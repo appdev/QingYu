@@ -62,7 +62,14 @@ export function horizontalRulePlugin() {
           ) {
             return true;
           }
-          if (context.revealed("line")) return true;
+          const line = context.state.doc.lineAt(context.node.from);
+          // A freshly typed rule leaves the caret at the right boundary. Keep
+          // that source editable so `****` can still become `**text**`.
+          const caretAtLineEnd = context.view.hasFocus &&
+            context.state.selection.ranges.some(
+              (selection) => selection.empty && selection.head === line.to,
+            );
+          if (context.revealed("line") || caretAtLineEnd) return true;
           context.add(
             Decoration.replace({
               widget: new HorizontalRuleWidget(context.node.from),

@@ -47,4 +47,33 @@ describe("horizontalRulePlugin", () => {
     expect(view.dom.querySelector("hr.cm-markra-horizontal-rule")).toBeNull();
     expect(view.dom.textContent).toContain("---");
   });
+
+  it("keeps four-asterisk source editable while the caret is at the line end", () => {
+    const view = createView("");
+
+    view.focus();
+
+    for (let index = 0; index < 4; index += 1) {
+      const head = view.state.selection.main.head;
+      view.dispatch({
+        changes: { from: head, insert: "*" },
+        selection: EditorSelection.cursor(head + 1),
+        userEvent: "input",
+      });
+    }
+
+    expect(view.state.selection.main.head).toBe(4);
+    expect(view.dom.querySelector("hr.cm-markra-horizontal-rule")).toBeNull();
+    expect(view.dom.textContent).toContain("****");
+
+    view.dispatch({ selection: EditorSelection.cursor(2) });
+
+    view.dispatch({
+      changes: { from: view.state.selection.main.head, insert: "bold" },
+      selection: EditorSelection.cursor(6),
+      userEvent: "input",
+    });
+
+    expect(view.state.doc.toString()).toBe("**bold**");
+  });
 });
