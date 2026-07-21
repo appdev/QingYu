@@ -563,6 +563,7 @@ jobs:
           node .release-scripts/scripts/release/generate-updater-manifest.mjs
 
       - name: Generate Homebrew cask
+        if: ${{ !contains(env.RELEASE_TAG, '-') }}
         env:
           GITHUB_REPOSITORY: ${{ github.repository }}
           OUTPUT_PATH: generated/homebrew/Casks/markra.rb
@@ -571,6 +572,7 @@ jobs:
         run: node .release-scripts/scripts/release/generate-homebrew-cask.mjs
 
       - name: Upload Homebrew cask artifact
+        if: ${{ !contains(env.RELEASE_TAG, '-') }}
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.APP_SLUG }}-homebrew-cask
@@ -604,7 +606,7 @@ jobs:
           files: ${{ steps.release_files.outputs.paths }}
 
       - name: Prepare Homebrew tap checkout
-        if: env.HOMEBREW_TAP_TOKEN != ''
+        if: env.HOMEBREW_TAP_TOKEN != '' && !contains(env.RELEASE_TAG, '-')
         shell: bash
         run: |
           set -euo pipefail
@@ -631,7 +633,7 @@ jobs:
           fi
 
       - name: Publish Homebrew cask to tap
-        if: env.HOMEBREW_TAP_TOKEN != ''
+        if: env.HOMEBREW_TAP_TOKEN != '' && !contains(env.RELEASE_TAG, '-')
         shell: bash
         run: |
           set -euo pipefail
