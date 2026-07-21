@@ -1,3 +1,14 @@
+## [2.0.0-alpha.0](https://github.com/markrahq/markra/compare/v1.7.4...v2.0.0-alpha.0) (2026-07-21)
+
+### Features
+
+* **editor:** replace Milkdown with CodeMirror ([d364b39](https://github.com/markrahq/markra/commit/d364b3948141188cdc6a4e48006d177650285600))
+* **editor:** restore CodeMirror feature parity ([2581000](https://github.com/markrahq/markra/commit/2581000277d343205e6205b235bf553d7012e23c))
+
+### Bug Fixes
+
+* **release:** skip Homebrew updates for prereleases ([fe43fd2](https://github.com/markrahq/markra/commit/fe43fd20159291168b04f0501c4f2eedf1c77ad6))
+
 ## [1.7.4](https://github.com/markrahq/markra/compare/v1.7.3...v1.7.4) (2026-07-19)
 
 ### Features
