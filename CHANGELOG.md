@@ -1,3 +1,9 @@
+## [2.0.0-alpha.2](https://github.com/markrahq/markra/compare/v2.0.0-alpha.1...v2.0.0-alpha.2) (2026-07-21)
+
+### Bug Fixes
+
+* **editor:** activate spellcheck after preference load ([3b38a85](https://github.com/markrahq/markra/commit/3b38a8534a61435d50ce8740f8ffdaaa6eef3a58))
+
 ## [2.0.0-alpha.1](https://github.com/markrahq/markra/compare/v2.0.0-alpha.0...v2.0.0-alpha.1) (2026-07-21)
 
 ### Features
