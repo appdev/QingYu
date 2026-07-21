@@ -443,10 +443,16 @@ describe("editor stylesheet", () => {
 
   it("gives horizontal rules a forgiving hit target without heavy selected-node feedback", () => {
     const styles = readFileSync(`${process.cwd()}/src/styles.css`, "utf8");
+    const renderedRuleStart = styles.indexOf(".markdown-paper .cm-markra-horizontal-rule {");
+    const renderedRuleEnd = styles.indexOf(".markdown-paper .cm-markra-task-checkbox", renderedRuleStart);
+    const renderedRuleStyles = styles.slice(renderedRuleStart, renderedRuleEnd);
     const ruleStart = styles.indexOf(".markdown-paper hr {");
     const ruleEnd = styles.indexOf(".ai-chat-markdown", ruleStart);
     const ruleStyles = styles.slice(ruleStart, ruleEnd);
 
+    expect(renderedRuleStart).toBeGreaterThanOrEqual(0);
+    expect(renderedRuleEnd).toBeGreaterThan(renderedRuleStart);
+    expect(renderedRuleStyles).toContain("border-top: 0 !important");
     expect(ruleStart).toBeGreaterThanOrEqual(0);
     expect(ruleEnd).toBeGreaterThan(ruleStart);
     expect(ruleStyles).toContain("@apply my-5 border-0");

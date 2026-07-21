@@ -1249,6 +1249,9 @@
   }
 
   .markdown-paper .cm-markra-horizontal-rule {
+    /* The app draws the rule with the shared hr background; suppress the
+       renderer theme's border so one Markdown block produces one line. */
+    border-top: 0 !important;
     margin: 16px 0 12px !important;
   }
 

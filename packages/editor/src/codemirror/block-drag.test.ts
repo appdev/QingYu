@@ -7,6 +7,7 @@ import {
   moveCodeMirrorBlock,
   readCodeMirrorBlockRanges,
 } from "./block-drag.ts";
+import { horizontalRulePlugin } from "./horizontal-rule.ts";
 import { getMarkraSlashMenuState, liveMarkdown } from "./index.ts";
 import "./dom.test-support.ts";
 
@@ -22,7 +23,7 @@ function createView(doc: string, readOnly = false) {
       extensions: [
         history(),
         liveMarkdown({
-          plugins: [codeMirrorBlockDragPlugin()],
+          plugins: [codeMirrorBlockDragPlugin(), horizontalRulePlugin()],
           slashMenu: true,
         }),
         EditorState.readOnly.of(readOnly),
@@ -106,6 +107,18 @@ describe("codeMirrorBlockDragPlugin", () => {
     expect(view.state.doc.toString()).toBe("Second\n\nFirst\n\nThird");
     expect(undo(view)).toBe(true);
     expect(view.state.doc.toString()).toBe(doc);
+  });
+
+  it("reorders a four-asterisk horizontal rule as one block", () => {
+    const doc = "First\n\n****\n\nSecond";
+    const view = createView(doc);
+    const blocks = readCodeMirrorBlockRanges(view.state);
+    const rule = blocks.find((block) => block.name === "HorizontalRule");
+    const second = blocks.find((block) => view.state.sliceDoc(block.from, block.to) === "Second");
+
+    expect(view.dom.querySelectorAll("hr.cm-markra-horizontal-rule")).toHaveLength(1);
+    expect(rule && second && moveCodeMirrorBlock(view, rule.from, second.from, "after")).toBe(true);
+    expect(view.state.doc.toString()).toBe("First\n\nSecond\n\n****");
   });
 
   it("reorders blocks through the rendered drag handle", () => {
