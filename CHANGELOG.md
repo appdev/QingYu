@@ -1,3 +1,15 @@
+## [2.0.0-alpha.1](https://github.com/markrahq/markra/compare/v2.0.0-alpha.0...v2.0.0-alpha.1) (2026-07-21)
+
+### Features
+
+* **updater:** add preview release channel ([f810809](https://github.com/markrahq/markra/commit/f8108092e94505854d3d0d35290675c983ade154))
+
+### Bug Fixes
+
+* **editor:** keep typed horizontal rules editable ([a106b38](https://github.com/markrahq/markra/commit/a106b38237fd1d3336096f8f76c9a4b52c4efc36))
+* **editor:** render horizontal rules as one line ([957dee0](https://github.com/markrahq/markra/commit/957dee0381836174a0e8efce9e72ad0b534eacf4))
+* **editor:** support pointer block dragging ([38629d3](https://github.com/markrahq/markra/commit/38629d3fd4c279526c6c4e4a6156abf76646dcef))
+
 ## [2.0.0-alpha.0](https://github.com/markrahq/markra/compare/v1.7.4...v2.0.0-alpha.0) (2026-07-21)
 
 ### Features
