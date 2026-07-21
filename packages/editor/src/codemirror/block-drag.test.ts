@@ -156,6 +156,56 @@ describe("codeMirrorBlockDragPlugin", () => {
     expect(view.dom.querySelector(".markra-block-drop-indicator")).toBeNull();
   });
 
+  it("reorders task items through pointer dragging when native drag events are unavailable", () => {
+    const view = createView(
+      "- [ ] First task\n- [ ] Second task\n- [ ] Third task",
+    );
+    const [first, second] = readCodeMirrorBlockRanges(view.state);
+    const handle = view.dom.querySelector<HTMLElement>(
+      `[data-block-from="${first?.from}"] .markra-block-drag-handle`,
+    );
+    const target = view.dom.querySelector<HTMLElement>(
+      `.cm-line[data-markra-block-from="${second?.from}"]`,
+    );
+
+    handle?.dispatchEvent(new PointerEvent("pointerdown", {
+      bubbles: true,
+      button: 0,
+      buttons: 1,
+      clientX: 10,
+      clientY: 10,
+      pointerId: 1,
+    }));
+    target?.dispatchEvent(new PointerEvent("pointermove", {
+      bubbles: true,
+      buttons: 1,
+      clientX: 20,
+      clientY: 40,
+      pointerId: 1,
+    }));
+
+    expect(view.dom.querySelector(".markra-block-drag-source")).not.toBeNull();
+    expect(
+      view.dom.querySelector(".markra-block-drop-indicator")?.getAttribute(
+        "data-show",
+      ),
+    ).toBe("true");
+
+    target?.dispatchEvent(new PointerEvent("pointerup", {
+      bubbles: true,
+      button: 0,
+      clientX: 20,
+      clientY: 40,
+      pointerId: 1,
+    }));
+
+    expect(view.state.doc.toString()).toBe(
+      "- [ ] Second task\n- [ ] First task\n- [ ] Third task",
+    );
+    expect(view.dom.querySelector(".markra-block-drag-source")).toBeNull();
+    expect(view.dom.querySelector(".markra-block-drop-indicator")).toBeNull();
+  });
+
   it("adds an editable blank block below and opens the virtual slash menu", () => {
     const view = createView("First\n\nSecond\n\nThird");
     const second = readCodeMirrorBlockRanges(view.state)[1];

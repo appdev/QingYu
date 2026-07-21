@@ -36,6 +36,7 @@ export interface CodeMirrorBlockDragPluginOptions {
 export type CodeMirrorBlockDropSide = "after" | "before";
 
 const blockDragMime = "application/x-markra-codemirror-block";
+const pointerDragThreshold = 4;
 const defaultLabels: CodeMirrorBlockDragLabels = {
   addBlock: "Add block below",
   dragBlock: "Drag block",
@@ -309,6 +310,11 @@ class BlockToolbarWidget extends WidgetType {
       delete drag.dataset.dragging;
       clearBlockDragUi(view);
     });
+    // Button drags do not reliably emit the HTML5 drag lifecycle in every
+    // WebView, so pointer events provide the primary cross-platform path.
+    drag.addEventListener("pointerdown", (event) => {
+      startPointerBlockDrag(view, this.blockFrom, drag, event);
+    });
     toolbar.append(add, drag);
     return toolbar;
   }
@@ -339,7 +345,7 @@ function eventElement(event: Event) {
       : null;
 }
 
-function dropTarget(event: DragEvent, view: CodeMirrorView) {
+function dropTarget(event: MouseEvent, view: CodeMirrorView) {
   const element = eventElement(event)?.closest<HTMLElement>(
     "[data-markra-block-from], [data-block-from]",
   );
@@ -400,7 +406,7 @@ function clearBlockDragUi(view: CodeMirrorView) {
 function startBlockDragUi(
   view: CodeMirrorView,
   sourceFrom: number,
-  event: DragEvent,
+  event: MouseEvent,
 ) {
   clearBlockDragUi(view);
   const source = view.dom.querySelector<HTMLElement>(
@@ -420,14 +426,16 @@ function startBlockDragUi(
   source?.classList.add("markra-block-drag-source");
   view.dom.dataset.dragging = "true";
   view.dom.ownerDocument.documentElement.dataset.markraBlockDragging = "true";
-  event.dataTransfer?.setDragImage?.(ghost, 12, 12);
+  if ("dataTransfer" in event) {
+    (event as DragEvent).dataTransfer?.setDragImage?.(ghost, 12, 12);
+  }
   blockDragUi.set(view, { ghost, indicator, source });
 }
 
 function updateBlockDragUi(
   view: CodeMirrorView,
   target: NonNullable<ReturnType<typeof dropTarget>>,
-  event: DragEvent,
+  event: MouseEvent,
 ) {
   const ui = blockDragUi.get(view);
   if (!ui || !target.element) return;
@@ -444,6 +452,75 @@ function updateBlockDragUi(
   const scrollRect = scroll.getBoundingClientRect();
   if (event.clientY < scrollRect.top + 48) scroll.scrollTop -= 18;
   if (event.clientY > scrollRect.bottom - 48) scroll.scrollTop += 18;
+}
+
+function startPointerBlockDrag(
+  view: CodeMirrorView,
+  sourceFrom: number,
+  handle: HTMLElement,
+  event: PointerEvent,
+) {
+  if (event.button !== 0 || view.state.facet(EditorState.readOnly)) return;
+  event.preventDefault();
+  event.stopPropagation();
+
+  const document = view.dom.ownerDocument;
+  const pointerId = event.pointerId;
+  const originX = event.clientX;
+  const originY = event.clientY;
+  let dragging = false;
+
+  const cleanup = () => {
+    document.removeEventListener("pointermove", handlePointerMove, true);
+    document.removeEventListener("pointerup", handlePointerUp, true);
+    document.removeEventListener("pointercancel", handlePointerCancel, true);
+    delete handle.dataset.dragging;
+  };
+  const handlePointerMove = (moveEvent: PointerEvent) => {
+    if (moveEvent.pointerId !== pointerId) return;
+    if (!dragging) {
+      const distance = Math.hypot(
+        moveEvent.clientX - originX,
+        moveEvent.clientY - originY,
+      );
+      if (distance < pointerDragThreshold) return;
+      dragging = true;
+      handle.dataset.dragging = "true";
+      startBlockDragUi(view, sourceFrom, moveEvent);
+    }
+
+    const target = dropTarget(moveEvent, view);
+    if (target) updateBlockDragUi(view, target, moveEvent);
+    moveEvent.preventDefault();
+  };
+  const handlePointerUp = (upEvent: PointerEvent) => {
+    if (upEvent.pointerId !== pointerId) return;
+    cleanup();
+    if (!dragging) return;
+
+    const target = dropTarget(upEvent, view);
+    if (target) {
+      moveCodeMirrorBlock(
+        view,
+        sourceFrom,
+        target.from,
+        target.side,
+        target.depth,
+      );
+    }
+    clearBlockDragUi(view);
+    upEvent.preventDefault();
+    upEvent.stopPropagation();
+  };
+  const handlePointerCancel = (cancelEvent: PointerEvent) => {
+    if (cancelEvent.pointerId !== pointerId) return;
+    cleanup();
+    clearBlockDragUi(view);
+  };
+
+  document.addEventListener("pointermove", handlePointerMove, true);
+  document.addEventListener("pointerup", handlePointerUp, true);
+  document.addEventListener("pointercancel", handlePointerCancel, true);
 }
 
 function draggedBlockFrom(event: DragEvent) {
