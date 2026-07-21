@@ -150,6 +150,18 @@ const spellcheckField = StateField.define<CodeMirrorSpellcheckState>({
       return createState(enabled, ignoredWords, matches);
     }
 
+    const previousConfig = transaction.startState.facet(spellcheckConfig);
+    const nextConfig = transaction.state.facet(spellcheckConfig);
+    if (previousConfig !== nextConfig) {
+      // Compartments preserve StateField instances, so facet reconfiguration must
+      // explicitly synchronize the field or a startup `false` stays false forever.
+      return createState(
+        nextConfig.enabled,
+        normalizedWordSet(nextConfig.ignoredWords),
+        [],
+      );
+    }
+
     if (!transaction.docChanged) return value;
     return createState(value.enabled, value.ignoredWords, []);
   },
@@ -279,8 +291,12 @@ const spellcheckView = ViewPlugin.fromClass(
       if (updateContainsComputedMatches(update)) return;
 
       const previous = getCodeMirrorSpellcheckState(update.startState);
+      const configChanged =
+        update.startState.facet(spellcheckConfig) !==
+        update.state.facet(spellcheckConfig);
       if (
         update.docChanged ||
+        configChanged ||
         state.enabled !== previous.enabled ||
         state.ignoredWords !== previous.ignoredWords
       ) {
