@@ -1,0 +1,135 @@
+import { EditorSelection, EditorState } from "@codemirror/state";
+import { EditorView, runScopeHandlers } from "@codemirror/view";
+import { afterEach, describe, expect, it } from "vitest";
+import {
+  formattingPlugin,
+  listMarkraUi,
+  liveMarkdown,
+  runMarkraCommand,
+} from "./index.ts";
+
+import "./dom.test-support.ts";
+
+const views: EditorView[] = [];
+
+function createView({
+  doc = "Before text after",
+  from = 7,
+  readOnly = false,
+  to = 11,
+} = {}) {
+  const parent = document.createElement("div");
+  document.body.append(parent);
+  const view = new EditorView({
+    parent,
+    state: EditorState.create({
+      doc,
+      selection: EditorSelection.range(from, to),
+      extensions: [
+        EditorState.readOnly.of(readOnly),
+        liveMarkdown({ plugins: [formattingPlugin()] }),
+      ],
+    }),
+  });
+  views.push(view);
+  return view;
+}
+
+afterEach(() => {
+  for (const view of views.splice(0)) view.destroy();
+  document.body.replaceChildren();
+});
+
+describe("formattingPlugin", () => {
+  it("publishes stable Markra-friendly formatting actions", () => {
+    const view = createView();
+
+    expect(
+      listMarkraUi(view, "selection-toolbar").map((action) => ({
+        command: action.command,
+        icon: action.icon,
+        label: action.label,
+      })),
+    ).toEqual([
+      { command: "format.bold", icon: "bold", label: "Bold" },
+      { command: "format.italic", icon: "italic", label: "Italic" },
+      {
+        command: "format.strikethrough",
+        icon: "strikethrough",
+        label: "Strikethrough",
+      },
+      { command: "format.code", icon: "code", label: "Inline code" },
+      {
+        command: "format.highlight",
+        icon: "highlighter",
+        label: "Highlight",
+      },
+    ]);
+  });
+
+  it("wraps and unwraps a selection while preserving the selected text", () => {
+    const view = createView();
+
+    expect(runMarkraCommand(view, "format.bold")).toBe(true);
+    expect(view.state.doc.toString()).toBe("Before **text** after");
+    expect(
+      view.state.sliceDoc(
+        view.state.selection.main.from,
+        view.state.selection.main.to,
+      ),
+    ).toBe("text");
+    expect(
+      listMarkraUi(view, "selection-toolbar").find(
+        (action) => action.command === "format.bold",
+      )?.active,
+    ).toBe(true);
+
+    expect(runMarkraCommand(view, "format.bold")).toBe(true);
+    expect(view.state.doc.toString()).toBe("Before text after");
+    expect(
+      view.state.sliceDoc(
+        view.state.selection.main.from,
+        view.state.selection.main.to,
+      ),
+    ).toBe("text");
+  });
+
+  it("toggles Markra highlight syntax", () => {
+    const view = createView();
+
+    expect(runMarkraCommand(view, "format.highlight")).toBe(true);
+    expect(view.state.doc.toString()).toBe("Before ==text== after");
+    expect(runMarkraCommand(view, "format.highlight")).toBe(true);
+    expect(view.state.doc.toString()).toBe("Before text after");
+  });
+
+  it("disables formatting without an editable text selection", () => {
+    const emptySelection = createView({ from: 7, to: 7 });
+    const readOnlySelection = createView({ readOnly: true });
+
+    expect(
+      listMarkraUi(emptySelection, "selection-toolbar").every(
+        (action) => !action.enabled,
+      ),
+    ).toBe(true);
+    expect(runMarkraCommand(emptySelection, "format.bold")).toBe(false);
+    expect(
+      listMarkraUi(readOnlySelection, "selection-toolbar").every(
+        (action) => !action.enabled,
+      ),
+    ).toBe(true);
+    expect(runMarkraCommand(readOnlySelection, "format.bold")).toBe(false);
+  });
+
+  it("provides common document-editor formatting shortcuts", () => {
+    const view = createView();
+    const event = new KeyboardEvent("keydown", {
+      bubbles: true,
+      ctrlKey: true,
+      key: "b",
+    });
+
+    expect(runScopeHandlers(view, event, "editor")).toBe(true);
+    expect(view.state.doc.toString()).toBe("Before **text** after");
+  });
+});

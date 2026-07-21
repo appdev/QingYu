@@ -61,7 +61,8 @@ import { useEditorPreferences } from "./hooks/useEditorPreferences";
 import { useDeferredAiSelectionReveal } from "./hooks/ai-selection-reveal";
 import { useExportSettings } from "./hooks/useExportSettings";
 import { useFileIgnoreSettings } from "./hooks/useFileIgnoreSettings";
-import { shouldFocusEditorOnReady, useEditorController } from "./hooks/useEditorController";
+import { useCodeMirrorEditorController } from "./hooks/useCodeMirrorEditorController";
+import { shouldFocusEditorOnReady } from "./lib/editor-focus";
 import { useMarkdownDocument, type ActiveDiskFileContentChange } from "./hooks/useMarkdownDocument";
 import { useMarkdownFileTree } from "./hooks/useMarkdownFileTree";
 import { useSelectionToolbarAnchorRefresh } from "./hooks/useSelectionToolbarAnchorRefresh";
@@ -85,7 +86,7 @@ import {
   useNativeMenus,
   useSettingsWindowShortcut
 } from "./hooks/useNativeBindings";
-import type { Editor as MilkdownEditor } from "@milkdown/kit/core";
+import type { EditorView } from "@codemirror/view";
 import {
   aiTranslationLanguageName,
   clampNumber,
@@ -493,7 +494,7 @@ function WorkspaceApp() {
   const mainDocumentPaneRef = useRef<HTMLDivElement | null>(null);
   const sourceScrollRef = useRef<HTMLElement | null>(null);
   const visualScrollRef = useRef<HTMLElement | null>(null);
-  const mainVisualEditorsRef = useRef(new Map<string, MilkdownEditor>());
+  const mainVisualEditorsRef = useRef(new Map<string, EditorView>());
   const documentTabViewStatesRef = useRef(new Map<string, DocumentTabViewState>());
   const pendingEditorModeScrollRef = useRef<PendingEditorModeScroll | null>(null);
   const splitSurfaceRef = useRef<HTMLDivElement | null>(null);
@@ -572,11 +573,11 @@ function WorkspaceApp() {
     };
   }, [editorPreferences.preferences.markdownTemplates]);
 
-  const editor = useEditorController();
+  const editor = useCodeMirrorEditorController();
   const clearEditorSelectionFormatting = editor.clearSelectionFormatting;
   const findEditorSearchMatches = editor.findSearchMatches;
   const getEditorCurrentMarkdown = editor.getCurrentMarkdown;
-  const handleMilkdownEditorReady = editor.handleEditorReady;
+  const handleCodeMirrorEditorReady = editor.handleEditorReady;
   const insertEditorMarkdownImage = editor.insertMarkdownImage;
   const insertEditorMarkdownImages = editor.insertMarkdownImages;
   const insertEditorMarkdownImagesAtPoint = editor.insertMarkdownImagesAtPoint;
@@ -617,9 +618,9 @@ function WorkspaceApp() {
 
     return visualEditorReadyRevisionRef.current === documentRevisionRef.current;
   }, [sourceSurfaceActive]);
-  const handleVisualEditorReady = useCallback((...args: Parameters<typeof handleMilkdownEditorReady>) => {
+  const handleVisualEditorReady = useCallback((...args: Parameters<typeof handleCodeMirrorEditorReady>) => {
     const [readyEditor] = args;
-    handleMilkdownEditorReady(...args);
+    handleCodeMirrorEditorReady(...args);
     if (readyEditor) {
       markAppPerformance("markdown-visual-ready", {
         ...visualEditorReadyDetailRef.current,
@@ -630,7 +631,7 @@ function WorkspaceApp() {
     } else if (visualEditorReadyRevisionRef.current === documentRevisionRef.current) {
       visualEditorReadyRevisionRef.current = null;
     }
-  }, [handleMilkdownEditorReady]);
+  }, [handleCodeMirrorEditorReady]);
   const handleActiveDiskFileContentChange = useCallback((change: ActiveDiskFileContentChange) => {
     if (largeMarkdownVisualBlockedRef.current) return false;
 
@@ -840,13 +841,16 @@ function WorkspaceApp() {
   }, [activeImageFile?.path, activeTabId, editorMode]);
   const handleMainVisualEditorReady = useCallback((
     tabId: string,
-    readyEditor: MilkdownEditor | null,
-    options?: Parameters<typeof handleMilkdownEditorReady>[1]
+    readyEditor: EditorView | null,
+    disposedEditor?: EditorView,
+    options?: Parameters<typeof handleCodeMirrorEditorReady>[1]
   ) => {
     if (readyEditor) {
       mainVisualEditorsRef.current.set(tabId, readyEditor);
-    } else {
+    } else if (mainVisualEditorsRef.current.get(tabId) === disposedEditor) {
       mainVisualEditorsRef.current.delete(tabId);
+    } else {
+      return;
     }
 
     const tab = readyEditor ? documentTabs.find((candidate) => candidate.id === tabId) : null;
@@ -874,7 +878,7 @@ function WorkspaceApp() {
     if (!activeEditor) return;
 
     handleVisualEditorReady(activeEditor, { autoFocus: false });
-  }, [activeTabId, handleVisualEditorReady]);
+  }, [activeTabId, document.revision, handleVisualEditorReady]);
   useEffect(() => {
     setActiveOutlineIndex(null);
   }, [activeTabId, document.path]);
@@ -2940,10 +2944,13 @@ function WorkspaceApp() {
   const syncVisualMarkdownAfterEditorCommand = useCallback(() => {
     if (readOnlyMode || !splitMode) return;
 
-    handleVisualMarkdownChange(getEditorCurrentMarkdown(document.content), {
-      documentRevision: document.revision
+    const content = getEditorCurrentMarkdown(document.content);
+    setActiveEditorSurface("visual");
+    handleMarkdownChange(content, {
+      documentRevision: document.revision,
+      surface: "visual"
     });
-  }, [document.content, document.revision, getEditorCurrentMarkdown, handleVisualMarkdownChange, readOnlyMode, splitMode]);
+  }, [document.content, document.revision, getEditorCurrentMarkdown, handleMarkdownChange, readOnlyMode, splitMode]);
   const saveLocalEditorImageFiles = useCallback(async (images: File[]) => {
     const copyToStorage = editorPreferences.preferences.copyExternalFilesToStorage;
     if (copyToStorage && !document.path) {
@@ -4123,7 +4130,9 @@ function WorkspaceApp() {
               markdownShortcuts={editorPreferences.preferences.markdownShortcuts}
               paragraphSpacingPx={editorPreferences.preferences.paragraphSpacingPx}
               onActiveOutlineIndexChange={tabActive ? handleActiveOutlineIndexChange : undefined}
-              onEditorReady={(readyEditor, options) => handleMainVisualEditorReady(tab.id, readyEditor, options)}
+              onEditorReady={(readyEditor, disposedEditor) =>
+                handleMainVisualEditorReady(tab.id, readyEditor, disposedEditor)
+              }
               onMarkdownChange={(content) => {
                 const options = { documentRevision: tab.revision };
                 if (tabActive) {

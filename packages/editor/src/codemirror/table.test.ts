@@ -1,0 +1,575 @@
+import { EditorSelection, EditorState } from "@codemirror/state";
+import { EditorView } from "@codemirror/view";
+import { afterEach, describe, expect, it } from "vitest";
+import { liveMarkdown } from "./index.ts";
+import { tablePreviewPlugin } from "./table.ts";
+import "./dom.test-support.ts";
+
+const views: EditorView[] = [];
+
+function createView(
+  doc: string,
+  plugin = tablePreviewPlugin(),
+) {
+  const parent = document.createElement("div");
+  document.body.append(parent);
+  const view = new EditorView({
+    parent,
+    state: EditorState.create({
+      doc,
+      extensions: [liveMarkdown({ plugins: [plugin] })],
+      selection: EditorSelection.cursor(doc.length),
+    }),
+  });
+  view.focus();
+  view.dispatch({ selection: view.state.selection });
+  views.push(view);
+  return view;
+}
+
+afterEach(() => {
+  for (const view of views.splice(0)) view.destroy();
+  document.body.replaceChildren();
+  window.localStorage.clear();
+});
+
+describe("tablePreviewPlugin", () => {
+  it("renders a GFM table without changing its Markdown source", () => {
+    const doc = [
+      "| Name | Value |",
+      "| :--- | ---: |",
+      "| Alpha | 1 |",
+      "",
+      "Edit",
+    ].join("\n");
+    const view = createView(doc);
+    const table = view.dom.querySelector<HTMLTableElement>(".cm-markra-table");
+
+    expect(table).not.toBeNull();
+    expect(table?.querySelector("th")?.textContent).toBe("Name");
+    expect(table?.querySelector("td")?.textContent).toBe("Alpha");
+    expect(table?.querySelectorAll("th")[0]?.style.textAlign).toBe("left");
+    expect(table?.querySelectorAll("th")[1]?.style.textAlign).toBe("right");
+    expect(view.state.doc.toString()).toBe(doc);
+  });
+
+  it("renders the original Markra table control layout and icons", () => {
+    const doc = [
+      "| Name | Value |",
+      "| :--- | :--- |",
+      "| Alpha | 1 |",
+      "",
+      "Edit",
+    ].join("\n");
+    const view = createView(doc);
+    const wrapper = view.dom.querySelector<HTMLElement>(
+      ".cm-markra-table-wrap",
+    );
+
+    expect(wrapper?.classList.contains("tableWrapper")).toBe(true);
+    expect(wrapper?.dataset.tableAlignment).toBe("left");
+    expect(wrapper?.querySelector(".cm-markra-table-controls")).toBeNull();
+    expect(
+      wrapper?.querySelector(".markra-table-scroll > .cm-markra-table"),
+    ).not.toBeNull();
+    expect(
+      wrapper?.querySelectorAll(".markra-table-align-controls > button"),
+    ).toHaveLength(5);
+    expect(
+      wrapper?.querySelectorAll(".markra-table-size-icon-square"),
+    ).toHaveLength(4);
+    expect(
+      wrapper?.querySelectorAll(".markra-table-align-icon-line"),
+    ).toHaveLength(9);
+    expect(wrapper?.querySelector(".markra-table-width-icon")).not.toBeNull();
+
+    for (const label of [
+      "Add column to the right",
+      "Add row below",
+      "Delete column",
+      "Delete row",
+      "Delete table",
+    ]) {
+      expect(
+        wrapper?.querySelector(
+          `[aria-label="${label}"] svg.markra-lucide-icon.markra-table-control-icon`,
+        ),
+      ).not.toBeNull();
+    }
+
+    expect(
+      wrapper?.querySelector('[aria-label="Align table left"]')
+        ?.getAttribute("aria-pressed"),
+    ).toBe("true");
+    expect(
+      wrapper?.querySelector('[aria-label="Column width mode"]')
+        ?.getAttribute("aria-pressed"),
+    ).toBe("true");
+  });
+
+  it("moves the original delete controls to the hovered header or row", () => {
+    const doc = [
+      "| Name | Value |",
+      "| --- | --- |",
+      "| Alpha | 1 |",
+      "",
+      "Edit",
+    ].join("\n");
+    const view = createView(doc);
+    const wrapper = view.dom.querySelector<HTMLElement>(
+      ".cm-markra-table-wrap",
+    );
+    const header = view.dom.querySelector<HTMLTableCellElement>(
+      ".cm-markra-table th:nth-child(2)",
+    );
+    const row = view.dom.querySelector<HTMLTableRowElement>(
+      ".cm-markra-table tbody tr",
+    );
+    const bodyCell = row?.querySelector<HTMLTableCellElement>("td");
+    const deleteColumn = wrapper?.querySelector<HTMLButtonElement>(
+      '[aria-label="Delete column"]',
+    );
+    const deleteRow = wrapper?.querySelector<HTMLButtonElement>(
+      '[aria-label="Delete row"]',
+    );
+
+    expect(wrapper).not.toBeNull();
+    expect(header).not.toBeNull();
+    expect(row).not.toBeNull();
+    expect(bodyCell).not.toBeNull();
+    wrapper!.getBoundingClientRect = () => ({
+      bottom: 150,
+      height: 140,
+      left: 20,
+      right: 320,
+      top: 10,
+      width: 300,
+      x: 20,
+      y: 10,
+      toJSON: () => ({}),
+    });
+    header!.getBoundingClientRect = () => ({
+      bottom: 70,
+      height: 40,
+      left: 120,
+      right: 220,
+      top: 30,
+      width: 100,
+      x: 120,
+      y: 30,
+      toJSON: () => ({}),
+    });
+    row!.getBoundingClientRect = () => ({
+      bottom: 110,
+      height: 40,
+      left: 20,
+      right: 284,
+      top: 70,
+      width: 264,
+      x: 20,
+      y: 70,
+      toJSON: () => ({}),
+    });
+
+    header!.dispatchEvent(new MouseEvent("mousemove", { bubbles: true }));
+    expect(deleteColumn?.hidden).toBe(false);
+    expect(deleteColumn?.style.left).toBe("150px");
+    expect(deleteColumn?.style.top).toBe("20px");
+    expect(deleteRow?.hidden).toBe(true);
+
+    bodyCell!.dispatchEvent(new MouseEvent("mousemove", { bubbles: true }));
+    expect(deleteColumn?.hidden).toBe(true);
+    expect(deleteRow?.hidden).toBe(false);
+    expect(deleteRow?.style.left).toBe("264px");
+    expect(deleteRow?.style.top).toBe("80px");
+  });
+
+  it("reveals the complete table source when the selection enters it", () => {
+    const doc = [
+      "| Name | Value |",
+      "| --- | --- |",
+      "| Alpha | 1 |",
+      "",
+      "Edit",
+    ].join("\n");
+    const view = createView(doc);
+
+    view.dispatch({ selection: EditorSelection.cursor(doc.indexOf("Alpha")) });
+
+    expect(view.dom.querySelector(".cm-markra-table")).toBeNull();
+    expect(view.dom.textContent).toContain("| Alpha | 1 |");
+  });
+
+  it("keeps the table visual when a preview cell is activated", () => {
+    const doc = [
+      "| Name | Value |",
+      "| --- | --- |",
+      "| Alpha | 1 |",
+      "",
+      "Edit",
+    ].join("\n");
+    const view = createView(doc);
+    const cell = view.dom.querySelector<HTMLTableCellElement>(".cm-markra-table tbody td");
+
+    cell?.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+
+    expect(view.state.selection.main.head).toBe(doc.length);
+    expect(view.dom.querySelector(".cm-markra-table")).not.toBeNull();
+    expect(cell?.contentEditable).toBe("true");
+  });
+
+  it("updates Markdown while editing a visual table cell", async () => {
+    const doc = [
+      "| Name | Value |",
+      "| --- | --- |",
+      "| Alpha | 1 |",
+      "",
+      "Edit",
+    ].join("\n");
+    const view = createView(doc);
+    const cell = view.dom.querySelector<HTMLTableCellElement>(
+      ".cm-markra-table tbody td",
+    );
+
+    cell?.focus();
+    if (cell) cell.textContent = "Updated | value";
+    cell?.dispatchEvent(new InputEvent("input", { bubbles: true }));
+
+    await Promise.resolve();
+
+    expect(view.state.doc.toString()).toContain("| Updated \\| value | 1 |");
+    expect(view.dom.querySelector(".cm-markra-table")).not.toBeNull();
+    expect(
+      view.dom.querySelector<HTMLTableCellElement>(
+        ".cm-markra-table tbody td",
+      )?.textContent,
+    ).toBe("Updated | value");
+    expect(document.activeElement).toBe(
+      view.dom.querySelector<HTMLTableCellElement>(
+        ".cm-markra-table tbody td",
+      ),
+    );
+  });
+
+  it("commits a visual table cell after IME composition finishes", async () => {
+    const doc = [
+      "| Name | Value |",
+      "| --- | --- |",
+      "| Alpha | 1 |",
+      "",
+      "Edit",
+    ].join("\n");
+    const view = createView(doc);
+    const cell = view.dom.querySelector<HTMLTableCellElement>(
+      ".cm-markra-table tbody td",
+    );
+
+    cell?.focus();
+    cell?.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }));
+    if (cell) cell.textContent = "中文";
+    cell?.dispatchEvent(new InputEvent("input", { bubbles: true, isComposing: true }));
+
+    expect(view.state.doc.toString()).toBe(doc);
+
+    cell?.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true }));
+    await Promise.resolve();
+
+    expect(view.state.doc.toString()).toContain("| 中文 | 1 |");
+    expect(view.dom.querySelector(".cm-markra-table")).not.toBeNull();
+    expect(document.activeElement?.textContent).toBe("中文");
+  });
+
+  it("restores the original visual cell value with Escape", async () => {
+    const doc = [
+      "| Name | Value |",
+      "| --- | --- |",
+      "| Alpha | 1 |",
+      "",
+      "Edit",
+    ].join("\n");
+    const view = createView(doc);
+    const cell = view.dom.querySelector<HTMLTableCellElement>(
+      ".cm-markra-table tbody td",
+    );
+
+    cell?.focus();
+    if (cell) cell.textContent = "Updated";
+    cell?.dispatchEvent(new InputEvent("input", { bubbles: true }));
+    await Promise.resolve();
+
+    view.dom.querySelector<HTMLTableCellElement>(
+      ".cm-markra-table tbody td",
+    )?.dispatchEvent(new KeyboardEvent("keydown", {
+      bubbles: true,
+      cancelable: true,
+      key: "Escape",
+    }));
+
+    expect(view.state.doc.toString()).toBe(doc);
+    expect(view.dom.querySelector(".cm-markra-table")).not.toBeNull();
+  });
+
+  it("keeps line breaks out of visual table cells", () => {
+    const doc = [
+      "| Name | Value |",
+      "| --- | --- |",
+      "| Alpha | 1 |",
+      "",
+      "Edit",
+    ].join("\n");
+    const view = createView(doc);
+    const cell = view.dom.querySelector<HTMLTableCellElement>(
+      ".cm-markra-table tbody td",
+    );
+    const event = new KeyboardEvent("keydown", {
+      bubbles: true,
+      cancelable: true,
+      key: "Enter",
+    });
+
+    cell?.dispatchEvent(event);
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(view.dom.querySelector(".cm-markra-table")).not.toBeNull();
+  });
+
+  it("adds rows and columns and keeps editing in the new visual cells", async () => {
+    const doc = [
+      "| Name | Value |",
+      "| --- | --- |",
+      "| Alpha | 1 |",
+      "",
+      "Edit",
+    ].join("\n");
+    const view = createView(doc);
+
+    view.dom.querySelector<HTMLButtonElement>('[aria-label="Add row below"]')?.click();
+    await Promise.resolve();
+    expect(view.state.doc.toString()).toContain("|  |  |\n\nEdit");
+    expect(document.activeElement).toBe(
+      view.dom.querySelector<HTMLTableCellElement>(
+        ".cm-markra-table tbody tr:last-child td:first-child",
+      ),
+    );
+    view.dom.querySelector<HTMLButtonElement>('[aria-label="Add column to the right"]')?.click();
+    await Promise.resolve();
+    expect(view.state.doc.toString()).toContain("| Name | Value |  |");
+    expect(document.activeElement).toBe(
+      view.dom.querySelector<HTMLTableCellElement>(
+        ".cm-markra-table thead th:last-child",
+      ),
+    );
+    view.dom.querySelector<HTMLButtonElement>('[aria-label="Align table right"]')?.click();
+    expect(view.state.doc.toString()).toContain("| ---: | ---: | ---: |");
+  });
+
+  it("deletes a selected preview row or column and focuses a nearby visual cell", async () => {
+    const doc = [
+      "| Name | Value | Extra |",
+      "| --- | --- | --- |",
+      "| Alpha | 1 | A |",
+      "| Beta | 2 | B |",
+      "",
+      "Edit",
+    ].join("\n");
+    const view = createView(doc);
+
+    view.dom.querySelector<HTMLTableCellElement>(
+      ".cm-markra-table tbody tr:first-child td",
+    )?.dispatchEvent(new MouseEvent("mousemove", { bubbles: true }));
+    view.dom.querySelector<HTMLButtonElement>('[aria-label="Delete row"]')?.click();
+    await Promise.resolve();
+    expect(view.state.doc.toString()).not.toContain("Alpha");
+    expect(document.activeElement).toBe(
+      view.dom.querySelector<HTMLTableCellElement>(
+        ".cm-markra-table tbody tr:first-child td:first-child",
+      ),
+    );
+    view.dom.querySelector<HTMLTableCellElement>(
+      ".cm-markra-table th:nth-child(3)",
+    )?.dispatchEvent(new MouseEvent("mousemove", { bubbles: true }));
+    view.dom.querySelector<HTMLButtonElement>('[aria-label="Delete column"]')?.click();
+    await Promise.resolve();
+    expect(view.state.doc.toString()).not.toContain("Extra");
+    expect(view.state.doc.toString()).not.toContain("| B |");
+    expect(document.activeElement).toBe(
+      view.dom.querySelector<HTMLTableCellElement>(
+        ".cm-markra-table thead th:last-child",
+      ),
+    );
+    view.dom.querySelector<HTMLButtonElement>('[aria-label="Delete table"]')?.click();
+    expect(view.state.doc.toString()).toBe("\nEdit");
+  });
+
+  it.each([
+    { button: 2, ctrlKey: false, name: "right-click" },
+    { button: 0, ctrlKey: true, name: "ctrl-click" },
+  ])("does not delete a table on $name", ({ button, ctrlKey }) => {
+    const doc = [
+      "| Name | Value |",
+      "| --- | --- |",
+      "| Alpha | 1 |",
+      "",
+      "Edit",
+    ].join("\n");
+    const view = createView(doc);
+    const deleteTable = view.dom.querySelector<HTMLButtonElement>(
+      '[aria-label="Delete table"]',
+    );
+
+    deleteTable?.dispatchEvent(new MouseEvent("click", {
+      bubbles: true,
+      button,
+      cancelable: true,
+      ctrlKey,
+    }));
+
+    expect(view.state.doc.toString()).toBe(doc);
+  });
+
+  it("applies Markra's configured table width mode", () => {
+    const doc = [
+      "| Name | Value |",
+      "| --- | --- |",
+      "| Alpha | 1 |",
+      "",
+      "Edit",
+    ].join("\n");
+    const view = createView(doc, tablePreviewPlugin({ widthMode: "even" }));
+
+    expect(view.dom.querySelector(".cm-markra-table-wrap")?.getAttribute("data-width-mode")).toBe("even");
+    expect(view.dom.querySelector(".cm-markra-table")?.getAttribute("data-width-mode")).toBe("even");
+  });
+
+  it("toggles the original table width control for every table in the document", () => {
+    const source = [
+      "| Name | Value |",
+      "| --- | --- |",
+      "| Alpha | 1 |",
+      "",
+      "| Other | Table |",
+      "| --- | --- |",
+      "| Beta | 2 |",
+      "",
+      "Edit",
+    ].join("\n");
+    const view = createView(source);
+    const button = view.dom.querySelector<HTMLButtonElement>(
+      '[aria-label="Column width mode"]',
+    );
+
+    button?.click();
+
+    expect(
+      Array.from(view.dom.querySelectorAll(".cm-markra-table-wrap")).map(
+        (wrapper) => wrapper.getAttribute("data-width-mode"),
+      ),
+    ).toEqual(["even", "even"]);
+    expect(
+      Array.from(view.dom.querySelectorAll(".cm-markra-table")).every(
+        (table) => !table.classList.contains("markra-table-width-auto"),
+      ),
+    ).toBe(true);
+    expect(
+      Array.from(
+        view.dom.querySelectorAll('[aria-label="Column width mode"]'),
+      ).every((control) => control.getAttribute("aria-pressed") === "false"),
+    ).toBe(true);
+  });
+
+  it("resizes a table and keeps editing in the last visual cell", async () => {
+    const doc = [
+      "| Field | Value |",
+      "| --- | --- |",
+      "| Name | Markra |",
+      "",
+      "Edit",
+    ].join("\n");
+    const view = createView(doc);
+    const adjust = view.dom.querySelector<HTMLButtonElement>(
+      '[aria-label="Adjust table"]',
+    );
+
+    adjust?.click();
+    const resize = document.querySelector<HTMLButtonElement>(
+      '[aria-label="Resize table to 3 columns by 4 rows"]',
+    );
+    resize?.dispatchEvent(new MouseEvent("mouseenter", { bubbles: true }));
+    expect(
+      document.querySelector<HTMLInputElement>('[aria-label="Table columns"]')?.value,
+    ).toBe("3");
+    expect(
+      document.querySelector<HTMLInputElement>('[aria-label="Table rows"]')?.value,
+    ).toBe("4");
+    resize?.dispatchEvent(new MouseEvent("mousedown", {
+      bubbles: true,
+      button: 0,
+      cancelable: true,
+    }));
+
+    await Promise.resolve();
+
+    expect(view.state.doc.toString()).toContain("| Field | Value |  |");
+    expect(view.state.doc.toString()).toContain("| Name | Markra |  |");
+    expect(view.state.doc.toString().match(/^\|  \|  \|  \|$/gmu)).toHaveLength(2);
+    expect(document.querySelector(".markra-table-size-popover")).toBeNull();
+    expect(view.dom.querySelector(".cm-markra-table")).not.toBeNull();
+    expect(document.activeElement).toBe(
+      view.dom.querySelector<HTMLTableCellElement>(
+        ".cm-markra-table tbody tr:last-child td:last-child",
+      ),
+    );
+  });
+
+  it("closes the size picker when its toolbar button is clicked again", () => {
+    const doc = [
+      "| Field | Value |",
+      "| --- | --- |",
+      "| Name | Markra |",
+      "",
+      "Edit",
+    ].join("\n");
+    const view = createView(doc);
+    const adjust = view.dom.querySelector<HTMLButtonElement>(
+      '[aria-label="Adjust table"]',
+    );
+
+    adjust?.click();
+    expect(document.querySelector(".markra-table-size-popover")).not.toBeNull();
+
+    adjust?.dispatchEvent(new MouseEvent("mousedown", {
+      bubbles: true,
+      button: 0,
+      cancelable: true,
+    }));
+    adjust?.click();
+
+    expect(document.querySelector(".markra-table-size-popover")).toBeNull();
+  });
+
+  it("clamps the size picker summary for tables larger than its grid", () => {
+    const header = `| ${Array.from({ length: 9 }, (_, index) => `H${index + 1}`).join(" | ")} |`;
+    const separator = `| ${Array.from({ length: 9 }, () => "---").join(" | ")} |`;
+    const row = `| ${Array.from({ length: 9 }, () => "Cell").join(" | ")} |`;
+    const view = createView([
+      header,
+      separator,
+      ...Array.from({ length: 11 }, () => row),
+      "",
+      "Edit",
+    ].join("\n"));
+
+    view.dom.querySelector<HTMLButtonElement>(
+      '[aria-label="Adjust table"]',
+    )?.click();
+
+    expect(
+      document.querySelector<HTMLInputElement>('[aria-label="Table columns"]')
+        ?.value,
+    ).toBe("8");
+    expect(
+      document.querySelector<HTMLInputElement>('[aria-label="Table rows"]')
+        ?.value,
+    ).toBe("10");
+  });
+});

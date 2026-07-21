@@ -23,7 +23,8 @@ Common commands:
 - `apps/desktop` contains the Tauri desktop shell.
 - `apps/web` contains the browser-hosted editor.
 - `packages/app` contains the shared React app surface and product UI.
-- `packages/editor` contains Milkdown editor integrations.
+- `packages/editor` contains the framework-agnostic CodeMirror editor core and extensions.
+- `packages/editor-react` contains the React bindings for the editor core.
 - `packages/ai` contains agent runtime, tools, and AI document flows.
 - `packages/providers` contains provider catalogs, settings, and request shaping.
 - `packages/markdown` contains Markdown parsing and asset/path helpers.

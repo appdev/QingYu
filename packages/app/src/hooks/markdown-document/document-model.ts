@@ -253,8 +253,8 @@ function normalizeComparableMarkdownListSpacing(content: string) {
       continue;
     }
 
-    // Milkdown may serialize adjacent one-line list items without the spacer line;
-    // keep that clean-file rewrite from becoming an unsaved edit.
+    // Visual serializers may omit spacer lines between adjacent one-line list items;
+    // keep that equivalent clean-file rewrite from becoming an unsaved edit.
     const isSimpleListSpacer =
       !fencedMarker &&
       isComparableMarkdownListSpacer(line, normalized[normalized.length - 1], lines[lineIndex + 1]);
@@ -295,7 +295,7 @@ function normalizeComparableMarkdownLineEscapes(line: string) {
       isMarkdownWordCharacter(line[index - 1]) &&
       isMarkdownWordCharacter(line[index + 2])
     ) {
-      // Milkdown escapes intraword underscores even though CommonMark treats them as literal text.
+      // Some visual serializers escape intraword underscores even though CommonMark treats them as literal text.
       normalized += "_";
       index += 1;
       continue;

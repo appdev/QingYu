@@ -1,8 +1,6 @@
 @import "tailwindcss";
 @source ".";
 @source "../../../packages/ui/src";
-@import "@milkdown/kit/prose/view/style/prosemirror.css";
-@import "@milkdown/kit/prose/tables/style/tables.css";
 @import "katex/dist/katex.css";
 
 @keyframes markra-history-panel-in {
@@ -14,18 +12,6 @@
   to {
     opacity: 1;
     transform: translateY(0);
-  }
-}
-
-@keyframes markra-prosemirror-caret-blink {
-  0%,
-  49% {
-    opacity: 1;
-  }
-
-  50%,
-  100% {
-    opacity: 0;
   }
 }
 
@@ -835,38 +821,424 @@
     --editor-text-cursor: url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http://www.w3.org/2000/svg%27%20width%3D%2724%27%20height%3D%2724%27%20viewBox%3D%270%200%2024%2024%27%3E%3Cpath%20d%3D%27M12%204v16M8.5%204h7M8.5%2020h7%27%20fill%3D%27none%27%20stroke%3D%27%23000000%27%20stroke-width%3D%274%27%20stroke-linecap%3D%27round%27/%3E%3Cpath%20d%3D%27M12%204v16M8.5%204h7M8.5%2020h7%27%20fill%3D%27none%27%20stroke%3D%27%23ffffff%27%20stroke-width%3D%272%27%20stroke-linecap%3D%27round%27/%3E%3C/svg%3E") 12 12, text;
   }
 
-  .markdown-paper [data-milkdown-root],
-  .markdown-paper .ProseMirror {
+  .markdown-paper .cm-editor {
     @apply min-h-[calc(100vh-176px)] outline-none;
     cursor: var(--editor-text-cursor);
     font-family: var(--editor-font-family);
   }
 
-  .markdown-paper .ProseMirror {
+  .markdown-paper .cm-content {
     @apply wrap-break-word whitespace-pre-wrap;
+    color: var(--editor-text-primary);
+    font-family: inherit;
   }
 
-  .markdown-paper .ProseMirror.markra-prosemirror-custom-caret {
-    caret-color: transparent;
+  .markdown-paper .cm-cursor,
+  .markdown-paper .cm-dropCursor {
+    border-left-color: var(--editor-caret-color) !important;
   }
 
-  .markdown-paper .markra-prosemirror-caret {
-    position: fixed;
-    z-index: 70;
+  /* CodeMirror uses transparent image nodes to stabilize widget cursors. They
+     are editor chrome, so Markdown media spacing must never leak onto them. */
+  .markdown-paper .cm-widgetBuffer {
+    display: inline !important;
+    width: 0 !important;
+    height: 0 !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    border: 0 !important;
+    border-radius: 0 !important;
+    max-width: none !important;
+  }
+
+  .markdown-paper .cm-line.cm-markra-h1,
+  .markdown-paper .cm-line.cm-markra-h2,
+  .markdown-paper .cm-line.cm-markra-h3,
+  .markdown-paper .cm-line.cm-markra-h4,
+  .markdown-paper .cm-line.cm-markra-h5,
+  .markdown-paper .cm-line.cm-markra-h6 {
+    color: var(--editor-text-heading) !important;
+    font-family: var(--editor-heading-font-family) !important;
+    font-weight: 760 !important;
+    letter-spacing: 0 !important;
+    text-wrap: balance;
+  }
+
+  .markdown-paper .cm-line.cm-markra-h1 {
+    padding-block: 0 16px !important;
+    font-size: 44px !important;
+    line-height: 1.15 !important;
+  }
+
+  .markdown-paper .cm-line.cm-markra-h2 {
+    padding-block: 28px 12px !important;
+    font-size: 31px !important;
+    line-height: 1.22 !important;
+  }
+
+  .markdown-paper .cm-line.cm-markra-h3 {
+    padding-block: 22px 4px !important;
+    font-size: 24px !important;
+    line-height: 1.28 !important;
+  }
+
+  .markdown-paper .cm-line.cm-markra-h4 {
+    padding-block: 18px 2px !important;
+    font-size: 19px !important;
+    line-height: 1.35 !important;
+  }
+
+  .markdown-paper .cm-line.cm-markra-h5,
+  .markdown-paper .cm-line.cm-markra-h6 {
+    padding-block-start: 14px !important;
+    font-size: 16px !important;
+    line-height: 1.45 !important;
+  }
+
+  .markdown-paper .cm-line.cm-markra-h1 > span:not(.cm-markra-link):not(.cm-markra-strikethrough),
+  .markdown-paper .cm-line.cm-markra-h2 > span:not(.cm-markra-link):not(.cm-markra-strikethrough),
+  .markdown-paper .cm-line.cm-markra-h3 > span:not(.cm-markra-link):not(.cm-markra-strikethrough),
+  .markdown-paper .cm-line.cm-markra-h4 > span:not(.cm-markra-link):not(.cm-markra-strikethrough),
+  .markdown-paper .cm-line.cm-markra-h5 > span:not(.cm-markra-link):not(.cm-markra-strikethrough),
+  .markdown-paper .cm-line.cm-markra-h6 > span:not(.cm-markra-link):not(.cm-markra-strikethrough) {
+    text-decoration: none !important;
+  }
+
+  .markdown-paper .cm-line.cm-markra-h1 > span,
+  .markdown-paper .cm-line.cm-markra-h2 > span,
+  .markdown-paper .cm-line.cm-markra-h3 > span,
+  .markdown-paper .cm-line.cm-markra-h4 > span,
+  .markdown-paper .cm-line.cm-markra-h5 > span,
+  .markdown-paper .cm-line.cm-markra-h6 > span {
+    font-family: inherit !important;
+    font-weight: inherit !important;
+  }
+
+  .markdown-paper .cm-line.cm-markra-paragraph {
+    color: var(--editor-text-primary);
+  }
+
+  .markdown-paper .cm-line.cm-markra-empty-line[data-markra-empty-source="hidden"] {
+    height: var(--editor-paragraph-spacing);
+    min-height: var(--editor-paragraph-spacing);
+    font-size: 0;
+    line-height: var(--editor-paragraph-spacing);
+  }
+
+  .markdown-paper .cm-line.cm-markra-empty-line[data-markra-empty-source="hidden"] > br {
     display: none;
-    width: 1px;
-    background: var(--accent);
-    border-radius: 999px;
-    pointer-events: none;
-    animation: markra-prosemirror-caret-blink 1.05s steps(1, end) infinite;
   }
 
-  .editor-content-slot[data-document-search-open="true"] .markdown-paper .markra-prosemirror-caret {
+  .markdown-paper .cm-line.cm-markra-list-item {
+    position: relative;
+  }
+
+  .markdown-paper .cm-line.cm-markra-list-item[data-markra-list-source="hidden"] {
+    padding-inline-start: 1.55em !important;
+  }
+
+  .markdown-paper .cm-line.cm-markra-list-item[data-markra-list-source="hidden"]::before {
+    position: absolute;
+    inset-inline-start: 0;
+    width: 1.2em;
+    color: var(--editor-text-secondary);
+    content: attr(data-list-marker);
+    text-align: center;
+  }
+
+  .markdown-paper .cm-line.cm-markra-list-item[data-list-kind="task"][data-markra-list-source="hidden"] {
+    padding-inline-start: 0 !important;
+  }
+
+  .markdown-paper .cm-line.cm-markra-list-item[data-list-kind="task"][data-markra-list-source="hidden"]::before {
+    content: none;
+  }
+
+  .markdown-paper .cm-markra-strong {
+    color: inherit;
+    font-weight: 700;
+  }
+
+  .markdown-paper .cm-markra-inline-code {
+    background: var(--editor-inline-code-bg) !important;
+    color: var(--editor-inline-code-text) !important;
+  }
+
+  .markdown-paper .cm-markra-link {
+    color: var(--editor-link-color) !important;
+  }
+
+  .markdown-paper .cm-line.cm-markra-blockquote {
+    border-left: 1px solid var(--editor-border-strong) !important;
+    padding-left: 20px !important;
+    color: var(--editor-text-secondary) !important;
+  }
+
+  .markdown-paper .cm-line.cm-markra-empty-line + .cm-line.cm-markra-blockquote {
+    margin-block-start: 10px;
+  }
+
+  .markdown-paper .cm-line.cm-markra-list-item + .cm-line.cm-markra-list-item {
+    padding-block-start: 8px !important;
+  }
+
+  .markdown-paper .cm-line.cm-markra-list-item[data-list-depth="0"] +
+    .cm-line.cm-markra-list-item[data-list-depth="1"] {
+    padding-block-start: 12px !important;
+  }
+
+  .markdown-paper .cm-line.cm-markra-list-item[data-list-depth="1"] +
+    .cm-line.cm-markra-list-item[data-list-depth="0"],
+  .markdown-paper .cm-line.cm-markra-list-item[data-list-kind="bullet"] +
+    .cm-line.cm-markra-list-item[data-list-kind="ordered"],
+  .markdown-paper .cm-line.cm-markra-list-item[data-list-kind="ordered"] +
+    .cm-line.cm-markra-list-item[data-list-kind="task"] {
+    padding-block-start: 24px !important;
+  }
+
+  .markdown-paper .cm-line.cm-markra-list-item[data-markra-list-source="hidden"] {
+    --markra-list-depth-offset: 0em;
+    padding-inline-start: calc(1.4em + var(--markra-list-depth-offset)) !important;
+  }
+
+  .markdown-paper .cm-line.cm-markra-list-item[data-list-depth="1"] {
+    --markra-list-depth-offset: 1.35em;
+  }
+
+  .markdown-paper .cm-line.cm-markra-list-item[data-list-depth="2"] {
+    --markra-list-depth-offset: 2.7em;
+  }
+
+  .markdown-paper .cm-line.cm-markra-list-item[data-list-depth="3"] {
+    --markra-list-depth-offset: 4.05em;
+  }
+
+  .markdown-paper .cm-line.cm-markra-list-item[data-markra-list-source="hidden"]::before {
+    inset-inline-start: var(--markra-list-depth-offset);
+  }
+
+  .markdown-paper .cm-line.cm-markra-list-item[data-list-kind="task"][data-markra-list-source="hidden"] {
+    padding-inline-start: calc(1.4em + var(--markra-list-depth-offset)) !important;
+  }
+
+  .markdown-paper .cm-line.cm-markra-code-header-line {
+    position: relative !important;
+    height: 0 !important;
+    min-height: 0 !important;
+    margin-block-start: 8px !important;
+    overflow: visible !important;
+    padding: 0 !important;
+    border: 0 !important;
+    border-radius: 0 !important;
+    background: transparent !important;
+    line-height: 0 !important;
+  }
+
+  .markdown-paper .cm-markra-code-header-wrap {
+    display: block !important;
+    height: 0 !important;
+  }
+
+  .markdown-paper .cm-markra-code-header {
     display: none !important;
   }
 
-  .markdown-paper .ProseMirror li[data-item-type="task"] {
-    @apply relative flex list-none items-start gap-2;
+  .markdown-paper .cm-markra-code-header-actions {
+    position: absolute !important;
+    top: 8px;
+    right: 8px;
+    z-index: 4;
+    display: flex !important;
+    align-items: center;
+    gap: 6px;
+    opacity: 0 !important;
+    pointer-events: none !important;
+    transform: translateY(-2px);
+    transition: opacity 150ms ease-out, transform 150ms ease-out;
+  }
+
+  .markdown-paper .cm-content:has(.cm-markra-code-line:hover)
+    .cm-markra-code-header-actions,
+  .markdown-paper .cm-markra-code-header-actions:focus-within {
+    opacity: 1 !important;
+    pointer-events: auto !important;
+    transform: translateY(0);
+  }
+
+  .markdown-paper .cm-markra-code-header-actions .markra-code-language-control {
+    position: static !important;
+    display: flex !important;
+    padding: 0 !important;
+    opacity: 1 !important;
+    pointer-events: auto !important;
+    transform: none !important;
+  }
+
+  .markdown-paper .cm-markra-code-header-actions .markra-code-language-select {
+    height: 28px !important;
+    min-height: 28px !important;
+    min-width: 160px !important;
+    padding: 0 10px !important;
+    font-size: 13px !important;
+    line-height: 1 !important;
+  }
+
+  .markdown-paper .cm-markra-code-header-actions .markra-code-copy-button {
+    position: relative !important;
+    top: auto !important;
+    right: auto !important;
+    width: 28px !important;
+    min-width: 28px !important;
+    height: 28px !important;
+    min-height: 28px !important;
+    padding: 0 !important;
+    opacity: 1 !important;
+    pointer-events: auto !important;
+    transform: none !important;
+  }
+
+  .markdown-paper .cm-line.cm-markra-code-content-line {
+    box-sizing: border-box;
+    padding-inline: 0 16px !important;
+    border-right: 1px solid var(--editor-border) !important;
+    border-left: 1px solid var(--editor-border) !important;
+    background: linear-gradient(
+      90deg,
+      var(--editor-code-line-bg) 0 43px,
+      var(--editor-border) 43px 44px,
+      var(--editor-code-bg) 44px 100%
+    ) !important;
+    color: var(--editor-code-text) !important;
+    font-family: Menlo, Consolas, "DejaVu Sans Mono", monospace !important;
+    font-size: 14.4px !important;
+    line-height: 23.76px !important;
+  }
+
+  .markdown-paper .cm-line.cm-markra-code-content-line::before {
+    box-sizing: border-box;
+    width: 43px !important;
+    min-width: 43px !important;
+    margin-right: 16px !important;
+    padding-right: 12px;
+    color: var(--editor-text-secondary) !important;
+    font: inherit;
+  }
+
+  .markdown-paper .cm-line.cm-markra-code-header-line +
+    .cm-line.cm-markra-code-content-line {
+    padding-block-start: 16px !important;
+    border-top: 1px solid var(--editor-border) !important;
+    border-radius: 4px 4px 0 0 !important;
+  }
+
+  .markdown-paper .cm-line.cm-markra-code-content-line:has(+ .cm-markra-code-closing-line) {
+    padding-block-end: 16px !important;
+    border-bottom: 1px solid var(--editor-border) !important;
+    border-radius: 0 0 4px 4px !important;
+  }
+
+  .markdown-paper .cm-line.cm-markra-code-closing-line {
+    height: 0 !important;
+    min-height: 0 !important;
+    padding: 0 !important;
+    border: 0 !important;
+    background: transparent !important;
+    line-height: 0 !important;
+  }
+
+  .markdown-paper .cm-markra-table-wrap {
+    display: block !important;
+    margin: 24px 0 !important;
+    padding: 28px 36px 36px 0 !important;
+    overflow: visible !important;
+    font-size: 16px !important;
+    line-height: 26.4px !important;
+  }
+
+  .markdown-paper .cm-line:has(> .cm-markra-table-wrap) {
+    font-size: 0 !important;
+    line-height: 0 !important;
+  }
+
+  .markdown-paper .cm-markra-table {
+    width: 100% !important;
+    max-width: 100% !important;
+    margin: 0 !important;
+  }
+
+  .markdown-paper .cm-markra-table[data-width-mode="auto"] {
+    table-layout: auto !important;
+  }
+
+  .markdown-paper .cm-markra-table[data-width-mode="even"] {
+    table-layout: fixed !important;
+  }
+
+  .markdown-paper .cm-markra-table th,
+  .markdown-paper .cm-markra-table td {
+    padding: 8px 12px !important;
+    border: 1px solid var(--editor-border-strong) !important;
+    caret-color: var(--editor-caret-color) !important;
+    outline: none !important;
+  }
+
+  .markdown-paper .cm-markra-table th[contenteditable="true"]:focus,
+  .markdown-paper .cm-markra-table td[contenteditable="true"]:focus {
+    box-shadow: inset 0 0 0 2px var(--editor-caret-color) !important;
+  }
+
+  .markdown-paper .cm-markra-table th {
+    background: var(--editor-bg-secondary) !important;
+    color: var(--editor-text-heading) !important;
+  }
+
+  .markdown-paper .cm-markra-table td {
+    background: var(--editor-paper-bg) !important;
+  }
+
+  .markdown-paper .cm-markra-table tbody tr:nth-child(even) td {
+    background: var(--editor-bg-secondary) !important;
+  }
+
+  .markdown-paper[data-editor-theme="github"] .cm-markra-table-wrap,
+  .markdown-paper[data-editor-theme="github-dark"] .cm-markra-table-wrap {
+    margin: 16px 0 !important;
+    padding: 0 !important;
+  }
+
+  .markdown-paper[data-editor-theme="github"] .cm-markra-table th,
+  .markdown-paper[data-editor-theme="github"] .cm-markra-table td,
+  .markdown-paper[data-editor-theme="github-dark"] .cm-markra-table th,
+  .markdown-paper[data-editor-theme="github-dark"] .cm-markra-table td {
+    padding: 6px 13px !important;
+    border-color: var(--editor-border) !important;
+  }
+
+  .markdown-paper .cm-line:has(> .cm-markra-horizontal-rule) {
+    font-size: 0 !important;
+    line-height: 0 !important;
+  }
+
+  .markdown-paper .cm-markra-horizontal-rule {
+    margin: 16px 0 12px !important;
+  }
+
+  .markdown-paper .cm-markra-task-checkbox {
+    width: 1rem;
+    height: 1rem;
+    margin: 0 0.5em 0 0;
+    accent-color: var(--accent) !important;
+    vertical-align: -0.08em;
+  }
+
+  @media (max-width: 900px) {
+    .markdown-paper .cm-line.cm-markra-h1 {
+      font-size: 34px !important;
+    }
+
+    .markdown-paper .cm-line.cm-markra-h2 {
+      font-size: 26px !important;
+    }
   }
 
   .markdown-paper .markra-task-list-checkbox {
@@ -891,19 +1263,54 @@
     @apply mb-0;
   }
 
-  .markdown-paper .ProseMirror-focused {
+  .markdown-paper .cm-editor.cm-focused {
     @apply outline-none;
   }
 
   .markdown-paper .markra-block-toolbar {
     @apply fixed z-50 flex h-6 items-center gap-0 rounded-md border border-transparent bg-transparent p-0 text-(--text-secondary) outline-none transition-[opacity,color,background-color,border-color,box-shadow] duration-150 ease-out;
-    opacity: 0;
+    display: flex !important;
+    gap: 0 !important;
+    margin: 0 !important;
+    opacity: 0 !important;
     pointer-events: none;
     transform: translate(-50%, -50%);
   }
 
+  .markdown-paper .cm-markra-block-toolbar {
+    /* 42px of controls plus a 12px gap offsets the -54px gutter without
+       shifting the document text column. */
+    position: static !important;
+    display: inline-flex !important;
+    flex: none;
+    margin: 0 12px 0 -54px !important;
+    margin-inline-start: -54px !important;
+    margin-inline-end: 12px !important;
+    opacity: 0 !important;
+    pointer-events: none;
+    transform: none;
+    vertical-align: middle;
+  }
+
+  .markdown-paper .cm-line:hover > .cm-markra-block-toolbar,
+  .markdown-paper .cm-markra-block-toolbar:focus-within,
+  .markdown-paper .cm-markra-block-toolbar[data-dragging="true"] {
+    opacity: 0.58 !important;
+    pointer-events: auto;
+  }
+
+  .markdown-paper .cm-markra-block-toolbar > button {
+    width: 20px;
+    height: 20px;
+    padding: 0 !important;
+    font-family: var(--editor-font-family) !important;
+    font-size: 12px !important;
+    font-weight: 560 !important;
+    line-height: 1 !important;
+  }
+
   .markdown-paper .markra-block-toolbar[data-show="true"] {
-    opacity: 0.58;
+    opacity: 0.58 !important;
     pointer-events: auto;
   }
 
@@ -911,12 +1318,13 @@
   .markdown-paper .markra-block-toolbar:focus-within,
   .markdown-paper .markra-block-toolbar[data-dragging="true"] {
     @apply bg-(--bg-hover) text-(--text-heading);
-    opacity: 1;
+    opacity: 1 !important;
     box-shadow: 0 6px 18px rgba(0, 0, 0, 0.08);
   }
 
   .markdown-paper .markra-block-tool-button {
     @apply grid h-5 w-5 cursor-pointer place-content-center rounded-sm border-0 bg-transparent p-0 text-(--text-secondary) outline-none transition-[color,background-color] duration-150 ease-out hover:bg-(--bg-active) hover:text-(--text-heading) focus-visible:bg-(--bg-active) focus-visible:text-(--text-heading);
+    display: grid !important;
   }
 
   .markdown-paper .markra-block-add-button {
@@ -999,7 +1407,7 @@
     opacity: 0.94;
   }
 
-  .markdown-paper .ProseMirror[data-dragging="true"] {
+  .markdown-paper .cm-editor[data-dragging="true"] {
     cursor: grabbing;
   }
 
@@ -1066,6 +1474,7 @@
     --editor-font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
     --editor-heading-font-family: var(--editor-font-family);
     --editor-paragraph-spacing: 8px;
+    --editor-caret-color: var(--accent);
     color: var(--editor-text-primary);
     font-family: var(--editor-font-family);
     transition:
@@ -1093,6 +1502,25 @@
     --editor-hl-meta: oklch(76% 0.1 330);
     --editor-hl-symbol: oklch(76% 0.09 185);
     --editor-hl-deletion: oklch(72% 0.12 29);
+  }
+
+  [data-theme="dark"] .markdown-paper,
+  [data-theme="github-dark"] .markdown-paper,
+  [data-theme="night"] .markdown-paper,
+  [data-theme="one-dark"] .markdown-paper,
+  [data-theme="one-dark-pro"] .markdown-paper,
+  [data-theme="solarized-dark"] .markdown-paper,
+  [data-theme="nord"] .markdown-paper,
+  [data-theme="catppuccin-mocha"] .markdown-paper,
+  .markdown-paper[data-editor-theme="dark"],
+  .markdown-paper[data-editor-theme="github-dark"],
+  .markdown-paper[data-editor-theme="night"],
+  .markdown-paper[data-editor-theme="one-dark"],
+  .markdown-paper[data-editor-theme="one-dark-pro"],
+  .markdown-paper[data-editor-theme="solarized-dark"],
+  .markdown-paper[data-editor-theme="nord"],
+  .markdown-paper[data-editor-theme="catppuccin-mocha"] {
+    --editor-caret-color: #ffffff;
   }
 
   .markdown-paper[data-editor-theme="night"] {
@@ -1521,10 +1949,10 @@
     --editor-link-color: oklch(41% 0.14 215);
   }
 
-  .markdown-paper[data-editor-theme="newsprint"] .ProseMirror::selection,
-  .markdown-paper[data-editor-theme="gothic"] .ProseMirror::selection,
-  .markdown-paper[data-editor-theme="pixyll"] .ProseMirror::selection,
-  .markdown-paper[data-editor-theme="whitey"] .ProseMirror::selection {
+  .markdown-paper[data-editor-theme="newsprint"] .cm-content ::selection,
+  .markdown-paper[data-editor-theme="gothic"] .cm-content ::selection,
+  .markdown-paper[data-editor-theme="pixyll"] .cm-content ::selection,
+  .markdown-paper[data-editor-theme="whitey"] .cm-content ::selection {
     background: color-mix(in srgb, var(--accent) 16%, transparent);
   }
 
@@ -1673,11 +2101,13 @@
     --markra-heading-toggle-center-offset: 0px;
   }
 
-  .markdown-paper h1.markra-heading-toggle-heading {
+  .markdown-paper h1.markra-heading-toggle-heading,
+  .markdown-paper .cm-line.cm-markra-h1.markra-heading-toggle-heading {
     --markra-heading-toggle-center-offset: -5.5px;
   }
 
-  .markdown-paper h2.markra-heading-toggle-heading {
+  .markdown-paper h2.markra-heading-toggle-heading,
+  .markdown-paper .cm-line.cm-markra-h2.markra-heading-toggle-heading {
     --markra-heading-toggle-center-offset: -3.5px;
   }
 
@@ -1685,24 +2115,27 @@
     @apply absolute inline-flex size-5 cursor-pointer items-center justify-center rounded-sm border-0 bg-transparent p-0 outline-none transition-[opacity,color,background-color] duration-150 ease-out focus-visible:bg-(--bg-hover) focus-visible:outline-none;
     color: color-mix(in srgb, var(--editor-text-secondary) 62%, transparent);
     left: -28px;
-    opacity: 0;
+    display: inline-flex !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    opacity: 0 !important;
     top: calc(50% + var(--markra-heading-toggle-center-offset));
     transform: translateY(-50%);
   }
 
   .markdown-paper .markra-heading-toggle-heading:hover > .markra-heading-toggle-button,
   .markdown-paper .markra-heading-toggle-heading:focus-within > .markra-heading-toggle-button {
-    opacity: 0.72;
+    opacity: 0.72 !important;
   }
 
   .markdown-paper .markra-heading-toggle-button:hover,
   .markdown-paper .markra-heading-toggle-button:focus-visible {
     color: var(--editor-text-secondary);
-    opacity: 1;
+    opacity: 1 !important;
   }
 
   .markdown-paper .markra-heading-toggle-button::before {
-    content: "";
+    content: "" !important;
     width: 7px;
     height: 7px;
     border-right: 1.6px solid currentColor;
@@ -1728,24 +2161,27 @@
     @apply absolute inline-flex size-4 cursor-pointer items-center justify-center rounded-sm border-0 bg-transparent p-0 outline-none transition-[opacity,color,background-color] duration-150 ease-out focus-visible:bg-(--bg-hover) focus-visible:outline-none;
     color: color-mix(in srgb, var(--editor-text-secondary) 62%, transparent);
     left: -2.2em;
-    opacity: 0;
+    display: inline-flex !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    opacity: 0 !important;
     top: calc((1lh - 1rem) / 2);
   }
 
   .markdown-paper .markra-list-toggle-item:hover > .markra-list-toggle-button,
   .markdown-paper .markra-list-toggle-item:focus-within > .markra-list-toggle-button,
   .markdown-paper .markra-list-toggle-item[data-list-collapsed="true"] > .markra-list-toggle-button {
-    opacity: 0.72;
+    opacity: 0.72 !important;
   }
 
   .markdown-paper .markra-list-toggle-button:hover,
   .markdown-paper .markra-list-toggle-button:focus-visible {
     color: var(--editor-text-secondary);
-    opacity: 1;
+    opacity: 1 !important;
   }
 
   .markdown-paper .markra-list-toggle-button::before {
-    content: "";
+    content: "" !important;
     width: 6px;
     height: 6px;
     border-right: 1.4px solid currentColor;
@@ -2214,7 +2650,7 @@
     visibility: visible;
   }
 
-  .markdown-paper .ProseMirror[contenteditable="false"] .markra-table-fragment-merge {
+  .markdown-paper .cm-content[contenteditable="false"] .markra-table-fragment-merge {
     display: none;
   }
 
@@ -2468,11 +2904,6 @@
     user-select: text;
   }
 
-  .markdown-paper .ProseMirror.markra-link-open-modifier-active a[href],
-  .markdown-paper .ProseMirror.markra-link-open-modifier-active .markra-live-link-label {
-    cursor: pointer;
-  }
-
   .markdown-paper .markra-live-link-source-label {
     @apply text-(--editor-link-color) underline underline-offset-2;
     cursor: var(--editor-text-cursor);
@@ -2628,7 +3059,7 @@
     @apply flex h-7 w-8 cursor-pointer items-center justify-center border-0 bg-transparent p-0 text-[1em] font-[760] text-(--text-heading) outline-none transition-colors duration-150 ease-out hover:bg-(--bg-hover) focus-visible:bg-(--bg-hover);
   }
 
-  .markdown-paper img {
+  .markdown-paper img:not(.cm-widgetBuffer) {
     @apply my-6 block max-w-full rounded-[3px] border border-(--border-default);
   }
 
@@ -2638,12 +3069,7 @@
     user-select: text;
   }
 
-  .markdown-paper .markra-image-node.ProseMirror-selectednode {
-    @apply bg-transparent;
-  }
-
-  .markdown-paper .markra-image-node.markra-image-node-selected,
-  .markdown-paper .markra-image-node.ProseMirror-selectednode {
+  .markdown-paper .markra-image-node.markra-image-node-selected {
     outline: 2px solid #8cf;
     outline-offset: 3px;
   }
@@ -2695,14 +3121,6 @@
     background: color-mix(in srgb, var(--accent) 28%, transparent);
   }
 
-  .markdown-paper .ProseMirror-hideselection .markra-image-node-source {
-    caret-color: var(--text-primary) !important;
-  }
-
-  .markdown-paper .ProseMirror-hideselection .markra-image-node-source::selection {
-    background: color-mix(in srgb, var(--accent) 28%, transparent) !important;
-  }
-
   .markdown-paper .markra-image-node-source-invalid .markra-image-node-source {
     @apply text-red-600;
   }
@@ -2741,24 +3159,6 @@
     margin: 0;
     overflow-x: auto;
     overflow-y: hidden;
-  }
-
-  .markdown-paper p:has(.markra-math-caret-anchor) {
-    position: relative;
-  }
-
-  .markdown-paper img.ProseMirror-separator.markra-math-caret-anchor {
-    position: absolute;
-    top: 50%;
-    right: 0;
-    width: 1px !important;
-    height: 1.35em !important;
-    max-width: none;
-    margin: 0 !important;
-    padding: 0;
-    border: 0 !important;
-    pointer-events: none;
-    transform: translateY(-50%);
   }
 
   .markdown-paper .markra-math-render-invalid {
@@ -3440,10 +3840,6 @@
     background: linear-gradient(color-mix(in srgb, var(--border-default) 72%, var(--text-secondary)), color-mix(in srgb, var(--border-default) 72%, var(--text-secondary))) center / 100% 2px no-repeat;
   }
 
-  .markdown-paper hr.ProseMirror-selectednode {
-    outline: none;
-  }
-
   .ai-chat-markdown {
     @apply text-[13px] leading-5;
     overflow-wrap: anywhere;
@@ -3537,8 +3933,7 @@
     display: none !important;
   }
 
-  .editor-content-slot[data-document-search-open="true"] .markdown-paper .markra-image-node.markra-image-node-selected,
-  .editor-content-slot[data-document-search-open="true"] .markdown-paper .ProseMirror-selectednode {
+  .editor-content-slot[data-document-search-open="true"] .markdown-paper .markra-image-node.markra-image-node-selected {
     outline: none !important;
     box-shadow: none !important;
   }

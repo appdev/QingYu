@@ -1,77 +1,23 @@
-import { Schema, type Fragment, type Node as ProseNode } from "@milkdown/kit/prose/model";
-import { EditorState, TextSelection } from "@milkdown/kit/prose/state";
 import { buildITrieFromWords } from "cspell-trie-lib";
 import {
   createAsyncCspellTrieSpellchecker,
   createWordSetSpellchecker,
   defaultEnglishSpellchecker,
-  findSpellcheckMatchAtSelection,
-  findSpellcheckMatchesInDoc,
-  replaceSpellcheckMatch,
-  tokenizeSpellcheckText
-} from "./spellcheck";
+  tokenizeSpellcheckText,
+} from "./spellcheck.ts";
 
-const schema = new Schema({
-  marks: {
-    link: {
-      attrs: { href: {} },
-      inclusive: false,
-      parseDOM: [],
-      toDOM: () => ["a", 0]
-    }
-  },
-  nodes: {
-    blockquote: {
-      content: "block+",
-      group: "block"
-    },
-    code_block: {
-      code: true,
-      content: "text*",
-      group: "block"
-    },
-    doc: { content: "block+" },
-    frontmatter: {
-      content: "text*",
-      group: "block"
-    },
-    paragraph: {
-      content: "inline*",
-      group: "block"
-    },
-    text: { group: "inline" }
-  }
-});
-
-const checker = createWordSetSpellchecker([
-  "a",
-  "and",
-  "document",
-  "example",
-  "inside",
-  "known",
-  "link",
-  "markdown",
-  "spelling",
-  "text",
-  "valid",
-  "with",
-  "word",
-  "words"
-]);
-
-function paragraph(children: Fragment | readonly ProseNode[]) {
-  return schema.node("paragraph", null, children);
-}
-
-describe("spellcheck", () => {
+describe("spellcheck utilities", () => {
   it("tokenizes ordinary words while skipping URLs, numbers, and short abbreviations", () => {
-    expect(tokenizeSpellcheckText("A valid markdown-ish word, https://example.test, PDF, 2026, and teh.")).toEqual([
+    expect(
+      tokenizeSpellcheckText(
+        "A valid markdown-ish word, https://example.test, PDF, 2026, and teh.",
+      ),
+    ).toEqual([
       { from: 2, text: "valid", to: 7 },
       { from: 8, text: "markdown-ish", to: 20 },
       { from: 21, text: "word", to: 25 },
       { from: 60, text: "and", to: 63 },
-      { from: 64, text: "teh", to: 67 }
+      { from: 64, text: "teh", to: 67 },
     ]);
   });
 
@@ -80,94 +26,48 @@ describe("spellcheck", () => {
       { from: 0, text: "café", to: 4 },
       { from: 5, text: "déjà-vu", to: 12 },
       { from: 13, text: "привет", to: 19 },
-      { from: 20, text: "and", to: 23 }
+      { from: 20, text: "and", to: 23 },
     ]);
   });
 
   it("skips identifier-style camelCase, PascalCase, and snake_case text", () => {
     expect(
-      tokenizeSpellcheckText("myVariableName ExampleComponent HTTPResponse api_response snake_case and wrnog")
-        .map(({ text }) => text)
+      tokenizeSpellcheckText(
+        "myVariableName ExampleComponent HTTPResponse api_response snake_case and wrnog",
+      ).map(({ text }) => text),
     ).toEqual(["and", "wrnog"]);
   });
 
-  it("finds misspelled document ranges and skips code, frontmatter, and link marks", () => {
-    const link = schema.marks.link.create({ href: "https://example.test" });
-    const doc = schema.node("doc", null, [
-      schema.node("frontmatter", null, [schema.text("titel: wrnog")]),
-      paragraph([
-        schema.text("Known text with teh "),
-        schema.text("wrnog link", [link]),
-        schema.text(" and wrnog word.")
-      ]),
-      schema.node("code_block", null, [schema.text("wrnogCode")])
+  it("checks word-set dictionaries and suggests nearby words", () => {
+    const spellchecker = createWordSetSpellchecker([
+      "accommodate",
+      "document",
+      "markdown",
     ]);
-    const state = EditorState.create({ doc });
 
-    expect(findSpellcheckMatchesInDoc(state.doc, checker).map(({ from, to, word }) => ({ from, to, word }))).toEqual([
-      { from: 31, to: 34, word: "teh" },
-      { from: 50, to: 55, word: "wrnog" }
-    ]);
+    expect(spellchecker.check("document")).toBe(true);
+    expect(spellchecker.check("acommodate")).toBe(false);
+    expect(spellchecker.suggest?.("acommodate")).toContain("accommodate");
   });
 
   it("uses a safe known-misspelling fallback when no dictionary is configured", () => {
-    const doc = schema.node("doc", null, [
-      paragraph([
-        schema.text("This document mentions customterm and teh.")
-      ])
-    ]);
-    const state = EditorState.create({ doc });
-
-    expect(findSpellcheckMatchesInDoc(state.doc, defaultEnglishSpellchecker).map(({ word }) => word)).toEqual(["teh"]);
+    expect(defaultEnglishSpellchecker.check("customterm")).toBe(true);
+    expect(defaultEnglishSpellchecker.check("teh")).toBe(false);
+    expect(defaultEnglishSpellchecker.suggest?.("teh")).toEqual(["the"]);
   });
 
-  it("does not underline words while an async dictionary is still loading", async () => {
-    const doc = schema.node("doc", null, [
-      paragraph([
-        schema.text("This document mentions environment and acommodate.")
-      ])
-    ]);
-    const state = EditorState.create({ doc });
-    const spellchecker = createAsyncCspellTrieSpellchecker(async () => buildITrieFromWords([
-      "a",
-      "and",
-      "document",
-      "environment",
-      "mentions",
-      "this",
-      "word"
-    ]));
+  it("treats words as valid while an async dictionary is loading", async () => {
+    const spellchecker = createAsyncCspellTrieSpellchecker(async () =>
+      buildITrieFromWords(["document", "environment"]),
+    );
 
-    expect(findSpellcheckMatchesInDoc(state.doc, spellchecker).map(({ word }) => word)).toEqual([]);
+    expect(spellchecker.isReady?.()).toBe(false);
+    expect(spellchecker.check("acommodate")).toBe(true);
 
     await spellchecker.load?.();
 
-    expect(findSpellcheckMatchesInDoc(state.doc, spellchecker).map(({ word }) => word)).toEqual([
-      "acommodate"
-    ]);
-  });
-
-  it("finds and replaces the misspelled word under the current selection", () => {
-    const doc = schema.node("doc", null, [
-      paragraph([
-        schema.text("Known text with acommodate word.")
-      ])
-    ]);
-    const state = EditorState.create({ doc });
-    const [match] = findSpellcheckMatchesInDoc(state.doc, checker);
-    const stateInsideMisspelling = state.apply(
-      state.tr.setSelection(TextSelection.create(state.doc, match.from + 2))
-    );
-    const stateOutsideMisspelling = state.apply(
-      state.tr.setSelection(TextSelection.create(state.doc, 2))
-    );
-
-    expect(findSpellcheckMatchAtSelection(stateInsideMisspelling, [match])).toEqual(match);
-    expect(findSpellcheckMatchAtSelection(stateOutsideMisspelling, [match])).toBeNull();
-
-    const transaction = replaceSpellcheckMatch(stateInsideMisspelling, match, "accommodate");
-
-    expect(transaction).not.toBeNull();
-    expect(stateInsideMisspelling.apply(transaction!).doc.textContent).toBe("Known text with accommodate word.");
+    expect(spellchecker.isReady?.()).toBe(true);
+    expect(spellchecker.check("environment")).toBe(true);
+    expect(spellchecker.check("acommodate")).toBe(false);
   });
 });

@@ -10,7 +10,7 @@ Every surface should disappear into the writing. Open a file, edit the page, sav
 
 ## Next
 
-- Replace this temporary editor with Milkdown
+- Keep Markdown editing fast, local, and extensible
 - Keep the default view as a single document
 - Reveal AI actions only around selected text
 `;
