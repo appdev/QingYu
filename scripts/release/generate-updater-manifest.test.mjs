@@ -71,23 +71,23 @@ test("generate-updater-manifest writes latest.json for every updater platform", 
   assert.deepEqual(manifest.platforms, {
     "darwin-aarch64": {
       signature: "mac-arm-signature",
-      url: "https://github.com/markrahq/markra/releases/latest/download/Markra_0.0.8_macos_arm64_updater.app.tar.gz",
+      url: "https://github.com/markrahq/markra/releases/download/v0.0.8/Markra_0.0.8_macos_arm64_updater.app.tar.gz",
     },
     "darwin-x86_64": {
       signature: "mac-intel-signature",
-      url: "https://github.com/markrahq/markra/releases/latest/download/Markra_0.0.8_macos_x64_updater.app.tar.gz",
+      url: "https://github.com/markrahq/markra/releases/download/v0.0.8/Markra_0.0.8_macos_x64_updater.app.tar.gz",
     },
     "linux-aarch64": {
       signature: "linux-arm-signature",
-      url: "https://github.com/markrahq/markra/releases/latest/download/Markra_0.0.8_linux_arm64.AppImage",
+      url: "https://github.com/markrahq/markra/releases/download/v0.0.8/Markra_0.0.8_linux_arm64.AppImage",
     },
     "linux-x86_64": {
       signature: "linux-signature",
-      url: "https://github.com/markrahq/markra/releases/latest/download/Markra_0.0.8_linux_x64.AppImage",
+      url: "https://github.com/markrahq/markra/releases/download/v0.0.8/Markra_0.0.8_linux_x64.AppImage",
     },
     "windows-x86_64": {
       signature: "windows-signature",
-      url: "https://github.com/markrahq/markra/releases/latest/download/Markra_0.0.8_windows_x64_setup.exe",
+      url: "https://github.com/markrahq/markra/releases/download/v0.0.8/Markra_0.0.8_windows_x64_setup.exe",
     },
   });
 });

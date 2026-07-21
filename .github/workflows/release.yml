@@ -30,7 +30,6 @@ env:
   NODE_VERSION: 24
   PNPM_VERSION: 10.30.3
   RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag_name || github.ref_name }}
-  TAURI_UPDATER_ENDPOINT: https://github.com/markrahq/markra/releases/latest/download/latest.json
 
 jobs:
   build:
@@ -179,9 +178,22 @@ jobs:
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Resolve updater endpoint
+        id: updater_endpoint
+        shell: bash
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          RELEASE_TAG: ${{ env.RELEASE_TAG }}
+        run: |
+          set -euo pipefail
+
+          endpoint="$(node .release-scripts/scripts/release/resolve-updater-endpoint.mjs)"
+          echo "endpoint=${endpoint}" >> "${GITHUB_OUTPUT}"
+
       - name: Prepare updater config
         shell: bash
         env:
+          TAURI_UPDATER_ENDPOINT: ${{ steps.updater_endpoint.outputs.endpoint }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
         run: |
@@ -604,6 +616,25 @@ jobs:
           overwrite_files: true
           fail_on_unmatched_files: true
           files: ${{ steps.release_files.outputs.paths }}
+
+      - name: Publish preview updater manifest
+        if: ${{ github.event_name != 'workflow_dispatch' || !inputs.draft }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          if ! gh release view preview --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            gh release create preview \
+              --repo "${GITHUB_REPOSITORY}" \
+              --target "${GITHUB_SHA}" \
+              --title "${APP_PRODUCT_NAME} Preview Update Channel" \
+              --notes "Rolling updater manifest for Markra preview and stable releases." \
+              --prerelease
+          fi
+
+          gh release upload preview release-assets/latest.json --clobber --repo "${GITHUB_REPOSITORY}"
 
       - name: Prepare Homebrew tap checkout
         if: env.HOMEBREW_TAP_TOKEN != '' && !contains(env.RELEASE_TAG, '-')
