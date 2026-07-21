@@ -34,10 +34,92 @@ describe("calloutPreviewPlugin", () => {
     const view = createView(doc);
     const calloutLines = view.dom.querySelectorAll(".cm-markra-callout");
 
-    expect(view.dom.querySelector(".markra-callout-header")?.textContent).toContain("Warning");
+    const header = view.dom.querySelector<HTMLElement>(".markra-callout-header");
+    const select = view.dom.querySelector<HTMLElement>(".markra-callout-type-select");
+    expect(header?.textContent).toContain("Warning");
+    expect(header && getComputedStyle(header).display).toBe("inline-flex");
+    expect(header && getComputedStyle(header).width).not.toBe("100%");
+    expect(select && getComputedStyle(select).position).toBe("absolute");
     expect(calloutLines).toHaveLength(3);
     expect(calloutLines[0]?.getAttribute("data-callout-type")).toBe("warning");
+    expect(calloutLines[0]?.classList.contains("markra-callout-first")).toBe(true);
+    expect(calloutLines[0]?.classList.contains("markra-callout-last")).toBe(false);
+    expect(calloutLines[1]?.classList.contains("markra-callout-first")).toBe(false);
+    expect(calloutLines[1]?.classList.contains("markra-callout-last")).toBe(false);
+    expect(calloutLines[2]?.classList.contains("markra-callout-first")).toBe(false);
+    expect(calloutLines[2]?.classList.contains("markra-callout-last")).toBe(true);
+    expect(
+      Array.from(calloutLines).some((line) =>
+        line.classList.contains("markra-callout-active"),
+      ),
+    ).toBe(false);
     expect(view.state.doc.toString()).toBe(doc);
+  });
+
+  it("marks every visual row active while the caret is inside the callout", () => {
+    const doc = "> [!NOTE]\n>\n> Synthetic detail\n\nEdit";
+    const view = createView(doc);
+
+    view.dispatch({
+      selection: EditorSelection.cursor(doc.indexOf("Synthetic") + 4),
+    });
+
+    const calloutLines = view.dom.querySelectorAll(".cm-markra-callout");
+    expect(calloutLines).toHaveLength(3);
+    expect(
+      Array.from(calloutLines).every((line) =>
+        line.classList.contains("markra-callout-active"),
+      ),
+    ).toBe(true);
+  });
+
+  it("keeps the callout layout stable during a multi-line range selection", () => {
+    const doc = "> [!NOTE]\n>\n> Synthetic detail\n\nEdit";
+    const view = createView(doc);
+
+    view.dispatch({ selection: EditorSelection.range(0, doc.length) });
+
+    expect(view.dom.querySelector(".markra-callout-header")?.textContent).toContain("Note");
+    expect(
+      Array.from(view.dom.querySelectorAll(".cm-markra-callout")).some((line) =>
+        line.classList.contains("markra-callout-active"),
+      ),
+    ).toBe(false);
+  });
+
+  it("uses measured block spacers instead of line margins around a callout", () => {
+    const view = createView("Before\n\n> [!NOTE]\n> Synthetic detail\n\nAfter");
+    const spacers = view.dom.querySelectorAll(".markra-callout-spacer");
+
+    expect(spacers).toHaveLength(2);
+    expect(
+      spacers[0]?.classList.contains("markra-callout-spacer-before"),
+    ).toBe(true);
+    expect(
+      spacers[1]?.classList.contains("markra-callout-spacer-after"),
+    ).toBe(true);
+    expect(
+      Number.parseFloat(
+        getComputedStyle(
+          view.dom.querySelector<HTMLElement>(".markra-callout-first")!,
+        ).marginTop,
+      ),
+    ).toBe(0);
+    expect(
+      Number.parseFloat(
+        getComputedStyle(
+          view.dom.querySelector<HTMLElement>(".markra-callout-last")!,
+        ).marginBottom,
+      ),
+    ).toBe(0);
+  });
+
+  it("marks a one-line callout as both the first and last visual row", () => {
+    const view = createView("> [!NOTE]");
+    const callout = view.dom.querySelector(".cm-markra-callout");
+
+    expect(callout?.classList.contains("markra-callout-first")).toBe(true);
+    expect(callout?.classList.contains("markra-callout-last")).toBe(true);
   });
 
   it("changes the callout type through its header control", () => {

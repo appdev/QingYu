@@ -1,4 +1,4 @@
-import type { EditorState } from "@codemirror/state";
+import { EditorSelection, EditorState } from "@codemirror/state";
 import {
   Decoration,
   EditorView,
@@ -28,8 +28,19 @@ export interface ImagePreviewPluginOptions {
 
 interface ImageDetails {
   alt: string;
+  markdown: string;
   source: string;
   title: string;
+}
+
+interface ImageWidgetDomState {
+  image: HTMLImageElement;
+  onOutsideMouseDown: (event: MouseEvent) => void;
+  onViewKeyDown: (event: KeyboardEvent) => void;
+  selected: boolean;
+  sourceInput: HTMLInputElement;
+  sourceRow: HTMLSpanElement;
+  widget: ImageWidget;
 }
 
 const safeDataImage = /^data:image\/(?:avif|gif|jpeg|png|webp);base64,/iu;
@@ -61,6 +72,7 @@ function imageDetails(
     alt: unescapeMarkdown(
       state.sliceDoc(openingLabel.to, closingLabel.from),
     ),
+    markdown: state.sliceDoc(node.from, node.to),
     source: unescapeMarkdown(state.sliceDoc(url.from, url.to).trim()),
     title: title
       ? unquoteMarkdownTitle(state.sliceDoc(title.from, title.to).trim())
@@ -82,53 +94,327 @@ export function resolveSafeImageSource(source: string) {
     : null;
 }
 
+const imageWidgetDomState = new WeakMap<HTMLElement, ImageWidgetDomState>();
+
+function unescapeImageMarkdownText(text: string) {
+  return text.replace(/\\([\\\]"])/gu, "$1");
+}
+
+function parseImageMarkdownSource(source: string): ImageDetails | null {
+  const markdown = source.trim();
+  const match = /^!\[((?:\\.|[^\]\\])*)\]\((?:<([^>\n]+)>|([^\s)\n]+))(?:\s+"((?:\\.|[^"\n])*)")?\)$/u.exec(
+    markdown,
+  );
+  if (!match) return null;
+
+  const [, alt = "", angleSource, plainSource, title = ""] = match;
+  return {
+    alt: unescapeImageMarkdownText(alt),
+    markdown,
+    source: angleSource ?? plainSource ?? "",
+    title: unescapeImageMarkdownText(title),
+  };
+}
+
+function createImageSourceIcon(ownerDocument: Document) {
+  const svg = ownerDocument.createElementNS("http://www.w3.org/2000/svg", "svg");
+  const rect = ownerDocument.createElementNS("http://www.w3.org/2000/svg", "rect");
+  const circle = ownerDocument.createElementNS("http://www.w3.org/2000/svg", "circle");
+  const path = ownerDocument.createElementNS("http://www.w3.org/2000/svg", "path");
+
+  svg.setAttribute("aria-hidden", "true");
+  svg.setAttribute("class", "markra-image-node-source-icon");
+  svg.setAttribute("fill", "none");
+  svg.setAttribute("height", "18");
+  svg.setAttribute("stroke", "currentColor");
+  svg.setAttribute("stroke-linecap", "round");
+  svg.setAttribute("stroke-linejoin", "round");
+  svg.setAttribute("stroke-width", "2");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("width", "18");
+  rect.setAttribute("height", "18");
+  rect.setAttribute("rx", "2");
+  rect.setAttribute("ry", "2");
+  rect.setAttribute("width", "18");
+  rect.setAttribute("x", "3");
+  rect.setAttribute("y", "3");
+  circle.setAttribute("cx", "9");
+  circle.setAttribute("cy", "9");
+  circle.setAttribute("r", "2");
+  path.setAttribute("d", "m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21");
+  svg.append(rect, circle, path);
+  return svg;
+}
+
+function updateImageElement(image: HTMLImageElement, widget: ImageWidget) {
+  image.alt = widget.details.alt;
+  image.className = widget.className;
+  image.src = widget.source;
+  if (widget.details.title) image.title = widget.details.title;
+  else image.removeAttribute("title");
+}
+
+function hideImageSource(root: HTMLElement, state: ImageWidgetDomState) {
+  state.selected = false;
+  state.sourceRow.remove();
+  root.classList.remove("markra-image-node-selected");
+  root.classList.remove("markra-image-node-source-invalid");
+  root.ownerDocument.removeEventListener(
+    "mousedown",
+    state.onOutsideMouseDown,
+    true,
+  );
+  if (root.isConnected) state.widget.view.requestMeasure();
+}
+
+function showImageSource(
+  root: HTMLElement,
+  state: ImageWidgetDomState,
+  preserveInput = false,
+) {
+  if (state.widget.readOnly) return false;
+  if (!preserveInput) state.sourceInput.value = state.widget.details.markdown;
+  if (!state.sourceRow.isConnected) root.insertBefore(state.sourceRow, state.image);
+  state.selected = true;
+  root.classList.add("markra-image-node-selected");
+  root.ownerDocument.addEventListener(
+    "mousedown",
+    state.onOutsideMouseDown,
+    true,
+  );
+  if (root.isConnected) state.widget.view.requestMeasure();
+  return true;
+}
+
+function syncImageSource(root: HTMLElement, state: ImageWidgetDomState) {
+  const { view } = state.widget;
+  const markdown = state.sourceInput.value.trim();
+  if (!markdown) {
+    const from = Math.min(state.widget.from, view.state.doc.length);
+    const to = Math.min(state.widget.to, view.state.doc.length);
+    view.dispatch({
+      changes: { from, to },
+      selection: EditorSelection.cursor(from),
+      userEvent: "input.delete",
+    });
+    view.focus();
+    return false;
+  }
+
+  const details = parseImageMarkdownSource(markdown);
+  const source = details
+    ? resolveImageSource(view, details, state.widget.resolver)
+    : null;
+  if (!details || !source) {
+    root.classList.add("markra-image-node-source-invalid");
+    return false;
+  }
+
+  root.classList.remove("markra-image-node-source-invalid");
+  state.image.alt = details.alt;
+  state.image.src = source;
+  if (details.title) state.image.title = details.title;
+  else state.image.removeAttribute("title");
+
+  const from = Math.min(state.widget.from, view.state.doc.length);
+  const to = Math.min(state.widget.to, view.state.doc.length);
+  if (view.state.sliceDoc(from, to) !== markdown) {
+    view.dispatch({
+      changes: { from, insert: markdown, to },
+      userEvent: "input",
+    });
+  }
+  return true;
+}
+
 class ImageWidget extends WidgetType {
   constructor(
-    readonly alt: string,
     readonly className: string,
+    readonly details: ImageDetails,
+    readonly from: number,
+    readonly readOnly: boolean,
+    readonly resolver: ImagePreviewPluginOptions["resolveSource"],
+    readonly selected: boolean,
     readonly source: string,
-    readonly title: string,
+    readonly to: number,
+    readonly view: CodeMirrorView,
   ) {
     super();
   }
 
   eq(other: ImageWidget) {
     return (
-      this.alt === other.alt &&
       this.className === other.className &&
+      this.details.markdown === other.details.markdown &&
+      this.from === other.from &&
+      this.readOnly === other.readOnly &&
+      this.selected === other.selected &&
       this.source === other.source &&
-      this.title === other.title
+      this.to === other.to
     );
   }
 
   ignoreEvent() {
-    // Let CodeMirror translate pointer events on the replacement widget into a
-    // document selection, which immediately reveals the editable image source.
-    return false;
+    return true;
   }
 
   toDOM(view: CodeMirrorView) {
+    const root = view.dom.ownerDocument.createElement("span");
+    const sourceRow = view.dom.ownerDocument.createElement("span");
+    const sourceInput = view.dom.ownerDocument.createElement("input");
     const image = view.dom.ownerDocument.createElement("img");
-    image.alt = this.alt;
-    image.className = this.className;
+    root.className = "markra-image-node";
+    root.contentEditable = "false";
+    root.draggable = false;
+    sourceRow.className = "markra-image-node-source-row";
+    sourceRow.contentEditable = "true";
+    sourceInput.ariaLabel = "Image markdown source";
+    sourceInput.className = "markra-image-node-source";
+    sourceInput.contentEditable = "true";
+    sourceInput.spellcheck = false;
+    sourceInput.type = "text";
+    sourceRow.append(createImageSourceIcon(view.dom.ownerDocument), sourceInput);
     image.decoding = "async";
     image.draggable = false;
     image.loading = "lazy";
-    image.src = this.source;
-    if (this.title) image.title = this.title;
-    return image;
+    updateImageElement(image, this);
+    root.append(image);
+
+    const state = {
+      image,
+      onOutsideMouseDown: (event: MouseEvent) => {
+        if (event.target instanceof Node && root.contains(event.target)) return;
+        const current = imageWidgetDomState.get(root);
+        if (current) hideImageSource(root, current);
+      },
+      onViewKeyDown: (event: KeyboardEvent) => {
+        const current = imageWidgetDomState.get(root);
+        if (
+          !current?.selected ||
+          (event.target instanceof Node && current.sourceRow.contains(event.target)) ||
+          (event.key !== "Backspace" && event.key !== "Delete") ||
+          event.altKey ||
+          event.ctrlKey ||
+          event.metaKey ||
+          event.shiftKey
+        ) {
+          return;
+        }
+        event.preventDefault();
+        const from = Math.min(current.widget.from, view.state.doc.length);
+        const to = Math.min(current.widget.to, view.state.doc.length);
+        view.dispatch({
+          changes: { from, to },
+          selection: EditorSelection.cursor(from),
+          userEvent: "input.delete",
+        });
+        view.focus();
+      },
+      selected: false,
+      sourceInput,
+      sourceRow,
+      widget: this,
+    } satisfies ImageWidgetDomState;
+    imageWidgetDomState.set(root, state);
+
+    const selectImage = (event: MouseEvent) => {
+      if (event.target instanceof Node && sourceRow.contains(event.target)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (state.widget.readOnly) return;
+      view.focus();
+      const anchor = Math.min(
+        Math.max(state.widget.from + 1, 0),
+        view.state.doc.length,
+      );
+      view.dispatch({ selection: EditorSelection.cursor(anchor) });
+      showImageSource(root, state);
+    };
+    const keepSourceFocused = (event: MouseEvent) => {
+      event.stopPropagation();
+      showImageSource(root, state, true);
+    };
+    const handleSourceKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        hideImageSource(root, state);
+        view.focus();
+        return;
+      }
+      if (
+        event.key !== "Enter" ||
+        event.altKey ||
+        event.ctrlKey ||
+        event.metaKey ||
+        event.shiftKey
+      ) {
+        return;
+      }
+      event.preventDefault();
+      if (!syncImageSource(root, state)) return;
+      const imageEnd = Math.min(state.widget.to, view.state.doc.length);
+      // The legacy editor treated Enter as "continue below the image". Move
+      // across the existing line break so subsequent typing starts there.
+      const anchor = Math.min(
+        imageEnd + (view.state.sliceDoc(imageEnd, imageEnd + 1) === "\n" ? 1 : 0),
+        view.state.doc.length,
+      );
+      hideImageSource(root, state);
+      view.dispatch({ selection: EditorSelection.cursor(anchor) });
+      view.focus();
+    };
+
+    root.addEventListener("mousedown", selectImage);
+    root.addEventListener("click", selectImage);
+    sourceRow.addEventListener("mousedown", keepSourceFocused);
+    sourceRow.addEventListener("click", keepSourceFocused);
+    sourceInput.addEventListener("input", () => syncImageSource(root, state));
+    sourceInput.addEventListener("keydown", handleSourceKeyDown);
+    view.dom.addEventListener("keydown", state.onViewKeyDown, true);
+    if (this.selected) showImageSource(root, state);
+    return root;
+  }
+
+  updateDOM(dom: HTMLElement) {
+    const state = imageWidgetDomState.get(dom);
+    if (!state) return false;
+    state.widget = this;
+    updateImageElement(state.image, this);
+    const preserveInput = dom.ownerDocument.activeElement === state.sourceInput;
+    if (this.selected || state.selected) {
+      showImageSource(dom, state, preserveInput);
+    } else {
+      hideImageSource(dom, state);
+    }
+    return true;
+  }
+
+  destroy(dom: HTMLElement) {
+    const state = imageWidgetDomState.get(dom);
+    if (!state) return;
+    dom.ownerDocument.removeEventListener(
+      "mousedown",
+      state.onOutsideMouseDown,
+      true,
+    );
+    state.widget.view.dom.removeEventListener(
+      "keydown",
+      state.onViewKeyDown,
+      true,
+    );
+    imageWidgetDomState.delete(dom);
   }
 }
 
-function resolvedImageSource(
-  context: MarkraRendererContext,
+function resolveImageSource(
+  view: CodeMirrorView,
   details: ImageDetails,
   resolver: ImagePreviewPluginOptions["resolveSource"],
 ) {
   const sourceContext: MarkraImageSourceContext = {
     ...details,
-    state: context.state,
-    view: context.view,
+    state: view.state,
+    view,
   };
   if (!resolver) return resolveSafeImageSource(details.source);
 
@@ -152,27 +438,38 @@ export function imagePreviewPlugin(options: ImagePreviewPluginOptions = {}) {
         id: "markra.image-preview",
         nodeNames: ["Image"],
         render(context) {
-          if (context.revealed("node")) return true;
           const startLine = context.state.doc.lineAt(context.node.from).number;
           const endLine = context.state.doc.lineAt(context.node.to).number;
           if (startLine !== endLine) return true;
 
           const details = imageDetails(context.state, context.node);
           if (!details) return true;
-          const source = resolvedImageSource(
-            context,
+          const source = resolveImageSource(
+            context.view,
             details,
             options.resolveSource,
           );
           if (!source) return true;
-
+          const line = context.state.doc.lineAt(context.node.from);
+          if (context.node.from === line.from && context.node.to === line.to) {
+            context.add(
+              Decoration.line({ class: "cm-markra-image-line" }).range(
+                line.from,
+              ),
+            );
+          }
           context.add(
             Decoration.replace({
               widget: new ImageWidget(
-                details.alt,
                 className,
+                details,
+                context.node.from,
+                context.state.facet(EditorState.readOnly),
+                options.resolveSource,
+                context.revealed("node"),
                 source,
-                details.title,
+                context.node.to,
+                context.view,
               ),
             }).range(context.node.from, context.node.to),
           );

@@ -3,6 +3,7 @@ import { EditorView } from "@codemirror/view";
 import {
   blocksPlugin,
   documentLinksPlugin,
+  getMarkraSlashMenuState,
   liveMarkdown,
 } from "@markra/editor/codemirror";
 import {
@@ -11,7 +12,10 @@ import {
 } from "@markra/editor-react";
 import { act, render } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { CodeMirrorEditorFloatingMenus } from "./CodeMirrorEditorFloatingMenus";
+import {
+  CodeMirrorEditorFloatingMenus,
+  fitCodeMirrorFloatingMenu,
+} from "./CodeMirrorEditorFloatingMenus";
 
 const views: EditorView[] = [];
 
@@ -70,6 +74,16 @@ afterEach(() => {
 });
 
 describe("CodeMirrorEditorFloatingMenus", () => {
+  it("keeps a tall caret menu inside the viewport", () => {
+    expect(
+      fitCodeMirrorFloatingMenu(
+        { left: 760, top: 700 },
+        { height: 426, width: 320 },
+        { height: 720, width: 800 },
+      ),
+    ).toEqual({ left: 468, top: 282 });
+  });
+
   it("renders and runs plugin-contributed slash commands", async () => {
     const view = createView();
     const host = render(
@@ -86,6 +100,22 @@ describe("CodeMirrorEditorFloatingMenus", () => {
     expect(host.container.querySelector(".markra-slash-menu")).not.toBeNull();
     act(() => heading2?.click());
     expect(view.state.doc.toString()).toBe("## ");
+  });
+
+  it("dismisses slash commands when the user points outside the menu", async () => {
+    const view = createView();
+    render(
+      <MarkraEditorProvider view={view}>
+        <CodeMirrorEditorFloatingMenus />
+      </MarkraEditorProvider>,
+    );
+
+    await flushMeasurement();
+    expect(getMarkraSlashMenuState(view).open).toBe(true);
+    act(() => {
+      document.body.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+    });
+    expect(getMarkraSlashMenuState(view).open).toBe(false);
   });
 
   it("renders and runs document-link completion items", async () => {

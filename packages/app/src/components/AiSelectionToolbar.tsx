@@ -1,4 +1,11 @@
-import { Fragment, useEffect, useRef, useState, type CSSProperties } from "react";
+import {
+  Fragment,
+  useEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type MouseEvent as ReactMouseEvent
+} from "react";
 import { createPortal } from "react-dom";
 import { Tooltip } from "@markra/ui";
 import {
@@ -95,6 +102,12 @@ type AiSelectionToolbarProps = {
 const toolbarOffsetPx = 12;
 const toolbarViewportMarginPx = 12;
 const toolbarHeightPx = 42;
+
+function preserveEditorSelection(event: ReactMouseEvent) {
+  // Mouse focus would blur CodeMirror before the click command can consume its
+  // selection. Keyboard focus remains available because this only handles a mouse press.
+  event.preventDefault();
+}
 
 function selectionToolbarPlacement(anchor: SelectionAnchor) {
   return anchor.top - toolbarOffsetPx - toolbarHeightPx >= toolbarViewportMarginPx ? "top" : "bottom";
@@ -337,6 +350,7 @@ export function AiSelectionToolbar({
       ? createPortal(
           <div
             className="pointer-events-auto fixed z-60 grid grid-cols-3 gap-1 rounded-md border border-(--border-default) bg-(--bg-primary) p-1 shadow-(--ai-command-popover-shadow)"
+            onMouseDown={preserveEditorSelection}
             ref={headingLevelMenuRef}
             style={headingLevelMenuStyle}
             role="menu"
@@ -382,6 +396,7 @@ export function AiSelectionToolbar({
   return (
     <section
       className={`ai-selection-toolbar pointer-events-none fixed z-50 -translate-x-1/2 ${toolbarPlacementClass} animate-[markra-ai-float-in_160ms_ease-out_both] motion-reduce:animate-none`}
+      onMouseDown={preserveEditorSelection}
       ref={toolbarRef}
       style={style}
       role="toolbar"

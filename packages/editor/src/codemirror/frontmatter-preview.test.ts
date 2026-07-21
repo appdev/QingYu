@@ -71,4 +71,15 @@ describe("frontmatterPreviewPlugin", () => {
     expect(malformed.dom.querySelector(".cm-markra-frontmatter")).toBeNull();
     expect(nonLeading.dom.querySelector(".cm-markra-frontmatter")).toBeNull();
   });
+
+  it("keeps metadata rendered during a multi-line range selection", () => {
+    const source = ["---", "title: Synthetic", "---", "", "# Body"].join("\n");
+    const view = createView(source);
+
+    view.dispatch({ selection: EditorSelection.range(0, source.length) });
+
+    expect(view.dom.querySelector(".cm-markra-frontmatter")?.textContent).toContain(
+      "Synthetic",
+    );
+  });
 });

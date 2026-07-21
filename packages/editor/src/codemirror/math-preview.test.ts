@@ -70,6 +70,16 @@ describe("mathPreviewPlugin", () => {
     expect(view.dom.textContent).toContain("$x + y$");
   });
 
+  it("keeps rendered math stable during a multi-line range selection", () => {
+    const doc = "Before $x + y$ after\n\nAnother paragraph";
+    const view = createView(doc);
+
+    view.dispatch({ selection: EditorSelection.range(0, doc.length) });
+
+    expect(view.dom.querySelector(".markra-math-render-inline")).not.toBeNull();
+    expect(view.dom.textContent).not.toContain("$x + y$");
+  });
+
   it("applies macro definitions to later formulas while folding definition-only blocks", () => {
     const doc = [
       "$$",

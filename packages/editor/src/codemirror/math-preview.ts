@@ -17,6 +17,7 @@ import {
   type MarkraMathMacros,
 } from "../math-render.ts";
 import { defineMarkraPlugin } from "./plugin.ts";
+import { cursorInsideRange, selectionChangeAffectsReveal } from "./policy.ts";
 
 export interface CodeMirrorMathRange {
   readonly from: number;
@@ -221,17 +222,6 @@ export function findCodeMirrorMathRanges(state: EditorState) {
   return [...display, ...inline].sort((left, right) => left.from - right.from);
 }
 
-function selectionTouchesRange(view: CodeMirrorView, range: SourceRange) {
-  return (
-    view.hasFocus &&
-    view.state.selection.ranges.some((selection) =>
-      selection.empty
-        ? selection.head > range.from && selection.head < range.to
-        : selection.from < range.to && selection.to > range.from,
-    )
-  );
-}
-
 function activateMath(view: CodeMirrorView, range: CodeMirrorMathRange) {
   const offset = range.source.startsWith("$$") || range.source.startsWith(String.raw`\[`)
     ? 2
@@ -349,7 +339,7 @@ function buildMathDecorations(view: CodeMirrorView) {
   for (const range of findCodeMirrorMathRanges(view.state)) {
     const macroDefinitionOnly =
       range.kind === "display" && isMarkraMathMacroDefinitionSource(range.tex);
-    const active = selectionTouchesRange(view, range);
+    const active = cursorInsideRange(view, range.from, range.to);
 
     if (macroDefinitionOnly) {
       renderMath(range, macros);
@@ -428,7 +418,7 @@ export function mathPreviewPlugin() {
           update(update: ViewUpdate) {
             if (
               update.docChanged ||
-              update.selectionSet ||
+              selectionChangeAffectsReveal(update) ||
               update.focusChanged ||
               update.viewportChanged
             ) {

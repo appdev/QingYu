@@ -40,7 +40,7 @@ afterEach(() => {
 });
 
 describe("codeMirrorBlockDragPlugin", () => {
-  it("discovers top-level Markdown blocks without rewriting source", () => {
+  it("discovers list items as independently draggable blocks without rewriting source", () => {
     const doc = "# Title\n\nParagraph\n\n- One\n- Two\n\n> Quote";
     const view = createView(doc);
 
@@ -48,10 +48,43 @@ describe("codeMirrorBlockDragPlugin", () => {
       view.state.sliceDoc(range.from, range.to))).toEqual([
       "# Title",
       "Paragraph",
-      "- One\n- Two",
+      "- One",
+      "- Two",
       "> Quote",
     ]);
     expect(view.state.doc.toString()).toBe(doc);
+  });
+
+  it("reorders one list item without moving the entire list", () => {
+    const doc = "- First\n- Second\n- Third\n\nAfter";
+    const view = createView(doc);
+    const [first, second] = readCodeMirrorBlockRanges(view.state);
+
+    expect(first?.name).toBe("ListItem");
+    expect(second?.name).toBe("ListItem");
+    expect(second && first && moveCodeMirrorBlock(view, second.from, first.from, "before")).toBe(true);
+    expect(view.state.doc.toString()).toBe("- Second\n- First\n- Third\n\nAfter");
+  });
+
+  it("moves a paragraph into a list as a sibling item", () => {
+    const doc = "Paragraph\n\n- First\n- Second";
+    const view = createView(doc);
+    const [paragraph, first] = readCodeMirrorBlockRanges(view.state);
+
+    expect(paragraph && first && moveCodeMirrorBlock(view, paragraph.from, first.from, "after")).toBe(true);
+    expect(view.state.doc.toString()).toBe("- First\n- Paragraph\n- Second");
+  });
+
+  it("outdents a nested list item when a shallower drop depth is requested", () => {
+    const doc = "- First\n  - Nested\n- Last";
+    const view = createView(doc);
+    const nested = readCodeMirrorBlockRanges(view.state).find(
+      (block) => block.depth === 1,
+    );
+    const last = readCodeMirrorBlockRanges(view.state).at(-1);
+
+    expect(nested && last && moveCodeMirrorBlock(view, nested.from, last.from, "before", 0)).toBe(true);
+    expect(view.state.doc.toString()).toBe("- First\n- Nested\n- Last");
   });
 
   it("renders block controls with the app-compatible icon structure", () => {
@@ -93,14 +126,21 @@ describe("codeMirrorBlockDragPlugin", () => {
     };
     const dragStart = new MouseEvent("dragstart", { bubbles: true, cancelable: true });
     Object.defineProperty(dragStart, "dataTransfer", { value: dataTransfer });
+    const dragOver = new MouseEvent("dragover", { bubbles: true, cancelable: true });
+    Object.defineProperty(dragOver, "dataTransfer", { value: dataTransfer });
     const drop = new MouseEvent("drop", { bubbles: true, cancelable: true });
     Object.defineProperty(drop, "dataTransfer", { value: dataTransfer });
 
     handle?.dispatchEvent(dragStart);
+    target?.dispatchEvent(dragOver);
+    expect(view.dom.querySelector(".markra-block-drag-source")).not.toBeNull();
+    expect(view.dom.querySelector(".markra-block-drop-indicator")?.getAttribute("data-show")).toBe("true");
     target?.dispatchEvent(drop);
 
     expect(drop.defaultPrevented).toBe(true);
     expect(view.state.doc.toString()).toBe("Second\n\nFirst\n\nThird");
+    expect(view.dom.querySelector(".markra-block-drag-source")).toBeNull();
+    expect(view.dom.querySelector(".markra-block-drop-indicator")).toBeNull();
   });
 
   it("adds an editable blank block below and opens the virtual slash menu", () => {
@@ -117,6 +157,7 @@ describe("codeMirrorBlockDragPlugin", () => {
       open: true,
       source: "virtual",
     });
+    expect(view.dom.querySelectorAll(".markra-block-add-button")).toHaveLength(4);
   });
 
   it("does not render mutation controls in a read-only editor", () => {

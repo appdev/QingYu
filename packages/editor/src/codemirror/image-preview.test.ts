@@ -61,15 +61,88 @@ describe("imagePreviewPlugin", () => {
     expect(view.state.doc.toString()).toBe(doc);
   });
 
-  it("reveals editable source when the selection enters the image node", () => {
+  it("marks a standalone Markdown image line for block layout", () => {
+    const doc = "![Synthetic alt](https://example.test/image.png)\n\nEdit";
+    const view = createView(doc);
+    const image = view.dom.querySelector<HTMLImageElement>(".cm-markra-image");
+
+    expect(image).not.toBeNull();
+    expect(image?.closest(".cm-markra-image-line")).not.toBeNull();
+  });
+
+  it("keeps the preview visible and shows editable Markdown source when selected", () => {
     const doc = "Before ![Synthetic alt](./assets/mock.png) after\n\nEdit";
     const view = createView(doc);
+    const image = view.dom.querySelector<HTMLImageElement>(".cm-markra-image");
+
+    expect(image).not.toBeNull();
+    image?.dispatchEvent(new MouseEvent("click", {
+      bubbles: true,
+      cancelable: true,
+    }));
 
     expect(view.dom.querySelector(".cm-markra-image")).not.toBeNull();
-    view.dispatch({ selection: { anchor: doc.indexOf("Synthetic") + 2 } });
+    expect(view.dom.querySelector(".markra-image-node-selected")).not.toBeNull();
+    expect(
+      view.dom.querySelector<HTMLInputElement>(".markra-image-node-source")
+        ?.value,
+    ).toBe("![Synthetic alt](./assets/mock.png)");
+    expect(view.state.doc.toString()).toBe(doc);
+  });
 
+  it("updates and deletes an image through its inline Markdown source", () => {
+    const doc = "![Synthetic alt](./assets/mock.png)\n\nEdit";
+    const view = createView(doc);
+    view.dom.querySelector<HTMLImageElement>(".cm-markra-image")?.dispatchEvent(
+      new MouseEvent("click", { bubbles: true, cancelable: true }),
+    );
+    const source = view.dom.querySelector<HTMLInputElement>(
+      ".markra-image-node-source",
+    );
+
+    expect(source).not.toBeNull();
+    if (!source) return;
+
+    source.value = "![Changed](https://example.test/changed.png)";
+    source.dispatchEvent(new Event("input", { bubbles: true }));
+    expect(view.state.doc.toString()).toBe(
+      "![Changed](https://example.test/changed.png)\n\nEdit",
+    );
+    expect(
+      view.dom.querySelector<HTMLImageElement>(".cm-markra-image")?.src,
+    ).toBe("https://example.test/changed.png");
+
+    const updatedSource = view.dom.querySelector<HTMLInputElement>(
+      ".markra-image-node-source",
+    );
+    expect(updatedSource).not.toBeNull();
+    if (!updatedSource) return;
+    updatedSource.value = "";
+    updatedSource.dispatchEvent(new Event("input", { bubbles: true }));
+
+    expect(view.state.doc.toString()).toBe("\n\nEdit");
     expect(view.dom.querySelector(".cm-markra-image")).toBeNull();
-    expect(firstLine(view)).toBe(doc.split("\n")[0]);
+  });
+
+  it("moves into the paragraph after an edited image on Enter", () => {
+    const doc = "![Synthetic alt](./assets/mock.png)\n\nEdit";
+    const view = createView(doc);
+    view.dom.querySelector<HTMLImageElement>(".cm-markra-image")?.dispatchEvent(
+      new MouseEvent("click", { bubbles: true, cancelable: true }),
+    );
+    const source = view.dom.querySelector<HTMLInputElement>(
+      ".markra-image-node-source",
+    );
+
+    expect(source).not.toBeNull();
+    source?.dispatchEvent(new KeyboardEvent("keydown", {
+      bubbles: true,
+      cancelable: true,
+      key: "Enter",
+    }));
+
+    expect(view.state.selection.main.head).toBe(doc.indexOf("\n") + 1);
+    expect(view.dom.querySelector(".markra-image-node-source")).toBeNull();
   });
 
   it("rejects executable and local protocols by default", () => {

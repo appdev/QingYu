@@ -60,17 +60,62 @@ describe("linksPlugin", () => {
     expect(resolveSafeLinkTarget("https://example.test/\u0000unsafe")).toBeNull();
   });
 
-  it("opens a rendered link on modifier-click without changing Markdown", () => {
+  it("reveals editable link Markdown on plain click without opening it", () => {
+    const doc =
+      "Read [Synthetic alt](https://example.test/guide) now\n\nEdit here";
+    const open = vi.fn();
+    const view = createView(doc, { open });
+    const link = view.dom.querySelector<HTMLElement>(".cm-markra-link");
+
+    expect(link).not.toBeNull();
+    expect(link?.dispatchEvent(new MouseEvent("mousedown", {
+      bubbles: true,
+      button: 0,
+      cancelable: true,
+    }))).toBe(false);
+
+    expect(open).not.toHaveBeenCalled();
+    expect(view.state.selection.main.head).toBe(
+      doc.indexOf("Synthetic alt") + 1,
+    );
+    expect(view.dom.querySelector(".cm-markra-link")).toBeNull();
+    expect(view.dom.querySelector(".cm-markra-link-source-label")?.textContent)
+      .toBe("Synthetic alt");
+    expect(
+      Array.from(
+        view.dom.querySelectorAll<HTMLElement>(".cm-markra-link-source"),
+        (element) => element.textContent,
+      ).join(""),
+    ).toBe("[](https://example.test/guide)");
+
+    const labelFrom = doc.indexOf("Synthetic alt");
+    view.dispatch({
+      changes: {
+        from: labelFrom,
+        insert: "Changed alt",
+        to: labelFrom + "Synthetic alt".length,
+      },
+    });
+    const urlFrom = view.state.doc.toString().indexOf("https://example.test/guide");
+    view.dispatch({
+      changes: {
+        from: urlFrom,
+        insert: "https://example.test/changed",
+        to: urlFrom + "https://example.test/guide".length,
+      },
+    });
+
+    expect(view.state.doc.toString()).toContain(
+      "[Changed alt](https://example.test/changed)",
+    );
+  });
+
+  it("opens a rendered link on Cmd/Ctrl-click without changing Markdown", () => {
     const doc =
       "Read [Synthetic guide](https://example.test/guide) now\n\nEdit here";
     const open = vi.fn();
     const view = createView(doc, { open });
     const link = view.dom.querySelector<HTMLElement>(".cm-markra-link");
-    const plainPointerDown = new MouseEvent("mousedown", {
-      bubbles: true,
-      button: 0,
-      cancelable: true,
-    });
     const modifierPointerDown = new MouseEvent("mousedown", {
       bubbles: true,
       button: 0,
@@ -83,21 +128,68 @@ describe("linksPlugin", () => {
       cancelable: true,
       metaKey: true,
     });
+    const controlPointerDown = new MouseEvent("mousedown", {
+      bubbles: true,
+      button: 0,
+      cancelable: true,
+      ctrlKey: true,
+    });
 
     expect(link).not.toBeNull();
-    link?.dispatchEvent(plainPointerDown);
-    expect(open).not.toHaveBeenCalled();
-
     expect(link?.dispatchEvent(modifierPointerDown)).toBe(false);
     expect(open).toHaveBeenCalledTimes(1);
     link?.dispatchEvent(modifierClick);
     expect(open).toHaveBeenCalledTimes(1);
+    expect(link?.dispatchEvent(controlPointerDown)).toBe(false);
+    expect(open).toHaveBeenCalledTimes(2);
     expect(open).toHaveBeenCalledWith(
       expect.objectContaining({
         source: "https://example.test/guide",
         target: "https://example.test/guide",
         view,
       }),
+    );
+    expect(view.state.doc.toString()).toBe(doc);
+  });
+
+  it.each([
+    ["angle autolink", "<https://example.test/angle>", "https://example.test/angle"],
+    ["bare autolink", "https://example.test/bare", "https://example.test/bare"],
+    ["angle email autolink", "<author@example.test>", "mailto:author@example.test"],
+    ["mailto autolink", "<mailto:author@example.test>", "mailto:author@example.test"],
+    ["bare email autolink", "author@example.test", "mailto:author@example.test"],
+    ["www autolink", "www.example.test/guide", "http://www.example.test/guide"],
+  ])("supports %s with the same click interactions", (_label, markdown, target) => {
+    const doc = `Read ${markdown} now\n\nEdit here`;
+    const visibleSource = markdown.replace(/^<|>$/gu, "");
+    const open = vi.fn();
+    const view = createView(doc, { open });
+    const link = view.dom.querySelector<HTMLElement>(".cm-markra-link");
+
+    expect(link?.tagName).toBe("A");
+    expect(link?.getAttribute("href")).toBe(target);
+    expect(link?.dispatchEvent(new MouseEvent("mousedown", {
+      bubbles: true,
+      button: 0,
+      cancelable: true,
+      metaKey: true,
+    }))).toBe(false);
+    expect(open).toHaveBeenCalledWith(expect.objectContaining({
+      source: target,
+      target,
+      view,
+    }));
+
+    expect(link?.dispatchEvent(new MouseEvent("mousedown", {
+      bubbles: true,
+      button: 0,
+      cancelable: true,
+    }))).toBe(false);
+    expect(view.state.selection.main.head).toBeGreaterThanOrEqual(
+      doc.indexOf(visibleSource),
+    );
+    expect(view.state.selection.main.head).toBeLessThanOrEqual(
+      doc.indexOf(visibleSource) + visibleSource.length,
     );
     expect(view.state.doc.toString()).toBe(doc);
   });

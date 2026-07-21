@@ -89,9 +89,29 @@ function rangeHasMarker(
 ) {
   if (range.from < marker.length) return false;
   if (range.to + marker.length > state.doc.length) return false;
-  return (
+  const hasMarker = (
     state.sliceDoc(range.from - marker.length, range.from) === marker &&
     state.sliceDoc(range.to, range.to + marker.length) === marker
+  );
+  if (!hasMarker || marker !== "*") return hasMarker;
+
+  const starRunLength = (position: number, direction: -1 | 1) => {
+    let length = 0;
+    let cursor = position;
+    while (direction < 0 ? cursor > 0 : cursor < state.doc.length) {
+      const from = direction < 0 ? cursor - 1 : cursor;
+      if (state.sliceDoc(from, from + 1) !== "*") break;
+      length += 1;
+      cursor += direction;
+    }
+    return length;
+  };
+
+  // A two-star delimiter is bold only; odd-length runs carry an italic layer
+  // as well (`*text*` or `***text***`).
+  return (
+    starRunLength(range.from, -1) % 2 === 1 &&
+    starRunLength(range.to, 1) % 2 === 1
   );
 }
 

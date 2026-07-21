@@ -64,6 +64,28 @@ describe("rawHtmlPreviewPlugin", () => {
     expect(view.dom.textContent).toContain("<kbd>Mod</kbd>");
   });
 
+  it("keeps rendered HTML stable during a multi-line range selection", () => {
+    const doc = "Press <kbd>Mod</kbd> now.\n\nAnother paragraph";
+    const view = createView(doc);
+
+    view.dispatch({ selection: EditorSelection.range(0, doc.length) });
+
+    expect(view.dom.querySelector(".cm-markra-inline-html")?.textContent).toBe("Mod");
+    expect(view.dom.textContent).not.toContain("<kbd>Mod</kbd>");
+  });
+
+  it("balances nested inline HTML without leaving closing tags behind", () => {
+    const doc = "Before <span><span>Inner</span></span> after\n\nEdit";
+    const view = createView(doc);
+    const preview = view.dom.querySelector<HTMLElement>(".cm-markra-inline-html");
+
+    expect(preview?.tagName).toBe("SPAN");
+    expect(preview?.querySelector("span")?.textContent).toBe("Inner");
+    expect(view.dom.textContent).toContain("Before Inner after");
+    expect(view.dom.textContent).not.toContain("</span>");
+    expect(view.state.doc.toString()).toBe(doc);
+  });
+
   it("resolves safe image sources and rejects executable URLs", () => {
     const resolveImageSrc = vi.fn((source: string) =>
       source === "./mock.png" ? "https://assets.example.test/mock.png" : source,

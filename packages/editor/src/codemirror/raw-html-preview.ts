@@ -14,6 +14,7 @@ import {
   type ResolveRawHtmlSrc,
 } from "../raw-html-sanitize.ts";
 import { defineMarkraPlugin } from "./plugin.ts";
+import { cursorInsideRange, selectionChangeAffectsReveal } from "./policy.ts";
 
 export interface RawHtmlPreviewPluginOptions {
   resolveImageSrc?: ResolveRawHtmlSrc;
@@ -24,6 +25,72 @@ interface CodeMirrorHtmlRange {
   readonly from: number;
   readonly source: string;
   readonly to: number;
+}
+
+interface InlineHtmlBoundary {
+  readonly from: number;
+  readonly kind: "close" | "open" | "void";
+  readonly parentFrom: number;
+  readonly parentTo: number;
+  readonly source: string;
+  readonly tagName: string;
+  readonly to: number;
+}
+
+const pairedInlineHtmlTags = new Set([
+  "a",
+  "abbr",
+  "b",
+  "code",
+  "del",
+  "em",
+  "i",
+  "kbd",
+  "mark",
+  "s",
+  "small",
+  "span",
+  "strong",
+  "sub",
+  "sup",
+  "u",
+]);
+
+const voidInlineHtmlTags = new Set([
+  "area",
+  "base",
+  "br",
+  "col",
+  "embed",
+  "hr",
+  "img",
+  "input",
+  "link",
+  "meta",
+  "param",
+  "source",
+  "track",
+  "wbr",
+]);
+
+function inlineHtmlBoundary(
+  source: string,
+  from: number,
+  to: number,
+  parentFrom: number,
+  parentTo: number,
+): InlineHtmlBoundary | null {
+  const match = /^<\s*(\/?)\s*([A-Za-z][\w:.-]*)(?=[\s/>])[^<]*>$/u.exec(
+    source.trim(),
+  );
+  const tagName = match?.[2]?.toLocaleLowerCase();
+  if (!tagName) return null;
+  const kind = match?.[1] === "/"
+    ? "close"
+    : /\/\s*>$/u.test(source) || voidInlineHtmlTags.has(tagName)
+      ? "void"
+      : "open";
+  return { from, kind, parentFrom, parentTo, source, tagName, to };
 }
 
 function blockHtmlRanges(view: CodeMirrorView) {
@@ -55,30 +122,57 @@ function inlineHtmlRanges(
   blocks: readonly CodeMirrorHtmlRange[],
 ) {
   const ranges: CodeMirrorHtmlRange[] = [];
-  const pattern = /<([A-Za-z][\w:-]*)(?:\s[^<>]*?)?>([^\n]*?)<\/\1\s*>/gu;
+  const groups = new Map<string, InlineHtmlBoundary[]>();
+  syntaxTree(view.state).iterate({
+    enter(node) {
+      if (node.name !== "HTMLTag") return;
+      if (blocks.some((block) => overlaps(node, block))) return;
+      const parent = node.node.parent;
+      if (!parent) return;
+      const boundary = inlineHtmlBoundary(
+        view.state.sliceDoc(node.from, node.to),
+        node.from,
+        node.to,
+        parent.from,
+        parent.to,
+      );
+      if (!boundary) return;
+      const key = `${parent.from}:${parent.to}`;
+      const group = groups.get(key) ?? [];
+      group.push(boundary);
+      groups.set(key, group);
+    },
+  });
 
-  for (let lineNumber = 1; lineNumber <= view.state.doc.lines; lineNumber += 1) {
-    const line = view.state.doc.line(lineNumber);
-    pattern.lastIndex = 0;
-    for (const match of line.text.matchAll(pattern)) {
-      const from = line.from + match.index;
-      const to = from + match[0].length;
-      if (blocks.some((block) => overlaps({ from, to }, block))) continue;
-      ranges.push({ block: false, from, source: match[0], to });
+  for (const boundaries of groups.values()) {
+    const stack: InlineHtmlBoundary[] = [];
+    for (const boundary of boundaries.sort((left, right) => left.from - right.from)) {
+      if (boundary.kind === "void") continue;
+      if (boundary.kind === "open") {
+        stack.push(boundary);
+        continue;
+      }
+      const opening = stack.at(-1);
+      if (!opening || opening.tagName !== boundary.tagName) {
+        stack.length = 0;
+        continue;
+      }
+      stack.pop();
+      // Emitting only the outer pair avoids overlapping replacement
+      // decorations for nested HTML, which CodeMirror cannot render safely.
+      if (stack.length > 0 || !pairedInlineHtmlTags.has(opening.tagName)) {
+        continue;
+      }
+      ranges.push({
+        block: opening.source.includes("\n") ||
+          view.state.sliceDoc(opening.from, boundary.to).includes("\n"),
+        from: opening.from,
+        source: view.state.sliceDoc(opening.from, boundary.to),
+        to: boundary.to,
+      });
     }
   }
-  return ranges;
-}
-
-function selectionTouches(view: CodeMirrorView, range: CodeMirrorHtmlRange) {
-  return (
-    view.hasFocus &&
-    view.state.selection.ranges.some((selection) =>
-      selection.empty
-        ? selection.head > range.from && selection.head < range.to
-        : selection.from < range.to && selection.to > range.from,
-    )
-  );
+  return ranges.sort((left, right) => left.from - right.from);
 }
 
 function activateHtml(view: CodeMirrorView, range: CodeMirrorHtmlRange) {
@@ -174,7 +268,7 @@ function buildRawHtmlDecorations(
   );
 
   for (const range of htmlRanges) {
-    if (selectionTouches(view, range)) continue;
+    if (cursorInsideRange(view, range.from, range.to)) continue;
     const widget = new RawHtmlWidget(range, options);
     if (range.block && range.source.includes("\n")) {
       addBlockReplacement(view, ranges, range, widget);
@@ -219,7 +313,7 @@ export function rawHtmlPreviewPlugin(
           update(update: ViewUpdate) {
             if (
               update.docChanged ||
-              update.selectionSet ||
+              selectionChangeAffectsReveal(update) ||
               update.focusChanged ||
               update.viewportChanged
             ) {

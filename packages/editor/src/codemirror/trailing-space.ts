@@ -23,9 +23,19 @@ class TrailingSpaceWidget extends WidgetType {
       if (event.button !== 0) return;
       event.preventDefault();
       event.stopPropagation();
+      const source = view.state.doc.toString();
+      const separator = source.length === 0 || source.endsWith("\n\n")
+        ? ""
+        : source.endsWith("\n")
+          ? "\n"
+          : "\n\n";
       view.dispatch({
+        changes: separator
+          ? { from: view.state.doc.length, insert: separator }
+          : undefined,
         scrollIntoView: true,
-        selection: { anchor: view.state.doc.length },
+        selection: { anchor: view.state.doc.length + separator.length },
+        userEvent: separator ? "input" : undefined,
       });
       view.focus();
     });

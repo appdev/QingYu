@@ -6,6 +6,16 @@ import {
 } from "@codemirror/view";
 import { createLucideIcon, popoverPosition } from "@markra/shared";
 import { Minus, Plus, Trash2 } from "lucide";
+import {
+  renderInlineMarkdown,
+  serializeInlineMarkdown,
+  type InlineMarkdownImageDetails,
+} from "./inline-markdown.ts";
+import type { ImagePreviewPluginOptions } from "./image.ts";
+import {
+  openMarkraLinkSource,
+  type LinksPluginOptions,
+} from "./links.ts";
 import { defineMarkraPlugin } from "./plugin.ts";
 import { markraRenderer } from "./renderers.ts";
 
@@ -19,7 +29,9 @@ export interface CodeMirrorTableShape {
 
 export interface TablePreviewPluginOptions {
   getDocumentKey?: () => string | null | undefined;
+  images?: ImagePreviewPluginOptions;
   labels?: Partial<TablePreviewLabels>;
+  links?: LinksPluginOptions;
   widthMode?: CodeMirrorTableWidthMode;
 }
 
@@ -42,7 +54,6 @@ export interface TablePreviewLabels {
 interface TableCellPreview {
   readonly from: number;
   readonly source: string;
-  readonly text: string;
   readonly to: number;
 }
 
@@ -57,6 +68,7 @@ interface TablePreview {
 interface TableEditingSession {
   readonly column: number;
   readonly header: boolean;
+  readonly inlineSourceVisible: boolean;
   readonly originalSource: string;
   readonly row: number;
   readonly tableFrom: number;
@@ -188,7 +200,6 @@ function tableCells(line: string, lineFrom: number) {
     cells.push({
       from: lineFrom + trimmed.from,
       source,
-      text: source.replace(/\\\|/gu, "|"),
       to: lineFrom + trimmed.to,
     });
   };
@@ -252,7 +263,6 @@ function tablePreview(
         cells[column] ?? {
           from: from + (lineOffsets[index + 2] ?? 0) + line.length,
           source: "",
-          text: "",
           to: from + (lineOffsets[index + 2] ?? 0) + line.length,
         },
       );
@@ -564,11 +574,8 @@ function applyWidthModeToTableControls(
   }
 }
 
-function visualTableCellSource(value: string) {
-  return value
-    .replace(/[\r\n]+/gu, " ")
-    .trim()
-    .replace(/\|/gu, "\\|");
+function visualTableCellSource(cell: HTMLTableCellElement) {
+  return serializeInlineMarkdown(cell);
 }
 
 function replaceVisualTableCell(
@@ -634,19 +641,68 @@ function focusVisualTableCell(
     if (!cell) return;
 
     cell.focus();
-    const textNode = cell.firstChild;
+    const walker = cell.ownerDocument.createTreeWalker(
+      cell,
+      NodeFilter.SHOW_TEXT,
+    );
+    let textNode = walker.nextNode();
+    let remaining = caretOffset;
+    while (
+      textNode &&
+      remaining > (textNode.textContent?.length ?? 0)
+    ) {
+      remaining -= textNode.textContent?.length ?? 0;
+      textNode = walker.nextNode();
+    }
     if (!textNode) return;
     const selection = cell.ownerDocument.getSelection();
     if (!selection) return;
     const range = cell.ownerDocument.createRange();
     range.setStart(
       textNode,
-      Math.min(caretOffset, textNode.textContent?.length ?? 0),
+      Math.min(remaining, textNode.textContent?.length ?? 0),
     );
     range.collapse(true);
     selection.removeAllRanges();
     selection.addRange(range);
   });
+}
+
+function revealVisualTableInlineSource(
+  cell: HTMLTableCellElement,
+  element: HTMLElement,
+  markdown: string | undefined,
+) {
+  if (!markdown) return false;
+  const source = cell.ownerDocument.createTextNode(markdown);
+  const icon = element.nextElementSibling;
+  if (icon?.classList.contains("markra-live-link-icon")) icon.remove();
+  element.replaceWith(source);
+  cell.focus();
+  const selection = cell.ownerDocument.getSelection();
+  if (selection) {
+    const range = cell.ownerDocument.createRange();
+    range.setStart(source, Math.min(1, markdown.length));
+    range.collapse(true);
+    selection.removeAllRanges();
+    selection.addRange(range);
+  }
+  return true;
+}
+
+function renderVisualTableCell(
+  view: CodeMirrorView,
+  cell: HTMLTableCellElement,
+  source: string,
+  images: ImagePreviewPluginOptions | undefined,
+) {
+  const resolver = images?.resolveSource;
+  renderInlineMarkdown(cell, source, resolver
+    ? {
+        resolveImageSource: (details: InlineMarkdownImageDetails) =>
+          resolver({ ...details, state: view.state, view }),
+      }
+    : undefined);
 }
 
 function appendCell(
@@ -658,10 +714,20 @@ function appendCell(
   preview: TablePreview,
   rowIndex: number,
   columnIndex: number,
+  images: ImagePreviewPluginOptions | undefined,
+  links: LinksPluginOptions | undefined,
 ) {
   const cell = row.ownerDocument.createElement(header ? "th" : "td");
   let composing = false;
-  cell.textContent = cellPreview.text;
+  const currentSession = tableEditingSessions.get(view);
+  const keepInlineSourceVisible =
+    currentSession?.tableFrom === preview.from &&
+    currentSession.row === rowIndex &&
+    currentSession.column === columnIndex &&
+    currentSession.header === header &&
+    currentSession.inlineSourceVisible;
+  if (keepInlineSourceVisible) cell.textContent = cellPreview.source;
+  else renderVisualTableCell(view, cell, cellPreview.source, images);
   cell.contentEditable = String(!view.state.readOnly);
   cell.tabIndex = view.state.readOnly ? -1 : 0;
   cell.dataset.tableColumn = String(columnIndex);
@@ -669,7 +735,61 @@ function appendCell(
   cell.dataset.tableRow = String(rowIndex);
   if (alignment) cell.style.textAlign = alignment;
   cell.addEventListener("mousedown", (event) => {
-    if (event.button !== 0 || event.ctrlKey) return;
+    if (event.button !== 0) return;
+    const target = event.target instanceof Element ? event.target : null;
+    const link = target?.closest<HTMLElement>(
+      "[data-markra-link-markdown]",
+    );
+    if (link && cell.contains(link)) {
+      const source = link.dataset.markraLinkSource;
+      const modifier = event.metaKey || event.ctrlKey;
+      const handled = modifier
+        ? Boolean(source && links && openMarkraLinkSource(view, source, links))
+        : revealVisualTableInlineSource(
+            cell,
+            link,
+            link.dataset.markraLinkMarkdown,
+          );
+      if (handled && !modifier) {
+        tableEditingSessions.set(view, {
+          column: columnIndex,
+          header,
+          inlineSourceVisible: true,
+          originalSource: cellPreview.source,
+          row: rowIndex,
+          tableFrom: preview.from,
+        });
+      }
+      if (handled) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+      return;
+    }
+    const image = target?.closest<HTMLElement>(
+      "[data-markra-image-markdown]",
+    );
+    if (image && cell.contains(image)) {
+      const handled = revealVisualTableInlineSource(
+        cell,
+        image,
+        image.dataset.markraImageMarkdown,
+      );
+      if (handled) {
+        tableEditingSessions.set(view, {
+          column: columnIndex,
+          header,
+          inlineSourceVisible: true,
+          originalSource: cellPreview.source,
+          row: rowIndex,
+          tableFrom: preview.from,
+        });
+        event.preventDefault();
+        event.stopPropagation();
+      }
+      return;
+    }
+    if (event.ctrlKey) return;
     event.stopPropagation();
   });
   cell.addEventListener("focus", () => {
@@ -685,6 +805,7 @@ function appendCell(
     tableEditingSessions.set(view, {
       column: columnIndex,
       header,
+      inlineSourceVisible: false,
       originalSource: cellPreview.source,
       row: rowIndex,
       tableFrom: preview.from,
@@ -709,6 +830,9 @@ function appendCell(
         session.header === header
       ) {
         tableEditingSessions.delete(view);
+        if (session.inlineSourceVisible && cell.isConnected) {
+          renderVisualTableCell(view, cell, cellPreview.source, images);
+        }
       }
     }, 0);
   });
@@ -721,7 +845,7 @@ function appendCell(
       rowIndex,
       columnIndex,
       header,
-      visualTableCellSource(cell.textContent ?? ""),
+      visualTableCellSource(cell),
     );
     if (changed) {
       focusVisualTableCell(
@@ -753,7 +877,16 @@ function appendCell(
     if (event.key === "Enter") {
       event.preventDefault();
       event.stopPropagation();
+      const session = tableEditingSessions.get(view);
       tableEditingSessions.delete(view);
+      if (session?.inlineSourceVisible) {
+        renderVisualTableCell(
+          view,
+          cell,
+          visualTableCellSource(cell),
+          images,
+        );
+      }
       view.focus();
       return;
     }
@@ -764,7 +897,7 @@ function appendCell(
     const session = tableEditingSessions.get(view);
     tableEditingSessions.delete(view);
     if (session) {
-      replaceVisualTableCell(
+      const changed = replaceVisualTableCell(
         view,
         preview,
         rowIndex,
@@ -772,6 +905,9 @@ function appendCell(
         header,
         session.originalSource,
       );
+      if (!changed && session.inlineSourceVisible) {
+        renderVisualTableCell(view, cell, session.originalSource, images);
+      }
     }
     view.focus();
   });
@@ -787,6 +923,8 @@ class TableWidget extends WidgetType {
     readonly labels: TablePreviewLabels,
     readonly defaultWidthMode: CodeMirrorTableWidthMode,
     readonly getDocumentKey: () => string | null | undefined,
+    readonly images: ImagePreviewPluginOptions | undefined,
+    readonly links: LinksPluginOptions | undefined,
   ) {
     super();
   }
@@ -795,6 +933,8 @@ class TableWidget extends WidgetType {
     return (
       JSON.stringify(this.preview) === JSON.stringify(other.preview) &&
       this.defaultWidthMode === other.defaultWidthMode &&
+      this.images === other.images &&
+      this.links === other.links &&
       JSON.stringify(this.labels) === JSON.stringify(other.labels)
     );
   }
@@ -1118,6 +1258,8 @@ class TableWidget extends WidgetType {
         this.preview,
         -1,
         index,
+        this.images,
+        this.links,
       );
     }
     head.append(headRow);
@@ -1134,6 +1276,8 @@ class TableWidget extends WidgetType {
           this.preview,
           rowIndex,
           columnIndex,
+          this.images,
+          this.links,
         );
       }
       body.append(row);
@@ -1179,6 +1323,26 @@ class TableWidget extends WidgetType {
     wrapper.addEventListener("mouseleave", () => {
       deleteColumnButton.hidden = true;
       deleteRowButton.hidden = true;
+    });
+    wrapper.addEventListener("copy", (event) => {
+      if (!event.clipboardData) return;
+      const selection = document.getSelection();
+      const target = event.target instanceof Element ? event.target : null;
+      const cell = target?.closest<HTMLTableCellElement>("th, td");
+      const selectionInsideCell = Boolean(
+        cell &&
+        selection &&
+        !selection.isCollapsed &&
+        selection.anchorNode &&
+        selection.focusNode &&
+        cell.contains(selection.anchorNode) &&
+        cell.contains(selection.focusNode),
+      );
+      const text = selectionInsideCell
+        ? selection?.toString() ?? ""
+        : view.state.sliceDoc(this.preview.from, this.preview.to);
+      event.preventDefault();
+      event.clipboardData.setData("text/plain", text);
     });
     return wrapper;
   }
@@ -1339,6 +1503,8 @@ export function tablePreviewPlugin(
                 labels,
                 widthMode,
                 getDocumentKey,
+                options.images,
+                options.links,
               ),
             }).range(firstLine.from, firstLine.to),
           );

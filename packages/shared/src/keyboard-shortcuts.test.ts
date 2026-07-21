@@ -127,4 +127,20 @@ describe("keyboard shortcuts", () => {
       shiftKey: true
     });
   });
+
+  it("uses browser-realistic letter casing for synthetic shortcut events", () => {
+    expect(keyboardShortcutToKeyboardEventInit("Mod+B")).toEqual({
+      altKey: false,
+      key: "b",
+      shiftKey: false
+    });
+    expect(keyboardShortcutToKeyboardEventInit("Mod+Shift+B")).toEqual({
+      altKey: false,
+      key: "B",
+      shiftKey: true
+    });
+    expect(keyboardShortcutToKeyboardEventInit("Mod+I")?.key).toBe("i");
+    expect(keyboardShortcutToKeyboardEventInit("Mod+E")?.key).toBe("e");
+    expect(keyboardShortcutToKeyboardEventInit("Mod+Shift+X")?.key).toBe("X");
+  });
 });

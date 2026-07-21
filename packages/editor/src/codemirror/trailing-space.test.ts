@@ -12,7 +12,7 @@ afterEach(() => {
 });
 
 describe("trailingSpacePlugin", () => {
-  it("focuses the source-native document end when the area below content is clicked", () => {
+  it("creates and focuses a new paragraph when the area below content is clicked", () => {
     const source = "| Name | Value |\n| --- | --- |\n| Alpha | 1 |";
     const parent = document.createElement("div");
     document.body.append(parent);
@@ -38,7 +38,7 @@ describe("trailingSpacePlugin", () => {
     }));
 
     expect(view.hasFocus).toBe(true);
-    expect(view.state.selection.main.head).toBe(source.length);
-    expect(view.state.doc.toString()).toBe(source);
+    expect(view.state.selection.main.head).toBe(source.length + 2);
+    expect(view.state.doc.toString()).toBe(`${source}\n\n`);
   });
 });

@@ -168,8 +168,9 @@ describe("useNativeMenuHandlers", () => {
 
     result.current.formatBold?.();
 
-    expect(runEditorShortcut).toHaveBeenCalledWith("B", {
+    expect(runEditorShortcut).toHaveBeenCalledWith("b", {
       altKey: true,
+      code: undefined,
       shiftKey: false
     });
   });

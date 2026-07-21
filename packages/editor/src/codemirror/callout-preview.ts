@@ -1,4 +1,8 @@
-import type { Range } from "@codemirror/state";
+import {
+  StateField,
+  type EditorState as CodeMirrorState,
+  type Range,
+} from "@codemirror/state";
 import {
   Decoration,
   EditorView,
@@ -16,6 +20,7 @@ import {
   type ParsedMarkdownCalloutMarker,
 } from "@markra/shared";
 import { defineMarkraPlugin } from "./plugin.ts";
+import { cursorInsideRange, selectionChangeAffectsReveal } from "./policy.ts";
 
 export interface CalloutPreviewPluginOptions {
   enabled?: boolean;
@@ -48,11 +53,11 @@ function blockquoteContent(line: string) {
     : null;
 }
 
-function readCodeMirrorCallouts(view: CodeMirrorView) {
+function readCodeMirrorCallouts(state: CodeMirrorState) {
   const callouts: CodeMirrorCallout[] = [];
 
-  for (let lineNumber = 1; lineNumber <= view.state.doc.lines; lineNumber += 1) {
-    const line = view.state.doc.line(lineNumber);
+  for (let lineNumber = 1; lineNumber <= state.doc.lines; lineNumber += 1) {
+    const line = state.doc.line(lineNumber);
     const quote = blockquoteContent(line.text);
     const marker = quote ? parseMarkdownCalloutMarker(quote.content) : null;
     if (!quote || !marker) continue;
@@ -62,8 +67,8 @@ function readCodeMirrorCallouts(view: CodeMirrorView) {
     const lineFroms = [line.from];
     let to = line.to;
     let continuationLine = lineNumber + 1;
-    while (continuationLine <= view.state.doc.lines) {
-      const continuation = view.state.doc.line(continuationLine);
+    while (continuationLine <= state.doc.lines) {
+      const continuation = state.doc.line(continuationLine);
       if (!blockquoteContent(continuation.text)) break;
       lineFroms.push(continuation.from);
       to = continuation.to;
@@ -84,13 +89,17 @@ function readCodeMirrorCallouts(view: CodeMirrorView) {
   return callouts;
 }
 
-function selectionTouches(view: CodeMirrorView, from: number, to: number) {
+function selectionTouchesCallout(
+  view: CodeMirrorView,
+  callout: CodeMirrorCallout,
+) {
   return (
     view.hasFocus &&
-    view.state.selection.ranges.some((selection) =>
-      selection.empty
-        ? selection.head > from && selection.head < to
-        : selection.from < to && selection.to > from,
+    view.state.selection.ranges.some(
+      (selection) =>
+        selection.empty &&
+        selection.head >= callout.from &&
+        selection.head <= callout.to,
     )
   );
 }
@@ -158,23 +167,46 @@ class CalloutHeaderWidget extends WidgetType {
   }
 }
 
+class CalloutSpacerWidget extends WidgetType {
+  constructor(readonly edge: "before" | "after") {
+    super();
+  }
+
+  eq(other: CalloutSpacerWidget) {
+    return other.edge === this.edge;
+  }
+
+  toDOM(view: CodeMirrorView) {
+    const spacer = view.dom.ownerDocument.createElement("div");
+    spacer.className = `markra-callout-spacer markra-callout-spacer-${this.edge}`;
+    spacer.setAttribute("aria-hidden", "true");
+    return spacer;
+  }
+}
+
 function buildCalloutDecorations(view: CodeMirrorView) {
   const ranges: Range<Decoration>[] = [];
 
-  for (const callout of readCodeMirrorCallouts(view)) {
-    for (const lineFrom of callout.lineFroms) {
+  for (const callout of readCodeMirrorCallouts(view.state)) {
+    const active = selectionTouchesCallout(view, callout);
+    for (const [index, lineFrom] of callout.lineFroms.entries()) {
+      const positionClasses = [
+        index === 0 ? "markra-callout-first" : "",
+        index === callout.lineFroms.length - 1 ? "markra-callout-last" : "",
+        active ? "markra-callout-active" : "",
+      ].filter(Boolean).join(" ");
       ranges.push(
         Decoration.line({
           attributes: {
             "data-callout-label": callout.marker.label,
             "data-callout-type": callout.marker.type,
           },
-          class: `cm-markra-callout markra-callout markra-callout-${callout.marker.type}`,
+          class: `cm-markra-callout markra-callout markra-callout-${callout.marker.type} ${positionClasses}`,
         }).range(lineFrom),
       );
     }
 
-    if (selectionTouches(view, callout.markerFrom, callout.markerTo)) continue;
+    if (cursorInsideRange(view, callout.markerFrom, callout.markerTo)) continue;
     ranges.push(
       Decoration.replace({ widget: new CalloutHeaderWidget(callout) }).range(
         callout.markerFrom,
@@ -186,11 +218,61 @@ function buildCalloutDecorations(view: CodeMirrorView) {
   return Decoration.set(ranges, true);
 }
 
+function buildCalloutSpacingDecorations(state: CodeMirrorState) {
+  const ranges: Range<Decoration>[] = [];
+
+  for (const callout of readCodeMirrorCallouts(state)) {
+    // Margins on a .cm-line can sit outside CodeMirror's measured height map,
+    // making pointer coordinates drift after every callout. Block widgets keep
+    // the visual spacing and the editor's document geometry synchronized.
+    ranges.push(
+      Decoration.widget({
+        block: true,
+        side: -1,
+        widget: new CalloutSpacerWidget("before"),
+      }).range(callout.from),
+      Decoration.widget({
+        block: true,
+        side: 1,
+        widget: new CalloutSpacerWidget("after"),
+      }).range(callout.to),
+    );
+  }
+
+  return Decoration.set(ranges, true);
+}
+
+const calloutSpacingField = StateField.define<DecorationSet>({
+  create: buildCalloutSpacingDecorations,
+  provide: (field) => EditorView.decorations.from(field),
+  update(spacing, transaction) {
+    return transaction.docChanged
+      ? buildCalloutSpacingDecorations(transaction.state)
+      : spacing;
+  },
+});
+
 const calloutTheme = EditorView.baseTheme({
   ".cm-line.cm-markra-callout": {
     background: "color-mix(in srgb, var(--callout-color, #4f7cac) 6%, transparent)",
-    borderLeft: "3px solid var(--callout-color, #4f7cac)",
-    paddingLeft: "0.75em",
+    borderLeft: "1px solid color-mix(in srgb, var(--callout-color, #4f7cac) 24%, transparent)",
+    borderRight: "1px solid color-mix(in srgb, var(--callout-color, #4f7cac) 24%, transparent)",
+    paddingInline: "1em",
+  },
+  ".cm-line.markra-callout-first": {
+    borderTopLeftRadius: "0.45em",
+    borderTopRightRadius: "0.45em",
+    borderTop: "1px solid color-mix(in srgb, var(--callout-color, #4f7cac) 24%, transparent)",
+    paddingTop: "0.85em",
+  },
+  ".cm-line.markra-callout-last": {
+    borderBottom: "1px solid color-mix(in srgb, var(--callout-color, #4f7cac) 24%, transparent)",
+    borderBottomLeftRadius: "0.45em",
+    borderBottomRightRadius: "0.45em",
+    paddingBottom: "0.85em",
+  },
+  ".markra-callout-spacer": {
+    height: "1.25em",
   },
   ".cm-line.cm-markra-callout.markra-callout-tip": {
     "--callout-color": "#299764",
@@ -204,12 +286,20 @@ const calloutTheme = EditorView.baseTheme({
   ".cm-line.cm-markra-callout.markra-callout-caution": {
     "--callout-color": "#cf222e",
   },
+  ".cm-line.markra-callout-active": {
+    borderColor: "color-mix(in srgb, var(--callout-color, #4f7cac) 38%, transparent)",
+  },
   ".markra-callout-header": {
     alignItems: "center",
     color: "var(--callout-color, #4f7cac)",
     display: "inline-flex",
     fontWeight: "650",
     gap: "0.4em",
+  },
+  ".cm-line.markra-callout-first .markra-callout-type-select": {
+    position: "absolute",
+    right: "1em",
+    top: "0.85em",
   },
   ".markra-callout-type-select": {
     background: "transparent",
@@ -219,8 +309,9 @@ const calloutTheme = EditorView.baseTheme({
     font: "inherit",
     opacity: "0",
   },
-  ".cm-markra-callout:hover .markra-callout-type-select, .markra-callout-type-select:focus": {
+  ".cm-markra-callout:hover .markra-callout-type-select, .markra-callout-active .markra-callout-type-select, .markra-callout-type-select:focus": {
     opacity: "1",
+    pointerEvents: "auto",
   },
 });
 
@@ -243,7 +334,7 @@ export function calloutPreviewPlugin(
               update(update: ViewUpdate) {
                 if (
                   update.docChanged ||
-                  update.selectionSet ||
+                  selectionChangeAffectsReveal(update) ||
                   update.focusChanged ||
                   update.viewportChanged
                 ) {
@@ -253,6 +344,7 @@ export function calloutPreviewPlugin(
             },
             { decorations: (plugin) => plugin.decorations },
           ),
+          calloutSpacingField,
           calloutTheme,
         ]
       : [],

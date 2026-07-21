@@ -1,6 +1,6 @@
 import { EditorSelection, EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { liveMarkdown } from "./index.ts";
 import { tablePreviewPlugin } from "./table.ts";
 import "./dom.test-support.ts";
@@ -51,6 +51,335 @@ describe("tablePreviewPlugin", () => {
     expect(table?.querySelectorAll("th")[0]?.style.textAlign).toBe("left");
     expect(table?.querySelectorAll("th")[1]?.style.textAlign).toBe("right");
     expect(view.state.doc.toString()).toBe(doc);
+  });
+
+  it("renders inline Markdown inside visual table cells", () => {
+    const doc = [
+      "| Name | Link |",
+      "| --- | --- |",
+      "| **Bold** | [Open](https://example.test) |",
+      "",
+      "Edit",
+    ].join("\n");
+    const view = createView(doc);
+    const cells = view.dom.querySelectorAll<HTMLTableCellElement>(
+      ".cm-markra-table tbody td",
+    );
+
+    expect(cells[0]?.querySelector("strong")?.textContent).toBe("Bold");
+    expect(cells[1]?.querySelector("a")?.textContent).toBe("Open");
+    expect(cells[1]?.querySelector("a")?.getAttribute("href")).toBe(
+      "https://example.test",
+    );
+    expect(cells[1]?.querySelector(".markra-live-link-icon")).not.toBeNull();
+    expect(view.state.doc.toString()).toBe(doc);
+  });
+
+  it("renders and preserves images inside visual table cells", async () => {
+    const doc = [
+      "| Name | Media |",
+      "| --- | --- |",
+      '| Row | Before ![Synthetic image](https://images.example.test/mock.png "Mock title") after |',
+      "",
+      "Edit",
+    ].join("\n");
+    const view = createView(doc);
+    const cell = view.dom.querySelector<HTMLTableCellElement>(
+      ".cm-markra-table tbody td:nth-child(2)",
+    );
+    const image = cell?.querySelector<HTMLImageElement>("img");
+
+    expect(image?.alt).toBe("Synthetic image");
+    expect(image?.getAttribute("src")).toBe(
+      "https://images.example.test/mock.png",
+    );
+    expect(image?.title).toBe("Mock title");
+
+    cell?.focus();
+    if (cell?.firstChild) cell.firstChild.textContent = "Updated before ";
+    cell?.dispatchEvent(new InputEvent("input", { bubbles: true }));
+    await Promise.resolve();
+
+    expect(view.state.doc.toString()).toContain(
+      '| Row | Updated before ![Synthetic image](https://images.example.test/mock.png "Mock title") after |',
+    );
+    expect(
+      view.dom.querySelector<HTMLImageElement>(
+        ".cm-markra-table tbody td:nth-child(2) img",
+      )?.alt,
+    ).toBe("Synthetic image");
+  });
+
+  it("reveals editable image Markdown inside a visual table cell", () => {
+    const doc = [
+      "| Name | Media |",
+      "| --- | --- |",
+      "| Row | ![Synthetic image](https://images.example.test/mock.png) |",
+      "",
+      "Edit",
+    ].join("\n");
+    const view = createView(doc);
+    const cell = view.dom.querySelector<HTMLTableCellElement>(
+      ".cm-markra-table tbody td:nth-child(2)",
+    );
+    const image = cell?.querySelector<HTMLImageElement>("img");
+
+    expect(image).not.toBeNull();
+    expect(image?.dispatchEvent(new MouseEvent("mousedown", {
+      bubbles: true,
+      button: 0,
+      cancelable: true,
+    }))).toBe(false);
+    expect(cell?.querySelector("img")).toBeNull();
+    expect(cell?.textContent).toBe(
+      "![Synthetic image](https://images.example.test/mock.png)",
+    );
+    expect(document.activeElement).toBe(cell);
+    expect(view.state.doc.toString()).toBe(doc);
+  });
+
+  it("preserves link titles while editing surrounding table-cell text", async () => {
+    const doc = [
+      "| Name | Value |",
+      "| --- | --- |",
+      '| Row | Before [Docs](https://example.test/guide "Guide title") after |',
+      "",
+      "Edit",
+    ].join("\n");
+    const view = createView(doc);
+    const cell = view.dom.querySelector<HTMLTableCellElement>(
+      ".cm-markra-table tbody td:nth-child(2)",
+    );
+
+    cell?.focus();
+    if (cell?.firstChild) cell.firstChild.textContent = "Updated before ";
+    cell?.dispatchEvent(new InputEvent("input", { bubbles: true }));
+    await Promise.resolve();
+
+    expect(view.state.doc.toString()).toContain(
+      '| Row | Updated before [Docs](https://example.test/guide "Guide title") after |',
+    );
+  });
+
+  it.each([
+    ["angle autolink", "<https://example.test/angle>", "https://example.test/angle"],
+    ["bare autolink", "https://example.test/bare", "https://example.test/bare"],
+    ["email autolink", "author@example.test", "mailto:author@example.test"],
+    ["www autolink", "www.example.test/guide", "http://www.example.test/guide"],
+  ])("renders and opens a %s inside a visual table cell", (_label, markdown, target) => {
+    const doc = [
+      "| Name | Link |",
+      "| --- | --- |",
+      `| Row | ${markdown} |`,
+      "",
+      "Edit",
+    ].join("\n");
+    const open = vi.fn();
+    const view = createView(doc, tablePreviewPlugin({ links: { open } }));
+    const link = view.dom.querySelector<HTMLAnchorElement>(
+      ".cm-markra-table tbody td:nth-child(2) a",
+    );
+
+    expect(link?.getAttribute("href")).toBe(target);
+    expect(link?.dispatchEvent(new MouseEvent("mousedown", {
+      bubbles: true,
+      button: 0,
+      cancelable: true,
+      metaKey: true,
+    }))).toBe(false);
+    expect(open).toHaveBeenCalledWith(expect.objectContaining({
+      source: target,
+      target,
+      view,
+    }));
+    expect(view.state.doc.toString()).toBe(doc);
+  });
+
+  it.each([
+    ["escaped punctuation", String.raw`Before \*literal\* after`],
+    ["long inline-code fence", "Before ```a``b``` after"],
+  ])("preserves unchanged %s while editing table-cell text", async (_label, value) => {
+    const doc = [
+      "| Name | Value |",
+      "| --- | --- |",
+      `| Row | ${value} |`,
+      "",
+      "Edit",
+    ].join("\n");
+    const view = createView(doc);
+    const cell = view.dom.querySelector<HTMLTableCellElement>(
+      ".cm-markra-table tbody td:nth-child(2)",
+    );
+
+    cell?.focus();
+    if (cell?.firstChild) cell.firstChild.textContent = "Updated before ";
+    cell?.dispatchEvent(new InputEvent("input", { bubbles: true }));
+    await Promise.resolve();
+
+    expect(view.state.doc.toString()).toContain(
+      `| Row | Updated before ${value.slice("Before ".length)} |`,
+    );
+  });
+
+  it("preserves a non-navigable link while editing surrounding table-cell text", async () => {
+    const markdown = "[Unsafe](javascript:noop)";
+    const doc = [
+      "| Name | Value |",
+      "| --- | --- |",
+      `| Row | Before ${markdown} after |`,
+      "",
+      "Edit",
+    ].join("\n");
+    const view = createView(doc);
+    const cell = view.dom.querySelector<HTMLTableCellElement>(
+      ".cm-markra-table tbody td:nth-child(2)",
+    );
+    const fallback = cell?.querySelector<HTMLElement>(
+      "[data-markra-link-markdown]",
+    );
+
+    expect(fallback?.tagName).toBe("SPAN");
+    cell?.focus();
+    if (cell?.firstChild) cell.firstChild.textContent = "Updated before ";
+    cell?.dispatchEvent(new InputEvent("input", { bubbles: true }));
+    await Promise.resolve();
+
+    expect(view.state.doc.toString()).toContain(
+      `| Row | Updated before ${markdown} after |`,
+    );
+  });
+
+  it("keeps editable link Markdown visible while a visual table cell changes", async () => {
+    const doc = [
+      "| Name | Link |",
+      "| --- | --- |",
+      "| Row | [Synthetic alt](https://example.test/guide) |",
+      "",
+      "Edit",
+    ].join("\n");
+    const view = createView(doc);
+    const cell = view.dom.querySelector<HTMLTableCellElement>(
+      ".cm-markra-table tbody td:nth-child(2)",
+    );
+    const link = cell?.querySelector<HTMLAnchorElement>("a");
+
+    expect(link).not.toBeNull();
+    expect(link?.dispatchEvent(new MouseEvent("mousedown", {
+      bubbles: true,
+      button: 0,
+      cancelable: true,
+    }))).toBe(false);
+
+    expect(view.dom.querySelector(".cm-markra-table")).not.toBeNull();
+    expect(cell?.querySelector("a")).toBeNull();
+    expect(cell?.querySelector(".markra-live-link-icon")).toBeNull();
+    expect(cell?.textContent).toBe(
+      "[Synthetic alt](https://example.test/guide)",
+    );
+    expect(view.state.doc.toString()).toBe(doc);
+    expect(document.activeElement).toBe(cell);
+
+    if (cell) {
+      cell.textContent =
+        "[Changed alt](https://example.test/changed)";
+    }
+    cell?.dispatchEvent(new InputEvent("input", { bubbles: true }));
+    await Promise.resolve();
+
+    const updatedCell = view.dom.querySelector<HTMLTableCellElement>(
+      ".cm-markra-table tbody td:nth-child(2)",
+    );
+    expect(updatedCell?.querySelector("a")).toBeNull();
+    expect(updatedCell?.textContent).toBe(
+      "[Changed alt](https://example.test/changed)",
+    );
+    expect(view.state.doc.toString()).toContain(
+      "| Row | [Changed alt](https://example.test/changed) |",
+    );
+
+    updatedCell?.dispatchEvent(new KeyboardEvent("keydown", {
+      bubbles: true,
+      cancelable: true,
+      key: "Enter",
+    }));
+    expect(
+      view.dom.querySelector(".cm-markra-table tbody td:nth-child(2) a")
+        ?.textContent,
+    ).toBe("Changed alt");
+  });
+
+  it("opens a visual table link on Cmd/Ctrl-click without revealing source", () => {
+    const doc = [
+      "| Name | Link |",
+      "| --- | --- |",
+      "| Row | [Synthetic alt](https://example.test/guide) |",
+      "",
+      "Edit",
+    ].join("\n");
+    const open = vi.fn();
+    const view = createView(doc, tablePreviewPlugin({ links: { open } }));
+    const link = view.dom.querySelector<HTMLAnchorElement>(
+      ".cm-markra-table tbody td:nth-child(2) a",
+    );
+
+    expect(link).not.toBeNull();
+    expect(link?.dispatchEvent(new MouseEvent("mousedown", {
+      bubbles: true,
+      button: 0,
+      cancelable: true,
+      metaKey: true,
+    }))).toBe(false);
+    expect(link?.dispatchEvent(new MouseEvent("mousedown", {
+      bubbles: true,
+      button: 0,
+      cancelable: true,
+      ctrlKey: true,
+    }))).toBe(false);
+
+    expect(open).toHaveBeenCalledTimes(2);
+    expect(open).toHaveBeenLastCalledWith(expect.objectContaining({
+      source: "https://example.test/guide",
+      target: "https://example.test/guide",
+      view,
+    }));
+    expect(view.dom.querySelector(".cm-markra-table")).not.toBeNull();
+    expect(view.dom.querySelector(".cm-markra-table a")).not.toBeNull();
+    expect(view.state.doc.toString()).toBe(doc);
+  });
+
+  it("preserves visual inline formatting while a table cell is edited", async () => {
+    const doc = "| Name |\n| --- |\n| **Bold** |\n\nEdit";
+    const view = createView(doc);
+    const cell = view.dom.querySelector<HTMLTableCellElement>(
+      ".cm-markra-table tbody td",
+    );
+    const strong = cell?.querySelector("strong");
+
+    cell?.focus();
+    if (strong) strong.textContent = "Updated";
+    cell?.dispatchEvent(new InputEvent("input", { bubbles: true }));
+    await Promise.resolve();
+
+    expect(view.state.doc.toString()).toContain("| **Updated** |");
+    expect(
+      view.dom.querySelector(".cm-markra-table tbody td strong")?.textContent,
+    ).toBe("Updated");
+  });
+
+  it("copies a visual table as Markdown plain text", () => {
+    const tableMarkdown = "| Name | Value |\n| --- | --- |\n| Alpha | 1 |";
+    const view = createView(`${tableMarkdown}\n\nEdit`);
+    const wrapper = view.dom.querySelector<HTMLElement>(".cm-markra-table-wrap");
+    const setData = vi.fn();
+    const event = new Event("copy", { bubbles: true, cancelable: true });
+    Object.defineProperty(event, "clipboardData", {
+      value: { setData },
+    });
+
+    wrapper?.dispatchEvent(event);
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(setData).toHaveBeenCalledWith("text/plain", tableMarkdown);
   });
 
   it("renders the original Markra table control layout and icons", () => {

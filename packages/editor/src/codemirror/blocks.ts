@@ -9,8 +9,10 @@ import { insertCodeMirrorMarkdownTable } from "./controller.ts";
 import {
   defineMarkraPlugin,
   type MarkraCommand,
+  type MarkraCommandContext,
   type MarkraUiContribution,
 } from "./plugin.ts";
+import { headingLevelControlExtension } from "./heading-level.ts";
 
 export type BlockCommandId =
   | "block.paragraph"
@@ -31,6 +33,7 @@ export type BlockLabels = Record<BlockCommandId, string>;
 
 export interface BlocksPluginOptions {
   callout?: boolean;
+  headingLevelLabel?: string;
   keybindings?: boolean;
   labels?: Partial<BlockLabels>;
 }
@@ -371,13 +374,30 @@ function toggleCodeBlock(view: EditorView) {
   return true;
 }
 
-function insertCalloutBlock(view: EditorView) {
+function calloutTypeFromQuery(query = "") {
+  const normalized = query.trim().toLocaleLowerCase();
+  if (!normalized) return "NOTE";
+  if ("tip".startsWith(normalized)) return "TIP";
+  if ("warning".startsWith(normalized) || normalized.startsWith("warn")) {
+    return "WARNING";
+  }
+  if ("caution".startsWith(normalized) || "danger".startsWith(normalized)) {
+    return "CAUTION";
+  }
+  if ("important".startsWith(normalized)) return "IMPORTANT";
+  return "NOTE";
+}
+
+function insertCalloutBlock(
+  view: EditorView,
+  context?: MarkraCommandContext,
+) {
   if (!isEditable(view) || view.state.selection.ranges.length !== 1) {
     return false;
   }
 
   const { from, to } = view.state.selection.main;
-  const markdown = "> [!NOTE]\n> ";
+  const markdown = `> [!${calloutTypeFromQuery(context?.query)}]\n> `;
   view.dispatch({
     changes: { from, insert: markdown, to },
     scrollIntoView: true,
@@ -507,6 +527,10 @@ export function blocksPlugin(options: BlocksPluginOptions = {}) {
 
   return defineMarkraPlugin({
     id: "markra.blocks",
+    extension: headingLevelControlExtension(
+      labels,
+      options.headingLevelLabel ?? "Heading level",
+    ),
     commands: specs.map((spec) =>
       blockCommand(spec, labels, keybindings)),
     ui: specs.map(blockUi),

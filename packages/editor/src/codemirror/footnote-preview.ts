@@ -10,6 +10,7 @@ import {
   type ViewUpdate,
 } from "@codemirror/view";
 import { defineMarkraPlugin } from "./plugin.ts";
+import { cursorInsideRange, selectionChangeAffectsReveal } from "./policy.ts";
 
 interface FootnoteDefinition {
   readonly content: string;
@@ -114,17 +115,6 @@ function readFootnoteReferences(
   return references;
 }
 
-function selectionTouches(view: CodeMirrorView, from: number, to: number) {
-  return (
-    view.hasFocus &&
-    view.state.selection.ranges.some((selection) =>
-      selection.empty
-        ? selection.head > from && selection.head < to
-        : selection.from < to && selection.to > from,
-    )
-  );
-}
-
 class FootnoteReferenceWidget extends WidgetType {
   constructor(readonly reference: FootnoteReference) {
     super();
@@ -210,7 +200,7 @@ function buildFootnoteDecorations(view: CodeMirrorView) {
   const references = readFootnoteReferences(view.state, definitions);
 
   for (const reference of references) {
-    if (selectionTouches(view, reference.from, reference.to)) continue;
+    if (cursorInsideRange(view, reference.from, reference.to)) continue;
     ranges.push(
       Decoration.replace({ widget: new FootnoteReferenceWidget(reference) }).range(
         reference.from,
@@ -229,7 +219,7 @@ function buildFootnoteDecorations(view: CodeMirrorView) {
         ),
       );
     }
-    if (selectionTouches(view, definition.from, definition.to)) continue;
+    if (cursorInsideRange(view, definition.from, definition.to)) continue;
     ranges.push(
       Decoration.replace({
         widget: new FootnoteDefinitionLabelWidget(definition.label),
@@ -298,7 +288,7 @@ export function footnotePreviewPlugin() {
           update(update: ViewUpdate) {
             if (
               update.docChanged ||
-              update.selectionSet ||
+              selectionChangeAffectsReveal(update) ||
               update.focusChanged ||
               update.viewportChanged
             ) {

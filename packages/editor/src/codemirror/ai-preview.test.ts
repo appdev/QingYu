@@ -321,6 +321,29 @@ describe("CodeMirror AI preview", () => {
     expect(view.dom.querySelector(".markra-ai-selection-hold")).toBeNull();
   });
 
+  it("does not dispatch while clearing an already empty selection hold", () => {
+    const view = createView("Synthetic selection");
+    const dispatch = vi.spyOn(view, "dispatch");
+
+    expect(clearCodeMirrorAiSelectionHold(view)).toBe(false);
+    expect(dispatch).not.toHaveBeenCalled();
+
+    expect(showCodeMirrorAiSelectionHold(view, {
+      from: 0,
+      source: "selection",
+      text: "Synthetic",
+      to: "Synthetic".length,
+    })).toBe(true);
+    dispatch.mockClear();
+
+    expect(clearCodeMirrorAiSelectionHold(view)).toBe(true);
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    dispatch.mockClear();
+
+    expect(clearCodeMirrorAiSelectionHold(view)).toBe(false);
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
   it("restores an applied comparison when undo returns to the original text", () => {
     const doc = "Before Original After";
     const result = replacementResult(doc, "Original", "A much better phrase");

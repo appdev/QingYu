@@ -13,6 +13,11 @@ export type MarkraUiPlacement =
 
 export type MarkraKeyBinding = Omit<KeyBinding, "any" | "run" | "shift">;
 
+export interface MarkraCommandContext {
+  readonly query?: string;
+  readonly source?: "slash-menu" | "ui";
+}
+
 export interface MarkraCommand {
   readonly id: string;
   readonly label: string;
@@ -20,7 +25,7 @@ export interface MarkraCommand {
   readonly keybindings?: readonly MarkraKeyBinding[];
   readonly isActive?: (view: EditorView) => boolean;
   readonly isEnabled?: (view: EditorView) => boolean;
-  readonly run: (view: EditorView) => boolean;
+  readonly run: (view: EditorView, context?: MarkraCommandContext) => boolean;
 }
 
 export interface MarkraUiContribution {
@@ -141,11 +146,15 @@ export function listMarkraPlugins(
   return state.facet(registryFacet).plugins;
 }
 
-export function runMarkraCommand(view: EditorView, id: string) {
+export function runMarkraCommand(
+  view: EditorView,
+  id: string,
+  context?: MarkraCommandContext,
+) {
   const registered = view.state.facet(registryFacet).commands.get(id);
   if (!registered) return false;
   if (registered.command.isEnabled?.(view) === false) return false;
-  return registered.command.run(view);
+  return registered.command.run(view, context);
 }
 
 export function listMarkraUi(
@@ -178,7 +187,7 @@ export function listMarkraUi(
         order: contribution.order ?? 0,
         placement: contribution.placement,
         plugin,
-        run: () => runMarkraCommand(view, command.id),
+        run: () => runMarkraCommand(view, command.id, { source: "ui" }),
       };
     })
     .sort((left, right) => left.order - right.order || left.label.localeCompare(right.label));

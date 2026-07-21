@@ -161,8 +161,6 @@ import {
   AI_EDITOR_PREVIEW_APPLIED_EVENT,
   AI_EDITOR_PREVIEW_ACTION_EVENT,
   AI_EDITOR_PREVIEW_RESTORE_EVENT,
-  markdownShortcutToKeyboardEventInit,
-  normalizeMarkdownShortcuts,
   type AiEditorPreviewAppliedDetail,
   type AiEditorPreviewActionDetail,
   type AiEditorPreviewRestoreDetail,
@@ -574,7 +572,6 @@ function WorkspaceApp() {
   }, [editorPreferences.preferences.markdownTemplates]);
 
   const editor = useCodeMirrorEditorController();
-  const clearEditorSelectionFormatting = editor.clearSelectionFormatting;
   const findEditorSearchMatches = editor.findSearchMatches;
   const getEditorCurrentMarkdown = editor.getCurrentMarkdown;
   const handleCodeMirrorEditorReady = editor.handleEditorReady;
@@ -591,12 +588,12 @@ function WorkspaceApp() {
   const replaceEditorSearchMatch = editor.replaceSearchMatch;
   const revealEditorSearchMatch = editor.revealSearchMatch;
   const runEditorShortcut = editor.runEditorShortcut;
+  const runEditorSelectionFormattingAction = editor.runSelectionFormattingAction;
   const getEditorSelectionAnchor = editor.getSelectionAnchor;
   const getEditorSelectionFormattingState = editor.getSelectionFormattingState;
   const getMarkdownFromEditor = editor.getMarkdownFromEditor;
   const setEditorSelectionHeadingLevel = editor.setSelectionHeadingLevel;
   const showEditorSearchMatches = editor.showSearchMatches;
-  const toggleEditorSelectionHighlight = editor.toggleSelectionHighlight;
   const syncAiSelectionToolbarFormattingState = useCallback(() => {
     const formattingState = getEditorSelectionFormattingState();
 
@@ -3232,40 +3229,15 @@ function WorkspaceApp() {
   const handleAiSelectionToolbarFormattingAction = useCallback((action: SelectionFormattingToolbarAction) => {
     if (readOnlyMode) return;
 
-    if (action === "highlight") {
-      if (!toggleEditorSelectionHighlight()) return;
+    if (!runEditorSelectionFormattingAction(action)) return;
 
-      syncVisualMarkdownAfterEditorCommand();
-      syncAiSelectionToolbarFormattingState();
-      return;
-    }
-
-    if (action === "clearFormatting") {
-      if (!clearEditorSelectionFormatting()) return;
-
-      syncVisualMarkdownAfterEditorCommand();
-      syncAiSelectionToolbarFormattingState();
-      return;
-    }
-
-    const normalizedShortcuts = normalizeMarkdownShortcuts(editorPreferences.preferences.markdownShortcuts);
-    const shortcut = markdownShortcutToKeyboardEventInit(normalizedShortcuts[action]);
-    if (!shortcut) return;
-
-    handleRunEditorShortcut(shortcut.key, {
-      altKey: Boolean(shortcut.altKey),
-      code: shortcut.code,
-      shiftKey: Boolean(shortcut.shiftKey)
-    });
+    syncVisualMarkdownAfterEditorCommand();
     syncAiSelectionToolbarFormattingState();
   }, [
-    clearEditorSelectionFormatting,
-    editorPreferences.preferences.markdownShortcuts,
-    handleRunEditorShortcut,
     readOnlyMode,
+    runEditorSelectionFormattingAction,
     syncAiSelectionToolbarFormattingState,
-    syncVisualMarkdownAfterEditorCommand,
-    toggleEditorSelectionHighlight
+    syncVisualMarkdownAfterEditorCommand
   ]);
   const handleAiSelectionToolbarHeadingLevelAction = useCallback((level: SelectionHeadingLevel) => {
     if (readOnlyMode) return;

@@ -6432,6 +6432,69 @@ describe("Markra workspace", () => {
     });
   });
 
+  it("applies inline formatting from the selection toolbar to the live CodeMirror selection", async () => {
+    mockedGetStoredEditorPreferences.mockResolvedValue(createStoredEditorPreferences({
+      showAiQuickInputOnSelection: false,
+      showAiSelectionToolbarOnSelection: true
+    }));
+    const { container } = renderApp();
+
+    await expectVisibleCodeMirrorText(container, "Welcome to Markra");
+    await settleEditorUpdates();
+    const visualView = getVisibleCodeMirrorView(container);
+    const from = findEditorTextPosition(visualView, "Welcome");
+
+    act(() => {
+      visualView.focus();
+      visualView.dispatch({
+        selection: EditorSelection.range(from, from + "Welcome".length)
+      });
+    });
+
+    const bold = await screen.findByRole("button", { name: "Bold" });
+    fireEvent.mouseDown(bold);
+    fireEvent.click(bold);
+
+    await waitFor(() => {
+      expect(visualView.state.doc.toString()).toContain("**Welcome** to Markra");
+    });
+    expect(visualView.state.sliceDoc(
+      visualView.state.selection.main.from,
+      visualView.state.selection.main.to
+    )).toBe("Welcome");
+  });
+
+  it.each([
+    { button: "Italic", formatted: "*Welcome* to Markra" },
+    { button: "Strikethrough", formatted: "~~Welcome~~ to Markra" }
+  ])("applies $button from the selection toolbar", async ({ button, formatted }) => {
+    mockedGetStoredEditorPreferences.mockResolvedValue(createStoredEditorPreferences({
+      showAiQuickInputOnSelection: false,
+      showAiSelectionToolbarOnSelection: true
+    }));
+    const { container } = renderApp();
+
+    await expectVisibleCodeMirrorText(container, "Welcome to Markra");
+    await settleEditorUpdates();
+    const visualView = getVisibleCodeMirrorView(container);
+    const from = findEditorTextPosition(visualView, "Welcome");
+
+    act(() => {
+      visualView.focus();
+      visualView.dispatch({
+        selection: EditorSelection.range(from, from + "Welcome".length)
+      });
+    });
+
+    const action = await screen.findByRole("button", { name: button });
+    fireEvent.mouseDown(action);
+    fireEvent.click(action);
+
+    await waitFor(() => {
+      expect(visualView.state.doc.toString()).toContain(formatted);
+    });
+  });
+
   it("keeps macOS full-document selections visible when selection helpers are disabled", async () => {
     const runtime = createDefaultAppRuntime();
     configureAppRuntime({

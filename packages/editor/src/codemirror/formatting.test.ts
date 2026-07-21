@@ -2,6 +2,7 @@ import { EditorSelection, EditorState } from "@codemirror/state";
 import { EditorView, runScopeHandlers } from "@codemirror/view";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  clearCodeMirrorSelectionFormatting,
   formattingPlugin,
   listMarkraUi,
   liveMarkdown,
@@ -83,8 +84,61 @@ describe("formattingPlugin", () => {
         (action) => action.command === "format.bold",
       )?.active,
     ).toBe(true);
+    expect(
+      listMarkraUi(view, "selection-toolbar").find(
+        (action) => action.command === "format.italic",
+      )?.active,
+    ).toBe(false);
 
     expect(runMarkraCommand(view, "format.bold")).toBe(true);
+    expect(view.state.doc.toString()).toBe("Before text after");
+    expect(
+      listMarkraUi(view, "selection-toolbar").find(
+        (action) => action.command === "format.bold",
+      )?.active,
+    ).toBe(false);
+    expect(
+      view.state.sliceDoc(
+        view.state.selection.main.from,
+        view.state.selection.main.to,
+      ),
+    ).toBe("text");
+  });
+
+  it("tracks and toggles nested bold and italic markers independently", () => {
+    const view = createView();
+
+    expect(runMarkraCommand(view, "format.bold")).toBe(true);
+    expect(runMarkraCommand(view, "format.italic")).toBe(true);
+    expect(view.state.doc.toString()).toBe("Before ***text*** after");
+    expect(
+      listMarkraUi(view, "selection-toolbar").find(
+        (action) => action.command === "format.bold",
+      )?.active,
+    ).toBe(true);
+    expect(
+      listMarkraUi(view, "selection-toolbar").find(
+        (action) => action.command === "format.italic",
+      )?.active,
+    ).toBe(true);
+
+    expect(runMarkraCommand(view, "format.italic")).toBe(true);
+    expect(view.state.doc.toString()).toBe("Before **text** after");
+    expect(
+      listMarkraUi(view, "selection-toolbar").find(
+        (action) => action.command === "format.italic",
+      )?.active,
+    ).toBe(false);
+  });
+
+  it("clears bold markers while preserving the selected text", () => {
+    const view = createView({
+      doc: "Before **text** after",
+      from: 9,
+      to: 13,
+    });
+
+    expect(clearCodeMirrorSelectionFormatting(view)).toBe(true);
     expect(view.state.doc.toString()).toBe("Before text after");
     expect(
       view.state.sliceDoc(
@@ -131,5 +185,26 @@ describe("formattingPlugin", () => {
 
     expect(runScopeHandlers(view, event, "editor")).toBe(true);
     expect(view.state.doc.toString()).toBe("Before **text** after");
+  });
+
+  it("handles normalized italic and strikethrough shortcut events", () => {
+    const italic = createView();
+    const italicEvent = new KeyboardEvent("keydown", {
+      bubbles: true,
+      ctrlKey: true,
+      key: "i",
+    });
+    expect(runScopeHandlers(italic, italicEvent, "editor")).toBe(true);
+    expect(italic.state.doc.toString()).toBe("Before *text* after");
+
+    const strikethrough = createView();
+    const strikethroughEvent = new KeyboardEvent("keydown", {
+      bubbles: true,
+      ctrlKey: true,
+      key: "x",
+      shiftKey: true,
+    });
+    expect(runScopeHandlers(strikethrough, strikethroughEvent, "editor")).toBe(true);
+    expect(strikethrough.state.doc.toString()).toBe("Before ~~text~~ after");
   });
 });

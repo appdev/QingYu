@@ -1,5 +1,5 @@
 import { syntaxTree } from "@codemirror/language";
-import type { EditorState } from "@codemirror/state";
+import { EditorSelection, type EditorState } from "@codemirror/state";
 import { EditorView, type EditorView as CodeMirrorView } from "@codemirror/view";
 import { defineMarkraPlugin } from "./plugin.ts";
 import type { MarkraSyntaxNode } from "./renderers.ts";
@@ -44,6 +44,18 @@ export function resolveSafeLinkTarget(source: string) {
   return safeSchemes.has(matchedScheme) ? candidate : null;
 }
 
+export function resolveAutolinkTarget(source: string) {
+  const candidate = unescapeMarkdown(source.trim());
+  if (scheme.test(candidate)) return resolveSafeLinkTarget(candidate);
+  if (/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/u.test(candidate)) {
+    return resolveSafeLinkTarget(`mailto:${candidate}`);
+  }
+  if (/^www\./iu.test(candidate)) {
+    return resolveSafeLinkTarget(`http://${candidate}`);
+  }
+  return resolveSafeLinkTarget(candidate);
+}
+
 function linkNodeAt(state: EditorState, position: number) {
   const boundedPosition = Math.max(0, Math.min(position, state.doc.length));
   const tree = syntaxTree(state);
@@ -55,7 +67,15 @@ function linkNodeAt(state: EditorState, position: number) {
   for (const candidate of candidates) {
     let node: MarkraSyntaxNode | null = candidate;
     while (node) {
-      if (node.name === "Link") return node;
+      if (node.name === "Link" || node.name === "Autolink") return node;
+      if (
+        node.name === "URL" &&
+        node.parent?.name !== "Image" &&
+        node.parent?.name !== "Link" &&
+        node.parent?.name !== "Autolink"
+      ) {
+        return node;
+      }
       node = node.parent;
     }
   }
@@ -63,22 +83,18 @@ function linkNodeAt(state: EditorState, position: number) {
 }
 
 function linkSource(state: EditorState, node: MarkraSyntaxNode) {
-  const url = node.getChild("URL");
+  const url = node.name === "URL" ? node : node.getChild("URL");
   if (!url) return null;
   const source = unescapeMarkdown(state.sliceDoc(url.from, url.to).trim());
-  return source || null;
+  if (!source) return null;
+  return node.name === "Link" ? source : resolveAutolinkTarget(source);
 }
 
-function resolvedLinkAt(
+function resolvedLinkSource(
   view: CodeMirrorView,
-  position: number,
+  source: string,
   resolver: LinksPluginOptions["resolveTarget"],
 ): ResolvedLink | null {
-  const node = linkNodeAt(view.state, position);
-  if (!node) return null;
-  const source = linkSource(view.state, node);
-  if (!source) return null;
-
   const sourceContext: MarkraLinkSourceContext = {
     source,
     state: view.state,
@@ -97,14 +113,23 @@ function resolvedLinkAt(
   return normalizedTarget ? { source, target: normalizedTarget } : null;
 }
 
-function openLinkAt(
+function resolvedLinkAt(
   view: CodeMirrorView,
   position: number,
+  resolver: LinksPluginOptions["resolveTarget"],
+): ResolvedLink | null {
+  const node = linkNodeAt(view.state, position);
+  if (!node) return null;
+  const source = linkSource(view.state, node);
+  if (!source) return null;
+  return resolvedLinkSource(view, source, resolver);
+}
+
+function openResolvedLink(
+  view: CodeMirrorView,
+  link: ResolvedLink,
   options: LinksPluginOptions,
 ) {
-  const link = resolvedLinkAt(view, position, options.resolveTarget);
-  if (!link) return false;
-
   try {
     const result = options.open({
       ...link,
@@ -123,6 +148,24 @@ function openLinkAt(
   }
 }
 
+export function openMarkraLinkSource(
+  view: CodeMirrorView,
+  source: string,
+  options: LinksPluginOptions,
+) {
+  const link = resolvedLinkSource(view, source, options.resolveTarget);
+  return link ? openResolvedLink(view, link, options) : false;
+}
+
+function openLinkAt(
+  view: CodeMirrorView,
+  position: number,
+  options: LinksPluginOptions,
+) {
+  const link = resolvedLinkAt(view, position, options.resolveTarget);
+  return link ? openResolvedLink(view, link, options) : false;
+}
+
 function linkPositionFromEvent(event: MouseEvent, view: CodeMirrorView) {
   const target = event.target;
   if (!(target instanceof Element)) return null;
@@ -134,6 +177,29 @@ function linkPositionFromEvent(event: MouseEvent, view: CodeMirrorView) {
   } catch {
     return null;
   }
+}
+
+function revealLinkSourceAt(view: CodeMirrorView, position: number) {
+  const node = linkNodeAt(view.state, position);
+  if (!node) return false;
+  const url = node.name === "URL" ? node : node.getChild("URL");
+  const marks = node.name === "Link" ? node.getChildren("LinkMark") : [];
+  const labelFrom = marks[0]?.to;
+  const labelTo = marks[1]?.from;
+  const anchor = labelFrom !== undefined && labelTo !== undefined
+    ? labelFrom < labelTo
+      ? Math.min(labelFrom + 1, labelTo)
+      : Math.min(node.from + 1, node.to)
+    : Math.min((url?.from ?? node.from) + 1, url?.to ?? node.to);
+
+  // Live preview only reveals an active node while the editor owns focus, so
+  // focus before dispatching the selection that switches this link to source.
+  view.focus();
+  view.dispatch({
+    selection: EditorSelection.cursor(anchor),
+    scrollIntoView: true,
+  });
+  return true;
 }
 
 export function linksPlugin(options: LinksPluginOptions) {
@@ -181,16 +247,18 @@ export function linksPlugin(options: LinksPluginOptions) {
             },
             mousedown(event, view) {
               if (event.button !== 0) return false;
+              const position = linkPositionFromEvent(event, view);
+              if (position === null) return false;
               if (
                 activation === "modifier" &&
                 !event.metaKey &&
                 !event.ctrlKey
               ) {
-                return false;
+                if (!revealLinkSourceAt(view, position)) return false;
+                event.preventDefault();
+                return true;
               }
 
-              const position = linkPositionFromEvent(event, view);
-              if (position === null) return false;
               // CodeMirror moves the selection on mousedown. Intercepting here
               // keeps the rendered link DOM alive long enough to resolve it.
               if (!openLinkAt(view, position, options)) return false;

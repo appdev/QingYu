@@ -109,6 +109,18 @@ describe("Markra slash menu", () => {
     expect(getMarkraSlashMenuState(execution).open).toBe(false);
   });
 
+  it.each([
+    ["warning", "WARNING"],
+    ["tip", "TIP"],
+    ["caution", "CAUTION"],
+    ["important", "IMPORTANT"],
+  ])("uses /%s as the inserted Callout type", (query, type) => {
+    const view = createView(`/${query}`);
+
+    expect(runMarkraSlashMenuAction(view, "block.callout")).toBe(true);
+    expect(view.state.doc.toString()).toBe(`> [!${type}]\n> `);
+  });
+
   it("closes a typed menu without immediately reopening it", () => {
     const view = createView("/h");
 

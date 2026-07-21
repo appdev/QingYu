@@ -112,6 +112,35 @@ describe("AiSelectionToolbar", () => {
     expect(onCopySelection).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps the editor selection focused while pointer actions still run", () => {
+    const onRunFormattingAction = vi.fn();
+
+    render(
+      <AiSelectionToolbar
+        anchor={anchor}
+        language="en"
+        open
+        onCopySelection={vi.fn()}
+        onInsertLink={vi.fn()}
+        onOpenCommand={vi.fn()}
+        onRunFormattingAction={onRunFormattingAction}
+        onRunAction={vi.fn()}
+      />
+    );
+
+    const bold = screen.getByRole("button", { name: "Bold" });
+    const mouseDown = new MouseEvent("mousedown", {
+      bubbles: true,
+      cancelable: true
+    });
+
+    expect(bold.dispatchEvent(mouseDown)).toBe(false);
+    expect(mouseDown.defaultPrevented).toBe(true);
+
+    fireEvent.click(bold);
+    expect(onRunFormattingAction).toHaveBeenCalledWith("bold");
+  });
+
   it("marks active formatting tools as pressed", () => {
     render(
       <AiSelectionToolbar

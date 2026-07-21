@@ -1,4 +1,5 @@
 import {
+  defineMarkraPlugin,
   getMarkraDocumentLinksState,
   getMarkraSlashMenuState,
   runMarkraCommand,
@@ -168,6 +169,84 @@ describe("CodeMirrorPaperSurface", () => {
     );
   });
 
+  it("accepts host plugins and renders their toolbar actions", () => {
+    const onEditorReady = vi.fn();
+    const plugin = defineMarkraPlugin({
+      id: "synthetic.host-plugin",
+      commands: [
+        {
+          id: "synthetic.append",
+          label: "Append synthetic marker",
+          run(view) {
+            view.dispatch({
+              changes: { from: view.state.doc.length, insert: "!" },
+            });
+            return true;
+          },
+        },
+      ],
+      ui: [{ command: "synthetic.append", placement: "toolbar" }],
+    });
+    render(
+      <CodeMirrorPaperSurface
+        autoFocus={false}
+        initialContent="Synthetic"
+        onEditorReady={onEditorReady}
+        onMarkdownChange={() => {}}
+        plugins={[plugin]}
+      />,
+    );
+    const view = onEditorReady.mock.calls[0]?.[0] as EditorView;
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Append synthetic marker" }),
+    );
+
+    expect(view.state.doc.toString()).toBe("Synthetic!");
+  });
+
+  it("keeps a host plugin context menu open while its action is pressed", () => {
+    const onEditorReady = vi.fn();
+    const plugin = defineMarkraPlugin({
+      id: "synthetic.context-plugin",
+      commands: [
+        {
+          id: "synthetic.context-append",
+          label: "Append from context",
+          run(view) {
+            view.dispatch({
+              changes: { from: view.state.doc.length, insert: "?" },
+            });
+            return true;
+          },
+        },
+      ],
+      ui: [
+        { command: "synthetic.context-append", placement: "context-menu" },
+      ],
+    });
+    render(
+      <CodeMirrorPaperSurface
+        autoFocus={false}
+        initialContent="Synthetic"
+        onEditorReady={onEditorReady}
+        onMarkdownChange={() => {}}
+        plugins={[plugin]}
+      />,
+    );
+    const view = onEditorReady.mock.calls[0]?.[0] as EditorView;
+    fireEvent.contextMenu(view.dom, { clientX: 40, clientY: 50 });
+    const action = screen.getByRole("menuitem", {
+      name: "Append from context",
+    });
+
+    fireEvent.pointerDown(action);
+    expect(action).toBeInTheDocument();
+    fireEvent.click(action);
+
+    expect(view.state.doc.toString()).toBe("Synthetic?");
+  });
+
   it("mounts per-block add and drag controls and opens the shortcut menu", async () => {
     const onEditorReady = vi.fn();
     const { container } = render(
@@ -263,6 +342,32 @@ describe("CodeMirrorPaperSurface", () => {
     expect(container.querySelector(".markra-html-node img")?.getAttribute("src")).toBe(
       "https://assets.example.test/mock.png",
     );
+    expect(resolveImageSrc).toHaveBeenCalledWith("./mock.png");
+  });
+
+  it("resolves image assets inside visual table cells", () => {
+    const resolveImageSrc = vi.fn((source: string) =>
+      source === "./mock.png" ? "https://assets.example.test/mock.png" : source,
+    );
+    const { container } = render(
+      <CodeMirrorPaperSurface
+        autoFocus={false}
+        initialContent={[
+          "| Name | Media |",
+          "| --- | --- |",
+          "| Row | ![Synthetic image](./mock.png) |",
+          "",
+          "Edit",
+        ].join("\n")}
+        onEditorReady={() => {}}
+        onMarkdownChange={() => {}}
+        resolveImageSrc={resolveImageSrc}
+      />,
+    );
+
+    expect(
+      container.querySelector(".cm-markra-table img")?.getAttribute("src"),
+    ).toBe("https://assets.example.test/mock.png");
     expect(resolveImageSrc).toHaveBeenCalledWith("./mock.png");
   });
 
@@ -525,6 +630,44 @@ describe("CodeMirrorPaperSurface", () => {
       expect(runMarkraCommand(view, "link.open")).toBe(false);
     });
     expect(openExternalUrl).toHaveBeenCalledTimes(1);
+  });
+
+  it("routes modifier-clicked visual table links through the same host callback", () => {
+    const onEditorReady = vi.fn();
+    const openExternalUrl = vi.fn();
+    const doc = [
+      "| Name | Link |",
+      "| --- | --- |",
+      "| Row | [Synthetic alt](https://example.test/guide) |",
+    ].join("\n");
+    render(
+      <CodeMirrorPaperSurface
+        autoFocus={false}
+        initialContent={doc}
+        onEditorReady={onEditorReady}
+        onMarkdownChange={() => {}}
+        openExternalUrl={openExternalUrl}
+      />,
+    );
+    const view = onEditorReady.mock.calls[0]?.[0] as EditorView;
+    const link = view.dom.querySelector<HTMLAnchorElement>(
+      ".cm-markra-table tbody a",
+    );
+
+    expect(link).not.toBeNull();
+    act(() => {
+      link?.dispatchEvent(new MouseEvent("mousedown", {
+        bubbles: true,
+        button: 0,
+        cancelable: true,
+        ctrlKey: true,
+      }));
+    });
+
+    expect(openExternalUrl).toHaveBeenCalledWith(
+      "https://example.test/guide",
+    );
+    expect(view.state.doc.toString()).toBe(doc);
   });
 
   it("opens and applies CodeMirror spellcheck suggestions with the configured shortcut", async () => {

@@ -63,4 +63,14 @@ describe("footnotePreviewPlugin", () => {
     expect(view.dom.querySelector(".cm-markra-footnote-reference")).toBeNull();
     expect(view.dom.textContent).toContain("Alpha[^one]");
   });
+
+  it("keeps footnotes rendered during a multi-line range selection", () => {
+    const doc = "Alpha[^one]\n\n[^one]: Synthetic detail.\n\nEdit";
+    const view = createView(doc);
+
+    view.dispatch({ selection: EditorSelection.range(0, doc.length) });
+
+    expect(view.dom.querySelector(".cm-markra-footnote-reference")).not.toBeNull();
+    expect(view.dom.querySelector(".cm-markra-footnote-definition")).not.toBeNull();
+  });
 });

@@ -142,12 +142,17 @@ export type {
   MarkraLinkOpenContext,
   MarkraLinkSourceContext,
 } from "./links.ts";
-export { linksPlugin, resolveSafeLinkTarget } from "./links.ts";
+export {
+  linksPlugin,
+  resolveAutolinkTarget,
+  resolveSafeLinkTarget,
+} from "./links.ts";
 export type { CodeMirrorMathRange } from "./math-preview.ts";
 export { findCodeMirrorMathRanges, mathPreviewPlugin } from "./math-preview.ts";
 export type { RevealContext, RevealPolicy, RevealScope } from "./policy.ts";
 export type {
   MarkraCommand,
+  MarkraCommandContext,
   MarkraKeyBinding,
   MarkraPlugin,
   MarkraUiAction,

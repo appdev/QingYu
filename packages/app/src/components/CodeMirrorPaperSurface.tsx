@@ -33,6 +33,7 @@ import {
   tablePreviewPlugin,
   trailingSpacePlugin,
   updateCodeMirrorSpellcheckOptions,
+  type MarkraPlugin,
 } from "@markra/editor/codemirror";
 import type {
   SaveClipboardAttachment,
@@ -68,10 +69,13 @@ import {
   spellcheckMenuPosition,
 } from "../lib/spellcheck-menu";
 import { CodeMirrorEditorFloatingMenus } from "./CodeMirrorEditorFloatingMenus";
+import { CodeMirrorPluginUi } from "./CodeMirrorPluginUi";
 import {
   SpellcheckSuggestionMenu,
   type SpellcheckSuggestionMenuState,
 } from "./SpellcheckSuggestionMenu";
+
+const emptyPlugins: readonly MarkraPlugin[] = [];
 
 export interface CodeMirrorPaperSurfaceProps {
   autoFocus?: boolean;
@@ -93,6 +97,7 @@ export interface CodeMirrorPaperSurfaceProps {
   onTextSelectionChange?: (selection: AiSelectionContext | null) => unknown;
   openExternalUrl?: (url: string) => unknown;
   openLocalAttachment?: (src: string) => unknown;
+  plugins?: readonly MarkraPlugin[];
   readOnly?: boolean;
   resolveImageSrc?: (src: string) => string;
   spellcheckEnabled?: boolean;
@@ -125,6 +130,7 @@ interface MarkdownExtensionOptions {
   openLocalAttachment: () => ((src: string) => unknown) | undefined;
   openSpellcheckSuggestions: (view: EditorView) => boolean;
   resolveImageSrc: (source: string) => string | undefined;
+  plugins: readonly MarkraPlugin[];
   shortcuts?: MarkdownShortcutMap;
   tableColumnWidthMode: TableColumnWidthModePreference;
   workspaceFiles: () => MarkdownDocumentLinkFile[];
@@ -138,15 +144,44 @@ function markdownExtension({
   openLocalAttachment,
   openSpellcheckSuggestions,
   resolveImageSrc,
+  plugins,
   shortcuts,
   tableColumnWidthMode,
   workspaceFiles,
 }: MarkdownExtensionOptions) {
+  const linkOptions = openExternalUrl() || openLocalAttachment()
+    ? {
+        open: ({ source, target }: { source: string; target: string }) => {
+          const localAttachment = isLocalAttachmentHref(source);
+          const localOpener = openLocalAttachment();
+          if (localAttachment && localOpener) {
+            return localOpener(source);
+          }
+          return openExternalUrl()?.(target);
+        },
+        resolveTarget: ({ source }: { source: string }) => {
+          if (isLocalAttachmentHref(source)) {
+            return openLocalAttachment() || openExternalUrl()
+              ? source
+              : null;
+          }
+          return openExternalUrl()
+            ? resolveSafeLinkTarget(source)
+            : null;
+        },
+    }
+    : undefined;
+  const imageOptions = {
+    resolveSource: ({ source }: { source: string }) =>
+      resolveImageSrc(source) ?? null,
+  };
+
   return liveMarkdown({
     highlight: extendedSyntax?.highlight ?? true,
     plugins: [
       blocksPlugin({
         callout: extendedSyntax?.githubAlerts ?? true,
+        headingLevelLabel: t(language, "menu.headingLevel"),
         keybindings: false,
         labels: {
           "block.bullet-list": t(language, "menu.bulletList"),
@@ -207,33 +242,8 @@ function markdownExtension({
       }),
       frontmatterPreviewPlugin(),
       horizontalRulePlugin(),
-      imagePreviewPlugin({
-        resolveSource: ({ source }) => resolveImageSrc(source) ?? null,
-      }),
-      ...(openExternalUrl() || openLocalAttachment()
-        ? [
-            linksPlugin({
-              open: ({ source, target }) => {
-                const localAttachment = isLocalAttachmentHref(source);
-                const localOpener = openLocalAttachment();
-                if (localAttachment && localOpener) {
-                  return localOpener(source);
-                }
-                return openExternalUrl()?.(target);
-              },
-              resolveTarget: ({ source }) => {
-                if (isLocalAttachmentHref(source)) {
-                  return openLocalAttachment() || openExternalUrl()
-                    ? source
-                    : null;
-                }
-                return openExternalUrl()
-                  ? resolveSafeLinkTarget(source)
-                  : null;
-              },
-            }),
-          ]
-        : []),
+      imagePreviewPlugin(imageOptions),
+      ...(linkOptions ? [linksPlugin(linkOptions)] : []),
       mathPreviewPlugin(),
       markdownEditingPlugin(),
       markdownShortcutsPlugin({
@@ -248,6 +258,7 @@ function markdownExtension({
       }),
       tablePreviewPlugin({
         getDocumentKey: documentPath,
+        images: imageOptions,
         labels: {
           addColumnRight: t(language, "editor.table.addColumnRight"),
           addRowBelow: t(language, "editor.table.addRowBelow"),
@@ -263,9 +274,11 @@ function markdownExtension({
           tableColumns: t(language, "editor.table.columns"),
           tableRows: t(language, "editor.table.rows"),
         },
+        links: linkOptions,
         widthMode: tableColumnWidthMode,
       }),
       trailingSpacePlugin(),
+      ...plugins,
     ],
     slashMenu: true,
   });
@@ -316,6 +329,7 @@ export function CodeMirrorPaperSurface({
   onTextSelectionChange,
   openExternalUrl,
   openLocalAttachment,
+  plugins = emptyPlugins,
   readOnly = false,
   resolveImageSrc,
   spellcheckEnabled = false,
@@ -484,6 +498,7 @@ export function CodeMirrorPaperSurface({
               openLocalAttachment: () => openLocalAttachmentRef.current,
               openSpellcheckSuggestions: openSpellcheckSuggestionMenu,
               resolveImageSrc: (source) => resolveImageSrcRef.current?.(source),
+              plugins,
               shortcuts: markdownShortcuts,
               tableColumnWidthMode,
               workspaceFiles: () => workspaceFilesRef.current,
@@ -574,6 +589,7 @@ export function CodeMirrorPaperSurface({
           openLocalAttachment: () => openLocalAttachmentRef.current,
           openSpellcheckSuggestions: openSpellcheckSuggestionMenu,
           resolveImageSrc: (source) => resolveImageSrcRef.current?.(source),
+          plugins,
           shortcuts: markdownShortcuts,
           tableColumnWidthMode,
           workspaceFiles: () => workspaceFilesRef.current,
@@ -587,6 +603,7 @@ export function CodeMirrorPaperSurface({
     Boolean(openExternalUrl),
     Boolean(openLocalAttachment),
     openSpellcheckSuggestionMenu,
+    plugins,
     tableColumnWidthMode,
   ]);
 
@@ -637,6 +654,7 @@ export function CodeMirrorPaperSurface({
         slashMenuEmptyLabel={t(language, "editor.slashCommandsNoResults")}
         slashMenuLabel={t(language, "editor.slashCommands")}
       />
+      <CodeMirrorPluginUi pluginIds={plugins.map((plugin) => plugin.id)} />
       {spellcheckMenu ? (
         <SpellcheckSuggestionMenu
           language={language}

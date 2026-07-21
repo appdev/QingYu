@@ -6,9 +6,11 @@ import {
   EditorView,
   ViewPlugin,
   type ViewUpdate,
+  WidgetType,
 } from "@codemirror/view";
 import {
   revealActiveLine,
+  selectionChangeAffectsReveal,
   type RevealPolicy,
   type RevealScope,
 } from "./policy.ts";
@@ -17,6 +19,10 @@ import {
   type MarkraRenderer,
   type MarkraSyntaxNode,
 } from "./renderers.ts";
+import {
+  resolveAutolinkTarget,
+  resolveSafeLinkTarget,
+} from "./links.ts";
 import { unescapeMarkdown } from "./syntax.ts";
 import { createTaskDecoration } from "./tasks.ts";
 
@@ -43,6 +49,7 @@ const HEADING_LEVELS: Readonly<Record<string, string>> = {
 };
 
 const INLINE_CLASSES: Readonly<Record<string, string>> = {
+  Autolink: "cm-markra-link",
   StrongEmphasis: "cm-markra-strong",
   Emphasis: "cm-markra-emphasis",
   InlineCode: "cm-markra-inline-code",
@@ -138,6 +145,23 @@ export interface LivePreviewConfig {
   reveal?: RevealPolicy;
   taskCheckboxes?: boolean;
 }
+
+class LinkIconWidget extends WidgetType {
+  eq(other: LinkIconWidget) {
+    return other instanceof LinkIconWidget;
+  }
+
+  toDOM(view: EditorView) {
+    const icon = view.dom.ownerDocument.createElement("span");
+    icon.ariaHidden = "true";
+    icon.className = "cm-markra-link-icon";
+    icon.contentEditable = "false";
+    icon.draggable = false;
+    return icon;
+  }
+}
+
+const linkIconWidget = new LinkIconWidget();
 
 function isLinkDestination(name: string, parentName: string | undefined) {
   return name === "URL" && parentName === "Link";
@@ -279,11 +303,12 @@ function buildDecorations(
       const listAttributes = listLineAttributes(line.text);
       if (listAttributes && !decoratedListLines.has(line.from)) {
         decoratedListLines.add(line.from);
+        const listMark = node.node.getChild("ListMark");
         const sourceVisible = reveal({
           view,
           state,
-          from: line.from,
-          to: line.to,
+          from: listMark?.from ?? line.from,
+          to: listMark?.to ?? line.from,
           nodeName: "ListMark",
           scope: "line",
         });
@@ -324,31 +349,102 @@ function buildDecorations(
       }
     }
 
-    const inlineClass = INLINE_CLASSES[node.name];
+    const parentName = node.node.parent?.name;
+    const standaloneUrl =
+      node.name === "URL" &&
+      parentName !== "Autolink" &&
+      parentName !== "Image" &&
+      parentName !== "Link";
+    const linkLike =
+      node.name === "Link" || node.name === "Autolink" || standaloneUrl;
+    const inlineClass = INLINE_CLASSES[node.name] ??
+      (standaloneUrl ? "cm-markra-link" : undefined);
     if (inlineClass && node.from < node.to) {
-      const linkUrl = node.name === "Link"
-        ? node.node.getChild("URL")
-        : null;
-      const linkHref = linkUrl
+      const linkUrl = node.name === "URL"
+        ? node.node
+        : linkLike
+          ? node.node.getChild("URL")
+          : null;
+      const linkSource = linkUrl
         ? unescapeMarkdown(state.sliceDoc(linkUrl.from, linkUrl.to).trim())
         : null;
-      ranges.push(
-        Decoration.mark({
-          class: inlineClass,
-          ...(linkHref
-            ? {
-                attributes: {
-                  draggable: "false",
-                  href: linkHref,
-                },
-                tagName: "a",
-              }
-            : {}),
-        }).range(node.from, node.to),
-      );
+      const linkHref = linkSource
+        ? node.name === "Link"
+          ? resolveSafeLinkTarget(linkSource)
+          : resolveAutolinkTarget(linkSource)
+        : null;
+      const linkRevealed = linkLike && reveal({
+        view,
+        state,
+        from: node.from,
+        to: node.to,
+        nodeName: node.name,
+        scope: "node",
+      });
+
+      if (linkLike && linkRevealed) {
+        const marks = node.name === "Link"
+          ? node.node.getChildren("LinkMark")
+          : [];
+        const labelFrom = marks[0]?.to ?? linkUrl?.from;
+        const labelTo = marks[1]?.from ?? linkUrl?.to;
+        if (
+          labelFrom !== undefined &&
+          labelTo !== undefined &&
+          labelFrom < labelTo
+        ) {
+          if (node.from < labelFrom) {
+            ranges.push(
+              Decoration.mark({
+                class: "cm-markra-link-source",
+              }).range(node.from, labelFrom),
+            );
+          }
+          ranges.push(
+            Decoration.mark({
+              class: "cm-markra-link-source-label",
+            }).range(labelFrom, labelTo),
+          );
+          if (labelTo < node.to) {
+            ranges.push(
+              Decoration.mark({
+                class: "cm-markra-link-source",
+              }).range(labelTo, node.to),
+            );
+          }
+        }
+      } else {
+        ranges.push(
+          Decoration.mark({
+            class: inlineClass,
+            ...(linkHref
+              ? {
+                  attributes: {
+                    draggable: "false",
+                    href: linkHref,
+                  },
+                  tagName: "a",
+                }
+              : {}),
+          }).range(node.from, node.to),
+        );
+
+        if (linkLike) {
+          const iconPosition = node.name === "Link"
+            ? node.node.getChildren("LinkMark")[1]?.from
+            : linkUrl?.to;
+          if (iconPosition !== undefined) {
+            ranges.push(
+              Decoration.widget({
+                side: 1,
+                widget: linkIconWidget,
+              }).range(iconPosition),
+            );
+          }
+        }
+      }
     }
 
-    const parentName = node.node.parent?.name;
     const taskSourceRemainsVisible =
       node.name === "ListMark" &&
       !taskCheckboxes &&
@@ -365,10 +461,19 @@ function buildDecorations(
 
     if (LINK_SYNTAX.has(node.name)) {
       let parent = node.node.parent;
-      while (parent && parent.name !== "Link" && parent.name !== "Image") {
+      while (
+        parent &&
+        parent.name !== "Autolink" &&
+        parent.name !== "Link" &&
+        parent.name !== "Image"
+      ) {
         parent = parent.parent;
       }
-      if (parent?.name === "Link") {
+      if (
+        parent?.name === "Autolink" ||
+        parent?.name === "Link" ||
+        parent?.name === "Image"
+      ) {
         revealFrom = parent.from;
         revealTo = parent.to;
         revealScope = "node";
@@ -485,13 +590,14 @@ function previewPlugin(config: LivePreviewConfig): Extension {
           (transaction) => transaction.reconfigured,
         );
         const syntaxTreeChanged =
+          !update.selectionSet &&
           update.transactions.length > 0 &&
           syntaxTree(update.startState) !== syntaxTree(update.state);
 
         if (
           compositionEnded ||
           update.docChanged ||
-          update.selectionSet ||
+          selectionChangeAffectsReveal(update) ||
           update.focusChanged ||
           update.viewportChanged ||
           reconfigured ||

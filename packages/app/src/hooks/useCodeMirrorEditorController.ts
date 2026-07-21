@@ -41,6 +41,7 @@ import { useCallback, useEffect, useRef } from "react";
 import type {
   SelectionFormattingAction,
   SelectionFormattingState,
+  SelectionFormattingToolbarAction,
   SelectionHeadingLevel,
 } from "../lib/selection-formatting";
 import type { SelectionAnchor } from "../lib/selection-anchor";
@@ -87,6 +88,21 @@ const formattingActions = new Map<string, SelectionFormattingAction>([
   ["block.ordered-list", "orderedList"],
   ["block.quote", "quote"],
 ]);
+
+const selectionFormattingCommands: Partial<
+  Record<SelectionFormattingToolbarAction, string>
+> = {
+  bold: "format.bold",
+  bulletList: "block.bullet-list",
+  heading1: "block.heading.1",
+  highlight: "format.highlight",
+  inlineCode: "format.code",
+  italic: "format.italic",
+  orderedList: "block.ordered-list",
+  paragraph: "block.paragraph",
+  quote: "block.quote",
+  strikethrough: "format.strikethrough",
+};
 
 function activeFormattingState(view: EditorView): SelectionFormattingState {
   const actions: SelectionFormattingAction[] = [];
@@ -246,11 +262,17 @@ export function useCodeMirrorEditorController() {
         return handled;
       }
 
+      // CodeMirror matches synthetic shifted-letter events against a lowercase
+      // key plus `shiftKey`; native menu payloads may provide the uppercase key.
+      const normalizedKey =
+        modifiers.shiftKey && /^[A-Z]$/u.test(key)
+          ? key.toLocaleLowerCase()
+          : key;
       const event = new KeyboardEvent("keydown", {
         bubbles: true,
         cancelable: true,
         ctrlKey: !mac,
-        key,
+        key: normalizedKey,
         metaKey: mac,
         ...modifiers,
       });
@@ -379,6 +401,21 @@ export function useCodeMirrorEditorController() {
     const view = viewRef.current;
     return view ? clearCodeMirrorSelectionFormatting(view) : false;
   }, []);
+
+  const runSelectionFormattingAction = useCallback(
+    (action: SelectionFormattingToolbarAction) => {
+      const view = viewRef.current;
+      if (!view) return false;
+
+      if (action === "clearFormatting") {
+        return clearCodeMirrorSelectionFormatting(view);
+      }
+
+      const command = selectionFormattingCommands[action];
+      return command ? runMarkraCommand(view, command) : false;
+    },
+    [],
+  );
 
   const applyAiResult = useCallback(
     (result: AiDiffResult, options: { previewId?: string } = {}) => {
@@ -516,6 +553,7 @@ export function useCodeMirrorEditorController() {
     replaceSearchMatch,
     revealSearchMatch,
     runEditorShortcut,
+    runSelectionFormattingAction,
     scrollAiSelectionAboveCommand,
     scrollToAiPreview,
     selectOutlineItem,

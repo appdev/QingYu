@@ -293,6 +293,7 @@ export function runMarkraSlashMenuAction(
     ? menu.actions.find((candidate) => candidate.command === commandId)
     : menu.actions[menu.selectedIndex];
   if (!action?.enabled || menu.from === null || menu.to === null) return false;
+  const query = menu.query;
 
   // Delete the typed or virtual query first so block commands operate on the
   // clean Markdown line, matching Markra's existing slash-command semantics.
@@ -302,7 +303,10 @@ export function runMarkraSlashMenuAction(
     selection: EditorSelection.cursor(menu.from),
     userEvent: "input.delete",
   });
-  const handled = runMarkraCommand(view, action.command);
+  const handled = runMarkraCommand(view, action.command, {
+    query,
+    source: "slash-menu",
+  });
   if (handled) view.focus();
   return handled;
 }

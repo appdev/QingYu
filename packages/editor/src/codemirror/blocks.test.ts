@@ -130,6 +130,27 @@ describe("blocksPlugin", () => {
     expect(view.state.selection.main.head).toBe(2);
   });
 
+  it("shows a quiet heading-level control for the active rendered heading", () => {
+    const view = createView({ doc: "## Synthetic heading", from: 8, to: 8 });
+    view.focus();
+    view.dispatch({ selection: view.state.selection });
+
+    const button = view.dom.querySelector<HTMLButtonElement>(
+      ".markra-heading-level-button",
+    );
+    expect(button?.dataset.headingLevel).toBe("H2");
+    button?.click();
+
+    const heading3 = view.dom.querySelector<HTMLButtonElement>(
+      '.markra-heading-level-option[data-heading-level="H3"]',
+    );
+    expect(heading3?.getAttribute("aria-selected")).toBe("false");
+    heading3?.click();
+
+    expect(view.state.doc.toString()).toBe("### Synthetic heading");
+    expect(view.dom.querySelector(".markra-heading-level-list")).toBeNull();
+  });
+
   it("does not transform the next line when a selection ends at its start", () => {
     const view = createView({ doc: "Alpha\nBeta", from: 0, to: 6 });
 

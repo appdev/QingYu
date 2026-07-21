@@ -83,5 +83,9 @@ export function showCodeMirrorAiSelectionHold(
 }
 
 export function clearCodeMirrorAiSelectionHold(view: EditorView) {
+  // Selection callbacks run on every pointer move. An empty transaction here
+  // can interrupt the browser's in-progress native drag selection.
+  if (!view.state.field(selectionHoldField, false)) return false;
   view.dispatch({ effects: clearSelectionHoldEffect.of(null) });
+  return true;
 }

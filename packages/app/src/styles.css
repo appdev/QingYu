@@ -762,6 +762,27 @@
     @apply px-2.5 py-2 text-[12px] leading-5 font-[560] text-(--text-secondary);
   }
 
+  .markra-plugin-toolbar {
+    @apply fixed top-12 right-4 z-[55] flex items-center gap-1 rounded-lg border border-(--border-default) bg-(--bg-primary) p-1 shadow-(--ai-command-popover-shadow);
+  }
+
+  .markra-plugin-selection-toolbar,
+  .markra-plugin-context-menu {
+    @apply fixed z-[65] flex min-w-40 flex-col gap-0.5 rounded-lg border border-(--border-default) bg-(--bg-primary) p-1 shadow-(--ai-command-popover-shadow);
+  }
+
+  .markra-plugin-toolbar button,
+  .markra-plugin-selection-toolbar button,
+  .markra-plugin-context-menu button {
+    @apply min-h-8 rounded-md border-0 bg-transparent px-2.5 text-left text-[13px] font-[560] text-(--text-primary);
+  }
+
+  .markra-plugin-toolbar button:hover,
+  .markra-plugin-selection-toolbar button:hover,
+  .markra-plugin-context-menu button:hover {
+    @apply bg-(--bg-active) text-(--text-heading);
+  }
+
   .document-search-icon-button {
     @apply flex size-8 shrink-0 items-center justify-center rounded-sm border border-transparent bg-transparent text-(--text-secondary) outline-none transition-[background-color,color,border-color] duration-150 ease-out;
   }
@@ -895,12 +916,12 @@
     line-height: 1.45 !important;
   }
 
-  .markdown-paper .cm-line.cm-markra-h1 > span:not(.cm-markra-link):not(.cm-markra-strikethrough),
-  .markdown-paper .cm-line.cm-markra-h2 > span:not(.cm-markra-link):not(.cm-markra-strikethrough),
-  .markdown-paper .cm-line.cm-markra-h3 > span:not(.cm-markra-link):not(.cm-markra-strikethrough),
-  .markdown-paper .cm-line.cm-markra-h4 > span:not(.cm-markra-link):not(.cm-markra-strikethrough),
-  .markdown-paper .cm-line.cm-markra-h5 > span:not(.cm-markra-link):not(.cm-markra-strikethrough),
-  .markdown-paper .cm-line.cm-markra-h6 > span:not(.cm-markra-link):not(.cm-markra-strikethrough) {
+  .markdown-paper .cm-line.cm-markra-h1 > span:not(.cm-markra-link):not(.cm-markra-link-source-label):not(.cm-markra-strikethrough),
+  .markdown-paper .cm-line.cm-markra-h2 > span:not(.cm-markra-link):not(.cm-markra-link-source-label):not(.cm-markra-strikethrough),
+  .markdown-paper .cm-line.cm-markra-h3 > span:not(.cm-markra-link):not(.cm-markra-link-source-label):not(.cm-markra-strikethrough),
+  .markdown-paper .cm-line.cm-markra-h4 > span:not(.cm-markra-link):not(.cm-markra-link-source-label):not(.cm-markra-strikethrough),
+  .markdown-paper .cm-line.cm-markra-h5 > span:not(.cm-markra-link):not(.cm-markra-link-source-label):not(.cm-markra-strikethrough),
+  .markdown-paper .cm-line.cm-markra-h6 > span:not(.cm-markra-link):not(.cm-markra-link-source-label):not(.cm-markra-strikethrough) {
     text-decoration: none !important;
   }
 
@@ -918,15 +939,13 @@
     color: var(--editor-text-primary);
   }
 
+  /* Keep CodeMirror's child <br> in layout. WebKit uses it to map a drag
+     endpoint through the visual gap instead of falling back to document end. */
   .markdown-paper .cm-line.cm-markra-empty-line[data-markra-empty-source="hidden"] {
     height: var(--editor-paragraph-spacing);
     min-height: var(--editor-paragraph-spacing);
     font-size: 0;
     line-height: var(--editor-paragraph-spacing);
-  }
-
-  .markdown-paper .cm-line.cm-markra-empty-line[data-markra-empty-source="hidden"] > br {
-    display: none;
   }
 
   .markdown-paper .cm-line.cm-markra-list-item {
@@ -959,6 +978,12 @@
     font-weight: 700;
   }
 
+  .markdown-paper .cm-markra-emphasis {
+    font-style: italic;
+    /* CJK system fonts often lack italic faces, so live Markdown needs local style synthesis. */
+    font-synthesis: style;
+  }
+
   .markdown-paper .cm-markra-inline-code {
     background: var(--editor-inline-code-bg) !important;
     color: var(--editor-inline-code-text) !important;
@@ -966,6 +991,10 @@
 
   .markdown-paper .cm-markra-link {
     color: var(--editor-link-color) !important;
+    cursor: var(--editor-text-cursor);
+    text-decoration: underline;
+    text-underline-offset: 0.16em;
+    -webkit-user-drag: none;
   }
 
   .markdown-paper .cm-line.cm-markra-blockquote {
@@ -1066,7 +1095,7 @@
   }
 
   .markdown-paper .cm-markra-code-header-actions .markra-code-language-control {
-    position: static !important;
+    position: relative !important;
     display: flex !important;
     padding: 0 !important;
     opacity: 1 !important;
@@ -1280,16 +1309,26 @@
   .markdown-paper .cm-markra-block-toolbar {
     /* 42px of controls plus a 12px gap offsets the -54px gutter without
        shifting the document text column. */
-    position: static !important;
+    position: relative !important;
     display: inline-flex !important;
     flex: none;
     margin: 0 12px 0 -54px !important;
     margin-inline-start: -54px !important;
     margin-inline-end: 12px !important;
     opacity: 0 !important;
-    pointer-events: none;
+    pointer-events: auto;
     transform: none;
     vertical-align: middle;
+  }
+
+  /* The controls sit outside the line box. This invisible bridge keeps the
+     line hovered while the pointer crosses the 12px gutter to the buttons. */
+  .markdown-paper .cm-markra-block-toolbar::after {
+    content: "";
+    position: absolute;
+    inset-block: 0;
+    inset-inline-end: -12px;
+    width: 12px;
   }
 
   .markdown-paper .cm-line:hover > .cm-markra-block-toolbar,
@@ -2263,9 +2302,87 @@
     --callout-border: color-mix(in srgb, var(--callout-color) 32%, var(--editor-border));
   }
 
+  .markdown-paper .cm-line.cm-markra-callout {
+    --callout-color: oklch(57% 0.11 252) !important;
+    --callout-bg: color-mix(in srgb, var(--callout-color) 5%, var(--editor-paper-bg));
+    --callout-border: color-mix(in srgb, var(--callout-color) 22%, var(--editor-border));
+    --callout-border-focus: color-mix(in srgb, var(--callout-color) 38%, var(--editor-border-strong));
+    position: relative !important;
+    box-sizing: border-box;
+    min-height: 1lh;
+    margin-block: 0 !important;
+    border-block-width: 0 !important;
+    border-inline: 1px solid var(--callout-border) !important;
+    border-radius: 0;
+    padding-block: 0 !important;
+    padding-inline: 16px !important;
+    background: var(--callout-bg) !important;
+    color: var(--editor-text-primary) !important;
+  }
+
+  .markdown-paper .cm-line.markra-callout-first {
+    border-block-start: 1px solid var(--callout-border) !important;
+    border-start-start-radius: 7px;
+    border-start-end-radius: 7px;
+    padding-block-start: 14px !important;
+  }
+
+  .markdown-paper .cm-line.markra-callout-last {
+    border-block-end: 1px solid var(--callout-border) !important;
+    border-end-start-radius: 7px;
+    border-end-end-radius: 7px;
+    padding-block-end: 14px !important;
+  }
+
+  .markdown-paper .markra-callout-spacer {
+    height: 20px;
+  }
+
+  .markdown-paper .cm-line.markra-callout-tip {
+    --callout-color: oklch(56% 0.11 154) !important;
+  }
+
+  .markdown-paper .cm-line.markra-callout-important {
+    --callout-color: oklch(55% 0.12 292) !important;
+  }
+
+  .markdown-paper .cm-line.markra-callout-warning {
+    --callout-color: oklch(62% 0.12 72) !important;
+  }
+
+  .markdown-paper .cm-line.markra-callout-caution {
+    --callout-color: oklch(57% 0.13 28) !important;
+  }
+
+  [data-theme="dark"] .markdown-paper .cm-line.cm-markra-callout,
+  [data-theme="github-dark"] .markdown-paper .cm-line.cm-markra-callout,
+  [data-theme="night"] .markdown-paper .cm-line.cm-markra-callout,
+  [data-theme="one-dark"] .markdown-paper .cm-line.cm-markra-callout,
+  [data-theme="one-dark-pro"] .markdown-paper .cm-line.cm-markra-callout,
+  [data-theme="solarized-dark"] .markdown-paper .cm-line.cm-markra-callout,
+  [data-theme="nord"] .markdown-paper .cm-line.cm-markra-callout,
+  [data-theme="catppuccin-mocha"] .markdown-paper .cm-line.cm-markra-callout,
+  .markdown-paper[data-editor-theme="dark"] .cm-line.cm-markra-callout,
+  .markdown-paper[data-editor-theme="github-dark"] .cm-line.cm-markra-callout,
+  .markdown-paper[data-editor-theme="night"] .cm-line.cm-markra-callout,
+  .markdown-paper[data-editor-theme="one-dark"] .cm-line.cm-markra-callout,
+  .markdown-paper[data-editor-theme="one-dark-pro"] .cm-line.cm-markra-callout,
+  .markdown-paper[data-editor-theme="solarized-dark"] .cm-line.cm-markra-callout,
+  .markdown-paper[data-editor-theme="nord"] .cm-line.cm-markra-callout,
+  .markdown-paper[data-editor-theme="catppuccin-mocha"] .cm-line.cm-markra-callout {
+    --callout-bg: color-mix(in srgb, var(--callout-color) 10%, var(--editor-paper-bg));
+    --callout-border: color-mix(in srgb, var(--callout-color) 32%, var(--editor-border));
+  }
+
   .markdown-paper .markra-callout-header {
-    @apply mb-2 flex min-h-5 items-center gap-2 text-[0.76em] leading-5 font-[720] tracking-normal;
+    @apply mb-2 inline-flex min-h-5 items-center gap-2 text-[0.76em] leading-5 font-[720] tracking-normal;
     color: var(--callout-color);
+  }
+
+  .markdown-paper .cm-line.markra-callout-first .markra-callout-type-select {
+    position: absolute;
+    inset-block-start: 14px;
+    inset-inline-end: 16px;
   }
 
   .markdown-paper .markra-callout-icon {
@@ -2311,13 +2428,18 @@
   }
 
   .markdown-paper .markra-callout:hover .markra-callout-type-select,
-  .markdown-paper .markra-callout:focus-within .markra-callout-type-select {
+  .markdown-paper .markra-callout:focus-within .markra-callout-type-select,
+  .markdown-paper .markra-callout-active .markra-callout-type-select {
     opacity: 1;
     pointer-events: auto;
   }
 
   .markdown-paper blockquote.markra-callout:focus-within {
     border-color: var(--callout-border-focus);
+  }
+
+  .markdown-paper .cm-line.markra-callout-active {
+    border-color: var(--callout-border-focus) !important;
   }
 
   .markdown-paper .markra-callout-type-select:focus {
@@ -2909,6 +3031,18 @@
     cursor: var(--editor-text-cursor);
   }
 
+  .markdown-paper .cm-markra-link-source,
+  .markdown-paper .cm-markra-link-source * {
+    color: var(--text-md-char) !important;
+    text-decoration: none !important;
+  }
+
+  .markdown-paper .cm-markra-link-source-label {
+    @apply underline underline-offset-2;
+    color: var(--editor-link-color) !important;
+    cursor: var(--editor-text-cursor);
+  }
+
   .markdown-paper a[href]::after,
   .markdown-paper .markra-live-link-label::after {
     content: none !important;
@@ -2962,6 +3096,25 @@
 
   .markdown-paper .markra-live-link-icon + .markra-live-link-icon {
     @apply hidden;
+  }
+
+  .markdown-paper .cm-markra-link-icon {
+    @apply inline-block text-(--editor-link-color);
+    margin-left: 0.18em;
+    pointer-events: none;
+    text-decoration: none;
+    user-select: none;
+    -webkit-user-drag: none;
+  }
+
+  .markdown-paper .cm-markra-link-icon::before {
+    content: "↗";
+    display: inline-block;
+    transform: translateY(-0.08em);
+    font-size: 0.72em;
+    font-weight: 700;
+    line-height: 1;
+    opacity: 0.7;
   }
 
   .markra-document-link-menu {
@@ -3063,8 +3216,24 @@
     @apply my-6 block max-w-full rounded-[3px] border border-(--border-default);
   }
 
+  .markdown-paper .cm-markra-table img.cm-markra-table-image {
+    @apply my-1 max-h-48 border-0;
+    object-fit: contain;
+  }
+
+  .markdown-paper .cm-line.cm-markra-image-line {
+    line-height: 0 !important;
+  }
+
+  .markdown-paper .cm-line.cm-markra-image-line > .markra-image-node {
+    display: inline-block;
+    width: 100%;
+    vertical-align: top;
+  }
+
   .markdown-paper .markra-image-node {
     @apply block max-w-full outline-none;
+    line-height: 1.65;
     -webkit-user-drag: none;
     user-select: text;
   }
@@ -3083,10 +3252,12 @@
   }
 
   .markdown-paper .markra-image-node-source {
-    @apply m-0 block w-full min-w-0 appearance-none rounded-none border-0 bg-transparent p-0 font-mono text-[0.95em] text-(--text-primary) outline-none;
+    @apply m-0 block w-full min-w-0 appearance-none rounded-none border-0 bg-transparent p-0 font-mono text-(--text-primary) outline-none;
     box-shadow: none;
     cursor: var(--editor-text-cursor);
-    line-height: inherit;
+    font-size: 0.875rem;
+    font-weight: 400;
+    line-height: 1.5rem;
   }
 
   .markdown-paper .markra-image-node-source:focus {
@@ -3095,7 +3266,8 @@
   }
 
   .markdown-paper .markra-image-node > img {
-    @apply mt-0 border-0;
+    @apply my-0 border-0;
+    display: block;
     -webkit-user-drag: none;
     user-select: none;
   }

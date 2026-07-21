@@ -285,9 +285,14 @@ export function keyboardShortcutToKeyboardEventInit(shortcut: unknown): Keyboard
   if (!parsed) return null;
 
   const code = physicalCodeByShortcutKey[parsed.key];
+  // DOM KeyboardEvent.key uses lowercase letters unless Shift is pressed.
+  // CodeMirror matches this value exactly for synthetic toolbar/menu commands.
+  const key = /^[A-Z]$/u.test(parsed.key)
+    ? parsed.shift ? parsed.key : parsed.key.toLocaleLowerCase()
+    : parsed.shift && code ? shiftedKeyByPhysicalCode[code] ?? parsed.key : parsed.key;
   const eventInit: KeyboardShortcutEventInit = {
     altKey: parsed.alt,
-    key: parsed.shift && code ? shiftedKeyByPhysicalCode[code] ?? parsed.key : parsed.key,
+    key,
     shiftKey: parsed.shift
   };
   if (code) eventInit.code = code;

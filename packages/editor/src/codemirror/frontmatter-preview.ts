@@ -9,6 +9,7 @@ import {
   type ViewUpdate,
 } from "@codemirror/view";
 import { defineMarkraPlugin } from "./plugin.ts";
+import { cursorInsideRange, selectionChangeAffectsReveal } from "./policy.ts";
 
 export type CodeMirrorFrontmatterKind = "json" | "toml" | "yaml";
 
@@ -102,20 +103,6 @@ export function readCodeMirrorFrontmatter(source: string) {
   return readFencedFrontmatter(source, from) ?? readJsonFrontmatter(source, from);
 }
 
-function selectionTouches(
-  view: CodeMirrorView,
-  range: CodeMirrorFrontmatterRange,
-) {
-  return (
-    view.hasFocus &&
-    view.state.selection.ranges.some((selection) =>
-      selection.empty
-        ? selection.head > range.from && selection.head < range.to
-        : selection.from < range.to && selection.to > range.from,
-    )
-  );
-}
-
 class FrontmatterWidget extends WidgetType {
   constructor(readonly range: CodeMirrorFrontmatterRange) {
     super();
@@ -165,7 +152,9 @@ class FrontmatterWidget extends WidgetType {
 
 function buildFrontmatterDecorations(view: CodeMirrorView) {
   const range = readCodeMirrorFrontmatter(view.state.doc.toString());
-  if (!range || selectionTouches(view, range)) return Decoration.none;
+  if (!range || cursorInsideRange(view, range.from, range.to)) {
+    return Decoration.none;
+  }
 
   const decorations: Range<Decoration>[] = [];
   const firstLine = view.state.doc.lineAt(range.from);
@@ -231,7 +220,7 @@ export function frontmatterPreviewPlugin() {
           update(update: ViewUpdate) {
             if (
               update.docChanged ||
-              update.selectionSet ||
+              selectionChangeAffectsReveal(update) ||
               update.focusChanged ||
               update.viewportChanged
             ) {

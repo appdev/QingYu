@@ -93,6 +93,54 @@ describe("useCodeMirrorEditorController", () => {
     expect(result.current.getSelectionFormattingState().actions).toEqual([]);
   });
 
+  it("runs selection toolbar formatting actions as direct Markra commands", () => {
+    const doc = "Before text after";
+    const from = doc.indexOf("text");
+    const view = createView(
+      doc,
+      EditorSelection.range(from, from + "text".length),
+    );
+    const { result } = renderHook(() => useCodeMirrorEditorController());
+    act(() => result.current.handleEditorReady(view));
+
+    act(() => {
+      expect(result.current.runSelectionFormattingAction("italic")).toBe(true);
+    });
+    expect(view.state.doc.toString()).toBe("Before *text* after");
+
+    act(() => {
+      expect(result.current.runSelectionFormattingAction("italic")).toBe(true);
+      expect(result.current.runSelectionFormattingAction("strikethrough")).toBe(true);
+    });
+    expect(view.state.doc.toString()).toBe("Before ~~text~~ after");
+
+    act(() => {
+      expect(result.current.runSelectionFormattingAction("strikethrough")).toBe(true);
+    });
+    expect(view.state.doc.toString()).toBe("Before text after");
+  });
+
+  it("normalizes shifted letter shortcuts before passing them to CodeMirror", () => {
+    const doc = "Before text after";
+    const from = doc.indexOf("text");
+    const view = createView(
+      doc,
+      EditorSelection.range(from, from + "text".length),
+    );
+    const { result } = renderHook(() => useCodeMirrorEditorController());
+    act(() => result.current.handleEditorReady(view));
+
+    act(() => {
+      expect(result.current.runEditorShortcut("X", { shiftKey: true })).toBe(true);
+    });
+    expect(view.state.doc.toString()).toBe("Before ~~text~~ after");
+
+    act(() => {
+      expect(result.current.runEditorShortcut("X", { shiftKey: true })).toBe(true);
+    });
+    expect(view.state.doc.toString()).toBe("Before text after");
+  });
+
   it("normalizes native redo shortcuts across desktop platforms", () => {
     const view = createView("Before");
     const { result } = renderHook(() => useCodeMirrorEditorController());

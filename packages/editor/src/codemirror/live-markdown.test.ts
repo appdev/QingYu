@@ -96,12 +96,20 @@ describe("liveMarkdown", () => {
     ]);
   });
 
-  it("reveals Markdown markers when the cursor enters their line", () => {
+  it("keeps Markdown markers hidden while the cursor edits rendered text", () => {
     const view = createView();
 
     view.dispatch({ selection: { anchor: 5 } });
 
-    expect(renderedLines(view)[0]).toBe("# Project **notes**");
+    expect(renderedLines(view)[0]).toBe("Project notes");
+  });
+
+  it("reveals only a syntax marker that the cursor enters directly", () => {
+    const view = createView();
+
+    view.dispatch({ selection: { anchor: 0 } });
+
+    expect(renderedLines(view)[0]).toBe("# Project notes");
   });
 
   it("renders every line when the editor does not have focus", () => {
@@ -115,10 +123,22 @@ describe("liveMarkdown", () => {
     const view = createView({ doc, anchor: 2 });
 
     expect(renderedLines(view)[0]).toBe("Before label after");
+    expect(view.dom.querySelector(".cm-markra-link-icon")).not.toBeNull();
 
     view.dispatch({ selection: { anchor: doc.indexOf("label") + 2 } });
 
     expect(renderedLines(view)[0]).toBe(doc);
+    expect(view.dom.querySelector(".cm-markra-link")).toBeNull();
+    expect(
+      view.dom.querySelector(".cm-markra-link-source-label")?.textContent,
+    ).toBe("label");
+    expect(
+      Array.from(
+        view.dom.querySelectorAll<HTMLElement>(".cm-markra-link-source"),
+        (element) => element.textContent,
+      ).join(""),
+    ).toBe("[](https://example.test)");
+    expect(view.dom.querySelector(".cm-markra-link-icon")).toBeNull();
   });
 
   it("keeps a link rendered when the caret is immediately beside it", () => {
@@ -144,6 +164,17 @@ describe("liveMarkdown", () => {
     expect(view.dom.querySelector(".cm-markra-blockquote")).not.toBeNull();
   });
 
+  it("does not create a navigable anchor for an unsafe link target", () => {
+    const doc = "Read [unsafe](javascript:noop)\n\nEdit";
+    const view = createView({ doc });
+    const rendered = view.dom.querySelector(".cm-markra-link");
+
+    expect(rendered?.textContent).toBe("unsafe");
+    expect(rendered?.tagName).not.toBe("A");
+    expect(rendered?.hasAttribute("href")).toBe(false);
+    expect(view.state.doc.toString()).toBe(doc);
+  });
+
   it("enables and renders GFM strikethrough by default", () => {
     const doc = "Keep ~~old~~ new\n\nEdit";
     const view = createView({ doc });
@@ -154,7 +185,7 @@ describe("liveMarkdown", () => {
     ).toBe("old");
   });
 
-  it("renders Markra highlight syntax and reveals its markers for editing", () => {
+  it("keeps Markra highlight syntax rendered while its text is selected", () => {
     const doc = "Active\n\nBefore ==marked== after";
     const view = createView({ doc, anchor: 0 });
 
@@ -165,7 +196,42 @@ describe("liveMarkdown", () => {
 
     const from = doc.indexOf("marked");
     view.dispatch({ selection: EditorSelection.range(from, from + 6) });
-    expect(view.dom.textContent).toContain("==marked==");
+    expect(view.dom.textContent).not.toContain("==marked==");
+    expect(view.dom.querySelector(".cm-markra-highlight")?.textContent).toBe(
+      "marked",
+    );
+  });
+
+  it("keeps preview text and empty-line state stable during a range selection", () => {
+    const doc = [
+      "Before **bold** and [label](https://example.test/long-target) after",
+      "",
+      "- Synthetic item",
+    ].join("\n");
+    const view = createView({ doc });
+    const before = renderedLines(view);
+
+    view.dispatch({ selection: EditorSelection.range(0, doc.length) });
+
+    expect(renderedLines(view)).toEqual(before);
+    expect(
+      view.dom
+        .querySelector(".cm-markra-empty-line")
+        ?.getAttribute("data-markra-empty-source"),
+    ).toBe("hidden");
+  });
+
+  it("does not rebuild preview decorations while a range endpoint moves", () => {
+    const doc = "First synthetic paragraph\n\nSecond synthetic paragraph";
+    const view = createView({
+      doc,
+      selection: EditorSelection.range(0, 5),
+    });
+
+    syntaxTreeIterations.splice(0);
+    view.dispatch({ selection: EditorSelection.range(0, doc.length) });
+
+    expect(syntaxTreeIterations).toHaveLength(0);
   });
 
   it("reveals every line touched by a multi-selection", () => {
@@ -178,7 +244,7 @@ describe("liveMarkdown", () => {
 
     expect(view.hasFocus).toBe(true);
     expect(view.state.selection.ranges).toHaveLength(2);
-    expect(renderedLines(view)).toEqual(["# One", "", "# Two", "", "Rest"]);
+    expect(renderedLines(view)).toEqual(["One", "", "Two", "", "Rest"]);
   });
 
   it("provides the view and syntax node name to custom reveal policies", () => {
@@ -357,13 +423,13 @@ describe("liveMarkdown", () => {
     expect(view.state.doc.toString()).toBe(doc);
   });
 
-  it("reveals list source markers only on the active list line", () => {
+  it("keeps list source markers hidden on the active list line", () => {
     const doc = "- First item\n- Second item\n\nEdit";
     const view = createView({ doc, anchor: doc.indexOf("First") });
     const lines = [...view.dom.querySelectorAll<HTMLElement>(".cm-line")];
 
-    expect(lines[0]?.getAttribute("data-markra-list-source")).toBe("visible");
-    expect(lines[0]?.textContent).toBe("- First item");
+    expect(lines[0]?.getAttribute("data-markra-list-source")).toBe("hidden");
+    expect(lines[0]?.textContent).toBe("First item");
     expect(lines[1]?.getAttribute("data-markra-list-source")).toBe("hidden");
     expect(lines[1]?.textContent).toBe("Second item");
   });
