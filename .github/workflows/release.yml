@@ -597,7 +597,13 @@ jobs:
         run: |
           set -euo pipefail
 
-          find release-assets -type f ! -name 'release-metadata.json' | sort > release-files.txt
+          # Tauri leaves the deb package internals beside the finished installer.
+          # Publishing those generic filenames makes Linux architectures collide.
+          find release-assets -type f \
+            ! -name 'release-metadata.json' \
+            ! -name 'control.tar.gz' \
+            ! -name 'data.tar.gz' \
+            | sort > release-files.txt
 
           {
             echo 'paths<<__FILES__'

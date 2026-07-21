@@ -24,3 +24,10 @@ test("release workflow keeps a rolling preview manifest for non-draft releases",
   assert.match(workflow, /gh release create preview/);
   assert.match(workflow, /gh release upload preview release-assets\/latest\.json --clobber/);
 });
+
+test("release workflow excludes deb package internals from GitHub release assets", () => {
+  const workflow = fs.readFileSync(workflowPath, "utf8");
+
+  assert.match(workflow, /! -name 'control\.tar\.gz'/);
+  assert.match(workflow, /! -name 'data\.tar\.gz'/);
+});
