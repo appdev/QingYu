@@ -41,6 +41,39 @@ afterEach(() => {
 });
 
 describe("imagePreviewPlugin", () => {
+  it("waits for Enter before previewing a newly typed image", () => {
+    const view = createView("");
+    const markdown = "![a](https://example.test/image.png)";
+
+    view.dispatch({
+      changes: { from: 0, insert: markdown },
+      selection: { anchor: markdown.length },
+      userEvent: "input",
+    });
+
+    expect(
+      view.dom.querySelector<HTMLInputElement>(".markra-image-node-source")
+        ?.value,
+    ).toBe(markdown);
+
+    view.dispatch({
+      changes: { from: markdown.length, insert: "\n" },
+      selection: { anchor: markdown.length + 1 },
+      userEvent: "input",
+    });
+
+    expect(view.dom.querySelector(".markra-image-node-source")).toBeNull();
+    expect(view.dom.querySelector(".cm-markra-image")).not.toBeNull();
+  });
+
+  it("renders an existing image when the initial caret is at its end", () => {
+    const doc = "![Synthetic alt](https://example.test/image.png)";
+    const view = createView(doc);
+
+    expect(view.dom.querySelector(".markra-image-node-source")).toBeNull();
+    expect(view.dom.querySelector(".cm-markra-image")).not.toBeNull();
+  });
+
   it("renders a safe Markdown image without changing its source", () => {
     const doc =
       'Before ![Synthetic alt](https://example.test/image.png "Preview") after\n\nEdit';
@@ -103,6 +136,7 @@ describe("imagePreviewPlugin", () => {
     expect(source).not.toBeNull();
     if (!source) return;
 
+    source.focus();
     source.value = "![Changed](https://example.test/changed.png)";
     source.dispatchEvent(new Event("input", { bubbles: true }));
     expect(view.state.doc.toString()).toBe(
@@ -143,6 +177,38 @@ describe("imagePreviewPlugin", () => {
 
     expect(view.state.selection.main.head).toBe(doc.indexOf("\n") + 1);
     expect(view.dom.querySelector(".markra-image-node-source")).toBeNull();
+  });
+
+  it("moves below a selected image when Enter comes from the editor", () => {
+    const imageMarkdown = "![Synthetic alt](./assets/mock.png)";
+    const doc = `${imageMarkdown}\nFollowing`;
+    const view = createView(doc);
+    view.dom.querySelector<HTMLImageElement>(".cm-markra-image")?.dispatchEvent(
+      new MouseEvent("click", { bubbles: true, cancelable: true }),
+    );
+    const event = new KeyboardEvent("keydown", {
+      bubbles: true,
+      cancelable: true,
+      key: "Enter",
+    });
+
+    expect(view.state.selection.main.head).toBe(1);
+    view.contentDOM.dispatchEvent(event);
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(view.state.doc.toString()).toBe(doc);
+    expect(view.state.selection.main.head).toBe(imageMarkdown.length + 1);
+    expect(view.dom.querySelector(".markra-image-node-source")).toBeNull();
+
+    view.dispatch({
+      changes: { from: imageMarkdown.length + 1, insert: "Plain " },
+      selection: { anchor: imageMarkdown.length + 7 },
+      userEvent: "input",
+    });
+    expect(view.state.doc.toString()).toBe(
+      `${imageMarkdown}\nPlain Following`,
+    );
+    expect(view.dom.querySelector(".cm-markra-link")).toBeNull();
   });
 
   it("rejects executable and local protocols by default", () => {

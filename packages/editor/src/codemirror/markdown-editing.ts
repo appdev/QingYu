@@ -2,6 +2,7 @@ import { syntaxTree } from "@codemirror/language";
 import {
   EditorSelection,
   EditorState,
+  Prec,
   type ChangeSpec,
   type SelectionRange,
 } from "@codemirror/state";
@@ -11,6 +12,8 @@ import { defineMarkraPlugin } from "./plugin.ts";
 const indentation = "  ";
 const listMarkerPattern = /^((?:[\t ]*>[\t ]*)*)([\t ]*)(?:[-+*]|\d+[.)])[\t ]+/u;
 const quotePrefixPattern = /^([\t ]*(?:>[\t ]*)+)/u;
+const incompleteInlineDestinationPattern =
+  /(?:^|[^\\])!?\[(?:\\.|[^\]\\])*\]\((?:\\.|[^)\n])*$/u;
 
 function isEditable(view: EditorView) {
   return !view.state.facet(EditorState.readOnly);
@@ -89,6 +92,29 @@ function handleShiftTab(view: EditorView) {
   return indentList(view, true);
 }
 
+function confirmIncompleteInlineDestination(view: EditorView) {
+  if (!isEditable(view)) return false;
+  const { ranges } = view.state.selection;
+  if (ranges.length !== 1 || !ranges[0]?.empty) return false;
+
+  const position = ranges[0].head;
+  const line = view.state.doc.lineAt(position);
+  if (position !== line.to) return false;
+  const sourceBeforeCursor = view.state.sliceDoc(line.from, position);
+  if (!incompleteInlineDestinationPattern.test(sourceBeforeCursor)) {
+    return false;
+  }
+
+  // Enter confirms the destination instead of placing a line break inside
+  // Markdown link syntax, which would leave both links and images unparseable.
+  view.dispatch({
+    changes: { from: position, insert: ")\n" },
+    selection: EditorSelection.cursor(position + 2),
+    userEvent: "input",
+  });
+  return true;
+}
+
 function insideTableCell(view: EditorView, position: number) {
   let node: ReturnType<typeof syntaxTree>["topNode"] | null =
     syntaxTree(view.state).resolveInner(position, -1);
@@ -128,9 +154,10 @@ function insertContextualHardBreak(view: EditorView) {
 export function markdownEditingPlugin() {
   return defineMarkraPlugin({
     id: "markra.markdown-editing",
-    extension: keymap.of([
+    extension: Prec.high(keymap.of([
+      { key: "Enter", run: confirmIncompleteInlineDestination },
       { key: "Tab", run: handleTab, shift: handleShiftTab },
       { key: "Shift-Enter", run: insertContextualHardBreak },
-    ]),
+    ])),
   });
 }

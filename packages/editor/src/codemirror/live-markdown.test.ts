@@ -178,12 +178,55 @@ describe("liveMarkdown", () => {
     expect(view.dom.querySelector(".cm-markra-link-icon")).toBeNull();
   });
 
-  it("keeps a link rendered when the caret is immediately beside it", () => {
-    const doc = "[label](https://example.test) after";
-    const linkEnd = doc.indexOf(" after");
-    const view = createView({ doc, anchor: linkEnd });
+  it("keeps a completed link in source mode until Enter moves the caret away", () => {
+    const markdown = "[label](https://example.test)";
+    const view = createView({ doc: "", anchor: 0 });
 
-    expect(renderedLines(view)[0]).toBe("label after");
+    view.dispatch({
+      changes: { from: 0, insert: markdown },
+      selection: { anchor: markdown.length },
+      userEvent: "input",
+    });
+
+    expect(renderedLines(view)[0]).toBe(markdown);
+
+    view.dispatch({
+      changes: { from: markdown.length, insert: "\n" },
+      selection: { anchor: markdown.length + 1 },
+      userEvent: "input",
+    });
+
+    expect(renderedLines(view)[0]).toBe("label");
+    expect(view.dom.querySelector(".cm-markra-link-icon")).not.toBeNull();
+  });
+
+  it("renders an existing link when the initial caret is at its end", () => {
+    const doc = "[label](https://example.test)";
+    const view = createView({ doc, anchor: doc.length });
+
+    expect(renderedLines(view)[0]).toBe("label");
+    expect(view.dom.querySelector(".cm-markra-link")).not.toBeNull();
+  });
+
+  it("does not preview an incomplete image label as a shortcut link", () => {
+    const view = createView({ doc: "", anchor: 0 });
+
+    view.dispatch({
+      changes: { from: 0, insert: "![a]" },
+      selection: { anchor: 4 },
+    });
+
+    expect(renderedLines(view)).toEqual(["![a]"]);
+    expect(view.dom.querySelector(".cm-markra-link")).toBeNull();
+    expect(view.dom.querySelector(".cm-markra-link-icon")).toBeNull();
+  });
+
+  it("keeps an unfinished image destination fully visible while typing", () => {
+    const doc = "![a](https://images.example.test/mock.jpg?w=1280&h=960";
+    const view = createView({ doc, anchor: doc.length });
+
+    expect(renderedLines(view)).toEqual([doc]);
+    expect(view.dom.querySelector(".cm-markra-link")).toBeNull();
   });
 
   it("renders reference-style links and reveals their complete source when edited", () => {

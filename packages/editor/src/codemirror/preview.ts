@@ -11,6 +11,7 @@ import {
 import {
   revealActiveLine,
   selectionChangeAffectsReveal,
+  type RevealContext,
   type RevealPolicy,
   type RevealScope,
 } from "./policy.ts";
@@ -142,6 +143,48 @@ function isInsidePreformattedBlock(
   return false;
 }
 
+function hasUnclosedInlineDestination(
+  state: EditorView["state"],
+  node: MarkraSyntaxNode,
+) {
+  const nodeLine = state.doc.lineAt(node.from);
+  const sourceBeforeNode = state.sliceDoc(nodeLine.from, node.from);
+  if (
+    node.name === "URL" &&
+    /(?:!\[(?:\\.|[^\]\\])*\]|\[(?:\\.|[^\]\\])*\])\((?:\\.|[^)\n])*$/u
+      .test(sourceBeforeNode) &&
+    !state.sliceDoc(node.to, nodeLine.to).includes(")")
+  ) {
+    return true;
+  }
+
+  let container: MarkraSyntaxNode | null = node;
+  while (
+    container &&
+    container.name !== "Image" &&
+    container.name !== "Link"
+  ) {
+    container = container.parent;
+  }
+  if (!container) return false;
+
+  if (
+    container.name === "Image" &&
+    !container.getChild("URL") &&
+    /^!\[(?:\\.|[^\]\\])*\]$/u.test(
+      state.sliceDoc(container.from, container.to),
+    )
+  ) {
+    return true;
+  }
+
+  const line = state.doc.lineAt(container.to);
+  if (container.to >= line.to) return false;
+  return /^\((?:\\.|[^)\n])*$/u.test(
+    state.sliceDoc(container.to, line.to),
+  );
+}
+
 function headingAriaLabel(source: string, setext: boolean) {
   const title = setext
     ? source
@@ -245,6 +288,7 @@ function buildDecorations(
   reveal: RevealPolicy,
   taskCheckboxes: boolean,
   resolveLinkTarget: LivePreviewConfig["resolveLinkTarget"],
+  typedBoundary: number | null,
 ) {
   const { state } = view;
   const ranges: Range<Decoration>[] = [];
@@ -256,6 +300,16 @@ function buildDecorations(
   const decoratedNodes = new Set<string>();
   const rendererClaimedNodes = new Set<string>();
   const tree = syntaxTree(state);
+  const isRevealed = (context: RevealContext) =>
+    reveal(context) ||
+    (
+      context.scope === "node-boundary" &&
+      typedBoundary === context.to &&
+      view.hasFocus &&
+      state.selection.ranges.some(
+        (selection) => selection.empty && selection.head === typedBoundary,
+      )
+    );
   type SyntaxNode = Parameters<
     NonNullable<Parameters<typeof tree.iterate>[0]["enter"]>
   >[0];
@@ -293,7 +347,7 @@ function buildDecorations(
         },
         node: node.node as MarkraSyntaxNode,
         revealed(scope = "node") {
-          return reveal({
+          return isRevealed({
             view,
             state,
             from: node.from,
@@ -345,7 +399,7 @@ function buildDecorations(
       if (listAttributes && !decoratedListLines.has(line.from)) {
         decoratedListLines.add(line.from);
         const listMark = node.node.getChild("ListMark");
-        const sourceVisible = reveal({
+        const sourceVisible = isRevealed({
           view,
           state,
           from: listMark?.from ?? line.from,
@@ -391,15 +445,22 @@ function buildDecorations(
     }
 
     const parentName = node.node.parent?.name;
+    const unfinishedInlineDestination = hasUnclosedInlineDestination(
+      state,
+      node.node as MarkraSyntaxNode,
+    );
     const standaloneUrl =
       node.name === "URL" &&
       parentName !== "Autolink" &&
       parentName !== "Image" &&
       parentName !== "Link";
     const linkLike =
-      node.name === "Link" || node.name === "Autolink" || standaloneUrl;
-    const inlineClass = INLINE_CLASSES[node.name] ??
-      (standaloneUrl ? "cm-markra-link" : undefined);
+      (node.name === "Link" && !unfinishedInlineDestination) ||
+      node.name === "Autolink" || standaloneUrl;
+    const inlineClass = unfinishedInlineDestination
+      ? undefined
+      : INLINE_CLASSES[node.name] ??
+        (standaloneUrl ? "cm-markra-link" : undefined);
     if (inlineClass && node.from < node.to) {
       const linkUrl = node.name === "URL"
         ? node.node
@@ -412,13 +473,13 @@ function buildDecorations(
       const linkHref = linkSource
         ? resolveLinkHref(node.name, linkSource, view, resolveLinkTarget)
         : null;
-      const linkRevealed = linkLike && reveal({
+      const linkRevealed = linkLike && isRevealed({
         view,
         state,
         from: node.from,
         to: node.to,
         nodeName: node.name,
-        scope: "node",
+        scope: "node-boundary",
       });
 
       if (linkLike && linkRevealed) {
@@ -493,6 +554,7 @@ function buildDecorations(
     const isReferenceDefinitionMark =
       node.name === "LinkMark" && parentName === "LinkReference";
     const isHideable =
+      !unfinishedInlineDestination &&
       !isFootnoteLinkSyntax(state, node.node as MarkraSyntaxNode) &&
       !taskSourceRemainsVisible &&
       !isReferenceDefinitionMark &&
@@ -521,7 +583,7 @@ function buildDecorations(
       ) {
         revealFrom = parent.from;
         revealTo = parent.to;
-        revealScope = "node";
+        revealScope = "node-boundary";
       }
     } else if (node.name === "HeaderMark") {
       const heading = node.node.parent;
@@ -546,7 +608,7 @@ function buildDecorations(
     if (
       isHideable &&
       node.from < node.to &&
-      !reveal({
+      !isRevealed({
         view,
         state,
         from: revealFrom,
@@ -595,7 +657,7 @@ function buildDecorations(
         ranges.push(
           Decoration.line({
             attributes: {
-              "data-markra-empty-source": reveal({
+              "data-markra-empty-source": isRevealed({
                 view,
                 state,
                 from: line.from,
@@ -641,18 +703,38 @@ function previewPlugin(config: LivePreviewConfig): Extension {
     class {
       decorations: DecorationSet;
       composing: boolean;
+      typedBoundary: number | null;
 
       constructor(view: EditorView) {
+        this.typedBoundary = null;
         this.decorations = buildDecorations(
           view,
           reveal,
           taskCheckboxes,
           resolveLinkTarget,
+          this.typedBoundary,
         );
         this.composing = view.composing;
       }
 
       update(update: ViewUpdate) {
+        const typedInput = update.transactions.some(
+          (transaction) =>
+            transaction.docChanged && transaction.isUserEvent("input"),
+        );
+        if (typedInput && update.state.selection.main.empty) {
+          // Only the node completed by this keyboard transaction keeps its
+          // closing delimiter visible. Existing content at the same cursor
+          // boundary must still render normally when a document is opened.
+          this.typedBoundary = update.state.selection.main.head;
+        } else if (
+          update.docChanged ||
+          update.selectionSet ||
+          update.focusChanged
+        ) {
+          this.typedBoundary = null;
+        }
+
         const compositionEnded = this.composing && !update.view.composing;
         this.composing = update.view.composing;
         syncCompositionUi(update.view, this.composing);
@@ -686,6 +768,7 @@ function previewPlugin(config: LivePreviewConfig): Extension {
             reveal,
             taskCheckboxes,
             resolveLinkTarget,
+            this.typedBoundary,
           );
         }
       }

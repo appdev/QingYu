@@ -292,7 +292,6 @@ class ImageWidget extends WidgetType {
         if (
           !current?.selected ||
           (event.target instanceof Node && current.sourceRow.contains(event.target)) ||
-          (event.key !== "Backspace" && event.key !== "Delete") ||
           event.altKey ||
           event.ctrlKey ||
           event.metaKey ||
@@ -300,6 +299,25 @@ class ImageWidget extends WidgetType {
         ) {
           return;
         }
+
+        if (event.key === "Enter") {
+          event.preventDefault();
+          const imageEnd = Math.min(current.widget.to, view.state.doc.length);
+          const hasFollowingLineBreak =
+            view.state.sliceDoc(imageEnd, imageEnd + 1) === "\n";
+          hideImageSource(root, current);
+          view.dispatch({
+            changes: hasFollowingLineBreak
+              ? undefined
+              : { from: imageEnd, insert: "\n" },
+            selection: EditorSelection.cursor(imageEnd + 1),
+            userEvent: "input",
+          });
+          view.focus();
+          return;
+        }
+
+        if (event.key !== "Backspace" && event.key !== "Delete") return;
         event.preventDefault();
         const from = Math.min(current.widget.from, view.state.doc.length);
         const to = Math.min(current.widget.to, view.state.doc.length);
@@ -381,7 +399,9 @@ class ImageWidget extends WidgetType {
     state.widget = this;
     updateImageElement(state.image, this);
     const preserveInput = dom.ownerDocument.activeElement === state.sourceInput;
-    if (this.selected || state.selected) {
+    // Cursor-driven source mode is temporary: once Enter moves the caret
+    // beyond the image, only an actively focused source input may keep it open.
+    if (this.selected || preserveInput) {
       showImageSource(dom, state, preserveInput);
     } else {
       hideImageSource(dom, state);
@@ -466,7 +486,7 @@ export function imagePreviewPlugin(options: ImagePreviewPluginOptions = {}) {
                 context.node.from,
                 context.state.facet(EditorState.readOnly),
                 options.resolveSource,
-                context.revealed("node"),
+                context.revealed("node-boundary"),
                 source,
                 context.node.to,
                 context.view,

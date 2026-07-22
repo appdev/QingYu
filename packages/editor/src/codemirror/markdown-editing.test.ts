@@ -1,5 +1,6 @@
+import { defaultKeymap } from "@codemirror/commands";
 import { EditorSelection, EditorState } from "@codemirror/state";
-import { EditorView, runScopeHandlers } from "@codemirror/view";
+import { EditorView, keymap, runScopeHandlers } from "@codemirror/view";
 import { afterEach, describe, expect, it } from "vitest";
 import { liveMarkdown } from "./index.ts";
 import { markdownEditingPlugin } from "./markdown-editing.ts";
@@ -14,7 +15,10 @@ function createView(doc: string, position: number) {
     parent,
     state: EditorState.create({
       doc,
-      extensions: [liveMarkdown({ plugins: [markdownEditingPlugin()] })],
+      extensions: [
+        keymap.of(defaultKeymap),
+        liveMarkdown({ plugins: [markdownEditingPlugin()] }),
+      ],
       selection: EditorSelection.cursor(position),
     }),
   });
@@ -40,6 +44,15 @@ afterEach(() => {
 });
 
 describe("markdownEditingPlugin", () => {
+  it("completes a typed image destination when Enter confirms it", () => {
+    const doc = "![a](https://images.example.test/mock.jpg?w=1280&h=960";
+    const view = createView(doc, doc.length);
+
+    expect(press(view, "Enter")).toBe(true);
+    expect(view.state.doc.toString()).toBe(`${doc})\n`);
+    expect(view.state.selection.main.head).toBe(doc.length + 2);
+  });
+
   it("keeps CodeMirror's native Markdown list continuation", () => {
     const view = createView("- First", "- First".length);
 

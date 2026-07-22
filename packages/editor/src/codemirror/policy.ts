@@ -1,7 +1,7 @@
 import type { EditorState } from "@codemirror/state";
 import type { EditorView, ViewUpdate } from "@codemirror/view";
 
-export type RevealScope = "line" | "node" | "heading";
+export type RevealScope = "line" | "node" | "node-boundary" | "heading";
 
 export interface RevealContext {
   view: EditorView;
@@ -64,7 +64,7 @@ export const revealActiveLine: RevealPolicy = ({
     );
   }
 
-  if (scope === "node") {
+  if (scope === "node" || scope === "node-boundary") {
     return cursors.some(
       (selection) => selection.head > from && selection.head < to,
     );
