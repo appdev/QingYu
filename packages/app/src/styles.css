@@ -1162,6 +1162,8 @@
     pointer-events: none;
   }
 
+  /* The backdrop owns the continuous gutter divider. Keep this pseudo-element
+     inside the number column so it cannot cover that divider on text rows. */
   .markdown-paper .cm-line.cm-markra-code-content-line::before {
     position: relative;
     z-index: 1;
@@ -1170,11 +1172,10 @@
     min-width: 43px !important;
     margin-right: 16px !important;
     padding-right: 12px;
-    border-right: 1px solid var(--editor-border);
+    border-left: 1px solid var(--editor-border);
     background: var(--editor-code-line-bg);
     color: var(--editor-text-secondary) !important;
     font: inherit;
-    box-shadow: 16px 0 0 var(--editor-code-bg);
   }
 
   .markdown-paper .cm-line.cm-markra-code-header-line +

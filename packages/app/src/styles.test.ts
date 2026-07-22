@@ -85,8 +85,10 @@ describe("editor stylesheet", () => {
     expect(backdropRule).toContain("background: linear-gradient(");
     expect(lineNumberRule).toContain("position: relative");
     expect(lineNumberRule).toContain("z-index: 1");
+    expect(lineNumberRule).toContain("border-left: 1px solid var(--editor-border)");
     expect(lineNumberRule).toContain("background: var(--editor-code-line-bg)");
-    expect(lineNumberRule).toContain("box-shadow: 16px 0 0 var(--editor-code-bg)");
+    expect(lineNumberRule).not.toContain("border-right:");
+    expect(lineNumberRule).not.toContain("box-shadow:");
   });
 
   it("matches the original code block control layout", () => {
