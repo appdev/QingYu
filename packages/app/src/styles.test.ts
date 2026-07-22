@@ -58,6 +58,65 @@ describe("editor stylesheet", () => {
     );
   });
 
+  it("keeps code block selections between the background and foreground", () => {
+    const styles = readFileSync(`${process.cwd()}/src/styles.css`, "utf8");
+    const codeLineStart = styles.indexOf(
+      ".markdown-paper .cm-line.cm-markra-code-content-line {",
+    );
+    const codeLineEnd = styles.indexOf("\n  }", codeLineStart);
+    const codeLineRule = styles.slice(codeLineStart, codeLineEnd);
+    const backdropStart = styles.indexOf(
+      ".markdown-paper .cm-line.cm-markra-code-content-line::after {",
+    );
+    const backdropEnd = styles.indexOf("\n  }", backdropStart);
+    const backdropRule = styles.slice(backdropStart, backdropEnd);
+    const lineNumberStart = styles.indexOf(
+      ".markdown-paper .cm-line.cm-markra-code-content-line::before {",
+    );
+    const lineNumberEnd = styles.indexOf("\n  }", lineNumberStart);
+    const lineNumberRule = styles.slice(lineNumberStart, lineNumberEnd);
+
+    expect(styles).not.toContain(".markdown-paper .cm-selectionLayer {");
+    expect(styles).not.toContain(".markdown-paper .cm-cursorLayer {");
+    expect(codeLineRule).toContain("position: relative");
+    expect(codeLineRule).toContain("background: transparent !important");
+    expect(backdropStart).toBeGreaterThanOrEqual(0);
+    expect(backdropRule).toContain("z-index: -2");
+    expect(backdropRule).toContain("background: linear-gradient(");
+    expect(lineNumberRule).toContain("position: relative");
+    expect(lineNumberRule).toContain("z-index: 1");
+    expect(lineNumberRule).toContain("background: var(--editor-code-line-bg)");
+    expect(lineNumberRule).toContain("box-shadow: 16px 0 0 var(--editor-code-bg)");
+  });
+
+  it("matches the original code block control layout", () => {
+    const styles = readFileSync(`${process.cwd()}/src/styles.css`, "utf8");
+    const closingLineStart = styles.indexOf(
+      ".markdown-paper .cm-line.cm-markra-code-closing-line {",
+    );
+    const closingLineEnd = styles.indexOf("\n  }", closingLineStart);
+    const closingLineRule = styles.slice(closingLineStart, closingLineEnd);
+    const languageControlStart = styles.indexOf(
+      ".markdown-paper .cm-line.cm-markra-code-closing-line .markra-code-language-control {",
+    );
+    const languageControlEnd = styles.indexOf("\n  }", languageControlStart);
+    const languageControlRule = styles.slice(
+      languageControlStart,
+      languageControlEnd,
+    );
+
+    expect(closingLineRule).toContain("position: relative");
+    expect(closingLineRule).toContain("height: 56px");
+    expect(languageControlStart).toBeGreaterThanOrEqual(0);
+    expect(languageControlRule).toContain("position: absolute");
+    expect(languageControlRule).toContain("top: 12px");
+    expect(languageControlRule).toContain("right: 0");
+    expect(languageControlRule).toContain("padding: 0");
+    expect(styles).toContain(
+      '.cm-markra-code-closing-line[data-code-block-active="true"] .markra-code-language-control',
+    );
+  });
+
   it("keeps hidden Markdown empty lines available for pointer hit testing", () => {
     const styles = readFileSync(`${process.cwd()}/src/styles.css`, "utf8");
     const emptyLineBreakRule = [

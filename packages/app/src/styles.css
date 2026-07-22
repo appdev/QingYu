@@ -1088,7 +1088,12 @@
 
   .markdown-paper .cm-content:has(.cm-markra-code-line:hover)
     .cm-markra-code-header-actions,
-  .markdown-paper .cm-markra-code-header-actions:focus-within {
+  .markdown-paper .cm-markra-code-header-actions:focus-within,
+  .markdown-paper .cm-content:has(.cm-markra-code-line:hover)
+    .cm-markra-code-closing-line
+    .markra-code-language-control,
+  .markdown-paper .cm-markra-code-closing-line[data-code-block-active="true"] .markra-code-language-control,
+  .markdown-paper .cm-markra-code-closing-line .markra-code-language-control:focus-within {
     opacity: 1 !important;
     pointer-events: auto !important;
     transform: translateY(0);
@@ -1127,52 +1132,116 @@
   }
 
   .markdown-paper .cm-line.cm-markra-code-content-line {
+    position: relative;
     box-sizing: border-box;
     padding-inline: 0 16px !important;
-    border-right: 1px solid var(--editor-border) !important;
-    border-left: 1px solid var(--editor-border) !important;
-    background: linear-gradient(
-      90deg,
-      var(--editor-code-line-bg) 0 43px,
-      var(--editor-border) 43px 44px,
-      var(--editor-code-bg) 44px 100%
-    ) !important;
+    border: 0 !important;
+    background: transparent !important;
     color: var(--editor-code-text) !important;
     font-family: Menlo, Consolas, "DejaVu Sans Mono", monospace !important;
     font-size: 14.4px !important;
     line-height: 23.76px !important;
   }
 
+  /* CodeMirror draws selections at z-index -1. Keeping the code surface at
+     -2 leaves selections visible without placing them over tokens or gutters. */
+  .markdown-paper .cm-line.cm-markra-code-content-line::after {
+    position: absolute;
+    inset: 0;
+    z-index: -2;
+    box-sizing: border-box;
+    border-right: 1px solid var(--editor-border);
+    border-left: 1px solid var(--editor-border);
+    background: linear-gradient(
+      90deg,
+      var(--editor-code-line-bg) 0 43px,
+      var(--editor-border) 43px 44px,
+      var(--editor-code-bg) 44px 100%
+    );
+    content: "";
+    pointer-events: none;
+  }
+
   .markdown-paper .cm-line.cm-markra-code-content-line::before {
+    position: relative;
+    z-index: 1;
     box-sizing: border-box;
     width: 43px !important;
     min-width: 43px !important;
     margin-right: 16px !important;
     padding-right: 12px;
+    border-right: 1px solid var(--editor-border);
+    background: var(--editor-code-line-bg);
     color: var(--editor-text-secondary) !important;
     font: inherit;
+    box-shadow: 16px 0 0 var(--editor-code-bg);
   }
 
   .markdown-paper .cm-line.cm-markra-code-header-line +
     .cm-line.cm-markra-code-content-line {
     padding-block-start: 16px !important;
-    border-top: 1px solid var(--editor-border) !important;
-    border-radius: 4px 4px 0 0 !important;
+  }
+
+  .markdown-paper .cm-line.cm-markra-code-header-line +
+    .cm-line.cm-markra-code-content-line::after {
+    border-top: 1px solid var(--editor-border);
+    border-radius: 4px 4px 0 0;
   }
 
   .markdown-paper .cm-line.cm-markra-code-content-line:has(+ .cm-markra-code-closing-line) {
     padding-block-end: 16px !important;
-    border-bottom: 1px solid var(--editor-border) !important;
-    border-radius: 0 0 4px 4px !important;
+  }
+
+  .markdown-paper .cm-line.cm-markra-code-content-line:has(+ .cm-markra-code-closing-line)::after {
+    border-bottom: 1px solid var(--editor-border);
+    border-radius: 0 0 4px 4px;
   }
 
   .markdown-paper .cm-line.cm-markra-code-closing-line {
-    height: 0 !important;
-    min-height: 0 !important;
+    position: relative !important;
+    height: 56px !important;
+    min-height: 56px !important;
     padding: 0 !important;
     border: 0 !important;
     background: transparent !important;
-    line-height: 0 !important;
+    line-height: 12px !important;
+    overflow: visible !important;
+  }
+
+  .markdown-paper .cm-markra-code-exit-wrap {
+    display: inline-block !important;
+    width: 100% !important;
+    height: 56px !important;
+  }
+
+  .markdown-paper .cm-markra-code-exit {
+    display: inline-block !important;
+    width: 100% !important;
+    height: 12px !important;
+    cursor: var(--editor-text-cursor);
+  }
+
+  .markdown-paper .cm-line.cm-markra-code-closing-line .markra-code-language-control {
+    position: absolute !important;
+    top: 12px;
+    right: 0;
+    z-index: 4;
+    display: flex !important;
+    padding: 0 !important;
+    opacity: 0 !important;
+    pointer-events: none !important;
+    transform: translateY(-2px);
+    transition: opacity 150ms ease-out, transform 150ms ease-out;
+  }
+
+  .markdown-paper .cm-line.cm-markra-code-closing-line .markra-code-language-select {
+    height: 32px !important;
+    min-height: 32px !important;
+    min-width: 160px !important;
+    padding: 0 12px !important;
+    font-family: Menlo, Consolas, "DejaVu Sans Mono", monospace !important;
+    font-size: 13px !important;
+    line-height: 1 !important;
   }
 
   .markdown-paper .cm-markra-table-wrap {

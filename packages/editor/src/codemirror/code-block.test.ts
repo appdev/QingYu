@@ -60,16 +60,41 @@ describe("codeBlockPreviewPlugin", () => {
     expect(view.state.doc.toString()).toBe(codeDocument);
   });
 
-  it("reveals fences and info when the selection enters the block", () => {
+  it("keeps the visual code block chrome while editing its content", () => {
     const view = createView();
 
     view.dispatch({
       selection: { anchor: codeDocument.indexOf("answer =") + 2 },
     });
 
-    expect(view.dom.querySelector(".cm-markra-code-header")).toBeNull();
-    expect(renderedLines(view)).toContain("```ts");
-    expect(renderedLines(view)).toContain("```");
+    expect(view.dom.querySelector(".cm-markra-code-header")?.textContent).toBe(
+      "ts",
+    );
+    expect(renderedLines(view)).not.toContain("```ts");
+    expect(renderedLines(view)).not.toContain("```");
+    expect(renderedLines(view)).toContain("const answer = 42;");
+    expect(
+      view.dom
+        .querySelector(".cm-markra-code-closing-line")
+        ?.getAttribute("data-code-block-active"),
+    ).toBe("true");
+    expect(view.dom.querySelector(".markra-code-language-select")).not.toBeNull();
+  });
+
+  it("moves a click on the folded closing line to an editable line after the fence", () => {
+    const view = createView("```ts\nconst answer = 42;\n```");
+    const closingLine = view.dom.querySelector<HTMLElement>(
+      ".cm-markra-code-closing-line",
+    );
+
+    expect(closingLine).not.toBeNull();
+    closingLine?.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+    view.dispatch(view.state.replaceSelection("Outside"));
+
+    expect(view.state.doc.toString()).toBe(
+      "```ts\nconst answer = 42;\n```\nOutside",
+    );
+    expect(view.state.selection.main.head).toBe(view.state.doc.length);
   });
 
   it("selects only the current code content on the first Mod+A", () => {
@@ -192,6 +217,8 @@ describe("codeBlockPreviewPlugin", () => {
     expect(copy?.querySelector(".markra-code-copy-icon")).not.toBeNull();
     expect(copy?.querySelector(".markra-code-copy-check-icon")).not.toBeNull();
     expect(language?.closest(".markra-code-language-control")).not.toBeNull();
+    expect(copy?.closest(".cm-markra-code-header-line")).not.toBeNull();
+    expect(language?.closest(".cm-markra-code-closing-line")).not.toBeNull();
     copy?.click();
 
     expect(writeText).toHaveBeenCalledWith(

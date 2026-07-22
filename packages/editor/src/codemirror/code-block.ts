@@ -211,10 +211,22 @@ const codeBlockTheme = EditorView.baseTheme({
   },
   ".cm-markra-code-closing-line": {
     borderRadius: "0 0 0.45em 0.45em",
-    height: "0",
-    lineHeight: "0",
-    minHeight: "0",
-    overflow: "hidden",
+    height: "3.5em",
+    lineHeight: "0.75em",
+    minHeight: "3.5em",
+    overflow: "visible",
+    position: "relative",
+  },
+  ".cm-markra-code-exit-wrap": {
+    display: "inline-block",
+    height: "100%",
+    width: "100%",
+  },
+  ".cm-markra-code-exit": {
+    cursor: "text",
+    display: "inline-block",
+    height: "100%",
+    width: "100%",
   },
   ".cm-markra-code-source-line": {
     color: "color-mix(in srgb, currentColor 72%, transparent)",
@@ -251,11 +263,6 @@ class CodeBlockHeaderWidget extends WidgetType {
     readonly code: string,
     readonly displayLanguage: string,
     readonly labels: CodeBlockPreviewLabels,
-    readonly language: string,
-    readonly languageFrom: number,
-    readonly languageTo: number,
-    readonly languages: readonly MarkraCodeLanguageOption[],
-    readonly openingMarkTo: number,
   ) {
     super();
   }
@@ -264,11 +271,7 @@ class CodeBlockHeaderWidget extends WidgetType {
     return (
       this.code === other.code &&
       this.displayLanguage === other.displayLanguage &&
-      this.language === other.language &&
-      this.languageFrom === other.languageFrom &&
-      this.languageTo === other.languageTo &&
-      JSON.stringify(this.labels) === JSON.stringify(other.labels) &&
-      JSON.stringify(this.languages) === JSON.stringify(other.languages)
+      JSON.stringify(this.labels) === JSON.stringify(other.labels)
     );
   }
 
@@ -277,18 +280,12 @@ class CodeBlockHeaderWidget extends WidgetType {
     const wrapper = document.createElement("span");
     const label = document.createElement("span");
     const actions = document.createElement("span");
-    const languageControl = document.createElement("span");
-    const language = document.createElement("select");
     const copy = document.createElement("button");
 
     wrapper.className = "cm-markra-code-header-wrap";
     label.className = "cm-markra-code-header";
     label.textContent = this.displayLanguage;
     actions.className = "cm-markra-code-header-actions";
-    languageControl.className = "markra-code-language-control";
-    language.className = "markra-code-language-select";
-    language.ariaLabel = this.labels.language;
-    language.disabled = view.state.readOnly;
     copy.className = "markra-code-copy-button";
     copy.type = "button";
     copy.ariaLabel = this.labels.copyCode;
@@ -306,6 +303,90 @@ class CodeBlockHeaderWidget extends WidgetType {
         checkIconChildren,
       ),
     );
+
+    copy.addEventListener("mousedown", (event) => event.stopPropagation());
+    copy.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const clipboard = document.defaultView?.navigator.clipboard;
+      if (!clipboard?.writeText) return;
+      clipboard.writeText(this.code).then(() => {
+        copy.ariaLabel = this.labels.codeCopied;
+        copy.title = this.labels.codeCopied;
+        copy.dataset.copied = "true";
+      }).catch(() => undefined);
+    });
+
+    actions.append(copy);
+    wrapper.append(label, actions);
+    return wrapper;
+  }
+}
+
+function moveSelectionAfterCodeBlock(
+  view: CodeMirrorView,
+  requestedAfterFence: number,
+) {
+  const afterFence = Math.min(requestedAfterFence, view.state.doc.length);
+  const hasFollowingLineBreak =
+    view.state.sliceDoc(afterFence, afterFence + 1) === "\n";
+  const canMaterializeLine = !hasFollowingLineBreak && !view.state.readOnly;
+
+  // The closing fence is visually folded. Materialize/select the line after
+  // it so clicks in the visual gap can never append code inside the fence.
+  view.dispatch({
+    changes: canMaterializeLine
+      ? { from: afterFence, insert: "\n" }
+      : undefined,
+    scrollIntoView: true,
+    selection: EditorSelection.cursor(
+      afterFence + (hasFollowingLineBreak || canMaterializeLine ? 1 : 0),
+    ),
+  });
+  view.focus();
+}
+
+class CodeBlockExitWidget extends WidgetType {
+  constructor(
+    readonly afterFence: number,
+    readonly labels: CodeBlockPreviewLabels,
+    readonly language: string,
+    readonly languageFrom: number,
+    readonly languageTo: number,
+    readonly languages: readonly MarkraCodeLanguageOption[],
+    readonly openingMarkTo: number,
+  ) {
+    super();
+  }
+
+  eq(other: CodeBlockExitWidget) {
+    return (
+      this.afterFence === other.afterFence &&
+      this.language === other.language &&
+      this.languageFrom === other.languageFrom &&
+      this.languageTo === other.languageTo &&
+      JSON.stringify(this.labels) === JSON.stringify(other.labels) &&
+      JSON.stringify(this.languages) === JSON.stringify(other.languages)
+    );
+  }
+
+  ignoreEvent() {
+    return true;
+  }
+
+  toDOM(view: CodeMirrorView) {
+    const document = view.dom.ownerDocument;
+    const wrapper = document.createElement("span");
+    const exit = document.createElement("span");
+    const languageControl = document.createElement("span");
+    const language = document.createElement("select");
+    wrapper.className = "cm-markra-code-exit-wrap";
+    exit.className = "cm-markra-code-exit";
+    exit.setAttribute("aria-hidden", "true");
+    languageControl.className = "markra-code-language-control";
+    language.className = "markra-code-language-select";
+    language.ariaLabel = this.labels.language;
+    language.disabled = view.state.readOnly;
 
     const languageOptions = [...this.languages];
     if (
@@ -340,22 +421,14 @@ class CodeBlockHeaderWidget extends WidgetType {
       });
     });
 
-    copy.addEventListener("mousedown", (event) => event.stopPropagation());
-    copy.addEventListener("click", (event) => {
+    exit.addEventListener("mousedown", (event) => {
+      if (event.button !== 0 || view.state.readOnly) return;
       event.preventDefault();
       event.stopPropagation();
-      const clipboard = document.defaultView?.navigator.clipboard;
-      if (!clipboard?.writeText) return;
-      clipboard.writeText(this.code).then(() => {
-        copy.ariaLabel = this.labels.codeCopied;
-        copy.title = this.labels.codeCopied;
-        copy.dataset.copied = "true";
-      }).catch(() => undefined);
+      moveSelectionAfterCodeBlock(view, this.afterFence);
     });
-
     languageControl.append(language);
-    actions.append(languageControl, copy);
-    wrapper.append(label, actions);
+    wrapper.append(exit, languageControl);
     return wrapper;
   }
 }
@@ -678,6 +751,24 @@ const codeBlockKeymap = Prec.high(
   ]),
 );
 
+const codeBlockPointerHandlers = EditorView.domEventHandlers({
+  mousedown(event, view) {
+    if (event.button !== 0 || !(event.target instanceof Element)) return false;
+    const closingLine = event.target.closest<HTMLElement>(
+      ".cm-markra-code-closing-line",
+    );
+    const rawAfterFence = closingLine?.dataset.codeBlockEnd;
+    if (!closingLine || rawAfterFence === undefined) return false;
+    const afterFence = Number(rawAfterFence);
+    if (!Number.isInteger(afterFence)) return false;
+
+    event.preventDefault();
+    event.stopPropagation();
+    moveSelectionAfterCodeBlock(view, afterFence);
+    return true;
+  },
+});
+
 export function codeBlockPreviewPlugin(
   options: CodeBlockPreviewPluginOptions = {},
 ) {
@@ -741,8 +832,10 @@ export function codeBlockPreviewPlugin(
           const firstLine = state.doc.lineAt(node.from);
           const lastLine = state.doc.lineAt(node.to);
           const revealed = context.revealed("line");
+          const sourceRevealed =
+            isMermaidLanguage(parts.language) && revealed;
           if (
-            !revealed &&
+            !sourceRevealed &&
             parts.codeNode &&
             parts.code.trim() &&
             isMermaidLanguage(parts.language)
@@ -787,11 +880,11 @@ export function codeBlockPreviewPlugin(
             const line = state.doc.line(lineNumber);
             const roleClass =
               line.number === firstLine.number
-                ? revealed
+                ? sourceRevealed
                   ? "cm-markra-code-source-line"
                   : "cm-markra-code-header-line"
                 : parts.hasClosingFence && line.number === lastLine.number
-                  ? revealed
+                  ? sourceRevealed
                     ? "cm-markra-code-source-line"
                     : "cm-markra-code-closing-line"
                   : "cm-markra-code-content-line";
@@ -801,18 +894,37 @@ export function codeBlockPreviewPlugin(
               Decoration.line({
                 attributes: codeContentLine
                   ? { "data-code-line-number": String(codeLineNumber) }
-                  : undefined,
+                  : roleClass === "cm-markra-code-closing-line"
+                    ? {
+                        "data-code-block-active": String(revealed),
+                        "data-code-block-end": String(node.to),
+                      }
+                    : undefined,
                 class: `cm-markra-code-line ${roleClass}`,
               }).range(line.from),
             );
           }
 
-          if (!revealed && lineIntersects(firstLine, visibleRange)) {
+          if (!sourceRevealed && lineIntersects(firstLine, visibleRange)) {
             context.add(
               Decoration.replace({
                 widget: new CodeBlockHeaderWidget(
                   parts.code,
                   parts.language || plainTextLabel,
+                  labels,
+                ),
+              }).range(node.from, firstLine.to),
+            );
+          }
+          if (
+            !sourceRevealed &&
+            parts.hasClosingFence &&
+            lineIntersects(lastLine, visibleRange)
+          ) {
+            context.add(
+              Decoration.replace({
+                widget: new CodeBlockExitWidget(
+                  node.to,
                   labels,
                   parts.language,
                   parts.languageFrom,
@@ -820,16 +932,7 @@ export function codeBlockPreviewPlugin(
                   languages,
                   parts.openingMarkTo,
                 ),
-              }).range(node.from, firstLine.to),
-            );
-          }
-          if (
-            !revealed &&
-            parts.hasClosingFence &&
-            lineIntersects(lastLine, visibleRange)
-          ) {
-            context.add(
-              Decoration.replace({}).range(lastLine.from, node.to),
+              }).range(lastLine.from, node.to),
             );
           }
 
@@ -870,6 +973,7 @@ export function codeBlockPreviewPlugin(
         },
       }),
       codeBlockKeymap,
+      codeBlockPointerHandlers,
       codeBlockTheme,
     ],
   });
