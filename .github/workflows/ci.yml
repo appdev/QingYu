@@ -47,19 +47,19 @@ jobs:
             shard: "2/2"
           - label: "@markra/app, editor 1/2"
             package: "@markra/app"
-            args: "src/components/MarkdownPaper.test.tsx"
+            args: "src/components/CodeMirrorPaperSurface.test.tsx"
             shard: "1/2"
           - label: "@markra/app, editor 2/2"
             package: "@markra/app"
-            args: "src/components/MarkdownPaper.test.tsx"
+            args: "src/components/CodeMirrorPaperSurface.test.tsx"
             shard: "2/2"
           - label: "@markra/app, remaining 1/2"
             package: "@markra/app"
-            args: "--exclude=src/App.test.tsx --exclude=src/components/MarkdownPaper.test.tsx --shard=1/2"
+            args: "--exclude=src/App.test.tsx --exclude=src/components/CodeMirrorPaperSurface.test.tsx --shard=1/2"
             shard: ""
           - label: "@markra/app, remaining 2/2"
             package: "@markra/app"
-            args: "--exclude=src/App.test.tsx --exclude=src/components/MarkdownPaper.test.tsx --shard=2/2"
+            args: "--exclude=src/App.test.tsx --exclude=src/components/CodeMirrorPaperSurface.test.tsx --shard=2/2"
             shard: ""
           - label: "@markra/editor"
             package: "@markra/editor"
@@ -108,7 +108,7 @@ jobs:
       - name: Test
         env:
           MARKRA_APP_TEST_SHARD: ${{ matrix.shard }}
-        run: pnpm --filter "${{ matrix.package }}" test ${{ matrix.args }}
+        run: pnpm --filter "${{ matrix.package }}" test -- ${{ matrix.args }}
 
   frontend-test-typecheck:
     name: Frontend Test Typecheck
