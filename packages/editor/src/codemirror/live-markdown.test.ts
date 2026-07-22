@@ -112,6 +112,31 @@ describe("liveMarkdown", () => {
     expect(renderedLines(view)[0]).toBe("# Project notes");
   });
 
+  it.each([
+    ["bold", "Before **synthetic** after", "synthetic"],
+    ["italic", "Before *synthetic* after", "synthetic"],
+    ["strikethrough", "Before ~~synthetic~~ after", "synthetic"],
+    ["highlight", "Before ==synthetic== after", "synthetic"],
+    ["inline code", "Before `synthetic` after", "synthetic"],
+  ])("reveals the complete %s wrapper when its text is active", (_label, doc, text) => {
+    const view = createView({
+      doc,
+      anchor: doc.indexOf(text) + Math.floor(text.length / 2),
+    });
+
+    expect(renderedLines(view)[0]).toBe(doc);
+  });
+
+  it("reveals every marker in a nested bold and italic wrapper", () => {
+    const doc = "Before ***synthetic*** after";
+    const view = createView({
+      doc,
+      anchor: doc.indexOf("synthetic") + 4,
+    });
+
+    expect(renderedLines(view)[0]).toBe(doc);
+  });
+
   it("renders every line when the editor does not have focus", () => {
     const view = createView({ anchor: 5, focus: false });
 

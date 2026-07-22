@@ -76,6 +76,19 @@ const HIDEABLE_MARKS = new Set([
 ]);
 
 const LINK_SYNTAX = new Set(["LinkMark", "LinkTitle", "URL"]);
+const INLINE_WRAPPER_MARKS = new Set([
+  "CodeMark",
+  "EmphasisMark",
+  "HighlightMark",
+  "StrikethroughMark",
+]);
+const INLINE_WRAPPERS = new Set([
+  "Emphasis",
+  "Highlight",
+  "InlineCode",
+  "Strikethrough",
+  "StrongEmphasis",
+]);
 const PREFORMATTED_BLOCKS = new Set([
   "BlockMath",
   "CodeBlock",
@@ -476,6 +489,15 @@ function buildDecorations(
       ) {
         revealFrom = parent.from;
         revealTo = parent.to;
+        revealScope = "node";
+      }
+    } else if (INLINE_WRAPPER_MARKS.has(node.name)) {
+      const wrapper = node.node.parent;
+      if (wrapper && INLINE_WRAPPERS.has(wrapper.name)) {
+        // Paired delimiters must reveal as one unit. Revealing each mark by
+        // itself leaves an orphan closing marker when the text is active.
+        revealFrom = wrapper.from;
+        revealTo = wrapper.to;
         revealScope = "node";
       }
     }
