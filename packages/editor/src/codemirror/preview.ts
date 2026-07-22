@@ -491,6 +491,15 @@ function buildDecorations(
         revealTo = parent.to;
         revealScope = "node";
       }
+    } else if (node.name === "HeaderMark") {
+      const heading = node.node.parent;
+      if (heading && HEADING_CLASSES[heading.name]) {
+        // Heading source follows the same edit affordance as paired inline
+        // wrappers: entering its rendered text reveals the complete marker.
+        revealFrom = heading.from;
+        revealTo = heading.to;
+        revealScope = "heading";
+      }
     } else if (INLINE_WRAPPER_MARKS.has(node.name)) {
       const wrapper = node.node.parent;
       if (wrapper && INLINE_WRAPPERS.has(wrapper.name)) {

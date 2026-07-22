@@ -86,6 +86,18 @@ afterEach(() => {
 });
 
 describe("liveMarkdown", () => {
+  it("keeps a heading marker visible immediately after it is typed", () => {
+    const view = createView({ doc: "", anchor: 0 });
+
+    view.dispatch({
+      changes: { from: 0, insert: "#" },
+      selection: { anchor: 1 },
+    });
+
+    expect(view.state.doc.toString()).toBe("#");
+    expect(renderedLines(view)).toEqual(["#"]);
+  });
+
   it("hides Markdown markers outside the active line", () => {
     const view = createView();
 
@@ -96,12 +108,12 @@ describe("liveMarkdown", () => {
     ]);
   });
 
-  it("keeps Markdown markers hidden while the cursor edits rendered text", () => {
+  it("reveals the heading marker while the cursor edits heading text", () => {
     const view = createView();
 
     view.dispatch({ selection: { anchor: 5 } });
 
-    expect(renderedLines(view)[0]).toBe("Project notes");
+    expect(renderedLines(view)[0]).toBe("# Project notes");
   });
 
   it("reveals only a syntax marker that the cursor enters directly", () => {
@@ -259,7 +271,7 @@ describe("liveMarkdown", () => {
     expect(syntaxTreeIterations).toHaveLength(0);
   });
 
-  it("reveals every line touched by a multi-selection", () => {
+  it("reveals heading source at every heading cursor in a multi-selection", () => {
     const doc = "# One\n\n# Two\n\nRest";
     const selection = EditorSelection.create([
       EditorSelection.cursor(2),
@@ -269,7 +281,7 @@ describe("liveMarkdown", () => {
 
     expect(view.hasFocus).toBe(true);
     expect(view.state.selection.ranges).toHaveLength(2);
-    expect(renderedLines(view)).toEqual(["One", "", "Two", "", "Rest"]);
+    expect(renderedLines(view)).toEqual(["# One", "", "# Two", "", "Rest"]);
   });
 
   it("provides the view and syntax node name to custom reveal policies", () => {
