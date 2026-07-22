@@ -112,8 +112,13 @@ describe("editor stylesheet", () => {
     expect(languageControlRule).toContain("top: 12px");
     expect(languageControlRule).toContain("right: 0");
     expect(languageControlRule).toContain("padding: 0");
+    expect(languageControlRule).toContain("opacity: 1 !important");
+    expect(languageControlRule).toContain("pointer-events: auto !important");
     expect(styles).toContain(
       '.cm-markra-code-closing-line[data-code-block-active="true"] .markra-code-language-control',
+    );
+    expect(styles).toContain(
+      '.markdown-paper .cm-line.cm-markra-code-closing-line[data-code-block-active="true"] .markra-code-language-control',
     );
   });
 

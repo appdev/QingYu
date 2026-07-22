@@ -1092,7 +1092,7 @@
   .markdown-paper .cm-content:has(.cm-markra-code-line:hover)
     .cm-markra-code-closing-line
     .markra-code-language-control,
-  .markdown-paper .cm-markra-code-closing-line[data-code-block-active="true"] .markra-code-language-control,
+  .markdown-paper .cm-line.cm-markra-code-closing-line[data-code-block-active="true"] .markra-code-language-control,
   .markdown-paper .cm-markra-code-closing-line .markra-code-language-control:focus-within {
     opacity: 1 !important;
     pointer-events: auto !important;
@@ -1221,6 +1221,8 @@
     cursor: var(--editor-text-cursor);
   }
 
+  /* Keep the selector visible like the original editor; WebView hover/reveal
+     state is not reliable enough for the only route to this control. */
   .markdown-paper .cm-line.cm-markra-code-closing-line .markra-code-language-control {
     position: absolute !important;
     top: 12px;
@@ -1228,9 +1230,9 @@
     z-index: 4;
     display: flex !important;
     padding: 0 !important;
-    opacity: 0 !important;
-    pointer-events: none !important;
-    transform: translateY(-2px);
+    opacity: 1 !important;
+    pointer-events: auto !important;
+    transform: translateY(0);
     transition: opacity 150ms ease-out, transform 150ms ease-out;
   }
 
