@@ -1,5 +1,10 @@
 import { forceParsing } from "@codemirror/language";
-import { EditorSelection, EditorState, type Extension } from "@codemirror/state";
+import {
+  EditorSelection,
+  EditorState,
+  type Extension,
+  type SelectionRange,
+} from "@codemirror/state";
 import { drawSelection, EditorView } from "@codemirror/view";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { liveMarkdown } from "./index.ts";
@@ -39,7 +44,7 @@ const views: EditorView[] = [];
 interface ViewOptions {
   doc?: string;
   anchor?: number;
-  selection?: EditorSelection;
+  selection?: EditorSelection | SelectionRange;
   focus?: boolean;
   extensions?: Extension[];
 }

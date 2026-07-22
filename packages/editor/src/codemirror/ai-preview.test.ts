@@ -23,6 +23,11 @@ import {
 import "./dom.test-support.ts";
 
 const views: EditorView[] = [];
+type ReplacementResult = Exclude<AiDiffResult, { type: "error" }> & {
+  from: number;
+  to: number;
+  type: "replace";
+};
 
 function createView(
   doc = "Before Original After",
@@ -49,7 +54,11 @@ function createView(
   return view;
 }
 
-function replacementResult(doc: string, original: string, replacement: string): AiDiffResult {
+function replacementResult(
+  doc: string,
+  original: string,
+  replacement: string,
+): ReplacementResult {
   const from = doc.indexOf(original);
   return {
     from,
