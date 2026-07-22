@@ -1,3 +1,9 @@
+## [2.0.0-alpha.4](https://github.com/markrahq/markra/compare/v2.0.0-alpha.3...v2.0.0-alpha.4) (2026-07-22)
+
+### Bug Fixes
+
+* **build:** support desktop ES2022 target ([6a61c91](https://github.com/markrahq/markra/commit/6a61c91598e3b3dd992e8b140dad5c068a58f91c))
+
 ## [2.0.0-alpha.3](https://github.com/markrahq/markra/compare/v2.0.0-alpha.2...v2.0.0-alpha.3) (2026-07-22)
 
 ### Bug Fixes
