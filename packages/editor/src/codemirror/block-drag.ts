@@ -157,6 +157,17 @@ function listMarkerMatch(state: CodeMirrorState, block: CodeMirrorBlockRange) {
   );
 }
 
+function findLastListBlockAtDepth(
+  blocks: readonly CodeMirrorBlockRange[],
+  depth: number,
+) {
+  for (let index = blocks.length - 1; index >= 0; index -= 1) {
+    const block = blocks[index];
+    if (block?.name === "ListItem" && block.depth === depth) return block;
+  }
+  return undefined;
+}
+
 function normalizedListDrop(
   state: CodeMirrorState,
   blocks: readonly CodeMirrorBlockRange[],
@@ -193,9 +204,7 @@ function normalizedListDrop(
 
   const contextEnd = side === "after" ? targetIndex : targetIndex - 1;
   const preceding = stationary.slice(0, contextEnd + 1);
-  const parent = preceding.findLast(
-    (block) => block.name === "ListItem" && block.depth === depth - 1,
-  );
+  const parent = findLastListBlockAtDepth(preceding, depth - 1);
   const parentMarker = parent ? listMarkerMatch(state, parent) : null;
   if (parentMarker) {
     return {
@@ -206,9 +215,7 @@ function normalizedListDrop(
     };
   }
 
-  const reference = preceding.findLast(
-    (block) => block.name === "ListItem" && block.depth === depth,
-  );
+  const reference = findLastListBlockAtDepth(preceding, depth);
   return {
     depth,
     indentation: reference
