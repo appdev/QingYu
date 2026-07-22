@@ -27,9 +27,11 @@ import type {
 } from "../clipboard-asset-types.ts";
 import { looksLikeMarkdownSource } from "../markdown-source-detection.ts";
 import {
+  codeMirrorSelectionIsInsideFencedCode,
   serializeCodeMirrorMarkdownImage,
   serializeCodeMirrorMarkdownLink,
 } from "./controller.ts";
+import { detectCodePaste, type DetectedCodePaste } from "./code-paste.ts";
 import { convertCodeMirrorClipboardHtml } from "./html-paste.ts";
 import { defineMarkraPlugin } from "./plugin.ts";
 
@@ -453,6 +455,64 @@ function insertHtmlPaste(
   return true;
 }
 
+function longestBacktickRun(code: string) {
+  return Array.from(code.matchAll(/`+/gu)).reduce(
+    (longest, match) => Math.max(longest, match[0].length),
+    0,
+  );
+}
+
+function codeBlockPaddingBefore(state: EditorState, position: number) {
+  if (position === 0) return "";
+  const before = state.sliceDoc(0, position);
+  if (before.endsWith("\n\n")) return "";
+  return before.endsWith("\n") ? "\n" : "\n\n";
+}
+
+function codeBlockPaddingAfter(state: EditorState, position: number) {
+  if (position === state.doc.length) return "";
+  const after = state.sliceDoc(position);
+  if (after.startsWith("\n\n")) return "";
+  return after.startsWith("\n") ? "\n" : "\n\n";
+}
+
+function insertDetectedCodePaste(
+  view: CodeMirrorView,
+  event: ClipboardEvent,
+  paste: DetectedCodePaste,
+) {
+  const { from, to } = view.state.selection.main;
+  // Snippets can contain Markdown fences, so the outer fence must be longer
+  // than every backtick run in the pasted source.
+  const fence = "`".repeat(Math.max(3, longestBacktickRun(paste.code) + 1));
+  const before = codeBlockPaddingBefore(view.state, from);
+  const after = codeBlockPaddingAfter(view.state, to);
+  const opening = `${fence}${paste.language}\n`;
+  const block = `${opening}${paste.code}\n${fence}`;
+  event.preventDefault();
+  view.dispatch({
+    changes: { from, insert: `${before}${block}${after}`, to },
+    scrollIntoView: true,
+    selection: EditorSelection.cursor(
+      from + before.length + opening.length + paste.code.length,
+    ),
+    userEvent: "input.paste",
+  });
+  view.focus();
+  return true;
+}
+
+function insertCodePaste(view: CodeMirrorView, event: ClipboardEvent) {
+  if (codeMirrorSelectionIsInsideFencedCode(view.state)) return false;
+  const text = event.clipboardData?.getData("text/plain") ?? "";
+  const paste = detectCodePaste({
+    editorData: event.clipboardData?.getData("vscode-editor-data") ?? "",
+    html: event.clipboardData?.getData("text/html") ?? "",
+    text,
+  });
+  return paste ? insertDetectedCodePaste(view, event, paste) : false;
+}
+
 const droppedPlainMarkdownImagePattern = /^!\[((?:\\.|[^\]\\])*)\]\(([^)\s]+)\)$/u;
 
 function droppedMarkdownImage(
@@ -546,6 +606,7 @@ export function codeMirrorClipboardAssetsPlugin(
             );
             return true;
           }
+          if (insertCodePaste(view, event)) return true;
           return insertHtmlPaste(view, event, field, options.saveRemoteImage);
         },
         drop(event, view) {

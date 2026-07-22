@@ -46,7 +46,12 @@ function fileList(files: readonly File[]) {
 
 function paste(
   view: EditorView,
-  options: { files?: readonly File[]; html?: string; text?: string },
+  options: {
+    editorData?: string;
+    files?: readonly File[];
+    html?: string;
+    text?: string;
+  },
 ) {
   const event = new Event("paste", { bubbles: true, cancelable: true });
   Object.defineProperty(event, "clipboardData", {
@@ -55,6 +60,7 @@ function paste(
       getData: (type: string) => {
         if (type === "text/html") return options.html ?? "";
         if (type === "text/plain") return options.text ?? "";
+        if (type === "vscode-editor-data") return options.editorData ?? "";
         return "";
       },
     },
@@ -190,7 +196,7 @@ describe("codeMirrorClipboardAssetsPlugin", () => {
     expect(view.state.doc.toString()).toContain("Outro");
   });
 
-  it("preserves plain code copied with syntax-highlighted HTML", () => {
+  it("wraps code copied with syntax-highlighted HTML in a fenced block", () => {
     const code = [
       "const mock_value = items[0];",
       'if (mock_value === "synthetic") {',
@@ -212,7 +218,54 @@ describe("codeMirrorClipboardAssetsPlugin", () => {
     });
 
     expect(event.defaultPrevented).toBe(true);
-    expect(view.state.doc.toString()).toBe(code);
+    expect(view.state.doc.toString()).toBe(`\`\`\`javascript\n${code}\n\`\`\``);
+  });
+
+  it("wraps high-confidence plain text code at a block boundary", () => {
+    const code = [
+      "const mockValue = items[0];",
+      "if (mockValue) {",
+      "  console.log(mockValue);",
+      "}",
+    ].join("\n");
+    const view = createView("Intro");
+
+    const event = paste(view, { text: code });
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(view.state.doc.toString()).toBe(
+      `Intro\n\n\`\`\`javascript\n${code}\n\`\`\``,
+    );
+  });
+
+  it("uses a longer fence when pasted code contains Markdown backticks", () => {
+    const code = 'const fence = "```";\nconsole.log(fence);';
+    const view = createView("");
+
+    paste(view, {
+      editorData: JSON.stringify({ mode: "javascript", version: 1 }),
+      text: code,
+    });
+
+    expect(view.state.doc.toString()).toBe(
+      `\`\`\`\`javascript\n${code}\n\`\`\`\``,
+    );
+  });
+
+  it("does not nest an automatically detected block inside fenced code", () => {
+    const view = createView("```ts\nconst before = true;\n```");
+    view.dispatch({ selection: EditorSelection.cursor(6) });
+    const original = view.state.doc.toString();
+
+    paste(view, {
+      editorData: JSON.stringify({ mode: "typescript", version: 1 }),
+      text: "const one = 1;\nconst two = 2;\n",
+    });
+
+    expect(view.state.doc.toString()).toBe(
+      original.replace("const before", "const one = 1;\nconst two = 2;\nconst before"),
+    );
+    expect(view.state.doc.toString().match(/```/gu)).toHaveLength(2);
   });
 
   it("inserts existing file-tree image drags without saving again", () => {
