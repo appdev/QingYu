@@ -1,3 +1,17 @@
+## [2.0.0-alpha.6](https://github.com/markrahq/markra/compare/v2.0.0-alpha.5...v2.0.0-alpha.6) (2026-07-22)
+
+### Features
+
+* **editor:** detect pasted code blocks ([2f95a5a](https://github.com/markrahq/markra/commit/2f95a5ad5dfc0e5e38a2997921070b5956f277d2))
+* **editor:** show pointer for modifier link navigation ([e755b9c](https://github.com/markrahq/markra/commit/e755b9ca9613e17af3970d1afed26c4086423cb9))
+
+### Bug Fixes
+
+* **editor:** align code block borders ([7ea3dc8](https://github.com/markrahq/markra/commit/7ea3dc8d506d63870b23296e878090236e1fd585))
+* **editor:** keep code language selector visible ([45405f9](https://github.com/markrahq/markra/commit/45405f9ef19e7433c92ba91f3e59b99866ff8f0f))
+* **editor:** let live preview resolve link targets through the host app ([#560](https://github.com/markrahq/markra/issues/560)) ([ecd7dda](https://github.com/markrahq/markra/commit/ecd7ddab311309c06b0e7e49bf456133a1e2daea)), closes [markrahq/markra#559](https://github.com/markrahq/markra/issues/559)
+* **editor:** stabilize link and image input boundaries ([cc23c91](https://github.com/markrahq/markra/commit/cc23c9197f50d7bdfd5f6a0d8ba636896165e5d2))
+
 ## [2.0.0-alpha.5](https://github.com/markrahq/markra/compare/v2.0.0-alpha.4...v2.0.0-alpha.5) (2026-07-22)
 
 ### Features
