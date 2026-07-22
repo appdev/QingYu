@@ -55,14 +55,16 @@ export function readCodeMirrorBlockRanges(
     });
   }
 
-  const appendListItems = (list: ReturnType<typeof syntaxTree>["topNode"]) => {
+  const appendListItems = (
+    list: ReturnType<typeof syntaxTree>["topNode"],
+    depth: number,
+  ) => {
     let child = list.firstChild;
     while (child) {
       if (child.name === "ListItem") {
         const line = state.doc.lineAt(child.from);
-        const indentation = /^\s*/u.exec(line.text)?.[0].length ?? 0;
         ranges.push({
-          depth: Math.floor(indentation / 2),
+          depth,
           from: line.from,
           name: child.name,
           to: state.doc.lineAt(child.to).to,
@@ -70,7 +72,7 @@ export function readCodeMirrorBlockRanges(
         let nested = child.firstChild;
         while (nested) {
           if (nested.name === "BulletList" || nested.name === "OrderedList") {
-            appendListItems(nested);
+            appendListItems(nested, depth + 1);
           }
           nested = nested.nextSibling;
         }
@@ -84,7 +86,7 @@ export function readCodeMirrorBlockRanges(
     const next = node.nextSibling;
     if (!frontmatter || node.from >= frontmatter.to) {
       if (node.name === "BulletList" || node.name === "OrderedList") {
-        appendListItems(node);
+        appendListItems(node, 0);
       } else {
         const from = state.doc.lineAt(node.from).from;
         const to = state.doc.lineAt(node.to).to;
@@ -121,6 +123,100 @@ function blockByFrom(state: CodeMirrorState, from: number) {
   return readCodeMirrorBlockRanges(state).find((range) => range.from === from) ?? null;
 }
 
+function minimalDocumentChange(current: string, next: string) {
+  let from = 0;
+  while (
+    from < current.length &&
+    from < next.length &&
+    current[from] === next[from]
+  ) {
+    from += 1;
+  }
+
+  let currentTo = current.length;
+  let nextTo = next.length;
+  while (
+    currentTo > from &&
+    nextTo > from &&
+    current[currentTo - 1] === next[nextTo - 1]
+  ) {
+    currentTo -= 1;
+    nextTo -= 1;
+  }
+
+  return {
+    from,
+    insert: next.slice(from, nextTo),
+    to: currentTo,
+  };
+}
+
+function listMarkerMatch(state: CodeMirrorState, block: CodeMirrorBlockRange) {
+  return /^(\s*)([-+*]|\d+[.)])(\s+)/u.exec(
+    state.doc.lineAt(block.from).text,
+  );
+}
+
+function normalizedListDrop(
+  state: CodeMirrorState,
+  blocks: readonly CodeMirrorBlockRange[],
+  source: CodeMirrorBlockRange,
+  target: CodeMirrorBlockRange,
+  side: CodeMirrorBlockDropSide,
+  requestedDepth: number,
+) {
+  const stationary = blocks.filter(
+    (block) => block.from < source.from || block.from >= source.to,
+  );
+  const targetIndex = stationary.findIndex((block) => block.from === target.from);
+  const previous = side === "after"
+    ? target
+    : stationary[targetIndex - 1] ?? null;
+  // Horizontal pointer movement can request a level whose parent does not
+  // exist. Clamp it here so the moved `-` remains a parsed list marker.
+  const maximumDepth = previous?.name === "ListItem"
+    ? (previous.depth ?? 0) + 1
+    : target.name === "ListItem"
+      ? target.depth ?? 0
+      : 0;
+  const depth = Math.min(Math.max(0, requestedDepth), maximumDepth);
+
+  const sameLevel = [target, previous].find(
+    (block) => block?.name === "ListItem" && block.depth === depth,
+  );
+  if (sameLevel) {
+    return {
+      depth,
+      indentation: listMarkerMatch(state, sameLevel)?.[1] ?? "",
+    };
+  }
+
+  const contextEnd = side === "after" ? targetIndex : targetIndex - 1;
+  const preceding = stationary.slice(0, contextEnd + 1);
+  const parent = preceding.findLast(
+    (block) => block.name === "ListItem" && block.depth === depth - 1,
+  );
+  const parentMarker = parent ? listMarkerMatch(state, parent) : null;
+  if (parentMarker) {
+    return {
+      depth,
+      // Ordered markers need wider child indentation than `- `, so align to
+      // the parent's actual content column instead of assuming two spaces.
+      indentation: " ".repeat(parentMarker[0].length),
+    };
+  }
+
+  const reference = preceding.findLast(
+    (block) => block.name === "ListItem" && block.depth === depth,
+  );
+  return {
+    depth,
+    indentation: reference
+      ? listMarkerMatch(state, reference)?.[1] ?? "  ".repeat(depth)
+      : "  ".repeat(depth),
+  };
+}
+
 export function moveCodeMirrorBlock(
   view: CodeMirrorView,
   sourceFrom: number,
@@ -141,27 +237,41 @@ export function moveCodeMirrorBlock(
   }
 
   const document = view.state.doc.toString();
+  const movingIntoList = source.name !== "ListItem" && target.name === "ListItem";
+  const drop = targetDepth !== undefined &&
+      (source.name === "ListItem" || movingIntoList)
+    ? normalizedListDrop(
+        view.state,
+        blocks,
+        source,
+        target,
+        side,
+        targetDepth,
+      )
+    : null;
   let sourceMarkdown = document.slice(source.from, source.to);
-  if (source.name === "ListItem" && targetDepth !== undefined) {
-    const depthDelta = Math.max(0, targetDepth) - (source.depth ?? 0);
-    if (depthDelta !== 0) {
+  if (source.name === "ListItem" && drop) {
+    const sourceIndentation = /^\s*/u.exec(sourceMarkdown)?.[0].length ?? 0;
+    const indentationDelta = drop.indentation.length - sourceIndentation;
+    if (indentationDelta !== 0) {
       sourceMarkdown = sourceMarkdown
         .split("\n")
         .map((line) => {
           const indentation = /^\s*/u.exec(line)?.[0].length ?? 0;
-          const nextIndentation = Math.max(0, indentation + depthDelta * 2);
+          const nextIndentation = Math.max(0, indentation + indentationDelta);
           return `${" ".repeat(nextIndentation)}${line.slice(indentation)}`;
         })
         .join("\n");
     }
   }
-  const movingIntoList = source.name !== "ListItem" && target.name === "ListItem";
   if (movingIntoList) {
     const targetLine = view.state.doc.lineAt(target.from).text;
     const marker = /^(\s*)([-+*]|\d+[.)])\s+/u.exec(targetLine);
     if (marker) {
-      const prefix = `${marker[1] ?? ""}${marker[2] ?? "-"} `;
-      const continuation = `${marker[1] ?? ""}  `;
+      const indentation = drop?.indentation ?? marker[1] ?? "";
+      const sourceMarker = marker[2] ?? "-";
+      const prefix = `${indentation}${sourceMarker} `;
+      const continuation = `${indentation}${" ".repeat(sourceMarker.length + 1)}`;
       sourceMarkdown = sourceMarkdown
         .split("\n")
         .map((line, index) => index === 0 ? `${prefix}${line}` : `${continuation}${line}`)
@@ -215,7 +325,9 @@ export function moveCodeMirrorBlock(
   // A single transaction keeps whitespace normalization and the move in one
   // undo step, including when a paragraph becomes a list item.
   view.dispatch({
-    changes: { from: 0, insert: nextDocument, to: view.state.doc.length },
+    // Keep the unchanged prefix and suffix so CodeMirror can incrementally
+    // preserve the parsed list tree in long documents after a nested move.
+    changes: minimalDocumentChange(document, nextDocument),
     scrollIntoView: true,
     selection: EditorSelection.cursor(insertedFrom),
     userEvent: "move",

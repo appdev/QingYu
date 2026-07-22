@@ -1,5 +1,5 @@
 import { history, undo } from "@codemirror/commands";
-import { EditorSelection, EditorState } from "@codemirror/state";
+import { EditorSelection, EditorState, type Extension } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { afterEach, describe, expect, it } from "vitest";
 import {
@@ -13,7 +13,11 @@ import "./dom.test-support.ts";
 
 const views: EditorView[] = [];
 
-function createView(doc: string, readOnly = false) {
+function createView(
+  doc: string,
+  readOnly = false,
+  extensions: readonly Extension[] = [],
+) {
   const parent = document.createElement("div");
   document.body.append(parent);
   const view = new EditorView({
@@ -27,6 +31,7 @@ function createView(doc: string, readOnly = false) {
           slashMenu: true,
         }),
         EditorState.readOnly.of(readOnly),
+        ...extensions,
       ],
       selection: EditorSelection.cursor(doc.length),
     }),
@@ -86,6 +91,132 @@ describe("codeMirrorBlockDragPlugin", () => {
 
     expect(nested && last && moveCodeMirrorBlock(view, nested.from, last.from, "before", 0)).toBe(true);
     expect(view.state.doc.toString()).toBe("- First\n- Nested\n- Last");
+  });
+
+  it("preserves parsed child-item styling by changing only the moved region", () => {
+    const doc = [
+      "- **First title**: Body",
+      "- Middle item",
+      "- **Second title**: Body",
+      "- **Third title**: Body",
+      "",
+      "After",
+    ].join("\n");
+    const changedRanges: Array<{ from: number; to: number }> = [];
+    const view = createView(doc, false, [
+      EditorView.updateListener.of((update) => {
+        if (!update.docChanged) return;
+        update.changes.iterChangedRanges((from, to) => {
+          changedRanges.push({ from, to });
+        });
+      }),
+    ]);
+    const [first, , second] = readCodeMirrorBlockRanges(view.state);
+
+    expect(
+      first && second &&
+        moveCodeMirrorBlock(view, second.from, first.from, "after", 1),
+    ).toBe(true);
+    expect(view.state.doc.toString()).toBe([
+      "- **First title**: Body",
+      "  - **Second title**: Body",
+      "- Middle item",
+      "- **Third title**: Body",
+      "",
+      "After",
+    ].join("\n"));
+    expect(changedRanges).toHaveLength(1);
+    expect(changedRanges[0]?.from).toBeGreaterThan(0);
+    expect(changedRanges[0]?.to).toBeLessThan(doc.length);
+
+    const childLine = Array.from(
+      view.dom.querySelectorAll<HTMLElement>(".cm-markra-list-item"),
+    ).find((line) => line.textContent === "Second title: Body");
+    expect(childLine?.getAttribute("data-list-depth")).toBe("1");
+    expect(childLine?.getAttribute("data-markra-list-source")).toBe("hidden");
+  });
+
+  it("clamps a child drop to the deepest available parent level", () => {
+    const view = createView([
+      "- **First title**: Body",
+      "- Middle item",
+      "- **Moved title**: Body",
+      "- Last item",
+    ].join("\n"));
+    const [first, , source] = readCodeMirrorBlockRanges(view.state);
+
+    expect(
+      source && first && moveCodeMirrorBlock(
+        view,
+        source.from,
+        first.from,
+        "after",
+        3,
+      ),
+    ).toBe(true);
+    expect(view.state.doc.toString()).toBe([
+      "- **First title**: Body",
+      "  - **Moved title**: Body",
+      "- Middle item",
+      "- Last item",
+    ].join("\n"));
+    const movedLine = Array.from(
+      view.dom.querySelectorAll<HTMLElement>(".cm-line"),
+    ).find((line) => line.textContent?.includes("Moved title"));
+    expect(movedLine?.getAttribute("data-list-depth")).toBe("1");
+    expect(movedLine?.getAttribute("data-markra-list-source")).toBe("hidden");
+  });
+
+  it("uses the parent marker width when nesting below an ordered item", () => {
+    const view = createView([
+      "10. Ordered parent",
+      "- **Moved title**: Body",
+      "- Last item",
+    ].join("\n"));
+    const [parent, source] = readCodeMirrorBlockRanges(view.state);
+
+    expect(
+      source && parent && moveCodeMirrorBlock(
+        view,
+        source.from,
+        parent.from,
+        "after",
+        1,
+      ),
+    ).toBe(true);
+    expect(view.state.doc.toString()).toBe([
+      "10. Ordered parent",
+      "    - **Moved title**: Body",
+      "- Last item",
+    ].join("\n"));
+    const movedLine = Array.from(
+      view.dom.querySelectorAll<HTMLElement>(".cm-line"),
+    ).find((line) => line.textContent?.includes("Moved title"));
+    expect(movedLine?.getAttribute("data-list-depth")).toBe("1");
+    expect(movedLine?.getAttribute("data-markra-list-source")).toBe("hidden");
+  });
+
+  it("turns a paragraph dropped as a child into a nested list item", () => {
+    const view = createView("- Parent\n\nChild paragraph\n\nAfter");
+    const [parent, child] = readCodeMirrorBlockRanges(view.state);
+
+    expect(
+      child && parent && moveCodeMirrorBlock(
+        view,
+        child.from,
+        parent.from,
+        "after",
+        1,
+      ),
+    ).toBe(true);
+    expect(view.state.doc.toString()).toBe(
+      "- Parent\n  - Child paragraph\n\nAfter",
+    );
+    const childLine = Array.from(
+      view.dom.querySelectorAll<HTMLElement>(".cm-line"),
+    ).find((line) => line.textContent === "Child paragraph");
+    expect(childLine?.getAttribute("data-list-depth")).toBe("1");
+    expect(childLine?.getAttribute("data-markra-list-source")).toBe("hidden");
   });
 
   it("renders block controls with the app-compatible icon structure", () => {
