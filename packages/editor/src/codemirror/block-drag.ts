@@ -449,7 +449,10 @@ function blockDecorations(
       attributes: { "data-markra-block-from": String(block.from) },
     }).range(block.from),
     Decoration.widget({
-      side: -1,
+      // Block tools must be the outermost start-of-line widget. Heading-level
+      // controls also use side -1, and their negative gutter margin would
+      // otherwise pull the drag handle back over the H1-H6 button.
+      side: -2,
       widget: new BlockToolbarWidget(block.from, labels),
     }).range(block.from),
   ]);

@@ -2119,10 +2119,13 @@
   }
 
   .markdown-paper .markra-heading-level-control {
-    position: relative;
+    position: absolute;
+    left: -28px;
+    top: calc(50% + var(--markra-heading-toggle-center-offset));
+    z-index: 5;
     display: inline-grid;
-    margin-right: 0.5rem;
-    vertical-align: 0.18em;
+    margin: 0;
+    transform: translateY(-50%);
   }
 
   .markdown-paper .markra-heading-level-button {
@@ -2212,12 +2215,12 @@
     --markra-heading-toggle-center-offset: 0px;
   }
 
-  /* Heading fold and level controls already occupy the positions beside the
-     text. Anchor block tools in their own gutter slot so widget order cannot
-     make the controls overlap. */
+  /* These controls are all absolutely positioned. Keeping them out of the
+     line layout prevents a pointer-down from moving heading text before the
+     matching pointer-up, which browsers can misread as a drag selection. */
   .markdown-paper .markra-heading-toggle-heading > .cm-markra-block-toolbar {
     position: absolute !important;
-    left: -78px;
+    left: -104px;
     margin: 0 !important;
     top: calc(50% + var(--markra-heading-toggle-center-offset));
     transform: translateY(-50%);
@@ -2241,7 +2244,7 @@
   .markdown-paper .markra-heading-toggle-button {
     @apply absolute inline-flex size-5 cursor-pointer items-center justify-center rounded-sm border-0 bg-transparent p-0 outline-none transition-[opacity,color,background-color] duration-150 ease-out focus-visible:bg-(--bg-hover) focus-visible:outline-none;
     color: color-mix(in srgb, var(--editor-text-secondary) 62%, transparent);
-    left: -28px;
+    left: -54px;
     display: inline-flex !important;
     margin: 0 !important;
     padding: 0 !important;

@@ -223,7 +223,7 @@ describe("editor stylesheet", () => {
 
     expect(headingToolbarRuleStart).toBeGreaterThanOrEqual(0);
     expect(headingToolbarRule).toContain("position: absolute !important");
-    expect(headingToolbarRule).toContain("left: -78px");
+    expect(headingToolbarRule).toContain("left: -104px");
     expect(headingToolbarRule).toContain("margin: 0 !important");
     expect(headingToolbarRule).toContain(
       "top: calc(50% + var(--markra-heading-toggle-center-offset))",
@@ -411,22 +411,35 @@ describe("editor stylesheet", () => {
     expect(styles).toContain("list-style-type: square;");
   });
 
-  it("shows a quiet inline level list control for the active rendered heading", () => {
+  it("keeps the active heading-level control out of the editable text layout", () => {
     const styles = readFileSync(`${process.cwd()}/src/styles.css`, "utf8");
     const labelStart = styles.indexOf(".markdown-paper .markra-heading-level-control {");
     const labelEnd = styles.indexOf(".markdown-paper .markra-heading-toggle-heading");
     const labelStyles = styles.slice(labelStart, labelEnd);
+    const foldButtonStart = styles.indexOf(
+      ".markdown-paper .markra-heading-toggle-button {",
+    );
+    const foldButtonEnd = styles.indexOf(
+      ".markdown-paper .markra-heading-toggle-heading:hover",
+      foldButtonStart,
+    );
+    const foldButtonStyles = styles.slice(foldButtonStart, foldButtonEnd);
 
     expect(labelStart).toBeGreaterThanOrEqual(0);
     expect(labelEnd).toBeGreaterThan(labelStart);
-    expect(labelStyles).toContain("position: relative");
+    expect(labelStyles).toContain("position: absolute");
     expect(labelStyles).toContain("display: inline-grid");
-    expect(labelStyles).toContain("margin-right");
+    expect(labelStyles).toContain("left: -28px");
+    expect(labelStyles).toContain("margin: 0");
+    expect(labelStyles).toContain(
+      "top: calc(50% + var(--markra-heading-toggle-center-offset))",
+    );
+    expect(labelStyles).toContain("transform: translateY(-50%)");
     expect(labelStyles).toContain(".markdown-paper .markra-heading-level-list");
     expect(labelStyles).toContain("[role=\"option\"]");
     expect(labelStyles).toContain(".markdown-paper .markra-heading-level-button::before");
-    expect(labelStyles).not.toContain("left:");
     expect(labelStyles).toContain("color: color-mix");
+    expect(foldButtonStyles).toContain("left: -54px");
   });
 
   it("keeps table add controls hidden until table hover or focus", () => {

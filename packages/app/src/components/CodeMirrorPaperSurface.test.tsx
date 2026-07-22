@@ -286,6 +286,41 @@ describe("CodeMirrorPaperSurface", () => {
     expect(screen.getByRole("menuitem", { name: "Table" })).toBeInTheDocument();
   });
 
+  it("keeps block controls before the heading-level control while editing", () => {
+    const onEditorReady = vi.fn();
+    const { container } = render(
+      <CodeMirrorPaperSurface
+        autoFocus={false}
+        initialContent="## Synthetic heading"
+        onEditorReady={onEditorReady}
+        onMarkdownChange={() => {}}
+      />,
+    );
+    const view = onEditorReady.mock.calls[0]?.[0] as EditorView;
+
+    act(() => {
+      view.focus();
+      view.dispatch({
+        selection: EditorSelection.cursor(view.state.doc.length),
+      });
+    });
+
+    const line = container.querySelector<HTMLElement>(".cm-markra-h2");
+    const toolbar = line?.querySelector<HTMLElement>(
+      ":scope > .cm-markra-block-toolbar",
+    );
+    const levelControl = line?.querySelector<HTMLElement>(
+      ":scope > .markra-heading-level-control",
+    );
+
+    expect(toolbar).not.toBeNull();
+    expect(levelControl).not.toBeNull();
+    expect(
+      toolbar!.compareDocumentPosition(levelControl!) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+  });
+
   it("enables Markra extended Markdown previews without rewriting source", () => {
     const onEditorReady = vi.fn();
     const doc = [
