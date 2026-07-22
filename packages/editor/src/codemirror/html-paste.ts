@@ -6,6 +6,29 @@ export interface CodeMirrorHtmlPaste {
   readonly remoteImages: readonly RemoteClipboardImage[];
 }
 
+const codeFontPattern = /(?:monospace|menlo|monaco|consolas|courier|sfmono|fira code|jetbrains mono|cascadia code|source code pro)/iu;
+const preformattedWhitespacePattern = /white-space\s*:\s*(?:pre|pre-wrap|break-spaces)/iu;
+
+function syntaxHighlightedPlainText(
+  document: Document,
+  plainText: string,
+) {
+  if (!plainText || document.querySelector("pre > code")) return null;
+  const preformatted = document.querySelector("pre") !== null ||
+    Array.from(document.querySelectorAll<HTMLElement>("[style]")).some(
+      (element) => {
+        const style = element.getAttribute("style") ?? "";
+        return codeFontPattern.test(style) ||
+          preformattedWhitespacePattern.test(style);
+      },
+    );
+  if (!preformatted) return null;
+
+  // Syntax-highlighted clipboard HTML represents punctuation as ordinary text.
+  // Turndown would escape it as Markdown, so preserve the accompanying source.
+  return plainText.replace(/\r\n?/gu, "\n");
+}
+
 function normalizedCellMarkdown(service: TurndownService, cell: Element) {
   return service
     .turndown(cell.innerHTML)
@@ -75,11 +98,15 @@ function remoteImage(image: Element): RemoteClipboardImage | null {
   };
 }
 
-export function convertCodeMirrorClipboardHtml(html: string): CodeMirrorHtmlPaste | null {
+export function convertCodeMirrorClipboardHtml(
+  html: string,
+  plainText = "",
+): CodeMirrorHtmlPaste | null {
   if (!html.trim() || typeof DOMParser === "undefined") return null;
   const document = new DOMParser().parseFromString(html, "text/html");
   const service = createTurndownService();
-  const markdown = service
+  const code = syntaxHighlightedPlainText(document, plainText);
+  const markdown = code ?? service
     .turndown(document.body.innerHTML)
     .replace(/\r\n?/gu, "\n")
     .replace(/\n{3,}/gu, "\n\n")

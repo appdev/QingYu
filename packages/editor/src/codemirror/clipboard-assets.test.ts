@@ -190,6 +190,31 @@ describe("codeMirrorClipboardAssetsPlugin", () => {
     expect(view.state.doc.toString()).toContain("Outro");
   });
 
+  it("preserves plain code copied with syntax-highlighted HTML", () => {
+    const code = [
+      "const mock_value = items[0];",
+      'if (mock_value === "synthetic") {',
+      "  return /a+b*/.test(mock_value);",
+      "}",
+    ].join("\n");
+    const view = createView("");
+
+    const event = paste(view, {
+      html: [
+        '<div style="font-family: Menlo, Monaco, monospace">',
+        "<div>const mock_value = items[0];</div>",
+        '<div>if (mock_value === &quot;synthetic&quot;) {</div>',
+        "<div>&nbsp;&nbsp;return /a+b*/.test(mock_value);</div>",
+        "<div>}</div>",
+        "</div>",
+      ].join(""),
+      text: code,
+    });
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(view.state.doc.toString()).toBe(code);
+  });
+
   it("inserts existing file-tree image drags without saving again", () => {
     const saveImage = vi.fn();
     const view = createView("", {

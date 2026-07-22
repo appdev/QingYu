@@ -430,7 +430,7 @@ function insertHtmlPaste(
   if (!html) return false;
   const plainText = event.clipboardData?.getData("text/plain") ?? "";
   if (looksLikeMarkdownSource(plainText)) return false;
-  const converted = convertCodeMirrorClipboardHtml(html);
+  const converted = convertCodeMirrorClipboardHtml(html, plainText);
   if (!converted) return false;
 
   const { from, to } = view.state.selection.main;
