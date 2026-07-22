@@ -247,6 +247,17 @@ function revealLinkSourceAt(view: CodeMirrorView, position: number) {
   return true;
 }
 
+function syncLinkModifierCursor(
+  view: CodeMirrorView,
+  event: Pick<KeyboardEvent | MouseEvent, "ctrlKey" | "metaKey">,
+) {
+  if (event.metaKey || event.ctrlKey) {
+    view.dom.dataset.markraLinkModifier = "true";
+  } else {
+    delete view.dom.dataset.markraLinkModifier;
+  }
+}
+
 export function linksPlugin(options: LinksPluginOptions) {
   const activation = options.activation ?? "modifier";
   const isAvailable = (view: CodeMirrorView) =>
@@ -279,6 +290,10 @@ export function linksPlugin(options: LinksPluginOptions) {
       activation === "none"
         ? []
         : EditorView.domEventHandlers({
+            blur(_event, view) {
+              delete view.dom.dataset.markraLinkModifier;
+              return false;
+            },
             click(event, view) {
               const target = event.target;
               if (!(target instanceof Element)) return false;
@@ -289,6 +304,14 @@ export function linksPlugin(options: LinksPluginOptions) {
               // the caret and reveal the source before the link is resolved.
               event.preventDefault();
               return true;
+            },
+            keydown(event, view) {
+              syncLinkModifierCursor(view, event);
+              return false;
+            },
+            keyup(event, view) {
+              syncLinkModifierCursor(view, event);
+              return false;
             },
             mousedown(event, view) {
               if (event.button !== 0) return false;
@@ -309,6 +332,10 @@ export function linksPlugin(options: LinksPluginOptions) {
               if (!openLinkAt(view, position, options)) return false;
               event.preventDefault();
               return true;
+            },
+            mousemove(event, view) {
+              syncLinkModifierCursor(view, event);
+              return false;
             },
           }),
     ui: [

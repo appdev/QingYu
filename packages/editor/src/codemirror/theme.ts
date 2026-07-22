@@ -44,6 +44,9 @@ export const markraTheme = EditorView.baseTheme({
     textDecorationColor: "color-mix(in srgb, currentColor 45%, transparent)",
     textUnderlineOffset: "0.16em",
   },
+  '&[data-markra-link-modifier="true"] .cm-markra-link, &[data-markra-link-modifier="true"] .cm-markra-link-icon': {
+    cursor: "pointer",
+  },
   ".cm-markra-highlight": {
     backgroundColor: "color-mix(in srgb, #facc15 38%, transparent)",
     borderRadius: "0.16em",

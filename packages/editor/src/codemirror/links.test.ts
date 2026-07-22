@@ -152,6 +152,29 @@ describe("linksPlugin", () => {
     expect(view.state.doc.toString()).toBe(doc);
   });
 
+  it.each([
+    ["Cmd", { key: "Meta", metaKey: true }],
+    ["Ctrl", { key: "Control", ctrlKey: true }],
+  ])("shows a pointer cursor while %s is held over links", (_label, init) => {
+    const doc = "Read [Synthetic guide](https://example.test/guide) now";
+    const view = createView(doc, { open: vi.fn() });
+    expect(view.dom.querySelector(".cm-markra-link")).not.toBeNull();
+
+    view.contentDOM.dispatchEvent(new KeyboardEvent("keydown", {
+      bubbles: true,
+      ...init,
+    }));
+
+    expect(view.dom.dataset.markraLinkModifier).toBe("true");
+
+    view.contentDOM.dispatchEvent(new KeyboardEvent("keyup", {
+      bubbles: true,
+      key: init.key,
+    }));
+
+    expect(view.dom.dataset.markraLinkModifier).toBeUndefined();
+  });
+
   it("opens a reference-style link through its resolved definition", () => {
     const doc = [
       "Read [Synthetic guide][docs] now",
