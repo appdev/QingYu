@@ -1,6 +1,6 @@
 import { forceParsing } from "@codemirror/language";
 import { EditorSelection, EditorState, type Extension } from "@codemirror/state";
-import { EditorView } from "@codemirror/view";
+import { drawSelection, EditorView } from "@codemirror/view";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { liveMarkdown } from "./index.ts";
 
@@ -376,6 +376,44 @@ describe("liveMarkdown", () => {
       expect(view.composing).toBe(false);
       expect(syntaxTreeIterations.length).toBeGreaterThan(0);
     });
+  });
+
+  it("hides CodeMirror's drawn selection while an IME composition is active", () => {
+    const view = createView({
+      doc: "Compose",
+      selection: EditorSelection.range(0, 3),
+      extensions: [drawSelection(), liveMarkdown()],
+    });
+    const selectionLayer = view.dom.querySelector<HTMLElement>(
+      ".cm-selectionLayer",
+    );
+    if (!selectionLayer) throw new Error("Expected CodeMirror's selection layer");
+
+    const selectionBackground = document.createElement("div");
+    selectionBackground.className = "cm-selectionBackground";
+    selectionLayer.append(selectionBackground);
+
+    expect(getComputedStyle(selectionBackground).backgroundColor).not.toBe(
+      "rgba(0, 0, 0, 0)",
+    );
+
+    view.contentDOM.dispatchEvent(
+      new CompositionEvent("compositionstart", { bubbles: true }),
+    );
+
+    expect(view.dom.dataset.markraComposing).toBe("true");
+    expect(getComputedStyle(selectionBackground).backgroundColor).toBe(
+      "rgba(0, 0, 0, 0)",
+    );
+
+    view.contentDOM.dispatchEvent(
+      new CompositionEvent("compositionend", { bubbles: true }),
+    );
+
+    expect(view.dom.dataset.markraComposing).toBeUndefined();
+    expect(getComputedStyle(selectionBackground).backgroundColor).not.toBe(
+      "rgba(0, 0, 0, 0)",
+    );
   });
 
   it("renders task markers as checkboxes that update the Markdown source", () => {

@@ -1,6 +1,11 @@
 import { EditorView } from "@codemirror/view";
 
 export const markraTheme = EditorView.baseTheme({
+  '&[data-markra-composing="true"] .cm-selectionBackground': {
+    // IME pre-edit updates temporarily expose their range as a CodeMirror
+    // selection. Hiding only that drawn layer prevents it from flashing.
+    backgroundColor: "transparent !important",
+  },
   ".cm-markra-h1": {
     fontSize: "1.8em",
     fontWeight: "700",

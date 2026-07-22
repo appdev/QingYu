@@ -596,6 +596,14 @@ function previewPlugin(config: LivePreviewConfig): Extension {
   const reveal = config.reveal ?? revealActiveLine;
   const taskCheckboxes = config.taskCheckboxes ?? true;
 
+  function syncCompositionUi(view: EditorView, composing: boolean) {
+    if (composing) {
+      view.dom.dataset.markraComposing = "true";
+    } else {
+      delete view.dom.dataset.markraComposing;
+    }
+  }
+
   return ViewPlugin.fromClass(
     class {
       decorations: DecorationSet;
@@ -609,6 +617,7 @@ function previewPlugin(config: LivePreviewConfig): Extension {
       update(update: ViewUpdate) {
         const compositionEnded = this.composing && !update.view.composing;
         this.composing = update.view.composing;
+        syncCompositionUi(update.view, this.composing);
 
         if (this.composing) {
           // Mapping preserves the current DOM while the platform owns the
@@ -645,10 +654,17 @@ function previewPlugin(config: LivePreviewConfig): Extension {
     {
       decorations: (plugin) => plugin.decorations,
       eventHandlers: {
+        compositionstart(_event, view) {
+          syncCompositionUi(view, true);
+        },
         compositionend(_event, view) {
+          syncCompositionUi(view, false);
           // CodeMirror updates its composition state before plugin handlers.
           // An empty transaction gives the plugin an immediate rebuild point.
           view.dispatch({});
+        },
+        blur(_event, view) {
+          syncCompositionUi(view, false);
         },
       },
     },
