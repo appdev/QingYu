@@ -1,3 +1,17 @@
+## [2.0.0-alpha.5](https://github.com/markrahq/markra/compare/v2.0.0-alpha.4...v2.0.0-alpha.5) (2026-07-22)
+
+### Features
+
+* **editor:** support footnote and reference source editing ([2751bcc](https://github.com/markrahq/markra/commit/2751bccc57faa8ef572b72fc8d271dc5de0a6c30))
+
+### Bug Fixes
+
+* **editor:** keep heading controls outside text flow ([76b8ccb](https://github.com/markrahq/markra/commit/76b8ccb41abb2fd0fcb1049ffee546ddbb4e455e))
+* **editor:** preserve pasted code source ([3415cbd](https://github.com/markrahq/markra/commit/3415cbdb6b1089910d584d928d22f77bfff8c0b3))
+* **editor:** prevent IME selection flicker ([09fe15b](https://github.com/markrahq/markra/commit/09fe15bc3202e04405ce1a6d695af075e62b39b6))
+* **editor:** restore visual code block editing ([4842317](https://github.com/markrahq/markra/commit/4842317ec629c60e4319bf9ec15e6a567909cb2f))
+* **editor:** reveal heading source while editing ([6ed8495](https://github.com/markrahq/markra/commit/6ed849525a9cb1d417a3d76871ae182b23800731))
+
 ## [2.0.0-alpha.4](https://github.com/markrahq/markra/compare/v2.0.0-alpha.3...v2.0.0-alpha.4) (2026-07-22)
 
 ### Bug Fixes
