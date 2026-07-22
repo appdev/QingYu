@@ -151,6 +151,30 @@ describe("editor stylesheet", () => {
     expect(revealRule).toContain("pointer-events: auto");
   });
 
+  it("keeps heading block tools in a separate slot from fold and level controls", () => {
+    const styles = readFileSync(`${process.cwd()}/src/styles.css`, "utf8");
+    const headingToolbarRuleStart = styles.indexOf(
+      ".markdown-paper .markra-heading-toggle-heading > .cm-markra-block-toolbar {",
+    );
+    const headingToolbarRuleEnd = styles.indexOf("\n  }", headingToolbarRuleStart);
+    const headingToolbarRule = styles.slice(
+      headingToolbarRuleStart,
+      headingToolbarRuleEnd,
+    );
+
+    expect(headingToolbarRuleStart).toBeGreaterThanOrEqual(0);
+    expect(headingToolbarRule).toContain("position: absolute !important");
+    expect(headingToolbarRule).toContain("left: -78px");
+    expect(headingToolbarRule).toContain("margin: 0 !important");
+    expect(headingToolbarRule).toContain(
+      "top: calc(50% + var(--markra-heading-toggle-center-offset))",
+    );
+    expect(headingToolbarRule).toContain("transform: translateY(-50%)");
+    expect(styles).toContain(
+      ".markdown-paper .markra-heading-toggle-heading > .cm-markra-block-toolbar::after",
+    );
+  });
+
   it("forces a grabbing cursor during document tab pointer drags", () => {
     const styles = readFileSync(`${process.cwd()}/src/styles.css`, "utf8");
 

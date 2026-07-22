@@ -2143,6 +2143,22 @@
     --markra-heading-toggle-center-offset: 0px;
   }
 
+  /* Heading fold and level controls already occupy the positions beside the
+     text. Anchor block tools in their own gutter slot so widget order cannot
+     make the controls overlap. */
+  .markdown-paper .markra-heading-toggle-heading > .cm-markra-block-toolbar {
+    position: absolute !important;
+    left: -78px;
+    margin: 0 !important;
+    top: calc(50% + var(--markra-heading-toggle-center-offset));
+    transform: translateY(-50%);
+  }
+
+  .markdown-paper .markra-heading-toggle-heading > .cm-markra-block-toolbar::after {
+    inset-inline-end: -8px;
+    width: 8px;
+  }
+
   .markdown-paper h1.markra-heading-toggle-heading,
   .markdown-paper .cm-line.cm-markra-h1.markra-heading-toggle-heading {
     --markra-heading-toggle-center-offset: -5.5px;
