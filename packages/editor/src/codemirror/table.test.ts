@@ -53,6 +53,24 @@ describe("tablePreviewPlugin", () => {
     expect(view.state.doc.toString()).toBe(doc);
   });
 
+  it("uses one editing host so a native selection can span the complete table", () => {
+    const doc = [
+      "| Name | Value |",
+      "| --- | --- |",
+      "| Alpha | 1 |",
+      "| Beta | 2 |",
+    ].join("\n");
+    const view = createView(doc);
+    const table = view.dom.querySelector<HTMLTableElement>(".cm-markra-table");
+    const cells = Array.from(
+      view.dom.querySelectorAll<HTMLTableCellElement>(".cm-markra-table th, .cm-markra-table td"),
+    );
+
+    expect(table?.getAttribute("contenteditable")).toBe("true");
+    expect(cells).not.toHaveLength(0);
+    expect(cells.every((cell) => !cell.hasAttribute("contenteditable"))).toBe(true);
+  });
+
   it("renders inline Markdown inside visual table cells", () => {
     const doc = [
       "| Name | Link |",
@@ -544,7 +562,8 @@ describe("tablePreviewPlugin", () => {
 
     expect(view.state.selection.main.head).toBe(doc.length);
     expect(view.dom.querySelector(".cm-markra-table")).not.toBeNull();
-    expect(cell?.contentEditable).toBe("true");
+    expect(cell?.closest("table")?.getAttribute("contenteditable")).toBe("true");
+    expect(cell?.hasAttribute("contenteditable")).toBe(false);
   });
 
   it("updates Markdown while editing a visual table cell", async () => {

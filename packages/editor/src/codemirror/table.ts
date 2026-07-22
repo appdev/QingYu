@@ -728,7 +728,6 @@ function appendCell(
     currentSession.inlineSourceVisible;
   if (keepInlineSourceVisible) cell.textContent = cellPreview.source;
   else renderVisualTableCell(view, cell, cellPreview.source, images);
-  cell.contentEditable = String(!view.state.readOnly);
   cell.tabIndex = view.state.readOnly ? -1 : 0;
   cell.dataset.tableColumn = String(columnIndex);
   cell.dataset.tableHeader = String(header);
@@ -1133,6 +1132,9 @@ class TableWidget extends WidgetType {
     alignControls.className = "markra-table-align-controls";
     sizeControls.className = "markra-table-size-controls";
     table.className = "cm-markra-table";
+    // Individual contenteditable cells trap native ranges inside one cell.
+    // One shared editing host lets drag selections cross the complete table.
+    table.setAttribute("contenteditable", String(!view.state.readOnly));
     table.dataset.tableAlignment = tableAlignment;
     table.dataset.widthMode = widthMode;
     table.classList.toggle("markra-table-width-auto", widthMode === "auto");
@@ -1462,7 +1464,7 @@ const tableTheme = EditorView.baseTheme({
     position: "relative",
     verticalAlign: "top",
   },
-  '.cm-markra-table th[contenteditable="true"]:focus, .cm-markra-table td[contenteditable="true"]:focus': {
+  '.cm-markra-table[contenteditable="true"] th:focus, .cm-markra-table[contenteditable="true"] td:focus': {
     boxShadow: "inset 0 0 0 2px currentColor",
   },
   ".cm-markra-table th": {
