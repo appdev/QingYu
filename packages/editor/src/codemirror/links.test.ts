@@ -152,6 +152,33 @@ describe("linksPlugin", () => {
     expect(view.state.doc.toString()).toBe(doc);
   });
 
+  it("opens a reference-style link through its resolved definition", () => {
+    const doc = [
+      "Read [Synthetic guide][docs] now",
+      "",
+      "[docs]: https://example.test/reference",
+      "",
+      "Edit here",
+    ].join("\n");
+    const open = vi.fn();
+    const view = createView(doc, { open });
+    const link = view.dom.querySelector<HTMLElement>(".cm-markra-link");
+
+    expect(link?.textContent).toBe("Synthetic guide");
+    expect(link?.dispatchEvent(new MouseEvent("mousedown", {
+      bubbles: true,
+      button: 0,
+      cancelable: true,
+      metaKey: true,
+    }))).toBe(false);
+    expect(open).toHaveBeenCalledWith(expect.objectContaining({
+      source: "https://example.test/reference",
+      target: "https://example.test/reference",
+      view,
+    }));
+    expect(view.state.doc.toString()).toBe(doc);
+  });
+
   it.each([
     ["angle autolink", "<https://example.test/angle>", "https://example.test/angle"],
     ["bare autolink", "https://example.test/bare", "https://example.test/bare"],

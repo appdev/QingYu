@@ -56,6 +56,53 @@ export function resolveAutolinkTarget(source: string) {
   return resolveSafeLinkTarget(candidate);
 }
 
+function normalizeMarkdownLinkLabel(source: string) {
+  return unescapeMarkdown(source.replace(/^\[|\]$/gu, ""))
+    .trim()
+    .replace(/\s+/gu, " ")
+    .toLocaleLowerCase();
+}
+
+export function readMarkdownLinkReferences(state: EditorState) {
+  const references = new Map<string, string>();
+
+  syntaxTree(state).iterate({
+    enter(node) {
+      if (node.name !== "LinkReference") return;
+      const label = node.node.getChild("LinkLabel");
+      const url = node.node.getChild("URL");
+      if (!label || !url) return;
+      const source = unescapeMarkdown(state.sliceDoc(url.from, url.to).trim());
+      if (!source) return;
+      references.set(
+        normalizeMarkdownLinkLabel(state.sliceDoc(label.from, label.to)),
+        source,
+      );
+    },
+  });
+
+  return references;
+}
+
+export function readMarkdownLinkDestination(
+  state: EditorState,
+  node: MarkraSyntaxNode,
+  references = readMarkdownLinkReferences(state),
+) {
+  const url = node.name === "URL" ? node : node.getChild("URL");
+  if (url) {
+    const source = unescapeMarkdown(state.sliceDoc(url.from, url.to).trim());
+    return source || null;
+  }
+  if (node.name !== "Link") return null;
+
+  const label = node.getChild("LinkLabel");
+  if (!label) return null;
+  return references.get(
+    normalizeMarkdownLinkLabel(state.sliceDoc(label.from, label.to)),
+  ) ?? null;
+}
+
 function linkNodeAt(state: EditorState, position: number) {
   const boundedPosition = Math.max(0, Math.min(position, state.doc.length));
   const tree = syntaxTree(state);
@@ -83,9 +130,7 @@ function linkNodeAt(state: EditorState, position: number) {
 }
 
 function linkSource(state: EditorState, node: MarkraSyntaxNode) {
-  const url = node.name === "URL" ? node : node.getChild("URL");
-  if (!url) return null;
-  const source = unescapeMarkdown(state.sliceDoc(url.from, url.to).trim());
+  const source = readMarkdownLinkDestination(state, node);
   if (!source) return null;
   return node.name === "Link" ? source : resolveAutolinkTarget(source);
 }

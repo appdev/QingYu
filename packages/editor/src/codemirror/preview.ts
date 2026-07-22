@@ -20,6 +20,8 @@ import {
   type MarkraSyntaxNode,
 } from "./renderers.ts";
 import {
+  readMarkdownLinkDestination,
+  readMarkdownLinkReferences,
   resolveAutolinkTarget,
   resolveSafeLinkTarget,
 } from "./links.ts";
@@ -75,7 +77,7 @@ const HIDEABLE_MARKS = new Set([
   "ListMark",
 ]);
 
-const LINK_SYNTAX = new Set(["LinkMark", "LinkTitle", "URL"]);
+const LINK_SYNTAX = new Set(["LinkLabel", "LinkMark", "LinkTitle", "URL"]);
 const INLINE_WRAPPER_MARKS = new Set([
   "CodeMark",
   "EmphasisMark",
@@ -221,6 +223,7 @@ function buildDecorations(
 ) {
   const { state } = view;
   const ranges: Range<Decoration>[] = [];
+  const referenceTargets = readMarkdownLinkReferences(state);
   const decoratedHeadingLines = new Set<number>();
   const decoratedBlockLines = new Set<string>();
   const decoratedEmptyLines = new Set<number>();
@@ -378,8 +381,8 @@ function buildDecorations(
         : linkLike
           ? node.node.getChild("URL")
           : null;
-      const linkSource = linkUrl
-        ? unescapeMarkdown(state.sliceDoc(linkUrl.from, linkUrl.to).trim())
+      const linkSource = linkLike
+        ? readMarkdownLinkDestination(state, node.node, referenceTargets)
         : null;
       const linkHref = linkSource
         ? node.name === "Link"
@@ -462,10 +465,16 @@ function buildDecorations(
       node.name === "ListMark" &&
       !taskCheckboxes &&
       listLineAttributes(state.doc.lineAt(node.from).text)?.kind === "task";
+    const isReferenceLinkLabel =
+      node.name === "LinkLabel" && parentName === "Link";
+    const isReferenceDefinitionMark =
+      node.name === "LinkMark" && parentName === "LinkReference";
     const isHideable =
       !isFootnoteLinkSyntax(state, node.node as MarkraSyntaxNode) &&
       !taskSourceRemainsVisible &&
+      !isReferenceDefinitionMark &&
       (HIDEABLE_MARKS.has(node.name) ||
+        isReferenceLinkLabel ||
         isLinkDestination(node.name, parentName));
 
     let revealFrom = node.from;

@@ -186,6 +186,27 @@ describe("liveMarkdown", () => {
     expect(renderedLines(view)[0]).toBe("label after");
   });
 
+  it("renders reference-style links and reveals their complete source when edited", () => {
+    const doc = [
+      "Read [guide][docs].",
+      "",
+      "[docs]: https://example.test",
+      "",
+      "Edit",
+    ].join("\n");
+    const view = createView({ doc });
+
+    expect(renderedLines(view)[0]).toBe("Read guide.");
+    expect(renderedLines(view)[2]).toBe("[docs]: https://example.test");
+    expect(
+      view.dom.querySelector(".cm-markra-link")?.getAttribute("href"),
+    ).toBe("https://example.test");
+
+    view.dispatch({ selection: { anchor: doc.indexOf("guide") + 2 } });
+
+    expect(renderedLines(view)[0]).toBe("Read [guide][docs].");
+  });
+
   it("styles rendered links and blockquotes", () => {
     const doc = "> Read [reference](https://example.test)\n\nEdit";
     const view = createView({ doc });

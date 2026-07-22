@@ -32,6 +32,18 @@ const definitionPattern = /^[ \t]{0,3}\[\^([^\]\s]+)\]:[ \t]*(.*)$/u;
 const referencePattern = /\[\^([^\]\s]+)\]/gu;
 const codeNodeNames = new Set(["CodeBlock", "FencedCode", "InlineCode"]);
 
+function activateFootnoteSource(
+  view: CodeMirrorView,
+  from: number,
+  to: number,
+) {
+  view.dispatch({
+    selection: { anchor: Math.min(to - 1, from + 1) },
+    scrollIntoView: true,
+  });
+  view.focus();
+}
+
 function isEscaped(source: string, index: number) {
   let count = 0;
   for (let cursor = index - 1; cursor >= 0 && source[cursor] === "\\"; cursor -= 1) {
@@ -165,31 +177,70 @@ class FootnoteReferenceWidget extends WidgetType {
       view.dispatch({ selection: { anchor: definition.contentFrom }, scrollIntoView: true });
       view.focus();
     };
+    const activateSource = (event: Event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      closePreview();
+      activateFootnoteSource(view, this.reference.from, this.reference.to);
+    };
+    const handleClick = (event: MouseEvent) => {
+      if ((event.metaKey || event.ctrlKey) && this.reference.definition) {
+        navigate(event);
+        return;
+      }
+      activateSource(event);
+    };
 
     reference.addEventListener("mouseenter", openPreview);
     reference.addEventListener("mouseleave", closePreview);
     reference.addEventListener("focusin", openPreview);
     reference.addEventListener("focusout", closePreview);
-    reference.addEventListener("click", navigate);
-    button.addEventListener("click", navigate);
+    reference.addEventListener("mousedown", (event) => {
+      if (event.metaKey || event.ctrlKey) return;
+      activateSource(event);
+    });
+    reference.addEventListener("click", handleClick);
     return reference;
   }
 }
 
 class FootnoteDefinitionLabelWidget extends WidgetType {
-  constructor(readonly label: string) {
+  constructor(readonly definition: FootnoteDefinition) {
     super();
   }
 
   eq(other: FootnoteDefinitionLabelWidget) {
-    return other.label === this.label;
+    return (
+      other.definition.label === this.definition.label &&
+      other.definition.from === this.definition.from &&
+      other.definition.markerTo === this.definition.markerTo
+    );
+  }
+
+  ignoreEvent() {
+    return false;
   }
 
   toDOM(view: CodeMirrorView) {
     const label = view.dom.ownerDocument.createElement("span");
     label.className = "cm-markra-footnote-definition-label";
-    label.textContent = this.label;
-    label.setAttribute("aria-label", `Footnote ${this.label}`);
+    label.textContent = this.definition.label;
+    label.setAttribute("aria-label", `Edit footnote ${this.definition.label} source`);
+    label.tabIndex = 0;
+    label.setAttribute("role", "button");
+    const activate = (event: Event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      activateFootnoteSource(
+        view,
+        this.definition.from,
+        this.definition.markerTo,
+      );
+    };
+    label.addEventListener("mousedown", activate);
+    label.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") activate(event);
+    });
     return label;
   }
 }
@@ -222,7 +273,7 @@ function buildFootnoteDecorations(view: CodeMirrorView) {
     if (cursorInsideRange(view, definition.from, definition.to)) continue;
     ranges.push(
       Decoration.replace({
-        widget: new FootnoteDefinitionLabelWidget(definition.label),
+        widget: new FootnoteDefinitionLabelWidget(definition),
       }).range(definition.from, definition.markerTo),
     );
   }
@@ -267,6 +318,7 @@ const footnoteTheme = EditorView.baseTheme({
   },
   ".cm-markra-footnote-definition-label": {
     color: "var(--accent, currentColor)",
+    cursor: "pointer",
     fontSize: "0.82em",
     fontWeight: "650",
     marginRight: "0.45em",
