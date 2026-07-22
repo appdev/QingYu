@@ -1,3 +1,13 @@
+## [2.0.0-alpha.3](https://github.com/markrahq/markra/compare/v2.0.0-alpha.2...v2.0.0-alpha.3) (2026-07-22)
+
+### Bug Fixes
+
+* **app:** separate heading block controls ([4de49d4](https://github.com/markrahq/markra/commit/4de49d4583499cc971d13ac1e5f36e8efcd309d4))
+* **editor:** allow selection across visual tables ([52cc31f](https://github.com/markrahq/markra/commit/52cc31f2b3e055a3bbf30395bc5b452159abaccb))
+* **editor:** preserve nested block move styling ([499eb4d](https://github.com/markrahq/markra/commit/499eb4d87259e2665e03addc1cafe47ad2d49d1c))
+* **editor:** reveal complete inline wrappers ([c161d95](https://github.com/markrahq/markra/commit/c161d95438ed3408633243d8184d1ca0b6030f9a))
+* **release:** exclude deb package internals ([e5b038f](https://github.com/markrahq/markra/commit/e5b038f15414f1e58a17e5b5e65b17994c62c16e))
+
 ## [2.0.0-alpha.2](https://github.com/markrahq/markra/compare/v2.0.0-alpha.1...v2.0.0-alpha.2) (2026-07-21)
 
 ### Bug Fixes
