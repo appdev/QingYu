@@ -1,20 +1,28 @@
-import type { Range } from "@codemirror/state";
+import {
+  EditorSelection,
+  EditorState,
+  Prec,
+  type Range,
+} from "@codemirror/state";
 import {
   Decoration,
   EditorView,
   ViewPlugin,
   WidgetType,
+  keymap,
   type DecorationSet,
   type EditorView as CodeMirrorView,
   type ViewUpdate,
 } from "@codemirror/view";
 import { defineMarkraPlugin } from "./plugin.ts";
-import { cursorInsideRange, selectionChangeAffectsReveal } from "./policy.ts";
 
 export type CodeMirrorFrontmatterKind = "json" | "toml" | "yaml";
 
 export interface CodeMirrorFrontmatterRange {
   readonly content: string;
+  readonly contentFrom: number;
+  readonly contentTo: number;
+  readonly delimiter?: "---" | "+++";
   readonly from: number;
   readonly kind: CodeMirrorFrontmatterKind;
   readonly source: string;
@@ -50,7 +58,10 @@ function findJsonObjectEnd(source: string, start: number) {
   return null;
 }
 
-function readJsonFrontmatter(source: string, from: number) {
+function readJsonFrontmatter(
+  source: string,
+  from: number,
+): CodeMirrorFrontmatterRange | null {
   if (source[from] !== "{") return null;
   const to = findJsonObjectEnd(source, from);
   if (to === null) return null;
@@ -70,6 +81,8 @@ function readJsonFrontmatter(source: string, from: number) {
   }
   return {
     content: json,
+    contentFrom: from,
+    contentTo: to,
     from,
     kind: "json" as const,
     source: json,
@@ -77,9 +90,12 @@ function readJsonFrontmatter(source: string, from: number) {
   };
 }
 
-function readFencedFrontmatter(source: string, from: number) {
+function readFencedFrontmatter(
+  source: string,
+  from: number,
+): CodeMirrorFrontmatterRange | null {
   const opening = /^(---|\+\+\+)[ \t]*(?:\r?\n|$)/u.exec(source.slice(from));
-  const delimiter = opening?.[1];
+  const delimiter = opening?.[1] as "---" | "+++" | undefined;
   if (!opening || !delimiter) return null;
 
   const contentFrom = from + opening[0].length;
@@ -91,6 +107,9 @@ function readFencedFrontmatter(source: string, from: number) {
   const to = closing.index + closing[0].length;
   return {
     content: source.slice(contentFrom, closing.index).replace(/\r?\n$/u, ""),
+    contentFrom,
+    contentTo: closing.index,
+    delimiter,
     from,
     kind: delimiter === "---" ? "yaml" as const : "toml" as const,
     source: source.slice(from, to),
@@ -98,7 +117,9 @@ function readFencedFrontmatter(source: string, from: number) {
   };
 }
 
-export function readCodeMirrorFrontmatter(source: string) {
+export function readCodeMirrorFrontmatter(
+  source: string,
+): CodeMirrorFrontmatterRange | null {
   const from = source.charCodeAt(0) === 0xfeff ? 1 : 0;
   return readFencedFrontmatter(source, from) ?? readJsonFrontmatter(source, from);
 }
@@ -113,48 +134,104 @@ class FrontmatterWidget extends WidgetType {
   }
 
   ignoreEvent() {
-    return false;
+    return true;
+  }
+
+  updateDOM(dom: HTMLElement, view: CodeMirrorView) {
+    if (!dom.classList.contains("cm-markra-frontmatter")) return false;
+    this.syncDOM(dom, view);
+    return true;
+  }
+
+  private syncDOM(root: HTMLElement, view: CodeMirrorView) {
+    const label = root.querySelector<HTMLElement>(".cm-markra-frontmatter-label");
+    const editor = root.querySelector<HTMLTextAreaElement>(
+      ".cm-markra-frontmatter-editor",
+    );
+    root.dataset.frontmatterKind = this.range.kind;
+    label?.replaceChildren(this.range.kind.toUpperCase());
+    if (editor && editor.value !== this.range.content) {
+      editor.value = this.range.content;
+    }
+    if (editor) {
+      editor.readOnly = view.state.facet(EditorState.readOnly);
+      editor.rows = Math.max(1, editor.value.split("\n").length);
+    }
   }
 
   toDOM(view: CodeMirrorView) {
     const document = view.dom.ownerDocument;
-    const root = document.createElement("pre");
+    const root = document.createElement("div");
     const label = document.createElement("span");
-    const code = document.createElement("code");
+    const editor = document.createElement("textarea");
 
     root.className = "cm-markra-frontmatter markra-frontmatter";
-    root.dataset.frontmatterKind = this.range.kind;
     root.dataset.type = "frontmatter";
-    root.tabIndex = 0;
-    root.setAttribute("role", "button");
-    root.setAttribute("aria-label", `Edit ${this.range.kind.toUpperCase()} frontmatter`);
     label.className = "cm-markra-frontmatter-label";
-    label.textContent = this.range.kind.toUpperCase();
-    code.textContent = this.range.content;
-    root.append(label, code);
+    editor.className = "cm-markra-frontmatter-editor";
+    editor.setAttribute(
+      "aria-label",
+      `Edit ${this.range.kind.toUpperCase()} frontmatter`,
+    );
+    editor.spellcheck = false;
+    editor.addEventListener("keydown", (event) => {
+      if (
+        (event.key !== "Backspace" && event.key !== "Delete") ||
+        editor.selectionStart !== 0 ||
+        editor.selectionEnd !== editor.value.length
+      ) {
+        return;
+      }
+      const current = readCodeMirrorFrontmatter(view.state.doc.toString());
+      if (!current || view.state.facet(EditorState.readOnly)) return;
 
-    const activate = (event: Event) => {
       event.preventDefault();
       event.stopPropagation();
+      const source = view.state.doc.toString();
+      let to = current.to;
+      while (source[to] === "\n" || source[to] === "\r") to += 1;
       view.dispatch({
-        selection: { anchor: Math.min(this.range.to - 1, this.range.from + 1) },
+        changes: { from: current.from, to },
+        selection: EditorSelection.cursor(current.from),
         scrollIntoView: true,
+        userEvent: "delete",
       });
       view.focus();
-    };
-    root.addEventListener("mousedown", activate);
-    root.addEventListener("keydown", (event) => {
-      if (event.key === "Enter" || event.key === " ") activate(event);
     });
+    editor.addEventListener("input", () => {
+      const current = readCodeMirrorFrontmatter(view.state.doc.toString());
+      if (!current) return;
+      const selectionStart = editor.selectionStart;
+      const selectionEnd = editor.selectionEnd;
+      const insert = current.delimiter ? `${editor.value}\n` : editor.value;
+      view.dispatch({
+        changes: {
+          from: current.contentFrom,
+          to: current.contentTo,
+          insert,
+        },
+        userEvent: "input",
+      });
+      const nextEditor = view.dom.querySelector<HTMLTextAreaElement>(
+        ".cm-markra-frontmatter-editor",
+      );
+      // Updating the hidden Markdown lines may rebuild CodeMirror's line DOM.
+      // Restore the textarea focus so continuous typing never drops a character.
+      nextEditor?.focus({ preventScroll: true });
+      nextEditor?.setSelectionRange(selectionStart, selectionEnd);
+      if (nextEditor) {
+        nextEditor.rows = Math.max(1, nextEditor.value.split("\n").length);
+      }
+    });
+    root.append(label, editor);
+    this.syncDOM(root, view);
     return root;
   }
 }
 
 function buildFrontmatterDecorations(view: CodeMirrorView) {
   const range = readCodeMirrorFrontmatter(view.state.doc.toString());
-  if (!range || cursorInsideRange(view, range.from, range.to)) {
-    return Decoration.none;
-  }
+  if (!range) return Decoration.none;
 
   const decorations: Range<Decoration>[] = [];
   const firstLine = view.state.doc.lineAt(range.from);
@@ -182,6 +259,29 @@ function buildFrontmatterDecorations(view: CodeMirrorView) {
   return Decoration.set(decorations, true);
 }
 
+function createLeadingYamlFrontmatter(view: CodeMirrorView) {
+  if (view.state.facet(EditorState.readOnly)) return false;
+  const { ranges } = view.state.selection;
+  if (ranges.length !== 1 || !ranges[0]?.empty) return false;
+
+  const position = ranges[0].head;
+  const line = view.state.doc.lineAt(position);
+  if (line.number !== 1 || position !== line.to || line.text !== "---") {
+    return false;
+  }
+
+  view.dispatch({
+    changes: { from: position, insert: "\n\n---" },
+    selection: EditorSelection.cursor(position + 1),
+    scrollIntoView: true,
+    userEvent: "input",
+  });
+  view.dom.querySelector<HTMLTextAreaElement>(
+    ".cm-markra-frontmatter-editor",
+  )?.focus();
+  return true;
+}
+
 const frontmatterTheme = EditorView.baseTheme({
   ".cm-markra-frontmatter-hidden-line": {
     display: "none",
@@ -190,10 +290,14 @@ const frontmatterTheme = EditorView.baseTheme({
     background: "color-mix(in srgb, currentColor 4%, transparent)",
     border: "1px solid color-mix(in srgb, currentColor 14%, transparent)",
     borderRadius: "0.5em",
+    boxSizing: "border-box",
     display: "block",
     margin: "0.5em 0 1em",
     overflowX: "auto",
+    overflowWrap: "anywhere",
     padding: "0.75em 0.9em",
+    whiteSpace: "pre-wrap",
+    width: "100%",
   },
   ".cm-markra-frontmatter-label": {
     display: "block",
@@ -202,6 +306,31 @@ const frontmatterTheme = EditorView.baseTheme({
     fontWeight: "650",
     marginBottom: "0.4em",
     opacity: "0.55",
+  },
+  ".cm-markra-frontmatter-editor": {
+    background: "transparent",
+    border: "0",
+    color: "inherit",
+    cursor: "text",
+    display: "block",
+    fieldSizing: "content",
+    fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, Liberation Mono, monospace",
+    fontSize: "inherit",
+    fontStyle: "normal",
+    fontWeight: "400",
+    lineHeight: "inherit",
+    margin: "0",
+    minHeight: "1.5em",
+    outline: "none",
+    overflow: "hidden",
+    overflowWrap: "anywhere",
+    padding: "0",
+    resize: "none",
+    whiteSpace: "pre-wrap",
+    width: "100%",
+  },
+  ".cm-markra-frontmatter-editor::selection": {
+    background: "color-mix(in srgb, Highlight 72%, transparent)",
   },
 });
 
@@ -220,7 +349,6 @@ export function frontmatterPreviewPlugin() {
           update(update: ViewUpdate) {
             if (
               update.docChanged ||
-              selectionChangeAffectsReveal(update) ||
               update.focusChanged ||
               update.viewportChanged
             ) {
@@ -230,6 +358,9 @@ export function frontmatterPreviewPlugin() {
         },
         { decorations: (plugin) => plugin.decorations },
       ),
+      Prec.highest(keymap.of([
+        { key: "Enter", run: createLeadingYamlFrontmatter },
+      ])),
       frontmatterTheme,
     ],
   });
