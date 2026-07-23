@@ -1,3 +1,13 @@
+## [2.0.0-alpha.7](https://github.com/markrahq/markra/compare/v2.0.0-alpha.6...v2.0.0-alpha.7) (2026-07-23)
+
+### Features
+
+* **editor:** make frontmatter cards directly editable ([60e3baf](https://github.com/markrahq/markra/commit/60e3baf1b88db262eb24009da8a343090370167b))
+
+### Bug Fixes
+
+* **editor:** remove frontmatter cards at visual boundaries ([e899b9e](https://github.com/markrahq/markra/commit/e899b9e8546bdab2bfc83a47e9a300f5a8c9ef46))
+
 ## [2.0.0-alpha.6](https://github.com/markrahq/markra/compare/v2.0.0-alpha.5...v2.0.0-alpha.6) (2026-07-22)
 
 ### Features
