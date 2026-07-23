@@ -53,6 +53,26 @@ describe("tablePreviewPlugin", () => {
     expect(view.state.doc.toString()).toBe(doc);
   });
 
+  it("renders valid GFM delimiter cells with fewer than three hyphens", () => {
+    const doc = [
+      "| Cycle | Count | Rank | Valid | Score |",
+      "| -- | :--: | :-: | :-------: | :-: |",
+      "| Day | 11 | 2 | 3 | 1 |",
+    ].join("\n");
+    const view = createView(doc);
+    const table = view.dom.querySelector<HTMLTableElement>(".cm-markra-table");
+    const headers = table?.querySelectorAll<HTMLTableCellElement>("th");
+
+    expect(table).not.toBeNull();
+    expect(headers).toHaveLength(5);
+    expect(headers?.[0]?.style.textAlign).toBe("");
+    expect(headers?.[1]?.style.textAlign).toBe("center");
+    expect(headers?.[2]?.style.textAlign).toBe("center");
+    expect(headers?.[3]?.style.textAlign).toBe("center");
+    expect(headers?.[4]?.style.textAlign).toBe("center");
+    expect(view.state.doc.toString()).toBe(doc);
+  });
+
   it("uses one editing host so a native selection can span the complete table", () => {
     const doc = [
       "| Name | Value |",

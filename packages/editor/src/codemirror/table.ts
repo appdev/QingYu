@@ -217,9 +217,11 @@ function tableCells(line: string, lineFrom: number) {
   return cells;
 }
 
+const tableSeparatorPattern = /^:?-+:?$/u;
+
 function alignmentFromSeparator(cell: string): CodeMirrorTableAlignment {
   const source = cell.trim();
-  if (!/^:?-{3,}:?$/u.test(source)) return null;
+  if (!tableSeparatorPattern.test(source)) return null;
   if (source.startsWith(":") && source.endsWith(":")) return "center";
   if (source.endsWith(":")) return "right";
   if (source.startsWith(":")) return "left";
@@ -245,7 +247,7 @@ function tablePreview(
   if (
     header.length === 0 ||
     separators.length !== header.length ||
-    separators.some((cell) => !/^:?-{3,}:?$/u.test(cell.source.trim()))
+    separators.some((cell) => !tableSeparatorPattern.test(cell.source.trim()))
   ) {
     return null;
   }
