@@ -124,6 +124,24 @@ export function readCodeMirrorFrontmatter(
   return readFencedFrontmatter(source, from) ?? readJsonFrontmatter(source, from);
 }
 
+function removeFrontmatter(
+  view: CodeMirrorView,
+  range: CodeMirrorFrontmatterRange,
+) {
+  if (view.state.facet(EditorState.readOnly)) return false;
+  const source = view.state.doc.toString();
+  let to = range.to;
+  while (source[to] === "\n" || source[to] === "\r") to += 1;
+  view.dispatch({
+    changes: { from: range.from, to },
+    selection: EditorSelection.cursor(range.from),
+    scrollIntoView: true,
+    userEvent: "delete",
+  });
+  view.focus();
+  return true;
+}
+
 class FrontmatterWidget extends WidgetType {
   constructor(readonly range: CodeMirrorFrontmatterRange) {
     super();
@@ -187,16 +205,7 @@ class FrontmatterWidget extends WidgetType {
 
       event.preventDefault();
       event.stopPropagation();
-      const source = view.state.doc.toString();
-      let to = current.to;
-      while (source[to] === "\n" || source[to] === "\r") to += 1;
-      view.dispatch({
-        changes: { from: current.from, to },
-        selection: EditorSelection.cursor(current.from),
-        scrollIntoView: true,
-        userEvent: "delete",
-      });
-      view.focus();
+      removeFrontmatter(view, current);
     });
     editor.addEventListener("input", () => {
       const current = readCodeMirrorFrontmatter(view.state.doc.toString());
@@ -282,6 +291,25 @@ function createLeadingYamlFrontmatter(view: CodeMirrorView) {
   return true;
 }
 
+function removeFrontmatterAtBoundary(
+  view: CodeMirrorView,
+  direction: "backward" | "forward",
+) {
+  const { ranges } = view.state.selection;
+  if (ranges.length !== 1 || !ranges[0]?.empty) return false;
+  const frontmatter = readCodeMirrorFrontmatter(view.state.doc.toString());
+  if (!frontmatter) return false;
+
+  const openingLine = view.state.doc.lineAt(frontmatter.from);
+  const position = ranges[0].head;
+  // The card replaces only the opening delimiter. CodeMirror may map the same
+  // visual card edge to any source position inside that replaced delimiter.
+  const atBoundary = direction === "backward"
+    ? position > openingLine.from && position <= openingLine.to
+    : position >= openingLine.from && position < openingLine.to;
+  return atBoundary && removeFrontmatter(view, frontmatter);
+}
+
 const frontmatterTheme = EditorView.baseTheme({
   ".cm-markra-frontmatter-hidden-line": {
     display: "none",
@@ -360,6 +388,14 @@ export function frontmatterPreviewPlugin() {
       ),
       Prec.highest(keymap.of([
         { key: "Enter", run: createLeadingYamlFrontmatter },
+        {
+          key: "Backspace",
+          run: (view) => removeFrontmatterAtBoundary(view, "backward"),
+        },
+        {
+          key: "Delete",
+          run: (view) => removeFrontmatterAtBoundary(view, "forward"),
+        },
       ])),
       frontmatterTheme,
     ],

@@ -142,6 +142,30 @@ describe("frontmatterPreviewPlugin", () => {
     expect(view.dom.textContent).not.toContain("---");
   });
 
+  it.each([
+    { key: "Backspace", position: 1 },
+    { key: "Backspace", position: 2 },
+    { key: "Backspace", position: 3 },
+    { key: "Delete", position: 0 },
+    { key: "Delete", position: 1 },
+    { key: "Delete", position: 2 },
+  ])("removes the entire card with $key at a mapped card boundary", ({ key, position }) => {
+    const source = ["---", "title: Synthetic", "---", "", "# Body"].join("\n");
+    const view = createView(source);
+    view.focus();
+    view.dispatch({ selection: EditorSelection.cursor(position) });
+
+    expect(
+      runScopeHandlers(
+        view,
+        new KeyboardEvent("keydown", { bubbles: true, key }),
+        "editor",
+      ),
+    ).toBe(true);
+    expect(view.state.doc.toString()).toBe("# Body");
+    expect(view.dom.textContent).not.toContain("--");
+  });
+
   it("keeps metadata rendered during a multi-line range selection", () => {
     const source = ["---", "title: Synthetic", "---", "", "# Body"].join("\n");
     const view = createView(source);
