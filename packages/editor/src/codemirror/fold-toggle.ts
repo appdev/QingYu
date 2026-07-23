@@ -171,7 +171,11 @@ function toggleDecorations(
         class: className,
       }).range(range.lineFrom),
       Decoration.widget({
-        side: 1,
+        // Keep gutter-only controls before the document boundary. CodeMirror
+        // draws a line-start selection with a strong positive association;
+        // placing this widget after the boundary would extend the highlight
+        // leftward over the absolutely positioned fold button.
+        side: -1,
         widget: new FoldToggleWidget(range, collapsed, labels),
       }).range(range.lineFrom),
     ];

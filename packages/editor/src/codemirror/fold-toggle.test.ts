@@ -29,6 +29,35 @@ afterEach(() => {
 });
 
 describe("foldTogglePlugin", () => {
+  it.each([
+    [
+      "heading",
+      "# Synthetic heading\n\nBody",
+      ".markra-heading-toggle-button",
+    ],
+    [
+      "list",
+      "- Parent item\n  - Nested item\n\nBody",
+      ".markra-list-toggle-button",
+    ],
+  ])(
+    "keeps the %s toggle outside the source-side selection boundary",
+    (_kind, doc, selector) => {
+      const view = createView(doc);
+      view.dispatch({ selection: { anchor: 5 } });
+      const toggle = view.dom.querySelector<HTMLButtonElement>(
+        selector,
+      );
+      if (!toggle) throw new Error("Expected the fold toggle");
+
+      // CodeMirror inserts this buffer between widgets associated before the
+      // position and the Markdown source associated after it.
+      expect(
+        toggle.nextElementSibling?.classList.contains("cm-widgetBuffer"),
+      ).toBe(true);
+    },
+  );
+
   it("collapses and expands a heading section without changing Markdown", () => {
     const doc = "# One\n\nAlpha\n\n## Child\n\nBeta\n\n# Two\n\nGamma";
     const view = createView(doc);
