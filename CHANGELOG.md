@@ -1,3 +1,11 @@
+## [2.0.0-alpha.8](https://github.com/markrahq/markra/compare/v2.0.0-alpha.7...v2.0.0-alpha.8) (2026-07-23)
+
+### Bug Fixes
+
+* **editor:** accept short GFM table delimiters ([cb38a7e](https://github.com/markrahq/markra/commit/cb38a7e7cfeb9a260a8f2c7416b619c7429a76da))
+* **editor:** exclude fold controls from selections ([624326c](https://github.com/markrahq/markra/commit/624326cea0a13b6822f6ce43981efa3ad1d96910))
+* **editor:** stabilize heading selection source ([f33a81c](https://github.com/markrahq/markra/commit/f33a81c275dff7249f664032eb1562902f73c420))
+
 ## [2.0.0-alpha.7](https://github.com/markrahq/markra/compare/v2.0.0-alpha.6...v2.0.0-alpha.7) (2026-07-23)
 
 ### Features
