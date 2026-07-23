@@ -58,9 +58,13 @@ export const revealActiveLine: RevealPolicy = ({
 
   if (scope === "heading") {
     // A heading marker sits at the node boundary, so both the rendered text
-    // and the source marker itself must activate the same editing state.
-    return cursors.some(
-      (selection) => selection.head >= from && selection.head <= to,
+    // and the source marker itself must activate the same editing state. Keep
+    // it visible while a drag selection still has either endpoint in the
+    // heading, otherwise hiding the marker moves the text under the pointer.
+    return state.selection.ranges.some(
+      (selection) =>
+        (selection.anchor >= from && selection.anchor <= to) ||
+        (selection.head >= from && selection.head <= to),
     );
   }
 

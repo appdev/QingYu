@@ -121,6 +121,20 @@ describe("liveMarkdown", () => {
     expect(renderedLines(view)[0]).toBe("# Project notes");
   });
 
+  it("keeps the heading marker visible while dragging a selection from its text", () => {
+    const doc = "## Synthetic heading";
+    const view = createView({ doc, anchor: doc.length });
+
+    view.dispatch({
+      selection: EditorSelection.range(
+        doc.length,
+        doc.indexOf("Synthetic") + 2,
+      ),
+    });
+
+    expect(renderedLines(view)[0]).toBe(doc);
+  });
+
   it("reveals only a syntax marker that the cursor enters directly", () => {
     const view = createView();
 
