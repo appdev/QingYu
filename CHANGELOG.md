@@ -1,3 +1,9 @@
+## [2.0.0-beta.1](https://github.com/markrahq/markra/compare/v2.0.0-alpha.11...v2.0.0-beta.1) (2026-07-24)
+
+### Bug Fixes
+
+* resolve outstanding issue regressions ([#566](https://github.com/markrahq/markra/issues/566)) ([8b50423](https://github.com/markrahq/markra/commit/8b50423ded92126bc958229f82d83fc347f86fe8))
+
 ## [2.0.0-alpha.11](https://github.com/markrahq/markra/compare/v2.0.0-alpha.10...v2.0.0-alpha.11) (2026-07-24)
 
 ### Bug Fixes
