@@ -1,3 +1,10 @@
+## [2.0.0-alpha.10](https://github.com/markrahq/markra/compare/v2.0.0-alpha.9...v2.0.0-alpha.10) (2026-07-24)
+
+### Bug Fixes
+
+* **editor:** preserve Mermaid source selections ([#565](https://github.com/markrahq/markra/issues/565)) ([e089a55](https://github.com/markrahq/markra/commit/e089a5537b7718b4749e1b9119ff1b46c01246ec))
+* **editor:** restore Mermaid zoom interactions ([#564](https://github.com/markrahq/markra/issues/564)) ([ebfacef](https://github.com/markrahq/markra/commit/ebfacef80de038fa7822aeed51b23bf1251544fd)), closes [#563](https://github.com/markrahq/markra/issues/563)
+
 ## [2.0.0-alpha.9](https://github.com/markrahq/markra/compare/v2.0.0-alpha.8...v2.0.0-alpha.9) (2026-07-24)
 
 ### Bug Fixes
