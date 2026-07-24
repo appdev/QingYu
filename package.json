@@ -1,0 +1,33 @@
+{
+  "name": "markra-workspace",
+  "version": "1.7.9",
+  "license": "AGPL-3.0-only",
+  "private": true,
+  "packageManager": "pnpm@10.30.3",
+  "type": "module",
+  "scripts": {
+    "changelog": "conventional-changelog -p conventionalcommits -i CHANGELOG.md -s",
+    "changelog:all": "conventional-changelog -p conventionalcommits -i CHANGELOG.md -s -r 0",
+    "app": "node packages/scripts/src/run-app.mjs",
+    "release": "node scripts/release/run-release.mjs",
+    "dev": "pnpm --filter @markra/desktop dev",
+    "build": "pnpm -r --if-present build",
+    "prepare:desktop-build": "pnpm --filter @markra/desktop build && pnpm prepare:qingyu-mcp-sidecar",
+    "prepare:mobile-build": "pnpm --filter @markra/desktop build",
+    "prepare:qingyu-mcp-sidecar": "node packages/scripts/src/prepare-qingyu-mcp-sidecar.mjs",
+    "test": "pnpm -r --if-present test",
+    "test:release": "node --test scripts/release/*.test.mjs",
+    "test:s3-sync:live": "node scripts/test-s3-sync-live.mjs",
+    "test:watch": "pnpm --filter @markra/desktop test:watch",
+    "typecheck:test": "pnpm -r --if-present typecheck:test",
+    "tauri": "node packages/scripts/src/run-tauri.mjs",
+    "brand:verify": "node packages/scripts/src/branding/verify-brand-copy.mjs",
+    "icons:generate": "node packages/scripts/src/app-icons/generate.mjs",
+    "icons:verify": "node packages/scripts/src/app-icons/verify.mjs"
+  },
+  "devDependencies": {
+    "bumpp": "^11.1.0",
+    "conventional-changelog": "^7.2.0",
+    "conventional-changelog-conventionalcommits": "^9.3.1"
+  }
+}

@@ -1,0 +1,12 @@
+[
+  {
+    "date": "2026-07-20",
+    "scope": "app",
+    "macrostructure": "Workbench",
+    "theme": "QingYu Site Variant",
+    "enrichment": "real product captures",
+    "nav": "N9",
+    "footer": "Ft2",
+    "brief": "Redesign the QingYu product site around real editor screenshots"
+  }
+]

@@ -1,0 +1,69 @@
+/*
+@qingyu-theme
+id: whitey
+name: Whitey
+appearance: light
+version: 1.0.0
+preview-background: #fdfdfd
+preview-panel: #f7f7f8
+preview-text: #111827
+preview-accent: #2563eb
+*/
+
+:root {
+  --bg-primary: oklch(99.3% 0.004 106);
+  --bg-secondary: oklch(97.5% 0.006 106);
+  --bg-code: oklch(97% 0.006 106);
+  --bg-hover: oklch(96% 0.008 106);
+  --bg-active: oklch(93.5% 0.01 106);
+  --text-primary: oklch(31% 0.011 106);
+  --text-heading: oklch(20% 0.01 106);
+  --text-secondary: oklch(54% 0.014 106);
+  --text-md-char: oklch(75% 0.01 106);
+  --border-default: oklch(91% 0.008 106);
+  --border-strong: oklch(83% 0.012 106);
+  --accent: oklch(48% 0.13 215);
+  --accent-soft: oklch(48% 0.13 215 / 0.12);
+  --accent-hover: oklch(41% 0.14 215);
+  --link-color: oklch(41% 0.14 215);
+  color-scheme: light;
+}
+
+/* Theme-specific rules migrated from the application stylesheet. */
+[data-theme="whitey"] {
+    --bg-primary: oklch(99.3% 0.004 106);
+    --bg-secondary: oklch(97.5% 0.006 106);
+    --bg-code: oklch(97% 0.006 106);
+    --bg-hover: oklch(96% 0.008 106);
+    --bg-active: oklch(93.5% 0.01 106);
+
+    --text-primary: oklch(31% 0.011 106);
+    --text-heading: oklch(20% 0.01 106);
+    --text-secondary: oklch(54% 0.014 106);
+    --text-md-char: oklch(75% 0.01 106);
+
+    --border-default: oklch(91% 0.008 106);
+    --border-strong: oklch(83% 0.012 106);
+    --accent: oklch(48% 0.13 215);
+    --accent-soft: oklch(48% 0.13 215 / 0.12);
+    --accent-hover: oklch(41% 0.14 215);
+    --link-color: oklch(41% 0.14 215);
+  }
+
+:root:not([data-theme="dark"]) .markdown-paper[data-editor-theme="whitey"] {
+    --editor-paper-bg: oklch(99.3% 0.004 106);
+    --editor-text-primary: oklch(31% 0.011 106);
+    --editor-text-heading: oklch(20% 0.01 106);
+    --editor-text-secondary: oklch(54% 0.014 106);
+    --editor-border: oklch(91% 0.008 106);
+    --editor-border-strong: oklch(83% 0.012 106);
+    --editor-bg-secondary: oklch(97.5% 0.006 106);
+    --editor-inline-code-bg: oklch(96% 0.008 106);
+    --editor-code-bg: oklch(97% 0.006 106);
+    --editor-code-line-bg: oklch(94.5% 0.008 106);
+    --editor-link-color: oklch(41% 0.14 215);
+  }
+
+.markdown-paper[data-editor-theme="whitey"] .ProseMirror::selection {
+    background: color-mix(in srgb, var(--accent) 16%, transparent);
+  }

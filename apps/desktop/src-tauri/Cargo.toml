@@ -1,0 +1,91 @@
+[package]
+name = "markra"
+default-run = "markra"
+version = "1.7.9"
+description = "Practical Markdown note-taking editor"
+authors = ["QingYu contributors"]
+license = "AGPL-3.0-only"
+repository = "https://github.com/appdev/QingYu"
+edition = "2021"
+
+[features]
+default = []
+desktop-sidecar = []
+
+[lib]
+name = "markra_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "qingyu-mcp"
+path = "src/bin/qingyu-mcp.rs"
+required-features = ["desktop-sidecar"]
+
+[build-dependencies]
+serde_json = "1"
+tauri-build = { version = "2.6.0", features = [] }
+
+[dependencies]
+base64 = "0.22.1"
+cap-fs-ext = "4.0.2"
+cap-std = "4.0.2"
+cssparser = "0.36.0"
+cssparser-color = "0.4.0"
+getrandom = "0.4.3"
+notify = "8.2.0"
+hmac = "0.12.1"
+icu_casemap = { version = "2.2.0", default-features = false, features = ["compiled_data"] }
+ignore = "0.4.28"
+percent-encoding = "2.3"
+quick-xml = "0.39.2"
+reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "rustls-tls"] }
+rustls = { version = "0.23.40", default-features = false, features = ["ring", "std"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10.9"
+tauri = { version = "2.11.0", features = ["protocol-asset"] }
+tauri-plugin-dialog = "2.7.1"
+tauri-plugin-fs = "2.5.1"
+tauri-plugin-log = "2.8.0"
+tauri-plugin-opener = "2.5.4"
+tauri-plugin-os = "2.3.2"
+tauri-plugin-store = "2.4.3"
+time = "0.3.44"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
+unicode-normalization = "0.1"
+zip = { version = "4.6.1", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+
+[dev-dependencies]
+tempfile = "3.27.0"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+core-foundation = "0.10.1"
+dispatch2 = "0.3.0"
+objc2 = "0.6.0"
+objc2-app-kit = { version = "0.3.0", default-features = false, features = ["std", "NSButton", "NSControl", "NSOpenPanel", "NSPanel", "NSResponder", "NSSavePanel", "NSView", "NSWindow"] }
+objc2-foundation = { version = "0.3.0", default-features = false, features = ["std", "NSArray", "NSString", "NSURL"] }
+tauri = { version = "2.11.0", features = ["macos-private-api"] }
+
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1.1.4", features = ["fs"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }
+winreg = "0.55.0"
+
+[target.'cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))'.dependencies]
+arboard = { version = "3.6.1", default-features = false }
+dirs = "6.0.0"
+fontdb = "0.23.0"
+futures = "0.3.32"
+rmcp = { version = "2.2.0", default-features = false, features = ["base64", "client", "macros", "server", "transport-async-rw", "transport-io"] }
+schemars = "1.2.1"
+sys-locale = "0.3.2"
+tauri-plugin-process = "2.3.1"
+tauri-plugin-single-instance = "2.4.2"
+tauri-plugin-updater = "2.10.1"
+tauri-plugin-window-state = "2.4.1"
+tokio = { version = "1", features = ["io-std", "net", "process"] }
+tokio-util = "0.7.18"
+trash = "5.2.6"
+uuid = { version = "1.24.0", features = ["serde", "v4"] }

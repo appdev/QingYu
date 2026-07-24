@@ -1,0 +1,2721 @@
+@import "tailwindcss";
+@source ".";
+@source "../../../packages/ui/src";
+@import "@milkdown/kit/prose/view/style/prosemirror.css";
+@import "@milkdown/kit/prose/tables/style/tables.css";
+@import "katex/dist/katex.css";
+
+@keyframes markra-history-panel-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes markra-prosemirror-caret-blink {
+  0%,
+  49% {
+    opacity: 1;
+  }
+
+  50%,
+  100% {
+    opacity: 0;
+  }
+}
+
+@keyframes markra-float-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.98);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes markra-spinner {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media screen {
+  .markdown-export-document {
+    position: fixed;
+    inset: 0;
+    z-index: -1;
+    overflow: hidden;
+    background: #ffffff;
+    opacity: 0;
+    pointer-events: none;
+  }
+}
+
+@media print {
+  body {
+    background: #ffffff !important;
+  }
+
+  body * {
+    visibility: hidden !important;
+  }
+
+  .markdown-export-document,
+  .markdown-export-document * {
+    visibility: visible !important;
+  }
+
+  .markdown-export-document {
+    position: absolute !important;
+    inset: 0 !important;
+    z-index: 9999 !important;
+    overflow: visible !important;
+    background: #ffffff !important;
+    opacity: 1 !important;
+    pointer-events: auto !important;
+  }
+
+  .markdown-export-paper {
+    max-width: none !important;
+    min-height: auto !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    color: #111111 !important;
+  }
+}
+
+@layer base {
+  :root {
+    --bg-primary: #ffffff;
+    --bg-secondary: #fafafa;
+    --bg-chrome: color-mix(in oklab, var(--bg-secondary) 82%, var(--bg-primary));
+    --bg-code: #f8f8f8;
+    --bg-hover: #f5f5f5;
+    --bg-active: #eeeeee;
+
+    --text-primary: #555555;
+    --text-heading: #333333;
+    --text-secondary: #999999;
+    --text-md-char: #c7c5c5;
+
+    --border-default: #eeeeee;
+    --border-strong: #dddddd;
+    --accent: #1a1c1e;
+    --accent-soft: rgba(26, 28, 30, 0.1);
+    --accent-hover: #0f1115;
+    --danger: #b42318;
+    --link-color: #2f56c6;
+    --scrollbar-track: transparent;
+    --scrollbar-thumb: color-mix(in srgb, var(--text-secondary) 44%, transparent);
+    --scrollbar-thumb-hover: color-mix(in srgb, var(--text-secondary) 64%, transparent);
+    --scrollbar-thumb-active: color-mix(in srgb, var(--accent) 48%, transparent);
+
+    --floating-menu-shadow: 0 20px 64px rgba(0, 0, 0, 0.16);
+    --floating-popover-shadow: 0 18px 48px rgba(0, 0, 0, 0.14);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    color: var(--text-primary);
+    background: var(--bg-primary);
+    color-scheme: light;
+    font-synthesis: none;
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  [data-theme="dark"] {
+    --bg-primary: #1e1e1e;
+    --bg-secondary: #252526;
+    --bg-code: #1e1e1e;
+    --bg-hover: #2a2d2e;
+    --bg-active: #37373d;
+
+    --text-primary: #d4d4d4;
+    --text-heading: #e0e0e0;
+    --text-secondary: #808080;
+    --text-md-char: #555555;
+
+    --border-default: #333333;
+    --border-strong: #444444;
+    --accent: #f4f4f5;
+    --accent-soft: rgba(244, 244, 245, 0.14);
+    --accent-hover: #fafafa;
+    --danger: #ff8a80;
+    --link-color: #b7c5ff;
+
+    --floating-menu-shadow:
+      0 28px 76px rgba(0, 0, 0, 0.68),
+      0 0 0 1px rgba(255, 255, 255, 0.045),
+      0 0 40px color-mix(in srgb, var(--accent) 9%, transparent);
+    --floating-popover-shadow:
+      0 22px 58px rgba(0, 0, 0, 0.66),
+      0 0 0 1px rgba(255, 255, 255, 0.04),
+      0 0 28px color-mix(in srgb, var(--accent) 7%, transparent);
+    color-scheme: dark;
+  }
+
+  html[data-theme-transition="suspended"],
+  html[data-theme-transition="suspended"] *,
+  html[data-theme-transition="suspended"] *::before,
+  html[data-theme-transition="suspended"] *::after {
+    transition: none !important;
+  }
+
+  * {
+    @apply box-border;
+    scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+    scrollbar-width: thin;
+  }
+
+  *::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  *::-webkit-scrollbar-track,
+  *::-webkit-scrollbar-track-piece,
+  *::-webkit-scrollbar-corner {
+    background: var(--scrollbar-track);
+  }
+
+  *::-webkit-scrollbar-thumb {
+    min-height: 48px;
+    border: 2px solid transparent;
+    border-radius: 999px;
+    background-color: var(--scrollbar-thumb);
+    background-clip: content-box;
+  }
+
+  *::-webkit-scrollbar-thumb:hover {
+    background-color: var(--scrollbar-thumb-hover);
+  }
+
+  *::-webkit-scrollbar-thumb:active {
+    background-color: var(--scrollbar-thumb-active);
+  }
+
+  *::-webkit-scrollbar-button {
+    display: none;
+    width: 0;
+    height: 0;
+  }
+
+  html[data-webkit-scroll-workaround="macos-27"],
+  html[data-webkit-scroll-workaround="macos-27"] * {
+    scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+    scrollbar-width: thin;
+  }
+
+  html[data-webkit-scroll-workaround="macos-27"] *::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  html[data-webkit-scroll-workaround="macos-27"] *::-webkit-scrollbar-thumb {
+    min-height: 48px;
+    border: 2px solid transparent;
+    border-radius: 999px;
+    background-color: var(--scrollbar-thumb);
+    background-clip: content-box;
+  }
+
+  html,
+  body,
+  #root {
+    @apply m-0 h-full w-full min-w-190 overscroll-none;
+  }
+
+  body {
+    @apply bg-(--bg-primary) text-(--text-primary);
+  }
+
+  html[data-window="settings"],
+  html[data-window="settings"] body,
+  html[data-window="settings"] #root {
+    @apply min-w-0;
+  }
+
+  button {
+    font: inherit;
+  }
+
+  @media (max-width: 900px) {
+    html,
+    body,
+    #root {
+      @apply min-w-0;
+    }
+  }
+}
+
+@layer components {
+  .compact-app-shell[data-compact="true"] {
+    --compact-safe-area-top: env(safe-area-inset-top, 0px);
+    --compact-safe-area-bottom: env(safe-area-inset-bottom, 0px);
+    --compact-keyboard-inset: 0px;
+    --compact-bottom-inset: max(var(--compact-safe-area-bottom), var(--compact-keyboard-inset));
+    overscroll-behavior: none;
+  }
+
+  .compact-app-shell[data-compact="true"] [data-compact-scroll="vertical"] {
+    overscroll-behavior-y: contain;
+    touch-action: pan-y pinch-zoom;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .compact-app-shell[data-compact="true"] .paper-scroll {
+    overscroll-behavior-y: contain;
+    scroll-padding-bottom: calc(3.25rem + var(--compact-bottom-inset));
+    touch-action: pan-y pinch-zoom;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .compact-app-shell[data-compact="true"] .paper-scroll::after {
+    display: block;
+    block-size: calc(3.25rem + var(--compact-bottom-inset));
+    content: "";
+    pointer-events: none;
+  }
+
+  .compact-app-shell[data-compact="true"] [data-compact-scroll="horizontal"] {
+    overscroll-behavior-x: contain;
+    touch-action: pan-x pinch-zoom;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .compact-app-shell[data-compact="true"] :where(button, [role="button"]) {
+    min-block-size: 44px;
+    min-inline-size: 44px;
+    touch-action: manipulation;
+  }
+
+  .compact-app-shell[data-compact="true"] :where(input, select, textarea) {
+    min-block-size: 44px;
+  }
+
+  .compact-app-shell[data-compact="true"] :where(button, [role="button"]):focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+  }
+
+  .compact-app-shell[data-compact="true"] :where(button, [role="button"]):active:not(:disabled) {
+    background-color: var(--bg-active);
+  }
+
+  .compact-app-shell[data-compact="true"] :where(button, [role="button"])[aria-pressed="true"] {
+    background-color: var(--bg-active);
+    color: var(--text-heading);
+  }
+
+  .document-tabs-scroll {
+    scrollbar-color: color-mix(in srgb, var(--text-secondary) 38%, transparent) transparent;
+    scrollbar-width: thin;
+  }
+
+  .document-tabs-scroll::-webkit-scrollbar {
+    width: 4px;
+    height: 4px;
+  }
+
+  .document-tabs-scroll::-webkit-scrollbar-thumb {
+    min-width: 48px;
+    min-height: 0;
+    border: 0;
+    border-radius: 999px;
+    background-color: color-mix(in srgb, var(--text-secondary) 38%, transparent);
+  }
+
+  .document-tabs-scroll::-webkit-scrollbar-thumb:hover {
+    background-color: color-mix(in srgb, var(--text-secondary) 54%, transparent);
+  }
+
+  .document-tabs-scroll::-webkit-scrollbar-thumb:active {
+    background-color: color-mix(in srgb, var(--accent) 42%, transparent);
+  }
+
+  .editor-content-slot .paper-scroll {
+    height: calc(100% - 2.5rem);
+    margin-top: 2.5rem;
+  }
+
+  .editor-content-slot .markdown-paper,
+  .editor-content-slot .markdown-source-paper {
+    min-height: calc(100vh - 2.5rem);
+    padding-top: 1rem;
+  }
+
+  @media (max-width: 900px) {
+    .editor-content-slot .markdown-paper,
+    .editor-content-slot .markdown-source-paper {
+      padding-top: 0;
+    }
+  }
+
+  .markra-slash-menu {
+    @apply fixed z-[60] w-60 rounded-lg border border-(--border-default) bg-(--bg-primary) p-1 text-[13px] leading-5 text-(--text-primary);
+    box-shadow: var(--floating-popover-shadow);
+  }
+
+  .markra-slash-menu-option {
+    @apply flex h-8 w-full cursor-pointer items-center rounded-md border-0 bg-transparent px-2.5 text-left text-[13px] leading-5 font-[560] tracking-normal text-(--text-primary) outline-none transition-[background-color,color] duration-150 ease-out;
+  }
+
+  .markra-slash-menu-option:hover,
+  .markra-slash-menu-option[aria-selected="true"] {
+    @apply bg-(--bg-active) text-(--text-heading);
+  }
+
+  .markra-slash-menu-empty {
+    @apply px-2.5 py-2 text-[12px] leading-5 font-[560] text-(--text-secondary);
+  }
+
+  .document-search-icon-button {
+    @apply flex size-8 shrink-0 items-center justify-center rounded-sm border border-transparent bg-transparent text-(--text-secondary) outline-none transition-[background-color,color,border-color] duration-150 ease-out;
+  }
+
+  .document-search-icon-button:hover,
+  .document-search-icon-button:focus-visible,
+  .document-search-icon-button[aria-pressed="true"] {
+    @apply border-(--border-default) bg-(--bg-active) text-(--text-heading);
+  }
+
+  .document-search-icon-button:disabled {
+    @apply cursor-not-allowed opacity-40;
+  }
+
+  .document-search-text-button {
+    @apply h-8 shrink-0 rounded-sm border border-(--border-default) bg-(--bg-primary) px-2.5 text-[12px] leading-5 font-[620] text-(--text-heading) outline-none transition-[background-color,border-color,color] duration-150 ease-out;
+  }
+
+  .document-search-text-button:hover,
+  .document-search-text-button:focus-visible {
+    @apply border-(--border-strong) bg-(--bg-active);
+  }
+
+  .document-search-text-button:disabled {
+    @apply cursor-not-allowed opacity-45;
+  }
+
+  .markdown-paper,
+  .markdown-source-paper {
+    --editor-text-cursor: url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http://www.w3.org/2000/svg%27%20width%3D%2724%27%20height%3D%2724%27%20viewBox%3D%270%200%2024%2024%27%3E%3Cpath%20d%3D%27M12%204v16M8.5%204h7M8.5%2020h7%27%20fill%3D%27none%27%20stroke%3D%27%23ffffff%27%20stroke-width%3D%274%27%20stroke-linecap%3D%27round%27/%3E%3Cpath%20d%3D%27M12%204v16M8.5%204h7M8.5%2020h7%27%20fill%3D%27none%27%20stroke%3D%27%231a1c1e%27%20stroke-width%3D%272%27%20stroke-linecap%3D%27round%27/%3E%3C/svg%3E") 12 12, text;
+  }
+
+  [data-theme-appearance="dark"] .markdown-paper,
+  [data-theme-appearance="dark"] .markdown-source-paper {
+    --editor-text-cursor: url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http://www.w3.org/2000/svg%27%20width%3D%2724%27%20height%3D%2724%27%20viewBox%3D%270%200%2024%2024%27%3E%3Cpath%20d%3D%27M12%204v16M8.5%204h7M8.5%2020h7%27%20fill%3D%27none%27%20stroke%3D%27%23000000%27%20stroke-width%3D%274%27%20stroke-linecap%3D%27round%27/%3E%3Cpath%20d%3D%27M12%204v16M8.5%204h7M8.5%2020h7%27%20fill%3D%27none%27%20stroke%3D%27%23ffffff%27%20stroke-width%3D%272%27%20stroke-linecap%3D%27round%27/%3E%3C/svg%3E") 12 12, text;
+  }
+
+  .markdown-paper [data-milkdown-root],
+  .markdown-paper .ProseMirror {
+    @apply min-h-[calc(100vh-176px)] outline-none;
+    cursor: var(--editor-text-cursor);
+    font-family: var(--editor-font-family);
+  }
+
+  .markdown-paper .ProseMirror {
+    @apply wrap-break-word whitespace-pre-wrap;
+  }
+
+  .markdown-paper .ProseMirror.markra-prosemirror-custom-caret {
+    caret-color: transparent;
+  }
+
+  .markdown-paper .markra-prosemirror-caret {
+    position: fixed;
+    z-index: 70;
+    display: none;
+    width: 1px;
+    background: var(--accent);
+    border-radius: 999px;
+    pointer-events: none;
+    animation: markra-prosemirror-caret-blink 1.05s steps(1, end) infinite;
+  }
+
+  .editor-content-slot[data-document-search-open="true"] .markdown-paper .markra-prosemirror-caret {
+    display: none !important;
+  }
+
+  .markdown-paper .ProseMirror li[data-item-type="task"] {
+    @apply relative flex list-none items-start gap-2;
+  }
+
+  .markdown-paper .markra-task-list-checkbox {
+    @apply h-4 w-4 shrink-0 cursor-pointer rounded-sm border border-(--border-strong) accent-(--accent);
+    line-height: inherit;
+    margin-top: calc((1lh - 1rem) / 2);
+  }
+
+  .markdown-paper .markra-task-list-checkbox:disabled {
+    @apply cursor-not-allowed opacity-55;
+  }
+
+  .markdown-paper .markra-task-list-content {
+    @apply min-w-0 flex-1;
+  }
+
+  .markdown-paper .markra-task-list-content > p:first-child {
+    @apply mt-0;
+  }
+
+  .markdown-paper .markra-task-list-content > p:last-child {
+    @apply mb-0;
+  }
+
+  .markdown-paper .ProseMirror-focused {
+    @apply outline-none;
+  }
+
+  .markdown-paper .markra-block-toolbar {
+    @apply fixed z-50 flex h-6 items-center gap-0 rounded-md border border-transparent bg-transparent p-0 text-(--text-secondary) outline-none transition-[opacity,color,background-color,border-color,box-shadow] duration-150 ease-out;
+    opacity: 0;
+    pointer-events: none;
+    transform: translate(-50%, -50%);
+  }
+
+  .markdown-paper .markra-block-toolbar[data-show="true"] {
+    opacity: 0.58;
+    pointer-events: auto;
+  }
+
+  .markdown-paper .markra-block-toolbar:hover,
+  .markdown-paper .markra-block-toolbar:focus-within,
+  .markdown-paper .markra-block-toolbar[data-dragging="true"] {
+    @apply bg-(--bg-hover) text-(--text-heading);
+    opacity: 1;
+    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.08);
+  }
+
+  .markdown-paper .markra-block-tool-button {
+    @apply grid h-5 w-5 cursor-pointer place-content-center rounded-sm border-0 bg-transparent p-0 text-(--text-secondary) outline-none transition-[color,background-color] duration-150 ease-out hover:bg-(--bg-active) hover:text-(--text-heading) focus-visible:bg-(--bg-active) focus-visible:text-(--text-heading);
+  }
+
+  .markdown-paper .markra-block-add-button {
+    @apply relative;
+  }
+
+  .markdown-paper .markra-block-add-button::before,
+  .markdown-paper .markra-block-add-button::after {
+    content: "";
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 8px;
+    height: 1.25px;
+    border-radius: 999px;
+    background: currentColor;
+    transform: translate(-50%, -50%);
+  }
+
+  .markdown-paper .markra-block-add-button::after {
+    transform: translate(-50%, -50%) rotate(90deg);
+  }
+
+  .markdown-paper .markra-block-drag-handle {
+    @apply cursor-grab;
+    grid-template-columns: repeat(2, 2.5px);
+    column-gap: 4px;
+    row-gap: 3px;
+  }
+
+  .markdown-paper .markra-block-drag-handle[data-dragging="true"] {
+    @apply cursor-grabbing;
+  }
+
+  .markdown-paper .markra-block-drag-dot {
+    @apply block rounded-full bg-current;
+    width: 2.5px;
+    height: 2.5px;
+    opacity: 0.78;
+  }
+
+  .markdown-paper .markra-block-drag-source {
+    opacity: 0.42;
+    transition: opacity 120ms ease-out;
+  }
+
+  .markdown-paper .markra-block-drop-indicator {
+    @apply fixed z-40 h-0.5 rounded-full bg-(--accent);
+    opacity: 0;
+    pointer-events: none;
+    transform: translateY(-50%) scaleX(0.98);
+    transform-origin: center;
+    transition:
+      opacity 120ms ease-out,
+      transform 120ms ease-out;
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent);
+  }
+
+  .markdown-paper .markra-block-drop-indicator[data-show="true"] {
+    opacity: 1;
+    transform: translateY(-50%) scaleX(1);
+  }
+
+  .markdown-paper .markra-block-drag-ghost {
+    @apply fixed z-50 max-w-80 truncate rounded-sm border border-(--border-default) bg-(--bg-primary) px-2 py-1 text-sm leading-5 text-(--text-heading);
+    left: 0;
+    opacity: 0;
+    pointer-events: none;
+    top: 0;
+    transform: translate(-9999px, -9999px);
+    transition: opacity 90ms ease-out;
+    white-space: nowrap;
+    box-shadow:
+      0 10px 24px rgba(15, 23, 42, 0.12),
+      0 1px 3px rgba(15, 23, 42, 0.1);
+    will-change: transform;
+  }
+
+  .markdown-paper .markra-block-drag-ghost[data-show="true"] {
+    opacity: 0.94;
+  }
+
+  .markdown-paper .ProseMirror[data-dragging="true"] {
+    cursor: grabbing;
+  }
+
+  html[data-markra-block-dragging="true"],
+  html[data-markra-block-dragging="true"] body,
+  .markdown-paper[data-block-dragging="true"],
+  .markdown-paper[data-block-dragging="true"] * {
+    cursor: grabbing;
+    -webkit-user-select: none;
+    user-select: none;
+  }
+
+  html[data-document-tab-dragging="true"],
+  html[data-document-tab-dragging="true"] body,
+  html[data-document-tab-dragging="true"] * {
+    cursor: grabbing !important;
+    -webkit-user-select: none;
+    user-select: none;
+  }
+
+  .markra-cm-source-search-match,
+  .markra-search-match {
+    border-radius: 2px;
+    background: color-mix(in srgb, var(--accent) 16%, transparent);
+  }
+
+  .markra-cm-source-search-match-current,
+  .markra-search-match-current {
+    background: color-mix(in srgb, var(--accent) 30%, transparent);
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 30%, transparent);
+  }
+
+  .markdown-paper {
+    --editor-paper-bg: var(--bg-primary);
+    --editor-text-primary: var(--text-primary);
+    --editor-text-heading: var(--text-heading);
+    --editor-text-secondary: var(--text-secondary);
+    --editor-border: var(--border-default);
+    --editor-border-strong: var(--border-strong);
+    --editor-bg-secondary: var(--bg-secondary);
+    --editor-inline-code-bg: var(--bg-code);
+    --editor-inline-code-text: oklch(40% 0.13 247);
+    --editor-code-bg: var(--bg-code);
+    --editor-code-line-bg: color-mix(in srgb, var(--bg-secondary) 72%, var(--bg-code));
+    --editor-code-text: var(--text-primary);
+    --editor-code-control-bg: color-mix(in srgb, var(--bg-primary) 94%, transparent);
+    --editor-link-color: var(--link-color);
+    --editor-hl-keyword: oklch(43% 0.17 283);
+    --editor-hl-string: oklch(42% 0.13 151);
+    --editor-hl-number: oklch(47% 0.16 42);
+    --editor-hl-title: oklch(44% 0.15 247);
+    --editor-hl-type: oklch(39% 0.13 210);
+    --editor-hl-meta: oklch(44% 0.15 330);
+    --editor-hl-symbol: oklch(40% 0.12 190);
+    --editor-hl-deletion: oklch(45% 0.17 29);
+    --editor-font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    --editor-heading-font-family: var(--editor-font-family);
+    --editor-paragraph-spacing: 8px;
+    color: var(--editor-text-primary);
+    font-family: var(--editor-font-family);
+    transition:
+      color 160ms ease-out,
+      border-color 160ms ease-out;
+  }
+
+  [data-theme-appearance="dark"] .markdown-paper {
+    --editor-inline-code-text: oklch(78% 0.09 225);
+    --editor-code-control-bg: color-mix(in srgb, var(--bg-secondary) 88%, transparent);
+    --editor-link-color: #b7c5ff;
+    --editor-hl-keyword: oklch(78% 0.11 285);
+    --editor-hl-string: oklch(76% 0.1 151);
+    --editor-hl-number: oklch(76% 0.12 70);
+    --editor-hl-title: oklch(76% 0.1 220);
+    --editor-hl-type: oklch(76% 0.08 196);
+    --editor-hl-meta: oklch(76% 0.1 330);
+    --editor-hl-symbol: oklch(76% 0.09 185);
+    --editor-hl-deletion: oklch(72% 0.12 29);
+  }
+
+  .markdown-paper h1,
+  .markdown-paper h2,
+  .markdown-paper h3,
+  .markdown-paper h4,
+  .markdown-paper h5,
+  .markdown-paper h6 {
+    @apply text-[var(--text-heading)] font-[760] tracking-normal;
+    color: var(--editor-text-heading);
+    font-family: var(--editor-heading-font-family);
+  }
+
+  .markdown-paper h1 {
+    @apply m-0 mb-6 text-[44px] leading-[1.15] max-[900px]:text-[34px];
+  }
+
+  .markdown-paper h2 {
+    @apply mt-9 mb-5 text-[31px] leading-[1.22] max-[900px]:text-[26px];
+  }
+
+  .markdown-paper h3 {
+    @apply mt-7.5 mb-3 text-2xl leading-[1.28];
+  }
+
+  .markdown-paper .markra-heading-editing {
+    @apply relative;
+  }
+
+  .markdown-paper .markra-heading-level-control {
+    position: relative;
+    display: inline-grid;
+    margin-right: 0.5rem;
+    vertical-align: 0.18em;
+  }
+
+  .markdown-paper .markra-heading-level-button {
+    display: grid;
+    place-content: center;
+    width: 1.75rem;
+    height: 1.25rem;
+    cursor: pointer;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    background: transparent;
+    padding: 0;
+    color: color-mix(in srgb, var(--editor-text-secondary) 58%, transparent);
+    font-family: var(--editor-font-family);
+    font-size: 11px;
+    font-weight: 650;
+    line-height: 1;
+    transition:
+      background-color 150ms ease-out,
+      border-color 150ms ease-out,
+      color 150ms ease-out;
+  }
+
+  .markdown-paper .markra-heading-level-button::before {
+    content: attr(data-heading-level);
+  }
+
+  .markdown-paper .markra-heading-level-button:hover,
+  .markdown-paper .markra-heading-level-button:focus-visible {
+    border-color: var(--editor-border);
+    background: var(--editor-bg-secondary);
+    color: var(--editor-text-secondary);
+    outline: none;
+  }
+
+  .markdown-paper .markra-heading-level-list {
+    position: absolute;
+    z-index: 70;
+    inset-block-start: calc(100% + 4px);
+    inset-inline-start: 0;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 2px;
+    width: 6.25rem;
+    border: 1px solid var(--editor-border);
+    border-radius: 6px;
+    background: var(--editor-paper-bg);
+    padding: 4px;
+    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.12);
+  }
+
+  .markdown-paper .markra-heading-level-list [role="option"] {
+    display: grid;
+    height: 1.5rem;
+    cursor: pointer;
+    place-content: center;
+    border: 0;
+    border-radius: 4px;
+    background: transparent;
+    padding: 0;
+    color: var(--editor-text-secondary);
+    font-family: var(--editor-font-family);
+    font-size: 12px;
+    font-weight: 650;
+    line-height: 1;
+  }
+
+  .markdown-paper .markra-heading-level-list [data-heading-level="paragraph"] {
+    grid-column: 1 / -1;
+    padding-inline: 0.5rem;
+  }
+
+  .markdown-paper .markra-heading-level-list [role="option"]:hover,
+  .markdown-paper .markra-heading-level-list [role="option"]:focus-visible {
+    background: var(--editor-bg-secondary);
+    color: var(--editor-text-heading);
+    outline: none;
+  }
+
+  .markdown-paper .markra-heading-level-list [role="option"][aria-selected="true"] {
+    background: var(--editor-bg-secondary);
+    color: var(--editor-text-heading);
+  }
+
+  .markdown-paper .markra-heading-toggle-heading {
+    @apply relative;
+    --markra-heading-toggle-center-offset: 0px;
+  }
+
+  .markdown-paper h1.markra-heading-toggle-heading {
+    --markra-heading-toggle-center-offset: -5.5px;
+  }
+
+  .markdown-paper h2.markra-heading-toggle-heading {
+    --markra-heading-toggle-center-offset: -3.5px;
+  }
+
+  .markdown-paper .markra-heading-toggle-button {
+    @apply absolute inline-flex size-5 cursor-pointer items-center justify-center rounded-sm border-0 bg-transparent p-0 outline-none transition-[opacity,color,background-color] duration-150 ease-out focus-visible:bg-(--bg-hover) focus-visible:outline-none;
+    color: color-mix(in srgb, var(--editor-text-secondary) 62%, transparent);
+    left: -28px;
+    opacity: 0;
+    top: calc(50% + var(--markra-heading-toggle-center-offset));
+    transform: translateY(-50%);
+  }
+
+  .markdown-paper .markra-heading-toggle-heading:hover > .markra-heading-toggle-button,
+  .markdown-paper .markra-heading-toggle-heading:focus-within > .markra-heading-toggle-button {
+    opacity: 0.72;
+  }
+
+  .markdown-paper .markra-heading-toggle-button:hover,
+  .markdown-paper .markra-heading-toggle-button:focus-visible {
+    color: var(--editor-text-secondary);
+    opacity: 1;
+  }
+
+  .markdown-paper .markra-heading-toggle-button::before {
+    content: "";
+    width: 7px;
+    height: 7px;
+    border-right: 1.6px solid currentColor;
+    border-bottom: 1.6px solid currentColor;
+    transform: rotate(45deg);
+    transform-origin: center;
+    transition: transform 120ms ease-out;
+  }
+
+  .markdown-paper .markra-heading-toggle-button[data-collapsed="true"]::before {
+    transform: rotate(-45deg);
+  }
+
+  .markdown-paper .markra-heading-collapsed-content {
+    display: none !important;
+  }
+
+  .markdown-paper .markra-list-toggle-item {
+    position: relative;
+  }
+
+  .markdown-paper .markra-list-toggle-button {
+    @apply absolute inline-flex size-4 cursor-pointer items-center justify-center rounded-sm border-0 bg-transparent p-0 outline-none transition-[opacity,color,background-color] duration-150 ease-out focus-visible:bg-(--bg-hover) focus-visible:outline-none;
+    color: color-mix(in srgb, var(--editor-text-secondary) 62%, transparent);
+    left: -2.2em;
+    opacity: 0;
+    top: calc((1lh - 1rem) / 2);
+  }
+
+  .markdown-paper .markra-list-toggle-item:hover > .markra-list-toggle-button,
+  .markdown-paper .markra-list-toggle-item:focus-within > .markra-list-toggle-button,
+  .markdown-paper .markra-list-toggle-item[data-list-collapsed="true"] > .markra-list-toggle-button {
+    opacity: 0.72;
+  }
+
+  .markdown-paper .markra-list-toggle-button:hover,
+  .markdown-paper .markra-list-toggle-button:focus-visible {
+    color: var(--editor-text-secondary);
+    opacity: 1;
+  }
+
+  .markdown-paper .markra-list-toggle-button::before {
+    content: "";
+    width: 6px;
+    height: 6px;
+    border-right: 1.4px solid currentColor;
+    border-bottom: 1.4px solid currentColor;
+    transform: rotate(45deg);
+    transform-origin: center;
+    transition: transform 120ms ease-out;
+  }
+
+  .markdown-paper .markra-list-toggle-button[data-collapsed="true"]::before {
+    transform: rotate(-45deg);
+  }
+
+  .markdown-paper .markra-list-toggle-item > ul,
+  .markdown-paper .markra-list-toggle-item > ol {
+    margin-left: 0.15em;
+    padding-left: 1.2em;
+  }
+
+  .markdown-paper .markra-list-collapsed-content {
+    display: none !important;
+  }
+
+  .markdown-paper p {
+    margin-block: 0 var(--editor-paragraph-spacing);
+    color: var(--editor-text-primary);
+  }
+
+  .markdown-paper blockquote {
+    @apply my-4.5 mr-0 border-l border-(--border-strong) py-0 pr-0 pl-5 text-(--text-secondary);
+    border-color: var(--editor-border-strong);
+    color: var(--editor-text-secondary);
+  }
+
+  .markdown-paper blockquote.markra-callout {
+    --callout-color: oklch(57% 0.11 252);
+    --callout-bg: color-mix(in srgb, var(--callout-color) 5%, var(--editor-paper-bg));
+    --callout-border: color-mix(in srgb, var(--callout-color) 22%, var(--editor-border));
+    --callout-border-focus: color-mix(in srgb, var(--callout-color) 38%, var(--editor-border-strong));
+    @apply relative my-5 rounded-[7px] border px-4 py-3.5 text-(--text-primary) transition-[background-color,border-color] duration-150 ease-out;
+    background: var(--callout-bg);
+    border-color: var(--callout-border);
+    color: var(--editor-text-primary);
+  }
+
+  .markdown-paper blockquote.markra-callout-tip {
+    --callout-color: oklch(56% 0.11 154);
+  }
+
+  .markdown-paper blockquote.markra-callout-important {
+    --callout-color: oklch(55% 0.12 292);
+  }
+
+  .markdown-paper blockquote.markra-callout-warning {
+    --callout-color: oklch(62% 0.12 72);
+  }
+
+  .markdown-paper blockquote.markra-callout-caution {
+    --callout-color: oklch(57% 0.13 28);
+  }
+
+  [data-theme="dark"] .markdown-paper blockquote.markra-callout,
+  [data-theme-appearance="dark"] .markdown-paper blockquote.markra-callout {
+    --callout-bg: color-mix(in srgb, var(--callout-color) 10%, var(--editor-paper-bg));
+    --callout-border: color-mix(in srgb, var(--callout-color) 32%, var(--editor-border));
+  }
+
+  .markdown-paper .markra-callout-header {
+    @apply mb-2 flex min-h-5 items-center gap-2 text-[0.76em] leading-5 font-[720] tracking-normal;
+    color: var(--callout-color);
+  }
+
+  .markdown-paper .markra-callout-icon {
+    @apply relative inline-grid size-4 shrink-0 place-items-center rounded-full;
+    background: color-mix(in srgb, currentColor 11%, var(--editor-paper-bg));
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 24%, transparent);
+  }
+
+  .markdown-paper .markra-callout-icon::before {
+    @apply block size-1.5 rounded-full;
+    content: "";
+    background: currentColor;
+  }
+
+  .markdown-paper .markra-callout-tip .markra-callout-icon::before {
+    @apply size-1.75 rounded-[2px];
+    transform: rotate(45deg);
+  }
+
+  .markdown-paper .markra-callout-important .markra-callout-icon::before {
+    @apply h-2.25 w-1 rounded-full;
+  }
+
+  .markdown-paper .markra-callout-warning .markra-callout-icon::before {
+    @apply size-2.5 rounded-none;
+    clip-path: polygon(50% 4%, 96% 92%, 4% 92%);
+  }
+
+  .markdown-paper .markra-callout-caution .markra-callout-icon::before {
+    @apply size-2 rounded-[2px];
+  }
+
+  .markdown-paper .markra-callout-title {
+    @apply shrink-0;
+  }
+
+  .markdown-paper .markra-callout-type-select {
+    @apply ml-auto h-6 max-w-30 rounded-md border border-(--border-default) px-2 text-[12px] leading-4 font-[520] text-(--text-secondary) outline-none transition-[opacity,border-color,color,background-color] duration-150 ease-out;
+    background: color-mix(in srgb, var(--editor-paper-bg) 86%, var(--callout-bg));
+    border-color: color-mix(in srgb, var(--callout-color) 18%, var(--editor-border));
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  .markdown-paper .markra-callout:hover .markra-callout-type-select,
+  .markdown-paper .markra-callout:focus-within .markra-callout-type-select {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  .markdown-paper blockquote.markra-callout:focus-within {
+    border-color: var(--callout-border-focus);
+  }
+
+  .markdown-paper .markra-callout-type-select:focus {
+    border-color: var(--callout-color);
+    color: var(--editor-text-primary);
+  }
+
+  .markdown-paper .markra-callout-marker-line {
+    @apply hidden;
+  }
+
+  .markdown-paper .markra-callout-source-marker {
+    @apply hidden;
+  }
+
+  .markdown-paper .markra-callout-source-marker + br {
+    @apply hidden;
+  }
+
+  .markdown-paper blockquote.markra-callout p {
+    @apply mb-3;
+    color: var(--editor-text-primary);
+    cursor: text;
+    min-height: 1lh;
+  }
+
+  .markdown-paper blockquote.markra-callout p:first-of-type {
+    @apply mt-0;
+  }
+
+  .markdown-paper blockquote.markra-callout p:last-child {
+    @apply mb-0;
+  }
+
+  .markdown-paper blockquote p {
+    @apply m-0 mb-3;
+  }
+
+  .markdown-paper ul {
+    @apply mt-3 mb-6 list-disc pl-[1.4em] marker:text-(--text-secondary);
+    color: var(--editor-text-primary);
+  }
+
+  .markdown-paper ul ul {
+    list-style-type: circle;
+  }
+
+  .markdown-paper ul ul ul {
+    list-style-type: square;
+  }
+
+  .markdown-paper ol {
+    @apply mt-3 mb-6 list-decimal pl-[1.4em] marker:text-(--text-secondary);
+    color: var(--editor-text-primary);
+  }
+
+  .markdown-paper li {
+    @apply my-2;
+  }
+
+  .markdown-paper.settings-template-preview {
+    @apply min-h-60 overflow-auto rounded-md bg-(--bg-secondary) px-4 py-3 text-[13px] leading-6;
+  }
+
+  .markdown-paper.settings-template-preview h1 {
+    @apply mb-3 border-0 pb-0 text-[21px] leading-7;
+  }
+
+  .markdown-paper.settings-template-preview h2 {
+    @apply mt-5 mb-2.5 border-0 pb-0 text-[17px] leading-6;
+  }
+
+  .markdown-paper.settings-template-preview h3 {
+    @apply mt-4 mb-2 text-[14px] leading-5;
+  }
+
+  .markdown-paper.settings-template-preview p {
+    @apply mb-3;
+  }
+
+  .markdown-paper.settings-template-preview ul,
+  .markdown-paper.settings-template-preview ol {
+    @apply mt-2 mb-4;
+  }
+
+  .markdown-paper.settings-template-preview li {
+    @apply my-1.5;
+  }
+
+  .markdown-paper.settings-template-preview blockquote {
+    @apply my-3 pl-3.5;
+  }
+
+  .markdown-paper.settings-template-preview pre {
+    @apply my-3 rounded-md px-3 py-2.5;
+  }
+
+  .markdown-paper.settings-template-preview > :last-child {
+    @apply mb-0;
+  }
+
+  .markdown-paper .tableWrapper {
+    @apply my-6 overflow-x-auto;
+  }
+
+  .markdown-paper .markra-table-controls-wrapper {
+    /* Center add controls against the table viewport, excluding the asymmetric control gutters. */
+    --markra-table-control-inline-center-offset: -1.125rem;
+    --markra-table-control-block-center-offset: -0.25rem;
+    @apply relative overflow-visible pt-7 pr-9 pb-9;
+  }
+
+  .markdown-paper .markra-table-scroll {
+    @apply overflow-x-auto;
+  }
+
+  .markdown-paper table {
+    @apply my-6 w-full border-collapse overflow-hidden text-left text-[0.95em] leading-[1.55];
+    table-layout: fixed;
+  }
+
+  .markdown-paper .markra-table-scroll > table {
+    @apply my-0;
+  }
+
+  .markdown-paper .markra-table-controls-wrapper[data-width-mode="auto"] .markra-table-scroll > table {
+    width: 100%;
+    max-width: 100%;
+    table-layout: auto;
+  }
+
+  .markdown-paper .markra-table-controls-wrapper[data-width-mode="auto"][data-table-alignment="center"]
+    .markra-table-scroll
+    > table {
+    margin-inline: auto;
+  }
+
+  .markdown-paper .markra-table-controls-wrapper[data-width-mode="auto"][data-table-alignment="right"]
+    .markra-table-scroll
+    > table {
+    margin-left: auto;
+  }
+
+  .markdown-paper th,
+  .markdown-paper td {
+    @apply border border-(--border-strong) px-3 py-2 align-top;
+    border-color: var(--editor-border-strong);
+  }
+
+  .markdown-paper .markra-table-controls-wrapper[data-width-mode="auto"] .markra-table-scroll th,
+  .markdown-paper .markra-table-controls-wrapper[data-width-mode="auto"] .markra-table-scroll td {
+    max-width: 32rem;
+    overflow-wrap: anywhere;
+    word-break: normal;
+  }
+
+  .markdown-paper th {
+    @apply bg-(--bg-secondary) text-(--text-heading) font-[650];
+    background: var(--editor-bg-secondary);
+    color: var(--editor-text-heading);
+  }
+
+  .markdown-paper td {
+    @apply bg-(--bg-primary);
+    background: var(--editor-paper-bg);
+  }
+
+  .markdown-paper tbody tr:nth-child(even) td {
+    @apply bg-(--bg-secondary);
+    background: var(--editor-bg-secondary);
+  }
+
+  .markdown-paper tbody tr:first-child:has(th) ~ tr:nth-child(even) td {
+    @apply bg-(--bg-primary);
+    background: var(--editor-paper-bg);
+  }
+
+  .markdown-paper tbody tr:first-child:has(th) ~ tr:nth-child(odd) td {
+    @apply bg-(--bg-secondary);
+    background: var(--editor-bg-secondary);
+  }
+
+  .markdown-paper th p,
+  .markdown-paper td p {
+    @apply m-0;
+  }
+
+  .markdown-paper .markra-table-control {
+    @apply absolute inline-flex size-6 cursor-pointer items-center justify-center rounded-full border border-(--border-default) p-0 text-[18px] leading-none font-[420] transition-[opacity,color,background-color,border-color,box-shadow,scale] duration-150 ease-out hover:border-(--border-strong) hover:bg-(--bg-hover) hover:text-(--text-heading) focus-visible:border-(--border-strong) focus-visible:bg-(--bg-hover) focus-visible:text-(--text-heading) focus-visible:outline-none;
+    background: color-mix(in srgb, var(--bg-primary) 94%, var(--bg-secondary));
+    box-shadow:
+      0 8px 24px rgba(0, 0, 0, 0.08),
+      0 1px 2px rgba(0, 0, 0, 0.08);
+    color: var(--text-secondary);
+    opacity: 0;
+    pointer-events: none;
+    scale: 0.9;
+  }
+
+  .markdown-paper .markra-table-controls-wrapper:hover .markra-table-control,
+  .markdown-paper .markra-table-controls-wrapper:focus-within .markra-table-control {
+    opacity: 1;
+    pointer-events: auto;
+    scale: 1;
+  }
+
+  .markdown-paper .markra-table-control:hover,
+  .markdown-paper .markra-table-control:focus-visible {
+    box-shadow:
+      0 12px 30px rgba(0, 0, 0, 0.12),
+      0 0 0 3px color-mix(in srgb, var(--text-secondary) 14%, transparent);
+  }
+
+  .markdown-paper .markra-table-fragment-merge {
+    @apply relative z-20 h-0 w-full overflow-visible;
+    color: var(--editor-text-secondary);
+    pointer-events: none;
+  }
+
+  .markdown-paper .markra-table-fragment-merge-button {
+    @apply absolute top-0 left-0 inline-flex size-6 cursor-pointer items-center justify-center overflow-visible rounded-[7px] border p-0 text-xs font-semibold whitespace-nowrap focus-visible:outline-none;
+    border-color: color-mix(in srgb, var(--editor-border-strong) 78%, transparent);
+    background: color-mix(in srgb, var(--editor-paper-bg) 94%, var(--editor-bg-secondary));
+    box-shadow: 0 2px 7px rgba(0, 0, 0, 0.08);
+    color: var(--editor-text-secondary);
+    opacity: 0;
+    pointer-events: none;
+    transform: translate(-1.5rem, 0.125rem) scale(0.92);
+    transition:
+      color 120ms ease-out,
+      background-color 120ms ease-out,
+      border-color 120ms ease-out,
+      box-shadow 120ms ease-out,
+      opacity 120ms ease-out,
+      transform 120ms ease-out;
+  }
+
+  .markdown-paper .markra-table-fragment-merge-button::before {
+    position: absolute;
+    inset: -0.25rem 0 -0.25rem -0.25rem;
+    content: "";
+  }
+
+  .markdown-paper .markra-table-fragment-merge:has(+ p:hover) .markra-table-fragment-merge-button,
+  .markdown-paper .markra-table-fragment-merge:focus-within .markra-table-fragment-merge-button,
+  .markdown-paper .markra-table-fragment-merge-button:hover,
+  .markdown-paper .markra-table-fragment-merge-button:focus-visible {
+    opacity: 1;
+    pointer-events: auto;
+    transform: translate(-1.5rem, 0.125rem) scale(1);
+  }
+
+  .markdown-paper .markra-table-fragment-merge-button:hover,
+  .markdown-paper .markra-table-fragment-merge-button:focus-visible {
+    border-color: var(--editor-border-strong);
+    background: var(--editor-bg-secondary);
+    box-shadow:
+      0 3px 9px rgba(0, 0, 0, 0.09),
+      0 0 0 2px color-mix(in srgb, var(--accent) 18%, transparent);
+    color: var(--editor-text-heading);
+  }
+
+  .markdown-paper .markra-table-fragment-merge-icon {
+    @apply size-3.5 shrink-0;
+    pointer-events: none;
+  }
+
+  .markdown-paper .markra-table-fragment-merge-label {
+    @apply absolute left-1 rounded-[7px] px-2 py-1 text-[11px] leading-tight font-medium;
+    bottom: calc(100% + 0.5rem);
+    background: var(--editor-text-heading);
+    box-shadow: 0 5px 14px rgba(0, 0, 0, 0.16);
+    color: var(--editor-paper-bg);
+    opacity: 0;
+    pointer-events: none;
+    transform: translateY(0.125rem);
+    transition:
+      opacity 120ms ease-out,
+      transform 120ms ease-out,
+      visibility 0ms linear 120ms;
+    visibility: hidden;
+  }
+
+  .markdown-paper .markra-table-fragment-merge-label::after {
+    position: absolute;
+    top: 100%;
+    left: 0.625rem;
+    border: 0.25rem solid transparent;
+    border-top-color: var(--editor-text-heading);
+    content: "";
+  }
+
+  .markdown-paper .markra-table-fragment-merge-button:hover .markra-table-fragment-merge-label,
+  .markdown-paper .markra-table-fragment-merge-button:focus-visible .markra-table-fragment-merge-label {
+    opacity: 1;
+    transform: translateY(0);
+    transition-delay: 0ms;
+    visibility: visible;
+  }
+
+  .markdown-paper .ProseMirror[contenteditable="false"] .markra-table-fragment-merge {
+    display: none;
+  }
+
+  .markdown-paper .markra-table-delete-control {
+    @apply hover:border-red-400/70 hover:bg-red-500/10 hover:text-red-600 focus-visible:border-red-400/70 focus-visible:bg-red-500/10 focus-visible:text-red-600;
+    transform: translate(-50%, -50%);
+  }
+
+  .markdown-paper .markra-table-delete-control:hover,
+  .markdown-paper .markra-table-delete-control:focus-visible {
+    box-shadow:
+      0 12px 30px rgba(0, 0, 0, 0.12),
+      0 0 0 3px color-mix(in srgb, oklch(63.7% 0.237 25.331) 14%, transparent);
+  }
+
+  .markdown-paper .markra-table-delete-column {
+    @apply z-10;
+  }
+
+  .markdown-paper .markra-table-delete-row {
+    @apply z-10;
+  }
+
+  .markdown-paper .markra-table-align-controls {
+    @apply absolute top-0 left-1.5 z-10 flex items-center gap-0.5;
+  }
+
+  .markdown-paper .markra-table-size-controls {
+    @apply relative flex items-center;
+  }
+
+  .markdown-paper .markra-table-size-button {
+    @apply static size-6 rounded-md border-transparent text-[0] shadow-none hover:border-(--border-default) focus-visible:border-(--border-default);
+    background: transparent;
+    box-shadow: none;
+  }
+
+  .markdown-paper .markra-table-size-button:hover,
+  .markdown-paper .markra-table-size-button:focus-visible,
+  .markdown-paper .markra-table-size-button[aria-expanded="true"] {
+    background: var(--bg-hover);
+    box-shadow: none;
+    color: var(--text-heading);
+  }
+
+  .markdown-paper .markra-table-size-icon {
+    @apply grid size-4 grid-cols-2 gap-0.75;
+  }
+
+  .markdown-paper .markra-table-size-icon-square {
+    @apply block rounded-[1px] border border-current;
+  }
+
+  .markra-table-size-popover {
+    @apply fixed z-70 rounded-lg border border-(--border-default) p-3;
+    background: color-mix(in srgb, var(--bg-primary) 98%, var(--bg-secondary));
+    box-shadow:
+      0 18px 40px rgba(0, 0, 0, 0.16),
+      0 2px 8px rgba(0, 0, 0, 0.08);
+  }
+
+  .markra-table-size-grid {
+    @apply grid gap-1;
+    grid-template-columns: repeat(8, 0.875rem);
+  }
+
+  .markra-table-size-cell {
+    @apply size-3.5 rounded-[2px] border border-(--border-default) p-0 transition-[background-color,border-color] duration-100 ease-out;
+    background: var(--bg-secondary);
+  }
+
+  .markra-table-size-cell:hover,
+  .markra-table-size-cell:focus-visible {
+    @apply outline-none;
+    border-color: var(--text-secondary);
+  }
+
+  .markra-table-size-cell-active {
+    background: color-mix(in srgb, var(--text-secondary) 46%, var(--bg-secondary));
+    border-color: color-mix(in srgb, var(--text-secondary) 66%, var(--border-default));
+  }
+
+  .markra-table-size-footer {
+    @apply mt-3 flex items-center justify-center gap-2 border-t border-(--border-default) pt-3;
+  }
+
+  .markra-table-size-input {
+    @apply h-7 w-10 rounded-sm border border-(--border-default) bg-(--bg-primary) px-1 text-center text-sm leading-none text-(--text-primary) outline-none focus-visible:border-(--border-strong);
+  }
+
+  .markra-table-size-input::-webkit-outer-spin-button,
+  .markra-table-size-input::-webkit-inner-spin-button {
+    margin: 0;
+    appearance: none;
+  }
+
+  .markra-table-size-input[type="number"] {
+    appearance: textfield;
+  }
+
+  .markra-table-size-separator {
+    @apply text-sm text-(--text-secondary);
+  }
+
+  .markdown-paper .markra-table-align-button,
+  .markdown-paper .markra-table-width-button {
+    @apply static size-6 rounded-md border-transparent text-[0] shadow-none hover:border-(--border-default) focus-visible:border-(--border-default);
+    background: transparent;
+    box-shadow: none;
+  }
+
+  .markdown-paper .markra-table-align-button:hover,
+  .markdown-paper .markra-table-align-button:focus-visible,
+  .markdown-paper .markra-table-align-button[aria-pressed="true"],
+  .markdown-paper .markra-table-width-button:hover,
+  .markdown-paper .markra-table-width-button:focus-visible,
+  .markdown-paper .markra-table-width-button[aria-pressed="true"] {
+    background: var(--bg-hover);
+    box-shadow: none;
+    color: var(--text-heading);
+  }
+
+  .markdown-paper .markra-table-width-button {
+    @apply text-(--text-secondary);
+  }
+
+  .markdown-paper .markra-table-width-button[aria-pressed="true"] {
+    background: var(--accent-soft);
+    color: var(--accent);
+  }
+
+  .markdown-paper .markra-table-width-icon {
+    @apply flex items-center gap-px;
+    width: 1.125rem;
+    height: 0.875rem;
+  }
+
+  .markdown-paper .markra-table-width-edge {
+    @apply h-3 w-px rounded-full bg-current;
+  }
+
+  .markdown-paper .markra-table-width-arrow {
+    @apply h-px flex-1 bg-current;
+    position: relative;
+  }
+
+  .markdown-paper .markra-table-width-arrow::before,
+  .markdown-paper .markra-table-width-arrow::after {
+    content: "";
+    position: absolute;
+    top: 50%;
+    width: 3px;
+    height: 3px;
+    border-color: currentColor;
+    border-style: solid;
+    transform: translateY(-50%) rotate(45deg);
+  }
+
+  .markdown-paper .markra-table-width-arrow::before {
+    left: 0;
+    border-width: 0 0 1px 1px;
+  }
+
+  .markdown-paper .markra-table-width-arrow::after {
+    right: 0;
+    border-width: 1px 1px 0 0;
+  }
+
+  .markdown-paper .markra-table-width-letter {
+    font-size: 0.55rem;
+    font-weight: 720;
+    line-height: 1;
+  }
+
+  .markdown-paper .markra-table-delete-table {
+    @apply static size-6 rounded-md border-transparent text-[0] shadow-none;
+    background: transparent;
+    box-shadow: none;
+    color: var(--text-secondary);
+  }
+
+  .markdown-paper .markra-table-delete-table:hover,
+  .markdown-paper .markra-table-delete-table:focus-visible {
+    background: color-mix(in srgb, oklch(63.7% 0.237 25.331) 10%, transparent);
+    border-color: color-mix(in srgb, oklch(63.7% 0.237 25.331) 70%, transparent);
+    box-shadow: none;
+    color: oklch(57.7% 0.245 27.325);
+  }
+
+  .markdown-paper .markra-table-align-icon {
+    @apply flex w-3.5 flex-col gap-0.75;
+  }
+
+  .markdown-paper .markra-table-align-icon-line {
+    @apply block h-0.5 rounded-full bg-current;
+  }
+
+  .markdown-paper .markra-table-align-icon-line:nth-child(1) {
+    width: 0.875rem;
+  }
+
+  .markdown-paper .markra-table-align-icon-line:nth-child(2) {
+    width: 0.625rem;
+  }
+
+  .markdown-paper .markra-table-align-icon-line:nth-child(3) {
+    width: 0.75rem;
+  }
+
+  .markdown-paper .markra-table-align-icon-left .markra-table-align-icon-line {
+    @apply mr-auto;
+  }
+
+  .markdown-paper .markra-table-align-icon-center .markra-table-align-icon-line {
+    @apply mx-auto;
+  }
+
+  .markdown-paper .markra-table-align-icon-right .markra-table-align-icon-line {
+    @apply ml-auto;
+  }
+
+  .markdown-paper .markra-table-add-column {
+    @apply right-1.5 -translate-y-1/2;
+    top: calc(50% + var(--markra-table-control-block-center-offset));
+  }
+
+  .markdown-paper .markra-table-add-row {
+    @apply bottom-1.5 -translate-x-1/2;
+    left: calc(50% + var(--markra-table-control-inline-center-offset));
+  }
+
+  .markdown-paper .markra-lucide-icon {
+    pointer-events: none;
+  }
+
+  .markdown-paper .markra-table-control-icon {
+    @apply size-3.5 shrink-0;
+  }
+
+  .markdown-paper a {
+    @apply text-(--editor-link-color) underline underline-offset-2;
+    cursor: var(--editor-text-cursor);
+    -webkit-user-drag: none;
+    user-select: text;
+  }
+
+  .markdown-paper .markra-live-link-label {
+    @apply text-(--editor-link-color) underline underline-offset-2;
+    cursor: var(--editor-text-cursor);
+    -webkit-user-drag: none;
+    user-select: text;
+  }
+
+  .markdown-paper .ProseMirror.markra-link-open-modifier-active a[href],
+  .markdown-paper .ProseMirror.markra-link-open-modifier-active .markra-live-link-label {
+    cursor: pointer;
+  }
+
+  .markdown-paper .markra-live-link-source-label {
+    @apply text-(--editor-link-color) underline underline-offset-2;
+    cursor: var(--editor-text-cursor);
+  }
+
+  .markdown-paper a[href]::after,
+  .markdown-paper .markra-live-link-label::after {
+    content: none !important;
+    display: none !important;
+  }
+
+  .markdown-paper sup[data-type="footnote_reference"] {
+    color: var(--editor-link-color);
+    cursor: help;
+    font-weight: 650;
+    text-decoration: none;
+  }
+
+  .markdown-paper .markra-footnote-preview {
+    position: fixed;
+    z-index: 80;
+    max-width: min(20rem, calc(100vw - 1.5rem));
+    border: 1px solid var(--editor-border);
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--editor-paper-bg) 96%, transparent);
+    padding: 0.625rem 0.75rem;
+    color: var(--editor-text-primary);
+    font-family: var(--editor-font-family);
+    font-size: 13px;
+    font-weight: 500;
+    line-height: 1.45;
+    overflow-wrap: anywhere;
+    pointer-events: none;
+    white-space: pre-wrap;
+    box-shadow: 0 16px 40px rgba(15, 23, 42, 0.14);
+  }
+
+  .markdown-paper .markra-live-link-icon {
+    @apply inline-block text-(--editor-link-color);
+    margin-left: 0.18em;
+    pointer-events: none;
+    text-decoration: none;
+    user-select: none;
+    -webkit-user-drag: none;
+  }
+
+  .markdown-paper .markra-live-link-icon::before {
+    content: "↗";
+    display: inline-block;
+    transform: translateY(-0.08em);
+    font-size: 0.72em;
+    font-weight: 650;
+    line-height: 1;
+    opacity: 0.7;
+  }
+
+  .markdown-paper .markra-live-link-icon + .markra-live-link-icon {
+    @apply hidden;
+  }
+
+  .markra-document-link-menu {
+    @apply fixed z-[60] min-w-60 max-w-[22rem] rounded-lg border border-(--border-default) bg-(--bg-primary) p-1 shadow-(--floating-menu-shadow);
+  }
+
+  .markra-document-link-option {
+    @apply flex cursor-pointer flex-col gap-0.5 rounded-md px-2.5 py-1.5 text-left;
+  }
+
+  .markra-document-link-option[aria-selected="true"] {
+    @apply bg-(--bg-hover);
+  }
+
+  .markra-document-link-title {
+    @apply truncate text-sm font-medium leading-5 text-(--text-heading);
+  }
+
+  .markra-document-link-path {
+    @apply truncate text-xs leading-4 text-(--text-secondary);
+  }
+
+  .markdown-paper .markra-html-node {
+    @apply max-w-full outline-none;
+    white-space: normal;
+  }
+
+  .markdown-paper .markra-html-node img {
+    @apply m-0 inline-block max-w-full rounded-none border-0 align-middle;
+  }
+
+  .markdown-paper .markra-html-node pre {
+    white-space: pre-wrap;
+  }
+
+  .markdown-paper .markra-html-node-source {
+    @apply relative z-10 block min-h-24 w-full resize-y rounded-none border-0 bg-transparent px-3 py-3 font-mono text-[0.9em] leading-5 text-transparent outline-none;
+    -webkit-text-fill-color: transparent;
+    box-shadow: none;
+    caret-color: var(--text-primary);
+    cursor: var(--editor-text-cursor);
+  }
+
+  .markdown-paper .markra-html-node-source:focus {
+    @apply border-0 outline-none;
+    box-shadow: none;
+  }
+
+  .markdown-paper .markra-html-node-source::selection {
+    background: color-mix(in srgb, var(--accent) 24%, transparent);
+    -webkit-text-fill-color: transparent;
+  }
+
+  .markdown-paper .markra-html-node-source-layer {
+    @apply relative;
+  }
+
+  .markdown-paper .markra-html-node-highlight {
+    @apply pointer-events-none absolute inset-0 z-0 m-0 overflow-hidden whitespace-pre px-3 py-3 font-mono text-[0.9em] leading-5 text-(--text-primary);
+  }
+
+  .markdown-paper .markra-html-node-highlight code {
+    @apply font-mono;
+  }
+
+  .markdown-paper .markra-html-token-tag {
+    color: oklch(45% 0.16 145);
+  }
+
+  .markdown-paper .markra-html-token-attr {
+    color: oklch(43% 0.15 258);
+  }
+
+  .markdown-paper .markra-html-token-string {
+    color: oklch(42% 0.14 29);
+  }
+
+  .markdown-paper .markra-html-token-comment {
+    color: var(--text-tertiary);
+  }
+
+  .markdown-paper .markra-html-node-editor {
+    @apply relative my-5 w-full bg-[color:color-mix(in_oklab,var(--bg-secondary)_70%,var(--bg-primary))] pt-6 text-(--text-primary);
+  }
+
+  .markdown-paper .markra-html-node-editor-toolbar {
+    @apply absolute top-0 right-0 z-10 flex h-7 items-center bg-[color:color-mix(in_oklab,var(--bg-secondary)_82%,var(--bg-primary))] text-[0.78em] leading-none text-(--text-secondary);
+  }
+
+  .markdown-paper .markra-html-node-editor-label {
+    @apply px-2 font-[520] tracking-normal;
+  }
+
+  .markdown-paper .markra-html-node-editor-apply {
+    @apply flex h-7 w-8 cursor-pointer items-center justify-center border-0 bg-transparent p-0 text-[1em] font-[760] text-(--text-heading) outline-none transition-colors duration-150 ease-out hover:bg-(--bg-hover) focus-visible:bg-(--bg-hover);
+  }
+
+  .markdown-paper img {
+    @apply my-6 block max-w-full rounded-[3px] border border-(--border-default);
+  }
+
+  .markdown-paper .markra-image-node {
+    @apply block max-w-full outline-none;
+    -webkit-user-drag: none;
+    user-select: text;
+  }
+
+  .markdown-paper .markra-image-node.ProseMirror-selectednode {
+    @apply bg-transparent;
+  }
+
+  .markdown-paper .markra-image-node.markra-image-node-selected,
+  .markdown-paper .markra-image-node.ProseMirror-selectednode {
+    outline: 2px solid #8cf;
+    outline-offset: 3px;
+  }
+
+  .markdown-paper .markra-image-node-source-row {
+    @apply m-0 flex w-full min-w-0 items-center gap-1.5 p-0 text-(--text-primary);
+  }
+
+  .markdown-paper .markra-image-node-source-icon {
+    @apply shrink-0 text-(--text-secondary);
+  }
+
+  .markdown-paper .markra-image-node-source {
+    @apply m-0 block w-full min-w-0 appearance-none rounded-none border-0 bg-transparent p-0 font-mono text-[0.95em] text-(--text-primary) outline-none;
+    box-shadow: none;
+    cursor: var(--editor-text-cursor);
+    line-height: inherit;
+  }
+
+  .markdown-paper .markra-image-node-source:focus {
+    @apply border-0 outline-none;
+    box-shadow: none;
+  }
+
+  .markdown-paper .markra-image-node > img {
+    @apply mt-0 border-0;
+    -webkit-user-drag: none;
+    user-select: none;
+  }
+
+  .markdown-paper .markra-image-upload-placeholder {
+    @apply my-6 inline-flex min-h-18 max-w-full items-center gap-2 rounded-[3px] border border-dashed border-(--border-default) bg-(--bg-secondary) px-3.5 py-3 text-[0.92em] font-medium text-(--text-secondary);
+    cursor: progress;
+    user-select: none;
+    vertical-align: middle;
+  }
+
+  .markdown-paper .markra-image-upload-placeholder-spinner {
+    @apply block size-4 shrink-0 rounded-full border-2 border-(--border-default);
+    animation: markra-spinner 0.82s linear infinite;
+    border-top-color: var(--accent);
+  }
+
+  .markdown-paper .markra-image-upload-placeholder-label {
+    @apply min-w-0 truncate;
+  }
+
+  .markdown-paper .markra-image-node-source::selection {
+    background: color-mix(in srgb, var(--accent) 28%, transparent);
+  }
+
+  .markdown-paper .ProseMirror-hideselection .markra-image-node-source {
+    caret-color: var(--text-primary) !important;
+  }
+
+  .markdown-paper .ProseMirror-hideselection .markra-image-node-source::selection {
+    background: color-mix(in srgb, var(--accent) 28%, transparent) !important;
+  }
+
+  .markdown-paper .markra-image-node-source-invalid .markra-image-node-source {
+    @apply text-red-600;
+  }
+
+  .markdown-paper .markra-live-image-preview {
+    @apply my-6 block max-w-full rounded-[3px] border border-(--border-default);
+  }
+
+  .markdown-paper .markra-math-render {
+    color: var(--text-primary);
+    letter-spacing: 0;
+    cursor: var(--editor-text-cursor);
+    user-select: text;
+  }
+
+  .markdown-paper .markra-math-render .katex {
+    font-size: 1em;
+  }
+
+  .markdown-paper .markra-math-render-inline {
+    display: inline-flex;
+    margin: 0 0.08em;
+    vertical-align: -0.08em;
+  }
+
+  .markdown-paper .markra-math-render-display {
+    display: block;
+    max-width: 100%;
+    margin: 0.85em 0;
+    overflow-x: auto;
+    overflow-y: hidden;
+    text-align: center;
+  }
+
+  .markdown-paper .markra-math-render-display .katex-display {
+    margin: 0;
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+
+  .markdown-paper p:has(.markra-math-caret-anchor) {
+    position: relative;
+  }
+
+  .markdown-paper img.ProseMirror-separator.markra-math-caret-anchor {
+    position: absolute;
+    top: 50%;
+    right: 0;
+    width: 1px !important;
+    height: 1.35em !important;
+    max-width: none;
+    margin: 0 !important;
+    padding: 0;
+    border: 0 !important;
+    pointer-events: none;
+    transform: translateY(-50%);
+  }
+
+  .markdown-paper .markra-math-render-invalid {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+    color: var(--text-secondary);
+  }
+
+  .markdown-paper p:has(.markra-math-source-active-display) {
+    margin-top: 0.85em;
+    margin-bottom: 0.85em;
+  }
+
+  .markdown-paper .markra-math-source-active {
+    border-radius: 3px;
+    background: color-mix(in srgb, var(--accent) 8%, transparent);
+    color: var(--editor-text-primary);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+    font-size: 0.95em;
+    line-height: 1.7;
+    white-space: pre-wrap;
+    -webkit-box-decoration-break: clone;
+    box-decoration-break: clone;
+  }
+
+  .markdown-paper .markra-math-source-active[data-type="hardbreak"] {
+    display: inline;
+    overflow: visible;
+    background: transparent;
+    color: inherit;
+    font-size: inherit;
+    line-height: inherit;
+  }
+
+  .markdown-paper .markra-math-token-delimiter {
+    color: var(--accent);
+  }
+
+  .markdown-paper .markra-math-token-command {
+    color: var(--editor-hl-keyword);
+    font-weight: 620;
+  }
+
+  .markdown-paper .markra-math-token-brace {
+    color: var(--editor-hl-type);
+  }
+
+  .markdown-paper .markra-math-token-operator {
+    color: var(--editor-hl-number);
+  }
+
+  .markdown-paper .markra-math-render-active-preview {
+    margin-top: 1em;
+    opacity: 0.96;
+  }
+
+  .markdown-paper .markra-math-macro-fold {
+    display: inline-flex;
+    max-width: 100%;
+    align-items: center;
+    border: 1px solid color-mix(in srgb, var(--editor-border) 72%, transparent);
+    border-radius: 4px;
+    background: color-mix(in srgb, var(--editor-text-primary) 4%, transparent);
+    color: var(--editor-text-secondary);
+    cursor: pointer;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+    font-size: 0.72em;
+    line-height: 1.45;
+    padding: 0.08rem 0.42rem;
+    user-select: none;
+    vertical-align: 0.08em;
+  }
+
+  .markdown-paper .markra-math-macro-fold:hover {
+    border-color: color-mix(in srgb, var(--accent) 42%, var(--editor-border));
+    color: var(--editor-text-primary);
+  }
+
+  .markdown-paper .markra-math-macro-fold:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--accent) 64%, transparent);
+    outline-offset: 2px;
+  }
+
+  .markdown-paper strong {
+    @apply text-(--text-heading) font-[760];
+  }
+
+  .markdown-paper em {
+    @apply italic;
+    font-synthesis: style;
+  }
+
+  .markdown-paper .markra-md-delimiter {
+    @apply text-(--text-md-char);
+  }
+
+  .markdown-paper .markra-md-hidden-delimiter {
+    display: inline-block;
+    width: 0;
+    max-width: 0;
+    overflow: hidden;
+    color: transparent;
+    vertical-align: baseline;
+    white-space: pre;
+    -webkit-text-fill-color: transparent;
+  }
+
+  .markdown-paper .markra-math-source-hidden-display.markra-md-hidden-delimiter {
+    display: inline-block;
+    position: absolute;
+    top: 50%;
+    right: 0;
+    z-index: 1;
+    width: max-content;
+    max-width: 100%;
+    height: 1.35em;
+    overflow: hidden;
+    color: transparent;
+    line-height: 1.35;
+    pointer-events: none;
+    white-space: pre;
+    transform: translateY(-50%);
+    -webkit-text-fill-color: transparent;
+    caret-color: var(--accent);
+  }
+
+  .markdown-paper .markra-live-mark-strong {
+    @apply text-(--text-heading) font-[760];
+  }
+
+  .markdown-paper .markra-live-mark-emphasis {
+    @apply italic;
+    /* CJK system fonts often lack italic faces, so live Markdown needs local style synthesis. */
+    font-synthesis: style;
+  }
+
+  .markdown-paper .markra-live-mark-strikethrough {
+    @apply line-through;
+  }
+
+  .markdown-paper .markra-live-mark-highlight {
+    @apply rounded-[3px] px-[0.12em] py-[0.02em];
+    background: color-mix(in srgb, #d4a72c 28%, transparent);
+    box-decoration-break: clone;
+    -webkit-box-decoration-break: clone;
+  }
+
+  .markdown-paper .markra-live-mark-inlineCode {
+    @apply rounded-[3px] border border-(--border-default) bg-(--bg-code) px-[0.28em] py-[0.12em] text-[0.88em] text-(--text-primary);
+    font-family: Menlo, Consolas, "DejaVu Sans Mono", monospace;
+  }
+
+  .markdown-paper code .markra-live-mark-inlineCode {
+    border: 0;
+    background: transparent;
+    box-shadow: none;
+    padding: 0;
+    color: inherit;
+    font-size: inherit;
+  }
+
+  .markdown-paper .markra-selection-hold {
+    @apply rounded-[3px];
+    background: color-mix(in srgb, var(--accent) 18%, transparent);
+    -webkit-box-decoration-break: clone;
+    box-decoration-break: clone;
+  }
+
+  .markdown-paper code {
+    @apply rounded-[3px] border border-(--border-default) bg-(--bg-code) px-[0.28em] py-[0.12em] text-[0.88em] text-(--text-primary);
+    font-family: Menlo, Consolas, "DejaVu Sans Mono", monospace;
+    color: oklch(40% 0.13 247);
+    background: var(--editor-inline-code-bg);
+    border-color: var(--editor-border);
+    color: var(--editor-inline-code-text);
+    box-shadow: inset 0 -1px 0 color-mix(in srgb, oklch(69.6% 0.17 162.48) 28%, transparent);
+  }
+
+  .markdown-paper pre {
+    @apply mt-5 mb-7 overflow-auto rounded border border-(--border-default) bg-(--bg-code) px-4.5 py-4;
+    background: var(--editor-code-bg);
+    border-color: var(--editor-border);
+  }
+
+  .markdown-paper pre code {
+    @apply border-0 bg-transparent p-0;
+    color: inherit;
+    box-shadow: none;
+  }
+
+  .markdown-paper .markra-code-block {
+    @apply relative mt-5 mb-7 grid overflow-visible rounded border border-(--border-default) bg-(--bg-code);
+    background: var(--editor-code-bg);
+    border-color: var(--editor-border);
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .markdown-paper .markra-code-copy-button {
+    @apply absolute top-2 right-2 z-[3] grid size-7 cursor-pointer place-items-center rounded-md border border-(--border-default) p-0 outline-none transition-[opacity,transform,color,background-color,border-color,box-shadow] duration-150 ease-out;
+    background: var(--editor-code-control-bg);
+    border-color: var(--editor-border);
+    color: var(--editor-text-secondary);
+    opacity: 0;
+    pointer-events: none;
+    transform: translateY(-0.125rem);
+  }
+
+  .markdown-paper .markra-code-copy-button svg {
+    @apply absolute;
+    transition:
+      opacity 140ms ease-out,
+      transform 140ms ease-out;
+  }
+
+  .markdown-paper .markra-code-copy-check-icon {
+    opacity: 0;
+    transform: scale(0.72);
+  }
+
+  .markdown-paper .markra-code-block:hover .markra-code-copy-button,
+  .markdown-paper .markra-code-block:focus-within .markra-code-copy-button {
+    opacity: 1;
+    pointer-events: auto;
+    transform: translateY(0);
+  }
+
+  .markdown-paper .markra-code-block[data-mermaid-mode="source"] .markra-code-copy-button {
+    right: 5.75rem;
+  }
+
+  .markdown-paper .markra-code-copy-button:hover,
+  .markdown-paper .markra-code-copy-button:focus-visible {
+    background: var(--editor-bg-secondary);
+    border-color: var(--editor-border-strong);
+    color: var(--editor-text-heading);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent);
+  }
+
+  .markdown-paper .markra-code-copy-button[data-copied="true"] {
+    background: color-mix(in srgb, oklch(69.6% 0.17 162.48) 14%, var(--editor-code-control-bg));
+    border-color: color-mix(in srgb, oklch(69.6% 0.17 162.48) 62%, var(--editor-border));
+    color: oklch(50% 0.13 151);
+  }
+
+  .markdown-paper .markra-code-copy-button[data-copied="true"] .markra-code-copy-icon {
+    opacity: 0;
+    transform: scale(0.72);
+  }
+
+  .markdown-paper .markra-code-copy-button[data-copied="true"] .markra-code-copy-check-icon {
+    opacity: 1;
+    transform: scale(1);
+  }
+
+  .markdown-paper .markra-code-language-control {
+    @apply absolute right-0 z-[2] flex items-center justify-end pt-1.5 transition-[opacity,transform] duration-150 ease-out;
+    top: 100%;
+    opacity: 0;
+    pointer-events: none;
+    transform: translateY(-0.125rem);
+  }
+
+  .markdown-paper .markra-code-block:hover .markra-code-language-control {
+    opacity: 1;
+    pointer-events: auto;
+    transform: translateY(0);
+  }
+
+  .markdown-paper .markra-code-language-select {
+    @apply h-8 min-w-40 cursor-pointer rounded-md border border-(--border-default) bg-(--bg-primary)/96 px-3 text-[0.82rem] font-medium text-(--text-secondary) shadow-sm outline-none transition-[border-color,color,background-color,box-shadow];
+    background: var(--editor-code-control-bg);
+    border-color: var(--editor-border);
+    color: var(--editor-text-secondary);
+    max-width: min(18rem, calc(100vw - 4rem));
+    font-family: Menlo, Consolas, "DejaVu Sans Mono", monospace;
+    line-height: 1;
+  }
+
+  .markdown-paper .markra-code-language-select:focus {
+    @apply border-(--border-focus) bg-(--bg-primary) text-(--text-primary);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--border-focus) 18%, transparent);
+  }
+
+  .markdown-paper .markra-code-line-numbers {
+    @apply rounded-l border-r border-(--border-default) px-3 py-4 text-right text-[0.9em] leading-[1.65] text-(--text-secondary);
+    background: var(--editor-code-line-bg);
+    border-color: var(--editor-border);
+    color: var(--editor-text-secondary);
+    font-family: Menlo, Consolas, "DejaVu Sans Mono", monospace;
+    user-select: none;
+  }
+
+  .markdown-paper .markra-code-line-number {
+    display: block;
+    min-width: 2ch;
+  }
+
+  .markdown-paper .markra-code-block pre {
+    @apply m-0 min-w-0 overflow-auto rounded-none border-0 bg-transparent px-4 py-4;
+  }
+
+  .markdown-paper .markra-code-block[data-mermaid-mode="preview"] {
+    display: block;
+    background: transparent;
+    border-color: transparent;
+    box-shadow: none;
+  }
+
+  .markdown-paper .markra-code-block[data-mermaid-mode="preview"] .markra-code-line-numbers,
+  .markdown-paper .markra-code-block[data-mermaid-mode="preview"] pre,
+  .markdown-paper .markra-code-block[data-mermaid-mode="preview"] .markra-code-copy-button,
+  .markdown-paper .markra-code-block[data-mermaid-mode="preview"] .markra-code-language-control {
+    display: none;
+  }
+
+  .markdown-paper .markra-mermaid-preview-button {
+    @apply absolute top-2 right-2 z-[3] h-7 cursor-pointer rounded-md border border-(--border-default) px-2.5 text-[0.74rem] font-medium outline-none transition-[opacity,transform,color,background-color,border-color,box-shadow] duration-150 ease-out;
+    background: var(--editor-code-control-bg);
+    border-color: var(--editor-border);
+    color: var(--editor-text-secondary);
+  }
+
+  .markdown-paper .markra-mermaid-preview-button[hidden] {
+    display: none;
+  }
+
+  .markdown-paper .markra-mermaid-preview-button:hover,
+  .markdown-paper .markra-mermaid-preview-button:focus-visible {
+    background: var(--editor-bg-secondary);
+    border-color: var(--editor-border-strong);
+    color: var(--editor-text-heading);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent);
+  }
+
+  .markdown-paper .markra-mermaid-zoom-button {
+    @apply absolute top-2 right-2 z-[3] grid size-7 cursor-pointer place-items-center rounded-md border border-(--border-default) p-0 outline-none transition-[opacity,transform,color,background-color,border-color,box-shadow] duration-150 ease-out;
+    background: var(--editor-code-control-bg);
+    border-color: var(--editor-border);
+    color: var(--editor-text-secondary);
+    opacity: 0;
+    pointer-events: none;
+    transform: translateY(-0.125rem);
+  }
+
+  .markdown-paper .markra-mermaid-zoom-button[hidden] {
+    display: none;
+  }
+
+  .markdown-paper .markra-code-block[data-mermaid-mode="preview"]:hover .markra-mermaid-zoom-button {
+    opacity: 1;
+    pointer-events: auto;
+    transform: translateY(0);
+  }
+
+  .markdown-paper .markra-mermaid-zoom-button:hover {
+    background: var(--editor-bg-secondary);
+    border-color: var(--editor-border-strong);
+    color: var(--editor-text-heading);
+  }
+
+  .markdown-paper .markra-mermaid-zoom-button:focus-visible {
+    background: var(--editor-bg-secondary);
+    border-color: var(--editor-border-strong);
+    color: var(--editor-text-heading);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent);
+  }
+
+  .markdown-paper .markra-mermaid-render {
+    @apply mx-4 mb-4 rounded border border-(--border-default) bg-(--bg-primary) p-4;
+    grid-column: 1 / -1;
+    border-color: var(--editor-border);
+    overflow-x: auto;
+    text-align: center;
+  }
+
+  .markdown-paper .markra-code-block[data-mermaid-mode="preview"] .markra-mermaid-render {
+    margin: 0;
+    padding: 0;
+    border: 0;
+    background: transparent;
+  }
+
+  .markdown-paper .markra-mermaid-render[hidden],
+  .markdown-paper .markra-mermaid-render-empty {
+    display: none;
+  }
+
+  .markdown-paper .markra-mermaid-render svg {
+    display: block;
+    max-width: 100%;
+    height: auto;
+    margin: 0 auto;
+  }
+
+  .markdown-paper .markra-mermaid-render-invalid {
+    @apply text-[0.86em];
+    background: color-mix(in srgb, oklch(65% 0.19 29) 8%, var(--editor-code-bg));
+    color: oklch(46% 0.17 29);
+    text-align: left;
+  }
+
+  .markra-mermaid-zoom-dialog {
+    @apply fixed inset-0 z-50 grid place-items-center p-4;
+    background: color-mix(in srgb, oklch(23% 0.02 260) 72%, transparent);
+  }
+
+  .markra-mermaid-zoom-panel {
+    @apply relative flex max-h-[88vh] w-full flex-col overflow-hidden rounded-lg border border-(--border-default) bg-(--bg-primary) shadow-2xl;
+    background: var(--editor-paper-bg, var(--bg-primary));
+    border-color: color-mix(in srgb, var(--editor-border-strong, var(--border-strong)) 82%, transparent);
+    color: var(--editor-text-primary, var(--text-primary));
+    height: min(88vh, 44rem);
+    max-width: min(92vw, 80rem);
+    min-height: min(28rem, 88vh);
+  }
+
+  .markra-mermaid-zoom-toolbar {
+    @apply relative z-[2] flex items-center justify-end gap-1 border-b border-(--border-default) px-3 py-2;
+    background: color-mix(in srgb, var(--editor-paper-bg, var(--bg-primary)) 94%, transparent);
+    border-color: color-mix(in srgb, var(--editor-border, var(--border-default)) 82%, transparent);
+  }
+
+  .markra-mermaid-zoom-value {
+    @apply min-w-12 px-1 text-center text-[12px] leading-5 font-[650] tabular-nums text-(--text-secondary);
+    color: var(--editor-text-secondary, var(--text-secondary));
+  }
+
+  .markra-mermaid-zoom-control-button,
+  .markra-mermaid-zoom-close-button {
+    @apply grid size-8 cursor-pointer place-items-center rounded-md border border-(--border-default) bg-(--bg-primary) p-0 text-(--text-secondary) outline-none transition-[color,background-color,border-color,box-shadow] duration-150 ease-out;
+    background: var(--editor-code-control-bg, var(--bg-primary));
+    border-color: var(--editor-border, var(--border-default));
+    color: var(--editor-text-secondary, var(--text-secondary));
+  }
+
+  .markra-mermaid-zoom-control-button:hover,
+  .markra-mermaid-zoom-close-button:hover {
+    background: var(--editor-bg-secondary, var(--bg-hover));
+    border-color: var(--editor-border-strong, var(--border-strong));
+    color: var(--editor-text-heading, var(--text-heading));
+  }
+
+  .markra-mermaid-zoom-control-button:focus-visible,
+  .markra-mermaid-zoom-close-button:focus-visible {
+    background: var(--editor-bg-secondary, var(--bg-hover));
+    border-color: var(--editor-border-strong, var(--border-strong));
+    color: var(--editor-text-heading, var(--text-heading));
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent);
+  }
+
+  .markra-mermaid-zoom-content {
+    @apply relative min-h-0 flex-1 overflow-hidden px-8 py-8 outline-none;
+    cursor: grab;
+    touch-action: none;
+  }
+
+  .markra-mermaid-zoom-content:focus-visible {
+    box-shadow: inset 0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent);
+  }
+
+  .markra-mermaid-zoom-content[data-dragging="true"] {
+    cursor: grabbing;
+  }
+
+  .markra-mermaid-zoom-canvas {
+    @apply flex min-h-full items-center justify-center;
+    transform-origin: center center;
+    transition: transform 90ms ease-out;
+    will-change: transform;
+  }
+
+  .markra-mermaid-zoom-content[data-dragging="true"] .markra-mermaid-zoom-canvas {
+    transition: none;
+  }
+
+  .markra-mermaid-zoom-svg {
+    display: block;
+    flex: 0 0 auto;
+    width: min(100%, 72rem);
+    min-width: min(48rem, calc(100vw - 5rem));
+    max-width: none;
+    height: auto;
+    margin: 0 auto;
+  }
+
+  .markdown-paper .markra-code-block code {
+    @apply block border-0 bg-transparent p-0 text-[0.9em];
+    color: var(--editor-code-text);
+    font-family: Menlo, Consolas, "DejaVu Sans Mono", monospace;
+    line-height: 1.65;
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
+  }
+
+  .markdown-paper[data-code-block-wrap="false"] .markra-code-block pre {
+    overflow-x: auto;
+  }
+
+  .markdown-paper[data-code-block-wrap="false"] .markra-code-block code {
+    overflow-wrap: normal;
+    white-space: pre;
+  }
+
+  .markdown-paper .hljs-keyword,
+  .markdown-paper .hljs-selector-tag,
+  .markdown-paper .hljs-literal {
+    color: var(--editor-hl-keyword);
+    font-weight: 650;
+  }
+
+  .markdown-paper .hljs-string,
+  .markdown-paper .hljs-regexp,
+  .markdown-paper .hljs-addition {
+    color: var(--editor-hl-string);
+  }
+
+  .markdown-paper .hljs-number,
+  .markdown-paper .hljs-attr,
+  .markdown-paper .hljs-variable {
+    color: var(--editor-hl-number);
+  }
+
+  .markdown-paper .hljs-title,
+  .markdown-paper .hljs-function,
+  .markdown-paper .hljs-built_in {
+    color: var(--editor-hl-title);
+  }
+
+  .markdown-paper .hljs-type,
+  .markdown-paper .hljs-class .hljs-title,
+  .markdown-paper .hljs-tag,
+  .markdown-paper .hljs-name {
+    color: var(--editor-hl-type);
+  }
+
+  .markdown-paper .hljs-meta,
+  .markdown-paper .hljs-doctag,
+  .markdown-paper .hljs-section {
+    color: var(--editor-hl-meta);
+  }
+
+  .markdown-paper .hljs-symbol,
+  .markdown-paper .hljs-bullet,
+  .markdown-paper .hljs-link {
+    color: var(--editor-hl-symbol);
+  }
+
+  .markdown-paper .hljs-deletion {
+    color: var(--editor-hl-deletion);
+  }
+
+  .markdown-paper .hljs-comment,
+  .markdown-paper .hljs-quote {
+    color: var(--editor-text-secondary);
+    font-style: italic;
+  }
+
+  .markdown-paper hr {
+    @apply my-5 border-0;
+    height: 12px;
+    cursor: pointer;
+    background: linear-gradient(var(--border-default), var(--border-default)) center / 100% 1px no-repeat;
+  }
+
+  .markdown-paper hr:hover {
+    background: linear-gradient(color-mix(in srgb, var(--border-default) 72%, var(--text-secondary)), color-mix(in srgb, var(--border-default) 72%, var(--text-secondary))) center / 100% 2px no-repeat;
+  }
+
+  .markdown-paper hr.ProseMirror-selectednode {
+    outline: none;
+  }
+
+  .markdown-paper::selection,
+  .markdown-paper *::selection {
+    background: color-mix(in srgb, var(--accent) 20%, transparent);
+  }
+
+  .editor-content-slot[data-document-search-open="true"] .markdown-paper,
+  .editor-content-slot[data-document-search-open="true"] .markdown-paper *,
+  .editor-content-slot[data-document-search-open="true"] .markdown-source-paper,
+  .editor-content-slot[data-document-search-open="true"] .markdown-source-paper * {
+    caret-color: transparent !important;
+  }
+
+  .editor-content-slot[data-document-search-open="true"] .markdown-paper::selection,
+  .editor-content-slot[data-document-search-open="true"] .markdown-paper *::selection,
+  .editor-content-slot[data-document-search-open="true"] .markdown-source-paper::selection,
+  .editor-content-slot[data-document-search-open="true"] .markdown-source-paper *::selection {
+    background: transparent;
+  }
+
+  .editor-content-slot[data-document-search-open="true"] .markdown-paper .markra-math-caret-anchor,
+  .editor-content-slot[data-document-search-open="true"] .markdown-paper .markra-image-node-source-row {
+    display: none !important;
+  }
+
+  .editor-content-slot[data-document-search-open="true"] .markdown-paper .markra-image-node.markra-image-node-selected,
+  .editor-content-slot[data-document-search-open="true"] .markdown-paper .ProseMirror-selectednode {
+    outline: none !important;
+    box-shadow: none !important;
+  }
+
+  /* Hallmark · component: native welcome surface · genre: editorial · tone: austere
+   * theme: locked QingYu design system · enrichment: none
+   * contrast: pass (40–41) · mobile: pass (34, 49, 50–57) · slop: pass
+   */
+  .welcome-screen {
+    box-sizing: border-box;
+    width: 100%;
+    min-width: 0;
+    min-height: 100dvh;
+    overflow-x: clip;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+  }
+
+  .welcome-screen *,
+  .welcome-screen *::before,
+  .welcome-screen *::after {
+    box-sizing: inherit;
+  }
+
+  .welcome-screen h1,
+  .welcome-screen h2,
+  .welcome-screen p {
+    margin: 0;
+  }
+
+  .welcome-screen h1,
+  .welcome-screen h2 {
+    min-width: 0;
+    overflow-wrap: anywhere;
+    color: var(--text-heading);
+    font-style: normal;
+  }
+
+  .welcome-screen--desktop {
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
+    padding-block-start: 2.5rem;
+  }
+
+  .welcome-screen__identity {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    justify-content: space-between;
+    gap: 1rem;
+    border-block-end: 1px solid var(--border-default);
+    background: var(--bg-secondary);
+    padding: 1rem 1.25rem;
+  }
+
+  .welcome-screen__wordmark {
+    color: var(--text-heading);
+    font-size: 0.8125rem;
+    font-weight: 650;
+    letter-spacing: 0.08em;
+  }
+
+  .welcome-screen__slogan {
+    max-width: 11ch;
+    color: var(--text-heading);
+    font-size: clamp(1.5rem, 5vw, 2.5rem);
+    font-weight: 650;
+    line-height: 1.32;
+    letter-spacing: 0.02em;
+  }
+
+  .welcome-screen__promise {
+    max-width: 24rem;
+    color: var(--text-primary);
+    font-size: 0.75rem;
+    line-height: 1.75;
+  }
+
+  .welcome-screen__desktop-task {
+    display: grid;
+    min-width: 0;
+    overflow-y: auto;
+    place-items: center;
+    padding: 1.25rem;
+  }
+
+  .welcome-screen__desktop-content {
+    width: min(100%, 35rem);
+    min-width: 0;
+  }
+
+  .welcome-screen__task-copy {
+    display: grid;
+    gap: 0.75rem;
+  }
+
+  .welcome-screen__task-copy h1,
+  .welcome-screen__mobile-copy h1 {
+    font-size: clamp(1.75rem, 4vw, 2.75rem);
+    font-weight: 700;
+    line-height: 1.16;
+    letter-spacing: -0.02em;
+  }
+
+  .welcome-screen__task-copy > p:last-child,
+  .welcome-screen__mobile-copy > p:last-child {
+    max-width: 37rem;
+    color: var(--text-primary);
+    font-size: 0.875rem;
+    line-height: 1.75;
+  }
+
+  .welcome-screen__primary-actions {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.5rem;
+    margin-block-start: 1.25rem;
+  }
+
+  .welcome-screen__action {
+    min-height: 2.75rem;
+    max-width: 100%;
+    white-space: nowrap;
+  }
+
+  .welcome-screen__defer {
+    color: var(--text-primary);
+  }
+
+  .welcome-screen__external {
+    display: grid;
+    gap: 1rem;
+    margin-block-start: 1.5rem;
+    border-block-start: 1px solid var(--border-default);
+    padding-block-start: 1rem;
+  }
+
+  .welcome-screen__external > div:first-child {
+    display: grid;
+    gap: 0.5rem;
+  }
+
+  .welcome-screen__external h2 {
+    font-size: 0.8125rem;
+    font-weight: 650;
+    line-height: 1.5;
+  }
+
+  .welcome-screen__external p {
+    color: var(--text-primary);
+    font-size: 0.75rem;
+    line-height: 1.65;
+  }
+
+  .welcome-screen__external-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+
+  .welcome-screen__external-actions .welcome-screen__action {
+    width: 100%;
+  }
+
+  .welcome-screen__status {
+    display: flex;
+    min-height: 2.75rem;
+    align-items: center;
+    gap: 0.5rem;
+    color: var(--text-primary);
+    font-size: 0.8125rem;
+    line-height: 1.5;
+  }
+
+  .welcome-screen__spinner {
+    flex: none;
+    animation: welcome-screen-spin 900ms linear infinite;
+  }
+
+  .welcome-screen button:active {
+    transform: translateY(1px);
+  }
+
+  .welcome-screen button:focus-visible {
+    outline: 2px solid var(--bg-primary);
+    outline-offset: 0;
+    box-shadow: 0 0 0 4px var(--accent);
+  }
+
+  .welcome-screen--mobile {
+    display: flex;
+    flex-direction: column;
+    padding-block-start: max(2rem, env(safe-area-inset-top, 0px));
+    padding-block-end: max(1.25rem, env(safe-area-inset-bottom, 0px));
+    padding-inline-start: max(1.25rem, env(safe-area-inset-left, 0px));
+    padding-inline-end: max(1.25rem, env(safe-area-inset-right, 0px));
+  }
+
+  .welcome-screen__mobile-copy {
+    display: grid;
+    width: min(100%, 36rem);
+    min-width: 0;
+    gap: 0.75rem;
+    margin-inline: auto;
+    padding-block-start: clamp(1rem, 8dvh, 4rem);
+  }
+
+  .welcome-screen__mobile-copy .welcome-screen__slogan {
+    max-width: none;
+    font-size: clamp(1.75rem, 8vw, 2.25rem);
+  }
+
+  .welcome-screen__mobile-copy .welcome-screen__wordmark {
+    margin-block-start: 1.75rem;
+    color: var(--text-primary);
+  }
+
+  .welcome-screen__mobile-copy h1 {
+    font-size: clamp(1.5rem, 7vw, 2rem);
+  }
+
+  .welcome-screen--mobile > .welcome-screen__status,
+  .welcome-screen__mobile-action {
+    width: min(100%, 36rem);
+    margin-block-start: auto;
+    margin-inline: auto;
+    padding-block-start: 2rem;
+  }
+
+  .welcome-screen__mobile-button {
+    width: 100%;
+    min-height: 3rem;
+    white-space: nowrap;
+  }
+
+  @keyframes welcome-screen-spin {
+    to {
+      transform: rotate(1turn);
+    }
+  }
+
+  @media (min-width: 34rem) {
+    .welcome-screen__identity {
+      gap: 2rem;
+      padding: clamp(1.5rem, 5vw, 3rem);
+    }
+
+    .welcome-screen__desktop-task {
+      padding: clamp(2rem, 7vw, 5rem) clamp(1.25rem, 6vw, 5rem);
+    }
+
+    .welcome-screen__primary-actions {
+      flex-direction: row;
+      align-items: center;
+      margin-block-start: 1.75rem;
+    }
+
+    .welcome-screen__external {
+      margin-block-start: clamp(2.5rem, 7vh, 4.5rem);
+      padding-block-start: 1.5rem;
+    }
+
+  }
+
+  @media (min-width: 50rem) {
+    .welcome-screen--desktop {
+      grid-template-columns: minmax(15rem, 21rem) minmax(0, 1fr);
+      grid-template-rows: minmax(0, 1fr);
+    }
+
+    .welcome-screen__identity {
+      border-block-end: 0;
+      border-inline-end: 1px solid var(--border-default);
+      padding: clamp(2rem, 4vw, 4rem);
+    }
+
+    .welcome-screen__slogan {
+      font-size: clamp(2rem, 3.4vw, 2.75rem);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .welcome-screen button:active {
+      transform: none;
+    }
+
+    .welcome-screen__spinner {
+      animation: none;
+    }
+
+    .markdown-paper .markra-image-upload-placeholder-spinner {
+      animation: none;
+    }
+
+    .compact-app-shell[data-compact="true"],
+    .compact-app-shell[data-compact="true"] * {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}

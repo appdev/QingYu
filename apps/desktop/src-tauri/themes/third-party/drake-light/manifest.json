@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "id": "drake-light",
+  "name": "Drake Light",
+  "appearance": "light",
+  "entry": "theme.css",
+  "author": "劉強東",
+  "version": "2.9.6",
+  "preview": {
+    "background": "#ffffff",
+    "panel": "#f6f8fa",
+    "text": "#333333",
+    "accent": "#e95f59"
+  },
+  "licenseFiles": [
+    "licenses/THEME-LICENSE.txt",
+    "licenses/FONT-LICENSE.txt"
+  ]
+}

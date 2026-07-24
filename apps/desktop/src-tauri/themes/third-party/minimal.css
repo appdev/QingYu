@@ -1,0 +1,74 @@
+/*
+@qingyu-theme
+id: minimal
+name: Minimal
+appearance: light
+version: 1.0.0
+preview-background: #fafafa
+preview-panel: #f4f4f5
+preview-text: #27272a
+preview-accent: #3f3f46
+*/
+
+:root {
+  --bg-primary: #fdfdfc;
+  --bg-secondary: #f7f7f5;
+  --bg-code: #f3f3f1;
+  --bg-hover: rgba(82, 82, 74, 0.08);
+  --bg-active: #ededeb;
+  --text-primary: #2f302d;
+  --text-heading: #171815;
+  --text-secondary: #777972;
+  --text-md-char: #c8cac2;
+  --border-default: #e7e7e2;
+  --border-strong: #d5d6cf;
+  --accent: #4b6f77;
+  --accent-soft: rgba(75, 111, 119, 0.12);
+  --accent-hover: #36565f;
+  --link-color: #36565f;
+  color-scheme: light;
+}
+
+/* Theme-specific rules migrated from the application stylesheet. */
+[data-theme="minimal"] {
+    --bg-primary: #fdfdfc;
+    --bg-secondary: #f7f7f5;
+    --bg-code: #f3f3f1;
+    --bg-hover: rgba(82, 82, 74, 0.08);
+    --bg-active: #ededeb;
+
+    --text-primary: #2f302d;
+    --text-heading: #171815;
+    --text-secondary: #777972;
+    --text-md-char: #c8cac2;
+
+    --border-default: #e7e7e2;
+    --border-strong: #d5d6cf;
+    --accent: #4b6f77;
+    --accent-soft: rgba(75, 111, 119, 0.12);
+    --accent-hover: #36565f;
+    --link-color: #36565f;
+  }
+
+.markdown-paper[data-editor-theme="minimal"] {
+    --editor-font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  }
+
+:root:not([data-theme="dark"]) .markdown-paper[data-editor-theme="minimal"] {
+    --editor-paper-bg: #fdfdfc;
+    --editor-text-primary: #2f302d;
+    --editor-text-heading: #171815;
+    --editor-text-secondary: #777972;
+    --editor-border: #e7e7e2;
+    --editor-border-strong: #d5d6cf;
+    --editor-bg-secondary: #f7f7f5;
+    --editor-inline-code-bg: #f3f3f1;
+    --editor-inline-code-text: #4b6f77;
+    --editor-code-bg: #f3f3f1;
+    --editor-code-line-bg: #ededeb;
+    --editor-link-color: #36565f;
+    --editor-hl-keyword: #5a6070;
+    --editor-hl-string: #55705a;
+    --editor-hl-number: #775b42;
+    --editor-hl-title: #4b6f77;
+  }

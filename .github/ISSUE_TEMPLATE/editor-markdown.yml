@@ -1,0 +1,73 @@
+name: Editor or Markdown issue
+description: Report a problem with editing, Markdown rendering, tables, code blocks, math, images, or export.
+title: "[Editor]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this template for Markdown editing and rendering issues. If the issue involves private content, please reduce it to a small sample first.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Pre-flight checks
+      options:
+        - label: I have searched existing issues for the same problem.
+          required: true
+        - label: I have reduced the Markdown sample to the smallest version that reproduces the issue.
+          required: true
+  - type: input
+    id: version
+    attributes:
+      label: QingYu version
+      placeholder: "0.1.18"
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Editor area
+      options:
+        - WYSIWYG editing
+        - Source mode
+        - Links
+        - Images
+        - Tables
+        - Code blocks
+        - Math / KaTeX
+        - Callouts
+        - Export
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: markdown
+    attributes:
+      label: Minimal Markdown sample
+      description: Paste the smallest Markdown input that reproduces the problem.
+      render: markdown
+      placeholder: |
+        ## Example
+
+        Paste a small sample here.
+    validations:
+      required: true
+  - type: textarea
+    id: current-behavior
+    attributes:
+      label: What happened?
+      placeholder: "The editor renders..., or editing..."
+    validations:
+      required: true
+  - type: textarea
+    id: expected-behavior
+    attributes:
+      label: What did you expect?
+      placeholder: "I expected the Markdown to..."
+    validations:
+      required: true
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: Screenshots or export output
+      description: Add screenshots, generated HTML/PDF details, or other output if relevant.

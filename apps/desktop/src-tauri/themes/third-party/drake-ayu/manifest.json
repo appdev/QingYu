@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "id": "drake-ayu",
+  "name": "Drake Ayu",
+  "appearance": "dark",
+  "entry": "theme.css",
+  "author": "劉強東",
+  "version": "2.9.6",
+  "preview": {
+    "background": "#20242f",
+    "panel": "#151924",
+    "text": "#b0b1ac",
+    "accent": "#fcc65c"
+  },
+  "licenseFiles": [
+    "licenses/THEME-LICENSE.txt",
+    "licenses/FONT-LICENSE.txt"
+  ]
+}

@@ -1,0 +1,61 @@
+import { getMarkdownOutline, getWordCount } from "./markdown";
+
+describe("markdown helpers", () => {
+  it("counts words in mixed prose", () => {
+    expect(getWordCount("QingYu writes local Markdown notes 123")).toBe(6);
+  });
+
+  it("counts plain English words and numbers", () => {
+    expect(getWordCount("Spring notes bring clear fresh air into QingYu drafts 2026")).toBe(10);
+    expect(getWordCount("Write Markdown notes 2026")).toBe(4);
+  });
+
+  it("extracts a simple markdown heading outline", () => {
+    expect(getMarkdownOutline("# Intro\n\nBody\n\n### Details\n\n```\n# ignored\n```\n\n## Next")).toEqual([
+      { level: 1, title: "Intro" },
+      { level: 3, title: "Details" },
+      { level: 2, title: "Next" }
+    ]);
+  });
+
+  it("extracts readable titles from formatted markdown headings", () => {
+    expect(
+      getMarkdownOutline(
+        [
+          "# **Synthetic** heading",
+          "## _Linked_ [label](https://example.test)",
+          "### `Code` and ~~old text~~"
+        ].join("\n\n")
+      )
+    ).toEqual([
+      { level: 1, title: "Synthetic heading", titleMarkdown: "**Synthetic** heading" },
+      { level: 2, title: "Linked label", titleMarkdown: "_Linked_ [label](https://example.test)" },
+      { level: 3, title: "Code and old text", titleMarkdown: "`Code` and ~~old text~~" }
+    ]);
+  });
+
+  it("extracts readable titles from QingYu highlight and math headings", () => {
+    expect(getMarkdownOutline("# ==Marked== formula $x^2$")).toEqual([
+      { level: 1, title: "Marked formula x^2", titleMarkdown: "==Marked== formula $x^2$" }
+    ]);
+  });
+
+  it("keeps numeric chapter prefixes in heading titles", () => {
+    expect(
+      getMarkdownOutline(["## 1. Overview", "### 2) Details", "## 10. **Final** chapter"].join("\n\n"))
+    ).toEqual([
+      { level: 2, title: "1. Overview" },
+      { level: 3, title: "2) Details" },
+      { level: 2, title: "10. Final chapter", titleMarkdown: "10. **Final** chapter" }
+    ]);
+  });
+
+  it("keeps non-numeric leading marker prefixes in heading titles", () => {
+    expect(
+      getMarkdownOutline(["## - Dash heading", "### > Quoted heading"].join("\n\n"))
+    ).toEqual([
+      { level: 2, title: "- Dash heading" },
+      { level: 3, title: "> Quoted heading" }
+    ]);
+  });
+});

@@ -1,0 +1,78 @@
+/*
+@qingyu-theme
+id: newsprint
+name: Newsprint
+appearance: light
+version: 1.0.0
+preview-background: #fbf7ef
+preview-panel: #f3eadb
+preview-text: #241f1a
+preview-accent: #175c63
+*/
+
+:root {
+  --bg-primary: oklch(96% 0.018 88);
+  --bg-secondary: oklch(91% 0.022 86);
+  --bg-code: oklch(88% 0.02 86);
+  --bg-hover: oklch(90% 0.024 86);
+  --bg-active: oklch(85% 0.026 84);
+  --text-primary: oklch(28% 0.012 75);
+  --text-heading: oklch(18% 0.012 75);
+  --text-secondary: oklch(45% 0.018 75);
+  --text-md-char: oklch(65% 0.024 78);
+  --border-default: oklch(80% 0.025 78);
+  --border-strong: oklch(68% 0.03 78);
+  --accent: oklch(42% 0.12 24);
+  --accent-soft: oklch(42% 0.12 24 / 0.12);
+  --accent-hover: oklch(34% 0.13 24);
+  --link-color: oklch(34% 0.13 24);
+  color-scheme: light;
+}
+
+/* Theme-specific rules migrated from the application stylesheet. */
+[data-theme="newsprint"] {
+    --bg-primary: oklch(96% 0.018 88);
+    --bg-secondary: oklch(91% 0.022 86);
+    --bg-code: oklch(88% 0.02 86);
+    --bg-hover: oklch(90% 0.024 86);
+    --bg-active: oklch(85% 0.026 84);
+
+    --text-primary: oklch(28% 0.012 75);
+    --text-heading: oklch(18% 0.012 75);
+    --text-secondary: oklch(45% 0.018 75);
+    --text-md-char: oklch(65% 0.024 78);
+
+    --border-default: oklch(80% 0.025 78);
+    --border-strong: oklch(68% 0.03 78);
+    --accent: oklch(42% 0.12 24);
+    --accent-soft: oklch(42% 0.12 24 / 0.12);
+    --accent-hover: oklch(34% 0.13 24);
+    --link-color: oklch(34% 0.13 24);
+  }
+
+.markdown-paper[data-editor-theme="newsprint"] {
+    --editor-font-family: Georgia, "Times New Roman", serif;
+    --editor-heading-font-family: Georgia, "Times New Roman", serif;
+  }
+
+:root:not([data-theme="dark"]) .markdown-paper[data-editor-theme="newsprint"] {
+    --editor-paper-bg: oklch(96% 0.018 88);
+    --editor-text-primary: oklch(28% 0.012 75);
+    --editor-text-heading: oklch(18% 0.012 75);
+    --editor-text-secondary: oklch(45% 0.018 75);
+    --editor-border: oklch(80% 0.025 78);
+    --editor-border-strong: oklch(68% 0.03 78);
+    --editor-bg-secondary: oklch(91% 0.022 86);
+    --editor-inline-code-bg: oklch(89% 0.024 86);
+    --editor-code-bg: oklch(88% 0.02 86);
+    --editor-code-line-bg: oklch(83% 0.026 86);
+    --editor-link-color: oklch(34% 0.13 24);
+    --editor-hl-keyword: oklch(35% 0.12 24);
+    --editor-hl-string: oklch(36% 0.09 145);
+    --editor-hl-title: oklch(34% 0.1 248);
+    --editor-hl-meta: oklch(36% 0.1 325);
+  }
+
+.markdown-paper[data-editor-theme="newsprint"] .ProseMirror::selection {
+    background: color-mix(in srgb, var(--accent) 16%, transparent);
+  }

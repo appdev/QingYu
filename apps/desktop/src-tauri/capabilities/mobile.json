@@ -1,0 +1,41 @@
+{
+  "$schema": "../gen/schemas/mobile-schema.json",
+  "identifier": "mobile",
+  "description": "Permissions for the QingYu managed mobile workspace.",
+  "platforms": [
+    "iOS",
+    "android"
+  ],
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "core:app:default",
+    "core:event:default",
+    "core:path:default",
+    "core:resources:default",
+    "core:window:default",
+    "dialog:allow-confirm",
+    "dialog:allow-message",
+    "dialog:allow-open",
+    "fs:allow-read-file",
+    "log:default",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [
+        {
+          "url": "http://*"
+        },
+        {
+          "url": "https://*"
+        }
+      ]
+    },
+    "os:default",
+    "store:allow-delete",
+    "store:allow-get",
+    "store:allow-load",
+    "store:allow-save",
+    "store:allow-set"
+  ]
+}

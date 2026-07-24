@@ -1,0 +1,92 @@
+/*
+@qingyu-theme
+id: night
+name: Night
+appearance: dark
+version: 1.0.0
+preview-background: #111827
+preview-panel: #1f2937
+preview-text: #f9fafb
+preview-accent: #f4f4f5
+*/
+
+:root {
+  --bg-primary: #1e1e1e;
+  --bg-secondary: #252526;
+  --bg-code: #1e1e1e;
+  --bg-hover: #2a2d2e;
+  --bg-active: #37373d;
+  --text-primary: #d4d4d4;
+  --text-heading: #e0e0e0;
+  --text-secondary: #808080;
+  --text-md-char: #555555;
+  --border-default: #333333;
+  --border-strong: #444444;
+  --accent: #f4f4f5;
+  --accent-soft: rgba(244, 244, 245, 0.14);
+  --accent-hover: #fafafa;
+  --link-color: #b7c5ff;
+  color-scheme: dark;
+}
+
+/* Theme-specific rules migrated from the application stylesheet. */
+[data-theme="night"] {
+    --bg-primary: #1e1e1e;
+    --bg-secondary: #252526;
+    --bg-code: #1e1e1e;
+    --bg-hover: #2a2d2e;
+    --bg-active: #37373d;
+
+    --text-primary: #d4d4d4;
+    --text-heading: #e0e0e0;
+    --text-secondary: #808080;
+    --text-md-char: #555555;
+
+    --border-default: #333333;
+    --border-strong: #444444;
+    --accent: #f4f4f5;
+    --accent-soft: rgba(244, 244, 245, 0.14);
+    --accent-hover: #fafafa;
+    --danger: #ff8a80;
+    --link-color: #b7c5ff;
+
+    --floating-menu-shadow:
+      0 28px 76px rgba(0, 0, 0, 0.68),
+      0 0 0 1px rgba(255, 255, 255, 0.045),
+      0 0 40px color-mix(in srgb, var(--accent) 9%, transparent);
+    --floating-popover-shadow:
+      0 22px 58px rgba(0, 0, 0, 0.66),
+      0 0 0 1px rgba(255, 255, 255, 0.04),
+      0 0 28px color-mix(in srgb, var(--accent) 7%, transparent);
+    color-scheme: dark;
+  }
+
+.markdown-paper[data-editor-theme="night"] {
+    --editor-paper-bg: oklch(18% 0.018 250);
+    --editor-text-primary: oklch(82% 0.018 250);
+    --editor-text-heading: oklch(92% 0.012 250);
+    --editor-text-secondary: oklch(65% 0.024 250);
+    --editor-border: oklch(31% 0.025 250);
+    --editor-border-strong: oklch(38% 0.03 250);
+    --editor-bg-secondary: oklch(23% 0.02 250);
+    --editor-code-bg: oklch(15% 0.02 250);
+    --editor-code-line-bg: oklch(20% 0.022 250);
+    --editor-code-text: oklch(84% 0.018 250);
+    --editor-code-control-bg: oklch(23% 0.024 250 / 0.96);
+    --editor-inline-code-bg: oklch(24% 0.025 250);
+    --editor-inline-code-text: oklch(76% 0.1 205);
+    --editor-link-color: #b7c5ff;
+    --editor-hl-keyword: oklch(76% 0.12 285);
+    --editor-hl-string: oklch(78% 0.11 151);
+    --editor-hl-number: oklch(78% 0.12 70);
+    --editor-hl-title: oklch(76% 0.1 220);
+    --editor-hl-type: oklch(78% 0.09 196);
+    --editor-hl-meta: oklch(76% 0.11 330);
+    --editor-hl-symbol: oklch(77% 0.1 185);
+    --editor-hl-deletion: oklch(73% 0.13 29);
+  }
+
+[data-theme="night"] .markdown-paper blockquote.markra-callout {
+    --callout-bg: color-mix(in srgb, var(--callout-color) 10%, var(--editor-paper-bg));
+    --callout-border: color-mix(in srgb, var(--callout-color) 32%, var(--editor-border));
+  }

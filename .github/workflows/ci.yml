@@ -1,0 +1,204 @@
+name: CI
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  frontend-tests:
+    name: Frontend Tests (${{ matrix.label }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: "@markra/desktop"
+            package: "@markra/desktop"
+            args: ""
+            shard: ""
+          - label: "@markra/web"
+            package: "@markra/web"
+            args: ""
+            shard: ""
+          - label: "@markra/app, workspace 1/2"
+            package: "@markra/app"
+            args: "src/App.test.tsx"
+            shard: "1/2"
+          - label: "@markra/app, workspace 2/2"
+            package: "@markra/app"
+            args: "src/App.test.tsx"
+            shard: "2/2"
+          - label: "@markra/app, editor 1/2"
+            package: "@markra/app"
+            args: "src/components/MarkdownPaper.test.tsx"
+            shard: "1/2"
+          - label: "@markra/app, editor 2/2"
+            package: "@markra/app"
+            args: "src/components/MarkdownPaper.test.tsx"
+            shard: "2/2"
+          - label: "@markra/app, remaining 1/2"
+            package: "@markra/app"
+            args: "--exclude=src/App.test.tsx --exclude=src/components/MarkdownPaper.test.tsx --shard=1/2"
+            shard: ""
+          - label: "@markra/app, remaining 2/2"
+            package: "@markra/app"
+            args: "--exclude=src/App.test.tsx --exclude=src/components/MarkdownPaper.test.tsx --shard=2/2"
+            shard: ""
+          - label: "@markra/editor"
+            package: "@markra/editor"
+            args: ""
+            shard: ""
+          - label: "@markra/markdown"
+            package: "@markra/markdown"
+            args: ""
+            shard: ""
+          - label: "@markra/scripts"
+            package: "@markra/scripts"
+            args: ""
+            shard: ""
+          - label: "@markra/shared"
+            package: "@markra/shared"
+            args: ""
+            shard: ""
+          - label: "@markra/ui"
+            package: "@markra/ui"
+            args: ""
+            shard: ""
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.30.3
+          run_install: false
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Test
+        env:
+          MARKRA_APP_TEST_SHARD: ${{ matrix.shard }}
+        run: pnpm --filter "${{ matrix.package }}" test ${{ matrix.args }}
+
+  frontend-test-typecheck:
+    name: Frontend Test Typecheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.30.3
+          run_install: false
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck tests
+        run: pnpm run typecheck:test
+
+  frontend-build:
+    name: Frontend Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.30.3
+          run_install: false
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        run: pnpm build
+
+  frontend:
+    name: Frontend
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs:
+      - frontend-tests
+      - frontend-test-typecheck
+      - frontend-build
+    if: always()
+
+    steps:
+      - name: Check frontend jobs
+        run: |
+          if [ "${{ needs.frontend-tests.result }}" != "success" ]; then
+            echo "Frontend Tests result: ${{ needs.frontend-tests.result }}"
+            exit 1
+          fi
+          if [ "${{ needs.frontend-test-typecheck.result }}" != "success" ]; then
+            echo "Frontend Test Typecheck result: ${{ needs.frontend-test-typecheck.result }}"
+            exit 1
+          fi
+          if [ "${{ needs.frontend-build.result }}" != "success" ]; then
+            echo "Frontend Build result: ${{ needs.frontend-build.result }}"
+            exit 1
+          fi
+
+  tauri-rust:
+    name: Tauri Rust
+    runs-on: macos-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup component add rustfmt
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            apps/desktop/src-tauri -> target
+
+      - name: Check formatting
+        run: cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml -- --check
+
+      - name: Test
+        run: cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --locked

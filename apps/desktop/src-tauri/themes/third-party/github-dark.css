@@ -1,0 +1,169 @@
+/*
+@qingyu-theme
+id: github-dark
+name: GitHub Dark
+appearance: dark
+author: GitHub
+version: 1.0.0
+preview-background: #0d1117
+preview-panel: #161b22
+preview-text: #e6edf3
+preview-accent: #2f81f7
+*/
+
+:root {
+  --bg-primary: #0d1117;
+  --bg-secondary: #161b22;
+  --bg-code: #161b22;
+  --bg-hover: rgba(177, 186, 196, 0.12);
+  --bg-active: #21262d;
+  --text-primary: #e6edf3;
+  --text-heading: #f0f6fc;
+  --text-secondary: #7d8590;
+  --text-md-char: #6e7681;
+  --border-default: #30363d;
+  --border-strong: #484f58;
+  --accent: #2f81f7;
+  --accent-soft: rgba(47, 129, 247, 0.16);
+  --accent-hover: #58a6ff;
+  --link-color: #58a6ff;
+  color-scheme: dark;
+}
+
+/* Theme-specific rules migrated from the application stylesheet. */
+[data-theme="github-dark"] {
+    --bg-primary: #1e1e1e;
+    --bg-secondary: #252526;
+    --bg-code: #1e1e1e;
+    --bg-hover: #2a2d2e;
+    --bg-active: #37373d;
+
+    --text-primary: #d4d4d4;
+    --text-heading: #e0e0e0;
+    --text-secondary: #808080;
+    --text-md-char: #555555;
+
+    --border-default: #333333;
+    --border-strong: #444444;
+    --accent: #f4f4f5;
+    --accent-soft: rgba(244, 244, 245, 0.14);
+    --accent-hover: #fafafa;
+    --danger: #ff8a80;
+    --link-color: #b7c5ff;
+
+    --floating-menu-shadow:
+      0 28px 76px rgba(0, 0, 0, 0.68),
+      0 0 0 1px rgba(255, 255, 255, 0.045),
+      0 0 40px color-mix(in srgb, var(--accent) 9%, transparent);
+    --floating-popover-shadow:
+      0 22px 58px rgba(0, 0, 0, 0.66),
+      0 0 0 1px rgba(255, 255, 255, 0.04),
+      0 0 28px color-mix(in srgb, var(--accent) 7%, transparent);
+    color-scheme: dark;
+  }
+
+[data-theme="github-dark"] {
+    --bg-primary: #0d1117;
+    --bg-secondary: #161b22;
+    --bg-code: #161b22;
+    --bg-hover: rgba(177, 186, 196, 0.12);
+    --bg-active: #21262d;
+
+    --text-primary: #e6edf3;
+    --text-heading: #f0f6fc;
+    --text-secondary: #7d8590;
+    --text-md-char: #6e7681;
+
+    --border-default: #30363d;
+    --border-strong: #484f58;
+    --accent: #2f81f7;
+    --accent-soft: rgba(47, 129, 247, 0.16);
+    --accent-hover: #58a6ff;
+    --link-color: #58a6ff;
+  }
+
+:root:not([data-theme="dark"]) .markdown-paper[data-editor-theme="github-dark"] {
+    --editor-paper-bg: #0d1117;
+    --editor-text-primary: #e6edf3;
+    --editor-text-heading: #f0f6fc;
+    --editor-text-secondary: #7d8590;
+    --editor-border: #30363d;
+    --editor-border-strong: #484f58;
+    --editor-bg-secondary: #161b22;
+    --editor-inline-code-bg: rgba(110, 118, 129, 0.4);
+    --editor-inline-code-text: #e6edf3;
+    --editor-code-bg: #161b22;
+    --editor-code-line-bg: #0d1117;
+    --editor-code-text: #e6edf3;
+    --editor-code-control-bg: rgba(22, 27, 34, 0.92);
+    --editor-link-color: #58a6ff;
+    --editor-hl-keyword: #ff7b72;
+    --editor-hl-string: #a5d6ff;
+    --editor-hl-number: #79c0ff;
+    --editor-hl-title: #d2a8ff;
+    --editor-hl-type: #7ee787;
+    --editor-hl-meta: #8b949e;
+    --editor-hl-symbol: #ffa657;
+    --editor-hl-deletion: #ffa198;
+  }
+
+.markdown-paper[data-editor-theme="github-dark"] h1 {
+    padding-bottom: 0.3em;
+    border-bottom: 1px solid var(--editor-border);
+    font-weight: 600;
+    line-height: 1.25;
+  }
+
+.markdown-paper[data-editor-theme="github-dark"] h2 {
+    padding-bottom: 0.3em;
+    border-bottom: 1px solid var(--editor-border);
+    font-weight: 600;
+    line-height: 1.25;
+  }
+
+.markdown-paper[data-editor-theme="github-dark"] h1 {
+    margin-top: 0;
+    margin-bottom: 1rem;
+    font-size: 2em;
+  }
+
+.markdown-paper[data-editor-theme="github-dark"] h2 {
+    margin-top: 1.5rem;
+    margin-bottom: 1rem;
+    font-size: 1.5em;
+  }
+
+[data-theme="github-dark"] .markdown-paper blockquote.markra-callout {
+    --callout-bg: color-mix(in srgb, var(--callout-color) 10%, var(--editor-paper-bg));
+    --callout-border: color-mix(in srgb, var(--callout-color) 32%, var(--editor-border));
+  }
+
+.markdown-paper[data-editor-theme="github-dark"] .tableWrapper {
+    margin-block: 1rem;
+  }
+
+.markdown-paper[data-editor-theme="github-dark"] .markra-table-controls-wrapper {
+    --markra-table-control-inline-center-offset: 0rem;
+    --markra-table-control-block-center-offset: 0rem;
+    padding: 0;
+  }
+
+.markdown-paper[data-editor-theme="github-dark"] table {
+    font-size: 1em;
+    font-variant: tabular-nums;
+    line-height: 1.5;
+  }
+
+.markdown-paper[data-editor-theme="github-dark"] th {
+    padding: 6px 13px;
+    border-color: var(--editor-border);
+  }
+
+.markdown-paper[data-editor-theme="github-dark"] td {
+    padding: 6px 13px;
+    border-color: var(--editor-border);
+  }
+
+.markdown-paper[data-editor-theme="github-dark"] th {
+    font-weight: 600;
+  }

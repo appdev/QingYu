@@ -1,0 +1,9 @@
+xcuserdata/
+build/
+Externals/
+*.mobileprovision
+*.p12
+*.cer
+*.crt
+*.key
+*.pem

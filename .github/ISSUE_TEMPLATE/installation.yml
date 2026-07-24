@@ -1,0 +1,81 @@
+name: Installation or packaging issue
+description: Report problems installing, launching, updating, or building a desktop package.
+title: "[Install]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this template for release assets, installation, launch, updater, or desktop packaging problems.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Pre-flight checks
+      options:
+        - label: I have searched existing issues for the same problem.
+          required: true
+        - label: I downloaded QingYu from the official GitHub Releases page or built it from this repository.
+          required: true
+  - type: input
+    id: version
+    attributes:
+      label: QingYu version or commit
+      placeholder: "0.1.18 / commit SHA"
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - macOS Apple Silicon
+        - macOS Intel
+        - Windows
+        - Linux
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: os-version
+    attributes:
+      label: OS version
+      placeholder: "macOS 15.5 / Windows 11 / Ubuntu 24.04"
+    validations:
+      required: true
+  - type: dropdown
+    id: artifact
+    attributes:
+      label: Package or workflow
+      options:
+        - macOS DMG
+        - Windows installer
+        - Windows portable
+        - Linux AppImage
+        - Local pnpm build
+        - Tauri build
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+      placeholder: "The installer..., the app does not launch..., or the build fails with..."
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Download/build...
+        2. Run...
+        3. See...
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or screenshots
+      description: Paste relevant terminal output or attach screenshots.
+      render: shell

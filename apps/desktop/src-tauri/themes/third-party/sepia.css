@@ -1,0 +1,70 @@
+/*
+@qingyu-theme
+id: sepia
+name: Sepia
+appearance: light
+version: 1.0.0
+preview-background: #fbf0d9
+preview-panel: #f3e3c4
+preview-text: #3b2f22
+preview-accent: #8b5e34
+*/
+
+:root {
+  --bg-primary: #fbf0d9;
+  --bg-secondary: #f3e2bd;
+  --bg-code: #f5e6c8;
+  --bg-hover: rgba(102, 81, 50, 0.11);
+  --bg-active: #ead6aa;
+  --text-primary: #4b3828;
+  --text-heading: #2f241b;
+  --text-secondary: #7a654d;
+  --text-md-char: #b49a76;
+  --border-default: #dfc596;
+  --border-strong: #c8a974;
+  --accent: #8f4e22;
+  --accent-soft: rgba(143, 78, 34, 0.13);
+  --accent-hover: #6f3d18;
+  --link-color: #6f3d18;
+  color-scheme: light;
+}
+
+/* Theme-specific rules migrated from the application stylesheet. */
+[data-theme="sepia"] {
+    --bg-primary: #fbf0d9;
+    --bg-secondary: #f3e2bd;
+    --bg-code: #f5e6c8;
+    --bg-hover: rgba(102, 81, 50, 0.11);
+    --bg-active: #ead6aa;
+
+    --text-primary: #4b3828;
+    --text-heading: #2f241b;
+    --text-secondary: #7a654d;
+    --text-md-char: #b49a76;
+
+    --border-default: #dfc596;
+    --border-strong: #c8a974;
+    --accent: #8f4e22;
+    --accent-soft: rgba(143, 78, 34, 0.13);
+    --accent-hover: #6f3d18;
+    --link-color: #6f3d18;
+  }
+
+:root:not([data-theme="dark"]) .markdown-paper[data-editor-theme="sepia"] {
+    --editor-paper-bg: #fbf0d9;
+    --editor-text-primary: #4b3828;
+    --editor-text-heading: #2f241b;
+    --editor-text-secondary: #7a654d;
+    --editor-border: #dfc596;
+    --editor-border-strong: #c8a974;
+    --editor-bg-secondary: #f3e2bd;
+    --editor-inline-code-bg: #f5e6c8;
+    --editor-inline-code-text: #6f3d18;
+    --editor-code-bg: #f5e6c8;
+    --editor-code-line-bg: #ead6aa;
+    --editor-link-color: #6f3d18;
+    --editor-hl-keyword: #8f4e22;
+    --editor-hl-string: #587a37;
+    --editor-hl-number: #9b5e23;
+    --editor-hl-title: #315f8c;
+  }

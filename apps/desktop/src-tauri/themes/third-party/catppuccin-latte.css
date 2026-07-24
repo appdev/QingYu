@@ -1,0 +1,75 @@
+/*
+@qingyu-theme
+id: catppuccin-latte
+name: Catppuccin Latte
+appearance: light
+author: Catppuccin
+version: 1.0.0
+preview-background: #eff1f5
+preview-panel: #e6e9ef
+preview-text: #4c4f69
+preview-accent: #8839ef
+*/
+
+:root {
+  --bg-primary: #eff1f5;
+  --bg-secondary: #e6e9ef;
+  --bg-code: #e6e9ef;
+  --bg-hover: rgba(124, 127, 147, 0.12);
+  --bg-active: #ccd0da;
+  --text-primary: #4c4f69;
+  --text-heading: #1e1e2e;
+  --text-secondary: #6c6f85;
+  --text-md-char: #9ca0b0;
+  --border-default: #ccd0da;
+  --border-strong: #bcc0cc;
+  --accent: #1e66f5;
+  --accent-soft: rgba(30, 102, 245, 0.13);
+  --accent-hover: #04a5e5;
+  --link-color: #04a5e5;
+  color-scheme: light;
+}
+
+/* Theme-specific rules migrated from the application stylesheet. */
+[data-theme="catppuccin-latte"] {
+    --bg-primary: #eff1f5;
+    --bg-secondary: #e6e9ef;
+    --bg-code: #e6e9ef;
+    --bg-hover: rgba(124, 127, 147, 0.12);
+    --bg-active: #ccd0da;
+
+    --text-primary: #4c4f69;
+    --text-heading: #1e1e2e;
+    --text-secondary: #6c6f85;
+    --text-md-char: #9ca0b0;
+
+    --border-default: #ccd0da;
+    --border-strong: #bcc0cc;
+    --accent: #1e66f5;
+    --accent-soft: rgba(30, 102, 245, 0.13);
+    --accent-hover: #04a5e5;
+    --link-color: #04a5e5;
+  }
+
+:root:not([data-theme="dark"]) .markdown-paper[data-editor-theme="catppuccin-latte"] {
+    --editor-paper-bg: #eff1f5;
+    --editor-text-primary: #4c4f69;
+    --editor-text-heading: #1e1e2e;
+    --editor-text-secondary: #6c6f85;
+    --editor-border: #ccd0da;
+    --editor-border-strong: #bcc0cc;
+    --editor-bg-secondary: #e6e9ef;
+    --editor-inline-code-bg: #e6e9ef;
+    --editor-inline-code-text: #1e66f5;
+    --editor-code-bg: #e6e9ef;
+    --editor-code-line-bg: #dce0e8;
+    --editor-link-color: #04a5e5;
+    --editor-hl-keyword: #8839ef;
+    --editor-hl-string: #40a02b;
+    --editor-hl-number: #fe640b;
+    --editor-hl-title: #1e66f5;
+    --editor-hl-type: #179299;
+    --editor-hl-meta: #ea76cb;
+    --editor-hl-symbol: #df8e1d;
+    --editor-hl-deletion: #d20f39;
+  }

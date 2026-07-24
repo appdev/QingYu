@@ -1,0 +1,75 @@
+/*
+@qingyu-theme
+id: academic
+name: Academic
+appearance: light
+version: 1.0.0
+preview-background: #fffffb
+preview-panel: #f4f1ea
+preview-text: #1f1b16
+preview-accent: #1d4ed8
+*/
+
+:root {
+  --bg-primary: #fbfaf7;
+  --bg-secondary: #f1efe8;
+  --bg-code: #eeeae0;
+  --bg-hover: rgba(85, 75, 58, 0.1);
+  --bg-active: #e5dfd1;
+  --text-primary: #302a22;
+  --text-heading: #191612;
+  --text-secondary: #6b6254;
+  --text-md-char: #b1a799;
+  --border-default: #ded6c8;
+  --border-strong: #c9bdab;
+  --accent: #315f8c;
+  --accent-soft: rgba(49, 95, 140, 0.13);
+  --accent-hover: #244866;
+  --link-color: #244866;
+  color-scheme: light;
+}
+
+/* Theme-specific rules migrated from the application stylesheet. */
+[data-theme="academic"] {
+    --bg-primary: #fbfaf7;
+    --bg-secondary: #f1efe8;
+    --bg-code: #eeeae0;
+    --bg-hover: rgba(85, 75, 58, 0.1);
+    --bg-active: #e5dfd1;
+
+    --text-primary: #302a22;
+    --text-heading: #191612;
+    --text-secondary: #6b6254;
+    --text-md-char: #b1a799;
+
+    --border-default: #ded6c8;
+    --border-strong: #c9bdab;
+    --accent: #315f8c;
+    --accent-soft: rgba(49, 95, 140, 0.13);
+    --accent-hover: #244866;
+    --link-color: #244866;
+  }
+
+.markdown-paper[data-editor-theme="academic"] {
+    --editor-font-family: Georgia, "Times New Roman", serif;
+    --editor-heading-font-family: Georgia, "Times New Roman", serif;
+  }
+
+:root:not([data-theme="dark"]) .markdown-paper[data-editor-theme="academic"] {
+    --editor-paper-bg: #fbfaf7;
+    --editor-text-primary: #302a22;
+    --editor-text-heading: #191612;
+    --editor-text-secondary: #6b6254;
+    --editor-border: #ded6c8;
+    --editor-border-strong: #c9bdab;
+    --editor-bg-secondary: #f1efe8;
+    --editor-inline-code-bg: #eeeae0;
+    --editor-inline-code-text: #315f8c;
+    --editor-code-bg: #eeeae0;
+    --editor-code-line-bg: #e5dfd1;
+    --editor-link-color: #244866;
+    --editor-hl-keyword: #884a2d;
+    --editor-hl-string: #4d7238;
+    --editor-hl-number: #8a5a2b;
+    --editor-hl-title: #315f8c;
+  }

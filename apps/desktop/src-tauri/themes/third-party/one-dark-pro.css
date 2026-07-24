@@ -1,0 +1,112 @@
+/*
+@qingyu-theme
+id: one-dark-pro
+name: One Dark Pro
+appearance: dark
+version: 1.0.0
+preview-background: #282c34
+preview-panel: #21252b
+preview-text: #abb2bf
+preview-accent: #61afef
+*/
+
+:root {
+  --bg-primary: #282c34;
+  --bg-secondary: #21252b;
+  --bg-code: #21252b;
+  --bg-hover: rgba(171, 178, 191, 0.1);
+  --bg-active: #2c313a;
+  --text-primary: #abb2bf;
+  --text-heading: #e6edf3;
+  --text-secondary: #7f848e;
+  --text-md-char: #5c6370;
+  --border-default: #3e4451;
+  --border-strong: #4b5263;
+  --accent: #61afef;
+  --accent-soft: rgba(97, 175, 239, 0.16);
+  --accent-hover: #56b6c2;
+  --link-color: #61afef;
+  color-scheme: dark;
+}
+
+/* Theme-specific rules migrated from the application stylesheet. */
+[data-theme="one-dark-pro"] {
+    --bg-primary: #1e1e1e;
+    --bg-secondary: #252526;
+    --bg-code: #1e1e1e;
+    --bg-hover: #2a2d2e;
+    --bg-active: #37373d;
+
+    --text-primary: #d4d4d4;
+    --text-heading: #e0e0e0;
+    --text-secondary: #808080;
+    --text-md-char: #555555;
+
+    --border-default: #333333;
+    --border-strong: #444444;
+    --accent: #f4f4f5;
+    --accent-soft: rgba(244, 244, 245, 0.14);
+    --accent-hover: #fafafa;
+    --danger: #ff8a80;
+    --link-color: #b7c5ff;
+
+    --floating-menu-shadow:
+      0 28px 76px rgba(0, 0, 0, 0.68),
+      0 0 0 1px rgba(255, 255, 255, 0.045),
+      0 0 40px color-mix(in srgb, var(--accent) 9%, transparent);
+    --floating-popover-shadow:
+      0 22px 58px rgba(0, 0, 0, 0.66),
+      0 0 0 1px rgba(255, 255, 255, 0.04),
+      0 0 28px color-mix(in srgb, var(--accent) 7%, transparent);
+    color-scheme: dark;
+  }
+
+[data-theme="one-dark-pro"] {
+    --bg-primary: #282c34;
+    --bg-secondary: #21252b;
+    --bg-code: #21252b;
+    --bg-hover: rgba(171, 178, 191, 0.1);
+    --bg-active: #2c313a;
+
+    --text-primary: #abb2bf;
+    --text-heading: #e6edf3;
+    --text-secondary: #7f848e;
+    --text-md-char: #5c6370;
+
+    --border-default: #3e4451;
+    --border-strong: #4b5263;
+    --accent: #61afef;
+    --accent-soft: rgba(97, 175, 239, 0.16);
+    --accent-hover: #56b6c2;
+    --link-color: #61afef;
+  }
+
+:root:not([data-theme="dark"]) .markdown-paper[data-editor-theme="one-dark-pro"] {
+    --editor-paper-bg: #282c34;
+    --editor-text-primary: #abb2bf;
+    --editor-text-heading: #e6edf3;
+    --editor-text-secondary: #7f848e;
+    --editor-border: #3e4451;
+    --editor-border-strong: #4b5263;
+    --editor-bg-secondary: #21252b;
+    --editor-inline-code-bg: #2c313a;
+    --editor-inline-code-text: #e06c75;
+    --editor-code-bg: #21252b;
+    --editor-code-line-bg: #2c313a;
+    --editor-code-text: #abb2bf;
+    --editor-code-control-bg: rgba(33, 37, 43, 0.92);
+    --editor-link-color: #61afef;
+    --editor-hl-keyword: #c678dd;
+    --editor-hl-string: #98c379;
+    --editor-hl-number: #d19a66;
+    --editor-hl-title: #61afef;
+    --editor-hl-type: #e5c07b;
+    --editor-hl-meta: #56b6c2;
+    --editor-hl-symbol: #e06c75;
+    --editor-hl-deletion: #e06c75;
+  }
+
+[data-theme="one-dark-pro"] .markdown-paper blockquote.markra-callout {
+    --callout-bg: color-mix(in srgb, var(--callout-color) 10%, var(--editor-paper-bg));
+    --callout-border: color-mix(in srgb, var(--callout-color) 32%, var(--editor-border));
+  }

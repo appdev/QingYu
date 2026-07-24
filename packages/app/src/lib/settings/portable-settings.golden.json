@@ -1,0 +1,118 @@
+{
+  "validStore": {
+    "appearanceMode": "dark",
+    "lightThemeId": "minimal",
+    "darkThemeId": "night",
+    "lightCustomThemeCss": ":root { color: #222; }",
+    "darkCustomThemeCss": ":root { color: #eee; }",
+    "language": "zh-CN",
+    "editorPreferences": {
+      "autoRevealActiveFile": false,
+      "autoSaveEnabled": true,
+      "autoSaveIntervalMinutes": 10,
+      "autoUpdateEnabled": true,
+      "bodyFontSize": 16,
+      "clipboardImageFolder": "assets",
+      "contentWidth": "default",
+      "contentWidthPx": null,
+      "documentLinksOpen": true,
+      "documentLinksVisible": false,
+      "editorFontFamily": { "family": null, "source": "theme" },
+      "extendedSyntax": { "githubAlerts": true, "highlight": true },
+      "imageUpload": { "fileNamePattern": "pasted-image-{timestamp}" },
+      "lineHeight": 1.65,
+      "markdownShortcuts": {
+        "openQuickOpen": "Mod+P",
+        "syncNow": "Mod+Alt+R",
+        "toggleMarkdownFiles": "Mod+Shift+M",
+        "toggleDocumentHistory": "Mod+Shift+H",
+        "toggleSourceMode": "Mod+Alt+S",
+        "toggleReadOnlyMode": "Mod+Alt+L",
+        "toggleViewMode": "F8",
+        "bold": "Mod+B",
+        "italic": "Mod+I",
+        "strikethrough": "Mod+Shift+X",
+        "inlineCode": "Mod+E",
+        "paragraph": "Mod+Alt+0",
+        "heading1": "Mod+Alt+1",
+        "heading2": "Mod+Alt+2",
+        "heading3": "Mod+Alt+3",
+        "bulletList": "Mod+Shift+8",
+        "orderedList": "Mod+Shift+7",
+        "quote": "Mod+Shift+B",
+        "codeBlock": "Mod+Alt+C",
+        "link": "Mod+K",
+        "image": "Mod+Shift+I",
+        "table": "Mod+Shift+Alt+T",
+        "toggleAllFolds": "Mod+Alt+T"
+      },
+      "markdownTemplates": [
+        {
+          "fileName": "daily.md",
+          "id": "daily",
+          "name": "Daily",
+          "suggestedName": ""
+        }
+      ],
+      "paragraphSpacingPx": 8,
+      "restoreWorkspaceOnStartup": true,
+      "sidebarLayoutMode": "stacked",
+      "showDocumentTabs": true,
+      "splitVisualPanePercent": 50,
+      "tableColumnWidthMode": "auto",
+      "titlebarActions": [
+        { "id": "viewMode", "visible": true },
+        { "id": "sourceMode", "visible": true },
+        { "id": "history", "visible": true },
+        { "id": "save", "visible": true },
+        { "id": "theme", "visible": true }
+      ],
+      "viewMode": "daily",
+      "viewModeCustomizations": {
+        "documentLinks": "visible",
+        "documentTabs": "visible",
+        "fileList": "visible",
+        "fileTree": "visible",
+        "fileTreeButton": "visible",
+        "openButton": "visible",
+        "outline": "visible",
+        "quickCreateButton": "visible",
+        "recentFolders": "visible",
+        "sidebarLayout": "visible",
+        "statusBar": "visible",
+        "titlebarActions": "visible",
+        "viewModeToggle": "visible",
+        "wordCount": "visible"
+      },
+      "showLineNumbers": false,
+      "showWordCount": true,
+      "wrapCodeBlocks": true
+    },
+    "fileIgnoreSettings": { "rules": "dist/" },
+    "exportSettings": {
+      "pandocArgs": "--toc",
+      "pdfAuthor": "QingYu",
+      "pdfFooter": "",
+      "pdfHeader": "",
+      "pdfHeightMm": 297,
+      "pdfMarginMm": 18,
+      "pdfMarginPreset": "default",
+      "pdfPageBreakOnH1": false,
+      "pdfPageSize": "a4",
+      "pdfWidthMm": 210
+    }
+  },
+  "boundaryCases": {
+    "invalidClipboardImageFolders": [
+      "assets\u0000/screenshots",
+      "assets\u001f/screenshots",
+      "assets\u007f/screenshots",
+      "assets\u0085/screenshots"
+    ],
+    "invalidShortcutKeys": [
+      "Mod+é",
+      "Mod+K",
+      "Mod+ſ"
+    ]
+  }
+}

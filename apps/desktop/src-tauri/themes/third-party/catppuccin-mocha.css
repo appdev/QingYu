@@ -1,0 +1,112 @@
+/*
+@qingyu-theme
+id: catppuccin-mocha
+name: Catppuccin Mocha
+appearance: dark
+author: Catppuccin
+version: 1.0.0
+preview-background: #1e1e2e
+preview-panel: #313244
+preview-text: #cdd6f4
+preview-accent: #cba6f7
+*/
+
+:root {
+  --bg-primary: #1e1e2e;
+  --bg-secondary: #313244;
+  --bg-code: #181825;
+  --bg-hover: rgba(205, 214, 244, 0.08);
+  --bg-active: #45475a;
+  --text-primary: #cdd6f4;
+  --text-heading: #f5e0dc;
+  --text-secondary: #a6adc8;
+  --text-md-char: #6c7086;
+  --border-default: #45475a;
+  --border-strong: #585b70;
+  --accent: #89b4fa;
+  --accent-soft: rgba(137, 180, 250, 0.16);
+  --accent-hover: #94e2d5;
+  --link-color: #94e2d5;
+  color-scheme: dark;
+}
+
+/* Theme-specific rules migrated from the application stylesheet. */
+[data-theme="catppuccin-mocha"] {
+    --bg-primary: #1e1e1e;
+    --bg-secondary: #252526;
+    --bg-code: #1e1e1e;
+    --bg-hover: #2a2d2e;
+    --bg-active: #37373d;
+
+    --text-primary: #d4d4d4;
+    --text-heading: #e0e0e0;
+    --text-secondary: #808080;
+    --text-md-char: #555555;
+
+    --border-default: #333333;
+    --border-strong: #444444;
+    --accent: #f4f4f5;
+    --accent-soft: rgba(244, 244, 245, 0.14);
+    --accent-hover: #fafafa;
+    --danger: #ff8a80;
+    --link-color: #b7c5ff;
+
+    --floating-menu-shadow:
+      0 28px 76px rgba(0, 0, 0, 0.68),
+      0 0 0 1px rgba(255, 255, 255, 0.045),
+      0 0 40px color-mix(in srgb, var(--accent) 9%, transparent);
+    --floating-popover-shadow:
+      0 22px 58px rgba(0, 0, 0, 0.66),
+      0 0 0 1px rgba(255, 255, 255, 0.04),
+      0 0 28px color-mix(in srgb, var(--accent) 7%, transparent);
+    color-scheme: dark;
+  }
+
+[data-theme="catppuccin-mocha"] {
+    --bg-primary: #1e1e2e;
+    --bg-secondary: #313244;
+    --bg-code: #181825;
+    --bg-hover: rgba(205, 214, 244, 0.08);
+    --bg-active: #45475a;
+
+    --text-primary: #cdd6f4;
+    --text-heading: #f5e0dc;
+    --text-secondary: #a6adc8;
+    --text-md-char: #6c7086;
+
+    --border-default: #45475a;
+    --border-strong: #585b70;
+    --accent: #89b4fa;
+    --accent-soft: rgba(137, 180, 250, 0.16);
+    --accent-hover: #94e2d5;
+    --link-color: #94e2d5;
+  }
+
+:root:not([data-theme="dark"]) .markdown-paper[data-editor-theme="catppuccin-mocha"] {
+    --editor-paper-bg: #1e1e2e;
+    --editor-text-primary: #cdd6f4;
+    --editor-text-heading: #f5e0dc;
+    --editor-text-secondary: #a6adc8;
+    --editor-border: #45475a;
+    --editor-border-strong: #585b70;
+    --editor-bg-secondary: #313244;
+    --editor-inline-code-bg: #181825;
+    --editor-inline-code-text: #89b4fa;
+    --editor-code-bg: #181825;
+    --editor-code-line-bg: #1e1e2e;
+    --editor-code-text: #cdd6f4;
+    --editor-link-color: #94e2d5;
+    --editor-hl-keyword: #cba6f7;
+    --editor-hl-string: #a6e3a1;
+    --editor-hl-number: #fab387;
+    --editor-hl-title: #89b4fa;
+    --editor-hl-type: #94e2d5;
+    --editor-hl-meta: #f5c2e7;
+    --editor-hl-symbol: #f9e2af;
+    --editor-hl-deletion: #f38ba8;
+  }
+
+[data-theme="catppuccin-mocha"] .markdown-paper blockquote.markra-callout {
+    --callout-bg: color-mix(in srgb, var(--callout-color) 10%, var(--editor-paper-bg));
+    --callout-border: color-mix(in srgb, var(--callout-color) 32%, var(--editor-border));
+  }

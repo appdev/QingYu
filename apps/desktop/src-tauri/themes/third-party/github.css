@@ -1,0 +1,133 @@
+/*
+@qingyu-theme
+id: github
+name: GitHub
+appearance: light
+author: GitHub
+version: 1.0.0
+preview-background: #ffffff
+preview-panel: #f6f8fa
+preview-text: #1f2328
+preview-accent: #0969da
+*/
+
+:root {
+  --bg-primary: #ffffff;
+  --bg-secondary: #f6f8fa;
+  --bg-code: #f6f8fa;
+  --bg-hover: rgba(129, 139, 152, 0.1);
+  --bg-active: #e6eaef;
+  --text-primary: #1f2328;
+  --text-heading: #1f2328;
+  --text-secondary: #59636e;
+  --text-md-char: #818b98;
+  --border-default: #d1d9e0;
+  --border-strong: #d1d9e0;
+  --accent: #0969da;
+  --accent-soft: rgba(9, 105, 218, 0.12);
+  --accent-hover: #0550ae;
+  --link-color: #0550ae;
+  color-scheme: light;
+}
+
+/* Theme-specific rules migrated from the application stylesheet. */
+[data-theme="github"] {
+    --bg-primary: #ffffff;
+    --bg-secondary: #f6f8fa;
+    --bg-code: #f6f8fa;
+    --bg-hover: rgba(129, 139, 152, 0.1);
+    --bg-active: #e6eaef;
+
+    --text-primary: #1f2328;
+    --text-heading: #1f2328;
+    --text-secondary: #59636e;
+    --text-md-char: #818b98;
+
+    --border-default: #d1d9e0;
+    --border-strong: #d1d9e0;
+    --accent: #0969da;
+    --accent-soft: rgba(9, 105, 218, 0.12);
+    --accent-hover: #0550ae;
+    --link-color: #0550ae;
+  }
+
+:root:not([data-theme="dark"]) .markdown-paper[data-editor-theme="github"] {
+    --editor-paper-bg: #ffffff;
+    --editor-text-primary: #1f2328;
+    --editor-text-heading: #1f2328;
+    --editor-text-secondary: #59636e;
+    --editor-border: #d1d9e0;
+    --editor-border-strong: #d1d9e0;
+    --editor-bg-secondary: #f6f8fa;
+    --editor-inline-code-bg: rgba(175, 184, 193, 0.2);
+    --editor-inline-code-text: #1f2328;
+    --editor-code-bg: #f6f8fa;
+    --editor-code-line-bg: #eff2f5;
+    --editor-code-text: #1f2328;
+    --editor-code-control-bg: rgba(255, 255, 255, 0.92);
+    --editor-link-color: #0550ae;
+    --editor-hl-keyword: #cf222e;
+    --editor-hl-string: #0a3069;
+    --editor-hl-number: #0550ae;
+    --editor-hl-title: #8250df;
+    --editor-hl-type: #116329;
+    --editor-hl-meta: #6e7781;
+    --editor-hl-symbol: #953800;
+    --editor-hl-deletion: #82071e;
+  }
+
+.markdown-paper[data-editor-theme="github"] h1 {
+    padding-bottom: 0.3em;
+    border-bottom: 1px solid var(--editor-border);
+    font-weight: 600;
+    line-height: 1.25;
+  }
+
+.markdown-paper[data-editor-theme="github"] h2 {
+    padding-bottom: 0.3em;
+    border-bottom: 1px solid var(--editor-border);
+    font-weight: 600;
+    line-height: 1.25;
+  }
+
+.markdown-paper[data-editor-theme="github"] h1 {
+    margin-top: 0;
+    margin-bottom: 1rem;
+    font-size: 2em;
+  }
+
+.markdown-paper[data-editor-theme="github"] h2 {
+    margin-top: 1.5rem;
+    margin-bottom: 1rem;
+    font-size: 1.5em;
+  }
+
+.markdown-paper[data-editor-theme="github"] .tableWrapper {
+    margin-block: 1rem;
+  }
+
+.markdown-paper[data-editor-theme="github"] .markra-table-controls-wrapper {
+    --markra-table-control-inline-center-offset: 0rem;
+    --markra-table-control-block-center-offset: 0rem;
+    padding: 0;
+  }
+
+.markdown-paper[data-editor-theme="github"] table {
+    font-size: 1em;
+    font-variant: tabular-nums;
+    line-height: 1.5;
+  }
+
+.markdown-paper[data-editor-theme="github"] th {
+    padding: 6px 13px;
+    border-color: var(--editor-border);
+  }
+
+.markdown-paper[data-editor-theme="github"] td {
+    padding: 6px 13px;
+    border-color: var(--editor-border);
+  }
+
+.markdown-paper[data-editor-theme="github"] th {
+    font-weight: 600;
+  }

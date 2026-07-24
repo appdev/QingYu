@@ -1,0 +1,76 @@
+/*
+@qingyu-theme
+id: pixyll
+name: Pixyll
+appearance: light
+version: 1.0.0
+preview-background: #fffaf0
+preview-panel: #f8ecd7
+preview-text: #33261a
+preview-accent: #d9480f
+*/
+
+:root {
+  --bg-primary: oklch(98% 0.012 94);
+  --bg-secondary: oklch(95% 0.018 94);
+  --bg-code: oklch(94.5% 0.017 94);
+  --bg-hover: oklch(93.5% 0.019 94);
+  --bg-active: oklch(90% 0.021 94);
+  --text-primary: oklch(33% 0.017 254);
+  --text-heading: oklch(24% 0.02 254);
+  --text-secondary: oklch(51% 0.026 254);
+  --text-md-char: oklch(70% 0.022 94);
+  --border-default: oklch(88% 0.018 94);
+  --border-strong: oklch(78% 0.026 94);
+  --accent: oklch(46% 0.16 15);
+  --accent-soft: oklch(46% 0.16 15 / 0.12);
+  --accent-hover: oklch(38% 0.17 15);
+  --link-color: oklch(38% 0.17 15);
+  color-scheme: light;
+}
+
+/* Theme-specific rules migrated from the application stylesheet. */
+[data-theme="pixyll"] {
+    --bg-primary: oklch(98% 0.012 94);
+    --bg-secondary: oklch(95% 0.018 94);
+    --bg-code: oklch(94.5% 0.017 94);
+    --bg-hover: oklch(93.5% 0.019 94);
+    --bg-active: oklch(90% 0.021 94);
+
+    --text-primary: oklch(33% 0.017 254);
+    --text-heading: oklch(24% 0.02 254);
+    --text-secondary: oklch(51% 0.026 254);
+    --text-md-char: oklch(70% 0.022 94);
+
+    --border-default: oklch(88% 0.018 94);
+    --border-strong: oklch(78% 0.026 94);
+    --accent: oklch(46% 0.16 15);
+    --accent-soft: oklch(46% 0.16 15 / 0.12);
+    --accent-hover: oklch(38% 0.17 15);
+    --link-color: oklch(38% 0.17 15);
+  }
+
+.markdown-paper[data-editor-theme="pixyll"] {
+    --editor-font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+  }
+
+:root:not([data-theme="dark"]) .markdown-paper[data-editor-theme="pixyll"] {
+    --editor-paper-bg: oklch(98% 0.012 94);
+    --editor-text-primary: oklch(33% 0.017 254);
+    --editor-text-heading: oklch(24% 0.02 254);
+    --editor-text-secondary: oklch(51% 0.026 254);
+    --editor-border: oklch(88% 0.018 94);
+    --editor-border-strong: oklch(78% 0.026 94);
+    --editor-bg-secondary: oklch(95% 0.018 94);
+    --editor-inline-code-bg: oklch(94% 0.022 94);
+    --editor-code-bg: oklch(94.5% 0.017 94);
+    --editor-code-line-bg: oklch(90% 0.021 94);
+    --editor-link-color: oklch(38% 0.17 15);
+    --editor-hl-keyword: oklch(46% 0.16 15);
+    --editor-hl-string: oklch(44% 0.12 157);
+    --editor-hl-title: oklch(43% 0.15 236);
+  }
+
+.markdown-paper[data-editor-theme="pixyll"] .ProseMirror::selection {
+    background: color-mix(in srgb, var(--accent) 16%, transparent);
+  }

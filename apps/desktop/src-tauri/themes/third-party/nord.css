@@ -1,0 +1,112 @@
+/*
+@qingyu-theme
+id: nord
+name: Nord
+appearance: dark
+author: Arctic Ice Studio
+version: 1.0.0
+preview-background: #2e3440
+preview-panel: #3b4252
+preview-text: #eceff4
+preview-accent: #88c0d0
+*/
+
+:root {
+  --bg-primary: #2e3440;
+  --bg-secondary: #3b4252;
+  --bg-code: #242933;
+  --bg-hover: rgba(216, 222, 233, 0.08);
+  --bg-active: #434c5e;
+  --text-primary: #d8dee9;
+  --text-heading: #eceff4;
+  --text-secondary: #a7b1c3;
+  --text-md-char: #6b768a;
+  --border-default: #4c566a;
+  --border-strong: #5e6b83;
+  --accent: #88c0d0;
+  --accent-soft: rgba(136, 192, 208, 0.16);
+  --accent-hover: #8fbcbb;
+  --link-color: #8fbcbb;
+  color-scheme: dark;
+}
+
+/* Theme-specific rules migrated from the application stylesheet. */
+[data-theme="nord"] {
+    --bg-primary: #1e1e1e;
+    --bg-secondary: #252526;
+    --bg-code: #1e1e1e;
+    --bg-hover: #2a2d2e;
+    --bg-active: #37373d;
+
+    --text-primary: #d4d4d4;
+    --text-heading: #e0e0e0;
+    --text-secondary: #808080;
+    --text-md-char: #555555;
+
+    --border-default: #333333;
+    --border-strong: #444444;
+    --accent: #f4f4f5;
+    --accent-soft: rgba(244, 244, 245, 0.14);
+    --accent-hover: #fafafa;
+    --danger: #ff8a80;
+    --link-color: #b7c5ff;
+
+    --floating-menu-shadow:
+      0 28px 76px rgba(0, 0, 0, 0.68),
+      0 0 0 1px rgba(255, 255, 255, 0.045),
+      0 0 40px color-mix(in srgb, var(--accent) 9%, transparent);
+    --floating-popover-shadow:
+      0 22px 58px rgba(0, 0, 0, 0.66),
+      0 0 0 1px rgba(255, 255, 255, 0.04),
+      0 0 28px color-mix(in srgb, var(--accent) 7%, transparent);
+    color-scheme: dark;
+  }
+
+[data-theme="nord"] {
+    --bg-primary: #2e3440;
+    --bg-secondary: #3b4252;
+    --bg-code: #242933;
+    --bg-hover: rgba(216, 222, 233, 0.08);
+    --bg-active: #434c5e;
+
+    --text-primary: #d8dee9;
+    --text-heading: #eceff4;
+    --text-secondary: #a7b1c3;
+    --text-md-char: #6b768a;
+
+    --border-default: #4c566a;
+    --border-strong: #5e6b83;
+    --accent: #88c0d0;
+    --accent-soft: rgba(136, 192, 208, 0.16);
+    --accent-hover: #8fbcbb;
+    --link-color: #8fbcbb;
+  }
+
+:root:not([data-theme="dark"]) .markdown-paper[data-editor-theme="nord"] {
+    --editor-paper-bg: #2e3440;
+    --editor-text-primary: #d8dee9;
+    --editor-text-heading: #eceff4;
+    --editor-text-secondary: #a7b1c3;
+    --editor-border: #4c566a;
+    --editor-border-strong: #5e6b83;
+    --editor-bg-secondary: #3b4252;
+    --editor-inline-code-bg: #242933;
+    --editor-inline-code-text: #88c0d0;
+    --editor-code-bg: #242933;
+    --editor-code-line-bg: #2e3440;
+    --editor-code-text: #d8dee9;
+    --editor-link-color: #8fbcbb;
+    --editor-hl-keyword: #81a1c1;
+    --editor-hl-string: #a3be8c;
+    --editor-hl-number: #b48ead;
+    --editor-hl-title: #88c0d0;
+    --editor-hl-type: #8fbcbb;
+    --editor-hl-meta: #d08770;
+    --editor-hl-symbol: #ebcb8b;
+    --editor-hl-deletion: #bf616a;
+  }
+
+[data-theme="nord"] .markdown-paper blockquote.markra-callout {
+    --callout-bg: color-mix(in srgb, var(--callout-color) 10%, var(--editor-paper-bg));
+    --callout-border: color-mix(in srgb, var(--callout-color) 32%, var(--editor-border));
+  }

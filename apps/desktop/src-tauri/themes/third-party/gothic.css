@@ -1,0 +1,77 @@
+/*
+@qingyu-theme
+id: gothic
+name: Gothic
+appearance: light
+version: 1.0.0
+preview-background: #f7f1e5
+preview-panel: #efe5d2
+preview-text: #2b2118
+preview-accent: #7f1d1d
+*/
+
+:root {
+  --bg-primary: oklch(96% 0.012 77);
+  --bg-secondary: oklch(92% 0.018 77);
+  --bg-code: oklch(90% 0.018 78);
+  --bg-hover: oklch(91% 0.02 77);
+  --bg-active: oklch(87% 0.024 77);
+  --text-primary: oklch(30% 0.016 70);
+  --text-heading: oklch(21% 0.016 70);
+  --text-secondary: oklch(48% 0.024 70);
+  --text-md-char: oklch(68% 0.025 74);
+  --border-default: oklch(84% 0.024 74);
+  --border-strong: oklch(73% 0.032 74);
+  --accent: oklch(43% 0.13 31);
+  --accent-soft: oklch(43% 0.13 31 / 0.12);
+  --accent-hover: oklch(36% 0.14 31);
+  --link-color: oklch(36% 0.14 31);
+  color-scheme: light;
+}
+
+/* Theme-specific rules migrated from the application stylesheet. */
+[data-theme="gothic"] {
+    --bg-primary: oklch(96% 0.012 77);
+    --bg-secondary: oklch(92% 0.018 77);
+    --bg-code: oklch(90% 0.018 78);
+    --bg-hover: oklch(91% 0.02 77);
+    --bg-active: oklch(87% 0.024 77);
+
+    --text-primary: oklch(30% 0.016 70);
+    --text-heading: oklch(21% 0.016 70);
+    --text-secondary: oklch(48% 0.024 70);
+    --text-md-char: oklch(68% 0.025 74);
+
+    --border-default: oklch(84% 0.024 74);
+    --border-strong: oklch(73% 0.032 74);
+    --accent: oklch(43% 0.13 31);
+    --accent-soft: oklch(43% 0.13 31 / 0.12);
+    --accent-hover: oklch(36% 0.14 31);
+    --link-color: oklch(36% 0.14 31);
+  }
+
+.markdown-paper[data-editor-theme="gothic"] {
+    --editor-font-family: "Avenir Next", Avenir, "Segoe UI", Helvetica, Arial, sans-serif;
+    --editor-heading-font-family: "Avenir Next", Avenir, "Segoe UI", Helvetica, Arial, sans-serif;
+  }
+
+:root:not([data-theme="dark"]) .markdown-paper[data-editor-theme="gothic"] {
+    --editor-paper-bg: oklch(96% 0.012 77);
+    --editor-text-primary: oklch(30% 0.016 70);
+    --editor-text-heading: oklch(21% 0.016 70);
+    --editor-text-secondary: oklch(48% 0.024 70);
+    --editor-border: oklch(84% 0.024 74);
+    --editor-border-strong: oklch(73% 0.032 74);
+    --editor-bg-secondary: oklch(92% 0.018 77);
+    --editor-inline-code-bg: oklch(91% 0.022 78);
+    --editor-code-bg: oklch(90% 0.018 78);
+    --editor-code-line-bg: oklch(86% 0.022 78);
+    --editor-link-color: oklch(36% 0.14 31);
+    --editor-hl-keyword: oklch(38% 0.13 31);
+    --editor-hl-string: oklch(37% 0.09 139);
+    --editor-hl-title: oklch(36% 0.11 250);
+  }
+
+.markdown-paper[data-editor-theme="gothic"] .ProseMirror::selection {
+    background: color-mix(in srgb, var(--accent) 16%, transparent);
+  }

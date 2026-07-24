@@ -1,0 +1,74 @@
+/*
+@qingyu-theme
+id: solarized-light
+name: Solarized Light
+appearance: light
+version: 1.0.0
+preview-background: #fdf6e3
+preview-panel: #eee8d5
+preview-text: #586e75
+preview-accent: #268bd2
+*/
+
+:root {
+  --bg-primary: #fdf6e3;
+  --bg-secondary: #eee8d5;
+  --bg-code: #eee8d5;
+  --bg-hover: rgba(101, 123, 131, 0.12);
+  --bg-active: #e1d8bd;
+  --text-primary: #586e75;
+  --text-heading: #073642;
+  --text-secondary: #839496;
+  --text-md-char: #93a1a1;
+  --border-default: #d8cfb2;
+  --border-strong: #c8bd9c;
+  --accent: #268bd2;
+  --accent-soft: rgba(38, 139, 210, 0.14);
+  --accent-hover: #006cae;
+  --link-color: #006cae;
+  color-scheme: light;
+}
+
+/* Theme-specific rules migrated from the application stylesheet. */
+[data-theme="solarized-light"] {
+    --bg-primary: #fdf6e3;
+    --bg-secondary: #eee8d5;
+    --bg-code: #eee8d5;
+    --bg-hover: rgba(101, 123, 131, 0.12);
+    --bg-active: #e1d8bd;
+
+    --text-primary: #586e75;
+    --text-heading: #073642;
+    --text-secondary: #839496;
+    --text-md-char: #93a1a1;
+
+    --border-default: #d8cfb2;
+    --border-strong: #c8bd9c;
+    --accent: #268bd2;
+    --accent-soft: rgba(38, 139, 210, 0.14);
+    --accent-hover: #006cae;
+    --link-color: #006cae;
+  }
+
+:root:not([data-theme="dark"]) .markdown-paper[data-editor-theme="solarized-light"] {
+    --editor-paper-bg: #fdf6e3;
+    --editor-text-primary: #586e75;
+    --editor-text-heading: #073642;
+    --editor-text-secondary: #839496;
+    --editor-border: #d8cfb2;
+    --editor-border-strong: #c8bd9c;
+    --editor-bg-secondary: #eee8d5;
+    --editor-inline-code-bg: #eee8d5;
+    --editor-inline-code-text: #268bd2;
+    --editor-code-bg: #eee8d5;
+    --editor-code-line-bg: #e1d8bd;
+    --editor-link-color: #006cae;
+    --editor-hl-keyword: #859900;
+    --editor-hl-string: #2aa198;
+    --editor-hl-number: #d33682;
+    --editor-hl-title: #268bd2;
+    --editor-hl-type: #b58900;
+    --editor-hl-meta: #6c71c4;
+    --editor-hl-symbol: #cb4b16;
+    --editor-hl-deletion: #dc322f;
+  }

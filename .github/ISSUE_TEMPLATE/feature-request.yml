@@ -1,0 +1,56 @@
+name: Feature request
+description: Suggest an improvement or new capability for QingYu.
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for suggesting an improvement. Please focus on the user problem first so we can evaluate the best solution.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Pre-flight checks
+      options:
+        - label: I have searched existing issues and discussions for a similar request.
+          required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What workflow or limitation is this feature meant to improve?
+      placeholder: "When I write..., it is hard to..."
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe the behavior or experience you would like.
+      placeholder: "QingYu could..."
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Product area
+      options:
+        - Editing
+        - File management
+        - Export
+        - Themes
+        - Settings
+        - Cross-platform behavior
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Optional. Share other approaches, workarounds, or tools you have tried.
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Add screenshots, examples, references, or workflow details.

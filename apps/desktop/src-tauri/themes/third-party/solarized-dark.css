@@ -1,0 +1,111 @@
+/*
+@qingyu-theme
+id: solarized-dark
+name: Solarized Dark
+appearance: dark
+version: 1.0.0
+preview-background: #002b36
+preview-panel: #073642
+preview-text: #eee8d5
+preview-accent: #2aa198
+*/
+
+:root {
+  --bg-primary: #002b36;
+  --bg-secondary: #073642;
+  --bg-code: #073642;
+  --bg-hover: rgba(131, 148, 150, 0.12);
+  --bg-active: #104554;
+  --text-primary: #93a1a1;
+  --text-heading: #eee8d5;
+  --text-secondary: #839496;
+  --text-md-char: #586e75;
+  --border-default: #164b5a;
+  --border-strong: #2a5d6a;
+  --accent: #268bd2;
+  --accent-soft: rgba(38, 139, 210, 0.18);
+  --accent-hover: #2aa198;
+  --link-color: #2aa198;
+  color-scheme: dark;
+}
+
+/* Theme-specific rules migrated from the application stylesheet. */
+[data-theme="solarized-dark"] {
+    --bg-primary: #1e1e1e;
+    --bg-secondary: #252526;
+    --bg-code: #1e1e1e;
+    --bg-hover: #2a2d2e;
+    --bg-active: #37373d;
+
+    --text-primary: #d4d4d4;
+    --text-heading: #e0e0e0;
+    --text-secondary: #808080;
+    --text-md-char: #555555;
+
+    --border-default: #333333;
+    --border-strong: #444444;
+    --accent: #f4f4f5;
+    --accent-soft: rgba(244, 244, 245, 0.14);
+    --accent-hover: #fafafa;
+    --danger: #ff8a80;
+    --link-color: #b7c5ff;
+
+    --floating-menu-shadow:
+      0 28px 76px rgba(0, 0, 0, 0.68),
+      0 0 0 1px rgba(255, 255, 255, 0.045),
+      0 0 40px color-mix(in srgb, var(--accent) 9%, transparent);
+    --floating-popover-shadow:
+      0 22px 58px rgba(0, 0, 0, 0.66),
+      0 0 0 1px rgba(255, 255, 255, 0.04),
+      0 0 28px color-mix(in srgb, var(--accent) 7%, transparent);
+    color-scheme: dark;
+  }
+
+[data-theme="solarized-dark"] {
+    --bg-primary: #002b36;
+    --bg-secondary: #073642;
+    --bg-code: #073642;
+    --bg-hover: rgba(131, 148, 150, 0.12);
+    --bg-active: #104554;
+
+    --text-primary: #93a1a1;
+    --text-heading: #eee8d5;
+    --text-secondary: #839496;
+    --text-md-char: #586e75;
+
+    --border-default: #164b5a;
+    --border-strong: #2a5d6a;
+    --accent: #268bd2;
+    --accent-soft: rgba(38, 139, 210, 0.18);
+    --accent-hover: #2aa198;
+    --link-color: #2aa198;
+  }
+
+:root:not([data-theme="dark"]) .markdown-paper[data-editor-theme="solarized-dark"] {
+    --editor-paper-bg: #002b36;
+    --editor-text-primary: #93a1a1;
+    --editor-text-heading: #eee8d5;
+    --editor-text-secondary: #839496;
+    --editor-border: #164b5a;
+    --editor-border-strong: #2a5d6a;
+    --editor-bg-secondary: #073642;
+    --editor-inline-code-bg: #073642;
+    --editor-inline-code-text: #2aa198;
+    --editor-code-bg: #073642;
+    --editor-code-line-bg: #002b36;
+    --editor-code-text: #93a1a1;
+    --editor-link-color: #2aa198;
+    --editor-hl-keyword: #859900;
+    --editor-hl-string: #2aa198;
+    --editor-hl-number: #d33682;
+    --editor-hl-title: #268bd2;
+    --editor-hl-type: #b58900;
+    --editor-hl-meta: #6c71c4;
+    --editor-hl-symbol: #cb4b16;
+    --editor-hl-deletion: #dc322f;
+  }
+
+[data-theme="solarized-dark"] .markdown-paper blockquote.markra-callout {
+    --callout-bg: color-mix(in srgb, var(--callout-color) 10%, var(--editor-paper-bg));
+    --callout-border: color-mix(in srgb, var(--callout-color) 32%, var(--editor-border));
+  }

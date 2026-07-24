@@ -1,0 +1,76 @@
+/*
+@qingyu-theme
+id: one-light
+name: One Light
+appearance: light
+version: 1.0.0
+preview-background: #fafafa
+preview-panel: #f0f0f0
+preview-text: #383a42
+preview-accent: #4078f2
+*/
+
+:root {
+  --bg-primary: #fafafa;
+  --bg-secondary: #f0f0f0;
+  --bg-code: #f0f0f0;
+  --bg-hover: rgba(160, 161, 167, 0.12);
+  --bg-active: #e5e5e6;
+  --text-primary: #383a42;
+  --text-heading: #202227;
+  --text-secondary: #a0a1a7;
+  --text-md-char: #b6b8bf;
+  --border-default: #d7dae0;
+  --border-strong: #c3c5cb;
+  --accent: #4078f2;
+  --accent-soft: rgba(64, 120, 242, 0.12);
+  --accent-hover: #0184bc;
+  --link-color: #4078f2;
+  color-scheme: light;
+}
+
+/* Theme-specific rules migrated from the application stylesheet. */
+[data-theme="one-light"] {
+    --bg-primary: #fafafa;
+    --bg-secondary: #f0f0f0;
+    --bg-code: #f0f0f0;
+    --bg-hover: rgba(160, 161, 167, 0.12);
+    --bg-active: #e5e5e6;
+
+    --text-primary: #383a42;
+    --text-heading: #202227;
+    --text-secondary: #a0a1a7;
+    --text-md-char: #b6b8bf;
+
+    --border-default: #d7dae0;
+    --border-strong: #c3c5cb;
+    --accent: #4078f2;
+    --accent-soft: rgba(64, 120, 242, 0.12);
+    --accent-hover: #0184bc;
+    --link-color: #4078f2;
+  }
+
+:root:not([data-theme="dark"]) .markdown-paper[data-editor-theme="one-light"] {
+    --editor-paper-bg: #fafafa;
+    --editor-text-primary: #383a42;
+    --editor-text-heading: #202227;
+    --editor-text-secondary: #a0a1a7;
+    --editor-border: #d7dae0;
+    --editor-border-strong: #c3c5cb;
+    --editor-bg-secondary: #f0f0f0;
+    --editor-inline-code-bg: #eaeaeb;
+    --editor-inline-code-text: #a626a4;
+    --editor-code-bg: #f0f0f0;
+    --editor-code-line-bg: #e5e5e6;
+    --editor-code-text: #383a42;
+    --editor-code-control-bg: rgba(250, 250, 250, 0.92);
+    --editor-link-color: #4078f2;
+    --editor-hl-keyword: #a626a4;
+    --editor-hl-string: #50a14f;
+    --editor-hl-number: #986801;
+    --editor-hl-title: #4078f2;
+    --editor-hl-type: #c18401;
+    --editor-hl-meta: #0184bc;
+    --editor-hl-symbol: #e45649;
+    --editor-hl-deletion: #ca1243;
+  }
