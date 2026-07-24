@@ -125,7 +125,10 @@ import {
   parseEditorWindowContext
 } from "./lib/editor-window-context";
 import { requestPrimaryNotebookSwitch } from "./lib/notebook-switch-events";
-import { listenPrimaryCloudNotebookCatalogRequested } from "./lib/cloud-notebook-catalog-events";
+import {
+  listenPrimaryCloudNotebookRestoreRequested,
+  type PrimaryCloudNotebookRestoreRequest
+} from "./lib/cloud-notebook-restore-events";
 import { isPandocSetupError, runPandocSetupAction } from "./app/pandoc-setup";
 import type { WorkspaceSearchResult } from "./lib/workspace-search";
 import type {
@@ -849,7 +852,6 @@ function WorkspaceApp() {
   const [remoteNotebookCatalogMode, setRemoteNotebookCatalogMode] = useState<"browse" | "select">("browse");
   const [remoteNotebookPendingRevision, setRemoteNotebookPendingRevision] = useState<string | null>(null);
   const [remoteNotebookCatalogRevision, setRemoteNotebookCatalogRevision] = useState<string | null>(null);
-  const [establishedCatalogRequestPending, setEstablishedCatalogRequestPending] = useState(false);
   const [mobileNotebookDialogOpen, setMobileNotebookDialogOpen] = useState(false);
   const [mobileNotebookLocalNames, setMobileNotebookLocalNames] = useState<string[]>([]);
   const [compactNavigationRequest, setCompactNavigationRequest] = useState<{
@@ -858,13 +860,66 @@ function WorkspaceApp() {
     retainUntilEditor: boolean;
   } | null>(null);
   const remoteNotebookRequestGenerationRef = useRef(0);
-  const establishedCatalogRequestPendingRef = useRef(false);
   const compactNavigationRequestIdRef = useRef(0);
   const currentDesktopNotebookName = primaryWindowOwner &&
     !compactMode.trueMobile &&
     primaryWorkspace.status === "ready"
     ? pathNameFromPath(primaryWorkspace.root)
     : null;
+  const handlePrimaryCloudNotebookRestoreRequest = useCallback(async ({
+    remoteName,
+    revision
+  }: PrimaryCloudNotebookRestoreRequest) => {
+    if (
+      compactMode.trueMobile ||
+      !primaryWindowOwner ||
+      remoteNotebookDialogOpen ||
+      syncConfig.appliedDocument?.revision !== revision
+    ) return false;
+
+    if (remoteName === currentDesktopNotebookName) {
+      return Boolean(await appSync.run("manual", revision));
+    }
+
+    const restoredRoot = await notebookSwitch.restoreDesktopNotebook(
+      remoteName,
+      primaryWorkspace.workspaceRoot ?? undefined
+    );
+    return restoredRoot !== null;
+  }, [
+    appSync.run,
+    compactMode.trueMobile,
+    currentDesktopNotebookName,
+    notebookSwitch.restoreDesktopNotebook,
+    primaryWindowOwner,
+    primaryWorkspace.workspaceRoot,
+    remoteNotebookDialogOpen,
+    syncConfig.appliedDocument?.revision
+  ]);
+  useEffect(() => {
+    if (!primaryWindowOwner || compactMode.trueMobile) return;
+
+    let active = true;
+    let stopListening: (() => unknown) | null = null;
+    listenPrimaryCloudNotebookRestoreRequested(
+      handlePrimaryCloudNotebookRestoreRequest
+    ).then((cleanup) => {
+      if (!active) {
+        cleanup();
+        return;
+      }
+      stopListening = cleanup;
+    }).catch(() => {});
+
+    return () => {
+      active = false;
+      stopListening?.();
+    };
+  }, [
+    compactMode.trueMobile,
+    handlePrimaryCloudNotebookRestoreRequest,
+    primaryWindowOwner
+  ]);
   useEffect(() => () => {
     remoteNotebookRequestGenerationRef.current += 1;
   }, []);
@@ -957,56 +1012,6 @@ function WorkspaceApp() {
     syncConfig.reload,
     syncConfig.status
   ]);
-  const openDesktopRemoteNotebookDialogRef = useRef(openDesktopRemoteNotebookDialog);
-  openDesktopRemoteNotebookDialogRef.current = openDesktopRemoteNotebookDialog;
-  useEffect(() => {
-    if (!establishedCatalogRequestPending || compactMode.trueMobile || !primaryWindowOwner) return;
-    if (primaryWorkspace.status === "loading") return;
-
-    establishedCatalogRequestPendingRef.current = false;
-    setEstablishedCatalogRequestPending(false);
-    if (
-      primaryWorkspace.status === "ready" &&
-      primaryWorkspace.root &&
-      primaryWorkspace.workspaceRoot
-    ) {
-      openDesktopRemoteNotebookDialogRef.current({ requireEstablishedWorkspace: true })
-        .catch(() => {});
-      return;
-    }
-    openSettingsWindow("sync", null, null).catch(() => {});
-  }, [
-    compactMode.trueMobile,
-    establishedCatalogRequestPending,
-    primaryWindowOwner,
-    primaryWorkspace.root,
-    primaryWorkspace.status,
-    primaryWorkspace.workspaceRoot
-  ]);
-  useEffect(() => {
-    if (!primaryWindowOwner || compactMode.trueMobile) return;
-
-    let active = true;
-    let stopListening: (() => unknown) | null = null;
-    listenPrimaryCloudNotebookCatalogRequested(() => {
-      if (!active) return undefined;
-      if (establishedCatalogRequestPendingRef.current) return undefined;
-      establishedCatalogRequestPendingRef.current = true;
-      setEstablishedCatalogRequestPending(true);
-      return undefined;
-    }).then((cleanup) => {
-      if (!active) {
-        cleanup();
-        return;
-      }
-      stopListening = cleanup;
-    }).catch(() => {});
-
-    return () => {
-      active = false;
-      stopListening?.();
-    };
-  }, [compactMode.trueMobile, primaryWindowOwner]);
   useEffect(() => {
     if (
       !remoteNotebookDialogOpen ||

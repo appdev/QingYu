@@ -114,7 +114,10 @@ import { notebookNameFromRoot } from "./lib/sync-config";
 import type { AppFormFactor, AppWorkspaceRuntime, RemoteNotebookCatalogEntry } from "./runtime";
 import * as appSyncCoordinatorModule from "./hooks/useAppSyncCoordinator";
 import * as notebookSwitchCoordinatorModule from "./hooks/useNotebookSwitchCoordinator";
-import { primaryCloudNotebookCatalogRequestedEvent } from "./lib/cloud-notebook-catalog-events";
+import {
+  primaryCloudNotebookRestoreRequestedEvent,
+  requestPrimaryCloudNotebookRestore
+} from "./lib/cloud-notebook-restore-events";
 
 installAppTestHarness();
 
@@ -1243,7 +1246,7 @@ describe("QingYu workspace", () => {
     coordinatorSpy.mockRestore();
   });
 
-  it("opens one shared cloud catalog from an established primary window and switches within Workspace", async () => {
+  it("executes a settings-owned remote selection without rendering a main-window dialog", async () => {
     const restoreDesktopNotebook = vi.fn(async (name: string) => `/Workspace/${name}`);
     const coordinatorSpy = vi.spyOn(
       notebookSwitchCoordinatorModule,
@@ -1258,52 +1261,45 @@ describe("QingYu workspace", () => {
       switching: false
     });
     const runtime = createDefaultAppRuntime();
-    const listNotebooks = vi.fn(async () => [
-      { available: true, disabledReason: null, name: "A" },
-      { available: true, disabledReason: null, name: "B" }
-    ]);
+    const load = vi.fn(async () => readySyncConfigResult("established-catalog-revision"));
     mockDesktopPrimaryWorkspace({ root: "/Workspace/A", status: "ready" });
     mockedLoadNativeMarkdownFilesForPath.mockResolvedValue([]);
     configureAppRuntime({
       ...runtime,
       syncConfig: {
         ...runtime.syncConfig,
-        listNotebooks,
-        load: async () => readySyncConfigResult("established-catalog-revision")
+        load
       }
     });
     const listenObserved = configureNotebookSwitchEventBus();
 
     renderApp();
+    await waitFor(() => expect(load).toHaveBeenCalled());
     await waitFor(() => expect(listenObserved).toHaveBeenCalledWith(
-      primaryCloudNotebookCatalogRequestedEvent,
+      primaryCloudNotebookRestoreRequestedEvent,
       expect.any(Function)
     ));
 
-    await act(async () => {
-      await getAppRuntime().events.emit(primaryCloudNotebookCatalogRequestedEvent, null);
+    const restoring = requestPrimaryCloudNotebookRestore({
+      remoteName: "B",
+      revision: "established-catalog-revision",
+      timeoutMs: 1_000
     });
 
-    const dialog = await screen.findByRole("dialog", { name: "Restore notebook from cloud" });
-    expect(screen.getAllByRole("dialog", { name: "Restore notebook from cloud" })).toHaveLength(1);
-    expect(within(dialog).getByRole("radio", { name: "A" })).toBeEnabled();
-    expect(within(dialog).getByText("Current notebook directory")).toBeVisible();
-    expect(within(dialog).getByRole("radio", { name: "B" })).toBeEnabled();
-
-    fireEvent.click(within(dialog).getByRole("radio", { name: "B" }));
-    fireEvent.click(within(dialog).getByRole("button", { name: "Restore" }));
-
-    await waitFor(() => expect(restoreDesktopNotebook).toHaveBeenCalledWith("B", "/Workspace"));
-    expect(listNotebooks).toHaveBeenCalledWith({ revision: "established-catalog-revision" });
+    await expect(restoring).resolves.toBe(true);
+    expect(restoreDesktopNotebook).toHaveBeenCalledOnce();
+    expect(restoreDesktopNotebook).toHaveBeenCalledWith("B", "/Workspace");
+    expect(screen.queryByRole("dialog", { name: "Restore notebook from cloud" }))
+      .not.toBeInTheDocument();
     coordinatorSpy.mockRestore();
   });
 
-  it("uses the current notebook immediately when first-sync discovery finds no remote notebooks", async () => {
+  it("runs current-notebook synchronization for a same-name settings selection", async () => {
     const run = vi.fn(async (trigger: "manual" | "app-launch" | "settings-exit" | "save" | "interval", revision?: string) => ({
       notebookName: "A",
       notesRoot: "/Workspace/A",
       provider: "webdav" as const,
-      revision: revision ?? "empty-catalog-revision",
+      revision: revision ?? "established-catalog-revision",
       summary: {
         bytesDownloaded: 0,
         bytesUploaded: 10,
@@ -1312,80 +1308,6 @@ describe("QingYu workspace", () => {
         scannedFiles: 1,
         skippedFiles: 0,
         uploadedFiles: 1
-      },
-      trigger
-    }));
-    const appSyncSpy = vi.spyOn(
-      appSyncCoordinatorModule,
-      "useAppSyncCoordinator"
-    ).mockReturnValue({
-      beginNotebookSwitch: vi.fn(async () => undefined),
-      finishNotebookSwitch: vi.fn(async () => undefined),
-      notifyDocumentSaved: vi.fn(async () => undefined),
-      run,
-      running: false,
-      status: null
-    });
-    const notebookSwitchSpy = vi.spyOn(
-      notebookSwitchCoordinatorModule,
-      "useNotebookSwitchCoordinator"
-    ).mockReturnValue({
-      recentNotebooks: [],
-      removeRecentNotebook: vi.fn(async () => undefined),
-      restoreDesktopNotebook: vi.fn(async () => null),
-      restoreManagedNotebook: vi.fn(async () => null),
-      switchDesktopNotebook: vi.fn(async () => null),
-      switchManagedNotebook: vi.fn(async () => null),
-      switching: false
-    });
-    const runtime = createDefaultAppRuntime();
-    const listNotebooks = vi.fn(async () => []);
-    mockDesktopPrimaryWorkspace({ root: "/Workspace/A", status: "ready" });
-    mockedLoadNativeMarkdownFilesForPath.mockResolvedValue([]);
-    configureAppRuntime({
-      ...runtime,
-      syncConfig: {
-        ...runtime.syncConfig,
-        listNotebooks,
-        load: async () => readySyncConfigResult("empty-catalog-revision")
-      }
-    });
-    const listenObserved = configureNotebookSwitchEventBus();
-
-    renderApp();
-    await waitFor(() => expect(listenObserved).toHaveBeenCalledWith(
-      primaryCloudNotebookCatalogRequestedEvent,
-      expect.any(Function)
-    ));
-    await act(async () => {
-      await getAppRuntime().events.emit(primaryCloudNotebookCatalogRequestedEvent, null);
-    });
-
-    await waitFor(() => expect(listNotebooks).toHaveBeenCalledWith({
-      revision: "empty-catalog-revision"
-    }));
-    await waitFor(() => expect(run).toHaveBeenCalledWith("manual", "empty-catalog-revision"));
-    expect(screen.queryByRole("dialog", { name: "Restore notebook from cloud" }))
-      .not.toBeInTheDocument();
-
-    notebookSwitchSpy.mockRestore();
-    appSyncSpy.mockRestore();
-  });
-
-  it("syncs the selected same-name remote notebook in place during first-sync discovery", async () => {
-    const run = vi.fn(async (trigger: "manual" | "app-launch" | "settings-exit" | "save" | "interval", revision?: string) => ({
-      notebookName: "A",
-      notesRoot: "/Workspace/A",
-      provider: "webdav" as const,
-      revision: revision ?? "same-name-catalog-revision",
-      summary: {
-        bytesDownloaded: 10,
-        bytesUploaded: 0,
-        conflictFiles: 0,
-        downloadedFiles: 1,
-        scannedFiles: 1,
-        skippedFiles: 0,
-        uploadedFiles: 0
       },
       trigger
     }));
@@ -1414,46 +1336,94 @@ describe("QingYu workspace", () => {
       switching: false
     });
     const runtime = createDefaultAppRuntime();
-    const listNotebooks = vi.fn(async () => [
-      { available: true, disabledReason: null, name: "A" },
-      { available: true, disabledReason: null, name: "B" }
-    ]);
+    const load = vi.fn(async () => readySyncConfigResult("established-catalog-revision"));
     mockDesktopPrimaryWorkspace({ root: "/Workspace/A", status: "ready" });
     mockedLoadNativeMarkdownFilesForPath.mockResolvedValue([]);
     configureAppRuntime({
       ...runtime,
       syncConfig: {
         ...runtime.syncConfig,
-        listNotebooks,
-        load: async () => readySyncConfigResult("same-name-catalog-revision")
+        load
       }
     });
     const listenObserved = configureNotebookSwitchEventBus();
 
     renderApp();
+    await waitFor(() => expect(load).toHaveBeenCalled());
     await waitFor(() => expect(listenObserved).toHaveBeenCalledWith(
-      primaryCloudNotebookCatalogRequestedEvent,
+      primaryCloudNotebookRestoreRequestedEvent,
       expect.any(Function)
     ));
-    await act(async () => {
-      await getAppRuntime().events.emit(primaryCloudNotebookCatalogRequestedEvent, null);
+
+    const selectingCurrent = requestPrimaryCloudNotebookRestore({
+      remoteName: "A",
+      revision: "established-catalog-revision",
+      timeoutMs: 1_000
     });
 
-    const dialog = await screen.findByRole("dialog", { name: "Restore notebook from cloud" });
-    fireEvent.click(within(dialog).getByRole("radio", { name: "A" }));
-    fireEvent.click(within(dialog).getByRole("button", { name: "Sync now" }));
-
-    await waitFor(() => expect(run).toHaveBeenCalledWith("manual", "same-name-catalog-revision"));
+    await expect(selectingCurrent).resolves.toBe(true);
+    expect(run).toHaveBeenCalledOnce();
+    expect(run).toHaveBeenCalledWith("manual", "established-catalog-revision");
     expect(restoreDesktopNotebook).not.toHaveBeenCalled();
-    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Restore notebook from cloud" }))
-      .not.toBeInTheDocument());
+    expect(screen.queryByRole("dialog", { name: "Restore notebook from cloud" }))
+      .not.toBeInTheDocument();
 
     notebookSwitchSpy.mockRestore();
     appSyncSpy.mockRestore();
   });
 
-  it("queues one established cloud catalog request until the primary Workspace is ready", async () => {
+  it("rejects a stale settings selection without switching notebooks", async () => {
     const restoreDesktopNotebook = vi.fn(async () => "/Workspace/B");
+    const notebookSwitchSpy = vi.spyOn(
+      notebookSwitchCoordinatorModule,
+      "useNotebookSwitchCoordinator"
+    ).mockReturnValue({
+      recentNotebooks: [],
+      removeRecentNotebook: vi.fn(async () => undefined),
+      restoreDesktopNotebook,
+      restoreManagedNotebook: vi.fn(async () => null),
+      switchDesktopNotebook: vi.fn(async () => null),
+      switchManagedNotebook: vi.fn(async () => null),
+      switching: false
+    });
+    const runtime = createDefaultAppRuntime();
+    const load = vi.fn(async () => readySyncConfigResult("established-catalog-revision"));
+    mockDesktopPrimaryWorkspace({ root: "/Workspace/A", status: "ready" });
+    mockedLoadNativeMarkdownFilesForPath.mockResolvedValue([]);
+    configureAppRuntime({
+      ...runtime,
+      syncConfig: {
+        ...runtime.syncConfig,
+        load
+      }
+    });
+    const listenObserved = configureNotebookSwitchEventBus();
+
+    renderApp();
+    await waitFor(() => expect(load).toHaveBeenCalled());
+    await waitFor(() => expect(listenObserved).toHaveBeenCalledWith(
+      primaryCloudNotebookRestoreRequestedEvent,
+      expect.any(Function)
+    ));
+
+    const selectingStale = requestPrimaryCloudNotebookRestore({
+      remoteName: "B",
+      revision: "stale-revision",
+      timeoutMs: 1_000
+    });
+
+    await expect(selectingStale).resolves.toBe(false);
+    expect(restoreDesktopNotebook).not.toHaveBeenCalled();
+    expect(screen.queryByRole("dialog", { name: "Restore notebook from cloud" }))
+      .not.toBeInTheDocument();
+
+    notebookSwitchSpy.mockRestore();
+  });
+
+  it("returns a safe false completion when a settings-owned remote transaction fails", async () => {
+    const restoreDesktopNotebook = vi.fn(async () => {
+      throw new Error("provider-secret-detail");
+    });
     const coordinatorSpy = vi.spyOn(
       notebookSwitchCoordinatorModule,
       "useNotebookSwitchCoordinator"
@@ -1467,100 +1437,13 @@ describe("QingYu workspace", () => {
       switching: false
     });
     const runtime = createDefaultAppRuntime();
-    const listNotebooks = vi.fn(async () => [
-      { available: true, disabledReason: null, name: "B" }
-    ]);
-    const controller = mockDesktopPrimaryWorkspace({ root: null, status: "loading" });
-    configureAppRuntime({
-      ...runtime,
-      syncConfig: {
-        ...runtime.syncConfig,
-        listNotebooks,
-        load: async () => readySyncConfigResult("loading-catalog-revision")
-      }
-    });
-    const listenObserved = configureNotebookSwitchEventBus();
-
-    const app = renderApp();
-    await waitFor(() => expect(listenObserved).toHaveBeenCalledWith(
-      primaryCloudNotebookCatalogRequestedEvent,
-      expect.any(Function)
-    ));
-
-    await act(async () => {
-      await getAppRuntime().events.emit(primaryCloudNotebookCatalogRequestedEvent, null);
-    });
-
-    expect(screen.queryByRole("dialog", { name: "Restore notebook from cloud" }))
-      .not.toBeInTheDocument();
-    expect(listNotebooks).not.toHaveBeenCalled();
-    expect(restoreDesktopNotebook).not.toHaveBeenCalled();
-
-    controller.root = "/Workspace/A";
-    controller.status = "ready";
-    controller.workspaceRoot = "/Workspace";
-    act(() => rerenderApp(app));
-
-    expect(await screen.findByRole("dialog", { name: "Restore notebook from cloud" }))
-      .toBeInTheDocument();
-    expect(await screen.findByRole("radio", { name: "B" })).toBeEnabled();
-    expect(listNotebooks).toHaveBeenCalledTimes(1);
-    act(() => rerenderApp(app));
-    expect(listNotebooks).toHaveBeenCalledTimes(1);
-    coordinatorSpy.mockRestore();
-  });
-
-  it("returns a queued established catalog request to sync settings when loading fails", async () => {
-    const runtime = createDefaultAppRuntime();
-    const listNotebooks = vi.fn(runtime.syncConfig.listNotebooks);
-    const controller = mockDesktopPrimaryWorkspace({ root: null, status: "loading" });
-    configureAppRuntime({
-      ...runtime,
-      syncConfig: {
-        ...runtime.syncConfig,
-        listNotebooks,
-        load: async () => readySyncConfigResult("failed-loading-catalog-revision")
-      },
-      window: {
-        ...runtime.window,
-        openSettingsWindow: mockedOpenSettingsWindow
-      }
-    });
-    const listenObserved = configureNotebookSwitchEventBus();
-    const app = renderApp();
-    await waitFor(() => expect(listenObserved).toHaveBeenCalledWith(
-      primaryCloudNotebookCatalogRequestedEvent,
-      expect.any(Function)
-    ));
-
-    await act(async () => {
-      await getAppRuntime().events.emit(primaryCloudNotebookCatalogRequestedEvent, null);
-    });
-    controller.error = "workspace-load-failed";
-    controller.status = "error";
-    act(() => rerenderApp(app));
-
-    await waitFor(() => expect(mockedOpenSettingsWindow).toHaveBeenCalledWith("sync", null, null));
-    expect(screen.queryByRole("dialog", { name: "Restore notebook from cloud" }))
-      .not.toBeInTheDocument();
-    expect(listNotebooks).not.toHaveBeenCalled();
-    expect(mockedOpenNativeMarkdownFolder).not.toHaveBeenCalled();
-  });
-
-  it("keeps one primary catalog subscription while dispatching the latest sync revision", async () => {
-    let currentResult = readySyncConfigResult("stable-listener-revision-a");
-    const load = vi.fn(async () => currentResult);
-    const listNotebooks = vi.fn(async () => [
-      { available: true, disabledReason: null, name: "B" }
-    ]);
-    const runtime = createDefaultAppRuntime();
+    const load = vi.fn(async () => readySyncConfigResult("established-catalog-revision"));
     mockDesktopPrimaryWorkspace({ root: "/Workspace/A", status: "ready" });
     mockedLoadNativeMarkdownFilesForPath.mockResolvedValue([]);
     configureAppRuntime({
       ...runtime,
       syncConfig: {
         ...runtime.syncConfig,
-        listNotebooks,
         load
       }
     });
@@ -1568,34 +1451,48 @@ describe("QingYu workspace", () => {
 
     renderApp();
     await waitFor(() => expect(load).toHaveBeenCalled());
-    await waitFor(() => expect(listenObserved.mock.calls.filter(
-      ([event]) => event === primaryCloudNotebookCatalogRequestedEvent
-    )).toHaveLength(1));
+    await waitFor(() => expect(listenObserved).toHaveBeenCalledWith(
+      primaryCloudNotebookRestoreRequestedEvent,
+      expect.any(Function)
+    ));
 
-    currentResult = readySyncConfigResult("stable-listener-revision-b");
-    await act(async () => {
-      await getAppRuntime().events.emit("qingyu://sync-config-changed", {
-        revision: "stable-listener-revision-b"
-      });
-    });
-    await waitFor(() => expect(load.mock.calls.length).toBeGreaterThan(1));
-
-    expect(listenObserved.mock.calls.filter(
-      ([event]) => event === primaryCloudNotebookCatalogRequestedEvent
-    )).toHaveLength(1);
-
-    await act(async () => {
-      await getAppRuntime().events.emit(primaryCloudNotebookCatalogRequestedEvent, null);
+    const restoring = requestPrimaryCloudNotebookRestore({
+      remoteName: "B",
+      revision: "established-catalog-revision",
+      timeoutMs: 1_000
     });
 
-    await waitFor(() => expect(listNotebooks).toHaveBeenCalledWith({
-      revision: "stable-listener-revision-b"
-    }));
+    await expect(restoring).resolves.toBe(false);
+    expect(restoreDesktopNotebook).toHaveBeenCalledOnce();
+    expect(screen.queryByText("provider-secret-detail")).not.toBeInTheDocument();
+    coordinatorSpy.mockRestore();
   });
 
-  it("does not subscribe an external standalone-file window to cloud catalog requests", async () => {
-    const notePath = `${mockFolderPath}/external-catalog.md`;
+  it("subscribes only the primary desktop workspace owner to cloud notebook restore requests", async () => {
+    const runtime = createDefaultAppRuntime();
+    const load = vi.fn(async () => readySyncConfigResult("owner-catalog-revision"));
+    mockDesktopPrimaryWorkspace({ root: "/Workspace/A", status: "ready" });
+    mockedLoadNativeMarkdownFilesForPath.mockResolvedValue([]);
+    configureAppRuntime({
+      ...runtime,
+      syncConfig: {
+        ...runtime.syncConfig,
+        load
+      }
+    });
     const listenObserved = configureNotebookSwitchEventBus();
+
+    const primaryApp = renderApp();
+    await waitFor(() => expect(listenObserved).toHaveBeenCalledWith(
+      primaryCloudNotebookRestoreRequestedEvent,
+      expect.any(Function)
+    ));
+    const primarySubscriptionCount = listenObserved.mock.calls.filter(
+      ([event]) => event === primaryCloudNotebookRestoreRequestedEvent
+    ).length;
+    primaryApp.unmount();
+
+    const notePath = `${mockFolderPath}/external-catalog.md`;
     window.history.replaceState({}, "", `/?path=${encodeURIComponent(notePath)}`);
     mockedReadNativeMarkdownFile.mockResolvedValue({
       content: "# External catalog isolation",
@@ -1607,10 +1504,9 @@ describe("QingYu workspace", () => {
 
     expect(await screen.findByRole("heading", { name: "External catalog isolation" }))
       .toBeInTheDocument();
-    expect(listenObserved).not.toHaveBeenCalledWith(
-      primaryCloudNotebookCatalogRequestedEvent,
-      expect.any(Function)
-    );
+    expect(listenObserved.mock.calls.filter(
+      ([event]) => event === primaryCloudNotebookRestoreRequestedEvent
+    )).toHaveLength(primarySubscriptionCount);
   });
 
   it.each(["default", "partial"] as const)(
