@@ -310,6 +310,32 @@ describe("settings application sync session", () => {
     expect(runtime.patch).toHaveBeenCalledTimes(1);
   });
 
+  it("clears an open cloud notebook dialog before a retained Settings window hides and reopens", async () => {
+    const runtime = installRuntime("/Workspace/A");
+    const { result } = renderHook(() => useSettingsWindowState());
+    await waitFor(() => expect(result.current.syncView.configDocument?.revision).toBe("rev-1"));
+    await act(async () => result.current.handleSelectCloudNotebook());
+    expect(result.current.remoteNotebookDialog.entries).toEqual([{
+      available: true,
+      disabledReason: null,
+      name: "Archive"
+    }]);
+
+    await act(async () => runtime.hide({ generation: 14 }));
+
+    expect(runtime.completeSettingsWindowHide).toHaveBeenCalledWith(14);
+    expect(result.current.remoteNotebookDialog.open).toBe(false);
+    expect(result.current.remoteNotebookDialog.entries).toEqual([]);
+    expect(result.current.remoteNotebookDialog.error).toBeNull();
+
+    await act(async () => runtime.reopen());
+
+    expect(result.current.remoteNotebookDialog.open).toBe(false);
+    expect(result.current.remoteNotebookDialog.entries).toEqual([]);
+    await act(async () => result.current.syncSession.patch({ field: "remoteRoot", value: "qingyu/reopened" }));
+    expect(runtime.patch).toHaveBeenCalledTimes(1);
+  });
+
   it("lets the normal category effect begin Sync once when a retained window reopens from another category", async () => {
     const runtime = installRuntime("/Workspace/A");
     const { result } = renderHook(() => useSettingsWindowState());

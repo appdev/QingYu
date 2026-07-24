@@ -333,7 +333,8 @@ export function useSettingsWindowState() {
     if (pendingHide) return pendingHide;
 
     const acknowledgement = acknowledgeSettingsWindowHide(request.generation);
-    const shutdown = syncSession.end("window-close");
+    const shutdown = Promise.resolve(remoteNotebookDialog.cancel())
+      .then(() => syncSession.end("window-close"));
     const hidePromise = Promise.allSettled([acknowledgement, shutdown])
       .then((results) => {
         const failed = results.find((result) => result.status === "rejected");
@@ -358,7 +359,13 @@ export function useSettingsWindowState() {
       });
     settingsHideInFlightRef.current.set(request.generation, hidePromise);
     return hidePromise;
-  }, [activeCategory, recoverVisibleSyncSession, showSyncExitFailure, syncSession.end]);
+  }, [
+    activeCategory,
+    recoverVisibleSyncSession,
+    remoteNotebookDialog.cancel,
+    showSyncExitFailure,
+    syncSession.end
+  ]);
 
   useEffect(() => {
     let cancelled = false;

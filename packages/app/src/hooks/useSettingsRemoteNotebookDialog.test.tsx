@@ -146,15 +146,71 @@ describe("useSettingsRemoteNotebookDialog", () => {
     expect(result.current.loading).toBe(false);
   });
 
+  it("starts a fresh ended-session transaction when cancel is followed by an immediate reopen", async () => {
+    const firstCatalog = deferred<RemoteNotebookCatalogEntry[]>();
+    const secondCatalog = deferred<RemoteNotebookCatalogEntry[]>();
+    const sessionRestart = deferred<undefined>();
+    const runtime = installRuntime({
+      listNotebooks: vi.fn()
+        .mockImplementationOnce(async () => firstCatalog.promise)
+        .mockImplementationOnce(async () => secondCatalog.promise)
+    });
+    const { result, syncSession } = setup();
+    let sessionActive = true;
+    syncSession.end.mockImplementation(async () => {
+      sessionActive = false;
+      return undefined;
+    });
+    syncSession.begin.mockImplementation(async () => {
+      await sessionRestart.promise;
+      sessionActive = true;
+    });
+
+    let firstOpen!: Promise<unknown>;
+    act(() => {
+      firstOpen = result.current.openDialog();
+    });
+    await waitFor(() => expect(runtime.listNotebooks).toHaveBeenCalledTimes(1));
+
+    let secondOpen!: Promise<unknown>;
+    act(() => {
+      result.current.cancel();
+      secondOpen = result.current.openDialog();
+    });
+
+    expect(secondOpen).not.toBe(firstOpen);
+    expect(syncSession.end).toHaveBeenCalledTimes(1);
+
+    act(() => sessionRestart.resolve(undefined));
+    await waitFor(() => expect(runtime.listNotebooks).toHaveBeenCalledTimes(2));
+    expect(sessionActive).toBe(false);
+
+    await act(async () => {
+      secondCatalog.resolve([entry("Fresh")]);
+      await secondOpen;
+    });
+    expect(result.current.open).toBe(true);
+    expect(result.current.entries).toEqual([entry("Fresh")]);
+
+    await act(async () => {
+      firstCatalog.resolve([entry("Stale")]);
+      await firstOpen;
+    });
+    expect(result.current.entries).toEqual([entry("Fresh")]);
+  });
+
   it("cancels only the dialog and resumes the Sync editing session", async () => {
     installRuntime();
     const { result, syncSession } = setup();
     await act(async () => result.current.openDialog());
 
-    act(() => result.current.cancel());
+    await act(async () => {
+      await result.current.cancel();
+    });
 
     await waitFor(() => expect(syncSession.begin).toHaveBeenCalledTimes(1));
     expect(result.current.open).toBe(false);
+    expect(result.current.entries).toEqual([]);
   });
 
   it("replaces a catalog failure with entries from a successful refresh", async () => {
@@ -184,8 +240,14 @@ describe("useSettingsRemoteNotebookDialog", () => {
       result.current.openDialog().catch(() => {});
     });
     await waitFor(() => expect(result.current.loading).toBe(true));
-    act(() => result.current.cancel());
-    await act(async () => catalog.resolve([entry("Too Late")]));
+    let cancel!: Promise<unknown>;
+    act(() => {
+      cancel = Promise.resolve(result.current.cancel());
+    });
+    await act(async () => {
+      catalog.resolve([entry("Too Late")]);
+      await cancel;
+    });
 
     expect(result.current.open).toBe(false);
     expect(result.current.entries).toEqual([]);
@@ -240,6 +302,56 @@ describe("useSettingsRemoteNotebookDialog", () => {
 
     rerender({ root: "/Restored/Archive" });
     await waitFor(() => expect(syncSession.begin).toHaveBeenCalledTimes(1));
+
+    rerender({ root: "/Workspace/Current" });
+    rerender({ root: "/Restored/Archive" });
+    expect(syncSession.begin).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not resume an old restore waiter after a new dialog transaction opens", async () => {
+    installRuntime();
+    const { result, rerender, syncSession } = setup("/Workspace/Current");
+    await act(async () => result.current.openDialog());
+    mockedRequestPrimaryCloudNotebookRestore.mockResolvedValueOnce(true);
+    await act(async () => result.current.restore("Archive"));
+
+    await act(async () => result.current.openDialog());
+    rerender({ root: "/Restored/Archive" });
+
+    expect(result.current.open).toBe(true);
+    expect(syncSession.begin).not.toHaveBeenCalled();
+  });
+
+  it("does not resume an old restore waiter after cancel starts a newer session", async () => {
+    installRuntime();
+    const { result, rerender, syncSession } = setup("/Workspace/Current");
+    await act(async () => result.current.openDialog());
+    mockedRequestPrimaryCloudNotebookRestore.mockResolvedValueOnce(true);
+    await act(async () => result.current.restore("Archive"));
+
+    await act(async () => {
+      await result.current.cancel();
+    });
+    await waitFor(() => expect(syncSession.begin).toHaveBeenCalledTimes(1));
+    rerender({ root: "/Restored/Archive" });
+
+    expect(syncSession.begin).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not resume an old restore waiter after a same-name restore operation", async () => {
+    installRuntime();
+    const { result, rerender, syncSession } = setup("/Workspace/Current");
+    await act(async () => result.current.openDialog());
+    mockedRequestPrimaryCloudNotebookRestore
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce(true);
+    await act(async () => result.current.restore("Archive"));
+
+    await act(async () => result.current.restore("Current"));
+    expect(syncSession.begin).toHaveBeenCalledTimes(1);
+    rerender({ root: "/Restored/Archive" });
+
+    expect(syncSession.begin).toHaveBeenCalledTimes(1);
   });
 
   it("reports session end and restart failures without hiding Settings", async () => {
@@ -256,7 +368,9 @@ describe("useSettingsRemoteNotebookDialog", () => {
     first.syncSession.end.mockResolvedValueOnce(undefined);
     first.syncSession.begin.mockRejectedValueOnce(new Error("reload failed"));
     await act(async () => first.result.current.openDialog());
-    act(() => first.result.current.cancel());
+    await act(async () => {
+      await first.result.current.cancel();
+    });
     await waitFor(() => expect(first.onSessionFailure).toHaveBeenCalledTimes(2));
   });
 

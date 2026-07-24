@@ -33,21 +33,63 @@ export function useSettingsRemoteNotebookDialog({
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [open, setOpen] = useState(false);
-  const [resumeNotebookName, setResumeNotebookName] = useState<string | null>(null);
-  const catalogGenerationRef = useRef(0);
+  const currentNotebookName = primaryRoot ? pathNameFromPath(primaryRoot) : null;
+  const currentNotebookNameRef = useRef(currentNotebookName);
+  currentNotebookNameRef.current = currentNotebookName;
+  const mountedRef = useRef(true);
   const openRef = useRef(false);
   const openPromiseRef = useRef<Promise<unknown> | null>(null);
+  const resumeWaiterRef = useRef<{ generation: number; remoteName: string } | null>(null);
   const restoreAbortControllerRef = useRef<AbortController | null>(null);
   const revisionRef = useRef<string | null>(null);
-  const currentNotebookName = primaryRoot ? pathNameFromPath(primaryRoot) : null;
+  const sessionEndedForDialogRef = useRef(false);
+  const sessionTransitionRef = useRef<Promise<unknown>>(Promise.resolve(undefined));
+  const transactionGenerationRef = useRef(0);
+
+  const enqueueSessionTransition = useCallback((transition: () => Promise<unknown>) => {
+    const request = sessionTransitionRef.current.then(transition, transition);
+    sessionTransitionRef.current = request.then(
+      () => undefined,
+      () => undefined
+    );
+    return request;
+  }, []);
 
   const restartSession = useCallback(async () => {
     try {
-      await syncSession.begin();
+      await enqueueSessionTransition(() => mountedRef.current
+        ? syncSession.begin()
+        : Promise.resolve(undefined));
+      return true;
     } catch {
       onSessionFailure();
+      return false;
     }
-  }, [onSessionFailure, syncSession.begin]);
+  }, [enqueueSessionTransition, onSessionFailure, syncSession.begin]);
+
+  const endSession = useCallback(async (
+    reason: Parameters<CompactSyncSettingsController["end"]>[0]
+  ) => {
+    try {
+      await enqueueSessionTransition(() => mountedRef.current
+        ? syncSession.end(reason)
+        : Promise.resolve(undefined));
+      return true;
+    } catch {
+      onSessionFailure();
+      return false;
+    }
+  }, [enqueueSessionTransition, onSessionFailure, syncSession.end]);
+
+  const invalidateTransaction = useCallback(() => {
+    const generation = transactionGenerationRef.current + 1;
+    transactionGenerationRef.current = generation;
+    openPromiseRef.current = null;
+    resumeWaiterRef.current = null;
+    restoreAbortControllerRef.current?.abort();
+    restoreAbortControllerRef.current = null;
+    return generation;
+  }, []);
 
   const loadCatalog = useCallback(async (generation: number) => {
     try {
@@ -59,21 +101,24 @@ export function useSettingsRemoteNotebookDialog({
       ) {
         throw new Error("Cloud notebook catalog is unavailable");
       }
+      if (!mountedRef.current || transactionGenerationRef.current !== generation) return;
 
       revisionRef.current = loadResult.revision;
       const nextEntries = await getAppRuntime().syncConfig.listNotebooks({
         revision: loadResult.revision
       });
-      if (catalogGenerationRef.current !== generation) return;
+      if (!mountedRef.current || transactionGenerationRef.current !== generation) return;
 
       setEntries(nextEntries);
       setError(null);
     } catch {
-      if (catalogGenerationRef.current !== generation) return;
+      if (!mountedRef.current || transactionGenerationRef.current !== generation) return;
       setEntries([]);
       setError(translate("notebooks.remote.refreshError"));
     } finally {
-      if (catalogGenerationRef.current === generation) setLoading(false);
+      if (mountedRef.current && transactionGenerationRef.current === generation) {
+        setLoading(false);
+      }
     }
   }, [translate]);
 
@@ -81,17 +126,19 @@ export function useSettingsRemoteNotebookDialog({
     const pendingOpen = openPromiseRef.current;
     if (pendingOpen) return pendingOpen;
 
+    const generation = invalidateTransaction();
     let request!: Promise<unknown>;
     request = (async () => {
-      try {
-        await syncSession.end("catalog-handoff");
-      } catch {
-        onSessionFailure();
-        return;
-      }
+      const editingEnded = await endSession("catalog-handoff");
+      if (
+        !editingEnded
+        || !mountedRef.current
+        || transactionGenerationRef.current !== generation
+      ) return;
 
-      const generation = ++catalogGenerationRef.current;
+      sessionEndedForDialogRef.current = true;
       openRef.current = true;
+      revisionRef.current = null;
       setEntries([]);
       setError(null);
       setLoading(true);
@@ -102,31 +149,44 @@ export function useSettingsRemoteNotebookDialog({
     });
     openPromiseRef.current = request;
     return request;
-  }, [loadCatalog, onSessionFailure, syncSession.end]);
+  }, [endSession, invalidateTransaction, loadCatalog]);
 
   const cancel = useCallback(() => {
-    catalogGenerationRef.current += 1;
+    const generation = invalidateTransaction();
+    const shouldRestartSession = sessionEndedForDialogRef.current;
+    sessionEndedForDialogRef.current = false;
     openRef.current = false;
-    setError(null);
-    setLoading(false);
-    setOpen(false);
-    restartSession().catch(() => {});
-  }, [restartSession]);
+    revisionRef.current = null;
+    if (mountedRef.current) {
+      setEntries([]);
+      setError(null);
+      setLoading(false);
+      setOpen(false);
+    }
+    if (!shouldRestartSession) return Promise.resolve(undefined);
+
+    return restartSession().then((restarted) => {
+      if (!restarted && transactionGenerationRef.current === generation) {
+        sessionEndedForDialogRef.current = true;
+      }
+    });
+  }, [invalidateTransaction, restartSession]);
 
   const refresh = useCallback(async () => {
     if (!openRef.current) return;
 
-    const generation = ++catalogGenerationRef.current;
+    const generation = invalidateTransaction();
+    revisionRef.current = null;
     setError(null);
     setLoading(true);
     await loadCatalog(generation);
-  }, [loadCatalog]);
+  }, [invalidateTransaction, loadCatalog]);
 
   const restore = useCallback(async (remoteName: string) => {
     const revision = revisionRef.current;
     if (!revision) throw new Error("Cloud notebook restore failed");
 
-    restoreAbortControllerRef.current?.abort();
+    const generation = invalidateTransaction();
     const abortController = new AbortController();
     restoreAbortControllerRef.current = abortController;
     try {
@@ -136,32 +196,55 @@ export function useSettingsRemoteNotebookDialog({
         signal: abortController.signal
       });
       if (!succeeded) throw new Error("Cloud notebook restore failed");
+      if (!mountedRef.current || transactionGenerationRef.current !== generation) return;
 
-      catalogGenerationRef.current += 1;
       openRef.current = false;
       setLoading(false);
       setOpen(false);
-      if (currentNotebookName === remoteName) {
-        await restartSession();
+      if (currentNotebookNameRef.current === remoteName) {
+        sessionEndedForDialogRef.current = false;
+        const restarted = await restartSession();
+        if (!restarted && transactionGenerationRef.current === generation) {
+          sessionEndedForDialogRef.current = true;
+        }
       } else {
-        setResumeNotebookName(remoteName);
+        resumeWaiterRef.current = { generation, remoteName };
       }
     } finally {
       if (restoreAbortControllerRef.current === abortController) {
         restoreAbortControllerRef.current = null;
       }
     }
+  }, [invalidateTransaction, restartSession]);
+
+  useEffect(() => {
+    const waiter = resumeWaiterRef.current;
+    if (
+      waiter === null
+      || waiter.generation !== transactionGenerationRef.current
+      || currentNotebookName !== waiter.remoteName
+    ) return;
+
+    resumeWaiterRef.current = null;
+    sessionEndedForDialogRef.current = false;
+    restartSession().then((restarted) => {
+      if (!restarted && transactionGenerationRef.current === waiter.generation) {
+        sessionEndedForDialogRef.current = true;
+      }
+    }).catch(() => {});
   }, [currentNotebookName, restartSession]);
 
   useEffect(() => {
-    if (resumeNotebookName === null || currentNotebookName !== resumeNotebookName) return;
-    setResumeNotebookName(null);
-    restartSession().catch(() => {});
-  }, [currentNotebookName, restartSession, resumeNotebookName]);
-
-  useEffect(() => () => {
-    catalogGenerationRef.current += 1;
-    restoreAbortControllerRef.current?.abort();
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      transactionGenerationRef.current += 1;
+      openPromiseRef.current = null;
+      resumeWaiterRef.current = null;
+      sessionEndedForDialogRef.current = false;
+      restoreAbortControllerRef.current?.abort();
+      restoreAbortControllerRef.current = null;
+    };
   }, []);
 
   return {
