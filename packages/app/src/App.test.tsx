@@ -115,6 +115,7 @@ import type { AppFormFactor, AppWorkspaceRuntime, RemoteNotebookCatalogEntry } f
 import * as appSyncCoordinatorModule from "./hooks/useAppSyncCoordinator";
 import * as notebookSwitchCoordinatorModule from "./hooks/useNotebookSwitchCoordinator";
 import {
+  primaryCloudNotebookRestoreCompletedEvent,
   primaryCloudNotebookRestoreRequestedEvent,
   requestPrimaryCloudNotebookRestore
 } from "./lib/cloud-notebook-restore-events";
@@ -144,12 +145,16 @@ function mockNotebookSwitchRouting() {
 
 function configureNotebookSwitchEventBus() {
   const listeners = new Map<string, Set<(event: { payload: unknown }) => unknown>>();
+  const delayedListenCompletions = new Set<string>();
+  const pendingListenCompletions = new Map<string, Array<() => unknown>>();
+  const emitObserved = vi.fn();
   const listenObserved = vi.fn();
   const runtime = getAppRuntime();
   configureAppRuntime({
     ...runtime,
     events: {
       async emit(event, payload) {
+        emitObserved(event, payload);
         listeners.get(event)?.forEach((handler) => handler({ payload }));
       },
       isAvailable: () => true,
@@ -159,13 +164,43 @@ function configureNotebookSwitchEventBus() {
         const storedHandler = (runtimeEvent: { payload: unknown }) => handler(runtimeEvent as never);
         eventListeners.add(storedHandler);
         listeners.set(event, eventListeners);
-        return () => {
+        const cleanup = () => {
           eventListeners.delete(storedHandler);
         };
+        if (delayedListenCompletions.delete(event)) {
+          return new Promise<() => unknown>((resolve) => {
+            const pending = pendingListenCompletions.get(event) ?? [];
+            pending.push(() => resolve(cleanup));
+            pendingListenCompletions.set(event, pending);
+          });
+        }
+        return cleanup;
       }
     }
   });
-  return listenObserved;
+  return Object.assign(listenObserved, {
+    activeListenerCount(event: string) {
+      return listeners.get(event)?.size ?? 0;
+    },
+    delayNextListenCompletion(event: string) {
+      delayedListenCompletions.add(event);
+      return undefined;
+    },
+    emittedEventCount(event: string) {
+      return emitObserved.mock.calls.filter(([emittedEvent]) => emittedEvent === event).length;
+    },
+    pendingListenCompletionCount(event: string) {
+      return pendingListenCompletions.get(event)?.length ?? 0;
+    },
+    resolveNextListenCompletion(event: string) {
+      const pending = pendingListenCompletions.get(event);
+      if (!pending) throw new Error(`No pending listener completion for ${event}`);
+      const resolve = pending.shift();
+      if (!resolve) throw new Error(`No pending listener completion for ${event}`);
+      if (pending.length === 0) pendingListenCompletions.delete(event);
+      return resolve();
+    }
+  });
 }
 
 const defaultFileTreeListOptions = { managedAttachmentFolder: "assets" };
@@ -1468,6 +1503,128 @@ describe("QingYu workspace", () => {
     coordinatorSpy.mockRestore();
   });
 
+  it("keeps one active primary restore listener across revision updates and uses the latest revision", async () => {
+    const restoreDesktopNotebook = vi.fn(async (name: string) => `/Workspace/${name}`);
+    const coordinatorSpy = vi.spyOn(
+      notebookSwitchCoordinatorModule,
+      "useNotebookSwitchCoordinator"
+    ).mockReturnValue({
+      recentNotebooks: [],
+      removeRecentNotebook: vi.fn(async () => undefined),
+      restoreDesktopNotebook,
+      restoreManagedNotebook: vi.fn(async () => null),
+      switchDesktopNotebook: vi.fn(async () => null),
+      switchManagedNotebook: vi.fn(async () => null),
+      switching: false
+    });
+    let resolveInitialLoad!: (
+      result: ReturnType<typeof readySyncConfigResult>
+    ) => undefined;
+    const initialLoad = new Promise<ReturnType<typeof readySyncConfigResult>>((resolve) => {
+      resolveInitialLoad = (result) => {
+        resolve(result);
+        return undefined;
+      };
+    });
+    let currentResult = readySyncConfigResult("stable-listener-revision-a");
+    const load = vi.fn()
+      .mockImplementationOnce(() => initialLoad)
+      .mockImplementation(async () => currentResult);
+    const runtime = createDefaultAppRuntime();
+    mockDesktopPrimaryWorkspace({ root: "/Workspace/A", status: "ready" });
+    mockedLoadNativeMarkdownFilesForPath.mockResolvedValue([]);
+    configureAppRuntime({
+      ...runtime,
+      syncConfig: {
+        ...runtime.syncConfig,
+        load
+      }
+    });
+    const eventBus = configureNotebookSwitchEventBus();
+    eventBus.delayNextListenCompletion(primaryCloudNotebookRestoreRequestedEvent);
+
+    renderApp();
+    await waitFor(() => expect(eventBus.activeListenerCount(
+      primaryCloudNotebookRestoreRequestedEvent
+    )).toBe(1));
+    expect(eventBus.pendingListenCompletionCount(
+      primaryCloudNotebookRestoreRequestedEvent
+    )).toBe(1);
+
+    await act(async () => resolveInitialLoad(currentResult));
+
+    expect(eventBus.activeListenerCount(
+      primaryCloudNotebookRestoreRequestedEvent
+    )).toBe(1);
+    await act(async () => {
+      eventBus.resolveNextListenCompletion(primaryCloudNotebookRestoreRequestedEvent);
+      await Promise.resolve();
+    });
+
+    currentResult = readySyncConfigResult("stable-listener-revision-b");
+    await act(async () => {
+      await getAppRuntime().events.emit("qingyu://sync-config-changed", {
+        revision: "stable-listener-revision-b"
+      });
+    });
+    await waitFor(() => expect(load).toHaveBeenCalledTimes(2));
+    expect(eventBus.activeListenerCount(
+      primaryCloudNotebookRestoreRequestedEvent
+    )).toBe(1);
+
+    const completionCountBeforeRequests = eventBus.emittedEventCount(
+      primaryCloudNotebookRestoreCompletedEvent
+    );
+    await expect(requestPrimaryCloudNotebookRestore({
+      remoteName: "B",
+      revision: "stable-listener-revision-a",
+      timeoutMs: 1_000
+    })).resolves.toBe(false);
+    expect(eventBus.emittedEventCount(
+      primaryCloudNotebookRestoreCompletedEvent
+    )).toBe(completionCountBeforeRequests + 1);
+    await expect(requestPrimaryCloudNotebookRestore({
+      remoteName: "B",
+      revision: "stable-listener-revision-b",
+      timeoutMs: 1_000
+    })).resolves.toBe(true);
+    expect(eventBus.emittedEventCount(
+      primaryCloudNotebookRestoreCompletedEvent
+    )).toBe(completionCountBeforeRequests + 2);
+    expect(restoreDesktopNotebook).toHaveBeenCalledOnce();
+    expect(restoreDesktopNotebook).toHaveBeenCalledWith("B", "/Workspace");
+    coordinatorSpy.mockRestore();
+  });
+
+  it("cleans a delayed primary restore listener after unmount", async () => {
+    const runtime = createDefaultAppRuntime();
+    mockDesktopPrimaryWorkspace({ root: "/Workspace/A", status: "ready" });
+    configureAppRuntime(runtime);
+    const eventBus = configureNotebookSwitchEventBus();
+    eventBus.delayNextListenCompletion(primaryCloudNotebookRestoreRequestedEvent);
+
+    const app = renderApp();
+    await waitFor(() => expect(eventBus.activeListenerCount(
+      primaryCloudNotebookRestoreRequestedEvent
+    )).toBe(1));
+    expect(eventBus.pendingListenCompletionCount(
+      primaryCloudNotebookRestoreRequestedEvent
+    )).toBe(1);
+
+    app.unmount();
+    expect(eventBus.activeListenerCount(
+      primaryCloudNotebookRestoreRequestedEvent
+    )).toBe(1);
+
+    await act(async () => {
+      eventBus.resolveNextListenCompletion(primaryCloudNotebookRestoreRequestedEvent);
+      await Promise.resolve();
+    });
+    expect(eventBus.activeListenerCount(
+      primaryCloudNotebookRestoreRequestedEvent
+    )).toBe(0);
+  });
+
   it("subscribes only the primary desktop workspace owner to cloud notebook restore requests", async () => {
     const runtime = createDefaultAppRuntime();
     const load = vi.fn(async () => readySyncConfigResult("owner-catalog-revision"));
@@ -1480,17 +1637,16 @@ describe("QingYu workspace", () => {
         load
       }
     });
-    const listenObserved = configureNotebookSwitchEventBus();
+    const eventBus = configureNotebookSwitchEventBus();
 
     const primaryApp = renderApp();
-    await waitFor(() => expect(listenObserved).toHaveBeenCalledWith(
-      primaryCloudNotebookRestoreRequestedEvent,
-      expect.any(Function)
-    ));
-    const primarySubscriptionCount = listenObserved.mock.calls.filter(
-      ([event]) => event === primaryCloudNotebookRestoreRequestedEvent
-    ).length;
+    await waitFor(() => expect(eventBus.activeListenerCount(
+      primaryCloudNotebookRestoreRequestedEvent
+    )).toBe(1));
     primaryApp.unmount();
+    expect(eventBus.activeListenerCount(
+      primaryCloudNotebookRestoreRequestedEvent
+    )).toBe(0);
 
     const notePath = `${mockFolderPath}/external-catalog.md`;
     window.history.replaceState({}, "", `/?path=${encodeURIComponent(notePath)}`);
@@ -1504,9 +1660,9 @@ describe("QingYu workspace", () => {
 
     expect(await screen.findByRole("heading", { name: "External catalog isolation" }))
       .toBeInTheDocument();
-    expect(listenObserved.mock.calls.filter(
-      ([event]) => event === primaryCloudNotebookRestoreRequestedEvent
-    )).toHaveLength(primarySubscriptionCount);
+    expect(eventBus.activeListenerCount(
+      primaryCloudNotebookRestoreRequestedEvent
+    )).toBe(0);
   });
 
   it.each(["default", "partial"] as const)(

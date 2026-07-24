@@ -896,14 +896,19 @@ function WorkspaceApp() {
     remoteNotebookDialogOpen,
     syncConfig.appliedDocument?.revision
   ]);
+  const handlePrimaryCloudNotebookRestoreRequestRef = useRef(
+    handlePrimaryCloudNotebookRestoreRequest
+  );
+  handlePrimaryCloudNotebookRestoreRequestRef.current =
+    handlePrimaryCloudNotebookRestoreRequest;
   useEffect(() => {
     if (!primaryWindowOwner || compactMode.trueMobile) return;
 
     let active = true;
     let stopListening: (() => unknown) | null = null;
-    listenPrimaryCloudNotebookRestoreRequested(
-      handlePrimaryCloudNotebookRestoreRequest
-    ).then((cleanup) => {
+    listenPrimaryCloudNotebookRestoreRequested((request) => (
+      handlePrimaryCloudNotebookRestoreRequestRef.current(request)
+    )).then((cleanup) => {
       if (!active) {
         cleanup();
         return;
@@ -917,7 +922,6 @@ function WorkspaceApp() {
     };
   }, [
     compactMode.trueMobile,
-    handlePrimaryCloudNotebookRestoreRequest,
     primaryWindowOwner
   ]);
   useEffect(() => () => {
