@@ -1,3 +1,9 @@
+## [2.0.0-alpha.9](https://github.com/markrahq/markra/compare/v2.0.0-alpha.8...v2.0.0-alpha.9) (2026-07-24)
+
+### Bug Fixes
+
+* **editor:** stabilize image previews during IME input ([7f38cf9](https://github.com/markrahq/markra/commit/7f38cf943923882a4eb3792297bf2c37cb309677))
+
 ## [2.0.0-alpha.8](https://github.com/markrahq/markra/compare/v2.0.0-alpha.7...v2.0.0-alpha.8) (2026-07-23)
 
 ### Bug Fixes
