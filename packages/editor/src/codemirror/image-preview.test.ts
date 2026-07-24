@@ -13,7 +13,7 @@ const views: EditorView[] = [];
 
 function createView(
   doc: string,
-  plugin = imagePreviewPlugin(),
+  plugin: ReturnType<typeof imagePreviewPlugin> | null = imagePreviewPlugin(),
 ) {
   const parent = document.createElement("div");
   document.body.append(parent);
@@ -21,7 +21,7 @@ function createView(
     parent,
     state: EditorState.create({
       doc,
-      extensions: [liveMarkdown({ plugins: [plugin] })],
+      extensions: [liveMarkdown({ plugins: plugin ? [plugin] : [] })],
       selection: { anchor: doc.length },
     }),
   });
@@ -92,6 +92,53 @@ describe("imagePreviewPlugin", () => {
     expect(image?.decoding).toBe("async");
     expect(firstLine(view)).toBe("Before  after");
     expect(view.state.doc.toString()).toBe(doc);
+  });
+
+  it("does not reload an unchanged image while editing text above it", () => {
+    const sourceSetter = vi.spyOn(
+      HTMLImageElement.prototype,
+      "src",
+      "set",
+    );
+    try {
+      const doc = [
+        "Edit here",
+        "",
+        "![Synthetic alt](https://example.test/image.png)",
+      ].join("\n");
+      const view = createView(doc);
+      const image = view.dom.querySelector<HTMLImageElement>(
+        ".cm-markra-image",
+      );
+      const requestMeasure = vi.spyOn(view, "requestMeasure");
+      const baselineView = createView(doc, null);
+      const baselineRequestMeasure = vi.spyOn(
+        baselineView,
+        "requestMeasure",
+      );
+      sourceSetter.mockClear();
+      requestMeasure.mockClear();
+      baselineRequestMeasure.mockClear();
+
+      baselineView.dispatch({
+        changes: { from: "Edit here".length, insert: "!" },
+        selection: { anchor: "Edit here!".length },
+        userEvent: "input",
+      });
+      view.dispatch({
+        changes: { from: "Edit here".length, insert: "!" },
+        selection: { anchor: "Edit here!".length },
+        userEvent: "input",
+      });
+
+      expect(view.dom.querySelector(".cm-markra-image")).toBe(image);
+      expect(sourceSetter).not.toHaveBeenCalled();
+      expect(requestMeasure).toHaveBeenCalledTimes(
+        baselineRequestMeasure.mock.calls.length,
+      );
+    } finally {
+      sourceSetter.mockRestore();
+    }
   });
 
   it("marks a standalone Markdown image line for block layout", () => {

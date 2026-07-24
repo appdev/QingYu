@@ -358,6 +358,8 @@ export function CodeMirrorPaperSurface({
   const openExternalUrlRef = useRef(openExternalUrl);
   const openLocalAttachmentRef = useRef(openLocalAttachment);
   const resolveImageSrcRef = useRef(resolveImageSrc);
+  const imeCompositionActiveRef = useRef(false);
+  const imeMarkdownChangePendingRef = useRef(false);
   const markdownCompartmentRef = useRef(new Compartment());
   const editableCompartmentRef = useRef(new Compartment());
   const spellcheckCompartmentRef = useRef(new Compartment());
@@ -530,6 +532,34 @@ export function CodeMirrorPaperSurface({
           editableCompartmentRef.current.of(
             editableExtension(readOnly, language),
           ),
+          EditorView.domEventHandlers({
+            compositionstart() {
+              imeCompositionActiveRef.current = true;
+              imeMarkdownChangePendingRef.current = false;
+              return false;
+            },
+            compositionend(_event, compositionView) {
+              imeCompositionActiveRef.current = false;
+              if (!imeMarkdownChangePendingRef.current) return false;
+
+              // IMEs can finalize their last DOM input immediately after
+              // compositionend. Publish in a microtask so React receives one
+              // settled snapshot and cannot disturb the composing DOM.
+              queueMicrotask(() => {
+                if (
+                  !imeMarkdownChangePendingRef.current ||
+                  viewRef.current !== compositionView
+                ) {
+                  return;
+                }
+                imeMarkdownChangePendingRef.current = false;
+                onMarkdownChangeRef.current(
+                  compositionView.state.doc.toString(),
+                );
+              });
+              return false;
+            },
+          }),
           EditorView.updateListener.of((update) => {
             if (update.selectionSet || update.docChanged) {
               const selection = update.state.selection.main;
@@ -554,7 +584,15 @@ export function CodeMirrorPaperSurface({
             }
 
             if (update.docChanged) {
-              onMarkdownChangeRef.current(update.state.doc.toString());
+              if (
+                imeCompositionActiveRef.current ||
+                update.view.composing
+              ) {
+                imeMarkdownChangePendingRef.current = true;
+              } else {
+                imeMarkdownChangePendingRef.current = false;
+                onMarkdownChangeRef.current(update.state.doc.toString());
+              }
             }
           }),
           paperTheme,

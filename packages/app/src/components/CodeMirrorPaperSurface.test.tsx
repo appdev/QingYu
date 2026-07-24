@@ -10,6 +10,7 @@ import { EditorSelection } from "@codemirror/state";
 import { EditorView, runScopeHandlers } from "@codemirror/view";
 import { markraEditorReactBridge } from "@markra/editor-react";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CodeMirrorPaperSurface } from "./CodeMirrorPaperSurface";
 
@@ -519,6 +520,128 @@ describe("CodeMirrorPaperSurface", () => {
       bubbles: true,
       data: "测",
     }));
+  });
+
+  it("publishes IME text once after composition ends", async () => {
+    const onEditorReady = vi.fn();
+    const onMarkdownChange = vi.fn();
+    render(
+      <CodeMirrorPaperSurface
+        autoFocus={false}
+        initialContent={"Edit\n\n## Stable block"}
+        onEditorReady={onEditorReady}
+        onMarkdownChange={onMarkdownChange}
+      />,
+    );
+    const view = onEditorReady.mock.calls[0]?.[0] as EditorView;
+    view.focus();
+    const inputLine = view.dom.querySelector<HTMLElement>(".cm-line");
+    if (!inputLine) throw new Error("Expected a CodeMirror input line");
+
+    view.contentDOM.dispatchEvent(new CompositionEvent("compositionstart", {
+      bubbles: true,
+      data: "",
+    }));
+    inputLine.append("测");
+    view.contentDOM.dispatchEvent(new InputEvent("input", {
+      bubbles: true,
+      data: "测",
+      inputType: "insertCompositionText",
+    }));
+
+    await waitFor(() => {
+      expect(view.composing).toBe(true);
+      expect(view.state.doc.toString()).toBe("Edit测\n\n## Stable block");
+    });
+    expect(onMarkdownChange).not.toHaveBeenCalled();
+
+    view.contentDOM.dispatchEvent(new CompositionEvent("compositionend", {
+      bubbles: true,
+      data: "测",
+    }));
+
+    await waitFor(() => {
+      expect(onMarkdownChange).toHaveBeenCalledTimes(1);
+      expect(onMarkdownChange).toHaveBeenLastCalledWith(
+        "Edit测\n\n## Stable block",
+      );
+    });
+  });
+
+  it("keeps an image mounted while controlled Markdown accepts IME text", async () => {
+    const onEditorReady = vi.fn();
+    const initialContent = [
+      "Compose",
+      "",
+      "![Synthetic image](https://example.test/image.png)",
+    ].join("\n");
+
+    function ControlledSurface() {
+      const [content, setContent] = useState(initialContent);
+      return (
+        <CodeMirrorPaperSurface
+          autoFocus={false}
+          initialContent={content}
+          onEditorReady={onEditorReady}
+          onMarkdownChange={setContent}
+          resolveImageSrc={(source) => source}
+        />
+      );
+    }
+
+    const { container } = render(<ControlledSurface />);
+    const view = onEditorReady.mock.calls[0]?.[0] as EditorView;
+    const inputLine = view.dom.querySelector<HTMLElement>(".cm-line");
+    const image = container.querySelector<HTMLImageElement>(
+      ".cm-markra-image",
+    );
+    if (!inputLine || !image) {
+      throw new Error("Expected the input line and rendered image");
+    }
+
+    await Promise.resolve();
+    view.focus();
+    let composedText = "";
+    for (const character of ["中", "文"]) {
+      composedText += character;
+      const currentInputLine =
+        view.dom.querySelector<HTMLElement>(".cm-line");
+      if (!currentInputLine) throw new Error("Expected the input line");
+      await act(async () => {
+        view.contentDOM.dispatchEvent(new CompositionEvent(
+          "compositionstart",
+          { bubbles: true, data: "" },
+        ));
+        currentInputLine.append(character);
+        view.contentDOM.dispatchEvent(new InputEvent("input", {
+          bubbles: true,
+          data: character,
+          inputType: "insertCompositionText",
+        }));
+      });
+      await waitFor(() => {
+        expect(view.composing).toBe(true);
+        expect(view.state.doc.toString()).toContain(
+          `Compose${composedText}`,
+        );
+      });
+      expect(container.querySelector(".cm-markra-image")).toBe(image);
+      expect(image.isConnected).toBe(true);
+      await act(async () => {
+        view.contentDOM.dispatchEvent(new CompositionEvent(
+          "compositionend",
+          { bubbles: true, data: character },
+        ));
+      });
+      await waitFor(() => expect(view.composing).toBe(false));
+      expect(container.querySelector(".cm-markra-image")).toBe(image);
+      expect(image.isConnected).toBe(true);
+    }
+
+    await waitFor(() => {
+      expect(view.state.doc.toString()).toContain("Compose中文");
+    });
+    expect(container.querySelector(".cm-markra-image")).toBe(image);
   });
 
   it("keeps AI selection context out of editable fenced code", () => {

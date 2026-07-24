@@ -35,12 +35,21 @@ interface ImageDetails {
 
 interface ImageWidgetDomState {
   image: HTMLImageElement;
+  imageRecord: ImageWidgetDomRecord;
   onOutsideMouseDown: (event: MouseEvent) => void;
   onViewKeyDown: (event: KeyboardEvent) => void;
   selected: boolean;
   sourceInput: HTMLInputElement;
   sourceRow: HTMLSpanElement;
   widget: ImageWidget;
+}
+
+interface ImageWidgetDomRecord {
+  claimed: boolean;
+  from: number;
+  image: HTMLImageElement;
+  key: string;
+  root: HTMLElement;
 }
 
 const safeDataImage = /^data:image\/(?:avif|gif|jpeg|png|webp);base64,/iu;
@@ -95,6 +104,10 @@ export function resolveSafeImageSource(source: string) {
 }
 
 const imageWidgetDomState = new WeakMap<HTMLElement, ImageWidgetDomState>();
+const imageWidgetDomRecords = new WeakMap<
+  CodeMirrorView,
+  Set<ImageWidgetDomRecord>
+>();
 
 function unescapeImageMarkdownText(text: string) {
   return text.replace(/\\([\\\]"])/gu, "$1");
@@ -147,24 +160,86 @@ function createImageSourceIcon(ownerDocument: Document) {
 }
 
 function updateImageElement(image: HTMLImageElement, widget: ImageWidget) {
-  image.alt = widget.details.alt;
-  image.className = widget.className;
-  image.src = widget.source;
-  if (widget.details.title) image.title = widget.details.title;
-  else image.removeAttribute("title");
+  if (image.alt !== widget.details.alt) image.alt = widget.details.alt;
+  if (image.className !== widget.className) image.className = widget.className;
+  // Editing above an image shifts its Markdown range and updates the widget.
+  // Reassigning an unchanged src makes browsers reload the image and flash.
+  if (image.getAttribute("src") !== widget.source) {
+    image.src = widget.source;
+  }
+  if (widget.details.title) {
+    if (image.title !== widget.details.title) image.title = widget.details.title;
+  } else if (image.hasAttribute("title")) {
+    image.removeAttribute("title");
+  }
+}
+
+function imageWidgetDomKey(widget: ImageWidget) {
+  return [
+    widget.className,
+    widget.details.markdown,
+    widget.readOnly ? "readonly" : "editable",
+    widget.source,
+  ].join("\u0000");
+}
+
+function claimImageElement(root: HTMLElement, widget: ImageWidget) {
+  let records = imageWidgetDomRecords.get(widget.view);
+  if (!records) {
+    records = new Set();
+    imageWidgetDomRecords.set(widget.view, records);
+  }
+
+  const key = imageWidgetDomKey(widget);
+  const composing =
+    widget.view.composing ||
+    widget.view.dom.dataset.markraComposing === "true";
+  let record: ImageWidgetDomRecord | undefined;
+  if (composing) {
+    record = [...records]
+      .filter((candidate) => !candidate.claimed && candidate.key === key)
+      .sort(
+        (left, right) =>
+          Math.abs(left.from - widget.from) -
+          Math.abs(right.from - widget.from),
+      )[0];
+  }
+
+  if (!record) {
+    record = {
+      claimed: false,
+      from: widget.from,
+      image: root.ownerDocument.createElement("img"),
+      key,
+      root,
+    };
+    records.add(record);
+  }
+
+  const claimedRecord = record;
+  claimedRecord.claimed = true;
+  claimedRecord.from = widget.from;
+  claimedRecord.root = root;
+  queueMicrotask(() => {
+    claimedRecord.claimed = false;
+  });
+  return claimedRecord;
 }
 
 function hideImageSource(root: HTMLElement, state: ImageWidgetDomState) {
+  const sourceVisible = state.sourceRow.isConnected;
   state.selected = false;
   state.sourceRow.remove();
   root.classList.remove("markra-image-node-selected");
   root.classList.remove("markra-image-node-source-invalid");
-  root.ownerDocument.removeEventListener(
-    "mousedown",
-    state.onOutsideMouseDown,
-    true,
-  );
-  if (root.isConnected) state.widget.view.requestMeasure();
+  if (sourceVisible) {
+    root.ownerDocument.removeEventListener(
+      "mousedown",
+      state.onOutsideMouseDown,
+      true,
+    );
+    if (root.isConnected) state.widget.view.requestMeasure();
+  }
 }
 
 function showImageSource(
@@ -173,16 +248,24 @@ function showImageSource(
   preserveInput = false,
 ) {
   if (state.widget.readOnly) return false;
-  if (!preserveInput) state.sourceInput.value = state.widget.details.markdown;
-  if (!state.sourceRow.isConnected) root.insertBefore(state.sourceRow, state.image);
+  const sourceVisible = state.sourceRow.isConnected;
+  if (
+    !preserveInput &&
+    state.sourceInput.value !== state.widget.details.markdown
+  ) {
+    state.sourceInput.value = state.widget.details.markdown;
+  }
+  if (!sourceVisible) root.insertBefore(state.sourceRow, state.image);
   state.selected = true;
   root.classList.add("markra-image-node-selected");
-  root.ownerDocument.addEventListener(
-    "mousedown",
-    state.onOutsideMouseDown,
-    true,
-  );
-  if (root.isConnected) state.widget.view.requestMeasure();
+  if (!sourceVisible) {
+    root.ownerDocument.addEventListener(
+      "mousedown",
+      state.onOutsideMouseDown,
+      true,
+    );
+    if (root.isConnected) state.widget.view.requestMeasure();
+  }
   return true;
 }
 
@@ -262,7 +345,8 @@ class ImageWidget extends WidgetType {
     const root = view.dom.ownerDocument.createElement("span");
     const sourceRow = view.dom.ownerDocument.createElement("span");
     const sourceInput = view.dom.ownerDocument.createElement("input");
-    const image = view.dom.ownerDocument.createElement("img");
+    const imageRecord = claimImageElement(root, this);
+    const { image } = imageRecord;
     root.className = "markra-image-node";
     root.contentEditable = "false";
     root.draggable = false;
@@ -282,6 +366,7 @@ class ImageWidget extends WidgetType {
 
     const state = {
       image,
+      imageRecord,
       onOutsideMouseDown: (event: MouseEvent) => {
         if (event.target instanceof Node && root.contains(event.target)) return;
         const current = imageWidgetDomState.get(root);
@@ -397,6 +482,9 @@ class ImageWidget extends WidgetType {
     const state = imageWidgetDomState.get(dom);
     if (!state) return false;
     state.widget = this;
+    state.imageRecord.from = this.from;
+    state.imageRecord.key = imageWidgetDomKey(this);
+    state.imageRecord.root = dom;
     updateImageElement(state.image, this);
     const preserveInput = dom.ownerDocument.activeElement === state.sourceInput;
     // Cursor-driven source mode is temporary: once Enter moves the caret
@@ -422,6 +510,26 @@ class ImageWidget extends WidgetType {
       state.onViewKeyDown,
       true,
     );
+    if (state.imageRecord.root === dom) {
+      const { view } = state.widget;
+      const releaseRecord = () => {
+        if (state.imageRecord.root !== dom) return;
+        const records = imageWidgetDomRecords.get(view);
+        records?.delete(state.imageRecord);
+        if (records?.size === 0) imageWidgetDomRecords.delete(view);
+      };
+      if (
+        view.composing ||
+        view.dom.dataset.markraComposing === "true"
+      ) {
+        // CodeMirror destroys the old content tile before constructing its
+        // IME replacement. Keep the decoded image available for that same
+        // synchronous reconciliation, then release it if no replacement came.
+        queueMicrotask(releaseRecord);
+      } else {
+        releaseRecord();
+      }
+    }
     imageWidgetDomState.delete(dom);
   }
 }
