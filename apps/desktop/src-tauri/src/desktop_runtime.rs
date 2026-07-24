@@ -20,7 +20,7 @@ use crate::windows::{
     apply_window_event_chrome, editor_window_url_for_path, is_editor_window_label,
     spawn_blank_editor_window, spawn_editor_window, spawn_restorable_editor_window,
 };
-use tauri::{Emitter, EventTarget, Manager};
+use tauri::Manager;
 use tauri_plugin_window_state::StateFlags;
 
 const STARTUP_WINDOW_NATIVE_REVEAL_FALLBACK_MS: u64 = 2400;
@@ -29,9 +29,6 @@ const DESKTOP_LOG_MAX_FILE_COUNT: usize = 5;
 // tauri-plugin-log's KeepSome count applies only to archived files; the active
 // log file is additional, so keep one fewer archive to cap total files.
 const DESKTOP_LOG_ARCHIVED_FILE_COUNT: usize = DESKTOP_LOG_MAX_FILE_COUNT - 1;
-const PRIMARY_CLOUD_NOTEBOOK_CATALOG_REQUESTED_EVENT: &str =
-    "qingyu://cloud-notebook-catalog-requested";
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum DesktopLaunchMode {
     Normal,
@@ -92,45 +89,6 @@ fn test_should_reveal_single_instance(mode: &str) -> bool {
         _ => DesktopLaunchMode::Normal,
     };
     should_reveal_single_instance(mode)
-}
-
-trait PrimaryCloudNotebookCatalogWindow {
-    fn show_catalog_window(&self) -> Result<(), String>;
-    fn focus_catalog_window(&self) -> Result<(), String>;
-    fn emit_catalog_request(&self) -> Result<(), String>;
-}
-
-impl<R: tauri::Runtime> PrimaryCloudNotebookCatalogWindow for tauri::WebviewWindow<R> {
-    fn show_catalog_window(&self) -> Result<(), String> {
-        self.show()
-            .map_err(|error| format!("primary-cloud-catalog-show-failed: {error}"))
-    }
-
-    fn focus_catalog_window(&self) -> Result<(), String> {
-        self.set_focus()
-            .map_err(|error| format!("primary-cloud-catalog-focus-failed: {error}"))
-    }
-
-    fn emit_catalog_request(&self) -> Result<(), String> {
-        self.emit_to(
-            EventTarget::webview_window(self.label()),
-            PRIMARY_CLOUD_NOTEBOOK_CATALOG_REQUESTED_EVENT,
-            (),
-        )
-        .map_err(|error| format!("primary-cloud-catalog-emit-failed: {error}"))
-    }
-}
-
-fn deliver_primary_cloud_notebook_catalog_request<W: PrimaryCloudNotebookCatalogWindow>(
-    window: Option<&W>,
-) -> Result<(), String> {
-    let window = window.ok_or_else(|| {
-        "primary-cloud-catalog-main-window-missing: The primary window is unavailable.".to_string()
-    })?;
-    window.show_catalog_window()?;
-    window.focus_catalog_window()?;
-    window.emit_catalog_request()?;
-    Ok(())
 }
 
 fn window_state_restore_flags() -> StateFlags {
@@ -203,12 +161,6 @@ pub(crate) fn request_primary_notebook_switch(
     let folder = crate::markdown_files::open::resolve_markdown_folder(path)?;
     reveal_or_open_markdown_paths(&app, vec![folder], false);
     Ok(())
-}
-
-#[tauri::command]
-pub(crate) fn request_primary_cloud_notebook_catalog(app: tauri::AppHandle) -> Result<(), String> {
-    let window = app.get_webview_window("main");
-    deliver_primary_cloud_notebook_catalog_request(window.as_ref())
 }
 
 fn show_main_window_if_hidden<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
@@ -429,7 +381,6 @@ pub(crate) fn run() {
             crate::watcher::watch_markdown_tree,
             crate::watcher::unwatch_markdown_tree,
             request_primary_notebook_switch,
-            request_primary_cloud_notebook_catalog,
             crate::opened_files::take_opened_markdown_paths,
             crate::shell_command::get_shell_command_status,
             crate::shell_command::install_shell_command,
@@ -489,73 +440,6 @@ pub(crate) fn run() {
 
 #[cfg(test)]
 mod tests {
-    use std::{cell::RefCell, rc::Rc};
-
-    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-    enum CatalogDeliveryFailure {
-        Show,
-        Focus,
-        Emit,
-    }
-
-    struct TestCatalogWindow {
-        failure: Option<CatalogDeliveryFailure>,
-        operations: Rc<RefCell<Vec<&'static str>>>,
-    }
-
-    impl super::PrimaryCloudNotebookCatalogWindow for TestCatalogWindow {
-        fn show_catalog_window(&self) -> Result<(), String> {
-            self.operations.borrow_mut().push("show");
-            if self.failure == Some(CatalogDeliveryFailure::Show) {
-                return Err("show failed".to_string());
-            }
-            Ok(())
-        }
-
-        fn focus_catalog_window(&self) -> Result<(), String> {
-            self.operations.borrow_mut().push("focus");
-            if self.failure == Some(CatalogDeliveryFailure::Focus) {
-                return Err("focus failed".to_string());
-            }
-            Ok(())
-        }
-
-        fn emit_catalog_request(&self) -> Result<(), String> {
-            self.operations.borrow_mut().push("emit");
-            if self.failure == Some(CatalogDeliveryFailure::Emit) {
-                return Err("emit failed".to_string());
-            }
-            Ok(())
-        }
-    }
-
-    fn test_catalog_window(
-        failure: Option<CatalogDeliveryFailure>,
-    ) -> (TestCatalogWindow, Rc<RefCell<Vec<&'static str>>>) {
-        let operations = Rc::new(RefCell::new(Vec::new()));
-        (
-            TestCatalogWindow {
-                failure,
-                operations: operations.clone(),
-            },
-            operations,
-        )
-    }
-
-    #[test]
-    fn cloud_catalog_request_shows_focuses_and_notifies_only_the_primary_window() {
-        let (window, operations) = test_catalog_window(None);
-
-        super::deliver_primary_cloud_notebook_catalog_request(Some(&window))
-            .expect("catalog request should be delivered");
-
-        assert_eq!(*operations.borrow(), ["show", "focus", "emit"]);
-        assert_eq!(
-            super::PRIMARY_CLOUD_NOTEBOOK_CATALOG_REQUESTED_EVENT,
-            ["qingyu://cloud", "-notebook-catalog-requested"].concat()
-        );
-    }
-
     #[test]
     fn mcp_serve_selects_headless_service_mode() {
         assert_eq!(
@@ -634,67 +518,6 @@ mod tests {
             .contains("app.set_activation_policy(tauri::ActivationPolicy::Prohibited);"));
         assert!(!setup_source
             .contains("app.set_activation_policy(tauri::ActivationPolicy::Accessory);"));
-    }
-
-    #[test]
-    fn cloud_catalog_event_uses_an_exact_webview_window_target() {
-        let source = include_str!("desktop_runtime.rs");
-        let implementation_start = source
-            .find("impl<R: tauri::Runtime> PrimaryCloudNotebookCatalogWindow")
-            .expect("the native catalog window implementation should exist");
-        let implementation_end = source[implementation_start..]
-            .find("\nfn deliver_primary_cloud_notebook_catalog_request")
-            .map(|offset| implementation_start + offset)
-            .expect("the native catalog window implementation should have a boundary");
-        let implementation = &source[implementation_start..implementation_end];
-
-        assert!(
-            implementation.contains("self.emit_to("),
-            "WebviewWindow::emit broadcasts globally in Tauri 2.11"
-        );
-        assert!(
-            implementation.contains("EventTarget::webview_window(self.label())"),
-            "the request must target exactly the selected primary webview window"
-        );
-        assert!(
-            !implementation.contains("self.emit("),
-            "broadcast delivery must not be used for the catalog request"
-        );
-    }
-
-    #[test]
-    fn cloud_catalog_request_returns_an_error_for_every_delivery_failure() {
-        assert!(
-            super::deliver_primary_cloud_notebook_catalog_request::<TestCatalogWindow>(None)
-                .expect_err("missing main window must fail")
-                .contains("main")
-        );
-
-        for failure in [
-            CatalogDeliveryFailure::Show,
-            CatalogDeliveryFailure::Focus,
-            CatalogDeliveryFailure::Emit,
-        ] {
-            let (window, operations) = test_catalog_window(Some(failure));
-            assert!(super::deliver_primary_cloud_notebook_catalog_request(Some(&window)).is_err());
-            let expected = match failure {
-                CatalogDeliveryFailure::Show => vec!["show"],
-                CatalogDeliveryFailure::Focus => vec!["show", "focus"],
-                CatalogDeliveryFailure::Emit => vec!["show", "focus", "emit"],
-            };
-            assert_eq!(*operations.borrow(), expected);
-        }
-    }
-
-    #[test]
-    fn desktop_registers_the_primary_cloud_catalog_request_command() {
-        let source = include_str!("desktop_runtime.rs");
-        let command = ["request_primary_cloud_notebook", "_catalog,"].concat();
-        let handler = &source[source
-            .find("tauri::generate_handler![")
-            .expect("desktop invoke handler should exist")..];
-
-        assert!(handler.contains(&command));
     }
 
     #[test]

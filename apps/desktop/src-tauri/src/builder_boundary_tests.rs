@@ -149,7 +149,6 @@ const DESKTOP_COMMANDS: &[&str] = &[
     "unwatch_markdown_file",
     "watch_markdown_tree",
     "unwatch_markdown_tree",
-    "request_primary_cloud_notebook_catalog",
     "request_primary_notebook_switch",
     "take_opened_markdown_paths",
     "get_shell_command_status",
@@ -309,11 +308,16 @@ fn builder_boundary_desktop_preserves_the_complete_command_surface() {
         "desktop runtime omitted the official opener plugin"
     );
     let commands = handler_identifiers(&runtime);
+    let obsolete_catalog_handoff = ["request_primary_cloud_notebook", "_catalog"].concat();
     let expected = DESKTOP_COMMANDS
         .iter()
         .map(|command| (*command).to_string())
         .collect::<BTreeSet<_>>();
 
+    assert!(
+        !commands.contains(&obsolete_catalog_handoff),
+        "desktop retained the obsolete cloud catalog window handoff"
+    );
     assert_eq!(commands, expected, "desktop command registrations changed");
     for command in MCP_COMMANDS.iter().chain(TYPED_SETTINGS_COMMANDS) {
         assert!(commands.contains(*command), "desktop omitted {command}");

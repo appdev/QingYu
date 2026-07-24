@@ -401,7 +401,6 @@ export type AppWindowRuntime = {
     projectRoot?: string | null,
     workspaceSourcePath?: string | null
   ) => Promise<unknown>;
-  requestPrimaryCloudNotebookCatalog: () => Promise<unknown>;
   markSettingsWindowReady: () => Promise<unknown>;
   hideSettingsWindow: () => Promise<unknown>;
   setEditorWindowRestoreState: (input: SetNativeEditorWindowRestoreStateInput) => Promise<unknown>;
@@ -803,7 +802,6 @@ export function createDefaultAppRuntime(): AppRuntime {
         }
       },
       openSettingsWindow: async () => undefined,
-      requestPrimaryCloudNotebookCatalog: () => unsupportedFeature("requestPrimaryCloudNotebookCatalog"),
       markSettingsWindowReady: async () => undefined,
       hideSettingsWindow: async () => undefined,
       setEditorWindowRestoreState: async () => undefined,

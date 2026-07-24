@@ -60,10 +60,6 @@ export function openSettingsWindow(
   });
 }
 
-export function requestNativePrimaryCloudNotebookCatalog() {
-  return invokeNative("request_primary_cloud_notebook_catalog");
-}
-
 export function markSettingsWindowReady() {
   return invokeNative("mark_settings_window_ready");
 }

@@ -19,7 +19,6 @@ import {
   markSettingsWindowReady,
   minimizeNativeWindow,
   openSettingsWindow,
-  requestNativePrimaryCloudNotebookCatalog,
   setNativeEditorWindowRestoreState,
   showNativeWindow,
   toggleNativeWindowFullscreen,
@@ -290,14 +289,6 @@ describe("native window actions", () => {
       sourceWindowLabel: "markra-editor-2",
       workspaceSourcePath: "/mock-files/standalone.md"
     });
-  });
-
-  it("requests the cloud notebook catalog without native arguments", async () => {
-    mockedInvoke.mockResolvedValue(undefined);
-
-    await requestNativePrimaryCloudNotebookCatalog();
-
-    expect(mockedInvoke).toHaveBeenCalledWith("request_primary_cloud_notebook_catalog");
   });
 
   it("marks the settings window ready", async () => {

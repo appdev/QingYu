@@ -90,12 +90,11 @@ describe("default app runtime capabilities", () => {
     await expect(runtime.workspace.resolveManagedRoot("personal")).resolves.toBeNull();
   });
 
-  it("rejects primary cloud catalog delivery without a configured native runtime", async () => {
+  it("does not expose the obsolete primary cloud catalog window handoff", () => {
     const runtime = createDefaultAppRuntime();
+    const obsoleteCatalogHandoff = ["request", "PrimaryCloudNotebookCatalog"].join("");
 
-    await expect(runtime.window.requestPrimaryCloudNotebookCatalog()).rejects.toThrow(
-      /requestPrimaryCloudNotebookCatalog is unavailable/i
-    );
+    expect(runtime.window).not.toHaveProperty(obsoleteCatalogHandoff);
   });
 
   it("models exact apply cancellation before accepting a new token", async () => {

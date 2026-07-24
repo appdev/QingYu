@@ -182,16 +182,10 @@ describe("desktop runtime retained capabilities", () => {
     expect(workspace.listManagedNotebookNames).toEqual(expect.any(Function));
   });
 
-  it("maps primary cloud catalog delivery to the native window request", async () => {
-    mockedInvoke.mockClear();
-    mockedInvoke.mockResolvedValue(undefined);
+  it("does not expose the obsolete primary cloud catalog window handoff", () => {
+    const obsoleteCatalogHandoff = ["request", "PrimaryCloudNotebookCatalog"].join("");
 
-    await desktopRuntime.window.requestPrimaryCloudNotebookCatalog();
-
-    expect(desktopRuntime.window.requestPrimaryCloudNotebookCatalog).toBe(
-      windowRuntime.requestNativePrimaryCloudNotebookCatalog
-    );
-    expect(mockedInvoke).toHaveBeenCalledWith("request_primary_cloud_notebook_catalog");
+    expect(desktopRuntime.window).not.toHaveProperty(obsoleteCatalogHandoff);
   });
 
   it("retains all desktop theme capabilities and activation adapters", () => {

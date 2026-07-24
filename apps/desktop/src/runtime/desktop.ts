@@ -232,7 +232,6 @@ export const desktopRuntime = {
     minimizeWindow: windowRuntime.minimizeNativeWindow,
     openExternalUrl: opener.openNativeExternalUrl,
     openSettingsWindow: windowRuntime.openSettingsWindow,
-    requestPrimaryCloudNotebookCatalog: windowRuntime.requestNativePrimaryCloudNotebookCatalog,
     markSettingsWindowReady: windowRuntime.markSettingsWindowReady,
     hideSettingsWindow: windowRuntime.hideSettingsWindow,
     setEditorWindowRestoreState: windowRuntime.setNativeEditorWindowRestoreState,
