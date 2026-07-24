@@ -3,8 +3,11 @@ pub mod chunker;
 pub mod crypto;
 pub mod diff;
 pub mod entity;
+pub mod history;
 mod indexer;
 mod path_security;
+pub mod purge;
+pub mod ref_store;
 pub mod repo;
 pub mod store;
 
@@ -18,6 +21,9 @@ pub use entity::{
     random_hash, sha1_hex, CheckIndex, CheckIndexFile, Chunk, File, Index, MergeResult, TrafficStat,
 };
 pub use error::RepoError;
+pub use history::History;
+pub use purge::PurgeStat;
+pub use ref_store::RefStore;
 pub use repo::{Device, Repo, RepoOptions, RepoPaths};
 pub use store::Store;
 

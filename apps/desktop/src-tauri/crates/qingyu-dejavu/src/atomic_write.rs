@@ -67,6 +67,26 @@ pub(crate) fn stage_cap_file(
     bytes: &[u8],
     mode: u32,
 ) -> Result<CapStagedFile, RepoError> {
+    let staged = create_cap_staged_file(parent, destination, mode)?;
+    let result = (|| -> Result<(), RepoError> {
+        let mut temp_file = staged.file();
+        temp_file.write_all(bytes)?;
+        temp_file.sync_all()?;
+        set_cap_mode(temp_file, mode)?;
+        Ok(())
+    })();
+
+    match result {
+        Ok(()) => Ok(staged),
+        Err(error) => Err(error),
+    }
+}
+
+pub(crate) fn create_cap_staged_file(
+    parent: &Dir,
+    destination: &std::ffi::OsStr,
+    mode: u32,
+) -> Result<CapStagedFile, RepoError> {
     for _attempt in 0..TEMP_CREATE_ATTEMPTS {
         let random = random_hash().map_err(|_| RepoError::RandomnessUnavailable)?;
         let mut temp_name = OsString::from(destination);
@@ -80,24 +100,14 @@ pub(crate) fn stage_cap_file(
             .follow(FollowSymlinks::No);
         configure_cap_temp_options(&mut options, mode);
         match parent.open_with(&temp_name, &options) {
-            Ok(mut temp_file) => {
-                let result = (|| -> Result<(), RepoError> {
-                    temp_file.write_all(bytes)?;
-                    temp_file.sync_all()?;
-                    set_cap_mode(&temp_file, mode)?;
-                    Ok(())
-                })();
-                if let Err(error) = result {
-                    let _cleanup_result = parent.remove_file(&temp_name);
-                    return Err(error);
-                }
+            Ok(temp_file) => {
                 return Ok(CapStagedFile {
                     parent: parent.try_clone()?,
                     temp_name,
                     destination: destination.to_os_string(),
                     temp_file,
                     cleanup_armed: true,
-                });
+                })
             }
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
             Err(error) => return Err(error.into()),

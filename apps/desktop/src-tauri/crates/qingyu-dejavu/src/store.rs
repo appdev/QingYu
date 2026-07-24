@@ -202,7 +202,7 @@ impl Store {
         Ok(relative)
     }
 
-    fn open_directory(&self, relative: &Path, create: bool) -> Result<Dir, RepoError> {
+    pub(crate) fn open_directory(&self, relative: &Path, create: bool) -> Result<Dir, RepoError> {
         let mut directory = self.open_repository_root(create)?;
         for component in relative.components() {
             let Component::Normal(name) = component else {
@@ -309,7 +309,7 @@ impl Store {
     }
 }
 
-fn validate_id(id: &str) -> Result<(), RepoError> {
+pub(crate) fn validate_id(id: &str) -> Result<(), RepoError> {
     if id.len() == 40
         && id
             .bytes()
@@ -323,7 +323,7 @@ fn validate_id(id: &str) -> Result<(), RepoError> {
     }
 }
 
-fn absolute_lexical_root(root: PathBuf) -> Result<PathBuf, RepoError> {
+pub(crate) fn absolute_lexical_root(root: PathBuf) -> Result<PathBuf, RepoError> {
     if root.as_os_str().is_empty() {
         return Err(RepoError::UnsafePath);
     }
@@ -353,7 +353,7 @@ fn absolute_lexical_root(root: PathBuf) -> Result<PathBuf, RepoError> {
     }
 }
 
-fn store_anchor(root: &Path) -> Result<(Dir, PathBuf), RepoError> {
+pub(crate) fn store_anchor(root: &Path) -> Result<(Dir, PathBuf), RepoError> {
     validate_windows_directory_components_before_canonicalize(root)?;
     let mut existing = root.to_path_buf();
     let mut missing = Vec::new();
@@ -420,7 +420,7 @@ pub(crate) fn open_absolute_dir_nofollow(path: &Path) -> Result<Dir, RepoError> 
     Ok(directory)
 }
 
-fn open_child_directory(
+pub(crate) fn open_child_directory(
     parent: &Dir,
     name: &std::ffi::OsStr,
     create: bool,
