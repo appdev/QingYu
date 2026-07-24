@@ -77,7 +77,11 @@ function installRuntime(primaryRoot: string | null, patchOverride?: AppRuntime["
   const cancelSettingsWindowHide = vi.fn(async () => undefined);
   const completeSettingsWindowHide = vi.fn(async () => undefined);
   const hideSettingsWindow = vi.fn(async () => undefined);
-  const requestPrimaryCloudNotebookCatalog = vi.fn(async () => undefined);
+  const listNotebooks = vi.fn(async () => [{
+    available: true,
+    disabledReason: null,
+    name: "Archive"
+  }]);
   configureAppRuntime({
     ...defaultRuntime,
     files: {
@@ -96,6 +100,7 @@ function installRuntime(primaryRoot: string | null, patchOverride?: AppRuntime["
     },
     syncConfig: {
       ...defaultRuntime.syncConfig,
+      listNotebooks,
       load,
       patch,
       requestApply
@@ -116,8 +121,7 @@ function installRuntime(primaryRoot: string | null, patchOverride?: AppRuntime["
           targetListener = null;
           contextListener = null;
         };
-      },
-      requestPrimaryCloudNotebookCatalog
+      }
     }
   });
   return {
@@ -125,6 +129,7 @@ function installRuntime(primaryRoot: string | null, patchOverride?: AppRuntime["
     completeSettingsWindowHide,
     hide: (request: NativeSettingsWindowHideRequest) => hideListener?.(request),
     hideSettingsWindow,
+    listNotebooks,
     load,
     patch,
     reopen: async (
@@ -145,7 +150,6 @@ function installRuntime(primaryRoot: string | null, patchOverride?: AppRuntime["
     }) => {
       await contextListener?.(context);
     },
-    requestPrimaryCloudNotebookCatalog,
     requestApply
   };
 }
@@ -224,17 +228,21 @@ describe("settings application sync session", () => {
     expect(runtime.cancelSettingsWindowHide).toHaveBeenCalledWith(8);
   });
 
-  it("requests the primary catalog without starting synchronization first", async () => {
+  it("opens the Settings-owned cloud notebook dialog without hiding Settings", async () => {
     const runtime = installRuntime("/Workspace/A");
     const { result } = renderHook(() => useSettingsWindowState());
     await waitFor(() => expect(result.current.syncView.configDocument?.revision).toBe("rev-1"));
-    await act(async () => result.current.syncSession.patch({ field: "remoteRoot", value: "qingyu/team" }));
 
     await act(async () => result.current.handleSelectCloudNotebook());
 
-    expect(runtime.requestApply).not.toHaveBeenCalled();
-    expect(runtime.requestPrimaryCloudNotebookCatalog.mock.invocationCallOrder[0])
-      .toBeLessThan(runtime.hideSettingsWindow.mock.invocationCallOrder[0] ?? 0);
+    expect(runtime.listNotebooks).toHaveBeenCalledWith({ revision: "rev-1" });
+    expect(result.current.remoteNotebookDialog.open).toBe(true);
+    expect(result.current.remoteNotebookDialog.entries).toEqual([{
+      available: true,
+      disabledReason: null,
+      name: "Archive"
+    }]);
+    expect(runtime.hideSettingsWindow).not.toHaveBeenCalled();
   });
 
   it("keeps settings visible and reports failure when ending sync editing fails", async () => {
@@ -250,7 +258,7 @@ describe("settings application sync session", () => {
 
     await act(async () => result.current.handleSelectCloudNotebook());
 
-    expect(runtime.requestPrimaryCloudNotebookCatalog).not.toHaveBeenCalled();
+    expect(runtime.listNotebooks).not.toHaveBeenCalled();
     expect(runtime.hideSettingsWindow).not.toHaveBeenCalled();
     expect(showAppToast).toHaveBeenCalledWith(expect.objectContaining({
       id: "application-sync-settings-exit",
@@ -258,75 +266,32 @@ describe("settings application sync session", () => {
     }));
   });
 
-  it("keeps settings visible and reports failure when the primary catalog request fails", async () => {
+  it("keeps Settings visible and shows a safe catalog error when listing fails", async () => {
     const runtime = installRuntime("/Workspace/A");
-    runtime.requestPrimaryCloudNotebookCatalog.mockRejectedValueOnce(new Error("main unavailable"));
+    runtime.listNotebooks.mockRejectedValueOnce(new Error("secret backend detail"));
     const { result } = renderHook(() => useSettingsWindowState());
     await waitFor(() => expect(result.current.syncView.configDocument?.revision).toBe("rev-1"));
 
     await act(async () => result.current.handleSelectCloudNotebook());
 
-    expect(runtime.requestPrimaryCloudNotebookCatalog).toHaveBeenCalledTimes(1);
+    expect(result.current.remoteNotebookDialog.open).toBe(true);
+    expect(result.current.remoteNotebookDialog.error)
+      .toBe("The cloud notebook list could not be refreshed.");
+    expect(result.current.remoteNotebookDialog.error).not.toContain("secret backend detail");
     expect(runtime.hideSettingsWindow).not.toHaveBeenCalled();
     expect(runtime.load).toHaveBeenCalledTimes(2);
-    expect(showAppToast).toHaveBeenCalledWith(expect.objectContaining({
-      id: "application-sync-settings-exit",
-      status: "error"
-    }));
   });
 
-  it("handles sync-session recovery failure after the primary catalog request fails", async () => {
-    const runtime = installRuntime("/Workspace/A");
-    runtime.requestPrimaryCloudNotebookCatalog.mockRejectedValueOnce(new Error("main unavailable"));
-    const { result } = renderHook(() => useSettingsWindowState());
-    await waitFor(() => expect(result.current.syncView.configDocument?.revision).toBe("rev-1"));
-    runtime.load.mockRejectedValueOnce(new Error("config unavailable"));
-
-    await expect(act(async () => result.current.handleSelectCloudNotebook())).resolves.toBeUndefined();
-
-    expect(runtime.load).toHaveBeenCalledTimes(2);
-    expect(runtime.hideSettingsWindow).not.toHaveBeenCalled();
-    expect(showAppToast).toHaveBeenCalledWith(expect.objectContaining({
-      id: "application-sync-settings-exit",
-      status: "error"
-    }));
-  });
-
-  it("holds the catalog request latch until the native hide handshake completes", async () => {
-    const runtime = installRuntime("/Workspace/A");
-    const { result } = renderHook(() => useSettingsWindowState());
-    await waitFor(() => expect(result.current.syncView.configDocument?.revision).toBe("rev-1"));
-
-    await act(async () => result.current.handleSelectCloudNotebook());
-    await act(async () => result.current.handleSelectCloudNotebook());
-
-    expect(runtime.requestPrimaryCloudNotebookCatalog).toHaveBeenCalledTimes(1);
-    expect(runtime.hideSettingsWindow).toHaveBeenCalledTimes(1);
-
-    await act(async () => runtime.hide({ generation: 9 }));
-    expect(runtime.completeSettingsWindowHide).toHaveBeenCalledWith(9);
-
-    await act(async () => result.current.handleSelectCloudNotebook());
-    expect(runtime.requestPrimaryCloudNotebookCatalog).toHaveBeenCalledTimes(2);
-    expect(runtime.hideSettingsWindow).toHaveBeenCalledTimes(2);
-  });
-
-  it("releases the catalog request latch after a failed hide handshake keeps settings visible", async () => {
+  it("recovers the visible Sync session after an ordinary hide failure", async () => {
     const runtime = installRuntime("/Workspace/A");
     runtime.completeSettingsWindowHide.mockRejectedValueOnce(new Error("hide failed"));
     const { result } = renderHook(() => useSettingsWindowState());
     await waitFor(() => expect(result.current.syncView.configDocument?.revision).toBe("rev-1"));
 
-    await act(async () => result.current.handleSelectCloudNotebook());
-    await act(async () => result.current.handleSelectCloudNotebook());
-    expect(runtime.requestPrimaryCloudNotebookCatalog).toHaveBeenCalledTimes(1);
-
     await act(async () => runtime.hide({ generation: 10 }));
     expect(runtime.cancelSettingsWindowHide).toHaveBeenCalledWith(10);
     expect(runtime.load).toHaveBeenCalledTimes(2);
-
-    await act(async () => result.current.handleSelectCloudNotebook());
-    expect(runtime.requestPrimaryCloudNotebookCatalog).toHaveBeenCalledTimes(2);
+    expect(result.current.activeCategory).toBe("sync");
   });
 
   it("restores the sync editing session when a retained Sync settings window reopens", async () => {
@@ -334,7 +299,6 @@ describe("settings application sync session", () => {
     const { result } = renderHook(() => useSettingsWindowState());
     await waitFor(() => expect(result.current.syncView.configDocument?.revision).toBe("rev-1"));
 
-    await act(async () => result.current.handleSelectCloudNotebook());
     await act(async () => runtime.hide({ generation: 11 }));
     expect(runtime.load).toHaveBeenCalledTimes(1);
 
@@ -344,24 +308,6 @@ describe("settings application sync session", () => {
     expect(runtime.load).toHaveBeenCalledTimes(2);
     await act(async () => result.current.syncSession.patch({ field: "remoteRoot", value: "qingyu/reopened" }));
     expect(runtime.patch).toHaveBeenCalledTimes(1);
-  });
-
-  it("clears a lost hide-request latch when the retained Sync settings window reopens", async () => {
-    const runtime = installRuntime("/Workspace/A");
-    const { result } = renderHook(() => useSettingsWindowState());
-    await waitFor(() => expect(result.current.syncView.configDocument?.revision).toBe("rev-1"));
-
-    await act(async () => result.current.handleSelectCloudNotebook());
-    await act(async () => result.current.handleSelectCloudNotebook());
-    expect(runtime.requestPrimaryCloudNotebookCatalog).toHaveBeenCalledTimes(1);
-    expect(runtime.load).toHaveBeenCalledTimes(1);
-
-    await act(async () => runtime.reopen());
-    expect(runtime.load).toHaveBeenCalledTimes(2);
-
-    await act(async () => result.current.handleSelectCloudNotebook());
-    expect(runtime.requestPrimaryCloudNotebookCatalog).toHaveBeenCalledTimes(2);
-    expect(runtime.hideSettingsWindow).toHaveBeenCalledTimes(2);
   });
 
   it("lets the normal category effect begin Sync once when a retained window reopens from another category", async () => {
@@ -377,7 +323,7 @@ describe("settings application sync session", () => {
     await waitFor(() => expect(runtime.load).toHaveBeenCalledTimes(2));
   });
 
-  it("recovers a retained active Sync page and stale catalog latch on a targetless reopen", async () => {
+  it("recovers a retained active Sync page on a targetless reopen", async () => {
     window.history.pushState({}, "", "/");
     const runtime = installRuntime("/Workspace/A");
     const { result } = renderHook(() => useSettingsWindowState());
@@ -386,15 +332,11 @@ describe("settings application sync session", () => {
     await waitFor(() => expect(result.current.syncView.configDocument?.revision).toBe("rev-1"));
     expect(runtime.load).toHaveBeenCalledTimes(1);
 
-    await act(async () => result.current.handleSelectCloudNotebook());
-    await act(async () => result.current.handleSelectCloudNotebook());
-    expect(runtime.requestPrimaryCloudNotebookCatalog).toHaveBeenCalledTimes(1);
+    await act(async () => runtime.hide({ generation: 12 }));
+    expect(runtime.load).toHaveBeenCalledTimes(1);
 
     await act(async () => runtime.reopenTargetless());
     expect(runtime.load).toHaveBeenCalledTimes(2);
-
-    await act(async () => result.current.handleSelectCloudNotebook());
-    expect(runtime.requestPrimaryCloudNotebookCatalog).toHaveBeenCalledTimes(2);
   });
 
   it("consumes an explicit non-Sync target without beginning Sync and remains retryable later", async () => {
@@ -402,15 +344,13 @@ describe("settings application sync session", () => {
     const { result } = renderHook(() => useSettingsWindowState());
     await waitFor(() => expect(result.current.syncView.configDocument?.revision).toBe("rev-1"));
 
-    await act(async () => result.current.handleSelectCloudNotebook());
+    await act(async () => runtime.hide({ generation: 13 }));
     await act(async () => runtime.reopen("exportPandocPath"));
     await waitFor(() => expect(result.current.activeCategory).toBe("export"));
     expect(runtime.load).toHaveBeenCalledTimes(1);
 
     await act(async () => result.current.setActiveCategory("sync"));
     await waitFor(() => expect(runtime.load).toHaveBeenCalledTimes(2));
-    await act(async () => result.current.handleSelectCloudNotebook());
-    expect(runtime.requestPrimaryCloudNotebookCatalog).toHaveBeenCalledTimes(2);
   });
 });
 describe("settings window utilities", () => {

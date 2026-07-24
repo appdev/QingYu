@@ -46,14 +46,12 @@ import {
   acknowledgeSettingsWindowHide,
   cancelSettingsWindowHide,
   completeSettingsWindowHide,
-  hideSettingsWindow,
   listenNativeSettingsWindowTarget,
   listenNativeSettingsWindowHideRequested,
   type NativeSettingsWindowContext,
   type NativeSettingsWindowHideRequest,
   type NativeSettingsWindowTarget
 } from "../lib/tauri/window";
-import { requestPrimaryCloudNotebookCatalog } from "../lib/cloud-notebook-catalog-events";
 import { normalizeSystemFontFamilyName } from "../lib/editor-font";
 import {
   loadMarkdownTemplatesFromEntries,
@@ -65,6 +63,7 @@ import { useAppTheme } from "./useAppTheme";
 import { getAppRuntime, type AppSystemFontFamily } from "../runtime";
 import { useCompactSyncSettings } from "./useCompactSyncSettings";
 import { usePrimaryWorkspace } from "./usePrimaryWorkspace";
+import { useSettingsRemoteNotebookDialog } from "./useSettingsRemoteNotebookDialog";
 
 export type SettingsCategory =
   | "general"
@@ -218,7 +217,6 @@ export function useSettingsWindowState() {
   syncPrimaryRootResolvedRef.current = syncPrimaryRootResolved;
   const syncPrimaryContextGenerationRef = useRef(0);
   const settingsHideInFlightRef = useRef(new Map<number, Promise<unknown>>());
-  const cloudNotebookCatalogRequestRef = useRef<Promise<unknown> | null>(null);
   const translate = useCallback((key: I18nKey) => t(appLanguage.language, key), [appLanguage.language]);
   const showSyncExitFailure = useCallback(() => {
     showAppToast({
@@ -246,31 +244,12 @@ export function useSettingsWindowState() {
       // The window stays visible with failure feedback even if session recovery is unavailable.
     }
   }, [syncSession.begin]);
-  const handleSelectCloudNotebook = useCallback(() => {
-    const pendingRequest = cloudNotebookCatalogRequestRef.current;
-    if (pendingRequest) return pendingRequest;
-
-    let request!: Promise<unknown>;
-    request = (async () => {
-      let editingEnded = false;
-      try {
-        await syncSession.end("catalog-handoff");
-        editingEnded = true;
-        await requestPrimaryCloudNotebookCatalog();
-        await hideSettingsWindow();
-      } catch {
-        if (editingEnded) {
-          await recoverVisibleSyncSession();
-        }
-        showSyncExitFailure();
-        if (cloudNotebookCatalogRequestRef.current === request) {
-          cloudNotebookCatalogRequestRef.current = null;
-        }
-      }
-    })();
-    cloudNotebookCatalogRequestRef.current = request;
-    return request;
-  }, [recoverVisibleSyncSession, showSyncExitFailure, syncSession.end]);
+  const remoteNotebookDialog = useSettingsRemoteNotebookDialog({
+    onSessionFailure: showSyncExitFailure,
+    primaryRoot: syncPrimaryRoot,
+    syncSession,
+    translate
+  });
   const handleSettingsWindowTarget = useCallback((target: NativeSettingsWindowTarget) => {
     nativeSettingsTargetRef.current = target;
     handleSelectCategory(settingsCategoryForTarget(target)).catch(() => {});
@@ -327,18 +306,9 @@ export function useSettingsWindowState() {
       || activeCategory !== "sync"
       || !syncPrimaryRootResolvedRef.current
     ) {
-      cloudNotebookCatalogRequestRef.current = null;
       return Promise.resolve(undefined);
     }
-
-    let reopening!: Promise<unknown>;
-    reopening = recoverVisibleSyncSession().then(() => {
-      if (cloudNotebookCatalogRequestRef.current === reopening) {
-        cloudNotebookCatalogRequestRef.current = null;
-      }
-    });
-    cloudNotebookCatalogRequestRef.current = reopening;
-    return reopening;
+    return recoverVisibleSyncSession();
   }, [activeCategory, recoverVisibleSyncSession]);
 
   useEffect(() => {
@@ -370,18 +340,14 @@ export function useSettingsWindowState() {
         if (failed?.status === "rejected") throw failed.reason;
       })
       .then(() => completeSettingsWindowHide(request.generation))
-      .then(() => {
-        cloudNotebookCatalogRequestRef.current = null;
-      })
       .catch(async () => {
         try {
           await cancelSettingsWindowHide(request.generation);
         } catch {
           // The retryable frontend session remains active even if native cancellation fails.
         }
-        if (cloudNotebookCatalogRequestRef.current) {
+        if (activeCategory === "sync" && syncPrimaryRootResolvedRef.current) {
           await recoverVisibleSyncSession();
-          cloudNotebookCatalogRequestRef.current = null;
         }
         showSyncExitFailure();
       })
@@ -392,7 +358,7 @@ export function useSettingsWindowState() {
       });
     settingsHideInFlightRef.current.set(request.generation, hidePromise);
     return hidePromise;
-  }, [recoverVisibleSyncSession, showSyncExitFailure, syncSession.end]);
+  }, [activeCategory, recoverVisibleSyncSession, showSyncExitFailure, syncSession.end]);
 
   useEffect(() => {
     let cancelled = false;
@@ -792,7 +758,7 @@ export function useSettingsWindowState() {
     handleDeleteMarkdownTemplate,
     handleUpdateMarkdownTemplate: handleSaveMarkdownTemplate,
     handleInstallShellCommand,
-    handleSelectCloudNotebook,
+    handleSelectCloudNotebook: remoteNotebookDialog.openDialog,
     handleUpdateEditorPreferences,
     handleUpdateExportSettings,
     handleDetectPandocPath,
@@ -801,6 +767,7 @@ export function useSettingsWindowState() {
     setActiveCategory: handleSelectCategory,
     markdownTemplates,
     primaryWorkspace,
+    remoteNotebookDialog,
     settingsFocusTarget,
     settingsSourceWindowLabel: settingsWorkspaceContext.sourceWindowLabel,
     settingsTransferRunning,

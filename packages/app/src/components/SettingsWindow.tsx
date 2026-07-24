@@ -30,6 +30,7 @@ import { WindowsWindowControls } from "./WindowsWindowControls";
 import { getAppRuntime } from "../runtime";
 import type { SettingsCategory } from "../hooks/useSettingsWindowState";
 import { requestPrimaryNotebookSwitch } from "../lib/notebook-switch-events";
+import { RemoteNotebookDialog } from "./notebooks/RemoteNotebookDialog";
 
 export function SettingsWindow() {
   const settingsState = useSettingsWindowState();
@@ -57,6 +58,7 @@ export function SettingsWindow() {
     handleUpdateExportSettings,
     markdownTemplates,
     primaryWorkspace,
+    remoteNotebookDialog,
     setActiveCategory,
     settingsFocusTarget,
     settingsSourceWindowLabel,
@@ -326,6 +328,19 @@ export function SettingsWindow() {
           ) : null}
         </SettingsContent>
       </div>
+      {remoteNotebookDialog.open ? (
+        <RemoteNotebookDialog
+          allowCurrentNotebookSelection
+          currentNotebookName={remoteNotebookDialog.currentNotebookName}
+          entries={remoteNotebookDialog.entries}
+          error={remoteNotebookDialog.error}
+          language={appLanguage.language}
+          loading={remoteNotebookDialog.loading}
+          onCancel={remoteNotebookDialog.cancel}
+          onRefresh={remoteNotebookDialog.refresh}
+          onRestore={remoteNotebookDialog.restore}
+        />
+      ) : null}
     </main>
   );
 }
