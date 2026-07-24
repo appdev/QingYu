@@ -136,13 +136,24 @@ pub(crate) fn validate_windows_directory_components_before_canonicalize(
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
-    use std::path::{Path, PathBuf};
+    use std::path::PathBuf;
 
     use super::{
         audit_absolute_directory_components_with, immutable_destination_is_safe,
         windows_attributes_are_reparse, DirectoryComponentStatus,
     };
     use crate::RepoError;
+
+    fn absolute_test_path(components: &[&str]) -> PathBuf {
+        #[cfg(windows)]
+        let mut path = PathBuf::from(r"C:\");
+        #[cfg(not(windows))]
+        let mut path = PathBuf::from("/");
+
+        path.extend(components);
+        assert!(path.is_absolute());
+        path
+    }
 
     #[test]
     fn windows_reparse_attribute_detection_is_independent_of_reparse_kind() {
@@ -162,52 +173,97 @@ mod tests {
     #[test]
     fn pre_canonicalize_audit_rejects_an_earlier_reparse_component() {
         let visited = RefCell::new(Vec::new());
+        let path = absolute_test_path(&["safe", "junction", "root"]);
+        let junction = absolute_test_path(&["safe", "junction"]);
 
-        let result = audit_absolute_directory_components_with(
-            Path::new("/safe/junction/root"),
-            |component| {
-                visited.borrow_mut().push(component.to_path_buf());
-                Ok(if component == Path::new("/safe/junction") {
-                    DirectoryComponentStatus::ExistingDirectory { reparse: true }
-                } else {
-                    DirectoryComponentStatus::ExistingDirectory { reparse: false }
-                })
-            },
-        );
+        let result = audit_absolute_directory_components_with(&path, |component| {
+            visited.borrow_mut().push(component.to_path_buf());
+            Ok(if component == junction {
+                DirectoryComponentStatus::ExistingDirectory { reparse: true }
+            } else {
+                DirectoryComponentStatus::ExistingDirectory { reparse: false }
+            })
+        });
 
         assert!(matches!(result, Err(RepoError::UnsafePath)));
         assert_eq!(
             visited.into_inner(),
             [
-                PathBuf::from("/"),
-                PathBuf::from("/safe"),
-                PathBuf::from("/safe/junction")
+                absolute_test_path(&[]),
+                absolute_test_path(&["safe"]),
+                absolute_test_path(&["safe", "junction"])
             ]
         );
     }
 
     #[test]
     fn pre_canonicalize_audit_stops_at_missing_and_rejects_non_directory_components() {
-        let missing_result = audit_absolute_directory_components_with(
-            Path::new("/safe/missing/root"),
-            |component| {
-                Ok(if component == Path::new("/safe/missing") {
-                    DirectoryComponentStatus::Missing
-                } else {
-                    DirectoryComponentStatus::ExistingDirectory { reparse: false }
-                })
-            },
-        );
+        let missing_path = absolute_test_path(&["safe", "missing", "root"]);
+        let missing_component = absolute_test_path(&["safe", "missing"]);
+        let missing_visited = RefCell::new(Vec::new());
+        let missing_result = audit_absolute_directory_components_with(&missing_path, |component| {
+            missing_visited.borrow_mut().push(component.to_path_buf());
+            Ok(if component == missing_component {
+                DirectoryComponentStatus::Missing
+            } else {
+                DirectoryComponentStatus::ExistingDirectory { reparse: false }
+            })
+        });
         assert!(missing_result.is_ok());
+        assert_eq!(
+            missing_visited.into_inner(),
+            [
+                absolute_test_path(&[]),
+                absolute_test_path(&["safe"]),
+                absolute_test_path(&["safe", "missing"])
+            ]
+        );
 
+        let non_directory_path = absolute_test_path(&["safe", "file", "root"]);
+        let non_directory_component = absolute_test_path(&["safe", "file"]);
         let non_directory_result =
-            audit_absolute_directory_components_with(Path::new("/safe/file/root"), |component| {
-                Ok(if component == Path::new("/safe/file") {
+            audit_absolute_directory_components_with(&non_directory_path, |component| {
+                Ok(if component == non_directory_component {
                     DirectoryComponentStatus::NonDirectory
                 } else {
                     DirectoryComponentStatus::ExistingDirectory { reparse: false }
                 })
             });
         assert!(matches!(non_directory_result, Err(RepoError::UnsafePath)));
+    }
+
+    #[test]
+    fn pre_canonicalize_audit_visits_every_component_of_an_absolute_path() {
+        let path = absolute_test_path(&["safe", "ordinary", "root"]);
+        let visited = RefCell::new(Vec::new());
+
+        let result = audit_absolute_directory_components_with(&path, |component| {
+            visited.borrow_mut().push(component.to_path_buf());
+            Ok(DirectoryComponentStatus::ExistingDirectory { reparse: false })
+        });
+
+        assert!(result.is_ok());
+        assert_eq!(
+            visited.into_inner(),
+            [
+                absolute_test_path(&[]),
+                absolute_test_path(&["safe"]),
+                absolute_test_path(&["safe", "ordinary"]),
+                absolute_test_path(&["safe", "ordinary", "root"])
+            ]
+        );
+    }
+
+    #[test]
+    fn pre_canonicalize_audit_rejects_non_absolute_and_parent_components() {
+        for path in [
+            PathBuf::from("relative/root"),
+            absolute_test_path(&["safe", "..", "root"]),
+        ] {
+            let result = audit_absolute_directory_components_with(&path, |_| {
+                Ok(DirectoryComponentStatus::ExistingDirectory { reparse: false })
+            });
+            assert!(matches!(result, Err(RepoError::UnsafePath)));
+        }
     }
 }
