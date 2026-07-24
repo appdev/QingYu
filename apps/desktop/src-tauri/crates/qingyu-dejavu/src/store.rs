@@ -8,7 +8,10 @@ use cap_std::fs::{Dir, OpenOptions};
 
 use crate::atomic_write::{stage_cap_file, CapStagedFile};
 use crate::crypto::{decrypt, encrypt};
-use crate::path_security::{cap_metadata_is_reparse, std_metadata_is_reparse};
+use crate::path_security::{
+    cap_metadata_is_reparse, std_metadata_is_reparse,
+    validate_windows_directory_components_before_canonicalize,
+};
 use crate::{CheckIndex, Chunk, File, Index, RepoError};
 
 const OBJECT_MODE: u32 = 0o644;
@@ -351,6 +354,7 @@ fn absolute_lexical_root(root: PathBuf) -> Result<PathBuf, RepoError> {
 }
 
 fn store_anchor(root: &Path) -> Result<(Dir, PathBuf), RepoError> {
+    validate_windows_directory_components_before_canonicalize(root)?;
     let mut existing = root.to_path_buf();
     let mut missing = Vec::new();
     loop {

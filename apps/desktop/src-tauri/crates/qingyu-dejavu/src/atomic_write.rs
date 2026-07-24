@@ -6,6 +6,9 @@ use std::path::{Path, PathBuf};
 use cap_fs_ext::{FollowSymlinks, OpenOptionsFollowExt};
 use cap_std::fs::{Dir, File as CapFile, OpenOptions as CapOpenOptions};
 
+use crate::path_security::{
+    cap_metadata_is_safe_immutable_destination, std_metadata_is_safe_immutable_destination,
+};
 use crate::{random_hash, RepoError};
 
 const TEMP_CREATE_ATTEMPTS: usize = 32;
@@ -124,7 +127,7 @@ impl StagedFile {
             }
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
                 let metadata = fs::symlink_metadata(&self.destination)?;
-                if !metadata.file_type().is_file() {
+                if !std_metadata_is_safe_immutable_destination(&metadata) {
                     return Err(RepoError::InvalidData(
                         "immutable object destination must be a regular file",
                     ));
@@ -171,7 +174,7 @@ impl CapStagedFile {
             }
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
                 let metadata = self.parent.symlink_metadata(&self.destination)?;
-                if !metadata.file_type().is_file() {
+                if !cap_metadata_is_safe_immutable_destination(&metadata) {
                     return Err(RepoError::InvalidData(
                         "immutable object destination must be a regular file",
                     ));

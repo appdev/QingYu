@@ -5,7 +5,10 @@ use cap_std::fs::Dir;
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 
 use crate::indexer::{self, IndexHook, NoopIndexHook};
-use crate::path_security::{cap_metadata_is_reparse, std_metadata_is_reparse};
+use crate::path_security::{
+    cap_metadata_is_reparse, std_metadata_is_reparse,
+    validate_windows_directory_components_before_canonicalize,
+};
 use crate::store::open_absolute_dir_nofollow;
 use crate::{Index, RepoError, Store};
 
@@ -148,6 +151,7 @@ fn normalize_root(path: &Path) -> Result<PathBuf, RepoError> {
     if !normalized.is_absolute() {
         return Err(RepoError::UnsafePath);
     }
+    validate_windows_directory_components_before_canonicalize(&normalized)?;
 
     match std::fs::symlink_metadata(&normalized) {
         Ok(metadata) if unsafe_link_metadata(&metadata) => {
