@@ -1596,25 +1596,149 @@ describe("QingYu workspace", () => {
     coordinatorSpy.mockRestore();
   });
 
-  it("cleans a delayed primary restore listener after unmount", async () => {
+  it("serializes a delayed primary restore listener across a StrictMode effect restart", async () => {
+    const restoreDesktopNotebook = vi.fn(async (name: string) => `/Workspace/${name}`);
+    const coordinatorSpy = vi.spyOn(
+      notebookSwitchCoordinatorModule,
+      "useNotebookSwitchCoordinator"
+    ).mockReturnValue({
+      recentNotebooks: [],
+      removeRecentNotebook: vi.fn(async () => undefined),
+      restoreDesktopNotebook,
+      restoreManagedNotebook: vi.fn(async () => null),
+      switchDesktopNotebook: vi.fn(async () => null),
+      switchManagedNotebook: vi.fn(async () => null),
+      switching: false
+    });
     const runtime = createDefaultAppRuntime();
+    const load = vi.fn(async () => readySyncConfigResult("strict-listener-revision"));
     mockDesktopPrimaryWorkspace({ root: "/Workspace/A", status: "ready" });
-    configureAppRuntime(runtime);
+    mockedLoadNativeMarkdownFilesForPath.mockResolvedValue([]);
+    configureAppRuntime({
+      ...runtime,
+      syncConfig: {
+        ...runtime.syncConfig,
+        load
+      }
+    });
+    const eventBus = configureNotebookSwitchEventBus();
+    eventBus.delayNextListenCompletion(primaryCloudNotebookRestoreRequestedEvent);
+
+    const app = render(
+      <StrictMode>
+        <App />
+      </StrictMode>
+    );
+    await waitFor(() => expect(load).toHaveBeenCalled());
+    await waitFor(() => expect(eventBus.activeListenerCount(
+      primaryCloudNotebookRestoreRequestedEvent
+    )).toBeGreaterThan(0));
+    expect(eventBus.pendingListenCompletionCount(
+      primaryCloudNotebookRestoreRequestedEvent
+    )).toBe(1);
+    expect(eventBus.activeListenerCount(
+      primaryCloudNotebookRestoreRequestedEvent
+    )).toBe(1);
+
+    const completionCountBeforeRestartRequest = eventBus.emittedEventCount(
+      primaryCloudNotebookRestoreCompletedEvent
+    );
+    const restartResult = await requestPrimaryCloudNotebookRestore({
+      remoteName: "B",
+      revision: "strict-listener-revision",
+      timeoutMs: 1_000
+    });
+    expect(typeof restartResult).toBe("boolean");
+    expect(restoreDesktopNotebook.mock.calls.length).toBeLessThanOrEqual(1);
+    expect(eventBus.emittedEventCount(
+      primaryCloudNotebookRestoreCompletedEvent
+    )).toBe(completionCountBeforeRestartRequest + 1);
+
+    await act(async () => {
+      eventBus.resolveNextListenCompletion(primaryCloudNotebookRestoreRequestedEvent);
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(eventBus.activeListenerCount(
+      primaryCloudNotebookRestoreRequestedEvent
+    )).toBe(1));
+    restoreDesktopNotebook.mockClear();
+
+    const completionCountBeforeActiveRequest = eventBus.emittedEventCount(
+      primaryCloudNotebookRestoreCompletedEvent
+    );
+    await expect(requestPrimaryCloudNotebookRestore({
+      remoteName: "B",
+      revision: "strict-listener-revision",
+      timeoutMs: 1_000
+    })).resolves.toBe(true);
+    expect(restoreDesktopNotebook).toHaveBeenCalledOnce();
+    expect(eventBus.emittedEventCount(
+      primaryCloudNotebookRestoreCompletedEvent
+    )).toBe(completionCountBeforeActiveRequest + 1);
+
+    app.unmount();
+    coordinatorSpy.mockRestore();
+  });
+
+  it("blocks requests after unmount while delayed primary listener cleanup is pending", async () => {
+    const restoreDesktopNotebook = vi.fn(async (name: string) => `/Workspace/${name}`);
+    const coordinatorSpy = vi.spyOn(
+      notebookSwitchCoordinatorModule,
+      "useNotebookSwitchCoordinator"
+    ).mockReturnValue({
+      recentNotebooks: [],
+      removeRecentNotebook: vi.fn(async () => undefined),
+      restoreDesktopNotebook,
+      restoreManagedNotebook: vi.fn(async () => null),
+      switchDesktopNotebook: vi.fn(async () => null),
+      switchManagedNotebook: vi.fn(async () => null),
+      switching: false
+    });
+    const runtime = createDefaultAppRuntime();
+    const load = vi.fn(async () => readySyncConfigResult("unmount-listener-revision"));
+    mockDesktopPrimaryWorkspace({ root: "/Workspace/A", status: "ready" });
+    mockedLoadNativeMarkdownFilesForPath.mockResolvedValue([]);
+    configureAppRuntime({
+      ...runtime,
+      syncConfig: {
+        ...runtime.syncConfig,
+        load
+      }
+    });
     const eventBus = configureNotebookSwitchEventBus();
     eventBus.delayNextListenCompletion(primaryCloudNotebookRestoreRequestedEvent);
 
     const app = renderApp();
+    await waitFor(() => expect(load).toHaveBeenCalled());
     await waitFor(() => expect(eventBus.activeListenerCount(
       primaryCloudNotebookRestoreRequestedEvent
     )).toBe(1));
-    expect(eventBus.pendingListenCompletionCount(
-      primaryCloudNotebookRestoreRequestedEvent
-    )).toBe(1);
+
+    await expect(requestPrimaryCloudNotebookRestore({
+      remoteName: "B",
+      revision: "unmount-listener-revision",
+      timeoutMs: 1_000
+    })).resolves.toBe(true);
+    expect(restoreDesktopNotebook).toHaveBeenCalledOnce();
+    restoreDesktopNotebook.mockClear();
 
     app.unmount();
     expect(eventBus.activeListenerCount(
       primaryCloudNotebookRestoreRequestedEvent
     )).toBe(1);
+
+    const completionCountBeforeUnmountedRequest = eventBus.emittedEventCount(
+      primaryCloudNotebookRestoreCompletedEvent
+    );
+    await expect(requestPrimaryCloudNotebookRestore({
+      remoteName: "B",
+      revision: "unmount-listener-revision",
+      timeoutMs: 1_000
+    })).resolves.toBe(false);
+    expect(restoreDesktopNotebook).not.toHaveBeenCalled();
+    expect(eventBus.emittedEventCount(
+      primaryCloudNotebookRestoreCompletedEvent
+    )).toBe(completionCountBeforeUnmountedRequest + 1);
 
     await act(async () => {
       eventBus.resolveNextListenCompletion(primaryCloudNotebookRestoreRequestedEvent);
@@ -1623,6 +1747,7 @@ describe("QingYu workspace", () => {
     expect(eventBus.activeListenerCount(
       primaryCloudNotebookRestoreRequestedEvent
     )).toBe(0);
+    coordinatorSpy.mockRestore();
   });
 
   it("subscribes only the primary desktop workspace owner to cloud notebook restore requests", async () => {
@@ -1644,9 +1769,9 @@ describe("QingYu workspace", () => {
       primaryCloudNotebookRestoreRequestedEvent
     )).toBe(1));
     primaryApp.unmount();
-    expect(eventBus.activeListenerCount(
+    await waitFor(() => expect(eventBus.activeListenerCount(
       primaryCloudNotebookRestoreRequestedEvent
-    )).toBe(0);
+    )).toBe(0));
 
     const notePath = `${mockFolderPath}/external-catalog.md`;
     window.history.replaceState({}, "", `/?path=${encodeURIComponent(notePath)}`);

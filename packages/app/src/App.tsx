@@ -901,24 +901,40 @@ function WorkspaceApp() {
   );
   handlePrimaryCloudNotebookRestoreRequestRef.current =
     handlePrimaryCloudNotebookRestoreRequest;
+  const primaryCloudNotebookRestoreRegistrationRef = useRef<Promise<unknown>>(
+    Promise.resolve()
+  );
   useEffect(() => {
     if (!primaryWindowOwner || compactMode.trueMobile) return;
 
     let active = true;
-    let stopListening: (() => unknown) | null = null;
-    listenPrimaryCloudNotebookRestoreRequested((request) => (
-      handlePrimaryCloudNotebookRestoreRequestRef.current(request)
-    )).then((cleanup) => {
+    let deactivate!: () => undefined;
+    const deactivated = new Promise<undefined>((resolve) => {
+      deactivate = () => {
+        resolve(undefined);
+        return undefined;
+      };
+    });
+    const registration = primaryCloudNotebookRestoreRegistrationRef.current.then(async () => {
+      if (!active) return;
+
+      const cleanup = await listenPrimaryCloudNotebookRestoreRequested((request) => {
+        if (!active) return false;
+        return handlePrimaryCloudNotebookRestoreRequestRef.current(request);
+      });
       if (!active) {
-        cleanup();
+        await cleanup();
         return;
       }
-      stopListening = cleanup;
-    }).catch(() => {});
+
+      await deactivated;
+      await cleanup();
+    });
+    primaryCloudNotebookRestoreRegistrationRef.current = registration.catch(() => undefined);
 
     return () => {
       active = false;
-      stopListening?.();
+      deactivate();
     };
   }, [
     compactMode.trueMobile,
