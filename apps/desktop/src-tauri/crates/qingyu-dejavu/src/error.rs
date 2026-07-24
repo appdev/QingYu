@@ -22,4 +22,12 @@ pub enum RepoError {
     NotFound(String),
     #[error("repository operation was cancelled")]
     Cancelled,
+    #[error("repository data directory contains no indexable files")]
+    EmptyIndex,
+    #[error("a file changed while the repository index was being built")]
+    IndexFileChanged,
+    #[error("repository indexing encountered a fatal invariant failure")]
+    RepoFatal,
+    #[error("repository path is unsafe")]
+    UnsafePath,
 }

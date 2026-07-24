@@ -1,0 +1,77 @@
+[
+  {
+    "offset": 0,
+    "length": 1550987,
+    "sha1": "55dc272e277758611e67b99f0d503473906a2722"
+  },
+  {
+    "offset": 1550987,
+    "length": 922575,
+    "sha1": "11e255079b84569621276c878e5b9de560e88301"
+  },
+  {
+    "offset": 2473562,
+    "length": 808143,
+    "sha1": "2d5921b9bbfd1c08a1087d505b5d216f21205662"
+  },
+  {
+    "offset": 3281705,
+    "length": 2984642,
+    "sha1": "77284e14f48755e35968e5be66f32e970c625570"
+  },
+  {
+    "offset": 6266347,
+    "length": 1695037,
+    "sha1": "6ab3093db9e60484b025481b4990deb248eb1816"
+  },
+  {
+    "offset": 7961384,
+    "length": 687303,
+    "sha1": "d23eb9ce04e185ca8fbac942e7670ee1d18fd517"
+  },
+  {
+    "offset": 8648687,
+    "length": 1194695,
+    "sha1": "187ba22ac717dfa5bbaeebe3dc230535f40a6fca"
+  },
+  {
+    "offset": 9843382,
+    "length": 1070549,
+    "sha1": "59a9b7e11cc5473c54a92c690e3983943cac00c0"
+  },
+  {
+    "offset": 10913931,
+    "length": 680387,
+    "sha1": "82bb8235a59e7e9a12063f5f4b30d939b1f0ec10"
+  },
+  {
+    "offset": 11594318,
+    "length": 1926775,
+    "sha1": "b9db47faca82bdca05da7f34fda5ff595752a55c"
+  },
+  {
+    "offset": 13521093,
+    "length": 554838,
+    "sha1": "befeb707392ffed9bcdeb4471657915e0ef2cdf3"
+  },
+  {
+    "offset": 14075931,
+    "length": 1161945,
+    "sha1": "32f85301c034142f6a77da0c70cebeaa684e06e2"
+  },
+  {
+    "offset": 15237876,
+    "length": 1128567,
+    "sha1": "b1fd0e82b2d065b3c0ed4b4304360aec43751a8d"
+  },
+  {
+    "offset": 16366443,
+    "length": 541295,
+    "sha1": "b38692ebff45904fa1b4e28ee6f345008dfe7bae"
+  },
+  {
+    "offset": 16907738,
+    "length": 4063782,
+    "sha1": "9e0e726ddd6bf1e4b3ff87a25061fdb9c23ef3cd"
+  }
+]

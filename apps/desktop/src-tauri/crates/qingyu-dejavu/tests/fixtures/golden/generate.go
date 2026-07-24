@@ -5,13 +5,19 @@
 package main
 
 import (
+	"bytes"
+	"crypto/sha1"
 	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 
 	"github.com/88250/gulu"
 	"github.com/klauspost/compress/zstd"
+	"github.com/restic/chunker"
 	"github.com/siyuan-note/dejavu/entity"
 	"github.com/siyuan-note/encryption"
 )
@@ -94,9 +100,53 @@ func main() {
 		panic(err)
 	}
 	write(outputDir, "index-object.bin", encoder.EncodeAll(indexJSON, nil))
+	writeChunkBoundaries(outputDir)
 
 	fmt.Printf("file-json=%s\n", fileJSON)
 	fmt.Printf("index-json=%s\n", indexJSON)
+}
+
+type chunkBoundary struct {
+	Offset int    `json:"offset"`
+	Length int    `json:"length"`
+	SHA1   string `json:"sha1"`
+}
+
+func writeChunkBoundaries(outputDir string) {
+	const streamSize = 20 * 1024 * 1024
+	data := make([]byte, streamSize)
+	x := uint64(0x4d595df4d0f33173)
+	for i := range data {
+		x ^= x << 13
+		x ^= x >> 7
+		x ^= x << 17
+		data[i] = byte(x)
+	}
+
+	oracle := chunker.New(bytes.NewReader(data), chunker.Pol(0x3DA3358B4DC173))
+	boundaries := []chunkBoundary{}
+	for {
+		chunk, err := oracle.Next(nil)
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			panic(err)
+		}
+		digest := sha1.Sum(chunk.Data)
+		boundaries = append(boundaries, chunkBoundary{
+			Offset: int(chunk.Start),
+			Length: int(chunk.Length),
+			SHA1:   hex.EncodeToString(digest[:]),
+		})
+	}
+
+	encoded, err := json.MarshalIndent(boundaries, "", "  ")
+	if err != nil {
+		panic(err)
+	}
+	encoded = append(encoded, '\n')
+	write(outputDir, "chunk-boundaries.json", encoded)
 }
 
 func write(dir, name string, data []byte) {
