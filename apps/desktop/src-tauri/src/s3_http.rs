@@ -84,7 +84,8 @@ impl S3Connection {
         if bucket.is_empty() || bucket.contains('/') || bucket.contains('\\') {
             return Err("S3 bucket is invalid".to_string());
         }
-        let region = required_trimmed(region, "S3 region")?;
+        let region = region.trim();
+        let region = if region.is_empty() { "auto" } else { region }.to_string();
         let access_key_id = required_trimmed(access_key_id, "S3 access key ID")?;
         if secret_access_key.is_empty() {
             return Err("S3 secret access key is required".to_string());
@@ -411,6 +412,31 @@ mod tests {
         assert!(!output.contains("private-access-key"));
         assert!(!output.contains("private-secret-key"));
         assert!(output.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn blank_region_resolves_to_auto_for_request_signing() {
+        let connection =
+            S3Connection::new("https://s3.example.test", "  ", "notes", "key", "secret")
+                .expect("blank region should use auto");
+        let url = s3_bucket_url(&connection).unwrap();
+        let headers = signed_s3_headers(
+            &Method::GET,
+            &url,
+            S3Payload::Empty,
+            None,
+            &connection,
+            OffsetDateTime::from_unix_timestamp(1_784_181_600).unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(connection.region, "auto");
+        assert!(headers
+            .get(reqwest::header::AUTHORIZATION)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .contains("/auto/s3/aws4_request"));
     }
 
     #[test]

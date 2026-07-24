@@ -93,7 +93,7 @@ impl Default for S3Config {
     fn default() -> Self {
         Self {
             endpoint_url: String::new(),
-            region: "us-east-1".into(),
+            region: String::new(),
             bucket: String::new(),
             access_key_id: String::new(),
             secret_access_key: String::new(),
@@ -345,7 +345,6 @@ impl SyncConfig {
                     issues.push(sync_issue("s3.endpointUrl", issue));
                 }
                 for (field, value) in [
-                    ("s3.region", self.s3.region.as_str()),
                     ("s3.bucket", self.s3.bucket.as_str()),
                     ("s3.accessKeyId", self.s3.access_key_id.as_str()),
                 ] {
@@ -423,7 +422,7 @@ mod tests {
         assert_eq!(value["autoSyncOnSave"], true);
         assert_eq!(value["intervalMinutes"], 5);
         assert_eq!(value["s3"]["endpointUrl"], "");
-        assert_eq!(value["s3"]["region"], "us-east-1");
+        assert_eq!(value["s3"]["region"], "");
         assert_eq!(value["s3"]["bucket"], "");
         assert_eq!(value["s3"]["accessKeyId"], "");
         assert_eq!(value["s3"]["secretAccessKey"], "");
@@ -481,6 +480,21 @@ mod tests {
         assert!(config.issues().is_empty());
         config.s3.request_timeout_seconds = 600;
         assert!(config.issues().is_empty());
+    }
+
+    #[test]
+    fn empty_s3_region_uses_runtime_default_and_remains_ready() {
+        let mut config = complete_s3_config();
+        config.s3.region = "  ".into();
+
+        config.normalize();
+
+        assert_eq!(config.s3.region, "");
+        assert!(config
+            .issues()
+            .iter()
+            .all(|issue| issue.field != "s3.region"));
+        assert_eq!(config.readiness(), SyncConfigReadiness::Ready);
     }
 
     fn complete_s3_config() -> SyncConfig {

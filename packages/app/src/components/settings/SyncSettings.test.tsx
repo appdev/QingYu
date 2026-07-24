@@ -149,6 +149,23 @@ describe("SyncSettings application scope", () => {
     expect(onPatch).toHaveBeenCalledWith({ field: "s3.tlsVerification", value: "skip" });
   });
 
+  it("keeps an empty S3 region while showing the automatic runtime value", () => {
+    const s3Config = {
+      ...config,
+      provider: "s3" as const,
+      s3: { ...config.s3, region: "" }
+    };
+    const s3Document = document({ config: s3Config });
+    render(<SyncSettings {...createProps({
+      configDocument: s3Document,
+      loadResult: { ...s3Document, status: "loaded" }
+    })} />);
+
+    const region = screen.getByRole("textbox", { name: "S3 region" });
+    expect(region).toHaveValue("");
+    expect(region).toHaveAttribute("placeholder", "auto");
+  });
+
   it("omits the loaded-state sync explanation callouts", () => {
     render(<SyncSettings {...createProps()} />);
 

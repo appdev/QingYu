@@ -416,6 +416,7 @@ export function CompactSyncFormScreen({
                   autoComplete="off"
                   className={inputClass}
                   disabled={fieldsDisabled}
+                  placeholder="auto"
                   value={draft.s3.region}
                   onChange={(event) => update({ field: "s3.region", value: event.currentTarget.value })}
                 />

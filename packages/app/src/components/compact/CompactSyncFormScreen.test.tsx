@@ -119,6 +119,20 @@ describe("CompactSyncFormScreen application config", () => {
     expect(setup.patch).toHaveBeenCalledWith({ field: "s3.tlsVerification", value: "skip" });
   });
 
+  it("keeps an empty S3 region while showing the automatic runtime value", () => {
+    const s3Document = document();
+    s3Document.config.provider = "s3";
+    const setup = controller({
+      configDocument: s3Document,
+      loadResult: { ...s3Document, status: "loaded" }
+    });
+    render(<CompactSyncFormScreen controller={setup} language="en" mode="edit" navigation={navigation()} />);
+
+    const region = screen.getByRole("textbox", { name: "S3 region" });
+    expect(region).toHaveValue("");
+    expect(region).toHaveAttribute("placeholder", "auto");
+  });
+
   it("tests the application connection without requiring a project config", async () => {
     const setup = controller();
     render(<CompactSyncFormScreen controller={setup} language="en" mode="edit" navigation={navigation()} />);
