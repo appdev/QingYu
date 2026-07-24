@@ -17,8 +17,6 @@ use super::{Cloud, CloudError, CloudObject, CloudOperation};
 
 const OBJECT_MODE: u32 = 0o644;
 const INTERNAL_NAMESPACE: &str = ".__qingyu_local_cloud";
-const STAGE_PREFIX: &str = "stage-";
-const STAGE_SUFFIX: &str = ".tmp";
 
 pub struct LocalCloud {
     root: Dir,
@@ -63,7 +61,6 @@ impl LocalCloud {
         if !stage_metadata.file_type().is_dir() || cap_metadata_is_reparse(&stage_metadata) {
             return Err(CloudError::UnsafeKey);
         }
-        clean_stale_stages(&stage)?;
         Ok(Self {
             root,
             stage,
@@ -324,34 +321,6 @@ fn collect_regular_objects(
     Ok(())
 }
 
-fn clean_stale_stages(stage: &Dir) -> Result<(), CloudError> {
-    for entry in stage.entries().map_err(CloudError::Io)? {
-        let entry = entry.map_err(CloudError::Io)?;
-        let name = entry.file_name();
-        let Some(name_text) = name.to_str() else {
-            continue;
-        };
-        if is_owned_stage_name(name_text) {
-            let metadata = stage.symlink_metadata(&name).map_err(CloudError::Io)?;
-            if !metadata.file_type().is_dir() {
-                stage.remove_file(&name).map_err(CloudError::Io)?;
-            }
-        }
-    }
-    Ok(())
-}
-
-fn is_owned_stage_name(name: &str) -> bool {
-    name.strip_prefix(STAGE_PREFIX)
-        .and_then(|name| name.strip_suffix(STAGE_SUFFIX))
-        .is_some_and(|hash| {
-            hash.len() == 40
-                && hash
-                    .bytes()
-                    .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
-        })
-}
-
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -511,31 +480,49 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn owned_staging_is_cleaned_at_startup_and_excluded_from_all_lists() {
+    async fn crash_like_staging_is_preserved_but_excluded_from_all_lists() {
         let temp = TempDir::new().unwrap();
         let staging = temp.path().join(INTERNAL_NAMESPACE);
         fs::create_dir(&staging).unwrap();
-        let stale_stage = format!("stage-{}.tmp", "0".repeat(40));
-        fs::write(staging.join(&stale_stage), b"stale").unwrap();
-        fs::write(staging.join("foreign"), b"preserve").unwrap();
+        let crash_stage = format!("stage-{}.tmp", "0".repeat(40));
+        fs::write(staging.join(&crash_stage), b"crash residue").unwrap();
 
         let cloud = LocalCloud::new(temp.path()).unwrap();
-        assert!(!staging.join(stale_stage).exists());
-        assert_eq!(fs::read(staging.join("foreign")).unwrap(), b"preserve");
-        fs::write(
-            staging.join(format!("stage-{}.tmp", "1".repeat(40))),
-            b"partial",
-        )
-        .unwrap();
-        cloud.put("objects/ready", b"complete", true).await.unwrap();
-
         assert_eq!(
-            cloud.list("").await.unwrap(),
-            [CloudObject {
-                key: "objects/ready".to_owned(),
-                size: 8,
-            }]
+            fs::read(staging.join(crash_stage)).unwrap(),
+            b"crash residue"
         );
+        assert!(cloud.list("").await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn second_constructor_does_not_delete_an_active_stage() {
+        let temp = TempDir::new().unwrap();
+        let staging = temp.path().join(INTERNAL_NAMESPACE);
+        let cloud = Arc::new(LocalCloud::new(temp.path()).unwrap());
+        let staged = Arc::new(Barrier::new(2));
+        let publish = Arc::new(Barrier::new(2));
+        let writer = {
+            let cloud = cloud.clone();
+            let staged = staged.clone();
+            let publish = publish.clone();
+            std::thread::spawn(move || {
+                cloud.put_with_before_publish("objects/active", b"complete", true, || {
+                    staged.wait();
+                    publish.wait();
+                })
+            })
+        };
+
+        staged.wait();
+        assert_eq!(fs::read_dir(&staging).unwrap().count(), 1);
+        let second = LocalCloud::new(temp.path()).unwrap();
+        assert_eq!(fs::read_dir(&staging).unwrap().count(), 1);
+        assert!(second.list("").await.unwrap().is_empty());
+
+        publish.wait();
+        assert_eq!(writer.join().unwrap().unwrap(), 8);
+        assert_eq!(second.get("objects/active").await.unwrap(), b"complete");
     }
 
     #[tokio::test]

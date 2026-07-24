@@ -28,6 +28,8 @@ pub enum RepoError {
     EmptyIndex,
     #[error("a file changed while the repository index was being built")]
     IndexFileChanged,
+    #[error("the working tree changed after the operation was planned")]
+    WorkingTreeChanged,
     #[error("repository indexing encountered a fatal invariant failure")]
     RepoFatal,
     #[error("repository path is unsafe")]

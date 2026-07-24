@@ -3,6 +3,7 @@ use std::future::Future;
 use std::sync::Arc;
 
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+/// A validated slash-separated path relative to the repository data root.
 pub struct RepositoryRelativePath(String);
 
 impl RepositoryRelativePath {
@@ -38,24 +39,39 @@ impl TryFrom<&str> for RepositoryRelativePath {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// The file revision observed while a working-tree change was planned.
+///
+/// This value is input to a later re-stat check; carrying it does not prove the
+/// working tree still has that revision.
 pub enum ExpectedRevision {
+    /// The path did not exist when the change was planned.
     Absent,
+    /// The path was a file with this exact repository identity and metadata.
     File { id: String, size: i64, updated: i64 },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// The filesystem mutation intended for a working-tree path.
 pub enum WorkingTreeAction {
     Write,
     Remove,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// A planned mutation and the revision that must be revalidated before it runs.
 pub struct WorkingTreeChange {
+    /// Repository-relative mutation target.
     pub path: RepositoryRelativePath,
+    /// Planning-time revision to compare with a fresh stat under the permit.
     pub expected_revision: ExpectedRevision,
+    /// Whether the target will be written or removed.
     pub action: WorkingTreeAction,
 }
 
+/// Opaque coordination token returned by [`WorkingTreeCoordinator::prepare`].
+///
+/// Possession of this token coordinates mutation ownership only. It does not
+/// prove that any [`WorkingTreeChange::expected_revision`] still matches disk.
 pub struct WorkingTreePermit {
     token: Option<Box<dyn Any + Send + Sync>>,
 }
@@ -80,7 +96,18 @@ impl WorkingTreePermit {
 }
 
 #[async_trait::async_trait]
+/// Coordinates access to planned working-tree mutations.
+///
+/// Coordination and revision validation are separate responsibilities.
 pub trait WorkingTreeCoordinator: Send + Sync {
+    /// Acquires a coordination permit for `changes`.
+    ///
+    /// This method does not stat files and does not prove that an
+    /// [`ExpectedRevision`] is current. A caller that will mutate files must,
+    /// after this returns and while the permit remains held, re-stat every
+    /// change and compare it with `expected_revision` before the first
+    /// [`WorkingTreeAction::Write`] or [`WorkingTreeAction::Remove`]. Any
+    /// mismatch must return [`crate::RepoError::WorkingTreeChanged`].
     async fn prepare(
         &self,
         changes: &[WorkingTreeChange],
@@ -104,6 +131,13 @@ impl WorkingTreeCoordinator for NoopWorkingTreeCoordinator {
 }
 
 /// Runs an operation under a prepared working-tree permit.
+///
+/// This helper acquires and releases coordination only; it does not re-stat the
+/// planned paths. The operation supplied by Task 7 must revalidate every
+/// [`WorkingTreeChange::expected_revision`] after `prepare` returns, while the
+/// permit is held, and before its first write or remove. A mismatch must return
+/// [`crate::RepoError::WorkingTreeChanged`]; this helper then still awaits the
+/// permit release before returning that error.
 ///
 /// Normal success and error returns await exactly one release. If this future is
 /// dropped, `Drop` only schedules a best-effort release when a live Tokio runtime
@@ -316,6 +350,18 @@ mod tests {
         .await;
 
         assert!(matches!(result, Err(RepoError::Cancelled)));
+        assert_eq!(coordinator.released(), [0]);
+    }
+
+    #[tokio::test]
+    async fn expected_revision_mismatch_is_released_once_before_returning() {
+        let coordinator = Arc::new(RecordingCoordinator::default());
+        let result = with_working_tree_permit(coordinator.clone(), &[change()], || async {
+            Err::<(), _>(RepoError::WorkingTreeChanged)
+        })
+        .await;
+
+        assert!(matches!(result, Err(RepoError::WorkingTreeChanged)));
         assert_eq!(coordinator.released(), [0]);
     }
 
