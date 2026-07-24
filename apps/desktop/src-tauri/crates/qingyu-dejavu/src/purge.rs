@@ -297,7 +297,7 @@ mod tests {
 
     use crate::{
         CheckIndex, CheckIndexFile, Chunk, Device, File, Index, RefStore, Repo, RepoError,
-        RepoOptions, RepoPaths,
+        RepoOptions, RepoPaths, Store,
     };
 
     use super::{collect_flat_ids, collect_object_ids, purge_store_with_cancel_check};
@@ -317,6 +317,7 @@ mod tests {
     const UNREACHABLE_CHUNK: &str = "dddddddddddddddddddddddddddddddddddddddd";
     const MISMATCH_CHECK_ID: &str = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
     const CONCURRENT_INDEX: &str = "ffffffffffffffffffffffffffffffffffffffff";
+    const CONCURRENT_CHUNK: &str = "0000000000000000000000000000000000000000";
 
     struct PurgeFixture {
         _temp: TempDir,
@@ -940,6 +941,148 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .id,
+            RETAINED_INDEX_REF
+        );
+    }
+
+    #[test]
+    fn purge_guard_survives_repository_materialize_rename_and_reopen() {
+        let fixture = fixture();
+        let original_repo_root = fixture._temp.path().join("repo");
+        let moved_repo_root = fixture._temp.path().join("repo-moved");
+        assert!(original_repo_root.is_dir());
+        fs::rename(&original_repo_root, &moved_repo_root).unwrap();
+
+        let reopened_repo = Repo::open(
+            RepoPaths {
+                data: fixture._temp.path().join("data"),
+                repo: moved_repo_root.clone(),
+                history: fixture._temp.path().join("history-moved"),
+                temp: fixture._temp.path().join("temp-moved"),
+            },
+            Device {
+                id: "moved-device".to_owned(),
+                name: "QingYu".to_owned(),
+                os: "test".to_owned(),
+            },
+            [9; 32],
+            RepoOptions::default(),
+        )
+        .unwrap();
+        let reopened_store = Store::new(&moved_repo_root, [9; 32]).unwrap();
+        let ref_target = index(UNREFERENCED_INDEX, UNREFERENCED_FILE, UNREFERENCED_CHECK);
+        let mut concurrent_index = index(CONCURRENT_INDEX, UNREFERENCED_FILE, "");
+        concurrent_index.files.clear();
+        concurrent_index.count = 0;
+        concurrent_index.size = 0;
+        let concurrent_chunk = Chunk {
+            id: CONCURRENT_CHUNK.to_owned(),
+            data: b"published after purge".to_vec(),
+        };
+        let cancelled = AtomicBool::new(false);
+        let (before_delete_tx, before_delete_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let (ref_started_tx, ref_started_rx) = mpsc::channel();
+        let (ref_result_tx, ref_result_rx) = mpsc::channel();
+        let (index_started_tx, index_started_rx) = mpsc::channel();
+        let (index_result_tx, index_result_rx) = mpsc::channel();
+        let (chunk_started_tx, chunk_started_rx) = mpsc::channel();
+        let (chunk_result_tx, chunk_result_rx) = mpsc::channel();
+
+        std::thread::scope(|scope| {
+            let purge_repo = &fixture.repo;
+            let cancelled = &cancelled;
+            let purge_thread = scope.spawn(move || {
+                purge_repo.purge_with_before_delete_hook(
+                    &[RETAINED_INDEX_CALLER.to_owned()],
+                    cancelled,
+                    || {
+                        before_delete_tx
+                            .send(())
+                            .map_err(|_| RepoError::RepoFatal)?;
+                        release_rx.recv().map_err(|_| RepoError::RepoFatal)?;
+                        Ok(())
+                    },
+                )
+            });
+            before_delete_rx.recv().unwrap();
+
+            let ref_repo = &reopened_repo;
+            scope.spawn(move || {
+                ref_started_tx.send(()).unwrap();
+                ref_result_tx
+                    .send(RefStore::new(&ref_repo.store).update_latest(&ref_target))
+                    .unwrap();
+            });
+            let index_store = &reopened_store;
+            scope.spawn(move || {
+                index_started_tx.send(()).unwrap();
+                index_result_tx
+                    .send(index_store.put_index(&concurrent_index))
+                    .unwrap();
+            });
+            let chunk_store = &reopened_store;
+            scope.spawn(move || {
+                chunk_started_tx.send(()).unwrap();
+                chunk_result_tx
+                    .send(chunk_store.put_chunk(&concurrent_chunk))
+                    .unwrap();
+            });
+            ref_started_rx.recv().unwrap();
+            index_started_rx.recv().unwrap();
+            chunk_started_rx.recv().unwrap();
+
+            let premature_ref = ref_result_rx.recv_timeout(Duration::from_millis(100)).ok();
+            let premature_index = index_result_rx
+                .recv_timeout(Duration::from_millis(100))
+                .ok();
+            let premature_chunk = chunk_result_rx
+                .recv_timeout(Duration::from_millis(100))
+                .ok();
+            let ref_was_premature = premature_ref.is_some();
+            let index_was_premature = premature_index.is_some();
+            let chunk_was_premature = premature_chunk.is_some();
+            release_tx.send(()).unwrap();
+            let purge_result = purge_thread.join().unwrap();
+            let ref_result = premature_ref.unwrap_or_else(|| ref_result_rx.recv().unwrap());
+            let index_result = premature_index.unwrap_or_else(|| index_result_rx.recv().unwrap());
+            let chunk_result = premature_chunk.unwrap_or_else(|| chunk_result_rx.recv().unwrap());
+
+            assert!(
+                !ref_was_premature,
+                "renamed-path ref publication bypassed purge guard"
+            );
+            assert!(
+                !index_was_premature,
+                "renamed-path index publication bypassed purge guard"
+            );
+            assert!(
+                !chunk_was_premature,
+                "renamed-path object publication bypassed purge guard"
+            );
+            purge_result.unwrap();
+            assert!(matches!(
+                ref_result,
+                Err(RepoError::NotFound(id)) if id == UNREFERENCED_INDEX
+            ));
+            index_result.unwrap();
+            chunk_result.unwrap();
+        });
+
+        assert!(!reopened_store
+            .index_path(UNREFERENCED_INDEX)
+            .unwrap()
+            .exists());
+        assert!(reopened_store
+            .index_path(CONCURRENT_INDEX)
+            .unwrap()
+            .is_file());
+        assert_eq!(
+            reopened_store.get_chunk(CONCURRENT_CHUNK).unwrap().data,
+            b"published after purge"
+        );
+        assert_eq!(
+            RefStore::new(&reopened_store).latest().unwrap().unwrap().id,
             RETAINED_INDEX_REF
         );
     }

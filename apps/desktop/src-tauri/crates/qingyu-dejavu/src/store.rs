@@ -1,7 +1,6 @@
-use std::collections::HashMap;
 use std::io::{BufReader, Cursor, Read};
 use std::path::{Component, Path, PathBuf};
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use cap_fs_ext::{DirExt, FollowSymlinks, OpenOptionsFollowExt};
 use cap_std::ambient_authority;
@@ -24,7 +23,7 @@ const MAX_CHECK_INDEX_DECODED_SIZE: usize = 512 * 1024 * 1024;
 
 type OperationGuard = Arc<Mutex<()>>;
 
-static OPERATION_GUARDS: OnceLock<Mutex<HashMap<PathBuf, Weak<Mutex<()>>>>> = OnceLock::new();
+static OPERATION_GUARD: OnceLock<OperationGuard> = OnceLock::new();
 
 pub struct Store {
     root: PathBuf,
@@ -40,8 +39,8 @@ pub struct Store {
 impl Store {
     pub fn new(root: impl Into<PathBuf>, key: [u8; 32]) -> Result<Self, RepoError> {
         let root = absolute_lexical_root(root.into())?;
-        let (anchor, relative_root, operation_identity) = store_anchor_with_identity(&root)?;
-        let operation_guard = operation_guard_for(operation_identity)?;
+        let (anchor, relative_root) = store_anchor(&root)?;
+        let operation_guard = Arc::clone(OPERATION_GUARD.get_or_init(|| Arc::new(Mutex::new(()))));
         let repository_dir = if relative_root.as_os_str().is_empty() {
             Some(anchor.try_clone()?)
         } else {
@@ -420,11 +419,6 @@ pub(crate) fn absolute_lexical_root(root: PathBuf) -> Result<PathBuf, RepoError>
 }
 
 pub(crate) fn store_anchor(root: &Path) -> Result<(Dir, PathBuf), RepoError> {
-    let (anchor, relative_root, _operation_identity) = store_anchor_with_identity(root)?;
-    Ok((anchor, relative_root))
-}
-
-fn store_anchor_with_identity(root: &Path) -> Result<(Dir, PathBuf, PathBuf), RepoError> {
     validate_windows_directory_components_before_canonicalize(root)?;
     let mut existing = root.to_path_buf();
     let mut missing = Vec::new();
@@ -437,8 +431,7 @@ fn store_anchor_with_identity(root: &Path) -> Result<(Dir, PathBuf, PathBuf), Re
                 let canonical_existing = std::fs::canonicalize(&existing)?;
                 let anchor = open_absolute_dir_nofollow(&canonical_existing)?;
                 let relative = missing.into_iter().rev().collect::<PathBuf>();
-                let operation_identity = canonical_existing.join(&relative);
-                return Ok((anchor, relative, operation_identity));
+                return Ok((anchor, relative));
             }
             Err(error)
                 if matches!(
@@ -458,20 +451,6 @@ fn store_anchor_with_identity(root: &Path) -> Result<(Dir, PathBuf, PathBuf), Re
             Err(error) => return Err(error.into()),
         }
     }
-}
-
-fn operation_guard_for(identity: PathBuf) -> Result<OperationGuard, RepoError> {
-    let registry = OPERATION_GUARDS.get_or_init(|| Mutex::new(HashMap::new()));
-    let mut guards = registry
-        .lock()
-        .map_err(|_| RepoError::InvalidData("repository operation guard registry poisoned"))?;
-    guards.retain(|_, guard| guard.strong_count() > 0);
-    if let Some(guard) = guards.get(&identity).and_then(Weak::upgrade) {
-        return Ok(guard);
-    }
-    let guard = Arc::new(Mutex::new(()));
-    guards.insert(identity, Arc::downgrade(&guard));
-    Ok(guard)
 }
 
 pub(crate) fn open_absolute_dir_nofollow(path: &Path) -> Result<Dir, RepoError> {
