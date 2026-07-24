@@ -5,6 +5,7 @@ use cap_fs_ext::{DirExt, FollowSymlinks, OpenOptionsFollowExt};
 use cap_std::fs::{Dir, Metadata, OpenOptions};
 
 use crate::chunker::StreamingRabinChunker;
+use crate::path_security::cap_metadata_is_reparse;
 use crate::{random_hash, sha1_hex, Chunk, File, Index, Repo, RepoError};
 
 #[cfg(windows)]
@@ -79,6 +80,9 @@ fn scan_directory(
     scanned: &mut Vec<ScannedFile>,
 ) -> Result<(), RepoError> {
     let directory_metadata = directory.dir_metadata().map_err(map_scan_io)?;
+    if cap_metadata_is_reparse(&directory_metadata) {
+        return Err(RepoError::UnsafePath);
+    }
     if !directory_metadata.file_type().is_dir() {
         return Err(RepoError::IndexFileChanged);
     }
@@ -90,6 +94,9 @@ fn scan_directory(
         let relative_path = relative_directory.join(&name);
         let repository_path = repository_path(&relative_path)?;
         let metadata = directory.symlink_metadata(&name).map_err(map_scan_io)?;
+        if cap_metadata_is_reparse(&metadata) {
+            return Err(RepoError::UnsafePath);
+        }
         let file_type = metadata.file_type();
         let protected = repo
             .protected_include_paths
@@ -119,6 +126,7 @@ fn scan_directory(
             let child = directory
                 .open_dir_nofollow(&name)
                 .map_err(|error| map_nofollow_io(directory, &name, error))?;
+            validate_data_directory(&child)?;
             scan_directory(repo, &child, &relative_path, hidden, scanned)?;
             continue;
         }
@@ -202,6 +210,9 @@ fn repository_path(relative_path: &Path) -> Result<String, RepoError> {
 fn store_scanned_file(repo: &Repo, scanned: &ScannedFile) -> Result<File, RepoError> {
     let mut source = open_file_nofollow(&repo.data_dir, &scanned.relative_path)?;
     let before_read = source.metadata().map_err(map_changed_io)?;
+    if cap_metadata_is_reparse(&before_read) {
+        return Err(RepoError::UnsafePath);
+    }
     if !before_read.file_type().is_file() {
         return Err(RepoError::IndexFileChanged);
     }
@@ -240,6 +251,9 @@ fn store_scanned_file(repo: &Repo, scanned: &ScannedFile) -> Result<File, RepoEr
     }
 
     let after_read = source.metadata().map_err(map_changed_io)?;
+    if cap_metadata_is_reparse(&after_read) {
+        return Err(RepoError::UnsafePath);
+    }
     if !after_read.file_type().is_file()
         || i64::try_from(after_read.len()).map_err(|_| RepoError::RepoFatal)? != scanned.size
         || metadata_updated(&after_read)? / 1_000 != scanned.updated / 1_000
@@ -262,12 +276,29 @@ fn open_file_nofollow(root: &Dir, path: &Path) -> Result<cap_std::fs::File, Repo
         directory = directory
             .open_dir_nofollow(component)
             .map_err(|error| map_nofollow_io(&directory, component, error))?;
+        validate_data_directory(&directory)?;
     }
     let mut options = OpenOptions::new();
     options.read(true).follow(FollowSymlinks::No);
-    directory
+    let file = directory
         .open_with(name, &options)
-        .map_err(|error| map_nofollow_io(&directory, name, error))
+        .map_err(|error| map_nofollow_io(&directory, name, error))?;
+    if cap_metadata_is_reparse(&file.metadata()?) {
+        return Err(RepoError::UnsafePath);
+    }
+    Ok(file)
+}
+
+fn validate_data_directory(directory: &Dir) -> Result<(), RepoError> {
+    let metadata = directory.dir_metadata().map_err(map_changed_io)?;
+    if cap_metadata_is_reparse(&metadata) {
+        return Err(RepoError::UnsafePath);
+    }
+    if metadata.file_type().is_dir() {
+        Ok(())
+    } else {
+        Err(RepoError::IndexFileChanged)
+    }
 }
 
 fn metadata_updated(metadata: &Metadata) -> Result<i64, RepoError> {
@@ -281,7 +312,9 @@ fn metadata_updated(metadata: &Metadata) -> Result<i64, RepoError> {
 
 fn map_nofollow_io(parent: &Dir, name: &std::ffi::OsStr, error: std::io::Error) -> RepoError {
     match parent.symlink_metadata(name) {
-        Ok(metadata) if metadata.file_type().is_symlink() => RepoError::UnsafePath,
+        Ok(metadata) if metadata.file_type().is_symlink() || cap_metadata_is_reparse(&metadata) => {
+            RepoError::UnsafePath
+        }
         _ if error.kind() == std::io::ErrorKind::NotFound => RepoError::IndexFileChanged,
         _ => RepoError::Io(error),
     }
@@ -699,27 +732,27 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn index_publication_stays_on_the_opened_repository_after_root_replacement() {
-        use std::os::unix::fs::symlink;
-
+    fn missing_repository_root_is_retained_after_first_index_publication() {
         let temp = tempfile::tempdir().unwrap();
         let repo_paths = paths(temp.path());
         let held_repository = temp.path().join("repo-held");
-        let outside = temp.path().join("outside");
         fs::create_dir_all(&repo_paths.data).unwrap();
-        fs::create_dir(&repo_paths.repo).unwrap();
-        fs::create_dir(&outside).unwrap();
         fs::write(repo_paths.data.join("file.md"), b"content").unwrap();
         let repo = Repo::open(repo_paths.clone(), device(), key(), RepoOptions::default()).unwrap();
+        assert!(!repo_paths.repo.exists());
+
+        let first = repo.index("first publication").unwrap();
         fs::rename(&repo_paths.repo, &held_repository).unwrap();
-        symlink(&outside, &repo_paths.repo).unwrap();
+        fs::create_dir(&repo_paths.repo).unwrap();
+        fs::write(repo_paths.data.join("second.md"), b"second content").unwrap();
 
-        let index = repo.index("confined publication").unwrap();
+        let second = repo.index("confined publication").unwrap();
 
-        assert_eq!(repo.store.get_index(&index.id).unwrap(), index);
+        assert_eq!(repo.store.get_index(&first.id).unwrap(), first);
+        assert_eq!(repo.store.get_index(&second.id).unwrap(), second);
+        assert_eq!(second.count, 2);
         assert!(held_repository.join("indexes").is_dir());
-        assert!(!outside.join("indexes").exists());
-        assert!(!outside.join("objects").exists());
+        assert_eq!(fs::read_dir(&repo_paths.repo).unwrap().count(), 0);
     }
 
     #[test]

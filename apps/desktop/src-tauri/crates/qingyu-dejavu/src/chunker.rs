@@ -286,10 +286,29 @@ mod tests {
     }
 
     #[test]
-    fn forced_exact_maximum_input_matches_the_pinned_restic_go_oracle() {
-        let mut bytes = Vec::with_capacity(MAX_SIZE);
+    fn forced_maximum_boundary_precedes_the_final_byte_like_the_pinned_go_oracle() {
+        let expected_chunks: Vec<ChunkBoundary> = serde_json::from_str(include_str!(
+            "../tests/fixtures/golden/chunk-max-boundaries.json"
+        ))
+        .unwrap();
+        assert_eq!(
+            expected_chunks,
+            vec![
+                ChunkBoundary {
+                    offset: 0,
+                    length: MAX_SIZE,
+                    sha1: "fcca09c14fa38ddb0ce70b3b84cf7f767afde4d1".to_owned(),
+                },
+                ChunkBoundary {
+                    offset: MAX_SIZE,
+                    length: 1,
+                    sha1: "e67cb59b3168e12ea787b84372ab07560f8304d5".to_owned(),
+                },
+            ]
+        );
+        let mut bytes = Vec::with_capacity(MAX_SIZE + 1);
         let mut x = 825_u64;
-        for _ in 0..MAX_SIZE {
+        for _ in 0..MAX_SIZE + 1 {
             x ^= x.wrapping_shl(13);
             x ^= x.wrapping_shr(7);
             x ^= x.wrapping_shl(17);
@@ -298,11 +317,7 @@ mod tests {
 
         assert_eq!(
             RabinChunker::new(&bytes).collect::<Vec<_>>(),
-            vec![ChunkBoundary {
-                offset: 0,
-                length: MAX_SIZE,
-                sha1: "fcca09c14fa38ddb0ce70b3b84cf7f767afde4d1".to_owned(),
-            }]
+            expected_chunks
         );
     }
 

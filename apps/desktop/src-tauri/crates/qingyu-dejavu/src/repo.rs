@@ -5,6 +5,7 @@ use cap_std::fs::Dir;
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 
 use crate::indexer::{self, IndexHook, NoopIndexHook};
+use crate::path_security::{cap_metadata_is_reparse, std_metadata_is_reparse};
 use crate::store::open_absolute_dir_nofollow;
 use crate::{Index, RepoError, Store};
 
@@ -93,6 +94,10 @@ impl Repo {
         }
         let ignore_matcher = ignore_builder.build().map_err(|_| RepoError::RepoFatal)?;
         let data_dir = open_absolute_dir_nofollow(&paths.data)?;
+        let data_metadata = data_dir.dir_metadata()?;
+        if !data_metadata.file_type().is_dir() || cap_metadata_is_reparse(&data_metadata) {
+            return Err(RepoError::UnsafePath);
+        }
         let store = Store::new(&paths.repo, key)?;
 
         Ok(Self {
@@ -217,18 +222,5 @@ pub(crate) fn validate_root_has_no_symlinks(path: &Path) -> Result<(), RepoError
 }
 
 fn unsafe_link_metadata(metadata: &std::fs::Metadata) -> bool {
-    if metadata.file_type().is_symlink() {
-        return true;
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::MetadataExt;
-        use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
-
-        metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
-    }
-    #[cfg(not(windows))]
-    {
-        false
-    }
+    std_metadata_is_reparse(metadata)
 }

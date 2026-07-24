@@ -101,9 +101,46 @@ func main() {
 	}
 	write(outputDir, "index-object.bin", encoder.EncodeAll(indexJSON, nil))
 	writeChunkBoundaries(outputDir)
+	writeMaximumBoundary(outputDir)
 
 	fmt.Printf("file-json=%s\n", fileJSON)
 	fmt.Printf("index-json=%s\n", indexJSON)
+}
+
+func writeMaximumBoundary(outputDir string) {
+	data := make([]byte, chunker.MaxSize+1)
+	x := uint64(825)
+	for i := range data {
+		x ^= x << 13
+		x ^= x >> 7
+		x ^= x << 17
+		data[i] = byte(x)
+	}
+
+	oracle := chunker.NewWithBoundaries(bytes.NewReader(data), chunker.Pol(0x3DA3358B4DC173), chunker.MinSize, chunker.MaxSize)
+	boundaries := []chunkBoundary{}
+	for {
+		chunk, err := oracle.Next(nil)
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			panic(err)
+		}
+		digest := sha1.Sum(chunk.Data)
+		boundaries = append(boundaries, chunkBoundary{
+			Offset: int(chunk.Start),
+			Length: int(chunk.Length),
+			SHA1:   hex.EncodeToString(digest[:]),
+		})
+	}
+
+	encoded, err := json.MarshalIndent(boundaries, "", "  ")
+	if err != nil {
+		panic(err)
+	}
+	encoded = append(encoded, '\n')
+	write(outputDir, "chunk-max-boundaries.json", encoded)
 }
 
 type chunkBoundary struct {

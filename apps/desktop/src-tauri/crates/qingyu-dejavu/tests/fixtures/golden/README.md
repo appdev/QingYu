@@ -32,6 +32,11 @@ For Task 4, `generate.go` also creates `chunk-boundaries.json` with the pinned
 steps with uint64 wrapping and takes the low byte. Each JSON entry records the
 Go chunk offset, length, and SHA-1 of its original bytes.
 
+`chunk-max-boundaries.json` uses the same pinned chunker with an 8 MiB + 1
+byte input starting from xorshift64 seed `825`. The first boundary is forced by
+`MaxSize` at exactly 8 MiB and the second boundary is the final byte, so this
+fixture distinguishes the maximum-boundary rule from a single EOF chunk.
+
 The checked-in fixture SHA-256 hashes are:
 
 ```text
@@ -40,4 +45,5 @@ f0dce2763d6753b75a1826bb3fed506df664a0bf80807775e97feac9cab07fd5  aes-gcm-siyuan
 11f984d88a5fa861303aa92e507a465ad5726328b6af8fe2a63777cd87234c9f  index-object.bin
 2d5f7c44ffb9ca87ba00a076d57496982e3642f2cffbc97c9f96b92c1725096e  kdf-key.bin
 29f678581b00be7f309911063e4be20b82bb263e7ed7f42559bccf68397aa0b2  chunk-boundaries.json
+9bd6187b445255a4323013d2b9e55d822712ef5c9d729200ad11c5430771d4ca  chunk-max-boundaries.json
 ```

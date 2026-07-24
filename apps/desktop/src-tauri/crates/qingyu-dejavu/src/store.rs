@@ -8,6 +8,7 @@ use cap_std::fs::{Dir, OpenOptions};
 
 use crate::atomic_write::{stage_cap_file, CapStagedFile};
 use crate::crypto::{decrypt, encrypt};
+use crate::path_security::{cap_metadata_is_reparse, std_metadata_is_reparse};
 use crate::{CheckIndex, Chunk, File, Index, RepoError};
 
 const OBJECT_MODE: u32 = 0o644;
@@ -21,6 +22,7 @@ pub struct Store {
     root: PathBuf,
     anchor: Dir,
     relative_root: PathBuf,
+    repository_dir: Mutex<Option<Dir>>,
     key: [u8; 32],
     compressor: Mutex<zstd::bulk::Compressor<'static>>,
     decompressor: Mutex<zstd::zstd_safe::DCtx<'static>>,
@@ -30,6 +32,11 @@ impl Store {
     pub fn new(root: impl Into<PathBuf>, key: [u8; 32]) -> Result<Self, RepoError> {
         let root = absolute_lexical_root(root.into())?;
         let (anchor, relative_root) = store_anchor(&root)?;
+        let repository_dir = if relative_root.as_os_str().is_empty() {
+            Some(anchor.try_clone()?)
+        } else {
+            None
+        };
         let mut compressor = zstd::bulk::Compressor::new(zstd::DEFAULT_COMPRESSION_LEVEL)
             .map_err(RepoError::Compression)?;
         compressor
@@ -48,6 +55,7 @@ impl Store {
             root,
             anchor,
             relative_root,
+            repository_dir: Mutex::new(repository_dir),
             key,
             compressor: Mutex::new(compressor),
             decompressor: Mutex::new(decompressor),
@@ -175,6 +183,9 @@ impl Store {
         let mut file = parent
             .open_with(name, &options)
             .map_err(|error| map_object_io(error, id))?;
+        if cap_metadata_is_reparse(&file.metadata()?) {
+            return Err(RepoError::UnsafePath);
+        }
         let mut bytes = Vec::new();
         file.read_to_end(&mut bytes)?;
         Ok(bytes)
@@ -189,13 +200,35 @@ impl Store {
     }
 
     fn open_directory(&self, relative: &Path, create: bool) -> Result<Dir, RepoError> {
-        let mut directory = self.anchor.try_clone()?;
-        for component in self.relative_root.components().chain(relative.components()) {
+        let mut directory = self.open_repository_root(create)?;
+        for component in relative.components() {
             let Component::Normal(name) = component else {
                 return Err(RepoError::UnsafePath);
             };
             directory = open_child_directory(&directory, name, create)?;
         }
+        Ok(directory)
+    }
+
+    fn open_repository_root(&self, create: bool) -> Result<Dir, RepoError> {
+        let mut retained = self
+            .repository_dir
+            .lock()
+            .map_err(|_| RepoError::InvalidData("repository directory handle lock poisoned"))?;
+        if let Some(directory) = retained.as_ref() {
+            validate_store_directory(directory)?;
+            return Ok(directory.try_clone()?);
+        }
+
+        let mut directory = self.anchor.try_clone()?;
+        for component in self.relative_root.components() {
+            let Component::Normal(name) = component else {
+                return Err(RepoError::UnsafePath);
+            };
+            directory = open_child_directory(&directory, name, create)?;
+        }
+        validate_store_directory(&directory)?;
+        *retained = Some(directory.try_clone()?);
         Ok(directory)
     }
 
@@ -323,7 +356,7 @@ fn store_anchor(root: &Path) -> Result<(Dir, PathBuf), RepoError> {
     loop {
         match std::fs::symlink_metadata(&existing) {
             Ok(metadata) => {
-                if !metadata.file_type().is_dir() || unsafe_store_root_metadata(&metadata) {
+                if !metadata.file_type().is_dir() || std_metadata_is_reparse(&metadata) {
                     return Err(RepoError::UnsafePath);
                 }
                 let canonical_existing = std::fs::canonicalize(&existing)?;
@@ -351,23 +384,6 @@ fn store_anchor(root: &Path) -> Result<(Dir, PathBuf), RepoError> {
     }
 }
 
-fn unsafe_store_root_metadata(metadata: &std::fs::Metadata) -> bool {
-    if metadata.file_type().is_symlink() {
-        return true;
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::MetadataExt;
-        use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
-
-        metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
-    }
-    #[cfg(not(windows))]
-    {
-        false
-    }
-}
-
 pub(crate) fn open_absolute_dir_nofollow(path: &Path) -> Result<Dir, RepoError> {
     if !path.is_absolute() {
         return Err(RepoError::UnsafePath);
@@ -390,10 +406,12 @@ pub(crate) fn open_absolute_dir_nofollow(path: &Path) -> Result<Dir, RepoError> 
         return Err(RepoError::UnsafePath);
     }
     let mut directory = Dir::open_ambient_dir(ambient_root, ambient_authority())?;
+    validate_store_directory(&directory)?;
     for name in names {
         directory = directory
             .open_dir_nofollow(&name)
             .map_err(|error| map_nofollow_error(&directory, &name, error))?;
+        validate_store_directory(&directory)?;
     }
     Ok(directory)
 }
@@ -404,16 +422,21 @@ fn open_child_directory(
     create: bool,
 ) -> Result<Dir, RepoError> {
     match parent.open_dir_nofollow(name) {
-        Ok(directory) => Ok(directory),
+        Ok(directory) => {
+            validate_store_directory(&directory)?;
+            Ok(directory)
+        }
         Err(error) if create && error.kind() == std::io::ErrorKind::NotFound => {
             match parent.create_dir(name) {
                 Ok(()) => {}
                 Err(create_error) if create_error.kind() == std::io::ErrorKind::AlreadyExists => {}
                 Err(create_error) => return Err(create_error.into()),
             }
-            parent
+            let directory = parent
                 .open_dir_nofollow(name)
-                .map_err(|open_error| map_nofollow_error(parent, name, open_error))
+                .map_err(|open_error| map_nofollow_error(parent, name, open_error))?;
+            validate_store_directory(&directory)?;
+            Ok(directory)
         }
         Err(error) => Err(map_nofollow_error(parent, name, error)),
     }
@@ -421,8 +444,19 @@ fn open_child_directory(
 
 fn map_nofollow_error(parent: &Dir, name: &std::ffi::OsStr, error: std::io::Error) -> RepoError {
     match parent.symlink_metadata(name) {
-        Ok(metadata) if metadata.file_type().is_symlink() => RepoError::UnsafePath,
+        Ok(metadata) if metadata.file_type().is_symlink() || cap_metadata_is_reparse(&metadata) => {
+            RepoError::UnsafePath
+        }
         _ => RepoError::Io(error),
+    }
+}
+
+fn validate_store_directory(directory: &Dir) -> Result<(), RepoError> {
+    let metadata = directory.dir_metadata()?;
+    if !metadata.file_type().is_dir() || cap_metadata_is_reparse(&metadata) {
+        Err(RepoError::UnsafePath)
+    } else {
+        Ok(())
     }
 }
 
@@ -471,6 +505,7 @@ mod tests {
     const INDEX_ID: &str = "89abcdef0123456789abcdef0123456789abcdef";
     const CHECK_INDEX_ID: &str = "fedcba9876543210fedcba9876543210fedcba98";
     const CHUNK_ID: &str = "1111111111111111111111111111111111111111";
+    const SECOND_CHUNK_ID: &str = "2222222222222222222222222222222222222222";
 
     fn fixture_key() -> [u8; 32] {
         *include_bytes!("../tests/fixtures/golden/kdf-key.bin")
@@ -827,6 +862,71 @@ mod tests {
         assert_eq!(store.get_chunk(CHUNK_ID).unwrap().data, b"confined");
         assert!(held_repository.join("objects/11").is_dir());
         assert!(!outside.join("objects").exists());
+    }
+
+    #[test]
+    fn missing_repository_root_is_retained_after_first_materialization() {
+        let temp = tempfile::tempdir().unwrap();
+        let repository = temp.path().join("repo");
+        let held_repository = temp.path().join("repo-held");
+        let store = Store::new(&repository, fixture_key()).unwrap();
+        assert!(!repository.exists());
+
+        store
+            .put_chunk(&Chunk {
+                id: CHUNK_ID.to_owned(),
+                data: b"first".to_vec(),
+            })
+            .unwrap();
+        fs::rename(&repository, &held_repository).unwrap();
+        fs::create_dir(&repository).unwrap();
+
+        store
+            .put_chunk(&Chunk {
+                id: SECOND_CHUNK_ID.to_owned(),
+                data: b"second".to_vec(),
+            })
+            .unwrap();
+
+        assert_eq!(store.get_chunk(CHUNK_ID).unwrap().data, b"first");
+        assert_eq!(store.get_chunk(SECOND_CHUNK_ID).unwrap().data, b"second");
+        assert!(held_repository.join("objects/11").is_dir());
+        assert!(held_repository.join("objects/22").is_dir());
+        assert_eq!(fs::read_dir(&repository).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn concurrent_first_use_converges_on_one_retained_repository_root() {
+        let temp = tempfile::tempdir().unwrap();
+        let repository = temp.path().join("repo");
+        let store = Arc::new(Store::new(&repository, fixture_key()).unwrap());
+        let barrier = Arc::new(Barrier::new(2));
+
+        let first_store = Arc::clone(&store);
+        let first_barrier = Arc::clone(&barrier);
+        let first = std::thread::spawn(move || {
+            first_barrier.wait();
+            first_store.put_chunk(&Chunk {
+                id: CHUNK_ID.to_owned(),
+                data: b"first".to_vec(),
+            })
+        });
+        let second_store = Arc::clone(&store);
+        let second = std::thread::spawn(move || {
+            barrier.wait();
+            second_store.put_chunk(&Chunk {
+                id: SECOND_CHUNK_ID.to_owned(),
+                data: b"second".to_vec(),
+            })
+        });
+
+        first.join().unwrap().unwrap();
+        second.join().unwrap().unwrap();
+
+        assert_eq!(store.get_chunk(CHUNK_ID).unwrap().data, b"first");
+        assert_eq!(store.get_chunk(SECOND_CHUNK_ID).unwrap().data, b"second");
+        assert!(repository.join("objects/11").is_dir());
+        assert!(repository.join("objects/22").is_dir());
     }
 
     #[test]

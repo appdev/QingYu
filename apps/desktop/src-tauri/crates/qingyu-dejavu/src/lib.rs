@@ -4,6 +4,7 @@ pub mod crypto;
 pub mod diff;
 pub mod entity;
 mod indexer;
+mod path_security;
 pub mod repo;
 pub mod store;
 
