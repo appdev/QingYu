@@ -1,6 +1,11 @@
 use sha1::{Digest, Sha1};
 use time::OffsetDateTime;
 
+use base64::Engine;
+
+use crate::crypto::{decrypt, encrypt};
+use crate::RepoError;
+
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct File {
     pub id: String,
@@ -52,6 +57,27 @@ pub struct Index {
     pub check_index_id: String,
     #[serde(rename = "aesKeyVerifyVal")]
     pub aes_key_verify_val: String,
+}
+
+impl Index {
+    pub fn init_aes_key_verify_val(&mut self, key: &[u8; 32]) -> Result<(), RepoError> {
+        let encrypted = encrypt(b"siyuan", key)?;
+        self.aes_key_verify_val = base64::engine::general_purpose::STANDARD.encode(encrypted);
+        Ok(())
+    }
+
+    pub fn verify_aes_key(&self, key: &[u8; 32]) -> bool {
+        if self.aes_key_verify_val.is_empty() {
+            return true;
+        }
+
+        let Ok(encrypted) =
+            base64::engine::general_purpose::STANDARD.decode(&self.aes_key_verify_val)
+        else {
+            return false;
+        };
+        matches!(decrypt(&encrypted, key), Ok(plaintext) if plaintext == b"siyuan")
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]

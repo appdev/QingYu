@@ -2,6 +2,18 @@
 pub enum RepoError {
     #[error("repository I/O failed")]
     Io(#[from] std::io::Error),
+    #[error("repository serialization failed")]
+    Serialization(#[from] serde_json::Error),
+    #[error("repository compression failed")]
+    Compression(#[source] std::io::Error),
+    #[error("repository key derivation failed")]
+    KeyDerivationFailed,
+    #[error("repository encryption failed")]
+    EncryptionFailed,
+    #[error("repository decryption failed")]
+    DecryptionFailed,
+    #[error("cryptographic randomness is unavailable")]
+    RandomnessUnavailable,
     #[error("repository data is invalid: {0}")]
     InvalidData(&'static str),
     #[error("repository object was not found: {0}")]
