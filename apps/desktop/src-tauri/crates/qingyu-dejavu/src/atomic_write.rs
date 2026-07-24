@@ -27,7 +27,8 @@ pub(crate) struct StagedFile {
 }
 
 pub(crate) struct CapStagedFile {
-    parent: Dir,
+    stage_parent: Dir,
+    destination_parent: Dir,
     temp_name: OsString,
     destination: OsString,
     temp_file: CapFile,
@@ -67,7 +68,17 @@ pub(crate) fn stage_cap_file(
     bytes: &[u8],
     mode: u32,
 ) -> Result<CapStagedFile, RepoError> {
-    let staged = create_cap_staged_file(parent, destination, mode)?;
+    stage_cap_file_in(parent, parent, destination, bytes, mode)
+}
+
+pub(crate) fn stage_cap_file_in(
+    stage_parent: &Dir,
+    destination_parent: &Dir,
+    destination: &std::ffi::OsStr,
+    bytes: &[u8],
+    mode: u32,
+) -> Result<CapStagedFile, RepoError> {
+    let staged = create_cap_staged_file_in(stage_parent, destination_parent, destination, mode)?;
     let result = (|| -> Result<(), RepoError> {
         let mut temp_file = staged.file();
         temp_file.write_all(bytes)?;
@@ -87,10 +98,18 @@ pub(crate) fn create_cap_staged_file(
     destination: &std::ffi::OsStr,
     mode: u32,
 ) -> Result<CapStagedFile, RepoError> {
+    create_cap_staged_file_in(parent, parent, destination, mode)
+}
+
+fn create_cap_staged_file_in(
+    stage_parent: &Dir,
+    destination_parent: &Dir,
+    destination: &std::ffi::OsStr,
+    mode: u32,
+) -> Result<CapStagedFile, RepoError> {
     for _attempt in 0..TEMP_CREATE_ATTEMPTS {
         let random = random_hash().map_err(|_| RepoError::RandomnessUnavailable)?;
-        let mut temp_name = OsString::from(destination);
-        temp_name.push(".");
+        let mut temp_name = OsString::from("stage-");
         temp_name.push(random);
         temp_name.push(".tmp");
         let mut options = CapOpenOptions::new();
@@ -99,10 +118,11 @@ pub(crate) fn create_cap_staged_file(
             .create_new(true)
             .follow(FollowSymlinks::No);
         configure_cap_temp_options(&mut options, mode);
-        match parent.open_with(&temp_name, &options) {
+        match stage_parent.open_with(&temp_name, &options) {
             Ok(temp_file) => {
                 return Ok(CapStagedFile {
-                    parent: parent.try_clone()?,
+                    stage_parent: stage_parent.try_clone()?,
+                    destination_parent: destination_parent.try_clone()?,
                     temp_name,
                     destination: destination.to_os_string(),
                     temp_file,
@@ -164,7 +184,8 @@ impl CapStagedFile {
 
     pub(crate) fn publish_replace(mut self) -> Result<(), RepoError> {
         replace_cap_with_retry(
-            &self.parent,
+            &self.stage_parent,
+            &self.destination_parent,
             &self.temp_file,
             &self.temp_name,
             &self.destination,
@@ -176,7 +197,8 @@ impl CapStagedFile {
     pub(crate) fn publish_replace_retaining_handle(mut self) -> Result<CapFile, RepoError> {
         let published = self.temp_file.try_clone()?;
         replace_cap_with_retry(
-            &self.parent,
+            &self.stage_parent,
+            &self.destination_parent,
             &self.temp_file,
             &self.temp_name,
             &self.destination,
@@ -186,16 +208,19 @@ impl CapStagedFile {
     }
 
     pub(crate) fn publish_no_replace(mut self) -> Result<PublishOutcome, RepoError> {
-        match self
-            .parent
-            .hard_link(&self.temp_name, &self.parent, &self.destination)
-        {
+        match self.stage_parent.hard_link(
+            &self.temp_name,
+            &self.destination_parent,
+            &self.destination,
+        ) {
             Ok(()) => {
                 self.remove_temp()?;
                 Ok(PublishOutcome::Published)
             }
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-                let metadata = self.parent.symlink_metadata(&self.destination)?;
+                let metadata = self
+                    .destination_parent
+                    .symlink_metadata(&self.destination)?;
                 if !cap_metadata_is_safe_immutable_destination(&metadata) {
                     return Err(RepoError::InvalidData(
                         "immutable object destination must be a regular file",
@@ -209,7 +234,7 @@ impl CapStagedFile {
     }
 
     fn remove_temp(&mut self) -> Result<(), RepoError> {
-        self.parent.remove_file(&self.temp_name)?;
+        self.stage_parent.remove_file(&self.temp_name)?;
         self.cleanup_armed = false;
         Ok(())
     }
@@ -226,7 +251,7 @@ impl Drop for StagedFile {
 impl Drop for CapStagedFile {
     fn drop(&mut self) {
         if self.cleanup_armed {
-            let _cleanup_result = self.parent.remove_file(&self.temp_name);
+            let _cleanup_result = self.stage_parent.remove_file(&self.temp_name);
         }
     }
 }
@@ -265,13 +290,14 @@ fn set_cap_mode(_file: &CapFile, _mode: u32) -> Result<(), RepoError> {
 }
 
 fn replace_cap_with_retry(
-    parent: &Dir,
+    stage_parent: &Dir,
+    destination_parent: &Dir,
     temp_file: &CapFile,
     from: &std::ffi::OsStr,
     to: &std::ffi::OsStr,
 ) -> Result<(), RepoError> {
     for attempt in 0..WINDOWS_RENAME_ATTEMPTS {
-        match replace_cap_file(parent, temp_file, from, to) {
+        match replace_cap_file(stage_parent, destination_parent, temp_file, from, to) {
             Ok(()) => return Ok(()),
             Err(error)
                 if cfg!(windows)
@@ -288,17 +314,19 @@ fn replace_cap_with_retry(
 
 #[cfg(not(windows))]
 fn replace_cap_file(
-    parent: &Dir,
+    stage_parent: &Dir,
+    destination_parent: &Dir,
     _temp_file: &CapFile,
     from: &std::ffi::OsStr,
     to: &std::ffi::OsStr,
 ) -> io::Result<()> {
-    parent.rename(from, parent, to)
+    stage_parent.rename(from, destination_parent, to)
 }
 
 #[cfg(windows)]
 fn replace_cap_file(
-    parent: &Dir,
+    _stage_parent: &Dir,
+    destination_parent: &Dir,
     temp_file: &CapFile,
     _from: &std::ffi::OsStr,
     to: &std::ffi::OsStr,
@@ -316,7 +344,7 @@ fn replace_cap_file(
     let info = buffer.as_mut_ptr().cast::<FILE_RENAME_INFO>();
     unsafe {
         (*info).Anonymous.ReplaceIfExists = true;
-        (*info).RootDirectory = parent.as_raw_handle();
+        (*info).RootDirectory = destination_parent.as_raw_handle();
         (*info).FileNameLength = u32::try_from(wide_name.len() * 2)
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "file name is too long"))?;
         std::ptr::copy_nonoverlapping(

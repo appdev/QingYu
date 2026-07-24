@@ -1,5 +1,7 @@
 #[derive(Debug, thiserror::Error)]
 pub enum RepoError {
+    #[error("repository cloud operation failed")]
+    Cloud(#[from] crate::CloudError),
     #[error("repository I/O failed")]
     Io(#[from] std::io::Error),
     #[error("repository serialization failed")]

@@ -30,10 +30,10 @@ pub use purge::PurgeStat;
 pub use ref_store::RefStore;
 pub use repo::{Device, Repo, RepoOptions, RepoPaths};
 pub use store::Store;
-pub use sync_lock::RemoteLockGuard;
+pub use sync_lock::{RemoteLockGuard, RemoteLockHealthError};
 pub use working_tree::{
-    with_working_tree_permit, NoopWorkingTreeCoordinator, WorkingTreeChange,
-    WorkingTreeCoordinator, WorkingTreePermit,
+    with_working_tree_permit, ExpectedRevision, NoopWorkingTreeCoordinator, RepositoryRelativePath,
+    WorkingTreeAction, WorkingTreeChange, WorkingTreeCoordinator, WorkingTreePermit,
 };
 
 pub const UPSTREAM_DEJAVU_COMMIT: &str = "8462fe30163c6e6e95ae2da832cfe76058e0e830";

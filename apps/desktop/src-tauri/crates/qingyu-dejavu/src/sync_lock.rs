@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use tokio::sync::oneshot;
@@ -26,6 +26,35 @@ pub struct RemoteLockGuard {
     cloud: Arc<dyn Cloud>,
     stop_refresh: Option<oneshot::Sender<()>>,
     refresh_task: Option<JoinHandle<()>>,
+    health: Arc<Mutex<Option<RemoteLockHealthError>>>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+#[error("remote lock refresh failed: {code}")]
+pub struct RemoteLockHealthError {
+    code: &'static str,
+    retryable: bool,
+}
+
+impl RemoteLockHealthError {
+    pub fn code(&self) -> &'static str {
+        self.code
+    }
+
+    pub fn is_retryable(&self) -> bool {
+        self.retryable
+    }
+
+    fn from_cloud(error: &CloudError) -> Self {
+        let error = match error {
+            CloudError::LockFailed { source } => source.as_ref(),
+            _ => error,
+        };
+        Self {
+            code: error.code(),
+            retryable: error.is_retryable(),
+        }
+    }
 }
 
 impl std::fmt::Debug for RemoteLockGuard {
@@ -38,14 +67,29 @@ impl std::fmt::Debug for RemoteLockGuard {
 }
 
 impl RemoteLockGuard {
+    pub fn ensure_healthy(&self) -> Result<(), RemoteLockHealthError> {
+        self.health
+            .lock()
+            .map_err(|_| RemoteLockHealthError {
+                code: "lock_health_state_poisoned",
+                retryable: false,
+            })?
+            .clone()
+            .map_or(Ok(()), Err)
+    }
+
     pub async fn release(mut self) -> Result<(), CloudError> {
         self.stop_refresh_task().await;
+        let mut last_error = None;
         for _attempt in 0..RELEASE_ATTEMPTS {
-            if self.cloud.remove(LOCK_SYNC_KEY).await.is_ok() {
-                return Ok(());
+            match self.cloud.remove(LOCK_SYNC_KEY).await {
+                Ok(()) => return Ok(()),
+                Err(error) => last_error = Some(error),
             }
         }
-        Err(CloudError::UnlockFailed)
+        Err(CloudError::unlock_failed(last_error.unwrap_or_else(|| {
+            CloudError::backend("missing_unlock_error")
+        })))
     }
 
     async fn stop_refresh_task(&mut self) {
@@ -53,7 +97,6 @@ impl RemoteLockGuard {
             let _send_result = stop_refresh.send(());
         }
         if let Some(refresh_task) = self.refresh_task.take() {
-            refresh_task.abort();
             let _join_result = refresh_task.await;
         }
     }
@@ -64,9 +107,7 @@ impl Drop for RemoteLockGuard {
         if let Some(stop_refresh) = self.stop_refresh.take() {
             let _send_result = stop_refresh.send(());
         }
-        if let Some(refresh_task) = self.refresh_task.take() {
-            refresh_task.abort();
-        }
+        drop(self.refresh_task.take());
     }
 }
 
@@ -87,6 +128,8 @@ pub(crate) async fn acquire_remote_lock(
 fn start_refresh(cloud: Arc<dyn Cloud>, device_id: String) -> RemoteLockGuard {
     let (stop_refresh, mut stopped) = oneshot::channel();
     let refresh_cloud = Arc::clone(&cloud);
+    let health = Arc::new(Mutex::new(None));
+    let refresh_health = Arc::clone(&health);
     let refresh_task = tokio::spawn(async move {
         let first = Instant::now() + REFRESH_INTERVAL;
         let mut interval = interval_at(first, REFRESH_INTERVAL);
@@ -95,7 +138,10 @@ fn start_refresh(cloud: Arc<dyn Cloud>, device_id: String) -> RemoteLockGuard {
                 biased;
                 _ = &mut stopped => break,
                 _ = interval.tick() => {
-                    let _refresh_result = write_and_verify_lock(&refresh_cloud, &device_id).await;
+                    let outcome = write_and_verify_lock(&refresh_cloud, &device_id).await;
+                    if let Ok(mut state) = refresh_health.lock() {
+                        *state = outcome.as_ref().err().map(RemoteLockHealthError::from_cloud);
+                    }
                 }
             }
         }
@@ -104,6 +150,7 @@ fn start_refresh(cloud: Arc<dyn Cloud>, device_id: String) -> RemoteLockGuard {
         cloud,
         stop_refresh: Some(stop_refresh),
         refresh_task: Some(refresh_task),
+        health,
     }
 }
 
@@ -115,7 +162,7 @@ async fn try_acquire(cloud: &Arc<dyn Cloud>, device_id: &str) -> Result<(), Clou
                 cloud
                     .remove(LOCK_SYNC_KEY)
                     .await
-                    .map_err(|_| CloudError::LockFailed)?;
+                    .map_err(CloudError::lock_failed)?;
                 None
             }
         },
@@ -125,10 +172,7 @@ async fn try_acquire(cloud: &Arc<dyn Cloud>, device_id: &str) -> Result<(), Clou
 
     if let Some(existing) = existing {
         let now = now_millis()?;
-        let stale = existing
-            .time
-            .checked_add(STALE_AFTER_MILLIS)
-            .is_some_and(|expires| now > expires);
+        let stale = lock_is_stale(existing.time, now);
         if !stale && existing.device_id != device_id {
             return Err(CloudError::Locked);
         }
@@ -142,19 +186,22 @@ async fn write_and_verify_lock(cloud: &Arc<dyn Cloud>, device_id: &str) -> Resul
         device_id: device_id.to_owned(),
         time: now_millis()?,
     };
-    let bytes = serde_json::to_vec(&lock).map_err(|_| CloudError::LockFailed)?;
+    let bytes = serde_json::to_vec(&lock)
+        .map_err(|_| CloudError::lock_failed(CloudError::backend("lock_serialization")))?;
     let written = cloud
         .put(LOCK_SYNC_KEY, &bytes, true)
         .await
-        .map_err(|_| CloudError::LockFailed)?;
+        .map_err(CloudError::lock_failed)?;
     if written != bytes.len() as u64 {
-        return Err(CloudError::LockFailed);
+        return Err(CloudError::lock_failed(CloudError::backend(
+            "invalid_put_length",
+        )));
     }
 
     let verified = match cloud.get(LOCK_SYNC_KEY).await {
         Ok(bytes) => serde_json::from_slice::<LockData>(&bytes).ok(),
         Err(CloudError::NotFound) => return Err(CloudError::Locked),
-        Err(_) => return Err(CloudError::LockFailed),
+        Err(error) => return Err(CloudError::lock_failed(error)),
     };
     if verified.as_ref() == Some(&lock) {
         Ok(())
@@ -165,17 +212,26 @@ async fn write_and_verify_lock(cloud: &Arc<dyn Cloud>, device_id: &str) -> Resul
 
 fn now_millis() -> Result<i64, CloudError> {
     i64::try_from(time::OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000)
-        .map_err(|_| CloudError::LockFailed)
+        .map_err(|_| CloudError::backend("system_time_out_of_range"))
+}
+
+fn lock_is_stale(written_at: i64, now: i64) -> bool {
+    written_at
+        .checked_add(STALE_AFTER_MILLIS)
+        .is_some_and(|expires| now > expires)
 }
 
 #[cfg(test)]
 mod tests {
     use std::fs;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
     use tempfile::TempDir;
+    use tokio::sync::Notify;
+
+    use super::REFRESH_INTERVAL;
 
     use crate::{
         Cloud, CloudError, CloudObject, CloudOperation, Device, LocalCloud, Repo, RepoOptions,
@@ -189,6 +245,11 @@ mod tests {
         put_count: AtomicUsize,
         remove_count: AtomicUsize,
         remove_failures: AtomicUsize,
+        put_failures: AtomicUsize,
+        block_refresh: AtomicBool,
+        refresh_started: Notify,
+        refresh_put_finished: Notify,
+        allow_refresh: Notify,
     }
 
     impl RecordingCloud {
@@ -200,6 +261,11 @@ mod tests {
                 put_count: AtomicUsize::new(0),
                 remove_count: AtomicUsize::new(0),
                 remove_failures: AtomicUsize::new(0),
+                put_failures: AtomicUsize::new(0),
+                block_refresh: AtomicBool::new(false),
+                refresh_started: Notify::new(),
+                refresh_put_finished: Notify::new(),
+                allow_refresh: Notify::new(),
             }
         }
 
@@ -233,10 +299,29 @@ mod tests {
         async fn put(&self, key: &str, bytes: &[u8], overwrite: bool) -> Result<u64, CloudError> {
             assert_eq!(key, "lock-sync");
             assert!(overwrite);
-            self.put_count.fetch_add(1, Ordering::SeqCst);
+            let put_number = self.put_count.fetch_add(1, Ordering::SeqCst) + 1;
+            if put_number > 1 && self.block_refresh.load(Ordering::SeqCst) {
+                self.refresh_started.notify_one();
+                self.allow_refresh.notified().await;
+            }
+            let failed = self
+                .put_failures
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
+                    remaining.checked_sub(1)
+                })
+                .is_ok();
+            if failed {
+                if put_number > 1 {
+                    self.refresh_put_finished.notify_one();
+                }
+                return Err(CloudError::Unavailable);
+            }
             *self.object.lock().unwrap() = Some(bytes.to_vec());
             if let Some(replacement) = self.post_put_replacement.lock().unwrap().take() {
                 *self.object.lock().unwrap() = Some(replacement);
+            }
+            if put_number > 1 {
+                self.refresh_put_finished.notify_one();
             }
             Ok(bytes.len() as u64)
         }
@@ -305,6 +390,43 @@ mod tests {
     async fn advance_retry() {
         tokio::time::advance(Duration::from_secs(5)).await;
         tokio::task::yield_now().await;
+    }
+
+    #[test]
+    fn stale_boundary_is_strictly_greater_than_sixty_five_seconds() {
+        let now = 1_000_000_i64;
+        assert!(!super::lock_is_stale(now - 65_000, now));
+        assert!(super::lock_is_stale(now - 65_001, now));
+    }
+
+    #[tokio::test]
+    async fn malformed_and_missing_field_lock_json_are_removed_before_reacquire() {
+        for bytes in [b"not-json".to_vec(), br#"{"deviceID":"device-b"}"#.to_vec()] {
+            let (_temp, repo) = repo_fixture();
+            let cloud = Arc::new(RecordingCloud::empty());
+            *cloud.object.lock().unwrap() = Some(bytes);
+
+            let guard = repo.lock_cloud(cloud.clone()).await.unwrap();
+            assert_eq!(cloud.counts(), (2, 1, 1));
+            guard.release().await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn malformed_lock_cleanup_failure_preserves_the_cloud_source() {
+        let (_temp, repo) = repo_fixture();
+        let cloud = Arc::new(RecordingCloud::empty());
+        *cloud.object.lock().unwrap() = Some(b"not-json".to_vec());
+        cloud.remove_failures.store(1, Ordering::SeqCst);
+
+        let error = repo.lock_cloud(cloud).await.unwrap_err();
+        let CloudError::LockFailed { source } = error else {
+            panic!("expected lock wrapper");
+        };
+        assert!(matches!(
+            *source,
+            CloudError::Injected(CloudOperation::Remove)
+        ));
     }
 
     #[tokio::test]
@@ -404,6 +526,69 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn release_waits_for_an_in_flight_refresh_before_remove() {
+        let (_temp, repo) = repo_fixture();
+        let cloud = Arc::new(RecordingCloud::empty());
+        let guard = repo.lock_cloud(cloud.clone()).await.unwrap();
+        cloud.block_refresh.store(true, Ordering::SeqCst);
+
+        tokio::time::advance(REFRESH_INTERVAL).await;
+        cloud.refresh_started.notified().await;
+        let release = tokio::spawn(async move { guard.release().await });
+        tokio::task::yield_now().await;
+        assert_eq!(cloud.remove_count.load(Ordering::SeqCst), 0);
+        assert!(!release.is_finished());
+
+        cloud.allow_refresh.notify_one();
+        release.await.unwrap().unwrap();
+        assert_eq!(cloud.remove_count.load(Ordering::SeqCst), 1);
+        assert!(cloud.object.lock().unwrap().is_none());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn refresh_failure_marks_guard_unhealthy_and_verified_success_clears_it() {
+        let (_temp, repo) = repo_fixture();
+        let cloud = Arc::new(RecordingCloud::empty());
+        let guard = repo.lock_cloud(cloud.clone()).await.unwrap();
+        cloud.put_failures.store(1, Ordering::SeqCst);
+
+        tokio::time::advance(REFRESH_INTERVAL).await;
+        cloud.refresh_put_finished.notified().await;
+        tokio::task::yield_now().await;
+        let health = guard.ensure_healthy().unwrap_err();
+        assert_eq!(health.code(), "unavailable");
+        assert!(health.is_retryable());
+
+        tokio::time::advance(REFRESH_INTERVAL).await;
+        cloud.refresh_put_finished.notified().await;
+        tokio::task::yield_now().await;
+        guard.ensure_healthy().unwrap();
+        guard.release().await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn dropping_guard_only_stops_and_allows_in_flight_refresh_to_finish() {
+        let (_temp, repo) = repo_fixture();
+        let cloud = Arc::new(RecordingCloud::empty());
+        let guard = repo.lock_cloud(cloud.clone()).await.unwrap();
+        cloud.block_refresh.store(true, Ordering::SeqCst);
+        tokio::time::advance(REFRESH_INTERVAL).await;
+        cloud.refresh_started.notified().await;
+
+        drop(guard);
+        assert_eq!(cloud.remove_count.load(Ordering::SeqCst), 0);
+        cloud.allow_refresh.notify_one();
+        tokio::task::yield_now().await;
+        tokio::task::yield_now().await;
+        assert_eq!(cloud.counts(), (3, 2, 0));
+        assert!(cloud.object.lock().unwrap().is_some());
+
+        tokio::time::advance(REFRESH_INTERVAL * 2).await;
+        tokio::task::yield_now().await;
+        assert_eq!(cloud.counts(), (3, 2, 0));
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn dropping_guard_stops_refresh_without_removing_the_remote_lock() {
         let (_temp, repo) = repo_fixture();
         let cloud = Arc::new(RecordingCloud::empty());
@@ -424,9 +609,13 @@ mod tests {
         cloud.remove_failures.store(3, Ordering::SeqCst);
         let guard = repo.lock_cloud(cloud.clone()).await.unwrap();
 
+        let error = guard.release().await.unwrap_err();
+        let CloudError::UnlockFailed { source } = error else {
+            panic!("expected unlock wrapper");
+        };
         assert!(matches!(
-            guard.release().await,
-            Err(CloudError::UnlockFailed)
+            *source,
+            CloudError::Injected(CloudOperation::Remove)
         ));
         assert_eq!(cloud.counts(), (2, 1, 3));
         tokio::time::advance(Duration::from_secs(60)).await;
@@ -444,6 +633,19 @@ mod tests {
         guard.release().await.unwrap();
         assert_eq!(cloud.counts(), (2, 1, 3));
         assert!(cloud.object.lock().unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn an_old_guard_unconditionally_removes_a_later_same_or_other_device_lock() {
+        for replacement_device in ["device-a", "device-b"] {
+            let (_temp, repo) = repo_fixture();
+            let cloud = Arc::new(RecordingCloud::empty());
+            let guard = repo.lock_cloud(cloud.clone()).await.unwrap();
+            *cloud.object.lock().unwrap() = Some(lock_json(replacement_device, now_millis()));
+
+            guard.release().await.unwrap();
+            assert!(cloud.object.lock().unwrap().is_none());
+        }
     }
 
     #[tokio::test(start_paused = true)]
