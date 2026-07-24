@@ -1,0 +1,28 @@
+[package]
+name = "qingyu-dejavu"
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-only"
+publish = false
+
+[dependencies]
+aes-gcm = "0.10.3"
+async-trait = "0.1.89"
+base64 = "0.22.1"
+filetime = "0.2.26"
+getrandom = "0.4.3"
+ignore = "0.4.28"
+scrypt = "0.11.0"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha1 = "0.10.6"
+thiserror = "2"
+time = "0.3.44"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
+zstd = "0.13.3"
+
+[dev-dependencies]
+tempfile = "3.27.0"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation"] }
