@@ -1,5 +1,6 @@
 import { useLayoutEffect, useState } from "react";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import type { AppLanguage } from "@markra/shared";
 import type { RemoteNotebookCatalogEntry } from "../../runtime";
 import { RemoteNotebookDialog } from "./RemoteNotebookDialog";
 
@@ -17,13 +18,18 @@ function entry(
 
 function deferred() {
   let resolve!: () => undefined;
-  const promise = new Promise<unknown>((resolvePromise) => {
+  let reject!: (reason?: unknown) => undefined;
+  const promise = new Promise<unknown>((resolvePromise, rejectPromise) => {
     resolve = () => {
       resolvePromise(undefined);
       return undefined;
     };
+    reject = (reason) => {
+      rejectPromise(reason);
+      return undefined;
+    };
   });
-  return { promise, resolve };
+  return { promise, reject, resolve };
 }
 
 const defaultProps = {
@@ -245,6 +251,36 @@ describe("RemoteNotebookDialog", () => {
 
     fireEvent.keyDown(dialog, { key: "Escape" });
     expect(onCancel).toHaveBeenCalledOnce();
+  });
+
+  it("does not continue a rejected restore operation after the dialog unmounts", async () => {
+    const pending = deferred();
+    let languageReads = 0;
+    const language = {
+      [Symbol.toPrimitive]() {
+        languageReads += 1;
+        return "en";
+      }
+    } as unknown as AppLanguage;
+    const { unmount } = render(
+      <RemoteNotebookDialog
+        {...defaultProps}
+        entries={[entry("Archive")]}
+        language={language}
+        onRestore={() => pending.promise}
+      />
+    );
+    fireEvent.click(screen.getByRole("radio", { name: "Archive" }));
+    fireEvent.click(screen.getByRole("button", { name: "Restore" }));
+    const readsBeforeUnmount = languageReads;
+
+    unmount();
+    await act(async () => {
+      pending.reject(new Error("restore failed after unmount"));
+      await Promise.resolve();
+    });
+
+    expect(languageReads).toBe(readsBeforeUnmount);
   });
 
   it("contains Tab and Shift+Tab focus within the dialog", () => {

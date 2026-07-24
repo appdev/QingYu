@@ -192,7 +192,7 @@ export function useSettingsWindowState() {
     available: true,
     observedLoadResult: null,
     primaryRoot: syncPrimaryRoot,
-    shouldBegin: activeCategory === "sync" && syncPrimaryRootResolved
+    shouldBegin: false
   });
   const syncView = useMemo(() => ({
     configDocument: syncSession.configDocument,
@@ -225,10 +225,16 @@ export function useSettingsWindowState() {
       status: "error"
     });
   }, [translate]);
+  const remoteNotebookDialog = useSettingsRemoteNotebookDialog({
+    onSessionFailure: showSyncExitFailure,
+    primaryRoot: syncPrimaryRoot,
+    syncSession,
+    translate
+  });
   const handleSelectCategory = useCallback(async (category: SettingsCategory) => {
     if (activeCategory === "sync" && category !== "sync") {
       try {
-        await syncSession.end("category-leave");
+        await remoteNotebookDialog.leaveSync("category-leave");
       } catch {
         showSyncExitFailure();
         return;
@@ -236,20 +242,14 @@ export function useSettingsWindowState() {
     }
     setActiveCategory(category);
     setSettingsFocusTarget(null);
-  }, [activeCategory, showSyncExitFailure, syncSession.end]);
+  }, [activeCategory, remoteNotebookDialog.leaveSync, showSyncExitFailure]);
   const recoverVisibleSyncSession = useCallback(async () => {
     try {
-      await syncSession.begin();
+      await remoteNotebookDialog.resumeSync();
     } catch {
       // The window stays visible with failure feedback even if session recovery is unavailable.
     }
-  }, [syncSession.begin]);
-  const remoteNotebookDialog = useSettingsRemoteNotebookDialog({
-    onSessionFailure: showSyncExitFailure,
-    primaryRoot: syncPrimaryRoot,
-    syncSession,
-    translate
-  });
+  }, [remoteNotebookDialog.resumeSync]);
   const handleSettingsWindowTarget = useCallback((target: NativeSettingsWindowTarget) => {
     nativeSettingsTargetRef.current = target;
     handleSelectCategory(settingsCategoryForTarget(target)).catch(() => {});
@@ -290,8 +290,8 @@ export function useSettingsWindowState() {
       return;
     }
 
-    await syncSession.begin();
-  }, [syncSession.begin]);
+    await remoteNotebookDialog.resumeSync();
+  }, [remoteNotebookDialog.resumeSync]);
 
   const handleSettingsWindowContext = useCallback((context: NativeSettingsWindowContext) => {
     const reopenTarget = nativeSettingsTargetRef.current;
@@ -310,6 +310,11 @@ export function useSettingsWindowState() {
     }
     return recoverVisibleSyncSession();
   }, [activeCategory, recoverVisibleSyncSession]);
+
+  useEffect(() => {
+    if (activeCategory !== "sync" || !syncPrimaryRootResolved) return;
+    remoteNotebookDialog.resumeSync().catch(() => {});
+  }, [activeCategory, remoteNotebookDialog.resumeSync, syncPrimaryRootResolved]);
 
   useEffect(() => {
     if (primaryWorkspace.status === "loading") return;
@@ -333,8 +338,7 @@ export function useSettingsWindowState() {
     if (pendingHide) return pendingHide;
 
     const acknowledgement = acknowledgeSettingsWindowHide(request.generation);
-    const shutdown = Promise.resolve(remoteNotebookDialog.cancel())
-      .then(() => syncSession.end("window-close"));
+    const shutdown = remoteNotebookDialog.leaveSync("window-close");
     const hidePromise = Promise.allSettled([acknowledgement, shutdown])
       .then((results) => {
         const failed = results.find((result) => result.status === "rejected");
@@ -362,9 +366,8 @@ export function useSettingsWindowState() {
   }, [
     activeCategory,
     recoverVisibleSyncSession,
-    remoteNotebookDialog.cancel,
+    remoteNotebookDialog.leaveSync,
     showSyncExitFailure,
-    syncSession.end
   ]);
 
   useEffect(() => {

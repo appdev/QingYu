@@ -9,10 +9,12 @@ export type SettingsRemoteNotebookDialogController = {
   entries: readonly RemoteNotebookCatalogEntry[];
   error: string | null;
   loading: boolean;
+  leaveSync: (reason: "category-leave" | "window-close") => Promise<unknown>;
   open: boolean;
   openDialog: () => Promise<unknown>;
   cancel: () => unknown;
   refresh: () => Promise<unknown>;
+  resumeSync: () => Promise<unknown>;
   restore: (remoteName: string) => Promise<unknown>;
 };
 
@@ -55,31 +57,37 @@ export function useSettingsRemoteNotebookDialog({
     return request;
   }, []);
 
+  const resumeSync = useCallback(() => enqueueSessionTransition(() => mountedRef.current
+    ? syncSession.begin()
+    : Promise.resolve(undefined)), [enqueueSessionTransition, syncSession.begin]);
+
+  const endSync = useCallback((
+    reason: Parameters<CompactSyncSettingsController["end"]>[0]
+  ) => enqueueSessionTransition(() => mountedRef.current
+    ? syncSession.end(reason)
+    : Promise.resolve(undefined)), [enqueueSessionTransition, syncSession.end]);
+
   const restartSession = useCallback(async () => {
     try {
-      await enqueueSessionTransition(() => mountedRef.current
-        ? syncSession.begin()
-        : Promise.resolve(undefined));
+      await resumeSync();
       return true;
     } catch {
       onSessionFailure();
       return false;
     }
-  }, [enqueueSessionTransition, onSessionFailure, syncSession.begin]);
+  }, [onSessionFailure, resumeSync]);
 
   const endSession = useCallback(async (
     reason: Parameters<CompactSyncSettingsController["end"]>[0]
   ) => {
     try {
-      await enqueueSessionTransition(() => mountedRef.current
-        ? syncSession.end(reason)
-        : Promise.resolve(undefined));
+      await endSync(reason);
       return true;
     } catch {
       onSessionFailure();
       return false;
     }
-  }, [enqueueSessionTransition, onSessionFailure, syncSession.end]);
+  }, [endSync, onSessionFailure]);
 
   const invalidateTransaction = useCallback(() => {
     const generation = transactionGenerationRef.current + 1;
@@ -90,6 +98,23 @@ export function useSettingsRemoteNotebookDialog({
     restoreAbortControllerRef.current = null;
     return generation;
   }, []);
+
+  const closeDialog = useCallback(() => {
+    openRef.current = false;
+    revisionRef.current = null;
+    if (!mountedRef.current) return;
+    setEntries([]);
+    setError(null);
+    setLoading(false);
+    setOpen(false);
+  }, []);
+
+  const leaveSync = useCallback((reason: "category-leave" | "window-close") => {
+    invalidateTransaction();
+    sessionEndedForDialogRef.current = false;
+    closeDialog();
+    return endSync(reason);
+  }, [closeDialog, endSync, invalidateTransaction]);
 
   const loadCatalog = useCallback(async (generation: number) => {
     try {
@@ -155,14 +180,7 @@ export function useSettingsRemoteNotebookDialog({
     const generation = invalidateTransaction();
     const shouldRestartSession = sessionEndedForDialogRef.current;
     sessionEndedForDialogRef.current = false;
-    openRef.current = false;
-    revisionRef.current = null;
-    if (mountedRef.current) {
-      setEntries([]);
-      setError(null);
-      setLoading(false);
-      setOpen(false);
-    }
+    closeDialog();
     if (!shouldRestartSession) return Promise.resolve(undefined);
 
     return restartSession().then((restarted) => {
@@ -170,7 +188,7 @@ export function useSettingsRemoteNotebookDialog({
         sessionEndedForDialogRef.current = true;
       }
     });
-  }, [invalidateTransaction, restartSession]);
+  }, [closeDialog, invalidateTransaction, restartSession]);
 
   const refresh = useCallback(async () => {
     if (!openRef.current) return;
@@ -252,10 +270,12 @@ export function useSettingsRemoteNotebookDialog({
     currentNotebookName,
     entries,
     error,
+    leaveSync,
     loading,
     open,
     openDialog,
     refresh,
+    resumeSync,
     restore
   };
 }

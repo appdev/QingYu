@@ -37,6 +37,8 @@ export function RemoteNotebookDialog({
 }: RemoteNotebookDialogProps) {
   const label = (key: string) => t(language, key);
   const dialogRef = useRef<HTMLDivElement>(null);
+  const mountedRef = useRef(true);
+  const operationGenerationRef = useRef(0);
   const previousFocusRef = useRef<HTMLElement | null>(null);
   const [selectedName, setSelectedName] = useState<string | null>(null);
   const [operationError, setOperationError] = useState<string | null>(null);
@@ -52,11 +54,16 @@ export function RemoteNotebookDialog({
   );
 
   useEffect(() => {
+    mountedRef.current = true;
     previousFocusRef.current = document.activeElement instanceof HTMLElement
       ? document.activeElement
       : null;
     dialogRef.current?.focus();
-    return () => previousFocusRef.current?.focus();
+    return () => {
+      mountedRef.current = false;
+      operationGenerationRef.current += 1;
+      previousFocusRef.current?.focus();
+    };
   }, []);
 
   useEffect(() => {
@@ -66,27 +73,39 @@ export function RemoteNotebookDialog({
 
   const refresh = async () => {
     if (busy) return;
+    const operationGeneration = operationGenerationRef.current + 1;
+    operationGenerationRef.current = operationGeneration;
     setOperationError(null);
     setRefreshing(true);
     try {
       await onRefresh();
     } catch {
-      setOperationError(label("notebooks.remote.refreshError"));
+      if (mountedRef.current && operationGenerationRef.current === operationGeneration) {
+        setOperationError(label("notebooks.remote.refreshError"));
+      }
     } finally {
-      setRefreshing(false);
+      if (mountedRef.current && operationGenerationRef.current === operationGeneration) {
+        setRefreshing(false);
+      }
     }
   };
 
   const restore = async () => {
     if (busy || !isSelectedRestorable || !selectedEntry) return;
+    const operationGeneration = operationGenerationRef.current + 1;
+    operationGenerationRef.current = operationGeneration;
     setOperationError(null);
     setRestoring(true);
     try {
       await onRestore(selectedEntry.name);
     } catch {
-      setOperationError(label("notebooks.remote.restoreError"));
+      if (mountedRef.current && operationGenerationRef.current === operationGeneration) {
+        setOperationError(label("notebooks.remote.restoreError"));
+      }
     } finally {
-      setRestoring(false);
+      if (mountedRef.current && operationGenerationRef.current === operationGeneration) {
+        setRestoring(false);
+      }
     }
   };
 

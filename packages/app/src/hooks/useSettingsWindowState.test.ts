@@ -1,4 +1,5 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
+import { requestPrimaryCloudNotebookRestore } from "../lib/cloud-notebook-restore-events";
 import { showAppToast } from "../lib/app-toast";
 import type { SyncConfigDocument, SyncConfigPatch } from "../lib/sync-config";
 import {
@@ -17,6 +18,22 @@ import {
 } from "./useSettingsWindowState";
 
 vi.mock("../lib/app-toast", () => ({ showAppToast: vi.fn() }));
+vi.mock("../lib/cloud-notebook-restore-events", () => ({
+  requestPrimaryCloudNotebookRestore: vi.fn()
+}));
+
+const mockedRequestPrimaryCloudNotebookRestore = vi.mocked(requestPrimaryCloudNotebookRestore);
+
+function deferred<T>() {
+  let resolve!: (value: T) => undefined;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = (value) => {
+      resolvePromise(value);
+      return undefined;
+    };
+  });
+  return { promise, resolve };
+}
 
 function document(revision: string, remoteRoot = "qingyu"): SyncConfigDocument {
   return {
@@ -158,6 +175,7 @@ describe("settings application sync session", () => {
   beforeEach(() => {
     resetAppRuntimeForTests();
     vi.mocked(showAppToast).mockReset();
+    mockedRequestPrimaryCloudNotebookRestore.mockReset();
     window.history.pushState({}, "", "/?settingsTarget=sync");
   });
 
@@ -334,6 +352,90 @@ describe("settings application sync session", () => {
     expect(result.current.remoteNotebookDialog.entries).toEqual([]);
     await act(async () => result.current.syncSession.patch({ field: "remoteRoot", value: "qingyu/reopened" }));
     expect(runtime.patch).toHaveBeenCalledTimes(1);
+  });
+
+  it("waits for a pending dialog cancel restart before ending Sync for native hide", async () => {
+    const runtime = installRuntime("/Workspace/A");
+    const { result } = renderHook(() => useSettingsWindowState());
+    await waitFor(() => expect(result.current.syncView.configDocument?.revision).toBe("rev-1"));
+    await act(async () => result.current.handleSelectCloudNotebook());
+    const restart = deferred<SyncConfigDocument & { status: "loaded" }>();
+    runtime.load.mockImplementationOnce(async () => restart.promise);
+
+    let cancel!: Promise<unknown>;
+    act(() => {
+      cancel = Promise.resolve(result.current.remoteNotebookDialog.cancel());
+    });
+    await waitFor(() => expect(runtime.load).toHaveBeenCalledTimes(3));
+
+    let hide!: Promise<unknown>;
+    act(() => {
+      hide = Promise.resolve(runtime.hide({ generation: 15 }));
+    });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    const completedBeforeRestart = runtime.completeSettingsWindowHide.mock.calls.length;
+
+    await act(async () => {
+      restart.resolve({ ...document("rev-restarted"), status: "loaded" });
+      await Promise.all([cancel, hide]);
+    });
+
+    expect(completedBeforeRestart).toBe(0);
+    expect(runtime.completeSettingsWindowHide).toHaveBeenCalledWith(15);
+    expect(result.current.syncSession.sessionId).toBeNull();
+  });
+
+  it("waits for a pending dialog cancel restart before leaving the Sync category", async () => {
+    const runtime = installRuntime("/Workspace/A");
+    const { result } = renderHook(() => useSettingsWindowState());
+    await waitFor(() => expect(result.current.syncView.configDocument?.revision).toBe("rev-1"));
+    await act(async () => result.current.handleSelectCloudNotebook());
+    const restart = deferred<SyncConfigDocument & { status: "loaded" }>();
+    runtime.load.mockImplementationOnce(async () => restart.promise);
+
+    let cancel!: Promise<unknown>;
+    act(() => {
+      cancel = Promise.resolve(result.current.remoteNotebookDialog.cancel());
+    });
+    await waitFor(() => expect(runtime.load).toHaveBeenCalledTimes(3));
+
+    let leave!: Promise<unknown>;
+    act(() => {
+      leave = Promise.resolve(result.current.setActiveCategory("appearance"));
+    });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    const categoryBeforeRestart = result.current.activeCategory;
+
+    await act(async () => {
+      restart.resolve({ ...document("rev-restarted"), status: "loaded" });
+      await Promise.all([cancel, leave]);
+    });
+
+    expect(categoryBeforeRestart).toBe("sync");
+    expect(result.current.activeCategory).toBe("appearance");
+    expect(result.current.syncSession.sessionId).toBeNull();
+  });
+
+  it("invalidates an unmatched restore waiter when leaving the Sync category", async () => {
+    installRuntime("/Workspace/Current");
+    const { result } = renderHook(() => useSettingsWindowState());
+    await waitFor(() => expect(result.current.syncView.configDocument?.revision).toBe("rev-1"));
+    await act(async () => result.current.handleSelectCloudNotebook());
+    mockedRequestPrimaryCloudNotebookRestore.mockResolvedValueOnce(true);
+    await act(async () => result.current.remoteNotebookDialog.restore("Archive"));
+
+    await act(async () => result.current.setActiveCategory("appearance"));
+    await act(async () => result.current.primaryWorkspace.commitDesktopRoot("/Restored/Archive"));
+    await waitFor(() => expect(result.current.primaryWorkspace.root).toBe("/Restored/Archive"));
+
+    expect(result.current.activeCategory).toBe("appearance");
+    expect(result.current.syncSession.sessionId).toBeNull();
   });
 
   it("lets the normal category effect begin Sync once when a retained window reopens from another category", async () => {
