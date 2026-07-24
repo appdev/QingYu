@@ -7,6 +7,7 @@ use cap_std::fs::{Dir, File as CapFile};
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 
 use crate::atomic_write::create_cap_staged_file;
+use crate::cloud::{Cloud, CloudError};
 use crate::indexer::{self, IndexHook, NoopIndexHook};
 use crate::path_security::{
     cap_metadata_is_reparse, std_metadata_is_reparse,
@@ -14,6 +15,7 @@ use crate::path_security::{
 };
 use crate::purge::{purge_store_with_cancel_check, PurgeStat};
 use crate::store::{open_absolute_dir_nofollow, open_child_directory};
+use crate::sync_lock::{acquire_remote_lock, RemoteLockGuard};
 use crate::{File, Index, RepoError, Store};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -127,6 +129,10 @@ impl Repo {
             }
         }
         Err(RepoError::RepoFatal)
+    }
+
+    pub async fn lock_cloud(&self, cloud: Arc<dyn Cloud>) -> Result<RemoteLockGuard, CloudError> {
+        acquire_remote_lock(cloud, self.device.id.clone()).await
     }
 
     pub fn checkout_file(&self, file: &File) -> Result<(), RepoError> {
