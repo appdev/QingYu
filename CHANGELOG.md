@@ -1,3 +1,9 @@
+## [2.0.0-alpha.11](https://github.com/markrahq/markra/compare/v2.0.0-alpha.10...v2.0.0-alpha.11) (2026-07-24)
+
+### Bug Fixes
+
+* **editor:** preserve source while dragging selections ([dd4a2fc](https://github.com/markrahq/markra/commit/dd4a2fcff0bc2acecea6de4a57335c8628872ffe))
+
 ## [2.0.0-alpha.10](https://github.com/markrahq/markra/compare/v2.0.0-alpha.9...v2.0.0-alpha.10) (2026-07-24)
 
 ### Bug Fixes
