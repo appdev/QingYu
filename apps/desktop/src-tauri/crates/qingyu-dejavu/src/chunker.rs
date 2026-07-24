@@ -1,3 +1,5 @@
+use std::io::{self, BufRead, BufReader, Read};
+
 use crate::sha1_hex;
 
 const WINDOW_SIZE: usize = 64;
@@ -5,6 +7,7 @@ const MIN_SIZE: usize = 512 * 1024;
 const MAX_SIZE: usize = 8 * 1024 * 1024;
 const SPLIT_MASK: u64 = (1 << 20) - 1;
 const POLYNOMIAL: u64 = 0x3DA3358B4DC173;
+const STREAM_BUFFER_SIZE: usize = 64 * 1024;
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct ChunkBoundary {
@@ -17,6 +20,12 @@ pub struct RabinChunker<'a> {
     bytes: &'a [u8],
     offset: usize,
     tables: Tables,
+}
+
+pub(crate) struct StreamingRabinChunker<R> {
+    reader: BufReader<R>,
+    tables: Tables,
+    finished: bool,
 }
 
 #[derive(Clone)]
@@ -75,6 +84,67 @@ impl Iterator for RabinChunker<'_> {
             length,
             sha1: sha1_hex(chunk),
         })
+    }
+}
+
+impl<R: Read> StreamingRabinChunker<R> {
+    pub(crate) fn new(reader: R) -> Self {
+        Self {
+            reader: BufReader::with_capacity(STREAM_BUFFER_SIZE, reader),
+            tables: Tables::new(),
+            finished: false,
+        }
+    }
+
+    pub(crate) fn next_chunk(&mut self) -> io::Result<Option<Vec<u8>>> {
+        if self.finished {
+            return Ok(None);
+        }
+
+        let mut chunk = Vec::with_capacity(MIN_SIZE);
+        let mut state = RabinState::new(&self.tables);
+        let skip_target = MIN_SIZE - WINDOW_SIZE;
+        while chunk.len() < skip_target {
+            let available = self.reader.fill_buf()?;
+            if available.is_empty() {
+                self.finished = true;
+                return if chunk.is_empty() {
+                    Ok(None)
+                } else {
+                    Ok(Some(chunk))
+                };
+            }
+            let used = available.len().min(skip_target - chunk.len());
+            chunk.extend_from_slice(&available[..used]);
+            self.reader.consume(used);
+        }
+        state.count = chunk.len();
+
+        loop {
+            let available = self.reader.fill_buf()?;
+            if available.is_empty() {
+                self.finished = true;
+                return Ok(Some(chunk));
+            }
+
+            let mut used = 0;
+            for byte in available.iter().copied() {
+                chunk.push(byte);
+                state.slide(byte, &self.tables);
+                used += 1;
+                if state.count >= MIN_SIZE
+                    && ((state.digest & SPLIT_MASK) == 0 || state.count >= MAX_SIZE)
+                {
+                    break;
+                }
+            }
+            self.reader.consume(used);
+            if state.count >= MIN_SIZE
+                && ((state.digest & SPLIT_MASK) == 0 || state.count >= MAX_SIZE)
+            {
+                return Ok(Some(chunk));
+            }
+        }
     }
 }
 
@@ -164,7 +234,11 @@ fn polynomial_degree(value: u64) -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{ChunkBoundary, RabinChunker};
+    use std::io::{self, Cursor, Read};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    use super::{ChunkBoundary, RabinChunker, StreamingRabinChunker, MAX_SIZE, MIN_SIZE};
 
     fn golden_stream() -> Vec<u8> {
         let mut bytes = Vec::with_capacity(20 * 1024 * 1024);
@@ -190,5 +264,88 @@ mod tests {
             RabinChunker::new(&bytes).collect::<Vec<_>>(),
             expected_chunks
         );
+    }
+
+    #[test]
+    fn empty_input_matches_the_pinned_restic_go_oracle() {
+        assert!(RabinChunker::new(&[]).next().is_none());
+    }
+
+    #[test]
+    fn exact_minimum_input_matches_the_pinned_restic_go_oracle() {
+        let bytes = vec![0_u8; MIN_SIZE];
+
+        assert_eq!(
+            RabinChunker::new(&bytes).collect::<Vec<_>>(),
+            vec![ChunkBoundary {
+                offset: 0,
+                length: MIN_SIZE,
+                sha1: "6a521e1d2a632c26e53b83d2cc4b0edecfc1e68c".to_owned(),
+            }]
+        );
+    }
+
+    #[test]
+    fn forced_exact_maximum_input_matches_the_pinned_restic_go_oracle() {
+        let mut bytes = Vec::with_capacity(MAX_SIZE);
+        let mut x = 825_u64;
+        for _ in 0..MAX_SIZE {
+            x ^= x.wrapping_shl(13);
+            x ^= x.wrapping_shr(7);
+            x ^= x.wrapping_shl(17);
+            bytes.push(x as u8);
+        }
+
+        assert_eq!(
+            RabinChunker::new(&bytes).collect::<Vec<_>>(),
+            vec![ChunkBoundary {
+                offset: 0,
+                length: MAX_SIZE,
+                sha1: "fcca09c14fa38ddb0ce70b3b84cf7f767afde4d1".to_owned(),
+            }]
+        );
+    }
+
+    struct BoundedReader {
+        inner: Cursor<Vec<u8>>,
+        largest_request: Arc<AtomicUsize>,
+    }
+
+    impl Read for BoundedReader {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            self.largest_request
+                .fetch_max(buffer.len(), Ordering::SeqCst);
+            self.inner.read(buffer)
+        }
+    }
+
+    #[test]
+    fn streaming_chunker_bounds_each_read_and_each_returned_chunk() {
+        let largest_request = Arc::new(AtomicUsize::new(0));
+        let expected_chunks: Vec<ChunkBoundary> = serde_json::from_str(include_str!(
+            "../tests/fixtures/golden/chunk-boundaries.json"
+        ))
+        .unwrap();
+        let reader = BoundedReader {
+            inner: Cursor::new(golden_stream()),
+            largest_request: Arc::clone(&largest_request),
+        };
+        let mut chunker = StreamingRabinChunker::new(reader);
+        let mut total = 0;
+        let mut actual_chunks = Vec::new();
+
+        while let Some(chunk) = chunker.next_chunk().unwrap() {
+            assert!(chunk.len() <= MAX_SIZE);
+            actual_chunks.push(ChunkBoundary {
+                offset: total,
+                length: chunk.len(),
+                sha1: crate::sha1_hex(&chunk),
+            });
+            total += chunk.len();
+        }
+
+        assert_eq!(total, 20 * 1024 * 1024);
+        assert_eq!(actual_chunks, expected_chunks);
+        assert!(largest_request.load(Ordering::SeqCst) <= MIN_SIZE);
     }
 }

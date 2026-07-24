@@ -3536,6 +3536,8 @@ dependencies = [
  "aes-gcm",
  "async-trait",
  "base64 0.22.1",
+ "cap-fs-ext",
+ "cap-std",
  "filetime",
  "getrandom 0.4.3",
  "ignore",

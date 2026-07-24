@@ -3,6 +3,9 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
+use cap_fs_ext::{FollowSymlinks, OpenOptionsFollowExt};
+use cap_std::fs::{Dir, File as CapFile, OpenOptions as CapOpenOptions};
+
 use crate::{random_hash, RepoError};
 
 const TEMP_CREATE_ATTEMPTS: usize = 32;
@@ -17,6 +20,14 @@ pub(crate) enum PublishOutcome {
 pub(crate) struct StagedFile {
     temp_path: PathBuf,
     destination: PathBuf,
+    cleanup_armed: bool,
+}
+
+pub(crate) struct CapStagedFile {
+    parent: Dir,
+    temp_name: OsString,
+    destination: OsString,
+    temp_file: CapFile,
     cleanup_armed: bool,
 }
 
@@ -47,17 +58,64 @@ pub(crate) fn stage_file(path: &Path, bytes: &[u8], mode: u32) -> Result<StagedF
     }
 }
 
-impl StagedFile {
-    pub(crate) fn path(&self) -> &Path {
-        &self.temp_path
+pub(crate) fn stage_cap_file(
+    parent: &Dir,
+    destination: &std::ffi::OsStr,
+    bytes: &[u8],
+    mode: u32,
+) -> Result<CapStagedFile, RepoError> {
+    for _attempt in 0..TEMP_CREATE_ATTEMPTS {
+        let random = random_hash().map_err(|_| RepoError::RandomnessUnavailable)?;
+        let mut temp_name = OsString::from(destination);
+        temp_name.push(".");
+        temp_name.push(random);
+        temp_name.push(".tmp");
+        let mut options = CapOpenOptions::new();
+        options
+            .write(true)
+            .create_new(true)
+            .follow(FollowSymlinks::No);
+        configure_cap_temp_options(&mut options, mode);
+        match parent.open_with(&temp_name, &options) {
+            Ok(mut temp_file) => {
+                let result = (|| -> Result<(), RepoError> {
+                    temp_file.write_all(bytes)?;
+                    temp_file.sync_all()?;
+                    set_cap_mode(&temp_file, mode)?;
+                    Ok(())
+                })();
+                if let Err(error) = result {
+                    let _cleanup_result = parent.remove_file(&temp_name);
+                    return Err(error);
+                }
+                return Ok(CapStagedFile {
+                    parent: parent.try_clone()?,
+                    temp_name,
+                    destination: destination.to_os_string(),
+                    temp_file,
+                    cleanup_armed: true,
+                });
+            }
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error.into()),
+        }
     }
 
+    Err(io::Error::new(
+        io::ErrorKind::AlreadyExists,
+        "could not create a unique safer-write temporary file",
+    )
+    .into())
+}
+
+impl StagedFile {
     pub(crate) fn publish_replace(mut self) -> Result<(), RepoError> {
         replace_with_retry(&self.temp_path, &self.destination)?;
         self.cleanup_armed = false;
         Ok(())
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn publish_no_replace(mut self) -> Result<PublishOutcome, RepoError> {
         match fs::hard_link(&self.temp_path, &self.destination) {
             Ok(()) => {
@@ -78,8 +136,55 @@ impl StagedFile {
         }
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     fn remove_temp(&mut self) -> Result<(), RepoError> {
         fs::remove_file(&self.temp_path)?;
+        self.cleanup_armed = false;
+        Ok(())
+    }
+}
+
+impl CapStagedFile {
+    pub(crate) fn file(&self) -> &CapFile {
+        &self.temp_file
+    }
+
+    pub(crate) fn publish_replace(mut self) -> Result<(), RepoError> {
+        replace_cap_with_retry(
+            &self.parent,
+            &self.temp_file,
+            &self.temp_name,
+            &self.destination,
+        )?;
+        self.cleanup_armed = false;
+        Ok(())
+    }
+
+    pub(crate) fn publish_no_replace(mut self) -> Result<PublishOutcome, RepoError> {
+        match self
+            .parent
+            .hard_link(&self.temp_name, &self.parent, &self.destination)
+        {
+            Ok(()) => {
+                self.remove_temp()?;
+                Ok(PublishOutcome::Published)
+            }
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                let metadata = self.parent.symlink_metadata(&self.destination)?;
+                if !metadata.file_type().is_file() {
+                    return Err(RepoError::InvalidData(
+                        "immutable object destination must be a regular file",
+                    ));
+                }
+                self.remove_temp()?;
+                Ok(PublishOutcome::AlreadyExists)
+            }
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    fn remove_temp(&mut self) -> Result<(), RepoError> {
+        self.parent.remove_file(&self.temp_name)?;
         self.cleanup_armed = false;
         Ok(())
     }
@@ -91,6 +196,120 @@ impl Drop for StagedFile {
             let _cleanup_result = fs::remove_file(&self.temp_path);
         }
     }
+}
+
+impl Drop for CapStagedFile {
+    fn drop(&mut self) {
+        if self.cleanup_armed {
+            let _cleanup_result = self.parent.remove_file(&self.temp_name);
+        }
+    }
+}
+
+#[cfg(unix)]
+fn configure_cap_temp_options(options: &mut CapOpenOptions, mode: u32) {
+    use cap_std::fs::OpenOptionsExt;
+
+    options.mode(mode);
+}
+
+#[cfg(windows)]
+fn configure_cap_temp_options(options: &mut CapOpenOptions, _mode: u32) {
+    use cap_std::fs::OpenOptionsExt;
+    use windows_sys::Win32::Storage::FileSystem::{DELETE, FILE_GENERIC_WRITE};
+
+    options.access_mode(FILE_GENERIC_WRITE | DELETE);
+}
+
+#[cfg(not(any(unix, windows)))]
+fn configure_cap_temp_options(_options: &mut CapOpenOptions, _mode: u32) {}
+
+#[cfg(unix)]
+fn set_cap_mode(file: &CapFile, mode: u32) -> Result<(), RepoError> {
+    use cap_std::fs::PermissionsExt;
+
+    file.set_permissions(cap_std::fs::Permissions::from_mode(mode))?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn set_cap_mode(_file: &CapFile, _mode: u32) -> Result<(), RepoError> {
+    Ok(())
+}
+
+fn replace_cap_with_retry(
+    parent: &Dir,
+    temp_file: &CapFile,
+    from: &std::ffi::OsStr,
+    to: &std::ffi::OsStr,
+) -> Result<(), RepoError> {
+    for attempt in 0..WINDOWS_RENAME_ATTEMPTS {
+        match replace_cap_file(parent, temp_file, from, to) {
+            Ok(()) => return Ok(()),
+            Err(error)
+                if cfg!(windows)
+                    && retryable_windows_rename_error(&error)
+                    && attempt + 1 < WINDOWS_RENAME_ATTEMPTS =>
+            {
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+    unreachable!("rename loop returns on its final attempt")
+}
+
+#[cfg(not(windows))]
+fn replace_cap_file(
+    parent: &Dir,
+    _temp_file: &CapFile,
+    from: &std::ffi::OsStr,
+    to: &std::ffi::OsStr,
+) -> io::Result<()> {
+    parent.rename(from, parent, to)
+}
+
+#[cfg(windows)]
+fn replace_cap_file(
+    parent: &Dir,
+    temp_file: &CapFile,
+    _from: &std::ffi::OsStr,
+    to: &std::ffi::OsStr,
+) -> io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FileRenameInfo, SetFileInformationByHandle, FILE_RENAME_INFO,
+    };
+
+    let wide_name = to.encode_wide().collect::<Vec<_>>();
+    let header_size = std::mem::offset_of!(FILE_RENAME_INFO, FileName);
+    let buffer_size = header_size + wide_name.len() * std::mem::size_of::<u16>();
+    let mut buffer = vec![0_u8; buffer_size];
+    let info = buffer.as_mut_ptr().cast::<FILE_RENAME_INFO>();
+    unsafe {
+        (*info).Anonymous.ReplaceIfExists = true;
+        (*info).RootDirectory = parent.as_raw_handle();
+        (*info).FileNameLength = u32::try_from(wide_name.len() * 2)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "file name is too long"))?;
+        std::ptr::copy_nonoverlapping(
+            wide_name.as_ptr(),
+            (*info).FileName.as_mut_ptr(),
+            wide_name.len(),
+        );
+        if SetFileInformationByHandle(
+            temp_file.as_raw_handle(),
+            FileRenameInfo,
+            buffer.as_ptr().cast(),
+            u32::try_from(buffer_size).map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidInput, "rename buffer is too large")
+            })?,
+        ) == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    Ok(())
 }
 
 fn create_temp_file(path: &Path) -> Result<(PathBuf, File), RepoError> {

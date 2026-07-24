@@ -1,9 +1,12 @@
-use std::fs;
 use std::io::{BufReader, Cursor, Read};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
-use crate::atomic_write::{stage_file, StagedFile};
+use cap_fs_ext::{DirExt, FollowSymlinks, OpenOptionsFollowExt};
+use cap_std::ambient_authority;
+use cap_std::fs::{Dir, OpenOptions};
+
+use crate::atomic_write::{stage_cap_file, CapStagedFile};
 use crate::crypto::{decrypt, encrypt};
 use crate::{CheckIndex, Chunk, File, Index, RepoError};
 
@@ -16,6 +19,8 @@ const MAX_CHECK_INDEX_DECODED_SIZE: usize = 512 * 1024 * 1024;
 
 pub struct Store {
     root: PathBuf,
+    anchor: Dir,
+    relative_root: PathBuf,
     key: [u8; 32],
     compressor: Mutex<zstd::bulk::Compressor<'static>>,
     decompressor: Mutex<zstd::zstd_safe::DCtx<'static>>,
@@ -23,6 +28,8 @@ pub struct Store {
 
 impl Store {
     pub fn new(root: impl Into<PathBuf>, key: [u8; 32]) -> Result<Self, RepoError> {
+        let root = absolute_lexical_root(root.into())?;
+        let (anchor, relative_root) = store_anchor(&root)?;
         let mut compressor = zstd::bulk::Compressor::new(zstd::DEFAULT_COMPRESSION_LEVEL)
             .map_err(RepoError::Compression)?;
         compressor
@@ -38,7 +45,9 @@ impl Store {
         })?;
 
         Ok(Self {
-            root: root.into(),
+            root,
+            anchor,
+            relative_root,
             key,
             compressor: Mutex::new(compressor),
             decompressor: Mutex::new(decompressor),
@@ -68,7 +77,7 @@ impl Store {
 
     pub fn get_chunk(&self, id: &str) -> Result<Chunk, RepoError> {
         let path = self.object_path(id)?;
-        let encoded = read_object(&path, id)?;
+        let encoded = self.read_object(&path, id)?;
         Ok(Chunk {
             id: id.to_owned(),
             data: self.decode_encrypted(&encoded, MAX_CHUNK_DECODED_SIZE)?,
@@ -84,18 +93,21 @@ impl Store {
 
     pub fn get_file(&self, id: &str) -> Result<File, RepoError> {
         let path = self.object_path(id)?;
-        let encoded = read_object(&path, id)?;
+        let encoded = self.read_object(&path, id)?;
         let json = self.decode_encrypted(&encoded, MAX_FILE_DECODED_SIZE)?;
         Ok(serde_json::from_slice(&json)?)
     }
 
     pub fn put_index(&self, index: &Index) -> Result<(), RepoError> {
-        self.put_index_with_mtime(index, |path, mtime| filetime::set_file_mtime(path, mtime))
+        self.put_index_with_mtime(index, |file, mtime| {
+            let standard_file = file.try_clone()?.into_std();
+            filetime::set_file_handle_times(&standard_file, None, Some(mtime))
+        })
     }
 
     fn put_index_with_mtime<F>(&self, index: &Index, set_mtime: F) -> Result<(), RepoError>
     where
-        F: FnOnce(&Path, filetime::FileTime) -> std::io::Result<()>,
+        F: FnOnce(&cap_std::fs::File, filetime::FileTime) -> std::io::Result<()>,
     {
         let path = self.index_path(&index.id)?;
         let json = serde_json::to_vec(index)?;
@@ -104,7 +116,7 @@ impl Store {
         let seconds = index.created.div_euclid(1_000);
         let nanos = index.created.rem_euclid(1_000) as u32 * 1_000_000;
         set_mtime(
-            staged.path(),
+            staged.file(),
             filetime::FileTime::from_unix_time(seconds, nanos),
         )?;
         staged.publish_replace()
@@ -112,7 +124,7 @@ impl Store {
 
     pub fn get_index(&self, id: &str) -> Result<Index, RepoError> {
         let path = self.index_path(id)?;
-        let encoded = read_object(&path, id)?;
+        let encoded = self.read_object(&path, id)?;
         let json = self.decompress(&encoded, MAX_INDEX_DECODED_SIZE)?;
         Ok(serde_json::from_slice(&json)?)
     }
@@ -126,7 +138,7 @@ impl Store {
 
     pub fn get_check_index(&self, id: &str) -> Result<CheckIndex, RepoError> {
         let path = self.check_index_path(id)?;
-        let encoded = read_object(&path, id)?;
+        let encoded = self.read_object(&path, id)?;
         let json = self.decompress(&encoded, MAX_CHECK_INDEX_DECODED_SIZE)?;
         Ok(serde_json::from_slice(&json)?)
     }
@@ -140,12 +152,51 @@ impl Store {
         Ok(())
     }
 
-    fn stage_object(&self, path: &Path, bytes: &[u8]) -> Result<StagedFile, RepoError> {
-        let parent = path
-            .parent()
-            .ok_or(RepoError::InvalidData("object path must have a parent"))?;
-        fs::create_dir_all(parent)?;
-        stage_file(path, bytes, OBJECT_MODE)
+    fn stage_object(&self, path: &Path, bytes: &[u8]) -> Result<CapStagedFile, RepoError> {
+        let relative = self.relative_store_path(path)?;
+        let destination = relative
+            .file_name()
+            .ok_or(RepoError::InvalidData("object path must have a file name"))?;
+        let parent =
+            self.open_directory(relative.parent().unwrap_or_else(|| Path::new("")), true)?;
+        stage_cap_file(&parent, destination, bytes, OBJECT_MODE)
+    }
+
+    fn read_object(&self, path: &Path, id: &str) -> Result<Vec<u8>, RepoError> {
+        let relative = self.relative_store_path(path)?;
+        let name = relative
+            .file_name()
+            .ok_or(RepoError::InvalidData("object path must have a file name"))?;
+        let parent = self
+            .open_directory(relative.parent().unwrap_or_else(|| Path::new("")), false)
+            .map_err(|error| map_not_found(error, id))?;
+        let mut options = OpenOptions::new();
+        options.read(true).follow(FollowSymlinks::No);
+        let mut file = parent
+            .open_with(name, &options)
+            .map_err(|error| map_object_io(error, id))?;
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)?;
+        Ok(bytes)
+    }
+
+    fn relative_store_path<'a>(&self, path: &'a Path) -> Result<&'a Path, RepoError> {
+        let relative = path
+            .strip_prefix(&self.root)
+            .map_err(|_| RepoError::UnsafePath)?;
+        validate_relative_path(relative)?;
+        Ok(relative)
+    }
+
+    fn open_directory(&self, relative: &Path, create: bool) -> Result<Dir, RepoError> {
+        let mut directory = self.anchor.try_clone()?;
+        for component in self.relative_root.components().chain(relative.components()) {
+            let Component::Normal(name) = component else {
+                return Err(RepoError::UnsafePath);
+            };
+            directory = open_child_directory(&directory, name, create)?;
+        }
+        Ok(directory)
     }
 
     fn encode_encrypted(&self, bytes: &[u8]) -> Result<Vec<u8>, RepoError> {
@@ -236,14 +287,171 @@ fn validate_id(id: &str) -> Result<(), RepoError> {
     }
 }
 
-fn read_object(path: &Path, id: &str) -> Result<Vec<u8>, RepoError> {
-    fs::read(path).map_err(|error| {
-        if error.kind() == std::io::ErrorKind::NotFound {
-            RepoError::NotFound(id.to_owned())
-        } else {
-            RepoError::Io(error)
+fn absolute_lexical_root(root: PathBuf) -> Result<PathBuf, RepoError> {
+    if root.as_os_str().is_empty() {
+        return Err(RepoError::UnsafePath);
+    }
+    let absolute = if root.is_absolute() {
+        root
+    } else {
+        std::env::current_dir()?.join(root)
+    };
+    let mut normalized = PathBuf::new();
+    for component in absolute.components() {
+        match component {
+            Component::Prefix(_) | Component::RootDir | Component::Normal(_) => {
+                normalized.push(component.as_os_str());
+            }
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !normalized.pop() {
+                    return Err(RepoError::UnsafePath);
+                }
+            }
         }
-    })
+    }
+    if normalized.is_absolute() {
+        Ok(normalized)
+    } else {
+        Err(RepoError::UnsafePath)
+    }
+}
+
+fn store_anchor(root: &Path) -> Result<(Dir, PathBuf), RepoError> {
+    let mut existing = root.to_path_buf();
+    let mut missing = Vec::new();
+    loop {
+        match std::fs::symlink_metadata(&existing) {
+            Ok(metadata) => {
+                if !metadata.file_type().is_dir() || unsafe_store_root_metadata(&metadata) {
+                    return Err(RepoError::UnsafePath);
+                }
+                let canonical_existing = std::fs::canonicalize(&existing)?;
+                let anchor = open_absolute_dir_nofollow(&canonical_existing)?;
+                let relative = missing.into_iter().rev().collect::<PathBuf>();
+                return Ok((anchor, relative));
+            }
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+                ) =>
+            {
+                let component = existing
+                    .file_name()
+                    .ok_or(RepoError::UnsafePath)?
+                    .to_os_string();
+                missing.push(component);
+                if !existing.pop() {
+                    return Err(RepoError::UnsafePath);
+                }
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
+}
+
+fn unsafe_store_root_metadata(metadata: &std::fs::Metadata) -> bool {
+    if metadata.file_type().is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+
+        metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
+}
+
+pub(crate) fn open_absolute_dir_nofollow(path: &Path) -> Result<Dir, RepoError> {
+    if !path.is_absolute() {
+        return Err(RepoError::UnsafePath);
+    }
+    let mut ambient_root = PathBuf::new();
+    let mut names = Vec::new();
+    for component in path.components() {
+        match component {
+            Component::Prefix(_) | Component::RootDir if names.is_empty() => {
+                ambient_root.push(component.as_os_str());
+            }
+            Component::Normal(name) => names.push(name.to_os_string()),
+            Component::CurDir => {}
+            Component::ParentDir | Component::Prefix(_) | Component::RootDir => {
+                return Err(RepoError::UnsafePath);
+            }
+        }
+    }
+    if ambient_root.as_os_str().is_empty() {
+        return Err(RepoError::UnsafePath);
+    }
+    let mut directory = Dir::open_ambient_dir(ambient_root, ambient_authority())?;
+    for name in names {
+        directory = directory
+            .open_dir_nofollow(&name)
+            .map_err(|error| map_nofollow_error(&directory, &name, error))?;
+    }
+    Ok(directory)
+}
+
+fn open_child_directory(
+    parent: &Dir,
+    name: &std::ffi::OsStr,
+    create: bool,
+) -> Result<Dir, RepoError> {
+    match parent.open_dir_nofollow(name) {
+        Ok(directory) => Ok(directory),
+        Err(error) if create && error.kind() == std::io::ErrorKind::NotFound => {
+            match parent.create_dir(name) {
+                Ok(()) => {}
+                Err(create_error) if create_error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(create_error) => return Err(create_error.into()),
+            }
+            parent
+                .open_dir_nofollow(name)
+                .map_err(|open_error| map_nofollow_error(parent, name, open_error))
+        }
+        Err(error) => Err(map_nofollow_error(parent, name, error)),
+    }
+}
+
+fn map_nofollow_error(parent: &Dir, name: &std::ffi::OsStr, error: std::io::Error) -> RepoError {
+    match parent.symlink_metadata(name) {
+        Ok(metadata) if metadata.file_type().is_symlink() => RepoError::UnsafePath,
+        _ => RepoError::Io(error),
+    }
+}
+
+fn validate_relative_path(path: &Path) -> Result<(), RepoError> {
+    if path
+        .components()
+        .all(|component| matches!(component, Component::Normal(_)))
+    {
+        Ok(())
+    } else {
+        Err(RepoError::UnsafePath)
+    }
+}
+
+fn map_not_found(error: RepoError, id: &str) -> RepoError {
+    match error {
+        RepoError::Io(io_error) if io_error.kind() == std::io::ErrorKind::NotFound => {
+            RepoError::NotFound(id.to_owned())
+        }
+        other => other,
+    }
+}
+
+fn map_object_io(error: std::io::Error, id: &str) -> RepoError {
+    if error.kind() == std::io::ErrorKind::NotFound {
+        RepoError::NotFound(id.to_owned())
+    } else {
+        RepoError::Io(error)
+    }
 }
 
 #[cfg(test)]
@@ -592,6 +800,33 @@ mod tests {
         };
         assert_eq!(fs::read(path).unwrap(), winning_bytes);
         assert_no_temp_files(temp.path());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn store_publication_stays_confined_to_the_opened_repository_handle() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().unwrap();
+        let repository = temp.path().join("repo");
+        let held_repository = temp.path().join("repo-held");
+        let outside = temp.path().join("outside");
+        fs::create_dir(&repository).unwrap();
+        fs::create_dir(&outside).unwrap();
+        let store = Store::new(&repository, fixture_key()).unwrap();
+        fs::rename(&repository, &held_repository).unwrap();
+        symlink(&outside, &repository).unwrap();
+
+        store
+            .put_chunk(&Chunk {
+                id: CHUNK_ID.to_owned(),
+                data: b"confined".to_vec(),
+            })
+            .unwrap();
+
+        assert_eq!(store.get_chunk(CHUNK_ID).unwrap().data, b"confined");
+        assert!(held_repository.join("objects/11").is_dir());
+        assert!(!outside.join("objects").exists());
     }
 
     #[test]

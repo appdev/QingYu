@@ -1,8 +1,11 @@
-use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
-use crate::repo::validate_root_has_no_symlinks;
-use crate::{random_hash, sha1_hex, Chunk, File, Index, RabinChunker, Repo, RepoError};
+use cap_fs_ext::{DirExt, FollowSymlinks, OpenOptionsFollowExt};
+use cap_std::fs::{Dir, Metadata, OpenOptions};
+
+use crate::chunker::StreamingRabinChunker;
+use crate::{random_hash, sha1_hex, Chunk, File, Index, Repo, RepoError};
 
 #[cfg(windows)]
 use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_HIDDEN as WINDOWS_HIDDEN_ATTRIBUTE;
@@ -22,16 +25,15 @@ impl IndexHook for NoopIndexHook {
 }
 
 struct ScannedFile {
-    absolute_path: PathBuf,
+    relative_path: PathBuf,
     repository_path: String,
     size: i64,
     updated: i64,
 }
 
 pub(crate) fn index_once(repo: &Repo, memo: &str, attempt: usize) -> Result<Index, RepoError> {
-    validate_root_has_no_symlinks(&repo.paths.data)?;
     let mut scanned = Vec::new();
-    scan_directory(repo, &repo.paths.data, Path::new(""), false, &mut scanned)?;
+    scan_directory(repo, &repo.data_dir, Path::new(""), false, &mut scanned)?;
     scanned.sort_by(|left, right| left.repository_path.cmp(&right.repository_path));
     if scanned.is_empty() {
         return Err(RepoError::EmptyIndex);
@@ -71,25 +73,23 @@ pub(crate) fn index_once(repo: &Repo, memo: &str, attempt: usize) -> Result<Inde
 
 fn scan_directory(
     repo: &Repo,
-    absolute_directory: &Path,
+    directory: &Dir,
     relative_directory: &Path,
     hidden_ancestor: bool,
     scanned: &mut Vec<ScannedFile>,
 ) -> Result<(), RepoError> {
-    let directory_metadata =
-        descendant_metadata_without_symlinks(&repo.paths.data, absolute_directory)?;
+    let directory_metadata = directory.dir_metadata().map_err(map_scan_io)?;
     if !directory_metadata.file_type().is_dir() {
         return Err(RepoError::IndexFileChanged);
     }
-    let entries = fs::read_dir(absolute_directory).map_err(map_scan_io)?;
+    let entries = directory.entries().map_err(map_scan_io)?;
     for entry in entries {
         let entry = entry.map_err(map_scan_io)?;
         let name = entry.file_name();
         let name_text = name.to_str().ok_or(RepoError::UnsafePath)?;
         let relative_path = relative_directory.join(&name);
         let repository_path = repository_path(&relative_path)?;
-        let absolute_path = entry.path();
-        let metadata = fs::symlink_metadata(&absolute_path).map_err(map_scan_io)?;
+        let metadata = directory.symlink_metadata(&name).map_err(map_scan_io)?;
         let file_type = metadata.file_type();
         let protected = repo
             .protected_include_paths
@@ -116,7 +116,10 @@ fn scan_directory(
             if (hidden || user_ignored) && !protected_descendant {
                 continue;
             }
-            scan_directory(repo, &absolute_path, &relative_path, hidden, scanned)?;
+            let child = directory
+                .open_dir_nofollow(&name)
+                .map_err(|error| map_nofollow_io(directory, &name, error))?;
+            scan_directory(repo, &child, &relative_path, hidden, scanned)?;
             continue;
         }
 
@@ -141,7 +144,7 @@ fn scan_directory(
         }
 
         scanned.push(ScannedFile {
-            absolute_path,
+            relative_path,
             repository_path,
             size: i64::try_from(metadata.len()).map_err(|_| RepoError::RepoFatal)?,
             updated: metadata_updated(&metadata)?,
@@ -157,10 +160,10 @@ fn has_protected_descendant(repo: &Repo, repository_path: &str) -> bool {
         .any(|protected| protected.starts_with(&prefix))
 }
 
-fn hidden_entry(name: &str, metadata: &fs::Metadata) -> bool {
+fn hidden_entry(name: &str, metadata: &Metadata) -> bool {
     #[cfg(windows)]
     let attributes = {
-        use std::os::windows::fs::MetadataExt;
+        use cap_std::fs::MetadataExt;
         metadata.file_attributes()
     };
     #[cfg(not(windows))]
@@ -197,37 +200,46 @@ fn repository_path(relative_path: &Path) -> Result<String, RepoError> {
 }
 
 fn store_scanned_file(repo: &Repo, scanned: &ScannedFile) -> Result<File, RepoError> {
-    let before_read =
-        descendant_metadata_without_symlinks(&repo.paths.data, &scanned.absolute_path)?;
+    let mut source = open_file_nofollow(&repo.data_dir, &scanned.relative_path)?;
+    let before_read = source.metadata().map_err(map_changed_io)?;
     if !before_read.file_type().is_file() {
         return Err(RepoError::IndexFileChanged);
     }
+    if i64::try_from(before_read.len()).map_err(|_| RepoError::RepoFatal)? != scanned.size
+        || metadata_updated(&before_read)? / 1_000 != scanned.updated / 1_000
+    {
+        return Err(RepoError::IndexFileChanged);
+    }
 
-    let data = fs::read(&scanned.absolute_path).map_err(map_changed_io)?;
     let mut file = File::new(
         scanned.repository_path.clone(),
         scanned.size,
         scanned.updated,
     );
-    if data.is_empty() {
-        let id = sha1_hex(&data);
+    if scanned.size == 0 {
+        let mut probe = [0_u8; 1];
+        if source.read(&mut probe).map_err(map_changed_io)? != 0 {
+            return Err(RepoError::IndexFileChanged);
+        }
+        let id = sha1_hex(&[]);
         repo.store.put_chunk(&Chunk {
             id: id.clone(),
-            data,
+            data: Vec::new(),
         })?;
         file.chunks.push(id);
     } else {
-        for boundary in RabinChunker::new(&data) {
+        let mut chunker = StreamingRabinChunker::new(&mut source);
+        while let Some(data) = chunker.next_chunk().map_err(map_changed_io)? {
+            let id = sha1_hex(&data);
             repo.store.put_chunk(&Chunk {
-                id: boundary.sha1.clone(),
-                data: data[boundary.offset..boundary.offset + boundary.length].to_vec(),
+                id: id.clone(),
+                data,
             })?;
-            file.chunks.push(boundary.sha1);
+            file.chunks.push(id);
         }
     }
 
-    let after_read =
-        descendant_metadata_without_symlinks(&repo.paths.data, &scanned.absolute_path)?;
+    let after_read = source.metadata().map_err(map_changed_io)?;
     if !after_read.file_type().is_file()
         || i64::try_from(after_read.len()).map_err(|_| RepoError::RepoFatal)? != scanned.size
         || metadata_updated(&after_read)? / 1_000 != scanned.updated / 1_000
@@ -239,39 +251,40 @@ fn store_scanned_file(repo: &Repo, scanned: &ScannedFile) -> Result<File, RepoEr
     Ok(file)
 }
 
-fn descendant_metadata_without_symlinks(
-    root: &Path,
-    path: &Path,
-) -> Result<fs::Metadata, RepoError> {
-    let relative = path.strip_prefix(root).map_err(|_| RepoError::UnsafePath)?;
-    let mut current = root.to_path_buf();
-    let mut metadata = fs::symlink_metadata(&current).map_err(map_changed_io)?;
-    if metadata.file_type().is_symlink() {
-        return Err(RepoError::UnsafePath);
-    }
-    for component in relative.components() {
+fn open_file_nofollow(root: &Dir, path: &Path) -> Result<cap_std::fs::File, RepoError> {
+    let parent = path.parent().ok_or(RepoError::UnsafePath)?;
+    let name = path.file_name().ok_or(RepoError::UnsafePath)?;
+    let mut directory = root.try_clone()?;
+    for component in parent.components() {
         let std::path::Component::Normal(component) = component else {
             return Err(RepoError::UnsafePath);
         };
-        current.push(component);
-        metadata = fs::symlink_metadata(&current).map_err(map_changed_io)?;
-        if metadata.file_type().is_symlink() {
-            return Err(RepoError::UnsafePath);
-        }
-        if current != path && !metadata.file_type().is_dir() {
-            return Err(RepoError::IndexFileChanged);
-        }
+        directory = directory
+            .open_dir_nofollow(component)
+            .map_err(|error| map_nofollow_io(&directory, component, error))?;
     }
-    Ok(metadata)
+    let mut options = OpenOptions::new();
+    options.read(true).follow(FollowSymlinks::No);
+    directory
+        .open_with(name, &options)
+        .map_err(|error| map_nofollow_io(&directory, name, error))
 }
 
-fn metadata_updated(metadata: &fs::Metadata) -> Result<i64, RepoError> {
-    let modified = filetime::FileTime::from_last_modification_time(metadata);
+fn metadata_updated(metadata: &Metadata) -> Result<i64, RepoError> {
+    let modified = filetime::FileTime::from_system_time(metadata.modified()?.into_std());
     modified
         .unix_seconds()
         .checked_mul(1_000)
         .and_then(|millis| millis.checked_add(i64::from(modified.nanoseconds() / 1_000_000)))
         .ok_or(RepoError::RepoFatal)
+}
+
+fn map_nofollow_io(parent: &Dir, name: &std::ffi::OsStr, error: std::io::Error) -> RepoError {
+    match parent.symlink_metadata(name) {
+        Ok(metadata) if metadata.file_type().is_symlink() => RepoError::UnsafePath,
+        _ if error.kind() == std::io::ErrorKind::NotFound => RepoError::IndexFileChanged,
+        _ => RepoError::Io(error),
+    }
 }
 
 fn map_scan_io(error: std::io::Error) -> RepoError {
@@ -634,18 +647,79 @@ mod tests {
     }
 
     #[test]
-    fn open_normalizes_roots_without_creating_the_data_directory() {
+    fn open_requires_but_does_not_create_the_data_directory() {
         let temp = tempfile::tempdir().unwrap();
         let repo_paths = paths(temp.path());
         assert!(!repo_paths.data.exists());
 
-        let _repo =
-            Repo::open(repo_paths.clone(), device(), key(), RepoOptions::default()).unwrap();
+        let result = Repo::open(repo_paths.clone(), device(), key(), RepoOptions::default());
 
+        assert!(
+            matches!(result, Err(RepoError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound)
+        );
         assert!(!repo_paths.data.exists());
         assert!(!repo_paths.repo.exists());
         assert!(!repo_paths.history.exists());
         assert!(!repo_paths.temp.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn indexing_stays_on_the_opened_data_root_after_its_ancestor_is_replaced() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().unwrap();
+        let data_parent = temp.path().join("data-parent");
+        let held_parent = temp.path().join("data-parent-held");
+        let outside_parent = temp.path().join("outside-parent");
+        fs::create_dir_all(data_parent.join("data")).unwrap();
+        fs::create_dir_all(outside_parent.join("data")).unwrap();
+        fs::write(data_parent.join("data/original.md"), b"original bytes").unwrap();
+        fs::write(outside_parent.join("data/outside.md"), b"outside bytes").unwrap();
+        let repo_paths = RepoPaths {
+            data: data_parent.join("data"),
+            repo: temp.path().join("repo"),
+            history: temp.path().join("history"),
+            temp: temp.path().join("temp"),
+        };
+        let repo = Repo::open(repo_paths, device(), key(), RepoOptions::default()).unwrap();
+        fs::rename(&data_parent, &held_parent).unwrap();
+        symlink(&outside_parent, &data_parent).unwrap();
+
+        let index = repo.index("held root").unwrap();
+        let file = repo.store.get_file(&index.files[0]).unwrap();
+
+        assert_eq!(index.count, 1);
+        assert_eq!(file.path, "/original.md");
+        assert_eq!(
+            repo.store.get_chunk(&file.chunks[0]).unwrap().data,
+            b"original bytes"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn index_publication_stays_on_the_opened_repository_after_root_replacement() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().unwrap();
+        let repo_paths = paths(temp.path());
+        let held_repository = temp.path().join("repo-held");
+        let outside = temp.path().join("outside");
+        fs::create_dir_all(&repo_paths.data).unwrap();
+        fs::create_dir(&repo_paths.repo).unwrap();
+        fs::create_dir(&outside).unwrap();
+        fs::write(repo_paths.data.join("file.md"), b"content").unwrap();
+        let repo = Repo::open(repo_paths.clone(), device(), key(), RepoOptions::default()).unwrap();
+        fs::rename(&repo_paths.repo, &held_repository).unwrap();
+        symlink(&outside, &repo_paths.repo).unwrap();
+
+        let index = repo.index("confined publication").unwrap();
+
+        assert_eq!(repo.store.get_index(&index.id).unwrap(), index);
+        assert!(held_repository.join("indexes").is_dir());
+        assert!(!outside.join("indexes").exists());
+        assert!(!outside.join("objects").exists());
     }
 
     #[test]

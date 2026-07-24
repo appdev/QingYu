@@ -1,9 +1,11 @@
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
+use cap_std::fs::Dir;
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 
 use crate::indexer::{self, IndexHook, NoopIndexHook};
+use crate::store::open_absolute_dir_nofollow;
 use crate::{Index, RepoError, Store};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -28,7 +30,7 @@ pub struct RepoOptions {
 }
 
 pub struct Repo {
-    pub(crate) paths: RepoPaths,
+    pub(crate) data_dir: Dir,
     pub(crate) device: Device,
     pub(crate) key: [u8; 32],
     pub(crate) protected_include_paths: Vec<String>,
@@ -75,7 +77,6 @@ impl Repo {
         validate_root_has_no_symlinks(&paths.repo)?;
         validate_root_has_no_symlinks(&paths.history)?;
         validate_root_has_no_symlinks(&paths.temp)?;
-
         let mut protected_include_paths = options
             .protected_include_paths
             .iter()
@@ -91,10 +92,11 @@ impl Repo {
                 .map_err(|_| RepoError::RepoFatal)?;
         }
         let ignore_matcher = ignore_builder.build().map_err(|_| RepoError::RepoFatal)?;
+        let data_dir = open_absolute_dir_nofollow(&paths.data)?;
         let store = Store::new(&paths.repo, key)?;
 
         Ok(Self {
-            paths,
+            data_dir,
             device,
             key,
             protected_include_paths,
@@ -143,7 +145,7 @@ fn normalize_root(path: &Path) -> Result<PathBuf, RepoError> {
     }
 
     match std::fs::symlink_metadata(&normalized) {
-        Ok(metadata) if metadata.file_type().is_symlink() => {
+        Ok(metadata) if unsafe_link_metadata(&metadata) => {
             return Err(RepoError::UnsafePath);
         }
         Ok(_) => {}
@@ -207,9 +209,26 @@ fn normalize_protected_path(path: &str) -> Result<String, RepoError> {
 
 pub(crate) fn validate_root_has_no_symlinks(path: &Path) -> Result<(), RepoError> {
     match std::fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.file_type().is_symlink() => Err(RepoError::UnsafePath),
+        Ok(metadata) if unsafe_link_metadata(&metadata) => Err(RepoError::UnsafePath),
         Ok(_) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(RepoError::Io(error)),
+    }
+}
+
+fn unsafe_link_metadata(metadata: &std::fs::Metadata) -> bool {
+    if metadata.file_type().is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+
+        metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    }
+    #[cfg(not(windows))]
+    {
+        false
     }
 }
