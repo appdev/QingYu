@@ -22,21 +22,33 @@ pub struct PurgeStat {
 pub(crate) fn purge_store_with_cancel_check<F>(
     store: &Store,
     retained_index_ids: &[String],
-    mut is_cancelled: F,
+    is_cancelled: F,
 ) -> Result<PurgeStat, RepoError>
 where
     F: FnMut() -> bool,
 {
+    purge_store_with_cancel_check_and_hook(store, retained_index_ids, is_cancelled, || Ok(()))
+}
+
+pub(crate) fn purge_store_with_cancel_check_and_hook<F, H>(
+    store: &Store,
+    retained_index_ids: &[String],
+    mut is_cancelled: F,
+    mut before_delete: H,
+) -> Result<PurgeStat, RepoError>
+where
+    F: FnMut() -> bool,
+    H: FnMut() -> Result<(), RepoError>,
+{
     check_cancelled(&mut is_cancelled)?;
-    let Some(object_ids) = collect_object_ids(store)? else {
-        return Ok(PurgeStat::default());
-    };
+    let object_ids = collect_object_ids(store, &mut is_cancelled)?;
     check_cancelled(&mut is_cancelled)?;
 
-    let index_ids = collect_flat_ids(store, Path::new("indexes"))?;
+    let index_ids = collect_flat_ids(store, Path::new("indexes"), &mut is_cancelled)?;
     check_cancelled(&mut is_cancelled)?;
 
-    let mut referenced_index_ids = RefStore::new(store).all_index_ids()?;
+    let mut referenced_index_ids =
+        RefStore::new(store).all_index_ids_unlocked_with_cancel_check(&mut is_cancelled)?;
     for id in retained_index_ids {
         validate_id(id)?;
         referenced_index_ids.insert(id.clone());
@@ -48,20 +60,14 @@ where
     ordered_references.sort();
     for index_id in ordered_references {
         check_cancelled(&mut is_cancelled)?;
-        let index = match store.get_index(index_id) {
-            Ok(index) => index,
-            Err(RepoError::UnsafePath) => return Err(RepoError::UnsafePath),
-            Err(_) => continue,
-        };
+        let index = store.get_index_unlocked(index_id)?;
         for file_id in index.files {
+            check_cancelled(&mut is_cancelled)?;
             validate_id(&file_id)?;
             referenced_object_ids.insert(file_id.clone());
-            let file = match store.get_file(&file_id) {
-                Ok(file) => file,
-                Err(RepoError::UnsafePath) => return Err(RepoError::UnsafePath),
-                Err(_) => continue,
-            };
+            let file = store.get_file_unlocked(&file_id)?;
             for chunk_id in file.chunks {
+                check_cancelled(&mut is_cancelled)?;
                 validate_id(&chunk_id)?;
                 referenced_object_ids.insert(chunk_id);
             }
@@ -84,7 +90,29 @@ where
         .cloned()
         .collect::<HashSet<_>>();
 
+    let mut check_index_ids =
+        collect_flat_ids(store, Path::new("check/indexes"), &mut is_cancelled)?
+            .into_iter()
+            .collect::<Vec<_>>();
+    check_index_ids.sort();
+    let mut removable_check_index_ids = Vec::new();
+    for id in check_index_ids {
+        check_cancelled(&mut is_cancelled)?;
+        let check_index = store.get_check_index_unlocked(&id)?;
+        if check_index.id != id {
+            return Err(RepoError::InvalidData(
+                "check index payload id must match its filename",
+            ));
+        }
+        validate_id(&check_index.index_id)?;
+        if unreferenced_indexes.contains(&check_index.index_id) {
+            removable_check_index_ids.push(id);
+        }
+    }
+
     let mut stat = PurgeStat::default();
+    check_cancelled(&mut is_cancelled)?;
+    before_delete()?;
     check_cancelled(&mut is_cancelled)?;
     for id in &unreferenced_index_ids {
         check_cancelled(&mut is_cancelled)?;
@@ -93,19 +121,9 @@ where
     }
 
     check_cancelled(&mut is_cancelled)?;
-    let mut check_index_ids = collect_flat_ids(store, Path::new("check/indexes"))?
-        .into_iter()
-        .collect::<Vec<_>>();
-    check_index_ids.sort();
-    for id in check_index_ids {
+    for id in removable_check_index_ids {
         check_cancelled(&mut is_cancelled)?;
-        let check_index = match store.get_check_index(&id) {
-            Ok(check_index) => check_index,
-            Err(_) => continue,
-        };
-        if unreferenced_indexes.contains(&check_index.index_id) {
-            remove_flat_file(store, Path::new("check/indexes"), &id)?;
-        }
+        remove_flat_file(store, Path::new("check/indexes"), &id)?;
     }
 
     check_cancelled(&mut is_cancelled)?;
@@ -121,14 +139,19 @@ where
     Ok(stat)
 }
 
-fn collect_object_ids(store: &Store) -> Result<Option<HashSet<String>>, RepoError> {
+fn collect_object_ids<F>(store: &Store, is_cancelled: &mut F) -> Result<HashSet<String>, RepoError>
+where
+    F: FnMut() -> bool,
+{
+    check_cancelled(is_cancelled)?;
     let objects = match store.open_directory(Path::new("objects"), false) {
         Ok(objects) => objects,
-        Err(error) if is_not_found(&error) => return Ok(None),
+        Err(error) if is_not_found(&error) => return Ok(HashSet::new()),
         Err(error) => return Err(error),
     };
     let mut ids = HashSet::new();
     for entry in objects.entries()? {
+        check_cancelled(is_cancelled)?;
         let entry = entry?;
         let prefix = entry.file_name();
         let metadata = objects.symlink_metadata(&prefix)?;
@@ -145,6 +168,7 @@ fn collect_object_ids(store: &Store) -> Result<Option<HashSet<String>>, RepoErro
             .open_dir_nofollow(prefix)
             .map_err(|error| map_nofollow_error(&objects, prefix.as_ref(), error))?;
         for object in directory.entries()? {
+            check_cancelled(is_cancelled)?;
             let object = object?;
             let name = object.file_name();
             let metadata = directory.symlink_metadata(&name)?;
@@ -163,10 +187,18 @@ fn collect_object_ids(store: &Store) -> Result<Option<HashSet<String>>, RepoErro
             }
         }
     }
-    Ok(Some(ids))
+    Ok(ids)
 }
 
-fn collect_flat_ids(store: &Store, relative: &Path) -> Result<HashSet<String>, RepoError> {
+fn collect_flat_ids<F>(
+    store: &Store,
+    relative: &Path,
+    is_cancelled: &mut F,
+) -> Result<HashSet<String>, RepoError>
+where
+    F: FnMut() -> bool,
+{
+    check_cancelled(is_cancelled)?;
     let directory = match store.open_directory(relative, false) {
         Ok(directory) => directory,
         Err(error) if is_not_found(&error) => return Ok(HashSet::new()),
@@ -174,6 +206,7 @@ fn collect_flat_ids(store: &Store, relative: &Path) -> Result<HashSet<String>, R
     };
     let mut ids = HashSet::new();
     for entry in directory.entries()? {
+        check_cancelled(is_cancelled)?;
         let entry = entry?;
         let name = entry.file_name();
         let metadata = directory.symlink_metadata(&name)?;
@@ -255,7 +288,10 @@ fn is_not_found(error: &RepoError) -> bool {
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::path::Path;
     use std::sync::atomic::AtomicBool;
+    use std::sync::mpsc;
+    use std::time::Duration;
 
     use tempfile::TempDir;
 
@@ -264,7 +300,7 @@ mod tests {
         RepoOptions, RepoPaths,
     };
 
-    use super::purge_store_with_cancel_check;
+    use super::{collect_flat_ids, collect_object_ids, purge_store_with_cancel_check};
 
     const RETAINED_INDEX_REF: &str = "1111111111111111111111111111111111111111";
     const RETAINED_INDEX_CALLER: &str = "2222222222222222222222222222222222222222";
@@ -279,6 +315,8 @@ mod tests {
     const RETAINED_CHUNK_REF: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
     const RETAINED_CHUNK_CALLER: &str = "cccccccccccccccccccccccccccccccccccccccc";
     const UNREACHABLE_CHUNK: &str = "dddddddddddddddddddddddddddddddddddddddd";
+    const MISMATCH_CHECK_ID: &str = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+    const CONCURRENT_INDEX: &str = "ffffffffffffffffffffffffffffffffffffffff";
 
     struct PurgeFixture {
         _temp: TempDir,
@@ -441,6 +479,17 @@ mod tests {
         assert!(repo.store.object_path(id).unwrap().is_file(), "{id}");
     }
 
+    fn assert_unreferenced_candidates_untouched(repo: &Repo) {
+        assert!(repo.store.index_path(UNREFERENCED_INDEX).unwrap().is_file());
+        assert!(repo
+            .store
+            .check_index_path(UNREFERENCED_CHECK)
+            .unwrap()
+            .is_file());
+        assert_exists(repo, UNREFERENCED_FILE);
+        assert_exists(repo, UNREACHABLE_CHUNK);
+    }
+
     #[test]
     fn purge_preserves_reachable_indexes_files_and_shared_chunks() {
         let fixture = fixture();
@@ -542,5 +591,356 @@ mod tests {
             .is_file());
         assert_exists(&fixture.repo, UNREFERENCED_FILE);
         assert_exists(&fixture.repo, UNREACHABLE_CHUNK);
+    }
+
+    #[test]
+    fn cancellation_is_observed_inside_object_index_and_recursive_ref_collection() {
+        let fixture = fixture();
+        fs::create_dir_all(fixture._temp.path().join("repo/refs/tags/nested")).unwrap();
+        fs::write(
+            fixture._temp.path().join("repo/refs/tags/nested/retained"),
+            RETAINED_INDEX_REF,
+        )
+        .unwrap();
+
+        let mut object_checks = 0;
+        assert!(matches!(
+            collect_object_ids(&fixture.repo.store, &mut || {
+                object_checks += 1;
+                object_checks == 3
+            }),
+            Err(RepoError::Cancelled)
+        ));
+        assert_eq!(object_checks, 3);
+
+        let mut index_checks = 0;
+        assert!(matches!(
+            collect_flat_ids(&fixture.repo.store, Path::new("indexes"), &mut || {
+                index_checks += 1;
+                index_checks == 3
+            },),
+            Err(RepoError::Cancelled)
+        ));
+        assert_eq!(index_checks, 3);
+
+        let mut ref_checks = 0;
+        assert!(matches!(
+            RefStore::new(&fixture.repo.store).all_index_ids_unlocked_with_cancel_check(
+                &mut || {
+                    ref_checks += 1;
+                    ref_checks == 3
+                }
+            ),
+            Err(RepoError::Cancelled)
+        ));
+        assert_eq!(ref_checks, 3);
+        assert_unreferenced_candidates_untouched(&fixture.repo);
+    }
+
+    #[test]
+    fn missing_retained_index_aborts_before_any_deletion() {
+        let fixture = fixture();
+        fs::remove_file(fixture.repo.store.index_path(RETAINED_INDEX_REF).unwrap()).unwrap();
+
+        assert!(fixture
+            .repo
+            .purge(&[RETAINED_INDEX_CALLER.to_owned()], &AtomicBool::new(false))
+            .is_err());
+        assert_unreferenced_candidates_untouched(&fixture.repo);
+    }
+
+    #[test]
+    fn corrupt_retained_index_aborts_before_any_deletion() {
+        let fixture = fixture();
+        fs::write(
+            fixture.repo.store.index_path(RETAINED_INDEX_REF).unwrap(),
+            b"not a zstd index",
+        )
+        .unwrap();
+
+        assert!(fixture
+            .repo
+            .purge(&[RETAINED_INDEX_CALLER.to_owned()], &AtomicBool::new(false))
+            .is_err());
+        assert_unreferenced_candidates_untouched(&fixture.repo);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_retained_index_aborts_before_any_deletion() {
+        use std::os::unix::fs::symlink;
+
+        let fixture = fixture();
+        let path = fixture.repo.store.index_path(RETAINED_INDEX_REF).unwrap();
+        fs::remove_file(&path).unwrap();
+        symlink(
+            fixture
+                .repo
+                .store
+                .index_path(RETAINED_INDEX_CALLER)
+                .unwrap(),
+            path,
+        )
+        .unwrap();
+
+        assert!(matches!(
+            fixture
+                .repo
+                .purge(&[RETAINED_INDEX_CALLER.to_owned()], &AtomicBool::new(false)),
+            Err(RepoError::UnsafePath)
+        ));
+        assert_unreferenced_candidates_untouched(&fixture.repo);
+    }
+
+    #[test]
+    fn missing_retained_file_aborts_before_any_deletion() {
+        let fixture = fixture();
+        fs::remove_file(fixture.repo.store.object_path(RETAINED_FILE_REF).unwrap()).unwrap();
+
+        assert!(fixture
+            .repo
+            .purge(&[RETAINED_INDEX_CALLER.to_owned()], &AtomicBool::new(false))
+            .is_err());
+        assert_unreferenced_candidates_untouched(&fixture.repo);
+    }
+
+    #[test]
+    fn corrupt_retained_file_aborts_before_any_deletion() {
+        let fixture = fixture();
+        fs::write(
+            fixture.repo.store.object_path(RETAINED_FILE_REF).unwrap(),
+            b"not an encrypted file object",
+        )
+        .unwrap();
+
+        assert!(fixture
+            .repo
+            .purge(&[RETAINED_INDEX_CALLER.to_owned()], &AtomicBool::new(false))
+            .is_err());
+        assert_unreferenced_candidates_untouched(&fixture.repo);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_retained_file_aborts_before_any_deletion() {
+        use std::os::unix::fs::symlink;
+
+        let fixture = fixture();
+        let path = fixture.repo.store.object_path(RETAINED_FILE_REF).unwrap();
+        fs::remove_file(&path).unwrap();
+        symlink(
+            fixture
+                .repo
+                .store
+                .object_path(RETAINED_FILE_CALLER)
+                .unwrap(),
+            path,
+        )
+        .unwrap();
+
+        assert!(matches!(
+            fixture
+                .repo
+                .purge(&[RETAINED_INDEX_CALLER.to_owned()], &AtomicBool::new(false)),
+            Err(RepoError::UnsafePath)
+        ));
+        assert_unreferenced_candidates_untouched(&fixture.repo);
+    }
+
+    #[test]
+    fn corrupt_check_index_aborts_before_any_deletion() {
+        let fixture = fixture();
+        fs::write(
+            fixture
+                .repo
+                .store
+                .check_index_path(UNREFERENCED_CHECK)
+                .unwrap(),
+            b"not a zstd check index",
+        )
+        .unwrap();
+
+        assert!(fixture
+            .repo
+            .purge(&[RETAINED_INDEX_CALLER.to_owned()], &AtomicBool::new(false))
+            .is_err());
+        assert_unreferenced_candidates_untouched(&fixture.repo);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_check_index_aborts_before_any_deletion() {
+        use std::os::unix::fs::symlink;
+
+        let fixture = fixture();
+        let path = fixture
+            .repo
+            .store
+            .check_index_path(UNREFERENCED_CHECK)
+            .unwrap();
+        fs::remove_file(&path).unwrap();
+        symlink(
+            fixture
+                .repo
+                .store
+                .check_index_path(RETAINED_CHECK_REF)
+                .unwrap(),
+            path,
+        )
+        .unwrap();
+
+        assert!(matches!(
+            fixture
+                .repo
+                .purge(&[RETAINED_INDEX_CALLER.to_owned()], &AtomicBool::new(false)),
+            Err(RepoError::UnsafePath)
+        ));
+        assert_unreferenced_candidates_untouched(&fixture.repo);
+    }
+
+    #[test]
+    fn check_index_payload_id_must_match_its_filename() {
+        let fixture = fixture();
+        let mismatch = check_index(
+            MISMATCH_CHECK_ID,
+            UNREFERENCED_INDEX,
+            UNREFERENCED_FILE,
+            &[UNREACHABLE_CHUNK],
+        );
+        fixture.repo.store.put_check_index(&mismatch).unwrap();
+        fs::rename(
+            fixture
+                .repo
+                .store
+                .check_index_path(MISMATCH_CHECK_ID)
+                .unwrap(),
+            fixture
+                .repo
+                .store
+                .check_index_path(UNREFERENCED_CHECK)
+                .unwrap(),
+        )
+        .unwrap();
+
+        assert!(matches!(
+            fixture
+                .repo
+                .purge(&[RETAINED_INDEX_CALLER.to_owned()], &AtomicBool::new(false)),
+            Err(RepoError::InvalidData(_))
+        ));
+        assert_unreferenced_candidates_untouched(&fixture.repo);
+    }
+
+    #[test]
+    fn purge_delete_phase_excludes_cross_open_ref_and_index_publication() {
+        let fixture = fixture();
+        let second_repo = Repo::open(
+            RepoPaths {
+                data: fixture._temp.path().join("data"),
+                repo: fixture._temp.path().join("repo"),
+                history: fixture._temp.path().join("history-2"),
+                temp: fixture._temp.path().join("temp-2"),
+            },
+            Device {
+                id: "second-device".to_owned(),
+                name: "QingYu".to_owned(),
+                os: "test".to_owned(),
+            },
+            [9; 32],
+            RepoOptions::default(),
+        )
+        .unwrap();
+        let ref_target = index(UNREFERENCED_INDEX, UNREFERENCED_FILE, UNREFERENCED_CHECK);
+        let mut concurrent_index = index(CONCURRENT_INDEX, UNREFERENCED_FILE, "");
+        concurrent_index.files.clear();
+        concurrent_index.count = 0;
+        concurrent_index.size = 0;
+        let cancelled = AtomicBool::new(false);
+        let (before_delete_tx, before_delete_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let (ref_started_tx, ref_started_rx) = mpsc::channel();
+        let (ref_result_tx, ref_result_rx) = mpsc::channel();
+        let (index_started_tx, index_started_rx) = mpsc::channel();
+        let (index_result_tx, index_result_rx) = mpsc::channel();
+
+        std::thread::scope(|scope| {
+            let purge_repo = &fixture.repo;
+            let cancelled = &cancelled;
+            let purge_thread = scope.spawn(move || {
+                purge_repo.purge_with_before_delete_hook(
+                    &[RETAINED_INDEX_CALLER.to_owned()],
+                    &cancelled,
+                    || {
+                        before_delete_tx
+                            .send(())
+                            .map_err(|_| RepoError::RepoFatal)?;
+                        release_rx.recv().map_err(|_| RepoError::RepoFatal)?;
+                        Ok(())
+                    },
+                )
+            });
+            before_delete_rx.recv().unwrap();
+
+            let ref_repo = &second_repo;
+            scope.spawn(move || {
+                ref_started_tx.send(()).unwrap();
+                ref_result_tx
+                    .send(RefStore::new(&ref_repo.store).update_latest(&ref_target))
+                    .unwrap();
+            });
+            let index_repo = &second_repo;
+            scope.spawn(move || {
+                index_started_tx.send(()).unwrap();
+                index_result_tx
+                    .send(index_repo.store.put_index(&concurrent_index))
+                    .unwrap();
+            });
+            ref_started_rx.recv().unwrap();
+            index_started_rx.recv().unwrap();
+
+            let premature_ref = ref_result_rx.recv_timeout(Duration::from_millis(100)).ok();
+            let premature_index = index_result_rx
+                .recv_timeout(Duration::from_millis(100))
+                .ok();
+            let ref_was_premature = premature_ref.is_some();
+            let index_was_premature = premature_index.is_some();
+            release_tx.send(()).unwrap();
+            let purge_result = purge_thread.join().unwrap();
+            let ref_result = premature_ref.unwrap_or_else(|| ref_result_rx.recv().unwrap());
+            let index_result = premature_index.unwrap_or_else(|| index_result_rx.recv().unwrap());
+
+            assert!(!ref_was_premature, "ref publication bypassed purge guard");
+            assert!(
+                !index_was_premature,
+                "index publication bypassed purge guard"
+            );
+            purge_result.unwrap();
+            assert!(matches!(
+                ref_result,
+                Err(RepoError::NotFound(id)) if id == UNREFERENCED_INDEX
+            ));
+            index_result.unwrap();
+        });
+
+        assert!(!fixture
+            .repo
+            .store
+            .index_path(UNREFERENCED_INDEX)
+            .unwrap()
+            .exists());
+        assert!(fixture
+            .repo
+            .store
+            .index_path(CONCURRENT_INDEX)
+            .unwrap()
+            .is_file());
+        assert_eq!(
+            RefStore::new(&fixture.repo.store)
+                .latest()
+                .unwrap()
+                .unwrap()
+                .id,
+            RETAINED_INDEX_REF
+        );
     }
 }

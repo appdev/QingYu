@@ -68,7 +68,7 @@ pub(crate) fn index_once(repo: &Repo, memo: &str, attempt: usize) -> Result<Inde
         aes_key_verify_val: String::new(),
     };
     index.init_aes_key_verify_val(&repo.key)?;
-    repo.store.put_index(&index)?;
+    repo.store.put_index_unlocked(&index)?;
     Ok(index)
 }
 
@@ -233,7 +233,7 @@ fn store_scanned_file(repo: &Repo, scanned: &ScannedFile) -> Result<File, RepoEr
             return Err(RepoError::IndexFileChanged);
         }
         let id = sha1_hex(&[]);
-        repo.store.put_chunk(&Chunk {
+        repo.store.put_chunk_unlocked(&Chunk {
             id: id.clone(),
             data: Vec::new(),
         })?;
@@ -242,7 +242,7 @@ fn store_scanned_file(repo: &Repo, scanned: &ScannedFile) -> Result<File, RepoEr
         let mut chunker = StreamingRabinChunker::new(&mut source);
         while let Some(data) = chunker.next_chunk().map_err(map_changed_io)? {
             let id = sha1_hex(&data);
-            repo.store.put_chunk(&Chunk {
+            repo.store.put_chunk_unlocked(&Chunk {
                 id: id.clone(),
                 data,
             })?;
@@ -261,7 +261,7 @@ fn store_scanned_file(repo: &Repo, scanned: &ScannedFile) -> Result<File, RepoEr
         return Err(RepoError::IndexFileChanged);
     }
 
-    repo.store.put_file(&file)?;
+    repo.store.put_file_unlocked(&file)?;
     Ok(file)
 }
 

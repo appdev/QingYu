@@ -27,46 +27,69 @@ impl<'store> RefStore<'store> {
     }
 
     pub fn latest(&self) -> Result<Option<Index>, RepoError> {
-        self.resolve("latest")
+        let _operation = self.store.lock_operation()?;
+        self.resolve_unlocked("latest")
     }
 
     pub fn latest_sync(&self) -> Result<Option<Index>, RepoError> {
-        self.resolve("latest-sync")
+        let _operation = self.store.lock_operation()?;
+        self.resolve_unlocked("latest-sync")
     }
 
     pub fn update_latest(&self, index: &Index) -> Result<(), RepoError> {
-        self.update("latest", index)
+        let _operation = self.store.lock_operation()?;
+        self.update_unlocked("latest", index)
     }
 
     pub fn update_latest_sync(&self, index: &Index) -> Result<(), RepoError> {
-        self.update("latest-sync", index)
+        let _operation = self.store.lock_operation()?;
+        self.update_unlocked("latest-sync", index)
     }
 
+    #[cfg(test)]
     pub(crate) fn all_index_ids(&self) -> Result<HashSet<String>, RepoError> {
+        let _operation = self.store.lock_operation()?;
+        self.all_index_ids_unlocked_with_cancel_check(&mut || false)
+    }
+
+    pub(crate) fn all_index_ids_unlocked_with_cancel_check<F>(
+        &self,
+        is_cancelled: &mut F,
+    ) -> Result<HashSet<String>, RepoError>
+    where
+        F: FnMut() -> bool,
+    {
+        check_cancelled(is_cancelled)?;
         let refs = match self.store.open_directory(Path::new("refs"), false) {
             Ok(refs) => refs,
             Err(error) if is_not_found(&error) => return Ok(HashSet::new()),
             Err(error) => return Err(error),
         };
         let mut ids = HashSet::new();
-        collect_ref_ids(&refs, true, &mut ids)?;
+        collect_ref_ids(&refs, true, &mut ids, is_cancelled)?;
         Ok(ids)
     }
 
-    fn resolve(&self, name: &str) -> Result<Option<Index>, RepoError> {
-        match self.read(name)? {
-            Some(id) => self.store.get_index(&id).map(Some),
+    fn resolve_unlocked(&self, name: &str) -> Result<Option<Index>, RepoError> {
+        match self.read_unlocked(name)? {
+            Some(id) => self.store.get_index_unlocked(&id).map(Some),
             None => Ok(None),
         }
     }
 
-    fn update(&self, name: &str, index: &Index) -> Result<(), RepoError> {
+    fn update_unlocked(&self, name: &str, index: &Index) -> Result<(), RepoError> {
         validate_id(&index.id)?;
+        let stored = self.store.get_index_unlocked(&index.id)?;
+        if stored.id != index.id {
+            return Err(RepoError::InvalidData(
+                "ref target index id must match its filename",
+            ));
+        }
         let refs = self.store.open_directory(Path::new("refs"), true)?;
         stage_cap_file(&refs, name.as_ref(), index.id.as_bytes(), REF_MODE)?.publish_replace()
     }
 
-    fn read(&self, name: &str) -> Result<Option<String>, RepoError> {
+    fn read_unlocked(&self, name: &str) -> Result<Option<String>, RepoError> {
         let refs = match self.store.open_directory(Path::new("refs"), false) {
             Ok(refs) => refs,
             Err(error) if is_not_found(&error) => return Ok(None),
@@ -80,8 +103,11 @@ fn collect_ref_ids(
     directory: &Dir,
     root_refs_directory: bool,
     ids: &mut HashSet<String>,
+    is_cancelled: &mut impl FnMut() -> bool,
 ) -> Result<(), RepoError> {
+    check_cancelled(is_cancelled)?;
     for entry in directory.entries()? {
+        check_cancelled(is_cancelled)?;
         let entry = entry?;
         let name = entry.file_name();
         let metadata = directory.symlink_metadata(&name)?;
@@ -92,7 +118,7 @@ fn collect_ref_ids(
             let child = directory
                 .open_dir_nofollow(&name)
                 .map_err(|error| map_nofollow_error(directory, &name, error))?;
-            collect_ref_ids(&child, false, ids)?;
+            collect_ref_ids(&child, false, ids, is_cancelled)?;
         } else if metadata.file_type().is_file() {
             let empty_is_none =
                 root_refs_directory && matches!(name.to_str(), Some("latest" | "latest-sync"));
@@ -102,6 +128,14 @@ fn collect_ref_ids(
         }
     }
     Ok(())
+}
+
+fn check_cancelled(is_cancelled: &mut impl FnMut() -> bool) -> Result<(), RepoError> {
+    if is_cancelled() {
+        Err(RepoError::Cancelled)
+    } else {
+        Ok(())
+    }
 }
 
 fn read_ref_file(
@@ -166,13 +200,15 @@ fn is_not_found(error: &RepoError) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
     use std::fs;
+    use std::path::Path;
 
     use tempfile::TempDir;
 
     use crate::{Index, RepoError, Store};
 
-    use super::RefStore;
+    use super::{collect_ref_ids, RefStore};
 
     const INDEX_ID: &str = "1111111111111111111111111111111111111111";
     const SYNC_INDEX_ID: &str = "2222222222222222222222222222222222222222";
@@ -204,7 +240,12 @@ mod tests {
 
         fs::create_dir_all(temp.path().join("repo/refs")).unwrap();
         fs::write(temp.path().join("repo/refs/latest"), b" \r\n\t").unwrap();
+        fs::write(temp.path().join("repo/refs/latest-sync"), b"\n\t ").unwrap();
         assert_eq!(refs.latest().unwrap(), None);
+        assert_eq!(refs.latest_sync().unwrap(), None);
+
+        fs::write(temp.path().join("repo/refs/latest-sync"), b"malformed").unwrap();
+        assert!(matches!(refs.latest_sync(), Err(RepoError::InvalidData(_))));
     }
 
     #[test]
@@ -255,11 +296,31 @@ mod tests {
     }
 
     #[test]
+    fn ref_to_missing_or_corrupt_index_is_an_error() {
+        let temp = TempDir::new().unwrap();
+        let store = Store::new(temp.path().join("repo"), [7; 32]).unwrap();
+        let refs_dir = temp.path().join("repo/refs");
+        fs::create_dir_all(&refs_dir).unwrap();
+        fs::write(refs_dir.join("latest"), INDEX_ID).unwrap();
+
+        assert!(matches!(
+            RefStore::new(&store).latest(),
+            Err(RepoError::NotFound(id)) if id == INDEX_ID
+        ));
+
+        fs::create_dir_all(temp.path().join("repo/indexes")).unwrap();
+        fs::write(store.index_path(INDEX_ID).unwrap(), b"corrupt index").unwrap();
+        assert!(RefStore::new(&store).latest().is_err());
+    }
+
+    #[test]
     fn invalid_update_does_not_replace_an_existing_ref() {
         let temp = TempDir::new().unwrap();
         let store = Store::new(temp.path().join("repo"), [7; 32]).unwrap();
         let refs = RefStore::new(&store);
-        refs.update_latest(&index(INDEX_ID)).unwrap();
+        let latest = index(INDEX_ID);
+        store.put_index(&latest).unwrap();
+        refs.update_latest(&latest).unwrap();
 
         assert!(matches!(
             refs.update_latest(&index("invalid")),
@@ -269,6 +330,39 @@ mod tests {
             fs::read(temp.path().join("repo/refs/latest")).unwrap(),
             INDEX_ID.as_bytes()
         );
+    }
+
+    #[test]
+    fn atomic_ref_publication_failure_preserves_the_obstruction_and_cleans_its_temp() {
+        let temp = TempDir::new().unwrap();
+        let store = Store::new(temp.path().join("repo"), [7; 32]).unwrap();
+        let first = index(INDEX_ID);
+        let replacement = index(SYNC_INDEX_ID);
+        store.put_index(&first).unwrap();
+        store.put_index(&replacement).unwrap();
+        let refs = RefStore::new(&store);
+        refs.update_latest(&first).unwrap();
+        let refs_dir = temp.path().join("repo/refs");
+        let latest = refs_dir.join("latest");
+        let prior = refs_dir.join("prior-latest");
+        fs::hard_link(&latest, &prior).unwrap();
+        fs::remove_file(&latest).unwrap();
+        fs::create_dir(&latest).unwrap();
+        fs::write(latest.join("sentinel"), b"do not replace").unwrap();
+
+        assert!(refs.update_latest(&replacement).is_err());
+        assert_eq!(fs::read(prior).unwrap(), INDEX_ID.as_bytes());
+        assert_eq!(
+            fs::read(latest.join("sentinel")).unwrap(),
+            b"do not replace"
+        );
+        let owned_temps = fs::read_dir(&refs_dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name())
+            .filter(|name| name.to_string_lossy().ends_with(".tmp"))
+            .collect::<Vec<_>>();
+        assert!(owned_temps.is_empty());
     }
 
     #[test]
@@ -285,5 +379,45 @@ mod tests {
             refs.all_index_ids(),
             Err(RepoError::InvalidData(_))
         ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recursive_ref_collection_rejects_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let temp = TempDir::new().unwrap();
+        let store = Store::new(temp.path().join("repo"), [7; 32]).unwrap();
+        let tags = temp.path().join("repo/refs/tags");
+        fs::create_dir_all(&tags).unwrap();
+        let outside = temp.path().join("outside-ref");
+        fs::write(&outside, INDEX_ID).unwrap();
+        symlink(&outside, tags.join("unsafe")).unwrap();
+
+        assert!(matches!(
+            RefStore::new(&store).all_index_ids(),
+            Err(RepoError::UnsafePath)
+        ));
+    }
+
+    #[test]
+    fn cancellation_is_checked_when_recursive_ref_collection_descends() {
+        let temp = TempDir::new().unwrap();
+        let store = Store::new(temp.path().join("repo"), [7; 32]).unwrap();
+        fs::create_dir_all(temp.path().join("repo/refs/tags/nested")).unwrap();
+        fs::write(temp.path().join("repo/refs/tags/nested/retained"), INDEX_ID).unwrap();
+        let tags = store.open_directory(Path::new("refs/tags"), false).unwrap();
+        let mut ids = HashSet::new();
+        let mut checks = 0;
+
+        assert!(matches!(
+            collect_ref_ids(&tags, false, &mut ids, &mut || {
+                checks += 1;
+                checks == 3
+            }),
+            Err(RepoError::Cancelled)
+        ));
+        assert_eq!(checks, 3);
+        assert!(ids.is_empty());
     }
 }

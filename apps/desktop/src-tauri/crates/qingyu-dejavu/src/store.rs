@@ -1,6 +1,7 @@
+use std::collections::HashMap;
 use std::io::{BufReader, Cursor, Read};
 use std::path::{Component, Path, PathBuf};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
 
 use cap_fs_ext::{DirExt, FollowSymlinks, OpenOptionsFollowExt};
 use cap_std::ambient_authority;
@@ -21,11 +22,16 @@ const MAX_FILE_DECODED_SIZE: usize = 64 * 1024 * 1024;
 const MAX_INDEX_DECODED_SIZE: usize = 512 * 1024 * 1024;
 const MAX_CHECK_INDEX_DECODED_SIZE: usize = 512 * 1024 * 1024;
 
+type OperationGuard = Arc<Mutex<()>>;
+
+static OPERATION_GUARDS: OnceLock<Mutex<HashMap<PathBuf, Weak<Mutex<()>>>>> = OnceLock::new();
+
 pub struct Store {
     root: PathBuf,
     anchor: Dir,
     relative_root: PathBuf,
     repository_dir: Mutex<Option<Dir>>,
+    operation_guard: OperationGuard,
     key: [u8; 32],
     compressor: Mutex<zstd::bulk::Compressor<'static>>,
     decompressor: Mutex<zstd::zstd_safe::DCtx<'static>>,
@@ -34,7 +40,8 @@ pub struct Store {
 impl Store {
     pub fn new(root: impl Into<PathBuf>, key: [u8; 32]) -> Result<Self, RepoError> {
         let root = absolute_lexical_root(root.into())?;
-        let (anchor, relative_root) = store_anchor(&root)?;
+        let (anchor, relative_root, operation_identity) = store_anchor_with_identity(&root)?;
+        let operation_guard = operation_guard_for(operation_identity)?;
         let repository_dir = if relative_root.as_os_str().is_empty() {
             Some(anchor.try_clone()?)
         } else {
@@ -59,6 +66,7 @@ impl Store {
             anchor,
             relative_root,
             repository_dir: Mutex::new(repository_dir),
+            operation_guard,
             key,
             compressor: Mutex::new(compressor),
             decompressor: Mutex::new(decompressor),
@@ -81,12 +89,22 @@ impl Store {
     }
 
     pub fn put_chunk(&self, chunk: &Chunk) -> Result<(), RepoError> {
+        let _operation = self.lock_operation()?;
+        self.put_chunk_unlocked(chunk)
+    }
+
+    pub(crate) fn put_chunk_unlocked(&self, chunk: &Chunk) -> Result<(), RepoError> {
         let path = self.object_path(&chunk.id)?;
         let encoded = self.encode_encrypted(&chunk.data)?;
         self.write_immutable_object(&path, &encoded)
     }
 
     pub fn get_chunk(&self, id: &str) -> Result<Chunk, RepoError> {
+        let _operation = self.lock_operation()?;
+        self.get_chunk_unlocked(id)
+    }
+
+    pub(crate) fn get_chunk_unlocked(&self, id: &str) -> Result<Chunk, RepoError> {
         let path = self.object_path(id)?;
         let encoded = self.read_object(&path, id)?;
         Ok(Chunk {
@@ -96,6 +114,11 @@ impl Store {
     }
 
     pub fn put_file(&self, file: &File) -> Result<(), RepoError> {
+        let _operation = self.lock_operation()?;
+        self.put_file_unlocked(file)
+    }
+
+    pub(crate) fn put_file_unlocked(&self, file: &File) -> Result<(), RepoError> {
         let path = self.object_path(&file.id)?;
         let json = serde_json::to_vec(file)?;
         let encoded = self.encode_encrypted(&json)?;
@@ -103,6 +126,11 @@ impl Store {
     }
 
     pub fn get_file(&self, id: &str) -> Result<File, RepoError> {
+        let _operation = self.lock_operation()?;
+        self.get_file_unlocked(id)
+    }
+
+    pub(crate) fn get_file_unlocked(&self, id: &str) -> Result<File, RepoError> {
         let path = self.object_path(id)?;
         let encoded = self.read_object(&path, id)?;
         let json = self.decode_encrypted(&encoded, MAX_FILE_DECODED_SIZE)?;
@@ -110,13 +138,27 @@ impl Store {
     }
 
     pub fn put_index(&self, index: &Index) -> Result<(), RepoError> {
-        self.put_index_with_mtime(index, |file, mtime| {
+        let _operation = self.lock_operation()?;
+        self.put_index_unlocked(index)
+    }
+
+    pub(crate) fn put_index_unlocked(&self, index: &Index) -> Result<(), RepoError> {
+        self.put_index_with_mtime_unlocked(index, |file, mtime| {
             let standard_file = file.try_clone()?.into_std();
             filetime::set_file_handle_times(&standard_file, None, Some(mtime))
         })
     }
 
+    #[cfg(test)]
     fn put_index_with_mtime<F>(&self, index: &Index, set_mtime: F) -> Result<(), RepoError>
+    where
+        F: FnOnce(&cap_std::fs::File, filetime::FileTime) -> std::io::Result<()>,
+    {
+        let _operation = self.lock_operation()?;
+        self.put_index_with_mtime_unlocked(index, set_mtime)
+    }
+
+    fn put_index_with_mtime_unlocked<F>(&self, index: &Index, set_mtime: F) -> Result<(), RepoError>
     where
         F: FnOnce(&cap_std::fs::File, filetime::FileTime) -> std::io::Result<()>,
     {
@@ -134,6 +176,11 @@ impl Store {
     }
 
     pub fn get_index(&self, id: &str) -> Result<Index, RepoError> {
+        let _operation = self.lock_operation()?;
+        self.get_index_unlocked(id)
+    }
+
+    pub(crate) fn get_index_unlocked(&self, id: &str) -> Result<Index, RepoError> {
         let path = self.index_path(id)?;
         let encoded = self.read_object(&path, id)?;
         let json = self.decompress(&encoded, MAX_INDEX_DECODED_SIZE)?;
@@ -141,6 +188,14 @@ impl Store {
     }
 
     pub fn put_check_index(&self, check_index: &CheckIndex) -> Result<(), RepoError> {
+        let _operation = self.lock_operation()?;
+        self.put_check_index_unlocked(check_index)
+    }
+
+    pub(crate) fn put_check_index_unlocked(
+        &self,
+        check_index: &CheckIndex,
+    ) -> Result<(), RepoError> {
         let path = self.check_index_path(&check_index.id)?;
         let json = serde_json::to_vec(check_index)?;
         let encoded = self.compress(&json)?;
@@ -148,6 +203,11 @@ impl Store {
     }
 
     pub fn get_check_index(&self, id: &str) -> Result<CheckIndex, RepoError> {
+        let _operation = self.lock_operation()?;
+        self.get_check_index_unlocked(id)
+    }
+
+    pub(crate) fn get_check_index_unlocked(&self, id: &str) -> Result<CheckIndex, RepoError> {
         let path = self.check_index_path(id)?;
         let encoded = self.read_object(&path, id)?;
         let json = self.decompress(&encoded, MAX_CHECK_INDEX_DECODED_SIZE)?;
@@ -211,6 +271,12 @@ impl Store {
             directory = open_child_directory(&directory, name, create)?;
         }
         Ok(directory)
+    }
+
+    pub(crate) fn lock_operation(&self) -> Result<MutexGuard<'_, ()>, RepoError> {
+        self.operation_guard
+            .lock()
+            .map_err(|_| RepoError::InvalidData("repository operation lock poisoned"))
     }
 
     fn open_repository_root(&self, create: bool) -> Result<Dir, RepoError> {
@@ -354,6 +420,11 @@ pub(crate) fn absolute_lexical_root(root: PathBuf) -> Result<PathBuf, RepoError>
 }
 
 pub(crate) fn store_anchor(root: &Path) -> Result<(Dir, PathBuf), RepoError> {
+    let (anchor, relative_root, _operation_identity) = store_anchor_with_identity(root)?;
+    Ok((anchor, relative_root))
+}
+
+fn store_anchor_with_identity(root: &Path) -> Result<(Dir, PathBuf, PathBuf), RepoError> {
     validate_windows_directory_components_before_canonicalize(root)?;
     let mut existing = root.to_path_buf();
     let mut missing = Vec::new();
@@ -366,7 +437,8 @@ pub(crate) fn store_anchor(root: &Path) -> Result<(Dir, PathBuf), RepoError> {
                 let canonical_existing = std::fs::canonicalize(&existing)?;
                 let anchor = open_absolute_dir_nofollow(&canonical_existing)?;
                 let relative = missing.into_iter().rev().collect::<PathBuf>();
-                return Ok((anchor, relative));
+                let operation_identity = canonical_existing.join(&relative);
+                return Ok((anchor, relative, operation_identity));
             }
             Err(error)
                 if matches!(
@@ -386,6 +458,20 @@ pub(crate) fn store_anchor(root: &Path) -> Result<(Dir, PathBuf), RepoError> {
             Err(error) => return Err(error.into()),
         }
     }
+}
+
+fn operation_guard_for(identity: PathBuf) -> Result<OperationGuard, RepoError> {
+    let registry = OPERATION_GUARDS.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut guards = registry
+        .lock()
+        .map_err(|_| RepoError::InvalidData("repository operation guard registry poisoned"))?;
+    guards.retain(|_, guard| guard.strong_count() > 0);
+    if let Some(guard) = guards.get(&identity).and_then(Weak::upgrade) {
+        return Ok(guard);
+    }
+    let guard = Arc::new(Mutex::new(()));
+    guards.insert(identity, Arc::downgrade(&guard));
+    Ok(guard)
 }
 
 pub(crate) fn open_absolute_dir_nofollow(path: &Path) -> Result<Dir, RepoError> {

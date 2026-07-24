@@ -3,8 +3,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use cap_fs_ext::{FollowSymlinks, OpenOptionsFollowExt};
-use cap_std::fs::{Dir, File as CapFile, OpenOptions};
+use cap_std::fs::{Dir, File as CapFile};
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 
 use crate::atomic_write::create_cap_staged_file;
@@ -120,6 +119,7 @@ impl Repo {
     }
 
     pub fn index(&self, memo: &str) -> Result<Index, RepoError> {
+        let _operation = self.store.lock_operation()?;
         for attempt in 0..7 {
             match indexer::index_once(self, memo, attempt) {
                 Err(RepoError::IndexFileChanged) if attempt < 6 => continue,
@@ -130,15 +130,34 @@ impl Repo {
     }
 
     pub fn checkout_file(&self, file: &File) -> Result<(), RepoError> {
-        self.checkout_file_with_mtime(file, |published, mtime| {
-            let standard_file = published.try_clone()?.into_std();
-            filetime::set_file_handle_times(&standard_file, None, Some(mtime))
-        })
+        let _operation = self.store.lock_operation()?;
+        self.checkout_file_with_hooks(
+            file,
+            || Ok(()),
+            |published, mtime| {
+                let standard_file = published.try_clone()?.into_std();
+                filetime::set_file_handle_times(&standard_file, None, Some(mtime))
+            },
+        )
     }
 
+    #[cfg(test)]
     fn checkout_file_with_mtime<F>(&self, file: &File, set_mtime: F) -> Result<(), RepoError>
     where
         F: FnOnce(&CapFile, filetime::FileTime) -> std::io::Result<()>,
+    {
+        self.checkout_file_with_hooks(file, || Ok(()), set_mtime)
+    }
+
+    fn checkout_file_with_hooks<F, G>(
+        &self,
+        file: &File,
+        after_publish: F,
+        set_mtime: G,
+    ) -> Result<(), RepoError>
+    where
+        F: FnOnce() -> std::io::Result<()>,
+        G: FnOnce(&CapFile, filetime::FileTime) -> std::io::Result<()>,
     {
         let components = validate_repository_file_path(&file.path)?;
         if file.size < 0 {
@@ -150,7 +169,7 @@ impl Repo {
         let staged = create_cap_staged_file(&parent, destination, 0o600)?;
         let mut written = 0_i64;
         for chunk_id in &file.chunks {
-            let chunk = self.store.get_chunk(chunk_id)?;
+            let chunk = self.store.get_chunk_unlocked(chunk_id)?;
             let chunk_size = i64::try_from(chunk.data.len())
                 .map_err(|_| RepoError::InvalidData("chunk size exceeds i64"))?;
             written = written
@@ -172,17 +191,8 @@ impl Repo {
         staged.file().sync_all()?;
         let seconds = file.updated.div_euclid(1_000);
         let nanos = file.updated.rem_euclid(1_000) as u32 * 1_000_000;
-        staged.publish_replace()?;
-
-        let mut options = OpenOptions::new();
-        options.read(true).follow(FollowSymlinks::No);
-        let published = parent
-            .open_with(destination, &options)
-            .map_err(|error| map_data_nofollow_error(&parent, destination, error))?;
-        let metadata = published.metadata()?;
-        if !metadata.file_type().is_file() || cap_metadata_is_reparse(&metadata) {
-            return Err(RepoError::UnsafePath);
-        }
+        let published = staged.publish_replace_retaining_handle()?;
+        after_publish()?;
         set_mtime(
             &published,
             filetime::FileTime::from_unix_time(seconds, nanos),
@@ -191,18 +201,23 @@ impl Repo {
     }
 
     pub fn checkout_files(&self, files: &[File]) -> Result<(), RepoError> {
+        let _operation = self.store.lock_operation()?;
         for file in files {
-            self.checkout_file(file)?;
+            self.checkout_file_with_hooks(
+                file,
+                || Ok(()),
+                |published, mtime| {
+                    let standard_file = published.try_clone()?.into_std();
+                    filetime::set_file_handle_times(&standard_file, None, Some(mtime))
+                },
+            )?;
         }
         Ok(())
     }
 
     pub fn remove_files(&self, files: &[File]) -> Result<(), RepoError> {
-        let paths = files
-            .iter()
-            .map(|file| validate_repository_file_path(&file.path))
-            .collect::<Result<Vec<_>, _>>()?;
-        for components in paths {
+        for file in files {
+            let components = validate_repository_file_path(&file.path)?;
             self.remove_file(&components)?;
         }
         Ok(())
@@ -213,9 +228,29 @@ impl Repo {
         retained_index_ids: &[String],
         cancelled: &AtomicBool,
     ) -> Result<PurgeStat, RepoError> {
+        let _operation = self.store.lock_operation()?;
         purge_store_with_cancel_check(&self.store, retained_index_ids, || {
             cancelled.load(Ordering::Relaxed)
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn purge_with_before_delete_hook<F>(
+        &self,
+        retained_index_ids: &[String],
+        cancelled: &AtomicBool,
+        before_delete: F,
+    ) -> Result<PurgeStat, RepoError>
+    where
+        F: FnMut() -> Result<(), RepoError>,
+    {
+        let _operation = self.store.lock_operation()?;
+        crate::purge::purge_store_with_cancel_check_and_hook(
+            &self.store,
+            retained_index_ids,
+            || cancelled.load(Ordering::Relaxed),
+            before_delete,
+        )
     }
 
     fn open_data_parent(
@@ -246,41 +281,6 @@ impl Repo {
             return Err(RepoError::UnsafePath);
         }
         parent.remove_file(name)?;
-        self.prune_empty_parents(&components[..components.len() - 1])
-    }
-
-    fn prune_empty_parents(&self, directories: &[std::ffi::OsString]) -> Result<(), RepoError> {
-        'depths: for depth in (1..=directories.len()).rev() {
-            let mut parent = self.data_dir.try_clone()?;
-            for component in &directories[..depth - 1] {
-                parent = match open_child_directory(&parent, component, false) {
-                    Ok(child) => child,
-                    Err(error) if is_not_found(&error) => continue 'depths,
-                    Err(error) => return Err(error),
-                };
-            }
-            let name = &directories[depth - 1];
-            let metadata = match parent.symlink_metadata(name) {
-                Ok(metadata) => metadata,
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-                Err(error) => return Err(error.into()),
-            };
-            if !metadata.file_type().is_dir() || cap_metadata_is_reparse(&metadata) {
-                return Err(RepoError::UnsafePath);
-            }
-            match parent.remove_dir(name) {
-                Ok(()) => {}
-                Err(error)
-                    if matches!(
-                        error.kind(),
-                        std::io::ErrorKind::DirectoryNotEmpty | std::io::ErrorKind::NotFound
-                    ) =>
-                {
-                    break
-                }
-                Err(error) => return Err(error.into()),
-            }
-        }
         Ok(())
     }
 }
@@ -311,19 +311,6 @@ fn validate_replace_destination(parent: &Dir, name: &std::ffi::OsStr) -> Result<
         Ok(_) => Err(RepoError::UnsafePath),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error.into()),
-    }
-}
-
-fn map_data_nofollow_error(
-    parent: &Dir,
-    name: &std::ffi::OsStr,
-    error: std::io::Error,
-) -> RepoError {
-    match parent.symlink_metadata(name) {
-        Ok(metadata) if metadata.file_type().is_symlink() || cap_metadata_is_reparse(&metadata) => {
-            RepoError::UnsafePath
-        }
-        _ => RepoError::Io(error),
     }
 }
 
@@ -598,8 +585,57 @@ mod tests {
         assert_eq!(fs::read(target).unwrap(), b"published bytes");
     }
 
+    #[cfg(unix)]
     #[test]
-    fn remove_files_deletes_only_regular_relative_files_and_prunes_empty_parents() {
+    fn checkout_restores_mtime_on_the_published_inode_not_a_same_name_replacement() {
+        let (temp, repo) = repo_fixture();
+        let chunk_id = "1111111111111111111111111111111111111111";
+        repo.store
+            .put_chunk(&Chunk {
+                id: chunk_id.to_owned(),
+                data: b"published bytes".to_vec(),
+            })
+            .unwrap();
+        let target = temp.path().join("data/document.md");
+        fs::write(&target, b"existing version").unwrap();
+        let published_link = temp.path().join("data/published-inode.md");
+        let replacement = temp.path().join("data/replacement.md");
+        let replacement_time = FileTime::from_unix_time(1_600_000_000, 0);
+        let file = File {
+            id: "3333333333333333333333333333333333333333".to_owned(),
+            path: "/document.md".to_owned(),
+            size: 15,
+            updated: 1_700_000_000_123,
+            chunks: vec![chunk_id.to_owned()],
+        };
+
+        repo.checkout_file_with_hooks(
+            &file,
+            || {
+                fs::hard_link(&target, &published_link)?;
+                fs::write(&replacement, b"concurrent replacement")?;
+                filetime::set_file_mtime(&replacement, replacement_time)?;
+                fs::rename(&replacement, &target)
+            },
+            |published, mtime| {
+                let standard_file = published.try_clone()?.into_std();
+                filetime::set_file_handle_times(&standard_file, None, Some(mtime))
+            },
+        )
+        .unwrap();
+
+        assert_eq!(fs::read(&target).unwrap(), b"concurrent replacement");
+        assert_eq!(fs::read(&published_link).unwrap(), b"published bytes");
+        let target_mtime = FileTime::from_last_modification_time(&fs::metadata(&target).unwrap());
+        assert_eq!(target_mtime.unix_seconds(), replacement_time.unix_seconds());
+        let published_mtime =
+            FileTime::from_last_modification_time(&fs::metadata(&published_link).unwrap());
+        assert_eq!(published_mtime.unix_seconds(), 1_700_000_000);
+        assert_eq!(published_mtime.nanoseconds(), 123_000_000);
+    }
+
+    #[test]
+    fn remove_files_deletes_only_regular_relative_files_without_pruning_parents() {
         let (temp, repo) = repo_fixture();
         let target = temp.path().join("data/notes/nested/document.md");
         fs::create_dir_all(target.parent().unwrap()).unwrap();
@@ -609,7 +645,8 @@ mod tests {
         repo.remove_files(&[file]).unwrap();
 
         assert!(!target.exists());
-        assert!(!temp.path().join("data/notes").exists());
+        assert!(temp.path().join("data/notes/nested").is_dir());
+        assert!(temp.path().join("data/notes").is_dir());
         assert!(temp.path().join("data").is_dir());
     }
 
@@ -627,15 +664,48 @@ mod tests {
     }
 
     #[test]
-    fn pruning_a_missing_ancestor_does_not_remove_a_same_named_root_directory() {
+    fn checkout_files_keeps_earlier_success_when_a_later_path_is_invalid() {
         let (temp, repo) = repo_fixture();
-        let same_named_root = temp.path().join("data/nested");
-        fs::create_dir_all(&same_named_root).unwrap();
-
-        repo.prune_empty_parents(&["missing".into(), "nested".into()])
+        let chunk_id = "1111111111111111111111111111111111111111";
+        repo.store
+            .put_chunk(&Chunk {
+                id: chunk_id.to_owned(),
+                data: b"first".to_vec(),
+            })
             .unwrap();
+        let first = File {
+            id: "2222222222222222222222222222222222222222".to_owned(),
+            path: "/first.md".to_owned(),
+            size: 5,
+            updated: 1_700_000_000_123,
+            chunks: vec![chunk_id.to_owned()],
+        };
+        let later_invalid = File::new("relative.md", 0, 1_700_000_000_123);
 
-        assert!(same_named_root.is_dir());
+        assert!(matches!(
+            repo.checkout_files(&[first, later_invalid]),
+            Err(RepoError::UnsafePath)
+        ));
+        assert_eq!(
+            fs::read(temp.path().join("data/first.md")).unwrap(),
+            b"first"
+        );
+    }
+
+    #[test]
+    fn remove_files_keeps_earlier_success_when_a_later_path_is_invalid() {
+        let (temp, repo) = repo_fixture();
+        let first_target = temp.path().join("data/first.md");
+        fs::write(&first_target, b"first").unwrap();
+        let first = File::new("/first.md", 5, 1_700_000_000_123);
+        let later_invalid = File::new("relative.md", 0, 1_700_000_000_123);
+
+        assert!(matches!(
+            repo.remove_files(&[first, later_invalid]),
+            Err(RepoError::UnsafePath)
+        ));
+
+        assert!(!first_target.exists());
     }
 
     #[cfg(unix)]

@@ -173,6 +173,18 @@ impl CapStagedFile {
         Ok(())
     }
 
+    pub(crate) fn publish_replace_retaining_handle(mut self) -> Result<CapFile, RepoError> {
+        let published = self.temp_file.try_clone()?;
+        replace_cap_with_retry(
+            &self.parent,
+            &self.temp_file,
+            &self.temp_name,
+            &self.destination,
+        )?;
+        self.cleanup_armed = false;
+        Ok(published)
+    }
+
     pub(crate) fn publish_no_replace(mut self) -> Result<PublishOutcome, RepoError> {
         match self
             .parent
@@ -229,9 +241,11 @@ fn configure_cap_temp_options(options: &mut CapOpenOptions, mode: u32) {
 #[cfg(windows)]
 fn configure_cap_temp_options(options: &mut CapOpenOptions, _mode: u32) {
     use cap_std::fs::OpenOptionsExt;
-    use windows_sys::Win32::Storage::FileSystem::{DELETE, FILE_GENERIC_WRITE};
+    use windows_sys::Win32::Storage::FileSystem::{
+        DELETE, FILE_GENERIC_WRITE, FILE_WRITE_ATTRIBUTES,
+    };
 
-    options.access_mode(FILE_GENERIC_WRITE | DELETE);
+    options.access_mode(FILE_GENERIC_WRITE | FILE_WRITE_ATTRIBUTES | DELETE);
 }
 
 #[cfg(not(any(unix, windows)))]
