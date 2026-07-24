@@ -3,12 +3,16 @@ use std::io::{BufReader, Cursor, Read};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
-use crate::atomic_write::write_file_safer;
+use crate::atomic_write::{stage_file, StagedFile};
 use crate::crypto::{decrypt, encrypt};
 use crate::{CheckIndex, Chunk, File, Index, RepoError};
 
 const OBJECT_MODE: u32 = 0o644;
 const ZSTD_WINDOW_LOG: u32 = 19;
+const MAX_CHUNK_DECODED_SIZE: usize = 8 * 1024 * 1024;
+const MAX_FILE_DECODED_SIZE: usize = 64 * 1024 * 1024;
+const MAX_INDEX_DECODED_SIZE: usize = 512 * 1024 * 1024;
+const MAX_CHECK_INDEX_DECODED_SIZE: usize = 512 * 1024 * 1024;
 
 pub struct Store {
     root: PathBuf,
@@ -58,12 +62,8 @@ impl Store {
 
     pub fn put_chunk(&self, chunk: &Chunk) -> Result<(), RepoError> {
         let path = self.object_path(&chunk.id)?;
-        if path.exists() {
-            return Ok(());
-        }
-
         let encoded = self.encode_encrypted(&chunk.data)?;
-        self.write_object(&path, &encoded)
+        self.write_immutable_object(&path, &encoded)
     }
 
     pub fn get_chunk(&self, id: &str) -> Result<Chunk, RepoError> {
@@ -71,44 +71,49 @@ impl Store {
         let encoded = read_object(&path, id)?;
         Ok(Chunk {
             id: id.to_owned(),
-            data: self.decode_encrypted(&encoded)?,
+            data: self.decode_encrypted(&encoded, MAX_CHUNK_DECODED_SIZE)?,
         })
     }
 
     pub fn put_file(&self, file: &File) -> Result<(), RepoError> {
         let path = self.object_path(&file.id)?;
-        if path.exists() {
-            return Ok(());
-        }
-
         let json = serde_json::to_vec(file)?;
         let encoded = self.encode_encrypted(&json)?;
-        self.write_object(&path, &encoded)
+        self.write_immutable_object(&path, &encoded)
     }
 
     pub fn get_file(&self, id: &str) -> Result<File, RepoError> {
         let path = self.object_path(id)?;
         let encoded = read_object(&path, id)?;
-        let json = self.decode_encrypted(&encoded)?;
+        let json = self.decode_encrypted(&encoded, MAX_FILE_DECODED_SIZE)?;
         Ok(serde_json::from_slice(&json)?)
     }
 
     pub fn put_index(&self, index: &Index) -> Result<(), RepoError> {
+        self.put_index_with_mtime(index, |path, mtime| filetime::set_file_mtime(path, mtime))
+    }
+
+    fn put_index_with_mtime<F>(&self, index: &Index, set_mtime: F) -> Result<(), RepoError>
+    where
+        F: FnOnce(&Path, filetime::FileTime) -> std::io::Result<()>,
+    {
         let path = self.index_path(&index.id)?;
         let json = serde_json::to_vec(index)?;
         let encoded = self.compress(&json)?;
-        self.write_object(&path, &encoded)?;
-
+        let staged = self.stage_object(&path, &encoded)?;
         let seconds = index.created.div_euclid(1_000);
         let nanos = index.created.rem_euclid(1_000) as u32 * 1_000_000;
-        filetime::set_file_mtime(&path, filetime::FileTime::from_unix_time(seconds, nanos))?;
-        Ok(())
+        set_mtime(
+            staged.path(),
+            filetime::FileTime::from_unix_time(seconds, nanos),
+        )?;
+        staged.publish_replace()
     }
 
     pub fn get_index(&self, id: &str) -> Result<Index, RepoError> {
         let path = self.index_path(id)?;
         let encoded = read_object(&path, id)?;
-        let json = self.decompress(&encoded)?;
+        let json = self.decompress(&encoded, MAX_INDEX_DECODED_SIZE)?;
         Ok(serde_json::from_slice(&json)?)
     }
 
@@ -122,16 +127,25 @@ impl Store {
     pub fn get_check_index(&self, id: &str) -> Result<CheckIndex, RepoError> {
         let path = self.check_index_path(id)?;
         let encoded = read_object(&path, id)?;
-        let json = self.decompress(&encoded)?;
+        let json = self.decompress(&encoded, MAX_CHECK_INDEX_DECODED_SIZE)?;
         Ok(serde_json::from_slice(&json)?)
     }
 
     fn write_object(&self, path: &Path, bytes: &[u8]) -> Result<(), RepoError> {
+        self.stage_object(path, bytes)?.publish_replace()
+    }
+
+    fn write_immutable_object(&self, path: &Path, bytes: &[u8]) -> Result<(), RepoError> {
+        self.stage_object(path, bytes)?.publish_no_replace()?;
+        Ok(())
+    }
+
+    fn stage_object(&self, path: &Path, bytes: &[u8]) -> Result<StagedFile, RepoError> {
         let parent = path
             .parent()
             .ok_or(RepoError::InvalidData("object path must have a parent"))?;
         fs::create_dir_all(parent)?;
-        write_file_safer(path, bytes, OBJECT_MODE)
+        stage_file(path, bytes, OBJECT_MODE)
     }
 
     fn encode_encrypted(&self, bytes: &[u8]) -> Result<Vec<u8>, RepoError> {
@@ -139,9 +153,9 @@ impl Store {
         encrypt(&compressed, &self.key)
     }
 
-    fn decode_encrypted(&self, bytes: &[u8]) -> Result<Vec<u8>, RepoError> {
+    fn decode_encrypted(&self, bytes: &[u8], limit: usize) -> Result<Vec<u8>, RepoError> {
         let compressed = decrypt(bytes, &self.key)?;
-        self.decompress(&compressed)
+        self.decompress(&compressed, limit)
     }
 
     fn compress(&self, bytes: &[u8]) -> Result<Vec<u8>, RepoError> {
@@ -150,14 +164,44 @@ impl Store {
             .map_err(RepoError::Compression)
     }
 
-    fn decompress(&self, bytes: &[u8]) -> Result<Vec<u8>, RepoError> {
+    fn decompress(&self, bytes: &[u8], limit: usize) -> Result<Vec<u8>, RepoError> {
+        let content_size = zstd::zstd_safe::get_frame_content_size(bytes).map_err(|_| {
+            RepoError::InvalidData("zstd frame is invalid or requires a window larger than 512 KiB")
+        })?;
+        if matches!(content_size, Some(size) if size > limit as u64) {
+            return Err(RepoError::DecodedSizeLimitExceeded { limit });
+        }
+
         let mut context = self.lock_decompressor()?;
+        context
+            .reset(zstd::zstd_safe::ResetDirective::SessionAndParameters)
+            .map_err(|_| {
+                RepoError::Compression(std::io::Error::other(
+                    "could not reset zstd decompression context",
+                ))
+            })?;
+        context
+            .set_parameter(zstd::zstd_safe::DParameter::WindowLogMax(ZSTD_WINDOW_LOG))
+            .map_err(|_| {
+                RepoError::Compression(std::io::Error::other(
+                    "could not set zstd decompression window limit",
+                ))
+            })?;
         let reader = BufReader::new(Cursor::new(bytes));
-        let mut decoder = zstd::stream::read::Decoder::with_context(reader, &mut context);
+        let decoder = zstd::stream::read::Decoder::with_context(reader, &mut context);
+        let read_limit = (limit as u64).saturating_add(1);
         let mut decoded = Vec::new();
         decoder
+            .take(read_limit)
             .read_to_end(&mut decoded)
-            .map_err(RepoError::Compression)?;
+            .map_err(|_| {
+                RepoError::InvalidData(
+                    "zstd frame is invalid or requires a window larger than 512 KiB",
+                )
+            })?;
+        if decoded.len() > limit {
+            return Err(RepoError::DecodedSizeLimitExceeded { limit });
+        }
         Ok(decoded)
     }
 
@@ -206,8 +250,13 @@ fn read_object(path: &Path, id: &str) -> Result<Vec<u8>, RepoError> {
 mod tests {
     use std::fs;
     use std::path::Path;
+    use std::sync::{Arc, Barrier};
 
-    use super::Store;
+    use super::{
+        Store, MAX_CHECK_INDEX_DECODED_SIZE, MAX_CHUNK_DECODED_SIZE, MAX_FILE_DECODED_SIZE,
+        MAX_INDEX_DECODED_SIZE,
+    };
+    use crate::atomic_write::PublishOutcome;
     use crate::{CheckIndex, CheckIndexFile, Chunk, File, Index, RepoError};
 
     const FILE_ID: &str = "0123456789abcdef0123456789abcdef01234567";
@@ -287,6 +336,32 @@ mod tests {
         let base = 1_u64 << exponent;
         let add = (base / 8) * u64::from(window_descriptor & 0x07);
         Some(base + add)
+    }
+
+    fn zstd_rle_frame_with_content_size(decoded_size: usize) -> Vec<u8> {
+        assert!(decoded_size <= u32::MAX as usize);
+        let mut frame = vec![0x28, 0xb5, 0x2f, 0xfd, 0xa0];
+        frame.extend_from_slice(&(decoded_size as u32).to_le_bytes());
+        append_rle_blocks(&mut frame, decoded_size);
+        frame
+    }
+
+    fn zstd_rle_frame_without_content_size(decoded_size: usize) -> Vec<u8> {
+        let mut frame = vec![0x28, 0xb5, 0x2f, 0xfd, 0x00, 0x48];
+        append_rle_blocks(&mut frame, decoded_size);
+        frame
+    }
+
+    fn append_rle_blocks(frame: &mut Vec<u8>, decoded_size: usize) {
+        let mut remaining = decoded_size;
+        while remaining > 0 {
+            let block_size = remaining.min(128 * 1024);
+            remaining -= block_size;
+            let last_block = usize::from(remaining == 0);
+            let header = (block_size << 3) | (1 << 1) | last_block;
+            frame.extend_from_slice(&(header as u32).to_le_bytes()[..3]);
+            frame.push(b'x');
+        }
     }
 
     #[test]
@@ -446,6 +521,150 @@ mod tests {
         let actual_millis =
             modified.unix_seconds() * 1_000 + i64::from(modified.nanoseconds() / 1_000_000);
         assert_eq!(actual_millis, index.created);
+    }
+
+    #[test]
+    fn index_mtime_failure_does_not_publish_replacement() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = Store::new(temp.path(), fixture_key()).unwrap();
+        let original = fixture_index();
+        store.put_index(&original).unwrap();
+        let path = store.index_path(INDEX_ID).unwrap();
+        let original_bytes = fs::read(&path).unwrap();
+        let mut replacement = original.clone();
+        replacement.memo = "must not publish".to_owned();
+
+        assert!(matches!(
+            store.put_index_with_mtime(&replacement, |_path, _mtime| {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "injected mtime failure",
+                ))
+            }),
+            Err(RepoError::Io(_))
+        ));
+
+        assert_eq!(fs::read(&path).unwrap(), original_bytes);
+        assert_eq!(store.get_index(INDEX_ID).unwrap(), original);
+        assert_no_temp_files(temp.path());
+    }
+
+    #[test]
+    fn immutable_store_publication_race_has_one_winner_without_overwrite() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = Store::new(temp.path(), fixture_key()).unwrap();
+        let path = store.object_path(CHUNK_ID).unwrap();
+        let first = store.stage_object(&path, b"first").unwrap();
+        let second = store.stage_object(&path, b"second").unwrap();
+        let barrier = Arc::new(Barrier::new(2));
+
+        let first_barrier = Arc::clone(&barrier);
+        let first_thread = std::thread::spawn(move || {
+            first_barrier.wait();
+            (first.publish_no_replace().unwrap(), b"first".as_slice())
+        });
+        let second_thread = std::thread::spawn(move || {
+            barrier.wait();
+            (second.publish_no_replace().unwrap(), b"second".as_slice())
+        });
+        let first_result = first_thread.join().unwrap();
+        let second_result = second_thread.join().unwrap();
+
+        let outcomes = [first_result.0, second_result.0];
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|outcome| **outcome == PublishOutcome::Published)
+                .count(),
+            1
+        );
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|outcome| **outcome == PublishOutcome::AlreadyExists)
+                .count(),
+            1
+        );
+        let winning_bytes = if first_result.0 == PublishOutcome::Published {
+            first_result.1
+        } else {
+            second_result.1
+        };
+        assert_eq!(fs::read(path).unwrap(), winning_bytes);
+        assert_no_temp_files(temp.path());
+    }
+
+    #[test]
+    fn object_type_decode_limits_reject_one_byte_over() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = Store::new(temp.path(), fixture_key()).unwrap();
+
+        let chunk_frame = zstd_rle_frame_with_content_size(MAX_CHUNK_DECODED_SIZE + 1);
+        let encrypted_chunk = crate::encrypt(&chunk_frame, &fixture_key()).unwrap();
+        write_fixture(&store.object_path(CHUNK_ID).unwrap(), &encrypted_chunk);
+        assert!(matches!(
+            store.get_chunk(CHUNK_ID),
+            Err(RepoError::DecodedSizeLimitExceeded { limit })
+                if limit == MAX_CHUNK_DECODED_SIZE
+        ));
+
+        let file_frame = zstd_rle_frame_with_content_size(MAX_FILE_DECODED_SIZE + 1);
+        let encrypted_file = crate::encrypt(&file_frame, &fixture_key()).unwrap();
+        write_fixture(&store.object_path(FILE_ID).unwrap(), &encrypted_file);
+        assert!(matches!(
+            store.get_file(FILE_ID),
+            Err(RepoError::DecodedSizeLimitExceeded { limit })
+                if limit == MAX_FILE_DECODED_SIZE
+        ));
+
+        let index_frame = zstd_rle_frame_with_content_size(MAX_INDEX_DECODED_SIZE + 1);
+        write_fixture(&store.index_path(INDEX_ID).unwrap(), &index_frame);
+        assert!(matches!(
+            store.get_index(INDEX_ID),
+            Err(RepoError::DecodedSizeLimitExceeded { limit })
+                if limit == MAX_INDEX_DECODED_SIZE
+        ));
+
+        write_fixture(
+            &store.check_index_path(CHECK_INDEX_ID).unwrap(),
+            &index_frame,
+        );
+        assert!(matches!(
+            store.get_check_index(CHECK_INDEX_ID),
+            Err(RepoError::DecodedSizeLimitExceeded { limit })
+                if limit == MAX_CHECK_INDEX_DECODED_SIZE
+        ));
+    }
+
+    #[test]
+    fn content_size_missing_stream_rejects_one_byte_over_limit() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = Store::new(temp.path(), fixture_key()).unwrap();
+        let frame = zstd_rle_frame_without_content_size(1_025);
+        assert_eq!(
+            zstd::zstd_safe::get_frame_content_size(&frame).unwrap(),
+            None
+        );
+
+        assert!(matches!(
+            store.decompress(&frame, 1_024),
+            Err(RepoError::DecodedSizeLimitExceeded { limit: 1_024 })
+        ));
+    }
+
+    #[test]
+    fn decoder_rejects_frames_requiring_a_window_over_512_kib() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = Store::new(temp.path(), fixture_key()).unwrap();
+        let frame = zstd_rle_frame_with_content_size(600_000);
+        write_fixture(&store.index_path(INDEX_ID).unwrap(), &frame);
+
+        assert!(matches!(
+            store.get_index(INDEX_ID),
+            Err(RepoError::InvalidData(
+                "zstd frame is invalid or requires a window larger than 512 KiB"
+            ))
+        ));
     }
 
     #[test]

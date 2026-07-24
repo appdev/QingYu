@@ -6,6 +6,8 @@ pub enum RepoError {
     Serialization(#[from] serde_json::Error),
     #[error("repository compression failed")]
     Compression(#[source] std::io::Error),
+    #[error("repository decoded data exceeds the {limit}-byte limit")]
+    DecodedSizeLimitExceeded { limit: usize },
     #[error("repository key derivation failed")]
     KeyDerivationFailed,
     #[error("repository encryption failed")]
