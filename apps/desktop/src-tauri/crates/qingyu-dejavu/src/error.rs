@@ -30,6 +30,13 @@ pub enum RepoError {
     IndexFileChanged,
     #[error("the working tree changed after the operation was planned")]
     WorkingTreeChanged,
+    #[error(transparent)]
+    RemoteLockUnhealthy(#[from] crate::RemoteLockHealthError),
+    #[error("sync operation failed: {operation}; remote lock release also failed: {unlock}")]
+    OperationAndUnlockFailed {
+        operation: Box<RepoError>,
+        unlock: crate::CloudError,
+    },
     #[error("repository indexing encountered a fatal invariant failure")]
     RepoFatal,
     #[error("repository path is unsafe")]

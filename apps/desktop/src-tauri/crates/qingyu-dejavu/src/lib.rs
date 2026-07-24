@@ -11,6 +11,7 @@ pub mod purge;
 pub mod ref_store;
 pub mod repo;
 pub mod store;
+pub mod sync;
 pub mod sync_lock;
 pub mod working_tree;
 
@@ -29,7 +30,7 @@ pub use history::History;
 pub use purge::PurgeStat;
 pub use ref_store::RefStore;
 pub use repo::{Device, Repo, RepoOptions, RepoPaths};
-pub use store::Store;
+pub use store::{RawObjectKind, Store};
 pub use sync_lock::{RemoteLockGuard, RemoteLockHealthError};
 pub use working_tree::{
     with_working_tree_permit, ExpectedRevision, NoopWorkingTreeCoordinator, RepositoryRelativePath,

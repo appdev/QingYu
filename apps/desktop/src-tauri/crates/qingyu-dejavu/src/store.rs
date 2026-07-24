@@ -20,8 +20,17 @@ const MAX_CHUNK_DECODED_SIZE: usize = 8 * 1024 * 1024;
 const MAX_FILE_DECODED_SIZE: usize = 64 * 1024 * 1024;
 const MAX_INDEX_DECODED_SIZE: usize = 512 * 1024 * 1024;
 const MAX_CHECK_INDEX_DECODED_SIZE: usize = 512 * 1024 * 1024;
+const RAW_ENCODING_OVERHEAD_LIMIT: usize = 1024 * 1024;
 
 type OperationGuard = Arc<Mutex<()>>;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RawObjectKind {
+    Chunk,
+    File,
+    Index,
+    CheckIndex,
+}
 
 static OPERATION_GUARD: OnceLock<OperationGuard> = OnceLock::new();
 
@@ -85,6 +94,265 @@ impl Store {
     pub fn check_index_path(&self, id: &str) -> Result<PathBuf, RepoError> {
         validate_id(id)?;
         Ok(self.root.join("check").join("indexes").join(id))
+    }
+
+    pub fn contains_raw(&self, kind: RawObjectKind, id: &str) -> Result<bool, RepoError> {
+        let _operation = self.lock_operation()?;
+        let path = self.raw_path(kind, id)?;
+        match self.read_raw_path(&path, id, 0) {
+            Ok(_) => Ok(true),
+            Err(RepoError::NotFound(_)) => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+
+    pub fn export_raw(&self, kind: RawObjectKind, id: &str) -> Result<Vec<u8>, RepoError> {
+        let _operation = self.lock_operation()?;
+        self.export_raw_unlocked(kind, id)
+    }
+
+    pub fn import_raw(&self, kind: RawObjectKind, id: &str, bytes: &[u8]) -> Result<(), RepoError> {
+        let _operation = self.lock_operation()?;
+        self.import_raw_unlocked(kind, id, bytes)
+    }
+
+    pub fn list_raw_ids(&self, kind: RawObjectKind) -> Result<Vec<String>, RepoError> {
+        let _operation = self.lock_operation()?;
+        let mut ids = Vec::new();
+        match kind {
+            RawObjectKind::Index | RawObjectKind::CheckIndex => {
+                let relative = if kind == RawObjectKind::Index {
+                    Path::new("indexes")
+                } else {
+                    Path::new("check/indexes")
+                };
+                let directory = match self.open_directory(relative, false) {
+                    Ok(directory) => directory,
+                    Err(RepoError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+                        return Ok(ids);
+                    }
+                    Err(error) => return Err(error),
+                };
+                for entry in directory.entries()? {
+                    let entry = entry?;
+                    let name = entry.file_name();
+                    let Some(id) = name.to_str() else {
+                        return Err(RepoError::UnsafePath);
+                    };
+                    validate_id(id)?;
+                    let metadata = directory.symlink_metadata(&name)?;
+                    if !metadata.file_type().is_file() || cap_metadata_is_reparse(&metadata) {
+                        return Err(RepoError::UnsafePath);
+                    }
+                    let bytes = self.export_raw_unlocked(kind, id)?;
+                    self.validate_raw(kind, id, &bytes)?;
+                    ids.push(id.to_owned());
+                }
+            }
+            RawObjectKind::Chunk | RawObjectKind::File => {
+                let objects = match self.open_directory(Path::new("objects"), false) {
+                    Ok(directory) => directory,
+                    Err(RepoError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+                        return Ok(ids);
+                    }
+                    Err(error) => return Err(error),
+                };
+                for prefix_entry in objects.entries()? {
+                    let prefix_entry = prefix_entry?;
+                    let prefix = prefix_entry.file_name();
+                    let prefix_text = prefix.to_str().ok_or(RepoError::UnsafePath)?;
+                    if prefix_text.len() != 2 {
+                        return Err(RepoError::InvalidData(
+                            "object prefix must contain two hex characters",
+                        ));
+                    }
+                    let directory = objects
+                        .open_dir_nofollow(&prefix)
+                        .map_err(|error| map_nofollow_error(&objects, &prefix, error))?;
+                    validate_store_directory(&directory)?;
+                    for entry in directory.entries()? {
+                        let entry = entry?;
+                        let suffix = entry.file_name();
+                        let suffix_text = suffix.to_str().ok_or(RepoError::UnsafePath)?;
+                        let id = format!("{prefix_text}{suffix_text}");
+                        validate_id(&id)?;
+                        let metadata = directory.symlink_metadata(&suffix)?;
+                        if !metadata.file_type().is_file() || cap_metadata_is_reparse(&metadata) {
+                            return Err(RepoError::UnsafePath);
+                        }
+                        let path = self.raw_path(kind, &id)?;
+                        let bytes = self.read_raw_path(&path, &id, raw_limit(kind))?;
+                        match self.validate_raw(kind, &id, &bytes) {
+                            Ok(()) => ids.push(id),
+                            Err(requested_error) => {
+                                let other_kind = match kind {
+                                    RawObjectKind::Chunk => RawObjectKind::File,
+                                    RawObjectKind::File => RawObjectKind::Chunk,
+                                    RawObjectKind::Index | RawObjectKind::CheckIndex => {
+                                        unreachable!("index kinds use their own directories")
+                                    }
+                                };
+                                if self.validate_raw(other_kind, &id, &bytes).is_err() {
+                                    return Err(requested_error);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        ids.sort();
+        Ok(ids)
+    }
+
+    fn export_raw_unlocked(&self, kind: RawObjectKind, id: &str) -> Result<Vec<u8>, RepoError> {
+        let path = self.raw_path(kind, id)?;
+        let bytes = self.read_raw_path(&path, id, raw_limit(kind))?;
+        self.validate_raw(kind, id, &bytes)?;
+        Ok(bytes)
+    }
+
+    fn import_raw_unlocked(
+        &self,
+        kind: RawObjectKind,
+        id: &str,
+        bytes: &[u8],
+    ) -> Result<(), RepoError> {
+        validate_id(id)?;
+        if bytes.len() > raw_limit(kind) {
+            return Err(RepoError::DecodedSizeLimitExceeded {
+                limit: raw_limit(kind),
+            });
+        }
+        self.validate_raw(kind, id, bytes)?;
+        let path = self.raw_path(kind, id)?;
+        match self.read_raw_path(&path, id, raw_limit(kind)) {
+            Ok(existing) => {
+                self.validate_raw(kind, id, &existing)?;
+                return if existing == bytes {
+                    Ok(())
+                } else {
+                    Err(RepoError::InvalidData(
+                        "immutable raw object already exists with different bytes",
+                    ))
+                };
+            }
+            Err(RepoError::NotFound(_)) => {}
+            Err(error) => return Err(error),
+        }
+        self.write_immutable_object(&path, bytes)
+    }
+
+    fn validate_raw(&self, kind: RawObjectKind, id: &str, bytes: &[u8]) -> Result<(), RepoError> {
+        match kind {
+            RawObjectKind::Chunk => {
+                let decoded = self.decode_encrypted(bytes, MAX_CHUNK_DECODED_SIZE)?;
+                if crate::sha1_hex(&decoded) != id {
+                    return Err(RepoError::InvalidData(
+                        "chunk payload id does not match its key",
+                    ));
+                }
+            }
+            RawObjectKind::File => {
+                let decoded = self.decode_encrypted(bytes, MAX_FILE_DECODED_SIZE)?;
+                let file: File = serde_json::from_slice(&decoded)?;
+                if file.id != id {
+                    return Err(RepoError::InvalidData(
+                        "file payload id does not match its key",
+                    ));
+                }
+                if file.size < 0 || File::new(&file.path, file.size, file.updated).id != id {
+                    return Err(RepoError::InvalidData(
+                        "file payload identity does not match its path and timestamp",
+                    ));
+                }
+                validate_repository_object_path(&file.path)?;
+                for chunk_id in &file.chunks {
+                    validate_id(chunk_id)?;
+                }
+            }
+            RawObjectKind::Index => {
+                let decoded = self.decompress(bytes, MAX_INDEX_DECODED_SIZE)?;
+                let index: Index = serde_json::from_slice(&decoded)?;
+                if index.id != id {
+                    return Err(RepoError::InvalidData(
+                        "index payload id does not match its key",
+                    ));
+                }
+                if index.count != index.files.len() || index.size < 0 {
+                    return Err(RepoError::InvalidData(
+                        "index payload count or size is invalid",
+                    ));
+                }
+                for file_id in &index.files {
+                    validate_id(file_id)?;
+                }
+                if !index.check_index_id.is_empty() {
+                    validate_id(&index.check_index_id)?;
+                }
+                if !index.verify_aes_key(&self.key) {
+                    return Err(RepoError::DecryptionFailed);
+                }
+            }
+            RawObjectKind::CheckIndex => {
+                let decoded = self.decompress(bytes, MAX_CHECK_INDEX_DECODED_SIZE)?;
+                let check_index: CheckIndex = serde_json::from_slice(&decoded)?;
+                if check_index.id != id {
+                    return Err(RepoError::InvalidData(
+                        "check index payload id does not match its key",
+                    ));
+                }
+                validate_id(&check_index.index_id)?;
+                for file in &check_index.files {
+                    validate_id(&file.id)?;
+                    for chunk_id in &file.chunks {
+                        validate_id(chunk_id)?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn raw_path(&self, kind: RawObjectKind, id: &str) -> Result<PathBuf, RepoError> {
+        match kind {
+            RawObjectKind::Chunk | RawObjectKind::File => self.object_path(id),
+            RawObjectKind::Index => self.index_path(id),
+            RawObjectKind::CheckIndex => self.check_index_path(id),
+        }
+    }
+
+    fn read_raw_path(&self, path: &Path, id: &str, limit: usize) -> Result<Vec<u8>, RepoError> {
+        let relative = self.relative_store_path(path)?;
+        let name = relative
+            .file_name()
+            .ok_or(RepoError::InvalidData("object path must have a file name"))?;
+        let parent = self
+            .open_directory(relative.parent().unwrap_or_else(|| Path::new("")), false)
+            .map_err(|error| map_not_found(error, id))?;
+        let mut options = OpenOptions::new();
+        options.read(true).follow(FollowSymlinks::No);
+        let mut file = parent
+            .open_with(name, &options)
+            .map_err(|error| map_object_io(error, id))?;
+        let metadata = file.metadata()?;
+        if !metadata.file_type().is_file() || cap_metadata_is_reparse(&metadata) {
+            return Err(RepoError::UnsafePath);
+        }
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        if metadata.len() > limit as u64 {
+            return Err(RepoError::DecodedSizeLimitExceeded { limit });
+        }
+        let mut bytes = Vec::with_capacity(metadata.len() as usize);
+        file.by_ref()
+            .take((limit as u64).saturating_add(1))
+            .read_to_end(&mut bytes)?;
+        if bytes.len() > limit {
+            return Err(RepoError::DecodedSizeLimitExceeded { limit });
+        }
+        Ok(bytes)
     }
 
     pub fn put_chunk(&self, chunk: &Chunk) -> Result<(), RepoError> {
@@ -371,6 +639,30 @@ impl Store {
         self.decompressor
             .lock()
             .map_err(|_| RepoError::InvalidData("zstd decompressor lock poisoned"))
+    }
+}
+
+fn raw_limit(kind: RawObjectKind) -> usize {
+    let decoded = match kind {
+        RawObjectKind::Chunk => MAX_CHUNK_DECODED_SIZE,
+        RawObjectKind::File => MAX_FILE_DECODED_SIZE,
+        RawObjectKind::Index => MAX_INDEX_DECODED_SIZE,
+        RawObjectKind::CheckIndex => MAX_CHECK_INDEX_DECODED_SIZE,
+    };
+    decoded.saturating_add(RAW_ENCODING_OVERHEAD_LIMIT)
+}
+
+fn validate_repository_object_path(path: &str) -> Result<(), RepoError> {
+    if path == "/" || !path.starts_with('/') || path.contains('\\') {
+        return Err(RepoError::UnsafePath);
+    }
+    if path[1..]
+        .split('/')
+        .any(|component| component.is_empty() || component == "." || component == "..")
+    {
+        Err(RepoError::UnsafePath)
+    } else {
+        Ok(())
     }
 }
 

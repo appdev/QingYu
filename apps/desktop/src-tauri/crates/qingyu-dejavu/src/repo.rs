@@ -16,7 +16,7 @@ use crate::path_security::{
 use crate::purge::{purge_store_with_cancel_check, PurgeStat};
 use crate::store::{open_absolute_dir_nofollow, open_child_directory};
 use crate::sync_lock::{acquire_remote_lock, RemoteLockGuard};
-use crate::{File, Index, RepoError, Store};
+use crate::{File, History, Index, RefStore, RepoError, Store};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RepoPaths {
@@ -46,7 +46,9 @@ pub struct Repo {
     pub(crate) protected_include_paths: Vec<String>,
     pub(crate) ignore_matcher: Gitignore,
     pub(crate) store: Store,
+    pub(crate) history: History,
     pub(crate) index_hook: Arc<dyn IndexHook>,
+    pub(crate) sync_guard: tokio::sync::Mutex<()>,
 }
 
 impl Repo {
@@ -108,6 +110,7 @@ impl Repo {
             return Err(RepoError::UnsafePath);
         }
         let store = Store::new(&paths.repo, key)?;
+        let history = History::new(&paths.history)?;
 
         Ok(Self {
             data_dir,
@@ -116,7 +119,9 @@ impl Repo {
             protected_include_paths,
             ignore_matcher,
             store,
+            history,
             index_hook,
+            sync_guard: tokio::sync::Mutex::new(()),
         })
     }
 
@@ -133,6 +138,14 @@ impl Repo {
 
     pub async fn lock_cloud(&self, cloud: Arc<dyn Cloud>) -> Result<RemoteLockGuard, CloudError> {
         acquire_remote_lock(cloud, self.device.id.clone()).await
+    }
+
+    pub fn latest(&self) -> Result<Option<Index>, RepoError> {
+        RefStore::new(&self.store).latest()
+    }
+
+    pub fn latest_sync(&self) -> Result<Option<Index>, RepoError> {
+        RefStore::new(&self.store).latest_sync()
     }
 
     pub fn checkout_file(&self, file: &File) -> Result<(), RepoError> {
