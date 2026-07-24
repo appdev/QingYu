@@ -103,6 +103,18 @@ describe("footnotePreviewPlugin", () => {
     expect(view.dom.textContent).toContain("Alpha[^one]");
   });
 
+  it("keeps footnote source visible while dragging from inside it", () => {
+    const doc = "Alpha[^one]\n\n[^one]: Synthetic detail.\n\nEdit";
+    const anchor = doc.indexOf("[^one]") + 2;
+    const view = createView(doc);
+
+    view.dispatch({ selection: EditorSelection.cursor(anchor) });
+    view.dispatch({ selection: EditorSelection.range(anchor, anchor + 3) });
+
+    expect(view.dom.querySelector(".cm-markra-footnote-reference")).toBeNull();
+    expect(view.dom.textContent).toContain("Alpha[^one]");
+  });
+
   it("keeps footnotes rendered during a multi-line range selection", () => {
     const doc = "Alpha[^one]\n\n[^one]: Synthetic detail.\n\nEdit";
     const view = createView(doc);

@@ -73,6 +73,20 @@ describe("calloutPreviewPlugin", () => {
     ).toBe(true);
   });
 
+  it("keeps the callout marker source visible while dragging from inside it", () => {
+    const doc = "> [!NOTE]\n>\n> Synthetic detail\n\nEdit";
+    const anchor = doc.indexOf("[!NOTE]") + 2;
+    const view = createView(doc);
+
+    view.dispatch({ selection: EditorSelection.cursor(anchor) });
+    expect(view.dom.querySelector(".markra-callout-header")).toBeNull();
+
+    view.dispatch({ selection: EditorSelection.range(anchor, anchor + 4) });
+
+    expect(view.dom.querySelector(".markra-callout-header")).toBeNull();
+    expect(view.dom.textContent).toContain("[!NOTE]");
+  });
+
   it("keeps the callout layout stable during a multi-line range selection", () => {
     const doc = "> [!NOTE]\n>\n> Synthetic detail\n\nEdit";
     const view = createView(doc);

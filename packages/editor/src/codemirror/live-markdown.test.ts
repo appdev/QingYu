@@ -144,6 +144,20 @@ describe("liveMarkdown", () => {
   });
 
   it.each([
+    ["list", "- Synthetic item"],
+    ["blockquote", "> Synthetic quote"],
+  ])("keeps the %s marker visible while dragging from its source", (
+    _label,
+    doc,
+  ) => {
+    const view = createView({ doc, anchor: 0 });
+
+    view.dispatch({ selection: EditorSelection.range(0, 5) });
+
+    expect(renderedLines(view)[0]).toBe(doc);
+  });
+
+  it.each([
     ["bold", "Before **synthetic** after", "synthetic"],
     ["italic", "Before *synthetic* after", "synthetic"],
     ["strikethrough", "Before ~~synthetic~~ after", "synthetic"],
@@ -153,6 +167,26 @@ describe("liveMarkdown", () => {
     const view = createView({
       doc,
       anchor: doc.indexOf(text) + Math.floor(text.length / 2),
+    });
+
+    expect(renderedLines(view)[0]).toBe(doc);
+  });
+
+  it.each([
+    ["bold", "Before **synthetic** after", "synthetic"],
+    ["italic", "Before *synthetic* after", "synthetic"],
+    ["strikethrough", "Before ~~synthetic~~ after", "synthetic"],
+    ["inline code", "Before `synthetic` after", "synthetic"],
+  ])("keeps the complete %s source visible while dragging from inside it", (
+    _label,
+    doc,
+    text,
+  ) => {
+    const anchor = doc.indexOf(text) + 2;
+    const view = createView({ doc, anchor });
+
+    view.dispatch({
+      selection: EditorSelection.range(anchor, anchor + 4),
     });
 
     expect(renderedLines(view)[0]).toBe(doc);
@@ -195,6 +229,19 @@ describe("liveMarkdown", () => {
       ).join(""),
     ).toBe("[](https://example.test)");
     expect(view.dom.querySelector(".cm-markra-link-icon")).toBeNull();
+  });
+
+  it("keeps complete link source visible while dragging from its label", () => {
+    const doc = "Before [synthetic](https://example.test) after";
+    const anchor = doc.indexOf("synthetic") + 2;
+    const view = createView({ doc, anchor });
+
+    view.dispatch({
+      selection: EditorSelection.range(anchor, anchor + 4),
+    });
+
+    expect(renderedLines(view)[0]).toBe(doc);
+    expect(view.dom.querySelector(".cm-markra-link")).toBeNull();
   });
 
   it("keeps a completed link in source mode until Enter moves the caret away", () => {

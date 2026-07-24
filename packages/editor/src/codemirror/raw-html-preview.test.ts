@@ -64,6 +64,18 @@ describe("rawHtmlPreviewPlugin", () => {
     expect(view.dom.textContent).toContain("<kbd>Mod</kbd>");
   });
 
+  it("keeps raw HTML source visible while dragging from inside it", () => {
+    const doc = "Press <kbd>Mod</kbd> now.\n\nEdit";
+    const anchor = doc.indexOf("Mod");
+    const view = createView(doc);
+
+    view.dispatch({ selection: EditorSelection.cursor(anchor) });
+    view.dispatch({ selection: EditorSelection.range(anchor, anchor + 3) });
+
+    expect(view.dom.querySelector(".cm-markra-inline-html")).toBeNull();
+    expect(view.dom.textContent).toContain("<kbd>Mod</kbd>");
+  });
+
   it("keeps rendered HTML stable during a multi-line range selection", () => {
     const doc = "Press <kbd>Mod</kbd> now.\n\nAnother paragraph";
     const view = createView(doc);

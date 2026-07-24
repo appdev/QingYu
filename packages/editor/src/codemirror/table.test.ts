@@ -603,6 +603,26 @@ describe("tablePreviewPlugin", () => {
     expect(view.dom.textContent).toContain("| Alpha | 1 |");
   });
 
+  it("keeps complete table source visible while dragging from inside it", () => {
+    const doc = [
+      "| Name | Value |",
+      "| --- | --- |",
+      "| Alpha | 1 |",
+      "",
+      "Edit",
+    ].join("\n");
+    const anchor = doc.indexOf("Alpha") + 1;
+    const view = createView(doc);
+
+    view.dispatch({ selection: EditorSelection.cursor(anchor) });
+    view.dispatch({
+      selection: EditorSelection.range(anchor, doc.indexOf("| 1")),
+    });
+
+    expect(view.dom.querySelector(".cm-markra-table")).toBeNull();
+    expect(view.dom.textContent).toContain("| Alpha | 1 |");
+  });
+
   it("keeps the table visual when a preview cell is activated", () => {
     const doc = [
       "| Name | Value |",

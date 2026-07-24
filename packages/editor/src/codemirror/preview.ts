@@ -11,6 +11,7 @@ import {
 import {
   revealActiveLine,
   selectionChangeAffectsReveal,
+  sourceDragSelectionExtension,
   type RevealContext,
   type RevealPolicy,
   type RevealScope,
@@ -794,5 +795,5 @@ function previewPlugin(config: LivePreviewConfig): Extension {
 }
 
 export function livePreview(config: LivePreviewConfig = {}): Extension {
-  return previewPlugin(config);
+  return [sourceDragSelectionExtension, previewPlugin(config)];
 }

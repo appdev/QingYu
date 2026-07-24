@@ -48,6 +48,19 @@ describe("horizontalRulePlugin", () => {
     expect(view.dom.textContent).toContain("---");
   });
 
+  it("keeps horizontal-rule source visible while dragging from inside it", () => {
+    const doc = "First\n\n---\n\nSecond";
+    const anchor = doc.indexOf("---");
+    const view = createView(doc);
+
+    view.focus();
+    view.dispatch({ selection: EditorSelection.cursor(anchor) });
+    view.dispatch({ selection: EditorSelection.range(anchor, anchor + 2) });
+
+    expect(view.dom.querySelector("hr.cm-markra-horizontal-rule")).toBeNull();
+    expect(view.dom.textContent).toContain("---");
+  });
+
   it("keeps four-asterisk source editable while the caret is at the line end", () => {
     const view = createView("");
 

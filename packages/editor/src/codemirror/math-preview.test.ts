@@ -70,6 +70,18 @@ describe("mathPreviewPlugin", () => {
     expect(view.dom.textContent).toContain("$x + y$");
   });
 
+  it("keeps math source visible while dragging from inside it", () => {
+    const doc = "Before $x + y$ after\n\nEdit";
+    const anchor = doc.indexOf("x");
+    const view = createView(doc);
+
+    view.dispatch({ selection: EditorSelection.cursor(anchor) });
+    view.dispatch({ selection: EditorSelection.range(anchor, anchor + 4) });
+
+    expect(view.dom.querySelector(".markra-math-render-inline")).toBeNull();
+    expect(view.dom.textContent).toContain("$x + y$");
+  });
+
   it("keeps rendered math stable during a multi-line range selection", () => {
     const doc = "Before $x + y$ after\n\nAnother paragraph";
     const view = createView(doc);
