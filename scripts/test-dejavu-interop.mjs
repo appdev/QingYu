@@ -22,6 +22,7 @@ export const SCENARIOS = Object.freeze([
   "rust-create-go-change-rust-observe",
   "independent-paths-converge",
   "same-path-conflict",
+  "go-identical-first-syncignore-conflict",
   "go-failure-before-ref-publication",
   "rust-failure-before-ref-publication",
 ]);
@@ -386,8 +387,22 @@ function samePathConflicts(executables, ownedRoot) {
   }
 }
 
+function goIdenticalFirstSyncignoreConflicts(executables, ownedRoot) {
+  const scenario = createScenario(ownedRoot, SCENARIOS[4]);
+  const first = createClient(scenario.root, "go", "go-syncignore-a");
+  const second = createClient(scenario.root, "go", "go-syncignore-b");
+  writeFile(first, ".siyuan/syncignore", "", 0);
+  writeFile(second, ".siyuan/syncignore", "", 1);
+
+  const uploaded = runClient(executables, first, scenario.cloudRoot);
+  assertCount(uploaded, "conflicts", 0, SCENARIOS[4]);
+  const merged = runClient(executables, second, scenario.cloudRoot);
+  assertCount(merged, "conflicts", 1, SCENARIOS[4]);
+  assertFile(second, ".siyuan/syncignore", "", SCENARIOS[4]);
+}
+
 function failureBeforePublication(executables, ownedRoot, failingLanguage) {
-  const scenarioName = failingLanguage === "go" ? SCENARIOS[4] : SCENARIOS[5];
+  const scenarioName = failingLanguage === "go" ? SCENARIOS[5] : SCENARIOS[6];
   const scenario = createScenario(ownedRoot, scenarioName);
   const failed = createClient(scenario.root, failingLanguage, `${failingLanguage}-failed`);
   writeFile(failed, "recover.txt", `created before ${failingLanguage} failure\n`, 0);
@@ -459,6 +474,7 @@ export function executeInterop() {
       rustCreatesGoChanges,
       independentPathsConverge,
       samePathConflicts,
+      goIdenticalFirstSyncignoreConflicts,
       (clients, root) => failureBeforePublication(clients, root, "go"),
       (clients, root) => failureBeforePublication(clients, root, "rust"),
     ];

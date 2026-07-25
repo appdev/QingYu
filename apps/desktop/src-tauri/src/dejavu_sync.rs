@@ -13,7 +13,9 @@ use time::OffsetDateTime;
 
 use self::commands::{DejavuSchedulerOwner, DejavuSyncServiceOwner};
 use self::path_guard::{tauri_path_guard_factory, PathGuardCoordinatorOwner};
-use self::repository::{DejavuRepositoryRunner, WorkingTreeCoordinatorFactory};
+use self::repository::{
+    DejavuRepositoryRunner, S3RepositoryCatalogValidator, WorkingTreeCoordinatorFactory,
+};
 use self::scheduler::{DejavuScheduler, LocalRepositoryScheduleSource, SystemDnsFlusher};
 use self::service::{DejavuSyncService, RepositoryJobError};
 use self::status::{RepositoryStatusStore, TauriRepositoryStatusEmitter};
@@ -41,7 +43,13 @@ pub(crate) fn install_production_graph(app: &tauri::AppHandle) -> Result<(), Rep
         Arc::new(OffsetDateTime::now_utc),
     );
     service.install_lifecycle(Arc::new(scheduler.clone()))?;
-    app.state::<DejavuSyncServiceOwner>().install(service)?;
+    let service_owner = app.state::<DejavuSyncServiceOwner>();
+    service_owner.install(service.clone())?;
+    service_owner.install_binding(
+        &app_data,
+        Arc::new(S3RepositoryCatalogValidator::new(&app_data)),
+        Arc::new(service),
+    )?;
     app.state::<DejavuSchedulerOwner>().install(scheduler)?;
     Ok(())
 }

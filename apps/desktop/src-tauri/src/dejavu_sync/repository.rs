@@ -10,8 +10,9 @@ use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use cap_fs_ext::DirExt;
 use qingyu_dejavu::{
-    Cloud, Device, Repo, RepoError, RepoOptions, RepoPaths, S3AddressingStyle, S3Cloud,
-    S3Connection, S3TlsVerification, S3TransportOptions, WorkingTreeCoordinator,
+    Cloud, CloudError, Device, Repo, RepoError, RepoOptions, RepoPaths, RepositoryMetadata,
+    S3AddressingStyle, S3Cloud, S3Connection, S3RepositoryCatalog, S3TlsVerification,
+    S3TransportOptions, WorkingTreeCoordinator,
 };
 
 use super::local_state::LocalSyncStateService;
@@ -39,6 +40,42 @@ const MAX_SYNCIGNORE_BYTES: usize = 1024 * 1024;
 
 type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
+pub(crate) trait RepositoryCatalogValidator: Send + Sync {
+    fn read_repository<'a>(
+        &'a self,
+        repository_id: &'a str,
+    ) -> BoxFuture<'a, Result<RepositoryMetadata, RepositoryJobError>>;
+}
+
+pub(crate) struct S3RepositoryCatalogValidator {
+    app_data: PathBuf,
+}
+
+impl S3RepositoryCatalogValidator {
+    pub(crate) fn new(app_data: impl AsRef<Path>) -> Self {
+        Self {
+            app_data: app_data.as_ref().to_path_buf(),
+        }
+    }
+}
+
+impl RepositoryCatalogValidator for S3RepositoryCatalogValidator {
+    fn read_repository<'a>(
+        &'a self,
+        repository_id: &'a str,
+    ) -> BoxFuture<'a, Result<RepositoryMetadata, RepositoryJobError>> {
+        Box::pin(async move {
+            let snapshot = ready_snapshot_at_app_data(&self.app_data, None)
+                .map_err(|_| RepositoryJobError::ConfigUnavailable)?;
+            let parameters = repository_cloud_parameters(snapshot.target, String::new())?;
+            let (connection, options) = s3_transport(&parameters)?;
+            let catalog =
+                S3RepositoryCatalog::new(connection, options).map_err(map_catalog_error)?;
+            catalog.read(repository_id).await.map_err(map_catalog_error)
+        })
+    }
+}
+
 #[allow(dead_code)]
 pub(crate) struct RepositoryCloudParameters {
     pub(crate) endpoint_url: String,
@@ -47,8 +84,8 @@ pub(crate) struct RepositoryCloudParameters {
     pub(crate) access_key_id: String,
     pub(crate) secret_access_key: String,
     pub(crate) request_timeout_seconds: u32,
-    pub(crate) addressing_style: String,
-    pub(crate) tls_verification: String,
+    pub(crate) addressing_style: ConfigAddressingStyle,
+    pub(crate) tls_verification: ConfigTlsVerification,
     pub(crate) repository_prefix: String,
 }
 
@@ -62,8 +99,14 @@ impl fmt::Debug for RepositoryCloudParameters {
             .field("access_key_id", &"[REDACTED]")
             .field("secret_access_key", &"[REDACTED]")
             .field("request_timeout_seconds", &self.request_timeout_seconds)
-            .field("addressing_style", &self.addressing_style)
-            .field("tls_verification", &self.tls_verification)
+            .field(
+                "addressing_style",
+                &config_addressing_style(self.addressing_style),
+            )
+            .field(
+                "tls_verification",
+                &config_tls_verification(self.tls_verification),
+            )
             .field("repository_prefix", &self.repository_prefix)
             .finish()
     }
@@ -91,31 +134,7 @@ impl RepositoryCloudFactory for S3RepositoryCloudFactory {
         &self,
         parameters: RepositoryCloudParameters,
     ) -> Result<Arc<dyn Cloud>, RepositoryJobError> {
-        let addressing_style = match parameters.addressing_style.as_str() {
-            "auto" => S3AddressingStyle::Auto,
-            "path" => S3AddressingStyle::Path,
-            "virtual-hosted" => S3AddressingStyle::VirtualHosted,
-            _ => return Err(RepositoryJobError::ConfigUnavailable),
-        };
-        let tls_verification = match parameters.tls_verification.as_str() {
-            "verify" => S3TlsVerification::Verify,
-            "skip" => S3TlsVerification::Skip,
-            _ => return Err(RepositoryJobError::ConfigUnavailable),
-        };
-        let connection = S3Connection::new(
-            &parameters.endpoint_url,
-            &parameters.region,
-            &parameters.bucket,
-            &parameters.access_key_id,
-            &parameters.secret_access_key,
-            addressing_style,
-        )
-        .map_err(|_| RepositoryJobError::ConfigUnavailable)?;
-        let options = S3TransportOptions {
-            request_timeout: Duration::from_secs(u64::from(parameters.request_timeout_seconds)),
-            tls_verification,
-            max_attempts: S3TransportOptions::default().max_attempts,
-        };
+        let (connection, options) = s3_transport(&parameters)?;
         let cloud = S3Cloud::new(connection, options, &parameters.repository_prefix)
             .map_err(|_| RepositoryJobError::CloudUnavailable)?;
         Ok(Arc::new(cloud))
@@ -204,37 +223,15 @@ impl DejavuRepositoryRunner {
             .map_err(|_| RepositoryJobError::RepositoryUnavailable)?;
         let snapshot = ready_snapshot_at_app_data(&self.app_data, None)
             .map_err(|_| RepositoryJobError::ConfigUnavailable)?;
-        let SyncTarget::S3 {
-            access_key_id,
-            addressing_style,
-            bucket,
-            endpoint_url,
-            region,
-            remote_root: _,
-            request_timeout_seconds,
-            secret_access_key,
-            tls_verification,
-        } = snapshot.target
-        else {
-            return Err(RepositoryJobError::ConfigUnavailable);
-        };
-
         let (canonical_notes_root, ignore_lines) = prepare_syncignore(&request.notes_root)?;
         let repository_paths = prepare_repository_layout(&self.app_data, &request.repository_id)?;
         after_layout_prepared(repository_paths.root_path());
         repository_paths.revalidate()?;
         let repository_prefix = format!("qingyu/repositories/{}/repo", request.repository_id);
-        let cloud = self.cloud_factory.create(RepositoryCloudParameters {
-            endpoint_url,
-            region,
-            bucket,
-            access_key_id,
-            secret_access_key,
-            request_timeout_seconds,
-            addressing_style: config_addressing_style(addressing_style).to_owned(),
-            tls_verification: config_tls_verification(tls_verification).to_owned(),
+        let cloud = self.cloud_factory.create(repository_cloud_parameters(
+            snapshot.target,
             repository_prefix,
-        })?;
+        )?)?;
         let repo = Repo::open(
             repository_paths.repo_paths(canonical_notes_root),
             Device {
@@ -415,6 +412,10 @@ fn canonical_notes_root(notes_root: &Path) -> Result<PathBuf, RepositoryJobError
     Ok(canonical)
 }
 
+pub(crate) fn prepare_binding_root(notes_root: &Path) -> Result<PathBuf, RepositoryJobError> {
+    prepare_syncignore(notes_root).map(|(canonical, _)| canonical)
+}
+
 fn prepare_syncignore(notes_root: &Path) -> Result<(PathBuf, Vec<String>), RepositoryJobError> {
     let canonical = canonical_notes_root(notes_root)?;
     let root = open_canonical_directory_nofollow(&canonical)
@@ -551,6 +552,68 @@ fn open_or_create_directory(
         .map_err(|_| RepositoryJobError::RepositoryUnavailable)
 }
 
+fn repository_cloud_parameters(
+    target: SyncTarget,
+    repository_prefix: String,
+) -> Result<RepositoryCloudParameters, RepositoryJobError> {
+    let SyncTarget::S3 {
+        access_key_id,
+        addressing_style,
+        bucket,
+        endpoint_url,
+        region,
+        remote_root: _,
+        request_timeout_seconds,
+        secret_access_key,
+        tls_verification,
+    } = target
+    else {
+        return Err(RepositoryJobError::ConfigUnavailable);
+    };
+    Ok(RepositoryCloudParameters {
+        endpoint_url,
+        region,
+        bucket,
+        access_key_id,
+        secret_access_key,
+        request_timeout_seconds,
+        addressing_style,
+        tls_verification,
+        repository_prefix,
+    })
+}
+
+fn s3_transport(
+    parameters: &RepositoryCloudParameters,
+) -> Result<(S3Connection, S3TransportOptions), RepositoryJobError> {
+    let addressing_style = match parameters.addressing_style {
+        ConfigAddressingStyle::Auto => S3AddressingStyle::Auto,
+        ConfigAddressingStyle::Path => S3AddressingStyle::Path,
+        ConfigAddressingStyle::VirtualHosted => S3AddressingStyle::VirtualHosted,
+    };
+    let tls_verification = match parameters.tls_verification {
+        ConfigTlsVerification::Verify => S3TlsVerification::Verify,
+        ConfigTlsVerification::Skip => S3TlsVerification::Skip,
+    };
+    let connection = S3Connection::new(
+        &parameters.endpoint_url,
+        &parameters.region,
+        &parameters.bucket,
+        &parameters.access_key_id,
+        &parameters.secret_access_key,
+        addressing_style,
+    )
+    .map_err(|_| RepositoryJobError::ConfigUnavailable)?;
+    Ok((
+        connection,
+        S3TransportOptions {
+            request_timeout: Duration::from_secs(u64::from(parameters.request_timeout_seconds)),
+            tls_verification,
+            max_attempts: S3TransportOptions::default().max_attempts,
+        },
+    ))
+}
+
 fn config_addressing_style(style: ConfigAddressingStyle) -> &'static str {
     match style {
         ConfigAddressingStyle::Auto => "auto",
@@ -563,6 +626,22 @@ fn config_tls_verification(verification: ConfigTlsVerification) -> &'static str 
     match verification {
         ConfigTlsVerification::Verify => "verify",
         ConfigTlsVerification::Skip => "skip",
+    }
+}
+
+fn map_catalog_error(error: CloudError) -> RepositoryJobError {
+    if error.is_dns() {
+        return RepositoryJobError::DnsUnavailable;
+    }
+    match error.code() {
+        "not_found"
+        | "unsafe_key"
+        | "response_too_large"
+        | "catalog_invalid_repository_id"
+        | "catalog_malformed_metadata"
+        | "catalog_invalid_metadata"
+        | "catalog_repository_id_mismatch" => RepositoryJobError::InvalidBinding,
+        _ => RepositoryJobError::CloudUnavailable,
     }
 }
 
@@ -625,8 +704,9 @@ mod tests {
     use tempfile::{tempdir, TempDir};
 
     use super::{
-        map_repo_error, DejavuRepositoryRunner, RepositoryCloudFactory, RepositoryCloudParameters,
-        WorkingTreeCoordinatorFactory,
+        config_addressing_style, config_tls_verification, map_repo_error, ConfigAddressingStyle,
+        ConfigTlsVerification, DejavuRepositoryRunner, RepositoryCloudFactory,
+        RepositoryCloudParameters, WorkingTreeCoordinatorFactory,
     };
     use crate::dejavu_sync::service::{
         JobCancellationToken, RepositoryJobError, RepositoryJobRunner, SyncAttemptContext,
@@ -778,8 +858,10 @@ mod tests {
                     region: parameters.region,
                     bucket: parameters.bucket,
                     request_timeout_seconds: parameters.request_timeout_seconds,
-                    addressing_style: parameters.addressing_style.to_owned(),
-                    tls_verification: parameters.tls_verification.to_owned(),
+                    addressing_style: config_addressing_style(parameters.addressing_style)
+                        .to_owned(),
+                    tls_verification: config_tls_verification(parameters.tls_verification)
+                        .to_owned(),
                     repository_prefix: parameters.repository_prefix,
                 });
             Ok(Arc::new(
@@ -882,6 +964,137 @@ mod tests {
         )
     }
 
+    struct MatrixEnvironment {
+        _root: TempDir,
+        root: PathBuf,
+        cloud_root: PathBuf,
+        repository_id: String,
+    }
+
+    struct MatrixClient {
+        app_data: PathBuf,
+        notes_root: PathBuf,
+        repository_id: String,
+    }
+
+    impl MatrixEnvironment {
+        fn new(repository_id: &str) -> Self {
+            let root = tempdir().unwrap();
+            let cloud_root = root.path().join("cloud");
+            std::fs::create_dir(&cloud_root).unwrap();
+            Self {
+                root: root.path().to_path_buf(),
+                _root: root,
+                cloud_root,
+                repository_id: repository_id.to_owned(),
+            }
+        }
+
+        fn client(&self, name: &str, files: &[(&str, &[u8])]) -> MatrixClient {
+            let app_data = self.root.join(format!("{name}-app-data"));
+            let notes_root = self.root.join(format!("{name}-notes"));
+            std::fs::create_dir(&app_data).unwrap();
+            std::fs::create_dir(&notes_root).unwrap();
+            for (relative_path, bytes) in files {
+                let path = notes_root.join(relative_path);
+                if let Some(parent) = path.parent() {
+                    std::fs::create_dir_all(parent).unwrap();
+                }
+                std::fs::write(path, bytes).unwrap();
+            }
+            std::fs::write(
+                app_data.join("sync-config.json"),
+                serde_json::to_vec_pretty(&serde_json::json!({
+                    "version": 3,
+                    "enabled": true,
+                    "provider": "s3",
+                    "remoteRoot": "ignored-by-dejavu-layout",
+                    "mode": "automatic",
+                    "intervalSeconds": 30,
+                    "webdav": {
+                        "serverUrl": "",
+                        "username": "",
+                        "password": ""
+                    },
+                    "s3": {
+                        "endpointUrl": "https://objects.example.test",
+                        "region": "",
+                        "bucket": "qingyu-notes",
+                        "accessKeyId": "fixture-access-key",
+                        "secretAccessKey": "fixture-secret-key",
+                        "requestTimeoutSeconds": 30,
+                        "addressingStyle": "path",
+                        "tlsVerification": "verify"
+                    }
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            std::fs::write(
+                app_data.join("local-sync.json"),
+                serde_json::to_vec_pretty(&serde_json::json!({
+                    "version": 1,
+                    "deviceId": matrix_device_id(name),
+                    "repoKey": STANDARD.encode([11_u8; 32]),
+                    "bindings": [{
+                        "repositoryId": self.repository_id,
+                        "displayName": "Matrix",
+                        "notesRoot": notes_root.canonicalize().unwrap(),
+                        "enabled": true
+                    }]
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            MatrixClient {
+                app_data,
+                notes_root,
+                repository_id: self.repository_id.clone(),
+            }
+        }
+    }
+
+    impl MatrixClient {
+        async fn bind_and_sync(
+            &self,
+            cloud_root: &Path,
+            job_number: u64,
+        ) -> Result<crate::dejavu_sync::service::RepositorySyncResult, RepositoryJobError> {
+            let runner = DejavuRepositoryRunner::with_cloud_factory(
+                &self.app_data,
+                Arc::new(FakeCoordinatorFactory),
+                Arc::new(LocalCloudFactory::new(cloud_root.to_path_buf())),
+            );
+            runner
+                .bind_and_sync(SyncAttemptContext {
+                    request: SyncJobRequest {
+                        notes_root: self.notes_root.clone(),
+                        repository_id: self.repository_id.clone(),
+                        trigger: SyncTrigger::Manual,
+                    },
+                    job_id: format!("30000000-0000-4000-8000-{job_number:012}"),
+                    attempt: 1,
+                    cancellation: JobCancellationToken::new(),
+                })
+                .await
+        }
+
+        fn history_root(&self) -> PathBuf {
+            self.app_data
+                .join("sync/repositories")
+                .join(&self.repository_id)
+                .join("history")
+        }
+    }
+
+    fn matrix_device_id(name: &str) -> &'static str {
+        match name {
+            "source" => "40000000-0000-4000-8000-000000000001",
+            "target" => "40000000-0000-4000-8000-000000000002",
+            _ => "40000000-0000-4000-8000-000000000003",
+        }
+    }
+
     fn index_count(root: &Path) -> usize {
         std::fs::read_dir(root)
             .unwrap()
@@ -960,6 +1173,138 @@ mod tests {
             std::fs::read(fixture.notes_root.join(".qingyu/syncignore")).unwrap(),
             b"drafts/**\n"
         );
+    }
+
+    #[tokio::test]
+    async fn bind_and_sync_matrix_accepts_empty_local_and_empty_remote() {
+        let environment = MatrixEnvironment::new("00000000-0000-4000-8000-000000000061");
+        let target = environment.client("target", &[]);
+
+        let result = target
+            .bind_and_sync(&environment.cloud_root, 61)
+            .await
+            .unwrap();
+
+        assert!(result.conflicts.is_empty());
+        assert!(target.notes_root.join(".qingyu/syncignore").is_file());
+    }
+
+    #[tokio::test]
+    async fn bind_and_sync_matrix_uploads_nonempty_local_to_empty_remote() {
+        let environment = MatrixEnvironment::new("00000000-0000-4000-8000-000000000062");
+        let target = environment.client("target", &[("local.md", b"local")]);
+
+        let result = target
+            .bind_and_sync(&environment.cloud_root, 62)
+            .await
+            .unwrap();
+
+        assert!(result.conflicts.is_empty());
+        assert!(result.transfer.upload_files > 0);
+        assert!(environment.cloud_root.join("refs/latest").is_file());
+    }
+
+    #[tokio::test]
+    async fn bind_and_sync_matrix_restores_nonempty_remote_into_empty_local() {
+        let environment = MatrixEnvironment::new("00000000-0000-4000-8000-000000000063");
+        let source = environment.client("source", &[("remote.md", b"remote")]);
+        source
+            .bind_and_sync(&environment.cloud_root, 63)
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(1_100)).await;
+        let target = environment.client("target", &[]);
+
+        let result = target
+            .bind_and_sync(&environment.cloud_root, 64)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            result
+                .conflicts
+                .iter()
+                .map(|conflict| conflict.relative_path.as_str())
+                .collect::<Vec<_>>(),
+            [".qingyu/syncignore"]
+        );
+        assert_eq!(
+            std::fs::read(target.notes_root.join("remote.md")).unwrap(),
+            b"remote"
+        );
+    }
+
+    #[tokio::test]
+    async fn bind_and_sync_matrix_merges_independent_nonempty_local_and_remote() {
+        let environment = MatrixEnvironment::new("00000000-0000-4000-8000-000000000064");
+        let source = environment.client("source", &[("remote.md", b"remote")]);
+        source
+            .bind_and_sync(&environment.cloud_root, 65)
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(1_100)).await;
+        let target = environment.client("target", &[("local.md", b"local")]);
+
+        let result = target
+            .bind_and_sync(&environment.cloud_root, 66)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            result
+                .conflicts
+                .iter()
+                .map(|conflict| conflict.relative_path.as_str())
+                .collect::<Vec<_>>(),
+            [".qingyu/syncignore"]
+        );
+        assert_eq!(
+            std::fs::read(target.notes_root.join("remote.md")).unwrap(),
+            b"remote"
+        );
+        assert_eq!(
+            std::fs::read(target.notes_root.join("local.md")).unwrap(),
+            b"local"
+        );
+    }
+
+    #[tokio::test]
+    async fn bind_and_sync_matrix_keeps_local_same_path_conflict_and_remote_history() {
+        let environment = MatrixEnvironment::new("00000000-0000-4000-8000-000000000065");
+        let source = environment.client("source", &[("same.md", b"remote")]);
+        source
+            .bind_and_sync(&environment.cloud_root, 67)
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(1_100)).await;
+        let target = environment.client("target", &[("same.md", b"local")]);
+
+        let result = target
+            .bind_and_sync(&environment.cloud_root, 68)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            result
+                .conflicts
+                .iter()
+                .map(|conflict| conflict.relative_path.as_str())
+                .collect::<Vec<_>>(),
+            [".qingyu/syncignore", "same.md"]
+        );
+        assert_eq!(
+            std::fs::read(target.notes_root.join("same.md")).unwrap(),
+            b"local"
+        );
+        let remote_versions = std::fs::read_dir(target.history_root())
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path().join("same.md"))
+            .filter(|path| path.is_file())
+            .map(std::fs::read)
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(remote_versions, [b"remote".to_vec()]);
     }
 
     #[test]
@@ -1053,8 +1398,8 @@ mod tests {
             access_key_id: "private-access-key".to_owned(),
             secret_access_key: "private-secret-key".to_owned(),
             request_timeout_seconds: 47,
-            addressing_style: "path".to_owned(),
-            tls_verification: "skip".to_owned(),
+            addressing_style: ConfigAddressingStyle::Path,
+            tls_verification: ConfigTlsVerification::Skip,
             repository_prefix: "qingyu/repositories/00000000-0000-4000-8000-000000000020/repo"
                 .to_owned(),
         };

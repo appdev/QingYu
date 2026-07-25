@@ -71,6 +71,7 @@ pub(crate) fn run() {
             crate::sync_config::cancel_sync_config_apply,
             crate::sync_config::load_sync_status,
             crate::sync_config::list_remote_notebooks,
+            crate::dejavu_sync::commands::bind_dejavu_repository,
             crate::sync_config::sync_application,
             crate::sync_config::test_sync_connection,
             crate::workspace_membership::is_document_in_workspace,

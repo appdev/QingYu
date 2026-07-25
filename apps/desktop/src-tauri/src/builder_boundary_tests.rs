@@ -63,6 +63,7 @@ const MOBILE_COMMANDS: &[&str] = &[
     "cancel_sync_config_apply",
     "load_sync_status",
     "list_remote_notebooks",
+    "bind_dejavu_repository",
     "sync_application",
     "test_sync_connection",
     "is_document_in_workspace",
@@ -171,6 +172,7 @@ const DESKTOP_COMMANDS: &[&str] = &[
     "cancel_sync_config_apply",
     "load_sync_status",
     "list_remote_notebooks",
+    "bind_dejavu_repository",
     "sync_application",
     "test_sync_connection",
     "is_document_in_workspace",
@@ -973,6 +975,8 @@ fn builder_boundary_installs_the_path_guard_graph_before_startup_on_both_platfor
     let graph = source("src/dejavu_sync.rs");
     assert!(graph.contains("tauri_path_guard_factory"));
     assert!(graph.contains("DejavuRepositoryRunner::new"));
+    assert!(graph.contains("S3RepositoryCatalogValidator::new"));
+    assert!(graph.contains("install_binding"));
     assert!(graph.contains("service.install_lifecycle"));
     assert!(graph.contains("DejavuSyncServiceOwner"));
     assert!(graph.contains("DejavuSchedulerOwner"));

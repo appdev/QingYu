@@ -282,6 +282,36 @@ impl LocalSyncStateService {
         Ok(())
     }
 
+    pub(crate) fn bind_repository(
+        &self,
+        state: &mut LocalSyncState,
+        mut binding: RepositoryBinding,
+    ) -> Result<(), LocalSyncStateError> {
+        validate_state(state)?;
+        binding.notes_root = canonical_notes_root(&binding.notes_root)?;
+        let repository_index = state
+            .bindings
+            .iter()
+            .position(|existing| existing.repository_id == binding.repository_id);
+        let root_index = state
+            .bindings
+            .iter()
+            .position(|existing| existing.notes_root == binding.notes_root);
+        let mut updated = state.clone();
+        match (repository_index, root_index) {
+            (None, None) => updated.bindings.push(binding),
+            (Some(repository_index), Some(root_index)) if repository_index == root_index => {
+                updated.bindings[repository_index].display_name = binding.display_name;
+                updated.bindings[repository_index].enabled = true;
+            }
+            (Some(_), _) => return Err(LocalSyncStateError::duplicate_repository()),
+            (_, Some(_)) => return Err(LocalSyncStateError::duplicate_root()),
+        }
+        self.save(&updated)?;
+        *state = updated;
+        Ok(())
+    }
+
     fn save_with_writer<Write>(
         &self,
         state: &LocalSyncState,
@@ -610,6 +640,51 @@ mod tests {
             state.bindings[0].notes_root,
             notes_a.canonicalize().unwrap()
         );
+    }
+
+    #[test]
+    fn binding_the_exact_repository_and_root_is_idempotent_and_reenables_remote_metadata() {
+        let temporary = tempdir().expect("temporary app data");
+        let notes = temporary.path().join("notes");
+        fs::create_dir(&notes).unwrap();
+        let service = LocalSyncStateService::new(temporary.path().join("app-data"));
+        let mut state = service.load_or_initialize(None).unwrap();
+        service
+            .add_binding(
+                &mut state,
+                RepositoryBinding {
+                    repository_id: "repo-a".to_string(),
+                    display_name: "Old remote name".to_string(),
+                    notes_root: notes.clone(),
+                    enabled: true,
+                },
+            )
+            .unwrap();
+        state.bindings[0].enabled = false;
+        service.save(&state).unwrap();
+
+        service
+            .bind_repository(
+                &mut state,
+                RepositoryBinding {
+                    repository_id: "repo-a".to_string(),
+                    display_name: "Authoritative remote name".to_string(),
+                    notes_root: notes.clone(),
+                    enabled: true,
+                },
+            )
+            .expect("an exact retry should re-enable the persisted binding");
+
+        assert_eq!(state.bindings.len(), 1);
+        assert_eq!(state.bindings[0].display_name, "Authoritative remote name");
+        assert!(state.bindings[0].enabled);
+        let reloaded = service.load().unwrap().unwrap();
+        assert_eq!(reloaded.bindings.len(), 1);
+        assert_eq!(
+            reloaded.bindings[0].display_name,
+            "Authoritative remote name"
+        );
+        assert!(reloaded.bindings[0].enabled);
     }
 
     #[test]

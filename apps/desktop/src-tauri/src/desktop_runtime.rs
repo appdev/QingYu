@@ -377,6 +377,7 @@ pub(crate) fn run() {
             crate::sync_config::sync_application,
             crate::sync_config::test_sync_connection,
             crate::sync_config::list_remote_notebooks,
+            crate::dejavu_sync::commands::bind_dejavu_repository,
             crate::workspace_membership::is_document_in_workspace,
             crate::web_http::download_web_image,
             crate::markdown_files::document::write_markdown_file,

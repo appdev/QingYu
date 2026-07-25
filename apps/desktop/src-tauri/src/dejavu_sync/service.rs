@@ -544,7 +544,7 @@ mod tests {
     use std::future::Future;
     use std::path::PathBuf;
     use std::pin::Pin;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
@@ -558,8 +558,9 @@ mod tests {
         SyncAttemptContext, SyncJobRequest, MAX_FINALIZATION_ATTEMPTS,
     };
     use crate::dejavu_sync::status::{
-        load_repository_sync_status, RepositoryStatusEventEmitter, RepositoryStatusStore,
-        RepositorySyncPhase, RepositorySyncStatus,
+        load_repository_sync_status, RepositoryConflictRecord, RepositoryStatusEventEmitter,
+        RepositoryStatusStore, RepositorySyncPhase, RepositorySyncStatus,
+        RepositoryTransferSummary,
     };
     use crate::sync_config::status::SyncTrigger;
 
@@ -787,6 +788,70 @@ mod tests {
     impl RepositoryStatusEventEmitter for NoopStatusEmitter {
         fn emit(&self, _status: &RepositorySyncStatus) -> Result<(), RepositoryJobError> {
             Ok(())
+        }
+    }
+
+    struct RemovableListenerEmitter {
+        listening: AtomicBool,
+        events: Mutex<Vec<RepositorySyncStatus>>,
+    }
+
+    impl RemovableListenerEmitter {
+        fn new() -> Self {
+            Self {
+                listening: AtomicBool::new(true),
+                events: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn remove_listener(&self) {
+            self.listening.store(false, Ordering::SeqCst);
+        }
+    }
+
+    impl RepositoryStatusEventEmitter for RemovableListenerEmitter {
+        fn emit(&self, status: &RepositorySyncStatus) -> Result<(), RepositoryJobError> {
+            if self.listening.load(Ordering::SeqCst) {
+                self.events.lock().unwrap().push(status.clone());
+            }
+            Ok(())
+        }
+    }
+
+    struct BlockingResultRunner {
+        started: mpsc::UnboundedSender<()>,
+        release: Semaphore,
+        result: RepositorySyncResult,
+    }
+
+    impl BlockingResultRunner {
+        fn new(started: mpsc::UnboundedSender<()>, result: RepositorySyncResult) -> Self {
+            Self {
+                started,
+                release: Semaphore::new(0),
+                result,
+            }
+        }
+
+        fn release(&self) {
+            self.release.add_permits(1);
+        }
+    }
+
+    impl RepositoryJobRunner for BlockingResultRunner {
+        fn validate(&self, request: SyncJobRequest) -> Result<SyncJobRequest, RepositoryJobError> {
+            Ok(request)
+        }
+
+        fn run_attempt<'a>(
+            &'a self,
+            _context: SyncAttemptContext,
+        ) -> BoxFuture<'a, Result<RepositorySyncResult, RepositoryJobError>> {
+            Box::pin(async move {
+                self.started.send(()).unwrap();
+                self.release.acquire().await.unwrap().forget();
+                Ok(self.result.clone())
+            })
         }
     }
 
@@ -1142,6 +1207,75 @@ mod tests {
 
         runner.release(1);
         sink.wait_for_phase(RepositorySyncPhase::Succeeded, 1).await;
+    }
+
+    #[tokio::test]
+    async fn removing_the_settings_listener_does_not_cancel_status_or_conflict_history() {
+        let app_data = tempdir().unwrap();
+        let repository_id = "00000000-0000-4000-8000-000000000042";
+        let (started_tx, mut started_rx) = mpsc::unbounded_channel();
+        let runner = Arc::new(BlockingResultRunner::new(
+            started_tx,
+            RepositorySyncResult {
+                data_changed: true,
+                transfer: RepositoryTransferSummary {
+                    download_bytes: 7,
+                    download_chunks: 1,
+                    download_files: 1,
+                    upload_bytes: 0,
+                    upload_chunks: 0,
+                    upload_files: 0,
+                },
+                conflicts: vec![RepositoryConflictRecord {
+                    relative_path: "conflicted.md".to_owned(),
+                    occurred_at: "2026-07-26T10:00:00Z".to_owned(),
+                }],
+            },
+        ));
+        let emitter = Arc::new(RemovableListenerEmitter::new());
+        let store = Arc::new(RepositoryStatusStore::new(
+            app_data.path(),
+            Arc::clone(&emitter),
+        ));
+        let service = DejavuSyncService::new(Arc::clone(&runner), Arc::clone(&store));
+
+        let accepted = service.enqueue(request(repository_id)).await.unwrap();
+        started_rx.recv().await.expect("accepted job should start");
+        let attempting = load_repository_sync_status(app_data.path(), repository_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(attempting.phase, RepositorySyncPhase::Attempting);
+
+        emitter.remove_listener();
+        drop(accepted);
+        drop(service);
+        runner.release();
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if load_repository_sync_status(app_data.path(), repository_id)
+                    .unwrap()
+                    .is_some_and(|status| status.phase == RepositorySyncPhase::Succeeded)
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("listener-free job should persist terminal status");
+        let terminal = load_repository_sync_status(app_data.path(), repository_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(terminal.phase, RepositorySyncPhase::Succeeded);
+        assert_eq!(terminal.transfer.download_bytes, 7);
+        assert_eq!(terminal.conflicts.len(), 1);
+        assert_eq!(terminal.conflicts[0].relative_path, "conflicted.md");
+        let events = emitter.events.lock().unwrap();
+        assert!(!events.is_empty());
+        assert!(events
+            .iter()
+            .all(|status| status.phase == RepositorySyncPhase::Attempting));
     }
 
     #[tokio::test]

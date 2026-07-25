@@ -4,13 +4,44 @@ use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
+use qingyu_dejavu::RepositoryMetadata;
+use serde::Deserialize;
+
+use super::local_state::{LocalSyncStateService, RepositoryBinding};
+use super::repository::{prepare_binding_root, RepositoryCatalogValidator};
 use super::scheduler::DejavuScheduler;
 use super::service::{AcceptedSyncJob, DejavuSyncService, RepositoryJobError, SyncJobRequest};
+use crate::sync_config::status::SyncTrigger;
 use tauri::{Manager, Runtime};
 
 #[derive(Default)]
 pub(crate) struct DejavuSyncServiceOwner {
     service: OnceLock<DejavuSyncService>,
+    binding: OnceLock<BindingController>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct BindRepositoryRequest {
+    pub(crate) notes_root: PathBuf,
+    pub(crate) repository_id: String,
+    pub(crate) display_name: String,
+}
+
+type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+
+pub(crate) trait BindJobEnqueuer: Send + Sync {
+    fn enqueue_bind_and_sync<'a>(
+        &'a self,
+        request: SyncJobRequest,
+    ) -> BoxFuture<'a, Result<AcceptedSyncJob, RepositoryJobError>>;
+}
+
+struct BindingController {
+    app_data: PathBuf,
+    catalog: Arc<dyn RepositoryCatalogValidator>,
+    enqueuer: Arc<dyn BindJobEnqueuer>,
+    transaction: tokio::sync::Mutex<()>,
 }
 
 #[derive(Default)]
@@ -160,6 +191,69 @@ impl DejavuSyncServiceOwner {
             .map_err(|_| RepositoryJobError::RepositoryUnavailable)
     }
 
+    pub(crate) fn install_binding<Validator, Enqueuer>(
+        &self,
+        app_data: impl AsRef<Path>,
+        catalog: Arc<Validator>,
+        enqueuer: Arc<Enqueuer>,
+    ) -> Result<(), RepositoryJobError>
+    where
+        Validator: RepositoryCatalogValidator + 'static,
+        Enqueuer: BindJobEnqueuer + 'static,
+    {
+        let catalog: Arc<dyn RepositoryCatalogValidator> = catalog;
+        let enqueuer: Arc<dyn BindJobEnqueuer> = enqueuer;
+        self.binding
+            .set(BindingController {
+                app_data: app_data.as_ref().to_path_buf(),
+                catalog,
+                enqueuer,
+                transaction: tokio::sync::Mutex::new(()),
+            })
+            .map_err(|_| RepositoryJobError::RepositoryUnavailable)
+    }
+
+    pub(crate) async fn bind_repository(
+        &self,
+        request: BindRepositoryRequest,
+    ) -> Result<AcceptedSyncJob, RepositoryJobError> {
+        let controller = self
+            .binding
+            .get()
+            .ok_or(RepositoryJobError::RepositoryUnavailable)?;
+        let _transaction = controller.transaction.lock().await;
+        validate_repository_id(&request.repository_id)?;
+        let metadata = controller
+            .catalog
+            .read_repository(&request.repository_id)
+            .await?;
+        validate_selected_metadata(&request, &metadata)?;
+        let notes_root = prepare_binding_root(&request.notes_root)?;
+        let state_service = LocalSyncStateService::new(&controller.app_data);
+        let mut state = state_service
+            .load_or_initialize(None)
+            .map_err(|_| RepositoryJobError::InvalidBinding)?;
+        state_service
+            .bind_repository(
+                &mut state,
+                RepositoryBinding {
+                    repository_id: metadata.repository_id.clone(),
+                    display_name: metadata.display_name,
+                    notes_root: notes_root.clone(),
+                    enabled: true,
+                },
+            )
+            .map_err(|_| RepositoryJobError::InvalidBinding)?;
+        controller
+            .enqueuer
+            .enqueue_bind_and_sync(SyncJobRequest {
+                notes_root,
+                repository_id: metadata.repository_id,
+                trigger: SyncTrigger::Manual,
+            })
+            .await
+    }
+
     #[allow(dead_code)]
     pub(crate) async fn enqueue(
         &self,
@@ -180,29 +274,252 @@ impl DejavuSyncServiceOwner {
     }
 }
 
+fn validate_selected_metadata(
+    request: &BindRepositoryRequest,
+    metadata: &RepositoryMetadata,
+) -> Result<(), RepositoryJobError> {
+    if metadata.repository_id != request.repository_id
+        || metadata.display_name != request.display_name
+    {
+        return Err(RepositoryJobError::InvalidBinding);
+    }
+    Ok(())
+}
+
+fn validate_repository_id(repository_id: &str) -> Result<(), RepositoryJobError> {
+    let parsed =
+        uuid::Uuid::parse_str(repository_id).map_err(|_| RepositoryJobError::InvalidBinding)?;
+    if parsed.to_string() != repository_id {
+        return Err(RepositoryJobError::InvalidBinding);
+    }
+    Ok(())
+}
+
+impl BindJobEnqueuer for DejavuSyncService {
+    fn enqueue_bind_and_sync<'a>(
+        &'a self,
+        request: SyncJobRequest,
+    ) -> BoxFuture<'a, Result<AcceptedSyncJob, RepositoryJobError>> {
+        Box::pin(async move { self.enqueue(request).await })
+    }
+}
+
+#[tauri::command]
+pub(crate) async fn bind_dejavu_repository(
+    owner: tauri::State<'_, DejavuSyncServiceOwner>,
+    request: BindRepositoryRequest,
+) -> Result<AcceptedSyncJob, String> {
+    owner
+        .bind_repository(request)
+        .await
+        .map_err(|error| error.safe_code().to_owned())
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
     use std::future::Future;
     use std::path::{Path, PathBuf};
     use std::pin::Pin;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
+    use qingyu_dejavu::RepositoryMetadata;
+    use tempfile::tempdir;
     use time::OffsetDateTime;
     use tokio::sync::{mpsc, watch};
 
-    use super::{DejavuSchedulerOwner, NativeExitAction};
+    use super::{
+        BindJobEnqueuer, BindRepositoryRequest, DejavuSchedulerOwner, DejavuSyncServiceOwner,
+        NativeExitAction,
+    };
+    use crate::dejavu_sync::local_state::LocalSyncStateService;
+    use crate::dejavu_sync::repository::RepositoryCatalogValidator;
     use crate::dejavu_sync::scheduler::{
         ActiveRepositorySchedule, DejavuScheduler, DnsFlusher, RepositoryScheduleSource,
         RepositoryScheduleStore, SchedulerJobEnqueuer,
     };
-    use crate::dejavu_sync::service::{AcceptedSyncJob, RepositoryJobError, SyncJobRequest};
-    use crate::dejavu_sync::status::RepositorySchedule;
+    use crate::dejavu_sync::service::{
+        AcceptedSyncJob, DejavuSyncService, RepositoryJobError, RepositoryJobRunner,
+        RepositoryStatusSink, RepositorySyncResult, SyncAttemptContext, SyncJobRequest,
+    };
+    use crate::dejavu_sync::status::{RepositorySchedule, RepositorySyncStatus};
     use crate::sync_config::model::SyncMode;
     use crate::sync_config::status::SyncTrigger;
 
     type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+
+    struct FakeCatalogValidator {
+        metadata: HashMap<String, RepositoryMetadata>,
+        calls: Mutex<Vec<String>>,
+        active: AtomicUsize,
+        max_active: AtomicUsize,
+        delay: Duration,
+    }
+
+    impl FakeCatalogValidator {
+        fn new(metadata: impl IntoIterator<Item = RepositoryMetadata>) -> Self {
+            Self {
+                metadata: metadata
+                    .into_iter()
+                    .map(|metadata| (metadata.repository_id.clone(), metadata))
+                    .collect(),
+                calls: Mutex::new(Vec::new()),
+                active: AtomicUsize::new(0),
+                max_active: AtomicUsize::new(0),
+                delay: Duration::ZERO,
+            }
+        }
+
+        fn with_delay(mut self, delay: Duration) -> Self {
+            self.delay = delay;
+            self
+        }
+    }
+
+    impl RepositoryCatalogValidator for FakeCatalogValidator {
+        fn read_repository<'a>(
+            &'a self,
+            repository_id: &'a str,
+        ) -> BoxFuture<'a, Result<RepositoryMetadata, RepositoryJobError>> {
+            Box::pin(async move {
+                self.calls.lock().unwrap().push(repository_id.to_owned());
+                let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+                self.max_active.fetch_max(active, Ordering::SeqCst);
+                if !self.delay.is_zero() {
+                    tokio::time::sleep(self.delay).await;
+                }
+                self.active.fetch_sub(1, Ordering::SeqCst);
+                self.metadata
+                    .get(repository_id)
+                    .cloned()
+                    .ok_or(RepositoryJobError::CloudUnavailable)
+            })
+        }
+    }
+
+    struct PersistedBindingRunner {
+        app_data: PathBuf,
+        attempts: AtomicUsize,
+    }
+
+    impl PersistedBindingRunner {
+        fn new(app_data: PathBuf) -> Self {
+            Self {
+                app_data,
+                attempts: AtomicUsize::new(0),
+            }
+        }
+    }
+
+    impl RepositoryJobRunner for PersistedBindingRunner {
+        fn validate(&self, request: SyncJobRequest) -> Result<SyncJobRequest, RepositoryJobError> {
+            let state = LocalSyncStateService::new(&self.app_data)
+                .load()
+                .map_err(|_| RepositoryJobError::InvalidBinding)?
+                .ok_or(RepositoryJobError::InvalidBinding)?;
+            if state.bindings.iter().any(|binding| {
+                binding.enabled
+                    && binding.repository_id == request.repository_id
+                    && binding.notes_root == request.notes_root
+            }) {
+                Ok(request)
+            } else {
+                Err(RepositoryJobError::InvalidBinding)
+            }
+        }
+
+        fn run_attempt<'a>(
+            &'a self,
+            context: SyncAttemptContext,
+        ) -> BoxFuture<'a, Result<RepositorySyncResult, RepositoryJobError>> {
+            Box::pin(async move {
+                self.validate(context.request)?;
+                self.attempts.fetch_add(1, Ordering::SeqCst);
+                Ok(RepositorySyncResult::default())
+            })
+        }
+    }
+
+    struct NoopStatusSink;
+
+    impl RepositoryStatusSink for NoopStatusSink {
+        fn publish<'a>(
+            &'a self,
+            _status: RepositorySyncStatus,
+        ) -> BoxFuture<'a, Result<(), RepositoryJobError>> {
+            Box::pin(async { Ok(()) })
+        }
+    }
+
+    struct RecordingBindEnqueuer {
+        app_data: PathBuf,
+        requests: Mutex<Vec<SyncJobRequest>>,
+        completions: Mutex<Vec<watch::Sender<Option<Result<(), RepositoryJobError>>>>>,
+    }
+
+    impl RecordingBindEnqueuer {
+        fn new(app_data: PathBuf) -> Self {
+            Self {
+                app_data,
+                requests: Mutex::new(Vec::new()),
+                completions: Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    impl BindJobEnqueuer for RecordingBindEnqueuer {
+        fn enqueue_bind_and_sync<'a>(
+            &'a self,
+            request: SyncJobRequest,
+        ) -> BoxFuture<'a, Result<AcceptedSyncJob, RepositoryJobError>> {
+            Box::pin(async move {
+                let state = LocalSyncStateService::new(&self.app_data)
+                    .load()
+                    .map_err(|_| RepositoryJobError::InvalidBinding)?
+                    .ok_or(RepositoryJobError::InvalidBinding)?;
+                if !state.bindings.iter().any(|binding| {
+                    binding.enabled
+                        && binding.repository_id == request.repository_id
+                        && binding.notes_root == request.notes_root
+                }) || !request.notes_root.join(".qingyu/syncignore").is_file()
+                {
+                    return Err(RepositoryJobError::InvalidBinding);
+                }
+                self.requests.lock().unwrap().push(request.clone());
+                let (accepted, completion) = AcceptedSyncJob::pending_for_test(
+                    "00000000-0000-4000-8000-000000000095",
+                    request.repository_id,
+                    request.notes_root,
+                );
+                self.completions.lock().unwrap().push(completion);
+                Ok(accepted)
+            })
+        }
+    }
+
+    fn repository_metadata(repository_id: &str, display_name: &str) -> RepositoryMetadata {
+        RepositoryMetadata {
+            format_version: 1,
+            repository_id: repository_id.to_owned(),
+            display_name: display_name.to_owned(),
+            created_at: 1_800_000_000,
+            updated_at: 1_800_000_000,
+        }
+    }
+
+    fn bind_request(
+        notes_root: PathBuf,
+        repository_id: &str,
+        display_name: &str,
+    ) -> BindRepositoryRequest {
+        BindRepositoryRequest {
+            notes_root,
+            repository_id: repository_id.to_owned(),
+            display_name: display_name.to_owned(),
+        }
+    }
 
     struct OwnerSource(ActiveRepositorySchedule);
 
@@ -442,5 +759,267 @@ mod tests {
             owner.begin_native_exit(),
             NativeExitAction::Wait(_)
         ));
+    }
+
+    #[tokio::test]
+    async fn bind_commits_remote_metadata_and_syncignore_before_returning_a_pending_job() {
+        let temporary = tempdir().unwrap();
+        let app_data = temporary.path().join("app-data");
+        let notes_root = temporary.path().join("notes");
+        std::fs::create_dir(&notes_root).unwrap();
+        let repository_id = "00000000-0000-4000-8000-000000000051";
+        let catalog = Arc::new(FakeCatalogValidator::new([repository_metadata(
+            repository_id,
+            "Remote journal",
+        )]));
+        let enqueuer = Arc::new(RecordingBindEnqueuer::new(app_data.clone()));
+        let owner = DejavuSyncServiceOwner::default();
+        owner
+            .install_binding(&app_data, Arc::clone(&catalog), Arc::clone(&enqueuer))
+            .unwrap();
+
+        let accepted = tokio::time::timeout(
+            Duration::from_millis(250),
+            owner.bind_repository(bind_request(
+                notes_root.clone(),
+                repository_id,
+                "Remote journal",
+            )),
+        )
+        .await
+        .expect("bind should return after enqueue acceptance")
+        .expect("valid existing metadata should bind");
+
+        assert_eq!(accepted.repository_id, repository_id);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), accepted.wait_for_completion())
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            std::fs::read(notes_root.join(".qingyu/syncignore")).unwrap(),
+            b""
+        );
+        let state = LocalSyncStateService::new(&app_data)
+            .load()
+            .unwrap()
+            .unwrap();
+        assert_eq!(state.bindings.len(), 1);
+        assert_eq!(state.bindings[0].repository_id, repository_id);
+        assert_eq!(state.bindings[0].display_name, "Remote journal");
+        assert!(state.bindings[0].enabled);
+        assert_eq!(enqueuer.requests.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn bind_rejects_stale_display_metadata_without_local_side_effects() {
+        let temporary = tempdir().unwrap();
+        let app_data = temporary.path().join("app-data");
+        let notes_root = temporary.path().join("notes");
+        std::fs::create_dir(&notes_root).unwrap();
+        let repository_id = "00000000-0000-4000-8000-000000000052";
+        let catalog = Arc::new(FakeCatalogValidator::new([repository_metadata(
+            repository_id,
+            "Renamed remotely",
+        )]));
+        let enqueuer = Arc::new(RecordingBindEnqueuer::new(app_data.clone()));
+        let owner = DejavuSyncServiceOwner::default();
+        owner
+            .install_binding(&app_data, catalog, Arc::clone(&enqueuer))
+            .unwrap();
+
+        let result = owner
+            .bind_repository(bind_request(
+                notes_root.clone(),
+                repository_id,
+                "Stale list name",
+            ))
+            .await;
+        let Err(error) = result else {
+            panic!("stale display metadata must be rejected");
+        };
+
+        assert_eq!(error, RepositoryJobError::InvalidBinding);
+        assert!(!app_data.join("local-sync.json").exists());
+        assert!(!notes_root.join(".qingyu").exists());
+        assert!(enqueuer.requests.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn bind_rejects_a_noncanonical_repository_id_before_reading_remote_metadata() {
+        let temporary = tempdir().unwrap();
+        let app_data = temporary.path().join("app-data");
+        let notes_root = temporary.path().join("notes");
+        std::fs::create_dir(&notes_root).unwrap();
+        let catalog = Arc::new(FakeCatalogValidator::new([]));
+        let enqueuer = Arc::new(RecordingBindEnqueuer::new(app_data.clone()));
+        let owner = DejavuSyncServiceOwner::default();
+        owner
+            .install_binding(&app_data, Arc::clone(&catalog), Arc::clone(&enqueuer))
+            .unwrap();
+
+        assert!(matches!(
+            owner
+                .bind_repository(bind_request(notes_root, "NOT-A-UUID", "Remote"))
+                .await,
+            Err(RepositoryJobError::InvalidBinding)
+        ));
+        assert!(catalog.calls.lock().unwrap().is_empty());
+        assert!(!app_data.join("local-sync.json").exists());
+    }
+
+    #[tokio::test]
+    async fn bind_exact_retry_reenables_but_both_reassignment_directions_are_rejected() {
+        let temporary = tempdir().unwrap();
+        let app_data = temporary.path().join("app-data");
+        let notes_a = temporary.path().join("notes-a");
+        let notes_b = temporary.path().join("notes-b");
+        std::fs::create_dir(&notes_a).unwrap();
+        std::fs::create_dir(&notes_b).unwrap();
+        let repository_a = "00000000-0000-4000-8000-000000000053";
+        let repository_b = "00000000-0000-4000-8000-000000000054";
+        let catalog = Arc::new(FakeCatalogValidator::new([
+            repository_metadata(repository_a, "Remote A"),
+            repository_metadata(repository_b, "Remote B"),
+        ]));
+        let enqueuer = Arc::new(RecordingBindEnqueuer::new(app_data.clone()));
+        let owner = DejavuSyncServiceOwner::default();
+        owner
+            .install_binding(&app_data, catalog, Arc::clone(&enqueuer))
+            .unwrap();
+        owner
+            .bind_repository(bind_request(notes_a.clone(), repository_a, "Remote A"))
+            .await
+            .unwrap();
+        let state_service = LocalSyncStateService::new(&app_data);
+        let mut disabled = state_service.load().unwrap().unwrap();
+        disabled.bindings[0].enabled = false;
+        state_service.save(&disabled).unwrap();
+
+        owner
+            .bind_repository(bind_request(notes_a.clone(), repository_a, "Remote A"))
+            .await
+            .expect("exact retry should re-enable and enqueue");
+        assert!(matches!(
+            owner
+                .bind_repository(bind_request(notes_b, repository_a, "Remote A"))
+                .await,
+            Err(RepositoryJobError::InvalidBinding)
+        ));
+        assert!(matches!(
+            owner
+                .bind_repository(bind_request(notes_a, repository_b, "Remote B"))
+                .await,
+            Err(RepositoryJobError::InvalidBinding)
+        ));
+
+        let state = state_service.load().unwrap().unwrap();
+        assert_eq!(state.bindings.len(), 1);
+        assert!(state.bindings[0].enabled);
+        assert_eq!(enqueuer.requests.lock().unwrap().len(), 2);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn bind_serializes_distinct_transactions_without_losing_local_state_updates() {
+        let temporary = tempdir().unwrap();
+        let app_data = temporary.path().join("app-data");
+        let notes_a = temporary.path().join("notes-a");
+        let notes_b = temporary.path().join("notes-b");
+        std::fs::create_dir(&notes_a).unwrap();
+        std::fs::create_dir(&notes_b).unwrap();
+        let repository_a = "00000000-0000-4000-8000-000000000055";
+        let repository_b = "00000000-0000-4000-8000-000000000056";
+        let catalog = Arc::new(
+            FakeCatalogValidator::new([
+                repository_metadata(repository_a, "Remote A"),
+                repository_metadata(repository_b, "Remote B"),
+            ])
+            .with_delay(Duration::from_millis(50)),
+        );
+        let enqueuer = Arc::new(RecordingBindEnqueuer::new(app_data.clone()));
+        let owner = Arc::new(DejavuSyncServiceOwner::default());
+        owner
+            .install_binding(&app_data, Arc::clone(&catalog), Arc::clone(&enqueuer))
+            .unwrap();
+
+        let first = {
+            let owner = Arc::clone(&owner);
+            tokio::spawn(async move {
+                owner
+                    .bind_repository(bind_request(notes_a, repository_a, "Remote A"))
+                    .await
+            })
+        };
+        let second = {
+            let owner = Arc::clone(&owner);
+            tokio::spawn(async move {
+                owner
+                    .bind_repository(bind_request(notes_b, repository_b, "Remote B"))
+                    .await
+            })
+        };
+        first.await.unwrap().unwrap();
+        second.await.unwrap().unwrap();
+
+        assert_eq!(catalog.max_active.load(Ordering::SeqCst), 1);
+        let state = LocalSyncStateService::new(&app_data)
+            .load()
+            .unwrap()
+            .unwrap();
+        assert_eq!(state.bindings.len(), 2);
+        assert_eq!(enqueuer.requests.lock().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn restarted_manual_sync_uses_the_persisted_binding_without_catalog_access() {
+        let temporary = tempdir().unwrap();
+        let app_data = temporary.path().join("app-data");
+        let notes_root = temporary.path().join("notes");
+        std::fs::create_dir(&notes_root).unwrap();
+        let repository_id = "00000000-0000-4000-8000-000000000057";
+        let catalog = Arc::new(FakeCatalogValidator::new([repository_metadata(
+            repository_id,
+            "Restarted",
+        )]));
+        let runner = Arc::new(PersistedBindingRunner::new(app_data.clone()));
+        let first_service = DejavuSyncService::new(Arc::clone(&runner), Arc::new(NoopStatusSink));
+        let owner = DejavuSyncServiceOwner::default();
+        owner
+            .install_binding(
+                &app_data,
+                Arc::clone(&catalog),
+                Arc::new(first_service.clone()),
+            )
+            .unwrap();
+
+        let accepted = owner
+            .bind_repository(bind_request(notes_root, repository_id, "Restarted"))
+            .await
+            .unwrap();
+        assert_eq!(accepted.wait_for_completion().await, Ok(()));
+        drop(owner);
+        drop(first_service);
+
+        let persisted = LocalSyncStateService::new(&app_data)
+            .load()
+            .unwrap()
+            .unwrap()
+            .bindings
+            .into_iter()
+            .find(|binding| binding.repository_id == repository_id)
+            .unwrap();
+        let restarted = DejavuSyncService::new(Arc::clone(&runner), Arc::new(NoopStatusSink));
+        let accepted = restarted
+            .enqueue(SyncJobRequest {
+                notes_root: persisted.notes_root,
+                repository_id: persisted.repository_id,
+                trigger: SyncTrigger::Manual,
+            })
+            .await
+            .unwrap();
+        assert_eq!(accepted.wait_for_completion().await, Ok(()));
+
+        assert_eq!(runner.attempts.load(Ordering::SeqCst), 2);
+        assert_eq!(catalog.calls.lock().unwrap().as_slice(), [repository_id]);
     }
 }
