@@ -1,6 +1,7 @@
 use std::{ffi::OsStr, path::Path, time::Duration};
 
 use crate::app_exit::handle_app_exit_requested;
+use crate::dejavu_sync::commands::DejavuSyncServiceOwner;
 use crate::markdown_files::MarkdownTreeLoadState;
 use crate::mcp;
 use crate::menu::{
@@ -206,6 +207,7 @@ pub(crate) fn run() {
         .manage(NativeApplicationMenuState::default())
         .manage(NativeMenuTargetState::default())
         .manage(EditorWindowRestoreState::default())
+        .manage(DejavuSyncServiceOwner::default())
         .manage(crate::themes::ThemeActivationState::default());
 
     #[cfg(any(target_os = "macos", windows, target_os = "linux"))]

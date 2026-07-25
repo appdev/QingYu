@@ -1,3 +1,4 @@
+use crate::dejavu_sync::commands::DejavuSyncServiceOwner;
 use crate::markdown_files::MarkdownTreeLoadState;
 use crate::mobile_back::MobileBackState;
 use crate::watcher::{MarkdownFileWatcherState, MarkdownTreeWatcherState};
@@ -8,6 +9,7 @@ pub(crate) fn run() {
         .manage(MarkdownTreeWatcherState::default())
         .manage(MarkdownTreeLoadState::default())
         .manage(MobileBackState::default())
+        .manage(DejavuSyncServiceOwner::default())
         .manage(crate::themes::ThemeActivationState::default())
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
