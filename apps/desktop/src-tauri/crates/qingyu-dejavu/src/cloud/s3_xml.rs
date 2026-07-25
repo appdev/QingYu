@@ -25,6 +25,7 @@ enum Field {
     Size,
     IsTruncated,
     NextContinuationToken,
+    RequestedPrefix,
     Prefix,
 }
 
@@ -65,6 +66,7 @@ pub(super) async fn parse_list_page(
     let mut common_prefixes = Vec::new();
     let mut is_truncated = None;
     let mut next_continuation_token = None;
+    let mut echoed_requested_prefix = None;
 
     loop {
         match xml
@@ -106,6 +108,10 @@ pub(super) async fn parse_list_page(
                     }
                     b"NextContinuationToken" if depth == 1 && root_open && !in_contents => {
                         start_field(&mut current_field, Field::NextContinuationToken)?;
+                        field_text.clear();
+                    }
+                    b"Prefix" if depth == 1 && root_open && !in_contents && !in_common_prefix => {
+                        start_field(&mut current_field, Field::RequestedPrefix)?;
                         field_text.clear();
                     }
                     b"Prefix" if depth == 2 && in_common_prefix => {
@@ -194,6 +200,15 @@ pub(super) async fn parse_list_page(
                         }
                         current_field = None;
                     }
+                    b"Prefix" if depth == 1 && current_field == Some(Field::RequestedPrefix) => {
+                        if echoed_requested_prefix
+                            .replace(field_text.clone())
+                            .is_some()
+                        {
+                            return Err(CloudError::backend("s3_list_duplicate_field"));
+                        }
+                        current_field = None;
+                    }
                     b"Prefix" if depth == 2 && current_field == Some(Field::Prefix) => {
                         if common_prefix.replace(field_text.clone()).is_some() {
                             return Err(CloudError::backend("s3_list_duplicate_field"));
@@ -255,6 +270,16 @@ pub(super) async fn parse_list_page(
                 if root_open
                     && depth == 1
                     && current_field.is_none()
+                    && empty.local_name().as_ref() == b"Prefix" =>
+            {
+                if echoed_requested_prefix.replace(String::new()).is_some() {
+                    return Err(CloudError::backend("s3_list_duplicate_field"));
+                }
+            }
+            Event::Empty(empty)
+                if root_open
+                    && depth == 1
+                    && current_field.is_none()
                     && !is_known_element(empty.local_name().as_ref()) => {}
             Event::Empty(_) | Event::DocType(_) | Event::GeneralRef(_) => {
                 return Err(CloudError::backend("s3_list_invalid_xml"));
@@ -274,6 +299,12 @@ pub(super) async fn parse_list_page(
     }
     let is_truncated =
         is_truncated.ok_or_else(|| CloudError::backend("s3_list_missing_truncated"))?;
+    if echoed_requested_prefix
+        .as_deref()
+        .is_some_and(|prefix| prefix != requested_prefix)
+    {
+        return Err(CloudError::UnsafeKey);
+    }
     if is_truncated && next_continuation_token.as_deref().is_none_or(str::is_empty) {
         return Err(CloudError::backend("s3_list_missing_continuation"));
     }

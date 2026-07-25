@@ -1246,6 +1246,50 @@ async fn cloud_list_paginates_strips_only_the_repository_prefix_and_sorts_keys()
 }
 
 #[tokio::test]
+async fn cloud_list_accepts_minio_namespace_and_validates_the_echoed_root_prefix() {
+    let target = "/qingyu-notes?list-type=2&max-keys=1000&prefix=qingyu%2Frepositories%2Frepo-a%2Frepo%2Fobjects%2F";
+    let exact_xml = br#"<?xml version="1.0" encoding="UTF-8"?>
+        <ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+          <Name>qingyu-notes</Name>
+          <Prefix>qingyu/repositories/repo-a/repo/objects/</Prefix>
+          <KeyCount>1</KeyCount>
+          <MaxKeys>1000</MaxKeys>
+          <IsTruncated>false</IsTruncated>
+          <Contents>
+            <Key>qingyu/repositories/repo-a/repo/objects/ab/cdef</Key>
+            <Size>4</Size>
+          </Contents>
+        </ListBucketResult>"#;
+    let mismatched_xml = br#"<?xml version="1.0" encoding="UTF-8"?>
+        <ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+          <Name>qingyu-notes</Name>
+          <Prefix>qingyu/repositories/another/repo/objects/</Prefix>
+          <KeyCount>0</KeyCount>
+          <MaxKeys>1000</MaxKeys>
+          <IsTruncated>false</IsTruncated>
+        </ListBucketResult>"#;
+    let fixture = HttpFixture::start(vec![
+        expected_request("GET", target, vec![], FixtureResponse::ok(exact_xml)),
+        expected_request("GET", target, vec![], FixtureResponse::ok(mismatched_xml)),
+    ])
+    .await;
+    let s3 = cloud(&fixture.endpoint, 1);
+
+    assert_eq!(
+        s3.list("objects/").await.unwrap(),
+        vec![qingyu_dejavu::CloudObject {
+            key: "objects/ab/cdef".to_string(),
+            size: 4,
+        }]
+    );
+    assert!(matches!(
+        s3.list("objects/").await,
+        Err(CloudError::UnsafeKey)
+    ));
+    fixture.finish(2).await;
+}
+
+#[tokio::test]
 async fn cloud_list_rejects_malformed_truncated_cross_prefix_and_stalled_pagination() {
     let target = "/qingyu-notes?list-type=2&max-keys=1000&prefix=qingyu%2Frepositories%2Frepo-a%2Frepo%2Fobjects%2F";
     let cases: Vec<&[u8]> = vec![
