@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use serde::Serialize;
-use tokio::sync::{Mutex as AsyncMutex, OwnedRwLockReadGuard, RwLock};
+use tokio::sync::{watch, Mutex as AsyncMutex, OwnedRwLockReadGuard, RwLock};
 
 use super::status::{
     RepositoryConflictRecord, RepositorySafeError, RepositorySyncStatus, RepositoryTransferSummary,
@@ -15,6 +15,7 @@ use super::status::{
 use crate::sync_config::status::{sync_status_timestamp, SyncTrigger};
 
 const MAX_WORKING_TREE_ATTEMPTS: u8 = 3;
+const MAX_FINALIZATION_ATTEMPTS: u8 = 3;
 
 type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
@@ -31,6 +32,60 @@ pub(crate) struct AcceptedSyncJob {
     pub(crate) job_id: String,
     pub(crate) repository_id: String,
     pub(crate) notes_root: PathBuf,
+    #[serde(skip)]
+    completion: watch::Receiver<Option<Result<(), RepositoryJobError>>>,
+}
+
+impl AcceptedSyncJob {
+    fn new(
+        job_id: String,
+        repository_id: String,
+        notes_root: PathBuf,
+        completion: watch::Receiver<Option<Result<(), RepositoryJobError>>>,
+    ) -> Self {
+        Self {
+            job_id,
+            repository_id,
+            notes_root,
+            completion,
+        }
+    }
+
+    pub(crate) async fn wait_for_completion(&self) -> Result<(), RepositoryJobError> {
+        let mut completion = self.completion.clone();
+        loop {
+            if let Some(result) = completion.borrow().clone() {
+                return result;
+            }
+            completion
+                .changed()
+                .await
+                .map_err(|_| RepositoryJobError::Cancelled)?;
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn completed_for_test(
+        job_id: &str,
+        repository_id: String,
+        notes_root: PathBuf,
+    ) -> Self {
+        let (_completion_tx, completion) = watch::channel(Some(Ok(())));
+        Self::new(job_id.to_owned(), repository_id, notes_root, completion)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn pending_for_test(
+        job_id: &str,
+        repository_id: String,
+        notes_root: PathBuf,
+    ) -> (Self, watch::Sender<Option<Result<(), RepositoryJobError>>>) {
+        let (completion_tx, completion) = watch::channel(None);
+        (
+            Self::new(job_id.to_owned(), repository_id, notes_root, completion),
+            completion_tx,
+        )
+    }
 }
 
 #[derive(Clone, Default)]
@@ -211,11 +266,13 @@ impl DejavuSyncService {
             let request = self.inner.runner.validate(request)?;
             self.require_accepting_generation(generation)?;
             let job_id = uuid::Uuid::new_v4().to_string();
-            let accepted = AcceptedSyncJob {
-                job_id: job_id.clone(),
-                repository_id: request.repository_id.clone(),
-                notes_root: request.notes_root.clone(),
-            };
+            let (completion_tx, completion) = watch::channel(None);
+            let accepted = AcceptedSyncJob::new(
+                job_id.clone(),
+                request.repository_id.clone(),
+                request.notes_root.clone(),
+                completion,
+            );
             self.inner
                 .status_sink
                 .publish(RepositorySyncStatus::attempting(
@@ -265,6 +322,7 @@ impl DejavuSyncService {
                         allow_follow_up,
                         generation,
                         ordinary_guard,
+                        completion_tx,
                     )
                     .await;
             });
@@ -280,6 +338,7 @@ impl DejavuSyncService {
         allow_follow_up: bool,
         generation: u64,
         ordinary_guard: OwnedRwLockReadGuard<()>,
+        completion_tx: watch::Sender<Option<Result<(), RepositoryJobError>>>,
     ) {
         let repository_lock = self.repository_lock(&request.repository_id);
         let _repository_guard = repository_lock.lock().await;
@@ -346,6 +405,7 @@ impl DejavuSyncService {
             && !cancellation.is_cancelled();
         let completed_at = sync_status_timestamp();
         let completion_result = result.clone();
+        let owned_operation_result = completion_result.clone().map(|_| ());
         let final_status = match result {
             Ok(result) => RepositorySyncStatus::succeeded(
                 &request,
@@ -362,12 +422,26 @@ impl DejavuSyncService {
                 RepositorySafeError::from(error),
             ),
         };
-        let _status_result = self.inner.status_sink.publish(final_status).await;
+        let mut status_result = Err(RepositoryJobError::StatusUnavailable);
+        for _attempt in 1..=MAX_FINALIZATION_ATTEMPTS {
+            status_result = self.inner.status_sink.publish(final_status.clone()).await;
+            if status_result.is_ok() {
+                break;
+            }
+        }
+        let mut schedule_result = Ok(());
         if let Some(lifecycle) = self.inner.lifecycle.get() {
-            let _schedule_result = lifecycle.record_completion(RepositoryJobCompletion {
+            let completion = RepositoryJobCompletion {
                 request: request.clone(),
                 result: completion_result,
-            });
+            };
+            schedule_result = Err(RepositoryJobError::StatusUnavailable);
+            for _attempt in 1..=MAX_FINALIZATION_ATTEMPTS {
+                schedule_result = lifecycle.record_completion(completion.clone());
+                if schedule_result.is_ok() {
+                    break;
+                }
+            }
         }
         self.inner
             .jobs
@@ -377,6 +451,11 @@ impl DejavuSyncService {
             .remove(&job_id);
         drop(_repository_guard);
         drop(ordinary_guard);
+
+        let owned_job_result = owned_operation_result
+            .and(status_result)
+            .and(schedule_result);
+        let _completion_result = completion_tx.send(Some(owned_job_result));
 
         if needs_follow_up {
             let service = self.clone();
@@ -603,6 +682,48 @@ mod tests {
         }
     }
 
+    struct FlakyFinalStatusSink {
+        final_failures: AtomicUsize,
+        final_attempts: AtomicUsize,
+    }
+
+    impl FlakyFinalStatusSink {
+        fn new(final_failures: usize) -> Self {
+            Self {
+                final_failures: AtomicUsize::new(final_failures),
+                final_attempts: AtomicUsize::new(0),
+            }
+        }
+    }
+
+    impl RepositoryStatusSink for FlakyFinalStatusSink {
+        fn publish<'a>(
+            &'a self,
+            status: RepositorySyncStatus,
+        ) -> BoxFuture<'a, Result<(), RepositoryJobError>> {
+            Box::pin(async move {
+                if status.phase == RepositorySyncPhase::Attempting {
+                    return Ok(());
+                }
+                self.final_attempts.fetch_add(1, Ordering::SeqCst);
+                if self
+                    .final_failures
+                    .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
+                        if remaining > 0 {
+                            Some(remaining - 1)
+                        } else {
+                            None
+                        }
+                    })
+                    .is_ok()
+                {
+                    return Err(RepositoryJobError::StatusUnavailable);
+                }
+                Ok(())
+            })
+        }
+    }
+
     struct BlockingStatusSink {
         statuses: Mutex<Vec<RepositorySyncStatus>>,
         blocked_phase: RepositorySyncPhase,
@@ -751,6 +872,8 @@ mod tests {
     struct RecordingLifecycle {
         allow_dns_retry: bool,
         dns_prepares: AtomicUsize,
+        completion_attempts: AtomicUsize,
+        completion_failures: AtomicUsize,
         completions: Mutex<Vec<RepositoryJobCompletion>>,
         changed: Notify,
     }
@@ -760,9 +883,15 @@ mod tests {
             Self {
                 allow_dns_retry,
                 dns_prepares: AtomicUsize::new(0),
+                completion_attempts: AtomicUsize::new(0),
+                completion_failures: AtomicUsize::new(0),
                 completions: Mutex::new(Vec::new()),
                 changed: Notify::new(),
             }
+        }
+
+        fn fail_next_completion(&self) {
+            self.completion_failures.fetch_add(1, Ordering::SeqCst);
         }
 
         async fn wait_for_completion(&self) {
@@ -790,6 +919,20 @@ mod tests {
             &self,
             completion: RepositoryJobCompletion,
         ) -> Result<(), RepositoryJobError> {
+            self.completion_attempts.fetch_add(1, Ordering::SeqCst);
+            if self
+                .completion_failures
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
+                    if remaining > 0 {
+                        Some(remaining - 1)
+                    } else {
+                        None
+                    }
+                })
+                .is_ok()
+            {
+                return Err(RepositoryJobError::StatusUnavailable);
+            }
             self.completions.lock().unwrap().push(completion);
             self.changed.notify_waiters();
             Ok(())
@@ -889,6 +1032,29 @@ mod tests {
         );
         assert_eq!(receive_start(&mut started_rx).await, accepted.repository_id);
         runner.release(1);
+        sink.wait_for_phase(RepositorySyncPhase::Succeeded, 1).await;
+    }
+
+    #[tokio::test]
+    async fn accepted_job_completion_waits_for_the_owned_job_to_finish() {
+        let (started_tx, mut started_rx) = mpsc::unbounded_channel();
+        let runner = Arc::new(ControlledRunner::new(started_tx));
+        let sink = Arc::new(MemoryStatusSink::default());
+        let service = service(Arc::clone(&runner), Arc::clone(&sink));
+
+        let accepted = service
+            .enqueue(request("00000000-0000-4000-8000-000000000041"))
+            .await
+            .unwrap();
+        receive_start(&mut started_rx).await;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), accepted.wait_for_completion(),)
+                .await
+                .is_err()
+        );
+
+        runner.release(1);
+        assert_eq!(accepted.wait_for_completion().await, Ok(()));
         sink.wait_for_phase(RepositorySyncPhase::Succeeded, 1).await;
     }
 
@@ -1225,5 +1391,25 @@ mod tests {
 
         assert_eq!(runner.attempts.load(Ordering::SeqCst), 1);
         assert_eq!(lifecycle.dns_prepares.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn final_status_and_schedule_persistence_retry_without_rerunning_sync() {
+        let runner = Arc::new(SequenceRunner::new([Ok(RepositorySyncResult::default())]));
+        let sink = Arc::new(FlakyFinalStatusSink::new(1));
+        let lifecycle = Arc::new(RecordingLifecycle::new(false));
+        lifecycle.fail_next_completion();
+        let service = DejavuSyncService::new(Arc::clone(&runner), Arc::clone(&sink));
+        service.install_lifecycle(Arc::clone(&lifecycle)).unwrap();
+
+        let accepted = service
+            .enqueue(request("00000000-0000-4000-8000-000000000016"))
+            .await
+            .unwrap();
+        assert_eq!(accepted.wait_for_completion().await, Ok(()));
+
+        assert_eq!(runner.attempts.load(Ordering::SeqCst), 1);
+        assert_eq!(sink.final_attempts.load(Ordering::SeqCst), 2);
+        assert_eq!(lifecycle.completion_attempts.load(Ordering::SeqCst), 2);
     }
 }

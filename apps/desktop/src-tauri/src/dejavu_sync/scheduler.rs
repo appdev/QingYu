@@ -26,6 +26,7 @@ use crate::sync_config::status::SyncTrigger;
 const ORDINARY_FAILURE_DELAY: Duration = Duration::from_secs(5 * 60);
 const FAILURE_PAUSE_DELAY: Duration = Duration::from_secs(64 * 60);
 const DNS_RETRY_THROTTLE: Duration = Duration::from_secs(5 * 60);
+const PERSISTENCE_RETRY_DELAY: Duration = Duration::from_secs(5 * 60);
 const MINIMUM_NO_CHANGE_DELAY_MINUTES: u64 = 8;
 
 type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
@@ -48,11 +49,11 @@ pub(crate) trait RepositoryScheduleSource: Send + Sync {
 
 pub(crate) trait RepositoryScheduleStore: Send + Sync {
     fn load_schedule(&self, repository_id: &str) -> Result<RepositorySchedule, RepositoryJobError>;
-    fn save_schedule(
+    fn update_schedule(
         &self,
         repository_id: &str,
-        schedule: RepositorySchedule,
-    ) -> Result<(), RepositoryJobError>;
+        update: &mut dyn FnMut(&mut RepositorySchedule) -> bool,
+    ) -> Result<RepositorySchedule, RepositoryJobError>;
     fn reserve_dns_retry(
         &self,
         repository_id: &str,
@@ -90,8 +91,14 @@ struct SchedulerInner {
 #[derive(Default)]
 struct SchedulerState {
     active: Option<ActiveRepositorySchedule>,
-    due: Option<Instant>,
+    due: Option<ScheduledDue>,
     generation: u64,
+}
+
+#[derive(Clone, Copy)]
+struct ScheduledDue {
+    deadline: Instant,
+    expected_persisted: Option<OffsetDateTime>,
 }
 
 impl DejavuScheduler {
@@ -129,11 +136,20 @@ impl DejavuScheduler {
         if active.notes_root != root || active.interval.is_zero() {
             return Err(RepositoryJobError::InvalidBinding);
         }
-        let schedule = self.inner.store.load_schedule(&active.repository_id)?;
-        let due = (active.mode == SyncMode::Automatic)
-            .then_some(schedule.next_scheduled_at)
-            .flatten()
-            .map(|next| wall_time_to_deadline((self.inner.clock)(), next));
+        let due = if active.mode == SyncMode::Automatic {
+            match self.inner.store.load_schedule(&active.repository_id) {
+                Ok(schedule) => schedule.next_scheduled_at.map(|next| ScheduledDue {
+                    deadline: wall_time_to_deadline((self.inner.clock)(), next),
+                    expected_persisted: Some(next),
+                }),
+                Err(_) => Some(ScheduledDue {
+                    deadline: Instant::now() + PERSISTENCE_RETRY_DELAY,
+                    expected_persisted: None,
+                }),
+            }
+        } else {
+            None
+        };
         let mut state = self.inner.state.lock().unwrap();
         state.active = Some(active);
         state.due = due;
@@ -181,9 +197,21 @@ impl DejavuScheduler {
         {
             return Ok(false);
         }
-        let mut schedule = self.inner.store.load_schedule(&active.repository_id)?;
-        schedule.same_count = 0;
-        self.schedule_after(&active, schedule, active.interval)?;
+        let next_scheduled_at = (self.inner.clock)() + active.interval;
+        let mut update = |schedule: &mut RepositorySchedule| {
+            schedule.same_count = 0;
+            schedule.next_scheduled_at = Some(next_scheduled_at);
+            true
+        };
+        if let Err(error) = self
+            .inner
+            .store
+            .update_schedule(&active.repository_id, &mut update)
+        {
+            self.install_memory_retry(&active.repository_id, None);
+            return Err(error);
+        }
+        self.install_due_if_active(&active, active.interval, next_scheduled_at);
         Ok(true)
     }
 
@@ -191,9 +219,18 @@ impl DejavuScheduler {
         self.trigger_now(SyncTrigger::AppLaunch).await
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) async fn trigger_exit(&self) -> Result<bool, RepositoryJobError> {
         // The public trigger schema remains unchanged until the S3 cutover.
         self.trigger_now(SyncTrigger::SettingsExit).await
+    }
+
+    pub(crate) async fn trigger_exit_job(
+        &self,
+    ) -> Result<Option<AcceptedSyncJob>, RepositoryJobError> {
+        // The exit barrier needs the internal completion handle while the public
+        // trigger schema remains unchanged until the S3 cutover.
+        self.trigger_job(SyncTrigger::SettingsExit).await
     }
 
     #[allow(dead_code)]
@@ -202,41 +239,69 @@ impl DejavuScheduler {
     }
 
     async fn trigger_now(&self, trigger: SyncTrigger) -> Result<bool, RepositoryJobError> {
+        Ok(self.trigger_job(trigger).await?.is_some())
+    }
+
+    async fn trigger_job(
+        &self,
+        trigger: SyncTrigger,
+    ) -> Result<Option<AcceptedSyncJob>, RepositoryJobError> {
         let Some(active) = self.active_snapshot() else {
-            return Ok(false);
+            return Ok(None);
         };
         if !trigger_allowed(active.mode, trigger) {
-            return Ok(false);
+            return Ok(None);
         }
-        let schedule = self.inner.store.load_schedule(&active.repository_id)?;
-        if trigger != SyncTrigger::Manual && schedule.automatic_failure_count >= 8 {
-            if active.mode == SyncMode::Automatic {
-                self.schedule_after(&active, schedule, FAILURE_PAUSE_DELAY)?;
+        let next_scheduled_at = (self.inner.clock)() + FAILURE_PAUSE_DELAY;
+        let mut paused = false;
+        let mut update = |schedule: &mut RepositorySchedule| {
+            if trigger == SyncTrigger::Manual || schedule.automatic_failure_count < 8 {
+                return false;
             }
-            return Ok(false);
+            paused = true;
+            if active.mode == SyncMode::Automatic {
+                schedule.next_scheduled_at = Some(next_scheduled_at);
+            }
+            true
+        };
+        if let Err(error) = self
+            .inner
+            .store
+            .update_schedule(&active.repository_id, &mut update)
+        {
+            self.install_memory_retry(&active.repository_id, None);
+            return Err(error);
         }
-        self.enqueue_active(active, trigger).await?;
-        Ok(true)
+        if paused {
+            if active.mode == SyncMode::Automatic {
+                self.install_due_if_active(&active, FAILURE_PAUSE_DELAY, next_scheduled_at);
+            }
+            return Ok(None);
+        }
+        self.enqueue_active(active, trigger).await.map(Some)
     }
 
     async fn enqueue_active(
         &self,
         active: ActiveRepositorySchedule,
         trigger: SyncTrigger,
-    ) -> Result<(), RepositoryJobError> {
+    ) -> Result<AcceptedSyncJob, RepositoryJobError> {
         let request = SyncJobRequest {
             notes_root: active.notes_root,
             repository_id: active.repository_id,
             trigger,
         };
         match self.inner.enqueuer.enqueue(request.clone()).await {
-            Ok(_) => Ok(()),
+            Ok(accepted) => Ok(accepted),
             Err(error) => {
-                let _recorded = self.record_completion(RepositoryJobCompletion {
+                let recorded = self.record_completion(RepositoryJobCompletion {
                     request,
                     result: Err(error),
                 });
-                Err(error)
+                match recorded {
+                    Ok(()) => Err(error),
+                    Err(persistence_error) => Err(persistence_error),
+                }
             }
         }
     }
@@ -262,87 +327,201 @@ impl DejavuScheduler {
         completion: RepositoryJobCompletion,
     ) -> Result<(), RepositoryJobError> {
         let repository_id = &completion.request.repository_id;
-        let mut schedule = self.inner.store.load_schedule(repository_id)?;
         let active = self
             .active_snapshot()
             .filter(|active| active.repository_id == *repository_id);
-        match completion.result {
-            Ok(result) => {
-                schedule.automatic_failure_count = 0;
-                if completion.request.trigger == SyncTrigger::Manual {
-                    return self.inner.store.save_schedule(repository_id, schedule);
-                }
-                let should_poll = completion.request.trigger != SyncTrigger::Manual
-                    && active
+        let now = (self.inner.clock)();
+        let mut next_due = None;
+        let mut update = |schedule: &mut RepositorySchedule| {
+            match &completion.result {
+                Ok(result) => {
+                    schedule.automatic_failure_count = 0;
+                    if completion.request.trigger == SyncTrigger::Manual {
+                        return true;
+                    }
+                    let should_poll = active
                         .as_ref()
                         .is_some_and(|active| active.mode == SyncMode::Automatic);
-                if !should_poll {
-                    schedule.next_scheduled_at = None;
-                    self.inner.store.save_schedule(repository_id, schedule)?;
-                    self.clear_due_if_active(repository_id);
-                    return Ok(());
-                }
-                let active = active.expect("active automatic schedule was checked");
-                let delay = if result.data_changed {
-                    active.interval
-                } else {
-                    next_no_change_delay(&mut schedule.same_count)
-                };
-                self.schedule_after(&active, schedule, delay)
-            }
-            Err(error) => {
-                if completion.request.trigger != SyncTrigger::Manual
-                    && error != RepositoryJobError::Cancelled
-                {
-                    schedule.automatic_failure_count =
-                        schedule.automatic_failure_count.saturating_add(1);
-                }
-                if completion.request.trigger == SyncTrigger::Manual {
-                    return self.inner.store.save_schedule(repository_id, schedule);
-                }
-                let should_retry = error != RepositoryJobError::Cancelled
-                    && completion.request.trigger != SyncTrigger::Manual
-                    && active
+                    if !should_poll {
+                        schedule.next_scheduled_at = None;
+                        return true;
+                    }
+                    let active = active
                         .as_ref()
-                        .is_some_and(|active| active.mode == SyncMode::Automatic);
-                if !should_retry {
-                    schedule.next_scheduled_at = None;
-                    self.inner.store.save_schedule(repository_id, schedule)?;
-                    self.clear_due_if_active(repository_id);
-                    return Ok(());
+                        .expect("active automatic schedule was checked");
+                    let delay = if result.data_changed {
+                        active.interval
+                    } else {
+                        next_no_change_delay(&mut schedule.same_count)
+                    };
+                    let next_scheduled_at = now + delay;
+                    schedule.next_scheduled_at = Some(next_scheduled_at);
+                    next_due = Some((delay, next_scheduled_at));
                 }
-                let delay = if schedule.automatic_failure_count >= 8 {
-                    FAILURE_PAUSE_DELAY
-                } else {
-                    ORDINARY_FAILURE_DELAY
-                };
-                self.schedule_after(&active.unwrap(), schedule, delay)
+                Err(error) => {
+                    if completion.request.trigger != SyncTrigger::Manual
+                        && *error != RepositoryJobError::Cancelled
+                    {
+                        schedule.automatic_failure_count =
+                            schedule.automatic_failure_count.saturating_add(1);
+                    }
+                    if completion.request.trigger == SyncTrigger::Manual {
+                        return true;
+                    }
+                    let should_retry = *error != RepositoryJobError::Cancelled
+                        && active
+                            .as_ref()
+                            .is_some_and(|active| active.mode == SyncMode::Automatic);
+                    if !should_retry {
+                        schedule.next_scheduled_at = None;
+                        return true;
+                    }
+                    let delay = if schedule.automatic_failure_count >= 8 {
+                        FAILURE_PAUSE_DELAY
+                    } else {
+                        ORDINARY_FAILURE_DELAY
+                    };
+                    let next_scheduled_at = now + delay;
+                    schedule.next_scheduled_at = Some(next_scheduled_at);
+                    next_due = Some((delay, next_scheduled_at));
+                }
             }
+            true
+        };
+        if let Err(error) = self.inner.store.update_schedule(repository_id, &mut update) {
+            self.install_memory_retry(repository_id, None);
+            return Err(error);
         }
+        if let (Some(active), Some((delay, next_scheduled_at))) = (active, next_due) {
+            self.install_due_if_active(&active, delay, next_scheduled_at);
+        } else {
+            self.clear_due_if_active(repository_id);
+        }
+        Ok(())
     }
 
-    fn schedule_after(
+    fn install_due_if_active(
         &self,
         active: &ActiveRepositorySchedule,
-        mut schedule: RepositorySchedule,
         delay: Duration,
-    ) -> Result<(), RepositoryJobError> {
-        schedule.next_scheduled_at = Some((self.inner.clock)() + delay);
-        self.inner
-            .store
-            .save_schedule(&active.repository_id, schedule)?;
+        next_scheduled_at: OffsetDateTime,
+    ) {
         let mut state = self.inner.state.lock().unwrap();
         if state
             .active
             .as_ref()
             .is_some_and(|current| current.repository_id == active.repository_id)
         {
-            state.due = Some(Instant::now() + delay);
+            state.due = Some(ScheduledDue {
+                deadline: Instant::now() + delay,
+                expected_persisted: Some(next_scheduled_at),
+            });
             state.generation = state.generation.wrapping_add(1);
         }
         drop(state);
         self.inner.changed.notify_one();
+    }
+
+    fn install_memory_retry(
+        &self,
+        repository_id: &str,
+        expected_persisted: Option<OffsetDateTime>,
+    ) {
+        let mut state = self.inner.state.lock().unwrap();
+        if state.active.as_ref().is_some_and(|active| {
+            active.repository_id == repository_id && active.mode == SyncMode::Automatic
+        }) {
+            state.due = Some(ScheduledDue {
+                deadline: Instant::now() + PERSISTENCE_RETRY_DELAY,
+                expected_persisted,
+            });
+            state.generation = state.generation.wrapping_add(1);
+        }
+        drop(state);
+        self.inner.changed.notify_one();
+    }
+
+    fn consume_due_after_acceptance(
+        &self,
+        active: &ActiveRepositorySchedule,
+        generation: u64,
+        expected_persisted: Option<OffsetDateTime>,
+    ) -> Result<(), RepositoryJobError> {
+        let Some(expected_persisted) = expected_persisted else {
+            self.replace_due_if_generation(active, generation, None);
+            return Ok(());
+        };
+        let mut consumed = false;
+        let mut consume = |schedule: &mut RepositorySchedule| {
+            if schedule.next_scheduled_at != Some(expected_persisted) {
+                return false;
+            }
+            schedule.next_scheduled_at = None;
+            consumed = true;
+            true
+        };
+        let schedule = match self
+            .inner
+            .store
+            .update_schedule(&active.repository_id, &mut consume)
+        {
+            Ok(schedule) => schedule,
+            Err(error) => {
+                self.install_memory_retry_if_generation(
+                    active,
+                    generation,
+                    Some(expected_persisted),
+                );
+                return Err(error);
+            }
+        };
+        if consumed {
+            self.replace_due_if_generation(active, generation, None);
+        } else {
+            let due = schedule.next_scheduled_at.map(|next| ScheduledDue {
+                deadline: wall_time_to_deadline((self.inner.clock)(), next),
+                expected_persisted: Some(next),
+            });
+            self.replace_due_if_generation(active, generation, due);
+        }
         Ok(())
+    }
+
+    fn install_memory_retry_if_generation(
+        &self,
+        active: &ActiveRepositorySchedule,
+        generation: u64,
+        expected_persisted: Option<OffsetDateTime>,
+    ) {
+        self.replace_due_if_generation(
+            active,
+            generation,
+            Some(ScheduledDue {
+                deadline: Instant::now() + PERSISTENCE_RETRY_DELAY,
+                expected_persisted,
+            }),
+        );
+    }
+
+    fn replace_due_if_generation(
+        &self,
+        active: &ActiveRepositorySchedule,
+        generation: u64,
+        due: Option<ScheduledDue>,
+    ) {
+        let mut state = self.inner.state.lock().unwrap();
+        if state.generation == generation
+            && state.active.as_ref().is_some_and(|current| {
+                current.repository_id == active.repository_id
+                    && current.notes_root == active.notes_root
+                    && current.mode == SyncMode::Automatic
+            })
+        {
+            state.due = due;
+            state.generation = state.generation.wrapping_add(1);
+        }
+        drop(state);
+        self.inner.changed.notify_one();
     }
 
     fn clear_due_if_active(&self, repository_id: &str) {
@@ -391,12 +570,12 @@ impl RepositoryScheduleStore for RepositoryStatusStore {
         RepositoryStatusStore::load_schedule(self, repository_id)
     }
 
-    fn save_schedule(
+    fn update_schedule(
         &self,
         repository_id: &str,
-        schedule: RepositorySchedule,
-    ) -> Result<(), RepositoryJobError> {
-        RepositoryStatusStore::save_schedule(self, repository_id, schedule)
+        update: &mut dyn FnMut(&mut RepositorySchedule) -> bool,
+    ) -> Result<RepositorySchedule, RepositoryJobError> {
+        RepositoryStatusStore::update_schedule(self, repository_id, update)
     }
 
     fn reserve_dns_retry(
@@ -426,33 +605,26 @@ async fn run_timer(weak_inner: Weak<SchedulerInner>) {
             continue;
         };
         tokio::select! {
-            () = tokio::time::sleep_until(due) => {
+            () = tokio::time::sleep_until(due.deadline) => {
                 let Some(inner) = weak_inner.upgrade() else {
                     return;
                 };
                 let active = {
-                    let mut state = inner.state.lock().unwrap();
+                    let state = inner.state.lock().unwrap();
                     if state.generation != generation
-                        || state.due.is_none_or(|current| current > Instant::now())
+                        || state
+                            .due
+                            .is_none_or(|current| current.deadline > Instant::now())
                     {
                         None
                     } else {
-                        state.due = None;
-                        state.active.clone().map(|active| (active, state.generation))
+                        state.active.clone()
                     }
                 };
-                if let Some((active, accepted_generation)) = active {
-                    let mut schedule = match inner.store.load_schedule(&active.repository_id) {
-                        Ok(schedule) => schedule,
-                        Err(_) => continue,
-                    };
-                    schedule.next_scheduled_at = None;
-                    if inner.store.save_schedule(&active.repository_id, schedule).is_err() {
-                        continue;
-                    }
+                if let Some(active) = active {
                     let still_active = {
                         let state = inner.state.lock().unwrap();
-                        state.generation == accepted_generation
+                        state.generation == generation
                             && state.active.as_ref().is_some_and(|current| {
                                 current.repository_id == active.repository_id
                                     && current.notes_root == active.notes_root
@@ -463,9 +635,22 @@ async fn run_timer(weak_inner: Weak<SchedulerInner>) {
                         continue;
                     }
                     let scheduler = DejavuScheduler { inner };
-                    let _accepted = scheduler
-                        .enqueue_active(active, SyncTrigger::Interval)
-                        .await;
+                    if scheduler
+                        .enqueue_active(active.clone(), SyncTrigger::Interval)
+                        .await
+                        .is_ok()
+                    {
+                        let active = scheduler
+                            .active_snapshot()
+                            .filter(|current| current.repository_id == active.repository_id);
+                        if let Some(active) = active {
+                            let _consumed = scheduler.consume_due_after_acceptance(
+                                &active,
+                                generation,
+                                due.expected_persisted,
+                            );
+                        }
+                    }
                 }
             }
             () = notified => {}
@@ -583,6 +768,7 @@ mod tests {
     use std::collections::HashMap;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
+    use std::sync::mpsc as std_mpsc;
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
@@ -648,16 +834,19 @@ mod tests {
                 .unwrap_or_default())
         }
 
-        fn save_schedule(
+        fn update_schedule(
             &self,
             repository_id: &str,
-            schedule: RepositorySchedule,
-        ) -> Result<(), RepositoryJobError> {
-            self.0
-                .lock()
-                .unwrap()
-                .insert(repository_id.to_owned(), schedule);
-            Ok(())
+            update: &mut dyn FnMut(&mut RepositorySchedule) -> bool,
+        ) -> Result<RepositorySchedule, RepositoryJobError> {
+            let mut schedules = self.0.lock().unwrap();
+            let schedule = schedules.entry(repository_id.to_owned()).or_default();
+            let changed = update(schedule);
+            let updated = schedule.clone();
+            if !changed {
+                return Ok(updated);
+            }
+            Ok(updated)
         }
 
         fn reserve_dns_retry(
@@ -667,6 +856,69 @@ mod tests {
             throttle: Duration,
         ) -> Result<bool, RepositoryJobError> {
             let mut schedules = self.0.lock().unwrap();
+            let schedule = schedules.entry(repository_id.to_owned()).or_default();
+            if schedule
+                .last_dns_retry_at
+                .is_some_and(|last| now - last < throttle)
+            {
+                return Ok(false);
+            }
+            schedule.last_dns_retry_at = Some(now);
+            Ok(true)
+        }
+    }
+
+    #[derive(Default)]
+    struct StaleSnapshotStore {
+        schedules: Mutex<HashMap<String, RepositorySchedule>>,
+        next_update_gate: Mutex<Option<(std_mpsc::Sender<()>, std_mpsc::Receiver<()>)>>,
+    }
+
+    impl StaleSnapshotStore {
+        fn gate_next_update(&self) -> (std_mpsc::Receiver<()>, std_mpsc::Sender<()>) {
+            let (entered_tx, entered_rx) = std_mpsc::channel();
+            let (release_tx, release_rx) = std_mpsc::channel();
+            *self.next_update_gate.lock().unwrap() = Some((entered_tx, release_rx));
+            (entered_rx, release_tx)
+        }
+    }
+
+    impl RepositoryScheduleStore for StaleSnapshotStore {
+        fn load_schedule(
+            &self,
+            repository_id: &str,
+        ) -> Result<RepositorySchedule, RepositoryJobError> {
+            Ok(self
+                .schedules
+                .lock()
+                .unwrap()
+                .get(repository_id)
+                .cloned()
+                .unwrap_or_default())
+        }
+
+        fn update_schedule(
+            &self,
+            repository_id: &str,
+            update: &mut dyn FnMut(&mut RepositorySchedule) -> bool,
+        ) -> Result<RepositorySchedule, RepositoryJobError> {
+            let mut schedules = self.schedules.lock().unwrap();
+            if let Some((entered, release)) = self.next_update_gate.lock().unwrap().take() {
+                entered.send(()).unwrap();
+                release.recv().unwrap();
+            }
+            let schedule = schedules.entry(repository_id.to_owned()).or_default();
+            update(schedule);
+            Ok(schedule.clone())
+        }
+
+        fn reserve_dns_retry(
+            &self,
+            repository_id: &str,
+            now: OffsetDateTime,
+            throttle: Duration,
+        ) -> Result<bool, RepositoryJobError> {
+            let mut schedules = self.schedules.lock().unwrap();
             let schedule = schedules.entry(repository_id.to_owned()).or_default();
             if schedule
                 .last_dns_retry_at
@@ -690,12 +942,99 @@ mod tests {
         ) -> BoxFuture<'a, Result<AcceptedSyncJob, RepositoryJobError>> {
             Box::pin(async move {
                 self.sent.send(request.clone()).unwrap();
-                Ok(AcceptedSyncJob {
-                    job_id: "00000000-0000-4000-8000-000000000099".to_owned(),
-                    repository_id: request.repository_id,
-                    notes_root: request.notes_root,
-                })
+                Ok(AcceptedSyncJob::completed_for_test(
+                    "00000000-0000-4000-8000-000000000099",
+                    request.repository_id,
+                    request.notes_root,
+                ))
             })
+        }
+    }
+
+    struct BlockingAcceptanceEnqueuer {
+        sent: mpsc::UnboundedSender<SyncJobRequest>,
+        release: Arc<tokio::sync::Semaphore>,
+    }
+
+    impl SchedulerJobEnqueuer for BlockingAcceptanceEnqueuer {
+        fn enqueue<'a>(
+            &'a self,
+            request: SyncJobRequest,
+        ) -> BoxFuture<'a, Result<AcceptedSyncJob, RepositoryJobError>> {
+            Box::pin(async move {
+                self.sent.send(request.clone()).unwrap();
+                self.release.acquire().await.unwrap().forget();
+                Ok(AcceptedSyncJob::completed_for_test(
+                    "00000000-0000-4000-8000-000000000098",
+                    request.repository_id,
+                    request.notes_root,
+                ))
+            })
+        }
+    }
+
+    #[derive(Default)]
+    struct FailingMemoryStore {
+        inner: MemoryStore,
+        fail_updates: AtomicUsize,
+        update_attempts: AtomicUsize,
+        changed: tokio::sync::Notify,
+    }
+
+    impl FailingMemoryStore {
+        fn fail_next_update(&self) {
+            self.fail_updates.fetch_add(1, Ordering::SeqCst);
+        }
+
+        async fn wait_for_update_attempts(&self, expected: usize) {
+            loop {
+                let changed = self.changed.notified();
+                if self.update_attempts.load(Ordering::SeqCst) >= expected {
+                    return;
+                }
+                changed.await;
+            }
+        }
+    }
+
+    impl RepositoryScheduleStore for FailingMemoryStore {
+        fn load_schedule(
+            &self,
+            repository_id: &str,
+        ) -> Result<RepositorySchedule, RepositoryJobError> {
+            self.inner.load_schedule(repository_id)
+        }
+
+        fn update_schedule(
+            &self,
+            repository_id: &str,
+            update: &mut dyn FnMut(&mut RepositorySchedule) -> bool,
+        ) -> Result<RepositorySchedule, RepositoryJobError> {
+            self.update_attempts.fetch_add(1, Ordering::SeqCst);
+            self.changed.notify_waiters();
+            if self
+                .fail_updates
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
+                    if remaining > 0 {
+                        Some(remaining - 1)
+                    } else {
+                        None
+                    }
+                })
+                .is_ok()
+            {
+                return Err(RepositoryJobError::StatusUnavailable);
+            }
+            self.inner.update_schedule(repository_id, update)
+        }
+
+        fn reserve_dns_retry(
+            &self,
+            repository_id: &str,
+            now: OffsetDateTime,
+            throttle: Duration,
+        ) -> Result<bool, RepositoryJobError> {
+            self.inner.reserve_dns_retry(repository_id, now, throttle)
         }
     }
 
@@ -875,6 +1214,203 @@ mod tests {
         assert!(fixture.jobs.try_recv().is_err());
         tokio::time::advance(Duration::from_secs(1)).await;
         assert_eq!(fixture.receive().await.repository_id, repository_id);
+    }
+
+    #[tokio::test]
+    async fn file_change_rmw_cannot_erase_a_concurrent_dns_reservation() {
+        let source = Arc::new(MemorySource::default());
+        let store = Arc::new(StaleSnapshotStore::default());
+        let flusher = Arc::new(RecordingFlusher::default());
+        let clock = Arc::new(TestClock::new(1_800_000_000));
+        let (sent, _jobs) = mpsc::unbounded_channel();
+        let scheduler = DejavuScheduler::new(
+            Arc::clone(&source),
+            Arc::new(RecordingEnqueuer { sent }),
+            Arc::clone(&store),
+            Arc::clone(&flusher),
+            {
+                let clock = Arc::clone(&clock);
+                Arc::new(move || clock.now())
+            },
+        );
+        let root = PathBuf::from("/notes/file-dns-race");
+        let repository_id = repository_id(30);
+        source.bind(
+            &root,
+            &repository_id,
+            SyncMode::Automatic,
+            Duration::from_secs(30),
+        );
+        scheduler.activate_root(&root).unwrap();
+        let (loaded, release) = store.gate_next_update();
+        let file_change = {
+            let scheduler = scheduler.clone();
+            let root = root.clone();
+            std::thread::spawn(move || scheduler.record_file_change(&root, &root.join("note.md")))
+        };
+        loaded.recv().unwrap();
+
+        let request = SyncJobRequest {
+            notes_root: root,
+            repository_id: repository_id.clone(),
+            trigger: SyncTrigger::Interval,
+        };
+        let (dns_started, dns_entered) = std_mpsc::channel();
+        let dns_retry = {
+            let scheduler = scheduler.clone();
+            std::thread::spawn(move || {
+                dns_started.send(()).unwrap();
+                scheduler.prepare_dns_retry(&request)
+            })
+        };
+        dns_entered.recv().unwrap();
+        release.send(()).unwrap();
+        assert!(file_change.join().unwrap().unwrap());
+        assert!(dns_retry.join().unwrap().unwrap());
+
+        assert_eq!(
+            store
+                .load_schedule(&repository_id)
+                .unwrap()
+                .last_dns_retry_at,
+            Some(clock.now())
+        );
+    }
+
+    #[tokio::test]
+    async fn completion_rmw_cannot_erase_a_concurrent_dns_reservation() {
+        let source = Arc::new(MemorySource::default());
+        let store = Arc::new(StaleSnapshotStore::default());
+        let clock = Arc::new(TestClock::new(1_800_000_000));
+        let (sent, _jobs) = mpsc::unbounded_channel();
+        let scheduler = DejavuScheduler::new(
+            Arc::clone(&source),
+            Arc::new(RecordingEnqueuer { sent }),
+            Arc::clone(&store),
+            Arc::new(RecordingFlusher::default()),
+            {
+                let clock = Arc::clone(&clock);
+                Arc::new(move || clock.now())
+            },
+        );
+        let root = PathBuf::from("/notes/completion-dns-race");
+        let repository_id = repository_id(31);
+        source.bind(
+            &root,
+            &repository_id,
+            SyncMode::Automatic,
+            Duration::from_secs(30),
+        );
+        scheduler.activate_root(&root).unwrap();
+        let (loaded, release) = store.gate_next_update();
+        let completed = {
+            let scheduler = scheduler.clone();
+            let root = root.clone();
+            let repository_id = repository_id.clone();
+            std::thread::spawn(move || {
+                scheduler.record_completion(completion(
+                    &root,
+                    &repository_id,
+                    SyncTrigger::Interval,
+                    Ok(RepositorySyncResult::default()),
+                ))
+            })
+        };
+        loaded.recv().unwrap();
+
+        let request = SyncJobRequest {
+            notes_root: root,
+            repository_id: repository_id.clone(),
+            trigger: SyncTrigger::Interval,
+        };
+        let (dns_started, dns_entered) = std_mpsc::channel();
+        let dns_retry = {
+            let scheduler = scheduler.clone();
+            std::thread::spawn(move || {
+                dns_started.send(()).unwrap();
+                scheduler.prepare_dns_retry(&request)
+            })
+        };
+        dns_entered.recv().unwrap();
+        release.send(()).unwrap();
+        completed.join().unwrap().unwrap();
+        assert!(dns_retry.join().unwrap().unwrap());
+
+        assert_eq!(
+            store
+                .load_schedule(&repository_id)
+                .unwrap()
+                .last_dns_retry_at,
+            Some(clock.now())
+        );
+    }
+
+    #[tokio::test]
+    async fn timer_consumption_rmw_cannot_erase_a_concurrent_dns_reservation() {
+        let source = Arc::new(MemorySource::default());
+        let store = Arc::new(StaleSnapshotStore::default());
+        let clock = Arc::new(TestClock::new(1_800_000_000));
+        let (sent, _jobs) = mpsc::unbounded_channel();
+        let scheduler = DejavuScheduler::new(
+            Arc::clone(&source),
+            Arc::new(RecordingEnqueuer { sent }),
+            Arc::clone(&store),
+            Arc::new(RecordingFlusher::default()),
+            {
+                let clock = Arc::clone(&clock);
+                Arc::new(move || clock.now())
+            },
+        );
+        let root = PathBuf::from("/notes/timer-dns-race");
+        let repository_id = repository_id(32);
+        source.bind(
+            &root,
+            &repository_id,
+            SyncMode::Automatic,
+            Duration::from_secs(30),
+        );
+        scheduler.activate_root(&root).unwrap();
+        scheduler
+            .record_file_change(&root, &root.join("note.md"))
+            .unwrap();
+        let (active, generation, expected_persisted) = {
+            let state = scheduler.inner.state.lock().unwrap();
+            (
+                state.active.clone().unwrap(),
+                state.generation,
+                state.due.unwrap().expected_persisted,
+            )
+        };
+        let (loaded, release) = store.gate_next_update();
+        let timer_consumption = {
+            let scheduler = scheduler.clone();
+            std::thread::spawn(move || {
+                scheduler.consume_due_after_acceptance(&active, generation, expected_persisted)
+            })
+        };
+        loaded.recv().unwrap();
+
+        let request = SyncJobRequest {
+            notes_root: root,
+            repository_id: repository_id.clone(),
+            trigger: SyncTrigger::Interval,
+        };
+        let (dns_started, dns_entered) = std_mpsc::channel();
+        let dns_retry = {
+            let scheduler = scheduler.clone();
+            std::thread::spawn(move || {
+                dns_started.send(()).unwrap();
+                scheduler.prepare_dns_retry(&request)
+            })
+        };
+        dns_entered.recv().unwrap();
+        release.send(()).unwrap();
+        timer_consumption.join().unwrap().unwrap();
+        assert!(dns_retry.join().unwrap().unwrap());
+
+        let schedule = store.load_schedule(&repository_id).unwrap();
+        assert_eq!(schedule.last_dns_retry_at, Some(clock.now()));
+        assert_eq!(schedule.next_scheduled_at, None);
     }
 
     #[tokio::test(start_paused = true)]
@@ -1156,6 +1692,161 @@ mod tests {
             schedule.next_scheduled_at.unwrap() - clock.now(),
             time::Duration::minutes(5)
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn timer_keeps_the_persisted_due_until_enqueue_is_accepted() {
+        let source = Arc::new(MemorySource::default());
+        let store = Arc::new(MemoryStore::default());
+        let clock = Arc::new(TestClock::new(1_800_000_000));
+        let release = Arc::new(tokio::sync::Semaphore::new(0));
+        let (sent, mut jobs) = mpsc::unbounded_channel();
+        let scheduler = DejavuScheduler::new(
+            Arc::clone(&source),
+            Arc::new(BlockingAcceptanceEnqueuer {
+                sent,
+                release: Arc::clone(&release),
+            }),
+            Arc::clone(&store),
+            Arc::new(RecordingFlusher::default()),
+            {
+                let clock = Arc::clone(&clock);
+                Arc::new(move || clock.now())
+            },
+        );
+        let root = PathBuf::from("/notes/acceptance-boundary");
+        let repository_id = repository_id(32);
+        source.bind(
+            &root,
+            &repository_id,
+            SyncMode::Automatic,
+            Duration::from_secs(30),
+        );
+        scheduler.activate_root(&root).unwrap();
+        scheduler
+            .record_file_change(&root, &root.join("note.md"))
+            .unwrap();
+        let original_due = store
+            .load_schedule(&repository_id)
+            .unwrap()
+            .next_scheduled_at;
+
+        tokio::time::advance(Duration::from_secs(30)).await;
+        clock.advance(Duration::from_secs(30));
+        assert_eq!(jobs.recv().await.unwrap().trigger, SyncTrigger::Interval);
+
+        assert_eq!(
+            store
+                .load_schedule(&repository_id)
+                .unwrap()
+                .next_scheduled_at,
+            original_due
+        );
+        scheduler
+            .record_file_change(&root, &root.join("newer.md"))
+            .unwrap();
+        let replacement_due = store
+            .load_schedule(&repository_id)
+            .unwrap()
+            .next_scheduled_at;
+        release.add_permits(1);
+        tokio::task::yield_now().await;
+
+        assert_eq!(
+            store
+                .load_schedule(&repository_id)
+                .unwrap()
+                .next_scheduled_at,
+            replacement_due
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn timer_persistence_failure_reinstalls_an_in_memory_retry() {
+        let source = Arc::new(MemorySource::default());
+        let store = Arc::new(FailingMemoryStore::default());
+        let clock = Arc::new(TestClock::new(1_800_000_000));
+        let (sent, mut jobs) = mpsc::unbounded_channel();
+        let scheduler = DejavuScheduler::new(
+            Arc::clone(&source),
+            Arc::new(RecordingEnqueuer { sent }),
+            Arc::clone(&store),
+            Arc::new(RecordingFlusher::default()),
+            {
+                let clock = Arc::clone(&clock);
+                Arc::new(move || clock.now())
+            },
+        );
+        let root = PathBuf::from("/notes/timer-persist-failure");
+        let repository_id = repository_id(33);
+        source.bind(
+            &root,
+            &repository_id,
+            SyncMode::Automatic,
+            Duration::from_secs(30),
+        );
+        scheduler.activate_root(&root).unwrap();
+        scheduler
+            .record_file_change(&root, &root.join("note.md"))
+            .unwrap();
+        let before_timer = store.update_attempts.load(Ordering::SeqCst);
+        store.fail_next_update();
+
+        tokio::time::advance(Duration::from_secs(30)).await;
+        store.wait_for_update_attempts(before_timer + 1).await;
+        assert_eq!(jobs.try_recv().unwrap().trigger, SyncTrigger::Interval);
+        tokio::time::advance(Duration::from_secs(5 * 60 - 1)).await;
+        assert!(jobs.try_recv().is_err());
+        tokio::time::advance(Duration::from_secs(1)).await;
+        for _ in 0..10 {
+            tokio::task::yield_now().await;
+        }
+
+        assert_eq!(jobs.try_recv().unwrap().trigger, SyncTrigger::Interval);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn completion_persistence_failure_reinstalls_an_in_memory_retry() {
+        let source = Arc::new(MemorySource::default());
+        let store = Arc::new(FailingMemoryStore::default());
+        let clock = Arc::new(TestClock::new(1_800_000_000));
+        let (sent, mut jobs) = mpsc::unbounded_channel();
+        let scheduler = DejavuScheduler::new(
+            Arc::clone(&source),
+            Arc::new(RecordingEnqueuer { sent }),
+            Arc::clone(&store),
+            Arc::new(RecordingFlusher::default()),
+            {
+                let clock = Arc::clone(&clock);
+                Arc::new(move || clock.now())
+            },
+        );
+        let root = PathBuf::from("/notes/completion-persist-failure");
+        let repository_id = repository_id(34);
+        source.bind(
+            &root,
+            &repository_id,
+            SyncMode::Automatic,
+            Duration::from_secs(30),
+        );
+        scheduler.activate_root(&root).unwrap();
+        store.fail_next_update();
+
+        assert_eq!(
+            scheduler.record_completion(completion(
+                &root,
+                &repository_id,
+                SyncTrigger::Interval,
+                Ok(RepositorySyncResult::default()),
+            )),
+            Err(RepositoryJobError::StatusUnavailable)
+        );
+        tokio::time::advance(Duration::from_secs(5 * 60)).await;
+        for _ in 0..10 {
+            tokio::task::yield_now().await;
+        }
+
+        assert_eq!(jobs.try_recv().unwrap().trigger, SyncTrigger::Interval);
     }
 
     #[tokio::test(start_paused = true)]

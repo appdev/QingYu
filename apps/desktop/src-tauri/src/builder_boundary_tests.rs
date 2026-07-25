@@ -470,6 +470,10 @@ fn builder_boundary_mobile_back_intercepts_only_uncoded_exit_requests() {
     assert!(runtime.contains("code: None"));
     assert!(runtime.contains("api.prevent_exit()"));
     assert!(runtime.contains("emit_mobile_back_requested"));
+    assert!(runtime.contains("commands::handle_native_sync_exit(app, Some(code), api)"));
+
+    let desktop_exit = source("src/app_exit.rs");
+    assert!(desktop_exit.contains("handle_native_sync_exit(app, code, api)"));
 
     let mobile_back = source("src/mobile_back.rs");
     assert!(mobile_back.contains("pub(crate) fn complete_mobile_back"));

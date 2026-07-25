@@ -1,4 +1,4 @@
-use crate::dejavu_sync::commands::DejavuSchedulerOwner;
+use crate::dejavu_sync::commands::handle_native_sync_exit;
 use crate::windows::is_settings_window_label;
 use tauri::{Emitter, Manager, Runtime};
 
@@ -51,9 +51,7 @@ pub(crate) fn handle_app_exit_requested<R: Runtime>(
         .filter(|window| is_app_exit_user_window(window))
         .count();
     if !should_intercept_app_exit(code, user_window_count) {
-        if let Some(owner) = app.try_state::<DejavuSchedulerOwner>() {
-            owner.trigger_exit();
-        }
+        handle_native_sync_exit(app, code, api);
         return;
     }
 

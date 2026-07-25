@@ -77,17 +77,18 @@ pub(crate) fn run() {
         ])
         .build(tauri::generate_context!())
         .expect("error while building QingYu mobile")
-        .run(|app, event| {
-            if matches!(&event, tauri::RunEvent::ExitRequested { code: Some(_), .. }) {
-                use tauri::Manager;
-                app.state::<DejavuSchedulerOwner>().trigger_exit();
-            }
-            if let tauri::RunEvent::ExitRequested {
+        .run(|app, event| match event {
+            tauri::RunEvent::ExitRequested {
                 code: None, api, ..
-            } = event
-            {
+            } => {
                 api.prevent_exit();
                 crate::mobile_back::emit_mobile_back_requested(app);
             }
+            tauri::RunEvent::ExitRequested {
+                code: Some(code),
+                api,
+                ..
+            } => crate::dejavu_sync::commands::handle_native_sync_exit(app, Some(code), api),
+            _ => {}
         });
 }

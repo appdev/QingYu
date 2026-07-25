@@ -242,17 +242,25 @@ impl RepositoryStatusStore {
             .unwrap_or_default())
     }
 
-    pub(crate) fn save_schedule(
+    pub(crate) fn update_schedule(
         &self,
         repository_id: &str,
-        schedule: RepositorySchedule,
-    ) -> Result<(), RepositoryJobError> {
+        update: &mut dyn FnMut(&mut RepositorySchedule) -> bool,
+    ) -> Result<RepositorySchedule, RepositoryJobError> {
         validate_repository_id(repository_id)?;
         let _write = self.write_lock.lock().unwrap();
         let mut status = load_repository_sync_status(&self.app_data, repository_id)?
             .ok_or(RepositoryJobError::StatusUnavailable)?;
-        status.schedule = schedule;
-        self.persist_then_emit(status)
+        if !update(&mut status.schedule) {
+            return Ok(status.schedule);
+        }
+        let schedule = status.schedule.clone();
+        self.persist_status(&status)?;
+        // The schedule mutation is committed once the atomic file replacement
+        // succeeds. Notification failure must not make callers retry a
+        // non-idempotent mutation such as incrementing failure/same counters.
+        let _notification_result = self.emitter.emit(&status);
+        Ok(schedule)
     }
 
     pub(crate) fn reserve_dns_retry(
@@ -261,23 +269,28 @@ impl RepositoryStatusStore {
         now: OffsetDateTime,
         throttle: std::time::Duration,
     ) -> Result<bool, RepositoryJobError> {
-        validate_repository_id(repository_id)?;
-        let _write = self.write_lock.lock().unwrap();
-        let mut status = load_repository_sync_status(&self.app_data, repository_id)?
-            .ok_or(RepositoryJobError::StatusUnavailable)?;
-        if status
-            .schedule
-            .last_dns_retry_at
-            .is_some_and(|last| now - last < throttle)
-        {
-            return Ok(false);
-        }
-        status.schedule.last_dns_retry_at = Some(now);
-        self.persist_then_emit(status)?;
-        Ok(true)
+        let mut permitted = false;
+        let mut reserve = |schedule: &mut RepositorySchedule| {
+            if schedule
+                .last_dns_retry_at
+                .is_some_and(|last| now - last < throttle)
+            {
+                return false;
+            }
+            schedule.last_dns_retry_at = Some(now);
+            permitted = true;
+            true
+        };
+        self.update_schedule(repository_id, &mut reserve)?;
+        Ok(permitted)
     }
 
     fn persist_then_emit(&self, status: RepositorySyncStatus) -> Result<(), RepositoryJobError> {
+        self.persist_status(&status)?;
+        self.emitter.emit(&status)
+    }
+
+    fn persist_status(&self, status: &RepositorySyncStatus) -> Result<(), RepositoryJobError> {
         validate_status(&status)?;
         let mut bytes = serde_json::to_vec_pretty(&status)
             .map_err(|_| RepositoryJobError::StatusUnavailable)?;
@@ -313,8 +326,7 @@ impl RepositoryStatusStore {
             .revalidate()
             .map_err(|_| RepositoryJobError::StatusUnavailable)?;
 
-        // Persistence is deliberately complete before this notification.
-        self.emitter.emit(&status)
+        Ok(())
     }
 }
 
@@ -511,6 +523,14 @@ mod tests {
         }
     }
 
+    struct FailingEmitter;
+
+    impl RepositoryStatusEventEmitter for FailingEmitter {
+        fn emit(&self, _status: &RepositorySyncStatus) -> Result<(), RepositoryJobError> {
+            Err(RepositoryJobError::StatusUnavailable)
+        }
+    }
+
     fn attempting(repository_id: &str) -> RepositorySyncStatus {
         RepositorySyncStatus::attempting(
             &SyncJobRequest {
@@ -654,8 +674,12 @@ mod tests {
             next_scheduled_at: Some(now + Duration::from_secs(300)),
         };
 
+        let mut replace_schedule = |current: &mut super::RepositorySchedule| {
+            *current = schedule.clone();
+            true
+        };
         store
-            .save_schedule(repository_id, schedule.clone())
+            .update_schedule(repository_id, &mut replace_schedule)
             .unwrap();
         let mut succeeded = attempting(repository_id);
         succeeded.phase = RepositorySyncPhase::Succeeded;
@@ -712,5 +736,45 @@ mod tests {
                 .last_dns_retry_at,
             Some(now + Duration::from_secs(300))
         );
+    }
+
+    #[tokio::test]
+    async fn committed_schedule_updates_are_not_reapplied_when_event_emission_fails() {
+        let app_data = tempdir().unwrap();
+        let repository_id = "00000000-0000-4000-8000-000000000043";
+        let store = RepositoryStatusStore::new(app_data.path(), Arc::new(FailingEmitter));
+        assert_eq!(
+            store.publish(attempting(repository_id)).await,
+            Err(RepositoryJobError::StatusUnavailable)
+        );
+
+        let mut update_result = Err(RepositoryJobError::StatusUnavailable);
+        for _attempt in 1..=3 {
+            let mut increment_failure_count = |schedule: &mut super::RepositorySchedule| {
+                schedule.automatic_failure_count += 1;
+                true
+            };
+            update_result = store.update_schedule(repository_id, &mut increment_failure_count);
+            if update_result.is_ok() {
+                break;
+            }
+        }
+        update_result.expect("a durable schedule write is committed despite notification failure");
+        assert_eq!(
+            store
+                .load_schedule(repository_id)
+                .unwrap()
+                .automatic_failure_count,
+            1
+        );
+
+        let now = time::OffsetDateTime::from_unix_timestamp(1_800_000_000).unwrap();
+        let throttle = Duration::from_secs(300);
+        assert!(store
+            .reserve_dns_retry(repository_id, now, throttle)
+            .unwrap());
+        assert!(!store
+            .reserve_dns_retry(repository_id, now + Duration::from_secs(1), throttle)
+            .unwrap());
     }
 }

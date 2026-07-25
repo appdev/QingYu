@@ -558,7 +558,7 @@ fn map_repo_error(error: RepoError) -> RepositoryJobError {
         RepoError::Cloud(_) | RepoError::RemoteLockUnhealthy(_) => {
             RepositoryJobError::CloudUnavailable
         }
-        RepoError::OperationAndUnlockFailed { .. } => RepositoryJobError::CloudUnavailable,
+        RepoError::OperationAndUnlockFailed { operation, .. } => map_repo_error(*operation),
         _ => RepositoryJobError::RepositoryUnavailable,
     }
 }
@@ -566,9 +566,7 @@ fn map_repo_error(error: RepoError) -> RepositoryJobError {
 fn repo_error_is_dns(error: &RepoError) -> bool {
     match error {
         RepoError::Cloud(error) => error.is_dns(),
-        RepoError::OperationAndUnlockFailed { operation, unlock } => {
-            repo_error_is_dns(operation) || unlock.is_dns()
-        }
+        RepoError::OperationAndUnlockFailed { operation, .. } => repo_error_is_dns(operation),
         _ => false,
     }
 }
@@ -639,6 +637,44 @@ mod tests {
             }),
             RepositoryJobError::DnsUnavailable
         );
+    }
+
+    #[test]
+    fn dns_during_unlock_never_reclassifies_the_primary_operation() {
+        for (operation, expected) in [
+            (
+                RepoError::UnsafePath,
+                RepositoryJobError::RepositoryUnavailable,
+            ),
+            (
+                RepoError::DecryptionFailed,
+                RepositoryJobError::RepositoryUnavailable,
+            ),
+            (
+                RepoError::InvalidData("fixture integrity failure"),
+                RepositoryJobError::RepositoryUnavailable,
+            ),
+            (
+                RepoError::Cloud(CloudError::Auth),
+                RepositoryJobError::CloudUnavailable,
+            ),
+            (
+                RepoError::Cloud(CloudError::Forbidden),
+                RepositoryJobError::CloudUnavailable,
+            ),
+            (
+                RepoError::Cloud(CloudError::Locked),
+                RepositoryJobError::CloudUnavailable,
+            ),
+        ] {
+            assert_eq!(
+                map_repo_error(RepoError::OperationAndUnlockFailed {
+                    operation: Box::new(operation),
+                    unlock: CloudError::Dns,
+                }),
+                expected
+            );
+        }
     }
 
     struct FakeCoordinator;
