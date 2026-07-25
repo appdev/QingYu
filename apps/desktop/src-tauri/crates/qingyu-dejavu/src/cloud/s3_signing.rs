@@ -1,7 +1,7 @@
 use std::fmt;
 
 use hmac::{Hmac, Mac};
-use percent_encoding::{percent_encode, AsciiSet, NON_ALPHANUMERIC};
+use percent_encoding::{percent_decode_str, percent_encode, AsciiSet, NON_ALPHANUMERIC};
 use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE, HOST};
 use reqwest::Method;
 use sha2::{Digest, Sha256};
@@ -102,7 +102,7 @@ impl S3Connection {
 
     pub fn object_url(&self, key: &str) -> Result<Url, CloudError> {
         let mut url = self.bucket_url()?;
-        append_path_segments(&mut url, key.split('/'))?;
+        append_path_segments(&mut url, key.split('/'));
         Ok(url)
     }
 
@@ -131,7 +131,7 @@ impl S3Connection {
             }
         }
 
-        append_path_segments(&mut url, [self.bucket.as_str()])?;
+        append_path_segments(&mut url, [self.bucket.as_str()]);
         Ok(url)
     }
 }
@@ -163,11 +163,38 @@ impl S3RequestSigner {
         content_type: Option<&str>,
         now: OffsetDateTime,
     ) -> Result<HeaderMap, CloudError> {
-        self.sign_at(
+        self.sign_prehashed_at(
             method,
             url,
             &sha256_hex(payload),
-            Some(payload.len()),
+            u64::try_from(payload.len())
+                .map_err(|_| CloudError::backend("s3_payload_too_large"))?,
+            content_type,
+            now,
+        )
+    }
+
+    pub fn sign_prehashed_at(
+        &self,
+        method: &Method,
+        url: &Url,
+        payload_hash: &str,
+        content_length: u64,
+        content_type: Option<&str>,
+        now: OffsetDateTime,
+    ) -> Result<HeaderMap, CloudError> {
+        if payload_hash.len() != 64
+            || !payload_hash
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+        {
+            return Err(CloudError::backend("s3_invalid_payload_hash"));
+        }
+        self.sign_at(
+            method,
+            url,
+            payload_hash,
+            Some(content_length),
             content_type,
             now,
         )
@@ -187,7 +214,7 @@ impl S3RequestSigner {
         method: &Method,
         url: &Url,
         payload_hash: &str,
-        content_length: Option<usize>,
+        content_length: Option<u64>,
         content_type: Option<&str>,
         now: OffsetDateTime,
     ) -> Result<HeaderMap, CloudError> {
@@ -204,11 +231,12 @@ impl S3RequestSigner {
             now.second()
         );
         let host = s3_host(url)?;
-        let (canonical_headers, signed_headers) = if let Some(content_type) = content_type {
+        let content_type = content_type.map(sigv4_trim_all);
+        let (canonical_headers, signed_headers) = if let Some(content_type) = &content_type {
             (
                 format!(
                     "content-type:{}\nhost:{host}\nx-amz-content-sha256:{payload_hash}\nx-amz-date:{amz_date}\n",
-                    content_type.trim()
+                    content_type
                 ),
                 "content-type;host;x-amz-content-sha256;x-amz-date",
             )
@@ -248,7 +276,7 @@ impl S3RequestSigner {
         headers.insert("x-amz-date", header_value(&amz_date)?);
         headers.insert(AUTHORIZATION, header_value(&authorization)?);
         if let Some(content_type) = content_type {
-            headers.insert(CONTENT_TYPE, header_value(content_type.trim())?);
+            headers.insert(CONTENT_TYPE, header_value(&content_type)?);
         }
         if let Some(content_length) = content_length {
             headers.insert(CONTENT_LENGTH, header_value(&content_length.to_string())?);
@@ -257,18 +285,20 @@ impl S3RequestSigner {
     }
 }
 
-fn append_path_segments<'a>(
-    url: &mut Url,
-    segments: impl IntoIterator<Item = &'a str>,
-) -> Result<(), CloudError> {
-    let mut path = url
-        .path_segments_mut()
-        .map_err(|_| CloudError::backend("s3_invalid_endpoint"))?;
-    path.pop_if_empty();
-    for segment in segments {
-        path.push(segment);
+fn append_path_segments<'a>(url: &mut Url, segments: impl IntoIterator<Item = &'a str>) {
+    let mut path = canonical_uri(url);
+    if path == "/" {
+        path.clear();
+    } else {
+        while path.ends_with('/') {
+            path.pop();
+        }
     }
-    Ok(())
+    for segment in segments {
+        path.push('/');
+        path.push_str(&aws_percent_encode(segment));
+    }
+    url.set_path(&path);
 }
 
 fn prepend_bucket_to_host(url: &mut Url, bucket: &str) -> Result<(), CloudError> {
@@ -302,12 +332,19 @@ fn endpoint_requires_virtual_hosted_bucket(url: &Url) -> bool {
         || host.contains(".myhuaweicloud.com")
 }
 
-fn canonical_uri(url: &Url) -> &str {
-    if url.path().is_empty() {
+fn canonical_uri(url: &Url) -> String {
+    let path = if url.path().is_empty() {
         "/"
     } else {
         url.path()
-    }
+    };
+    path.split('/')
+        .map(|segment| {
+            let decoded = percent_decode_str(segment).collect::<Vec<_>>();
+            percent_encode(&decoded, AWS_PERCENT_ENCODE_SET).to_string()
+        })
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 fn canonical_query(url: &Url) -> String {
@@ -325,6 +362,23 @@ fn canonical_query(url: &Url) -> String {
 
 fn aws_percent_encode(value: &str) -> String {
     percent_encode(value.as_bytes(), AWS_PERCENT_ENCODE_SET).to_string()
+}
+
+fn sigv4_trim_all(value: &str) -> String {
+    let mut normalized = String::with_capacity(value.len());
+    let mut pending_space = false;
+    for character in value.chars() {
+        if matches!(character, ' ' | '\t') {
+            pending_space = !normalized.is_empty();
+        } else {
+            if pending_space {
+                normalized.push(' ');
+                pending_space = false;
+            }
+            normalized.push(character);
+        }
+    }
+    normalized
 }
 
 fn s3_host(url: &Url) -> Result<String, CloudError> {

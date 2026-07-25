@@ -1,5 +1,5 @@
 use qingyu_dejavu::{S3AddressingStyle, S3Connection, S3RequestSigner};
-use reqwest::header::{AUTHORIZATION, CONTENT_LENGTH, HOST};
+use reqwest::header::{AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE, HOST};
 use reqwest::Method;
 use time::OffsetDateTime;
 
@@ -112,6 +112,58 @@ fn signing_encodes_each_object_key_segment_once() {
 }
 
 #[test]
+fn signing_aws_path_encodes_reserved_punctuation() {
+    let connection = connection(S3AddressingStyle::Path);
+    let url = connection
+        .object_url("repo/a+b!c")
+        .expect("AWS-encoded object URL");
+    let headers = S3RequestSigner::new(connection)
+        .sign_bytes_at(
+            &Method::PUT,
+            &url,
+            b"hello",
+            Some("application/octet-stream"),
+            fixed_time(),
+        )
+        .expect("signed headers");
+
+    assert_eq!(
+        url.as_str(),
+        "https://s3.example.test/qingyu-notes/repo/a%2Bb%21c"
+    );
+    assert_eq!(
+        headers.get(AUTHORIZATION).unwrap(),
+        "AWS4-HMAC-SHA256 Credential=test-key/20260716/us-east-1/s3/aws4_request, SignedHeaders=content-type;host;x-amz-content-sha256;x-amz-date, Signature=0c829a323266cae4782fa167966ad4445215c742bba3d96a4e6593fa7b5d9dc3"
+    );
+}
+
+#[test]
+fn signing_content_type_uses_sigv4_trim_all_for_header_and_signature() {
+    let connection = connection(S3AddressingStyle::Path);
+    let url = connection
+        .object_url("repo/refs/latest")
+        .expect("object URL");
+    let headers = S3RequestSigner::new(connection)
+        .sign_bytes_at(
+            &Method::PUT,
+            &url,
+            b"hello",
+            Some("\ttext/plain;  \tcharset=utf-8 \t"),
+            fixed_time(),
+        )
+        .expect("signed headers");
+
+    assert_eq!(
+        headers.get(CONTENT_TYPE).unwrap(),
+        "text/plain; charset=utf-8"
+    );
+    assert_eq!(
+        headers.get(AUTHORIZATION).unwrap(),
+        "AWS4-HMAC-SHA256 Credential=test-key/20260716/us-east-1/s3/aws4_request, SignedHeaders=content-type;host;x-amz-content-sha256;x-amz-date, Signature=e5853974cd16ad831d191e4a842b35efaa6b75746592355e2921eb12f0b9e9ac"
+    );
+}
+
+#[test]
 fn signing_debug_output_redacts_both_credentials() {
     let connection = S3Connection::new(
         "https://s3.example.test",
@@ -157,4 +209,52 @@ fn signing_empty_body_hashes_zero_bytes_without_a_logical_empty_marker() {
         .to_str()
         .unwrap()
         .contains("x-amz-meta-qingyu-logical-empty"));
+}
+
+#[test]
+fn signing_prehashed_payload_supports_u64_content_lengths_without_payload_bytes() {
+    let connection = connection(S3AddressingStyle::Path);
+    let url = connection
+        .object_url("repo/objects/ab/large")
+        .expect("object URL");
+    let content_length: u64 = u64::from(u32::MAX) + 17;
+    let headers = S3RequestSigner::new(connection)
+        .sign_prehashed_at(
+            &Method::PUT,
+            &url,
+            "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+            content_length,
+            Some("application/octet-stream"),
+            fixed_time(),
+        )
+        .expect("prehashed payload should sign without payload bytes");
+
+    assert_eq!(headers.get(CONTENT_LENGTH).unwrap(), "4294967312");
+    assert_eq!(
+        headers.get(AUTHORIZATION).unwrap(),
+        "AWS4-HMAC-SHA256 Credential=test-key/20260716/us-east-1/s3/aws4_request, SignedHeaders=content-type;host;x-amz-content-sha256;x-amz-date, Signature=f773531a68895081557ad21abe37e041319a1ef629a2309548094e1458c1a55f"
+    );
+}
+
+#[test]
+fn signing_prehashed_payload_rejects_non_sha256_lower_hex() {
+    let connection = connection(S3AddressingStyle::Path);
+    let url = connection
+        .object_url("repo/objects/ab/large")
+        .expect("object URL");
+    let signer = S3RequestSigner::new(connection);
+    let invalid_hashes = [
+        "abc".to_string(),
+        "a".repeat(63),
+        "a".repeat(65),
+        "A".repeat(64),
+        "g".repeat(64),
+    ];
+
+    for invalid_hash in invalid_hashes {
+        let error = signer
+            .sign_prehashed_at(&Method::PUT, &url, &invalid_hash, 1, None, fixed_time())
+            .expect_err("invalid SHA-256 text must be rejected");
+        assert_eq!(error.code(), "s3_invalid_payload_hash");
+    }
 }
