@@ -40,6 +40,7 @@ pub struct Store {
     relative_root: PathBuf,
     repository_dir: Mutex<Option<Dir>>,
     operation_guard: OperationGuard,
+    lifecycle: crate::lifecycle::LifecycleGate,
     key: [u8; 32],
     compressor: Mutex<zstd::bulk::Compressor<'static>>,
     decompressor: Mutex<zstd::zstd_safe::DCtx<'static>>,
@@ -50,6 +51,7 @@ impl Store {
         let root = absolute_lexical_root(root.into())?;
         let (anchor, relative_root) = store_anchor(&root)?;
         let operation_guard = Arc::clone(OPERATION_GUARD.get_or_init(|| Arc::new(Mutex::new(()))));
+        let lifecycle = crate::lifecycle::LifecycleGate::for_directory(&anchor)?;
         let repository_dir = if relative_root.as_os_str().is_empty() {
             Some(anchor.try_clone()?)
         } else {
@@ -75,6 +77,7 @@ impl Store {
             relative_root,
             repository_dir: Mutex::new(repository_dir),
             operation_guard,
+            lifecycle,
             key,
             compressor: Mutex::new(compressor),
             decompressor: Mutex::new(decompressor),
@@ -97,9 +100,17 @@ impl Store {
     }
 
     pub fn contains_raw(&self, kind: RawObjectKind, id: &str) -> Result<bool, RepoError> {
+        let _lifecycle = self.try_lifecycle()?;
         let _operation = self.lock_operation()?;
-        let path = self.raw_path(kind, id)?;
-        match self.read_raw_path(&path, id, 0) {
+        self.contains_raw_unlocked(kind, id)
+    }
+
+    pub(crate) fn contains_raw_unlocked(
+        &self,
+        kind: RawObjectKind,
+        id: &str,
+    ) -> Result<bool, RepoError> {
+        match self.export_raw_unlocked(kind, id) {
             Ok(_) => Ok(true),
             Err(RepoError::NotFound(_)) => Ok(false),
             Err(error) => Err(error),
@@ -107,16 +118,19 @@ impl Store {
     }
 
     pub fn export_raw(&self, kind: RawObjectKind, id: &str) -> Result<Vec<u8>, RepoError> {
+        let _lifecycle = self.try_lifecycle()?;
         let _operation = self.lock_operation()?;
         self.export_raw_unlocked(kind, id)
     }
 
     pub fn import_raw(&self, kind: RawObjectKind, id: &str, bytes: &[u8]) -> Result<(), RepoError> {
+        let _lifecycle = self.try_lifecycle()?;
         let _operation = self.lock_operation()?;
         self.import_raw_unlocked(kind, id, bytes)
     }
 
     pub fn list_raw_ids(&self, kind: RawObjectKind) -> Result<Vec<String>, RepoError> {
+        let _lifecycle = self.try_lifecycle()?;
         let _operation = self.lock_operation()?;
         let mut ids = Vec::new();
         match kind {
@@ -205,14 +219,18 @@ impl Store {
         Ok(ids)
     }
 
-    fn export_raw_unlocked(&self, kind: RawObjectKind, id: &str) -> Result<Vec<u8>, RepoError> {
+    pub(crate) fn export_raw_unlocked(
+        &self,
+        kind: RawObjectKind,
+        id: &str,
+    ) -> Result<Vec<u8>, RepoError> {
         let path = self.raw_path(kind, id)?;
         let bytes = self.read_raw_path(&path, id, raw_limit(kind))?;
         self.validate_raw(kind, id, &bytes)?;
         Ok(bytes)
     }
 
-    fn import_raw_unlocked(
+    pub(crate) fn import_raw_unlocked(
         &self,
         kind: RawObjectKind,
         id: &str,
@@ -339,9 +357,6 @@ impl Store {
         if !metadata.file_type().is_file() || cap_metadata_is_reparse(&metadata) {
             return Err(RepoError::UnsafePath);
         }
-        if limit == 0 {
-            return Ok(Vec::new());
-        }
         if metadata.len() > limit as u64 {
             return Err(RepoError::DecodedSizeLimitExceeded { limit });
         }
@@ -356,6 +371,7 @@ impl Store {
     }
 
     pub fn put_chunk(&self, chunk: &Chunk) -> Result<(), RepoError> {
+        let _lifecycle = self.try_lifecycle()?;
         let _operation = self.lock_operation()?;
         self.put_chunk_unlocked(chunk)
     }
@@ -367,20 +383,22 @@ impl Store {
     }
 
     pub fn get_chunk(&self, id: &str) -> Result<Chunk, RepoError> {
+        let _lifecycle = self.try_lifecycle()?;
         let _operation = self.lock_operation()?;
         self.get_chunk_unlocked(id)
     }
 
     pub(crate) fn get_chunk_unlocked(&self, id: &str) -> Result<Chunk, RepoError> {
-        let path = self.object_path(id)?;
-        let encoded = self.read_object(&path, id)?;
-        Ok(Chunk {
+        let encoded = self.export_raw_unlocked(RawObjectKind::Chunk, id)?;
+        let chunk = Chunk {
             id: id.to_owned(),
             data: self.decode_encrypted(&encoded, MAX_CHUNK_DECODED_SIZE)?,
-        })
+        };
+        Ok(chunk)
     }
 
     pub fn put_file(&self, file: &File) -> Result<(), RepoError> {
+        let _lifecycle = self.try_lifecycle()?;
         let _operation = self.lock_operation()?;
         self.put_file_unlocked(file)
     }
@@ -393,18 +411,19 @@ impl Store {
     }
 
     pub fn get_file(&self, id: &str) -> Result<File, RepoError> {
+        let _lifecycle = self.try_lifecycle()?;
         let _operation = self.lock_operation()?;
         self.get_file_unlocked(id)
     }
 
     pub(crate) fn get_file_unlocked(&self, id: &str) -> Result<File, RepoError> {
-        let path = self.object_path(id)?;
-        let encoded = self.read_object(&path, id)?;
+        let encoded = self.export_raw_unlocked(RawObjectKind::File, id)?;
         let json = self.decode_encrypted(&encoded, MAX_FILE_DECODED_SIZE)?;
         Ok(serde_json::from_slice(&json)?)
     }
 
     pub fn put_index(&self, index: &Index) -> Result<(), RepoError> {
+        let _lifecycle = self.try_lifecycle()?;
         let _operation = self.lock_operation()?;
         self.put_index_unlocked(index)
     }
@@ -421,6 +440,7 @@ impl Store {
     where
         F: FnOnce(&cap_std::fs::File, filetime::FileTime) -> std::io::Result<()>,
     {
+        let _lifecycle = self.try_lifecycle()?;
         let _operation = self.lock_operation()?;
         self.put_index_with_mtime_unlocked(index, set_mtime)
     }
@@ -443,18 +463,19 @@ impl Store {
     }
 
     pub fn get_index(&self, id: &str) -> Result<Index, RepoError> {
+        let _lifecycle = self.try_lifecycle()?;
         let _operation = self.lock_operation()?;
         self.get_index_unlocked(id)
     }
 
     pub(crate) fn get_index_unlocked(&self, id: &str) -> Result<Index, RepoError> {
-        let path = self.index_path(id)?;
-        let encoded = self.read_object(&path, id)?;
+        let encoded = self.export_raw_unlocked(RawObjectKind::Index, id)?;
         let json = self.decompress(&encoded, MAX_INDEX_DECODED_SIZE)?;
         Ok(serde_json::from_slice(&json)?)
     }
 
     pub fn put_check_index(&self, check_index: &CheckIndex) -> Result<(), RepoError> {
+        let _lifecycle = self.try_lifecycle()?;
         let _operation = self.lock_operation()?;
         self.put_check_index_unlocked(check_index)
     }
@@ -470,13 +491,13 @@ impl Store {
     }
 
     pub fn get_check_index(&self, id: &str) -> Result<CheckIndex, RepoError> {
+        let _lifecycle = self.try_lifecycle()?;
         let _operation = self.lock_operation()?;
         self.get_check_index_unlocked(id)
     }
 
     pub(crate) fn get_check_index_unlocked(&self, id: &str) -> Result<CheckIndex, RepoError> {
-        let path = self.check_index_path(id)?;
-        let encoded = self.read_object(&path, id)?;
+        let encoded = self.export_raw_unlocked(RawObjectKind::CheckIndex, id)?;
         let json = self.decompress(&encoded, MAX_CHECK_INDEX_DECODED_SIZE)?;
         Ok(serde_json::from_slice(&json)?)
     }
@@ -498,27 +519,6 @@ impl Store {
         let parent =
             self.open_directory(relative.parent().unwrap_or_else(|| Path::new("")), true)?;
         stage_cap_file(&parent, destination, bytes, OBJECT_MODE)
-    }
-
-    fn read_object(&self, path: &Path, id: &str) -> Result<Vec<u8>, RepoError> {
-        let relative = self.relative_store_path(path)?;
-        let name = relative
-            .file_name()
-            .ok_or(RepoError::InvalidData("object path must have a file name"))?;
-        let parent = self
-            .open_directory(relative.parent().unwrap_or_else(|| Path::new("")), false)
-            .map_err(|error| map_not_found(error, id))?;
-        let mut options = OpenOptions::new();
-        options.read(true).follow(FollowSymlinks::No);
-        let mut file = parent
-            .open_with(name, &options)
-            .map_err(|error| map_object_io(error, id))?;
-        if cap_metadata_is_reparse(&file.metadata()?) {
-            return Err(RepoError::UnsafePath);
-        }
-        let mut bytes = Vec::new();
-        file.read_to_end(&mut bytes)?;
-        Ok(bytes)
     }
 
     fn relative_store_path<'a>(&self, path: &'a Path) -> Result<&'a Path, RepoError> {
@@ -544,6 +544,19 @@ impl Store {
         self.operation_guard
             .lock()
             .map_err(|_| RepoError::InvalidData("repository operation lock poisoned"))
+    }
+
+    pub(crate) async fn acquire_lifecycle(&self) -> tokio::sync::OwnedMutexGuard<()> {
+        self.lifecycle.acquire().await
+    }
+
+    pub(crate) fn with_lifecycle(mut self, lifecycle: crate::lifecycle::LifecycleGate) -> Self {
+        self.lifecycle = lifecycle;
+        self
+    }
+
+    pub(crate) fn try_lifecycle(&self) -> Result<tokio::sync::OwnedMutexGuard<()>, RepoError> {
+        self.lifecycle.try_acquire()
     }
 
     fn open_repository_root(&self, create: bool) -> Result<Dir, RepoError> {
@@ -862,7 +875,8 @@ mod tests {
     use crate::atomic_write::PublishOutcome;
     use crate::{CheckIndex, CheckIndexFile, Chunk, File, Index, RepoError};
 
-    const FILE_ID: &str = "0123456789abcdef0123456789abcdef01234567";
+    const FILE_ID: &str = "9088f936691086d6a0c11e516cf2ec1b2cef77d6";
+    const GOLDEN_FILE_ID: &str = "0123456789abcdef0123456789abcdef01234567";
     const INDEX_ID: &str = "89abcdef0123456789abcdef0123456789abcdef";
     const CHECK_INDEX_ID: &str = "fedcba9876543210fedcba9876543210fedcba98";
     const CHUNK_ID: &str = "1111111111111111111111111111111111111111";
@@ -977,8 +991,8 @@ mod tests {
             store.object_path(FILE_ID).unwrap(),
             temp.path()
                 .join("objects")
-                .join("01")
-                .join("23456789abcdef0123456789abcdef01234567")
+                .join(&FILE_ID[..2])
+                .join(&FILE_ID[2..])
         );
         assert_eq!(
             store.index_path(INDEX_ID).unwrap(),
@@ -1015,13 +1029,24 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let store = Store::new(temp.path(), fixture_key()).unwrap();
         write_fixture(
-            &store.object_path(FILE_ID).unwrap(),
+            &store.object_path(GOLDEN_FILE_ID).unwrap(),
             include_bytes!("../tests/fixtures/golden/file-object.bin"),
         );
 
-        let file = store.get_file(FILE_ID).unwrap();
+        let path = store.object_path(GOLDEN_FILE_ID).unwrap();
+        let encoded = store
+            .read_raw_path(
+                &path,
+                GOLDEN_FILE_ID,
+                super::raw_limit(super::RawObjectKind::File),
+            )
+            .unwrap();
+        let json = store
+            .decode_encrypted(&encoded, MAX_FILE_DECODED_SIZE)
+            .unwrap();
+        let file: File = serde_json::from_slice(&json).unwrap();
 
-        assert_eq!(file.id, FILE_ID);
+        assert_eq!(file.id, GOLDEN_FILE_ID);
         assert_eq!(file.path, "/oracle/文档.md");
         assert_eq!(file.size, 12);
         assert_eq!(file.updated, 1_700_000_000_123);
@@ -1048,7 +1073,7 @@ mod tests {
         assert_eq!(index.id, INDEX_ID);
         assert_eq!(index.memo, "Go golden oracle");
         assert_eq!(index.created, 1_700_000_000_456);
-        assert_eq!(index.files, vec![FILE_ID.to_owned()]);
+        assert_eq!(index.files, vec![GOLDEN_FILE_ID.to_owned()]);
         assert_eq!(index.count, 1);
         assert_eq!(index.size, 12);
         assert_eq!(index.system_id, "oracle-system-id");
@@ -1068,7 +1093,7 @@ mod tests {
         let store = Store::new(temp.path(), fixture_key()).unwrap();
         let file = fixture_file();
         let chunk = Chunk {
-            id: CHUNK_ID.to_owned(),
+            id: crate::sha1_hex(b"raw chunk bytes"),
             data: b"raw chunk bytes".to_vec(),
         };
         let index = fixture_index();
@@ -1080,7 +1105,7 @@ mod tests {
         store.put_check_index(&check_index).unwrap();
 
         assert_eq!(store.get_file(FILE_ID).unwrap(), file);
-        assert_eq!(store.get_chunk(CHUNK_ID).unwrap(), chunk);
+        assert_eq!(store.get_chunk(&chunk.id).unwrap(), chunk);
         assert_eq!(store.get_index(INDEX_ID).unwrap(), index);
         assert_eq!(store.get_check_index(CHECK_INDEX_ID).unwrap(), check_index);
         assert_no_temp_files(temp.path());
@@ -1213,15 +1238,18 @@ mod tests {
         fs::rename(&repository, &held_repository).unwrap();
         symlink(&outside, &repository).unwrap();
 
+        let chunk_id = crate::sha1_hex(b"confined");
         store
             .put_chunk(&Chunk {
-                id: CHUNK_ID.to_owned(),
+                id: chunk_id.clone(),
                 data: b"confined".to_vec(),
             })
             .unwrap();
 
-        assert_eq!(store.get_chunk(CHUNK_ID).unwrap().data, b"confined");
-        assert!(held_repository.join("objects/11").is_dir());
+        assert_eq!(store.get_chunk(&chunk_id).unwrap().data, b"confined");
+        assert!(held_repository
+            .join(format!("objects/{}", &chunk_id[..2]))
+            .is_dir());
         assert!(!outside.join("objects").exists());
     }
 
@@ -1233,26 +1261,32 @@ mod tests {
         let store = Store::new(&repository, fixture_key()).unwrap();
         assert!(!repository.exists());
 
+        let first_id = crate::sha1_hex(b"first");
         store
             .put_chunk(&Chunk {
-                id: CHUNK_ID.to_owned(),
+                id: first_id.clone(),
                 data: b"first".to_vec(),
             })
             .unwrap();
         fs::rename(&repository, &held_repository).unwrap();
         fs::create_dir(&repository).unwrap();
 
+        let second_id = crate::sha1_hex(b"second");
         store
             .put_chunk(&Chunk {
-                id: SECOND_CHUNK_ID.to_owned(),
+                id: second_id.clone(),
                 data: b"second".to_vec(),
             })
             .unwrap();
 
-        assert_eq!(store.get_chunk(CHUNK_ID).unwrap().data, b"first");
-        assert_eq!(store.get_chunk(SECOND_CHUNK_ID).unwrap().data, b"second");
-        assert!(held_repository.join("objects/11").is_dir());
-        assert!(held_repository.join("objects/22").is_dir());
+        assert_eq!(store.get_chunk(&first_id).unwrap().data, b"first");
+        assert_eq!(store.get_chunk(&second_id).unwrap().data, b"second");
+        assert!(held_repository
+            .join(format!("objects/{}", &first_id[..2]))
+            .is_dir());
+        assert!(held_repository
+            .join(format!("objects/{}", &second_id[..2]))
+            .is_dir());
         assert_eq!(fs::read_dir(&repository).unwrap().count(), 0);
     }
 
@@ -1265,29 +1299,57 @@ mod tests {
 
         let first_store = Arc::clone(&store);
         let first_barrier = Arc::clone(&barrier);
+        let first_id = crate::sha1_hex(b"first");
+        let second_id = crate::sha1_hex(b"second");
+        let first_thread_id = first_id.clone();
         let first = std::thread::spawn(move || {
             first_barrier.wait();
             first_store.put_chunk(&Chunk {
-                id: CHUNK_ID.to_owned(),
+                id: first_thread_id,
                 data: b"first".to_vec(),
             })
         });
         let second_store = Arc::clone(&store);
+        let second_thread_id = second_id.clone();
         let second = std::thread::spawn(move || {
             barrier.wait();
             second_store.put_chunk(&Chunk {
-                id: SECOND_CHUNK_ID.to_owned(),
+                id: second_thread_id,
                 data: b"second".to_vec(),
             })
         });
 
-        first.join().unwrap().unwrap();
-        second.join().unwrap().unwrap();
+        let first_result = first.join().unwrap();
+        let second_result = second.join().unwrap();
+        assert_eq!(
+            [first_result.as_ref(), second_result.as_ref()]
+                .into_iter()
+                .filter(|result| result.is_ok())
+                .count(),
+            1
+        );
+        assert_eq!(
+            [first_result.as_ref(), second_result.as_ref()]
+                .into_iter()
+                .filter(|result| matches!(result, Err(RepoError::RepositoryBusy)))
+                .count(),
+            1
+        );
+        store
+            .put_chunk(&Chunk {
+                id: first_id.clone(),
+                data: b"first".to_vec(),
+            })
+            .unwrap();
+        store
+            .put_chunk(&Chunk {
+                id: second_id.clone(),
+                data: b"second".to_vec(),
+            })
+            .unwrap();
 
-        assert_eq!(store.get_chunk(CHUNK_ID).unwrap().data, b"first");
-        assert_eq!(store.get_chunk(SECOND_CHUNK_ID).unwrap().data, b"second");
-        assert!(repository.join("objects/11").is_dir());
-        assert!(repository.join("objects/22").is_dir());
+        assert_eq!(store.get_chunk(&first_id).unwrap().data, b"first");
+        assert_eq!(store.get_chunk(&second_id).unwrap().data, b"second");
     }
 
     #[test]
@@ -1394,6 +1456,79 @@ mod tests {
         assert!(matches!(
             good_store.get_file(FILE_ID),
             Err(RepoError::DecryptionFailed)
+        ));
+    }
+
+    #[test]
+    fn normal_getters_bound_raw_reads_and_validate_embedded_identity() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = Store::new(temp.path(), fixture_key()).unwrap();
+        write_fixture(
+            &store.object_path(CHUNK_ID).unwrap(),
+            &vec![0_u8; super::raw_limit(super::RawObjectKind::Chunk) + 1],
+        );
+        assert!(matches!(
+            store.get_chunk(CHUNK_ID),
+            Err(RepoError::DecodedSizeLimitExceeded { .. })
+        ));
+
+        let mut mismatched = fixture_file();
+        mismatched.id = SECOND_CHUNK_ID.to_owned();
+        let encoded = store
+            .encode_encrypted(&serde_json::to_vec(&mismatched).unwrap())
+            .unwrap();
+        write_fixture(&store.object_path(FILE_ID).unwrap(), &encoded);
+        assert!(matches!(
+            store.get_file(FILE_ID),
+            Err(RepoError::InvalidData(_))
+        ));
+    }
+
+    #[test]
+    fn raw_import_rejects_different_valid_payloads_at_existing_file_and_index_keys() {
+        let first_root = tempfile::tempdir().unwrap();
+        let second_root = tempfile::tempdir().unwrap();
+        let target_root = tempfile::tempdir().unwrap();
+        let first = Store::new(first_root.path(), fixture_key()).unwrap();
+        let second = Store::new(second_root.path(), fixture_key()).unwrap();
+        let target = Store::new(target_root.path(), fixture_key()).unwrap();
+
+        let first_file = fixture_file();
+        let mut second_file = first_file.clone();
+        second_file.chunks = vec![SECOND_CHUNK_ID.to_owned()];
+        first.put_file(&first_file).unwrap();
+        second.put_file(&second_file).unwrap();
+        let first_file_raw = first
+            .export_raw(super::RawObjectKind::File, FILE_ID)
+            .unwrap();
+        let second_file_raw = second
+            .export_raw(super::RawObjectKind::File, FILE_ID)
+            .unwrap();
+        target
+            .import_raw(super::RawObjectKind::File, FILE_ID, &first_file_raw)
+            .unwrap();
+        assert!(matches!(
+            target.import_raw(super::RawObjectKind::File, FILE_ID, &second_file_raw),
+            Err(RepoError::InvalidData(_))
+        ));
+
+        let first_index = fixture_index();
+        let mut second_index = first_index.clone();
+        second_index.memo = "different but valid".to_owned();
+        first.put_index(&first_index).unwrap();
+        second.put_index(&second_index).unwrap();
+        let first_index_raw = first
+            .export_raw(super::RawObjectKind::Index, INDEX_ID)
+            .unwrap();
+        let second_index_raw = second
+            .export_raw(super::RawObjectKind::Index, INDEX_ID)
+            .unwrap();
+        target
+            .import_raw(super::RawObjectKind::Index, INDEX_ID, &first_index_raw)
+            .unwrap();
+        assert!(matches!(
+            target.import_raw(super::RawObjectKind::Index, INDEX_ID, &second_index_raw),
+            Err(RepoError::InvalidData(_))
         ));
     }
 

@@ -32,7 +32,12 @@ struct ScannedFile {
     updated: i64,
 }
 
-pub(crate) fn index_once(repo: &Repo, memo: &str, attempt: usize) -> Result<Index, RepoError> {
+pub(crate) fn index_once(
+    repo: &Repo,
+    memo: &str,
+    attempt: usize,
+    previous: Option<&Index>,
+) -> Result<Index, RepoError> {
     let mut scanned = Vec::new();
     scan_directory(repo, &repo.data_dir, Path::new(""), false, &mut scanned)?;
     scanned.sort_by(|left, right| left.repository_path.cmp(&right.repository_path));
@@ -50,6 +55,16 @@ pub(crate) fn index_once(repo: &Repo, memo: &str, attempt: usize) -> Result<Inde
             .checked_add(file.size)
             .ok_or(RepoError::RepoFatal)?;
         file_ids.push(file.id);
+    }
+
+    if let Some(previous) = previous {
+        let mut previous_ids = previous.files.clone();
+        let mut current_ids = file_ids.clone();
+        previous_ids.sort();
+        current_ids.sort();
+        if previous_ids == current_ids {
+            return Ok(previous.clone());
+        }
     }
 
     let created = i64::try_from(time::OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000)

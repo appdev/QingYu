@@ -308,16 +308,16 @@ mod tests {
     const RETAINED_CHECK_REF: &str = "4444444444444444444444444444444444444444";
     const RETAINED_CHECK_CALLER: &str = "5555555555555555555555555555555555555555";
     const UNREFERENCED_CHECK: &str = "6666666666666666666666666666666666666666";
-    const RETAINED_FILE_REF: &str = "7777777777777777777777777777777777777777";
-    const RETAINED_FILE_CALLER: &str = "8888888888888888888888888888888888888888";
-    const UNREFERENCED_FILE: &str = "9999999999999999999999999999999999999999";
-    const SHARED_CHUNK: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-    const RETAINED_CHUNK_REF: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
-    const RETAINED_CHUNK_CALLER: &str = "cccccccccccccccccccccccccccccccccccccccc";
-    const UNREACHABLE_CHUNK: &str = "dddddddddddddddddddddddddddddddddddddddd";
+    const RETAINED_FILE_REF: &str = "aa1f5cfc4d153cccacac523c2bf38a5028428830";
+    const RETAINED_FILE_CALLER: &str = "9bb9f38cbfb569132c9e39441dad0b6368583c88";
+    const UNREFERENCED_FILE: &str = "baa00a51cc31646e8dc08d909d3439c0231cf9bd";
+    const SHARED_CHUNK: &str = "d18aac96b905b4b3c839891b7a91c9414149514c";
+    const RETAINED_CHUNK_REF: &str = "b1fd00c4e51aee02e1cbb17219649c97d2cd3b78";
+    const RETAINED_CHUNK_CALLER: &str = "a6f0959a2c1aebdd1c10a2d03d2f9a453f6ab2e9";
+    const UNREACHABLE_CHUNK: &str = "408e9edfd6912aae297c39da08db127ea40a4bfc";
     const MISMATCH_CHECK_ID: &str = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
     const CONCURRENT_INDEX: &str = "ffffffffffffffffffffffffffffffffffffffff";
-    const CONCURRENT_CHUNK: &str = "0000000000000000000000000000000000000000";
+    const CONCURRENT_CHUNK: &str = "c18f39b2beac0a5693d47fcea130cd8acf595258";
 
     struct PurgeFixture {
         _temp: TempDir,
@@ -910,17 +910,11 @@ mod tests {
             let ref_result = premature_ref.unwrap_or_else(|| ref_result_rx.recv().unwrap());
             let index_result = premature_index.unwrap_or_else(|| index_result_rx.recv().unwrap());
 
-            assert!(!ref_was_premature, "ref publication bypassed purge guard");
-            assert!(
-                !index_was_premature,
-                "index publication bypassed purge guard"
-            );
+            assert!(ref_was_premature, "ref publication did not fail fast");
+            assert!(index_was_premature, "index publication did not fail fast");
             purge_result.unwrap();
-            assert!(matches!(
-                ref_result,
-                Err(RepoError::NotFound(id)) if id == UNREFERENCED_INDEX
-            ));
-            index_result.unwrap();
+            assert!(matches!(ref_result, Err(RepoError::RepositoryBusy)));
+            assert!(matches!(index_result, Err(RepoError::RepositoryBusy)));
         });
 
         assert!(!fixture
@@ -929,7 +923,7 @@ mod tests {
             .index_path(UNREFERENCED_INDEX)
             .unwrap()
             .exists());
-        assert!(fixture
+        assert!(!fixture
             .repo
             .store
             .index_path(CONCURRENT_INDEX)
@@ -1048,26 +1042,40 @@ mod tests {
             let index_result = premature_index.unwrap_or_else(|| index_result_rx.recv().unwrap());
             let chunk_result = premature_chunk.unwrap_or_else(|| chunk_result_rx.recv().unwrap());
 
-            assert!(
-                !ref_was_premature,
-                "renamed-path ref publication bypassed purge guard"
-            );
-            assert!(
-                !index_was_premature,
-                "renamed-path index publication bypassed purge guard"
-            );
-            assert!(
-                !chunk_was_premature,
-                "renamed-path object publication bypassed purge guard"
+            assert!(ref_was_premature, "renamed-path ref did not fail fast");
+            assert_ne!(
+                index_was_premature, chunk_was_premature,
+                "one same-store publication should wait on the std guard while the other fails busy"
             );
             purge_result.unwrap();
-            assert!(matches!(
-                ref_result,
-                Err(RepoError::NotFound(id)) if id == UNREFERENCED_INDEX
-            ));
-            index_result.unwrap();
-            chunk_result.unwrap();
+            assert!(matches!(ref_result, Err(RepoError::RepositoryBusy)));
+            assert_eq!(
+                [&index_result, &chunk_result]
+                    .into_iter()
+                    .filter(|result| result.is_ok())
+                    .count(),
+                1
+            );
+            assert_eq!(
+                [&index_result, &chunk_result]
+                    .into_iter()
+                    .filter(|result| matches!(result, Err(RepoError::RepositoryBusy)))
+                    .count(),
+                1
+            );
         });
+
+        let mut retry_index = index(CONCURRENT_INDEX, UNREFERENCED_FILE, "");
+        retry_index.files.clear();
+        retry_index.count = 0;
+        retry_index.size = 0;
+        reopened_store.put_index(&retry_index).unwrap();
+        reopened_store
+            .put_chunk(&Chunk {
+                id: CONCURRENT_CHUNK.to_owned(),
+                data: b"published after purge".to_vec(),
+            })
+            .unwrap();
 
         assert!(!reopened_store
             .index_path(UNREFERENCED_INDEX)

@@ -13,9 +13,10 @@ use time::OffsetDateTime;
 use crate::path_security::cap_metadata_is_reparse;
 use crate::store::{RawObjectKind, Store};
 use crate::{
-    random_hash, CheckIndex, CheckIndexFile, Cloud, CloudError, CloudObject, ExpectedRevision,
-    File, Index, MergeResult, RefStore, RemoteLockGuard, Repo, RepoError, RepositoryRelativePath,
-    TrafficStat, WorkingTreeAction, WorkingTreeChange, WorkingTreeCoordinator,
+    random_hash, with_working_tree_permit, CheckIndex, CheckIndexFile, Cloud, CloudError,
+    CloudObject, ExpectedRevision, File, Index, MergeResult, RefStore, RemoteLockGuard, Repo,
+    RepoError, RepositoryRelativePath, TrafficStat, WorkingTreeAction, WorkingTreeChange,
+    WorkingTreeCoordinator,
 };
 
 const SEVEN_MINUTES_MILLIS: i64 = 7 * 60 * 1_000;
@@ -38,6 +39,7 @@ enum TransferKind {
 
 struct MergePlan {
     result: MergeResult,
+    history_candidates: Vec<File>,
     local_changed: bool,
     changes: Vec<WorkingTreeChange>,
 }
@@ -67,7 +69,7 @@ impl Repo {
         coordinator: Arc<dyn WorkingTreeCoordinator>,
         mode: SyncMode,
     ) -> Result<(MergeResult, TrafficStat), RepoError> {
-        let _sync = self.sync_guard.lock().await;
+        let _lifecycle = self.store.acquire_lifecycle().await;
         let guard = self.lock_cloud(Arc::clone(&cloud)).await?;
         let operation = self
             .run_sync_under_lock(&cloud, &guard, coordinator, mode)
@@ -93,11 +95,11 @@ impl Repo {
     ) -> Result<(MergeResult, TrafficStat), RepoError> {
         // This sequence is deliberately pinned: current index, local latest,
         // cloud latest, latest-sync, then the remaining missing cloud objects.
-        let current = self.index_current("[Sync] Current working tree")?;
-        let _local_latest = self.latest()?;
+        let current = self.index_current_unlocked("[Sync] Current working tree")?;
+        let _local_latest = resolve_local_ref_unlocked(&self.store, "latest")?;
         let mut traffic = TrafficStat::default();
-        let cloud_latest = download_cloud_latest(&self.store, cloud, &mut traffic).await?;
-        let latest_sync = self.latest_sync()?;
+        let cloud_download = download_cloud_latest(&self.store, cloud, &mut traffic).await?;
+        let latest_sync = resolve_local_ref_unlocked(&self.store, "latest-sync")?;
 
         let current_files = files_for_index(&self.store, &current)?;
         let latest_sync_files = latest_sync
@@ -106,30 +108,34 @@ impl Repo {
             .transpose()?
             .unwrap_or_default();
 
-        let Some(cloud_latest) = cloud_latest else {
+        let Some((cloud_latest, sequence_objects)) = cloud_download else {
             let result = empty_merge_result();
             if mode == SyncMode::Bidirectional {
                 let final_index =
                     publish_remote_index(&self.store, cloud, guard, current, &mut traffic).await?;
-                update_local_refs(&self.store, &final_index)?;
+                update_local_refs(&self.store, &final_index, Some(&final_index))?;
+            } else {
+                update_local_refs(&self.store, &current, None)?;
             }
             return Ok((result, traffic));
         };
 
-        ensure_cloud_index_contents(&self.store, cloud, &cloud_latest, &mut traffic).await?;
+        let fetched_remote_files =
+            ensure_cloud_index_contents(&self.store, cloud, &cloud_latest, &mut traffic).await?;
         let cloud_files = files_for_index(&self.store, &cloud_latest)?;
         let plan = plan_merge(
             &self.store,
             &current_files,
             &latest_sync_files,
             &cloud_files,
+            &fetched_remote_files,
         )?;
 
-        store_remote_conflicts(self, &plan.result)?;
+        store_remote_conflicts(self, plan.result.time, &plan.history_candidates)?;
         apply_working_tree_plan(self, coordinator, &plan).await?;
 
         let mut final_index = if plan.result.data_changed() && plan.local_changed {
-            self.index_current("[Sync] Cloud sync merge")?
+            self.index_current_unlocked("[Sync] Cloud sync merge")?
         } else if plan.result.data_changed() {
             cloud_latest.clone()
         } else {
@@ -139,15 +145,27 @@ impl Repo {
         if mode == SyncMode::Bidirectional && plan.local_changed {
             final_index =
                 publish_remote_index(&self.store, cloud, guard, final_index, &mut traffic).await?;
+        } else if mode == SyncMode::Bidirectional {
+            repair_stale_sequence_refs(cloud, guard, &sequence_objects, &mut traffic).await?;
         }
-        update_local_refs(&self.store, &final_index)?;
+        let cloud_baseline = if mode == SyncMode::Bidirectional && plan.local_changed {
+            &final_index
+        } else {
+            &cloud_latest
+        };
+        update_local_refs(&self.store, &final_index, Some(cloud_baseline))?;
         Ok((plan.result, traffic))
     }
 
-    fn index_current(&self, memo: &str) -> Result<Index, RepoError> {
-        match self.index(memo) {
+    fn index_current_unlocked(&self, memo: &str) -> Result<Index, RepoError> {
+        let _operation = self.store.lock_operation()?;
+        let previous = RefStore::new(&self.store).resolve_unlocked("latest")?;
+        match self.index_unlocked(memo, previous.as_ref()) {
             Ok(index) => Ok(index),
             Err(RepoError::EmptyIndex) => {
+                if let Some(previous) = previous.filter(|index| index.files.is_empty()) {
+                    return Ok(previous);
+                }
                 let created = now_millis()?;
                 let mut index = Index {
                     id: random_hash().map_err(|_| RepoError::RandomnessUnavailable)?,
@@ -163,7 +181,7 @@ impl Repo {
                     aes_key_verify_val: String::new(),
                 };
                 index.init_aes_key_verify_val(&self.key)?;
-                self.store.put_index(&index)?;
+                self.store.put_index_unlocked(&index)?;
                 Ok(index)
             }
             Err(error) => Err(error),
@@ -181,7 +199,12 @@ fn empty_merge_result() -> MergeResult {
 }
 
 fn files_for_index(store: &Store, index: &Index) -> Result<Vec<File>, RepoError> {
-    index.files.iter().map(|id| store.get_file(id)).collect()
+    let _operation = store.lock_operation()?;
+    index
+        .files
+        .iter()
+        .map(|id| store.get_file_unlocked(id))
+        .collect()
 }
 
 fn plan_merge(
@@ -189,6 +212,7 @@ fn plan_merge(
     current: &[File],
     latest_sync: &[File],
     cloud: &[File],
+    fetched_remote_files: &BTreeSet<String>,
 ) -> Result<MergePlan, RepoError> {
     let (mut local_upserts, local_removes) = crate::diff_upsert_remove(current, latest_sync);
     let (cloud_upserts, cloud_removes) = crate::diff_upsert_remove(cloud, current);
@@ -208,10 +232,14 @@ fn plan_merge(
     let local_removes_by_path = by_path(&local_removes);
     let current_by_path = by_path(current);
     let mut result = empty_merge_result();
+    let mut history_candidates = Vec::new();
 
     for remote in cloud_upserts {
         if local_upserts_by_path.contains_key(remote.path.as_str()) {
-            result.conflicts.push(remote);
+            history_candidates.push(remote.clone());
+            if fetched_remote_files.contains(&remote.id) {
+                result.conflicts.push(remote);
+            }
             continue;
         }
         if local_removes_by_path.contains_key(remote.path.as_str()) {
@@ -261,9 +289,11 @@ fn plan_merge(
     sort_files(&mut result.upserts);
     sort_files(&mut result.removes);
     sort_files(&mut result.conflicts);
+    sort_files(&mut history_candidates);
     let changes = working_tree_changes(current, &result)?;
     Ok(MergePlan {
         result,
+        history_candidates,
         local_changed,
         changes,
     })
@@ -329,12 +359,16 @@ fn expected_revision(file: Option<&File>) -> ExpectedRevision {
     })
 }
 
-fn store_remote_conflicts(repo: &Repo, result: &MergeResult) -> Result<(), RepoError> {
-    if result.conflicts.is_empty() {
+fn store_remote_conflicts(
+    repo: &Repo,
+    time: OffsetDateTime,
+    conflicts: &[File],
+) -> Result<(), RepoError> {
+    if conflicts.is_empty() {
         return Ok(());
     }
-    let timestamp = history_timestamp(result.time);
-    for file in &result.conflicts {
+    let timestamp = history_timestamp(time);
+    for file in conflicts {
         let relative = file.path.strip_prefix('/').ok_or(RepoError::UnsafePath)?;
         let bytes = open_file_from_store(&repo.store, file)?;
         repo.history
@@ -356,9 +390,10 @@ fn history_timestamp(time: OffsetDateTime) -> String {
 }
 
 fn open_file_from_store(store: &Store, file: &File) -> Result<Vec<u8>, RepoError> {
+    let _operation = store.lock_operation()?;
     let mut bytes = Vec::new();
     for chunk_id in &file.chunks {
-        let chunk = store.get_chunk(chunk_id)?;
+        let chunk = store.get_chunk_unlocked(chunk_id)?;
         bytes.extend_from_slice(&chunk.data);
         if i64::try_from(bytes.len()).map_err(|_| RepoError::RepoFatal)? > file.size {
             return Err(RepoError::InvalidData(
@@ -382,18 +417,47 @@ async fn apply_working_tree_plan(
     if plan.changes.is_empty() {
         return Ok(());
     }
-    let permit = coordinator.prepare(&plan.changes).await?;
-    let operation = (|| {
+    with_working_tree_permit(coordinator, &plan.changes, || async {
         for change in &plan.changes {
             if repo.working_tree_revision(&change.path)? != change.expected_revision {
                 return Err(RepoError::WorkingTreeChanged);
             }
         }
-        repo.checkout_files(&plan.result.upserts)?;
-        repo.remove_files(&plan.result.removes)
-    })();
-    coordinator.release(permit).await;
-    operation
+        for change in &plan.changes {
+            if repo.working_tree_revision(&change.path)? != change.expected_revision {
+                return Err(RepoError::WorkingTreeChanged);
+            }
+            match change.action {
+                WorkingTreeAction::Write => {
+                    let path = format!("/{}", change.path.as_str());
+                    let file = plan
+                        .result
+                        .upserts
+                        .iter()
+                        .find(|file| file.path == path)
+                        .ok_or(RepoError::InvalidData(
+                            "working-tree write is missing its file object",
+                        ))?;
+                    repo.checkout_file_unlocked(file)?;
+                }
+                WorkingTreeAction::Remove => {
+                    let path = format!("/{}", change.path.as_str());
+                    let file = plan
+                        .result
+                        .removes
+                        .iter()
+                        .find(|file| file.path == path)
+                        .ok_or(RepoError::InvalidData(
+                            "working-tree remove is missing its file object",
+                        ))?;
+                    repo.remove_files_unlocked(std::slice::from_ref(file))?;
+                }
+            }
+            tokio::task::yield_now().await;
+        }
+        Ok(())
+    })
+    .await
 }
 
 impl Repo {
@@ -447,17 +511,26 @@ fn metadata_updated(metadata: &cap_std::fs::Metadata) -> Result<i64, RepoError> 
         .ok_or(RepoError::RepoFatal)
 }
 
-fn update_local_refs(store: &Store, index: &Index) -> Result<(), RepoError> {
+fn resolve_local_ref_unlocked(store: &Store, name: &str) -> Result<Option<Index>, RepoError> {
+    let _operation = store.lock_operation()?;
+    RefStore::new(store).resolve_unlocked(name)
+}
+
+fn update_local_refs(store: &Store, local: &Index, cloud: Option<&Index>) -> Result<(), RepoError> {
+    let _operation = store.lock_operation()?;
     let refs = RefStore::new(store);
-    refs.update_latest(index)?;
-    refs.update_latest_sync(index)
+    refs.update_unlocked("latest", local)?;
+    match cloud {
+        Some(cloud) => refs.update_unlocked("latest-sync", cloud),
+        None => refs.clear_unlocked("latest-sync"),
+    }
 }
 
 async fn download_cloud_latest(
     store: &Store,
     cloud: &Arc<dyn Cloud>,
     traffic: &mut TrafficStat,
-) -> Result<Option<Index>, RepoError> {
+) -> Result<Option<(Index, Vec<CloudObject>)>, RepoError> {
     let latest_bytes = match tracked_get(cloud, CLOUD_LATEST_KEY, TransferKind::File, traffic).await
     {
         Ok(bytes) => bytes,
@@ -468,15 +541,15 @@ async fn download_cloud_latest(
     let mut latest = ensure_remote_index(store, cloud, &latest_id, traffic).await?;
 
     let objects = tracked_list(cloud, "refs/", traffic).await?;
-    if let Some((_sequence, sequence_id)) = max_sequence_ref(&objects) {
-        if sequence_id != latest_id {
-            let sequence_latest = ensure_remote_index(store, cloud, &sequence_id, traffic).await?;
+    if let Some((_sequence, sequence_id)) = sequence_state(&objects)?.last() {
+        if sequence_id != &latest_id {
+            let sequence_latest = ensure_remote_index(store, cloud, sequence_id, traffic).await?;
             if sequence_latest.created > latest.created {
                 latest = sequence_latest;
             }
         }
     }
-    Ok(Some(latest))
+    Ok(Some((latest, objects)))
 }
 
 fn parse_remote_ref(bytes: &[u8]) -> Result<String, RepoError> {
@@ -498,12 +571,18 @@ async fn ensure_remote_index(
     id: &str,
     traffic: &mut TrafficStat,
 ) -> Result<Index, RepoError> {
-    if !store.contains_raw(RawObjectKind::Index, id)? {
+    let present = {
+        let _operation = store.lock_operation()?;
+        store.contains_raw_unlocked(RawObjectKind::Index, id)?
+    };
+    if !present {
         let key = format!("indexes/{id}");
         let bytes = tracked_get(cloud, &key, TransferKind::File, traffic).await?;
-        store.import_raw(RawObjectKind::Index, id, &bytes)?;
+        let _operation = store.lock_operation()?;
+        store.import_raw_unlocked(RawObjectKind::Index, id, &bytes)?;
     }
-    store.get_index(id)
+    let _operation = store.lock_operation()?;
+    store.get_index_unlocked(id)
 }
 
 async fn ensure_cloud_index_contents(
@@ -511,39 +590,101 @@ async fn ensure_cloud_index_contents(
     cloud: &Arc<dyn Cloud>,
     index: &Index,
     traffic: &mut TrafficStat,
-) -> Result<(), RepoError> {
+) -> Result<BTreeSet<String>, RepoError> {
+    let mut fetched_files = BTreeSet::new();
+    let mut check_index = None;
     if !index.check_index_id.is_empty() {
-        if !store.contains_raw(RawObjectKind::CheckIndex, &index.check_index_id)? {
+        let present = {
+            let _operation = store.lock_operation()?;
+            store.contains_raw_unlocked(RawObjectKind::CheckIndex, &index.check_index_id)?
+        };
+        if !present {
             let key = format!("check/indexes/{}", index.check_index_id);
             let bytes = tracked_get(cloud, &key, TransferKind::File, traffic).await?;
-            store.import_raw(RawObjectKind::CheckIndex, &index.check_index_id, &bytes)?;
+            let _operation = store.lock_operation()?;
+            store.import_raw_unlocked(RawObjectKind::CheckIndex, &index.check_index_id, &bytes)?;
         }
-        let check = store.get_check_index(&index.check_index_id)?;
+        let check = {
+            let _operation = store.lock_operation()?;
+            store.get_check_index_unlocked(&index.check_index_id)?
+        };
         if check.index_id != index.id {
             return Err(RepoError::InvalidData(
                 "check index target does not match cloud latest",
             ));
         }
+        validate_check_index_files(index, &check)?;
+        check_index = Some(check);
     }
 
     for file_id in &index.files {
-        if !store.contains_raw(RawObjectKind::File, file_id)? {
+        let present = {
+            let _operation = store.lock_operation()?;
+            store.contains_raw_unlocked(RawObjectKind::File, file_id)?
+        };
+        if !present {
             let key = object_key(file_id)?;
             let bytes = tracked_get(cloud, &key, TransferKind::File, traffic).await?;
-            store.import_raw(RawObjectKind::File, file_id, &bytes)?;
+            let _operation = store.lock_operation()?;
+            store.import_raw_unlocked(RawObjectKind::File, file_id, &bytes)?;
+            fetched_files.insert(file_id.clone());
         }
     }
     let files = files_for_index(store, index)?;
+    if let Some(check) = check_index.as_ref() {
+        validate_check_index_dependencies(&files, check)?;
+    }
     let chunk_ids = files
         .iter()
         .flat_map(|file| file.chunks.iter().cloned())
         .collect::<BTreeSet<_>>();
     for chunk_id in chunk_ids {
-        if !store.contains_raw(RawObjectKind::Chunk, &chunk_id)? {
+        let present = {
+            let _operation = store.lock_operation()?;
+            store.contains_raw_unlocked(RawObjectKind::Chunk, &chunk_id)?
+        };
+        if !present {
             let key = object_key(&chunk_id)?;
             let bytes = tracked_get(cloud, &key, TransferKind::Chunk, traffic).await?;
-            store.import_raw(RawObjectKind::Chunk, &chunk_id, &bytes)?;
+            let _operation = store.lock_operation()?;
+            store.import_raw_unlocked(RawObjectKind::Chunk, &chunk_id, &bytes)?;
         }
+    }
+    Ok(fetched_files)
+}
+
+fn validate_check_index_files(index: &Index, check: &CheckIndex) -> Result<(), RepoError> {
+    let index_files = index.files.iter().collect::<BTreeSet<_>>();
+    let check_files = check
+        .files
+        .iter()
+        .map(|file| &file.id)
+        .collect::<BTreeSet<_>>();
+    if index_files.len() != index.files.len()
+        || check_files.len() != check.files.len()
+        || index_files != check_files
+    {
+        return Err(RepoError::InvalidData(
+            "check index file list does not match cloud index",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_check_index_dependencies(files: &[File], check: &CheckIndex) -> Result<(), RepoError> {
+    let check_files = check
+        .files
+        .iter()
+        .map(|file| (file.id.as_str(), file))
+        .collect::<BTreeMap<_, _>>();
+    if files.iter().any(|file| {
+        check_files
+            .get(file.id.as_str())
+            .is_none_or(|checked| checked.chunks != file.chunks)
+    }) {
+        return Err(RepoError::InvalidData(
+            "check index chunk list does not match cloud file",
+        ));
     }
     Ok(())
 }
@@ -568,8 +709,11 @@ async fn publish_remote_index(
             .collect(),
     };
     index.check_index_id = check.id.clone();
-    store.put_check_index(&check)?;
-    store.put_index(&index)?;
+    {
+        let _operation = store.lock_operation()?;
+        store.put_check_index_unlocked(&check)?;
+        store.put_index_unlocked(&index)?;
+    }
 
     let chunk_ids = files
         .iter()
@@ -620,6 +764,10 @@ async fn publish_remote_index(
     )
     .await?;
 
+    let existing = tracked_list(cloud, "refs/", traffic).await?;
+    let next_sequence = next_sequence(&existing)?;
+    let sequence_key = format!("{CLOUD_SEQUENCE_PREFIX}{next_sequence}-{}", index.id);
+
     tracked_put(
         cloud,
         guard,
@@ -630,10 +778,6 @@ async fn publish_remote_index(
         traffic,
     )
     .await?;
-    let existing = tracked_list(cloud, "refs/", traffic).await?;
-    let next_sequence =
-        max_sequence_ref(&existing).map_or(1, |(sequence, _)| sequence.saturating_add(1));
-    let sequence_key = format!("{CLOUD_SEQUENCE_PREFIX}{next_sequence}-{}", index.id);
     tracked_put(
         cloud,
         guard,
@@ -658,6 +802,31 @@ async fn publish_remote_index(
     Ok(index)
 }
 
+async fn repair_stale_sequence_refs(
+    cloud: &Arc<dyn Cloud>,
+    guard: &RemoteLockGuard,
+    existing: &[CloudObject],
+    traffic: &mut TrafficStat,
+) -> Result<(), RepoError> {
+    let sequences = sequence_state(existing)?;
+    if sequences.len() <= 1 {
+        return Ok(());
+    }
+    let (sequence, id) = sequences
+        .last()
+        .ok_or(RepoError::InvalidData("remote sequence state is empty"))?;
+    let retained = format!("{CLOUD_SEQUENCE_PREFIX}{sequence}-{id}");
+    for stale in existing
+        .iter()
+        .filter(|object| object.key.starts_with(CLOUD_SEQUENCE_PREFIX) && object.key != retained)
+    {
+        guard.ensure_healthy()?;
+        traffic.api_put = traffic.api_put.saturating_add(1);
+        let _cleanup_result = cloud.remove(&stale.key).await;
+    }
+    Ok(())
+}
+
 async fn publish_raw(
     store: &Store,
     cloud: &Arc<dyn Cloud>,
@@ -667,7 +836,10 @@ async fn publish_raw(
     transfer: TransferKind,
     traffic: &mut TrafficStat,
 ) -> Result<(), RepoError> {
-    let bytes = store.export_raw(kind, id)?;
+    let bytes = {
+        let _operation = store.lock_operation()?;
+        store.export_raw_unlocked(kind, id)?
+    };
     let key = match kind {
         RawObjectKind::Chunk | RawObjectKind::File => object_key(id)?,
         RawObjectKind::Index => format!("indexes/{id}"),
@@ -741,11 +913,29 @@ async fn tracked_list(
     cloud.list(prefix).await
 }
 
-fn max_sequence_ref(objects: &[CloudObject]) -> Option<(u64, String)> {
-    objects
+fn sequence_state(objects: &[CloudObject]) -> Result<Vec<(u64, String)>, RepoError> {
+    let mut by_sequence = BTreeMap::new();
+    for (sequence, id) in objects
         .iter()
         .filter_map(|object| parse_sequence_ref(&object.key))
-        .max_by_key(|(sequence, _)| *sequence)
+    {
+        if by_sequence.insert(sequence, id).is_some() {
+            return Err(RepoError::InvalidData(
+                "remote sequence refs contain a duplicate sequence",
+            ));
+        }
+    }
+    Ok(by_sequence.into_iter().collect())
+}
+
+fn next_sequence(objects: &[CloudObject]) -> Result<u64, RepoError> {
+    sequence_state(objects)?
+        .last()
+        .map_or(Ok(1), |(sequence, _)| {
+            sequence
+                .checked_add(1)
+                .ok_or(RepoError::InvalidData("remote sequence ref exhausted u64"))
+        })
 }
 
 fn parse_sequence_ref(key: &str) -> Option<(u64, String)> {
@@ -1379,9 +1569,13 @@ mod tests {
         assert_eq!(result.conflicts.len(), 1);
         assert_eq!(fs::read(second.data.join("same.md")).unwrap(), b"local");
         assert!(second.data.join("local.md").exists());
-        assert_eq!(
+        assert_ne!(
             second.repo.latest().unwrap().unwrap().id,
             second.repo.latest_sync().unwrap().unwrap().id
+        );
+        assert_eq!(
+            second.repo.latest_sync().unwrap().unwrap().id.as_bytes(),
+            remote_ref_before.as_slice()
         );
         assert_eq!(inner.get("refs/latest").await.unwrap(), remote_ref_before);
         assert!(inspected.events().iter().all(|event| {
@@ -1390,6 +1584,306 @@ mod tests {
                 || event.starts_with("get:")
                 || event.starts_with("list:")
         }));
+    }
+
+    #[tokio::test]
+    async fn repeated_download_conflict_keeps_local_tree_and_cloud_baseline_refs() {
+        let (_cloud_root, inner) = cloud_fixture();
+        let remote = repo_fixture("remote", RepoOptions::default());
+        write_file(&remote.data, "same.md", b"remote", 1_700_000_010_000);
+        sync(&remote.repo, inner.clone()).await;
+        let cloud_id = String::from_utf8(inner.get("refs/latest").await.unwrap()).unwrap();
+
+        let local = repo_fixture("local", RepoOptions::default());
+        write_file(&local.data, "same.md", b"local", 1_700_000_000_000);
+        for round in 0..3 {
+            local
+                .repo
+                .sync_download(inner.clone(), coordinator())
+                .await
+                .unwrap();
+            assert_eq!(fs::read(local.data.join("same.md")).unwrap(), b"local");
+            assert_eq!(local.repo.latest_sync().unwrap().unwrap().id, cloud_id);
+            assert_ne!(local.repo.latest().unwrap().unwrap().id, cloud_id);
+            assert!(
+                fs::read_dir(&local.history).unwrap().next().is_some(),
+                "round {round}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn download_without_cloud_latest_records_local_latest_and_empty_cloud_baseline() {
+        let (_cloud_root, cloud) = cloud_fixture();
+        let local = repo_fixture("local", RepoOptions::default());
+        write_file(&local.data, "local.md", b"local", 1_700_000_000_000);
+
+        local
+            .repo
+            .sync_download(cloud, coordinator())
+            .await
+            .unwrap();
+
+        assert!(local.repo.latest().unwrap().is_some());
+        assert!(local.repo.latest_sync().unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn consecutive_noop_sync_reuses_index_identity_and_does_not_publish() {
+        let (_cloud_root, inner) = cloud_fixture();
+        let inspected = Arc::new(InspectCloud::new(inner.clone()));
+        let local = repo_fixture("local", RepoOptions::default());
+        write_file(&local.data, "doc.md", b"stable", 1_700_000_000_000);
+        local
+            .repo
+            .sync(inspected.clone(), coordinator())
+            .await
+            .unwrap();
+        let expected = local.repo.latest().unwrap().unwrap().id;
+        let index_count = local
+            .repo
+            .store
+            .list_raw_ids(super::RawObjectKind::Index)
+            .unwrap()
+            .len();
+        inspected.clear_events();
+
+        local
+            .repo
+            .sync(inspected.clone(), coordinator())
+            .await
+            .unwrap();
+
+        assert_eq!(local.repo.latest().unwrap().unwrap().id, expected);
+        assert_eq!(local.repo.latest_sync().unwrap().unwrap().id, expected);
+        assert_eq!(inner.get("refs/latest").await.unwrap(), expected.as_bytes());
+        assert_eq!(
+            local
+                .repo
+                .store
+                .list_raw_ids(super::RawObjectKind::Index)
+                .unwrap()
+                .len(),
+            index_count
+        );
+        assert!(inspected.events().iter().all(|event| {
+            event == "put:lock-sync"
+                || event == "remove:lock-sync"
+                || event.starts_with("get:")
+                || event.starts_with("list:")
+        }));
+    }
+
+    #[tokio::test]
+    async fn local_only_edit_uploads_without_reporting_a_remote_conflict() {
+        let (_cloud_root, cloud) = cloud_fixture();
+        let local = repo_fixture("local", RepoOptions::default());
+        write_file(&local.data, "doc.md", b"base", 1_700_000_000_000);
+        sync(&local.repo, cloud.clone()).await;
+        write_file(&local.data, "doc.md", b"local", 1_700_000_010_000);
+
+        let result = sync(&local.repo, cloud.clone()).await;
+
+        assert!(result.conflicts.is_empty());
+        let reader = repo_fixture("reader", RepoOptions::default());
+        sync(&reader.repo, cloud).await;
+        assert_eq!(fs::read(reader.data.join("doc.md")).unwrap(), b"local");
+    }
+
+    #[tokio::test]
+    async fn shared_repository_lifecycle_blocks_same_path_sync_and_sync_public_ops() {
+        let (_cloud_root, cloud) = cloud_fixture();
+        let source = repo_fixture("source", RepoOptions::default());
+        write_file(&source.data, "remote.md", b"remote", 1_700_000_000_000);
+        sync(&source.repo, cloud.clone()).await;
+        let inspected = Arc::new(InspectCloud::new(cloud));
+
+        let shared = repo_fixture("shared", RepoOptions::default());
+        let paths = RepoPaths {
+            data: shared.data.clone(),
+            repo: shared._root.path().join("repo"),
+            history: shared.history.clone(),
+            temp: shared._root.path().join("temp"),
+        };
+        let reopened = Repo::open(
+            paths,
+            Device {
+                id: "device-shared".to_owned(),
+                name: "shared".to_owned(),
+                os: "test".to_owned(),
+            },
+            [7; 32],
+            RepoOptions::default(),
+        )
+        .unwrap();
+        let blocking = Arc::new(BlockingCoordinator {
+            entered: Notify::new(),
+            proceed: Notify::new(),
+            releases: AtomicUsize::new(0),
+        });
+        let first = tokio::spawn({
+            let cloud = inspected.clone();
+            let blocking = blocking.clone();
+            async move { shared.repo.sync(cloud, blocking).await }
+        });
+        blocking.entered.notified().await;
+
+        assert!(matches!(
+            reopened.index("busy"),
+            Err(RepoError::RepositoryBusy)
+        ));
+        assert!(matches!(reopened.latest(), Err(RepoError::RepositoryBusy)));
+        assert!(matches!(
+            reopened.store.list_raw_ids(super::RawObjectKind::Index),
+            Err(RepoError::RepositoryBusy)
+        ));
+        assert!(matches!(
+            reopened.purge(&[], &AtomicBool::new(false)),
+            Err(RepoError::RepositoryBusy)
+        ));
+        let second = tokio::spawn({
+            let cloud = inspected.clone();
+            async move { reopened.sync(cloud, coordinator()).await }
+        });
+        tokio::task::yield_now().await;
+        assert!(!second.is_finished());
+        assert_eq!(
+            inspected
+                .events()
+                .iter()
+                .filter(|event| event.as_str() == "put:lock-sync")
+                .count(),
+            1
+        );
+
+        blocking.proceed.notify_one();
+        first.await.unwrap().unwrap();
+        second.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn aborting_sync_releases_the_lifecycle_gate_for_public_operations() {
+        let (_cloud_root, cloud) = cloud_fixture();
+        let source = repo_fixture("source", RepoOptions::default());
+        write_file(&source.data, "remote.md", b"remote", 1_700_000_000_000);
+        sync(&source.repo, cloud.clone()).await;
+        let local = Arc::new(repo_fixture("local", RepoOptions::default()));
+        let blocking = Arc::new(BlockingCoordinator {
+            entered: Notify::new(),
+            proceed: Notify::new(),
+            releases: AtomicUsize::new(0),
+        });
+        let task = tokio::spawn({
+            let local = local.clone();
+            let cloud = cloud.clone();
+            let blocking = blocking.clone();
+            async move { local.repo.sync(cloud, blocking).await }
+        });
+        blocking.entered.notified().await;
+
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        tokio::task::yield_now().await;
+
+        assert!(matches!(
+            local.repo.index("after abort"),
+            Err(RepoError::EmptyIndex)
+        ));
+    }
+
+    #[tokio::test]
+    async fn later_working_tree_edit_is_not_overwritten_after_an_earlier_partial_apply() {
+        let (_cloud_root, cloud) = cloud_fixture();
+        let remote = repo_fixture("remote", RepoOptions::default());
+        let local = repo_fixture("local", RepoOptions::default());
+        for name in ["a.md", "b.md"] {
+            write_file(&remote.data, name, b"base", 1_700_000_000_000);
+        }
+        sync(&remote.repo, cloud.clone()).await;
+        sync(&local.repo, cloud.clone()).await;
+        let previous_ref = local.repo.latest().unwrap().unwrap().id;
+        write_file(&remote.data, "a.md", b"remote-a", 1_700_000_010_000);
+        write_file(&remote.data, "b.md", b"remote-b", 1_700_000_010_000);
+        sync(&remote.repo, cloud.clone()).await;
+        let edited_path = local.data.join("b.md");
+        let first_path = local.data.join("a.md");
+        let editor = tokio::spawn(async move {
+            loop {
+                if fs::read(&first_path).unwrap() == b"remote-a" {
+                    write_file(
+                        edited_path.parent().unwrap(),
+                        "b.md",
+                        b"editor-b",
+                        1_800_000_000_000,
+                    );
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        });
+
+        let error = local.repo.sync(cloud, coordinator()).await.unwrap_err();
+        editor.await.unwrap();
+
+        assert!(matches!(error, RepoError::WorkingTreeChanged));
+        assert_eq!(fs::read(local.data.join("a.md")).unwrap(), b"remote-a");
+        assert_eq!(fs::read(local.data.join("b.md")).unwrap(), b"editor-b");
+        assert_eq!(local.repo.latest().unwrap().unwrap().id, previous_ref);
+    }
+
+    #[tokio::test]
+    async fn abort_during_partial_working_tree_apply_releases_permit_and_refs_stay_put() {
+        let (_cloud_root, cloud) = cloud_fixture();
+        let remote = repo_fixture("remote", RepoOptions::default());
+        let local = Arc::new(repo_fixture("local", RepoOptions::default()));
+        for name in ["a.md", "b.md", "c.md", "d.md"] {
+            write_file(&remote.data, name, b"base", 1_700_000_000_000);
+        }
+        sync(&remote.repo, cloud.clone()).await;
+        sync(&local.repo, cloud.clone()).await;
+        let previous_ref = local.repo.latest().unwrap().unwrap().id;
+        for name in ["a.md", "b.md", "c.md", "d.md"] {
+            write_file(&remote.data, name, b"remote", 1_700_000_010_000);
+        }
+        sync(&remote.repo, cloud.clone()).await;
+        let releases = Arc::new(AtomicUsize::new(0));
+        struct CountingCoordinator(Arc<AtomicUsize>);
+        #[async_trait::async_trait]
+        impl WorkingTreeCoordinator for CountingCoordinator {
+            async fn prepare(
+                &self,
+                _changes: &[WorkingTreeChange],
+            ) -> Result<WorkingTreePermit, RepoError> {
+                Ok(WorkingTreePermit::new(()))
+            }
+            async fn release(&self, _permit: WorkingTreePermit) {
+                self.0.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+        let task = tokio::spawn({
+            let local = local.clone();
+            let cloud = cloud.clone();
+            let releases = releases.clone();
+            async move {
+                local
+                    .repo
+                    .sync(cloud, Arc::new(CountingCoordinator(releases)))
+                    .await
+            }
+        });
+        loop {
+            if fs::read(local.data.join("a.md")).unwrap() == b"remote" {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        tokio::task::yield_now().await;
+
+        assert_eq!(releases.load(Ordering::SeqCst), 1);
+        assert_eq!(local.repo.latest().unwrap().unwrap().id, previous_ref);
     }
 
     #[tokio::test]
@@ -1582,6 +2076,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn existing_file_payload_must_match_cloud_check_index_dependencies() {
+        let (_cloud_root, cloud) = cloud_fixture();
+        let source = repo_fixture("source", RepoOptions::default());
+        write_file(&source.data, "doc.md", b"source", 1_700_000_000_000);
+        sync(&source.repo, cloud.clone()).await;
+        let cloud_index = source.repo.latest_sync().unwrap().unwrap();
+        let mut rogue_file = source.repo.store.get_file(&cloud_index.files[0]).unwrap();
+        rogue_file.chunks = vec!["bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_owned()];
+        let rogue_root = TempDir::new().unwrap();
+        let rogue_store = Store::new(rogue_root.path().join("repo"), [7; 32]).unwrap();
+        rogue_store.put_file(&rogue_file).unwrap();
+        let rogue_raw = rogue_store
+            .export_raw(super::RawObjectKind::File, &rogue_file.id)
+            .unwrap();
+        let local = repo_fixture("local", RepoOptions::default());
+        local
+            .repo
+            .store
+            .import_raw(super::RawObjectKind::File, &rogue_file.id, &rogue_raw)
+            .unwrap();
+
+        assert!(matches!(
+            local.repo.sync(cloud, coordinator()).await,
+            Err(RepoError::InvalidData(_))
+        ));
+        assert!(local.repo.latest().unwrap().is_none());
+        assert!(local.repo.latest_sync().unwrap().is_none());
+        assert!(!local.data.join("doc.md").exists());
+    }
+
+    #[tokio::test]
     async fn sequence_ref_is_visible_before_stale_sequence_cleanup() {
         let (_cloud_root, inner) = cloud_fixture();
         let inspected = Arc::new(InspectCloud::new(inner));
@@ -1597,15 +2122,15 @@ mod tests {
             .await
             .unwrap();
         let events = inspected.events();
-        let latest = events
-            .iter()
-            .rposition(|event| event == "put:refs/latest")
-            .unwrap();
         let list = events
             .iter()
+            .position(|event| event == "list:refs/")
+            .unwrap();
+        let latest = events
+            .iter()
             .enumerate()
-            .skip(latest + 1)
-            .find(|(_, event)| event.as_str() == "list:refs/")
+            .skip(list + 1)
+            .find(|(_, event)| event.as_str() == "put:refs/latest")
             .map(|(index, _)| index)
             .unwrap();
         let sequence = events
@@ -1622,7 +2147,7 @@ mod tests {
             .find(|(_, event)| event.starts_with("remove:refs/latest-"))
             .map(|(index, _)| index)
             .unwrap();
-        assert!(latest < list && list < sequence && sequence < cleanup);
+        assert!(list < latest && latest < sequence && sequence < cleanup);
         for prefix in ["put:objects/", "put:check/indexes/", "put:indexes/"] {
             assert!(events[..latest]
                 .iter()
@@ -1651,6 +2176,114 @@ mod tests {
         assert_eq!(traffic.api_put, actual_state_puts);
         assert_eq!(traffic.api_get, actual_state_gets);
         assert!(traffic.api_put > traffic.upload_file_count + traffic.upload_chunk_count);
+    }
+
+    #[test]
+    fn sequence_state_ignores_malformed_but_rejects_duplicates_and_max_overflow() {
+        let id_a = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let id_b = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        let objects = vec![
+            CloudObject {
+                key: "refs/latest-not-a-sequence".to_owned(),
+                size: 0,
+            },
+            CloudObject {
+                key: format!("refs/latest-7-{id_a}"),
+                size: 0,
+            },
+            CloudObject {
+                key: format!("refs/latest-7-{id_b}"),
+                size: 0,
+            },
+        ];
+        assert!(matches!(
+            super::sequence_state(&objects),
+            Err(RepoError::InvalidData(_))
+        ));
+
+        let max = vec![CloudObject {
+            key: format!("refs/latest-{}-{id_a}", u64::MAX),
+            size: 0,
+        }];
+        assert!(matches!(
+            super::next_sequence(&max),
+            Err(RepoError::InvalidData(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn duplicate_and_max_sequence_state_fail_before_latest_publication_or_local_refs() {
+        let id_b = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        {
+            let (_cloud_root, inner) = cloud_fixture();
+            let local = repo_fixture("local", RepoOptions::default());
+            write_file(&local.data, "doc.md", b"base", 1_700_000_000_000);
+            sync(&local.repo, inner.clone()).await;
+            let latest_before = inner.get("refs/latest").await.unwrap();
+            let local_before = local.repo.latest().unwrap().unwrap().id;
+            inner
+                .put(&format!("refs/latest-1-{id_b}"), id_b.as_bytes(), true)
+                .await
+                .unwrap();
+            write_file(&local.data, "doc.md", b"changed", 1_700_000_010_000);
+
+            assert!(matches!(
+                local.repo.sync(inner.clone(), coordinator()).await,
+                Err(RepoError::InvalidData(_))
+            ));
+            assert_eq!(inner.get("refs/latest").await.unwrap(), latest_before);
+            assert_eq!(local.repo.latest().unwrap().unwrap().id, local_before);
+        }
+        {
+            let (_cloud_root, inner) = cloud_fixture();
+            let local = repo_fixture("local", RepoOptions::default());
+            write_file(&local.data, "doc.md", b"base", 1_700_000_000_000);
+            sync(&local.repo, inner.clone()).await;
+            let latest_before = inner.get("refs/latest").await.unwrap();
+            let latest_id = String::from_utf8(latest_before.clone()).unwrap();
+            let local_before = local.repo.latest().unwrap().unwrap().id;
+            inner
+                .put(
+                    &format!("refs/latest-{}-{latest_id}", u64::MAX),
+                    latest_id.as_bytes(),
+                    true,
+                )
+                .await
+                .unwrap();
+            write_file(&local.data, "doc.md", b"changed", 1_700_000_010_000);
+
+            assert!(matches!(
+                local.repo.sync(inner.clone(), coordinator()).await,
+                Err(RepoError::InvalidData(_))
+            ));
+            assert_eq!(inner.get("refs/latest").await.unwrap(), latest_before);
+            assert_eq!(local.repo.latest().unwrap().unwrap().id, local_before);
+        }
+    }
+
+    #[tokio::test]
+    async fn stale_sequence_cleanup_failure_converges_on_noop_retry() {
+        let (_cloud_root, inner) = cloud_fixture();
+        let inspected = Arc::new(InspectCloud::new(inner.clone()));
+        let local = repo_fixture("local", RepoOptions::default());
+        write_file(&local.data, "doc.md", b"base", 1_700_000_000_000);
+        sync(&local.repo, inspected.clone()).await;
+        let stale_key = inner
+            .list("refs/latest-")
+            .await
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap()
+            .key;
+        inspected.fail_remove(&stale_key, 1);
+        write_file(&local.data, "doc.md", b"changed", 1_700_000_010_000);
+
+        sync(&local.repo, inspected.clone()).await;
+        assert_eq!(inner.list("refs/latest-").await.unwrap().len(), 2);
+
+        sync(&local.repo, inspected).await;
+        assert_eq!(inner.list("refs/latest-").await.unwrap().len(), 1);
     }
 
     #[test]

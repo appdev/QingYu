@@ -27,27 +27,32 @@ impl<'store> RefStore<'store> {
     }
 
     pub fn latest(&self) -> Result<Option<Index>, RepoError> {
+        let _lifecycle = self.store.try_lifecycle()?;
         let _operation = self.store.lock_operation()?;
         self.resolve_unlocked("latest")
     }
 
     pub fn latest_sync(&self) -> Result<Option<Index>, RepoError> {
+        let _lifecycle = self.store.try_lifecycle()?;
         let _operation = self.store.lock_operation()?;
         self.resolve_unlocked("latest-sync")
     }
 
     pub fn update_latest(&self, index: &Index) -> Result<(), RepoError> {
+        let _lifecycle = self.store.try_lifecycle()?;
         let _operation = self.store.lock_operation()?;
         self.update_unlocked("latest", index)
     }
 
     pub fn update_latest_sync(&self, index: &Index) -> Result<(), RepoError> {
+        let _lifecycle = self.store.try_lifecycle()?;
         let _operation = self.store.lock_operation()?;
         self.update_unlocked("latest-sync", index)
     }
 
     #[cfg(test)]
     pub(crate) fn all_index_ids(&self) -> Result<HashSet<String>, RepoError> {
+        let _lifecycle = self.store.try_lifecycle()?;
         let _operation = self.store.lock_operation()?;
         self.all_index_ids_unlocked_with_cancel_check(&mut || false)
     }
@@ -70,14 +75,14 @@ impl<'store> RefStore<'store> {
         Ok(ids)
     }
 
-    fn resolve_unlocked(&self, name: &str) -> Result<Option<Index>, RepoError> {
+    pub(crate) fn resolve_unlocked(&self, name: &str) -> Result<Option<Index>, RepoError> {
         match self.read_unlocked(name)? {
             Some(id) => self.store.get_index_unlocked(&id).map(Some),
             None => Ok(None),
         }
     }
 
-    fn update_unlocked(&self, name: &str, index: &Index) -> Result<(), RepoError> {
+    pub(crate) fn update_unlocked(&self, name: &str, index: &Index) -> Result<(), RepoError> {
         validate_id(&index.id)?;
         let stored = self.store.get_index_unlocked(&index.id)?;
         if stored.id != index.id {
@@ -87,6 +92,11 @@ impl<'store> RefStore<'store> {
         }
         let refs = self.store.open_directory(Path::new("refs"), true)?;
         stage_cap_file(&refs, name.as_ref(), index.id.as_bytes(), REF_MODE)?.publish_replace()
+    }
+
+    pub(crate) fn clear_unlocked(&self, name: &str) -> Result<(), RepoError> {
+        let refs = self.store.open_directory(Path::new("refs"), true)?;
+        stage_cap_file(&refs, name.as_ref(), b"", REF_MODE)?.publish_replace()
     }
 
     fn read_unlocked(&self, name: &str) -> Result<Option<String>, RepoError> {

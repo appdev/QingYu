@@ -24,6 +24,8 @@ pub enum RepoError {
     NotFound(String),
     #[error("repository operation was cancelled")]
     Cancelled,
+    #[error("repository lifecycle operation is already in progress")]
+    RepositoryBusy,
     #[error("repository data directory contains no indexable files")]
     EmptyIndex,
     #[error("a file changed while the repository index was being built")]

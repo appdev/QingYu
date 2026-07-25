@@ -6,6 +6,7 @@ pub mod diff;
 pub mod entity;
 pub mod history;
 mod indexer;
+mod lifecycle;
 mod path_security;
 pub mod purge;
 pub mod ref_store;

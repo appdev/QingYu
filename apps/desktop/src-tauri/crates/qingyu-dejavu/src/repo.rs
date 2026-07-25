@@ -48,7 +48,6 @@ pub struct Repo {
     pub(crate) store: Store,
     pub(crate) history: History,
     pub(crate) index_hook: Arc<dyn IndexHook>,
-    pub(crate) sync_guard: tokio::sync::Mutex<()>,
 }
 
 impl Repo {
@@ -109,7 +108,8 @@ impl Repo {
         if !data_metadata.file_type().is_dir() || cap_metadata_is_reparse(&data_metadata) {
             return Err(RepoError::UnsafePath);
         }
-        let store = Store::new(&paths.repo, key)?;
+        let lifecycle = crate::lifecycle::LifecycleGate::for_directory(&data_dir)?;
+        let store = Store::new(&paths.repo, key)?.with_lifecycle(lifecycle);
         let history = History::new(&paths.history)?;
 
         Ok(Self {
@@ -121,14 +121,22 @@ impl Repo {
             store,
             history,
             index_hook,
-            sync_guard: tokio::sync::Mutex::new(()),
         })
     }
 
     pub fn index(&self, memo: &str) -> Result<Index, RepoError> {
+        let _lifecycle = self.store.try_lifecycle()?;
         let _operation = self.store.lock_operation()?;
+        self.index_unlocked(memo, None)
+    }
+
+    pub(crate) fn index_unlocked(
+        &self,
+        memo: &str,
+        previous: Option<&Index>,
+    ) -> Result<Index, RepoError> {
         for attempt in 0..7 {
-            match indexer::index_once(self, memo, attempt) {
+            match indexer::index_once(self, memo, attempt, previous) {
                 Err(RepoError::IndexFileChanged) if attempt < 6 => continue,
                 result => return result,
             }
@@ -149,6 +157,11 @@ impl Repo {
     }
 
     pub fn checkout_file(&self, file: &File) -> Result<(), RepoError> {
+        let _lifecycle = self.store.try_lifecycle()?;
+        self.checkout_file_unlocked(file)
+    }
+
+    pub(crate) fn checkout_file_unlocked(&self, file: &File) -> Result<(), RepoError> {
         let _operation = self.store.lock_operation()?;
         self.checkout_file_with_hooks(
             file,
@@ -165,6 +178,8 @@ impl Repo {
     where
         F: FnOnce(&CapFile, filetime::FileTime) -> std::io::Result<()>,
     {
+        let _lifecycle = self.store.try_lifecycle()?;
+        let _operation = self.store.lock_operation()?;
         self.checkout_file_with_hooks(file, || Ok(()), set_mtime)
     }
 
@@ -220,6 +235,7 @@ impl Repo {
     }
 
     pub fn checkout_files(&self, files: &[File]) -> Result<(), RepoError> {
+        let _lifecycle = self.store.try_lifecycle()?;
         let _operation = self.store.lock_operation()?;
         for file in files {
             self.checkout_file_with_hooks(
@@ -235,6 +251,12 @@ impl Repo {
     }
 
     pub fn remove_files(&self, files: &[File]) -> Result<(), RepoError> {
+        let _lifecycle = self.store.try_lifecycle()?;
+        self.remove_files_unlocked(files)
+    }
+
+    pub(crate) fn remove_files_unlocked(&self, files: &[File]) -> Result<(), RepoError> {
+        let _operation = self.store.lock_operation()?;
         for file in files {
             let components = validate_repository_file_path(&file.path)?;
             self.remove_file(&components)?;
@@ -247,6 +269,7 @@ impl Repo {
         retained_index_ids: &[String],
         cancelled: &AtomicBool,
     ) -> Result<PurgeStat, RepoError> {
+        let _lifecycle = self.store.try_lifecycle()?;
         let _operation = self.store.lock_operation()?;
         purge_store_with_cancel_check(&self.store, retained_index_ids, || {
             cancelled.load(Ordering::Relaxed)
@@ -263,6 +286,7 @@ impl Repo {
     where
         F: FnMut() -> Result<(), RepoError>,
     {
+        let _lifecycle = self.store.try_lifecycle()?;
         let _operation = self.store.lock_operation()?;
         crate::purge::purge_store_with_cancel_check_and_hook(
             &self.store,
@@ -475,29 +499,60 @@ mod tests {
         (temp, repo)
     }
 
+    #[tokio::test]
+    async fn lifecycle_gate_follows_data_directory_identity_across_rename_and_reopen() {
+        let (temp, first) = repo_fixture();
+        fs::write(temp.path().join("data/document.md"), b"document").unwrap();
+        let moved_data = temp.path().join("data-moved");
+        fs::rename(temp.path().join("data"), &moved_data).unwrap();
+        let second = Repo::open(
+            RepoPaths {
+                data: moved_data,
+                repo: temp.path().join("repo-second"),
+                history: temp.path().join("history-second"),
+                temp: temp.path().join("temp-second"),
+            },
+            Device {
+                id: "second".to_owned(),
+                name: "QingYu".to_owned(),
+                os: "test".to_owned(),
+            },
+            [3; 32],
+            RepoOptions::default(),
+        )
+        .unwrap();
+        let held = first.store.acquire_lifecycle().await;
+
+        assert!(matches!(
+            second.index("busy"),
+            Err(RepoError::RepositoryBusy)
+        ));
+        drop(held);
+        assert!(second.index("available").is_ok());
+    }
+
+    fn put_chunk(repo: &Repo, data: &[u8]) -> String {
+        let id = crate::sha1_hex(data);
+        repo.store
+            .put_chunk(&Chunk {
+                id: id.clone(),
+                data: data.to_vec(),
+            })
+            .unwrap();
+        id
+    }
+
     #[test]
     fn checkout_file_streams_chunks_in_order_and_restores_mtime() {
         let (temp, repo) = repo_fixture();
-        let first = "1111111111111111111111111111111111111111";
-        let second = "2222222222222222222222222222222222222222";
-        repo.store
-            .put_chunk(&Chunk {
-                id: first.to_owned(),
-                data: b"hello ".to_vec(),
-            })
-            .unwrap();
-        repo.store
-            .put_chunk(&Chunk {
-                id: second.to_owned(),
-                data: b"world".to_vec(),
-            })
-            .unwrap();
+        let first = put_chunk(&repo, b"hello ");
+        let second = put_chunk(&repo, b"world");
         let file = File {
             id: "3333333333333333333333333333333333333333".to_owned(),
             path: "/notes/document.md".to_owned(),
             size: 11,
             updated: 1_700_000_000_123,
-            chunks: vec![first.to_owned(), second.to_owned()],
+            chunks: vec![first, second],
         };
 
         repo.checkout_file(&file).unwrap();
@@ -512,14 +567,8 @@ mod tests {
     #[test]
     fn interrupted_checkout_preserves_the_existing_target_and_removes_temp() {
         let (temp, repo) = repo_fixture();
-        let first = "1111111111111111111111111111111111111111";
+        let first = put_chunk(&repo, b"partial");
         let missing = "ffffffffffffffffffffffffffffffffffffffff";
-        repo.store
-            .put_chunk(&Chunk {
-                id: first.to_owned(),
-                data: b"partial".to_vec(),
-            })
-            .unwrap();
         let target = temp.path().join("data/notes/document.md");
         fs::create_dir_all(target.parent().unwrap()).unwrap();
         fs::write(&target, b"existing version").unwrap();
@@ -528,7 +577,7 @@ mod tests {
             path: "/notes/document.md".to_owned(),
             size: 14,
             updated: 1_700_000_000_123,
-            chunks: vec![first.to_owned(), missing.to_owned()],
+            chunks: vec![first, missing.to_owned()],
         };
 
         assert!(matches!(
@@ -546,13 +595,7 @@ mod tests {
     #[test]
     fn checkout_size_mismatch_preserves_the_existing_target() {
         let (temp, repo) = repo_fixture();
-        let chunk_id = "1111111111111111111111111111111111111111";
-        repo.store
-            .put_chunk(&Chunk {
-                id: chunk_id.to_owned(),
-                data: b"new bytes".to_vec(),
-            })
-            .unwrap();
+        let chunk_id = put_chunk(&repo, b"new bytes");
         let target = temp.path().join("data/document.md");
         fs::write(&target, b"existing version").unwrap();
         let file = File {
@@ -560,7 +603,7 @@ mod tests {
             path: "/document.md".to_owned(),
             size: 99,
             updated: 1_700_000_000_123,
-            chunks: vec![chunk_id.to_owned()],
+            chunks: vec![chunk_id],
         };
 
         assert!(matches!(
@@ -573,13 +616,7 @@ mod tests {
     #[test]
     fn checkout_publishes_before_restoring_mtime() {
         let (temp, repo) = repo_fixture();
-        let chunk_id = "1111111111111111111111111111111111111111";
-        repo.store
-            .put_chunk(&Chunk {
-                id: chunk_id.to_owned(),
-                data: b"published bytes".to_vec(),
-            })
-            .unwrap();
+        let chunk_id = put_chunk(&repo, b"published bytes");
         let target = temp.path().join("data/document.md");
         fs::write(&target, b"existing version").unwrap();
         let file = File {
@@ -587,7 +624,7 @@ mod tests {
             path: "/document.md".to_owned(),
             size: 15,
             updated: 1_700_000_000_123,
-            chunks: vec![chunk_id.to_owned()],
+            chunks: vec![chunk_id],
         };
 
         let result = repo.checkout_file_with_mtime(&file, |_file, _mtime| {
@@ -608,13 +645,7 @@ mod tests {
     #[test]
     fn checkout_restores_mtime_on_the_published_inode_not_a_same_name_replacement() {
         let (temp, repo) = repo_fixture();
-        let chunk_id = "1111111111111111111111111111111111111111";
-        repo.store
-            .put_chunk(&Chunk {
-                id: chunk_id.to_owned(),
-                data: b"published bytes".to_vec(),
-            })
-            .unwrap();
+        let chunk_id = put_chunk(&repo, b"published bytes");
         let target = temp.path().join("data/document.md");
         fs::write(&target, b"existing version").unwrap();
         let published_link = temp.path().join("data/published-inode.md");
@@ -625,7 +656,7 @@ mod tests {
             path: "/document.md".to_owned(),
             size: 15,
             updated: 1_700_000_000_123,
-            chunks: vec![chunk_id.to_owned()],
+            chunks: vec![chunk_id],
         };
 
         repo.checkout_file_with_hooks(
@@ -685,19 +716,13 @@ mod tests {
     #[test]
     fn checkout_files_keeps_earlier_success_when_a_later_path_is_invalid() {
         let (temp, repo) = repo_fixture();
-        let chunk_id = "1111111111111111111111111111111111111111";
-        repo.store
-            .put_chunk(&Chunk {
-                id: chunk_id.to_owned(),
-                data: b"first".to_vec(),
-            })
-            .unwrap();
+        let chunk_id = put_chunk(&repo, b"first");
         let first = File {
             id: "2222222222222222222222222222222222222222".to_owned(),
             path: "/first.md".to_owned(),
             size: 5,
             updated: 1_700_000_000_123,
-            chunks: vec![chunk_id.to_owned()],
+            chunks: vec![chunk_id],
         };
         let later_invalid = File::new("relative.md", 0, 1_700_000_000_123);
 

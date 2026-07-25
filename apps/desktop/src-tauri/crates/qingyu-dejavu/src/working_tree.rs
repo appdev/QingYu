@@ -266,6 +266,29 @@ mod tests {
         releases: AtomicUsize,
     }
 
+    #[derive(Default)]
+    struct BlockingPrepareCoordinator {
+        prepare_started: Notify,
+        allow_prepare: Notify,
+        releases: AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl WorkingTreeCoordinator for BlockingPrepareCoordinator {
+        async fn prepare(
+            &self,
+            _changes: &[WorkingTreeChange],
+        ) -> Result<WorkingTreePermit, RepoError> {
+            self.prepare_started.notify_one();
+            self.allow_prepare.notified().await;
+            Ok(WorkingTreePermit::new(()))
+        }
+
+        async fn release(&self, _permit: WorkingTreePermit) {
+            self.releases.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
     #[async_trait::async_trait]
     impl WorkingTreeCoordinator for BlockingReleaseCoordinator {
         async fn prepare(
@@ -410,6 +433,54 @@ mod tests {
 
         assert_eq!(coordinator.prepare_count(), 1);
         assert_eq!(coordinator.released(), [0]);
+    }
+
+    #[tokio::test]
+    async fn abort_before_prepare_finishes_has_no_permit_to_release() {
+        let coordinator = Arc::new(BlockingPrepareCoordinator::default());
+        let task = {
+            let coordinator = coordinator.clone();
+            tokio::spawn(async move {
+                with_working_tree_permit(coordinator, &[change()], || async {
+                    Ok::<_, RepoError>(())
+                })
+                .await
+            })
+        };
+        coordinator.prepare_started.notified().await;
+
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        tokio::task::yield_now().await;
+
+        assert_eq!(coordinator.releases.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn abort_during_release_keeps_the_spawned_release_alive() {
+        let coordinator = Arc::new(BlockingReleaseCoordinator::default());
+        let task = {
+            let coordinator = coordinator.clone();
+            tokio::spawn(async move {
+                with_working_tree_permit(coordinator, &[change()], || async {
+                    Ok::<_, RepoError>(())
+                })
+                .await
+            })
+        };
+        coordinator.release_started.notified().await;
+
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        coordinator.allow_release.notify_one();
+        for _attempt in 0..10 {
+            if coordinator.releases.load(Ordering::SeqCst) == 1 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+
+        assert_eq!(coordinator.releases.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
