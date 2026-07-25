@@ -53,6 +53,12 @@ pub enum CloudError {
     Injected(CloudOperation),
     #[error("cloud filesystem I/O failed")]
     Io(#[source] std::io::Error),
+    #[error("S3 request failed with HTTP status {status}")]
+    S3Response {
+        status: u16,
+        request_id: Option<String>,
+        retryable: bool,
+    },
     #[error("cloud backend failed: {code}")]
     Backend { code: &'static str, retryable: bool },
 }
@@ -76,6 +82,14 @@ impl CloudError {
             Self::UnlockFailed { .. } => "unlock_failed",
             Self::Injected(_) => "injected",
             Self::Io(_) => "io",
+            Self::S3Response { status, .. } => match *status {
+                401 => "auth",
+                403 => "forbidden",
+                408 => "unavailable",
+                429 => "rate_limited",
+                500 | 502 | 503 | 504 => "unavailable",
+                _ => "s3_response",
+            },
             Self::Backend { code, .. } => code,
         }
     }
@@ -84,6 +98,7 @@ impl CloudError {
         match self {
             Self::RateLimited | Self::Unavailable | Self::Locked | Self::Io(_) => true,
             Self::LockFailed { source } | Self::UnlockFailed { source } => source.is_retryable(),
+            Self::S3Response { retryable, .. } => *retryable,
             Self::Backend { retryable, .. } => *retryable,
             Self::NotFound
             | Self::AlreadyExists
@@ -206,9 +221,12 @@ mod tests {
 }
 
 pub mod local;
+mod s3;
 mod s3_signing;
+mod s3_xml;
 mod transfer;
 
 pub use local::LocalCloud;
+pub use s3::{S3Cloud, S3TransportOptions};
 pub use s3_signing::{S3AddressingStyle, S3Connection, S3RequestSigner, S3TlsVerification};
 pub use transfer::CloudUploadSource;

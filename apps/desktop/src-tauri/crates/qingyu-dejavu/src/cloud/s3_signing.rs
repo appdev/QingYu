@@ -106,7 +106,7 @@ impl S3Connection {
         Ok(url)
     }
 
-    fn bucket_url(&self) -> Result<Url, CloudError> {
+    pub(super) fn bucket_url(&self) -> Result<Url, CloudError> {
         let mut url = self.endpoint_url.clone();
         match self.addressing_style {
             S3AddressingStyle::Auto => {
