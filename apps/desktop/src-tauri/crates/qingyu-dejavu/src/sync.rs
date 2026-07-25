@@ -141,6 +141,7 @@ impl Repo {
             &latest_sync_files,
             &cloud_files,
             &fetched_remote_files,
+            mode,
         )?;
 
         store_remote_conflicts(self, plan.result.time, &plan.history_candidates)?;
@@ -233,6 +234,7 @@ fn plan_merge(
     latest_sync: &[File],
     cloud: &[File],
     fetched_remote_files: &BTreeSet<String>,
+    mode: SyncMode,
 ) -> Result<MergePlan, RepoError> {
     let (mut local_upserts, local_removes) = crate::diff_upsert_remove(current, latest_sync);
     let (cloud_upserts, cloud_removes) = crate::diff_upsert_remove(cloud, current);
@@ -253,16 +255,24 @@ fn plan_merge(
     let current_by_path = by_path(current);
     let mut result = empty_merge_result();
     let mut history_candidates = Vec::new();
+    let mut working_tree_upserts = Vec::new();
+    let mut working_tree_removes = Vec::new();
 
     for remote in cloud_upserts {
         if local_upserts_by_path.contains_key(remote.path.as_str()) {
             history_candidates.push(remote.clone());
-            if fetched_remote_files.contains(&remote.id) {
+            if mode == SyncMode::DownloadOnly {
+                result.conflicts.push(remote.clone());
+                result.upserts.push(remote);
+            } else if fetched_remote_files.contains(&remote.id) {
                 result.conflicts.push(remote);
             }
             continue;
         }
         if local_removes_by_path.contains_key(remote.path.as_str()) {
+            if mode == SyncMode::DownloadOnly {
+                result.upserts.push(remote);
+            }
             continue;
         }
         if remote.path.ends_with(".tmp") {
@@ -274,13 +284,21 @@ fn plan_merge(
         {
             continue;
         }
+        working_tree_upserts.push(remote.clone());
         result.upserts.push(remote);
     }
 
     for remote in cloud_removes {
-        if !local_upserts_by_path.contains_key(remote.path.as_str()) {
-            result.removes.push(remote);
+        if local_upserts_by_path.contains_key(remote.path.as_str()) {
+            if mode == SyncMode::DownloadOnly {
+                history_candidates.push(remote.clone());
+                result.conflicts.push(remote.clone());
+                result.removes.push(remote);
+            }
+            continue;
         }
+        working_tree_removes.push(remote.clone());
+        result.removes.push(remote);
     }
 
     if let Some(syncignore) = cloud_syncignore {
@@ -297,20 +315,22 @@ fn plan_merge(
         let matcher = builder
             .build()
             .map_err(|_| RepoError::InvalidData("syncignore rule is invalid"))?;
-        result.removes.retain(|file| {
+        let keep_remove = |file: &File| {
             file.path.strip_prefix('/').is_some_and(|path| {
                 !matcher
                     .matched_path_or_any_parents(Path::new(path), false)
                     .is_ignore()
             })
-        });
+        };
+        result.removes.retain(&keep_remove);
+        working_tree_removes.retain(keep_remove);
     }
 
     sort_files(&mut result.upserts);
     sort_files(&mut result.removes);
     sort_files(&mut result.conflicts);
     sort_files(&mut history_candidates);
-    let changes = working_tree_changes(current, &result)?;
+    let changes = working_tree_changes(current, &working_tree_upserts, &working_tree_removes)?;
     Ok(MergePlan {
         result,
         history_candidates,
@@ -352,18 +372,19 @@ pub(crate) fn cloud_upsert_is_too_old(local: &File, cloud: &File) -> bool {
 
 fn working_tree_changes(
     current: &[File],
-    result: &MergeResult,
+    upserts: &[File],
+    removes: &[File],
 ) -> Result<Vec<WorkingTreeChange>, RepoError> {
     let current_by_path = by_path(current);
-    let mut changes = Vec::with_capacity(result.upserts.len() + result.removes.len());
-    for file in &result.upserts {
+    let mut changes = Vec::with_capacity(upserts.len() + removes.len());
+    for file in upserts {
         changes.push(WorkingTreeChange {
             path: working_tree_path(&file.path)?,
             expected_revision: expected_revision(current_by_path.get(file.path.as_str()).copied()),
             action: WorkingTreeAction::Write,
         });
     }
-    for file in &result.removes {
+    for file in removes {
         changes.push(WorkingTreeChange {
             path: working_tree_path(&file.path)?,
             expected_revision: expected_revision(current_by_path.get(file.path.as_str()).copied()),
@@ -1683,7 +1704,30 @@ mod tests {
             .unwrap()
             .0;
 
-        assert_eq!(result.conflicts.len(), 1);
+        assert_eq!(
+            result
+                .upserts
+                .iter()
+                .map(|file| file.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["/same.md"]
+        );
+        assert_eq!(
+            result
+                .removes
+                .iter()
+                .map(|file| file.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["/local.md"]
+        );
+        assert_eq!(
+            result
+                .conflicts
+                .iter()
+                .map(|file| file.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["/local.md", "/same.md"]
+        );
         assert_eq!(fs::read(second.data.join("same.md")).unwrap(), b"local");
         assert!(second.data.join("local.md").exists());
         assert_ne!(
@@ -1701,6 +1745,271 @@ mod tests {
                 || event.starts_with("get:")
                 || event.starts_with("list:")
         }));
+    }
+
+    #[tokio::test]
+    async fn download_only_reports_remote_upsert_without_writing_same_content_conflict() {
+        let (_cloud_root, cloud) = cloud_fixture();
+        let remote = repo_fixture("remote", RepoOptions::default());
+        let local = repo_fixture("local", RepoOptions::default());
+        let base_mtime = 1_700_000_000_000;
+        let remote_mtime = 1_700_000_060_000;
+        let local_mtime = 1_700_000_120_000;
+
+        write_file(&remote.data, "same.md", b"same", base_mtime);
+        sync(&remote.repo, cloud.clone()).await;
+        sync(&local.repo, cloud.clone()).await;
+        write_file(&remote.data, "same.md", b"same", remote_mtime);
+        sync(&remote.repo, cloud.clone()).await;
+        write_file(&local.data, "same.md", b"same", local_mtime);
+
+        let result = local
+            .repo
+            .sync_download(cloud, coordinator())
+            .await
+            .unwrap()
+            .0;
+
+        assert_eq!(result.upserts.len(), 1);
+        assert!(result.removes.is_empty());
+        assert_eq!(result.conflicts.len(), 1);
+        assert_eq!(fs::read(local.data.join("same.md")).unwrap(), b"same");
+        let metadata = fs::metadata(local.data.join("same.md")).unwrap();
+        assert_eq!(
+            FileTime::from_last_modification_time(&metadata),
+            FileTime::from_unix_time(local_mtime / 1_000, 0)
+        );
+        let snapshots = fs::read_dir(&local.history)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect::<Vec<_>>();
+        assert_eq!(snapshots.len(), 1);
+        assert_eq!(fs::read(snapshots[0].join("same.md")).unwrap(), b"same");
+    }
+
+    async fn independent_local_edit_fixture(
+    ) -> (TempDir, Arc<LocalCloud>, RepoFixture, RepoFixture, i64) {
+        let (cloud_root, cloud) = cloud_fixture();
+        let remote = repo_fixture("remote", RepoOptions::default());
+        let local = repo_fixture("local", RepoOptions::default());
+        let base_mtime = 1_700_000_000_000;
+        let local_mtime = 1_700_000_120_000;
+        write_file(&remote.data, "remote.md", b"remote base", base_mtime);
+        write_file(&remote.data, "local.md", b"local base", base_mtime);
+        sync(&remote.repo, cloud.clone()).await;
+        sync(&local.repo, cloud.clone()).await;
+        write_file(
+            &remote.data,
+            "remote.md",
+            b"remote changed",
+            1_700_000_060_000,
+        );
+        sync(&remote.repo, cloud.clone()).await;
+        write_file(&local.data, "local.md", b"local changed", local_mtime);
+        (cloud_root, cloud, remote, local, local_mtime)
+    }
+
+    #[tokio::test]
+    async fn download_only_reports_stored_cloud_baseline_conflict_but_normal_sync_does_not() {
+        let (_normal_cloud_root, normal_cloud, _normal_remote, normal_local, _) =
+            independent_local_edit_fixture().await;
+        let normal = normal_local
+            .repo
+            .sync(normal_cloud, coordinator())
+            .await
+            .unwrap()
+            .0;
+        assert_eq!(
+            normal
+                .upserts
+                .iter()
+                .map(|file| file.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["/remote.md"]
+        );
+        assert!(normal.removes.is_empty());
+        assert!(normal.conflicts.is_empty());
+
+        let (_download_cloud_root, download_cloud, _download_remote, download_local, local_mtime) =
+            independent_local_edit_fixture().await;
+        let download = download_local
+            .repo
+            .sync_download(download_cloud, coordinator())
+            .await
+            .unwrap()
+            .0;
+        assert_eq!(
+            download
+                .upserts
+                .iter()
+                .map(|file| file.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["/local.md", "/remote.md"]
+        );
+        assert!(download.removes.is_empty());
+        assert_eq!(
+            download
+                .conflicts
+                .iter()
+                .map(|file| file.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["/local.md"]
+        );
+        assert_eq!(
+            fs::read(download_local.data.join("remote.md")).unwrap(),
+            b"remote changed"
+        );
+        assert_eq!(
+            fs::read(download_local.data.join("local.md")).unwrap(),
+            b"local changed"
+        );
+        let metadata = fs::metadata(download_local.data.join("local.md")).unwrap();
+        assert_eq!(
+            FileTime::from_last_modification_time(&metadata),
+            FileTime::from_unix_time(local_mtime / 1_000, 0)
+        );
+        let snapshots = fs::read_dir(&download_local.history)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect::<Vec<_>>();
+        assert_eq!(snapshots.len(), 1);
+        assert_eq!(
+            fs::read(snapshots[0].join("local.md")).unwrap(),
+            b"local base"
+        );
+    }
+
+    async fn remote_delete_local_update_fixture(
+    ) -> (TempDir, Arc<LocalCloud>, RepoFixture, RepoFixture, i64) {
+        let (cloud_root, cloud) = cloud_fixture();
+        let remote = repo_fixture("remote", RepoOptions::default());
+        let local = repo_fixture("local", RepoOptions::default());
+        let local_mtime = 1_700_000_120_000;
+        write_file(&remote.data, "same.md", b"base", 1_700_000_000_000);
+        sync(&remote.repo, cloud.clone()).await;
+        sync(&local.repo, cloud.clone()).await;
+        fs::remove_file(remote.data.join("same.md")).unwrap();
+        sync(&remote.repo, cloud.clone()).await;
+        write_file(&local.data, "same.md", b"local changed", local_mtime);
+        (cloud_root, cloud, remote, local, local_mtime)
+    }
+
+    #[tokio::test]
+    async fn download_only_reports_remote_delete_conflict_but_normal_sync_keeps_local_update() {
+        let (_normal_cloud_root, normal_cloud, _normal_remote, normal_local, _) =
+            remote_delete_local_update_fixture().await;
+        let normal = normal_local
+            .repo
+            .sync(normal_cloud, coordinator())
+            .await
+            .unwrap()
+            .0;
+        assert!(normal.upserts.is_empty());
+        assert!(normal.removes.is_empty());
+        assert!(normal.conflicts.is_empty());
+        assert_eq!(
+            fs::read(normal_local.data.join("same.md")).unwrap(),
+            b"local changed"
+        );
+
+        let (_download_cloud_root, download_cloud, _download_remote, download_local, local_mtime) =
+            remote_delete_local_update_fixture().await;
+        let download = download_local
+            .repo
+            .sync_download(download_cloud, coordinator())
+            .await
+            .unwrap()
+            .0;
+        assert!(download.upserts.is_empty());
+        assert_eq!(
+            download
+                .removes
+                .iter()
+                .map(|file| file.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["/same.md"]
+        );
+        assert_eq!(
+            download
+                .conflicts
+                .iter()
+                .map(|file| file.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["/same.md"]
+        );
+        assert_eq!(
+            fs::read(download_local.data.join("same.md")).unwrap(),
+            b"local changed"
+        );
+        let metadata = fs::metadata(download_local.data.join("same.md")).unwrap();
+        assert_eq!(
+            FileTime::from_last_modification_time(&metadata),
+            FileTime::from_unix_time(local_mtime / 1_000, 0)
+        );
+        let snapshots = fs::read_dir(&download_local.history)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect::<Vec<_>>();
+        assert_eq!(snapshots.len(), 1);
+        assert_eq!(
+            fs::read(snapshots[0].join("same.md")).unwrap(),
+            b"local changed"
+        );
+    }
+
+    async fn remote_update_local_delete_fixture(
+    ) -> (TempDir, Arc<LocalCloud>, RepoFixture, RepoFixture) {
+        let (cloud_root, cloud) = cloud_fixture();
+        let remote = repo_fixture("remote", RepoOptions::default());
+        let local = repo_fixture("local", RepoOptions::default());
+        write_file(&remote.data, "same.md", b"base", 1_700_000_000_000);
+        sync(&remote.repo, cloud.clone()).await;
+        sync(&local.repo, cloud.clone()).await;
+        write_file(
+            &remote.data,
+            "same.md",
+            b"remote changed",
+            1_700_000_060_000,
+        );
+        sync(&remote.repo, cloud.clone()).await;
+        fs::remove_file(local.data.join("same.md")).unwrap();
+        (cloud_root, cloud, remote, local)
+    }
+
+    #[tokio::test]
+    async fn download_only_reports_remote_update_but_normal_sync_keeps_local_delete() {
+        let (_normal_cloud_root, normal_cloud, _normal_remote, normal_local) =
+            remote_update_local_delete_fixture().await;
+        let normal = normal_local
+            .repo
+            .sync(normal_cloud, coordinator())
+            .await
+            .unwrap()
+            .0;
+        assert!(normal.upserts.is_empty());
+        assert!(normal.removes.is_empty());
+        assert!(normal.conflicts.is_empty());
+        assert!(!normal_local.data.join("same.md").exists());
+
+        let (_download_cloud_root, download_cloud, _download_remote, download_local) =
+            remote_update_local_delete_fixture().await;
+        let download = download_local
+            .repo
+            .sync_download(download_cloud, coordinator())
+            .await
+            .unwrap()
+            .0;
+        assert_eq!(
+            download
+                .upserts
+                .iter()
+                .map(|file| file.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["/same.md"]
+        );
+        assert!(download.removes.is_empty());
+        assert!(download.conflicts.is_empty());
+        assert!(!download_local.data.join("same.md").exists());
     }
 
     #[tokio::test]

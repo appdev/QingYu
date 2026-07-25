@@ -24,6 +24,7 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"
 zstd = "0.13.3"
 
 [dev-dependencies]
+sha2 = "0.10.9"
 tempfile = "3.27.0"
 tokio = { version = "1", features = ["test-util"] }
 
