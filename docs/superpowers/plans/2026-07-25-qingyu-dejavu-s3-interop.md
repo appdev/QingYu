@@ -154,7 +154,8 @@ git commit -m "feat(sync): add Dejavu S3 signing"
 Cover these exact behaviors with `LocalCloud` and instrumented Cloud fixtures:
 
 - a bounded read accepts its limit and rejects the next byte without returning a partial value;
-- `refs/latest` and sequence refs require exactly 42 bytes;
+- `refs/latest` and sequence refs read at most 42 bytes, then require exactly 40
+  lowercase SHA-1 hex characters after trimming surrounding whitespace;
 - `lock-sync` is bounded at 64 KiB and a chunk keeps the existing 8 MiB plaintext
   plus 1 MiB encoded-object envelope;
 - `File`, `Index`, and `CheckIndex` use `download_to` and `upload_from` rather
@@ -240,7 +241,7 @@ cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml -p qingyu-dejavu
 DEJAVU_SOURCE_DIR=/Volumes/extendData/Data/IdeaProjects/upstream/dejavu pnpm test:dejavu-oracle
 ```
 
-Expected: exact refs/chunks remain bounded, temporary files are cleaned, and all
+Expected: refs/chunks remain protocol-bounded, temporary files are cleaned, and all
 existing Go/Rust bytes and state-machine scenarios remain compatible.
 
 - [ ] **Step 7: Commit the Cloud transfer boundary**
