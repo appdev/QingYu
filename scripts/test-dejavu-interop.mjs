@@ -358,7 +358,11 @@ function samePathConflicts(executables, ownedRoot) {
   const rustConflict = runClient(executables, rust, scenario.cloudRoot);
   assertCount(rustConflict, "conflicts", 1, SCENARIOS[3]);
   assertFile(rust, "go-first.txt", "local rust bytes\n", SCENARIOS[3]);
-  runClient(executables, go, scenario.cloudRoot);
+  const goAfterRustConflict = runClient(executables, go, scenario.cloudRoot);
+  if (goAfterRustConflict.indexId !== rustConflict.indexId) {
+    throw new Error(`${SCENARIOS[3]}: Go did not converge on Rust's retained index`);
+  }
+  assertFile(go, "go-first.txt", "local rust bytes\n", SCENARIOS[3]);
 
   writeFile(rust, "rust-first.txt", "remote rust bytes\n", 20);
   writeFile(go, "rust-first.txt", "local go bytes\n", 21);
@@ -366,6 +370,14 @@ function samePathConflicts(executables, ownedRoot) {
   const goConflict = runClient(executables, go, scenario.cloudRoot);
   assertCount(goConflict, "conflicts", 1, SCENARIOS[3]);
   assertFile(go, "rust-first.txt", "local go bytes\n", SCENARIOS[3]);
+  const rustAfterGoConflict = runClient(executables, rust, scenario.cloudRoot);
+  if (rustAfterGoConflict.indexId !== goConflict.indexId) {
+    throw new Error(`${SCENARIOS[3]}: Rust did not converge on Go's retained index`);
+  }
+  for (const client of [go, rust]) {
+    assertFile(client, "go-first.txt", "local rust bytes\n", SCENARIOS[3]);
+    assertFile(client, "rust-first.txt", "local go bytes\n", SCENARIOS[3]);
+  }
 }
 
 function failureBeforePublication(executables, ownedRoot, failingLanguage) {
@@ -385,24 +397,38 @@ function failureBeforePublication(executables, ownedRoot, failingLanguage) {
     throw new Error(`${scenarioName}: failure did not occur after repository object upload`);
   }
 
-  const recoveringLanguage = failingLanguage === "go" ? "rust" : "go";
-  const recovering = { ...failed, language: recoveringLanguage, deviceId: `${recoveringLanguage}-recovery` };
-  runClient(executables, recovering, scenario.cloudRoot);
+  runClient(executables, failed, scenario.cloudRoot);
   if (!fs.statSync(path.join(scenario.cloudRoot, "refs", "latest")).isFile()) {
-    throw new Error(`${scenarioName}: recovery did not publish refs/latest`);
+    throw new Error(`${scenarioName}: retry did not publish refs/latest`);
   }
 
-  const observer = createClient(scenario.root, recoveringLanguage, `${recoveringLanguage}-observer`);
-  if (recoveringLanguage === "go") {
-    writeFile(observer, "observer-anchor.txt", "observer\n", 1);
-  }
-  runClient(executables, observer, scenario.cloudRoot);
-  assertFile(
-    observer,
-    "recover.txt",
-    `created before ${failingLanguage} failure\n`,
-    scenarioName,
+  const recoveringLanguage = failingLanguage === "go" ? "rust" : "go";
+  const recovering = createClient(
+    scenario.root,
+    recoveringLanguage,
+    `${recoveringLanguage}-recovery`,
   );
+  writeFile(recovering, "independent.txt", `${recoveringLanguage} independent\n`, 1);
+  const recovered = runClient(executables, recovering, scenario.cloudRoot);
+  const converged = runClient(executables, failed, scenario.cloudRoot);
+  if (converged.indexId !== recovered.indexId) {
+    throw new Error(`${scenarioName}: failed and independent clients did not converge`);
+  }
+
+  for (const client of [failed, recovering]) {
+    assertFile(
+      client,
+      "recover.txt",
+      `created before ${failingLanguage} failure\n`,
+      scenarioName,
+    );
+    assertFile(
+      client,
+      "independent.txt",
+      `${recoveringLanguage} independent\n`,
+      scenarioName,
+    );
+  }
 }
 
 function removeOwnedRoot(ownedRoot) {
