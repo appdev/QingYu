@@ -1,22 +1,26 @@
 use std::collections::HashSet;
+use std::ffi::OsStr;
 use std::fmt;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
-use qingyu_dejavu::{derive_key, write_file_safer};
+use qingyu_dejavu::{derive_key, write_cap_file_safer};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::storage_capability::{nonfollowing_read_options, unique_regular_file_identity};
+use crate::storage_capability::{
+    directory_identity, nonfollowing_read_options, open_canonical_directory_nofollow,
+    unique_regular_file_identity,
+};
 use crate::sync_config::storage::open_app_data;
 
 // Task 3 wires these staged internal API items into the background sync runtime.
 #[cfg_attr(not(test), allow(dead_code))]
 const LOCAL_SYNC_STATE_VERSION: u32 = 1;
 #[cfg_attr(not(test), allow(dead_code))]
-const LOCAL_SYNC_STATE_FILE: &str = "dejavu-sync-local-state.json";
+const LOCAL_SYNC_STATE_FILE: &str = "local-sync.json";
 #[cfg_attr(not(test), allow(dead_code))]
 const MAX_LOCAL_SYNC_STATE_BYTES: usize = 1024 * 1024;
 
@@ -35,7 +39,7 @@ impl fmt::Debug for LocalSyncState {
         formatter
             .debug_struct("LocalSyncState")
             .field("version", &self.version)
-            .field("device_id", &self.device_id)
+            .field("device_id", &"[REDACTED]")
             .field("repo_key", &"[REDACTED]")
             .field("bindings", &self.bindings)
             .finish()
@@ -239,46 +243,24 @@ impl LocalSyncStateService {
 
         let state = serde_json::from_slice::<LocalSyncState>(&bytes)
             .map_err(|_| LocalSyncStateError::malformed())?;
-        validate_state(&state)?;
-        Ok(Some(state))
+        Ok(Some(normalize_state(state)?))
     }
 
     pub(crate) fn save(&self, state: &LocalSyncState) -> Result<(), LocalSyncStateError> {
-        self.save_with_writer(state, |path, bytes, mode| {
-            write_file_safer(path, bytes, mode).map_err(|_| LocalSyncStateError::write_failed())
+        self.save_with_writer(state, |directory, destination, bytes, mode| {
+            write_cap_file_safer(directory, destination, bytes, mode)
+                .map_err(|_| LocalSyncStateError::write_failed())
         })
     }
 
     pub(crate) fn add_binding(
         &self,
         state: &mut LocalSyncState,
-        mut binding: RepositoryBinding,
+        binding: RepositoryBinding,
     ) -> Result<(), LocalSyncStateError> {
-        let metadata = std::fs::symlink_metadata(&binding.notes_root)
-            .map_err(|_| LocalSyncStateError::invalid_binding())?;
-        if metadata.file_type().is_symlink() || !metadata.is_dir() {
-            return Err(LocalSyncStateError::invalid_binding());
-        }
-        binding.notes_root = binding
-            .notes_root
-            .canonicalize()
-            .map_err(|_| LocalSyncStateError::invalid_binding())?;
-        if state
-            .bindings
-            .iter()
-            .any(|existing| existing.repository_id == binding.repository_id)
-        {
-            return Err(LocalSyncStateError::duplicate_repository());
-        }
-        if state
-            .bindings
-            .iter()
-            .any(|existing| existing.notes_root == binding.notes_root)
-        {
-            return Err(LocalSyncStateError::duplicate_root());
-        }
         let mut updated = state.clone();
         updated.bindings.push(binding);
+        let updated = normalize_state(updated)?;
         self.save(&updated)?;
         *state = updated;
         Ok(())
@@ -290,11 +272,11 @@ impl LocalSyncStateService {
         writer: Write,
     ) -> Result<(), LocalSyncStateError>
     where
-        Write: FnOnce(&Path, &[u8], u32) -> Result<(), LocalSyncStateError>,
+        Write: FnOnce(&cap_std::fs::Dir, &OsStr, &[u8], u32) -> Result<(), LocalSyncStateError>,
     {
-        validate_state(state)?;
+        let state = normalize_state(state.clone())?;
         let mut bytes =
-            serde_json::to_vec_pretty(state).map_err(|_| LocalSyncStateError::write_failed())?;
+            serde_json::to_vec_pretty(&state).map_err(|_| LocalSyncStateError::write_failed())?;
         bytes.push(b'\n');
         if bytes.len() > MAX_LOCAL_SYNC_STATE_BYTES {
             return Err(LocalSyncStateError::too_large());
@@ -315,7 +297,8 @@ impl LocalSyncStateService {
             .revalidate()
             .map_err(|_| LocalSyncStateError::unsafe_path())?;
         writer(
-            &app_data.canonical_path().join(LOCAL_SYNC_STATE_FILE),
+            app_data.directory(),
+            OsStr::new(LOCAL_SYNC_STATE_FILE),
             &bytes,
             0o600,
         )?;
@@ -346,7 +329,7 @@ fn repository_key(user_key_input: Option<&str>) -> Result<String, LocalSyncState
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
-fn validate_state(state: &LocalSyncState) -> Result<(), LocalSyncStateError> {
+fn normalize_state(mut state: LocalSyncState) -> Result<LocalSyncState, LocalSyncStateError> {
     if state.version != LOCAL_SYNC_STATE_VERSION {
         return Err(LocalSyncStateError::malformed());
     }
@@ -366,10 +349,8 @@ fn validate_state(state: &LocalSyncState) -> Result<(), LocalSyncStateError> {
 
     let mut repositories = HashSet::new();
     let mut roots = HashSet::new();
-    for binding in &state.bindings {
-        if !binding.notes_root.is_absolute() {
-            return Err(LocalSyncStateError::invalid_binding());
-        }
+    for binding in &mut state.bindings {
+        binding.notes_root = canonical_notes_root(&binding.notes_root)?;
         if !repositories.insert(binding.repository_id.as_str()) {
             return Err(LocalSyncStateError::duplicate_repository());
         }
@@ -377,7 +358,44 @@ fn validate_state(state: &LocalSyncState) -> Result<(), LocalSyncStateError> {
             return Err(LocalSyncStateError::duplicate_root());
         }
     }
-    Ok(())
+    Ok(state)
+}
+
+fn canonical_notes_root(path: &Path) -> Result<PathBuf, LocalSyncStateError> {
+    canonical_notes_root_with_observer(path, |_| {})
+}
+
+fn canonical_notes_root_with_observer<Observe>(
+    path: &Path,
+    after_initial_open: Observe,
+) -> Result<PathBuf, LocalSyncStateError>
+where
+    Observe: FnOnce(&Path),
+{
+    let canonical = path
+        .canonicalize()
+        .map_err(|_| LocalSyncStateError::invalid_binding())?;
+    let retained = open_canonical_directory_nofollow(&canonical)
+        .map_err(|_| LocalSyncStateError::invalid_binding())?;
+    let retained_identity =
+        directory_identity(&retained).map_err(|_| LocalSyncStateError::invalid_binding())?;
+
+    after_initial_open(&canonical);
+
+    let revalidated_canonical = path
+        .canonicalize()
+        .map_err(|_| LocalSyncStateError::invalid_binding())?;
+    if revalidated_canonical != canonical {
+        return Err(LocalSyncStateError::invalid_binding());
+    }
+    let reopened = open_canonical_directory_nofollow(&canonical)
+        .map_err(|_| LocalSyncStateError::invalid_binding())?;
+    if directory_identity(&reopened).map_err(|_| LocalSyncStateError::invalid_binding())?
+        != retained_identity
+    {
+        return Err(LocalSyncStateError::invalid_binding());
+    }
+    Ok(canonical)
 }
 
 #[cfg(test)]
@@ -386,13 +404,13 @@ mod tests {
 
     use base64::engine::general_purpose::STANDARD;
     use base64::Engine;
-    use qingyu_dejavu::derive_key;
+    use qingyu_dejavu::{derive_key, write_cap_file_safer};
     use tempfile::tempdir;
     use uuid::{Uuid, Version};
 
     use super::{
-        LocalSyncStateError, LocalSyncStateService, RepositoryBinding, LOCAL_SYNC_STATE_FILE,
-        MAX_LOCAL_SYNC_STATE_BYTES,
+        canonical_notes_root_with_observer, LocalSyncStateError, LocalSyncStateService,
+        RepositoryBinding, LOCAL_SYNC_STATE_FILE, MAX_LOCAL_SYNC_STATE_BYTES,
     };
 
     #[test]
@@ -413,8 +431,12 @@ mod tests {
             Some(Version::Random)
         );
         assert!(state.bindings.is_empty());
-        let stored = fs::read_to_string(temporary.path().join(LOCAL_SYNC_STATE_FILE))
-            .expect("state should be persisted");
+        let stored = fs::read_to_string(temporary.path().join("local-sync.json"))
+            .expect("state should be persisted at the fixed local-only path");
+        assert!(!temporary
+            .path()
+            .join("dejavu-sync-local-state.json")
+            .exists());
         assert!(stored.ends_with('\n'));
         assert!(stored.contains("\n  \"deviceId\":"));
         assert!(stored.contains("\n  \"repoKey\":"));
@@ -519,6 +541,90 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn direct_save_rejects_distinct_paths_for_the_same_canonical_note_root() {
+        use std::os::unix::fs::symlink;
+
+        let temporary = tempdir().expect("temporary app data");
+        let notes = temporary.path().join("notes");
+        let alias = temporary.path().join("notes-alias");
+        fs::create_dir(&notes).unwrap();
+        symlink(&notes, &alias).unwrap();
+        let service = LocalSyncStateService::new(temporary.path().join("app-data"));
+        let mut state = service.load_or_initialize(None).unwrap();
+        state.bindings = vec![
+            RepositoryBinding {
+                repository_id: "repo-a".to_string(),
+                display_name: "Notes".to_string(),
+                notes_root: notes,
+                enabled: true,
+            },
+            RepositoryBinding {
+                repository_id: "repo-b".to_string(),
+                display_name: "Notes Alias".to_string(),
+                notes_root: alias,
+                enabled: true,
+            },
+        ];
+
+        let error = service
+            .save(&state)
+            .expect_err("canonical root aliases must not create two bindings");
+
+        assert!(error.to_string().contains("duplicate-root"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn load_normalizes_a_persisted_note_root_alias_to_its_canonical_directory() {
+        use std::os::unix::fs::symlink;
+
+        let temporary = tempdir().expect("temporary app data");
+        let notes = temporary.path().join("notes");
+        let alias = temporary.path().join("notes-alias");
+        fs::create_dir(&notes).unwrap();
+        symlink(&notes, &alias).unwrap();
+        let service = LocalSyncStateService::new(temporary.path().join("app-data"));
+        let mut state = service.load_or_initialize(None).unwrap();
+        state.bindings.push(RepositoryBinding {
+            repository_id: "repo-a".to_string(),
+            display_name: "Notes".to_string(),
+            notes_root: alias.clone(),
+            enabled: true,
+        });
+        fs::write(
+            temporary.path().join("app-data/local-sync.json"),
+            serde_json::to_vec_pretty(&state).unwrap(),
+        )
+        .unwrap();
+
+        let loaded = service.load().unwrap().unwrap();
+
+        assert_eq!(loaded.bindings[0].notes_root, notes.canonicalize().unwrap());
+        assert_ne!(loaded.bindings[0].notes_root, alias);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn canonical_root_revalidation_rejects_a_target_replaced_after_initial_open() {
+        let temporary = tempdir().expect("temporary root");
+        let notes = temporary.path().join("notes");
+        let moved = temporary.path().join("moved-notes");
+        let replacement = temporary.path().join("replacement");
+        fs::create_dir(&notes).unwrap();
+        fs::create_dir(&replacement).unwrap();
+
+        let result = canonical_notes_root_with_observer(&notes, |_| {
+            fs::rename(&notes, &moved).unwrap();
+            fs::rename(&replacement, &notes).unwrap();
+        });
+
+        assert!(result.is_err());
+        assert!(moved.is_dir());
+        assert!(notes.is_dir());
+    }
+
     #[test]
     fn malformed_or_unknown_state_is_rejected_without_echoing_the_key() {
         let temporary = tempdir().expect("temporary app data");
@@ -609,8 +715,8 @@ mod tests {
         let before = fs::read(&path).unwrap();
         state.device_id = Uuid::new_v4().to_string();
 
-        let result = service.save_with_writer(&state, |destination, bytes, _mode| {
-            fs::write(destination.with_extension("interrupted"), &bytes[..8]).unwrap();
+        let result = service.save_with_writer(&state, |_directory, _destination, bytes, _mode| {
+            fs::write(temporary.path().join("interrupted"), &bytes[..8]).unwrap();
             Err(LocalSyncStateError::write_failed())
         });
 
@@ -625,8 +731,32 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
-    fn debug_output_always_redacts_the_repository_key() {
+    fn saving_stays_with_the_retained_app_data_directory_after_path_replacement() {
+        let temporary = tempdir().expect("temporary parent");
+        let app_data = temporary.path().join("app-data");
+        let retained = temporary.path().join("retained-app-data");
+        let service = LocalSyncStateService::new(&app_data);
+        let mut state = service.load_or_initialize(None).unwrap();
+        state.device_id = Uuid::new_v4().to_string();
+
+        let result = service.save_with_writer(&state, |directory, destination, bytes, mode| {
+            fs::rename(&app_data, &retained).unwrap();
+            fs::create_dir(&app_data).unwrap();
+            write_cap_file_safer(directory, destination, bytes, mode)
+                .map_err(|_| LocalSyncStateError::write_failed())
+        });
+
+        assert!(result.is_err(), "the ambient app-data identity changed");
+        assert!(fs::read_dir(&app_data).unwrap().next().is_none());
+        let stored = fs::read_to_string(retained.join("local-sync.json")).unwrap();
+        assert!(stored.contains(&state.device_id));
+        assert!(stored.contains(&state.repo_key));
+    }
+
+    #[test]
+    fn debug_output_redacts_the_repository_key_and_device_id() {
         let temporary = tempdir().expect("temporary app data");
         let state = LocalSyncStateService::new(temporary.path())
             .load_or_initialize(None)
@@ -634,6 +764,7 @@ mod tests {
 
         let debug = format!("{state:?}");
         assert!(!debug.contains(&state.repo_key));
+        assert!(!debug.contains(&state.device_id));
         assert!(debug.contains("[REDACTED]"));
     }
 }

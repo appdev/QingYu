@@ -1,4 +1,4 @@
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -39,8 +39,17 @@ pub fn write_file_safer(path: &Path, bytes: &[u8], mode: u32) -> Result<(), Repo
     stage_file(path, bytes, mode)?.publish_replace()
 }
 
+pub fn write_cap_file_safer(
+    parent: &Dir,
+    destination: &OsStr,
+    bytes: &[u8],
+    mode: u32,
+) -> Result<(), RepoError> {
+    stage_cap_file(parent, destination, bytes, mode)?.publish_replace()
+}
+
 pub(crate) fn stage_file(path: &Path, bytes: &[u8], mode: u32) -> Result<StagedFile, RepoError> {
-    let (temp_path, mut temp_file) = create_temp_file(path)?;
+    let (temp_path, mut temp_file) = create_temp_file(path, mode)?;
     let result = (|| -> Result<(), RepoError> {
         temp_file.write_all(bytes)?;
         temp_file.sync_all()?;
@@ -368,7 +377,7 @@ fn replace_cap_file(
     Ok(())
 }
 
-fn create_temp_file(path: &Path) -> Result<(PathBuf, File), RepoError> {
+fn create_temp_file(path: &Path, mode: u32) -> Result<(PathBuf, File), RepoError> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     let file_name = path
         .file_name()
@@ -381,11 +390,10 @@ fn create_temp_file(path: &Path) -> Result<(PathBuf, File), RepoError> {
         temp_name.push(random);
         temp_name.push(".tmp");
         let temp_path = parent.join(temp_name);
-        match OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temp_path)
-        {
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        configure_std_temp_options(&mut options, mode);
+        match options.open(&temp_path) {
             Ok(file) => return Ok((temp_path, file)),
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
             Err(error) => return Err(error.into()),
@@ -398,6 +406,16 @@ fn create_temp_file(path: &Path) -> Result<(PathBuf, File), RepoError> {
     )
     .into())
 }
+
+#[cfg(unix)]
+fn configure_std_temp_options(options: &mut OpenOptions, mode: u32) {
+    use std::os::unix::fs::OpenOptionsExt;
+
+    options.mode(mode);
+}
+
+#[cfg(not(unix))]
+fn configure_std_temp_options(_options: &mut OpenOptions, _mode: u32) {}
 
 #[cfg(unix)]
 fn set_mode(path: &Path, mode: u32) -> Result<(), RepoError> {
@@ -491,7 +509,10 @@ mod tests {
     use cap_std::ambient_authority;
     use cap_std::fs::Dir;
 
-    use super::{stage_cap_file, stage_file, write_file_safer, PublishOutcome};
+    use super::{
+        create_temp_file, stage_cap_file, stage_file, write_cap_file_safer, write_file_safer,
+        PublishOutcome,
+    };
 
     #[test]
     fn capability_stage_can_be_rewound_and_read_before_publication() {
@@ -504,6 +525,41 @@ mod tests {
         staged_file.read_to_end(&mut bytes).unwrap();
 
         assert_eq!(bytes, b"staged bytes");
+    }
+
+    #[test]
+    fn capability_safer_write_stays_with_the_retained_directory_after_path_replacement() {
+        let temp = tempfile::tempdir().unwrap();
+        let configured = temp.path().join("configured");
+        let retained = temp.path().join("retained");
+        fs::create_dir(&configured).unwrap();
+        let parent = Dir::open_ambient_dir(&configured, ambient_authority()).unwrap();
+        fs::rename(&configured, &retained).unwrap();
+        fs::create_dir(&configured).unwrap();
+
+        write_cap_file_safer(&parent, OsStr::new("local-sync.json"), b"secret", 0o600).unwrap();
+
+        assert_eq!(
+            fs::read(retained.join("local-sync.json")).unwrap(),
+            b"secret"
+        );
+        assert!(fs::read_dir(&configured).unwrap().next().is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ambient_safer_write_temp_is_private_from_its_initial_creation() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let destination = temp.path().join("object");
+
+        let (temp_path, temp_file) = create_temp_file(&destination, 0o600).unwrap();
+
+        let mode = temp_file.metadata().unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        drop(temp_file);
+        fs::remove_file(temp_path).unwrap();
     }
 
     #[test]

@@ -19,7 +19,7 @@ pub mod working_tree;
 
 mod error;
 
-pub use atomic_write::write_file_safer;
+pub use atomic_write::{write_cap_file_safer, write_file_safer};
 pub use catalog::{
     CatalogIssue, CatalogIssueKind, RepositoryCatalogEntry, RepositoryCatalogList,
     RepositoryMetadata, S3RepositoryCatalog,
