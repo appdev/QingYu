@@ -1971,23 +1971,21 @@ fn sync_tools_read_and_update_sanitized_config_without_losing_omitted_credential
     assert!(!serialized.contains("password"));
     assert!(!serialized.contains(&fixture.notes_root.to_string_lossy().to_string()));
 
+    let input = serde_json::from_value::<SyncConfigPatchInput>(serde_json::json!({
+        "expectedRevision": fixture.revision,
+        "remoteRoot": "archive",
+        "mode": "startup-exit",
+        "intervalSeconds": 300
+    }))
+    .expect("deserialize the public scheduling patch contract");
     let updated = fixture
         .service
-        .update_config(SyncConfigPatchInput {
-            expected_revision: fixture.revision.clone(),
-            enabled: None,
-            provider: None,
-            remote_root: Some("archive".to_string()),
-            auto_sync_on_save: Some(true),
-            interval_minutes: None,
-            webdav_server_url: None,
-            s3_endpoint_url: None,
-            s3_region: None,
-            s3_bucket: None,
-        })
+        .update_config(input)
         .expect("batch sync config update");
     assert_eq!(updated.remote_root, "archive");
-    assert!(updated.auto_sync_on_save);
+    let sanitized = serde_json::to_value(&updated).expect("serialize sanitized config");
+    assert_eq!(sanitized["mode"], "startup-exit");
+    assert_eq!(sanitized["intervalSeconds"], 300);
     assert_ne!(updated.revision, fixture.revision);
 
     let SyncConfigLoadResponse::Loaded { document } =

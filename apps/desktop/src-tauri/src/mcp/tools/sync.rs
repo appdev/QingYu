@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     mcp::config::SyncExecutionPolicy,
     remote_sync::mcp_service::{SyncConfigPatchInput, SyncCredentialPatchInput},
-    sync_config::model::SyncProvider,
+    sync_config::model::{SyncMode, SyncProvider},
 };
 
 use super::{failure_from_code, McpServices, ToolResult};
@@ -23,8 +23,9 @@ pub(super) struct SyncConfigUpdateInput {
     #[schemars(with = "Option<String>")]
     pub(super) provider: Option<SyncProvider>,
     pub(super) remote_root: Option<String>,
-    pub(super) auto_sync_on_save: Option<bool>,
-    pub(super) interval_minutes: Option<u32>,
+    #[schemars(with = "Option<String>")]
+    pub(super) mode: Option<SyncMode>,
+    pub(super) interval_seconds: Option<u32>,
     pub(super) webdav_server_url: Option<String>,
     pub(super) s3_endpoint_url: Option<String>,
     pub(super) s3_region: Option<String>,
@@ -101,8 +102,8 @@ pub(super) fn update_config(services: &McpServices, input: &SyncConfigUpdateInpu
             enabled: input.enabled,
             provider: input.provider,
             remote_root: input.remote_root.clone(),
-            auto_sync_on_save: input.auto_sync_on_save,
-            interval_minutes: input.interval_minutes,
+            mode: input.mode,
+            interval_seconds: input.interval_seconds,
             webdav_server_url: input.webdav_server_url.clone(),
             s3_endpoint_url: input.s3_endpoint_url.clone(),
             s3_region: input.s3_region.clone(),

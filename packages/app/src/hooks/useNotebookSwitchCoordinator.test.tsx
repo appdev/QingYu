@@ -27,9 +27,9 @@ function deferred<T>() {
 function configuredDocument(enabled = true): SyncConfigDocument {
   return {
     config: {
-      autoSyncOnSave: true,
       enabled,
-      intervalMinutes: 0,
+      intervalSeconds: 30,
+      mode: "automatic",
       provider: "webdav",
       remoteRoot: "qingyu",
       s3: {
@@ -42,7 +42,7 @@ function configuredDocument(enabled = true): SyncConfigDocument {
         addressingStyle: "auto",
         tlsVerification: "verify"
       },
-      version: 2,
+      version: 3,
       webdav: {
         password: "secret",
         serverUrl: "https://dav.example.test",

@@ -7,7 +7,7 @@ use crate::sync_validation::{
     validate_remote_root, validate_required, SyncValueIssue,
 };
 
-pub(crate) const SYNC_CONFIG_VERSION: u32 = 2;
+pub(crate) const SYNC_CONFIG_VERSION: u32 = 3;
 pub(crate) const MIN_S3_REQUEST_TIMEOUT_SECONDS: u32 = 5;
 pub(crate) const MAX_S3_REQUEST_TIMEOUT_SECONDS: u32 = 600;
 
@@ -18,8 +18,8 @@ pub(crate) struct SyncConfig {
     pub(crate) enabled: bool,
     pub(crate) provider: SyncProvider,
     pub(crate) remote_root: String,
-    pub(crate) auto_sync_on_save: bool,
-    pub(crate) interval_minutes: u32,
+    pub(crate) mode: SyncMode,
+    pub(crate) interval_seconds: u32,
     pub(crate) webdav: WebDavConfig,
     pub(crate) s3: S3Config,
 }
@@ -29,6 +29,14 @@ pub(crate) struct SyncConfig {
 pub(crate) enum SyncProvider {
     S3,
     Webdav,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum SyncMode {
+    Automatic,
+    StartupExit,
+    FullyManual,
 }
 
 #[derive(Clone, Deserialize, Default, Serialize)]
@@ -194,10 +202,10 @@ pub(crate) enum SyncConfigPatch {
     Provider(SyncProvider),
     #[serde(rename = "remoteRoot")]
     RemoteRoot(String),
-    #[serde(rename = "autoSyncOnSave")]
-    AutoSyncOnSave(bool),
-    #[serde(rename = "intervalMinutes")]
-    IntervalMinutes(u32),
+    #[serde(rename = "mode")]
+    Mode(SyncMode),
+    #[serde(rename = "intervalSeconds")]
+    IntervalSeconds(u32),
     #[serde(rename = "webdav.serverUrl")]
     WebDavServerUrl(String),
     #[serde(rename = "webdav.username")]
@@ -286,8 +294,8 @@ impl Default for SyncConfig {
             enabled: false,
             provider: SyncProvider::S3,
             remote_root: "qingyu".into(),
-            auto_sync_on_save: true,
-            interval_minutes: 5,
+            mode: SyncMode::Automatic,
+            interval_seconds: 30,
             webdav: WebDavConfig::default(),
             s3: S3Config::default(),
         }
@@ -302,7 +310,7 @@ impl SyncConfig {
     }
 
     pub(crate) fn normalize(&mut self) {
-        self.interval_minutes = normalize_interval(self.interval_minutes);
+        self.interval_seconds = normalize_interval(self.interval_seconds);
         if let Ok(remote_root) = normalize_remote_root(&self.remote_root) {
             self.remote_root = remote_root;
         } else {
@@ -373,8 +381,8 @@ impl SyncConfig {
             SyncConfigPatch::Enabled(value) => self.enabled = value,
             SyncConfigPatch::Provider(value) => self.provider = value,
             SyncConfigPatch::RemoteRoot(value) => self.remote_root = value,
-            SyncConfigPatch::AutoSyncOnSave(value) => self.auto_sync_on_save = value,
-            SyncConfigPatch::IntervalMinutes(value) => self.interval_minutes = value,
+            SyncConfigPatch::Mode(value) => self.mode = value,
+            SyncConfigPatch::IntervalSeconds(value) => self.interval_seconds = value,
             SyncConfigPatch::WebDavServerUrl(value) => self.webdav.server_url = value,
             SyncConfigPatch::WebDavUsername(value) => self.webdav.username = value,
             SyncConfigPatch::WebDavPassword(value) => self.webdav.password = value,
@@ -415,12 +423,14 @@ mod tests {
     #[test]
     fn default_shape_is_flat_disabled_and_versioned() {
         let value = serde_json::to_value(SyncConfig::default()).unwrap();
-        assert_eq!(value["version"], 2);
+        assert_eq!(value["version"], 3);
         assert_eq!(value["enabled"], false);
         assert_eq!(value["provider"], "s3");
         assert_eq!(value["remoteRoot"], "qingyu");
-        assert_eq!(value["autoSyncOnSave"], true);
-        assert_eq!(value["intervalMinutes"], 5);
+        assert_eq!(value["mode"], "automatic");
+        assert_eq!(value["intervalSeconds"], 30);
+        assert!(value.get("autoSyncOnSave").is_none());
+        assert!(value.get("intervalMinutes").is_none());
         assert_eq!(value["s3"]["endpointUrl"], "");
         assert_eq!(value["s3"]["region"], "");
         assert_eq!(value["s3"]["bucket"], "");
@@ -441,14 +451,64 @@ mod tests {
             ..SyncConfig::default()
         };
         config.remote_root = " team/notes ".into();
-        config.interval_minutes = 2_000;
         config.webdav.server_url = " https://dav.example.test ".into();
         config.webdav.password = " secret ".into();
         config.normalize();
         assert_eq!(config.remote_root, "team/notes");
-        assert_eq!(config.interval_minutes, 1_440);
         assert_eq!(config.webdav.password, " secret ");
         assert_eq!(config.readiness(), SyncConfigReadiness::Ready);
+    }
+
+    #[test]
+    fn scheduling_modes_and_interval_seconds_round_trip_with_exact_names_and_bounds() {
+        for (mode, interval, normalized_interval) in [
+            ("automatic", 29, 30),
+            ("startup-exit", 30, 30),
+            ("fully-manual", 43_200, 43_200),
+            ("automatic", 43_201, 43_200),
+        ] {
+            let mut value = serde_json::to_value(SyncConfig::default()).unwrap();
+            value["version"] = serde_json::json!(3);
+            value["mode"] = serde_json::json!(mode);
+            value["intervalSeconds"] = serde_json::json!(interval);
+            value.as_object_mut().unwrap().remove("autoSyncOnSave");
+            value.as_object_mut().unwrap().remove("intervalMinutes");
+
+            let mut config = serde_json::from_value::<SyncConfig>(value).unwrap();
+            config.normalize();
+            let normalized = serde_json::to_value(config).unwrap();
+
+            assert_eq!(normalized["mode"], mode);
+            assert_eq!(normalized["intervalSeconds"], normalized_interval);
+        }
+    }
+
+    #[test]
+    fn scheduling_patches_change_only_mode_and_interval_seconds() {
+        let mut config = SyncConfig {
+            provider: SyncProvider::Webdav,
+            ..SyncConfig::default()
+        };
+        config.webdav.server_url = "https://dav.example.test".into();
+        config.webdav.username = "writer".into();
+        config.webdav.password = "private".into();
+        config.s3.access_key_id = "access".into();
+        config.s3.secret_access_key = "secret".into();
+
+        for patch in [
+            serde_json::json!({ "field": "mode", "value": "startup-exit" }),
+            serde_json::json!({ "field": "intervalSeconds", "value": 120 }),
+        ] {
+            config.apply_patch(serde_json::from_value(patch).unwrap());
+        }
+        let value = serde_json::to_value(config).unwrap();
+
+        assert_eq!(value["mode"], "startup-exit");
+        assert_eq!(value["intervalSeconds"], 120);
+        assert_eq!(value["webdav"]["username"], "writer");
+        assert_eq!(value["webdav"]["password"], "private");
+        assert_eq!(value["s3"]["accessKeyId"], "access");
+        assert_eq!(value["s3"]["secretAccessKey"], "secret");
     }
 
     #[test]

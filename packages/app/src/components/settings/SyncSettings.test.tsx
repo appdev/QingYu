@@ -9,9 +9,9 @@ import { translate } from "../../test/settings-components";
 import { SyncSettings, type SyncSettingsProps } from "./SyncSettings";
 
 const config: QingYuSyncConfig = {
-  autoSyncOnSave: true,
   enabled: true,
-  intervalMinutes: 15,
+  intervalSeconds: 900,
+  mode: "automatic",
   provider: "webdav",
   remoteRoot: "qingyu/main",
   s3: {
@@ -24,7 +24,7 @@ const config: QingYuSyncConfig = {
     addressingStyle: "auto",
     tlsVerification: "verify"
   },
-  version: 2,
+  version: 3,
   webdav: {
     password: "password-value",
     serverUrl: "https://dav.example.test",
@@ -78,7 +78,7 @@ describe("SyncSettings application scope", () => {
 
     expect(screen.getAllByRole("heading").map((heading) => heading.textContent)).toEqual([
       "Basic settings",
-      "Automatic sync",
+      "Sync schedule",
       "S3 connection",
       "Advanced options",
       "Connection and status"
@@ -90,7 +90,7 @@ describe("SyncSettings application scope", () => {
 
     expect(screen.getAllByRole("heading").map((heading) => heading.textContent)).toEqual([
       "Basic settings",
-      "Automatic sync",
+      "Sync schedule",
       "WebDAV connection",
       "Connection and status"
     ]);
@@ -114,14 +114,22 @@ describe("SyncSettings application scope", () => {
     expect(screen.getByText("Not selected")).toBeVisible();
   });
 
-  it("persists each changed field immediately with the app-level patch shape", () => {
+  it("persists scheduling and remote-root fields with the app-level patch shape", () => {
     const onPatch = vi.fn(async (_patch: SyncConfigPatch) => undefined);
     render(<SyncSettings {...createProps({ onPatch })} />);
 
+    fireEvent.change(screen.getByRole("combobox", { name: "Sync mode" }), {
+      target: { value: "fully-manual" }
+    });
+    fireEvent.change(screen.getByRole("spinbutton", { name: "Automatic sync interval" }), {
+      target: { value: "600" }
+    });
     fireEvent.change(screen.getByRole("textbox", { name: "Remote root" }), {
       target: { value: "qingyu/team" }
     });
 
+    expect(onPatch).toHaveBeenCalledWith({ field: "mode", value: "fully-manual" });
+    expect(onPatch).toHaveBeenCalledWith({ field: "intervalSeconds", value: 600 });
     expect(onPatch).toHaveBeenCalledWith({ field: "remoteRoot", value: "qingyu/team" });
   });
 

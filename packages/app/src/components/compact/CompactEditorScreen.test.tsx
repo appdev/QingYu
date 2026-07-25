@@ -89,9 +89,9 @@ function controller(overrides: {
         primaryRoot: "/notes",
         syncConfigDocument: overrides.syncConfigured ? {
           config: {
-            autoSyncOnSave: false,
             enabled: true,
-            intervalMinutes: 0,
+            intervalSeconds: 30,
+            mode: "startup-exit",
             provider: "webdav",
             remoteRoot: "qingyu",
             s3: {
@@ -104,7 +104,7 @@ function controller(overrides: {
               addressingStyle: "auto",
               tlsVerification: "verify"
             },
-            version: 2,
+            version: 3,
             webdav: {
               password: "",
               serverUrl: "https://dav.example.test",

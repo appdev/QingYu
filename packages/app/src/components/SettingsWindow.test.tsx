@@ -76,9 +76,9 @@ describe("SettingsWindow notes workspace", () => {
         ...runtime.syncConfig,
         load: async () => ({
           config: {
-            autoSyncOnSave: true,
             enabled: false,
-            intervalMinutes: 15,
+            intervalSeconds: 900,
+            mode: "automatic",
             provider: "webdav",
             remoteRoot: "qingyu/main",
             s3: {
@@ -91,7 +91,7 @@ describe("SettingsWindow notes workspace", () => {
               addressingStyle: "auto",
               tlsVerification: "verify"
             },
-            version: 2,
+            version: 3,
             webdav: {
               password: "password-value",
               serverUrl: "https://dav.example.test",
@@ -132,9 +132,9 @@ describe("SettingsWindow notes workspace", () => {
         }]),
         load: async () => ({
           config: {
-            autoSyncOnSave: true,
             enabled: true,
-            intervalMinutes: 15,
+            intervalSeconds: 900,
+            mode: "automatic",
             provider: "webdav",
             remoteRoot: "qingyu/main",
             s3: {
@@ -147,7 +147,7 @@ describe("SettingsWindow notes workspace", () => {
               addressingStyle: "auto",
               tlsVerification: "verify"
             },
-            version: 2,
+            version: 3,
             webdav: {
               password: "password-value",
               serverUrl: "https://dav.example.test",

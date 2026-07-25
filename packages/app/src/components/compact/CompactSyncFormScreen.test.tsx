@@ -7,9 +7,9 @@ import { CompactSyncFormScreen } from "./CompactSyncFormScreen";
 function document(revision = "rev-1"): SyncConfigDocument {
   return {
     config: {
-      autoSyncOnSave: false,
       enabled: true,
-      intervalMinutes: 0,
+      intervalSeconds: 30,
+      mode: "startup-exit",
       provider: "webdav",
       remoteRoot: "qingyu",
       s3: {
@@ -22,7 +22,7 @@ function document(revision = "rev-1"): SyncConfigDocument {
         addressingStyle: "auto",
         tlsVerification: "verify"
       },
-      version: 2,
+      version: 3,
       webdav: { password: "", serverUrl: "https://dav.example.test", username: "" }
     },
     configured: true,
@@ -84,14 +84,22 @@ describe("CompactSyncFormScreen application config", () => {
     expect(screen.getByRole("textbox", { name: "Remote root" })).toHaveValue("qingyu");
   });
 
-  it("writes app-level fields immediately", () => {
+  it("writes scheduling and remote-root fields immediately", () => {
     const setup = controller();
     render(<CompactSyncFormScreen controller={setup} language="en" mode="edit" navigation={navigation()} />);
 
+    fireEvent.change(screen.getByRole("combobox", { name: "Sync mode" }), {
+      target: { value: "fully-manual" }
+    });
+    fireEvent.change(screen.getByRole("spinbutton", { name: "Automatic sync interval" }), {
+      target: { value: "600" }
+    });
     fireEvent.change(screen.getByRole("textbox", { name: "Remote root" }), {
       target: { value: "qingyu/team" }
     });
 
+    expect(setup.patch).toHaveBeenCalledWith({ field: "mode", value: "fully-manual" });
+    expect(setup.patch).toHaveBeenCalledWith({ field: "intervalSeconds", value: 600 });
     expect(setup.patch).toHaveBeenCalledWith({ field: "remoteRoot", value: "qingyu/team" });
   });
 

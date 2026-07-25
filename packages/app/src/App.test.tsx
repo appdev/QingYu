@@ -395,9 +395,9 @@ function readyProjectConfigResult(projectRoot: string, revision = "rev-app-ready
   projectRoot satisfies string;
   return {
     config: {
-      autoSyncOnSave: true,
       enabled: true,
-      intervalMinutes: 0,
+      intervalSeconds: 30,
+      mode: "automatic" as const,
       provider: "webdav" as const,
       remoteRoot: "notes",
       s3: {
@@ -410,7 +410,7 @@ function readyProjectConfigResult(projectRoot: string, revision = "rev-app-ready
         addressingStyle: "auto" as const,
         tlsVerification: "verify" as const
       },
-      version: 2 as const,
+      version: 3 as const,
       webdav: {
         password: "secret-password",
         serverUrl: "https://private-dav.example.test",
@@ -489,9 +489,9 @@ function readySyncConfigResult(
 ) {
   return {
     config: {
-      autoSyncOnSave: true,
       enabled: true,
-      intervalMinutes: 0,
+      intervalSeconds: 30,
+      mode: "automatic" as const,
       provider,
       remoteRoot: provider === "s3" ? "project-b-prefix" : "notes",
       s3: {
@@ -504,7 +504,7 @@ function readySyncConfigResult(
         addressingStyle: "auto" as const,
         tlsVerification: "verify" as const
       },
-      version: 2 as const,
+      version: 3 as const,
       webdav: {
         password: "secret-password",
         serverUrl: "https://private-dav.example.test",

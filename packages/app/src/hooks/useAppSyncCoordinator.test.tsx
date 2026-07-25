@@ -31,9 +31,9 @@ let completeMockedApply: ((revision: string, token: string) => Promise<unknown>)
 function configDocument(revision = "rev-1", patch: Partial<SyncConfigDocument["config"]> = {}): SyncConfigDocument {
   return {
     config: {
-      autoSyncOnSave: true,
       enabled: true,
-      intervalMinutes: 0,
+      intervalSeconds: 30,
+      mode: "automatic",
       provider: "webdav",
       remoteRoot: "qingyu",
       s3: {
@@ -46,7 +46,7 @@ function configDocument(revision = "rev-1", patch: Partial<SyncConfigDocument["c
         addressingStyle: "auto",
         tlsVerification: "verify"
       },
-      version: 2,
+      version: 3,
       webdav: {
         password: "private",
         serverUrl: "https://dav.example.test",
@@ -832,14 +832,14 @@ describe("application sync coordinator", () => {
   it("runs the configured interval and invalidates the old timer after a root switch", async () => {
     const setIntervalSpy = vi.spyOn(window, "setInterval");
     const { rerender } = renderCoordinator({
-      document: configDocument("rev-a", { intervalMinutes: 5 }),
+      document: configDocument("rev-a", { intervalSeconds: 300 }),
       primaryRoot: "/A"
     });
     await waitFor(() => expect(mockedRunApplicationSync).toHaveBeenCalledWith(expect.objectContaining({
       notesRoot: "/A",
       trigger: "app-launch"
     })));
-    const oldTimer = setIntervalSpy.mock.calls.find(([, delay]) => delay === 5 * 60 * 1000)?.[0];
+    const oldTimer = setIntervalSpy.mock.calls.find(([, delay]) => delay === 300 * 1000)?.[0];
     expect(oldTimer).toBeTypeOf("function");
     mockedRunApplicationSync.mockClear();
 
@@ -854,7 +854,7 @@ describe("application sync coordinator", () => {
     }));
 
     rerender({
-      currentDocument: configDocument("rev-b", { intervalMinutes: 5 }),
+      currentDocument: configDocument("rev-b", { intervalSeconds: 300 }),
       currentRoot: "/B"
     });
     await waitFor(() => expect(mockedRunApplicationSync).toHaveBeenCalledWith(expect.objectContaining({
@@ -867,6 +867,71 @@ describe("application sync coordinator", () => {
     });
     expect(mockedRunApplicationSync).not.toHaveBeenCalled();
     setIntervalSpy.mockRestore();
+  });
+
+  it.each([
+    ["automatic", ["app-launch", "interval", "manual", "save", "settings-exit"]],
+    ["startup-exit", ["app-launch", "manual", "settings-exit"]],
+    ["fully-manual", ["manual"]]
+  ] as const)("limits WebDAV %s mode to its eligible triggers", async (mode, eligible) => {
+    const eligibleTriggers: readonly SyncRunResult["trigger"][] = eligible;
+    const { result } = renderCoordinator({ document: configDocument("rev-1", { mode }) });
+    if (eligibleTriggers.includes("app-launch")) {
+      await waitFor(() => expect(mockedRunApplicationSync).toHaveBeenCalledWith(
+        expect.objectContaining({ trigger: "app-launch" })
+      ));
+      await waitFor(() => expect(result.current.running).toBe(false));
+    } else {
+      await act(async () => Promise.resolve());
+      expect(mockedRunApplicationSync).not.toHaveBeenCalled();
+    }
+    mockedRunApplicationSync.mockClear();
+
+    for (const trigger of ["interval", "manual", "save", "settings-exit"] as const) {
+      const callsBefore = mockedRunApplicationSync.mock.calls.length;
+      await act(async () => {
+        await result.current.run(trigger);
+      });
+      if (eligibleTriggers.includes(trigger)) {
+        expect(mockedRunApplicationSync).toHaveBeenCalledTimes(callsBefore + 1);
+        expect(mockedRunApplicationSync).toHaveBeenLastCalledWith(
+          expect.objectContaining({ trigger })
+        );
+      } else {
+        expect(mockedRunApplicationSync).toHaveBeenCalledTimes(callsBefore);
+      }
+    }
+  });
+
+  it("settles a fully-manual settings exit without starting WebDAV sync", async () => {
+    const { cancelApply } = installRuntime();
+    const reload = vi.fn(async () => ({
+      status: "loaded",
+      ...configDocument("rev-2", { mode: "fully-manual" })
+    } as SyncConfigLoadResult));
+    renderCoordinator({
+      document: configDocument("rev-1", { mode: "fully-manual" }),
+      reload
+    });
+    await act(async () => Promise.resolve());
+    expect(mockedRunApplicationSync).not.toHaveBeenCalled();
+
+    await act(() => emitSyncEditing({ active: true, revision: "rev-1", sessionId: "s1" }));
+    await act(() => emitSyncApplyRequested({
+      exitReason: "window-close",
+      revision: "rev-2",
+      sessionId: "s1",
+      source: "settings-exit",
+      token: "apply-manual"
+    }));
+    await act(() => emitSyncEditing({ active: false, revision: "rev-2", sessionId: "s1" }));
+
+    await waitFor(() => expect(cancelApply).toHaveBeenCalledWith({
+      revision: "rev-2",
+      sessionId: "s1",
+      token: "apply-manual"
+    }));
+    expect(mockedRunApplicationSync).not.toHaveBeenCalled();
   });
 
   it("coalesces save and manual callers by root and revision while preserving the manual result", async () => {

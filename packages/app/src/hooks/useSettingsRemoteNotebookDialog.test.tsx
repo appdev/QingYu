@@ -20,9 +20,9 @@ const mockedRequestPrimaryCloudNotebookRestore = vi.mocked(requestPrimaryCloudNo
 function document(revision = "rev-2"): SyncConfigDocument {
   return {
     config: {
-      autoSyncOnSave: false,
       enabled: true,
-      intervalMinutes: 0,
+      intervalSeconds: 30,
+      mode: "startup-exit",
       provider: "webdav",
       remoteRoot: "qingyu",
       s3: {
@@ -35,7 +35,7 @@ function document(revision = "rev-2"): SyncConfigDocument {
         addressingStyle: "auto",
         tlsVerification: "verify"
       },
-      version: 2,
+      version: 3,
       webdav: { password: "", serverUrl: "https://dav.example.test", username: "" }
     },
     configured: true,

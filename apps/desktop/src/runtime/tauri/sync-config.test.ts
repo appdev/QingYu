@@ -23,12 +23,12 @@ describe("native application sync config runtime", () => {
   it("maps config mutations without a project or notes root", async () => {
     mockedInvoke.mockResolvedValue({});
     const config = {
-      version: 2 as const,
+      version: 3 as const,
       enabled: true,
       provider: "webdav" as const,
       remoteRoot: "qingyu",
-      autoSyncOnSave: false,
-      intervalMinutes: 0,
+      mode: "startup-exit" as const,
+      intervalSeconds: 300,
       webdav: { serverUrl: "https://dav.example.test", username: "writer", password: "password" },
       s3: {
         endpointUrl: "",
@@ -49,6 +49,14 @@ describe("native application sync config runtime", () => {
       expectedRevision: "rev-1",
       patch: { field: "remoteRoot", value: "qingyu/team" }
     });
+    await patchNativeSyncConfig({
+      expectedRevision: "rev-2",
+      patch: { field: "mode", value: "fully-manual" }
+    });
+    await patchNativeSyncConfig({
+      expectedRevision: "rev-3",
+      patch: { field: "intervalSeconds", value: 600 }
+    });
     await recoverNativeSyncConfig({ config, expectedRevision: "bad-rev" });
     await resetNativeSyncConfig({ confirmed: true, expectedRevision: "bad-rev" });
     await setNativeSyncConfigEditing({ active: true, revision: "rev-1", sessionId: "settings-1" });
@@ -67,6 +75,14 @@ describe("native application sync config runtime", () => {
       ["patch_sync_config", { request: {
         expectedRevision: "rev-1",
         patch: { field: "remoteRoot", value: "qingyu/team" }
+      } }],
+      ["patch_sync_config", { request: {
+        expectedRevision: "rev-2",
+        patch: { field: "mode", value: "fully-manual" }
+      } }],
+      ["patch_sync_config", { request: {
+        expectedRevision: "rev-3",
+        patch: { field: "intervalSeconds", value: 600 }
       } }],
       ["recover_sync_config", { request: { config, expectedRevision: "bad-rev" } }],
       ["reset_sync_config", { request: { confirmed: true, expectedRevision: "bad-rev" } }],

@@ -7,9 +7,9 @@ import { useSyncConfig } from "./useSyncConfig";
 function loaded(revision: string, password: string): SyncConfigLoadResult {
   return {
     config: {
-      autoSyncOnSave: true,
       enabled: true,
-      intervalMinutes: 0,
+      intervalSeconds: 30,
+      mode: "automatic",
       provider: "webdav",
       remoteRoot: "qingyu",
       s3: {
@@ -22,7 +22,7 @@ function loaded(revision: string, password: string): SyncConfigLoadResult {
         addressingStyle: "auto",
         tlsVerification: "verify"
       },
-      version: 2,
+      version: 3,
       webdav: {
         password,
         serverUrl: "https://dav.example.test",

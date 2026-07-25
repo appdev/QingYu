@@ -9,12 +9,12 @@ import {
 describe("application sync config contract", () => {
   it("applies every supported field patch without mutating the source config", () => {
     const source: QingYuSyncConfig = {
-      version: 2,
+      version: 3,
       enabled: false,
       provider: "webdav",
       remoteRoot: "qingyu",
-      autoSyncOnSave: false,
-      intervalMinutes: 0,
+      mode: "automatic",
+      intervalSeconds: 30,
       webdav: { serverUrl: "https://dav.old", username: "old", password: "secret" },
       s3: {
         endpointUrl: "",
@@ -29,6 +29,8 @@ describe("application sync config contract", () => {
     };
 
     const remote = applySyncConfigPatch(source, { field: "remoteRoot", value: "qingyu/team" });
+    const mode = applySyncConfigPatch(source, { field: "mode", value: "startup-exit" });
+    const interval = applySyncConfigPatch(source, { field: "intervalSeconds", value: 300 });
     const webdav = applySyncConfigPatch(source, { field: "webdav.username", value: "new" });
     const s3 = applySyncConfigPatch(source, { field: "s3.bucket", value: "notes" });
     const timeout = applySyncConfigPatch(source, {
@@ -45,6 +47,8 @@ describe("application sync config contract", () => {
     });
 
     expect(remote.remoteRoot).toBe("qingyu/team");
+    expect(mode.mode).toBe("startup-exit");
+    expect(interval.intervalSeconds).toBe(300);
     expect(webdav.webdav).toEqual({ ...source.webdav, username: "new" });
     expect(s3.s3).toEqual({ ...source.s3, bucket: "notes" });
     expect(timeout.s3).toEqual({ ...source.s3, requestTimeoutSeconds: 120 });
@@ -59,12 +63,12 @@ describe("application sync config contract", () => {
 
   it("keeps the config flat and free of project identity fields", () => {
     const config: QingYuSyncConfig = {
-      version: 2,
+      version: 3,
       enabled: false,
       provider: "webdav",
       remoteRoot: "qingyu",
-      autoSyncOnSave: false,
-      intervalMinutes: 0,
+      mode: "fully-manual",
+      intervalSeconds: 43_200,
       webdav: { serverUrl: "", username: "", password: "" },
       s3: {
         endpointUrl: "",
@@ -100,9 +104,9 @@ describe("application sync config contract", () => {
   ])("preserves the explicit configured flag for a %s disabled config", (_label, configured) => {
     const loaded = {
       config: {
-        autoSyncOnSave: false,
         enabled: false,
-        intervalMinutes: 0,
+        intervalSeconds: 30,
+        mode: "automatic" as const,
         provider: "webdav" as const,
         remoteRoot: configured ? "qingyu" : "",
         s3: {
@@ -115,7 +119,7 @@ describe("application sync config contract", () => {
           addressingStyle: "auto" as const,
           tlsVerification: "verify" as const
         },
-        version: 2 as const,
+        version: 3 as const,
         webdav: {
           password: "",
           serverUrl: configured ? "https://dav.example.test" : "",

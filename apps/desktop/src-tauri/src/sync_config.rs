@@ -997,7 +997,7 @@ mod tests {
             config_path(app_data.path()),
             app_data.path().join("sync-config.json")
         );
-        assert_eq!(stored.document.config.version, 2);
+        assert_eq!(stored.document.config.version, 3);
         assert!(!stored.document.config.enabled);
         assert_eq!(
             fs::read(notes.path().join(".qingyu/config.json")).unwrap(),

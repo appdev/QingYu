@@ -30,9 +30,9 @@ const inputClass = "min-h-11 min-w-0 max-w-full w-full rounded-xl border border-
 
 function defaultSyncConfig(provider: SyncProvider = "webdav"): QingYuSyncConfig {
   return {
-    autoSyncOnSave: false,
     enabled: false,
-    intervalMinutes: 0,
+    intervalSeconds: 30,
+    mode: "automatic",
     provider,
     remoteRoot: "qingyu",
     s3: {
@@ -45,7 +45,7 @@ function defaultSyncConfig(provider: SyncProvider = "webdav"): QingYuSyncConfig 
       addressingStyle: "auto",
       tlsVerification: "verify"
     },
-    version: 2,
+    version: 3,
     webdav: {
       password: "",
       serverUrl: "",
@@ -509,31 +509,40 @@ export function CompactSyncFormScreen({
             </div>
           )}
 
-          <label className="flex min-h-11 min-w-0 items-center justify-between gap-3 text-sm font-medium">
-            <span className="min-w-0 break-words">{t(language, "compact.sync.autoSyncOnSave")}</span>
-            <input
-              aria-label={t(language, "compact.sync.autoSyncOnSave")}
-              checked={draft.autoSyncOnSave}
-              className="min-h-11 min-w-0 max-w-full accent-(--accent)"
+          <Field label={t(language, "settings.sync.mode")}>
+            <select
+              aria-label={t(language, "settings.sync.mode")}
+              className={inputClass}
               disabled={fieldsDisabled}
-              type="checkbox"
-              onChange={(event) => update({ field: "autoSyncOnSave", value: event.currentTarget.checked })}
-            />
-          </label>
+              value={draft.mode}
+              onChange={(event) => update({
+                field: "mode",
+                value: event.currentTarget.value === "startup-exit"
+                  ? "startup-exit"
+                  : event.currentTarget.value === "fully-manual"
+                    ? "fully-manual"
+                    : "automatic"
+              })}
+            >
+              <option value="automatic">{t(language, "settings.sync.mode.automatic")}</option>
+              <option value="startup-exit">{t(language, "settings.sync.mode.startupExit")}</option>
+              <option value="fully-manual">{t(language, "settings.sync.mode.fullyManual")}</option>
+            </select>
+          </Field>
 
-          <Field label={t(language, "settings.sync.intervalMinutes")}>
+          <Field label={t(language, "settings.sync.intervalSeconds")}>
             <input
-              aria-label={t(language, "settings.sync.intervalMinutes")}
+              aria-label={t(language, "settings.sync.intervalSeconds")}
               className={inputClass}
               disabled={fieldsDisabled}
               inputMode="numeric"
-              max={1440}
-              min={0}
+              max={43200}
+              min={30}
               type="number"
-              value={draft.intervalMinutes}
+              value={draft.intervalSeconds}
               onChange={(event) => update({
-                field: "intervalMinutes",
-                value: Math.min(1440, Math.max(0, Number(event.currentTarget.value) || 0))
+                field: "intervalSeconds",
+                value: Math.min(43200, Math.max(30, Number(event.currentTarget.value) || 30))
               })}
             />
           </Field>

@@ -6,6 +6,7 @@ import type {
   SyncConfigDocument,
   SyncConfigLoadResult,
   NormalSyncRunRequest,
+  SyncMode,
   SyncProvider,
   SyncRunResult,
   SyncSafeError,
@@ -83,6 +84,15 @@ const automaticTriggers = new Set<SyncTrigger>([
   "save",
   "settings-exit"
 ]);
+
+function isTriggerEligible(mode: SyncMode, trigger: SyncTrigger) {
+  if (trigger === "manual") return true;
+  if (mode === "fully-manual") return false;
+  if (mode === "startup-exit") {
+    return trigger === "app-launch" || trigger === "settings-exit";
+  }
+  return true;
+}
 const freshnessErrorCodes = new Set([
   "revision-conflict",
   "sync-config-absent",
@@ -568,6 +578,9 @@ export function useAppSyncCoordinator({
     const generation = generationRef.current;
     const settingsApply = trigger === "settings-exit" && Boolean(applyToken);
     const ownedSettingsApply = settingsApply && ownedSettingsRoot === root;
+    if (document && !isTriggerEligible(document.config.mode, trigger)) {
+      return { error: null, result: null };
+    }
     if (
       !root ||
       !revision ||
@@ -685,7 +698,9 @@ export function useAppSyncCoordinator({
   const notifyDocumentSaved = useCallback(async (documentPath: string) => {
     const root = primaryRootRef.current;
     const document = configRef.current;
-    if (!root || !isReady(document) || !document.config.autoSyncOnSave) return null;
+    if (!root || !isReady(document) || !isTriggerEligible(document.config.mode, "save")) {
+      return null;
+    }
     const generation = generationRef.current;
     let member = false;
     try {
@@ -765,6 +780,17 @@ export function useAppSyncCoordinator({
         if (!document) {
           blockedRevisionRef.current = pending.revision;
           setTimerVersion((value) => value + 1);
+        }
+        if (document && !isTriggerEligible(document.config.mode, "settings-exit")) {
+          return getAppRuntime().syncConfig.cancelApply({
+            revision: pending.revision,
+            sessionId: pending.sessionId,
+            token: pending.token
+          }).catch((error) => {
+            appLogger.error("sync", "Manual sync mode apply cancellation failed", {
+              error: error instanceof Error ? error.message : String(error)
+            });
+          });
         }
         return runDetailedRef.current(
           "settings-exit",
@@ -947,7 +973,12 @@ export function useAppSyncCoordinator({
   }, [installReloaded, primaryRoot, showSyncFailureToast]);
 
   useEffect(() => {
-    if (!primaryRoot || barrierRef.current !== "ready" || !isReady(configDocument)) return;
+    if (
+      !primaryRoot ||
+      barrierRef.current !== "ready" ||
+      !isReady(configDocument) ||
+      !isTriggerEligible(configDocument.config.mode, "app-launch")
+    ) return;
     const identity = `${primaryRoot}\u0000${configDocument.revision}`;
     if (launchIdentityRef.current === identity) return;
     launchIdentityRef.current = identity;
@@ -959,13 +990,13 @@ export function useAppSyncCoordinator({
       !primaryRoot ||
       barrierRef.current !== "ready" ||
       !isReady(configDocument) ||
-      configDocument.config.intervalMinutes <= 0 ||
+      !isTriggerEligible(configDocument.config.mode, "interval") ||
       blockedRevisionRef.current === configDocument.revision ||
       editingSession
     ) return;
     const timer = window.setInterval(() => {
       run("interval", configDocument.revision).catch(() => {});
-    }, configDocument.config.intervalMinutes * 60 * 1000);
+    }, configDocument.config.intervalSeconds * 1000);
     return () => window.clearInterval(timer);
   }, [barrierVersion, configDocument, editingSession, primaryRoot, run, timerVersion]);
 

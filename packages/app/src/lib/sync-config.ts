@@ -1,16 +1,17 @@
 export type SyncProvider = "s3" | "webdav";
+export type SyncMode = "automatic" | "startup-exit" | "fully-manual";
 export type S3AddressingStyle = "auto" | "path" | "virtual-hosted";
 export type S3TlsVerification = "skip" | "verify";
 export type SyncConfigReadiness = "disabled" | "incomplete" | "ready";
 export type SyncTrigger = "app-launch" | "interval" | "manual" | "save" | "settings-exit";
 
 export type QingYuSyncConfig = {
-  version: 2;
+  version: 3;
   enabled: boolean;
   provider: SyncProvider;
   remoteRoot: string;
-  autoSyncOnSave: boolean;
-  intervalMinutes: number;
+  mode: SyncMode;
+  intervalSeconds: number;
   webdav: {
     serverUrl: string;
     username: string;
@@ -32,8 +33,8 @@ export type SyncConfigPatch =
   | { field: "enabled"; value: boolean }
   | { field: "provider"; value: SyncProvider }
   | { field: "remoteRoot"; value: string }
-  | { field: "autoSyncOnSave"; value: boolean }
-  | { field: "intervalMinutes"; value: number }
+  | { field: "mode"; value: SyncMode }
+  | { field: "intervalSeconds"; value: number }
   | { field: "webdav.serverUrl" | "webdav.username" | "webdav.password"; value: string }
   | {
       field:
@@ -55,8 +56,8 @@ export function applySyncConfigPatch(
   if (patch.field === "enabled") return { ...config, enabled: patch.value };
   if (patch.field === "provider") return { ...config, provider: patch.value };
   if (patch.field === "remoteRoot") return { ...config, remoteRoot: patch.value };
-  if (patch.field === "autoSyncOnSave") return { ...config, autoSyncOnSave: patch.value };
-  if (patch.field === "intervalMinutes") return { ...config, intervalMinutes: patch.value };
+  if (patch.field === "mode") return { ...config, mode: patch.value };
+  if (patch.field === "intervalSeconds") return { ...config, intervalSeconds: patch.value };
   if (patch.field === "webdav.serverUrl") {
     return { ...config, webdav: { ...config.webdav, serverUrl: patch.value } };
   }

@@ -1344,6 +1344,41 @@ mod tests {
     }
 
     #[test]
+    fn version_two_config_is_unsupported_without_heuristic_migration() {
+        let legacy = serde_json::json!({
+            "version": 2,
+            "enabled": false,
+            "provider": "webdav",
+            "remoteRoot": "qingyu",
+            "autoSyncOnSave": true,
+            "intervalMinutes": 5,
+            "webdav": {
+                "serverUrl": "https://dav.example.test",
+                "username": "writer",
+                "password": "private"
+            },
+            "s3": {
+                "endpointUrl": "",
+                "region": "",
+                "bucket": "",
+                "accessKeyId": "",
+                "secretAccessKey": "",
+                "requestTimeoutSeconds": 60,
+                "addressingStyle": "auto",
+                "tlsVerification": "verify"
+            }
+        });
+
+        let SyncConfigLoadResponse::Unsupported { version, .. } =
+            classify(&serde_json::to_vec(&legacy).unwrap())
+        else {
+            panic!("version 2 must remain unsupported rather than being migrated");
+        };
+
+        assert_eq!(version, 2);
+    }
+
+    #[test]
     fn malformed_config_blocks_patch_and_unconfirmed_reset() {
         let app_data = tempdir().unwrap();
         let invalid = b"{invalid";
@@ -1915,7 +1950,16 @@ mod tests {
             &enabled.document.revision,
             vec![
                 SyncConfigPatch::RemoteRoot("archive".into()),
-                SyncConfigPatch::AutoSyncOnSave(true),
+                serde_json::from_value(serde_json::json!({
+                    "field": "mode",
+                    "value": "startup-exit"
+                }))
+                .unwrap(),
+                serde_json::from_value(serde_json::json!({
+                    "field": "intervalSeconds",
+                    "value": 300
+                }))
+                .unwrap(),
                 SyncConfigPatch::WebDavUsername("user".into()),
                 SyncConfigPatch::WebDavPassword("secret".into()),
             ],
@@ -1924,7 +1968,9 @@ mod tests {
 
         assert_ne!(updated.document.revision, enabled.document.revision);
         assert_eq!(updated.document.config.remote_root, "archive");
-        assert!(updated.document.config.auto_sync_on_save);
+        let config = serde_json::to_value(&updated.document.config).unwrap();
+        assert_eq!(config["mode"], "startup-exit");
+        assert_eq!(config["intervalSeconds"], 300);
         assert_eq!(updated.document.config.webdav.username, "user");
         assert_eq!(updated.document.config.webdav.password, "secret");
     }

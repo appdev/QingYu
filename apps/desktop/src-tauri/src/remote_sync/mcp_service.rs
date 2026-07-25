@@ -19,7 +19,7 @@ use crate::{
         emit_sync_config_changed,
         model::{
             SyncConfigDocument, SyncConfigIssue, SyncConfigLoadResponse, SyncConfigPatch,
-            SyncConfigReadiness, SyncConnectionTestResult, SyncProvider,
+            SyncConfigReadiness, SyncConnectionTestResult, SyncMode, SyncProvider,
         },
         ready_snapshot_at_app_data,
         status::{
@@ -39,8 +39,9 @@ pub(crate) struct SyncConfigPatchInput {
     #[schemars(with = "Option<String>")]
     pub(crate) provider: Option<SyncProvider>,
     pub(crate) remote_root: Option<String>,
-    pub(crate) auto_sync_on_save: Option<bool>,
-    pub(crate) interval_minutes: Option<u32>,
+    #[schemars(with = "Option<String>")]
+    pub(crate) mode: Option<SyncMode>,
+    pub(crate) interval_seconds: Option<u32>,
     pub(crate) webdav_server_url: Option<String>,
     pub(crate) s3_endpoint_url: Option<String>,
     pub(crate) s3_region: Option<String>,
@@ -65,8 +66,8 @@ pub(crate) struct SanitizedSyncConfig {
     pub(crate) enabled: bool,
     pub(crate) provider: SyncProvider,
     pub(crate) remote_root: String,
-    pub(crate) auto_sync_on_save: bool,
-    pub(crate) interval_minutes: u32,
+    pub(crate) mode: SyncMode,
+    pub(crate) interval_seconds: u32,
     pub(crate) webdav_server_url: String,
     pub(crate) s3_endpoint_url: String,
     pub(crate) s3_region: String,
@@ -474,13 +475,10 @@ impl SyncService {
             &mut patches,
             input.remote_root.map(SyncConfigPatch::RemoteRoot),
         );
+        push_patch(&mut patches, input.mode.map(SyncConfigPatch::Mode));
         push_patch(
             &mut patches,
-            input.auto_sync_on_save.map(SyncConfigPatch::AutoSyncOnSave),
-        );
-        push_patch(
-            &mut patches,
-            input.interval_minutes.map(SyncConfigPatch::IntervalMinutes),
+            input.interval_seconds.map(SyncConfigPatch::IntervalSeconds),
         );
         push_patch(
             &mut patches,
@@ -713,8 +711,8 @@ fn sanitize_document(document: SyncConfigDocument) -> SanitizedSyncConfig {
         enabled: config.enabled,
         provider: config.provider,
         remote_root: config.remote_root,
-        auto_sync_on_save: config.auto_sync_on_save,
-        interval_minutes: config.interval_minutes,
+        mode: config.mode,
+        interval_seconds: config.interval_seconds,
         webdav_server_url: config.webdav.server_url,
         s3_endpoint_url: config.s3.endpoint_url,
         s3_region: config.s3.region,

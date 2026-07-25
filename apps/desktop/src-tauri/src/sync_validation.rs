@@ -9,7 +9,7 @@ pub(crate) enum SyncValueIssue {
 }
 
 pub(crate) fn normalize_interval(value: u32) -> u32 {
-    value.min(1_440)
+    value.clamp(30, 43_200)
 }
 
 pub(crate) fn normalize_non_secret(value: &mut String) {
@@ -109,5 +109,19 @@ mod tests {
     #[test]
     fn empty_remote_root_remains_a_required_issue() {
         assert_eq!(validate_remote_root("  "), Some(SyncValueIssue::Required));
+    }
+
+    #[test]
+    fn sync_interval_seconds_clamp_to_the_inclusive_supported_range() {
+        for (value, expected) in [
+            (0, 30),
+            (29, 30),
+            (30, 30),
+            (43_200, 43_200),
+            (43_201, 43_200),
+            (u32::MAX, 43_200),
+        ] {
+            assert_eq!(normalize_interval(value), expected, "input {value}");
+        }
     }
 }

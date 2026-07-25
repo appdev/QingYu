@@ -7,9 +7,9 @@ import { CompactSyncStatusScreen } from "./CompactSyncStatusScreen";
 function document(): SyncConfigDocument {
   return {
     config: {
-      autoSyncOnSave: false,
       enabled: true,
-      intervalMinutes: 0,
+      intervalSeconds: 30,
+      mode: "startup-exit",
       provider: "webdav",
       remoteRoot: "qingyu",
       s3: {
@@ -22,7 +22,7 @@ function document(): SyncConfigDocument {
         addressingStyle: "auto",
         tlsVerification: "verify"
       },
-      version: 2,
+      version: 3,
       webdav: { password: "", serverUrl: "https://dav.example.test", username: "" }
     },
     configured: true,

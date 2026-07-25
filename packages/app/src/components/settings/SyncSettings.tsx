@@ -370,12 +370,23 @@ export function SyncSettings({
           <SettingsTextInput label={translate("settings.sync.remotePath")} value={config.remoteRoot} placeholder={translate("settings.sync.remotePathPlaceholder")} widthClassName="w-64" onChange={(value) => queuePatch({ field: "remoteRoot", value })} />
         } />
       </SettingsSection>
-      <SettingsSection label={translate("settings.sync.section.automatic")}>
-        <SettingsRow title={translate("settings.sync.autoSyncOnSave")} description={translate("settings.sync.autoSyncOnSaveDescription")} action={
-          <SettingsSwitch checked={config.autoSyncOnSave} label={translate("settings.sync.autoSyncOnSave")} onChange={() => queuePatch({ field: "autoSyncOnSave", value: !config.autoSyncOnSave })} />
+      <SettingsSection label={translate("settings.sync.section.scheduling")}>
+        <SettingsRow title={translate("settings.sync.mode")} description={translate("settings.sync.modeDescription")} action={
+          <SettingsSelect label={translate("settings.sync.mode")} options={[
+            { label: translate("settings.sync.mode.automatic"), value: "automatic" },
+            { label: translate("settings.sync.mode.startupExit"), value: "startup-exit" },
+            { label: translate("settings.sync.mode.fullyManual"), value: "fully-manual" }
+          ]} value={config.mode} onChange={(value) => queuePatch({
+            field: "mode",
+            value: value === "startup-exit"
+              ? "startup-exit"
+              : value === "fully-manual"
+                ? "fully-manual"
+                : "automatic"
+          })} />
         } />
-        <SettingsRow title={translate("settings.sync.intervalMinutes")} description={translate("settings.sync.intervalMinutesDescription")} action={
-          <SettingsNumberInput label={translate("settings.sync.intervalMinutes")} min={0} max={1440} unit={translate("settings.sync.intervalUnit")} value={config.intervalMinutes} onChange={(value) => queuePatch({ field: "intervalMinutes", value })} />
+        <SettingsRow title={translate("settings.sync.intervalSeconds")} description={translate("settings.sync.intervalSecondsDescription")} action={
+          <SettingsNumberInput label={translate("settings.sync.intervalSeconds")} min={30} max={43200} unit={translate("settings.sync.seconds")} value={config.intervalSeconds} onChange={(value) => queuePatch({ field: "intervalSeconds", value })} />
         } />
       </SettingsSection>
       {config.provider === "webdav" ? (
