@@ -6,7 +6,7 @@ use std::sync::Arc;
 use cap_std::fs::{Dir, File as CapFile};
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 
-use crate::atomic_write::create_cap_staged_file;
+use crate::atomic_write::{create_cap_staged_file, CapStagedFile};
 use crate::cloud::{Cloud, CloudError};
 use crate::indexer::{self, IndexHook, NoopIndexHook};
 use crate::path_security::{
@@ -14,7 +14,9 @@ use crate::path_security::{
     validate_windows_directory_components_before_canonicalize,
 };
 use crate::purge::{purge_store_with_cancel_check, PurgeStat};
-use crate::store::{open_absolute_dir_nofollow, open_child_directory};
+use crate::store::{
+    open_absolute_dir_nofollow, open_child_directory, open_or_create_absolute_dir_nofollow,
+};
 use crate::sync_lock::{acquire_remote_lock, RemoteLockGuard};
 use crate::{File, History, Index, RefStore, RepoError, Store};
 
@@ -47,6 +49,8 @@ pub struct Repo {
     pub(crate) protected_include_paths: Vec<String>,
     pub(crate) ignore_matcher: Gitignore,
     pub(crate) store: Store,
+    pub(crate) temp_dir: Dir,
+    pub(crate) temp_gate: crate::lifecycle::LifecycleGate,
     pub(crate) history: History,
     pub(crate) index_hook: Arc<dyn IndexHook>,
 }
@@ -112,6 +116,13 @@ impl Repo {
         let data_gate = crate::lifecycle::LifecycleGate::for_directory(&data_dir)?;
         let store = Store::new(&paths.repo, key)?;
         let history = History::new(&paths.history)?;
+        let temp_dir = open_or_create_absolute_dir_nofollow(&paths.temp)?;
+        let temp_gate = crate::lifecycle::LifecycleGate::for_directory(&temp_dir)?;
+        match temp_gate.try_acquire() {
+            Ok(_cleanup_guard) => cleanup_abandoned_downloads(&temp_dir)?,
+            Err(RepoError::RepositoryBusy) => {}
+            Err(error) => return Err(error),
+        }
 
         Ok(Self {
             data_dir,
@@ -121,8 +132,22 @@ impl Repo {
             protected_include_paths,
             ignore_matcher,
             store,
+            temp_dir,
+            temp_gate,
             history,
             index_hook,
+        })
+    }
+
+    pub(crate) fn create_staged_download(&self) -> Result<RepoStagedDownload, RepoError> {
+        let temp_guard = self.temp_gate.try_acquire()?;
+        Ok(RepoStagedDownload {
+            staged: create_cap_staged_file(
+                &self.temp_dir,
+                std::ffi::OsStr::new("download.tmp"),
+                0o600,
+            )?,
+            _temp_guard: temp_guard,
         })
     }
 
@@ -338,6 +363,44 @@ impl Repo {
     }
 }
 
+pub(crate) struct RepoStagedDownload {
+    staged: CapStagedFile,
+    _temp_guard: tokio::sync::OwnedMutexGuard<()>,
+}
+
+impl RepoStagedDownload {
+    pub(crate) fn writer(&self) -> Result<tokio::fs::File, RepoError> {
+        Ok(tokio::fs::File::from_std(
+            self.staged.file().try_clone()?.into_std(),
+        ))
+    }
+
+    pub(crate) fn file(&self) -> &CapFile {
+        self.staged.file()
+    }
+}
+
+fn cleanup_abandoned_downloads(temp_dir: &Dir) -> Result<(), RepoError> {
+    for entry in temp_dir.entries()? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let Some(name_text) = name.to_str() else {
+            continue;
+        };
+        if !name_text.starts_with("stage-") || !name_text.ends_with(".tmp") {
+            continue;
+        }
+        let metadata = temp_dir.symlink_metadata(&name)?;
+        if metadata.file_type().is_file()
+            || metadata.file_type().is_symlink()
+            || cap_metadata_is_reparse(&metadata)
+        {
+            temp_dir.remove_file(&name)?;
+        }
+    }
+    Ok(())
+}
+
 fn validate_repository_file_path(path: &str) -> Result<Vec<std::ffi::OsString>, RepoError> {
     if path == "/" || !path.starts_with('/') || path.contains('\\') {
         return Err(RepoError::UnsafePath);
@@ -481,6 +544,7 @@ mod tests {
 
     use filetime::FileTime;
     use tempfile::TempDir;
+    use tokio::io::AsyncWriteExt;
 
     use crate::{Chunk, File, RepoError};
 
@@ -507,6 +571,92 @@ mod tests {
         )
         .unwrap();
         (temp, repo)
+    }
+
+    #[tokio::test]
+    async fn dropping_a_staged_download_removes_its_partial_task_owned_file() {
+        let (temp, repo) = repo_fixture();
+        let staged = repo.create_staged_download().unwrap();
+        let mut writer = staged.writer().unwrap();
+        writer.write_all(b"partial").await.unwrap();
+        writer.flush().await.unwrap();
+        drop(writer);
+        assert_eq!(fs::read_dir(temp.path().join("temp")).unwrap().count(), 1);
+
+        drop(staged);
+
+        assert_eq!(fs::read_dir(temp.path().join("temp")).unwrap().count(), 0);
+    }
+
+    #[tokio::test]
+    async fn opening_another_repo_does_not_clean_an_active_download_stage() {
+        let (temp, first) = repo_fixture();
+        let staged = first.create_staged_download().unwrap();
+        let mut writer = staged.writer().unwrap();
+        writer.write_all(b"active").await.unwrap();
+        writer.flush().await.unwrap();
+        drop(writer);
+        let second_data = temp.path().join("data-second");
+        fs::create_dir_all(&second_data).unwrap();
+
+        let second = Repo::open(
+            RepoPaths {
+                data: second_data,
+                repo: temp.path().join("repo-second"),
+                history: temp.path().join("history-second"),
+                temp: temp.path().join("temp"),
+            },
+            Device {
+                id: "second".to_owned(),
+                name: "QingYu".to_owned(),
+                os: "test".to_owned(),
+            },
+            [3; 32],
+            RepoOptions::default(),
+        )
+        .unwrap();
+
+        assert_eq!(fs::read_dir(temp.path().join("temp")).unwrap().count(), 1);
+        drop(second);
+        drop(staged);
+        assert_eq!(fs::read_dir(temp.path().join("temp")).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn opening_a_repo_cleans_only_abandoned_stages_inside_its_own_temp_root() {
+        let root = TempDir::new().unwrap();
+        let own_temp = root.path().join("own-temp");
+        let other_temp = root.path().join("other-temp");
+        fs::create_dir_all(&own_temp).unwrap();
+        fs::create_dir_all(&other_temp).unwrap();
+        fs::write(own_temp.join("stage-abandoned.tmp"), b"own").unwrap();
+        fs::write(other_temp.join("stage-neighbor.tmp"), b"other").unwrap();
+        let data = root.path().join("data");
+        fs::create_dir_all(&data).unwrap();
+
+        let repo = Repo::open(
+            RepoPaths {
+                data,
+                repo: root.path().join("repo"),
+                history: root.path().join("history"),
+                temp: own_temp.clone(),
+            },
+            Device {
+                id: "device".to_owned(),
+                name: "QingYu".to_owned(),
+                os: "test".to_owned(),
+            },
+            [3; 32],
+            RepoOptions::default(),
+        )
+        .unwrap();
+
+        assert_eq!(fs::read_dir(&own_temp).unwrap().count(), 0);
+        assert_eq!(
+            fs::read(other_temp.join("stage-neighbor.tmp")).unwrap(),
+            b"other"
+        );
+        drop(repo);
     }
 
     #[tokio::test]

@@ -1,12 +1,17 @@
-use std::io::{BufReader, Cursor, Read};
+use std::ffi::OsString;
+use std::io::{BufReader, Cursor, Read, Seek, SeekFrom, Write};
 use std::path::{Component, Path, PathBuf};
+use std::pin::Pin;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use cap_fs_ext::{DirExt, FollowSymlinks, OpenOptionsFollowExt};
 use cap_std::ambient_authority;
 use cap_std::fs::{Dir, OpenOptions};
+use serde::de::DeserializeOwned;
+use tokio::io::AsyncRead;
 
 use crate::atomic_write::{stage_cap_file, CapStagedFile};
+use crate::cloud::{CloudError, CloudUploadSource};
 use crate::crypto::{decrypt, encrypt};
 use crate::path_security::{
     cap_metadata_is_reparse, std_metadata_is_reparse,
@@ -17,10 +22,8 @@ use crate::{CheckIndex, Chunk, File, Index, RepoError};
 const OBJECT_MODE: u32 = 0o644;
 const ZSTD_WINDOW_LOG: u32 = 19;
 const MAX_CHUNK_DECODED_SIZE: usize = 8 * 1024 * 1024;
-const MAX_FILE_DECODED_SIZE: usize = 64 * 1024 * 1024;
-const MAX_INDEX_DECODED_SIZE: usize = 512 * 1024 * 1024;
-const MAX_CHECK_INDEX_DECODED_SIZE: usize = 512 * 1024 * 1024;
 const RAW_ENCODING_OVERHEAD_LIMIT: usize = 1024 * 1024;
+pub(crate) const MAX_CHUNK_RAW_SIZE: usize = MAX_CHUNK_DECODED_SIZE + RAW_ENCODING_OVERHEAD_LIMIT;
 
 type OperationGuard = Arc<Mutex<()>>;
 
@@ -44,6 +47,38 @@ pub struct Store {
     key: [u8; 32],
     compressor: Mutex<zstd::bulk::Compressor<'static>>,
     decompressor: Mutex<zstd::zstd_safe::DCtx<'static>>,
+}
+
+pub(crate) struct StoreUploadSource {
+    parent: Dir,
+    name: OsString,
+    content_length: u64,
+}
+
+impl CloudUploadSource for StoreUploadSource {
+    fn content_length(&self) -> u64 {
+        self.content_length
+    }
+
+    fn open(&self) -> Result<Pin<Box<dyn AsyncRead + Send>>, CloudError> {
+        let mut options = OpenOptions::new();
+        options.read(true).follow(FollowSymlinks::No);
+        let file = self
+            .parent
+            .open_with(&self.name, &options)
+            .map_err(CloudError::Io)?;
+        let metadata = file.metadata().map_err(CloudError::Io)?;
+        if !metadata.file_type().is_file() || cap_metadata_is_reparse(&metadata) {
+            return Err(CloudError::UnsafeKey);
+        }
+        if metadata.len() != self.content_length {
+            return Err(CloudError::LengthMismatch {
+                expected: self.content_length,
+                actual: metadata.len(),
+            });
+        }
+        Ok(Box::pin(tokio::fs::File::from_std(file.into_std())))
+    }
 }
 
 impl Store {
@@ -113,8 +148,11 @@ impl Store {
         kind: RawObjectKind,
         id: &str,
     ) -> Result<bool, RepoError> {
-        match self.export_raw_unlocked(kind, id) {
-            Ok(_) => Ok(true),
+        match self.open_raw_file(kind, id) {
+            Ok(file) => {
+                self.validate_raw_file(kind, id, &file)?;
+                Ok(true)
+            }
             Err(RepoError::NotFound(_)) => Ok(false),
             Err(error) => Err(error),
         }
@@ -161,8 +199,8 @@ impl Store {
                     if !metadata.file_type().is_file() || cap_metadata_is_reparse(&metadata) {
                         return Err(RepoError::UnsafePath);
                     }
-                    let bytes = self.export_raw_unlocked(kind, id)?;
-                    self.validate_raw(kind, id, &bytes)?;
+                    let file = self.open_raw_file(kind, id)?;
+                    self.validate_raw_file(kind, id, &file)?;
                     ids.push(id.to_owned());
                 }
             }
@@ -197,9 +235,8 @@ impl Store {
                         if !metadata.file_type().is_file() || cap_metadata_is_reparse(&metadata) {
                             return Err(RepoError::UnsafePath);
                         }
-                        let path = self.raw_path(kind, &id)?;
-                        let bytes = self.read_raw_path(&path, &id, raw_limit(kind))?;
-                        match self.validate_raw(kind, &id, &bytes) {
+                        let file = self.open_raw_file(kind, &id)?;
+                        match self.validate_raw_file(kind, &id, &file) {
                             Ok(()) => ids.push(id),
                             Err(requested_error) => {
                                 let other_kind = match kind {
@@ -209,7 +246,7 @@ impl Store {
                                         unreachable!("index kinds use their own directories")
                                     }
                                 };
-                                if self.validate_raw(other_kind, &id, &bytes).is_err() {
+                                if self.validate_raw_file(other_kind, &id, &file).is_err() {
                                     return Err(requested_error);
                                 }
                             }
@@ -227,8 +264,7 @@ impl Store {
         kind: RawObjectKind,
         id: &str,
     ) -> Result<Vec<u8>, RepoError> {
-        let path = self.raw_path(kind, id)?;
-        let bytes = self.read_raw_path(&path, id, raw_limit(kind))?;
+        let bytes = self.read_raw(kind, id, raw_limit(kind))?;
         self.validate_raw(kind, id, &bytes)?;
         Ok(bytes)
     }
@@ -240,14 +276,14 @@ impl Store {
         bytes: &[u8],
     ) -> Result<(), RepoError> {
         validate_id(id)?;
-        if bytes.len() > raw_limit(kind) {
-            return Err(RepoError::DecodedSizeLimitExceeded {
-                limit: raw_limit(kind),
-            });
+        if let Some(limit) = raw_limit(kind) {
+            if bytes.len() > limit {
+                return Err(RepoError::DecodedSizeLimitExceeded { limit });
+            }
         }
         self.validate_raw(kind, id, bytes)?;
         let path = self.raw_path(kind, id)?;
-        match self.read_raw_path(&path, id, raw_limit(kind)) {
+        match self.read_raw(kind, id, raw_limit(kind)) {
             Ok(existing) => {
                 self.validate_raw(kind, id, &existing)?;
                 return if existing == bytes {
@@ -264,6 +300,76 @@ impl Store {
         self.write_immutable_object(&path, bytes)
     }
 
+    pub(crate) fn import_raw_staged_unlocked(
+        &self,
+        kind: RawObjectKind,
+        id: &str,
+        source: &cap_std::fs::File,
+    ) -> Result<(), RepoError> {
+        validate_id(id)?;
+        let path = self.raw_path(kind, id)?;
+        let relative = self.relative_store_path(&path)?;
+        let destination = relative
+            .file_name()
+            .ok_or(RepoError::InvalidData("object path must have a file name"))?;
+        let parent =
+            self.open_directory(relative.parent().unwrap_or_else(|| Path::new("")), true)?;
+        let staged =
+            crate::atomic_write::create_cap_staged_file(&parent, destination, OBJECT_MODE)?;
+        copy_cap_file(source, staged.file(), raw_limit(kind))?;
+        self.validate_raw_file(kind, id, staged.file())?;
+
+        match self.open_raw_file(kind, id) {
+            Ok(existing) => {
+                self.validate_raw_file(kind, id, &existing)?;
+                return if cap_files_equal(&existing, staged.file())? {
+                    Ok(())
+                } else {
+                    Err(RepoError::InvalidData(
+                        "immutable raw object already exists with different bytes",
+                    ))
+                };
+            }
+            Err(RepoError::NotFound(_)) => {}
+            Err(error) => return Err(error),
+        }
+
+        if staged.publish_no_replace()? == crate::atomic_write::PublishOutcome::AlreadyExists {
+            let existing = self.open_raw_file(kind, id)?;
+            self.validate_raw_file(kind, id, &existing)?;
+            if !cap_files_equal(&existing, source)? {
+                return Err(RepoError::InvalidData(
+                    "immutable raw object already exists with different bytes",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn open_raw_upload_source_unlocked(
+        &self,
+        kind: RawObjectKind,
+        id: &str,
+    ) -> Result<StoreUploadSource, RepoError> {
+        let path = self.raw_path(kind, id)?;
+        let relative = self.relative_store_path(&path)?;
+        let name = relative
+            .file_name()
+            .ok_or(RepoError::InvalidData("object path must have a file name"))?
+            .to_os_string();
+        let parent = self
+            .open_directory(relative.parent().unwrap_or_else(|| Path::new("")), false)
+            .map_err(|error| map_not_found(error, id))?;
+        let file = self.open_raw_file(kind, id)?;
+        self.validate_raw_file(kind, id, &file)?;
+        let content_length = file.metadata()?.len();
+        Ok(StoreUploadSource {
+            parent,
+            name,
+            content_length,
+        })
+    }
+
     fn validate_raw(&self, kind: RawObjectKind, id: &str, bytes: &[u8]) -> Result<(), RepoError> {
         match kind {
             RawObjectKind::Chunk => {
@@ -275,8 +381,8 @@ impl Store {
                 }
             }
             RawObjectKind::File => {
-                let decoded = self.decode_encrypted(bytes, MAX_FILE_DECODED_SIZE)?;
-                let file: File = serde_json::from_slice(&decoded)?;
+                let compressed = decrypt(bytes, &self.key)?;
+                let file: File = self.deserialize_compressed_reader(Cursor::new(compressed))?;
                 if file.id != id {
                     return Err(RepoError::InvalidData(
                         "file payload id does not match its key",
@@ -293,43 +399,75 @@ impl Store {
                 }
             }
             RawObjectKind::Index => {
-                let decoded = self.decompress(bytes, MAX_INDEX_DECODED_SIZE)?;
-                let index: Index = serde_json::from_slice(&decoded)?;
-                if index.id != id {
-                    return Err(RepoError::InvalidData(
-                        "index payload id does not match its key",
-                    ));
-                }
-                if index.count != index.files.len() || index.size < 0 {
-                    return Err(RepoError::InvalidData(
-                        "index payload count or size is invalid",
-                    ));
-                }
-                for file_id in &index.files {
-                    validate_id(file_id)?;
-                }
-                if !index.check_index_id.is_empty() {
-                    validate_id(&index.check_index_id)?;
-                }
-                if !index.verify_aes_key(&self.key) {
-                    return Err(RepoError::DecryptionFailed);
-                }
+                let index: Index = self.deserialize_compressed_reader(Cursor::new(bytes))?;
+                self.validate_index(id, &index)?;
             }
             RawObjectKind::CheckIndex => {
-                let decoded = self.decompress(bytes, MAX_CHECK_INDEX_DECODED_SIZE)?;
-                let check_index: CheckIndex = serde_json::from_slice(&decoded)?;
-                if check_index.id != id {
-                    return Err(RepoError::InvalidData(
-                        "check index payload id does not match its key",
-                    ));
-                }
-                validate_id(&check_index.index_id)?;
-                for file in &check_index.files {
-                    validate_id(&file.id)?;
-                    for chunk_id in &file.chunks {
-                        validate_id(chunk_id)?;
-                    }
-                }
+                let check_index: CheckIndex =
+                    self.deserialize_compressed_reader(Cursor::new(bytes))?;
+                self.validate_check_index(id, &check_index)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_raw_file(
+        &self,
+        kind: RawObjectKind,
+        id: &str,
+        file: &cap_std::fs::File,
+    ) -> Result<(), RepoError> {
+        match kind {
+            RawObjectKind::Chunk | RawObjectKind::File => {
+                let bytes = read_cap_file(file, raw_limit(kind))?;
+                self.validate_raw(kind, id, &bytes)
+            }
+            RawObjectKind::Index => {
+                let index: Index = self.deserialize_compressed_reader(rewound_clone(file)?)?;
+                self.validate_index(id, &index)
+            }
+            RawObjectKind::CheckIndex => {
+                let check_index: CheckIndex =
+                    self.deserialize_compressed_reader(rewound_clone(file)?)?;
+                self.validate_check_index(id, &check_index)
+            }
+        }
+    }
+
+    fn validate_index(&self, id: &str, index: &Index) -> Result<(), RepoError> {
+        if index.id != id {
+            return Err(RepoError::InvalidData(
+                "index payload id does not match its key",
+            ));
+        }
+        if index.count != index.files.len() || index.size < 0 {
+            return Err(RepoError::InvalidData(
+                "index payload count or size is invalid",
+            ));
+        }
+        for file_id in &index.files {
+            validate_id(file_id)?;
+        }
+        if !index.check_index_id.is_empty() {
+            validate_id(&index.check_index_id)?;
+        }
+        if !index.verify_aes_key(&self.key) {
+            return Err(RepoError::DecryptionFailed);
+        }
+        Ok(())
+    }
+
+    fn validate_check_index(&self, id: &str, check_index: &CheckIndex) -> Result<(), RepoError> {
+        if check_index.id != id {
+            return Err(RepoError::InvalidData(
+                "check index payload id does not match its key",
+            ));
+        }
+        validate_id(&check_index.index_id)?;
+        for file in &check_index.files {
+            validate_id(&file.id)?;
+            for chunk_id in &file.chunks {
+                validate_id(chunk_id)?;
             }
         }
         Ok(())
@@ -343,8 +481,9 @@ impl Store {
         }
     }
 
-    fn read_raw_path(&self, path: &Path, id: &str, limit: usize) -> Result<Vec<u8>, RepoError> {
-        let relative = self.relative_store_path(path)?;
+    fn open_raw_file(&self, kind: RawObjectKind, id: &str) -> Result<cap_std::fs::File, RepoError> {
+        let path = self.raw_path(kind, id)?;
+        let relative = self.relative_store_path(&path)?;
         let name = relative
             .file_name()
             .ok_or(RepoError::InvalidData("object path must have a file name"))?;
@@ -353,24 +492,24 @@ impl Store {
             .map_err(|error| map_not_found(error, id))?;
         let mut options = OpenOptions::new();
         options.read(true).follow(FollowSymlinks::No);
-        let mut file = parent
+        let file = parent
             .open_with(name, &options)
             .map_err(|error| map_object_io(error, id))?;
         let metadata = file.metadata()?;
         if !metadata.file_type().is_file() || cap_metadata_is_reparse(&metadata) {
             return Err(RepoError::UnsafePath);
         }
-        if metadata.len() > limit as u64 {
-            return Err(RepoError::DecodedSizeLimitExceeded { limit });
-        }
-        let mut bytes = Vec::with_capacity(metadata.len() as usize);
-        file.by_ref()
-            .take((limit as u64).saturating_add(1))
-            .read_to_end(&mut bytes)?;
-        if bytes.len() > limit {
-            return Err(RepoError::DecodedSizeLimitExceeded { limit });
-        }
-        Ok(bytes)
+        Ok(file)
+    }
+
+    fn read_raw(
+        &self,
+        kind: RawObjectKind,
+        id: &str,
+        limit: Option<usize>,
+    ) -> Result<Vec<u8>, RepoError> {
+        let file = self.open_raw_file(kind, id)?;
+        read_cap_file(&file, limit)
     }
 
     pub fn put_chunk(&self, chunk: &Chunk) -> Result<(), RepoError> {
@@ -421,8 +560,8 @@ impl Store {
 
     pub(crate) fn get_file_unlocked(&self, id: &str) -> Result<File, RepoError> {
         let encoded = self.export_raw_unlocked(RawObjectKind::File, id)?;
-        let json = self.decode_encrypted(&encoded, MAX_FILE_DECODED_SIZE)?;
-        Ok(serde_json::from_slice(&json)?)
+        let compressed = decrypt(&encoded, &self.key)?;
+        self.deserialize_compressed_reader(Cursor::new(compressed))
     }
 
     pub fn put_index(&self, index: &Index) -> Result<(), RepoError> {
@@ -472,9 +611,10 @@ impl Store {
     }
 
     pub(crate) fn get_index_unlocked(&self, id: &str) -> Result<Index, RepoError> {
-        let encoded = self.export_raw_unlocked(RawObjectKind::Index, id)?;
-        let json = self.decompress(&encoded, MAX_INDEX_DECODED_SIZE)?;
-        Ok(serde_json::from_slice(&json)?)
+        let file = self.open_raw_file(RawObjectKind::Index, id)?;
+        let index = self.deserialize_compressed_reader(rewound_clone(&file)?)?;
+        self.validate_index(id, &index)?;
+        Ok(index)
     }
 
     pub fn put_check_index(&self, check_index: &CheckIndex) -> Result<(), RepoError> {
@@ -500,9 +640,10 @@ impl Store {
     }
 
     pub(crate) fn get_check_index_unlocked(&self, id: &str) -> Result<CheckIndex, RepoError> {
-        let encoded = self.export_raw_unlocked(RawObjectKind::CheckIndex, id)?;
-        let json = self.decompress(&encoded, MAX_CHECK_INDEX_DECODED_SIZE)?;
-        Ok(serde_json::from_slice(&json)?)
+        let file = self.open_raw_file(RawObjectKind::CheckIndex, id)?;
+        let check_index = self.deserialize_compressed_reader(rewound_clone(&file)?)?;
+        self.validate_check_index(id, &check_index)?;
+        Ok(check_index)
     }
 
     fn write_object(&self, path: &Path, bytes: &[u8]) -> Result<(), RepoError> {
@@ -636,6 +777,39 @@ impl Store {
         Ok(decoded)
     }
 
+    fn deserialize_compressed_reader<T, R>(&self, reader: R) -> Result<T, RepoError>
+    where
+        T: DeserializeOwned,
+        R: Read,
+    {
+        let mut context = self.lock_decompressor()?;
+        context
+            .reset(zstd::zstd_safe::ResetDirective::SessionAndParameters)
+            .map_err(|_| {
+                RepoError::Compression(std::io::Error::other(
+                    "could not reset zstd decompression context",
+                ))
+            })?;
+        context
+            .set_parameter(zstd::zstd_safe::DParameter::WindowLogMax(ZSTD_WINDOW_LOG))
+            .map_err(|_| {
+                RepoError::Compression(std::io::Error::other(
+                    "could not set zstd decompression window limit",
+                ))
+            })?;
+        let decoder =
+            zstd::stream::read::Decoder::with_context(BufReader::new(reader), &mut context);
+        serde_json::from_reader(decoder).map_err(|error| {
+            if error.is_io() {
+                RepoError::InvalidData(
+                    "zstd frame is invalid or requires a window larger than 512 KiB",
+                )
+            } else {
+                RepoError::Serialization(error)
+            }
+        })
+    }
+
     fn lock_compressor(
         &self,
     ) -> Result<MutexGuard<'_, zstd::bulk::Compressor<'static>>, RepoError> {
@@ -653,14 +827,93 @@ impl Store {
     }
 }
 
-fn raw_limit(kind: RawObjectKind) -> usize {
-    let decoded = match kind {
-        RawObjectKind::Chunk => MAX_CHUNK_DECODED_SIZE,
-        RawObjectKind::File => MAX_FILE_DECODED_SIZE,
-        RawObjectKind::Index => MAX_INDEX_DECODED_SIZE,
-        RawObjectKind::CheckIndex => MAX_CHECK_INDEX_DECODED_SIZE,
-    };
-    decoded.saturating_add(RAW_ENCODING_OVERHEAD_LIMIT)
+fn raw_limit(kind: RawObjectKind) -> Option<usize> {
+    match kind {
+        RawObjectKind::Chunk => Some(MAX_CHUNK_RAW_SIZE),
+        RawObjectKind::File | RawObjectKind::Index | RawObjectKind::CheckIndex => None,
+    }
+}
+
+fn rewound_clone(file: &cap_std::fs::File) -> Result<cap_std::fs::File, RepoError> {
+    let mut reader = file.try_clone()?;
+    reader.seek(SeekFrom::Start(0))?;
+    Ok(reader)
+}
+
+fn read_cap_file(file: &cap_std::fs::File, limit: Option<usize>) -> Result<Vec<u8>, RepoError> {
+    let mut reader = rewound_clone(file)?;
+    let mut bytes = Vec::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = reader.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        if let Some(limit) = limit {
+            let next = bytes
+                .len()
+                .checked_add(read)
+                .ok_or(RepoError::DecodedSizeLimitExceeded { limit })?;
+            if next > limit {
+                return Err(RepoError::DecodedSizeLimitExceeded { limit });
+            }
+        }
+        bytes
+            .try_reserve(read)
+            .map_err(|_| RepoError::InvalidData("repository object cannot fit in memory"))?;
+        bytes.extend_from_slice(&buffer[..read]);
+    }
+    Ok(bytes)
+}
+
+fn copy_cap_file(
+    source: &cap_std::fs::File,
+    destination: &cap_std::fs::File,
+    limit: Option<usize>,
+) -> Result<u64, RepoError> {
+    let mut reader = rewound_clone(source)?;
+    let mut writer = destination.try_clone()?;
+    writer.seek(SeekFrom::Start(0))?;
+    writer.set_len(0)?;
+    let mut copied = 0_u64;
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = reader.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        copied = copied
+            .checked_add(read as u64)
+            .ok_or(RepoError::InvalidData("repository object size overflow"))?;
+        if let Some(limit) = limit {
+            if copied > limit as u64 {
+                return Err(RepoError::DecodedSizeLimitExceeded { limit });
+            }
+        }
+        writer.write_all(&buffer[..read])?;
+    }
+    writer.sync_all()?;
+    Ok(copied)
+}
+
+fn cap_files_equal(left: &cap_std::fs::File, right: &cap_std::fs::File) -> Result<bool, RepoError> {
+    if left.metadata()?.len() != right.metadata()?.len() {
+        return Ok(false);
+    }
+    let mut left = rewound_clone(left)?;
+    let mut right = rewound_clone(right)?;
+    let mut left_buffer = [0_u8; 64 * 1024];
+    let mut right_buffer = [0_u8; 64 * 1024];
+    loop {
+        let left_read = left.read(&mut left_buffer)?;
+        let right_read = right.read(&mut right_buffer)?;
+        if left_read != right_read || left_buffer[..left_read] != right_buffer[..right_read] {
+            return Ok(false);
+        }
+        if left_read == 0 {
+            return Ok(true);
+        }
+    }
 }
 
 fn validate_repository_object_path(path: &str) -> Result<(), RepoError> {
@@ -788,6 +1041,20 @@ pub(crate) fn open_absolute_dir_nofollow(path: &Path) -> Result<Dir, RepoError> 
     Ok(directory)
 }
 
+pub(crate) fn open_or_create_absolute_dir_nofollow(path: &Path) -> Result<Dir, RepoError> {
+    let root = absolute_lexical_root(path.to_path_buf())?;
+    let (anchor, relative_root) = store_anchor(&root)?;
+    let mut directory = anchor;
+    for component in relative_root.components() {
+        let Component::Normal(name) = component else {
+            return Err(RepoError::UnsafePath);
+        };
+        directory = open_child_directory(&directory, name, true)?;
+    }
+    validate_store_directory(&directory)?;
+    Ok(directory)
+}
+
 pub(crate) fn open_child_directory(
     parent: &Dir,
     name: &std::ffi::OsStr,
@@ -866,10 +1133,7 @@ mod tests {
     use std::path::Path;
     use std::sync::{Arc, Barrier};
 
-    use super::{
-        Store, MAX_CHECK_INDEX_DECODED_SIZE, MAX_CHUNK_DECODED_SIZE, MAX_FILE_DECODED_SIZE,
-        MAX_INDEX_DECODED_SIZE,
-    };
+    use super::{Store, MAX_CHUNK_DECODED_SIZE};
     use crate::atomic_write::PublishOutcome;
     use crate::{CheckIndex, CheckIndexFile, Chunk, File, Index, RepoError};
 
@@ -1031,18 +1295,17 @@ mod tests {
             include_bytes!("../tests/fixtures/golden/file-object.bin"),
         );
 
-        let path = store.object_path(GOLDEN_FILE_ID).unwrap();
         let encoded = store
-            .read_raw_path(
-                &path,
+            .read_raw(
+                super::RawObjectKind::File,
                 GOLDEN_FILE_ID,
                 super::raw_limit(super::RawObjectKind::File),
             )
             .unwrap();
-        let json = store
-            .decode_encrypted(&encoded, MAX_FILE_DECODED_SIZE)
+        let compressed = crate::decrypt(&encoded, &fixture_key()).unwrap();
+        let file: File = store
+            .deserialize_compressed_reader(std::io::Cursor::new(compressed))
             .unwrap();
-        let file: File = serde_json::from_slice(&json).unwrap();
 
         assert_eq!(file.id, GOLDEN_FILE_ID);
         assert_eq!(file.path, "/oracle/文档.md");
@@ -1351,7 +1614,7 @@ mod tests {
     }
 
     #[test]
-    fn object_type_decode_limits_reject_one_byte_over() {
+    fn chunk_decode_limit_rejects_one_byte_over() {
         let temp = tempfile::tempdir().unwrap();
         let store = Store::new(temp.path(), fixture_key()).unwrap();
 
@@ -1362,33 +1625,6 @@ mod tests {
             store.get_chunk(CHUNK_ID),
             Err(RepoError::DecodedSizeLimitExceeded { limit })
                 if limit == MAX_CHUNK_DECODED_SIZE
-        ));
-
-        let file_frame = zstd_rle_frame_with_content_size(MAX_FILE_DECODED_SIZE + 1);
-        let encrypted_file = crate::encrypt(&file_frame, &fixture_key()).unwrap();
-        write_fixture(&store.object_path(FILE_ID).unwrap(), &encrypted_file);
-        assert!(matches!(
-            store.get_file(FILE_ID),
-            Err(RepoError::DecodedSizeLimitExceeded { limit })
-                if limit == MAX_FILE_DECODED_SIZE
-        ));
-
-        let index_frame = zstd_rle_frame_with_content_size(MAX_INDEX_DECODED_SIZE + 1);
-        write_fixture(&store.index_path(INDEX_ID).unwrap(), &index_frame);
-        assert!(matches!(
-            store.get_index(INDEX_ID),
-            Err(RepoError::DecodedSizeLimitExceeded { limit })
-                if limit == MAX_INDEX_DECODED_SIZE
-        ));
-
-        write_fixture(
-            &store.check_index_path(CHECK_INDEX_ID).unwrap(),
-            &index_frame,
-        );
-        assert!(matches!(
-            store.get_check_index(CHECK_INDEX_ID),
-            Err(RepoError::DecodedSizeLimitExceeded { limit })
-                if limit == MAX_CHECK_INDEX_DECODED_SIZE
         ));
     }
 
@@ -1463,7 +1699,7 @@ mod tests {
         let store = Store::new(temp.path(), fixture_key()).unwrap();
         write_fixture(
             &store.object_path(CHUNK_ID).unwrap(),
-            &vec![0_u8; super::raw_limit(super::RawObjectKind::Chunk) + 1],
+            &vec![0_u8; super::raw_limit(super::RawObjectKind::Chunk).unwrap() + 1],
         );
         assert!(matches!(
             store.get_chunk(CHUNK_ID),

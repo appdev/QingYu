@@ -11,12 +11,12 @@ use ignore::gitignore::GitignoreBuilder;
 use time::OffsetDateTime;
 
 use crate::path_security::cap_metadata_is_reparse;
-use crate::store::{RawObjectKind, Store};
+use crate::store::{RawObjectKind, Store, MAX_CHUNK_RAW_SIZE};
 use crate::{
     random_hash, with_working_tree_permit, CheckIndex, CheckIndexFile, Cloud, CloudError,
-    CloudObject, ExpectedRevision, File, Index, MergeResult, RefStore, RemoteLockGuard, Repo,
-    RepoError, RepositoryRelativePath, TrafficStat, WorkingTreeAction, WorkingTreeChange,
-    WorkingTreeCoordinator,
+    CloudObject, CloudUploadSource, ExpectedRevision, File, Index, MergeResult, RefStore,
+    RemoteLockGuard, Repo, RepoError, RepositoryRelativePath, TrafficStat, WorkingTreeAction,
+    WorkingTreeChange, WorkingTreeCoordinator,
 };
 
 const SEVEN_MINUTES_MILLIS: i64 = 7 * 60 * 1_000;
@@ -104,7 +104,7 @@ impl Repo {
         let current = self.index_current_unlocked("[Sync] Current working tree")?;
         let _local_latest = resolve_local_ref_unlocked(&self.store, "latest")?;
         let mut traffic = TrafficStat::default();
-        let cloud_download = download_cloud_latest(&self.store, cloud, &mut traffic).await?;
+        let cloud_download = download_cloud_latest(self, cloud, &mut traffic).await?;
         let latest_sync = resolve_local_ref_unlocked(&self.store, "latest-sync")?;
 
         let current_files = files_for_index(&self.store, &current)?;
@@ -132,7 +132,7 @@ impl Repo {
         };
 
         let fetched_remote_files =
-            ensure_cloud_index_contents(&self.store, cloud, &cloud_latest, &mut traffic).await?;
+            ensure_cloud_index_contents(self, cloud, &cloud_latest, &mut traffic).await?;
         let cloud_files = files_for_index(&self.store, &cloud_latest)?;
         let current_matches_cloud = same_file_ids(&current_files, &cloud_files);
         let plan = plan_merge(
@@ -576,23 +576,30 @@ fn update_local_refs(store: &Store, local: &Index, cloud: Option<&Index>) -> Res
 }
 
 async fn download_cloud_latest(
-    store: &Store,
+    repo: &Repo,
     cloud: &Arc<dyn Cloud>,
     traffic: &mut TrafficStat,
 ) -> Result<Option<CloudLatestDownload>, RepoError> {
-    let latest_bytes = match tracked_get(cloud, CLOUD_LATEST_KEY, TransferKind::File, traffic).await
+    let latest_bytes = match tracked_get(
+        cloud,
+        CLOUD_LATEST_KEY,
+        MAX_REMOTE_REF_BYTES as u64,
+        TransferKind::File,
+        traffic,
+    )
+    .await
     {
         Ok(bytes) => bytes,
         Err(CloudError::NotFound) => return Ok(None),
         Err(error) => return Err(error.into()),
     };
     let latest_id = parse_remote_ref(&latest_bytes)?;
-    let mut latest = ensure_remote_index(store, cloud, &latest_id, traffic).await?;
+    let mut latest = ensure_remote_index(repo, cloud, &latest_id, traffic).await?;
 
     let objects = tracked_list(cloud, "refs/", traffic).await?;
     if let Some((_sequence, sequence_id)) = sequence_state(&objects)?.last() {
         if sequence_id != &latest_id {
-            let sequence_latest = ensure_remote_index(store, cloud, sequence_id, traffic).await?;
+            let sequence_latest = ensure_remote_index(repo, cloud, sequence_id, traffic).await?;
             if sequence_latest.created > latest.created {
                 latest = sequence_latest;
             }
@@ -619,27 +626,34 @@ fn parse_remote_ref(bytes: &[u8]) -> Result<String, RepoError> {
 }
 
 async fn ensure_remote_index(
-    store: &Store,
+    repo: &Repo,
     cloud: &Arc<dyn Cloud>,
     id: &str,
     traffic: &mut TrafficStat,
 ) -> Result<Index, RepoError> {
     let present = {
-        let _operation = store.lock_operation()?;
-        store.contains_raw_unlocked(RawObjectKind::Index, id)?
+        let _operation = repo.store.lock_operation()?;
+        repo.store.contains_raw_unlocked(RawObjectKind::Index, id)?
     };
     if !present {
         let key = format!("indexes/{id}");
-        let bytes = tracked_get(cloud, &key, TransferKind::File, traffic).await?;
-        let _operation = store.lock_operation()?;
-        store.import_raw_unlocked(RawObjectKind::Index, id, &bytes)?;
+        tracked_download_raw(
+            repo,
+            cloud,
+            &key,
+            RawObjectKind::Index,
+            id,
+            TransferKind::File,
+            traffic,
+        )
+        .await?;
     }
-    let _operation = store.lock_operation()?;
-    store.get_index_unlocked(id)
+    let _operation = repo.store.lock_operation()?;
+    repo.store.get_index_unlocked(id)
 }
 
 async fn ensure_cloud_index_contents(
-    store: &Store,
+    repo: &Repo,
     cloud: &Arc<dyn Cloud>,
     index: &Index,
     traffic: &mut TrafficStat,
@@ -648,32 +662,38 @@ async fn ensure_cloud_index_contents(
     let mut check_index = None;
     if !index.check_index_id.is_empty() {
         let present = {
-            let _operation = store.lock_operation()?;
-            store.contains_raw_unlocked(RawObjectKind::CheckIndex, &index.check_index_id)?
+            let _operation = repo.store.lock_operation()?;
+            repo.store
+                .contains_raw_unlocked(RawObjectKind::CheckIndex, &index.check_index_id)?
         };
         if present {
             let check = {
-                let _operation = store.lock_operation()?;
-                store.get_check_index_unlocked(&index.check_index_id)?
+                let _operation = repo.store.lock_operation()?;
+                repo.store.get_check_index_unlocked(&index.check_index_id)?
             };
             check_index = Some(check);
         } else {
             let key = format!("check/indexes/{}", index.check_index_id);
-            match tracked_get(cloud, &key, TransferKind::File, traffic).await {
-                Ok(bytes) => {
+            match tracked_download_raw(
+                repo,
+                cloud,
+                &key,
+                RawObjectKind::CheckIndex,
+                &index.check_index_id,
+                TransferKind::File,
+                traffic,
+            )
+            .await
+            {
+                Ok(()) => {
                     let check = {
-                        let _operation = store.lock_operation()?;
-                        store.import_raw_unlocked(
-                            RawObjectKind::CheckIndex,
-                            &index.check_index_id,
-                            &bytes,
-                        )?;
-                        store.get_check_index_unlocked(&index.check_index_id)?
+                        let _operation = repo.store.lock_operation()?;
+                        repo.store.get_check_index_unlocked(&index.check_index_id)?
                     };
                     check_index = Some(check);
                 }
-                Err(CloudError::NotFound) => {}
-                Err(error) => return Err(error.into()),
+                Err(RepoError::Cloud(CloudError::NotFound)) => {}
+                Err(error) => return Err(error),
             }
         }
         if let Some(check) = check_index.as_ref() {
@@ -688,18 +708,26 @@ async fn ensure_cloud_index_contents(
 
     for file_id in &index.files {
         let present = {
-            let _operation = store.lock_operation()?;
-            store.contains_raw_unlocked(RawObjectKind::File, file_id)?
+            let _operation = repo.store.lock_operation()?;
+            repo.store
+                .contains_raw_unlocked(RawObjectKind::File, file_id)?
         };
         if !present {
             let key = object_key(file_id)?;
-            let bytes = tracked_get(cloud, &key, TransferKind::File, traffic).await?;
-            let _operation = store.lock_operation()?;
-            store.import_raw_unlocked(RawObjectKind::File, file_id, &bytes)?;
+            tracked_download_raw(
+                repo,
+                cloud,
+                &key,
+                RawObjectKind::File,
+                file_id,
+                TransferKind::File,
+                traffic,
+            )
+            .await?;
             fetched_files.insert(file_id.clone());
         }
     }
-    let files = files_for_index(store, index)?;
+    let files = files_for_index(&repo.store, index)?;
     if let Some(check) = check_index.as_ref() {
         validate_check_index_dependencies(&files, check)?;
     }
@@ -709,14 +737,23 @@ async fn ensure_cloud_index_contents(
         .collect::<BTreeSet<_>>();
     for chunk_id in chunk_ids {
         let present = {
-            let _operation = store.lock_operation()?;
-            store.contains_raw_unlocked(RawObjectKind::Chunk, &chunk_id)?
+            let _operation = repo.store.lock_operation()?;
+            repo.store
+                .contains_raw_unlocked(RawObjectKind::Chunk, &chunk_id)?
         };
         if !present {
             let key = object_key(&chunk_id)?;
-            let bytes = tracked_get(cloud, &key, TransferKind::Chunk, traffic).await?;
-            let _operation = store.lock_operation()?;
-            store.import_raw_unlocked(RawObjectKind::Chunk, &chunk_id, &bytes)?;
+            let bytes = tracked_get(
+                cloud,
+                &key,
+                MAX_CHUNK_RAW_SIZE as u64,
+                TransferKind::Chunk,
+                traffic,
+            )
+            .await?;
+            let _operation = repo.store.lock_operation()?;
+            repo.store
+                .import_raw_unlocked(RawObjectKind::Chunk, &chunk_id, &bytes)?;
         }
     }
     Ok(fetched_files)
@@ -935,29 +972,70 @@ async fn publish_raw(
     transfer: TransferKind,
     traffic: &mut TrafficStat,
 ) -> Result<(), RepoError> {
-    let bytes = {
+    let source = {
         let _operation = store.lock_operation()?;
-        store.export_raw_unlocked(kind, id)?
+        store.open_raw_upload_source_unlocked(kind, id)?
     };
     let key = match kind {
         RawObjectKind::Chunk | RawObjectKind::File => object_key(id)?,
         RawObjectKind::Index => format!("indexes/{id}"),
         RawObjectKind::CheckIndex => format!("check/indexes/{id}"),
     };
-    match tracked_put(cloud, guard, &key, &bytes, false, transfer, traffic).await {
+    match tracked_upload(cloud, guard, &key, &source, false, transfer, traffic).await {
         Ok(()) | Err(RepoError::Cloud(CloudError::AlreadyExists)) => Ok(()),
         Err(error) => Err(error),
     }
 }
 
+async fn tracked_download_raw(
+    repo: &Repo,
+    cloud: &Arc<dyn Cloud>,
+    key: &str,
+    object_kind: RawObjectKind,
+    id: &str,
+    transfer_kind: TransferKind,
+    traffic: &mut TrafficStat,
+) -> Result<(), RepoError> {
+    let staged = repo.create_staged_download()?;
+    let mut writer = staged.writer()?;
+    traffic.api_get = traffic.api_get.saturating_add(1);
+    let written = cloud.download_to(key, &mut writer).await?;
+    tokio::io::AsyncWriteExt::flush(&mut writer).await?;
+    writer.sync_all().await?;
+    drop(writer);
+    if staged.file().metadata()?.len() != written {
+        return Err(RepoError::InvalidData(
+            "cloud download returned an invalid payload length",
+        ));
+    }
+    {
+        let _operation = repo.store.lock_operation()?;
+        repo.store
+            .import_raw_staged_unlocked(object_kind, id, staged.file())?;
+    }
+    traffic.download_bytes = traffic
+        .download_bytes
+        .saturating_add(i64::try_from(written).unwrap_or(i64::MAX));
+    match transfer_kind {
+        TransferKind::File => {
+            traffic.download_file_count = traffic.download_file_count.saturating_add(1)
+        }
+        TransferKind::Chunk => {
+            traffic.download_chunk_count = traffic.download_chunk_count.saturating_add(1)
+        }
+    }
+    Ok(())
+}
+
 async fn tracked_get(
     cloud: &Arc<dyn Cloud>,
     key: &str,
+    max_bytes: u64,
     kind: TransferKind,
     traffic: &mut TrafficStat,
 ) -> Result<Vec<u8>, CloudError> {
     traffic.api_get = traffic.api_get.saturating_add(1);
-    let bytes = cloud.get(key).await?;
+    let bytes = cloud.get_bounded(key, max_bytes).await?;
     traffic.download_bytes = traffic
         .download_bytes
         .saturating_add(i64::try_from(bytes.len()).unwrap_or(i64::MAX));
@@ -987,6 +1065,38 @@ async fn tracked_put(
     if written != bytes.len() as u64 {
         return Err(RepoError::InvalidData(
             "cloud put returned an invalid payload length",
+        ));
+    }
+    traffic.upload_bytes = traffic
+        .upload_bytes
+        .saturating_add(i64::try_from(written).unwrap_or(i64::MAX));
+    match kind {
+        TransferKind::File => {
+            traffic.upload_file_count = traffic.upload_file_count.saturating_add(1)
+        }
+        TransferKind::Chunk => {
+            traffic.upload_chunk_count = traffic.upload_chunk_count.saturating_add(1)
+        }
+    }
+    Ok(())
+}
+
+async fn tracked_upload(
+    cloud: &Arc<dyn Cloud>,
+    guard: &RemoteLockGuard,
+    key: &str,
+    source: &dyn CloudUploadSource,
+    overwrite: bool,
+    kind: TransferKind,
+    traffic: &mut TrafficStat,
+) -> Result<(), RepoError> {
+    guard.ensure_healthy()?;
+    traffic.api_put = traffic.api_put.saturating_add(1);
+    let expected = source.content_length();
+    let written = cloud.upload_from(key, source, overwrite).await?;
+    if written != expected {
+        return Err(RepoError::InvalidData(
+            "cloud upload returned an invalid payload length",
         ));
     }
     traffic.upload_bytes = traffic
@@ -1065,12 +1175,15 @@ mod tests {
 
     use filetime::FileTime;
     use tempfile::TempDir;
+    use tokio::io::AsyncWriteExt;
     use tokio::sync::Notify;
 
+    use super::MAX_REMOTE_REF_BYTES;
+
     use crate::{
-        Cloud, CloudError, CloudObject, Device, File, LocalCloud, NoopWorkingTreeCoordinator, Repo,
-        RepoError, RepoOptions, RepoPaths, Store, WorkingTreeChange, WorkingTreeCoordinator,
-        WorkingTreePermit,
+        Cloud, CloudError, CloudObject, CloudUploadSource, Device, File, LocalCloud,
+        NoopWorkingTreeCoordinator, Repo, RepoError, RepoOptions, RepoPaths, Store,
+        WorkingTreeChange, WorkingTreeCoordinator, WorkingTreePermit,
     };
 
     struct RepoFixture {
@@ -1143,6 +1256,8 @@ mod tests {
         inner: Arc<LocalCloud>,
         events: Mutex<Vec<String>>,
         fail_get: Mutex<HashMap<String, usize>>,
+        fail_download_mid_body: Mutex<HashMap<String, usize>>,
+        wrong_download_length: Mutex<HashMap<String, usize>>,
         fail_put: Mutex<HashMap<String, usize>>,
         fail_put_prefix: Mutex<HashMap<String, usize>>,
         fail_remove: Mutex<HashMap<String, usize>>,
@@ -1157,6 +1272,8 @@ mod tests {
                 inner,
                 events: Mutex::new(Vec::new()),
                 fail_get: Mutex::new(HashMap::new()),
+                fail_download_mid_body: Mutex::new(HashMap::new()),
+                wrong_download_length: Mutex::new(HashMap::new()),
                 fail_put: Mutex::new(HashMap::new()),
                 fail_put_prefix: Mutex::new(HashMap::new()),
                 fail_remove: Mutex::new(HashMap::new()),
@@ -1172,6 +1289,20 @@ mod tests {
 
         fn fail_get(&self, key: &str, count: usize) {
             self.fail_get.lock().unwrap().insert(key.to_owned(), count);
+        }
+
+        fn fail_download_mid_body(&self, key: &str, count: usize) {
+            self.fail_download_mid_body
+                .lock()
+                .unwrap()
+                .insert(key.to_owned(), count);
+        }
+
+        fn return_wrong_download_length(&self, key: &str, count: usize) {
+            self.wrong_download_length
+                .lock()
+                .unwrap()
+                .insert(key.to_owned(), count);
         }
 
         fn fail_put_prefix(&self, prefix: &str, count: usize) {
@@ -1215,7 +1346,7 @@ mod tests {
 
     #[async_trait::async_trait]
     impl Cloud for InspectCloud {
-        async fn get(&self, key: &str) -> Result<Vec<u8>, CloudError> {
+        async fn get_bounded(&self, key: &str, max_bytes: u64) -> Result<Vec<u8>, CloudError> {
             self.events.lock().unwrap().push(format!("get:{key}"));
             if Self::should_fail(&self.fail_get, key) {
                 return Err(CloudError::Backend {
@@ -1223,7 +1354,40 @@ mod tests {
                     retryable: false,
                 });
             }
-            self.inner.get(key).await
+            self.inner.get_bounded(key, max_bytes).await
+        }
+
+        async fn download_to(
+            &self,
+            key: &str,
+            destination: &mut (dyn tokio::io::AsyncWrite + Unpin + Send),
+        ) -> Result<u64, CloudError> {
+            self.events.lock().unwrap().push(format!("download:{key}"));
+            if Self::should_fail(&self.fail_get, key) {
+                return Err(CloudError::Backend {
+                    code: "test_get_failure",
+                    retryable: false,
+                });
+            }
+            if Self::should_fail(&self.fail_download_mid_body, key) {
+                let bytes = self.inner.get_bounded(key, 16 * 1024 * 1024).await?;
+                let partial = &bytes[..bytes.len().min(7)];
+                destination
+                    .write_all(partial)
+                    .await
+                    .map_err(CloudError::Io)?;
+                destination.flush().await.map_err(CloudError::Io)?;
+                return Err(CloudError::Backend {
+                    code: "test_mid_body_failure",
+                    retryable: true,
+                });
+            }
+            let written = self.inner.download_to(key, destination).await?;
+            if Self::should_fail(&self.wrong_download_length, key) {
+                Ok(written.saturating_add(1))
+            } else {
+                Ok(written)
+            }
         }
 
         async fn put(&self, key: &str, bytes: &[u8], overwrite: bool) -> Result<u64, CloudError> {
@@ -1260,6 +1424,40 @@ mod tests {
                 });
             }
             self.inner.put(key, bytes, overwrite).await
+        }
+
+        async fn upload_from(
+            &self,
+            key: &str,
+            source: &dyn CloudUploadSource,
+            overwrite: bool,
+        ) -> Result<u64, CloudError> {
+            self.events.lock().unwrap().push(format!("upload:{key}"));
+            if Self::should_fail(&self.fail_put, key) {
+                return Err(CloudError::Backend {
+                    code: "test_put_failure",
+                    retryable: false,
+                });
+            }
+            let prefix_failure = {
+                let mut failures = self.fail_put_prefix.lock().unwrap();
+                if let Some((_prefix, remaining)) = failures
+                    .iter_mut()
+                    .find(|(prefix, remaining)| **remaining > 0 && key.starts_with(prefix.as_str()))
+                {
+                    *remaining -= 1;
+                    true
+                } else {
+                    false
+                }
+            };
+            if prefix_failure {
+                return Err(CloudError::Backend {
+                    code: "test_put_failure",
+                    retryable: false,
+                });
+            }
+            self.inner.upload_from(key, source, overwrite).await
         }
 
         async fn remove(&self, key: &str) -> Result<(), CloudError> {
@@ -1347,7 +1545,10 @@ mod tests {
         assert!(uploaded.upserts.is_empty());
         assert!(uploaded.removes.is_empty());
         assert!(uploaded.conflicts.is_empty());
-        assert!(cloud.get("refs/latest").await.is_ok());
+        assert!(cloud
+            .get_bounded("refs/latest", MAX_REMOTE_REF_BYTES as u64)
+            .await
+            .is_ok());
         assert!(uploader.repo.latest_sync().unwrap().is_some());
         assert!(upload_traffic.api_put > 0);
         assert!(upload_traffic.upload_bytes > 0);
@@ -1355,7 +1556,7 @@ mod tests {
         assert!(!uploaded_latest.check_index_id.is_empty());
         assert_eq!(
             cloud
-                .get(&format!("indexes/{}", uploaded_latest.id))
+                .get_bounded(&format!("indexes/{}", uploaded_latest.id), 16 * 1024 * 1024)
                 .await
                 .unwrap(),
             uploader
@@ -1366,7 +1567,10 @@ mod tests {
         );
         assert_eq!(
             cloud
-                .get(&format!("check/indexes/{}", uploaded_latest.check_index_id))
+                .get_bounded(
+                    &format!("check/indexes/{}", uploaded_latest.check_index_id),
+                    16 * 1024 * 1024,
+                )
                 .await
                 .unwrap(),
             uploader
@@ -1391,6 +1595,125 @@ mod tests {
         assert_eq!(
             downloader.repo.latest().unwrap().unwrap().id,
             downloader.repo.latest_sync().unwrap().unwrap().id
+        );
+    }
+
+    #[tokio::test]
+    async fn file_index_and_check_index_use_staged_downloads_and_reopenable_uploads() {
+        let (_cloud_root, inner) = cloud_fixture();
+        let inspected = Arc::new(InspectCloud::new(inner));
+        let uploader = repo_fixture("staged-upload", RepoOptions::default());
+        write_file(
+            &uploader.data,
+            "notes/staged.md",
+            b"staged transfer",
+            1_700_000_000_000,
+        );
+
+        uploader
+            .repo
+            .sync(inspected.clone(), coordinator())
+            .await
+            .unwrap();
+        let latest = uploader.repo.latest_sync().unwrap().unwrap();
+        let file_id = latest.files[0].clone();
+        let events = inspected.events();
+        assert!(events.contains(&format!("upload:indexes/{}", latest.id)));
+        assert!(events.contains(&format!("upload:check/indexes/{}", latest.check_index_id)));
+        assert!(events.contains(&format!("upload:{}", super::object_key(&file_id).unwrap())));
+
+        inspected.clear_events();
+        let downloader = repo_fixture("staged-download", RepoOptions::default());
+        downloader
+            .repo
+            .sync_download(inspected.clone(), coordinator())
+            .await
+            .unwrap();
+        let events = inspected.events();
+        assert!(events.contains(&format!("download:indexes/{}", latest.id)));
+        assert!(events.contains(&format!("download:check/indexes/{}", latest.check_index_id)));
+        assert!(events.contains(&format!(
+            "download:{}",
+            super::object_key(&file_id).unwrap()
+        )));
+    }
+
+    #[tokio::test]
+    async fn mid_body_failure_removes_the_partial_stage_without_importing_the_object() {
+        let (_cloud_root, inner) = cloud_fixture();
+        let uploader = repo_fixture("partial-source", RepoOptions::default());
+        write_file(
+            &uploader.data,
+            "notes/partial.md",
+            b"complete remote body",
+            1_700_000_000_000,
+        );
+        sync(&uploader.repo, inner.clone()).await;
+        let latest = uploader.repo.latest_sync().unwrap().unwrap();
+        let index_key = format!("indexes/{}", latest.id);
+        let inspected = Arc::new(InspectCloud::new(inner));
+        inspected.fail_download_mid_body(&index_key, 1);
+        let downloader = repo_fixture("partial-target", RepoOptions::default());
+
+        assert!(matches!(
+            downloader
+                .repo
+                .sync_download(inspected, coordinator())
+                .await,
+            Err(RepoError::Cloud(CloudError::Backend {
+                code: "test_mid_body_failure",
+                retryable: true,
+            }))
+        ));
+        assert!(!downloader
+            .repo
+            .store
+            .contains_raw(super::RawObjectKind::Index, &latest.id)
+            .unwrap());
+        assert_eq!(
+            fs::read_dir(downloader._root.path().join("temp"))
+                .unwrap()
+                .count(),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn reported_download_length_must_match_the_staged_file_before_import() {
+        let (_cloud_root, inner) = cloud_fixture();
+        let uploader = repo_fixture("length-source", RepoOptions::default());
+        write_file(
+            &uploader.data,
+            "notes/length.md",
+            b"length checked body",
+            1_700_000_000_000,
+        );
+        sync(&uploader.repo, inner.clone()).await;
+        let latest = uploader.repo.latest_sync().unwrap().unwrap();
+        let index_key = format!("indexes/{}", latest.id);
+        let inspected = Arc::new(InspectCloud::new(inner));
+        inspected.return_wrong_download_length(&index_key, 1);
+        let downloader = repo_fixture("length-target", RepoOptions::default());
+
+        assert!(matches!(
+            downloader
+                .repo
+                .sync_download(inspected, coordinator())
+                .await,
+            Err(RepoError::InvalidData(
+                "cloud download returned an invalid payload length"
+            ))
+        ));
+        assert!(!downloader
+            .repo
+            .store
+            .contains_raw(super::RawObjectKind::Index, &latest.id)
+            .unwrap());
+        assert_eq!(
+            fs::read_dir(downloader._root.path().join("temp"))
+                .unwrap()
+                .count(),
+            0
         );
     }
 
@@ -1691,7 +2014,10 @@ mod tests {
         let first = repo_fixture("first", RepoOptions::default());
         write_file(&first.data, "same.md", b"remote", 1_700_000_010_000);
         sync(&first.repo, inner.clone()).await;
-        let remote_ref_before = inner.get("refs/latest").await.unwrap();
+        let remote_ref_before = inner
+            .get_bounded("refs/latest", MAX_REMOTE_REF_BYTES as u64)
+            .await
+            .unwrap();
 
         let second = repo_fixture("second", RepoOptions::default());
         write_file(&second.data, "same.md", b"local", 1_700_000_000_000);
@@ -1738,11 +2064,18 @@ mod tests {
             second.repo.latest_sync().unwrap().unwrap().id.as_bytes(),
             remote_ref_before.as_slice()
         );
-        assert_eq!(inner.get("refs/latest").await.unwrap(), remote_ref_before);
+        assert_eq!(
+            inner
+                .get_bounded("refs/latest", MAX_REMOTE_REF_BYTES as u64)
+                .await
+                .unwrap(),
+            remote_ref_before
+        );
         assert!(inspected.events().iter().all(|event| {
             event == "put:lock-sync"
                 || event == "remove:lock-sync"
                 || event.starts_with("get:")
+                || event.starts_with("download:")
                 || event.starts_with("list:")
         }));
     }
@@ -2018,7 +2351,13 @@ mod tests {
         let remote = repo_fixture("remote", RepoOptions::default());
         write_file(&remote.data, "same.md", b"remote", 1_700_000_010_000);
         sync(&remote.repo, inner.clone()).await;
-        let cloud_id = String::from_utf8(inner.get("refs/latest").await.unwrap()).unwrap();
+        let cloud_id = String::from_utf8(
+            inner
+                .get_bounded("refs/latest", MAX_REMOTE_REF_BYTES as u64)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
 
         let local = repo_fixture("local", RepoOptions::default());
         write_file(&local.data, "same.md", b"local", 1_700_000_000_000);
@@ -2082,7 +2421,13 @@ mod tests {
 
         assert_eq!(local.repo.latest().unwrap().unwrap().id, expected);
         assert_eq!(local.repo.latest_sync().unwrap().unwrap().id, expected);
-        assert_eq!(inner.get("refs/latest").await.unwrap(), expected.as_bytes());
+        assert_eq!(
+            inner
+                .get_bounded("refs/latest", MAX_REMOTE_REF_BYTES as u64)
+                .await
+                .unwrap(),
+            expected.as_bytes()
+        );
         assert_eq!(
             local
                 .repo
@@ -2646,13 +2991,19 @@ mod tests {
         let file = source.repo.store.get_file(&latest.files[0]).unwrap();
         assert_eq!(file.chunks.len(), 1);
         let check_key = format!("check/indexes/{}", latest.check_index_id);
-        let index_bytes = cloud.get(&format!("indexes/{}", latest.id)).await.unwrap();
+        let index_bytes = cloud
+            .get_bounded(&format!("indexes/{}", latest.id), 16 * 1024 * 1024)
+            .await
+            .unwrap();
         let file_bytes = cloud
-            .get(&super::object_key(&file.id).unwrap())
+            .get_bounded(&super::object_key(&file.id).unwrap(), 16 * 1024 * 1024)
             .await
             .unwrap();
         let chunk_bytes = cloud
-            .get(&super::object_key(&file.chunks[0]).unwrap())
+            .get_bounded(
+                &super::object_key(&file.chunks[0]).unwrap(),
+                16 * 1024 * 1024,
+            )
             .await
             .unwrap();
         cloud.remove(&check_key).await.unwrap();
@@ -2744,7 +3095,11 @@ mod tests {
             .map(|(index, _)| index)
             .unwrap();
         assert!(list < latest && latest < sequence && sequence < cleanup);
-        for prefix in ["put:objects/", "put:check/indexes/", "put:indexes/"] {
+        for prefix in [
+            "upload:objects/",
+            "upload:check/indexes/",
+            "upload:indexes/",
+        ] {
             assert!(events[..latest]
                 .iter()
                 .any(|event| event.starts_with(prefix)));
@@ -2759,12 +3114,20 @@ mod tests {
             .count()
             + events
                 .iter()
+                .filter(|event| event.starts_with("upload:"))
+                .count()
+            + events
+                .iter()
                 .filter(|event| event.starts_with("remove:refs/latest-"))
                 .count();
         let actual_state_gets = events
             .iter()
             .filter(|event| event.starts_with("get:") && event.as_str() != "get:lock-sync")
             .count()
+            + events
+                .iter()
+                .filter(|event| event.starts_with("download:"))
+                .count()
             + events
                 .iter()
                 .filter(|event| event.starts_with("list:"))
@@ -2815,7 +3178,10 @@ mod tests {
             let local = repo_fixture("local", RepoOptions::default());
             write_file(&local.data, "doc.md", b"base", 1_700_000_000_000);
             sync(&local.repo, inner.clone()).await;
-            let latest_before = inner.get("refs/latest").await.unwrap();
+            let latest_before = inner
+                .get_bounded("refs/latest", MAX_REMOTE_REF_BYTES as u64)
+                .await
+                .unwrap();
             let local_before = local.repo.latest().unwrap().unwrap().id;
             inner
                 .put(&format!("refs/latest-1-{id_b}"), id_b.as_bytes(), true)
@@ -2827,7 +3193,13 @@ mod tests {
                 local.repo.sync(inner.clone(), coordinator()).await,
                 Err(RepoError::InvalidData(_))
             ));
-            assert_eq!(inner.get("refs/latest").await.unwrap(), latest_before);
+            assert_eq!(
+                inner
+                    .get_bounded("refs/latest", MAX_REMOTE_REF_BYTES as u64)
+                    .await
+                    .unwrap(),
+                latest_before
+            );
             assert_eq!(local.repo.latest().unwrap().unwrap().id, local_before);
         }
         {
@@ -2835,7 +3207,10 @@ mod tests {
             let local = repo_fixture("local", RepoOptions::default());
             write_file(&local.data, "doc.md", b"base", 1_700_000_000_000);
             sync(&local.repo, inner.clone()).await;
-            let latest_before = inner.get("refs/latest").await.unwrap();
+            let latest_before = inner
+                .get_bounded("refs/latest", MAX_REMOTE_REF_BYTES as u64)
+                .await
+                .unwrap();
             let latest_id = String::from_utf8(latest_before.clone()).unwrap();
             let local_before = local.repo.latest().unwrap().unwrap().id;
             inner
@@ -2852,7 +3227,13 @@ mod tests {
                 local.repo.sync(inner.clone(), coordinator()).await,
                 Err(RepoError::InvalidData(_))
             ));
-            assert_eq!(inner.get("refs/latest").await.unwrap(), latest_before);
+            assert_eq!(
+                inner
+                    .get_bounded("refs/latest", MAX_REMOTE_REF_BYTES as u64)
+                    .await
+                    .unwrap(),
+                latest_before
+            );
             assert_eq!(local.repo.latest().unwrap().unwrap().id, local_before);
         }
     }
@@ -2905,7 +3286,13 @@ mod tests {
             .sync(inspected.clone(), coordinator())
             .await
             .is_err());
-        let partial_latest = String::from_utf8(inner.get("refs/latest").await.unwrap()).unwrap();
+        let partial_latest = String::from_utf8(
+            inner
+                .get_bounded("refs/latest", MAX_REMOTE_REF_BYTES as u64)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
         assert_ne!(partial_latest, local_before);
         assert_eq!(
             inner.list("refs/latest-").await.unwrap().as_slice(),
@@ -2922,7 +3309,13 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            String::from_utf8(inner.get("refs/latest").await.unwrap()).unwrap(),
+            String::from_utf8(
+                inner
+                    .get_bounded("refs/latest", MAX_REMOTE_REF_BYTES as u64)
+                    .await
+                    .unwrap(),
+            )
+            .unwrap(),
             partial_latest
         );
         let after_repair = inner.list("refs/latest-").await.unwrap();

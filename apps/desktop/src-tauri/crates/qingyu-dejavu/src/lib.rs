@@ -21,8 +21,8 @@ mod error;
 pub use atomic_write::write_file_safer;
 pub use chunker::{ChunkBoundary, RabinChunker};
 pub use cloud::{
-    Cloud, CloudError, CloudObject, CloudOperation, LocalCloud, S3AddressingStyle, S3Connection,
-    S3RequestSigner, S3TlsVerification,
+    Cloud, CloudError, CloudObject, CloudOperation, CloudUploadSource, LocalCloud,
+    S3AddressingStyle, S3Connection, S3RequestSigner, S3TlsVerification,
 };
 pub use crypto::{decrypt, derive_key, encrypt};
 pub use diff::{diff_index_files, diff_upsert_remove, IndexFileDiff};

@@ -101,7 +101,7 @@ pub(crate) fn create_cap_staged_file(
     create_cap_staged_file_in(parent, parent, destination, mode)
 }
 
-fn create_cap_staged_file_in(
+pub(crate) fn create_cap_staged_file_in(
     stage_parent: &Dir,
     destination_parent: &Dir,
     destination: &std::ffi::OsStr,
@@ -114,6 +114,7 @@ fn create_cap_staged_file_in(
         temp_name.push(".tmp");
         let mut options = CapOpenOptions::new();
         options
+            .read(true)
             .write(true)
             .create_new(true)
             .follow(FollowSymlinks::No);
@@ -267,10 +268,10 @@ fn configure_cap_temp_options(options: &mut CapOpenOptions, mode: u32) {
 fn configure_cap_temp_options(options: &mut CapOpenOptions, _mode: u32) {
     use cap_std::fs::OpenOptionsExt;
     use windows_sys::Win32::Storage::FileSystem::{
-        DELETE, FILE_GENERIC_WRITE, FILE_WRITE_ATTRIBUTES,
+        DELETE, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_WRITE_ATTRIBUTES,
     };
 
-    options.access_mode(FILE_GENERIC_WRITE | FILE_WRITE_ATTRIBUTES | DELETE);
+    options.access_mode(FILE_GENERIC_READ | FILE_GENERIC_WRITE | FILE_WRITE_ATTRIBUTES | DELETE);
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -482,10 +483,28 @@ fn retryable_windows_rename_error(_error: &io::Error) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::OsStr;
     use std::fs;
+    use std::io::{Read, Seek, SeekFrom};
     use std::sync::{Arc, Barrier};
 
-    use super::{stage_file, write_file_safer, PublishOutcome};
+    use cap_std::ambient_authority;
+    use cap_std::fs::Dir;
+
+    use super::{stage_cap_file, stage_file, write_file_safer, PublishOutcome};
+
+    #[test]
+    fn capability_stage_can_be_rewound_and_read_before_publication() {
+        let temp = tempfile::tempdir().unwrap();
+        let parent = Dir::open_ambient_dir(temp.path(), ambient_authority()).unwrap();
+        let staged = stage_cap_file(&parent, OsStr::new("object"), b"staged bytes", 0o600).unwrap();
+        let mut staged_file = staged.file();
+        staged_file.seek(SeekFrom::Start(0)).unwrap();
+        let mut bytes = Vec::new();
+        staged_file.read_to_end(&mut bytes).unwrap();
+
+        assert_eq!(bytes, b"staged bytes");
+    }
 
     #[test]
     fn safer_write_replaces_destination_and_leaves_no_owned_temp() {

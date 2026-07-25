@@ -1,19 +1,19 @@
 use std::ffi::{OsStr, OsString};
-use std::io::Read;
 use std::path::Path;
 use std::sync::Mutex;
 
 use cap_fs_ext::{FollowSymlinks, OpenOptionsFollowExt};
 use cap_std::fs::{Dir, OpenOptions};
+use tokio::io::AsyncReadExt;
 
-use crate::atomic_write::{stage_cap_file_in, PublishOutcome};
+use crate::atomic_write::{create_cap_staged_file_in, stage_cap_file_in, PublishOutcome};
 use crate::path_security::{
     cap_metadata_is_reparse, validate_windows_directory_components_before_canonicalize,
 };
 use crate::store::{absolute_lexical_root, open_absolute_dir_nofollow, open_child_directory};
 use crate::RepoError;
 
-use super::{Cloud, CloudError, CloudObject, CloudOperation};
+use super::{Cloud, CloudError, CloudObject, CloudOperation, CloudUploadSource};
 
 const OBJECT_MODE: u32 = 0o644;
 const INTERNAL_NAMESPACE: &str = ".__qingyu_local_cloud";
@@ -129,27 +129,131 @@ impl LocalCloud {
 
 #[async_trait::async_trait]
 impl Cloud for LocalCloud {
-    async fn get(&self, key: &str) -> Result<Vec<u8>, CloudError> {
+    async fn get_bounded(&self, key: &str, max_bytes: u64) -> Result<Vec<u8>, CloudError> {
         let components = validate_key(key)?;
         self.take_failure(CloudOperation::Get)?;
         let parent = self.open_parent(&components, false)?;
         let name = &components[components.len() - 1];
         let mut options = OpenOptions::new();
         options.read(true).follow(FollowSymlinks::No);
-        let mut file = parent
+        let file = parent
             .open_with(name, &options)
             .map_err(|error| map_object_io(&parent, name, error))?;
         let metadata = file.metadata().map_err(CloudError::Io)?;
         if !metadata.file_type().is_file() || cap_metadata_is_reparse(&metadata) {
             return Err(CloudError::UnsafeKey);
         }
-        let mut bytes = Vec::new();
-        file.read_to_end(&mut bytes).map_err(CloudError::Io)?;
+        if metadata.len() > max_bytes {
+            return Err(CloudError::ResponseTooLarge { limit: max_bytes });
+        }
+        let reader = tokio::fs::File::from_std(file.into_std());
+        let retained_limit = max_bytes.saturating_add(u64::from(max_bytes != u64::MAX));
+        let initial_capacity = metadata.len().min(max_bytes).min(64 * 1024) as usize;
+        let mut bytes = Vec::with_capacity(initial_capacity);
+        tokio::io::AsyncReadExt::read_to_end(&mut reader.take(retained_limit), &mut bytes)
+            .await
+            .map_err(CloudError::Io)?;
+        if bytes.len() as u64 > max_bytes {
+            return Err(CloudError::ResponseTooLarge { limit: max_bytes });
+        }
         Ok(bytes)
+    }
+
+    async fn download_to(
+        &self,
+        key: &str,
+        destination: &mut (dyn tokio::io::AsyncWrite + Unpin + Send),
+    ) -> Result<u64, CloudError> {
+        let components = validate_key(key)?;
+        self.take_failure(CloudOperation::Get)?;
+        let parent = self.open_parent(&components, false)?;
+        let name = &components[components.len() - 1];
+        let mut options = OpenOptions::new();
+        options.read(true).follow(FollowSymlinks::No);
+        let file = parent
+            .open_with(name, &options)
+            .map_err(|error| map_object_io(&parent, name, error))?;
+        let metadata = file.metadata().map_err(CloudError::Io)?;
+        if !metadata.file_type().is_file() || cap_metadata_is_reparse(&metadata) {
+            return Err(CloudError::UnsafeKey);
+        }
+        let mut reader = tokio::fs::File::from_std(file.into_std());
+        let written = tokio::io::copy(&mut reader, destination)
+            .await
+            .map_err(CloudError::Io)?;
+        tokio::io::AsyncWriteExt::flush(destination)
+            .await
+            .map_err(CloudError::Io)?;
+        Ok(written)
     }
 
     async fn put(&self, key: &str, bytes: &[u8], overwrite: bool) -> Result<u64, CloudError> {
         self.put_with_before_publish(key, bytes, overwrite, || {})
+    }
+
+    async fn upload_from(
+        &self,
+        key: &str,
+        source: &dyn CloudUploadSource,
+        overwrite: bool,
+    ) -> Result<u64, CloudError> {
+        let components = validate_key(key)?;
+        self.take_failure(CloudOperation::Put)?;
+        let parent = self.open_parent(&components, true)?;
+        let destination = &components[components.len() - 1];
+        validate_destination(&parent, destination)?;
+        let staged = create_cap_staged_file_in(&self.stage, &parent, destination, OBJECT_MODE)
+            .map_err(map_repo_error)?;
+        let expected = source.content_length();
+        let mut reader = source.open()?;
+        let mut target = tokio::fs::File::from_std(
+            staged
+                .file()
+                .try_clone()
+                .map_err(CloudError::Io)?
+                .into_std(),
+        );
+        let mut actual = 0_u64;
+        let mut buffer = vec![0_u8; 64 * 1024];
+        while actual < expected {
+            let remaining = expected - actual;
+            let read_limit = usize::try_from(remaining.min(buffer.len() as u64))
+                .map_err(|_| CloudError::backend("payload_length_overflow"))?;
+            let read = tokio::io::AsyncReadExt::read(&mut reader, &mut buffer[..read_limit])
+                .await
+                .map_err(CloudError::Io)?;
+            if read == 0 {
+                return Err(CloudError::LengthMismatch { expected, actual });
+            }
+            tokio::io::AsyncWriteExt::write_all(&mut target, &buffer[..read])
+                .await
+                .map_err(CloudError::Io)?;
+            actual = actual
+                .checked_add(read as u64)
+                .ok_or_else(|| CloudError::backend("payload_length_overflow"))?;
+        }
+        let excess = tokio::io::AsyncReadExt::read(&mut reader, &mut buffer[..1])
+            .await
+            .map_err(CloudError::Io)?;
+        if excess != 0 {
+            return Err(CloudError::LengthMismatch {
+                expected,
+                actual: expected.saturating_add(1),
+            });
+        }
+        tokio::io::AsyncWriteExt::flush(&mut target)
+            .await
+            .map_err(CloudError::Io)?;
+        target.sync_all().await.map_err(CloudError::Io)?;
+        drop(target);
+        if overwrite {
+            staged.publish_replace().map_err(map_repo_error)?;
+        } else if staged.publish_no_replace().map_err(map_repo_error)?
+            == PublishOutcome::AlreadyExists
+        {
+            return Err(CloudError::AlreadyExists);
+        }
+        Ok(actual)
     }
 
     async fn remove(&self, key: &str) -> Result<(), CloudError> {
@@ -324,12 +428,103 @@ fn collect_regular_objects(
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::pin::Pin;
     use std::sync::{Arc, Barrier};
 
     use tempfile::TempDir;
+    use tokio::io::AsyncRead;
 
     use super::{LocalCloud, INTERNAL_NAMESPACE};
-    use crate::cloud::{Cloud, CloudError, CloudObject, CloudOperation};
+    use crate::cloud::{Cloud, CloudError, CloudObject, CloudOperation, CloudUploadSource};
+
+    struct BytesUploadSource {
+        declared_length: u64,
+        bytes: Vec<u8>,
+    }
+
+    impl CloudUploadSource for BytesUploadSource {
+        fn content_length(&self) -> u64 {
+            self.declared_length
+        }
+
+        fn open(&self) -> Result<Pin<Box<dyn AsyncRead + Send>>, CloudError> {
+            Ok(Box::pin(std::io::Cursor::new(self.bytes.clone())))
+        }
+    }
+
+    #[tokio::test]
+    async fn bounded_read_accepts_its_limit_and_rejects_the_next_byte_without_partial_data() {
+        let temp = TempDir::new().unwrap();
+        let cloud = LocalCloud::new(temp.path()).unwrap();
+        cloud.put("objects/value", b"12345", true).await.unwrap();
+
+        assert_eq!(
+            cloud.get_bounded("objects/value", 5).await.unwrap(),
+            b"12345"
+        );
+        assert!(matches!(
+            cloud.get_bounded("objects/value", 4).await,
+            Err(CloudError::ResponseTooLarge { limit: 4 })
+        ));
+    }
+
+    #[tokio::test]
+    async fn staged_transfer_streams_exact_bytes_and_rejects_short_or_long_upload_sources() {
+        let temp = TempDir::new().unwrap();
+        let cloud = LocalCloud::new(temp.path()).unwrap();
+        let exact = BytesUploadSource {
+            declared_length: 5,
+            bytes: b"value".to_vec(),
+        };
+
+        assert_eq!(
+            cloud
+                .upload_from("objects/exact", &exact, false)
+                .await
+                .unwrap(),
+            5
+        );
+        let mut downloaded = Vec::new();
+        assert_eq!(
+            cloud
+                .download_to("objects/exact", &mut downloaded)
+                .await
+                .unwrap(),
+            5
+        );
+        assert_eq!(downloaded, b"value");
+
+        for (key, source, actual) in [
+            (
+                "objects/short",
+                BytesUploadSource {
+                    declared_length: 6,
+                    bytes: b"short".to_vec(),
+                },
+                5,
+            ),
+            (
+                "objects/long",
+                BytesUploadSource {
+                    declared_length: 4,
+                    bytes: b"longer".to_vec(),
+                },
+                5,
+            ),
+        ] {
+            assert!(matches!(
+                cloud.upload_from(key, &source, false).await,
+                Err(CloudError::LengthMismatch {
+                    expected,
+                    actual: observed,
+                }) if expected == source.declared_length && observed == actual
+            ));
+            assert!(matches!(
+                cloud.get_bounded(key, 16).await,
+                Err(CloudError::NotFound)
+            ));
+        }
+    }
 
     #[tokio::test]
     async fn rejects_non_repository_keys_and_prefixes() {
@@ -364,7 +559,7 @@ mod tests {
         }
 
         assert!(matches!(
-            cloud.get("../escape").await,
+            cloud.get_bounded("../escape", 16).await,
             Err(CloudError::UnsafeKey)
         ));
         assert!(matches!(
@@ -387,15 +582,21 @@ mod tests {
             cloud.put("refs/latest", b"ignored", false).await,
             Err(CloudError::AlreadyExists)
         ));
-        assert_eq!(cloud.get("refs/latest").await.unwrap(), b"first");
+        assert_eq!(
+            cloud.get_bounded("refs/latest", 16).await.unwrap(),
+            b"first"
+        );
 
         assert_eq!(cloud.put("refs/latest", b"second", true).await.unwrap(), 6);
-        assert_eq!(cloud.get("refs/latest").await.unwrap(), b"second");
+        assert_eq!(
+            cloud.get_bounded("refs/latest", 16).await.unwrap(),
+            b"second"
+        );
 
         cloud.remove("refs/latest").await.unwrap();
         cloud.remove("refs/latest").await.unwrap();
         assert!(matches!(
-            cloud.get("refs/latest").await,
+            cloud.get_bounded("refs/latest", 16).await,
             Err(CloudError::NotFound)
         ));
         assert_eq!(cloud.available_size().await.unwrap(), u64::MAX);
@@ -450,11 +651,11 @@ mod tests {
 
         cloud.fail_next(CloudOperation::Get, 1).unwrap();
         assert!(matches!(
-            cloud.get("objects/CON").await,
+            cloud.get_bounded("objects/CON", 16).await,
             Err(CloudError::UnsafeKey)
         ));
         assert!(matches!(
-            cloud.get("objects/safe").await,
+            cloud.get_bounded("objects/safe", 16).await,
             Err(CloudError::Injected(CloudOperation::Get))
         ));
 
@@ -522,7 +723,10 @@ mod tests {
 
         publish.wait();
         assert_eq!(writer.join().unwrap().unwrap(), 8);
-        assert_eq!(second.get("objects/active").await.unwrap(), b"complete");
+        assert_eq!(
+            second.get_bounded("objects/active", 16).await.unwrap(),
+            b"complete"
+        );
     }
 
     #[tokio::test]
@@ -547,7 +751,10 @@ mod tests {
         assert!(cloud.list("").await.unwrap().is_empty());
         publish.wait();
         assert_eq!(writer.join().unwrap().unwrap(), 8);
-        assert_eq!(cloud.get("objects/ready").await.unwrap(), b"complete");
+        assert_eq!(
+            cloud.get_bounded("objects/ready", 16).await.unwrap(),
+            b"complete"
+        );
     }
 
     #[test]
@@ -632,7 +839,7 @@ mod tests {
             Err(CloudError::UnsafeKey)
         ));
         assert!(matches!(
-            cloud.get("link-object").await,
+            cloud.get_bounded("link-object", 16).await,
             Err(CloudError::UnsafeKey)
         ));
         assert!(matches!(
@@ -658,10 +865,10 @@ mod tests {
         }
 
         assert!(matches!(
-            cloud.get("object").await,
+            cloud.get_bounded("object", 16).await,
             Err(CloudError::Injected(CloudOperation::Get))
         ));
-        assert_eq!(cloud.get("object").await.unwrap(), b"value");
+        assert_eq!(cloud.get_bounded("object", 16).await.unwrap(), b"value");
 
         assert!(matches!(
             cloud.put("other", b"other", true).await,

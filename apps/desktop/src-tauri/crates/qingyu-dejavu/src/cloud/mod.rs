@@ -33,6 +33,10 @@ pub enum CloudError {
     Unavailable,
     #[error("cloud quota was exceeded")]
     QuotaExceeded,
+    #[error("cloud response exceeded the {limit}-byte limit")]
+    ResponseTooLarge { limit: u64 },
+    #[error("cloud transfer length differed from the declared {expected} bytes")]
+    LengthMismatch { expected: u64, actual: u64 },
     #[error("cloud repository is locked")]
     Locked,
     #[error("cloud lock operation failed")]
@@ -65,6 +69,8 @@ impl CloudError {
             Self::RateLimited => "rate_limited",
             Self::Unavailable => "unavailable",
             Self::QuotaExceeded => "quota_exceeded",
+            Self::ResponseTooLarge { .. } => "response_too_large",
+            Self::LengthMismatch { .. } => "length_mismatch",
             Self::Locked => "locked",
             Self::LockFailed { .. } => "lock_failed",
             Self::UnlockFailed { .. } => "unlock_failed",
@@ -86,6 +92,8 @@ impl CloudError {
             | Self::Forbidden
             | Self::ClockSkew
             | Self::QuotaExceeded
+            | Self::ResponseTooLarge { .. }
+            | Self::LengthMismatch { .. }
             | Self::Injected(_) => false,
         }
     }
@@ -112,12 +120,30 @@ impl CloudError {
 
 #[async_trait::async_trait]
 pub trait Cloud: Send + Sync {
-    async fn get(&self, key: &str) -> Result<Vec<u8>, CloudError>;
+    /// Reads a protocol-small object, stopping before retaining bytes beyond `max_bytes`.
+    async fn get_bounded(&self, key: &str, max_bytes: u64) -> Result<Vec<u8>, CloudError>;
+    /// Streams an object into caller-owned staging and returns the exact bytes written.
+    /// Once any body byte is written, an implementation must return a mid-body failure instead
+    /// of retrying or appending a replacement response to the same destination.
+    async fn download_to(
+        &self,
+        key: &str,
+        destination: &mut (dyn tokio::io::AsyncWrite + Unpin + Send),
+    ) -> Result<u64, CloudError>;
     /// Publishes `bytes` and returns their exact payload length on success.
     ///
-    /// With `overwrite == false`, an existing safe regular object returns
-    /// [`CloudError::AlreadyExists`]. Implementations own any transport timeout.
+    /// S3 implementations may use ordinary PUT for either `overwrite` value, matching Dejavu.
+    /// Deterministic local implementations may retain stricter no-clobber behavior when false.
     async fn put(&self, key: &str, bytes: &[u8], overwrite: bool) -> Result<u64, CloudError>;
+    /// Streams a repository object from a reopenable source, rejecting any source whose bytes
+    /// are shorter or longer than [`CloudUploadSource::content_length`]. Each retry must call
+    /// [`CloudUploadSource::open`] again to obtain a reader positioned at byte zero.
+    async fn upload_from(
+        &self,
+        key: &str,
+        source: &dyn CloudUploadSource,
+        overwrite: bool,
+    ) -> Result<u64, CloudError>;
     async fn remove(&self, key: &str) -> Result<(), CloudError>;
     /// Returns full keys whose strings start with `prefix`, globally sorted by key.
     /// Empty prefixes and one trailing slash are allowed.
@@ -139,6 +165,19 @@ mod tests {
             (CloudError::RateLimited, "rate_limited", true),
             (CloudError::Unavailable, "unavailable", true),
             (CloudError::QuotaExceeded, "quota_exceeded", false),
+            (
+                CloudError::ResponseTooLarge { limit: 42 },
+                "response_too_large",
+                false,
+            ),
+            (
+                CloudError::LengthMismatch {
+                    expected: 4,
+                    actual: 5,
+                },
+                "length_mismatch",
+                false,
+            ),
         ];
         for (error, code, retryable) in cases {
             assert_eq!(error.code(), code);
@@ -168,6 +207,8 @@ mod tests {
 
 pub mod local;
 mod s3_signing;
+mod transfer;
 
 pub use local::LocalCloud;
 pub use s3_signing::{S3AddressingStyle, S3Connection, S3RequestSigner, S3TlsVerification};
+pub use transfer::CloudUploadSource;

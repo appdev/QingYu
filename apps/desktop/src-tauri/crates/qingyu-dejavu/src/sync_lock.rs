@@ -8,6 +8,7 @@ use tokio::time::{interval_at, Instant};
 use crate::{Cloud, CloudError};
 
 const LOCK_SYNC_KEY: &str = "lock-sync";
+const MAX_LOCK_SYNC_BYTES: u64 = 64 * 1024;
 const ACQUIRE_ATTEMPTS: usize = 3;
 const ACQUIRE_RETRY_DELAY: Duration = Duration::from_secs(5);
 const REFRESH_INTERVAL: Duration = Duration::from_secs(30);
@@ -155,7 +156,7 @@ fn start_refresh(cloud: Arc<dyn Cloud>, device_id: String) -> RemoteLockGuard {
 }
 
 async fn try_acquire(cloud: &Arc<dyn Cloud>, device_id: &str) -> Result<(), CloudError> {
-    let existing = match cloud.get(LOCK_SYNC_KEY).await {
+    let existing = match cloud.get_bounded(LOCK_SYNC_KEY, MAX_LOCK_SYNC_BYTES).await {
         Ok(bytes) => match serde_json::from_slice::<LockData>(&bytes) {
             Ok(existing) => Some(existing),
             Err(_) => {
@@ -198,7 +199,7 @@ async fn write_and_verify_lock(cloud: &Arc<dyn Cloud>, device_id: &str) -> Resul
         )));
     }
 
-    let verified = match cloud.get(LOCK_SYNC_KEY).await {
+    let verified = match cloud.get_bounded(LOCK_SYNC_KEY, MAX_LOCK_SYNC_BYTES).await {
         Ok(bytes) => serde_json::from_slice::<LockData>(&bytes).ok(),
         Err(CloudError::NotFound) => return Err(CloudError::Locked),
         Err(error) => return Err(CloudError::lock_failed(error)),
@@ -229,13 +230,14 @@ mod tests {
     use std::time::Duration;
 
     use tempfile::TempDir;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::sync::Notify;
 
     use super::REFRESH_INTERVAL;
 
     use crate::{
-        Cloud, CloudError, CloudObject, CloudOperation, Device, LocalCloud, Repo, RepoOptions,
-        RepoPaths,
+        Cloud, CloudError, CloudObject, CloudOperation, CloudUploadSource, Device, LocalCloud,
+        Repo, RepoOptions, RepoPaths,
     };
 
     struct RecordingCloud {
@@ -286,14 +288,34 @@ mod tests {
 
     #[async_trait::async_trait]
     impl Cloud for RecordingCloud {
-        async fn get(&self, key: &str) -> Result<Vec<u8>, CloudError> {
+        async fn get_bounded(&self, key: &str, max_bytes: u64) -> Result<Vec<u8>, CloudError> {
             assert_eq!(key, "lock-sync");
+            assert_eq!(max_bytes, super::MAX_LOCK_SYNC_BYTES);
             self.get_count.fetch_add(1, Ordering::SeqCst);
-            self.object
+            let bytes = self
+                .object
                 .lock()
                 .unwrap()
                 .clone()
-                .ok_or(CloudError::NotFound)
+                .ok_or(CloudError::NotFound)?;
+            if bytes.len() as u64 > max_bytes {
+                return Err(CloudError::ResponseTooLarge { limit: max_bytes });
+            }
+            Ok(bytes)
+        }
+
+        async fn download_to(
+            &self,
+            key: &str,
+            destination: &mut (dyn tokio::io::AsyncWrite + Unpin + Send),
+        ) -> Result<u64, CloudError> {
+            let bytes = self.get_bounded(key, u64::MAX).await?;
+            destination
+                .write_all(&bytes)
+                .await
+                .map_err(CloudError::Io)?;
+            destination.flush().await.map_err(CloudError::Io)?;
+            Ok(bytes.len() as u64)
         }
 
         async fn put(&self, key: &str, bytes: &[u8], overwrite: bool) -> Result<u64, CloudError> {
@@ -324,6 +346,29 @@ mod tests {
                 self.refresh_put_finished.notify_one();
             }
             Ok(bytes.len() as u64)
+        }
+
+        async fn upload_from(
+            &self,
+            key: &str,
+            source: &dyn CloudUploadSource,
+            overwrite: bool,
+        ) -> Result<u64, CloudError> {
+            let expected = source.content_length();
+            let reader = source.open()?;
+            let mut bytes = Vec::new();
+            reader
+                .take(expected.saturating_add(1))
+                .read_to_end(&mut bytes)
+                .await
+                .map_err(CloudError::Io)?;
+            if bytes.len() as u64 != expected {
+                return Err(CloudError::LengthMismatch {
+                    expected,
+                    actual: bytes.len() as u64,
+                });
+            }
+            self.put(key, &bytes, overwrite).await
         }
 
         async fn remove(&self, key: &str) -> Result<(), CloudError> {
@@ -435,8 +480,13 @@ mod tests {
         let cloud = Arc::new(LocalCloud::new(_temp.path()).unwrap());
 
         let guard = repo.lock_cloud(cloud.clone()).await.unwrap();
-        let value: serde_json::Value =
-            serde_json::from_slice(&cloud.get("lock-sync").await.unwrap()).unwrap();
+        let value: serde_json::Value = serde_json::from_slice(
+            &cloud
+                .get_bounded("lock-sync", super::MAX_LOCK_SYNC_BYTES)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
         assert_eq!(value.as_object().unwrap().len(), 2);
         assert_eq!(value["deviceID"], "device-a");
         let written = value["time"].as_i64().unwrap();

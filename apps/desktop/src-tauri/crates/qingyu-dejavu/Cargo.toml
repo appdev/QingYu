@@ -25,7 +25,8 @@ sha1 = "0.10.6"
 sha2 = "0.10.9"
 thiserror = "2"
 time = "0.3.44"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
+tokio = { version = "1", features = ["fs", "io-util", "macros", "rt-multi-thread", "sync", "time"] }
+tokio-util = { version = "0.7.18", features = ["io"] }
 url = "2"
 zstd = "0.13.3"
 
