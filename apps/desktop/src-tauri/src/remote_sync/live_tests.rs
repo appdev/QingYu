@@ -1582,36 +1582,48 @@ async fn run_checkpoint_recovery_scenario() -> Result<(), String> {
     finish_scenario(&config, &backend.inner, &[root], scenario_result).await
 }
 
-async fn run_concurrent_remote_change_scenario() -> Result<(), String> {
+async fn run_concurrent_remote_replan_scenario() -> Result<(), String> {
     let config = LiveS3Config::from_env()?;
     let backend = MutateBeforeUploadBackend::new(config.backend_for("concurrent-change")?);
     let root = temp_root(&config, "concurrent-change")?;
     let scenario_result = async {
         write_local_file(&root, "note.md", b"baseline")?;
-        execute_remote_sync(&root, &backend.inner).await?;
-        let manifest_before = fs::read(live_state_root(&root).join("s3-manifest.json"))
-            .map_err(|error| format!("Failed to snapshot concurrent manifest: {error}"))?;
+        let baseline = execute_remote_sync(&root, &backend.inner).await?;
+        assert_summary(&baseline, 1, 0, 0)?;
         write_local_file(&root, "note.md", b"local planned version")?;
-        let error = execute_remote_sync(&root, &backend)
-            .await
-            .expect_err("concurrent remote mutation must reject the stale upload plan");
-        if error.safe_code() != "s3-object-changed" {
-            return Err(format!(
-                "Concurrent remote mutation returned an unexpected error: {error}"
-            ));
-        }
+
+        let conflict = execute_remote_sync(&root, &backend).await?;
+        assert_summary(&conflict, 0, 0, 1)?;
         if read_remote_file(&backend.inner, "note.md").await? != b"concurrent remote version" {
-            return Err("Stale upload overwrote the concurrent remote version".to_string());
+            return Err("Concurrent replan overwrote the remote version".to_string());
         }
         if read_local_file(&root, "note.md")? != b"local planned version" {
-            return Err("Rejected stale upload changed the local planned version".to_string());
+            return Err("Concurrent replan replaced the local planned version".to_string());
         }
-        let manifest_after = fs::read(live_state_root(&root).join("s3-manifest.json"))
-            .map_err(|error| format!("Failed to re-read concurrent manifest: {error}"))?;
-        if manifest_before != manifest_after {
-            return Err("Rejected stale upload changed the manifest checkpoint".to_string());
+        let conflicts = conflict_files(&root)?;
+        if conflicts.len() != 1
+            || fs::read(&conflicts[0])
+                .map_err(|error| format!("Failed to read concurrent conflict copy: {error}"))?
+                != b"concurrent remote version"
+        {
+            return Err("Concurrent replan did not preserve one remote conflict copy".to_string());
         }
-        Ok(())
+        let conflict_name = conflicts[0]
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| "Concurrent conflict copy name was invalid".to_string())?
+            .to_string();
+
+        let stabilization = execute_remote_sync(&root, &backend.inner).await?;
+        assert_summary(&stabilization, 1, 0, 0)?;
+        if conflict_files(&root)?.len() != 1 {
+            return Err("Concurrent replan stabilization repeated the conflict".to_string());
+        }
+        if read_remote_file(&backend.inner, &conflict_name).await? != b"concurrent remote version" {
+            return Err("Concurrent conflict copy was not uploaded to MinIO".to_string());
+        }
+        assert_manifest_paths(&root, &["note.md", conflict_name.as_str()])?;
+        assert_noop_sync(&root, &backend.inner).await
     }
     .await;
     finish_scenario(&config, &backend.inner, &[root], scenario_result).await
@@ -1863,9 +1875,9 @@ fn live_minio_checkpoints_completed_upload_before_injected_failure() {
 
 #[test]
 #[ignore = "requires MARKRA_TEST_S3_* and a real MinIO server"]
-fn live_minio_rejects_remote_change_between_plan_and_upload() {
-    tauri::async_runtime::block_on(run_concurrent_remote_change_scenario())
-        .expect("live MinIO concurrent remote change scenario");
+fn live_minio_replans_remote_change_between_plan_and_upload_as_conflict() {
+    tauri::async_runtime::block_on(run_concurrent_remote_replan_scenario())
+        .expect("live MinIO concurrent remote replan scenario");
 }
 
 #[test]
