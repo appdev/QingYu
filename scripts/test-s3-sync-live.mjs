@@ -53,17 +53,21 @@ export function runLiveS3Tests(environment = process.env, spawnProcess = spawn) 
 function waitForTestProcess(child, label) {
   return new Promise((resolve) => {
     let settled = false;
-    const finish = (code) => {
+    const finish = (result) => {
       if (settled) return;
       settled = true;
-      resolve(code);
+      resolve(result);
     };
     child.once("error", () => {
       console.error(`Failed to start ${label}`);
-      finish(1);
+      finish({ code: 1, signal: null, cancelled: false });
     });
     child.once("exit", (code, signal) => {
-      finish(code ?? (signal === "SIGINT" ? 130 : 1));
+      finish({
+        code: code ?? (signal === "SIGINT" ? 130 : 1),
+        signal: signal ?? null,
+        cancelled: signal !== null
+      });
     });
   });
 }
@@ -87,7 +91,11 @@ export async function runAllLiveS3Tests(
     ],
     { env: environment, stdio: "inherit" }
   );
-  const existingCode = await waitForTestProcess(existing, "existing live S3 tests");
+  const existingResult = await waitForTestProcess(
+    existing,
+    "existing live S3 tests"
+  );
+  if (existingResult.cancelled) return existingResult.code;
 
   const dejavu = spawnProcess(
     "cargo",
@@ -108,8 +116,11 @@ export async function runAllLiveS3Tests(
       stdio: "inherit"
     }
   );
-  const dejavuCode = await waitForTestProcess(dejavu, "Dejavu Rust live S3 test");
-  return existingCode !== 0 ? existingCode : dejavuCode;
+  const dejavuResult = await waitForTestProcess(
+    dejavu,
+    "Dejavu Rust live S3 test"
+  );
+  return existingResult.code !== 0 ? existingResult.code : dejavuResult.code;
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {

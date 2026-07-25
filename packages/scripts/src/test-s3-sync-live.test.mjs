@@ -21,9 +21,15 @@ function completeEnvironment() {
   };
 }
 
-function exitingChild(code) {
+function exitingChild(code, signal = null) {
   const child = new EventEmitter();
-  queueMicrotask(() => child.emit("exit", code, null));
+  queueMicrotask(() => child.emit("exit", code, signal));
+  return child;
+}
+
+function erroringChild() {
+  const child = new EventEmitter();
+  queueMicrotask(() => child.emit("error", new Error("private spawn detail")));
   return child;
 }
 
@@ -175,6 +181,46 @@ describe("live S3 test wrapper", () => {
       wrapper.runAllLiveS3Tests(completeEnvironment(), spawnProcess)
     ).resolves.toBe(9);
     expect(spawnProcess).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    ["SIGINT", 130],
+    ["SIGTERM", 1]
+  ])(
+    "stops after the existing suite exits on %s and returns %i",
+    async (signal, expectedCode) => {
+      const wrapper = await loadWrapper();
+      expect(wrapper).not.toBeNull();
+      if (!wrapper) return;
+
+      const spawnProcess = vi.fn(() => exitingChild(null, signal));
+
+      await expect(
+        wrapper.runAllLiveS3Tests(completeEnvironment(), spawnProcess)
+      ).resolves.toBe(expectedCode);
+      expect(spawnProcess).toHaveBeenCalledTimes(1);
+    }
+  );
+
+  it("continues after the existing child emits an error and preserves its failure code", async () => {
+    const wrapper = await loadWrapper();
+    expect(wrapper).not.toBeNull();
+    if (!wrapper) return;
+
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const spawnProcess = vi
+      .fn()
+      .mockImplementationOnce(() => erroringChild())
+      .mockImplementationOnce(() => exitingChild(0));
+
+    await expect(
+      wrapper.runAllLiveS3Tests(completeEnvironment(), spawnProcess)
+    ).resolves.toBe(1);
+    expect(spawnProcess).toHaveBeenCalledTimes(2);
+    expect(consoleError).toHaveBeenCalledWith(
+      "Failed to start existing live S3 tests"
+    );
+    consoleError.mockRestore();
   });
 
   it("returns the Dejavu crate failure when the existing suite succeeds", async () => {
