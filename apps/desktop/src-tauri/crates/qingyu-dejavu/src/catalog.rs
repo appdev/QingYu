@@ -178,7 +178,10 @@ impl S3RepositoryCatalog {
         validate_repository_id(repository_id)?;
         let repository_prefix = format!("{repository_id}/");
         let metadata_key = metadata_key(repository_id);
-        let objects = self.cloud.list(&repository_prefix).await?;
+        let objects = self
+            .cloud
+            .list_catalog_repository_objects(repository_id)
+            .await?;
         let mut seen = HashSet::new();
         let mut ordinary_keys = Vec::new();
         let mut has_metadata = false;
@@ -194,10 +197,14 @@ impl S3RepositoryCatalog {
         }
         ordinary_keys.sort();
         for key in ordinary_keys {
-            self.cloud.remove(&key).await?;
+            self.cloud
+                .remove_catalog_repository_object(repository_id, &key)
+                .await?;
         }
         if has_metadata {
-            self.cloud.remove(&metadata_key).await?;
+            self.cloud
+                .remove_catalog_repository_object(repository_id, &metadata_key)
+                .await?;
         }
         Ok(())
     }

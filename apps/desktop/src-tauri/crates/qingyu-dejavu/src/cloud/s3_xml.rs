@@ -32,6 +32,7 @@ pub(super) async fn parse_list_page(
     response: Response,
     repository_prefix: &str,
     requested_prefix: &str,
+    allow_object_trailing_slash: bool,
 ) -> Result<ListPage, CloudError> {
     let mut total = 0_usize;
     let stream = response.bytes_stream().map(move |result| {
@@ -229,7 +230,7 @@ pub(super) async fn parse_list_page(
                         let relative = key
                             .strip_prefix(&repository_prefix)
                             .ok_or(CloudError::UnsafeKey)?;
-                        validate_relative(relative, false)?;
+                        validate_relative(relative, allow_object_trailing_slash)?;
                         objects.push(CloudObject {
                             key: relative.to_string(),
                             size,
@@ -294,6 +295,7 @@ fn is_known_element(name: &[u8]) -> bool {
             | b"IsTruncated"
             | b"NextContinuationToken"
             | b"Prefix"
+            | b"CommonPrefixes"
     )
 }
 

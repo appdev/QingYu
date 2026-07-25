@@ -130,7 +130,15 @@ impl S3Cloud {
     }
 
     fn object_url(&self, key: &str) -> Result<Url, CloudError> {
-        validate_relative(key, false)?;
+        self.object_url_with_validation(key, false)
+    }
+
+    fn object_url_with_validation(
+        &self,
+        key: &str,
+        allow_trailing_slash: bool,
+    ) -> Result<Url, CloudError> {
+        validate_relative(key, allow_trailing_slash)?;
         self.connection
             .object_url(&format!("{}/{key}", self.repository_prefix))
     }
@@ -181,7 +189,8 @@ impl S3Cloud {
         loop {
             let url = self.list_url("", continuation.as_deref(), Some("/"))?;
             let response = self.send_empty_with_retry(Method::GET, &url).await?;
-            let page = parse_list_page(response, &self.repository_prefix, &full_prefix).await?;
+            let page =
+                parse_list_page(response, &self.repository_prefix, &full_prefix, false).await?;
             prefixes.extend(page.common_prefixes);
             invalid_direct_object_count = invalid_direct_object_count
                 .checked_add(page.objects.len())
@@ -201,6 +210,79 @@ impl S3Cloud {
             prefixes,
             invalid_direct_object_count,
         })
+    }
+
+    pub(crate) async fn list_catalog_repository_objects(
+        &self,
+        repository_id: &str,
+    ) -> Result<Vec<CloudObject>, CloudError> {
+        self.validate_catalog_repository(repository_id)?;
+        self.list_objects(&format!("{repository_id}/"), true).await
+    }
+
+    pub(crate) async fn remove_catalog_repository_object(
+        &self,
+        repository_id: &str,
+        key: &str,
+    ) -> Result<(), CloudError> {
+        self.validate_catalog_repository(repository_id)?;
+        let repository_prefix = format!("{repository_id}/");
+        if !key.starts_with(&repository_prefix) {
+            return Err(CloudError::UnsafeKey);
+        }
+        let url = self.object_url_with_validation(key, true)?;
+        self.send_empty_with_retry(Method::DELETE, &url).await?;
+        Ok(())
+    }
+
+    fn validate_catalog_repository(&self, repository_id: &str) -> Result<(), CloudError> {
+        if self.repository_prefix != CATALOG_ROOT_PREFIX {
+            return Err(CloudError::UnsafeKey);
+        }
+        let parsed = uuid::Uuid::parse_str(repository_id).map_err(|_| CloudError::UnsafeKey)?;
+        if parsed.to_string() != repository_id {
+            return Err(CloudError::UnsafeKey);
+        }
+        Ok(())
+    }
+
+    async fn list_objects(
+        &self,
+        prefix: &str,
+        allow_object_trailing_slash: bool,
+    ) -> Result<Vec<CloudObject>, CloudError> {
+        validate_relative(prefix, true)?;
+        let full_prefix = format!("{}/{}", self.repository_prefix, prefix);
+        let mut continuation: Option<String> = None;
+        let mut seen_continuations = HashSet::new();
+        let mut objects = Vec::new();
+        loop {
+            let url = self.list_url(prefix, continuation.as_deref(), None)?;
+            let response = self.send_empty_with_retry(Method::GET, &url).await?;
+            let page = parse_list_page(
+                response,
+                &self.repository_prefix,
+                &full_prefix,
+                allow_object_trailing_slash,
+            )
+            .await?;
+            if !page.common_prefixes.is_empty() {
+                return Err(CloudError::UnsafeKey);
+            }
+            objects.extend(page.objects);
+            if !page.is_truncated {
+                break;
+            }
+            let next = page
+                .next_continuation_token
+                .ok_or_else(|| CloudError::backend("s3_list_missing_continuation"))?;
+            if next.is_empty() || !seen_continuations.insert(next.clone()) {
+                return Err(CloudError::backend("s3_list_stalled_continuation"));
+            }
+            continuation = Some(next);
+        }
+        objects.sort_by(|left, right| left.key.cmp(&right.key));
+        Ok(objects)
     }
 
     fn signed_empty_request(
@@ -516,32 +598,7 @@ impl Cloud for S3Cloud {
     }
 
     async fn list(&self, prefix: &str) -> Result<Vec<CloudObject>, CloudError> {
-        validate_relative(prefix, true)?;
-        let full_prefix = format!("{}/{}", self.repository_prefix, prefix);
-        let mut continuation: Option<String> = None;
-        let mut seen_continuations = HashSet::new();
-        let mut objects = Vec::new();
-        loop {
-            let url = self.list_url(prefix, continuation.as_deref(), None)?;
-            let response = self.send_empty_with_retry(Method::GET, &url).await?;
-            let page = parse_list_page(response, &self.repository_prefix, &full_prefix).await?;
-            if !page.common_prefixes.is_empty() {
-                return Err(CloudError::UnsafeKey);
-            }
-            objects.extend(page.objects);
-            if !page.is_truncated {
-                break;
-            }
-            let next = page
-                .next_continuation_token
-                .ok_or_else(|| CloudError::backend("s3_list_missing_continuation"))?;
-            if next.is_empty() || !seen_continuations.insert(next.clone()) {
-                return Err(CloudError::backend("s3_list_stalled_continuation"));
-            }
-            continuation = Some(next);
-        }
-        objects.sort_by(|left, right| left.key.cmp(&right.key));
-        Ok(objects)
+        self.list_objects(prefix, false).await
     }
 
     async fn available_size(&self) -> Result<u64, CloudError> {

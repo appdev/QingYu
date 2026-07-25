@@ -948,7 +948,7 @@ async fn cloud_delete_is_unconditional_and_has_no_if_match_header() {
 async fn cloud_list_paginates_strips_only_the_repository_prefix_and_sorts_keys() {
     let first_target = "/qingyu-notes?list-type=2&max-keys=1000&prefix=qingyu%2Frepositories%2Frepo-a%2Frepo%2Fobjects%2F";
     let second_target = "/qingyu-notes?continuation-token=next%2Btoken&list-type=2&max-keys=1000&prefix=qingyu%2Frepositories%2Frepo-a%2Frepo%2Fobjects%2F";
-    let first_xml = br#"<ListBucketResult><CommonPrefixes/><CustomSibling/><IsTruncated>true</IsTruncated><NextContinuationToken>next+token</NextContinuationToken><Contents><Key>qingyu/repositories/repo-a/repo/objects/zz/item</Key><Size>9</Size></Contents></ListBucketResult>"#;
+    let first_xml = br#"<ListBucketResult><UnknownExtension/><CustomSibling/><IsTruncated>true</IsTruncated><NextContinuationToken>next+token</NextContinuationToken><Contents><Key>qingyu/repositories/repo-a/repo/objects/zz/item</Key><Size>9</Size></Contents></ListBucketResult>"#;
     let second_xml = br#"<ListBucketResult><IsTruncated>false</IsTruncated><Contents><Key>qingyu/repositories/repo-a/repo/objects/ab/cdef</Key><Size>4</Size></Contents></ListBucketResult>"#;
     let fixture = HttpFixture::start(vec![
         expected_request("GET", first_target, vec![], FixtureResponse::ok(first_xml)),
@@ -986,6 +986,7 @@ async fn cloud_list_rejects_malformed_truncated_cross_prefix_and_stalled_paginat
         br#"<ListBucketResult><Contents><Key>x</Key>"#,
         br#"<ListBucketResult><IsTruncated>true</IsTruncated></ListBucketResult>"#,
         br#"<ListBucketResult><IsTruncated>false</IsTruncated><Contents><Key>qingyu/repositories/repo-b/repo/objects/ab/cdef</Key><Size>1</Size></Contents></ListBucketResult>"#,
+        br#"<ListBucketResult><IsTruncated>false</IsTruncated><Contents><Key>qingyu/repositories/repo-a/repo/objects/</Key><Size>0</Size></Contents></ListBucketResult>"#,
         br#"<ListBucketResult><IsTruncated>fal<Unexpected/>se</IsTruncated></ListBucketResult>"#,
         br#"<ListBucketResult><IsTruncated>false</IsTruncated></ListBucketResult><ListBucketResult><IsTruncated>false</IsTruncated></ListBucketResult>"#,
         br#"<ListBucketResult><IsTruncated>false</IsTruncated></ListBucketResult>trailing"#,
@@ -1259,6 +1260,10 @@ async fn cloud_rejects_unsafe_repository_prefixes_keys_and_list_prefixes_before_
     for prefix in ["/objects", "objects//", "objects/../", "objects\\"] {
         assert!(matches!(s3.list(prefix).await, Err(CloudError::UnsafeKey)));
     }
+    assert!(matches!(
+        s3.remove("objects/").await,
+        Err(CloudError::UnsafeKey)
+    ));
 }
 
 #[tokio::test]
@@ -1590,6 +1595,26 @@ async fn catalog_list_rejects_duplicate_or_missing_prefix_fields() {
 }
 
 #[tokio::test]
+async fn catalog_list_rejects_a_self_closing_common_prefixes_element() {
+    let xml =
+        "<ListBucketResult><IsTruncated>false</IsTruncated><CommonPrefixes/></ListBucketResult>";
+    let fixture = HttpFixture::start(vec![expected_request(
+        "GET",
+        CATALOG_LIST_TARGET,
+        vec![],
+        FixtureResponse::ok(xml),
+    )])
+    .await;
+    let catalog = catalog(&fixture.endpoint, 1);
+
+    assert!(matches!(
+        catalog.list().await,
+        Err(CloudError::Backend { .. })
+    ));
+    fixture.finish(1).await;
+}
+
+#[tokio::test]
 async fn catalog_read_accepts_exactly_64_kib_and_rejects_the_next_byte() {
     let mut exact = catalog_json(CATALOG_ID_A, "Notes", 1, 1);
     exact.resize(64 * 1024, b' ');
@@ -1828,6 +1853,76 @@ async fn catalog_delete_paginates_and_deletes_metadata_last() {
 
     catalog.delete_repository(CATALOG_ID_A).await.unwrap();
     fixture.finish(5).await;
+}
+
+#[tokio::test]
+async fn catalog_delete_accepts_zero_byte_directory_markers_and_deletes_metadata_last() {
+    let target = leak(format!(
+        "/qingyu-notes?list-type=2&max-keys=1000&prefix=qingyu%2Frepositories%2F{}%2F",
+        CATALOG_ID_A
+    ));
+    let page = format!(
+        "<ListBucketResult><IsTruncated>false</IsTruncated>\
+         <Contents><Key>qingyu/repositories/{CATALOG_ID_A}/</Key><Size>0</Size></Contents>\
+         <Contents><Key>qingyu/repositories/{CATALOG_ID_A}/repo/objects/</Key><Size>0</Size></Contents>\
+         <Contents><Key>qingyu/repositories/{CATALOG_ID_A}/metadata.json</Key><Size>10</Size></Contents>\
+         </ListBucketResult>"
+    );
+    let fixture = HttpFixture::start(vec![
+        expected_request("GET", target, vec![], FixtureResponse::ok(page)),
+        expected_request(
+            "DELETE",
+            catalog_object_target(CATALOG_ID_A, ""),
+            vec![],
+            FixtureResponse::status(204),
+        ),
+        expected_request(
+            "DELETE",
+            catalog_object_target(CATALOG_ID_A, "repo/objects/"),
+            vec![],
+            FixtureResponse::status(204),
+        ),
+        expected_request(
+            "DELETE",
+            catalog_object_target(CATALOG_ID_A, "metadata.json"),
+            vec![],
+            FixtureResponse::status(204),
+        ),
+    ])
+    .await;
+    let catalog = catalog(&fixture.endpoint, 1);
+
+    catalog.delete_repository(CATALOG_ID_A).await.unwrap();
+    fixture.finish(4).await;
+}
+
+#[tokio::test]
+async fn catalog_delete_rejects_unsafe_directory_markers_before_any_delete() {
+    let target = leak(format!(
+        "/qingyu-notes?list-type=2&max-keys=1000&prefix=qingyu%2Frepositories%2F{}%2F",
+        CATALOG_ID_A
+    ));
+    for unsafe_suffix in ["repo//", "repo/./", "repo/../", "repo\\objects/"] {
+        let page = format!(
+            "<ListBucketResult><IsTruncated>false</IsTruncated>\
+             <Contents><Key>qingyu/repositories/{CATALOG_ID_A}/{unsafe_suffix}</Key><Size>0</Size></Contents>\
+             </ListBucketResult>"
+        );
+        let fixture = HttpFixture::start(vec![expected_request(
+            "GET",
+            target,
+            vec![],
+            FixtureResponse::ok(page),
+        )])
+        .await;
+        let catalog = catalog(&fixture.endpoint, 1);
+
+        assert!(matches!(
+            catalog.delete_repository(CATALOG_ID_A).await,
+            Err(CloudError::UnsafeKey)
+        ));
+        fixture.finish(1).await;
+    }
 }
 
 #[tokio::test]
