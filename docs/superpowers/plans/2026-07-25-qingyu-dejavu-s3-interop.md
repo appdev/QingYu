@@ -16,6 +16,9 @@
 - Preserve the Dejavu `lock-sync` JSON and timing; do not add ETag CAS, conditional PUT, conditional DELETE, or a lease service.
 - Do not use QingYu's legacy logical-empty sentinel inside the new Dejavu repository.
 - Keep request diagnostics secret-free and bound transport retries; never retry deterministic authentication, authorization, validation, decrypt, or integrity failures.
+- Preserve Dejavu/SiYuan capacity semantics: no QingYu limit for one user file, one current snapshot, or the repository; retain the 8 MiB plaintext chunk maximum.
+- Treat third-party S3 available capacity as unknown. Do not copy SiYuan's 2 TiB sentinel into the reusable core or present it as actual bucket quota.
+- Bound only protocol-small objects in memory. Stream `File`, `Index`, and `CheckIndex` downloads through capability-owned temporary files and stream their uploads from validated local repository objects.
 - Do not modify WebDAV or route product synchronization to this backend in this milestone.
 - Every behavior starts with a failing HTTP, MinIO, or interoperability test and ends with a focused commit.
 
@@ -30,6 +33,7 @@ apps/desktop/src-tauri/crates/qingyu-dejavu/
     catalog.rs                       # outer metadata and listing
     cloud/
       mod.rs                         # existing Cloud trait plus S3 exports
+      transfer.rs                    # bounded buffers and streamed transfer helpers
       s3.rs                          # Cloud implementation
       s3_signing.rs                  # SigV4 URL and headers
       s3_xml.rs                      # bounded ListObjectsV2 parser
@@ -126,7 +130,127 @@ git add apps/desktop/src-tauri/crates/qingyu-dejavu apps/desktop/src-tauri/Cargo
 git commit -m "feat(sync): add Dejavu S3 signing"
 ```
 
-### Task 2: Implement the S3 Cloud operations and bounded diagnostics
+### Task 2: Replace whole-body Cloud transfers with bounded and staged I/O
+
+**Files:**
+- Create: `apps/desktop/src-tauri/crates/qingyu-dejavu/src/cloud/transfer.rs`
+- Modify: `apps/desktop/src-tauri/crates/qingyu-dejavu/Cargo.toml`
+- Modify: `apps/desktop/src-tauri/Cargo.lock`
+- Modify: `apps/desktop/src-tauri/crates/qingyu-dejavu/src/cloud/mod.rs`
+- Modify: `apps/desktop/src-tauri/crates/qingyu-dejavu/src/cloud/local.rs`
+- Modify: `apps/desktop/src-tauri/crates/qingyu-dejavu/src/repo.rs`
+- Modify: `apps/desktop/src-tauri/crates/qingyu-dejavu/src/store.rs`
+- Modify: `apps/desktop/src-tauri/crates/qingyu-dejavu/src/sync.rs`
+- Modify: `apps/desktop/src-tauri/crates/qingyu-dejavu/src/sync_lock.rs`
+
+**Interfaces:**
+- Replaces: unbounded `Cloud::get` with `get_bounded(key, max_bytes)` and `download_to(key, writer)`.
+- Adds: reopenable `CloudUploadSource` and `upload_from(key, source, overwrite)` for repository objects; keeps byte PUT for protocol-small objects.
+- Preserves: exact Dejavu bytes, object IDs, encryption, compression, and publication order.
+- Produces: capability-owned temporary download lifecycle retained by `Repo`.
+
+- [ ] **Step 1: Add failing Cloud boundary and cleanup tests**
+
+Cover these exact behaviors with `LocalCloud` and instrumented Cloud fixtures:
+
+- a bounded read accepts its limit and rejects the next byte without returning a partial value;
+- `refs/latest` and sequence refs require exactly 42 bytes;
+- `lock-sync` is bounded at 64 KiB and a chunk keeps the existing 8 MiB plaintext
+  plus 1 MiB encoded-object envelope;
+- `File`, `Index`, and `CheckIndex` use `download_to` and `upload_from` rather
+  than whole-body transfer `Vec` values;
+- a failed or cancelled transfer removes its task-owned temporary file and never
+  imports a partial object;
+- successful import verifies the object ID before atomic publication.
+
+- [ ] **Step 2: Run focused tests and verify RED**
+
+```bash
+cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml -p qingyu-dejavu cloud::
+cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml -p qingyu-dejavu staged_download
+```
+
+Expected: compile failures because the new Cloud methods and staged import path
+do not exist.
+
+- [ ] **Step 3: Add the explicit Cloud transfer contract**
+
+Use object-safe async methods equivalent to:
+
+```rust
+async fn get_bounded(&self, key: &str, max_bytes: u64) -> Result<Vec<u8>, CloudError>;
+async fn download_to(
+    &self,
+    key: &str,
+    destination: &mut (dyn tokio::io::AsyncWrite + Unpin + Send),
+) -> Result<u64, CloudError>;
+trait CloudUploadSource: Send + Sync {
+    fn content_length(&self) -> u64;
+    fn open(&self) -> Result<std::pin::Pin<Box<dyn tokio::io::AsyncRead + Send>>, CloudError>;
+}
+async fn upload_from(
+    &self,
+    key: &str,
+    source: &dyn CloudUploadSource,
+    overwrite: bool,
+) -> Result<u64, CloudError>;
+```
+
+`get_bounded` must stop as soon as the next byte would cross the caller-supplied
+limit. `download_to` returns the bytes written, flushes but does not publish the
+destination, and leaves cleanup ownership with the caller. Update the trait
+contract so S3 `put(..., overwrite)` may perform ordinary PUT for either boolean
+value, matching pinned Dejavu; do not change `LocalCloud`'s stricter collision
+check used by deterministic tests. `upload_from` opens a fresh reader for every
+retry and must reject short and long sources relative to `content_length`;
+protocol-small byte PUT retains its exact payload length. A download may retry
+connection establishment or a retryable status only before writing its first
+body byte. Any mid-body failure returns an error so the caller's staged-file
+guard removes the partial target instead of appending a retry to it.
+
+Enable Tokio `fs` and `io-util`, and add
+`tokio-util = { version = "0.7.18", features = ["io"] }` for the reqwest upload
+body bridge. Do not introduce a second HTTP or S3 client library.
+
+- [ ] **Step 4: Retain and use the capability-owned Repo temp directory**
+
+Keep the validated `RepoPaths.temp` directory in `Repo`. Give each download a
+random task-owned staged file under that directory. On success, rewind and pass
+the staged file into `Store`; on every error or cancellation, close and unlink
+only that owned file. Startup cleanup may remove abandoned files only from this
+repository's `temp/` directory. Open validated local raw objects through the
+repository capability and pass those handles to `upload_from`, matching Dejavu
+S3 `UploadObject` instead of copying them into a second whole-body buffer.
+
+- [ ] **Step 5: Remove provisional non-protocol object caps without changing format**
+
+Keep the chunk boundary. Remove the provisional 64 MiB `File` metadata limit and
+512 MiB `Index`/`CheckIndex` limits from the Plan 1 decoder. Decode zstd objects
+from a reader with the existing 512 KiB window cap and deserialize JSON from the
+decode stream. Preserve the existing AES-256-GCM object layout: authenticated
+`File` ciphertext may still require one object-sized processing buffer, but the
+network layer must not first create another unbounded response buffer. Map
+allocation, conversion, decode, and integrity failures safely and never publish
+before validation completes.
+
+- [ ] **Step 6: Run core and shared Go scenario tests and verify GREEN**
+
+```bash
+cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml -p qingyu-dejavu
+DEJAVU_SOURCE_DIR=/Volumes/extendData/Data/IdeaProjects/upstream/dejavu pnpm test:dejavu-oracle
+```
+
+Expected: exact refs/chunks remain bounded, temporary files are cleaned, and all
+existing Go/Rust bytes and state-machine scenarios remain compatible.
+
+- [ ] **Step 7: Commit the Cloud transfer boundary**
+
+```bash
+git add apps/desktop/src-tauri/crates/qingyu-dejavu apps/desktop/src-tauri/Cargo.lock
+git commit -m "refactor(sync): stage large Dejavu transfers"
+```
+
+### Task 3: Implement the S3 Cloud operations and bounded diagnostics
 
 **Files:**
 - Create: `apps/desktop/src-tauri/crates/qingyu-dejavu/src/cloud/s3.rs`
@@ -143,13 +267,16 @@ git commit -m "feat(sync): add Dejavu S3 signing"
 
 Use a bounded local TCP fixture to assert exact requests for:
 
-- GET success and 404-to-`CloudError::NotFound`;
+- bounded GET success, streamed download and reopenable streamed upload success,
+  and 404-to-`CloudError::NotFound`;
 - PUT with `Cache-Control: no-cache`, including a true zero-byte body;
 - DELETE without `If-Match`;
 - ListObjectsV2 pagination with `continuation-token`;
 - prefix stripping from `qingyu/repositories/repo-a/repo/objects/ab/cdef`;
 - malformed, oversized, truncated, and cross-prefix XML results;
-- transport failure and HTTP 408/429/500/502/503/504 retry up to three attempts;
+- connection failure and HTTP 408/429/500/502/503/504 retry up to three attempts;
+- upload retry reopens its source, while a truncated download after its first
+  written byte fails without appending a second attempt;
 - HTTP 400/401/403 and decrypt/integrity failures without retry.
 
 - [ ] **Step 2: Run S3 operation tests and verify RED**
@@ -174,11 +301,16 @@ on `lock-sync` rather than conditional writes.
 
 - [ ] **Step 4: Implement bounded request and XML handling**
 
-Create a fresh signature for every retry. Buffer successful GET bodies under an
-explicit size limit supplied by the caller. Parse ListObjectsV2 incrementally,
-cap one page at 1000 entries, require continuation progress, and sort returned
-`CloudObject` values by key. Map provider request IDs and status codes into
-typed diagnostics without response bodies or credentials.
+Create a fresh signature for every retry. `get_bounded` must enforce the caller's
+limit while reading response chunks. `download_to` must stream response chunks
+directly into the supplied writer and must not collect the response into a
+whole-body `Vec`. `upload_from` must reopen its source for every signed retry and
+stream it with the exact content length. Parse ListObjectsV2 incrementally, cap
+one page at 1000 entries, require continuation progress, and sort returned
+`CloudObject` values by key.
+Map provider request IDs and status codes into typed diagnostics without response
+bodies or credentials. `available_size` returns `u64::MAX` for S3 and is tested
+as unknown capacity, never as a measured quota.
 
 - [ ] **Step 5: Run tests and verify GREEN**
 
@@ -193,7 +325,7 @@ git add apps/desktop/src-tauri/crates/qingyu-dejavu
 git commit -m "feat(sync): implement Dejavu S3 cloud adapter"
 ```
 
-### Task 3: Add the QingYu outer repository catalog
+### Task 4: Add the QingYu outer repository catalog
 
 **Files:**
 - Create: `apps/desktop/src-tauri/crates/qingyu-dejavu/src/catalog.rs`
@@ -234,7 +366,8 @@ cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml -p qingyu-dejavu --
 - [ ] **Step 3: Implement catalog operations separately from Cloud**
 
 List direct `repositories/<id>/metadata.json` objects, reject nested or invalid
-IDs, read bounded JSON, and sort entries by display name then ID. Create writes
+IDs, read JSON with a 64 KiB bound, and sort entries by display name then ID.
+Create writes
 metadata before any repo object. Rename updates only display name and
 `updatedAt`. Delete lists then deletes every object under exactly the selected
 repository prefix after the caller has confirmed; the catalog API itself does
@@ -252,7 +385,7 @@ git add apps/desktop/src-tauri/crates/qingyu-dejavu
 git commit -m "feat(sync): add QingYu Dejavu repository catalog"
 ```
 
-### Task 4: Prove remote lock and latest-sequence behavior over S3
+### Task 5: Prove remote lock and latest-sequence behavior over S3
 
 **Files:**
 - Modify: `apps/desktop/src-tauri/crates/qingyu-dejavu/tests/s3_http.rs`
@@ -301,7 +434,7 @@ git add apps/desktop/src-tauri/crates/qingyu-dejavu
 git commit -m "test(sync): lock Dejavu S3 publication order"
 ```
 
-### Task 5: Add real MinIO Rust coverage
+### Task 6: Add real MinIO Rust coverage
 
 **Files:**
 - Create: `apps/desktop/src-tauri/crates/qingyu-dejavu/tests/s3_minio.rs`
@@ -359,7 +492,7 @@ git add apps/desktop/src-tauri/crates/qingyu-dejavu/tests/s3_minio.rs scripts/te
 git commit -m "test(sync): cover Dejavu Rust sync on MinIO"
 ```
 
-### Task 6: Add mixed Go/Rust repository interoperability tests over one local cloud
+### Task 7: Add mixed Go/Rust repository interoperability tests over one local cloud
 
 **Files:**
 - Create: `apps/desktop/src-tauri/crates/qingyu-dejavu/src/bin/dejavu-interop.rs`
@@ -450,7 +583,7 @@ Use a unique local-cloud directory for each scenario and execute:
 6. always delete only the orchestrator-owned temporary scenario root.
 
 This command requires neither S3 credentials nor MinIO. S3 transport behavior
-is covered independently by Tasks 1–5; this task isolates repository-format and
+is covered independently by Tasks 1–6; this task isolates repository-format and
 state-machine interoperability from upstream Dejavu's hardcoded S3 `repo/`
 prefix.
 
@@ -470,7 +603,7 @@ git add apps/desktop/src-tauri/crates/qingyu-dejavu scripts/dejavu-interop-go sc
 git commit -m "test(sync): prove Dejavu Go Rust interoperability"
 ```
 
-### Task 7: Verify the S3 interoperability milestone
+### Task 8: Verify the S3 interoperability milestone
 
 **Files:**
 - Modify only files in this plan if verification reveals a scoped defect.
@@ -527,6 +660,8 @@ Do not create an empty commit.
 ## Self-review
 
 - The new S3 adapter uses the Plan 1 `Cloud` trait and leaves the Plan 1 merge algorithm untouched.
+- User files and repositories have no QingYu-defined capacity cap; only refs, locks, chunks, and outer catalog metadata use protocol bounds.
+- Large repository metadata and indexes are staged under the repository temp capability before validation and atomic publication; third-party S3 capacity is reported as unknown.
 - Remote prefixes, metadata fields, retry statuses, list limits, zero-byte behavior, and lock ordering have explicit S3 tests; mixed Go/Rust repository scenarios have explicit shared-local-cloud tests.
 - The new repository never writes QingYu legacy manifests or `remote-conflict` files.
 - Product S3 and all WebDAV routes remain unchanged until the later integration and cutover plans.
