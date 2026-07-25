@@ -1,3 +1,11 @@
+## [2.0.0-beta.2](https://github.com/markrahq/markra/compare/v2.0.0-beta.1...v2.0.0-beta.2) (2026-07-25)
+
+### Features
+
+* **app:** add safe unused image cleanup ([#567](https://github.com/markrahq/markra/issues/567)) ([e2fe13c](https://github.com/markrahq/markra/commit/e2fe13c6d46e73b20437e740c402b0291b4a2bd9)), closes [#366](https://github.com/markrahq/markra/issues/366)
+* **desktop:** add adaptive macOS app icon ([#523](https://github.com/markrahq/markra/issues/523)) ([fe2eb2b](https://github.com/markrahq/markra/commit/fe2eb2b903de444f8d140b36eda07cd32ea777f6))
+* **editor:** add typewriter mode ([#557](https://github.com/markrahq/markra/issues/557)) ([41b83ba](https://github.com/markrahq/markra/commit/41b83ba58fbd14aee8d9a75835fef02c8b116f23))
+
 ## [2.0.0-beta.1](https://github.com/markrahq/markra/compare/v2.0.0-alpha.11...v2.0.0-beta.1) (2026-07-24)
 
 ### Bug Fixes
