@@ -37,9 +37,29 @@ struct ScenarioCase {
 }
 
 #[derive(Debug, serde::Deserialize)]
+#[serde(tag = "op")]
+enum ScenarioStep {
+    #[serde(rename = "write")]
+    Write(WriteStep),
+    #[serde(rename = "apply_dir")]
+    ApplyDir(ApplyDirStep),
+    #[serde(rename = "remove")]
+    Remove(RemoveStep),
+    #[serde(rename = "index")]
+    Index(IndexStep),
+    #[serde(rename = "sync")]
+    Sync(SyncStep),
+    #[serde(rename = "sync_download")]
+    SyncDownload(SyncStep),
+    #[serde(rename = "assert")]
+    Assert(AssertStep),
+    #[serde(rename = "assert_missing")]
+    AssertMissing(AssertMissingStep),
+}
+
+#[derive(Debug, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ScenarioStep {
-    op: String,
+struct WriteStep {
     client: String,
     #[serde(default)]
     path: String,
@@ -47,14 +67,87 @@ struct ScenarioStep {
     content: String,
     #[serde(default)]
     source: String,
+    #[serde(default)]
+    minutes: i64,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ApplyDirStep {
+    client: String,
     #[serde(default, rename = "sourceDir")]
     source_dir: String,
     #[serde(default)]
-    memo: String,
-    #[serde(default)]
     minutes: i64,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RemoveStep {
+    client: String,
+    #[serde(default)]
+    path: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct IndexStep {
+    client: String,
+    #[serde(default)]
+    memo: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SyncStep {
+    client: String,
     #[serde(default)]
     want: Option<ScenarioExpectation>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AssertStep {
+    client: String,
+    #[serde(default)]
+    path: String,
+    #[serde(default)]
+    content: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AssertMissingStep {
+    client: String,
+    #[serde(default)]
+    path: String,
+}
+
+impl ScenarioStep {
+    fn client(&self) -> &str {
+        match self {
+            Self::Write(step) => &step.client,
+            Self::ApplyDir(step) => &step.client,
+            Self::Remove(step) => &step.client,
+            Self::Index(step) => &step.client,
+            Self::Sync(step) | Self::SyncDownload(step) => &step.client,
+            Self::Assert(step) => &step.client,
+            Self::AssertMissing(step) => &step.client,
+        }
+    }
+
+    fn operation(&self) -> &'static str {
+        match self {
+            Self::Write(_) => "write",
+            Self::ApplyDir(_) => "apply_dir",
+            Self::Remove(_) => "remove",
+            Self::Index(_) => "index",
+            Self::Sync(_) => "sync",
+            Self::SyncDownload(_) => "sync_download",
+            Self::Assert(_) => "assert",
+            Self::AssertMissing(_) => "assert_missing",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, serde::Deserialize)]
@@ -545,12 +638,12 @@ async fn run_case(
     let env = ScenarioEnv::new(loaded.fixture.group).await?;
     let clients = env.clients_for_case(case).await?;
     for (index, step) in case.steps.iter().enumerate() {
-        let client = clients.get(&step.client).ok_or_else(|| {
+        let client = clients.get(step.client()).ok_or_else(|| {
             format!(
                 "case {} step {}: unknown client {}",
                 case.name,
                 index + 1,
-                step.client
+                step.client()
             )
         })?;
         run_step(
@@ -576,9 +669,12 @@ async fn run_step(
     step: &ScenarioStep,
     deviations: &mut ApprovedDeviationTracker,
 ) -> Result<(), String> {
-    let step_label = format!("case {case_name} step {step_number} op {}", step.op);
-    match step.op.as_str() {
-        "write" => {
+    let step_label = format!(
+        "case {case_name} step {step_number} op {}",
+        step.operation()
+    );
+    match step {
+        ScenarioStep::Write(step) => {
             let content = if step.source.is_empty() {
                 step.content.as_bytes().to_vec()
             } else {
@@ -594,7 +690,7 @@ async fn run_step(
             )
             .map_err(|error| format!("{step_label}: {error}"))
         }
-        "apply_dir" => {
+        ScenarioStep::ApplyDir(step) => {
             if step.source_dir.is_empty() {
                 return Err(format!("{step_label}: empty sourceDir"));
             }
@@ -604,7 +700,7 @@ async fn run_step(
             touch_regular_files(&client.paths.data, scenario_time(step.minutes)?)
                 .map_err(|error| format!("{step_label}: {error}"))
         }
-        "remove" => {
+        ScenarioStep::Remove(step) => {
             let path = safe_join(&client.paths.data, &step.path, "data")?;
             match fs::remove_file(&path) {
                 Ok(()) => Ok(()),
@@ -612,7 +708,7 @@ async fn run_step(
                 Err(error) => Err(format!("{step_label}: remove {}: {error}", path.display())),
             }
         }
-        "index" => {
+        ScenarioStep::Index(step) => {
             let memo = if step.memo.is_empty() {
                 "sync scenario index"
             } else {
@@ -624,21 +720,33 @@ async fn run_step(
                 .map(|_| ())
                 .map_err(|error| format!("{step_label}: index {}: {error}", client.name))
         }
-        "sync" | "sync_download" => {
+        ScenarioStep::Sync(step) => {
             let cloud: Arc<dyn Cloud> = env.cloud.clone();
             let coordinator: Arc<dyn WorkingTreeCoordinator> = Arc::new(NoopWorkingTreeCoordinator);
-            let result = if step.op == "sync" {
-                client.repo.sync(cloud, coordinator).await
-            } else {
-                client.repo.sync_download(cloud, coordinator).await
-            }
-            .map_err(|error| format!("{step_label}: client {}: {error}", client.name))?;
+            let result = client
+                .repo
+                .sync(cloud, coordinator)
+                .await
+                .map_err(|error| format!("{step_label}: client {}: {error}", client.name))?;
             if let Some(expected) = step.want {
                 assert_merge(case_name, &step_label, &client.name, &result.0, expected)?;
             }
             Ok(())
         }
-        "assert" => {
+        ScenarioStep::SyncDownload(step) => {
+            let cloud: Arc<dyn Cloud> = env.cloud.clone();
+            let coordinator: Arc<dyn WorkingTreeCoordinator> = Arc::new(NoopWorkingTreeCoordinator);
+            let result = client
+                .repo
+                .sync_download(cloud, coordinator)
+                .await
+                .map_err(|error| format!("{step_label}: client {}: {error}", client.name))?;
+            if let Some(expected) = step.want {
+                assert_merge(case_name, &step_label, &client.name, &result.0, expected)?;
+            }
+            Ok(())
+        }
+        ScenarioStep::Assert(step) => {
             let actual = read_file_state(&client.paths.data, &step.path)
                 .map_err(|error| format!("{step_label}: client {}: {error}", client.name))?;
             if same_file_state(actual.as_deref(), Some(step.content.as_bytes())) {
@@ -656,7 +764,7 @@ async fn run_step(
                 })
             }
         }
-        "assert_missing" => {
+        ScenarioStep::AssertMissing(step) => {
             let actual = read_file_state(&client.paths.data, &step.path)
                 .map_err(|error| format!("{step_label}: client {}: {error}", client.name))?;
             if actual.is_none() {
@@ -674,7 +782,6 @@ async fn run_step(
                 })
             }
         }
-        _ => Err(format!("{step_label}: unsupported scenario operation")),
     }
 }
 
@@ -944,6 +1051,39 @@ fn read_file_state(data_root: &Path, relative: &str) -> Result<Option<Vec<u8>>, 
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(format!("read {}: {error}", path.display())),
     }
+}
+
+fn assert_scenario_step_parse_error(json: &str, expected_message: &str) {
+    let error =
+        serde_json::from_str::<ScenarioStep>(json).expect_err("scenario step should be rejected");
+    assert!(
+        error.to_string().contains(expected_message),
+        "unexpected scenario parse error: {error}"
+    );
+}
+
+#[test]
+fn sync_step_rejects_path_field() {
+    assert_scenario_step_parse_error(
+        r#"{"op":"sync","client":"a","path":"doc.txt"}"#,
+        "unknown field `path`",
+    );
+}
+
+#[test]
+fn remove_step_rejects_want_field() {
+    assert_scenario_step_parse_error(
+        r#"{"op":"remove","client":"a","path":"doc.txt","want":{"upserts":0}}"#,
+        "unknown field `want`",
+    );
+}
+
+#[test]
+fn scenario_step_rejects_unknown_operation() {
+    assert_scenario_step_parse_error(
+        r#"{"op":"teleport","client":"a"}"#,
+        "unknown variant `teleport`",
+    );
 }
 
 #[tokio::test]

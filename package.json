@@ -17,6 +17,7 @@
     "prepare:qingyu-mcp-sidecar": "node packages/scripts/src/prepare-qingyu-mcp-sidecar.mjs",
     "test": "pnpm -r --if-present test",
     "test:dejavu-oracle": "node scripts/test-dejavu-oracle.mjs",
+    "test:dejavu-oracle:unit": "node --test scripts/test-dejavu-oracle.test.mjs",
     "test:release": "node --test scripts/release/*.test.mjs",
     "test:s3-sync:live": "node scripts/test-s3-sync-live.mjs",
     "test:watch": "pnpm --filter @markra/desktop test:watch",
