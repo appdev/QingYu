@@ -260,10 +260,12 @@ creates attempting status, spawns an owned Tokio task, and returns acceptance.
 
 `bind_and_sync` must canonicalize the note root, ensure an empty
 `/.qingyu/syncignore` exists through a safe write, load the global key and device,
-construct per-repo `{repo,history,temp}` paths, construct `S3Cloud`, call
-`Repo::index("[Sync] Cloud sync", true)`, then `Repo::sync`. Retry a typed
-`WorkingTreeChanged` at most three immediate re-index passes; after the third,
-queue one normal follow-up job instead of looping.
+construct per-repo `{repo,history,temp}` paths, construct `S3Cloud`, then call
+`Repo::sync` exactly once per attempt with the Tauri `WorkingTreeCoordinator`.
+Do not call `Repo::index` first: the core sync state machine indexes the current
+working tree while holding its own lifecycle and repository operation guards.
+Retry a typed `WorkingTreeChanged` with at most three complete sync attempts;
+after the third, queue one normal follow-up job instead of looping.
 
 - [ ] **Step 5: Persist per-repository status independent of listeners**
 
