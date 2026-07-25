@@ -1,3 +1,13 @@
+## [2.0.0-beta.3](https://github.com/markrahq/markra/compare/v2.0.0-beta.2...v2.0.0-beta.3) (2026-07-25)
+
+### Features
+
+* **editor:** add CodeMirror Vim mode ([#568](https://github.com/markrahq/markra/issues/568)) ([8d59edc](https://github.com/markrahq/markra/commit/8d59edcb5b3b7c27f25a11c8374a11d2e85aaf36)), closes [#29](https://github.com/markrahq/markra/issues/29)
+
+### Bug Fixes
+
+* **editor:** mute Markdown syntax markers ([#569](https://github.com/markrahq/markra/issues/569)) ([e55b596](https://github.com/markrahq/markra/commit/e55b5969ffa88d8e1c6d66a360fc656f5a1dbc49))
+
 ## [2.0.0-beta.2](https://github.com/markrahq/markra/compare/v2.0.0-beta.1...v2.0.0-beta.2) (2026-07-25)
 
 ### Features
