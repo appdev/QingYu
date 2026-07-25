@@ -781,13 +781,16 @@ export function useAppSyncCoordinator({
           blockedRevisionRef.current = pending.revision;
           setTimerVersion((value) => value + 1);
         }
-        if (document && !isTriggerEligible(document.config.mode, "settings-exit")) {
+        const canRunSettingsApply = isReady(document) &&
+          document.revision === pending.revision &&
+          isTriggerEligible(document.config.mode, "settings-exit");
+        if (!canRunSettingsApply) {
           return getAppRuntime().syncConfig.cancelApply({
             revision: pending.revision,
             sessionId: pending.sessionId,
             token: pending.token
           }).catch((error) => {
-            appLogger.error("sync", "Manual sync mode apply cancellation failed", {
+            appLogger.error("sync", "Sync settings apply cancellation failed", {
               error: error instanceof Error ? error.message : String(error)
             });
           });

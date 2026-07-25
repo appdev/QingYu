@@ -436,7 +436,7 @@ describe("application sync coordinator", () => {
 
   it("does not publish an old-root barrier apply after the notebook root changes", async () => {
     const { cancelApply, syncConfig } = installRuntime();
-    const reload = vi.fn(async () => ({ status: "loaded", ...configDocument("rev-2") } as SyncConfigLoadResult));
+    const reload = vi.fn(async () => ({ status: "loaded", ...configDocument("rev-3") } as SyncConfigLoadResult));
     const { result, rerender } = renderCoordinator({ reload });
     await waitFor(() => expect(mockedRunApplicationSync).toHaveBeenCalled());
     await waitFor(() => expect(result.current.running).toBe(false));
@@ -734,35 +734,58 @@ describe("application sync coordinator", () => {
     expect(isDocumentInRoot).toHaveBeenCalledWith("/Notes/inside.md", "/Notes");
   });
 
-  it("pauses automatic triggers until the edited settings session exits", async () => {
-    const reload = vi.fn(async () => ({ status: "loaded", ...configDocument("rev-2") } as SyncConfigLoadResult));
-    const { result } = renderCoordinator({ reload });
-    await waitFor(() => expect(mockedRunApplicationSync).toHaveBeenCalled());
-    mockedRunApplicationSync.mockClear();
+  it.each(["automatic", "startup-exit"] as const)(
+    "runs an eligible %s settings apply only after an exact reload",
+    async (mode) => {
+      const { cancelApply, syncConfig } = installRuntime();
+      const reload = vi.fn(async () => ({
+        status: "loaded",
+        ...configDocument("rev-2", { mode })
+      } as SyncConfigLoadResult));
+      const { result } = renderCoordinator({
+        document: configDocument("rev-1", { mode }),
+        reload
+      });
+      await waitFor(() => expect(mockedRunApplicationSync).toHaveBeenCalled());
+      mockedRunApplicationSync.mockClear();
 
-    await act(() => emitSyncEditing({ active: true, revision: "rev-1", sessionId: "s1" }));
-    await act(() => result.current.notifyDocumentSaved("/Notes/file.md"));
-    expect(mockedRunApplicationSync).not.toHaveBeenCalled();
-    await act(() => emitSyncApplyRequested({
-      exitReason: "category-leave",
-      revision: "rev-2",
-      sessionId: "s1",
-      source: "settings-exit",
-      token: "apply-1"
-    }));
-    await act(() => emitSyncEditing({ active: false, revision: "rev-2", sessionId: "s1" }));
+      await act(() => emitSyncEditing({ active: true, revision: "rev-1", sessionId: "s1" }));
+      await act(() => result.current.notifyDocumentSaved("/Notes/file.md"));
+      expect(mockedRunApplicationSync).not.toHaveBeenCalled();
+      await act(() => emitSyncApplyRequested({
+        exitReason: "category-leave",
+        revision: "rev-2",
+        sessionId: "s1",
+        source: "settings-exit",
+        token: "apply-1"
+      }));
+      await act(() => emitSyncEditing({ active: false, revision: "rev-2", sessionId: "s1" }));
 
-    await waitFor(() => expect(mockedRunApplicationSync).toHaveBeenCalledWith({
-      applyToken: "apply-1",
-      notebookName: "Notes",
-      notesRoot: "/Notes",
-      revision: "rev-2",
-      trigger: "settings-exit"
-    }));
-  });
+      await waitFor(() => expect(mockedRunApplicationSync).toHaveBeenCalledWith({
+        applyToken: "apply-1",
+        notebookName: "Notes",
+        notesRoot: "/Notes",
+        revision: "rev-2",
+        trigger: "settings-exit"
+      }));
+      expect(cancelApply).not.toHaveBeenCalled();
+      expect((await syncConfig.loadEditing()).pendingApply).toEqual(expect.objectContaining({
+        revision: "rev-2",
+        sessionId: "s1",
+        state: "completed",
+        token: "apply-1"
+      }));
+    }
+  );
 
-  it("settles a settings apply through native sync even when the frontend reload fails", async () => {
-    const reload = vi.fn(async () => null);
+  it.each([
+    { outcome: "null", reloadResult: async () => null },
+    { outcome: "rejection", reloadResult: async () => {
+      throw new Error("reload failed");
+    } }
+  ])("cancels a settings apply when the frontend reload returns $outcome", async ({ reloadResult }) => {
+    const { cancelApply, syncConfig } = installRuntime();
+    const reload = vi.fn(reloadResult);
     renderCoordinator({ reload });
     await waitFor(() => expect(mockedRunApplicationSync).toHaveBeenCalled());
     mockedRunApplicationSync.mockClear();
@@ -773,16 +796,61 @@ describe("application sync coordinator", () => {
       revision: "rev-2",
       sessionId: "s1",
       source: "settings-exit",
-      token: "apply-reload-failed"
+      token: "apply-reload-unavailable"
     }));
     await act(() => emitSyncEditing({ active: false, revision: "rev-2", sessionId: "s1" }));
 
-    await waitFor(() => expect(mockedRunApplicationSync).toHaveBeenCalledWith({
-      applyToken: "apply-reload-failed",
-      notebookName: "Notes",
-      notesRoot: "/Notes",
+    await waitFor(() => expect(reload).toHaveBeenCalled());
+    await act(async () => Promise.resolve());
+    expect(mockedRunApplicationSync).not.toHaveBeenCalled();
+    await waitFor(() => expect(cancelApply).toHaveBeenCalledWith({
       revision: "rev-2",
-      trigger: "settings-exit"
+      sessionId: "s1",
+      token: "apply-reload-unavailable"
+    }));
+    expect(mockedRunApplicationSync).not.toHaveBeenCalled();
+    expect((await syncConfig.loadEditing()).pendingApply).toEqual(expect.objectContaining({
+      revision: "rev-2",
+      sessionId: "s1",
+      state: "completed",
+      token: "apply-reload-unavailable"
+    }));
+  });
+
+  it("cancels a settings apply when reload returns a different revision", async () => {
+    const { cancelApply, syncConfig } = installRuntime();
+    const reload = vi.fn(async () => ({
+      status: "loaded",
+      ...configDocument("rev-3")
+    } as SyncConfigLoadResult));
+    renderCoordinator({ reload });
+    await waitFor(() => expect(mockedRunApplicationSync).toHaveBeenCalled());
+    mockedRunApplicationSync.mockClear();
+
+    await act(() => emitSyncEditing({ active: true, revision: "rev-1", sessionId: "s1" }));
+    await act(() => emitSyncApplyRequested({
+      exitReason: "category-leave",
+      revision: "rev-2",
+      sessionId: "s1",
+      source: "settings-exit",
+      token: "apply-revision-mismatch"
+    }));
+    await act(() => emitSyncEditing({ active: false, revision: "rev-2", sessionId: "s1" }));
+
+    await waitFor(() => expect(reload).toHaveBeenCalled());
+    await act(async () => Promise.resolve());
+    expect(mockedRunApplicationSync).not.toHaveBeenCalled();
+    await waitFor(() => expect(cancelApply).toHaveBeenCalledWith({
+      revision: "rev-2",
+      sessionId: "s1",
+      token: "apply-revision-mismatch"
+    }));
+    expect(mockedRunApplicationSync).not.toHaveBeenCalled();
+    expect((await syncConfig.loadEditing()).pendingApply).toEqual(expect.objectContaining({
+      revision: "rev-2",
+      sessionId: "s1",
+      state: "completed",
+      token: "apply-revision-mismatch"
     }));
   });
 
@@ -904,7 +972,7 @@ describe("application sync coordinator", () => {
   });
 
   it("settles a fully-manual settings exit without starting WebDAV sync", async () => {
-    const { cancelApply } = installRuntime();
+    const { cancelApply, syncConfig } = installRuntime();
     const reload = vi.fn(async () => ({
       status: "loaded",
       ...configDocument("rev-2", { mode: "fully-manual" })
@@ -932,6 +1000,12 @@ describe("application sync coordinator", () => {
       token: "apply-manual"
     }));
     expect(mockedRunApplicationSync).not.toHaveBeenCalled();
+    expect((await syncConfig.loadEditing()).pendingApply).toEqual(expect.objectContaining({
+      revision: "rev-2",
+      sessionId: "s1",
+      state: "completed",
+      token: "apply-manual"
+    }));
   });
 
   it("coalesces save and manual callers by root and revision while preserving the manual result", async () => {
