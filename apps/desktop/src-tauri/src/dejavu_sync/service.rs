@@ -422,13 +422,6 @@ impl DejavuSyncService {
                 RepositorySafeError::from(error),
             ),
         };
-        let mut status_result = Err(RepositoryJobError::StatusUnavailable);
-        for _attempt in 1..=MAX_FINALIZATION_ATTEMPTS {
-            status_result = self.inner.status_sink.publish(final_status.clone()).await;
-            if status_result.is_ok() {
-                break;
-            }
-        }
         let mut schedule_result = Ok(());
         if let Some(lifecycle) = self.inner.lifecycle.get() {
             let completion = RepositoryJobCompletion {
@@ -443,6 +436,16 @@ impl DejavuSyncService {
                 }
             }
         }
+        let mut status_result = schedule_result;
+        if schedule_result.is_ok() {
+            status_result = Err(RepositoryJobError::StatusUnavailable);
+            for _attempt in 1..=MAX_FINALIZATION_ATTEMPTS {
+                status_result = self.inner.status_sink.publish(final_status.clone()).await;
+                if status_result.is_ok() {
+                    break;
+                }
+            }
+        }
         self.inner
             .jobs
             .lock()
@@ -453,8 +456,8 @@ impl DejavuSyncService {
         drop(ordinary_guard);
 
         let owned_job_result = owned_operation_result
-            .and(status_result)
-            .and(schedule_result);
+            .and(schedule_result)
+            .and(status_result);
         let _completion_result = completion_tx.send(Some(owned_job_result));
 
         if needs_follow_up {
@@ -545,14 +548,19 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
+    use tempfile::tempdir;
+    use time::OffsetDateTime;
     use tokio::sync::{mpsc, oneshot, Notify, Semaphore};
 
     use super::{
         AcceptedSyncJob, DejavuSyncService, RepositoryJobCompletion, RepositoryJobError,
         RepositoryJobLifecycle, RepositoryJobRunner, RepositoryStatusSink, RepositorySyncResult,
-        SyncAttemptContext, SyncJobRequest,
+        SyncAttemptContext, SyncJobRequest, MAX_FINALIZATION_ATTEMPTS,
     };
-    use crate::dejavu_sync::status::{RepositorySyncPhase, RepositorySyncStatus};
+    use crate::dejavu_sync::status::{
+        load_repository_sync_status, RepositoryStatusEventEmitter, RepositoryStatusStore,
+        RepositorySyncPhase, RepositorySyncStatus,
+    };
     use crate::sync_config::status::SyncTrigger;
 
     type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
@@ -771,6 +779,66 @@ mod tests {
                 self.statuses.lock().unwrap().push(status);
                 Ok(())
             })
+        }
+    }
+
+    struct NoopStatusEmitter;
+
+    impl RepositoryStatusEventEmitter for NoopStatusEmitter {
+        fn emit(&self, _status: &RepositorySyncStatus) -> Result<(), RepositoryJobError> {
+            Ok(())
+        }
+    }
+
+    struct BlockingFinalStore {
+        store: Arc<RepositoryStatusStore>,
+        entered: mpsc::UnboundedSender<()>,
+        release: Semaphore,
+    }
+
+    impl BlockingFinalStore {
+        fn release(&self) {
+            self.release.add_permits(1);
+        }
+    }
+
+    impl RepositoryStatusSink for BlockingFinalStore {
+        fn publish<'a>(
+            &'a self,
+            status: RepositorySyncStatus,
+        ) -> BoxFuture<'a, Result<(), RepositoryJobError>> {
+            Box::pin(async move {
+                if status.phase != RepositorySyncPhase::Attempting {
+                    self.entered.send(()).unwrap();
+                    self.release.acquire().await.unwrap().forget();
+                }
+                self.store.publish(status).await
+            })
+        }
+    }
+
+    struct StoreScheduleLifecycle {
+        store: Arc<RepositoryStatusStore>,
+        next_due: OffsetDateTime,
+    }
+
+    impl RepositoryJobLifecycle for StoreScheduleLifecycle {
+        fn prepare_dns_retry(&self, _request: &SyncJobRequest) -> Result<bool, RepositoryJobError> {
+            Ok(false)
+        }
+
+        fn record_completion(
+            &self,
+            completion: RepositoryJobCompletion,
+        ) -> Result<(), RepositoryJobError> {
+            let mut install_due =
+                |schedule: &mut crate::dejavu_sync::status::RepositorySchedule| {
+                    schedule.next_scheduled_at = Some(self.next_due);
+                    true
+                };
+            self.store
+                .update_schedule(&completion.request.repository_id, &mut install_due)?;
+            Ok(())
         }
     }
 
@@ -1411,5 +1479,82 @@ mod tests {
         assert_eq!(runner.attempts.load(Ordering::SeqCst), 1);
         assert_eq!(sink.final_attempts.load(Ordering::SeqCst), 2);
         assert_eq!(lifecycle.completion_attempts.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn recoverable_schedule_is_durable_before_terminal_status_publication() {
+        let app_data = tempdir().unwrap();
+        let repository_id = "00000000-0000-4000-8000-000000000044";
+        let next_due = OffsetDateTime::from_unix_timestamp(1_800_003_840).unwrap();
+        let store = Arc::new(RepositoryStatusStore::new(
+            app_data.path(),
+            Arc::new(NoopStatusEmitter),
+        ));
+        let (entered_tx, mut entered_rx) = mpsc::unbounded_channel();
+        let sink = Arc::new(BlockingFinalStore {
+            store: Arc::clone(&store),
+            entered: entered_tx,
+            release: Semaphore::new(0),
+        });
+        let lifecycle = Arc::new(StoreScheduleLifecycle {
+            store: Arc::clone(&store),
+            next_due,
+        });
+        let runner = Arc::new(SequenceRunner::new([Ok(RepositorySyncResult::default())]));
+        let service = DejavuSyncService::new(Arc::clone(&runner), Arc::clone(&sink));
+        service.install_lifecycle(lifecycle).unwrap();
+
+        let accepted = service.enqueue(request(repository_id)).await.unwrap();
+        entered_rx
+            .recv()
+            .await
+            .expect("terminal publication should reach the injected crash boundary");
+        let crash_boundary = load_repository_sync_status(app_data.path(), repository_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(crash_boundary.phase, RepositorySyncPhase::Attempting);
+        assert_eq!(crash_boundary.schedule.next_scheduled_at, Some(next_due));
+
+        sink.release();
+        assert_eq!(accepted.wait_for_completion().await, Ok(()));
+        let terminal = load_repository_sync_status(app_data.path(), repository_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(terminal.phase, RepositorySyncPhase::Succeeded);
+        assert_eq!(terminal.schedule.next_scheduled_at, Some(next_due));
+        assert_eq!(runner.attempts.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn exhausted_schedule_transition_keeps_attempting_status_and_reports_failure() {
+        let runner = Arc::new(SequenceRunner::new([Ok(RepositorySyncResult::default())]));
+        let sink = Arc::new(MemoryStatusSink::default());
+        let lifecycle = Arc::new(RecordingLifecycle::new(false));
+        for _attempt in 1..=MAX_FINALIZATION_ATTEMPTS {
+            lifecycle.fail_next_completion();
+        }
+        let service = DejavuSyncService::new(Arc::clone(&runner), Arc::clone(&sink));
+        service.install_lifecycle(Arc::clone(&lifecycle)).unwrap();
+
+        let accepted = service
+            .enqueue(request("00000000-0000-4000-8000-000000000045"))
+            .await
+            .unwrap();
+        assert_eq!(
+            accepted.wait_for_completion().await,
+            Err(RepositoryJobError::StatusUnavailable)
+        );
+
+        assert!(sink
+            .statuses
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|status| status.phase == RepositorySyncPhase::Attempting));
+        assert_eq!(runner.attempts.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            lifecycle.completion_attempts.load(Ordering::SeqCst),
+            MAX_FINALIZATION_ATTEMPTS as usize
+        );
     }
 }

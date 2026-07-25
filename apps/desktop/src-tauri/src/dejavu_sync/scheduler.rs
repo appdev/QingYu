@@ -92,13 +92,26 @@ struct SchedulerInner {
 struct SchedulerState {
     active: Option<ActiveRepositorySchedule>,
     due: Option<ScheduledDue>,
+    due_claim: Option<DueClaim>,
     generation: u64,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 struct ScheduledDue {
     deadline: Instant,
     expected_persisted: Option<OffsetDateTime>,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+struct DueClaim {
+    generation: u64,
+    expected_persisted: Option<OffsetDateTime>,
+}
+
+enum PauseDecision {
+    NotPaused,
+    BlockedUntil(OffsetDateTime),
+    Eligible(Option<OffsetDateTime>),
 }
 
 impl DejavuScheduler {
@@ -153,6 +166,7 @@ impl DejavuScheduler {
         let mut state = self.inner.state.lock().unwrap();
         state.active = Some(active);
         state.due = due;
+        state.due_claim = None;
         state.generation = state.generation.wrapping_add(1);
         drop(state);
         self.inner.changed.notify_one();
@@ -170,6 +184,7 @@ impl DejavuScheduler {
         }
         state.active = None;
         state.due = None;
+        state.due_claim = None;
         state.generation = state.generation.wrapping_add(1);
         drop(state);
         self.inner.changed.notify_one();
@@ -252,17 +267,17 @@ impl DejavuScheduler {
         if !trigger_allowed(active.mode, trigger) {
             return Ok(None);
         }
-        let next_scheduled_at = (self.inner.clock)() + FAILURE_PAUSE_DELAY;
-        let mut paused = false;
+        let now = (self.inner.clock)();
+        let mut pause = PauseDecision::NotPaused;
         let mut update = |schedule: &mut RepositorySchedule| {
             if trigger == SyncTrigger::Manual || schedule.automatic_failure_count < 8 {
                 return false;
             }
-            paused = true;
-            if active.mode == SyncMode::Automatic {
-                schedule.next_scheduled_at = Some(next_scheduled_at);
-            }
-            true
+            pause = match schedule.next_scheduled_at {
+                Some(deadline) if deadline > now => PauseDecision::BlockedUntil(deadline),
+                deadline => PauseDecision::Eligible(deadline),
+            };
+            false
         };
         if let Err(error) = self
             .inner
@@ -272,13 +287,38 @@ impl DejavuScheduler {
             self.install_memory_retry(&active.repository_id, None);
             return Err(error);
         }
-        if paused {
+        if let PauseDecision::BlockedUntil(deadline) = pause {
             if active.mode == SyncMode::Automatic {
-                self.install_due_if_active(&active, FAILURE_PAUSE_DELAY, next_scheduled_at);
+                self.install_due_if_active(&active, wall_time_delay(now, deadline), deadline);
             }
             return Ok(None);
         }
-        self.enqueue_active(active, trigger).await.map(Some)
+        let claim = match (pause, trigger) {
+            (PauseDecision::Eligible(expected_persisted), SyncTrigger::AppLaunch) => {
+                let Some(claim) = self.claim_due_for_trigger(&active, expected_persisted) else {
+                    return Ok(None);
+                };
+                Some(claim)
+            }
+            (PauseDecision::NotPaused, SyncTrigger::AppLaunch) => {
+                match self.claim_expired_automatic_due_for_startup(&active) {
+                    Ok(claim) => claim,
+                    Err(()) => return Ok(None),
+                }
+            }
+            (PauseDecision::Eligible(_), _)
+            | (PauseDecision::NotPaused, _)
+            | (PauseDecision::BlockedUntil(_), _) => None,
+        };
+        match self.enqueue_active(active.clone(), trigger).await {
+            Ok(accepted) => {
+                if let Some(claim) = claim {
+                    let _consumed = self.consume_due_after_acceptance(&active, claim);
+                }
+                Ok(Some(accepted))
+            }
+            Err(error) => Err(error),
+        }
     }
 
     async fn enqueue_active(
@@ -368,10 +408,11 @@ impl DejavuScheduler {
                     if completion.request.trigger == SyncTrigger::Manual {
                         return true;
                     }
+                    let active_mode = active.as_ref().map(|active| active.mode);
                     let should_retry = *error != RepositoryJobError::Cancelled
-                        && active
-                            .as_ref()
-                            .is_some_and(|active| active.mode == SyncMode::Automatic);
+                        && (active_mode == Some(SyncMode::Automatic)
+                            || (schedule.automatic_failure_count >= 8
+                                && active_mode == Some(SyncMode::StartupExit)));
                     if !should_retry {
                         schedule.next_scheduled_at = None;
                         return true;
@@ -393,7 +434,11 @@ impl DejavuScheduler {
             return Err(error);
         }
         if let (Some(active), Some((delay, next_scheduled_at))) = (active, next_due) {
-            self.install_due_if_active(&active, delay, next_scheduled_at);
+            if active.mode == SyncMode::Automatic {
+                self.install_due_if_active(&active, delay, next_scheduled_at);
+            } else {
+                self.clear_due_if_active(repository_id);
+            }
         } else {
             self.clear_due_if_active(repository_id);
         }
@@ -416,6 +461,7 @@ impl DejavuScheduler {
                 deadline: Instant::now() + delay,
                 expected_persisted: Some(next_scheduled_at),
             });
+            state.due_claim = None;
             state.generation = state.generation.wrapping_add(1);
         }
         drop(state);
@@ -435,6 +481,7 @@ impl DejavuScheduler {
                 deadline: Instant::now() + PERSISTENCE_RETRY_DELAY,
                 expected_persisted,
             });
+            state.due_claim = None;
             state.generation = state.generation.wrapping_add(1);
         }
         drop(state);
@@ -444,11 +491,10 @@ impl DejavuScheduler {
     fn consume_due_after_acceptance(
         &self,
         active: &ActiveRepositorySchedule,
-        generation: u64,
-        expected_persisted: Option<OffsetDateTime>,
+        claim: DueClaim,
     ) -> Result<(), RepositoryJobError> {
-        let Some(expected_persisted) = expected_persisted else {
-            self.replace_due_if_generation(active, generation, None);
+        let Some(expected_persisted) = claim.expected_persisted else {
+            self.park_due_claim(active, claim);
             return Ok(());
         };
         let mut consumed = false;
@@ -467,58 +513,134 @@ impl DejavuScheduler {
         {
             Ok(schedule) => schedule,
             Err(error) => {
-                self.install_memory_retry_if_generation(
-                    active,
-                    generation,
-                    Some(expected_persisted),
-                );
+                self.park_due_claim(active, claim);
                 return Err(error);
             }
         };
         if consumed {
-            self.replace_due_if_generation(active, generation, None);
+            self.park_due_claim(active, claim);
         } else {
             let due = schedule.next_scheduled_at.map(|next| ScheduledDue {
                 deadline: wall_time_to_deadline((self.inner.clock)(), next),
                 expected_persisted: Some(next),
             });
-            self.replace_due_if_generation(active, generation, due);
+            self.finish_due_claim(active, claim, due);
         }
         Ok(())
     }
 
-    fn install_memory_retry_if_generation(
+    fn claim_due_for_trigger(
         &self,
         active: &ActiveRepositorySchedule,
-        generation: u64,
         expected_persisted: Option<OffsetDateTime>,
-    ) {
-        self.replace_due_if_generation(
-            active,
-            generation,
-            Some(ScheduledDue {
-                deadline: Instant::now() + PERSISTENCE_RETRY_DELAY,
-                expected_persisted,
-            }),
-        );
+    ) -> Option<DueClaim> {
+        let mut state = self.inner.state.lock().unwrap();
+        if state.due_claim.is_some()
+            || state.active.as_ref().is_none_or(|current| {
+                current.repository_id != active.repository_id
+                    || current.notes_root != active.notes_root
+            })
+            || state.due.is_some_and(|due| {
+                due.expected_persisted.is_some() && due.expected_persisted != expected_persisted
+            })
+        {
+            return None;
+        }
+        let claim = DueClaim {
+            generation: state.generation,
+            expected_persisted,
+        };
+        state.due = None;
+        state.due_claim = Some(claim);
+        Some(claim)
     }
 
-    fn replace_due_if_generation(
+    fn claim_expired_automatic_due_for_startup(
+        &self,
+        active: &ActiveRepositorySchedule,
+    ) -> Result<Option<DueClaim>, ()> {
+        let mut state = self.inner.state.lock().unwrap();
+        if state.active.as_ref().is_none_or(|current| {
+            current.repository_id != active.repository_id
+                || current.notes_root != active.notes_root
+                || current.mode != SyncMode::Automatic
+        }) {
+            return Ok(None);
+        }
+        if state.due_claim.is_some() {
+            return Err(());
+        }
+        let Some(due) = state.due.filter(|due| due.deadline <= Instant::now()) else {
+            return Ok(None);
+        };
+        let claim = DueClaim {
+            generation: state.generation,
+            expected_persisted: due.expected_persisted,
+        };
+        state.due = None;
+        state.due_claim = Some(claim);
+        Ok(Some(claim))
+    }
+
+    fn claim_timer_due(
         &self,
         active: &ActiveRepositorySchedule,
         generation: u64,
+        due: ScheduledDue,
+    ) -> Option<DueClaim> {
+        let mut state = self.inner.state.lock().unwrap();
+        if state.generation != generation
+            || state.due != Some(due)
+            || state.due_claim.is_some()
+            || state.active.as_ref().is_none_or(|current| {
+                current.repository_id != active.repository_id
+                    || current.notes_root != active.notes_root
+                    || current.mode != SyncMode::Automatic
+            })
+        {
+            return None;
+        }
+        let claim = DueClaim {
+            generation,
+            expected_persisted: due.expected_persisted,
+        };
+        state.due = None;
+        state.due_claim = Some(claim);
+        Some(claim)
+    }
+
+    fn finish_due_claim(
+        &self,
+        active: &ActiveRepositorySchedule,
+        claim: DueClaim,
         due: Option<ScheduledDue>,
     ) {
         let mut state = self.inner.state.lock().unwrap();
-        if state.generation == generation
+        if state.generation == claim.generation
+            && state.due_claim == Some(claim)
             && state.active.as_ref().is_some_and(|current| {
                 current.repository_id == active.repository_id
                     && current.notes_root == active.notes_root
-                    && current.mode == SyncMode::Automatic
             })
         {
             state.due = due;
+            state.due_claim = None;
             state.generation = state.generation.wrapping_add(1);
+        }
+        drop(state);
+        self.inner.changed.notify_one();
+    }
+
+    fn park_due_claim(&self, active: &ActiveRepositorySchedule, claim: DueClaim) {
+        let mut state = self.inner.state.lock().unwrap();
+        if state.generation == claim.generation
+            && state.due_claim == Some(claim)
+            && state.active.as_ref().is_some_and(|current| {
+                current.repository_id == active.repository_id
+                    && current.notes_root == active.notes_root
+            })
+        {
+            state.due = None;
         }
         drop(state);
         self.inner.changed.notify_one();
@@ -532,6 +654,7 @@ impl DejavuScheduler {
             .is_some_and(|active| active.repository_id == repository_id)
         {
             state.due = None;
+            state.due_claim = None;
             state.generation = state.generation.wrapping_add(1);
         }
         drop(state);
@@ -635,20 +758,19 @@ async fn run_timer(weak_inner: Weak<SchedulerInner>) {
                         continue;
                     }
                     let scheduler = DejavuScheduler { inner };
-                    if scheduler
-                        .enqueue_active(active.clone(), SyncTrigger::Interval)
-                        .await
-                        .is_ok()
-                    {
-                        let active = scheduler
-                            .active_snapshot()
-                            .filter(|current| current.repository_id == active.repository_id);
-                        if let Some(active) = active {
-                            let _consumed = scheduler.consume_due_after_acceptance(
-                                &active,
-                                generation,
-                                due.expected_persisted,
-                            );
+                    if let Some(claim) = scheduler.claim_timer_due(&active, generation, due) {
+                        if scheduler
+                            .enqueue_active(active.clone(), SyncTrigger::Interval)
+                            .await
+                            .is_ok()
+                        {
+                            let active = scheduler
+                                .active_snapshot()
+                                .filter(|current| current.repository_id == active.repository_id);
+                            if let Some(active) = active {
+                                let _consumed =
+                                    scheduler.consume_due_after_acceptance(&active, claim);
+                            }
                         }
                     }
                 }
@@ -696,6 +818,11 @@ fn wall_time_to_deadline(now: OffsetDateTime, due: OffsetDateTime) -> Instant {
     } else {
         Instant::now() + Duration::from_secs(seconds as u64)
     }
+}
+
+fn wall_time_delay(now: OffsetDateTime, due: OffsetDateTime) -> Duration {
+    let seconds = (due - now).whole_seconds();
+    Duration::from_secs(seconds.max(0) as u64)
 }
 
 #[allow(dead_code)]
@@ -1373,20 +1500,19 @@ mod tests {
         scheduler
             .record_file_change(&root, &root.join("note.md"))
             .unwrap();
-        let (active, generation, expected_persisted) = {
+        let (active, generation, due) = {
             let state = scheduler.inner.state.lock().unwrap();
             (
                 state.active.clone().unwrap(),
                 state.generation,
-                state.due.unwrap().expected_persisted,
+                state.due.unwrap(),
             )
         };
+        let claim = scheduler.claim_timer_due(&active, generation, due).unwrap();
         let (loaded, release) = store.gate_next_update();
         let timer_consumption = {
             let scheduler = scheduler.clone();
-            std::thread::spawn(move || {
-                scheduler.consume_due_after_acceptance(&active, generation, expected_persisted)
-            })
+            std::thread::spawn(move || scheduler.consume_due_after_acceptance(&active, claim))
         };
         loaded.recv().unwrap();
 
@@ -1504,6 +1630,192 @@ mod tests {
                 .automatic_failure_count,
             0
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn eighth_failure_persists_pause_deadline_for_automatic_and_startup_exit() {
+        for (mode, timer_expected) in [(SyncMode::Automatic, true), (SyncMode::StartupExit, false)]
+        {
+            let fixture = Fixture::new();
+            let root = PathBuf::from(format!("/notes/eighth-failure-{mode:?}"));
+            let repository_id = repository_id(40 + mode as u8);
+            fixture
+                .source
+                .bind(&root, &repository_id, mode, Duration::from_secs(30));
+            fixture.store.0.lock().unwrap().insert(
+                repository_id.clone(),
+                RepositorySchedule {
+                    automatic_failure_count: 7,
+                    ..RepositorySchedule::default()
+                },
+            );
+            fixture.scheduler.activate_root(&root).unwrap();
+
+            fixture
+                .scheduler
+                .record_completion(completion(
+                    &root,
+                    &repository_id,
+                    SyncTrigger::SettingsExit,
+                    Err(RepositoryJobError::CloudUnavailable),
+                ))
+                .unwrap();
+
+            let schedule = fixture.store.load_schedule(&repository_id).unwrap();
+            assert_eq!(schedule.automatic_failure_count, 8);
+            assert_eq!(
+                schedule.next_scheduled_at,
+                Some(fixture.clock.now() + Duration::from_secs(64 * 60))
+            );
+            assert_eq!(
+                fixture.scheduler.inner.state.lock().unwrap().due.is_some(),
+                timer_expected
+            );
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn persisted_pause_deadline_survives_restart_and_allows_one_attempt_at_expiry() {
+        for mode in [SyncMode::Automatic, SyncMode::StartupExit] {
+            let mut fixture = Fixture::new();
+            let root = PathBuf::from(format!("/notes/pause-deadline-{mode:?}"));
+            let repository_id = repository_id(50 + mode as u8);
+            fixture
+                .source
+                .bind(&root, &repository_id, mode, Duration::from_secs(30));
+            let pause_until = fixture.clock.now() + Duration::from_secs(64 * 60);
+            fixture.store.0.lock().unwrap().insert(
+                repository_id.clone(),
+                RepositorySchedule {
+                    automatic_failure_count: 8,
+                    next_scheduled_at: Some(pause_until),
+                    ..RepositorySchedule::default()
+                },
+            );
+            fixture.scheduler.activate_root(&root).unwrap();
+            fixture.clock.advance(Duration::from_secs(60));
+
+            assert!(!fixture.scheduler.trigger_startup().await.unwrap());
+            assert_eq!(
+                fixture
+                    .store
+                    .load_schedule(&repository_id)
+                    .unwrap()
+                    .next_scheduled_at,
+                Some(pause_until)
+            );
+            assert!(fixture.scheduler.deactivate_root(&root));
+            assert!(fixture.scheduler.activate_root(&root).unwrap());
+            assert!(!fixture.scheduler.trigger_exit().await.unwrap());
+            assert_eq!(
+                fixture
+                    .store
+                    .load_schedule(&repository_id)
+                    .unwrap()
+                    .next_scheduled_at,
+                Some(pause_until)
+            );
+
+            fixture.clock.advance(Duration::from_secs(63 * 60));
+            assert!(fixture.scheduler.trigger_startup().await.unwrap());
+            assert_eq!(fixture.receive().await.trigger, SyncTrigger::AppLaunch);
+            fixture.clock.advance(Duration::from_secs(1));
+            assert!(!fixture.scheduler.trigger_startup().await.unwrap());
+            assert!(fixture.jobs.try_recv().is_err());
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn automatic_expired_due_and_pending_startup_enqueue_exactly_one_job() {
+        let mut fixture = Fixture::new();
+        let root = PathBuf::from("/notes/expired-due-startup");
+        let repository_id = repository_id(60);
+        fixture.source.bind(
+            &root,
+            &repository_id,
+            SyncMode::Automatic,
+            Duration::from_secs(30),
+        );
+        fixture.store.0.lock().unwrap().insert(
+            repository_id.clone(),
+            RepositorySchedule {
+                automatic_failure_count: 8,
+                next_scheduled_at: Some(fixture.clock.now()),
+                ..RepositorySchedule::default()
+            },
+        );
+        fixture.scheduler.activate_root(&root).unwrap();
+
+        assert!(fixture.scheduler.trigger_startup().await.unwrap());
+        assert_eq!(fixture.receive().await.trigger, SyncTrigger::AppLaunch);
+        for _ in 0..10 {
+            tokio::task::yield_now().await;
+        }
+        assert!(fixture.jobs.try_recv().is_err());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn automatic_normal_expired_due_and_pending_startup_enqueue_exactly_one_job() {
+        let mut fixture = Fixture::new();
+        let root = PathBuf::from("/notes/normal-expired-due-startup");
+        let repository_id = repository_id(61);
+        fixture.source.bind(
+            &root,
+            &repository_id,
+            SyncMode::Automatic,
+            Duration::from_secs(30),
+        );
+        fixture.store.0.lock().unwrap().insert(
+            repository_id.clone(),
+            RepositorySchedule {
+                next_scheduled_at: Some(fixture.clock.now()),
+                ..RepositorySchedule::default()
+            },
+        );
+        fixture.scheduler.activate_root(&root).unwrap();
+
+        assert!(fixture.scheduler.trigger_startup().await.unwrap());
+        assert_eq!(fixture.receive().await.trigger, SyncTrigger::AppLaunch);
+        for _ in 0..10 {
+            tokio::task::yield_now().await;
+        }
+        assert!(fixture.jobs.try_recv().is_err());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn settings_exit_enqueues_its_barrier_job_while_an_interval_due_is_claimed() {
+        let mut fixture = Fixture::new();
+        let root = PathBuf::from("/notes/claimed-interval-exit");
+        let repository_id = repository_id(62);
+        fixture.source.bind(
+            &root,
+            &repository_id,
+            SyncMode::Automatic,
+            Duration::from_secs(30),
+        );
+        fixture.store.0.lock().unwrap().insert(
+            repository_id.clone(),
+            RepositorySchedule {
+                next_scheduled_at: Some(fixture.clock.now()),
+                ..RepositorySchedule::default()
+            },
+        );
+        fixture.scheduler.activate_root(&root).unwrap();
+        for _ in 0..10 {
+            tokio::task::yield_now().await;
+        }
+
+        assert_eq!(fixture.receive().await.trigger, SyncTrigger::Interval);
+        assert!(fixture
+            .scheduler
+            .inner
+            .state
+            .lock()
+            .unwrap()
+            .due_claim
+            .is_some());
+        assert!(fixture.scheduler.trigger_exit().await.unwrap());
+        assert_eq!(fixture.receive().await.trigger, SyncTrigger::SettingsExit);
     }
 
     #[tokio::test(start_paused = true)]
@@ -1762,7 +2074,7 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn timer_persistence_failure_reinstalls_an_in_memory_retry() {
+    async fn accepted_timer_due_clear_failure_parks_without_a_second_sync_or_busy_loop() {
         let source = Arc::new(MemorySource::default());
         let store = Arc::new(FailingMemoryStore::default());
         let clock = Arc::new(TestClock::new(1_800_000_000));
@@ -1789,20 +2101,37 @@ mod tests {
         scheduler
             .record_file_change(&root, &root.join("note.md"))
             .unwrap();
+        let original_due = store
+            .load_schedule(&repository_id)
+            .unwrap()
+            .next_scheduled_at;
         let before_timer = store.update_attempts.load(Ordering::SeqCst);
         store.fail_next_update();
 
         tokio::time::advance(Duration::from_secs(30)).await;
         store.wait_for_update_attempts(before_timer + 1).await;
         assert_eq!(jobs.try_recv().unwrap().trigger, SyncTrigger::Interval);
-        tokio::time::advance(Duration::from_secs(5 * 60 - 1)).await;
-        assert!(jobs.try_recv().is_err());
-        tokio::time::advance(Duration::from_secs(1)).await;
+        tokio::time::advance(Duration::from_secs(5 * 60)).await;
         for _ in 0..10 {
             tokio::task::yield_now().await;
         }
-
-        assert_eq!(jobs.try_recv().unwrap().trigger, SyncTrigger::Interval);
+        assert!(jobs.try_recv().is_err());
+        tokio::time::advance(Duration::from_secs(60 * 60)).await;
+        for _ in 0..10 {
+            tokio::task::yield_now().await;
+        }
+        assert!(jobs.try_recv().is_err());
+        assert_eq!(
+            store.update_attempts.load(Ordering::SeqCst),
+            before_timer + 1
+        );
+        assert_eq!(
+            store
+                .load_schedule(&repository_id)
+                .unwrap()
+                .next_scheduled_at,
+            original_due
+        );
     }
 
     #[tokio::test(start_paused = true)]
