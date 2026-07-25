@@ -40,7 +40,7 @@ pub struct Store {
     relative_root: PathBuf,
     repository_dir: Mutex<Option<Dir>>,
     operation_guard: OperationGuard,
-    lifecycle: crate::lifecycle::LifecycleGate,
+    repo_gate: crate::lifecycle::LifecycleGate,
     key: [u8; 32],
     compressor: Mutex<zstd::bulk::Compressor<'static>>,
     decompressor: Mutex<zstd::zstd_safe::DCtx<'static>>,
@@ -51,12 +51,15 @@ impl Store {
         let root = absolute_lexical_root(root.into())?;
         let (anchor, relative_root) = store_anchor(&root)?;
         let operation_guard = Arc::clone(OPERATION_GUARD.get_or_init(|| Arc::new(Mutex::new(()))));
-        let lifecycle = crate::lifecycle::LifecycleGate::for_directory(&anchor)?;
-        let repository_dir = if relative_root.as_os_str().is_empty() {
-            Some(anchor.try_clone()?)
-        } else {
-            None
-        };
+        let mut repository_dir = anchor.try_clone()?;
+        for component in relative_root.components() {
+            let Component::Normal(name) = component else {
+                return Err(RepoError::UnsafePath);
+            };
+            repository_dir = open_child_directory(&repository_dir, name, true)?;
+        }
+        validate_store_directory(&repository_dir)?;
+        let repo_gate = crate::lifecycle::LifecycleGate::for_directory(&repository_dir)?;
         let mut compressor = zstd::bulk::Compressor::new(zstd::DEFAULT_COMPRESSION_LEVEL)
             .map_err(RepoError::Compression)?;
         compressor
@@ -75,9 +78,9 @@ impl Store {
             root,
             anchor,
             relative_root,
-            repository_dir: Mutex::new(repository_dir),
+            repository_dir: Mutex::new(Some(repository_dir)),
             operation_guard,
-            lifecycle,
+            repo_gate,
             key,
             compressor: Mutex::new(compressor),
             decompressor: Mutex::new(decompressor),
@@ -546,17 +549,12 @@ impl Store {
             .map_err(|_| RepoError::InvalidData("repository operation lock poisoned"))
     }
 
-    pub(crate) async fn acquire_lifecycle(&self) -> tokio::sync::OwnedMutexGuard<()> {
-        self.lifecycle.acquire().await
-    }
-
-    pub(crate) fn with_lifecycle(mut self, lifecycle: crate::lifecycle::LifecycleGate) -> Self {
-        self.lifecycle = lifecycle;
-        self
-    }
-
     pub(crate) fn try_lifecycle(&self) -> Result<tokio::sync::OwnedMutexGuard<()>, RepoError> {
-        self.lifecycle.try_acquire()
+        self.repo_gate.try_acquire()
+    }
+
+    pub(crate) fn repo_gate(&self) -> &crate::lifecycle::LifecycleGate {
+        &self.repo_gate
     }
 
     fn open_repository_root(&self, create: bool) -> Result<Dir, RepoError> {
@@ -1254,12 +1252,12 @@ mod tests {
     }
 
     #[test]
-    fn missing_repository_root_is_retained_after_first_materialization() {
+    fn repository_root_is_materialized_and_retained_on_open() {
         let temp = tempfile::tempdir().unwrap();
         let repository = temp.path().join("repo");
         let held_repository = temp.path().join("repo-held");
         let store = Store::new(&repository, fixture_key()).unwrap();
-        assert!(!repository.exists());
+        assert!(repository.is_dir());
 
         let first_id = crate::sha1_hex(b"first");
         store

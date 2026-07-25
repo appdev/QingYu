@@ -1043,25 +1043,18 @@ mod tests {
             let chunk_result = premature_chunk.unwrap_or_else(|| chunk_result_rx.recv().unwrap());
 
             assert!(ref_was_premature, "renamed-path ref did not fail fast");
-            assert_ne!(
-                index_was_premature, chunk_was_premature,
-                "one same-store publication should wait on the std guard while the other fails busy"
+            assert!(
+                index_was_premature && chunk_was_premature,
+                "same-repository publications must both fail before the std guard"
             );
             purge_result.unwrap();
             assert!(matches!(ref_result, Err(RepoError::RepositoryBusy)));
             assert_eq!(
                 [&index_result, &chunk_result]
                     .into_iter()
-                    .filter(|result| result.is_ok())
-                    .count(),
-                1
-            );
-            assert_eq!(
-                [&index_result, &chunk_result]
-                    .into_iter()
                     .filter(|result| matches!(result, Err(RepoError::RepositoryBusy)))
                     .count(),
-                1
+                2
             );
         });
 

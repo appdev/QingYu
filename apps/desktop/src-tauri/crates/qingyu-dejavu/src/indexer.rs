@@ -747,14 +747,14 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn missing_repository_root_is_retained_after_first_index_publication() {
+    fn repository_root_is_materialized_by_open_and_retained_after_index_publication() {
         let temp = tempfile::tempdir().unwrap();
         let repo_paths = paths(temp.path());
         let held_repository = temp.path().join("repo-held");
         fs::create_dir_all(&repo_paths.data).unwrap();
         fs::write(repo_paths.data.join("file.md"), b"content").unwrap();
         let repo = Repo::open(repo_paths.clone(), device(), key(), RepoOptions::default()).unwrap();
-        assert!(!repo_paths.repo.exists());
+        assert!(repo_paths.repo.is_dir());
 
         let first = repo.index("first publication").unwrap();
         fs::rename(&repo_paths.repo, &held_repository).unwrap();

@@ -41,6 +41,7 @@ pub struct RepoOptions {
 
 pub struct Repo {
     pub(crate) data_dir: Dir,
+    pub(crate) data_gate: crate::lifecycle::LifecycleGate,
     pub(crate) device: Device,
     pub(crate) key: [u8; 32],
     pub(crate) protected_include_paths: Vec<String>,
@@ -108,12 +109,13 @@ impl Repo {
         if !data_metadata.file_type().is_dir() || cap_metadata_is_reparse(&data_metadata) {
             return Err(RepoError::UnsafePath);
         }
-        let lifecycle = crate::lifecycle::LifecycleGate::for_directory(&data_dir)?;
-        let store = Store::new(&paths.repo, key)?.with_lifecycle(lifecycle);
+        let data_gate = crate::lifecycle::LifecycleGate::for_directory(&data_dir)?;
+        let store = Store::new(&paths.repo, key)?;
         let history = History::new(&paths.history)?;
 
         Ok(Self {
             data_dir,
+            data_gate,
             device,
             key,
             protected_include_paths,
@@ -125,7 +127,7 @@ impl Repo {
     }
 
     pub fn index(&self, memo: &str) -> Result<Index, RepoError> {
-        let _lifecycle = self.store.try_lifecycle()?;
+        let _lifecycle = self.try_lifecycle()?;
         let _operation = self.store.lock_operation()?;
         self.index_unlocked(memo, None)
     }
@@ -157,7 +159,7 @@ impl Repo {
     }
 
     pub fn checkout_file(&self, file: &File) -> Result<(), RepoError> {
-        let _lifecycle = self.store.try_lifecycle()?;
+        let _lifecycle = self.try_lifecycle()?;
         self.checkout_file_unlocked(file)
     }
 
@@ -178,7 +180,7 @@ impl Repo {
     where
         F: FnOnce(&CapFile, filetime::FileTime) -> std::io::Result<()>,
     {
-        let _lifecycle = self.store.try_lifecycle()?;
+        let _lifecycle = self.try_lifecycle()?;
         let _operation = self.store.lock_operation()?;
         self.checkout_file_with_hooks(file, || Ok(()), set_mtime)
     }
@@ -235,7 +237,7 @@ impl Repo {
     }
 
     pub fn checkout_files(&self, files: &[File]) -> Result<(), RepoError> {
-        let _lifecycle = self.store.try_lifecycle()?;
+        let _lifecycle = self.try_lifecycle()?;
         let _operation = self.store.lock_operation()?;
         for file in files {
             self.checkout_file_with_hooks(
@@ -251,7 +253,7 @@ impl Repo {
     }
 
     pub fn remove_files(&self, files: &[File]) -> Result<(), RepoError> {
-        let _lifecycle = self.store.try_lifecycle()?;
+        let _lifecycle = self.try_lifecycle()?;
         self.remove_files_unlocked(files)
     }
 
@@ -269,7 +271,7 @@ impl Repo {
         retained_index_ids: &[String],
         cancelled: &AtomicBool,
     ) -> Result<PurgeStat, RepoError> {
-        let _lifecycle = self.store.try_lifecycle()?;
+        let _lifecycle = self.try_lifecycle()?;
         let _operation = self.store.lock_operation()?;
         purge_store_with_cancel_check(&self.store, retained_index_ids, || {
             cancelled.load(Ordering::Relaxed)
@@ -286,7 +288,7 @@ impl Repo {
     where
         F: FnMut() -> Result<(), RepoError>,
     {
-        let _lifecycle = self.store.try_lifecycle()?;
+        let _lifecycle = self.try_lifecycle()?;
         let _operation = self.store.lock_operation()?;
         crate::purge::purge_store_with_cancel_check_and_hook(
             &self.store,
@@ -306,6 +308,14 @@ impl Repo {
             directory = open_child_directory(&directory, component, create)?;
         }
         Ok(directory)
+    }
+
+    pub(crate) async fn acquire_lifecycle(&self) -> crate::lifecycle::LifecyclePermits {
+        crate::lifecycle::LifecycleGate::acquire_pair(self.store.repo_gate(), &self.data_gate).await
+    }
+
+    pub(crate) fn try_lifecycle(&self) -> Result<crate::lifecycle::LifecyclePermits, RepoError> {
+        crate::lifecycle::LifecycleGate::try_acquire_pair(self.store.repo_gate(), &self.data_gate)
     }
 
     fn remove_file(&self, components: &[std::ffi::OsString]) -> Result<(), RepoError> {
@@ -521,7 +531,7 @@ mod tests {
             RepoOptions::default(),
         )
         .unwrap();
-        let held = first.store.acquire_lifecycle().await;
+        let held = first.acquire_lifecycle().await;
 
         assert!(matches!(
             second.index("busy"),
