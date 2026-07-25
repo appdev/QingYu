@@ -5,6 +5,14 @@ edition = "2021"
 license = "AGPL-3.0-only"
 publish = false
 
+[features]
+interop-cli = []
+
+[[bin]]
+name = "dejavu-interop"
+path = "src/bin/dejavu-interop.rs"
+required-features = ["interop-cli"]
+
 [dependencies]
 aes-gcm = "0.10.3"
 async-trait = "0.1.89"
