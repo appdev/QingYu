@@ -516,20 +516,45 @@ git commit -m "feat(sync): coordinate Dejavu writes by affected path"
 - Modify: `apps/desktop/src-tauri/src/dejavu_sync/repository.rs`
 - Modify: `apps/desktop/src-tauri/src/dejavu_sync/local_state.rs`
 - Modify: `apps/desktop/src-tauri/src/dejavu_sync/service.rs`
-- Test: focused Rust integration tests in `dejavu_sync/repository.rs`
+- Modify: `apps/desktop/src-tauri/src/dejavu_sync.rs`
+- Modify: `apps/desktop/src-tauri/src/desktop_runtime.rs`
+- Modify: `apps/desktop/src-tauri/src/mobile_runtime.rs`
+- Modify: `apps/desktop/src-tauri/src/builder_boundary_tests.rs`
+- Test: focused Rust tests in `dejavu_sync/commands.rs`,
+  `dejavu_sync/local_state.rs`, `dejavu_sync/repository.rs`, and
+  `dejavu_sync/service.rs`
 
 **Interfaces:**
 - Produces: command `bind_dejavu_repository` returning `AcceptedSyncJob`.
 - Produces: one `BindRepositoryRequest { notes_root, repository_id, display_name }`.
 - Preserves: empty, existing, and restore directories all invoke the same adapter.
 
+**Boundary correction:**
+
+`S3RepositoryCatalog` already exists in the `qingyu-dejavu` crate. Binding reads
+and validates the selected repository's existing `metadata.json`; it does not
+create, rename, or infer a remote repository. The remote display name is
+authoritative and a stale request must fail instead of persisting stale metadata.
+
+Serialize the complete local binding transaction in the installed product
+owner: canonicalize and capability-check the root, ensure the empty
+`/.qingyu/syncignore` when absent, atomically persist the binding, then enqueue.
+An exact repository/root retry is idempotent and re-enables the binding; the
+same root with another repository ID or the same repository ID with another
+root is rejected. This lock also prevents simultaneous bind requests from
+losing one another's `local-sync.json` update. Register the internal command on
+desktop and mobile, but do not route the existing public S3/WebDAV sync command
+through it until Plan 4.
+
 - [ ] **Step 1: Add failing binding matrix tests**
 
 Cover empty local/empty remote, nonempty local/empty remote, empty local/nonempty
 remote, nonempty local/nonempty remote with independent paths, and same-path
 conflict. Assert every case calls the same `bind_and_sync` function, creates an
-empty `/.qingyu/syncignore` when absent, records the binding before enqueue, and
-returns before a blocked job completes.
+empty `/.qingyu/syncignore` when absent, initializes local key state when
+absent, records the binding before enqueue, and returns before a blocked job
+completes. Also cover exact idempotent retry, both duplicate-conflict directions,
+stale display metadata, and concurrent distinct bindings without a lost update.
 
 - [ ] **Step 2: Run binding tests and verify RED**
 
@@ -541,15 +566,17 @@ cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --lib dejavu_sync::
 
 Validate repository metadata through `S3RepositoryCatalog`, canonicalize and
 capability-check the local root, reject a root already bound to another ID,
-write the binding atomically, then enqueue. Do not branch on whether the UI
-called the operation “enable” or “restore”; that text is not part of the request.
+write or idempotently re-enable the binding atomically, then enqueue. Do not
+branch on whether the UI called the operation “enable” or “restore”; that text
+is not part of the request. Do not create catalog metadata from this command.
 
 - [ ] **Step 4: Add restart and listener-loss tests**
 
 Persist a blocked accepted job, remove the simulated Settings listener, allow
 the job to complete, and assert status/history are correct. Restart the service
 from the same `local-sync.json` and verify it can load the binding and run a
-manual sync without recreating repository metadata.
+manual sync without recreating or rereading repository metadata. Add desktop
+and mobile command-registration boundary assertions.
 
 - [ ] **Step 5: Run tests and verify GREEN**
 
@@ -559,7 +586,7 @@ modal response open for the duration of network synchronization.
 - [ ] **Step 6: Commit unified binding**
 
 ```bash
-git add apps/desktop/src-tauri/src/dejavu_sync
+git add apps/desktop/src-tauri/src/dejavu_sync apps/desktop/src-tauri/src/dejavu_sync.rs apps/desktop/src-tauri/src/desktop_runtime.rs apps/desktop/src-tauri/src/mobile_runtime.rs apps/desktop/src-tauri/src/builder_boundary_tests.rs
 git commit -m "feat(sync): unify Dejavu bind and restore jobs"
 ```
 
