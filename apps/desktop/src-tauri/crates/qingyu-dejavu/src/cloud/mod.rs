@@ -167,5 +167,7 @@ mod tests {
 }
 
 pub mod local;
+mod s3_signing;
 
 pub use local::LocalCloud;
+pub use s3_signing::{S3AddressingStyle, S3Connection, S3RequestSigner, S3TlsVerification};
