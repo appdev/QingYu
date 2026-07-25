@@ -252,6 +252,7 @@ fn clipboard_image_file_name(
     Ok(format!("pasted-image-{millis}{suffix}.{extension}"))
 }
 
+#[cfg(test)]
 fn save_clipboard_image_file(
     document_path: String,
     folder: String,
@@ -262,6 +263,7 @@ fn save_clipboard_image_file(
     forbid_root_assets: impl FnOnce(&Path) -> Result<(), String>,
 ) -> Result<ClipboardImageFile, String> {
     save_clipboard_image_file_with_writer(
+        crate::dejavu_sync::path_guard::native_working_tree_registry(),
         document_path,
         folder,
         mime_type,
@@ -277,6 +279,7 @@ fn save_clipboard_image_file(
 }
 
 fn save_clipboard_image_file_with_writer(
+    registry: &Arc<crate::dejavu_sync::path_guard::NativeWorkingTreeRegistry>,
     document_path: String,
     folder: String,
     mime_type: String,
@@ -290,6 +293,7 @@ fn save_clipboard_image_file_with_writer(
     let extension = clipboard_image_extension(&mime_type)?;
     let target_name = clipboard_image_file_name(extension, 0, file_name.as_deref())?;
     let saved = save_standalone_resource_with_writer(
+        registry,
         document_path,
         normalize_clipboard_image_folder(&folder)?,
         target_name,
@@ -390,7 +394,8 @@ fn save_clipboard_image_with_registry(
         );
     }
 
-    save_clipboard_image_file(
+    save_clipboard_image_file_with_writer(
+        registry,
         document_path,
         folder,
         mime_type,
@@ -398,6 +403,10 @@ fn save_clipboard_image_with_registry(
         file_name,
         allow_root_assets,
         forbid_root_assets,
+        |target, contents| {
+            let mut source = io::Cursor::new(contents);
+            io::copy(&mut source, target).map(|_| ())
+        },
     )
 }
 
@@ -485,6 +494,47 @@ mod tests {
 
         assert_eq!(error, "sync-path-guarded");
         assert!(!root.join("assets/Picture.png").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn native_guard_applies_to_standalone_clipboard_image_candidates() {
+        let (root, note) = project_fixture("standalone-native-guard");
+        let registry =
+            Arc::new(crate::dejavu_sync::path_guard::NativeWorkingTreeRegistry::default());
+        let _block = registry
+            .block_paths(&root, &["notes/assets/guarded.png".to_string()])
+            .unwrap();
+
+        let error = save_clipboard_image_with_registry(
+            &registry,
+            note.to_string_lossy().to_string(),
+            "assets".to_string(),
+            "image/png".to_string(),
+            valid_png(),
+            Some("guarded.png".to_string()),
+            None,
+            None,
+            |_| Ok(()),
+            |_| Ok(()),
+        )
+        .unwrap_err();
+        assert_eq!(error, "sync-path-guarded");
+        assert!(!root.join("notes/assets/guarded.png").exists());
+        let saved = save_clipboard_image_with_registry(
+            &registry,
+            note.to_string_lossy().to_string(),
+            "assets".to_string(),
+            "image/png".to_string(),
+            valid_png(),
+            Some("other.png".to_string()),
+            None,
+            None,
+            |_| Ok(()),
+            |_| Ok(()),
+        )
+        .unwrap();
+        assert_eq!(saved.relative_path, "assets/other.png");
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -791,6 +841,7 @@ mod tests {
         let bytes = valid_png();
         let final_path = root.join("notes/assets/diagram.png");
         let saved = save_clipboard_image_file_with_writer(
+            crate::dejavu_sync::path_guard::native_working_tree_registry(),
             note.to_string_lossy().to_string(),
             "assets".to_string(),
             "image/png".to_string(),
@@ -827,6 +878,7 @@ mod tests {
 
         let (root, note) = project_fixture("failed-standalone");
         let error = save_clipboard_image_file_with_writer(
+            crate::dejavu_sync::path_guard::native_working_tree_registry(),
             note.to_string_lossy().to_string(),
             "assets".to_string(),
             "image/png".to_string(),

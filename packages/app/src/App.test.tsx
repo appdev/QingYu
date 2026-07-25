@@ -9473,6 +9473,7 @@ describe("QingYu workspace", () => {
 
     renderApp();
     expect(await screen.findByText("Primary original")).toBeInTheDocument();
+    await screen.findByRole("button", { name: "original.md" });
 
     fireEvent.keyDown(window, { key: "s", metaKey: true, shiftKey: true });
 

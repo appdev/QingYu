@@ -606,6 +606,7 @@ pub(super) fn save_project_resource_with_writer_in_registry(
 }
 
 pub(super) fn save_standalone_resource_with_writer(
+    registry: &std::sync::Arc<crate::dejavu_sync::path_guard::NativeWorkingTreeRegistry>,
     document_path: String,
     folder: PathBuf,
     file_name: String,
@@ -649,7 +650,7 @@ pub(super) fn save_standalone_resource_with_writer(
         &folder,
         &target_folder,
         &file_name,
-        |_| Ok(None),
+        |candidate| registry.acquire_creation_candidate(candidate).map(Some),
         |published| {
             if let Err(error) =
                 verify_directory_path_identity(&root, root_identity, "Resource root")

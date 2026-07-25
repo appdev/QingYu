@@ -55,6 +55,20 @@ pub(crate) fn write_markdown_file(
 #[cfg(desktop)]
 #[tauri::command]
 pub(crate) fn write_markdown_export_file(path: String, contents: String) -> Result<(), String> {
+    write_markdown_export_file_with_registry(
+        crate::dejavu_sync::path_guard::native_working_tree_registry(),
+        path,
+        contents,
+    )
+}
+
+#[cfg(desktop)]
+fn write_markdown_export_file_with_registry(
+    registry: &std::sync::Arc<crate::dejavu_sync::path_guard::NativeWorkingTreeRegistry>,
+    path: String,
+    contents: String,
+) -> Result<(), String> {
+    let _mutation = registry.acquire_mutation(&[PathBuf::from(&path)])?;
     write_markdown_file_with_optional_history_root(None, path, contents, false, None)
 }
 
@@ -77,7 +91,7 @@ mod tests {
 
     use tempfile::tempdir;
 
-    use super::acquire_document_write_guard;
+    use super::{acquire_document_write_guard, write_markdown_export_file_with_registry};
     use crate::dejavu_sync::path_guard::NativeWorkingTreeRegistry;
 
     #[test]
@@ -118,5 +132,34 @@ mod tests {
             Some(request_id),
         )
         .is_ok());
+    }
+
+    #[test]
+    fn html_export_uses_an_ordinary_native_lease() {
+        let directory = tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let guarded = root.join("guarded.html");
+        let other = root.join("other.html");
+        let registry = Arc::new(NativeWorkingTreeRegistry::default());
+        let _block = registry
+            .block_paths(&root, &["guarded.html".to_string()])
+            .unwrap();
+        assert_eq!(
+            write_markdown_export_file_with_registry(
+                &registry,
+                guarded.to_string_lossy().to_string(),
+                "guarded".to_string()
+            )
+            .unwrap_err(),
+            "sync-path-guarded"
+        );
+        assert!(!guarded.exists());
+        write_markdown_export_file_with_registry(
+            &registry,
+            other.to_string_lossy().to_string(),
+            "other".to_string(),
+        )
+        .unwrap();
+        assert_eq!(std::fs::read_to_string(other).unwrap(), "other");
     }
 }

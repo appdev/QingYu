@@ -185,6 +185,19 @@ impl Drop for PrimaryOwnershipLease {
 }
 
 impl NativeWorkingTreeRegistry {
+    #[cfg(test)]
+    pub(crate) fn tracks_mutation(&self, path: &Path) -> bool {
+        let Ok(path) = canonical_mutation_path(path) else {
+            return false;
+        };
+        self.state
+            .lock()
+            .unwrap()
+            .mutations
+            .values()
+            .any(|mutation| mutation.paths.iter().any(|candidate| candidate == &path))
+    }
+
     pub(crate) fn acquire_mutation(
         self: &Arc<Self>,
         paths: &[PathBuf],

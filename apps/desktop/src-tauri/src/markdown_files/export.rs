@@ -366,6 +366,17 @@ fn export_pdf_file_with_renderer(
     result
 }
 
+fn export_pdf_file_with_renderer_in_registry(
+    registry: &std::sync::Arc<crate::dejavu_sync::path_guard::NativeWorkingTreeRegistry>,
+    path: String,
+    html: String,
+    renderer_path: &Path,
+    render: impl FnMut(&Path, &Path, &Path, &[String]) -> Result<bool, String>,
+) -> Result<(), String> {
+    let _mutation = registry.acquire_mutation(&[PathBuf::from(&path)])?;
+    export_pdf_file_with_renderer(path, html, renderer_path, render)
+}
+
 fn run_pandoc_process(
     binary: &Path,
     working_directory: &Path,
@@ -447,6 +458,28 @@ fn export_pandoc_file_with_runner(
     result
 }
 
+fn export_pandoc_file_with_runner_in_registry(
+    registry: &std::sync::Arc<crate::dejavu_sync::path_guard::NativeWorkingTreeRegistry>,
+    path: String,
+    markdown: String,
+    format: PandocExportFormat,
+    document_path: Option<String>,
+    pandoc_path: Option<PathBuf>,
+    pandoc_args: String,
+    run: impl FnMut(&Path, &Path, &Path, &Path, &[String]) -> Result<bool, String>,
+) -> Result<(), String> {
+    let _mutation = registry.acquire_mutation(&[PathBuf::from(&path)])?;
+    export_pandoc_file_with_runner(
+        path,
+        markdown,
+        format,
+        document_path,
+        pandoc_path,
+        pandoc_args,
+        run,
+    )
+}
+
 #[tauri::command]
 pub(crate) async fn export_pdf_file(path: String, html: String) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || export_pdf_file_blocking(path, html))
@@ -459,7 +492,8 @@ fn export_pdf_file_blocking(path: String, html: String) -> Result<(), String> {
         "PDF export requires Google Chrome, Chromium, or Microsoft Edge".to_string()
     })?;
 
-    export_pdf_file_with_renderer(
+    export_pdf_file_with_renderer_in_registry(
+        crate::dejavu_sync::path_guard::native_working_tree_registry(),
         path,
         html,
         &renderer_path,
@@ -507,7 +541,8 @@ fn export_pandoc_file_blocking(
 ) -> Result<(), String> {
     let pandoc_binary = find_pandoc(&pandoc_path)?;
 
-    export_pandoc_file_with_runner(
+    export_pandoc_file_with_runner_in_registry(
+        crate::dejavu_sync::path_guard::native_working_tree_registry(),
         path,
         markdown,
         format,
@@ -545,6 +580,84 @@ fn detect_pandoc_path_blocking() -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pdf_and_pandoc_targets_use_ordinary_native_leases() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().canonicalize().unwrap();
+        let registry = std::sync::Arc::new(
+            crate::dejavu_sync::path_guard::NativeWorkingTreeRegistry::default(),
+        );
+        let _block = registry
+            .block_paths(
+                &root,
+                &["guarded.pdf".to_string(), "guarded.docx".to_string()],
+            )
+            .unwrap();
+        let renderer = PathBuf::from("/mock/Chrome");
+        let guarded_pdf = root.join("guarded.pdf");
+        assert_eq!(
+            export_pdf_file_with_renderer_in_registry(
+                &registry,
+                guarded_pdf.to_string_lossy().to_string(),
+                "<p>x</p>".to_string(),
+                &renderer,
+                |_, _, _, _| panic!("renderer must not run")
+            )
+            .unwrap_err(),
+            "sync-path-guarded"
+        );
+        assert!(!guarded_pdf.exists());
+        let guarded_docx = root.join("guarded.docx");
+        assert_eq!(
+            export_pandoc_file_with_runner_in_registry(
+                &registry,
+                guarded_docx.to_string_lossy().to_string(),
+                "x".to_string(),
+                PandocExportFormat::Docx,
+                None,
+                Some(PathBuf::from("/mock/pandoc")),
+                String::new(),
+                |_, _, _, _, _| panic!("pandoc must not run")
+            )
+            .unwrap_err(),
+            "sync-path-guarded"
+        );
+        assert!(!guarded_docx.exists());
+
+        let other_pdf = root.join("other.pdf");
+        export_pdf_file_with_renderer_in_registry(
+            &registry,
+            other_pdf.to_string_lossy().to_string(),
+            "<p>x</p>".to_string(),
+            &renderer,
+            |_, _, output, _| {
+                assert!(registry.tracks_mutation(&other_pdf));
+                fs::write(output, b"pdf").unwrap();
+                Ok(true)
+            },
+        )
+        .unwrap();
+        assert!(!registry.tracks_mutation(&other_pdf));
+
+        let other_docx = root.join("other.docx");
+        export_pandoc_file_with_runner_in_registry(
+            &registry,
+            other_docx.to_string_lossy().to_string(),
+            "x".to_string(),
+            PandocExportFormat::Docx,
+            None,
+            Some(PathBuf::from("/mock/pandoc")),
+            String::new(),
+            |_, _, output, _, _| {
+                assert!(registry.tracks_mutation(&other_docx));
+                fs::write(output, b"docx").unwrap();
+                Ok(true)
+            },
+        )
+        .unwrap();
+        assert!(!registry.tracks_mutation(&other_docx));
+    }
 
     #[test]
     fn renders_pdf_html_with_browser_renderer() {

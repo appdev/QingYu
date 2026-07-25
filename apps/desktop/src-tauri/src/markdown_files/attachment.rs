@@ -222,6 +222,7 @@ fn write_attachment_file_with_hook(
     write_contents: impl FnOnce(&mut fs::File) -> io::Result<()>,
 ) -> Result<ClipboardAttachmentFile, String> {
     write_attachment_file_with_scope_hooks_internal(
+        crate::dejavu_sync::path_guard::native_working_tree_registry(),
         document_path,
         folder,
         file_name,
@@ -234,6 +235,7 @@ fn write_attachment_file_with_hook(
 }
 
 fn write_attachment_file_with_scope_hooks_internal(
+    registry: &Arc<crate::dejavu_sync::path_guard::NativeWorkingTreeRegistry>,
     document_path: String,
     folder: String,
     file_name: String,
@@ -244,6 +246,7 @@ fn write_attachment_file_with_scope_hooks_internal(
     write_contents: impl FnOnce(&mut fs::File) -> io::Result<()>,
 ) -> Result<ClipboardAttachmentFile, String> {
     write_standalone_attachment_file(
+        registry,
         document_path,
         folder,
         file_name,
@@ -256,6 +259,7 @@ fn write_attachment_file_with_scope_hooks_internal(
 }
 
 fn write_standalone_attachment_file(
+    registry: &Arc<crate::dejavu_sync::path_guard::NativeWorkingTreeRegistry>,
     document_path: String,
     folder: String,
     file_name: String,
@@ -315,7 +319,7 @@ fn write_standalone_attachment_file(
         &folder,
         &target_folder,
         &file_name,
-        |_| Ok(None),
+        |candidate| registry.acquire_creation_candidate(candidate).map(Some),
         |published| {
             if let Err(error) =
                 verify_directory_path_identity(&root, root_identity, "Attachment root")
@@ -438,6 +442,7 @@ fn write_attachment_file_with_scope_hooks(
     write_contents: impl FnOnce(&mut fs::File) -> io::Result<()>,
 ) -> Result<ClipboardAttachmentFile, String> {
     write_attachment_file_with_scope_hooks_internal(
+        crate::dejavu_sync::path_guard::native_working_tree_registry(),
         document_path,
         folder,
         file_name,
@@ -468,6 +473,7 @@ fn save_clipboard_attachment_file(
     )
 }
 
+#[cfg(test)]
 fn save_clipboard_attachment_file_with_scope(
     document_path: String,
     folder: String,
@@ -481,6 +487,7 @@ fn save_clipboard_attachment_file_with_scope(
     }
 
     write_attachment_file_with_scope_hooks_internal(
+        crate::dejavu_sync::path_guard::native_working_tree_registry(),
         document_path,
         folder,
         file_name,
@@ -643,6 +650,7 @@ fn import_local_file_with_optional_project_root_in_registry(
     }
 
     write_standalone_attachment_file(
+        registry,
         document_path,
         folder,
         file_name,
@@ -685,13 +693,22 @@ fn save_clipboard_attachment_with_registry(
         );
     }
 
-    save_clipboard_attachment_file_with_scope(
+    if bytes.is_empty() {
+        return Err("Clipboard attachment is empty".to_string());
+    }
+    write_attachment_file_with_scope_hooks_internal(
+        registry,
         document_path,
         folder,
-        bytes,
         file_name,
         allow_root_assets,
         forbid_root_assets,
+        || Ok(()),
+        || Ok(()),
+        move |target| {
+            let mut contents = io::Cursor::new(bytes.as_slice());
+            io::copy(&mut contents, target).map(|_| ())
+        },
     )
 }
 
@@ -1047,6 +1064,83 @@ mod tests {
 
         assert_eq!(error, "sync-path-guarded");
         assert!(!fixture.root.join("assets/Reference.pdf").exists());
+    }
+
+    #[test]
+    fn native_guard_applies_to_standalone_clipboard_attachment_candidates() {
+        let fixture = AttachmentFixture::new();
+        let registry =
+            Arc::new(crate::dejavu_sync::path_guard::NativeWorkingTreeRegistry::default());
+        let _block = registry
+            .block_paths(&fixture.root, &["assets/guarded.pdf".to_string()])
+            .unwrap();
+
+        let error = save_clipboard_attachment_with_registry(
+            &registry,
+            fixture.note.to_string_lossy().to_string(),
+            "assets".to_string(),
+            vec![1],
+            "guarded.pdf".to_string(),
+            None,
+            None,
+            |_| Ok(()),
+            |_| Ok(()),
+        )
+        .unwrap_err();
+        assert_eq!(error, "sync-path-guarded");
+        assert!(!fixture.root.join("assets/guarded.pdf").exists());
+        let saved = save_clipboard_attachment_with_registry(
+            &registry,
+            fixture.note.to_string_lossy().to_string(),
+            "assets".to_string(),
+            vec![2],
+            "other.pdf".to_string(),
+            None,
+            None,
+            |_| Ok(()),
+            |_| Ok(()),
+        )
+        .unwrap();
+        assert_eq!(saved.relative_path, "assets/other.pdf");
+    }
+
+    #[test]
+    fn native_guard_applies_to_standalone_local_file_import_candidates() {
+        let fixture = AttachmentFixture::new();
+        let source_root = tempfile::tempdir().unwrap();
+        let guarded_source = source_root.path().join("guarded.pdf");
+        let other_source = source_root.path().join("other.pdf");
+        fs::write(&guarded_source, [1]).unwrap();
+        fs::write(&other_source, [2]).unwrap();
+        let registry =
+            Arc::new(crate::dejavu_sync::path_guard::NativeWorkingTreeRegistry::default());
+        let _block = registry
+            .block_paths(&fixture.root, &["assets/guarded.pdf".to_string()])
+            .unwrap();
+
+        let error = import_local_file_with_registry(
+            &registry,
+            fixture.note.to_string_lossy().to_string(),
+            "assets".to_string(),
+            guarded_source.to_string_lossy().to_string(),
+            None,
+            |_| Ok(()),
+            |_| Ok(()),
+        )
+        .unwrap_err();
+        assert_eq!(error, "sync-path-guarded");
+        assert!(!fixture.root.join("assets/guarded.pdf").exists());
+        let saved = import_local_file_with_registry(
+            &registry,
+            fixture.note.to_string_lossy().to_string(),
+            "assets".to_string(),
+            other_source.to_string_lossy().to_string(),
+            None,
+            |_| Ok(()),
+            |_| Ok(()),
+        )
+        .unwrap();
+        assert_eq!(saved.relative_path, "assets/other.pdf");
     }
 
     #[test]
