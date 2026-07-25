@@ -1,10 +1,13 @@
 use std::collections::HashSet;
+use std::error::Error;
 use std::fmt;
+use std::net::ToSocketAddrs;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use std::time::Duration;
 
+use reqwest::dns::{Addrs, Name, Resolve, Resolving};
 use reqwest::header::{HeaderMap, HeaderValue, CACHE_CONTROL};
 use reqwest::{Method, Response, Url};
 use sha2::{Digest, Sha256};
@@ -85,33 +88,65 @@ impl S3Cloud {
         now: Arc<dyn Fn() -> OffsetDateTime + Send + Sync>,
     ) -> Result<Self, CloudError> {
         validate_repository_prefix(repository_prefix)?;
-        Self::new_with_validated_prefix(connection, options, repository_prefix, now)
+        Self::new_with_validated_prefix_and_resolver(
+            connection,
+            options,
+            repository_prefix,
+            now,
+            Arc::new(SystemDnsResolver),
+        )
     }
 
     pub(crate) fn new_catalog_transport(
         connection: S3Connection,
         options: S3TransportOptions,
     ) -> Result<Self, CloudError> {
-        Self::new_with_validated_prefix(
+        Self::new_with_validated_prefix_and_resolver(
             connection,
             options,
             CATALOG_ROOT_PREFIX,
             Arc::new(OffsetDateTime::now_utc),
+            Arc::new(SystemDnsResolver),
         )
     }
 
-    fn new_with_validated_prefix(
+    #[cfg(test)]
+    fn new_with_resolver<Resolver>(
+        connection: S3Connection,
+        options: S3TransportOptions,
+        repository_prefix: &str,
+        resolver: Arc<Resolver>,
+    ) -> Result<Self, CloudError>
+    where
+        Resolver: Resolve + 'static,
+    {
+        validate_repository_prefix(repository_prefix)?;
+        Self::new_with_validated_prefix_and_resolver(
+            connection,
+            options,
+            repository_prefix,
+            Arc::new(OffsetDateTime::now_utc),
+            resolver,
+        )
+    }
+
+    fn new_with_validated_prefix_and_resolver<Resolver>(
         connection: S3Connection,
         options: S3TransportOptions,
         repository_prefix: &str,
         now: Arc<dyn Fn() -> OffsetDateTime + Send + Sync>,
-    ) -> Result<Self, CloudError> {
+        resolver: Arc<Resolver>,
+    ) -> Result<Self, CloudError>
+    where
+        Resolver: Resolve + 'static,
+    {
         if options.request_timeout.is_zero() || !(1..=3).contains(&options.max_attempts) {
             return Err(CloudError::backend("s3_invalid_transport_options"));
         }
         let client = reqwest::Client::builder()
             .timeout(options.request_timeout)
             .redirect(reqwest::redirect::Policy::none())
+            .dns_resolver(Arc::new(DnsTaggingResolver::new(resolver)))
             .danger_accept_invalid_certs(matches!(
                 options.tls_verification,
                 S3TlsVerification::Skip
@@ -397,6 +432,65 @@ impl S3Cloud {
             }
         }
         Err(CloudError::Unavailable)
+    }
+}
+
+struct DnsTaggingResolver {
+    inner: Arc<dyn Resolve>,
+}
+
+struct SystemDnsResolver;
+
+impl Resolve for SystemDnsResolver {
+    fn resolve(&self, name: Name) -> Resolving {
+        let host = name.as_str().to_owned();
+        Box::pin(async move {
+            tokio::task::spawn_blocking(move || {
+                (host.as_str(), 0)
+                    .to_socket_addrs()
+                    .map(|addresses| Box::new(addresses) as Addrs)
+                    .map_err(|error| Box::new(error) as Box<dyn Error + Send + Sync>)
+            })
+            .await
+            .map_err(|error| Box::new(error) as Box<dyn Error + Send + Sync>)?
+        })
+    }
+}
+
+impl DnsTaggingResolver {
+    fn new<Resolver>(inner: Arc<Resolver>) -> Self
+    where
+        Resolver: Resolve + 'static,
+    {
+        Self { inner }
+    }
+}
+
+impl Resolve for DnsTaggingResolver {
+    fn resolve(&self, name: Name) -> Resolving {
+        let resolving = self.inner.resolve(name);
+        Box::pin(async move {
+            resolving.await.map_err(|source| {
+                Box::new(DnsResolutionError { source }) as Box<dyn Error + Send + Sync>
+            })
+        })
+    }
+}
+
+#[derive(Debug)]
+struct DnsResolutionError {
+    source: Box<dyn Error + Send + Sync>,
+}
+
+impl fmt::Display for DnsResolutionError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("DNS resolution failed")
+    }
+}
+
+impl Error for DnsResolutionError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        Some(self.source.as_ref())
     }
 }
 
@@ -835,7 +929,22 @@ fn retryable_send_error(error: &reqwest::Error) -> bool {
 }
 
 fn map_reqwest_error(error: reqwest::Error) -> CloudError {
-    CloudError::Io(std::io::Error::other(error))
+    if error_chain_contains_dns_resolution(&error) {
+        CloudError::Dns
+    } else {
+        CloudError::Io(std::io::Error::other(error))
+    }
+}
+
+fn error_chain_contains_dns_resolution(error: &(dyn Error + 'static)) -> bool {
+    let mut current = Some(error);
+    while let Some(error) = current {
+        if error.downcast_ref::<DnsResolutionError>().is_some() {
+            return true;
+        }
+        current = error.source();
+    }
+    false
 }
 
 fn hex_lower(bytes: &[u8]) -> String {
@@ -850,8 +959,11 @@ fn hex_lower(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::error::Error;
+    use std::fmt;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    use reqwest::dns::{Name, Resolve, Resolving};
     use reqwest::header::AUTHORIZATION;
     use tokio::net::{TcpListener, TcpStream};
 
@@ -876,6 +988,81 @@ mod tests {
             tls_verification: S3TlsVerification::Verify,
             max_attempts: 3,
         }
+    }
+
+    #[derive(Debug)]
+    struct ResolverFixtureError;
+
+    impl fmt::Display for ResolverFixtureError {
+        fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("fixture resolver failure")
+        }
+    }
+
+    impl Error for ResolverFixtureError {}
+
+    struct AlwaysFailResolver;
+
+    impl Resolve for AlwaysFailResolver {
+        fn resolve(&self, _name: Name) -> Resolving {
+            Box::pin(async { Err(Box::new(ResolverFixtureError) as Box<dyn Error + Send + Sync>) })
+        }
+    }
+
+    #[tokio::test]
+    async fn resolver_chain_failure_is_classified_as_typed_dns_before_redaction() {
+        let connection = S3Connection::new(
+            "http://unresolved.example.test",
+            "us-east-1",
+            "qingyu-notes",
+            "test-key",
+            "test-secret",
+            S3AddressingStyle::Path,
+        )
+        .unwrap();
+        let cloud = S3Cloud::new_with_resolver(
+            connection,
+            S3TransportOptions {
+                max_attempts: 1,
+                ..options()
+            },
+            "qingyu/repositories/00000000-0000-4000-8000-000000000001/repo",
+            Arc::new(AlwaysFailResolver),
+        )
+        .unwrap();
+
+        assert!(matches!(
+            cloud.get_bounded("refs/latest", 42).await,
+            Err(CloudError::Dns)
+        ));
+    }
+
+    #[tokio::test]
+    async fn generic_connect_failure_is_not_misclassified_as_dns() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        drop(listener);
+        let connection = S3Connection::new(
+            &format!("http://{address}"),
+            "us-east-1",
+            "qingyu-notes",
+            "test-key",
+            "test-secret",
+            S3AddressingStyle::Path,
+        )
+        .unwrap();
+        let cloud = S3Cloud::new(
+            connection,
+            S3TransportOptions {
+                max_attempts: 1,
+                ..options()
+            },
+            "qingyu/repositories/00000000-0000-4000-8000-000000000001/repo",
+        )
+        .unwrap();
+
+        let error = cloud.get_bounded("refs/latest", 42).await.unwrap_err();
+        assert!(!matches!(error, CloudError::Dns));
     }
 
     #[derive(Debug)]

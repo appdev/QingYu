@@ -11,6 +11,7 @@ use cap_fs_ext::DirExt;
 use qingyu_dejavu::{write_cap_file_safer, RepositoryRelativePath};
 use serde::{Deserialize, Serialize};
 use tauri::Emitter;
+use time::OffsetDateTime;
 
 use super::service::{
     RepositoryJobError, RepositoryStatusSink, RepositorySyncResult, SyncJobRequest,
@@ -58,6 +59,17 @@ pub(crate) struct RepositorySafeError {
     pub(crate) operation: String,
 }
 
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct RepositorySchedule {
+    pub(crate) same_count: u32,
+    pub(crate) automatic_failure_count: u32,
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub(crate) last_dns_retry_at: Option<OffsetDateTime>,
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub(crate) next_scheduled_at: Option<OffsetDateTime>,
+}
+
 impl From<RepositoryJobError> for RepositorySafeError {
     fn from(error: RepositoryJobError) -> Self {
         Self {
@@ -78,7 +90,8 @@ pub(crate) struct RepositorySyncStatus {
     pub(crate) attempt: u8,
     pub(crate) last_attempt_at: String,
     pub(crate) last_successful_sync_at: Option<String>,
-    pub(crate) next_scheduled_at: Option<String>,
+    #[serde(flatten)]
+    pub(crate) schedule: RepositorySchedule,
     pub(crate) error: Option<RepositorySafeError>,
     pub(crate) transfer: RepositoryTransferSummary,
     pub(crate) conflicts: Vec<RepositoryConflictRecord>,
@@ -100,7 +113,7 @@ impl RepositorySyncStatus {
             attempt,
             last_attempt_at: attempted_at,
             last_successful_sync_at: None,
-            next_scheduled_at: None,
+            schedule: RepositorySchedule::default(),
             error: None,
             transfer: RepositoryTransferSummary::default(),
             conflicts: Vec::new(),
@@ -123,7 +136,7 @@ impl RepositorySyncStatus {
             attempt,
             last_attempt_at: completed_at.clone(),
             last_successful_sync_at: Some(completed_at),
-            next_scheduled_at: None,
+            schedule: RepositorySchedule::default(),
             error: None,
             transfer: result.transfer,
             conflicts: result.conflicts,
@@ -146,7 +159,7 @@ impl RepositorySyncStatus {
             attempt,
             last_attempt_at: completed_at,
             last_successful_sync_at: None,
-            next_scheduled_at: None,
+            schedule: RepositorySchedule::default(),
             error: Some(error),
             transfer: RepositoryTransferSummary::default(),
             conflicts: Vec::new(),
@@ -206,6 +219,7 @@ impl RepositoryStatusStore {
         let _write = self.write_lock.lock().unwrap();
         if let Some(previous) = load_repository_sync_status(&self.app_data, &status.repository_id)?
         {
+            status.schedule = previous.schedule;
             if status.last_successful_sync_at.is_none() {
                 status.last_successful_sync_at = previous.last_successful_sync_at;
             }
@@ -216,6 +230,55 @@ impl RepositoryStatusStore {
                 status.conflicts = previous.conflicts;
             }
         }
+        self.persist_then_emit(status)
+    }
+
+    pub(crate) fn load_schedule(
+        &self,
+        repository_id: &str,
+    ) -> Result<RepositorySchedule, RepositoryJobError> {
+        Ok(load_repository_sync_status(&self.app_data, repository_id)?
+            .map(|status| status.schedule)
+            .unwrap_or_default())
+    }
+
+    pub(crate) fn save_schedule(
+        &self,
+        repository_id: &str,
+        schedule: RepositorySchedule,
+    ) -> Result<(), RepositoryJobError> {
+        validate_repository_id(repository_id)?;
+        let _write = self.write_lock.lock().unwrap();
+        let mut status = load_repository_sync_status(&self.app_data, repository_id)?
+            .ok_or(RepositoryJobError::StatusUnavailable)?;
+        status.schedule = schedule;
+        self.persist_then_emit(status)
+    }
+
+    pub(crate) fn reserve_dns_retry(
+        &self,
+        repository_id: &str,
+        now: OffsetDateTime,
+        throttle: std::time::Duration,
+    ) -> Result<bool, RepositoryJobError> {
+        validate_repository_id(repository_id)?;
+        let _write = self.write_lock.lock().unwrap();
+        let mut status = load_repository_sync_status(&self.app_data, repository_id)?
+            .ok_or(RepositoryJobError::StatusUnavailable)?;
+        if status
+            .schedule
+            .last_dns_retry_at
+            .is_some_and(|last| now - last < throttle)
+        {
+            return Ok(false);
+        }
+        status.schedule.last_dns_retry_at = Some(now);
+        self.persist_then_emit(status)?;
+        Ok(true)
+    }
+
+    fn persist_then_emit(&self, status: RepositorySyncStatus) -> Result<(), RepositoryJobError> {
+        validate_status(&status)?;
         let mut bytes = serde_json::to_vec_pretty(&status)
             .map_err(|_| RepositoryJobError::StatusUnavailable)?;
         bytes.push(b'\n');
@@ -409,6 +472,7 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
+    use std::time::Duration;
 
     use tempfile::tempdir;
 
@@ -573,5 +637,80 @@ mod tests {
 
         assert_eq!(error, RepositoryJobError::StatusUnavailable);
         assert!(!outside.path().join("state.json").exists());
+    }
+
+    #[tokio::test]
+    async fn schedule_fields_are_persisted_before_emit_and_survive_sync_status_updates() {
+        let app_data = tempdir().unwrap();
+        let repository_id = "00000000-0000-4000-8000-000000000016";
+        let emitter = Arc::new(InspectingEmitter::new(app_data.path().to_path_buf()));
+        let store = RepositoryStatusStore::new(app_data.path(), Arc::clone(&emitter));
+        store.publish(attempting(repository_id)).await.unwrap();
+        let now = time::OffsetDateTime::from_unix_timestamp(1_800_000_000).unwrap();
+        let schedule = super::RepositorySchedule {
+            same_count: 4,
+            automatic_failure_count: 7,
+            last_dns_retry_at: Some(now),
+            next_scheduled_at: Some(now + Duration::from_secs(300)),
+        };
+
+        store
+            .save_schedule(repository_id, schedule.clone())
+            .unwrap();
+        let mut succeeded = attempting(repository_id);
+        succeeded.phase = RepositorySyncPhase::Succeeded;
+        succeeded.last_successful_sync_at = Some("2026-07-25T08:00:01Z".to_owned());
+        store.publish(succeeded).await.unwrap();
+
+        let persisted = load_repository_sync_status(app_data.path(), repository_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(persisted.schedule, schedule);
+        let json = std::fs::read_to_string(
+            app_data
+                .path()
+                .join(format!("sync/repositories/{repository_id}/state.json")),
+        )
+        .unwrap();
+        for field in [
+            "\"sameCount\"",
+            "\"automaticFailureCount\"",
+            "\"lastDnsRetryAt\"",
+            "\"nextScheduledAt\"",
+        ] {
+            assert!(
+                json.contains(field),
+                "missing persisted schedule field {field}"
+            );
+        }
+        assert!(!json.contains("notesRoot"));
+    }
+
+    #[tokio::test]
+    async fn dns_retry_timestamp_reservation_is_atomic_and_allows_the_five_minute_boundary() {
+        let app_data = tempdir().unwrap();
+        let repository_id = "00000000-0000-4000-8000-000000000017";
+        let emitter = Arc::new(InspectingEmitter::new(app_data.path().to_path_buf()));
+        let store = RepositoryStatusStore::new(app_data.path(), Arc::clone(&emitter));
+        store.publish(attempting(repository_id)).await.unwrap();
+        let now = time::OffsetDateTime::from_unix_timestamp(1_800_000_000).unwrap();
+        let throttle = Duration::from_secs(300);
+
+        assert!(store
+            .reserve_dns_retry(repository_id, now, throttle)
+            .unwrap());
+        assert!(!store
+            .reserve_dns_retry(repository_id, now + Duration::from_secs(299), throttle)
+            .unwrap());
+        assert!(store
+            .reserve_dns_retry(repository_id, now + Duration::from_secs(300), throttle)
+            .unwrap());
+        assert_eq!(
+            store
+                .load_schedule(repository_id)
+                .unwrap()
+                .last_dns_retry_at,
+            Some(now + Duration::from_secs(300))
+        );
     }
 }

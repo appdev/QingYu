@@ -4,8 +4,9 @@ use std::sync::{Arc, Mutex};
 
 use notify::event::{CreateKind, RemoveKind};
 use notify::{Event, EventKind};
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 
+use crate::dejavu_sync::commands::DejavuSchedulerOwner;
 use crate::markdown_files::MarkdownIgnoreRules;
 use crate::protected_paths::path_contains_qingyu_control_directory;
 
@@ -19,6 +20,7 @@ const MARKDOWN_TREE_CHANGED_EVENT: &str = "markra://tree-changed";
 struct ActiveMarkdownWatcher {
     ignore_rules: Arc<Mutex<MarkdownIgnoreRules>>,
     subscriber_count: usize,
+    watch_root: PathBuf,
     watcher: DirectoryWatcher,
 }
 
@@ -171,6 +173,7 @@ fn has_active_watcher_subscription(
 fn remember_active_watcher(
     watcher_state: &Mutex<HashMap<PathBuf, ActiveMarkdownWatcher>>,
     path: PathBuf,
+    watch_root: PathBuf,
     watcher: DirectoryWatcher,
     ignore_rules: Arc<Mutex<MarkdownIgnoreRules>>,
 ) -> Result<(), String> {
@@ -200,6 +203,7 @@ fn remember_active_watcher(
         ActiveMarkdownWatcher {
             ignore_rules,
             subscriber_count: 1,
+            watch_root,
             watcher,
         },
     );
@@ -210,19 +214,18 @@ fn remember_active_watcher(
 fn release_active_watcher(
     watcher_state: &Mutex<HashMap<PathBuf, ActiveMarkdownWatcher>>,
     path: &Path,
-) -> Result<(), String> {
+) -> Result<Option<PathBuf>, String> {
     let mut active_watchers = watcher_state
         .lock()
         .map_err(|_| "markdown watcher state lock is poisoned".to_string())?;
 
     if let Some(watcher) = active_watchers.get_mut(path) {
         if !release_active_watcher_subscription(&mut watcher.subscriber_count) {
-            return Ok(());
+            return Ok(None);
         }
     }
 
-    remove_path_entry(&mut active_watchers, path);
-    Ok(())
+    Ok(remove_path_entry(&mut active_watchers, path).map(|watcher| watcher.watch_root))
 }
 
 #[tauri::command]
@@ -300,7 +303,13 @@ pub(crate) fn watch_markdown_file(
         },
     )?;
 
-    remember_active_watcher(&watcher_state.0, watched_path, watcher, ignore_rules)
+    remember_active_watcher(
+        &watcher_state.0,
+        watched_path,
+        watch_root,
+        watcher,
+        ignore_rules,
+    )
 }
 
 #[tauri::command]
@@ -309,13 +318,14 @@ pub(crate) fn unwatch_markdown_file(
     path: String,
 ) -> Result<(), String> {
     let watched_path = PathBuf::from(path);
-    release_active_watcher(&watcher_state.0, &watched_path)
+    release_active_watcher(&watcher_state.0, &watched_path).map(|_| ())
 }
 
 #[tauri::command]
 pub(crate) fn watch_markdown_tree(
     app: tauri::AppHandle,
     watcher_state: tauri::State<'_, MarkdownTreeWatcherState>,
+    scheduler_owner: tauri::State<'_, DejavuSchedulerOwner>,
     root_path: String,
     global_ignore_rules: Option<String>,
 ) -> Result<(), String> {
@@ -338,6 +348,9 @@ pub(crate) fn watch_markdown_tree(
         &watch_root,
         global_ignore_rules.as_deref(),
     )? {
+        // A new React subscription can arrive before the stale subscription's
+        // asynchronous unwatch. The newest subscription owns the active root.
+        scheduler_owner.activate_root(&watch_root);
         return Ok(());
     }
     let emitted_root = watch_root.to_string_lossy().to_string();
@@ -348,6 +361,7 @@ pub(crate) fn watch_markdown_tree(
     )));
     let callback_ignore_rules = Arc::clone(&ignore_rules);
 
+    let callback_app = app.clone();
     let watcher = DirectoryWatcher::new(
         &watch_root,
         Arc::clone(&ignore_rules),
@@ -363,7 +377,8 @@ pub(crate) fn watch_markdown_tree(
             if let Some(event_path) =
                 markdown_tree_event_path(&event, &callback_root, &ignore_rules)
             {
-                let _ = app.emit(
+                scheduler_owner_for(&callback_app).record_file_change(&callback_root, event_path);
+                let _ = callback_app.emit(
                     MARKDOWN_TREE_CHANGED_EVENT,
                     MarkdownTreeChanged {
                         path: event_path.to_string_lossy().to_string(),
@@ -374,16 +389,34 @@ pub(crate) fn watch_markdown_tree(
         },
     )?;
 
-    remember_active_watcher(&watcher_state.0, source_path, watcher, ignore_rules)
+    remember_active_watcher(
+        &watcher_state.0,
+        source_path,
+        watch_root.clone(),
+        watcher,
+        ignore_rules,
+    )?;
+    scheduler_owner.activate_root(&watch_root);
+    Ok(())
 }
 
 #[tauri::command]
 pub(crate) fn unwatch_markdown_tree(
     watcher_state: tauri::State<'_, MarkdownTreeWatcherState>,
+    scheduler_owner: tauri::State<'_, DejavuSchedulerOwner>,
     root_path: String,
 ) -> Result<(), String> {
     let watched_path = PathBuf::from(root_path);
-    release_active_watcher(&watcher_state.0, &watched_path)
+    if let Some(root) = release_active_watcher(&watcher_state.0, &watched_path)? {
+        scheduler_owner.deactivate_root(&root);
+    }
+    Ok(())
+}
+
+fn scheduler_owner_for<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> tauri::State<'_, DejavuSchedulerOwner> {
+    app.state::<DejavuSchedulerOwner>()
 }
 
 #[cfg(test)]

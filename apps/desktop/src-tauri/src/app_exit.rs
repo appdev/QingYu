@@ -1,3 +1,4 @@
+use crate::dejavu_sync::commands::DejavuSchedulerOwner;
 use crate::windows::is_settings_window_label;
 use tauri::{Emitter, Manager, Runtime};
 
@@ -50,6 +51,9 @@ pub(crate) fn handle_app_exit_requested<R: Runtime>(
         .filter(|window| is_app_exit_user_window(window))
         .count();
     if !should_intercept_app_exit(code, user_window_count) {
+        if let Some(owner) = app.try_state::<DejavuSchedulerOwner>() {
+            owner.trigger_exit();
+        }
         return;
     }
 
@@ -73,6 +77,13 @@ mod tests {
     fn allows_programmatic_or_windowless_exit() {
         assert!(!should_intercept_app_exit(Some(0), 1));
         assert!(!should_intercept_app_exit(None, 0));
+    }
+
+    #[test]
+    fn only_an_actual_non_intercepted_exit_reaches_native_scheduler_triggering() {
+        assert!(!should_intercept_app_exit(Some(0), 1));
+        assert!(!should_intercept_app_exit(None, 0));
+        assert!(should_intercept_app_exit(None, 1));
     }
 
     #[test]

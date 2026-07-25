@@ -4,7 +4,7 @@ use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use serde::Serialize;
 use tokio::sync::{Mutex as AsyncMutex, OwnedRwLockReadGuard, RwLock};
@@ -35,8 +35,15 @@ pub(crate) struct AcceptedSyncJob {
 
 #[derive(Clone, Default)]
 pub(crate) struct RepositorySyncResult {
+    pub(crate) data_changed: bool,
     pub(crate) transfer: RepositoryTransferSummary,
     pub(crate) conflicts: Vec<RepositoryConflictRecord>,
+}
+
+#[derive(Clone)]
+pub(crate) struct RepositoryJobCompletion {
+    pub(crate) request: SyncJobRequest,
+    pub(crate) result: Result<RepositorySyncResult, RepositoryJobError>,
 }
 
 #[derive(Clone)]
@@ -78,6 +85,7 @@ pub(crate) enum RepositoryJobError {
     ConfigUnavailable,
     RepositoryUnavailable,
     CloudUnavailable,
+    DnsUnavailable,
 }
 
 impl RepositoryJobError {
@@ -90,6 +98,7 @@ impl RepositoryJobError {
             Self::ConfigUnavailable => "dejavu-config-unavailable",
             Self::RepositoryUnavailable => "dejavu-repository-unavailable",
             Self::CloudUnavailable => "dejavu-cloud-unavailable",
+            Self::DnsUnavailable => "dejavu-dns-unavailable",
         }
     }
 }
@@ -118,6 +127,15 @@ pub(crate) trait RepositoryStatusSink: Send + Sync {
     ) -> BoxFuture<'a, Result<(), RepositoryJobError>>;
 }
 
+pub(crate) trait RepositoryJobLifecycle: Send + Sync {
+    fn prepare_dns_retry(&self, request: &SyncJobRequest) -> Result<bool, RepositoryJobError>;
+
+    fn record_completion(
+        &self,
+        completion: RepositoryJobCompletion,
+    ) -> Result<(), RepositoryJobError>;
+}
+
 #[derive(Clone)]
 pub(crate) struct DejavuSyncService {
     inner: Arc<DejavuSyncServiceInner>,
@@ -129,6 +147,7 @@ struct DejavuSyncServiceInner {
     repository_locks: Mutex<HashMap<String, Arc<AsyncMutex<()>>>>,
     global_gate: Arc<RwLock<()>>,
     jobs: Mutex<JobRegistry>,
+    lifecycle: OnceLock<Arc<dyn RepositoryJobLifecycle>>,
 }
 
 #[derive(Default)]
@@ -154,8 +173,24 @@ impl DejavuSyncService {
                 repository_locks: Mutex::new(HashMap::new()),
                 global_gate: Arc::new(RwLock::new(())),
                 jobs: Mutex::new(JobRegistry::default()),
+                lifecycle: OnceLock::new(),
             }),
         }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn install_lifecycle<Lifecycle>(
+        &self,
+        lifecycle: Arc<Lifecycle>,
+    ) -> Result<(), RepositoryJobError>
+    where
+        Lifecycle: RepositoryJobLifecycle + 'static,
+    {
+        let lifecycle: Arc<dyn RepositoryJobLifecycle> = lifecycle;
+        self.inner
+            .lifecycle
+            .set(lifecycle)
+            .map_err(|_| RepositoryJobError::RepositoryUnavailable)
     }
 
     pub(crate) async fn enqueue(
@@ -250,6 +285,7 @@ impl DejavuSyncService {
         let _repository_guard = repository_lock.lock().await;
         let mut result = Err(RepositoryJobError::Cancelled);
         let mut final_attempt = 1;
+        let mut dns_retry_performed = false;
         for attempt in 1..=MAX_WORKING_TREE_ATTEMPTS {
             final_attempt = attempt;
             if cancellation.is_cancelled() {
@@ -280,6 +316,27 @@ impl DejavuSyncService {
                     cancellation: cancellation.clone(),
                 })
                 .await;
+            if matches!(result, Err(RepositoryJobError::DnsUnavailable))
+                && !dns_retry_performed
+                && !cancellation.is_cancelled()
+                && self
+                    .inner
+                    .lifecycle
+                    .get()
+                    .is_some_and(|lifecycle| lifecycle.prepare_dns_retry(&request).unwrap_or(false))
+            {
+                dns_retry_performed = true;
+                result = self
+                    .inner
+                    .runner
+                    .run_attempt(SyncAttemptContext {
+                        request: request.clone(),
+                        job_id: job_id.clone(),
+                        attempt,
+                        cancellation: cancellation.clone(),
+                    })
+                    .await;
+            }
             if !matches!(result, Err(RepositoryJobError::WorkingTreeChanged)) {
                 break;
             }
@@ -288,6 +345,7 @@ impl DejavuSyncService {
             && matches!(result, Err(RepositoryJobError::WorkingTreeChanged))
             && !cancellation.is_cancelled();
         let completed_at = sync_status_timestamp();
+        let completion_result = result.clone();
         let final_status = match result {
             Ok(result) => RepositorySyncStatus::succeeded(
                 &request,
@@ -305,6 +363,12 @@ impl DejavuSyncService {
             ),
         };
         let _status_result = self.inner.status_sink.publish(final_status).await;
+        if let Some(lifecycle) = self.inner.lifecycle.get() {
+            let _schedule_result = lifecycle.record_completion(RepositoryJobCompletion {
+                request: request.clone(),
+                result: completion_result,
+            });
+        }
         self.inner
             .jobs
             .lock()
@@ -394,6 +458,7 @@ impl DejavuSyncService {
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+    use std::collections::VecDeque;
     use std::future::Future;
     use std::path::PathBuf;
     use std::pin::Pin;
@@ -404,8 +469,9 @@ mod tests {
     use tokio::sync::{mpsc, oneshot, Notify, Semaphore};
 
     use super::{
-        AcceptedSyncJob, DejavuSyncService, RepositoryJobError, RepositoryJobRunner,
-        RepositoryStatusSink, RepositorySyncResult, SyncAttemptContext, SyncJobRequest,
+        AcceptedSyncJob, DejavuSyncService, RepositoryJobCompletion, RepositoryJobError,
+        RepositoryJobLifecycle, RepositoryJobRunner, RepositoryStatusSink, RepositorySyncResult,
+        SyncAttemptContext, SyncJobRequest,
     };
     use crate::dejavu_sync::status::{RepositorySyncPhase, RepositorySyncStatus};
     use crate::sync_config::status::SyncTrigger;
@@ -644,6 +710,90 @@ mod tests {
         primary_attempts: AtomicUsize,
         primary_changed: Notify,
         other_started: mpsc::UnboundedSender<String>,
+    }
+
+    struct SequenceRunner {
+        results: Mutex<VecDeque<Result<RepositorySyncResult, RepositoryJobError>>>,
+        attempts: AtomicUsize,
+    }
+
+    impl SequenceRunner {
+        fn new(
+            results: impl IntoIterator<Item = Result<RepositorySyncResult, RepositoryJobError>>,
+        ) -> Self {
+            Self {
+                results: Mutex::new(results.into_iter().collect()),
+                attempts: AtomicUsize::new(0),
+            }
+        }
+    }
+
+    impl RepositoryJobRunner for SequenceRunner {
+        fn validate(&self, request: SyncJobRequest) -> Result<SyncJobRequest, RepositoryJobError> {
+            Ok(request)
+        }
+
+        fn run_attempt<'a>(
+            &'a self,
+            _context: SyncAttemptContext,
+        ) -> BoxFuture<'a, Result<RepositorySyncResult, RepositoryJobError>> {
+            Box::pin(async move {
+                self.attempts.fetch_add(1, Ordering::SeqCst);
+                self.results
+                    .lock()
+                    .unwrap()
+                    .pop_front()
+                    .expect("fixture result for every complete attempt")
+            })
+        }
+    }
+
+    struct RecordingLifecycle {
+        allow_dns_retry: bool,
+        dns_prepares: AtomicUsize,
+        completions: Mutex<Vec<RepositoryJobCompletion>>,
+        changed: Notify,
+    }
+
+    impl RecordingLifecycle {
+        fn new(allow_dns_retry: bool) -> Self {
+            Self {
+                allow_dns_retry,
+                dns_prepares: AtomicUsize::new(0),
+                completions: Mutex::new(Vec::new()),
+                changed: Notify::new(),
+            }
+        }
+
+        async fn wait_for_completion(&self) {
+            tokio::time::timeout(Duration::from_secs(2), async {
+                loop {
+                    let listening = self.changed.notified();
+                    if !self.completions.lock().unwrap().is_empty() {
+                        return;
+                    }
+                    listening.await;
+                }
+            })
+            .await
+            .expect("job lifecycle completion should arrive");
+        }
+    }
+
+    impl RepositoryJobLifecycle for RecordingLifecycle {
+        fn prepare_dns_retry(&self, _request: &SyncJobRequest) -> Result<bool, RepositoryJobError> {
+            self.dns_prepares.fetch_add(1, Ordering::SeqCst);
+            Ok(self.allow_dns_retry)
+        }
+
+        fn record_completion(
+            &self,
+            completion: RepositoryJobCompletion,
+        ) -> Result<(), RepositoryJobError> {
+            self.completions.lock().unwrap().push(completion);
+            self.changed.notify_waiters();
+            Ok(())
+        }
     }
 
     impl FollowUpDetectingRunner {
@@ -1001,5 +1151,79 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn typed_dns_failure_retries_one_complete_attempt_then_reports_success() {
+        let runner = Arc::new(SequenceRunner::new([
+            Err(RepositoryJobError::DnsUnavailable),
+            Ok(RepositorySyncResult {
+                data_changed: true,
+                ..RepositorySyncResult::default()
+            }),
+        ]));
+        let sink = Arc::new(MemoryStatusSink::default());
+        let lifecycle = Arc::new(RecordingLifecycle::new(true));
+        let service = DejavuSyncService::new(Arc::clone(&runner), Arc::clone(&sink));
+        service.install_lifecycle(Arc::clone(&lifecycle)).unwrap();
+
+        service
+            .enqueue(request("00000000-0000-4000-8000-000000000013"))
+            .await
+            .unwrap();
+        lifecycle.wait_for_completion().await;
+
+        assert_eq!(runner.attempts.load(Ordering::SeqCst), 2);
+        assert_eq!(lifecycle.dns_prepares.load(Ordering::SeqCst), 1);
+        let completions = lifecycle.completions.lock().unwrap();
+        assert!(completions[0]
+            .result
+            .as_ref()
+            .is_ok_and(|result| result.data_changed));
+    }
+
+    #[tokio::test]
+    async fn dns_retry_is_separately_bounded_to_one_complete_retry() {
+        let runner = Arc::new(SequenceRunner::new([
+            Err(RepositoryJobError::DnsUnavailable),
+            Err(RepositoryJobError::DnsUnavailable),
+        ]));
+        let sink = Arc::new(MemoryStatusSink::default());
+        let lifecycle = Arc::new(RecordingLifecycle::new(true));
+        let service = DejavuSyncService::new(Arc::clone(&runner), Arc::clone(&sink));
+        service.install_lifecycle(Arc::clone(&lifecycle)).unwrap();
+
+        service
+            .enqueue(request("00000000-0000-4000-8000-000000000014"))
+            .await
+            .unwrap();
+        lifecycle.wait_for_completion().await;
+
+        assert_eq!(runner.attempts.load(Ordering::SeqCst), 2);
+        assert_eq!(lifecycle.dns_prepares.load(Ordering::SeqCst), 1);
+        assert!(matches!(
+            lifecycle.completions.lock().unwrap()[0].result,
+            Err(RepositoryJobError::DnsUnavailable)
+        ));
+    }
+
+    #[tokio::test]
+    async fn throttled_dns_failure_does_not_run_a_second_complete_attempt() {
+        let runner = Arc::new(SequenceRunner::new([Err(
+            RepositoryJobError::DnsUnavailable,
+        )]));
+        let sink = Arc::new(MemoryStatusSink::default());
+        let lifecycle = Arc::new(RecordingLifecycle::new(false));
+        let service = DejavuSyncService::new(Arc::clone(&runner), Arc::clone(&sink));
+        service.install_lifecycle(Arc::clone(&lifecycle)).unwrap();
+
+        service
+            .enqueue(request("00000000-0000-4000-8000-000000000015"))
+            .await
+            .unwrap();
+        lifecycle.wait_for_completion().await;
+
+        assert_eq!(runner.attempts.load(Ordering::SeqCst), 1);
+        assert_eq!(lifecycle.dns_prepares.load(Ordering::SeqCst), 1);
     }
 }

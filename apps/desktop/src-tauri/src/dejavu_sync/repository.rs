@@ -242,6 +242,7 @@ impl DejavuRepositoryRunner {
             return Err(RepositoryJobError::Cancelled);
         }
         let occurred_at = timestamp(merge.time);
+        let data_changed = merge.data_changed();
         let conflicts = merge
             .conflicts
             .into_iter()
@@ -260,6 +261,7 @@ impl DejavuRepositoryRunner {
             })
             .collect::<Result<Vec<_>, RepositoryJobError>>()?;
         Ok(RepositorySyncResult {
+            data_changed,
             transfer: RepositoryTransferSummary {
                 download_bytes: nonnegative_u64(traffic.download_bytes),
                 download_chunks: usize_u64(traffic.download_chunk_count),
@@ -547,6 +549,9 @@ fn config_tls_verification(verification: ConfigTlsVerification) -> &'static str 
 }
 
 fn map_repo_error(error: RepoError) -> RepositoryJobError {
+    if repo_error_is_dns(&error) {
+        return RepositoryJobError::DnsUnavailable;
+    }
     match error {
         RepoError::WorkingTreeChanged => RepositoryJobError::WorkingTreeChanged,
         RepoError::Cancelled => RepositoryJobError::Cancelled,
@@ -555,6 +560,16 @@ fn map_repo_error(error: RepoError) -> RepositoryJobError {
         }
         RepoError::OperationAndUnlockFailed { .. } => RepositoryJobError::CloudUnavailable,
         _ => RepositoryJobError::RepositoryUnavailable,
+    }
+}
+
+fn repo_error_is_dns(error: &RepoError) -> bool {
+    match error {
+        RepoError::Cloud(error) => error.is_dns(),
+        RepoError::OperationAndUnlockFailed { operation, unlock } => {
+            repo_error_is_dns(operation) || unlock.is_dns()
+        }
+        _ => false,
     }
 }
 
@@ -588,16 +603,43 @@ mod tests {
     use base64::engine::general_purpose::STANDARD;
     use base64::Engine;
     use qingyu_dejavu::{
-        Cloud, LocalCloud, WorkingTreeChange, WorkingTreeCoordinator, WorkingTreePermit,
+        Cloud, CloudError, LocalCloud, RepoError, WorkingTreeChange, WorkingTreeCoordinator,
+        WorkingTreePermit,
     };
     use tempfile::{tempdir, TempDir};
 
-    use super::{DejavuRepositoryRunner, RepositoryCloudFactory, RepositoryCloudParameters};
+    use super::{
+        map_repo_error, DejavuRepositoryRunner, RepositoryCloudFactory, RepositoryCloudParameters,
+    };
     use crate::dejavu_sync::service::{
         JobCancellationToken, RepositoryJobError, RepositoryJobRunner, SyncAttemptContext,
         SyncJobRequest,
     };
     use crate::sync_config::status::SyncTrigger;
+
+    #[test]
+    fn only_typed_cloud_dns_errors_reach_the_scheduler_dns_category() {
+        assert_eq!(
+            map_repo_error(RepoError::Cloud(CloudError::Dns)),
+            RepositoryJobError::DnsUnavailable
+        );
+        for error in [
+            RepoError::Cloud(CloudError::Unavailable),
+            RepoError::Cloud(CloudError::Auth),
+            RepoError::Cloud(CloudError::Forbidden),
+            RepoError::Cloud(CloudError::UnsafeKey),
+            RepoError::UnsafePath,
+        ] {
+            assert_ne!(map_repo_error(error), RepositoryJobError::DnsUnavailable);
+        }
+        assert_eq!(
+            map_repo_error(RepoError::OperationAndUnlockFailed {
+                operation: Box::new(RepoError::Cloud(CloudError::Dns)),
+                unlock: CloudError::Forbidden,
+            }),
+            RepositoryJobError::DnsUnavailable
+        );
+    }
 
     struct FakeCoordinator;
 

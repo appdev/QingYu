@@ -31,6 +31,8 @@ pub enum CloudError {
     RateLimited,
     #[error("cloud backend is unavailable")]
     Unavailable,
+    #[error("cloud hostname resolution failed")]
+    Dns,
     #[error("cloud quota was exceeded")]
     QuotaExceeded,
     #[error("cloud response exceeded the {limit}-byte limit")]
@@ -74,6 +76,7 @@ impl CloudError {
             Self::ClockSkew => "clock_skew",
             Self::RateLimited => "rate_limited",
             Self::Unavailable => "unavailable",
+            Self::Dns => "dns",
             Self::QuotaExceeded => "quota_exceeded",
             Self::ResponseTooLarge { .. } => "response_too_large",
             Self::LengthMismatch { .. } => "length_mismatch",
@@ -96,7 +99,7 @@ impl CloudError {
 
     pub fn is_retryable(&self) -> bool {
         match self {
-            Self::RateLimited | Self::Unavailable | Self::Locked | Self::Io(_) => true,
+            Self::RateLimited | Self::Unavailable | Self::Dns | Self::Locked | Self::Io(_) => true,
             Self::LockFailed { source } | Self::UnlockFailed { source } => source.is_retryable(),
             Self::S3Response { retryable, .. } => *retryable,
             Self::Backend { retryable, .. } => *retryable,
@@ -117,6 +120,14 @@ impl CloudError {
         Self::Backend {
             code,
             retryable: false,
+        }
+    }
+
+    pub fn is_dns(&self) -> bool {
+        match self {
+            Self::Dns => true,
+            Self::LockFailed { source } | Self::UnlockFailed { source } => source.is_dns(),
+            _ => false,
         }
     }
 
@@ -179,6 +190,7 @@ mod tests {
             (CloudError::ClockSkew, "clock_skew", false),
             (CloudError::RateLimited, "rate_limited", true),
             (CloudError::Unavailable, "unavailable", true),
+            (CloudError::Dns, "dns", true),
             (CloudError::QuotaExceeded, "quota_exceeded", false),
             (
                 CloudError::ResponseTooLarge { limit: 42 },

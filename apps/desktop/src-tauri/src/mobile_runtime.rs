@@ -1,4 +1,4 @@
-use crate::dejavu_sync::commands::DejavuSyncServiceOwner;
+use crate::dejavu_sync::commands::{DejavuSchedulerOwner, DejavuSyncServiceOwner};
 use crate::markdown_files::MarkdownTreeLoadState;
 use crate::mobile_back::MobileBackState;
 use crate::watcher::{MarkdownFileWatcherState, MarkdownTreeWatcherState};
@@ -10,6 +10,7 @@ pub(crate) fn run() {
         .manage(MarkdownTreeLoadState::default())
         .manage(MobileBackState::default())
         .manage(DejavuSyncServiceOwner::default())
+        .manage(DejavuSchedulerOwner::default())
         .manage(crate::themes::ThemeActivationState::default())
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
@@ -17,6 +18,11 @@ pub(crate) fn run() {
         .plugin(tauri_plugin_log::Builder::new().build())
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_opener::init())
+        .setup(|app| {
+            use tauri::Manager;
+            app.state::<DejavuSchedulerOwner>().trigger_startup();
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             crate::app_settings::get_mcp_policy,
             crate::app_settings::update_mcp_policy,
@@ -72,6 +78,10 @@ pub(crate) fn run() {
         .build(tauri::generate_context!())
         .expect("error while building QingYu mobile")
         .run(|app, event| {
+            if matches!(&event, tauri::RunEvent::ExitRequested { code: Some(_), .. }) {
+                use tauri::Manager;
+                app.state::<DejavuSchedulerOwner>().trigger_exit();
+            }
             if let tauri::RunEvent::ExitRequested {
                 code: None, api, ..
             } = event
