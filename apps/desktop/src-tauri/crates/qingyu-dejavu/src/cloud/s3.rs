@@ -718,6 +718,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use reqwest::header::AUTHORIZATION;
+    use tokio::net::{TcpListener, TcpStream};
 
     use super::*;
     use crate::cloud::S3AddressingStyle;
@@ -742,8 +743,99 @@ mod tests {
         }
     }
 
-    #[test]
-    fn request_construction_reads_a_fresh_clock_for_each_signature() {
+    #[derive(Debug)]
+    struct CapturedRequest {
+        target: String,
+        amz_date: String,
+        authorization: String,
+    }
+
+    async fn capture_request(stream: &mut TcpStream) -> CapturedRequest {
+        let mut bytes = Vec::new();
+        loop {
+            let mut chunk = [0_u8; 1024];
+            let read = stream.read(&mut chunk).await.expect("read request head");
+            assert_ne!(read, 0, "connection closed before request head completed");
+            bytes.extend_from_slice(&chunk[..read]);
+            assert!(
+                bytes.len() <= 64 * 1024,
+                "request head exceeded fixture limit"
+            );
+            if bytes.windows(4).any(|window| window == b"\r\n\r\n") {
+                break;
+            }
+        }
+
+        let head_end = bytes
+            .windows(4)
+            .position(|window| window == b"\r\n\r\n")
+            .expect("complete request head");
+        let head = std::str::from_utf8(&bytes[..head_end]).expect("UTF-8 request head");
+        let mut lines = head.split("\r\n");
+        let target = lines
+            .next()
+            .and_then(|line| line.split_whitespace().nth(1))
+            .expect("request target")
+            .to_owned();
+        let mut amz_date = None;
+        let mut authorization = None;
+        for line in lines {
+            let (name, value) = line.split_once(':').expect("valid request header");
+            if name.eq_ignore_ascii_case("x-amz-date") {
+                amz_date = Some(value.trim().to_owned());
+            } else if name.eq_ignore_ascii_case("authorization") {
+                authorization = Some(value.trim().to_owned());
+            }
+        }
+
+        CapturedRequest {
+            target,
+            amz_date: amz_date.expect("x-amz-date header"),
+            authorization: authorization.expect("authorization header"),
+        }
+    }
+
+    #[tokio::test]
+    async fn retry_loop_signs_each_attempt_with_a_fresh_clock() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind HTTP fixture");
+        let endpoint = format!(
+            "http://{}",
+            listener.local_addr().expect("HTTP fixture address")
+        );
+        let server = tokio::spawn(async move {
+            let mut captured = Vec::new();
+            for (status, reason, body) in [
+                (503, "Service Unavailable", &b""[..]),
+                (200, "OK", &b"ok"[..]),
+            ] {
+                let (mut stream, _) =
+                    tokio::time::timeout(Duration::from_secs(2), listener.accept())
+                        .await
+                        .expect("fixture timed out waiting for request")
+                        .expect("accept fixture request");
+                captured.push(capture_request(&mut stream).await);
+                let response = format!(
+                    "HTTP/1.1 {status} {reason}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                stream
+                    .write_all(response.as_bytes())
+                    .await
+                    .expect("write response head");
+                stream.write_all(body).await.expect("write response body");
+                stream.shutdown().await.expect("close fixture response");
+            }
+
+            if let Ok(Ok((_unexpected, _))) =
+                tokio::time::timeout(Duration::from_millis(150), listener.accept()).await
+            {
+                panic!("fixture received an unexpected third request");
+            }
+            captured
+        });
+
         let calls = Arc::new(AtomicUsize::new(0));
         let calls_for_clock = Arc::clone(&calls);
         let clock = Arc::new(move || {
@@ -752,36 +844,35 @@ mod tests {
                 .expect("fixed test timestamp")
         });
         let cloud = S3Cloud::new_with_clock(
-            connection(),
+            S3Connection::new(
+                &endpoint,
+                "us-east-1",
+                "qingyu-notes",
+                "test-key",
+                "test-secret",
+                S3AddressingStyle::Path,
+            )
+            .expect("valid fixture S3 connection"),
             options(),
             "qingyu/repositories/repo-a/repo",
             clock,
         )
         .expect("valid S3 cloud");
-        let url = cloud
-            .object_get_url("refs/latest")
-            .expect("valid Dejavu GET URL");
+        let result =
+            tokio::time::timeout(Duration::from_secs(3), cloud.get_bounded("refs/latest", 2))
+                .await
+                .expect("S3 GET timed out")
+                .expect("retrying S3 GET");
+        let captured = server.await.expect("HTTP fixture task");
 
-        let first = cloud
-            .signed_empty_request(Method::GET, url.clone())
-            .expect("first signed request")
-            .build()
-            .expect("build first request");
-        let second = cloud
-            .signed_empty_request(Method::GET, url)
-            .expect("second signed request")
-            .build()
-            .expect("build second request");
-
+        assert_eq!(result, b"ok");
         assert_eq!(calls.load(Ordering::SeqCst), 2);
-        assert_ne!(
-            first.headers()["x-amz-date"],
-            second.headers()["x-amz-date"]
-        );
-        assert_ne!(
-            first.headers()[AUTHORIZATION],
-            second.headers()[AUTHORIZATION]
-        );
+        assert_eq!(captured.len(), 2);
+        let expected_target = "/qingyu-notes/qingyu/repositories/repo-a/repo/refs/latest?response-cache-control=no-cache";
+        assert_eq!(captured[0].target, expected_target);
+        assert_eq!(captured[1].target, expected_target);
+        assert_ne!(captured[0].amz_date, captured[1].amz_date);
+        assert_ne!(captured[0].authorization, captured[1].authorization);
     }
 
     #[test]
