@@ -13,6 +13,7 @@ import * as mcp from "./tauri/mcp";
 import * as opener from "./tauri/opener";
 import * as settings from "./tauri/settings";
 import * as syncConfig from "./tauri/sync-config";
+import * as syncPathGuard from "./tauri/sync-path-guard";
 import * as shellCommand from "./tauri/shell-command";
 import * as themes from "./tauri/themes";
 import * as updater from "./tauri/updater";
@@ -184,6 +185,9 @@ export const desktopRuntime = {
     setEditing: syncConfig.setNativeSyncConfigEditing,
     sync: syncConfig.syncApplication,
     testConnection: syncConfig.testSyncConnection
+  },
+  syncPathGuard: {
+    acknowledge: syncPathGuard.acknowledgeNativePathGuard
   },
   shellCommand: {
     getShellCommandStatus: shellCommand.getNativeShellCommandStatus,

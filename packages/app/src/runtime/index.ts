@@ -160,6 +160,10 @@ export type AppEventsRuntime = {
   ) => Promise<RuntimeCleanup>;
 };
 
+export type AppSyncPathGuardRuntime = {
+  acknowledge: (input: { notesRoot: string; requestId: string }) => Promise<unknown>;
+};
+
 export type AppFormFactor = "desktop" | "mobile";
 
 export type AppPlatformRuntime = {
@@ -421,6 +425,7 @@ export type AppRuntime = {
   navigation: AppNavigationRuntime;
   platform: AppPlatformRuntime;
   syncConfig: AppSyncConfigRuntime;
+  syncPathGuard: AppSyncPathGuardRuntime;
   settings: AppSettingsRuntime;
   shellCommand: AppShellCommandRuntime;
   systemFonts: AppSystemFontsRuntime;
@@ -750,6 +755,9 @@ export function createDefaultAppRuntime(): AppRuntime {
       },
       sync: () => unsupportedFeature("syncApplication"),
       testConnection: () => unsupportedFeature("testSyncConnection")
+    },
+    syncPathGuard: {
+      acknowledge: () => unsupportedFeature("acknowledgePathGuard")
     },
     shellCommand: {
       getShellCommandStatus: async () => ({ commandPath: null, targetPath: null, status: "unavailable" }),

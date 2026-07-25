@@ -1,4 +1,5 @@
 use crate::dejavu_sync::commands::{DejavuSchedulerOwner, DejavuSyncServiceOwner};
+use crate::dejavu_sync::path_guard::PathGuardCoordinatorOwner;
 use crate::markdown_files::MarkdownTreeLoadState;
 use crate::mobile_back::MobileBackState;
 use crate::watcher::{MarkdownFileWatcherState, MarkdownTreeWatcherState};
@@ -11,6 +12,7 @@ pub(crate) fn run() {
         .manage(MobileBackState::default())
         .manage(DejavuSyncServiceOwner::default())
         .manage(DejavuSchedulerOwner::default())
+        .manage(PathGuardCoordinatorOwner::default())
         .manage(crate::themes::ThemeActivationState::default())
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
@@ -20,6 +22,8 @@ pub(crate) fn run() {
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             use tauri::Manager;
+            crate::dejavu_sync::install_production_graph(&app.handle())
+                .map_err(|error| std::io::Error::other(error.safe_code()))?;
             app.state::<DejavuSchedulerOwner>().trigger_startup();
             Ok(())
         })
@@ -31,6 +35,7 @@ pub(crate) fn run() {
             crate::app_settings::replace_portable_app_settings,
             crate::primary_workspace::read_primary_workspace_state,
             crate::primary_workspace::write_primary_workspace_state,
+            crate::dejavu_sync::path_guard::acknowledge_path_guard,
             crate::themes::list_themes,
             crate::themes::read_theme_css,
             crate::themes::activation::prepare_theme_activation,

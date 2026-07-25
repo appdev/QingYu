@@ -245,6 +245,7 @@ const messages: LocaleMessages = {
   "app.openContainingFolder": "Enthaltenden Ordner öffnen",
   "app.markdownTemplateSaved": "Vorlage gespeichert.",
   "app.markdownTemplateSaveFailed": "Vorlage konnte nicht gespeichert werden.",
+  "app.syncPathGuarded": "Diese Datei wird gerade synchronisiert.",
   "app.markdownFileCreateFailed": "Datei konnte nicht erstellt werden.",
   "app.markdownFolderCreateFailed": "Ordner konnte nicht erstellt werden.",
   "app.markdownFileRenameFailed": "Datei konnte nicht umbenannt werden.",

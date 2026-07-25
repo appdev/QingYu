@@ -76,6 +76,13 @@ pub(crate) trait RepositoryCloudFactory: Send + Sync {
     ) -> Result<Arc<dyn Cloud>, RepositoryJobError>;
 }
 
+pub(crate) trait WorkingTreeCoordinatorFactory: Send + Sync {
+    fn create(
+        &self,
+        context: &SyncAttemptContext,
+    ) -> Result<Arc<dyn WorkingTreeCoordinator>, RepositoryJobError>;
+}
+
 #[allow(dead_code)]
 struct S3RepositoryCloudFactory;
 
@@ -117,7 +124,7 @@ impl RepositoryCloudFactory for S3RepositoryCloudFactory {
 
 pub(crate) struct DejavuRepositoryRunner {
     app_data: PathBuf,
-    coordinator: Arc<dyn WorkingTreeCoordinator>,
+    coordinator_factory: Arc<dyn WorkingTreeCoordinatorFactory>,
     cloud_factory: Arc<dyn RepositoryCloudFactory>,
 }
 
@@ -125,23 +132,30 @@ impl DejavuRepositoryRunner {
     #[allow(dead_code)]
     pub(crate) fn new(
         app_data: impl AsRef<Path>,
-        coordinator: Arc<dyn WorkingTreeCoordinator>,
+        coordinator_factory: Arc<dyn WorkingTreeCoordinatorFactory>,
     ) -> Self {
-        Self::with_cloud_factory(app_data, coordinator, Arc::new(S3RepositoryCloudFactory))
+        Self {
+            app_data: app_data.as_ref().to_path_buf(),
+            coordinator_factory,
+            cloud_factory: Arc::new(S3RepositoryCloudFactory),
+        }
     }
 
-    pub(crate) fn with_cloud_factory<Factory>(
+    #[cfg(test)]
+    pub(crate) fn with_cloud_factory<Factory, CoordinatorFactory>(
         app_data: impl AsRef<Path>,
-        coordinator: Arc<dyn WorkingTreeCoordinator>,
+        coordinator_factory: Arc<CoordinatorFactory>,
         cloud_factory: Arc<Factory>,
     ) -> Self
     where
         Factory: RepositoryCloudFactory + 'static,
+        CoordinatorFactory: WorkingTreeCoordinatorFactory + 'static,
     {
         let cloud_factory: Arc<dyn RepositoryCloudFactory> = cloud_factory;
+        let coordinator_factory: Arc<dyn WorkingTreeCoordinatorFactory> = coordinator_factory;
         Self {
             app_data: app_data.as_ref().to_path_buf(),
-            coordinator,
+            coordinator_factory,
             cloud_factory,
         }
     }
@@ -173,7 +187,11 @@ impl DejavuRepositoryRunner {
         if context.cancellation.is_cancelled() {
             return Err(RepositoryJobError::Cancelled);
         }
-        let request = self.validate(context.request)?;
+        let request = self.validate(context.request.clone())?;
+        let coordinator = self.coordinator_factory.create(&SyncAttemptContext {
+            request: request.clone(),
+            ..context.clone()
+        })?;
         let local_state = LocalSyncStateService::new(&self.app_data)
             .load()
             .map_err(|_| RepositoryJobError::InvalidBinding)?
@@ -235,7 +253,7 @@ impl DejavuRepositoryRunner {
 
         // Repo::sync owns the attempt's indexing and lifecycle/operation guards.
         let (merge, traffic) = repo
-            .sync(cloud, Arc::clone(&self.coordinator))
+            .sync(cloud, coordinator)
             .await
             .map_err(map_repo_error)?;
         if context.cancellation.is_cancelled() {
@@ -608,6 +626,7 @@ mod tests {
 
     use super::{
         map_repo_error, DejavuRepositoryRunner, RepositoryCloudFactory, RepositoryCloudParameters,
+        WorkingTreeCoordinatorFactory,
     };
     use crate::dejavu_sync::service::{
         JobCancellationToken, RepositoryJobError, RepositoryJobRunner, SyncAttemptContext,
@@ -678,6 +697,17 @@ mod tests {
     }
 
     struct FakeCoordinator;
+
+    struct FakeCoordinatorFactory;
+
+    impl WorkingTreeCoordinatorFactory for FakeCoordinatorFactory {
+        fn create(
+            &self,
+            _context: &SyncAttemptContext,
+        ) -> Result<Arc<dyn WorkingTreeCoordinator>, RepositoryJobError> {
+            Ok(Arc::new(FakeCoordinator))
+        }
+    }
 
     impl WorkingTreeCoordinator for FakeCoordinator {
         fn prepare<'life0, 'life1, 'async_trait>(
@@ -845,7 +875,7 @@ mod tests {
         (
             DejavuRepositoryRunner::with_cloud_factory(
                 &fixture.app_data,
-                Arc::new(FakeCoordinator),
+                Arc::new(FakeCoordinatorFactory),
                 Arc::clone(&factory),
             ),
             factory,

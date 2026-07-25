@@ -737,6 +737,7 @@ const messages: LocaleMessages = {
   "app.windowDragRegion": "窗口拖拽区域",
   "app.fileActions": "文件操作",
   "app.notifications": "通知",
+  "app.syncPathGuarded": "正在同步此文件",
   "app.closeToast": "关闭通知",
   "app.updateAvailable": "轻语 {version} 可更新。",
   "app.updateInstallAndRestart": "安装并重启",

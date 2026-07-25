@@ -252,6 +252,7 @@ const messages: LocaleMessages = {
   "app.openContainingFolder": "所在フォルダーを開く",
   "app.markdownTemplateSaved": "テンプレートとして保存しました。",
   "app.markdownTemplateSaveFailed": "テンプレートを保存できませんでした。",
+  "app.syncPathGuarded": "このファイルは同期中です。",
   "app.markdownFileCreateFailed": "ファイルを作成できませんでした。",
   "app.markdownFolderCreateFailed": "フォルダーを作成できませんでした。",
   "app.markdownFileRenameFailed": "ファイル名を変更できませんでした。",

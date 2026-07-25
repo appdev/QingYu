@@ -14,6 +14,7 @@ import * as opener from "./tauri/opener";
 import * as settings from "./tauri/settings";
 import * as themes from "./tauri/themes/shared";
 import * as syncConfig from "./tauri/sync-config/shared";
+import * as syncPathGuard from "./tauri/sync-path-guard";
 import * as webResource from "./tauri/web-resource";
 
 const defaultRuntime = createDefaultAppRuntime();
@@ -118,6 +119,9 @@ export const mobileRuntime = {
     setEditing: syncConfig.setNativeSyncConfigEditing,
     sync: syncConfig.syncApplication,
     testConnection: syncConfig.testSyncConnection
+  },
+  syncPathGuard: {
+    acknowledge: syncPathGuard.acknowledgeNativePathGuard
   },
   window: {
     ...defaultRuntime.window,

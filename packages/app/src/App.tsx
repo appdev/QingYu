@@ -59,6 +59,7 @@ import { useCompactSyncSettings } from "./hooks/useCompactSyncSettings";
 import { useAppSyncCoordinator } from "./hooks/useAppSyncCoordinator";
 import { useNotebookSwitchCoordinator } from "./hooks/useNotebookSwitchCoordinator";
 import { useSyncConfig } from "./hooks/useSyncConfig";
+import { useSyncPathGuard } from "./hooks/useSyncPathGuard";
 import { useSelectionToolbarAnchorRefresh } from "./hooks/useSelectionToolbarAnchorRefresh";
 import { useSharedEditorHistory } from "./hooks/useSharedEditorHistory";
 import { useSideBySideTabs } from "./hooks/useSideBySideTabs";
@@ -112,6 +113,14 @@ import {
   type MarkdownTreeMoveDocumentUpdate
 } from "./lib/markdown-tree-move";
 import { replaceMovedPath, sameNativePath } from "./lib/path-move";
+import {
+  editorReadOnlyForPath,
+  editorReadOnlyForTarget,
+  syncExistingDocumentWriteBlockedByGuardedPath,
+  syncSaveBlockedByGuardedPath,
+  syncMutationIntersectsGuardedPaths
+} from "./lib/sync-path-events";
+import { SyncPathMutationRegistry } from "./lib/sync-path-mutations";
 import { nextViewMode, resolveViewModeChrome, type ViewMode } from "./lib/view-mode";
 import {
   resolveDesktopOsVersion,
@@ -228,6 +237,11 @@ const sideDocumentMainPanePercentMin = 35;
 const sideDocumentMainPanePercentMax = 70;
 const defaultSideDocumentMainPanePercent = 50;
 const quietStatusOverlayInset = 56;
+
+function nativeChildPath(parentPath: string, name: string) {
+  const separator = parentPath.includes("\\") && !parentPath.includes("/") ? "\\" : "/";
+  return `${parentPath.replace(/[\\/]+$/u, "")}${separator}${name}`;
+}
 
 function editorFileForNativeLocalFile(file: NativeLocalFile) {
   const editorFile = new File([], file.name, { type: "application/octet-stream" });
@@ -475,6 +489,7 @@ function WorkspaceApp() {
   const [editorMode, setEditorMode] = useState<EditorMode>("visual");
   const [activeEditorSurface, setActiveEditorSurface] = useState<EditorSurface>("visual");
   const [readOnlyMode, setReadOnlyMode] = useState(false);
+  const syncPathMutationRegistry = useMemo(() => new SyncPathMutationRegistry(), []);
   const [quickOpenOpen, setQuickOpenOpen] = useState(false);
   const [documentHistoryOpen, setDocumentHistoryOpen] = useState(false);
   const [documentHistoryRefreshKey, setDocumentHistoryRefreshKey] = useState(0);
@@ -667,16 +682,16 @@ function WorkspaceApp() {
   const syncConfig = useSyncConfig();
   const {
     files: fileTreeFiles,
-    createFile: createMarkdownTreeFile,
-    createFolder: createMarkdownTreeFolder,
+    createFile: createMarkdownTreeFileUnchecked,
+    createFolder: createMarkdownTreeFolderUnchecked,
     clearProjectRoot,
-    deleteFile: deleteMarkdownTreeFile,
+    deleteFile: deleteMarkdownTreeFileUnchecked,
     fileTreeAssetsVisible,
     fileTreeSort,
-    moveFile: moveMarkdownTreeFile,
+    moveFile: moveMarkdownTreeFileUnchecked,
     open: fileTreeOpen,
     openFolderPath,
-    renameFile: renameMarkdownTreeFile,
+    renameFile: renameMarkdownTreeFileUnchecked,
     recentFoldersOpen: recentMarkdownFoldersOpen,
     refresh: refreshMarkdownFileTree,
     resizing: fileTreeResizing,
@@ -829,10 +844,96 @@ function WorkspaceApp() {
     saveCurrentDocumentContent,
     saveCurrentDocument,
     saveDirtyMarkdownFiles,
+    saveDirtyMarkdownPaths,
     saveMarkdownTab,
     selectMarkdownTab,
     wordCount
   } = markdownDocument;
+  const { guardedPaths } = useSyncPathGuard({
+    enabled: primaryWindowOwner,
+    mutationRegistry: syncPathMutationRegistry,
+    notesRoot: primaryIntegrationRoot,
+    saveDirtyMarkdownPaths
+  });
+  const mainEditorReadOnly = editorReadOnlyForPath(readOnlyMode, document.path, guardedPaths);
+  const guardFileMutation = useCallback((mutation: {
+    destinationPath?: string | null;
+    sourcePath?: string | null;
+  }) => {
+    if (
+      !syncMutationIntersectsGuardedPaths(mutation, guardedPaths) &&
+      !syncPathMutationRegistry.isBlocked(mutation)
+    ) {
+      return false;
+    }
+    showAppToast({
+      message: translate("app.syncPathGuarded"),
+      status: "success",
+      surface: "notice"
+    });
+    return true;
+  }, [guardedPaths, syncPathMutationRegistry, translate]);
+  const createMarkdownTreeFile = useCallback((
+    fileName: string,
+    parentPath: string | null = null,
+    contents?: string
+  ) => {
+    const parent = parentPath ?? fileTreeSourcePath;
+    const mutation = { destinationPath: parent ? nativeChildPath(parent, fileName) : null };
+    if (parent && guardFileMutation(mutation)) {
+      return Promise.resolve(null);
+    }
+    const lease = parent ? syncPathMutationRegistry.acquire(mutation) : null;
+    if (parent && !lease) {
+      guardFileMutation(mutation);
+      return Promise.resolve(null);
+    }
+    return createMarkdownTreeFileUnchecked(fileName, parentPath, contents)
+      .finally(() => lease?.release());
+  }, [createMarkdownTreeFileUnchecked, fileTreeSourcePath, guardFileMutation, syncPathMutationRegistry]);
+  const createMarkdownTreeFolder = useCallback((
+    folderName: string,
+    parentPath: string | null = null
+  ) => {
+    const parent = parentPath ?? fileTreeSourcePath;
+    const mutation = { destinationPath: parent ? nativeChildPath(parent, folderName) : null };
+    if (parent && guardFileMutation(mutation)) {
+      return Promise.resolve(null);
+    }
+    const lease = parent ? syncPathMutationRegistry.acquire(mutation) : null;
+    if (parent && !lease) {
+      guardFileMutation(mutation);
+      return Promise.resolve(null);
+    }
+    return createMarkdownTreeFolderUnchecked(folderName, parentPath)
+      .finally(() => lease?.release());
+  }, [createMarkdownTreeFolderUnchecked, fileTreeSourcePath, guardFileMutation, syncPathMutationRegistry]);
+  const renameMarkdownTreeFile = useCallback((file: NativeMarkdownFolderFile, fileName: string) => {
+    const destinationPath = nativeChildPath(
+      file.path.replace(/[\\/][^\\/]+$/u, ""),
+      fileName
+    );
+    const mutation = { destinationPath, sourcePath: file.path };
+    if (guardFileMutation(mutation)) return Promise.resolve(null);
+    const lease = syncPathMutationRegistry.acquire(mutation);
+    if (!lease) {
+      guardFileMutation(mutation);
+      return Promise.resolve(null);
+    }
+    return renameMarkdownTreeFileUnchecked(file, fileName)
+      .finally(() => lease.release());
+  }, [guardFileMutation, renameMarkdownTreeFileUnchecked, syncPathMutationRegistry]);
+  const deleteMarkdownTreeFile = useCallback((file: NativeMarkdownFolderFile) => {
+    const mutation = { sourcePath: file.path };
+    if (guardFileMutation(mutation)) return Promise.resolve(false);
+    const lease = syncPathMutationRegistry.acquire(mutation);
+    if (!lease) {
+      guardFileMutation(mutation);
+      return Promise.resolve(false);
+    }
+    return deleteMarkdownTreeFileUnchecked(file)
+      .finally(() => lease.release());
+  }, [deleteMarkdownTreeFileUnchecked, guardFileMutation, syncPathMutationRegistry]);
   const [notebookRestoreConfigDocument, setNotebookRestoreConfigDocument] = useState<SyncConfigDocument | null>(null);
   const notebookSwitch = useNotebookSwitchCoordinator({
     appSync,
@@ -1548,7 +1649,7 @@ function WorkspaceApp() {
     enabled: appFeatures.nativeWindowChrome,
     ready: startupWindowReady
   });
-  const documentHistoryAvailable = hasOpenDocument && document.path !== null && !activeImageFile && !readOnlyMode;
+  const documentHistoryAvailable = hasOpenDocument && document.path !== null && !activeImageFile && !mainEditorReadOnly;
   const documentSearchAvailable = hasOpenDocument && !activeImageFile;
   const documentSearchSurface: EditorSurface =
     sourceSurfaceActive || largeMarkdownVisualBlocked ? "source" : "visual";
@@ -1711,6 +1812,18 @@ function WorkspaceApp() {
     restoreWorkspaceOnStartup: editorPreferences.preferences.restoreWorkspaceOnStartup,
     titlebarTabs
   });
+  const sideEditorReadOnly = editorReadOnlyForPath(
+    readOnlyMode,
+    sideDocumentTab?.path,
+    guardedPaths
+  );
+  const activeEditorReadOnly = editorReadOnlyForTarget(
+    documentOperationTarget,
+    document.path,
+    sideDocumentTab?.path,
+    readOnlyMode,
+    guardedPaths
+  );
   const applyRenamedTreeFile = useCallback((previousPath: string, renamedFile: NativeMarkdownFolderFile) => {
     replaceOpenDocumentFile(previousPath, renamedFile);
     persistSideDocumentGroupPathUpdate({
@@ -1754,16 +1867,37 @@ function WorkspaceApp() {
     file: NativeMarkdownFolderFile,
     targetParentPath: string | null
   ) => {
-    const result = await moveMarkdownTreeFileWithLinks(file, targetParentPath, {
-      dirtyContent: file.kind ? null : getDirtyMarkdownFileContent(file.path),
-      moveFile: moveMarkdownTreeFile,
-      readFile: readNativeMarkdownFile,
-      saveFile: saveNativeMarkdownFile
-    });
-    if (result) applyMovedTreeFile(file, result.file, result.document);
+    const parent = targetParentPath ?? fileTreeSourcePath;
+    const destinationPath = parent ? nativeChildPath(parent, file.name) : null;
+    const mutation = { destinationPath, sourcePath: file.path };
+    if (guardFileMutation(mutation)) return null;
+    const lease = syncPathMutationRegistry.acquire(mutation);
+    if (!lease) {
+      guardFileMutation(mutation);
+      return null;
+    }
 
-    return result?.file ?? null;
-  }, [applyMovedTreeFile, getDirtyMarkdownFileContent, moveMarkdownTreeFile]);
+    try {
+      const result = await moveMarkdownTreeFileWithLinks(file, targetParentPath, {
+        dirtyContent: file.kind ? null : getDirtyMarkdownFileContent(file.path),
+        moveFile: moveMarkdownTreeFileUnchecked,
+        readFile: readNativeMarkdownFile,
+        saveFile: saveNativeMarkdownFile
+      });
+      if (result) applyMovedTreeFile(file, result.file, result.document);
+
+      return result?.file ?? null;
+    } finally {
+      lease.release();
+    }
+  }, [
+    applyMovedTreeFile,
+    fileTreeSourcePath,
+    getDirtyMarkdownFileContent,
+    guardFileMutation,
+    moveMarkdownTreeFileUnchecked,
+    syncPathMutationRegistry
+  ]);
   const saveDocumentTabViewState = useCallback((tabId: string | null | undefined, patch: DocumentTabViewState) => {
     if (!tabId) return;
 
@@ -1854,7 +1988,7 @@ function WorkspaceApp() {
     setSelectionToolbarActiveActions([]);
     setSelectionToolbarHeadingLevel(null);
 
-    if (!activeSelection || readOnlyMode) {
+    if (!activeSelection || mainEditorReadOnly) {
       setSelectionToolbarAnchor(null);
       editor.clearSelection();
       return;
@@ -1876,7 +2010,7 @@ function WorkspaceApp() {
     getEditorSelectionAnchor,
     hasEditorTextSelection,
     holdSelection,
-    readOnlyMode,
+    mainEditorReadOnly,
     setSelectionToolbarAnchorIfChanged,
     syncSelectionToolbarFormattingState,
     updateSelectedWordCount
@@ -1892,7 +2026,7 @@ function WorkspaceApp() {
   }, [editor, readOnlyMode]);
   const selectionToolbarVisible =
     !sourceSurfaceActive &&
-    !readOnlyMode &&
+    !mainEditorReadOnly &&
     selectionToolbarAnchor !== null &&
     Boolean(activeTextSelection?.text.trim());
   const selectionToolbarLayoutSignature = useMemo(() => [
@@ -1923,7 +2057,7 @@ function WorkspaceApp() {
     visibleFileTreeOpen
   ]);
   const refreshSelectionToolbarAnchor = useCallback(() => {
-    if (sourceSurfaceActive || readOnlyMode || !activeTextSelection?.text.trim()) return;
+    if (sourceSurfaceActive || mainEditorReadOnly || !activeTextSelection?.text.trim()) return;
 
     const nextAnchor = getEditorSelectionAnchor() ?? selectionAnchorFromDomSelection(window.getSelection());
     if (!nextAnchor) return;
@@ -1933,7 +2067,7 @@ function WorkspaceApp() {
   }, [
     activeTextSelection,
     getEditorSelectionAnchor,
-    readOnlyMode,
+    mainEditorReadOnly,
     setSelectionToolbarAnchorIfChanged,
     sourceSurfaceActive,
     syncSelectionToolbarFormattingState
@@ -1957,7 +2091,7 @@ function WorkspaceApp() {
     origin: "clipboard" | "drop" | "import" | "remote" = "clipboard",
     targetDocumentPath: string | null = document.path
   ) => {
-    if (readOnlyMode) return null;
+    if (mainEditorReadOnly) return null;
 
     let result: Awaited<ReturnType<typeof saveLocalEditorImage>>;
     try {
@@ -2002,7 +2136,7 @@ function WorkspaceApp() {
   }, [
     document.path,
     editorPreferences.preferences,
-    readOnlyMode,
+    mainEditorReadOnly,
     refreshMarkdownFileTree,
     resolveAssetContextForDocument,
     translate
@@ -2012,7 +2146,7 @@ function WorkspaceApp() {
     image: RemoteClipboardImage,
     targetDocumentPath: string | null = document.path
   ) => {
-    if (readOnlyMode) return null;
+    if (mainEditorReadOnly) return null;
 
     const context = resolveAssetContextForDocument(targetDocumentPath);
     const saved = await persistRemoteEditorImage({
@@ -2031,14 +2165,14 @@ function WorkspaceApp() {
     }
 
     return saved;
-  }, [document.path, handleSaveClipboardImage, readOnlyMode, resolveAssetContextForDocument, translate]);
+  }, [document.path, handleSaveClipboardImage, mainEditorReadOnly, resolveAssetContextForDocument, translate]);
 
   const handleSaveClipboardAttachment = useCallback(async (
     attachment: File,
     targetDocumentPath: string | null | undefined = document.path,
     origin: "clipboard" | "drop" | "import" = "clipboard"
   ) => {
-    if (readOnlyMode) return null;
+    if (mainEditorReadOnly) return null;
 
     const context = resolveAssetContextForDocument(targetDocumentPath ?? null);
     const copyToStorage = resolveEditorAssetAction({
@@ -2077,7 +2211,7 @@ function WorkspaceApp() {
     return savedAttachment;
   }, [
     document.path,
-    readOnlyMode,
+    mainEditorReadOnly,
     refreshMarkdownFileTree,
     resolveAssetContextForDocument,
     translate
@@ -2478,7 +2612,7 @@ function WorkspaceApp() {
     fileName: string
   ) => {
     const renamedFile = await renameMarkdownTreeFile(file, fileName);
-    if (!renamedFile) throw new Error("File rename failed");
+    if (!renamedFile) return;
     applyRenamedTreeFile(file.path, renamedFile);
   }, [applyRenamedTreeFile, renameMarkdownTreeFile]);
   const handleMoveMarkdownTreeFile = useCallback(async (
@@ -2502,6 +2636,7 @@ function WorkspaceApp() {
     const uniqueDeleteTargets = deleteTargets.filter((target, index, targets) =>
       targets.findIndex((candidate) => sameNativePath(candidate.path, target.path)) === index
     );
+    if (uniqueDeleteTargets.some((target) => guardFileMutation({ sourcePath: target.path }))) return;
     const deletingMultipleFiles = uniqueDeleteTargets.length > 1;
     const fileIsFolder = file.kind === "folder";
     const deleteCount = String(uniqueDeleteTargets.length);
@@ -2523,7 +2658,7 @@ function WorkspaceApp() {
         // Leave the file visible when native deletion fails.
       }
     }
-  }, [deleteMarkdownTreeFile, detachDeletedDocumentFile, translate]);
+  }, [deleteMarkdownTreeFile, detachDeletedDocumentFile, guardFileMutation, translate]);
   const handleSaveMarkdownFileAsTemplate = useCallback(async (file: NativeMarkdownFolderFile) => {
     if (file.kind === "asset" || file.kind === "attachment" || file.kind === "folder") return;
 
@@ -2604,12 +2739,12 @@ function WorkspaceApp() {
       });
     }
 
-    const file = await fileTree.createFile(fileName, null);
+    const file = await createMarkdownTreeFile(fileName, null);
     if (!file) return false;
 
     await handleOpenTreeFile(file, { managed: compactMode.trueMobile });
     return true;
-  }, [compactMode.trueMobile, createBlankDocument, fileTree.createFile, fileTree.sourcePath, handleOpenTreeFile]);
+  }, [compactMode.trueMobile, createBlankDocument, createMarkdownTreeFile, fileTree.sourcePath, handleOpenTreeFile]);
   const handleQuickOpenOpen = useCallback(() => {
     hideGlobalSearch();
     hideDocumentSearch();
@@ -2851,11 +2986,28 @@ function WorkspaceApp() {
       historyId
     }]);
 
+    const mutation = { sourcePath: document.path };
+    if (
+      syncExistingDocumentWriteBlockedByGuardedPath(document.path, guardedPaths) ||
+      syncPathMutationRegistry.isBlocked(mutation)
+    ) {
+      guardFileMutation(mutation);
+      return;
+    }
+    const lease = document.path ? syncPathMutationRegistry.acquire(mutation) : null;
+    if (document.path && !lease) {
+      guardFileMutation(mutation);
+      return;
+    }
+
     const restored = restoreDocumentContent(contents);
     debug(() => ["[markra-history] app restore state result", {
       restored
     }]);
-    if (!restored) return;
+    if (!restored) {
+      lease?.release();
+      return;
+    }
 
     const editorReplaced = replaceEditorMarkdown(contents);
     debug(() => ["[markra-history] editor replace requested", {
@@ -2874,14 +3026,18 @@ function WorkspaceApp() {
         debug(() => ["[markra-history] save restored document failed", {
           error: error instanceof Error ? error.message : String(error)
         }]);
-      });
+      })
+      .finally(() => lease?.release());
   }, [
     document.dirty,
     document.path,
     document.revision,
+    guardedPaths,
+    guardFileMutation,
     replaceEditorMarkdown,
     restoreDocumentContent,
-    saveCurrentDocumentContent
+    saveCurrentDocumentContent,
+    syncPathMutationRegistry
   ]);
   useEffect(() => {
     if (documentHistoryAvailable) return;
@@ -2914,26 +3070,53 @@ function WorkspaceApp() {
         ? translate("app.files")
         : rawFileTreeRootName;
   const saveDocument = useCallback(async (saveAs = false) => {
-    if (focusedSideDocumentTabId) {
-      const savedFile = await saveMarkdownTab(focusedSideDocumentTabId, saveAs);
-      if (savedFile) persistSideDocumentGroupSavedTabPath(focusedSideDocumentTabId, savedFile.path);
-      if (savedFile) await appSync.notifyDocumentSaved(savedFile.path);
-      return savedFile;
+    const targetPath = focusedSideDocumentTabId ? sideDocumentTab?.path : document.path;
+    const mutation = { sourcePath: targetPath };
+    if (
+      !saveAs &&
+      (
+        syncSaveBlockedByGuardedPath(false, targetPath, guardedPaths) ||
+        syncPathMutationRegistry.isBlocked(mutation)
+      )
+    ) {
+      guardFileMutation(mutation);
+      return null;
+    }
+    const lease = !saveAs && targetPath ? syncPathMutationRegistry.acquire(mutation) : null;
+    if (!saveAs && targetPath && !lease) {
+      guardFileMutation(mutation);
+      return null;
     }
 
-    const savedFile = await saveCurrentDocument(saveAs);
-    if (savedFile && activeTabId) persistSideDocumentGroupSavedTabPath(activeTabId, savedFile.path);
-    if (savedFile) refreshOpenDocumentHistory(savedFile.path);
-    if (savedFile) await appSync.notifyDocumentSaved(savedFile.path);
-    return savedFile;
+    try {
+      if (focusedSideDocumentTabId) {
+        const savedFile = await saveMarkdownTab(focusedSideDocumentTabId, saveAs);
+        if (savedFile) persistSideDocumentGroupSavedTabPath(focusedSideDocumentTabId, savedFile.path);
+        if (savedFile) await appSync.notifyDocumentSaved(savedFile.path);
+        return savedFile;
+      }
+
+      const savedFile = await saveCurrentDocument(saveAs);
+      if (savedFile && activeTabId) persistSideDocumentGroupSavedTabPath(activeTabId, savedFile.path);
+      if (savedFile) refreshOpenDocumentHistory(savedFile.path);
+      if (savedFile) await appSync.notifyDocumentSaved(savedFile.path);
+      return savedFile;
+    } finally {
+      lease?.release();
+    }
   }, [
     activeTabId,
+    document.path,
     focusedSideDocumentTabId,
+    guardedPaths,
+    guardFileMutation,
     persistSideDocumentGroupSavedTabPath,
     refreshOpenDocumentHistory,
     appSync.notifyDocumentSaved,
     saveCurrentDocument,
-    saveMarkdownTab
+    saveMarkdownTab,
+    sideDocumentTab?.path,
+    syncPathMutationRegistry
   ]);
   const handleSaveDocument = useCallback(() => saveDocument(false), [saveDocument]);
   const saveDocumentAs = useCallback(() => saveDocument(true), [saveDocument]);
@@ -2983,7 +3166,7 @@ function WorkspaceApp() {
     if (isApplyingSourceToVisualSync()) return;
     if (syncingExternalDocumentHistoryRef.current) return;
     if (sourceMode) return;
-    if (readOnlyMode) return;
+    if (mainEditorReadOnly) return;
     if (
       splitMode &&
       activeEditorSurface === "source" &&
@@ -2998,12 +3181,12 @@ function WorkspaceApp() {
     activeEditorSurface,
     handleMarkdownChange,
     isApplyingSourceToVisualSync,
-    readOnlyMode,
+    mainEditorReadOnly,
     sourceMode,
     splitMode
   ]);
   const handleSourceMarkdownChange = useCallback((content: string, options?: { documentRevision?: number }) => {
-    if (readOnlyMode) return;
+    if (mainEditorReadOnly) return;
     if (
       content !== document.content &&
       (options?.documentRevision === undefined || options.documentRevision === document.revision)
@@ -3019,7 +3202,7 @@ function WorkspaceApp() {
     document.revision,
     handleMarkdownChange,
     markSourceEditForHistory,
-    readOnlyMode,
+    mainEditorReadOnly,
     splitMode
   ]);
   const syncSplitPaneScrollPosition = useCallback((sourceSurface: EditorSurface, sourceElement: HTMLElement) => {
@@ -3083,14 +3266,14 @@ function WorkspaceApp() {
     syncSplitPaneScroll("visual", event);
   }, [activeTabId, saveDocumentTabViewState, syncSplitPaneScroll]);
   const syncVisualMarkdownAfterEditorCommand = useCallback(() => {
-    if (readOnlyMode || !splitMode) return;
+    if (mainEditorReadOnly || !splitMode) return;
 
     handleVisualMarkdownChange(getEditorCurrentMarkdown(document.content), {
       documentRevision: document.revision
     });
-  }, [document.content, document.revision, getEditorCurrentMarkdown, handleVisualMarkdownChange, readOnlyMode, splitMode]);
+  }, [document.content, document.revision, getEditorCurrentMarkdown, handleVisualMarkdownChange, mainEditorReadOnly, splitMode]);
   const handleImportLocalImages = useCallback(async () => {
-    if (readOnlyMode || !hasOpenDocument || activeImageFile || sourceMode) return;
+    if (mainEditorReadOnly || !hasOpenDocument || activeImageFile || sourceMode) return;
 
     const images = await openNativeLocalImages({
       title: translate("menu.importLocalImages")
@@ -3116,13 +3299,13 @@ function WorkspaceApp() {
     hasOpenDocument,
     handleSaveEditorResources,
     insertEditorMarkdownImages,
-    readOnlyMode,
+    mainEditorReadOnly,
     sourceMode,
     syncVisualMarkdownAfterEditorCommand,
     translate
   ]);
   const handleImportLocalFiles = useCallback(async () => {
-    if (readOnlyMode || !hasOpenDocument || activeImageFile || sourceMode) return;
+    if (mainEditorReadOnly || !hasOpenDocument || activeImageFile || sourceMode) return;
 
     const files = await openNativeLocalFiles({
       title: translate("menu.importLocalFiles")
@@ -3149,13 +3332,13 @@ function WorkspaceApp() {
     hasOpenDocument,
     handleSaveEditorResources,
     insertEditorMarkdownLinks,
-    readOnlyMode,
+    mainEditorReadOnly,
     sourceMode,
     syncVisualMarkdownAfterEditorCommand,
     translate
   ]);
   const handleDroppedLocalImage = useCallback(async (target: Extract<NativeMarkdownDroppedTarget, { kind: "image" }>) => {
-    if (readOnlyMode || activeImageFile || !document.path) return;
+    if (mainEditorReadOnly || activeImageFile || !document.path) return;
 
     const payload = markdownImageDragPayloadForFile({
       name: target.name,
@@ -3180,14 +3363,14 @@ function WorkspaceApp() {
     document.path,
     insertEditorMarkdownImages,
     insertEditorMarkdownImagesAtPoint,
-    readOnlyMode,
+    mainEditorReadOnly,
     syncVisualMarkdownAfterEditorCommand
   ]);
   const handleInsertFileTreeImageAsset = useCallback((
     file: NativeMarkdownFolderFile,
     point: { left: number; top: number }
   ) => {
-    if (readOnlyMode || activeImageFile || !document.path || file.kind !== "asset") return;
+    if (mainEditorReadOnly || activeImageFile || !document.path || file.kind !== "asset") return;
 
     const payload = markdownImageDragPayloadForFile(file);
     const inserted = insertEditorMarkdownImagesAtPoint(
@@ -3202,7 +3385,7 @@ function WorkspaceApp() {
     activeImageFile,
     document.path,
     insertEditorMarkdownImagesAtPoint,
-    readOnlyMode,
+    mainEditorReadOnly,
     syncVisualMarkdownAfterEditorCommand
   ]);
   const handleNativeMarkdownDrop = useCallback(async (target: NativeMarkdownDroppedTarget) => {
@@ -3214,43 +3397,43 @@ function WorkspaceApp() {
     await handleDroppedMarkdownPath(target);
   }, [handleDroppedLocalImage, handleDroppedMarkdownPath]);
   const handleInsertMarkdownSnippet = useCallback((...args: Parameters<typeof insertEditorMarkdownSnippet>) => {
-    if (readOnlyMode) return;
+    if (activeEditorReadOnly) return;
 
     insertEditorMarkdownSnippet(...args);
     syncVisualMarkdownAfterEditorCommand();
-  }, [insertEditorMarkdownSnippet, readOnlyMode, syncVisualMarkdownAfterEditorCommand]);
+  }, [activeEditorReadOnly, insertEditorMarkdownSnippet, syncVisualMarkdownAfterEditorCommand]);
   const handleInsertMarkdownImage = useCallback(() => {
-    if (readOnlyMode) return;
+    if (activeEditorReadOnly) return;
 
     insertEditorMarkdownImage();
     syncVisualMarkdownAfterEditorCommand();
-  }, [insertEditorMarkdownImage, readOnlyMode, syncVisualMarkdownAfterEditorCommand]);
+  }, [activeEditorReadOnly, insertEditorMarkdownImage, syncVisualMarkdownAfterEditorCommand]);
   const handleInsertMarkdownLink = useCallback(() => {
     runEditorLinkCommand({
       insertMarkdownLink: insertEditorMarkdownLink,
-      readOnlyMode,
+      readOnlyMode: activeEditorReadOnly,
       syncSelectionToolbarFormattingState,
       syncVisualMarkdownAfterEditorCommand
     });
   }, [
     insertEditorMarkdownLink,
-    readOnlyMode,
+    activeEditorReadOnly,
     syncSelectionToolbarFormattingState,
     syncVisualMarkdownAfterEditorCommand
   ]);
   const handleInsertMarkdownTable = useCallback(() => {
-    if (readOnlyMode) return;
+    if (activeEditorReadOnly) return;
 
     insertEditorMarkdownTable();
     syncVisualMarkdownAfterEditorCommand();
-  }, [insertEditorMarkdownTable, readOnlyMode, syncVisualMarkdownAfterEditorCommand]);
+  }, [activeEditorReadOnly, insertEditorMarkdownTable, syncVisualMarkdownAfterEditorCommand]);
   const handleRunEditorShortcut = useCallback((...args: Parameters<typeof runEditorShortcut>) => {
-    if (readOnlyMode) return false;
+    if (activeEditorReadOnly) return false;
 
     const handled = runEditorShortcut(...args);
     syncVisualMarkdownAfterEditorCommand();
     return handled;
-  }, [readOnlyMode, runEditorShortcut, syncVisualMarkdownAfterEditorCommand]);
+  }, [activeEditorReadOnly, runEditorShortcut, syncVisualMarkdownAfterEditorCommand]);
   const handleCompactFormattingAction = useCallback((action: MarkdownFormattingShortcutAction) => {
     const normalizedShortcuts = normalizeMarkdownShortcuts(editorPreferences.preferences.markdownShortcuts);
     const shortcut = markdownShortcutToKeyboardEventInit(normalizedShortcuts[action]);
@@ -3263,14 +3446,14 @@ function WorkspaceApp() {
     });
   }, [editorPreferences.preferences.markdownShortcuts, handleRunEditorShortcut]);
   const handleToggleEditorTaskList = useCallback(() => {
-    if (readOnlyMode) return false;
+    if (activeEditorReadOnly) return false;
 
     const handled = toggleEditorTaskList();
     if (handled) syncVisualMarkdownAfterEditorCommand();
     return handled;
-  }, [readOnlyMode, syncVisualMarkdownAfterEditorCommand, toggleEditorTaskList]);
+  }, [activeEditorReadOnly, syncVisualMarkdownAfterEditorCommand, toggleEditorTaskList]);
   const handleSelectionToolbarFormattingAction = useCallback((action: SelectionFormattingToolbarAction) => {
-    if (readOnlyMode) return;
+    if (activeEditorReadOnly) return;
 
     if (action === "highlight") {
       if (!toggleEditorSelectionHighlight()) return;
@@ -3302,29 +3485,29 @@ function WorkspaceApp() {
     clearEditorSelectionFormatting,
     editorPreferences.preferences.markdownShortcuts,
     handleRunEditorShortcut,
-    readOnlyMode,
+    activeEditorReadOnly,
     syncSelectionToolbarFormattingState,
     syncVisualMarkdownAfterEditorCommand,
     toggleEditorSelectionHighlight
   ]);
   const handleSelectionToolbarHeadingLevelAction = useCallback((level: SelectionHeadingLevel) => {
-    if (readOnlyMode) return;
+    if (activeEditorReadOnly) return;
     if (!setEditorSelectionHeadingLevel(level)) return;
 
     syncVisualMarkdownAfterEditorCommand();
     syncSelectionToolbarFormattingState();
   }, [
-    readOnlyMode,
+    activeEditorReadOnly,
     setEditorSelectionHeadingLevel,
     syncSelectionToolbarFormattingState,
     syncVisualMarkdownAfterEditorCommand
   ]);
   const handleSelectionToolbarInsertLink = useCallback(() => {
-    if (readOnlyMode) return;
+    if (activeEditorReadOnly) return;
 
     setSelectionToolbarAnchor(null);
     handleInsertMarkdownLink();
-  }, [handleInsertMarkdownLink, readOnlyMode]);
+  }, [activeEditorReadOnly, handleInsertMarkdownLink]);
   const handleSelectionToolbarCopySelection = useCallback(() => {
     const selectedText = activeTextSelection?.text ?? "";
     if (!selectedText.trim() || !navigator.clipboard) return;
@@ -3365,7 +3548,7 @@ function WorkspaceApp() {
     navigateDocumentSearch(-1);
   }, [navigateDocumentSearch]);
   const handleDocumentReplace = useCallback(() => {
-    if (readOnlyMode || !activeDocumentSearchMatch) return;
+    if (mainEditorReadOnly || !activeDocumentSearchMatch) return;
 
     if (documentSearchSurface === "source") {
       handleSourceMarkdownChange(replaceTextRange(document.content, activeDocumentSearchMatch, documentSearchReplacement));
@@ -3380,10 +3563,10 @@ function WorkspaceApp() {
     documentSearchSurface,
     handleSourceMarkdownChange,
     replaceEditorSearchMatch,
-    readOnlyMode
+    mainEditorReadOnly
   ]);
   const handleDocumentReplaceAll = useCallback(() => {
-    if (readOnlyMode || documentSearchMatches.length === 0) return;
+    if (mainEditorReadOnly || documentSearchMatches.length === 0) return;
 
     if (documentSearchSurface === "source") {
       handleSourceMarkdownChange(replaceTextRanges(document.content, documentSearchMatches, documentSearchReplacement));
@@ -3400,7 +3583,7 @@ function WorkspaceApp() {
     documentSearchSurface,
     handleSourceMarkdownChange,
     replaceAllEditorSearchMatches,
-    readOnlyMode,
+    mainEditorReadOnly,
     resetDocumentSearchActiveIndex
   ]);
   useEffect(() => {
@@ -3846,10 +4029,10 @@ function WorkspaceApp() {
     handleOpenTitlebarTabToSide
   ]);
   const handleSideDocumentChange = useCallback((content: string) => {
-    if (!sideDocumentGroup || readOnlyMode) return;
+    if (!sideDocumentGroup || sideEditorReadOnly) return;
 
     handleMarkdownTabChange(sideDocumentGroup.sideTabId, content);
-  }, [handleMarkdownTabChange, readOnlyMode, sideDocumentGroup]);
+  }, [handleMarkdownTabChange, sideDocumentGroup, sideEditorReadOnly]);
 
   const handleCloseTitlebarTab = useCallback(async (tabId: string) => {
     captureActiveDocumentViewState();
@@ -4062,7 +4245,7 @@ function WorkspaceApp() {
               onSaveEditorResources={(request) => handleSaveEditorResources(request, tab.path)}
               openLocalAttachment={(src) => handleOpenLocalAttachment(src, tab.path)}
               openExternalUrl={handleOpenEditorLink}
-              readOnly={readOnlyMode}
+              readOnly={editorReadOnlyForPath(readOnlyMode, tab.path, guardedPaths)}
               onTextSelectionChange={tabActive ? handleTextSelectionChange : undefined}
               resolveImageSrc={createMarkdownImageSrcResolver(tab.path)}
               revision={tab.revision}
@@ -4114,15 +4297,15 @@ function WorkspaceApp() {
       importLocalImages: handleImportLocalImages,
       insertMarkdownImage: handleInsertMarkdownImage,
       insertMarkdownLink: handleInsertMarkdownLink,
-      readOnly: readOnlyMode,
+      readOnly: mainEditorReadOnly,
       runEditorShortcut: handleRunEditorShortcut,
       runFormattingAction: handleCompactFormattingAction,
       setSelectionHeadingLevel: handleSelectionToolbarHeadingLevelAction,
       toggleTaskList: handleToggleEditorTaskList
     },
     files: {
-      createFile: fileTree.createFile,
-      createFolder: fileTree.createFolder,
+      createFile: createMarkdownTreeFile,
+      createFolder: createMarkdownTreeFolder,
       deleteFile: handleDeleteMarkdownTreeFile,
       files: fileTree.files,
       moveFile: handleMoveMarkdownTreeFile,
@@ -4176,8 +4359,8 @@ function WorkspaceApp() {
     editorPreferences.preferences,
     handleCompactPreferencesChange,
     handleCreateCompactDocument,
-    fileTree.createFile,
-    fileTree.createFolder,
+    createMarkdownTreeFile,
+    createMarkdownTreeFolder,
     fileTree.files,
     handleOpenMarkdownFolder,
     fileTree.sourcePath,
@@ -4203,7 +4386,7 @@ function WorkspaceApp() {
     openMobileNotebookDialog,
     primaryIntegrationRoot,
     syncConfig.appliedDocument,
-    readOnlyMode,
+    mainEditorReadOnly,
     runApplicationSyncNow,
     saveCurrentDocument
   ]);
@@ -4214,7 +4397,7 @@ function WorkspaceApp() {
       language={appLanguage.language}
       matchCount={documentSearchMatchCount}
       query={documentSearchQuery}
-      readOnly={readOnlyMode}
+      readOnly={mainEditorReadOnly}
       replaceOpen={documentSearchReplaceOpen}
       replacement={documentSearchReplacement}
       onCaseSensitiveChange={handleDocumentSearchCaseSensitiveChange}
@@ -4522,7 +4705,7 @@ function WorkspaceApp() {
                           onContentWidthResizeEnd={editorWidthResizerVisible ? handleEditorContentWidthResizeEnd : undefined}
                           onScroll={handleSourcePaneScroll}
                           onSelectionTextChange={updateSelectedWordCount}
-                          readOnly={readOnlyMode}
+                          readOnly={mainEditorReadOnly}
                           searchActiveIndex={normalizedDocumentSearchActiveIndex}
                           searchMatches={visibleSourceDocumentSearchMatches}
                           showLineNumbers={editorPreferences.preferences.showLineNumbers}
@@ -4553,7 +4736,7 @@ function WorkspaceApp() {
                           onContentWidthResizeEnd={editorWidthResizerVisible ? handleEditorContentWidthResizeEnd : undefined}
                           onScroll={handleSourcePaneScroll}
                           onSelectionTextChange={updateSelectedWordCount}
-                          readOnly={readOnlyMode}
+                          readOnly={mainEditorReadOnly}
                           searchActiveIndex={normalizedDocumentSearchActiveIndex}
                           searchMatches={visibleSourceDocumentSearchMatches}
                           showLineNumbers={editorPreferences.preferences.showLineNumbers}
@@ -4567,7 +4750,7 @@ function WorkspaceApp() {
                     <QuietStatus
                       dirty={document.dirty}
                       language={appLanguage.language}
-                      readOnly={readOnlyMode}
+                      readOnly={mainEditorReadOnly}
                       selectedWordCount={selectedWordCount}
                       showWordCount={viewModeChrome.wordCount && editorPreferences.preferences.showWordCount}
                       syncLabel={syncStatusLabel}
@@ -4610,7 +4793,7 @@ function WorkspaceApp() {
                         onSaveEditorResources={(request) => handleSaveEditorResources(request, sideDocumentTab.path)}
                         openLocalAttachment={(src) => handleOpenLocalAttachment(src, sideDocumentTab.path)}
                         openExternalUrl={handleOpenEditorLink}
-                        readOnly={readOnlyMode}
+                        readOnly={sideEditorReadOnly}
                         resolveImageSrc={resolveSideDocumentImageSrc}
                         revision={sideDocumentTab.revision}
                         sizeBytes={sideDocumentTab.sizeBytes}
@@ -4619,7 +4802,7 @@ function WorkspaceApp() {
                           <QuietStatus
                             dirty={sideDocumentTab.dirty}
                             language={appLanguage.language}
-                            readOnly={readOnlyMode}
+                            readOnly={sideEditorReadOnly}
                             showWordCount={viewModeChrome.wordCount && editorPreferences.preferences.showWordCount}
                             wordCount={sideDocumentWordCount}
                           />

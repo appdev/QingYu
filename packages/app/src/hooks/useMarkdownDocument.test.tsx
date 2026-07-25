@@ -4325,6 +4325,212 @@ describe("useMarkdownDocument", () => {
     });
   });
 
+  it("flushes only exact requested dirty paths and leaves unrelated tabs dirty", async () => {
+    const firstPath = "/mock-files/vault/first.md";
+    const secondPath = "/mock-files/vault/second.md";
+    mockedReadNativeMarkdownFile.mockImplementation(async (path) => ({
+      content: `# ${path === firstPath ? "First" : "Second"}`,
+      name: path === firstPath ? "first.md" : "second.md",
+      path
+    }));
+    mockedSaveNativeMarkdownFile.mockImplementation(async ({ path }) => ({
+      name: path === firstPath ? "first.md" : "second.md",
+      path: path!
+    }));
+    const { result } = renderHook(() =>
+      useMarkdownDocument({
+        documentTabsEnabled: true,
+        getCurrentMarkdown: (fallbackContent) => fallbackContent,
+        onTreeRootFromFilePath: vi.fn(),
+        onTreeRootFromFolderPath: vi.fn(),
+        preferencesReady: false,
+        restoreWorkspaceOnStartup: false
+      })
+    );
+    await act(async () => {
+      await result.current.openTreeMarkdownFile({ name: "first.md", path: firstPath, relativePath: "first.md" });
+      await result.current.openTreeMarkdownFile({ name: "second.md", path: secondPath, relativePath: "second.md" });
+    });
+    const firstTab = result.current.tabs.find((tab) => tab.path === firstPath)!;
+    const secondTab = result.current.tabs.find((tab) => tab.path === secondPath)!;
+    act(() => {
+      result.current.handleMarkdownTabChange(firstTab.id, "# First\n\nDirty");
+      result.current.handleMarkdownTabChange(secondTab.id, "# Second\n\nDirty");
+    });
+    mockedSaveNativeMarkdownFile.mockClear();
+
+    let clean = false;
+    await act(async () => {
+      clean = await result.current.saveDirtyMarkdownPaths([firstPath]);
+    });
+
+    expect(clean).toBe(true);
+    expect(mockedSaveNativeMarkdownFile).toHaveBeenCalledTimes(1);
+    expect(mockedSaveNativeMarkdownFile).toHaveBeenCalledWith(expect.objectContaining({
+      contents: "# First\n\nDirty",
+      path: firstPath
+    }));
+    expect(result.current.tabs.find((tab) => tab.path === firstPath)?.dirty).toBe(false);
+    expect(result.current.tabs.find((tab) => tab.path === secondPath)?.dirty).toBe(true);
+  });
+
+  it("re-saves an edit made while an exact path flush is awaiting native I/O", async () => {
+    const path = "/mock-files/vault/guide.md";
+    let resolveFirst!: () => undefined;
+    const firstSave = new Promise<{ name: string; path: string }>((resolve) => {
+      resolveFirst = () => {
+        resolve({ name: "guide.md", path });
+        return undefined;
+      };
+    });
+    mockedReadNativeMarkdownFile.mockResolvedValue({ content: "# Guide", name: "guide.md", path });
+    mockedSaveNativeMarkdownFile
+      .mockReturnValueOnce(firstSave)
+      .mockResolvedValueOnce({ name: "guide.md", path });
+    const { result } = renderHook(() =>
+      useMarkdownDocument({
+        getCurrentMarkdown: (fallbackContent) => fallbackContent,
+        onTreeRootFromFilePath: vi.fn(),
+        onTreeRootFromFolderPath: vi.fn(),
+        preferencesReady: false,
+        restoreWorkspaceOnStartup: false
+      })
+    );
+    await act(async () => {
+      await result.current.openTreeMarkdownFile({ name: "guide.md", path, relativePath: "guide.md" });
+    });
+    act(() => result.current.handleMarkdownChange("# Guide\n\nFirst edit"));
+
+    let flush!: Promise<boolean>;
+    act(() => {
+      flush = result.current.saveDirtyMarkdownPaths([path]);
+    });
+    await waitFor(() => expect(mockedSaveNativeMarkdownFile).toHaveBeenCalledTimes(1));
+    act(() => result.current.handleMarkdownChange("# Guide\n\nSecond edit"));
+    await act(async () => {
+      resolveFirst();
+      await flush;
+    });
+
+    expect(mockedSaveNativeMarkdownFile).toHaveBeenCalledTimes(2);
+    expect(mockedSaveNativeMarkdownFile).toHaveBeenLastCalledWith(expect.objectContaining({
+      contents: "# Guide\n\nSecond edit",
+      path
+    }));
+    expect(result.current.document).toMatchObject({
+      content: "# Guide\n\nSecond edit",
+      dirty: false,
+      path
+    });
+  });
+
+  it("serializes an exact path flush behind an in-flight global dirty save", async () => {
+    const path = "/mock-files/vault/guide.md";
+    let resolveSave!: () => undefined;
+    const pendingSave = new Promise<{ name: string; path: string }>((resolve) => {
+      resolveSave = () => {
+        resolve({ name: "guide.md", path });
+        return undefined;
+      };
+    });
+    mockedReadNativeMarkdownFile.mockResolvedValue({ content: "# Guide", name: "guide.md", path });
+    mockedSaveNativeMarkdownFile.mockReturnValue(pendingSave);
+    const { result } = renderHook(() => useMarkdownDocument({
+      getCurrentMarkdown: (fallbackContent) => fallbackContent,
+      onTreeRootFromFilePath: vi.fn(),
+      onTreeRootFromFolderPath: vi.fn(),
+      preferencesReady: false,
+      restoreWorkspaceOnStartup: false
+    }));
+    await act(async () => {
+      await result.current.openTreeMarkdownFile({ name: "guide.md", path, relativePath: "guide.md" });
+    });
+    act(() => result.current.handleMarkdownChange("# Guide\n\nDirty"));
+    const globalSave = result.current.saveDirtyMarkdownFiles();
+    await waitFor(() => expect(mockedSaveNativeMarkdownFile).toHaveBeenCalledTimes(1));
+    const exactSave = result.current.saveDirtyMarkdownPaths([path]);
+    await Promise.resolve();
+    expect(mockedSaveNativeMarkdownFile).toHaveBeenCalledTimes(1);
+
+    let clean = false;
+    await act(async () => {
+      resolveSave();
+      await globalSave;
+      clean = await exactSave;
+    });
+    expect(clean).toBe(true);
+    expect(mockedSaveNativeMarkdownFile).toHaveBeenCalledTimes(1);
+  });
+
+  it("serializes overlapping exact path flushes", async () => {
+    const path = "/mock-files/vault/guide.md";
+    let resolveSave!: () => undefined;
+    const pendingSave = new Promise<{ name: string; path: string }>((resolve) => {
+      resolveSave = () => {
+        resolve({ name: "guide.md", path });
+        return undefined;
+      };
+    });
+    mockedReadNativeMarkdownFile.mockResolvedValue({ content: "# Guide", name: "guide.md", path });
+    mockedSaveNativeMarkdownFile.mockReturnValue(pendingSave);
+    const { result } = renderHook(() => useMarkdownDocument({
+      getCurrentMarkdown: (fallbackContent) => fallbackContent,
+      onTreeRootFromFilePath: vi.fn(),
+      onTreeRootFromFolderPath: vi.fn(),
+      preferencesReady: false,
+      restoreWorkspaceOnStartup: false
+    }));
+    await act(async () => {
+      await result.current.openTreeMarkdownFile({ name: "guide.md", path, relativePath: "guide.md" });
+    });
+    act(() => result.current.handleMarkdownChange("# Guide\n\nDirty"));
+    const first = result.current.saveDirtyMarkdownPaths([path]);
+    const second = result.current.saveDirtyMarkdownPaths([path]);
+    await waitFor(() => expect(mockedSaveNativeMarkdownFile).toHaveBeenCalledTimes(1));
+
+    await act(async () => {
+      resolveSave();
+      await Promise.all([first, second]);
+    });
+    expect(mockedSaveNativeMarkdownFile).toHaveBeenCalledTimes(1);
+  });
+
+  it("serializes a global dirty save behind an in-flight exact path flush", async () => {
+    const path = "/mock-files/vault/guide.md";
+    let resolveSave!: () => undefined;
+    const pendingSave = new Promise<{ name: string; path: string }>((resolve) => {
+      resolveSave = () => {
+        resolve({ name: "guide.md", path });
+        return undefined;
+      };
+    });
+    mockedReadNativeMarkdownFile.mockResolvedValue({ content: "# Guide", name: "guide.md", path });
+    mockedSaveNativeMarkdownFile.mockReturnValue(pendingSave);
+    const { result } = renderHook(() => useMarkdownDocument({
+      getCurrentMarkdown: (fallbackContent) => fallbackContent,
+      onTreeRootFromFilePath: vi.fn(),
+      onTreeRootFromFolderPath: vi.fn(),
+      preferencesReady: false,
+      restoreWorkspaceOnStartup: false
+    }));
+    await act(async () => {
+      await result.current.openTreeMarkdownFile({ name: "guide.md", path, relativePath: "guide.md" });
+    });
+    act(() => result.current.handleMarkdownChange("# Guide\n\nDirty"));
+    const exact = result.current.saveDirtyMarkdownPaths([path]);
+    await waitFor(() => expect(mockedSaveNativeMarkdownFile).toHaveBeenCalledTimes(1));
+    const global = result.current.saveDirtyMarkdownFiles();
+    await Promise.resolve();
+    expect(mockedSaveNativeMarkdownFile).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      resolveSave();
+      await exact;
+      await global;
+    });
+    expect(mockedSaveNativeMarkdownFile).toHaveBeenCalledTimes(1);
+  });
+
   it("shares one dirty-file save and its returned files across concurrent callers", async () => {
     const guidePath = "/mock-files/vault/guide.md";
     let resolveSave!: () => undefined;

@@ -245,6 +245,7 @@ const messages: LocaleMessages = {
   "app.openContainingFolder": "포함된 폴더 열기",
   "app.markdownTemplateSaved": "템플릿으로 저장했습니다.",
   "app.markdownTemplateSaveFailed": "템플릿을 저장할 수 없습니다.",
+  "app.syncPathGuarded": "이 파일을 동기화하고 있습니다.",
   "app.markdownFileCreateFailed": "파일을 만들 수 없습니다.",
   "app.markdownFolderCreateFailed": "폴더를 만들 수 없습니다.",
   "app.markdownFileRenameFailed": "파일 이름을 변경할 수 없습니다.",

@@ -27,6 +27,7 @@ const MOBILE_COMMANDS: &[&str] = &[
     "replace_portable_app_settings",
     "read_primary_workspace_state",
     "write_primary_workspace_state",
+    "acknowledge_path_guard",
     "list_themes",
     "read_theme_css",
     "prepare_theme_activation",
@@ -86,6 +87,7 @@ const DESKTOP_COMMANDS: &[&str] = &[
     "patch_exposed_app_settings",
     "read_primary_workspace_state",
     "write_primary_workspace_state",
+    "acknowledge_path_guard",
     "prepare_desktop_notebook_target",
     "discard_prepared_desktop_notebook_target",
     "list_themes",
@@ -947,4 +949,37 @@ fn builder_boundary_theme_quarantine_cleanup_has_platform_safe_root_deletion() {
         !cleanup.contains("collect::<io::Result<Vec"),
         "cleanup must not collect an unbounded directory width before enforcing limits"
     );
+}
+
+#[test]
+fn builder_boundary_installs_the_path_guard_graph_before_startup_on_both_platforms() {
+    for runtime_path in ["src/desktop_runtime.rs", "src/mobile_runtime.rs"] {
+        let runtime = source(runtime_path);
+        let install = runtime
+            .find("install_production_graph")
+            .unwrap_or_else(|| panic!("{runtime_path} should install the Dejavu graph"));
+        let startup = runtime
+            .find("trigger_startup")
+            .unwrap_or_else(|| panic!("{runtime_path} should retain the startup trigger"));
+        assert!(
+            install < startup,
+            "{runtime_path} consumed startup before graph installation"
+        );
+        assert!(runtime.contains("PathGuardCoordinatorOwner::default()"));
+        assert!(runtime.contains("acknowledge_path_guard"));
+    }
+
+    let graph = source("src/dejavu_sync.rs");
+    assert!(graph.contains("tauri_path_guard_factory"));
+    assert!(graph.contains("DejavuRepositoryRunner::new"));
+    assert!(graph.contains("service.install_lifecycle"));
+    assert!(graph.contains("DejavuSyncServiceOwner"));
+    assert!(graph.contains("DejavuSchedulerOwner"));
+    assert!(
+        !production_source_tree("src/dejavu_sync").contains("NoopWorkingTreeCoordinator"),
+        "the installed product graph must not use the core no-op coordinator"
+    );
+
+    let sync_config = source("src/sync_config.rs");
+    assert!(sync_config.contains("pub(crate) async fn sync_application"));
 }

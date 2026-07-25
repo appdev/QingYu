@@ -689,6 +689,7 @@ export type I18nKey =
   | "app.windowDragRegion"
   | "app.fileActions"
   | "app.notifications"
+  | "app.syncPathGuarded"
   | "app.closeToast"
   | "app.updateAvailable"
   | "app.updateInstallAndRestart"

@@ -749,6 +749,7 @@ const messages: BaseLocaleMessages = {
   "app.windowDragRegion": "Window drag region",
   "app.fileActions": "File actions",
   "app.notifications": "Notifications",
+  "app.syncPathGuarded": "This file is being synchronized.",
   "app.closeToast": "Close notification",
   "app.updateAvailable": "QingYu {version} is available.",
   "app.updateInstallAndRestart": "Install and restart",

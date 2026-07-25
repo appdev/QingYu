@@ -2,6 +2,7 @@ use std::{ffi::OsStr, path::Path, time::Duration};
 
 use crate::app_exit::handle_app_exit_requested;
 use crate::dejavu_sync::commands::{DejavuSchedulerOwner, DejavuSyncServiceOwner};
+use crate::dejavu_sync::path_guard::PathGuardCoordinatorOwner;
 use crate::markdown_files::MarkdownTreeLoadState;
 use crate::mcp;
 use crate::menu::{
@@ -209,6 +210,7 @@ pub(crate) fn run() {
         .manage(EditorWindowRestoreState::default())
         .manage(DejavuSyncServiceOwner::default())
         .manage(DejavuSchedulerOwner::default())
+        .manage(PathGuardCoordinatorOwner::default())
         .manage(crate::themes::ThemeActivationState::default());
 
     #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
@@ -248,6 +250,8 @@ pub(crate) fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(move |app| {
+            crate::dejavu_sync::install_production_graph(&app.handle())
+                .map_err(|error| std::io::Error::other(error.safe_code()))?;
             if launch_mode == DesktopLaunchMode::McpService {
                 #[cfg(target_os = "macos")]
                 app.set_activation_policy(tauri::ActivationPolicy::Prohibited);
@@ -317,6 +321,7 @@ pub(crate) fn run() {
             crate::app_settings::patch_exposed_app_settings,
             crate::primary_workspace::read_primary_workspace_state,
             crate::primary_workspace::write_primary_workspace_state,
+            crate::dejavu_sync::path_guard::acknowledge_path_guard,
             crate::primary_workspace::prepare_desktop_notebook_target,
             crate::primary_workspace::discard_prepared_desktop_notebook_target,
             crate::themes::list_themes,

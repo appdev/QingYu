@@ -344,6 +344,7 @@ export function useMarkdownDocument({
   const startupWorkspaceRestoreKeyRef = useRef<string | null>(null);
   const nativeWindowCloseScheduledRef = useRef(false);
   const dirtyFileSavePromiseRef = useRef<Promise<SavedNativeMarkdownFile[]> | null>(null);
+  const dirtyFileWriteTailRef = useRef<Promise<unknown>>(Promise.resolve());
   const editorSyncStateRef = useRef<EditorSyncState | null>(null);
   if (editorSyncStateRef.current === null) editorSyncStateRef.current = createEditorSyncState();
   const editorSyncState = editorSyncStateRef.current;
@@ -1736,7 +1737,7 @@ export function useMarkdownDocument({
   const saveDirtyMarkdownFiles = useCallback(() => {
     if (dirtyFileSavePromiseRef.current) return dirtyFileSavePromiseRef.current;
 
-    const savePromise = (async () => {
+    const operation = async () => {
       const snapshot = syncActiveDocumentDraftSnapshot();
       // Update relaunches can happen immediately; wait so untitled drafts survive the restart.
       await persistWorkspaceState(draftWorkspacePatchFromTabs(snapshot.tabs, snapshot.activeTabId));
@@ -1748,12 +1749,49 @@ export function useMarkdownDocument({
         if (savedFile) savedFiles.push(savedFile);
       }
       return savedFiles;
-    })().finally(() => {
+    };
+    const savePromise = dirtyFileWriteTailRef.current
+      .then(operation, operation)
+      .finally(() => {
       if (dirtyFileSavePromiseRef.current === savePromise) dirtyFileSavePromiseRef.current = null;
     });
+    dirtyFileWriteTailRef.current = savePromise.then(
+      () => undefined,
+      () => undefined
+    );
 
     dirtyFileSavePromiseRef.current = savePromise;
     return savePromise;
+  }, [saveMarkdownTabContent, syncActiveDocumentDraftSnapshot]);
+
+  const saveDirtyMarkdownPaths = useCallback((requestedPaths: readonly string[]) => {
+    const requested = requestedPaths
+      .map(normalizeComparablePath)
+      .filter((path): path is string => path !== null);
+    if (requested.length === 0) return Promise.resolve(false);
+
+    const operation = async () => {
+      while (true) {
+        const snapshot = syncActiveDocumentDraftSnapshot();
+        const dirtyTabs = snapshot.tabs.filter((tab) => {
+          if (!tab.open || !tab.dirty || tab.path === null || tab.deleted) return false;
+          const path = normalizeComparablePath(tab.path);
+          return path !== null && requested.includes(path);
+        });
+        if (dirtyTabs.length === 0) return true;
+
+        for (const tab of dirtyTabs) {
+          const savedFile = await saveMarkdownTabContent(tab, tab.content, { skipHistorySnapshot: true });
+          if (!savedFile) return false;
+        }
+      }
+    };
+    const save = dirtyFileWriteTailRef.current.then(operation, operation);
+    dirtyFileWriteTailRef.current = save.then(
+      () => undefined,
+      () => undefined
+    );
+    return save;
   }, [saveMarkdownTabContent, syncActiveDocumentDraftSnapshot]);
 
   const autoSaveDirtyMarkdownTabs = useCallback(async () => {
@@ -2498,6 +2536,7 @@ export function useMarkdownDocument({
     saveCurrentDocumentContent,
     saveCurrentDocument,
     saveDirtyMarkdownFiles,
+    saveDirtyMarkdownPaths,
     saveMarkdownTab,
     selectMarkdownTab,
     wordCount
