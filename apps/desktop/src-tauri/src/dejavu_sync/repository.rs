@@ -23,6 +23,7 @@ use super::status::{RepositoryConflictRecord, RepositoryTransferSummary};
 use crate::storage_capability::{
     create_private_file_options, directory_identity, nonfollowing_read_options,
     open_canonical_directory_nofollow, sync_directory, unique_regular_file_identity,
+    DirectoryIdentity,
 };
 use crate::sync_config::model::{
     S3AddressingStyle as ConfigAddressingStyle, S3TlsVerification as ConfigTlsVerification,
@@ -149,6 +150,18 @@ impl DejavuRepositoryRunner {
         &self,
         context: SyncAttemptContext,
     ) -> Result<RepositorySyncResult, RepositoryJobError> {
+        self.bind_and_sync_with_layout_observer(context, |_| {})
+            .await
+    }
+
+    async fn bind_and_sync_with_layout_observer<Observe>(
+        &self,
+        context: SyncAttemptContext,
+        after_layout_prepared: Observe,
+    ) -> Result<RepositorySyncResult, RepositoryJobError>
+    where
+        Observe: FnOnce(&Path) + Send,
+    {
         if context.attempt == 0
             || context.attempt > 3
             || uuid::Uuid::parse_str(&context.job_id)
@@ -190,6 +203,8 @@ impl DejavuRepositoryRunner {
 
         let (canonical_notes_root, ignore_lines) = prepare_syncignore(&request.notes_root)?;
         let repository_paths = prepare_repository_layout(&self.app_data, &request.repository_id)?;
+        after_layout_prepared(repository_paths.root_path());
+        repository_paths.revalidate()?;
         let repository_prefix = format!("qingyu/repositories/{}/repo", request.repository_id);
         let cloud = self.cloud_factory.create(RepositoryCloudParameters {
             endpoint_url,
@@ -203,12 +218,7 @@ impl DejavuRepositoryRunner {
             repository_prefix,
         })?;
         let repo = Repo::open(
-            RepoPaths {
-                data: canonical_notes_root,
-                repo: repository_paths.repo,
-                history: repository_paths.history,
-                temp: repository_paths.temp,
-            },
+            repository_paths.repo_paths(canonical_notes_root),
             Device {
                 id: local_state.device_id,
                 name: "QingYu".to_owned(),
@@ -221,6 +231,7 @@ impl DejavuRepositoryRunner {
             },
         )
         .map_err(map_repo_error)?;
+        repository_paths.revalidate()?;
 
         // Repo::sync owns the attempt's indexing and lifecycle/operation guards.
         let (merge, traffic) = repo
@@ -290,9 +301,67 @@ impl RepositoryJobRunner for DejavuRepositoryRunner {
 }
 
 struct PreparedRepositoryPaths {
-    repo: PathBuf,
-    history: PathBuf,
-    temp: PathBuf,
+    repository: RetainedRepositoryDirectory,
+    repo: RetainedRepositoryDirectory,
+    history: RetainedRepositoryDirectory,
+    temp: RetainedRepositoryDirectory,
+}
+
+struct RetainedRepositoryDirectory {
+    path: PathBuf,
+    directory: cap_std::fs::Dir,
+    identity: DirectoryIdentity,
+}
+
+impl RetainedRepositoryDirectory {
+    fn new(path: PathBuf, directory: cap_std::fs::Dir) -> Result<Self, RepositoryJobError> {
+        let identity = directory_identity(&directory)
+            .map_err(|_| RepositoryJobError::RepositoryUnavailable)?;
+        Ok(Self {
+            path,
+            directory,
+            identity,
+        })
+    }
+
+    fn revalidate(&self) -> Result<(), RepositoryJobError> {
+        if directory_identity(&self.directory)
+            .map_err(|_| RepositoryJobError::RepositoryUnavailable)?
+            != self.identity
+        {
+            return Err(RepositoryJobError::RepositoryUnavailable);
+        }
+        let reopened = open_canonical_directory_nofollow(&self.path)
+            .map_err(|_| RepositoryJobError::RepositoryUnavailable)?;
+        if directory_identity(&reopened).map_err(|_| RepositoryJobError::RepositoryUnavailable)?
+            != self.identity
+        {
+            return Err(RepositoryJobError::RepositoryUnavailable);
+        }
+        Ok(())
+    }
+}
+
+impl PreparedRepositoryPaths {
+    fn root_path(&self) -> &Path {
+        &self.repository.path
+    }
+
+    fn repo_paths(&self, data: PathBuf) -> RepoPaths {
+        RepoPaths {
+            data,
+            repo: self.repo.path.clone(),
+            history: self.history.path.clone(),
+            temp: self.temp.path.clone(),
+        }
+    }
+
+    fn revalidate(&self) -> Result<(), RepositoryJobError> {
+        self.repository.revalidate()?;
+        self.repo.revalidate()?;
+        self.history.revalidate()?;
+        self.temp.revalidate()
+    }
 }
 
 fn canonical_repository_id(repository_id: &str) -> Result<String, RepositoryJobError> {
@@ -412,9 +481,9 @@ fn prepare_repository_layout(
     let sync = open_or_create_directory(app_data.directory(), "sync")?;
     let repositories = open_or_create_directory(&sync, "repositories")?;
     let repository = open_or_create_directory(&repositories, &repository_id)?;
-    for child in ["repo", "history", "temp"] {
-        open_or_create_directory(&repository, child)?;
-    }
+    let repo = open_or_create_directory(&repository, "repo")?;
+    let history = open_or_create_directory(&repository, "history")?;
+    let temp = open_or_create_directory(&repository, "temp")?;
     app_data
         .revalidate()
         .map_err(|_| RepositoryJobError::RepositoryUnavailable)?;
@@ -423,11 +492,14 @@ fn prepare_repository_layout(
         .join("sync")
         .join("repositories")
         .join(repository_id);
-    Ok(PreparedRepositoryPaths {
-        repo: root.join("repo"),
-        history: root.join("history"),
-        temp: root.join("temp"),
-    })
+    let prepared = PreparedRepositoryPaths {
+        repository: RetainedRepositoryDirectory::new(root.clone(), repository)?,
+        repo: RetainedRepositoryDirectory::new(root.join("repo"), repo)?,
+        history: RetainedRepositoryDirectory::new(root.join("history"), history)?,
+        temp: RetainedRepositoryDirectory::new(root.join("temp"), temp)?,
+    };
+    prepared.revalidate()?;
+    Ok(prepared)
 }
 
 fn open_or_create_directory(
@@ -824,6 +896,43 @@ mod tests {
 
         assert_eq!(error, RepositoryJobError::RepositoryUnavailable);
         assert_eq!(std::fs::read(outside).unwrap(), b"keep me");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn bind_and_sync_rejects_an_ordinary_repo_directory_replaced_before_core_open() {
+        let fixture = Fixture::new();
+        let (runner, _) = runner(&fixture);
+        let request = runner.validate(fixture.request()).unwrap();
+        let repository_root = fixture
+            .app_data
+            .canonicalize()
+            .unwrap()
+            .join(format!("sync/repositories/{}", fixture.repository_id));
+        let moved_repo = repository_root.join("moved-repo");
+
+        let result = runner
+            .bind_and_sync_with_layout_observer(
+                SyncAttemptContext {
+                    request,
+                    job_id: "20000000-0000-4000-8000-000000000023".to_owned(),
+                    attempt: 1,
+                    cancellation: JobCancellationToken::new(),
+                },
+                |prepared_root| {
+                    assert_eq!(prepared_root, repository_root);
+                    std::fs::rename(repository_root.join("repo"), &moved_repo).unwrap();
+                    std::fs::create_dir(repository_root.join("repo")).unwrap();
+                },
+            )
+            .await;
+
+        let Err(error) = result else {
+            panic!("ambient replacement must not be accepted by the core open");
+        };
+        assert_eq!(error, RepositoryJobError::RepositoryUnavailable);
+        assert!(moved_repo.is_dir());
+        assert!(repository_root.join("repo").is_dir());
     }
 
     #[test]

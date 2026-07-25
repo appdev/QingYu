@@ -72,7 +72,6 @@ impl From<RepositoryJobError> for RepositorySafeError {
 pub(crate) struct RepositorySyncStatus {
     pub(crate) version: u32,
     pub(crate) repository_id: String,
-    pub(crate) notes_root: PathBuf,
     pub(crate) phase: RepositorySyncPhase,
     pub(crate) trigger: SyncTrigger,
     pub(crate) job_id: String,
@@ -95,7 +94,6 @@ impl RepositorySyncStatus {
         Self {
             version: REPOSITORY_SYNC_STATUS_VERSION,
             repository_id: request.repository_id.clone(),
-            notes_root: request.notes_root.clone(),
             phase: RepositorySyncPhase::Attempting,
             trigger: request.trigger,
             job_id,
@@ -119,7 +117,6 @@ impl RepositorySyncStatus {
         Self {
             version: REPOSITORY_SYNC_STATUS_VERSION,
             repository_id: request.repository_id.clone(),
-            notes_root: request.notes_root.clone(),
             phase: RepositorySyncPhase::Succeeded,
             trigger: request.trigger,
             job_id,
@@ -143,7 +140,6 @@ impl RepositorySyncStatus {
         Self {
             version: REPOSITORY_SYNC_STATUS_VERSION,
             repository_id: request.repository_id.clone(),
-            notes_root: request.notes_root.clone(),
             phase: RepositorySyncPhase::Failed,
             trigger: request.trigger,
             job_id,
@@ -342,7 +338,6 @@ fn validate_repository_id(repository_id: &str) -> Result<(), RepositoryJobError>
 fn validate_status(status: &RepositorySyncStatus) -> Result<(), RepositoryJobError> {
     validate_repository_id(&status.repository_id)?;
     if status.version != REPOSITORY_SYNC_STATUS_VERSION
-        || !status.notes_root.is_absolute()
         || status.attempt == 0
         || status.attempt > 3
         || uuid::Uuid::parse_str(&status.job_id)
@@ -507,6 +502,42 @@ mod tests {
             load_repository_sync_status(app_data.path(), repository_id).unwrap(),
             Some(status)
         );
+    }
+
+    #[tokio::test]
+    async fn persisted_and_emitted_status_omit_the_machine_absolute_notes_root() {
+        let app_data = tempdir().unwrap();
+        let repository_id = "00000000-0000-4000-8000-000000000013";
+        let sentinel = app_data.path().join("machine-private-notes-root");
+        let emitter = Arc::new(InspectingEmitter::new(app_data.path().to_path_buf()));
+        let store = RepositoryStatusStore::new(app_data.path(), Arc::clone(&emitter));
+        let status = RepositorySyncStatus::attempting(
+            &SyncJobRequest {
+                notes_root: sentinel.clone(),
+                repository_id: repository_id.to_owned(),
+                trigger: SyncTrigger::Manual,
+            },
+            "00000000-0000-4000-8000-000000000098".to_owned(),
+            1,
+            "2026-07-25T08:00:00Z".to_owned(),
+        );
+
+        store.publish(status).await.unwrap();
+
+        let persisted = std::fs::read_to_string(
+            app_data
+                .path()
+                .join(format!("sync/repositories/{repository_id}/state.json")),
+        )
+        .unwrap();
+        let persisted_json = serde_json::from_str::<serde_json::Value>(&persisted).unwrap();
+        let emitted_json =
+            serde_json::to_value(emitter.emitted.lock().unwrap().last().unwrap()).unwrap();
+        let sentinel = sentinel.to_string_lossy();
+        assert!(persisted_json.get("notesRoot").is_none());
+        assert!(emitted_json.get("notesRoot").is_none());
+        assert!(!persisted.contains(sentinel.as_ref()));
+        assert!(!emitted_json.to_string().contains(sentinel.as_ref()));
     }
 
     #[tokio::test]

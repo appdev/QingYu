@@ -28,9 +28,9 @@ impl DejavuSyncServiceOwner {
     }
 
     #[allow(dead_code)]
-    pub(crate) fn cancel_all_for_shutdown_or_reset(&self) {
+    pub(crate) async fn cancel_all_for_shutdown_or_reset(&self) {
         if let Some(service) = self.service.get() {
-            service.cancel_all_for_shutdown_or_reset();
+            service.cancel_all_for_shutdown_or_reset().await;
         }
     }
 }

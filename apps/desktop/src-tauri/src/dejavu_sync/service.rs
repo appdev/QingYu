@@ -128,7 +128,14 @@ struct DejavuSyncServiceInner {
     status_sink: Arc<dyn RepositoryStatusSink>,
     repository_locks: Mutex<HashMap<String, Arc<AsyncMutex<()>>>>,
     global_gate: Arc<RwLock<()>>,
-    jobs: Mutex<HashMap<String, JobCancellationToken>>,
+    jobs: Mutex<JobRegistry>,
+}
+
+#[derive(Default)]
+struct JobRegistry {
+    generation: u64,
+    draining: bool,
+    cancellations: HashMap<String, JobCancellationToken>,
 }
 
 impl DejavuSyncService {
@@ -146,7 +153,7 @@ impl DejavuSyncService {
                 status_sink,
                 repository_locks: Mutex::new(HashMap::new()),
                 global_gate: Arc::new(RwLock::new(())),
-                jobs: Mutex::new(HashMap::new()),
+                jobs: Mutex::new(JobRegistry::default()),
             }),
         }
     }
@@ -155,16 +162,19 @@ impl DejavuSyncService {
         &self,
         request: SyncJobRequest,
     ) -> Result<AcceptedSyncJob, RepositoryJobError> {
-        self.enqueue_inner(request, true).await
+        self.enqueue_inner(request, true, None).await
     }
 
     fn enqueue_inner<'a>(
         &'a self,
         request: SyncJobRequest,
         allow_follow_up: bool,
+        inherited_generation: Option<u64>,
     ) -> BoxFuture<'a, Result<AcceptedSyncJob, RepositoryJobError>> {
         Box::pin(async move {
+            let generation = self.accepting_generation(inherited_generation)?;
             let request = self.inner.runner.validate(request)?;
+            self.require_accepting_generation(generation)?;
             let job_id = uuid::Uuid::new_v4().to_string();
             let accepted = AcceptedSyncJob {
                 job_id: job_id.clone(),
@@ -185,11 +195,31 @@ impl DejavuSyncService {
             // that begins after enqueue returns therefore observes every accepted job.
             let ordinary_guard = Arc::clone(&self.inner.global_gate).read_owned().await;
             let cancellation = JobCancellationToken::new();
-            self.inner
-                .jobs
-                .lock()
-                .unwrap()
-                .insert(job_id.clone(), cancellation.clone());
+            let registered = {
+                let mut jobs = self.inner.jobs.lock().unwrap();
+                if jobs.draining || jobs.generation != generation {
+                    false
+                } else {
+                    jobs.cancellations
+                        .insert(job_id.clone(), cancellation.clone());
+                    true
+                }
+            };
+            if !registered {
+                drop(ordinary_guard);
+                let _status_result = self
+                    .inner
+                    .status_sink
+                    .publish(RepositorySyncStatus::failed(
+                        &request,
+                        job_id,
+                        1,
+                        sync_status_timestamp(),
+                        RepositorySafeError::from(RepositoryJobError::Cancelled),
+                    ))
+                    .await;
+                return Err(RepositoryJobError::Cancelled);
+            }
             let service = self.clone();
             tokio::spawn(async move {
                 service
@@ -198,6 +228,7 @@ impl DejavuSyncService {
                         job_id,
                         cancellation,
                         allow_follow_up,
+                        generation,
                         ordinary_guard,
                     )
                     .await;
@@ -212,6 +243,7 @@ impl DejavuSyncService {
         job_id: String,
         cancellation: JobCancellationToken,
         allow_follow_up: bool,
+        generation: u64,
         ordinary_guard: OwnedRwLockReadGuard<()>,
     ) {
         let repository_lock = self.repository_lock(&request.repository_id);
@@ -224,17 +256,19 @@ impl DejavuSyncService {
                 result = Err(RepositoryJobError::Cancelled);
                 break;
             }
-            if attempt > 1 {
-                let _status_result = self
-                    .inner
-                    .status_sink
-                    .publish(RepositorySyncStatus::attempting(
-                        &request,
-                        job_id.clone(),
-                        attempt,
-                        sync_status_timestamp(),
-                    ))
-                    .await;
+            let _status_result = self
+                .inner
+                .status_sink
+                .publish(RepositorySyncStatus::attempting(
+                    &request,
+                    job_id.clone(),
+                    attempt,
+                    sync_status_timestamp(),
+                ))
+                .await;
+            if cancellation.is_cancelled() {
+                result = Err(RepositoryJobError::Cancelled);
+                break;
             }
             result = self
                 .inner
@@ -271,15 +305,46 @@ impl DejavuSyncService {
             ),
         };
         let _status_result = self.inner.status_sink.publish(final_status).await;
-        self.inner.jobs.lock().unwrap().remove(&job_id);
+        self.inner
+            .jobs
+            .lock()
+            .unwrap()
+            .cancellations
+            .remove(&job_id);
         drop(_repository_guard);
         drop(ordinary_guard);
 
         if needs_follow_up {
             let service = self.clone();
             tokio::spawn(async move {
-                let _accepted = service.enqueue_inner(request, false).await;
+                let _accepted = service
+                    .enqueue_inner(request, false, Some(generation))
+                    .await;
             });
+        }
+    }
+
+    fn accepting_generation(
+        &self,
+        inherited_generation: Option<u64>,
+    ) -> Result<u64, RepositoryJobError> {
+        let jobs = self.inner.jobs.lock().unwrap();
+        if jobs.draining {
+            return Err(RepositoryJobError::Cancelled);
+        }
+        match inherited_generation {
+            Some(generation) if generation == jobs.generation => Ok(generation),
+            Some(_) => Err(RepositoryJobError::Cancelled),
+            None => Ok(jobs.generation),
+        }
+    }
+
+    fn require_accepting_generation(&self, generation: u64) -> Result<(), RepositoryJobError> {
+        let jobs = self.inner.jobs.lock().unwrap();
+        if jobs.draining || jobs.generation != generation {
+            Err(RepositoryJobError::Cancelled)
+        } else {
+            Ok(())
         }
     }
 
@@ -304,10 +369,25 @@ impl DejavuSyncService {
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn cancel_all_for_shutdown_or_reset(&self) {
-        for cancellation in self.inner.jobs.lock().unwrap().values() {
-            cancellation.cancel();
-        }
+    pub(crate) fn cancel_all_for_shutdown_or_reset(&self) -> BoxFuture<'static, ()> {
+        let cancellation_generation = {
+            let mut jobs = self.inner.jobs.lock().unwrap();
+            jobs.generation = jobs.generation.wrapping_add(1);
+            jobs.draining = true;
+            for cancellation in jobs.cancellations.values() {
+                cancellation.cancel();
+            }
+            jobs.generation
+        };
+        let service = self.clone();
+        Box::pin(async move {
+            let barrier = service.inner.global_gate.write().await;
+            drop(barrier);
+            let mut jobs = service.inner.jobs.lock().unwrap();
+            if jobs.generation == cancellation_generation {
+                jobs.draining = false;
+            }
+        })
     }
 }
 
@@ -457,6 +537,56 @@ mod tests {
         }
     }
 
+    struct BlockingStatusSink {
+        statuses: Mutex<Vec<RepositorySyncStatus>>,
+        blocked_phase: RepositorySyncPhase,
+        blocked_occurrence: usize,
+        matching_publishes: AtomicUsize,
+        entered: mpsc::UnboundedSender<()>,
+        release: Semaphore,
+    }
+
+    impl BlockingStatusSink {
+        fn new(
+            blocked_phase: RepositorySyncPhase,
+            blocked_occurrence: usize,
+            entered: mpsc::UnboundedSender<()>,
+        ) -> Self {
+            Self {
+                statuses: Mutex::new(Vec::new()),
+                blocked_phase,
+                blocked_occurrence,
+                matching_publishes: AtomicUsize::new(0),
+                entered,
+                release: Semaphore::new(0),
+            }
+        }
+
+        fn release(&self) {
+            self.release.add_permits(1);
+        }
+    }
+
+    impl RepositoryStatusSink for BlockingStatusSink {
+        fn publish<'a>(
+            &'a self,
+            status: RepositorySyncStatus,
+        ) -> BoxFuture<'a, Result<(), RepositoryJobError>> {
+            Box::pin(async move {
+                let should_block = status.phase == self.blocked_phase
+                    && self.matching_publishes.fetch_add(1, Ordering::SeqCst) + 1
+                        == self.blocked_occurrence;
+                if should_block {
+                    self.entered.send(()).unwrap();
+                    let permit = self.release.acquire().await.unwrap();
+                    permit.forget();
+                }
+                self.statuses.lock().unwrap().push(status);
+                Ok(())
+            })
+        }
+    }
+
     struct WorkingTreeChangedRunner {
         attempts: AtomicUsize,
         changed: Notify,
@@ -505,6 +635,66 @@ mod tests {
                 self.attempts.fetch_add(1, Ordering::SeqCst);
                 self.changed.notify_waiters();
                 Err(RepositoryJobError::WorkingTreeChanged)
+            })
+        }
+    }
+
+    struct FollowUpDetectingRunner {
+        primary_job_id: Mutex<Option<String>>,
+        primary_attempts: AtomicUsize,
+        primary_changed: Notify,
+        other_started: mpsc::UnboundedSender<String>,
+    }
+
+    impl FollowUpDetectingRunner {
+        fn new(other_started: mpsc::UnboundedSender<String>) -> Self {
+            Self {
+                primary_job_id: Mutex::new(None),
+                primary_attempts: AtomicUsize::new(0),
+                primary_changed: Notify::new(),
+                other_started,
+            }
+        }
+
+        async fn wait_for_primary_attempts(&self, expected: usize) {
+            tokio::time::timeout(Duration::from_secs(2), async {
+                loop {
+                    let listening = self.primary_changed.notified();
+                    if self.primary_attempts.load(Ordering::SeqCst) >= expected {
+                        return;
+                    }
+                    listening.await;
+                }
+            })
+            .await
+            .expect("expected primary working-tree attempts should run");
+        }
+    }
+
+    impl RepositoryJobRunner for FollowUpDetectingRunner {
+        fn validate(&self, request: SyncJobRequest) -> Result<SyncJobRequest, RepositoryJobError> {
+            Ok(request)
+        }
+
+        fn run_attempt<'a>(
+            &'a self,
+            context: SyncAttemptContext,
+        ) -> BoxFuture<'a, Result<RepositorySyncResult, RepositoryJobError>> {
+            Box::pin(async move {
+                let is_primary = {
+                    let mut primary_job_id = self.primary_job_id.lock().unwrap();
+                    let primary_job_id =
+                        primary_job_id.get_or_insert_with(|| context.job_id.clone());
+                    primary_job_id == &context.job_id
+                };
+                if is_primary {
+                    self.primary_attempts.fetch_add(1, Ordering::SeqCst);
+                    self.primary_changed.notify_waiters();
+                    Err(RepositoryJobError::WorkingTreeChanged)
+                } else {
+                    self.other_started.send(context.job_id).unwrap();
+                    Ok(RepositorySyncResult::default())
+                }
             })
         }
     }
@@ -593,6 +783,29 @@ mod tests {
         runner.release(1);
         sink.wait_for_phase(RepositorySyncPhase::Succeeded, 2).await;
         assert_eq!(runner.max_for(repository), 1);
+    }
+
+    #[tokio::test]
+    async fn queued_job_republishes_attempting_after_it_acquires_the_repository_lock() {
+        let (started_tx, mut started_rx) = mpsc::unbounded_channel();
+        let runner = Arc::new(ControlledRunner::new(started_tx));
+        let sink = Arc::new(MemoryStatusSink::default());
+        let service = service(Arc::clone(&runner), Arc::clone(&sink));
+        let repository = "00000000-0000-4000-8000-000000000012";
+
+        service.enqueue(request(repository)).await.unwrap();
+        assert_eq!(receive_start(&mut started_rx).await, repository);
+        let queued = service.enqueue(request(repository)).await.unwrap();
+
+        runner.release(1);
+        assert_eq!(receive_start(&mut started_rx).await, repository);
+        let latest = sink.statuses.lock().unwrap().last().cloned().unwrap();
+        assert_eq!(latest.phase, RepositorySyncPhase::Attempting);
+        assert_eq!(latest.job_id, queued.job_id);
+        assert_eq!(latest.attempt, 1);
+
+        runner.release(1);
+        sink.wait_for_phase(RepositorySyncPhase::Succeeded, 2).await;
     }
 
     #[tokio::test]
@@ -697,6 +910,76 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn shutdown_generation_rejects_an_enqueue_blocked_before_job_registration() {
+        let (started_tx, mut started_rx) = mpsc::unbounded_channel();
+        let runner = Arc::new(ControlledRunner::new(started_tx));
+        let (status_entered_tx, mut status_entered_rx) = mpsc::unbounded_channel();
+        let sink = Arc::new(BlockingStatusSink::new(
+            RepositorySyncPhase::Attempting,
+            1,
+            status_entered_tx,
+        ));
+        let service = DejavuSyncService::new(Arc::clone(&runner), Arc::clone(&sink));
+        let enqueue = {
+            let service = service.clone();
+            tokio::spawn(async move {
+                service
+                    .enqueue(request("00000000-0000-4000-8000-000000000010"))
+                    .await
+            })
+        };
+        status_entered_rx
+            .recv()
+            .await
+            .expect("initial status publish should block");
+
+        service.cancel_all_for_shutdown_or_reset().await;
+        sink.release();
+
+        assert!(matches!(
+            enqueue.await.unwrap(),
+            Err(RepositoryJobError::Cancelled)
+        ));
+        assert!(matches!(
+            started_rx.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
+    }
+
+    #[tokio::test]
+    async fn shutdown_generation_prevents_a_follow_up_derived_during_final_status_publish() {
+        let (other_started_tx, mut other_started_rx) = mpsc::unbounded_channel();
+        let runner = Arc::new(FollowUpDetectingRunner::new(other_started_tx));
+        let (status_entered_tx, mut status_entered_rx) = mpsc::unbounded_channel();
+        let sink = Arc::new(BlockingStatusSink::new(
+            RepositorySyncPhase::Failed,
+            1,
+            status_entered_tx,
+        ));
+        let service = DejavuSyncService::new(Arc::clone(&runner), Arc::clone(&sink));
+        let repository = "00000000-0000-4000-8000-000000000011";
+
+        service.enqueue(request(repository)).await.unwrap();
+        runner.wait_for_primary_attempts(3).await;
+        status_entered_rx
+            .recv()
+            .await
+            .expect("final failed status publish should block");
+
+        let draining = service.cancel_all_for_shutdown_or_reset();
+        sink.release();
+        draining.await;
+
+        let explicit = service.enqueue(request(repository)).await.unwrap();
+        let started_job_id = tokio::time::timeout(Duration::from_secs(2), other_started_rx.recv())
+            .await
+            .expect("the explicit post-reset job should start")
+            .expect("runner start channel should stay open");
+        assert_eq!(started_job_id, explicit.job_id);
+        assert_eq!(runner.primary_attempts.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
     async fn shutdown_or_reset_token_cancels_queued_jobs_without_caller_ownership() {
         let (started_tx, mut started_rx) = mpsc::unbounded_channel();
         let runner = Arc::new(ControlledRunner::new(started_tx));
@@ -707,8 +990,9 @@ mod tests {
         service.enqueue(request(repository)).await.unwrap();
         service.enqueue(request(repository)).await.unwrap();
         assert_eq!(receive_start(&mut started_rx).await, repository);
-        service.cancel_all_for_shutdown_or_reset();
+        let draining = service.cancel_all_for_shutdown_or_reset();
         runner.release(1);
+        draining.await;
 
         sink.wait_for_phase(RepositorySyncPhase::Succeeded, 1).await;
         sink.wait_for_phase(RepositorySyncPhase::Failed, 1).await;
