@@ -14,6 +14,7 @@ const MAX_PAGE_OBJECTS: usize = 1000;
 
 pub(super) struct ListPage {
     pub objects: Vec<CloudObject>,
+    pub common_prefixes: Vec<String>,
     pub is_truncated: bool,
     pub next_continuation_token: Option<String>,
 }
@@ -24,6 +25,7 @@ enum Field {
     Size,
     IsTruncated,
     NextContinuationToken,
+    Prefix,
 }
 
 pub(super) async fn parse_list_page(
@@ -52,11 +54,14 @@ pub(super) async fn parse_list_page(
     let mut root_closed = false;
     let mut depth = 0_usize;
     let mut in_contents = false;
+    let mut in_common_prefix = false;
+    let mut common_prefix: Option<String> = None;
     let mut current_field = None;
     let mut field_text = String::new();
     let mut object_key: Option<String> = None;
     let mut object_size: Option<u64> = None;
     let mut objects = Vec::new();
+    let mut common_prefixes = Vec::new();
     let mut is_truncated = None;
     let mut next_continuation_token = None;
 
@@ -80,6 +85,12 @@ pub(super) async fn parse_list_page(
                         object_key = None;
                         object_size = None;
                     }
+                    b"CommonPrefixes"
+                        if depth == 1 && root_open && !in_contents && !in_common_prefix =>
+                    {
+                        in_common_prefix = true;
+                        common_prefix = None;
+                    }
                     b"Key" if depth == 2 && in_contents => {
                         start_field(&mut current_field, Field::Key)?;
                         field_text.clear();
@@ -96,12 +107,18 @@ pub(super) async fn parse_list_page(
                         start_field(&mut current_field, Field::NextContinuationToken)?;
                         field_text.clear();
                     }
+                    b"Prefix" if depth == 2 && in_common_prefix => {
+                        start_field(&mut current_field, Field::Prefix)?;
+                        field_text.clear();
+                    }
                     b"ListBucketResult"
                     | b"Contents"
+                    | b"CommonPrefixes"
                     | b"Key"
                     | b"Size"
                     | b"IsTruncated"
-                    | b"NextContinuationToken" => {
+                    | b"NextContinuationToken"
+                    | b"Prefix" => {
                         return Err(CloudError::backend("s3_list_invalid_xml"));
                     }
                     _ if root_open => {}
@@ -176,6 +193,29 @@ pub(super) async fn parse_list_page(
                         }
                         current_field = None;
                     }
+                    b"Prefix" if depth == 2 && current_field == Some(Field::Prefix) => {
+                        if common_prefix.replace(field_text.clone()).is_some() {
+                            return Err(CloudError::backend("s3_list_duplicate_field"));
+                        }
+                        current_field = None;
+                    }
+                    b"CommonPrefixes" if depth == 1 && in_common_prefix => {
+                        let prefix = common_prefix
+                            .take()
+                            .ok_or_else(|| CloudError::backend("s3_list_missing_prefix"))?;
+                        if prefix.is_empty() || !prefix.starts_with(requested_prefix) {
+                            return Err(CloudError::UnsafeKey);
+                        }
+                        let relative = prefix
+                            .strip_prefix(&repository_prefix)
+                            .ok_or(CloudError::UnsafeKey)?;
+                        validate_relative(relative, true)?;
+                        common_prefixes.push(relative.to_string());
+                        if objects.len().saturating_add(common_prefixes.len()) > MAX_PAGE_OBJECTS {
+                            return Err(CloudError::backend("s3_list_too_many_objects"));
+                        }
+                        in_common_prefix = false;
+                    }
                     b"Contents" if depth == 1 && in_contents => {
                         let key = object_key
                             .take()
@@ -194,12 +234,14 @@ pub(super) async fn parse_list_page(
                             key: relative.to_string(),
                             size,
                         });
-                        if objects.len() > MAX_PAGE_OBJECTS {
+                        if objects.len().saturating_add(common_prefixes.len()) > MAX_PAGE_OBJECTS {
                             return Err(CloudError::backend("s3_list_too_many_objects"));
                         }
                         in_contents = false;
                     }
-                    b"ListBucketResult" if depth == 0 && root_open && !in_contents => {
+                    b"ListBucketResult"
+                        if depth == 0 && root_open && !in_contents && !in_common_prefix =>
+                    {
                         root_open = false;
                         root_closed = true;
                     }
@@ -220,7 +262,13 @@ pub(super) async fn parse_list_page(
         buffer.clear();
     }
 
-    if !root_closed || root_open || depth != 0 || in_contents || current_field.is_some() {
+    if !root_closed
+        || root_open
+        || depth != 0
+        || in_contents
+        || in_common_prefix
+        || current_field.is_some()
+    {
         return Err(CloudError::backend("s3_list_truncated_xml"));
     }
     let is_truncated =
@@ -230,6 +278,7 @@ pub(super) async fn parse_list_page(
     }
     Ok(ListPage {
         objects,
+        common_prefixes,
         is_truncated,
         next_continuation_token,
     })
@@ -244,6 +293,7 @@ fn is_known_element(name: &[u8]) -> bool {
             | b"Size"
             | b"IsTruncated"
             | b"NextContinuationToken"
+            | b"Prefix"
     )
 }
 

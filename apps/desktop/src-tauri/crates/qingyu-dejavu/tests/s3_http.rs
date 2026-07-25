@@ -7,7 +7,8 @@ use std::task::{Context, Poll};
 use std::time::Duration;
 
 use qingyu_dejavu::{
-    Cloud, CloudError, CloudUploadSource, S3AddressingStyle, S3Cloud, S3Connection,
+    CatalogIssueKind, Cloud, CloudError, CloudUploadSource, RepositoryCatalogEntry,
+    RepositoryMetadata, S3AddressingStyle, S3Cloud, S3Connection, S3RepositoryCatalog,
     S3RequestSigner, S3TlsVerification, S3TransportOptions,
 };
 use reqwest::header::{AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE, HOST};
@@ -557,6 +558,31 @@ fn cloud(endpoint: &str, max_attempts: usize) -> S3Cloud {
         REPOSITORY_PREFIX,
     )
     .expect("valid fixture S3 cloud")
+}
+
+fn catalog(endpoint: &str, max_attempts: usize) -> S3RepositoryCatalog {
+    let connection = S3Connection::new(
+        endpoint,
+        "us-east-1",
+        "qingyu-notes",
+        "test-key",
+        "test-secret",
+        S3AddressingStyle::Path,
+    )
+    .expect("valid fixture connection");
+    S3RepositoryCatalog::new(
+        connection,
+        S3TransportOptions {
+            request_timeout: Duration::from_secs(2),
+            tls_verification: S3TlsVerification::Verify,
+            max_attempts,
+        },
+    )
+    .expect("valid fixture S3 catalog")
+}
+
+fn leak(value: String) -> &'static str {
+    Box::leak(value.into_boxed_str())
 }
 
 struct MemoryReader {
@@ -1266,4 +1292,710 @@ fn cloud_transport_options_reject_zero_and_more_than_three_attempts() {
         REPOSITORY_PREFIX,
     )
     .is_err());
+}
+
+const CATALOG_ID_A: &str = "00000000-0000-4000-8000-000000000001";
+const CATALOG_ID_B: &str = "00000000-0000-4000-8000-000000000002";
+const CATALOG_ID_C: &str = "00000000-0000-4000-8000-000000000003";
+const CATALOG_ID_D: &str = "00000000-0000-4000-8000-000000000004";
+const CATALOG_ID_E: &str = "00000000-0000-4000-8000-000000000005";
+const CATALOG_ID_F: &str = "00000000-0000-4000-8000-000000000006";
+const CATALOG_ID_G: &str = "00000000-0000-4000-8000-000000000007";
+const CATALOG_ID_H: &str = "00000000-0000-4000-8000-000000000008";
+const CATALOG_ID_I: &str = "00000000-0000-4000-8000-000000000009";
+const CATALOG_LIST_TARGET: &str =
+    "/qingyu-notes?delimiter=%2F&list-type=2&max-keys=1000&prefix=qingyu%2Frepositories%2F";
+const CATALOG_LIST_NEXT_TARGET: &str = "/qingyu-notes?continuation-token=next%2Bpage&delimiter=%2F&list-type=2&max-keys=1000&prefix=qingyu%2Frepositories%2F";
+
+fn catalog_metadata_target(repository_id: &str) -> &'static str {
+    leak(format!(
+        "/qingyu-notes/qingyu/repositories/{repository_id}/metadata.json?response-cache-control=no-cache"
+    ))
+}
+
+fn catalog_object_target(repository_id: &str, suffix: &str) -> &'static str {
+    leak(format!(
+        "/qingyu-notes/qingyu/repositories/{repository_id}/{suffix}"
+    ))
+}
+
+fn catalog_json(
+    repository_id: &str,
+    display_name: &str,
+    created_at: i64,
+    updated_at: i64,
+) -> Vec<u8> {
+    format!(
+        "{{\"formatVersion\":1,\"repositoryId\":\"{repository_id}\",\"displayName\":\"{display_name}\",\"createdAt\":{created_at},\"updatedAt\":{updated_at}}}"
+    )
+    .into_bytes()
+}
+
+#[test]
+fn catalog_metadata_serde_contract_is_exact_and_denies_unknown_fields() {
+    let metadata = RepositoryMetadata {
+        format_version: 1,
+        repository_id: CATALOG_ID_A.to_string(),
+        display_name: "Notes".to_string(),
+        created_at: 10,
+        updated_at: 20,
+    };
+
+    assert_eq!(
+        serde_json::to_string(&metadata).unwrap(),
+        format!(
+            "{{\"formatVersion\":1,\"repositoryId\":\"{CATALOG_ID_A}\",\"displayName\":\"Notes\",\"createdAt\":10,\"updatedAt\":20}}"
+        )
+    );
+    assert!(serde_json::from_str::<RepositoryMetadata>(&format!(
+        "{{\"formatVersion\":1,\"repositoryId\":\"{CATALOG_ID_A}\",\"displayName\":\"Notes\",\"createdAt\":10,\"updatedAt\":20,\"localPath\":\"/secret\"}}"
+    ))
+    .is_err());
+}
+
+#[tokio::test]
+async fn catalog_create_rejects_noncanonical_ids_and_invalid_names_before_network_io() {
+    let fixture = HttpFixture::start(vec![]).await;
+    let catalog = catalog(&fixture.endpoint, 1);
+
+    for invalid_id in [
+        "00000000-0000-4000-8000-00000000000A",
+        "{00000000-0000-4000-8000-000000000001}",
+        "00000000000040008000000000000001",
+        "../00000000-0000-4000-8000-000000000001",
+        "00000000-0000-4000-8000-000000000001/extra",
+    ] {
+        assert_eq!(
+            catalog
+                .create(invalid_id, "Notes", 10)
+                .await
+                .unwrap_err()
+                .code(),
+            "catalog_invalid_repository_id"
+        );
+    }
+    for invalid_name in ["", "   ", "bad\nname", "bad\u{7f}name"] {
+        assert_eq!(
+            catalog
+                .create(CATALOG_ID_A, invalid_name, 10)
+                .await
+                .unwrap_err()
+                .code(),
+            "catalog_invalid_display_name"
+        );
+    }
+    fixture.finish(0).await;
+}
+
+#[tokio::test]
+async fn catalog_list_uses_delimited_direct_prefixes_sorts_and_reports_safe_typed_issues() {
+    let invalid_upper = "00000000-0000-4000-8000-00000000000A";
+    let first_list_xml = format!(
+        "<ListBucketResult><IsTruncated>true</IsTruncated><NextContinuationToken>next+page</NextContinuationToken>\
+         <CommonPrefixes><Prefix>qingyu/repositories/{CATALOG_ID_A}/</Prefix></CommonPrefixes>\
+         <CommonPrefixes><Prefix>qingyu/repositories/{CATALOG_ID_B}/</Prefix></CommonPrefixes>\
+         <CommonPrefixes><Prefix>qingyu/repositories/{CATALOG_ID_C}/</Prefix></CommonPrefixes>\
+         <CommonPrefixes><Prefix>qingyu/repositories/{CATALOG_ID_D}/</Prefix></CommonPrefixes>\
+         </ListBucketResult>"
+    );
+    let second_list_xml = format!(
+        "<ListBucketResult><IsTruncated>false</IsTruncated>\
+         <CommonPrefixes><Prefix>qingyu/repositories/{CATALOG_ID_E}/</Prefix></CommonPrefixes>\
+         <CommonPrefixes><Prefix>qingyu/repositories/{CATALOG_ID_F}/</Prefix></CommonPrefixes>\
+         <CommonPrefixes><Prefix>qingyu/repositories/{CATALOG_ID_G}/</Prefix></CommonPrefixes>\
+         <CommonPrefixes><Prefix>qingyu/repositories/{CATALOG_ID_H}/</Prefix></CommonPrefixes>\
+         <CommonPrefixes><Prefix>qingyu/repositories/{CATALOG_ID_I}/</Prefix></CommonPrefixes>\
+         <CommonPrefixes><Prefix>qingyu/repositories/{invalid_upper}/</Prefix></CommonPrefixes>\
+         <CommonPrefixes><Prefix>qingyu/repositories/{CATALOG_ID_A}/nested/</Prefix></CommonPrefixes>\
+         <Contents><Key>qingyu/repositories/junk</Key><Size>4</Size></Contents>\
+         </ListBucketResult>"
+    );
+    let valid_a = catalog_json(CATALOG_ID_A, "Alpha", 1, 2);
+    let valid_b = catalog_json(CATALOG_ID_B, "Alpha", 3, 4);
+    let valid_c = catalog_json(CATALOG_ID_C, "Beta", 5, 6);
+    let malformed = b"{not-json".to_vec();
+    let unknown = format!(
+        "{{\"formatVersion\":1,\"repositoryId\":\"{CATALOG_ID_E}\",\"displayName\":\"Unknown\",\"createdAt\":1,\"updatedAt\":1,\"extra\":true}}"
+    )
+    .into_bytes();
+    let invalid_stored_name = catalog_json(CATALOG_ID_F, " Not Trimmed ", 1, 1);
+    let mismatch = catalog_json(CATALOG_ID_A, "Mismatch", 1, 1);
+    let mut oversized = catalog_json(CATALOG_ID_H, "Oversized", 1, 1);
+    oversized.resize(64 * 1024 + 1, b' ');
+    let fixture = HttpFixture::start(vec![
+        expected_request(
+            "GET",
+            CATALOG_LIST_TARGET,
+            vec![],
+            FixtureResponse::ok(first_list_xml),
+        ),
+        expected_request(
+            "GET",
+            CATALOG_LIST_NEXT_TARGET,
+            vec![],
+            FixtureResponse::ok(second_list_xml),
+        ),
+        expected_request(
+            "GET",
+            catalog_metadata_target(CATALOG_ID_A),
+            vec![],
+            FixtureResponse::ok(valid_a),
+        ),
+        expected_request(
+            "GET",
+            catalog_metadata_target(CATALOG_ID_B),
+            vec![],
+            FixtureResponse::ok(valid_b),
+        ),
+        expected_request(
+            "GET",
+            catalog_metadata_target(CATALOG_ID_C),
+            vec![],
+            FixtureResponse::ok(valid_c),
+        ),
+        expected_request(
+            "GET",
+            catalog_metadata_target(CATALOG_ID_D),
+            vec![],
+            FixtureResponse::ok(malformed),
+        ),
+        expected_request(
+            "GET",
+            catalog_metadata_target(CATALOG_ID_E),
+            vec![],
+            FixtureResponse::ok(unknown),
+        ),
+        expected_request(
+            "GET",
+            catalog_metadata_target(CATALOG_ID_F),
+            vec![],
+            FixtureResponse::ok(invalid_stored_name),
+        ),
+        expected_request(
+            "GET",
+            catalog_metadata_target(CATALOG_ID_G),
+            vec![],
+            FixtureResponse::ok(mismatch),
+        ),
+        expected_request(
+            "GET",
+            catalog_metadata_target(CATALOG_ID_H),
+            vec![],
+            FixtureResponse::ok(oversized),
+        ),
+        expected_request(
+            "GET",
+            catalog_metadata_target(CATALOG_ID_I),
+            vec![],
+            FixtureResponse::status(404),
+        ),
+    ])
+    .await;
+    let catalog = catalog(&fixture.endpoint, 1);
+
+    let result = catalog.list().await.unwrap();
+    assert_eq!(
+        result.entries,
+        vec![
+            RepositoryCatalogEntry {
+                repository_id: CATALOG_ID_A.to_string(),
+                display_name: "Alpha".to_string(),
+                created_at: 1,
+                updated_at: 2,
+            },
+            RepositoryCatalogEntry {
+                repository_id: CATALOG_ID_B.to_string(),
+                display_name: "Alpha".to_string(),
+                created_at: 3,
+                updated_at: 4,
+            },
+            RepositoryCatalogEntry {
+                repository_id: CATALOG_ID_C.to_string(),
+                display_name: "Beta".to_string(),
+                created_at: 5,
+                updated_at: 6,
+            },
+        ]
+    );
+    assert_eq!(
+        result
+            .issues
+            .iter()
+            .map(|issue| (issue.repository_id.as_deref(), issue.kind))
+            .collect::<Vec<_>>(),
+        vec![
+            (Some(CATALOG_ID_D), CatalogIssueKind::MalformedMetadata),
+            (Some(CATALOG_ID_E), CatalogIssueKind::MalformedMetadata),
+            (Some(CATALOG_ID_F), CatalogIssueKind::InvalidMetadata),
+            (Some(CATALOG_ID_G), CatalogIssueKind::RepositoryIdMismatch),
+            (Some(CATALOG_ID_H), CatalogIssueKind::MetadataTooLarge),
+            (Some(CATALOG_ID_I), CatalogIssueKind::MissingMetadata),
+            (None, CatalogIssueKind::InvalidRepositoryPrefix),
+            (None, CatalogIssueKind::InvalidRepositoryPrefix),
+            (None, CatalogIssueKind::InvalidRepositoryPrefix),
+        ]
+    );
+    fixture.finish(11).await;
+}
+
+#[tokio::test]
+async fn catalog_list_fails_closed_on_duplicate_canonical_repository_ids() {
+    let xml = format!(
+        "<ListBucketResult><IsTruncated>false</IsTruncated>\
+         <CommonPrefixes><Prefix>qingyu/repositories/{CATALOG_ID_A}/</Prefix></CommonPrefixes>\
+         <CommonPrefixes><Prefix>qingyu/repositories/{CATALOG_ID_A}/</Prefix></CommonPrefixes>\
+         </ListBucketResult>"
+    );
+    let fixture = HttpFixture::start(vec![expected_request(
+        "GET",
+        CATALOG_LIST_TARGET,
+        vec![],
+        FixtureResponse::ok(xml),
+    )])
+    .await;
+    let catalog = catalog(&fixture.endpoint, 1);
+
+    assert_eq!(
+        catalog.list().await.unwrap_err().code(),
+        "catalog_duplicate_repository_id"
+    );
+    fixture.finish(1).await;
+}
+
+#[tokio::test]
+async fn catalog_list_rejects_duplicate_or_missing_prefix_fields() {
+    let duplicate = format!(
+        "<ListBucketResult><IsTruncated>false</IsTruncated><CommonPrefixes>\
+         <Prefix>qingyu/repositories/{CATALOG_ID_A}/</Prefix>\
+         <Prefix>qingyu/repositories/{CATALOG_ID_B}/</Prefix>\
+         </CommonPrefixes></ListBucketResult>"
+    );
+    let missing =
+        "<ListBucketResult><IsTruncated>false</IsTruncated><CommonPrefixes><Other/></CommonPrefixes></ListBucketResult>";
+    for xml in [duplicate.as_bytes(), missing.as_bytes()] {
+        let fixture = HttpFixture::start(vec![expected_request(
+            "GET",
+            CATALOG_LIST_TARGET,
+            vec![],
+            FixtureResponse::ok(xml),
+        )])
+        .await;
+        let catalog = catalog(&fixture.endpoint, 1);
+        assert!(matches!(
+            catalog.list().await,
+            Err(CloudError::Backend { .. })
+        ));
+        fixture.finish(1).await;
+    }
+}
+
+#[tokio::test]
+async fn catalog_read_accepts_exactly_64_kib_and_rejects_the_next_byte() {
+    let mut exact = catalog_json(CATALOG_ID_A, "Notes", 1, 1);
+    exact.resize(64 * 1024, b' ');
+    let mut oversized = catalog_json(CATALOG_ID_A, "Notes", 1, 1);
+    oversized.resize(64 * 1024 + 1, b' ');
+    let target = catalog_metadata_target(CATALOG_ID_A);
+    let fixture = HttpFixture::start(vec![
+        expected_request("GET", target, vec![], FixtureResponse::ok(exact)),
+        expected_request("GET", target, vec![], FixtureResponse::ok(oversized)),
+    ])
+    .await;
+    let catalog = catalog(&fixture.endpoint, 1);
+
+    assert_eq!(
+        catalog.read(CATALOG_ID_A).await.unwrap().display_name,
+        "Notes"
+    );
+    assert!(matches!(
+        catalog.read(CATALOG_ID_A).await,
+        Err(CloudError::ResponseTooLarge { limit: 65_536 })
+    ));
+    fixture.finish(2).await;
+}
+
+#[tokio::test]
+async fn catalog_read_rejects_unsupported_version_and_noncanonical_stored_id() {
+    let version_two = format!(
+        "{{\"formatVersion\":2,\"repositoryId\":\"{CATALOG_ID_A}\",\"displayName\":\"Notes\",\"createdAt\":1,\"updatedAt\":1}}"
+    );
+    let uppercase_id =
+        b"{\"formatVersion\":1,\"repositoryId\":\"00000000-0000-4000-8000-00000000000A\",\"displayName\":\"Notes\",\"createdAt\":1,\"updatedAt\":1}";
+    let target = catalog_metadata_target(CATALOG_ID_A);
+    let fixture = HttpFixture::start(vec![
+        expected_request("GET", target, vec![], FixtureResponse::ok(version_two)),
+        expected_request("GET", target, vec![], FixtureResponse::ok(uppercase_id)),
+    ])
+    .await;
+    let catalog = catalog(&fixture.endpoint, 1);
+
+    for _ in 0..2 {
+        assert_eq!(
+            catalog.read(CATALOG_ID_A).await.unwrap_err().code(),
+            "catalog_invalid_metadata"
+        );
+    }
+    fixture.finish(2).await;
+}
+
+#[tokio::test]
+async fn catalog_create_checks_for_a_duplicate_before_writing_trimmed_metadata() {
+    let metadata = catalog_json(CATALOG_ID_A, "Notes", 10, 10);
+    let get_target = catalog_metadata_target(CATALOG_ID_A);
+    let put_target = catalog_object_target(CATALOG_ID_A, "metadata.json");
+    let mut put = expected_request("PUT", put_target, &metadata, FixtureResponse::status(200));
+    put.required_headers.extend([
+        ("content-type", "application/octet-stream"),
+        ("cache-control", "no-cache"),
+    ]);
+    put.absent_headers.extend(["if-match", "if-none-match"]);
+    let fixture = HttpFixture::start(vec![
+        expected_request("GET", get_target, vec![], FixtureResponse::status(404)),
+        put,
+    ])
+    .await;
+    let catalog = catalog(&fixture.endpoint, 1);
+
+    assert_eq!(
+        catalog.create(CATALOG_ID_A, "  Notes  ", 10).await.unwrap(),
+        RepositoryMetadata {
+            format_version: 1,
+            repository_id: CATALOG_ID_A.to_string(),
+            display_name: "Notes".to_string(),
+            created_at: 10,
+            updated_at: 10,
+        }
+    );
+    fixture.finish(2).await;
+}
+
+#[tokio::test]
+async fn catalog_create_does_not_overwrite_an_existing_repository_id() {
+    let fixture = HttpFixture::start(vec![expected_request(
+        "GET",
+        catalog_metadata_target(CATALOG_ID_A),
+        vec![],
+        FixtureResponse::ok(catalog_json(CATALOG_ID_A, "Existing", 1, 1)),
+    )])
+    .await;
+    let catalog = catalog(&fixture.endpoint, 1);
+
+    assert!(matches!(
+        catalog.create(CATALOG_ID_A, "New", 2).await,
+        Err(CloudError::AlreadyExists)
+    ));
+    fixture.finish(1).await;
+}
+
+#[tokio::test]
+async fn catalog_create_rejects_escaped_metadata_over_64_kib_before_network_io() {
+    let fixture = HttpFixture::start(vec![]).await;
+    let catalog = catalog(&fixture.endpoint, 1);
+    let escaped_name = "\"".repeat(40 * 1024);
+
+    assert_eq!(
+        catalog
+            .create(CATALOG_ID_A, &escaped_name, 1)
+            .await
+            .unwrap_err()
+            .code(),
+        "catalog_metadata_too_large"
+    );
+    fixture.finish(0).await;
+}
+
+#[tokio::test]
+async fn catalog_rename_changes_only_trimmed_name_and_updated_at() {
+    let before = catalog_json(CATALOG_ID_A, "Before", 10, 20);
+    let after = catalog_json(CATALOG_ID_A, "After", 10, 30);
+    let mut put = expected_request(
+        "PUT",
+        catalog_object_target(CATALOG_ID_A, "metadata.json"),
+        &after,
+        FixtureResponse::status(200),
+    );
+    put.absent_headers.extend(["if-match", "if-none-match"]);
+    let fixture = HttpFixture::start(vec![
+        expected_request(
+            "GET",
+            catalog_metadata_target(CATALOG_ID_A),
+            vec![],
+            FixtureResponse::ok(before),
+        ),
+        put,
+    ])
+    .await;
+    let catalog = catalog(&fixture.endpoint, 1);
+
+    assert_eq!(
+        catalog.rename(CATALOG_ID_A, "  After ", 30).await.unwrap(),
+        RepositoryMetadata {
+            format_version: 1,
+            repository_id: CATALOG_ID_A.to_string(),
+            display_name: "After".to_string(),
+            created_at: 10,
+            updated_at: 30,
+        }
+    );
+    fixture.finish(2).await;
+}
+
+#[tokio::test]
+async fn catalog_rename_does_not_put_escaped_metadata_over_64_kib() {
+    let fixture = HttpFixture::start(vec![expected_request(
+        "GET",
+        catalog_metadata_target(CATALOG_ID_A),
+        vec![],
+        FixtureResponse::ok(catalog_json(CATALOG_ID_A, "Before", 10, 20)),
+    )])
+    .await;
+    let catalog = catalog(&fixture.endpoint, 1);
+    let escaped_name = "\"".repeat(40 * 1024);
+
+    assert_eq!(
+        catalog
+            .rename(CATALOG_ID_A, &escaped_name, 30)
+            .await
+            .unwrap_err()
+            .code(),
+        "catalog_metadata_too_large"
+    );
+    fixture.finish(1).await;
+}
+
+#[tokio::test]
+async fn catalog_delete_paginates_and_deletes_metadata_last() {
+    let first_target = leak(format!(
+        "/qingyu-notes?list-type=2&max-keys=1000&prefix=qingyu%2Frepositories%2F{}%2F",
+        CATALOG_ID_A
+    ));
+    let second_target = leak(format!(
+        "/qingyu-notes?continuation-token=next&list-type=2&max-keys=1000&prefix=qingyu%2Frepositories%2F{}%2F",
+        CATALOG_ID_A
+    ));
+    let first_page = format!(
+        "<ListBucketResult><IsTruncated>true</IsTruncated><NextContinuationToken>next</NextContinuationToken>\
+         <Contents><Key>qingyu/repositories/{CATALOG_ID_A}/metadata.json</Key><Size>10</Size></Contents>\
+         <Contents><Key>qingyu/repositories/{CATALOG_ID_A}/repo/objects/aa/one</Key><Size>11</Size></Contents>\
+         </ListBucketResult>"
+    );
+    let second_page = format!(
+        "<ListBucketResult><IsTruncated>false</IsTruncated>\
+         <Contents><Key>qingyu/repositories/{CATALOG_ID_A}/repo/refs/latest</Key><Size>40</Size></Contents>\
+         </ListBucketResult>"
+    );
+    let mut delete_object = expected_request(
+        "DELETE",
+        catalog_object_target(CATALOG_ID_A, "repo/objects/aa/one"),
+        vec![],
+        FixtureResponse::status(204),
+    );
+    delete_object
+        .absent_headers
+        .extend(["if-match", "if-none-match"]);
+    let mut delete_ref = expected_request(
+        "DELETE",
+        catalog_object_target(CATALOG_ID_A, "repo/refs/latest"),
+        vec![],
+        FixtureResponse::status(204),
+    );
+    delete_ref
+        .absent_headers
+        .extend(["if-match", "if-none-match"]);
+    let mut delete_metadata = expected_request(
+        "DELETE",
+        catalog_object_target(CATALOG_ID_A, "metadata.json"),
+        vec![],
+        FixtureResponse::status(204),
+    );
+    delete_metadata
+        .absent_headers
+        .extend(["if-match", "if-none-match"]);
+    let fixture = HttpFixture::start(vec![
+        expected_request("GET", first_target, vec![], FixtureResponse::ok(first_page)),
+        expected_request(
+            "GET",
+            second_target,
+            vec![],
+            FixtureResponse::ok(second_page),
+        ),
+        delete_object,
+        delete_ref,
+        delete_metadata,
+    ])
+    .await;
+    let catalog = catalog(&fixture.endpoint, 1);
+
+    catalog.delete_repository(CATALOG_ID_A).await.unwrap();
+    fixture.finish(5).await;
+}
+
+#[tokio::test]
+async fn catalog_delete_rejects_cross_prefix_listing_before_any_delete() {
+    let target = leak(format!(
+        "/qingyu-notes?list-type=2&max-keys=1000&prefix=qingyu%2Frepositories%2F{}%2F",
+        CATALOG_ID_A
+    ));
+    let page = format!(
+        "<ListBucketResult><IsTruncated>false</IsTruncated>\
+         <Contents><Key>qingyu/repositories/{CATALOG_ID_A}/repo/refs/latest</Key><Size>40</Size></Contents>\
+         <Contents><Key>qingyu/repositories/{CATALOG_ID_B}/metadata.json</Key><Size>10</Size></Contents>\
+         </ListBucketResult>"
+    );
+    let fixture = HttpFixture::start(vec![expected_request(
+        "GET",
+        target,
+        vec![],
+        FixtureResponse::ok(page),
+    )])
+    .await;
+    let catalog = catalog(&fixture.endpoint, 1);
+
+    assert!(matches!(
+        catalog.delete_repository(CATALOG_ID_A).await,
+        Err(CloudError::UnsafeKey)
+    ));
+    fixture.finish(1).await;
+}
+
+#[tokio::test]
+async fn catalog_delete_removes_listed_objects_when_metadata_is_missing() {
+    let target = leak(format!(
+        "/qingyu-notes?list-type=2&max-keys=1000&prefix=qingyu%2Frepositories%2F{}%2F",
+        CATALOG_ID_A
+    ));
+    let page = format!(
+        "<ListBucketResult><IsTruncated>false</IsTruncated>\
+         <Contents><Key>qingyu/repositories/{CATALOG_ID_A}/repo/refs/latest</Key><Size>40</Size></Contents>\
+         </ListBucketResult>"
+    );
+    let fixture = HttpFixture::start(vec![
+        expected_request("GET", target, vec![], FixtureResponse::ok(page)),
+        expected_request(
+            "DELETE",
+            catalog_object_target(CATALOG_ID_A, "repo/refs/latest"),
+            vec![],
+            FixtureResponse::status(204),
+        ),
+    ])
+    .await;
+    let catalog = catalog(&fixture.endpoint, 1);
+
+    catalog.delete_repository(CATALOG_ID_A).await.unwrap();
+    fixture.finish(2).await;
+}
+
+#[tokio::test]
+async fn catalog_list_propagates_auth_and_provider_failures() {
+    for status in [403, 500] {
+        let fixture = HttpFixture::start(vec![expected_request(
+            "GET",
+            CATALOG_LIST_TARGET,
+            vec![],
+            FixtureResponse::status(status),
+        )])
+        .await;
+        let catalog = catalog(&fixture.endpoint, 1);
+        let error = catalog.list().await.unwrap_err();
+        if status == 403 {
+            assert!(matches!(error, CloudError::Forbidden));
+        } else {
+            assert!(matches!(
+                error,
+                CloudError::S3Response {
+                    status: 500,
+                    retryable: true,
+                    ..
+                }
+            ));
+        }
+        fixture.finish(1).await;
+    }
+}
+
+#[tokio::test]
+async fn catalog_read_reuses_retry_and_redirect_boundaries() {
+    let target = catalog_metadata_target(CATALOG_ID_A);
+    let fixture = HttpFixture::start(vec![
+        expected_request("GET", target, vec![], FixtureResponse::status(503)),
+        expected_request(
+            "GET",
+            target,
+            vec![],
+            FixtureResponse::ok(catalog_json(CATALOG_ID_A, "Notes", 1, 1)),
+        ),
+    ])
+    .await;
+    let retrying_catalog = catalog(&fixture.endpoint, 2);
+    assert_eq!(
+        retrying_catalog
+            .read(CATALOG_ID_A)
+            .await
+            .unwrap()
+            .display_name,
+        "Notes"
+    );
+    fixture.finish(2).await;
+
+    let redirect = FixtureResponse::Http {
+        status: 307,
+        headers: vec![("Location", "http://127.0.0.1:1/credential-leak")],
+        body: vec![],
+        declared_length: None,
+    };
+    let fixture = HttpFixture::start(vec![expected_request("GET", target, vec![], redirect)]).await;
+    let redirect_catalog = catalog(&fixture.endpoint, 3);
+    assert!(matches!(
+        redirect_catalog.read(CATALOG_ID_A).await,
+        Err(CloudError::S3Response {
+            status: 307,
+            retryable: false,
+            ..
+        })
+    ));
+    fixture.finish(1).await;
+}
+
+#[tokio::test]
+async fn repository_cloud_list_cannot_expose_outer_catalog_metadata() {
+    let target =
+        "/qingyu-notes?list-type=2&max-keys=1000&prefix=qingyu%2Frepositories%2Frepo-a%2Frepo%2F";
+    let xml = format!(
+        "<ListBucketResult><IsTruncated>false</IsTruncated>\
+         <Contents><Key>qingyu/repositories/{CATALOG_ID_A}/metadata.json</Key><Size>10</Size></Contents>\
+         </ListBucketResult>"
+    );
+    let fixture = HttpFixture::start(vec![expected_request(
+        "GET",
+        target,
+        vec![],
+        FixtureResponse::ok(xml),
+    )])
+    .await;
+    let cloud = cloud(&fixture.endpoint, 1);
+
+    assert!(matches!(cloud.list("").await, Err(CloudError::UnsafeKey)));
+    fixture.finish(1).await;
+}
+
+#[tokio::test]
+async fn repository_cloud_list_rejects_nonempty_common_prefixes_without_a_delimiter() {
+    let target =
+        "/qingyu-notes?list-type=2&max-keys=1000&prefix=qingyu%2Frepositories%2Frepo-a%2Frepo%2F";
+    let xml = format!(
+        "<ListBucketResult><IsTruncated>false</IsTruncated><CommonPrefixes>\
+         <Prefix>{REPOSITORY_PREFIX}/objects/</Prefix>\
+         </CommonPrefixes></ListBucketResult>"
+    );
+    let fixture = HttpFixture::start(vec![expected_request(
+        "GET",
+        target,
+        vec![],
+        FixtureResponse::ok(xml),
+    )])
+    .await;
+    let cloud = cloud(&fixture.endpoint, 1);
+
+    assert!(matches!(cloud.list("").await, Err(CloudError::UnsafeKey)));
+    fixture.finish(1).await;
 }

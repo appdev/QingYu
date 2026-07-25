@@ -20,6 +20,12 @@ use super::{
 
 const CONTENT_TYPE_BINARY: &str = "application/octet-stream";
 const MAX_REQUEST_ID_BYTES: usize = 128;
+const CATALOG_ROOT_PREFIX: &str = "qingyu/repositories";
+
+pub(crate) struct S3CatalogDirectoryListing {
+    pub prefixes: Vec<String>,
+    pub invalid_direct_object_count: usize,
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct S3TransportOptions {
@@ -79,6 +85,27 @@ impl S3Cloud {
         now: Arc<dyn Fn() -> OffsetDateTime + Send + Sync>,
     ) -> Result<Self, CloudError> {
         validate_repository_prefix(repository_prefix)?;
+        Self::new_with_validated_prefix(connection, options, repository_prefix, now)
+    }
+
+    pub(crate) fn new_catalog_transport(
+        connection: S3Connection,
+        options: S3TransportOptions,
+    ) -> Result<Self, CloudError> {
+        Self::new_with_validated_prefix(
+            connection,
+            options,
+            CATALOG_ROOT_PREFIX,
+            Arc::new(OffsetDateTime::now_utc),
+        )
+    }
+
+    fn new_with_validated_prefix(
+        connection: S3Connection,
+        options: S3TransportOptions,
+        repository_prefix: &str,
+        now: Arc<dyn Fn() -> OffsetDateTime + Send + Sync>,
+    ) -> Result<Self, CloudError> {
         if options.request_timeout.is_zero() || !(1..=3).contains(&options.max_attempts) {
             return Err(CloudError::backend("s3_invalid_transport_options"));
         }
@@ -115,7 +142,12 @@ impl S3Cloud {
         Ok(url)
     }
 
-    fn list_url(&self, prefix: &str, continuation: Option<&str>) -> Result<Url, CloudError> {
+    fn list_url(
+        &self,
+        prefix: &str,
+        continuation: Option<&str>,
+        delimiter: Option<&str>,
+    ) -> Result<Url, CloudError> {
         validate_relative(prefix, true)?;
         let full_prefix = format!("{}/{}", self.repository_prefix, prefix);
         let mut url = self.connection.bucket_url()?;
@@ -124,12 +156,51 @@ impl S3Cloud {
             if let Some(continuation) = continuation {
                 query.append_pair("continuation-token", continuation);
             }
+            if let Some(delimiter) = delimiter {
+                query.append_pair("delimiter", delimiter);
+            }
             query
                 .append_pair("list-type", "2")
                 .append_pair("max-keys", "1000")
                 .append_pair("prefix", &full_prefix);
         }
         Ok(url)
+    }
+
+    pub(crate) async fn list_catalog_directories(
+        &self,
+    ) -> Result<S3CatalogDirectoryListing, CloudError> {
+        if self.repository_prefix != CATALOG_ROOT_PREFIX {
+            return Err(CloudError::UnsafeKey);
+        }
+        let full_prefix = format!("{}/", self.repository_prefix);
+        let mut continuation: Option<String> = None;
+        let mut seen_continuations = HashSet::new();
+        let mut prefixes = Vec::new();
+        let mut invalid_direct_object_count = 0_usize;
+        loop {
+            let url = self.list_url("", continuation.as_deref(), Some("/"))?;
+            let response = self.send_empty_with_retry(Method::GET, &url).await?;
+            let page = parse_list_page(response, &self.repository_prefix, &full_prefix).await?;
+            prefixes.extend(page.common_prefixes);
+            invalid_direct_object_count = invalid_direct_object_count
+                .checked_add(page.objects.len())
+                .ok_or_else(|| CloudError::backend("catalog_issue_count_overflow"))?;
+            if !page.is_truncated {
+                break;
+            }
+            let next = page
+                .next_continuation_token
+                .ok_or_else(|| CloudError::backend("s3_list_missing_continuation"))?;
+            if next.is_empty() || !seen_continuations.insert(next.clone()) {
+                return Err(CloudError::backend("s3_list_stalled_continuation"));
+            }
+            continuation = Some(next);
+        }
+        Ok(S3CatalogDirectoryListing {
+            prefixes,
+            invalid_direct_object_count,
+        })
     }
 
     fn signed_empty_request(
@@ -451,9 +522,12 @@ impl Cloud for S3Cloud {
         let mut seen_continuations = HashSet::new();
         let mut objects = Vec::new();
         loop {
-            let url = self.list_url(prefix, continuation.as_deref())?;
+            let url = self.list_url(prefix, continuation.as_deref(), None)?;
             let response = self.send_empty_with_retry(Method::GET, &url).await?;
             let page = parse_list_page(response, &self.repository_prefix, &full_prefix).await?;
+            if !page.common_prefixes.is_empty() {
+                return Err(CloudError::UnsafeKey);
+            }
             objects.extend(page.objects);
             if !page.is_truncated {
                 break;

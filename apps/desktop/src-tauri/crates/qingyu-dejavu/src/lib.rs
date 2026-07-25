@@ -1,4 +1,5 @@
 pub mod atomic_write;
+pub mod catalog;
 pub mod chunker;
 pub mod cloud;
 pub mod crypto;
@@ -19,6 +20,10 @@ pub mod working_tree;
 mod error;
 
 pub use atomic_write::write_file_safer;
+pub use catalog::{
+    CatalogIssue, CatalogIssueKind, RepositoryCatalogEntry, RepositoryCatalogList,
+    RepositoryMetadata, S3RepositoryCatalog,
+};
 pub use chunker::{ChunkBoundary, RabinChunker};
 pub use cloud::{
     Cloud, CloudError, CloudObject, CloudOperation, CloudUploadSource, LocalCloud,
