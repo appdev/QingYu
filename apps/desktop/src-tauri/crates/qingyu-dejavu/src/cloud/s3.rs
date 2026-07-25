@@ -44,6 +44,7 @@ pub struct S3Cloud {
     client: reqwest::Client,
     options: S3TransportOptions,
     repository_prefix: String,
+    now: Arc<dyn Fn() -> OffsetDateTime + Send + Sync>,
 }
 
 impl fmt::Debug for S3Cloud {
@@ -63,7 +64,21 @@ impl S3Cloud {
         options: S3TransportOptions,
         repository_prefix: &str,
     ) -> Result<Self, CloudError> {
-        validate_relative(repository_prefix, false)?;
+        Self::new_with_clock(
+            connection,
+            options,
+            repository_prefix,
+            Arc::new(OffsetDateTime::now_utc),
+        )
+    }
+
+    fn new_with_clock(
+        connection: S3Connection,
+        options: S3TransportOptions,
+        repository_prefix: &str,
+        now: Arc<dyn Fn() -> OffsetDateTime + Send + Sync>,
+    ) -> Result<Self, CloudError> {
+        validate_repository_prefix(repository_prefix)?;
         if options.request_timeout.is_zero() || !(1..=3).contains(&options.max_attempts) {
             return Err(CloudError::backend("s3_invalid_transport_options"));
         }
@@ -83,6 +98,7 @@ impl S3Cloud {
             client,
             options,
             repository_prefix: repository_prefix.to_string(),
+            now,
         })
     }
 
@@ -90,6 +106,13 @@ impl S3Cloud {
         validate_relative(key, false)?;
         self.connection
             .object_url(&format!("{}/{key}", self.repository_prefix))
+    }
+
+    fn object_get_url(&self, key: &str) -> Result<Url, CloudError> {
+        let mut url = self.object_url(key)?;
+        url.query_pairs_mut()
+            .append_pair("response-cache-control", "no-cache");
+        Ok(url)
     }
 
     fn list_url(&self, prefix: &str, continuation: Option<&str>) -> Result<Url, CloudError> {
@@ -114,9 +137,7 @@ impl S3Cloud {
         method: Method,
         url: Url,
     ) -> Result<reqwest::RequestBuilder, CloudError> {
-        let headers = self
-            .signer
-            .sign_empty_at(&method, &url, OffsetDateTime::now_utc())?;
+        let headers = self.signer.sign_empty_at(&method, &url, (self.now)())?;
         Ok(self.client.request(method, url).headers(headers))
     }
 
@@ -131,7 +152,7 @@ impl S3Cloud {
             &url,
             bytes,
             Some(CONTENT_TYPE_BINARY),
-            OffsetDateTime::now_utc(),
+            (self.now)(),
         )?;
         headers.insert(CACHE_CONTROL, HeaderValue::from_static("no-cache"));
         Ok(self
@@ -154,7 +175,7 @@ impl S3Cloud {
             payload_hash,
             content_length,
             Some(CONTENT_TYPE_BINARY),
-            OffsetDateTime::now_utc(),
+            (self.now)(),
         )?;
         headers.insert(CACHE_CONTROL, HeaderValue::from_static("no-cache"));
         Ok(self
@@ -229,7 +250,7 @@ impl S3Cloud {
 #[async_trait::async_trait]
 impl Cloud for S3Cloud {
     async fn get_bounded(&self, key: &str, max_bytes: u64) -> Result<Vec<u8>, CloudError> {
-        let url = self.object_url(key)?;
+        let url = self.object_get_url(key)?;
         for attempt in 0..self.options.max_attempts {
             let response = self
                 .signed_empty_request(Method::GET, url.clone())?
@@ -297,7 +318,7 @@ impl Cloud for S3Cloud {
         key: &str,
         destination: &mut (dyn AsyncWrite + Unpin + Send),
     ) -> Result<u64, CloudError> {
-        let url = self.object_url(key)?;
+        let url = self.object_get_url(key)?;
         for attempt in 0..self.options.max_attempts {
             let response = self
                 .signed_empty_request(Method::GET, url.clone())?
@@ -627,6 +648,25 @@ pub(super) fn validate_relative(
     Ok(())
 }
 
+fn validate_repository_prefix(repository_prefix: &str) -> Result<(), CloudError> {
+    validate_relative(repository_prefix, false)?;
+    let mut segments = repository_prefix.split('/');
+    match (
+        segments.next(),
+        segments.next(),
+        segments.next(),
+        segments.next(),
+        segments.next(),
+    ) {
+        (Some("qingyu"), Some("repositories"), Some(repository_id), Some("repo"), None)
+            if !repository_id.is_empty() =>
+        {
+            validate_relative(repository_id, false)
+        }
+        _ => Err(CloudError::UnsafeKey),
+    }
+}
+
 fn response_error(response: &Response) -> CloudError {
     let status = response.status().as_u16();
     match status {
@@ -671,4 +711,108 @@ fn hex_lower(bytes: &[u8]) -> String {
         output.push(HEX[(byte & 0x0f) as usize] as char);
     }
     output
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use reqwest::header::AUTHORIZATION;
+
+    use super::*;
+    use crate::cloud::S3AddressingStyle;
+
+    fn connection() -> S3Connection {
+        S3Connection::new(
+            "https://s3.example.test",
+            "us-east-1",
+            "qingyu-notes",
+            "test-key",
+            "test-secret",
+            S3AddressingStyle::Path,
+        )
+        .expect("valid test S3 connection")
+    }
+
+    fn options() -> S3TransportOptions {
+        S3TransportOptions {
+            request_timeout: Duration::from_secs(1),
+            tls_verification: S3TlsVerification::Verify,
+            max_attempts: 3,
+        }
+    }
+
+    #[test]
+    fn request_construction_reads_a_fresh_clock_for_each_signature() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let calls_for_clock = Arc::clone(&calls);
+        let clock = Arc::new(move || {
+            let offset = calls_for_clock.fetch_add(1, Ordering::SeqCst) as i64;
+            OffsetDateTime::from_unix_timestamp(1_784_181_600 + offset)
+                .expect("fixed test timestamp")
+        });
+        let cloud = S3Cloud::new_with_clock(
+            connection(),
+            options(),
+            "qingyu/repositories/repo-a/repo",
+            clock,
+        )
+        .expect("valid S3 cloud");
+        let url = cloud
+            .object_get_url("refs/latest")
+            .expect("valid Dejavu GET URL");
+
+        let first = cloud
+            .signed_empty_request(Method::GET, url.clone())
+            .expect("first signed request")
+            .build()
+            .expect("build first request");
+        let second = cloud
+            .signed_empty_request(Method::GET, url)
+            .expect("second signed request")
+            .build()
+            .expect("build second request");
+
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert_ne!(
+            first.headers()["x-amz-date"],
+            second.headers()["x-amz-date"]
+        );
+        assert_ne!(
+            first.headers()[AUTHORIZATION],
+            second.headers()[AUTHORIZATION]
+        );
+    }
+
+    #[test]
+    fn dejavu_response_cache_query_is_part_of_the_get_signature() {
+        let now = OffsetDateTime::from_unix_timestamp(1_784_181_600).expect("fixed test timestamp");
+        let cloud = S3Cloud::new_with_clock(
+            connection(),
+            options(),
+            "qingyu/repositories/repo-a/repo",
+            Arc::new(move || now),
+        )
+        .expect("valid S3 cloud");
+        let url = cloud
+            .object_get_url("refs/latest")
+            .expect("valid Dejavu GET URL");
+        assert_eq!(url.query(), Some("response-cache-control=no-cache"));
+        let with_query = cloud
+            .signed_empty_request(Method::GET, url.clone())
+            .expect("signed Dejavu GET")
+            .build()
+            .expect("build Dejavu GET");
+        let mut without_query_url = url;
+        without_query_url.set_query(None);
+        let without_query = cloud
+            .signer
+            .sign_empty_at(&Method::GET, &without_query_url, now)
+            .expect("sign comparison URL");
+
+        assert_ne!(
+            with_query.headers()[AUTHORIZATION],
+            without_query[AUTHORIZATION]
+        );
+    }
 }

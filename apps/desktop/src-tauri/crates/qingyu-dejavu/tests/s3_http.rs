@@ -12,6 +12,7 @@ use qingyu_dejavu::{
 };
 use reqwest::header::{AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE, HOST};
 use reqwest::Method;
+use sha2::{Digest, Sha256};
 use time::OffsetDateTime;
 use tokio::io::{AsyncRead, ReadBuf};
 use tokio::net::TcpListener;
@@ -19,6 +20,10 @@ use tokio::net::TcpListener;
 const FIXED_TIME: i64 = 1_784_181_600;
 const EMPTY_SHA256: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 const REPOSITORY_PREFIX: &str = "qingyu/repositories/repo-a/repo";
+const REF_GET_TARGET: &str =
+    "/qingyu-notes/qingyu/repositories/repo-a/repo/refs/latest?response-cache-control=no-cache";
+const OBJECT_GET_TARGET: &str =
+    "/qingyu-notes/qingyu/repositories/repo-a/repo/objects/ab/cdef?response-cache-control=no-cache";
 
 fn connection(addressing_style: S3AddressingStyle) -> S3Connection {
     S3Connection::new(
@@ -280,6 +285,7 @@ struct ExpectedRequest {
     required_headers: Vec<(&'static str, &'static str)>,
     absent_headers: Vec<&'static str>,
     body: Vec<u8>,
+    payload_sha256: String,
     body_read: FixtureBodyRead,
     response: FixtureResponse,
 }
@@ -481,6 +487,11 @@ fn assert_request(head: &str, body: &[u8], expected: &ExpectedRequest) {
         format!("{} {} HTTP/1.1", expected.method, expected.target)
     );
     let headers = parse_request_headers(head);
+    assert_eq!(
+        headers.get("x-amz-content-sha256"),
+        Some(&expected.payload_sha256),
+        "wrong signed payload hash"
+    );
     for (name, value) in &expected.required_headers {
         let actual = headers
             .get(&name.to_ascii_lowercase())
@@ -506,15 +517,24 @@ fn expected_request(
     body: impl AsRef<[u8]>,
     response: FixtureResponse,
 ) -> ExpectedRequest {
+    let body = body.as_ref().to_vec();
     ExpectedRequest {
         method,
         target,
         required_headers: vec![("authorization", "<aws4>")],
         absent_headers: vec![],
-        body: body.as_ref().to_vec(),
+        payload_sha256: sha256_hex(&body),
+        body,
         body_read: FixtureBodyRead::Full,
         response,
     }
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 fn cloud(endpoint: &str, max_attempts: usize) -> S3Cloud {
@@ -675,7 +695,7 @@ async fn cloud_put_uses_plain_no_cache_put_for_both_overwrite_values_and_true_em
 
 #[tokio::test]
 async fn cloud_get_is_bounded_at_max_plus_one_and_maps_404_to_not_found() {
-    let target = "/qingyu-notes/qingyu/repositories/repo-a/repo/refs/latest";
+    let target = REF_GET_TARGET;
     let fixture = HttpFixture::start(vec![
         expected_request("GET", target, vec![], FixtureResponse::ok(b"hello")),
         expected_request("GET", target, vec![], FixtureResponse::ok(b"hello")),
@@ -698,7 +718,7 @@ async fn cloud_get_is_bounded_at_max_plus_one_and_maps_404_to_not_found() {
 
 #[tokio::test]
 async fn cloud_get_retries_a_body_failure_before_retaining_the_first_byte() {
-    let target = "/qingyu-notes/qingyu/repositories/repo-a/repo/refs/latest";
+    let target = REF_GET_TARGET;
     let fixture = HttpFixture::start(vec![
         expected_request(
             "GET",
@@ -722,7 +742,7 @@ async fn cloud_get_retries_a_body_failure_before_retaining_the_first_byte() {
 
 #[tokio::test]
 async fn cloud_download_streams_once_and_never_appends_a_retry_after_partial_body() {
-    let target = "/qingyu-notes/qingyu/repositories/repo-a/repo/objects/ab/cdef";
+    let target = OBJECT_GET_TARGET;
     let fixture = HttpFixture::start(vec![
         expected_request("GET", target, vec![], FixtureResponse::ok(b"abcdef")),
         expected_request(
@@ -762,7 +782,7 @@ async fn cloud_download_streams_once_and_never_appends_a_retry_after_partial_bod
 
 #[tokio::test]
 async fn cloud_download_counts_header_retries_and_zero_byte_body_failure_in_one_attempt_budget() {
-    let target = "/qingyu-notes/qingyu/repositories/repo-a/repo/objects/ab/cdef";
+    let target = OBJECT_GET_TARGET;
     let fixture = HttpFixture::start(vec![
         expected_request("GET", target, vec![], FixtureResponse::status(503)),
         expected_request("GET", target, vec![], FixtureResponse::status(503)),
@@ -820,6 +840,7 @@ async fn cloud_upload_reopens_and_retries_after_the_server_drops_a_partial_put()
     let payload = vec![b'x'; 256 * 1024];
     let mut first = expected_request("PUT", target, &payload[..1024], FixtureResponse::Disconnect);
     first.body_read = FixtureBodyRead::Prefix(1024);
+    first.payload_sha256 = sha256_hex(&payload);
     first.required_headers.push(("content-length", "262144"));
     let second = expected_request("PUT", target, &payload, FixtureResponse::ok(vec![]));
     let fixture = HttpFixture::start(vec![first, second]).await;
@@ -901,7 +922,7 @@ async fn cloud_delete_is_unconditional_and_has_no_if_match_header() {
 async fn cloud_list_paginates_strips_only_the_repository_prefix_and_sorts_keys() {
     let first_target = "/qingyu-notes?list-type=2&max-keys=1000&prefix=qingyu%2Frepositories%2Frepo-a%2Frepo%2Fobjects%2F";
     let second_target = "/qingyu-notes?continuation-token=next%2Btoken&list-type=2&max-keys=1000&prefix=qingyu%2Frepositories%2Frepo-a%2Frepo%2Fobjects%2F";
-    let first_xml = br#"<ListBucketResult><IsTruncated>true</IsTruncated><NextContinuationToken>next+token</NextContinuationToken><Contents><Key>qingyu/repositories/repo-a/repo/objects/zz/item</Key><Size>9</Size></Contents></ListBucketResult>"#;
+    let first_xml = br#"<ListBucketResult><CommonPrefixes/><CustomSibling/><IsTruncated>true</IsTruncated><NextContinuationToken>next+token</NextContinuationToken><Contents><Key>qingyu/repositories/repo-a/repo/objects/zz/item</Key><Size>9</Size></Contents></ListBucketResult>"#;
     let second_xml = br#"<ListBucketResult><IsTruncated>false</IsTruncated><Contents><Key>qingyu/repositories/repo-a/repo/objects/ab/cdef</Key><Size>4</Size></Contents></ListBucketResult>"#;
     let fixture = HttpFixture::start(vec![
         expected_request("GET", first_target, vec![], FixtureResponse::ok(first_xml)),
@@ -943,6 +964,8 @@ async fn cloud_list_rejects_malformed_truncated_cross_prefix_and_stalled_paginat
         br#"<ListBucketResult><IsTruncated>false</IsTruncated></ListBucketResult><ListBucketResult><IsTruncated>false</IsTruncated></ListBucketResult>"#,
         br#"<ListBucketResult><IsTruncated>false</IsTruncated></ListBucketResult>trailing"#,
         br#"<ListBucketResult><Wrapper><IsTruncated>false</IsTruncated></Wrapper></ListBucketResult>"#,
+        br#"<ListBucketResult><IsTruncated>false</IsTruncated><Contents/></ListBucketResult>"#,
+        br#"<ListBucketResult><IsTruncated>false</IsTruncated><NextContinuationToken/></ListBucketResult>"#,
     ];
     for (index, xml) in cases.into_iter().enumerate() {
         let fixture = HttpFixture::start(vec![expected_request(
@@ -1047,7 +1070,7 @@ async fn cloud_list_rejects_oversized_xml_fields_and_more_than_one_thousand_cont
 
 #[tokio::test]
 async fn cloud_retries_only_transient_http_statuses_and_re_signs_each_attempt() {
-    let target = "/qingyu-notes/qingyu/repositories/repo-a/repo/refs/latest";
+    let target = REF_GET_TARGET;
     for status in [408, 429, 500, 502, 503, 504] {
         let fixture = HttpFixture::start(vec![
             expected_request("GET", target, vec![], FixtureResponse::status(status)),
@@ -1063,7 +1086,7 @@ async fn cloud_retries_only_transient_http_statuses_and_re_signs_each_attempt() 
 
 #[tokio::test]
 async fn cloud_retries_connection_failure_but_not_400_401_403_or_redirects() {
-    let target = "/qingyu-notes/qingyu/repositories/repo-a/repo/refs/latest";
+    let target = REF_GET_TARGET;
     let fixture = HttpFixture::start(vec![
         expected_request("GET", target, vec![], FixtureResponse::Disconnect),
         expected_request("GET", target, vec![], FixtureResponse::ok(b"ok")),
@@ -1106,7 +1129,7 @@ async fn cloud_retries_connection_failure_but_not_400_401_403_or_redirects() {
 
 #[tokio::test]
 async fn cloud_provider_diagnostics_bound_request_ids_without_response_bodies() {
-    let target = "/qingyu-notes/qingyu/repositories/repo-a/repo/refs/latest";
+    let target = REF_GET_TARGET;
     let secret_body = b"do-not-retain-this-provider-body";
     let long_request_id = "x".repeat(300);
     let leaked: &'static str = Box::leak(long_request_id.into_boxed_str());
@@ -1183,6 +1206,12 @@ async fn cloud_rejects_unsafe_repository_prefixes_keys_and_list_prefixes_before_
         "qingyu//repo",
         "qingyu/../repo",
         "qingyu\\repo",
+        "qingyu/repositories",
+        "qingyu/repositories/repo-a",
+        "catalog",
+        "qingyu/repositories//repo",
+        "qingyu/repositories/repo-a/repo/extra",
+        "qingyu/extra/repositories/repo-a/repo",
     ] {
         assert!(S3Cloud::new(connection.clone(), options, prefix).is_err());
     }

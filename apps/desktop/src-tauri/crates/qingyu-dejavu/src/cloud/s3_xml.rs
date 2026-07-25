@@ -208,7 +208,11 @@ pub(super) async fn parse_list_page(
             }
             Event::Eof => break,
             Event::Decl(_) | Event::PI(_) | Event::Comment(_) => {}
-            Event::Empty(_) if root_open && current_field.is_none() => {}
+            Event::Empty(empty)
+                if root_open
+                    && depth == 1
+                    && current_field.is_none()
+                    && !is_known_element(empty.local_name().as_ref()) => {}
             Event::Empty(_) | Event::DocType(_) | Event::GeneralRef(_) => {
                 return Err(CloudError::backend("s3_list_invalid_xml"));
             }
@@ -229,6 +233,18 @@ pub(super) async fn parse_list_page(
         is_truncated,
         next_continuation_token,
     })
+}
+
+fn is_known_element(name: &[u8]) -> bool {
+    matches!(
+        name,
+        b"ListBucketResult"
+            | b"Contents"
+            | b"Key"
+            | b"Size"
+            | b"IsTruncated"
+            | b"NextContinuationToken"
+    )
 }
 
 fn start_field(current: &mut Option<Field>, field: Field) -> Result<(), CloudError> {
