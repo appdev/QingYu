@@ -290,6 +290,10 @@ git commit -m "feat(sync): add Dejavu background job service"
 ### Task 4: Port SiYuan scheduling, backoff, DNS retry, and active-root behavior
 
 **Files:**
+- Modify: `apps/desktop/src-tauri/Cargo.toml`
+- Modify: `apps/desktop/src-tauri/Cargo.lock`
+- Modify: `apps/desktop/src-tauri/crates/qingyu-dejavu/src/cloud/mod.rs`
+- Modify: `apps/desktop/src-tauri/crates/qingyu-dejavu/src/cloud/s3.rs`
 - Create: `apps/desktop/src-tauri/src/dejavu_sync/scheduler.rs`
 - Modify: `apps/desktop/src-tauri/src/dejavu_sync/service.rs`
 - Modify: `apps/desktop/src-tauri/src/dejavu_sync/status.rs`
@@ -301,6 +305,18 @@ git commit -m "feat(sync): add Dejavu background job service"
 **Interfaces:**
 - Produces: `RepositorySchedule`, `record_file_change`, `activate_root`, `deactivate_root`, `trigger_startup`, `trigger_exit`.
 - Consumes: `SyncMode` and `DejavuSyncService::enqueue`.
+
+**Implementation correction:** Tokio paused-time tests require this package to
+enable Tokio's `test-util` feature. DNS classification must be produced by the
+S3 transport as an explicit `CloudError` category before the application layer
+redacts it; the scheduler must not infer DNS from display strings. The runtime
+may manage and call an uninstalled scheduler owner in this task, but Task 5 is
+still responsible for installing the real service/coordinator/scheduler graph.
+Do not expose a user command, use a no-op working-tree coordinator, or cut S3
+traffic over from the existing service in this task. Until the later wire
+cutover expands the public trigger schema, scheduler `Exit` maps internally to
+the existing `SyncTrigger::SettingsExit` value; it is not implemented through a
+React settings-window hook.
 
 - [ ] **Step 1: Write paused-time scheduler tests**
 
@@ -341,6 +357,9 @@ sync once immediately when the last DNS refresh attempt was at least five
 minutes ago. Windows may run the existing flush command; other platforms record
 a no-op flush and still retry once. Do not retry auth, forbidden, rate-limit
 beyond transport policy, decrypt, lock, integrity, or unsafe-path errors as DNS.
+The transport classifier must have direct typed/error-chain evidence that name
+resolution failed; generic connect, timeout, TLS, HTTP, authentication, lock,
+decrypt, integrity, and unsafe-path failures remain distinct.
 
 - [ ] **Step 5: Run tests and verify GREEN**
 
@@ -350,7 +369,7 @@ sleeps and no interval job for inactive repositories.
 - [ ] **Step 6: Commit scheduling**
 
 ```bash
-git add apps/desktop/src-tauri/src/dejavu_sync apps/desktop/src-tauri/src/watcher.rs apps/desktop/src-tauri/src/app_exit.rs apps/desktop/src-tauri/src/desktop_runtime.rs apps/desktop/src-tauri/src/mobile_runtime.rs
+git add apps/desktop/src-tauri/Cargo.toml apps/desktop/src-tauri/Cargo.lock apps/desktop/src-tauri/crates/qingyu-dejavu/src/cloud/mod.rs apps/desktop/src-tauri/crates/qingyu-dejavu/src/cloud/s3.rs apps/desktop/src-tauri/src/dejavu_sync apps/desktop/src-tauri/src/watcher.rs apps/desktop/src-tauri/src/app_exit.rs apps/desktop/src-tauri/src/desktop_runtime.rs apps/desktop/src-tauri/src/mobile_runtime.rs
 git commit -m "feat(sync): schedule Dejavu background synchronization"
 ```
 
