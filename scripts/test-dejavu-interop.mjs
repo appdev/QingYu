@@ -230,6 +230,12 @@ function assertFile(client, relative, expected, label) {
   }
 }
 
+function assertMissingFile(client, relative, label) {
+  if (fs.existsSync(path.join(client.dataPath, ...safeRelativePath(relative)))) {
+    throw new Error(`${label}: unpublished file became visible`);
+  }
+}
+
 function verifyProtocol(executables, scenario) {
   const client = createClient(scenario.root, "rust", "protocol-rust");
   const valid = requestFor(client, scenario.cloudRoot, "inspect", false);
@@ -397,11 +403,6 @@ function failureBeforePublication(executables, ownedRoot, failingLanguage) {
     throw new Error(`${scenarioName}: failure did not occur after repository object upload`);
   }
 
-  runClient(executables, failed, scenario.cloudRoot);
-  if (!fs.statSync(path.join(scenario.cloudRoot, "refs", "latest")).isFile()) {
-    throw new Error(`${scenarioName}: retry did not publish refs/latest`);
-  }
-
   const recoveringLanguage = failingLanguage === "go" ? "rust" : "go";
   const recovering = createClient(
     scenario.root,
@@ -409,9 +410,15 @@ function failureBeforePublication(executables, ownedRoot, failingLanguage) {
     `${recoveringLanguage}-recovery`,
   );
   writeFile(recovering, "independent.txt", `${recoveringLanguage} independent\n`, 1);
-  const recovered = runClient(executables, recovering, scenario.cloudRoot);
-  const converged = runClient(executables, failed, scenario.cloudRoot);
-  if (converged.indexId !== recovered.indexId) {
+  runClient(executables, recovering, scenario.cloudRoot);
+  assertMissingFile(recovering, "recover.txt", scenarioName);
+  if (!fs.statSync(path.join(scenario.cloudRoot, "refs", "latest")).isFile()) {
+    throw new Error(`${scenarioName}: independent client did not publish refs/latest`);
+  }
+
+  const merged = runClient(executables, failed, scenario.cloudRoot);
+  const converged = runClient(executables, recovering, scenario.cloudRoot);
+  if (merged.indexId === null || converged.indexId !== merged.indexId) {
     throw new Error(`${scenarioName}: failed and independent clients did not converge`);
   }
 
