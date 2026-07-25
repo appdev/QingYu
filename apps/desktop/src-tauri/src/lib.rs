@@ -6,6 +6,7 @@ mod app_settings;
 mod atomic_noreplace;
 #[cfg(desktop)]
 mod clipboard;
+mod dejavu_sync;
 #[cfg(desktop)]
 mod desktop_runtime;
 #[cfg(desktop)]

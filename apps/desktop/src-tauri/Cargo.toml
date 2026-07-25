@@ -41,6 +41,7 @@ hmac = "0.12.1"
 icu_casemap = { version = "2.2.0", default-features = false, features = ["compiled_data"] }
 ignore = "0.4.28"
 percent-encoding = "2.3"
+qingyu-dejavu = { path = "crates/qingyu-dejavu" }
 quick-xml = "0.39.2"
 reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "rustls-tls"] }
 rustls = { version = "0.23.40", default-features = false, features = ["ring", "std"] }
@@ -57,6 +58,7 @@ tauri-plugin-store = "2.4.3"
 time = "0.3.44"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
 unicode-normalization = "0.1"
+uuid = { version = "1.24.0", features = ["serde", "v4"] }
 zip = { version = "4.6.1", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 [dev-dependencies]
@@ -92,4 +94,3 @@ tauri-plugin-window-state = "2.4.1"
 tokio = { version = "1", features = ["io-std", "net", "process"] }
 tokio-util = "0.7.18"
 trash = "5.2.6"
-uuid = { version = "1.24.0", features = ["serde", "v4"] }
