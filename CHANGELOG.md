@@ -1,3 +1,9 @@
+## [2.0.0-beta.4](https://github.com/markrahq/markra/compare/v2.0.0-beta.3...v2.0.0-beta.4) (2026-07-25)
+
+### Bug Fixes
+
+* **editor:** stabilize fenced code block editing ([#572](https://github.com/markrahq/markra/issues/572)) ([bc7f281](https://github.com/markrahq/markra/commit/bc7f2817a0067a70094ad09d045233daeb519cbf)), closes [#570](https://github.com/markrahq/markra/issues/570)
+
 ## [2.0.0-beta.3](https://github.com/markrahq/markra/compare/v2.0.0-beta.2...v2.0.0-beta.3) (2026-07-25)
 
 ### Features
