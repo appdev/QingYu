@@ -352,9 +352,9 @@ struct FullSyncRequest {
     has_authorization: bool,
     has_if_match: bool,
     has_if_none_match: bool,
-    acquisition_verified_before_request: bool,
-    direct_latest_visible_before_request: bool,
-    sequence_latest_visible_before_request: bool,
+    acquisition_success_response_committed_before_request: bool,
+    direct_latest_success_response_committed_before_request: bool,
+    sequence_latest_success_response_committed_before_request: bool,
     ref_value: Option<String>,
 }
 
@@ -363,9 +363,9 @@ struct FullSyncServerState {
     lock_body: Mutex<Option<Vec<u8>>>,
     lock_puts: AtomicUsize,
     object_puts: AtomicUsize,
-    acquisition_verified: AtomicBool,
-    direct_latest_visible: AtomicBool,
-    sequence_latest_visible: AtomicBool,
+    acquisition_success_response_committed: AtomicBool,
+    direct_latest_success_response_committed: AtomicBool,
+    sequence_latest_success_response_committed: AtomicBool,
     upload_paused: tokio::sync::Notify,
     allow_upload_response: tokio::sync::Notify,
     refresh_verified: tokio::sync::Notify,
@@ -378,9 +378,9 @@ impl FullSyncServerState {
             lock_body: Mutex::new(None),
             lock_puts: AtomicUsize::new(0),
             object_puts: AtomicUsize::new(0),
-            acquisition_verified: AtomicBool::new(false),
-            direct_latest_visible: AtomicBool::new(false),
-            sequence_latest_visible: AtomicBool::new(false),
+            acquisition_success_response_committed: AtomicBool::new(false),
+            direct_latest_success_response_committed: AtomicBool::new(false),
+            sequence_latest_success_response_committed: AtomicBool::new(false),
             upload_paused: tokio::sync::Notify::new(),
             allow_upload_response: tokio::sync::Notify::new(),
             refresh_verified: tokio::sync::Notify::new(),
@@ -477,24 +477,28 @@ async fn handle_full_sync_request(
         has_authorization: headers.contains_key("authorization"),
         has_if_match: headers.contains_key("if-match"),
         has_if_none_match: headers.contains_key("if-none-match"),
-        acquisition_verified_before_request: state.acquisition_verified.load(Ordering::SeqCst),
-        direct_latest_visible_before_request: state.direct_latest_visible.load(Ordering::SeqCst),
-        sequence_latest_visible_before_request: state
-            .sequence_latest_visible
+        acquisition_success_response_committed_before_request: state
+            .acquisition_success_response_committed
+            .load(Ordering::SeqCst),
+        direct_latest_success_response_committed_before_request: state
+            .direct_latest_success_response_committed
+            .load(Ordering::SeqCst),
+        sequence_latest_success_response_committed_before_request: state
+            .sequence_latest_success_response_committed
             .load(Ordering::SeqCst),
         ref_value,
     });
 
     let mut refresh_verify = false;
-    let mut acquisition_verify = false;
-    let mut direct_latest_publish = false;
-    let mut sequence_latest_publish = false;
+    let mut commit_acquisition_success_response = false;
+    let mut commit_direct_latest_success_response = false;
+    let mut commit_sequence_latest_success_response = false;
     let (status, response_body) = match (method.as_str(), target.as_str()) {
         ("GET", FULL_SYNC_LOCK_GET_TARGET) => {
             let lock = state.lock_body.lock().unwrap().clone();
             if let Some(lock) = lock {
                 refresh_verify = state.lock_puts.load(Ordering::SeqCst) > 1;
-                acquisition_verify = !refresh_verify;
+                commit_acquisition_success_response = !refresh_verify;
                 (200, lock)
             } else {
                 (404, Vec::new())
@@ -531,9 +535,9 @@ async fn handle_full_sync_request(
                 || target
                     .starts_with(&format!("/qingyu-notes/{REPOSITORY_PREFIX}/refs/latest-8-")) =>
         {
-            direct_latest_publish =
+            commit_direct_latest_success_response =
                 target == format!("/qingyu-notes/{REPOSITORY_PREFIX}/refs/latest");
-            sequence_latest_publish =
+            commit_sequence_latest_success_response =
                 target.starts_with(&format!("/qingyu-notes/{REPOSITORY_PREFIX}/refs/latest-8-"));
             (200, Vec::new())
         }
@@ -552,6 +556,27 @@ async fn handle_full_sync_request(
         }
         _ => panic!("unexpected full-sync request: {method} {target}"),
     };
+    // Commit the fixture's chosen success outcome before response bytes become readable. These
+    // flags do not claim delivery by themselves: the handler's checked writes and the final
+    // successful Repo::sync result provide that second half without a post-shutdown race.
+    if commit_acquisition_success_response {
+        assert_eq!(status, 200);
+        state
+            .acquisition_success_response_committed
+            .store(true, Ordering::SeqCst);
+    }
+    if commit_direct_latest_success_response {
+        assert_eq!(status, 200);
+        state
+            .direct_latest_success_response_committed
+            .store(true, Ordering::SeqCst);
+    }
+    if commit_sequence_latest_success_response {
+        assert_eq!(status, 200);
+        state
+            .sequence_latest_success_response_committed
+            .store(true, Ordering::SeqCst);
+    }
     let reason = match status {
         200 => "OK",
         204 => "No Content",
@@ -571,15 +596,6 @@ async fn handle_full_sync_request(
     tokio::io::AsyncWriteExt::shutdown(&mut stream)
         .await
         .expect("close full-sync response");
-    if acquisition_verify {
-        state.acquisition_verified.store(true, Ordering::SeqCst);
-    }
-    if direct_latest_publish {
-        state.direct_latest_visible.store(true, Ordering::SeqCst);
-    }
-    if sequence_latest_publish {
-        state.sequence_latest_visible.store(true, Ordering::SeqCst);
-    }
     if refresh_verify {
         state.refresh_verified.notify_one();
     }
@@ -2442,7 +2458,9 @@ async fn full_sync_request_order_preserves_lock_and_sequence_publication_over_s3
         })
         .expect("repository mutation");
     assert!(2 < first_repository_mutation);
-    assert!(requests[first_repository_mutation].acquisition_verified_before_request);
+    assert!(
+        requests[first_repository_mutation].acquisition_success_response_committed_before_request
+    );
 
     let object_puts = requests
         .iter()
@@ -2522,11 +2540,11 @@ async fn full_sync_request_order_preserves_lock_and_sequence_publication_over_s3
         requests[sequence_latest].target,
         format!("/qingyu-notes/{REPOSITORY_PREFIX}/refs/latest-8-{direct_id}")
     );
-    assert!(requests[sequence_latest].direct_latest_visible_before_request);
-    assert!(requests[older_delete].direct_latest_visible_before_request);
-    assert!(requests[older_delete].sequence_latest_visible_before_request);
-    assert!(requests[stale_delete].direct_latest_visible_before_request);
-    assert!(requests[stale_delete].sequence_latest_visible_before_request);
+    assert!(requests[sequence_latest].direct_latest_success_response_committed_before_request);
+    assert!(requests[older_delete].direct_latest_success_response_committed_before_request);
+    assert!(requests[older_delete].sequence_latest_success_response_committed_before_request);
+    assert!(requests[stale_delete].direct_latest_success_response_committed_before_request);
+    assert!(requests[stale_delete].sequence_latest_success_response_committed_before_request);
 
     let lock_puts = requests
         .iter()
