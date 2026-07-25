@@ -1,15 +1,17 @@
 use std::collections::BTreeMap;
+use std::fs;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use std::time::Duration;
 
 use qingyu_dejavu::{
-    CatalogIssueKind, Cloud, CloudError, CloudUploadSource, RepositoryCatalogEntry,
-    RepositoryMetadata, S3AddressingStyle, S3Cloud, S3Connection, S3RepositoryCatalog,
-    S3RequestSigner, S3TlsVerification, S3TransportOptions,
+    CatalogIssueKind, Cloud, CloudError, CloudUploadSource, Device, NoopWorkingTreeCoordinator,
+    Repo, RepoOptions, RepoPaths, RepositoryCatalogEntry, RepositoryMetadata, S3AddressingStyle,
+    S3Cloud, S3Connection, S3RepositoryCatalog, S3RequestSigner, S3TlsVerification,
+    S3TransportOptions,
 };
 use reqwest::header::{AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE, HOST};
 use reqwest::Method;
@@ -333,6 +335,254 @@ struct HttpFixture {
     endpoint: String,
     observed: Arc<AtomicUsize>,
     task: tokio::task::JoinHandle<()>,
+}
+
+const FULL_SYNC_REQUEST_COUNT: usize = 16;
+const FULL_SYNC_STALE_ID: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const FULL_SYNC_OLDER_ID: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+const FULL_SYNC_LOCK_GET_TARGET: &str =
+    "/qingyu-notes/qingyu/repositories/repo-a/repo/lock-sync?response-cache-control=no-cache";
+const FULL_SYNC_LOCK_PUT_TARGET: &str = "/qingyu-notes/qingyu/repositories/repo-a/repo/lock-sync";
+const FULL_SYNC_LIST_TARGET: &str = "/qingyu-notes?list-type=2&max-keys=1000&prefix=qingyu%2Frepositories%2Frepo-a%2Frepo%2Frefs%2F";
+
+#[derive(Clone, Debug)]
+struct FullSyncRequest {
+    method: String,
+    target: String,
+    has_authorization: bool,
+    has_if_match: bool,
+    has_if_none_match: bool,
+    acquisition_verified_before_request: bool,
+    direct_latest_visible_before_request: bool,
+    sequence_latest_visible_before_request: bool,
+    ref_value: Option<String>,
+}
+
+struct FullSyncServerState {
+    requests: Mutex<Vec<FullSyncRequest>>,
+    lock_body: Mutex<Option<Vec<u8>>>,
+    lock_puts: AtomicUsize,
+    object_puts: AtomicUsize,
+    acquisition_verified: AtomicBool,
+    direct_latest_visible: AtomicBool,
+    sequence_latest_visible: AtomicBool,
+    upload_paused: tokio::sync::Notify,
+    allow_upload_response: tokio::sync::Notify,
+    refresh_verified: tokio::sync::Notify,
+}
+
+impl FullSyncServerState {
+    fn new() -> Self {
+        Self {
+            requests: Mutex::new(Vec::new()),
+            lock_body: Mutex::new(None),
+            lock_puts: AtomicUsize::new(0),
+            object_puts: AtomicUsize::new(0),
+            acquisition_verified: AtomicBool::new(false),
+            direct_latest_visible: AtomicBool::new(false),
+            sequence_latest_visible: AtomicBool::new(false),
+            upload_paused: tokio::sync::Notify::new(),
+            allow_upload_response: tokio::sync::Notify::new(),
+            refresh_verified: tokio::sync::Notify::new(),
+        }
+    }
+}
+
+struct FullSyncHttpFixture {
+    endpoint: String,
+    state: Arc<FullSyncServerState>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl FullSyncHttpFixture {
+    async fn start() -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind full-sync HTTP fixture");
+        let endpoint = format!(
+            "http://{}",
+            listener.local_addr().expect("full-sync fixture address")
+        );
+        let state = Arc::new(FullSyncServerState::new());
+        let state_for_task = Arc::clone(&state);
+        let task = tokio::spawn(async move {
+            let mut handlers = tokio::task::JoinSet::new();
+            let mut accepted = 0_usize;
+            while accepted < FULL_SYNC_REQUEST_COUNT {
+                tokio::select! {
+                    connection = listener.accept() => {
+                        let (stream, _) = connection.expect("accept full-sync fixture request");
+                        accepted += 1;
+                        let state = Arc::clone(&state_for_task);
+                        handlers.spawn(async move {
+                            handle_full_sync_request(stream, state).await;
+                        });
+                    }
+                    joined = handlers.join_next(), if !handlers.is_empty() => {
+                        joined
+                            .expect("full-sync fixture handler disappeared")
+                            .expect("full-sync fixture handler failed");
+                    }
+                }
+            }
+            while let Some(joined) = handlers.join_next().await {
+                joined.expect("full-sync fixture handler failed");
+            }
+            assert_eq!(
+                state_for_task.requests.lock().unwrap().len(),
+                FULL_SYNC_REQUEST_COUNT,
+                "full-sync fixture did not record every accepted request"
+            );
+        });
+        Self {
+            endpoint,
+            state,
+            task,
+        }
+    }
+
+    async fn finish(self) -> Vec<FullSyncRequest> {
+        tokio::time::timeout(Duration::from_secs(5), self.task)
+            .await
+            .expect("full-sync fixture timed out")
+            .expect("full-sync fixture task failed");
+        Arc::try_unwrap(self.state)
+            .unwrap_or_else(|_| panic!("full-sync fixture state still has owners"))
+            .requests
+            .into_inner()
+            .unwrap()
+    }
+}
+
+async fn handle_full_sync_request(
+    mut stream: tokio::net::TcpStream,
+    state: Arc<FullSyncServerState>,
+) {
+    let (head, body) = read_request(&mut stream, FixtureBodyRead::Full).await;
+    let request_line = head.split("\r\n").next().expect("request line");
+    let mut request_parts = request_line.split_whitespace();
+    let method = request_parts.next().expect("request method").to_string();
+    let target = request_parts.next().expect("request target").to_string();
+    assert_eq!(request_parts.next(), Some("HTTP/1.1"));
+    assert!(request_parts.next().is_none());
+    let headers = parse_request_headers(&head);
+    let ref_value = if method == "PUT" && target.contains("/repo/refs/latest") {
+        Some(String::from_utf8(body.clone()).expect("UTF-8 remote ref"))
+    } else {
+        None
+    };
+    state.requests.lock().unwrap().push(FullSyncRequest {
+        method: method.clone(),
+        target: target.clone(),
+        has_authorization: headers.contains_key("authorization"),
+        has_if_match: headers.contains_key("if-match"),
+        has_if_none_match: headers.contains_key("if-none-match"),
+        acquisition_verified_before_request: state.acquisition_verified.load(Ordering::SeqCst),
+        direct_latest_visible_before_request: state.direct_latest_visible.load(Ordering::SeqCst),
+        sequence_latest_visible_before_request: state
+            .sequence_latest_visible
+            .load(Ordering::SeqCst),
+        ref_value,
+    });
+
+    let mut refresh_verify = false;
+    let mut acquisition_verify = false;
+    let mut direct_latest_publish = false;
+    let mut sequence_latest_publish = false;
+    let (status, response_body) = match (method.as_str(), target.as_str()) {
+        ("GET", FULL_SYNC_LOCK_GET_TARGET) => {
+            let lock = state.lock_body.lock().unwrap().clone();
+            if let Some(lock) = lock {
+                refresh_verify = state.lock_puts.load(Ordering::SeqCst) > 1;
+                acquisition_verify = !refresh_verify;
+                (200, lock)
+            } else {
+                (404, Vec::new())
+            }
+        }
+        ("PUT", FULL_SYNC_LOCK_PUT_TARGET) => {
+            state.lock_puts.fetch_add(1, Ordering::SeqCst);
+            *state.lock_body.lock().unwrap() = Some(body);
+            (200, Vec::new())
+        }
+        ("GET", REF_GET_TARGET) => (404, Vec::new()),
+        ("GET", FULL_SYNC_LIST_TARGET) => {
+            let xml = format!(
+                "<ListBucketResult><IsTruncated>false</IsTruncated>\
+                 <Contents><Key>{REPOSITORY_PREFIX}/refs/latest-2-{FULL_SYNC_OLDER_ID}</Key><Size>40</Size></Contents>\
+                 <Contents><Key>{REPOSITORY_PREFIX}/refs/latest-7-{FULL_SYNC_STALE_ID}</Key><Size>40</Size></Contents>\
+                 </ListBucketResult>"
+            );
+            (200, xml.into_bytes())
+        }
+        ("PUT", target)
+            if target.starts_with(&format!("/qingyu-notes/{REPOSITORY_PREFIX}/objects/")) =>
+        {
+            if state.object_puts.fetch_add(1, Ordering::SeqCst) == 0 {
+                state.upload_paused.notify_one();
+                state.allow_upload_response.notified().await;
+            }
+            (200, Vec::new())
+        }
+        ("PUT", target)
+            if target.starts_with(&format!("/qingyu-notes/{REPOSITORY_PREFIX}/check/indexes/"))
+                || target.starts_with(&format!("/qingyu-notes/{REPOSITORY_PREFIX}/indexes/"))
+                || target == format!("/qingyu-notes/{REPOSITORY_PREFIX}/refs/latest")
+                || target
+                    .starts_with(&format!("/qingyu-notes/{REPOSITORY_PREFIX}/refs/latest-8-")) =>
+        {
+            direct_latest_publish =
+                target == format!("/qingyu-notes/{REPOSITORY_PREFIX}/refs/latest");
+            sequence_latest_publish =
+                target.starts_with(&format!("/qingyu-notes/{REPOSITORY_PREFIX}/refs/latest-8-"));
+            (200, Vec::new())
+        }
+        ("DELETE", target)
+            if target
+                == format!(
+                    "/qingyu-notes/{REPOSITORY_PREFIX}/refs/latest-7-{FULL_SYNC_STALE_ID}"
+                )
+                || target
+                    == format!(
+                        "/qingyu-notes/{REPOSITORY_PREFIX}/refs/latest-2-{FULL_SYNC_OLDER_ID}"
+                    )
+                || target == FULL_SYNC_LOCK_PUT_TARGET =>
+        {
+            (204, Vec::new())
+        }
+        _ => panic!("unexpected full-sync request: {method} {target}"),
+    };
+    let reason = match status {
+        200 => "OK",
+        204 => "No Content",
+        404 => "Not Found",
+        _ => "Fixture",
+    };
+    let response = format!(
+        "HTTP/1.1 {status} {reason}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        response_body.len()
+    );
+    tokio::io::AsyncWriteExt::write_all(&mut stream, response.as_bytes())
+        .await
+        .expect("write full-sync response head");
+    tokio::io::AsyncWriteExt::write_all(&mut stream, &response_body)
+        .await
+        .expect("write full-sync response body");
+    tokio::io::AsyncWriteExt::shutdown(&mut stream)
+        .await
+        .expect("close full-sync response");
+    if acquisition_verify {
+        state.acquisition_verified.store(true, Ordering::SeqCst);
+    }
+    if direct_latest_publish {
+        state.direct_latest_visible.store(true, Ordering::SeqCst);
+    }
+    if sequence_latest_publish {
+        state.sequence_latest_visible.store(true, Ordering::SeqCst);
+    }
+    if refresh_verify {
+        state.refresh_verified.notify_one();
+    }
 }
 
 impl HttpFixture {
@@ -2093,4 +2343,218 @@ async fn repository_cloud_list_rejects_nonempty_common_prefixes_without_a_delimi
 
     assert!(matches!(cloud.list("").await, Err(CloudError::UnsafeKey)));
     fixture.finish(1).await;
+}
+
+#[tokio::test]
+async fn full_sync_request_order_preserves_lock_and_sequence_publication_over_s3() {
+    let root = tempfile::TempDir::new().expect("create full-sync repository root");
+    let data = root.path().join("data");
+    fs::create_dir_all(&data).expect("create full-sync data root");
+    fs::write(data.join("document.md"), b"one file first sync")
+        .expect("write full-sync source file");
+    let repo = Repo::open(
+        RepoPaths {
+            data,
+            repo: root.path().join("repo"),
+            history: root.path().join("history"),
+            temp: root.path().join("temp"),
+        },
+        Device {
+            id: "device-s3-order".to_string(),
+            name: "S3 order fixture".to_string(),
+            os: "test".to_string(),
+        },
+        [7; 32],
+        RepoOptions::default(),
+    )
+    .expect("open full-sync repository");
+    let fixture = FullSyncHttpFixture::start().await;
+    let connection = S3Connection::new(
+        &fixture.endpoint,
+        "us-east-1",
+        "qingyu-notes",
+        "test-key",
+        "test-secret",
+        S3AddressingStyle::Path,
+    )
+    .expect("valid full-sync fixture connection");
+    let cloud: Arc<dyn Cloud> = Arc::new(
+        S3Cloud::new(
+            connection,
+            S3TransportOptions {
+                request_timeout: Duration::from_secs(90),
+                tls_verification: S3TlsVerification::Verify,
+                max_attempts: 1,
+            },
+            REPOSITORY_PREFIX,
+        )
+        .expect("valid full-sync S3 cloud"),
+    );
+    let state = Arc::clone(&fixture.state);
+    let sync =
+        tokio::spawn(async move { repo.sync(cloud, Arc::new(NoopWorkingTreeCoordinator)).await });
+
+    tokio::time::timeout(Duration::from_secs(5), state.upload_paused.notified())
+        .await
+        .expect("first repository upload did not reach its barrier");
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(30)).await;
+    tokio::time::resume();
+    tokio::time::timeout(Duration::from_secs(5), state.refresh_verified.notified())
+        .await
+        .expect("lock-sync was not refreshed and verified during the paused upload");
+    state.allow_upload_response.notify_one();
+    let sync_result = tokio::time::timeout(Duration::from_secs(10), sync).await;
+    drop(state);
+    let requests = fixture.finish().await;
+    sync_result
+        .expect("full Repo::sync timed out")
+        .expect("full Repo::sync task failed")
+        .expect("full Repo::sync failed");
+
+    assert_eq!(requests.len(), FULL_SYNC_REQUEST_COUNT);
+    assert!(requests.iter().all(|request| request.has_authorization));
+    assert!(requests
+        .iter()
+        .all(|request| !request.has_if_match && !request.has_if_none_match));
+    let safe_debug = format!("{requests:?}");
+    for secret in [
+        "AWS4-HMAC-SHA256",
+        "test-key",
+        "test-secret",
+        "Credential=",
+        "Signature=",
+    ] {
+        assert!(!safe_debug.contains(secret));
+    }
+
+    assert_eq!(requests[0].method, "GET");
+    assert_eq!(requests[0].target, FULL_SYNC_LOCK_GET_TARGET);
+    assert_eq!(requests[1].method, "PUT");
+    assert_eq!(requests[1].target, FULL_SYNC_LOCK_PUT_TARGET);
+    assert_eq!(requests[2].method, "GET");
+    assert_eq!(requests[2].target, FULL_SYNC_LOCK_GET_TARGET);
+    let first_repository_mutation = requests
+        .iter()
+        .position(|request| {
+            matches!(request.method.as_str(), "PUT" | "DELETE")
+                && request.target != FULL_SYNC_LOCK_PUT_TARGET
+        })
+        .expect("repository mutation");
+    assert!(2 < first_repository_mutation);
+    assert!(requests[first_repository_mutation].acquisition_verified_before_request);
+
+    let object_puts = requests
+        .iter()
+        .enumerate()
+        .filter(|(_, request)| request.method == "PUT" && request.target.contains("/repo/objects/"))
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        object_puts.len(),
+        2,
+        "one file must upload chunk and file objects"
+    );
+    assert_eq!(first_repository_mutation, object_puts[0]);
+    let check_index_put = requests
+        .iter()
+        .position(|request| {
+            request.method == "PUT" && request.target.contains("/repo/check/indexes/")
+        })
+        .expect("check-index PUT");
+    let index_put = requests
+        .iter()
+        .position(|request| request.method == "PUT" && request.target.contains("/repo/indexes/"))
+        .expect("index PUT");
+    let list_refs = requests
+        .iter()
+        .position(|request| request.method == "GET" && request.target == FULL_SYNC_LIST_TARGET)
+        .expect("sequence-ref LIST");
+    let direct_latest_target = format!("/qingyu-notes/{REPOSITORY_PREFIX}/refs/latest");
+    let direct_latest = requests
+        .iter()
+        .position(|request| request.method == "PUT" && request.target == direct_latest_target)
+        .expect("direct latest PUT");
+    let sequence_latest = requests
+        .iter()
+        .position(|request| {
+            request.method == "PUT"
+                && request
+                    .target
+                    .starts_with(&format!("/qingyu-notes/{REPOSITORY_PREFIX}/refs/latest-8-"))
+        })
+        .expect("next sequence-ref PUT");
+    let stale_delete_target =
+        format!("/qingyu-notes/{REPOSITORY_PREFIX}/refs/latest-7-{FULL_SYNC_STALE_ID}");
+    let older_delete_target =
+        format!("/qingyu-notes/{REPOSITORY_PREFIX}/refs/latest-2-{FULL_SYNC_OLDER_ID}");
+    let older_delete = requests
+        .iter()
+        .position(|request| request.method == "DELETE" && request.target == older_delete_target)
+        .expect("older sequence-ref DELETE");
+    let stale_delete = requests
+        .iter()
+        .position(|request| request.method == "DELETE" && request.target == stale_delete_target)
+        .expect("stale sequence-ref DELETE");
+    assert!(object_puts
+        .iter()
+        .all(|position| *position < check_index_put));
+    assert!(check_index_put < index_put);
+    assert!(index_put < list_refs);
+    assert!(list_refs < direct_latest);
+    assert!(direct_latest < sequence_latest);
+    assert!(sequence_latest < older_delete);
+    assert!(older_delete < stale_delete);
+
+    let direct_id = requests[direct_latest]
+        .ref_value
+        .as_deref()
+        .expect("direct latest ref body");
+    assert_eq!(direct_id.len(), 40);
+    assert!(direct_id
+        .bytes()
+        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)));
+    assert_eq!(
+        requests[sequence_latest].ref_value.as_deref(),
+        Some(direct_id)
+    );
+    assert_eq!(
+        requests[sequence_latest].target,
+        format!("/qingyu-notes/{REPOSITORY_PREFIX}/refs/latest-8-{direct_id}")
+    );
+    assert!(requests[sequence_latest].direct_latest_visible_before_request);
+    assert!(requests[older_delete].direct_latest_visible_before_request);
+    assert!(requests[older_delete].sequence_latest_visible_before_request);
+    assert!(requests[stale_delete].direct_latest_visible_before_request);
+    assert!(requests[stale_delete].sequence_latest_visible_before_request);
+
+    let lock_puts = requests
+        .iter()
+        .enumerate()
+        .filter(|(_, request)| {
+            request.method == "PUT" && request.target == FULL_SYNC_LOCK_PUT_TARGET
+        })
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    let lock_gets = requests
+        .iter()
+        .enumerate()
+        .filter(|(_, request)| {
+            request.method == "GET" && request.target == FULL_SYNC_LOCK_GET_TARGET
+        })
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    assert_eq!(lock_puts.len(), 2, "acquire plus one 30-second refresh");
+    assert_eq!(
+        lock_gets.len(),
+        3,
+        "initial GET plus two lock verifications"
+    );
+    assert!(object_puts[0] < lock_puts[1]);
+    assert!(lock_puts[1] < lock_gets[2]);
+    assert!(lock_gets[2] < object_puts[1]);
+    let release = requests.len() - 1;
+    assert_eq!(requests[release].method, "DELETE");
+    assert_eq!(requests[release].target, FULL_SYNC_LOCK_PUT_TARGET);
+    assert!(stale_delete < release);
 }
