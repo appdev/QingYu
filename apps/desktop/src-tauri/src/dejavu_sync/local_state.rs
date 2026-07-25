@@ -290,9 +290,10 @@ impl LocalSyncStateService {
     where
         Write: FnOnce(&cap_std::fs::Dir, &OsStr, &[u8], u32) -> Result<(), LocalSyncStateError>,
     {
-        validate_state(state)?;
+        let persisted = self.load()?;
+        let state = prepare_state_for_save(state.clone(), persisted.as_ref())?;
         let mut bytes =
-            serde_json::to_vec_pretty(state).map_err(|_| LocalSyncStateError::write_failed())?;
+            serde_json::to_vec_pretty(&state).map_err(|_| LocalSyncStateError::write_failed())?;
         bytes.push(b'\n');
         if bytes.len() > MAX_LOCAL_SYNC_STATE_BYTES {
             return Err(LocalSyncStateError::too_large());
@@ -346,6 +347,53 @@ fn repository_key(user_key_input: Option<&str>) -> Result<String, LocalSyncState
 
 #[cfg_attr(not(test), allow(dead_code))]
 fn validate_state(state: &LocalSyncState) -> Result<(), LocalSyncStateError> {
+    validate_state_header(state)?;
+
+    let mut repositories = HashSet::new();
+    let mut roots = HashSet::new();
+    for binding in &state.bindings {
+        validate_persisted_notes_root(&binding.notes_root)?;
+        if !repositories.insert(binding.repository_id.as_str()) {
+            return Err(LocalSyncStateError::duplicate_repository());
+        }
+        if !roots.insert(binding.notes_root.as_path()) {
+            return Err(LocalSyncStateError::duplicate_root());
+        }
+    }
+    Ok(())
+}
+
+fn prepare_state_for_save(
+    mut state: LocalSyncState,
+    persisted: Option<&LocalSyncState>,
+) -> Result<LocalSyncState, LocalSyncStateError> {
+    validate_state_header(&state)?;
+
+    let mut repositories = HashSet::new();
+    let mut roots = HashSet::new();
+    for binding in &mut state.bindings {
+        let unchanged_persisted_root = persisted.is_some_and(|persisted| {
+            persisted.bindings.iter().any(|existing| {
+                existing.repository_id == binding.repository_id
+                    && existing.notes_root == binding.notes_root
+            })
+        });
+        if unchanged_persisted_root {
+            validate_persisted_notes_root(&binding.notes_root)?;
+        } else {
+            binding.notes_root = canonical_notes_root(&binding.notes_root)?;
+        }
+        if !repositories.insert(binding.repository_id.as_str()) {
+            return Err(LocalSyncStateError::duplicate_repository());
+        }
+        if !roots.insert(binding.notes_root.as_path()) {
+            return Err(LocalSyncStateError::duplicate_root());
+        }
+    }
+    Ok(state)
+}
+
+fn validate_state_header(state: &LocalSyncState) -> Result<(), LocalSyncStateError> {
     if state.version != LOCAL_SYNC_STATE_VERSION {
         return Err(LocalSyncStateError::malformed());
     }
@@ -363,17 +411,6 @@ fn validate_state(state: &LocalSyncState) -> Result<(), LocalSyncStateError> {
         return Err(LocalSyncStateError::malformed());
     }
 
-    let mut repositories = HashSet::new();
-    let mut roots = HashSet::new();
-    for binding in &state.bindings {
-        validate_persisted_notes_root(&binding.notes_root)?;
-        if !repositories.insert(binding.repository_id.as_str()) {
-            return Err(LocalSyncStateError::duplicate_repository());
-        }
-        if !roots.insert(binding.notes_root.as_path()) {
-            return Err(LocalSyncStateError::duplicate_root());
-        }
-    }
     Ok(())
 }
 
@@ -663,6 +700,103 @@ mod tests {
         assert!(detached_notes_a.is_dir());
     }
 
+    #[test]
+    fn direct_save_rejects_a_new_missing_root_and_preserves_the_disk_state() {
+        let temporary = tempdir().expect("temporary app data");
+        let app_data = temporary.path().join("app-data");
+        let service = LocalSyncStateService::new(&app_data);
+        let mut state = service.load_or_initialize(None).unwrap();
+        let state_path = app_data.join(LOCAL_SYNC_STATE_FILE);
+        let before = fs::read(&state_path).unwrap();
+        state.bindings.push(RepositoryBinding {
+            repository_id: "repo-missing".to_string(),
+            display_name: "Missing Notes".to_string(),
+            notes_root: temporary.path().join("missing-notes"),
+            enabled: true,
+        });
+
+        let error = service
+            .save(&state)
+            .expect_err("a new binding must resolve to an online canonical root");
+
+        assert!(error.to_string().contains("invalid-binding"));
+        assert_eq!(fs::read(&state_path).unwrap(), before);
+        assert!(service.load().unwrap().unwrap().bindings.is_empty());
+    }
+
+    #[test]
+    fn direct_save_rejects_a_changed_missing_root_and_keeps_the_old_binding() {
+        let temporary = tempdir().expect("temporary app data");
+        let notes = temporary.path().join("notes");
+        fs::create_dir(&notes).unwrap();
+        let app_data = temporary.path().join("app-data");
+        let service = LocalSyncStateService::new(&app_data);
+        let mut state = service.load_or_initialize(None).unwrap();
+        service
+            .add_binding(
+                &mut state,
+                RepositoryBinding {
+                    repository_id: "repo-a".to_string(),
+                    display_name: "Notes".to_string(),
+                    notes_root: notes.clone(),
+                    enabled: true,
+                },
+            )
+            .unwrap();
+        let persisted_root = state.bindings[0].notes_root.clone();
+        let state_path = app_data.join(LOCAL_SYNC_STATE_FILE);
+        let before = fs::read(&state_path).unwrap();
+        state.bindings[0].notes_root = temporary.path().join("missing-replacement");
+
+        let error = service
+            .save(&state)
+            .expect_err("a changed root must resolve before replacing the binding");
+
+        assert!(error.to_string().contains("invalid-binding"));
+        assert_eq!(fs::read(&state_path).unwrap(), before);
+        let reloaded = service.load().unwrap().unwrap();
+        assert_eq!(reloaded.bindings.len(), 1);
+        assert_eq!(reloaded.bindings[0].repository_id, "repo-a");
+        assert_eq!(reloaded.bindings[0].notes_root, persisted_root);
+    }
+
+    #[test]
+    fn direct_save_updates_non_path_fields_for_an_unchanged_offline_binding() {
+        let temporary = tempdir().expect("temporary app data");
+        let notes = temporary.path().join("notes");
+        let detached_notes = temporary.path().join("detached-notes");
+        fs::create_dir(&notes).unwrap();
+        let service = LocalSyncStateService::new(temporary.path().join("app-data"));
+        let mut state = service.load_or_initialize(None).unwrap();
+        service
+            .add_binding(
+                &mut state,
+                RepositoryBinding {
+                    repository_id: "repo-a".to_string(),
+                    display_name: "Notes".to_string(),
+                    notes_root: notes.clone(),
+                    enabled: true,
+                },
+            )
+            .unwrap();
+        let persisted_root = state.bindings[0].notes_root.clone();
+        fs::rename(&notes, &detached_notes).unwrap();
+        state.bindings[0].display_name = "Offline Notes".to_string();
+        state.bindings[0].enabled = false;
+
+        service
+            .save(&state)
+            .expect("unchanged persisted root may be offline during a metadata update");
+
+        let reloaded = service.load().unwrap().unwrap();
+        assert_eq!(reloaded.bindings.len(), 1);
+        assert_eq!(reloaded.bindings[0].repository_id, "repo-a");
+        assert_eq!(reloaded.bindings[0].display_name, "Offline Notes");
+        assert_eq!(reloaded.bindings[0].notes_root, persisted_root);
+        assert!(!reloaded.bindings[0].enabled);
+        assert!(detached_notes.is_dir());
+    }
+
     #[cfg(unix)]
     #[test]
     fn adding_an_online_alias_of_an_existing_root_is_still_rejected() {
@@ -734,7 +868,7 @@ mod tests {
             .save(&state)
             .expect_err("canonical root aliases must not create two bindings");
 
-        assert!(error.to_string().contains("invalid-binding"));
+        assert!(error.to_string().contains("duplicate-root"));
     }
 
     #[cfg(unix)]
