@@ -1,7 +1,8 @@
-use std::ffi::OsString;
+use std::cell::RefCell;
 use std::io::{BufReader, Cursor, Read, Seek, SeekFrom, Write};
 use std::path::{Component, Path, PathBuf};
 use std::pin::Pin;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use cap_fs_ext::{DirExt, FollowSymlinks, OpenOptionsFollowExt};
@@ -50,8 +51,7 @@ pub struct Store {
 }
 
 pub(crate) struct StoreUploadSource {
-    parent: Dir,
-    name: OsString,
+    file: cap_std::fs::File,
     content_length: u64,
 }
 
@@ -61,12 +61,8 @@ impl CloudUploadSource for StoreUploadSource {
     }
 
     fn open(&self) -> Result<Pin<Box<dyn AsyncRead + Send>>, CloudError> {
-        let mut options = OpenOptions::new();
-        options.read(true).follow(FollowSymlinks::No);
-        let file = self
-            .parent
-            .open_with(&self.name, &options)
-            .map_err(CloudError::Io)?;
+        let mut file = self.file.try_clone().map_err(CloudError::Io)?;
+        file.seek(SeekFrom::Start(0)).map_err(CloudError::Io)?;
         let metadata = file.metadata().map_err(CloudError::Io)?;
         if !metadata.file_type().is_file() || cap_metadata_is_reparse(&metadata) {
             return Err(CloudError::UnsafeKey);
@@ -306,6 +302,19 @@ impl Store {
         id: &str,
         source: &cap_std::fs::File,
     ) -> Result<(), RepoError> {
+        self.import_raw_staged_with_before_publish_unlocked(kind, id, source, || Ok(()))
+    }
+
+    fn import_raw_staged_with_before_publish_unlocked<F>(
+        &self,
+        kind: RawObjectKind,
+        id: &str,
+        source: &cap_std::fs::File,
+        before_publish: F,
+    ) -> Result<(), RepoError>
+    where
+        F: FnOnce() -> Result<(), RepoError>,
+    {
         validate_id(id)?;
         let path = self.raw_path(kind, id)?;
         let relative = self.relative_store_path(&path)?;
@@ -318,6 +327,7 @@ impl Store {
             crate::atomic_write::create_cap_staged_file(&parent, destination, OBJECT_MODE)?;
         copy_cap_file(source, staged.file(), raw_limit(kind))?;
         self.validate_raw_file(kind, id, staged.file())?;
+        let validated_staged = staged.file().try_clone()?;
 
         match self.open_raw_file(kind, id) {
             Ok(existing) => {
@@ -334,10 +344,11 @@ impl Store {
             Err(error) => return Err(error),
         }
 
+        before_publish()?;
         if staged.publish_no_replace()? == crate::atomic_write::PublishOutcome::AlreadyExists {
             let existing = self.open_raw_file(kind, id)?;
             self.validate_raw_file(kind, id, &existing)?;
-            if !cap_files_equal(&existing, source)? {
+            if !cap_files_equal(&existing, &validated_staged)? {
                 return Err(RepoError::InvalidData(
                     "immutable raw object already exists with different bytes",
                 ));
@@ -351,21 +362,11 @@ impl Store {
         kind: RawObjectKind,
         id: &str,
     ) -> Result<StoreUploadSource, RepoError> {
-        let path = self.raw_path(kind, id)?;
-        let relative = self.relative_store_path(&path)?;
-        let name = relative
-            .file_name()
-            .ok_or(RepoError::InvalidData("object path must have a file name"))?
-            .to_os_string();
-        let parent = self
-            .open_directory(relative.parent().unwrap_or_else(|| Path::new("")), false)
-            .map_err(|error| map_not_found(error, id))?;
         let file = self.open_raw_file(kind, id)?;
         self.validate_raw_file(kind, id, &file)?;
         let content_length = file.metadata()?.len();
         Ok(StoreUploadSource {
-            parent,
-            name,
+            file,
             content_length,
         })
     }
@@ -797,13 +798,21 @@ impl Store {
                     "could not set zstd decompression window limit",
                 ))
             })?;
+        let source_error = Rc::new(RefCell::new(None));
+        let tracked_reader = SourceErrorReader {
+            inner: reader,
+            source_error: Rc::clone(&source_error),
+        };
         let decoder =
-            zstd::stream::read::Decoder::with_context(BufReader::new(reader), &mut context);
+            zstd::stream::read::Decoder::with_context(BufReader::new(tracked_reader), &mut context);
         serde_json::from_reader(decoder).map_err(|error| {
             if error.is_io() {
-                RepoError::InvalidData(
-                    "zstd frame is invalid or requires a window larger than 512 KiB",
-                )
+                match source_error.borrow_mut().take() {
+                    Some(error) => RepoError::Io(error),
+                    None => RepoError::InvalidData(
+                        "zstd frame is invalid or requires a window larger than 512 KiB",
+                    ),
+                }
             } else {
                 RepoError::Serialization(error)
             }
@@ -824,6 +833,27 @@ impl Store {
         self.decompressor
             .lock()
             .map_err(|_| RepoError::InvalidData("zstd decompressor lock poisoned"))
+    }
+}
+
+struct SourceErrorReader<R> {
+    inner: R,
+    source_error: Rc<RefCell<Option<std::io::Error>>>,
+}
+
+impl<R: Read> Read for SourceErrorReader<R> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        match self.inner.read(buffer) {
+            Ok(read) => Ok(read),
+            Err(error) => {
+                let retained = match error.raw_os_error() {
+                    Some(code) => std::io::Error::from_raw_os_error(code),
+                    None => std::io::Error::new(error.kind(), error.to_string()),
+                };
+                *self.source_error.borrow_mut() = Some(retained);
+                Err(error)
+            }
+        }
     }
 }
 
@@ -1129,12 +1159,19 @@ fn map_object_io(error: std::io::Error, id: &str) -> RepoError {
 
 #[cfg(test)]
 mod tests {
+    use std::ffi::OsStr;
     use std::fs;
+    use std::io::{Read, Seek, SeekFrom, Write};
     use std::path::Path;
     use std::sync::{Arc, Barrier};
 
+    use cap_std::ambient_authority;
+    use cap_std::fs::Dir;
+    use tokio::io::AsyncReadExt;
+
     use super::{Store, MAX_CHUNK_DECODED_SIZE};
-    use crate::atomic_write::PublishOutcome;
+    use crate::atomic_write::{stage_cap_file, write_file_safer, PublishOutcome};
+    use crate::cloud::CloudUploadSource;
     use crate::{CheckIndex, CheckIndexFile, Chunk, File, Index, RepoError};
 
     const FILE_ID: &str = "9088f936691086d6a0c11e516cf2ec1b2cef77d6";
@@ -1143,6 +1180,25 @@ mod tests {
     const CHECK_INDEX_ID: &str = "fedcba9876543210fedcba9876543210fedcba98";
     const CHUNK_ID: &str = "1111111111111111111111111111111111111111";
     const SECOND_CHUNK_ID: &str = "2222222222222222222222222222222222222222";
+
+    struct FailingReader {
+        inner: std::io::Cursor<Vec<u8>>,
+        fail_after: u64,
+    }
+
+    impl Read for FailingReader {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            if self.inner.position() >= self.fail_after {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::ConnectionReset,
+                    "injected source read failure",
+                ));
+            }
+            let remaining = usize::try_from(self.fail_after - self.inner.position()).unwrap();
+            let read_limit = remaining.min(buffer.len());
+            Read::read(&mut self.inner, &mut buffer[..read_limit])
+        }
+    }
 
     fn fixture_key() -> [u8; 32] {
         *include_bytes!("../tests/fixtures/golden/kdf-key.bin")
@@ -1660,6 +1716,27 @@ mod tests {
     }
 
     #[test]
+    fn compressed_reader_preserves_a_real_source_io_error_after_partial_input() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = Store::new(temp.path(), fixture_key()).unwrap();
+        let compressed = store
+            .compress(&serde_json::to_vec(&fixture_index()).unwrap())
+            .unwrap();
+        let fail_after = u64::try_from((compressed.len() / 2).max(1)).unwrap();
+        let reader = FailingReader {
+            inner: std::io::Cursor::new(compressed),
+            fail_after,
+        };
+
+        let result: Result<Index, RepoError> = store.deserialize_compressed_reader(reader);
+
+        assert!(matches!(
+            result,
+            Err(RepoError::Io(error)) if error.kind() == std::io::ErrorKind::ConnectionReset
+        ));
+    }
+
+    #[test]
     fn missing_objects_map_to_typed_not_found() {
         let temp = tempfile::tempdir().unwrap();
         let store = Store::new(temp.path(), fixture_key()).unwrap();
@@ -1764,6 +1841,108 @@ mod tests {
             target.import_raw(super::RawObjectKind::Index, INDEX_ID, &second_index_raw),
             Err(RepoError::InvalidData(_))
         ));
+    }
+
+    #[test]
+    fn staged_import_race_compares_the_winner_to_the_validated_stage_not_mutated_source() {
+        let first_root = tempfile::tempdir().unwrap();
+        let second_root = tempfile::tempdir().unwrap();
+        let target_root = tempfile::tempdir().unwrap();
+        let source_root = tempfile::tempdir().unwrap();
+        let first = Store::new(first_root.path(), fixture_key()).unwrap();
+        let second = Store::new(second_root.path(), fixture_key()).unwrap();
+        let target = Store::new(target_root.path(), fixture_key()).unwrap();
+        let first_index = fixture_index();
+        let mut second_index = first_index.clone();
+        second_index.memo = "different but valid".to_owned();
+        first.put_index(&first_index).unwrap();
+        second.put_index(&second_index).unwrap();
+        let first_raw = first
+            .export_raw(super::RawObjectKind::Index, INDEX_ID)
+            .unwrap();
+        let second_raw = second
+            .export_raw(super::RawObjectKind::Index, INDEX_ID)
+            .unwrap();
+        let source_dir = Dir::open_ambient_dir(source_root.path(), ambient_authority()).unwrap();
+        let source = stage_cap_file(&source_dir, OsStr::new("source"), &first_raw, 0o600).unwrap();
+
+        let result = target.import_raw_staged_with_before_publish_unlocked(
+            super::RawObjectKind::Index,
+            INDEX_ID,
+            source.file(),
+            || {
+                target.import_raw_unlocked(super::RawObjectKind::Index, INDEX_ID, &second_raw)?;
+                let mut source_writer = source.file().try_clone()?;
+                source_writer.seek(SeekFrom::Start(0))?;
+                source_writer.set_len(0)?;
+                source_writer.write_all(&second_raw)?;
+                source_writer.sync_all()?;
+                Ok(())
+            },
+        );
+
+        assert!(matches!(
+            result,
+            Err(RepoError::InvalidData(
+                "immutable raw object already exists with different bytes"
+            ))
+        ));
+        assert_eq!(
+            target
+                .export_raw(super::RawObjectKind::Index, INDEX_ID)
+                .unwrap(),
+            second_raw
+        );
+    }
+
+    #[tokio::test]
+    async fn upload_source_retries_keep_the_validated_file_identity_after_path_replacement() {
+        let root = tempfile::tempdir().unwrap();
+        let store = Store::new(root.path(), fixture_key()).unwrap();
+        let first_index = fixture_index();
+        store.put_index(&first_index).unwrap();
+        let first_raw = store
+            .export_raw(super::RawObjectKind::Index, INDEX_ID)
+            .unwrap();
+        let mut second_raw = None;
+        'memo: for index in 0..first_index.memo.len() {
+            for replacement in b'a'..=b'z' {
+                let mut memo = first_index.memo.as_bytes().to_vec();
+                if memo[index] == replacement {
+                    continue;
+                }
+                memo[index] = replacement;
+                let mut candidate = first_index.clone();
+                candidate.memo = String::from_utf8(memo).unwrap();
+                let candidate_raw = store
+                    .compress(&serde_json::to_vec(&candidate).unwrap())
+                    .unwrap();
+                if candidate_raw.len() == first_raw.len() && candidate_raw != first_raw {
+                    second_raw = Some(candidate_raw);
+                    break 'memo;
+                }
+            }
+        }
+        let second_raw = second_raw.expect("fixture must have a same-length valid replacement");
+        assert_ne!(first_raw, second_raw);
+        assert_eq!(first_raw.len(), second_raw.len());
+        store
+            .validate_raw(super::RawObjectKind::Index, INDEX_ID, &second_raw)
+            .unwrap();
+        let source = {
+            let _operation = store.lock_operation().unwrap();
+            store
+                .open_raw_upload_source_unlocked(super::RawObjectKind::Index, INDEX_ID)
+                .unwrap()
+        };
+        write_file_safer(&store.index_path(INDEX_ID).unwrap(), &second_raw, 0o644).unwrap();
+
+        for _attempt in 0..2 {
+            let mut reader = source.open().unwrap();
+            let mut bytes = Vec::new();
+            reader.read_to_end(&mut bytes).await.unwrap();
+            assert_eq!(bytes, first_raw);
+        }
     }
 
     #[test]
