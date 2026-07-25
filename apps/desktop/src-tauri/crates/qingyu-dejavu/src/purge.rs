@@ -870,7 +870,7 @@ mod tests {
             let purge_thread = scope.spawn(move || {
                 purge_repo.purge_with_before_delete_hook(
                     &[RETAINED_INDEX_CALLER.to_owned()],
-                    &cancelled,
+                    cancelled,
                     || {
                         before_delete_tx
                             .send(())

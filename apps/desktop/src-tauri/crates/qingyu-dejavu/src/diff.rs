@@ -68,7 +68,10 @@ fn equal_file(left: &File, right: &File) -> bool {
 }
 
 fn files_by_path(files: &[File]) -> HashMap<&str, &File> {
-    files.iter().map(|file| (file.path.as_str(), file)).collect()
+    files
+        .iter()
+        .map(|file| (file.path.as_str(), file))
+        .collect()
 }
 
 fn sort_files(files: &mut [File]) {
@@ -109,12 +112,17 @@ mod tests {
         let left_file = file("/doc.txt", 1_700_000_001_123);
         let right_file = file("/doc.txt", 1_700_000_000_123);
 
-        let (upserts, removes) =
-            diff_upsert_remove(std::slice::from_ref(&left_file), std::slice::from_ref(&right_file));
+        let (upserts, removes) = diff_upsert_remove(
+            std::slice::from_ref(&left_file),
+            std::slice::from_ref(&right_file),
+        );
         assert_eq!(upserts, vec![left_file.clone()]);
         assert!(removes.is_empty());
 
-        let index_diff = diff_index_files(&[left_file.clone()], &[right_file.clone()]);
+        let index_diff = diff_index_files(
+            std::slice::from_ref(&left_file),
+            std::slice::from_ref(&right_file),
+        );
         assert_eq!(index_diff.updates_left, vec![left_file]);
         assert_eq!(index_diff.updates_right, vec![right_file]);
     }
@@ -151,11 +159,22 @@ mod tests {
 
         let (upserts, removes) = diff_upsert_remove(&left, &right);
         assert_eq!(
-            upserts.iter().map(|file| file.path.as_str()).collect::<Vec<_>>(),
-            vec!["/b-new.txt", "/b-updated.txt", "/z-new.txt", "/z-updated.txt"]
+            upserts
+                .iter()
+                .map(|file| file.path.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "/b-new.txt",
+                "/b-updated.txt",
+                "/z-new.txt",
+                "/z-updated.txt"
+            ]
         );
         assert_eq!(
-            removes.iter().map(|file| file.path.as_str()).collect::<Vec<_>>(),
+            removes
+                .iter()
+                .map(|file| file.path.as_str())
+                .collect::<Vec<_>>(),
             vec!["/b-removed.txt", "/z-removed.txt"]
         );
 
