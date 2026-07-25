@@ -379,18 +379,40 @@ git commit -m "feat(sync): schedule Dejavu background synchronization"
 - Create: `apps/desktop/src-tauri/src/dejavu_sync/path_guard.rs`
 - Modify: `apps/desktop/src-tauri/src/dejavu_sync/repository.rs`
 - Modify: `apps/desktop/src-tauri/src/dejavu_sync/commands.rs`
+- Modify: `apps/desktop/src-tauri/src/dejavu_sync.rs`
+- Modify: `apps/desktop/src-tauri/src/desktop_runtime.rs`
+- Modify: `apps/desktop/src-tauri/src/mobile_runtime.rs`
+- Modify: `apps/desktop/src-tauri/src/builder_boundary_tests.rs`
 - Create: `packages/app/src/lib/sync-path-events.ts`
 - Create: `packages/app/src/lib/sync-path-events.test.ts`
 - Create: `packages/app/src/hooks/useSyncPathGuard.ts`
 - Create: `packages/app/src/hooks/useSyncPathGuard.test.tsx`
+- Modify: `packages/app/src/hooks/useMarkdownDocument.ts`
+- Modify: `packages/app/src/hooks/useMarkdownDocument.test.tsx`
 - Modify: `packages/app/src/App.tsx`
-- Modify: `apps/desktop/src/runtime/tauri/sync-config/shared.ts`
+- Create: `apps/desktop/src/runtime/tauri/sync-path-guard.ts`
+- Modify: `apps/desktop/src/runtime/desktop.ts`
+- Modify: `apps/desktop/src/runtime/mobile.ts`
 - Modify: `packages/app/src/runtime/index.ts`
 
 **Interfaces:**
 - Produces: Tauri `WorkingTreeCoordinator` implementation.
+- Produces: an attempt-bound coordinator factory in the product adapter; the
+  Dejavu core trait remains `prepare(changes)` and receives no QingYu job/root
+  context.
 - Produces: request/ack/release event contract keyed by request ID.
 - Produces: `guardedPaths: ReadonlySet<string>` for editor and file actions.
+- Produces: the first installed internal Dejavu service graph, still without a
+  product sync command or replacement of the existing S3/WebDAV route.
+
+**Boundary correction:**
+
+`WorkingTreeCoordinator::prepare` deliberately knows only the planned Dejavu
+changes. `jobId` and `notesRoot` come from `SyncAttemptContext`, so
+`DejavuRepositoryRunner` must request one coordinator per attempt from a
+product-layer factory and pass that coordinator to `Repo::sync`. Do not add
+Tauri window, QingYu job, or repository-root parameters to the core trait.
+Static fake/no-op coordinators remain available only through test factories.
 
 - [ ] **Step 1: Define and test the event contract**
 
@@ -413,7 +435,9 @@ export type SyncPathGuardRelease = {
 
 Add runtime `acknowledgePathGuard({ requestId, notesRoot })`. Tests must reject
 duplicate IDs, roots that do not match the primary workspace, traversal paths,
-late acknowledgements, and release for another request.
+late acknowledgements, acknowledgement from a non-owner window, and release for
+another request. The frontend stores paths per request ID and derives the
+guarded set as their union so overlapping requests release independently.
 
 - [ ] **Step 2: Run event/hook tests and verify RED**
 
@@ -423,37 +447,65 @@ pnpm --filter @markra/app exec vitest run src/lib/sync-path-events.test.ts src/h
 
 - [ ] **Step 3: Implement backend prepare/release**
 
-For the active root, emit `qingyu://sync-path-guard-request`, wait up to 15
-seconds for the matching acknowledgement, and return a permit containing the
-request ID. Inactive roots use a no-op permit because no editor owns those
-paths. On timeout, return a safe coordination error without applying remote
-changes. Release emits `qingyu://sync-path-guard-release` on every result path.
+Create the coordinator from `SyncAttemptContext` so its event contains that
+attempt's `jobId` and canonical `notesRoot`. For the root currently owned by the
+primary editor, emit `qingyu://sync-path-guard-request`, wait up to 15 seconds
+for the matching acknowledgement, and return a permit containing the request
+ID. A root that was never editor-owned may use a product-layer no-op permit; if
+ownership changes after an active attempt starts, fail coordination instead of
+silently applying to the former root. On timeout, listener loss, invalid/late
+ack, cancellation, or emit failure, return a safe coordination error without
+applying remote changes and emit release cleanup for any published request.
+Permit release emits `qingyu://sync-path-guard-release` exactly once on every
+success/error path.
+
+After this coordinator exists, install the real graph during desktop and mobile
+Tauri setup in this order: Tauri coordinator factory ->
+`DejavuRepositoryRunner` -> `RepositoryStatusStore`/service -> scheduler and
+lifecycle -> both owners. Register the acknowledgement command on both
+platforms and add builder-boundary tests. Setup must finish before the existing
+startup trigger is consumed. Do not expose a new manual product command and do
+not cut over `sync_application` in this task.
 
 - [ ] **Step 4: Implement frontend flush and guarded state**
 
-On a valid request, find open tabs under the exact root, save dirty matching
-documents, then acknowledge. Add relative paths to `guardedPaths` only after
-saves succeed. The active editor is read-only only when its exact path is in the
-set. Create, rename, move, and delete actions reject only a guarded target path
-with a non-blocking “正在同步此文件” notice. Release removes exactly that request's
-paths.
+Add a path-filtered save primitive to `useMarkdownDocument`; it snapshots and
+saves only dirty open tabs whose exact canonical paths are requested, using the
+existing `applySavedCurrentDocument` generation/content check so an edit made
+while native I/O is pending remains dirty. The request handler repeats the
+snapshot/save check until every matching tab is clean at a stable generation,
+then synchronously records that request's guarded paths and acknowledges. A
+save failure never acknowledges. This avoids both saving unrelated tabs and
+losing edits made during the flush.
+
+Do not mutate the existing global `readOnlyMode`. Derive read-only separately
+for each main/side editor from its exact path. Create, rename, move, and delete
+reject only operations whose source, destination, parent, or subtree intersects
+a guarded path, with a localized non-blocking “正在同步此文件” notice; unrelated
+documents and folders remain usable. Release removes only that request's path
+set, leaving paths guarded by another request intact.
 
 - [ ] **Step 5: Add concurrency regression tests**
 
-Prove an unrelated document remains editable and deletable while one path is
-guarded, dirty content is saved before ack, a save during guard is not lost,
-external file replacement causes core recheck/replan, and release restores the
-editor after success or failure.
+Prove an unrelated document remains editable, creatable, and deletable while
+one path is guarded; only matching dirty tabs are saved before ack; an edit
+during an awaited save is re-saved or leaves the request unacknowledged; a
+folder mutation intersecting a guarded descendant is blocked; overlapping
+request releases do not unlock early; external file replacement causes core
+recheck/replan; ownership changes abort apply; and release restores the editor
+after success or failure.
 
 - [ ] **Step 6: Run tests and verify GREEN**
 
-Run focused Vitest, Rust path-guard tests, `pnpm typecheck:test`, and full Rust
-tests. Expected: no global read-only state and no stale remote overwrite.
+Run focused `useMarkdownDocument`, event/hook, Rust path-guard, repository graph,
+and builder-boundary tests, followed by `pnpm typecheck:test` and full Rust
+tests. Expected: no global read-only state, no no-op production coordinator, no
+stale remote overwrite, and no change to the public sync command route.
 
 - [ ] **Step 7: Commit path coordination**
 
 ```bash
-git add apps/desktop/src-tauri/src/dejavu_sync packages/app/src/lib/sync-path-events.ts packages/app/src/lib/sync-path-events.test.ts packages/app/src/hooks/useSyncPathGuard.ts packages/app/src/hooks/useSyncPathGuard.test.tsx packages/app/src/App.tsx apps/desktop/src/runtime/tauri/sync-config/shared.ts packages/app/src/runtime/index.ts
+git add apps/desktop/src-tauri/src/dejavu_sync apps/desktop/src-tauri/src/dejavu_sync.rs apps/desktop/src-tauri/src/desktop_runtime.rs apps/desktop/src-tauri/src/mobile_runtime.rs apps/desktop/src-tauri/src/builder_boundary_tests.rs apps/desktop/src/runtime/tauri/sync-path-guard.ts apps/desktop/src/runtime/desktop.ts apps/desktop/src/runtime/mobile.ts packages/app/src/lib/sync-path-events.ts packages/app/src/lib/sync-path-events.test.ts packages/app/src/hooks/useSyncPathGuard.ts packages/app/src/hooks/useSyncPathGuard.test.tsx packages/app/src/hooks/useMarkdownDocument.ts packages/app/src/hooks/useMarkdownDocument.test.tsx packages/app/src/App.tsx packages/app/src/runtime/index.ts
 git commit -m "feat(sync): coordinate Dejavu writes by affected path"
 ```
 
