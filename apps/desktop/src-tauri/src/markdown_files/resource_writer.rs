@@ -297,6 +297,12 @@ pub(super) fn write_unique_resource(
     relative_folder: &Path,
     target_folder: &Dir,
     file_name: &str,
+    acquire_candidate: impl Fn(
+        &Path,
+    ) -> Result<
+        Option<crate::dejavu_sync::path_guard::NativeMutationLease>,
+        String,
+    >,
     validate_addressability: impl Fn(Option<(&str, FileIdentity)>) -> Result<(), String>,
     write_contents: impl FnOnce(&mut fs::File) -> io::Result<()>,
 ) -> Result<SavedProjectResource, String> {
@@ -323,7 +329,7 @@ pub(super) fn write_unique_resource(
     }
     drop(target);
 
-    let target_name = match (0..1000).find_map(|attempt| {
+    let published = match (0..1000).find_map(|attempt| {
         let target_name = match unique_resource_file_name(file_name, attempt) {
             Ok(name) => name,
             Err(error) => return Some(Err(error)),
@@ -331,16 +337,26 @@ pub(super) fn write_unique_resource(
         if let Err(error) = validate_addressability(None) {
             return Some(Err(error));
         }
+        match target_folder.symlink_metadata(&target_name) {
+            Ok(_) => return None,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Some(Err(error.to_string())),
+        }
+        let candidate_path = root.join(relative_folder).join(&target_name);
+        let mutation = match acquire_candidate(&candidate_path) {
+            Ok(mutation) => mutation,
+            Err(error) => return Some(Err(error)),
+        };
         match staging
             .directory
             .hard_link(STAGED_RESOURCE_NAME, target_folder, &target_name)
         {
-            Ok(()) => Some(Ok(target_name)),
+            Ok(()) => Some(Ok((target_name, mutation))),
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => None,
             Err(error) => Some(Err(error.to_string())),
         }
     }) {
-        Some(Ok(name)) => name,
+        Some(Ok(published)) => published,
         Some(Err(error)) => return Err(cleanup_staging_after_error(staging, error)),
         None => {
             return Err(cleanup_staging_after_error(
@@ -349,6 +365,7 @@ pub(super) fn write_unique_resource(
             ))
         }
     };
+    let (target_name, _mutation) = published;
 
     if let Err(error) = validate_addressability(Some((&target_name, target_identity))) {
         return match rollback_published_resource(
@@ -488,7 +505,8 @@ pub(super) fn existing_project_asset_reference(
     existing_project_asset_reference_at(&document_path, &project_root, source_path)
 }
 
-pub(super) fn save_project_resource_with_writer(
+pub(super) fn save_project_resource_with_writer_in_registry(
+    registry: &std::sync::Arc<crate::dejavu_sync::path_guard::NativeWorkingTreeRegistry>,
     document_path: String,
     project_root_path: String,
     file_name: String,
@@ -538,6 +556,7 @@ pub(super) fn save_project_resource_with_writer(
         Path::new(ASSETS_FOLDER),
         &target_folder,
         &file_name,
+        |candidate| registry.acquire_creation_candidate(candidate).map(Some),
         |published| {
             if let Err(error) = verify_directory_path_identity(
                 &project_root,
@@ -630,6 +649,7 @@ pub(super) fn save_standalone_resource_with_writer(
         &folder,
         &target_folder,
         &file_name,
+        |_| Ok(None),
         |published| {
             if let Err(error) =
                 verify_directory_path_identity(&root, root_identity, "Resource root")
@@ -671,7 +691,8 @@ pub(super) fn save_standalone_resource_with_writer(
     result
 }
 
-pub(super) fn save_project_resource_bytes(
+pub(super) fn save_project_resource_bytes_in_registry(
+    registry: &std::sync::Arc<crate::dejavu_sync::path_guard::NativeWorkingTreeRegistry>,
     document_path: String,
     project_root_path: String,
     bytes: Vec<u8>,
@@ -680,7 +701,8 @@ pub(super) fn save_project_resource_bytes(
     allow_root_assets: impl FnOnce(&Path) -> Result<(), String>,
     forbid_root_assets: impl FnOnce(&Path) -> Result<(), String>,
 ) -> Result<SavedProjectResource, String> {
-    save_project_resource_with_writer(
+    save_project_resource_with_writer_in_registry(
+        registry,
         document_path,
         project_root_path,
         file_name,

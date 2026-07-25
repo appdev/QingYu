@@ -103,6 +103,7 @@ export type SaveNativeMarkdownFileInput = {
   path: string | null;
   skipHistorySnapshot?: boolean;
   suggestedName: string;
+  syncPathGuardRequestId?: string;
   contents: string;
 };
 

@@ -1,6 +1,7 @@
 use std::fs;
 use std::io;
 use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
 
 use cap_fs_ext::{DirExt, FollowSymlinks, OpenOptionsExt, OpenOptionsFollowExt};
 use cap_std::fs::Dir;
@@ -11,8 +12,8 @@ use super::asset::allow_asset_directory;
 use super::path::is_markdown_open_file;
 use super::resource_writer::{
     existing_project_asset_reference as shared_existing_project_asset_reference, file_identity,
-    save_project_resource_bytes, save_project_resource_with_writer, write_unique_resource,
-    FileIdentity,
+    save_project_resource_bytes_in_registry, save_project_resource_with_writer_in_registry,
+    write_unique_resource, FileIdentity,
 };
 use super::types::ClipboardAttachmentFile;
 
@@ -314,6 +315,7 @@ fn write_standalone_attachment_file(
         &folder,
         &target_folder,
         &file_name,
+        |_| Ok(None),
         |published| {
             if let Err(error) =
                 verify_directory_path_identity(&root, root_identity, "Attachment root")
@@ -377,6 +379,7 @@ fn existing_project_asset_reference(
     )
 }
 
+#[cfg(test)]
 fn save_project_clipboard_attachment_file(
     document_path: String,
     project_root_path: String,
@@ -386,7 +389,30 @@ fn save_project_clipboard_attachment_file(
     allow_root_assets: impl FnOnce(&Path) -> Result<(), String>,
     forbid_root_assets: impl FnOnce(&Path) -> Result<(), String>,
 ) -> Result<ClipboardAttachmentFile, String> {
-    let saved = save_project_resource_bytes(
+    save_project_clipboard_attachment_file_in_registry(
+        crate::dejavu_sync::path_guard::native_working_tree_registry(),
+        document_path,
+        project_root_path,
+        bytes,
+        file_name,
+        source_path,
+        allow_root_assets,
+        forbid_root_assets,
+    )
+}
+
+fn save_project_clipboard_attachment_file_in_registry(
+    registry: &Arc<crate::dejavu_sync::path_guard::NativeWorkingTreeRegistry>,
+    document_path: String,
+    project_root_path: String,
+    bytes: Vec<u8>,
+    file_name: String,
+    source_path: Option<String>,
+    allow_root_assets: impl FnOnce(&Path) -> Result<(), String>,
+    forbid_root_assets: impl FnOnce(&Path) -> Result<(), String>,
+) -> Result<ClipboardAttachmentFile, String> {
+    let saved = save_project_resource_bytes_in_registry(
+        registry,
         document_path,
         project_root_path,
         bytes,
@@ -525,8 +551,31 @@ fn import_local_file_with_asset_scope_and_hook(
     )
 }
 
-#[cfg(desktop)]
+#[cfg(test)]
 fn import_local_file_with_optional_project_root(
+    document_path: String,
+    project_root_path: Option<String>,
+    folder: String,
+    source_path: String,
+    allow_root_assets: impl FnOnce(&Path) -> Result<(), String>,
+    forbid_root_assets: impl FnOnce(&Path) -> Result<(), String>,
+    before_source_open: impl FnOnce() -> Result<(), String>,
+) -> Result<ClipboardAttachmentFile, String> {
+    import_local_file_with_optional_project_root_in_registry(
+        crate::dejavu_sync::path_guard::native_working_tree_registry(),
+        document_path,
+        project_root_path,
+        folder,
+        source_path,
+        allow_root_assets,
+        forbid_root_assets,
+        before_source_open,
+    )
+}
+
+#[cfg(desktop)]
+fn import_local_file_with_optional_project_root_in_registry(
+    registry: &Arc<crate::dejavu_sync::path_guard::NativeWorkingTreeRegistry>,
     document_path: String,
     project_root_path: Option<String>,
     folder: String,
@@ -578,7 +627,8 @@ fn import_local_file_with_optional_project_root(
     let mut source = source.into_std();
 
     if let Some(project_root_path) = project_root_path {
-        let saved = save_project_resource_with_writer(
+        let saved = save_project_resource_with_writer_in_registry(
+            registry,
             document_path,
             project_root_path,
             file_name,
@@ -611,6 +661,41 @@ fn forbid_asset_directory(app: &tauri::AppHandle, root: &Path) -> Result<(), Str
 }
 
 #[cfg(desktop)]
+fn save_clipboard_attachment_with_registry(
+    registry: &Arc<crate::dejavu_sync::path_guard::NativeWorkingTreeRegistry>,
+    document_path: String,
+    folder: String,
+    bytes: Vec<u8>,
+    file_name: String,
+    project_root_path: Option<String>,
+    source_path: Option<String>,
+    allow_root_assets: impl FnOnce(&Path) -> Result<(), String>,
+    forbid_root_assets: impl FnOnce(&Path) -> Result<(), String>,
+) -> Result<ClipboardAttachmentFile, String> {
+    if let Some(project_root_path) = project_root_path {
+        return save_project_clipboard_attachment_file_in_registry(
+            registry,
+            document_path,
+            project_root_path,
+            bytes,
+            file_name,
+            source_path,
+            allow_root_assets,
+            forbid_root_assets,
+        );
+    }
+
+    save_clipboard_attachment_file_with_scope(
+        document_path,
+        folder,
+        bytes,
+        file_name,
+        allow_root_assets,
+        forbid_root_assets,
+    )
+}
+
+#[cfg(desktop)]
 #[tauri::command]
 pub(crate) fn save_clipboard_attachment(
     app: tauri::AppHandle,
@@ -621,25 +706,38 @@ pub(crate) fn save_clipboard_attachment(
     project_root_path: Option<String>,
     source_path: Option<String>,
 ) -> Result<ClipboardAttachmentFile, String> {
-    if let Some(project_root_path) = project_root_path {
-        return save_project_clipboard_attachment_file(
-            document_path,
-            project_root_path,
-            bytes,
-            file_name,
-            source_path,
-            |root| allow_asset_directory(&app, root),
-            |root| forbid_asset_directory(&app, root),
-        );
-    }
-
-    save_clipboard_attachment_file_with_scope(
+    save_clipboard_attachment_with_registry(
+        crate::dejavu_sync::path_guard::native_working_tree_registry(),
         document_path,
         folder,
         bytes,
         file_name,
+        project_root_path,
+        source_path,
         |root| allow_asset_directory(&app, root),
         |root| forbid_asset_directory(&app, root),
+    )
+}
+
+#[cfg(desktop)]
+fn import_local_file_with_registry(
+    registry: &Arc<crate::dejavu_sync::path_guard::NativeWorkingTreeRegistry>,
+    document_path: String,
+    folder: String,
+    source_path: String,
+    project_root_path: Option<String>,
+    allow_root_assets: impl FnOnce(&Path) -> Result<(), String>,
+    forbid_root_assets: impl FnOnce(&Path) -> Result<(), String>,
+) -> Result<ClipboardAttachmentFile, String> {
+    import_local_file_with_optional_project_root_in_registry(
+        registry,
+        document_path,
+        project_root_path,
+        folder,
+        source_path,
+        allow_root_assets,
+        forbid_root_assets,
+        || Ok(()),
     )
 }
 
@@ -652,15 +750,16 @@ pub(crate) async fn import_local_file(
     source_path: String,
     project_root_path: Option<String>,
 ) -> Result<ClipboardAttachmentFile, String> {
+    let registry = Arc::clone(crate::dejavu_sync::path_guard::native_working_tree_registry());
     tauri::async_runtime::spawn_blocking(move || {
-        import_local_file_with_optional_project_root(
+        import_local_file_with_registry(
+            &registry,
             document_path,
-            project_root_path,
             folder,
             source_path,
+            project_root_path,
             |root| allow_asset_directory(&app, root),
             |root| forbid_asset_directory(&app, root),
-            || Ok(()),
         )
     })
     .await
@@ -922,6 +1021,144 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.root);
         }
+    }
+
+    #[test]
+    fn native_guard_rejects_primary_clipboard_attachment_before_writing() {
+        let fixture = AttachmentFixture::new();
+        let registry =
+            Arc::new(crate::dejavu_sync::path_guard::NativeWorkingTreeRegistry::default());
+        let _block = registry
+            .block_paths(&fixture.root, &["assets/Reference.pdf".to_string()])
+            .unwrap();
+
+        let error = save_clipboard_attachment_with_registry(
+            &registry,
+            fixture.note.to_string_lossy().to_string(),
+            "assets".to_string(),
+            vec![4, 5, 6],
+            "Reference.pdf".to_string(),
+            Some(fixture.root.to_string_lossy().to_string()),
+            None,
+            |_| Ok(()),
+            |_| Ok(()),
+        )
+        .unwrap_err();
+
+        assert_eq!(error, "sync-path-guarded");
+        assert!(!fixture.root.join("assets/Reference.pdf").exists());
+    }
+
+    #[test]
+    fn native_guard_allows_an_unrelated_primary_attachment_candidate() {
+        let fixture = AttachmentFixture::new();
+        let registry =
+            Arc::new(crate::dejavu_sync::path_guard::NativeWorkingTreeRegistry::default());
+        let _block = registry
+            .block_paths(&fixture.root, &["assets/guarded.pdf".to_string()])
+            .unwrap();
+
+        let saved = save_clipboard_attachment_with_registry(
+            &registry,
+            fixture.note.to_string_lossy().to_string(),
+            "assets".to_string(),
+            vec![4, 5, 6],
+            "unrelated.pdf".to_string(),
+            Some(fixture.root.to_string_lossy().to_string()),
+            None,
+            |_| Ok(()),
+            |_| Ok(()),
+        )
+        .expect("an unrelated candidate should remain writable");
+
+        assert_eq!(saved.relative_path, "assets/unrelated.pdf");
+        assert!(fixture.root.join("assets/unrelated.pdf").is_file());
+    }
+
+    #[test]
+    fn guarded_existing_candidate_is_skipped_before_acquiring_the_suffix_candidate() {
+        let fixture = AttachmentFixture::new();
+        let assets = fixture.root.join("assets");
+        fs::create_dir(&assets).unwrap();
+        fs::write(assets.join("Reference.pdf"), [1, 2, 3]).unwrap();
+        let registry =
+            Arc::new(crate::dejavu_sync::path_guard::NativeWorkingTreeRegistry::default());
+        let _block = registry
+            .block_paths(&fixture.root, &["assets/Reference.pdf".to_string()])
+            .unwrap();
+
+        let saved = save_clipboard_attachment_with_registry(
+            &registry,
+            fixture.note.to_string_lossy().to_string(),
+            "assets".to_string(),
+            vec![4, 5, 6],
+            "Reference.pdf".to_string(),
+            Some(fixture.root.to_string_lossy().to_string()),
+            None,
+            |_| Ok(()),
+            |_| Ok(()),
+        )
+        .expect("an occupied guarded candidate should advance to an unguarded suffix");
+
+        assert_eq!(saved.relative_path, "assets/Reference-2.pdf");
+        assert_eq!(fs::read(assets.join("Reference.pdf")).unwrap(), [1, 2, 3]);
+        assert_eq!(fs::read(assets.join("Reference-2.pdf")).unwrap(), [4, 5, 6]);
+    }
+
+    #[test]
+    fn existing_project_asset_reference_does_not_acquire_an_unrelated_write_lease() {
+        let fixture = AttachmentFixture::new();
+        let assets = fixture.root.join("assets");
+        fs::create_dir(&assets).unwrap();
+        let existing = assets.join("existing.pdf");
+        fs::write(&existing, [4, 5, 6]).unwrap();
+        let registry =
+            Arc::new(crate::dejavu_sync::path_guard::NativeWorkingTreeRegistry::default());
+        let _block = registry
+            .block_paths(&fixture.root, &["assets/guarded.pdf".to_string()])
+            .unwrap();
+
+        let saved = save_clipboard_attachment_with_registry(
+            &registry,
+            fixture.note.to_string_lossy().to_string(),
+            "assets".to_string(),
+            vec![4, 5, 6],
+            "existing.pdf".to_string(),
+            Some(fixture.root.to_string_lossy().to_string()),
+            Some(existing.to_string_lossy().to_string()),
+            |_| Ok(()),
+            |_| Ok(()),
+        )
+        .expect("an existing reference should not acquire a write lease");
+
+        assert_eq!(saved.relative_path, "assets/existing.pdf");
+    }
+
+    #[test]
+    fn native_guard_rejects_primary_local_file_import_before_writing() {
+        let fixture = AttachmentFixture::new();
+        let source_root = tempfile::tempdir().unwrap();
+        let source = source_root.path().join("Reference.pdf");
+        fs::write(&source, [4, 5, 6]).unwrap();
+        let registry =
+            Arc::new(crate::dejavu_sync::path_guard::NativeWorkingTreeRegistry::default());
+        let _block = registry
+            .block_paths(&fixture.root, &["assets/Reference.pdf".to_string()])
+            .unwrap();
+
+        let error = import_local_file_with_registry(
+            &registry,
+            fixture.note.to_string_lossy().to_string(),
+            "assets".to_string(),
+            source.to_string_lossy().to_string(),
+            Some(fixture.root.to_string_lossy().to_string()),
+            |_| Ok(()),
+            |_| Ok(()),
+        )
+        .unwrap_err();
+
+        assert_eq!(error, "sync-path-guarded");
+        assert!(!fixture.root.join("assets/Reference.pdf").exists());
     }
 
     #[test]

@@ -380,6 +380,7 @@ pub(crate) fn run() {
             crate::workspace_membership::is_document_in_workspace,
             crate::web_http::download_web_image,
             crate::markdown_files::document::write_markdown_file,
+            crate::markdown_files::document::write_markdown_export_file,
             crate::text_file::write_text_file,
             crate::markdown_files::export::export_pdf_file,
             crate::markdown_files::export::check_pandoc_available,

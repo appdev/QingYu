@@ -127,6 +127,7 @@ export type SaveNativeMarkdownFileInput = {
   path: string | null;
   skipHistorySnapshot?: boolean;
   suggestedName: string;
+  syncPathGuardRequestId?: string;
   contents: string;
 };
 
@@ -699,6 +700,7 @@ export async function saveNativeMarkdownFile({
   path,
   skipHistorySnapshot,
   suggestedName,
+  syncPathGuardRequestId,
   contents
 }: SaveNativeMarkdownFileInput): Promise<SavedNativeMarkdownFile | null> {
   debug(() => ["[markra-history] native save markdown start", {
@@ -728,7 +730,8 @@ export async function saveNativeMarkdownFile({
     historyCursorId,
     path: targetPath,
     skipHistorySnapshot,
-    suggestedName
+    suggestedName,
+    syncPathGuardRequestId
   });
 }
 
@@ -743,7 +746,7 @@ export async function saveNativeHtmlFile({
 
   if (!targetPath) return null;
 
-  await invokeNative("write_markdown_file", {
+  await invokeNative("write_markdown_export_file", {
     path: targetPath,
     contents
   });

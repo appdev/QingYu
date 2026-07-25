@@ -375,6 +375,7 @@ export async function saveNativeMarkdownFileInPlace({
   historyCursorId,
   path,
   skipHistorySnapshot,
+  syncPathGuardRequestId,
   contents
 }: SaveNativeMarkdownFileInput): Promise<SavedNativeMarkdownFile> {
   if (!path) throw new Error("Managed workspace Markdown files require a path before saving.");
@@ -384,9 +385,13 @@ export async function saveNativeMarkdownFileInPlace({
     historyCursorId?: string;
     path: string;
     skipHistorySnapshot?: boolean;
+    syncPathGuardRequestId?: string;
   } = { contents, path };
   if (historyCursorId?.trim()) writeArgs.historyCursorId = historyCursorId;
   if (skipHistorySnapshot === true) writeArgs.skipHistorySnapshot = true;
+  if (syncPathGuardRequestId?.trim()) {
+    writeArgs.syncPathGuardRequestId = syncPathGuardRequestId;
+  }
 
   await invokeNative("write_markdown_file", writeArgs);
   debug(() => ["[markra-history] native save markdown success", {

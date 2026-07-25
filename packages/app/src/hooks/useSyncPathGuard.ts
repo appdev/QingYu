@@ -16,7 +16,7 @@ type UseSyncPathGuardOptions = {
   enabled: boolean;
   mutationRegistry: SyncPathMutationRegistry;
   notesRoot: string | null;
-  saveDirtyMarkdownPaths: (paths: readonly string[]) => Promise<boolean>;
+  saveDirtyMarkdownPaths: (paths: readonly string[], requestId: string) => Promise<boolean>;
 };
 
 const frontendPathFlushTimeoutMs = 14_000;
@@ -47,6 +47,8 @@ export function useSyncPathGuard({
   const pendingRef = useRef(new Map<string, SyncPathGuardRequest>());
   const pendingAcknowledgementsRef = useRef(new Map<string, SyncPathGuardRequest>());
   const mountedRef = useRef(true);
+  const saveDirtyMarkdownPathsRef = useRef(saveDirtyMarkdownPaths);
+  saveDirtyMarkdownPathsRef.current = saveDirtyMarkdownPaths;
   const [guardedPaths, setGuardedPaths] = useState<ReadonlySet<string>>(new Set());
 
   const publishGuardedPaths = useCallback(() => {
@@ -112,7 +114,7 @@ export function useSyncPathGuard({
           saved = await flushBeforeNativeTimeout(async () => {
             await mutationRegistry.prepare(request.requestId, new Set(paths));
             if (!active || pendingRef.current.get(request.requestId) !== request) return false;
-            return saveDirtyMarkdownPaths(paths);
+            return saveDirtyMarkdownPathsRef.current(paths, request.requestId);
           });
         } catch {
           saved = false;
@@ -143,7 +145,7 @@ export function useSyncPathGuard({
       pendingAcknowledgementsRef.current.clear();
       mutationRegistry.clearRequests();
     };
-  }, [enabled, mutationRegistry, notesRoot, publishGuardedPaths, saveDirtyMarkdownPaths]);
+  }, [enabled, mutationRegistry, notesRoot, publishGuardedPaths]);
 
   useEffect(() => {
     const pending = [...pendingAcknowledgementsRef.current.values()];

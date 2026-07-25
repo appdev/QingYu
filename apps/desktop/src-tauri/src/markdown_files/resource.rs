@@ -365,6 +365,47 @@ pub(crate) fn trash_workspace_resources(
     root_path: String,
     resources: Vec<TrashWorkspaceResourceInput>,
 ) -> Vec<TrashWorkspaceResourceResult> {
+    trash_workspace_resources_with_registry(
+        root_path,
+        resources,
+        crate::dejavu_sync::path_guard::native_working_tree_registry(),
+    )
+}
+
+fn trash_workspace_resources_with_registry(
+    root_path: String,
+    resources: Vec<TrashWorkspaceResourceInput>,
+    registry: &Arc<crate::dejavu_sync::path_guard::NativeWorkingTreeRegistry>,
+) -> Vec<TrashWorkspaceResourceResult> {
+    let guarded_paths = PathBuf::from(&root_path)
+        .canonicalize()
+        .ok()
+        .into_iter()
+        .flat_map(|root| {
+            resources.iter().filter_map(move |resource| {
+                normalized_resource_relative_path(&resource.relative_path)
+                    .ok()
+                    .map(|relative| root.join(relative))
+            })
+        })
+        .collect::<Vec<_>>();
+    let _mutation = if guarded_paths.is_empty() {
+        None
+    } else {
+        match registry.acquire_mutation(&guarded_paths) {
+            Ok(mutation) => Some(mutation),
+            Err(error) => {
+                return resources
+                    .into_iter()
+                    .map(|input| TrashWorkspaceResourceResult {
+                        error: Some(error.clone()),
+                        relative_path: input.relative_path,
+                        status: TrashWorkspaceResourceStatus::Failed,
+                    })
+                    .collect()
+            }
+        }
+    };
     WorkspaceResourceService::default().trash(root_path, resources)
 }
 
@@ -396,6 +437,26 @@ mod tests {
             .expect("manual should be written");
         fs::write(root.join("outside.txt"), b"outside").expect("outside file should be written");
         (temporary, root)
+    }
+
+    #[test]
+    fn native_guard_rejects_workspace_resource_trash_before_mutation() {
+        let (_temporary, root) = fixture();
+        let registry =
+            Arc::new(crate::dejavu_sync::path_guard::NativeWorkingTreeRegistry::default());
+        let _block = registry
+            .block_paths(&root, &["assets/cover.png".to_string()])
+            .unwrap();
+
+        let results = trash_workspace_resources_with_registry(
+            root.to_string_lossy().to_string(),
+            vec![resource_input(&root, "assets/cover.png")],
+            &registry,
+        );
+
+        assert_eq!(results[0].status, TrashWorkspaceResourceStatus::Failed);
+        assert_eq!(results[0].error.as_deref(), Some("sync-path-guarded"));
+        assert!(root.join("assets/cover.png").is_file());
     }
 
     #[test]

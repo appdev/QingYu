@@ -4361,14 +4361,18 @@ describe("useMarkdownDocument", () => {
 
     let clean = false;
     await act(async () => {
-      clean = await result.current.saveDirtyMarkdownPaths([firstPath]);
+      clean = await result.current.saveDirtyMarkdownPaths(
+        [firstPath],
+        "e728a5d6-31ed-490d-bb8a-8f15cb550e74"
+      );
     });
 
     expect(clean).toBe(true);
     expect(mockedSaveNativeMarkdownFile).toHaveBeenCalledTimes(1);
     expect(mockedSaveNativeMarkdownFile).toHaveBeenCalledWith(expect.objectContaining({
       contents: "# First\n\nDirty",
-      path: firstPath
+      path: firstPath,
+      syncPathGuardRequestId: "e728a5d6-31ed-490d-bb8a-8f15cb550e74"
     }));
     expect(result.current.tabs.find((tab) => tab.path === firstPath)?.dirty).toBe(false);
     expect(result.current.tabs.find((tab) => tab.path === secondPath)?.dirty).toBe(true);

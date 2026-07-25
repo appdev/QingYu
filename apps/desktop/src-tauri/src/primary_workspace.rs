@@ -95,11 +95,21 @@ impl<'a, Backend: PrimaryWorkspaceBackend + ?Sized> PrimaryWorkspaceService<'a, 
         }
     }
 
+    #[cfg(test)]
     fn write(
         &self,
         input: PrimaryWorkspaceWriteInput,
     ) -> Result<PrimaryWorkspaceWriteResult, String> {
         self.write_validated(input, || Ok(()))
+    }
+
+    fn write_with_primary_root_guard(
+        &self,
+        input: PrimaryWorkspaceWriteInput,
+        proposed_root: Option<&Path>,
+        registry: &crate::dejavu_sync::path_guard::NativeWorkingTreeRegistry,
+    ) -> Result<PrimaryWorkspaceWriteResult, String> {
+        self.write_validated(input, || registry.validate_primary_root(proposed_root))
     }
 
     fn write_validated(
@@ -259,12 +269,28 @@ impl ConsumedPreparedDesktopNotebookTarget {
         backend: &dyn PrimaryWorkspaceBackend,
         lock: &Mutex<()>,
     ) -> Result<PrimaryWorkspaceWriteResult, String> {
+        self.commit_primary_workspace_with_backend_and_registry(
+            backend,
+            lock,
+            crate::dejavu_sync::path_guard::native_working_tree_registry(),
+        )
+    }
+
+    fn commit_primary_workspace_with_backend_and_registry(
+        &self,
+        backend: &dyn PrimaryWorkspaceBackend,
+        lock: &Mutex<()>,
+        registry: &crate::dejavu_sync::path_guard::NativeWorkingTreeRegistry,
+    ) -> Result<PrimaryWorkspaceWriteResult, String> {
         let result = PrimaryWorkspaceService::new(backend, lock).write_validated(
             PrimaryWorkspaceWriteInput {
                 expected_state: Some(self.expected_primary_workspace.clone()),
                 state: self.desired_primary_workspace_state(),
             },
-            || self.validate_current_address(),
+            || {
+                self.validate_current_address()?;
+                registry.validate_primary_root(Some(&self.notes_root))
+            },
         )?;
         if !result.applied {
             return Err(notebook_target_error());
@@ -643,6 +669,32 @@ pub(crate) fn resolve_sync_primary_workspace<R: tauri::Runtime>(
     with_primary_workspace_transaction(app, |authoritative| authoritative)
 }
 
+fn proposed_primary_workspace_root<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    state: &Value,
+) -> Option<PathBuf> {
+    #[cfg(mobile)]
+    {
+        let app_data_root = app.path().app_data_dir().ok()?;
+        authoritative_primary_workspace_root(
+            Some(state.clone()),
+            PrimaryWorkspaceKind::Mobile,
+            Some(&app_data_root),
+        )
+        .ok()
+    }
+    #[cfg(not(mobile))]
+    {
+        let _ = app;
+        authoritative_primary_workspace_root(
+            Some(state.clone()),
+            PrimaryWorkspaceKind::Desktop,
+            None,
+        )
+        .ok()
+    }
+}
+
 #[tauri::command]
 pub(crate) fn read_primary_workspace_state(app: tauri::AppHandle) -> Result<Option<Value>, String> {
     read_primary_workspace_value(&app)
@@ -653,11 +705,16 @@ pub(crate) fn write_primary_workspace_state(
     app: tauri::AppHandle,
     input: PrimaryWorkspaceWriteInput,
 ) -> Result<PrimaryWorkspaceWriteResult, String> {
+    let proposed_root = proposed_primary_workspace_root(&app, &input.state);
     let store = app
         .store(LOCAL_STATE_STORE_PATH)
         .map_err(|_| persistence_error())?;
     let backend = StorePrimaryWorkspaceBackend { store };
-    PrimaryWorkspaceService::new(&backend, transaction_lock()).write(input)
+    PrimaryWorkspaceService::new(&backend, transaction_lock()).write_with_primary_root_guard(
+        input,
+        proposed_root.as_deref(),
+        crate::dejavu_sync::path_guard::native_working_tree_registry(),
+    )
 }
 
 #[tauri::command]
@@ -1076,6 +1133,36 @@ mod tests {
     }
 
     #[test]
+    fn native_prepared_commit_rejects_activating_a_root_held_by_an_inactive_sync_permit() {
+        let _guard = prepared_target_test_lock().lock().unwrap();
+        let temporary = tempfile::tempdir().unwrap();
+        let parent = temporary.path().join("Workspace");
+        let old_root = parent.join("A");
+        std::fs::create_dir_all(&old_root).unwrap();
+        let previous = completed_v3_desktop_state(&parent, &old_root);
+        let prepared = super::prepare_desktop_notebook_target_lease_at_path_with_expected(
+            parent.to_str().unwrap(),
+            "B",
+            Some(previous.clone()),
+        )
+        .unwrap();
+        let consumed = super::consume_prepared_desktop_notebook_target(&prepared.lease).unwrap();
+        let backend = MemoryBackend::with([(PRIMARY_WORKSPACE_KEY, previous.clone())]);
+        let lock = Mutex::new(());
+        let registry = std::sync::Arc::new(
+            crate::dejavu_sync::path_guard::NativeWorkingTreeRegistry::default(),
+        );
+        let _ownership = registry.lease_ownership(consumed.notes_root.clone(), false);
+
+        let error = consumed
+            .commit_primary_workspace_with_backend_and_registry(&backend, &lock, &registry)
+            .expect_err("an inactive sync permit must keep its root inactive");
+
+        assert_eq!(error, "sync-path-guarded");
+        assert_eq!(backend.value(PRIMARY_WORKSPACE_KEY), Some(previous));
+    }
+
+    #[test]
     fn concurrent_prepared_desktop_restore_consumers_cannot_replay_a_lease() {
         let _guard = prepared_target_test_lock().lock().unwrap();
         let temporary = tempfile::tempdir().unwrap();
@@ -1438,6 +1525,42 @@ mod tests {
         assert!(!result.applied);
         assert_eq!(result.state, current);
         assert_eq!(backend.value(PRIMARY_WORKSPACE_KEY), Some(current));
+    }
+
+    #[test]
+    fn guarded_primary_workspace_write_is_rolled_back_if_a_lease_appears_during_save() {
+        let temporary = tempfile::tempdir().unwrap();
+        let workspace = temporary.path().join("Workspace");
+        let old_root = workspace.join("A");
+        let next_root = workspace.join("B");
+        std::fs::create_dir_all(&old_root).unwrap();
+        std::fs::create_dir(&next_root).unwrap();
+        let (backend, save_started, release_save) = BlockingBackend::new();
+        let backend = std::sync::Arc::new(backend);
+        let transaction_lock = std::sync::Arc::new(Mutex::new(()));
+        let registry = std::sync::Arc::new(
+            crate::dejavu_sync::path_guard::NativeWorkingTreeRegistry::default(),
+        );
+        let writer = {
+            let backend = backend.clone();
+            let transaction_lock = transaction_lock.clone();
+            let registry = registry.clone();
+            let next_root = next_root.clone();
+            std::thread::spawn(move || {
+                PrimaryWorkspaceService::new(backend.as_ref(), transaction_lock.as_ref())
+                    .write_with_primary_root_guard(
+                        write_input(next_root.to_str().unwrap()),
+                        Some(&next_root),
+                        &registry,
+                    )
+            })
+        };
+        save_started.recv().unwrap();
+        let _ownership = registry.lease_ownership(old_root, true);
+        release_save.send(()).unwrap();
+
+        assert_eq!(writer.join().unwrap().unwrap_err(), "sync-path-guarded");
+        assert_eq!(backend.inner.value(PRIMARY_WORKSPACE_KEY), None);
     }
 
     #[test]

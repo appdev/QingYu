@@ -651,6 +651,9 @@ pub(crate) fn create_markdown_tree_file(
     let target_path = parent.join(normalized_file_name);
 
     ensure_markdown_tree_parent(&root, &parent)?;
+    let _mutation = crate::dejavu_sync::path_guard::acquire_native_working_tree_mutation(&[
+        target_path.clone(),
+    ])?;
 
     if target_path.exists() {
         return Err("File already exists".to_string());
@@ -674,6 +677,9 @@ pub(crate) fn create_markdown_tree_folder(
     let target_path = parent.join(normalized_folder_name);
 
     ensure_markdown_tree_parent(&root, &parent)?;
+    let _mutation = crate::dejavu_sync::path_guard::acquire_native_working_tree_mutation(&[
+        target_path.clone(),
+    ])?;
 
     if target_path.exists() {
         return Err("Folder already exists".to_string());
@@ -700,6 +706,10 @@ pub(crate) fn rename_markdown_tree_file(
     let target_path = parent.join(normalized_file_name);
 
     ensure_markdown_tree_parent(&root, parent)?;
+    let _mutation = crate::dejavu_sync::path_guard::acquire_native_working_tree_mutation(&[
+        source_path.clone(),
+        target_path.clone(),
+    ])?;
 
     if target_path.exists() && target_path != source_path {
         return Err("File already exists".to_string());
@@ -728,6 +738,10 @@ pub(crate) fn move_markdown_tree_file(
     let target_path = target_parent.join(source_name);
 
     ensure_markdown_tree_parent(&root, &target_parent)?;
+    let _mutation = crate::dejavu_sync::path_guard::acquire_native_working_tree_mutation(&[
+        source_path.clone(),
+        target_path.clone(),
+    ])?;
 
     if source_path.is_dir()
         && (target_parent == source_path || target_parent.starts_with(&source_path))
@@ -751,6 +765,9 @@ pub(crate) fn delete_markdown_tree_file(root_path: String, path: String) -> Resu
     let root_path = PathBuf::from(root_path);
     let root = canonical_markdown_tree_root(&root_path)?;
     let source_path = canonical_markdown_tree_entry(&root, &PathBuf::from(path))?;
+    let _mutation = crate::dejavu_sync::path_guard::acquire_native_working_tree_mutation(&[
+        source_path.clone(),
+    ])?;
 
     if source_path.is_dir() {
         fs::remove_dir_all(source_path).map_err(|error| error.to_string())

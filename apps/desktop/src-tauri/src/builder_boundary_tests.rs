@@ -142,6 +142,7 @@ const DESKTOP_COMMANDS: &[&str] = &[
     "destroy_current_editor_window",
     "download_web_image",
     "write_markdown_file",
+    "write_markdown_export_file",
     "write_text_file",
     "export_pdf_file",
     "check_pandoc_available",

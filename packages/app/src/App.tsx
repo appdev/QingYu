@@ -856,6 +856,13 @@ function WorkspaceApp() {
     saveDirtyMarkdownPaths
   });
   const mainEditorReadOnly = editorReadOnlyForPath(readOnlyMode, document.path, guardedPaths);
+  const showSyncPathGuardedNotice = useCallback(() => {
+    showAppToast({
+      message: translate("app.syncPathGuarded"),
+      status: "success",
+      surface: "notice"
+    });
+  }, [translate]);
   const guardFileMutation = useCallback((mutation: {
     destinationPath?: string | null;
     sourcePath?: string | null;
@@ -866,13 +873,9 @@ function WorkspaceApp() {
     ) {
       return false;
     }
-    showAppToast({
-      message: translate("app.syncPathGuarded"),
-      status: "success",
-      surface: "notice"
-    });
+    showSyncPathGuardedNotice();
     return true;
-  }, [guardedPaths, syncPathMutationRegistry, translate]);
+  }, [guardedPaths, showSyncPathGuardedNotice, syncPathMutationRegistry]);
   const createMarkdownTreeFile = useCallback((
     fileName: string,
     parentPath: string | null = null,
@@ -3101,6 +3104,13 @@ function WorkspaceApp() {
       if (savedFile) refreshOpenDocumentHistory(savedFile.path);
       if (savedFile) await appSync.notifyDocumentSaved(savedFile.path);
       return savedFile;
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.includes("sync-path-guarded")) {
+        showSyncPathGuardedNotice();
+        return null;
+      }
+      throw error;
     } finally {
       lease?.release();
     }
@@ -3116,6 +3126,7 @@ function WorkspaceApp() {
     saveCurrentDocument,
     saveMarkdownTab,
     sideDocumentTab?.path,
+    showSyncPathGuardedNotice,
     syncPathMutationRegistry
   ]);
   const handleSaveDocument = useCallback(() => saveDocument(false), [saveDocument]);

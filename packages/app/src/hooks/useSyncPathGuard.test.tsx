@@ -68,8 +68,16 @@ describe("useSyncPathGuard", () => {
 
     await publish(syncPathGuardRequestEvent, first);
     await publish(syncPathGuardRequestEvent, second);
-    expect(saveDirtyMarkdownPaths).toHaveBeenNthCalledWith(1, ["/notes/shared.md", "/notes/one.md"]);
-    expect(saveDirtyMarkdownPaths).toHaveBeenNthCalledWith(2, ["/notes/shared.md", "/notes/two.md"]);
+    expect(saveDirtyMarkdownPaths).toHaveBeenNthCalledWith(
+      1,
+      ["/notes/shared.md", "/notes/one.md"],
+      first.requestId
+    );
+    expect(saveDirtyMarkdownPaths).toHaveBeenNthCalledWith(
+      2,
+      ["/notes/shared.md", "/notes/two.md"],
+      second.requestId
+    );
     expect(acknowledge).toHaveBeenCalledTimes(2);
     expect([...result.current.guardedPaths].sort()).toEqual([
       "/notes/one.md",
@@ -141,6 +149,42 @@ describe("useSyncPathGuard", () => {
     ));
 
     expect(guardStateAtAcknowledgement).toEqual(["guarded"]);
+  });
+
+  it("keeps an acknowledged guard installed when the save callback identity changes", async () => {
+    const firstSave = vi.fn(async () => true);
+    const secondSave = vi.fn(async () => true);
+    const { result, rerender } = renderHook(
+      ({ saveDirtyMarkdownPaths }) => useSyncPathGuard({
+        enabled: true,
+        mutationRegistry,
+        notesRoot: root,
+        saveDirtyMarkdownPaths
+      }),
+      { initialProps: { saveDirtyMarkdownPaths: firstSave } }
+    );
+    await waitFor(() => expect(listeners.has(syncPathGuardRequestEvent)).toBe(true));
+    const guarded = request(
+      "e728a5d6-31ed-490d-bb8a-8f15cb550e74",
+      ["guarded.md"]
+    );
+
+    await publish(syncPathGuardRequestEvent, guarded);
+    expect(acknowledge).toHaveBeenCalledTimes(1);
+    expect(result.current.guardedPaths.has("/notes/guarded.md")).toBe(true);
+    expect(mutationRegistry.isBlocked({ sourcePath: "/notes/guarded.md" })).toBe(true);
+
+    rerender({ saveDirtyMarkdownPaths: secondSave });
+
+    expect(result.current.guardedPaths.has("/notes/guarded.md")).toBe(true);
+    expect(mutationRegistry.isBlocked({ sourcePath: "/notes/guarded.md" })).toBe(true);
+    await publish<SyncPathGuardRelease>(syncPathGuardReleaseEvent, {
+      notesRoot: root,
+      relativePaths: guarded.relativePaths,
+      requestId: guarded.requestId
+    });
+    expect(result.current.guardedPaths.size).toBe(0);
+    expect(mutationRegistry.isBlocked({ sourcePath: "/notes/guarded.md" })).toBe(false);
   });
 
   it("does not acknowledge or guard after a failed save", async () => {

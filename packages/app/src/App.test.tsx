@@ -9482,6 +9482,37 @@ describe("QingYu workspace", () => {
     expect(screen.getByRole("button", { name: "original.md" })).toBeInTheDocument();
   });
 
+  it("shows the sync guard notice when native Save As rejects the selected destination", async () => {
+    const originalPath = "/Notes/original.md";
+    mockDesktopPrimaryWorkspace({ root: "/Notes", status: "ready" });
+    mockedGetStoredWorkspaceState.mockResolvedValue({
+      filePath: originalPath,
+      fileTreeOpen: true,
+      folderName: "Notes",
+      folderPath: "/Notes",
+      openFilePaths: [originalPath]
+    });
+    mockedLoadNativeMarkdownFilesForPath.mockResolvedValue([{
+      name: "original.md",
+      path: originalPath,
+      relativePath: "original.md"
+    }]);
+    mockedReadNativeMarkdownFile.mockResolvedValue({
+      content: "# Primary original",
+      name: "original.md",
+      path: originalPath
+    });
+    mockedSaveNativeMarkdownFile.mockRejectedValue("sync-path-guarded");
+
+    renderApp();
+    expect(await screen.findByText("Primary original")).toBeInTheDocument();
+    fireEvent.keyDown(window, { key: "s", metaKey: true, shiftKey: true });
+
+    await waitFor(() => expect(document.querySelector(".app-toast"))
+      .toHaveTextContent("This file is being synchronized."));
+    expect(screen.getByRole("tab", { name: /original\.md/u })).toBeInTheDocument();
+  });
+
   it("starts untitled document saves in the open markdown folder", async () => {
     mockOpenMarkdownTarget({
       kind: "folder",

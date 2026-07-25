@@ -88,6 +88,7 @@ type MarkdownChangeOptions = {
 type SaveCurrentDocumentContentOptions = {
   historyCursorId?: string;
   skipHistorySnapshot?: boolean;
+  syncPathGuardRequestId?: string;
 };
 
 type ApplySavedCurrentDocumentOptions = {
@@ -1579,6 +1580,7 @@ export function useMarkdownDocument({
         path: savePath,
         skipHistorySnapshot: options.skipHistorySnapshot,
         suggestedName: tab.name || "Untitled.md",
+        syncPathGuardRequestId: options.syncPathGuardRequestId,
         contents
       });
 
@@ -1764,7 +1766,10 @@ export function useMarkdownDocument({
     return savePromise;
   }, [saveMarkdownTabContent, syncActiveDocumentDraftSnapshot]);
 
-  const saveDirtyMarkdownPaths = useCallback((requestedPaths: readonly string[]) => {
+  const saveDirtyMarkdownPaths = useCallback((
+    requestedPaths: readonly string[],
+    syncPathGuardRequestId?: string
+  ) => {
     const requested = requestedPaths
       .map(normalizeComparablePath)
       .filter((path): path is string => path !== null);
@@ -1781,7 +1786,10 @@ export function useMarkdownDocument({
         if (dirtyTabs.length === 0) return true;
 
         for (const tab of dirtyTabs) {
-          const savedFile = await saveMarkdownTabContent(tab, tab.content, { skipHistorySnapshot: true });
+          const savedFile = await saveMarkdownTabContent(tab, tab.content, {
+            skipHistorySnapshot: true,
+            syncPathGuardRequestId
+          });
           if (!savedFile) return false;
         }
       }

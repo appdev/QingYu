@@ -1,11 +1,14 @@
 use std::fs;
 use std::io;
 use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
 
 use super::asset::allow_asset_directory;
 #[cfg(desktop)]
 use super::path::{is_markdown_tree_asset_file, path_to_string};
-use super::resource_writer::{save_project_resource_bytes, save_standalone_resource_with_writer};
+use super::resource_writer::{
+    save_project_resource_bytes_in_registry, save_standalone_resource_with_writer,
+};
 use super::types::ClipboardImageFile;
 #[cfg(desktop)]
 use super::types::MarkdownImageFile;
@@ -299,7 +302,32 @@ fn save_clipboard_image_file_with_writer(
     })
 }
 
+#[cfg(test)]
 fn save_project_clipboard_image_file(
+    document_path: String,
+    project_root_path: String,
+    mime_type: String,
+    bytes: Vec<u8>,
+    file_name: Option<String>,
+    source_path: Option<String>,
+    allow_root_assets: impl FnOnce(&Path) -> Result<(), String>,
+    forbid_root_assets: impl FnOnce(&Path) -> Result<(), String>,
+) -> Result<ClipboardImageFile, String> {
+    save_project_clipboard_image_file_in_registry(
+        crate::dejavu_sync::path_guard::native_working_tree_registry(),
+        document_path,
+        project_root_path,
+        mime_type,
+        bytes,
+        file_name,
+        source_path,
+        allow_root_assets,
+        forbid_root_assets,
+    )
+}
+
+fn save_project_clipboard_image_file_in_registry(
+    registry: &Arc<crate::dejavu_sync::path_guard::NativeWorkingTreeRegistry>,
     document_path: String,
     project_root_path: String,
     mime_type: String,
@@ -312,7 +340,8 @@ fn save_project_clipboard_image_file(
     validate_clipboard_image_bytes(&mime_type, &bytes)?;
     let extension = clipboard_image_extension(&mime_type)?;
     let target_name = clipboard_image_file_name(extension, 0, file_name.as_deref())?;
-    let saved = save_project_resource_bytes(
+    let saved = save_project_resource_bytes_in_registry(
+        registry,
         document_path,
         project_root_path,
         bytes,
@@ -335,6 +364,43 @@ fn forbid_asset_directory(app: &tauri::AppHandle, root: &Path) -> Result<(), Str
         .map_err(|error| error.to_string())
 }
 
+fn save_clipboard_image_with_registry(
+    registry: &Arc<crate::dejavu_sync::path_guard::NativeWorkingTreeRegistry>,
+    document_path: String,
+    folder: String,
+    mime_type: String,
+    bytes: Vec<u8>,
+    file_name: Option<String>,
+    project_root_path: Option<String>,
+    source_path: Option<String>,
+    allow_root_assets: impl FnOnce(&Path) -> Result<(), String>,
+    forbid_root_assets: impl FnOnce(&Path) -> Result<(), String>,
+) -> Result<ClipboardImageFile, String> {
+    if let Some(project_root_path) = project_root_path {
+        return save_project_clipboard_image_file_in_registry(
+            registry,
+            document_path,
+            project_root_path,
+            mime_type,
+            bytes,
+            file_name,
+            source_path,
+            allow_root_assets,
+            forbid_root_assets,
+        );
+    }
+
+    save_clipboard_image_file(
+        document_path,
+        folder,
+        mime_type,
+        bytes,
+        file_name,
+        allow_root_assets,
+        forbid_root_assets,
+    )
+}
+
 #[tauri::command]
 pub(crate) fn save_clipboard_image(
     app: tauri::AppHandle,
@@ -346,25 +412,15 @@ pub(crate) fn save_clipboard_image(
     project_root_path: Option<String>,
     source_path: Option<String>,
 ) -> Result<ClipboardImageFile, String> {
-    if let Some(project_root_path) = project_root_path {
-        return save_project_clipboard_image_file(
-            document_path,
-            project_root_path,
-            mime_type,
-            bytes,
-            file_name,
-            source_path,
-            |root| allow_asset_directory(&app, root),
-            |root| forbid_asset_directory(&app, root),
-        );
-    }
-
-    save_clipboard_image_file(
+    save_clipboard_image_with_registry(
+        crate::dejavu_sync::path_guard::native_working_tree_registry(),
         document_path,
         folder,
         mime_type,
         bytes,
         file_name,
+        project_root_path,
+        source_path,
         |root| allow_asset_directory(&app, root),
         |root| forbid_asset_directory(&app, root),
     )
@@ -402,6 +458,34 @@ mod tests {
             .expect("note directory should be created");
         fs::write(&note, "# Day").expect("note should be created");
         (root, note)
+    }
+
+    #[test]
+    fn native_guard_rejects_primary_clipboard_image_before_writing() {
+        let (root, note) = project_fixture("native-guard");
+        let registry =
+            Arc::new(crate::dejavu_sync::path_guard::NativeWorkingTreeRegistry::default());
+        let _block = registry
+            .block_paths(&root, &["assets/Picture.png".to_string()])
+            .unwrap();
+
+        let error = save_clipboard_image_with_registry(
+            &registry,
+            note.to_string_lossy().to_string(),
+            "assets".to_string(),
+            "image/png".to_string(),
+            valid_png(),
+            Some("Picture.png".to_string()),
+            Some(root.to_string_lossy().to_string()),
+            None,
+            |_| Ok(()),
+            |_| Ok(()),
+        )
+        .unwrap_err();
+
+        assert_eq!(error, "sync-path-guarded");
+        assert!(!root.join("assets/Picture.png").exists());
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

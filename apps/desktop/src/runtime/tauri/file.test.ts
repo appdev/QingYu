@@ -864,6 +864,23 @@ describe("native file access", () => {
     });
   });
 
+  it("forwards an exact sync path guard request only for its authorized dirty flush", async () => {
+    mockedInvoke.mockResolvedValue(undefined);
+
+    await saveNativeMarkdownFile({
+      path: mockDraftPath,
+      suggestedName: "draft.md",
+      contents: "# Dirty before sync",
+      syncPathGuardRequestId: "e728a5d6-31ed-490d-bb8a-8f15cb550e74"
+    });
+
+    expect(mockedInvoke).toHaveBeenCalledWith("write_markdown_file", {
+      path: mockDraftPath,
+      contents: "# Dirty before sync",
+      syncPathGuardRequestId: "e728a5d6-31ed-490d-bb8a-8f15cb550e74"
+    });
+  });
+
   it("asks for a native save path before writing an untitled document", async () => {
     mockedSave.mockResolvedValue(mockUntitledPath);
     mockedInvoke.mockResolvedValue(undefined);
@@ -933,7 +950,7 @@ describe("native file access", () => {
       defaultPath: "draft.html",
       filters: [{ name: "HTML", extensions: ["html", "htm"] }]
     });
-    expect(mockedInvoke).toHaveBeenCalledWith("write_markdown_file", {
+    expect(mockedInvoke).toHaveBeenCalledWith("write_markdown_export_file", {
       path: "/mock-files/draft.html",
       contents: "<!doctype html><html><body><h1>Draft</h1></body></html>"
     });
