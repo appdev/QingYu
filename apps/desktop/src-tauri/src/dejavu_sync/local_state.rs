@@ -243,7 +243,8 @@ impl LocalSyncStateService {
 
         let state = serde_json::from_slice::<LocalSyncState>(&bytes)
             .map_err(|_| LocalSyncStateError::malformed())?;
-        Ok(Some(normalize_state(state)?))
+        validate_state(&state)?;
+        Ok(Some(state))
     }
 
     pub(crate) fn save(&self, state: &LocalSyncState) -> Result<(), LocalSyncStateError> {
@@ -256,11 +257,26 @@ impl LocalSyncStateService {
     pub(crate) fn add_binding(
         &self,
         state: &mut LocalSyncState,
-        binding: RepositoryBinding,
+        mut binding: RepositoryBinding,
     ) -> Result<(), LocalSyncStateError> {
+        validate_state(state)?;
+        binding.notes_root = canonical_notes_root(&binding.notes_root)?;
+        if state
+            .bindings
+            .iter()
+            .any(|existing| existing.repository_id == binding.repository_id)
+        {
+            return Err(LocalSyncStateError::duplicate_repository());
+        }
+        if state
+            .bindings
+            .iter()
+            .any(|existing| existing.notes_root == binding.notes_root)
+        {
+            return Err(LocalSyncStateError::duplicate_root());
+        }
         let mut updated = state.clone();
         updated.bindings.push(binding);
-        let updated = normalize_state(updated)?;
         self.save(&updated)?;
         *state = updated;
         Ok(())
@@ -274,9 +290,9 @@ impl LocalSyncStateService {
     where
         Write: FnOnce(&cap_std::fs::Dir, &OsStr, &[u8], u32) -> Result<(), LocalSyncStateError>,
     {
-        let state = normalize_state(state.clone())?;
+        validate_state(state)?;
         let mut bytes =
-            serde_json::to_vec_pretty(&state).map_err(|_| LocalSyncStateError::write_failed())?;
+            serde_json::to_vec_pretty(state).map_err(|_| LocalSyncStateError::write_failed())?;
         bytes.push(b'\n');
         if bytes.len() > MAX_LOCAL_SYNC_STATE_BYTES {
             return Err(LocalSyncStateError::too_large());
@@ -329,7 +345,7 @@ fn repository_key(user_key_input: Option<&str>) -> Result<String, LocalSyncState
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
-fn normalize_state(mut state: LocalSyncState) -> Result<LocalSyncState, LocalSyncStateError> {
+fn validate_state(state: &LocalSyncState) -> Result<(), LocalSyncStateError> {
     if state.version != LOCAL_SYNC_STATE_VERSION {
         return Err(LocalSyncStateError::malformed());
     }
@@ -349,8 +365,8 @@ fn normalize_state(mut state: LocalSyncState) -> Result<LocalSyncState, LocalSyn
 
     let mut repositories = HashSet::new();
     let mut roots = HashSet::new();
-    for binding in &mut state.bindings {
-        binding.notes_root = canonical_notes_root(&binding.notes_root)?;
+    for binding in &state.bindings {
+        validate_persisted_notes_root(&binding.notes_root)?;
         if !repositories.insert(binding.repository_id.as_str()) {
             return Err(LocalSyncStateError::duplicate_repository());
         }
@@ -358,7 +374,25 @@ fn normalize_state(mut state: LocalSyncState) -> Result<LocalSyncState, LocalSyn
             return Err(LocalSyncStateError::duplicate_root());
         }
     }
-    Ok(state)
+    Ok(())
+}
+
+fn validate_persisted_notes_root(path: &Path) -> Result<(), LocalSyncStateError> {
+    if !path.is_absolute() {
+        return Err(LocalSyncStateError::invalid_binding());
+    }
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(_) => return Err(LocalSyncStateError::invalid_binding()),
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(LocalSyncStateError::invalid_binding());
+    }
+    if canonical_notes_root(path)? != path {
+        return Err(LocalSyncStateError::invalid_binding());
+    }
+    Ok(())
 }
 
 fn canonical_notes_root(path: &Path) -> Result<PathBuf, LocalSyncStateError> {
@@ -541,6 +575,134 @@ mod tests {
         );
     }
 
+    #[test]
+    fn load_preserves_local_identity_and_binding_when_the_notes_root_is_offline() {
+        let temporary = tempdir().expect("temporary app data");
+        let notes = temporary.path().join("notes");
+        let detached_notes = temporary.path().join("detached-notes");
+        fs::create_dir(&notes).unwrap();
+        let service = LocalSyncStateService::new(temporary.path().join("app-data"));
+        let mut state = service.load_or_initialize(None).unwrap();
+        service
+            .add_binding(
+                &mut state,
+                RepositoryBinding {
+                    repository_id: "repo-a".to_string(),
+                    display_name: "Notes A".to_string(),
+                    notes_root: notes.clone(),
+                    enabled: true,
+                },
+            )
+            .unwrap();
+        let expected_device_id = state.device_id.clone();
+        let expected_repo_key = state.repo_key.clone();
+        let expected_root = state.bindings[0].notes_root.clone();
+        fs::rename(&notes, &detached_notes).unwrap();
+
+        let loaded = service
+            .load()
+            .expect("an offline repository must not invalidate local identity")
+            .expect("the local state still exists");
+
+        assert!(loaded.device_id == expected_device_id);
+        assert!(loaded.repo_key == expected_repo_key);
+        assert_eq!(loaded.bindings.len(), 1);
+        assert_eq!(loaded.bindings[0].repository_id, "repo-a");
+        assert_eq!(loaded.bindings[0].display_name, "Notes A");
+        assert_eq!(loaded.bindings[0].notes_root, expected_root);
+        assert!(loaded.bindings[0].enabled);
+        assert!(detached_notes.is_dir());
+    }
+
+    #[test]
+    fn an_offline_existing_binding_does_not_block_adding_an_online_repository() {
+        let temporary = tempdir().expect("temporary app data");
+        let notes_a = temporary.path().join("notes-a");
+        let detached_notes_a = temporary.path().join("detached-notes-a");
+        let notes_b = temporary.path().join("notes-b");
+        fs::create_dir(&notes_a).unwrap();
+        fs::create_dir(&notes_b).unwrap();
+        let service = LocalSyncStateService::new(temporary.path().join("app-data"));
+        let mut state = service.load_or_initialize(None).unwrap();
+        service
+            .add_binding(
+                &mut state,
+                RepositoryBinding {
+                    repository_id: "repo-a".to_string(),
+                    display_name: "Notes A".to_string(),
+                    notes_root: notes_a.clone(),
+                    enabled: true,
+                },
+            )
+            .unwrap();
+        let persisted_notes_a = state.bindings[0].notes_root.clone();
+        fs::rename(&notes_a, &detached_notes_a).unwrap();
+
+        service
+            .add_binding(
+                &mut state,
+                RepositoryBinding {
+                    repository_id: "repo-b".to_string(),
+                    display_name: "Notes B".to_string(),
+                    notes_root: notes_b.clone(),
+                    enabled: true,
+                },
+            )
+            .expect("an unrelated offline repository must not block a new binding");
+
+        assert_eq!(state.bindings.len(), 2);
+        assert_eq!(state.bindings[0].notes_root, persisted_notes_a);
+        assert_eq!(
+            state.bindings[1].notes_root,
+            notes_b.canonicalize().unwrap()
+        );
+        let reloaded = service.load().unwrap().unwrap();
+        assert_eq!(reloaded.bindings.len(), 2);
+        assert_eq!(reloaded.bindings[0].notes_root, persisted_notes_a);
+        assert_eq!(reloaded.bindings[1].repository_id, "repo-b");
+        assert!(detached_notes_a.is_dir());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn adding_an_online_alias_of_an_existing_root_is_still_rejected() {
+        use std::os::unix::fs::symlink;
+
+        let temporary = tempdir().expect("temporary app data");
+        let notes = temporary.path().join("notes");
+        let alias = temporary.path().join("notes-alias");
+        fs::create_dir(&notes).unwrap();
+        symlink(&notes, &alias).unwrap();
+        let service = LocalSyncStateService::new(temporary.path().join("app-data"));
+        let mut state = service.load_or_initialize(None).unwrap();
+        service
+            .add_binding(
+                &mut state,
+                RepositoryBinding {
+                    repository_id: "repo-a".to_string(),
+                    display_name: "Notes".to_string(),
+                    notes_root: notes,
+                    enabled: true,
+                },
+            )
+            .unwrap();
+
+        let error = service
+            .add_binding(
+                &mut state,
+                RepositoryBinding {
+                    repository_id: "repo-b".to_string(),
+                    display_name: "Notes Alias".to_string(),
+                    notes_root: alias,
+                    enabled: true,
+                },
+            )
+            .expect_err("an online alias must still resolve to the duplicate canonical root");
+
+        assert!(error.to_string().contains("duplicate-root"));
+        assert_eq!(state.bindings.len(), 1);
+    }
+
     #[cfg(unix)]
     #[test]
     fn direct_save_rejects_distinct_paths_for_the_same_canonical_note_root() {
@@ -572,12 +734,12 @@ mod tests {
             .save(&state)
             .expect_err("canonical root aliases must not create two bindings");
 
-        assert!(error.to_string().contains("duplicate-root"));
+        assert!(error.to_string().contains("invalid-binding"));
     }
 
     #[cfg(unix)]
     #[test]
-    fn load_normalizes_a_persisted_note_root_alias_to_its_canonical_directory() {
+    fn load_rejects_a_persisted_note_root_that_is_now_a_symlink() {
         use std::os::unix::fs::symlink;
 
         let temporary = tempdir().expect("temporary app data");
@@ -599,10 +761,11 @@ mod tests {
         )
         .unwrap();
 
-        let loaded = service.load().unwrap().unwrap();
+        let error = service
+            .load()
+            .expect_err("a reachable persisted symlink root is unsafe");
 
-        assert_eq!(loaded.bindings[0].notes_root, notes.canonicalize().unwrap());
-        assert_ne!(loaded.bindings[0].notes_root, alias);
+        assert!(error.to_string().contains("invalid-binding"));
     }
 
     #[cfg(unix)]
