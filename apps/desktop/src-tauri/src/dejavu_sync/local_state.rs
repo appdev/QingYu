@@ -71,17 +71,33 @@ impl fmt::Debug for RepositoryBinding {
 #[cfg_attr(not(test), allow(dead_code))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct LocalSyncStateError {
+    kind: LocalSyncStateErrorKind,
     code: &'static str,
     message: &'static str,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LocalSyncStateErrorKind {
+    InvalidState,
+    Storage,
+}
+
 impl LocalSyncStateError {
-    fn new(code: &'static str, message: &'static str) -> Self {
-        Self { code, message }
+    fn new(kind: LocalSyncStateErrorKind, code: &'static str, message: &'static str) -> Self {
+        Self {
+            kind,
+            code,
+            message,
+        }
+    }
+
+    pub(crate) fn is_invalid_state(self) -> bool {
+        self.kind == LocalSyncStateErrorKind::InvalidState
     }
 
     fn unsafe_path() -> Self {
         Self::new(
+            LocalSyncStateErrorKind::Storage,
             "local-sync-state-unsafe-path",
             "The local sync state path is unsafe.",
         )
@@ -89,6 +105,7 @@ impl LocalSyncStateError {
 
     fn read_failed() -> Self {
         Self::new(
+            LocalSyncStateErrorKind::Storage,
             "local-sync-state-read-failed",
             "The local sync state could not be read.",
         )
@@ -96,6 +113,7 @@ impl LocalSyncStateError {
 
     fn malformed() -> Self {
         Self::new(
+            LocalSyncStateErrorKind::InvalidState,
             "local-sync-state-malformed",
             "The local sync state is malformed.",
         )
@@ -103,6 +121,7 @@ impl LocalSyncStateError {
 
     fn too_large() -> Self {
         Self::new(
+            LocalSyncStateErrorKind::InvalidState,
             "local-sync-state-too-large",
             "The local sync state exceeds the supported size limit.",
         )
@@ -110,6 +129,7 @@ impl LocalSyncStateError {
 
     fn invalid_binding() -> Self {
         Self::new(
+            LocalSyncStateErrorKind::InvalidState,
             "local-sync-state-invalid-binding",
             "The repository binding is invalid.",
         )
@@ -117,6 +137,7 @@ impl LocalSyncStateError {
 
     fn duplicate_repository() -> Self {
         Self::new(
+            LocalSyncStateErrorKind::InvalidState,
             "local-sync-state-duplicate-repository",
             "The repository is already bound.",
         )
@@ -124,6 +145,7 @@ impl LocalSyncStateError {
 
     fn duplicate_root() -> Self {
         Self::new(
+            LocalSyncStateErrorKind::InvalidState,
             "local-sync-state-duplicate-root",
             "The note root is already bound.",
         )
@@ -131,6 +153,7 @@ impl LocalSyncStateError {
 
     fn random_failed() -> Self {
         Self::new(
+            LocalSyncStateErrorKind::Storage,
             "local-sync-state-random-failed",
             "The local sync key could not be generated.",
         )
@@ -138,6 +161,7 @@ impl LocalSyncStateError {
 
     fn derive_failed() -> Self {
         Self::new(
+            LocalSyncStateErrorKind::Storage,
             "local-sync-state-key-derivation-failed",
             "The local sync key could not be derived.",
         )
@@ -145,6 +169,7 @@ impl LocalSyncStateError {
 
     fn write_failed() -> Self {
         Self::new(
+            LocalSyncStateErrorKind::Storage,
             "local-sync-state-write-failed",
             "The local sync state could not be written.",
         )
@@ -513,6 +538,28 @@ mod tests {
         canonical_notes_root_with_observer, LocalSyncStateError, LocalSyncStateService,
         RepositoryBinding, LOCAL_SYNC_STATE_FILE, MAX_LOCAL_SYNC_STATE_BYTES,
     };
+
+    #[test]
+    fn error_categories_separate_invalid_state_from_storage_and_key_failures() {
+        for error in [
+            LocalSyncStateError::malformed(),
+            LocalSyncStateError::too_large(),
+            LocalSyncStateError::invalid_binding(),
+            LocalSyncStateError::duplicate_repository(),
+            LocalSyncStateError::duplicate_root(),
+        ] {
+            assert!(error.is_invalid_state(), "{error}");
+        }
+        for error in [
+            LocalSyncStateError::unsafe_path(),
+            LocalSyncStateError::read_failed(),
+            LocalSyncStateError::random_failed(),
+            LocalSyncStateError::derive_failed(),
+            LocalSyncStateError::write_failed(),
+        ] {
+            assert!(!error.is_invalid_state(), "{error}");
+        }
+    }
 
     #[test]
     fn absent_state_initializes_versioned_local_identity_and_pretty_json() {

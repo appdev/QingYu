@@ -196,11 +196,24 @@ pub(crate) struct DejavuSyncService {
     inner: Arc<DejavuSyncServiceInner>,
 }
 
+#[derive(Clone)]
+pub(crate) struct LocalStateTransaction {
+    gate: Arc<AsyncMutex<()>>,
+}
+
+impl LocalStateTransaction {
+    pub(crate) async fn run<T>(&self, operation: impl Future<Output = T>) -> T {
+        let _transaction = self.gate.lock().await;
+        operation.await
+    }
+}
+
 struct DejavuSyncServiceInner {
     runner: Arc<dyn RepositoryJobRunner>,
     status_sink: Arc<dyn RepositoryStatusSink>,
     repository_locks: Mutex<HashMap<String, Arc<AsyncMutex<()>>>>,
     global_gate: Arc<RwLock<()>>,
+    local_state_transaction: LocalStateTransaction,
     jobs: Mutex<JobRegistry>,
     lifecycle: OnceLock<Arc<dyn RepositoryJobLifecycle>>,
 }
@@ -227,6 +240,9 @@ impl DejavuSyncService {
                 status_sink,
                 repository_locks: Mutex::new(HashMap::new()),
                 global_gate: Arc::new(RwLock::new(())),
+                local_state_transaction: LocalStateTransaction {
+                    gate: Arc::new(AsyncMutex::new(())),
+                },
                 jobs: Mutex::new(JobRegistry::default()),
                 lifecycle: OnceLock::new(),
             }),
@@ -263,6 +279,11 @@ impl DejavuSyncService {
     ) -> BoxFuture<'a, Result<AcceptedSyncJob, RepositoryJobError>> {
         Box::pin(async move {
             let generation = self.accepting_generation(inherited_generation)?;
+            // Validate under the ordinary-job side of the global barrier. If a
+            // key replacement/reset already owns or is waiting for the write
+            // side, enqueue must observe the state after that mutation rather
+            // than accepting a binding that the writer just disabled.
+            let ordinary_guard = Arc::clone(&self.inner.global_gate).read_owned().await;
             let request = self.inner.runner.validate(request)?;
             self.require_accepting_generation(generation)?;
             let job_id = uuid::Uuid::new_v4().to_string();
@@ -283,9 +304,9 @@ impl DejavuSyncService {
                 ))
                 .await?;
 
-            // Acquire the ordinary-job guard before reporting acceptance. A key writer
-            // that begins after enqueue returns therefore observes every accepted job.
-            let ordinary_guard = Arc::clone(&self.inner.global_gate).read_owned().await;
+            // The guard was acquired before validation and remains owned by the
+            // background job. A key writer that begins after enqueue returns
+            // therefore observes every accepted job.
             let cancellation = JobCancellationToken::new();
             let registered = {
                 let mut jobs = self.inner.jobs.lock().unwrap();
@@ -512,6 +533,24 @@ impl DejavuSyncService {
     ) -> T {
         let _barrier = self.inner.global_gate.write().await;
         operation.await
+    }
+
+    pub(crate) fn local_state_transaction(&self) -> LocalStateTransaction {
+        self.inner.local_state_transaction.clone()
+    }
+
+    /// Key replacement and repository reset writers acquire locks in this
+    /// order: stop all ordinary jobs with the global write barrier, then enter
+    /// the shared `local-sync.json` transaction. Binding takes only the state
+    /// transaction, releases it after atomic persistence, and enqueues later.
+    /// Keeping that asymmetry prevents a writer-preferring `RwLock` cycle.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) async fn with_global_key_state_transaction<T>(
+        &self,
+        operation: impl Future<Output = T>,
+    ) -> T {
+        let _barrier = self.inner.global_gate.write().await;
+        self.inner.local_state_transaction.run(operation).await
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
@@ -1395,6 +1434,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn global_key_state_transaction_waits_for_the_shared_local_state_writer() {
+        let (started_tx, _started_rx) = mpsc::unbounded_channel();
+        let runner = Arc::new(ControlledRunner::new(started_tx));
+        let sink = Arc::new(MemoryStatusSink::default());
+        let service = service(runner, sink);
+        let state_transaction = service.local_state_transaction();
+        let (local_entered_tx, local_entered_rx) = oneshot::channel();
+        let (release_local_tx, release_local_rx) = oneshot::channel();
+        let local_writer = tokio::spawn(async move {
+            state_transaction
+                .run(async move {
+                    local_entered_tx.send(()).unwrap();
+                    release_local_rx.await.unwrap();
+                })
+                .await;
+        });
+        local_entered_rx.await.unwrap();
+
+        let (key_entered_tx, mut key_entered_rx) = oneshot::channel();
+        let key_writer = {
+            let service = service.clone();
+            tokio::spawn(async move {
+                service
+                    .with_global_key_state_transaction(async move {
+                        key_entered_tx.send(()).unwrap();
+                    })
+                    .await;
+            })
+        };
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), &mut key_entered_rx)
+                .await
+                .is_err(),
+            "key/reset state mutation must wait for the current local-state writer"
+        );
+
+        release_local_tx.send(()).unwrap();
+        key_entered_rx.await.unwrap();
+        local_writer.await.unwrap();
+        key_writer.await.unwrap();
+    }
+
+    #[tokio::test]
     async fn working_tree_changes_retry_three_attempts_then_queue_only_one_follow_up() {
         let runner = Arc::new(WorkingTreeChangedRunner::new());
         let sink = Arc::new(MemoryStatusSink::default());
@@ -1451,8 +1533,9 @@ mod tests {
             .await
             .expect("initial status publish should block");
 
-        service.cancel_all_for_shutdown_or_reset().await;
+        let draining = service.cancel_all_for_shutdown_or_reset();
         sink.release();
+        draining.await;
 
         assert!(matches!(
             enqueue.await.unwrap(),

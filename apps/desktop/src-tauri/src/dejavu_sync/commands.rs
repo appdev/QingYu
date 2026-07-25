@@ -1,16 +1,17 @@
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use qingyu_dejavu::RepositoryMetadata;
 use serde::Deserialize;
 
-use super::local_state::{LocalSyncStateService, RepositoryBinding};
+use super::local_state::{LocalSyncStateError, LocalSyncStateService, RepositoryBinding};
 use super::repository::{prepare_binding_root, RepositoryCatalogValidator};
 use super::scheduler::DejavuScheduler;
-use super::service::{AcceptedSyncJob, DejavuSyncService, RepositoryJobError, SyncJobRequest};
+use super::service::{
+    AcceptedSyncJob, DejavuSyncService, LocalStateTransaction, RepositoryJobError, SyncJobRequest,
+};
 use crate::sync_config::status::SyncTrigger;
 use tauri::{Manager, Runtime};
 
@@ -41,15 +42,21 @@ struct BindingController {
     app_data: PathBuf,
     catalog: Arc<dyn RepositoryCatalogValidator>,
     enqueuer: Arc<dyn BindJobEnqueuer>,
-    transaction: tokio::sync::Mutex<()>,
+    state_transaction: LocalStateTransaction,
 }
 
 #[derive(Default)]
 pub(crate) struct DejavuSchedulerOwner {
     scheduler: OnceLock<DejavuScheduler>,
-    startup_pending: AtomicBool,
-    active_root: Mutex<Option<PathBuf>>,
+    roots: Mutex<SchedulerOwnerRoots>,
     native_exit_state: Arc<Mutex<NativeExitState>>,
+}
+
+#[derive(Default)]
+struct SchedulerOwnerRoots {
+    watched_root: Option<PathBuf>,
+    active_root: Option<PathBuf>,
+    startup_pending: bool,
 }
 
 #[derive(Default)]
@@ -100,29 +107,63 @@ impl DejavuSchedulerOwner {
     }
 
     pub(crate) fn activate_root(&self, root: &Path) -> bool {
-        let activated = self
-            .scheduler
-            .get()
-            .is_some_and(|scheduler| scheduler.activate_root(root).unwrap_or(false));
+        let mut roots = self.roots.lock().unwrap();
+        roots.watched_root = Some(root.to_path_buf());
+        let activated = self.activate_locked_root(&mut roots, root);
+        drop(roots);
         if activated {
-            *self.active_root.lock().unwrap() = Some(root.to_path_buf());
             self.consume_pending_startup();
         }
         activated
     }
 
-    pub(crate) fn deactivate_root(&self, root: &Path) -> bool {
-        let deactivated = self
-            .scheduler
-            .get()
-            .is_some_and(|scheduler| scheduler.deactivate_root(root));
-        if deactivated {
-            let mut active_root = self.active_root.lock().unwrap();
-            if active_root.as_ref().is_some_and(|active| active == root) {
-                *active_root = None;
-            }
+    pub(crate) fn refresh_after_bind(&self, root: &Path) -> bool {
+        let mut roots = self.roots.lock().unwrap();
+        if roots.watched_root.as_deref() != Some(root) {
+            return false;
         }
-        deactivated
+        let activated = self.activate_locked_root(&mut roots, root);
+        if activated {
+            // The accepted manual bind job covers a launch that was waiting only
+            // because this watched root did not have a binding yet. A launch
+            // arriving after this transaction observes the active root normally.
+            roots.startup_pending = false;
+        }
+        activated
+    }
+
+    fn activate_locked_root(&self, roots: &mut SchedulerOwnerRoots, root: &Path) -> bool {
+        let Some(scheduler) = self.scheduler.get() else {
+            roots.active_root = None;
+            return false;
+        };
+        let activated = scheduler.activate_root(root).unwrap_or(false);
+        if activated {
+            roots.active_root = Some(root.to_path_buf());
+            return true;
+        }
+        if let Some(previous) = roots.active_root.take() {
+            scheduler.deactivate_root(&previous);
+        }
+        false
+    }
+
+    pub(crate) fn deactivate_root(&self, root: &Path) -> bool {
+        let mut roots = self.roots.lock().unwrap();
+        let watched = roots.watched_root.as_deref() == Some(root);
+        if watched {
+            roots.watched_root = None;
+        }
+        let active = roots.active_root.as_deref() == Some(root);
+        if active {
+            roots.active_root = None;
+        }
+        let deactivated = active
+            && self
+                .scheduler
+                .get()
+                .is_some_and(|scheduler| scheduler.deactivate_root(root));
+        watched || deactivated
     }
 
     pub(crate) fn record_file_change(&self, root: &Path, path: &Path) -> bool {
@@ -132,20 +173,21 @@ impl DejavuSchedulerOwner {
     }
 
     pub(crate) fn trigger_startup(&self) {
-        self.startup_pending.store(true, Ordering::Release);
+        self.roots.lock().unwrap().startup_pending = true;
         self.consume_pending_startup();
     }
 
     fn consume_pending_startup(&self) {
-        if self.active_root.lock().unwrap().is_none()
-            || !self.startup_pending.swap(false, Ordering::AcqRel)
-        {
-            return;
-        }
         let Some(scheduler) = self.scheduler.get().cloned() else {
-            self.startup_pending.store(true, Ordering::Release);
             return;
         };
+        {
+            let mut roots = self.roots.lock().unwrap();
+            if roots.active_root.is_none() || !roots.startup_pending {
+                return;
+            }
+            roots.startup_pending = false;
+        }
         tauri::async_runtime::spawn(async move {
             let _accepted = scheduler.trigger_startup().await;
         });
@@ -196,6 +238,7 @@ impl DejavuSyncServiceOwner {
         app_data: impl AsRef<Path>,
         catalog: Arc<Validator>,
         enqueuer: Arc<Enqueuer>,
+        state_transaction: LocalStateTransaction,
     ) -> Result<(), RepositoryJobError>
     where
         Validator: RepositoryCatalogValidator + 'static,
@@ -208,7 +251,7 @@ impl DejavuSyncServiceOwner {
                 app_data: app_data.as_ref().to_path_buf(),
                 catalog,
                 enqueuer,
-                transaction: tokio::sync::Mutex::new(()),
+                state_transaction,
             })
             .map_err(|_| RepositoryJobError::RepositoryUnavailable)
     }
@@ -221,7 +264,6 @@ impl DejavuSyncServiceOwner {
             .binding
             .get()
             .ok_or(RepositoryJobError::RepositoryUnavailable)?;
-        let _transaction = controller.transaction.lock().await;
         validate_repository_id(&request.repository_id)?;
         let metadata = controller
             .catalog
@@ -229,21 +271,24 @@ impl DejavuSyncServiceOwner {
             .await?;
         validate_selected_metadata(&request, &metadata)?;
         let notes_root = prepare_binding_root(&request.notes_root)?;
-        let state_service = LocalSyncStateService::new(&controller.app_data);
-        let mut state = state_service
-            .load_or_initialize(None)
-            .map_err(|_| RepositoryJobError::InvalidBinding)?;
-        state_service
-            .bind_repository(
-                &mut state,
-                RepositoryBinding {
-                    repository_id: metadata.repository_id.clone(),
-                    display_name: metadata.display_name,
-                    notes_root: notes_root.clone(),
-                    enabled: true,
-                },
-            )
-            .map_err(|_| RepositoryJobError::InvalidBinding)?;
+        let binding = RepositoryBinding {
+            repository_id: metadata.repository_id.clone(),
+            display_name: metadata.display_name,
+            notes_root: notes_root.clone(),
+            enabled: true,
+        };
+        controller
+            .state_transaction
+            .run(async {
+                let state_service = LocalSyncStateService::new(&controller.app_data);
+                let mut state = state_service
+                    .load_or_initialize(None)
+                    .map_err(map_local_state_error)?;
+                state_service
+                    .bind_repository(&mut state, binding)
+                    .map_err(map_local_state_error)
+            })
+            .await?;
         controller
             .enqueuer
             .enqueue_bind_and_sync(SyncJobRequest {
@@ -271,6 +316,14 @@ impl DejavuSyncServiceOwner {
         if let Some(service) = self.service.get() {
             service.cancel_all_for_shutdown_or_reset().await;
         }
+    }
+}
+
+fn map_local_state_error(error: LocalSyncStateError) -> RepositoryJobError {
+    if error.is_invalid_state() {
+        RepositoryJobError::InvalidBinding
+    } else {
+        RepositoryJobError::RepositoryUnavailable
     }
 }
 
@@ -307,12 +360,22 @@ impl BindJobEnqueuer for DejavuSyncService {
 #[tauri::command]
 pub(crate) async fn bind_dejavu_repository(
     owner: tauri::State<'_, DejavuSyncServiceOwner>,
+    scheduler_owner: tauri::State<'_, DejavuSchedulerOwner>,
     request: BindRepositoryRequest,
 ) -> Result<AcceptedSyncJob, String> {
-    owner
-        .bind_repository(request)
+    bind_repository_and_refresh_scheduler(&owner, &scheduler_owner, request)
         .await
         .map_err(|error| error.safe_code().to_owned())
+}
+
+async fn bind_repository_and_refresh_scheduler(
+    owner: &DejavuSyncServiceOwner,
+    scheduler_owner: &DejavuSchedulerOwner,
+    request: BindRepositoryRequest,
+) -> Result<AcceptedSyncJob, RepositoryJobError> {
+    let accepted = owner.bind_repository(request).await?;
+    scheduler_owner.refresh_after_bind(&accepted.notes_root);
+    Ok(accepted)
 }
 
 #[cfg(test)]
@@ -325,24 +388,27 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
+    use base64::engine::general_purpose::STANDARD;
+    use base64::Engine;
     use qingyu_dejavu::RepositoryMetadata;
     use tempfile::tempdir;
     use time::OffsetDateTime;
-    use tokio::sync::{mpsc, watch};
+    use tokio::sync::{mpsc, oneshot, watch, Notify};
 
     use super::{
-        BindJobEnqueuer, BindRepositoryRequest, DejavuSchedulerOwner, DejavuSyncServiceOwner,
-        NativeExitAction,
+        bind_repository_and_refresh_scheduler, BindJobEnqueuer, BindRepositoryRequest,
+        DejavuSchedulerOwner, DejavuSyncServiceOwner, NativeExitAction,
     };
-    use crate::dejavu_sync::local_state::LocalSyncStateService;
+    use crate::dejavu_sync::local_state::{LocalSyncStateService, RepositoryBinding};
     use crate::dejavu_sync::repository::RepositoryCatalogValidator;
     use crate::dejavu_sync::scheduler::{
         ActiveRepositorySchedule, DejavuScheduler, DnsFlusher, RepositoryScheduleSource,
         RepositoryScheduleStore, SchedulerJobEnqueuer,
     };
     use crate::dejavu_sync::service::{
-        AcceptedSyncJob, DejavuSyncService, RepositoryJobError, RepositoryJobRunner,
-        RepositoryStatusSink, RepositorySyncResult, SyncAttemptContext, SyncJobRequest,
+        AcceptedSyncJob, DejavuSyncService, LocalStateTransaction, RepositoryJobError,
+        RepositoryJobRunner, RepositoryStatusSink, RepositorySyncResult, SyncAttemptContext,
+        SyncJobRequest,
     };
     use crate::dejavu_sync::status::{RepositorySchedule, RepositorySyncStatus};
     use crate::sync_config::model::SyncMode;
@@ -453,10 +519,19 @@ mod tests {
         }
     }
 
+    fn test_state_transaction(app_data: &Path) -> LocalStateTransaction {
+        DejavuSyncService::new(
+            Arc::new(PersistedBindingRunner::new(app_data.to_path_buf())),
+            Arc::new(NoopStatusSink),
+        )
+        .local_state_transaction()
+    }
+
     struct RecordingBindEnqueuer {
         app_data: PathBuf,
         requests: Mutex<Vec<SyncJobRequest>>,
         completions: Mutex<Vec<watch::Sender<Option<Result<(), RepositoryJobError>>>>>,
+        enqueued: Notify,
     }
 
     impl RecordingBindEnqueuer {
@@ -465,6 +540,7 @@ mod tests {
                 app_data,
                 requests: Mutex::new(Vec::new()),
                 completions: Mutex::new(Vec::new()),
+                enqueued: Notify::new(),
             }
         }
     }
@@ -488,6 +564,7 @@ mod tests {
                     return Err(RepositoryJobError::InvalidBinding);
                 }
                 self.requests.lock().unwrap().push(request.clone());
+                self.enqueued.notify_waiters();
                 let (accepted, completion) = AcceptedSyncJob::pending_for_test(
                     "00000000-0000-4000-8000-000000000095",
                     request.repository_id,
@@ -495,6 +572,75 @@ mod tests {
                 );
                 self.completions.lock().unwrap().push(completion);
                 Ok(accepted)
+            })
+        }
+    }
+
+    struct PausingServiceBindEnqueuer {
+        service: DejavuSyncService,
+        before_enqueue: Notify,
+        release_enqueue: Notify,
+        delegating_enqueue: Notify,
+    }
+
+    impl PausingServiceBindEnqueuer {
+        fn new(service: DejavuSyncService) -> Self {
+            Self {
+                service,
+                before_enqueue: Notify::new(),
+                release_enqueue: Notify::new(),
+                delegating_enqueue: Notify::new(),
+            }
+        }
+    }
+
+    impl BindJobEnqueuer for PausingServiceBindEnqueuer {
+        fn enqueue_bind_and_sync<'a>(
+            &'a self,
+            request: SyncJobRequest,
+        ) -> BoxFuture<'a, Result<AcceptedSyncJob, RepositoryJobError>> {
+            Box::pin(async move {
+                self.before_enqueue.notify_one();
+                self.release_enqueue.notified().await;
+                self.delegating_enqueue.notify_one();
+                self.service.enqueue(request).await
+            })
+        }
+    }
+
+    struct FailOnceBindEnqueuer {
+        app_data: PathBuf,
+        attempts: AtomicUsize,
+    }
+
+    impl FailOnceBindEnqueuer {
+        fn new(app_data: PathBuf) -> Self {
+            Self {
+                app_data,
+                attempts: AtomicUsize::new(0),
+            }
+        }
+    }
+
+    impl BindJobEnqueuer for FailOnceBindEnqueuer {
+        fn enqueue_bind_and_sync<'a>(
+            &'a self,
+            request: SyncJobRequest,
+        ) -> BoxFuture<'a, Result<AcceptedSyncJob, RepositoryJobError>> {
+            Box::pin(async move {
+                let state = LocalSyncStateService::new(&self.app_data)
+                    .load()
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(state.bindings.len(), 1, "binding is durable first");
+                if self.attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                    return Err(RepositoryJobError::CloudUnavailable);
+                }
+                Ok(AcceptedSyncJob::completed_for_test(
+                    "00000000-0000-4000-8000-000000000099",
+                    request.repository_id,
+                    request.notes_root,
+                ))
             })
         }
     }
@@ -529,6 +675,58 @@ mod tests {
             root: &Path,
         ) -> Result<Option<ActiveRepositorySchedule>, RepositoryJobError> {
             Ok((self.0.notes_root == root).then(|| self.0.clone()))
+        }
+    }
+
+    #[derive(Default)]
+    struct MutableOwnerSource(Mutex<Option<ActiveRepositorySchedule>>);
+
+    impl MutableOwnerSource {
+        fn activate(&self, schedule: ActiveRepositorySchedule) {
+            *self.0.lock().unwrap() = Some(schedule);
+        }
+    }
+
+    impl RepositoryScheduleSource for MutableOwnerSource {
+        fn resolve_active_root(
+            &self,
+            root: &Path,
+        ) -> Result<Option<ActiveRepositorySchedule>, RepositoryJobError> {
+            Ok(self
+                .0
+                .lock()
+                .unwrap()
+                .as_ref()
+                .filter(|active| active.notes_root == root)
+                .cloned())
+        }
+    }
+
+    struct BindingOwnerSource {
+        app_data: PathBuf,
+        mode: SyncMode,
+    }
+
+    impl RepositoryScheduleSource for BindingOwnerSource {
+        fn resolve_active_root(
+            &self,
+            root: &Path,
+        ) -> Result<Option<ActiveRepositorySchedule>, RepositoryJobError> {
+            let state = LocalSyncStateService::new(&self.app_data)
+                .load()
+                .map_err(|_| RepositoryJobError::RepositoryUnavailable)?;
+            Ok(state.and_then(|state| {
+                state
+                    .bindings
+                    .into_iter()
+                    .find(|binding| binding.enabled && binding.notes_root == root)
+                    .map(|binding| ActiveRepositorySchedule {
+                        notes_root: binding.notes_root,
+                        repository_id: binding.repository_id,
+                        mode: self.mode,
+                        interval: Duration::from_secs(30),
+                    })
+            }))
         }
     }
 
@@ -677,7 +875,7 @@ mod tests {
             Path::new("/notes/uninstalled"),
             Path::new("/notes/uninstalled/note.md"),
         ));
-        assert!(!owner.deactivate_root(Path::new("/notes/uninstalled")));
+        assert!(owner.deactivate_root(Path::new("/notes/uninstalled")));
         owner.trigger_startup();
         assert!(matches!(owner.begin_native_exit(), NativeExitAction::Allow));
     }
@@ -690,16 +888,203 @@ mod tests {
         owner.install(scheduler).unwrap();
 
         assert!(owner.activate_root(&root));
-        for _ in 0..10 {
-            tokio::task::yield_now().await;
-        }
-        assert_eq!(jobs.try_recv().unwrap().trigger, SyncTrigger::AppLaunch);
+        assert_eq!(jobs.recv().await.unwrap().trigger, SyncTrigger::AppLaunch);
 
         assert!(owner.activate_root(&root));
-        for _ in 0..10 {
-            tokio::task::yield_now().await;
-        }
         assert!(jobs.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn accepted_bind_refreshes_only_the_current_watched_root_without_replaying_startup() {
+        let temporary = tempdir().unwrap();
+        let app_data = temporary.path().join("app-data");
+        let root_path = temporary.path().join("bound-after-watch");
+        let switched_path = temporary.path().join("switched-away");
+        std::fs::create_dir(&root_path).unwrap();
+        std::fs::create_dir(&switched_path).unwrap();
+        let root = root_path.canonicalize().unwrap();
+        let switched_root = switched_path.canonicalize().unwrap();
+        let repository_id = "00000000-0000-4000-8000-000000000043";
+        let source = Arc::new(BindingOwnerSource {
+            app_data: app_data.clone(),
+            mode: SyncMode::StartupExit,
+        });
+        let (sent, mut jobs) = mpsc::unbounded_channel();
+        let scheduler = DejavuScheduler::new(
+            source,
+            Arc::new(OwnerEnqueuer(sent)),
+            Arc::new(OwnerStore::default()),
+            Arc::new(OwnerFlusher),
+            Arc::new(|| OffsetDateTime::from_unix_timestamp(1_800_000_000).unwrap()),
+        );
+        let scheduler_owner = DejavuSchedulerOwner::default();
+        scheduler_owner.install(scheduler).unwrap();
+        let catalog = Arc::new(FakeCatalogValidator::new([repository_metadata(
+            repository_id,
+            "Watched journal",
+        )]));
+        let bind_enqueuer = Arc::new(RecordingBindEnqueuer::new(app_data.clone()));
+        let service_owner = DejavuSyncServiceOwner::default();
+        service_owner
+            .install_binding(
+                &app_data,
+                catalog,
+                bind_enqueuer,
+                test_state_transaction(&app_data),
+            )
+            .unwrap();
+
+        scheduler_owner.trigger_startup();
+        assert!(!scheduler_owner.activate_root(&root));
+
+        bind_repository_and_refresh_scheduler(
+            &service_owner,
+            &scheduler_owner,
+            bind_request(root.clone(), repository_id, "Watched journal"),
+        )
+        .await
+        .unwrap();
+        assert!(jobs.try_recv().is_err(), "manual bind covers stale startup");
+
+        scheduler_owner.trigger_startup();
+        let startup = jobs.recv().await.unwrap();
+        assert_eq!(startup.repository_id, repository_id);
+        assert_eq!(startup.trigger, SyncTrigger::AppLaunch);
+
+        let exit_wait = match scheduler_owner.begin_native_exit() {
+            NativeExitAction::Wait(wait) => tokio::spawn(wait),
+            _ => panic!("active StartupExit binding must enqueue on exit"),
+        };
+        assert_eq!(
+            jobs.recv().await.unwrap().trigger,
+            SyncTrigger::SettingsExit
+        );
+        assert_eq!(exit_wait.await.unwrap(), Ok(()));
+
+        assert!(!scheduler_owner.activate_root(&switched_root));
+        assert!(!scheduler_owner.refresh_after_bind(&root));
+        assert!(!scheduler_owner.record_file_change(&root, &root.join("stale.md")));
+    }
+
+    #[tokio::test]
+    async fn closed_unbound_watch_is_not_reactivated_after_binding() {
+        let root = PathBuf::from("/notes/closed-before-bind");
+        let source = Arc::new(MutableOwnerSource::default());
+        let (sent, mut jobs) = mpsc::unbounded_channel();
+        let scheduler = DejavuScheduler::new(
+            Arc::clone(&source),
+            Arc::new(OwnerEnqueuer(sent)),
+            Arc::new(OwnerStore::default()),
+            Arc::new(OwnerFlusher),
+            Arc::new(|| OffsetDateTime::from_unix_timestamp(1_800_000_000).unwrap()),
+        );
+        let owner = DejavuSchedulerOwner::default();
+        owner.install(scheduler).unwrap();
+
+        assert!(!owner.activate_root(&root));
+        assert!(owner.deactivate_root(&root));
+        source.activate(ActiveRepositorySchedule {
+            notes_root: root.clone(),
+            repository_id: "00000000-0000-4000-8000-000000000044".to_owned(),
+            mode: SyncMode::StartupExit,
+            interval: Duration::from_secs(30),
+        });
+
+        assert!(!owner.refresh_after_bind(&root));
+        owner.trigger_startup();
+        assert!(jobs.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn disabled_binding_does_not_activate_even_while_its_root_is_watched() {
+        let temporary = tempdir().unwrap();
+        let app_data = temporary.path().join("app-data");
+        let root_path = temporary.path().join("disabled-binding");
+        std::fs::create_dir(&root_path).unwrap();
+        let root = root_path.canonicalize().unwrap();
+        let state_service = LocalSyncStateService::new(&app_data);
+        let mut state = state_service.load_or_initialize(None).unwrap();
+        state_service
+            .bind_repository(
+                &mut state,
+                RepositoryBinding {
+                    repository_id: "00000000-0000-4000-8000-000000000046".to_owned(),
+                    display_name: "Disabled".to_owned(),
+                    notes_root: root.clone(),
+                    enabled: false,
+                },
+            )
+            .unwrap();
+        let (sent, mut jobs) = mpsc::unbounded_channel();
+        let scheduler = DejavuScheduler::new(
+            Arc::new(BindingOwnerSource {
+                app_data,
+                mode: SyncMode::StartupExit,
+            }),
+            Arc::new(OwnerEnqueuer(sent)),
+            Arc::new(OwnerStore::default()),
+            Arc::new(OwnerFlusher),
+            Arc::new(|| OffsetDateTime::from_unix_timestamp(1_800_000_000).unwrap()),
+        );
+        let owner = DejavuSchedulerOwner::default();
+        owner.install(scheduler).unwrap();
+
+        assert!(!owner.activate_root(&root));
+        assert!(!owner.refresh_after_bind(&root));
+        owner.trigger_startup();
+        assert!(jobs.try_recv().is_err());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn post_bind_automatic_file_change_installs_and_runs_a_due_job() {
+        let temporary = tempdir().unwrap();
+        let app_data = temporary.path().join("app-data");
+        let root_path = temporary.path().join("automatic-after-bind");
+        std::fs::create_dir(&root_path).unwrap();
+        let root = root_path.canonicalize().unwrap();
+        let repository_id = "00000000-0000-4000-8000-000000000045";
+        let source = Arc::new(BindingOwnerSource {
+            app_data: app_data.clone(),
+            mode: SyncMode::Automatic,
+        });
+        let (sent, mut jobs) = mpsc::unbounded_channel();
+        let scheduler = DejavuScheduler::new(
+            source,
+            Arc::new(OwnerEnqueuer(sent)),
+            Arc::new(OwnerStore::default()),
+            Arc::new(OwnerFlusher),
+            Arc::new(|| OffsetDateTime::from_unix_timestamp(1_800_000_000).unwrap()),
+        );
+        let scheduler_owner = DejavuSchedulerOwner::default();
+        scheduler_owner.install(scheduler).unwrap();
+        let catalog = Arc::new(FakeCatalogValidator::new([repository_metadata(
+            repository_id,
+            "Automatic journal",
+        )]));
+        let bind_enqueuer = Arc::new(RecordingBindEnqueuer::new(app_data.clone()));
+        let service_owner = DejavuSyncServiceOwner::default();
+        service_owner
+            .install_binding(
+                &app_data,
+                catalog,
+                bind_enqueuer,
+                test_state_transaction(&app_data),
+            )
+            .unwrap();
+
+        assert!(!scheduler_owner.activate_root(&root));
+        bind_repository_and_refresh_scheduler(
+            &service_owner,
+            &scheduler_owner,
+            bind_request(root.clone(), repository_id, "Automatic journal"),
+        )
+        .await
+        .unwrap();
+        assert!(scheduler_owner.record_file_change(&root, &root.join("new.md")));
+
+        tokio::time::advance(Duration::from_secs(30)).await;
+        let automatic = jobs.recv().await.unwrap();
+        assert_eq!(automatic.trigger, SyncTrigger::Interval);
     }
 
     #[tokio::test]
@@ -775,7 +1160,12 @@ mod tests {
         let enqueuer = Arc::new(RecordingBindEnqueuer::new(app_data.clone()));
         let owner = DejavuSyncServiceOwner::default();
         owner
-            .install_binding(&app_data, Arc::clone(&catalog), Arc::clone(&enqueuer))
+            .install_binding(
+                &app_data,
+                Arc::clone(&catalog),
+                Arc::clone(&enqueuer),
+                test_state_transaction(&app_data),
+            )
             .unwrap();
 
         let accepted = tokio::time::timeout(
@@ -825,7 +1215,12 @@ mod tests {
         let enqueuer = Arc::new(RecordingBindEnqueuer::new(app_data.clone()));
         let owner = DejavuSyncServiceOwner::default();
         owner
-            .install_binding(&app_data, catalog, Arc::clone(&enqueuer))
+            .install_binding(
+                &app_data,
+                catalog,
+                Arc::clone(&enqueuer),
+                test_state_transaction(&app_data),
+            )
             .unwrap();
 
         let result = owner
@@ -855,7 +1250,12 @@ mod tests {
         let enqueuer = Arc::new(RecordingBindEnqueuer::new(app_data.clone()));
         let owner = DejavuSyncServiceOwner::default();
         owner
-            .install_binding(&app_data, Arc::clone(&catalog), Arc::clone(&enqueuer))
+            .install_binding(
+                &app_data,
+                Arc::clone(&catalog),
+                Arc::clone(&enqueuer),
+                test_state_transaction(&app_data),
+            )
             .unwrap();
 
         assert!(matches!(
@@ -885,7 +1285,12 @@ mod tests {
         let enqueuer = Arc::new(RecordingBindEnqueuer::new(app_data.clone()));
         let owner = DejavuSyncServiceOwner::default();
         owner
-            .install_binding(&app_data, catalog, Arc::clone(&enqueuer))
+            .install_binding(
+                &app_data,
+                catalog,
+                Arc::clone(&enqueuer),
+                test_state_transaction(&app_data),
+            )
             .unwrap();
         owner
             .bind_repository(bind_request(notes_a.clone(), repository_a, "Remote A"))
@@ -919,8 +1324,83 @@ mod tests {
         assert_eq!(enqueuer.requests.lock().unwrap().len(), 2);
     }
 
+    #[tokio::test]
+    async fn enqueue_failure_keeps_one_binding_and_exact_retry_recovers_without_duplication() {
+        let temporary = tempdir().unwrap();
+        let app_data = temporary.path().join("app-data");
+        let notes_root = temporary.path().join("notes");
+        std::fs::create_dir(&notes_root).unwrap();
+        let repository_id = "00000000-0000-4000-8000-000000000060";
+        let catalog = Arc::new(FakeCatalogValidator::new([repository_metadata(
+            repository_id,
+            "Retry remote",
+        )]));
+        let enqueuer = Arc::new(FailOnceBindEnqueuer::new(app_data.clone()));
+        let owner = DejavuSyncServiceOwner::default();
+        owner
+            .install_binding(
+                &app_data,
+                catalog,
+                Arc::clone(&enqueuer),
+                test_state_transaction(&app_data),
+            )
+            .unwrap();
+        let request = bind_request(notes_root, repository_id, "Retry remote");
+
+        let Err(first_error) = owner.bind_repository(request.clone()).await else {
+            panic!("first enqueue must fail after persisting the binding");
+        };
+        assert_eq!(first_error, RepositoryJobError::CloudUnavailable);
+        let after_failure = LocalSyncStateService::new(&app_data)
+            .load()
+            .unwrap()
+            .unwrap();
+        assert_eq!(after_failure.bindings.len(), 1);
+
+        let accepted = owner.bind_repository(request).await.unwrap();
+        assert_eq!(accepted.wait_for_completion().await, Ok(()));
+        let after_retry = LocalSyncStateService::new(&app_data)
+            .load()
+            .unwrap()
+            .unwrap();
+        assert_eq!(after_retry.bindings.len(), 1);
+        assert_eq!(enqueuer.attempts.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn local_state_storage_failure_uses_repository_unavailable_safe_code() {
+        let temporary = tempdir().unwrap();
+        let app_data = temporary.path().join("app-data");
+        let notes_root = temporary.path().join("notes");
+        std::fs::create_dir_all(app_data.join("local-sync.json")).unwrap();
+        std::fs::create_dir(&notes_root).unwrap();
+        let repository_id = "00000000-0000-4000-8000-000000000061";
+        let catalog = Arc::new(FakeCatalogValidator::new([repository_metadata(
+            repository_id,
+            "Broken storage",
+        )]));
+        let enqueuer = Arc::new(RecordingBindEnqueuer::new(app_data.clone()));
+        let owner = DejavuSyncServiceOwner::default();
+        owner
+            .install_binding(
+                &app_data,
+                catalog,
+                enqueuer,
+                test_state_transaction(&app_data),
+            )
+            .unwrap();
+
+        let result = owner
+            .bind_repository(bind_request(notes_root, repository_id, "Broken storage"))
+            .await;
+        let Err(error) = result else {
+            panic!("unsafe local state storage must reject binding");
+        };
+        assert_eq!(error.safe_code(), "dejavu-repository-unavailable");
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn bind_serializes_distinct_transactions_without_losing_local_state_updates() {
+    async fn bind_serializes_state_writes_without_serializing_remote_catalog_reads() {
         let temporary = tempdir().unwrap();
         let app_data = temporary.path().join("app-data");
         let notes_a = temporary.path().join("notes-a");
@@ -939,7 +1419,12 @@ mod tests {
         let enqueuer = Arc::new(RecordingBindEnqueuer::new(app_data.clone()));
         let owner = Arc::new(DejavuSyncServiceOwner::default());
         owner
-            .install_binding(&app_data, Arc::clone(&catalog), Arc::clone(&enqueuer))
+            .install_binding(
+                &app_data,
+                Arc::clone(&catalog),
+                Arc::clone(&enqueuer),
+                test_state_transaction(&app_data),
+            )
             .unwrap();
 
         let first = {
@@ -961,13 +1446,178 @@ mod tests {
         first.await.unwrap().unwrap();
         second.await.unwrap().unwrap();
 
-        assert_eq!(catalog.max_active.load(Ordering::SeqCst), 1);
+        assert_eq!(catalog.max_active.load(Ordering::SeqCst), 2);
         let state = LocalSyncStateService::new(&app_data)
             .load()
             .unwrap()
             .unwrap();
         assert_eq!(state.bindings.len(), 2);
         assert_eq!(enqueuer.requests.lock().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn key_state_writer_before_bind_cannot_resurrect_the_old_repository_key() {
+        let temporary = tempdir().unwrap();
+        let app_data = temporary.path().join("app-data");
+        let notes_root = temporary.path().join("notes");
+        std::fs::create_dir(&notes_root).unwrap();
+        let repository_id = "00000000-0000-4000-8000-000000000058";
+        let state_service = LocalSyncStateService::new(&app_data);
+        let initial = state_service.load_or_initialize(None).unwrap();
+        let old_key = initial.repo_key;
+        let replacement_key = STANDARD.encode([0x58_u8; 32]);
+        let catalog = Arc::new(FakeCatalogValidator::new([repository_metadata(
+            repository_id,
+            "Key ordering",
+        )]));
+        let enqueuer = Arc::new(RecordingBindEnqueuer::new(app_data.clone()));
+        let state_gate_service = DejavuSyncService::new(
+            Arc::new(PersistedBindingRunner::new(app_data.clone())),
+            Arc::new(NoopStatusSink),
+        );
+        let owner = Arc::new(DejavuSyncServiceOwner::default());
+        owner
+            .install_binding(
+                &app_data,
+                catalog,
+                Arc::clone(&enqueuer),
+                state_gate_service.local_state_transaction(),
+            )
+            .unwrap();
+
+        let (writer_entered_tx, writer_entered_rx) = oneshot::channel();
+        let (release_writer_tx, release_writer_rx) = oneshot::channel();
+        let writer = {
+            let app_data = app_data.clone();
+            let replacement_key = replacement_key.clone();
+            let service = state_gate_service.clone();
+            tokio::spawn(async move {
+                service
+                    .with_global_key_state_transaction(async move {
+                        let state_service = LocalSyncStateService::new(app_data);
+                        let mut state = state_service.load().unwrap().unwrap();
+                        writer_entered_tx.send(()).unwrap();
+                        release_writer_rx.await.unwrap();
+                        state.repo_key = replacement_key;
+                        state_service.save(&state).unwrap();
+                    })
+                    .await;
+            })
+        };
+        writer_entered_rx.await.unwrap();
+
+        let binding = {
+            let owner = Arc::clone(&owner);
+            let notes_root = notes_root.clone();
+            tokio::spawn(async move {
+                owner
+                    .bind_repository(bind_request(notes_root, repository_id, "Key ordering"))
+                    .await
+            })
+        };
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), enqueuer.enqueued.notified())
+                .await
+                .is_err(),
+            "bind must wait for the service-owned state transaction"
+        );
+        release_writer_tx.send(()).unwrap();
+        writer.await.unwrap();
+        binding.await.unwrap().unwrap();
+
+        let final_state = state_service.load().unwrap().unwrap();
+        assert_ne!(final_state.repo_key, old_key);
+        assert_eq!(final_state.repo_key, replacement_key);
+        assert_eq!(final_state.bindings.len(), 1);
+        assert_eq!(final_state.bindings[0].repository_id, repository_id);
+    }
+
+    #[tokio::test]
+    async fn reset_before_enqueue_revalidates_under_global_barrier_without_lock_inversion() {
+        let temporary = tempdir().unwrap();
+        let app_data = temporary.path().join("app-data");
+        let notes_root = temporary.path().join("notes");
+        std::fs::create_dir(&notes_root).unwrap();
+        let repository_id = "00000000-0000-4000-8000-000000000059";
+        let state_service = LocalSyncStateService::new(&app_data);
+        state_service.load_or_initialize(None).unwrap();
+        let replacement_key = STANDARD.encode([0x59_u8; 32]);
+        let catalog = Arc::new(FakeCatalogValidator::new([repository_metadata(
+            repository_id,
+            "Bind ordering",
+        )]));
+        let runner = Arc::new(PersistedBindingRunner::new(app_data.clone()));
+        let service = DejavuSyncService::new(runner, Arc::new(NoopStatusSink));
+        let enqueuer = Arc::new(PausingServiceBindEnqueuer::new(service.clone()));
+        let owner = Arc::new(DejavuSyncServiceOwner::default());
+        owner
+            .install_binding(
+                &app_data,
+                catalog,
+                Arc::clone(&enqueuer),
+                service.local_state_transaction(),
+            )
+            .unwrap();
+
+        let binding = {
+            let owner = Arc::clone(&owner);
+            let notes_root = notes_root.clone();
+            tokio::spawn(async move {
+                owner
+                    .bind_repository(bind_request(notes_root, repository_id, "Bind ordering"))
+                    .await
+            })
+        };
+        enqueuer.before_enqueue.notified().await;
+
+        let (writer_entered_tx, writer_entered_rx) = oneshot::channel();
+        let (release_writer_tx, release_writer_rx) = oneshot::channel();
+        let writer = {
+            let app_data = app_data.clone();
+            let replacement_key = replacement_key.clone();
+            let service = service.clone();
+            tokio::spawn(async move {
+                service
+                    .with_global_key_state_transaction(async move {
+                        let state_service = LocalSyncStateService::new(app_data);
+                        let mut state = state_service.load().unwrap().unwrap();
+                        writer_entered_tx.send(()).unwrap();
+                        release_writer_rx.await.unwrap();
+                        state.repo_key = replacement_key;
+                        for binding in &mut state.bindings {
+                            binding.enabled = false;
+                        }
+                        state_service.save(&state).unwrap();
+                    })
+                    .await;
+            })
+        };
+        tokio::time::timeout(Duration::from_secs(2), writer_entered_rx)
+            .await
+            .expect("bind must release the state transaction before enqueue")
+            .unwrap();
+
+        enqueuer.release_enqueue.notify_one();
+        enqueuer.delegating_enqueue.notified().await;
+        release_writer_tx.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(2), writer)
+            .await
+            .expect("key writer must not deadlock")
+            .unwrap();
+        let result = tokio::time::timeout(Duration::from_secs(2), binding)
+            .await
+            .expect("bind enqueue must continue after the key writer")
+            .unwrap();
+        let Err(error) = result else {
+            panic!("reset-disabled binding must fail validation before acceptance");
+        };
+        assert_eq!(error, RepositoryJobError::InvalidBinding);
+
+        let final_state = state_service.load().unwrap().unwrap();
+        assert_eq!(final_state.repo_key, replacement_key);
+        assert_eq!(final_state.bindings.len(), 1);
+        assert_eq!(final_state.bindings[0].repository_id, repository_id);
+        assert!(!final_state.bindings[0].enabled);
     }
 
     #[tokio::test]
@@ -989,6 +1639,7 @@ mod tests {
                 &app_data,
                 Arc::clone(&catalog),
                 Arc::new(first_service.clone()),
+                first_service.local_state_transaction(),
             )
             .unwrap();
 
