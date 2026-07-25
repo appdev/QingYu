@@ -22,11 +22,11 @@ use tokio::net::TcpListener;
 
 const FIXED_TIME: i64 = 1_784_181_600;
 const EMPTY_SHA256: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
-const REPOSITORY_PREFIX: &str = "qingyu/repositories/repo-a/repo";
+const REPOSITORY_PREFIX: &str = "qingyu/repositories/01234567-89ab-4def-8123-456789abcdef/repo";
 const REF_GET_TARGET: &str =
-    "/qingyu-notes/qingyu/repositories/repo-a/repo/refs/latest?response-cache-control=no-cache";
+    "/qingyu-notes/qingyu/repositories/01234567-89ab-4def-8123-456789abcdef/repo/refs/latest?response-cache-control=no-cache";
 const OBJECT_GET_TARGET: &str =
-    "/qingyu-notes/qingyu/repositories/repo-a/repo/objects/ab/cdef?response-cache-control=no-cache";
+    "/qingyu-notes/qingyu/repositories/01234567-89ab-4def-8123-456789abcdef/repo/objects/ab/cdef?response-cache-control=no-cache";
 
 fn connection(addressing_style: S3AddressingStyle) -> S3Connection {
     S3Connection::new(
@@ -341,9 +341,10 @@ const FULL_SYNC_REQUEST_COUNT: usize = 16;
 const FULL_SYNC_STALE_ID: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const FULL_SYNC_OLDER_ID: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 const FULL_SYNC_LOCK_GET_TARGET: &str =
-    "/qingyu-notes/qingyu/repositories/repo-a/repo/lock-sync?response-cache-control=no-cache";
-const FULL_SYNC_LOCK_PUT_TARGET: &str = "/qingyu-notes/qingyu/repositories/repo-a/repo/lock-sync";
-const FULL_SYNC_LIST_TARGET: &str = "/qingyu-notes?list-type=2&max-keys=1000&prefix=qingyu%2Frepositories%2Frepo-a%2Frepo%2Frefs%2F";
+    "/qingyu-notes/qingyu/repositories/01234567-89ab-4def-8123-456789abcdef/repo/lock-sync?response-cache-control=no-cache";
+const FULL_SYNC_LOCK_PUT_TARGET: &str =
+    "/qingyu-notes/qingyu/repositories/01234567-89ab-4def-8123-456789abcdef/repo/lock-sync";
+const FULL_SYNC_LIST_TARGET: &str = "/qingyu-notes?list-type=2&max-keys=1000&prefix=qingyu%2Frepositories%2F01234567-89ab-4def-8123-456789abcdef%2Frepo%2Frefs%2F";
 
 #[derive(Clone, Debug)]
 struct FullSyncRequest {
@@ -964,7 +965,8 @@ async fn assert_completes<T>(future: impl Future<Output = T>) -> T {
 
 #[tokio::test]
 async fn cloud_put_uses_plain_no_cache_put_for_both_overwrite_values_and_true_empty_body() {
-    let target = "/qingyu-notes/qingyu/repositories/repo-a/repo/refs/latest";
+    let target =
+        "/qingyu-notes/qingyu/repositories/01234567-89ab-4def-8123-456789abcdef/repo/refs/latest";
     let mut first = expected_request("PUT", target, b"hello", FixtureResponse::ok(vec![]));
     first
         .required_headers
@@ -1105,7 +1107,7 @@ async fn cloud_download_counts_header_retries_and_zero_byte_body_failure_in_one_
 
 #[tokio::test]
 async fn cloud_upload_prehashes_and_reopens_the_source_for_every_retry() {
-    let target = "/qingyu-notes/qingyu/repositories/repo-a/repo/objects/ab/cdef";
+    let target = "/qingyu-notes/qingyu/repositories/01234567-89ab-4def-8123-456789abcdef/repo/objects/ab/cdef";
     let first = expected_request("PUT", target, b"payload", FixtureResponse::status(503));
     let second = expected_request("PUT", target, b"payload", FixtureResponse::ok(vec![]));
     let fixture = HttpFixture::start(vec![first, second]).await;
@@ -1128,7 +1130,7 @@ async fn cloud_upload_prehashes_and_reopens_the_source_for_every_retry() {
 
 #[tokio::test]
 async fn cloud_upload_reopens_and_retries_after_the_server_drops_a_partial_put() {
-    let target = "/qingyu-notes/qingyu/repositories/repo-a/repo/objects/ab/cdef";
+    let target = "/qingyu-notes/qingyu/repositories/01234567-89ab-4def-8123-456789abcdef/repo/objects/ab/cdef";
     let payload = vec![b'x'; 256 * 1024];
     let mut first = expected_request("PUT", target, &payload[..1024], FixtureResponse::Disconnect);
     first.body_read = FixtureBodyRead::Prefix(1024);
@@ -1151,7 +1153,7 @@ async fn cloud_upload_reopens_and_retries_after_the_server_drops_a_partial_put()
 
 #[tokio::test]
 async fn cloud_upload_restores_a_source_io_error_and_does_not_retry_it() {
-    let target = "/qingyu-notes/qingyu/repositories/repo-a/repo/objects/ab/cdef";
+    let target = "/qingyu-notes/qingyu/repositories/01234567-89ab-4def-8123-456789abcdef/repo/objects/ab/cdef";
     let mut request = expected_request("PUT", target, b"", FixtureResponse::Disconnect);
     request.body_read = FixtureBodyRead::ConnectionOnly;
     let fixture = HttpFixture::start(vec![request]).await;
@@ -1200,7 +1202,8 @@ async fn cloud_upload_rejects_short_and_long_sources_before_network_io_without_r
 
 #[tokio::test]
 async fn cloud_delete_is_unconditional_and_has_no_if_match_header() {
-    let target = "/qingyu-notes/qingyu/repositories/repo-a/repo/refs/latest";
+    let target =
+        "/qingyu-notes/qingyu/repositories/01234567-89ab-4def-8123-456789abcdef/repo/refs/latest";
     let mut request = expected_request("DELETE", target, vec![], FixtureResponse::status(204));
     request.absent_headers.push("if-match");
     let fixture = HttpFixture::start(vec![request]).await;
@@ -1212,10 +1215,10 @@ async fn cloud_delete_is_unconditional_and_has_no_if_match_header() {
 
 #[tokio::test]
 async fn cloud_list_paginates_strips_only_the_repository_prefix_and_sorts_keys() {
-    let first_target = "/qingyu-notes?list-type=2&max-keys=1000&prefix=qingyu%2Frepositories%2Frepo-a%2Frepo%2Fobjects%2F";
-    let second_target = "/qingyu-notes?continuation-token=next%2Btoken&list-type=2&max-keys=1000&prefix=qingyu%2Frepositories%2Frepo-a%2Frepo%2Fobjects%2F";
-    let first_xml = br#"<ListBucketResult><UnknownExtension/><CustomSibling/><IsTruncated>true</IsTruncated><NextContinuationToken>next+token</NextContinuationToken><Contents><Key>qingyu/repositories/repo-a/repo/objects/zz/item</Key><Size>9</Size></Contents></ListBucketResult>"#;
-    let second_xml = br#"<ListBucketResult><IsTruncated>false</IsTruncated><Contents><Key>qingyu/repositories/repo-a/repo/objects/ab/cdef</Key><Size>4</Size></Contents></ListBucketResult>"#;
+    let first_target = "/qingyu-notes?list-type=2&max-keys=1000&prefix=qingyu%2Frepositories%2F01234567-89ab-4def-8123-456789abcdef%2Frepo%2Fobjects%2F";
+    let second_target = "/qingyu-notes?continuation-token=next%2Btoken&list-type=2&max-keys=1000&prefix=qingyu%2Frepositories%2F01234567-89ab-4def-8123-456789abcdef%2Frepo%2Fobjects%2F";
+    let first_xml = br#"<ListBucketResult><UnknownExtension/><CustomSibling/><IsTruncated>true</IsTruncated><NextContinuationToken>next+token</NextContinuationToken><Contents><Key>qingyu/repositories/01234567-89ab-4def-8123-456789abcdef/repo/objects/zz/item</Key><Size>9</Size></Contents></ListBucketResult>"#;
+    let second_xml = br#"<ListBucketResult><IsTruncated>false</IsTruncated><Contents><Key>qingyu/repositories/01234567-89ab-4def-8123-456789abcdef/repo/objects/ab/cdef</Key><Size>4</Size></Contents></ListBucketResult>"#;
     let fixture = HttpFixture::start(vec![
         expected_request("GET", first_target, vec![], FixtureResponse::ok(first_xml)),
         expected_request(
@@ -1247,23 +1250,23 @@ async fn cloud_list_paginates_strips_only_the_repository_prefix_and_sorts_keys()
 
 #[tokio::test]
 async fn cloud_list_accepts_minio_namespace_and_validates_the_echoed_root_prefix() {
-    let target = "/qingyu-notes?list-type=2&max-keys=1000&prefix=qingyu%2Frepositories%2Frepo-a%2Frepo%2Fobjects%2F";
+    let target = "/qingyu-notes?list-type=2&max-keys=1000&prefix=qingyu%2Frepositories%2F01234567-89ab-4def-8123-456789abcdef%2Frepo%2Fobjects%2F";
     let exact_xml = br#"<?xml version="1.0" encoding="UTF-8"?>
         <ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
           <Name>qingyu-notes</Name>
-          <Prefix>qingyu/repositories/repo-a/repo/objects/</Prefix>
+          <Prefix>qingyu/repositories/01234567-89ab-4def-8123-456789abcdef/repo/objects/</Prefix>
           <KeyCount>1</KeyCount>
           <MaxKeys>1000</MaxKeys>
           <IsTruncated>false</IsTruncated>
           <Contents>
-            <Key>qingyu/repositories/repo-a/repo/objects/ab/cdef</Key>
+            <Key>qingyu/repositories/01234567-89ab-4def-8123-456789abcdef/repo/objects/ab/cdef</Key>
             <Size>4</Size>
           </Contents>
         </ListBucketResult>"#;
     let mismatched_xml = br#"<?xml version="1.0" encoding="UTF-8"?>
         <ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
           <Name>qingyu-notes</Name>
-          <Prefix>qingyu/repositories/another/repo/objects/</Prefix>
+          <Prefix>qingyu/repositories/11111111-1111-4111-8111-111111111111/repo/objects/</Prefix>
           <KeyCount>0</KeyCount>
           <MaxKeys>1000</MaxKeys>
           <IsTruncated>false</IsTruncated>
@@ -1291,12 +1294,12 @@ async fn cloud_list_accepts_minio_namespace_and_validates_the_echoed_root_prefix
 
 #[tokio::test]
 async fn cloud_list_rejects_malformed_truncated_cross_prefix_and_stalled_pagination() {
-    let target = "/qingyu-notes?list-type=2&max-keys=1000&prefix=qingyu%2Frepositories%2Frepo-a%2Frepo%2Fobjects%2F";
+    let target = "/qingyu-notes?list-type=2&max-keys=1000&prefix=qingyu%2Frepositories%2F01234567-89ab-4def-8123-456789abcdef%2Frepo%2Fobjects%2F";
     let cases: Vec<&[u8]> = vec![
         br#"<ListBucketResult><Contents><Key>x</Key>"#,
         br#"<ListBucketResult><IsTruncated>true</IsTruncated></ListBucketResult>"#,
-        br#"<ListBucketResult><IsTruncated>false</IsTruncated><Contents><Key>qingyu/repositories/repo-b/repo/objects/ab/cdef</Key><Size>1</Size></Contents></ListBucketResult>"#,
-        br#"<ListBucketResult><IsTruncated>false</IsTruncated><Contents><Key>qingyu/repositories/repo-a/repo/objects/</Key><Size>0</Size></Contents></ListBucketResult>"#,
+        br#"<ListBucketResult><IsTruncated>false</IsTruncated><Contents><Key>qingyu/repositories/11111111-1111-4111-8111-111111111111/repo/objects/ab/cdef</Key><Size>1</Size></Contents></ListBucketResult>"#,
+        br#"<ListBucketResult><IsTruncated>false</IsTruncated><Contents><Key>qingyu/repositories/01234567-89ab-4def-8123-456789abcdef/repo/objects/</Key><Size>0</Size></Contents></ListBucketResult>"#,
         br#"<ListBucketResult><IsTruncated>fal<Unexpected/>se</IsTruncated></ListBucketResult>"#,
         br#"<ListBucketResult><IsTruncated>false</IsTruncated></ListBucketResult><ListBucketResult><IsTruncated>false</IsTruncated></ListBucketResult>"#,
         br#"<ListBucketResult><IsTruncated>false</IsTruncated></ListBucketResult>trailing"#,
@@ -1324,8 +1327,8 @@ async fn cloud_list_rejects_malformed_truncated_cross_prefix_and_stalled_paginat
 
 #[tokio::test]
 async fn cloud_list_rejects_a_continuation_token_that_does_not_advance() {
-    let first_target = "/qingyu-notes?list-type=2&max-keys=1000&prefix=qingyu%2Frepositories%2Frepo-a%2Frepo%2Fobjects%2F";
-    let second_target = "/qingyu-notes?continuation-token=same&list-type=2&max-keys=1000&prefix=qingyu%2Frepositories%2Frepo-a%2Frepo%2Fobjects%2F";
+    let first_target = "/qingyu-notes?list-type=2&max-keys=1000&prefix=qingyu%2Frepositories%2F01234567-89ab-4def-8123-456789abcdef%2Frepo%2Fobjects%2F";
+    let second_target = "/qingyu-notes?continuation-token=same&list-type=2&max-keys=1000&prefix=qingyu%2Frepositories%2F01234567-89ab-4def-8123-456789abcdef%2Frepo%2Fobjects%2F";
     let xml = br#"<ListBucketResult><IsTruncated>true</IsTruncated><NextContinuationToken>same</NextContinuationToken></ListBucketResult>"#;
     let fixture = HttpFixture::start(vec![
         expected_request("GET", first_target, vec![], FixtureResponse::ok(xml)),
@@ -1346,9 +1349,9 @@ async fn cloud_list_rejects_a_continuation_token_that_does_not_advance() {
 
 #[tokio::test]
 async fn cloud_list_rejects_a_multi_token_continuation_cycle() {
-    let first_target = "/qingyu-notes?list-type=2&max-keys=1000&prefix=qingyu%2Frepositories%2Frepo-a%2Frepo%2Fobjects%2F";
-    let second_target = "/qingyu-notes?continuation-token=A&list-type=2&max-keys=1000&prefix=qingyu%2Frepositories%2Frepo-a%2Frepo%2Fobjects%2F";
-    let third_target = "/qingyu-notes?continuation-token=B&list-type=2&max-keys=1000&prefix=qingyu%2Frepositories%2Frepo-a%2Frepo%2Fobjects%2F";
+    let first_target = "/qingyu-notes?list-type=2&max-keys=1000&prefix=qingyu%2Frepositories%2F01234567-89ab-4def-8123-456789abcdef%2Frepo%2Fobjects%2F";
+    let second_target = "/qingyu-notes?continuation-token=A&list-type=2&max-keys=1000&prefix=qingyu%2Frepositories%2F01234567-89ab-4def-8123-456789abcdef%2Frepo%2Fobjects%2F";
+    let third_target = "/qingyu-notes?continuation-token=B&list-type=2&max-keys=1000&prefix=qingyu%2Frepositories%2F01234567-89ab-4def-8123-456789abcdef%2Frepo%2Fobjects%2F";
     let page_a = br#"<ListBucketResult><IsTruncated>true</IsTruncated><NextContinuationToken>A</NextContinuationToken></ListBucketResult>"#;
     let page_b = br#"<ListBucketResult><IsTruncated>true</IsTruncated><NextContinuationToken>B</NextContinuationToken></ListBucketResult>"#;
     let fixture = HttpFixture::start(vec![
@@ -1371,7 +1374,7 @@ async fn cloud_list_rejects_a_multi_token_continuation_cycle() {
 
 #[tokio::test]
 async fn cloud_list_rejects_oversized_xml_fields_and_more_than_one_thousand_contents() {
-    let target = "/qingyu-notes?list-type=2&max-keys=1000&prefix=qingyu%2Frepositories%2Frepo-a%2Frepo%2Fobjects%2F";
+    let target = "/qingyu-notes?list-type=2&max-keys=1000&prefix=qingyu%2Frepositories%2F01234567-89ab-4def-8123-456789abcdef%2Frepo%2Fobjects%2F";
     let oversized_key = format!(
         "<ListBucketResult><IsTruncated>false</IsTruncated><Contents><Key>{}</Key><Size>1</Size></Contents></ListBucketResult>",
         "x".repeat(70 * 1024)
@@ -1574,6 +1577,35 @@ async fn cloud_rejects_unsafe_repository_prefixes_keys_and_list_prefixes_before_
         s3.remove("objects/").await,
         Err(CloudError::UnsafeKey)
     ));
+}
+
+#[test]
+fn cloud_repository_prefix_requires_a_canonical_lower_hyphen_uuid() {
+    let options = S3TransportOptions {
+        request_timeout: Duration::from_secs(1),
+        tls_verification: S3TlsVerification::Verify,
+        max_attempts: 1,
+    };
+    for prefix in [
+        "qingyu/repositories/repo-a/repo",
+        "qingyu/repositories/0123456789ab4def8123456789abcdef/repo",
+        "qingyu/repositories/01234567-89AB-4DEF-8123-456789ABCDEF/repo",
+    ] {
+        assert!(
+            matches!(
+                S3Cloud::new(connection(S3AddressingStyle::Path), options, prefix,),
+                Err(CloudError::UnsafeKey)
+            ),
+            "accepted non-canonical repository prefix {prefix}"
+        );
+    }
+
+    S3Cloud::new(
+        connection(S3AddressingStyle::Path),
+        options,
+        "qingyu/repositories/01234567-89ab-4def-8123-456789abcdef/repo",
+    )
+    .expect("canonical lower-hyphen UUID repository prefix");
 }
 
 #[tokio::test]
@@ -2364,7 +2396,7 @@ async fn catalog_read_reuses_retry_and_redirect_boundaries() {
 #[tokio::test]
 async fn repository_cloud_list_cannot_expose_outer_catalog_metadata() {
     let target =
-        "/qingyu-notes?list-type=2&max-keys=1000&prefix=qingyu%2Frepositories%2Frepo-a%2Frepo%2F";
+        "/qingyu-notes?list-type=2&max-keys=1000&prefix=qingyu%2Frepositories%2F01234567-89ab-4def-8123-456789abcdef%2Frepo%2F";
     let xml = format!(
         "<ListBucketResult><IsTruncated>false</IsTruncated>\
          <Contents><Key>qingyu/repositories/{CATALOG_ID_A}/metadata.json</Key><Size>10</Size></Contents>\
@@ -2386,7 +2418,7 @@ async fn repository_cloud_list_cannot_expose_outer_catalog_metadata() {
 #[tokio::test]
 async fn repository_cloud_list_rejects_nonempty_common_prefixes_without_a_delimiter() {
     let target =
-        "/qingyu-notes?list-type=2&max-keys=1000&prefix=qingyu%2Frepositories%2Frepo-a%2Frepo%2F";
+        "/qingyu-notes?list-type=2&max-keys=1000&prefix=qingyu%2Frepositories%2F01234567-89ab-4def-8123-456789abcdef%2Frepo%2F";
     let xml = format!(
         "<ListBucketResult><IsTruncated>false</IsTruncated><CommonPrefixes>\
          <Prefix>{REPOSITORY_PREFIX}/objects/</Prefix>\

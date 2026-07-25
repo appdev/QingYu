@@ -792,7 +792,11 @@ fn validate_repository_prefix(repository_prefix: &str) -> Result<(), CloudError>
         (Some("qingyu"), Some("repositories"), Some(repository_id), Some("repo"), None)
             if !repository_id.is_empty() =>
         {
-            validate_relative(repository_id, false)
+            let parsed = uuid::Uuid::parse_str(repository_id).map_err(|_| CloudError::UnsafeKey)?;
+            if parsed.to_string() != repository_id {
+                return Err(CloudError::UnsafeKey);
+            }
+            Ok(())
         }
         _ => Err(CloudError::UnsafeKey),
     }
@@ -985,7 +989,7 @@ mod tests {
             )
             .expect("valid fixture S3 connection"),
             options(),
-            "qingyu/repositories/repo-a/repo",
+            "qingyu/repositories/01234567-89ab-4def-8123-456789abcdef/repo",
             clock,
         )
         .expect("valid S3 cloud");
@@ -999,7 +1003,7 @@ mod tests {
         assert_eq!(result, b"ok");
         assert_eq!(calls.load(Ordering::SeqCst), 2);
         assert_eq!(captured.len(), 2);
-        let expected_target = "/qingyu-notes/qingyu/repositories/repo-a/repo/refs/latest?response-cache-control=no-cache";
+        let expected_target = "/qingyu-notes/qingyu/repositories/01234567-89ab-4def-8123-456789abcdef/repo/refs/latest?response-cache-control=no-cache";
         assert_eq!(captured[0].target, expected_target);
         assert_eq!(captured[1].target, expected_target);
         assert_ne!(captured[0].amz_date, captured[1].amz_date);
@@ -1012,7 +1016,7 @@ mod tests {
         let cloud = S3Cloud::new_with_clock(
             connection(),
             options(),
-            "qingyu/repositories/repo-a/repo",
+            "qingyu/repositories/01234567-89ab-4def-8123-456789abcdef/repo",
             Arc::new(move || now),
         )
         .expect("valid S3 cloud");
