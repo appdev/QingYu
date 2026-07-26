@@ -13,9 +13,15 @@ use tauri::Manager;
 use time::OffsetDateTime;
 
 use self::commands::{DejavuSchedulerOwner, DejavuSyncServiceOwner};
+use self::local_state::LocalSyncStateService;
+use self::maintenance::{
+    clean_expired_conflict_history, clean_startup_residue, local_calendar_date_at, os_random_index,
+    spawn_production_daily_maintenance, LocalMaintenanceController, LocalPurgeExecutor,
+};
 use self::path_guard::{tauri_path_guard_factory, PathGuardCoordinatorOwner};
 use self::repository::{
-    DejavuRepositoryRunner, S3RepositoryCatalogValidator, WorkingTreeCoordinatorFactory,
+    DejavuLocalPurgeRepository, DejavuRepositoryRunner, S3RepositoryCatalogValidator,
+    WorkingTreeCoordinatorFactory,
 };
 use self::scheduler::{DejavuScheduler, LocalRepositoryScheduleSource, SystemDnsFlusher};
 use self::service::{DejavuSyncService, RepositoryJobError};
@@ -26,6 +32,14 @@ pub(crate) fn install_production_graph(app: &tauri::AppHandle) -> Result<(), Rep
         .path()
         .app_data_dir()
         .map_err(|_| RepositoryJobError::RepositoryUnavailable)?;
+    let startup_bindings = LocalSyncStateService::new(&app_data)
+        .load()
+        .map_err(RepositoryJobError::from)?
+        .map(|state| state.bindings)
+        .unwrap_or_default();
+    clean_startup_residue(&app_data, &startup_bindings)?;
+    clean_expired_conflict_history(&app_data, OffsetDateTime::now_utc())?;
+
     let path_guard_factory = tauri_path_guard_factory(app.clone());
     app.state::<PathGuardCoordinatorOwner>()
         .install(path_guard_factory.clone())?;
@@ -36,6 +50,17 @@ pub(crate) fn install_production_graph(app: &tauri::AppHandle) -> Result<(), Rep
         Arc::new(TauriRepositoryStatusEmitter::new(app.clone())),
     ));
     let service = DejavuSyncService::new(Arc::clone(&runner), Arc::clone(&status_store));
+    let local_purge = Arc::new(LocalPurgeExecutor::new(
+        Arc::new(DejavuLocalPurgeRepository::new(&app_data)),
+        local_calendar_date_at,
+        os_random_index,
+    ));
+    let maintenance = Arc::new(LocalMaintenanceController::new_with_transaction(
+        local_purge,
+        Arc::clone(&status_store),
+        OffsetDateTime::now_utc,
+        Arc::new(service.clone()),
+    ));
     let scheduler = DejavuScheduler::new(
         Arc::new(LocalRepositoryScheduleSource::new(&app_data)),
         Arc::new(service.clone()),
@@ -44,8 +69,10 @@ pub(crate) fn install_production_graph(app: &tauri::AppHandle) -> Result<(), Rep
         Arc::new(OffsetDateTime::now_utc),
     );
     service.install_lifecycle(Arc::new(scheduler.clone()))?;
+    service.install_completion_observer(Arc::clone(&maintenance))?;
     let service_owner = app.state::<DejavuSyncServiceOwner>();
     service_owner.install(service.clone())?;
+    service_owner.install_maintenance(Arc::clone(&maintenance))?;
     let state_transaction = service.local_state_transaction();
     service_owner.install_binding(
         &app_data,
@@ -53,6 +80,9 @@ pub(crate) fn install_production_graph(app: &tauri::AppHandle) -> Result<(), Rep
         Arc::new(service),
         state_transaction,
     )?;
-    app.state::<DejavuSchedulerOwner>().install(scheduler)?;
+    let scheduler_owner = app.state::<DejavuSchedulerOwner>();
+    scheduler_owner.install(scheduler)?;
+    scheduler_owner.install_maintenance(Arc::clone(&maintenance))?;
+    spawn_production_daily_maintenance(&app_data, maintenance);
     Ok(())
 }

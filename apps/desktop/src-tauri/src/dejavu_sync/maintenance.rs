@@ -12,7 +12,7 @@ use cap_std::fs::{Dir, Metadata};
 use qingyu_dejavu::{Index, PurgeStat};
 use time::{Date, Duration, Month, OffsetDateTime, PrimitiveDateTime, Time, UtcOffset};
 
-use super::local_state::RepositoryBinding;
+use super::local_state::{LocalSyncStateService, RepositoryBinding};
 use super::service::{
     RepositoryJobCompletion, RepositoryJobCompletionObserver, RepositoryJobError,
 };
@@ -544,6 +544,8 @@ pub(crate) fn os_random_index(upper: usize) -> Option<usize> {
 
 const INDEX_RETENTION_DAYS: i64 = 180;
 const RETENTION_INDEXES_DAILY: usize = 2;
+const DAILY_MAINTENANCE_INTERVAL: std::time::Duration =
+    std::time::Duration::from_secs(24 * 60 * 60);
 
 /// Selects local index IDs using the pinned SiYuan policy.
 ///
@@ -615,6 +617,62 @@ pub(crate) fn local_calendar_date_at(instant: OffsetDateTime) -> Option<Date> {
     UtcOffset::local_offset_at(instant)
         .ok()
         .map(|offset| instant.to_offset(offset).date())
+}
+
+pub(crate) fn resolve_daily_repository_ids(
+    app_data_path: &Path,
+) -> Result<Vec<String>, RepositoryJobError> {
+    let Some(state) = LocalSyncStateService::new(app_data_path)
+        .load()
+        .map_err(RepositoryJobError::from)?
+    else {
+        return Ok(Vec::new());
+    };
+    Ok(state
+        .bindings
+        .into_iter()
+        .filter(|binding| binding.enabled)
+        .filter(|binding| {
+            uuid::Uuid::parse_str(&binding.repository_id)
+                .ok()
+                .is_some_and(|repository_id| repository_id.to_string() == binding.repository_id)
+        })
+        .filter(|binding| open_current_binding_root(&binding.notes_root).is_some())
+        .map(|binding| binding.repository_id)
+        .collect())
+}
+
+pub(crate) fn spawn_production_daily_maintenance(
+    app_data_path: impl AsRef<Path>,
+    controller: Arc<LocalMaintenanceController>,
+) {
+    let app_data_path = app_data_path.as_ref().to_path_buf();
+    tokio::spawn(async move {
+        let first_tick = tokio::time::Instant::now() + DAILY_MAINTENANCE_INTERVAL;
+        let mut interval = tokio::time::interval_at(first_tick, DAILY_MAINTENANCE_INTERVAL);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            interval.tick().await;
+            let cleanup_app_data = app_data_path.clone();
+            let cleanup_at = OffsetDateTime::now_utc();
+            let _cleanup_result = tokio::task::spawn_blocking(move || {
+                clean_expired_conflict_history(&cleanup_app_data, cleanup_at)
+            })
+            .await;
+
+            let binding_app_data = app_data_path.clone();
+            let repository_ids = tokio::task::spawn_blocking(move || {
+                resolve_daily_repository_ids(&binding_app_data)
+            })
+            .await;
+            let Ok(Ok(repository_ids)) = repository_ids else {
+                continue;
+            };
+            for repository_id in repository_ids {
+                let _maintenance_result = controller.try_daily(&repository_id);
+            }
+        }
+    });
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -899,11 +957,12 @@ mod tests {
 
     use super::{
         clean_expired_conflict_history, clean_startup_residue, os_random_index,
-        select_retained_indexes, LocalMaintenanceController, LocalMaintenanceStatusStore,
-        LocalMaintenanceTimer, LocalMaintenanceTransaction, LocalPurgeExecutor, LocalPurgeOutcome,
+        resolve_daily_repository_ids, select_retained_indexes, spawn_production_daily_maintenance,
+        LocalMaintenanceController, LocalMaintenanceStatusStore, LocalMaintenanceTimer,
+        LocalMaintenanceTransaction, LocalPurgeExecutor, LocalPurgeOutcome,
         LocalPurgeRepositoryOps, LocalPurgeTaskExecutor,
     };
-    use crate::dejavu_sync::local_state::RepositoryBinding;
+    use crate::dejavu_sync::local_state::{LocalSyncStateService, RepositoryBinding};
     use crate::dejavu_sync::service::RepositoryJobError;
     use crate::dejavu_sync::status::RepositoryMaintenance;
     use crate::sync_config::status::SyncTrigger;
@@ -2410,5 +2469,105 @@ mod tests {
         let expected_removed = if cfg!(unix) { 5 } else { 4 };
         assert_eq!(removed.removed_entries, expected_removed);
         assert!(!offline_root.exists());
+    }
+
+    #[test]
+    fn daily_repository_resolution_reloads_and_skips_disabled_or_offline_roots() {
+        let root = tempdir().unwrap();
+        let app_data = root.path().join("app-data");
+        let first_root = root.path().join("first-notes");
+        let disabled_root = root.path().join("disabled-notes");
+        let offline_root = root.path().join("offline-notes");
+        for notes_root in [&first_root, &disabled_root, &offline_root] {
+            std::fs::create_dir(notes_root).unwrap();
+        }
+        let state_service = LocalSyncStateService::new(&app_data);
+        let mut state = state_service.load_or_initialize(None).unwrap();
+        let first = "00000000-0000-4000-8000-000000000091";
+        let disabled = "00000000-0000-4000-8000-000000000092";
+        let offline = "00000000-0000-4000-8000-000000000093";
+        for (repository_id, notes_root) in [
+            (first, &first_root),
+            (disabled, &disabled_root),
+            (offline, &offline_root),
+        ] {
+            state_service
+                .add_binding(
+                    &mut state,
+                    RepositoryBinding {
+                        repository_id: repository_id.to_owned(),
+                        display_name: repository_id.to_owned(),
+                        notes_root: notes_root.clone(),
+                        enabled: true,
+                    },
+                )
+                .unwrap();
+        }
+        state.bindings[1].enabled = false;
+        state_service.save(&state).unwrap();
+        std::fs::remove_dir(&offline_root).unwrap();
+
+        assert_eq!(resolve_daily_repository_ids(&app_data).unwrap(), [first]);
+
+        state.bindings[0].enabled = false;
+        state.bindings[1].enabled = true;
+        state_service.save(&state).unwrap();
+        assert_eq!(resolve_daily_repository_ids(&app_data).unwrap(), [disabled]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn production_daily_maintenance_waits_exactly_twenty_four_hours_before_first_run() {
+        let root = tempdir().unwrap();
+        let app_data = root.path().join("app-data");
+        let notes_root = root.path().join("notes");
+        std::fs::create_dir(&notes_root).unwrap();
+        let repository_id = "00000000-0000-4000-8000-000000000094";
+        let state_service = LocalSyncStateService::new(&app_data);
+        let mut state = state_service.load_or_initialize(None).unwrap();
+        state_service
+            .add_binding(
+                &mut state,
+                RepositoryBinding {
+                    repository_id: repository_id.to_owned(),
+                    display_name: "Daily".to_owned(),
+                    notes_root,
+                    enabled: true,
+                },
+            )
+            .unwrap();
+
+        let executor = Arc::new(GatedPurgeTaskExecutor::new());
+        let statuses = Arc::new(FakeMaintenanceStatusStore::new());
+        let now = utc(2026, Month::July, 26, 12, 0);
+        statuses.values.lock().unwrap().insert(
+            repository_id.to_owned(),
+            RepositoryMaintenance {
+                last_local_purge_at: Some(now - Duration::hours(6)),
+                next_local_purge_at: Some(now),
+            },
+        );
+        let controller = Arc::new(LocalMaintenanceController::new(
+            Arc::clone(&executor),
+            statuses,
+            move || now,
+        ));
+        spawn_production_daily_maintenance(&app_data, controller);
+        tokio::task::yield_now().await;
+
+        tokio::time::advance(std::time::Duration::from_secs(24 * 60 * 60 - 1)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(executor.calls.load(Ordering::SeqCst), 0);
+
+        tokio::time::advance(std::time::Duration::from_secs(1)).await;
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            executor.started.acquire(),
+        )
+        .await
+        .unwrap()
+        .unwrap()
+        .forget();
+        assert_eq!(executor.calls.load(Ordering::SeqCst), 1);
+        executor.release.add_permits(1);
     }
 }

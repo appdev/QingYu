@@ -7,6 +7,7 @@ use qingyu_dejavu::RepositoryMetadata;
 use serde::Deserialize;
 
 use super::local_state::{LocalSyncStateService, RepositoryBinding};
+use super::maintenance::LocalMaintenanceController;
 use super::repository::{prepare_binding_root, RepositoryCatalogValidator};
 use super::scheduler::DejavuScheduler;
 use super::service::{
@@ -19,6 +20,7 @@ use tauri::{Manager, Runtime};
 pub(crate) struct DejavuSyncServiceOwner {
     service: OnceLock<DejavuSyncService>,
     binding: OnceLock<BindingController>,
+    maintenance: OnceLock<Arc<LocalMaintenanceController>>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -48,6 +50,7 @@ struct BindingController {
 #[derive(Default)]
 pub(crate) struct DejavuSchedulerOwner {
     scheduler: OnceLock<DejavuScheduler>,
+    maintenance: OnceLock<Arc<LocalMaintenanceController>>,
     roots: Mutex<SchedulerOwnerRoots>,
     native_exit_state: Arc<Mutex<NativeExitState>>,
 }
@@ -103,6 +106,15 @@ impl DejavuSchedulerOwner {
     pub(crate) fn install(&self, scheduler: DejavuScheduler) -> Result<(), RepositoryJobError> {
         self.scheduler
             .set(scheduler)
+            .map_err(|_| RepositoryJobError::RepositoryUnavailable)
+    }
+
+    pub(crate) fn install_maintenance(
+        &self,
+        maintenance: Arc<LocalMaintenanceController>,
+    ) -> Result<(), RepositoryJobError> {
+        self.maintenance
+            .set(maintenance)
             .map_err(|_| RepositoryJobError::RepositoryUnavailable)
     }
 
@@ -223,7 +235,11 @@ impl DejavuSchedulerOwner {
             }
         }
         let state = Arc::clone(&self.native_exit_state);
+        let maintenance = self.maintenance.get().cloned();
         NativeExitAction::Wait(Box::pin(async move {
+            if let Some(maintenance) = maintenance {
+                maintenance.cancel_all_and_wait().await;
+            }
             let result = match scheduler.trigger_exit_job().await {
                 Ok(Some(accepted)) => accepted.wait_for_completion().await,
                 Ok(None) => Ok(()),
@@ -244,6 +260,15 @@ impl DejavuSyncServiceOwner {
     pub(crate) fn install(&self, service: DejavuSyncService) -> Result<(), RepositoryJobError> {
         self.service
             .set(service)
+            .map_err(|_| RepositoryJobError::RepositoryUnavailable)
+    }
+
+    pub(crate) fn install_maintenance(
+        &self,
+        maintenance: Arc<LocalMaintenanceController>,
+    ) -> Result<(), RepositoryJobError> {
+        self.maintenance
+            .set(maintenance)
             .map_err(|_| RepositoryJobError::RepositoryUnavailable)
     }
 
@@ -327,6 +352,9 @@ impl DejavuSyncServiceOwner {
 
     #[allow(dead_code)]
     pub(crate) async fn cancel_all_for_shutdown_or_reset(&self) {
+        if let Some(maintenance) = self.maintenance.get() {
+            maintenance.cancel_all_and_wait().await;
+        }
         if let Some(service) = self.service.get() {
             service.cancel_all_for_shutdown_or_reset().await;
         }
@@ -392,7 +420,7 @@ mod tests {
     use std::future::Future;
     use std::path::{Path, PathBuf};
     use std::pin::Pin;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
@@ -401,13 +429,17 @@ mod tests {
     use qingyu_dejavu::RepositoryMetadata;
     use tempfile::tempdir;
     use time::OffsetDateTime;
-    use tokio::sync::{mpsc, oneshot, watch, Notify};
+    use tokio::sync::{mpsc, oneshot, watch, Notify, Semaphore};
 
     use super::{
         bind_repository_and_refresh_scheduler, BindJobEnqueuer, BindRepositoryRequest,
         DejavuSchedulerOwner, DejavuSyncServiceOwner, NativeExitAction,
     };
     use crate::dejavu_sync::local_state::{LocalSyncStateService, RepositoryBinding};
+    use crate::dejavu_sync::maintenance::{
+        LocalMaintenanceController, LocalMaintenanceStatusStore, LocalPurgeOutcome,
+        LocalPurgeTaskExecutor, LocalPurgeTaskFuture,
+    };
     use crate::dejavu_sync::repository::RepositoryCatalogValidator;
     use crate::dejavu_sync::scheduler::{
         ActiveRepositorySchedule, DejavuScheduler, DnsFlusher, RepositoryScheduleSource,
@@ -418,7 +450,9 @@ mod tests {
         RepositoryJobRunner, RepositoryStatusSink, RepositorySyncResult, SyncAttemptContext,
         SyncJobRequest,
     };
-    use crate::dejavu_sync::status::{RepositorySchedule, RepositorySyncStatus};
+    use crate::dejavu_sync::status::{
+        RepositoryMaintenance, RepositorySchedule, RepositorySyncStatus,
+    };
     use crate::sync_config::model::SyncMode;
     use crate::sync_config::status::SyncTrigger;
 
@@ -430,6 +464,62 @@ mod tests {
         active: AtomicUsize,
         max_active: AtomicUsize,
         delay: Duration,
+    }
+
+    struct ExitMaintenanceStatusStore;
+
+    impl LocalMaintenanceStatusStore for ExitMaintenanceStatusStore {
+        fn load_maintenance(
+            &self,
+            _repository_id: &str,
+        ) -> Result<RepositoryMaintenance, RepositoryJobError> {
+            Ok(RepositoryMaintenance::default())
+        }
+
+        fn set_maintenance(
+            &self,
+            _repository_id: &str,
+            maintenance: RepositoryMaintenance,
+        ) -> Result<RepositoryMaintenance, RepositoryJobError> {
+            Ok(maintenance)
+        }
+    }
+
+    struct ExitCancellationPurgeExecutor {
+        started: Arc<Notify>,
+        saw_cancel: Arc<Notify>,
+        release: Arc<Semaphore>,
+    }
+
+    impl ExitCancellationPurgeExecutor {
+        fn new() -> Self {
+            Self {
+                started: Arc::new(Notify::new()),
+                saw_cancel: Arc::new(Notify::new()),
+                release: Arc::new(Semaphore::new(0)),
+            }
+        }
+    }
+
+    impl LocalPurgeTaskExecutor for ExitCancellationPurgeExecutor {
+        fn execute(
+            &self,
+            _repository_id: String,
+            _now: OffsetDateTime,
+            cancelled: Arc<AtomicBool>,
+        ) -> LocalPurgeTaskFuture {
+            self.started.notify_one();
+            let saw_cancel = Arc::clone(&self.saw_cancel);
+            let release = Arc::clone(&self.release);
+            Box::pin(async move {
+                while !cancelled.load(Ordering::Acquire) {
+                    tokio::task::yield_now().await;
+                }
+                saw_cancel.notify_one();
+                release.acquire().await.unwrap().forget();
+                Ok(LocalPurgeOutcome::Skipped)
+            })
+        }
     }
 
     impl FakeCatalogValidator {
@@ -1226,6 +1316,51 @@ mod tests {
             owner.begin_native_exit(),
             NativeExitAction::Wait(_)
         ));
+    }
+
+    #[tokio::test]
+    async fn native_exit_cancels_and_waits_for_local_maintenance_before_exit_sync() {
+        let owner = DejavuSchedulerOwner::default();
+        let (scheduler, root, mut jobs) = pending_exit_scheduler_fixture();
+        owner.install(scheduler).unwrap();
+        assert!(owner.activate_root(&root));
+
+        let executor = Arc::new(ExitCancellationPurgeExecutor::new());
+        let maintenance = Arc::new(LocalMaintenanceController::new(
+            Arc::clone(&executor),
+            Arc::new(ExitMaintenanceStatusStore),
+            || OffsetDateTime::from_unix_timestamp(1_800_000_000).unwrap(),
+        ));
+        owner.install_maintenance(Arc::clone(&maintenance)).unwrap();
+        let maintenance_started = executor.started.notified();
+        assert!(maintenance
+            .notify_sync_completion(
+                "00000000-0000-4000-8000-000000000049",
+                SyncTrigger::Manual,
+                true,
+            )
+            .unwrap());
+        maintenance_started.await;
+
+        let saw_cancel = executor.saw_cancel.notified();
+        let wait = match owner.begin_native_exit() {
+            NativeExitAction::Wait(wait) => wait,
+            _ => panic!("native exit should wait for maintenance and exit sync"),
+        };
+        let waiting = tokio::spawn(wait);
+        tokio::time::timeout(Duration::from_secs(1), saw_cancel)
+            .await
+            .expect("exit must set the maintenance cancellation flag first");
+        assert!(
+            jobs.try_recv().is_err(),
+            "exit sync must wait for purge return"
+        );
+
+        executor.release.add_permits(1);
+        let (request, completion) = jobs.recv().await.unwrap();
+        assert_eq!(request.trigger, SyncTrigger::SettingsExit);
+        completion.send(Some(Ok(()))).unwrap();
+        assert_eq!(waiting.await.unwrap(), Ok(()));
     }
 
     #[tokio::test]

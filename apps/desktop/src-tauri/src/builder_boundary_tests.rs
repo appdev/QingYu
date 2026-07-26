@@ -973,8 +973,24 @@ fn builder_boundary_installs_the_path_guard_graph_before_startup_on_both_platfor
     }
 
     let graph = source("src/dejavu_sync.rs");
+    let startup_cleanup = graph
+        .find("clean_startup_residue")
+        .expect("the production graph should clean owned startup residue");
+    let status_store = graph
+        .find("RepositoryStatusStore::new")
+        .expect("the production graph should install repository status storage");
+    let scheduler = graph
+        .find("DejavuScheduler::new")
+        .expect("the production graph should install the sync scheduler");
+    assert!(startup_cleanup < status_store);
+    assert!(startup_cleanup < scheduler);
     assert!(graph.contains("tauri_path_guard_factory"));
     assert!(graph.contains("DejavuRepositoryRunner::new"));
+    assert!(graph.contains("DejavuLocalPurgeRepository::new"));
+    assert!(graph.contains("LocalPurgeExecutor::new"));
+    assert!(graph.contains("LocalMaintenanceController::new_with_transaction"));
+    assert!(graph.contains("service.install_completion_observer"));
+    assert!(graph.contains("spawn_production_daily_maintenance"));
     assert!(graph.contains("S3RepositoryCatalogValidator::new"));
     assert!(graph.contains("install_binding"));
     assert!(graph.contains("service.install_lifecycle"));
