@@ -4,7 +4,7 @@ use std::future::Future;
 use std::io;
 use std::path::Path;
 use std::pin::Pin;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use cap_fs_ext::DirExt;
@@ -113,6 +113,9 @@ impl LocalPurgeExecutor {
 
 pub(crate) type LocalPurgeTaskFuture =
     Pin<Box<dyn Future<Output = Result<LocalPurgeOutcome, RepositoryJobError>> + Send + 'static>>;
+pub(crate) type LocalMaintenanceTimerFuture = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
+
+const LOCAL_MAINTENANCE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(12 * 60 * 60);
 
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) trait LocalPurgeTaskExecutor: Send + Sync {
@@ -169,17 +172,69 @@ impl LocalMaintenanceStatusStore for RepositoryStatusStore {
     }
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) trait LocalMaintenanceTimer: Send + Sync {
+    fn sleep(&self, duration: std::time::Duration) -> LocalMaintenanceTimerFuture;
+}
+
+struct TokioLocalMaintenanceTimer;
+
+impl LocalMaintenanceTimer for TokioLocalMaintenanceTimer {
+    fn sleep(&self, duration: std::time::Duration) -> LocalMaintenanceTimerFuture {
+        Box::pin(tokio::time::sleep(duration))
+    }
+}
+
+struct RunningMaintenanceAttempt {
+    cancelled: Arc<AtomicBool>,
+    finished: AtomicBool,
+    finished_notify: tokio::sync::Notify,
+}
+
+impl RunningMaintenanceAttempt {
+    fn new() -> Self {
+        Self {
+            cancelled: Arc::new(AtomicBool::new(false)),
+            finished: AtomicBool::new(false),
+            finished_notify: tokio::sync::Notify::new(),
+        }
+    }
+
+    fn cancel(&self) {
+        self.cancelled.store(true, Ordering::Release);
+    }
+
+    fn finish(&self) {
+        self.finished.store(true, Ordering::Release);
+        self.finished_notify.notify_waiters();
+    }
+
+    async fn wait_finished(&self) {
+        loop {
+            if self.finished.load(Ordering::Acquire) {
+                return;
+            }
+            let notified = self.finished_notify.notified();
+            if self.finished.load(Ordering::Acquire) {
+                return;
+            }
+            notified.await;
+        }
+    }
+}
+
 struct LocalMaintenanceControllerInner {
     executor: Arc<dyn LocalPurgeTaskExecutor>,
     statuses: Arc<dyn LocalMaintenanceStatusStore>,
     clock: Arc<dyn Fn() -> OffsetDateTime + Send + Sync>,
-    running: Mutex<HashMap<String, Arc<AtomicBool>>>,
+    timer: Arc<dyn LocalMaintenanceTimer>,
+    running: Mutex<HashMap<String, Arc<RunningMaintenanceAttempt>>>,
 }
 
 struct RunningMaintenanceGuard {
     inner: Arc<LocalMaintenanceControllerInner>,
     repository_id: String,
-    token: Arc<AtomicBool>,
+    token: Arc<RunningMaintenanceAttempt>,
 }
 
 impl Drop for RunningMaintenanceGuard {
@@ -191,6 +246,7 @@ impl Drop for RunningMaintenanceGuard {
         {
             running.remove(&self.repository_id);
         }
+        self.token.finish();
     }
 }
 
@@ -212,13 +268,35 @@ impl LocalMaintenanceController {
         Status: LocalMaintenanceStatusStore + 'static,
         Clock: Fn() -> OffsetDateTime + Send + Sync + 'static,
     {
+        Self::new_with_timer(
+            executor,
+            statuses,
+            clock,
+            Arc::new(TokioLocalMaintenanceTimer),
+        )
+    }
+
+    pub(crate) fn new_with_timer<Executor, Status, Clock, Timer>(
+        executor: Arc<Executor>,
+        statuses: Arc<Status>,
+        clock: Clock,
+        timer: Arc<Timer>,
+    ) -> Self
+    where
+        Executor: LocalPurgeTaskExecutor + 'static,
+        Status: LocalMaintenanceStatusStore + 'static,
+        Clock: Fn() -> OffsetDateTime + Send + Sync + 'static,
+        Timer: LocalMaintenanceTimer + 'static,
+    {
         let executor: Arc<dyn LocalPurgeTaskExecutor> = executor;
         let statuses: Arc<dyn LocalMaintenanceStatusStore> = statuses;
+        let timer: Arc<dyn LocalMaintenanceTimer> = timer;
         Self {
             inner: Arc::new(LocalMaintenanceControllerInner {
                 executor,
                 statuses,
                 clock: Arc::new(clock),
+                timer,
                 running: Mutex::new(HashMap::new()),
             }),
         }
@@ -266,8 +344,8 @@ impl LocalMaintenanceController {
                 }
             }
         }
-        let cancelled = Arc::new(AtomicBool::new(false));
-        running.insert(repository_id.to_owned(), Arc::clone(&cancelled));
+        let attempt = Arc::new(RunningMaintenanceAttempt::new());
+        running.insert(repository_id.to_owned(), Arc::clone(&attempt));
         drop(running);
 
         let inner = Arc::clone(&self.inner);
@@ -278,14 +356,22 @@ impl LocalMaintenanceController {
         let running_guard = RunningMaintenanceGuard {
             inner: Arc::clone(&inner),
             repository_id: repository_id.clone(),
-            token: Arc::clone(&cancelled),
+            token: Arc::clone(&attempt),
         };
         handle.spawn(async move {
             let _running_guard = running_guard;
-            let _result = inner
-                .executor
-                .execute(repository_id.clone(), now, cancelled)
-                .await;
+            let mut execution =
+                inner
+                    .executor
+                    .execute(repository_id.clone(), now, Arc::clone(&attempt.cancelled));
+            let mut timeout = inner.timer.sleep(LOCAL_MAINTENANCE_TIMEOUT);
+            let _result = tokio::select! {
+                result = &mut execution => result,
+                () = &mut timeout => {
+                    attempt.cancel();
+                    execution.await
+                }
+            };
             let completed_at = (inner.clock)().max(completion_floor);
             let _status_result = inner.statuses.set_maintenance(
                 &repository_id,
@@ -296,6 +382,37 @@ impl LocalMaintenanceController {
             );
         });
         Ok(true)
+    }
+
+    pub(crate) async fn cancel_repository_and_wait(&self, repository_id: &str) -> bool {
+        let attempt = self
+            .inner
+            .running
+            .lock()
+            .unwrap()
+            .get(repository_id)
+            .cloned();
+        let Some(attempt) = attempt else {
+            return false;
+        };
+        attempt.cancel();
+        attempt.wait_finished().await;
+        true
+    }
+
+    pub(crate) async fn cancel_all_and_wait(&self) -> usize {
+        let attempts = {
+            let running = self.inner.running.lock().unwrap();
+            let attempts = running.values().cloned().collect::<Vec<_>>();
+            for attempt in &attempts {
+                attempt.cancel();
+            }
+            attempts
+        };
+        for attempt in &attempts {
+            attempt.wait_finished().await;
+        }
+        attempts.len()
     }
 
     #[cfg(test)]
@@ -701,7 +818,8 @@ mod tests {
     use super::{
         clean_expired_conflict_history, clean_startup_residue, os_random_index,
         select_retained_indexes, LocalMaintenanceController, LocalMaintenanceStatusStore,
-        LocalPurgeExecutor, LocalPurgeOutcome, LocalPurgeRepositoryOps, LocalPurgeTaskExecutor,
+        LocalMaintenanceTimer, LocalPurgeExecutor, LocalPurgeOutcome, LocalPurgeRepositoryOps,
+        LocalPurgeTaskExecutor,
     };
     use crate::dejavu_sync::local_state::RepositoryBinding;
     use crate::dejavu_sync::service::RepositoryJobError;
@@ -805,6 +923,73 @@ mod tests {
             _cancelled: Arc<AtomicBool>,
         ) -> super::LocalPurgeTaskFuture {
             Box::pin(async move { panic!("injected local purge panic") })
+        }
+    }
+
+    struct ManualMaintenanceTimer {
+        requested: Mutex<Vec<std::time::Duration>>,
+        fired: Arc<tokio::sync::Semaphore>,
+    }
+
+    impl ManualMaintenanceTimer {
+        fn new() -> Self {
+            Self {
+                requested: Mutex::new(Vec::new()),
+                fired: Arc::new(tokio::sync::Semaphore::new(0)),
+            }
+        }
+    }
+
+    impl LocalMaintenanceTimer for ManualMaintenanceTimer {
+        fn sleep(&self, duration: std::time::Duration) -> super::LocalMaintenanceTimerFuture {
+            self.requested.lock().unwrap().push(duration);
+            let fired = Arc::clone(&self.fired);
+            Box::pin(async move {
+                fired.acquire().await.unwrap().forget();
+            })
+        }
+    }
+
+    struct CancellationAwarePurgeTaskExecutor {
+        started: Arc<tokio::sync::Semaphore>,
+        saw_cancel: Arc<tokio::sync::Semaphore>,
+        release: Arc<tokio::sync::Semaphore>,
+        cancellations: Mutex<Vec<Arc<AtomicBool>>>,
+    }
+
+    impl CancellationAwarePurgeTaskExecutor {
+        fn new() -> Self {
+            Self {
+                started: Arc::new(tokio::sync::Semaphore::new(0)),
+                saw_cancel: Arc::new(tokio::sync::Semaphore::new(0)),
+                release: Arc::new(tokio::sync::Semaphore::new(0)),
+                cancellations: Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    impl LocalPurgeTaskExecutor for CancellationAwarePurgeTaskExecutor {
+        fn execute(
+            &self,
+            _repository_id: String,
+            _now: OffsetDateTime,
+            cancelled: Arc<AtomicBool>,
+        ) -> super::LocalPurgeTaskFuture {
+            self.cancellations
+                .lock()
+                .unwrap()
+                .push(Arc::clone(&cancelled));
+            self.started.add_permits(1);
+            let saw_cancel = Arc::clone(&self.saw_cancel);
+            let release = Arc::clone(&self.release);
+            Box::pin(async move {
+                while !cancelled.load(Ordering::Acquire) {
+                    tokio::task::yield_now().await;
+                }
+                saw_cancel.add_permits(1);
+                release.acquire().await.unwrap().forget();
+                Ok(LocalPurgeOutcome::Skipped)
+            })
         }
     }
 
@@ -1606,8 +1791,8 @@ mod tests {
             move || now,
         );
         let repository_id = "00000000-0000-4000-8000-00000000007e";
-        let stale = Arc::new(AtomicBool::new(false));
-        let current = Arc::new(AtomicBool::new(false));
+        let stale = Arc::new(super::RunningMaintenanceAttempt::new());
+        let current = Arc::new(super::RunningMaintenanceAttempt::new());
         controller
             .inner
             .running
@@ -1713,6 +1898,113 @@ mod tests {
                 next_local_purge_at: Some(maximum),
             }
         );
+    }
+
+    #[tokio::test]
+    async fn twelve_hour_timeout_sets_the_executor_flag_and_waits_for_cooperative_exit() {
+        let executor = Arc::new(CancellationAwarePurgeTaskExecutor::new());
+        let timer = Arc::new(ManualMaintenanceTimer::new());
+        let statuses = Arc::new(FakeMaintenanceStatusStore::new());
+        let now = utc(2026, Month::July, 26, 12, 0);
+        let controller = LocalMaintenanceController::new_with_timer(
+            Arc::clone(&executor),
+            Arc::clone(&statuses),
+            move || now,
+            Arc::clone(&timer),
+        );
+        let repository_id = "00000000-0000-4000-8000-000000000081";
+
+        assert!(controller
+            .notify_sync_completion(repository_id, SyncTrigger::Manual, true)
+            .unwrap());
+        executor.started.acquire().await.unwrap().forget();
+        assert_eq!(
+            timer.requested.lock().unwrap().as_slice(),
+            [std::time::Duration::from_secs(12 * 60 * 60)]
+        );
+        timer.fired.add_permits(1);
+        executor.saw_cancel.acquire().await.unwrap().forget();
+        assert!(executor.cancellations.lock().unwrap()[0].load(Ordering::Acquire));
+        assert!(controller.is_running(repository_id));
+        assert!(statuses.writes.lock().unwrap().is_empty());
+
+        executor.release.add_permits(1);
+        wait_for_status_writes(&statuses, 1).await;
+        wait_for_idle(&controller, repository_id).await;
+    }
+
+    #[tokio::test]
+    async fn repository_cancellation_sets_the_flag_before_waiting_for_lane_release() {
+        let executor = Arc::new(CancellationAwarePurgeTaskExecutor::new());
+        let timer = Arc::new(ManualMaintenanceTimer::new());
+        let statuses = Arc::new(FakeMaintenanceStatusStore::new());
+        let now = utc(2026, Month::July, 26, 12, 0);
+        let controller = LocalMaintenanceController::new_with_timer(
+            Arc::clone(&executor),
+            Arc::clone(&statuses),
+            move || now,
+            timer,
+        );
+        let repository_id = "00000000-0000-4000-8000-000000000082";
+        assert!(controller
+            .notify_sync_completion(repository_id, SyncTrigger::Manual, true)
+            .unwrap());
+        executor.started.acquire().await.unwrap().forget();
+
+        let cancellation = tokio::spawn({
+            let controller = controller.clone();
+            async move { controller.cancel_repository_and_wait(repository_id).await }
+        });
+        executor.saw_cancel.acquire().await.unwrap().forget();
+        assert!(!cancellation.is_finished());
+        assert!(controller.is_running(repository_id));
+
+        executor.release.add_permits(1);
+        assert!(cancellation.await.unwrap());
+        assert!(!controller.is_running(repository_id));
+        wait_for_status_writes(&statuses, 1).await;
+    }
+
+    #[tokio::test]
+    async fn cancel_all_marks_every_attempt_before_waiting_and_releases_all_lanes() {
+        let executor = Arc::new(CancellationAwarePurgeTaskExecutor::new());
+        let timer = Arc::new(ManualMaintenanceTimer::new());
+        let statuses = Arc::new(FakeMaintenanceStatusStore::new());
+        let now = utc(2026, Month::July, 26, 12, 0);
+        let controller = LocalMaintenanceController::new_with_timer(
+            Arc::clone(&executor),
+            Arc::clone(&statuses),
+            move || now,
+            timer,
+        );
+        let first = "00000000-0000-4000-8000-000000000083";
+        let second = "00000000-0000-4000-8000-000000000084";
+        for repository_id in [first, second] {
+            assert!(controller
+                .notify_sync_completion(repository_id, SyncTrigger::Manual, true)
+                .unwrap());
+        }
+        executor.started.acquire_many(2).await.unwrap().forget();
+
+        let cancellation = tokio::spawn({
+            let controller = controller.clone();
+            async move { controller.cancel_all_and_wait().await }
+        });
+        executor.saw_cancel.acquire_many(2).await.unwrap().forget();
+        assert!(!cancellation.is_finished());
+        assert!(executor
+            .cancellations
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|cancelled| cancelled.load(Ordering::Acquire)));
+
+        executor.release.add_permits(2);
+        assert_eq!(cancellation.await.unwrap(), 2);
+        assert!(!controller.is_running(first));
+        assert!(!controller.is_running(second));
+        wait_for_status_writes(&statuses, 2).await;
+        assert!(!controller.cancel_repository_and_wait(first).await);
     }
 
     #[test]
