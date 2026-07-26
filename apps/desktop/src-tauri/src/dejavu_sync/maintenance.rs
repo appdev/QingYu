@@ -2,10 +2,12 @@ use std::collections::{HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
 use std::io;
 use std::path::Path;
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 
 use cap_fs_ext::DirExt;
 use cap_std::fs::{Dir, Metadata};
-use qingyu_dejavu::Index;
+use qingyu_dejavu::{Index, PurgeStat};
 use time::{Date, Duration, Month, OffsetDateTime, PrimitiveDateTime, Time, UtcOffset};
 
 use super::local_state::RepositoryBinding;
@@ -17,6 +19,112 @@ use crate::sync_config::storage::open_app_data;
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct MaintenanceCleanupStat {
     pub(crate) removed_entries: usize,
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) trait LocalPurgeRepositoryOps: Send + Sync {
+    fn list_local_indexes(&self, repository_id: &str) -> Result<Vec<Index>, RepositoryJobError>;
+
+    fn purge_local(
+        &self,
+        repository_id: &str,
+        retained_index_ids: &[String],
+        cancelled: &AtomicBool,
+    ) -> Result<PurgeStat, RepositoryJobError>;
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) enum LocalPurgeOutcome {
+    Skipped,
+    Purged(PurgeStat),
+}
+
+#[derive(Clone)]
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) struct LocalPurgeExecutor {
+    repository: Arc<dyn LocalPurgeRepositoryOps>,
+    local_date_at: Arc<dyn Fn(OffsetDateTime) -> Option<Date> + Send + Sync>,
+    select_random_index: Arc<dyn Fn(usize) -> Option<usize> + Send + Sync>,
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+impl LocalPurgeExecutor {
+    pub(crate) fn new<Repository, LocalDate, SelectRandom>(
+        repository: Arc<Repository>,
+        local_date_at: LocalDate,
+        select_random_index: SelectRandom,
+    ) -> Self
+    where
+        Repository: LocalPurgeRepositoryOps + 'static,
+        LocalDate: Fn(OffsetDateTime) -> Option<Date> + Send + Sync + 'static,
+        SelectRandom: Fn(usize) -> Option<usize> + Send + Sync + 'static,
+    {
+        let repository: Arc<dyn LocalPurgeRepositoryOps> = repository;
+        Self {
+            repository,
+            local_date_at: Arc::new(local_date_at),
+            select_random_index: Arc::new(select_random_index),
+        }
+    }
+
+    pub(crate) async fn execute(
+        &self,
+        repository_id: String,
+        now: OffsetDateTime,
+        cancelled: Arc<AtomicBool>,
+    ) -> Result<LocalPurgeOutcome, RepositoryJobError> {
+        let repository = Arc::clone(&self.repository);
+        let local_date_at = Arc::clone(&self.local_date_at);
+        let select_random_index = Arc::clone(&self.select_random_index);
+        tokio::task::spawn_blocking(move || {
+            let indexes = repository.list_local_indexes(&repository_id)?;
+            let mut selection_failed = false;
+            let retained = select_retained_indexes(
+                &indexes,
+                now,
+                |instant| local_date_at(instant),
+                |upper| match select_random_index(upper) {
+                    Some(selected) if selected < upper => selected,
+                    _ => {
+                        selection_failed = true;
+                        0
+                    }
+                },
+            );
+            if selection_failed {
+                return Ok(LocalPurgeOutcome::Skipped);
+            }
+            let Some(retained) = retained else {
+                return Ok(LocalPurgeOutcome::Skipped);
+            };
+            repository
+                .purge_local(&repository_id, &retained, cancelled.as_ref())
+                .map(LocalPurgeOutcome::Purged)
+        })
+        .await
+        .map_err(|_| RepositoryJobError::RepositoryUnavailable)?
+    }
+}
+
+/// Selects an unbiased position from the exact half-open range `[0, upper)`
+/// using operating-system entropy. Entropy failure conservatively disables
+/// the purge attempt.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn os_random_index(upper: usize) -> Option<usize> {
+    if upper == 0 {
+        return None;
+    }
+    let upper = upper as u128;
+    let acceptance_limit = u128::MAX - (u128::MAX % upper);
+    loop {
+        let mut entropy = [0_u8; 16];
+        getrandom::fill(&mut entropy).ok()?;
+        let value = u128::from_le_bytes(entropy);
+        if value < acceptance_limit {
+            return usize::try_from(value % upper).ok();
+        }
+    }
 }
 
 const INDEX_RETENTION_DAYS: i64 = 180;
@@ -366,13 +474,84 @@ fn metadata_is_reparse(metadata: &Metadata) -> bool {
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::{Arc, Mutex};
 
-    use qingyu_dejavu::Index;
+    use qingyu_dejavu::{Index, PurgeStat};
     use tempfile::tempdir;
     use time::{Date, Duration, Month, OffsetDateTime, UtcOffset};
 
-    use super::{clean_expired_conflict_history, clean_startup_residue, select_retained_indexes};
+    use super::{
+        clean_expired_conflict_history, clean_startup_residue, os_random_index,
+        select_retained_indexes, LocalPurgeExecutor, LocalPurgeOutcome, LocalPurgeRepositoryOps,
+    };
     use crate::dejavu_sync::local_state::RepositoryBinding;
+    use crate::dejavu_sync::service::RepositoryJobError;
+
+    #[derive(Clone)]
+    struct PurgeCall {
+        repository_id: String,
+        retained_index_ids: Vec<String>,
+        same_cancellation: bool,
+    }
+
+    struct FakeLocalPurgeRepository {
+        indexes: Vec<Index>,
+        expected_cancellation: Arc<AtomicBool>,
+        purge_stat: PurgeStat,
+        list_thread: Mutex<Option<std::thread::ThreadId>>,
+        purge_calls: Mutex<Vec<PurgeCall>>,
+    }
+
+    impl LocalPurgeRepositoryOps for FakeLocalPurgeRepository {
+        fn list_local_indexes(
+            &self,
+            _repository_id: &str,
+        ) -> Result<Vec<Index>, RepositoryJobError> {
+            *self.list_thread.lock().unwrap() = Some(std::thread::current().id());
+            Ok(self.indexes.clone())
+        }
+
+        fn purge_local(
+            &self,
+            repository_id: &str,
+            retained_index_ids: &[String],
+            cancelled: &AtomicBool,
+        ) -> Result<PurgeStat, RepositoryJobError> {
+            self.purge_calls.lock().unwrap().push(PurgeCall {
+                repository_id: repository_id.to_owned(),
+                retained_index_ids: retained_index_ids.to_vec(),
+                same_cancellation: std::ptr::eq(cancelled, self.expected_cancellation.as_ref()),
+            });
+            Ok(self.purge_stat.clone())
+        }
+    }
+
+    struct FailingLocalPurgeRepository {
+        indexes: Vec<Index>,
+        list_error: Option<RepositoryJobError>,
+        purge_error: Option<RepositoryJobError>,
+    }
+
+    impl LocalPurgeRepositoryOps for FailingLocalPurgeRepository {
+        fn list_local_indexes(
+            &self,
+            _repository_id: &str,
+        ) -> Result<Vec<Index>, RepositoryJobError> {
+            self.list_error
+                .map_or_else(|| Ok(self.indexes.clone()), Err)
+        }
+
+        fn purge_local(
+            &self,
+            _repository_id: &str,
+            _retained_index_ids: &[String],
+            _cancelled: &AtomicBool,
+        ) -> Result<PurgeStat, RepositoryJobError> {
+            self.purge_error
+                .map_or_else(|| Err(RepositoryJobError::RepositoryUnavailable), Err)
+        }
+    }
 
     fn owned_stage(hex: char) -> String {
         format!("stage-{}.tmp", hex.to_string().repeat(40))
@@ -579,6 +758,197 @@ mod tests {
                 "oct-31-selected".to_owned(),
             ])
         );
+    }
+
+    #[tokio::test]
+    async fn local_purge_executor_runs_blocking_success_with_exact_selection_contract() {
+        let now = utc(2026, Month::July, 26, 12, 0);
+        let cancellation = Arc::new(AtomicBool::new(false));
+        let repository = Arc::new(FakeLocalPurgeRepository {
+            indexes: vec![
+                index("today-a", now - Duration::minutes(1)),
+                index("today-b", now - Duration::minutes(2)),
+                index("old-fixed", now - Duration::days(1)),
+                index(
+                    "old-selected",
+                    now - Duration::days(1) - Duration::minutes(1),
+                ),
+                index(
+                    "old-dropped",
+                    now - Duration::days(1) - Duration::minutes(2),
+                ),
+            ],
+            expected_cancellation: Arc::clone(&cancellation),
+            purge_stat: PurgeStat {
+                objects: 3,
+                indexes: 2,
+                size: 128,
+            },
+            list_thread: Mutex::new(None),
+            purge_calls: Mutex::new(Vec::new()),
+        });
+        let random_uppers = Arc::new(Mutex::new(Vec::new()));
+        let observed_uppers = Arc::clone(&random_uppers);
+        let executor = LocalPurgeExecutor::new(
+            Arc::clone(&repository),
+            |instant| Some(instant.date()),
+            move |upper| {
+                observed_uppers.lock().unwrap().push(upper);
+                Some(1)
+            },
+        );
+        let caller_thread = std::thread::current().id();
+
+        let outcome = executor
+            .execute("repo-a".to_owned(), now, Arc::clone(&cancellation))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            outcome,
+            LocalPurgeOutcome::Purged(PurgeStat {
+                objects: 3,
+                indexes: 2,
+                size: 128,
+            })
+        );
+        assert_eq!(*random_uppers.lock().unwrap(), vec![2]);
+        assert_ne!(*repository.list_thread.lock().unwrap(), Some(caller_thread));
+        let calls = repository.purge_calls.lock().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].repository_id, "repo-a");
+        assert!(calls[0].same_cancellation);
+        assert_eq!(
+            sorted(calls[0].retained_index_ids.clone()),
+            sorted(vec![
+                "today-a".to_owned(),
+                "today-b".to_owned(),
+                "old-fixed".to_owned(),
+                "old-selected".to_owned(),
+            ])
+        );
+    }
+
+    #[tokio::test]
+    async fn local_purge_executor_skips_fewer_than_three_without_purge() {
+        let now = utc(2026, Month::July, 26, 12, 0);
+        let cancellation = Arc::new(AtomicBool::new(false));
+        let repository = Arc::new(FakeLocalPurgeRepository {
+            indexes: vec![
+                index("today-a", now - Duration::minutes(1)),
+                index("today-b", now - Duration::minutes(2)),
+            ],
+            expected_cancellation: Arc::clone(&cancellation),
+            purge_stat: PurgeStat::default(),
+            list_thread: Mutex::new(None),
+            purge_calls: Mutex::new(Vec::new()),
+        });
+        let executor = LocalPurgeExecutor::new(
+            Arc::clone(&repository),
+            |instant| Some(instant.date()),
+            |_| Some(0),
+        );
+
+        let outcome = executor
+            .execute("repo-a".to_owned(), now, cancellation)
+            .await
+            .unwrap();
+
+        assert_eq!(outcome, LocalPurgeOutcome::Skipped);
+        assert!(repository.purge_calls.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn local_purge_executor_conservatively_skips_policy_resolution_failures() {
+        let now = utc(2026, Month::July, 26, 12, 0);
+        let indexes = vec![
+            index("today-a", now - Duration::minutes(1)),
+            index("today-b", now - Duration::minutes(2)),
+            index("old-fixed", now - Duration::days(1)),
+            index(
+                "old-selected",
+                now - Duration::days(1) - Duration::minutes(1),
+            ),
+            index(
+                "old-dropped",
+                now - Duration::days(1) - Duration::minutes(2),
+            ),
+        ];
+
+        for failure_mode in 0..3 {
+            let cancellation = Arc::new(AtomicBool::new(false));
+            let repository = Arc::new(FakeLocalPurgeRepository {
+                indexes: indexes.clone(),
+                expected_cancellation: Arc::clone(&cancellation),
+                purge_stat: PurgeStat::default(),
+                list_thread: Mutex::new(None),
+                purge_calls: Mutex::new(Vec::new()),
+            });
+            let executor = LocalPurgeExecutor::new(
+                Arc::clone(&repository),
+                move |instant| (failure_mode != 0).then_some(instant.date()),
+                move |upper| match failure_mode {
+                    1 => None,
+                    2 => Some(upper),
+                    _ => Some(0),
+                },
+            );
+
+            assert_eq!(
+                executor
+                    .execute("repo-a".to_owned(), now, cancellation)
+                    .await
+                    .unwrap(),
+                LocalPurgeOutcome::Skipped
+            );
+            assert!(repository.purge_calls.lock().unwrap().is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn local_purge_executor_returns_list_and_purge_errors() {
+        let now = utc(2026, Month::July, 26, 12, 0);
+        let retained_indexes = vec![
+            index("today-a", now - Duration::minutes(1)),
+            index("today-b", now - Duration::minutes(2)),
+            index("yesterday", now - Duration::days(1)),
+        ];
+        for (list_error, purge_error, expected) in [
+            (
+                Some(RepositoryJobError::ConfigUnavailable),
+                None,
+                RepositoryJobError::ConfigUnavailable,
+            ),
+            (
+                None,
+                Some(RepositoryJobError::RepositoryUnavailable),
+                RepositoryJobError::RepositoryUnavailable,
+            ),
+        ] {
+            let repository = Arc::new(FailingLocalPurgeRepository {
+                indexes: retained_indexes.clone(),
+                list_error,
+                purge_error,
+            });
+            let executor =
+                LocalPurgeExecutor::new(repository, |instant| Some(instant.date()), |_| Some(0));
+
+            assert_eq!(
+                executor
+                    .execute("repo-a".to_owned(), now, Arc::new(AtomicBool::new(false)),)
+                    .await,
+                Err(expected)
+            );
+        }
+    }
+
+    #[test]
+    fn os_random_index_uses_the_exact_half_open_range() {
+        assert_eq!(os_random_index(0), None);
+        for _ in 0..64 {
+            assert_eq!(os_random_index(1), Some(0));
+            assert!(os_random_index(17).is_some_and(|selected| selected < 17));
+        }
     }
 
     #[test]
