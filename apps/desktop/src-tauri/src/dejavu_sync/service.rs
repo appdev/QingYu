@@ -500,10 +500,12 @@ impl DejavuSyncService {
         drop(ordinary_guard);
 
         if let Some(observer) = self.inner.completion_observer.get() {
-            observer.observe_completion(RepositoryJobCompletion {
-                request: request.clone(),
-                result: completion_result,
-            });
+            let _observer_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                observer.observe_completion(RepositoryJobCompletion {
+                    request: request.clone(),
+                    result: completion_result,
+                });
+            }));
         }
 
         let owned_job_result = owned_operation_result
@@ -1169,6 +1171,14 @@ mod tests {
         sink: Arc<MemoryStatusSink>,
         observations: Mutex<Vec<(bool, bool, bool)>>,
         changed: Notify,
+    }
+
+    struct PanickingCompletionObserver;
+
+    impl RepositoryJobCompletionObserver for PanickingCompletionObserver {
+        fn observe_completion(&self, _completion: RepositoryJobCompletion) {
+            panic!("injected post-lock observer panic");
+        }
     }
 
     impl RepositoryJobCompletionObserver for PostLockCompletionObserver {
@@ -1925,5 +1935,22 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(maintenance.await.unwrap(), Ok(LocalPurgeOutcome::Skipped));
+    }
+
+    #[tokio::test]
+    async fn completion_observer_panic_cannot_change_a_successful_job_result() {
+        let runner = Arc::new(SequenceRunner::new([Ok(RepositorySyncResult::default())]));
+        let sink = Arc::new(MemoryStatusSink::default());
+        let service = DejavuSyncService::new(runner, sink);
+        service
+            .install_completion_observer(Arc::new(PanickingCompletionObserver))
+            .unwrap();
+
+        let accepted = service
+            .enqueue(request("00000000-0000-4000-8000-000000000048"))
+            .await
+            .unwrap();
+
+        assert_eq!(accepted.wait_for_completion().await, Ok(()));
     }
 }
