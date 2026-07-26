@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use serde::Serialize;
-use tokio::sync::{watch, Mutex as AsyncMutex, OwnedRwLockReadGuard, RwLock};
+use tokio::sync::{watch, Mutex as AsyncMutex, Notify, OwnedRwLockReadGuard, RwLock};
 
 use super::maintenance::{
     LocalMaintenanceOperation, LocalMaintenanceTransaction, LocalPurgeTaskFuture,
@@ -215,11 +215,189 @@ impl LocalStateTransaction {
     }
 }
 
+#[derive(Default)]
+struct AdmissionState {
+    global_reserved: bool,
+    active_total: usize,
+    repositories: HashMap<String, RepositoryAdmissionState>,
+}
+
+#[derive(Default)]
+struct RepositoryAdmissionState {
+    reserved: bool,
+    active: usize,
+}
+
+#[derive(Default)]
+struct AdmissionControl {
+    state: Mutex<AdmissionState>,
+    changed: Notify,
+}
+
+struct AdmissionPermit {
+    control: Arc<AdmissionControl>,
+    repository_id: String,
+}
+
+impl Drop for AdmissionPermit {
+    fn drop(&mut self) {
+        let mut state = self.control.state.lock().unwrap();
+        state.active_total = state
+            .active_total
+            .checked_sub(1)
+            .expect("admission total must balance");
+        let remove_repository = {
+            let repository = state
+                .repositories
+                .get_mut(&self.repository_id)
+                .expect("admitted repository must remain registered");
+            repository.active = repository
+                .active
+                .checked_sub(1)
+                .expect("repository admission must balance");
+            repository.active == 0 && !repository.reserved
+        };
+        if remove_repository {
+            state.repositories.remove(&self.repository_id);
+        }
+        drop(state);
+        self.control.changed.notify_waiters();
+    }
+}
+
+pub(crate) struct RepositoryBindAdmission {
+    service: DejavuSyncService,
+    repository_id: String,
+    permit: Option<AdmissionPermit>,
+}
+
+impl RepositoryBindAdmission {
+    pub(crate) async fn run_state<T>(&self, operation: impl Future<Output = T>) -> T {
+        let ordinary_guard = Arc::clone(&self.service.inner.global_gate)
+            .read_owned()
+            .await;
+        let repository_lock = self.service.repository_lock(&self.repository_id);
+        let repository_guard = repository_lock.lock_owned().await;
+        let result = self
+            .service
+            .inner
+            .local_state_transaction
+            .run(operation)
+            .await;
+        drop(repository_guard);
+        drop(ordinary_guard);
+        result
+    }
+
+    pub(crate) fn enqueue(
+        mut self,
+        request: SyncJobRequest,
+    ) -> BoxFuture<'static, Result<AcceptedSyncJob, RepositoryJobError>> {
+        if request.repository_id != self.repository_id {
+            return Box::pin(async { Err(RepositoryJobError::InvalidBinding) });
+        }
+        let permit = self
+            .permit
+            .take()
+            .expect("binding admission can only be transferred once");
+        self.service
+            .clone()
+            .enqueue_inner(request, true, None, Some(permit))
+    }
+}
+
+pub(crate) struct RepositoryMaintenanceReservation {
+    service: DejavuSyncService,
+    repository_id: String,
+}
+
+impl RepositoryMaintenanceReservation {
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) async fn run<T>(self, operation: impl Future<Output = T>) -> T {
+        self.service
+            .wait_for_repository_admission_drain(&self.repository_id)
+            .await;
+        let ordinary_guard = Arc::clone(&self.service.inner.global_gate)
+            .read_owned()
+            .await;
+        let repository_lock = self.service.repository_lock(&self.repository_id);
+        let repository_guard = repository_lock.lock_owned().await;
+        let result = operation.await;
+        drop(repository_guard);
+        drop(ordinary_guard);
+        result
+    }
+
+    #[allow(dead_code)]
+    pub(crate) async fn run_state<T>(self, operation: impl Future<Output = T>) -> T {
+        self.service
+            .wait_for_repository_admission_drain(&self.repository_id)
+            .await;
+        let ordinary_guard = Arc::clone(&self.service.inner.global_gate)
+            .read_owned()
+            .await;
+        let repository_lock = self.service.repository_lock(&self.repository_id);
+        let repository_guard = repository_lock.lock_owned().await;
+        let result = self
+            .service
+            .inner
+            .local_state_transaction
+            .run(operation)
+            .await;
+        drop(repository_guard);
+        drop(ordinary_guard);
+        result
+    }
+}
+
+impl Drop for RepositoryMaintenanceReservation {
+    fn drop(&mut self) {
+        self.service
+            .release_repository_reservation(&self.repository_id);
+    }
+}
+
+pub(crate) struct GlobalMaintenanceReservation {
+    service: DejavuSyncService,
+}
+
+impl GlobalMaintenanceReservation {
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) async fn run<T>(self, operation: impl Future<Output = T>) -> T {
+        self.service.wait_for_global_admission_drain().await;
+        let barrier = self.service.inner.global_gate.write().await;
+        let result = operation.await;
+        drop(barrier);
+        result
+    }
+
+    #[allow(dead_code)]
+    pub(crate) async fn run_state<T>(self, operation: impl Future<Output = T>) -> T {
+        self.service.wait_for_global_admission_drain().await;
+        let barrier = self.service.inner.global_gate.write().await;
+        let result = self
+            .service
+            .inner
+            .local_state_transaction
+            .run(operation)
+            .await;
+        drop(barrier);
+        result
+    }
+}
+
+impl Drop for GlobalMaintenanceReservation {
+    fn drop(&mut self) {
+        self.service.release_global_reservation();
+    }
+}
+
 struct DejavuSyncServiceInner {
     runner: Arc<dyn RepositoryJobRunner>,
     status_sink: Arc<dyn RepositoryStatusSink>,
     repository_locks: Mutex<HashMap<String, Arc<AsyncMutex<()>>>>,
     global_gate: Arc<RwLock<()>>,
+    admissions: Arc<AdmissionControl>,
     local_state_transaction: LocalStateTransaction,
     jobs: Mutex<JobRegistry>,
     lifecycle: OnceLock<Arc<dyn RepositoryJobLifecycle>>,
@@ -248,6 +426,7 @@ impl DejavuSyncService {
                 status_sink,
                 repository_locks: Mutex::new(HashMap::new()),
                 global_gate: Arc::new(RwLock::new(())),
+                admissions: Arc::new(AdmissionControl::default()),
                 local_state_transaction: LocalStateTransaction {
                     gate: Arc::new(AsyncMutex::new(())),
                 },
@@ -287,19 +466,30 @@ impl DejavuSyncService {
             .map_err(|_| RepositoryJobError::RepositoryUnavailable)
     }
 
-    pub(crate) async fn enqueue(
+    pub(crate) fn enqueue(
         &self,
         request: SyncJobRequest,
-    ) -> Result<AcceptedSyncJob, RepositoryJobError> {
-        self.enqueue_inner(request, true, None).await
+    ) -> BoxFuture<'static, Result<AcceptedSyncJob, RepositoryJobError>> {
+        self.clone().enqueue_inner(request, true, None, None)
     }
 
-    fn enqueue_inner<'a>(
-        &'a self,
+    fn enqueue_inner(
+        self,
         request: SyncJobRequest,
         allow_follow_up: bool,
         inherited_generation: Option<u64>,
-    ) -> BoxFuture<'a, Result<AcceptedSyncJob, RepositoryJobError>> {
+        inherited_admission: Option<AdmissionPermit>,
+    ) -> BoxFuture<'static, Result<AcceptedSyncJob, RepositoryJobError>> {
+        let admission = match inherited_admission {
+            Some(admission) if admission.repository_id == request.repository_id => admission,
+            Some(_) => {
+                return Box::pin(async { Err(RepositoryJobError::InvalidBinding) });
+            }
+            None => match self.admit_ordinary(&request.repository_id) {
+                Ok(admission) => admission,
+                Err(error) => return Box::pin(async move { Err(error) }),
+            },
+        };
         Box::pin(async move {
             let generation = self.accepting_generation(inherited_generation)?;
             // Validate under the ordinary-job side of the global barrier. If a
@@ -366,6 +556,7 @@ impl DejavuSyncService {
                         allow_follow_up,
                         generation,
                         ordinary_guard,
+                        admission,
                         completion_tx,
                     )
                     .await;
@@ -382,6 +573,7 @@ impl DejavuSyncService {
         allow_follow_up: bool,
         generation: u64,
         ordinary_guard: OwnedRwLockReadGuard<()>,
+        admission: AdmissionPermit,
         completion_tx: watch::Sender<Option<Result<(), RepositoryJobError>>>,
     ) {
         let repository_lock = self.repository_lock(&request.repository_id);
@@ -513,14 +705,152 @@ impl DejavuSyncService {
             .and(status_result);
         let _completion_result = completion_tx.send(Some(owned_job_result));
 
-        if needs_follow_up {
-            let service = self.clone();
+        let follow_up = needs_follow_up.then(|| {
+            self.clone()
+                .enqueue_inner(request, false, Some(generation), None)
+        });
+        drop(admission);
+        if let Some(follow_up) = follow_up {
             tokio::spawn(async move {
-                let _accepted = service
-                    .enqueue_inner(request, false, Some(generation))
-                    .await;
+                let _accepted = follow_up.await;
             });
         }
+    }
+
+    fn admit_ordinary(&self, repository_id: &str) -> Result<AdmissionPermit, RepositoryJobError> {
+        let control = Arc::clone(&self.inner.admissions);
+        let mut state = control.state.lock().unwrap();
+        if state.global_reserved
+            || state
+                .repositories
+                .get(repository_id)
+                .is_some_and(|repository| repository.reserved)
+        {
+            return Err(RepositoryJobError::Cancelled);
+        }
+        state.active_total = state
+            .active_total
+            .checked_add(1)
+            .expect("admission total must fit usize");
+        let repository = state
+            .repositories
+            .entry(repository_id.to_owned())
+            .or_default();
+        repository.active = repository
+            .active
+            .checked_add(1)
+            .expect("repository admission must fit usize");
+        drop(state);
+        Ok(AdmissionPermit {
+            control,
+            repository_id: repository_id.to_owned(),
+        })
+    }
+
+    pub(crate) fn begin_repository_bind(
+        &self,
+        repository_id: &str,
+    ) -> Result<RepositoryBindAdmission, RepositoryJobError> {
+        let permit = self.admit_ordinary(repository_id)?;
+        Ok(RepositoryBindAdmission {
+            service: self.clone(),
+            repository_id: repository_id.to_owned(),
+            permit: Some(permit),
+        })
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn reserve_repository_maintenance(
+        &self,
+        repository_id: &str,
+    ) -> Result<RepositoryMaintenanceReservation, RepositoryJobError> {
+        let mut state = self.inner.admissions.state.lock().unwrap();
+        if state.global_reserved {
+            return Err(RepositoryJobError::Cancelled);
+        }
+        let repository = state
+            .repositories
+            .entry(repository_id.to_owned())
+            .or_default();
+        if repository.reserved {
+            return Err(RepositoryJobError::Cancelled);
+        }
+        repository.reserved = true;
+        drop(state);
+        Ok(RepositoryMaintenanceReservation {
+            service: self.clone(),
+            repository_id: repository_id.to_owned(),
+        })
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn reserve_global_maintenance(
+        &self,
+    ) -> Result<GlobalMaintenanceReservation, RepositoryJobError> {
+        let mut state = self.inner.admissions.state.lock().unwrap();
+        if state.global_reserved
+            || state
+                .repositories
+                .values()
+                .any(|repository| repository.reserved)
+        {
+            return Err(RepositoryJobError::Cancelled);
+        }
+        state.global_reserved = true;
+        drop(state);
+        Ok(GlobalMaintenanceReservation {
+            service: self.clone(),
+        })
+    }
+
+    async fn wait_for_repository_admission_drain(&self, repository_id: &str) {
+        loop {
+            let changed = self.inner.admissions.changed.notified();
+            let drained = self
+                .inner
+                .admissions
+                .state
+                .lock()
+                .unwrap()
+                .repositories
+                .get(repository_id)
+                .is_none_or(|repository| repository.active == 0);
+            if drained {
+                return;
+            }
+            changed.await;
+        }
+    }
+
+    async fn wait_for_global_admission_drain(&self) {
+        loop {
+            let changed = self.inner.admissions.changed.notified();
+            if self.inner.admissions.state.lock().unwrap().active_total == 0 {
+                return;
+            }
+            changed.await;
+        }
+    }
+
+    fn release_repository_reservation(&self, repository_id: &str) {
+        let mut state = self.inner.admissions.state.lock().unwrap();
+        let remove_repository = if let Some(repository) = state.repositories.get_mut(repository_id)
+        {
+            repository.reserved = false;
+            repository.active == 0
+        } else {
+            false
+        };
+        if remove_repository {
+            state.repositories.remove(repository_id);
+        }
+        drop(state);
+        self.inner.admissions.changed.notify_waiters();
+    }
+
+    fn release_global_reservation(&self) {
+        self.inner.admissions.state.lock().unwrap().global_reserved = false;
+        self.inner.admissions.changed.notify_waiters();
     }
 
     fn accepting_generation(
@@ -567,15 +897,16 @@ impl DejavuSyncService {
         operation.await
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn local_state_transaction(&self) -> LocalStateTransaction {
         self.inner.local_state_transaction.clone()
     }
 
-    /// Key replacement and repository reset writers acquire locks in this
-    /// order: stop all ordinary jobs with the global write barrier, then enter
-    /// the shared `local-sync.json` transaction. Binding takes only the state
-    /// transaction, releases it after atomic persistence, and enqueues later.
-    /// Keeping that asymmetry prevents a writer-preferring `RwLock` cycle.
+    /// Global key writers acquire the global write barrier before the shared
+    /// `local-sync.json` transaction. Repository state mutations use global
+    /// read -> repository lane -> local state. A bind keeps its admission
+    /// permit across validation and that state transaction, then transfers the
+    /// same permit to its first sync so a reservation cannot enter the gap.
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) async fn with_global_key_state_transaction<T>(
         &self,
@@ -615,6 +946,10 @@ impl LocalMaintenanceTransaction for DejavuSyncService {
         operation: LocalMaintenanceOperation,
     ) -> LocalPurgeTaskFuture {
         let service = self.clone();
+        let admission = match service.admit_ordinary(&repository_id) {
+            Ok(admission) => admission,
+            Err(error) => return Box::pin(async move { Err(error) }),
+        };
         Box::pin(async move {
             let ordinary_guard = Arc::clone(&service.inner.global_gate).read_owned().await;
             let repository_lock = service.repository_lock(&repository_id);
@@ -622,6 +957,7 @@ impl LocalMaintenanceTransaction for DejavuSyncService {
             let result = operation().await;
             drop(repository_guard);
             drop(ordinary_guard);
+            drop(admission);
             result
         })
     }
@@ -1062,6 +1398,7 @@ mod tests {
 
     struct SequenceRunner {
         results: Mutex<VecDeque<Result<RepositorySyncResult, RepositoryJobError>>>,
+        validations: AtomicUsize,
         attempts: AtomicUsize,
     }
 
@@ -1071,6 +1408,7 @@ mod tests {
         ) -> Self {
             Self {
                 results: Mutex::new(results.into_iter().collect()),
+                validations: AtomicUsize::new(0),
                 attempts: AtomicUsize::new(0),
             }
         }
@@ -1078,6 +1416,7 @@ mod tests {
 
     impl RepositoryJobRunner for SequenceRunner {
         fn validate(&self, request: SyncJobRequest) -> Result<SyncJobRequest, RepositoryJobError> {
+            self.validations.fetch_add(1, Ordering::SeqCst);
             Ok(request)
         }
 
@@ -1951,6 +2290,233 @@ mod tests {
             .await
             .unwrap();
 
+        assert_eq!(accepted.wait_for_completion().await, Ok(()));
+    }
+
+    #[tokio::test]
+    async fn repository_reservation_waits_for_a_registered_job_before_repository_poll() {
+        let (started_tx, mut started_rx) = mpsc::unbounded_channel();
+        let runner = Arc::new(ControlledRunner::new(started_tx));
+        let sink = Arc::new(MemoryStatusSink::default());
+        let service = service(Arc::clone(&runner), sink);
+        let repository_id = "00000000-0000-4000-8000-000000000049";
+        let held_repository = service.repository_lock(repository_id).lock_owned().await;
+
+        let accepted = service.enqueue(request(repository_id)).await.unwrap();
+        let reservation = service
+            .reserve_repository_maintenance(repository_id)
+            .unwrap();
+        let (reserved_tx, mut reserved_rx) = oneshot::channel();
+        let reserved = tokio::spawn(async move {
+            reservation
+                .run(async move {
+                    reserved_tx.send(()).unwrap();
+                })
+                .await;
+        });
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), &mut reserved_rx)
+                .await
+                .is_err(),
+            "reservation must observe a job registered before its spawned task polls the lane"
+        );
+
+        drop(held_repository);
+        assert_eq!(receive_start(&mut started_rx).await, repository_id);
+        runner.release(1);
+        assert_eq!(accepted.wait_for_completion().await, Ok(()));
+        tokio::time::timeout(Duration::from_secs(1), reserved_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        reserved.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn repository_reservation_rejects_new_sync_before_validation_or_status() {
+        let runner = Arc::new(SequenceRunner::new([Ok(RepositorySyncResult::default())]));
+        let sink = Arc::new(MemoryStatusSink::default());
+        let service = DejavuSyncService::new(Arc::clone(&runner), Arc::clone(&sink));
+        let repository_id = "00000000-0000-4000-8000-000000000050";
+        let _reservation = service
+            .reserve_repository_maintenance(repository_id)
+            .unwrap();
+
+        let rejected = service.enqueue(request(repository_id)).await;
+        assert!(matches!(rejected, Err(RepositoryJobError::Cancelled)));
+        assert_eq!(runner.validations.load(Ordering::SeqCst), 0);
+        assert_eq!(runner.attempts.load(Ordering::SeqCst), 0);
+        assert!(sink.statuses.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn unpolled_global_reservation_rejects_new_sync_and_bind_admission() {
+        let runner = Arc::new(SequenceRunner::new([Ok(RepositorySyncResult::default())]));
+        let sink = Arc::new(MemoryStatusSink::default());
+        let service = DejavuSyncService::new(runner, Arc::clone(&sink));
+        let repository_id = "00000000-0000-4000-8000-000000000051";
+        let reservation = service.reserve_global_maintenance().unwrap();
+        let _unpolled_writer = reservation.run(std::future::pending::<()>());
+
+        let rejected = service.enqueue(request(repository_id)).await;
+        assert!(matches!(rejected, Err(RepositoryJobError::Cancelled)));
+        assert!(matches!(
+            service.begin_repository_bind(repository_id),
+            Err(RepositoryJobError::Cancelled)
+        ));
+        assert!(sink.statuses.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn admitted_bind_transfers_its_lane_to_sync_before_reserved_operation() {
+        let (started_tx, mut started_rx) = mpsc::unbounded_channel();
+        let runner = Arc::new(ControlledRunner::new(started_tx));
+        let sink = Arc::new(MemoryStatusSink::default());
+        let service = service(Arc::clone(&runner), sink);
+        let repository_id = "00000000-0000-4000-8000-000000000052";
+        let bind = service.begin_repository_bind(repository_id).unwrap();
+        let (state_entered_tx, state_entered_rx) = oneshot::channel();
+        let (release_state_tx, release_state_rx) = oneshot::channel();
+        let binding = tokio::spawn(async move {
+            bind.run_state(async move {
+                state_entered_tx.send(()).unwrap();
+                release_state_rx.await.unwrap();
+            })
+            .await;
+            bind.enqueue(request(repository_id)).await
+        });
+        state_entered_rx.await.unwrap();
+
+        let reservation = service
+            .reserve_repository_maintenance(repository_id)
+            .unwrap();
+        let (reserved_tx, mut reserved_rx) = oneshot::channel();
+        let reserved = tokio::spawn(async move {
+            reservation
+                .run(async move {
+                    reserved_tx.send(()).unwrap();
+                })
+                .await;
+        });
+        release_state_tx.send(()).unwrap();
+        assert_eq!(receive_start(&mut started_rx).await, repository_id);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), &mut reserved_rx)
+                .await
+                .is_err(),
+            "the reserved operation must not overtake the sync accepted by the earlier bind"
+        );
+
+        runner.release(1);
+        let accepted = binding.await.unwrap().unwrap();
+        assert_eq!(accepted.wait_for_completion().await, Ok(()));
+        tokio::time::timeout(Duration::from_secs(1), reserved_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        reserved.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn repository_reservation_leaves_other_repository_admission_concurrent() {
+        let (started_tx, mut started_rx) = mpsc::unbounded_channel();
+        let runner = Arc::new(ControlledRunner::new(started_tx));
+        let sink = Arc::new(MemoryStatusSink::default());
+        let service = service(Arc::clone(&runner), sink);
+        let reserved_repository = "00000000-0000-4000-8000-000000000053";
+        let other_repository = "00000000-0000-4000-8000-000000000054";
+        let _reservation = service
+            .reserve_repository_maintenance(reserved_repository)
+            .unwrap();
+
+        let accepted = service.enqueue(request(other_repository)).await.unwrap();
+        assert_eq!(receive_start(&mut started_rx).await, other_repository);
+        runner.release(1);
+        assert_eq!(accepted.wait_for_completion().await, Ok(()));
+    }
+
+    #[tokio::test]
+    async fn repository_and_global_reservations_reject_new_local_maintenance() {
+        let runner = Arc::new(SequenceRunner::new([]));
+        let sink = Arc::new(MemoryStatusSink::default());
+        let service = DejavuSyncService::new(runner, sink);
+        let repository_id = "00000000-0000-4000-8000-000000000056";
+        let calls = Arc::new(AtomicUsize::new(0));
+
+        let repository_reservation = service
+            .reserve_repository_maintenance(repository_id)
+            .unwrap();
+        let operation_calls = Arc::clone(&calls);
+        let repository_operation: LocalMaintenanceOperation = Box::new(move || {
+            operation_calls.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async { Ok(LocalPurgeOutcome::Skipped) })
+        });
+        assert_eq!(
+            LocalMaintenanceTransaction::run(
+                &service,
+                repository_id.to_owned(),
+                repository_operation,
+            )
+            .await,
+            Err(RepositoryJobError::Cancelled)
+        );
+        drop(repository_reservation);
+
+        let global_reservation = service.reserve_global_maintenance().unwrap();
+        let operation_calls = Arc::clone(&calls);
+        let global_operation: LocalMaintenanceOperation = Box::new(move || {
+            operation_calls.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async { Ok(LocalPurgeOutcome::Skipped) })
+        });
+        assert_eq!(
+            LocalMaintenanceTransaction::run(&service, repository_id.to_owned(), global_operation,)
+                .await,
+            Err(RepositoryJobError::Cancelled)
+        );
+        drop(global_reservation);
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn reservation_error_panic_and_cancellation_release_the_seal() {
+        let runner = Arc::new(SequenceRunner::new([
+            Ok(RepositorySyncResult::default()),
+            Ok(RepositorySyncResult::default()),
+            Ok(RepositorySyncResult::default()),
+        ]));
+        let sink = Arc::new(MemoryStatusSink::default());
+        let service = DejavuSyncService::new(runner, sink);
+        let repository_id = "00000000-0000-4000-8000-000000000055";
+
+        let error = service
+            .reserve_repository_maintenance(repository_id)
+            .unwrap()
+            .run(async { Err::<(), _>(RepositoryJobError::CloudUnavailable) })
+            .await;
+        assert_eq!(error, Err(RepositoryJobError::CloudUnavailable));
+        let accepted = service.enqueue(request(repository_id)).await.unwrap();
+        assert_eq!(accepted.wait_for_completion().await, Ok(()));
+
+        let panic_reservation = service
+            .reserve_repository_maintenance(repository_id)
+            .unwrap();
+        let panicked = tokio::spawn(async move {
+            panic_reservation
+                .run(async move { panic!("injected reservation panic") })
+                .await;
+        })
+        .await;
+        assert!(panicked.unwrap_err().is_panic());
+        let accepted = service.enqueue(request(repository_id)).await.unwrap();
+        assert_eq!(accepted.wait_for_completion().await, Ok(()));
+
+        let cancelled_reservation = service
+            .reserve_repository_maintenance(repository_id)
+            .unwrap();
+        let cancelled = tokio::spawn(cancelled_reservation.run(std::future::pending::<()>()));
+        cancelled.abort();
+        assert!(cancelled.await.unwrap_err().is_cancelled());
+        let accepted = service.enqueue(request(repository_id)).await.unwrap();
         assert_eq!(accepted.wait_for_completion().await, Ok(()));
     }
 }
