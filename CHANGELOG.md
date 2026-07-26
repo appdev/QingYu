@@ -1,3 +1,15 @@
+## [2.0.0-beta.6](https://github.com/markrahq/markra/compare/v2.0.0-beta.5...v2.0.0-beta.6) (2026-07-26)
+
+### Features
+
+* **app:** unify default fonts across platforms ([#586](https://github.com/markrahq/markra/issues/586)) ([b0a9b96](https://github.com/markrahq/markra/commit/b0a9b9633232607cc5c648d264af91cb9f72ec94))
+* **editor:** add Markdown marker reveal preference ([#582](https://github.com/markrahq/markra/issues/582)) ([7060297](https://github.com/markrahq/markra/commit/706029704c414eb8899bf9b0f6e3ae4e5ade566e)), closes [#580](https://github.com/markrahq/markra/issues/580)
+
+### Bug Fixes
+
+* **app:** isolate editor mode changes by tab ([#585](https://github.com/markrahq/markra/issues/585)) ([0dbf56c](https://github.com/markrahq/markra/commit/0dbf56c097175a0e240746d3c1330116bee6a4b4))
+* **editor:** tighten table preview spacing ([#583](https://github.com/markrahq/markra/issues/583)) ([9a8d602](https://github.com/markrahq/markra/commit/9a8d602a582c2e5b5ad6b9016e6b4b161946137a))
+
 ## [2.0.0-beta.5](https://github.com/markrahq/markra/compare/v2.0.0-beta.4...v2.0.0-beta.5) (2026-07-26)
 
 ### Features
