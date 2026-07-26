@@ -72,6 +72,10 @@ function isBlankEditorWindow() {
   return new URLSearchParams(window.location.search).has("blank");
 }
 
+function isEmptyUntitledDocument(document: DocumentState) {
+  return document.open && document.path === null && document.content.trim() === "";
+}
+
 function initialMarkdownFilePath() {
   return new URLSearchParams(window.location.search).get("path");
 }
@@ -170,6 +174,7 @@ type UseMarkdownDocumentOptions = {
   ) => unknown | Promise<unknown>;
   onTreeRootFromFilePath: (path: string) => unknown;
   onWorkspaceSessionChange?: (sessionId: string) => unknown;
+  openDroppedFilesInTabs?: boolean;
   preferencesReady?: boolean;
   restoreWorkspaceOnStartup?: boolean;
   workspaceSourcePath?: string | null;
@@ -266,6 +271,7 @@ export function useMarkdownDocument({
   onTreeRootFromFolderPath,
   onTreeRootFromFilePath,
   onWorkspaceSessionChange,
+  openDroppedFilesInTabs = false,
   preferencesReady = true,
   restoreWorkspaceOnStartup = true,
   workspaceSourcePath
@@ -974,12 +980,12 @@ export function useMarkdownDocument({
             nextTabs = currentTabs;
             nextActiveTabId = existingTab.id;
           } else {
-            const activeTabIsPristine = currentTabs.some((tab) =>
-              tab.id === activeTabIdRef.current && isPristineUntitledDocument(documentFromTab(tab))
+            const activeTabIsEmptyUntitled = currentTabs.some((tab) =>
+              tab.id === activeTabIdRef.current && isEmptyUntitledDocument(documentFromTab(tab))
             );
-            const nextTabId = activeTabIsPristine && activeTabIdRef.current ? activeTabIdRef.current : fileTabId(file.path);
+            const nextTabId = activeTabIsEmptyUntitled && activeTabIdRef.current ? activeTabIdRef.current : fileTabId(file.path);
             const nextTab = createDocumentTab(nextDocument, nextTabId);
-            nextTabs = activeTabIsPristine
+            nextTabs = activeTabIsEmptyUntitled
               ? currentTabs.map((tab) => tab.id === activeTabIdRef.current ? nextTab : tab)
               : [...currentTabs, nextTab];
             nextActiveTabId = nextTab.id;
@@ -1747,6 +1753,14 @@ export function useMarkdownDocument({
     return !current.open || (current.path === null && currentMarkdown().trim() === "");
   }, [currentMarkdown]);
 
+  const isCurrentWindowEmptyUntitled = useCallback(() => {
+    if (!isCurrentDocumentEmptyUntitled()) return false;
+
+    return tabsRef.current.every((tab) =>
+      tab.id === activeTabIdRef.current || isEmptyUntitledDocument(documentFromTab(tab))
+    );
+  }, [isCurrentDocumentEmptyUntitled]);
+
   const isFileInCurrentWorkspace = useCallback((path: string) => {
     const workspaceRootPath = workspaceRootForSource(workspaceSourcePath, documentRef.current.path);
     return isPathWithinRoot(path, workspaceRootPath);
@@ -1755,7 +1769,7 @@ export function useMarkdownDocument({
   const handleDroppedMarkdownPath = useCallback(
     async (target: NativeMarkdownDroppedTarget) => {
       if (target.kind === "folder") {
-        if (!isCurrentDocumentEmptyUntitled()) {
+        if (!isCurrentWindowEmptyUntitled()) {
           await openNativeMarkdownFolderInNewWindow(target.path);
           return;
         }
@@ -1766,14 +1780,42 @@ export function useMarkdownDocument({
         return;
       }
 
-      if (isCurrentDocumentEmptyUntitled()) {
+      const currentDocumentEmpty = isCurrentDocumentEmptyUntitled();
+      const hasExistingWindowContext =
+        Boolean(normalizeComparablePath(workspaceSourcePath)) ||
+        tabsRef.current.some((tab) =>
+          tab.id !== activeTabIdRef.current &&
+          !isEmptyUntitledDocument(documentFromTab(tab))
+        );
+
+      if (
+        openDroppedFilesInTabs &&
+        documentTabsEnabled &&
+        (!currentDocumentEmpty || hasExistingWindowContext)
+      ) {
+        // An empty active tab can still belong to a window with a workspace or other documents.
+        await loadNativeMarkdownPath(target.path, false);
+        return;
+      }
+
+      if (currentDocumentEmpty) {
         await loadNativeMarkdownPath(target.path);
         return;
       }
 
       await openNativeMarkdownFileInNewWindow(target.path);
     },
-    [clearOpenDocument, isCurrentDocumentEmptyUntitled, loadNativeMarkdownPath, onTreeRootFromFolderPath, resolveWorkspaceSessionId]
+    [
+      clearOpenDocument,
+      documentTabsEnabled,
+      isCurrentDocumentEmptyUntitled,
+      isCurrentWindowEmptyUntitled,
+      loadNativeMarkdownPath,
+      onTreeRootFromFolderPath,
+      openDroppedFilesInTabs,
+      resolveWorkspaceSessionId,
+      workspaceSourcePath
+    ]
   );
 
   const handleNativeOpenedMarkdownPaths = useCallback(async (paths: string[]) => {

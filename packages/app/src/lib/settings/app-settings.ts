@@ -391,6 +391,7 @@ export type EditorPreferences = {
   lineHeight: number;
   markdownShortcuts: MarkdownShortcutBindings;
   markdownTemplates: MarkdownTemplateEntry[];
+  openDroppedFilesInTabs: boolean;
   paragraphSpacingPx: number;
   restoreWorkspaceOnStartup: boolean;
   sidebarLayoutMode: SidebarLayoutMode;
@@ -550,6 +551,7 @@ export const defaultEditorPreferences: EditorPreferences = {
   lineHeight: 1.65,
   markdownShortcuts: defaultMarkdownShortcuts,
   markdownTemplates: [],
+  openDroppedFilesInTabs: false,
   paragraphSpacingPx: 8,
   restoreWorkspaceOnStartup: true,
   sidebarLayoutMode: "stacked",
@@ -1726,6 +1728,10 @@ export function normalizeEditorPreferences(value: unknown): EditorPreferences {
       : defaultEditorPreferences.lineHeight,
     markdownShortcuts: normalizeMarkdownShortcuts(preferences.markdownShortcuts),
     markdownTemplates: normalizeMarkdownTemplateEntries(preferences.markdownTemplates),
+    openDroppedFilesInTabs:
+      typeof preferences.openDroppedFilesInTabs === "boolean"
+        ? preferences.openDroppedFilesInTabs
+        : defaultEditorPreferences.openDroppedFilesInTabs,
     paragraphSpacingPx: normalizeEditorParagraphSpacingPx(preferences.paragraphSpacingPx),
     restoreWorkspaceOnStartup:
       typeof preferences.restoreWorkspaceOnStartup === "boolean"
