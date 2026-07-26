@@ -11,7 +11,7 @@ use super::maintenance::LocalMaintenanceController;
 use super::repository::{prepare_binding_root, RepositoryCatalogValidator};
 use super::scheduler::DejavuScheduler;
 use super::service::{
-    AcceptedSyncJob, DejavuSyncService, LocalStateTransaction, RepositoryJobError, SyncJobRequest,
+    AcceptedSyncJob, DejavuSyncService, RepositoryBindAdmission, RepositoryJobError, SyncJobRequest,
 };
 use crate::sync_config::status::SyncTrigger;
 use tauri::{Manager, Runtime};
@@ -36,6 +36,7 @@ type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 pub(crate) trait BindJobEnqueuer: Send + Sync {
     fn enqueue_bind_and_sync<'a>(
         &'a self,
+        admission: RepositoryBindAdmission,
         request: SyncJobRequest,
     ) -> BoxFuture<'a, Result<AcceptedSyncJob, RepositoryJobError>>;
 }
@@ -44,7 +45,7 @@ struct BindingController {
     app_data: PathBuf,
     catalog: Arc<dyn RepositoryCatalogValidator>,
     enqueuer: Arc<dyn BindJobEnqueuer>,
-    state_transaction: LocalStateTransaction,
+    service: DejavuSyncService,
 }
 
 #[derive(Default)]
@@ -282,7 +283,7 @@ impl DejavuSyncServiceOwner {
         app_data: impl AsRef<Path>,
         catalog: Arc<Validator>,
         enqueuer: Arc<Enqueuer>,
-        state_transaction: LocalStateTransaction,
+        service: DejavuSyncService,
     ) -> Result<(), RepositoryJobError>
     where
         Validator: RepositoryCatalogValidator + 'static,
@@ -295,7 +296,7 @@ impl DejavuSyncServiceOwner {
                 app_data: app_data.as_ref().to_path_buf(),
                 catalog,
                 enqueuer,
-                state_transaction,
+                service,
             })
             .map_err(|_| RepositoryJobError::RepositoryUnavailable)
     }
@@ -309,6 +310,9 @@ impl DejavuSyncServiceOwner {
             .get()
             .ok_or(RepositoryJobError::RepositoryUnavailable)?;
         validate_repository_id(&request.repository_id)?;
+        let admission = controller
+            .service
+            .begin_repository_bind(&request.repository_id)?;
         let metadata = controller
             .catalog
             .read_repository(&request.repository_id)
@@ -321,9 +325,8 @@ impl DejavuSyncServiceOwner {
             notes_root: notes_root.clone(),
             enabled: true,
         };
-        controller
-            .state_transaction
-            .run(async {
+        admission
+            .run_state(async {
                 let state_service = LocalSyncStateService::new(&controller.app_data);
                 let mut state = state_service
                     .load_or_initialize(None)
@@ -335,11 +338,14 @@ impl DejavuSyncServiceOwner {
             .await?;
         controller
             .enqueuer
-            .enqueue_bind_and_sync(SyncJobRequest {
-                notes_root,
-                repository_id: metadata.repository_id,
-                trigger: SyncTrigger::Manual,
-            })
+            .enqueue_bind_and_sync(
+                admission,
+                SyncJobRequest {
+                    notes_root,
+                    repository_id: metadata.repository_id,
+                    trigger: SyncTrigger::Manual,
+                },
+            )
             .await
     }
 
@@ -397,9 +403,10 @@ fn validate_repository_id(repository_id: &str) -> Result<(), RepositoryJobError>
 impl BindJobEnqueuer for DejavuSyncService {
     fn enqueue_bind_and_sync<'a>(
         &'a self,
+        admission: RepositoryBindAdmission,
         request: SyncJobRequest,
     ) -> BoxFuture<'a, Result<AcceptedSyncJob, RepositoryJobError>> {
-        Box::pin(async move { self.enqueue(request).await })
+        Box::pin(async move { admission.enqueue(request).await })
     }
 }
 
@@ -458,7 +465,7 @@ mod tests {
         RepositoryScheduleStore, SchedulerJobEnqueuer,
     };
     use crate::dejavu_sync::service::{
-        AcceptedSyncJob, DejavuSyncService, LocalStateTransaction, RepositoryJobError,
+        AcceptedSyncJob, DejavuSyncService, RepositoryBindAdmission, RepositoryJobError,
         RepositoryJobRunner, RepositoryStatusSink, RepositorySyncResult, SyncAttemptContext,
         SyncJobRequest,
     };
@@ -644,12 +651,11 @@ mod tests {
         }
     }
 
-    fn test_state_transaction(app_data: &Path) -> LocalStateTransaction {
+    fn test_binding_service(app_data: &Path) -> DejavuSyncService {
         DejavuSyncService::new(
             Arc::new(PersistedBindingRunner::new(app_data.to_path_buf())),
             Arc::new(NoopStatusSink),
         )
-        .local_state_transaction()
     }
 
     struct RecordingBindEnqueuer {
@@ -673,6 +679,7 @@ mod tests {
     impl BindJobEnqueuer for RecordingBindEnqueuer {
         fn enqueue_bind_and_sync<'a>(
             &'a self,
+            _admission: RepositoryBindAdmission,
             request: SyncJobRequest,
         ) -> BoxFuture<'a, Result<AcceptedSyncJob, RepositoryJobError>> {
             Box::pin(async move {
@@ -702,16 +709,14 @@ mod tests {
     }
 
     struct PausingServiceBindEnqueuer {
-        service: DejavuSyncService,
         before_enqueue: Notify,
         release_enqueue: Notify,
         delegating_enqueue: Notify,
     }
 
     impl PausingServiceBindEnqueuer {
-        fn new(service: DejavuSyncService) -> Self {
+        fn new() -> Self {
             Self {
-                service,
                 before_enqueue: Notify::new(),
                 release_enqueue: Notify::new(),
                 delegating_enqueue: Notify::new(),
@@ -722,13 +727,14 @@ mod tests {
     impl BindJobEnqueuer for PausingServiceBindEnqueuer {
         fn enqueue_bind_and_sync<'a>(
             &'a self,
+            admission: RepositoryBindAdmission,
             request: SyncJobRequest,
         ) -> BoxFuture<'a, Result<AcceptedSyncJob, RepositoryJobError>> {
             Box::pin(async move {
                 self.before_enqueue.notify_one();
                 self.release_enqueue.notified().await;
                 self.delegating_enqueue.notify_one();
-                self.service.enqueue(request).await
+                admission.enqueue(request).await
             })
         }
     }
@@ -750,6 +756,7 @@ mod tests {
     impl BindJobEnqueuer for FailOnceBindEnqueuer {
         fn enqueue_bind_and_sync<'a>(
             &'a self,
+            _admission: RepositoryBindAdmission,
             request: SyncJobRequest,
         ) -> BoxFuture<'a, Result<AcceptedSyncJob, RepositoryJobError>> {
             Box::pin(async move {
@@ -1074,7 +1081,7 @@ mod tests {
                 &app_data,
                 catalog,
                 bind_enqueuer,
-                test_state_transaction(&app_data),
+                test_binding_service(&app_data),
             )
             .unwrap();
 
@@ -1213,7 +1220,7 @@ mod tests {
                 &app_data,
                 catalog,
                 Arc::clone(&bind_enqueuer),
-                test_state_transaction(&app_data),
+                test_binding_service(&app_data),
             )
             .unwrap();
 
@@ -1280,7 +1287,7 @@ mod tests {
                 &app_data,
                 catalog,
                 Arc::clone(&bind_enqueuer),
-                test_state_transaction(&app_data),
+                test_binding_service(&app_data),
             )
             .unwrap();
 
@@ -1462,7 +1469,7 @@ mod tests {
                 &app_data,
                 Arc::clone(&catalog),
                 Arc::clone(&enqueuer),
-                test_state_transaction(&app_data),
+                test_binding_service(&app_data),
             )
             .unwrap();
 
@@ -1517,7 +1524,7 @@ mod tests {
                 &app_data,
                 catalog,
                 Arc::clone(&enqueuer),
-                test_state_transaction(&app_data),
+                test_binding_service(&app_data),
             )
             .unwrap();
 
@@ -1552,7 +1559,7 @@ mod tests {
                 &app_data,
                 Arc::clone(&catalog),
                 Arc::clone(&enqueuer),
-                test_state_transaction(&app_data),
+                test_binding_service(&app_data),
             )
             .unwrap();
 
@@ -1562,6 +1569,34 @@ mod tests {
                 .await,
             Err(RepositoryJobError::InvalidBinding)
         ));
+        assert!(catalog.calls.lock().unwrap().is_empty());
+        assert!(!app_data.join("local-sync.json").exists());
+    }
+
+    #[tokio::test]
+    async fn global_reservation_rejects_bind_before_remote_catalog_or_local_state() {
+        let temporary = tempdir().unwrap();
+        let app_data = temporary.path().join("app-data");
+        let notes_root = temporary.path().join("notes");
+        std::fs::create_dir(&notes_root).unwrap();
+        let repository_id = "00000000-0000-4000-8000-000000000062";
+        let catalog = Arc::new(FakeCatalogValidator::new([repository_metadata(
+            repository_id,
+            "Reserved remote",
+        )]));
+        let service = test_binding_service(&app_data);
+        let enqueuer = Arc::new(RecordingBindEnqueuer::new(app_data.clone()));
+        let owner = DejavuSyncServiceOwner::default();
+        owner
+            .install_binding(&app_data, Arc::clone(&catalog), enqueuer, service.clone())
+            .unwrap();
+        let _reservation = service.reserve_global_maintenance().unwrap();
+
+        let result = owner
+            .bind_repository(bind_request(notes_root, repository_id, "Reserved remote"))
+            .await;
+
+        assert!(matches!(result, Err(RepositoryJobError::Cancelled)));
         assert!(catalog.calls.lock().unwrap().is_empty());
         assert!(!app_data.join("local-sync.json").exists());
     }
@@ -1587,7 +1622,7 @@ mod tests {
                 &app_data,
                 catalog,
                 Arc::clone(&enqueuer),
-                test_state_transaction(&app_data),
+                test_binding_service(&app_data),
             )
             .unwrap();
         owner
@@ -1640,7 +1675,7 @@ mod tests {
                 &app_data,
                 catalog,
                 Arc::clone(&enqueuer),
-                test_state_transaction(&app_data),
+                test_binding_service(&app_data),
             )
             .unwrap();
         let request = bind_request(notes_root, repository_id, "Retry remote");
@@ -1684,7 +1719,7 @@ mod tests {
                 &app_data,
                 catalog,
                 enqueuer,
-                test_state_transaction(&app_data),
+                test_binding_service(&app_data),
             )
             .unwrap();
 
@@ -1721,7 +1756,7 @@ mod tests {
                 &app_data,
                 Arc::clone(&catalog),
                 Arc::clone(&enqueuer),
-                test_state_transaction(&app_data),
+                test_binding_service(&app_data),
             )
             .unwrap();
 
@@ -1779,7 +1814,7 @@ mod tests {
                 &app_data,
                 catalog,
                 Arc::clone(&enqueuer),
-                state_gate_service.local_state_transaction(),
+                state_gate_service.clone(),
             )
             .unwrap();
 
@@ -1846,15 +1881,10 @@ mod tests {
         )]));
         let runner = Arc::new(PersistedBindingRunner::new(app_data.clone()));
         let service = DejavuSyncService::new(runner, Arc::new(NoopStatusSink));
-        let enqueuer = Arc::new(PausingServiceBindEnqueuer::new(service.clone()));
+        let enqueuer = Arc::new(PausingServiceBindEnqueuer::new());
         let owner = Arc::new(DejavuSyncServiceOwner::default());
         owner
-            .install_binding(
-                &app_data,
-                catalog,
-                Arc::clone(&enqueuer),
-                service.local_state_transaction(),
-            )
+            .install_binding(&app_data, catalog, Arc::clone(&enqueuer), service.clone())
             .unwrap();
 
         let binding = {
@@ -1937,7 +1967,7 @@ mod tests {
                 &app_data,
                 Arc::clone(&catalog),
                 Arc::new(first_service.clone()),
-                first_service.local_state_transaction(),
+                first_service.clone(),
             )
             .unwrap();
 

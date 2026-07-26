@@ -73,12 +73,11 @@ pub(crate) fn install_production_graph(app: &tauri::AppHandle) -> Result<(), Rep
     let service_owner = app.state::<DejavuSyncServiceOwner>();
     service_owner.install(service.clone())?;
     service_owner.install_maintenance(Arc::clone(&maintenance))?;
-    let state_transaction = service.local_state_transaction();
     service_owner.install_binding(
         &app_data,
         Arc::new(S3RepositoryCatalogValidator::new(&app_data)),
-        Arc::new(service),
-        state_transaction,
+        Arc::new(service.clone()),
+        service,
     )?;
     let scheduler_owner = app.state::<DejavuSchedulerOwner>();
     scheduler_owner.install(scheduler)?;
