@@ -216,6 +216,12 @@ impl Repo {
         RefStore::new(&self.store).latest_sync()
     }
 
+    pub fn list_local_indexes(&self) -> Result<Vec<Index>, RepoError> {
+        let _lifecycle = self.try_lifecycle()?;
+        let _operation = self.store.lock_operation()?;
+        self.store.list_indexes_by_mtime_unlocked()
+    }
+
     pub fn checkout_file(&self, file: &File) -> Result<(), RepoError> {
         let _lifecycle = self.try_lifecycle()?;
         self.checkout_file_unlocked(file)
@@ -582,7 +588,7 @@ mod tests {
     use tempfile::TempDir;
     use tokio::io::AsyncWriteExt;
 
-    use crate::{Chunk, File, RepoError};
+    use crate::{Chunk, File, Index, RepoError};
 
     use super::{Device, Repo, RepoOptions, RepoPaths};
 
@@ -751,6 +757,90 @@ mod tests {
             })
             .unwrap();
         id
+    }
+
+    fn empty_index(repo: &Repo, id: &str, created: i64) -> Index {
+        let mut index = Index {
+            id: id.to_owned(),
+            memo: String::new(),
+            created,
+            files: Vec::new(),
+            count: 0,
+            size: 0,
+            system_id: String::new(),
+            system_name: String::new(),
+            system_os: String::new(),
+            check_index_id: String::new(),
+            aes_key_verify_val: String::new(),
+        };
+        index.init_aes_key_verify_val(&repo.key).unwrap();
+        index
+    }
+
+    #[test]
+    fn local_indexes_are_decoded_in_filesystem_mtime_order_not_created_order() {
+        let (_temp, repo) = repo_fixture();
+        let older_created = empty_index(&repo, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 1_000);
+        let newer_created = empty_index(&repo, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", 2_000);
+        repo.store.put_index(&older_created).unwrap();
+        repo.store.put_index(&newer_created).unwrap();
+        filetime::set_file_mtime(
+            repo.store.index_path(&older_created.id).unwrap(),
+            FileTime::from_unix_time(2_000, 0),
+        )
+        .unwrap();
+        filetime::set_file_mtime(
+            repo.store.index_path(&newer_created.id).unwrap(),
+            FileTime::from_unix_time(1_000, 0),
+        )
+        .unwrap();
+
+        let indexes = repo.list_local_indexes().unwrap();
+
+        assert_eq!(indexes, vec![older_created, newer_created]);
+    }
+
+    #[test]
+    fn local_index_listing_reports_a_corrupt_addressed_index() {
+        let (temp, repo) = repo_fixture();
+        let corrupt_id = "cccccccccccccccccccccccccccccccccccccccc";
+        let indexes = temp.path().join("repo/indexes");
+        fs::create_dir_all(&indexes).unwrap();
+        fs::write(indexes.join(corrupt_id), b"corrupt addressed index").unwrap();
+
+        assert!(repo.list_local_indexes().is_err());
+    }
+
+    #[test]
+    fn local_index_listing_rejects_a_non_regular_addressed_entry() {
+        let (temp, repo) = repo_fixture();
+        let directory_id = "dddddddddddddddddddddddddddddddddddddddd";
+        fs::create_dir_all(temp.path().join("repo/indexes").join(directory_id)).unwrap();
+
+        assert!(matches!(
+            repo.list_local_indexes(),
+            Err(RepoError::UnsafePath)
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_index_listing_does_not_follow_an_addressed_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let (temp, repo) = repo_fixture();
+        let symlink_id = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+        let target = temp.path().join("outside-index");
+        fs::write(&target, b"outside").unwrap();
+        let indexes = temp.path().join("repo/indexes");
+        fs::create_dir_all(&indexes).unwrap();
+        symlink(&target, indexes.join(symlink_id)).unwrap();
+
+        assert!(matches!(
+            repo.list_local_indexes(),
+            Err(RepoError::UnsafePath)
+        ));
+        assert_eq!(fs::read(target).unwrap(), b"outside");
     }
 
     #[test]

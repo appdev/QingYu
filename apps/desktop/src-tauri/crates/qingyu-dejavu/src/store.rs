@@ -625,6 +625,39 @@ impl Store {
         self.decode_index_reader_unlocked(id, rewound_clone(&file)?)
     }
 
+    pub(crate) fn list_indexes_by_mtime_unlocked(&self) -> Result<Vec<Index>, RepoError> {
+        let directory = match self.open_directory(Path::new("indexes"), false) {
+            Ok(directory) => directory,
+            Err(RepoError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(Vec::new())
+            }
+            Err(error) => return Err(error),
+        };
+        let mut addressed = Vec::new();
+        for entry in directory.entries()? {
+            let name = entry?.file_name();
+            let id = name.to_str().ok_or(RepoError::UnsafePath)?;
+            if id.len() != 40 {
+                continue;
+            }
+            validate_id(id)?;
+            let metadata = directory.symlink_metadata(&name)?;
+            if !metadata.file_type().is_file() || cap_metadata_is_reparse(&metadata) {
+                return Err(RepoError::UnsafePath);
+            }
+            let file = self.open_raw_file(RawObjectKind::Index, id)?;
+            let modified = file.metadata()?.modified()?;
+            addressed.push((modified, id.to_owned(), file));
+        }
+        addressed.sort_by_key(|entry| std::cmp::Reverse(entry.0));
+
+        let mut indexes = Vec::with_capacity(addressed.len());
+        for (_modified, id, file) in addressed {
+            indexes.push(self.decode_index_reader_unlocked(&id, rewound_clone(&file)?)?);
+        }
+        Ok(indexes)
+    }
+
     pub(crate) fn decode_index_reader_unlocked<R: Read>(
         &self,
         id: &str,
