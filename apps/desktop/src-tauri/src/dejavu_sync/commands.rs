@@ -237,14 +237,19 @@ impl DejavuSchedulerOwner {
         let state = Arc::clone(&self.native_exit_state);
         let maintenance = self.maintenance.get().cloned();
         NativeExitAction::Wait(Box::pin(async move {
-            if let Some(maintenance) = maintenance {
-                maintenance.cancel_all_and_wait().await;
+            if let Some(maintenance) = maintenance.as_ref() {
+                maintenance.suspend_all_and_wait().await;
             }
             let result = match scheduler.trigger_exit_job().await {
                 Ok(Some(accepted)) => accepted.wait_for_completion().await,
                 Ok(None) => Ok(()),
                 Err(error) => Err(error),
             };
+            if result.is_err() {
+                if let Some(maintenance) = maintenance {
+                    maintenance.resume();
+                }
+            }
             *state.lock().unwrap() = if result.is_ok() {
                 NativeExitState::BypassReady
             } else {
@@ -353,10 +358,17 @@ impl DejavuSyncServiceOwner {
     #[allow(dead_code)]
     pub(crate) async fn cancel_all_for_shutdown_or_reset(&self) {
         if let Some(maintenance) = self.maintenance.get() {
-            maintenance.cancel_all_and_wait().await;
+            maintenance.suspend_all_and_wait().await;
         }
         if let Some(service) = self.service.get() {
             service.cancel_all_for_shutdown_or_reset().await;
+        }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn resume_local_maintenance(&self) {
+        if let Some(maintenance) = self.maintenance.get() {
+            maintenance.resume();
         }
     }
 }
@@ -489,6 +501,21 @@ mod tests {
         started: Arc<Notify>,
         saw_cancel: Arc<Notify>,
         release: Arc<Semaphore>,
+    }
+
+    #[derive(Default)]
+    struct ImmediateExitPurgeExecutor(AtomicUsize);
+
+    impl LocalPurgeTaskExecutor for ImmediateExitPurgeExecutor {
+        fn execute(
+            &self,
+            _repository_id: String,
+            _now: OffsetDateTime,
+            _cancelled: Arc<AtomicBool>,
+        ) -> LocalPurgeTaskFuture {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async { Ok(LocalPurgeOutcome::Skipped) })
+        }
     }
 
     impl ExitCancellationPurgeExecutor {
@@ -1361,6 +1388,13 @@ mod tests {
         assert_eq!(request.trigger, SyncTrigger::SettingsExit);
         completion.send(Some(Ok(()))).unwrap();
         assert_eq!(waiting.await.unwrap(), Ok(()));
+        assert!(!maintenance
+            .notify_sync_completion(
+                "00000000-0000-4000-8000-00000000004a",
+                SyncTrigger::Manual,
+                true,
+            )
+            .unwrap());
     }
 
     #[tokio::test]
@@ -1369,6 +1403,13 @@ mod tests {
         let (scheduler, root, mut jobs) = pending_exit_scheduler_fixture();
         owner.install(scheduler).unwrap();
         assert!(owner.activate_root(&root));
+        let executor = Arc::new(ImmediateExitPurgeExecutor::default());
+        let maintenance = Arc::new(LocalMaintenanceController::new(
+            Arc::clone(&executor),
+            Arc::new(ExitMaintenanceStatusStore),
+            || OffsetDateTime::from_unix_timestamp(1_800_000_000).unwrap(),
+        ));
+        owner.install_maintenance(Arc::clone(&maintenance)).unwrap();
 
         let wait = match owner.begin_native_exit() {
             NativeExitAction::Wait(wait) => wait,
@@ -1383,6 +1424,20 @@ mod tests {
             waiting.await.unwrap(),
             Err(RepositoryJobError::CloudUnavailable)
         );
+        assert!(maintenance
+            .notify_sync_completion(
+                "00000000-0000-4000-8000-00000000004b",
+                SyncTrigger::Manual,
+                true,
+            )
+            .unwrap());
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while executor.0.load(Ordering::SeqCst) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("failed exit should resume local maintenance admission");
         assert!(matches!(
             owner.begin_native_exit(),
             NativeExitAction::Wait(_)

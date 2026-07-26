@@ -38,7 +38,7 @@ pub(crate) fn install_production_graph(app: &tauri::AppHandle) -> Result<(), Rep
         .map(|state| state.bindings)
         .unwrap_or_default();
     clean_startup_residue(&app_data, &startup_bindings)?;
-    clean_expired_conflict_history(&app_data, OffsetDateTime::now_utc())?;
+    let _conflict_cleanup = clean_expired_conflict_history(&app_data, OffsetDateTime::now_utc());
 
     let path_guard_factory = tauri_path_guard_factory(app.clone());
     app.state::<PathGuardCoordinatorOwner>()
@@ -61,7 +61,7 @@ pub(crate) fn install_production_graph(app: &tauri::AppHandle) -> Result<(), Rep
         OffsetDateTime::now_utc,
         Arc::new(service.clone()),
     ));
-    let scheduler = DejavuScheduler::new(
+    let scheduler = DejavuScheduler::new_for_tauri(
         Arc::new(LocalRepositoryScheduleSource::new(&app_data)),
         Arc::new(service.clone()),
         Arc::clone(&status_store),

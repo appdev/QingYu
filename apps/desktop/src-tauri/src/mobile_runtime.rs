@@ -22,8 +22,9 @@ pub(crate) fn run() {
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             use tauri::Manager;
-            crate::dejavu_sync::install_production_graph(&app.handle())
-                .map_err(|error| std::io::Error::other(error.safe_code()))?;
+            if let Err(error) = crate::dejavu_sync::install_production_graph(&app.handle()) {
+                eprintln!("QingYu Dejavu sync initialization failed: {error}");
+            }
             app.state::<DejavuSchedulerOwner>().trigger_startup();
             Ok(())
         })

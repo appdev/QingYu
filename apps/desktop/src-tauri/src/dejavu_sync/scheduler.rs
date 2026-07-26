@@ -30,6 +30,7 @@ const PERSISTENCE_RETRY_DELAY: Duration = Duration::from_secs(5 * 60);
 const MINIMUM_NO_CHANGE_DELAY_MINUTES: u64 = 8;
 
 type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+type SchedulerTaskFuture = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
 type SchedulerClock = dyn Fn() -> OffsetDateTime + Send + Sync;
 
 #[derive(Clone)]
@@ -129,6 +130,44 @@ impl DejavuScheduler {
         Store: RepositoryScheduleStore + 'static,
         Flusher: DnsFlusher + 'static,
     {
+        Self::new_with_task_spawner(source, enqueuer, store, dns_flusher, clock, |future| {
+            tokio::spawn(future);
+        })
+    }
+
+    pub(crate) fn new_for_tauri<Source, Enqueuer, Store, Flusher>(
+        source: Arc<Source>,
+        enqueuer: Arc<Enqueuer>,
+        store: Arc<Store>,
+        dns_flusher: Arc<Flusher>,
+        clock: Arc<SchedulerClock>,
+    ) -> Self
+    where
+        Source: RepositoryScheduleSource + 'static,
+        Enqueuer: SchedulerJobEnqueuer + 'static,
+        Store: RepositoryScheduleStore + 'static,
+        Flusher: DnsFlusher + 'static,
+    {
+        Self::new_with_task_spawner(source, enqueuer, store, dns_flusher, clock, |future| {
+            tauri::async_runtime::spawn(future);
+        })
+    }
+
+    fn new_with_task_spawner<Source, Enqueuer, Store, Flusher, Spawn>(
+        source: Arc<Source>,
+        enqueuer: Arc<Enqueuer>,
+        store: Arc<Store>,
+        dns_flusher: Arc<Flusher>,
+        clock: Arc<SchedulerClock>,
+        spawn: Spawn,
+    ) -> Self
+    where
+        Source: RepositoryScheduleSource + 'static,
+        Enqueuer: SchedulerJobEnqueuer + 'static,
+        Store: RepositoryScheduleStore + 'static,
+        Flusher: DnsFlusher + 'static,
+        Spawn: FnOnce(SchedulerTaskFuture),
+    {
         let inner = Arc::new(SchedulerInner {
             source,
             enqueuer,
@@ -138,7 +177,7 @@ impl DejavuScheduler {
             state: Mutex::new(SchedulerState::default()),
             changed: Arc::new(Notify::new()),
         });
-        tokio::spawn(run_timer(Arc::downgrade(&inner)));
+        spawn(Box::pin(run_timer(Arc::downgrade(&inner))));
         Self { inner }
     }
 
@@ -962,6 +1001,23 @@ mod tests {
     use crate::sync_config::status::SyncTrigger;
 
     type BoxFuture<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send + 'a>>;
+
+    #[test]
+    fn tauri_scheduler_spawner_does_not_require_an_entered_tokio_runtime() {
+        std::thread::spawn(|| {
+            let (sent, _received) = mpsc::unbounded_channel();
+            let scheduler = DejavuScheduler::new_for_tauri(
+                Arc::new(MemorySource::default()),
+                Arc::new(RecordingEnqueuer { sent }),
+                Arc::new(MemoryStore::default()),
+                Arc::new(RecordingFlusher::default()),
+                Arc::new(|| OffsetDateTime::from_unix_timestamp(1_800_000_000).unwrap()),
+            );
+            drop(scheduler);
+        })
+        .join()
+        .expect("the production scheduler spawner must work outside Tokio context");
+    }
 
     #[derive(Default)]
     struct MemorySource {

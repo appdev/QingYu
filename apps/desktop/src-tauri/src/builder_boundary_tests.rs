@@ -980,7 +980,7 @@ fn builder_boundary_installs_the_path_guard_graph_before_startup_on_both_platfor
         .find("RepositoryStatusStore::new")
         .expect("the production graph should install repository status storage");
     let scheduler = graph
-        .find("DejavuScheduler::new")
+        .find("DejavuScheduler::new_for_tauri")
         .expect("the production graph should install the sync scheduler");
     assert!(startup_cleanup < status_store);
     assert!(startup_cleanup < scheduler);
@@ -1000,6 +1000,16 @@ fn builder_boundary_installs_the_path_guard_graph_before_startup_on_both_platfor
         !production_source_tree("src/dejavu_sync").contains("NoopWorkingTreeCoordinator"),
         "the installed product graph must not use the core no-op coordinator"
     );
+    let maintenance = source("src/dejavu_sync/maintenance.rs");
+    assert!(maintenance.contains("spawn_on_tauri_runtime"));
+    assert!(maintenance.contains("tauri::async_runtime::spawn(future)"));
+    for runtime_path in ["src/desktop_runtime.rs", "src/mobile_runtime.rs"] {
+        let runtime = source(runtime_path);
+        assert!(
+            runtime.contains("if let Err(error) = crate::dejavu_sync::install_production_graph")
+        );
+        assert!(runtime.contains("Dejavu sync initialization failed"));
+    }
 
     let sync_config = source("src/sync_config.rs");
     assert!(sync_config.contains("pub(crate) async fn sync_application"));

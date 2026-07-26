@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
 use std::future::Future;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -250,7 +250,14 @@ struct LocalMaintenanceControllerInner {
     clock: Arc<dyn Fn() -> OffsetDateTime + Send + Sync>,
     timer: Arc<dyn LocalMaintenanceTimer>,
     transaction: Arc<dyn LocalMaintenanceTransaction>,
-    running: Mutex<HashMap<String, Arc<RunningMaintenanceAttempt>>>,
+    state: Mutex<LocalMaintenanceControllerState>,
+}
+
+#[derive(Default)]
+struct LocalMaintenanceControllerState {
+    suspended: bool,
+    running: HashMap<String, Arc<RunningMaintenanceAttempt>>,
+    daily_housekeeping: Option<Arc<RunningMaintenanceAttempt>>,
 }
 
 struct RunningMaintenanceGuard {
@@ -261,12 +268,32 @@ struct RunningMaintenanceGuard {
 
 impl Drop for RunningMaintenanceGuard {
     fn drop(&mut self) {
-        let mut running = self.inner.running.lock().unwrap();
-        if running
+        let mut state = self.inner.state.lock().unwrap();
+        if state
+            .running
             .get(&self.repository_id)
             .is_some_and(|current| Arc::ptr_eq(current, &self.token))
         {
-            running.remove(&self.repository_id);
+            state.running.remove(&self.repository_id);
+        }
+        self.token.finish();
+    }
+}
+
+struct DailyHousekeepingGuard {
+    inner: Arc<LocalMaintenanceControllerInner>,
+    token: Arc<RunningMaintenanceAttempt>,
+}
+
+impl Drop for DailyHousekeepingGuard {
+    fn drop(&mut self) {
+        let mut state = self.inner.state.lock().unwrap();
+        if state
+            .daily_housekeeping
+            .as_ref()
+            .is_some_and(|current| Arc::ptr_eq(current, &self.token))
+        {
+            state.daily_housekeeping = None;
         }
         self.token.finish();
     }
@@ -366,7 +393,7 @@ impl LocalMaintenanceController {
                 clock: Arc::new(clock),
                 timer,
                 transaction,
-                running: Mutex::new(HashMap::new()),
+                state: Mutex::new(LocalMaintenanceControllerState::default()),
             }),
         }
     }
@@ -395,8 +422,8 @@ impl LocalMaintenanceController {
         let handle = tokio::runtime::Handle::try_current()
             .map_err(|_| RepositoryJobError::RepositoryUnavailable)?;
         let now = (self.inner.clock)();
-        let mut running = self.inner.running.lock().unwrap();
-        if running.contains_key(repository_id) {
+        let mut state = self.inner.state.lock().unwrap();
+        if state.suspended || state.running.contains_key(repository_id) {
             return Ok(false);
         }
         let maintenance = self.inner.statuses.load_maintenance(repository_id)?;
@@ -414,8 +441,10 @@ impl LocalMaintenanceController {
             }
         }
         let attempt = Arc::new(RunningMaintenanceAttempt::new());
-        running.insert(repository_id.to_owned(), Arc::clone(&attempt));
-        drop(running);
+        state
+            .running
+            .insert(repository_id.to_owned(), Arc::clone(&attempt));
+        drop(state);
 
         let inner = Arc::clone(&self.inner);
         let repository_id = repository_id.to_owned();
@@ -459,9 +488,10 @@ impl LocalMaintenanceController {
     pub(crate) async fn cancel_repository_and_wait(&self, repository_id: &str) -> bool {
         let attempt = self
             .inner
-            .running
+            .state
             .lock()
             .unwrap()
+            .running
             .get(repository_id)
             .cloned();
         let Some(attempt) = attempt else {
@@ -474,8 +504,9 @@ impl LocalMaintenanceController {
 
     pub(crate) async fn cancel_all_and_wait(&self) -> usize {
         let attempts = {
-            let running = self.inner.running.lock().unwrap();
-            let attempts = running.values().cloned().collect::<Vec<_>>();
+            let state = self.inner.state.lock().unwrap();
+            let mut attempts = state.running.values().cloned().collect::<Vec<_>>();
+            attempts.extend(state.daily_housekeeping.iter().cloned());
             for attempt in &attempts {
                 attempt.cancel();
             }
@@ -487,12 +518,54 @@ impl LocalMaintenanceController {
         attempts.len()
     }
 
+    pub(crate) async fn suspend_all_and_wait(&self) -> usize {
+        let attempts = {
+            let mut state = self.inner.state.lock().unwrap();
+            state.suspended = true;
+            let mut attempts = state.running.values().cloned().collect::<Vec<_>>();
+            attempts.extend(state.daily_housekeeping.iter().cloned());
+            for attempt in &attempts {
+                attempt.cancel();
+            }
+            attempts
+        };
+        for attempt in &attempts {
+            attempt.wait_finished().await;
+        }
+        attempts.len()
+    }
+
+    pub(crate) fn resume(&self) {
+        self.inner.state.lock().unwrap().suspended = false;
+    }
+
+    async fn run_daily_housekeeping_operation<T>(
+        &self,
+        operation: impl Future<Output = T>,
+    ) -> Option<T> {
+        let attempt = {
+            let mut state = self.inner.state.lock().unwrap();
+            if state.suspended || state.daily_housekeeping.is_some() {
+                return None;
+            }
+            let attempt = Arc::new(RunningMaintenanceAttempt::new());
+            state.daily_housekeeping = Some(Arc::clone(&attempt));
+            attempt
+        };
+        let _guard = DailyHousekeepingGuard {
+            inner: Arc::clone(&self.inner),
+            token: attempt,
+        };
+        Some(operation.await)
+    }
+
     #[cfg(test)]
     fn is_running(&self, repository_id: &str) -> bool {
         self.inner
-            .running
+            .state
             .lock()
             .unwrap()
+            .running
             .contains_key(repository_id)
     }
 }
@@ -647,32 +720,46 @@ pub(crate) fn spawn_production_daily_maintenance(
     controller: Arc<LocalMaintenanceController>,
 ) {
     let app_data_path = app_data_path.as_ref().to_path_buf();
-    tokio::spawn(async move {
+    spawn_daily_maintenance_with(app_data_path, controller, spawn_on_tauri_runtime);
+}
+
+fn spawn_on_tauri_runtime(future: Pin<Box<dyn Future<Output = ()> + Send + 'static>>) {
+    tauri::async_runtime::spawn(future);
+}
+
+fn spawn_daily_maintenance_with<Spawn>(
+    app_data_path: PathBuf,
+    controller: Arc<LocalMaintenanceController>,
+    spawn: Spawn,
+) where
+    Spawn: FnOnce(Pin<Box<dyn Future<Output = ()> + Send + 'static>>),
+{
+    spawn(Box::pin(async move {
         let first_tick = tokio::time::Instant::now() + DAILY_MAINTENANCE_INTERVAL;
         let mut interval = tokio::time::interval_at(first_tick, DAILY_MAINTENANCE_INTERVAL);
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             interval.tick().await;
-            let cleanup_app_data = app_data_path.clone();
-            let cleanup_at = OffsetDateTime::now_utc();
-            let _cleanup_result = tokio::task::spawn_blocking(move || {
-                clean_expired_conflict_history(&cleanup_app_data, cleanup_at)
-            })
-            .await;
-
-            let binding_app_data = app_data_path.clone();
-            let repository_ids = tokio::task::spawn_blocking(move || {
-                resolve_daily_repository_ids(&binding_app_data)
-            })
-            .await;
-            let Ok(Ok(repository_ids)) = repository_ids else {
+            let housekeeping_app_data = app_data_path.clone();
+            let housekeeping_at = OffsetDateTime::now_utc();
+            let repository_ids = controller
+                .run_daily_housekeeping_operation(async move {
+                    tokio::task::spawn_blocking(move || {
+                        let _cleanup_result =
+                            clean_expired_conflict_history(&housekeeping_app_data, housekeeping_at);
+                        resolve_daily_repository_ids(&housekeeping_app_data)
+                    })
+                    .await
+                })
+                .await;
+            let Some(Ok(Ok(repository_ids))) = repository_ids else {
                 continue;
             };
             for repository_id in repository_ids {
                 let _maintenance_result = controller.try_daily(&repository_id);
             }
         }
-    });
+    }));
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -957,9 +1044,9 @@ mod tests {
 
     use super::{
         clean_expired_conflict_history, clean_startup_residue, os_random_index,
-        resolve_daily_repository_ids, select_retained_indexes, spawn_production_daily_maintenance,
-        LocalMaintenanceController, LocalMaintenanceStatusStore, LocalMaintenanceTimer,
-        LocalMaintenanceTransaction, LocalPurgeExecutor, LocalPurgeOutcome,
+        resolve_daily_repository_ids, select_retained_indexes, spawn_daily_maintenance_with,
+        spawn_on_tauri_runtime, LocalMaintenanceController, LocalMaintenanceStatusStore,
+        LocalMaintenanceTimer, LocalMaintenanceTransaction, LocalPurgeExecutor, LocalPurgeOutcome,
         LocalPurgeRepositoryOps, LocalPurgeTaskExecutor,
     };
     use crate::dejavu_sync::local_state::{LocalSyncStateService, RepositoryBinding};
@@ -971,6 +1058,21 @@ mod tests {
         values: Mutex<HashMap<String, RepositoryMaintenance>>,
         writes: Mutex<Vec<(String, RepositoryMaintenance)>>,
         fail_sets: AtomicBool,
+    }
+
+    #[test]
+    fn tauri_daily_spawner_does_not_require_an_entered_tokio_runtime() {
+        let (sent, received) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            spawn_on_tauri_runtime(Box::pin(async move {
+                sent.send(()).unwrap();
+            }));
+        })
+        .join()
+        .expect("the production daily spawner must work outside Tokio context");
+        received
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("the Tauri runtime should execute the spawned daily task");
     }
 
     impl FakeMaintenanceStatusStore {
@@ -2014,9 +2116,10 @@ mod tests {
         let current = Arc::new(super::RunningMaintenanceAttempt::new());
         controller
             .inner
-            .running
+            .state
             .lock()
             .unwrap()
+            .running
             .insert(repository_id.to_owned(), Arc::clone(&current));
         let guard = super::RunningMaintenanceGuard {
             inner: Arc::clone(&controller.inner),
@@ -2028,9 +2131,10 @@ mod tests {
 
         assert!(controller
             .inner
-            .running
+            .state
             .lock()
             .unwrap()
+            .running
             .get(repository_id)
             .is_some_and(|token| Arc::ptr_eq(token, &current)));
     }
@@ -2236,6 +2340,98 @@ mod tests {
         assert!(!controller.is_running(second));
         wait_for_status_writes(&statuses, 2).await;
         assert!(!controller.cancel_repository_and_wait(first).await);
+    }
+
+    #[tokio::test]
+    async fn suspension_linearizes_before_cancellation_and_rejects_new_attempts_until_resumed() {
+        let executor = Arc::new(CancellationAwarePurgeTaskExecutor::new());
+        let statuses = Arc::new(FakeMaintenanceStatusStore::new());
+        let now = utc(2026, Month::July, 26, 12, 0);
+        let controller = LocalMaintenanceController::new(
+            Arc::clone(&executor),
+            Arc::clone(&statuses),
+            move || now,
+        );
+        let first = "00000000-0000-4000-8000-000000000085";
+        let later = "00000000-0000-4000-8000-000000000086";
+        assert!(controller
+            .notify_sync_completion(first, SyncTrigger::Manual, true)
+            .unwrap());
+        executor.started.acquire().await.unwrap().forget();
+
+        let suspension = tokio::spawn({
+            let controller = controller.clone();
+            async move { controller.suspend_all_and_wait().await }
+        });
+        executor.saw_cancel.acquire().await.unwrap().forget();
+        assert!(!controller
+            .notify_sync_completion(later, SyncTrigger::Manual, true)
+            .unwrap());
+        assert!(!controller.try_daily(later).unwrap());
+
+        executor.release.add_permits(1);
+        assert_eq!(suspension.await.unwrap(), 1);
+        controller.resume();
+        assert!(controller
+            .notify_sync_completion(later, SyncTrigger::Manual, true)
+            .unwrap());
+        executor.started.acquire().await.unwrap().forget();
+        let cancellation = tokio::spawn({
+            let controller = controller.clone();
+            async move { controller.cancel_repository_and_wait(later).await }
+        });
+        executor.saw_cancel.acquire().await.unwrap().forget();
+        executor.release.add_permits(1);
+        assert!(cancellation.await.unwrap());
+        wait_for_status_writes(&statuses, 2).await;
+    }
+
+    #[tokio::test]
+    async fn suspension_waits_for_tracked_daily_housekeeping_and_blocks_a_later_tick() {
+        let now = utc(2026, Month::July, 26, 12, 0);
+        let controller = LocalMaintenanceController::new(
+            Arc::new(ImmediatePurgeTaskExecutor {
+                outcomes: Mutex::new(VecDeque::new()),
+            }),
+            Arc::new(FakeMaintenanceStatusStore::new()),
+            move || now,
+        );
+        let started = Arc::new(tokio::sync::Semaphore::new(0));
+        let release = Arc::new(tokio::sync::Semaphore::new(0));
+        let housekeeping = tokio::spawn({
+            let controller = controller.clone();
+            let started = Arc::clone(&started);
+            let release = Arc::clone(&release);
+            async move {
+                controller
+                    .run_daily_housekeeping_operation(async move {
+                        started.add_permits(1);
+                        release.acquire().await.unwrap().forget();
+                    })
+                    .await
+            }
+        });
+        started.acquire().await.unwrap().forget();
+
+        let suspension = tokio::spawn({
+            let controller = controller.clone();
+            async move { controller.suspend_all_and_wait().await }
+        });
+        tokio::task::yield_now().await;
+        assert!(!suspension.is_finished());
+        assert!(controller
+            .run_daily_housekeeping_operation(async {})
+            .await
+            .is_none());
+
+        release.add_permits(1);
+        assert!(housekeeping.await.unwrap().is_some());
+        assert_eq!(suspension.await.unwrap(), 1);
+        controller.resume();
+        assert!(controller
+            .run_daily_housekeeping_operation(async {})
+            .await
+            .is_some());
     }
 
     #[test]
@@ -2551,7 +2747,9 @@ mod tests {
             statuses,
             move || now,
         ));
-        spawn_production_daily_maintenance(&app_data, controller);
+        spawn_daily_maintenance_with(app_data.clone(), controller, |future| {
+            tokio::spawn(future);
+        });
         tokio::task::yield_now().await;
 
         tokio::time::advance(std::time::Duration::from_secs(24 * 60 * 60 - 1)).await;

@@ -250,8 +250,9 @@ pub(crate) fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(move |app| {
-            crate::dejavu_sync::install_production_graph(&app.handle())
-                .map_err(|error| std::io::Error::other(error.safe_code()))?;
+            if let Err(error) = crate::dejavu_sync::install_production_graph(&app.handle()) {
+                eprintln!("QingYu Dejavu sync initialization failed: {error}");
+            }
             if launch_mode == DesktopLaunchMode::McpService {
                 #[cfg(target_os = "macos")]
                 app.set_activation_policy(tauri::ActivationPolicy::Prohibited);
