@@ -176,6 +176,24 @@ struct LocalMaintenanceControllerInner {
     running: Mutex<HashMap<String, Arc<AtomicBool>>>,
 }
 
+struct RunningMaintenanceGuard {
+    inner: Arc<LocalMaintenanceControllerInner>,
+    repository_id: String,
+    token: Arc<AtomicBool>,
+}
+
+impl Drop for RunningMaintenanceGuard {
+    fn drop(&mut self) {
+        let mut running = self.inner.running.lock().unwrap();
+        if running
+            .get(&self.repository_id)
+            .is_some_and(|current| Arc::ptr_eq(current, &self.token))
+        {
+            running.remove(&self.repository_id);
+        }
+    }
+}
+
 #[derive(Clone)]
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct LocalMaintenanceController {
@@ -239,9 +257,10 @@ impl LocalMaintenanceController {
             None if require_first_success_marker => return Ok(false),
             None => {}
             Some(last) => {
+                let minimum_due = six_hours_after(last);
                 let due_at = maintenance
                     .next_local_purge_at
-                    .unwrap_or(last + Duration::hours(6));
+                    .map_or(minimum_due, |persisted| persisted.max(minimum_due));
                 if now < due_at {
                     return Ok(false);
                 }
@@ -253,20 +272,28 @@ impl LocalMaintenanceController {
 
         let inner = Arc::clone(&self.inner);
         let repository_id = repository_id.to_owned();
+        let completion_floor = maintenance
+            .last_local_purge_at
+            .map_or(now, |last| last.max(now));
+        let running_guard = RunningMaintenanceGuard {
+            inner: Arc::clone(&inner),
+            repository_id: repository_id.clone(),
+            token: Arc::clone(&cancelled),
+        };
         handle.spawn(async move {
+            let _running_guard = running_guard;
             let _result = inner
                 .executor
                 .execute(repository_id.clone(), now, cancelled)
                 .await;
-            let completed_at = (inner.clock)();
+            let completed_at = (inner.clock)().max(completion_floor);
             let _status_result = inner.statuses.set_maintenance(
                 &repository_id,
                 RepositoryMaintenance {
                     last_local_purge_at: Some(completed_at),
-                    next_local_purge_at: Some(completed_at + Duration::hours(6)),
+                    next_local_purge_at: Some(six_hours_after(completed_at)),
                 },
             );
-            inner.running.lock().unwrap().remove(&repository_id);
         });
         Ok(true)
     }
@@ -279,6 +306,21 @@ impl LocalMaintenanceController {
             .unwrap()
             .contains_key(repository_id)
     }
+}
+
+fn six_hours_after(instant: OffsetDateTime) -> OffsetDateTime {
+    instant
+        .checked_add(Duration::hours(6))
+        .filter(|next| *next <= maximum_maintenance_instant())
+        .unwrap_or_else(maximum_maintenance_instant)
+}
+
+fn maximum_maintenance_instant() -> OffsetDateTime {
+    Date::from_calendar_date(9999, Month::December, 31)
+        .expect("the RFC 3339 maximum date is valid")
+        .with_hms_nano(23, 59, 59, 999_999_999)
+        .expect("the final nanosecond of the day is valid")
+        .assume_utc()
 }
 
 /// Selects an unbiased position from the exact half-open range `[0, upper)`
@@ -751,6 +793,19 @@ mod tests {
 
     struct ImmediatePurgeTaskExecutor {
         outcomes: Mutex<VecDeque<Result<LocalPurgeOutcome, RepositoryJobError>>>,
+    }
+
+    struct PanickingPurgeTaskExecutor;
+
+    impl LocalPurgeTaskExecutor for PanickingPurgeTaskExecutor {
+        fn execute(
+            &self,
+            _repository_id: String,
+            _now: OffsetDateTime,
+            _cancelled: Arc<AtomicBool>,
+        ) -> super::LocalPurgeTaskFuture {
+            Box::pin(async move { panic!("injected local purge panic") })
+        }
     }
 
     impl LocalPurgeTaskExecutor for ImmediatePurgeTaskExecutor {
@@ -1517,6 +1572,147 @@ mod tests {
             .unwrap());
         wait_for_idle(&controller, repository_id).await;
         assert!(statuses.writes.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn executor_panic_cannot_leave_a_permanently_running_lane() {
+        let statuses = Arc::new(FakeMaintenanceStatusStore::new());
+        let now = utc(2026, Month::July, 26, 12, 0);
+        let controller = LocalMaintenanceController::new(
+            Arc::new(PanickingPurgeTaskExecutor),
+            statuses,
+            move || now,
+        );
+        let repository_id = "00000000-0000-4000-8000-00000000007d";
+
+        assert!(controller
+            .notify_sync_completion(repository_id, SyncTrigger::Manual, true)
+            .unwrap());
+        wait_for_idle(&controller, repository_id).await;
+        assert!(controller
+            .notify_sync_completion(repository_id, SyncTrigger::Manual, true)
+            .unwrap());
+        wait_for_idle(&controller, repository_id).await;
+    }
+
+    #[test]
+    fn stale_running_guard_cannot_remove_a_newer_attempt_token() {
+        let now = utc(2026, Month::July, 26, 12, 0);
+        let controller = LocalMaintenanceController::new(
+            Arc::new(ImmediatePurgeTaskExecutor {
+                outcomes: Mutex::new(VecDeque::new()),
+            }),
+            Arc::new(FakeMaintenanceStatusStore::new()),
+            move || now,
+        );
+        let repository_id = "00000000-0000-4000-8000-00000000007e";
+        let stale = Arc::new(AtomicBool::new(false));
+        let current = Arc::new(AtomicBool::new(false));
+        controller
+            .inner
+            .running
+            .lock()
+            .unwrap()
+            .insert(repository_id.to_owned(), Arc::clone(&current));
+        let guard = super::RunningMaintenanceGuard {
+            inner: Arc::clone(&controller.inner),
+            repository_id: repository_id.to_owned(),
+            token: stale,
+        };
+
+        drop(guard);
+
+        assert!(controller
+            .inner
+            .running
+            .lock()
+            .unwrap()
+            .get(repository_id)
+            .is_some_and(|token| Arc::ptr_eq(token, &current)));
+    }
+
+    #[tokio::test]
+    async fn completion_clock_rollback_cannot_shorten_the_six_hour_throttle() {
+        let executor = Arc::new(GatedPurgeTaskExecutor::new());
+        let statuses = Arc::new(FakeMaintenanceStatusStore::new());
+        let base = utc(2026, Month::July, 26, 12, 0);
+        let now = Arc::new(Mutex::new(base));
+        let observed_now = Arc::clone(&now);
+        let controller = LocalMaintenanceController::new(
+            Arc::clone(&executor),
+            Arc::clone(&statuses),
+            move || *observed_now.lock().unwrap(),
+        );
+        let repository_id = "00000000-0000-4000-8000-00000000007f";
+
+        assert!(controller
+            .notify_sync_completion(repository_id, SyncTrigger::Manual, true)
+            .unwrap());
+        executor.started.acquire().await.unwrap().forget();
+        *now.lock().unwrap() = base - Duration::hours(1);
+        executor.release.add_permits(1);
+        wait_for_status_writes(&statuses, 1).await;
+        wait_for_idle(&controller, repository_id).await;
+        assert_eq!(
+            statuses.writes.lock().unwrap()[0].1,
+            RepositoryMaintenance {
+                last_local_purge_at: Some(base),
+                next_local_purge_at: Some(base + Duration::hours(6)),
+            }
+        );
+
+        *now.lock().unwrap() = base + Duration::hours(6) - Duration::milliseconds(1);
+        assert!(!controller
+            .notify_sync_completion(repository_id, SyncTrigger::Manual, true)
+            .unwrap());
+        *now.lock().unwrap() = base + Duration::hours(6);
+        assert!(controller
+            .notify_sync_completion(repository_id, SyncTrigger::Manual, true)
+            .unwrap());
+        executor.started.acquire().await.unwrap().forget();
+        executor.release.add_permits(1);
+        wait_for_status_writes(&statuses, 2).await;
+    }
+
+    #[tokio::test]
+    async fn extreme_valid_timestamps_use_checked_six_hour_arithmetic() {
+        let executor = Arc::new(ImmediatePurgeTaskExecutor {
+            outcomes: Mutex::new(VecDeque::from([Ok(LocalPurgeOutcome::Skipped)])),
+        });
+        let statuses = Arc::new(FakeMaintenanceStatusStore::new());
+        let maximum = super::maximum_maintenance_instant();
+        let now = Arc::new(Mutex::new(
+            maximum.checked_sub(Duration::nanoseconds(1)).unwrap(),
+        ));
+        let observed_now = Arc::clone(&now);
+        let controller =
+            LocalMaintenanceController::new(executor, Arc::clone(&statuses), move || {
+                *observed_now.lock().unwrap()
+            });
+        let repository_id = "00000000-0000-4000-8000-000000000080";
+        statuses.values.lock().unwrap().insert(
+            repository_id.to_owned(),
+            RepositoryMaintenance {
+                last_local_purge_at: Some(maximum),
+                next_local_purge_at: None,
+            },
+        );
+
+        assert!(!controller
+            .notify_sync_completion(repository_id, SyncTrigger::Manual, true)
+            .unwrap());
+        *now.lock().unwrap() = maximum;
+        assert!(controller
+            .notify_sync_completion(repository_id, SyncTrigger::Manual, true)
+            .unwrap());
+        wait_for_status_writes(&statuses, 1).await;
+        assert_eq!(
+            statuses.writes.lock().unwrap()[0].1,
+            RepositoryMaintenance {
+                last_local_purge_at: Some(maximum),
+                next_local_purge_at: Some(maximum),
+            }
+        );
     }
 
     #[test]
