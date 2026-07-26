@@ -2,21 +2,306 @@
 // Copyright (c) 2022-present, b3log.org
 // SPDX-License-Identifier: AGPL-3.0-only
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use cap_fs_ext::DirExt;
 use cap_std::fs::Dir;
 
 use crate::path_security::cap_metadata_is_reparse;
-use crate::store::validate_id;
-use crate::{RefStore, RepoError, Store};
+use crate::store::{validate_id, RawObjectKind};
+use crate::{Cloud, CloudError, File, RefStore, RemoteLockGuard, Repo, RepoError, Store};
+
+const MAX_REMOTE_REF_BYTES: u64 = 42;
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct PurgeStat {
     pub objects: usize,
     pub indexes: usize,
     pub size: i64,
+}
+
+#[derive(Default, serde::Deserialize, serde::Serialize)]
+struct CloudIndexes {
+    indexes: Option<Vec<CloudIndex>>,
+}
+
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(default)]
+struct CloudIndex {
+    id: String,
+    #[serde(rename = "systemID")]
+    system_id: String,
+    #[serde(rename = "systemName")]
+    system_name: String,
+    #[serde(rename = "systemOS")]
+    system_os: String,
+}
+
+impl Default for CloudIndex {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            system_id: String::new(),
+            system_name: String::new(),
+            system_os: String::new(),
+        }
+    }
+}
+
+impl Repo {
+    pub async fn purge_cloud(
+        &self,
+        cloud: Arc<dyn Cloud>,
+        cancelled: &AtomicBool,
+    ) -> Result<PurgeStat, RepoError> {
+        let _lifecycle = self.acquire_lifecycle().await;
+        let guard = self.lock_cloud(Arc::clone(&cloud)).await?;
+        let operation =
+            purge_cloud_under_lock(self, &cloud, &guard, || cancelled.load(Ordering::Relaxed))
+                .await;
+        let release = guard.release().await;
+        match (operation, release) {
+            (Ok(stat), Ok(())) => Ok(stat),
+            (Ok(_), Err(unlock)) => Err(RepoError::Cloud(unlock)),
+            (Err(operation), Ok(())) => Err(operation),
+            (Err(operation), Err(unlock)) => Err(RepoError::OperationAndUnlockFailed {
+                operation: Box::new(operation),
+                unlock,
+            }),
+        }
+    }
+}
+
+async fn purge_cloud_under_lock<F>(
+    repo: &Repo,
+    cloud: &Arc<dyn Cloud>,
+    guard: &RemoteLockGuard,
+    mut is_cancelled: F,
+) -> Result<PurgeStat, RepoError>
+where
+    F: FnMut() -> bool,
+{
+    check_remote_operation(guard, &mut is_cancelled)?;
+    let object_entries = cloud.list("objects/").await?;
+    let mut object_sizes = BTreeMap::new();
+    for object in object_entries {
+        check_remote_operation(guard, &mut is_cancelled)?;
+        if let Some(id) = object_id_from_key(&object.key) {
+            object_sizes.insert(id, object.size);
+        }
+    }
+
+    check_remote_operation(guard, &mut is_cancelled)?;
+    let index_entries = cloud.list("indexes/").await?;
+    let mut index_ids = BTreeSet::new();
+    for object in index_entries {
+        check_remote_operation(guard, &mut is_cancelled)?;
+        if let Some(id) = flat_id_from_key(&object.key, "indexes/") {
+            index_ids.insert(id);
+        }
+    }
+
+    check_remote_operation(guard, &mut is_cancelled)?;
+    if index_ids.is_empty() || object_sizes.is_empty() {
+        return Ok(PurgeStat::default());
+    }
+
+    check_remote_operation(guard, &mut is_cancelled)?;
+    let refs = cloud.list("refs/").await?;
+    let mut referenced_index_ids = BTreeSet::new();
+    for reference in refs {
+        check_remote_operation(guard, &mut is_cancelled)?;
+        let bytes = cloud
+            .get_bounded(&reference.key, MAX_REMOTE_REF_BYTES)
+            .await?;
+        check_remote_operation(guard, &mut is_cancelled)?;
+        referenced_index_ids.insert(String::from_utf8_lossy(&bytes).trim().to_owned());
+    }
+
+    let unreferenced_index_ids = index_ids
+        .difference(&referenced_index_ids)
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut referenced_file_ids = BTreeSet::new();
+    let mut referenced_object_ids = BTreeSet::new();
+    for index_id in &referenced_index_ids {
+        check_remote_operation(guard, &mut is_cancelled)?;
+        let key = format!("indexes/{index_id}");
+        let index = match repo
+            .download_raw_to_store(cloud, &key, RawObjectKind::Index, index_id)
+            .await
+        {
+            Ok(_) => {
+                let _operation = repo.store.lock_operation()?;
+                repo.store.get_index_unlocked(index_id)
+            }
+            Err(error) => Err(error),
+        };
+        let Ok(index) = index else {
+            // Dejavu retains a ref target whose index is missing or corrupt, but it cannot
+            // contribute file reachability when the index payload cannot be decoded.
+            continue;
+        };
+        for file_id in index.files {
+            check_remote_operation(guard, &mut is_cancelled)?;
+            referenced_file_ids.insert(file_id.clone());
+            referenced_object_ids.insert(file_id);
+        }
+    }
+
+    for file_id in referenced_file_ids {
+        check_remote_operation(guard, &mut is_cancelled)?;
+        let local_file = {
+            let _operation = repo.store.lock_operation()?;
+            repo.store.get_file_unlocked(&file_id)
+        };
+        let file = match local_file {
+            Ok(file) => file,
+            Err(_) => download_cloud_file(repo, cloud, &file_id).await?,
+        };
+        for chunk_id in file.chunks {
+            check_remote_operation(guard, &mut is_cancelled)?;
+            referenced_object_ids.insert(chunk_id);
+        }
+    }
+
+    let mut unreferenced_objects = Vec::new();
+    let mut stat = PurgeStat {
+        objects: 0,
+        indexes: unreferenced_index_ids.len(),
+        size: 0,
+    };
+    for (id, size) in object_sizes {
+        check_remote_operation(guard, &mut is_cancelled)?;
+        if !referenced_object_ids.contains(&id) {
+            stat.objects += 1;
+            stat.size = stat
+                .size
+                .checked_add(
+                    i64::try_from(size)
+                        .map_err(|_| RepoError::InvalidData("object size exceeds i64"))?,
+                )
+                .ok_or(RepoError::InvalidData("purge byte count overflow"))?;
+            unreferenced_objects.push(id);
+        }
+    }
+
+    check_remote_operation(guard, &mut is_cancelled)?;
+    let check_indexes = cloud.list("check/indexes/").await.unwrap_or_default();
+
+    // No remote mutation may begin after cancellation or lock loss has been observed.
+    check_remote_operation(guard, &mut is_cancelled)?;
+    for object in check_indexes {
+        check_remote_operation(guard, &mut is_cancelled)?;
+        cloud.remove(&object.key).await?;
+    }
+    for id in &unreferenced_index_ids {
+        check_remote_operation(guard, &mut is_cancelled)?;
+        cloud.remove(&format!("indexes/{id}")).await?;
+    }
+    check_remote_operation(guard, &mut is_cancelled)?;
+    purge_cloud_indexes_v2(repo, cloud, guard, &referenced_index_ids, &mut is_cancelled).await?;
+    for id in unreferenced_objects {
+        check_remote_operation(guard, &mut is_cancelled)?;
+        cloud.remove(&object_key(&id)?).await?;
+    }
+    Ok(stat)
+}
+
+async fn download_cloud_file(
+    repo: &Repo,
+    cloud: &Arc<dyn Cloud>,
+    id: &str,
+) -> Result<File, RepoError> {
+    repo.download_raw_to_store(cloud, &object_key(id)?, RawObjectKind::File, id)
+        .await?;
+    let _operation = repo.store.lock_operation()?;
+    repo.store.get_file_unlocked(id)
+}
+
+async fn purge_cloud_indexes_v2<F>(
+    repo: &Repo,
+    cloud: &Arc<dyn Cloud>,
+    guard: &RemoteLockGuard,
+    referenced_index_ids: &BTreeSet<String>,
+    is_cancelled: &mut F,
+) -> Result<(), RepoError>
+where
+    F: FnMut() -> bool,
+{
+    check_remote_operation(guard, is_cancelled)?;
+    let staged = match repo.stage_cloud_download(cloud, "indexes-v2.json").await {
+        Ok((staged, _written)) => staged,
+        Err(RepoError::Cloud(CloudError::NotFound)) => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    let decoded =
+        zstd::stream::decode_all(staged.reader()?.into_std()).map_err(RepoError::Compression)?;
+    let mut indexes = if decoded.is_empty() {
+        CloudIndexes::default()
+    } else {
+        // The pinned Go decoder logs malformed JSON and leaves this value at its default.
+        serde_json::from_slice(&decoded).unwrap_or_default()
+    };
+    let retained = indexes
+        .indexes
+        .take()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|index| referenced_index_ids.contains(&index.id))
+        .collect::<Vec<_>>();
+    indexes.indexes = if retained.is_empty() {
+        None
+    } else {
+        Some(retained)
+    };
+    let json = serde_json::to_vec_pretty(&indexes)?;
+    let encoded = zstd::stream::encode_all(json.as_slice(), zstd::DEFAULT_COMPRESSION_LEVEL)
+        .map_err(RepoError::Compression)?;
+    check_remote_operation(guard, is_cancelled)?;
+    let written = cloud.put("indexes-v2.json", &encoded, true).await?;
+    if written != encoded.len() as u64 {
+        return Err(RepoError::Cloud(CloudError::LengthMismatch {
+            expected: encoded.len() as u64,
+            actual: written,
+        }));
+    }
+    Ok(())
+}
+
+fn check_remote_operation<F>(guard: &RemoteLockGuard, is_cancelled: &mut F) -> Result<(), RepoError>
+where
+    F: FnMut() -> bool,
+{
+    check_cancelled(is_cancelled)?;
+    guard.ensure_healthy()?;
+    Ok(())
+}
+
+fn object_key(id: &str) -> Result<String, RepoError> {
+    validate_id(id)?;
+    Ok(format!("objects/{}/{}", &id[..2], &id[2..]))
+}
+
+fn object_id_from_key(key: &str) -> Option<String> {
+    let relative = key.strip_prefix("objects/")?;
+    let (prefix, suffix) = relative.split_once('/')?;
+    if suffix.contains('/') || !is_lower_hex(prefix, 2) || !is_lower_hex(suffix, 38) {
+        return None;
+    }
+    Some(format!("{prefix}{suffix}"))
+}
+
+fn flat_id_from_key(key: &str, prefix: &str) -> Option<String> {
+    let id = key.strip_prefix(prefix)?;
+    if validate_id(id).is_ok() {
+        Some(id.to_owned())
+    } else {
+        None
+    }
 }
 
 pub(crate) fn purge_store_with_cancel_check<F>(
@@ -289,15 +574,17 @@ fn is_not_found(error: &RepoError) -> bool {
 mod tests {
     use std::fs;
     use std::path::Path;
-    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::mpsc;
+    use std::sync::Arc;
     use std::time::Duration;
 
     use tempfile::TempDir;
 
     use crate::{
-        CheckIndex, CheckIndexFile, Chunk, Device, File, Index, RefStore, Repo, RepoError,
-        RepoOptions, RepoPaths, Store,
+        CheckIndex, CheckIndexFile, Chunk, Cloud, CloudError, CloudObject, CloudOperation,
+        CloudUploadSource, Device, File, Index, LocalCloud, RawObjectKind, RefStore, Repo,
+        RepoError, RepoOptions, RepoPaths, Store,
     };
 
     use super::{collect_flat_ids, collect_object_ids, purge_store_with_cancel_check};
@@ -323,6 +610,108 @@ mod tests {
         _temp: TempDir,
         repo: Repo,
         unreachable_encoded_size: i64,
+    }
+
+    struct CloudPurgeFixture {
+        local: PurgeFixture,
+        _cloud_temp: TempDir,
+        cloud: Arc<LocalCloud>,
+    }
+
+    #[derive(Clone, Copy, Default)]
+    struct CloudHooks {
+        cancel_before_delete: bool,
+        cancel_after_first_repository_remove: bool,
+        fail_check_index_list: bool,
+        fail_refresh_during_object_list: bool,
+        fail_unlock_after_index_list: bool,
+        fail_unlock_after_ref_list: bool,
+        remove_first_ref_after_list: bool,
+    }
+
+    struct HookCloud {
+        inner: Arc<LocalCloud>,
+        cancelled: Arc<AtomicBool>,
+        hooks: CloudHooks,
+    }
+
+    impl HookCloud {
+        fn new(inner: Arc<LocalCloud>, cancelled: Arc<AtomicBool>, hooks: CloudHooks) -> Self {
+            Self {
+                inner,
+                cancelled,
+                hooks,
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Cloud for HookCloud {
+        async fn get_bounded(&self, key: &str, max_bytes: u64) -> Result<Vec<u8>, CloudError> {
+            self.inner.get_bounded(key, max_bytes).await
+        }
+
+        async fn download_to(
+            &self,
+            key: &str,
+            destination: &mut (dyn tokio::io::AsyncWrite + Unpin + Send),
+        ) -> Result<u64, CloudError> {
+            self.inner.download_to(key, destination).await
+        }
+
+        async fn put(&self, key: &str, bytes: &[u8], overwrite: bool) -> Result<u64, CloudError> {
+            self.inner.put(key, bytes, overwrite).await
+        }
+
+        async fn upload_from(
+            &self,
+            key: &str,
+            source: &dyn CloudUploadSource,
+            overwrite: bool,
+        ) -> Result<u64, CloudError> {
+            self.inner.upload_from(key, source, overwrite).await
+        }
+
+        async fn remove(&self, key: &str) -> Result<(), CloudError> {
+            self.inner.remove(key).await?;
+            if self.hooks.cancel_after_first_repository_remove && key != "lock-sync" {
+                self.cancelled.store(true, Ordering::SeqCst);
+            }
+            Ok(())
+        }
+
+        async fn list(&self, prefix: &str) -> Result<Vec<CloudObject>, CloudError> {
+            if self.hooks.fail_check_index_list && prefix == "check/indexes/" {
+                return Err(CloudError::Injected(CloudOperation::List));
+            }
+            let objects = self.inner.list(prefix).await?;
+            if self.hooks.fail_refresh_during_object_list && prefix == "objects/" {
+                tokio::task::yield_now().await;
+                self.inner.fail_next(CloudOperation::Put, 1)?;
+                tokio::time::advance(Duration::from_secs(30)).await;
+                tokio::task::yield_now().await;
+                tokio::task::yield_now().await;
+            }
+            if self.hooks.remove_first_ref_after_list && prefix == "refs/" {
+                if let Some(reference) = objects.first() {
+                    self.inner.remove(&reference.key).await?;
+                }
+            }
+            if self.hooks.fail_unlock_after_ref_list && prefix == "refs/" {
+                self.inner.fail_next(CloudOperation::Remove, 3)?;
+            }
+            if self.hooks.fail_unlock_after_index_list && prefix == "indexes/" {
+                self.inner.fail_next(CloudOperation::Remove, 3)?;
+            }
+            if self.hooks.cancel_before_delete && prefix == "check/indexes/" {
+                self.cancelled.store(true, Ordering::SeqCst);
+            }
+            Ok(objects)
+        }
+
+        async fn available_size(&self) -> Result<u64, CloudError> {
+            self.inner.available_size().await
+        }
     }
 
     fn index(id: &str, file_id: &str, check_index_id: &str) -> Index {
@@ -476,6 +865,97 @@ mod tests {
         }
     }
 
+    fn remote_object_key(id: &str) -> String {
+        format!("objects/{}/{}", &id[..2], &id[2..])
+    }
+
+    async fn put_remote_raw(
+        fixture: &PurgeFixture,
+        cloud: &LocalCloud,
+        kind: RawObjectKind,
+        id: &str,
+    ) {
+        let key = match kind {
+            RawObjectKind::Chunk | RawObjectKind::File => remote_object_key(id),
+            RawObjectKind::Index => format!("indexes/{id}"),
+            RawObjectKind::CheckIndex => format!("check/indexes/{id}"),
+        };
+        let bytes = fixture.repo.store.export_raw(kind, id).unwrap();
+        cloud.put(&key, &bytes, false).await.unwrap();
+    }
+
+    async fn cloud_fixture() -> CloudPurgeFixture {
+        let local = fixture();
+        let cloud_temp = TempDir::new().unwrap();
+        let cloud = Arc::new(LocalCloud::new(cloud_temp.path()).unwrap());
+        for id in [
+            SHARED_CHUNK,
+            RETAINED_CHUNK_REF,
+            RETAINED_CHUNK_CALLER,
+            UNREACHABLE_CHUNK,
+        ] {
+            put_remote_raw(&local, &cloud, RawObjectKind::Chunk, id).await;
+        }
+        for id in [RETAINED_FILE_REF, RETAINED_FILE_CALLER, UNREFERENCED_FILE] {
+            put_remote_raw(&local, &cloud, RawObjectKind::File, id).await;
+        }
+        for id in [
+            RETAINED_INDEX_REF,
+            RETAINED_INDEX_CALLER,
+            UNREFERENCED_INDEX,
+        ] {
+            put_remote_raw(&local, &cloud, RawObjectKind::Index, id).await;
+        }
+        for id in [
+            RETAINED_CHECK_REF,
+            RETAINED_CHECK_CALLER,
+            UNREFERENCED_CHECK,
+        ] {
+            put_remote_raw(&local, &cloud, RawObjectKind::CheckIndex, id).await;
+        }
+        cloud
+            .put("refs/latest", RETAINED_INDEX_REF.as_bytes(), true)
+            .await
+            .unwrap();
+        cloud
+            .put("refs/tag-retained", RETAINED_INDEX_CALLER.as_bytes(), true)
+            .await
+            .unwrap();
+        let indexes_v2 = serde_json::to_vec_pretty(&serde_json::json!({
+            "indexes": [
+                {
+                    "id": RETAINED_INDEX_REF,
+                    "systemID": "device-a",
+                    "systemName": "QingYu A",
+                    "systemOS": "test"
+                },
+                {
+                    "id": UNREFERENCED_INDEX,
+                    "systemID": "stale",
+                    "systemName": "Stale",
+                    "systemOS": "test"
+                },
+                {
+                    "id": RETAINED_INDEX_CALLER,
+                    "systemID": "device-b",
+                    "systemName": "QingYu B",
+                    "systemOS": "test"
+                }
+            ]
+        }))
+        .unwrap();
+        let indexes_v2 = zstd::stream::encode_all(indexes_v2.as_slice(), 0).unwrap();
+        cloud
+            .put("indexes-v2.json", &indexes_v2, true)
+            .await
+            .unwrap();
+        CloudPurgeFixture {
+            local,
+            _cloud_temp: cloud_temp,
+            cloud,
+        }
+    }
+
     fn assert_exists(repo: &Repo, id: &str) {
         assert!(repo.store.object_path(id).unwrap().is_file(), "{id}");
     }
@@ -489,6 +969,536 @@ mod tests {
             .is_file());
         assert_exists(repo, UNREFERENCED_FILE);
         assert_exists(repo, UNREACHABLE_CHUNK);
+    }
+
+    async fn assert_remote_unreferenced_candidates_untouched(cloud: &LocalCloud) {
+        assert_eq!(
+            cloud
+                .list(&format!("indexes/{UNREFERENCED_INDEX}"))
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            cloud
+                .list(&format!("check/indexes/{UNREFERENCED_CHECK}"))
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        for id in [UNREFERENCED_FILE, UNREACHABLE_CHUNK] {
+            assert_eq!(cloud.list(&remote_object_key(id)).await.unwrap().len(), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn purge_cloud_preserves_all_ref_reachability_and_is_idempotent() {
+        let fixture = cloud_fixture().await;
+        let cloud: Arc<dyn Cloud> = fixture.cloud.clone();
+        let cancelled = AtomicBool::new(false);
+
+        let stat = fixture
+            .local
+            .repo
+            .purge_cloud(cloud.clone(), &cancelled)
+            .await
+            .unwrap();
+
+        assert_eq!(stat.indexes, 1);
+        assert_eq!(stat.objects, 2);
+        assert_eq!(stat.size, fixture.local.unreachable_encoded_size);
+        assert!(fixture.cloud.list("lock-sync").await.unwrap().is_empty());
+        assert!(
+            fixture
+                .cloud
+                .list(&format!("indexes/{RETAINED_INDEX_REF}"))
+                .await
+                .unwrap()
+                .len()
+                == 1
+        );
+        assert!(
+            fixture
+                .cloud
+                .list(&format!("indexes/{RETAINED_INDEX_CALLER}"))
+                .await
+                .unwrap()
+                .len()
+                == 1
+        );
+        assert!(fixture
+            .cloud
+            .list(&format!("indexes/{UNREFERENCED_INDEX}"))
+            .await
+            .unwrap()
+            .is_empty());
+        assert!(fixture
+            .cloud
+            .list("check/indexes/")
+            .await
+            .unwrap()
+            .is_empty());
+        for id in [
+            RETAINED_FILE_REF,
+            RETAINED_FILE_CALLER,
+            SHARED_CHUNK,
+            RETAINED_CHUNK_REF,
+            RETAINED_CHUNK_CALLER,
+        ] {
+            assert_eq!(
+                fixture
+                    .cloud
+                    .list(&remote_object_key(id))
+                    .await
+                    .unwrap()
+                    .len(),
+                1,
+                "{id}"
+            );
+        }
+        for id in [UNREFERENCED_FILE, UNREACHABLE_CHUNK] {
+            assert!(
+                fixture
+                    .cloud
+                    .list(&remote_object_key(id))
+                    .await
+                    .unwrap()
+                    .is_empty(),
+                "{id}"
+            );
+        }
+        let indexes_v2 = fixture
+            .cloud
+            .get_bounded("indexes-v2.json", 1024 * 1024)
+            .await
+            .unwrap();
+        let indexes_v2 = zstd::stream::decode_all(indexes_v2.as_slice()).unwrap();
+        let indexes_v2: serde_json::Value = serde_json::from_slice(&indexes_v2).unwrap();
+        assert_eq!(
+            indexes_v2["indexes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|index| index["id"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            [RETAINED_INDEX_REF, RETAINED_INDEX_CALLER]
+        );
+
+        assert_eq!(
+            fixture
+                .local
+                .repo
+                .purge_cloud(cloud, &cancelled)
+                .await
+                .unwrap(),
+            super::PurgeStat::default()
+        );
+    }
+
+    #[tokio::test]
+    async fn purge_cloud_malformed_indexes_v2_rewrites_null_after_go_decoder_discards_prefix() {
+        let fixture = cloud_fixture().await;
+        let truncated = format!(
+            r#"{{"indexes":[{{"id":"{RETAINED_INDEX_REF}","systemID":"a","systemName":"A","systemOS":"test"}},{{"id":"#
+        );
+        let encoded =
+            zstd::stream::encode_all(truncated.as_bytes(), zstd::DEFAULT_COMPRESSION_LEVEL)
+                .unwrap();
+        fixture
+            .cloud
+            .put("indexes-v2.json", &encoded, true)
+            .await
+            .unwrap();
+        let cloud: Arc<dyn Cloud> = fixture.cloud.clone();
+        let cancelled = AtomicBool::new(false);
+
+        fixture
+            .local
+            .repo
+            .purge_cloud(cloud, &cancelled)
+            .await
+            .unwrap();
+
+        let encoded = fixture
+            .cloud
+            .get_bounded("indexes-v2.json", u64::MAX)
+            .await
+            .unwrap();
+        let decoded = zstd::stream::decode_all(encoded.as_slice()).unwrap();
+        let indexes: serde_json::Value = serde_json::from_slice(&decoded).unwrap();
+        assert_eq!(indexes["indexes"], serde_json::Value::Null);
+    }
+
+    #[tokio::test]
+    async fn purge_cloud_missing_or_corrupt_referenced_index_is_retained_but_protects_no_objects() {
+        for corrupt in [false, true] {
+            let fixture = cloud_fixture().await;
+            let index_key = format!("indexes/{RETAINED_INDEX_REF}");
+            if corrupt {
+                fixture
+                    .cloud
+                    .put(&index_key, b"not-a-zstd-index", true)
+                    .await
+                    .unwrap();
+            } else {
+                fixture.cloud.remove(&index_key).await.unwrap();
+            }
+            let cloud: Arc<dyn Cloud> = fixture.cloud.clone();
+            let cancelled = AtomicBool::new(false);
+
+            let stat = fixture
+                .local
+                .repo
+                .purge_cloud(cloud, &cancelled)
+                .await
+                .unwrap();
+
+            assert_eq!(stat.indexes, 1);
+            assert!(fixture.cloud.list(&index_key).await.unwrap().len() == usize::from(corrupt));
+            for id in [RETAINED_FILE_REF, RETAINED_CHUNK_REF] {
+                assert!(fixture
+                    .cloud
+                    .list(&remote_object_key(id))
+                    .await
+                    .unwrap()
+                    .is_empty());
+            }
+            for id in [RETAINED_FILE_CALLER, SHARED_CHUNK, RETAINED_CHUNK_CALLER] {
+                assert_eq!(
+                    fixture
+                        .cloud
+                        .list(&remote_object_key(id))
+                        .await
+                        .unwrap()
+                        .len(),
+                    1
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn purge_cloud_missing_or_corrupt_referenced_file_aborts_before_deletion() {
+        for corrupt in [false, true] {
+            let fixture = cloud_fixture().await;
+            fs::remove_file(
+                fixture
+                    .local
+                    .repo
+                    .store
+                    .object_path(RETAINED_FILE_REF)
+                    .unwrap(),
+            )
+            .unwrap();
+            let file_key = remote_object_key(RETAINED_FILE_REF);
+            if corrupt {
+                fixture
+                    .cloud
+                    .put(&file_key, b"not-an-encrypted-file", true)
+                    .await
+                    .unwrap();
+            } else {
+                fixture.cloud.remove(&file_key).await.unwrap();
+            }
+            let cloud: Arc<dyn Cloud> = fixture.cloud.clone();
+            let cancelled = AtomicBool::new(false);
+
+            let error = fixture
+                .local
+                .repo
+                .purge_cloud(cloud, &cancelled)
+                .await
+                .unwrap_err();
+
+            if corrupt {
+                assert!(!matches!(error, RepoError::Cloud(CloudError::NotFound)));
+            } else {
+                assert!(matches!(error, RepoError::Cloud(CloudError::NotFound)));
+            }
+            assert_remote_unreferenced_candidates_untouched(&fixture.cloud).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn purge_cloud_imports_missing_referenced_file_metadata_and_preserves_its_chunks() {
+        let fixture = cloud_fixture().await;
+        let local_path = fixture
+            .local
+            .repo
+            .store
+            .object_path(RETAINED_FILE_REF)
+            .unwrap();
+        fs::remove_file(&local_path).unwrap();
+        let remote_raw = fixture
+            .cloud
+            .get_bounded(&remote_object_key(RETAINED_FILE_REF), u64::MAX)
+            .await
+            .unwrap();
+        let cloud: Arc<dyn Cloud> = fixture.cloud.clone();
+        let cancelled = AtomicBool::new(false);
+
+        fixture
+            .local
+            .repo
+            .purge_cloud(cloud, &cancelled)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            fixture
+                .local
+                .repo
+                .store
+                .export_raw(RawObjectKind::File, RETAINED_FILE_REF)
+                .unwrap(),
+            remote_raw
+        );
+        assert_eq!(
+            fixture
+                .local
+                .repo
+                .store
+                .get_file(RETAINED_FILE_REF)
+                .unwrap()
+                .chunks,
+            [SHARED_CHUNK, RETAINED_CHUNK_REF]
+        );
+        for id in [SHARED_CHUNK, RETAINED_CHUNK_REF] {
+            assert_eq!(
+                fixture
+                    .cloud
+                    .list(&remote_object_key(id))
+                    .await
+                    .unwrap()
+                    .len(),
+                1
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn purge_cloud_ref_disappearing_after_list_aborts_before_deletion() {
+        let fixture = cloud_fixture().await;
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let cloud: Arc<dyn Cloud> = Arc::new(HookCloud::new(
+            fixture.cloud.clone(),
+            cancelled.clone(),
+            CloudHooks {
+                remove_first_ref_after_list: true,
+                ..CloudHooks::default()
+            },
+        ));
+
+        let error = fixture
+            .local
+            .repo
+            .purge_cloud(cloud, cancelled.as_ref())
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, RepoError::Cloud(CloudError::NotFound)));
+        assert_remote_unreferenced_candidates_untouched(&fixture.cloud).await;
+    }
+
+    #[tokio::test]
+    async fn purge_cloud_cancellation_before_first_delete_preserves_every_candidate() {
+        let fixture = cloud_fixture().await;
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let cloud: Arc<dyn Cloud> = Arc::new(HookCloud::new(
+            fixture.cloud.clone(),
+            cancelled.clone(),
+            CloudHooks {
+                cancel_before_delete: true,
+                ..CloudHooks::default()
+            },
+        ));
+
+        let error = fixture
+            .local
+            .repo
+            .purge_cloud(cloud, cancelled.as_ref())
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, RepoError::Cancelled));
+        assert_remote_unreferenced_candidates_untouched(&fixture.cloud).await;
+        assert!(fixture.cloud.list("lock-sync").await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn purge_cloud_cancellation_during_deletion_stops_following_destructive_phases() {
+        let fixture = cloud_fixture().await;
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let cloud: Arc<dyn Cloud> = Arc::new(HookCloud::new(
+            fixture.cloud.clone(),
+            cancelled.clone(),
+            CloudHooks {
+                cancel_after_first_repository_remove: true,
+                ..CloudHooks::default()
+            },
+        ));
+
+        let error = fixture
+            .local
+            .repo
+            .purge_cloud(cloud, cancelled.as_ref())
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, RepoError::Cancelled));
+        assert_eq!(fixture.cloud.list("check/indexes/").await.unwrap().len(), 2);
+        assert_remote_unreferenced_candidates_untouched(&fixture.cloud).await;
+        assert!(fixture.cloud.list("lock-sync").await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn purge_cloud_ignores_legacy_check_index_list_failure_like_go() {
+        let fixture = cloud_fixture().await;
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let cloud: Arc<dyn Cloud> = Arc::new(HookCloud::new(
+            fixture.cloud.clone(),
+            cancelled.clone(),
+            CloudHooks {
+                fail_check_index_list: true,
+                ..CloudHooks::default()
+            },
+        ));
+
+        let stat = fixture
+            .local
+            .repo
+            .purge_cloud(cloud, cancelled.as_ref())
+            .await
+            .unwrap();
+
+        assert_eq!(stat.indexes, 1);
+        assert_eq!(stat.objects, 2);
+        assert_eq!(fixture.cloud.list("check/indexes/").await.unwrap().len(), 3);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn purge_cloud_lock_refresh_loss_aborts_before_deletion() {
+        let fixture = cloud_fixture().await;
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let cloud: Arc<dyn Cloud> = Arc::new(HookCloud::new(
+            fixture.cloud.clone(),
+            cancelled.clone(),
+            CloudHooks {
+                fail_refresh_during_object_list: true,
+                ..CloudHooks::default()
+            },
+        ));
+
+        let error = fixture
+            .local
+            .repo
+            .purge_cloud(cloud, cancelled.as_ref())
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, RepoError::RemoteLockUnhealthy(_)));
+        assert_remote_unreferenced_candidates_untouched(&fixture.cloud).await;
+        assert!(fixture.cloud.list("lock-sync").await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn purge_cloud_empty_object_or_index_set_short_circuits_before_refs_and_cleanup() {
+        for remove_objects in [false, true] {
+            let fixture = cloud_fixture().await;
+            if remove_objects {
+                for object in fixture.cloud.list("objects/").await.unwrap() {
+                    fixture.cloud.remove(&object.key).await.unwrap();
+                }
+            } else {
+                for index in fixture.cloud.list("indexes/").await.unwrap() {
+                    fixture.cloud.remove(&index.key).await.unwrap();
+                }
+            }
+            let indexes_v2_before = fixture
+                .cloud
+                .get_bounded("indexes-v2.json", u64::MAX)
+                .await
+                .unwrap();
+            let cloud: Arc<dyn Cloud> = fixture.cloud.clone();
+            let cancelled = AtomicBool::new(false);
+
+            let stat = fixture
+                .local
+                .repo
+                .purge_cloud(cloud, &cancelled)
+                .await
+                .unwrap();
+
+            assert_eq!(stat, super::PurgeStat::default());
+            assert_eq!(fixture.cloud.list("check/indexes/").await.unwrap().len(), 3);
+            assert_eq!(
+                fixture
+                    .cloud
+                    .get_bounded("indexes-v2.json", u64::MAX)
+                    .await
+                    .unwrap(),
+                indexes_v2_before
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn purge_cloud_reports_unlock_failure_after_successful_short_circuit() {
+        let fixture = cloud_fixture().await;
+        for index in fixture.cloud.list("indexes/").await.unwrap() {
+            fixture.cloud.remove(&index.key).await.unwrap();
+        }
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let cloud: Arc<dyn Cloud> = Arc::new(HookCloud::new(
+            fixture.cloud.clone(),
+            cancelled.clone(),
+            CloudHooks {
+                fail_unlock_after_index_list: true,
+                ..CloudHooks::default()
+            },
+        ));
+
+        let error = fixture
+            .local
+            .repo
+            .purge_cloud(cloud, cancelled.as_ref())
+            .await
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            RepoError::Cloud(CloudError::UnlockFailed { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn purge_cloud_preserves_operation_and_unlock_failures_together() {
+        let fixture = cloud_fixture().await;
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let cloud: Arc<dyn Cloud> = Arc::new(HookCloud::new(
+            fixture.cloud.clone(),
+            cancelled.clone(),
+            CloudHooks {
+                remove_first_ref_after_list: true,
+                fail_unlock_after_ref_list: true,
+                ..CloudHooks::default()
+            },
+        ));
+
+        let error = fixture
+            .local
+            .repo
+            .purge_cloud(cloud, cancelled.as_ref())
+            .await
+            .unwrap_err();
+
+        let RepoError::OperationAndUnlockFailed { operation, unlock } = error else {
+            panic!("expected combined operation and unlock error");
+        };
+        assert!(matches!(*operation, RepoError::Cloud(CloudError::NotFound)));
+        assert!(matches!(unlock, CloudError::UnlockFailed { .. }));
     }
 
     #[test]

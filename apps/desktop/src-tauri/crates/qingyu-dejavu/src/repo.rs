@@ -1,4 +1,4 @@
-use std::io::Write;
+use std::io::{Seek, SeekFrom, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -6,7 +6,7 @@ use std::sync::Arc;
 use cap_std::fs::{Dir, File as CapFile};
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 
-use crate::atomic_write::{create_cap_staged_file, CapStagedFile};
+use crate::atomic_write::{create_cap_staged_file, is_owned_stage_name, CapStagedFile};
 use crate::cloud::{Cloud, CloudError};
 use crate::indexer::{self, IndexHook, NoopIndexHook};
 use crate::path_security::{
@@ -149,6 +149,39 @@ impl Repo {
             )?,
             _temp_guard: temp_guard,
         })
+    }
+
+    pub(crate) async fn stage_cloud_download(
+        &self,
+        cloud: &Arc<dyn Cloud>,
+        key: &str,
+    ) -> Result<(RepoStagedDownload, u64), RepoError> {
+        let staged = self.create_staged_download()?;
+        let mut writer = staged.writer()?;
+        let written = cloud.download_to(key, &mut writer).await?;
+        tokio::io::AsyncWriteExt::flush(&mut writer).await?;
+        writer.sync_all().await?;
+        drop(writer);
+        if staged.file().metadata()?.len() != written {
+            return Err(RepoError::InvalidData(
+                "cloud download returned an invalid payload length",
+            ));
+        }
+        Ok((staged, written))
+    }
+
+    pub(crate) async fn download_raw_to_store(
+        &self,
+        cloud: &Arc<dyn Cloud>,
+        key: &str,
+        kind: crate::RawObjectKind,
+        id: &str,
+    ) -> Result<u64, RepoError> {
+        let (staged, written) = self.stage_cloud_download(cloud, key).await?;
+        let _operation = self.store.lock_operation()?;
+        self.store
+            .import_raw_staged_unlocked(kind, id, staged.file())?;
+        Ok(written)
     }
 
     pub fn index(&self, memo: &str) -> Result<Index, RepoError> {
@@ -378,16 +411,19 @@ impl RepoStagedDownload {
     pub(crate) fn file(&self) -> &CapFile {
         self.staged.file()
     }
+
+    pub(crate) fn reader(&self) -> Result<CapFile, RepoError> {
+        let mut reader = self.staged.file().try_clone()?;
+        reader.seek(SeekFrom::Start(0))?;
+        Ok(reader)
+    }
 }
 
 fn cleanup_abandoned_downloads(temp_dir: &Dir) -> Result<(), RepoError> {
     for entry in temp_dir.entries()? {
         let entry = entry?;
         let name = entry.file_name();
-        let Some(name_text) = name.to_str() else {
-            continue;
-        };
-        if !name_text.starts_with("stage-") || !name_text.ends_with(".tmp") {
+        if !is_owned_stage_name(&name) {
             continue;
         }
         let metadata = temp_dir.symlink_metadata(&name)?;
@@ -629,8 +665,22 @@ mod tests {
         let other_temp = root.path().join("other-temp");
         fs::create_dir_all(&own_temp).unwrap();
         fs::create_dir_all(&other_temp).unwrap();
-        fs::write(own_temp.join("stage-abandoned.tmp"), b"own").unwrap();
-        fs::write(other_temp.join("stage-neighbor.tmp"), b"other").unwrap();
+        let owned = format!("stage-{}.tmp", "0".repeat(40));
+        fs::write(own_temp.join(&owned), b"owned").unwrap();
+        let retained_files = [
+            "stage-abandoned.tmp".to_owned(),
+            format!("stage-{}.tmp", "0".repeat(39)),
+            format!("stage-{}.tmp", "0".repeat(41)),
+            format!("stage-{}.tmp", "A".repeat(40)),
+            format!("stage-{}g.tmp", "0".repeat(39)),
+            "user.tmp".to_owned(),
+        ];
+        for name in &retained_files {
+            fs::write(own_temp.join(name), name.as_bytes()).unwrap();
+        }
+        let matching_directory = format!("stage-{}.tmp", "1".repeat(40));
+        fs::create_dir(own_temp.join(&matching_directory)).unwrap();
+        fs::write(other_temp.join(&owned), b"other").unwrap();
         let data = root.path().join("data");
         fs::create_dir_all(&data).unwrap();
 
@@ -651,11 +701,12 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(fs::read_dir(&own_temp).unwrap().count(), 0);
-        assert_eq!(
-            fs::read(other_temp.join("stage-neighbor.tmp")).unwrap(),
-            b"other"
-        );
+        assert!(!own_temp.join(&owned).exists());
+        for name in retained_files {
+            assert_eq!(fs::read(own_temp.join(&name)).unwrap(), name.as_bytes());
+        }
+        assert!(own_temp.join(matching_directory).is_dir());
+        assert_eq!(fs::read(other_temp.join(owned)).unwrap(), b"other");
         drop(repo);
     }
 

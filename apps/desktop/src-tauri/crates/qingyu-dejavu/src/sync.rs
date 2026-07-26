@@ -996,23 +996,10 @@ async fn tracked_download_raw(
     transfer_kind: TransferKind,
     traffic: &mut TrafficStat,
 ) -> Result<(), RepoError> {
-    let staged = repo.create_staged_download()?;
-    let mut writer = staged.writer()?;
     traffic.api_get = traffic.api_get.saturating_add(1);
-    let written = cloud.download_to(key, &mut writer).await?;
-    tokio::io::AsyncWriteExt::flush(&mut writer).await?;
-    writer.sync_all().await?;
-    drop(writer);
-    if staged.file().metadata()?.len() != written {
-        return Err(RepoError::InvalidData(
-            "cloud download returned an invalid payload length",
-        ));
-    }
-    {
-        let _operation = repo.store.lock_operation()?;
-        repo.store
-            .import_raw_staged_unlocked(object_kind, id, staged.file())?;
-    }
+    let written = repo
+        .download_raw_to_store(cloud, key, object_kind, id)
+        .await?;
     traffic.download_bytes = traffic
         .download_bytes
         .saturating_add(i64::try_from(written).unwrap_or(i64::MAX));

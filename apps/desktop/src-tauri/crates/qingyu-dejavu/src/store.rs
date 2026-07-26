@@ -561,7 +561,16 @@ impl Store {
 
     pub(crate) fn get_file_unlocked(&self, id: &str) -> Result<File, RepoError> {
         let encoded = self.export_raw_unlocked(RawObjectKind::File, id)?;
-        let compressed = decrypt(&encoded, &self.key)?;
+        self.decode_raw_file_unlocked(id, &encoded)
+    }
+
+    pub(crate) fn decode_raw_file_unlocked(
+        &self,
+        id: &str,
+        encoded: &[u8],
+    ) -> Result<File, RepoError> {
+        self.validate_raw(RawObjectKind::File, id, encoded)?;
+        let compressed = decrypt(encoded, &self.key)?;
         self.deserialize_compressed_reader(Cursor::new(compressed))
     }
 

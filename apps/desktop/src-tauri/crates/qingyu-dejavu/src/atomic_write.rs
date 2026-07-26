@@ -14,6 +14,27 @@ use crate::{random_hash, RepoError};
 const TEMP_CREATE_ATTEMPTS: usize = 32;
 const WINDOWS_RENAME_ATTEMPTS: usize = 3;
 
+/// Returns whether `name` is an exact temporary filename owned by Dejavu's
+/// capability-based atomic writer.
+///
+/// Callers must still confine cleanup to a directory they own. The filename
+/// grammar alone does not establish ownership outside such a parent.
+pub fn is_owned_stage_name(name: &OsStr) -> bool {
+    let Some(name) = name.to_str() else {
+        return false;
+    };
+    let Some(hash) = name
+        .strip_prefix("stage-")
+        .and_then(|name| name.strip_suffix(".tmp"))
+    else {
+        return false;
+    };
+    hash.len() == 40
+        && hash
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum PublishOutcome {
     Published,
@@ -510,9 +531,27 @@ mod tests {
     use cap_std::fs::Dir;
 
     use super::{
-        create_temp_file, stage_cap_file, stage_file, write_cap_file_safer, write_file_safer,
-        PublishOutcome,
+        create_temp_file, is_owned_stage_name, stage_cap_file, stage_file, write_cap_file_safer,
+        write_file_safer, PublishOutcome,
     };
+
+    #[test]
+    fn owned_stage_name_requires_exact_lowercase_sha1_grammar() {
+        let valid = format!("stage-{}.tmp", "0".repeat(40));
+        assert!(is_owned_stage_name(OsStr::new(&valid)));
+
+        for invalid in [
+            "stage-abandoned.tmp".to_owned(),
+            format!("stage-{}.tmp", "0".repeat(39)),
+            format!("stage-{}.tmp", "0".repeat(41)),
+            format!("stage-{}.tmp", "A".repeat(40)),
+            format!("stage-{}g.tmp", "0".repeat(39)),
+            "user.tmp".to_owned(),
+            format!("prefix-stage-{}.tmp", "0".repeat(40)),
+        ] {
+            assert!(!is_owned_stage_name(OsStr::new(&invalid)), "{invalid}");
+        }
+    }
 
     #[test]
     fn capability_stage_can_be_rewound_and_read_before_publication() {
