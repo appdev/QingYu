@@ -70,6 +70,15 @@ pub(crate) struct RepositorySchedule {
     pub(crate) next_scheduled_at: Option<OffsetDateTime>,
 }
 
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct RepositoryMaintenance {
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub(crate) last_local_purge_at: Option<OffsetDateTime>,
+    #[serde(with = "time::serde::rfc3339::option")]
+    pub(crate) next_local_purge_at: Option<OffsetDateTime>,
+}
+
 impl From<RepositoryJobError> for RepositorySafeError {
     fn from(error: RepositoryJobError) -> Self {
         Self {
@@ -92,6 +101,8 @@ pub(crate) struct RepositorySyncStatus {
     pub(crate) last_successful_sync_at: Option<String>,
     #[serde(flatten)]
     pub(crate) schedule: RepositorySchedule,
+    #[serde(default)]
+    pub(crate) maintenance: RepositoryMaintenance,
     pub(crate) error: Option<RepositorySafeError>,
     pub(crate) transfer: RepositoryTransferSummary,
     pub(crate) conflicts: Vec<RepositoryConflictRecord>,
@@ -114,6 +125,7 @@ impl RepositorySyncStatus {
             last_attempt_at: attempted_at,
             last_successful_sync_at: None,
             schedule: RepositorySchedule::default(),
+            maintenance: RepositoryMaintenance::default(),
             error: None,
             transfer: RepositoryTransferSummary::default(),
             conflicts: Vec::new(),
@@ -137,6 +149,7 @@ impl RepositorySyncStatus {
             last_attempt_at: completed_at.clone(),
             last_successful_sync_at: Some(completed_at),
             schedule: RepositorySchedule::default(),
+            maintenance: RepositoryMaintenance::default(),
             error: None,
             transfer: result.transfer,
             conflicts: result.conflicts,
@@ -160,6 +173,7 @@ impl RepositorySyncStatus {
             last_attempt_at: completed_at,
             last_successful_sync_at: None,
             schedule: RepositorySchedule::default(),
+            maintenance: RepositoryMaintenance::default(),
             error: Some(error),
             transfer: RepositoryTransferSummary::default(),
             conflicts: Vec::new(),
@@ -220,6 +234,7 @@ impl RepositoryStatusStore {
         if let Some(previous) = load_repository_sync_status(&self.app_data, &status.repository_id)?
         {
             status.schedule = previous.schedule;
+            status.maintenance = previous.maintenance;
             if status.last_successful_sync_at.is_none() {
                 status.last_successful_sync_at = previous.last_successful_sync_at;
             }
@@ -240,6 +255,35 @@ impl RepositoryStatusStore {
         Ok(load_repository_sync_status(&self.app_data, repository_id)?
             .map(|status| status.schedule)
             .unwrap_or_default())
+    }
+
+    pub(crate) fn load_maintenance(
+        &self,
+        repository_id: &str,
+    ) -> Result<RepositoryMaintenance, RepositoryJobError> {
+        Ok(load_repository_sync_status(&self.app_data, repository_id)?
+            .map(|status| status.maintenance)
+            .unwrap_or_default())
+    }
+
+    pub(crate) fn set_maintenance(
+        &self,
+        repository_id: &str,
+        maintenance: RepositoryMaintenance,
+    ) -> Result<RepositoryMaintenance, RepositoryJobError> {
+        validate_repository_id(repository_id)?;
+        let _write = self.write_lock.lock().unwrap();
+        let mut status = load_repository_sync_status(&self.app_data, repository_id)?
+            .ok_or(RepositoryJobError::StatusUnavailable)?;
+        if status.maintenance == maintenance {
+            return Ok(maintenance);
+        }
+        status.maintenance = maintenance.clone();
+        self.persist_status(&status)?;
+        // Exact replacement is committed once the atomic file write succeeds;
+        // event delivery remains advisory and must not turn it into a retry.
+        let _notification_result = self.emitter.emit(&status);
+        Ok(maintenance)
     }
 
     pub(crate) fn update_schedule(
@@ -283,6 +327,20 @@ impl RepositoryStatusStore {
         };
         self.update_schedule(repository_id, &mut reserve)?;
         Ok(permitted)
+    }
+
+    pub(crate) fn clear_sync_schedule(
+        &self,
+        repository_id: &str,
+    ) -> Result<RepositorySchedule, RepositoryJobError> {
+        let mut clear = |schedule: &mut RepositorySchedule| {
+            if *schedule == RepositorySchedule::default() {
+                return false;
+            }
+            *schedule = RepositorySchedule::default();
+            true
+        };
+        self.update_schedule(repository_id, &mut clear)
     }
 
     fn persist_then_emit(&self, status: RepositorySyncStatus) -> Result<(), RepositoryJobError> {
@@ -482,17 +540,21 @@ fn open_child_directory(
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
     use tempfile::tempdir;
 
     use super::{
-        load_repository_sync_status, RepositoryStatusEventEmitter, RepositoryStatusStore,
-        RepositorySyncPhase, RepositorySyncStatus,
+        load_repository_sync_status, RepositoryConflictRecord, RepositoryMaintenance,
+        RepositorySafeError, RepositorySchedule, RepositoryStatusEventEmitter,
+        RepositoryStatusStore, RepositorySyncPhase, RepositorySyncStatus,
+        RepositoryTransferSummary,
     };
-    use crate::dejavu_sync::service::{RepositoryJobError, RepositoryStatusSink, SyncJobRequest};
+    use crate::dejavu_sync::service::{
+        RepositoryJobError, RepositoryStatusSink, RepositorySyncResult, SyncJobRequest,
+    };
     use crate::sync_config::status::SyncTrigger;
 
     struct InspectingEmitter {
@@ -527,6 +589,18 @@ mod tests {
 
     impl RepositoryStatusEventEmitter for FailingEmitter {
         fn emit(&self, _status: &RepositorySyncStatus) -> Result<(), RepositoryJobError> {
+            Err(RepositoryJobError::StatusUnavailable)
+        }
+    }
+
+    #[derive(Default)]
+    struct CountingFailingEmitter {
+        calls: AtomicUsize,
+    }
+
+    impl RepositoryStatusEventEmitter for CountingFailingEmitter {
+        fn emit(&self, _status: &RepositorySyncStatus) -> Result<(), RepositoryJobError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
             Err(RepositoryJobError::StatusUnavailable)
         }
     }
@@ -708,6 +782,243 @@ mod tests {
             );
         }
         assert!(!json.contains("notesRoot"));
+    }
+
+    #[test]
+    fn old_status_without_maintenance_loads_with_the_default_section() {
+        let app_data = tempdir().unwrap();
+        let repository_id = "00000000-0000-4000-8000-000000000061";
+        let repository = app_data
+            .path()
+            .join(format!("sync/repositories/{repository_id}"));
+        std::fs::create_dir_all(&repository).unwrap();
+        let legacy = serde_json::json!({
+            "version": 1,
+            "repositoryId": repository_id,
+            "phase": "succeeded",
+            "trigger": "manual",
+            "jobId": "00000000-0000-4000-8000-000000000091",
+            "attempt": 1,
+            "lastAttemptAt": "2026-07-25T08:00:00Z",
+            "lastSuccessfulSyncAt": "2026-07-25T08:00:00Z",
+            "sameCount": 0,
+            "automaticFailureCount": 0,
+            "lastDnsRetryAt": null,
+            "nextScheduledAt": null,
+            "error": null,
+            "transfer": {
+                "downloadBytes": 0,
+                "downloadChunks": 0,
+                "downloadFiles": 0,
+                "uploadBytes": 0,
+                "uploadChunks": 0,
+                "uploadFiles": 0
+            },
+            "conflicts": []
+        });
+        std::fs::write(
+            repository.join("state.json"),
+            serde_json::to_vec_pretty(&legacy).unwrap(),
+        )
+        .unwrap();
+
+        let loaded = load_repository_sync_status(app_data.path(), repository_id)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(loaded.version, 1);
+        assert_eq!(loaded.maintenance, RepositoryMaintenance::default());
+    }
+
+    #[tokio::test]
+    async fn maintenance_survives_attempting_succeeded_failed_and_schedule_writes() {
+        let app_data = tempdir().unwrap();
+        let repository_id = "00000000-0000-4000-8000-000000000062";
+        let emitter = Arc::new(InspectingEmitter::new(app_data.path().to_path_buf()));
+        let store = RepositoryStatusStore::new(app_data.path(), emitter);
+        let last = time::OffsetDateTime::from_unix_timestamp(1_800_000_000).unwrap();
+        let maintenance = RepositoryMaintenance {
+            last_local_purge_at: Some(last),
+            next_local_purge_at: Some(last + Duration::from_secs(6 * 60 * 60)),
+        };
+        let request = SyncJobRequest {
+            notes_root: PathBuf::from("/notes/journal"),
+            repository_id: repository_id.to_owned(),
+            trigger: SyncTrigger::Manual,
+        };
+        let mut initial = attempting(repository_id);
+        initial.maintenance = maintenance.clone();
+        store.publish(initial).await.unwrap();
+        let persisted_json = serde_json::from_slice::<serde_json::Value>(
+            &std::fs::read(
+                app_data
+                    .path()
+                    .join(format!("sync/repositories/{repository_id}/state.json")),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(persisted_json["version"], 1);
+        assert_eq!(
+            persisted_json["maintenance"]["lastLocalPurgeAt"],
+            "2027-01-15T08:00:00Z"
+        );
+        assert_eq!(
+            persisted_json["maintenance"]["nextLocalPurgeAt"],
+            "2027-01-15T14:00:00Z"
+        );
+
+        let next_attempting = attempting(repository_id);
+        assert_eq!(
+            next_attempting.maintenance,
+            RepositoryMaintenance::default()
+        );
+        store.publish(next_attempting).await.unwrap();
+        assert_eq!(
+            load_repository_sync_status(app_data.path(), repository_id)
+                .unwrap()
+                .unwrap()
+                .maintenance,
+            maintenance
+        );
+        let succeeded = RepositorySyncStatus::succeeded(
+            &request,
+            "00000000-0000-4000-8000-000000000092".to_owned(),
+            1,
+            "2026-07-25T08:00:01Z".to_owned(),
+            RepositorySyncResult::default(),
+        );
+        assert_eq!(succeeded.maintenance, RepositoryMaintenance::default());
+        store.publish(succeeded).await.unwrap();
+        assert_eq!(
+            load_repository_sync_status(app_data.path(), repository_id)
+                .unwrap()
+                .unwrap()
+                .maintenance,
+            maintenance
+        );
+        let failed = RepositorySyncStatus::failed(
+            &request,
+            "00000000-0000-4000-8000-000000000093".to_owned(),
+            1,
+            "2026-07-25T08:00:02Z".to_owned(),
+            RepositorySafeError {
+                code: "failure".to_owned(),
+                operation: "repository-sync".to_owned(),
+            },
+        );
+        assert_eq!(failed.maintenance, RepositoryMaintenance::default());
+        store.publish(failed).await.unwrap();
+        let mut schedule_update = |schedule: &mut super::RepositorySchedule| {
+            schedule.same_count = 2;
+            true
+        };
+        store
+            .update_schedule(repository_id, &mut schedule_update)
+            .unwrap();
+        assert_eq!(
+            load_repository_sync_status(app_data.path(), repository_id)
+                .unwrap()
+                .unwrap()
+                .maintenance,
+            maintenance
+        );
+    }
+
+    #[tokio::test]
+    async fn maintenance_replacement_commits_once_despite_emitter_failure() {
+        let app_data = tempdir().unwrap();
+        let repository_id = "00000000-0000-4000-8000-000000000063";
+        let emitter = Arc::new(CountingFailingEmitter::default());
+        let store = RepositoryStatusStore::new(app_data.path(), Arc::clone(&emitter));
+        assert_eq!(
+            store.publish(attempting(repository_id)).await,
+            Err(RepositoryJobError::StatusUnavailable)
+        );
+        let last = time::OffsetDateTime::from_unix_timestamp(1_800_000_000).unwrap();
+        let maintenance = RepositoryMaintenance {
+            last_local_purge_at: Some(last),
+            next_local_purge_at: Some(last + Duration::from_secs(6 * 60 * 60)),
+        };
+
+        assert_eq!(
+            store.set_maintenance(repository_id, maintenance.clone()),
+            Ok(maintenance.clone())
+        );
+        assert_eq!(
+            store.load_maintenance(repository_id),
+            Ok(maintenance.clone())
+        );
+        assert_eq!(emitter.calls.load(Ordering::SeqCst), 2);
+
+        assert_eq!(
+            store.set_maintenance(repository_id, maintenance.clone()),
+            Ok(maintenance)
+        );
+        assert_eq!(emitter.calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn schedule_clear_is_isolated_and_idempotent() {
+        let app_data = tempdir().unwrap();
+        let repository_id = "00000000-0000-4000-8000-000000000064";
+        let emitter = Arc::new(InspectingEmitter::new(app_data.path().to_path_buf()));
+        let store = RepositoryStatusStore::new(app_data.path(), Arc::clone(&emitter));
+        let now = time::OffsetDateTime::from_unix_timestamp(1_800_000_000).unwrap();
+        let mut status = attempting(repository_id);
+        status.phase = RepositorySyncPhase::Failed;
+        status.last_successful_sync_at = Some("2026-07-25T07:00:00Z".to_owned());
+        status.error = Some(RepositorySafeError {
+            code: "cloud-failure".to_owned(),
+            operation: "repository-sync".to_owned(),
+        });
+        status.transfer = RepositoryTransferSummary {
+            download_bytes: 11,
+            download_chunks: 12,
+            download_files: 13,
+            upload_bytes: 21,
+            upload_chunks: 22,
+            upload_files: 23,
+        };
+        status.conflicts = vec![RepositoryConflictRecord {
+            relative_path: "notes/conflict.md".to_owned(),
+            occurred_at: "2026-07-25T08:00:00Z".to_owned(),
+        }];
+        status.schedule = RepositorySchedule {
+            same_count: 4,
+            automatic_failure_count: 7,
+            last_dns_retry_at: Some(now),
+            next_scheduled_at: Some(now + Duration::from_secs(300)),
+        };
+        status.maintenance = RepositoryMaintenance {
+            last_local_purge_at: Some(now - Duration::from_secs(60)),
+            next_local_purge_at: Some(now + Duration::from_secs(6 * 60 * 60)),
+        };
+        store.publish(status).await.unwrap();
+        let before = load_repository_sync_status(app_data.path(), repository_id)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(
+            store.clear_sync_schedule(repository_id),
+            Ok(RepositorySchedule::default())
+        );
+        let after = load_repository_sync_status(app_data.path(), repository_id)
+            .unwrap()
+            .unwrap();
+        let mut expected = before;
+        expected.schedule = RepositorySchedule::default();
+        assert_eq!(after, expected);
+
+        let emitted_after_first_clear = emitter.emitted.lock().unwrap().len();
+        assert_eq!(
+            store.clear_sync_schedule(repository_id),
+            Ok(RepositorySchedule::default())
+        );
+        assert_eq!(
+            emitter.emitted.lock().unwrap().len(),
+            emitted_after_first_clear
+        );
     }
 
     #[tokio::test]
