@@ -187,16 +187,15 @@ impl LocalMaintenanceTimer for TokioLocalMaintenanceTimer {
 
 struct RunningMaintenanceAttempt {
     cancelled: Arc<AtomicBool>,
-    finished: AtomicBool,
-    finished_notify: tokio::sync::Notify,
+    finished: tokio::sync::watch::Sender<bool>,
 }
 
 impl RunningMaintenanceAttempt {
     fn new() -> Self {
+        let (finished, _initial_receiver) = tokio::sync::watch::channel(false);
         Self {
             cancelled: Arc::new(AtomicBool::new(false)),
-            finished: AtomicBool::new(false),
-            finished_notify: tokio::sync::Notify::new(),
+            finished,
         }
     }
 
@@ -205,20 +204,18 @@ impl RunningMaintenanceAttempt {
     }
 
     fn finish(&self) {
-        self.finished.store(true, Ordering::Release);
-        self.finished_notify.notify_waiters();
+        self.finished.send_replace(true);
     }
 
     async fn wait_finished(&self) {
+        let mut finished = self.finished.subscribe();
         loop {
-            if self.finished.load(Ordering::Acquire) {
+            if *finished.borrow() {
                 return;
             }
-            let notified = self.finished_notify.notified();
-            if self.finished.load(Ordering::Acquire) {
+            if finished.changed().await.is_err() {
                 return;
             }
-            notified.await;
         }
     }
 }
@@ -1814,6 +1811,18 @@ mod tests {
             .unwrap()
             .get(repository_id)
             .is_some_and(|token| Arc::ptr_eq(token, &current)));
+    }
+
+    #[tokio::test]
+    async fn completion_wait_is_sticky_when_finish_precedes_wait_registration() {
+        let attempt = super::RunningMaintenanceAttempt::new();
+        let wait = attempt.wait_finished();
+
+        attempt.finish();
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), wait)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
