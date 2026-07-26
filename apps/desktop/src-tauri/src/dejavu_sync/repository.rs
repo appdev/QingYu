@@ -16,6 +16,7 @@ use qingyu_dejavu::{
 };
 
 use super::local_state::LocalSyncStateService;
+use super::maintenance::LocalPurgeRepositoryOps;
 use super::service::{
     RepositoryJobError, RepositoryJobRunner, RepositorySyncResult, SyncAttemptContext,
     SyncJobRequest,
@@ -147,6 +148,45 @@ pub(crate) struct DejavuRepositoryRunner {
     cloud_factory: Arc<dyn RepositoryCloudFactory>,
 }
 
+pub(crate) struct DejavuLocalPurgeRepository {
+    app_data: PathBuf,
+}
+
+impl DejavuLocalPurgeRepository {
+    pub(crate) fn new(app_data: impl AsRef<Path>) -> Self {
+        Self {
+            app_data: app_data.as_ref().to_path_buf(),
+        }
+    }
+}
+
+impl LocalPurgeRepositoryOps for DejavuLocalPurgeRepository {
+    fn list_local_indexes(
+        &self,
+        repository_id: &str,
+    ) -> Result<Vec<qingyu_dejavu::Index>, RepositoryJobError> {
+        let opened = open_bound_local_repository(&self.app_data, repository_id, None, |_| {})?;
+        let indexes = opened.repo.list_local_indexes().map_err(map_repo_error)?;
+        opened.paths.revalidate()?;
+        Ok(indexes)
+    }
+
+    fn purge_local(
+        &self,
+        repository_id: &str,
+        retained_index_ids: &[String],
+        cancelled: &std::sync::atomic::AtomicBool,
+    ) -> Result<qingyu_dejavu::PurgeStat, RepositoryJobError> {
+        let opened = open_bound_local_repository(&self.app_data, repository_id, None, |_| {})?;
+        let stat = opened
+            .repo
+            .purge(retained_index_ids, cancelled)
+            .map_err(map_repo_error)?;
+        opened.paths.revalidate()?;
+        Ok(stat)
+    }
+}
+
 impl DejavuRepositoryRunner {
     #[allow(dead_code)]
     pub(crate) fn new(
@@ -211,48 +251,28 @@ impl DejavuRepositoryRunner {
             request: request.clone(),
             ..context.clone()
         })?;
-        let local_state = LocalSyncStateService::new(&self.app_data)
-            .load()
-            .map_err(RepositoryJobError::from)?
-            .ok_or(RepositoryJobError::InvalidBinding)?;
-        let key_bytes = STANDARD
-            .decode(&local_state.repo_key)
-            .map_err(|_| RepositoryJobError::RepositoryUnavailable)?;
-        let key: [u8; 32] = key_bytes
-            .try_into()
-            .map_err(|_| RepositoryJobError::RepositoryUnavailable)?;
         let snapshot = ready_snapshot_at_app_data(&self.app_data, None)
             .map_err(|_| RepositoryJobError::ConfigUnavailable)?;
-        let (canonical_notes_root, ignore_lines) = prepare_syncignore(&request.notes_root)?;
-        let repository_paths = prepare_repository_layout(&self.app_data, &request.repository_id)?;
-        after_layout_prepared(repository_paths.root_path());
-        repository_paths.revalidate()?;
+        let opened = open_bound_local_repository(
+            &self.app_data,
+            &request.repository_id,
+            Some(&request.notes_root),
+            after_layout_prepared,
+        )?;
         let repository_prefix = format!("qingyu/repositories/{}/repo", request.repository_id);
         let cloud = self.cloud_factory.create(repository_cloud_parameters(
             snapshot.target,
             repository_prefix,
         )?)?;
-        let repo = Repo::open(
-            repository_paths.repo_paths(canonical_notes_root),
-            Device {
-                id: local_state.device_id,
-                name: "QingYu".to_owned(),
-                os: std::env::consts::OS.to_owned(),
-            },
-            key,
-            RepoOptions {
-                ignore_lines,
-                protected_include_paths: vec![QINGYU_SYNCIGNORE_PROTECTED_PATH.to_owned()],
-            },
-        )
-        .map_err(map_repo_error)?;
-        repository_paths.revalidate()?;
+        let OpenedLocalRepository { repo, paths } = opened;
+        paths.revalidate()?;
 
         // Repo::sync owns the attempt's indexing and lifecycle/operation guards.
         let (merge, traffic) = repo
             .sync(cloud, coordinator)
             .await
             .map_err(map_repo_error)?;
+        paths.revalidate()?;
         if context.cancellation.is_cancelled() {
             return Err(RepositoryJobError::Cancelled);
         }
@@ -315,6 +335,64 @@ impl RepositoryJobRunner for DejavuRepositoryRunner {
     ) -> BoxFuture<'a, Result<RepositorySyncResult, RepositoryJobError>> {
         Box::pin(async move { self.bind_and_sync(context).await })
     }
+}
+
+struct OpenedLocalRepository {
+    repo: Repo,
+    paths: PreparedRepositoryPaths,
+}
+
+fn open_bound_local_repository<Observe>(
+    app_data: &Path,
+    repository_id: &str,
+    expected_notes_root: Option<&Path>,
+    after_layout_prepared: Observe,
+) -> Result<OpenedLocalRepository, RepositoryJobError>
+where
+    Observe: FnOnce(&Path),
+{
+    let repository_id = canonical_repository_id(repository_id)?;
+    let local_state = LocalSyncStateService::new(app_data)
+        .load()
+        .map_err(RepositoryJobError::from)?
+        .ok_or(RepositoryJobError::InvalidBinding)?;
+    let binding = local_state
+        .bindings
+        .iter()
+        .find(|binding| binding.enabled && binding.repository_id == repository_id)
+        .ok_or(RepositoryJobError::InvalidBinding)?;
+    if expected_notes_root.is_some_and(|expected| expected != binding.notes_root) {
+        return Err(RepositoryJobError::InvalidBinding);
+    }
+    let key_bytes = STANDARD
+        .decode(&local_state.repo_key)
+        .map_err(|_| RepositoryJobError::RepositoryUnavailable)?;
+    let key: [u8; 32] = key_bytes
+        .try_into()
+        .map_err(|_| RepositoryJobError::RepositoryUnavailable)?;
+    let (canonical_notes_root, ignore_lines) = prepare_syncignore(&binding.notes_root)?;
+    if expected_notes_root.is_some_and(|expected| expected != canonical_notes_root) {
+        return Err(RepositoryJobError::InvalidBinding);
+    }
+    let paths = prepare_repository_layout(app_data, &repository_id)?;
+    after_layout_prepared(paths.root_path());
+    paths.revalidate()?;
+    let repo = Repo::open(
+        paths.repo_paths(canonical_notes_root),
+        Device {
+            id: local_state.device_id,
+            name: "QingYu".to_owned(),
+            os: std::env::consts::OS.to_owned(),
+        },
+        key,
+        RepoOptions {
+            ignore_lines,
+            protected_include_paths: vec![QINGYU_SYNCIGNORE_PROTECTED_PATH.to_owned()],
+        },
+    )
+    .map_err(map_repo_error)?;
+    paths.revalidate()?;
+    Ok(OpenedLocalRepository { repo, paths })
 }
 
 struct PreparedRepositoryPaths {
@@ -705,9 +783,10 @@ mod tests {
 
     use super::{
         config_addressing_style, config_tls_verification, map_repo_error, ConfigAddressingStyle,
-        ConfigTlsVerification, DejavuRepositoryRunner, RepositoryCloudFactory,
-        RepositoryCloudParameters, WorkingTreeCoordinatorFactory,
+        ConfigTlsVerification, DejavuLocalPurgeRepository, DejavuRepositoryRunner,
+        RepositoryCloudFactory, RepositoryCloudParameters, WorkingTreeCoordinatorFactory,
     };
+    use crate::dejavu_sync::maintenance::LocalPurgeRepositoryOps;
     use crate::dejavu_sync::service::{
         JobCancellationToken, RepositoryJobError, RepositoryJobRunner, SyncAttemptContext,
         SyncJobRequest,
@@ -1165,6 +1244,40 @@ mod tests {
                 repository_prefix: format!("qingyu/repositories/{}/repo", fixture.repository_id),
             }]
         );
+    }
+
+    #[tokio::test]
+    async fn local_purge_adapter_opens_the_bound_repository_with_the_sync_layout() {
+        let fixture = Fixture::new();
+        let (runner, _) = runner(&fixture);
+        let request = runner.validate(fixture.request()).unwrap();
+        runner
+            .run_attempt(SyncAttemptContext {
+                request,
+                job_id: "20000000-0000-4000-8000-000000000090".to_owned(),
+                attempt: 1,
+                cancellation: JobCancellationToken::new(),
+            })
+            .await
+            .unwrap();
+        let repository = DejavuLocalPurgeRepository::new(&fixture.app_data);
+
+        let indexes = repository
+            .list_local_indexes(&fixture.repository_id)
+            .unwrap();
+        assert_eq!(indexes.len(), 1);
+        let retained = indexes
+            .iter()
+            .map(|index| index.id.clone())
+            .collect::<Vec<_>>();
+        let stat = repository
+            .purge_local(
+                &fixture.repository_id,
+                &retained,
+                &std::sync::atomic::AtomicBool::new(false),
+            )
+            .unwrap();
+        assert_eq!(stat, qingyu_dejavu::PurgeStat::default());
     }
 
     #[tokio::test]

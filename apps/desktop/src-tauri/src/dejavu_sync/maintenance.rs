@@ -13,7 +13,9 @@ use qingyu_dejavu::{Index, PurgeStat};
 use time::{Date, Duration, Month, OffsetDateTime, PrimitiveDateTime, Time, UtcOffset};
 
 use super::local_state::RepositoryBinding;
-use super::service::RepositoryJobError;
+use super::service::{
+    RepositoryJobCompletion, RepositoryJobCompletionObserver, RepositoryJobError,
+};
 use super::status::{RepositoryMaintenance, RepositoryStatusStore};
 use crate::storage_capability::{directory_identity, open_canonical_directory_nofollow};
 use crate::sync_config::status::SyncTrigger;
@@ -113,6 +115,8 @@ impl LocalPurgeExecutor {
 
 pub(crate) type LocalPurgeTaskFuture =
     Pin<Box<dyn Future<Output = Result<LocalPurgeOutcome, RepositoryJobError>> + Send + 'static>>;
+pub(crate) type LocalMaintenanceOperation =
+    Box<dyn FnOnce() -> LocalPurgeTaskFuture + Send + 'static>;
 pub(crate) type LocalMaintenanceTimerFuture = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
 
 const LOCAL_MAINTENANCE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(12 * 60 * 60);
@@ -177,6 +181,26 @@ pub(crate) trait LocalMaintenanceTimer: Send + Sync {
     fn sleep(&self, duration: std::time::Duration) -> LocalMaintenanceTimerFuture;
 }
 
+pub(crate) trait LocalMaintenanceTransaction: Send + Sync {
+    fn run(
+        &self,
+        repository_id: String,
+        operation: LocalMaintenanceOperation,
+    ) -> LocalPurgeTaskFuture;
+}
+
+struct ImmediateLocalMaintenanceTransaction;
+
+impl LocalMaintenanceTransaction for ImmediateLocalMaintenanceTransaction {
+    fn run(
+        &self,
+        _repository_id: String,
+        operation: LocalMaintenanceOperation,
+    ) -> LocalPurgeTaskFuture {
+        Box::pin(async move { operation().await })
+    }
+}
+
 struct TokioLocalMaintenanceTimer;
 
 impl LocalMaintenanceTimer for TokioLocalMaintenanceTimer {
@@ -225,6 +249,7 @@ struct LocalMaintenanceControllerInner {
     statuses: Arc<dyn LocalMaintenanceStatusStore>,
     clock: Arc<dyn Fn() -> OffsetDateTime + Send + Sync>,
     timer: Arc<dyn LocalMaintenanceTimer>,
+    transaction: Arc<dyn LocalMaintenanceTransaction>,
     running: Mutex<HashMap<String, Arc<RunningMaintenanceAttempt>>>,
 }
 
@@ -265,11 +290,33 @@ impl LocalMaintenanceController {
         Status: LocalMaintenanceStatusStore + 'static,
         Clock: Fn() -> OffsetDateTime + Send + Sync + 'static,
     {
-        Self::new_with_timer(
+        Self::new_with_timer_and_transaction(
             executor,
             statuses,
             clock,
             Arc::new(TokioLocalMaintenanceTimer),
+            Arc::new(ImmediateLocalMaintenanceTransaction),
+        )
+    }
+
+    pub(crate) fn new_with_transaction<Executor, Status, Clock, Transaction>(
+        executor: Arc<Executor>,
+        statuses: Arc<Status>,
+        clock: Clock,
+        transaction: Arc<Transaction>,
+    ) -> Self
+    where
+        Executor: LocalPurgeTaskExecutor + 'static,
+        Status: LocalMaintenanceStatusStore + 'static,
+        Clock: Fn() -> OffsetDateTime + Send + Sync + 'static,
+        Transaction: LocalMaintenanceTransaction + 'static,
+    {
+        Self::new_with_timer_and_transaction(
+            executor,
+            statuses,
+            clock,
+            Arc::new(TokioLocalMaintenanceTimer),
+            transaction,
         )
     }
 
@@ -285,15 +332,40 @@ impl LocalMaintenanceController {
         Clock: Fn() -> OffsetDateTime + Send + Sync + 'static,
         Timer: LocalMaintenanceTimer + 'static,
     {
+        Self::new_with_timer_and_transaction(
+            executor,
+            statuses,
+            clock,
+            timer,
+            Arc::new(ImmediateLocalMaintenanceTransaction),
+        )
+    }
+
+    fn new_with_timer_and_transaction<Executor, Status, Clock, Timer, Transaction>(
+        executor: Arc<Executor>,
+        statuses: Arc<Status>,
+        clock: Clock,
+        timer: Arc<Timer>,
+        transaction: Arc<Transaction>,
+    ) -> Self
+    where
+        Executor: LocalPurgeTaskExecutor + 'static,
+        Status: LocalMaintenanceStatusStore + 'static,
+        Clock: Fn() -> OffsetDateTime + Send + Sync + 'static,
+        Timer: LocalMaintenanceTimer + 'static,
+        Transaction: LocalMaintenanceTransaction + 'static,
+    {
         let executor: Arc<dyn LocalPurgeTaskExecutor> = executor;
         let statuses: Arc<dyn LocalMaintenanceStatusStore> = statuses;
         let timer: Arc<dyn LocalMaintenanceTimer> = timer;
+        let transaction: Arc<dyn LocalMaintenanceTransaction> = transaction;
         Self {
             inner: Arc::new(LocalMaintenanceControllerInner {
                 executor,
                 statuses,
                 clock: Arc::new(clock),
                 timer,
+                transaction,
                 running: Mutex::new(HashMap::new()),
             }),
         }
@@ -357,10 +429,13 @@ impl LocalMaintenanceController {
         };
         handle.spawn(async move {
             let _running_guard = running_guard;
-            let mut execution =
-                inner
-                    .executor
-                    .execute(repository_id.clone(), now, Arc::clone(&attempt.cancelled));
+            let executor = Arc::clone(&inner.executor);
+            let execution_repository_id = repository_id.clone();
+            let execution_cancelled = Arc::clone(&attempt.cancelled);
+            let operation: LocalMaintenanceOperation = Box::new(move || {
+                executor.execute(execution_repository_id, now, execution_cancelled)
+            });
+            let mut execution = inner.transaction.run(repository_id.clone(), operation);
             let mut timeout = inner.timer.sleep(LOCAL_MAINTENANCE_TIMEOUT);
             let _result = tokio::select! {
                 result = &mut execution => result,
@@ -419,6 +494,16 @@ impl LocalMaintenanceController {
             .lock()
             .unwrap()
             .contains_key(repository_id)
+    }
+}
+
+impl RepositoryJobCompletionObserver for LocalMaintenanceController {
+    fn observe_completion(&self, completion: RepositoryJobCompletion) {
+        let _maintenance_result = self.notify_sync_completion(
+            &completion.request.repository_id,
+            completion.request.trigger,
+            completion.result.is_ok(),
+        );
     }
 }
 
@@ -815,8 +900,8 @@ mod tests {
     use super::{
         clean_expired_conflict_history, clean_startup_residue, os_random_index,
         select_retained_indexes, LocalMaintenanceController, LocalMaintenanceStatusStore,
-        LocalMaintenanceTimer, LocalPurgeExecutor, LocalPurgeOutcome, LocalPurgeRepositoryOps,
-        LocalPurgeTaskExecutor,
+        LocalMaintenanceTimer, LocalMaintenanceTransaction, LocalPurgeExecutor, LocalPurgeOutcome,
+        LocalPurgeRepositoryOps, LocalPurgeTaskExecutor,
     };
     use crate::dejavu_sync::local_state::RepositoryBinding;
     use crate::dejavu_sync::service::RepositoryJobError;
@@ -877,6 +962,49 @@ mod tests {
         calls: AtomicUsize,
         started: Arc<tokio::sync::Semaphore>,
         release: Arc<tokio::sync::Semaphore>,
+    }
+
+    struct TransactionAwarePurgeTaskExecutor {
+        transaction_active: Arc<AtomicBool>,
+        observed_active: Arc<AtomicBool>,
+    }
+
+    impl LocalPurgeTaskExecutor for TransactionAwarePurgeTaskExecutor {
+        fn execute(
+            &self,
+            _repository_id: String,
+            _now: OffsetDateTime,
+            _cancelled: Arc<AtomicBool>,
+        ) -> super::LocalPurgeTaskFuture {
+            let transaction_active = Arc::clone(&self.transaction_active);
+            let observed_active = Arc::clone(&self.observed_active);
+            Box::pin(async move {
+                observed_active.store(transaction_active.load(Ordering::SeqCst), Ordering::SeqCst);
+                Ok(LocalPurgeOutcome::Skipped)
+            })
+        }
+    }
+
+    struct RecordingMaintenanceTransaction {
+        active: Arc<AtomicBool>,
+        repositories: Mutex<Vec<String>>,
+    }
+
+    impl LocalMaintenanceTransaction for RecordingMaintenanceTransaction {
+        fn run(
+            &self,
+            repository_id: String,
+            operation: super::LocalMaintenanceOperation,
+        ) -> super::LocalPurgeTaskFuture {
+            self.repositories.lock().unwrap().push(repository_id);
+            let active = Arc::clone(&self.active);
+            Box::pin(async move {
+                active.store(true, Ordering::SeqCst);
+                let result = operation().await;
+                active.store(false, Ordering::SeqCst);
+                result
+            })
+        }
     }
 
     impl GatedPurgeTaskExecutor {
@@ -1516,6 +1644,41 @@ mod tests {
 
         executor.release.add_permits(1);
         wait_for_status_writes(&statuses, 1).await;
+    }
+
+    #[tokio::test]
+    async fn purge_execution_runs_inside_the_injected_repository_transaction() {
+        let transaction_active = Arc::new(AtomicBool::new(false));
+        let observed_active = Arc::new(AtomicBool::new(false));
+        let executor = Arc::new(TransactionAwarePurgeTaskExecutor {
+            transaction_active: Arc::clone(&transaction_active),
+            observed_active: Arc::clone(&observed_active),
+        });
+        let transaction = Arc::new(RecordingMaintenanceTransaction {
+            active: Arc::clone(&transaction_active),
+            repositories: Mutex::new(Vec::new()),
+        });
+        let statuses = Arc::new(FakeMaintenanceStatusStore::new());
+        let now = utc(2026, Month::July, 26, 12, 0);
+        let controller = LocalMaintenanceController::new_with_transaction(
+            executor,
+            Arc::clone(&statuses),
+            move || now,
+            Arc::clone(&transaction),
+        );
+        let repository_id = "00000000-0000-4000-8000-000000000080";
+
+        assert!(controller
+            .notify_sync_completion(repository_id, SyncTrigger::Manual, true)
+            .unwrap());
+        wait_for_status_writes(&statuses, 1).await;
+
+        assert!(observed_active.load(Ordering::SeqCst));
+        assert!(!transaction_active.load(Ordering::SeqCst));
+        assert_eq!(
+            transaction.repositories.lock().unwrap().as_slice(),
+            &[repository_id.to_owned()]
+        );
     }
 
     #[tokio::test]

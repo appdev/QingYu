@@ -9,6 +9,9 @@ use std::sync::{Arc, Mutex, OnceLock};
 use serde::Serialize;
 use tokio::sync::{watch, Mutex as AsyncMutex, OwnedRwLockReadGuard, RwLock};
 
+use super::maintenance::{
+    LocalMaintenanceOperation, LocalMaintenanceTransaction, LocalPurgeTaskFuture,
+};
 use super::status::{
     RepositoryConflictRecord, RepositorySafeError, RepositorySyncStatus, RepositoryTransferSummary,
 };
@@ -191,6 +194,10 @@ pub(crate) trait RepositoryJobLifecycle: Send + Sync {
     ) -> Result<(), RepositoryJobError>;
 }
 
+pub(crate) trait RepositoryJobCompletionObserver: Send + Sync {
+    fn observe_completion(&self, completion: RepositoryJobCompletion);
+}
+
 #[derive(Clone)]
 pub(crate) struct DejavuSyncService {
     inner: Arc<DejavuSyncServiceInner>,
@@ -216,6 +223,7 @@ struct DejavuSyncServiceInner {
     local_state_transaction: LocalStateTransaction,
     jobs: Mutex<JobRegistry>,
     lifecycle: OnceLock<Arc<dyn RepositoryJobLifecycle>>,
+    completion_observer: OnceLock<Arc<dyn RepositoryJobCompletionObserver>>,
 }
 
 #[derive(Default)]
@@ -245,6 +253,7 @@ impl DejavuSyncService {
                 },
                 jobs: Mutex::new(JobRegistry::default()),
                 lifecycle: OnceLock::new(),
+                completion_observer: OnceLock::new(),
             }),
         }
     }
@@ -261,6 +270,20 @@ impl DejavuSyncService {
         self.inner
             .lifecycle
             .set(lifecycle)
+            .map_err(|_| RepositoryJobError::RepositoryUnavailable)
+    }
+
+    pub(crate) fn install_completion_observer<Observer>(
+        &self,
+        observer: Arc<Observer>,
+    ) -> Result<(), RepositoryJobError>
+    where
+        Observer: RepositoryJobCompletionObserver + 'static,
+    {
+        let observer: Arc<dyn RepositoryJobCompletionObserver> = observer;
+        self.inner
+            .completion_observer
+            .set(observer)
             .map_err(|_| RepositoryJobError::RepositoryUnavailable)
     }
 
@@ -447,7 +470,7 @@ impl DejavuSyncService {
         if let Some(lifecycle) = self.inner.lifecycle.get() {
             let completion = RepositoryJobCompletion {
                 request: request.clone(),
-                result: completion_result,
+                result: completion_result.clone(),
             };
             schedule_result = Err(RepositoryJobError::StatusUnavailable);
             for _attempt in 1..=MAX_FINALIZATION_ATTEMPTS {
@@ -475,6 +498,13 @@ impl DejavuSyncService {
             .remove(&job_id);
         drop(_repository_guard);
         drop(ordinary_guard);
+
+        if let Some(observer) = self.inner.completion_observer.get() {
+            observer.observe_completion(RepositoryJobCompletion {
+                request: request.clone(),
+                result: completion_result,
+            });
+        }
 
         let owned_job_result = owned_operation_result
             .and(schedule_result)
@@ -576,6 +606,25 @@ impl DejavuSyncService {
     }
 }
 
+impl LocalMaintenanceTransaction for DejavuSyncService {
+    fn run(
+        &self,
+        repository_id: String,
+        operation: LocalMaintenanceOperation,
+    ) -> LocalPurgeTaskFuture {
+        let service = self.clone();
+        Box::pin(async move {
+            let ordinary_guard = Arc::clone(&service.inner.global_gate).read_owned().await;
+            let repository_lock = service.repository_lock(&repository_id);
+            let repository_guard = repository_lock.lock_owned().await;
+            let result = operation().await;
+            drop(repository_guard);
+            drop(ordinary_guard);
+            result
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
@@ -592,9 +641,13 @@ mod tests {
     use tokio::sync::{mpsc, oneshot, Notify, Semaphore};
 
     use super::{
-        AcceptedSyncJob, DejavuSyncService, RepositoryJobCompletion, RepositoryJobError,
-        RepositoryJobLifecycle, RepositoryJobRunner, RepositoryStatusSink, RepositorySyncResult,
-        SyncAttemptContext, SyncJobRequest, MAX_FINALIZATION_ATTEMPTS,
+        AcceptedSyncJob, DejavuSyncService, RepositoryJobCompletion,
+        RepositoryJobCompletionObserver, RepositoryJobError, RepositoryJobLifecycle,
+        RepositoryJobRunner, RepositoryStatusSink, RepositorySyncResult, SyncAttemptContext,
+        SyncJobRequest, MAX_FINALIZATION_ATTEMPTS,
+    };
+    use crate::dejavu_sync::maintenance::{
+        LocalMaintenanceOperation, LocalMaintenanceTransaction, LocalPurgeOutcome,
     };
     use crate::dejavu_sync::status::{
         load_repository_sync_status, RepositoryConflictRecord, RepositoryStatusEventEmitter,
@@ -1108,6 +1161,41 @@ mod tests {
             self.completions.lock().unwrap().push(completion);
             self.changed.notify_waiters();
             Ok(())
+        }
+    }
+
+    struct PostLockCompletionObserver {
+        service: std::sync::Weak<super::DejavuSyncServiceInner>,
+        sink: Arc<MemoryStatusSink>,
+        observations: Mutex<Vec<(bool, bool, bool)>>,
+        changed: Notify,
+    }
+
+    impl RepositoryJobCompletionObserver for PostLockCompletionObserver {
+        fn observe_completion(&self, completion: RepositoryJobCompletion) {
+            let service = self.service.upgrade().unwrap();
+            let global_released = service.global_gate.try_write().is_ok();
+            let repository_lock = service
+                .repository_locks
+                .lock()
+                .unwrap()
+                .get(&completion.request.repository_id)
+                .cloned()
+                .unwrap();
+            let repository_released = repository_lock.try_lock().is_ok();
+            let terminal_published = self
+                .sink
+                .statuses
+                .lock()
+                .unwrap()
+                .last()
+                .is_some_and(|status| status.phase == RepositorySyncPhase::Succeeded);
+            self.observations.lock().unwrap().push((
+                global_released,
+                repository_released,
+                terminal_published,
+            ));
+            self.changed.notify_waiters();
         }
     }
 
@@ -1773,5 +1861,69 @@ mod tests {
             lifecycle.completion_attempts.load(Ordering::SeqCst),
             MAX_FINALIZATION_ATTEMPTS as usize
         );
+    }
+
+    #[tokio::test]
+    async fn completion_observer_runs_after_terminal_status_and_owned_locks_are_released() {
+        let runner = Arc::new(SequenceRunner::new([Ok(RepositorySyncResult::default())]));
+        let sink = Arc::new(MemoryStatusSink::default());
+        let service = DejavuSyncService::new(Arc::clone(&runner), Arc::clone(&sink));
+        let observer = Arc::new(PostLockCompletionObserver {
+            service: Arc::downgrade(&service.inner),
+            sink: Arc::clone(&sink),
+            observations: Mutex::new(Vec::new()),
+            changed: Notify::new(),
+        });
+        service
+            .install_completion_observer(Arc::clone(&observer))
+            .unwrap();
+
+        let accepted = service
+            .enqueue(request("00000000-0000-4000-8000-000000000046"))
+            .await
+            .unwrap();
+        assert_eq!(accepted.wait_for_completion().await, Ok(()));
+
+        assert_eq!(
+            observer.observations.lock().unwrap().as_slice(),
+            &[(true, true, true)]
+        );
+    }
+
+    #[tokio::test]
+    async fn local_maintenance_transaction_waits_for_the_registered_repository_job() {
+        let (started_tx, mut started_rx) = mpsc::unbounded_channel();
+        let runner = Arc::new(ControlledRunner::new(started_tx));
+        let sink = Arc::new(MemoryStatusSink::default());
+        let service = DejavuSyncService::new(Arc::clone(&runner), sink);
+        let repository_id = "00000000-0000-4000-8000-000000000047";
+        let accepted = service.enqueue(request(repository_id)).await.unwrap();
+        assert_eq!(started_rx.recv().await.as_deref(), Some(repository_id));
+
+        let (maintenance_started_tx, mut maintenance_started_rx) = mpsc::unbounded_channel();
+        let operation: LocalMaintenanceOperation = Box::new(move || {
+            Box::pin(async move {
+                maintenance_started_tx.send(()).unwrap();
+                Ok(LocalPurgeOutcome::Skipped)
+            })
+        });
+        let maintenance = tokio::spawn(LocalMaintenanceTransaction::run(
+            &service,
+            repository_id.to_owned(),
+            operation,
+        ));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), maintenance_started_rx.recv())
+                .await
+                .is_err()
+        );
+
+        runner.release(1);
+        assert_eq!(accepted.wait_for_completion().await, Ok(()));
+        tokio::time::timeout(Duration::from_secs(1), maintenance_started_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(maintenance.await.unwrap(), Ok(LocalPurgeOutcome::Skipped));
     }
 }
