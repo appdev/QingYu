@@ -647,15 +647,14 @@ impl Store {
             }
             let file = self.open_raw_file(RawObjectKind::Index, id)?;
             let modified = file.metadata()?.modified()?;
-            addressed.push((modified, id.to_owned(), file));
+            let index = self.decode_index_reader_unlocked(id, rewound_clone(&file)?)?;
+            addressed.push((modified, index));
         }
         addressed.sort_by_key(|entry| std::cmp::Reverse(entry.0));
-
-        let mut indexes = Vec::with_capacity(addressed.len());
-        for (_modified, id, file) in addressed {
-            indexes.push(self.decode_index_reader_unlocked(&id, rewound_clone(&file)?)?);
-        }
-        Ok(indexes)
+        Ok(addressed
+            .into_iter()
+            .map(|(_modified, index)| index)
+            .collect())
     }
 
     pub(crate) fn decode_index_reader_unlocked<R: Read>(
