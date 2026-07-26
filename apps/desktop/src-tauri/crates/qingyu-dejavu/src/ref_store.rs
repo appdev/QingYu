@@ -17,6 +17,21 @@ use crate::{Index, RepoError, Store};
 const REF_MODE: u32 = 0o644;
 const MAX_REF_BYTES: u64 = 42;
 
+pub(crate) const MAX_REMOTE_REF_BYTES: u64 = MAX_REF_BYTES;
+
+pub(crate) fn parse_remote_ref(bytes: &[u8]) -> Result<String, RepoError> {
+    if bytes.len() as u64 > MAX_REMOTE_REF_BYTES {
+        return Err(RepoError::InvalidData(
+            "remote ref exceeds the 42-byte limit",
+        ));
+    }
+    let id = std::str::from_utf8(bytes)
+        .map_err(|_| RepoError::InvalidData("remote ref must be UTF-8"))?
+        .trim();
+    validate_id(id)?;
+    Ok(id.to_owned())
+}
+
 pub struct RefStore<'store> {
     store: &'store Store,
 }

@@ -11,10 +11,9 @@ use cap_fs_ext::DirExt;
 use cap_std::fs::Dir;
 
 use crate::path_security::cap_metadata_is_reparse;
+use crate::ref_store::{parse_remote_ref, MAX_REMOTE_REF_BYTES};
 use crate::store::{validate_id, RawObjectKind};
 use crate::{Cloud, CloudError, File, RefStore, RemoteLockGuard, Repo, RepoError, Store};
-
-const MAX_REMOTE_REF_BYTES: u64 = 42;
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct PurgeStat {
@@ -28,7 +27,7 @@ struct CloudIndexes {
     indexes: Option<Vec<CloudIndex>>,
 }
 
-#[derive(serde::Deserialize, serde::Serialize)]
+#[derive(Default, serde::Deserialize, serde::Serialize)]
 #[serde(default)]
 struct CloudIndex {
     id: String,
@@ -38,17 +37,6 @@ struct CloudIndex {
     system_name: String,
     #[serde(rename = "systemOS")]
     system_os: String,
-}
-
-impl Default for CloudIndex {
-    fn default() -> Self {
-        Self {
-            id: String::new(),
-            system_id: String::new(),
-            system_name: String::new(),
-            system_os: String::new(),
-        }
-    }
 }
 
 impl Repo {
@@ -118,7 +106,7 @@ where
             .get_bounded(&reference.key, MAX_REMOTE_REF_BYTES)
             .await?;
         check_remote_operation(guard, &mut is_cancelled)?;
-        referenced_index_ids.insert(String::from_utf8_lossy(&bytes).trim().to_owned());
+        referenced_index_ids.insert(parse_remote_ref(&bytes)?);
     }
 
     let unreferenced_index_ids = index_ids
@@ -129,17 +117,7 @@ where
     let mut referenced_object_ids = BTreeSet::new();
     for index_id in &referenced_index_ids {
         check_remote_operation(guard, &mut is_cancelled)?;
-        let key = format!("indexes/{index_id}");
-        let index = match repo
-            .download_raw_to_store(cloud, &key, RawObjectKind::Index, index_id)
-            .await
-        {
-            Ok(_) => {
-                let _operation = repo.store.lock_operation()?;
-                repo.store.get_index_unlocked(index_id)
-            }
-            Err(error) => Err(error),
-        };
+        let index = download_cloud_index(repo, cloud, index_id).await;
         let Ok(index) = index else {
             // Dejavu retains a ref target whose index is missing or corrupt, but it cannot
             // contribute file reachability when the index payload cannot be decoded.
@@ -202,13 +180,30 @@ where
         check_remote_operation(guard, &mut is_cancelled)?;
         cloud.remove(&format!("indexes/{id}")).await?;
     }
+    let indexes_v2 =
+        prepare_cloud_indexes_v2(repo, cloud, guard, &referenced_index_ids, &mut is_cancelled)
+            .await?;
     check_remote_operation(guard, &mut is_cancelled)?;
-    purge_cloud_indexes_v2(repo, cloud, guard, &referenced_index_ids, &mut is_cancelled).await?;
+    publish_cloud_indexes_v2(cloud, guard, indexes_v2, &mut is_cancelled).await?;
     for id in unreferenced_objects {
         check_remote_operation(guard, &mut is_cancelled)?;
         cloud.remove(&object_key(&id)?).await?;
     }
     Ok(stat)
+}
+
+async fn download_cloud_index(
+    repo: &Repo,
+    cloud: &Arc<dyn Cloud>,
+    id: &str,
+) -> Result<crate::Index, RepoError> {
+    validate_id(id)?;
+    let (staged, _written) = repo
+        .stage_cloud_download(cloud, &format!("indexes/{id}"))
+        .await?;
+    let _operation = repo.store.lock_operation()?;
+    repo.store
+        .decode_index_reader_unlocked(id, staged.reader()?)
 }
 
 async fn download_cloud_file(
@@ -222,30 +217,33 @@ async fn download_cloud_file(
     repo.store.get_file_unlocked(id)
 }
 
-async fn purge_cloud_indexes_v2<F>(
+async fn prepare_cloud_indexes_v2<F>(
     repo: &Repo,
     cloud: &Arc<dyn Cloud>,
     guard: &RemoteLockGuard,
     referenced_index_ids: &BTreeSet<String>,
     is_cancelled: &mut F,
-) -> Result<(), RepoError>
+) -> Result<Option<Vec<u8>>, RepoError>
 where
     F: FnMut() -> bool,
 {
     check_remote_operation(guard, is_cancelled)?;
     let staged = match repo.stage_cloud_download(cloud, "indexes-v2.json").await {
         Ok((staged, _written)) => staged,
-        Err(RepoError::Cloud(CloudError::NotFound)) => return Ok(()),
+        Err(RepoError::Cloud(CloudError::NotFound)) => return Ok(None),
         Err(error) => return Err(error),
     };
-    let decoded =
-        zstd::stream::decode_all(staged.reader()?.into_std()).map_err(RepoError::Compression)?;
-    let mut indexes = if decoded.is_empty() {
-        CloudIndexes::default()
-    } else {
+    check_remote_operation(guard, is_cancelled)?;
+    let mut indexes = match repo
+        .store
+        .deserialize_compressed_reader::<CloudIndexes, _>(staged.reader()?)
+    {
+        Ok(indexes) => indexes,
         // The pinned Go decoder logs malformed JSON and leaves this value at its default.
-        serde_json::from_slice(&decoded).unwrap_or_default()
+        Err(RepoError::Serialization(_)) => CloudIndexes::default(),
+        Err(error) => return Err(error),
     };
+    check_remote_operation(guard, is_cancelled)?;
     let retained = indexes
         .indexes
         .take()
@@ -259,8 +257,23 @@ where
         Some(retained)
     };
     let json = serde_json::to_vec_pretty(&indexes)?;
-    let encoded = zstd::stream::encode_all(json.as_slice(), zstd::DEFAULT_COMPRESSION_LEVEL)
-        .map_err(RepoError::Compression)?;
+    let encoded = repo.store.compress(&json)?;
+    check_remote_operation(guard, is_cancelled)?;
+    Ok(Some(encoded))
+}
+
+async fn publish_cloud_indexes_v2<F>(
+    cloud: &Arc<dyn Cloud>,
+    guard: &RemoteLockGuard,
+    encoded: Option<Vec<u8>>,
+    is_cancelled: &mut F,
+) -> Result<(), RepoError>
+where
+    F: FnMut() -> bool,
+{
+    let Some(encoded) = encoded else {
+        return Ok(());
+    };
     check_remote_operation(guard, is_cancelled)?;
     let written = cloud.put("indexes-v2.json", &encoded, true).await?;
     if written != encoded.len() as u64 {
@@ -944,7 +957,7 @@ mod tests {
             ]
         }))
         .unwrap();
-        let indexes_v2 = zstd::stream::encode_all(indexes_v2.as_slice(), 0).unwrap();
+        let indexes_v2 = local.repo.store.compress(&indexes_v2).unwrap();
         cloud
             .put("indexes-v2.json", &indexes_v2, true)
             .await
@@ -991,6 +1004,44 @@ mod tests {
         for id in [UNREFERENCED_FILE, UNREACHABLE_CHUNK] {
             assert_eq!(cloud.list(&remote_object_key(id)).await.unwrap().len(), 1);
         }
+    }
+
+    async fn assert_remote_purge_stopped_at_indexes_v2(
+        cloud: &LocalCloud,
+        original_indexes_v2: &[u8],
+    ) {
+        assert!(cloud
+            .list(&format!("indexes/{UNREFERENCED_INDEX}"))
+            .await
+            .unwrap()
+            .is_empty());
+        assert!(cloud.list("check/indexes/").await.unwrap().is_empty());
+        for id in [UNREFERENCED_FILE, UNREACHABLE_CHUNK] {
+            assert_eq!(cloud.list(&remote_object_key(id)).await.unwrap().len(), 1);
+        }
+        assert_eq!(
+            cloud
+                .get_bounded("indexes-v2.json", u64::MAX)
+                .await
+                .unwrap(),
+            original_indexes_v2
+        );
+    }
+
+    fn oversized_zstd_window_frame(decoded_size: usize) -> Vec<u8> {
+        assert!(decoded_size <= u32::MAX as usize);
+        let mut frame = vec![0x28, 0xb5, 0x2f, 0xfd, 0xa0];
+        frame.extend_from_slice(&(decoded_size as u32).to_le_bytes());
+        let mut remaining = decoded_size;
+        while remaining > 0 {
+            let block_size = remaining.min(128 * 1024);
+            remaining -= block_size;
+            let last_block = usize::from(remaining == 0);
+            let header = (block_size << 3) | (1 << 1) | last_block;
+            frame.extend_from_slice(&(header as u32).to_le_bytes()[..3]);
+            frame.push(b'x');
+        }
+        frame
     }
 
     #[tokio::test]
@@ -1103,9 +1154,12 @@ mod tests {
         let truncated = format!(
             r#"{{"indexes":[{{"id":"{RETAINED_INDEX_REF}","systemID":"a","systemName":"A","systemOS":"test"}},{{"id":"#
         );
-        let encoded =
-            zstd::stream::encode_all(truncated.as_bytes(), zstd::DEFAULT_COMPRESSION_LEVEL)
-                .unwrap();
+        let encoded = fixture
+            .local
+            .repo
+            .store
+            .compress(truncated.as_bytes())
+            .unwrap();
         fixture
             .cloud
             .put("indexes-v2.json", &encoded, true)
@@ -1129,6 +1183,180 @@ mod tests {
         let decoded = zstd::stream::decode_all(encoded.as_slice()).unwrap();
         let indexes: serde_json::Value = serde_json::from_slice(&decoded).unwrap();
         assert_eq!(indexes["indexes"], serde_json::Value::Null);
+    }
+
+    #[tokio::test]
+    async fn purge_cloud_indexes_v2_rejects_oversized_window_before_object_deletes() {
+        let fixture = cloud_fixture().await;
+        let encoded = oversized_zstd_window_frame(600_000);
+        fixture
+            .cloud
+            .put("indexes-v2.json", &encoded, true)
+            .await
+            .unwrap();
+        let cloud: Arc<dyn Cloud> = fixture.cloud.clone();
+        let cancelled = AtomicBool::new(false);
+
+        let error = fixture
+            .local
+            .repo
+            .purge_cloud(cloud, &cancelled)
+            .await
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            RepoError::InvalidData(
+                "zstd frame is invalid or requires a window larger than 512 KiB"
+            )
+        ));
+        assert_remote_purge_stopped_at_indexes_v2(&fixture.cloud, &encoded).await;
+    }
+
+    #[tokio::test]
+    async fn purge_cloud_indexes_v2_rejects_truncated_zstd_before_object_deletes() {
+        let fixture = cloud_fixture().await;
+        let json = serde_json::to_vec(&serde_json::json!({
+            "indexes": [{
+                "id": RETAINED_INDEX_REF,
+                "systemID": "device-a",
+                "systemName": "QingYu A",
+                "systemOS": "test"
+            }]
+        }))
+        .unwrap();
+        let mut encoded = fixture.local.repo.store.compress(&json).unwrap();
+        encoded.pop().unwrap();
+        fixture
+            .cloud
+            .put("indexes-v2.json", &encoded, true)
+            .await
+            .unwrap();
+        let cloud: Arc<dyn Cloud> = fixture.cloud.clone();
+        let cancelled = AtomicBool::new(false);
+
+        fixture
+            .local
+            .repo
+            .purge_cloud(cloud, &cancelled)
+            .await
+            .unwrap_err();
+
+        assert_remote_purge_stopped_at_indexes_v2(&fixture.cloud, &encoded).await;
+    }
+
+    #[tokio::test]
+    async fn purge_cloud_rejects_invalid_refs_before_any_delete() {
+        let invalid_refs = [
+            ("empty", Vec::new()),
+            ("non-utf8", vec![0xff; 40]),
+            ("39-bytes", vec![b'a'; 39]),
+            ("uppercase", vec![b'A'; 40]),
+            ("non-hex", vec![b'g'; 40]),
+            ("over-42-bytes", vec![b'a'; 43]),
+        ];
+
+        for (name, invalid_ref) in invalid_refs {
+            let fixture = cloud_fixture().await;
+            fixture
+                .cloud
+                .put("refs/latest", &invalid_ref, true)
+                .await
+                .unwrap();
+            let cloud: Arc<dyn Cloud> = fixture.cloud.clone();
+            let cancelled = AtomicBool::new(false);
+
+            fixture
+                .local
+                .repo
+                .purge_cloud(cloud, &cancelled)
+                .await
+                .unwrap_err();
+
+            assert_remote_unreferenced_candidates_untouched(&fixture.cloud).await;
+            assert!(
+                fixture.cloud.list("lock-sync").await.unwrap().is_empty(),
+                "{name}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn purge_cloud_decodes_remote_ref_index_without_reading_corrupt_local_copy() {
+        let fixture = cloud_fixture().await;
+        let local_index_path = fixture
+            .local
+            .repo
+            .store
+            .index_path(RETAINED_INDEX_REF)
+            .unwrap();
+        let local_bytes = b"corrupt-local-index";
+        fs::write(&local_index_path, local_bytes).unwrap();
+        let cloud: Arc<dyn Cloud> = fixture.cloud.clone();
+        let cancelled = AtomicBool::new(false);
+
+        fixture
+            .local
+            .repo
+            .purge_cloud(cloud, &cancelled)
+            .await
+            .unwrap();
+
+        assert_eq!(fs::read(local_index_path).unwrap(), local_bytes);
+        for id in [RETAINED_FILE_REF, RETAINED_CHUNK_REF] {
+            assert_eq!(
+                fixture
+                    .cloud
+                    .list(&remote_object_key(id))
+                    .await
+                    .unwrap()
+                    .len(),
+                1,
+                "{id}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn purge_cloud_decodes_remote_ref_index_without_replacing_different_valid_local_raw() {
+        let fixture = cloud_fixture().await;
+        let local_index_path = fixture
+            .local
+            .repo
+            .store
+            .index_path(RETAINED_INDEX_REF)
+            .unwrap();
+        let different = index(RETAINED_INDEX_REF, UNREFERENCED_FILE, RETAINED_CHECK_REF);
+        let local_bytes = fixture
+            .local
+            .repo
+            .store
+            .compress(serde_json::to_vec(&different).unwrap().as_slice())
+            .unwrap();
+        fs::write(&local_index_path, &local_bytes).unwrap();
+        let cloud: Arc<dyn Cloud> = fixture.cloud.clone();
+        let cancelled = AtomicBool::new(false);
+
+        fixture
+            .local
+            .repo
+            .purge_cloud(cloud, &cancelled)
+            .await
+            .unwrap();
+
+        assert_eq!(fs::read(local_index_path).unwrap(), local_bytes);
+        for id in [RETAINED_FILE_REF, RETAINED_CHUNK_REF] {
+            assert_eq!(
+                fixture
+                    .cloud
+                    .list(&remote_object_key(id))
+                    .await
+                    .unwrap()
+                    .len(),
+                1,
+                "{id}"
+            );
+        }
     }
 
     #[tokio::test]

@@ -11,6 +11,7 @@ use ignore::gitignore::GitignoreBuilder;
 use time::OffsetDateTime;
 
 use crate::path_security::cap_metadata_is_reparse;
+use crate::ref_store::{parse_remote_ref, MAX_REMOTE_REF_BYTES};
 use crate::store::{RawObjectKind, Store, MAX_CHUNK_RAW_SIZE};
 use crate::{
     random_hash, with_working_tree_permit, CheckIndex, CheckIndexFile, Cloud, CloudError,
@@ -23,7 +24,6 @@ const SEVEN_MINUTES_MILLIS: i64 = 7 * 60 * 1_000;
 const CLOUD_LATEST_KEY: &str = "refs/latest";
 const CLOUD_SEQUENCE_PREFIX: &str = "refs/latest-";
 const QINGYU_SYNCIGNORE_PATH: &str = "/.qingyu/syncignore";
-const MAX_REMOTE_REF_BYTES: usize = 42;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum SyncMode {
@@ -583,7 +583,7 @@ async fn download_cloud_latest(
     let latest_bytes = match tracked_get(
         cloud,
         CLOUD_LATEST_KEY,
-        MAX_REMOTE_REF_BYTES as u64,
+        MAX_REMOTE_REF_BYTES,
         TransferKind::File,
         traffic,
     )
@@ -610,19 +610,6 @@ async fn download_cloud_latest(
         direct_latest_id: latest_id,
         sequence_objects: objects,
     }))
-}
-
-fn parse_remote_ref(bytes: &[u8]) -> Result<String, RepoError> {
-    if bytes.len() > MAX_REMOTE_REF_BYTES {
-        return Err(RepoError::InvalidData(
-            "remote ref exceeds the 42-byte limit",
-        ));
-    }
-    let id = std::str::from_utf8(bytes)
-        .map_err(|_| RepoError::InvalidData("remote ref must be UTF-8"))?
-        .trim();
-    crate::store::validate_id(id)?;
-    Ok(id.to_owned())
 }
 
 async fn ensure_remote_index(
@@ -1165,7 +1152,7 @@ mod tests {
     use tokio::io::AsyncWriteExt;
     use tokio::sync::Notify;
 
-    use super::MAX_REMOTE_REF_BYTES;
+    use crate::ref_store::MAX_REMOTE_REF_BYTES;
 
     use crate::{
         Cloud, CloudError, CloudObject, CloudUploadSource, Device, File, LocalCloud,
@@ -1533,7 +1520,7 @@ mod tests {
         assert!(uploaded.removes.is_empty());
         assert!(uploaded.conflicts.is_empty());
         assert!(cloud
-            .get_bounded("refs/latest", MAX_REMOTE_REF_BYTES as u64)
+            .get_bounded("refs/latest", MAX_REMOTE_REF_BYTES)
             .await
             .is_ok());
         assert!(uploader.repo.latest_sync().unwrap().is_some());
@@ -2002,7 +1989,7 @@ mod tests {
         write_file(&first.data, "same.md", b"remote", 1_700_000_010_000);
         sync(&first.repo, inner.clone()).await;
         let remote_ref_before = inner
-            .get_bounded("refs/latest", MAX_REMOTE_REF_BYTES as u64)
+            .get_bounded("refs/latest", MAX_REMOTE_REF_BYTES)
             .await
             .unwrap();
 
@@ -2053,7 +2040,7 @@ mod tests {
         );
         assert_eq!(
             inner
-                .get_bounded("refs/latest", MAX_REMOTE_REF_BYTES as u64)
+                .get_bounded("refs/latest", MAX_REMOTE_REF_BYTES)
                 .await
                 .unwrap(),
             remote_ref_before
@@ -2340,7 +2327,7 @@ mod tests {
         sync(&remote.repo, inner.clone()).await;
         let cloud_id = String::from_utf8(
             inner
-                .get_bounded("refs/latest", MAX_REMOTE_REF_BYTES as u64)
+                .get_bounded("refs/latest", MAX_REMOTE_REF_BYTES)
                 .await
                 .unwrap(),
         )
@@ -2410,7 +2397,7 @@ mod tests {
         assert_eq!(local.repo.latest_sync().unwrap().unwrap().id, expected);
         assert_eq!(
             inner
-                .get_bounded("refs/latest", MAX_REMOTE_REF_BYTES as u64)
+                .get_bounded("refs/latest", MAX_REMOTE_REF_BYTES)
                 .await
                 .unwrap(),
             expected.as_bytes()
@@ -3166,7 +3153,7 @@ mod tests {
             write_file(&local.data, "doc.md", b"base", 1_700_000_000_000);
             sync(&local.repo, inner.clone()).await;
             let latest_before = inner
-                .get_bounded("refs/latest", MAX_REMOTE_REF_BYTES as u64)
+                .get_bounded("refs/latest", MAX_REMOTE_REF_BYTES)
                 .await
                 .unwrap();
             let local_before = local.repo.latest().unwrap().unwrap().id;
@@ -3182,7 +3169,7 @@ mod tests {
             ));
             assert_eq!(
                 inner
-                    .get_bounded("refs/latest", MAX_REMOTE_REF_BYTES as u64)
+                    .get_bounded("refs/latest", MAX_REMOTE_REF_BYTES)
                     .await
                     .unwrap(),
                 latest_before
@@ -3195,7 +3182,7 @@ mod tests {
             write_file(&local.data, "doc.md", b"base", 1_700_000_000_000);
             sync(&local.repo, inner.clone()).await;
             let latest_before = inner
-                .get_bounded("refs/latest", MAX_REMOTE_REF_BYTES as u64)
+                .get_bounded("refs/latest", MAX_REMOTE_REF_BYTES)
                 .await
                 .unwrap();
             let latest_id = String::from_utf8(latest_before.clone()).unwrap();
@@ -3216,7 +3203,7 @@ mod tests {
             ));
             assert_eq!(
                 inner
-                    .get_bounded("refs/latest", MAX_REMOTE_REF_BYTES as u64)
+                    .get_bounded("refs/latest", MAX_REMOTE_REF_BYTES)
                     .await
                     .unwrap(),
                 latest_before
@@ -3275,7 +3262,7 @@ mod tests {
             .is_err());
         let partial_latest = String::from_utf8(
             inner
-                .get_bounded("refs/latest", MAX_REMOTE_REF_BYTES as u64)
+                .get_bounded("refs/latest", MAX_REMOTE_REF_BYTES)
                 .await
                 .unwrap(),
         )
@@ -3298,7 +3285,7 @@ mod tests {
         assert_eq!(
             String::from_utf8(
                 inner
-                    .get_bounded("refs/latest", MAX_REMOTE_REF_BYTES as u64)
+                    .get_bounded("refs/latest", MAX_REMOTE_REF_BYTES)
                     .await
                     .unwrap(),
             )

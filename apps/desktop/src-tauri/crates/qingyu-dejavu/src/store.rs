@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::io::{BufReader, Cursor, Read, Seek, SeekFrom, Write};
 use std::path::{Component, Path, PathBuf};
 use std::pin::Pin;
@@ -622,7 +622,16 @@ impl Store {
 
     pub(crate) fn get_index_unlocked(&self, id: &str) -> Result<Index, RepoError> {
         let file = self.open_raw_file(RawObjectKind::Index, id)?;
-        let index = self.deserialize_compressed_reader(rewound_clone(&file)?)?;
+        self.decode_index_reader_unlocked(id, rewound_clone(&file)?)
+    }
+
+    pub(crate) fn decode_index_reader_unlocked<R: Read>(
+        &self,
+        id: &str,
+        reader: R,
+    ) -> Result<Index, RepoError> {
+        validate_id(id)?;
+        let index = self.deserialize_compressed_reader(reader)?;
         self.validate_index(id, &index)?;
         Ok(index)
     }
@@ -740,7 +749,7 @@ impl Store {
         self.decompress(&compressed, limit)
     }
 
-    fn compress(&self, bytes: &[u8]) -> Result<Vec<u8>, RepoError> {
+    pub(crate) fn compress(&self, bytes: &[u8]) -> Result<Vec<u8>, RepoError> {
         self.lock_compressor()?
             .compress(bytes)
             .map_err(RepoError::Compression)
@@ -787,7 +796,7 @@ impl Store {
         Ok(decoded)
     }
 
-    fn deserialize_compressed_reader<T, R>(&self, reader: R) -> Result<T, RepoError>
+    pub(crate) fn deserialize_compressed_reader<T, R>(&self, reader: R) -> Result<T, RepoError>
     where
         T: DeserializeOwned,
         R: Read,
@@ -814,18 +823,22 @@ impl Store {
         };
         let decoder =
             zstd::stream::read::Decoder::with_context(BufReader::new(tracked_reader), &mut context);
-        serde_json::from_reader(decoder).map_err(|error| {
-            if error.is_io() {
-                match source_error.borrow_mut().take() {
-                    Some(error) => RepoError::Io(error),
-                    None => RepoError::InvalidData(
-                        "zstd frame is invalid or requires a window larger than 512 KiB",
-                    ),
-                }
-            } else {
-                RepoError::Serialization(error)
-            }
-        })
+        let decoder_error = Rc::new(Cell::new(false));
+        let mut tracked_decoder = DecoderErrorReader {
+            inner: decoder,
+            failed: Rc::clone(&decoder_error),
+        };
+        let parsed = serde_json::from_reader(&mut tracked_decoder);
+        let drain = std::io::copy(&mut tracked_decoder, &mut std::io::sink());
+        if let Some(error) = source_error.borrow_mut().take() {
+            return Err(RepoError::Io(error));
+        }
+        if decoder_error.get() || drain.is_err() {
+            return Err(RepoError::InvalidData(
+                "zstd frame is invalid or requires a window larger than 512 KiB",
+            ));
+        }
+        parsed.map_err(RepoError::Serialization)
     }
 
     fn lock_compressor(
@@ -848,6 +861,23 @@ impl Store {
 struct SourceErrorReader<R> {
     inner: R,
     source_error: Rc<RefCell<Option<std::io::Error>>>,
+}
+
+struct DecoderErrorReader<R> {
+    inner: R,
+    failed: Rc<Cell<bool>>,
+}
+
+impl<R: Read> Read for DecoderErrorReader<R> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        match self.inner.read(buffer) {
+            Ok(read) => Ok(read),
+            Err(error) => {
+                self.failed.set(true);
+                Err(error)
+            }
+        }
+    }
 }
 
 impl<R: Read> Read for SourceErrorReader<R> {
