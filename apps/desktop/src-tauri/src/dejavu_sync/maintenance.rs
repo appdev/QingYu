@@ -456,15 +456,18 @@ impl LocalMaintenanceController {
             repository_id: repository_id.clone(),
             token: Arc::clone(&attempt),
         };
+        let executor = Arc::clone(&inner.executor);
+        let execution_repository_id = repository_id.clone();
+        let execution_cancelled = Arc::clone(&attempt.cancelled);
+        let operation: LocalMaintenanceOperation =
+            Box::new(move || executor.execute(execution_repository_id, now, execution_cancelled));
+        // `run` owns the service admission boundary. Construct this future
+        // before spawning so an accepted purge is registered synchronously and
+        // cannot be overtaken by a repository/global reservation before the
+        // detached task receives its first poll.
+        let mut execution = inner.transaction.run(repository_id.clone(), operation);
         handle.spawn(async move {
             let _running_guard = running_guard;
-            let executor = Arc::clone(&inner.executor);
-            let execution_repository_id = repository_id.clone();
-            let execution_cancelled = Arc::clone(&attempt.cancelled);
-            let operation: LocalMaintenanceOperation = Box::new(move || {
-                executor.execute(execution_repository_id, now, execution_cancelled)
-            });
-            let mut execution = inner.transaction.run(repository_id.clone(), operation);
             let mut timeout = inner.timer.sleep(LOCAL_MAINTENANCE_TIMEOUT);
             let _result = tokio::select! {
                 result = &mut execution => result,
@@ -1832,14 +1835,15 @@ mod tests {
         assert!(controller
             .notify_sync_completion(repository_id, SyncTrigger::Manual, true)
             .unwrap());
+        assert_eq!(
+            transaction.repositories.lock().unwrap().as_slice(),
+            &[repository_id.to_owned()],
+            "the repository transaction must register before the detached task can be polled"
+        );
         wait_for_status_writes(&statuses, 1).await;
 
         assert!(observed_active.load(Ordering::SeqCst));
         assert!(!transaction_active.load(Ordering::SeqCst));
-        assert_eq!(
-            transaction.repositories.lock().unwrap().as_slice(),
-            &[repository_id.to_owned()]
-        );
     }
 
     #[tokio::test]
