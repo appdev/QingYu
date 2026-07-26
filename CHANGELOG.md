@@ -1,3 +1,11 @@
+## [2.0.0-beta.5](https://github.com/markrahq/markra/compare/v2.0.0-beta.4...v2.0.0-beta.5) (2026-07-26)
+
+### Features
+
+* **app:** add collapsible file list controls ([#578](https://github.com/markrahq/markra/issues/578)) ([5c06c29](https://github.com/markrahq/markra/commit/5c06c294e6b3742a82a88e7262bd948ee61bffc5)), closes [#575](https://github.com/markrahq/markra/issues/575)
+* **settings:** add custom theme toggle ([#577](https://github.com/markrahq/markra/issues/577)) ([e90f862](https://github.com/markrahq/markra/commit/e90f862b02768dadfead21c0bbef61f83022464e))
+* **shortcuts:** support Alt-only keybindings ([#573](https://github.com/markrahq/markra/issues/573)) ([0d9216f](https://github.com/markrahq/markra/commit/0d9216f3a0db59f49d05f8d202c43635e4b110a3))
+
 ## [2.0.0-beta.4](https://github.com/markrahq/markra/compare/v2.0.0-beta.3...v2.0.0-beta.4) (2026-07-25)
 
 ### Bug Fixes
