@@ -1,3 +1,11 @@
+## [2.0.0-beta.7](https://github.com/markrahq/markra/compare/v2.0.0-beta.6...v2.0.0-beta.7) (2026-07-26)
+
+### Features
+
+* **app:** add dropped file tab option ([#588](https://github.com/markrahq/markra/issues/588)) ([85df305](https://github.com/markrahq/markra/commit/85df305ab4a7c35e32f5f03aff5d7425e34a1fee)), closes [#576](https://github.com/markrahq/markra/issues/576)
+* **editor:** add heading theme tokens ([#587](https://github.com/markrahq/markra/issues/587)) ([f304ff9](https://github.com/markrahq/markra/commit/f304ff9053d4e9babf675b87232b969d818fdbd9))
+* **editor:** support Chinese slash-menu trigger ([#589](https://github.com/markrahq/markra/issues/589)) ([f40a6b9](https://github.com/markrahq/markra/commit/f40a6b95444b5c46293a4f5a00f5c0be9c9ba80d))
+
 ## [2.0.0-beta.6](https://github.com/markrahq/markra/compare/v2.0.0-beta.5...v2.0.0-beta.6) (2026-07-26)
 
 ### Features
