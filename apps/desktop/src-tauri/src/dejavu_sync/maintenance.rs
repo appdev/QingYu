@@ -1,9 +1,11 @@
 use std::collections::{HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
+use std::future::Future;
 use std::io;
 use std::path::Path;
+use std::pin::Pin;
 use std::sync::atomic::AtomicBool;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use cap_fs_ext::DirExt;
 use cap_std::fs::{Dir, Metadata};
@@ -12,7 +14,9 @@ use time::{Date, Duration, Month, OffsetDateTime, PrimitiveDateTime, Time, UtcOf
 
 use super::local_state::RepositoryBinding;
 use super::service::RepositoryJobError;
+use super::status::{RepositoryMaintenance, RepositoryStatusStore};
 use crate::storage_capability::{directory_identity, open_canonical_directory_nofollow};
+use crate::sync_config::status::SyncTrigger;
 use crate::sync_config::storage::open_app_data;
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -104,6 +108,176 @@ impl LocalPurgeExecutor {
         })
         .await
         .map_err(|_| RepositoryJobError::RepositoryUnavailable)?
+    }
+}
+
+pub(crate) type LocalPurgeTaskFuture =
+    Pin<Box<dyn Future<Output = Result<LocalPurgeOutcome, RepositoryJobError>> + Send + 'static>>;
+
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) trait LocalPurgeTaskExecutor: Send + Sync {
+    fn execute(
+        &self,
+        repository_id: String,
+        now: OffsetDateTime,
+        cancelled: Arc<AtomicBool>,
+    ) -> LocalPurgeTaskFuture;
+}
+
+impl LocalPurgeTaskExecutor for LocalPurgeExecutor {
+    fn execute(
+        &self,
+        repository_id: String,
+        now: OffsetDateTime,
+        cancelled: Arc<AtomicBool>,
+    ) -> LocalPurgeTaskFuture {
+        let executor = self.clone();
+        Box::pin(async move {
+            LocalPurgeExecutor::execute(&executor, repository_id, now, cancelled).await
+        })
+    }
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) trait LocalMaintenanceStatusStore: Send + Sync {
+    fn load_maintenance(
+        &self,
+        repository_id: &str,
+    ) -> Result<RepositoryMaintenance, RepositoryJobError>;
+
+    fn set_maintenance(
+        &self,
+        repository_id: &str,
+        maintenance: RepositoryMaintenance,
+    ) -> Result<RepositoryMaintenance, RepositoryJobError>;
+}
+
+impl LocalMaintenanceStatusStore for RepositoryStatusStore {
+    fn load_maintenance(
+        &self,
+        repository_id: &str,
+    ) -> Result<RepositoryMaintenance, RepositoryJobError> {
+        RepositoryStatusStore::load_maintenance(self, repository_id)
+    }
+
+    fn set_maintenance(
+        &self,
+        repository_id: &str,
+        maintenance: RepositoryMaintenance,
+    ) -> Result<RepositoryMaintenance, RepositoryJobError> {
+        RepositoryStatusStore::set_maintenance(self, repository_id, maintenance)
+    }
+}
+
+struct LocalMaintenanceControllerInner {
+    executor: Arc<dyn LocalPurgeTaskExecutor>,
+    statuses: Arc<dyn LocalMaintenanceStatusStore>,
+    clock: Arc<dyn Fn() -> OffsetDateTime + Send + Sync>,
+    running: Mutex<HashMap<String, Arc<AtomicBool>>>,
+}
+
+#[derive(Clone)]
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) struct LocalMaintenanceController {
+    inner: Arc<LocalMaintenanceControllerInner>,
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+impl LocalMaintenanceController {
+    pub(crate) fn new<Executor, Status, Clock>(
+        executor: Arc<Executor>,
+        statuses: Arc<Status>,
+        clock: Clock,
+    ) -> Self
+    where
+        Executor: LocalPurgeTaskExecutor + 'static,
+        Status: LocalMaintenanceStatusStore + 'static,
+        Clock: Fn() -> OffsetDateTime + Send + Sync + 'static,
+    {
+        let executor: Arc<dyn LocalPurgeTaskExecutor> = executor;
+        let statuses: Arc<dyn LocalMaintenanceStatusStore> = statuses;
+        Self {
+            inner: Arc::new(LocalMaintenanceControllerInner {
+                executor,
+                statuses,
+                clock: Arc::new(clock),
+                running: Mutex::new(HashMap::new()),
+            }),
+        }
+    }
+
+    pub(crate) fn notify_sync_completion(
+        &self,
+        repository_id: &str,
+        trigger: SyncTrigger,
+        succeeded: bool,
+    ) -> Result<bool, RepositoryJobError> {
+        if !succeeded || trigger == SyncTrigger::SettingsExit {
+            return Ok(false);
+        }
+        self.start_if_due(repository_id, false)
+    }
+
+    pub(crate) fn try_daily(&self, repository_id: &str) -> Result<bool, RepositoryJobError> {
+        self.start_if_due(repository_id, true)
+    }
+
+    fn start_if_due(
+        &self,
+        repository_id: &str,
+        require_first_success_marker: bool,
+    ) -> Result<bool, RepositoryJobError> {
+        let handle = tokio::runtime::Handle::try_current()
+            .map_err(|_| RepositoryJobError::RepositoryUnavailable)?;
+        let now = (self.inner.clock)();
+        let mut running = self.inner.running.lock().unwrap();
+        if running.contains_key(repository_id) {
+            return Ok(false);
+        }
+        let maintenance = self.inner.statuses.load_maintenance(repository_id)?;
+        match maintenance.last_local_purge_at {
+            None if require_first_success_marker => return Ok(false),
+            None => {}
+            Some(last) => {
+                let due_at = maintenance
+                    .next_local_purge_at
+                    .unwrap_or(last + Duration::hours(6));
+                if now < due_at {
+                    return Ok(false);
+                }
+            }
+        }
+        let cancelled = Arc::new(AtomicBool::new(false));
+        running.insert(repository_id.to_owned(), Arc::clone(&cancelled));
+        drop(running);
+
+        let inner = Arc::clone(&self.inner);
+        let repository_id = repository_id.to_owned();
+        handle.spawn(async move {
+            let _result = inner
+                .executor
+                .execute(repository_id.clone(), now, cancelled)
+                .await;
+            let completed_at = (inner.clock)();
+            let _status_result = inner.statuses.set_maintenance(
+                &repository_id,
+                RepositoryMaintenance {
+                    last_local_purge_at: Some(completed_at),
+                    next_local_purge_at: Some(completed_at + Duration::hours(6)),
+                },
+            );
+            inner.running.lock().unwrap().remove(&repository_id);
+        });
+        Ok(true)
+    }
+
+    #[cfg(test)]
+    fn is_running(&self, repository_id: &str) -> bool {
+        self.inner
+            .running
+            .lock()
+            .unwrap()
+            .contains_key(repository_id)
     }
 }
 
@@ -473,8 +647,9 @@ fn metadata_is_reparse(metadata: &Metadata) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::{HashMap, VecDeque};
     use std::fs;
-    use std::sync::atomic::AtomicBool;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
     use qingyu_dejavu::{Index, PurgeStat};
@@ -483,10 +658,135 @@ mod tests {
 
     use super::{
         clean_expired_conflict_history, clean_startup_residue, os_random_index,
-        select_retained_indexes, LocalPurgeExecutor, LocalPurgeOutcome, LocalPurgeRepositoryOps,
+        select_retained_indexes, LocalMaintenanceController, LocalMaintenanceStatusStore,
+        LocalPurgeExecutor, LocalPurgeOutcome, LocalPurgeRepositoryOps, LocalPurgeTaskExecutor,
     };
     use crate::dejavu_sync::local_state::RepositoryBinding;
     use crate::dejavu_sync::service::RepositoryJobError;
+    use crate::dejavu_sync::status::RepositoryMaintenance;
+    use crate::sync_config::status::SyncTrigger;
+
+    struct FakeMaintenanceStatusStore {
+        values: Mutex<HashMap<String, RepositoryMaintenance>>,
+        writes: Mutex<Vec<(String, RepositoryMaintenance)>>,
+        fail_sets: AtomicBool,
+    }
+
+    impl FakeMaintenanceStatusStore {
+        fn new() -> Self {
+            Self {
+                values: Mutex::new(HashMap::new()),
+                writes: Mutex::new(Vec::new()),
+                fail_sets: AtomicBool::new(false),
+            }
+        }
+    }
+
+    impl LocalMaintenanceStatusStore for FakeMaintenanceStatusStore {
+        fn load_maintenance(
+            &self,
+            repository_id: &str,
+        ) -> Result<RepositoryMaintenance, RepositoryJobError> {
+            Ok(self
+                .values
+                .lock()
+                .unwrap()
+                .get(repository_id)
+                .cloned()
+                .unwrap_or_default())
+        }
+
+        fn set_maintenance(
+            &self,
+            repository_id: &str,
+            maintenance: RepositoryMaintenance,
+        ) -> Result<RepositoryMaintenance, RepositoryJobError> {
+            if self.fail_sets.load(Ordering::SeqCst) {
+                return Err(RepositoryJobError::StatusUnavailable);
+            }
+            self.values
+                .lock()
+                .unwrap()
+                .insert(repository_id.to_owned(), maintenance.clone());
+            self.writes
+                .lock()
+                .unwrap()
+                .push((repository_id.to_owned(), maintenance.clone()));
+            Ok(maintenance)
+        }
+    }
+
+    struct GatedPurgeTaskExecutor {
+        calls: AtomicUsize,
+        started: Arc<tokio::sync::Semaphore>,
+        release: Arc<tokio::sync::Semaphore>,
+    }
+
+    impl GatedPurgeTaskExecutor {
+        fn new() -> Self {
+            Self {
+                calls: AtomicUsize::new(0),
+                started: Arc::new(tokio::sync::Semaphore::new(0)),
+                release: Arc::new(tokio::sync::Semaphore::new(0)),
+            }
+        }
+    }
+
+    impl LocalPurgeTaskExecutor for GatedPurgeTaskExecutor {
+        fn execute(
+            &self,
+            _repository_id: String,
+            _now: OffsetDateTime,
+            _cancelled: Arc<AtomicBool>,
+        ) -> super::LocalPurgeTaskFuture {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            self.started.add_permits(1);
+            let release = Arc::clone(&self.release);
+            Box::pin(async move {
+                release.acquire().await.unwrap().forget();
+                Ok(LocalPurgeOutcome::Skipped)
+            })
+        }
+    }
+
+    struct ImmediatePurgeTaskExecutor {
+        outcomes: Mutex<VecDeque<Result<LocalPurgeOutcome, RepositoryJobError>>>,
+    }
+
+    impl LocalPurgeTaskExecutor for ImmediatePurgeTaskExecutor {
+        fn execute(
+            &self,
+            _repository_id: String,
+            _now: OffsetDateTime,
+            _cancelled: Arc<AtomicBool>,
+        ) -> super::LocalPurgeTaskFuture {
+            let outcome = self.outcomes.lock().unwrap().pop_front().unwrap();
+            Box::pin(async move { outcome })
+        }
+    }
+
+    async fn wait_for_status_writes(statuses: &FakeMaintenanceStatusStore, expected: usize) {
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if statuses.writes.lock().unwrap().len() >= expected {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+
+    async fn wait_for_idle(controller: &LocalMaintenanceController, repository_id: &str) {
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            while controller.is_running(repository_id) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+    }
 
     #[derive(Clone)]
     struct PurgeCall {
@@ -949,6 +1249,274 @@ mod tests {
             assert_eq!(os_random_index(1), Some(0));
             assert!(os_random_index(17).is_some_and(|selected| selected < 17));
         }
+    }
+
+    #[tokio::test]
+    async fn first_successful_non_exit_completion_starts_detached_maintenance() {
+        let executor = Arc::new(GatedPurgeTaskExecutor::new());
+        let statuses = Arc::new(FakeMaintenanceStatusStore::new());
+        let now = utc(2026, Month::July, 26, 12, 0);
+        let controller = LocalMaintenanceController::new(
+            Arc::clone(&executor),
+            Arc::clone(&statuses),
+            move || now,
+        );
+        let repository_id = "00000000-0000-4000-8000-000000000071";
+
+        assert!(controller
+            .notify_sync_completion(repository_id, SyncTrigger::Manual, true)
+            .unwrap());
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            executor.started.acquire(),
+        )
+        .await
+        .unwrap()
+        .unwrap()
+        .forget();
+        assert_eq!(executor.calls.load(Ordering::SeqCst), 1);
+        assert!(statuses.writes.lock().unwrap().is_empty());
+
+        executor.release.add_permits(1);
+        wait_for_status_writes(&statuses, 1).await;
+    }
+
+    #[tokio::test]
+    async fn failed_and_settings_exit_syncs_do_not_start_maintenance() {
+        let executor = Arc::new(GatedPurgeTaskExecutor::new());
+        let statuses = Arc::new(FakeMaintenanceStatusStore::new());
+        let now = utc(2026, Month::July, 26, 12, 0);
+        let controller =
+            LocalMaintenanceController::new(Arc::clone(&executor), statuses, move || now);
+        let repository_id = "00000000-0000-4000-8000-000000000072";
+
+        assert!(!controller
+            .notify_sync_completion(repository_id, SyncTrigger::Manual, false)
+            .unwrap());
+        assert!(!controller
+            .notify_sync_completion(repository_id, SyncTrigger::SettingsExit, true)
+            .unwrap());
+        tokio::task::yield_now().await;
+        assert_eq!(executor.calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn repeated_completion_deduplicates_and_exact_six_hours_is_due() {
+        let executor = Arc::new(GatedPurgeTaskExecutor::new());
+        let statuses = Arc::new(FakeMaintenanceStatusStore::new());
+        let base = utc(2026, Month::July, 26, 12, 0);
+        let now = Arc::new(Mutex::new(base));
+        let observed_now = Arc::clone(&now);
+        let controller = LocalMaintenanceController::new(
+            Arc::clone(&executor),
+            Arc::clone(&statuses),
+            move || *observed_now.lock().unwrap(),
+        );
+        let repository_id = "00000000-0000-4000-8000-000000000073";
+
+        assert!(controller
+            .notify_sync_completion(repository_id, SyncTrigger::Manual, true)
+            .unwrap());
+        executor.started.acquire().await.unwrap().forget();
+        assert!(!controller
+            .notify_sync_completion(repository_id, SyncTrigger::Manual, true)
+            .unwrap());
+        executor.release.add_permits(1);
+        wait_for_status_writes(&statuses, 1).await;
+        wait_for_idle(&controller, repository_id).await;
+
+        *now.lock().unwrap() = base + Duration::hours(6) - Duration::milliseconds(1);
+        assert!(!controller
+            .notify_sync_completion(repository_id, SyncTrigger::Manual, true)
+            .unwrap());
+        *now.lock().unwrap() = base + Duration::hours(6);
+        assert!(controller
+            .notify_sync_completion(repository_id, SyncTrigger::Manual, true)
+            .unwrap());
+        executor.started.acquire().await.unwrap().forget();
+        assert_eq!(executor.calls.load(Ordering::SeqCst), 2);
+        executor.release.add_permits(1);
+        wait_for_status_writes(&statuses, 2).await;
+    }
+
+    #[tokio::test]
+    async fn daily_is_inert_before_first_marker_and_starts_when_due_afterward() {
+        let executor = Arc::new(GatedPurgeTaskExecutor::new());
+        let statuses = Arc::new(FakeMaintenanceStatusStore::new());
+        let base = utc(2026, Month::July, 26, 12, 0);
+        let now = Arc::new(Mutex::new(base));
+        let observed_now = Arc::clone(&now);
+        let controller = LocalMaintenanceController::new(
+            Arc::clone(&executor),
+            Arc::clone(&statuses),
+            move || *observed_now.lock().unwrap(),
+        );
+        let repository_id = "00000000-0000-4000-8000-000000000074";
+
+        assert!(!controller.try_daily(repository_id).unwrap());
+        statuses.values.lock().unwrap().insert(
+            repository_id.to_owned(),
+            RepositoryMaintenance {
+                last_local_purge_at: Some(base),
+                next_local_purge_at: Some(base + Duration::hours(6)),
+            },
+        );
+        *now.lock().unwrap() = base + Duration::hours(6);
+
+        assert!(controller.try_daily(repository_id).unwrap());
+        executor.started.acquire().await.unwrap().forget();
+        executor.release.add_permits(1);
+        wait_for_status_writes(&statuses, 1).await;
+    }
+
+    #[tokio::test]
+    async fn last_attempt_is_the_marker_even_if_an_orphan_next_deadline_exists() {
+        let executor = Arc::new(GatedPurgeTaskExecutor::new());
+        let statuses = Arc::new(FakeMaintenanceStatusStore::new());
+        let now = utc(2026, Month::July, 26, 12, 0);
+        let controller = LocalMaintenanceController::new(
+            Arc::clone(&executor),
+            Arc::clone(&statuses),
+            move || now,
+        );
+        let daily = "00000000-0000-4000-8000-00000000007a";
+        let sync = "00000000-0000-4000-8000-00000000007b";
+        for repository_id in [daily, sync] {
+            statuses.values.lock().unwrap().insert(
+                repository_id.to_owned(),
+                RepositoryMaintenance {
+                    last_local_purge_at: None,
+                    next_local_purge_at: Some(now + Duration::hours(6)),
+                },
+            );
+        }
+
+        assert!(!controller.try_daily(daily).unwrap());
+        assert!(controller
+            .notify_sync_completion(sync, SyncTrigger::Manual, true)
+            .unwrap());
+        executor.started.acquire().await.unwrap().forget();
+        executor.release.add_permits(1);
+        wait_for_status_writes(&statuses, 1).await;
+    }
+
+    #[tokio::test]
+    async fn different_repositories_run_in_parallel() {
+        let executor = Arc::new(GatedPurgeTaskExecutor::new());
+        let statuses = Arc::new(FakeMaintenanceStatusStore::new());
+        let now = utc(2026, Month::July, 26, 12, 0);
+        let controller = LocalMaintenanceController::new(
+            Arc::clone(&executor),
+            Arc::clone(&statuses),
+            move || now,
+        );
+        let first = "00000000-0000-4000-8000-000000000075";
+        let second = "00000000-0000-4000-8000-000000000076";
+
+        assert!(controller
+            .notify_sync_completion(first, SyncTrigger::Manual, true)
+            .unwrap());
+        assert!(controller
+            .notify_sync_completion(second, SyncTrigger::Manual, true)
+            .unwrap());
+        executor.started.acquire_many(2).await.unwrap().forget();
+        assert_eq!(executor.calls.load(Ordering::SeqCst), 2);
+        executor.release.add_permits(2);
+        wait_for_status_writes(&statuses, 2).await;
+    }
+
+    #[tokio::test]
+    async fn dropping_controller_handle_does_not_cancel_an_accepted_attempt() {
+        let executor = Arc::new(GatedPurgeTaskExecutor::new());
+        let statuses = Arc::new(FakeMaintenanceStatusStore::new());
+        let now = utc(2026, Month::July, 26, 12, 0);
+        let controller = LocalMaintenanceController::new(
+            Arc::clone(&executor),
+            Arc::clone(&statuses),
+            move || now,
+        );
+        let repository_id = "00000000-0000-4000-8000-000000000077";
+
+        assert!(controller
+            .notify_sync_completion(repository_id, SyncTrigger::Manual, true)
+            .unwrap());
+        drop(controller);
+        executor.started.acquire().await.unwrap().forget();
+        executor.release.add_permits(1);
+        wait_for_status_writes(&statuses, 1).await;
+        assert_eq!(statuses.writes.lock().unwrap()[0].0, repository_id);
+    }
+
+    #[tokio::test]
+    async fn skipped_and_failed_attempts_both_persist_completion_deadlines() {
+        let executor = Arc::new(ImmediatePurgeTaskExecutor {
+            outcomes: Mutex::new(VecDeque::from([
+                Ok(LocalPurgeOutcome::Skipped),
+                Err(RepositoryJobError::CloudUnavailable),
+            ])),
+        });
+        let statuses = Arc::new(FakeMaintenanceStatusStore::new());
+        let base = utc(2026, Month::July, 26, 12, 0);
+        let now = Arc::new(Mutex::new(base));
+        let observed_now = Arc::clone(&now);
+        let controller =
+            LocalMaintenanceController::new(executor, Arc::clone(&statuses), move || {
+                *observed_now.lock().unwrap()
+            });
+        let skipped = "00000000-0000-4000-8000-000000000078";
+        let failed = "00000000-0000-4000-8000-000000000079";
+
+        assert!(controller
+            .notify_sync_completion(skipped, SyncTrigger::Manual, true)
+            .unwrap());
+        wait_for_status_writes(&statuses, 1).await;
+        *now.lock().unwrap() = base + Duration::minutes(1);
+        assert!(controller
+            .notify_sync_completion(failed, SyncTrigger::Manual, true)
+            .unwrap());
+        wait_for_status_writes(&statuses, 2).await;
+
+        let writes = statuses.writes.lock().unwrap();
+        assert_eq!(writes[0].0, skipped);
+        assert_eq!(writes[0].1.last_local_purge_at, Some(base));
+        assert_eq!(
+            writes[0].1.next_local_purge_at,
+            Some(base + Duration::hours(6))
+        );
+        assert_eq!(writes[1].0, failed);
+        assert_eq!(
+            writes[1].1.last_local_purge_at,
+            Some(base + Duration::minutes(1))
+        );
+        assert_eq!(
+            writes[1].1.next_local_purge_at,
+            Some(base + Duration::hours(6) + Duration::minutes(1))
+        );
+    }
+
+    #[tokio::test]
+    async fn status_persistence_failure_is_internal_and_releases_the_running_lane() {
+        let executor = Arc::new(ImmediatePurgeTaskExecutor {
+            outcomes: Mutex::new(VecDeque::from([
+                Ok(LocalPurgeOutcome::Skipped),
+                Ok(LocalPurgeOutcome::Skipped),
+            ])),
+        });
+        let statuses = Arc::new(FakeMaintenanceStatusStore::new());
+        statuses.fail_sets.store(true, Ordering::SeqCst);
+        let now = utc(2026, Month::July, 26, 12, 0);
+        let controller = LocalMaintenanceController::new(executor, statuses.clone(), move || now);
+        let repository_id = "00000000-0000-4000-8000-00000000007c";
+
+        assert!(controller
+            .notify_sync_completion(repository_id, SyncTrigger::Manual, true)
+            .unwrap());
+        wait_for_idle(&controller, repository_id).await;
+        assert!(controller
+            .notify_sync_completion(repository_id, SyncTrigger::Manual, true)
+            .unwrap());
+        wait_for_idle(&controller, repository_id).await;
+        assert!(statuses.writes.lock().unwrap().is_empty());
     }
 
     #[test]
