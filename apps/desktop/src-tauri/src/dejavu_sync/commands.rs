@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use qingyu_dejavu::RepositoryMetadata;
 use serde::Deserialize;
 
-use super::local_state::{LocalSyncStateError, LocalSyncStateService, RepositoryBinding};
+use super::local_state::{LocalSyncStateService, RepositoryBinding};
 use super::repository::{prepare_binding_root, RepositoryCatalogValidator};
 use super::scheduler::DejavuScheduler;
 use super::service::{
@@ -130,6 +130,20 @@ impl DejavuSchedulerOwner {
             roots.startup_pending = false;
         }
         activated
+    }
+
+    fn observe_bind_completion(&self, accepted: AcceptedSyncJob) {
+        let Some(scheduler) = self.scheduler.get().cloned() else {
+            return;
+        };
+        tauri::async_runtime::spawn(async move {
+            let result = accepted.wait_for_completion().await;
+            let _recorded = scheduler.record_bind_completion(
+                &accepted.notes_root,
+                &accepted.repository_id,
+                result,
+            );
+        });
     }
 
     fn activate_locked_root(&self, roots: &mut SchedulerOwnerRoots, root: &Path) -> bool {
@@ -283,10 +297,10 @@ impl DejavuSyncServiceOwner {
                 let state_service = LocalSyncStateService::new(&controller.app_data);
                 let mut state = state_service
                     .load_or_initialize(None)
-                    .map_err(map_local_state_error)?;
+                    .map_err(RepositoryJobError::from)?;
                 state_service
                     .bind_repository(&mut state, binding)
-                    .map_err(map_local_state_error)
+                    .map_err(RepositoryJobError::from)
             })
             .await?;
         controller
@@ -316,14 +330,6 @@ impl DejavuSyncServiceOwner {
         if let Some(service) = self.service.get() {
             service.cancel_all_for_shutdown_or_reset().await;
         }
-    }
-}
-
-fn map_local_state_error(error: LocalSyncStateError) -> RepositoryJobError {
-    if error.is_invalid_state() {
-        RepositoryJobError::InvalidBinding
-    } else {
-        RepositoryJobError::RepositoryUnavailable
     }
 }
 
@@ -374,7 +380,9 @@ async fn bind_repository_and_refresh_scheduler(
     request: BindRepositoryRequest,
 ) -> Result<AcceptedSyncJob, RepositoryJobError> {
     let accepted = owner.bind_repository(request).await?;
-    scheduler_owner.refresh_after_bind(&accepted.notes_root);
+    if scheduler_owner.refresh_after_bind(&accepted.notes_root) {
+        scheduler_owner.observe_bind_completion(accepted.clone());
+    }
     Ok(accepted)
 }
 
@@ -731,7 +739,23 @@ mod tests {
     }
 
     #[derive(Default)]
-    struct OwnerStore(Mutex<HashMap<String, RepositorySchedule>>);
+    struct OwnerStore {
+        schedules: Mutex<HashMap<String, RepositorySchedule>>,
+        updates: AtomicUsize,
+        changed: Notify,
+    }
+
+    impl OwnerStore {
+        async fn wait_for_updates(&self, expected: usize) {
+            loop {
+                let changed = self.changed.notified();
+                if self.updates.load(Ordering::SeqCst) >= expected {
+                    return;
+                }
+                changed.await;
+            }
+        }
+    }
 
     impl RepositoryScheduleStore for OwnerStore {
         fn load_schedule(
@@ -739,7 +763,7 @@ mod tests {
             repository_id: &str,
         ) -> Result<RepositorySchedule, RepositoryJobError> {
             Ok(self
-                .0
+                .schedules
                 .lock()
                 .unwrap()
                 .get(repository_id)
@@ -752,10 +776,13 @@ mod tests {
             repository_id: &str,
             update: &mut dyn FnMut(&mut RepositorySchedule) -> bool,
         ) -> Result<RepositorySchedule, RepositoryJobError> {
-            let mut schedules = self.0.lock().unwrap();
+            let mut schedules = self.schedules.lock().unwrap();
             let schedule = schedules.entry(repository_id.to_owned()).or_default();
             update(schedule);
-            Ok(schedule.clone())
+            let updated = schedule.clone();
+            self.updates.fetch_add(1, Ordering::SeqCst);
+            self.changed.notify_waiters();
+            Ok(updated)
         }
 
         fn reserve_dns_retry(
@@ -1036,7 +1063,7 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn post_bind_automatic_file_change_installs_and_runs_a_due_job() {
+    async fn accepted_automatic_bind_completion_polls_without_file_change_or_caller_handle() {
         let temporary = tempdir().unwrap();
         let app_data = temporary.path().join("app-data");
         let root_path = temporary.path().join("automatic-after-bind");
@@ -1048,10 +1075,11 @@ mod tests {
             mode: SyncMode::Automatic,
         });
         let (sent, mut jobs) = mpsc::unbounded_channel();
+        let store = Arc::new(OwnerStore::default());
         let scheduler = DejavuScheduler::new(
             source,
             Arc::new(OwnerEnqueuer(sent)),
-            Arc::new(OwnerStore::default()),
+            Arc::clone(&store),
             Arc::new(OwnerFlusher),
             Arc::new(|| OffsetDateTime::from_unix_timestamp(1_800_000_000).unwrap()),
         );
@@ -1067,24 +1095,104 @@ mod tests {
             .install_binding(
                 &app_data,
                 catalog,
-                bind_enqueuer,
+                Arc::clone(&bind_enqueuer),
                 test_state_transaction(&app_data),
             )
             .unwrap();
 
         assert!(!scheduler_owner.activate_root(&root));
-        bind_repository_and_refresh_scheduler(
+        let accepted = bind_repository_and_refresh_scheduler(
             &service_owner,
             &scheduler_owner,
             bind_request(root.clone(), repository_id, "Automatic journal"),
         )
         .await
         .unwrap();
-        assert!(scheduler_owner.record_file_change(&root, &root.join("new.md")));
+        assert!(
+            jobs.try_recv().is_err(),
+            "bind must not enqueue a duplicate"
+        );
+
+        let completion = bind_enqueuer.completions.lock().unwrap().pop().unwrap();
+        drop(accepted);
+        completion.send(Some(Ok(()))).unwrap();
+        store.wait_for_updates(1).await;
+        assert!(jobs.try_recv().is_err(), "completion only installs a due");
+        let schedule = store.load_schedule(repository_id).unwrap();
+        assert_eq!(
+            schedule.next_scheduled_at,
+            Some(OffsetDateTime::from_unix_timestamp(1_800_000_030).unwrap())
+        );
 
         tokio::time::advance(Duration::from_secs(30)).await;
         let automatic = jobs.recv().await.unwrap();
         assert_eq!(automatic.trigger, SyncTrigger::Interval);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn failed_automatic_bind_completion_retries_after_five_minutes() {
+        let temporary = tempdir().unwrap();
+        let app_data = temporary.path().join("app-data");
+        let root_path = temporary.path().join("failed-automatic-bind");
+        std::fs::create_dir(&root_path).unwrap();
+        let root = root_path.canonicalize().unwrap();
+        let repository_id = "00000000-0000-4000-8000-000000000047";
+        let source = Arc::new(BindingOwnerSource {
+            app_data: app_data.clone(),
+            mode: SyncMode::Automatic,
+        });
+        let (sent, mut jobs) = mpsc::unbounded_channel();
+        let store = Arc::new(OwnerStore::default());
+        let scheduler = DejavuScheduler::new(
+            source,
+            Arc::new(OwnerEnqueuer(sent)),
+            Arc::clone(&store),
+            Arc::new(OwnerFlusher),
+            Arc::new(|| OffsetDateTime::from_unix_timestamp(1_800_000_000).unwrap()),
+        );
+        let scheduler_owner = DejavuSchedulerOwner::default();
+        scheduler_owner.install(scheduler).unwrap();
+        let catalog = Arc::new(FakeCatalogValidator::new([repository_metadata(
+            repository_id,
+            "Failed automatic journal",
+        )]));
+        let bind_enqueuer = Arc::new(RecordingBindEnqueuer::new(app_data.clone()));
+        let service_owner = DejavuSyncServiceOwner::default();
+        service_owner
+            .install_binding(
+                &app_data,
+                catalog,
+                Arc::clone(&bind_enqueuer),
+                test_state_transaction(&app_data),
+            )
+            .unwrap();
+
+        assert!(!scheduler_owner.activate_root(&root));
+        let accepted = bind_repository_and_refresh_scheduler(
+            &service_owner,
+            &scheduler_owner,
+            bind_request(root.clone(), repository_id, "Failed automatic journal"),
+        )
+        .await
+        .unwrap();
+        assert!(jobs.try_recv().is_err());
+
+        let completion = bind_enqueuer.completions.lock().unwrap().pop().unwrap();
+        drop(accepted);
+        completion
+            .send(Some(Err(RepositoryJobError::CloudUnavailable)))
+            .unwrap();
+        store.wait_for_updates(1).await;
+        let schedule = store.load_schedule(repository_id).unwrap();
+        assert_eq!(schedule.automatic_failure_count, 1);
+        assert_eq!(
+            schedule.next_scheduled_at,
+            Some(OffsetDateTime::from_unix_timestamp(1_800_000_300).unwrap())
+        );
+        assert!(jobs.try_recv().is_err());
+
+        tokio::time::advance(Duration::from_secs(5 * 60)).await;
+        assert_eq!(jobs.recv().await.unwrap().trigger, SyncTrigger::Interval);
     }
 
     #[tokio::test]

@@ -362,6 +362,53 @@ impl DejavuScheduler {
         Ok(true)
     }
 
+    pub(crate) fn record_bind_completion(
+        &self,
+        notes_root: &Path,
+        repository_id: &str,
+        result: Result<(), RepositoryJobError>,
+    ) -> Result<bool, RepositoryJobError> {
+        let Some(active) = self.active_snapshot().filter(|active| {
+            active.mode == SyncMode::Automatic
+                && active.repository_id == repository_id
+                && active.notes_root == notes_root
+        }) else {
+            return Ok(false);
+        };
+        if result == Err(RepositoryJobError::Cancelled) {
+            return Ok(false);
+        }
+        let now = (self.inner.clock)();
+        let mut delay = active.interval;
+        let mut next_scheduled_at = now + delay;
+        let mut update = |schedule: &mut RepositorySchedule| {
+            match result {
+                Ok(()) => {
+                    schedule.automatic_failure_count = 0;
+                    schedule.same_count = 0;
+                }
+                Err(_) => {
+                    schedule.automatic_failure_count =
+                        schedule.automatic_failure_count.saturating_add(1);
+                    delay = if schedule.automatic_failure_count >= 8 {
+                        FAILURE_PAUSE_DELAY
+                    } else {
+                        ORDINARY_FAILURE_DELAY
+                    };
+                    next_scheduled_at = now + delay;
+                }
+            }
+            schedule.next_scheduled_at = Some(next_scheduled_at);
+            true
+        };
+        if let Err(error) = self.inner.store.update_schedule(repository_id, &mut update) {
+            self.install_memory_retry(repository_id, None);
+            return Err(error);
+        }
+        self.install_due_if_active(&active, delay, next_scheduled_at);
+        Ok(true)
+    }
+
     pub(crate) fn record_completion(
         &self,
         completion: RepositoryJobCompletion,
@@ -852,7 +899,7 @@ impl RepositoryScheduleSource for LocalRepositoryScheduleSource {
         }
         let state = LocalSyncStateService::new(&self.app_data)
             .load()
-            .map_err(|_| RepositoryJobError::InvalidBinding)?
+            .map_err(RepositoryJobError::from)?
             .ok_or(RepositoryJobError::InvalidBinding)?;
         let Some(binding) = state
             .bindings
@@ -1958,6 +2005,132 @@ mod tests {
         let schedule = fixture.store.load_schedule(&repository_id).unwrap();
         assert_eq!(schedule.automatic_failure_count, 0);
         assert_eq!(schedule.next_scheduled_at, Some(planned));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn successful_automatic_bind_completion_polls_at_interval_without_file_change() {
+        let mut fixture = Fixture::new();
+        let root = PathBuf::from("/notes/new-automatic-bind");
+        let repository_id = repository_id(41);
+        fixture.source.bind(
+            &root,
+            &repository_id,
+            SyncMode::Automatic,
+            Duration::from_secs(30),
+        );
+        fixture.scheduler.activate_root(&root).unwrap();
+
+        assert!(fixture
+            .scheduler
+            .record_bind_completion(&root, &repository_id, Ok(()))
+            .unwrap());
+        assert!(fixture.jobs.try_recv().is_err());
+        let schedule = fixture.store.load_schedule(&repository_id).unwrap();
+        assert_eq!(schedule.automatic_failure_count, 0);
+        assert_eq!(
+            schedule.next_scheduled_at,
+            Some(fixture.clock.now() + Duration::from_secs(30))
+        );
+
+        fixture.clock.advance(Duration::from_secs(30));
+        tokio::time::advance(Duration::from_secs(30)).await;
+        assert_eq!(fixture.receive().await.trigger, SyncTrigger::Interval);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn failed_automatic_bind_completion_counts_failure_and_retries_after_five_minutes() {
+        let mut fixture = Fixture::new();
+        let root = PathBuf::from("/notes/failed-automatic-bind");
+        let repository_id = repository_id(42);
+        fixture.source.bind(
+            &root,
+            &repository_id,
+            SyncMode::Automatic,
+            Duration::from_secs(30),
+        );
+        fixture.scheduler.activate_root(&root).unwrap();
+
+        assert!(fixture
+            .scheduler
+            .record_bind_completion(
+                &root,
+                &repository_id,
+                Err(RepositoryJobError::CloudUnavailable),
+            )
+            .unwrap());
+        let schedule = fixture.store.load_schedule(&repository_id).unwrap();
+        assert_eq!(schedule.automatic_failure_count, 1);
+        assert_eq!(
+            schedule.next_scheduled_at,
+            Some(fixture.clock.now() + Duration::from_secs(5 * 60))
+        );
+
+        fixture.clock.advance(Duration::from_secs(5 * 60));
+        tokio::time::advance(Duration::from_secs(5 * 60)).await;
+        assert_eq!(fixture.receive().await.trigger, SyncTrigger::Interval);
+    }
+
+    #[tokio::test]
+    async fn bind_completion_does_not_schedule_startup_exit_or_stale_roots() {
+        let fixture = Fixture::new();
+        let startup_exit_root = PathBuf::from("/notes/startup-exit-bind");
+        let startup_exit_repository = repository_id(43);
+        fixture.source.bind(
+            &startup_exit_root,
+            &startup_exit_repository,
+            SyncMode::StartupExit,
+            Duration::from_secs(30),
+        );
+        fixture.scheduler.activate_root(&startup_exit_root).unwrap();
+        assert!(!fixture
+            .scheduler
+            .record_bind_completion(&startup_exit_root, &startup_exit_repository, Ok(()))
+            .unwrap());
+        assert_eq!(
+            fixture
+                .store
+                .load_schedule(&startup_exit_repository)
+                .unwrap()
+                .next_scheduled_at,
+            None
+        );
+
+        let closed_root = PathBuf::from("/notes/closed-automatic-bind");
+        let closed_repository = repository_id(44);
+        fixture.source.bind(
+            &closed_root,
+            &closed_repository,
+            SyncMode::Automatic,
+            Duration::from_secs(30),
+        );
+        fixture.scheduler.activate_root(&closed_root).unwrap();
+        assert!(fixture.scheduler.deactivate_root(&closed_root));
+        assert!(!fixture
+            .scheduler
+            .record_bind_completion(&closed_root, &closed_repository, Ok(()))
+            .unwrap());
+
+        let current_root = PathBuf::from("/notes/current-automatic-bind");
+        let current_repository = repository_id(45);
+        fixture.source.bind(
+            &current_root,
+            &current_repository,
+            SyncMode::Automatic,
+            Duration::from_secs(30),
+        );
+        fixture.scheduler.activate_root(&current_root).unwrap();
+        assert!(!fixture
+            .scheduler
+            .record_bind_completion(&closed_root, &closed_repository, Ok(()))
+            .unwrap());
+        assert_eq!(
+            fixture
+                .store
+                .load_schedule(&closed_repository)
+                .unwrap()
+                .next_scheduled_at,
+            None
+        );
     }
 
     #[tokio::test(start_paused = true)]

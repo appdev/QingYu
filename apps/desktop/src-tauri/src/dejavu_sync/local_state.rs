@@ -16,6 +16,8 @@ use crate::storage_capability::{
 };
 use crate::sync_config::storage::open_app_data;
 
+use super::service::RepositoryJobError;
+
 // Task 3 wires these staged internal API items into the background sync runtime.
 #[cfg_attr(not(test), allow(dead_code))]
 const LOCAL_SYNC_STATE_VERSION: u32 = 1;
@@ -183,6 +185,16 @@ impl fmt::Display for LocalSyncStateError {
 }
 
 impl std::error::Error for LocalSyncStateError {}
+
+impl From<LocalSyncStateError> for RepositoryJobError {
+    fn from(error: LocalSyncStateError) -> Self {
+        if error.is_invalid_state() {
+            Self::InvalidBinding
+        } else {
+            Self::RepositoryUnavailable
+        }
+    }
+}
 
 #[cfg_attr(not(test), allow(dead_code))]
 #[derive(Clone, Debug)]
@@ -538,6 +550,7 @@ mod tests {
         canonical_notes_root_with_observer, LocalSyncStateError, LocalSyncStateService,
         RepositoryBinding, LOCAL_SYNC_STATE_FILE, MAX_LOCAL_SYNC_STATE_BYTES,
     };
+    use crate::dejavu_sync::service::RepositoryJobError;
 
     #[test]
     fn error_categories_separate_invalid_state_from_storage_and_key_failures() {
@@ -549,6 +562,10 @@ mod tests {
             LocalSyncStateError::duplicate_root(),
         ] {
             assert!(error.is_invalid_state(), "{error}");
+            assert_eq!(
+                RepositoryJobError::from(error),
+                RepositoryJobError::InvalidBinding
+            );
         }
         for error in [
             LocalSyncStateError::unsafe_path(),
@@ -558,6 +575,10 @@ mod tests {
             LocalSyncStateError::write_failed(),
         ] {
             assert!(!error.is_invalid_state(), "{error}");
+            assert_eq!(
+                RepositoryJobError::from(error),
+                RepositoryJobError::RepositoryUnavailable
+            );
         }
     }
 

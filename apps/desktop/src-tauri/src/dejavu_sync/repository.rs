@@ -213,7 +213,7 @@ impl DejavuRepositoryRunner {
         })?;
         let local_state = LocalSyncStateService::new(&self.app_data)
             .load()
-            .map_err(|_| RepositoryJobError::InvalidBinding)?
+            .map_err(RepositoryJobError::from)?
             .ok_or(RepositoryJobError::InvalidBinding)?;
         let key_bytes = STANDARD
             .decode(&local_state.repo_key)
@@ -296,7 +296,7 @@ impl RepositoryJobRunner for DejavuRepositoryRunner {
         request.notes_root = canonical_notes_root(&request.notes_root)?;
         let state = LocalSyncStateService::new(&self.app_data)
             .load()
-            .map_err(|_| RepositoryJobError::InvalidBinding)?
+            .map_err(RepositoryJobError::from)?
             .ok_or(RepositoryJobError::InvalidBinding)?;
         let valid = state.bindings.iter().any(|binding| {
             binding.enabled
@@ -774,6 +774,26 @@ mod tests {
                 expected
             );
         }
+    }
+
+    #[test]
+    fn runner_validate_maps_local_state_storage_failure_to_repository_unavailable() {
+        let temporary = tempdir().unwrap();
+        let app_data = temporary.path().join("app-data");
+        let notes_root = temporary.path().join("notes");
+        std::fs::create_dir_all(app_data.join("local-sync.json")).unwrap();
+        std::fs::create_dir(&notes_root).unwrap();
+        let runner = DejavuRepositoryRunner::new(&app_data, Arc::new(FakeCoordinatorFactory));
+
+        let result = runner.validate(SyncJobRequest {
+            notes_root,
+            repository_id: "00000000-0000-4000-8000-000000000019".to_owned(),
+            trigger: SyncTrigger::Manual,
+        });
+        let Err(error) = result else {
+            panic!("unsafe local state storage must reject runner validation");
+        };
+        assert_eq!(error.safe_code(), "dejavu-repository-unavailable");
     }
 
     struct FakeCoordinator;
