@@ -13,6 +13,11 @@
 - Complete the first three plans before starting cutover.
 - A sync conflict never waits for user input: local remains active, remote is retained in 30-day local conflict history, and sync finishes.
 - The user must see one non-blocking notification and a current-file conflict marker; no full-screen overlay or blocking modal may appear.
+- Dejavu may report the protected `/.qingyu/syncignore` control file as a
+  conflict when two devices independently create equal content with different
+  metadata. Preserve that core result and merge behavior, but classify it as an
+  internal protected conflict: it must not create a user-facing conflict record,
+  toast, path, count, marker, or resolution action.
 - Resolution choices are exactly keep local, use remote, and keep both. None performs automatic Markdown merge.
 - S3 note data uses Dejavu after cutover and must never create legacy `remote-conflict` files or per-file manifests.
 - WebDAV remains on the legacy engine. Portable `settings.json` synchronization remains on its existing protected settings scope and is not moved into the note repository.
@@ -105,7 +110,10 @@ cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --lib dejavu_sync::
 After a successful sync, map each `MergeResult.conflicts` path to the corresponding
 history file created during that run. Generate a UUID conflict ID, append a local
 record to `state.json`, and retain prior unresolved records whose history still
-exists. Never create a note-folder copy.
+exists. Before public record creation, filter the exact protected
+`/.qingyu/syncignore` path. Its Dejavu conflict and history behavior remain
+unchanged inside the core, but it is not a user document and is excluded from
+public conflict status. Never create a note-folder copy.
 
 - [ ] **Step 4: Implement list and version-read commands**
 

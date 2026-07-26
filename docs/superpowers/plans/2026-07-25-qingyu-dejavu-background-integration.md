@@ -594,23 +594,48 @@ git commit -m "feat(sync): unify Dejavu bind and restore jobs"
 
 **Files:**
 - Create: `apps/desktop/src-tauri/src/dejavu_sync/maintenance.rs`
+- Modify: `apps/desktop/src-tauri/src/dejavu_sync.rs`
 - Modify: `apps/desktop/src-tauri/src/dejavu_sync/service.rs`
 - Modify: `apps/desktop/src-tauri/src/dejavu_sync/commands.rs`
 - Modify: `apps/desktop/src-tauri/src/dejavu_sync/local_state.rs`
+- Modify: `apps/desktop/src-tauri/src/dejavu_sync/status.rs`
 - Modify: `apps/desktop/src-tauri/src/desktop_runtime.rs`
 - Modify: `apps/desktop/src-tauri/src/mobile_runtime.rs`
+- Modify: `apps/desktop/src-tauri/src/builder_boundary_tests.rs`
+- Modify: `apps/desktop/src-tauri/crates/qingyu-dejavu/src/repo.rs`
+- Modify: `apps/desktop/src-tauri/crates/qingyu-dejavu/src/purge.rs`
 
 **Interfaces:**
 - Produces: `rebuild_local_repository`, `stop_repository_sync`, `change_global_key`, `purge_remote_repository`, `delete_remote_repository`.
 - Produces: startup cleanup and daily local maintenance.
+- Produces: accepted background maintenance jobs; no long-running command keeps a
+  Settings invoke pending.
+- Preserves: every `local-sync.json` writer uses the service-owned
+  `LocalStateTransaction`; key replacement uses
+  `with_global_key_state_transaction` and no second state mutex.
 
 - [ ] **Step 1: Write failing maintenance boundary tests**
 
-Assert startup deletes only each repository's `temp/repo` and recognized owned
-`.qingyu` staging names, never arbitrary user `*.tmp`, `repo`, `history`, or note
-files. Add retention tests for 180 days, all indexes today, two per older day,
-no purge under three retained indexes, first-success async purge, six-hour
-minimum, daily scheduling, and 12-hour cancellation.
+Assert startup removes only exact `stage-[0-9a-f]{40}.tmp` files from owned,
+non-recursive parents: each repository `temp/`, repository root (for
+`state.json` publication), app-data root (for `local-sync.json` publication),
+and the bound root's direct `.qingyu/`. Harden `Repo::open` to the same exact
+stage-name predicate. Never delete an entire `temp/`, any invented `temp/repo`,
+an arbitrary user `*.tmp`, `repo/`, `history/`, a note file, or a matching name
+outside those exact parents.
+
+Port SiYuan's pinned retention selection literally: discard indexes older than
+180 days; group the remaining indexes by the machine's local calendar date;
+retain every index from today; for each older date retain the newest index plus
+up to `RetentionIndexesDaily * 7` random selections from SiYuan's same
+`[0, len - 1)` range, stopping once two unique indexes are retained. This
+intentionally preserves the pinned implementation's exclusion of the oldest
+entry from random selection and its possibility of retaining only one after
+repeated duplicate draws. Inject the random selector in tests so the production
+policy remains SiYuan-compatible without flaky assertions. Skip purge when the
+resulting retained-ID set has fewer than three entries. Cover first successful
+non-exit sync per repository, six-hour minimum, the later daily attempt, and
+12-hour cooperative cancellation.
 
 - [ ] **Step 2: Run maintenance tests and verify RED**
 
@@ -622,33 +647,81 @@ cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --lib dejavu_sync::
 
 Call core `Repo::purge` with calculated retained IDs. Clean sync conflict history
 older than 30 days daily without touching existing document-edit history.
-Record last purge and next due time per repository in `state.json`.
+Record last purge and next due time per repository in the existing `state.json`
+through `RepositoryStatusStore`; normal sync status writes must preserve these
+maintenance fields instead of replacing them. Run the blocking purge through
+`spawn_blocking` with the same cancellation flag used by the 12-hour timeout.
 
-- [ ] **Step 4: Implement four independent lifecycle commands**
+SiYuan calls its first purge after the first successful non-exit sync and then
+allows at most one attempt per six hours; its 24-hour cron does nothing until
+that first success. Apply the same rule independently per QingYu repository.
+
+- [ ] **Step 4: Port Dejavu remote purge into the core crate**
+
+Add `Repo::purge_cloud(cloud, cancelled)` from the pinned Go
+`Repo.PurgeCloud`. The core method, not the Tauri maintenance layer, owns the
+repository-format traversal: acquire `lock-sync`; list `objects/`, `indexes/`,
+and `refs/`; treat every ref target as a retained index; load its encrypted
+index and file metadata; compute reachable file/chunk objects; remove
+unreferenced indexes, legacy check indexes, stale `indexes-v2.json` entries, and
+unreferenced objects; then release the remote lock. Preserve Go's empty-list
+short circuit and missing/corrupt object behavior. Add LocalCloud oracle-style
+tests for reachability, shared chunks, multiple refs, stale indexes-v2,
+cancellation before deletion, lock loss, and idempotent rerun. Do not reproduce
+object-key, encryption, or reachability logic in `maintenance.rs`.
+
+- [ ] **Step 5: Implement five independent lifecycle commands**
 
 - rebuild deletes only current local `repo/`, recreates it, and indexes notes;
-- stop removes enabled binding/schedule only;
-- key change takes global write lock, clears every old-key `repo/`, preserves notes/history, disables bindings, then writes the new key;
-- remote delete removes only the explicitly confirmed repository prefix.
+- stop waits for the current per-repository operation, removes the binding,
+  clears persisted scheduling state, and deactivates that root; an already
+  accepted sync may finish, but no new job may validate afterward;
+- key change returns an accepted global maintenance job, enters
+  `with_global_key_state_transaction` (global write then the shared state
+  transaction), clears every old-key `repo/`, preserves notes/history and the
+  device ID, disables all bindings, then writes the Base64/passphrase-derived
+  key using the existing SiYuan-compatible derivation;
+- remote purge returns an accepted repository maintenance job and calls only
+  core `Repo::purge_cloud` while holding the ordinary global-read and
+  per-repository service transaction;
+- remote delete removes only the explicitly confirmed repository prefix through
+  `S3RepositoryCatalog::delete_repository`. It is rejected while that repository
+  still has an enabled binding, so deletion cannot silently act as Stop and the
+  scheduler cannot recreate an unlisted orphan repository.
 
 Remote purge requires confirmation and remote lock, computes reachability from
-all retained remote indexes, and never runs from the automatic scheduler.
+all ref-retained remote indexes exactly as pinned Dejavu does, and never runs
+from the automatic scheduler. Remote delete follows pinned Dejavu's explicit
+manual lifecycle but remains separate from stop in QingYu's multi-repository
+model.
 
-- [ ] **Step 5: Add crash-restart tests**
+All state-changing commands reuse narrow service transactions with this order:
+ordinary repository maintenance is `global read -> repository mutex`, adding
+`LocalStateTransaction` only for a local-state mutation; key replacement is
+`global write -> LocalStateTransaction`. Do not call
+`cancel_all_for_shutdown_or_reset` from inside the global key transaction and
+do not add another mutex around `local-sync.json`.
+
+- [ ] **Step 6: Add crash-restart tests**
 
 Interrupt after temporary write, object upload, index upload, and before ref
 publication. Restart cleanup, index, and sync; assert convergence without WAL or
-scanning every ref for an invented full restore.
+scanning every ref for an invented full restore. A key-change interruption may
+leave only some local `repo/` directories cleared; restart must safely rebuild
+them from their note roots after the new state is committed, and must never
+touch notes or history. Remote upload/index/ref interruption remains a normal
+Dejavu convergence test, not a startup-cleanup scan of remote storage.
 
-- [ ] **Step 6: Run tests and verify GREEN**
+- [ ] **Step 7: Run tests and verify GREEN**
 
 Run maintenance/crash tests and the entire Rust workspace. Expected: each reset
-operation changes only its documented target.
+operation changes only its documented target, every long operation is accepted
+before it completes, and no listener/window lifetime owns the job.
 
-- [ ] **Step 7: Commit maintenance behavior**
+- [ ] **Step 8: Commit maintenance behavior**
 
 ```bash
-git add apps/desktop/src-tauri/src/dejavu_sync apps/desktop/src-tauri/src/desktop_runtime.rs apps/desktop/src-tauri/src/mobile_runtime.rs
+git add apps/desktop/src-tauri/src/dejavu_sync apps/desktop/src-tauri/src/dejavu_sync.rs apps/desktop/src-tauri/src/desktop_runtime.rs apps/desktop/src-tauri/src/mobile_runtime.rs apps/desktop/src-tauri/src/builder_boundary_tests.rs apps/desktop/src-tauri/crates/qingyu-dejavu/src/repo.rs apps/desktop/src-tauri/crates/qingyu-dejavu/src/purge.rs
 git commit -m "feat(sync): add Dejavu repository maintenance"
 ```
 
