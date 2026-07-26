@@ -45,7 +45,7 @@ where
     let mut grouped = HashMap::<Date, Vec<&Index>>::new();
     for index in indexes_newest_first {
         if now_millis - i128::from(index.created) > retention_millis {
-            continue;
+            break;
         }
         let created =
             OffsetDateTime::from_unix_timestamp_nanos(i128::from(index.created) * 1_000_000)
@@ -509,6 +509,33 @@ mod tests {
         assert!(
             select_retained_indexes(&indexes, now, |instant| Some(instant.date()), |_| 0,)
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn retained_indexes_stop_at_first_expired_index_in_listing_order() {
+        let now = utc(2026, Month::July, 26, 12, 0);
+        let indexes = vec![
+            index("today-a", now - Duration::minutes(1)),
+            index("today-b", now - Duration::minutes(2)),
+            index("yesterday", now - Duration::days(1)),
+            index(
+                "first-expired",
+                now - Duration::days(180) - Duration::milliseconds(1),
+            ),
+            index("newer-created-after-expired", now - Duration::minutes(3)),
+        ];
+
+        let retained =
+            select_retained_indexes(&indexes, now, |instant| Some(instant.date()), |_| 0).unwrap();
+
+        assert_eq!(
+            sorted(retained),
+            sorted(vec![
+                "today-a".to_owned(),
+                "today-b".to_owned(),
+                "yesterday".to_owned(),
+            ])
         );
     }
 
