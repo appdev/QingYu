@@ -55,7 +55,7 @@ tauri-plugin-log = "2.8.0"
 tauri-plugin-opener = "2.5.4"
 tauri-plugin-os = "2.3.2"
 tauri-plugin-store = "2.4.3"
-time = { version = "0.3.44", features = ["serde", "serde-well-known"] }
+time = { version = "0.3.44", features = ["local-offset", "serde", "serde-well-known"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
 unicode-normalization = "0.1"
 uuid = { version = "1.24.0", features = ["serde", "v4"] }

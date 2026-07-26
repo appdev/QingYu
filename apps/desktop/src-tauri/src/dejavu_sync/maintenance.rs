@@ -25,17 +25,20 @@ const RETENTION_INDEXES_DAILY: usize = 2;
 /// Selects local index IDs using the pinned SiYuan policy.
 ///
 /// `indexes_newest_first` must keep the order returned by Dejavu's local index
-/// listing. `select_random_index` receives the exclusive upper bound used by
-/// Go's `math/rand.Intn` and must return a position in that range.
+/// listing. `local_date_at` resolves each instant independently so historical
+/// daylight-saving offsets are preserved; returning `None` skips the purge.
+/// `select_random_index` receives the exclusive upper bound used by Go's
+/// `math/rand.Intn` and must return a position in that range.
 #[cfg_attr(not(test), allow(dead_code))]
-pub(crate) fn select_retained_indexes<F>(
+pub(crate) fn select_retained_indexes<LocalDate, SelectRandom>(
     indexes_newest_first: &[Index],
     now: OffsetDateTime,
-    local_offset: UtcOffset,
-    mut select_random_index: F,
+    mut local_date_at: LocalDate,
+    mut select_random_index: SelectRandom,
 ) -> Option<Vec<String>>
 where
-    F: FnMut(usize) -> usize,
+    LocalDate: FnMut(OffsetDateTime) -> Option<Date>,
+    SelectRandom: FnMut(usize) -> usize,
 {
     let now_millis = now.unix_timestamp_nanos() / 1_000_000;
     let retention_millis = i128::from(INDEX_RETENTION_DAYS) * 24 * 60 * 60 * 1_000;
@@ -48,12 +51,12 @@ where
             OffsetDateTime::from_unix_timestamp_nanos(i128::from(index.created) * 1_000_000)
                 .ok()?;
         grouped
-            .entry(created.to_offset(local_offset).date())
+            .entry(local_date_at(created)?)
             .or_default()
             .push(index);
     }
 
-    let today = now.to_offset(local_offset).date();
+    let today = local_date_at(now)?;
     let mut retained_ids = Vec::new();
     for (date, indexes) in grouped {
         if date == today || indexes.len() <= RETENTION_INDEXES_DAILY {
@@ -82,6 +85,13 @@ where
     let mut unique_ids = HashSet::new();
     retained_ids.retain(|id| unique_ids.insert(id.clone()));
     (retained_ids.len() >= 3).then_some(retained_ids)
+}
+
+#[allow(dead_code)]
+pub(crate) fn local_calendar_date_at(instant: OffsetDateTime) -> Option<Date> {
+    UtcOffset::local_offset_at(instant)
+        .ok()
+        .map(|offset| instant.to_offset(offset).date())
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -429,10 +439,15 @@ mod tests {
         ];
         let mut upper_bounds = Vec::new();
 
-        let retained = select_retained_indexes(&indexes, now, local_offset, |upper| {
-            upper_bounds.push(upper);
-            1
-        })
+        let retained = select_retained_indexes(
+            &indexes,
+            now,
+            |instant| Some(instant.to_offset(local_offset).date()),
+            |upper| {
+                upper_bounds.push(upper);
+                1
+            },
+        )
         .unwrap();
 
         assert_eq!(upper_bounds, vec![3]);
@@ -460,11 +475,16 @@ mod tests {
         ];
         let mut calls = 0;
 
-        let retained = select_retained_indexes(&indexes, now, UtcOffset::UTC, |upper_exclusive| {
-            calls += 1;
-            assert_eq!(upper_exclusive, 2);
-            0
-        })
+        let retained = select_retained_indexes(
+            &indexes,
+            now,
+            |instant| Some(instant.date()),
+            |upper_exclusive| {
+                calls += 1;
+                assert_eq!(upper_exclusive, 2);
+                0
+            },
+        )
         .unwrap();
 
         assert_eq!(calls, 14);
@@ -486,7 +506,52 @@ mod tests {
             index("today-b", now - Duration::minutes(2)),
         ];
 
-        assert!(select_retained_indexes(&indexes, now, UtcOffset::UTC, |_| 0).is_none());
+        assert!(
+            select_retained_indexes(&indexes, now, |instant| Some(instant.date()), |_| 0,)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn retained_indexes_resolve_each_instant_across_dst_before_grouping_local_days() {
+        let now = utc(2026, Month::November, 2, 5, 30);
+        let transition = utc(2026, Month::November, 1, 6, 0);
+        let daylight = UtcOffset::from_hms(-4, 0, 0).unwrap();
+        let standard = UtcOffset::from_hms(-5, 0, 0).unwrap();
+        let indexes = vec![
+            index("today", utc(2026, Month::November, 2, 5, 20)),
+            index("nov-1-later", utc(2026, Month::November, 1, 5, 30)),
+            index("nov-1-midnight", utc(2026, Month::November, 1, 4, 30)),
+            index("oct-31-latest", utc(2026, Month::November, 1, 3, 30)),
+            index("oct-31-selected", utc(2026, Month::October, 31, 23, 0)),
+            index("oct-31-dropped", utc(2026, Month::October, 31, 20, 0)),
+        ];
+
+        let retained = select_retained_indexes(
+            &indexes,
+            now,
+            |instant| {
+                let offset = if instant < transition {
+                    daylight
+                } else {
+                    standard
+                };
+                Some(instant.to_offset(offset).date())
+            },
+            |_| 1,
+        )
+        .unwrap();
+
+        assert_eq!(
+            sorted(retained),
+            sorted(vec![
+                "today".to_owned(),
+                "nov-1-later".to_owned(),
+                "nov-1-midnight".to_owned(),
+                "oct-31-latest".to_owned(),
+                "oct-31-selected".to_owned(),
+            ])
+        );
     }
 
     #[test]
