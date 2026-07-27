@@ -15,7 +15,7 @@ use tauri::Manager;
 use time::OffsetDateTime;
 
 use self::commands::{DejavuSchedulerOwner, DejavuSyncServiceOwner};
-use self::conflicts::ConflictStore;
+use self::conflicts::{ConflictResolver, ConflictStore};
 use self::lifecycle::RepositoryLifecycleController;
 use self::local_state::LocalSyncStateService;
 use self::maintenance::{
@@ -47,6 +47,7 @@ pub(crate) fn install_production_graph(app: &tauri::AppHandle) -> Result<(), Rep
     let path_guard_factory = tauri_path_guard_factory(app.clone());
     app.state::<PathGuardCoordinatorOwner>()
         .install(path_guard_factory.clone())?;
+    let conflict_coordinator_factory = Arc::new(path_guard_factory.clone());
     let coordinator_factory: Arc<dyn WorkingTreeCoordinatorFactory> = Arc::new(path_guard_factory);
     let runner = Arc::new(DejavuRepositoryRunner::new(&app_data, coordinator_factory));
     let status_store = Arc::new(RepositoryStatusStore::new(
@@ -77,7 +78,15 @@ pub(crate) fn install_production_graph(app: &tauri::AppHandle) -> Result<(), Rep
     let service_owner = app.state::<DejavuSyncServiceOwner>();
     service_owner.install(service.clone())?;
     service_owner.install_maintenance(Arc::clone(&maintenance))?;
-    service_owner.install_conflicts(ConflictStore::new(&app_data))?;
+    let conflicts = Arc::new(ConflictStore::new(&app_data));
+    service_owner.install_conflicts(Arc::clone(&conflicts))?;
+    service_owner.install_conflict_resolver(Arc::new(ConflictResolver::new(
+        &app_data,
+        service.clone(),
+        conflicts,
+        Arc::clone(&status_store),
+        conflict_coordinator_factory,
+    )))?;
     service_owner.install_binding(
         &app_data,
         Arc::new(S3RepositoryCatalogValidator::new(&app_data)),

@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use tauri::Emitter;
 use time::OffsetDateTime;
 
-use super::conflicts::{conflict_history_exists, SyncConflictRecord};
+use super::conflicts::{conflict_history_exists, ConflictResolutionKind, SyncConflictRecord};
 use super::service::{
     RepositoryJobError, RepositoryStatusSink, RepositorySyncResult, SyncJobRequest,
 };
@@ -238,16 +238,13 @@ impl RepositoryStatusStore {
             } else if status.conflicts.is_empty() && status.phase == RepositorySyncPhase::Failed {
                 status.conflicts = previous.conflicts;
             } else if status.phase == RepositorySyncPhase::Succeeded {
-                let mut unresolved = previous
+                let mut retained = previous
                     .conflicts
                     .into_iter()
-                    .filter(|conflict| {
-                        conflict.resolution.is_none()
-                            && conflict_history_exists(&self.app_data, conflict)
-                    })
+                    .filter(|conflict| conflict_history_exists(&self.app_data, conflict))
                     .collect::<Vec<_>>();
-                unresolved.append(&mut status.conflicts);
-                status.conflicts = unresolved;
+                retained.append(&mut status.conflicts);
+                status.conflicts = retained;
             }
         }
         self.persist_then_emit(status)
@@ -350,6 +347,37 @@ impl RepositoryStatusStore {
             true
         };
         self.update_schedule(repository_id, &mut clear)
+    }
+
+    pub(crate) fn resolve_conflict(
+        &self,
+        repository_id: &str,
+        conflict_id: &str,
+        resolution: ConflictResolutionKind,
+    ) -> Result<SyncConflictRecord, RepositoryJobError> {
+        validate_repository_id(repository_id)?;
+        let parsed = uuid::Uuid::parse_str(conflict_id)
+            .map_err(|_| RepositoryJobError::ConflictUnavailable)?;
+        if parsed.to_string() != conflict_id {
+            return Err(RepositoryJobError::ConflictUnavailable);
+        }
+        let _write = self.write_lock.lock().unwrap();
+        let mut status = load_repository_sync_status(&self.app_data, repository_id)?
+            .ok_or(RepositoryJobError::ConflictUnavailable)?;
+        let conflict = status
+            .conflicts
+            .iter_mut()
+            .find(|conflict| {
+                conflict.conflict_id == conflict_id
+                    && conflict.repository_id == repository_id
+                    && conflict.resolution.is_none()
+            })
+            .ok_or(RepositoryJobError::ConflictUnavailable)?;
+        conflict.resolution = Some(resolution);
+        let resolved = conflict.clone();
+        self.persist_status(&status)?;
+        let _notification_result = self.emitter.emit(&status);
+        Ok(resolved)
     }
 
     fn persist_then_emit(&self, status: RepositorySyncStatus) -> Result<(), RepositoryJobError> {

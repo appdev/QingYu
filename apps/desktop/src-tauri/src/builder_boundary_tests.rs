@@ -1018,6 +1018,9 @@ fn builder_boundary_installs_the_path_guard_graph_before_startup_on_both_platfor
             "change_global_key",
             "purge_remote_repository",
             "delete_remote_repository",
+            "list_dejavu_conflicts",
+            "read_dejavu_conflict",
+            "resolve_dejavu_conflict",
         ] {
             assert!(
                 runtime.contains(&format!("crate::dejavu_sync::commands::{command},")),
