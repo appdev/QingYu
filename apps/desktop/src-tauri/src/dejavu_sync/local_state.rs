@@ -349,6 +349,42 @@ impl LocalSyncStateService {
         Ok(())
     }
 
+    pub(crate) fn remove_repository_binding(
+        &self,
+        state: &mut LocalSyncState,
+        repository_id: &str,
+    ) -> Result<Option<RepositoryBinding>, LocalSyncStateError> {
+        validate_state(state)?;
+        let Some(index) = state
+            .bindings
+            .iter()
+            .position(|binding| binding.repository_id == repository_id)
+        else {
+            return Ok(None);
+        };
+        let mut updated = state.clone();
+        let removed = updated.bindings.remove(index);
+        self.save(&updated)?;
+        *state = updated;
+        Ok(Some(removed))
+    }
+
+    pub(crate) fn replace_repository_key(
+        &self,
+        state: &mut LocalSyncState,
+        user_key_input: &str,
+    ) -> Result<(), LocalSyncStateError> {
+        validate_state(state)?;
+        let mut updated = state.clone();
+        updated.repo_key = repository_key(Some(user_key_input))?;
+        for binding in &mut updated.bindings {
+            binding.enabled = false;
+        }
+        self.save(&updated)?;
+        *state = updated;
+        Ok(())
+    }
+
     fn save_with_writer<Write>(
         &self,
         state: &LocalSyncState,
@@ -547,8 +583,9 @@ mod tests {
     use uuid::{Uuid, Version};
 
     use super::{
-        canonical_notes_root_with_observer, LocalSyncStateError, LocalSyncStateService,
-        RepositoryBinding, LOCAL_SYNC_STATE_FILE, MAX_LOCAL_SYNC_STATE_BYTES,
+        canonical_notes_root_with_observer, repository_key, LocalSyncStateError,
+        LocalSyncStateService, RepositoryBinding, LOCAL_SYNC_STATE_FILE,
+        MAX_LOCAL_SYNC_STATE_BYTES,
     };
     use crate::dejavu_sync::service::RepositoryJobError;
 
@@ -753,6 +790,104 @@ mod tests {
             "Authoritative remote name"
         );
         assert!(reloaded.bindings[0].enabled);
+    }
+
+    #[test]
+    fn removing_a_binding_persists_only_the_selected_repository() {
+        let temporary = tempdir().expect("temporary app data");
+        let notes_a = temporary.path().join("notes-a");
+        let notes_b = temporary.path().join("notes-b");
+        fs::create_dir(&notes_a).unwrap();
+        fs::create_dir(&notes_b).unwrap();
+        let service = LocalSyncStateService::new(temporary.path().join("app-data"));
+        let mut state = service.load_or_initialize(None).unwrap();
+        let device_id = state.device_id.clone();
+        let repo_key = state.repo_key.clone();
+        for (repository_id, display_name, notes_root) in [
+            ("repo-a", "Notes A", notes_a),
+            ("repo-b", "Notes B", notes_b),
+        ] {
+            service
+                .add_binding(
+                    &mut state,
+                    RepositoryBinding {
+                        repository_id: repository_id.to_owned(),
+                        display_name: display_name.to_owned(),
+                        notes_root,
+                        enabled: true,
+                    },
+                )
+                .unwrap();
+        }
+
+        let removed = service
+            .remove_repository_binding(&mut state, "repo-a")
+            .unwrap()
+            .expect("selected binding should be returned");
+
+        assert_eq!(removed.repository_id, "repo-a");
+        assert_eq!(state.device_id, device_id);
+        assert_eq!(state.repo_key, repo_key);
+        assert_eq!(state.bindings.len(), 1);
+        assert_eq!(state.bindings[0].repository_id, "repo-b");
+        let reloaded = service.load().unwrap().unwrap();
+        assert_eq!(reloaded.bindings.len(), 1);
+        assert_eq!(reloaded.bindings[0].repository_id, "repo-b");
+        assert!(service
+            .remove_repository_binding(&mut state, "repo-a")
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn replacing_repository_key_preserves_device_and_roots_but_disables_all_bindings() {
+        let temporary = tempdir().expect("temporary app data");
+        let notes_a = temporary.path().join("notes-a");
+        let notes_b = temporary.path().join("notes-b");
+        fs::create_dir(&notes_a).unwrap();
+        fs::create_dir(&notes_b).unwrap();
+        let service = LocalSyncStateService::new(temporary.path().join("app-data"));
+        let mut state = service.load_or_initialize(None).unwrap();
+        for (repository_id, notes_root) in [("repo-a", notes_a), ("repo-b", notes_b)] {
+            service
+                .add_binding(
+                    &mut state,
+                    RepositoryBinding {
+                        repository_id: repository_id.to_owned(),
+                        display_name: repository_id.to_owned(),
+                        notes_root,
+                        enabled: true,
+                    },
+                )
+                .unwrap();
+        }
+        let device_id = state.device_id.clone();
+        let roots = state
+            .bindings
+            .iter()
+            .map(|binding| binding.notes_root.clone())
+            .collect::<Vec<_>>();
+        let expected_key = repository_key(Some("replacement passphrase")).unwrap();
+
+        service
+            .replace_repository_key(&mut state, "replacement passphrase")
+            .unwrap();
+
+        assert_eq!(state.device_id, device_id);
+        assert_eq!(state.repo_key, expected_key);
+        assert_eq!(
+            state
+                .bindings
+                .iter()
+                .map(|binding| binding.notes_root.clone())
+                .collect::<Vec<_>>(),
+            roots
+        );
+        assert!(state.bindings.iter().all(|binding| !binding.enabled));
+        let reloaded = service.load().unwrap().unwrap();
+        assert_eq!(reloaded.device_id, device_id);
+        assert_eq!(reloaded.repo_key, expected_key);
+        assert!(reloaded.bindings.iter().all(|binding| !binding.enabled));
     }
 
     #[test]
