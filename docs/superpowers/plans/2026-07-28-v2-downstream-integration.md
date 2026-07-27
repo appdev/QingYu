@@ -84,10 +84,10 @@ git merge -s ours upstream/main --allow-unrelated-histories -m "chore: bridge Qi
 - [ ] **Step 3: Start the V2 merge**
 
 ```bash
-git merge upstream/v2 --no-ff --no-commit
+git merge upstream/v2 --no-ff --no-commit -X ours
 ```
 
-Expected: conflicts are present in app/editor/runtime integration files; no primary-checkout file is modified.
+Expected: non-conflicting V2 changes are applied automatically, conflicting hunks retain the downstream baseline, delete/modify conflicts remain explicit, and no primary-checkout file is modified. The later tasks deliberately add supported V2 behavior that was hidden by a downstream-favored conflict hunk.
 
 ### Task 3: Adopt the V2 editor without its AI seam
 
