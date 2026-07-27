@@ -2743,6 +2743,54 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn restart_converges_after_object_index_and_ref_publication_failures() {
+        for (case, failed_prefix) in [
+            ("object", "objects/"),
+            ("index", "indexes/"),
+            ("ref", "refs/latest"),
+        ] {
+            let (_cloud_root, inner) = cloud_fixture();
+            let inspected = Arc::new(InspectCloud::new(inner));
+            inspected.fail_put_prefix(failed_prefix, 1);
+            let interrupted = repo_fixture(&format!("interrupted-{case}"), RepoOptions::default());
+            write_file(
+                &interrupted.data,
+                "recover.md",
+                case.as_bytes(),
+                1_700_000_000_000,
+            );
+
+            let error = interrupted
+                .repo
+                .sync(inspected.clone(), coordinator())
+                .await
+                .unwrap_err();
+            assert!(matches!(error, RepoError::Cloud(_)), "{case}");
+            assert!(
+                inspected.inner.list("refs/").await.unwrap().is_empty(),
+                "{case} failure published a ref"
+            );
+            assert!(interrupted.repo.latest().unwrap().is_none(), "{case}");
+            assert!(interrupted.repo.latest_sync().unwrap().is_none(), "{case}");
+
+            sync(&interrupted.repo, inspected.clone()).await;
+            let recovered = repo_fixture(&format!("recovered-{case}"), RepoOptions::default());
+            sync(&recovered.repo, inspected.clone()).await;
+
+            assert_eq!(
+                fs::read(recovered.data.join("recover.md")).unwrap(),
+                case.as_bytes(),
+                "{case} retry did not converge"
+            );
+            assert_eq!(
+                interrupted.repo.latest().unwrap().unwrap().id,
+                recovered.repo.latest().unwrap().unwrap().id,
+                "{case} clients did not converge on one ref"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn successful_operation_with_release_failure_returns_unlock_error_once_stopped() {
         let (_cloud_root, inner) = cloud_fixture();
         let inspected = Arc::new(InspectCloud::new(inner));
