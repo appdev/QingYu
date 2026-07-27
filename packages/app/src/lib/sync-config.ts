@@ -263,6 +263,19 @@ export type AcceptedSyncJob = {
   repositoryId: string;
 };
 
+export type AcceptedMaintenanceJob = {
+  jobId: string;
+  operation:
+    | "rebuild-local-repository"
+    | "stop-repository-sync"
+    | "change-global-key"
+    | "purge-remote-repository"
+    | "delete-remote-repository";
+  repositoryId: string | null;
+};
+
+export type DejavuKeyState = { configured: boolean };
+
 export type ConflictResolutionKind = "keep-local" | "use-remote" | "keep-both";
 
 export type SyncConflictRecord = {
@@ -320,8 +333,16 @@ export type DejavuRepositoryStatus = {
 
 export type AppSyncConfigRuntime = {
   cancelApply(input: SyncApplyIdentity): Promise<SyncApplyWriteResult>;
+  changeGlobalKey(input: { confirmed: true; newKey: string }): Promise<AcceptedMaintenanceJob>;
+  deleteRemoteRepository(input: {
+    confirmed: true;
+    repositoryId: string;
+  }): Promise<AcceptedMaintenanceJob>;
   enable(input: { expectedRevision: string | null }): Promise<SyncConfigDocument>;
+  exportGlobalKey(input: { confirmed: true }): Promise<string>;
+  initializeGlobalKey(input: { key: string }): Promise<DejavuKeyState>;
   load(): Promise<SyncConfigLoadResult>;
+  loadKeyState(): Promise<DejavuKeyState>;
   listNotebooks(input: { revision: string }): Promise<RemoteNotebookCatalogEntry[]>;
   listConflicts(input: { repositoryId: string }): Promise<SyncConflictRecord[]>;
   loadEditing(): Promise<SyncEditingSnapshot>;
@@ -331,10 +352,18 @@ export type AppSyncConfigRuntime = {
     expectedRevision: string;
     patch: SyncConfigPatch;
   }): Promise<SyncConfigDocument>;
+  purgeRemoteRepository(input: {
+    confirmed: true;
+    repositoryId: string;
+  }): Promise<AcceptedMaintenanceJob>;
   recover(input: {
     config: QingYuSyncConfig;
     expectedRevision: string;
   }): Promise<SyncConfigDocument>;
+  rebuildLocalRepository(input: {
+    confirmed: true;
+    repositoryId: string;
+  }): Promise<AcceptedMaintenanceJob>;
   requestApply(input: SyncApplyUpdate): Promise<SyncApplyWriteResult>;
   readConflict(input: {
     conflictId: string;
@@ -345,6 +374,10 @@ export type AppSyncConfigRuntime = {
     expectedRevision: string | null;
   }): Promise<SyncConfigDocument>;
   setEditing(input: SyncEditingUpdate): Promise<SyncEditingWriteResult>;
+  stopRepositorySync(input: {
+    confirmed: true;
+    repositoryId: string;
+  }): Promise<AcceptedMaintenanceJob>;
   resolveConflict(input: {
     conflictId: string;
     repositoryId: string;

@@ -6,6 +6,11 @@ import type {
   SyncConfigLoadResult
 } from "../../lib/sync-config";
 import { translate } from "../../test/settings-components";
+import {
+  configureAppRuntime,
+  createDefaultAppRuntime,
+  resetAppRuntimeForTests
+} from "../../runtime";
 import { SyncSettings, type SyncSettingsProps } from "./SyncSettings";
 
 const config: QingYuSyncConfig = {
@@ -80,6 +85,8 @@ describe("SyncSettings application scope", () => {
       "Basic settings",
       "Sync schedule",
       "S3 connection",
+      "Repository key",
+      "Repository maintenance",
       "Advanced options",
       "Connection and status"
     ]);
@@ -118,11 +125,11 @@ describe("SyncSettings application scope", () => {
     const onPatch = vi.fn(async (_patch: SyncConfigPatch) => undefined);
     render(<SyncSettings {...createProps({ onPatch })} />);
 
-    fireEvent.change(screen.getByRole("combobox", { name: "Sync mode" }), {
-      target: { value: "fully-manual" }
-    });
     fireEvent.change(screen.getByRole("spinbutton", { name: "Automatic sync interval" }), {
       target: { value: "600" }
+    });
+    fireEvent.change(screen.getByRole("combobox", { name: "Sync mode" }), {
+      target: { value: "fully-manual" }
     });
     fireEvent.change(screen.getByRole("textbox", { name: "Remote root" }), {
       target: { value: "qingyu/team" }
@@ -131,6 +138,7 @@ describe("SyncSettings application scope", () => {
     expect(onPatch).toHaveBeenCalledWith({ field: "mode", value: "fully-manual" });
     expect(onPatch).toHaveBeenCalledWith({ field: "intervalSeconds", value: 600 });
     expect(onPatch).toHaveBeenCalledWith({ field: "remoteRoot", value: "qingyu/team" });
+    expect(screen.queryByRole("spinbutton", { name: "Automatic sync interval" })).not.toBeInTheDocument();
   });
 
   it("persists S3 timeout addressing and TLS verification changes immediately", () => {
@@ -155,6 +163,68 @@ describe("SyncSettings application scope", () => {
     expect(onPatch).toHaveBeenCalledWith({ field: "s3.requestTimeoutSeconds", value: 299 });
     expect(onPatch).toHaveBeenCalledWith({ field: "s3.addressingStyle", value: "path" });
     expect(onPatch).toHaveBeenCalledWith({ field: "s3.tlsVerification", value: "skip" });
+  });
+
+  it("imports a local key and dispatches repository maintenance as accepted background work", async () => {
+    const runtime = createDefaultAppRuntime();
+    const initializeGlobalKey = vi.fn(async () => ({ configured: true }));
+    const rebuildLocalRepository = vi.fn(async () => ({
+      jobId: "00000000-0000-4000-8000-0000000000c1",
+      operation: "rebuild-local-repository" as const,
+      repositoryId: "00000000-0000-4000-8000-0000000000c2"
+    }));
+    runtime.syncConfig.initializeGlobalKey = initializeGlobalKey;
+    runtime.syncConfig.loadKeyState = vi.fn(async () => ({ configured: false }));
+    runtime.syncConfig.loadRepositoryStatus = vi.fn(async () => ({
+      attempt: 1,
+      automaticFailureCount: 0,
+      conflicts: [],
+      error: null,
+      jobId: "00000000-0000-4000-8000-0000000000c3",
+      lastAttemptAt: "2026-07-28T10:00:00Z",
+      lastDnsRetryAt: null,
+      lastSuccessfulSyncAt: "2026-07-28T10:00:00Z",
+      maintenance: { lastLocalPurgeAt: null, nextLocalPurgeAt: null },
+      nextScheduledAt: null,
+      phase: "succeeded" as const,
+      repositoryId: "00000000-0000-4000-8000-0000000000c2",
+      sameCount: 0,
+      transfer: {
+        downloadBytes: 0,
+        downloadChunks: 0,
+        downloadFiles: 0,
+        uploadBytes: 0,
+        uploadChunks: 0,
+        uploadFiles: 0
+      },
+      trigger: "manual" as const,
+      version: 1 as const
+    }));
+    runtime.syncConfig.rebuildLocalRepository = rebuildLocalRepository;
+    configureAppRuntime(runtime);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    try {
+      const s3Document = document({ config: { ...config, provider: "s3" } });
+      render(<SyncSettings {...createProps({
+        configDocument: s3Document,
+        loadResult: { ...s3Document, status: "loaded" }
+      })} />);
+
+      const keyInput = await screen.findByLabelText("Repository key or passphrase");
+      fireEvent.change(keyInput, { target: { value: "test passphrase" } });
+      fireEvent.click(screen.getByRole("button", { name: "Import key" }));
+      await waitFor(() => expect(initializeGlobalKey).toHaveBeenCalledWith({ key: "test passphrase" }));
+
+      const rebuild = await screen.findByRole("button", { name: "Rebuild local repository" });
+      fireEvent.click(rebuild);
+      await waitFor(() => expect(rebuildLocalRepository).toHaveBeenCalledWith({
+        confirmed: true,
+        repositoryId: "00000000-0000-4000-8000-0000000000c2"
+      }));
+    } finally {
+      resetAppRuntimeForTests();
+      vi.restoreAllMocks();
+    }
   });
 
   it("keeps an empty S3 region while showing the automatic runtime value", () => {

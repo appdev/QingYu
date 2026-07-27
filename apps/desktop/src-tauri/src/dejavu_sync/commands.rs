@@ -4,7 +4,7 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use qingyu_dejavu::RepositoryMetadata;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use super::conflicts::{
     ConflictResolver, ConflictStore, ConflictVersions, ResolveConflictRequest, SyncConflictRecord,
@@ -52,6 +52,24 @@ pub(crate) struct ConfirmedRepositoryRequest {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct ChangeGlobalKeyRequest {
     pub(crate) new_key: String,
+    pub(crate) confirmed: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DejavuKeyState {
+    pub(crate) configured: bool,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct InitializeGlobalKeyRequest {
+    pub(crate) key: String,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ExportGlobalKeyRequest {
     pub(crate) confirmed: bool,
 }
 
@@ -427,6 +445,47 @@ impl DejavuSyncServiceOwner {
             .ok_or(RepositoryJobError::RepositoryUnavailable)
     }
 
+    fn service(&self) -> Result<&DejavuSyncService, RepositoryJobError> {
+        self.service
+            .get()
+            .ok_or(RepositoryJobError::RepositoryUnavailable)
+    }
+
+    pub(crate) fn key_state(&self) -> Result<DejavuKeyState, RepositoryJobError> {
+        Ok(DejavuKeyState {
+            configured: self.conflicts()?.key_configured()?,
+        })
+    }
+
+    pub(crate) fn export_global_key(
+        &self,
+        request: ExportGlobalKeyRequest,
+    ) -> Result<String, RepositoryJobError> {
+        if !request.confirmed {
+            return Err(RepositoryJobError::ConfirmationRequired);
+        }
+        self.conflicts()?.export_key()
+    }
+
+    pub(crate) async fn initialize_global_key(
+        &self,
+        request: InitializeGlobalKeyRequest,
+    ) -> Result<DejavuKeyState, RepositoryJobError> {
+        if request.key.trim().is_empty() {
+            return Err(RepositoryJobError::InvalidBinding);
+        }
+        let reservation = self.service()?.reserve_global_maintenance()?;
+        let app_data = self.conflicts()?.app_data().to_path_buf();
+        reservation
+            .run_state(async move {
+                LocalSyncStateService::new(app_data)
+                    .load_or_initialize(Some(&request.key))
+                    .map_err(RepositoryJobError::from)
+            })
+            .await?;
+        Ok(DejavuKeyState { configured: true })
+    }
+
     async fn resolve_conflict(
         &self,
         request: ResolveConflictRequest,
@@ -599,6 +658,36 @@ pub(crate) fn change_global_key(
 ) -> Result<AcceptedMaintenanceJob, String> {
     owner
         .change_global_key(request)
+        .map_err(|error| error.safe_code().to_owned())
+}
+
+#[tauri::command]
+pub(crate) fn load_dejavu_key_state(
+    owner: tauri::State<'_, DejavuSyncServiceOwner>,
+) -> Result<DejavuKeyState, String> {
+    owner
+        .key_state()
+        .map_err(|error| error.safe_code().to_owned())
+}
+
+#[tauri::command]
+pub(crate) async fn initialize_dejavu_global_key(
+    owner: tauri::State<'_, DejavuSyncServiceOwner>,
+    request: InitializeGlobalKeyRequest,
+) -> Result<DejavuKeyState, String> {
+    owner
+        .initialize_global_key(request)
+        .await
+        .map_err(|error| error.safe_code().to_owned())
+}
+
+#[tauri::command]
+pub(crate) fn export_dejavu_global_key(
+    owner: tauri::State<'_, DejavuSyncServiceOwner>,
+    request: ExportGlobalKeyRequest,
+) -> Result<String, String> {
+    owner
+        .export_global_key(request)
         .map_err(|error| error.safe_code().to_owned())
 }
 

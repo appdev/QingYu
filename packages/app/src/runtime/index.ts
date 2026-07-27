@@ -692,8 +692,13 @@ export function createDefaultAppRuntime(): AppRuntime {
         }
         return { broadcasted: false, event: syncPendingApply };
       },
+      changeGlobalKey: () => unsupportedFeature("changeDejavuGlobalKey"),
+      deleteRemoteRepository: () => unsupportedFeature("deleteDejavuRemoteRepository"),
       enable: () => unsupportedFeature("enableSyncConfig"),
+      exportGlobalKey: () => unsupportedFeature("exportDejavuGlobalKey"),
+      initializeGlobalKey: async () => ({ configured: true }),
       load: () => unsupportedFeature("loadSyncConfig"),
+      loadKeyState: async () => ({ configured: false }),
       listNotebooks: () => unsupportedFeature("listRemoteNotebooks"),
       listConflicts: async () => [],
       loadEditing: async () => ({
@@ -704,6 +709,7 @@ export function createDefaultAppRuntime(): AppRuntime {
       loadRepositoryStatus: async () => null,
       loadStatus: () => unsupportedFeature("loadSyncStatus"),
       patch: () => unsupportedFeature("patchSyncConfig"),
+      purgeRemoteRepository: () => unsupportedFeature("purgeDejavuRemoteRepository"),
       recover: () => unsupportedFeature("recoverSyncConfig"),
       requestApply: async (input) => {
         if (!input.token.trim()) {
@@ -737,6 +743,7 @@ export function createDefaultAppRuntime(): AppRuntime {
         return { broadcasted: false, event: syncPendingApply };
       },
       readConflict: () => unsupportedFeature("readDejavuConflict"),
+      rebuildLocalRepository: () => unsupportedFeature("rebuildDejavuLocalRepository"),
       reset: () => unsupportedFeature("resetSyncConfig"),
       setEditing: async (input) => {
         syncEditingCounter += 1;
@@ -756,6 +763,7 @@ export function createDefaultAppRuntime(): AppRuntime {
             : { ...input, active: false, counter: syncEditingCounter }
         };
       },
+      stopRepositorySync: () => unsupportedFeature("stopDejavuRepositorySync"),
       resolveConflict: () => unsupportedFeature("resolveDejavuConflict"),
       sync: () => unsupportedFeature("syncApplication"),
       testConnection: () => unsupportedFeature("testSyncConnection")
@@ -873,12 +881,14 @@ export {
   notebookNameFromRoot,
   normalizeSyncConfigLoadResult,
   type AcceptedSyncJob,
+  type AcceptedMaintenanceJob,
   type AppSyncConfigRuntime,
   type ConflictResolution,
   type ConflictResolutionKind,
   type ConflictVersion,
   type ConflictVersions,
   type DejavuRepositoryStatus,
+  type DejavuKeyState,
   type RemoteNotebookCatalogEntry,
   type QingYuSyncConfig,
   type SyncApplyUpdate,

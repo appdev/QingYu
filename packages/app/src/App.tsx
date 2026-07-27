@@ -183,7 +183,11 @@ import {
   notifyAppEditorPreferencesChanged
 } from "./lib/settings/settings-events";
 import { getAppRuntime } from "./runtime";
-import type { RemoteNotebookCatalogEntry, SyncConfigDocument } from "./lib/sync-config";
+import type {
+  RemoteNotebookCatalogEntry,
+  SyncConfigDocument,
+  SyncConflictRecord
+} from "./lib/sync-config";
 import {
   confirmNativeMarkdownFileDelete,
   confirmNativeUnsavedMarkdownDocumentDiscard,
@@ -736,6 +740,29 @@ function WorkspaceApp() {
   const openSyncConflict = syncConflicts.conflicts.find(
     (conflict) => conflict.conflictId === openSyncConflictId
   ) ?? null;
+  useEffect(() => {
+    if (!getAppRuntime().events.isAvailable()) return;
+    let active = true;
+    let cleanup: (() => unknown) | null = null;
+    getAppRuntime().events.listen<SyncConflictRecord>(
+      "qingyu://open-dejavu-conflict",
+      ({ payload }) => {
+        if (!active) return;
+        const available = syncConflicts.conflicts.some((conflict) => (
+          conflict.conflictId === payload.conflictId
+            && conflict.repositoryId === payload.repositoryId
+        ));
+        if (available) setOpenSyncConflictId(payload.conflictId);
+      }
+    ).then((stop) => {
+      if (!active) return stop();
+      cleanup = stop;
+    }).catch(() => {});
+    return () => {
+      active = false;
+      cleanup?.();
+    };
+  }, [syncConflicts.conflicts]);
   const defaultMarkdownSaveDirectory = useMemo(
     () => defaultSaveDirectoryFromFileTree(fileTreeSourcePath),
     [fileTreeSourcePath]

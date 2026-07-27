@@ -109,6 +109,25 @@ impl ConflictStore {
         }
     }
 
+    pub(crate) fn app_data(&self) -> &Path {
+        &self.app_data
+    }
+
+    pub(crate) fn key_configured(&self) -> Result<bool, RepositoryJobError> {
+        LocalSyncStateService::new(&self.app_data)
+            .load()
+            .map(|state| state.is_some())
+            .map_err(RepositoryJobError::from)
+    }
+
+    pub(crate) fn export_key(&self) -> Result<String, RepositoryJobError> {
+        LocalSyncStateService::new(&self.app_data)
+            .load()
+            .map_err(RepositoryJobError::from)?
+            .map(|state| state.repo_key)
+            .ok_or(RepositoryJobError::InvalidBinding)
+    }
+
     pub(crate) fn list(
         &self,
         repository_id: &str,
@@ -825,6 +844,8 @@ mod tests {
         let fixture = Fixture::new(b"remote text").await;
         let store = ConflictStore::new(&fixture.app_data);
 
+        assert!(store.key_configured().unwrap());
+        assert_eq!(store.export_key().unwrap(), STANDARD.encode([3_u8; 32]));
         let listed = store.list(REPOSITORY_ID).unwrap();
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].relative_path, "document.md");

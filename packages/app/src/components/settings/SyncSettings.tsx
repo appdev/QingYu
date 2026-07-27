@@ -2,6 +2,8 @@ import { AlertTriangle, Cloud, RefreshCw, RotateCcw, TestTube2 } from "lucide-re
 import { useEffect, useRef, useState } from "react";
 import {
   applySyncConfigPatch,
+  type DejavuKeyState,
+  type DejavuRepositoryStatus,
   type QingYuSyncConfig,
   type SyncConfigDocument,
   type SyncConfigLoadResult,
@@ -11,6 +13,7 @@ import {
   type SyncStatus,
   type SyncTrigger
 } from "../../lib/sync-config";
+import { getAppRuntime } from "../../runtime";
 import {
   SettingsButton,
   SettingsCallout,
@@ -191,6 +194,12 @@ export function SyncSettings({
   const currentLoadedRevisionRef = useRef(loadedRevision);
   currentLoadedRevisionRef.current = loadedRevision;
   const [connectionTesting, setConnectionTesting] = useState(false);
+  const [dejavuKeyState, setDejavuKeyState] = useState<DejavuKeyState | null>(null);
+  const [dejavuRepositoryStatus, setDejavuRepositoryStatus] = useState<DejavuRepositoryStatus | null>(null);
+  const [keyInput, setKeyInput] = useState("");
+  const [keyFeedback, setKeyFeedback] = useState<string | null>(null);
+  const [repositoryFeedback, setRepositoryFeedback] = useState<string | null>(null);
+  const [pendingRepositoryOperation, setPendingRepositoryOperation] = useState<string | null>(null);
   const connectionTestingRef = useRef(false);
   const [connectionFeedback, setConnectionFeedback] = useState<{
     result: SyncConnectionTestResult | null;
@@ -203,6 +212,50 @@ export function SyncSettings({
   const visibleOverlays = revisionVisible && draft ? draft.overlays : {};
   const failedOverlays = overlayValues(visibleOverlays).filter((overlay) => overlay.status === "failed");
   const hasUncommittedDraft = overlayValues(visibleOverlays).length > 0;
+
+  useEffect(() => {
+    let active = true;
+    getAppRuntime().syncConfig.loadKeyState().then((state) => {
+      if (active) setDejavuKeyState(state);
+    }).catch(() => {
+      if (active) setDejavuKeyState(null);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    let cleanup: (() => unknown) | null = null;
+    if (!primaryRoot) {
+      setDejavuRepositoryStatus(null);
+      return;
+    }
+    getAppRuntime().syncConfig.loadRepositoryStatus({ notesRoot: primaryRoot }).then((next) => {
+      if (active) setDejavuRepositoryStatus(next);
+    }).catch(() => {
+      if (active) setDejavuRepositoryStatus(null);
+    });
+    if (getAppRuntime().events.isAvailable()) {
+      getAppRuntime().events.listen<DejavuRepositoryStatus>(
+        "qingyu://dejavu-sync-status-changed",
+        ({ payload }) => {
+          if (!active) return;
+          setDejavuRepositoryStatus((current) => (
+            current?.repositoryId === payload.repositoryId ? payload : current
+          ));
+        }
+      ).then((stop) => {
+        if (!active) return stop();
+        cleanup = stop;
+      }).catch(() => {});
+    }
+    return () => {
+      active = false;
+      cleanup?.();
+    };
+  }, [primaryRoot]);
 
   useEffect(() => {
     setDraft((current) => {
@@ -339,6 +392,55 @@ export function SyncSettings({
       setConnectionTesting(false);
     }
   };
+  const repositoryId = dejavuRepositoryStatus?.repositoryId ?? null;
+  const runRepositoryOperation = async (
+    operation: string,
+    confirmation: string,
+    run: () => Promise<unknown>
+  ) => {
+    if (pendingRepositoryOperation === operation || !window.confirm(confirmation)) return;
+    setPendingRepositoryOperation(operation);
+    setRepositoryFeedback(null);
+    try {
+      await run();
+      setRepositoryFeedback(translate("settings.sync.repository.accepted"));
+    } catch {
+      setRepositoryFeedback(translate("settings.sync.operationFailed"));
+    } finally {
+      setPendingRepositoryOperation(null);
+    }
+  };
+  const saveGlobalKey = async () => {
+    const nextKey = keyInput.trim();
+    if (!nextKey || pendingRepositoryOperation === "key") return;
+    setPendingRepositoryOperation("key");
+    setKeyFeedback(null);
+    try {
+      if (dejavuKeyState?.configured) {
+        if (!window.confirm(translate("settings.sync.key.changeConfirm"))) return;
+        await getAppRuntime().syncConfig.changeGlobalKey({ confirmed: true, newKey: nextKey });
+      } else {
+        setDejavuKeyState(await getAppRuntime().syncConfig.initializeGlobalKey({ key: nextKey }));
+      }
+      setKeyInput("");
+      setKeyFeedback(translate("settings.sync.key.saved"));
+    } catch {
+      setKeyFeedback(translate("settings.sync.operationFailed"));
+    } finally {
+      setPendingRepositoryOperation(null);
+    }
+  };
+  const exportGlobalKey = async () => {
+    if (!window.confirm(translate("settings.sync.key.exportConfirm"))) return;
+    setKeyFeedback(null);
+    try {
+      const key = await getAppRuntime().syncConfig.exportGlobalKey({ confirmed: true });
+      await navigator.clipboard.writeText(key);
+      setKeyFeedback(translate("settings.sync.key.copied"));
+    } catch {
+      setKeyFeedback(translate("settings.sync.operationFailed"));
+    }
+  };
 
   return (
     <>
@@ -385,9 +487,11 @@ export function SyncSettings({
                 : "automatic"
           })} />
         } />
-        <SettingsRow title={translate("settings.sync.intervalSeconds")} description={translate("settings.sync.intervalSecondsDescription")} action={
-          <SettingsNumberInput label={translate("settings.sync.intervalSeconds")} min={30} max={43200} unit={translate("settings.sync.seconds")} value={config.intervalSeconds} onChange={(value) => queuePatch({ field: "intervalSeconds", value })} />
-        } />
+        {config.mode === "automatic" ? (
+          <SettingsRow title={translate("settings.sync.intervalSeconds")} description={translate("settings.sync.intervalSecondsDescription")} action={
+            <SettingsNumberInput label={translate("settings.sync.intervalSeconds")} min={30} max={43200} unit={translate("settings.sync.seconds")} value={config.intervalSeconds} onChange={(value) => queuePatch({ field: "intervalSeconds", value })} />
+          } />
+        ) : null}
       </SettingsSection>
       {config.provider === "webdav" ? (
         <SettingsSection label={translate("settings.sync.section.webdavConnection")}>
@@ -405,6 +509,93 @@ export function SyncSettings({
         </SettingsSection>
       )}
       {config.provider === "s3" ? (
+        <>
+        <SettingsSection label={translate("settings.sync.section.key")}>
+          <SettingsRow
+            title={translate("settings.sync.key.title")}
+            description={translate(dejavuKeyState?.configured
+              ? "settings.sync.key.configured"
+              : "settings.sync.key.absent")}
+            action={
+              <div className="flex flex-wrap justify-end gap-2">
+                <SettingsTextInput
+                  label={translate("settings.sync.key.input")}
+                  placeholder={translate("settings.sync.key.placeholder")}
+                  type="password"
+                  value={keyInput}
+                  onChange={setKeyInput}
+                />
+                <SettingsButton
+                  disabled={!keyInput.trim() || pendingRepositoryOperation === "key"}
+                  label={translate(dejavuKeyState?.configured
+                    ? "settings.sync.key.change"
+                    : "settings.sync.key.import")}
+                  onClick={saveGlobalKey}
+                >
+                  {translate(dejavuKeyState?.configured
+                    ? "settings.sync.key.change"
+                    : "settings.sync.key.import")}
+                </SettingsButton>
+                <SettingsButton
+                  disabled={!dejavuKeyState?.configured || pendingRepositoryOperation === "key"}
+                  label={translate("settings.sync.key.export")}
+                  onClick={exportGlobalKey}
+                >
+                  {translate("settings.sync.key.export")}
+                </SettingsButton>
+              </div>
+            }
+          />
+          {keyFeedback ? <p className="m-0 py-2 text-[12px] text-(--text-secondary)" role="status">{keyFeedback}</p> : null}
+        </SettingsSection>
+        <SettingsSection label={translate("settings.sync.section.repository") }>
+          {!repositoryId ? (
+            <p className="m-0 py-4 text-[12px] text-(--text-secondary)">{translate("settings.sync.repository.unbound")}</p>
+          ) : (
+            <>
+              <p className="m-0 py-2 text-[11px] text-(--text-secondary)">{repositoryId}</p>
+              <SettingsRow title={translate("settings.sync.repository.rebuild")} description={translate("settings.sync.repository.rebuildDescription")} action={
+                <SettingsButton disabled={pendingRepositoryOperation === "rebuild"} label={translate("settings.sync.repository.rebuild")} onClick={() => runRepositoryOperation(
+                  "rebuild",
+                  translate("settings.sync.repository.rebuildConfirm"),
+                  () => getAppRuntime().syncConfig.rebuildLocalRepository({ confirmed: true, repositoryId })
+                )}>{translate("settings.sync.repository.rebuild")}</SettingsButton>
+              } />
+              <SettingsRow title={translate("settings.sync.repository.stop")} description={translate("settings.sync.repository.stopDescription")} action={
+                <SettingsButton disabled={pendingRepositoryOperation === "stop"} label={translate("settings.sync.repository.stop")} onClick={() => runRepositoryOperation(
+                  "stop",
+                  translate("settings.sync.repository.stopConfirm"),
+                  () => getAppRuntime().syncConfig.stopRepositorySync({ confirmed: true, repositoryId })
+                )}>{translate("settings.sync.repository.stop")}</SettingsButton>
+              } />
+              <SettingsRow title={translate("settings.sync.repository.purge")} description={translate("settings.sync.repository.purgeDescription")} action={
+                <SettingsButton disabled={pendingRepositoryOperation === "purge"} label={translate("settings.sync.repository.purge")} onClick={() => runRepositoryOperation(
+                  "purge",
+                  translate("settings.sync.repository.purgeConfirm"),
+                  () => getAppRuntime().syncConfig.purgeRemoteRepository({ confirmed: true, repositoryId })
+                )}>{translate("settings.sync.repository.purge")}</SettingsButton>
+              } />
+              <SettingsRow title={translate("settings.sync.repository.delete")} description={translate("settings.sync.repository.deleteDescription")} action={
+                <SettingsButton disabled={pendingRepositoryOperation === "delete"} label={translate("settings.sync.repository.delete")} onClick={() => runRepositoryOperation(
+                  "delete",
+                  translate("settings.sync.repository.deleteConfirm"),
+                  () => getAppRuntime().syncConfig.deleteRemoteRepository({ confirmed: true, repositoryId })
+                )}>{translate("settings.sync.repository.delete")}</SettingsButton>
+              } />
+              {(dejavuRepositoryStatus?.conflicts ?? []).filter((conflict) => conflict.resolution === null).map((conflict) => (
+                <button
+                  className="block w-full break-all py-1 text-left text-[12px] text-(--danger) underline-offset-2 hover:underline"
+                  key={conflict.conflictId}
+                  type="button"
+                  onClick={() => getAppRuntime().events.emit("qingyu://open-dejavu-conflict", conflict).catch(() => {})}
+                >
+                  {conflict.relativePath}
+                </button>
+              ))}
+              {repositoryFeedback ? <p className="m-0 py-2 text-[12px] text-(--text-secondary)" role="status">{repositoryFeedback}</p> : null}
+            </>
+          )}
+        </SettingsSection>
         <SettingsSection label={translate("settings.sync.section.advanced")}>
           <SettingsRow title={translate("settings.sync.s3RequestTimeout")} description={translate("settings.sync.s3RequestTimeoutDescription")} action={<SettingsNumberInput label={translate("settings.sync.s3RequestTimeout")} min={5} max={600} unit={translate("settings.sync.seconds")} value={config.s3.requestTimeoutSeconds} onChange={(value) => queuePatch({ field: "s3.requestTimeoutSeconds", value })} />} />
           <SettingsRow title={translate("settings.sync.s3AddressingStyle")} description={translate("settings.sync.s3AddressingStyleDescription")} action={<SettingsSelect label={translate("settings.sync.s3AddressingStyle")} options={[
@@ -420,6 +611,7 @@ export function SyncSettings({
             { label: translate("settings.sync.s3TlsVerification.skip"), value: "skip" }
           ]} value={config.s3.tlsVerification} onChange={(value) => queuePatch({ field: "s3.tlsVerification", value: value === "skip" ? "skip" : "verify" })} />} />
         </SettingsSection>
+        </>
       ) : null}
       <SettingsSection label={translate("settings.sync.section.connectionStatus")}>
         <div className="py-4">

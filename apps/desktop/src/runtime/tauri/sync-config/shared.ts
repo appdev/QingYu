@@ -7,8 +7,10 @@ import {
   type SyncConfigLoadResult,
   type SyncConnectionTestResult,
   type AcceptedSyncJob,
+  type AcceptedMaintenanceJob,
   type ConflictVersions,
   type DejavuRepositoryStatus,
+  type DejavuKeyState,
   type SyncConflictRecord,
   type SyncRunResult
 } from "@markra/app/runtime";
@@ -73,6 +75,59 @@ export function resolveNativeDejavuConflict(
   input: Parameters<AppSyncConfigRuntime["resolveConflict"]>[0]
 ): Promise<AcceptedSyncJob> {
   return invokeNative("resolve_dejavu_conflict", { request: input });
+}
+
+export function loadNativeDejavuKeyState(): Promise<DejavuKeyState> {
+  return invokeNative("load_dejavu_key_state");
+}
+
+export function initializeNativeDejavuGlobalKey(
+  input: Parameters<AppSyncConfigRuntime["initializeGlobalKey"]>[0]
+): Promise<DejavuKeyState> {
+  return invokeNative("initialize_dejavu_global_key", { request: input });
+}
+
+export function exportNativeDejavuGlobalKey(
+  input: Parameters<AppSyncConfigRuntime["exportGlobalKey"]>[0]
+): Promise<string> {
+  return invokeNative("export_dejavu_global_key", { request: input });
+}
+
+function repositoryMaintenance(
+  command: string,
+  input: { confirmed: true; repositoryId: string }
+): Promise<AcceptedMaintenanceJob> {
+  return invokeNative(command, { request: input });
+}
+
+export function rebuildNativeDejavuLocalRepository(
+  input: Parameters<AppSyncConfigRuntime["rebuildLocalRepository"]>[0]
+): Promise<AcceptedMaintenanceJob> {
+  return repositoryMaintenance("rebuild_local_repository", input);
+}
+
+export function stopNativeDejavuRepositorySync(
+  input: Parameters<AppSyncConfigRuntime["stopRepositorySync"]>[0]
+): Promise<AcceptedMaintenanceJob> {
+  return repositoryMaintenance("stop_repository_sync", input);
+}
+
+export function changeNativeDejavuGlobalKey(
+  input: Parameters<AppSyncConfigRuntime["changeGlobalKey"]>[0]
+): Promise<AcceptedMaintenanceJob> {
+  return invokeNative("change_global_key", { request: input });
+}
+
+export function purgeNativeDejavuRemoteRepository(
+  input: Parameters<AppSyncConfigRuntime["purgeRemoteRepository"]>[0]
+): Promise<AcceptedMaintenanceJob> {
+  return repositoryMaintenance("purge_remote_repository", input);
+}
+
+export function deleteNativeDejavuRemoteRepository(
+  input: Parameters<AppSyncConfigRuntime["deleteRemoteRepository"]>[0]
+): Promise<AcceptedMaintenanceJob> {
+  return repositoryMaintenance("delete_remote_repository", input);
 }
 
 export function patchNativeSyncConfig(
