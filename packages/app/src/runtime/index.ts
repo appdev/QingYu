@@ -695,11 +695,13 @@ export function createDefaultAppRuntime(): AppRuntime {
       enable: () => unsupportedFeature("enableSyncConfig"),
       load: () => unsupportedFeature("loadSyncConfig"),
       listNotebooks: () => unsupportedFeature("listRemoteNotebooks"),
+      listConflicts: async () => [],
       loadEditing: async () => ({
         counter: syncEditingCounter,
         pendingApply: syncPendingApply,
         state: syncEditingState
       }),
+      loadRepositoryStatus: async () => null,
       loadStatus: () => unsupportedFeature("loadSyncStatus"),
       patch: () => unsupportedFeature("patchSyncConfig"),
       recover: () => unsupportedFeature("recoverSyncConfig"),
@@ -734,6 +736,7 @@ export function createDefaultAppRuntime(): AppRuntime {
         };
         return { broadcasted: false, event: syncPendingApply };
       },
+      readConflict: () => unsupportedFeature("readDejavuConflict"),
       reset: () => unsupportedFeature("resetSyncConfig"),
       setEditing: async (input) => {
         syncEditingCounter += 1;
@@ -753,6 +756,7 @@ export function createDefaultAppRuntime(): AppRuntime {
             : { ...input, active: false, counter: syncEditingCounter }
         };
       },
+      resolveConflict: () => unsupportedFeature("resolveDejavuConflict"),
       sync: () => unsupportedFeature("syncApplication"),
       testConnection: () => unsupportedFeature("testSyncConnection")
     },
@@ -868,7 +872,13 @@ export type {
 export {
   notebookNameFromRoot,
   normalizeSyncConfigLoadResult,
+  type AcceptedSyncJob,
   type AppSyncConfigRuntime,
+  type ConflictResolution,
+  type ConflictResolutionKind,
+  type ConflictVersion,
+  type ConflictVersions,
+  type DejavuRepositoryStatus,
   type RemoteNotebookCatalogEntry,
   type QingYuSyncConfig,
   type SyncApplyUpdate,
@@ -879,6 +889,7 @@ export {
   type SyncConfigLoadResult,
   type SyncConfigPatch,
   type SyncConfigReadiness,
+  type SyncConflictRecord,
   type SyncConnectionTestResult,
   type SyncEditingEvent,
   type SyncEditingSnapshot,

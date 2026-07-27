@@ -257,12 +257,75 @@ export type RemoteNotebookCatalogEntry = {
   name: string;
 };
 
+export type AcceptedSyncJob = {
+  jobId: string;
+  notesRoot: string;
+  repositoryId: string;
+};
+
+export type ConflictResolutionKind = "keep-local" | "use-remote" | "keep-both";
+
+export type SyncConflictRecord = {
+  conflictId: string;
+  occurredAt: string;
+  relativePath: string;
+  repositoryId: string;
+  resolution: ConflictResolutionKind | null;
+};
+
+export type ConflictVersion = {
+  byteSize: number;
+  text: string | null;
+};
+
+export type ConflictVersions = {
+  conflict: SyncConflictRecord;
+  local: ConflictVersion | null;
+  remote: ConflictVersion;
+};
+
+export type ConflictResolution =
+  | { kind: "keep-local" }
+  | { kind: "use-remote" }
+  | { destinationRelativePath: string; kind: "keep-both" };
+
+export type DejavuRepositoryStatus = {
+  attempt: number;
+  automaticFailureCount: number;
+  conflicts: SyncConflictRecord[];
+  error: { code: string; operation: string } | null;
+  jobId: string;
+  lastAttemptAt: string;
+  lastDnsRetryAt: string | null;
+  lastSuccessfulSyncAt: string | null;
+  maintenance: {
+    lastLocalPurgeAt: string | null;
+    nextLocalPurgeAt: string | null;
+  };
+  nextScheduledAt: string | null;
+  phase: "attempting" | "failed" | "succeeded";
+  repositoryId: string;
+  sameCount: number;
+  transfer: {
+    downloadBytes: number;
+    downloadChunks: number;
+    downloadFiles: number;
+    uploadBytes: number;
+    uploadChunks: number;
+    uploadFiles: number;
+  };
+  trigger: SyncTrigger;
+  version: 1;
+};
+
 export type AppSyncConfigRuntime = {
   cancelApply(input: SyncApplyIdentity): Promise<SyncApplyWriteResult>;
   enable(input: { expectedRevision: string | null }): Promise<SyncConfigDocument>;
   load(): Promise<SyncConfigLoadResult>;
   listNotebooks(input: { revision: string }): Promise<RemoteNotebookCatalogEntry[]>;
+  listConflicts(input: { repositoryId: string }): Promise<SyncConflictRecord[]>;
   loadEditing(): Promise<SyncEditingSnapshot>;
+  loadRepositoryStatus(input: { notesRoot: string }): Promise<DejavuRepositoryStatus | null>;
   loadStatus(): Promise<SyncStatus | null>;
   patch(input: {
     expectedRevision: string;
@@ -273,11 +336,20 @@ export type AppSyncConfigRuntime = {
     expectedRevision: string;
   }): Promise<SyncConfigDocument>;
   requestApply(input: SyncApplyUpdate): Promise<SyncApplyWriteResult>;
+  readConflict(input: {
+    conflictId: string;
+    repositoryId: string;
+  }): Promise<ConflictVersions>;
   reset(input: {
     confirmed: true;
     expectedRevision: string | null;
   }): Promise<SyncConfigDocument>;
   setEditing(input: SyncEditingUpdate): Promise<SyncEditingWriteResult>;
+  resolveConflict(input: {
+    conflictId: string;
+    repositoryId: string;
+    resolution: ConflictResolution;
+  }): Promise<AcceptedSyncJob>;
   sync(input: SyncRunRequest): Promise<SyncRunResult>;
   testConnection(input: { revision: string }): Promise<SyncConnectionTestResult>;
 };

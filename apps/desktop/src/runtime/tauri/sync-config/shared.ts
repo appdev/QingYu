@@ -6,6 +6,10 @@ import {
   type SyncConfigDocument,
   type SyncConfigLoadResult,
   type SyncConnectionTestResult,
+  type AcceptedSyncJob,
+  type ConflictVersions,
+  type DejavuRepositoryStatus,
+  type SyncConflictRecord,
   type SyncRunResult
 } from "@markra/app/runtime";
 import { invokeNative } from "../invoke";
@@ -45,6 +49,30 @@ export async function cancelNativeSyncConfigApply(
 
 export function loadNativeSyncStatus(): ReturnType<AppSyncConfigRuntime["loadStatus"]> {
   return invokeNative("load_sync_status");
+}
+
+export function loadNativeDejavuRepositoryStatus(
+  input: Parameters<AppSyncConfigRuntime["loadRepositoryStatus"]>[0]
+): Promise<DejavuRepositoryStatus | null> {
+  return invokeNative("load_dejavu_repository_status", { notesRoot: input.notesRoot });
+}
+
+export function listNativeDejavuConflicts(
+  input: Parameters<AppSyncConfigRuntime["listConflicts"]>[0]
+): Promise<SyncConflictRecord[]> {
+  return invokeNative("list_dejavu_conflicts", { repositoryId: input.repositoryId });
+}
+
+export function readNativeDejavuConflict(
+  input: Parameters<AppSyncConfigRuntime["readConflict"]>[0]
+): Promise<ConflictVersions> {
+  return invokeNative("read_dejavu_conflict", { request: input });
+}
+
+export function resolveNativeDejavuConflict(
+  input: Parameters<AppSyncConfigRuntime["resolveConflict"]>[0]
+): Promise<AcceptedSyncJob> {
+  return invokeNative("resolve_dejavu_conflict", { request: input });
 }
 
 export function patchNativeSyncConfig(

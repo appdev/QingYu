@@ -1019,6 +1019,7 @@ fn builder_boundary_installs_the_path_guard_graph_before_startup_on_both_platfor
             "purge_remote_repository",
             "delete_remote_repository",
             "list_dejavu_conflicts",
+            "load_dejavu_repository_status",
             "read_dejavu_conflict",
             "resolve_dejavu_conflict",
         ] {

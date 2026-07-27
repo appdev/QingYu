@@ -80,6 +80,7 @@ pub(crate) fn run() {
             crate::dejavu_sync::commands::delete_remote_repository,
             crate::dejavu_sync::commands::list_dejavu_conflicts,
             crate::dejavu_sync::commands::read_dejavu_conflict,
+            crate::dejavu_sync::commands::load_dejavu_repository_status,
             crate::dejavu_sync::commands::resolve_dejavu_conflict,
             crate::sync_config::sync_application,
             crate::sync_config::test_sync_connection,

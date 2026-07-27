@@ -19,6 +19,7 @@ use super::scheduler::DejavuScheduler;
 use super::service::{
     AcceptedSyncJob, DejavuSyncService, RepositoryBindAdmission, RepositoryJobError, SyncJobRequest,
 };
+use super::status::RepositorySyncStatus;
 use crate::sync_config::status::SyncTrigger;
 use tauri::{Manager, Runtime};
 
@@ -452,6 +453,13 @@ impl DejavuSyncServiceOwner {
             .read(&request.repository_id, &request.conflict_id)
     }
 
+    pub(crate) fn repository_status_for_root(
+        &self,
+        notes_root: &Path,
+    ) -> Result<Option<RepositorySyncStatus>, RepositoryJobError> {
+        self.conflicts()?.status_for_root(notes_root)
+    }
+
     pub(crate) fn rebuild_local_repository(
         &self,
         request: ConfirmedRepositoryRequest,
@@ -631,6 +639,16 @@ pub(crate) fn read_dejavu_conflict(
 ) -> Result<ConflictVersions, String> {
     owner
         .read_conflict(request)
+        .map_err(|error| error.safe_code().to_owned())
+}
+
+#[tauri::command]
+pub(crate) fn load_dejavu_repository_status(
+    owner: tauri::State<'_, DejavuSyncServiceOwner>,
+    notes_root: PathBuf,
+) -> Result<Option<RepositorySyncStatus>, String> {
+    owner
+        .repository_status_for_root(&notes_root)
         .map_err(|error| error.safe_code().to_owned())
 }
 

@@ -33,6 +33,8 @@ import {
 } from "./components/MarkdownTabsBar";
 import { NativeTitleBar } from "./components/NativeTitleBar";
 import { QuietStatus } from "./components/QuietStatus";
+import { SyncConflictDialog } from "./components/sync/SyncConflictDialog";
+import { SyncConflictIndicator } from "./components/sync/SyncConflictIndicator";
 import { QuickOpenPanel } from "./components/QuickOpenPanel";
 import { SideDocumentPane } from "./components/SideDocumentPane";
 import type { SidebarSyncButtonState } from "./components/SidebarSyncButton";
@@ -60,6 +62,7 @@ import { useAppSyncCoordinator } from "./hooks/useAppSyncCoordinator";
 import { useNotebookSwitchCoordinator } from "./hooks/useNotebookSwitchCoordinator";
 import { useSyncConfig } from "./hooks/useSyncConfig";
 import { useSyncPathGuard } from "./hooks/useSyncPathGuard";
+import { useSyncConflicts } from "./hooks/useSyncConflicts";
 import { useSelectionToolbarAnchorRefresh } from "./hooks/useSelectionToolbarAnchorRefresh";
 import { useSharedEditorHistory } from "./hooks/useSharedEditorHistory";
 import { useSideBySideTabs } from "./hooks/useSideBySideTabs";
@@ -725,6 +728,14 @@ function WorkspaceApp() {
     reloadConfig: syncConfig.reload,
     translate
   });
+  const syncConflicts = useSyncConflicts({
+    notesRoot: primaryIntegrationRoot,
+    translate
+  });
+  const [openSyncConflictId, setOpenSyncConflictId] = useState<string | null>(null);
+  const openSyncConflict = syncConflicts.conflicts.find(
+    (conflict) => conflict.conflictId === openSyncConflictId
+  ) ?? null;
   const defaultMarkdownSaveDirectory = useMemo(
     () => defaultSaveDirectoryFromFileTree(fileTreeSourcePath),
     [fileTreeSourcePath]
@@ -849,6 +860,7 @@ function WorkspaceApp() {
     selectMarkdownTab,
     wordCount
   } = markdownDocument;
+  const activeSyncConflict = syncConflicts.conflictForPath(document.path);
   const { guardedPaths } = useSyncPathGuard({
     enabled: primaryWindowOwner,
     mutationRegistry: syncPathMutationRegistry,
@@ -4757,6 +4769,12 @@ function WorkspaceApp() {
                       ) : null}
                     </div>
                   )}
+                  {activeSyncConflict ? (
+                    <SyncConflictIndicator
+                      label={translate("sync.conflict.indicator")}
+                      onOpen={() => setOpenSyncConflictId(activeSyncConflict.conflictId)}
+                    />
+                  ) : null}
                   {viewModeChrome.statusBar ? (
                     <QuietStatus
                       dirty={document.dirty}
@@ -4855,6 +4873,15 @@ function WorkspaceApp() {
         />
       ) : null}
       {desktopRemoteNotebookDialog}
+      {openSyncConflict ? (
+        <SyncConflictDialog
+          conflict={openSyncConflict}
+          language={appLanguage.language}
+          onClose={() => setOpenSyncConflictId(null)}
+          onRead={syncConflicts.read}
+          onResolve={syncConflicts.resolve}
+        />
+      ) : null}
     </>
   );
 }

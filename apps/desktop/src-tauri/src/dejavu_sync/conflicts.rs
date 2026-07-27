@@ -17,7 +17,7 @@ use super::service::{
     AcceptedSyncJob, DejavuSyncService, JobCancellationToken, RepositoryJobError,
     SyncAttemptContext, SyncJobRequest,
 };
-use super::status::{load_repository_sync_status, RepositoryStatusStore};
+use super::status::{load_repository_sync_status, RepositoryStatusStore, RepositorySyncStatus};
 use crate::storage_capability::{
     nonfollowing_read_options, open_canonical_directory_nofollow, unique_regular_file_identity,
     UniqueRegularFileIdentity,
@@ -167,6 +167,29 @@ impl ConflictStore {
             local,
             remote,
         })
+    }
+
+    pub(crate) fn status_for_root(
+        &self,
+        notes_root: &Path,
+    ) -> Result<Option<RepositorySyncStatus>, RepositoryJobError> {
+        let notes_root = notes_root
+            .canonicalize()
+            .map_err(|_| RepositoryJobError::InvalidBinding)?;
+        let Some(state) = LocalSyncStateService::new(&self.app_data)
+            .load()
+            .map_err(RepositoryJobError::from)?
+        else {
+            return Ok(None);
+        };
+        let Some(binding) = state
+            .bindings
+            .iter()
+            .find(|binding| binding.enabled && binding.notes_root == notes_root)
+        else {
+            return Ok(None);
+        };
+        load_repository_sync_status(&self.app_data, &binding.repository_id)
     }
 
     fn find(
@@ -805,6 +828,14 @@ mod tests {
         let listed = store.list(REPOSITORY_ID).unwrap();
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].relative_path, "document.md");
+        assert_eq!(
+            store
+                .status_for_root(&fixture.notes_root)
+                .unwrap()
+                .unwrap()
+                .repository_id,
+            REPOSITORY_ID
+        );
         let versions = store.read(REPOSITORY_ID, CONFLICT_ID).unwrap();
         assert_eq!(
             versions.local.as_ref().unwrap().text.as_deref(),
