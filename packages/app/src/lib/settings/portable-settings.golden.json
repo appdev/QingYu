@@ -28,7 +28,9 @@
         "toggleDocumentHistory": "Mod+Shift+H",
         "toggleSourceMode": "Mod+Alt+S",
         "toggleReadOnlyMode": "Mod+Alt+L",
+        "toggleTypewriterMode": "Mod+Shift+Y",
         "toggleViewMode": "F8",
+        "toggleVimMode": "Mod+Alt+V",
         "bold": "Mod+B",
         "italic": "Mod+I",
         "strikethrough": "Mod+Shift+X",
@@ -67,6 +69,7 @@
         { "id": "save", "visible": true },
         { "id": "theme", "visible": true }
       ],
+      "typewriterModeEnabled": false,
       "viewMode": "daily",
       "viewModeCustomizations": {
         "documentLinks": "visible",
@@ -86,6 +89,7 @@
       },
       "showLineNumbers": false,
       "showWordCount": true,
+      "vimModeEnabled": false,
       "wrapCodeBlocks": true
     },
     "fileIgnoreSettings": { "rules": "dist/" },

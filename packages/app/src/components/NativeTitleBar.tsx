@@ -59,6 +59,7 @@ import { WindowsNativeTitleBar } from "./WindowsNativeTitleBar";
 type EditorViewMode = "visual" | "source" | "split";
 
 type NativeTitleBarProps = {
+  compactLayout?: boolean;
   dirty: boolean;
   documentKind?: "file" | "folder" | "image";
   documentName: string;
@@ -111,6 +112,7 @@ function mergeClassNames(...classNames: Array<string | false | null | undefined>
 }
 
 export function NativeTitleBar({
+  compactLayout = false,
   dirty,
   documentKind = "file",
   documentName,
@@ -166,7 +168,7 @@ export function NativeTitleBar({
   const editorViewMode = splitMode ? "split" : sourceMode ? "source" : "visual";
   const openChoiceMenuAvailable = Boolean(onOpenMarkdownFolder);
   const openChoiceMenuAlignmentClassName = platform === "windows" ? "right-0" : "left-0";
-  const titlebarSideSlotWidth = 164;
+  const titlebarSideSlotWidth = 196;
   const normalizedTitlebarActions = useMemo(
     () => titlebarActions?.length === 0 ? [] : normalizeTitlebarActions(titlebarActions),
     [titlebarActions]
@@ -204,8 +206,6 @@ export function NativeTitleBar({
   }, [viewModeActionVisible]);
 
   useEffect(() => {
-    if (!openMenuVisible && !viewModeMenuVisible) return;
-
     const handlePointerDown = (event: PointerEvent) => {
       const target = event.target as Node;
       if (openMenuVisible && !openMenuRef.current?.contains(target)) setOpenMenuVisible(false);
@@ -218,10 +218,15 @@ export function NativeTitleBar({
       }
     };
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
+      if (event.key !== "Escape") return;
+
+      if (openMenuVisible || viewModeMenuVisible) {
         setOpenMenuVisible(false);
         setViewModeMenuVisible(false);
+        return;
       }
+
+      if (viewMode === "immersive") onSelectViewMode?.("full");
     };
     const handleLayoutChange = () => {
       const trigger = viewModeMenuRef.current?.querySelector("button");
@@ -239,7 +244,7 @@ export function NativeTitleBar({
       window.removeEventListener("resize", handleLayoutChange);
       window.removeEventListener("scroll", handleLayoutChange, true);
     };
-  }, [openMenuVisible, viewModeMenuVisible]);
+  }, [onSelectViewMode, openMenuVisible, viewMode, viewModeMenuVisible]);
 
   useLayoutEffect(() => {
     if (!viewModeMenuVisible) return;
@@ -616,7 +621,7 @@ export function NativeTitleBar({
     ? "transition-none"
     : "transition-[width] duration-200 ease-[cubic-bezier(0.22,1,0.36,1)] motion-reduce:transition-none";
   const titlebarGridStyle: CSSProperties = {
-    ...(!nativeWindowChrome && markdownFilesOpen ? { left: markdownFilesWidth + 1 } : {}),
+    ...(!compactLayout && !nativeWindowChrome && markdownFilesOpen ? { left: markdownFilesWidth + 1 } : {}),
     gridTemplateColumns: nativeWindowChrome
       ? `${titlebarSideSlotWidth}px minmax(0,1fr) ${titlebarSideSlotWidth}px`
       : "auto minmax(0, 1fr) auto"
@@ -720,7 +725,7 @@ export function NativeTitleBar({
 
   return (
     <header
-      className={`native-titlebar group/titlebar fixed inset-x-0 top-0 z-8 grid h-10 grid-cols-[164px_minmax(0,1fr)_164px] select-none items-center ${titlebarSurfaceClassName} [-webkit-user-select:none]`}
+      className={`native-titlebar group/titlebar fixed inset-x-0 top-0 z-8 grid h-10 grid-cols-[196px_minmax(0,1fr)_196px] select-none items-center ${titlebarSurfaceClassName} [-webkit-user-select:none]`}
       style={titlebarGridStyle}
       aria-label={label("app.windowDragRegion")}
       data-tauri-drag-region={nativeWindowChrome && !titleContent ? true : undefined}

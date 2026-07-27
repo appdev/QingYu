@@ -1,4 +1,9 @@
-import type { MarkdownNode } from "@milkdown/kit/transformer";
+type MarkdownNode = {
+  data?: unknown;
+  meta?: unknown;
+  type: string;
+  value?: string;
+};
 
 type HugoMathKind = "display" | "inline";
 type MicromarkCode = number | null;

@@ -21,14 +21,18 @@ fn is_builtin_ignored_directory_name(name: &OsStr) -> bool {
 #[derive(Debug)]
 pub(crate) struct MarkdownIgnoreRules {
     global_rules: String,
+    include_workspace_rules: bool,
     root: PathBuf,
     matcher: Gitignore,
 }
 
 impl MarkdownIgnoreRules {
     pub(crate) fn for_root(root: &Path, global_rules: Option<&str>) -> Self {
-        let workspace_rules = std::fs::read_to_string(root.join(MARKRA_IGNORE_FILE_NAME)).ok();
-        Self::from_rules(root, global_rules, workspace_rules.as_deref())
+        Self::build(root, global_rules, true)
+    }
+
+    pub(crate) fn built_in_only(root: &Path) -> Self {
+        Self::build(root, None, false)
     }
 
     pub(crate) fn for_retained_root(
@@ -43,10 +47,27 @@ impl MarkdownIgnoreRules {
                 let mut rules = String::new();
                 file.read_to_string(&mut rules).ok().map(|_| rules)
             });
-        Self::from_rules(root, global_rules, workspace_rules.as_deref())
+        Self::from_rules(root, global_rules, workspace_rules.as_deref(), true)
     }
 
-    fn from_rules(root: &Path, global_rules: Option<&str>, workspace_rules: Option<&str>) -> Self {
+    fn build(root: &Path, global_rules: Option<&str>, include_workspace_rules: bool) -> Self {
+        let workspace_rules = include_workspace_rules
+            .then(|| std::fs::read_to_string(root.join(MARKRA_IGNORE_FILE_NAME)).ok())
+            .flatten();
+        Self::from_rules(
+            root,
+            global_rules,
+            workspace_rules.as_deref(),
+            include_workspace_rules,
+        )
+    }
+
+    fn from_rules(
+        root: &Path,
+        global_rules: Option<&str>,
+        workspace_rules: Option<&str>,
+        include_workspace_rules: bool,
+    ) -> Self {
         let global_rules = global_rules.unwrap_or_default().to_string();
         let mut builder = GitignoreBuilder::new(root);
 
@@ -56,14 +77,17 @@ impl MarkdownIgnoreRules {
         }
         // Workspace rules are added last so their negations can override global defaults.
         // Partial file errors are intentionally ignored to keep the workspace repairable.
-        let workspace_rules_path = root.join(MARKRA_IGNORE_FILE_NAME);
-        for line in workspace_rules.unwrap_or_default().lines() {
-            let _ = builder.add_line(Some(workspace_rules_path.clone()), line);
+        if include_workspace_rules {
+            let workspace_rules_path = root.join(MARKRA_IGNORE_FILE_NAME);
+            for line in workspace_rules.unwrap_or_default().lines() {
+                let _ = builder.add_line(Some(workspace_rules_path.clone()), line);
+            }
         }
         let matcher = builder.build().unwrap_or_else(|_| Gitignore::empty());
 
         Self {
             global_rules,
+            include_workspace_rules,
             root: root.to_path_buf(),
             matcher,
         }
@@ -72,7 +96,7 @@ impl MarkdownIgnoreRules {
     pub(crate) fn reload(&mut self) {
         let root = self.root.clone();
         let global_rules = self.global_rules.clone();
-        *self = Self::for_root(&root, Some(&global_rules));
+        *self = Self::build(&root, Some(&global_rules), self.include_workspace_rules);
     }
 
     pub(crate) fn ignores(&self, path: &Path, is_directory: bool) -> bool {
@@ -192,6 +216,20 @@ mod tests {
 
             assert!(rules.ignores(&root.join("note.md"), false));
         }
+    }
+
+    #[test]
+    fn built_in_only_rules_keep_user_ignored_markdown_visible() {
+        let root = test_root("built-in-only");
+        fs::create_dir_all(root.join("drafts")).expect("draft folder should be created");
+        fs::create_dir_all(root.join(".git")).expect("git folder should be created");
+        fs::write(root.join(".markraignore"), "drafts/\n").expect("ignore file should be written");
+
+        let rules = MarkdownIgnoreRules::built_in_only(&root);
+
+        assert!(!rules.ignores(&root.join("drafts/hidden.md"), false));
+        assert!(rules.ignores(&root.join(".git/readme.md"), false));
+        fs::remove_dir_all(root).expect("test root should be removed");
     }
 
     #[test]

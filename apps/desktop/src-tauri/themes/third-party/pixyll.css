@@ -70,7 +70,3 @@ preview-accent: #d9480f
     --editor-hl-string: oklch(44% 0.12 157);
     --editor-hl-title: oklch(43% 0.15 236);
   }
-
-.markdown-paper[data-editor-theme="pixyll"] .ProseMirror::selection {
-    background: color-mix(in srgb, var(--accent) 16%, transparent);
-  }

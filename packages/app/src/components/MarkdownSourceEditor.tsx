@@ -5,6 +5,12 @@ import { Decoration, EditorView, keymap, lineNumbers } from "@codemirror/view";
 import { minimalSetup } from "codemirror";
 import { t, type AppLanguage, type SearchRange } from "@markra/shared";
 import {
+  codeMirrorTypewriterMode,
+  markdownSyntaxHighlighting,
+  markraHighlight,
+  reconfigureCodeMirrorVimMode
+} from "@markra/editor/codemirror";
+import {
   editorContentWidthPixels,
   editorCustomContentWidthMax,
   editorCustomContentWidthMin,
@@ -15,6 +21,7 @@ import {
   type EditorFontFamilyPreference
 } from "../lib/editor-font";
 import type { ExtendedSyntaxPreferences } from "../lib/settings/app-settings";
+import { codeMirrorVimLabels } from "../lib/vim-labels";
 import { EditorWidthResizer } from "./EditorWidthResizer";
 
 export type MarkdownSourceEditorProps = {
@@ -44,6 +51,8 @@ export type MarkdownSourceEditorProps = {
   showLineNumbers?: boolean;
   scrollRef?: Ref<HTMLElement>;
   topInset?: "none" | "tabs" | "titlebar";
+  typewriterModeEnabled?: boolean;
+  vimModeEnabled?: boolean;
 };
 
 type MarkdownSourcePaperStyle = CSSProperties & {
@@ -206,7 +215,9 @@ export function MarkdownSourceEditor({
   searchMatches = [],
   showLineNumbers = false,
   scrollRef,
-  topInset = "titlebar"
+  topInset = "titlebar",
+  typewriterModeEnabled = false,
+  vimModeEnabled = false
 }: MarkdownSourceEditorProps) {
   const editorContainerRef = useRef<HTMLDivElement | null>(null);
   const contentRef = useRef(content);
@@ -219,6 +230,8 @@ export function MarkdownSourceEditor({
   const editableCompartmentRef = useRef(new Compartment());
   const lineNumbersCompartmentRef = useRef(new Compartment());
   const searchCompartmentRef = useRef(new Compartment());
+  const typewriterModeCompartmentRef = useRef(new Compartment());
+  const vimModeCompartmentRef = useRef(new Compartment());
   const externalContentScrollSuppressedRef = useRef(false);
   const externalContentScrollRestoreFrameRef = useRef<number | null>(null);
   const resolvedContentWidth = contentWidthPx ?? editorContentWidthPixels[contentWidth];
@@ -271,17 +284,23 @@ export function MarkdownSourceEditor({
 
   const extensions = useMemo(
     () => [
+      vimModeCompartmentRef.current.of([]),
       minimalSetup,
       markdownSourceSharedHistoryExtension(onUndoRef, onRedoRef),
       markdown({
         base: markdownLanguage,
-        codeLanguages: []
+        codeLanguages: [],
+        extensions: [markraHighlight]
       }),
+      markdownSyntaxHighlighting,
       EditorView.lineWrapping,
       contentAttributesCompartmentRef.current.of(markdownSourceContentAttributes(sourceLabel, readOnly)),
       editableCompartmentRef.current.of(EditorView.editable.of(!readOnly)),
       lineNumbersCompartmentRef.current.of(showLineNumbers ? lineNumbers() : []),
       searchCompartmentRef.current.of(markdownSourceSearchExtension(searchMatches, searchActiveIndex)),
+      typewriterModeCompartmentRef.current.of(
+        codeMirrorTypewriterMode({ enabled: typewriterModeEnabled })
+      ),
       EditorView.updateListener.of((update) => {
         if (update.selectionSet || update.docChanged) {
           onSelectionTextChangeRef.current?.(selectedSourceTextFromState(update.state));
@@ -346,6 +365,29 @@ export function MarkdownSourceEditor({
       effects: lineNumbersCompartmentRef.current.reconfigure(showLineNumbers ? lineNumbers() : [])
     });
   }, [showLineNumbers]);
+
+  useEffect(() => {
+    const view = viewRef.current;
+    if (!view) return;
+
+    view.dispatch({
+      effects: typewriterModeCompartmentRef.current.reconfigure(
+        codeMirrorTypewriterMode({ enabled: typewriterModeEnabled })
+      )
+    });
+  }, [typewriterModeEnabled]);
+
+  useEffect(() => {
+    const view = viewRef.current;
+    if (!view) return;
+
+    return reconfigureCodeMirrorVimMode(
+      view,
+      vimModeCompartmentRef.current,
+      vimModeEnabled,
+      codeMirrorVimLabels(language)
+    );
+  }, [language, vimModeEnabled]);
 
   useEffect(() => {
     const view = viewRef.current;

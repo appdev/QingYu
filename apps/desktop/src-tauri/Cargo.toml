@@ -1,7 +1,7 @@
 [package]
 name = "markra"
 default-run = "markra"
-version = "1.7.9"
+version = "2.0.0-beta.5"
 description = "Practical Markdown note-taking editor"
 authors = ["QingYu contributors"]
 license = "AGPL-3.0-only"

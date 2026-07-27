@@ -13,12 +13,12 @@ import {
 import type { EditorTheme } from "../lib/settings/app-settings";
 import type { TableColumnWidthModePreference } from "../lib/settings/app-settings";
 import { EditorWidthResizer } from "./EditorWidthResizer";
-import type { MarkdownPaperSurfaceProps } from "./MarkdownPaperSurface";
+import type { CodeMirrorPaperSurfaceProps } from "./CodeMirrorPaperSurface";
 
 const MarkdownPaperSurface = lazy(async () => {
-  const module = await import("./MarkdownPaperSurface");
+  const module = await import("./CodeMirrorPaperSurface");
 
-  return { default: module.MarkdownPaperSurface };
+  return { default: module.CodeMirrorPaperSurface };
 });
 
 type MarkdownPaperProps = {
@@ -30,36 +30,38 @@ type MarkdownPaperProps = {
   contentWidthMin?: number;
   contentWidthPx?: number | null;
   documentKey?: string | null;
-  documentPath?: MarkdownPaperSurfaceProps["documentPath"];
+  documentPath?: CodeMirrorPaperSurfaceProps["documentPath"];
   editorFontFamily?: EditorFontFamilyPreference;
   editorTheme?: EditorTheme;
-  extendedSyntax?: MarkdownPaperSurfaceProps["extendedSyntax"];
+  extendedSyntax?: CodeMirrorPaperSurfaceProps["extendedSyntax"];
   initialContent: string;
   language?: AppLanguage;
   lineHeight?: number;
-  markdownShortcuts?: MarkdownPaperSurfaceProps["markdownShortcuts"];
-  onActiveOutlineIndexChange?: MarkdownPaperSurfaceProps["onActiveOutlineIndexChange"];
-  onEditorReady: MarkdownPaperSurfaceProps["onEditorReady"];
-  onMarkdownChange: MarkdownPaperSurfaceProps["onMarkdownChange"];
+  markdownShortcuts?: CodeMirrorPaperSurfaceProps["markdownShortcuts"];
+  onActiveOutlineIndexChange?: CodeMirrorPaperSurfaceProps["onActiveOutlineIndexChange"];
+  onEditorReady: CodeMirrorPaperSurfaceProps["onEditorReady"];
+  onMarkdownChange: CodeMirrorPaperSurfaceProps["onMarkdownChange"];
   onContentWidthChange?: (width: number) => unknown;
   onContentWidthResizeEnd?: () => unknown;
   onContentWidthResizeStart?: () => unknown;
   onScroll?: (event: UIEvent<HTMLElement>) => unknown;
   paragraphSpacingPx?: number;
-  onSaveClipboardAttachment?: MarkdownPaperSurfaceProps["onSaveClipboardAttachment"];
-  onSaveClipboardImage?: MarkdownPaperSurfaceProps["onSaveClipboardImage"];
-  onSaveEditorResources?: MarkdownPaperSurfaceProps["onSaveEditorResources"];
-  onSaveRemoteClipboardImage?: MarkdownPaperSurfaceProps["onSaveRemoteClipboardImage"];
-  openLocalAttachment?: MarkdownPaperSurfaceProps["openLocalAttachment"];
-  openExternalUrl?: MarkdownPaperSurfaceProps["openExternalUrl"];
-  readOnly?: MarkdownPaperSurfaceProps["readOnly"];
-  onTextSelectionChange?: MarkdownPaperSurfaceProps["onTextSelectionChange"];
-  resolveImageSrc?: MarkdownPaperSurfaceProps["resolveImageSrc"];
+  onSaveClipboardAttachment?: CodeMirrorPaperSurfaceProps["onSaveClipboardAttachment"];
+  onSaveClipboardImage?: CodeMirrorPaperSurfaceProps["onSaveClipboardImage"];
+  onSaveEditorResources?: CodeMirrorPaperSurfaceProps["onSaveEditorResources"];
+  onSaveRemoteClipboardImage?: CodeMirrorPaperSurfaceProps["onSaveRemoteClipboardImage"];
+  openLocalAttachment?: CodeMirrorPaperSurfaceProps["openLocalAttachment"];
+  openExternalUrl?: CodeMirrorPaperSurfaceProps["openExternalUrl"];
+  readOnly?: CodeMirrorPaperSurfaceProps["readOnly"];
+  onTextSelectionChange?: CodeMirrorPaperSurfaceProps["onTextSelectionChange"];
+  resolveImageSrc?: CodeMirrorPaperSurfaceProps["resolveImageSrc"];
   revision: number;
   scrollRef?: Ref<HTMLElement>;
   tableColumnWidthMode?: TableColumnWidthModePreference;
   topInset?: "tabs" | "titlebar";
-  workspaceFiles?: MarkdownPaperSurfaceProps["workspaceFiles"];
+  typewriterModeEnabled?: CodeMirrorPaperSurfaceProps["typewriterModeEnabled"];
+  vimModeEnabled?: CodeMirrorPaperSurfaceProps["vimModeEnabled"];
+  workspaceFiles?: CodeMirrorPaperSurfaceProps["workspaceFiles"];
   wrapCodeBlocks?: boolean;
 };
 
@@ -80,7 +82,7 @@ function MarkdownPaperSurfaceFallback() {
     <div
       aria-hidden="true"
       className="min-h-6"
-      data-editor-engine="milkdown-loading"
+      data-editor-engine="codemirror-loading"
     />
   );
 }
@@ -123,6 +125,8 @@ export function MarkdownPaper({
   scrollRef,
   tableColumnWidthMode = "auto",
   topInset = "titlebar",
+  typewriterModeEnabled = false,
+  vimModeEnabled = false,
   workspaceFiles,
   wrapCodeBlocks = true
 }: MarkdownPaperProps) {
@@ -142,7 +146,7 @@ export function MarkdownPaper({
     paddingBottom: editorBottomPadding(bottomOverlayInset)
   } satisfies MarkdownPaperStyle;
   const topInsetClassName = topInset === "tabs" ? "pt-24 max-[900px]:pt-20" : "pt-14 max-[900px]:pt-10";
-  const editorInstanceKey = `${documentKey ?? "untitled"}:${revision}`;
+  const editorInstanceKey = documentKey ?? "untitled";
 
   return (
     <section
@@ -156,7 +160,8 @@ export function MarkdownPaper({
         className={`markdown-paper relative mx-auto min-h-screen w-full max-w-215 px-18 ${topInsetClassName} text-[16px] leading-[1.65] text-(--text-primary) caret-(--accent) outline-none focus:outline-none max-[900px]:px-5.25`}
         style={paperStyle}
         aria-label={t(language, "app.markdownEditor")}
-        data-editor-engine="milkdown"
+        data-document-revision={revision}
+        data-editor-engine="codemirror"
         data-editor-theme={editorTheme}
         data-code-block-wrap={wrapCodeBlocks ? "true" : "false"}
       >
@@ -190,6 +195,8 @@ export function MarkdownPaper({
             onTextSelectionChange={onTextSelectionChange}
             resolveImageSrc={resolveImageSrc}
             tableColumnWidthMode={tableColumnWidthMode}
+            typewriterModeEnabled={typewriterModeEnabled}
+            vimModeEnabled={vimModeEnabled}
             workspaceFiles={workspaceFiles}
           />
         </Suspense>

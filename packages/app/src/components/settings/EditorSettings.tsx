@@ -821,6 +821,38 @@ export function EditorSettings({
           }
         />
         <SettingsRow
+          title={translate("settings.editor.typewriterMode")}
+          description={translate("settings.editor.typewriterModeDescription")}
+          action={
+            <SettingsSwitch
+              checked={preferences.typewriterModeEnabled}
+              label={translate("settings.editor.typewriterMode")}
+              onChange={() =>
+                onUpdatePreferences({
+                  ...preferences,
+                  typewriterModeEnabled: !preferences.typewriterModeEnabled
+                })
+              }
+            />
+          }
+        />
+        <SettingsRow
+          title={translate("settings.editor.vimMode")}
+          description={translate("settings.editor.vimModeDescription")}
+          action={
+            <SettingsSwitch
+              checked={preferences.vimModeEnabled}
+              label={translate("settings.editor.vimMode")}
+              onChange={() =>
+                onUpdatePreferences({
+                  ...preferences,
+                  vimModeEnabled: !preferences.vimModeEnabled
+                })
+              }
+            />
+          }
+        />
+        <SettingsRow
           title={translate("settings.editor.wrapCodeBlocks")}
           description={translate("settings.editor.wrapCodeBlocksDescription")}
           action={

@@ -1,8 +1,6 @@
 @import "tailwindcss";
 @source ".";
 @source "../../../packages/ui/src";
-@import "@milkdown/kit/prose/view/style/prosemirror.css";
-@import "@milkdown/kit/prose/tables/style/tables.css";
 @import "katex/dist/katex.css";
 
 @keyframes markra-history-panel-in {
@@ -376,6 +374,27 @@
     @apply px-2.5 py-2 text-[12px] leading-5 font-[560] text-(--text-secondary);
   }
 
+  .markra-plugin-toolbar {
+    @apply fixed top-12 right-4 z-[55] flex items-center gap-1 rounded-lg border border-(--border-default) bg-(--bg-primary) p-1 shadow-(--ai-command-popover-shadow);
+  }
+
+  .markra-plugin-selection-toolbar,
+  .markra-plugin-context-menu {
+    @apply fixed z-[65] flex min-w-40 flex-col gap-0.5 rounded-lg border border-(--border-default) bg-(--bg-primary) p-1 shadow-(--ai-command-popover-shadow);
+  }
+
+  .markra-plugin-toolbar button,
+  .markra-plugin-selection-toolbar button,
+  .markra-plugin-context-menu button {
+    @apply min-h-8 rounded-md border-0 bg-transparent px-2.5 text-left text-[13px] font-[560] text-(--text-primary);
+  }
+
+  .markra-plugin-toolbar button:hover,
+  .markra-plugin-selection-toolbar button:hover,
+  .markra-plugin-context-menu button:hover {
+    @apply bg-(--bg-active) text-(--text-heading);
+  }
+
   .document-search-icon-button {
     @apply flex size-8 shrink-0 items-center justify-center rounded-sm border border-transparent bg-transparent text-(--text-secondary) outline-none transition-[background-color,color,border-color] duration-150 ease-out;
   }
@@ -405,6 +424,7 @@
 
   .markdown-paper,
   .markdown-source-paper {
+    --editor-markdown-syntax-color: color-mix(in srgb, var(--text-md-char) 72%, var(--editor-paper-bg, var(--bg-primary)));
     --editor-text-cursor: url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http://www.w3.org/2000/svg%27%20width%3D%2724%27%20height%3D%2724%27%20viewBox%3D%270%200%2024%2024%27%3E%3Cpath%20d%3D%27M12%204v16M8.5%204h7M8.5%2020h7%27%20fill%3D%27none%27%20stroke%3D%27%23ffffff%27%20stroke-width%3D%274%27%20stroke-linecap%3D%27round%27/%3E%3Cpath%20d%3D%27M12%204v16M8.5%204h7M8.5%2020h7%27%20fill%3D%27none%27%20stroke%3D%27%231a1c1e%27%20stroke-width%3D%272%27%20stroke-linecap%3D%27round%27/%3E%3C/svg%3E") 12 12, text;
   }
 
@@ -413,38 +433,531 @@
     --editor-text-cursor: url("data:image/svg+xml,%3Csvg%20xmlns%3D%27http://www.w3.org/2000/svg%27%20width%3D%2724%27%20height%3D%2724%27%20viewBox%3D%270%200%2024%2024%27%3E%3Cpath%20d%3D%27M12%204v16M8.5%204h7M8.5%2020h7%27%20fill%3D%27none%27%20stroke%3D%27%23000000%27%20stroke-width%3D%274%27%20stroke-linecap%3D%27round%27/%3E%3Cpath%20d%3D%27M12%204v16M8.5%204h7M8.5%2020h7%27%20fill%3D%27none%27%20stroke%3D%27%23ffffff%27%20stroke-width%3D%272%27%20stroke-linecap%3D%27round%27/%3E%3C/svg%3E") 12 12, text;
   }
 
-  .markdown-paper [data-milkdown-root],
-  .markdown-paper .ProseMirror {
+  .markdown-paper .cm-editor {
     @apply min-h-[calc(100vh-176px)] outline-none;
     cursor: var(--editor-text-cursor);
     font-family: var(--editor-font-family);
   }
 
-  .markdown-paper .ProseMirror {
+  .markdown-paper .cm-content {
     @apply wrap-break-word whitespace-pre-wrap;
+    color: var(--editor-text-primary);
+    font-family: inherit;
   }
 
-  .markdown-paper .ProseMirror.markra-prosemirror-custom-caret {
-    caret-color: transparent;
+  .markdown-paper .cm-markra-syntax-character,
+  .markdown-source-paper .cm-markra-syntax-character {
+    color: var(--editor-markdown-syntax-color) !important;
   }
 
-  .markdown-paper .markra-prosemirror-caret {
-    position: fixed;
-    z-index: 70;
-    display: none;
-    width: 1px;
-    background: var(--accent);
-    border-radius: 999px;
-    pointer-events: none;
-    animation: markra-prosemirror-caret-blink 1.05s steps(1, end) infinite;
+  .markdown-paper .cm-cursor,
+  .markdown-paper .cm-dropCursor {
+    border-left-color: var(--editor-caret-color) !important;
   }
 
-  .editor-content-slot[data-document-search-open="true"] .markdown-paper .markra-prosemirror-caret {
+  .markdown-paper .cm-vimMode .cm-fat-cursor,
+  .markdown-source-paper .cm-vimMode .cm-fat-cursor {
+    background: var(--accent) !important;
+    color: var(--bg-primary) !important;
+  }
+
+  .markdown-paper .cm-editor:not(.cm-focused) .cm-vimMode .cm-fat-cursor,
+  .markdown-source-paper .cm-editor:not(.cm-focused) .cm-vimMode .cm-fat-cursor {
     display: none !important;
   }
 
-  .markdown-paper .ProseMirror li[data-item-type="task"] {
-    @apply relative flex list-none items-start gap-2;
+  .markdown-paper .cm-vim-panel {
+    border-top: 1px solid var(--editor-border);
+    background: var(--editor-bg-secondary);
+    color: var(--editor-text-secondary);
+  }
+
+  .markdown-source-paper .cm-vim-panel {
+    border-top: 1px solid var(--border-default);
+    background: var(--bg-secondary);
+    color: var(--text-secondary);
+  }
+
+  .markdown-paper .cm-vim-panel,
+  .markdown-source-paper .cm-vim-panel {
+    align-items: center;
+    gap: 8px;
+    min-height: 24px;
+    padding: 2px 10px;
+    font-family: Menlo, Consolas, "DejaVu Sans Mono", monospace;
+    font-size: 11px;
+    line-height: 20px;
+  }
+
+  .markdown-paper .cm-vim-panel > span:first-child,
+  .markdown-source-paper .cm-vim-panel > span:first-child {
+    color: var(--accent);
+    font-weight: 650;
+    letter-spacing: 0.04em;
+  }
+
+  .markdown-paper .markra-vim-hint,
+  .markdown-source-paper .markra-vim-hint {
+    color: var(--editor-text-secondary, var(--text-secondary));
+    opacity: 0.82;
+    white-space: nowrap;
+  }
+
+  .markdown-paper .markra-vim-feedback,
+  .markdown-source-paper .markra-vim-feedback {
+    color: var(--editor-text-primary, var(--text-primary));
+    white-space: nowrap;
+  }
+
+  /* CodeMirror uses transparent image nodes to stabilize widget cursors. They
+     are editor chrome, so Markdown media spacing must never leak onto them. */
+  .markdown-paper .cm-widgetBuffer {
+    display: inline !important;
+    width: 0 !important;
+    height: 0 !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    border: 0 !important;
+    border-radius: 0 !important;
+    max-width: none !important;
+  }
+
+  .markdown-paper .cm-line.cm-markra-h1,
+  .markdown-paper .cm-line.cm-markra-h2,
+  .markdown-paper .cm-line.cm-markra-h3,
+  .markdown-paper .cm-line.cm-markra-h4,
+  .markdown-paper .cm-line.cm-markra-h5,
+  .markdown-paper .cm-line.cm-markra-h6 {
+    color: var(--editor-text-heading) !important;
+    font-family: var(--editor-heading-font-family) !important;
+    font-weight: 760 !important;
+    letter-spacing: 0 !important;
+    text-wrap: balance;
+  }
+
+  .markdown-paper .cm-line.cm-markra-h1 {
+    padding-block: 0 16px !important;
+    font-size: 44px !important;
+    line-height: 1.15 !important;
+  }
+
+  .markdown-paper .cm-line.cm-markra-h2 {
+    padding-block: 28px 12px !important;
+    font-size: 31px !important;
+    line-height: 1.22 !important;
+  }
+
+  .markdown-paper .cm-line.cm-markra-h3 {
+    padding-block: 22px 4px !important;
+    font-size: 24px !important;
+    line-height: 1.28 !important;
+  }
+
+  .markdown-paper .cm-line.cm-markra-h4 {
+    padding-block: 18px 2px !important;
+    font-size: 19px !important;
+    line-height: 1.35 !important;
+  }
+
+  .markdown-paper .cm-line.cm-markra-h5,
+  .markdown-paper .cm-line.cm-markra-h6 {
+    padding-block-start: 14px !important;
+    font-size: 16px !important;
+    line-height: 1.45 !important;
+  }
+
+  .markdown-paper .cm-line.cm-markra-h1 > span:not(.cm-markra-link):not(.cm-markra-link-source-label):not(.cm-markra-strikethrough),
+  .markdown-paper .cm-line.cm-markra-h2 > span:not(.cm-markra-link):not(.cm-markra-link-source-label):not(.cm-markra-strikethrough),
+  .markdown-paper .cm-line.cm-markra-h3 > span:not(.cm-markra-link):not(.cm-markra-link-source-label):not(.cm-markra-strikethrough),
+  .markdown-paper .cm-line.cm-markra-h4 > span:not(.cm-markra-link):not(.cm-markra-link-source-label):not(.cm-markra-strikethrough),
+  .markdown-paper .cm-line.cm-markra-h5 > span:not(.cm-markra-link):not(.cm-markra-link-source-label):not(.cm-markra-strikethrough),
+  .markdown-paper .cm-line.cm-markra-h6 > span:not(.cm-markra-link):not(.cm-markra-link-source-label):not(.cm-markra-strikethrough) {
+    text-decoration: none !important;
+  }
+
+  .markdown-paper .cm-line.cm-markra-h1 > span,
+  .markdown-paper .cm-line.cm-markra-h2 > span,
+  .markdown-paper .cm-line.cm-markra-h3 > span,
+  .markdown-paper .cm-line.cm-markra-h4 > span,
+  .markdown-paper .cm-line.cm-markra-h5 > span,
+  .markdown-paper .cm-line.cm-markra-h6 > span {
+    font-family: inherit !important;
+    font-weight: inherit !important;
+  }
+
+  .markdown-paper .cm-line.cm-markra-paragraph {
+    color: var(--editor-text-primary);
+  }
+
+  /* Keep CodeMirror's child <br> in layout. WebKit uses it to map a drag
+     endpoint through the visual gap instead of falling back to document end. */
+  .markdown-paper .cm-line.cm-markra-empty-line[data-markra-empty-source="hidden"] {
+    height: var(--editor-paragraph-spacing);
+    min-height: var(--editor-paragraph-spacing);
+    font-size: 0;
+    line-height: var(--editor-paragraph-spacing);
+  }
+
+  .markdown-paper .cm-line.cm-markra-list-item {
+    position: relative;
+  }
+
+  .markdown-paper .cm-line.cm-markra-list-item[data-markra-list-source="hidden"] {
+    padding-inline-start: 1.55em !important;
+  }
+
+  .markdown-paper .cm-line.cm-markra-list-item[data-markra-list-source="hidden"]::before {
+    position: absolute;
+    inset-inline-start: 0;
+    width: 1.2em;
+    color: var(--editor-text-secondary);
+    content: attr(data-list-marker);
+    text-align: center;
+  }
+
+  .markdown-paper .cm-line.cm-markra-list-item[data-list-kind="task"][data-markra-list-source="hidden"] {
+    padding-inline-start: 0 !important;
+  }
+
+  .markdown-paper .cm-line.cm-markra-list-item[data-list-kind="task"][data-markra-list-source="hidden"]::before {
+    content: none;
+  }
+
+  .markdown-paper .cm-markra-strong {
+    color: inherit;
+    font-weight: 700;
+  }
+
+  .markdown-paper .cm-markra-emphasis {
+    font-style: italic;
+    /* CJK system fonts often lack italic faces, so live Markdown needs local style synthesis. */
+    font-synthesis: style;
+  }
+
+  .markdown-paper .cm-markra-inline-code {
+    background: var(--editor-inline-code-bg) !important;
+    color: var(--editor-inline-code-text) !important;
+  }
+
+  .markdown-paper .cm-markra-link {
+    color: var(--editor-link-color) !important;
+    cursor: var(--editor-text-cursor);
+    text-decoration: underline;
+    text-underline-offset: 0.16em;
+    -webkit-user-drag: none;
+  }
+
+  .markdown-paper .cm-line.cm-markra-blockquote {
+    border-left: 1px solid var(--editor-border-strong) !important;
+    padding-left: 20px !important;
+    color: var(--editor-text-secondary) !important;
+  }
+
+  .markdown-paper .cm-line.cm-markra-empty-line + .cm-line.cm-markra-blockquote {
+    margin-block-start: 10px;
+  }
+
+  .markdown-paper .cm-line.cm-markra-list-item + .cm-line.cm-markra-list-item {
+    padding-block-start: 8px !important;
+  }
+
+  .markdown-paper .cm-line.cm-markra-list-item[data-list-depth="0"] +
+    .cm-line.cm-markra-list-item[data-list-depth="1"] {
+    padding-block-start: 12px !important;
+  }
+
+  .markdown-paper .cm-line.cm-markra-list-item[data-list-depth="1"] +
+    .cm-line.cm-markra-list-item[data-list-depth="0"],
+  .markdown-paper .cm-line.cm-markra-list-item[data-list-kind="bullet"] +
+    .cm-line.cm-markra-list-item[data-list-kind="ordered"],
+  .markdown-paper .cm-line.cm-markra-list-item[data-list-kind="ordered"] +
+    .cm-line.cm-markra-list-item[data-list-kind="task"] {
+    padding-block-start: 24px !important;
+  }
+
+  .markdown-paper .cm-line.cm-markra-list-item[data-markra-list-source="hidden"] {
+    --markra-list-depth-offset: 0em;
+    padding-inline-start: calc(1.4em + var(--markra-list-depth-offset)) !important;
+  }
+
+  .markdown-paper .cm-line.cm-markra-list-item[data-list-depth="1"] {
+    --markra-list-depth-offset: 1.35em;
+  }
+
+  .markdown-paper .cm-line.cm-markra-list-item[data-list-depth="2"] {
+    --markra-list-depth-offset: 2.7em;
+  }
+
+  .markdown-paper .cm-line.cm-markra-list-item[data-list-depth="3"] {
+    --markra-list-depth-offset: 4.05em;
+  }
+
+  .markdown-paper .cm-line.cm-markra-list-item[data-markra-list-source="hidden"]::before {
+    inset-inline-start: var(--markra-list-depth-offset);
+  }
+
+  .markdown-paper .cm-line.cm-markra-list-item[data-list-kind="task"][data-markra-list-source="hidden"] {
+    padding-inline-start: calc(1.4em + var(--markra-list-depth-offset)) !important;
+  }
+
+  .markdown-paper .cm-line.cm-markra-code-header-line {
+    position: relative !important;
+    height: 0 !important;
+    min-height: 0 !important;
+    margin-block-start: 8px !important;
+    overflow: visible !important;
+    padding: 0 !important;
+    border: 0 !important;
+    border-radius: 0 !important;
+    background: transparent !important;
+    line-height: 0 !important;
+  }
+
+  .markdown-paper .cm-markra-code-header-wrap {
+    display: block !important;
+    height: 0 !important;
+  }
+
+  .markdown-paper .cm-markra-code-header {
+    display: none !important;
+  }
+
+  .markdown-paper .cm-markra-code-header-actions {
+    position: absolute !important;
+    top: 8px;
+    right: 8px;
+    z-index: 4;
+    display: flex !important;
+    align-items: center;
+    gap: 6px;
+    opacity: 1 !important;
+    pointer-events: auto !important;
+    transform: none;
+    transition: opacity 150ms ease-out, transform 150ms ease-out;
+  }
+
+  .markdown-paper .cm-markra-code-header-actions .markra-code-language-control {
+    position: relative !important;
+    display: flex !important;
+    padding: 0 !important;
+    opacity: 1 !important;
+    pointer-events: auto !important;
+    transform: none !important;
+  }
+
+  .markdown-paper .cm-markra-code-header-actions .markra-code-language-select {
+    height: 28px !important;
+    min-height: 28px !important;
+    min-width: 160px !important;
+    padding: 0 10px !important;
+    font-size: 13px !important;
+    line-height: 1 !important;
+  }
+
+  .markdown-paper .cm-markra-code-header-actions .markra-code-copy-button {
+    position: relative !important;
+    top: auto !important;
+    right: auto !important;
+    width: 28px !important;
+    min-width: 28px !important;
+    height: 28px !important;
+    min-height: 28px !important;
+    padding: 0 !important;
+    opacity: 1 !important;
+    pointer-events: auto !important;
+    transform: none !important;
+  }
+
+  .markdown-paper .cm-line.cm-markra-code-content-line {
+    position: relative;
+    box-sizing: border-box;
+    /* The inline line-number marker only occupies the first visual row.
+       A hanging indent keeps soft-wrapped continuations out of the gutter. */
+    padding-inline: 59px 16px !important;
+    text-indent: -59px;
+    border: 0 !important;
+    background: transparent !important;
+    color: var(--editor-code-text) !important;
+    font-family: Menlo, Consolas, "DejaVu Sans Mono", monospace !important;
+    font-size: 14.4px !important;
+    line-height: 23.76px !important;
+  }
+
+  /* CodeMirror draws selections at z-index -1. Keeping the code surface at
+     -2 leaves selections visible without placing them over tokens or gutters. */
+  .markdown-paper .cm-line.cm-markra-code-content-line::after {
+    position: absolute;
+    inset: 0;
+    z-index: -2;
+    box-sizing: border-box;
+    border-right: 1px solid var(--editor-border);
+    border-left: 1px solid var(--editor-border);
+    background: linear-gradient(
+      90deg,
+      var(--editor-code-line-bg) 0 43px,
+      var(--editor-border) 43px 44px,
+      var(--editor-code-bg) 44px 100%
+    );
+    content: "";
+    pointer-events: none;
+  }
+
+  /* The backdrop owns the continuous gutter divider. Keep this pseudo-element
+     inside the number column so it cannot cover that divider on text rows. */
+  .markdown-paper .cm-line.cm-markra-code-content-line::before {
+    position: relative;
+    z-index: 1;
+    box-sizing: border-box;
+    width: 43px !important;
+    min-width: 43px !important;
+    margin-right: 16px !important;
+    padding-right: 12px;
+    border-left: 1px solid var(--editor-border);
+    background: var(--editor-code-line-bg);
+    color: var(--editor-text-secondary) !important;
+    font: inherit;
+  }
+
+  .markdown-paper .cm-line.cm-markra-code-header-line +
+    .cm-line.cm-markra-code-content-line {
+    padding-block-start: 16px !important;
+  }
+
+  .markdown-paper .cm-line.cm-markra-code-header-line +
+    .cm-line.cm-markra-code-content-line::after {
+    border-top: 1px solid var(--editor-border);
+    border-radius: 4px 4px 0 0;
+  }
+
+  .markdown-paper .cm-line.cm-markra-code-content-line:has(+ .cm-markra-code-closing-line) {
+    padding-block-end: 16px !important;
+  }
+
+  .markdown-paper .cm-line.cm-markra-code-content-line:has(+ .cm-markra-code-closing-line)::after {
+    border-bottom: 1px solid var(--editor-border);
+    border-radius: 0 0 4px 4px;
+  }
+
+  .markdown-paper .cm-line.cm-markra-code-closing-line {
+    position: relative !important;
+    height: 12px !important;
+    min-height: 12px !important;
+    padding: 0 !important;
+    border: 0 !important;
+    background: transparent !important;
+    line-height: 12px !important;
+    overflow: visible !important;
+  }
+
+  .markdown-paper .cm-markra-code-exit-wrap {
+    display: inline-block !important;
+    width: 100% !important;
+    height: 12px !important;
+  }
+
+  .markdown-paper .cm-markra-code-exit {
+    display: inline-block !important;
+    width: 100% !important;
+    height: 12px !important;
+    cursor: var(--editor-text-cursor);
+  }
+
+  .markdown-paper .cm-markra-table-wrap {
+    display: block !important;
+    margin: 24px 0 !important;
+    padding: 28px 36px 36px 0 !important;
+    overflow: visible !important;
+    font-size: 16px !important;
+    line-height: 26.4px !important;
+  }
+
+  .markdown-paper .cm-line:has(> .cm-markra-table-wrap) {
+    font-size: 0 !important;
+    line-height: 0 !important;
+  }
+
+  .markdown-paper .cm-markra-table {
+    width: 100% !important;
+    max-width: 100% !important;
+    margin: 0 !important;
+  }
+
+  .markdown-paper .cm-markra-table[data-width-mode="auto"] {
+    table-layout: auto !important;
+  }
+
+  .markdown-paper .cm-markra-table[data-width-mode="even"] {
+    table-layout: fixed !important;
+  }
+
+  .markdown-paper .cm-markra-table th,
+  .markdown-paper .cm-markra-table td {
+    padding: 8px 12px !important;
+    border: 1px solid var(--editor-border-strong) !important;
+    caret-color: var(--editor-caret-color) !important;
+    outline: none !important;
+  }
+
+  .markdown-paper .cm-markra-table th[contenteditable="true"]:focus,
+  .markdown-paper .cm-markra-table td[contenteditable="true"]:focus {
+    box-shadow: inset 0 0 0 2px var(--editor-caret-color) !important;
+  }
+
+  .markdown-paper .cm-markra-table th {
+    background: var(--editor-bg-secondary) !important;
+    color: var(--editor-text-heading) !important;
+  }
+
+  .markdown-paper .cm-markra-table td {
+    background: var(--editor-paper-bg) !important;
+  }
+
+  .markdown-paper .cm-markra-table tbody tr:nth-child(even) td {
+    background: var(--editor-bg-secondary) !important;
+  }
+
+  .markdown-paper[data-editor-theme="github"] .cm-markra-table-wrap,
+  .markdown-paper[data-editor-theme="github-dark"] .cm-markra-table-wrap {
+    margin: 16px 0 !important;
+    padding: 0 !important;
+  }
+
+  .markdown-paper[data-editor-theme="github"] .cm-markra-table th,
+  .markdown-paper[data-editor-theme="github"] .cm-markra-table td,
+  .markdown-paper[data-editor-theme="github-dark"] .cm-markra-table th,
+  .markdown-paper[data-editor-theme="github-dark"] .cm-markra-table td {
+    padding: 6px 13px !important;
+    border-color: var(--editor-border) !important;
+  }
+
+  .markdown-paper .cm-line:has(> .cm-markra-horizontal-rule) {
+    font-size: 0 !important;
+    line-height: 0 !important;
+  }
+
+  .markdown-paper .cm-markra-horizontal-rule {
+    /* The app draws the rule with the shared hr background; suppress the
+       renderer theme's border so one Markdown block produces one line. */
+    border-top: 0 !important;
+    margin: 16px 0 12px !important;
+  }
+
+  .markdown-paper .cm-markra-task-checkbox {
+    width: 1rem;
+    height: 1rem;
+    margin: 0 0.5em 0 0;
+    accent-color: var(--accent) !important;
+    vertical-align: -0.08em;
+  }
+
+  @media (max-width: 900px) {
+    .markdown-paper .cm-line.cm-markra-h1 {
+      font-size: 34px !important;
+    }
+
+    .markdown-paper .cm-line.cm-markra-h2 {
+      font-size: 26px !important;
+    }
   }
 
   .markdown-paper .markra-task-list-checkbox {
@@ -469,19 +982,64 @@
     @apply mb-0;
   }
 
-  .markdown-paper .ProseMirror-focused {
+  .markdown-paper .cm-editor.cm-focused {
     @apply outline-none;
   }
 
   .markdown-paper .markra-block-toolbar {
     @apply fixed z-50 flex h-6 items-center gap-0 rounded-md border border-transparent bg-transparent p-0 text-(--text-secondary) outline-none transition-[opacity,color,background-color,border-color,box-shadow] duration-150 ease-out;
-    opacity: 0;
+    display: flex !important;
+    gap: 0 !important;
+    margin: 0 !important;
+    opacity: 0 !important;
     pointer-events: none;
     transform: translate(-50%, -50%);
   }
 
+  .markdown-paper .cm-markra-block-toolbar {
+    /* 42px of controls plus a 12px gap offsets the -54px gutter without
+       shifting the document text column. */
+    position: relative !important;
+    display: inline-flex !important;
+    flex: none;
+    margin: 0 12px 0 -54px !important;
+    margin-inline-start: -54px !important;
+    margin-inline-end: 12px !important;
+    opacity: 0 !important;
+    pointer-events: auto;
+    transform: none;
+    vertical-align: middle;
+  }
+
+  /* The controls sit outside the line box. This invisible bridge keeps the
+     line hovered while the pointer crosses the 12px gutter to the buttons. */
+  .markdown-paper .cm-markra-block-toolbar::after {
+    content: "";
+    position: absolute;
+    inset-block: 0;
+    inset-inline-end: -12px;
+    width: 12px;
+  }
+
+  .markdown-paper .cm-line:hover > .cm-markra-block-toolbar,
+  .markdown-paper .cm-markra-block-toolbar:focus-within,
+  .markdown-paper .cm-markra-block-toolbar[data-dragging="true"] {
+    opacity: 0.58 !important;
+    pointer-events: auto;
+  }
+
+  .markdown-paper .cm-markra-block-toolbar > button {
+    width: 20px;
+    height: 20px;
+    padding: 0 !important;
+    font-family: var(--editor-font-family) !important;
+    font-size: 12px !important;
+    font-weight: 560 !important;
+    line-height: 1 !important;
+  }
+
   .markdown-paper .markra-block-toolbar[data-show="true"] {
-    opacity: 0.58;
+    opacity: 0.58 !important;
     pointer-events: auto;
   }
 
@@ -489,12 +1047,13 @@
   .markdown-paper .markra-block-toolbar:focus-within,
   .markdown-paper .markra-block-toolbar[data-dragging="true"] {
     @apply bg-(--bg-hover) text-(--text-heading);
-    opacity: 1;
+    opacity: 1 !important;
     box-shadow: 0 6px 18px rgba(0, 0, 0, 0.08);
   }
 
   .markdown-paper .markra-block-tool-button {
     @apply grid h-5 w-5 cursor-pointer place-content-center rounded-sm border-0 bg-transparent p-0 text-(--text-secondary) outline-none transition-[color,background-color] duration-150 ease-out hover:bg-(--bg-active) hover:text-(--text-heading) focus-visible:bg-(--bg-active) focus-visible:text-(--text-heading);
+    display: grid !important;
   }
 
   .markdown-paper .markra-block-add-button {
@@ -577,7 +1136,7 @@
     opacity: 0.94;
   }
 
-  .markdown-paper .ProseMirror[data-dragging="true"] {
+  .markdown-paper .cm-editor[data-dragging="true"] {
     cursor: grabbing;
   }
 
@@ -636,6 +1195,7 @@
     --editor-font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
     --editor-heading-font-family: var(--editor-font-family);
     --editor-paragraph-spacing: 8px;
+    --editor-caret-color: var(--accent);
     color: var(--editor-text-primary);
     font-family: var(--editor-font-family);
     transition:
@@ -644,6 +1204,7 @@
   }
 
   [data-theme-appearance="dark"] .markdown-paper {
+    --editor-caret-color: #ffffff;
     --editor-inline-code-text: oklch(78% 0.09 225);
     --editor-code-control-bg: color-mix(in srgb, var(--bg-secondary) 88%, transparent);
     --editor-link-color: #b7c5ff;
@@ -685,10 +1246,13 @@
   }
 
   .markdown-paper .markra-heading-level-control {
-    position: relative;
+    position: absolute;
+    left: -28px;
+    top: calc(50% + var(--markra-heading-toggle-center-offset));
+    z-index: 5;
     display: inline-grid;
-    margin-right: 0.5rem;
-    vertical-align: 0.18em;
+    margin: 0;
+    transform: translateY(-50%);
   }
 
   .markdown-paper .markra-heading-level-button {
@@ -778,36 +1342,57 @@
     --markra-heading-toggle-center-offset: 0px;
   }
 
-  .markdown-paper h1.markra-heading-toggle-heading {
+  /* These controls are all absolutely positioned. Keeping them out of the
+     line layout prevents a pointer-down from moving heading text before the
+     matching pointer-up, which browsers can misread as a drag selection. */
+  .markdown-paper .markra-heading-toggle-heading > .cm-markra-block-toolbar {
+    position: absolute !important;
+    left: -104px;
+    margin: 0 !important;
+    top: calc(50% + var(--markra-heading-toggle-center-offset));
+    transform: translateY(-50%);
+  }
+
+  .markdown-paper .markra-heading-toggle-heading > .cm-markra-block-toolbar::after {
+    inset-inline-end: -8px;
+    width: 8px;
+  }
+
+  .markdown-paper h1.markra-heading-toggle-heading,
+  .markdown-paper .cm-line.cm-markra-h1.markra-heading-toggle-heading {
     --markra-heading-toggle-center-offset: -5.5px;
   }
 
-  .markdown-paper h2.markra-heading-toggle-heading {
+  .markdown-paper h2.markra-heading-toggle-heading,
+  .markdown-paper .cm-line.cm-markra-h2.markra-heading-toggle-heading {
     --markra-heading-toggle-center-offset: -3.5px;
   }
 
   .markdown-paper .markra-heading-toggle-button {
     @apply absolute inline-flex size-5 cursor-pointer items-center justify-center rounded-sm border-0 bg-transparent p-0 outline-none transition-[opacity,color,background-color] duration-150 ease-out focus-visible:bg-(--bg-hover) focus-visible:outline-none;
     color: color-mix(in srgb, var(--editor-text-secondary) 62%, transparent);
-    left: -28px;
-    opacity: 0;
+    left: -54px;
+    display: inline-flex !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    opacity: 0 !important;
     top: calc(50% + var(--markra-heading-toggle-center-offset));
     transform: translateY(-50%);
   }
 
   .markdown-paper .markra-heading-toggle-heading:hover > .markra-heading-toggle-button,
   .markdown-paper .markra-heading-toggle-heading:focus-within > .markra-heading-toggle-button {
-    opacity: 0.72;
+    opacity: 0.72 !important;
   }
 
   .markdown-paper .markra-heading-toggle-button:hover,
   .markdown-paper .markra-heading-toggle-button:focus-visible {
     color: var(--editor-text-secondary);
-    opacity: 1;
+    opacity: 1 !important;
   }
 
   .markdown-paper .markra-heading-toggle-button::before {
-    content: "";
+    content: "" !important;
     width: 7px;
     height: 7px;
     border-right: 1.6px solid currentColor;
@@ -833,24 +1418,27 @@
     @apply absolute inline-flex size-4 cursor-pointer items-center justify-center rounded-sm border-0 bg-transparent p-0 outline-none transition-[opacity,color,background-color] duration-150 ease-out focus-visible:bg-(--bg-hover) focus-visible:outline-none;
     color: color-mix(in srgb, var(--editor-text-secondary) 62%, transparent);
     left: -2.2em;
-    opacity: 0;
+    display: inline-flex !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    opacity: 0 !important;
     top: calc((1lh - 1rem) / 2);
   }
 
   .markdown-paper .markra-list-toggle-item:hover > .markra-list-toggle-button,
   .markdown-paper .markra-list-toggle-item:focus-within > .markra-list-toggle-button,
   .markdown-paper .markra-list-toggle-item[data-list-collapsed="true"] > .markra-list-toggle-button {
-    opacity: 0.72;
+    opacity: 0.72 !important;
   }
 
   .markdown-paper .markra-list-toggle-button:hover,
   .markdown-paper .markra-list-toggle-button:focus-visible {
     color: var(--editor-text-secondary);
-    opacity: 1;
+    opacity: 1 !important;
   }
 
   .markdown-paper .markra-list-toggle-button::before {
-    content: "";
+    content: "" !important;
     width: 6px;
     height: 6px;
     border-right: 1.4px solid currentColor;
@@ -918,9 +1506,87 @@
     --callout-border: color-mix(in srgb, var(--callout-color) 32%, var(--editor-border));
   }
 
+  .markdown-paper .cm-line.cm-markra-callout {
+    --callout-color: oklch(57% 0.11 252) !important;
+    --callout-bg: color-mix(in srgb, var(--callout-color) 5%, var(--editor-paper-bg));
+    --callout-border: color-mix(in srgb, var(--callout-color) 22%, var(--editor-border));
+    --callout-border-focus: color-mix(in srgb, var(--callout-color) 38%, var(--editor-border-strong));
+    position: relative !important;
+    box-sizing: border-box;
+    min-height: 1lh;
+    margin-block: 0 !important;
+    border-block-width: 0 !important;
+    border-inline: 1px solid var(--callout-border) !important;
+    border-radius: 0;
+    padding-block: 0 !important;
+    padding-inline: 16px !important;
+    background: var(--callout-bg) !important;
+    color: var(--editor-text-primary) !important;
+  }
+
+  .markdown-paper .cm-line.markra-callout-first {
+    border-block-start: 1px solid var(--callout-border) !important;
+    border-start-start-radius: 7px;
+    border-start-end-radius: 7px;
+    padding-block-start: 14px !important;
+  }
+
+  .markdown-paper .cm-line.markra-callout-last {
+    border-block-end: 1px solid var(--callout-border) !important;
+    border-end-start-radius: 7px;
+    border-end-end-radius: 7px;
+    padding-block-end: 14px !important;
+  }
+
+  .markdown-paper .markra-callout-spacer {
+    height: 20px;
+  }
+
+  .markdown-paper .cm-line.markra-callout-tip {
+    --callout-color: oklch(56% 0.11 154) !important;
+  }
+
+  .markdown-paper .cm-line.markra-callout-important {
+    --callout-color: oklch(55% 0.12 292) !important;
+  }
+
+  .markdown-paper .cm-line.markra-callout-warning {
+    --callout-color: oklch(62% 0.12 72) !important;
+  }
+
+  .markdown-paper .cm-line.markra-callout-caution {
+    --callout-color: oklch(57% 0.13 28) !important;
+  }
+
+  [data-theme="dark"] .markdown-paper .cm-line.cm-markra-callout,
+  [data-theme="github-dark"] .markdown-paper .cm-line.cm-markra-callout,
+  [data-theme="night"] .markdown-paper .cm-line.cm-markra-callout,
+  [data-theme="one-dark"] .markdown-paper .cm-line.cm-markra-callout,
+  [data-theme="one-dark-pro"] .markdown-paper .cm-line.cm-markra-callout,
+  [data-theme="solarized-dark"] .markdown-paper .cm-line.cm-markra-callout,
+  [data-theme="nord"] .markdown-paper .cm-line.cm-markra-callout,
+  [data-theme="catppuccin-mocha"] .markdown-paper .cm-line.cm-markra-callout,
+  .markdown-paper[data-editor-theme="dark"] .cm-line.cm-markra-callout,
+  .markdown-paper[data-editor-theme="github-dark"] .cm-line.cm-markra-callout,
+  .markdown-paper[data-editor-theme="night"] .cm-line.cm-markra-callout,
+  .markdown-paper[data-editor-theme="one-dark"] .cm-line.cm-markra-callout,
+  .markdown-paper[data-editor-theme="one-dark-pro"] .cm-line.cm-markra-callout,
+  .markdown-paper[data-editor-theme="solarized-dark"] .cm-line.cm-markra-callout,
+  .markdown-paper[data-editor-theme="nord"] .cm-line.cm-markra-callout,
+  .markdown-paper[data-editor-theme="catppuccin-mocha"] .cm-line.cm-markra-callout {
+    --callout-bg: color-mix(in srgb, var(--callout-color) 10%, var(--editor-paper-bg));
+    --callout-border: color-mix(in srgb, var(--callout-color) 32%, var(--editor-border));
+  }
+
   .markdown-paper .markra-callout-header {
-    @apply mb-2 flex min-h-5 items-center gap-2 text-[0.76em] leading-5 font-[720] tracking-normal;
+    @apply mb-2 inline-flex min-h-5 items-center gap-2 text-[0.76em] leading-5 font-[720] tracking-normal;
     color: var(--callout-color);
+  }
+
+  .markdown-paper .cm-line.markra-callout-first .markra-callout-type-select {
+    position: absolute;
+    inset-block-start: 14px;
+    inset-inline-end: 16px;
   }
 
   .markdown-paper .markra-callout-icon {
@@ -966,13 +1632,150 @@
   }
 
   .markdown-paper .markra-callout:hover .markra-callout-type-select,
-  .markdown-paper .markra-callout:focus-within .markra-callout-type-select {
+  .markdown-paper .markra-callout:focus-within .markra-callout-type-select,
+  .markdown-paper .markra-callout-active .markra-callout-type-select {
     opacity: 1;
     pointer-events: auto;
   }
 
   .markdown-paper blockquote.markra-callout:focus-within {
     border-color: var(--callout-border-focus);
+  }
+
+  .markdown-paper .cm-line.markra-callout-active {
+    border-color: var(--callout-border-focus) !important;
+  }
+
+  /* Draw a one-line-high typewriter band instead of filling the entire
+     CodeMirror line box. Several visual blocks use asymmetric padding for
+     document rhythm, so the offset below tracks half of that padding delta. */
+  .markdown-paper .cm-editor[data-typewriter-mode="true"].cm-focused
+    .cm-line.cm-activeLine {
+    --typewriter-active-line-offset: 0px;
+    --typewriter-active-line-color: color-mix(in srgb, currentColor 8%, transparent);
+    background:
+      linear-gradient(
+        var(--typewriter-active-line-color),
+        var(--typewriter-active-line-color)
+      )
+      center calc(50% + var(--typewriter-active-line-offset)) / 100% 1lh no-repeat !important;
+  }
+
+  .markdown-paper .cm-editor[data-typewriter-mode="true"].cm-focused
+    .cm-line.cm-markra-h1.cm-activeLine {
+    --typewriter-active-line-offset: -8px;
+  }
+
+  .markdown-paper .cm-editor[data-typewriter-mode="true"].cm-focused
+    .cm-line.cm-markra-h2.cm-activeLine {
+    --typewriter-active-line-offset: 8px;
+  }
+
+  .markdown-paper .cm-editor[data-typewriter-mode="true"].cm-focused
+    .cm-line.cm-markra-h3.cm-activeLine {
+    --typewriter-active-line-offset: 9px;
+  }
+
+  .markdown-paper .cm-editor[data-typewriter-mode="true"].cm-focused
+    .cm-line.cm-markra-h4.cm-activeLine {
+    --typewriter-active-line-offset: 8px;
+  }
+
+  .markdown-paper .cm-editor[data-typewriter-mode="true"].cm-focused
+    .cm-line.cm-markra-h5.cm-activeLine,
+  .markdown-paper .cm-editor[data-typewriter-mode="true"].cm-focused
+    .cm-line.cm-markra-h6.cm-activeLine {
+    --typewriter-active-line-offset: 7px;
+  }
+
+  .markdown-paper .cm-editor[data-typewriter-mode="true"].cm-focused
+    .cm-line.cm-markra-list-item +
+    .cm-line.cm-markra-list-item.cm-activeLine {
+    --typewriter-active-line-offset: 4px;
+  }
+
+  .markdown-paper .cm-editor[data-typewriter-mode="true"].cm-focused
+    .cm-line.cm-markra-list-item[data-list-depth="0"] +
+    .cm-line.cm-markra-list-item[data-list-depth="1"].cm-activeLine {
+    --typewriter-active-line-offset: 6px;
+  }
+
+  .markdown-paper .cm-editor[data-typewriter-mode="true"].cm-focused
+    .cm-line.cm-markra-list-item[data-list-depth="1"] +
+    .cm-line.cm-markra-list-item[data-list-depth="0"].cm-activeLine,
+  .markdown-paper .cm-editor[data-typewriter-mode="true"].cm-focused
+    .cm-line.cm-markra-list-item[data-list-kind="bullet"] +
+    .cm-line.cm-markra-list-item[data-list-kind="ordered"].cm-activeLine,
+  .markdown-paper .cm-editor[data-typewriter-mode="true"].cm-focused
+    .cm-line.cm-markra-list-item[data-list-kind="ordered"] +
+    .cm-line.cm-markra-list-item[data-list-kind="task"].cm-activeLine {
+    --typewriter-active-line-offset: 12px;
+  }
+
+  .markdown-paper .cm-editor[data-typewriter-mode="true"].cm-focused
+    .cm-line.cm-activeLine.markra-callout-first {
+    --typewriter-active-line-offset: 7px;
+  }
+
+  .markdown-paper .cm-editor[data-typewriter-mode="true"].cm-focused
+    .cm-line.cm-activeLine.markra-callout-last {
+    --typewriter-active-line-offset: -7px;
+  }
+
+  .markdown-paper .cm-editor[data-typewriter-mode="true"].cm-focused
+    .cm-line.cm-activeLine.markra-callout-first.markra-callout-last {
+    --typewriter-active-line-offset: 0px;
+  }
+
+  .markdown-paper .cm-editor[data-typewriter-mode="true"].cm-focused
+    .cm-line.cm-markra-code-header-line +
+    .cm-line.cm-activeLine.cm-markra-code-content-line {
+    --typewriter-active-line-offset: 8px;
+  }
+
+  .markdown-paper .cm-editor[data-typewriter-mode="true"].cm-focused
+    .cm-line.cm-activeLine.cm-markra-code-content-line:has(+ .cm-markra-code-closing-line) {
+    --typewriter-active-line-offset: -8px;
+  }
+
+  .markdown-paper .cm-editor[data-typewriter-mode="true"].cm-focused
+    .cm-line.cm-markra-code-header-line +
+    .cm-line.cm-activeLine.cm-markra-code-content-line:has(+ .cm-markra-code-closing-line) {
+    --typewriter-active-line-offset: 0px;
+  }
+
+  /* The code backdrop is a negative-z pseudo-element, so its active band must
+     be composed into that same surface rather than painted on the parent. */
+  .markdown-paper .cm-editor[data-typewriter-mode="true"].cm-focused
+    .cm-line.cm-activeLine.cm-markra-code-content-line {
+    background: transparent !important;
+  }
+
+  .markdown-paper .cm-editor[data-typewriter-mode="true"].cm-focused
+    .cm-line.cm-activeLine.cm-markra-code-content-line::after {
+    background:
+      linear-gradient(
+        var(--typewriter-active-line-color),
+        var(--typewriter-active-line-color)
+      )
+      center calc(50% + var(--typewriter-active-line-offset)) / 100% 1lh no-repeat,
+      linear-gradient(
+        90deg,
+        var(--editor-code-line-bg) 0 43px,
+        var(--editor-border) 43px 44px,
+        var(--editor-code-bg) 44px 100%
+      ) !important;
+  }
+
+  .markdown-paper .cm-editor[data-typewriter-mode="true"].cm-focused
+    .cm-line.cm-activeLine.cm-markra-callout {
+    background:
+      linear-gradient(
+        var(--typewriter-active-line-color),
+        var(--typewriter-active-line-color)
+      )
+      center calc(50% + var(--typewriter-active-line-offset)) / 100% 1lh no-repeat,
+      var(--callout-bg) !important;
   }
 
   .markdown-paper .markra-callout-type-select:focus {
@@ -1273,7 +2076,7 @@
     visibility: visible;
   }
 
-  .markdown-paper .ProseMirror[contenteditable="false"] .markra-table-fragment-merge {
+  .markdown-paper .cm-content[contenteditable="false"] .markra-table-fragment-merge {
     display: none;
   }
 
@@ -1527,13 +2330,20 @@
     user-select: text;
   }
 
-  .markdown-paper .ProseMirror.markra-link-open-modifier-active a[href],
-  .markdown-paper .ProseMirror.markra-link-open-modifier-active .markra-live-link-label {
-    cursor: pointer;
-  }
-
   .markdown-paper .markra-live-link-source-label {
     @apply text-(--editor-link-color) underline underline-offset-2;
+    cursor: var(--editor-text-cursor);
+  }
+
+  .markdown-paper .cm-markra-link-source,
+  .markdown-paper .cm-markra-link-source * {
+    color: var(--editor-markdown-syntax-color) !important;
+    text-decoration: none !important;
+  }
+
+  .markdown-paper .cm-markra-link-source-label {
+    @apply underline underline-offset-2;
+    color: var(--editor-link-color) !important;
     cursor: var(--editor-text-cursor);
   }
 
@@ -1590,6 +2400,25 @@
 
   .markdown-paper .markra-live-link-icon + .markra-live-link-icon {
     @apply hidden;
+  }
+
+  .markdown-paper .cm-markra-link-icon {
+    @apply inline-block text-(--editor-link-color);
+    margin-left: 0.18em;
+    pointer-events: none;
+    text-decoration: none;
+    user-select: none;
+    -webkit-user-drag: none;
+  }
+
+  .markdown-paper .cm-markra-link-icon::before {
+    content: "↗";
+    display: inline-block;
+    transform: translateY(-0.08em);
+    font-size: 0.72em;
+    font-weight: 700;
+    line-height: 1;
+    opacity: 0.7;
   }
 
   .markra-document-link-menu {
@@ -1687,22 +2516,33 @@
     @apply flex h-7 w-8 cursor-pointer items-center justify-center border-0 bg-transparent p-0 text-[1em] font-[760] text-(--text-heading) outline-none transition-colors duration-150 ease-out hover:bg-(--bg-hover) focus-visible:bg-(--bg-hover);
   }
 
-  .markdown-paper img {
+  .markdown-paper img:not(.cm-widgetBuffer) {
     @apply my-6 block max-w-full rounded-[3px] border border-(--border-default);
+  }
+
+  .markdown-paper .cm-markra-table img.cm-markra-table-image {
+    @apply my-1 max-h-48 border-0;
+    object-fit: contain;
+  }
+
+  .markdown-paper .cm-line.cm-markra-image-line {
+    line-height: 0 !important;
+  }
+
+  .markdown-paper .cm-line.cm-markra-image-line > .markra-image-node {
+    display: inline-block;
+    width: 100%;
+    vertical-align: top;
   }
 
   .markdown-paper .markra-image-node {
     @apply block max-w-full outline-none;
+    line-height: 1.65;
     -webkit-user-drag: none;
     user-select: text;
   }
 
-  .markdown-paper .markra-image-node.ProseMirror-selectednode {
-    @apply bg-transparent;
-  }
-
-  .markdown-paper .markra-image-node.markra-image-node-selected,
-  .markdown-paper .markra-image-node.ProseMirror-selectednode {
+  .markdown-paper .markra-image-node.markra-image-node-selected {
     outline: 2px solid #8cf;
     outline-offset: 3px;
   }
@@ -1716,10 +2556,12 @@
   }
 
   .markdown-paper .markra-image-node-source {
-    @apply m-0 block w-full min-w-0 appearance-none rounded-none border-0 bg-transparent p-0 font-mono text-[0.95em] text-(--text-primary) outline-none;
+    @apply m-0 block w-full min-w-0 appearance-none rounded-none border-0 bg-transparent p-0 font-mono text-(--text-primary) outline-none;
     box-shadow: none;
     cursor: var(--editor-text-cursor);
-    line-height: inherit;
+    font-size: 0.875rem;
+    font-weight: 400;
+    line-height: 1.5rem;
   }
 
   .markdown-paper .markra-image-node-source:focus {
@@ -1728,7 +2570,8 @@
   }
 
   .markdown-paper .markra-image-node > img {
-    @apply mt-0 border-0;
+    @apply my-0 border-0;
+    display: block;
     -webkit-user-drag: none;
     user-select: none;
   }
@@ -1752,14 +2595,6 @@
 
   .markdown-paper .markra-image-node-source::selection {
     background: color-mix(in srgb, var(--accent) 28%, transparent);
-  }
-
-  .markdown-paper .ProseMirror-hideselection .markra-image-node-source {
-    caret-color: var(--text-primary) !important;
-  }
-
-  .markdown-paper .ProseMirror-hideselection .markra-image-node-source::selection {
-    background: color-mix(in srgb, var(--accent) 28%, transparent) !important;
   }
 
   .markdown-paper .markra-image-node-source-invalid .markra-image-node-source {
@@ -1800,24 +2635,6 @@
     margin: 0;
     overflow-x: auto;
     overflow-y: hidden;
-  }
-
-  .markdown-paper p:has(.markra-math-caret-anchor) {
-    position: relative;
-  }
-
-  .markdown-paper img.ProseMirror-separator.markra-math-caret-anchor {
-    position: absolute;
-    top: 50%;
-    right: 0;
-    width: 1px !important;
-    height: 1.35em !important;
-    max-width: none;
-    margin: 0 !important;
-    padding: 0;
-    border: 0 !important;
-    pointer-events: none;
-    transform: translateY(-50%);
   }
 
   .markdown-paper .markra-math-render-invalid {
@@ -1910,7 +2727,7 @@
   }
 
   .markdown-paper .markra-md-delimiter {
-    @apply text-(--text-md-char);
+    @apply text-(--editor-markdown-syntax-color);
   }
 
   .markdown-paper .markra-md-hidden-delimiter {
@@ -2152,7 +2969,7 @@
   }
 
   .markdown-paper .markra-mermaid-zoom-button {
-    @apply absolute top-2 right-2 z-[3] grid size-7 cursor-pointer place-items-center rounded-md border border-(--border-default) p-0 outline-none transition-[opacity,transform,color,background-color,border-color,box-shadow] duration-150 ease-out;
+    @apply absolute top-4 right-2 z-[3] grid size-7 cursor-pointer place-items-center rounded-md border border-(--border-default) p-0 outline-none transition-[opacity,transform,color,background-color,border-color,box-shadow] duration-150 ease-out;
     background: var(--editor-code-control-bg);
     border-color: var(--editor-border);
     color: var(--editor-text-secondary);
@@ -2385,10 +3202,6 @@
     background: linear-gradient(color-mix(in srgb, var(--border-default) 72%, var(--text-secondary)), color-mix(in srgb, var(--border-default) 72%, var(--text-secondary))) center / 100% 2px no-repeat;
   }
 
-  .markdown-paper hr.ProseMirror-selectednode {
-    outline: none;
-  }
-
   .markdown-paper::selection,
   .markdown-paper *::selection {
     background: color-mix(in srgb, var(--accent) 20%, transparent);
@@ -2413,8 +3226,7 @@
     display: none !important;
   }
 
-  .editor-content-slot[data-document-search-open="true"] .markdown-paper .markra-image-node.markra-image-node-selected,
-  .editor-content-slot[data-document-search-open="true"] .markdown-paper .ProseMirror-selectednode {
+  .editor-content-slot[data-document-search-open="true"] .markdown-paper .markra-image-node.markra-image-node-selected {
     outline: none !important;
     box-shadow: none !important;
   }

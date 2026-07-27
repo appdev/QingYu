@@ -16,19 +16,26 @@ const editorControllerSpies = vi.hoisted(() => ({
   replaceMarkdown: vi.fn()
 }));
 
-vi.mock("./hooks/useEditorController", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("./hooks/useEditorController")>();
+vi.mock("./hooks/useCodeMirrorEditorController", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./hooks/useCodeMirrorEditorController")>();
 
   return {
     ...actual,
-    useEditorController: () => ({
-      ...actual.useEditorController(),
+    useCodeMirrorEditorController: () => ({
+      ...actual.useCodeMirrorEditorController(),
       replaceMarkdown: editorControllerSpies.replaceMarkdown
     })
   };
 });
 
 installAppTestHarness();
+
+async function expectVisualMarkdownText(text: string) {
+  await waitFor(() => {
+    const editors = screen.getAllByRole("textbox", { name: "Markdown document" });
+    expect(editors.some((editor) => editor.textContent?.includes(text))).toBe(true);
+  });
+}
 
 function openMarkdownFromUnifiedPicker() {
   fireEvent.click(screen.getByRole("button", { name: "Open Markdown or Folder" }));
@@ -108,18 +115,20 @@ describe("QingYu document history restore", () => {
     renderApp();
 
     openMarkdownFromUnifiedPicker();
-    expect(await screen.findByText("Current")).toBeInTheDocument();
+    await expectVisualMarkdownText("Current");
 
     fireEvent.click(screen.getByRole("button", { name: "Show history" }));
     expect(await screen.findByRole("region", { name: "History versions" })).toBeInTheDocument();
     expect(screen.queryByRole("dialog", { name: "History versions" })).not.toBeInTheDocument();
 
     fireEvent.click(await screen.findByRole("option"));
+    fireEvent.click(await screen.findByRole("button", { name: "Restore version" }));
 
     await waitFor(() => {
       expect(debugSpy.mock.calls.map((call) => call[0])).toEqual(expect.arrayContaining([
+        "[markra-history] preview click",
+        "[markra-history] preview contents resolved",
         "[markra-history] restore click",
-        "[markra-history] restore contents resolved",
         "[markra-history] app restore requested",
         "[markra-history] document restore state updated",
         "[markra-history] editor replace requested",
@@ -142,7 +151,7 @@ describe("QingYu document history restore", () => {
     renderApp();
 
     openMarkdownFromUnifiedPicker();
-    expect(await screen.findByText("Current")).toBeInTheDocument();
+    await expectVisualMarkdownText("Current");
 
     fireEvent.click(screen.getByRole("button", { name: "Show history" }));
     expect(await screen.findByRole("region", { name: "History versions" })).toBeInTheDocument();
@@ -168,7 +177,7 @@ describe("QingYu document history restore", () => {
     renderApp();
 
     fireEvent.keyDown(window, { ctrlKey: true, key: "o" });
-    expect(await screen.findByText("Current")).toBeInTheDocument();
+    await expectVisualMarkdownText("Current");
 
     fireEvent.click(screen.getByRole("button", { name: "Show history" }));
 
@@ -199,13 +208,14 @@ describe("QingYu document history restore", () => {
     renderApp();
 
     openMarkdownFromUnifiedPicker();
-    expect(await screen.findByText("Current")).toBeInTheDocument();
+    await expectVisualMarkdownText("Current");
     editorControllerSpies.replaceMarkdown.mockClear();
 
     fireEvent.click(screen.getByRole("button", { name: "Show history" }));
     expect(await screen.findByRole("region", { name: "History versions" })).toBeInTheDocument();
 
     fireEvent.click(await screen.findByRole("option"));
+    fireEvent.click(await screen.findByRole("button", { name: "Restore version" }));
 
     await waitFor(() => {
       expect(editorControllerSpies.replaceMarkdown).toHaveBeenCalledWith("# Earlier\n\nSynthetic body.");
@@ -238,21 +248,72 @@ describe("QingYu document history restore", () => {
     renderApp();
 
     openMarkdownFromUnifiedPicker();
-    expect(await screen.findByText("Current")).toBeInTheDocument();
+    await expectVisualMarkdownText("Current");
 
     fireEvent.click(screen.getByRole("button", { name: "Show history" }));
     expect(await screen.findByRole("region", { name: "History versions" })).toBeInTheDocument();
 
     fireEvent.click(await screen.findByRole("option"));
+    fireEvent.click(await screen.findByRole("button", { name: "Restore version" }));
 
     await waitFor(() => {
       expect(mockedSaveNativeMarkdownFile).toHaveBeenCalledWith({
         contents: "# Earlier\n\nSynthetic body.",
-        historyCursorId: "history-current",
         path: mockNativePath,
-        skipHistorySnapshot: true,
         suggestedName: "native.md"
       });
+    });
+  });
+
+  it("preserves unsaved contents in history before restoring an earlier version", async () => {
+    mockedConsumeWelcomeDocumentState.mockResolvedValue(false);
+    mockOpenMarkdownFile({
+      content: "# Current\n\nSynthetic body.",
+      name: "native.md",
+      path: mockNativePath
+    });
+    mockedListNativeMarkdownFileHistory.mockResolvedValue([
+      {
+        id: "history-current",
+        createdAt: 1_700_000_001_000,
+        sizeBytes: 27
+      }
+    ]);
+    mockedReadNativeMarkdownFileHistory.mockResolvedValue({
+      id: "history-current",
+      contents: "# Earlier\n\nSynthetic body."
+    });
+    mockedSaveNativeMarkdownFile.mockResolvedValue({
+      name: "native.md",
+      path: mockNativePath
+    });
+
+    renderApp();
+
+    openMarkdownFromUnifiedPicker();
+    await expectVisualMarkdownText("Current");
+    await selectEditorViewMode("Source code");
+    replaceMarkdownSource(
+      await screen.findByRole("textbox", { name: "Markdown source" }),
+      "# Unsaved\n\nSynthetic draft."
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Show history" }));
+    fireEvent.click(await screen.findByRole("option"));
+    fireEvent.click(await screen.findByRole("button", { name: "Restore version" }));
+
+    await waitFor(() => {
+      expect(mockedSaveNativeMarkdownFile).toHaveBeenCalledTimes(2);
+    });
+    expect(mockedSaveNativeMarkdownFile).toHaveBeenNthCalledWith(1, {
+      contents: "# Unsaved\n\nSynthetic draft.",
+      path: mockNativePath,
+      suggestedName: "native.md"
+    });
+    expect(mockedSaveNativeMarkdownFile).toHaveBeenNthCalledWith(2, {
+      contents: "# Earlier\n\nSynthetic body.",
+      path: mockNativePath,
+      suggestedName: "native.md"
     });
   });
 
@@ -268,7 +329,7 @@ describe("QingYu document history restore", () => {
     renderApp();
 
     openMarkdownFromUnifiedPicker();
-    expect(await screen.findByText("Current")).toBeInTheDocument();
+    await expectVisualMarkdownText("Current");
 
     const historyButton = screen.getByRole("button", { name: "Show history" });
     fireEvent.click(historyButton);
@@ -291,7 +352,7 @@ describe("QingYu document history restore", () => {
     renderApp();
 
     openMarkdownFromUnifiedPicker();
-    expect(await screen.findByText("Current")).toBeInTheDocument();
+    await expectVisualMarkdownText("Current");
 
     fireEvent.keyDown(window, {
       key: "h",
@@ -320,7 +381,7 @@ describe("QingYu document history restore", () => {
     renderApp();
 
     openMarkdownFromUnifiedPicker();
-    expect(await screen.findByText("Current")).toBeInTheDocument();
+    await expectVisualMarkdownText("Current");
 
     fireEvent.keyDown(window, {
       altKey: true,
@@ -374,7 +435,7 @@ describe("QingYu document history restore", () => {
     renderApp();
 
     openMarkdownFromUnifiedPicker();
-    expect(await screen.findByText("Current")).toBeInTheDocument();
+    await expectVisualMarkdownText("Current");
 
     fireEvent.click(screen.getByRole("button", { name: "Show history" }));
     expect(await screen.findByRole("region", { name: "History versions" })).toBeInTheDocument();

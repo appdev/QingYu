@@ -14,6 +14,7 @@ import {
   installNativeMarkdownFileDrop,
   listenNativeOpenedMarkdownPaths,
   listNativeMarkdownFileHistory,
+  listNativeMarkdownReferenceFilesForPath,
   loadNativeMarkdownFilesForPath,
   listNativeMarkdownFilesForPath,
   moveNativeMarkdownTreeFile,
@@ -43,6 +44,7 @@ import {
   saveNativeSettingsFile,
   saveNativeMarkdownFile,
   searchNativeMarkdownFilesForPath,
+  trashNativeMarkdownAssets,
   trashNativeWorkspaceResources,
   writeNativeMarkdownTemplateFile,
   watchNativeMarkdownFile,
@@ -607,6 +609,65 @@ describe("native file access", () => {
       globalIgnoreRules: "generated/",
       managedAttachmentFolder: "media/files",
       path: mockReadmePath
+    });
+  });
+
+  it("lists reference Markdown files and trashes selected managed assets", async () => {
+    mockedInvoke
+      .mockResolvedValueOnce([
+        {
+          path: "/mock-files/hidden.md",
+          relativePath: "hidden.md",
+          sizeBytes: 25
+        }
+      ])
+      .mockResolvedValueOnce({
+        failures: [],
+        trashedPaths: ["/mock-files/assets/unused.png"]
+      });
+
+    await expect(listNativeMarkdownReferenceFilesForPath(mockFolderPath)).resolves.toEqual([
+      {
+        name: "hidden.md",
+        path: "/mock-files/hidden.md",
+        relativePath: "hidden.md",
+        sizeBytes: 25
+      }
+    ]);
+    await expect(trashNativeMarkdownAssets({
+      documents: [{
+        modifiedAt: 1_700_000_001_000,
+        path: "/mock-files/note.md",
+        sizeBytes: 25
+      }],
+      managedFolder: "assets",
+      rootPath: mockFolderPath,
+      targets: [{
+        modifiedAt: 1_700_000_000_000,
+        path: "/mock-files/assets/unused.png",
+        sizeBytes: 10
+      }]
+    })).resolves.toEqual({
+      failures: [],
+      trashedPaths: ["/mock-files/assets/unused.png"]
+    });
+
+    expect(mockedInvoke).toHaveBeenNthCalledWith(1, "list_markdown_reference_files_for_path", {
+      path: mockFolderPath
+    });
+    expect(mockedInvoke).toHaveBeenNthCalledWith(2, "trash_markdown_assets", {
+      documents: [{
+        modifiedAt: 1_700_000_001_000,
+        path: "/mock-files/note.md",
+        sizeBytes: 25
+      }],
+      managedFolder: "assets",
+      rootPath: mockFolderPath,
+      targets: [{
+        modifiedAt: 1_700_000_000_000,
+        path: "/mock-files/assets/unused.png",
+        sizeBytes: 10
+      }]
     });
   });
 

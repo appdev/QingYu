@@ -18,6 +18,9 @@ type NativeMarkdownFileHistoryEntry = Awaited<ReturnType<AppFileRuntime["listMar
 type NativeMarkdownFileHistoryFile = Awaited<ReturnType<AppFileRuntime["readMarkdownFileHistory"]>>;
 type LoadNativeMarkdownFilesForPath = NonNullable<AppFileRuntime["loadMarkdownFilesForPath"]>;
 type LoadNativeMarkdownFilesForPathOptions = NonNullable<Parameters<LoadNativeMarkdownFilesForPath>[1]>;
+type TrashNativeMarkdownAssets = NonNullable<AppFileRuntime["trashMarkdownAssets"]>;
+type TrashNativeMarkdownAssetsInput = Parameters<TrashNativeMarkdownAssets>[0];
+type NativeMarkdownAssetTrashSummary = Awaited<ReturnType<TrashNativeMarkdownAssets>>;
 type WatchNativeMarkdownOptions = NonNullable<Parameters<AppFileRuntime["watchMarkdownFile"]>[3]>;
 
 type NativeMarkdownFile = {
@@ -187,6 +190,23 @@ export async function listNativeMarkdownFilesForPath(
   }
   const files = await invokeNative<MarkdownFolderFileResponse[]>("list_markdown_files_for_path", args);
   return files.map(markdownFolderFileFromResponse);
+}
+
+export async function listNativeMarkdownReferenceFilesForPath(
+  path: string
+): Promise<NativeMarkdownFolderFile[]> {
+  const files = await invokeNative<MarkdownFolderFileResponse[]>(
+    "list_markdown_reference_files_for_path",
+    { path }
+  );
+
+  return files.map(markdownFolderFileFromResponse);
+}
+
+export function trashNativeMarkdownAssets(
+  input: TrashNativeMarkdownAssetsInput
+): Promise<NativeMarkdownAssetTrashSummary> {
+  return invokeNative<NativeMarkdownAssetTrashSummary>("trash_markdown_assets", input);
 }
 
 let markdownFileTreeLoadRequestIndex = 0;

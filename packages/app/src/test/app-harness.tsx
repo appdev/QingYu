@@ -366,6 +366,8 @@ vi.mock("../lib/settings/app-settings", () => ({
     },
     showLineNumbers: false,
     showWordCount: true,
+    typewriterModeEnabled: false,
+    vimModeEnabled: false,
     wrapCodeBlocks: true
   },
   appThemeOptions: [
@@ -458,7 +460,7 @@ vi.mock("../lib/settings/app-settings", () => ({
     const appearanceMode = ["system", "light", "dark"].includes(String(value.appearanceMode))
       ? value.appearanceMode
       : "system";
-    const lightTheme = [
+    const requestedLightTheme = [
       "light",
       "github",
       "one-light",
@@ -473,7 +475,7 @@ vi.mock("../lib/settings/app-settings", () => ({
       "minimal",
       "custom"
     ].includes(String(value.lightTheme)) ? value.lightTheme : "light";
-    const darkTheme = [
+    const requestedDarkTheme = [
       "dark",
       "github-dark",
       "one-dark",
@@ -484,11 +486,15 @@ vi.mock("../lib/settings/app-settings", () => ({
       "catppuccin-mocha",
       "custom"
     ].includes(String(value.darkTheme)) ? value.darkTheme : "dark";
+    const customThemeEnabled = value.customThemeEnabled === true
+      || requestedLightTheme === "custom"
+      || requestedDarkTheme === "custom";
 
     return {
       appearanceMode,
-      darkTheme,
-      lightTheme
+      ...(customThemeEnabled ? { customThemeEnabled: true } : {}),
+      darkTheme: requestedDarkTheme === "custom" ? "dark" : requestedDarkTheme,
+      lightTheme: requestedLightTheme === "custom" ? "light" : requestedLightTheme
     };
   }),
   resolveAppAppearanceTheme: vi.fn((theme, systemTheme) => {
@@ -509,6 +515,8 @@ vi.mock("../lib/settings/app-settings", () => ({
     preferences.appearanceMode === "system" ? systemTheme : preferences.appearanceMode
   ),
   resolveAppThemePreferencesEditorTheme: vi.fn((preferences, systemTheme) => {
+    if (preferences.customThemeEnabled) return "custom";
+
     const appearance = preferences.appearanceMode === "system" ? systemTheme : preferences.appearanceMode;
 
     return appearance === "dark" ? preferences.darkTheme : preferences.lightTheme;
@@ -598,7 +606,9 @@ vi.mock("../lib/settings/app-settings", () => ({
     },
     showLineNumbers: preferences?.showLineNumbers ?? false,
     showWordCount: true,
+    typewriterModeEnabled: preferences?.typewriterModeEnabled ?? false,
     ...preferences,
+    vimModeEnabled: preferences?.vimModeEnabled ?? false,
     wrapCodeBlocks: preferences?.wrapCodeBlocks ?? true
   })),
   normalizeFileIgnoreSettings: vi.fn((value: unknown) => {
@@ -1008,13 +1018,6 @@ export function rerenderApp(app: ReturnType<typeof render>) {
 }
 
 export function installAppTestHarness() {
-  afterAll(async () => {
-    // Milkdown ctx leaves 3s listener cleanup timers pending after editor teardown.
-    await new Promise((resolve) => {
-      window.setTimeout(resolve, 3200);
-    });
-  });
-
   beforeEach(() => {
     primaryWorkspaceHarnessState.desktopController = null;
     configuredWorkspaceState = {};
@@ -1352,6 +1355,8 @@ export function installAppTestHarness() {
       },
       showLineNumbers: false,
       showWordCount: true,
+      typewriterModeEnabled: false,
+      vimModeEnabled: false,
       wrapCodeBlocks: true
     });
     mockedGetStoredExportSettings.mockResolvedValue({

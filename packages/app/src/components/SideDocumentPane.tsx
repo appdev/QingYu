@@ -36,6 +36,8 @@ type SideDocumentPaneProps = {
   showLineNumbers?: boolean;
   status?: ReactNode;
   tableColumnWidthMode?: TableColumnWidthModePreference;
+  typewriterModeEnabled?: boolean;
+  vimModeEnabled?: boolean;
   onSaveClipboardAttachment?: (attachment: File) => Promise<{ label: string; src: string } | null>;
   onSaveEditorResources?: SaveEditorResources;
   workspaceFiles?: MarkdownDocumentLinkFile[];
@@ -75,6 +77,8 @@ export function SideDocumentPane({
   showLineNumbers = false,
   status = null,
   tableColumnWidthMode = "auto",
+  typewriterModeEnabled = false,
+  vimModeEnabled = false,
   onSaveClipboardAttachment,
   onSaveEditorResources,
   workspaceFiles,
@@ -110,6 +114,8 @@ export function SideDocumentPane({
           readOnly={readOnly}
           showLineNumbers={showLineNumbers}
           topInset="titlebar"
+          typewriterModeEnabled={typewriterModeEnabled}
+          vimModeEnabled={vimModeEnabled}
         />
       ) : visualBlocked ? (
         <LargeMarkdownNotice language={language} />
@@ -143,6 +149,8 @@ export function SideDocumentPane({
           revision={revision}
           tableColumnWidthMode={tableColumnWidthMode}
           topInset="titlebar"
+          typewriterModeEnabled={typewriterModeEnabled}
+          vimModeEnabled={vimModeEnabled}
           workspaceFiles={workspaceFiles}
           wrapCodeBlocks={wrapCodeBlocks}
         />

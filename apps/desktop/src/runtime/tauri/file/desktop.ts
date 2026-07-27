@@ -19,6 +19,7 @@ export {
   deleteNativeMarkdownTreeFile,
   listNativeMarkdownFileHistory,
   listNativeMarkdownFilesForPath,
+  listNativeMarkdownReferenceFilesForPath,
   loadNativeMarkdownFilesForPath,
   moveNativeMarkdownTreeFile,
   readNativeMarkdownFile,
@@ -26,6 +27,7 @@ export {
   renameNativeMarkdownTreeFile,
   saveNativeMarkdownFileInPlace,
   searchNativeMarkdownFilesForPath,
+  trashNativeMarkdownAssets,
   watchNativeMarkdownFile,
   watchNativeMarkdownTree
 } from "./shared";

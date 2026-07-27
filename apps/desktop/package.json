@@ -1,12 +1,13 @@
 {
   "name": "@markra/desktop",
-  "version": "1.7.9",
+  "version": "2.0.0-beta.5",
   "license": "AGPL-3.0-only",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc -p tsconfig.app.json && vite build && pnpm verify:chunks",
+    "build:icon": "node scripts/icon.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck:test": "tsc -p tsconfig.test.json --noEmit",

@@ -262,7 +262,7 @@
   accent-color: #65b73b;
 }
 
-.markdown-paper[data-editor-theme="drake-light"] .ProseMirror li[data-item-type="task"] {
+.markdown-paper[data-editor-theme="drake-light"] .cm-line:has(.cm-markra-task-checkbox) {
   color: #333333;
 }
 

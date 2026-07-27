@@ -212,7 +212,7 @@ Add strings required by supported V2 features. Do not add AI, provider, proxy, o
 
 - [ ] **Step 3: Preserve QingYu branding and icon inputs**
 
-Keep downstream icon files and Tauri icon paths. Do not replace them with the upstream Markra adaptive-icon artwork.
+Keep downstream icon files and Tauri icon paths. Do not replace them with the upstream QingYu adaptive-icon artwork.
 
 - [ ] **Step 4: Preserve site and downstream release contracts**
 
