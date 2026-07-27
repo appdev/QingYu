@@ -152,6 +152,11 @@ pub(crate) struct DejavuLocalPurgeRepository {
     app_data: PathBuf,
 }
 
+pub(crate) struct DejavuRepositoryMaintenance {
+    app_data: PathBuf,
+    cloud_factory: Arc<dyn RepositoryCloudFactory>,
+}
+
 impl DejavuLocalPurgeRepository {
     pub(crate) fn new(app_data: impl AsRef<Path>) -> Self {
         Self {
@@ -181,6 +186,81 @@ impl LocalPurgeRepositoryOps for DejavuLocalPurgeRepository {
         let stat = opened
             .repo
             .purge(retained_index_ids, cancelled)
+            .map_err(map_repo_error)?;
+        opened.paths.revalidate()?;
+        Ok(stat)
+    }
+}
+
+impl DejavuRepositoryMaintenance {
+    pub(crate) fn new(app_data: impl AsRef<Path>) -> Self {
+        Self {
+            app_data: app_data.as_ref().to_path_buf(),
+            cloud_factory: Arc::new(S3RepositoryCloudFactory),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_cloud_factory<Factory>(
+        app_data: impl AsRef<Path>,
+        cloud_factory: Arc<Factory>,
+    ) -> Self
+    where
+        Factory: RepositoryCloudFactory + 'static,
+    {
+        let cloud_factory: Arc<dyn RepositoryCloudFactory> = cloud_factory;
+        Self {
+            app_data: app_data.as_ref().to_path_buf(),
+            cloud_factory,
+        }
+    }
+
+    pub(crate) fn rebuild_local_repository(
+        &self,
+        repository_id: &str,
+    ) -> Result<(), RepositoryJobError> {
+        let opened = open_bound_local_repository(&self.app_data, repository_id, None, |_| {})?;
+        opened.paths.revalidate()?;
+        drop(opened);
+
+        let paths = reset_local_repository_storage(&self.app_data, repository_id)?;
+        paths.revalidate()?;
+        drop(paths);
+
+        let opened = open_bound_local_repository(&self.app_data, repository_id, None, |_| {})?;
+        opened
+            .repo
+            .index("Rebuild local repository")
+            .map_err(map_repo_error)?;
+        opened.paths.revalidate()
+    }
+
+    pub(crate) fn clear_local_repository(
+        &self,
+        repository_id: &str,
+    ) -> Result<(), RepositoryJobError> {
+        reset_local_repository_storage(&self.app_data, repository_id).map(drop)
+    }
+
+    pub(crate) async fn purge_remote_repository(
+        &self,
+        repository_id: &str,
+        cancelled: &std::sync::atomic::AtomicBool,
+    ) -> Result<qingyu_dejavu::PurgeStat, RepositoryJobError> {
+        let repository_id = canonical_repository_id(repository_id)?;
+        let snapshot = ready_snapshot_at_app_data(&self.app_data, None)
+            .map_err(|_| RepositoryJobError::ConfigUnavailable)?;
+        let opened = open_bound_local_repository(&self.app_data, &repository_id, None, |_| {})?;
+        let repository_prefix = format!("qingyu/repositories/{repository_id}/repo");
+        let cloud = self.cloud_factory.create(repository_cloud_parameters(
+            snapshot.target,
+            repository_prefix,
+        )?)?;
+        opened.paths.revalidate()?;
+        let stat = opened
+            .repo
+            .purge_cloud(cloud, cancelled)
+            .await
             .map_err(map_repo_error)?;
         opened.paths.revalidate()?;
         Ok(stat)
@@ -601,6 +681,41 @@ fn prepare_repository_layout(
     Ok(prepared)
 }
 
+fn reset_local_repository_storage(
+    app_data_path: &Path,
+    repository_id: &str,
+) -> Result<PreparedRepositoryPaths, RepositoryJobError> {
+    let prepared = prepare_repository_layout(app_data_path, repository_id)?;
+    prepared.revalidate()?;
+    let PreparedRepositoryPaths {
+        repository,
+        repo,
+        history,
+        temp,
+    } = prepared;
+    drop(repo);
+
+    repository
+        .directory
+        .remove_dir_all("repo")
+        .map_err(|_| RepositoryJobError::RepositoryUnavailable)?;
+    sync_directory(&repository.directory).map_err(|_| RepositoryJobError::RepositoryUnavailable)?;
+    let repo_directory = open_or_create_directory(&repository.directory, "repo")?;
+    sync_directory(&repository.directory).map_err(|_| RepositoryJobError::RepositoryUnavailable)?;
+    repository.revalidate()?;
+    history.revalidate()?;
+    temp.revalidate()?;
+    let repo = RetainedRepositoryDirectory::new(repository.path.join("repo"), repo_directory)?;
+    let prepared = PreparedRepositoryPaths {
+        repository,
+        repo,
+        history,
+        temp,
+    };
+    prepared.revalidate()?;
+    Ok(prepared)
+}
+
 fn open_or_create_directory(
     parent: &cap_std::fs::Dir,
     name: &str,
@@ -783,8 +898,9 @@ mod tests {
 
     use super::{
         config_addressing_style, config_tls_verification, map_repo_error, ConfigAddressingStyle,
-        ConfigTlsVerification, DejavuLocalPurgeRepository, DejavuRepositoryRunner,
-        RepositoryCloudFactory, RepositoryCloudParameters, WorkingTreeCoordinatorFactory,
+        ConfigTlsVerification, DejavuLocalPurgeRepository, DejavuRepositoryMaintenance,
+        DejavuRepositoryRunner, RepositoryCloudFactory, RepositoryCloudParameters,
+        WorkingTreeCoordinatorFactory,
     };
     use crate::dejavu_sync::maintenance::LocalPurgeRepositoryOps;
     use crate::dejavu_sync::service::{
@@ -1278,6 +1394,112 @@ mod tests {
             )
             .unwrap();
         assert_eq!(stat, qingyu_dejavu::PurgeStat::default());
+    }
+
+    #[tokio::test]
+    async fn rebuild_local_repository_replaces_only_repo_and_indexes_current_notes() {
+        let fixture = Fixture::new();
+        let (runner, _) = runner(&fixture);
+        let request = runner.validate(fixture.request()).unwrap();
+        runner
+            .run_attempt(SyncAttemptContext {
+                request,
+                job_id: "20000000-0000-4000-8000-000000000091".to_owned(),
+                attempt: 1,
+                cancellation: JobCancellationToken::new(),
+            })
+            .await
+            .unwrap();
+        let repository_root = fixture
+            .app_data
+            .join("sync/repositories")
+            .join(&fixture.repository_id);
+        std::fs::write(repository_root.join("repo/old-key-object"), b"old").unwrap();
+        std::fs::write(repository_root.join("history/keep-history"), b"history").unwrap();
+        std::fs::write(repository_root.join("temp/keep-temp"), b"temp").unwrap();
+        std::fs::write(fixture.notes_root.join("second.md"), b"second\n").unwrap();
+        let maintenance = DejavuRepositoryMaintenance::with_cloud_factory(
+            &fixture.app_data,
+            Arc::new(LocalCloudFactory::new(fixture.cloud_root.clone())),
+        );
+
+        maintenance
+            .rebuild_local_repository(&fixture.repository_id)
+            .unwrap();
+
+        assert!(!repository_root.join("repo/old-key-object").exists());
+        assert_eq!(index_count(&repository_root.join("repo/indexes")), 1);
+        assert!(repository_root.join("history/keep-history").is_file());
+        assert!(repository_root.join("temp/keep-temp").is_file());
+        assert!(fixture.notes_root.join("journal.md").is_file());
+        assert!(fixture.notes_root.join("second.md").is_file());
+    }
+
+    #[tokio::test]
+    async fn remote_purge_adapter_uses_bound_repo_key_and_exact_repository_prefix() {
+        let fixture = Fixture::new();
+        let (runner, _) = runner(&fixture);
+        let request = runner.validate(fixture.request()).unwrap();
+        runner
+            .run_attempt(SyncAttemptContext {
+                request,
+                job_id: "20000000-0000-4000-8000-000000000092".to_owned(),
+                attempt: 1,
+                cancellation: JobCancellationToken::new(),
+            })
+            .await
+            .unwrap();
+        let factory = Arc::new(LocalCloudFactory::new(fixture.cloud_root.clone()));
+        let maintenance = DejavuRepositoryMaintenance::with_cloud_factory(
+            &fixture.app_data,
+            Arc::clone(&factory),
+        );
+
+        let stat = maintenance
+            .purge_remote_repository(
+                &fixture.repository_id,
+                &std::sync::atomic::AtomicBool::new(false),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(stat, qingyu_dejavu::PurgeStat::default());
+        assert_eq!(
+            factory.observed.lock().unwrap()[0].repository_prefix,
+            format!("qingyu/repositories/{}/repo", fixture.repository_id)
+        );
+    }
+
+    #[test]
+    fn clear_local_repository_is_idempotent_and_preserves_history_temp_and_notes() {
+        let fixture = Fixture::new();
+        let repository_root = fixture
+            .app_data
+            .join("sync/repositories")
+            .join(&fixture.repository_id);
+        std::fs::create_dir_all(repository_root.join("repo")).unwrap();
+        std::fs::create_dir_all(repository_root.join("history")).unwrap();
+        std::fs::create_dir_all(repository_root.join("temp")).unwrap();
+        std::fs::write(repository_root.join("repo/old-key-object"), b"old").unwrap();
+        std::fs::write(repository_root.join("history/keep-history"), b"history").unwrap();
+        std::fs::write(repository_root.join("temp/keep-temp"), b"temp").unwrap();
+        let maintenance = DejavuRepositoryMaintenance::with_cloud_factory(
+            &fixture.app_data,
+            Arc::new(LocalCloudFactory::new(fixture.cloud_root.clone())),
+        );
+
+        maintenance
+            .clear_local_repository(&fixture.repository_id)
+            .unwrap();
+        maintenance
+            .clear_local_repository(&fixture.repository_id)
+            .unwrap();
+
+        assert!(repository_root.join("repo").is_dir());
+        assert!(!repository_root.join("repo/old-key-object").exists());
+        assert!(repository_root.join("history/keep-history").is_file());
+        assert!(repository_root.join("temp/keep-temp").is_file());
+        assert!(fixture.notes_root.join("journal.md").is_file());
     }
 
     #[tokio::test]
