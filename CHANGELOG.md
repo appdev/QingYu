@@ -1,3 +1,10 @@
+## [2.0.0-beta.8](https://github.com/markrahq/markra/compare/v2.0.0-beta.7...v2.0.0-beta.8) (2026-07-27)
+
+### Bug Fixes
+
+* **editor:** make heading marker hiding opt-in ([#590](https://github.com/markrahq/markra/issues/590)) ([33a355e](https://github.com/markrahq/markra/commit/33a355e4a0205a9a6d129998d41dcb118a3f2598)), closes [#580](https://github.com/markrahq/markra/issues/580)
+* **editor:** stabilize code block caret alignment ([#591](https://github.com/markrahq/markra/issues/591)) ([b489762](https://github.com/markrahq/markra/commit/b4897620d5aca8e90d076a3c672f57aa16ea3ea4))
+
 ## [2.0.0-beta.7](https://github.com/markrahq/markra/compare/v2.0.0-beta.6...v2.0.0-beta.7) (2026-07-26)
 
 ### Features
