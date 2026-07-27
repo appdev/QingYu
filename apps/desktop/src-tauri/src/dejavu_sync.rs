@@ -1,4 +1,5 @@
 pub(crate) mod commands;
+pub(crate) mod lifecycle;
 pub(crate) mod local_state;
 pub(crate) mod maintenance;
 pub(crate) mod path_guard;
@@ -13,6 +14,7 @@ use tauri::Manager;
 use time::OffsetDateTime;
 
 use self::commands::{DejavuSchedulerOwner, DejavuSyncServiceOwner};
+use self::lifecycle::RepositoryLifecycleController;
 use self::local_state::LocalSyncStateService;
 use self::maintenance::{
     clean_expired_conflict_history, clean_startup_residue, local_calendar_date_at, os_random_index,
@@ -20,8 +22,8 @@ use self::maintenance::{
 };
 use self::path_guard::{tauri_path_guard_factory, PathGuardCoordinatorOwner};
 use self::repository::{
-    DejavuLocalPurgeRepository, DejavuRepositoryRunner, S3RepositoryCatalogValidator,
-    WorkingTreeCoordinatorFactory,
+    DejavuLocalPurgeRepository, DejavuRepositoryMaintenance, DejavuRepositoryRunner,
+    S3RepositoryCatalogValidator, WorkingTreeCoordinatorFactory,
 };
 use self::scheduler::{DejavuScheduler, LocalRepositoryScheduleSource, SystemDnsFlusher};
 use self::service::{DejavuSyncService, RepositoryJobError};
@@ -77,11 +79,19 @@ pub(crate) fn install_production_graph(app: &tauri::AppHandle) -> Result<(), Rep
         &app_data,
         Arc::new(S3RepositoryCatalogValidator::new(&app_data)),
         Arc::new(service.clone()),
-        service,
+        service.clone(),
     )?;
     let scheduler_owner = app.state::<DejavuSchedulerOwner>();
     scheduler_owner.install(scheduler)?;
     scheduler_owner.install_maintenance(Arc::clone(&maintenance))?;
+    service_owner.install_lifecycle(Arc::new(RepositoryLifecycleController::new(
+        &app_data,
+        service,
+        Arc::new(DejavuRepositoryMaintenance::new(&app_data)),
+        Arc::clone(&status_store),
+        Arc::new(scheduler_owner.inner().clone()),
+        Arc::clone(&maintenance),
+    )))?;
     spawn_production_daily_maintenance(&app_data, maintenance);
     Ok(())
 }

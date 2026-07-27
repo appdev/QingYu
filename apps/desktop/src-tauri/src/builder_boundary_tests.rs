@@ -994,6 +994,9 @@ fn builder_boundary_installs_the_path_guard_graph_before_startup_on_both_platfor
     assert!(graph.contains("S3RepositoryCatalogValidator::new"));
     assert!(graph.contains("install_binding"));
     assert!(graph.contains("service.install_lifecycle"));
+    assert!(graph.contains("DejavuRepositoryMaintenance::new"));
+    assert!(graph.contains("RepositoryLifecycleController::new"));
+    assert!(graph.contains("service_owner.install_lifecycle"));
     assert!(graph.contains("DejavuSyncServiceOwner"));
     assert!(graph.contains("DejavuSchedulerOwner"));
     assert!(
@@ -1009,6 +1012,18 @@ fn builder_boundary_installs_the_path_guard_graph_before_startup_on_both_platfor
             runtime.contains("if let Err(error) = crate::dejavu_sync::install_production_graph")
         );
         assert!(runtime.contains("Dejavu sync initialization failed"));
+        for command in [
+            "rebuild_local_repository",
+            "stop_repository_sync",
+            "change_global_key",
+            "purge_remote_repository",
+            "delete_remote_repository",
+        ] {
+            assert!(
+                runtime.contains(&format!("crate::dejavu_sync::commands::{command},")),
+                "{runtime_path} should register {command}"
+            );
+        }
     }
 
     let sync_config = source("src/sync_config.rs");

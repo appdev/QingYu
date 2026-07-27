@@ -6,6 +6,9 @@ use std::sync::{Arc, Mutex, OnceLock};
 use qingyu_dejavu::RepositoryMetadata;
 use serde::Deserialize;
 
+use super::lifecycle::{
+    AcceptedMaintenanceJob, RepositoryLifecycleController, RepositoryRootDeactivator,
+};
 use super::local_state::{LocalSyncStateService, RepositoryBinding};
 use super::maintenance::LocalMaintenanceController;
 use super::repository::{prepare_binding_root, RepositoryCatalogValidator};
@@ -20,6 +23,7 @@ use tauri::{Manager, Runtime};
 pub(crate) struct DejavuSyncServiceOwner {
     service: OnceLock<DejavuSyncService>,
     binding: OnceLock<BindingController>,
+    lifecycle: OnceLock<Arc<RepositoryLifecycleController>>,
     maintenance: OnceLock<Arc<LocalMaintenanceController>>,
 }
 
@@ -29,6 +33,20 @@ pub(crate) struct BindRepositoryRequest {
     pub(crate) notes_root: PathBuf,
     pub(crate) repository_id: String,
     pub(crate) display_name: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ConfirmedRepositoryRequest {
+    pub(crate) repository_id: String,
+    pub(crate) confirmed: bool,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ChangeGlobalKeyRequest {
+    pub(crate) new_key: String,
+    pub(crate) confirmed: bool,
 }
 
 type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
@@ -48,11 +66,11 @@ struct BindingController {
     service: DejavuSyncService,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct DejavuSchedulerOwner {
-    scheduler: OnceLock<DejavuScheduler>,
-    maintenance: OnceLock<Arc<LocalMaintenanceController>>,
-    roots: Mutex<SchedulerOwnerRoots>,
+    scheduler: Arc<OnceLock<DejavuScheduler>>,
+    maintenance: Arc<OnceLock<Arc<LocalMaintenanceController>>>,
+    roots: Arc<Mutex<SchedulerOwnerRoots>>,
     native_exit_state: Arc<Mutex<NativeExitState>>,
 }
 
@@ -261,6 +279,12 @@ impl DejavuSchedulerOwner {
     }
 }
 
+impl RepositoryRootDeactivator for DejavuSchedulerOwner {
+    fn deactivate_root(&self, root: &Path) {
+        DejavuSchedulerOwner::deactivate_root(self, root);
+    }
+}
+
 impl DejavuSyncServiceOwner {
     #[allow(dead_code)]
     pub(crate) fn install(&self, service: DejavuSyncService) -> Result<(), RepositoryJobError> {
@@ -275,6 +299,15 @@ impl DejavuSyncServiceOwner {
     ) -> Result<(), RepositoryJobError> {
         self.maintenance
             .set(maintenance)
+            .map_err(|_| RepositoryJobError::RepositoryUnavailable)
+    }
+
+    pub(crate) fn install_lifecycle(
+        &self,
+        lifecycle: Arc<RepositoryLifecycleController>,
+    ) -> Result<(), RepositoryJobError> {
+        self.lifecycle
+            .set(lifecycle)
             .map_err(|_| RepositoryJobError::RepositoryUnavailable)
     }
 
@@ -349,6 +382,53 @@ impl DejavuSyncServiceOwner {
             .await
     }
 
+    fn lifecycle(&self) -> Result<&RepositoryLifecycleController, RepositoryJobError> {
+        self.lifecycle
+            .get()
+            .map(Arc::as_ref)
+            .ok_or(RepositoryJobError::RepositoryUnavailable)
+    }
+
+    pub(crate) fn rebuild_local_repository(
+        &self,
+        request: ConfirmedRepositoryRequest,
+    ) -> Result<AcceptedMaintenanceJob, RepositoryJobError> {
+        self.lifecycle()?
+            .rebuild_local_repository(&request.repository_id, request.confirmed)
+    }
+
+    pub(crate) fn stop_repository_sync(
+        &self,
+        request: ConfirmedRepositoryRequest,
+    ) -> Result<AcceptedMaintenanceJob, RepositoryJobError> {
+        self.lifecycle()?
+            .stop_repository_sync(&request.repository_id, request.confirmed)
+    }
+
+    pub(crate) fn change_global_key(
+        &self,
+        request: ChangeGlobalKeyRequest,
+    ) -> Result<AcceptedMaintenanceJob, RepositoryJobError> {
+        self.lifecycle()?
+            .change_global_key(request.new_key, request.confirmed)
+    }
+
+    pub(crate) fn purge_remote_repository(
+        &self,
+        request: ConfirmedRepositoryRequest,
+    ) -> Result<AcceptedMaintenanceJob, RepositoryJobError> {
+        self.lifecycle()?
+            .purge_remote_repository(&request.repository_id, request.confirmed)
+    }
+
+    pub(crate) fn delete_remote_repository(
+        &self,
+        request: ConfirmedRepositoryRequest,
+    ) -> Result<AcceptedMaintenanceJob, RepositoryJobError> {
+        self.lifecycle()?
+            .delete_remote_repository(&request.repository_id, request.confirmed)
+    }
+
     #[allow(dead_code)]
     pub(crate) async fn enqueue(
         &self,
@@ -418,6 +498,56 @@ pub(crate) async fn bind_dejavu_repository(
 ) -> Result<AcceptedSyncJob, String> {
     bind_repository_and_refresh_scheduler(&owner, &scheduler_owner, request)
         .await
+        .map_err(|error| error.safe_code().to_owned())
+}
+
+#[tauri::command]
+pub(crate) fn rebuild_local_repository(
+    owner: tauri::State<'_, DejavuSyncServiceOwner>,
+    request: ConfirmedRepositoryRequest,
+) -> Result<AcceptedMaintenanceJob, String> {
+    owner
+        .rebuild_local_repository(request)
+        .map_err(|error| error.safe_code().to_owned())
+}
+
+#[tauri::command]
+pub(crate) fn stop_repository_sync(
+    owner: tauri::State<'_, DejavuSyncServiceOwner>,
+    request: ConfirmedRepositoryRequest,
+) -> Result<AcceptedMaintenanceJob, String> {
+    owner
+        .stop_repository_sync(request)
+        .map_err(|error| error.safe_code().to_owned())
+}
+
+#[tauri::command]
+pub(crate) fn change_global_key(
+    owner: tauri::State<'_, DejavuSyncServiceOwner>,
+    request: ChangeGlobalKeyRequest,
+) -> Result<AcceptedMaintenanceJob, String> {
+    owner
+        .change_global_key(request)
+        .map_err(|error| error.safe_code().to_owned())
+}
+
+#[tauri::command]
+pub(crate) fn purge_remote_repository(
+    owner: tauri::State<'_, DejavuSyncServiceOwner>,
+    request: ConfirmedRepositoryRequest,
+) -> Result<AcceptedMaintenanceJob, String> {
+    owner
+        .purge_remote_repository(request)
+        .map_err(|error| error.safe_code().to_owned())
+}
+
+#[tauri::command]
+pub(crate) fn delete_remote_repository(
+    owner: tauri::State<'_, DejavuSyncServiceOwner>,
+    request: ConfirmedRepositoryRequest,
+) -> Result<AcceptedMaintenanceJob, String> {
+    owner
+        .delete_remote_repository(request)
         .map_err(|error| error.safe_code().to_owned())
 }
 

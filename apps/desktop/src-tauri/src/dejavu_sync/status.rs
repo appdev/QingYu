@@ -333,6 +333,10 @@ impl RepositoryStatusStore {
         &self,
         repository_id: &str,
     ) -> Result<RepositorySchedule, RepositoryJobError> {
+        validate_repository_id(repository_id)?;
+        if load_repository_sync_status(&self.app_data, repository_id)?.is_none() {
+            return Ok(RepositorySchedule::default());
+        }
         let mut clear = |schedule: &mut RepositorySchedule| {
             if *schedule == RepositorySchedule::default() {
                 return false;
@@ -1018,6 +1022,20 @@ mod tests {
         assert_eq!(
             emitter.emitted.lock().unwrap().len(),
             emitted_after_first_clear
+        );
+    }
+
+    #[test]
+    fn clearing_an_absent_sync_schedule_is_idempotent() {
+        let app_data = tempdir().unwrap();
+        let store = RepositoryStatusStore::new(
+            app_data.path(),
+            Arc::new(InspectingEmitter::new(app_data.path().to_path_buf())),
+        );
+
+        assert_eq!(
+            store.clear_sync_schedule("00000000-0000-4000-8000-000000000093"),
+            Ok(RepositorySchedule::default())
         );
     }
 

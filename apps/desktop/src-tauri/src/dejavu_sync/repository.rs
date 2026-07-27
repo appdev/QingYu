@@ -265,6 +265,22 @@ impl DejavuRepositoryMaintenance {
         opened.paths.revalidate()?;
         Ok(stat)
     }
+
+    pub(crate) async fn delete_remote_repository(
+        &self,
+        repository_id: &str,
+    ) -> Result<(), RepositoryJobError> {
+        let repository_id = canonical_repository_id(repository_id)?;
+        let snapshot = ready_snapshot_at_app_data(&self.app_data, None)
+            .map_err(|_| RepositoryJobError::ConfigUnavailable)?;
+        let parameters = repository_cloud_parameters(snapshot.target, String::new())?;
+        let (connection, options) = s3_transport(&parameters)?;
+        let catalog = S3RepositoryCatalog::new(connection, options).map_err(map_catalog_error)?;
+        catalog
+            .delete_repository(&repository_id)
+            .await
+            .map_err(map_catalog_error)
+    }
 }
 
 impl DejavuRepositoryRunner {
