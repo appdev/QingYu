@@ -20,7 +20,7 @@ export type MobileNotebookDialogProps = {
   onCancel: () => unknown;
   onCreate: (name: string) => Promise<unknown>;
   onRefresh: () => Promise<unknown>;
-  onRestore: (name: string) => Promise<unknown>;
+  onRestore: (entry: RemoteNotebookCatalogEntry) => Promise<unknown>;
   onSwitch: (name: string) => Promise<unknown>;
   remoteEntries: readonly RemoteNotebookCatalogEntry[];
 };
@@ -28,6 +28,12 @@ export type MobileNotebookDialogProps = {
 type MobileOperation = "create" | "refresh" | "restore" | "switch" | null;
 
 const mobileButtonClass = "min-h-11 min-w-11 whitespace-nowrap rounded-md border border-(--border-default) px-3 text-[12px] font-[620] text-(--text-heading) transition-colors duration-150 hover:bg-(--bg-hover) focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-(--accent) active:translate-y-px disabled:cursor-default disabled:opacity-60 motion-reduce:transform-none motion-reduce:transition-none";
+
+function catalogEntryKey(entry: RemoteNotebookCatalogEntry) {
+  return entry.provider === "s3"
+    ? `s3:${entry.repositoryId}`
+    : `webdav:${entry.name}`;
+}
 
 export function MobileNotebookDialog({
   error,
@@ -45,7 +51,7 @@ export function MobileNotebookDialog({
   const dialogRef = useRef<HTMLDivElement>(null);
   const previousFocusRef = useRef<HTMLElement | null>(null);
   const [name, setName] = useState("");
-  const [selectedRemoteName, setSelectedRemoteName] = useState<string | null>(null);
+  const [selectedRemoteKey, setSelectedRemoteKey] = useState<string | null>(null);
   const [operation, setOperation] = useState<MobileOperation>(null);
   const [operationError, setOperationError] = useState<string | null>(null);
   const invalidName = name.length > 0 && !isValidManagedNotebookName(name);
@@ -60,10 +66,10 @@ export function MobileNotebookDialog({
   }, []);
 
   useEffect(() => {
-    if (selectedRemoteName === null) return;
-    const selected = remoteEntries.find((catalogEntry) => catalogEntry.name === selectedRemoteName);
-    if (!selected?.available) setSelectedRemoteName(null);
-  }, [remoteEntries, selectedRemoteName]);
+    if (selectedRemoteKey === null) return;
+    const selected = remoteEntries.find((catalogEntry) => catalogEntryKey(catalogEntry) === selectedRemoteKey);
+    if (!selected?.available) setSelectedRemoteKey(null);
+  }, [remoteEntries, selectedRemoteKey]);
 
   const run = async (nextOperation: Exclude<MobileOperation, null>, action: () => Promise<unknown>) => {
     if (busy) return;
@@ -92,7 +98,11 @@ export function MobileNotebookDialog({
   };
 
   const visibleError = operationError ?? error;
-  const selectedRemoteExistsLocally = selectedRemoteName !== null && localNames.includes(selectedRemoteName);
+  const selectedRemoteEntry = selectedRemoteKey === null
+    ? null
+    : remoteEntries.find((entry) => catalogEntryKey(entry) === selectedRemoteKey) ?? null;
+  const selectedRemoteExistsLocally = selectedRemoteEntry !== null
+    && localNames.includes(selectedRemoteEntry.name);
 
   return (
     <div className="fixed inset-0 z-50 flex items-end bg-[color-mix(in_srgb,var(--text-heading)_42%,transparent)] pt-[max(1rem,var(--compact-safe-area-top))]">
@@ -209,14 +219,16 @@ export function MobileNotebookDialog({
                 aria-label={label("notebooks.mobile.remoteListLabel")}
                 className="m-0 grid list-none gap-1 p-0"
               >
-                {remoteEntries.map((remoteEntry) => (
-                  <li className="grid gap-1" key={remoteEntry.name}>
+                {remoteEntries.map((remoteEntry) => {
+                  const entryKey = catalogEntryKey(remoteEntry);
+                  return (
+                  <li className="grid gap-1" key={entryKey}>
                     <button
-                      aria-pressed={selectedRemoteName === remoteEntry.name}
+                      aria-pressed={selectedRemoteKey === entryKey}
                       className={`${mobileButtonClass} w-full justify-start overflow-hidden text-left aria-pressed:border-(--accent) aria-pressed:bg-(--bg-active)`}
                       disabled={busy || !remoteEntry.available}
                       type="button"
-                      onClick={() => setSelectedRemoteName(remoteEntry.name)}
+                      onClick={() => setSelectedRemoteKey(entryKey)}
                     >
                       <span className="min-w-0 truncate">{remoteEntry.name}</span>
                     </button>
@@ -226,7 +238,8 @@ export function MobileNotebookDialog({
                       </p>
                     ) : null}
                   </li>
-                ))}
+                  );
+                })}
               </ul>
             )}
             {selectedRemoteExistsLocally && !busy ? (
@@ -253,11 +266,11 @@ export function MobileNotebookDialog({
               ) : null}
               <button
                 className={`${mobileButtonClass} bg-(--accent) text-(--bg-primary) hover:bg-(--accent-hover)`}
-                disabled={busy || selectedRemoteName === null}
+                disabled={busy || selectedRemoteEntry === null}
                 type="button"
                 onClick={() => {
-                  if (selectedRemoteName === null) return;
-                  run("restore", () => onRestore(selectedRemoteName)).catch(() => {});
+                  if (selectedRemoteEntry === null) return;
+                  run("restore", () => onRestore(selectedRemoteEntry)).catch(() => {});
                 }}
               >
                 {label("notebooks.action.restore")}

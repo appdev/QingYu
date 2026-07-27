@@ -6,12 +6,15 @@ import { RemoteNotebookDialog } from "./RemoteNotebookDialog";
 
 function entry(
   name: string,
-  options: Partial<Omit<RemoteNotebookCatalogEntry, "name">> = {}
+  options: Partial<Pick<RemoteNotebookCatalogEntry, "available" | "disabledReason">> = {}
 ): RemoteNotebookCatalogEntry {
   return {
     available: true,
     disabledReason: null,
+    displayName: name,
     name,
+    provider: "webdav",
+    repositoryId: null,
     ...options
   };
 }
@@ -75,7 +78,7 @@ describe("RemoteNotebookDialog", () => {
     expect(within(dialog).getByText(/same-name local folder.*reuse.*merge/iu)).toBeVisible();
 
     fireEvent.click(restore);
-    await waitFor(() => expect(onRestore).toHaveBeenCalledWith("晨间札记"));
+    await waitFor(() => expect(onRestore).toHaveBeenCalledWith(entry("晨间札记")));
     expect(onRestore).toHaveBeenCalledTimes(1);
   });
 
@@ -97,8 +100,8 @@ describe("RemoteNotebookDialog", () => {
     fireEvent.click(within(dialog).getByRole("radio", { name: "晨间札记" }));
     fireEvent.click(within(dialog).getByRole("button", { name: "Restore" }));
 
-    await waitFor(() => expect(onRestore).toHaveBeenCalledWith("晨间札记"));
-    expect(onRestore).not.toHaveBeenCalledWith("Archive");
+    await waitFor(() => expect(onRestore).toHaveBeenCalledWith(entry("晨间札记")));
+    expect(onRestore).not.toHaveBeenCalledWith(entry("Archive"));
   });
 
   it("allows the current remote directory to be chosen during first-sync discovery", async () => {
@@ -116,7 +119,7 @@ describe("RemoteNotebookDialog", () => {
     fireEvent.click(screen.getByRole("radio", { name: "Archive" }));
     fireEvent.click(screen.getByRole("button", { name: "Sync now" }));
 
-    await waitFor(() => expect(onRestore).toHaveBeenCalledWith("Archive"));
+    await waitFor(() => expect(onRestore).toHaveBeenCalledWith(entry("Archive")));
   });
 
   it.each(["current", "unavailable"] as const)(

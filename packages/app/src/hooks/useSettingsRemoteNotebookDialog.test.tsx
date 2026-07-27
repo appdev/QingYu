@@ -46,7 +46,25 @@ function document(revision = "rev-2"): SyncConfigDocument {
 }
 
 function entry(name: string): RemoteNotebookCatalogEntry {
-  return { available: true, disabledReason: null, name };
+  return {
+    available: true,
+    disabledReason: null,
+    displayName: name,
+    name,
+    provider: "webdav",
+    repositoryId: null
+  };
+}
+
+function s3Entry(displayName: string): RemoteNotebookCatalogEntry {
+  return {
+    available: true,
+    disabledReason: null,
+    displayName,
+    name: displayName,
+    provider: "s3",
+    repositoryId: "00000000-0000-4000-8000-000000000051"
+  };
 }
 
 function deferred<T>() {
@@ -268,11 +286,12 @@ describe("useSettingsRemoteNotebookDialog", () => {
     await act(async () => result.current.openDialog());
     mockedRequestPrimaryCloudNotebookRestore.mockResolvedValueOnce(false);
 
-    await expect(result.current.restore("Archive")).rejects.toThrow();
+    await expect(result.current.restore(entry("Archive"))).rejects.toThrow();
 
     expect(result.current.open).toBe(true);
     expect(mockedRequestPrimaryCloudNotebookRestore).toHaveBeenCalledWith(expect.objectContaining({
       remoteName: "Archive",
+      provider: "webdav",
       revision: "rev-2",
       signal: expect.any(AbortSignal)
     }));
@@ -284,7 +303,7 @@ describe("useSettingsRemoteNotebookDialog", () => {
     await act(async () => result.current.openDialog());
     mockedRequestPrimaryCloudNotebookRestore.mockResolvedValueOnce(true);
 
-    await act(async () => result.current.restore("Archive"));
+    await act(async () => result.current.restore(entry("Archive")));
 
     expect(result.current.open).toBe(false);
     expect(syncSession.begin).toHaveBeenCalledTimes(1);
@@ -296,7 +315,7 @@ describe("useSettingsRemoteNotebookDialog", () => {
     await act(async () => result.current.openDialog());
     mockedRequestPrimaryCloudNotebookRestore.mockResolvedValueOnce(true);
 
-    await act(async () => result.current.restore("Archive"));
+    await act(async () => result.current.restore(entry("Archive")));
     expect(result.current.open).toBe(false);
     expect(syncSession.begin).not.toHaveBeenCalled();
 
@@ -313,7 +332,7 @@ describe("useSettingsRemoteNotebookDialog", () => {
     const { result, rerender, syncSession } = setup("/Workspace/Current");
     await act(async () => result.current.openDialog());
     mockedRequestPrimaryCloudNotebookRestore.mockResolvedValueOnce(true);
-    await act(async () => result.current.restore("Archive"));
+    await act(async () => result.current.restore(entry("Archive")));
 
     await act(async () => result.current.openDialog());
     rerender({ root: "/Restored/Archive" });
@@ -327,7 +346,7 @@ describe("useSettingsRemoteNotebookDialog", () => {
     const { result, rerender, syncSession } = setup("/Workspace/Current");
     await act(async () => result.current.openDialog());
     mockedRequestPrimaryCloudNotebookRestore.mockResolvedValueOnce(true);
-    await act(async () => result.current.restore("Archive"));
+    await act(async () => result.current.restore(entry("Archive")));
 
     await act(async () => {
       await result.current.cancel();
@@ -345,9 +364,9 @@ describe("useSettingsRemoteNotebookDialog", () => {
     mockedRequestPrimaryCloudNotebookRestore
       .mockResolvedValueOnce(true)
       .mockResolvedValueOnce(true);
-    await act(async () => result.current.restore("Archive"));
+    await act(async () => result.current.restore(entry("Archive")));
 
-    await act(async () => result.current.restore("Current"));
+    await act(async () => result.current.restore(entry("Current")));
     expect(syncSession.begin).toHaveBeenCalledTimes(1);
     rerender({ root: "/Restored/Archive" });
 
@@ -385,11 +404,31 @@ describe("useSettingsRemoteNotebookDialog", () => {
     await act(async () => result.current.openDialog());
 
     act(() => {
-      result.current.restore("Archive").catch(() => {});
+      result.current.restore(entry("Archive")).catch(() => {});
     });
     await waitFor(() => expect(restoreSignal).toBeDefined());
     unmount();
 
     expect(restoreSignal?.aborted).toBe(true);
+  });
+
+  it("accepts an S3 repository binding for the selected local root and resumes immediately", async () => {
+    installRuntime({ listNotebooks: async () => [s3Entry("Archive")] });
+    const { result, syncSession } = setup("/Workspace/Current");
+    await act(async () => result.current.openDialog());
+    mockedRequestPrimaryCloudNotebookRestore.mockResolvedValueOnce(true);
+
+    await act(async () => result.current.restore(s3Entry("Archive")));
+
+    expect(mockedRequestPrimaryCloudNotebookRestore).toHaveBeenCalledWith(expect.objectContaining({
+      displayName: "Archive",
+      notesRoot: "/Workspace/Current",
+      provider: "s3",
+      repositoryId: "00000000-0000-4000-8000-000000000051",
+      revision: "rev-2",
+      signal: expect.any(AbortSignal)
+    }));
+    expect(result.current.open).toBe(false);
+    expect(syncSession.begin).toHaveBeenCalledTimes(1);
   });
 });

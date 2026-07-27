@@ -1009,23 +1009,34 @@ function WorkspaceApp() {
     primaryWorkspace.status === "ready"
     ? pathNameFromPath(primaryWorkspace.root)
     : null;
-  const handlePrimaryCloudNotebookRestoreRequest = useCallback(async ({
-    remoteName,
-    revision
-  }: PrimaryCloudNotebookRestoreRequest) => {
+  const handlePrimaryCloudNotebookRestoreRequest = useCallback(async (
+    request: PrimaryCloudNotebookRestoreRequest
+  ) => {
     if (
       compactMode.trueMobile ||
       !primaryWindowOwner ||
       remoteNotebookDialogOpen ||
-      syncConfig.appliedDocument?.revision !== revision
+      syncConfig.appliedDocument?.revision !== request.revision
     ) return false;
 
-    if (remoteName === currentDesktopNotebookName) {
-      return Boolean(await appSync.run("manual", revision));
+    if (request.provider === "s3") {
+      if (primaryWorkspace.status !== "ready" || primaryWorkspace.root !== request.notesRoot) {
+        return false;
+      }
+      await getAppRuntime().syncConfig.bindRepository({
+        displayName: request.displayName,
+        notesRoot: request.notesRoot,
+        repositoryId: request.repositoryId
+      });
+      return true;
+    }
+
+    if (request.remoteName === currentDesktopNotebookName) {
+      return Boolean(await appSync.run("manual", request.revision));
     }
 
     const restoredRoot = await notebookSwitch.restoreDesktopNotebook(
-      remoteName,
+      request.remoteName,
       primaryWorkspace.workspaceRoot ?? undefined
     );
     return restoredRoot !== null;
@@ -1035,6 +1046,8 @@ function WorkspaceApp() {
     currentDesktopNotebookName,
     notebookSwitch.restoreDesktopNotebook,
     primaryWindowOwner,
+    primaryWorkspace.root,
+    primaryWorkspace.status,
     primaryWorkspace.workspaceRoot,
     remoteNotebookDialogOpen,
     syncConfig.appliedDocument?.revision
@@ -1239,10 +1252,22 @@ function WorkspaceApp() {
     syncConfig.loadResult,
     syncConfig.status
   ]);
-  const restoreDesktopRemoteNotebook = useCallback(async (name: string) => {
+  const restoreDesktopRemoteNotebook = useCallback(async (entry: RemoteNotebookCatalogEntry) => {
     requireCurrentRemoteNotebookCatalogRevision();
+    if (entry.provider === "s3") {
+      if (primaryWorkspace.status !== "ready" || !primaryWorkspace.root) {
+        throw new Error("Choose a local notebook directory before binding an S3 repository.");
+      }
+      await getAppRuntime().syncConfig.bindRepository({
+        displayName: entry.displayName,
+        notesRoot: primaryWorkspace.root,
+        repositoryId: entry.repositoryId
+      });
+      closeRemoteNotebookDialog();
+      return;
+    }
     const restoredRoot = await notebookSwitch.restoreDesktopNotebook(
-      name,
+      entry.name,
       primaryWorkspace.workspaceRoot ?? undefined
     );
     if (!restoredRoot) throw new Error("Notebook restore did not complete.");
@@ -1250,12 +1275,18 @@ function WorkspaceApp() {
   }, [
     closeRemoteNotebookDialog,
     notebookSwitch.restoreDesktopNotebook,
+    primaryWorkspace.root,
+    primaryWorkspace.status,
     primaryWorkspace.workspaceRoot,
     requireCurrentRemoteNotebookCatalogRevision
   ]);
-  const selectDesktopRemoteNotebook = useCallback(async (name: string) => {
-    if (remoteNotebookCatalogMode !== "select" || name !== currentDesktopNotebookName) {
-      await restoreDesktopRemoteNotebook(name);
+  const selectDesktopRemoteNotebook = useCallback(async (entry: RemoteNotebookCatalogEntry) => {
+    if (
+      entry.provider === "s3"
+      || remoteNotebookCatalogMode !== "select"
+      || entry.name !== currentDesktopNotebookName
+    ) {
+      await restoreDesktopRemoteNotebook(entry);
       return;
     }
     const revision = requireCurrentRemoteNotebookCatalogRevision();
@@ -1367,7 +1398,7 @@ function WorkspaceApp() {
     if (!switchedRoot) throw new Error("Notebook switch did not complete.");
     closeMobileNotebookDialog();
   }, [closeMobileNotebookDialog, notebookSwitch.switchManagedNotebook]);
-  const restoreMobileNotebook = useCallback(async (name: string) => {
+  const restoreMobileNotebook = useCallback(async (entry: RemoteNotebookCatalogEntry) => {
     const configuredRevision = syncConfig.status === "loaded" && syncConfig.loadResult?.status === "loaded"
       ? syncConfig.loadResult.revision
       : null;
@@ -1375,12 +1406,26 @@ function WorkspaceApp() {
       closeMobileNotebookDialog();
       throw new Error("The cloud notebook catalog is stale.");
     }
-    const restoredRoot = await notebookSwitch.restoreManagedNotebook(name);
+    if (entry.provider === "s3") {
+      if (primaryWorkspace.status !== "ready" || !primaryWorkspace.root) {
+        throw new Error("A local notebook directory is required.");
+      }
+      await getAppRuntime().syncConfig.bindRepository({
+        displayName: entry.displayName,
+        notesRoot: primaryWorkspace.root,
+        repositoryId: entry.repositoryId
+      });
+      closeMobileNotebookDialog();
+      return;
+    }
+    const restoredRoot = await notebookSwitch.restoreManagedNotebook(entry.name);
     if (!restoredRoot) throw new Error("Notebook restore did not complete.");
     closeMobileNotebookDialog();
   }, [
     closeMobileNotebookDialog,
     notebookSwitch.restoreManagedNotebook,
+    primaryWorkspace.root,
+    primaryWorkspace.status,
     remoteNotebookCatalogRevision,
     syncConfig.loadResult,
     syncConfig.status

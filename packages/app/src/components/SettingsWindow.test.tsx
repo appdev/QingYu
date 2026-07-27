@@ -128,7 +128,10 @@ describe("SettingsWindow notes workspace", () => {
         listNotebooks: vi.fn(async () => [{
           available: true,
           disabledReason: null,
-          name: "Archive"
+          displayName: "Archive",
+          name: "Archive",
+          provider: "webdav" as const,
+          repositoryId: null
         }]),
         load: async () => ({
           config: {

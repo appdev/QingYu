@@ -1,22 +1,44 @@
 import { getAppRuntime } from "../runtime";
 
-export type PrimaryCloudNotebookRestoreRequest = {
-  remoteName: string;
+type PrimaryCloudNotebookRestoreRequestBase = {
   requestId: string;
   revision: string;
 };
+
+export type PrimaryCloudNotebookRestoreRequest =
+  | PrimaryCloudNotebookRestoreRequestBase & {
+      displayName: string;
+      notesRoot: string;
+      provider: "s3";
+      repositoryId: string;
+    }
+  | PrimaryCloudNotebookRestoreRequestBase & {
+      provider: "webdav";
+      remoteName: string;
+    };
 
 export type PrimaryCloudNotebookRestoreCompletion = {
   requestId: string;
   succeeded: boolean;
 };
 
-export type PrimaryCloudNotebookRestoreInput = {
-  remoteName: string;
+type PrimaryCloudNotebookRestoreInputBase = {
   revision: string;
   signal?: AbortSignal;
   timeoutMs?: number;
 };
+
+export type PrimaryCloudNotebookRestoreInput =
+  | PrimaryCloudNotebookRestoreInputBase & {
+      displayName: string;
+      notesRoot: string;
+      provider: "s3";
+      repositoryId: string;
+    }
+  | PrimaryCloudNotebookRestoreInputBase & {
+      provider: "webdav";
+      remoteName: string;
+    };
 
 export const primaryCloudNotebookRestoreRequestedEvent =
   "qingyu://cloud-notebook-restore-requested";
@@ -37,12 +59,27 @@ function isValidEventString(value: unknown): value is string {
 function normalizeRequest(value: unknown): PrimaryCloudNotebookRestoreRequest | null {
   if (!isRecord(value)) return null;
   if (
-    !isValidEventString(value.remoteName) ||
     !isValidEventString(value.requestId) ||
     !isValidEventString(value.revision)
   ) return null;
-
+  if (value.provider === "s3") {
+    if (
+      !isValidEventString(value.displayName)
+      || !isValidEventString(value.notesRoot)
+      || !isValidEventString(value.repositoryId)
+    ) return null;
+    return {
+      displayName: value.displayName,
+      notesRoot: value.notesRoot,
+      provider: "s3",
+      repositoryId: value.repositoryId,
+      requestId: value.requestId,
+      revision: value.revision
+    };
+  }
+  if (value.provider !== "webdav" || !isValidEventString(value.remoteName)) return null;
   return {
+    provider: "webdav",
     remoteName: value.remoteName,
     requestId: value.requestId,
     revision: value.revision
@@ -71,18 +108,34 @@ function createRequestId() {
 export function requestPrimaryCloudNotebookRestore(
   input: PrimaryCloudNotebookRestoreInput
 ): Promise<boolean> {
-  if (!isValidEventString(input.remoteName) || !isValidEventString(input.revision)) {
+  if (!isValidEventString(input.revision) || (
+    input.provider === "s3"
+      ? !isValidEventString(input.displayName)
+        || !isValidEventString(input.notesRoot)
+        || !isValidEventString(input.repositoryId)
+      : !isValidEventString(input.remoteName)
+  )) {
     return Promise.resolve(false);
   }
 
   const events = getAppRuntime().events;
   if (!events.isAvailable() || input.signal?.aborted) return Promise.resolve(false);
 
-  const request: PrimaryCloudNotebookRestoreRequest = {
-    remoteName: input.remoteName,
-    requestId: createRequestId(),
-    revision: input.revision
-  };
+  const request: PrimaryCloudNotebookRestoreRequest = input.provider === "s3"
+    ? {
+        displayName: input.displayName,
+        notesRoot: input.notesRoot,
+        provider: "s3",
+        repositoryId: input.repositoryId,
+        requestId: createRequestId(),
+        revision: input.revision
+      }
+    : {
+        provider: "webdav",
+        remoteName: input.remoteName,
+        requestId: createRequestId(),
+        revision: input.revision
+      };
 
   return new Promise((resolve) => {
     let abortListenerRegistered = false;

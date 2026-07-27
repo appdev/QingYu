@@ -7,13 +7,12 @@ use reqwest::{Client, Url};
 use serde::Serialize;
 
 use super::backend::{notebook_name_available_on_current_platform, ValidRemoteRoot};
-use super::diagnostics::{create_sync_run_id, SyncDiagnosticContext};
-use super::s3_backend::{S3Backend, S3SyncSettings, S3TransportOptions};
 use super::{
     apply_basic_auth, parse_webdav_propfind_response, raw_relative_href_path,
     validated_remote_path_segments, webdav_propfind_method, webdav_url_with_segments,
     WebDavPropResponse, REMOTE_SYNC_TIMEOUT_SECS,
 };
+use crate::dejavu_sync::repository::list_s3_repository_catalog;
 use crate::sync_config::model::{SyncSnapshot, SyncTarget};
 
 const CATALOG_UNAVAILABLE: &str =
@@ -24,67 +23,63 @@ const CATALOG_UNAVAILABLE: &str =
 pub(crate) struct RemoteNotebookCatalogEntry {
     pub(crate) available: bool,
     pub(crate) disabled_reason: Option<String>,
+    pub(crate) display_name: String,
     pub(crate) name: String,
+    pub(crate) provider: RemoteNotebookProvider,
+    pub(crate) repository_id: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum RemoteNotebookProvider {
+    S3,
+    Webdav,
 }
 
 pub(crate) async fn list_remote_notebooks(
     snapshot: SyncSnapshot,
 ) -> Result<Vec<RemoteNotebookCatalogEntry>, String> {
-    let names = match snapshot.target {
-        SyncTarget::S3 {
-            access_key_id,
-            addressing_style,
-            bucket,
-            endpoint_url,
-            region,
-            remote_root,
-            request_timeout_seconds,
-            secret_access_key,
-            tls_verification,
-        } => {
-            let notes_prefix = ValidRemoteRoot::parse(&remote_root)
-                .map(|root| root.notes_prefix())
-                .map_err(|_| CATALOG_UNAVAILABLE.to_string())?;
-            let backend = S3Backend::new_at_validated_prefix_with_transport(
-                S3SyncSettings {
-                    access_key_id,
-                    bucket,
-                    endpoint_url,
-                    region,
-                    remote_path: notes_prefix,
-                    secret_access_key,
-                },
-                S3TransportOptions {
-                    addressing_style,
-                    request_timeout_seconds,
-                    tls_verification,
-                },
-            )
-            .map_err(|_| CATALOG_UNAVAILABLE.to_string())?
-            .with_diagnostic_context(SyncDiagnosticContext::new(create_sync_run_id(), "catalog"));
-            backend
-                .list_notebook_names()
+    match snapshot.target.clone() {
+        SyncTarget::S3 { .. } => {
+            let catalog = list_s3_repository_catalog(snapshot)
                 .await
-                .map_err(|_| CATALOG_UNAVAILABLE.to_string())?
+                .map_err(|_| CATALOG_UNAVAILABLE.to_string())?;
+            Ok(catalog
+                .entries
+                .into_iter()
+                .map(|entry| RemoteNotebookCatalogEntry {
+                    available: true,
+                    disabled_reason: None,
+                    display_name: entry.display_name.clone(),
+                    name: entry.display_name,
+                    provider: RemoteNotebookProvider::S3,
+                    repository_id: Some(entry.repository_id),
+                })
+                .collect())
         }
         SyncTarget::Webdav {
             password,
             remote_root,
             server_url,
             username,
-        } => list_webdav_notebook_names(server_url, remote_root, username, password).await?,
-    };
-
-    Ok(names.into_iter().filter_map(catalog_entry).collect())
+        } => {
+            let names =
+                list_webdav_notebook_names(server_url, remote_root, username, password).await?;
+            Ok(names.into_iter().filter_map(webdav_catalog_entry).collect())
+        }
+    }
 }
 
-fn catalog_entry(name: String) -> Option<RemoteNotebookCatalogEntry> {
+fn webdav_catalog_entry(name: String) -> Option<RemoteNotebookCatalogEntry> {
     let name = crate::notebook_scope::validate_notebook_name(&name).ok()?;
     let available = notebook_name_available_on_current_platform(&name);
     Some(RemoteNotebookCatalogEntry {
         available,
         disabled_reason: (!available).then(|| "notebook-name-unavailable".to_string()),
+        display_name: name.clone(),
         name,
+        provider: RemoteNotebookProvider::Webdav,
+        repository_id: None,
     })
 }
 
@@ -198,7 +193,7 @@ mod tests {
 
     use crate::sync_config::model::{SyncConfig, SyncProvider, SyncSnapshot, SyncTarget};
 
-    use super::list_remote_notebooks;
+    use super::{list_remote_notebooks, RemoteNotebookProvider};
 
     fn webdav_snapshot(server_url: String) -> SyncSnapshot {
         let mut config = SyncConfig {
@@ -328,6 +323,11 @@ mod tests {
                 .collect::<Vec<_>>(),
             expected_names
         );
+        assert!(entries.iter().all(|entry| {
+            entry.provider == RemoteNotebookProvider::Webdav
+                && entry.repository_id.is_none()
+                && entry.display_name == entry.name
+        }));
         assert!(
             entries
                 .iter()

@@ -15,9 +15,10 @@ import {
 } from "../runtime";
 
 function validRequest(
-  overrides: Partial<PrimaryCloudNotebookRestoreRequest> = {}
+  overrides: Partial<Extract<PrimaryCloudNotebookRestoreRequest, { provider: "webdav" }>> = {}
 ): PrimaryCloudNotebookRestoreRequest {
   return {
+    provider: "webdav",
     remoteName: "Archive",
     requestId: "request-1",
     revision: "rev-2",
@@ -61,6 +62,7 @@ describe("primary cloud notebook restore requests", () => {
     const bus = createEventBus();
     configureAppRuntime({ ...getAppRuntime(), events: bus.events });
     const pending = requestPrimaryCloudNotebookRestore({
+      provider: "webdav",
       remoteName: "Archive",
       revision: "rev-2",
       timeoutMs: 1_000
@@ -137,6 +139,7 @@ describe("primary cloud notebook restore requests", () => {
 
   it("settles false when no primary owner responds before the supplied timeout", async () => {
     await expect(requestPrimaryCloudNotebookRestore({
+      provider: "webdav",
       remoteName: "Archive",
       revision: "rev-2",
       timeoutMs: 1
@@ -148,6 +151,7 @@ describe("primary cloud notebook restore requests", () => {
     configureAppRuntime({ ...getAppRuntime(), events: bus.events });
     const abortController = new AbortController();
     const pending = requestPrimaryCloudNotebookRestore({
+      provider: "webdav",
       remoteName: "Archive",
       revision: "rev-2",
       signal: abortController.signal,
@@ -171,11 +175,36 @@ describe("primary cloud notebook restore requests", () => {
     });
 
     await expect(requestPrimaryCloudNotebookRestore({
+      provider: "webdav",
       remoteName: "Archive",
       revision: "rev-2",
       timeoutMs: 1_000
     })).resolves.toBe(false);
 
     expect(bus.listenerCount(primaryCloudNotebookRestoreCompletedEvent)).toBe(0);
+  });
+
+  it("delivers an S3 repository identity and local root without converting either to a name", async () => {
+    const bus = createEventBus();
+    configureAppRuntime({ ...getAppRuntime(), events: bus.events });
+    const handler = vi.fn(async () => true);
+    await listenPrimaryCloudNotebookRestoreRequested(handler);
+
+    const pending = requestPrimaryCloudNotebookRestore({
+      displayName: "Shared notes",
+      notesRoot: "/Workspace/Current",
+      provider: "s3",
+      repositoryId: "00000000-0000-4000-8000-000000000051",
+      revision: "rev-2",
+      timeoutMs: 1_000
+    });
+
+    await expect(pending).resolves.toBe(true);
+    expect(handler).toHaveBeenCalledWith(expect.objectContaining({
+      displayName: "Shared notes",
+      notesRoot: "/Workspace/Current",
+      provider: "s3",
+      repositoryId: "00000000-0000-4000-8000-000000000051"
+    }));
   });
 });

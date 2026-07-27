@@ -7,7 +7,14 @@ function remoteEntry(
   available = true,
   disabledReason: string | null = null
 ): RemoteNotebookCatalogEntry {
-  return { available, disabledReason, name };
+  return {
+    available,
+    disabledReason,
+    displayName: name,
+    name,
+    provider: "webdav",
+    repositoryId: null
+  };
 }
 
 const defaultProps = {
@@ -17,7 +24,7 @@ const defaultProps = {
   onCancel: vi.fn(),
   onCreate: vi.fn(async (_name: string) => undefined),
   onRefresh: vi.fn(async () => undefined),
-  onRestore: vi.fn(async (_name: string) => undefined),
+  onRestore: vi.fn(async (_entry: RemoteNotebookCatalogEntry) => undefined),
   onSwitch: vi.fn(async (_name: string) => undefined),
   remoteEntries: [remoteEntry("云端札记")]
 };
@@ -92,7 +99,7 @@ describe("MobileNotebookDialog", () => {
   });
 
   it("restores one enabled remote child into the managed workspace and warns before same-name merge", async () => {
-    const onRestore = vi.fn(async (_name: string) => undefined);
+    const onRestore = vi.fn(async (_entry: RemoteNotebookCatalogEntry) => undefined);
     render(
       <MobileNotebookDialog
         {...defaultProps}
@@ -116,9 +123,9 @@ describe("MobileNotebookDialog", () => {
     expect(screen.getByText(/already exists.*merge|same-name.*merge/iu)).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: /^restore$/iu }));
 
-    await waitFor(() => expect(onRestore).toHaveBeenCalledWith("云端札记"));
+    await waitFor(() => expect(onRestore).toHaveBeenCalledWith(remoteEntry("云端札记")));
     expect(onRestore).toHaveBeenCalledTimes(1);
-    expect(onRestore).not.toHaveBeenCalledWith("Archive");
+    expect(onRestore).not.toHaveBeenCalledWith(remoteEntry("Archive"));
   });
 
   it("provides explicit loading, empty, retry, and Escape dismissal states", async () => {

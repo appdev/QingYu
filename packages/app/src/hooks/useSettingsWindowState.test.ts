@@ -97,7 +97,10 @@ function installRuntime(primaryRoot: string | null, patchOverride?: AppRuntime["
   const listNotebooks = vi.fn(async () => [{
     available: true,
     disabledReason: null,
-    name: "Archive"
+    displayName: "Archive",
+    name: "Archive",
+    provider: "webdav" as const,
+    repositoryId: null
   }]);
   configureAppRuntime({
     ...defaultRuntime,
@@ -258,7 +261,10 @@ describe("settings application sync session", () => {
     expect(result.current.remoteNotebookDialog.entries).toEqual([{
       available: true,
       disabledReason: null,
-      name: "Archive"
+      displayName: "Archive",
+      name: "Archive",
+      provider: "webdav",
+      repositoryId: null
     }]);
     expect(runtime.hideSettingsWindow).not.toHaveBeenCalled();
   });
@@ -336,7 +342,10 @@ describe("settings application sync session", () => {
     expect(result.current.remoteNotebookDialog.entries).toEqual([{
       available: true,
       disabledReason: null,
-      name: "Archive"
+      displayName: "Archive",
+      name: "Archive",
+      provider: "webdav",
+      repositoryId: null
     }]);
 
     await act(async () => runtime.hide({ generation: 14 }));
@@ -428,7 +437,14 @@ describe("settings application sync session", () => {
     await waitFor(() => expect(result.current.syncView.configDocument?.revision).toBe("rev-1"));
     await act(async () => result.current.handleSelectCloudNotebook());
     mockedRequestPrimaryCloudNotebookRestore.mockResolvedValueOnce(true);
-    await act(async () => result.current.remoteNotebookDialog.restore("Archive"));
+    await act(async () => result.current.remoteNotebookDialog.restore({
+      available: true,
+      disabledReason: null,
+      displayName: "Archive",
+      name: "Archive",
+      provider: "webdav",
+      repositoryId: null
+    }));
 
     await act(async () => result.current.setActiveCategory("appearance"));
     await act(async () => result.current.primaryWorkspace.commitDesktopRoot("/Restored/Archive"));

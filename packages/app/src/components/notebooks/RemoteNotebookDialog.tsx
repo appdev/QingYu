@@ -21,8 +21,14 @@ export type RemoteNotebookDialogProps = {
   loading: boolean;
   onCancel: () => unknown;
   onRefresh: () => Promise<unknown>;
-  onRestore: (name: string) => Promise<unknown>;
+  onRestore: (entry: RemoteNotebookCatalogEntry) => Promise<unknown>;
 };
+
+function catalogEntryKey(entry: RemoteNotebookCatalogEntry) {
+  return entry.provider === "s3"
+    ? `s3:${entry.repositoryId}`
+    : `webdav:${entry.name}`;
+}
 
 export function RemoteNotebookDialog({
   allowCurrentNotebookSelection = false,
@@ -40,14 +46,14 @@ export function RemoteNotebookDialog({
   const mountedRef = useRef(true);
   const operationGenerationRef = useRef(0);
   const previousFocusRef = useRef<HTMLElement | null>(null);
-  const [selectedName, setSelectedName] = useState<string | null>(null);
+  const [selectedEntryKey, setSelectedEntryKey] = useState<string | null>(null);
   const [operationError, setOperationError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [restoring, setRestoring] = useState(false);
   const busy = loading || refreshing || restoring;
-  const selectedEntry = selectedName === null
+  const selectedEntry = selectedEntryKey === null
     ? null
-    : entries.find((catalogEntry) => catalogEntry.name === selectedName) ?? null;
+    : entries.find((catalogEntry) => catalogEntryKey(catalogEntry) === selectedEntryKey) ?? null;
   const selectedCurrentNotebook = selectedEntry?.name === currentNotebookName;
   const isSelectedRestorable = selectedEntry?.available === true && (
     allowCurrentNotebookSelection || !selectedCurrentNotebook
@@ -67,9 +73,9 @@ export function RemoteNotebookDialog({
   }, []);
 
   useEffect(() => {
-    if (selectedName === null) return;
-    if (!isSelectedRestorable) setSelectedName(null);
-  }, [isSelectedRestorable, selectedName]);
+    if (selectedEntryKey === null) return;
+    if (!isSelectedRestorable) setSelectedEntryKey(null);
+  }, [isSelectedRestorable, selectedEntryKey]);
 
   const refresh = async () => {
     if (busy) return;
@@ -97,7 +103,7 @@ export function RemoteNotebookDialog({
     setOperationError(null);
     setRestoring(true);
     try {
-      await onRestore(selectedEntry.name);
+      await onRestore(selectedEntry);
     } catch {
       if (mountedRef.current && operationGenerationRef.current === operationGeneration) {
         setOperationError(label("notebooks.remote.restoreError"));
@@ -161,22 +167,23 @@ export function RemoteNotebookDialog({
               <legend className="sr-only">{label("notebooks.remote.listLabel")}</legend>
               {entries.map((catalogEntry) => {
                 const currentNotebook = catalogEntry.name === currentNotebookName;
+                const entryKey = catalogEntryKey(catalogEntry);
                 return (
                   <label
                     className="grid min-h-11 cursor-pointer grid-cols-[auto_minmax(0,1fr)] items-start gap-x-3 rounded-md border border-transparent px-3 py-2 text-[13px] text-(--text-heading) hover:bg-(--bg-hover) active:bg-(--bg-active) has-[:checked]:border-(--border-default) has-[:checked]:bg-(--bg-active) has-[:disabled]:cursor-default has-[:disabled]:opacity-60"
-                    key={catalogEntry.name}
+                    key={entryKey}
                   >
                     <input
                       aria-label={catalogEntry.name}
-                      checked={selectedName === catalogEntry.name}
+                      checked={selectedEntryKey === entryKey}
                       className="mt-1 accent-(--accent) focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-(--accent)"
                       disabled={busy || !catalogEntry.available || (
                         currentNotebook && !allowCurrentNotebookSelection
                       )}
                       name="remote-notebook"
                       type="radio"
-                      value={catalogEntry.name}
-                      onChange={() => setSelectedName(catalogEntry.name)}
+                      value={entryKey}
+                      onChange={() => setSelectedEntryKey(entryKey)}
                     />
                     <span className="min-w-0 overflow-wrap-anywhere font-[620]">
                       {catalogEntry.name}

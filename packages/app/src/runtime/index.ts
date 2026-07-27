@@ -671,6 +671,7 @@ export function createDefaultAppRuntime(): AppRuntime {
     },
     settings: createMemorySettingsRuntime(),
     syncConfig: {
+      bindRepository: () => unsupportedFeature("bindDejavuRepository"),
       cancelApply: async (input) => {
         if (!syncPendingApply) {
           throw new Error("sync-apply-unavailable: The sync settings apply is unavailable.");

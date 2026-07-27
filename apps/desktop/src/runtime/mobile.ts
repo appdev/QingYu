@@ -106,6 +106,7 @@ export const mobileRuntime = {
     releaseActivation: themes.releaseNativeThemeActivation
   },
   syncConfig: {
+    bindRepository: syncConfig.bindNativeDejavuRepository,
     cancelApply: syncConfig.cancelNativeSyncConfigApply,
     changeGlobalKey: syncConfig.changeNativeDejavuGlobalKey,
     deleteRemoteRepository: syncConfig.deleteNativeDejavuRemoteRepository,

@@ -251,11 +251,22 @@ export type SyncConnectionTestResult = {
   provider: SyncProvider;
 };
 
-export type RemoteNotebookCatalogEntry = {
+type RemoteNotebookCatalogEntryBase = {
   available: boolean;
   disabledReason: string | null;
+  displayName: string;
   name: string;
 };
+
+export type RemoteNotebookCatalogEntry =
+  | RemoteNotebookCatalogEntryBase & {
+      provider: "s3";
+      repositoryId: string;
+    }
+  | RemoteNotebookCatalogEntryBase & {
+      provider: "webdav";
+      repositoryId: null;
+    };
 
 export type AcceptedSyncJob = {
   jobId: string;
@@ -332,6 +343,11 @@ export type DejavuRepositoryStatus = {
 };
 
 export type AppSyncConfigRuntime = {
+  bindRepository(input: {
+    displayName: string;
+    notesRoot: string;
+    repositoryId: string;
+  }): Promise<AcceptedSyncJob>;
   cancelApply(input: SyncApplyIdentity): Promise<SyncApplyWriteResult>;
   changeGlobalKey(input: { confirmed: true; newKey: string }): Promise<AcceptedMaintenanceJob>;
   deleteRemoteRepository(input: {

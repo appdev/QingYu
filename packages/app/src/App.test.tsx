@@ -125,6 +125,17 @@ installAppTestHarness();
 // Vitest shards files only, so CI needs a local registration boundary to split this monolithic suite by test title.
 const it = createShardedTest(registerTest, process.env.MARKRA_APP_TEST_SHARD);
 
+function webdavEntry(name: string): RemoteNotebookCatalogEntry {
+  return {
+    available: true,
+    disabledReason: null,
+    displayName: name,
+    name,
+    provider: "webdav",
+    repositoryId: null
+  };
+}
+
 function mockNotebookSwitchRouting() {
   const switchDesktopNotebook = vi.fn(async () => null);
   const spy = vi.spyOn(
@@ -1193,10 +1204,7 @@ describe("QingYu workspace", () => {
 
     mockedOpenSettingsWindow.mockClear();
     const readyRuntime = createDefaultAppRuntime();
-    const listNotebooks = vi.fn(async () => [
-      { available: true, disabledReason: null, name: "Cloud Notes" },
-      { available: true, disabledReason: null, name: "随笔" }
-    ]);
+    const listNotebooks = vi.fn(async () => [webdavEntry("Cloud Notes"), webdavEntry("随笔")]);
     mockDesktopPrimaryWorkspace({ root: null, status: "needs-onboarding" });
     configureAppRuntime({
       ...readyRuntime,
@@ -1243,9 +1251,7 @@ describe("QingYu workspace", () => {
       switching: false
     });
     const runtime = createDefaultAppRuntime();
-    const listNotebooks = vi.fn(async () => [
-      { available: true, disabledReason: null, name: "Cloud Notes" }
-    ]);
+    const listNotebooks = vi.fn(async () => [webdavEntry("Cloud Notes")]);
     const controller = mockDesktopPrimaryWorkspace({ root: null, status: "needs-onboarding" });
     configureAppRuntime({
       ...runtime,
@@ -1316,6 +1322,7 @@ describe("QingYu workspace", () => {
     ));
 
     const restoring = requestPrimaryCloudNotebookRestore({
+      provider: "webdav",
       remoteName: "B",
       revision: "established-catalog-revision",
       timeoutMs: 1_000
@@ -1327,6 +1334,51 @@ describe("QingYu workspace", () => {
     expect(screen.queryByRole("dialog", { name: "Restore notebook from cloud" }))
       .not.toBeInTheDocument();
     coordinatorSpy.mockRestore();
+  });
+
+  it("accepts a settings-owned S3 repository binding without waiting for sync completion", async () => {
+    const runtime = createDefaultAppRuntime();
+    const load = vi.fn(async () => readySyncConfigResult("established-catalog-revision"));
+    const bindRepository = vi.fn(async () => ({
+      jobId: "00000000-0000-4000-8000-000000000052",
+      notesRoot: "/Workspace/A",
+      repositoryId: "00000000-0000-4000-8000-000000000051"
+    }));
+    mockDesktopPrimaryWorkspace({ root: "/Workspace/A", status: "ready" });
+    mockedLoadNativeMarkdownFilesForPath.mockResolvedValue([]);
+    configureAppRuntime({
+      ...runtime,
+      syncConfig: {
+        ...runtime.syncConfig,
+        bindRepository,
+        load
+      }
+    });
+    const listenObserved = configureNotebookSwitchEventBus();
+
+    renderApp();
+    await waitFor(() => expect(load).toHaveBeenCalled());
+    await waitFor(() => expect(listenObserved).toHaveBeenCalledWith(
+      primaryCloudNotebookRestoreRequestedEvent,
+      expect.any(Function)
+    ));
+
+    await expect(requestPrimaryCloudNotebookRestore({
+      displayName: "Shared notes",
+      notesRoot: "/Workspace/A",
+      provider: "s3",
+      repositoryId: "00000000-0000-4000-8000-000000000051",
+      revision: "established-catalog-revision",
+      timeoutMs: 1_000
+    })).resolves.toBe(true);
+
+    expect(bindRepository).toHaveBeenCalledWith({
+      displayName: "Shared notes",
+      notesRoot: "/Workspace/A",
+      repositoryId: "00000000-0000-4000-8000-000000000051"
+    });
+    expect(screen.queryByRole("dialog", { name: "Restore notebook from cloud" }))
+      .not.toBeInTheDocument();
   });
 
   it("runs current-notebook synchronization for a same-name settings selection", async () => {
@@ -1391,6 +1443,7 @@ describe("QingYu workspace", () => {
     ));
 
     const selectingCurrent = requestPrimaryCloudNotebookRestore({
+      provider: "webdav",
       remoteName: "A",
       revision: "established-catalog-revision",
       timeoutMs: 1_000
@@ -1442,6 +1495,7 @@ describe("QingYu workspace", () => {
     ));
 
     const selectingStale = requestPrimaryCloudNotebookRestore({
+      provider: "webdav",
       remoteName: "B",
       revision: "stale-revision",
       timeoutMs: 1_000
@@ -1492,6 +1546,7 @@ describe("QingYu workspace", () => {
     ));
 
     const restoring = requestPrimaryCloudNotebookRestore({
+      provider: "webdav",
       remoteName: "B",
       revision: "established-catalog-revision",
       timeoutMs: 1_000
@@ -1576,6 +1631,7 @@ describe("QingYu workspace", () => {
       primaryCloudNotebookRestoreCompletedEvent
     );
     await expect(requestPrimaryCloudNotebookRestore({
+      provider: "webdav",
       remoteName: "B",
       revision: "stable-listener-revision-a",
       timeoutMs: 1_000
@@ -1584,6 +1640,7 @@ describe("QingYu workspace", () => {
       primaryCloudNotebookRestoreCompletedEvent
     )).toBe(completionCountBeforeRequests + 1);
     await expect(requestPrimaryCloudNotebookRestore({
+      provider: "webdav",
       remoteName: "B",
       revision: "stable-listener-revision-b",
       timeoutMs: 1_000
@@ -1644,6 +1701,7 @@ describe("QingYu workspace", () => {
       primaryCloudNotebookRestoreCompletedEvent
     );
     const restartResult = await requestPrimaryCloudNotebookRestore({
+      provider: "webdav",
       remoteName: "B",
       revision: "strict-listener-revision",
       timeoutMs: 1_000
@@ -1667,6 +1725,7 @@ describe("QingYu workspace", () => {
       primaryCloudNotebookRestoreCompletedEvent
     );
     await expect(requestPrimaryCloudNotebookRestore({
+      provider: "webdav",
       remoteName: "B",
       revision: "strict-listener-revision",
       timeoutMs: 1_000
@@ -1715,6 +1774,7 @@ describe("QingYu workspace", () => {
     )).toBe(1));
 
     await expect(requestPrimaryCloudNotebookRestore({
+      provider: "webdav",
       remoteName: "B",
       revision: "unmount-listener-revision",
       timeoutMs: 1_000
@@ -1731,6 +1791,7 @@ describe("QingYu workspace", () => {
       primaryCloudNotebookRestoreCompletedEvent
     );
     await expect(requestPrimaryCloudNotebookRestore({
+      provider: "webdav",
       remoteName: "B",
       revision: "unmount-listener-revision",
       timeoutMs: 1_000
@@ -1829,9 +1890,7 @@ describe("QingYu workspace", () => {
       };
     });
     const load = vi.fn(() => configPromise);
-    const listNotebooks = vi.fn(async () => [
-      { available: true, disabledReason: null, name: "Fresh notebook" }
-    ]);
+    const listNotebooks = vi.fn(async () => [webdavEntry("Fresh notebook")]);
     mockDesktopPrimaryWorkspace({ root: null, status: "needs-onboarding" });
     configureAppRuntime({
       ...runtime,
@@ -1884,9 +1943,7 @@ describe("QingYu workspace", () => {
       name: "Restore notebook from cloud"
     })).not.toBeInTheDocument());
 
-    await act(async () => resolveCatalog([
-      { available: true, disabledReason: null, name: "Stale notebook" }
-    ]));
+    await act(async () => resolveCatalog([webdavEntry("Stale notebook")]));
     expect(screen.queryByText("Stale notebook")).not.toBeInTheDocument();
   });
 
@@ -1907,9 +1964,7 @@ describe("QingYu workspace", () => {
     });
     const runtime = createDefaultAppRuntime();
     const listManagedNotebookNames = vi.fn(async () => ["Archive", "随笔"]);
-    const listNotebooks = vi.fn(async () => [
-      { available: true, disabledReason: null, name: "Cloud Mobile" }
-    ]);
+    const listNotebooks = vi.fn(async () => [webdavEntry("Cloud Mobile")]);
     const openMarkdownFolder = vi.fn(async () => ({ name: "Forbidden", path: "/Forbidden" }));
     mockCompactViewport(false);
     mockedLoadPrimaryWorkspaceState.mockResolvedValue({
@@ -1979,9 +2034,7 @@ describe("QingYu workspace", () => {
 
   it("lists cloud notebooks on true mobile when the complete sync config is disabled", async () => {
     const runtime = createDefaultAppRuntime();
-    const listNotebooks = vi.fn(async () => [
-      { available: true, disabledReason: null, name: "Cloud Mobile" }
-    ]);
+    const listNotebooks = vi.fn(async () => [webdavEntry("Cloud Mobile")]);
     mockCompactViewport(false);
     mockedLoadPrimaryWorkspaceState.mockResolvedValue({
       desktopWorkspaceRoot: null,
@@ -2061,9 +2114,7 @@ describe("QingYu workspace", () => {
       name: "Switch notebook"
     })).not.toBeInTheDocument());
 
-    await act(async () => resolveCatalog([
-      { available: true, disabledReason: null, name: "Stale mobile notebook" }
-    ]));
+    await act(async () => resolveCatalog([webdavEntry("Stale mobile notebook")]));
     expect(screen.queryByText("Stale mobile notebook")).not.toBeInTheDocument();
   });
 

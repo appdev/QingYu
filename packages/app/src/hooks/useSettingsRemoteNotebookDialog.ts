@@ -15,7 +15,7 @@ export type SettingsRemoteNotebookDialogController = {
   cancel: () => unknown;
   refresh: () => Promise<unknown>;
   resumeSync: () => Promise<unknown>;
-  restore: (remoteName: string) => Promise<unknown>;
+  restore: (entry: RemoteNotebookCatalogEntry) => Promise<unknown>;
 };
 
 export type UseSettingsRemoteNotebookDialogInput = {
@@ -38,6 +38,8 @@ export function useSettingsRemoteNotebookDialog({
   const currentNotebookName = primaryRoot ? pathNameFromPath(primaryRoot) : null;
   const currentNotebookNameRef = useRef(currentNotebookName);
   currentNotebookNameRef.current = currentNotebookName;
+  const primaryRootRef = useRef(primaryRoot);
+  primaryRootRef.current = primaryRoot;
   const mountedRef = useRef(true);
   const openRef = useRef(false);
   const openPromiseRef = useRef<Promise<unknown> | null>(null);
@@ -200,33 +202,47 @@ export function useSettingsRemoteNotebookDialog({
     await loadCatalog(generation);
   }, [invalidateTransaction, loadCatalog]);
 
-  const restore = useCallback(async (remoteName: string) => {
+  const restore = useCallback(async (entry: RemoteNotebookCatalogEntry) => {
     const revision = revisionRef.current;
     if (!revision) throw new Error("Cloud notebook restore failed");
+    const notesRoot = primaryRootRef.current;
+    if (entry.provider === "s3" && !notesRoot) {
+      throw new Error("Cloud notebook restore failed");
+    }
 
     const generation = invalidateTransaction();
     const abortController = new AbortController();
     restoreAbortControllerRef.current = abortController;
     try {
-      const succeeded = await requestPrimaryCloudNotebookRestore({
-        remoteName,
-        revision,
-        signal: abortController.signal
-      });
+      const succeeded = await requestPrimaryCloudNotebookRestore(entry.provider === "s3"
+        ? {
+            displayName: entry.displayName,
+            notesRoot: notesRoot!,
+            provider: "s3",
+            repositoryId: entry.repositoryId,
+            revision,
+            signal: abortController.signal
+          }
+        : {
+            provider: "webdav",
+            remoteName: entry.name,
+            revision,
+            signal: abortController.signal
+          });
       if (!succeeded) throw new Error("Cloud notebook restore failed");
       if (!mountedRef.current || transactionGenerationRef.current !== generation) return;
 
       openRef.current = false;
       setLoading(false);
       setOpen(false);
-      if (currentNotebookNameRef.current === remoteName) {
+      if (entry.provider === "s3" || currentNotebookNameRef.current === entry.name) {
         sessionEndedForDialogRef.current = false;
         const restarted = await restartSession();
         if (!restarted && transactionGenerationRef.current === generation) {
           sessionEndedForDialogRef.current = true;
         }
       } else {
-        resumeWaiterRef.current = { generation, remoteName };
+        resumeWaiterRef.current = { generation, remoteName: entry.name };
       }
     } finally {
       if (restoreAbortControllerRef.current === abortController) {

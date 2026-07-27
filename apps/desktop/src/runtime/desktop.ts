@@ -172,6 +172,7 @@ export const desktopRuntime = {
     writeGroup: settings.writeNativeAppSettingsGroup
   },
   syncConfig: {
+    bindRepository: syncConfig.bindNativeDejavuRepository,
     cancelApply: syncConfig.cancelNativeSyncConfigApply,
     changeGlobalKey: syncConfig.changeNativeDejavuGlobalKey,
     deleteRemoteRepository: syncConfig.deleteNativeDejavuRemoteRepository,

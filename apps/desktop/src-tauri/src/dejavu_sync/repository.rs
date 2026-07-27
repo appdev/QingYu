@@ -10,9 +10,9 @@ use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use cap_fs_ext::DirExt;
 use qingyu_dejavu::{
-    Cloud, CloudError, Device, Repo, RepoError, RepoOptions, RepoPaths, RepositoryMetadata,
-    S3AddressingStyle, S3Cloud, S3Connection, S3RepositoryCatalog, S3TlsVerification,
-    S3TransportOptions, WorkingTreeCoordinator,
+    Cloud, CloudError, Device, Repo, RepoError, RepoOptions, RepoPaths, RepositoryCatalogList,
+    RepositoryMetadata, S3AddressingStyle, S3Cloud, S3Connection, S3RepositoryCatalog,
+    S3TlsVerification, S3TransportOptions, WorkingTreeCoordinator,
 };
 
 use super::conflicts::SyncConflictRecord;
@@ -30,7 +30,7 @@ use crate::storage_capability::{
 };
 use crate::sync_config::model::{
     S3AddressingStyle as ConfigAddressingStyle, S3TlsVerification as ConfigTlsVerification,
-    SyncTarget,
+    SyncSnapshot, SyncTarget,
 };
 use crate::sync_config::ready_snapshot_at_app_data;
 use crate::sync_config::storage::open_app_data;
@@ -76,6 +76,15 @@ impl RepositoryCatalogValidator for S3RepositoryCatalogValidator {
             catalog.read(repository_id).await.map_err(map_catalog_error)
         })
     }
+}
+
+pub(crate) async fn list_s3_repository_catalog(
+    snapshot: SyncSnapshot,
+) -> Result<RepositoryCatalogList, RepositoryJobError> {
+    let parameters = repository_cloud_parameters(snapshot.target, String::new())?;
+    let (connection, options) = s3_transport(&parameters)?;
+    let catalog = S3RepositoryCatalog::new(connection, options).map_err(map_catalog_error)?;
+    catalog.list().await.map_err(map_catalog_error)
 }
 
 #[allow(dead_code)]
