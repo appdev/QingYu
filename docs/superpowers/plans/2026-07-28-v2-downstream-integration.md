@@ -78,7 +78,7 @@ git commit -m "docs: define V2 downstream integration"
 - [ ] **Step 2: Create the upstream-main ancestry bridge without changing the tree**
 
 ```bash
-git merge -s ours upstream/main -m "chore: bridge QingYu downstream to upstream main"
+git merge -s ours upstream/main --allow-unrelated-histories -m "chore: bridge QingYu downstream to upstream main"
 ```
 
 - [ ] **Step 3: Start the V2 merge**
