@@ -384,6 +384,8 @@ pub(crate) fn run() {
             crate::dejavu_sync::commands::change_global_key,
             crate::dejavu_sync::commands::purge_remote_repository,
             crate::dejavu_sync::commands::delete_remote_repository,
+            crate::dejavu_sync::commands::list_dejavu_conflicts,
+            crate::dejavu_sync::commands::read_dejavu_conflict,
             crate::workspace_membership::is_document_in_workspace,
             crate::web_http::download_web_image,
             crate::markdown_files::document::write_markdown_file,

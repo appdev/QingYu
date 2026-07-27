@@ -1,4 +1,5 @@
 pub(crate) mod commands;
+pub(crate) mod conflicts;
 pub(crate) mod lifecycle;
 pub(crate) mod local_state;
 pub(crate) mod maintenance;
@@ -14,6 +15,7 @@ use tauri::Manager;
 use time::OffsetDateTime;
 
 use self::commands::{DejavuSchedulerOwner, DejavuSyncServiceOwner};
+use self::conflicts::ConflictStore;
 use self::lifecycle::RepositoryLifecycleController;
 use self::local_state::LocalSyncStateService;
 use self::maintenance::{
@@ -75,6 +77,7 @@ pub(crate) fn install_production_graph(app: &tauri::AppHandle) -> Result<(), Rep
     let service_owner = app.state::<DejavuSyncServiceOwner>();
     service_owner.install(service.clone())?;
     service_owner.install_maintenance(Arc::clone(&maintenance))?;
+    service_owner.install_conflicts(ConflictStore::new(&app_data))?;
     service_owner.install_binding(
         &app_data,
         Arc::new(S3RepositoryCatalogValidator::new(&app_data)),

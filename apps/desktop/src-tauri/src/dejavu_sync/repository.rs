@@ -15,13 +15,14 @@ use qingyu_dejavu::{
     S3TransportOptions, WorkingTreeCoordinator,
 };
 
+use super::conflicts::SyncConflictRecord;
 use super::local_state::LocalSyncStateService;
 use super::maintenance::LocalPurgeRepositoryOps;
 use super::service::{
     RepositoryJobError, RepositoryJobRunner, RepositorySyncResult, SyncAttemptContext,
     SyncJobRequest,
 };
-use super::status::{RepositoryConflictRecord, RepositoryTransferSummary};
+use super::status::RepositoryTransferSummary;
 use crate::storage_capability::{
     create_private_file_options, directory_identity, nonfollowing_read_options,
     open_canonical_directory_nofollow, sync_directory, unique_regular_file_identity,
@@ -377,6 +378,7 @@ impl DejavuRepositoryRunner {
         let conflicts = merge
             .conflicts
             .into_iter()
+            .filter(|file| file.path != "/.qingyu/syncignore")
             .map(|file| {
                 let relative_path = file
                     .path
@@ -385,9 +387,12 @@ impl DejavuRepositoryRunner {
                     .to_owned();
                 qingyu_dejavu::RepositoryRelativePath::new(relative_path.clone())
                     .map_err(|_| RepositoryJobError::RepositoryUnavailable)?;
-                Ok(RepositoryConflictRecord {
+                Ok(SyncConflictRecord {
+                    conflict_id: uuid::Uuid::new_v4().to_string(),
+                    repository_id: request.repository_id.clone(),
                     relative_path,
                     occurred_at: occurred_at.clone(),
+                    resolution: None,
                 })
             })
             .collect::<Result<Vec<_>, RepositoryJobError>>()?;
@@ -1591,14 +1596,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(
-            result
-                .conflicts
-                .iter()
-                .map(|conflict| conflict.relative_path.as_str())
-                .collect::<Vec<_>>(),
-            [".qingyu/syncignore"]
-        );
+        assert!(result.conflicts.is_empty());
         assert_eq!(
             std::fs::read(target.notes_root.join("remote.md")).unwrap(),
             b"remote"
@@ -1621,14 +1619,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(
-            result
-                .conflicts
-                .iter()
-                .map(|conflict| conflict.relative_path.as_str())
-                .collect::<Vec<_>>(),
-            [".qingyu/syncignore"]
-        );
+        assert!(result.conflicts.is_empty());
         assert_eq!(
             std::fs::read(target.notes_root.join("remote.md")).unwrap(),
             b"remote"
@@ -1661,7 +1652,7 @@ mod tests {
                 .iter()
                 .map(|conflict| conflict.relative_path.as_str())
                 .collect::<Vec<_>>(),
-            [".qingyu/syncignore", "same.md"]
+            ["same.md"]
         );
         assert_eq!(
             std::fs::read(target.notes_root.join("same.md")).unwrap(),

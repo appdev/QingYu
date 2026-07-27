@@ -9,12 +9,11 @@ use std::sync::{Arc, Mutex, OnceLock};
 use serde::Serialize;
 use tokio::sync::{watch, Mutex as AsyncMutex, Notify, OwnedRwLockReadGuard, RwLock};
 
+use super::conflicts::SyncConflictRecord;
 use super::maintenance::{
     LocalMaintenanceOperation, LocalMaintenanceTransaction, LocalPurgeTaskFuture,
 };
-use super::status::{
-    RepositoryConflictRecord, RepositorySafeError, RepositorySyncStatus, RepositoryTransferSummary,
-};
+use super::status::{RepositorySafeError, RepositorySyncStatus, RepositoryTransferSummary};
 use crate::sync_config::status::{sync_status_timestamp, SyncTrigger};
 
 const MAX_WORKING_TREE_ATTEMPTS: u8 = 3;
@@ -95,7 +94,7 @@ impl AcceptedSyncJob {
 pub(crate) struct RepositorySyncResult {
     pub(crate) data_changed: bool,
     pub(crate) transfer: RepositoryTransferSummary,
-    pub(crate) conflicts: Vec<RepositoryConflictRecord>,
+    pub(crate) conflicts: Vec<SyncConflictRecord>,
 }
 
 #[derive(Clone)]
@@ -138,6 +137,7 @@ pub(crate) struct SyncAttemptContext {
 pub(crate) enum RepositoryJobError {
     InvalidBinding,
     ConfirmationRequired,
+    ConflictUnavailable,
     WorkingTreeChanged,
     Cancelled,
     StatusUnavailable,
@@ -152,6 +152,7 @@ impl RepositoryJobError {
         match self {
             Self::InvalidBinding => "dejavu-invalid-binding",
             Self::ConfirmationRequired => "dejavu-confirmation-required",
+            Self::ConflictUnavailable => "dejavu-conflict-unavailable",
             Self::WorkingTreeChanged => "dejavu-working-tree-changed",
             Self::Cancelled => "dejavu-job-cancelled",
             Self::StatusUnavailable => "dejavu-status-unavailable",
@@ -986,13 +987,13 @@ mod tests {
         RepositoryJobRunner, RepositoryStatusSink, RepositorySyncResult, SyncAttemptContext,
         SyncJobRequest, MAX_FINALIZATION_ATTEMPTS,
     };
+    use crate::dejavu_sync::conflicts::SyncConflictRecord;
     use crate::dejavu_sync::maintenance::{
         LocalMaintenanceOperation, LocalMaintenanceTransaction, LocalPurgeOutcome,
     };
     use crate::dejavu_sync::status::{
-        load_repository_sync_status, RepositoryConflictRecord, RepositoryStatusEventEmitter,
-        RepositoryStatusStore, RepositorySyncPhase, RepositorySyncStatus,
-        RepositoryTransferSummary,
+        load_repository_sync_status, RepositoryStatusEventEmitter, RepositoryStatusStore,
+        RepositorySyncPhase, RepositorySyncStatus, RepositoryTransferSummary,
     };
     use crate::sync_config::status::SyncTrigger;
 
@@ -1704,9 +1705,12 @@ mod tests {
                     upload_chunks: 0,
                     upload_files: 0,
                 },
-                conflicts: vec![RepositoryConflictRecord {
+                conflicts: vec![SyncConflictRecord {
+                    conflict_id: "00000000-0000-4000-8000-000000000094".to_owned(),
+                    repository_id: repository_id.to_owned(),
                     relative_path: "conflicted.md".to_owned(),
                     occurred_at: "2026-07-26T10:00:00Z".to_owned(),
+                    resolution: None,
                 }],
             },
         ));

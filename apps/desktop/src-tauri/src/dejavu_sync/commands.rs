@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use qingyu_dejavu::RepositoryMetadata;
 use serde::Deserialize;
 
+use super::conflicts::{ConflictStore, ConflictVersions, SyncConflictRecord};
 use super::lifecycle::{
     AcceptedMaintenanceJob, RepositoryLifecycleController, RepositoryRootDeactivator,
 };
@@ -23,6 +24,7 @@ use tauri::{Manager, Runtime};
 pub(crate) struct DejavuSyncServiceOwner {
     service: OnceLock<DejavuSyncService>,
     binding: OnceLock<BindingController>,
+    conflicts: OnceLock<ConflictStore>,
     lifecycle: OnceLock<Arc<RepositoryLifecycleController>>,
     maintenance: OnceLock<Arc<LocalMaintenanceController>>,
 }
@@ -47,6 +49,13 @@ pub(crate) struct ConfirmedRepositoryRequest {
 pub(crate) struct ChangeGlobalKeyRequest {
     pub(crate) new_key: String,
     pub(crate) confirmed: bool,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct ReadConflictRequest {
+    pub(crate) repository_id: String,
+    pub(crate) conflict_id: String,
 }
 
 type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
@@ -311,6 +320,15 @@ impl DejavuSyncServiceOwner {
             .map_err(|_| RepositoryJobError::RepositoryUnavailable)
     }
 
+    pub(crate) fn install_conflicts(
+        &self,
+        conflicts: ConflictStore,
+    ) -> Result<(), RepositoryJobError> {
+        self.conflicts
+            .set(conflicts)
+            .map_err(|_| RepositoryJobError::RepositoryUnavailable)
+    }
+
     pub(crate) fn install_binding<Validator, Enqueuer>(
         &self,
         app_data: impl AsRef<Path>,
@@ -387,6 +405,27 @@ impl DejavuSyncServiceOwner {
             .get()
             .map(Arc::as_ref)
             .ok_or(RepositoryJobError::RepositoryUnavailable)
+    }
+
+    fn conflicts(&self) -> Result<&ConflictStore, RepositoryJobError> {
+        self.conflicts
+            .get()
+            .ok_or(RepositoryJobError::RepositoryUnavailable)
+    }
+
+    pub(crate) fn list_conflicts(
+        &self,
+        repository_id: &str,
+    ) -> Result<Vec<SyncConflictRecord>, RepositoryJobError> {
+        self.conflicts()?.list(repository_id)
+    }
+
+    pub(crate) fn read_conflict(
+        &self,
+        request: ReadConflictRequest,
+    ) -> Result<ConflictVersions, RepositoryJobError> {
+        self.conflicts()?
+            .read(&request.repository_id, &request.conflict_id)
     }
 
     pub(crate) fn rebuild_local_repository(
@@ -548,6 +587,26 @@ pub(crate) fn delete_remote_repository(
 ) -> Result<AcceptedMaintenanceJob, String> {
     owner
         .delete_remote_repository(request)
+        .map_err(|error| error.safe_code().to_owned())
+}
+
+#[tauri::command]
+pub(crate) fn list_dejavu_conflicts(
+    owner: tauri::State<'_, DejavuSyncServiceOwner>,
+    repository_id: String,
+) -> Result<Vec<SyncConflictRecord>, String> {
+    owner
+        .list_conflicts(&repository_id)
+        .map_err(|error| error.safe_code().to_owned())
+}
+
+#[tauri::command]
+pub(crate) fn read_dejavu_conflict(
+    owner: tauri::State<'_, DejavuSyncServiceOwner>,
+    request: ReadConflictRequest,
+) -> Result<ConflictVersions, String> {
+    owner
+        .read_conflict(request)
         .map_err(|error| error.safe_code().to_owned())
 }
 

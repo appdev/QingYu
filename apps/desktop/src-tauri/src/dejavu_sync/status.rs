@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use tauri::Emitter;
 use time::OffsetDateTime;
 
+use super::conflicts::{conflict_history_exists, SyncConflictRecord};
 use super::service::{
     RepositoryJobError, RepositoryStatusSink, RepositorySyncResult, SyncJobRequest,
 };
@@ -43,13 +44,6 @@ pub(crate) struct RepositoryTransferSummary {
     pub(crate) upload_bytes: u64,
     pub(crate) upload_chunks: u64,
     pub(crate) upload_files: u64,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct RepositoryConflictRecord {
-    pub(crate) relative_path: String,
-    pub(crate) occurred_at: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -105,7 +99,7 @@ pub(crate) struct RepositorySyncStatus {
     pub(crate) maintenance: RepositoryMaintenance,
     pub(crate) error: Option<RepositorySafeError>,
     pub(crate) transfer: RepositoryTransferSummary,
-    pub(crate) conflicts: Vec<RepositoryConflictRecord>,
+    pub(crate) conflicts: Vec<SyncConflictRecord>,
 }
 
 impl RepositorySyncStatus {
@@ -243,6 +237,17 @@ impl RepositoryStatusStore {
                 status.conflicts = previous.conflicts;
             } else if status.conflicts.is_empty() && status.phase == RepositorySyncPhase::Failed {
                 status.conflicts = previous.conflicts;
+            } else if status.phase == RepositorySyncPhase::Succeeded {
+                let mut unresolved = previous
+                    .conflicts
+                    .into_iter()
+                    .filter(|conflict| {
+                        conflict.resolution.is_none()
+                            && conflict_history_exists(&self.app_data, conflict)
+                    })
+                    .collect::<Vec<_>>();
+                unresolved.append(&mut status.conflicts);
+                status.conflicts = unresolved;
             }
         }
         self.persist_then_emit(status)
@@ -485,6 +490,13 @@ fn validate_status(status: &RepositorySyncStatus) -> Result<(), RepositoryJobErr
         return Err(RepositoryJobError::StatusUnavailable);
     }
     for conflict in &status.conflicts {
+        if uuid::Uuid::parse_str(&conflict.conflict_id)
+            .ok()
+            .is_none_or(|conflict_id| conflict_id.to_string() != conflict.conflict_id)
+            || conflict.repository_id != status.repository_id
+        {
+            return Err(RepositoryJobError::StatusUnavailable);
+        }
         RepositoryRelativePath::new(conflict.relative_path.clone())
             .map_err(|_| RepositoryJobError::StatusUnavailable)?;
         if conflict.occurred_at.is_empty() {
@@ -551,11 +563,11 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        load_repository_sync_status, RepositoryConflictRecord, RepositoryMaintenance,
-        RepositorySafeError, RepositorySchedule, RepositoryStatusEventEmitter,
-        RepositoryStatusStore, RepositorySyncPhase, RepositorySyncStatus,
-        RepositoryTransferSummary,
+        load_repository_sync_status, RepositoryMaintenance, RepositorySafeError,
+        RepositorySchedule, RepositoryStatusEventEmitter, RepositoryStatusStore,
+        RepositorySyncPhase, RepositorySyncStatus, RepositoryTransferSummary,
     };
+    use crate::dejavu_sync::conflicts::SyncConflictRecord;
     use crate::dejavu_sync::service::{
         RepositoryJobError, RepositoryStatusSink, RepositorySyncResult, SyncJobRequest,
     };
@@ -984,9 +996,12 @@ mod tests {
             upload_chunks: 22,
             upload_files: 23,
         };
-        status.conflicts = vec![RepositoryConflictRecord {
+        status.conflicts = vec![SyncConflictRecord {
+            conflict_id: "00000000-0000-4000-8000-000000000095".to_owned(),
+            repository_id: repository_id.to_owned(),
             relative_path: "notes/conflict.md".to_owned(),
             occurred_at: "2026-07-25T08:00:00Z".to_owned(),
+            resolution: None,
         }];
         status.schedule = RepositorySchedule {
             same_count: 4,
