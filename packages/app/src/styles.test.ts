@@ -26,6 +26,41 @@ const seededThemeIds = [
 
 const externalThemeIds = ["drake-faithful-light", "drake-faithful-ayu"] as const;
 
+const expectedExternalThemeManifests = {
+  "drake-faithful-light": {
+    schemaVersion: 1,
+    id: "drake-faithful-light",
+    name: "轻语 · Drake Light",
+    appearance: "light",
+    entry: "theme.css",
+    author: "劉強東 / 轻语",
+    version: "2.9.6-light-voice.1",
+    preview: {
+      background: "#ffffff",
+      panel: "#f6f8fa",
+      text: "#333333",
+      accent: "#e95f59"
+    },
+    licenseFiles: ["licenses/THEME-LICENSE.txt", "licenses/FONT-LICENSE.txt"]
+  },
+  "drake-faithful-ayu": {
+    schemaVersion: 1,
+    id: "drake-faithful-ayu",
+    name: "轻语 · Drake Ayu",
+    appearance: "dark",
+    entry: "theme.css",
+    author: "劉強東 / 轻语",
+    version: "2.9.6-light-voice.1",
+    preview: {
+      background: "#20242f",
+      panel: "#151924",
+      text: "#b0b1ac",
+      accent: "#fcc65c"
+    },
+    licenseFiles: ["licenses/THEME-LICENSE.txt", "licenses/FONT-LICENSE.txt"]
+  }
+} as const;
+
 const expectedFontHashes = {
   "JetBrainsMono-Bold.woff2": "df3f86c04988d8f7fc516db3e95ec6b630cdc67bec91fe4297c6f8e132be1037",
   "JetBrainsMono-BoldItalic.woff2": "3aa30cac2529ca86f6b8ef479f143d924378682657510541d10d8e8b6d07120b",
@@ -155,6 +190,47 @@ const expectedThemeDeclarations = {
     "--editor-hl-deletion: #d1675a;"
   ]
 } as const;
+
+const expectedAyuSyntaxRules = [
+  `.markdown-paper[data-editor-theme="drake-faithful-ayu"] .hljs-property {
+  color: #FFC66D;
+}`,
+  `.markdown-paper[data-editor-theme="drake-faithful-ayu"] .hljs-attr,
+.markdown-paper[data-editor-theme="drake-faithful-ayu"] .hljs-attribute,
+.markdown-paper[data-editor-theme="drake-faithful-ayu"] .hljs-variable.language_ {
+  color: #9876AA;
+}`,
+  `.markdown-paper[data-editor-theme="drake-faithful-ayu"] .hljs-comment {
+  color: #5c6773;
+}`,
+  `.markdown-paper[data-editor-theme="drake-faithful-ayu"] .hljs-tag,
+.markdown-paper[data-editor-theme="drake-faithful-ayu"] .hljs-name,
+.markdown-paper[data-editor-theme="drake-faithful-ayu"] .hljs-punctuation {
+  color: #E8BF6A;
+}`,
+  `.markdown-paper[data-editor-theme="drake-faithful-ayu"] .hljs-built_in {
+  color: #FF9E59;
+}`,
+  `.markdown-paper[data-editor-theme="drake-faithful-ayu"] .hljs-quote {
+  color: #a6e22e;
+}`,
+  `.markdown-paper[data-editor-theme="drake-faithful-ayu"] .hljs-section {
+  color: #FFD760;
+}`,
+  `.markdown-paper[data-editor-theme="drake-faithful-ayu"] .markra-code-block code::selection {
+  background: #214283;
+}`
+] as const;
+
+function readRuleDeclarations(styles: string, selector: string) {
+  const ruleStart = styles.indexOf(`${selector} {`);
+  const declarationsStart = ruleStart + selector.length + 2;
+  const ruleEnd = styles.indexOf("\n}", declarationsStart);
+
+  expect(ruleStart).toBeGreaterThanOrEqual(0);
+  expect(ruleEnd).toBeGreaterThan(declarationsStart);
+  return styles.slice(declarationsStart, ruleEnd);
+}
 
 function readSeededThemeStyles(themeId: typeof seededThemeIds[number]) {
   const fixturePath = themeId === "drake-light" || themeId === "drake-ayu"
@@ -1424,14 +1500,23 @@ describe("editor stylesheet", () => {
   });
 
   it("keeps Drake-faithful external packages licensed, self-contained, and source-faithful", () => {
+    const catalogSource = readFileSync(
+      `${process.cwd()}/../../apps/desktop/src-tauri/src/themes/catalog.rs`,
+      "utf8"
+    );
+
     for (const id of externalThemeIds) {
       const root = `${process.cwd()}/../../themes/external/${id}`;
       const manifest = JSON.parse(readFileSync(`${root}/manifest.json`, "utf8"));
       const styles = readFileSync(`${root}/theme.css`, "utf8");
+      const rootDeclarations = readRuleDeclarations(styles, `:root[data-theme="${id}"]`);
+      const editorDeclarations = readRuleDeclarations(
+        styles,
+        `.markdown-paper[data-editor-theme="${id}"]`
+      );
 
-      expect(manifest.id).toBe(id);
-      expect(manifest.name).toMatch(/^轻语 · Drake /u);
-      expect(seededThemeIds).not.toContain(id);
+      expect(manifest).toEqual(expectedExternalThemeManifests[id]);
+      expect(catalogSource).not.toContain(`id: "${id}"`);
       expect(styles.match(/@font-face/gu)).toHaveLength(4);
       expect(styles).toContain(`:root[data-theme="${id}"]`);
       expect(styles).toContain(`.markdown-paper[data-editor-theme="${id}"]`);
@@ -1448,12 +1533,20 @@ describe("editor stylesheet", () => {
         expect(createHash("sha256").update(bytes).digest("hex")).toBe(expectedHash);
       }
 
-      expectedThemeDeclarations[id].forEach((declaration) => expect(styles).toContain(declaration));
+      expectedThemeDeclarations[id].forEach((declaration) => {
+        const declarations = declaration.startsWith("--editor-")
+          ? editorDeclarations
+          : rootDeclarations;
+        expect(declarations).toContain(declaration);
+      });
       expect(styles).not.toMatch(/url\(\s*["']?(?:https?:|\/\/|file:)/u);
       expect(readFileSync(`${root}/licenses/THEME-LICENSE.txt`, "utf8")).toContain("MIT License");
       expect(readFileSync(`${root}/licenses/FONT-LICENSE.txt`, "utf8")).toContain(
         "SIL OPEN FONT LICENSE Version 1.1"
       );
+      if (id === "drake-faithful-ayu") {
+        expectedAyuSyntaxRules.forEach((rule) => expect(styles).toContain(rule));
+      }
     }
   });
 
