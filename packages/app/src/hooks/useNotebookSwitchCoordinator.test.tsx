@@ -1,5 +1,9 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
-import type { SyncConfigDocument, SyncRunResult } from "../lib/sync-config";
+import type {
+  SyncConfigDocument,
+  SyncDispatchResult,
+  SyncRunResult
+} from "../lib/sync-config";
 import {
   getStoredRecentNotebooks
 } from "../lib/settings/local-state";
@@ -56,7 +60,7 @@ function configuredDocument(enabled = true): SyncConfigDocument {
   };
 }
 
-function syncResult(notesRoot: string): SyncRunResult {
+function legacySyncResult(notesRoot: string): SyncRunResult {
   return {
     notebookName: notesRoot.split("/").at(-1) ?? "",
     notesRoot,
@@ -73,6 +77,10 @@ function syncResult(notesRoot: string): SyncRunResult {
     },
     trigger: "manual"
   };
+}
+
+function completedDispatch(notesRoot: string): SyncDispatchResult {
+  return { result: legacySyncResult(notesRoot), status: "completed" };
 }
 
 function createAppSync(overrides: Partial<AppSyncCoordinator> = {}): AppSyncCoordinator {
@@ -148,7 +156,7 @@ describe("notebook switch coordinator", () => {
       },
       syncConfig: {
         ...runtime.syncConfig,
-        sync: vi.fn(async (request) => syncResult(
+        sync: vi.fn(async (request) => completedDispatch(
           "notesRoot" in request ? request.notesRoot : "/Prepared"
         ))
       },
@@ -327,7 +335,7 @@ describe("notebook switch coordinator", () => {
       lease: "prepared-existing-b",
       notesRoot: "/Workspace/B"
     }));
-    const sync = vi.fn(async () => syncResult("/Workspace/B"));
+    const sync = vi.fn(async () => completedDispatch("/Workspace/B"));
     configureAppRuntime({
       ...runtime,
       files: {
@@ -372,7 +380,7 @@ describe("notebook switch coordinator", () => {
 
   it("mounts the desktop root committed by native bootstrap without a second path commit", async () => {
     const runtime = createDefaultAppRuntime();
-    const sync = vi.fn(async () => syncResult("/Workspace/B"));
+    const sync = vi.fn(async () => completedDispatch("/Workspace/B"));
     configureAppRuntime({
       ...runtime,
       syncConfig: { ...runtime.syncConfig, sync },
@@ -406,7 +414,7 @@ describe("notebook switch coordinator", () => {
   it("discards an unconsumed prepared restore lease when flushing fails", async () => {
     const runtime = createDefaultAppRuntime();
     const discardPreparedDesktopNotebookTarget = vi.fn(async () => undefined);
-    const sync = vi.fn(async () => syncResult("/Restore Parent/Cloud Notes"));
+    const sync = vi.fn(async () => completedDispatch("/Restore Parent/Cloud Notes"));
     configureAppRuntime({
       ...runtime,
       files: {
@@ -439,7 +447,7 @@ describe("notebook switch coordinator", () => {
   it("discards a prepared restore lease when native target validation fails", async () => {
     const runtime = createDefaultAppRuntime();
     const discardPreparedDesktopNotebookTarget = vi.fn(async () => undefined);
-    const sync = vi.fn(async () => syncResult("/Restore Parent/Other Notes"));
+    const sync = vi.fn(async () => completedDispatch("/Restore Parent/Other Notes"));
     configureAppRuntime({
       ...runtime,
       files: {
@@ -467,7 +475,7 @@ describe("notebook switch coordinator", () => {
 
   it("accepts a successfully bootstrapped native commit exactly once", async () => {
     const runtime = createDefaultAppRuntime();
-    const sync = vi.fn(async () => syncResult("/Restore Parent/Cloud Notes"));
+    const sync = vi.fn(async () => completedDispatch("/Restore Parent/Cloud Notes"));
     const openMarkdownFolder = vi.fn(async () => ({
       name: "Restore Parent",
       path: "/Restore Parent"
@@ -506,8 +514,11 @@ describe("notebook switch coordinator", () => {
     const requestApply = vi.fn(runtime.syncConfig.requestApply);
     const setEditing = vi.fn(runtime.syncConfig.setEditing);
     const sync = vi.fn(async () => ({
-      ...syncResult("/Workspace/B"),
-      revision: "stale-revision"
+      result: {
+        ...legacySyncResult("/Workspace/B"),
+        revision: "stale-revision"
+      },
+      status: "completed" as const
     }));
     configureAppRuntime({
       ...runtime,
@@ -545,7 +556,7 @@ describe("notebook switch coordinator", () => {
 
   it("rejects a local switch during remote restore and allows an explicit retry", async () => {
     const runtime = createDefaultAppRuntime();
-    const bootstrap = deferred<SyncRunResult>();
+    const bootstrap = deferred<SyncDispatchResult>();
     configureAppRuntime({
       ...runtime,
       syncConfig: {
@@ -589,7 +600,7 @@ describe("notebook switch coordinator", () => {
 
   it("rejects a concurrent remote restore and allows an explicit retry", async () => {
     const runtime = createDefaultAppRuntime();
-    const firstBootstrap = deferred<SyncRunResult>();
+    const firstBootstrap = deferred<SyncDispatchResult>();
     let syncAttempt = 0;
     const prepareDesktopNotebookTarget = vi.fn(async ({ notebookName, parentPath }) => ({
       lease: `prepared-${notebookName}`,
@@ -602,7 +613,7 @@ describe("notebook switch coordinator", () => {
         sync: vi.fn(async () => {
           syncAttempt += 1;
           if (syncAttempt === 1) return firstBootstrap.promise;
-          return syncResult("/Workspace/C");
+          return completedDispatch("/Workspace/C");
         })
       },
       workspace: {
@@ -688,7 +699,7 @@ describe("notebook switch coordinator", () => {
       ...runtime,
       syncConfig: {
         ...runtime.syncConfig,
-        sync: vi.fn(async () => syncResult("/Workspace/B"))
+        sync: vi.fn(async () => completedDispatch("/Workspace/B"))
       },
       workspace: {
         ...runtime.workspace,

@@ -1,8 +1,8 @@
-import type { SyncRunRequest, SyncRunResult } from "./sync-config";
+import type { SyncDispatchResult, SyncRunRequest } from "./sync-config";
 import { getAppRuntime } from "../runtime";
 
 type ApplicationSyncDependencies = {
-  sync?: (input: SyncRunRequest) => Promise<SyncRunResult>;
+  sync?: (input: SyncRunRequest) => Promise<SyncDispatchResult>;
 };
 
 export function runApplicationSync(

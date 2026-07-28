@@ -17,9 +17,10 @@ use super::diagnostics::{
 #[cfg(test)]
 use super::engine::execute_remote_sync_pair;
 use super::engine::{
-    complete_remote_first_restore_locked, execute_remote_sync_pair_locked,
-    preserve_remote_settings_conflict, with_remote_sync_execution_lock, RemoteSyncSummary,
-    SettingsSyncOutcome, MAX_IMMEDIATE_RECHECK_PASSES,
+    complete_remote_first_restore_locked, execute_portable_settings_sync_locked,
+    execute_remote_sync_pair_locked, preserve_remote_settings_conflict,
+    with_remote_sync_execution_lock, RemoteSyncSummary, SettingsSyncOutcome,
+    MAX_IMMEDIATE_RECHECK_PASSES,
 };
 use super::s3_backend::{S3Backend, S3SyncSettings, S3TransportOptions};
 use super::scope::RemoteSyncScope;
@@ -118,6 +119,115 @@ impl ApplicationSyncSource {
             Self::PreparedDirectory { .. } => true,
         }
     }
+}
+
+pub(crate) async fn run_application_s3_portable_settings<R: Runtime>(
+    app: &tauri::AppHandle<R>,
+    snapshot: SyncSnapshot,
+    trigger: SyncTrigger,
+) -> Result<(), SyncRunError> {
+    let run_id = create_sync_run_id();
+    let app_data = app.path().app_data_dir().map_err(|_| {
+        run_error(
+            "app-data-unavailable",
+            &snapshot.revision,
+            trigger,
+            SyncSummary::default(),
+        )
+    })?;
+    if snapshot.state_root != app_data.join("sync-state") {
+        return Err(run_error(
+            "sync-state-mismatch",
+            &snapshot.revision,
+            trigger,
+            SyncSummary::default(),
+        ));
+    }
+    let remote_root = ValidRemoteRoot::parse(&snapshot.config.remote_root).map_err(|error| {
+        run_error(
+            safe_error_code(&error),
+            &snapshot.revision,
+            trigger,
+            SyncSummary::default(),
+        )
+    })?;
+    validate_snapshot_target(&snapshot.config, &snapshot.target, &remote_root).map_err(|()| {
+        run_error(
+            "sync-snapshot-mismatch",
+            &snapshot.revision,
+            trigger,
+            SyncSummary::default(),
+        )
+    })?;
+    let settings_service = AppSettingsService::from_app(app).map_err(|error| {
+        run_error(
+            safe_error_code(&error.to_string()),
+            &snapshot.revision,
+            trigger,
+            SyncSummary::default(),
+        )
+    })?;
+    let SyncTarget::S3 {
+        access_key_id,
+        addressing_style,
+        bucket,
+        endpoint_url,
+        region,
+        remote_root: _,
+        request_timeout_seconds,
+        secret_access_key,
+        tls_verification,
+    } = snapshot.target
+    else {
+        return Err(run_error(
+            "sync-snapshot-mismatch",
+            &snapshot.revision,
+            trigger,
+            SyncSummary::default(),
+        ));
+    };
+    let transport = S3TransportOptions {
+        addressing_style,
+        request_timeout_seconds,
+        tls_verification,
+    };
+    let settings_backend = S3Backend::new_at_validated_prefix_with_transport(
+        S3SyncSettings {
+            access_key_id,
+            bucket,
+            endpoint_url,
+            region,
+            remote_path: remote_root.app_prefix(),
+            secret_access_key,
+        },
+        transport,
+    )
+    .map_err(|error| {
+        run_error(
+            safe_error_code(&error),
+            &snapshot.revision,
+            trigger,
+            SyncSummary::default(),
+        )
+    })?
+    .with_diagnostic_context(SyncDiagnosticContext::new(&run_id, "settings"));
+    let settings_state = settings_state_root(
+        &snapshot.state_root,
+        &settings_backend.target_fingerprint_source(),
+        remote_root.as_str(),
+    );
+    run_prepared_portable_settings_sync(
+        &snapshot.revision,
+        SyncProvider::S3,
+        trigger,
+        &app_data,
+        settings_state,
+        &settings_backend,
+        &settings_service,
+        || async { Ok(()) },
+    )
+    .await
+    .map(|_| ())
 }
 
 pub(crate) async fn run_application_sync<R: Runtime>(
@@ -925,6 +1035,125 @@ where
     clear_portable_settings_pending(scope)
 }
 
+async fn run_prepared_portable_settings_sync<SettingsBackend, Reload, ReloadFuture>(
+    revision: &str,
+    _provider: SyncProvider,
+    trigger: SyncTrigger,
+    app_data: &Path,
+    settings_state: PathBuf,
+    settings_backend: &SettingsBackend,
+    settings_service: &AppSettingsService,
+    mut reload: Reload,
+) -> Result<SyncSummary, SyncRunError>
+where
+    SettingsBackend: RemoteSyncBackend,
+    Reload: FnMut() -> ReloadFuture,
+    ReloadFuture: Future<Output = Result<(), String>>,
+{
+    with_remote_sync_execution_lock(|| async {
+        let mut prepared = prepare_portable_settings_sync(
+            settings_service,
+            app_data,
+            settings_state.clone(),
+            "manifest.json",
+        )
+        .map_err(|error| {
+            run_error(
+                safe_error_code(&error),
+                revision,
+                trigger,
+                SyncSummary::default(),
+            )
+        })?;
+        if prepared.phase == PortableSettingsJournalPhase::Publication {
+            let pending_publication =
+                settings_service.deferred_settings_publication(prepared.publication_events.clone());
+            finish_portable_settings_publication(
+                prepared.scope(),
+                settings_service,
+                &pending_publication,
+                &mut reload,
+            )
+            .await
+            .map_err(|error| {
+                run_error(
+                    safe_error_code(&error),
+                    revision,
+                    trigger,
+                    SyncSummary::default(),
+                )
+            })?;
+            prepared = prepare_portable_settings_sync(
+                settings_service,
+                app_data,
+                settings_state,
+                "manifest.json",
+            )
+            .map_err(|error| {
+                run_error(
+                    safe_error_code(&error),
+                    revision,
+                    trigger,
+                    SyncSummary::default(),
+                )
+            })?;
+        }
+        sanitize_legacy_remote_settings(prepared.scope(), settings_backend)
+            .await
+            .map_err(|error| {
+                run_error(
+                    safe_error_code(&error.to_string()),
+                    revision,
+                    trigger,
+                    SyncSummary::default(),
+                )
+            })?;
+        let mut publication = None;
+        let settings_result =
+            execute_portable_settings_sync_locked(prepared.scope(), settings_backend, |expected| {
+                publication = Some(reconcile_prepared_settings_after_scope_defer_publication(
+                    settings_service,
+                    app_data,
+                    &prepared,
+                    expected,
+                )?);
+                Ok(())
+            })
+            .await;
+        let summary = settings_result
+            .as_ref()
+            .ok()
+            .map(|outcome| remote_summary(&outcome.summary))
+            .unwrap_or_default();
+        let result = settings_result
+            .map(|_| summary.clone())
+            .map_err(|error| remote_run_error(error, revision, trigger, summary.clone()));
+        let publication_result = match publication.as_ref() {
+            Some(publication) => {
+                finish_portable_settings_publication(
+                    prepared.scope(),
+                    settings_service,
+                    publication,
+                    &mut reload,
+                )
+                .await
+            }
+            None => Ok(()),
+        };
+        match (result, publication_result) {
+            (result @ Err(_), _) => result,
+            (Ok(summary), Ok(())) => Ok(summary),
+            (Ok(summary), Err(error)) => Err(run_error(
+                safe_error_code(&error),
+                revision,
+                trigger,
+                summary,
+            )),
+        }
+    })
+    .await
+}
+
 async fn run_prepared_scoped_sync_pair<NotesBackend, SettingsBackend, Reload, ReloadFuture>(
     revision: &str,
     provider: SyncProvider,
@@ -1317,9 +1546,9 @@ mod tests {
     use super::{
         build_sync_scopes, prepare_portable_settings_sync,
         prepare_portable_settings_sync_with_conflict_preserver,
-        reconcile_prepared_settings_after_scope, run_prepared_scoped_sync_pair,
-        run_scoped_sync_pair, scoped_sync_pair_result, settings_state_root, sync_safe_error,
-        validate_snapshot_target, ApplicationSyncSource,
+        reconcile_prepared_settings_after_scope, run_prepared_portable_settings_sync,
+        run_prepared_scoped_sync_pair, run_scoped_sync_pair, scoped_sync_pair_result,
+        settings_state_root, sync_safe_error, validate_snapshot_target, ApplicationSyncSource,
     };
     use crate::app_settings::{
         AppSettingsError, AppSettingsGroup, AppSettingsService, SettingsBackend, SettingsEventSink,
@@ -1507,6 +1736,55 @@ mod tests {
                 .push((event.to_string(), payload));
             Ok(())
         }
+    }
+
+    #[test]
+    fn s3_portable_settings_run_uses_only_the_protected_settings_scope() {
+        tauri::async_runtime::block_on(async {
+            let app_data = tempdir().unwrap();
+            let app_data_root = app_data.path().canonicalize().unwrap();
+            let settings_state = app_data_root.join("sync-state/settings/s3-portable-only");
+            let settings_path = app_data_root.join("settings.json");
+            let live = BTreeMap::from([("language".into(), json!("en"))]);
+            fs::write(&settings_path, serde_json::to_vec(&live).unwrap()).unwrap();
+            let settings_service = AppSettingsService::new_for_test(
+                Arc::new(FileSettingsBackend::new(settings_path, live)),
+                None,
+            );
+            let settings_backend = FakeBackend::new("settings-s3-portable-only");
+
+            let summary = run_prepared_portable_settings_sync(
+                "revision-s3-portable-only",
+                SyncProvider::S3,
+                SyncTrigger::Manual,
+                &app_data_root,
+                settings_state.clone(),
+                &settings_backend,
+                &settings_service,
+                || async { Ok(()) },
+            )
+            .await
+            .unwrap();
+
+            assert_eq!(summary.uploaded_files, 1);
+            assert_eq!(
+                settings_backend
+                    .files
+                    .lock()
+                    .unwrap()
+                    .keys()
+                    .cloned()
+                    .collect::<Vec<_>>(),
+                vec!["settings.json".to_string()]
+            );
+            let scope =
+                RemoteSyncScope::portable_settings(&app_data_root, settings_state, "manifest.json")
+                    .unwrap();
+            assert!(scope.includes_relative_path("settings.json", false));
+            assert!(!scope.includes_relative_path("note.md", false));
+            assert!(scope.state_root().join("manifest.json").is_file());
+            assert!(read_portable_settings_pending(&scope).unwrap().is_none());
+        });
     }
 
     #[test]

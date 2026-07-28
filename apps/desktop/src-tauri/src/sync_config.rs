@@ -3,6 +3,7 @@ pub(crate) mod model;
 pub(crate) mod status;
 pub(crate) mod storage;
 
+use std::future::Future;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -59,6 +60,34 @@ pub(crate) struct SyncApplicationRequest {
     trigger: SyncTrigger,
 }
 
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "lowercase", tag = "status")]
+pub(crate) enum SyncDispatchResult {
+    Accepted {
+        job: crate::dejavu_sync::service::AcceptedSyncJob,
+    },
+    Completed {
+        result: SyncRunResult,
+    },
+}
+
+impl std::fmt::Debug for SyncDispatchResult {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Accepted { job } => formatter
+                .debug_struct("Accepted")
+                .field("job_id", &job.job_id)
+                .field("repository_id", &job.repository_id)
+                .field("notes_root", &job.notes_root)
+                .finish(),
+            Self::Completed { result } => formatter
+                .debug_struct("Completed")
+                .field("result", result)
+                .finish(),
+        }
+    }
+}
+
 fn validate_sync_application_notebook(
     request: &SyncApplicationRequest,
     canonical_notes_root: &Path,
@@ -84,6 +113,25 @@ fn validate_sync_application_result(
         Ok(result)
     } else {
         Err("sync-result-mismatch: The synchronization result identity changed.".to_string())
+    }
+}
+
+fn validate_sync_application_dispatch(
+    request: &SyncApplicationRequest,
+    canonical_notes_root: &Path,
+    dispatch: SyncDispatchResult,
+) -> Result<SyncDispatchResult, String> {
+    match dispatch {
+        SyncDispatchResult::Completed { result } => {
+            validate_sync_application_result(request, canonical_notes_root, result)
+                .map(|result| SyncDispatchResult::Completed { result })
+        }
+        SyncDispatchResult::Accepted { job } if job.notes_root == canonical_notes_root => {
+            Ok(SyncDispatchResult::Accepted { job })
+        }
+        SyncDispatchResult::Accepted { .. } => {
+            Err("sync-result-mismatch: The synchronization result identity changed.".to_string())
+        }
     }
 }
 
@@ -407,7 +455,7 @@ fn enforce_application_sync_editing_barrier(
 }
 
 type SyncApplyCompletion =
-    Box<dyn Fn(&str, &str, Result<SyncRunResult, String>) -> Result<(), String> + Send>;
+    Box<dyn Fn(&str, &str, Result<SyncDispatchResult, String>) -> Result<(), String> + Send>;
 
 fn application_sync_worker_stopped() -> String {
     "sync-failed: Application sync execution stopped unexpectedly.".to_string()
@@ -491,6 +539,60 @@ fn emit_primary_workspace_changed<R: tauri::Runtime>(app: &tauri::AppHandle<R>) 
     );
 }
 
+async fn dispatch_application_sync_provider<
+    Legacy,
+    LegacyFuture,
+    PortableSettings,
+    PortableSettingsFuture,
+    Enqueue,
+    EnqueueFuture,
+>(
+    provider: model::SyncProvider,
+    app_data: &Path,
+    notes_root: PathBuf,
+    trigger: SyncTrigger,
+    run_legacy: Legacy,
+    run_portable_settings: PortableSettings,
+    enqueue: Enqueue,
+) -> Result<SyncDispatchResult, String>
+where
+    Legacy: FnOnce() -> LegacyFuture,
+    LegacyFuture: Future<Output = Result<SyncRunResult, String>>,
+    PortableSettings: FnOnce() -> PortableSettingsFuture,
+    PortableSettingsFuture: Future<Output = Result<(), String>>,
+    Enqueue: FnOnce(crate::dejavu_sync::service::SyncJobRequest) -> EnqueueFuture,
+    EnqueueFuture: Future<Output = Result<crate::dejavu_sync::service::AcceptedSyncJob, String>>,
+{
+    match provider {
+        model::SyncProvider::Webdav => run_legacy()
+            .await
+            .map(|result| SyncDispatchResult::Completed { result }),
+        model::SyncProvider::S3 => {
+            let state = crate::dejavu_sync::local_state::LocalSyncStateService::new(app_data)
+                .load()
+                .map_err(|error| {
+                    crate::dejavu_sync::service::RepositoryJobError::from(error)
+                        .safe_code()
+                        .to_string()
+                })?
+                .ok_or_else(|| "dejavu-invalid-binding".to_string())?;
+            let binding = state
+                .bindings
+                .into_iter()
+                .find(|binding| binding.enabled && binding.notes_root == notes_root)
+                .ok_or_else(|| "dejavu-invalid-binding".to_string())?;
+            run_portable_settings().await?;
+            enqueue(crate::dejavu_sync::service::SyncJobRequest {
+                notes_root,
+                repository_id: binding.repository_id,
+                trigger,
+            })
+            .await
+            .map(|job| SyncDispatchResult::Accepted { job })
+        }
+    }
+}
+
 struct SyncApplyCompletionGuard {
     completion: Option<SyncApplyCompletion>,
     revision: String,
@@ -510,7 +612,10 @@ impl SyncApplyCompletionGuard {
         }
     }
 
-    fn complete(mut self, outcome: Result<SyncRunResult, String>) -> Result<SyncRunResult, String> {
+    fn complete(
+        mut self,
+        outcome: Result<SyncDispatchResult, String>,
+    ) -> Result<SyncDispatchResult, String> {
         if let Some(completion) = self.completion.take() {
             completion(&self.revision, &self.token, outcome.clone())?;
         }
@@ -530,35 +635,16 @@ impl Drop for SyncApplyCompletionGuard {
     }
 }
 
-async fn execute_application_sync(
+async fn execute_legacy_application_sync(
     app: tauri::AppHandle,
-    validated_root: ValidatedSyncApplicationRoot,
-    request: SyncApplicationRequest,
+    app_data: PathBuf,
+    canonical_notes_root: PathBuf,
+    source: ValidatedSyncApplicationSource,
+    snapshot: SyncSnapshot,
+    trigger: SyncTrigger,
+    previous_status: Option<SyncStatus>,
 ) -> Result<SyncRunResult, String> {
-    enforce_application_sync_editing_barrier(request.trigger, sync_editing_active()?)?;
-    if !request.bootstrap {
-        let current_primary = validate_sync_application_root(&app, &request)?;
-        if current_primary.canonical != validated_root.canonical {
-            return Err(crate::primary_workspace::sync_primary_workspace_mismatch());
-        }
-    }
-    let ValidatedSyncApplicationRoot {
-        canonical: canonical_notes_root,
-        source,
-    } = validated_root;
-    validate_sync_application_notebook(&request, &canonical_notes_root)?;
-    let app_data = app_data_dir(&app)?;
-    let snapshot = if request.bootstrap {
-        configured_snapshot_at_app_data(&app_data, Some(&request.revision))?
-    } else {
-        ready_snapshot_at_app_data(&app_data, Some(&request.revision))?
-    };
-    let previous_status = if request.bootstrap {
-        load_sync_status_at_app_data(&app_data)?
-    } else {
-        None
-    };
-    let result = match source {
+    match source {
         #[cfg(not(mobile))]
         ValidatedSyncApplicationSource::PreparedDirectory(prepared) => {
             let directory = prepared.directory.try_clone().map_err(|_| {
@@ -566,11 +652,11 @@ async fn execute_application_sync(
             })?;
             let result = crate::remote_sync::service::run_application_sync_from_prepared_directory(
                 &app,
-                canonical_notes_root.clone(),
+                canonical_notes_root,
                 directory,
                 prepared.restore_generation().to_string(),
                 snapshot,
-                request.trigger,
+                trigger,
             )
             .await
             .map_err(|error| error.to_string());
@@ -598,10 +684,10 @@ async fn execute_application_sync(
         ValidatedSyncApplicationSource::ManagedBootstrap(directory) => {
             crate::remote_sync::service::run_application_sync_from_managed_bootstrap(
                 &app,
-                canonical_notes_root.clone(),
+                canonical_notes_root,
                 directory,
                 snapshot,
-                request.trigger,
+                trigger,
             )
             .await
             .map_err(|error| error.to_string())
@@ -609,22 +695,104 @@ async fn execute_application_sync(
         ValidatedSyncApplicationSource::Regular => {
             crate::remote_sync::service::run_application_sync(
                 &app,
-                canonical_notes_root.clone(),
+                canonical_notes_root,
                 snapshot,
-                request.trigger,
+                trigger,
             )
             .await
             .map_err(|error| error.to_string())
         }
-    }?;
-    validate_sync_application_result(&request, &canonical_notes_root, result)
+    }
+}
+
+async fn execute_application_sync(
+    app: tauri::AppHandle,
+    validated_root: ValidatedSyncApplicationRoot,
+    request: SyncApplicationRequest,
+) -> Result<SyncDispatchResult, String> {
+    enforce_application_sync_editing_barrier(request.trigger, sync_editing_active()?)?;
+    if !request.bootstrap {
+        let current_primary = validate_sync_application_root(&app, &request)?;
+        if current_primary.canonical != validated_root.canonical {
+            return Err(crate::primary_workspace::sync_primary_workspace_mismatch());
+        }
+    }
+    let ValidatedSyncApplicationRoot {
+        canonical: canonical_notes_root,
+        source,
+    } = validated_root;
+    validate_sync_application_notebook(&request, &canonical_notes_root)?;
+    let app_data = app_data_dir(&app)?;
+    let snapshot = if request.bootstrap {
+        configured_snapshot_at_app_data(&app_data, Some(&request.revision))?
+    } else {
+        ready_snapshot_at_app_data(&app_data, Some(&request.revision))?
+    };
+    let previous_status = if request.bootstrap {
+        load_sync_status_at_app_data(&app_data)?
+    } else {
+        None
+    };
+    let provider = snapshot.config.provider;
+    let dejavu_service = if provider == model::SyncProvider::S3 {
+        Some(
+            app.try_state::<crate::dejavu_sync::commands::DejavuSyncServiceOwner>()
+                .ok_or_else(|| "dejavu-repository-unavailable".to_string())?
+                .installed_service()
+                .map_err(|error| error.safe_code().to_string())?,
+        )
+    } else {
+        None
+    };
+    let trigger = request.trigger;
+    let legacy_app = app.clone();
+    let legacy_app_data = app_data.clone();
+    let legacy_notes_root = canonical_notes_root.clone();
+    let legacy_snapshot = snapshot.clone();
+    let portable_app = app.clone();
+    let portable_snapshot = snapshot;
+    let dispatch = dispatch_application_sync_provider(
+        provider,
+        &app_data,
+        canonical_notes_root.clone(),
+        trigger,
+        move || {
+            execute_legacy_application_sync(
+                legacy_app,
+                legacy_app_data,
+                legacy_notes_root,
+                source,
+                legacy_snapshot,
+                trigger,
+                previous_status,
+            )
+        },
+        move || async move {
+            crate::remote_sync::service::run_application_s3_portable_settings(
+                &portable_app,
+                portable_snapshot,
+                trigger,
+            )
+            .await
+            .map_err(|error| error.to_string())
+        },
+        move |job_request| async move {
+            dejavu_service
+                .ok_or_else(|| "dejavu-repository-unavailable".to_string())?
+                .enqueue(job_request)
+                .await
+                .map_err(|error| error.safe_code().to_string())
+        },
+    )
+    .await?;
+    validate_sync_application_dispatch(&request, &canonical_notes_root, dispatch)
 }
 
 #[tauri::command]
 pub(crate) async fn sync_application(
     app: tauri::AppHandle,
     request: SyncApplicationRequest,
-) -> Result<SyncRunResult, String> {
+) -> Result<SyncDispatchResult, String> {
     validate_sync_application_mode(&request)?;
     let validated_root = validate_sync_application_root(&app, &request)?;
     let canonical_notes_root = validated_root.canonical.clone();
@@ -635,15 +803,19 @@ pub(crate) async fn sync_application(
     if let Some(token) = apply_token {
         match begin_sync_apply(&request.revision, &token)? {
             SyncApplyDisposition::Completed(outcome) => {
-                return outcome.and_then(|result| {
-                    validate_sync_application_result(&request, &canonical_notes_root, result)
+                return outcome.and_then(|dispatch| {
+                    validate_sync_application_dispatch(&request, &canonical_notes_root, dispatch)
                 });
             }
             SyncApplyDisposition::Wait => {
                 return wait_sync_apply(&request.revision, &token)
                     .await
-                    .and_then(|result| {
-                        validate_sync_application_result(&request, &canonical_notes_root, result)
+                    .and_then(|dispatch| {
+                        validate_sync_application_dispatch(
+                            &request,
+                            &canonical_notes_root,
+                            dispatch,
+                        )
                     });
             }
             SyncApplyDisposition::Execute => {}
@@ -799,6 +971,9 @@ mod tests {
 
     use tempfile::tempdir;
 
+    use crate::dejavu_sync::local_state::{LocalSyncStateService, RepositoryBinding};
+    use crate::dejavu_sync::service::AcceptedSyncJob;
+
     use super::editing::{SyncApplyDisposition, SyncEditingTestRegistry};
     use super::model::{SyncConfig, SyncConfigLoadResponse, SyncConfigPatch, SyncProvider};
     use super::status::{
@@ -811,11 +986,285 @@ mod tests {
     };
     use super::SyncConfigChangedEvent;
     use super::{
-        enforce_application_sync_editing_barrier, failed_bootstrap_commit_status,
-        parse_patch_request, parse_recover_request, validate_sync_application_mode,
+        dispatch_application_sync_provider, enforce_application_sync_editing_barrier,
+        failed_bootstrap_commit_status, parse_patch_request, parse_recover_request,
+        validate_sync_application_dispatch, validate_sync_application_mode,
         validate_sync_application_notebook, validate_sync_application_result,
         validated_application_sync_apply_token, SyncApplicationRequest, SyncApplyCompletionGuard,
+        SyncDispatchResult,
     };
+
+    #[test]
+    fn completed_application_sync_dispatch_serializes_with_its_legacy_result() {
+        let dispatch = SyncDispatchResult::Completed {
+            result: SyncRunResult {
+                notebook_name: "Notes".into(),
+                notes_root: "/Notes".into(),
+                provider: SyncProvider::Webdav,
+                revision: "rev".into(),
+                summary: SyncSummary::default(),
+                trigger: SyncTrigger::Manual,
+            },
+        };
+
+        assert_eq!(
+            serde_json::to_value(dispatch).unwrap(),
+            serde_json::json!({
+                "status": "completed",
+                "result": {
+                    "notebookName": "Notes",
+                    "notesRoot": "/Notes",
+                    "provider": "webdav",
+                    "revision": "rev",
+                    "summary": {
+                        "bytesDownloaded": 0,
+                        "bytesUploaded": 0,
+                        "conflictFiles": 0,
+                        "downloadedFiles": 0,
+                        "scannedFiles": 0,
+                        "skippedFiles": 0,
+                        "uploadedFiles": 0
+                    },
+                    "trigger": "manual"
+                }
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn provider_webdav_dispatch_runs_only_the_legacy_application_sync() {
+        let app_data = tempdir().unwrap();
+        let notes = tempdir().unwrap();
+        let canonical_notes = notes.path().canonicalize().unwrap();
+        let legacy_runs = AtomicUsize::new(0);
+        let portable_runs = AtomicUsize::new(0);
+        let queue_runs = AtomicUsize::new(0);
+        let expected = SyncRunResult {
+            notebook_name: canonical_notes
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned(),
+            notes_root: canonical_notes.to_string_lossy().into_owned(),
+            provider: SyncProvider::Webdav,
+            revision: "rev".into(),
+            summary: SyncSummary::default(),
+            trigger: SyncTrigger::Manual,
+        };
+
+        let dispatch = dispatch_application_sync_provider(
+            SyncProvider::Webdav,
+            app_data.path(),
+            canonical_notes,
+            SyncTrigger::Manual,
+            || async {
+                legacy_runs.fetch_add(1, Ordering::SeqCst);
+                Ok(expected.clone())
+            },
+            || async {
+                portable_runs.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            },
+            |_| async {
+                queue_runs.fetch_add(1, Ordering::SeqCst);
+                Err("unexpected Dejavu queue".to_string())
+            },
+        )
+        .await
+        .unwrap();
+
+        let SyncDispatchResult::Completed { result } = dispatch else {
+            panic!("WebDAV must complete through the legacy engine");
+        };
+        assert_eq!(result, expected);
+        assert_eq!(legacy_runs.load(Ordering::SeqCst), 1);
+        assert_eq!(portable_runs.load(Ordering::SeqCst), 0);
+        assert_eq!(queue_runs.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn provider_s3_dispatch_uses_only_portable_settings_and_the_active_dejavu_queue() {
+        let app_data = tempdir().unwrap();
+        let notes_parent = tempdir().unwrap();
+        let notes = notes_parent.path().join("Notes");
+        fs::create_dir(&notes).unwrap();
+        let canonical_notes = notes.canonicalize().unwrap();
+        let repository_id = "00000000-0000-4000-8000-000000000201";
+        let state_service = LocalSyncStateService::new(app_data.path());
+        let mut state = state_service.load_or_initialize(Some("test-key")).unwrap();
+        state_service
+            .add_binding(
+                &mut state,
+                RepositoryBinding {
+                    display_name: "Notes".into(),
+                    enabled: true,
+                    notes_root: canonical_notes.clone(),
+                    repository_id: repository_id.into(),
+                },
+            )
+            .unwrap();
+        let old_notes_state = app_data
+            .path()
+            .join("sync-state/notes")
+            .join("a".repeat(64));
+        fs::create_dir_all(&old_notes_state).unwrap();
+        let old_manifest = old_notes_state.join("manifest.json");
+        fs::write(&old_manifest, b"old-s3-notes-manifest").unwrap();
+        let legacy_runs = AtomicUsize::new(0);
+        let portable_runs = AtomicUsize::new(0);
+        let queue_runs = AtomicUsize::new(0);
+        let portable_state = app_data.path().join("sync-state/settings/provider-routing");
+        let queued_notes = canonical_notes.clone();
+        let queued_repository_id = repository_id.to_string();
+
+        let dispatch = dispatch_application_sync_provider(
+            SyncProvider::S3,
+            app_data.path(),
+            canonical_notes.clone(),
+            SyncTrigger::Manual,
+            || async {
+                legacy_runs.fetch_add(1, Ordering::SeqCst);
+                Err("legacy notes must not run".to_string())
+            },
+            || async {
+                portable_runs.fetch_add(1, Ordering::SeqCst);
+                fs::create_dir_all(&portable_state).unwrap();
+                fs::write(portable_state.join("settings.json"), b"portable").unwrap();
+                Ok(())
+            },
+            |request| {
+                let queue_runs = &queue_runs;
+                async move {
+                    queue_runs.fetch_add(1, Ordering::SeqCst);
+                    assert_eq!(request.notes_root, queued_notes);
+                    assert_eq!(request.repository_id, queued_repository_id);
+                    assert_eq!(request.trigger, SyncTrigger::Manual);
+                    Ok(AcceptedSyncJob::completed_for_test(
+                        "00000000-0000-4000-8000-000000000202",
+                        request.repository_id,
+                        request.notes_root,
+                    ))
+                }
+            },
+        )
+        .await
+        .unwrap();
+
+        let SyncDispatchResult::Accepted { job } = dispatch else {
+            panic!("S3 must return the accepted Dejavu job");
+        };
+        assert_eq!(job.repository_id, repository_id);
+        assert_eq!(job.notes_root, canonical_notes);
+        assert_eq!(legacy_runs.load(Ordering::SeqCst), 0);
+        assert_eq!(portable_runs.load(Ordering::SeqCst), 1);
+        assert_eq!(queue_runs.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            fs::read(portable_state.join("settings.json")).unwrap(),
+            b"portable"
+        );
+        assert_eq!(
+            fs::read(old_manifest).unwrap(),
+            b"old-s3-notes-manifest",
+            "the legacy S3 note manifest must neither be read through the old engine nor migrated"
+        );
+    }
+
+    #[tokio::test]
+    async fn provider_s3_dispatch_rejects_missing_or_disabled_binding_before_portable_network_work()
+    {
+        for enabled in [None, Some(false)] {
+            let app_data = tempdir().unwrap();
+            let notes_parent = tempdir().unwrap();
+            let notes = notes_parent.path().join("Notes");
+            fs::create_dir(&notes).unwrap();
+            let canonical_notes = notes.canonicalize().unwrap();
+            if let Some(enabled) = enabled {
+                let state_service = LocalSyncStateService::new(app_data.path());
+                let mut state = state_service.load_or_initialize(Some("test-key")).unwrap();
+                state_service
+                    .add_binding(
+                        &mut state,
+                        RepositoryBinding {
+                            display_name: "Notes".into(),
+                            enabled,
+                            notes_root: canonical_notes.clone(),
+                            repository_id: "00000000-0000-4000-8000-000000000203".into(),
+                        },
+                    )
+                    .unwrap();
+            }
+            let portable_runs = AtomicUsize::new(0);
+            let queue_runs = AtomicUsize::new(0);
+
+            let error = dispatch_application_sync_provider(
+                SyncProvider::S3,
+                app_data.path(),
+                canonical_notes,
+                SyncTrigger::Manual,
+                || async { Err("legacy notes must not run".to_string()) },
+                || async {
+                    portable_runs.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                },
+                |_| async {
+                    queue_runs.fetch_add(1, Ordering::SeqCst);
+                    Err("queue must not run".to_string())
+                },
+            )
+            .await
+            .err()
+            .unwrap();
+
+            assert_eq!(error, "dejavu-invalid-binding");
+            assert_eq!(
+                portable_runs.load(Ordering::SeqCst),
+                0,
+                "binding admission must fail before any S3 portable-settings network work"
+            );
+            assert_eq!(queue_runs.load(Ordering::SeqCst), 0);
+        }
+    }
+
+    #[test]
+    fn accepted_application_sync_dispatch_must_keep_the_canonical_notes_root() {
+        let directory = tempdir().unwrap();
+        let notes = directory.path().join("Notes");
+        let other = directory.path().join("Other");
+        fs::create_dir(&notes).unwrap();
+        fs::create_dir(&other).unwrap();
+        let canonical = notes.canonicalize().unwrap();
+        let request = SyncApplicationRequest {
+            apply_token: None,
+            bootstrap: false,
+            notebook_name: Some("Notes".into()),
+            notes_root: Some(canonical.to_string_lossy().into_owned()),
+            prepared_target_lease: None,
+            revision: "rev".into(),
+            trigger: SyncTrigger::Manual,
+        };
+        let matching = SyncDispatchResult::Accepted {
+            job: AcceptedSyncJob::completed_for_test(
+                "00000000-0000-4000-8000-000000000204",
+                "00000000-0000-4000-8000-000000000205".into(),
+                canonical.clone(),
+            ),
+        };
+        let mismatched = SyncDispatchResult::Accepted {
+            job: AcceptedSyncJob::completed_for_test(
+                "00000000-0000-4000-8000-000000000206",
+                "00000000-0000-4000-8000-000000000207".into(),
+                other.canonicalize().unwrap(),
+            ),
+        };
+
+        assert!(validate_sync_application_dispatch(&request, &canonical, matching).is_ok());
+        assert_eq!(
+            validate_sync_application_dispatch(&request, &canonical, mismatched)
+                .err()
+                .unwrap(),
+            "sync-result-mismatch: The synchronization result identity changed."
+        );
+    }
 
     #[test]
     fn application_sync_request_name_must_match_the_immutable_canonical_root() {
@@ -1214,10 +1663,15 @@ mod tests {
             trigger: SyncTrigger::SettingsExit,
         };
         registry
-            .complete_apply("rev", "token", Ok(outcome))
+            .complete_apply(
+                "rev",
+                "token",
+                Ok(SyncDispatchResult::Completed { result: outcome }),
+            )
             .unwrap();
-        let SyncApplyDisposition::Completed(Ok(completed)) =
-            registry.begin_apply("rev", "token").unwrap()
+        let SyncApplyDisposition::Completed(Ok(SyncDispatchResult::Completed {
+            result: completed,
+        })) = registry.begin_apply("rev", "token").unwrap()
         else {
             panic!("completed token should replay its exact outcome");
         };
@@ -1265,9 +1719,8 @@ mod tests {
             }
             waiter.changed().await.unwrap();
         };
-        let expected =
-            Err("sync-failed: Application sync execution stopped unexpectedly.".to_string());
-        assert_eq!(waiter_outcome, expected);
+        let expected = "sync-failed: Application sync execution stopped unexpectedly.".to_string();
+        assert_eq!(waiter_outcome.unwrap_err(), expected);
         let replay = registry
             .lock()
             .unwrap()
@@ -1276,7 +1729,7 @@ mod tests {
         let SyncApplyDisposition::Completed(replayed_outcome) = replay else {
             panic!("panicked worker must leave the apply token completed");
         };
-        assert_eq!(replayed_outcome, expected);
+        assert_eq!(replayed_outcome.unwrap_err(), expected);
     }
 
     #[test]

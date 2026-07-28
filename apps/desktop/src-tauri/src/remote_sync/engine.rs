@@ -317,6 +317,44 @@ where
     operation().await
 }
 
+pub(crate) async fn execute_portable_settings_sync_locked<Backend, Reconcile>(
+    settings_scope: &RemoteSyncScope,
+    settings_backend: &Backend,
+    reconcile: Reconcile,
+) -> Result<SettingsSyncOutcome, RemoteSyncError>
+where
+    Backend: RemoteSyncBackend,
+    Reconcile: FnOnce(Option<&str>) -> Result<(), String>,
+{
+    let hooks = RemoteSyncExecutionHooks::default();
+    execute_portable_settings_sync_with_hooks(settings_scope, settings_backend, &hooks, reconcile)
+        .await
+}
+
+async fn execute_portable_settings_sync_with_hooks<Backend, Reconcile>(
+    settings_scope: &RemoteSyncScope,
+    settings_backend: &Backend,
+    hooks: &RemoteSyncExecutionHooks,
+    reconcile: Reconcile,
+) -> Result<SettingsSyncOutcome, RemoteSyncError>
+where
+    Backend: RemoteSyncBackend,
+    Reconcile: FnOnce(Option<&str>) -> Result<(), String>,
+{
+    let summary = execute_remote_sync_locked(settings_scope, settings_backend, hooks).await?;
+    let target_fingerprint = sha256_hex(settings_backend.target_fingerprint_source().as_bytes());
+    let (manifest, _) = load_sync_manifest(settings_scope, &target_fingerprint)?;
+    let outcome = SettingsSyncOutcome {
+        summary,
+        expected_local_hash: manifest
+            .entries
+            .get("settings.json")
+            .map(|entry| entry.local_hash.clone()),
+    };
+    reconcile(outcome.expected_local_hash.as_deref()).map_err(RemoteSyncError::from)?;
+    Ok(outcome)
+}
+
 pub(crate) async fn execute_remote_sync_pair_locked<NotesBackend, SettingsBackend, Reconcile>(
     notes_scope: &RemoteSyncScope,
     notes_backend: &NotesBackend,
@@ -334,28 +372,13 @@ where
 {
     let hooks = RemoteSyncExecutionHooks::default();
     let notes = execute_remote_sync_locked(notes_scope, notes_backend, &hooks).await;
-    let mut settings =
-        match execute_remote_sync_locked(settings_scope, settings_backend, &hooks).await {
-            Ok(summary) => {
-                let target_fingerprint =
-                    sha256_hex(settings_backend.target_fingerprint_source().as_bytes());
-                load_sync_manifest(settings_scope, &target_fingerprint)
-                    .map(|(manifest, _)| SettingsSyncOutcome {
-                        summary,
-                        expected_local_hash: manifest
-                            .entries
-                            .get("settings.json")
-                            .map(|entry| entry.local_hash.clone()),
-                    })
-                    .map_err(RemoteSyncError::from)
-            }
-            Err(error) => Err(error),
-        };
-    if let Ok(outcome) = &settings {
-        if let Err(error) = reconcile(outcome.expected_local_hash.as_deref()) {
-            settings = Err(error.into());
-        }
-    }
+    let settings = execute_portable_settings_sync_with_hooks(
+        settings_scope,
+        settings_backend,
+        &hooks,
+        reconcile,
+    )
+    .await;
     (notes, settings)
 }
 

@@ -107,20 +107,23 @@ describe("native application sync config runtime", () => {
 
   it("maps sync and connection testing to the application native commands", async () => {
     mockedInvoke.mockResolvedValue({
-      notebookName: "Notes",
-      notesRoot: "/Notes",
-      provider: "webdav",
-      revision: "rev-1",
-      summary: {
-        bytesDownloaded: 0,
-        bytesUploaded: 0,
-        conflictFiles: 0,
-        downloadedFiles: 0,
-        scannedFiles: 0,
-        skippedFiles: 0,
-        uploadedFiles: 0
-      },
-      trigger: "manual"
+      status: "completed",
+      result: {
+        notebookName: "Notes",
+        notesRoot: "/Notes",
+        provider: "webdav",
+        revision: "rev-1",
+        summary: {
+          bytesDownloaded: 0,
+          bytesUploaded: 0,
+          conflictFiles: 0,
+          downloadedFiles: 0,
+          scannedFiles: 0,
+          skippedFiles: 0,
+          uploadedFiles: 0
+        },
+        trigger: "manual"
+      }
     });
     await syncApplication({
       notebookName: "Notes",
@@ -140,6 +143,44 @@ describe("native application sync config runtime", () => {
     ]);
   });
 
+  it("returns an accepted S3 background job without logging it as completed", async () => {
+    const completedLog = vi.spyOn(appLogger, "info").mockImplementation(() => ({
+      area: "sync",
+      details: {},
+      level: "info",
+      message: "Application synchronization completed",
+      timestamp: "2026-07-28T00:00:00Z"
+    }));
+    mockedInvoke.mockResolvedValue({
+      status: "accepted",
+      job: {
+        jobId: "00000000-0000-4000-8000-000000000301",
+        notesRoot: "/Notes",
+        repositoryId: "00000000-0000-4000-8000-000000000302"
+      }
+    });
+
+    await expect(syncApplication({
+      notebookName: "Notes",
+      notesRoot: "/Notes",
+      revision: "rev-1",
+      trigger: "manual"
+    })).resolves.toEqual({
+      status: "accepted",
+      job: {
+        jobId: "00000000-0000-4000-8000-000000000301",
+        notesRoot: "/Notes",
+        repositoryId: "00000000-0000-4000-8000-000000000302"
+      }
+    });
+    expect(completedLog).not.toHaveBeenCalledWith(
+      "sync",
+      "Application synchronization completed",
+      expect.anything()
+    );
+    completedLog.mockRestore();
+  });
+
   it("logs a successful synchronization summary without notebook paths", async () => {
     const logSpy = vi.spyOn(appLogger, "info").mockImplementation(() => ({
       area: "sync",
@@ -149,20 +190,23 @@ describe("native application sync config runtime", () => {
       timestamp: "2026-07-23T01:53:04Z"
     }));
     mockedInvoke.mockResolvedValue({
-      notebookName: "Private Notes",
-      notesRoot: "/Users/example/Private Notes",
-      provider: "s3",
-      revision: "rev-safe",
-      summary: {
-        bytesDownloaded: 2,
-        bytesUploaded: 4,
-        conflictFiles: 0,
-        downloadedFiles: 1,
-        scannedFiles: 3,
-        skippedFiles: 0,
-        uploadedFiles: 1
-      },
-      trigger: "manual"
+      status: "completed",
+      result: {
+        notebookName: "Private Notes",
+        notesRoot: "/Users/example/Private Notes",
+        provider: "s3",
+        revision: "rev-safe",
+        summary: {
+          bytesDownloaded: 2,
+          bytesUploaded: 4,
+          conflictFiles: 0,
+          downloadedFiles: 1,
+          scannedFiles: 3,
+          skippedFiles: 0,
+          uploadedFiles: 1
+        },
+        trigger: "manual"
+      }
     });
 
     await syncApplication({
@@ -191,20 +235,23 @@ describe("native application sync config runtime", () => {
 
   it("rejects a native run result whose immutable notebook identity changed", async () => {
     mockedInvoke.mockResolvedValue({
-      notebookName: "Other",
-      notesRoot: "/Notes",
-      provider: "webdav",
-      revision: "rev-1",
-      summary: {
-        bytesDownloaded: 0,
-        bytesUploaded: 0,
-        conflictFiles: 0,
-        downloadedFiles: 0,
-        scannedFiles: 0,
-        skippedFiles: 0,
-        uploadedFiles: 0
-      },
-      trigger: "manual"
+      status: "completed",
+      result: {
+        notebookName: "Other",
+        notesRoot: "/Notes",
+        provider: "webdav",
+        revision: "rev-1",
+        summary: {
+          bytesDownloaded: 0,
+          bytesUploaded: 0,
+          conflictFiles: 0,
+          downloadedFiles: 0,
+          scannedFiles: 0,
+          skippedFiles: 0,
+          uploadedFiles: 0
+        },
+        trigger: "manual"
+      }
     });
 
     await expect(syncApplication({

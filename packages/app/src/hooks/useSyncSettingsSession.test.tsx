@@ -146,7 +146,10 @@ function completion(request: SyncRunRequestedPayload, overrides: Partial<SyncRun
     notebookName: request.notebookName,
     notesRoot: request.notesRoot,
     requestId: request.requestId,
-    result: syncResult(request.notesRoot, request.revision),
+    result: {
+      result: syncResult(request.notesRoot, request.revision),
+      status: "completed" as const
+    },
     revision: request.revision,
     sessionId: request.sessionId,
     trigger: "manual" as const,
@@ -458,6 +461,31 @@ describe("useSyncSettingsSession", () => {
 
     const request = requestedRuns(events)[0]!;
     await act(async () => events.emit(syncRunCompletedEvent, completion(request)));
+
+    expect(result.current.dirty).toBe(false);
+  });
+
+  it("clears dirty state when S3 synchronization is accepted for the current root", async () => {
+    const events = configureSessionRuntime({
+      syncConfig: { patch: async () => syncDocument("rev-2", "qingyu/team") }
+    });
+    const { result } = renderHook(() => useSyncSettingsSession({ primaryRoot: "/Notes" }));
+    await waitFor(() => expect(events.listeners.has(syncRunCompletedEvent)).toBe(true));
+    await act(async () => result.current.begin());
+    await act(async () => result.current.patch({ field: "remoteRoot", value: "qingyu/team" }));
+    await act(async () => result.current.runImmediate());
+
+    const request = requestedRuns(events)[0]!;
+    await act(async () => events.emit(syncRunCompletedEvent, completion(request, {
+      result: {
+        job: {
+          jobId: "00000000-0000-4000-8000-000000000501",
+          notesRoot: "/Notes",
+          repositoryId: "00000000-0000-4000-8000-000000000502"
+        },
+        status: "accepted"
+      }
+    })));
 
     expect(result.current.dirty).toBe(false);
   });

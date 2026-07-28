@@ -1,8 +1,10 @@
 import { StrictMode, type ReactNode } from "react";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import type {
+  DejavuRepositoryStatus,
   SyncConfigDocument,
   SyncConfigLoadResult,
+  SyncDispatchResult,
   SyncRunResult,
   SyncStatus
 } from "../lib/sync-config";
@@ -14,7 +16,12 @@ import {
 import { dismissAppToast, showAppToast } from "../lib/app-toast";
 import { appLogger } from "../lib/app-logger";
 import { runApplicationSync } from "../lib/sync";
-import { configureAppRuntime, createDefaultAppRuntime, resetAppRuntimeForTests } from "../runtime";
+import {
+  configureAppRuntime,
+  createDefaultAppRuntime,
+  getAppRuntime,
+  resetAppRuntimeForTests
+} from "../runtime";
 import { useAppSyncCoordinator } from "./useAppSyncCoordinator";
 
 vi.mock("../lib/app-toast", () => ({ dismissAppToast: vi.fn(), showAppToast: vi.fn() }));
@@ -61,7 +68,7 @@ function configDocument(revision = "rev-1", patch: Partial<SyncConfigDocument["c
   };
 }
 
-function syncResult(notesRoot: string, revision: string, trigger: SyncRunResult["trigger"]): SyncRunResult {
+function legacySyncResult(notesRoot: string, revision: string, trigger: SyncRunResult["trigger"]): SyncRunResult {
   return {
     notebookName: notesRoot.split(/[\\/]/).at(-1) ?? "",
     notesRoot,
@@ -77,6 +84,59 @@ function syncResult(notesRoot: string, revision: string, trigger: SyncRunResult[
       uploadedFiles: 1
     },
     trigger
+  };
+}
+
+function completedDispatch(
+  notesRoot: string,
+  revision: string,
+  trigger: SyncRunResult["trigger"]
+): SyncDispatchResult {
+  return { result: legacySyncResult(notesRoot, revision, trigger), status: "completed" };
+}
+
+function acceptedDispatch(notesRoot: string): SyncDispatchResult {
+  return {
+    job: {
+      jobId: "00000000-0000-4000-8000-000000000401",
+      notesRoot,
+      repositoryId: "00000000-0000-4000-8000-000000000402"
+    },
+    status: "accepted"
+  };
+}
+
+function dejavuStatus(
+  phase: DejavuRepositoryStatus["phase"],
+  error: DejavuRepositoryStatus["error"] = null
+): DejavuRepositoryStatus {
+  return {
+    attempt: 1,
+    automaticFailureCount: 0,
+    conflicts: [],
+    error,
+    jobId: "00000000-0000-4000-8000-000000000401",
+    lastAttemptAt: "2026-07-28T00:00:00Z",
+    lastDnsRetryAt: null,
+    lastSuccessfulSyncAt: phase === "succeeded" ? "2026-07-28T00:00:01Z" : null,
+    maintenance: {
+      lastLocalPurgeAt: null,
+      nextLocalPurgeAt: null
+    },
+    nextScheduledAt: null,
+    phase,
+    repositoryId: "00000000-0000-4000-8000-000000000402",
+    sameCount: 0,
+    transfer: {
+      downloadBytes: 0,
+      downloadChunks: 0,
+      downloadFiles: 0,
+      uploadBytes: 0,
+      uploadChunks: 0,
+      uploadFiles: 0
+    },
+    trigger: "manual",
+    version: 1
   };
 }
 
@@ -195,7 +255,7 @@ describe("application sync coordinator", () => {
       if ("applyToken" in input && input.applyToken) {
         await completeMockedApply?.(input.revision, input.applyToken);
       }
-      return syncResult(input.notesRoot, input.revision, input.trigger);
+      return completedDispatch(input.notesRoot, input.revision, input.trigger);
     });
   });
 
@@ -219,8 +279,249 @@ describe("application sync coordinator", () => {
     await waitFor(() => expect(result.current.running).toBe(false));
   });
 
+  it("keeps an accepted S3 job nonterminal until its matching Dejavu success event", async () => {
+    const onFilesChanged = vi.fn();
+    mockedRunApplicationSync.mockResolvedValueOnce(acceptedDispatch("/Notes"));
+    const { result } = renderCoordinator({
+      document: configDocument("rev-1", {
+        mode: "fully-manual",
+        provider: "s3"
+      }),
+      onFilesChanged
+    });
+    let returned: SyncDispatchResult | null = null;
+
+    await act(async () => {
+      returned = await result.current.run("manual");
+    });
+
+    expect(returned).toEqual(acceptedDispatch("/Notes"));
+    expect(onFilesChanged).not.toHaveBeenCalled();
+    expect(result.current.running).toBe(true);
+
+    await act(() => getAppRuntime().events.emit(
+      "qingyu://dejavu-sync-status-changed",
+      dejavuStatus("succeeded")
+    ));
+
+    await waitFor(() => expect(result.current.running).toBe(false));
+    expect(onFilesChanged).toHaveBeenCalledOnce();
+    expect(onFilesChanged).toHaveBeenCalledWith("/Notes");
+  });
+
+  it("reports a terminal Dejavu failure after S3 dispatch acceptance", async () => {
+    const onFilesChanged = vi.fn();
+    mockedRunApplicationSync.mockResolvedValueOnce(acceptedDispatch("/Notes"));
+    const { result } = renderCoordinator({
+      document: configDocument("rev-1", {
+        mode: "fully-manual",
+        provider: "s3"
+      }),
+      onFilesChanged
+    });
+
+    await act(() => result.current.run("manual"));
+    expect(mockedShowAppToast).not.toHaveBeenCalledWith(
+      expect.objectContaining({ status: "error" })
+    );
+
+    await act(() => getAppRuntime().events.emit(
+      "qingyu://dejavu-sync-status-changed",
+      dejavuStatus("failed", {
+        code: "dejavu-cloud-unavailable",
+        operation: "repository-sync"
+      })
+    ));
+
+    await waitFor(() => expect(mockedShowAppToast).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "app-sync",
+        message: "settings.sync.toastIncomplete",
+        status: "error"
+      })
+    ));
+    expect(result.current.running).toBe(false);
+    expect(onFilesChanged).not.toHaveBeenCalled();
+  });
+
+  it("ignores a terminal Dejavu event for another jobId", async () => {
+    const onFilesChanged = vi.fn();
+    mockedRunApplicationSync.mockResolvedValueOnce(acceptedDispatch("/Notes"));
+    const { result } = renderCoordinator({
+      document: configDocument("rev-1", {
+        mode: "fully-manual",
+        provider: "s3"
+      }),
+      onFilesChanged
+    });
+
+    await act(() => result.current.run("manual"));
+    await act(() => getAppRuntime().events.emit(
+      "qingyu://dejavu-sync-status-changed",
+      {
+        ...dejavuStatus("succeeded"),
+        jobId: "00000000-0000-4000-8000-000000000499"
+      }
+    ));
+
+    expect(result.current.running).toBe(true);
+    expect(onFilesChanged).not.toHaveBeenCalled();
+
+    await act(() => getAppRuntime().events.emit(
+      "qingyu://dejavu-sync-status-changed",
+      dejavuStatus("succeeded")
+    ));
+
+    await waitFor(() => expect(result.current.running).toBe(false));
+    expect(onFilesChanged).toHaveBeenCalledOnce();
+  });
+
+  it("settles from a terminal Dejavu event that races ahead of acceptance", async () => {
+    const onFilesChanged = vi.fn();
+    const submission = deferred<SyncDispatchResult>();
+    mockedRunApplicationSync.mockImplementationOnce(() => submission.promise);
+    const { result } = renderCoordinator({
+      document: configDocument("rev-1", {
+        mode: "fully-manual",
+        provider: "s3"
+      }),
+      onFilesChanged
+    });
+    await act(async () => Promise.resolve());
+
+    let run!: Promise<SyncDispatchResult | null>;
+    act(() => {
+      run = result.current.run("manual");
+    });
+    await waitFor(() => expect(mockedRunApplicationSync).toHaveBeenCalledOnce());
+
+    await act(() => getAppRuntime().events.emit(
+      "qingyu://dejavu-sync-status-changed",
+      dejavuStatus("succeeded")
+    ));
+    expect(onFilesChanged).not.toHaveBeenCalled();
+
+    await act(async () => {
+      submission.resolve(acceptedDispatch("/Notes"));
+      await run;
+    });
+
+    await waitFor(() => expect(result.current.running).toBe(false));
+    expect(onFilesChanged).toHaveBeenCalledOnce();
+    expect(onFilesChanged).toHaveBeenCalledWith("/Notes");
+  });
+
+  it("recovers a terminal Dejavu status missed before listener registration", async () => {
+    const runtime = getAppRuntime();
+    const registration = deferred<undefined>();
+    const loadRepositoryStatus = vi.fn(async () => dejavuStatus("succeeded"));
+    configureAppRuntime({
+      ...runtime,
+      events: {
+        ...runtime.events,
+        listen: async (event, listener) => {
+          await registration.promise;
+          return runtime.events.listen(event, listener);
+        }
+      },
+      syncConfig: {
+        ...runtime.syncConfig,
+        loadRepositoryStatus
+      }
+    });
+    const onFilesChanged = vi.fn();
+    mockedRunApplicationSync.mockResolvedValueOnce(acceptedDispatch("/Notes"));
+    const { result } = renderCoordinator({
+      document: configDocument("rev-1", {
+        mode: "fully-manual",
+        provider: "s3"
+      }),
+      onFilesChanged
+    });
+
+    await act(() => result.current.run("manual"));
+    await act(async () => {
+      registration.resolve(undefined);
+      await registration.promise;
+    });
+
+    await waitFor(() => expect(result.current.running).toBe(false));
+    expect(loadRepositoryStatus).toHaveBeenCalledWith({ notesRoot: "/Notes" });
+    expect(onFilesChanged).toHaveBeenCalledWith("/Notes");
+  });
+
+  it("tracks one shared accepted job in every mounted coordinator", async () => {
+    const submission = deferred<SyncDispatchResult>();
+    mockedRunApplicationSync.mockImplementationOnce(() => submission.promise);
+    const firstChanged = vi.fn();
+    const secondChanged = vi.fn();
+    const document = configDocument("rev-1", {
+      mode: "fully-manual",
+      provider: "s3"
+    });
+    const first = renderCoordinator({ document, onFilesChanged: firstChanged });
+    const second = renderCoordinator({ document, onFilesChanged: secondChanged });
+
+    let firstRun!: Promise<SyncDispatchResult | null>;
+    let secondRun!: Promise<SyncDispatchResult | null>;
+    act(() => {
+      firstRun = first.result.current.run("manual");
+      secondRun = second.result.current.run("manual");
+    });
+    await waitFor(() => expect(mockedRunApplicationSync).toHaveBeenCalledOnce());
+    await act(async () => {
+      submission.resolve(acceptedDispatch("/Notes"));
+      await Promise.all([firstRun, secondRun]);
+    });
+
+    expect(first.result.current.running).toBe(true);
+    expect(second.result.current.running).toBe(true);
+
+    await act(() => getAppRuntime().events.emit(
+      "qingyu://dejavu-sync-status-changed",
+      dejavuStatus("succeeded")
+    ));
+
+    await waitFor(() => expect(first.result.current.running).toBe(false));
+    await waitFor(() => expect(second.result.current.running).toBe(false));
+    expect(firstChanged).toHaveBeenCalledOnce();
+    expect(secondChanged).toHaveBeenCalledOnce();
+  });
+
+  it("does not carry an accepted S3 job into a replacement workspace", async () => {
+    const onFilesChanged = vi.fn();
+    mockedRunApplicationSync.mockResolvedValueOnce(acceptedDispatch("/Notes"));
+    const { result, rerender } = renderCoordinator({
+      document: configDocument("rev-1", {
+        mode: "fully-manual",
+        provider: "s3"
+      }),
+      onFilesChanged
+    });
+
+    await act(() => result.current.run("manual"));
+    expect(result.current.running).toBe(true);
+
+    act(() => {
+      rerender({
+        currentDocument: configDocument("rev-b", {
+          mode: "fully-manual",
+          provider: "s3"
+        }),
+        currentRoot: "/B"
+      });
+    });
+
+    expect(result.current.running).toBe(false);
+    await act(() => getAppRuntime().events.emit(
+      "qingyu://dejavu-sync-status-changed",
+      dejavuStatus("succeeded")
+    ));
+    expect(onFilesChanged).not.toHaveBeenCalled();
+  });
+
   it("cancels a queued old-root run and drains an already-started run before switching", async () => {
-    const nativeRun = deferred<SyncRunResult>();
+    const nativeRun = deferred<SyncDispatchResult>();
     mockedRunApplicationSync.mockImplementationOnce(() => nativeRun.promise);
     const { result, rerender } = renderCoordinator({ primaryRoot: "/Notes" });
     await waitFor(() => expect(mockedRunApplicationSync).toHaveBeenCalledWith({
@@ -239,7 +540,7 @@ describe("application sync coordinator", () => {
     await Promise.resolve();
     expect(drained).toBe(false);
 
-    nativeRun.resolve(syncResult("/Notes", "rev-1", "app-launch"));
+    nativeRun.resolve(completedDispatch("/Notes", "rev-1", "app-launch"));
     await draining;
     result.current.finishNotebookSwitch();
 
@@ -247,7 +548,7 @@ describe("application sync coordinator", () => {
   });
 
   it("does not carry an old running count into the replacement switch generation", async () => {
-    const oldRun = deferred<SyncRunResult>();
+    const oldRun = deferred<SyncDispatchResult>();
     mockedRunApplicationSync.mockImplementationOnce(() => oldRun.promise);
     const { result } = renderCoordinator({ primaryRoot: "/Notes" });
     await waitFor(() => expect(mockedRunApplicationSync).toHaveBeenCalledWith({
@@ -262,15 +563,15 @@ describe("application sync coordinator", () => {
     act(() => {
       draining = result.current.beginNotebookSwitch();
     });
-    oldRun.resolve(syncResult("/Notes", "rev-1", "app-launch"));
+    oldRun.resolve(completedDispatch("/Notes", "rev-1", "app-launch"));
     await act(async () => {
       await draining;
       result.current.finishNotebookSwitch();
     });
 
-    const newRun = deferred<SyncRunResult>();
+    const newRun = deferred<SyncDispatchResult>();
     mockedRunApplicationSync.mockImplementationOnce(() => newRun.promise);
-    let nextRun!: Promise<SyncRunResult | null>;
+    let nextRun!: Promise<SyncDispatchResult | null>;
     act(() => {
       nextRun = result.current.run("manual");
     });
@@ -282,7 +583,7 @@ describe("application sync coordinator", () => {
     }));
     await waitFor(() => expect(result.current.running).toBe(true));
 
-    newRun.resolve(syncResult("/Notes", "rev-1", "manual"));
+    newRun.resolve(completedDispatch("/Notes", "rev-1", "manual"));
     await act(async () => {
       await nextRun;
     });
@@ -295,7 +596,7 @@ describe("application sync coordinator", () => {
     await waitFor(() => expect(mockedRunApplicationSync).toHaveBeenCalled());
     await waitFor(() => expect(result.current.running).toBe(false));
     mockedRunApplicationSync.mockClear();
-    const nativePublication = deferred<SyncRunResult>();
+    const nativePublication = deferred<SyncDispatchResult>();
     mockedRunApplicationSync.mockImplementationOnce(() => nativePublication.promise);
 
     await act(() => emitSyncEditing({ active: true, revision: "rev-1", sessionId: "s1" }));
@@ -322,7 +623,7 @@ describe("application sync coordinator", () => {
     await Promise.resolve();
     expect(drained).toBe(false);
 
-    nativePublication.resolve(syncResult("/Notes", "rev-2", "settings-exit"));
+    nativePublication.resolve(completedDispatch("/Notes", "rev-2", "settings-exit"));
     await draining;
     result.current.finishNotebookSwitch();
     expect(drained).toBe(true);
@@ -701,11 +1002,14 @@ describe("application sync coordinator", () => {
     await waitFor(() => expect(result.current.running).toBe(false));
     changed.mockClear();
     mockedRunApplicationSync.mockResolvedValueOnce({
-      ...syncResult("/Notes", "rev-1", "manual"),
-      notebookName: "Other"
+      result: {
+        ...legacySyncResult("/Notes", "rev-1", "manual"),
+        notebookName: "Other"
+      },
+      status: "completed"
     });
 
-    let returned: SyncRunResult | null = syncResult("/placeholder", "rev", "manual");
+    let returned: SyncDispatchResult | null = completedDispatch("/placeholder", "rev", "manual");
     await act(async () => {
       returned = await result.current.run("manual");
     });
@@ -855,7 +1159,7 @@ describe("application sync coordinator", () => {
   });
 
   it("cancels queued old-root work and prevents an in-flight old result from updating the new root", async () => {
-    const runA = deferred<SyncRunResult>();
+    const runA = deferred<SyncDispatchResult>();
     const changed = vi.fn();
     mockedRunApplicationSync.mockImplementationOnce(() => runA.promise);
     const { result, rerender } = renderCoordinator({ onFilesChanged: changed, primaryRoot: "/A" });
@@ -864,7 +1168,7 @@ describe("application sync coordinator", () => {
     rerender({ currentDocument: configDocument("rev-b"), currentRoot: "/B" });
     expect(result.current.status).toBeNull();
     await act(async () => {
-      runA.resolve(syncResult("/A", "rev-1", "app-launch"));
+      runA.resolve(completedDispatch("/A", "rev-1", "app-launch"));
       await runA.promise;
     });
     await waitFor(() => expect(mockedRunApplicationSync).toHaveBeenCalledWith(expect.objectContaining({
@@ -1009,12 +1313,12 @@ describe("application sync coordinator", () => {
   });
 
   it("coalesces save and manual callers by root and revision while preserving the manual result", async () => {
-    const pending = deferred<SyncRunResult>();
+    const pending = deferred<SyncDispatchResult>();
     const { result } = renderCoordinator();
     await waitFor(() => expect(mockedRunApplicationSync).toHaveBeenCalled());
     mockedRunApplicationSync.mockClear();
     mockedRunApplicationSync.mockImplementationOnce(() => pending.promise);
-    let manualRun: Promise<SyncRunResult | null> | null = null;
+    let manualRun: Promise<SyncDispatchResult | null> | null = null;
 
     await act(async () => {
       await result.current.notifyDocumentSaved("/Notes/file.md");
@@ -1028,26 +1332,29 @@ describe("application sync coordinator", () => {
       trigger: "save"
     });
 
-    let manualResult: SyncRunResult | null = null;
+    let manualResult: SyncDispatchResult | null = null;
     await act(async () => {
-      pending.resolve(syncResult("/Notes", "rev-1", "save"));
+      pending.resolve(completedDispatch("/Notes", "rev-1", "save"));
       manualResult = await manualRun;
     });
-    expect(manualResult).toEqual(expect.objectContaining({
-      notesRoot: "/Notes",
-      revision: "rev-1",
-      trigger: "manual"
-    }));
+    expect(manualResult).toEqual({
+      result: expect.objectContaining({
+        notesRoot: "/Notes",
+        revision: "rev-1",
+        trigger: "manual"
+      }),
+      status: "completed"
+    });
   });
 
   it("queues one fresh save pass when a document is saved during an active sync", async () => {
-    const firstSave = deferred<SyncRunResult>();
+    const firstSave = deferred<SyncDispatchResult>();
     const { result } = renderCoordinator();
     await waitFor(() => expect(mockedRunApplicationSync).toHaveBeenCalled());
     mockedRunApplicationSync.mockClear();
     mockedRunApplicationSync
       .mockImplementationOnce(() => firstSave.promise)
-      .mockResolvedValueOnce(syncResult("/Notes", "rev-1", "save"));
+      .mockResolvedValueOnce(completedDispatch("/Notes", "rev-1", "save"));
 
     await act(() => result.current.notifyDocumentSaved("/Notes/file.md"));
     await waitFor(() => expect(mockedRunApplicationSync).toHaveBeenCalledTimes(1));
@@ -1055,7 +1362,7 @@ describe("application sync coordinator", () => {
     expect(mockedRunApplicationSync).toHaveBeenCalledTimes(1);
 
     await act(async () => {
-      firstSave.resolve(syncResult("/Notes", "rev-1", "save"));
+      firstSave.resolve(completedDispatch("/Notes", "rev-1", "save"));
       await firstSave.promise;
     });
 
@@ -1069,21 +1376,21 @@ describe("application sync coordinator", () => {
   });
 
   it("queues later saves behind the bounded trailing save pass", async () => {
-    const firstSave = deferred<SyncRunResult>();
-    const trailingSave = deferred<SyncRunResult>();
+    const firstSave = deferred<SyncDispatchResult>();
+    const trailingSave = deferred<SyncDispatchResult>();
     const { result } = renderCoordinator();
     await waitFor(() => expect(mockedRunApplicationSync).toHaveBeenCalled());
     mockedRunApplicationSync.mockClear();
     mockedRunApplicationSync
       .mockImplementationOnce(() => firstSave.promise)
       .mockImplementationOnce(() => trailingSave.promise)
-      .mockResolvedValueOnce(syncResult("/Notes", "rev-1", "save"));
+      .mockResolvedValueOnce(completedDispatch("/Notes", "rev-1", "save"));
 
     await act(() => result.current.notifyDocumentSaved("/Notes/file.md"));
     await waitFor(() => expect(mockedRunApplicationSync).toHaveBeenCalledTimes(1));
     await act(() => result.current.notifyDocumentSaved("/Notes/file.md"));
     await act(async () => {
-      firstSave.resolve(syncResult("/Notes", "rev-1", "save"));
+      firstSave.resolve(completedDispatch("/Notes", "rev-1", "save"));
       await firstSave.promise;
     });
     await waitFor(() => expect(mockedRunApplicationSync).toHaveBeenCalledTimes(2));
@@ -1091,7 +1398,7 @@ describe("application sync coordinator", () => {
     await act(() => result.current.notifyDocumentSaved("/Notes/file.md"));
     expect(mockedRunApplicationSync).toHaveBeenCalledTimes(2);
     await act(async () => {
-      trailingSave.resolve(syncResult("/Notes", "rev-1", "save"));
+      trailingSave.resolve(completedDispatch("/Notes", "rev-1", "save"));
       await trailingSave.promise;
     });
 
@@ -1099,13 +1406,13 @@ describe("application sync coordinator", () => {
   });
 
   it("uses save eligibility when a save joins an active manual run", async () => {
-    const manual = deferred<SyncRunResult>();
+    const manual = deferred<SyncDispatchResult>();
     const { result } = renderCoordinator();
     await waitFor(() => expect(mockedRunApplicationSync).toHaveBeenCalled());
     mockedRunApplicationSync.mockClear();
     mockedRunApplicationSync.mockImplementationOnce(() => manual.promise);
 
-    let manualRun!: Promise<SyncRunResult | null>;
+    let manualRun!: Promise<SyncDispatchResult | null>;
     await act(() => {
       manualRun = result.current.run("manual");
     });
@@ -1114,7 +1421,7 @@ describe("application sync coordinator", () => {
     await act(() => emitSyncEditing({ active: true, revision: "rev-1", sessionId: "s1" }));
 
     await act(async () => {
-      manual.resolve(syncResult("/Notes", "rev-1", "manual"));
+      manual.resolve(completedDispatch("/Notes", "rev-1", "manual"));
       await manualRun;
     });
 
@@ -1123,7 +1430,7 @@ describe("application sync coordinator", () => {
 
   it("does not turn a failed primary run into an automatic save retry", async () => {
     let rejectPrimary!: (error: Error) => undefined;
-    const primary = new Promise<SyncRunResult>((_, reject) => {
+    const primary = new Promise<SyncDispatchResult>((_, reject) => {
       rejectPrimary = (error) => {
         reject(error);
         return undefined;
@@ -1236,7 +1543,7 @@ describe("application sync coordinator", () => {
   it("retries the current sync in place and dismisses the toast after success", async () => {
     mockedRunApplicationSync
       .mockRejectedValueOnce(new Error("remote-http-error: initial failure"))
-      .mockResolvedValueOnce(syncResult("/Notes", "rev-1", "manual"));
+      .mockResolvedValueOnce(completedDispatch("/Notes", "rev-1", "manual"));
 
     renderCoordinator();
 
@@ -1304,14 +1611,14 @@ describe("application sync coordinator", () => {
   });
 
   it("does not let a stale retry success dismiss a newer workspace failure", async () => {
-    const retry = deferred<SyncRunResult>();
+    const retry = deferred<SyncDispatchResult>();
     installRuntime(async () => {
       throw new Error("workspace-document-membership-unavailable");
     });
     mockedRunApplicationSync
       .mockRejectedValueOnce(new Error("remote-http-error: initial failure"))
       .mockImplementationOnce(() => retry.promise)
-      .mockResolvedValueOnce(syncResult("/B", "rev-b", "app-launch"));
+      .mockResolvedValueOnce(completedDispatch("/B", "rev-b", "app-launch"));
 
     const { result, rerender } = renderCoordinator();
     await waitFor(() => expect(mockedShowAppToast).toHaveBeenCalledWith(expect.objectContaining({
@@ -1335,7 +1642,7 @@ describe("application sync coordinator", () => {
     const dismissCountBeforeRetrySettles = mockedDismissAppToast.mock.calls.length;
 
     await act(async () => {
-      retry.resolve(syncResult("/Notes", "rev-1", "manual"));
+      retry.resolve(completedDispatch("/Notes", "rev-1", "manual"));
       await retry.promise;
     });
 
@@ -1343,11 +1650,11 @@ describe("application sync coordinator", () => {
   });
 
   it("clears an owned loading toast on workspace change without a second stale dismissal", async () => {
-    const retry = deferred<SyncRunResult>();
+    const retry = deferred<SyncDispatchResult>();
     mockedRunApplicationSync
       .mockRejectedValueOnce(new Error("remote-http-error: initial failure"))
       .mockImplementationOnce(() => retry.promise)
-      .mockResolvedValueOnce(syncResult("/B", "rev-b", "app-launch"));
+      .mockResolvedValueOnce(completedDispatch("/B", "rev-b", "app-launch"));
 
     const { rerender } = renderCoordinator();
     await waitFor(() => expect(mockedShowAppToast).toHaveBeenCalledWith(expect.objectContaining({
@@ -1365,7 +1672,7 @@ describe("application sync coordinator", () => {
     await waitFor(() => expect(mockedDismissAppToast).toHaveBeenCalledTimes(1));
 
     await act(async () => {
-      retry.resolve(syncResult("/Notes", "rev-1", "manual"));
+      retry.resolve(completedDispatch("/Notes", "rev-1", "manual"));
       await retry.promise;
     });
     expect(mockedDismissAppToast).toHaveBeenCalledTimes(1);
@@ -1478,7 +1785,7 @@ describe("application sync coordinator", () => {
 
     await waitFor(() => expect(mockedRunApplicationSync).toHaveBeenCalled());
     unmount();
-    await waitFor(() => expect(cleanups.length).toBeGreaterThanOrEqual(4));
+    await waitFor(() => expect(cleanups.length).toBeGreaterThanOrEqual(5));
     expect(cleanups.every((cleanup) => cleanup.mock.calls.length === 1)).toBe(true);
   });
 
@@ -1510,7 +1817,7 @@ describe("application sync coordinator", () => {
       registration.resolve(undefined);
       await registration.promise;
     });
-    await waitFor(() => expect(cleanups).toHaveLength(4));
+    await waitFor(() => expect(cleanups).toHaveLength(5));
     expect(cleanups.every((cleanup) => cleanup.mock.calls.length === 1)).toBe(true);
   });
 
@@ -1539,7 +1846,7 @@ describe("application sync coordinator", () => {
       }
     });
     const { unmount } = renderCoordinator();
-    await waitFor(() => expect(cleanups).toHaveLength(3));
+    await waitFor(() => expect(cleanups).toHaveLength(4));
 
     unmount();
     expect(cleanups.every((cleanup) => cleanup.mock.calls.length === 1)).toBe(true);
@@ -1548,7 +1855,7 @@ describe("application sync coordinator", () => {
       delayedRegistration.resolve(undefined);
       await delayedRegistration.promise;
     });
-    await waitFor(() => expect(cleanups).toHaveLength(4));
+    await waitFor(() => expect(cleanups).toHaveLength(5));
     expect(cleanups.every((cleanup) => cleanup.mock.calls.length === 1)).toBe(true);
   });
 });

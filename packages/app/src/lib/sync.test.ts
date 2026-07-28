@@ -9,20 +9,23 @@ describe("application sync runtime boundary", () => {
       trigger: "manual" as const
     };
     const expectedResult = {
-      notebookName: "notes",
-      notesRoot: "/canonical/notes",
-      provider: "webdav" as const,
-      revision: "rev-1",
-      summary: {
-        bytesDownloaded: 0,
-        bytesUploaded: 0,
-        conflictFiles: 0,
-        downloadedFiles: 0,
-        scannedFiles: 0,
-        skippedFiles: 0,
-        uploadedFiles: 0
+      result: {
+        notebookName: "notes",
+        notesRoot: "/canonical/notes",
+        provider: "webdav" as const,
+        revision: "rev-1",
+        summary: {
+          bytesDownloaded: 0,
+          bytesUploaded: 0,
+          conflictFiles: 0,
+          downloadedFiles: 0,
+          scannedFiles: 0,
+          skippedFiles: 0,
+          uploadedFiles: 0
+        },
+        trigger: "manual" as const
       },
-      trigger: "manual" as const
+      status: "completed" as const
     };
     const sync = vi.fn(async () => expectedResult);
 

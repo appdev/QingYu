@@ -1,10 +1,11 @@
 import { getAppRuntime, type RuntimeCleanup } from "../runtime";
 import type {
+  DejavuRepositoryStatus,
   SyncApplyUpdate,
+  SyncDispatchResult,
   SyncEditingEvent,
   SyncEditingUpdate,
   SyncPendingApply,
-  SyncRunResult,
   SyncSafeError,
   SyncStatus,
   SyncTrigger
@@ -16,6 +17,7 @@ export const syncApplyRequestedEvent = "qingyu://sync-config-apply-requested";
 export const syncRunRequestedEvent = "qingyu://sync-run-requested";
 export const syncRunCompletedEvent = "qingyu://sync-run-completed";
 export const syncStatusChangedEvent = "qingyu://sync-status-changed";
+export const dejavuSyncStatusChangedEvent = "qingyu://dejavu-sync-status-changed";
 
 export type SyncConfigChangedPayload = { revision: string };
 export type SyncEditingPayload = SyncEditingEvent;
@@ -34,7 +36,7 @@ export type SyncRunCompletedPayload = {
   notebookName: string;
   notesRoot: string;
   requestId: string;
-  result: SyncRunResult | null;
+  result: SyncDispatchResult | null;
   revision: string;
   sessionId: string;
   trigger: SyncTrigger;
@@ -109,4 +111,10 @@ export function emitSyncStatusChanged(payload: SyncStatusChangedPayload) {
 
 export function listenSyncStatusChanged(handler: (payload: SyncStatusChangedPayload) => unknown) {
   return listenEvent(syncStatusChangedEvent, handler);
+}
+
+export function listenDejavuSyncStatusChanged(
+  handler: (payload: DejavuRepositoryStatus) => unknown
+) {
+  return listenEvent(dejavuSyncStatusChangedEvent, handler);
 }

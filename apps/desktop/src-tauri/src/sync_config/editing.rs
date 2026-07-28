@@ -2,7 +2,7 @@ use std::sync::{Mutex, OnceLock};
 
 use serde::{Deserialize, Serialize};
 
-use super::status::SyncRunResult;
+use super::SyncDispatchResult;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -98,13 +98,13 @@ struct SyncEditingRegistry {
 
 #[derive(Clone, Debug)]
 struct SyncApplyEntry {
-    completion: tokio::sync::watch::Sender<Option<Result<SyncRunResult, String>>>,
-    outcome: Option<Result<SyncRunResult, String>>,
+    completion: tokio::sync::watch::Sender<Option<Result<SyncDispatchResult, String>>>,
+    outcome: Option<Result<SyncDispatchResult, String>>,
     public: SyncPendingApply,
 }
 
 pub(crate) enum SyncApplyDisposition {
-    Completed(Result<SyncRunResult, String>),
+    Completed(Result<SyncDispatchResult, String>),
     Execute,
     Wait,
 }
@@ -371,7 +371,10 @@ fn begin_apply_in_registry(
     }
 }
 
-pub(crate) async fn wait_sync_apply(revision: &str, token: &str) -> Result<SyncRunResult, String> {
+pub(crate) async fn wait_sync_apply(
+    revision: &str,
+    token: &str,
+) -> Result<SyncDispatchResult, String> {
     let mut completion = {
         let registry = registry().lock().map_err(|_| state_unavailable())?;
         let entry = registry.apply.as_ref().ok_or_else(|| {
@@ -402,7 +405,7 @@ pub(crate) async fn wait_sync_apply(revision: &str, token: &str) -> Result<SyncR
 pub(crate) fn complete_sync_apply(
     revision: &str,
     token: &str,
-    outcome: Result<SyncRunResult, String>,
+    outcome: Result<SyncDispatchResult, String>,
 ) -> Result<(), String> {
     let mut registry = registry().lock().map_err(|_| state_unavailable())?;
     complete_apply_in_registry(&mut registry, revision, token, outcome)
@@ -452,7 +455,7 @@ fn complete_apply_in_registry(
     registry: &mut SyncEditingRegistry,
     revision: &str,
     token: &str,
-    outcome: Result<SyncRunResult, String>,
+    outcome: Result<SyncDispatchResult, String>,
 ) -> Result<(), String> {
     let entry = registry.apply.clone().ok_or_else(|| {
         "sync-apply-unavailable: The sync settings apply is unavailable.".to_string()
@@ -550,7 +553,7 @@ impl SyncEditingTestRegistry {
         &mut self,
         revision: &str,
         token: &str,
-        outcome: Result<SyncRunResult, String>,
+        outcome: Result<SyncDispatchResult, String>,
     ) -> Result<(), String> {
         complete_apply_in_registry(&mut self.registry, revision, token, outcome)
     }
@@ -568,7 +571,8 @@ impl SyncEditingTestRegistry {
         &self,
         revision: &str,
         token: &str,
-    ) -> Result<tokio::sync::watch::Receiver<Option<Result<SyncRunResult, String>>>, String> {
+    ) -> Result<tokio::sync::watch::Receiver<Option<Result<SyncDispatchResult, String>>>, String>
+    {
         let entry = self.registry.apply.as_ref().ok_or_else(|| {
             "sync-apply-unavailable: The sync settings apply is unavailable.".to_string()
         })?;

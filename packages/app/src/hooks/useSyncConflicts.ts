@@ -8,9 +8,10 @@ import type {
   DejavuRepositoryStatus,
   SyncConflictRecord
 } from "../lib/sync-config";
+import { dejavuSyncStatusChangedEvent } from "../lib/sync-config-events";
 import { getAppRuntime } from "../runtime";
 
-export const dejavuSyncStatusChangedEvent = "qingyu://dejavu-sync-status-changed";
+export { dejavuSyncStatusChangedEvent };
 
 const noticedConflictIds = new Set<string>();
 

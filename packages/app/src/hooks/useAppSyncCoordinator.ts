@@ -3,8 +3,10 @@ import type { I18nKey } from "@markra/shared";
 import { dismissAppToast, showAppToast } from "../lib/app-toast";
 import { appLogger } from "../lib/app-logger";
 import type {
+  DejavuRepositoryStatus,
   SyncConfigDocument,
   SyncConfigLoadResult,
+  SyncDispatchResult,
   NormalSyncRunRequest,
   SyncMode,
   SyncProvider,
@@ -16,6 +18,7 @@ import type {
 import { notebookNameFromRoot } from "../lib/sync-config";
 import {
   emitSyncRunCompleted,
+  listenDejavuSyncStatusChanged,
   listenSyncApplyRequested,
   listenSyncEditing,
   listenSyncRunRequested,
@@ -31,7 +34,7 @@ export type AppSyncCoordinator = {
   beginNotebookSwitch: () => Promise<void>;
   finishNotebookSwitch: () => unknown;
   notifyDocumentSaved: (documentPath: string) => Promise<unknown>;
-  run: (trigger: SyncTrigger, revision?: string) => Promise<SyncRunResult | null>;
+  run: (trigger: SyncTrigger, revision?: string) => Promise<SyncDispatchResult | null>;
   running: boolean;
   status: SyncStatus | null;
 };
@@ -47,7 +50,7 @@ export type AppSyncCoordinatorInput = {
 type SharedRunOutcome =
   | { state: "cancelled" }
   | { error: unknown; state: "failed" }
-  | { result: SyncRunResult; state: "succeeded" };
+  | { result: SyncDispatchResult; state: "succeeded" };
 
 type SharedRun = {
   callers: Set<Promise<unknown>>;
@@ -64,12 +67,19 @@ type SharedRun = {
   trailingSaveStarted: boolean;
 };
 
-type CallerOutcome = { error: SyncSafeError | null; result: SyncRunResult | null };
+type CallerOutcome = { error: SyncSafeError | null; result: SyncDispatchResult | null };
 type EditingSession = { sessionId: string };
 type PendingApply = EditingSession & { counter: number; revision: string; token: string };
 type SettingsApplyLifecycle = {
   notesRoot: string;
   promise: Promise<unknown>;
+};
+type AcceptedApplicationRun = {
+  generation: number;
+  jobId: string;
+  notesRoot: string;
+  repositoryId: string;
+  revision: string;
 };
 
 const pendingRuns = new Map<string, SharedRun>();
@@ -138,6 +148,29 @@ function pendingApplyKey(pending: Pick<PendingApply, "revision" | "sessionId" | 
   return `${pending.sessionId}\u0000${pending.revision}\u0000${pending.token}`;
 }
 
+function dispatchMatchesRequest(
+  dispatch: SyncDispatchResult,
+  request: NormalSyncRunRequest
+) {
+  if (dispatch.status === "accepted") {
+    return dispatch.job.notesRoot === request.notesRoot;
+  }
+  return dispatch.result.notesRoot === request.notesRoot &&
+    dispatch.result.notebookName === request.notebookName &&
+    dispatch.result.revision === request.revision;
+}
+
+function dispatchWithTrigger(
+  dispatch: SyncDispatchResult,
+  trigger: SyncTrigger
+): SyncDispatchResult {
+  if (dispatch.status === "accepted") return dispatch;
+  return {
+    result: { ...dispatch.result, trigger },
+    status: "completed"
+  };
+}
+
 function acquireSharedRun(request: NormalSyncRunRequest, shouldStart: () => boolean) {
   const key = pendingRunKey(request);
   const existing = pendingRuns.get(key);
@@ -171,11 +204,7 @@ function acquireSharedRun(request: NormalSyncRunRequest, shouldStart: () => bool
     shared.started = true;
     try {
       let result = await runApplicationSync(request);
-      if (
-        result.notesRoot !== request.notesRoot ||
-        result.notebookName !== request.notebookName ||
-        result.revision !== request.revision
-      ) {
+      if (!dispatchMatchesRequest(result, request)) {
         throw new Error("sync-result-mismatch");
       }
       if (shared.rerunSaveRequested) {
@@ -187,11 +216,7 @@ function acquireSharedRun(request: NormalSyncRunRequest, shouldStart: () => bool
         if (rerunShouldStart?.()) {
           result = await runApplicationSync(saveRequest);
         }
-        if (
-          result.notesRoot !== saveRequest.notesRoot ||
-          result.notebookName !== saveRequest.notebookName ||
-          result.revision !== saveRequest.revision
-        ) {
+        if (!dispatchMatchesRequest(result, saveRequest)) {
           throw new Error("sync-result-mismatch");
         }
       }
@@ -257,6 +282,10 @@ export function useAppSyncCoordinator({
   const [runningCount, setRunningCount] = useState(0);
   const [status, setStatus] = useState<SyncStatus | null>(null);
   const [timerVersion, setTimerVersion] = useState(0);
+  const [acceptedRunVersion, setAcceptedRunVersion] = useState(0);
+  const acceptedRunsRef = useRef(new Map<string, AcceptedApplicationRun>());
+  const acceptedSharedRunsRef = useRef(new WeakSet<SharedRun>());
+  const cachedDejavuStatusesRef = useRef(new Map<string, DejavuRepositoryStatus>());
   const blockedRevisionRef = useRef<string | null>(null);
   const claimedApplyKeysRef = useRef(new Set<string>());
   const configRef = useRef<SyncConfigDocument | null>(null);
@@ -300,6 +329,9 @@ export function useAppSyncCoordinator({
     configRef.current = null;
     launchIdentityRef.current = null;
     statusIdentityRef.current = null;
+    acceptedRunsRef.current.clear();
+    acceptedSharedRunsRef.current = new WeakSet<SharedRun>();
+    cachedDejavuStatusesRef.current.clear();
   }
   configRef.current = configDocument;
   if (
@@ -537,11 +569,13 @@ export function useAppSyncCoordinator({
         });
         runDetailedRef.current("manual").then(({ error, result }) => {
           if (!ownsRetry()) return;
+          const matchesIdentity = result?.status === "accepted"
+            ? result.job.notesRoot === root
+            : result?.result.notesRoot === root && result.result.revision === revision;
           if (
-            result &&
+            matchesIdentity &&
             ownsIdentity() &&
-            result.notesRoot === root &&
-            result.revision === revision
+            result
           ) {
             dismissOwnedRetry();
             return;
@@ -565,6 +599,40 @@ export function useAppSyncCoordinator({
     });
   }, []);
   showSyncFailureToastRef.current = showSyncFailureToast;
+
+  const handleDejavuStatus = useCallback((payload: DejavuRepositoryStatus) => {
+    cachedDejavuStatusesRef.current.set(payload.jobId, payload);
+    while (cachedDejavuStatusesRef.current.size > 32) {
+      const oldest = cachedDejavuStatusesRef.current.keys().next().value;
+      if (oldest === undefined) break;
+      cachedDejavuStatusesRef.current.delete(oldest);
+    }
+    const accepted = acceptedRunsRef.current.get(payload.jobId);
+    if (
+      !accepted ||
+      accepted.repositoryId !== payload.repositoryId ||
+      payload.phase === "attempting"
+    ) return;
+    acceptedRunsRef.current.delete(payload.jobId);
+    cachedDejavuStatusesRef.current.delete(payload.jobId);
+    setAcceptedRunVersion((current) => current + 1);
+    if (
+      !mountedRef.current ||
+      generationRef.current !== accepted.generation ||
+      primaryRootRef.current !== accepted.notesRoot ||
+      configRef.current?.revision !== accepted.revision
+    ) return;
+    if (payload.phase === "succeeded") {
+      Promise.resolve(onFilesChangedRef.current?.(accepted.notesRoot)).catch(() => {});
+      return;
+    }
+    appLogger.error("sync", "Dejavu synchronization failed", {
+      code: payload.error?.code ?? "dejavu-repository-unavailable",
+      operation: payload.error?.operation ?? "repository-sync",
+      provider: "s3"
+    });
+    showSyncFailureToast();
+  }, [showSyncFailureToast]);
 
   const runDetailed = useCallback(async (
     trigger: SyncTrigger,
@@ -665,7 +733,43 @@ export function useAppSyncCoordinator({
         return { error: safeError, result: null };
       }
 
-      if (mountedRef.current && generationRef.current === generation && primaryRootRef.current === root) {
+      const dispatch = dispatchWithTrigger(outcome.result, trigger);
+      if (dispatch.status === "accepted") {
+        if (!acceptedSharedRunsRef.current.has(shared)) {
+          acceptedSharedRunsRef.current.add(shared);
+          if (
+            mountedRef.current &&
+            generationRef.current === generation &&
+            primaryRootRef.current === root &&
+            configRef.current?.revision === revision
+          ) {
+            acceptedRunsRef.current.set(dispatch.job.jobId, {
+              generation,
+              jobId: dispatch.job.jobId,
+              notesRoot: dispatch.job.notesRoot,
+              repositoryId: dispatch.job.repositoryId,
+              revision
+            });
+            setAcceptedRunVersion((current) => current + 1);
+            const cached = cachedDejavuStatusesRef.current.get(dispatch.job.jobId);
+            if (cached) handleDejavuStatus(cached);
+            getAppRuntime().syncConfig.loadRepositoryStatus({
+              notesRoot: dispatch.job.notesRoot
+            }).then((current) => {
+              if (
+                current &&
+                current.jobId === dispatch.job.jobId &&
+                current.repositoryId === dispatch.job.repositoryId &&
+                acceptedRunsRef.current.has(dispatch.job.jobId)
+              ) handleDejavuStatus(current);
+            }).catch(() => {});
+          }
+        }
+      } else if (
+        mountedRef.current &&
+        generationRef.current === generation &&
+        primaryRootRef.current === root
+      ) {
         if (onFilesChangedRef.current && !shared.filesChangedNotified) {
           shared.filesChangedNotified = true;
           await Promise.resolve(onFilesChangedRef.current(root)).catch(() => {});
@@ -673,7 +777,7 @@ export function useAppSyncCoordinator({
       }
       return {
         error: null,
-        result: { ...outcome.result, trigger }
+        result: dispatch
       };
       } finally {
         if (mountedRef.current && generationRef.current === generation) {
@@ -688,7 +792,7 @@ export function useAppSyncCoordinator({
       if (shared.completed && shared.callers.size === 0) inFlightRuns.delete(shared);
     }).catch(() => {});
     return caller;
-  }, [installReloaded, recoverError, showSyncFailureToast]);
+  }, [handleDejavuStatus, installReloaded, recoverError, showSyncFailureToast]);
   runDetailedRef.current = runDetailed;
 
   const run = useCallback(async (trigger: SyncTrigger, revision?: string) => (
@@ -852,9 +956,11 @@ export function useAppSyncCoordinator({
         }
         const outcome = await runDetailedRef.current("manual", payload.revision);
         const accepted = Boolean(
-          outcome.result?.notebookName === payload.notebookName &&
-          outcome.result?.notesRoot === primaryRoot &&
-          outcome.result.revision === payload.revision
+          outcome.result?.status === "accepted"
+            ? outcome.result.job.notesRoot === primaryRoot
+            : outcome.result?.result.notebookName === payload.notebookName &&
+              outcome.result.result.notesRoot === primaryRoot &&
+              outcome.result.result.revision === payload.revision
         );
         await emitSyncRunCompleted({
           accepted,
@@ -916,7 +1022,8 @@ export function useAppSyncCoordinator({
         listenSyncEditing(handleEditing),
         listenSyncApplyRequested(handleApply),
         listenSyncRunRequested(handleRequested),
-        listenSyncStatusChanged(handleStatus)
+        listenSyncStatusChanged(handleStatus),
+        listenDejavuSyncStatusChanged(handleDejavuStatus)
       ].map(registerOne));
       if (!installed()) return;
       if (failures.some(Boolean)) throw new Error("sync-editing-listener-unavailable");
@@ -973,7 +1080,7 @@ export function useAppSyncCoordinator({
       }
       for (const cleanup of cleanups) cleanup();
     };
-  }, [installReloaded, primaryRoot, showSyncFailureToast]);
+  }, [handleDejavuStatus, installReloaded, primaryRoot, showSyncFailureToast]);
 
   useEffect(() => {
     if (
@@ -1009,8 +1116,10 @@ export function useAppSyncCoordinator({
   const scopedStatus = statusIdentityRef.current === identity ? status : null;
   const scopedRunning = runningGenerationRef.current === generationRef.current ? runningCount : 0;
   const running = useMemo(
-    () => scopedRunning > 0 || scopedStatus?.completionState === "attempting",
-    [scopedRunning, scopedStatus?.completionState]
+    () => scopedRunning > 0 ||
+      acceptedRunsRef.current.size > 0 ||
+      scopedStatus?.completionState === "attempting",
+    [acceptedRunVersion, identity, scopedRunning, scopedStatus?.completionState]
   );
   return {
     beginNotebookSwitch,

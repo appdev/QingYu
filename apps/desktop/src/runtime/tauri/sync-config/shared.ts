@@ -12,6 +12,7 @@ import {
   type DejavuRepositoryStatus,
   type DejavuKeyState,
   type SyncConflictRecord,
+  type SyncDispatchResult,
   type SyncRunResult
 } from "@markra/app/runtime";
 import { invokeNative } from "../invoke";
@@ -180,8 +181,15 @@ export async function requestNativeSyncConfigApply(
 
 export async function syncApplication(
   input: Parameters<AppSyncConfigRuntime["sync"]>[0]
-): Promise<SyncRunResult> {
-  const result = await invokeNative<SyncRunResult>("sync_application", { request: input });
+): Promise<SyncDispatchResult> {
+  const dispatch = await invokeNative<SyncDispatchResult>("sync_application", { request: input });
+  if (dispatch.status === "accepted") {
+    if (!("notesRoot" in input) || dispatch.job.notesRoot !== input.notesRoot) {
+      throw new Error("sync-result-mismatch");
+    }
+    return dispatch;
+  }
+  const { result } = dispatch;
   const expectedNotesRoot = "notesRoot" in input ? input.notesRoot : result.notesRoot;
   const expectedNotebookName = "notebookName" in input
     ? input.notebookName
@@ -205,7 +213,7 @@ export async function syncApplication(
     trigger: result.trigger,
     uploadedFiles: result.summary.uploadedFiles
   });
-  return result;
+  return dispatch;
 }
 
 export function testSyncConnection(

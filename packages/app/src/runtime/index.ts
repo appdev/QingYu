@@ -914,6 +914,7 @@ export {
   type SyncEditingWriteResult,
   type SyncPendingApply,
   type SyncProvider,
+  type SyncDispatchResult,
   type SyncRunRequest,
   type SyncRunResult,
   type SyncSafeError,

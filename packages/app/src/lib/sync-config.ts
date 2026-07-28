@@ -200,6 +200,10 @@ export type SyncRunResult = {
   trigger: SyncTrigger;
 };
 
+export type SyncDispatchResult =
+  | { job: AcceptedSyncJob; status: "accepted" }
+  | { result: SyncRunResult; status: "completed" };
+
 export function notebookNameFromRoot(root: string): string {
   const withoutTrailingSeparators = root.replace(/[\\/]+$/u, "");
   return withoutTrailingSeparators.split(/[\\/]/u).at(-1) ?? "";
@@ -399,7 +403,7 @@ export type AppSyncConfigRuntime = {
     repositoryId: string;
     resolution: ConflictResolution;
   }): Promise<AcceptedSyncJob>;
-  sync(input: SyncRunRequest): Promise<SyncRunResult>;
+  sync(input: SyncRunRequest): Promise<SyncDispatchResult>;
   testConnection(input: { revision: string }): Promise<SyncConnectionTestResult>;
 };
 

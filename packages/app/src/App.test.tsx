@@ -565,20 +565,23 @@ function incompleteDisabledSyncConfigResult(
 function successfulApplicationSync(input: Parameters<typeof mockedSyncApplication>[0]) {
   const notesRoot = mockSyncRequestNotesRoot(input);
   return Promise.resolve({
-    notebookName: input.bootstrap ? notebookNameFromRoot(notesRoot) : input.notebookName,
-    notesRoot,
-    provider: "webdav" as const,
-    revision: input.revision,
-    summary: {
-      bytesDownloaded: 0,
-      bytesUploaded: 0,
-      conflictFiles: 0,
-      downloadedFiles: 0,
-      scannedFiles: 1,
-      skippedFiles: 0,
-      uploadedFiles: 0
+    result: {
+      notebookName: input.bootstrap ? notebookNameFromRoot(notesRoot) : input.notebookName,
+      notesRoot,
+      provider: "webdav" as const,
+      revision: input.revision,
+      summary: {
+        bytesDownloaded: 0,
+        bytesUploaded: 0,
+        conflictFiles: 0,
+        downloadedFiles: 0,
+        scannedFiles: 1,
+        skippedFiles: 0,
+        uploadedFiles: 0
+      },
+      trigger: input.trigger
     },
-    trigger: input.trigger
+    status: "completed" as const
   });
 }
 
@@ -1393,20 +1396,23 @@ describe("QingYu workspace", () => {
 
   it("runs current-notebook synchronization for a same-name settings selection", async () => {
     const run = vi.fn(async (trigger: "manual" | "app-launch" | "settings-exit" | "save" | "interval", revision?: string) => ({
-      notebookName: "A",
-      notesRoot: "/Workspace/A",
-      provider: "webdav" as const,
-      revision: revision ?? "established-catalog-revision",
-      summary: {
-        bytesDownloaded: 0,
-        bytesUploaded: 10,
-        conflictFiles: 0,
-        downloadedFiles: 0,
-        scannedFiles: 1,
-        skippedFiles: 0,
-        uploadedFiles: 1
+      result: {
+        notebookName: "A",
+        notesRoot: "/Workspace/A",
+        provider: "webdav" as const,
+        revision: revision ?? "established-catalog-revision",
+        summary: {
+          bytesDownloaded: 0,
+          bytesUploaded: 10,
+          conflictFiles: 0,
+          downloadedFiles: 0,
+          scannedFiles: 1,
+          skippedFiles: 0,
+          uploadedFiles: 1
+        },
+        trigger
       },
-      trigger
+      status: "completed" as const
     }));
     const appSyncSpy = vi.spyOn(
       appSyncCoordinatorModule,
@@ -2986,20 +2992,23 @@ describe("QingYu workspace", () => {
     mockedSyncApplication.mockImplementation(async (input) => {
       const notesRoot = mockSyncRequestNotesRoot(input);
       return {
-        notebookName: input.bootstrap ? notebookNameFromRoot(notesRoot) : input.notebookName,
-        notesRoot,
-        provider: loadResult.config.provider,
-        revision: input.revision,
-        summary: {
-          bytesDownloaded: 20,
-          bytesUploaded: 10,
-          conflictFiles: 1,
-          downloadedFiles: 2,
-          scannedFiles: 5,
-          skippedFiles: 0,
-          uploadedFiles: 1
+        result: {
+          notebookName: input.bootstrap ? notebookNameFromRoot(notesRoot) : input.notebookName,
+          notesRoot,
+          provider: loadResult.config.provider,
+          revision: input.revision,
+          summary: {
+            bytesDownloaded: 20,
+            bytesUploaded: 10,
+            conflictFiles: 1,
+            downloadedFiles: 2,
+            scannedFiles: 5,
+            skippedFiles: 0,
+            uploadedFiles: 1
+          },
+          trigger: input.trigger
         },
-        trigger: input.trigger
+        status: "completed" as const
       };
     });
     mockedGetStoredWorkspaceState.mockResolvedValue({

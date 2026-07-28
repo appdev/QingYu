@@ -451,6 +451,10 @@ impl DejavuSyncServiceOwner {
             .ok_or(RepositoryJobError::RepositoryUnavailable)
     }
 
+    pub(crate) fn installed_service(&self) -> Result<DejavuSyncService, RepositoryJobError> {
+        self.service().cloned()
+    }
+
     pub(crate) fn key_state(&self) -> Result<DejavuKeyState, RepositoryJobError> {
         Ok(DejavuKeyState {
             configured: self.conflicts()?.key_configured()?,

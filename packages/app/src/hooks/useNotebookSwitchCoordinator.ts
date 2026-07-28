@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { SyncConfigDocument, SyncRunResult } from "../lib/sync-config";
+import type { SyncConfigDocument, SyncDispatchResult } from "../lib/sync-config";
 import { notebookNameFromRoot } from "../lib/sync-config";
 import {
   listenNotebookSwitchRequested,
@@ -52,10 +52,12 @@ type PendingDesktopNotebookSwitch = {
 type NotebookSwitchTransactionKind = "default" | "desktop-remote-restore";
 
 function bootstrapResultMatches(
-  result: SyncRunResult,
+  dispatch: SyncDispatchResult,
   notesRoot: string,
   revision: string
 ) {
+  if (dispatch.status !== "completed") return false;
+  const { result } = dispatch;
   return result.notesRoot === notesRoot &&
     result.notebookName === notebookNameFromRoot(notesRoot) &&
     result.revision === revision;

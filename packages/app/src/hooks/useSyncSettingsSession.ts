@@ -168,16 +168,19 @@ export function useSyncSettingsSession({
       const request = session.manualRequests.get(payload.requestId);
       if (!request) return;
       session.manualRequests.delete(payload.requestId);
+      const dispatchMatches = payload.result?.status === "accepted"
+        ? payload.result.job.notesRoot === request.notesRoot
+        : payload.result?.status === "completed" &&
+          payload.result.result.revision === request.revision &&
+          payload.result.result.notebookName === request.notebookName &&
+          payload.result.result.notesRoot === request.notesRoot;
       if (
         !payload.accepted ||
         payload.error ||
-        !payload.result ||
+        !dispatchMatches ||
         payload.revision !== request.revision ||
-        payload.result.revision !== request.revision ||
         payload.notebookName !== request.notebookName ||
-        payload.result.notebookName !== request.notebookName ||
         payload.notesRoot !== request.notesRoot ||
-        payload.result.notesRoot !== request.notesRoot ||
         primaryRootRef.current !== request.notesRoot ||
         session.revision !== request.revision
       ) return;
