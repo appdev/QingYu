@@ -1115,6 +1115,7 @@ const messages: BaseLocaleMessages = {
 
 export const syncEnMessages = Object.fromEntries(
   Object.entries(messages).filter(([key]) => (
+    key.startsWith("sync.conflict.") ||
     key.startsWith("settings.sync.") ||
     key.startsWith("compact.sync.") ||
     key === "compact.error.sync"
