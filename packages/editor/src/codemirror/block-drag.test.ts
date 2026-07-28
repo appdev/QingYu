@@ -1,7 +1,9 @@
 import { history, undo } from "@codemirror/commands";
+import { markdown } from "@codemirror/lang-markdown";
+import { forceParsing } from "@codemirror/language";
 import { EditorSelection, EditorState, type Extension } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   codeMirrorBlockDragPlugin,
   moveCodeMirrorBlock,
@@ -10,6 +12,58 @@ import {
 import { horizontalRulePlugin } from "./horizontal-rule.ts";
 import { getMarkraSlashMenuState, liveMarkdown } from "./index.ts";
 import "./dom.test-support.ts";
+
+const synchronousParseRequests = vi.hoisted(
+  (): Array<{
+    kind: "ensure" | "force";
+    timeout: number | undefined;
+    upto: number;
+  }> => [],
+);
+const syntaxTreeIterations = vi.hoisted(
+  (): Array<{ from: number | undefined; to: number | undefined }> => [],
+);
+
+vi.mock("@codemirror/language", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@codemirror/language")>();
+
+  return {
+    ...actual,
+    ensureSyntaxTree(
+      ...args: Parameters<typeof actual.ensureSyntaxTree>
+    ) {
+      synchronousParseRequests.push({
+        kind: "ensure",
+        timeout: args[2],
+        upto: args[1],
+      });
+      return actual.ensureSyntaxTree(...args);
+    },
+    forceParsing(...args: Parameters<typeof actual.forceParsing>) {
+      synchronousParseRequests.push({
+        kind: "force",
+        timeout: args[2],
+        upto: args[1] ?? args[0].viewport.to,
+      });
+      return actual.forceParsing(...args);
+    },
+    syntaxTree(state: Parameters<typeof actual.syntaxTree>[0]) {
+      const tree = actual.syntaxTree(state);
+      return new Proxy(tree, {
+        get(target, property, receiver) {
+          if (property !== "iterate") {
+            return Reflect.get(target, property, receiver);
+          }
+
+          return (spec: Parameters<typeof tree.iterate>[0]) => {
+            syntaxTreeIterations.push({ from: spec.from, to: spec.to });
+            return target.iterate(spec);
+          };
+        },
+      });
+    },
+  };
+});
 
 const views: EditorView[] = [];
 
@@ -43,6 +97,8 @@ function createView(
 afterEach(() => {
   for (const view of views.splice(0)) view.destroy();
   document.body.replaceChildren();
+  synchronousParseRequests.splice(0);
+  syntaxTreeIterations.splice(0);
 });
 
 describe("codeMirrorBlockDragPlugin", () => {
@@ -61,25 +117,59 @@ describe("codeMirrorBlockDragPlugin", () => {
     expect(view.state.doc.toString()).toBe(doc);
   });
 
-  it("discovers blocks beyond the initial syntax parser viewport", () => {
+  it("discovers and moves blocks after parsing advances beyond the initial viewport", () => {
     const doc = [
       ...Array.from({ length: 400 }, (_, index) => `Paragraph ${index}`),
       "- Final list item",
     ].join("\n\n");
-    const state = EditorState.create({
-      doc,
-      extensions: [
-        liveMarkdown({
-          plugins: [codeMirrorBlockDragPlugin(), horizontalRulePlugin()],
-          slashMenu: true,
-        }),
-      ],
-    });
+    const view = createView(doc);
 
-    expect(readCodeMirrorBlockRanges(state).at(-1)).toMatchObject({
+    expect(forceParsing(view, doc.length, 1_000)).toBe(true);
+    const finalBlock = readCodeMirrorBlockRanges(view.state).at(-1);
+    expect(finalBlock).toMatchObject({
       from: doc.lastIndexOf("- Final list item"),
       name: "ListItem",
     });
+    expect(
+      finalBlock && moveCodeMirrorBlock(view, finalBlock.from, 0, "before"),
+    ).toBe(true);
+    expect(view.state.doc.toString().startsWith("- Final list item")).toBe(true);
+  });
+
+  it("does not synchronously request full parsing from the doc-change decoration path", () => {
+    const doc = Array.from(
+      { length: 10_000 },
+      (_, index) => `Paragraph ${index}`,
+    ).join("\n\n");
+    const parent = document.createElement("div");
+    document.body.append(parent);
+    const view = new EditorView({
+      parent,
+      state: EditorState.create({
+        doc,
+        extensions: [
+          markdown(),
+          codeMirrorBlockDragPlugin().extension ?? [],
+        ],
+      }),
+    });
+    views.push(view);
+
+    synchronousParseRequests.splice(0);
+    syntaxTreeIterations.splice(0);
+    view.dispatch({ changes: { from: 0, insert: "Edited " } });
+    const visibleRanges = view.visibleRanges.map(({ from, to }) => ({
+      from,
+      to,
+    }));
+
+    expect(synchronousParseRequests).toEqual([]);
+    expect(syntaxTreeIterations.length).toBeGreaterThan(0);
+    expect(syntaxTreeIterations.every((iteration) =>
+      visibleRanges.some((visibleRange) =>
+        iteration.from === visibleRange.from &&
+        iteration.to === visibleRange.to
+      ))).toBe(true);
   });
 
   it("reorders one list item without moving the entire list", () => {

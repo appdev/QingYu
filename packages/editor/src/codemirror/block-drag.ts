@@ -1,4 +1,4 @@
-import { ensureSyntaxTree, syntaxTree } from "@codemirror/language";
+import { syntaxTree } from "@codemirror/language";
 import {
   EditorSelection,
   EditorState,
@@ -35,6 +35,11 @@ export interface CodeMirrorBlockDragPluginOptions {
 
 export type CodeMirrorBlockDropSide = "after" | "before";
 
+interface CodeMirrorBlockReadRange {
+  readonly from: number;
+  readonly to: number;
+}
+
 const blockDragMime = "application/x-markra-codemirror-block";
 const pointerDragThreshold = 4;
 const defaultLabels: CodeMirrorBlockDragLabels = {
@@ -42,82 +47,105 @@ const defaultLabels: CodeMirrorBlockDragLabels = {
   dragBlock: "Drag block",
 };
 
-export function readCodeMirrorBlockRanges(
+function readCodeMirrorBlockRangesIn(
   state: CodeMirrorState,
+  readRanges: readonly CodeMirrorBlockReadRange[],
 ): CodeMirrorBlockRange[] {
-  const tree = ensureSyntaxTree(state, state.doc.length) ?? syntaxTree(state);
+  const tree = syntaxTree(state);
   const ranges: CodeMirrorBlockRange[] = [];
+  const decoratedStarts = new Set<number>();
+  const includesStart = (from: number) => readRanges.some(
+    (range) => from >= range.from && from <= range.to,
+  );
+  const appendRange = (range: CodeMirrorBlockRange) => {
+    if (decoratedStarts.has(range.from) || !includesStart(range.from)) return;
+    decoratedStarts.add(range.from);
+    ranges.push(range);
+  };
   const frontmatter = readCodeMirrorFrontmatter(state.doc.toString());
   if (frontmatter) {
-    ranges.push({
+    appendRange({
       from: state.doc.lineAt(frontmatter.from).from,
       name: `Frontmatter:${frontmatter.kind}`,
       to: state.doc.lineAt(frontmatter.to).to,
     });
   }
 
-  const appendListItems = (
-    list: ReturnType<typeof syntaxTree>["topNode"],
-    depth: number,
-  ) => {
-    let child = list.firstChild;
-    while (child) {
-      if (child.name === "ListItem") {
-        const line = state.doc.lineAt(child.from);
-        ranges.push({
-          depth,
-          from: line.from,
-          name: child.name,
-          to: state.doc.lineAt(child.to).to,
-        });
-        let nested = child.firstChild;
-        while (nested) {
-          if (nested.name === "BulletList" || nested.name === "OrderedList") {
-            appendListItems(nested, depth + 1);
+  for (const readRange of readRanges) {
+    tree.iterate({
+      from: readRange.from,
+      to: readRange.to,
+      enter(node) {
+        if (frontmatter && node.from < frontmatter.to) return;
+        if (node.name === "ListItem") {
+          let depth = 0;
+          let parent = node.node.parent;
+          while (parent) {
+            if (parent.name === "ListItem") depth += 1;
+            parent = parent.parent;
           }
-          nested = nested.nextSibling;
+          const line = state.doc.lineAt(node.from);
+          appendRange({
+            depth,
+            from: line.from,
+            name: node.name,
+            to: state.doc.lineAt(node.to).to,
+          });
+          return;
+        }
+
+        const parent = node.node.parent;
+        if (
+          parent?.parent === null &&
+          node.name !== "BulletList" &&
+          node.name !== "OrderedList"
+        ) {
+          const from = state.doc.lineAt(node.from).from;
+          const to = state.doc.lineAt(node.to).to;
+          if (to > from) appendRange({ from, name: node.name, to });
         }
       }
-      child = child.nextSibling;
-    }
-  };
+    });
+  }
 
-  let node = tree.topNode.firstChild;
-  while (node) {
-    const next = node.nextSibling;
-    if (!frontmatter || node.from >= frontmatter.to) {
-      if (node.name === "BulletList" || node.name === "OrderedList") {
-        appendListItems(node, 0);
-      } else {
-        const from = state.doc.lineAt(node.from).from;
-        const to = state.doc.lineAt(node.to).to;
-        if (to > from) ranges.push({ from, name: node.name, to });
+  const visitedEmptyLines = new Set<number>();
+  for (const readRange of readRanges) {
+    const firstLine = state.doc.lineAt(readRange.from).number;
+    const lastLine = state.doc.lineAt(readRange.to).number;
+    for (
+      let lineNumber = firstLine;
+      lineNumber <= lastLine;
+      lineNumber += 1
+    ) {
+      if (
+        lineNumber <= 1 ||
+        lineNumber >= state.doc.lines ||
+        visitedEmptyLines.has(lineNumber)
+      ) {
+        continue;
+      }
+      visitedEmptyLines.add(lineNumber);
+      const line = state.doc.line(lineNumber);
+      if (
+        line.length === 0 &&
+        state.doc.line(lineNumber - 1).length === 0 &&
+        state.doc.line(lineNumber + 1).length === 0
+      ) {
+        appendRange({ from: line.from, name: "EmptyLine", to: line.to });
       }
     }
-    node = next;
-  }
-  let runStart = 0;
-  while (runStart < state.doc.lines) {
-    const first = state.doc.line(runStart + 1);
-    if (first.length > 0) {
-      runStart += 1;
-      continue;
-    }
-    let runEnd = runStart;
-    while (
-      runEnd + 1 < state.doc.lines &&
-      state.doc.line(runEnd + 2).length === 0
-    ) {
-      runEnd += 1;
-    }
-    for (let index = runStart + 1; index < runEnd; index += 1) {
-      const line = state.doc.line(index + 1);
-      ranges.push({ from: line.from, name: "EmptyLine", to: line.to });
-    }
-    runStart = runEnd + 1;
   }
 
   return ranges.sort((left, right) => left.from - right.from || left.to - right.to);
+}
+
+export function readCodeMirrorBlockRanges(
+  state: CodeMirrorState,
+): CodeMirrorBlockRange[] {
+  return readCodeMirrorBlockRangesIn(
+    state,
+    [{ from: 0, to: state.doc.length }],
+  );
 }
 
 function blockByFrom(state: CodeMirrorState, from: number) {
@@ -441,11 +469,15 @@ class BlockToolbarWidget extends WidgetType {
 }
 
 function blockDecorations(
-  state: CodeMirrorState,
+  view: CodeMirrorView,
   labels: CodeMirrorBlockDragLabels,
 ): DecorationSet {
+  const { state } = view;
   if (state.facet(EditorState.readOnly)) return Decoration.none;
-  const decorations = readCodeMirrorBlockRanges(state).flatMap((block) => [
+  const decorations = readCodeMirrorBlockRangesIn(
+    state,
+    view.visibleRanges,
+  ).flatMap((block) => [
     Decoration.line({
       attributes: { "data-markra-block-from": String(block.from) },
     }).range(block.from),
@@ -654,17 +686,23 @@ function draggedBlockFrom(event: DragEvent) {
 
 class BlockDragViewPlugin {
   decorations: DecorationSet;
+  tree: ReturnType<typeof syntaxTree>;
 
   constructor(view: CodeMirrorView, readonly labels: CodeMirrorBlockDragLabels) {
-    this.decorations = blockDecorations(view.state, labels);
+    this.tree = syntaxTree(view.state);
+    this.decorations = blockDecorations(view, labels);
   }
 
   update(update: ViewUpdate) {
+    const tree = syntaxTree(update.state);
     if (
       update.docChanged ||
-      update.startState.readOnly !== update.state.readOnly
+      update.startState.readOnly !== update.state.readOnly ||
+      update.viewportChanged ||
+      tree !== this.tree
     ) {
-      this.decorations = blockDecorations(update.state, this.labels);
+      this.tree = tree;
+      this.decorations = blockDecorations(update.view, this.labels);
     }
   }
 }
