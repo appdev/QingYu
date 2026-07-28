@@ -1,5 +1,5 @@
 export type ThemeAppearance = "light" | "dark";
-export type ThemeSource = "default" | "third-party";
+export type ThemeSource = "bundled" | "default" | "third-party";
 export type ThemeStorageKind = "inlineCss" | "resourceDirectory";
 
 export type ThemePreview = {
@@ -103,14 +103,14 @@ function compareThemeDescriptors(left: ThemeDescriptor, right: ThemeDescriptor) 
 export function mergeThemeCatalog(snapshot: ThemeCatalogSnapshot): MergedThemeCatalog {
   const lightDefault = protectedThemeDescriptors[0];
   const darkDefault = protectedThemeDescriptors[1];
-  const thirdPartyThemes = snapshot.themes.filter(({ source }) => source === "third-party");
+  const installedThemes = snapshot.themes.filter(({ source }) => source !== "default");
   const lightThemes = [
     lightDefault,
-    ...thirdPartyThemes.filter(({ appearance }) => appearance === "light").sort(compareThemeDescriptors)
+    ...installedThemes.filter(({ appearance }) => appearance === "light").sort(compareThemeDescriptors)
   ];
   const darkThemes = [
     darkDefault,
-    ...thirdPartyThemes.filter(({ appearance }) => appearance === "dark").sort(compareThemeDescriptors)
+    ...installedThemes.filter(({ appearance }) => appearance === "dark").sort(compareThemeDescriptors)
   ];
 
   return {

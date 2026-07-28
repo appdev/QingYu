@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "id": "wenkai-paper-dark",
+  "name": "轻语 · 文楷夜读",
+  "appearance": "dark",
+  "entry": "theme.css",
+  "author": "轻语",
+  "version": "1.0.0",
+  "preview": {
+    "background": "#23282d",
+    "panel": "#282e33",
+    "text": "#e7e9ea",
+    "accent": "#54c59f"
+  },
+  "licenseFiles": [
+    "licenses/THEME-LICENSE.txt",
+    "licenses/FONT-LICENSE.txt",
+    "licenses/WEBFONT-LICENSE.txt"
+  ]
+}

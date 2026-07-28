@@ -24,6 +24,20 @@ static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 pub(crate) const ACTIVATION_LEASE_PARENT_NAME: &str = ".qingyu-theme-activation-leases";
 
+pub(crate) fn is_protected_theme_id(id: &str) -> bool {
+    matches!(
+        id,
+        "light" | "dark" | "wenkai-paper-light" | "wenkai-paper-dark"
+    )
+}
+
+fn protected_theme_error() -> ThemeError {
+    ThemeError::new(
+        ThemeErrorCode::ProtectedTheme,
+        "Protected built-in themes cannot be imported, replaced, or deleted.",
+    )
+}
+
 const SEED_THEMES: [(&str, &[u8]); 18] = [
     (
         "github.css",
@@ -104,6 +118,7 @@ struct EmbeddedThemePackage {
     id: &'static str,
     storage_name: &'static str,
     files: &'static [(&'static str, &'static [u8])],
+    shared_files: &'static [(&'static str, &'static [u8])],
 }
 
 const DRAKE_LIGHT_FILES: [(&str, &[u8]); 8] = [
@@ -195,11 +210,103 @@ const DRAKE_THEME_PACKAGES: &[EmbeddedThemePackage] = &[
         id: "drake-light",
         storage_name: "drake-light",
         files: &DRAKE_LIGHT_FILES,
+        shared_files: &[],
     },
     EmbeddedThemePackage {
         id: "drake-ayu",
         storage_name: "drake-ayu",
         files: &DRAKE_AYU_FILES,
+        shared_files: &[],
+    },
+];
+
+macro_rules! wenkai_font_files {
+    ($($subset:literal),+ $(,)?) => {
+        [
+            $(
+                (
+                    concat!("assets/fonts/lxgwwenkaiscreen-subset-", $subset, ".woff2"),
+                    include_bytes!(concat!(
+                        "../../../../../themes/external/wenkai-paper-light/assets/fonts/lxgwwenkaiscreen-subset-",
+                        $subset,
+                        ".woff2"
+                    )) as &[u8],
+                ),
+            )+
+        ]
+    };
+}
+
+const WENKAI_FONT_FILES: [(&str, &[u8]); 97] = wenkai_font_files!(
+    4, 5, 6, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41,
+    42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65,
+    66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89,
+    90, 91, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110, 111, 112, 113, 114,
+    115, 116, 117, 118, 119,
+);
+
+const WENKAI_SHARED_FILES: [(&str, &[u8]); 100] = {
+    let mut files = [("", &[] as &[u8]); 100];
+    let mut index = 0;
+    while index < WENKAI_FONT_FILES.len() {
+        files[index] = WENKAI_FONT_FILES[index];
+        index += 1;
+    }
+    files[97] = (
+        "licenses/THEME-LICENSE.txt",
+        include_bytes!(
+            "../../../../../themes/external/wenkai-paper-light/licenses/THEME-LICENSE.txt"
+        ),
+    );
+    files[98] = (
+        "licenses/FONT-LICENSE.txt",
+        include_bytes!(
+            "../../../../../themes/external/wenkai-paper-light/licenses/FONT-LICENSE.txt"
+        ),
+    );
+    files[99] = (
+        "licenses/WEBFONT-LICENSE.txt",
+        include_bytes!(
+            "../../../../../themes/external/wenkai-paper-light/licenses/WEBFONT-LICENSE.txt"
+        ),
+    );
+    files
+};
+
+const WENKAI_LIGHT_FILES: [(&str, &[u8]); 2] = [
+    (
+        "manifest.json",
+        include_bytes!("../../../../../themes/external/wenkai-paper-light/manifest.json"),
+    ),
+    (
+        "theme.css",
+        include_bytes!("../../../../../themes/external/wenkai-paper-light/theme.css"),
+    ),
+];
+
+const WENKAI_DARK_FILES: [(&str, &[u8]); 2] = [
+    (
+        "manifest.json",
+        include_bytes!("../../../../../themes/external/wenkai-paper-dark/manifest.json"),
+    ),
+    (
+        "theme.css",
+        include_bytes!("../../../../../themes/external/wenkai-paper-dark/theme.css"),
+    ),
+];
+
+const WENKAI_THEME_PACKAGES: &[EmbeddedThemePackage] = &[
+    EmbeddedThemePackage {
+        id: "wenkai-paper-light",
+        storage_name: "wenkai-paper-light",
+        files: &WENKAI_LIGHT_FILES,
+        shared_files: &WENKAI_SHARED_FILES,
+    },
+    EmbeddedThemePackage {
+        id: "wenkai-paper-dark",
+        storage_name: "wenkai-paper-dark",
+        files: &WENKAI_DARK_FILES,
+        shared_files: &WENKAI_SHARED_FILES,
     },
 ];
 
@@ -381,7 +488,12 @@ impl ThemeCatalog {
                 ))
             };
             match parsed_theme {
-                Ok(theme) => parsed.push(theme),
+                Ok(mut theme) => {
+                    if is_protected_theme_id(&theme.id) {
+                        theme.source = "bundled".to_string();
+                    }
+                    parsed.push(theme);
+                }
                 Err(error) => invalid_files.push(InvalidThemeFile {
                     file_name,
                     reason: error.message,
@@ -462,9 +574,25 @@ impl ThemeCatalog {
             &Path,
         ) -> Result<(), ThemeError>,
     ) -> Result<Vec<InvalidThemeFile>, ThemeError> {
+        self.seed_missing_embedded_with_hook(DRAKE_THEME_PACKAGES, hook)
+    }
+
+    pub(crate) fn seed_missing_wenkai(&self) -> Result<Vec<InvalidThemeFile>, ThemeError> {
+        self.seed_missing_embedded_with_hook(WENKAI_THEME_PACKAGES, &mut |_, _, _| Ok(()))
+    }
+
+    fn seed_missing_embedded_with_hook(
+        &self,
+        packages: &'static [EmbeddedThemePackage],
+        hook: &mut dyn FnMut(
+            EmbeddedSeedHookPoint,
+            &EmbeddedThemePackage,
+            &Path,
+        ) -> Result<(), ThemeError>,
+    ) -> Result<Vec<InvalidThemeFile>, ThemeError> {
         self.ensure_root()?;
         let mut diagnostics = Vec::new();
-        for package in DRAKE_THEME_PACKAGES {
+        for package in packages {
             if self.existing_descriptor(package.id)?.is_some() {
                 continue;
             }
@@ -559,9 +687,16 @@ impl ThemeCatalog {
     }
 
     pub(crate) fn drake_seed_diagnostics(&self) -> Result<Vec<InvalidThemeFile>, ThemeError> {
+        self.embedded_seed_diagnostics(DRAKE_THEME_PACKAGES)
+    }
+
+    fn embedded_seed_diagnostics(
+        &self,
+        packages: &'static [EmbeddedThemePackage],
+    ) -> Result<Vec<InvalidThemeFile>, ThemeError> {
         self.ensure_root()?;
         let mut diagnostics = Vec::new();
-        for package in DRAKE_THEME_PACKAGES {
+        for package in packages {
             if self.existing_descriptor(package.id)?.is_some() {
                 continue;
             }
@@ -733,6 +868,9 @@ impl ThemeCatalog {
     ) -> Result<ThemeDescriptor, ThemeError> {
         self.ensure_root()?;
         let candidate = prepared.descriptor().clone();
+        if is_protected_theme_id(&candidate.id) {
+            return Err(protected_theme_error());
+        }
         if self.existing_descriptor(&candidate.id)?.is_some() {
             return Err(ThemeError::new(
                 ThemeErrorCode::DuplicateTheme,
@@ -763,6 +901,9 @@ impl ThemeCatalog {
     ) -> Result<ThemeDescriptor, ThemeError> {
         self.ensure_root()?;
         let candidate = prepared.descriptor().clone();
+        if is_protected_theme_id(&candidate.id) {
+            return Err(protected_theme_error());
+        }
         let existing = self.find_descriptor(&candidate.id)?;
         if existing.fingerprint != expected_fingerprint {
             return Err(fingerprint_mismatch());
@@ -796,11 +937,8 @@ impl ThemeCatalog {
         expected_fingerprint: &str,
         hook: &mut dyn FnMut(DeleteHookPoint),
     ) -> Result<(), ThemeError> {
-        if matches!(id, "light" | "dark") {
-            return Err(ThemeError::new(
-                ThemeErrorCode::ProtectedTheme,
-                "Protected default themes cannot be deleted.",
-            ));
+        if is_protected_theme_id(id) {
+            return Err(protected_theme_error());
         }
         let descriptor = self.find_descriptor(id)?;
         if descriptor.fingerprint != expected_fingerprint {
@@ -1376,7 +1514,7 @@ fn try_materialize_embedded_theme(
             )
         })?;
         revalidate_embedded_staging(&parent, root_name, &root_directory)?;
-        for (relative_path, bytes) in package.files {
+        for (relative_path, bytes) in package.files.iter().chain(package.shared_files.iter()) {
             let relative_path = Path::new(relative_path);
             if relative_path.is_absolute()
                 || relative_path
@@ -1486,7 +1624,8 @@ fn validate_exact_embedded_files(
     validated: &ValidatedThemeDirectory,
     package: &EmbeddedThemePackage,
 ) -> Result<(), ThemeError> {
-    if validated.files.len() != package.files.len() {
+    let expected_file_count = package.files.len() + package.shared_files.len();
+    if validated.files.len() != expected_file_count {
         return Err(fingerprint_mismatch());
     }
     let actual = validated
@@ -1494,10 +1633,11 @@ fn validate_exact_embedded_files(
         .iter()
         .map(|file| (file.relative_path.as_str(), file.bytes.as_slice()))
         .collect::<BTreeMap<_, _>>();
-    if actual.len() != package.files.len()
+    if actual.len() != expected_file_count
         || package
             .files
             .iter()
+            .chain(package.shared_files.iter())
             .any(|(path, bytes)| actual.get(path).copied() != Some(*bytes))
     {
         return Err(fingerprint_mismatch());
@@ -1512,9 +1652,10 @@ fn validate_exact_embedded_graph(
     let expected_files = package
         .files
         .iter()
+        .chain(package.shared_files.iter())
         .map(|(path, bytes)| ((*path).to_string(), *bytes))
         .collect::<BTreeMap<_, _>>();
-    if expected_files.len() != package.files.len() {
+    if expected_files.len() != package.files.len() + package.shared_files.len() {
         return Err(fingerprint_mismatch());
     }
     let mut expected_directories = BTreeSet::new();
@@ -2026,7 +2167,7 @@ mod tests {
         materialize_embedded_theme, materialize_embedded_theme_with_hook,
         rename_catalog_noreplace_with_hook, CatalogPublicationHookPoint, CatalogRenameHookPoint,
         DeleteHookPoint, EmbeddedSeedHookPoint, ThemeCatalog, ACTIVATION_LEASE_PARENT_NAME,
-        DRAKE_THEME_PACKAGES,
+        DRAKE_THEME_PACKAGES, WENKAI_THEME_PACKAGES,
     };
     use crate::themes::{
         archive::prepare_external_theme, manifest::parse_theme_manifest, parser::MAX_THEME_BYTES,
@@ -2254,6 +2395,150 @@ mod tests {
                 4
             );
         }
+    }
+
+    #[test]
+    fn bundled_wenkai_packages_validate_font_shards_licenses_and_source_hash() {
+        const EXPECTED_FONT_BUNDLE_HASH: &str =
+            "fa7053a6113883cecc550774a85b9acf3d27da9a856def978e6d2ed023cc6bd3";
+        let temp = tempdir().unwrap();
+
+        for package in WENKAI_THEME_PACKAGES {
+            let root = temp.path().join(package.storage_name);
+            let validated = materialize_embedded_theme(&root, package).unwrap();
+            assert_eq!(validated.descriptor.id, package.id);
+            assert_eq!(validated.descriptor.author.as_deref(), Some("轻语"));
+            assert_eq!(
+                validated.descriptor.appearance,
+                if package.id.ends_with("light") {
+                    ThemeAppearance::Light
+                } else {
+                    ThemeAppearance::Dark
+                }
+            );
+
+            let manifest = parse_theme_manifest(
+                &validated
+                    .files
+                    .iter()
+                    .find(|file| file.relative_path == "manifest.json")
+                    .unwrap()
+                    .bytes,
+            )
+            .unwrap();
+            assert_eq!(
+                manifest.license_files,
+                [
+                    "licenses/THEME-LICENSE.txt".to_string(),
+                    "licenses/FONT-LICENSE.txt".to_string(),
+                    "licenses/WEBFONT-LICENSE.txt".to_string(),
+                ]
+            );
+
+            let css = String::from_utf8(
+                validated
+                    .files
+                    .iter()
+                    .find(|file| file.relative_path == "theme.css")
+                    .unwrap()
+                    .bytes
+                    .clone(),
+            )
+            .unwrap();
+            let mut digest = Sha256::new();
+            let mut font_count = 0;
+            for (path, bytes) in package
+                .shared_files
+                .iter()
+                .filter(|(path, _)| path.ends_with(".woff2"))
+            {
+                assert!(bytes.starts_with(b"wOF2"));
+                assert!(css.contains(path));
+                digest.update(bytes);
+                font_count += 1;
+            }
+            assert_eq!(font_count, 97);
+            assert_eq!(
+                format!("{:x}", digest.finalize()),
+                EXPECTED_FONT_BUNDLE_HASH
+            );
+            assert_eq!(validated.files.len(), 102);
+        }
+    }
+
+    #[test]
+    fn bundled_wenkai_packages_cannot_be_deleted_from_the_catalog() {
+        let temp = tempdir().unwrap();
+        let catalog = ThemeCatalog::at(temp.path().join("themes"));
+        assert!(catalog.seed_missing_wenkai().unwrap().is_empty());
+
+        for id in ["wenkai-paper-light", "wenkai-paper-dark"] {
+            let descriptor = catalog.find_descriptor(id).unwrap();
+            let error = catalog.delete(id, &descriptor.fingerprint).unwrap_err();
+
+            assert_eq!(error.code, ThemeErrorCode::ProtectedTheme);
+            assert!(temp.path().join("themes").join(id).is_dir());
+        }
+    }
+
+    #[test]
+    fn bundled_wenkai_packages_cannot_be_replaced_by_imports() {
+        let temp = tempdir().unwrap();
+        let catalog_root = temp.path().join("themes");
+        fs::create_dir(&catalog_root).unwrap();
+        let catalog = ThemeCatalog::at(catalog_root.clone());
+        assert!(catalog.seed_missing_wenkai().unwrap().is_empty());
+        let installed = catalog.find_descriptor("wenkai-paper-light").unwrap();
+        let source_root = temp.path().join("replacement-source");
+        let source_archive = temp.path().join("replacement.theme");
+        write_package_archive(
+            &source_root,
+            &source_archive,
+            &catalog_root,
+            "wenkai-paper-light",
+            "Replacement",
+            "light",
+            "replacement",
+        );
+        let replacement = prepare_external_theme(&source_archive, &catalog_root).unwrap();
+
+        let error = catalog
+            .replace_prepared(replacement, &installed.fingerprint)
+            .unwrap_err();
+
+        assert_eq!(error.code, ThemeErrorCode::ProtectedTheme);
+        assert_eq!(
+            catalog
+                .find_descriptor("wenkai-paper-light")
+                .unwrap()
+                .fingerprint,
+            installed.fingerprint
+        );
+    }
+
+    #[test]
+    fn bundled_wenkai_ids_cannot_be_claimed_by_imports() {
+        let temp = tempdir().unwrap();
+        let catalog_root = temp.path().join("themes");
+        fs::create_dir(&catalog_root).unwrap();
+        let catalog = ThemeCatalog::at(catalog_root.clone());
+        let source_root = temp.path().join("import-source");
+        let source_archive = temp.path().join("import.theme");
+        write_package_archive(
+            &source_root,
+            &source_archive,
+            &catalog_root,
+            "wenkai-paper-dark",
+            "Impostor",
+            "dark",
+            "impostor",
+        );
+        let prepared = prepare_external_theme(&source_archive, &catalog_root).unwrap();
+
+        let error = catalog.import_prepared(prepared).unwrap_err();
+
+        assert_eq!(error.code, ThemeErrorCode::ProtectedTheme);
+        assert!(!catalog_root.join("wenkai-paper-dark").exists());
     }
 
     #[test]
