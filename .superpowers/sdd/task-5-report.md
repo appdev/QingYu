@@ -660,3 +660,79 @@ git diff --check: passed
 
 No Task 6, Task 7, Task 8, live-server, credential, or `.serena/` work was
 performed in this review fix.
+
+## Review Fix Round 2: complete semantic reads and bounded snapshots
+
+The second scoped review found three correctness gaps in Round 1:
+
+1. The exported `readCodeMirrorBlockRanges` API and the discrete move path read
+   the same potentially partial syntax snapshot as decorations. Under parser
+   load, a 5,890-character document returned a paragraph at offset 2995 as its
+   final block instead of the list item at offset 5890.
+2. Iterating every descendant `ListItem` promoted a list nested inside a
+   blockquote to an overlapping top-level draggable block.
+3. The syntax-tree test mock created a new proxy on every read. That made an
+   unchanged underlying tree appear to have a new identity and masked whether
+   the decoration plugin actually waited for a parser-published tree.
+
+### RED
+
+Three tests failed independently against the Round 1 implementation:
+
+- `returns complete exported ranges before the background parser finishes`:
+  expected the final block at offset 5890 with name `ListItem`, but received the
+  partial parser boundary at offset 2995 with name `Paragraph`.
+- `keeps quoted lists inside the top-level blockquote block`: expected one
+  `Blockquote` followed by the two real top-level list items, but received an
+  additional overlapping `ListItem` for `> - Quoted two`.
+- `rebuilds block decorations only after the parser publishes a new tree`: an
+  empty dispatch over the same underlying tree was expected to perform zero
+  iterations, but the uncached proxy caused one iteration over `{ from: 0,
+  to: 243 }`.
+
+### GREEN and execution boundary
+
+- Decorations and pointer-move hit testing consume only `syntaxTree(state)` and
+  `view.visibleRanges`. They do not synchronously advance or fully parse the
+  document.
+- The exported complete reader, and the discrete add/move/drop commit paths that
+  depend on it, use the already complete CodeMirror tree when available. If the
+  background parser has not finished, they synchronously parse the document with
+  the active language parser so their semantic result is deterministic.
+- That fallback full parse is cached at most once per immutable `EditorState` in
+  a `WeakMap`. It is not called by pointer movement, decoration construction, or
+  `docChanged` updates, and it performs no extra parse when CodeMirror already
+  has a complete tree.
+- The synchronous fallback remains an explicit cost on a discrete user action.
+  The visual editor currently limits this worst case to documents below
+  1,000,000 characters and below 20,000 lines, but the fallback can still pause
+  that individual add/move/drop interaction while parsing; this tradeoff is not
+  hidden as background work.
+- A `ListItem` is independently draggable only when its outermost syntax owner
+  is a top-level bullet or ordered list. Lists inside blockquotes retain the
+  blockquote as their draggable owner, while nested list-item filtering remains
+  intact.
+- The test mock now caches one proxy per underlying tree and per observation
+  mode. The behavior test proves that the same tree causes no rebuild, a
+  parser-published new tree does rebuild, and the visible toolbar appears only
+  after that publication.
+
+Repair commit: `76af1538dca0e083ef5083fb661787f385cbe2e7`
+
+Final verification on Node 24.18.0:
+
+```text
+three regression tests: each independently RED before the repair and GREEN after
+focused block-drag: 20 passed, 0 failed
+complete editor: 30 files, 339 passed, 0 failed
+pnpm test run 1: 2783 passed across workspace package commands
+pnpm test run 2: 2783 passed across workspace package commands
+pnpm typecheck:test: passed across all configured workspaces
+pnpm build: passed, including 12 desktop vendor chunk imports
+cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml:
+  1099 passed, 0 failed, 2 ignored; binary and doc tests passed
+git diff --check: passed
+```
+
+No Task 6, Task 7, Task 8, live-server, credential, or `.serena/` work was
+performed in this review fix.
