@@ -23,6 +23,11 @@ const synchronousParseRequests = vi.hoisted(
 const syntaxTreeIterations = vi.hoisted(
   (): Array<{ from: number | undefined; to: number | undefined }> => [],
 );
+const suppressedSyntaxTreeStates = vi.hoisted(() => new WeakSet<object>());
+const syntaxTreeProxyCaches = vi.hoisted(() => ({
+  normal: new WeakMap<object, object>(),
+  suppressed: new WeakMap<object, object>(),
+}));
 
 vi.mock("@codemirror/language", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@codemirror/language")>();
@@ -49,18 +54,27 @@ vi.mock("@codemirror/language", async (importOriginal) => {
     },
     syntaxTree(state: Parameters<typeof actual.syntaxTree>[0]) {
       const tree = actual.syntaxTree(state);
-      return new Proxy(tree, {
+      const suppressed = suppressedSyntaxTreeStates.has(state);
+      const cache = suppressed
+        ? syntaxTreeProxyCaches.suppressed
+        : syntaxTreeProxyCaches.normal;
+      const cached = cache.get(tree);
+      if (cached) return cached as typeof tree;
+      const proxy = new Proxy(tree, {
         get(target, property, receiver) {
           if (property !== "iterate") {
             return Reflect.get(target, property, receiver);
           }
 
           return (spec: Parameters<typeof tree.iterate>[0]) => {
+            if (suppressed) return;
             syntaxTreeIterations.push({ from: spec.from, to: spec.to });
             return target.iterate(spec);
           };
         },
       });
+      cache.set(tree, proxy);
+      return proxy;
     },
   };
 });
@@ -136,6 +150,48 @@ describe("codeMirrorBlockDragPlugin", () => {
     expect(view.state.doc.toString().startsWith("- Final list item")).toBe(true);
   });
 
+  it("returns complete exported ranges before the background parser finishes", () => {
+    const doc = [
+      ...Array.from({ length: 400 }, (_, index) => `Paragraph ${index}`),
+      "- Final list item",
+    ].join("\n\n");
+    const state = EditorState.create({
+      doc,
+      extensions: [markdown()],
+    });
+
+    expect(readCodeMirrorBlockRanges(state).at(-1)).toMatchObject({
+      from: doc.lastIndexOf("- Final list item"),
+      name: "ListItem",
+    });
+  });
+
+  it("keeps quoted lists inside the top-level blockquote block", () => {
+    const doc = [
+      "> - Quoted one",
+      "> - Quoted two",
+      "",
+      "- Top one",
+      "- Top two",
+    ].join("\n");
+    const state = EditorState.create({
+      doc,
+      extensions: [markdown()],
+    });
+
+    expect(readCodeMirrorBlockRanges(state).map((block) => ({
+      name: block.name,
+      source: state.sliceDoc(block.from, block.to),
+    }))).toEqual([
+      {
+        name: "Blockquote",
+        source: "> - Quoted one\n> - Quoted two",
+      },
+      { name: "ListItem", source: "- Top one" },
+      { name: "ListItem", source: "- Top two" },
+    ]);
+  });
+
   it("does not synchronously request full parsing from the doc-change decoration path", () => {
     const doc = Array.from(
       { length: 10_000 },
@@ -170,6 +226,51 @@ describe("codeMirrorBlockDragPlugin", () => {
         iteration.from === visibleRange.from &&
         iteration.to === visibleRange.to
       ))).toBe(true);
+  });
+
+  it("rebuilds block decorations only after the parser publishes a new tree", () => {
+    const doc = [
+      "- Visible item",
+      ...Array.from({ length: 400 }, (_, index) => `Paragraph ${index}`),
+    ].join("\n\n");
+    const plugin = codeMirrorBlockDragPlugin();
+    const stableState = EditorState.create({
+      doc,
+      extensions: [markdown(), plugin.extension ?? []],
+    });
+    const stableParent = document.createElement("div");
+    document.body.append(stableParent);
+    const stableView = new EditorView({
+      parent: stableParent,
+      state: stableState,
+    });
+    views.push(stableView);
+    syntaxTreeIterations.splice(0);
+    stableView.dispatch({});
+    expect(syntaxTreeIterations).toHaveLength(0);
+
+    const deferredState = EditorState.create({
+      doc,
+      extensions: [markdown(), plugin.extension ?? []],
+    });
+    suppressedSyntaxTreeStates.add(deferredState);
+    const deferredParent = document.createElement("div");
+    document.body.append(deferredParent);
+    const deferredView = new EditorView({
+      parent: deferredParent,
+      state: deferredState,
+    });
+    views.push(deferredView);
+    expect(
+      deferredView.dom.querySelector('[data-markra-block-from="0"]'),
+    ).toBeNull();
+
+    syntaxTreeIterations.splice(0);
+    expect(forceParsing(deferredView, doc.length, 1_000)).toBe(true);
+    expect(syntaxTreeIterations.length).toBeGreaterThan(0);
+    expect(
+      deferredView.dom.querySelector('[data-markra-block-from="0"]'),
+    ).not.toBeNull();
   });
 
   it("reorders one list item without moving the entire list", () => {

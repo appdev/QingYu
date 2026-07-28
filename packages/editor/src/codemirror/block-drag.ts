@@ -1,4 +1,8 @@
-import { syntaxTree } from "@codemirror/language";
+import {
+  language,
+  syntaxTree,
+  syntaxTreeAvailable,
+} from "@codemirror/language";
 import {
   EditorSelection,
   EditorState,
@@ -46,12 +50,29 @@ const defaultLabels: CodeMirrorBlockDragLabels = {
   addBlock: "Add block below",
   dragBlock: "Drag block",
 };
+const completeSyntaxTrees = new WeakMap<
+  CodeMirrorState,
+  ReturnType<typeof syntaxTree>
+>();
+
+function completeSyntaxTree(state: CodeMirrorState) {
+  if (syntaxTreeAvailable(state)) return syntaxTree(state);
+  const cached = completeSyntaxTrees.get(state);
+  if (cached) return cached;
+
+  const parser = state.facet(language)?.parser;
+  const tree = parser
+    ? parser.parse(state.doc.toString())
+    : syntaxTree(state);
+  completeSyntaxTrees.set(state, tree);
+  return tree;
+}
 
 function readCodeMirrorBlockRangesIn(
   state: CodeMirrorState,
   readRanges: readonly CodeMirrorBlockReadRange[],
+  tree: ReturnType<typeof syntaxTree>,
 ): CodeMirrorBlockRange[] {
-  const tree = syntaxTree(state);
   const ranges: CodeMirrorBlockRange[] = [];
   const decoratedStarts = new Set<number>();
   const includesStart = (from: number) => readRanges.some(
@@ -78,6 +99,14 @@ function readCodeMirrorBlockRangesIn(
       enter(node) {
         if (frontmatter && node.from < frontmatter.to) return;
         if (node.name === "ListItem") {
+          let topLevel = node.node;
+          while (topLevel.parent?.parent) topLevel = topLevel.parent;
+          if (
+            topLevel.name !== "BulletList" &&
+            topLevel.name !== "OrderedList"
+          ) {
+            return;
+          }
           let depth = 0;
           let parent = node.node.parent;
           while (parent) {
@@ -145,6 +174,7 @@ export function readCodeMirrorBlockRanges(
   return readCodeMirrorBlockRangesIn(
     state,
     [{ from: 0, to: state.doc.length }],
+    completeSyntaxTree(state),
   );
 }
 
@@ -477,6 +507,7 @@ function blockDecorations(
   const decorations = readCodeMirrorBlockRangesIn(
     state,
     view.visibleRanges,
+    syntaxTree(state),
   ).flatMap((block) => [
     Decoration.line({
       attributes: { "data-markra-block-from": String(block.from) },
@@ -526,7 +557,11 @@ function dropTarget(event: MouseEvent, view: CodeMirrorView) {
   try {
     const position = view.posAtCoords({ x: event.clientX, y: event.clientY });
     if (position === null) return null;
-    const block = readCodeMirrorBlockRanges(view.state).find(
+    const block = readCodeMirrorBlockRangesIn(
+      view.state,
+      view.visibleRanges,
+      syntaxTree(view.state),
+    ).find(
       (candidate) => position >= candidate.from && position <= candidate.to,
     );
     return block
