@@ -590,3 +590,73 @@ Repair commit: `df81086c31f2f4c68aff7cd2b64c4f8181e5518a`
   are usable, so it did not prevent any required gate.
 - Live S3/MinIO, Go oracle/interop, and app UI verification were intentionally not
   run because they belong to Tasks 6, 7, and 8.
+
+## Review Fix Round 1: responsive block-drag parsing
+
+Review found that the first repair called
+`ensureSyntaxTree(state, state.doc.length)` from `blockDecorations`. That method
+has a default synchronous budget of 50 milliseconds, while block decorations are
+built during ViewPlugin construction and every `docChanged` update. Large files
+could therefore spend the complete parser budget on the main thread after each
+edit.
+
+The local CodeMirror 6.12.3 implementation was used as the API reference:
+
+- `syntaxTree(state)` returns the current, potentially incomplete parse snapshot
+  without advancing the parser;
+- the language parse worker advances from `view.viewport` in idle slices and
+  dispatches `Language.setState` when a newer tree is available;
+- official decoration plugins rebuild when the tree identity or viewport changes
+  and iterate only `view.visibleRanges`;
+- `forceParsing` is reserved for deterministic tests here, not the product edit
+  path.
+
+### RED
+
+A 158,895-character Markdown document was edited once in an isolated
+Markdown-plus-block-drag EditorView. A hoisted parser-boundary spy observed the
+old hot path requesting:
+
+```text
+kind: ensure
+upto: 158895
+timeout: undefined (CodeMirror default: 50 ms)
+```
+
+The test expected no synchronous `ensureSyntaxTree` or `forceParsing` request and
+failed with exit 1. The assertion is on the parser API boundary, not wall-clock
+timing.
+
+### GREEN and behavior preservation
+
+- `readCodeMirrorBlockRanges` now consumes only the current `syntaxTree`
+  snapshot. It never advances the parser synchronously.
+- The decoration path traverses only `view.visibleRanges`, including bounded
+  empty-line discovery, rather than walking or parsing the full document.
+- `BlockDragViewPlugin` rebuilds for document changes, viewport changes,
+  read-only changes, and background syntax-tree identity changes.
+- The long-document boundary test now records zero synchronous parser requests
+  and proves every syntax-tree iteration exactly matches a visible range.
+- The parser-advance test uses CodeMirror's `forceParsing` only as a deterministic
+  stand-in for the idle worker. After advancement, the list item at offset 5890
+  is discovered and successfully moved to the document start.
+- Existing nested list depth, child-item styling, minimal changed range, undo,
+  add-block, read-only, pointer, and drag/drop tests remain green.
+
+Repair commit: `87d53bb5257498432af9fba9750321b3ca9e124b`
+
+Final verification on Node 24.18.0:
+
+```text
+focused block-drag: 17 passed, 0 failed
+complete editor: 30 files, 336 passed, 0 failed
+pnpm test: 2780 passed across workspace package commands
+pnpm typecheck:test: passed across all configured workspaces
+pnpm build: passed, including 12 desktop vendor chunk imports
+cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml:
+  1099 passed, 0 failed, 2 ignored; binary and doc tests passed
+git diff --check: passed
+```
+
+No Task 6, Task 7, Task 8, live-server, credential, or `.serena/` work was
+performed in this review fix.
