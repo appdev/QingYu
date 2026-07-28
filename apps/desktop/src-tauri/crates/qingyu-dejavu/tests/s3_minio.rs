@@ -6,15 +6,16 @@ use std::env;
 use std::fs;
 use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use filetime::FileTime;
 use futures_util::FutureExt;
 use qingyu_dejavu::{
-    Cloud, CloudError, Device, MergeResult, NoopWorkingTreeCoordinator, Repo, RepoError,
-    RepoOptions, RepoPaths, S3AddressingStyle, S3Cloud, S3Connection, S3RepositoryCatalog,
-    S3TlsVerification, S3TransportOptions,
+    Cloud, CloudError, CloudObject, CloudOperation, CloudUploadSource, Device, MergeResult,
+    NoopWorkingTreeCoordinator, Repo, RepoError, RepoOptions, RepoPaths, S3AddressingStyle,
+    S3Cloud, S3Connection, S3RepositoryCatalog, S3TlsVerification, S3TransportOptions,
 };
 use tempfile::TempDir;
 use uuid::Uuid;
@@ -25,6 +26,70 @@ const CLEANUP_TIMEOUT: Duration = Duration::from_secs(60);
 const LOCK_CONTENTION_TIMEOUT: Duration = Duration::from_secs(20);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 const TEST_KEY: [u8; 32] = [0x51; 32];
+const MAX_LATEST_REF_BYTES: u64 = 1024 * 1024;
+
+struct FailBeforeLatestCloud {
+    inner: Arc<dyn Cloud>,
+    failed: AtomicBool,
+}
+
+impl FailBeforeLatestCloud {
+    fn new(inner: Arc<dyn Cloud>) -> Self {
+        Self {
+            inner,
+            failed: AtomicBool::new(false),
+        }
+    }
+
+    fn reject_latest_once(&self, key: &str) -> Result<(), CloudError> {
+        if key == "refs/latest" && !self.failed.swap(true, Ordering::SeqCst) {
+            return Err(CloudError::Injected(CloudOperation::Put));
+        }
+        Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl Cloud for FailBeforeLatestCloud {
+    async fn get_bounded(&self, key: &str, max_bytes: u64) -> Result<Vec<u8>, CloudError> {
+        self.inner.get_bounded(key, max_bytes).await
+    }
+
+    async fn download_to(
+        &self,
+        key: &str,
+        destination: &mut (dyn tokio::io::AsyncWrite + Unpin + Send),
+    ) -> Result<u64, CloudError> {
+        self.inner.download_to(key, destination).await
+    }
+
+    async fn put(&self, key: &str, bytes: &[u8], overwrite: bool) -> Result<u64, CloudError> {
+        self.reject_latest_once(key)?;
+        self.inner.put(key, bytes, overwrite).await
+    }
+
+    async fn upload_from(
+        &self,
+        key: &str,
+        source: &dyn CloudUploadSource,
+        overwrite: bool,
+    ) -> Result<u64, CloudError> {
+        self.reject_latest_once(key)?;
+        self.inner.upload_from(key, source, overwrite).await
+    }
+
+    async fn remove(&self, key: &str) -> Result<(), CloudError> {
+        self.inner.remove(key).await
+    }
+
+    async fn list(&self, prefix: &str) -> Result<Vec<CloudObject>, CloudError> {
+        self.inner.list(prefix).await
+    }
+
+    async fn available_size(&self) -> Result<u64, CloudError> {
+        self.inner.available_size().await
+    }
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn dejavu_s3_sync_round_trips_through_real_minio() -> Result<(), LiveFailure> {
@@ -313,6 +378,73 @@ async fn run_live_scenario(
             && read_file(&client_a.data, "from-b.md")? == b"independent B",
     )?;
 
+    fs::remove_file(client_a.data.join("from-a.md"))
+        .map_err(|_| LiveFailure::new("a_delete_local", "io"))?;
+    let a_delete = sync_repo("a_delete_upload", &client_a.repo, Arc::clone(&cloud)).await?;
+    require(
+        "a_delete_upload",
+        a_delete.conflicts.is_empty() && !client_a.data.join("from-a.md").exists(),
+    )?;
+    let b_delete = sync_repo("b_delete_download", &client_b.repo, Arc::clone(&cloud)).await?;
+    require(
+        "b_delete_download",
+        b_delete.conflicts.is_empty()
+            && merge_removes_path(&b_delete, "/from-a.md")
+            && !client_b.data.join("from-a.md").exists(),
+    )?;
+
+    write_file_at(
+        &client_a.data,
+        "retry.md",
+        b"survives interrupted ref publication",
+        base_seconds + 25,
+    )?;
+    let latest_before = cloud
+        .get_bounded("refs/latest", MAX_LATEST_REF_BYTES)
+        .await
+        .map_err(|error| LiveFailure::cloud("retry_latest_before", &error))?;
+    let fail_before_latest: Arc<dyn Cloud> =
+        Arc::new(FailBeforeLatestCloud::new(Arc::clone(&cloud)));
+    let failed_publication = sync_repo(
+        "a_interrupted_ref_publication",
+        &client_a.repo,
+        fail_before_latest,
+    )
+    .await;
+    require(
+        "a_interrupted_ref_publication",
+        failed_publication.is_err_and(|error| error.code == "injected"),
+    )?;
+    let latest_after_failure = cloud
+        .get_bounded("refs/latest", MAX_LATEST_REF_BYTES)
+        .await
+        .map_err(|error| LiveFailure::cloud("retry_latest_after_failure", &error))?;
+    require(
+        "a_interrupted_ref_publication",
+        latest_after_failure == latest_before,
+    )?;
+    let retry = sync_repo(
+        "a_ref_publication_retry",
+        &client_a.repo,
+        Arc::clone(&cloud),
+    )
+    .await?;
+    require(
+        "a_ref_publication_retry",
+        retry.conflicts.is_empty() && client_a.repo.latest_sync().is_ok_and(|v| v.is_some()),
+    )?;
+    let b_retry = sync_repo(
+        "b_observes_publication_retry",
+        &client_b.repo,
+        Arc::clone(&cloud),
+    )
+    .await?;
+    require(
+        "b_observes_publication_retry",
+        b_retry.conflicts.is_empty()
+            && read_file(&client_b.data, "retry.md")? == b"survives interrupted ref publication",
+    )?;
+
     write_file_at(
         &client_b.data,
         "same.md",
@@ -493,6 +625,10 @@ fn history_versions(history_root: &Path, relative_path: &str) -> Result<Vec<Vec<
 
 fn merge_contains_path(result: &MergeResult, path: &str) -> bool {
     result.upserts.iter().any(|file| file.path == path)
+}
+
+fn merge_removes_path(result: &MergeResult, path: &str) -> bool {
+    result.removes.iter().any(|file| file.path == path)
 }
 
 fn require(stage: &'static str, condition: bool) -> Result<(), LiveFailure> {

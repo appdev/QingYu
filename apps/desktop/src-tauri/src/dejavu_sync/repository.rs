@@ -913,16 +913,21 @@ fn timestamp(value: time::OffsetDateTime) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::env;
     use std::future::Future;
+    use std::panic::AssertUnwindSafe;
     use std::path::{Path, PathBuf};
     use std::pin::Pin;
     use std::sync::{Arc, Mutex};
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     use base64::engine::general_purpose::STANDARD;
     use base64::Engine;
+    use futures::FutureExt;
     use qingyu_dejavu::{
-        Cloud, CloudError, LocalCloud, RepoError, WorkingTreeChange, WorkingTreeCoordinator,
-        WorkingTreePermit,
+        Cloud, CloudError, LocalCloud, NoopWorkingTreeCoordinator, RepoError, S3AddressingStyle,
+        S3Connection, S3RepositoryCatalog, S3TlsVerification, S3TransportOptions,
+        WorkingTreeChange, WorkingTreeCoordinator, WorkingTreePermit,
     };
     use tempfile::{tempdir, TempDir};
 
@@ -934,10 +939,17 @@ mod tests {
     };
     use crate::dejavu_sync::maintenance::LocalPurgeRepositoryOps;
     use crate::dejavu_sync::service::{
-        JobCancellationToken, RepositoryJobError, RepositoryJobRunner, SyncAttemptContext,
-        SyncJobRequest,
+        DejavuSyncService, JobCancellationToken, RepositoryJobError, RepositoryJobRunner,
+        SyncAttemptContext, SyncJobRequest,
+    };
+    use crate::dejavu_sync::status::{
+        load_repository_sync_status, RepositoryStatusEventEmitter, RepositoryStatusStore,
+        RepositorySyncPhase, RepositorySyncStatus,
     };
     use crate::sync_config::status::SyncTrigger;
+
+    const LIVE_SCENARIO_TIMEOUT: Duration = Duration::from_secs(120);
+    const LIVE_CLEANUP_TIMEOUT: Duration = Duration::from_secs(60);
 
     #[test]
     fn only_typed_cloud_dns_errors_reach_the_scheduler_dns_category() {
@@ -1063,6 +1075,194 @@ mod tests {
         {
             Box::pin(async {})
         }
+    }
+
+    struct LiveNoopCoordinatorFactory;
+
+    impl WorkingTreeCoordinatorFactory for LiveNoopCoordinatorFactory {
+        fn create(
+            &self,
+            _context: &SyncAttemptContext,
+        ) -> Result<Arc<dyn WorkingTreeCoordinator>, RepositoryJobError> {
+            Ok(Arc::new(NoopWorkingTreeCoordinator))
+        }
+    }
+
+    #[derive(Default)]
+    struct LiveStatusEmitter {
+        events: Mutex<Vec<RepositorySyncStatus>>,
+    }
+
+    impl RepositoryStatusEventEmitter for LiveStatusEmitter {
+        fn emit(&self, status: &RepositorySyncStatus) -> Result<(), RepositoryJobError> {
+            self.events.lock().unwrap().push(status.clone());
+            Ok(())
+        }
+    }
+
+    struct LiveS3ApplicationConfig {
+        endpoint_url: String,
+        region: String,
+        bucket: String,
+        access_key_id: String,
+        secret_access_key: String,
+    }
+
+    impl LiveS3ApplicationConfig {
+        fn from_env() -> Result<Self, &'static str> {
+            Ok(Self {
+                endpoint_url: live_required_env("MARKRA_TEST_S3_ENDPOINT")?,
+                region: live_optional_env("MARKRA_TEST_S3_REGION")
+                    .unwrap_or_else(|| "us-east-1".to_owned()),
+                bucket: live_required_env("MARKRA_TEST_S3_BUCKET")?,
+                access_key_id: live_required_env("MARKRA_TEST_S3_ACCESS_KEY_ID")?,
+                secret_access_key: live_required_env("MARKRA_TEST_S3_SECRET_ACCESS_KEY")?,
+            })
+        }
+
+        fn catalog(&self) -> Result<S3RepositoryCatalog, &'static str> {
+            let connection = S3Connection::new(
+                &self.endpoint_url,
+                &self.region,
+                &self.bucket,
+                &self.access_key_id,
+                &self.secret_access_key,
+                S3AddressingStyle::Auto,
+            )
+            .map_err(|_| "connection")?;
+            S3RepositoryCatalog::new(
+                connection,
+                S3TransportOptions {
+                    request_timeout: Duration::from_secs(15),
+                    tls_verification: S3TlsVerification::Verify,
+                    max_attempts: 3,
+                },
+            )
+            .map_err(|_| "catalog")
+        }
+
+        fn write_client(
+            &self,
+            root: &Path,
+            name: &str,
+            repository_id: &str,
+            initial_files: &[(&str, &[u8])],
+        ) -> Result<LiveApplicationClient, &'static str> {
+            let app_data = root.join(format!("{name}-app-data"));
+            let notes_root = root.join(format!("{name}-notes"));
+            std::fs::create_dir(&app_data).map_err(|_| "local_setup")?;
+            std::fs::create_dir(&notes_root).map_err(|_| "local_setup")?;
+            for (relative_path, bytes) in initial_files {
+                let path = notes_root.join(relative_path);
+                if let Some(parent) = path.parent() {
+                    std::fs::create_dir_all(parent).map_err(|_| "local_setup")?;
+                }
+                std::fs::write(path, bytes).map_err(|_| "local_setup")?;
+            }
+            let canonical_notes_root = notes_root.canonicalize().map_err(|_| "local_setup")?;
+            let config = serde_json::json!({
+                "version": 3,
+                "enabled": true,
+                "provider": "s3",
+                "remoteRoot": "ignored-by-dejavu-layout",
+                "mode": "automatic",
+                "intervalSeconds": 30,
+                "webdav": {
+                    "serverUrl": "",
+                    "username": "",
+                    "password": ""
+                },
+                "s3": {
+                    "endpointUrl": self.endpoint_url,
+                    "region": self.region,
+                    "bucket": self.bucket,
+                    "accessKeyId": self.access_key_id,
+                    "secretAccessKey": self.secret_access_key,
+                    "requestTimeoutSeconds": 15,
+                    "addressingStyle": "auto",
+                    "tlsVerification": "verify"
+                }
+            });
+            std::fs::write(
+                app_data.join("sync-config.json"),
+                serde_json::to_vec_pretty(&config).map_err(|_| "local_setup")?,
+            )
+            .map_err(|_| "local_setup")?;
+            let state = serde_json::json!({
+                "version": 1,
+                "deviceId": uuid::Uuid::new_v4().to_string(),
+                "repoKey": STANDARD.encode([0x62_u8; 32]),
+                "bindings": [{
+                    "repositoryId": repository_id,
+                    "displayName": "Live restore",
+                    "notesRoot": canonical_notes_root,
+                    "enabled": true
+                }]
+            });
+            std::fs::write(
+                app_data.join("local-sync.json"),
+                serde_json::to_vec_pretty(&state).map_err(|_| "local_setup")?,
+            )
+            .map_err(|_| "local_setup")?;
+            Ok(LiveApplicationClient {
+                app_data,
+                notes_root,
+                repository_id: repository_id.to_owned(),
+            })
+        }
+    }
+
+    struct LiveApplicationClient {
+        app_data: PathBuf,
+        notes_root: PathBuf,
+        repository_id: String,
+    }
+
+    impl LiveApplicationClient {
+        async fn enqueue_and_wait(&self) -> Result<(String, Arc<LiveStatusEmitter>), &'static str> {
+            let runner = Arc::new(DejavuRepositoryRunner::new(
+                &self.app_data,
+                Arc::new(LiveNoopCoordinatorFactory),
+            ));
+            let emitter = Arc::new(LiveStatusEmitter::default());
+            let status_store = Arc::new(RepositoryStatusStore::new(
+                &self.app_data,
+                Arc::clone(&emitter),
+            ));
+            let service = DejavuSyncService::new(runner, status_store);
+            let accepted = service
+                .enqueue(SyncJobRequest {
+                    notes_root: self.notes_root.clone(),
+                    repository_id: self.repository_id.clone(),
+                    trigger: SyncTrigger::Manual,
+                })
+                .await
+                .map_err(|_| "enqueue")?;
+            let job_id = accepted.job_id.clone();
+            accepted
+                .wait_for_completion()
+                .await
+                .map_err(|_| "background_completion")?;
+            Ok((job_id, emitter))
+        }
+    }
+
+    fn live_optional_env(name: &str) -> Option<String> {
+        env::var(name)
+            .ok()
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty())
+    }
+
+    fn live_required_env(name: &str) -> Result<String, &'static str> {
+        live_optional_env(name).ok_or(match name {
+            "MARKRA_TEST_S3_ENDPOINT" => "missing_endpoint",
+            "MARKRA_TEST_S3_REGION" => "missing_region",
+            "MARKRA_TEST_S3_BUCKET" => "missing_bucket",
+            "MARKRA_TEST_S3_ACCESS_KEY_ID" => "missing_access_key",
+            "MARKRA_TEST_S3_SECRET_ACCESS_KEY" => "missing_secret_key",
+            _ => "missing_environment",
+        })
     }
 
     #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1346,6 +1546,117 @@ mod tests {
             .filter_map(Result::ok)
             .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_file()))
             .count()
+    }
+
+    #[tokio::test]
+    #[ignore = "requires MARKRA_TEST_S3_* and a real MinIO server"]
+    async fn live_minio_s3_background_restore_persists_status_and_cleans() {
+        let config = LiveS3ApplicationConfig::from_env()
+            .expect("live application S3 environment should be complete");
+        let catalog = config
+            .catalog()
+            .expect("live application S3 catalog should open");
+        let repository_id = uuid::Uuid::new_v4().to_string();
+
+        let scenario = AssertUnwindSafe(async {
+            tokio::time::timeout(
+                LIVE_SCENARIO_TIMEOUT,
+                run_live_application_restore(&config, &catalog, &repository_id),
+            )
+            .await
+            .map_err(|_| "scenario_timeout")?
+        })
+        .catch_unwind()
+        .await;
+        let cleanup = tokio::time::timeout(LIVE_CLEANUP_TIMEOUT, async {
+            catalog
+                .delete_repository(&repository_id)
+                .await
+                .map_err(|_| "cleanup_delete")?;
+            match catalog.read(&repository_id).await {
+                Err(CloudError::NotFound) => Ok(()),
+                Ok(_) => Err("cleanup_metadata_remained"),
+                Err(_) => Err("cleanup_verify"),
+            }
+        })
+        .await
+        .map_err(|_| "cleanup_timeout")
+        .and_then(|result| result);
+
+        match scenario {
+            Ok(scenario) => match (scenario, cleanup) {
+                (Ok(()), Ok(())) => {}
+                (Err(stage), Ok(())) => panic!("live application S3 stage failed: {stage}"),
+                (Ok(()), Err(stage)) => panic!("live application S3 cleanup failed: {stage}"),
+                (Err(stage), Err(cleanup)) => {
+                    panic!("live application S3 stage failed: {stage}; cleanup failed: {cleanup}")
+                }
+            },
+            Err(panic) => {
+                if let Err(stage) = cleanup {
+                    eprintln!("live application S3 panic cleanup failed: {stage}");
+                }
+                std::panic::resume_unwind(panic)
+            }
+        }
+    }
+
+    async fn run_live_application_restore(
+        config: &LiveS3ApplicationConfig,
+        catalog: &S3RepositoryCatalog,
+        repository_id: &str,
+    ) -> Result<(), &'static str> {
+        let millis = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|_| "clock")?
+            .as_millis();
+        let created_at = i64::try_from(millis).map_err(|_| "clock")?;
+        catalog
+            .create(repository_id, "QingYu live restore", created_at)
+            .await
+            .map_err(|_| "catalog_create")?;
+        let root = tempdir().map_err(|_| "local_setup")?;
+        let source = config.write_client(
+            root.path(),
+            "source",
+            repository_id,
+            &[("remote.md", b"restored through production service\n")],
+        )?;
+        let target = config.write_client(root.path(), "target", repository_id, &[])?;
+
+        source.enqueue_and_wait().await?;
+        let source_status = load_repository_sync_status(&source.app_data, repository_id)
+            .map_err(|_| "source_status")?
+            .ok_or("source_status_missing")?;
+        if source_status.phase != RepositorySyncPhase::Succeeded
+            || source_status.transfer.upload_files == 0
+        {
+            return Err("source_status_invalid");
+        }
+
+        let (target_job_id, target_events) = target.enqueue_and_wait().await?;
+        if std::fs::read(target.notes_root.join("remote.md")).map_err(|_| "restore_read")?
+            != b"restored through production service\n"
+        {
+            return Err("restore_bytes");
+        }
+        let target_status = load_repository_sync_status(&target.app_data, repository_id)
+            .map_err(|_| "target_status")?
+            .ok_or("target_status_missing")?;
+        if target_status.phase != RepositorySyncPhase::Succeeded
+            || target_status.job_id != target_job_id
+            || target_status.transfer.download_files == 0
+        {
+            return Err("target_status_invalid");
+        }
+        let events = target_events.events.lock().map_err(|_| "status_events")?;
+        if events.first().map(|status| status.phase) != Some(RepositorySyncPhase::Attempting)
+            || events.last().map(|status| status.phase) != Some(RepositorySyncPhase::Succeeded)
+            || events.iter().any(|status| status.job_id != target_job_id)
+        {
+            return Err("status_event_sequence");
+        }
+        Ok(())
     }
 
     #[tokio::test]

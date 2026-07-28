@@ -290,6 +290,23 @@ async fn run_read_only_connection_test_scenario() -> Result<(), String> {
     finish_s3_scenario(&config, &backend, scenario).await
 }
 
+async fn verify_isolated_prefix_root_is_empty() -> Result<(), String> {
+    let config = LiveS3Config::from_env()?;
+    let backend = S3Backend::new(S3SyncSettings {
+        access_key_id: config.access_key_id,
+        bucket: config.bucket,
+        endpoint_url: config.endpoint_url,
+        region: config.region,
+        remote_path: config.prefix_root,
+        secret_access_key: config.secret_access_key,
+    })?;
+    if backend.list_files().await?.is_empty() {
+        Ok(())
+    } else {
+        Err("Live S3 isolated prefix root still contains objects".to_string())
+    }
+}
+
 #[test]
 #[ignore = "requires MARKRA_TEST_S3_* and a real MinIO server"]
 fn live_minio_s3_protected_settings_transport_round_trips_and_cleans() {
@@ -302,4 +319,11 @@ fn live_minio_s3_protected_settings_transport_round_trips_and_cleans() {
 fn live_minio_s3_connection_test_preserves_remote_snapshot() {
     tauri::async_runtime::block_on(run_read_only_connection_test_scenario())
         .expect("live MinIO read-only connection-test scenario");
+}
+
+#[test]
+#[ignore = "requires MARKRA_TEST_S3_* and a real MinIO server"]
+fn live_minio_s3_isolated_prefix_root_is_empty() {
+    tauri::async_runtime::block_on(verify_isolated_prefix_root_is_empty())
+        .expect("live MinIO isolated prefix root should be empty");
 }
