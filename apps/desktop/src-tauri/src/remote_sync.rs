@@ -26,6 +26,11 @@ pub(crate) mod service;
 mod settings_scope;
 
 pub(crate) use backend::{sync_state_key, ValidRemoteRoot};
+#[cfg(test)]
+pub(crate) use backend::{
+    RemoteSyncBackend as TestRemoteSyncBackend, RemoteSyncError as TestRemoteSyncError,
+    RemoteSyncFile as TestRemoteSyncFile,
+};
 use backend::{RemoteSyncBackend, RemoteSyncError, RemoteSyncFile as BackendRemoteSyncFile};
 use engine::validate_relative_path;
 use s3_backend::{S3Backend, S3SyncSettings, S3TransportOptions};

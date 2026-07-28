@@ -95,12 +95,16 @@ function completedDispatch(
   return { result: legacySyncResult(notesRoot, revision, trigger), status: "completed" };
 }
 
-function acceptedDispatch(notesRoot: string): SyncDispatchResult {
+function acceptedDispatch(
+  notesRoot: string,
+  identity: Partial<Extract<SyncDispatchResult, { status: "accepted" }>["job"]> = {}
+): SyncDispatchResult {
   return {
     job: {
       jobId: "00000000-0000-4000-8000-000000000401",
       notesRoot,
-      repositoryId: "00000000-0000-4000-8000-000000000402"
+      repositoryId: "00000000-0000-4000-8000-000000000402",
+      ...identity
     },
     status: "accepted"
   };
@@ -108,14 +112,15 @@ function acceptedDispatch(notesRoot: string): SyncDispatchResult {
 
 function dejavuStatus(
   phase: DejavuRepositoryStatus["phase"],
-  error: DejavuRepositoryStatus["error"] = null
+  error: DejavuRepositoryStatus["error"] = null,
+  identity: Partial<Pick<DejavuRepositoryStatus, "jobId" | "repositoryId">> = {}
 ): DejavuRepositoryStatus {
   return {
     attempt: 1,
     automaticFailureCount: 0,
     conflicts: [],
     error,
-    jobId: "00000000-0000-4000-8000-000000000401",
+    jobId: identity.jobId ?? "00000000-0000-4000-8000-000000000401",
     lastAttemptAt: "2026-07-28T00:00:00Z",
     lastDnsRetryAt: null,
     lastSuccessfulSyncAt: phase === "succeeded" ? "2026-07-28T00:00:01Z" : null,
@@ -125,7 +130,7 @@ function dejavuStatus(
     },
     nextScheduledAt: null,
     phase,
-    repositoryId: "00000000-0000-4000-8000-000000000402",
+    repositoryId: identity.repositoryId ?? "00000000-0000-4000-8000-000000000402",
     sameCount: 0,
     transfer: {
       downloadBytes: 0,
@@ -448,6 +453,262 @@ describe("application sync coordinator", () => {
     await waitFor(() => expect(result.current.running).toBe(false));
     expect(loadRepositoryStatus).toHaveBeenCalledWith({ notesRoot: "/Notes" });
     expect(onFilesChanged).toHaveBeenCalledWith("/Notes");
+  });
+
+  it("recovers an accepted job when its event is lost and persisted status becomes terminal", async () => {
+    vi.useFakeTimers();
+    const runtime = getAppRuntime();
+    const persisted = [
+      dejavuStatus("attempting"),
+      dejavuStatus("succeeded", null, {
+        jobId: "00000000-0000-4000-8000-000000000499"
+      }),
+      dejavuStatus("succeeded", null, {
+        repositoryId: "00000000-0000-4000-8000-000000000498"
+      }),
+      dejavuStatus("succeeded")
+    ];
+    const loadRepositoryStatus = vi.fn(async () => persisted.shift() ?? dejavuStatus("succeeded"));
+    configureAppRuntime({
+      ...runtime,
+      syncConfig: {
+        ...runtime.syncConfig,
+        loadRepositoryStatus
+      }
+    });
+    const onFilesChanged = vi.fn();
+    mockedRunApplicationSync.mockResolvedValueOnce(acceptedDispatch("/Notes"));
+    const { result } = renderCoordinator({
+      document: configDocument("rev-1", {
+        mode: "fully-manual",
+        provider: "s3"
+      }),
+      onFilesChanged
+    });
+
+    await act(() => result.current.run("manual"));
+    await act(async () => Promise.resolve());
+
+    expect(loadRepositoryStatus).toHaveBeenCalledTimes(1);
+    expect(result.current.running).toBe(true);
+    expect(vi.getTimerCount()).toBe(1);
+
+    await act(async () => vi.advanceTimersByTimeAsync(999));
+    expect(loadRepositoryStatus).toHaveBeenCalledTimes(1);
+
+    await act(async () => vi.advanceTimersByTimeAsync(1));
+    expect(loadRepositoryStatus).toHaveBeenCalledTimes(2);
+    expect(result.current.running).toBe(true);
+    expect(onFilesChanged).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(1);
+
+    await act(async () => vi.advanceTimersByTimeAsync(1_000));
+    expect(loadRepositoryStatus).toHaveBeenCalledTimes(3);
+    expect(result.current.running).toBe(true);
+    expect(onFilesChanged).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(1);
+
+    await act(async () => vi.advanceTimersByTimeAsync(1_000));
+    expect(loadRepositoryStatus).toHaveBeenCalledTimes(4);
+    expect(result.current.running).toBe(false);
+    expect(onFilesChanged).toHaveBeenCalledOnce();
+    expect(onFilesChanged).toHaveBeenCalledWith("/Notes");
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("keeps at most one accepted-status poll outstanding while a read is in flight", async () => {
+    vi.useFakeTimers();
+    const runtime = getAppRuntime();
+    const retry = deferred<DejavuRepositoryStatus | null>();
+    const loadRepositoryStatus = vi.fn()
+      .mockResolvedValueOnce(dejavuStatus("attempting"))
+      .mockImplementationOnce(() => retry.promise);
+    configureAppRuntime({
+      ...runtime,
+      syncConfig: {
+        ...runtime.syncConfig,
+        loadRepositoryStatus
+      }
+    });
+    mockedRunApplicationSync.mockResolvedValueOnce(acceptedDispatch("/Notes"));
+    const coordinator = renderCoordinator({
+      document: configDocument("rev-1", {
+        mode: "fully-manual",
+        provider: "s3"
+      })
+    });
+    const { result } = coordinator;
+
+    await act(() => result.current.run("manual"));
+    await act(async () => Promise.resolve());
+    expect(vi.getTimerCount()).toBe(1);
+
+    await act(async () => vi.advanceTimersByTimeAsync(1_000));
+    expect(loadRepositoryStatus).toHaveBeenCalledTimes(2);
+    expect(vi.getTimerCount()).toBe(0);
+
+    await act(async () => {
+      retry.resolve(dejavuStatus("attempting"));
+      await retry.promise;
+    });
+    expect(result.current.running).toBe(true);
+    expect(vi.getTimerCount()).toBe(1);
+    coordinator.unmount();
+  });
+
+  it("supersedes an older accepted job once the same repository accepts a newer job", async () => {
+    vi.useFakeTimers();
+    const runtime = getAppRuntime();
+    const newerJobId = "00000000-0000-4000-8000-000000000403";
+    const loadRepositoryStatus = vi.fn()
+      .mockResolvedValueOnce(dejavuStatus("attempting"))
+      .mockResolvedValueOnce(dejavuStatus("succeeded", null, { jobId: newerJobId }))
+      .mockResolvedValue(dejavuStatus("attempting"));
+    configureAppRuntime({
+      ...runtime,
+      syncConfig: {
+        ...runtime.syncConfig,
+        loadRepositoryStatus
+      }
+    });
+    mockedRunApplicationSync
+      .mockResolvedValueOnce(acceptedDispatch("/Notes"))
+      .mockResolvedValueOnce(acceptedDispatch("/Notes", { jobId: newerJobId }));
+    const { result, rerender } = renderCoordinator({
+      document: configDocument("rev-1", {
+        mode: "fully-manual",
+        provider: "s3"
+      })
+    });
+
+    await act(() => result.current.run("manual"));
+    await act(async () => Promise.resolve());
+    act(() => {
+      rerender({
+        currentDocument: configDocument("rev-2", {
+          mode: "fully-manual",
+          provider: "s3"
+        }),
+        currentRoot: "/Notes"
+      });
+    });
+    await act(() => result.current.run("manual"));
+    expect(result.current.running).toBe(true);
+
+    await act(async () => vi.advanceTimersByTimeAsync(1_000));
+
+    expect(loadRepositoryStatus).toHaveBeenCalledTimes(2);
+    expect(result.current.running).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("cancels accepted-status recovery when the workspace generation changes", async () => {
+    vi.useFakeTimers();
+    const runtime = getAppRuntime();
+    const loadRepositoryStatus = vi.fn(async () => dejavuStatus("attempting"));
+    configureAppRuntime({
+      ...runtime,
+      syncConfig: {
+        ...runtime.syncConfig,
+        loadRepositoryStatus
+      }
+    });
+    mockedRunApplicationSync.mockResolvedValueOnce(acceptedDispatch("/Notes"));
+    const onFilesChanged = vi.fn();
+    const { result, rerender } = renderCoordinator({
+      document: configDocument("rev-1", {
+        mode: "fully-manual",
+        provider: "s3"
+      }),
+      onFilesChanged
+    });
+
+    await act(() => result.current.run("manual"));
+    await act(async () => Promise.resolve());
+    expect(loadRepositoryStatus).toHaveBeenCalledOnce();
+    expect(vi.getTimerCount()).toBe(1);
+
+    act(() => {
+      rerender({
+        currentDocument: configDocument("rev-b", {
+          mode: "fully-manual",
+          provider: "s3"
+        }),
+        currentRoot: "/B"
+      });
+    });
+
+    expect(result.current.running).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
+    await act(async () => vi.advanceTimersByTimeAsync(10_000));
+    expect(loadRepositoryStatus).toHaveBeenCalledOnce();
+    expect(onFilesChanged).not.toHaveBeenCalled();
+  });
+
+  it("cancels accepted-status recovery when a notebook switch opens a new generation", async () => {
+    vi.useFakeTimers();
+    const runtime = getAppRuntime();
+    const loadRepositoryStatus = vi.fn(async () => dejavuStatus("attempting"));
+    configureAppRuntime({
+      ...runtime,
+      syncConfig: {
+        ...runtime.syncConfig,
+        loadRepositoryStatus
+      }
+    });
+    mockedRunApplicationSync.mockResolvedValueOnce(acceptedDispatch("/Notes"));
+    const { result } = renderCoordinator({
+      document: configDocument("rev-1", {
+        mode: "fully-manual",
+        provider: "s3"
+      })
+    });
+
+    await act(() => result.current.run("manual"));
+    await act(async () => Promise.resolve());
+    expect(result.current.running).toBe(true);
+    expect(vi.getTimerCount()).toBe(1);
+
+    await act(() => result.current.beginNotebookSwitch());
+
+    expect(result.current.running).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
+    await act(async () => vi.advanceTimersByTimeAsync(10_000));
+    expect(loadRepositoryStatus).toHaveBeenCalledOnce();
+    await act(async () => {
+      await Promise.resolve(result.current.finishNotebookSwitch());
+    });
+  });
+
+  it("cancels accepted-status recovery when the coordinator unmounts", async () => {
+    vi.useFakeTimers();
+    const runtime = getAppRuntime();
+    const loadRepositoryStatus = vi.fn(async () => dejavuStatus("attempting"));
+    configureAppRuntime({
+      ...runtime,
+      syncConfig: {
+        ...runtime.syncConfig,
+        loadRepositoryStatus
+      }
+    });
+    mockedRunApplicationSync.mockResolvedValueOnce(acceptedDispatch("/Notes"));
+    const coordinator = renderCoordinator({
+      document: configDocument("rev-1", {
+        mode: "fully-manual",
+        provider: "s3"
+      })
+    });
+
+    await act(() => coordinator.result.current.run("manual"));
+    await act(async () => Promise.resolve());
+    expect(loadRepositoryStatus).toHaveBeenCalledOnce();
+    expect(vi.getTimerCount()).toBe(1);
+
+    coordinator.unmount();
+
+    expect(vi.getTimerCount()).toBe(0);
+    await act(async () => vi.advanceTimersByTimeAsync(10_000));
+    expect(loadRepositoryStatus).toHaveBeenCalledOnce();
   });
 
   it("tracks one shared accepted job in every mounted coordinator", async () => {

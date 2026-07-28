@@ -94,6 +94,7 @@ const automaticTriggers = new Set<SyncTrigger>([
   "save",
   "settings-exit"
 ]);
+const acceptedStatusPollIntervalMs = 1_000;
 
 function isTriggerEligible(mode: SyncMode, trigger: SyncTrigger) {
   if (trigger === "manual") return true;
@@ -284,6 +285,9 @@ export function useAppSyncCoordinator({
   const [timerVersion, setTimerVersion] = useState(0);
   const [acceptedRunVersion, setAcceptedRunVersion] = useState(0);
   const acceptedRunsRef = useRef(new Map<string, AcceptedApplicationRun>());
+  const acceptedStatusPollInFlightRef = useRef<object | null>(null);
+  const acceptedStatusPollTimerRef = useRef<number | null>(null);
+  const pollAcceptedStatusRef = useRef<() => unknown>(() => undefined);
   const acceptedSharedRunsRef = useRef(new WeakSet<SharedRun>());
   const cachedDejavuStatusesRef = useRef(new Map<string, DejavuRepositoryStatus>());
   const blockedRevisionRef = useRef<string | null>(null);
@@ -315,6 +319,13 @@ export function useAppSyncCoordinator({
   const showSyncFailureToastRef = useRef<() => unknown>(() => undefined);
   const syncToastAttemptRef = useRef(0);
   const translateRef = useRef(translate);
+  const cancelAcceptedStatusPoll = useCallback(() => {
+    if (acceptedStatusPollTimerRef.current !== null) {
+      window.clearTimeout(acceptedStatusPollTimerRef.current);
+      acceptedStatusPollTimerRef.current = null;
+    }
+    acceptedStatusPollInFlightRef.current = null;
+  }, []);
 
   if (primaryRootRef.current !== primaryRoot) {
     syncToastAttemptRef.current += 1;
@@ -329,6 +340,7 @@ export function useAppSyncCoordinator({
     configRef.current = null;
     launchIdentityRef.current = null;
     statusIdentityRef.current = null;
+    cancelAcceptedStatusPoll();
     acceptedRunsRef.current.clear();
     acceptedSharedRunsRef.current = new WeakSet<SharedRun>();
     cachedDejavuStatusesRef.current.clear();
@@ -352,6 +364,11 @@ export function useAppSyncCoordinator({
     notebookSwitchBarrierActive = true;
     listenerEventsEnabledRef.current = false;
     generationRef.current += 1;
+    cancelAcceptedStatusPoll();
+    acceptedRunsRef.current.clear();
+    acceptedSharedRunsRef.current = new WeakSet<SharedRun>();
+    cachedDejavuStatusesRef.current.clear();
+    setAcceptedRunVersion((current) => current + 1);
     runningGenerationRef.current = generationRef.current;
     setRunningCount(0);
     statusIdentityRef.current = null;
@@ -387,7 +404,7 @@ export function useAppSyncCoordinator({
       }),
       ...activeSettingsApplies
     ]);
-  }, []);
+  }, [cancelAcceptedStatusPoll]);
 
   const finishNotebookSwitch = useCallback(async () => {
     const switchRoot = notebookSwitchRootRef.current;
@@ -463,13 +480,15 @@ export function useAppSyncCoordinator({
     return () => {
       mountedRef.current = false;
       generationRef.current += 1;
+      cancelAcceptedStatusPoll();
+      acceptedRunsRef.current.clear();
       configRef.current = null;
       syncToastAttemptRef.current += 1;
       editingSessionRef.current = null;
       pendingApplyRef.current = null;
       claimedApplyKeysRef.current.clear();
     };
-  }, []);
+  }, [cancelAcceptedStatusPoll]);
 
   useEffect(() => () => {
     syncToastAttemptRef.current += 1;
@@ -615,6 +634,7 @@ export function useAppSyncCoordinator({
     ) return;
     acceptedRunsRef.current.delete(payload.jobId);
     cachedDejavuStatusesRef.current.delete(payload.jobId);
+    if (acceptedRunsRef.current.size === 0) cancelAcceptedStatusPoll();
     setAcceptedRunVersion((current) => current + 1);
     if (
       !mountedRef.current ||
@@ -632,7 +652,52 @@ export function useAppSyncCoordinator({
       provider: "s3"
     });
     showSyncFailureToast();
-  }, [showSyncFailureToast]);
+  }, [cancelAcceptedStatusPoll, showSyncFailureToast]);
+
+  const scheduleAcceptedStatusPoll = useCallback(() => {
+    if (
+      acceptedStatusPollTimerRef.current !== null ||
+      acceptedStatusPollInFlightRef.current !== null ||
+      !mountedRef.current ||
+      acceptedRunsRef.current.size === 0
+    ) return;
+    acceptedStatusPollTimerRef.current = window.setTimeout(() => {
+      acceptedStatusPollTimerRef.current = null;
+      pollAcceptedStatusRef.current();
+    }, acceptedStatusPollIntervalMs);
+  }, []);
+
+  const pollAcceptedStatus = useCallback(() => {
+    if (
+      acceptedStatusPollTimerRef.current !== null ||
+      acceptedStatusPollInFlightRef.current !== null ||
+      !mountedRef.current ||
+      acceptedRunsRef.current.size === 0
+    ) return;
+    const generation = generationRef.current;
+    const notesRoot = primaryRootRef.current;
+    if (!notesRoot) return;
+    const poll = {};
+    acceptedStatusPollInFlightRef.current = poll;
+    getAppRuntime().syncConfig.loadRepositoryStatus({ notesRoot }).then((current) => {
+      if (
+        current &&
+        mountedRef.current &&
+        generationRef.current === generation &&
+        primaryRootRef.current === notesRoot
+      ) handleDejavuStatus(current);
+    }).catch(() => {}).finally(() => {
+      if (acceptedStatusPollInFlightRef.current !== poll) return;
+      acceptedStatusPollInFlightRef.current = null;
+      if (
+        mountedRef.current &&
+        generationRef.current === generation &&
+        primaryRootRef.current === notesRoot &&
+        acceptedRunsRef.current.size > 0
+      ) scheduleAcceptedStatusPoll();
+    });
+  }, [handleDejavuStatus, scheduleAcceptedStatusPoll]);
+  pollAcceptedStatusRef.current = pollAcceptedStatus;
 
   const runDetailed = useCallback(async (
     trigger: SyncTrigger,
@@ -743,6 +808,16 @@ export function useAppSyncCoordinator({
             primaryRootRef.current === root &&
             configRef.current?.revision === revision
           ) {
+            for (const [jobId, accepted] of acceptedRunsRef.current) {
+              if (
+                accepted.generation === generation &&
+                accepted.notesRoot === dispatch.job.notesRoot &&
+                accepted.repositoryId === dispatch.job.repositoryId
+              ) {
+                acceptedRunsRef.current.delete(jobId);
+                cachedDejavuStatusesRef.current.delete(jobId);
+              }
+            }
             acceptedRunsRef.current.set(dispatch.job.jobId, {
               generation,
               jobId: dispatch.job.jobId,
@@ -753,16 +828,7 @@ export function useAppSyncCoordinator({
             setAcceptedRunVersion((current) => current + 1);
             const cached = cachedDejavuStatusesRef.current.get(dispatch.job.jobId);
             if (cached) handleDejavuStatus(cached);
-            getAppRuntime().syncConfig.loadRepositoryStatus({
-              notesRoot: dispatch.job.notesRoot
-            }).then((current) => {
-              if (
-                current &&
-                current.jobId === dispatch.job.jobId &&
-                current.repositoryId === dispatch.job.repositoryId &&
-                acceptedRunsRef.current.has(dispatch.job.jobId)
-              ) handleDejavuStatus(current);
-            }).catch(() => {});
+            if (acceptedRunsRef.current.has(dispatch.job.jobId)) pollAcceptedStatus();
           }
         }
       } else if (
@@ -792,7 +858,7 @@ export function useAppSyncCoordinator({
       if (shared.completed && shared.callers.size === 0) inFlightRuns.delete(shared);
     }).catch(() => {});
     return caller;
-  }, [handleDejavuStatus, installReloaded, recoverError, showSyncFailureToast]);
+  }, [handleDejavuStatus, installReloaded, pollAcceptedStatus, recoverError, showSyncFailureToast]);
   runDetailedRef.current = runDetailed;
 
   const run = useCallback(async (trigger: SyncTrigger, revision?: string) => (

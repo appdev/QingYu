@@ -1035,7 +1035,7 @@ where
     clear_portable_settings_pending(scope)
 }
 
-async fn run_prepared_portable_settings_sync<SettingsBackend, Reload, ReloadFuture>(
+pub(crate) async fn run_prepared_portable_settings_sync<SettingsBackend, Reload, ReloadFuture>(
     revision: &str,
     _provider: SyncProvider,
     trigger: SyncTrigger,

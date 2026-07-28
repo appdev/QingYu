@@ -5,6 +5,7 @@ pub(crate) mod storage;
 
 use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager};
@@ -539,35 +540,44 @@ fn emit_primary_workspace_changed<R: tauri::Runtime>(app: &tauri::AppHandle<R>) 
     );
 }
 
-async fn dispatch_application_sync_provider<
-    Legacy,
-    LegacyFuture,
-    PortableSettings,
-    PortableSettingsFuture,
-    Enqueue,
-    EnqueueFuture,
->(
+type ApplicationSyncDispatchFuture<T> =
+    Pin<Box<dyn Future<Output = Result<T, String>> + Send + 'static>>;
+type LegacyApplicationSyncOperation =
+    Box<dyn FnOnce() -> ApplicationSyncDispatchFuture<SyncRunResult> + Send>;
+type PortableSettingsSyncOperation = Box<dyn FnOnce() -> ApplicationSyncDispatchFuture<()> + Send>;
+type DejavuEnqueueOperation = Box<
+    dyn FnOnce(
+            crate::dejavu_sync::service::SyncJobRequest,
+        )
+            -> ApplicationSyncDispatchFuture<crate::dejavu_sync::service::AcceptedSyncJob>
+        + Send,
+>;
+
+struct ApplicationSyncDispatchOperations {
+    enqueue_dejavu: Option<DejavuEnqueueOperation>,
+    run_legacy: LegacyApplicationSyncOperation,
+    run_portable_settings: PortableSettingsSyncOperation,
+}
+
+async fn execute_application_sync_dispatch(
     provider: model::SyncProvider,
     app_data: &Path,
     notes_root: PathBuf,
     trigger: SyncTrigger,
-    run_legacy: Legacy,
-    run_portable_settings: PortableSettings,
-    enqueue: Enqueue,
-) -> Result<SyncDispatchResult, String>
-where
-    Legacy: FnOnce() -> LegacyFuture,
-    LegacyFuture: Future<Output = Result<SyncRunResult, String>>,
-    PortableSettings: FnOnce() -> PortableSettingsFuture,
-    PortableSettingsFuture: Future<Output = Result<(), String>>,
-    Enqueue: FnOnce(crate::dejavu_sync::service::SyncJobRequest) -> EnqueueFuture,
-    EnqueueFuture: Future<Output = Result<crate::dejavu_sync::service::AcceptedSyncJob, String>>,
-{
+    operations: ApplicationSyncDispatchOperations,
+) -> Result<SyncDispatchResult, String> {
+    let ApplicationSyncDispatchOperations {
+        enqueue_dejavu,
+        run_legacy,
+        run_portable_settings,
+    } = operations;
     match provider {
         model::SyncProvider::Webdav => run_legacy()
             .await
             .map(|result| SyncDispatchResult::Completed { result }),
         model::SyncProvider::S3 => {
+            let enqueue_dejavu =
+                enqueue_dejavu.ok_or_else(|| "dejavu-repository-unavailable".to_string())?;
             let state = crate::dejavu_sync::local_state::LocalSyncStateService::new(app_data)
                 .load()
                 .map_err(|error| {
@@ -582,7 +592,7 @@ where
                 .find(|binding| binding.enabled && binding.notes_root == notes_root)
                 .ok_or_else(|| "dejavu-invalid-binding".to_string())?;
             run_portable_settings().await?;
-            enqueue(crate::dejavu_sync::service::SyncJobRequest {
+            enqueue_dejavu(crate::dejavu_sync::service::SyncJobRequest {
                 notes_root,
                 repository_id: binding.repository_id,
                 trigger,
@@ -590,6 +600,61 @@ where
             .await
             .map(|job| SyncDispatchResult::Accepted { job })
         }
+    }
+}
+
+fn production_application_sync_operations(
+    app: tauri::AppHandle,
+    app_data: PathBuf,
+    canonical_notes_root: PathBuf,
+    source: ValidatedSyncApplicationSource,
+    snapshot: SyncSnapshot,
+    trigger: SyncTrigger,
+    previous_status: Option<SyncStatus>,
+) -> ApplicationSyncDispatchOperations {
+    let dejavu_service = app
+        .try_state::<crate::dejavu_sync::commands::DejavuSyncServiceOwner>()
+        .and_then(|owner| owner.installed_service().ok());
+    let legacy_app = app.clone();
+    let legacy_app_data = app_data;
+    let legacy_notes_root = canonical_notes_root;
+    let legacy_snapshot = snapshot.clone();
+    let portable_app = app;
+    let portable_snapshot = snapshot;
+    let enqueue_dejavu = dejavu_service.map(|service| -> DejavuEnqueueOperation {
+        Box::new(move |job_request| {
+            Box::pin(async move {
+                service
+                    .enqueue(job_request)
+                    .await
+                    .map_err(|error| error.safe_code().to_string())
+            })
+        })
+    });
+    ApplicationSyncDispatchOperations {
+        enqueue_dejavu,
+        run_legacy: Box::new(move || {
+            Box::pin(execute_legacy_application_sync(
+                legacy_app,
+                legacy_app_data,
+                legacy_notes_root,
+                source,
+                legacy_snapshot,
+                trigger,
+                previous_status,
+            ))
+        }),
+        run_portable_settings: Box::new(move || {
+            Box::pin(async move {
+                crate::remote_sync::service::run_application_s3_portable_settings(
+                    &portable_app,
+                    portable_snapshot,
+                    trigger,
+                )
+                .await
+                .map_err(|error| error.to_string())
+            })
+        }),
     }
 }
 
@@ -734,55 +799,22 @@ async fn execute_application_sync(
         None
     };
     let provider = snapshot.config.provider;
-    let dejavu_service = if provider == model::SyncProvider::S3 {
-        Some(
-            app.try_state::<crate::dejavu_sync::commands::DejavuSyncServiceOwner>()
-                .ok_or_else(|| "dejavu-repository-unavailable".to_string())?
-                .installed_service()
-                .map_err(|error| error.safe_code().to_string())?,
-        )
-    } else {
-        None
-    };
     let trigger = request.trigger;
-    let legacy_app = app.clone();
-    let legacy_app_data = app_data.clone();
-    let legacy_notes_root = canonical_notes_root.clone();
-    let legacy_snapshot = snapshot.clone();
-    let portable_app = app.clone();
-    let portable_snapshot = snapshot;
-    let dispatch = dispatch_application_sync_provider(
+    let operations = production_application_sync_operations(
+        app,
+        app_data.clone(),
+        canonical_notes_root.clone(),
+        source,
+        snapshot,
+        trigger,
+        previous_status,
+    );
+    let dispatch = execute_application_sync_dispatch(
         provider,
         &app_data,
         canonical_notes_root.clone(),
         trigger,
-        move || {
-            execute_legacy_application_sync(
-                legacy_app,
-                legacy_app_data,
-                legacy_notes_root,
-                source,
-                legacy_snapshot,
-                trigger,
-                previous_status,
-            )
-        },
-        move || async move {
-            crate::remote_sync::service::run_application_s3_portable_settings(
-                &portable_app,
-                portable_snapshot,
-                trigger,
-            )
-            .await
-            .map_err(|error| error.to_string())
-        },
-        move |job_request| async move {
-            dejavu_service
-                .ok_or_else(|| "dejavu-repository-unavailable".to_string())?
-                .enqueue(job_request)
-                .await
-                .map_err(|error| error.safe_code().to_string())
-        },
+        operations,
     )
     .await?;
     validate_sync_application_dispatch(&request, &canonical_notes_root, dispatch)
@@ -965,14 +997,24 @@ pub(crate) fn load_sync_status(app: tauri::AppHandle) -> Result<Option<SyncStatu
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     use std::fs;
+    use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
+    use serde_json::{json, Map, Value};
+    use sha2::{Digest, Sha256};
     use tempfile::tempdir;
 
+    use crate::app_settings::{AppSettingsError, AppSettingsService, SettingsBackend};
     use crate::dejavu_sync::local_state::{LocalSyncStateService, RepositoryBinding};
     use crate::dejavu_sync::service::AcceptedSyncJob;
+    use crate::remote_sync::service::run_prepared_portable_settings_sync;
+    use crate::remote_sync::{
+        TestRemoteSyncBackend as RemoteSyncBackend, TestRemoteSyncError as RemoteSyncError,
+        TestRemoteSyncFile as RemoteSyncFile,
+    };
 
     use super::editing::{SyncApplyDisposition, SyncEditingTestRegistry};
     use super::model::{SyncConfig, SyncConfigLoadResponse, SyncConfigPatch, SyncProvider};
@@ -986,13 +1028,213 @@ mod tests {
     };
     use super::SyncConfigChangedEvent;
     use super::{
-        dispatch_application_sync_provider, enforce_application_sync_editing_barrier,
+        enforce_application_sync_editing_barrier, execute_application_sync_dispatch,
         failed_bootstrap_commit_status, parse_patch_request, parse_recover_request,
         validate_sync_application_dispatch, validate_sync_application_mode,
         validate_sync_application_notebook, validate_sync_application_result,
-        validated_application_sync_apply_token, SyncApplicationRequest, SyncApplyCompletionGuard,
+        validated_application_sync_apply_token, ApplicationSyncDispatchOperations,
+        DejavuEnqueueOperation, SyncApplicationRequest, SyncApplyCompletionGuard,
         SyncDispatchResult,
     };
+
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    enum ApplicationSyncIoOperation {
+        DejavuEnqueue,
+        LegacyNotesManifestRead(PathBuf),
+        RemoteDelete(String),
+        RemoteDownload(String),
+        RemoteList,
+        RemoteUpload(String),
+    }
+
+    struct RecordingRemoteBackend {
+        files: Mutex<BTreeMap<String, Vec<u8>>>,
+        operations: Arc<Mutex<Vec<ApplicationSyncIoOperation>>>,
+    }
+
+    struct FileSettingsBackend {
+        path: PathBuf,
+        values: Mutex<BTreeMap<String, Value>>,
+    }
+
+    impl FileSettingsBackend {
+        fn new(path: PathBuf, values: BTreeMap<String, Value>) -> Self {
+            Self {
+                path,
+                values: Mutex::new(values),
+            }
+        }
+
+        fn persist(&self) -> Result<(), AppSettingsError> {
+            fs::write(
+                &self.path,
+                serde_json::to_vec(&*self.values.lock().unwrap()).unwrap(),
+            )
+            .map_err(|_| AppSettingsError::reconcile_failed())
+        }
+    }
+
+    impl SettingsBackend for FileSettingsBackend {
+        fn get(&self, key: &str) -> Result<Option<Value>, AppSettingsError> {
+            Ok(self.values.lock().unwrap().get(key).cloned())
+        }
+
+        fn set(&self, key: &str, value: Value) -> Result<(), AppSettingsError> {
+            self.values.lock().unwrap().insert(key.into(), value);
+            Ok(())
+        }
+
+        fn delete(&self, key: &str) -> Result<(), AppSettingsError> {
+            self.values.lock().unwrap().remove(key);
+            Ok(())
+        }
+
+        fn save(&self) -> Result<(), AppSettingsError> {
+            self.persist()
+        }
+
+        fn replace_portable_atomically(
+            &self,
+            desired: &Map<String, Value>,
+        ) -> Result<(), AppSettingsError> {
+            *self.values.lock().unwrap() = desired
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect();
+            self.persist()
+        }
+    }
+
+    impl RecordingRemoteBackend {
+        fn new(operations: Arc<Mutex<Vec<ApplicationSyncIoOperation>>>) -> Self {
+            Self {
+                files: Mutex::new(BTreeMap::new()),
+                operations,
+            }
+        }
+
+        fn identity(bytes: &[u8]) -> String {
+            format!("sha256:{:x}", Sha256::digest(bytes))
+        }
+    }
+
+    impl RemoteSyncBackend for RecordingRemoteBackend {
+        fn target_fingerprint_source(&self) -> String {
+            "recording-application-settings".to_string()
+        }
+
+        async fn list_files(&self) -> Result<BTreeMap<String, RemoteSyncFile>, RemoteSyncError> {
+            self.operations
+                .lock()
+                .unwrap()
+                .push(ApplicationSyncIoOperation::RemoteList);
+            Ok(self
+                .files
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|(path, bytes)| {
+                    (
+                        path.clone(),
+                        RemoteSyncFile {
+                            identity: Self::identity(bytes),
+                            size: bytes.len() as u64,
+                        },
+                    )
+                })
+                .collect())
+        }
+
+        async fn download(
+            &self,
+            path: &str,
+            expected_identity: &str,
+        ) -> Result<Vec<u8>, RemoteSyncError> {
+            self.operations
+                .lock()
+                .unwrap()
+                .push(ApplicationSyncIoOperation::RemoteDownload(path.into()));
+            let bytes = self.files.lock().unwrap().get(path).cloned().unwrap();
+            assert_eq!(Self::identity(&bytes), expected_identity);
+            Ok(bytes)
+        }
+
+        async fn upload(
+            &self,
+            path: &str,
+            bytes: &[u8],
+            _expected_identity: Option<&str>,
+        ) -> Result<String, RemoteSyncError> {
+            self.operations
+                .lock()
+                .unwrap()
+                .push(ApplicationSyncIoOperation::RemoteUpload(path.into()));
+            self.files
+                .lock()
+                .unwrap()
+                .insert(path.into(), bytes.to_vec());
+            Ok(Self::identity(bytes))
+        }
+
+        async fn delete(
+            &self,
+            path: &str,
+            _expected_identity: &str,
+        ) -> Result<(), RemoteSyncError> {
+            self.operations
+                .lock()
+                .unwrap()
+                .push(ApplicationSyncIoOperation::RemoteDelete(path.into()));
+            self.files.lock().unwrap().remove(path);
+            Ok(())
+        }
+    }
+
+    fn rust_function_body<'a>(source: &'a str, signature: &str) -> &'a str {
+        let start = source
+            .find(signature)
+            .expect("function signature must exist");
+        let body_start = source[start..]
+            .find('{')
+            .map(|offset| start + offset)
+            .expect("function body must open");
+        let mut depth = 0usize;
+        for (offset, character) in source[body_start..].char_indices() {
+            match character {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return &source[body_start..=body_start + offset];
+                    }
+                }
+                _ => {}
+            }
+        }
+        panic!("function body must close");
+    }
+
+    #[test]
+    fn production_application_execution_has_one_provider_dispatch_boundary() {
+        let source = include_str!("sync_config.rs");
+        let body = rust_function_body(source, "async fn execute_application_sync(");
+
+        assert_eq!(
+            body.matches("execute_application_sync_dispatch(").count(),
+            1
+        );
+        for bypass in [
+            "dispatch_application_sync_provider(",
+            "execute_legacy_application_sync(",
+            "run_application_s3_portable_settings(",
+            ".enqueue(",
+        ] {
+            assert!(
+                !body.contains(bypass),
+                "production command execution bypassed the unique provider dispatcher with {bypass}"
+            );
+        }
+    }
 
     #[test]
     fn completed_application_sync_dispatch_serializes_with_its_legacy_result() {
@@ -1036,9 +1278,15 @@ mod tests {
         let app_data = tempdir().unwrap();
         let notes = tempdir().unwrap();
         let canonical_notes = notes.path().canonicalize().unwrap();
-        let legacy_runs = AtomicUsize::new(0);
-        let portable_runs = AtomicUsize::new(0);
-        let queue_runs = AtomicUsize::new(0);
+        let legacy_manifest = app_data
+            .path()
+            .join("sync-state/notes/legacy/manifest.json");
+        fs::create_dir_all(legacy_manifest.parent().unwrap()).unwrap();
+        fs::write(&legacy_manifest, b"legacy-webdav-notes").unwrap();
+        let operations = Arc::new(Mutex::new(Vec::new()));
+        let legacy_runs = Arc::new(AtomicUsize::new(0));
+        let portable_runs = Arc::new(AtomicUsize::new(0));
+        let queue_runs = Arc::new(AtomicUsize::new(0));
         let expected = SyncRunResult {
             notebook_name: canonical_notes
                 .file_name()
@@ -1052,22 +1300,45 @@ mod tests {
             trigger: SyncTrigger::Manual,
         };
 
-        let dispatch = dispatch_application_sync_provider(
+        let expected_for_run = expected.clone();
+        let legacy_manifest_for_run = legacy_manifest.clone();
+        let operations_for_run = operations.clone();
+        let legacy_runs_for_run = legacy_runs.clone();
+        let portable_runs_for_run = portable_runs.clone();
+        let queue_runs_for_run = queue_runs.clone();
+        let dispatch = execute_application_sync_dispatch(
             SyncProvider::Webdav,
             app_data.path(),
             canonical_notes,
             SyncTrigger::Manual,
-            || async {
-                legacy_runs.fetch_add(1, Ordering::SeqCst);
-                Ok(expected.clone())
-            },
-            || async {
-                portable_runs.fetch_add(1, Ordering::SeqCst);
-                Ok(())
-            },
-            |_| async {
-                queue_runs.fetch_add(1, Ordering::SeqCst);
-                Err("unexpected Dejavu queue".to_string())
+            ApplicationSyncDispatchOperations {
+                enqueue_dejavu: Some(Box::new(move |_| {
+                    Box::pin(async move {
+                        queue_runs_for_run.fetch_add(1, Ordering::SeqCst);
+                        Err("unexpected Dejavu queue".to_string())
+                    })
+                })),
+                run_legacy: Box::new(move || {
+                    Box::pin(async move {
+                        legacy_runs_for_run.fetch_add(1, Ordering::SeqCst);
+                        operations_for_run.lock().unwrap().push(
+                            ApplicationSyncIoOperation::LegacyNotesManifestRead(
+                                legacy_manifest_for_run.clone(),
+                            ),
+                        );
+                        assert_eq!(
+                            fs::read(&legacy_manifest_for_run).unwrap(),
+                            b"legacy-webdav-notes"
+                        );
+                        Ok(expected_for_run)
+                    })
+                }),
+                run_portable_settings: Box::new(move || {
+                    Box::pin(async move {
+                        portable_runs_for_run.fetch_add(1, Ordering::SeqCst);
+                        Ok(())
+                    })
+                }),
             },
         )
         .await
@@ -1080,17 +1351,24 @@ mod tests {
         assert_eq!(legacy_runs.load(Ordering::SeqCst), 1);
         assert_eq!(portable_runs.load(Ordering::SeqCst), 0);
         assert_eq!(queue_runs.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            *operations.lock().unwrap(),
+            vec![ApplicationSyncIoOperation::LegacyNotesManifestRead(
+                legacy_manifest
+            )]
+        );
     }
 
     #[tokio::test]
     async fn provider_s3_dispatch_uses_only_portable_settings_and_the_active_dejavu_queue() {
         let app_data = tempdir().unwrap();
+        let app_data_root = app_data.path().canonicalize().unwrap();
         let notes_parent = tempdir().unwrap();
         let notes = notes_parent.path().join("Notes");
         fs::create_dir(&notes).unwrap();
         let canonical_notes = notes.canonicalize().unwrap();
         let repository_id = "00000000-0000-4000-8000-000000000201";
-        let state_service = LocalSyncStateService::new(app_data.path());
+        let state_service = LocalSyncStateService::new(&app_data_root);
         let mut state = state_service.load_or_initialize(Some("test-key")).unwrap();
         state_service
             .add_binding(
@@ -1103,48 +1381,89 @@ mod tests {
                 },
             )
             .unwrap();
-        let old_notes_state = app_data
-            .path()
-            .join("sync-state/notes")
-            .join("a".repeat(64));
+        let old_notes_state = app_data_root.join("sync-state/notes").join("a".repeat(64));
         fs::create_dir_all(&old_notes_state).unwrap();
         let old_manifest = old_notes_state.join("manifest.json");
         fs::write(&old_manifest, b"old-s3-notes-manifest").unwrap();
-        let legacy_runs = AtomicUsize::new(0);
-        let portable_runs = AtomicUsize::new(0);
-        let queue_runs = AtomicUsize::new(0);
-        let portable_state = app_data.path().join("sync-state/settings/provider-routing");
+        let operations = Arc::new(Mutex::new(Vec::new()));
+        let settings_backend = Arc::new(RecordingRemoteBackend::new(operations.clone()));
+        let settings_path = app_data_root.join("settings.json");
+        let live_settings = BTreeMap::from([("language".to_string(), json!("en"))]);
+        fs::write(&settings_path, serde_json::to_vec(&live_settings).unwrap()).unwrap();
+        let settings_service = AppSettingsService::new_for_test(
+            Arc::new(FileSettingsBackend::new(settings_path, live_settings)),
+            None,
+        );
+        let legacy_runs = Arc::new(AtomicUsize::new(0));
+        let portable_runs = Arc::new(AtomicUsize::new(0));
+        let queue_runs = Arc::new(AtomicUsize::new(0));
+        let portable_state = app_data_root.join("sync-state/settings/provider-routing");
         let queued_notes = canonical_notes.clone();
         let queued_repository_id = repository_id.to_string();
+        let legacy_runs_for_run = legacy_runs.clone();
+        let portable_runs_for_run = portable_runs.clone();
+        let queue_runs_for_run = queue_runs.clone();
+        let portable_state_for_run = portable_state.clone();
+        let old_manifest_for_run = old_manifest.clone();
+        let legacy_operations = operations.clone();
+        let portable_backend = settings_backend.clone();
+        let portable_operations = operations.clone();
+        let app_data_for_run = app_data_root.clone();
 
-        let dispatch = dispatch_application_sync_provider(
+        let dispatch = execute_application_sync_dispatch(
             SyncProvider::S3,
-            app_data.path(),
+            &app_data_root,
             canonical_notes.clone(),
             SyncTrigger::Manual,
-            || async {
-                legacy_runs.fetch_add(1, Ordering::SeqCst);
-                Err("legacy notes must not run".to_string())
-            },
-            || async {
-                portable_runs.fetch_add(1, Ordering::SeqCst);
-                fs::create_dir_all(&portable_state).unwrap();
-                fs::write(portable_state.join("settings.json"), b"portable").unwrap();
-                Ok(())
-            },
-            |request| {
-                let queue_runs = &queue_runs;
-                async move {
-                    queue_runs.fetch_add(1, Ordering::SeqCst);
-                    assert_eq!(request.notes_root, queued_notes);
-                    assert_eq!(request.repository_id, queued_repository_id);
-                    assert_eq!(request.trigger, SyncTrigger::Manual);
-                    Ok(AcceptedSyncJob::completed_for_test(
-                        "00000000-0000-4000-8000-000000000202",
-                        request.repository_id,
-                        request.notes_root,
-                    ))
-                }
+            ApplicationSyncDispatchOperations {
+                enqueue_dejavu: Some(Box::new(move |request| {
+                    Box::pin(async move {
+                        queue_runs_for_run.fetch_add(1, Ordering::SeqCst);
+                        portable_operations
+                            .lock()
+                            .unwrap()
+                            .push(ApplicationSyncIoOperation::DejavuEnqueue);
+                        assert_eq!(request.notes_root, queued_notes);
+                        assert_eq!(request.repository_id, queued_repository_id);
+                        assert_eq!(request.trigger, SyncTrigger::Manual);
+                        Ok(AcceptedSyncJob::completed_for_test(
+                            "00000000-0000-4000-8000-000000000202",
+                            request.repository_id,
+                            request.notes_root,
+                        ))
+                    })
+                })),
+                run_legacy: Box::new(move || {
+                    Box::pin(async move {
+                        legacy_runs_for_run.fetch_add(1, Ordering::SeqCst);
+                        legacy_operations.lock().unwrap().push(
+                            ApplicationSyncIoOperation::LegacyNotesManifestRead(
+                                old_manifest_for_run.clone(),
+                            ),
+                        );
+                        let _legacy_bytes =
+                            fs::read(&old_manifest_for_run).map_err(|error| error.to_string())?;
+                        Err("legacy notes must not run".to_string())
+                    })
+                }),
+                run_portable_settings: Box::new(move || {
+                    Box::pin(async move {
+                        portable_runs_for_run.fetch_add(1, Ordering::SeqCst);
+                        run_prepared_portable_settings_sync(
+                            "provider-routing-revision",
+                            SyncProvider::S3,
+                            SyncTrigger::Manual,
+                            &app_data_for_run,
+                            portable_state_for_run,
+                            portable_backend.as_ref(),
+                            &settings_service,
+                            || async { Ok(()) },
+                        )
+                        .await
+                        .map(|_| ())
+                        .map_err(|error| error.to_string())
+                    })
+                }),
             },
         )
         .await
@@ -1159,9 +1478,35 @@ mod tests {
         assert_eq!(portable_runs.load(Ordering::SeqCst), 1);
         assert_eq!(queue_runs.load(Ordering::SeqCst), 1);
         assert_eq!(
-            fs::read(portable_state.join("settings.json")).unwrap(),
-            b"portable"
+            settings_backend
+                .files
+                .lock()
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>(),
+            vec!["settings.json".to_string()]
         );
+        let recorded = operations.lock().unwrap().clone();
+        assert!(recorded.contains(&ApplicationSyncIoOperation::RemoteList));
+        assert!(recorded.contains(&ApplicationSyncIoOperation::RemoteUpload(
+            "settings.json".into()
+        )));
+        assert_eq!(
+            recorded.last(),
+            Some(&ApplicationSyncIoOperation::DejavuEnqueue)
+        );
+        assert!(!recorded.iter().any(|operation| matches!(
+            operation,
+            ApplicationSyncIoOperation::LegacyNotesManifestRead(_)
+        )));
+        assert!(recorded.iter().all(|operation| match operation {
+            ApplicationSyncIoOperation::RemoteDelete(path)
+            | ApplicationSyncIoOperation::RemoteDownload(path)
+            | ApplicationSyncIoOperation::RemoteUpload(path) => path == "settings.json",
+            _ => true,
+        }));
+        assert!(portable_state.join("engine/manifest.json").is_file());
         assert_eq!(
             fs::read(old_manifest).unwrap(),
             b"old-s3-notes-manifest",
@@ -1170,58 +1515,113 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn provider_s3_dispatch_rejects_missing_or_disabled_binding_before_portable_network_work()
+    async fn provider_s3_dispatch_rejects_unavailable_service_or_invalid_state_before_network_work()
     {
-        for enabled in [None, Some(false)] {
+        #[derive(Clone, Copy, Debug)]
+        enum AdmissionCase {
+            ServiceMissing,
+            StateMissing,
+            BindingMissing,
+            BindingDisabled,
+            StateCorrupt,
+        }
+
+        for (case, expected_error) in [
+            (
+                AdmissionCase::ServiceMissing,
+                "dejavu-repository-unavailable",
+            ),
+            (AdmissionCase::StateMissing, "dejavu-invalid-binding"),
+            (AdmissionCase::BindingMissing, "dejavu-invalid-binding"),
+            (AdmissionCase::BindingDisabled, "dejavu-invalid-binding"),
+            (AdmissionCase::StateCorrupt, "dejavu-invalid-binding"),
+        ] {
             let app_data = tempdir().unwrap();
             let notes_parent = tempdir().unwrap();
             let notes = notes_parent.path().join("Notes");
             fs::create_dir(&notes).unwrap();
             let canonical_notes = notes.canonicalize().unwrap();
-            if let Some(enabled) = enabled {
-                let state_service = LocalSyncStateService::new(app_data.path());
-                let mut state = state_service.load_or_initialize(Some("test-key")).unwrap();
-                state_service
-                    .add_binding(
-                        &mut state,
-                        RepositoryBinding {
-                            display_name: "Notes".into(),
-                            enabled,
-                            notes_root: canonical_notes.clone(),
-                            repository_id: "00000000-0000-4000-8000-000000000203".into(),
-                        },
-                    )
-                    .unwrap();
+            let state_service = LocalSyncStateService::new(app_data.path());
+            match case {
+                AdmissionCase::ServiceMissing => {
+                    let mut state = state_service.load_or_initialize(Some("test-key")).unwrap();
+                    state_service
+                        .add_binding(
+                            &mut state,
+                            RepositoryBinding {
+                                display_name: "Notes".into(),
+                                enabled: true,
+                                notes_root: canonical_notes.clone(),
+                                repository_id: "00000000-0000-4000-8000-000000000203".into(),
+                            },
+                        )
+                        .unwrap();
+                }
+                AdmissionCase::StateMissing => {}
+                AdmissionCase::BindingMissing => {
+                    state_service.load_or_initialize(Some("test-key")).unwrap();
+                }
+                AdmissionCase::BindingDisabled => {
+                    let mut state = state_service.load_or_initialize(Some("test-key")).unwrap();
+                    state_service
+                        .add_binding(
+                            &mut state,
+                            RepositoryBinding {
+                                display_name: "Notes".into(),
+                                enabled: false,
+                                notes_root: canonical_notes.clone(),
+                                repository_id: "00000000-0000-4000-8000-000000000203".into(),
+                            },
+                        )
+                        .unwrap();
+                }
+                AdmissionCase::StateCorrupt => {
+                    fs::write(app_data.path().join("local-sync.json"), b"{corrupt").unwrap();
+                }
             }
-            let portable_runs = AtomicUsize::new(0);
-            let queue_runs = AtomicUsize::new(0);
+            let portable_runs = Arc::new(AtomicUsize::new(0));
+            let queue_runs = Arc::new(AtomicUsize::new(0));
+            let portable_runs_for_run = portable_runs.clone();
+            let queue_runs_for_run = queue_runs.clone();
+            let enqueue_dejavu: Option<DejavuEnqueueOperation> = match case {
+                AdmissionCase::ServiceMissing => None,
+                _ => Some(Box::new(move |_| {
+                    Box::pin(async move {
+                        queue_runs_for_run.fetch_add(1, Ordering::SeqCst);
+                        Err("queue must not run".to_string())
+                    })
+                })),
+            };
 
-            let error = dispatch_application_sync_provider(
+            let error = execute_application_sync_dispatch(
                 SyncProvider::S3,
                 app_data.path(),
                 canonical_notes,
                 SyncTrigger::Manual,
-                || async { Err("legacy notes must not run".to_string()) },
-                || async {
-                    portable_runs.fetch_add(1, Ordering::SeqCst);
-                    Ok(())
-                },
-                |_| async {
-                    queue_runs.fetch_add(1, Ordering::SeqCst);
-                    Err("queue must not run".to_string())
+                ApplicationSyncDispatchOperations {
+                    enqueue_dejavu,
+                    run_legacy: Box::new(|| {
+                        Box::pin(async { Err("legacy notes must not run".to_string()) })
+                    }),
+                    run_portable_settings: Box::new(move || {
+                        Box::pin(async move {
+                            portable_runs_for_run.fetch_add(1, Ordering::SeqCst);
+                            Ok(())
+                        })
+                    }),
                 },
             )
             .await
             .err()
             .unwrap();
 
-            assert_eq!(error, "dejavu-invalid-binding");
+            assert_eq!(error, expected_error, "case {case:?}");
             assert_eq!(
                 portable_runs.load(Ordering::SeqCst),
                 0,
-                "binding admission must fail before any S3 portable-settings network work"
+                "case {case:?} must fail before any S3 portable-settings network work"
             );
-            assert_eq!(queue_runs.load(Ordering::SeqCst), 0);
+            assert_eq!(queue_runs.load(Ordering::SeqCst), 0, "case {case:?}");
         }
     }
 
