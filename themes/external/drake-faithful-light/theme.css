@@ -1,0 +1,374 @@
+/*
+ * MIT License
+ *
+ * Copyright (c) 2023 劉強東 https://github.com/liangjingkanji
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ */
+
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("./assets/fonts/JetBrainsMono-Regular.woff2") format("woff2");
+  font-display: swap;
+  font-style: normal;
+  font-weight: 400;
+}
+
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("./assets/fonts/JetBrainsMono-Italic.woff2") format("woff2");
+  font-display: swap;
+  font-style: italic;
+  font-weight: 400;
+}
+
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("./assets/fonts/JetBrainsMono-Bold.woff2") format("woff2");
+  font-display: swap;
+  font-style: normal;
+  font-weight: 700;
+}
+
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("./assets/fonts/JetBrainsMono-BoldItalic.woff2") format("woff2");
+  font-display: swap;
+  font-style: italic;
+  font-weight: 700;
+}
+
+:root[data-theme="drake-faithful-light"] {
+  --bg-primary: #ffffff;
+  --bg-secondary: #f6f8fa;
+  --bg-chrome: #f8f8f8;
+  --bg-code: #f6f8fa;
+  --bg-hover: #E5E5E596;
+  --bg-active: #E5E5E596;
+  --bg-titlebar: #ffffff;
+  --bg-sidebar: #f6f8fa;
+  --bg-sidebar-header: #f8f8f8;
+  --bg-toolbar: #ffffff;
+  --bg-outline: #f8f8f8;
+  --bg-sidebar-footer: #f8f8f8;
+  --border-chrome: #dfe2e5;
+  --sidebar-font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  --sidebar-tree-font-size: 15.4px;
+  --sidebar-tree-font-weight: 400;
+  --sidebar-tree-line-height: 1.6;
+  --text-tree: #333333;
+  --bg-tree-hover: #E5E5E596;
+  --text-tree-hover: #333333;
+  --sidebar-tree-current-font-weight: 400;
+  --sidebar-outline-font-size: 14px;
+  --sidebar-outline-font-weight: 400;
+  --sidebar-outline-line-height: 1.6;
+  --sidebar-outline-row-min-height: 28px;
+  --sidebar-outline-max-lines: 2;
+  --text-outline: #333333;
+  --bg-outline-hover: #E5E5E596;
+  --text-outline-hover: #333333;
+  --sidebar-outline-current-font-weight: 500;
+  --sidebar-outline-h1-font-weight: 600;
+  --sidebar-outline-h1-text: #273849;
+  --sidebar-outline-h1-space-before: 8px;
+  --sidebar-outline-h2-font-weight: 600;
+  --sidebar-outline-h2-text: #273849;
+  --sidebar-outline-h2-space-before: 6px;
+  --bg-tree-current: #E5E5E596;
+  --text-tree-current: #273849;
+  --tree-current-indicator: #e95f59;
+  --bg-tree-selected: #fdefee;
+  --text-tree-selected: #273849;
+  --tree-selected-indicator: #e95f59;
+  --bg-outline-current: transparent;
+  --text-outline-current: #d63200;
+  --text-primary: #333333;
+  --text-heading: #273849;
+  --text-secondary: #777777;
+  --text-md-char: #777777;
+  --border-default: #dfe2e5;
+  --border-strong: #dfe2e5;
+  --accent: #e95f59;
+  --accent-soft: #fdefee;
+  --accent-hover: #d63200;
+  --danger: #ff0000;
+  --link-color: #d63200;
+  --scrollbar-track: transparent;
+  --scrollbar-thumb: #dfe2e5;
+  --scrollbar-thumb-hover: #777777;
+  --scrollbar-thumb-active: #e95f59;
+  color-scheme: light;
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-feature-settings: "liga" 1, "calt" 1;
+}
+
+.markdown-paper[data-editor-theme="drake-faithful-light"] {
+  --editor-paper-bg: #ffffff;
+  --editor-text-primary: #333333;
+  --editor-text-heading: #273849;
+  --editor-text-secondary: #777777;
+  --editor-border: #dfe2e5;
+  --editor-border-strong: #dfe2e5;
+  --editor-bg-secondary: #f8f8f8;
+  --editor-inline-code-bg: #fdefee;
+  --editor-inline-code-text: #d63200;
+  --editor-code-bg: #f6f8fa;
+  --editor-code-line-bg: #f6f8fa;
+  --editor-code-text: #24292e;
+  --editor-code-control-bg: #ffffff;
+  --editor-link-color: #d63200;
+  --editor-hl-keyword: #708;
+  --editor-hl-string: #008000;
+  --editor-hl-number: #4A86E8;
+  --editor-hl-title: #0000ff;
+  --editor-hl-type: #00627A;
+  --editor-hl-meta: #24292e;
+  --editor-hl-symbol: #4A86E8;
+  --editor-hl-deletion: #ff0000;
+  --editor-font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  --editor-heading-font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  --editor-paragraph-spacing: 0.8rem;
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  line-height: 1.6;
+}
+
+:root[data-theme="drake-faithful-light"] .markdown-source-paper,
+.markdown-source-paper[data-editor-theme="drake-faithful-light"] {
+  --source-editor-font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  line-height: 1.6;
+}
+
+.markdown-paper[data-editor-theme="drake-faithful-light"] h1,
+.markdown-paper[data-editor-theme="drake-faithful-light"] h2,
+.markdown-paper[data-editor-theme="drake-faithful-light"] h3,
+.markdown-paper[data-editor-theme="drake-faithful-light"] h4,
+.markdown-paper[data-editor-theme="drake-faithful-light"] h5,
+.markdown-paper[data-editor-theme="drake-faithful-light"] h6 {
+  color: var(--editor-text-heading);
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.markdown-paper[data-editor-theme="drake-faithful-light"] h1 {
+  margin-top: 0;
+  text-align: center;
+  font-size: 2rem;
+}
+
+.markdown-paper[data-editor-theme="drake-faithful-light"] h2 {
+  margin-bottom: 1.5rem;
+  border-bottom: 2px solid #273849;
+  padding-bottom: 0.35rem;
+  font-size: 1.8rem;
+}
+
+.markdown-paper[data-editor-theme="drake-faithful-light"] h3 {
+  font-size: 1.4rem;
+}
+
+.markdown-paper[data-editor-theme="drake-faithful-light"] h4 {
+  font-size: 1.2rem;
+}
+
+.markdown-paper[data-editor-theme="drake-faithful-light"] h5,
+.markdown-paper[data-editor-theme="drake-faithful-light"] h6 {
+  font-size: 1rem;
+}
+
+.markdown-paper[data-editor-theme="drake-faithful-light"] a {
+  color: #d63200;
+  text-decoration-color: #d63200;
+  text-underline-offset: 0.18em;
+}
+
+.markdown-paper[data-editor-theme="drake-faithful-light"] a:hover {
+  color: #e95f59;
+  text-decoration-color: currentColor;
+}
+
+.markdown-paper[data-editor-theme="drake-faithful-light"] blockquote:not(.markra-callout) {
+  position: relative;
+  border-left: 4px solid #e95f59;
+  border-radius: 2px;
+  background: #fdefee;
+  padding: 0.75rem 1rem;
+  color: #333333;
+}
+
+.markdown-paper[data-editor-theme="drake-faithful-light"] blockquote.markra-callout {
+  --callout-bg: color-mix(in srgb, var(--callout-color) 8%, #ffffff);
+  --callout-border: color-mix(in srgb, var(--callout-color) 34%, #dfe2e5);
+}
+
+.markdown-paper[data-editor-theme="drake-faithful-light"] mark,
+.markdown-paper[data-editor-theme="drake-faithful-light"] .markra-live-mark-highlight {
+  border: 1px solid #d63200;
+  border-radius: 999px;
+  background: transparent;
+  padding: 0.08em 0.48em;
+  color: #d63200;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+
+.markdown-paper[data-editor-theme="drake-faithful-light"] code,
+.markdown-paper[data-editor-theme="drake-faithful-light"] .markra-live-mark-inlineCode,
+.markdown-paper[data-editor-theme="drake-faithful-light"] pre,
+.markdown-paper[data-editor-theme="drake-faithful-light"] .markra-code-block,
+.markdown-paper[data-editor-theme="drake-faithful-light"] .markra-code-block code,
+.markdown-paper[data-editor-theme="drake-faithful-light"] .markra-code-language-select,
+.markdown-paper[data-editor-theme="drake-faithful-light"] .markra-code-line-numbers {
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.markdown-paper[data-editor-theme="drake-faithful-light"] code,
+.markdown-paper[data-editor-theme="drake-faithful-light"] .markra-live-mark-inlineCode {
+  border-color: #e95f59;
+  background: #fdefee;
+  color: #d63200;
+  box-shadow: none;
+}
+
+.markdown-paper[data-editor-theme="drake-faithful-light"] pre,
+.markdown-paper[data-editor-theme="drake-faithful-light"] .markra-code-block,
+.markdown-paper[data-editor-theme="drake-faithful-light"] .markra-code-block code {
+  background: #f6f8fa;
+  color: #24292e;
+}
+
+.markdown-paper[data-editor-theme="drake-faithful-light"] .markra-code-block {
+  border-radius: 2px;
+}
+
+.markdown-paper[data-editor-theme="drake-faithful-light"] .hljs-keyword,
+.markdown-paper[data-editor-theme="drake-faithful-light"] .hljs-selector-tag {
+  color: #708;
+}
+
+.markdown-paper[data-editor-theme="drake-faithful-light"] .hljs-string,
+.markdown-paper[data-editor-theme="drake-faithful-light"] .hljs-regexp,
+.markdown-paper[data-editor-theme="drake-faithful-light"] .hljs-addition {
+  color: #008000;
+}
+
+.markdown-paper[data-editor-theme="drake-faithful-light"] .hljs-number,
+.markdown-paper[data-editor-theme="drake-faithful-light"] .hljs-symbol,
+.markdown-paper[data-editor-theme="drake-faithful-light"] .hljs-link {
+  color: #4A86E8;
+}
+
+.markdown-paper[data-editor-theme="drake-faithful-light"] .hljs-variable.language_,
+.markdown-paper[data-editor-theme="drake-faithful-light"] .hljs-params,
+.markdown-paper[data-editor-theme="drake-faithful-light"] .hljs-type {
+  color: #00627A;
+}
+
+.markdown-paper[data-editor-theme="drake-faithful-light"] .hljs-title,
+.markdown-paper[data-editor-theme="drake-faithful-light"] .hljs-title.class_,
+.markdown-paper[data-editor-theme="drake-faithful-light"] .hljs-title.function_ {
+  color: #0000ff;
+}
+
+.markdown-paper[data-editor-theme="drake-faithful-light"] .hljs-literal {
+  color: #9E880D;
+}
+
+.markdown-paper[data-editor-theme="drake-faithful-light"] .hljs-comment,
+.markdown-paper[data-editor-theme="drake-faithful-light"] .markra-code-line-numbers {
+  color: #787878;
+}
+
+.markdown-paper[data-editor-theme="drake-faithful-light"] .hljs-variable,
+.markdown-paper[data-editor-theme="drake-faithful-light"] .hljs-meta,
+.markdown-paper[data-editor-theme="drake-faithful-light"] .hljs-property,
+.markdown-paper[data-editor-theme="drake-faithful-light"] .hljs-operator,
+.markdown-paper[data-editor-theme="drake-faithful-light"] .hljs-attr,
+.markdown-paper[data-editor-theme="drake-faithful-light"] .hljs-attribute,
+.markdown-paper[data-editor-theme="drake-faithful-light"] .hljs-tag,
+.markdown-paper[data-editor-theme="drake-faithful-light"] .hljs-name,
+.markdown-paper[data-editor-theme="drake-faithful-light"] .hljs-built_in,
+.markdown-paper[data-editor-theme="drake-faithful-light"] .hljs-punctuation {
+  color: #24292e;
+}
+
+.markdown-paper[data-editor-theme="drake-faithful-light"] .hljs-deletion {
+  color: #ff0000;
+}
+
+.markdown-paper[data-editor-theme="drake-faithful-light"] .tableWrapper {
+  margin-block: 1rem;
+}
+
+.markdown-paper[data-editor-theme="drake-faithful-light"] table {
+  background: #ffffff;
+  font-variant: tabular-nums;
+}
+
+.markdown-paper[data-editor-theme="drake-faithful-light"] thead,
+.markdown-paper[data-editor-theme="drake-faithful-light"] tr:nth-child(even) {
+  background: #f8f8f8;
+}
+
+.markdown-paper[data-editor-theme="drake-faithful-light"] th,
+.markdown-paper[data-editor-theme="drake-faithful-light"] td {
+  border-color: #dfe2e5;
+  padding: 6px 13px;
+}
+
+.markdown-paper[data-editor-theme="drake-faithful-light"] kbd {
+  margin-inline: 0.2rem;
+  border: 1px solid #777777;
+  border-radius: 0.4em;
+  background: transparent;
+  padding: 0.25em 0.42em;
+  color: #333333;
+  box-shadow: 0.1em 0.1em 0.2em #dfe2e5;
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.markdown-paper[data-editor-theme="drake-faithful-light"] .markra-task-list-checkbox {
+  border-color: #dfe2e5;
+  accent-color: #65b73b;
+}
+
+.markdown-paper[data-editor-theme="drake-faithful-light"] .markra-mermaid-render {
+  border-color: #dfe2e5;
+  background: #ffffff;
+  color: #333333;
+}
+
+.markdown-paper[data-editor-theme="drake-faithful-light"] .markra-mermaid-render svg {
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.markdown-paper[data-editor-theme="drake-faithful-light"] .markra-mermaid-render text,
+.markdown-paper[data-editor-theme="drake-faithful-light"] .markra-mermaid-render .nodeLabel {
+  fill: #333333;
+  color: #333333;
+}
+
+.markdown-paper[data-editor-theme="drake-faithful-light"] .markra-code-copy-button svg,
+.markdown-paper[data-editor-theme="drake-faithful-light"] .markra-mermaid-preview-button svg,
+.markdown-paper[data-editor-theme="drake-faithful-light"] .markra-mermaid-zoom-button svg,
+:root[data-theme="drake-faithful-light"] .lucide {
+  stroke: currentColor;
+}

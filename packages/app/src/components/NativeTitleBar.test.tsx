@@ -109,10 +109,19 @@ describe("NativeTitleBar", () => {
     expect(container.querySelector(".native-titlebar")).not.toHaveAttribute("data-tauri-drag-region");
     expect(container.querySelector(".native-title-slot")).not.toHaveAttribute("data-tauri-drag-region");
     expect(screen.getByRole("tab", { name: "Draft.md" }).closest("[data-tauri-drag-region]")).toBeNull();
-    expect(container.querySelector(".native-titlebar")).toHaveClass("bg-(--bg-primary)");
+    expect(container.querySelector(".native-titlebar")).toHaveClass(
+      "theme-titlebar-legacy-primary",
+      "theme-titlebar-surface"
+    );
+    expect(container.querySelector(".native-titlebar")).not.toHaveClass("bg-(--bg-primary)");
     expect(container.querySelector(".native-titlebar")).not.toHaveClass("border-b");
     const sidebarSurface = container.querySelector<HTMLElement>(".native-titlebar-sidebar-surface");
     const sidebarDivider = container.querySelector<HTMLElement>(".native-titlebar-sidebar-divider");
+    expect(sidebarSurface).toHaveClass(
+      "theme-sidebar-legacy-secondary",
+      "theme-sidebar-surface"
+    );
+    expect(sidebarDivider).toHaveClass("theme-chrome-divider");
     expect(sidebarSurface).toHaveStyle({ width: "220px" });
     expect(sidebarSurface).toContainElement(sidebarDivider);
     expect(sidebarDivider).toHaveClass("right-0", "opacity-100");
@@ -337,7 +346,7 @@ describe("NativeTitleBar", () => {
       "right-0",
       "left-1.5",
       "h-px",
-      "bg-(--border-default)"
+      "theme-chrome-divider"
     );
     expect(container.querySelector(".windows-titlebar-corner-divider")).toHaveClass(
       "absolute",
@@ -347,14 +356,14 @@ describe("NativeTitleBar", () => {
       "rounded-tl-md",
       "border-t",
       "border-l",
-      "border-(--border-default)"
+      "theme-chrome-border"
     );
     const titlebar = container.querySelector<HTMLElement>(".native-titlebar");
     const sidebarDivider = container.querySelector<HTMLElement>(".windows-titlebar-sidebar-divider");
     expect(sidebarDivider).toBeInTheDocument();
     expect(titlebar).toContainElement(sidebarDivider);
     expect(container.querySelector(".windows-titlebar-sidebar-surface")).not.toBeInTheDocument();
-    expect(sidebarDivider).toHaveClass("absolute", "top-1.5", "bottom-0", "left-0", "w-px", "bg-(--border-default)");
+    expect(sidebarDivider).toHaveClass("absolute", "top-1.5", "bottom-0", "left-0", "w-px", "theme-chrome-divider");
     expect(sidebarDivider).not.toHaveClass("right-0");
     expect(container.querySelector(".windows-titlebar-corner-mask")).toHaveStyle({
       left: "218px",
@@ -423,7 +432,10 @@ describe("NativeTitleBar", () => {
     );
 
     expect(container.querySelector(".windows-app-chrome")).toBeInTheDocument();
-    expect(container.querySelector(".windows-app-chrome")).toHaveClass("bg-(--bg-chrome)");
+    expect(container.querySelector(".windows-app-chrome")).toHaveClass(
+      "theme-titlebar-legacy-chrome",
+      "theme-titlebar-surface"
+    );
     expect(container.querySelector(".windows-app-chrome")).not.toHaveClass("border-b");
     expect(container.querySelector(".windows-app-chrome-tools")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Toggle workspace sidebar" })).toBeInTheDocument();
@@ -431,8 +443,12 @@ describe("NativeTitleBar", () => {
     expect(screen.queryByRole("button", { name: "Go back" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Go forward" })).not.toBeInTheDocument();
     expect(container.querySelector(".native-titlebar")).toHaveClass("top-10");
-    expect(container.querySelector(".native-titlebar")).toHaveClass("bg-(--bg-primary)");
-    expect(container.querySelector(".native-titlebar")).toHaveClass("border-t");
+    expect(container.querySelector(".native-titlebar")).toHaveClass(
+      "theme-titlebar-legacy-primary",
+      "theme-titlebar-surface",
+      "border-t",
+      "theme-chrome-border"
+    );
     expect(container.querySelector(".native-titlebar")).not.toHaveClass("border-l");
     expect(container.querySelector(".native-titlebar")).not.toHaveClass("rounded-tl-md");
     expect(container.querySelector(".native-titlebar")).not.toHaveClass("overflow-hidden");

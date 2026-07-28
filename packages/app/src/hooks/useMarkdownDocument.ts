@@ -75,6 +75,9 @@ import {
 
 export type { MarkdownDocumentTab } from "./markdown-document/document-model";
 
+function isEmptyUntitledDocument(document: DocumentState) {
+  return document.open && document.path === null && document.content.trim() === "";
+}
 type CreateBlankDocumentOptions = {
   content?: string;
   name?: string;
@@ -166,6 +169,7 @@ type UseMarkdownDocumentOptions = {
   ) => unknown | Promise<unknown>;
   onTreeRootFromFilePath: (path: string) => unknown;
   onSwitchNotebookDirectory?: (path: string) => unknown | Promise<unknown>;
+  openDroppedFilesInTabs?: boolean;
   preferencesReady?: boolean;
   restoreWorkspaceRoot?: string | null;
   restoreWorkspaceOnStartup?: boolean;
@@ -321,6 +325,7 @@ export function useMarkdownDocument({
   onTreeRootFromFolderPath,
   onTreeRootFromFilePath,
   onSwitchNotebookDirectory,
+  openDroppedFilesInTabs = false,
   preferencesReady = true,
   restoreWorkspaceRoot = null,
   restoreWorkspaceOnStartup = true,
@@ -1040,12 +1045,12 @@ export function useMarkdownDocument({
             nextTabs = currentTabs;
             nextActiveTabId = existingTab.id;
           } else {
-            const activeTabIsPristine = currentTabs.some((tab) =>
-              tab.id === activeTabIdRef.current && isPristineUntitledDocument(documentFromTab(tab))
+            const activeTabIsEmptyUntitled = currentTabs.some((tab) =>
+              tab.id === activeTabIdRef.current && isEmptyUntitledDocument(documentFromTab(tab))
             );
-            const nextTabId = activeTabIsPristine && activeTabIdRef.current ? activeTabIdRef.current : fileTabId(file.path);
+            const nextTabId = activeTabIsEmptyUntitled && activeTabIdRef.current ? activeTabIdRef.current : fileTabId(file.path);
             const nextTab = createDocumentTab(nextDocument, nextTabId);
-            nextTabs = activeTabIsPristine
+            nextTabs = activeTabIsEmptyUntitled
               ? currentTabs.map((tab) => tab.id === activeTabIdRef.current ? nextTab : tab)
               : [...currentTabs, nextTab];
             nextActiveTabId = nextTab.id;
@@ -1882,13 +1887,31 @@ export function useMarkdownDocument({
         return switchedRoot !== null && switchedRoot !== false;
       }
 
-      if (resolvedNativeOpenPolicy === "spawn-external") {
-        await openNativeMarkdownFileInNewWindow(target.path);
+      const currentDocumentEmpty = isCurrentDocumentEmptyUntitled();
+      const hasExistingWindowContext =
+        Boolean(normalizeComparablePath(workspaceSourcePath)) ||
+        tabsRef.current.some((tab) =>
+          tab.id !== activeTabIdRef.current &&
+          !isEmptyUntitledDocument(documentFromTab(tab))
+        );
+
+      if (
+        openDroppedFilesInTabs &&
+        documentTabsEnabled &&
+        (!currentDocumentEmpty || hasExistingWindowContext)
+      ) {
+        // An empty active tab can still belong to a window with a workspace or other documents.
+        await loadNativeMarkdownPath(target.path, false);
         return true;
       }
 
-      if (isCurrentDocumentEmptyUntitled()) {
+      if (currentDocumentEmpty) {
         await loadNativeMarkdownPath(target.path);
+        return true;
+      }
+
+      if (resolvedNativeOpenPolicy === "spawn-external") {
+        await openNativeMarkdownFileInNewWindow(target.path);
         return true;
       }
 
@@ -1896,10 +1919,13 @@ export function useMarkdownDocument({
       return true;
     },
     [
+      documentTabsEnabled,
       isCurrentDocumentEmptyUntitled,
       loadNativeMarkdownPath,
       onSwitchNotebookDirectory,
-      resolvedNativeOpenPolicy
+      openDroppedFilesInTabs,
+      resolvedNativeOpenPolicy,
+      workspaceSourcePath
     ]
   );
 

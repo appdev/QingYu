@@ -203,6 +203,31 @@ describe("SettingsWindow notes workspace", () => {
       resolution: "keep-local" as const
     };
     const listeners = new Map<string, Set<(event: { payload: unknown }) => unknown>>();
+    const loadRepositoryStatus = vi.fn(async () => ({
+      attempt: 1,
+      automaticFailureCount: 0,
+      conflicts: [conflict],
+      error: null,
+      jobId: "00000000-0000-4000-8000-0000000000c3",
+      lastAttemptAt: "2026-07-29T02:42:00Z",
+      lastDnsRetryAt: null,
+      lastSuccessfulSyncAt: "2026-07-29T02:42:00Z",
+      maintenance: { lastLocalPurgeAt: null, nextLocalPurgeAt: null },
+      nextScheduledAt: null,
+      phase: "succeeded" as const,
+      repositoryId: conflict.repositoryId,
+      sameCount: 0,
+      transfer: {
+        downloadBytes: 0,
+        downloadChunks: 0,
+        downloadFiles: 0,
+        uploadBytes: 0,
+        uploadChunks: 0,
+        uploadFiles: 0
+      },
+      trigger: "manual" as const,
+      version: 1 as const
+    }));
     const runtime = getAppRuntime();
     configureAppRuntime({
       ...runtime,
@@ -251,31 +276,7 @@ describe("SettingsWindow notes workspace", () => {
           revision: "rev-conflict",
           status: "loaded"
         }),
-        loadRepositoryStatus: async () => ({
-          attempt: 1,
-          automaticFailureCount: 0,
-          conflicts: [conflict],
-          error: null,
-          jobId: "00000000-0000-4000-8000-0000000000c3",
-          lastAttemptAt: "2026-07-29T02:42:00Z",
-          lastDnsRetryAt: null,
-          lastSuccessfulSyncAt: "2026-07-29T02:42:00Z",
-          maintenance: { lastLocalPurgeAt: null, nextLocalPurgeAt: null },
-          nextScheduledAt: null,
-          phase: "succeeded",
-          repositoryId: conflict.repositoryId,
-          sameCount: 0,
-          transfer: {
-            downloadBytes: 0,
-            downloadChunks: 0,
-            downloadFiles: 0,
-            uploadBytes: 0,
-            uploadChunks: 0,
-            uploadFiles: 0
-          },
-          trigger: "manual",
-          version: 1
-        }),
+        loadRepositoryStatus,
         readDejavuConflictHistory: vi.fn(async () => ({
           conflict,
           local: { byteSize: 13, text: "local content" },
@@ -283,7 +284,7 @@ describe("SettingsWindow notes workspace", () => {
         }))
       }
     });
-    render(<SettingsWindow />);
+    const view = render(<SettingsWindow />);
 
     fireEvent.click(await screen.findByRole("button", { name: "Sync" }));
     fireEvent.click(await screen.findByRole("button", { name: "notes/conflicted.md" }));
@@ -291,6 +292,15 @@ describe("SettingsWindow notes workspace", () => {
     const dialog = await screen.findByRole("dialog", { name: "Sync conflict history" });
     expect(within(dialog).getByText("local content")).toBeInTheDocument();
     expect(within(dialog).getByText("remote content")).toBeInTheDocument();
+    expect(loadRepositoryStatus.mock.calls.length).toBeGreaterThanOrEqual(2);
     expect(mockedHideSettingsWindow).not.toHaveBeenCalled();
+
+    settingsPrimaryWorkspaceState.current = {
+      ...settingsPrimaryWorkspaceState.current,
+      root: "/Workspace/Other"
+    };
+    view.rerender(<SettingsWindow />);
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Sync conflict history" }))
+      .not.toBeInTheDocument());
   });
 });

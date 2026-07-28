@@ -109,7 +109,6 @@ function FileTreeProbe({
       <p data-testid="open-state">{tree.open ? "open" : "closed"}</p>
       <p data-testid="tree-width">{tree.width}</p>
       <p data-testid="tree-resizing">{tree.resizing ? "resizing" : "idle"}</p>
-      <p data-testid="recent-folders-open-state">{tree.recentFoldersOpen ? "open" : "closed"}</p>
       <p data-testid="assets-visible-state">{tree.fileTreeAssetsVisible ? "visible" : "hidden"}</p>
       <p data-testid="file-tree-sort">{`${tree.fileTreeSort.key}:${tree.fileTreeSort.direction}`}</p>
       <p data-testid="layout-class">{tree.workspaceLayoutClassName}</p>
@@ -124,7 +123,7 @@ function FileTreeProbe({
         type="button"
         onClick={() => tree.openFolderPath("/recent/notes", "notes", true, true, { coalesce: true })}
       >
-        Open recent folder
+        Open notes folder
       </button>
       <button
         type="button"
@@ -161,12 +160,6 @@ function FileTreeProbe({
       </button>
       <button type="button" onClick={tree.endResize}>
         End resize
-      </button>
-      <button type="button" onClick={() => tree.setRecentFoldersOpen?.(false)}>
-        Collapse recent folders
-      </button>
-      <button type="button" onClick={() => tree.setRecentFoldersOpen?.(true)}>
-        Expand recent folders
       </button>
       <button type="button" onClick={() => tree.setFileTreeAssetsVisible?.(!tree.fileTreeAssetsVisible)}>
         Toggle image assets
@@ -236,9 +229,7 @@ describe("useMarkdownFileTree", () => {
     mockedSaveStoredFileTreeSortForWorkspace.mockReset();
     mockedSaveStoredWorkspaceState.mockReset();
     mockedGetStoredFileTreeSortByWorkspace.mockResolvedValue({});
-    mockedGetStoredWorkspaceState.mockResolvedValue(mockWorkspaceState({
-      recentFoldersOpen: true
-    }));
+    mockedGetStoredWorkspaceState.mockResolvedValue(mockWorkspaceState());
     mockedCreateNativeMarkdownTreeFile.mockResolvedValue({
       name: "Daily note.md",
       path: "/vault/Daily note.md",
@@ -427,7 +418,6 @@ describe("useMarkdownFileTree", () => {
     });
     act(() => {
       result.current.toggle();
-      result.current.setRecentFoldersOpen(false);
       result.current.setFileTreeAssetsVisible(false);
     });
 
@@ -1131,30 +1121,6 @@ describe("useMarkdownFileTree", () => {
     expect(screen.queryByText("stale.md")).not.toBeInTheDocument();
   });
 
-  it("restores and persists the recent folder section expansion state", async () => {
-    mockedGetStoredWorkspaceState.mockResolvedValue(mockWorkspaceState({
-      recentFoldersOpen: false
-    }));
-
-    render(<FileTreeProbe />);
-
-    await waitFor(() => expect(screen.getByTestId("recent-folders-open-state")).toHaveTextContent("closed"));
-
-    fireEvent.click(screen.getByRole("button", { name: "Expand recent folders" }));
-
-    expect(screen.getByTestId("recent-folders-open-state")).toHaveTextContent("open");
-    expect(mockedSaveStoredWorkspaceState).toHaveBeenCalledWith({
-      recentFoldersOpen: true
-    });
-
-    fireEvent.click(screen.getByRole("button", { name: "Collapse recent folders" }));
-
-    expect(screen.getByTestId("recent-folders-open-state")).toHaveTextContent("closed");
-    expect(mockedSaveStoredWorkspaceState).toHaveBeenCalledWith({
-      recentFoldersOpen: false
-    });
-  });
-
   it("restores and persists file tree image asset visibility", async () => {
     mockedGetStoredWorkspaceState.mockResolvedValue(mockWorkspaceState({
       fileTreeAssetsVisible: false
@@ -1185,7 +1151,7 @@ describe("useMarkdownFileTree", () => {
 
     render(<FileTreeProbe />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Open recent folder" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open notes folder" }));
 
     expect(await screen.findByText("index.md")).toBeInTheDocument();
     await waitFor(() =>
@@ -1246,7 +1212,7 @@ describe("useMarkdownFileTree", () => {
 
     render(<FileTreeProbe />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Open recent folder" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open notes folder" }));
 
     expect(await screen.findByText("index.md")).toBeInTheDocument();
     expect(screen.getByTestId("root-name")).toHaveTextContent("notes");
@@ -1266,7 +1232,7 @@ describe("useMarkdownFileTree", () => {
 
       render(<FileTreeProbe />);
 
-      fireEvent.click(screen.getByRole("button", { name: "Open recent folder" }));
+      fireEvent.click(screen.getByRole("button", { name: "Open notes folder" }));
       fireEvent.click(screen.getByRole("button", { name: "Open second docs folder" }));
 
       expect(mockedListNativeMarkdownFilesForPath).not.toHaveBeenCalled();
@@ -1299,7 +1265,7 @@ describe("useMarkdownFileTree", () => {
 
       render(<FileTreeProbe />);
 
-      fireEvent.click(screen.getByRole("button", { name: "Open recent folder" }));
+      fireEvent.click(screen.getByRole("button", { name: "Open notes folder" }));
 
       await act(async () => {
         vi.advanceTimersByTime(150);

@@ -69,6 +69,21 @@ pub fn write_cap_file_safer(
     stage_cap_file(parent, destination, bytes, mode)?.publish_replace()
 }
 
+/// Atomically publishes a complete capability-addressed file without replacing
+/// an existing destination. Returns `true` when this call published the file
+/// and `false` when a safe regular file already occupied the destination.
+pub fn write_cap_file_no_replace_safer(
+    parent: &Dir,
+    destination: &OsStr,
+    bytes: &[u8],
+    mode: u32,
+) -> Result<bool, RepoError> {
+    Ok(
+        stage_cap_file(parent, destination, bytes, mode)?.publish_no_replace()?
+            == PublishOutcome::Published,
+    )
+}
+
 pub(crate) fn stage_file(path: &Path, bytes: &[u8], mode: u32) -> Result<StagedFile, RepoError> {
     let (temp_path, mut temp_file) = create_temp_file(path, mode)?;
     let result = (|| -> Result<(), RepoError> {

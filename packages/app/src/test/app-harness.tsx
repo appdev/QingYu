@@ -253,11 +253,8 @@ vi.mock("../lib/tauri/updater", () => ({
 }));
 
 vi.mock("../lib/settings/local-state", () => ({
-  getStoredRecentNotebooks: vi.fn(async () => []),
   isValidManagedNotebookName: vi.fn(() => true),
   loadPrimaryWorkspaceState: vi.fn(),
-  removeStoredRecentNotebook: vi.fn(async () => []),
-  saveStoredRecentNotebook: vi.fn(async (notebook) => [notebook]),
   savePrimaryWorkspaceState: vi.fn()
 }));
 
@@ -341,6 +338,7 @@ vi.mock("../lib/settings/app-settings", () => ({
     paragraphSpacingPx: 8,
     restoreWorkspaceOnStartup: true,
     showDocumentTabs: true,
+    hideHeadingMarkersOnFocus: false,
     splitVisualPanePercent: 50,
     tableColumnWidthMode: "auto",
     titlebarActions: [
@@ -359,7 +357,6 @@ vi.mock("../lib/settings/app-settings", () => ({
       openButton: "visible",
       outline: "visible",
       quickCreateButton: "visible",
-      recentFolders: "visible",
       statusBar: "visible",
       titlebarActions: "visible",
       viewModeToggle: "visible"
@@ -449,9 +446,6 @@ vi.mock("../lib/settings/app-settings", () => ({
     darkTheme: "dark",
     lightTheme: "light"
   },
-  approveThemeFingerprint: vi.fn(async () => undefined),
-  forgetApprovedThemeFingerprint: vi.fn(async () => undefined),
-  getApprovedThemeFingerprint: vi.fn(async () => null),
   isThemeId: vi.fn((value) => typeof value === "string" && /^[a-z0-9][a-z0-9-]{0,63}$/u.test(value)),
   normalizeAppThemePreferences: vi.fn((preferences) => {
     const value = typeof preferences === "object" && preferences !== null
@@ -585,6 +579,7 @@ vi.mock("../lib/settings/app-settings", () => ({
     },
     restoreWorkspaceOnStartup: true,
     showDocumentTabs: true,
+    hideHeadingMarkersOnFocus: false,
     splitVisualPanePercent: 50,
     titlebarActions: [
       { id: "viewMode", visible: true },
@@ -1028,7 +1023,6 @@ export function installAppTestHarness() {
       canImport: true,
       canOpenDirectory: true
     };
-    runtime.themes.confirmActivation = vi.fn(async () => true);
     runtime.themes.list = vi.fn(async () => ({ invalidFiles: [], themes: appHarnessThemeDescriptors }));
     runtime.themes.prepareActivation = vi.fn(async (id, expectedFingerprint) => ({
       fingerprint: expectedFingerprint,
@@ -1323,10 +1317,12 @@ export function installAppTestHarness() {
       lineHeight: 1.65,
       markdownShortcuts: defaultMarkdownShortcuts,
       markdownTemplates: [],
+      openDroppedFilesInTabs: false,
       paragraphSpacingPx: 8,
       restoreWorkspaceOnStartup: true,
       sidebarLayoutMode: "stacked",
       showDocumentTabs: true,
+      hideHeadingMarkersOnFocus: false,
       splitVisualPanePercent: 50,
       tableColumnWidthMode: "auto",
         titlebarActions: [
@@ -1346,7 +1342,6 @@ export function installAppTestHarness() {
         openButton: "visible",
         outline: "visible",
         quickCreateButton: "visible",
-        recentFolders: "visible",
         sidebarLayout: "visible",
         statusBar: "visible",
         titlebarActions: "visible",

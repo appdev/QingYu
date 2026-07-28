@@ -2,11 +2,8 @@ import { normalizeNullableString } from "@markra/shared";
 import { getAppRuntime, type RuntimeStore } from "../../runtime";
 import {
   normalizeRecentMarkdownFiles,
-  normalizeRecentNotebooks,
   prependRecentMarkdownFile,
-  prependRecentNotebook,
-  type RecentMarkdownFile,
-  type RecentNotebook
+  type RecentMarkdownFile
 } from "./recent-markdown";
 import {
   defaultWorkspaceState,
@@ -29,7 +26,6 @@ const welcomeDocumentSeenKey = "welcomeDocumentSeen";
 const fileTreeSortByWorkspaceKey = "fileTreeSortByWorkspace";
 const workspaceKey = "workspace";
 const recentMarkdownFilesKey = "recentMarkdownFiles";
-const recentNotebooksKey = "recentNotebooks";
 const mainWorkspaceWindowLabel = "main";
 const settingsWorkspaceWindowLabel = "markra-settings";
 const maxFileTreeSortWorkspaceEntries = 50;
@@ -78,13 +74,6 @@ type PrimaryWorkspacePersistenceCoordinator = {
 
 let primaryWorkspacePersistenceCoordinator: PrimaryWorkspacePersistenceCoordinator | null = null;
 
-type RecentNotebooksPersistenceCoordinator = {
-  settings: ReturnType<typeof getAppRuntime>["settings"];
-  tail: Promise<unknown>;
-};
-
-let recentNotebooksPersistenceCoordinator: RecentNotebooksPersistenceCoordinator | null = null;
-
 type StoredWorkspaceStore = {
   legacyState: StoredWorkspaceState;
   openWindows: StoredWorkspaceWindow[];
@@ -100,33 +89,6 @@ function localStore() {
     autoSave: false,
     defaults: {}
   });
-}
-
-function runRecentNotebooksStoreOperation<T>(
-  operation: (store: RuntimeStore) => Promise<T>
-) {
-  const settings = getAppRuntime().settings;
-  if (recentNotebooksPersistenceCoordinator?.settings !== settings) {
-    recentNotebooksPersistenceCoordinator = {
-      settings,
-      tail: Promise.resolve()
-    };
-  }
-  const coordinator = recentNotebooksPersistenceCoordinator;
-  const result = coordinator.tail
-    .catch(() => undefined)
-    .then(async () => {
-      const store = await settings.loadStore(localStateStorePath, {
-        autoSave: false,
-        defaults: {}
-      });
-      return await operation(store);
-    });
-  coordinator.tail = result.then(
-    () => undefined,
-    () => undefined
-  );
-  return result;
 }
 
 async function saveLocalStore(store: RuntimeStore) {
@@ -392,7 +354,6 @@ function workspaceWindowStateIsEmpty(state: StoredWorkspaceWindowState) {
     !state.folderName &&
     !state.folderPath &&
     state.openFilePaths.length === 0 &&
-    state.recentFoldersOpen !== false &&
     !state.sideBySideGroup
   );
 }
@@ -537,30 +498,4 @@ export async function clearStoredRecentMarkdownFiles() {
   const store = await localStore();
   await store.delete(recentMarkdownFilesKey);
   await saveLocalStore(store);
-}
-
-export async function getStoredRecentNotebooks(): Promise<RecentNotebook[]> {
-  return await runRecentNotebooksStoreOperation(async (store) => (
-    normalizeRecentNotebooks(await store.get<RecentNotebook[]>(recentNotebooksKey))
-  ));
-}
-
-export async function saveStoredRecentNotebook(notebook: RecentNotebook) {
-  return await runRecentNotebooksStoreOperation(async (store) => {
-    const current = normalizeRecentNotebooks(await store.get<RecentNotebook[]>(recentNotebooksKey));
-    const notebooks = prependRecentNotebook(current, notebook);
-    await store.set(recentNotebooksKey, notebooks);
-    await saveLocalStore(store);
-    return notebooks;
-  });
-}
-
-export async function removeStoredRecentNotebook(path: string) {
-  return await runRecentNotebooksStoreOperation(async (store) => {
-    const current = normalizeRecentNotebooks(await store.get<RecentNotebook[]>(recentNotebooksKey));
-    const notebooks = current.filter((notebook) => notebook.path !== path);
-    await store.set(recentNotebooksKey, notebooks);
-    await saveLocalStore(store);
-    return notebooks;
-  });
 }

@@ -65,8 +65,8 @@ This document only defines engineering conventions for this repository.
 
 - The canonical upstream repository is [markrahq/markra](https://github.com/markrahq/markra). Keep it configured as the `upstream` remote and treat it as read-only: fetch and merge from it, but do not push to it.
 - Keep the private downstream repository configured as `origin`. Push local `main`, customization branches, and local merge commits only to `origin`, and only when the user explicitly requests a push.
-- Check upstream changes with `git fetch upstream`; do not use an unreviewed direct pull to replace, rebase, reset, or discard local commits.
-- Integrate new `upstream/main` commits in an isolated worktree and temporary local branch first. Preserve existing user changes and do not modify unrelated untracked files in the primary checkout.
+- Check upstream changes with `git fetch upstream`, then resolve the upstream repository's current default branch through `upstream/HEAD`; do not assume the default branch is named `main`, and do not use an unreviewed direct pull to replace, rebase, reset, or discard local commits.
+- Integrate new commits from the upstream default branch in an isolated worktree and temporary local branch first. Preserve existing user changes and do not modify unrelated untracked files in the primary checkout.
 - Preserve local product capabilities when resolving upstream changes, including the S3 note-folder `SyncProvider`, its shared remote-sync engine, triggers, conflict handling, and live MinIO coverage. Do not accept an upstream side merely because it lacks a local feature.
 - Before updating local `main`, verify the integrated commit with `cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml`, `pnpm test`, `pnpm typecheck:test`, and `pnpm build`. Run `pnpm test:s3-sync:live` when the configured real MinIO test server is available.
 - Update local `main` only after the integration checks pass. Then remove the temporary integration worktree and branch while leaving the local customization history intact.

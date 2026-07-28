@@ -4,6 +4,7 @@ import type { DejavuRepositoryStatus, SyncConflictRecord } from "../lib/sync-con
 import {
   configureAppRuntime,
   createDefaultAppRuntime,
+  getAppRuntime,
   resetAppRuntimeForTests,
   type RuntimeEvent
 } from "../runtime";
@@ -16,6 +17,14 @@ import {
 vi.mock("../lib/app-toast", () => ({ showAppToast: vi.fn() }));
 
 const repositoryId = "00000000-0000-4000-8000-0000000000a1";
+
+function deferred<T>() {
+  let resolve!: (value: T) => unknown;
+  const promise = new Promise<T>((complete) => {
+    resolve = complete;
+  });
+  return { promise, resolve };
+}
 
 function conflict(conflictId: string, relativePath = "folder/note.md"): SyncConflictRecord {
   return {
@@ -94,6 +103,22 @@ describe("useSyncConflictHistory", () => {
     expect(showAppToast).not.toHaveBeenCalled();
   });
 
+  it("keeps the persisted baseline when event subscription is unavailable", async () => {
+    const runtime = getAppRuntime();
+    runtime.events.listen = vi.fn(async () => {
+      throw new Error("listener unavailable");
+    });
+
+    const { result } = renderHook(() => useSyncConflictHistory({
+      notesRoot: "/notes",
+      translate: (key) => key
+    }));
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.entries).toEqual([initial]);
+    expect(showAppToast).not.toHaveBeenCalled();
+  });
+
   it("notifies once for newly completed history without asking for a resolution", async () => {
     const { result } = renderHook(() => useSyncConflictHistory({
       notesRoot: "/notes",
@@ -101,17 +126,54 @@ describe("useSyncConflictHistory", () => {
     }));
     await waitFor(() => expect(listeners.has(dejavuSyncStatusChangedEvent)).toBe(true));
     const next = conflict("00000000-0000-4000-8000-0000000000a5", "new.md");
+    vi.mocked(getAppRuntime().syncConfig.listDejavuConflictHistory)
+      .mockResolvedValue([initial, next]);
 
     await act(async () => {
       await listeners.get(dejavuSyncStatusChangedEvent)?.({ payload: status([initial, next]) });
       await listeners.get(dejavuSyncStatusChangedEvent)?.({ payload: status([initial, next]) });
     });
-    expect(showAppToast).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(showAppToast).toHaveBeenCalledTimes(1));
     expect(showAppToast).toHaveBeenCalledWith(expect.objectContaining({
       id: `sync-conflict-${next.conflictId}`,
       message: "sync.conflict.notice",
       status: "success"
     }));
     expect(result.current.entries).toEqual([initial, next]);
+  });
+
+  it("subscribes before the baseline read and reconciles a conflict emitted during loading", async () => {
+    const firstHistory = deferred<SyncConflictRecord[]>();
+    const next = conflict("00000000-0000-4000-8000-0000000000a6", "during-load.md");
+    const runtime = createDefaultAppRuntime();
+    runtime.events.isAvailable = () => true;
+    runtime.events.listen = vi.fn(async (event, handler) => {
+      listeners.set(event, handler as (event: RuntimeEvent<unknown>) => unknown);
+      return () => listeners.delete(event);
+    });
+    runtime.syncConfig.loadRepositoryStatus = vi.fn(async () => status([initial]));
+    runtime.syncConfig.listDejavuConflictHistory = vi.fn()
+      .mockImplementationOnce(() => firstHistory.promise)
+      .mockResolvedValue([initial, next]);
+    configureAppRuntime(runtime);
+
+    const { result } = renderHook(() => useSyncConflictHistory({
+      notesRoot: "/notes",
+      translate: (key) => key
+    }));
+    await waitFor(() => expect(runtime.syncConfig.listDejavuConflictHistory).toHaveBeenCalledTimes(1));
+    expect(listeners.has(dejavuSyncStatusChangedEvent)).toBe(true);
+
+    await act(async () => {
+      await listeners.get(dejavuSyncStatusChangedEvent)?.({ payload: status([initial, next]) });
+      firstHistory.resolve([initial]);
+      await firstHistory.promise;
+    });
+
+    await waitFor(() => expect(result.current.entries).toEqual([initial, next]));
+    expect(showAppToast).toHaveBeenCalledOnce();
+    expect(showAppToast).toHaveBeenCalledWith(expect.objectContaining({
+      id: `sync-conflict-${next.conflictId}`
+    }));
   });
 });

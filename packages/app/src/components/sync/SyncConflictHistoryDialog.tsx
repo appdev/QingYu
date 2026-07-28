@@ -7,10 +7,12 @@ import type { ConflictVersion, ConflictVersions, SyncConflictRecord } from "../.
 function VersionPane({
   emptyLabel,
   label,
+  missingLabel,
   version
 }: {
   emptyLabel: string;
   label: string;
+  missingLabel: string;
   version: ConflictVersion | null;
 }) {
   return (
@@ -24,7 +26,7 @@ function VersionPane({
         </pre>
       ) : (
         <div className="grid min-h-36 content-center gap-1 p-3 text-center text-[12px] text-(--text-secondary)">
-          <span>{emptyLabel}</span>
+          <span>{version ? emptyLabel : missingLabel}</span>
           {version ? <span>{version.byteSize.toLocaleString()} B</span> : null}
         </div>
       )}
@@ -98,11 +100,13 @@ export function SyncConflictHistoryDialog({
             <VersionPane
               emptyLabel={label("sync.conflict.binaryOrLarge")}
               label={label("sync.conflict.localVersion")}
+              missingLabel={label("sync.conflict.localMissing")}
               version={versions.local}
             />
             <VersionPane
               emptyLabel={label("sync.conflict.binaryOrLarge")}
               label={label("sync.conflict.remoteVersion")}
+              missingLabel={label("sync.conflict.unavailable")}
               version={versions.remote}
             />
           </div>

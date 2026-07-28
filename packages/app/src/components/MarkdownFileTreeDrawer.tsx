@@ -45,8 +45,7 @@ import {
   Search,
   Settings,
   TableOfContents,
-  Trash2,
-  X
+  Trash2
 } from "lucide-react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -66,7 +65,7 @@ import type { NativeMarkdownFolderFile } from "../lib/tauri";
 import { normalizeMovedPath, sameNativePath } from "../lib/path-move";
 import { readNativeClipboardText, showNativeMarkdownFileTreeContextMenu } from "../lib/tauri";
 import { resolveDesktopPlatform, type DesktopPlatform } from "../lib/platform";
-import type { RecentMarkdownFolder, SidebarLayoutMode } from "../lib/settings/app-settings";
+import type { SidebarLayoutMode } from "../lib/settings/app-settings";
 import {
   workspaceBacklinksForPath,
   workspaceUnlinkedMentionsForPath,
@@ -153,10 +152,9 @@ type MarkdownFileTreeDrawerProps = {
   outlineItems: MarkdownOutlineItem[];
   outlineVisible?: boolean;
   platform?: DesktopPlatform;
-  recentFolders?: readonly RecentMarkdownFolder[];
-  recentFoldersOpen?: boolean;
-  recentFoldersVisible?: boolean;
   revealPathRequest?: { id: number; path: string | null } | null;
+  recentFolders?: readonly { name: string; path: string }[];
+  recentFoldersOpen?: boolean;
   resizing?: boolean;
   rootPath?: string | null;
   rootName: string;
@@ -182,12 +180,10 @@ type MarkdownFileTreeDrawerProps = {
   onOpenContainingFolder?: (path: string) => unknown | Promise<unknown>;
   onOpenFileToSide?: (file: NativeMarkdownFolderFile) => unknown | Promise<unknown>;
   onOpenFolder?: () => unknown | Promise<unknown>;
-  onOpenRecentFolder?: (folder: RecentMarkdownFolder) => unknown | Promise<unknown>;
+  onOpenRecentFolder?: (folder: { name: string; path: string }) => unknown | Promise<unknown>;
   onOpenSettings?: () => unknown | Promise<unknown>;
   onSyncNow?: () => unknown | Promise<unknown>;
   onInstallAvailableUpdate?: () => unknown | Promise<unknown>;
-  onRecentFoldersOpenChange?: (open: boolean) => unknown;
-  onRemoveRecentFolder?: (folder: RecentMarkdownFolder) => unknown | Promise<unknown>;
   onMoveFile?: (file: NativeMarkdownFolderFile, targetParentPath: string | null) => unknown | Promise<unknown>;
   onRenameFile?: (file: NativeMarkdownFolderFile, fileName: string) => unknown | Promise<unknown>;
   onResize?: (width: number) => unknown;
@@ -231,82 +227,46 @@ function cancelFileTreeAnimationFrame(handle: number) {
   cancel(handle);
 }
 const documentLinksResizeKeyboardStepPercent = 5;
-const recentFolderPathDisplayMaxLength = 48;
 const fileTreeContextRowSelectionClassName = "select-none [-webkit-user-select:none]";
 const fileTreeDropTargetClassName = "bg-(--bg-active) text-(--text-heading)";
 const fileTreeDropListTargetClassName = "rounded-sm bg-(--bg-active)";
 const sidebarPanelTabBaseClassName = "relative -mb-px h-10 cursor-pointer border-0 border-b border-transparent bg-transparent px-2 text-[13px] leading-none font-[560] transition-colors duration-150 ease-out focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-(--accent)";
 const sidebarPanelTabActiveClassName = "border-(--text-secondary) text-(--text-heading)";
 const sidebarPanelTabInactiveClassName = "text-(--text-secondary) hover:text-(--text-heading)";
+const outlineButtonBaseClassName = "theme-outline-item min-w-0 cursor-pointer rounded-sm border-0 bg-transparent px-1 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-(--accent)";
 const outlineTitleMarkdownPlugins = [remarkGfm, remarkMath, markraHighlightRemarkPlugin];
 const outlineTitleMarkdownComponents = {
   a: ({ children }) => <>{children}</>,
   code: ({ children, className }) => {
     const isMath = typeof className === "string" && className.split(/\s+/u).includes("math-inline");
     if (isMath) {
-      return <span className="markra-outline-title-math font-mono text-[0.92em] text-(--text-heading)">{children}</span>;
+      return <span className="markra-outline-title-math font-mono text-[0.92em]">{children}</span>;
     }
 
     return (
-      <code className="rounded-sm bg-(--bg-active) px-0.75 py-px font-mono text-[0.92em] text-(--text-heading)">
+      <code className="rounded-sm bg-(--bg-active) px-0.75 py-px font-mono text-[0.92em]">
         {children}
       </code>
     );
   },
   del: ({ children }) => <del className="line-through decoration-(--text-tertiary) decoration-1">{children}</del>,
   em: ({ children }) => (
-    <em className="italic text-(--text-primary)" style={{ fontStyle: "italic", fontSynthesis: "style" }}>
+    <em className="italic" style={{ fontStyle: "italic", fontSynthesis: "style" }}>
       {children}
     </em>
   ),
   img: ({ alt }) => <>{alt}</>,
   mark: ({ children }) => (
-    <mark className="rounded-sm bg-(--accent-soft) px-0.5 text-(--text-heading)">
+    <mark className="rounded-sm bg-(--accent-soft) px-0.5">
       {children}
     </mark>
   ),
   p: ({ children }) => <>{children}</>,
-  strong: ({ children }) => <strong className="font-[760] text-(--text-heading)">{children}</strong>
+  strong: ({ children }) => <strong className="font-[760]">{children}</strong>
 } satisfies Components;
 
 function sidebarPanelTabClassName(selected: boolean) {
   return `${sidebarPanelTabBaseClassName} ${selected ? sidebarPanelTabActiveClassName : sidebarPanelTabInactiveClassName}`;
-}
-
-function recentFolderNameKey(folder: RecentMarkdownFolder) {
-  return folder.name.trim().toLocaleLowerCase();
-}
-
-function duplicateRecentFolderNameKeys(folders: readonly RecentMarkdownFolder[]) {
-  const counts = new Map<string, number>();
-
-  folders.forEach((folder) => {
-    const key = recentFolderNameKey(folder);
-    counts.set(key, (counts.get(key) ?? 0) + 1);
-  });
-
-  return new Set(Array.from(counts.entries()).filter(([, count]) => count > 1).map(([key]) => key));
-}
-
-function compactRecentFolderPath(path: string, maxLength = recentFolderPathDisplayMaxLength) {
-  if (path.length <= maxLength) return path;
-
-  const separator = path.includes("\\") && !path.includes("/") ? "\\" : "/";
-  const hasLeadingSeparator = path.startsWith("/") || path.startsWith("\\");
-  const segments = path.split(/[\\/]/u).filter(Boolean);
-
-  if (segments.length >= 4) {
-    const leadingPath = segments.slice(0, 2).join(separator);
-    const trailingPath = segments.slice(-2).join(separator);
-    const candidate = `${hasLeadingSeparator ? separator : ""}${leadingPath}${separator}...${separator}${trailingPath}`;
-    if (candidate.length <= maxLength) return candidate;
-  }
-
-  const remainingLength = Math.max(2, maxLength - 3);
-  const leadingLength = Math.ceil(remainingLength / 2);
-  const trailingLength = Math.floor(remainingLength / 2);
-
-  return `${path.slice(0, leadingLength)}...${path.slice(-trailingLength)}`;
 }
 
 function OutlineTitle({ item }: { item: MarkdownOutlineItem }) {
@@ -473,8 +433,7 @@ export function MarkdownFileTreeDrawer({
   outlineVisible = true,
   platform = resolveDesktopPlatform(),
   recentFolders = [],
-  recentFoldersOpen: controlledRecentFoldersOpen,
-  recentFoldersVisible = true,
+  recentFoldersOpen = false,
   revealPathRequest = null,
   resizing = false,
   rootPath = null,
@@ -499,8 +458,6 @@ export function MarkdownFileTreeDrawer({
   onOpenSettings = () => {},
   onSyncNow,
   onInstallAvailableUpdate,
-  onRecentFoldersOpenChange,
-  onRemoveRecentFolder,
   onMoveFile,
   onRenameFile,
   onResize,
@@ -527,11 +484,8 @@ export function MarkdownFileTreeDrawer({
   const pendingFileTreeScrollOffsetRef = useRef(fileTreeScrollOffset);
   const fileTreeScrollAnimationFrameRef = useRef<number | null>(null);
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(() => new Set());
-  const [hoveredRecentFolderPath, setHoveredRecentFolderPath] = useState<string | null>(null);
-  const [focusedRecentFolderActionPath, setFocusedRecentFolderActionPath] = useState<string | null>(null);
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
-  const [localRecentFoldersOpen, setLocalRecentFoldersOpen] = useState(true);
   const [fileTreeListOpen, setFileTreeListOpen] = useState(true);
   const [outlineOpen, setOutlineOpen] = useState(true);
   const [localDocumentLinksOpen, setLocalDocumentLinksOpen] = useState(true);
@@ -612,23 +566,6 @@ export function MarkdownFileTreeDrawer({
     [fileTreeAssetsVisible, fullTree]
   );
   const tree = useMemo(() => filterMarkdownFileTree(assetFilteredTree, searchQuery), [assetFilteredTree, searchQuery]);
-  const recentFoldersOpen = controlledRecentFoldersOpen ?? localRecentFoldersOpen;
-  const setRecentFoldersExpanded = useCallback((openRecentFolders: boolean) => {
-    if (controlledRecentFoldersOpen === undefined) {
-      setLocalRecentFoldersOpen(openRecentFolders);
-    }
-
-    onRecentFoldersOpenChange?.(openRecentFolders);
-  }, [controlledRecentFoldersOpen, onRecentFoldersOpenChange]);
-  const toggleRecentFoldersExpanded = useCallback(() => {
-    setRecentFoldersExpanded(!recentFoldersOpen);
-  }, [recentFoldersOpen, setRecentFoldersExpanded]);
-  const handleRecentFoldersHeaderKeyDown = useCallback((event: ReactKeyboardEvent<HTMLDivElement>) => {
-    if (event.key !== "Enter" && event.key !== " ") return;
-
-    event.preventDefault();
-    toggleRecentFoldersExpanded();
-  }, [toggleRecentFoldersExpanded]);
   const visibleFileTreeRows = useMemo(
     () => buildVisibleFileTreeRows(
       tree,
@@ -785,13 +722,7 @@ export function MarkdownFileTreeDrawer({
     return null;
   }, [currentPath, normalizeTreeCreateParentPath, rootPath]);
   const activeCreateParentPath = selectedCreateParentPath ?? currentDocumentCreateParentPath;
-  const recentFolderChoices = useMemo(() => recentFolders.slice(0, 5), [recentFolders]);
-  const duplicateRecentFolderNames = useMemo(
-    () => duplicateRecentFolderNameKeys(recentFolderChoices),
-    [recentFolderChoices]
-  );
   const documentLinksOpen = controlledDocumentLinksOpen ?? localDocumentLinksOpen;
-  const recentFolderAreaVisible = recentFoldersVisible && recentFolderChoices.length > 0 && Boolean(onOpenRecentFolder);
   const tabbedSidebarLayout = sidebarLayoutMode === "tabs";
   const activeFileInLinkIndex = Boolean(
     linkIndex && currentPath && linkIndex.files.some((file) => file.file.path === currentPath)
@@ -822,10 +753,10 @@ export function MarkdownFileTreeDrawer({
   const linksPanelVisible = linkPanelAvailable && (!tabbedSidebarLayout || activeSidebarPanel === "links");
   const linksPanelOpen = tabbedSidebarLayout || documentLinksOpen;
   const linksPanelClassName = tabbedSidebarLayout
-    ? "markdown-file-tree-links flex min-h-0 flex-1"
+    ? "markdown-file-tree-links theme-outline-surface theme-chrome-border flex min-h-0 flex-1"
     : documentLinksOpen
-      ? "markdown-file-tree-links flex min-h-20 flex-1 flex-col border-t border-(--border-default)"
-      : "markdown-file-tree-links h-9 shrink-0 border-t border-(--border-default)";
+      ? "markdown-file-tree-links theme-outline-surface theme-chrome-border flex min-h-20 flex-1 flex-col border-t"
+      : "markdown-file-tree-links theme-outline-surface theme-chrome-border h-9 shrink-0 border-t";
   const linksPanelStyle = !tabbedSidebarLayout && documentLinksOpen
     ? { flex: `0 1 ${documentLinksHeightPercent}%` }
     : undefined;
@@ -843,10 +774,10 @@ export function MarkdownFileTreeDrawer({
     fileTreeListOpen;
   const documentLinksResizerVisible = !tabbedSidebarLayout && linkPanelAvailable && documentLinksOpen;
   const fileSearchVisible = filePanelRendered;
-  const folderAccessVisible =
-    recentFolderAreaVisible &&
-    filePanelRendered;
-  const fileTreeSurfaceClassName = platform === "windows" ? "bg-(--bg-chrome)" : "bg-(--bg-secondary)";
+  const sidebarLegacySurfaceClassName = platform === "windows"
+    ? "theme-sidebar-legacy-chrome"
+    : "theme-sidebar-legacy-secondary";
+  const fileTreeSurfaceClassName = `${sidebarLegacySurfaceClassName} theme-sidebar-surface`;
   const outlineToolbarVisible = !tabbedSidebarLayout ||
     (outlinePanelOpen && (outlineItems.length > 0 || outlineExpansionAvailable));
   const sidebarPanelTabs = useMemo(() => {
@@ -1863,14 +1794,14 @@ export function MarkdownFileTreeDrawer({
     if (createType === "file") {
       return (
         <div
-          className={`relative grid h-8 ${creatingTemplate ? "grid-cols-[17px_minmax(0,1fr)_auto]" : "grid-cols-[17px_minmax(0,1fr)]"} items-center gap-1.5 py-0 pr-2 text-[13px] leading-none text-(--text-secondary) ${rowIndentClass} ${rowBranchClass}`}
+          className={`theme-tree-row relative grid h-8 ${creatingTemplate ? "grid-cols-[17px_minmax(0,1fr)_auto]" : "grid-cols-[17px_minmax(0,1fr)]"} items-center gap-1.5 py-0 pr-2 ${rowIndentClass} ${rowBranchClass}`}
           style={rowIndentStyle}
         >
           <FileText aria-hidden="true" className="shrink-0" size={15} />
           <input
             aria-label={label("app.newMarkdownFileName")}
             autoFocus
-            className="h-6 min-w-0 rounded-md border border-(--accent) bg-(--bg-primary) px-1.5 text-[13px] leading-5 text-(--text-primary) outline-none"
+            className="theme-tree-input h-6 min-w-0 rounded-md border border-(--accent) bg-(--bg-primary) px-1.5 text-(--text-primary) outline-none"
             ref={selectPrefilledFileNameInput}
             type="text"
             value={newFileName}
@@ -1905,14 +1836,14 @@ export function MarkdownFileTreeDrawer({
 
     return (
       <div
-        className={`relative grid h-8 grid-cols-[17px_minmax(0,1fr)] items-center gap-1.5 py-0 pr-2 text-[13px] leading-none text-(--text-secondary) ${rowIndentClass} ${rowBranchClass}`}
+        className={`theme-tree-row relative grid h-8 grid-cols-[17px_minmax(0,1fr)] items-center gap-1.5 py-0 pr-2 ${rowIndentClass} ${rowBranchClass}`}
         style={rowIndentStyle}
       >
         <Folder aria-hidden="true" className="shrink-0" size={15} />
         <input
           aria-label={label("app.newMarkdownFolderName")}
           autoFocus
-          className="h-6 min-w-0 rounded-md border border-(--accent) bg-(--bg-primary) px-1.5 text-[13px] leading-5 text-(--text-primary) outline-none"
+          className="theme-tree-input h-6 min-w-0 rounded-md border border-(--accent) bg-(--bg-primary) px-1.5 text-(--text-primary) outline-none"
           type="text"
           value={newFolderName}
           placeholder={label("app.newMarkdownFolder")}
@@ -1981,7 +1912,7 @@ export function MarkdownFileTreeDrawer({
 
     return (
       <div
-        className={`relative grid h-8 w-full items-center py-0 pr-2 text-[13px] leading-none text-(--text-secondary) ${folder ? "grid-cols-[13px_16px_minmax(0,1fr)] gap-1" : "grid-cols-[17px_minmax(0,1fr)] gap-1.5"} ${rowIndentClass} ${rowBranchClass}`}
+        className={`theme-tree-row relative grid h-8 w-full items-center py-0 pr-2 ${folder ? "grid-cols-[13px_16px_minmax(0,1fr)] gap-1" : "grid-cols-[17px_minmax(0,1fr)] gap-1.5"} ${rowIndentClass} ${rowBranchClass}`}
         style={rowIndentStyle}
       >
         {folder ? <span aria-hidden="true" /> : null}
@@ -1989,7 +1920,7 @@ export function MarkdownFileTreeDrawer({
         <input
           aria-label={folder ? label("app.renameMarkdownFolder") : label("app.renameMarkdownFile")}
           autoFocus
-          className="h-6 min-w-0 rounded-md border border-(--accent) bg-(--bg-primary) px-1.5 text-[13px] leading-5 text-(--text-primary) outline-none"
+          className="theme-tree-input h-6 min-w-0 rounded-md border border-(--accent) bg-(--bg-primary) px-1.5 text-(--text-primary) outline-none"
           ref={folder ? selectAllPrefilledFileTreeInput : selectPrefilledFileNameInput}
           type="text"
           value={renameFileName}
@@ -2045,10 +1976,11 @@ export function MarkdownFileTreeDrawer({
                   dropTargetProps.setNodeRef,
                   dragSource.setNodeRef
                 )}
-                className={`relative flex h-8 w-full cursor-pointer touch-none items-center gap-1 border-0 py-0 pr-2 text-left text-[13px] leading-none text-(--text-secondary) focus-visible:outline-none ${folderRowStateClassName} ${dragSource.isDragging ? "opacity-70" : ""} ${fileTreeContextRowSelectionClassName} ${rowIndentClass} ${rowBranchClass}`}
+                className={`theme-tree-row relative flex h-8 w-full cursor-pointer touch-none items-center gap-1 border-0 py-0 pr-2 text-left focus-visible:outline-none ${folderRowStateClassName} ${dragSource.isDragging ? "opacity-70" : ""} ${fileTreeContextRowSelectionClassName} ${rowIndentClass} ${rowBranchClass}`}
                 style={rowIndentStyle}
                 type="button"
                 aria-expanded={expanded}
+                data-file-tree-drop-target={dropTarget ? "true" : undefined}
                 onContextMenu={(event) => openContextMenu(event, folderFile, node.path)}
                 onClick={() => {
                   finishFileTreeInputsBeforeRowNavigation();
@@ -2065,7 +1997,7 @@ export function MarkdownFileTreeDrawer({
                   <ChevronRight aria-hidden="true" className="shrink-0" size={13} />
                 )}
                 <Folder aria-hidden="true" className="shrink-0" size={16} />
-                <span className="min-w-0 truncate leading-5">
+                <span className="theme-tree-label min-w-0 truncate">
                   {node.name}
                 </span>
               </button>
@@ -2224,7 +2156,7 @@ export function MarkdownFileTreeDrawer({
           <Tooltip content={node.file.path}>
           <button
             ref={dragSource.setNodeRef}
-            className={`relative grid h-8 w-full cursor-pointer touch-none grid-cols-[17px_minmax(0,1fr)] items-center gap-1.5 border-0 bg-transparent py-0 pr-2 text-left text-[13px] leading-none text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-heading) focus-visible:bg-(--bg-hover) focus-visible:text-(--text-heading) focus-visible:outline-none aria-[current=page]:border-l-[3px] aria-[current=page]:border-(--text-secondary) aria-[current=page]:bg-(--bg-active) aria-[current=page]:text-(--text-heading) aria-selected:bg-(--accent-soft) aria-selected:text-(--text-heading) aria-selected:shadow-[inset_3px_0_0_var(--accent)] ${dragSource.isDragging ? "opacity-70" : ""} ${fileTreeContextRowSelectionClassName} ${rowIndentClass} ${rowBranchClass}`}
+            className={`theme-tree-current-surface theme-tree-row relative grid h-8 w-full cursor-pointer touch-none grid-cols-[17px_minmax(0,1fr)] items-center gap-1.5 border-0 bg-transparent py-0 pr-2 text-left focus-visible:outline-none ${dragSource.isDragging ? "opacity-70" : ""} ${fileTreeContextRowSelectionClassName} ${rowIndentClass} ${rowBranchClass}`}
             style={rowIndentStyle}
             type="button"
             aria-current={active ? "page" : undefined}
@@ -2244,7 +2176,7 @@ export function MarkdownFileTreeDrawer({
             onKeyDown={(event) => handleFileTreeRowDeleteKey(event, node.file)}
           >
             <FileIcon aria-hidden="true" className="shrink-0" size={15} />
-            <span className="min-w-0 truncate leading-5">
+            <span className="theme-tree-label min-w-0 truncate">
               {node.name}
             </span>
           </button>
@@ -2273,7 +2205,7 @@ export function MarkdownFileTreeDrawer({
     const nodeList = (setNodeRef?: (element: HTMLOListElement | null) => undefined) => (
       <ol
         ref={setNodeRef}
-        className={depth === 0 ? "m-0 list-none p-0" : `ml-5 list-none border-l border-(--border-default) p-0 ${listDropTarget ? fileTreeDropListTargetClassName : ""}`}
+        className={depth === 0 ? "m-0 list-none p-0" : `ml-5 list-none border-l theme-chrome-border p-0 ${listDropTarget ? fileTreeDropListTargetClassName : ""}`}
         role={depth === 0 ? "tree" : "group"}
         aria-label={treeLabel}
         aria-multiselectable={depth === 0 ? "true" : undefined}
@@ -2349,14 +2281,13 @@ export function MarkdownFileTreeDrawer({
           const collapsed = collapsedOutlineKeys.has(key);
           const outlineIndent = (item.level - 1) * 12;
           const active = activeOutlineIndex === index;
-          const outlineButtonClassName = active
-            ? "h-7 min-w-0 cursor-pointer truncate rounded-sm border-0 bg-(--bg-active) px-1 text-left text-[13px] leading-5 font-[620] text-(--text-heading) focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-(--accent)"
-            : "h-7 min-w-0 cursor-pointer truncate rounded-sm border-0 bg-transparent px-1 text-left text-[13px] leading-5 text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-heading) focus-visible:bg-(--bg-hover) focus-visible:text-(--text-heading) focus-visible:outline-none";
+          const outlineButtonClassName = outlineButtonBaseClassName;
 
           return (
             <li key={key}>
               <div
-                className="grid h-7 w-full grid-cols-[24px_minmax(0,1fr)] items-center gap-1 py-0 pr-1 text-[13px] leading-none"
+                className="theme-outline-row grid w-full grid-cols-[24px_minmax(0,1fr)] items-center gap-1 py-0 pr-1"
+                data-outline-level={item.level}
                 style={{ paddingLeft: `${outlineIndent}px` }}
               >
                 {hasChildren ? (
@@ -2469,109 +2400,6 @@ export function MarkdownFileTreeDrawer({
       <span className="flex w-3.5 justify-center" aria-hidden="true">{icon}</span>
       <span>{itemLabel}</span>
     </button>
-  );
-
-  const renderFolderAccessArea = () => (
-    recentFolderAreaVisible ? (
-      <div className={`shrink-0 border-b border-(--border-default) ${fileTreeSurfaceClassName}`}>
-        {recentFolderAreaVisible && onOpenRecentFolder ? (
-          <section
-            className="markdown-file-tree-recent-folders py-1"
-            role="region"
-            aria-label={label("app.recentMarkdownFolders")}
-          >
-            <div
-              aria-expanded={recentFoldersOpen}
-              aria-label={recentFoldersOpen ? label("app.hideRecentMarkdownFolders") : label("app.showRecentMarkdownFolders")}
-              className="flex h-8 cursor-pointer items-center gap-1 px-3 pr-2 text-[12px] text-(--text-secondary) transition-colors hover:bg-(--bg-hover) hover:text-(--text-heading) focus-visible:bg-(--bg-hover) focus-visible:text-(--text-heading) focus-visible:outline-none"
-              role="button"
-              tabIndex={0}
-              onClick={toggleRecentFoldersExpanded}
-              onKeyDown={handleRecentFoldersHeaderKeyDown}
-            >
-              <h3 className="m-0 min-w-0 flex-1 truncate text-[12px] leading-5 font-[560] tracking-normal text-(--text-secondary)">
-                {label("app.recentMarkdownFolders")}
-              </h3>
-              <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md" aria-hidden="true">
-                {recentFoldersOpen ? (
-                  <ChevronDown size={14} />
-                ) : (
-                  <ChevronRight size={14} />
-                )}
-              </span>
-            </div>
-            {recentFoldersOpen ? (
-              <div className="space-y-0.5 px-2 pb-1">
-                {recentFolderChoices.map((folder) => {
-                  const duplicateName = duplicateRecentFolderNames.has(recentFolderNameKey(folder));
-                  const currentRecentFolder = Boolean(rootPath && sameNativePath(folder.path, rootPath));
-                  const folderActionLabel = duplicateName ? `${folder.name} ${folder.path}` : folder.name;
-                  const folderPathLabel = compactRecentFolderPath(folder.path);
-                  const RecentFolderIcon = currentRecentFolder ? FolderOpen : Folder;
-                  const recentFolderButtonStateClassName = currentRecentFolder
-                    ? "bg-(--bg-active) text-(--text-heading) hover:bg-(--bg-active) focus-visible:bg-(--bg-active)"
-                    : "bg-transparent text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-heading) focus-visible:bg-(--bg-hover) focus-visible:text-(--text-heading)";
-
-                  return (
-                    <div
-                      className={`markdown-file-tree-recent-folder grid ${duplicateName ? "h-10" : "h-7"} grid-cols-[minmax(0,1fr)_auto] items-center gap-1`}
-                      key={folder.path}
-                      onMouseEnter={() => setHoveredRecentFolderPath(folder.path)}
-                      onMouseLeave={() => {
-                        setHoveredRecentFolderPath((path) => (path === folder.path ? null : path));
-                        setFocusedRecentFolderActionPath((path) => (path === folder.path ? null : path));
-                      }}
-                    >
-                      <Tooltip content={folder.path}>
-                        <button
-                          aria-label={folderActionLabel}
-                          aria-current={currentRecentFolder ? "page" : undefined}
-                          className={`flex ${duplicateName ? "h-10 items-center" : "h-7 items-center"} min-w-0 cursor-pointer gap-2 rounded-sm border-0 px-2 text-left text-[12px] leading-none focus-visible:outline-none ${recentFolderButtonStateClassName}`}
-                          type="button"
-                          onClick={() => onOpenRecentFolder(folder)}
-                        >
-                          <RecentFolderIcon aria-hidden="true" className="shrink-0" size={14} />
-                          <span className="flex min-w-0 flex-col gap-0.5">
-                            <span className="min-w-0 truncate leading-4">{folder.name}</span>
-                            {duplicateName ? (
-                              <span className="min-w-0 truncate text-[10px] leading-4 text-(--text-tertiary)">
-                                {folderPathLabel}
-                              </span>
-                            ) : null}
-                          </span>
-                        </button>
-                      </Tooltip>
-                      {onRemoveRecentFolder ? (
-                        (() => {
-                          const actionVisible =
-                            hoveredRecentFolderPath === folder.path || focusedRecentFolderActionPath === folder.path;
-
-                          return (
-                            <IconButton
-                              className="rounded-md transition-opacity duration-150 ease-[cubic-bezier(0.22,1,0.36,1)]"
-                              label={`${label("app.removeRecentMarkdownFolder")}: ${folderActionLabel}`}
-                              style={{
-                                opacity: actionVisible ? 1 : 0,
-                                pointerEvents: actionVisible ? "auto" : "none"
-                              }}
-                              onBlur={() => setFocusedRecentFolderActionPath((path) => (path === folder.path ? null : path))}
-                              onFocus={() => setFocusedRecentFolderActionPath(folder.path)}
-                              onClick={() => onRemoveRecentFolder(folder)}
-                            >
-                              <X aria-hidden="true" size={13} />
-                            </IconButton>
-                          );
-                        })()
-                      ) : null}
-                    </div>
-                  );
-                })}
-              </div>
-            ) : null}
-          </section>
-        ) : null}
-      </div>
-    ) : null
   );
 
   const sidebarPanelLabelKey = (panel: SidebarPanel): Parameters<typeof t>[1] => {
@@ -2769,7 +2597,7 @@ export function MarkdownFileTreeDrawer({
   const renderSidebarPanelTabs = () => (
     tabbedSidebarLayout && sidebarPanelTabs.length > 1 ? (
       <div
-        className={`markdown-file-tree-panel-tabs grid h-10 shrink-0 border-b border-(--border-default) px-3 ${sidebarPanelTabGridClassName}`}
+        className={`markdown-file-tree-panel-tabs theme-sidebar-header-surface grid h-10 shrink-0 border-b theme-chrome-border px-3 ${sidebarPanelTabGridClassName}`}
         role="group"
         aria-label={sidebarPanelTabs.map((panel) => label(sidebarPanelLabelKey(panel))).join(" / ")}
       >
@@ -2801,7 +2629,7 @@ export function MarkdownFileTreeDrawer({
         </label>
         <input
           id="markra-file-search"
-          className="h-8 border-0 border-b border-(--border-default) bg-transparent px-3 text-[12px] text-(--text-primary) outline-none placeholder:text-(--text-secondary) focus:border-(--border-strong)"
+          className="h-8 border-0 border-b theme-chrome-border bg-transparent px-3 text-[12px] text-(--text-primary) outline-none placeholder:text-(--text-secondary) focus:border-(--border-strong)"
           type="search"
           value={searchQuery}
           placeholder={label("app.searchPlaceholder")}
@@ -2833,7 +2661,7 @@ export function MarkdownFileTreeDrawer({
       ) : null}
 
       <aside
-        className={`markdown-file-tree relative flex h-full min-h-0 w-full flex-col overflow-hidden border-r border-(--border-default) ${fileTreeSurfaceClassName} ${drawerTopPaddingClassName} will-change-[width,min-width,max-width] ${drawerWidthTransitionClassName} ${drawerStateClass}`}
+        className={`markdown-file-tree theme-sidebar-root relative flex h-full min-h-0 w-full flex-col overflow-hidden border-r theme-chrome-border ${fileTreeSurfaceClassName} ${drawerTopPaddingClassName} will-change-[width,min-width,max-width] ${drawerWidthTransitionClassName} ${drawerStateClass}`}
         aria-label={label("app.markdownFileTree")}
         aria-hidden={!open}
         inert={!open}
@@ -2856,17 +2684,37 @@ export function MarkdownFileTreeDrawer({
             aria-valuenow={resolvedWidth}
             onKeyDown={handleResizeKeyDown}
             onPointerDown={handleResizePointerDown}
-          />
+          >
+            <div className="theme-chrome-divider pointer-events-none absolute inset-y-0 right-0 w-px" />
+          </div>
         ) : null}
         {!tabbedSidebarLayout && filePanelAvailable ? (
-          <div className="markdown-file-tree-files-header grid h-10 shrink-0 grid-cols-[minmax(0,1fr)_auto] items-center border-b border-(--border-default) pr-2 pl-3">
+          <div className="markdown-file-tree-files-header theme-sidebar-header-surface grid h-10 shrink-0 grid-cols-[minmax(0,1fr)_auto] items-center border-b theme-chrome-border pr-2 pl-3">
             <h2 className="m-0 truncate text-[14px] leading-5 font-[560] tracking-normal text-(--text-heading)">
               {label("app.files")}
             </h2>
           </div>
         ) : null}
 
-        {folderAccessVisible ? renderFolderAccessArea() : null}
+        {recentFoldersOpen && onOpenRecentFolder && recentFolders.length > 0 ? (
+          <div className="markdown-file-tree-folder-access theme-sidebar-surface flex shrink-0 items-center gap-1 border-b theme-chrome-border px-3 py-1">
+            {recentFolders.map((folder) => {
+              const current = Boolean(rootPath && sameNativePath(folder.path, rootPath));
+
+              return (
+                <button
+                  className="theme-tree-current-surface min-w-0 cursor-pointer truncate rounded-sm bg-transparent px-1.5 py-1 text-left text-[12px] text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-heading) focus-visible:bg-(--bg-hover) focus-visible:text-(--text-heading) focus-visible:outline-none"
+                  type="button"
+                  aria-current={current ? "page" : undefined}
+                  key={folder.path}
+                  onClick={() => onOpenRecentFolder?.(folder)}
+                >
+                  {folder.name}
+                </button>
+              );
+            })}
+          </div>
+        ) : null}
 
         <div ref={fileTreeBodyRef} className="markdown-file-tree-body flex min-h-0 flex-1 flex-col">
           {filePanelRendered ? (
@@ -2883,12 +2731,12 @@ export function MarkdownFileTreeDrawer({
                 onDragStart={handleFileTreeDragStart}
               >
                 {renderFileTreeActions(
-                  "markdown-file-tree-toolbar flex h-8 shrink-0 items-center justify-start gap-1 pr-4 pl-2.5 text-(--text-secondary)"
+                  "markdown-file-tree-toolbar theme-toolbar-surface flex h-8 shrink-0 items-center justify-start gap-1 pr-4 pl-2.5 text-(--text-secondary)"
                 )}
 
                 {renderFileSearchInput()}
 
-                <div className="markdown-file-tree-root flex h-8 shrink-0 items-center gap-1 pr-2 pl-4 text-[13px] text-(--text-secondary)">
+                <div className="markdown-file-tree-root theme-sidebar-surface flex h-8 shrink-0 items-center gap-1 pr-2 pl-4 text-[13px] text-(--text-secondary)">
                   <FileTreeDropTarget
                     disabled={!dragMoveAvailable}
                     id={fileTreeRootDropId("header")}
@@ -2929,7 +2777,7 @@ export function MarkdownFileTreeDrawer({
                       {(rootDropTarget) => (
                         <div
                           ref={combineNodeRefs<HTMLDivElement>(rootDropTarget.setNodeRef, setFileTreeScrollRef)}
-                          className={`file-tree-scroll min-h-0 flex-1 overflow-y-auto overscroll-none pb-4 ${dragOverTargetPath === dragTargetKey(null) ? fileTreeDropTargetClassName : ""}`}
+                          className={`file-tree-scroll theme-sidebar-surface min-h-0 flex-1 overflow-y-auto overscroll-none pb-4 ${dragOverTargetPath === dragTargetKey(null) ? fileTreeDropTargetClassName : ""}`}
                           onScroll={handleFileTreeScroll}
                           onMouseDown={cancelFileTreeInputsFromBlankArea}
                           onContextMenu={(event) => openContextMenu(event)}
@@ -2957,7 +2805,7 @@ export function MarkdownFileTreeDrawer({
 
           {outlineResizerVisible ? (
             <div
-              className="markdown-file-tree-outline-resizer group relative h-2 shrink-0 cursor-row-resize touch-none outline-none"
+              className="markdown-file-tree-outline-resizer theme-chrome-divider-control group relative h-2 shrink-0 cursor-row-resize touch-none outline-none"
               role="separator"
               tabIndex={0}
               aria-label={label("app.resizeOutline")}
@@ -2968,17 +2816,17 @@ export function MarkdownFileTreeDrawer({
               onKeyDown={handleOutlineResizeKeyDown}
               onPointerDown={handleOutlineResizePointerDown}
             >
-              <div className="pointer-events-none absolute inset-x-0 top-1/2 h-px -translate-y-1/2 bg-(--border-default) transition-colors duration-150 ease-out group-hover:bg-(--border-strong) group-focus-visible:bg-(--border-strong)" />
+              <div className="theme-chrome-divider pointer-events-none absolute inset-x-0 top-1/2 h-px -translate-y-1/2 transition-colors duration-150 ease-out group-hover:bg-(--border-strong) group-focus-visible:bg-(--border-strong)" />
             </div>
           ) : null}
 
           {outlinePanelVisible ? (
             <section
-              className={`markdown-file-tree-outline flex min-h-0 flex-col ${outlinePanelOpen ? "min-h-20" : "h-9 shrink-0 border-t border-(--border-default)"} ${outlinePanelFlexible ? "flex-1" : ""}`}
+              className={`markdown-file-tree-outline theme-outline-surface flex min-h-0 flex-col ${outlinePanelOpen ? "min-h-20" : "h-9 shrink-0 border-t theme-chrome-border"} ${outlinePanelFlexible ? "flex-1" : ""}`}
               style={outlinePanelStyle}
             >
               {outlineToolbarVisible ? (
-                <div className={`markdown-file-tree-outline-toolbar flex shrink-0 items-center gap-1 text-[13px] text-(--text-secondary) ${tabbedSidebarLayout ? "h-8 justify-start border-b border-(--border-default) px-3" : "h-9 px-4 pr-2"}`}>
+                <div className={`markdown-file-tree-outline-toolbar theme-toolbar-surface theme-chrome-border flex shrink-0 items-center gap-1 text-[13px] text-(--text-secondary) ${tabbedSidebarLayout ? "h-8 justify-start border-b px-3" : "h-9 px-4 pr-2"}`}>
                   {!tabbedSidebarLayout ? (
                     <>
                       <TableOfContents aria-hidden="true" size={16} />
@@ -3056,7 +2904,7 @@ export function MarkdownFileTreeDrawer({
                 </div>
               ) : null}
             {outlinePanelOpen ? (
-              <div className="markdown-file-tree-outline-scroll min-h-0 flex-1 overflow-y-auto overscroll-none pb-4">
+              <div className="markdown-file-tree-outline-scroll theme-outline-surface min-h-0 flex-1 overflow-y-auto overscroll-none pb-4">
                 {renderOutline()}
               </div>
             ) : null}
@@ -3065,7 +2913,7 @@ export function MarkdownFileTreeDrawer({
 
           {documentLinksResizerVisible ? (
             <div
-              className="markdown-file-tree-document-links-resizer group relative h-2 shrink-0 cursor-row-resize touch-none outline-none"
+              className="markdown-file-tree-document-links-resizer theme-chrome-divider-control group relative h-2 shrink-0 cursor-row-resize touch-none outline-none"
               role="separator"
               tabIndex={0}
               aria-label={label("app.resizeDocumentLinks")}
@@ -3076,7 +2924,7 @@ export function MarkdownFileTreeDrawer({
               onKeyDown={handleDocumentLinksResizeKeyDown}
               onPointerDown={handleDocumentLinksResizePointerDown}
             >
-              <div className="pointer-events-none absolute inset-x-0 top-1/2 h-px -translate-y-1/2 bg-(--border-default) transition-colors duration-150 ease-out group-hover:bg-(--border-strong) group-focus-visible:bg-(--border-strong)" />
+              <div className="theme-chrome-divider pointer-events-none absolute inset-x-0 top-1/2 h-px -translate-y-1/2 transition-colors duration-150 ease-out group-hover:bg-(--border-strong) group-focus-visible:bg-(--border-strong)" />
             </div>
           ) : null}
 
@@ -3114,7 +2962,7 @@ export function MarkdownFileTreeDrawer({
           ) : null}
         </div>
         {open ? (
-          <div className={`markdown-file-tree-footer flex h-12 shrink-0 items-center justify-between border-t border-(--border-default) ${fileTreeSurfaceClassName} px-2.5`}>
+          <div className="markdown-file-tree-footer theme-sidebar-footer-surface flex h-12 shrink-0 items-center justify-between border-t theme-chrome-border px-2.5">
             <div className="markdown-file-tree-primary-actions flex items-center gap-1">
               <IconButton
                 className="rounded-md opacity-70 hover:opacity-100 focus-visible:opacity-100"

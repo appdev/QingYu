@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 
 const seededThemeIds = [
@@ -20,10 +21,350 @@ const seededThemeIds = [
   "academic",
   "minimal",
   "drake-light",
-  "drake-ayu"
+  "drake-ayu",
+  "wenkai-paper-light",
+  "wenkai-paper-dark"
 ] as const;
 
+const externalThemeIds = ["drake-faithful-light", "drake-faithful-ayu"] as const;
+
+const expectedExternalThemeManifests = {
+  "drake-faithful-light": {
+    schemaVersion: 1,
+    id: "drake-faithful-light",
+    name: "轻语 · Drake Light",
+    appearance: "light",
+    entry: "theme.css",
+    author: "劉強東 / 轻语",
+    version: "2.9.6-light-voice.1",
+    preview: {
+      background: "#ffffff",
+      panel: "#f6f8fa",
+      text: "#333333",
+      accent: "#e95f59"
+    },
+    licenseFiles: ["licenses/THEME-LICENSE.txt", "licenses/FONT-LICENSE.txt"]
+  },
+  "drake-faithful-ayu": {
+    schemaVersion: 1,
+    id: "drake-faithful-ayu",
+    name: "轻语 · Drake Ayu",
+    appearance: "dark",
+    entry: "theme.css",
+    author: "劉強東 / 轻语",
+    version: "2.9.6-light-voice.1",
+    preview: {
+      background: "#20242f",
+      panel: "#151924",
+      text: "#b0b1ac",
+      accent: "#fcc65c"
+    },
+    licenseFiles: ["licenses/THEME-LICENSE.txt", "licenses/FONT-LICENSE.txt"]
+  }
+} as const;
+
+const expectedFontHashes = {
+  "JetBrainsMono-Bold.woff2": "df3f86c04988d8f7fc516db3e95ec6b630cdc67bec91fe4297c6f8e132be1037",
+  "JetBrainsMono-BoldItalic.woff2": "3aa30cac2529ca86f6b8ef479f143d924378682657510541d10d8e8b6d07120b",
+  "JetBrainsMono-Italic.woff2": "9aef9fe9f1292b1cc4b1af075e4e9bc5f2adf23fef54908e58e2ebe338f33a65",
+  "JetBrainsMono-Regular.woff2": "bceff0710e3a7fe5b3622265c48b6fbc055cf071df80ef5f36ffc69550296664"
+} as const;
+
+const expectedThemeDeclarations = {
+  "drake-faithful-light": [
+    "--bg-primary: #ffffff;",
+    "--bg-secondary: #f6f8fa;",
+    "--bg-chrome: #f8f8f8;",
+    "--bg-code: #f6f8fa;",
+    "--bg-hover: #E5E5E596;",
+    "--bg-active: #E5E5E596;",
+    "--bg-titlebar: #ffffff;",
+    "--bg-sidebar: #f6f8fa;",
+    "--bg-sidebar-header: #f8f8f8;",
+    "--bg-toolbar: #ffffff;",
+    "--bg-outline: #f8f8f8;",
+    "--bg-sidebar-footer: #f8f8f8;",
+    "--border-chrome: #dfe2e5;",
+    "--sidebar-font-family: \"JetBrains Mono\", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;",
+    "--sidebar-tree-font-size: 15.4px;",
+    "--sidebar-tree-font-weight: 400;",
+    "--sidebar-tree-line-height: 1.6;",
+    "--text-tree: #333333;",
+    "--bg-tree-hover: #E5E5E596;",
+    "--text-tree-hover: #333333;",
+    "--sidebar-tree-current-font-weight: 400;",
+    "--sidebar-outline-font-size: 14px;",
+    "--sidebar-outline-font-weight: 400;",
+    "--sidebar-outline-line-height: 1.6;",
+    "--sidebar-outline-row-min-height: 28px;",
+    "--sidebar-outline-max-lines: 2;",
+    "--text-outline: #333333;",
+    "--bg-outline-hover: #E5E5E596;",
+    "--text-outline-hover: #333333;",
+    "--sidebar-outline-current-font-weight: 500;",
+    "--sidebar-outline-h1-font-weight: 600;",
+    "--sidebar-outline-h1-text: #273849;",
+    "--sidebar-outline-h1-space-before: 8px;",
+    "--sidebar-outline-h2-font-weight: 600;",
+    "--sidebar-outline-h2-text: #273849;",
+    "--sidebar-outline-h2-space-before: 6px;",
+    "--bg-tree-current: #E5E5E596;",
+    "--text-tree-current: #273849;",
+    "--tree-current-indicator: #e95f59;",
+    "--bg-tree-selected: #fdefee;",
+    "--text-tree-selected: #273849;",
+    "--tree-selected-indicator: #e95f59;",
+    "--bg-outline-current: transparent;",
+    "--text-outline-current: #d63200;",
+    "--text-primary: #333333;",
+    "--text-heading: #273849;",
+    "--text-secondary: #777777;",
+    "--text-md-char: #777777;",
+    "--border-default: #dfe2e5;",
+    "--border-strong: #dfe2e5;",
+    "--accent: #e95f59;",
+    "--accent-soft: #fdefee;",
+    "--accent-hover: #d63200;",
+    "--danger: #ff0000;",
+    "--link-color: #d63200;",
+    "--scrollbar-track: transparent;",
+    "--scrollbar-thumb: #dfe2e5;",
+    "--scrollbar-thumb-hover: #777777;",
+    "--scrollbar-thumb-active: #e95f59;",
+    "--editor-paper-bg: #ffffff;",
+    "--editor-text-primary: #333333;",
+    "--editor-text-heading: #273849;",
+    "--editor-text-secondary: #777777;",
+    "--editor-border: #dfe2e5;",
+    "--editor-border-strong: #dfe2e5;",
+    "--editor-bg-secondary: #f8f8f8;",
+    "--editor-inline-code-bg: #fdefee;",
+    "--editor-inline-code-text: #d63200;",
+    "--editor-code-bg: #f6f8fa;",
+    "--editor-code-line-bg: #f6f8fa;",
+    "--editor-code-text: #24292e;",
+    "--editor-code-control-bg: #ffffff;",
+    "--editor-link-color: #d63200;",
+    "--editor-hl-keyword: #708;",
+    "--editor-hl-string: #008000;",
+    "--editor-hl-number: #4A86E8;",
+    "--editor-hl-title: #0000ff;",
+    "--editor-hl-type: #00627A;",
+    "--editor-hl-meta: #24292e;",
+    "--editor-hl-symbol: #4A86E8;",
+    "--editor-hl-deletion: #ff0000;"
+  ],
+  "drake-faithful-ayu": [
+    "--bg-primary: #20242f;",
+    "--bg-secondary: #20242f;",
+    "--bg-chrome: #1a1e29;",
+    "--bg-code: #151924;",
+    "--bg-hover: #151924;",
+    "--bg-active: #151924;",
+    "--bg-titlebar: #1a1e29;",
+    "--bg-sidebar: #20242f;",
+    "--bg-sidebar-header: #1a1e29;",
+    "--bg-toolbar: #151924;",
+    "--bg-outline: #20242f;",
+    "--bg-sidebar-footer: #1a1e29;",
+    "--border-chrome: #111520;",
+    "--sidebar-font-family: \"JetBrains Mono\", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;",
+    "--sidebar-tree-font-size: 15.4px;",
+    "--sidebar-tree-font-weight: 400;",
+    "--sidebar-tree-line-height: 1.6;",
+    "--text-tree: #b0b1ac;",
+    "--bg-tree-hover: #151924;",
+    "--text-tree-hover: #b0b1ac;",
+    "--sidebar-tree-current-font-weight: 400;",
+    "--sidebar-outline-font-size: 14px;",
+    "--sidebar-outline-font-weight: 400;",
+    "--sidebar-outline-line-height: 1.6;",
+    "--sidebar-outline-row-min-height: 28px;",
+    "--sidebar-outline-max-lines: 2;",
+    "--text-outline: #b0b1ac;",
+    "--bg-outline-hover: #151924;",
+    "--text-outline-hover: #b0b1ac;",
+    "--sidebar-outline-current-font-weight: 500;",
+    "--sidebar-outline-h1-font-weight: 600;",
+    "--sidebar-outline-h1-text: #cbcdbf;",
+    "--sidebar-outline-h1-space-before: 8px;",
+    "--sidebar-outline-h2-font-weight: 600;",
+    "--sidebar-outline-h2-text: #cbcdbf;",
+    "--sidebar-outline-h2-space-before: 6px;",
+    "--bg-tree-current: #151924;",
+    "--text-tree-current: #cbcdbf;",
+    "--tree-current-indicator: #fcc65c;",
+    "--bg-tree-selected: #3473B068;",
+    "--text-tree-selected: #cbcdbf;",
+    "--tree-selected-indicator: #fcc65c;",
+    "--bg-outline-current: transparent;",
+    "--text-outline-current: #ffcc66;",
+    "--text-primary: #b0b1ac;",
+    "--text-heading: #cbcdbf;",
+    "--text-secondary: #676773;",
+    "--text-md-char: #676773;",
+    "--border-default: #111520;",
+    "--border-strong: #111520;",
+    "--accent: #fcc65c;",
+    "--accent-soft: #3473B068;",
+    "--accent-hover: #ffcc66;",
+    "--danger: #d1675a;",
+    "--link-color: #ffcc66;",
+    "--scrollbar-track: transparent;",
+    "--scrollbar-thumb: #676773;",
+    "--scrollbar-thumb-hover: #b0b1ac;",
+    "--scrollbar-thumb-active: #fcc65c;",
+    "--editor-paper-bg: #20242f;",
+    "--editor-text-primary: #b0b1ac;",
+    "--editor-text-heading: #cbcdbf;",
+    "--editor-text-secondary: #676773;",
+    "--editor-border: #111520;",
+    "--editor-border-strong: #111520;",
+    "--editor-bg-secondary: #1a1e29;",
+    "--editor-inline-code-bg: #151924;",
+    "--editor-inline-code-text: #ffcc66;",
+    "--editor-code-bg: #151924;",
+    "--editor-code-line-bg: #151924;",
+    "--editor-code-text: #b0b1ac;",
+    "--editor-code-control-bg: #151924;",
+    "--editor-link-color: #ffcc66;",
+    "--editor-hl-keyword: #ffa759;",
+    "--editor-hl-string: #9cc16b;",
+    "--editor-hl-number: #6897BB;",
+    "--editor-hl-title: #ffd580;",
+    "--editor-hl-type: #AABBCC;",
+    "--editor-hl-meta: #BBB529;",
+    "--editor-hl-symbol: #ffa759;",
+    "--editor-hl-deletion: #d1675a;"
+  ]
+} as const;
+
+const expectedWenkaiSidebarDeclarations = {
+  "wenkai-paper-light": [
+    "--sidebar-font-family: \"LXGW WenKai Screen\", \"Kaiti SC\", KaiTi, STKaiti, ui-serif, serif;",
+    "--sidebar-tree-font-size: 14px;",
+    "--sidebar-tree-font-weight: 400;",
+    "--sidebar-tree-line-height: 20px;",
+    "--text-tree: #262626;",
+    "--bg-tree-hover: rgba(38, 38, 38, 0.055);",
+    "--text-tree-hover: #262626;",
+    "--sidebar-tree-current-font-weight: 400;",
+    "--sidebar-outline-font-size: 14px;",
+    "--sidebar-outline-font-weight: 400;",
+    "--sidebar-outline-line-height: 20px;",
+    "--sidebar-outline-row-min-height: 28px;",
+    "--sidebar-outline-max-lines: 1;",
+    "--text-outline: #262626;",
+    "--bg-outline-hover: rgba(38, 38, 38, 0.055);",
+    "--text-outline-hover: #262626;",
+    "--sidebar-outline-current-font-weight: 500;",
+    "--sidebar-outline-h1-font-size: 16px;",
+    "--sidebar-outline-h1-font-weight: 600;",
+    "--sidebar-outline-h1-text: #1c5d33;",
+    "--sidebar-outline-h1-space-before: 8px;",
+    "--sidebar-outline-h2-font-weight: 600;",
+    "--sidebar-outline-h2-text: #262626;",
+    "--sidebar-outline-h2-space-before: 6px;"
+  ],
+  "wenkai-paper-dark": [
+    "--sidebar-font-family: \"LXGW WenKai Screen\", \"Kaiti SC\", KaiTi, STKaiti, ui-serif, serif;",
+    "--sidebar-tree-font-size: 14px;",
+    "--sidebar-tree-font-weight: 400;",
+    "--sidebar-tree-line-height: 20px;",
+    "--text-tree: #e7e9ea;",
+    "--bg-tree-hover: rgba(255, 255, 255, 0.055);",
+    "--text-tree-hover: #ffffff;",
+    "--sidebar-tree-current-font-weight: 400;",
+    "--sidebar-outline-font-size: 14px;",
+    "--sidebar-outline-font-weight: 400;",
+    "--sidebar-outline-line-height: 20px;",
+    "--sidebar-outline-row-min-height: 28px;",
+    "--sidebar-outline-max-lines: 1;",
+    "--text-outline: #e7e9ea;",
+    "--bg-outline-hover: rgba(255, 255, 255, 0.055);",
+    "--text-outline-hover: #ffffff;",
+    "--sidebar-outline-current-font-weight: 500;",
+    "--sidebar-outline-h1-font-size: 16px;",
+    "--sidebar-outline-h1-font-weight: 600;",
+    "--sidebar-outline-h1-text: #54c59f;",
+    "--sidebar-outline-h1-space-before: 8px;",
+    "--sidebar-outline-h2-font-weight: 600;",
+    "--sidebar-outline-h2-text: #ffffff;",
+    "--sidebar-outline-h2-space-before: 6px;"
+  ]
+} as const;
+
+const expectedAyuSyntaxRules = [
+  `.markdown-paper[data-editor-theme="drake-faithful-ayu"] .hljs-property {
+  color: #FFC66D;
+}`,
+  `.markdown-paper[data-editor-theme="drake-faithful-ayu"] .hljs-attr,
+.markdown-paper[data-editor-theme="drake-faithful-ayu"] .hljs-attribute,
+.markdown-paper[data-editor-theme="drake-faithful-ayu"] .hljs-variable.language_ {
+  color: #9876AA;
+}`,
+  `.markdown-paper[data-editor-theme="drake-faithful-ayu"] .hljs-comment {
+  color: #5c6773;
+}`,
+  `.markdown-paper[data-editor-theme="drake-faithful-ayu"] .hljs-tag,
+.markdown-paper[data-editor-theme="drake-faithful-ayu"] .hljs-name,
+.markdown-paper[data-editor-theme="drake-faithful-ayu"] .hljs-punctuation {
+  color: #E8BF6A;
+}`,
+  `.markdown-paper[data-editor-theme="drake-faithful-ayu"] .hljs-built_in {
+  color: #FF9E59;
+}`,
+  `.markdown-paper[data-editor-theme="drake-faithful-ayu"] .hljs-quote {
+  color: #a6e22e;
+}`,
+  `.markdown-paper[data-editor-theme="drake-faithful-ayu"] .hljs-section {
+  color: #FFD760;
+}`,
+  `.markdown-paper[data-editor-theme="drake-faithful-ayu"] .markra-code-block code::selection {
+  background: #214283;
+}`
+] as const;
+
+function readRuleDeclarations(styles: string, selector: string) {
+  const ruleStart = styles.indexOf(`${selector} {`);
+  const declarationsStart = ruleStart + selector.length + 2;
+  const ruleEnd = styles.indexOf("\n}", declarationsStart);
+
+  expect(ruleStart).toBeGreaterThanOrEqual(0);
+  expect(ruleEnd).toBeGreaterThan(declarationsStart);
+  return styles.slice(declarationsStart, ruleEnd);
+}
+
+function readCustomPropertyNames(declarations: string) {
+  return Array.from(
+    declarations.matchAll(/^\s*(--[a-z0-9-]+)\s*:/gmu),
+    ([, name]) => name
+  );
+}
+
+function readNestedRuleDeclarations(styles: string, selector: string) {
+  const ruleStart = styles.indexOf(`${selector} {`);
+  const declarationsStart = styles.indexOf("{", ruleStart) + 1;
+  let depth = 1;
+
+  expect(ruleStart).toBeGreaterThanOrEqual(0);
+  for (let index = declarationsStart; index < styles.length; index += 1) {
+    if (styles[index] === "{") depth += 1;
+    if (styles[index] !== "}") continue;
+    depth -= 1;
+    if (depth === 0) return styles.slice(declarationsStart, index);
+  }
+
+  throw new Error(`CSS rule ${selector} is not closed`);
+}
+
 function readSeededThemeStyles(themeId: typeof seededThemeIds[number]) {
+  if (themeId === "wenkai-paper-light" || themeId === "wenkai-paper-dark") {
+    return readFileSync(
+      `${process.cwd()}/../../themes/external/${themeId}/theme.css`,
+      "utf8"
+    );
+  }
   const fixturePath = themeId === "drake-light" || themeId === "drake-ayu"
     ? `${themeId}/theme.css`
     : `${themeId}.css`;
@@ -148,6 +489,43 @@ describe("editor stylesheet", () => {
     expect(styles).toContain("opacity: 0 !important");
   });
 
+  it("exposes shared per-level heading theme tokens for CodeMirror and rendered headings", () => {
+    const styles = readFileSync(`${process.cwd()}/src/styles.css`, "utf8");
+    const headingDefaults = [
+      { fontSize: "44px", level: 1, lineHeight: "1.15" },
+      { fontSize: "31px", level: 2, lineHeight: "1.22" },
+      { fontSize: "24px", level: 3, lineHeight: "1.28" },
+      { fontSize: "19px", level: 4, lineHeight: "1.35" },
+      { fontSize: "16px", level: 5, lineHeight: "1.45" },
+      { fontSize: "16px", level: 6, lineHeight: "1.45" }
+    ];
+
+    expect(styles).toContain("--editor-heading-font-weight: 760;");
+    expect(styles).toContain("--editor-heading-letter-spacing: 0;");
+    expect(styles).toContain("--editor-h1-font-size-compact: 34px;");
+    expect(styles).toContain("--editor-h2-font-size-compact: 26px;");
+
+    for (const { fontSize, level, lineHeight } of headingDefaults) {
+      const colorVariable = `--editor-h${level}-color`;
+      const fontSizeVariable = `--editor-h${level}-font-size`;
+      const fontWeightVariable = `--editor-h${level}-font-weight`;
+      const lineHeightVariable = `--editor-h${level}-line-height`;
+
+      expect(styles).toContain(`${colorVariable}: var(--editor-text-heading);`);
+      expect(styles).toContain(`${fontSizeVariable}: ${fontSize};`);
+      expect(styles).toContain(`${fontWeightVariable}: var(--editor-heading-font-weight);`);
+      expect(styles).toContain(`${lineHeightVariable}: ${lineHeight};`);
+      expect(styles).toContain(`color: var(${colorVariable}) !important;`);
+      expect(styles).toContain(`font-size: var(${fontSizeVariable}) !important;`);
+      expect(styles).toContain(`font-weight: var(${fontWeightVariable}) !important;`);
+      expect(styles).toContain(`line-height: var(${lineHeightVariable}) !important;`);
+      expect(styles).toContain(`color: var(${colorVariable});`);
+      expect(styles).toContain(`font-size: var(${fontSizeVariable});`);
+      expect(styles).toContain(`font-weight: var(${fontWeightVariable});`);
+      expect(styles).toContain(`line-height: var(${lineHeightVariable});`);
+    }
+  });
+
   it("keeps CodeMirror's drawn selection background visible", () => {
     const styles = readFileSync(`${process.cwd()}/src/styles.css`, "utf8");
 
@@ -179,7 +557,9 @@ describe("editor stylesheet", () => {
     expect(codeLineRule).toContain("position: relative");
     expect(codeLineRule).toContain("background: transparent !important");
     expect(codeLineRule).toContain("padding-inline: 59px 16px !important");
+    expect(codeLineRule).toContain("padding-block: 0 !important");
     expect(codeLineRule).toContain("text-indent: -59px");
+    expect(codeLineRule).toContain("line-height: 24px !important");
     expect(backdropStart).toBeGreaterThanOrEqual(0);
     expect(backdropRule).toContain("z-index: -2");
     expect(backdropRule).toContain("background: linear-gradient(");
@@ -260,14 +640,32 @@ describe("editor stylesheet", () => {
       ".cm-line.cm-activeLine.markra-callout-first.markra-callout-last {\n" +
       "    --typewriter-active-line-offset: 0px;",
     );
-    expect(styles).toContain(
-      ".cm-line.cm-activeLine.cm-markra-code-content-line:has(+ .cm-markra-code-closing-line) {\n" +
-      "    --typewriter-active-line-offset: -8px;",
+    expect(styles).not.toContain(
+      ".cm-line.cm-markra-code-header-line +\n" +
+      "    .cm-line.cm-activeLine.cm-markra-code-content-line {",
+    );
+    expect(styles).not.toContain(
+      ".cm-line.cm-activeLine.cm-markra-code-content-line:has(+ .cm-markra-code-closing-line) {",
     );
   });
 
-  it("keeps code block controls in the header without extra closing space", () => {
+  it("overlays code block controls without inserting a blank header line", () => {
     const styles = readFileSync(`${process.cwd()}/src/styles.css`, "utf8");
+    const headerLineStart = styles.indexOf(
+      ".markdown-paper .cm-line.cm-markra-code-header-line {",
+    );
+    const headerLineEnd = styles.indexOf("\n  }", headerLineStart);
+    const headerLineRule = styles.slice(headerLineStart, headerLineEnd);
+    const headerWrapStart = styles.indexOf(
+      ".markdown-paper .cm-markra-code-header-wrap {",
+    );
+    const headerWrapEnd = styles.indexOf("\n  }", headerWrapStart);
+    const headerWrapRule = styles.slice(headerWrapStart, headerWrapEnd);
+    const topGapStart = styles.indexOf(
+      ".markdown-paper .cm-markra-code-top-gap {",
+    );
+    const topGapEnd = styles.indexOf("\n  }", topGapStart);
+    const topGapRule = styles.slice(topGapStart, topGapEnd);
     const headerActionsStart = styles.indexOf(
       ".markdown-paper .cm-markra-code-header-actions {",
     );
@@ -289,10 +687,60 @@ describe("editor stylesheet", () => {
       languageControlStart,
       languageControlEnd,
     );
+    const languageSelectStart = styles.indexOf(
+      ".markdown-paper .cm-markra-code-header-actions .markra-code-language-select {",
+    );
+    const languageSelectEnd = styles.indexOf("\n  }", languageSelectStart);
+    const languageSelectRule = styles.slice(
+      languageSelectStart,
+      languageSelectEnd,
+    );
+    const copyButtonStart = styles.indexOf(
+      ".markdown-paper .cm-markra-code-header-actions .markra-code-copy-button {",
+    );
+    const copyButtonEnd = styles.indexOf("\n  }", copyButtonStart);
+    const copyButtonRule = styles.slice(copyButtonStart, copyButtonEnd);
+    const firstContentLineStart = styles.indexOf(
+      ".markdown-paper .cm-line.cm-markra-code-header-line +\n" +
+      "    .cm-line.cm-markra-code-content-line {",
+    );
+    const firstContentLineEnd = styles.indexOf(
+      "\n  }",
+      firstContentLineStart,
+    );
+    const firstContentLineRule = styles.slice(
+      firstContentLineStart,
+      firstContentLineEnd,
+    );
+    const firstContentBackdropStart = styles.indexOf(
+      ".markdown-paper .cm-line.cm-markra-code-header-line +\n" +
+      "    .cm-line.cm-markra-code-content-line::after {",
+    );
+    const lastContentBackdropStart = styles.indexOf(
+      ".markdown-paper .cm-line.cm-markra-code-content-line:has(+ .cm-markra-code-closing-line)::after {",
+    );
 
+    expect(headerLineStart).toBeGreaterThanOrEqual(0);
+    expect(headerLineRule).toContain("height: 0 !important");
+    expect(headerLineRule).toContain("min-height: 0 !important");
+    expect(headerLineRule).toContain("margin-block: 0 !important");
+    expect(headerLineRule).not.toContain("margin-block-start: 8px");
+    expect(headerLineRule).toContain("border: 0 !important");
+    expect(headerLineRule).toContain("background: transparent !important");
+    expect(headerWrapRule).toContain("height: 0 !important");
+    expect(topGapStart).toBeGreaterThanOrEqual(0);
+    expect(topGapRule).toContain("height: 12px !important");
+    expect(topGapRule).toContain("margin: 0 !important");
+    expect(topGapRule).toContain("pointer-events: none");
+    expect(topGapRule).toContain(
+      "border-top: 1px solid var(--editor-border)",
+    );
+    expect(topGapRule).toContain("border-radius: 4px 4px 0 0");
+    expect(topGapRule).toContain("var(--editor-code-line-bg) 0 43px");
     expect(headerActionsRule).toContain("opacity: 1 !important");
     expect(headerActionsRule).toContain("pointer-events: auto !important");
     expect(headerActionsRule).toContain("transform: none");
+    expect(headerActionsRule).toContain("top: 0");
     expect(closingLineRule).toContain("position: relative");
     expect(closingLineRule).toContain("height: 12px");
     expect(closingLineRule).toContain("min-height: 12px");
@@ -301,6 +749,29 @@ describe("editor stylesheet", () => {
     expect(languageControlRule).toContain("padding: 0");
     expect(languageControlRule).toContain("opacity: 1 !important");
     expect(languageControlRule).toContain("pointer-events: auto !important");
+    expect(languageSelectRule).toContain("width: 160px !important");
+    expect(languageSelectRule).toContain("height: 24px !important");
+    expect(languageSelectRule).toContain("min-height: 24px !important");
+    expect(copyButtonRule).toContain("width: 24px !important");
+    expect(copyButtonRule).toContain("height: 24px !important");
+    expect(firstContentLineStart).toBeGreaterThanOrEqual(0);
+    expect(firstContentLineRule).not.toContain("padding-block");
+    expect(firstContentLineRule).toContain(
+      "padding-inline-end: 220px !important",
+    );
+    expect(firstContentBackdropStart).toBe(-1);
+    expect(lastContentBackdropStart).toBe(-1);
+    expect(closingLineRule).toContain(
+      "border-bottom: 1px solid var(--editor-border)",
+    );
+    expect(closingLineRule).toContain("border-radius: 0 0 4px 4px");
+    expect(closingLineRule).toContain(
+      "var(--editor-code-line-bg) 0 43px",
+    );
+    expect(styles).not.toContain(
+      ".markdown-paper .cm-line.cm-markra-code-content-line:has(+ .cm-markra-code-closing-line) {\n" +
+      "    padding-block-end:",
+    );
     expect(styles).not.toContain(
       ".markdown-paper .cm-line.cm-markra-code-closing-line .markra-code-language-control {",
     );
@@ -335,11 +806,11 @@ describe("editor stylesheet", () => {
     expect(styles).toContain(".markdown-paper .cm-markra-code-header-actions");
     expect(styles).toContain("opacity: 0 !important");
     expect(styles).toContain(".markdown-paper .cm-markra-table-wrap");
-    expect(styles).toContain("padding: 28px 36px 36px 0 !important");
+    expect(styles).toContain("padding: 20px 36px 12px 0 !important");
     expect(styles).toContain(
       ".markdown-paper .cm-line:has(> .cm-markra-table-wrap)",
     );
-    expect(styles).toContain("margin: 24px 0 !important");
+    expect(styles).toContain("margin: 0 !important");
     expect(styles).toContain(
       '.markdown-paper .cm-markra-table[data-width-mode="auto"]',
     );
@@ -563,8 +1034,8 @@ describe("editor stylesheet", () => {
     expect(headingEnd).toBeGreaterThan(headingStart);
     expect(headingStyles).not.toContain("border-b");
     expect(headingStyles).not.toContain("border-color: var(--editor-border)");
-    expect(headingStyles).toContain("text-[44px]");
-    expect(headingStyles).toContain("text-[31px]");
+    expect(headingStyles).toContain("font-size: var(--editor-h1-font-size)");
+    expect(headingStyles).toContain("font-size: var(--editor-h2-font-size)");
   });
 
   it("uses a paragraph spacing variable for visual editor paragraphs", () => {
@@ -1094,6 +1565,11 @@ describe("editor stylesheet", () => {
     const activeInlineCodeStart = styles.indexOf(".markdown-paper code .markra-live-mark-inlineCode {");
     const activeInlineCodeEnd = styles.indexOf(".markdown-paper .markra-selection-hold");
     const activeInlineCodeStyles = styles.slice(activeInlineCodeStart, activeInlineCodeEnd);
+    const commentStart = styles.indexOf(
+      ".markdown-paper .hljs-comment,",
+    );
+    const commentEnd = styles.indexOf("\n  }", commentStart);
+    const commentStyles = styles.slice(commentStart, commentEnd);
 
     expect(inlineCodeStyles).toContain("color: oklch");
     expect(inlineCodeStyles).toContain("box-shadow");
@@ -1104,6 +1580,9 @@ describe("editor stylesheet", () => {
     expect(styles).toContain(".markdown-paper .hljs-meta");
     expect(styles).toContain(".markdown-paper .hljs-symbol");
     expect(styles).toContain(".markdown-paper .hljs-type");
+    expect(commentStart).toBeGreaterThanOrEqual(0);
+    expect(commentStyles).toContain("font-style: normal");
+    expect(commentStyles).not.toContain("font-style: italic");
   });
 
   it("defines Typora-style editor themes and code block copy controls", () => {
@@ -1149,6 +1628,124 @@ describe("editor stylesheet", () => {
       expect(styles).not.toContain("fonts.googleapis.com");
       expect(styles).not.toContain("CodeMirror");
       expect(styles).not.toContain("#typora-");
+    }
+  });
+
+  it("keeps WenKai Paper packages licensed, self-contained, and complete across app chrome", () => {
+    const appStyles = readFileSync(`${process.cwd()}/src/styles.css`, "utf8");
+    const defaultAppTokens = readCustomPropertyNames(readNestedRuleDeclarations(appStyles, "  :root"));
+    const defaultEditorTokens = readCustomPropertyNames(
+      readNestedRuleDeclarations(appStyles, "  .markdown-paper")
+    );
+
+    for (const theme of ["wenkai-paper-light", "wenkai-paper-dark"] as const) {
+      const root = `${process.cwd()}/../../themes/external/${theme}`;
+      const styles = readSeededThemeStyles(theme);
+      const manifest = JSON.parse(readFileSync(`${root}/manifest.json`, "utf8"));
+
+      expect(manifest.author).toBe("轻语");
+      expect(manifest.id).toBe(theme);
+      expect(manifest.licenseFiles).toEqual([
+        "licenses/THEME-LICENSE.txt",
+        "licenses/FONT-LICENSE.txt",
+        "licenses/WEBFONT-LICENSE.txt"
+      ]);
+      expect(styles.match(/@font-face/gu)).toHaveLength(97);
+      expect(styles).toContain(`:root[data-theme="${theme}"]`);
+      expect(styles).toContain(`.markdown-paper[data-editor-theme="${theme}"]`);
+      expect(styles).toContain(`.markdown-source-paper[data-editor-theme="${theme}"]`);
+      expect(styles).toContain('font-family: "LXGW WenKai Screen"');
+      expect(styles).toContain("font-family: ui-monospace");
+      const rootTokens = readCustomPropertyNames(
+        readRuleDeclarations(styles, `:root[data-theme="${theme}"]`)
+      );
+      const editorTokens = readCustomPropertyNames(
+        readRuleDeclarations(styles, `.markdown-paper[data-editor-theme="${theme}"]`)
+      );
+      expect(rootTokens).toEqual(expect.arrayContaining(defaultAppTokens));
+      expect(editorTokens).toEqual(expect.arrayContaining(defaultEditorTokens));
+      for (const token of [
+        "--bg-titlebar",
+        "--bg-sidebar",
+        "--bg-sidebar-header",
+        "--bg-toolbar",
+        "--bg-tree-current",
+        "--bg-tree-selected",
+        "--bg-outline",
+        "--bg-outline-current",
+        "--bg-sidebar-footer",
+        "--border-chrome",
+        "--editor-paper-bg",
+        "--editor-font-family",
+        "--source-editor-font-family"
+      ]) {
+        expect(styles).toContain(token);
+      }
+      for (const declaration of expectedWenkaiSidebarDeclarations[theme]) {
+        expect(styles).toContain(declaration);
+      }
+      expect(styles).not.toContain("@import");
+      expect(styles).not.toMatch(/url\(\s*["']?(?:https?:|\/\/|file:)/u);
+      expect(readFileSync(`${root}/licenses/THEME-LICENSE.txt`, "utf8")).toContain(
+        "independent theme for 轻语"
+      );
+      expect(readFileSync(`${root}/licenses/FONT-LICENSE.txt`, "utf8")).toContain(
+        "SIL OPEN FONT LICENSE Version 1.1"
+      );
+      expect(readFileSync(`${root}/licenses/WEBFONT-LICENSE.txt`, "utf8")).toContain(
+        "Copyright (c) 2022 Chawye Hsu"
+      );
+    }
+  });
+
+  it("keeps Drake-faithful external packages licensed, self-contained, and source-faithful", () => {
+    const catalogSource = readFileSync(
+      `${process.cwd()}/../../apps/desktop/src-tauri/src/themes/catalog.rs`,
+      "utf8"
+    );
+
+    for (const id of externalThemeIds) {
+      const root = `${process.cwd()}/../../themes/external/${id}`;
+      const manifest = JSON.parse(readFileSync(`${root}/manifest.json`, "utf8"));
+      const styles = readFileSync(`${root}/theme.css`, "utf8");
+      const rootDeclarations = readRuleDeclarations(styles, `:root[data-theme="${id}"]`);
+      const editorDeclarations = readRuleDeclarations(
+        styles,
+        `.markdown-paper[data-editor-theme="${id}"]`
+      );
+
+      expect(manifest).toEqual(expectedExternalThemeManifests[id]);
+      expect(catalogSource).not.toContain(`id: "${id}"`);
+      expect(styles.match(/@font-face/gu)).toHaveLength(4);
+      expect(styles).toContain(`:root[data-theme="${id}"]`);
+      expect(styles).toContain(`.markdown-paper[data-editor-theme="${id}"]`);
+      expect(styles).toContain(`.markdown-source-paper[data-editor-theme="${id}"]`);
+      expect(styles).not.toContain("oklch");
+      expect(styles).not.toContain("@import");
+      expect(styles).not.toContain("@include-when-export");
+      expect(styles).not.toContain("#typora-");
+      expect(styles).not.toContain(".cm-s-inner");
+
+      for (const [fileName, expectedHash] of Object.entries(expectedFontHashes)) {
+        const bytes = readFileSync(`${root}/assets/fonts/${fileName}`);
+        expect(bytes.subarray(0, 4).toString("ascii")).toBe("wOF2");
+        expect(createHash("sha256").update(bytes).digest("hex")).toBe(expectedHash);
+      }
+
+      expectedThemeDeclarations[id].forEach((declaration) => {
+        const declarations = declaration.startsWith("--editor-")
+          ? editorDeclarations
+          : rootDeclarations;
+        expect(declarations).toContain(declaration);
+      });
+      expect(styles).not.toMatch(/url\(\s*["']?(?:https?:|\/\/|file:)/u);
+      expect(readFileSync(`${root}/licenses/THEME-LICENSE.txt`, "utf8")).toContain("MIT License");
+      expect(readFileSync(`${root}/licenses/FONT-LICENSE.txt`, "utf8")).toContain(
+        "SIL OPEN FONT LICENSE Version 1.1"
+      );
+      if (id === "drake-faithful-ayu") {
+        expectedAyuSyntaxRules.forEach((rule) => expect(styles).toContain(rule));
+      }
     }
   });
 
@@ -1232,5 +1829,108 @@ describe("editor stylesheet", () => {
     expect(styles).toContain("user-select: text");
     expect(styles).toContain("cursor: var(--editor-text-cursor)");
     expect(styles).toContain(".markdown-paper a");
+  });
+
+  it("defines stable chrome surfaces with platform-aware legacy fallbacks", () => {
+    const styles = readFileSync(`${process.cwd()}/src/styles.css`, "utf8");
+
+    expect(styles).toContain("--theme-titlebar-legacy-surface: var(--bg-primary);");
+    expect(styles).toContain("--theme-titlebar-legacy-surface: var(--bg-chrome);");
+    expect(styles).toContain(
+      "background-color: var(--bg-titlebar, var(--theme-titlebar-legacy-surface));"
+    );
+    expect(styles).toContain("--theme-sidebar-legacy-surface: var(--bg-secondary);");
+    expect(styles).toContain("--theme-sidebar-legacy-surface: var(--bg-chrome);");
+    expect(styles).toContain(
+      "background-color: var(--bg-sidebar, var(--theme-sidebar-legacy-surface));"
+    );
+    expect(styles).toContain(
+      "background-color: var(--bg-sidebar-header, var(--bg-sidebar, var(--theme-sidebar-legacy-surface)));"
+    );
+    expect(styles).toContain(
+      "background-color: var(--bg-toolbar, var(--bg-sidebar, var(--theme-sidebar-legacy-surface)));"
+    );
+    expect(styles).toContain(
+      "background-color: var(--bg-outline, var(--bg-sidebar, var(--theme-sidebar-legacy-surface)));"
+    );
+    expect(styles).toContain(
+      "background-color: var(--bg-sidebar-footer, var(--bg-sidebar, var(--theme-sidebar-legacy-surface)));"
+    );
+    expect(styles).toContain("border-color: var(--border-chrome, var(--border-default));");
+    expect(styles).toContain("background-color: var(--border-chrome, var(--border-default));");
+
+    const currentRule = styles.indexOf('.theme-tree-row[aria-current="page"]');
+    const selectedRule = styles.indexOf('.theme-tree-row[aria-selected="true"]');
+    expect(currentRule).toBeGreaterThanOrEqual(0);
+    expect(selectedRule).toBeGreaterThan(currentRule);
+    expect(styles).toContain("var(--bg-tree-current, var(--bg-active))");
+    expect(styles).toContain("var(--text-tree-current, var(--text-heading))");
+    expect(styles).toContain("var(--tree-current-indicator, var(--text-secondary))");
+    expect(styles).toContain("var(--bg-tree-selected, var(--accent-soft))");
+    expect(styles).toContain("var(--text-tree-selected, var(--text-heading))");
+    expect(styles).toContain("var(--tree-selected-indicator, var(--accent))");
+    expect(styles).toContain("var(--bg-outline-current, var(--bg-active))");
+    expect(styles).toContain("var(--text-outline-current, var(--text-heading))");
+  });
+
+  it("exposes P0 sidebar typography, state, wrapping, and outline-level fallbacks", () => {
+    const styles = readFileSync(`${process.cwd()}/src/styles.css`, "utf8");
+
+    const sidebarRule = readRuleDeclarations(styles, ".theme-sidebar-root");
+    const treeRule = readRuleDeclarations(styles, ".theme-tree-row");
+    const outlineRowRule = readRuleDeclarations(styles, ".theme-outline-row");
+    const outlineRule = readRuleDeclarations(styles, ".theme-outline-item");
+    const outlineInlineRule = readRuleDeclarations(
+      styles,
+      ".theme-outline-item :where(strong, em, code, mark, .markra-outline-title-math)"
+    );
+    const outlineCurrentRule = readRuleDeclarations(
+      styles,
+      '.theme-outline-item[aria-current="location"]'
+    );
+
+    expect(sidebarRule).toContain("font-family: var(--sidebar-font-family, inherit);");
+    expect(treeRule).toContain("color: var(--text-tree, var(--text-secondary));");
+    expect(treeRule).toContain("font-size: var(--sidebar-tree-font-size, 13px);");
+    expect(treeRule).toContain("font-weight: var(--sidebar-tree-font-weight, 400);");
+    expect(treeRule).toContain("line-height: var(--sidebar-tree-line-height, 20px);");
+    expect(styles).toContain("var(--bg-tree-hover, var(--bg-hover))");
+    expect(styles).toContain("var(--text-tree-hover, var(--text-heading))");
+    expect(styles).toContain("var(--sidebar-tree-current-font-weight, var(--sidebar-tree-font-weight, 400))");
+    expect(outlineRowRule).toContain("min-height: var(--sidebar-outline-row-min-height, 28px);");
+    expect(outlineRule).toContain(
+      "color: var(--markra-outline-level-text, var(--text-outline, var(--text-secondary)));"
+    );
+    expect(outlineRule).toContain(
+      "font-size: var(--markra-outline-level-font-size, var(--sidebar-outline-font-size, 13px));"
+    );
+    expect(outlineRule).toContain(
+      "font-weight: var(--markra-outline-level-font-weight, var(--sidebar-outline-font-weight, 400));"
+    );
+    expect(outlineRule).toContain("line-height: var(--sidebar-outline-line-height, 20px);");
+    expect(outlineRule).toContain("-webkit-line-clamp: var(--sidebar-outline-max-lines, 1);");
+    expect(outlineInlineRule).toContain("color: inherit;");
+    expect(styles).toContain("var(--bg-outline-hover, var(--bg-hover))");
+    expect(styles).toContain("var(--text-outline-hover, var(--text-heading))");
+    expect(outlineCurrentRule).toContain("font-weight: var(--sidebar-outline-current-font-weight, 620);");
+
+    for (const level of [1, 2, 3, 4, 5, 6]) {
+      expect(styles).toContain(`.theme-outline-row[data-outline-level="${level}"]`);
+      expect(styles).toContain(`--sidebar-outline-h${level}-font-size`);
+      expect(styles).toContain(`--sidebar-outline-h${level}-font-weight`);
+      expect(styles).toContain(`--sidebar-outline-h${level}-text`);
+      expect(styles).toContain(`--sidebar-outline-h${level}-space-before`);
+    }
+  });
+
+  it("keeps semantic chrome focus and resizer interaction states above layered utilities", () => {
+    const styles = readFileSync(`${process.cwd()}/src/styles.css`, "utf8");
+
+    expect(styles).toContain(
+      ".theme-chrome-border:focus {\n  border-color: var(--border-strong);\n}"
+    );
+    expect(styles).toContain(
+      ".theme-chrome-divider-control:is(:hover, :focus-visible) > .theme-chrome-divider {\n  background-color: var(--border-strong);\n}"
+    );
   });
 });

@@ -225,8 +225,11 @@ impl RepositoryStatusStore {
     fn write_then_emit(&self, mut status: RepositorySyncStatus) -> Result<(), RepositoryJobError> {
         validate_status(&status)?;
         let _write = self.write_lock.lock().unwrap();
-        if let Some(previous) = load_repository_sync_status(&self.app_data, &status.repository_id)?
-        {
+        if let Some(previous) = load_repository_sync_status_with_existing_history(
+            &self.app_data,
+            &status.repository_id,
+        )? {
+            let previous_conflicts = previous.conflicts;
             status.schedule = previous.schedule;
             status.maintenance = previous.maintenance;
             if status.last_successful_sync_at.is_none() {
@@ -234,15 +237,11 @@ impl RepositoryStatusStore {
             }
             if status.phase == RepositorySyncPhase::Attempting {
                 status.transfer = previous.transfer;
-                status.conflicts = previous.conflicts;
+                status.conflicts = previous_conflicts;
             } else if status.conflicts.is_empty() && status.phase == RepositorySyncPhase::Failed {
-                status.conflicts = previous.conflicts;
+                status.conflicts = previous_conflicts;
             } else if status.phase == RepositorySyncPhase::Succeeded {
-                let mut retained = previous
-                    .conflicts
-                    .into_iter()
-                    .filter(|conflict| conflict_history_exists(&self.app_data, conflict))
-                    .collect::<Vec<_>>();
+                let mut retained = previous_conflicts;
                 retained.append(&mut status.conflicts);
                 status.conflicts = retained;
             }
@@ -254,18 +253,22 @@ impl RepositoryStatusStore {
         &self,
         repository_id: &str,
     ) -> Result<RepositorySchedule, RepositoryJobError> {
-        Ok(load_repository_sync_status(&self.app_data, repository_id)?
-            .map(|status| status.schedule)
-            .unwrap_or_default())
+        Ok(
+            load_repository_sync_status_with_existing_history(&self.app_data, repository_id)?
+                .map(|status| status.schedule)
+                .unwrap_or_default(),
+        )
     }
 
     pub(crate) fn load_maintenance(
         &self,
         repository_id: &str,
     ) -> Result<RepositoryMaintenance, RepositoryJobError> {
-        Ok(load_repository_sync_status(&self.app_data, repository_id)?
-            .map(|status| status.maintenance)
-            .unwrap_or_default())
+        Ok(
+            load_repository_sync_status_with_existing_history(&self.app_data, repository_id)?
+                .map(|status| status.maintenance)
+                .unwrap_or_default(),
+        )
     }
 
     pub(crate) fn set_maintenance(
@@ -275,8 +278,9 @@ impl RepositoryStatusStore {
     ) -> Result<RepositoryMaintenance, RepositoryJobError> {
         validate_repository_id(repository_id)?;
         let _write = self.write_lock.lock().unwrap();
-        let mut status = load_repository_sync_status(&self.app_data, repository_id)?
-            .ok_or(RepositoryJobError::StatusUnavailable)?;
+        let mut status =
+            load_repository_sync_status_with_existing_history(&self.app_data, repository_id)?
+                .ok_or(RepositoryJobError::StatusUnavailable)?;
         if status.maintenance == maintenance {
             return Ok(maintenance);
         }
@@ -295,8 +299,9 @@ impl RepositoryStatusStore {
     ) -> Result<RepositorySchedule, RepositoryJobError> {
         validate_repository_id(repository_id)?;
         let _write = self.write_lock.lock().unwrap();
-        let mut status = load_repository_sync_status(&self.app_data, repository_id)?
-            .ok_or(RepositoryJobError::StatusUnavailable)?;
+        let mut status =
+            load_repository_sync_status_with_existing_history(&self.app_data, repository_id)?
+                .ok_or(RepositoryJobError::StatusUnavailable)?;
         if !update(&mut status.schedule) {
             return Ok(status.schedule);
         }
@@ -336,7 +341,9 @@ impl RepositoryStatusStore {
         repository_id: &str,
     ) -> Result<RepositorySchedule, RepositoryJobError> {
         validate_repository_id(repository_id)?;
-        if load_repository_sync_status(&self.app_data, repository_id)?.is_none() {
+        if load_repository_sync_status_with_existing_history(&self.app_data, repository_id)?
+            .is_none()
+        {
             return Ok(RepositorySchedule::default());
         }
         let mut clear = |schedule: &mut RepositorySchedule| {
@@ -463,6 +470,19 @@ pub(crate) fn load_repository_sync_status(
         return Err(RepositoryJobError::StatusUnavailable);
     }
     Ok(Some(status))
+}
+
+fn load_repository_sync_status_with_existing_history(
+    app_data: &Path,
+    repository_id: &str,
+) -> Result<Option<RepositorySyncStatus>, RepositoryJobError> {
+    let mut status = load_repository_sync_status(app_data, repository_id)?;
+    if let Some(status) = &mut status {
+        status
+            .conflicts
+            .retain(|conflict| conflict_history_exists(app_data, conflict));
+    }
+    Ok(status)
 }
 
 fn validate_repository_id(repository_id: &str) -> Result<(), RepositoryJobError> {
@@ -673,6 +693,110 @@ mod tests {
             load_repository_sync_status(app_data.path(), repository_id).unwrap(),
             Some(status)
         );
+    }
+
+    #[tokio::test]
+    async fn attempting_and_failed_statuses_drop_conflicts_after_history_cleanup() {
+        for (repository_id, phase) in [
+            (
+                "00000000-0000-4000-8000-000000000071",
+                RepositorySyncPhase::Attempting,
+            ),
+            (
+                "00000000-0000-4000-8000-000000000072",
+                RepositorySyncPhase::Failed,
+            ),
+        ] {
+            let app_data = tempdir().unwrap();
+            let emitter = Arc::new(InspectingEmitter::new(app_data.path().to_path_buf()));
+            let store = RepositoryStatusStore::new(app_data.path(), Arc::clone(&emitter));
+            let conflict = SyncConflictRecord {
+                conflict_id: "00000000-0000-4000-8000-000000000073".to_owned(),
+                repository_id: repository_id.to_owned(),
+                relative_path: "notes/conflict.md".to_owned(),
+                occurred_at: "2026-07-25T08:00:00Z".to_owned(),
+                resolution: None,
+            };
+            let history = app_data.path().join(format!(
+                "sync/repositories/{repository_id}/history/2026-07-25-080000-sync/notes/conflict.md"
+            ));
+            std::fs::create_dir_all(history.parent().unwrap()).unwrap();
+            std::fs::write(&history, b"remote").unwrap();
+            let mut previous = attempting(repository_id);
+            previous.phase = RepositorySyncPhase::Succeeded;
+            previous.last_successful_sync_at = Some("2026-07-25T08:00:00Z".to_owned());
+            previous.conflicts = vec![conflict];
+            store.publish(previous).await.unwrap();
+            std::fs::remove_file(history).unwrap();
+
+            let mut next = attempting(repository_id);
+            next.phase = phase;
+            if phase == RepositorySyncPhase::Failed {
+                next.error = Some(RepositorySafeError {
+                    code: "network-failed".to_owned(),
+                    operation: "repository-sync".to_owned(),
+                });
+            }
+            store.publish(next).await.unwrap();
+
+            let persisted = load_repository_sync_status(app_data.path(), repository_id)
+                .unwrap()
+                .unwrap();
+            assert!(persisted.conflicts.is_empty(), "phase {phase:?}");
+            assert!(emitter
+                .emitted
+                .lock()
+                .unwrap()
+                .last()
+                .unwrap()
+                .conflicts
+                .is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn schedule_updates_do_not_reemit_conflicts_after_history_cleanup() {
+        let app_data = tempdir().unwrap();
+        let repository_id = "00000000-0000-4000-8000-000000000074";
+        let emitter = Arc::new(InspectingEmitter::new(app_data.path().to_path_buf()));
+        let store = RepositoryStatusStore::new(app_data.path(), Arc::clone(&emitter));
+        let history = app_data.path().join(format!(
+            "sync/repositories/{repository_id}/history/2026-07-25-080000-sync/conflict.md"
+        ));
+        std::fs::create_dir_all(history.parent().unwrap()).unwrap();
+        std::fs::write(&history, b"remote").unwrap();
+        let mut status = attempting(repository_id);
+        status.phase = RepositorySyncPhase::Succeeded;
+        status.last_successful_sync_at = Some("2026-07-25T08:00:00Z".to_owned());
+        status.conflicts = vec![SyncConflictRecord {
+            conflict_id: "00000000-0000-4000-8000-000000000075".to_owned(),
+            repository_id: repository_id.to_owned(),
+            relative_path: "conflict.md".to_owned(),
+            occurred_at: "2026-07-25T08:00:00Z".to_owned(),
+            resolution: None,
+        }];
+        store.publish(status).await.unwrap();
+        std::fs::remove_file(history).unwrap();
+
+        let mut update = |schedule: &mut RepositorySchedule| {
+            schedule.same_count = 1;
+            true
+        };
+        store.update_schedule(repository_id, &mut update).unwrap();
+
+        assert!(load_repository_sync_status(app_data.path(), repository_id)
+            .unwrap()
+            .unwrap()
+            .conflicts
+            .is_empty());
+        assert!(emitter
+            .emitted
+            .lock()
+            .unwrap()
+            .last()
+            .unwrap()
+            .conflicts
+            .is_empty());
     }
 
     #[tokio::test]

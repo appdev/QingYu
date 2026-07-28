@@ -33,6 +33,12 @@ import { requestPrimaryNotebookSwitch } from "../lib/notebook-switch-events";
 import { RemoteNotebookDialog } from "./notebooks/RemoteNotebookDialog";
 import { SyncConflictHistoryDialog } from "./sync/SyncConflictHistoryDialog";
 import type { SyncConflictRecord } from "../lib/sync-config";
+import { SettingsWindowLoadingShell } from "./SettingsWindowLoadingShell";
+
+type OpenSyncConflictHistory = {
+  conflict: SyncConflictRecord;
+  notesRoot: string;
+};
 
 export function SettingsWindow() {
   const settingsState = useSettingsWindowState();
@@ -90,7 +96,7 @@ export function SettingsWindow() {
   const showMacosWindowChrome = platform === "macos" && appFeatures.nativeWindowChrome;
   const liveSettingsStartupReady = appLanguage.ready && appTheme.ready;
   const [settingsStartupReady, setSettingsStartupReady] = useState(liveSettingsStartupReady);
-  const [openSyncConflictHistory, setOpenSyncConflictHistory] = useState<SyncConflictRecord | null>(null);
+  const [openSyncConflictHistory, setOpenSyncConflictHistory] = useState<OpenSyncConflictHistory | null>(null);
   useEffect(() => {
     if (!settingsStartupReady && liveSettingsStartupReady) setSettingsStartupReady(true);
   }, [liveSettingsStartupReady, settingsStartupReady]);
@@ -101,12 +107,48 @@ export function SettingsWindow() {
     setOpenSyncConflictHistory(null);
     hideSettingsWindow().catch(() => {});
   };
-  const handleReadSyncConflictHistory = useCallback((conflict: SyncConflictRecord) => (
-    getAppRuntime().syncConfig.readDejavuConflictHistory({
+  const handleOpenSyncConflictHistory = useCallback((conflict: SyncConflictRecord) => {
+    if (!syncView.primaryRoot) return;
+    setOpenSyncConflictHistory({ conflict, notesRoot: syncView.primaryRoot });
+  }, [syncView.primaryRoot]);
+  const handleSyncRepositoryIdentityChange = useCallback((identity: {
+    notesRoot: string | null;
+    repositoryId: string | null;
+  }) => {
+    setOpenSyncConflictHistory((current) => (
+      current && (
+        current.notesRoot !== identity.notesRoot
+        || current.conflict.repositoryId !== identity.repositoryId
+      )
+        ? null
+        : current
+    ));
+  }, []);
+  useEffect(() => {
+    setOpenSyncConflictHistory((current) => (
+      current && current.notesRoot !== syncView.primaryRoot ? null : current
+    ));
+  }, [syncView.primaryRoot]);
+  const handleReadSyncConflictHistory = useCallback(async (conflict: SyncConflictRecord) => {
+    const selection = openSyncConflictHistory;
+    if (
+      !selection
+      || selection.conflict.conflictId !== conflict.conflictId
+      || selection.notesRoot !== syncView.primaryRoot
+    ) {
+      throw new Error("sync-conflict-ownership-changed");
+    }
+    const current = await getAppRuntime().syncConfig.loadRepositoryStatus({
+      notesRoot: selection.notesRoot
+    });
+    if (current?.repositoryId !== conflict.repositoryId) {
+      throw new Error("sync-conflict-ownership-changed");
+    }
+    return getAppRuntime().syncConfig.readDejavuConflictHistory({
       conflictId: conflict.conflictId,
       repositoryId: conflict.repositoryId
-    })
-  ), []);
+    });
+  }, [openSyncConflictHistory, syncView.primaryRoot]);
   const handleCopyRuntimeLogs = (contents: string) => {
     const writeText = navigator.clipboard?.writeText?.bind(navigator.clipboard);
     if (!writeText) {
@@ -155,7 +197,7 @@ export function SettingsWindow() {
     markSettingsWindowReady().catch(() => {});
   }, [settingsStartupReady]);
 
-  if (!settingsStartupReady) return null;
+  if (!settingsStartupReady) return <SettingsWindowLoadingShell onClose={handleCloseSettings} />;
 
   return (
     <main
@@ -257,7 +299,8 @@ export function SettingsWindow() {
               testing={syncView.testing}
               translate={translate}
               onEnable={syncSession.enable}
-              onOpenConflictHistory={setOpenSyncConflictHistory}
+              onOpenConflictHistory={handleOpenSyncConflictHistory}
+              onRepositoryIdentityChange={handleSyncRepositoryIdentityChange}
               onPatch={syncSession.patch}
               onReset={syncSession.reset}
               onRunSync={syncSession.runImmediate}
@@ -354,7 +397,8 @@ export function SettingsWindow() {
       ) : null}
       {openSyncConflictHistory ? (
         <SyncConflictHistoryDialog
-          conflict={openSyncConflictHistory}
+          key={`${openSyncConflictHistory.notesRoot}\u0000${openSyncConflictHistory.conflict.repositoryId}\u0000${openSyncConflictHistory.conflict.conflictId}`}
+          conflict={openSyncConflictHistory.conflict}
           language={appLanguage.language}
           onClose={() => setOpenSyncConflictHistory(null)}
           onRead={handleReadSyncConflictHistory}

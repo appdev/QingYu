@@ -1,4 +1,59 @@
-+## [2.0.0-beta.5](https://github.com/markrahq/markra/compare/v2.0.0-beta.4...v2.0.0-beta.5) (2026-07-26)
+## [2.0.0](https://github.com/markrahq/markra/compare/v1.7.4...v2.0.0) (2026-07-28)
+
+### Features
+
+* **app:** add collapsible file list controls and dropped file tab option ([#578](https://github.com/markrahq/markra/issues/578), [#588](https://github.com/markrahq/markra/issues/588))
+* **app:** add safe unused image cleanup ([#567](https://github.com/markrahq/markra/issues/567))
+* **app:** unify default fonts across platforms ([#586](https://github.com/markrahq/markra/issues/586))
+* **editor:** replace Milkdown with CodeMirror and restore feature parity
+* **editor:** add Typewriter and Vim modes ([#557](https://github.com/markrahq/markra/issues/557), [#568](https://github.com/markrahq/markra/issues/568))
+* **editor:** improve frontmatter, reference, code paste, and slash-menu editing ([#589](https://github.com/markrahq/markra/issues/589))
+* **settings:** add custom theme and Markdown marker controls ([#577](https://github.com/markrahq/markra/issues/577), [#582](https://github.com/markrahq/markra/issues/582))
+* **shortcuts:** support Alt-only keybindings ([#573](https://github.com/markrahq/markra/issues/573))
+* **updater:** add preview release channel
+
+### Bug Fixes
+
+* **app:** isolate editor mode changes by tab ([#585](https://github.com/markrahq/markra/issues/585))
+* **editor:** stabilize code blocks, headings, tables, links, images, and Mermaid editing
+* **editor:** improve caret, selection, drag, and IME behavior
+* **settings:** show active sidebar category ([#592](https://github.com/markrahq/markra/issues/592))
+* **release:** improve prerelease, Homebrew, and Debian packaging
+
+## [2.0.0-beta.9](https://github.com/markrahq/markra/compare/v2.0.0-beta.8...v2.0.0-beta.9) (2026-07-28)
+
+### Bug Fixes
+
+* **settings:** show active sidebar category ([#592](https://github.com/markrahq/markra/issues/592)) ([8306eb2](https://github.com/markrahq/markra/commit/8306eb26b6d6cc5082f1b17da61b0c155ac04d43))
+
+## [2.0.0-beta.8](https://github.com/markrahq/markra/compare/v2.0.0-beta.7...v2.0.0-beta.8) (2026-07-27)
+
+### Bug Fixes
+
+* **editor:** make heading marker hiding opt-in ([#590](https://github.com/markrahq/markra/issues/590)) ([33a355e](https://github.com/markrahq/markra/commit/33a355e4a0205a9a6d129998d41dcb118a3f2598)), closes [#580](https://github.com/markrahq/markra/issues/580)
+* **editor:** stabilize code block caret alignment ([#591](https://github.com/markrahq/markra/issues/591)) ([b489762](https://github.com/markrahq/markra/commit/b4897620d5aca8e90d076a3c672f57aa16ea3ea4))
+
+## [2.0.0-beta.7](https://github.com/markrahq/markra/compare/v2.0.0-beta.6...v2.0.0-beta.7) (2026-07-26)
+
+### Features
+
+* **app:** add dropped file tab option ([#588](https://github.com/markrahq/markra/issues/588)) ([85df305](https://github.com/markrahq/markra/commit/85df305ab4a7c35e32f5f03aff5d7425e34a1fee)), closes [#576](https://github.com/markrahq/markra/issues/576)
+* **editor:** add heading theme tokens ([#587](https://github.com/markrahq/markra/issues/587)) ([f304ff9](https://github.com/markrahq/markra/commit/f304ff9053d4e9babf675b87232b969d818fdbd9))
+* **editor:** support Chinese slash-menu trigger ([#589](https://github.com/markrahq/markra/issues/589)) ([f40a6b9](https://github.com/markrahq/markra/commit/f40a6b95444b5c46293a4f5a00f5c0be9c9ba80d))
+
+## [2.0.0-beta.6](https://github.com/markrahq/markra/compare/v2.0.0-beta.5...v2.0.0-beta.6) (2026-07-26)
+
+### Features
+
+* **app:** unify default fonts across platforms ([#586](https://github.com/markrahq/markra/issues/586)) ([b0a9b96](https://github.com/markrahq/markra/commit/b0a9b9633232607cc5c648d264af91cb9f72ec94))
+* **editor:** add Markdown marker reveal preference ([#582](https://github.com/markrahq/markra/issues/582)) ([7060297](https://github.com/markrahq/markra/commit/706029704c414eb8899bf9b0f6e3ae4e5ade566e)), closes [#580](https://github.com/markrahq/markra/issues/580)
+
+### Bug Fixes
+
+* **app:** isolate editor mode changes by tab ([#585](https://github.com/markrahq/markra/issues/585)) ([0dbf56c](https://github.com/markrahq/markra/commit/0dbf56c097175a0e240746d3c1330116bee6a4b4))
+* **editor:** tighten table preview spacing ([#583](https://github.com/markrahq/markra/issues/583)) ([9a8d602](https://github.com/markrahq/markra/commit/9a8d602a582c2e5b5ad6b9016e6b4b161946137a))
+
+## [2.0.0-beta.5](https://github.com/markrahq/markra/compare/v2.0.0-beta.4...v2.0.0-beta.5) (2026-07-26)
 
 ### Features
 

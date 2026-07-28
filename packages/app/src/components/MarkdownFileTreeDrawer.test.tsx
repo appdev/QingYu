@@ -249,7 +249,115 @@ describe("MarkdownFileTreeDrawer", () => {
     expect(container.querySelector(".markdown-file-tree-outline")).toContainElement(container.querySelector(".lucide-table-of-contents"));
   });
 
-  it("hides recent folders, file list, and outline independently for view mode chrome", () => {
+  it("maps every stacked sidebar zone to the stable theme contract", () => {
+    const { container } = render(
+      <MarkdownFileTreeDrawer
+        activeOutlineIndex={0}
+        currentPath="/vault/Untitled.md"
+        documentLinksOpen
+        documentLinksVisible
+        files={markdownFiles}
+        linkIndex={{
+          backlinks: [],
+          fileCount: markdownFiles.length,
+          files: markdownFiles.map((file) => ({
+            file,
+            mentionRanges: [],
+            titleCandidates: [file.name.replace(/\.md$/u, "")]
+          })),
+          unlinkedMentions: [],
+          unreadableFileCount: 0
+        } satisfies WorkspaceLinkIndex}
+        open
+        outlineItems={[{ level: 1, title: "Intro" }]}
+        recentFolders={[{ name: "vault", path: "/vault" }]}
+        recentFoldersOpen
+        rootName="vault"
+        rootPath="/vault"
+        width={288}
+        onOpenFile={() => {}}
+        onOpenRecentFolder={() => {}}
+        onResize={() => {}}
+        onSelectOutlineItem={() => {}}
+      />
+    );
+
+    expect(container.querySelector(".markdown-file-tree")).toHaveClass(
+      "theme-sidebar-root",
+      "theme-sidebar-legacy-secondary",
+      "theme-sidebar-surface",
+      "theme-chrome-border"
+    );
+    expect(container.querySelector(".markdown-file-tree-files-header")).toHaveClass(
+      "theme-sidebar-header-surface",
+      "theme-chrome-border"
+    );
+    expect(container.querySelector(".markdown-file-tree-toolbar")).toHaveClass("theme-toolbar-surface");
+    expect(container.querySelector(".markdown-file-tree-folder-access")).toHaveClass(
+      "theme-sidebar-surface",
+      "theme-chrome-border"
+    );
+    const currentRecentFolder = screen.getByRole("button", { name: "vault" });
+    expect(currentRecentFolder).toHaveAttribute("aria-current", "page");
+    expect(currentRecentFolder).toHaveClass("theme-tree-current-surface");
+    expect(container.querySelector(".markdown-file-tree-root")).toHaveClass("theme-sidebar-surface");
+    expect(container.querySelector(".file-tree-scroll")).toHaveClass("theme-sidebar-surface");
+    expect(container.querySelector('[aria-current="page"][data-file-tree-path]')).toHaveClass(
+      "theme-tree-current-surface",
+      "theme-tree-row"
+    );
+    expect(container.querySelector(".markdown-file-tree-outline")).toHaveClass("theme-outline-surface");
+    expect(container.querySelector(".markdown-file-tree-outline-toolbar")).toHaveClass(
+      "theme-toolbar-surface",
+      "theme-chrome-border"
+    );
+    expect(container.querySelector(".markdown-file-tree-outline-scroll")).toHaveClass("theme-outline-surface");
+    expect(container.querySelector('[aria-current="location"]')).toHaveClass("theme-outline-item");
+    expect(container.querySelector(".markdown-file-tree-links")).toHaveClass(
+      "theme-outline-surface",
+      "theme-chrome-border"
+    );
+    expect(container.querySelector(".markdown-file-tree-footer")).toHaveClass(
+      "theme-sidebar-footer-surface",
+      "theme-chrome-border"
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Search Markdown files" }));
+    expect(screen.getByRole("searchbox", { name: "Search Markdown files" })).toHaveClass("theme-chrome-border");
+    expect(container.querySelector(".markdown-file-tree-resizer > .theme-chrome-divider")).toBeInTheDocument();
+    expect(container.querySelector(".markdown-file-tree-outline-resizer > .theme-chrome-divider")).toBeInTheDocument();
+    expect(container.querySelector(".markdown-file-tree-document-links-resizer > .theme-chrome-divider")).toBeInTheDocument();
+    expect(container.querySelector(".markdown-file-tree-outline-resizer")).toHaveClass(
+      "theme-chrome-divider-control"
+    );
+    expect(container.querySelector(".markdown-file-tree-document-links-resizer")).toHaveClass(
+      "theme-chrome-divider-control"
+    );
+    fireEvent.click(screen.getByRole("button", { name: "deploy" }));
+    expect(screen.getByRole("button", { name: "deploy" })).toHaveClass("theme-tree-row");
+    expect(container.querySelector("ol.border-l")).toHaveClass("theme-chrome-border");
+  });
+
+  it("does not render recent folders without an open callback", () => {
+    const { container } = render(
+      <MarkdownFileTreeDrawer
+        currentPath="/vault/Untitled.md"
+        files={markdownFiles}
+        open
+        outlineItems={[]}
+        recentFolders={[{ name: "vault", path: "/vault" }]}
+        recentFoldersOpen
+        rootName="vault"
+        rootPath="/vault"
+        onOpenFile={() => {}}
+        onSelectOutlineItem={() => {}}
+      />
+    );
+
+    expect(container.querySelector(".markdown-file-tree-folder-access")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "vault" })).not.toBeInTheDocument();
+  });
+
+  it("hides the file list and outline independently for view mode chrome", () => {
     render(
       <MarkdownFileTreeDrawer
         currentPath="/vault/Untitled.md"
@@ -261,37 +369,29 @@ describe("MarkdownFileTreeDrawer", () => {
           { level: 2, title: "Details" }
         ]}
         outlineVisible={false}
-        recentFolders={[{ name: "mock-workspace", path: "/mock-files/workspace" }]}
-        recentFoldersVisible={false}
         rootName="Obsidian Vault"
         onOpenFile={() => {}}
-        onOpenRecentFolder={() => {}}
         onSelectOutlineItem={() => {}}
       />
     );
 
-    expect(screen.queryByRole("region", { name: "Recently used directories" })).not.toBeInTheDocument();
     expect(screen.queryByRole("tree", { name: "Markdown files" })).not.toBeInTheDocument();
     expect(screen.queryByRole("list", { name: "Document outline" })).not.toBeInTheDocument();
     expect(screen.queryByText("Outline")).not.toBeInTheDocument();
   });
 
-  it("uses safe line height for truncated compact labels", () => {
+  it("exposes outline levels and leaves label wrapping to the sidebar theme contract", () => {
     const { container } = render(
       <MarkdownFileTreeDrawer
         currentPath="/vault/Untitled.md"
         files={markdownFiles}
         open
         outlineItems={[
-          { level: 1, title: "plugin gap" }
-        ]}
-        recentFolders={[
-          { name: "docs", path: "/mock-workspaces/alpha/docs" },
-          { name: "docs", path: "/mock-workspaces/beta/docs" }
+          { level: 1, title: "plugin gap" },
+          { level: 2, title: "theme contract" }
         ]}
         rootName="Obsidian Vault"
         onOpenFile={() => {}}
-        onOpenRecentFolder={() => {}}
         onSelectOutlineItem={() => {}}
       />
     );
@@ -299,19 +399,15 @@ describe("MarkdownFileTreeDrawer", () => {
     const fileButton = screen.getByRole("button", { name: "Untitled.md" });
     const folderButton = screen.getByRole("button", { name: "deploy" });
     const outlineButton = screen.getByRole("button", { name: "plugin gap" });
-    const recentSection = screen.getByRole("region", { name: "Recently used directories" });
-    const recentHeader = within(recentSection).getByRole("heading", { name: "Recently used directories" });
-    const recentFolder = within(recentSection).getByRole("button", {
-      name: "docs /mock-workspaces/alpha/docs"
-    });
+    const outlineRows = container.querySelectorAll(".theme-outline-row");
 
-    expect(within(fileButton).getByText("Untitled.md")).toHaveClass("truncate", "leading-5");
-    expect(within(folderButton).getByText("deploy")).toHaveClass("truncate", "leading-5");
-    expect(outlineButton).toHaveClass("truncate", "leading-5");
+    expect(within(fileButton).getByText("Untitled.md")).toHaveClass("truncate", "theme-tree-label");
+    expect(within(folderButton).getByText("deploy")).toHaveClass("truncate", "theme-tree-label");
+    expect(outlineRows).toHaveLength(2);
+    expect(outlineRows[0]).toHaveAttribute("data-outline-level", "1");
+    expect(outlineRows[1]).toHaveAttribute("data-outline-level", "2");
+    expect(outlineButton).not.toHaveClass("truncate", "h-7");
     expect(outlineButton).not.toHaveClass("leading-none");
-    expect(recentHeader).toHaveClass("truncate", "leading-5");
-    expect(within(recentFolder).getByText("docs")).toHaveClass("truncate", "leading-4");
-    expect(within(recentFolder).getByText("/mock-workspaces/alpha/docs")).toHaveClass("truncate", "leading-4");
   });
 
   it("switches file and outline panels in the tabbed sidebar layout", () => {
@@ -324,20 +420,17 @@ describe("MarkdownFileTreeDrawer", () => {
           { level: 1, title: "Intro" },
           { level: 2, title: "Details" }
         ]}
-        recentFolders={[{ name: "mock-workspace", path: "/mock-files/workspace" }]}
         rootName="Example Vault"
         sidebarLayoutMode="tabs"
         onOpenFile={() => {}}
-        onOpenRecentFolder={() => {}}
         onSelectOutlineItem={() => {}}
       />
     );
     const layoutTabs = screen.getByRole("group", { name: "Files / Outline" });
-    const recentFolders = screen.getByRole("region", { name: "Recently used directories" });
     const root = container.querySelector(".markdown-file-tree-root") as HTMLElement;
 
-    expect(layoutTabs.compareDocumentPosition(recentFolders) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(layoutTabs).toHaveClass("markdown-file-tree-panel-tabs");
+    expect(layoutTabs).toHaveClass("theme-sidebar-header-surface", "theme-chrome-border");
     expect(layoutTabs).not.toHaveClass("rounded-md", "border", "bg-(--bg-secondary)");
     expect(layoutTabs.querySelector(".lucide-file-text")).not.toBeInTheDocument();
     expect(layoutTabs.querySelector(".lucide-table-of-contents")).not.toBeInTheDocument();
@@ -355,7 +448,6 @@ describe("MarkdownFileTreeDrawer", () => {
     expect(within(layoutTabs).getByRole("button", { name: "Files" })).toHaveAttribute("aria-pressed", "true");
     expect(within(layoutTabs).getByRole("button", { name: "Outline" })).toHaveAttribute("aria-pressed", "false");
     expect(screen.queryByRole("tree", { name: "Markdown files" })).not.toBeInTheDocument();
-    expect(screen.getByRole("region", { name: "Recently used directories" })).toBeInTheDocument();
     expect(container.querySelector(".markdown-file-tree-toolbar")).toBeInTheDocument();
     expect(screen.getByText("Example Vault")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Show files" })).toBeInTheDocument();
@@ -363,7 +455,6 @@ describe("MarkdownFileTreeDrawer", () => {
     fireEvent.click(screen.getByRole("button", { name: "Show files" }));
 
     expect(screen.getByRole("tree", { name: "Markdown files" })).toBeInTheDocument();
-    expect(screen.getByRole("region", { name: "Recently used directories" })).toBeInTheDocument();
     expect(container.querySelector(".markdown-file-tree-toolbar")).toBeInTheDocument();
 
     fireEvent.click(within(layoutTabs).getByRole("button", { name: "Outline" }));
@@ -383,7 +474,9 @@ describe("MarkdownFileTreeDrawer", () => {
     expect(outlineList).toHaveClass("markdown-file-tree-outline-list", "px-2", "py-1");
     expect(outlineList).toHaveTextContent("Intro");
     expect(outlineList).toHaveTextContent("Details");
-    expect(screen.getByRole("button", { name: "Intro" })).toHaveClass("h-7");
+    const introOutlineButton = screen.getByRole("button", { name: "Intro" });
+    expect(introOutlineButton).not.toHaveClass("h-7");
+    expect(introOutlineButton.closest(".theme-outline-row")).toHaveAttribute("data-outline-level", "1");
     expect(screen.getAllByText("Outline")).toHaveLength(1);
     expect(screen.getByRole("button", { name: "Collapse outline headings" })).toHaveClass("ml-auto");
     expect(container.querySelector(".markdown-file-tree-outline")).toHaveClass("flex-1");
@@ -755,223 +848,6 @@ describe("MarkdownFileTreeDrawer", () => {
     rectSpy.mockRestore();
   });
 
-  it("shows recent folders in a dedicated sidebar section", () => {
-    const openRecentFolder = vi.fn();
-    const removeRecentFolder = vi.fn();
-    const { container } = render(
-      <MarkdownFileTreeDrawer
-        currentPath="/vault/Untitled.md"
-        files={markdownFiles}
-        open
-        outlineItems={[]}
-        recentFolders={[
-          { name: "notes", path: "/mock-files/notes" },
-          { name: "test", path: "/mock-files/test" }
-        ]}
-        rootName="Obsidian Vault"
-        onOpenFile={() => {}}
-        onRemoveRecentFolder={removeRecentFolder}
-        onOpenRecentFolder={openRecentFolder}
-        onSelectOutlineItem={() => {}}
-      />
-    );
-
-    const recentSection = screen.getByRole("region", { name: "Recently used directories" });
-    const recentHeader = within(recentSection)
-      .getByRole("heading", { name: "Recently used directories" })
-      .closest("div");
-
-    expect(recentSection).toHaveClass("markdown-file-tree-recent-folders");
-    expect(recentHeader?.querySelector(".lucide-folder")).not.toBeInTheDocument();
-    expect(within(recentSection).getByRole("button", { name: "notes" })).toBeInTheDocument();
-    expect(screen.queryByRole("region", { name: "Directory" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Switch Notebook Directory..." })).not.toBeInTheDocument();
-    expect(screen.queryByRole("menu", { name: "Open Markdown or Folder" })).not.toBeInTheDocument();
-
-    fireEvent.click(within(recentSection).getByRole("button", { name: "notes" }));
-
-    expect(openRecentFolder).toHaveBeenCalledWith({ name: "notes", path: "/mock-files/notes" });
-    expect(removeRecentFolder).not.toHaveBeenCalled();
-  });
-
-  it("toggles recent folders when clicking the full section header row", () => {
-    render(
-      <MarkdownFileTreeDrawer
-        currentPath="/vault/Untitled.md"
-        files={markdownFiles}
-        open
-        outlineItems={[]}
-        recentFolders={[
-          { name: "notes", path: "/mock-files/notes" },
-          { name: "test", path: "/mock-files/test" }
-        ]}
-        rootName="Obsidian Vault"
-        onOpenFile={() => {}}
-        onOpenRecentFolder={() => {}}
-        onSelectOutlineItem={() => {}}
-      />
-    );
-
-    const recentSection = screen.getByRole("region", { name: "Recently used directories" });
-    const recentHeader = within(recentSection)
-      .getByRole("heading", { name: "Recently used directories" })
-      .closest("div");
-
-    expect(recentHeader).toBeInTheDocument();
-    expect(within(recentSection).getByRole("button", { name: "notes" })).toBeInTheDocument();
-
-    fireEvent.click(recentHeader!);
-
-    expect(within(recentSection).queryByRole("button", { name: "notes" })).not.toBeInTheDocument();
-
-    fireEvent.click(recentHeader!);
-
-    expect(within(recentSection).getByRole("button", { name: "notes" })).toBeInTheDocument();
-  });
-
-  it("disambiguates recent folders with the same name by path", () => {
-    const openRecentFolder = vi.fn();
-
-    render(
-      <MarkdownFileTreeDrawer
-        currentPath="/vault/Untitled.md"
-        files={markdownFiles}
-        open
-        outlineItems={[]}
-        recentFolders={[
-          { name: "docs", path: "/mock-workspaces/alpha/docs" },
-          { name: "docs", path: "/mock-workspaces/beta/docs" }
-        ]}
-        rootPath="/mock-workspaces/beta/docs"
-        rootName="Obsidian Vault"
-        onOpenFile={() => {}}
-        onOpenRecentFolder={openRecentFolder}
-        onSelectOutlineItem={() => {}}
-      />
-    );
-
-    const recentSection = screen.getByRole("region", { name: "Recently used directories" });
-    const alphaDocs = within(recentSection).getByRole("button", {
-      name: "docs /mock-workspaces/alpha/docs"
-    });
-    const betaDocs = within(recentSection).getByRole("button", {
-      name: "docs /mock-workspaces/beta/docs"
-    });
-
-    expect(alphaDocs).toHaveTextContent("/mock-workspaces/alpha/docs");
-    expect(betaDocs).toHaveTextContent("/mock-workspaces/beta/docs");
-    expect(alphaDocs).not.toHaveAttribute("aria-current");
-    expect(betaDocs).toHaveAttribute("aria-current", "page");
-    expect(betaDocs.querySelector(".lucide-folder-open")).toBeInTheDocument();
-
-    fireEvent.click(betaDocs);
-
-    expect(openRecentFolder).toHaveBeenCalledWith({
-      name: "docs",
-      path: "/mock-workspaces/beta/docs"
-    });
-  });
-
-  it("middle-truncates long duplicate recent folder paths while keeping the full path tooltip", async () => {
-    vi.useFakeTimers();
-
-    const alphaPath = "/mock-workspaces/team-alpha/projects/handbook/content/docs";
-    const betaPath = "/mock-workspaces/team-beta/projects/handbook/content/docs";
-
-    render(
-      <MarkdownFileTreeDrawer
-        currentPath="/vault/Untitled.md"
-        files={markdownFiles}
-        open
-        outlineItems={[]}
-        recentFolders={[
-          { name: "docs", path: alphaPath },
-          { name: "docs", path: betaPath }
-        ]}
-        rootName="Obsidian Vault"
-        onOpenFile={() => {}}
-        onOpenRecentFolder={() => {}}
-        onSelectOutlineItem={() => {}}
-      />
-    );
-
-    const recentSection = screen.getByRole("region", { name: "Recently used directories" });
-    const alphaDocs = within(recentSection).getByRole("button", {
-      name: `docs ${alphaPath}`
-    });
-    const betaDocs = within(recentSection).getByRole("button", {
-      name: `docs ${betaPath}`
-    });
-
-    expect(alphaDocs).not.toHaveAttribute("title");
-    expect(betaDocs).not.toHaveAttribute("title");
-    expect(within(alphaDocs).getByText("/mock-workspaces/team-alpha/.../content/docs")).toBeInTheDocument();
-    expect(within(betaDocs).getByText("/mock-workspaces/team-beta/.../content/docs")).toBeInTheDocument();
-    expect(alphaDocs).not.toHaveTextContent(alphaPath);
-    expect(betaDocs).not.toHaveTextContent(betaPath);
-
-    fireEvent.pointerEnter(alphaDocs);
-    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
-
-    await act(async () => {
-      vi.advanceTimersByTime(500);
-    });
-
-    expect(screen.getByRole("tooltip")).toHaveTextContent(alphaPath);
-  });
-
-  it("collapses recent folders and removes a recent folder without opening it", () => {
-    const openRecentFolder = vi.fn();
-    const removeRecentFolder = vi.fn();
-    const { container } = render(
-      <MarkdownFileTreeDrawer
-        currentPath="/vault/Untitled.md"
-        files={markdownFiles}
-        open
-        outlineItems={[]}
-        recentFolders={[
-          { name: "notes", path: "/mock-files/notes" },
-          { name: "test", path: "/mock-files/test" }
-        ]}
-        rootName="Obsidian Vault"
-        onOpenFile={() => {}}
-        onOpenRecentFolder={openRecentFolder}
-        onRemoveRecentFolder={removeRecentFolder}
-        onSelectOutlineItem={() => {}}
-      />
-    );
-
-    const recentSection = screen.getByRole("region", { name: "Recently used directories" });
-
-    expect(within(recentSection).getByRole("button", { name: "notes" })).toBeInTheDocument();
-
-    fireEvent.click(within(recentSection).getByRole("button", { name: "Hide recent directories" }));
-
-    expect(within(recentSection).queryByRole("button", { name: "notes" })).not.toBeInTheDocument();
-
-    fireEvent.click(within(recentSection).getByRole("button", { name: "Show recent directories" }));
-    const removeNotes = within(recentSection).getByRole("button", { name: "Remove from recent directories: notes" });
-    const notesRow = removeNotes.closest(".markdown-file-tree-recent-folder");
-
-    expect(notesRow).toBeInTheDocument();
-    expect(removeNotes).toHaveStyle({ opacity: "0", pointerEvents: "none" });
-    expect(removeNotes).not.toHaveClass("group-focus-within/recent-folder:opacity-100");
-
-    fireEvent.mouseEnter(notesRow!);
-
-    expect(removeNotes).toHaveStyle({ opacity: "1", pointerEvents: "auto" });
-
-    fireEvent.mouseLeave(notesRow!);
-
-    expect(removeNotes).toHaveStyle({ opacity: "0", pointerEvents: "none" });
-
-    fireEvent.mouseEnter(notesRow!);
-    fireEvent.click(removeNotes);
-
-    expect(removeRecentFolder).toHaveBeenCalledWith({ name: "notes", path: "/mock-files/notes" });
-    expect(openRecentFolder).not.toHaveBeenCalled();
-  });
-
   it("collapses and restores the outline panel", () => {
     const { container } = render(
       <MarkdownFileTreeDrawer
@@ -1011,10 +887,8 @@ describe("MarkdownFileTreeDrawer", () => {
           { level: 1, title: "Intro" },
           { level: 2, title: "Details" }
         ]}
-        recentFolders={[{ name: "mock-workspace", path: "/mock-files/workspace" }]}
         rootName="Example Vault"
         onOpenFile={() => {}}
-        onOpenRecentFolder={() => {}}
         onSelectOutlineItem={() => {}}
       />
     );
@@ -1023,7 +897,6 @@ describe("MarkdownFileTreeDrawer", () => {
 
     expect(screen.getByText("Files")).toBeInTheDocument();
     expect(screen.queryByRole("tree", { name: "Markdown files" })).not.toBeInTheDocument();
-    expect(screen.getByRole("region", { name: "Recently used directories" })).toBeInTheDocument();
     expect(container.querySelector(".markdown-file-tree-toolbar")).toBeInTheDocument();
     expect(screen.getByText("Example Vault")).toBeInTheDocument();
     expect(container.querySelector(".markdown-file-tree-files")).toHaveClass("shrink-0");
@@ -1035,7 +908,6 @@ describe("MarkdownFileTreeDrawer", () => {
     fireEvent.click(screen.getByRole("button", { name: "Show files" }));
 
     expect(screen.getByRole("tree", { name: "Markdown files" })).toBeInTheDocument();
-    expect(screen.getByRole("region", { name: "Recently used directories" })).toBeInTheDocument();
     expect(container.querySelector(".markdown-file-tree-toolbar")).toBeInTheDocument();
     expect(container.querySelector(".markdown-file-tree-outline-resizer")).toBeInTheDocument();
   });
@@ -1203,7 +1075,7 @@ describe("MarkdownFileTreeDrawer", () => {
     expect(openFolder).toHaveBeenCalledTimes(1);
   });
 
-  it("places file actions between recent folders and the workspace root", () => {
+  it("places file actions before the workspace root", () => {
     const { container } = render(
       <MarkdownFileTreeDrawer
         currentPath="/vault/Untitled.md"
@@ -1215,18 +1087,15 @@ describe("MarkdownFileTreeDrawer", () => {
         open
         outlineItems={[]}
         platform="macos"
-        recentFolders={[{ name: "mock-workspace", path: "/mock-files/workspace" }]}
         rootPath="/vault"
         rootName="Example Vault"
         sidebarLayoutMode="tabs"
         onCleanUnusedImages={() => {}}
         onCreateFile={() => {}}
         onOpenFile={() => {}}
-        onOpenRecentFolder={() => {}}
         onSelectOutlineItem={() => {}}
       />
     );
-    const recentFolders = screen.getByRole("region", { name: "Recently used directories" });
     const toolbar = container.querySelector(".markdown-file-tree-toolbar") as HTMLElement;
     const root = container.querySelector(".markdown-file-tree-root") as HTMLElement;
 
@@ -1248,7 +1117,6 @@ describe("MarkdownFileTreeDrawer", () => {
     expect(within(root).getAllByRole("button").map((button) => button.getAttribute("aria-label"))).toEqual([
       "Hide files"
     ]);
-    expect(recentFolders.compareDocumentPosition(toolbar) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(toolbar.compareDocumentPosition(root) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
@@ -1312,8 +1180,8 @@ describe("MarkdownFileTreeDrawer", () => {
     const primaryActions = container.querySelector(".markdown-file-tree-primary-actions");
     const sidebar = screen.getByRole("complementary", { name: "Markdown file tree" });
 
-    expect(sidebar).toHaveClass("bg-(--bg-chrome)");
-    expect(footer).toHaveClass("shrink-0", "border-t", "bg-(--bg-chrome)");
+    expect(sidebar).toHaveClass("theme-sidebar-legacy-chrome", "theme-sidebar-surface");
+    expect(footer).toHaveClass("shrink-0", "border-t", "theme-sidebar-footer-surface", "theme-chrome-border");
     expect(settings.closest(".markdown-file-tree-footer")).toBe(footer);
     expect(primaryActions).toContainElement(settings);
     expect(primaryActions).toContainElement(syncNow);
@@ -1432,12 +1300,12 @@ describe("MarkdownFileTreeDrawer", () => {
     expect(sidebar).toHaveClass("transition-[width,min-width,max-width]");
     expect(sidebar).not.toHaveClass("opacity-100", "opacity-0");
     expect(container.querySelector(".markdown-file-tree-content")).toHaveClass("transition-opacity", "opacity-100");
-    expect(sidebar).toHaveClass("bg-(--bg-secondary)");
+    expect(sidebar).toHaveClass("theme-sidebar-legacy-secondary", "theme-sidebar-surface");
     expect(screen.getByText("Files")).toBeInTheDocument();
     expect(screen.getByText("Obsidian Vault")).toBeInTheDocument();
     expect(folder).toHaveAttribute("aria-expanded", "false");
     expect(screen.queryByRole("button", { name: "deploy/deploy.md" })).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Untitled.md" })).toHaveClass("aria-[current=page]:border-l-[3px]");
+    expect(screen.getByRole("button", { name: "Untitled.md" })).toHaveClass("theme-tree-current-surface", "theme-tree-row");
     expect(screen.getByRole("button", { name: "Untitled.md" })).toHaveAttribute("aria-current", "page");
     expect(container.querySelector('[role="tree"]')).toBeInTheDocument();
 
@@ -1445,6 +1313,42 @@ describe("MarkdownFileTreeDrawer", () => {
     fireEvent.click(screen.getByRole("button", { name: "deploy/deploy.md" }));
 
     expect(openFile).toHaveBeenCalledWith(markdownFiles[2]);
+  });
+
+  it("keeps platform-specific sidebar fallbacks behind the shared sidebar surface", () => {
+    const { container, rerender } = render(
+      <MarkdownFileTreeDrawer
+        currentPath="/vault/Untitled.md"
+        files={markdownFiles}
+        open
+        outlineItems={[]}
+        platform="windows"
+        rootName="Obsidian Vault"
+        onOpenFile={() => {}}
+        onSelectOutlineItem={() => {}}
+      />
+    );
+
+    const windowsSidebar = container.querySelector(".markdown-file-tree");
+
+    expect(windowsSidebar).toHaveClass("theme-sidebar-legacy-chrome", "theme-sidebar-surface");
+
+    rerender(
+      <MarkdownFileTreeDrawer
+        currentPath="/vault/Untitled.md"
+        files={markdownFiles}
+        open
+        outlineItems={[]}
+        platform="macos"
+        rootName="Obsidian Vault"
+        onOpenFile={() => {}}
+        onSelectOutlineItem={() => {}}
+      />
+    );
+
+    const nonWindowsSidebar = container.querySelector(".markdown-file-tree");
+
+    expect(nonWindowsSidebar).toHaveClass("theme-sidebar-legacy-secondary", "theme-sidebar-surface");
   });
 
   it("supports modifier-based multi-selection in the visible file tree", () => {
@@ -1487,6 +1391,8 @@ describe("MarkdownFileTreeDrawer", () => {
     expect(architecture).toHaveAttribute("aria-selected", "true");
     expect(aws).toHaveAttribute("aria-selected", "true");
     expect(untitled).toHaveAttribute("aria-selected", "true");
+    expect(untitled).toHaveAttribute("aria-current", "page");
+    expect(untitled).toHaveClass("theme-tree-current-surface", "theme-tree-row");
     expect(folder).not.toHaveAttribute("aria-selected");
 
     fireEvent.click(aws, { ctrlKey: true });
@@ -2484,6 +2390,8 @@ describe("MarkdownFileTreeDrawer", () => {
     fireEvent.click(screen.getByRole("button", { name: "New" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "New file" }));
     const newFileInput = screen.getByRole("textbox", { name: "New file name" });
+    expect(newFileInput).toHaveClass("theme-tree-input");
+    expect(newFileInput.parentElement).toHaveClass("theme-tree-row");
     fireEvent.change(newFileInput, { target: { value: "Daily note" } });
     fireEvent.keyDown(newFileInput, { key: "Enter" });
 
@@ -2496,6 +2404,8 @@ describe("MarkdownFileTreeDrawer", () => {
     });
 
     const renameInput = screen.getByRole("textbox", { name: "Rename file" });
+    expect(renameInput).toHaveClass("theme-tree-input");
+    expect(renameInput.parentElement).toHaveClass("theme-tree-row");
     fireEvent.change(renameInput, { target: { value: "Renamed.md" } });
     fireEvent.keyDown(renameInput, { key: "Enter" });
 
@@ -3925,7 +3835,7 @@ describe("MarkdownFileTreeDrawer", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "deploy" }));
 
-    expect(screen.getByRole("group", { name: "deploy children" })).toHaveClass("border-l");
+    expect(screen.getByRole("group", { name: "deploy children" })).toHaveClass("border-l", "theme-chrome-border");
   });
 
   it("keeps nested files visually deeper than their parent folder", () => {
@@ -4032,7 +3942,7 @@ describe("MarkdownFileTreeDrawer", () => {
 
       expect(screen.getByRole("button", { name: "Intro" })).not.toHaveAttribute("aria-current");
       expect(screen.getByRole("button", { name: "Details" })).toHaveAttribute("aria-current", "location");
-      expect(screen.getByRole("button", { name: "Details" })).toHaveClass("bg-(--bg-active)", "text-(--text-heading)");
+      expect(screen.getByRole("button", { name: "Details" })).toHaveClass("theme-outline-item");
       expect(scrollIntoView).toHaveBeenCalledWith({
         behavior: "auto",
         block: "nearest",
@@ -4072,8 +3982,10 @@ describe("MarkdownFileTreeDrawer", () => {
 
     expect(boldTitle.tagName).toBe("STRONG");
     expect(boldTitle).toHaveClass("font-[760]");
+    expect(boldTitle).not.toHaveClass("text-(--text-heading)");
     expect(italicTitle.tagName).toBe("EM");
     expect(italicTitle).toHaveClass("italic");
+    expect(italicTitle).not.toHaveClass("text-(--text-primary)");
     expect(italicTitle.getAttribute("style")).toContain("font-style: italic");
     expect(italicTitle.getAttribute("style")).toContain("font-synthesis: style");
     expect(deletedTitle.tagName).toBe("DEL");
@@ -4104,7 +4016,9 @@ describe("MarkdownFileTreeDrawer", () => {
 
     expect(highlightedTitle.tagName).toBe("MARK");
     expect(highlightedTitle).toHaveClass("bg-(--accent-soft)");
+    expect(highlightedTitle).not.toHaveClass("text-(--text-heading)");
     expect(mathTitle).toHaveClass("markra-outline-title-math");
+    expect(mathTitle).not.toHaveClass("text-(--text-heading)");
   });
 
   it("keeps links and images as plain outline title text", () => {

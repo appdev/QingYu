@@ -212,6 +212,34 @@ describe("EditorSettings", () => {
     });
   });
 
+  it("toggles automatic heading marker hiding from the editor settings", () => {
+    const onUpdatePreferences = vi.fn();
+
+    render(
+      <EditorSettings
+        preferences={{
+          ...defaultEditorPreferences,
+          hideHeadingMarkersOnFocus: false
+        }}
+        translate={translate}
+        onUpdatePreferences={onUpdatePreferences}
+      />
+    );
+
+    const headingMarkersSwitch = screen.getByRole("switch", {
+      name: "Automatically hide heading markers (Typora-like)"
+    });
+
+    expect(headingMarkersSwitch).toHaveAttribute("aria-checked", "false");
+
+    fireEvent.click(headingMarkersSwitch);
+
+    expect(onUpdatePreferences).toHaveBeenCalledWith({
+      ...defaultEditorPreferences,
+      hideHeadingMarkersOnFocus: true
+    });
+  });
+
   it("toggles typewriter mode from the editor settings", () => {
     const onUpdatePreferences = vi.fn();
 

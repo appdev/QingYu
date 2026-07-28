@@ -19,7 +19,9 @@ pub mod working_tree;
 
 mod error;
 
-pub use atomic_write::{is_owned_stage_name, write_cap_file_safer, write_file_safer};
+pub use atomic_write::{
+    is_owned_stage_name, write_cap_file_no_replace_safer, write_cap_file_safer, write_file_safer,
+};
 pub use catalog::{
     CatalogIssue, CatalogIssueKind, RepositoryCatalogEntry, RepositoryCatalogList,
     RepositoryMetadata, S3RepositoryCatalog,

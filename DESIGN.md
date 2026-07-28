@@ -24,43 +24,43 @@ colors:
   overlay-ink: "#1F232C"
 typography:
   editor-h1:
-    fontFamily: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif
+    fontFamily: '"Noto Sans SC Variable", "Noto Sans SC", "Noto Sans CJK SC", sans-serif'
     fontSize: 44px
     fontWeight: 760
     lineHeight: 1.15
     letterSpacing: 0em
   editor-h2:
-    fontFamily: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif
+    fontFamily: '"Noto Sans SC Variable", "Noto Sans SC", "Noto Sans CJK SC", sans-serif'
     fontSize: 31px
     fontWeight: 760
     lineHeight: 1.22
     letterSpacing: 0em
   editor-h3:
-    fontFamily: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif
+    fontFamily: '"Noto Sans SC Variable", "Noto Sans SC", "Noto Sans CJK SC", sans-serif'
     fontSize: 24px
     fontWeight: 760
     lineHeight: 1.28
     letterSpacing: 0em
   editor-body:
-    fontFamily: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif
+    fontFamily: '"Noto Sans SC Variable", "Noto Sans SC", "Noto Sans CJK SC", sans-serif'
     fontSize: 16px
     fontWeight: 400
     lineHeight: 1.65
     letterSpacing: 0em
   ui-body:
-    fontFamily: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif
+    fontFamily: '"Noto Sans SC Variable", "Noto Sans SC", "Noto Sans CJK SC", sans-serif'
     fontSize: 13px
     fontWeight: 520
     lineHeight: 1.54
     letterSpacing: 0em
   ui-label:
-    fontFamily: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif
+    fontFamily: '"Noto Sans SC Variable", "Noto Sans SC", "Noto Sans CJK SC", sans-serif'
     fontSize: 12px
     fontWeight: 560
     lineHeight: 1.67
     letterSpacing: 0em
   ui-control:
-    fontFamily: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif
+    fontFamily: '"Noto Sans SC Variable", "Noto Sans SC", "Noto Sans CJK SC", sans-serif'
     fontSize: 12px
     fontWeight: 620
     lineHeight: 1.67

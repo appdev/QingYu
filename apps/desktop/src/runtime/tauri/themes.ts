@@ -8,7 +8,6 @@ import { invokeNative } from "./invoke";
 export {
   cancelNativeThemeActivation,
   commitNativeThemeActivation,
-  confirmNativeThemeActivation,
   deleteNativeTheme,
   listNativeThemes,
   prepareNativeThemeActivation,

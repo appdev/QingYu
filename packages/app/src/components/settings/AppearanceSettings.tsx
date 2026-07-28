@@ -4,7 +4,6 @@ import { useEffect, useState } from "react";
 import { Tooltip } from "@markra/ui";
 import {
   appAppearanceModeOptions,
-  forgetApprovedThemeFingerprint,
   type AppAppearanceMode
 } from "../../lib/settings/app-settings";
 import type { ThemeDescriptor } from "../../lib/themes/theme-catalog";
@@ -127,7 +126,6 @@ export function AppearanceSettings({
     if (!window.confirm(`${translate("settings.theme.deleteTheme")} “${theme.name}”?`)) return;
     runAction(async () => {
       await catalog.deleteTheme(theme);
-      await forgetApprovedThemeFingerprint(theme.id);
     }).catch(() => {});
   }
 

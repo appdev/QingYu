@@ -57,6 +57,7 @@
         }
       ],
       "paragraphSpacingPx": 8,
+      "openDroppedFilesInTabs": false,
       "restoreWorkspaceOnStartup": true,
       "sidebarLayoutMode": "stacked",
       "showDocumentTabs": true,
@@ -80,7 +81,6 @@
         "openButton": "visible",
         "outline": "visible",
         "quickCreateButton": "visible",
-        "recentFolders": "visible",
         "sidebarLayout": "visible",
         "statusBar": "visible",
         "titlebarActions": "visible",
@@ -89,6 +89,7 @@
       },
       "showLineNumbers": false,
       "showWordCount": true,
+      "hideHeadingMarkersOnFocus": false,
       "vimModeEnabled": false,
       "wrapCodeBlocks": true
     },

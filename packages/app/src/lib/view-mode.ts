@@ -13,7 +13,6 @@ export type ViewModeCustomizations = {
   openButton: ViewModeVisibility;
   outline: ViewModeVisibility;
   quickCreateButton: ViewModeVisibility;
-  recentFolders: ViewModeVisibility;
   sidebarLayout: ViewModeVisibility;
   statusBar: ViewModeVisibility;
   titlebarActions: ViewModeVisibility;
@@ -30,7 +29,6 @@ export type ViewModeChrome = {
   openButton: boolean;
   outline: boolean;
   quickCreateButton: boolean;
-  recentFolders: boolean;
   sidebarLayout: boolean;
   statusBar: boolean;
   titlebarActions: boolean;
@@ -47,7 +45,6 @@ export const defaultViewModeCustomizations: ViewModeCustomizations = {
   openButton: "visible",
   outline: "visible",
   quickCreateButton: "visible",
-  recentFolders: "visible",
   sidebarLayout: "visible",
   statusBar: "visible",
   titlebarActions: "visible",
@@ -65,7 +62,6 @@ const viewModeChromePresets: Record<Exclude<ViewMode, "custom">, ViewModeChrome>
     openButton: true,
     outline: true,
     quickCreateButton: true,
-    recentFolders: true,
     sidebarLayout: true,
     statusBar: true,
     titlebarActions: true,
@@ -81,7 +77,6 @@ const viewModeChromePresets: Record<Exclude<ViewMode, "custom">, ViewModeChrome>
     openButton: true,
     outline: false,
     quickCreateButton: true,
-    recentFolders: false,
     sidebarLayout: false,
     statusBar: false,
     titlebarActions: true,
@@ -97,7 +92,6 @@ const viewModeChromePresets: Record<Exclude<ViewMode, "custom">, ViewModeChrome>
     openButton: true,
     outline: true,
     quickCreateButton: true,
-    recentFolders: true,
     sidebarLayout: true,
     statusBar: true,
     titlebarActions: true,
@@ -113,7 +107,6 @@ const viewModeChromePresets: Record<Exclude<ViewMode, "custom">, ViewModeChrome>
     openButton: false,
     outline: false,
     quickCreateButton: false,
-    recentFolders: false,
     sidebarLayout: false,
     statusBar: false,
     titlebarActions: false,
@@ -156,7 +149,6 @@ export function normalizeViewModeCustomizations(value: unknown): ViewModeCustomi
     openButton: normalizeViewModeVisibility(customizations.openButton),
     outline: normalizeViewModeVisibility(customizations.outline),
     quickCreateButton: normalizeViewModeVisibility(customizations.quickCreateButton),
-    recentFolders: normalizeViewModeVisibility(customizations.recentFolders),
     sidebarLayout: normalizeViewModeVisibility(customizations.sidebarLayout),
     statusBar: normalizeViewModeVisibility(customizations.statusBar),
     titlebarActions: normalizeViewModeVisibility(customizations.titlebarActions),
@@ -183,7 +175,6 @@ export function resolveViewModeChrome(mode: unknown, customizations: unknown): V
     openButton: visibilityToBoolean(normalizedCustomizations.openButton),
     outline: visibilityToBoolean(normalizedCustomizations.outline),
     quickCreateButton: visibilityToBoolean(normalizedCustomizations.quickCreateButton),
-    recentFolders: visibilityToBoolean(normalizedCustomizations.recentFolders),
     sidebarLayout: true,
     statusBar: visibilityToBoolean(normalizedCustomizations.statusBar),
     titlebarActions: visibilityToBoolean(normalizedCustomizations.titlebarActions),

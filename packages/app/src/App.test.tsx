@@ -141,8 +141,6 @@ function mockNotebookSwitchRouting() {
     notebookSwitchCoordinatorModule,
     "useNotebookSwitchCoordinator"
   ).mockReturnValue({
-    recentNotebooks: [],
-    removeRecentNotebook: vi.fn(async () => undefined),
     restoreDesktopNotebook: vi.fn(async () => null),
     restoreManagedNotebook: vi.fn(async () => null),
     switchDesktopNotebook,
@@ -856,6 +854,7 @@ function createStoredEditorPreferences(
     lineHeight: 1.65,
     markdownShortcuts: defaultMarkdownShortcuts,
     markdownTemplates: [],
+    openDroppedFilesInTabs: overrides.openDroppedFilesInTabs ?? false,
     paragraphSpacingPx: 8,
     restoreWorkspaceOnStartup: true,
     sidebarLayoutMode: "stacked",
@@ -871,6 +870,8 @@ function createStoredEditorPreferences(
     showLineNumbers: overrides.showLineNumbers ?? false,
     showWordCount: true,
     typewriterModeEnabled: overrides.typewriterModeEnabled ?? false,
+    hideHeadingMarkersOnFocus:
+      overrides.hideHeadingMarkersOnFocus ?? false,
     vimModeEnabled: overrides.vimModeEnabled ?? false,
     ...overrides,
     viewMode: overrides.viewMode ?? "daily",
@@ -883,7 +884,6 @@ function createStoredEditorPreferences(
       openButton: "visible",
       outline: "visible",
       quickCreateButton: "visible",
-      recentFolders: "visible",
       sidebarLayout: "visible",
       statusBar: "visible",
       titlebarActions: "visible",
@@ -1108,14 +1108,13 @@ describe("QingYu workspace", () => {
     await waitFor(() => expect(controller.commitDesktopRoot).toHaveBeenCalledWith("/Chosen"));
   });
 
-  it("renders recent notebook history and routes a selection through the switch coordinator", async () => {
-    const switchDesktopNotebook = vi.fn(async () => "/Recent/Notes");
+  it("omits recent directory history while preserving controlled notebook switching", async () => {
+    mockedResolveDesktopPlatform.mockReturnValue("windows");
+    const switchDesktopNotebook = vi.fn(async () => "/Chosen");
     const coordinatorSpy = vi.spyOn(
       notebookSwitchCoordinatorModule,
       "useNotebookSwitchCoordinator"
     ).mockReturnValue({
-      recentNotebooks: [{ name: "Notes", path: "/Recent/Notes" }],
-      removeRecentNotebook: vi.fn(async () => undefined),
       restoreDesktopNotebook: vi.fn(async () => null),
       restoreManagedNotebook: vi.fn(async () => null),
       switchDesktopNotebook,
@@ -1126,57 +1125,13 @@ describe("QingYu workspace", () => {
     mockedListNativeMarkdownFilesForPath.mockResolvedValue([]);
 
     renderApp();
-    const recentSection = await screen.findByRole("region", { name: "Recently used directories" });
-    fireEvent.click(within(recentSection).getByRole("button", { name: "Notes" }));
+    fireEvent.click(screen.getByRole("button", { name: "Toggle workspace sidebar" }));
 
-    await waitFor(() => expect(switchDesktopNotebook).toHaveBeenCalledWith("/Recent/Notes"));
-    coordinatorSpy.mockRestore();
-  });
+    expect(screen.queryByRole("region", { name: "Recently used directories" })).not.toBeInTheDocument();
+    fireEvent.click(await screen.findByRole("button", { name: "Switch Notebook Directory" }));
 
-  it("does not expose recent-notebook removal from an external file window", async () => {
-    const notePath = `${mockFolderPath}/external.md`;
-    const removeRecentNotebook = vi.fn(async () => undefined);
-    const requestPrimaryNotebookSwitch = vi.fn(async () => undefined);
-    const runtime = getAppRuntime();
-    configureAppRuntime({
-      ...runtime,
-      files: {
-        ...runtime.files,
-        requestPrimaryNotebookSwitch
-      }
-    });
-    const coordinatorSpy = vi.spyOn(
-      notebookSwitchCoordinatorModule,
-      "useNotebookSwitchCoordinator"
-    ).mockReturnValue({
-      recentNotebooks: [{ name: "Notes", path: "/Recent/Notes" }],
-      removeRecentNotebook,
-      restoreDesktopNotebook: vi.fn(async () => null),
-      restoreManagedNotebook: vi.fn(async () => null),
-      switchDesktopNotebook: vi.fn(async () => null),
-      switchManagedNotebook: vi.fn(async () => null),
-      switching: false
-    });
-    window.history.replaceState({}, "", `/?path=${encodeURIComponent(notePath)}`);
-    mockedReadNativeMarkdownFile.mockResolvedValue({
-      content: "# External note",
-      name: "external.md",
-      path: notePath
-    });
-
-    renderApp();
-
-    expect(await screen.findByRole("heading", { name: "External note" })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Toggle file list" }));
-    const recentSection = await screen.findByRole("region", { name: "Recently used directories" });
-    const recentNotebook = within(recentSection).getByRole("button", { name: "Notes" });
-    expect(recentNotebook).toBeInTheDocument();
-    expect(within(recentSection).queryByRole("button", {
-      name: "Remove from recent directories: Notes"
-    })).not.toBeInTheDocument();
-    fireEvent.click(recentNotebook);
-    await waitFor(() => expect(requestPrimaryNotebookSwitch).toHaveBeenCalledWith("/Recent/Notes"));
-    expect(removeRecentNotebook).not.toHaveBeenCalled();
+    expect(switchDesktopNotebook).toHaveBeenCalledTimes(1);
+    expect(switchDesktopNotebook).toHaveBeenCalledWith();
     coordinatorSpy.mockRestore();
   });
 
@@ -1186,8 +1141,6 @@ describe("QingYu workspace", () => {
       notebookSwitchCoordinatorModule,
       "useNotebookSwitchCoordinator"
     ).mockReturnValue({
-      recentNotebooks: [],
-      removeRecentNotebook: vi.fn(async () => undefined),
       restoreDesktopNotebook,
       restoreManagedNotebook: vi.fn(async () => null),
       switchDesktopNotebook: vi.fn(async () => null),
@@ -1257,8 +1210,6 @@ describe("QingYu workspace", () => {
       notebookSwitchCoordinatorModule,
       "useNotebookSwitchCoordinator"
     ).mockReturnValue({
-      recentNotebooks: [],
-      removeRecentNotebook: vi.fn(async () => undefined),
       restoreDesktopNotebook,
       restoreManagedNotebook: vi.fn(async () => null),
       switchDesktopNotebook: vi.fn(async () => null),
@@ -1308,8 +1259,6 @@ describe("QingYu workspace", () => {
       notebookSwitchCoordinatorModule,
       "useNotebookSwitchCoordinator"
     ).mockReturnValue({
-      recentNotebooks: [],
-      removeRecentNotebook: vi.fn(async () => undefined),
       restoreDesktopNotebook,
       restoreManagedNotebook: vi.fn(async () => null),
       switchDesktopNotebook: vi.fn(async () => null),
@@ -1432,8 +1381,6 @@ describe("QingYu workspace", () => {
       notebookSwitchCoordinatorModule,
       "useNotebookSwitchCoordinator"
     ).mockReturnValue({
-      recentNotebooks: [],
-      removeRecentNotebook: vi.fn(async () => undefined),
       restoreDesktopNotebook,
       restoreManagedNotebook: vi.fn(async () => null),
       switchDesktopNotebook: vi.fn(async () => null),
@@ -1484,8 +1431,6 @@ describe("QingYu workspace", () => {
       notebookSwitchCoordinatorModule,
       "useNotebookSwitchCoordinator"
     ).mockReturnValue({
-      recentNotebooks: [],
-      removeRecentNotebook: vi.fn(async () => undefined),
       restoreDesktopNotebook,
       restoreManagedNotebook: vi.fn(async () => null),
       switchDesktopNotebook: vi.fn(async () => null),
@@ -1535,8 +1480,6 @@ describe("QingYu workspace", () => {
       notebookSwitchCoordinatorModule,
       "useNotebookSwitchCoordinator"
     ).mockReturnValue({
-      recentNotebooks: [],
-      removeRecentNotebook: vi.fn(async () => undefined),
       restoreDesktopNotebook,
       restoreManagedNotebook: vi.fn(async () => null),
       switchDesktopNotebook: vi.fn(async () => null),
@@ -1582,8 +1525,6 @@ describe("QingYu workspace", () => {
       notebookSwitchCoordinatorModule,
       "useNotebookSwitchCoordinator"
     ).mockReturnValue({
-      recentNotebooks: [],
-      removeRecentNotebook: vi.fn(async () => undefined),
       restoreDesktopNotebook,
       restoreManagedNotebook: vi.fn(async () => null),
       switchDesktopNotebook: vi.fn(async () => null),
@@ -1677,8 +1618,6 @@ describe("QingYu workspace", () => {
       notebookSwitchCoordinatorModule,
       "useNotebookSwitchCoordinator"
     ).mockReturnValue({
-      recentNotebooks: [],
-      removeRecentNotebook: vi.fn(async () => undefined),
       restoreDesktopNotebook,
       restoreManagedNotebook: vi.fn(async () => null),
       switchDesktopNotebook: vi.fn(async () => null),
@@ -1763,8 +1702,6 @@ describe("QingYu workspace", () => {
       notebookSwitchCoordinatorModule,
       "useNotebookSwitchCoordinator"
     ).mockReturnValue({
-      recentNotebooks: [],
-      removeRecentNotebook: vi.fn(async () => undefined),
       restoreDesktopNotebook,
       restoreManagedNotebook: vi.fn(async () => null),
       switchDesktopNotebook: vi.fn(async () => null),
@@ -1972,8 +1909,6 @@ describe("QingYu workspace", () => {
       notebookSwitchCoordinatorModule,
       "useNotebookSwitchCoordinator"
     ).mockReturnValue({
-      recentNotebooks: [],
-      removeRecentNotebook: vi.fn(async () => undefined),
       restoreDesktopNotebook: vi.fn(async () => null),
       restoreManagedNotebook,
       switchDesktopNotebook: vi.fn(async () => null),
@@ -4401,10 +4336,12 @@ describe("QingYu workspace", () => {
         lineHeight: 1.65,
         markdownShortcuts: defaultMarkdownShortcuts,
         markdownTemplates: [],
+        openDroppedFilesInTabs: false,
         paragraphSpacingPx: 8,
         restoreWorkspaceOnStartup: true,
         sidebarLayoutMode: "stacked",
         showDocumentTabs: true,
+        hideHeadingMarkersOnFocus: false,
         splitVisualPanePercent: 50,
         tableColumnWidthMode: "even",
         titlebarActions: [
@@ -4423,7 +4360,6 @@ describe("QingYu workspace", () => {
           openButton: "visible",
           outline: "visible",
           quickCreateButton: "visible",
-          recentFolders: "visible",
           sidebarLayout: "visible",
           statusBar: "visible",
           titlebarActions: "visible",
@@ -4458,10 +4394,12 @@ describe("QingYu workspace", () => {
         lineHeight: 1.65,
         markdownShortcuts: defaultMarkdownShortcuts,
         markdownTemplates: [],
+        openDroppedFilesInTabs: false,
         paragraphSpacingPx: 8,
         restoreWorkspaceOnStartup: true,
         sidebarLayoutMode: "stacked",
         showDocumentTabs: true,
+        hideHeadingMarkersOnFocus: false,
         splitVisualPanePercent: 50,
         tableColumnWidthMode: "even",
         titlebarActions: [
@@ -4480,7 +4418,6 @@ describe("QingYu workspace", () => {
           openButton: "visible",
           outline: "visible",
           quickCreateButton: "visible",
-          recentFolders: "visible",
           sidebarLayout: "visible",
           statusBar: "visible",
           titlebarActions: "visible",
@@ -4848,7 +4785,6 @@ describe("QingYu workspace", () => {
         ...defaultPreferences.viewModeCustomizations,
         fileList: "hidden",
         outline: "hidden",
-        recentFolders: "hidden"
       }
     }));
     mockedGetStoredWorkspaceState.mockResolvedValue({
@@ -4874,7 +4810,6 @@ describe("QingYu workspace", () => {
       gridTemplateColumns: "0px minmax(0,1fr)"
     });
     expect(screen.queryByRole("button", { name: "Toggle file list" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("region", { name: "Recently used directories" })).not.toBeInTheDocument();
     expect(screen.queryByRole("tree", { name: "Markdown files" })).not.toBeInTheDocument();
     expect(screen.queryByRole("list", { name: "Document outline" })).not.toBeInTheDocument();
   });
@@ -5683,7 +5618,8 @@ describe("QingYu workspace", () => {
     const { container } = renderApp();
 
     await waitFor(() => expect(mockedGetStoredLanguage).toHaveBeenCalledTimes(1));
-    expect(container.querySelector(".settings-window")).not.toBeInTheDocument();
+    expect(container.querySelector(".settings-window-loading")).toHaveAttribute("aria-busy", "true");
+    expect(container.querySelectorAll(".settings-loading-shimmer").length).toBeGreaterThan(0);
     expect(mockedMarkSettingsWindowReady).not.toHaveBeenCalled();
 
     act(() => {
@@ -5691,6 +5627,7 @@ describe("QingYu workspace", () => {
     });
 
     expect(await screen.findByRole("button", { name: "Général" })).toBeInTheDocument();
+    expect(container.querySelector(".settings-window-loading")).not.toBeInTheDocument();
     await waitFor(() => expect(mockedMarkSettingsWindowReady).toHaveBeenCalledTimes(1));
   });
 
@@ -6018,10 +5955,12 @@ describe("QingYu workspace", () => {
         bold: "Mod+Alt+B"
       },
       markdownTemplates: [],
+      openDroppedFilesInTabs: false,
       paragraphSpacingPx: 8,
       restoreWorkspaceOnStartup: true,
       sidebarLayoutMode: "stacked",
       showDocumentTabs: true,
+      hideHeadingMarkersOnFocus: false,
       splitVisualPanePercent: 50,
       tableColumnWidthMode: "even",
       titlebarActions: [
@@ -6039,7 +5978,6 @@ describe("QingYu workspace", () => {
         openButton: "visible",
         outline: "visible",
         quickCreateButton: "visible",
-        recentFolders: "visible",
         sidebarLayout: "visible",
         statusBar: "visible",
         titlebarActions: "visible",
@@ -8578,10 +8516,12 @@ describe("QingYu workspace", () => {
       lineHeight: 1.65,
       markdownShortcuts: defaultMarkdownShortcuts,
       markdownTemplates: [],
+      openDroppedFilesInTabs: false,
       paragraphSpacingPx: 8,
       restoreWorkspaceOnStartup: true,
       sidebarLayoutMode: "stacked",
       showDocumentTabs: false,
+      hideHeadingMarkersOnFocus: false,
       splitVisualPanePercent: 50,
       tableColumnWidthMode: "even",
       titlebarActions: [
@@ -8599,7 +8539,6 @@ describe("QingYu workspace", () => {
         openButton: "visible",
         outline: "visible",
         quickCreateButton: "visible",
-        recentFolders: "visible",
         sidebarLayout: "visible",
         statusBar: "visible",
         titlebarActions: "visible",
@@ -8729,10 +8668,12 @@ describe("QingYu workspace", () => {
       lineHeight: 1.65,
       markdownShortcuts: defaultMarkdownShortcuts,
       markdownTemplates: [],
+      openDroppedFilesInTabs: false,
       paragraphSpacingPx: 8,
       restoreWorkspaceOnStartup: true,
       sidebarLayoutMode: "stacked",
       showDocumentTabs: false,
+      hideHeadingMarkersOnFocus: false,
       splitVisualPanePercent: 50,
       tableColumnWidthMode: "even",
       titlebarActions: [
@@ -8750,7 +8691,6 @@ describe("QingYu workspace", () => {
         openButton: "visible",
         outline: "visible",
         quickCreateButton: "visible",
-        recentFolders: "visible",
         sidebarLayout: "visible",
         statusBar: "visible",
         titlebarActions: "visible",
@@ -9513,6 +9453,160 @@ describe("QingYu workspace", () => {
     expect(await screen.findByRole("heading", { name: "Source edit" })).toBeInTheDocument();
     expect(screen.getByText("Updated from source mode.")).toBeInTheDocument();
     expect(screen.getByLabelText("Markdown editor")).toHaveAttribute("data-editor-engine", "codemirror");
+  });
+
+  it("commits pending visual IME content before source mode mounts", async () => {
+    renderApp();
+
+    await expectVisibleMarkdownText("Welcome to QingYu");
+    const visualEditor = screen.getByRole("textbox", { name: "Markdown document" });
+    const visualView = getMarkdownSourceView(visualEditor);
+    const pendingCompositionTasks: VoidFunction[] = [];
+    const queueMicrotaskSpy = vi
+      .spyOn(globalThis, "queueMicrotask")
+      .mockImplementation((task) => pendingCompositionTasks.push(task));
+    try {
+      act(() => {
+        fireEvent.compositionStart(visualEditor);
+        visualView.dispatch({
+          changes: {
+            from: 0,
+            insert: "# Pending visual edit\n\nNot published by the IME yet.",
+            to: visualView.state.doc.length
+          }
+        });
+        fireEvent.compositionEnd(visualEditor);
+      });
+    } finally {
+      queueMicrotaskSpy.mockRestore();
+    }
+
+    await selectEditorViewMode("Source code");
+
+    expect(readMarkdownSource(await screen.findByRole("textbox", { name: "Markdown source" }))).toBe(
+      "# Pending visual edit\n\nNot published by the IME yet."
+    );
+    act(() => pendingCompositionTasks.forEach((task) => task()));
+  });
+
+  it("keeps the active tab content across editor modes after a prior tab finishes IME composition", async () => {
+    const bulletinPath = "/mock-files/vault/bulletin.md";
+    const tempPath = "/mock-files/vault/temp.md";
+    mockedGetStoredWorkspaceState.mockResolvedValue({
+      filePath: bulletinPath,
+      fileTreeOpen: false,
+      folderName: null,
+      folderPath: null,
+      openFilePaths: [bulletinPath, tempPath]
+    });
+    mockedReadNativeMarkdownFile.mockImplementation(async (path) => path === bulletinPath
+      ? {
+        content: "# Bulletin\n\nFirst document.",
+        name: "bulletin.md",
+        path
+      }
+      : {
+        content: "# Temporary notes\n\nSecond document.",
+        name: "temp.md",
+        path
+      });
+
+    renderApp();
+
+    expect(await screen.findByRole("heading", { name: "Bulletin" })).toBeInTheDocument();
+    const bulletinEditor = screen.getByRole("textbox", { name: "Markdown document" });
+    const bulletinView = getMarkdownSourceView(bulletinEditor);
+    const pendingCompositionTasks: VoidFunction[] = [];
+    const queueMicrotaskSpy = vi
+      .spyOn(globalThis, "queueMicrotask")
+      .mockImplementation((task) => pendingCompositionTasks.push(task));
+    try {
+      act(() => {
+        fireEvent.compositionStart(bulletinEditor);
+        bulletinView.dispatch({
+          changes: {
+            from: 0,
+            insert: "# Bulletin\n\nFinished Chinese composition.",
+            to: bulletinView.state.doc.length
+          }
+        });
+        fireEvent.compositionEnd(bulletinEditor);
+      });
+    } finally {
+      queueMicrotaskSpy.mockRestore();
+    }
+    fireEvent.click(screen.getByRole("tab", { name: /temp\.md/ }));
+
+    await selectEditorViewMode("Source code");
+
+    expect(readMarkdownSource(await screen.findByRole("textbox", { name: "Markdown source" }))).toBe(
+      "# Temporary notes\n\nSecond document."
+    );
+    act(() => pendingCompositionTasks.forEach((task) => task()));
+    expect(readMarkdownSource(screen.getByRole("textbox", { name: "Markdown source" }))).toBe(
+      "# Temporary notes\n\nSecond document."
+    );
+
+    fireEvent.click(screen.getByRole("tab", { name: /bulletin\.md/ }));
+    expect(readMarkdownSource(await screen.findByRole("textbox", { name: "Markdown source" }))).toBe(
+      "# Bulletin\n\nFinished Chinese composition."
+    );
+    fireEvent.click(screen.getByRole("tab", { name: /temp\.md/ }));
+
+    await selectEditorViewMode("Preview + Source");
+
+    expect(readMarkdownSource(screen.getByRole("textbox", { name: "Markdown source" }))).toBe(
+      "# Temporary notes\n\nSecond document."
+    );
+    await expectVisibleCodeMirrorText(document.body, "Temporary notes");
+    expect(readMarkdownSource(screen.getByRole("textbox", { name: "Markdown document" }))).toBe(
+      "# Temporary notes\n\nSecond document."
+    );
+
+    await selectEditorViewMode("Preview");
+
+    await expectVisibleCodeMirrorText(document.body, "Temporary notes");
+    expect(readMarkdownSource(screen.getByRole("textbox", { name: "Markdown document" }))).toBe(
+      "# Temporary notes\n\nSecond document."
+    );
+  });
+
+  it("isolates source editor instances between document tabs", async () => {
+    const firstPath = "/mock-files/vault/first.md";
+    const secondPath = "/mock-files/vault/second.md";
+    mockedGetStoredWorkspaceState.mockResolvedValue({
+      filePath: firstPath,
+      fileTreeOpen: false,
+      folderName: null,
+      folderPath: null,
+      openFilePaths: [firstPath, secondPath]
+    });
+    mockedReadNativeMarkdownFile.mockImplementation(async (path) => path === firstPath
+      ? {
+        content: "# First document",
+        name: "first.md",
+        path
+      }
+      : {
+        content: "# Second document",
+        name: "second.md",
+        path
+      });
+
+    renderApp();
+
+    expect(await screen.findByRole("heading", { name: "First document" })).toBeInTheDocument();
+    await selectEditorViewMode("Source code");
+    const firstSourceView = getMarkdownSourceView(
+      await screen.findByRole("textbox", { name: "Markdown source" })
+    );
+
+    fireEvent.click(screen.getByRole("tab", { name: /second\.md/ }));
+
+    const secondSourceEditor = await screen.findByRole("textbox", { name: "Markdown source" });
+    const secondSourceView = getMarkdownSourceView(secondSourceEditor);
+    expect(secondSourceView).not.toBe(firstSourceView);
+    expect(secondSourceView.state.doc.toString()).toBe("# Second document");
   });
 
   it("shows optional line numbers in source and split source modes", async () => {

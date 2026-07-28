@@ -45,6 +45,41 @@
   }
 }
 
+@keyframes markra-settings-shimmer {
+  to {
+    transform: translateX(120%);
+  }
+}
+
+.settings-loading-shimmer {
+  position: relative;
+  display: block;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--text-secondary) 18%, var(--bg-secondary));
+}
+
+.settings-loading-shimmer::after {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--text-heading) 12%, transparent),
+    transparent
+  );
+  content: "";
+  transform: translateX(-120%);
+  animation: markra-settings-shimmer 1.45s cubic-bezier(0.16, 1, 0.3, 1) infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .settings-loading-shimmer::after {
+    animation: none;
+    opacity: 0.35;
+    transform: none;
+  }
+}
+
 @media screen {
   .markdown-export-document {
     position: fixed;
@@ -122,6 +157,8 @@
     color: var(--text-primary);
     background: var(--bg-primary);
     color-scheme: light;
+    font-kerning: normal;
+    font-optical-sizing: auto;
     font-synthesis: none;
     text-rendering: optimizeLegibility;
     -webkit-font-smoothing: antialiased;
@@ -528,42 +565,60 @@
   .markdown-paper .cm-line.cm-markra-h4,
   .markdown-paper .cm-line.cm-markra-h5,
   .markdown-paper .cm-line.cm-markra-h6 {
-    color: var(--editor-text-heading) !important;
     font-family: var(--editor-heading-font-family) !important;
-    font-weight: 760 !important;
-    letter-spacing: 0 !important;
+    letter-spacing: var(--editor-heading-letter-spacing) !important;
     text-wrap: balance;
   }
 
   .markdown-paper .cm-line.cm-markra-h1 {
+    color: var(--editor-h1-color) !important;
     padding-block: 0 16px !important;
-    font-size: 44px !important;
-    line-height: 1.15 !important;
+    font-size: var(--editor-h1-font-size) !important;
+    font-weight: var(--editor-h1-font-weight) !important;
+    line-height: var(--editor-h1-line-height) !important;
   }
 
   .markdown-paper .cm-line.cm-markra-h2 {
+    color: var(--editor-h2-color) !important;
     padding-block: 28px 12px !important;
-    font-size: 31px !important;
-    line-height: 1.22 !important;
+    font-size: var(--editor-h2-font-size) !important;
+    font-weight: var(--editor-h2-font-weight) !important;
+    line-height: var(--editor-h2-line-height) !important;
   }
 
   .markdown-paper .cm-line.cm-markra-h3 {
+    color: var(--editor-h3-color) !important;
     padding-block: 22px 4px !important;
-    font-size: 24px !important;
-    line-height: 1.28 !important;
+    font-size: var(--editor-h3-font-size) !important;
+    font-weight: var(--editor-h3-font-weight) !important;
+    line-height: var(--editor-h3-line-height) !important;
   }
 
   .markdown-paper .cm-line.cm-markra-h4 {
+    color: var(--editor-h4-color) !important;
     padding-block: 18px 2px !important;
-    font-size: 19px !important;
-    line-height: 1.35 !important;
+    font-size: var(--editor-h4-font-size) !important;
+    font-weight: var(--editor-h4-font-weight) !important;
+    line-height: var(--editor-h4-line-height) !important;
   }
 
   .markdown-paper .cm-line.cm-markra-h5,
   .markdown-paper .cm-line.cm-markra-h6 {
     padding-block-start: 14px !important;
-    font-size: 16px !important;
-    line-height: 1.45 !important;
+  }
+
+  .markdown-paper .cm-line.cm-markra-h5 {
+    color: var(--editor-h5-color) !important;
+    font-size: var(--editor-h5-font-size) !important;
+    font-weight: var(--editor-h5-font-weight) !important;
+    line-height: var(--editor-h5-line-height) !important;
+  }
+
+  .markdown-paper .cm-line.cm-markra-h6 {
+    color: var(--editor-h6-color) !important;
+    font-size: var(--editor-h6-font-size) !important;
+    font-weight: var(--editor-h6-font-weight) !important;
+    line-height: var(--editor-h6-line-height) !important;
   }
 
   .markdown-paper .cm-line.cm-markra-h1 > span:not(.cm-markra-link):not(.cm-markra-link-source-label):not(.cm-markra-strikethrough),
@@ -700,11 +755,15 @@
     padding-inline-start: calc(1.4em + var(--markra-list-depth-offset)) !important;
   }
 
+  /* The opening fence is folded into this zero-height line. Keep controls
+     over the first code row: vertical height or margins on the hidden line
+     accumulate across blocks and shift WebKit's pointer mapping away from
+     the rendered caret. */
   .markdown-paper .cm-line.cm-markra-code-header-line {
     position: relative !important;
     height: 0 !important;
     min-height: 0 !important;
-    margin-block-start: 8px !important;
+    margin-block: 0 !important;
     overflow: visible !important;
     padding: 0 !important;
     border: 0 !important;
@@ -718,13 +777,31 @@
     height: 0 !important;
   }
 
+  .markdown-paper .cm-markra-code-top-gap {
+    box-sizing: border-box;
+    width: 100% !important;
+    height: 12px !important;
+    margin: 0 !important;
+    border-top: 1px solid var(--editor-border);
+    border-right: 1px solid var(--editor-border);
+    border-left: 1px solid var(--editor-border);
+    border-radius: 4px 4px 0 0;
+    background: linear-gradient(
+      90deg,
+      var(--editor-code-line-bg) 0 43px,
+      var(--editor-border) 43px 44px,
+      var(--editor-code-bg) 44px 100%
+    );
+    pointer-events: none;
+  }
+
   .markdown-paper .cm-markra-code-header {
     display: none !important;
   }
 
   .markdown-paper .cm-markra-code-header-actions {
     position: absolute !important;
-    top: 8px;
+    top: 0;
     right: 8px;
     z-index: 4;
     display: flex !important;
@@ -746,9 +823,10 @@
   }
 
   .markdown-paper .cm-markra-code-header-actions .markra-code-language-select {
-    height: 28px !important;
-    min-height: 28px !important;
+    height: 24px !important;
+    min-height: 24px !important;
     min-width: 160px !important;
+    width: 160px !important;
     padding: 0 10px !important;
     font-size: 13px !important;
     line-height: 1 !important;
@@ -758,10 +836,10 @@
     position: relative !important;
     top: auto !important;
     right: auto !important;
-    width: 28px !important;
-    min-width: 28px !important;
-    height: 28px !important;
-    min-height: 28px !important;
+    width: 24px !important;
+    min-width: 24px !important;
+    height: 24px !important;
+    min-height: 24px !important;
     padding: 0 !important;
     opacity: 1 !important;
     pointer-events: auto !important;
@@ -774,13 +852,17 @@
     /* The inline line-number marker only occupies the first visual row.
        A hanging indent keeps soft-wrapped continuations out of the gutter. */
     padding-inline: 59px 16px !important;
+    /* WebKit and CodeMirror disagree about pointer coordinates when selected
+       editable lines add vertical padding. Keep every code row geometrically
+       uniform so a click and its rendered caret stay on the same line. */
+    padding-block: 0 !important;
     text-indent: -59px;
     border: 0 !important;
     background: transparent !important;
     color: var(--editor-code-text) !important;
     font-family: Menlo, Consolas, "DejaVu Sans Mono", monospace !important;
     font-size: 14.4px !important;
-    line-height: 23.76px !important;
+    line-height: 24px !important;
   }
 
   /* CodeMirror draws selections at z-index -1. Keeping the code surface at
@@ -820,31 +902,26 @@
 
   .markdown-paper .cm-line.cm-markra-code-header-line +
     .cm-line.cm-markra-code-content-line {
-    padding-block-start: 16px !important;
-  }
-
-  .markdown-paper .cm-line.cm-markra-code-header-line +
-    .cm-line.cm-markra-code-content-line::after {
-    border-top: 1px solid var(--editor-border);
-    border-radius: 4px 4px 0 0;
-  }
-
-  .markdown-paper .cm-line.cm-markra-code-content-line:has(+ .cm-markra-code-closing-line) {
-    padding-block-end: 16px !important;
-  }
-
-  .markdown-paper .cm-line.cm-markra-code-content-line:has(+ .cm-markra-code-closing-line)::after {
-    border-bottom: 1px solid var(--editor-border);
-    border-radius: 0 0 4px 4px;
+    padding-inline-end: 220px !important;
   }
 
   .markdown-paper .cm-line.cm-markra-code-closing-line {
     position: relative !important;
+    box-sizing: border-box;
     height: 12px !important;
     min-height: 12px !important;
     padding: 0 !important;
     border: 0 !important;
-    background: transparent !important;
+    border-right: 1px solid var(--editor-border) !important;
+    border-bottom: 1px solid var(--editor-border) !important;
+    border-left: 1px solid var(--editor-border) !important;
+    border-radius: 0 0 4px 4px !important;
+    background: linear-gradient(
+      90deg,
+      var(--editor-code-line-bg) 0 43px,
+      var(--editor-border) 43px 44px,
+      var(--editor-code-bg) 44px 100%
+    ) !important;
     line-height: 12px !important;
     overflow: visible !important;
   }
@@ -864,8 +941,8 @@
 
   .markdown-paper .cm-markra-table-wrap {
     display: block !important;
-    margin: 24px 0 !important;
-    padding: 28px 36px 36px 0 !important;
+    margin: 0 !important;
+    padding: 20px 36px 12px 0 !important;
     overflow: visible !important;
     font-size: 16px !important;
     line-height: 26.4px !important;
@@ -952,11 +1029,11 @@
 
   @media (max-width: 900px) {
     .markdown-paper .cm-line.cm-markra-h1 {
-      font-size: 34px !important;
+      font-size: var(--editor-h1-font-size-compact) !important;
     }
 
     .markdown-paper .cm-line.cm-markra-h2 {
-      font-size: 26px !important;
+      font-size: var(--editor-h2-font-size-compact) !important;
     }
   }
 
@@ -1174,6 +1251,34 @@
     --editor-text-primary: var(--text-primary);
     --editor-text-heading: var(--text-heading);
     --editor-text-secondary: var(--text-secondary);
+    --editor-heading-font-weight: 760;
+    --editor-heading-letter-spacing: 0;
+    --editor-h1-color: var(--editor-text-heading);
+    --editor-h1-font-size: 44px;
+    --editor-h1-font-size-compact: 34px;
+    --editor-h1-font-weight: var(--editor-heading-font-weight);
+    --editor-h1-line-height: 1.15;
+    --editor-h2-color: var(--editor-text-heading);
+    --editor-h2-font-size: 31px;
+    --editor-h2-font-size-compact: 26px;
+    --editor-h2-font-weight: var(--editor-heading-font-weight);
+    --editor-h2-line-height: 1.22;
+    --editor-h3-color: var(--editor-text-heading);
+    --editor-h3-font-size: 24px;
+    --editor-h3-font-weight: var(--editor-heading-font-weight);
+    --editor-h3-line-height: 1.28;
+    --editor-h4-color: var(--editor-text-heading);
+    --editor-h4-font-size: 19px;
+    --editor-h4-font-weight: var(--editor-heading-font-weight);
+    --editor-h4-line-height: 1.35;
+    --editor-h5-color: var(--editor-text-heading);
+    --editor-h5-font-size: 16px;
+    --editor-h5-font-weight: var(--editor-heading-font-weight);
+    --editor-h5-line-height: 1.45;
+    --editor-h6-color: var(--editor-text-heading);
+    --editor-h6-font-size: 16px;
+    --editor-h6-font-weight: var(--editor-heading-font-weight);
+    --editor-h6-line-height: 1.45;
     --editor-border: var(--border-default);
     --editor-border-strong: var(--border-strong);
     --editor-bg-secondary: var(--bg-secondary);
@@ -1224,21 +1329,63 @@
   .markdown-paper h4,
   .markdown-paper h5,
   .markdown-paper h6 {
-    @apply text-[var(--text-heading)] font-[760] tracking-normal;
-    color: var(--editor-text-heading);
     font-family: var(--editor-heading-font-family);
+    letter-spacing: var(--editor-heading-letter-spacing);
   }
 
   .markdown-paper h1 {
-    @apply m-0 mb-6 text-[44px] leading-[1.15] max-[900px]:text-[34px];
+    @apply m-0 mb-6;
+    color: var(--editor-h1-color);
+    font-size: var(--editor-h1-font-size);
+    font-weight: var(--editor-h1-font-weight);
+    line-height: var(--editor-h1-line-height);
   }
 
   .markdown-paper h2 {
-    @apply mt-9 mb-5 text-[31px] leading-[1.22] max-[900px]:text-[26px];
+    @apply mt-9 mb-5;
+    color: var(--editor-h2-color);
+    font-size: var(--editor-h2-font-size);
+    font-weight: var(--editor-h2-font-weight);
+    line-height: var(--editor-h2-line-height);
   }
 
   .markdown-paper h3 {
-    @apply mt-7.5 mb-3 text-2xl leading-[1.28];
+    @apply mt-7.5 mb-3;
+    color: var(--editor-h3-color);
+    font-size: var(--editor-h3-font-size);
+    font-weight: var(--editor-h3-font-weight);
+    line-height: var(--editor-h3-line-height);
+  }
+
+  .markdown-paper h4 {
+    color: var(--editor-h4-color);
+    font-size: var(--editor-h4-font-size);
+    font-weight: var(--editor-h4-font-weight);
+    line-height: var(--editor-h4-line-height);
+  }
+
+  .markdown-paper h5 {
+    color: var(--editor-h5-color);
+    font-size: var(--editor-h5-font-size);
+    font-weight: var(--editor-h5-font-weight);
+    line-height: var(--editor-h5-line-height);
+  }
+
+  .markdown-paper h6 {
+    color: var(--editor-h6-color);
+    font-size: var(--editor-h6-font-size);
+    font-weight: var(--editor-h6-font-weight);
+    line-height: var(--editor-h6-line-height);
+  }
+
+  @media (max-width: 900px) {
+    .markdown-paper h1 {
+      font-size: var(--editor-h1-font-size-compact);
+    }
+
+    .markdown-paper h2 {
+      font-size: var(--editor-h2-font-size-compact);
+    }
   }
 
   .markdown-paper .markra-heading-editing {
@@ -1727,23 +1874,6 @@
     --typewriter-active-line-offset: 0px;
   }
 
-  .markdown-paper .cm-editor[data-typewriter-mode="true"].cm-focused
-    .cm-line.cm-markra-code-header-line +
-    .cm-line.cm-activeLine.cm-markra-code-content-line {
-    --typewriter-active-line-offset: 8px;
-  }
-
-  .markdown-paper .cm-editor[data-typewriter-mode="true"].cm-focused
-    .cm-line.cm-activeLine.cm-markra-code-content-line:has(+ .cm-markra-code-closing-line) {
-    --typewriter-active-line-offset: -8px;
-  }
-
-  .markdown-paper .cm-editor[data-typewriter-mode="true"].cm-focused
-    .cm-line.cm-markra-code-header-line +
-    .cm-line.cm-activeLine.cm-markra-code-content-line:has(+ .cm-markra-code-closing-line) {
-    --typewriter-active-line-offset: 0px;
-  }
-
   /* The code backdrop is a negative-z pseudo-element, so its active band must
      be composed into that same surface rather than painted on the parent. */
   .markdown-paper .cm-editor[data-typewriter-mode="true"].cm-focused
@@ -2101,7 +2231,8 @@
   }
 
   .markdown-paper .markra-table-align-controls {
-    @apply absolute top-0 left-1.5 z-10 flex items-center gap-0.5;
+    @apply absolute left-1.5 z-10 flex items-center gap-0.5;
+    top: -12px !important;
   }
 
   .markdown-paper .markra-table-size-controls {
@@ -2304,7 +2435,7 @@
   }
 
   .markdown-paper .markra-table-add-row {
-    @apply bottom-1.5 -translate-x-1/2;
+    @apply -bottom-3 -translate-x-1/2;
     left: calc(50% + var(--markra-table-control-inline-center-offset));
   }
 
@@ -3188,7 +3319,7 @@
   .markdown-paper .hljs-comment,
   .markdown-paper .hljs-quote {
     color: var(--editor-text-secondary);
-    font-style: italic;
+    font-style: normal;
   }
 
   .markdown-paper hr {
@@ -3530,4 +3661,191 @@
       scroll-behavior: auto !important;
     }
   }
+}
+
+/* Stable third-party theme chrome contract. */
+.theme-titlebar-legacy-primary {
+  --theme-titlebar-legacy-surface: var(--bg-primary);
+}
+
+.theme-titlebar-legacy-chrome {
+  --theme-titlebar-legacy-surface: var(--bg-chrome);
+}
+
+.theme-titlebar-surface {
+  background-color: var(--bg-titlebar, var(--theme-titlebar-legacy-surface));
+}
+
+.theme-sidebar-legacy-secondary {
+  --theme-sidebar-legacy-surface: var(--bg-secondary);
+}
+
+.theme-sidebar-legacy-chrome {
+  --theme-sidebar-legacy-surface: var(--bg-chrome);
+}
+
+.theme-sidebar-surface {
+  background-color: var(--bg-sidebar, var(--theme-sidebar-legacy-surface));
+}
+
+.theme-sidebar-root {
+  font-family: var(--sidebar-font-family, inherit);
+}
+
+.theme-sidebar-header-surface {
+  background-color: var(--bg-sidebar-header, var(--bg-sidebar, var(--theme-sidebar-legacy-surface)));
+}
+
+.theme-toolbar-surface {
+  background-color: var(--bg-toolbar, var(--bg-sidebar, var(--theme-sidebar-legacy-surface)));
+}
+
+.theme-outline-surface {
+  background-color: var(--bg-outline, var(--bg-sidebar, var(--theme-sidebar-legacy-surface)));
+}
+
+.theme-sidebar-footer-surface {
+  background-color: var(--bg-sidebar-footer, var(--bg-sidebar, var(--theme-sidebar-legacy-surface)));
+}
+
+.theme-chrome-border {
+  border-color: var(--border-chrome, var(--border-default));
+}
+
+.theme-chrome-border:focus {
+  border-color: var(--border-strong);
+}
+
+.theme-chrome-divider {
+  background-color: var(--border-chrome, var(--border-default));
+}
+
+.theme-chrome-divider-control:is(:hover, :focus-visible) > .theme-chrome-divider {
+  background-color: var(--border-strong);
+}
+
+.theme-tree-current-surface[aria-current="page"] {
+  background-color: var(--bg-tree-current, var(--bg-active));
+  color: var(--text-tree-current, var(--text-heading));
+}
+
+.theme-tree-row {
+  color: var(--text-tree, var(--text-secondary));
+  font-size: var(--sidebar-tree-font-size, 13px);
+  font-weight: var(--sidebar-tree-font-weight, 400);
+  line-height: var(--sidebar-tree-line-height, 20px);
+}
+
+.theme-tree-label {
+  line-height: inherit;
+}
+
+.theme-tree-input {
+  font: inherit;
+  line-height: 20px;
+}
+
+.theme-tree-row:not([data-file-tree-drop-target="true"]):is(:hover, :focus-visible) {
+  background-color: var(--bg-tree-hover, var(--bg-hover));
+  color: var(--text-tree-hover, var(--text-heading));
+}
+
+.theme-tree-row[data-file-tree-drop-target="true"] {
+  background-color: var(--bg-active);
+  color: var(--text-heading);
+}
+
+.theme-tree-row[aria-current="page"] {
+  border-left: 3px solid var(--tree-current-indicator, var(--text-secondary));
+  background-color: var(--bg-tree-current, var(--bg-active));
+  color: var(--text-tree-current, var(--text-heading));
+  font-weight: var(--sidebar-tree-current-font-weight, var(--sidebar-tree-font-weight, 400));
+}
+
+.theme-tree-row[aria-selected="true"] {
+  border-left: 3px solid var(--tree-selected-indicator, var(--accent));
+  background-color: var(--bg-tree-selected, var(--accent-soft));
+  color: var(--text-tree-selected, var(--text-heading));
+}
+
+.theme-outline-row {
+  min-height: var(--sidebar-outline-row-min-height, 28px);
+}
+
+.theme-outline-row[data-outline-level="1"] {
+  --markra-outline-level-font-size: var(--sidebar-outline-h1-font-size, var(--sidebar-outline-font-size, 13px));
+  --markra-outline-level-font-weight: var(--sidebar-outline-h1-font-weight, var(--sidebar-outline-font-weight, 400));
+  --markra-outline-level-text: var(--sidebar-outline-h1-text, var(--text-outline, var(--text-secondary)));
+  margin-block-start: var(--sidebar-outline-h1-space-before, 0px);
+}
+
+.theme-outline-row[data-outline-level="2"] {
+  --markra-outline-level-font-size: var(--sidebar-outline-h2-font-size, var(--sidebar-outline-font-size, 13px));
+  --markra-outline-level-font-weight: var(--sidebar-outline-h2-font-weight, var(--sidebar-outline-font-weight, 400));
+  --markra-outline-level-text: var(--sidebar-outline-h2-text, var(--text-outline, var(--text-secondary)));
+  margin-block-start: var(--sidebar-outline-h2-space-before, 0px);
+}
+
+.theme-outline-row[data-outline-level="3"] {
+  --markra-outline-level-font-size: var(--sidebar-outline-h3-font-size, var(--sidebar-outline-font-size, 13px));
+  --markra-outline-level-font-weight: var(--sidebar-outline-h3-font-weight, var(--sidebar-outline-font-weight, 400));
+  --markra-outline-level-text: var(--sidebar-outline-h3-text, var(--text-outline, var(--text-secondary)));
+  margin-block-start: var(--sidebar-outline-h3-space-before, 0px);
+}
+
+.theme-outline-row[data-outline-level="4"] {
+  --markra-outline-level-font-size: var(--sidebar-outline-h4-font-size, var(--sidebar-outline-font-size, 13px));
+  --markra-outline-level-font-weight: var(--sidebar-outline-h4-font-weight, var(--sidebar-outline-font-weight, 400));
+  --markra-outline-level-text: var(--sidebar-outline-h4-text, var(--text-outline, var(--text-secondary)));
+  margin-block-start: var(--sidebar-outline-h4-space-before, 0px);
+}
+
+.theme-outline-row[data-outline-level="5"] {
+  --markra-outline-level-font-size: var(--sidebar-outline-h5-font-size, var(--sidebar-outline-font-size, 13px));
+  --markra-outline-level-font-weight: var(--sidebar-outline-h5-font-weight, var(--sidebar-outline-font-weight, 400));
+  --markra-outline-level-text: var(--sidebar-outline-h5-text, var(--text-outline, var(--text-secondary)));
+  margin-block-start: var(--sidebar-outline-h5-space-before, 0px);
+}
+
+.theme-outline-row[data-outline-level="6"] {
+  --markra-outline-level-font-size: var(--sidebar-outline-h6-font-size, var(--sidebar-outline-font-size, 13px));
+  --markra-outline-level-font-weight: var(--sidebar-outline-h6-font-weight, var(--sidebar-outline-font-weight, 400));
+  --markra-outline-level-text: var(--sidebar-outline-h6-text, var(--text-outline, var(--text-secondary)));
+  margin-block-start: var(--sidebar-outline-h6-space-before, 0px);
+}
+
+.markdown-file-tree-outline-list > li:first-child > .theme-outline-row {
+  margin-block-start: 0;
+}
+
+.theme-outline-item {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: var(--sidebar-outline-max-lines, 1);
+  padding-block: 4px;
+  color: var(--markra-outline-level-text, var(--text-outline, var(--text-secondary)));
+  font-size: var(--markra-outline-level-font-size, var(--sidebar-outline-font-size, 13px));
+  font-weight: var(--markra-outline-level-font-weight, var(--sidebar-outline-font-weight, 400));
+  line-height: var(--sidebar-outline-line-height, 20px);
+  white-space: normal;
+}
+
+.theme-outline-item:is(:hover, :focus-visible) {
+  background-color: var(--bg-outline-hover, var(--bg-hover));
+  color: var(--text-outline-hover, var(--text-heading));
+}
+
+.theme-outline-item[aria-current="location"] {
+  background-color: var(--bg-outline-current, var(--bg-active));
+  color: var(--text-outline-current, var(--text-heading));
+  font-weight: var(--sidebar-outline-current-font-weight, 620);
+}
+
+.theme-outline-item :where(strong, em, code, mark, .markra-outline-title-math) {
+  color: inherit;
+}
+
+.theme-outline-item[aria-current="location"] strong {
+  font-weight: inherit;
 }

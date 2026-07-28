@@ -6,19 +6,13 @@ import {
   type NotebookSwitchRequest
 } from "../lib/notebook-switch-events";
 import {
-  getStoredRecentNotebooks,
-  isValidManagedNotebookName,
-  removeStoredRecentNotebook,
-  saveStoredRecentNotebook
+  isValidManagedNotebookName
 } from "../lib/settings/local-state";
-import type { RecentNotebook } from "../lib/settings/recent-markdown";
 import { getAppRuntime } from "../runtime";
 import type { AppSyncCoordinator } from "./useAppSyncCoordinator";
 import type { PrimaryWorkspaceController } from "./usePrimaryWorkspace";
 
 export type NotebookSwitchCoordinator = {
-  recentNotebooks: RecentNotebook[];
-  removeRecentNotebook: (path: string) => Promise<unknown>;
   restoreDesktopNotebook: (
     remoteName: string,
     parentPath?: string
@@ -73,13 +67,11 @@ export function useNotebookSwitchCoordinator({
   trueMobile
 }: NotebookSwitchCoordinatorInput): NotebookSwitchCoordinator {
   const [switching, setSwitching] = useState(false);
-  const [recentNotebooks, setRecentNotebooks] = useState<RecentNotebook[]>([]);
   const activeTransactionRef = useRef<Promise<string | null> | null>(null);
   const activeTransactionKindRef = useRef<NotebookSwitchTransactionKind | null>(null);
   const mountedRef = useRef(true);
   const mountedRootRef = useRef(primaryRoot);
   const mountedRootWaitersRef = useRef<MountedRootWaiter[]>([]);
-  const recentNotebooksGenerationRef = useRef(0);
   const pendingRequestRef = useRef<PendingDesktopNotebookSwitch | null>(null);
   const desktopRequestInProgressRef = useRef(false);
   const requestPumpRef = useRef<Promise<unknown> | null>(null);
@@ -104,22 +96,6 @@ export function useNotebookSwitchCoordinator({
       const pending = pendingRequestRef.current;
       pendingRequestRef.current = null;
       for (const settle of pending?.settle ?? []) settle(null);
-    };
-  }, []);
-
-  useEffect(() => {
-    let active = true;
-    const generation = recentNotebooksGenerationRef.current + 1;
-    recentNotebooksGenerationRef.current = generation;
-    getStoredRecentNotebooks()
-      .then((notebooks) => {
-        if (active && recentNotebooksGenerationRef.current === generation) {
-          setRecentNotebooks(notebooks);
-        }
-      })
-      .catch(() => {});
-    return () => {
-      active = false;
     };
   }, []);
 
@@ -161,32 +137,10 @@ export function useNotebookSwitchCoordinator({
   ) => {
     const mounted = await waitForMountedRoot(root);
     if (!mounted) return null;
-    if (primaryWindowOwner) {
-      const recentGeneration = recentNotebooksGenerationRef.current + 1;
-      recentNotebooksGenerationRef.current = recentGeneration;
-      const notebooks = await saveStoredRecentNotebook({ name: notebookNameFromRoot(root), path: root }).catch(() => null);
-      if (
-        notebooks &&
-        mountedRef.current &&
-        recentNotebooksGenerationRef.current === recentGeneration
-      ) {
-        setRecentNotebooks(notebooks);
-      }
-    }
     await releaseBarrier();
     await requestVisibleLaunchSync();
     return root;
-  }, [primaryWindowOwner, requestVisibleLaunchSync, waitForMountedRoot]);
-
-  const removeRecentNotebook = useCallback(async (path: string) => {
-    if (!primaryWindowOwner) return;
-    const recentGeneration = recentNotebooksGenerationRef.current + 1;
-    recentNotebooksGenerationRef.current = recentGeneration;
-    const notebooks = await removeStoredRecentNotebook(path);
-    if (mountedRef.current && recentNotebooksGenerationRef.current === recentGeneration) {
-      setRecentNotebooks(notebooks);
-    }
-  }, [primaryWindowOwner]);
+  }, [requestVisibleLaunchSync, waitForMountedRoot]);
 
   const performDesktopNotebookSwitch = useCallback(async (path?: string) => {
     if (!primaryWindowOwner || trueMobile) return null;
@@ -458,8 +412,6 @@ export function useNotebookSwitchCoordinator({
   }, [primaryWindowOwner, requestDesktopNotebookSwitch, trueMobile]);
 
   return {
-    recentNotebooks,
-    removeRecentNotebook,
     restoreDesktopNotebook,
     restoreManagedNotebook,
     switchDesktopNotebook,

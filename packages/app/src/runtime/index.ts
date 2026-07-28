@@ -74,6 +74,7 @@ import type {
   ThemeImportResult,
   ThemeRuntimeCapabilities
 } from "../lib/themes/theme-catalog";
+import { defaultDarkThemeId, defaultLightThemeId } from "../lib/themes/default-theme-ids";
 
 export type { WorkspaceSearchRequest, WorkspaceSearchResponse } from "../lib/workspace-search";
 export type { AppLogArea, AppLogEvent, AppLogLevel, AppLogWriter } from "../lib/app-logger";
@@ -132,7 +133,6 @@ export type AppThemeRuntime = {
   cancelActivation: (token: string) => Promise<unknown>;
   capabilities: ThemeRuntimeCapabilities;
   commitActivation: (token: string) => Promise<unknown>;
-  confirmActivation: (themeName: string) => Promise<boolean>;
   delete: (id: string, expectedFingerprint: string) => Promise<unknown>;
   importFile: () => Promise<ThemeImportResult | null>;
   list: () => Promise<ThemeCatalogSnapshot>;
@@ -507,8 +507,8 @@ function createMemorySettingsRuntime(): AppSettingsRuntime {
 
         return {
           appearanceMode: appearanceMode ?? "system",
-          darkTheme: darkTheme ?? "dark",
-          lightTheme: lightTheme ?? "light"
+          darkTheme: darkTheme ?? defaultDarkThemeId,
+          lightTheme: lightTheme ?? defaultLightThemeId
         } as TValue;
       }
       const key = group === "language" ? "language" : group;
@@ -793,7 +793,6 @@ export function createDefaultAppRuntime(): AppRuntime {
         canOpenDirectory: false
       },
       commitActivation: () => unsupportedFeature("commitThemeActivation"),
-      confirmActivation: async () => false,
       delete: () => unsupportedFeature("deleteTheme"),
       importFile: () => unsupportedFeature("importTheme"),
       list: async () => ({ invalidFiles: [], themes: [] }),

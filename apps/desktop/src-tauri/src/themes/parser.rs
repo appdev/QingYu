@@ -6,6 +6,7 @@ use sha2::{Digest, Sha256};
 use unicode_normalization::UnicodeNormalization;
 
 use super::{
+    css_security::validate_theme_css_policy,
     manifest::{
         normalize_bounded_text, normalize_preview_color, parse_theme_appearance, valid_theme_id,
     },
@@ -67,6 +68,7 @@ pub(crate) fn parse_theme_file(bytes: &[u8], file_name: &str) -> Result<ParsedTh
             "Theme ID is invalid or reserved.",
         ));
     }
+    validate_theme_css_policy(css, id)?;
 
     let name = bounded_text(required(&metadata, "name")?, 120, "name")?;
     let author = optional_bounded_text(&metadata, "author", 120)?;
@@ -96,7 +98,10 @@ pub(crate) fn parse_theme_file(bytes: &[u8], file_name: &str) -> Result<ParsedTh
     })
 }
 
-pub(crate) fn validate_package_css(bytes: &[u8]) -> Result<ValidatedPackageCss, ThemeError> {
+pub(crate) fn validate_package_css(
+    bytes: &[u8],
+    theme_id: &str,
+) -> Result<ValidatedPackageCss, ThemeError> {
     if bytes.len() > MAX_THEME_BYTES {
         return Err(ThemeError::new(
             ThemeErrorCode::ThemeTooLarge,
@@ -115,6 +120,7 @@ pub(crate) fn validate_package_css(bytes: &[u8]) -> Result<ValidatedPackageCss, 
         "Theme CSS contains an unsafe package resource reference.",
         |value| validate_package_resource_url(value, &mut referenced_assets),
     )?;
+    validate_theme_css_policy(css, theme_id)?;
 
     Ok(ValidatedPackageCss {
         css: css.to_string(),
@@ -366,8 +372,11 @@ fn parse_url_function<'i, 't>(
 
 fn validate_legacy_resource_url(value: &str) -> Result<(), ThemeErrorCode> {
     let value = value.trim();
-    if value.starts_with('#') || value.to_ascii_lowercase().starts_with("data:") {
+    if value.starts_with('#') {
         return Ok(());
+    }
+    if value.to_ascii_lowercase().starts_with("data:") {
+        return validate_passive_data_url(value);
     }
     Err(ThemeErrorCode::UnsafeResource)
 }
@@ -377,8 +386,11 @@ fn validate_package_resource_url(
     referenced_assets: &mut BTreeSet<String>,
 ) -> Result<(), ThemeErrorCode> {
     let value = value.trim();
-    if value.starts_with('#') || value.to_ascii_lowercase().starts_with("data:") {
+    if value.starts_with('#') {
         return Ok(());
+    }
+    if value.to_ascii_lowercase().starts_with("data:") {
+        return validate_passive_data_url(value);
     }
     if has_malformed_percent_encoding(value) {
         return Err(ThemeErrorCode::UnsafeResource);
@@ -402,6 +414,32 @@ fn validate_package_resource_url(
         return Err(ThemeErrorCode::UnsafeResource);
     }
     referenced_assets.insert(format!("assets/{path}"));
+    Ok(())
+}
+
+fn validate_passive_data_url(value: &str) -> Result<(), ThemeErrorCode> {
+    let data = value.get(5..).ok_or(ThemeErrorCode::UnsafeResource)?;
+    let (metadata, payload) = data.split_once(',').ok_or(ThemeErrorCode::UnsafeResource)?;
+    let mut parts = metadata.split(';');
+    let mime = parts.next().ok_or(ThemeErrorCode::UnsafeResource)?;
+    let encoding = parts.next().ok_or(ThemeErrorCode::UnsafeResource)?;
+    if !matches!(
+        mime.to_ascii_lowercase().as_str(),
+        "image/png"
+            | "image/jpeg"
+            | "image/gif"
+            | "image/webp"
+            | "font/woff2"
+            | "application/font-woff2"
+    ) || !encoding.eq_ignore_ascii_case("base64")
+        || parts.next().is_some()
+        || payload.is_empty()
+        || !payload
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'/' | b'='))
+    {
+        return Err(ThemeErrorCode::UnsafeResource);
+    }
     Ok(())
 }
 
@@ -445,7 +483,7 @@ mod tests {
                 "nord",
                 "北境",
                 "dark",
-                ":root { background: url(data:image/svg+xml;base64,AA==); mask: url(#marker); }",
+                ".markdown-paper[data-editor-theme='nord'] { background: url(data:image/png;base64,AA==); mask: url(#marker); }",
             ),
             "nord.css",
         )
@@ -490,15 +528,19 @@ mod tests {
     #[test]
     fn package_css_accepts_assets_fragments_and_bounded_data_urls() {
         let css = validate_package_css(
-            ":root {
+            "@font-face {
+                font-family: 'Package Test';
                 src: url(\"./assets/fonts/JetBrainsMono-Regular.woff2\");
+            }
+            .markdown-paper[data-editor-theme='package-test'] {
                 mask: url(#marker);
-                background: url(data:image/svg+xml;base64,AA==);
+                background: url(data:image/png;base64,AA==);
                 background-image: image-set(\"./assets/images/background.png\" type(\"image/png\") 1x);
                 content: -webkit-image-set(\"./assets/images/background@2x.png\" 2x);
                 cursor: url(\"./assets/icons/Cafe%CC%81.svg\"), auto;
             }"
             .as_bytes(),
+            "package-test",
         )
         .unwrap();
 
@@ -533,7 +575,137 @@ mod tests {
             ":root { --pixel: \"https://example.com/pixel.png\"; background: image-set(var(--pixel) 1x); }",
         ] {
             assert_eq!(
-                validate_package_css(body.as_bytes()).unwrap_err().code,
+                validate_package_css(body.as_bytes(), "package-test")
+                    .unwrap_err()
+                    .code,
+                ThemeErrorCode::UnsafeResource,
+                "body {body}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_global_and_application_control_takeover_selectors() {
+        for body in [
+            "* { display: none; }",
+            ":root { display: none; }",
+            ":root { overflow: hidden; }",
+            ":root { font-size: 0; }",
+            ":root button { display: none; }",
+            ":root[data-theme='hostile'] button { display: none; }",
+            "[aria-label='Delete'] { opacity: 0; }",
+            ":root[data-theme='hostile'] .settings-sidebar { pointer-events: none; }",
+            ":is(.markdown-paper[data-editor-theme='hostile'], button) { display: none; }",
+            ":root:has(.markdown-paper[data-editor-theme='hostile']) button { display: none; }",
+            ".markdown-paper[data-editor-theme='hostile'] ~ button { display: none; }",
+            ":root b\\75tton { visibility: hidden; }",
+        ] {
+            assert_eq!(
+                parse_theme_file(
+                    &theme_css("hostile", "Hostile", "dark", body),
+                    "hostile.css"
+                )
+                .unwrap_err()
+                .code,
+                ThemeErrorCode::UnsafeResource,
+                "body {body}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_editor_rules_that_can_hide_or_intercept_the_application() {
+        for declarations in [
+            "display: none;",
+            "visibility: hidden;",
+            "opacity: 0;",
+            "pointer-events: none;",
+            "position: fixed; inset: 0; z-index: 2147483647;",
+            "animation: hostile-spin 1ms infinite;",
+            "-webkit-app-region: drag;",
+            "po\\73ition: fixed;",
+        ] {
+            let body = format!(".markdown-paper[data-editor-theme='hostile'] {{ {declarations} }}");
+            assert_eq!(
+                parse_theme_file(
+                    &theme_css("hostile", "Hostile", "dark", &body),
+                    "hostile.css"
+                )
+                .unwrap_err()
+                .code,
+                ThemeErrorCode::UnsafeResource,
+                "declarations {declarations}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_active_data_urls_and_unsafe_stylesheet_at_rules() {
+        for body in [
+            ":root { background: url('data:text/html;base64,PHNjcmlwdD4='); }",
+            ":root { background: url('data:image/svg+xml;base64,PHN2Zz4='); }",
+            ":root { cursor: url('data:application/xml;base64,PHhtbD4='), auto; }",
+            "@keyframes hostile { from { opacity: 0; } to { opacity: 1; } }",
+            "@\\6b eyframes hostile { from { opacity: 0; } to { opacity: 1; } }",
+            "@media (min-width: 0px) { :root button { display: none; } }",
+            "@supports (display: grid) { :root .settings-sidebar { opacity: 0; } }",
+            "@property --hostile { syntax: '*'; inherits: true; initial-value: red; }",
+        ] {
+            assert_eq!(
+                parse_theme_file(
+                    &theme_css("hostile", "Hostile", "dark", body),
+                    "hostile.css"
+                )
+                .unwrap_err()
+                .code,
+                ThemeErrorCode::UnsafeResource,
+                "body {body}"
+            );
+        }
+
+        assert!(parse_theme_file(
+            &theme_css(
+                "passive-data",
+                "Passive data",
+                "light",
+                ".markdown-paper[data-editor-theme='passive-data'] { background-image: url('data:image/png;base64,iVBORw0KGgo='); }"
+            ),
+            "passive-data.css"
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn allows_responsive_wrappers_when_every_nested_rule_remains_scoped() {
+        let body = "@media (max-width: 720px) {
+            .markdown-paper[data-editor-theme='responsive'] { padding: 1rem; }
+            .markdown-paper[data-editor-theme='responsive'] blockquote::before { content: '“'; }
+        }
+        @supports (color: color-mix(in srgb, red, blue)) {
+            :root[data-theme = 'responsive'] { --accent: color-mix(in srgb, red 50%, blue); }
+        }
+        @layer responsive-theme {
+            :root[data-theme='responsive'] .lucide { stroke: currentColor; }
+        }";
+        assert!(parse_theme_file(
+            &theme_css("responsive", "Responsive", "light", body),
+            "responsive.css"
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn package_css_rejects_ui_takeover_rules() {
+        for body in [
+            "* { display: none; }",
+            ":root button { pointer-events: none; }",
+            ".markdown-paper[data-editor-theme='hostile'] { position: fixed; inset: 0; }",
+            ":root { background: url('data:image/svg+xml;base64,PHN2Zz4='); }",
+        ] {
+            assert_eq!(
+                validate_package_css(body.as_bytes(), "hostile")
+                    .unwrap_err()
+                    .code,
                 ThemeErrorCode::UnsafeResource,
                 "body {body}"
             );
@@ -545,7 +717,7 @@ mod tests {
         let mut css = b":root { background: url(data:image/png;base64,".to_vec();
         css.resize(super::MAX_THEME_BYTES + 1, b'A');
         assert_eq!(
-            validate_package_css(&css).unwrap_err().code,
+            validate_package_css(&css, "bounded-data").unwrap_err().code,
             ThemeErrorCode::ThemeTooLarge
         );
     }

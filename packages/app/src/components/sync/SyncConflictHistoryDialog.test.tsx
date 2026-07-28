@@ -40,4 +40,19 @@ describe("SyncConflictHistoryDialog", () => {
     expect(screen.queryByLabelText("Relative path for the remote copy")).not.toBeInTheDocument();
     expect(onClose).not.toHaveBeenCalled();
   });
+
+  it("distinguishes a deleted local file from a binary or oversized version", async () => {
+    render(
+      <SyncConflictHistoryDialog
+        conflict={conflict}
+        language="en"
+        onClose={vi.fn()}
+        onRead={vi.fn(async () => ({ ...versions, local: null }))}
+      />
+    );
+
+    expect(await screen.findByText("The local file no longer exists.")).toBeVisible();
+    expect(screen.queryByText("Preview unavailable for a binary or large file."))
+      .not.toBeInTheDocument();
+  });
 });

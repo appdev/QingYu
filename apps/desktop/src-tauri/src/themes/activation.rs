@@ -14,7 +14,9 @@ use serde::Serialize;
 use tauri::Manager;
 
 use super::{
-    catalog::{CatalogActivationSource, ThemeCatalog, ACTIVATION_LEASE_PARENT_NAME},
+    catalog::{
+        is_protected_theme_id, CatalogActivationSource, ThemeCatalog, ACTIVATION_LEASE_PARENT_NAME,
+    },
     resources::{
         validate_theme_directory_from_retained, ValidatedThemeDirectory, ValidatedThemeFile,
         MAX_PACKAGE_BYTES, MAX_PACKAGE_ENTRIES,
@@ -1564,7 +1566,7 @@ pub(crate) fn delete_theme_with_permissions(
     allow_directory: &mut dyn FnMut(&Path) -> Result<(), ThemeError>,
     forbid_directory: &mut dyn FnMut(&Path) -> Result<(), ThemeError>,
 ) -> Result<(), ThemeError> {
-    if matches!(id, "light" | "dark") {
+    if is_protected_theme_id(id) {
         return catalog.delete(id, expected_fingerprint);
     }
     let hint = state.catalog_hint(catalog, id, expected_fingerprint)?;
@@ -1844,6 +1846,48 @@ mod tests {
         assert!(css.contains("--theme-id: legacy"));
         assert!(allowed.borrow().is_empty());
         assert!(forbidden.borrow().is_empty());
+    }
+
+    #[test]
+    fn invalid_css_cannot_reach_activation_or_touch_files_outside_the_catalog() {
+        let temporary = tempdir().unwrap();
+        let catalog_root = temporary.path().join("themes");
+        fs::create_dir(&catalog_root).unwrap();
+        let catalog = ThemeCatalog::at(catalog_root.clone());
+        let hostile_path = catalog_root.join("hostile.css");
+        let hostile = String::from_utf8(css("hostile")).unwrap().replace(
+            ":root { --theme-id: hostile; }",
+            ":root[data-theme='hostile'] .settings-sidebar { pointer-events: none; }",
+        );
+        fs::write(&hostile_path, hostile).unwrap();
+        let sentinel = temporary.path().join("user-document.md");
+        let sentinel_bytes = b"Activation must not mutate this document.\n";
+        fs::write(&sentinel, sentinel_bytes).unwrap();
+        let state = ThemeActivationState::default();
+        let permission_calls = RefCell::new(Vec::new());
+
+        let error = state
+            .prepare_with_permissions(
+                &catalog,
+                "main",
+                "hostile",
+                "untrusted-fingerprint",
+                &mut |path| {
+                    permission_calls.borrow_mut().push(path.to_path_buf());
+                    Ok(())
+                },
+                &mut |path| {
+                    permission_calls.borrow_mut().push(path.to_path_buf());
+                    Ok(())
+                },
+            )
+            .unwrap_err();
+
+        assert_eq!(error.code, ThemeErrorCode::FingerprintMismatch);
+        assert!(permission_calls.into_inner().is_empty());
+        assert_eq!(fs::read(&sentinel).unwrap(), sentinel_bytes);
+        assert!(hostile_path.exists());
+        assert_eq!(state.pending_count(), 0);
     }
 
     #[test]
@@ -2868,6 +2912,49 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(error.code, ThemeErrorCode::ProtectedTheme);
+    }
+
+    #[test]
+    fn rejecting_bundled_wenkai_deletion_preserves_its_active_lease() {
+        let temporary = tempdir().unwrap();
+        let catalog_root = temporary.path().join("themes");
+        let catalog = ThemeCatalog::at(catalog_root.clone());
+        assert!(catalog.seed_missing_wenkai().unwrap().is_empty());
+        let descriptor = catalog.find_descriptor("wenkai-paper-light").unwrap();
+        let state = ThemeActivationState::default();
+        let prepared = state
+            .prepare_with_permissions(
+                &catalog,
+                "main",
+                &descriptor.id,
+                &descriptor.fingerprint,
+                &mut |_| Ok(()),
+                &mut |_| Ok(()),
+            )
+            .unwrap();
+        state
+            .commit_with_permissions("main", &prepared.token, &mut |_| Ok(()), &mut |_| Ok(()))
+            .unwrap();
+        let active_root = state.active_root("main").unwrap();
+        let forbidden = RefCell::new(Vec::new());
+
+        let error = delete_theme_with_permissions(
+            &catalog,
+            &state,
+            &descriptor.id,
+            &descriptor.fingerprint,
+            &mut |_| Ok(()),
+            &mut |path| {
+                forbidden.borrow_mut().push(path.to_path_buf());
+                Ok(())
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code, ThemeErrorCode::ProtectedTheme);
+        assert!(forbidden.into_inner().is_empty());
+        assert_eq!(state.active_root("main"), Some(active_root));
+        assert!(catalog_root.join("wenkai-paper-light").is_dir());
     }
 
     #[test]

@@ -165,7 +165,7 @@ fn validate_open_theme_directory(
     let manifest_file = required_file(&files, "manifest.json", ThemeErrorCode::InvalidManifest)?;
     let manifest = parse_theme_manifest(&manifest_file.bytes)?;
     let stylesheet = required_file(&files, "theme.css", ThemeErrorCode::InvalidManifest)?;
-    let css = validate_package_css(&stylesheet.bytes)?;
+    let css = validate_package_css(&stylesheet.bytes, &manifest.id)?;
     validate_css_assets(&css.referenced_assets, &files)?;
     validate_licenses(&manifest, &files)?;
 

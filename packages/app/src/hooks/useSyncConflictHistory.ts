@@ -38,14 +38,49 @@ export function useSyncConflictHistory({
   const [entries, setEntries] = useState<SyncConflictRecord[]>([]);
   const [loading, setLoading] = useState(Boolean(notesRoot));
   const [repositoryId, setRepositoryId] = useState<string | null>(null);
-  const repositoryIdRef = useRef<string | null>(null);
   const translateRef = useRef(translate);
-  repositoryIdRef.current = repositoryId;
   translateRef.current = translate;
 
   useEffect(() => {
     let active = true;
     let cleanup: (() => unknown) | null = null;
+    let baselineReady = false;
+    let activeRepositoryId: string | null = null;
+    const bufferedStatuses = new Map<string, DejavuRepositoryStatus>();
+    let reconciliation = Promise.resolve();
+    const applyHistory = (records: readonly SyncConflictRecord[], notify: boolean) => {
+      if (!active) return;
+      const next = historyRecords(records);
+      for (const conflict of next) {
+        if (noticedConflictIds.has(conflict.conflictId)) continue;
+        noticedConflictIds.add(conflict.conflictId);
+        if (!notify) continue;
+        showAppToast({
+          id: `sync-conflict-${conflict.conflictId}`,
+          message: translateRef.current("sync.conflict.notice"),
+          status: "success",
+          surface: "notice"
+        });
+      }
+      setEntries(next);
+    };
+    const reconcilePersistedHistory = (notify: boolean) => {
+      const repositoryId = activeRepositoryId;
+      if (!repositoryId) return Promise.resolve();
+      return getAppRuntime().syncConfig.listDejavuConflictHistory({ repositoryId }).then((records) => {
+        if (!active || repositoryId !== activeRepositoryId) return;
+        applyHistory(records, notify);
+      }).catch(() => {});
+    };
+    const handleStatus = ({ payload }: { payload: DejavuRepositoryStatus }) => {
+      if (!active) return;
+      if (!baselineReady) {
+        bufferedStatuses.set(payload.repositoryId, payload);
+        return;
+      }
+      if (payload.repositoryId !== activeRepositoryId) return;
+      reconciliation = reconciliation.then(() => reconcilePersistedHistory(true));
+    };
     const install = async () => {
       if (!notesRoot) {
         setEntries([]);
@@ -55,6 +90,17 @@ export function useSyncConflictHistory({
       }
       setLoading(true);
       try {
+        if (getAppRuntime().events.isAvailable()) {
+          try {
+            cleanup = await getAppRuntime().events.listen<DejavuRepositoryStatus>(
+              dejavuSyncStatusChangedEvent,
+              handleStatus
+            );
+            if (!active) return cleanup();
+          } catch {
+            cleanup = null;
+          }
+        }
         const status = await getAppRuntime().syncConfig.loadRepositoryStatus({ notesRoot });
         if (!active) return;
         const nextRepositoryId = status?.repositoryId ?? null;
@@ -63,43 +109,29 @@ export function useSyncConflictHistory({
           : [];
         if (!active) return;
         const nextConflicts = historyRecords(initial);
-        nextConflicts.forEach((conflict) => noticedConflictIds.add(conflict.conflictId));
-        repositoryIdRef.current = nextRepositoryId;
+        activeRepositoryId = nextRepositoryId;
         setRepositoryId(nextRepositoryId);
-        setEntries(nextConflicts);
+        applyHistory(nextConflicts, false);
+        baselineReady = true;
+        const buffered = nextRepositoryId ? bufferedStatuses.has(nextRepositoryId) : false;
+        bufferedStatuses.clear();
+        await reconcilePersistedHistory(buffered);
       } catch {
         if (!active) return;
-        repositoryIdRef.current = null;
+        activeRepositoryId = null;
+        baselineReady = true;
+        bufferedStatuses.clear();
         setRepositoryId(null);
         setEntries([]);
       } finally {
         if (active) setLoading(false);
       }
 
-      if (!getAppRuntime().events.isAvailable()) return;
-      cleanup = await getAppRuntime().events.listen<DejavuRepositoryStatus>(
-        dejavuSyncStatusChangedEvent,
-        ({ payload }) => {
-          if (!active || payload.repositoryId !== repositoryIdRef.current) return;
-          const next = historyRecords(payload.conflicts);
-          for (const conflict of next) {
-            if (noticedConflictIds.has(conflict.conflictId)) continue;
-            noticedConflictIds.add(conflict.conflictId);
-            showAppToast({
-              id: `sync-conflict-${conflict.conflictId}`,
-              message: translateRef.current("sync.conflict.notice"),
-              status: "success",
-              surface: "notice"
-            });
-          }
-          setEntries(next);
-        }
-      );
-      if (!active) cleanup();
     };
     install().catch(() => {});
     return () => {
       active = false;
+      bufferedStatuses.clear();
       cleanup?.();
     };
   }, [notesRoot]);

@@ -16,7 +16,6 @@ describe("view mode chrome", () => {
       openButton: true,
       outline: true,
       quickCreateButton: true,
-      recentFolders: true,
       sidebarLayout: true,
       statusBar: true,
       titlebarActions: true,
@@ -35,7 +34,6 @@ describe("view mode chrome", () => {
       openButton: true,
       outline: false,
       quickCreateButton: true,
-      recentFolders: false,
       sidebarLayout: false,
       statusBar: false,
       titlebarActions: true,
@@ -51,7 +49,6 @@ describe("view mode chrome", () => {
       openButton: false,
       outline: false,
       quickCreateButton: false,
-      recentFolders: false,
       sidebarLayout: false,
       statusBar: false,
       titlebarActions: false,
@@ -71,7 +68,6 @@ describe("view mode chrome", () => {
       openButton: "hidden" as const,
       outline: "hidden" as const,
       quickCreateButton: "hidden" as const,
-      recentFolders: "hidden" as const,
       sidebarLayout: "hidden" as const,
       wordCount: "hidden" as const,
       viewModeToggle: "hidden" as const
@@ -86,7 +82,6 @@ describe("view mode chrome", () => {
       openButton: false,
       outline: false,
       quickCreateButton: false,
-      recentFolders: false,
       sidebarLayout: true,
       viewModeToggle: true,
       wordCount: false
@@ -100,7 +95,6 @@ describe("view mode chrome", () => {
       openButton: true,
       outline: true,
       quickCreateButton: true,
-      recentFolders: true,
       sidebarLayout: true,
       viewModeToggle: true,
       wordCount: true
@@ -108,16 +102,20 @@ describe("view mode chrome", () => {
   });
 
   it("ignores legacy custom fields that are no longer configurable", () => {
-    expect(resolveViewModeChrome("custom", {
+    const chrome = resolveViewModeChrome("custom", {
       ...defaultViewModeCustomizations,
       fileTree: "hidden",
+      recentFolders: "hidden",
       sidebarLayout: "hidden",
       viewModeToggle: "hidden"
-    })).toMatchObject({
+    });
+
+    expect(chrome).toMatchObject({
       fileTree: true,
       sidebarLayout: true,
       viewModeToggle: true
     });
+    expect(chrome).not.toHaveProperty("recentFolders");
   });
 
   it("cycles through quick titlebar view mode presets", () => {

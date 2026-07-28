@@ -789,6 +789,23 @@ export function EditorSettings({
           }
         />
         <SettingsRow
+          title={translate("settings.editor.hideHeadingMarkersOnFocus")}
+          description={translate("settings.editor.hideHeadingMarkersOnFocusDescription")}
+          action={
+            <SettingsSwitch
+              checked={preferences.hideHeadingMarkersOnFocus}
+              label={translate("settings.editor.hideHeadingMarkersOnFocus")}
+              onChange={() =>
+                onUpdatePreferences({
+                  ...preferences,
+                  hideHeadingMarkersOnFocus:
+                    !preferences.hideHeadingMarkersOnFocus
+                })
+              }
+            />
+          }
+        />
+        <SettingsRow
           title={translate("settings.editor.showLineNumbers")}
           description={translate("settings.editor.showLineNumbersDescription")}
           action={

@@ -35,6 +35,7 @@ import {
 import { NativeTitleBar } from "./components/NativeTitleBar";
 import { QuietStatus } from "./components/QuietStatus";
 import { QuickOpenPanel } from "./components/QuickOpenPanel";
+import { SettingsWindowLoadingShell } from "./components/SettingsWindowLoadingShell";
 import { SideDocumentPane } from "./components/SideDocumentPane";
 import type { SidebarSyncButtonState } from "./components/SidebarSyncButton";
 import { WorkspaceLayout } from "./components/WorkspaceLayout";
@@ -65,6 +66,7 @@ import { useSyncPathGuard } from "./hooks/useSyncPathGuard";
 import { useSyncConflictHistory } from "./hooks/useSyncConflictHistory";
 import { useSelectionToolbarAnchorRefresh } from "./hooks/useSelectionToolbarAnchorRefresh";
 import { useSharedEditorHistory } from "./hooks/useSharedEditorHistory";
+import { routeMarkdownChangeToTab } from "./hooks/markdown-document/editor-sync";
 import { useSideBySideTabs } from "./hooks/useSideBySideTabs";
 import { useAutoUpdater } from "./hooks/useAutoUpdater";
 import { useDefaultContextMenuBlocker } from "./hooks/useDefaultContextMenuBlocker";
@@ -175,7 +177,6 @@ import {
   saveStoredEditorPreferences,
   saveStoredWorkspaceState,
   type RecentMarkdownFile,
-  type RecentMarkdownFolder,
   type EditorPreferences,
   type StoredWorkspaceSideBySideGroup,
   type TitlebarActionPreference
@@ -430,7 +431,7 @@ function SettingsRouteApp() {
   }, [handleCloseSettings]);
 
   return (
-    <Suspense fallback={null}>
+    <Suspense fallback={<SettingsWindowLoadingShell onClose={handleCloseSettings} />}>
       <SettingsWindow />
     </Suspense>
   );
@@ -715,7 +716,6 @@ function WorkspaceApp() {
     open: fileTreeOpen,
     openFolderPath,
     renameFile: renameMarkdownTreeFileUnchecked,
-    recentFoldersOpen: recentMarkdownFoldersOpen,
     refresh: refreshMarkdownFileTree,
     resizing: fileTreeResizing,
     resize: resizeFileTree,
@@ -725,7 +725,6 @@ function WorkspaceApp() {
     setRootFromMarkdownFilePath,
     setFileTreeSort,
     setFileTreeAssetsVisible,
-    setRecentFoldersOpen: setRecentMarkdownFoldersOpen,
     startResize: startFileTreeResize,
     toggle: toggleFileTree,
     width: fileTreeWidth,
@@ -828,6 +827,7 @@ function WorkspaceApp() {
     onTreeRootFromFolderPath: openFolderPath,
     onTreeRootFromFilePath: setRootFromMarkdownFilePath,
     onSwitchNotebookDirectory: handleNativeNotebookDirectory,
+    openDroppedFilesInTabs: editorPreferences.preferences.openDroppedFilesInTabs,
     preferencesReady: !editorPreferences.loading && !compactMode.trueMobile && (
       !primaryWindowOwner ||
       primaryWorkspace.status === "ready" ||
@@ -1620,7 +1620,6 @@ function WorkspaceApp() {
   // preferences still win, and view mode can only hide what they allow.
   const documentLinksVisible = viewModeChrome.documentLinks && editorPreferences.preferences.documentLinksVisible;
   const fileTreeContentVisible =
-    viewModeChrome.recentFolders ||
     viewModeChrome.fileList ||
     viewModeChrome.outline ||
     documentLinksVisible;
@@ -1788,6 +1787,7 @@ function WorkspaceApp() {
     syncSourceEditsToVisualHistory
   } = useSharedEditorHistory({
     documentContent: document.content,
+    documentKey: activeTabId,
     documentRevision: document.revision,
     largeMarkdownVisualBlocked,
     replaceEditorMarkdown,
@@ -3314,7 +3314,11 @@ function WorkspaceApp() {
   const handleSideDocumentPaneFocus = useCallback(() => {
     setDocumentOperationTarget("side");
   }, []);
-  const handleVisualMarkdownChange = useCallback((content: string, options?: { documentRevision?: number }) => {
+  const handleVisualMarkdownTabChange = useCallback((
+    tabId: string,
+    content: string,
+    options?: { documentRevision?: number }
+  ) => {
     if (isApplyingSourceToVisualSync()) return;
     if (syncingExternalDocumentHistoryRef.current) return;
     if (sourceMode) return;
@@ -3328,16 +3332,28 @@ function WorkspaceApp() {
     }
 
     if (splitMode && activeEditorSurface !== "source") setActiveEditorSurface("visual");
-    handleMarkdownChange(content, { ...options, surface: "visual" });
+    // IME completion can publish after another tab becomes active, so preserve the
+    // originating tab identity instead of writing through the current-document path.
+    routeMarkdownChangeToTab({
+      content,
+      documentRevision: options?.documentRevision,
+      handleMarkdownTabChange,
+      surface: "visual",
+      tabId
+    });
   }, [
     activeEditorSurface,
-    handleMarkdownChange,
+    handleMarkdownTabChange,
     isApplyingSourceToVisualSync,
     mainEditorReadOnly,
     sourceMode,
     splitMode
   ]);
-  const handleSourceMarkdownChange = useCallback((content: string, options?: { documentRevision?: number }) => {
+  const handleSourceMarkdownTabChange = useCallback((
+    tabId: string,
+    content: string,
+    options?: { documentRevision?: number }
+  ) => {
     if (mainEditorReadOnly) return;
     if (
       content !== document.content &&
@@ -3348,15 +3364,29 @@ function WorkspaceApp() {
 
     markSourceEditForHistory(content, options);
     if (splitMode) setActiveEditorSurface("source");
-    handleMarkdownChange(content, { ...options, surface: "source" });
+    routeMarkdownChangeToTab({
+      content,
+      documentRevision: options?.documentRevision,
+      handleMarkdownTabChange,
+      surface: "source",
+      tabId
+    });
   }, [
     document.content,
     document.revision,
-    handleMarkdownChange,
+    handleMarkdownTabChange,
     markSourceEditForHistory,
     mainEditorReadOnly,
     splitMode
   ]);
+  const handleSourceMarkdownChange = useCallback((
+    content: string,
+    options?: { documentRevision?: number }
+  ) => {
+    if (!activeTabId) return;
+
+    handleSourceMarkdownTabChange(activeTabId, content, options);
+  }, [activeTabId, handleSourceMarkdownTabChange]);
   const syncSplitPaneScrollPosition = useCallback((sourceSurface: EditorSurface, sourceElement: HTMLElement) => {
     if (!splitMode) return false;
 
@@ -3776,11 +3806,36 @@ function WorkspaceApp() {
       path: document.path
     };
   }, [activeImageFile, document.content, document.name, document.path, hasOpenDocument]);
+  const commitActiveVisualMarkdown = useCallback(() => {
+    if (!activeTabId) return;
+    if (editorMode === "source") return;
+    if (editorMode === "split" && activeEditorSurface === "source") return;
+
+    const activeVisualEditor = mainVisualEditorsRef.current.get(activeTabId);
+    if (!activeVisualEditor) return;
+
+    handleVisualMarkdownTabChange(
+      activeTabId,
+      getMarkdownFromEditor(activeVisualEditor, document.content),
+      { documentRevision: document.revision }
+    );
+  }, [
+    activeEditorSurface,
+    activeTabId,
+    document.content,
+    document.revision,
+    editorMode,
+    getMarkdownFromEditor,
+    handleVisualMarkdownTabChange
+  ]);
   const handleEditorModeSelect = useCallback((nextMode: EditorMode) => {
     if (!sourceModeAvailable) return;
     if (nextMode === editorMode) return;
 
     captureActiveDocumentViewState();
+    // IME changes can still be pending in the visual surface when source mode
+    // mounts, so snapshot the originating editor before changing surfaces.
+    commitActiveVisualMarkdown();
 
     if (nextMode === "visual") {
       if (sourceMode) syncSourceEditsToVisualHistory();
@@ -3806,6 +3861,7 @@ function WorkspaceApp() {
     captureActiveDocumentViewState,
     clearActiveTextSelection,
     clearSideDocumentGroup,
+    commitActiveVisualMarkdown,
     editorMode,
     queueEditorModeScroll,
     sideDocumentGroup,
@@ -3833,18 +3889,6 @@ function WorkspaceApp() {
     compactMode.trueMobile,
     notebookSwitch.switchDesktopNotebook,
     openMobileNotebookDialog,
-    primaryWindowOwner
-  ]);
-  const handleOpenRecentMarkdownFolder = useCallback(async (folder: RecentMarkdownFolder) => {
-    if (compactMode.trueMobile) return;
-    if (primaryWindowOwner) {
-      await notebookSwitch.switchDesktopNotebook(folder.path);
-      return;
-    }
-    await requestPrimaryNotebookSwitch({ path: folder.path, source: "recent" });
-  }, [
-    compactMode.trueMobile,
-    notebookSwitch.switchDesktopNotebook,
     primaryWindowOwner
   ]);
   const handleOpenContainingFolder = useCallback((path: string) => {
@@ -4367,15 +4411,11 @@ function WorkspaceApp() {
               onEditorReady={(readyEditor, disposedEditor) =>
                 handleMainVisualEditorReady(tab.id, readyEditor, disposedEditor)
               }
-              onMarkdownChange={(content) => {
-                const options = { documentRevision: tab.revision };
-                if (tabActive) {
-                  handleVisualMarkdownChange(content, options);
-                  return;
-                }
-
-                handleMarkdownTabChange(tab.id, content, { ...options, surface: "visual" });
-              }}
+              onMarkdownChange={(content) => handleVisualMarkdownTabChange(
+                tab.id,
+                content,
+                { documentRevision: tab.revision }
+              )}
               onContentWidthChange={editorWidthResizerVisible ? handleEditorContentWidthChange : undefined}
               onContentWidthResizeEnd={editorWidthResizerVisible ? handleEditorContentWidthResizeEnd : undefined}
               onSaveEditorResources={(request) => handleSaveEditorResources(request, tab.path)}
@@ -4387,6 +4427,7 @@ function WorkspaceApp() {
               revision={tab.revision}
               onScroll={tabActive ? handleVisualPaneScroll : undefined}
               scrollRef={tabActive ? visualScrollRef : undefined}
+              hideHeadingMarkersOnFocus={editorPreferences.preferences.hideHeadingMarkersOnFocus}
               tableColumnWidthMode={editorPreferences.preferences.tableColumnWidthMode}
               topInset="titlebar"
               typewriterModeEnabled={editorPreferences.preferences.typewriterModeEnabled}
@@ -4723,9 +4764,6 @@ function WorkspaceApp() {
             open: visibleFileTreeOpen,
             outlineItems,
             outlineVisible: viewModeChrome.outline,
-            recentFolders: notebookSwitch.recentNotebooks,
-            recentFoldersOpen: recentMarkdownFoldersOpen,
-            recentFoldersVisible: viewModeChrome.recentFolders,
             revealPathRequest: fileTreeRevealPathRequest,
             resizing: fileTreeResizing,
             rootPath: fileTree.sourcePath,
@@ -4751,14 +4789,9 @@ function WorkspaceApp() {
               ? handleOpenTreeFileToSide
               : undefined,
             onOpenFolder: handleOpenMarkdownFolder,
-            onOpenRecentFolder: handleOpenRecentMarkdownFolder,
             onOpenSettings: handleOpenSettings,
             onSyncNow: sidebarSyncAvailable ? runApplicationSyncNow : undefined,
             onInstallAvailableUpdate: appUpdater.installAvailableUpdate,
-            onRecentFoldersOpenChange: setRecentMarkdownFoldersOpen,
-            onRemoveRecentFolder: primaryWindowOwner
-              ? (folder) => notebookSwitch.removeRecentNotebook(folder.path)
-              : undefined,
             onRenameFile: handleRenameMarkdownTreeFile,
             onResize: compactViewport ? undefined : resizeFileTree,
             onResizeEnd: compactViewport ? undefined : endFileTreeResize,
@@ -4849,6 +4882,7 @@ function WorkspaceApp() {
                       </div>
                       <div className="min-h-0 overflow-hidden" onFocusCapture={handleSourcePaneFocus}>
                         <LazyMarkdownSourceEditor
+                          key={activeTabId ?? "untitled:0"}
                           autoFocus={activeEditorSurface === "source"}
                           bottomOverlayInset={quietStatusOverlayInset}
                           bodyFontSize={editorPreferences.preferences.bodyFontSize}
@@ -4859,9 +4893,13 @@ function WorkspaceApp() {
                           extendedSyntax={editorPreferences.preferences.extendedSyntax}
                           language={appLanguage.language}
                           lineHeight={editorPreferences.preferences.lineHeight}
-                          onChange={(content) => handleSourceMarkdownChange(content, {
-                            documentRevision: document.revision
-                          })}
+                          onChange={(content) => handleSourceMarkdownTabChange(
+                            activeTabId ?? "untitled:0",
+                            content,
+                            {
+                              documentRevision: document.revision
+                            }
+                          )}
                           onContentWidthChange={editorWidthResizerVisible ? handleEditorContentWidthChange : undefined}
                           onContentWidthResizeEnd={editorWidthResizerVisible ? handleEditorContentWidthResizeEnd : undefined}
                           onScroll={handleSourcePaneScroll}
@@ -4882,6 +4920,7 @@ function WorkspaceApp() {
                       {mainVisualEditors}
                       {sourceMode ? (
                         <LazyMarkdownSourceEditor
+                          key={activeTabId ?? "untitled:0"}
                           autoFocus
                           bottomOverlayInset={quietStatusOverlayInset}
                           bodyFontSize={editorPreferences.preferences.bodyFontSize}
@@ -4892,9 +4931,13 @@ function WorkspaceApp() {
                           extendedSyntax={editorPreferences.preferences.extendedSyntax}
                           language={appLanguage.language}
                           lineHeight={editorPreferences.preferences.lineHeight}
-                          onChange={(content) => handleSourceMarkdownChange(content, {
-                            documentRevision: document.revision
-                          })}
+                          onChange={(content) => handleSourceMarkdownTabChange(
+                            activeTabId ?? "untitled:0",
+                            content,
+                            {
+                              documentRevision: document.revision
+                            }
+                          )}
                           onContentWidthChange={editorWidthResizerVisible ? handleEditorContentWidthChange : undefined}
                           onContentWidthResizeEnd={editorWidthResizerVisible ? handleEditorContentWidthResizeEnd : undefined}
                           onScroll={handleSourcePaneScroll}
@@ -4962,6 +5005,7 @@ function WorkspaceApp() {
                         resolveImageSrc={resolveSideDocumentImageSrc}
                         revision={sideDocumentTab.revision}
                         sizeBytes={sideDocumentTab.sizeBytes}
+                        hideHeadingMarkersOnFocus={editorPreferences.preferences.hideHeadingMarkersOnFocus}
                         showLineNumbers={editorPreferences.preferences.showLineNumbers}
                         status={viewModeChrome.statusBar ? (
                           <QuietStatus

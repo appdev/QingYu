@@ -33,6 +33,7 @@ type SideDocumentPaneProps = {
   resolveImageSrc?: (src: string) => string;
   revision: number;
   sizeBytes?: number;
+  hideHeadingMarkersOnFocus?: boolean;
   showLineNumbers?: boolean;
   status?: ReactNode;
   tableColumnWidthMode?: TableColumnWidthModePreference;
@@ -74,6 +75,7 @@ export function SideDocumentPane({
   resolveImageSrc,
   revision,
   sizeBytes,
+  hideHeadingMarkersOnFocus = false,
   showLineNumbers = false,
   status = null,
   tableColumnWidthMode = "auto",
@@ -147,6 +149,7 @@ export function SideDocumentPane({
           readOnly={readOnly}
           resolveImageSrc={resolveImageSrc}
           revision={revision}
+          hideHeadingMarkersOnFocus={hideHeadingMarkersOnFocus}
           tableColumnWidthMode={tableColumnWidthMode}
           topInset="titlebar"
           typewriterModeEnabled={typewriterModeEnabled}

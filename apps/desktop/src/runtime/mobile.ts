@@ -99,7 +99,6 @@ export const mobileRuntime = {
       canOpenDirectory: false
     },
     commitActivation: themes.commitNativeThemeActivation,
-    confirmActivation: themes.confirmNativeThemeActivation,
     delete: themes.deleteNativeTheme,
     list: themes.listNativeThemes,
     prepareActivation: themes.prepareNativeThemeActivation,

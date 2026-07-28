@@ -38,6 +38,10 @@ export type SyncSettingsProps = {
   translate: SettingsTranslate;
   onEnable: () => Promise<unknown>;
   onOpenConflictHistory: (conflict: SyncConflictRecord) => unknown;
+  onRepositoryIdentityChange?: (identity: {
+    notesRoot: string | null;
+    repositoryId: string | null;
+  }) => unknown;
   onPatch: (patch: SyncConfigPatch) => Promise<unknown>;
   onReset: () => Promise<unknown>;
   onRunSync: () => Promise<unknown>;
@@ -279,6 +283,7 @@ export function SyncSettings({
   loadResult,
   onEnable,
   onOpenConflictHistory,
+  onRepositoryIdentityChange,
   onPatch,
   onReset,
   onRunSync,
@@ -408,6 +413,13 @@ export function SyncSettings({
       cleanup?.();
     };
   }, [primaryRoot]);
+
+  useEffect(() => {
+    onRepositoryIdentityChange?.({
+      notesRoot: primaryRoot,
+      repositoryId: dejavuRepositoryStatus?.repositoryId ?? null
+    });
+  }, [dejavuRepositoryStatus?.repositoryId, onRepositoryIdentityChange, primaryRoot]);
 
   useEffect(() => {
     setDraft((current) => {

@@ -18,9 +18,9 @@
           appearanceMode === "light" || (appearanceMode === "system" && !prefersDark) ? "light" : "dark";
         const theme =
           resolvedAppearance === "dark"
-            ? params.get("startupDarkTheme") || "dark"
-            : params.get("startupLightTheme") || "light";
-        const background = resolvedAppearance === "dark" ? "#1e1e1e" : "#ffffff";
+            ? params.get("startupDarkTheme") || "wenkai-paper-dark"
+            : params.get("startupLightTheme") || "wenkai-paper-light";
+        const background = resolvedAppearance === "dark" ? "#23282d" : "#ffffff";
         const root = document.documentElement;
 
         if (isSettingsWindow) root.dataset.window = "settings";
@@ -35,9 +35,296 @@
         document.head.append(style);
       })();
     </script>
+    <style>
+      @keyframes qingyu-settings-startup-shimmer {
+        to {
+          transform: translateX(120%);
+        }
+      }
+
+      .settings-startup-shell {
+        --settings-startup-bg: #ffffff;
+        --settings-startup-sidebar: #ffffff;
+        --settings-startup-border: #ededed;
+        --settings-startup-block: #ededed;
+        --settings-startup-highlight: rgba(28, 93, 51, 0.1);
+        display: none;
+        height: 100vh;
+        grid-template-columns: 180px minmax(0, 1fr);
+        overflow: hidden;
+        background: var(--settings-startup-bg);
+      }
+
+      html[data-theme-appearance="dark"] .settings-startup-shell {
+        --settings-startup-bg: #23282d;
+        --settings-startup-sidebar: #23282d;
+        --settings-startup-border: #33373c;
+        --settings-startup-block: #363d45;
+        --settings-startup-highlight: rgba(84, 197, 159, 0.12);
+      }
+
+      html[data-window="settings"] .settings-startup-shell {
+        display: grid;
+      }
+
+      .settings-startup-sidebar {
+        display: flex;
+        min-height: 0;
+        flex-direction: column;
+        border-right: 1px solid var(--settings-startup-border);
+        background: var(--settings-startup-sidebar);
+      }
+
+      .settings-startup-sidebar-head {
+        display: flex;
+        min-height: 92px;
+        align-items: flex-end;
+        padding: 0 28px 20px;
+      }
+
+      .settings-startup-nav {
+        display: flex;
+        min-height: 0;
+        flex: 1;
+        flex-direction: column;
+        gap: 4px;
+        overflow: hidden;
+        padding: 0 12px;
+      }
+
+      .settings-startup-nav-item {
+        display: flex;
+        min-height: 36px;
+        align-items: center;
+        gap: 12px;
+        padding: 0 12px;
+      }
+
+      .settings-startup-sidebar-foot {
+        padding: 16px 28px;
+        border-top: 1px solid var(--settings-startup-border);
+      }
+
+      .settings-startup-content {
+        min-width: 0;
+        background: var(--settings-startup-bg);
+      }
+
+      .settings-startup-content-head {
+        display: flex;
+        min-height: 56px;
+        align-items: center;
+        padding: 0 28px;
+        border-bottom: 1px solid var(--settings-startup-border);
+      }
+
+      .settings-startup-content-body {
+        display: grid;
+        align-content: start;
+        gap: 32px;
+        padding: 28px 32px;
+      }
+
+      .settings-startup-section {
+        display: grid;
+        gap: 12px;
+      }
+
+      .settings-startup-row {
+        display: grid;
+        min-height: 60px;
+        grid-template-columns: minmax(0, 1fr) auto;
+        align-items: center;
+        gap: 20px;
+        border-bottom: 1px solid var(--settings-startup-border);
+        padding: 16px 0;
+      }
+
+      .settings-startup-copy {
+        display: grid;
+        min-width: 0;
+        gap: 8px;
+      }
+
+      .settings-startup-shimmer {
+        position: relative;
+        display: block;
+        overflow: hidden;
+        border-radius: 4px;
+        background: var(--settings-startup-block);
+      }
+
+      .settings-startup-shimmer::after {
+        position: absolute;
+        inset: 0;
+        background: linear-gradient(
+          90deg,
+          transparent,
+          var(--settings-startup-highlight),
+          transparent
+        );
+        content: "";
+        transform: translateX(-120%);
+        animation: qingyu-settings-startup-shimmer 1.45s cubic-bezier(0.16, 1, 0.3, 1) infinite;
+      }
+
+      .settings-startup-title {
+        width: 64px;
+        height: 16px;
+      }
+
+      .settings-startup-icon {
+        width: 16px;
+        height: 16px;
+        flex: 0 0 16px;
+        border-radius: 50%;
+      }
+
+      .settings-startup-nav-line {
+        width: 72px;
+        height: 12px;
+      }
+
+      .settings-startup-heading {
+        width: min(96px, 40%);
+        height: 16px;
+      }
+
+      .settings-startup-section-line {
+        width: min(56px, 24%);
+        height: 12px;
+      }
+
+      .settings-startup-copy-line {
+        width: min(256px, 62%);
+        height: 12px;
+      }
+
+      .settings-startup-copy-line-secondary {
+        width: min(360px, 88%);
+        height: 8px;
+      }
+
+      .settings-startup-control {
+        width: 64px;
+        height: 32px;
+      }
+
+      .settings-startup-switch {
+        width: 40px;
+        height: 24px;
+        border-radius: 24px;
+      }
+
+      @media (max-width: 700px) {
+        .settings-startup-shell {
+          grid-template-columns: minmax(0, 1fr);
+          grid-template-rows: auto minmax(0, 1fr);
+        }
+
+        .settings-startup-sidebar {
+          flex: none;
+          border-right: 0;
+          border-bottom: 1px solid var(--settings-startup-border);
+        }
+
+        .settings-startup-sidebar-head,
+        .settings-startup-sidebar-foot {
+          display: none;
+        }
+
+        .settings-startup-nav {
+          flex: none;
+          flex-direction: row;
+          padding: 8px;
+        }
+
+        .settings-startup-nav-item {
+          flex: 0 0 auto;
+        }
+
+        .settings-startup-content-head {
+          min-height: 48px;
+          padding: 0 16px;
+        }
+      }
+
+      @media (max-width: 520px) {
+        .settings-startup-content-body {
+          padding: 24px 16px;
+        }
+
+        .settings-startup-row {
+          grid-template-columns: minmax(0, 1fr);
+          gap: 8px;
+        }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        .settings-startup-shimmer::after {
+          animation: none;
+          opacity: 0.35;
+          transform: none;
+        }
+      }
+    </style>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <main class="settings-startup-shell" aria-busy="true" aria-label="QingYu">
+        <aside class="settings-startup-sidebar" aria-hidden="true">
+          <div class="settings-startup-sidebar-head">
+            <span class="settings-startup-shimmer settings-startup-title"></span>
+          </div>
+          <div class="settings-startup-nav">
+            <div class="settings-startup-nav-item"><span class="settings-startup-shimmer settings-startup-icon"></span><span class="settings-startup-shimmer settings-startup-nav-line"></span></div>
+            <div class="settings-startup-nav-item"><span class="settings-startup-shimmer settings-startup-icon"></span><span class="settings-startup-shimmer settings-startup-nav-line"></span></div>
+            <div class="settings-startup-nav-item"><span class="settings-startup-shimmer settings-startup-icon"></span><span class="settings-startup-shimmer settings-startup-nav-line"></span></div>
+            <div class="settings-startup-nav-item"><span class="settings-startup-shimmer settings-startup-icon"></span><span class="settings-startup-shimmer settings-startup-nav-line"></span></div>
+            <div class="settings-startup-nav-item"><span class="settings-startup-shimmer settings-startup-icon"></span><span class="settings-startup-shimmer settings-startup-nav-line"></span></div>
+            <div class="settings-startup-nav-item"><span class="settings-startup-shimmer settings-startup-icon"></span><span class="settings-startup-shimmer settings-startup-nav-line"></span></div>
+            <div class="settings-startup-nav-item"><span class="settings-startup-shimmer settings-startup-icon"></span><span class="settings-startup-shimmer settings-startup-nav-line"></span></div>
+            <div class="settings-startup-nav-item"><span class="settings-startup-shimmer settings-startup-icon"></span><span class="settings-startup-shimmer settings-startup-nav-line"></span></div>
+          </div>
+          <div class="settings-startup-sidebar-foot">
+            <span class="settings-startup-shimmer settings-startup-nav-line"></span>
+          </div>
+        </aside>
+
+        <section class="settings-startup-content" aria-hidden="true">
+          <header class="settings-startup-content-head">
+            <span class="settings-startup-shimmer settings-startup-heading"></span>
+          </header>
+          <div class="settings-startup-content-body">
+            <section class="settings-startup-section">
+              <span class="settings-startup-shimmer settings-startup-section-line"></span>
+              <div class="settings-startup-row">
+                <div class="settings-startup-copy"><span class="settings-startup-shimmer settings-startup-copy-line"></span><span class="settings-startup-shimmer settings-startup-copy-line-secondary"></span></div>
+                <span class="settings-startup-shimmer settings-startup-control"></span>
+              </div>
+            </section>
+            <section class="settings-startup-section">
+              <span class="settings-startup-shimmer settings-startup-section-line"></span>
+              <div class="settings-startup-row">
+                <div class="settings-startup-copy"><span class="settings-startup-shimmer settings-startup-copy-line"></span><span class="settings-startup-shimmer settings-startup-copy-line-secondary"></span></div>
+                <span class="settings-startup-shimmer settings-startup-switch"></span>
+              </div>
+              <div class="settings-startup-row">
+                <div class="settings-startup-copy"><span class="settings-startup-shimmer settings-startup-copy-line"></span><span class="settings-startup-shimmer settings-startup-copy-line-secondary"></span></div>
+                <span class="settings-startup-shimmer settings-startup-control"></span>
+              </div>
+            </section>
+            <section class="settings-startup-section">
+              <span class="settings-startup-shimmer settings-startup-section-line"></span>
+              <div class="settings-startup-row">
+                <div class="settings-startup-copy"><span class="settings-startup-shimmer settings-startup-copy-line"></span><span class="settings-startup-shimmer settings-startup-copy-line-secondary"></span></div>
+                <span class="settings-startup-shimmer settings-startup-switch"></span>
+              </div>
+            </section>
+          </div>
+        </section>
+      </main>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

@@ -90,6 +90,7 @@ export interface CodeMirrorPaperSurfaceProps {
   plugins?: readonly MarkraPlugin[];
   readOnly?: boolean;
   resolveImageSrc?: (src: string) => string;
+  hideHeadingMarkersOnFocus?: boolean;
   tableColumnWidthMode?: TableColumnWidthModePreference;
   typewriterModeEnabled?: boolean;
   vimModeEnabled?: boolean;
@@ -118,6 +119,7 @@ interface MarkdownExtensionOptions {
   openExternalUrl: () => ((url: string) => unknown) | undefined;
   openLocalAttachment: () => ((src: string) => unknown) | undefined;
   resolveImageSrc: (source: string) => string | undefined;
+  hideHeadingMarkersOnFocus: boolean;
   plugins: readonly MarkraPlugin[];
   shortcuts?: MarkdownShortcutMap;
   tableColumnWidthMode: TableColumnWidthModePreference;
@@ -131,6 +133,7 @@ function markdownExtension({
   openExternalUrl,
   openLocalAttachment,
   resolveImageSrc,
+  hideHeadingMarkersOnFocus,
   plugins,
   shortcuts,
   tableColumnWidthMode,
@@ -166,6 +169,7 @@ function markdownExtension({
   return liveMarkdown({
     highlight: extendedSyntax?.highlight ?? true,
     resolveLinkTarget: linkOptions?.resolveTarget,
+    hideHeadingMarkersOnFocus,
     plugins: [
       blocksPlugin({
         callout: extendedSyntax?.githubAlerts ?? true,
@@ -319,6 +323,7 @@ export function CodeMirrorPaperSurface({
   plugins = emptyPlugins,
   readOnly = false,
   resolveImageSrc,
+  hideHeadingMarkersOnFocus = false,
   tableColumnWidthMode = "auto",
   typewriterModeEnabled = false,
   vimModeEnabled = false,
@@ -425,6 +430,7 @@ export function CodeMirrorPaperSurface({
               openExternalUrl: () => openExternalUrlRef.current,
               openLocalAttachment: () => openLocalAttachmentRef.current,
               resolveImageSrc: (source) => resolveImageSrcRef.current?.(source),
+              hideHeadingMarkersOnFocus,
               plugins,
               shortcuts: markdownShortcuts,
               tableColumnWidthMode,
@@ -552,6 +558,7 @@ export function CodeMirrorPaperSurface({
           openExternalUrl: () => openExternalUrlRef.current,
           openLocalAttachment: () => openLocalAttachmentRef.current,
           resolveImageSrc: (source) => resolveImageSrcRef.current?.(source),
+          hideHeadingMarkersOnFocus,
           plugins,
           shortcuts: markdownShortcuts,
           tableColumnWidthMode,
@@ -566,6 +573,7 @@ export function CodeMirrorPaperSurface({
     Boolean(openExternalUrl),
     Boolean(openLocalAttachment),
     plugins,
+    hideHeadingMarkersOnFocus,
     tableColumnWidthMode,
   ]);
 

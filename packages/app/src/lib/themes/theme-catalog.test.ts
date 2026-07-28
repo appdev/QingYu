@@ -1,7 +1,8 @@
 import {
   mergeThemeCatalog,
   protectedThemeDescriptors,
-  type ThemeCatalogSnapshot
+  type ThemeCatalogSnapshot,
+  type ThemeDescriptor
 } from "./theme-catalog";
 
 describe("theme catalog", () => {
@@ -65,6 +66,24 @@ describe("theme catalog", () => {
     };
 
     expect(mergeThemeCatalog(native).darkThemes[1]?.storageKind).toBe("resourceDirectory");
+  });
+
+  it("keeps bundled resource themes in the selectable catalog", () => {
+    const bundled: ThemeDescriptor = {
+      appearance: "light",
+      author: "轻语",
+      fileName: "wenkai-paper-light",
+      fingerprint: "c".repeat(64),
+      id: "wenkai-paper-light",
+      name: "轻语 · 文楷纸白",
+      preview: { accent: "#1c5d33", background: "#ffffff", panel: "#f5f5f5", text: "#202124" },
+      source: "bundled",
+      storageKind: "resourceDirectory"
+    };
+
+    const merged = mergeThemeCatalog({ invalidFiles: [], themes: [bundled] });
+
+    expect(merged.lightThemes.map(({ id }) => id)).toEqual(["light", "wenkai-paper-light"]);
   });
 
   it("exposes exactly two protected defaults", () => {

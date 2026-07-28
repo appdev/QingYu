@@ -23,6 +23,8 @@ use crate::storage_capability::{
 };
 
 const SETTINGS_STORE_PATH: &str = "settings.json";
+pub(crate) const DEFAULT_LIGHT_THEME_ID: &str = "wenkai-paper-light";
+pub(crate) const DEFAULT_DARK_THEME_ID: &str = "wenkai-paper-dark";
 const APPEARANCE_MODE_KEY: &str = "appearanceMode";
 const LIGHT_THEME_KEY: &str = "lightThemeId";
 const DARK_THEME_KEY: &str = "darkThemeId";
@@ -436,8 +438,8 @@ impl AppSettingsService {
                 }
                 Ok(Some(json!({
                     "appearanceMode": mode.unwrap_or_else(|| json!("system")),
-                    "lightTheme": light.unwrap_or_else(|| json!("light")),
-                    "darkTheme": dark.unwrap_or_else(|| json!("dark")),
+                    "lightTheme": light.unwrap_or_else(|| json!(DEFAULT_LIGHT_THEME_ID)),
+                    "darkTheme": dark.unwrap_or_else(|| json!(DEFAULT_DARK_THEME_ID)),
                 })))
             }
             AppSettingsGroup::CustomThemeCss => {
@@ -714,6 +716,8 @@ impl AppSettingsService {
             if let Some(mut value) = self.backend.get(key)? {
                 if key == EXPORT_SETTINGS_KEY {
                     value = portable_export_settings(value);
+                } else if key == EDITOR_PREFERENCES_KEY {
+                    value = portable_editor_preferences(value);
                 }
                 object.insert(key.to_string(), value);
             }
@@ -1223,7 +1227,11 @@ fn normalize_file_ignore_rules(rules: &str) -> String {
 }
 
 fn default_appearance() -> Value {
-    json!({ "appearanceMode": "system", "lightTheme": "light", "darkTheme": "dark" })
+    json!({
+        "appearanceMode": "system",
+        "lightTheme": DEFAULT_LIGHT_THEME_ID,
+        "darkTheme": DEFAULT_DARK_THEME_ID,
+    })
 }
 
 fn default_editor() -> Value {
@@ -1257,6 +1265,16 @@ fn default_export() -> Value {
 fn portable_export_settings(mut value: Value) -> Value {
     if let Some(settings) = value.as_object_mut() {
         settings.remove("pandocPath");
+    }
+    value
+}
+
+fn portable_editor_preferences(mut value: Value) -> Value {
+    if let Some(customizations) = value
+        .get_mut("viewModeCustomizations")
+        .and_then(Value::as_object_mut)
+    {
+        customizations.remove("recentFolders");
     }
     value
 }
@@ -1418,6 +1436,7 @@ fn valid_portable_editor_preferences(value: &Value) -> bool {
         "lineHeight",
         "markdownShortcuts",
         "markdownTemplates",
+        "openDroppedFilesInTabs",
         "paragraphSpacingPx",
         "restoreWorkspaceOnStartup",
         "sidebarLayoutMode",
@@ -1430,6 +1449,7 @@ fn valid_portable_editor_preferences(value: &Value) -> bool {
         "viewModeCustomizations",
         "showLineNumbers",
         "showWordCount",
+        "hideHeadingMarkersOnFocus",
         "vimModeEnabled",
         "wrapCodeBlocks",
     ];
@@ -1442,6 +1462,8 @@ fn valid_portable_editor_preferences(value: &Value) -> bool {
         | "autoUpdateEnabled"
         | "documentLinksOpen"
         | "documentLinksVisible"
+        | "hideHeadingMarkersOnFocus"
+        | "openDroppedFilesInTabs"
         | "restoreWorkspaceOnStartup"
         | "showDocumentTabs"
         | "showLineNumbers"
@@ -1769,17 +1791,21 @@ fn valid_view_mode_customizations(value: &Value) -> bool {
         "openButton",
         "outline",
         "quickCreateButton",
-        "recentFolders",
         "sidebarLayout",
         "statusBar",
         "titlebarActions",
         "viewModeToggle",
         "wordCount",
     ];
-    object_has_exact(value, KEYS).is_some_and(|object| {
+    value.as_object().is_some_and(|object| {
         object
-            .values()
-            .all(|visibility| string_in(visibility, &["visible", "hidden"]))
+            .keys()
+            .all(|key| KEYS.contains(&key.as_str()) || key == "recentFolders")
+            && KEYS.iter().all(|key| {
+                object
+                    .get(*key)
+                    .is_some_and(|visibility| string_in(visibility, &["visible", "hidden"]))
+            })
     })
 }
 
@@ -1940,6 +1966,8 @@ pub(crate) fn portable_settings_from_bytes(
         if let Some(mut value) = raw.get(key).cloned() {
             if key == EXPORT_SETTINGS_KEY {
                 value = portable_export_settings(value);
+            } else if key == EDITOR_PREFERENCES_KEY {
+                value = portable_editor_preferences(value);
             }
             portable.insert(key.to_string(), value);
         }
@@ -1955,8 +1983,8 @@ fn portable_event_groups(
         .ok_or_else(AppSettingsError::reconcile_failed)?;
     let appearance = json!({
         "appearanceMode": object.get(APPEARANCE_MODE_KEY).cloned().unwrap_or_else(|| json!("system")),
-        "lightTheme": object.get(LIGHT_THEME_KEY).cloned().unwrap_or_else(|| json!("light")),
-        "darkTheme": object.get(DARK_THEME_KEY).cloned().unwrap_or_else(|| json!("dark")),
+        "lightTheme": object.get(LIGHT_THEME_KEY).cloned().unwrap_or_else(|| json!(DEFAULT_LIGHT_THEME_ID)),
+        "darkTheme": object.get(DARK_THEME_KEY).cloned().unwrap_or_else(|| json!(DEFAULT_DARK_THEME_ID)),
     });
     let custom_css = json!({
         "light": object.get("lightCustomThemeCss").cloned().unwrap_or(Value::Null),
@@ -2224,6 +2252,27 @@ mod tests {
     }
 
     #[test]
+    fn partial_appearance_settings_use_the_bundled_wenkai_defaults() {
+        let backend = Arc::new(MemoryBackend::with([(
+            APPEARANCE_MODE_KEY,
+            json!("system"),
+        )]));
+        let appearance = service_with_backend(backend)
+            .read_group(AppSettingsGroup::Appearance)
+            .expect("read appearance settings")
+            .expect("partial appearance settings");
+
+        assert_eq!(
+            appearance,
+            json!({
+                "appearanceMode": "system",
+                "lightTheme": "wenkai-paper-light",
+                "darkTheme": "wenkai-paper-dark",
+            })
+        );
+    }
+
+    #[test]
     fn exposed_read_omits_unapproved_store_keys() {
         let backend = Arc::new(MemoryBackend::with([
             ("workspace", json!({ "path": "/private/notes" })),
@@ -2290,6 +2339,8 @@ mod tests {
         assert!(emitted.iter().any(|(event, payload)| {
             event == "markra://theme-changed"
                 && payload["preferences"]["appearanceMode"] == json!("system")
+                && payload["preferences"]["lightTheme"] == json!("wenkai-paper-light")
+                && payload["preferences"]["darkTheme"] == json!("wenkai-paper-dark")
         }));
         assert!(emitted
             .iter()
@@ -2530,6 +2581,21 @@ mod tests {
     fn portable_settings_validator_accepts_the_complete_cross_language_golden_store() {
         validate_portable_settings_bytes(&serde_json::to_vec(&portable_golden_store()).unwrap())
             .unwrap();
+    }
+
+    #[test]
+    fn legacy_recent_folders_is_inert_in_canonical_portable_settings() {
+        let mut legacy = portable_golden_store();
+        legacy["editorPreferences"]["viewModeCustomizations"]["recentFolders"] =
+            json!("malformed-but-ignored");
+        let bytes = serde_json::to_vec(&legacy).unwrap();
+
+        validate_portable_settings_bytes(&bytes).unwrap();
+        let canonical = portable_settings_from_bytes(Some(&bytes)).unwrap();
+
+        assert!(canonical["editorPreferences"]["viewModeCustomizations"]
+            .get("recentFolders")
+            .is_none());
     }
 
     #[test]
@@ -2810,6 +2876,26 @@ mod tests {
 
         assert_eq!(value[LANGUAGE_KEY], json!("zh-CN"));
         assert!(value.get("mcp").is_none());
+    }
+
+    #[test]
+    fn portable_snapshot_omits_legacy_recent_folders_without_migrating_the_store() {
+        let mut preferences = portable_golden_store()[EDITOR_PREFERENCES_KEY].clone();
+        preferences["viewModeCustomizations"]["recentFolders"] = json!("hidden");
+        let backend = Arc::new(MemoryBackend::with([(EDITOR_PREFERENCES_KEY, preferences)]));
+        let service = service_with_backend(backend.clone());
+
+        let snapshot = service.portable_settings_snapshot().unwrap();
+        let value: Value = serde_json::from_slice(snapshot.bytes().unwrap()).unwrap();
+
+        assert!(value[EDITOR_PREFERENCES_KEY]["viewModeCustomizations"]
+            .get("recentFolders")
+            .is_none());
+        assert!(
+            backend.values.lock().unwrap()[EDITOR_PREFERENCES_KEY]["viewModeCustomizations"]
+                .get("recentFolders")
+                .is_some()
+        );
     }
 
     #[test]

@@ -1,9 +1,6 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { configureAppRuntime, createDefaultAppRuntime, resetAppRuntimeForTests } from "../runtime";
-import {
-  approveThemeFingerprint,
-  type AppThemePreferences
-} from "../lib/settings/app-settings";
+import type { AppThemePreferences } from "../lib/settings/app-settings";
 import {
   protectedThemeDescriptors,
   type ThemeActivationPayload,
@@ -57,6 +54,30 @@ const midnight: ThemeDescriptor = {
   storageKind: "resourceDirectory"
 };
 
+const wenkaiPaperLight: ThemeDescriptor = {
+  appearance: "light",
+  author: "轻语",
+  fileName: null,
+  fingerprint: "e".repeat(64),
+  id: "wenkai-paper-light",
+  name: "轻语 · 文楷纸白",
+  preview: { accent: "#1c5d33", background: "#ffffff", panel: "#f7f7f7", text: "#262626" },
+  source: "bundled",
+  storageKind: "resourceDirectory"
+};
+
+const wenkaiPaperDark: ThemeDescriptor = {
+  appearance: "dark",
+  author: "轻语",
+  fileName: null,
+  fingerprint: "f".repeat(64),
+  id: "wenkai-paper-dark",
+  name: "轻语 · 文楷夜读",
+  preview: { accent: "#54c59f", background: "#23282d", panel: "#282e33", text: "#e7e9ea" },
+  source: "bundled",
+  storageKind: "resourceDirectory"
+};
+
 function deferred<T>() {
   let resolvePromise: (value: T) => unknown = () => undefined;
   const promise = new Promise<T>((resolve) => {
@@ -106,7 +127,7 @@ function dispatchStylesheetEvent(link: HTMLLinkElement, type: "error" | "load") 
   });
 }
 
-function runtimeWithThemes(preferences: AppThemePreferences, themes: ThemeDescriptor[]) {
+function runtimeWithThemes(preferences: AppThemePreferences | null, themes: ThemeDescriptor[]) {
   const runtime = createDefaultAppRuntime();
   runtime.settings.readGroup = vi.fn(async (group) => group === "appearance" ? preferences : null) as typeof runtime.settings.readGroup;
   runtime.settings.writeGroup = vi.fn(async () => undefined);
@@ -130,7 +151,6 @@ function runtimeWithThemes(preferences: AppThemePreferences, themes: ThemeDescri
   runtime.themes.commitActivation = vi.fn(async () => undefined);
   runtime.themes.cancelActivation = vi.fn(async () => undefined);
   runtime.themes.releaseActivation = vi.fn(async () => undefined);
-  runtime.themes.confirmActivation = vi.fn(async () => true);
   configureAppRuntime(runtime);
   return runtime;
 }
@@ -174,72 +194,92 @@ describe("useAppTheme", () => {
     expect(document.documentElement).not.toHaveAttribute("data-theme-transition");
   });
 
-  it("loads and confirms an unapproved stored third-party fingerprint", async () => {
+  it("activates the bundled WenKai theme when no appearance preference exists", async () => {
+    const runtime = runtimeWithThemes(null, [wenkaiPaperLight, wenkaiPaperDark]);
+    const { result } = renderHook(() => useAppTheme());
+    const candidate = await waitForCandidate("wenkai-paper-light-token");
+
+    dispatchStylesheetEvent(candidate, "load");
+
+    await waitFor(() => expect(result.current.ready).toBe(true));
+
+    expect(result.current.themePreferences).toEqual({
+      appearanceMode: "system",
+      darkTheme: "wenkai-paper-dark",
+      lightTheme: "wenkai-paper-light"
+    });
+    expect(runtime.themes.prepareActivation).toHaveBeenCalledWith(
+      "wenkai-paper-light",
+      wenkaiPaperLight.fingerprint
+    );
+    expect(document.documentElement.dataset.theme).toBe("wenkai-paper-light");
+  });
+
+  it("loads a stored third-party theme without a confirmation transaction", async () => {
     const runtime = runtimeWithThemes({ appearanceMode: "dark", darkTheme: "nord", lightTheme: "light" }, [nord]);
     const { result } = renderHook(() => useAppTheme());
 
     await waitFor(() => expect(result.current.ready).toBe(true));
 
     expect(runtime.themes.prepareActivation).toHaveBeenCalledWith("nord", nord.fingerprint);
-    expect(runtime.themes.confirmActivation).toHaveBeenCalledWith("Nord");
     expect(runtime.themes.commitActivation).toHaveBeenCalledWith("nord-token");
     expect(document.documentElement.dataset.theme).toBe("nord");
     expect(document.documentElement.dataset.themeAppearance).toBe("dark");
     expect(document.getElementById("markra-third-party-theme-style")?.textContent).toContain("--loaded-theme: nord");
   });
 
-  it("does not persist a preview selection until confirmation succeeds", async () => {
-    const runtime = runtimeWithThemes({ appearanceMode: "light", darkTheme: "dark", lightTheme: "light" }, [sepia]);
-    let resolveConfirmation: (accepted: boolean) => unknown = () => undefined;
-    runtime.themes.confirmActivation = vi.fn(() => new Promise<boolean>((resolve) => {
-      resolveConfirmation = resolve;
-    }));
-    const { result } = renderHook(() => useAppTheme());
-    await waitFor(() => expect(result.current.ready).toBe(true));
-
-    act(() => result.current.selectTheme(sepia));
-    await waitFor(() => expect(runtime.themes.confirmActivation).toHaveBeenCalledWith("Sepia"));
-    expect(runtime.settings.writeGroup).not.toHaveBeenCalled();
-
-    await act(async () => resolveConfirmation(true));
-    await waitFor(() => expect(runtime.settings.writeGroup).toHaveBeenCalledWith("appearance", expect.objectContaining({ lightTheme: "sepia" })));
-    expect(result.current.lightTheme).toBe("sepia");
-  });
-
-  it("restores the previous protected theme when guarded preview is rejected", async () => {
-    const runtime = runtimeWithThemes({ appearanceMode: "light", darkTheme: "dark", lightTheme: "light" }, [sepia]);
-    runtime.themes.confirmActivation = vi.fn(async () => false);
+  it("persists a third-party selection immediately while its activation prepares", async () => {
+    const runtime = runtimeWithThemes(
+      { appearanceMode: "light", darkTheme: "dark", lightTheme: "light" },
+      [sepia]
+    );
+    const pending = deferred<ThemeActivationPayload>();
+    runtime.themes.prepareActivation = vi.fn(() => pending.promise);
     const { result } = renderHook(() => useAppTheme());
     await waitFor(() => expect(result.current.ready).toBe(true));
 
     act(() => result.current.selectTheme(sepia));
 
-    await waitFor(() => expect(result.current.lightTheme).toBe("light"));
-    await waitFor(() => expect(result.current.ready).toBe(true));
-    expect(document.documentElement.dataset.theme).toBe("light");
-    expect(document.getElementById("markra-third-party-theme-style")).not.toBeInTheDocument();
-    expect(runtime.settings.writeGroup).not.toHaveBeenCalled();
-    expect(runtime.themes.cancelActivation).toHaveBeenCalledWith("sepia-token");
-  });
-
-  it("keeps an appearance switch local until its stored third-party theme is approved", async () => {
-    const runtime = runtimeWithThemes({ appearanceMode: "dark", darkTheme: "dark", lightTheme: "sepia" }, [sepia]);
-    let resolveConfirmation: (accepted: boolean) => unknown = () => undefined;
-    runtime.themes.confirmActivation = vi.fn(() => new Promise<boolean>((resolve) => {
-      resolveConfirmation = resolve;
-    }));
-    const { result } = renderHook(() => useAppTheme());
-    await waitFor(() => expect(result.current.ready).toBe(true));
-
-    act(() => result.current.selectAppearanceMode("light"));
-    await waitFor(() => expect(runtime.themes.confirmActivation).toHaveBeenCalledWith("Sepia"));
-    expect(runtime.settings.writeGroup).not.toHaveBeenCalled();
-
-    await act(async () => resolveConfirmation(true));
     await waitFor(() => expect(runtime.settings.writeGroup).toHaveBeenCalledWith(
       "appearance",
-      expect.objectContaining({ appearanceMode: "light", lightTheme: "sepia" })
+      expect.objectContaining({ lightTheme: sepia.id })
     ));
+    expect(result.current.lightTheme).toBe(sepia.id);
+
+    await act(async () => {
+      pending.resolve(inlineActivation(sepia));
+      await pending.promise;
+    });
+    await waitFor(() => expect(result.current.ready).toBe(true));
+  });
+
+  it("activates a selected third-party theme only once when its settings event echoes locally", async () => {
+    const runtime = runtimeWithThemes(
+      { appearanceMode: "light", darkTheme: "dark", lightTheme: "light" },
+      [sepia]
+    );
+    const themeListeners: Array<(event: { payload: unknown }) => unknown> = [];
+    runtime.events.isAvailable = () => true;
+    runtime.events.listen = vi.fn(async (event, handler) => {
+      if (event === "markra://theme-changed") {
+        themeListeners.push(handler as (event: { payload: unknown }) => unknown);
+      }
+      return () => undefined;
+    }) as typeof runtime.events.listen;
+    runtime.events.emit = vi.fn(async (event, payload) => {
+      if (event === "markra://theme-changed") {
+        themeListeners.forEach((listener) => listener({ payload }));
+      }
+    });
+    const { result } = renderHook(() => useAppTheme());
+    await waitFor(() => expect(result.current.ready).toBe(true));
+    await waitFor(() => expect(themeListeners).toHaveLength(1));
+
+    act(() => result.current.selectTheme(sepia));
+
+    await waitFor(() => expect(result.current.ready).toBe(true));
+    expect(document.documentElement.dataset.theme).toBe(sepia.id);
+    expect(runtime.themes.prepareActivation).toHaveBeenCalledTimes(1);
   });
 
   it("repairs a missing selected id to the matching protected default", async () => {
@@ -251,7 +291,7 @@ describe("useAppTheme", () => {
     expect(document.documentElement.dataset.theme).toBe("dark");
   });
 
-  it("loads a resource candidate before previewing, confirming, and committing it", async () => {
+  it("loads a resource candidate before applying and committing it", async () => {
     const runtime = runtimeWithThemes(
       { appearanceMode: "dark", darkTheme: drakeAyu.id, lightTheme: "light" },
       [drakeAyu]
@@ -265,38 +305,16 @@ describe("useAppTheme", () => {
       `asset://themes/drake-ayu/theme.css?fingerprint=${drakeAyu.fingerprint}`
     );
     expect(result.current.ready).toBe(false);
-    expect(runtime.themes.confirmActivation).not.toHaveBeenCalled();
     expect(runtime.themes.commitActivation).not.toHaveBeenCalled();
     expect(document.documentElement.dataset.theme).not.toBe(drakeAyu.id);
 
     dispatchStylesheetEvent(candidate, "load");
 
     await waitFor(() => expect(result.current.ready).toBe(true));
-    expect(runtime.themes.confirmActivation).toHaveBeenCalledWith(drakeAyu.name);
     expect(runtime.themes.commitActivation).toHaveBeenCalledWith("drake-ayu-token");
     expect(activeLink()).toBe(candidate);
     expect(candidate).not.toHaveAttribute("data-markra-theme-candidate");
     expect(document.documentElement.dataset.theme).toBe(drakeAyu.id);
-  });
-
-  it("keeps an approved resource theme gated on load while skipping confirmation", async () => {
-    const runtime = runtimeWithThemes(
-      { appearanceMode: "dark", darkTheme: drakeAyu.id, lightTheme: "light" },
-      [drakeAyu]
-    );
-    await approveThemeFingerprint(drakeAyu.id, drakeAyu.fingerprint);
-    const { result } = renderHook(() => useAppTheme());
-
-    const candidate = await waitForCandidate("drake-ayu-token");
-    expect(result.current.ready).toBe(false);
-    expect(runtime.themes.confirmActivation).not.toHaveBeenCalled();
-    expect(runtime.themes.commitActivation).not.toHaveBeenCalled();
-
-    dispatchStylesheetEvent(candidate, "load");
-
-    await waitFor(() => expect(result.current.ready).toBe(true));
-    expect(runtime.themes.confirmActivation).not.toHaveBeenCalled();
-    expect(runtime.themes.commitActivation).toHaveBeenCalledWith("drake-ayu-token");
   });
 
   it("falls back to the matching protected theme when a resource stylesheet errors", async () => {
@@ -327,72 +345,11 @@ describe("useAppTheme", () => {
     );
   });
 
-  it("cancels a rejected resource preview and restores preferences without persistence", async () => {
-    const runtime = runtimeWithThemes(
-      { appearanceMode: "dark", darkTheme: "dark", lightTheme: "light" },
-      [drakeAyu]
-    );
-    runtime.themes.confirmActivation = vi.fn(async () => false);
-    const { result } = renderHook(() => useAppTheme());
-    await waitFor(() => expect(result.current.ready).toBe(true));
-
-    act(() => result.current.selectTheme(drakeAyu));
-    const candidate = await waitForCandidate("drake-ayu-token");
-    expect(runtime.settings.writeGroup).not.toHaveBeenCalled();
-    dispatchStylesheetEvent(candidate, "load");
-
-    await waitFor(() => expect(result.current.darkTheme).toBe("dark"));
-    await waitFor(() => expect(result.current.ready).toBe(true));
-    expect(runtime.settings.writeGroup).not.toHaveBeenCalled();
-    expect(runtime.themes.cancelActivation).toHaveBeenCalledWith("drake-ayu-token");
-    expect(runtime.themes.commitActivation).not.toHaveBeenCalled();
-    expect(activeLink()).not.toBeInTheDocument();
-    expect(document.documentElement.dataset.theme).toBe("dark");
-  });
-
-  it("does not let a rejected activation clear a newer pending selection while cancel waits", async () => {
-    const runtime = runtimeWithThemes(
-      { appearanceMode: "dark", darkTheme: "dark", lightTheme: "light" },
-      [drakeAyu, midnight]
-    );
-    const slowCancel = deferred<unknown>();
-    runtime.themes.cancelActivation = vi.fn((token) => token === "drake-ayu-token"
-      ? slowCancel.promise
-      : Promise.resolve(undefined));
-    runtime.themes.confirmActivation = vi.fn(async (themeName) => themeName !== drakeAyu.name);
-    const { result } = renderHook(() => useAppTheme());
-    await waitFor(() => expect(result.current.ready).toBe(true));
-
-    act(() => result.current.selectTheme(drakeAyu));
-    const rejectedCandidate = await waitForCandidate("drake-ayu-token");
-    dispatchStylesheetEvent(rejectedCandidate, "load");
-    await waitFor(() => expect(runtime.themes.cancelActivation).toHaveBeenCalledWith("drake-ayu-token"));
-
-    act(() => result.current.selectTheme(midnight));
-    const currentCandidate = await waitForCandidate("midnight-token");
-    await act(async () => {
-      slowCancel.resolve(undefined);
-      await slowCancel.promise;
-    });
-    dispatchStylesheetEvent(currentCandidate, "load");
-
-    await waitFor(() => expect(result.current.ready).toBe(true));
-    expect(result.current.darkTheme).toBe(midnight.id);
-    expect(runtime.settings.writeGroup).toHaveBeenCalledWith(
-      "appearance",
-      expect.objectContaining({ darkTheme: midnight.id })
-    );
-    expect(runtime.themes.commitActivation).toHaveBeenCalledWith("midnight-token");
-    expect(document.documentElement.dataset.theme).toBe(midnight.id);
-  });
-
   it("prevents a slow resource candidate from winning after a faster selection", async () => {
     const runtime = runtimeWithThemes(
       { appearanceMode: "dark", darkTheme: "dark", lightTheme: "light" },
       [drakeAyu, midnight]
     );
-    await approveThemeFingerprint(drakeAyu.id, drakeAyu.fingerprint);
-    await approveThemeFingerprint(midnight.id, midnight.fingerprint);
     const { result } = renderHook(() => useAppTheme());
     await waitFor(() => expect(result.current.ready).toBe(true));
 
@@ -417,7 +374,6 @@ describe("useAppTheme", () => {
       { appearanceMode: "dark", darkTheme: "dark", lightTheme: "light" },
       [drakeAyu, midnight]
     );
-    await approveThemeFingerprint(midnight.id, midnight.fingerprint);
     const slowPrepare = deferred<ThemeActivationPayload>();
     const slowCancel = deferred<unknown>();
     const events: string[] = [];
@@ -492,7 +448,6 @@ describe("useAppTheme", () => {
       { appearanceMode: "dark", darkTheme: drakeAyu.id, lightTheme: "light" },
       [drakeAyu]
     );
-    await approveThemeFingerprint(drakeAyu.id, drakeAyu.fingerprint);
     const { result } = renderHook(() => useAppTheme());
     const candidate = await waitForCandidate("drake-ayu-token");
     dispatchStylesheetEvent(candidate, "load");
@@ -510,7 +465,6 @@ describe("useAppTheme", () => {
       { appearanceMode: "dark", darkTheme: drakeAyu.id, lightTheme: "light" },
       [drakeAyu]
     );
-    await approveThemeFingerprint(drakeAyu.id, drakeAyu.fingerprint);
     const { result } = renderHook(() => useAppTheme());
     const candidate = await waitForCandidate("drake-ayu-token");
     dispatchStylesheetEvent(candidate, "load");
@@ -530,8 +484,6 @@ describe("useAppTheme", () => {
       { appearanceMode: "dark", darkTheme: drakeAyu.id, lightTheme: "light" },
       [drakeAyu, midnight]
     );
-    await approveThemeFingerprint(drakeAyu.id, drakeAyu.fingerprint);
-    await approveThemeFingerprint(midnight.id, midnight.fingerprint);
     const { result } = renderHook(() => useAppTheme());
     const firstCandidate = await waitForCandidate("drake-ayu-token");
     dispatchStylesheetEvent(firstCandidate, "load");
@@ -556,7 +508,6 @@ describe("useAppTheme", () => {
       { appearanceMode: "dark", darkTheme: drakeAyu.id, lightTheme: "light" },
       [drakeAyu, midnight]
     );
-    await approveThemeFingerprint(drakeAyu.id, drakeAyu.fingerprint);
     const { result, unmount } = renderHook(() => useAppTheme());
     const firstCandidate = await waitForCandidate("drake-ayu-token");
     dispatchStylesheetEvent(firstCandidate, "load");
@@ -593,6 +544,33 @@ describe("useAppTheme", () => {
     expect(runtime.themes.commitActivation).not.toHaveBeenCalled();
   });
 
+  it("keeps the protected theme usable when native validation rejects malicious CSS", async () => {
+    const runtime = runtimeWithThemes(
+      { appearanceMode: "dark", darkTheme: nord.id, lightTheme: "light" },
+      [nord]
+    );
+    runtime.themes.prepareActivation = vi.fn(async () => {
+      throw new Error("Theme CSS contains an unsafe application selector");
+    });
+    const { result } = renderHook(() => useAppTheme());
+
+    await waitFor(() => expect(result.current.darkTheme).toBe("dark"));
+    await waitFor(() => expect(result.current.ready).toBe(true));
+
+    expect(result.current.themeError).toContain("unsafe application selector");
+    expect(document.documentElement.dataset.theme).toBe("dark");
+    expect(document.documentElement.dataset.themeAppearance).toBe("dark");
+    expect(document.querySelector(
+      "#markra-third-party-theme-style, #markra-third-party-theme-link, [data-markra-theme-candidate]"
+    )).not.toBeInTheDocument();
+    expect(runtime.themes.commitActivation).not.toHaveBeenCalled();
+    expect(runtime.themes.cancelActivation).not.toHaveBeenCalled();
+    expect(runtime.settings.writeGroup).toHaveBeenCalledWith(
+      "appearance",
+      expect.objectContaining({ darkTheme: "dark" })
+    );
+  });
+
   it("cancels a deferred activation once when a later selection makes its effect stale", async () => {
     const runtime = runtimeWithThemes(
       { appearanceMode: "light", darkTheme: "dark", lightTheme: "light" },
@@ -623,15 +601,15 @@ describe("useAppTheme", () => {
     expect(document.documentElement.dataset.theme).toBe("light");
   });
 
-  it("cancels a prepared token once when the post-prepare branch errors", async () => {
+  it("cancels a prepared token once when native commit fails", async () => {
     const runtime = runtimeWithThemes(
       { appearanceMode: "dark", darkTheme: "nord", lightTheme: "light" },
       [nord]
     );
     const pending = deferred<ThemeActivationPayload>();
     runtime.themes.prepareActivation = vi.fn(() => pending.promise);
-    runtime.themes.confirmActivation = vi.fn(async () => {
-      throw new Error("confirmation failed");
+    runtime.themes.commitActivation = vi.fn(async () => {
+      throw new Error("commit failed");
     });
     renderHook(() => useAppTheme());
     await waitFor(() => expect(runtime.themes.prepareActivation).toHaveBeenCalledTimes(1));
@@ -643,7 +621,7 @@ describe("useAppTheme", () => {
 
     await waitFor(() => expect(runtime.themes.cancelActivation).toHaveBeenCalledTimes(1));
     expect(runtime.themes.cancelActivation).toHaveBeenCalledWith("nord-deferred-token");
-    expect(runtime.themes.commitActivation).not.toHaveBeenCalled();
+    expect(runtime.themes.commitActivation).toHaveBeenCalledWith("nord-deferred-token");
     expect(document.getElementById("markra-third-party-theme-style")).not.toBeInTheDocument();
     expect(document.documentElement.dataset.theme).toBe("dark");
   });

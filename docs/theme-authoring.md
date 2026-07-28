@@ -2,7 +2,7 @@
 
 QingYu supports two third-party theme forms:
 
-- A single UTF-8 `.css` file is enough when the theme needs only CSS rules, CSS variables, same-document fragments, or small inline `data:` resources. It cannot carry a local font, image, icon, or license beside the CSS.
+- A single UTF-8 `.css` file is enough when the theme needs only CSS rules, CSS variables, same-document fragments, or small passive base64 `data:` resources. It cannot carry a local font, image, icon, or license beside the CSS.
 - An unpacked resource-theme directory is the authoring format when the theme has fonts, images, icons, or license files. For distribution, its root contents can be packaged externally as a portable `.theme` archive.
 
 One CSS file, resource directory, or `.theme` package represents exactly one `light` or `dark` theme. The protected Light and Dark themes remain built in.
@@ -41,7 +41,7 @@ preview-accent: #52c7c7
 }
 ```
 
-The file limit is 256 KiB. IDs must match `^[a-z0-9][a-z0-9-]{0,63}$`; `light`, `dark`, and every ID beginning with `qingyu-` are reserved. Names and authors are limited to 120 Unicode scalar values, versions to 64, and preview values must be valid non-transparent CSS colors. Single-file CSS rejects `@import` and every relative or external URL; only bounded `data:` URLs and same-document fragments such as `url(#marker)` are accepted.
+The file limit is 256 KiB. IDs must match `^[a-z0-9][a-z0-9-]{0,63}$`; `light`, `dark`, and every ID beginning with `qingyu-` are reserved. Names and authors are limited to 120 Unicode scalar values, versions to 64, and preview values must be valid non-transparent CSS colors. Single-file CSS rejects `@import` and every relative or external URL. Same-document fragments such as `url(#marker)` and bounded base64 data for PNG, JPEG, GIF, WebP, or WOFF2 content are accepted; HTML, XML, SVG, unknown MIME types, and non-base64 data are rejected.
 
 ## Resource-theme directory
 
@@ -164,7 +164,65 @@ Only the active third-party stylesheet is loaded. Unscoped `:root`, `.markdown-p
 :root[data-theme="ocean-night"] .markdown-source-paper { /* source editor */ }
 ```
 
-These root/editor selectors and the variables below are the stable theme surface. Standard Markdown elements below `.markdown-paper`, such as headings, paragraphs, links, lists, blockquotes, tables, `code`, `pre`, `mark`, `kbd`, and images, may also be styled. Internal `.markra-*`, `.ProseMirror`, `.cm-*`, Milkdown, and component selectors are available to full CSS themes but are less stable and may change with the application or editor implementation.
+These root/editor selectors and the variables below are the stable theme surface. Standard Markdown elements below `.markdown-paper`, such as headings, paragraphs, links, lists, blockquotes, tables, `code`, `pre`, `mark`, `kbd`, and images, may also be styled. Editor-internal `.markra-*`, `.ProseMirror`, `.cm-*`, and Milkdown selectors remain available when they are descendants of the selected theme's `.markdown-paper` or `.markdown-source-paper`, but they are less stable and may change with the editor implementation.
+
+### CSS safety boundary
+
+The validator preserves ordinary theme authoring while preventing a stylesheet from taking over application controls. It applies the following boundaries to both single-file CSS and resource-theme CSS:
+
+- Rules may target the active theme root, the active theme's Markdown or source editor, and descendants of those editor surfaces. Global selectors and unscoped application selectors such as `*`, `button`, `[aria-label]`, or settings/sidebar internals are rejected.
+- Descendants of an ID-scoped application root may receive non-interactive paint declarations such as colors, backgrounds, borders, shadows, `fill`, and `stroke`. Layout, visibility, and interaction changes on application controls are rejected.
+- Markdown descendants keep normal CSS for typography, fonts, colors, backgrounds, borders, spacing, tables, code blocks, generated content, packaged assets, and theme-specific custom variables.
+- Declarations that directly remove the editor from layout, escape it into a viewport overlay, intercept clicks, or turn an app region into a native drag surface are rejected. This includes `display`, `visibility`, `opacity`, `pointer-events`, viewport positioning/insets, `z-index`, transforms, animation, selection/touch interception, and `-webkit-app-region`. `position: static` and `position: relative` remain available.
+- `@font-face` is supported. `@media`, `@supports`, `@container`, and block-form `@layer` are supported, and every nested rule is checked against the same scope. `@import`, `@keyframes`, `@property`, and other global at-rules are rejected.
+- CSS escapes and comments cannot be used to disguise selector or property names from validation.
+
+CSS is treated as presentation data: it is never evaluated as JavaScript and receives no file-operation API. Resource activation grants the asset protocol access only to the validated, application-owned copy of that theme package. Rejected imports are cleaned from staging without rewriting the source package or files outside the theme catalog.
+
+Themes should set the following application-chrome variables on their ID-scoped `:root` selector. Themes should not target sidebar internal classes. Every variable is optional and may be omitted safely; QingYu then uses the documented fallback.
+
+| Variable | Fallback |
+| --- | --- |
+| `--bg-titlebar` | Windows top app chrome `--bg-chrome`; macOS and document titlebars `--bg-primary` |
+| `--bg-sidebar` | Windows `--bg-chrome`; other platforms `--bg-secondary` |
+| `--bg-sidebar-header` | `--bg-sidebar`, then the platform sidebar fallback |
+| `--bg-toolbar` | `--bg-sidebar`, then the platform sidebar fallback |
+| `--bg-outline` | `--bg-sidebar`, then the platform sidebar fallback |
+| `--bg-sidebar-footer` | `--bg-sidebar`, then the platform sidebar fallback |
+| `--border-chrome` | `--border-default` |
+| `--bg-tree-current` | `--bg-active` |
+| `--text-tree-current` | `--text-heading` |
+| `--tree-current-indicator` | `--text-secondary` |
+| `--bg-tree-selected` | `--accent-soft` |
+| `--text-tree-selected` | `--text-heading` |
+| `--tree-selected-indicator` | `--accent` |
+| `--bg-outline-current` | `--bg-active` |
+| `--text-outline-current` | `--text-heading` |
+
+Sidebar typography and outline rhythm are also optional. They are consumed by APP-owned semantic classes, so themes can adapt the sidebar without targeting its internal component selectors. When omitted, these variables preserve QingYu's current compact sidebar behavior.
+
+| Variable | Fallback |
+| --- | --- |
+| `--sidebar-font-family` | Inherit the active theme's root/application font |
+| `--sidebar-tree-font-size` | `13px` |
+| `--sidebar-tree-font-weight` | `400` |
+| `--sidebar-tree-line-height` | `20px` |
+| `--text-tree` | `--text-secondary` |
+| `--bg-tree-hover` | `--bg-hover` |
+| `--text-tree-hover` | `--text-heading` |
+| `--sidebar-tree-current-font-weight` | `--sidebar-tree-font-weight`, then `400` |
+| `--sidebar-outline-font-size` | `13px` |
+| `--sidebar-outline-font-weight` | `400` |
+| `--sidebar-outline-line-height` | `20px` |
+| `--sidebar-outline-row-min-height` | `28px` |
+| `--sidebar-outline-max-lines` | `1` |
+| `--text-outline` | `--text-secondary` |
+| `--bg-outline-hover` | `--bg-hover` |
+| `--text-outline-hover` | `--text-heading` |
+| `--sidebar-outline-current-font-weight` | `620` |
+| `--sidebar-outline-h1-*` through `--sidebar-outline-h6-*` | The common outline value, with `0px` for spacing |
+
+Each per-level outline prefix supports `font-size`, `font-weight`, `text`, and `space-before`, for example `--sidebar-outline-h2-font-weight` and `--sidebar-outline-h2-space-before`. The first visible outline row never receives extra leading space. `--sidebar-outline-max-lines` controls APP-owned line clamping; use a small positive integer such as `1` or `2`.
 
 Application variables:
 
@@ -234,7 +292,7 @@ fill: url(#marker);
 background-image: url("data:image/png;base64,iVBORw0KGgo=");
 ```
 
-Every `./assets/...` reference is percent-decoded and Unicode-normalized, and the referenced regular file must exist. A `data:` resource counts toward the 256 KiB CSS limit.
+Every `./assets/...` reference is percent-decoded and Unicode-normalized, and the referenced regular file must exist. A `data:` resource counts toward the 256 KiB CSS limit and must use one of the passive base64 MIME types listed above.
 Quoted `image-set()` and `-webkit-image-set()` candidates follow the same URL rules. Dynamic `var()`, `env()`, or `attr()` substitution is not accepted inside those functions because QingYu cannot validate the resulting resource before the stylesheet loads.
 
 Rejected examples include:
@@ -251,6 +309,8 @@ src: url("./assets/../licenses/FONT-LICENSE.txt");
 src: url("./assets/font.woff2?version=1");
 background-image: image-set("https://example.com/background.webp" 1x);
 background-image: image-set(var(--dynamic-image) 1x);
+background-image: url("data:text/html;base64,PHNjcmlwdD4=");
+background-image: url("data:image/svg+xml;base64,PHN2Zz4=");
 ```
 
 ## Directory, package, and path limits
@@ -288,7 +348,7 @@ On desktop:
 1. Choose **Settings → Appearance → Open theme folder**.
 2. Copy the unpacked theme directory into that folder. A simple legacy `.css` file can instead be placed at the folder root.
 3. Select **Refresh themes** after adding or editing files. Invalid directories and files are reported without blocking valid themes.
-4. Select the theme in its light or dark section. Selection applies immediately after any required fingerprint confirmation.
+4. Select the theme in its light or dark section. Selection applies immediately without a second confirmation.
 
 Desktop **Import theme** accepts both `.css` and `.theme`. Importing a new ID installs it. Importing an ID that already exists asks before replacement and checks the installed theme's expected fingerprint; replacement is atomic, so validation or publication failure leaves the old theme intact. Unpacked author directories are not rewritten by Refresh.
 
@@ -296,9 +356,9 @@ To distribute a resource theme, create a standard ZIP archive whose root contain
 
 Compact/mobile installations can discover and use valid legacy or resource themes already present in their theme folder. They provide theme selection, Refresh, and deletion, but do not expose Import theme or Open theme folder actions. Light and dark lists are independent, may contain different numbers of themes, and retain their current selections.
 
-## Fingerprints and confirmation
+## Fingerprints and atomic updates
 
-QingYu computes a content fingerprint from the normalized manifest plus every sorted path and file byte. ZIP compression or entry order does not change it, while changing the manifest, CSS, font, image, icon, or license does. The first activation of each new fingerprint requires native confirmation. Replacing or directly editing an approved theme changes the fingerprint and requires confirmation again; a stale expected fingerprint cannot replace or delete a newer theme.
+QingYu computes a content fingerprint from the normalized manifest plus every sorted path and file byte. ZIP compression or entry order does not change it, while changing the manifest, CSS, font, image, icon, or license does. Selection activates the current validated fingerprint immediately. A stale expected fingerprint cannot replace or delete a newer theme, and a changed author directory is revalidated before its stylesheet can be exposed.
 
 ## Current non-goals
 
