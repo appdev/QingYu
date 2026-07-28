@@ -249,6 +249,83 @@ describe("MarkdownFileTreeDrawer", () => {
     expect(container.querySelector(".markdown-file-tree-outline")).toContainElement(container.querySelector(".lucide-table-of-contents"));
   });
 
+  it("maps every stacked sidebar zone to the stable theme contract", () => {
+    const { container } = render(
+      <MarkdownFileTreeDrawer
+        activeOutlineIndex={0}
+        currentPath="/vault/Untitled.md"
+        documentLinksOpen
+        documentLinksVisible
+        files={markdownFiles}
+        linkIndex={{
+          backlinks: [],
+          fileCount: markdownFiles.length,
+          files: markdownFiles.map((file) => ({
+            file,
+            mentionRanges: [],
+            titleCandidates: [file.name.replace(/\.md$/u, "")]
+          })),
+          unlinkedMentions: [],
+          unreadableFileCount: 0
+        } satisfies WorkspaceLinkIndex}
+        open
+        outlineItems={[{ level: 1, title: "Intro" }]}
+        recentFolders={[{ name: "vault", path: "/vault" }]}
+        recentFoldersOpen
+        rootName="vault"
+        rootPath="/vault"
+        width={288}
+        onOpenFile={() => {}}
+        onOpenRecentFolder={() => {}}
+        onResize={() => {}}
+        onSelectOutlineItem={() => {}}
+      />
+    );
+
+    expect(container.querySelector(".markdown-file-tree")).toHaveClass(
+      "theme-sidebar-legacy-secondary",
+      "theme-sidebar-surface",
+      "theme-chrome-border"
+    );
+    expect(container.querySelector(".markdown-file-tree-files-header")).toHaveClass(
+      "theme-sidebar-header-surface",
+      "theme-chrome-border"
+    );
+    expect(container.querySelector(".markdown-file-tree-toolbar")).toHaveClass("theme-toolbar-surface");
+    expect(container.querySelector(".markdown-file-tree-folder-access")).toHaveClass(
+      "theme-sidebar-surface",
+      "theme-chrome-border"
+    );
+    const currentRecentFolder = screen.getByRole("button", { name: "vault" });
+    expect(currentRecentFolder).toHaveAttribute("aria-current", "page");
+    expect(currentRecentFolder).toHaveClass("theme-tree-current-surface");
+    expect(container.querySelector(".markdown-file-tree-root")).toHaveClass("theme-sidebar-surface");
+    expect(container.querySelector(".file-tree-scroll")).toHaveClass("theme-sidebar-surface");
+    expect(container.querySelector('[aria-current="page"][data-file-tree-path]')).toHaveClass(
+      "theme-tree-current-surface",
+      "theme-tree-row"
+    );
+    expect(container.querySelector(".markdown-file-tree-outline")).toHaveClass("theme-outline-surface");
+    expect(container.querySelector(".markdown-file-tree-outline-toolbar")).toHaveClass(
+      "theme-toolbar-surface",
+      "theme-chrome-border"
+    );
+    expect(container.querySelector(".markdown-file-tree-outline-scroll")).toHaveClass("theme-outline-surface");
+    expect(container.querySelector('[aria-current="location"]')).toHaveClass("theme-outline-item");
+    expect(container.querySelector(".markdown-file-tree-links")).toHaveClass(
+      "theme-outline-surface",
+      "theme-chrome-border"
+    );
+    expect(container.querySelector(".markdown-file-tree-footer")).toHaveClass(
+      "theme-sidebar-footer-surface",
+      "theme-chrome-border"
+    );
+    expect(container.querySelectorAll(".theme-chrome-divider").length).toBeGreaterThanOrEqual(2);
+    expect(container.querySelector(".markdown-file-tree-resizer > .theme-chrome-divider")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "deploy" }));
+    expect(container.querySelector("ol.border-l")).toHaveClass("theme-chrome-border");
+  });
+
   it("hides the file list and outline independently for view mode chrome", () => {
     render(
       <MarkdownFileTreeDrawer
@@ -317,6 +394,7 @@ describe("MarkdownFileTreeDrawer", () => {
     const root = container.querySelector(".markdown-file-tree-root") as HTMLElement;
 
     expect(layoutTabs).toHaveClass("markdown-file-tree-panel-tabs");
+    expect(layoutTabs).toHaveClass("theme-sidebar-header-surface", "theme-chrome-border");
     expect(layoutTabs).not.toHaveClass("rounded-md", "border", "bg-(--bg-secondary)");
     expect(layoutTabs.querySelector(".lucide-file-text")).not.toBeInTheDocument();
     expect(layoutTabs.querySelector(".lucide-table-of-contents")).not.toBeInTheDocument();
@@ -1064,8 +1142,8 @@ describe("MarkdownFileTreeDrawer", () => {
     const primaryActions = container.querySelector(".markdown-file-tree-primary-actions");
     const sidebar = screen.getByRole("complementary", { name: "Markdown file tree" });
 
-    expect(sidebar).toHaveClass("bg-(--bg-chrome)");
-    expect(footer).toHaveClass("shrink-0", "border-t", "bg-(--bg-chrome)");
+    expect(sidebar).toHaveClass("theme-sidebar-legacy-chrome", "theme-sidebar-surface");
+    expect(footer).toHaveClass("shrink-0", "border-t", "theme-sidebar-footer-surface", "theme-chrome-border");
     expect(settings.closest(".markdown-file-tree-footer")).toBe(footer);
     expect(primaryActions).toContainElement(settings);
     expect(primaryActions).toContainElement(syncNow);
@@ -1184,12 +1262,12 @@ describe("MarkdownFileTreeDrawer", () => {
     expect(sidebar).toHaveClass("transition-[width,min-width,max-width]");
     expect(sidebar).not.toHaveClass("opacity-100", "opacity-0");
     expect(container.querySelector(".markdown-file-tree-content")).toHaveClass("transition-opacity", "opacity-100");
-    expect(sidebar).toHaveClass("bg-(--bg-secondary)");
+    expect(sidebar).toHaveClass("theme-sidebar-legacy-secondary", "theme-sidebar-surface");
     expect(screen.getByText("Files")).toBeInTheDocument();
     expect(screen.getByText("Obsidian Vault")).toBeInTheDocument();
     expect(folder).toHaveAttribute("aria-expanded", "false");
     expect(screen.queryByRole("button", { name: "deploy/deploy.md" })).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Untitled.md" })).toHaveClass("aria-[current=page]:border-l-[3px]");
+    expect(screen.getByRole("button", { name: "Untitled.md" })).toHaveClass("theme-tree-current-surface", "theme-tree-row");
     expect(screen.getByRole("button", { name: "Untitled.md" })).toHaveAttribute("aria-current", "page");
     expect(container.querySelector('[role="tree"]')).toBeInTheDocument();
 
@@ -1197,6 +1275,42 @@ describe("MarkdownFileTreeDrawer", () => {
     fireEvent.click(screen.getByRole("button", { name: "deploy/deploy.md" }));
 
     expect(openFile).toHaveBeenCalledWith(markdownFiles[2]);
+  });
+
+  it("keeps platform-specific sidebar fallbacks behind the shared sidebar surface", () => {
+    const { container, rerender } = render(
+      <MarkdownFileTreeDrawer
+        currentPath="/vault/Untitled.md"
+        files={markdownFiles}
+        open
+        outlineItems={[]}
+        platform="windows"
+        rootName="Obsidian Vault"
+        onOpenFile={() => {}}
+        onSelectOutlineItem={() => {}}
+      />
+    );
+
+    const windowsSidebar = container.querySelector(".markdown-file-tree");
+
+    expect(windowsSidebar).toHaveClass("theme-sidebar-legacy-chrome", "theme-sidebar-surface");
+
+    rerender(
+      <MarkdownFileTreeDrawer
+        currentPath="/vault/Untitled.md"
+        files={markdownFiles}
+        open
+        outlineItems={[]}
+        platform="macos"
+        rootName="Obsidian Vault"
+        onOpenFile={() => {}}
+        onSelectOutlineItem={() => {}}
+      />
+    );
+
+    const nonWindowsSidebar = container.querySelector(".markdown-file-tree");
+
+    expect(nonWindowsSidebar).toHaveClass("theme-sidebar-legacy-secondary", "theme-sidebar-surface");
   });
 
   it("supports modifier-based multi-selection in the visible file tree", () => {
@@ -1239,6 +1353,8 @@ describe("MarkdownFileTreeDrawer", () => {
     expect(architecture).toHaveAttribute("aria-selected", "true");
     expect(aws).toHaveAttribute("aria-selected", "true");
     expect(untitled).toHaveAttribute("aria-selected", "true");
+    expect(untitled).toHaveAttribute("aria-current", "page");
+    expect(untitled).toHaveClass("theme-tree-current-surface", "theme-tree-row");
     expect(folder).not.toHaveAttribute("aria-selected");
 
     fireEvent.click(aws, { ctrlKey: true });
@@ -3677,7 +3793,7 @@ describe("MarkdownFileTreeDrawer", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "deploy" }));
 
-    expect(screen.getByRole("group", { name: "deploy children" })).toHaveClass("border-l");
+    expect(screen.getByRole("group", { name: "deploy children" })).toHaveClass("border-l", "theme-chrome-border");
   });
 
   it("keeps nested files visually deeper than their parent folder", () => {
@@ -3784,7 +3900,7 @@ describe("MarkdownFileTreeDrawer", () => {
 
       expect(screen.getByRole("button", { name: "Intro" })).not.toHaveAttribute("aria-current");
       expect(screen.getByRole("button", { name: "Details" })).toHaveAttribute("aria-current", "location");
-      expect(screen.getByRole("button", { name: "Details" })).toHaveClass("bg-(--bg-active)", "text-(--text-heading)");
+      expect(screen.getByRole("button", { name: "Details" })).toHaveClass("theme-outline-item");
       expect(scrollIntoView).toHaveBeenCalledWith({
         behavior: "auto",
         block: "nearest",

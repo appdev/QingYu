@@ -153,6 +153,8 @@ type MarkdownFileTreeDrawerProps = {
   outlineVisible?: boolean;
   platform?: DesktopPlatform;
   revealPathRequest?: { id: number; path: string | null } | null;
+  recentFolders?: readonly { name: string; path: string }[];
+  recentFoldersOpen?: boolean;
   resizing?: boolean;
   rootPath?: string | null;
   rootName: string;
@@ -178,6 +180,7 @@ type MarkdownFileTreeDrawerProps = {
   onOpenContainingFolder?: (path: string) => unknown | Promise<unknown>;
   onOpenFileToSide?: (file: NativeMarkdownFolderFile) => unknown | Promise<unknown>;
   onOpenFolder?: () => unknown | Promise<unknown>;
+  onOpenRecentFolder?: (folder: { name: string; path: string }) => unknown | Promise<unknown>;
   onOpenSettings?: () => unknown | Promise<unknown>;
   onSyncNow?: () => unknown | Promise<unknown>;
   onInstallAvailableUpdate?: () => unknown | Promise<unknown>;
@@ -230,6 +233,7 @@ const fileTreeDropListTargetClassName = "rounded-sm bg-(--bg-active)";
 const sidebarPanelTabBaseClassName = "relative -mb-px h-10 cursor-pointer border-0 border-b border-transparent bg-transparent px-2 text-[13px] leading-none font-[560] transition-colors duration-150 ease-out focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-(--accent)";
 const sidebarPanelTabActiveClassName = "border-(--text-secondary) text-(--text-heading)";
 const sidebarPanelTabInactiveClassName = "text-(--text-secondary) hover:text-(--text-heading)";
+const outlineButtonBaseClassName = "theme-outline-item h-7 min-w-0 cursor-pointer truncate rounded-sm border-0 bg-transparent px-1 text-left text-[13px] leading-5 text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-heading) focus-visible:bg-(--bg-hover) focus-visible:text-(--text-heading) focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-(--accent)";
 const outlineTitleMarkdownPlugins = [remarkGfm, remarkMath, markraHighlightRemarkPlugin];
 const outlineTitleMarkdownComponents = {
   a: ({ children }) => <>{children}</>,
@@ -428,6 +432,8 @@ export function MarkdownFileTreeDrawer({
   outlineItems,
   outlineVisible = true,
   platform = resolveDesktopPlatform(),
+  recentFolders = [],
+  recentFoldersOpen = false,
   revealPathRequest = null,
   resizing = false,
   rootPath = null,
@@ -448,6 +454,7 @@ export function MarkdownFileTreeDrawer({
   onOpenContainingFolder,
   onOpenFileToSide,
   onOpenFolder,
+  onOpenRecentFolder,
   onOpenSettings = () => {},
   onSyncNow,
   onInstallAvailableUpdate,
@@ -746,10 +753,10 @@ export function MarkdownFileTreeDrawer({
   const linksPanelVisible = linkPanelAvailable && (!tabbedSidebarLayout || activeSidebarPanel === "links");
   const linksPanelOpen = tabbedSidebarLayout || documentLinksOpen;
   const linksPanelClassName = tabbedSidebarLayout
-    ? "markdown-file-tree-links flex min-h-0 flex-1"
+    ? "markdown-file-tree-links theme-outline-surface theme-chrome-border flex min-h-0 flex-1"
     : documentLinksOpen
-      ? "markdown-file-tree-links flex min-h-20 flex-1 flex-col border-t border-(--border-default)"
-      : "markdown-file-tree-links h-9 shrink-0 border-t border-(--border-default)";
+      ? "markdown-file-tree-links theme-outline-surface theme-chrome-border flex min-h-20 flex-1 flex-col border-t"
+      : "markdown-file-tree-links theme-outline-surface theme-chrome-border h-9 shrink-0 border-t";
   const linksPanelStyle = !tabbedSidebarLayout && documentLinksOpen
     ? { flex: `0 1 ${documentLinksHeightPercent}%` }
     : undefined;
@@ -767,7 +774,10 @@ export function MarkdownFileTreeDrawer({
     fileTreeListOpen;
   const documentLinksResizerVisible = !tabbedSidebarLayout && linkPanelAvailable && documentLinksOpen;
   const fileSearchVisible = filePanelRendered;
-  const fileTreeSurfaceClassName = platform === "windows" ? "bg-(--bg-chrome)" : "bg-(--bg-secondary)";
+  const sidebarLegacySurfaceClassName = platform === "windows"
+    ? "theme-sidebar-legacy-chrome"
+    : "theme-sidebar-legacy-secondary";
+  const fileTreeSurfaceClassName = `${sidebarLegacySurfaceClassName} theme-sidebar-surface`;
   const outlineToolbarVisible = !tabbedSidebarLayout ||
     (outlinePanelOpen && (outlineItems.length > 0 || outlineExpansionAvailable));
   const sidebarPanelTabs = useMemo(() => {
@@ -2145,7 +2155,7 @@ export function MarkdownFileTreeDrawer({
           <Tooltip content={node.file.path}>
           <button
             ref={dragSource.setNodeRef}
-            className={`relative grid h-8 w-full cursor-pointer touch-none grid-cols-[17px_minmax(0,1fr)] items-center gap-1.5 border-0 bg-transparent py-0 pr-2 text-left text-[13px] leading-none text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-heading) focus-visible:bg-(--bg-hover) focus-visible:text-(--text-heading) focus-visible:outline-none aria-[current=page]:border-l-[3px] aria-[current=page]:border-(--text-secondary) aria-[current=page]:bg-(--bg-active) aria-[current=page]:text-(--text-heading) aria-selected:bg-(--accent-soft) aria-selected:text-(--text-heading) aria-selected:shadow-[inset_3px_0_0_var(--accent)] ${dragSource.isDragging ? "opacity-70" : ""} ${fileTreeContextRowSelectionClassName} ${rowIndentClass} ${rowBranchClass}`}
+            className={`theme-tree-current-surface theme-tree-row relative grid h-8 w-full cursor-pointer touch-none grid-cols-[17px_minmax(0,1fr)] items-center gap-1.5 border-0 bg-transparent py-0 pr-2 text-left text-[13px] leading-none text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-heading) focus-visible:bg-(--bg-hover) focus-visible:text-(--text-heading) focus-visible:outline-none ${dragSource.isDragging ? "opacity-70" : ""} ${fileTreeContextRowSelectionClassName} ${rowIndentClass} ${rowBranchClass}`}
             style={rowIndentStyle}
             type="button"
             aria-current={active ? "page" : undefined}
@@ -2194,7 +2204,7 @@ export function MarkdownFileTreeDrawer({
     const nodeList = (setNodeRef?: (element: HTMLOListElement | null) => undefined) => (
       <ol
         ref={setNodeRef}
-        className={depth === 0 ? "m-0 list-none p-0" : `ml-5 list-none border-l border-(--border-default) p-0 ${listDropTarget ? fileTreeDropListTargetClassName : ""}`}
+        className={depth === 0 ? "m-0 list-none p-0" : `ml-5 list-none border-l theme-chrome-border p-0 ${listDropTarget ? fileTreeDropListTargetClassName : ""}`}
         role={depth === 0 ? "tree" : "group"}
         aria-label={treeLabel}
         aria-multiselectable={depth === 0 ? "true" : undefined}
@@ -2270,9 +2280,7 @@ export function MarkdownFileTreeDrawer({
           const collapsed = collapsedOutlineKeys.has(key);
           const outlineIndent = (item.level - 1) * 12;
           const active = activeOutlineIndex === index;
-          const outlineButtonClassName = active
-            ? "h-7 min-w-0 cursor-pointer truncate rounded-sm border-0 bg-(--bg-active) px-1 text-left text-[13px] leading-5 font-[620] text-(--text-heading) focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-(--accent)"
-            : "h-7 min-w-0 cursor-pointer truncate rounded-sm border-0 bg-transparent px-1 text-left text-[13px] leading-5 text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-heading) focus-visible:bg-(--bg-hover) focus-visible:text-(--text-heading) focus-visible:outline-none";
+          const outlineButtonClassName = outlineButtonBaseClassName;
 
           return (
             <li key={key}>
@@ -2587,7 +2595,7 @@ export function MarkdownFileTreeDrawer({
   const renderSidebarPanelTabs = () => (
     tabbedSidebarLayout && sidebarPanelTabs.length > 1 ? (
       <div
-        className={`markdown-file-tree-panel-tabs grid h-10 shrink-0 border-b border-(--border-default) px-3 ${sidebarPanelTabGridClassName}`}
+        className={`markdown-file-tree-panel-tabs theme-sidebar-header-surface grid h-10 shrink-0 border-b theme-chrome-border px-3 ${sidebarPanelTabGridClassName}`}
         role="group"
         aria-label={sidebarPanelTabs.map((panel) => label(sidebarPanelLabelKey(panel))).join(" / ")}
       >
@@ -2619,7 +2627,7 @@ export function MarkdownFileTreeDrawer({
         </label>
         <input
           id="markra-file-search"
-          className="h-8 border-0 border-b border-(--border-default) bg-transparent px-3 text-[12px] text-(--text-primary) outline-none placeholder:text-(--text-secondary) focus:border-(--border-strong)"
+          className="h-8 border-0 border-b theme-chrome-border bg-transparent px-3 text-[12px] text-(--text-primary) outline-none placeholder:text-(--text-secondary) focus:border-(--border-strong)"
           type="search"
           value={searchQuery}
           placeholder={label("app.searchPlaceholder")}
@@ -2651,7 +2659,7 @@ export function MarkdownFileTreeDrawer({
       ) : null}
 
       <aside
-        className={`markdown-file-tree relative flex h-full min-h-0 w-full flex-col overflow-hidden border-r border-(--border-default) ${fileTreeSurfaceClassName} ${drawerTopPaddingClassName} will-change-[width,min-width,max-width] ${drawerWidthTransitionClassName} ${drawerStateClass}`}
+        className={`markdown-file-tree relative flex h-full min-h-0 w-full flex-col overflow-hidden border-r theme-chrome-border ${fileTreeSurfaceClassName} ${drawerTopPaddingClassName} will-change-[width,min-width,max-width] ${drawerWidthTransitionClassName} ${drawerStateClass}`}
         aria-label={label("app.markdownFileTree")}
         aria-hidden={!open}
         inert={!open}
@@ -2674,13 +2682,35 @@ export function MarkdownFileTreeDrawer({
             aria-valuenow={resolvedWidth}
             onKeyDown={handleResizeKeyDown}
             onPointerDown={handleResizePointerDown}
-          />
+          >
+            <div className="theme-chrome-divider pointer-events-none absolute inset-y-0 right-0 w-px" />
+          </div>
         ) : null}
         {!tabbedSidebarLayout && filePanelAvailable ? (
-          <div className="markdown-file-tree-files-header grid h-10 shrink-0 grid-cols-[minmax(0,1fr)_auto] items-center border-b border-(--border-default) pr-2 pl-3">
+          <div className="markdown-file-tree-files-header theme-sidebar-header-surface grid h-10 shrink-0 grid-cols-[minmax(0,1fr)_auto] items-center border-b theme-chrome-border pr-2 pl-3">
             <h2 className="m-0 truncate text-[14px] leading-5 font-[560] tracking-normal text-(--text-heading)">
               {label("app.files")}
             </h2>
+          </div>
+        ) : null}
+
+        {recentFoldersOpen && recentFolders.length > 0 ? (
+          <div className="markdown-file-tree-folder-access theme-sidebar-surface flex shrink-0 items-center gap-1 border-b theme-chrome-border px-3 py-1">
+            {recentFolders.map((folder) => {
+              const current = Boolean(rootPath && sameNativePath(folder.path, rootPath));
+
+              return (
+                <button
+                  className="theme-tree-current-surface min-w-0 cursor-pointer truncate rounded-sm bg-transparent px-1.5 py-1 text-left text-[12px] text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-heading) focus-visible:bg-(--bg-hover) focus-visible:text-(--text-heading) focus-visible:outline-none"
+                  type="button"
+                  aria-current={current ? "page" : undefined}
+                  key={folder.path}
+                  onClick={() => onOpenRecentFolder?.(folder)}
+                >
+                  {folder.name}
+                </button>
+              );
+            })}
           </div>
         ) : null}
 
@@ -2699,12 +2729,12 @@ export function MarkdownFileTreeDrawer({
                 onDragStart={handleFileTreeDragStart}
               >
                 {renderFileTreeActions(
-                  "markdown-file-tree-toolbar flex h-8 shrink-0 items-center justify-start gap-1 pr-4 pl-2.5 text-(--text-secondary)"
+                  "markdown-file-tree-toolbar theme-toolbar-surface flex h-8 shrink-0 items-center justify-start gap-1 pr-4 pl-2.5 text-(--text-secondary)"
                 )}
 
                 {renderFileSearchInput()}
 
-                <div className="markdown-file-tree-root flex h-8 shrink-0 items-center gap-1 pr-2 pl-4 text-[13px] text-(--text-secondary)">
+                <div className="markdown-file-tree-root theme-sidebar-surface flex h-8 shrink-0 items-center gap-1 pr-2 pl-4 text-[13px] text-(--text-secondary)">
                   <FileTreeDropTarget
                     disabled={!dragMoveAvailable}
                     id={fileTreeRootDropId("header")}
@@ -2745,7 +2775,7 @@ export function MarkdownFileTreeDrawer({
                       {(rootDropTarget) => (
                         <div
                           ref={combineNodeRefs<HTMLDivElement>(rootDropTarget.setNodeRef, setFileTreeScrollRef)}
-                          className={`file-tree-scroll min-h-0 flex-1 overflow-y-auto overscroll-none pb-4 ${dragOverTargetPath === dragTargetKey(null) ? fileTreeDropTargetClassName : ""}`}
+                          className={`file-tree-scroll theme-sidebar-surface min-h-0 flex-1 overflow-y-auto overscroll-none pb-4 ${dragOverTargetPath === dragTargetKey(null) ? fileTreeDropTargetClassName : ""}`}
                           onScroll={handleFileTreeScroll}
                           onMouseDown={cancelFileTreeInputsFromBlankArea}
                           onContextMenu={(event) => openContextMenu(event)}
@@ -2784,17 +2814,17 @@ export function MarkdownFileTreeDrawer({
               onKeyDown={handleOutlineResizeKeyDown}
               onPointerDown={handleOutlineResizePointerDown}
             >
-              <div className="pointer-events-none absolute inset-x-0 top-1/2 h-px -translate-y-1/2 bg-(--border-default) transition-colors duration-150 ease-out group-hover:bg-(--border-strong) group-focus-visible:bg-(--border-strong)" />
+              <div className="theme-chrome-divider pointer-events-none absolute inset-x-0 top-1/2 h-px -translate-y-1/2 transition-colors duration-150 ease-out group-hover:bg-(--border-strong) group-focus-visible:bg-(--border-strong)" />
             </div>
           ) : null}
 
           {outlinePanelVisible ? (
             <section
-              className={`markdown-file-tree-outline flex min-h-0 flex-col ${outlinePanelOpen ? "min-h-20" : "h-9 shrink-0 border-t border-(--border-default)"} ${outlinePanelFlexible ? "flex-1" : ""}`}
+              className={`markdown-file-tree-outline theme-outline-surface flex min-h-0 flex-col ${outlinePanelOpen ? "min-h-20" : "h-9 shrink-0 border-t theme-chrome-border"} ${outlinePanelFlexible ? "flex-1" : ""}`}
               style={outlinePanelStyle}
             >
               {outlineToolbarVisible ? (
-                <div className={`markdown-file-tree-outline-toolbar flex shrink-0 items-center gap-1 text-[13px] text-(--text-secondary) ${tabbedSidebarLayout ? "h-8 justify-start border-b border-(--border-default) px-3" : "h-9 px-4 pr-2"}`}>
+                <div className={`markdown-file-tree-outline-toolbar theme-toolbar-surface theme-chrome-border flex shrink-0 items-center gap-1 text-[13px] text-(--text-secondary) ${tabbedSidebarLayout ? "h-8 justify-start border-b px-3" : "h-9 px-4 pr-2"}`}>
                   {!tabbedSidebarLayout ? (
                     <>
                       <TableOfContents aria-hidden="true" size={16} />
@@ -2872,7 +2902,7 @@ export function MarkdownFileTreeDrawer({
                 </div>
               ) : null}
             {outlinePanelOpen ? (
-              <div className="markdown-file-tree-outline-scroll min-h-0 flex-1 overflow-y-auto overscroll-none pb-4">
+              <div className="markdown-file-tree-outline-scroll theme-outline-surface min-h-0 flex-1 overflow-y-auto overscroll-none pb-4">
                 {renderOutline()}
               </div>
             ) : null}
@@ -2892,7 +2922,7 @@ export function MarkdownFileTreeDrawer({
               onKeyDown={handleDocumentLinksResizeKeyDown}
               onPointerDown={handleDocumentLinksResizePointerDown}
             >
-              <div className="pointer-events-none absolute inset-x-0 top-1/2 h-px -translate-y-1/2 bg-(--border-default) transition-colors duration-150 ease-out group-hover:bg-(--border-strong) group-focus-visible:bg-(--border-strong)" />
+              <div className="theme-chrome-divider pointer-events-none absolute inset-x-0 top-1/2 h-px -translate-y-1/2 transition-colors duration-150 ease-out group-hover:bg-(--border-strong) group-focus-visible:bg-(--border-strong)" />
             </div>
           ) : null}
 
@@ -2930,7 +2960,7 @@ export function MarkdownFileTreeDrawer({
           ) : null}
         </div>
         {open ? (
-          <div className={`markdown-file-tree-footer flex h-12 shrink-0 items-center justify-between border-t border-(--border-default) ${fileTreeSurfaceClassName} px-2.5`}>
+          <div className="markdown-file-tree-footer theme-sidebar-footer-surface flex h-12 shrink-0 items-center justify-between border-t theme-chrome-border px-2.5">
             <div className="markdown-file-tree-primary-actions flex items-center gap-1">
               <IconButton
                 className="rounded-md opacity-70 hover:opacity-100 focus-visible:opacity-100"
