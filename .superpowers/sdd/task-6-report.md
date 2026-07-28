@@ -140,3 +140,118 @@ Review remediation followed one RED/GREEN cluster at a time. The final review ad
 
 - No known Task 6 implementation blocker remains.
 - Task 7 still owns removal/rerouting of the wider external-folder native/menu chain; this task deliberately changed only the welcome surface.
+
+---
+
+# Recovery Task 6 Addendum: Pinned Go Oracle and Go/Rust Interoperability
+
+## Outcome
+
+The recovered Dejavu integration passes both the pinned upstream oracle and the
+bidirectional Go/Rust repository interoperability suite. No product code or
+fixture changed during this task. The only repository change is this evidence
+addendum.
+
+Verification started from QingYu integration HEAD
+`4e801ec90e7ad449ee950be7e2466d3022f8ce49`. The supplied upstream checkout was
+verified before execution as exact HEAD
+`8462fe30163c6e6e95ae2da832cfe76058e0e830` with an empty
+`git status --porcelain=v1 --untracked-files=all`. The oracle independently
+repeated both checks before using the source. The pinned checkout was never
+modified.
+
+## Toolchain
+
+- Node.js `v24.18.0`, selected with `fnm` as required by CI;
+- pnpm `10.30.3`;
+- Go `go1.26.5 darwin/arm64`;
+- Cargo `1.96.0 (30a34c682 2026-05-25)`;
+- rustc `1.96.0 (ac68faa20 2026-05-25)`.
+
+The machine's `~/.cargo/bin/cargo` is a broken symlink to the removed
+`/opt/homebrew/bin/rustup-init`, while the current Homebrew rustup installation
+is healthy at `/opt/homebrew/opt/rustup/bin`. The first oracle attempt therefore
+completed the Go stages but failed to start the Rust stage with
+`spawnSync cargo ENOENT`. This was an execution-environment failure, not a
+scenario mismatch. No global symlink or repository file was changed. The final
+commands prepend the current Homebrew rustup directory to `PATH` for that
+process only.
+
+## Pinned oracle
+
+Final command:
+
+```bash
+eval "$(fnm env --shell zsh)" && \
+  fnm use 24.18.0 --silent-if-unchanged && \
+  PATH="/opt/homebrew/opt/rustup/bin:$PATH" \
+  DEJAVU_SOURCE_DIR=/Volumes/extendData/Data/IdeaProjects/upstream/dejavu \
+  pnpm test:dejavu-oracle
+```
+
+Result: exit 0.
+
+- The four shared JSON fixture files matched their pinned SHA-256 values and
+  were byte-identical between Go and Rust.
+- Go `TestSyncScenariosFromJSON`: 27 of 27 scenarios passed. The fixture groups
+  contain 7 basic, 5 edge, 4 known-conflict, and 11 sync-download scenarios.
+- Go `go test ./... -count=1`: all Dejavu packages passed.
+- Rust `qingyu-dejavu --test scenarios`: 5 tests passed. The
+  `runs_all_pinned_dejavu_scenarios` test executed all 27 byte-identical shared
+  scenarios and consumed exactly the seven explicit filesystem deviation
+  records; the four contract tests also passed.
+
+No shared scenario or approved deviation was skipped, widened, or rewritten.
+
+## Bidirectional interoperability
+
+Final command:
+
+```bash
+eval "$(fnm env --shell zsh)" && \
+  fnm use 24.18.0 --silent-if-unchanged && \
+  PATH="/opt/homebrew/opt/rustup/bin:$PATH" \
+  pnpm test:dejavu-interop
+```
+
+Result: exit 0; all 7 of 7 scenarios passed:
+
+1. `go-create-rust-change-go-observe`;
+2. `rust-create-go-change-rust-observe`;
+3. `independent-paths-converge`;
+4. `same-path-conflict`;
+5. `go-identical-first-syncignore-conflict`;
+6. `go-failure-before-ref-publication`;
+7. `rust-failure-before-ref-publication`.
+
+The suite built fresh Go and Rust clients, verified repositories written by
+either implementation can be read and advanced by the other, exercised
+convergence and conflict behavior, and proved both implementations leave
+`refs/latest` unpublished when failure is injected after object/index upload.
+
+## `.siyuan` compatibility boundary
+
+The only `.siyuan/syncignore` path in the interoperability runner belongs to
+scenario 5. Both clients in that scenario are intentionally Go clients; it is
+an upstream Dejavu compatibility witness for the identical-first-file conflict
+behavior and does not configure or exercise QingYu's product namespace.
+
+QingYu production behavior remains separate:
+
+- core synchronization uses the constant `/.qingyu/syncignore`;
+- application repository preparation creates and protects
+  `/.qingyu/syncignore`;
+- the production S3 namespace remains
+  `qingyu/repositories/<repository-id>/repo`.
+
+No `.siyuan` product path, SiYuan workspace rule, Petal behavior, or official
+cloud API was introduced.
+
+## Final state
+
+- Product/code HEAD before this report-only commit:
+  `4e801ec90e7ad449ee950be7e2466d3022f8ce49`.
+- Upstream Dejavu remained at the pinned clean HEAD after both suites.
+- `.serena/` remained untracked and was not read into, modified, staged, or
+  committed by this task.
+- Real S3/MinIO and Computer Use were intentionally not run in Task 6.
