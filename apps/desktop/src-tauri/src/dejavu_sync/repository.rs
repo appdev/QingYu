@@ -1,3 +1,4 @@
+use std::ffi::OsStr;
 use std::fmt;
 use std::future::Future;
 use std::io::Read;
@@ -10,10 +11,11 @@ use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use cap_fs_ext::DirExt;
 use qingyu_dejavu::{
-    Cloud, CloudError, Device, Repo, RepoError, RepoOptions, RepoPaths, RepositoryCatalogList,
-    RepositoryMetadata, S3AddressingStyle, S3Cloud, S3Connection, S3RepositoryCatalog,
-    S3TlsVerification, S3TransportOptions, WorkingTreeCoordinator,
+    write_cap_file_safer, Cloud, CloudError, Device, Repo, RepoError, RepoOptions, RepoPaths,
+    RepositoryCatalogList, RepositoryMetadata, S3AddressingStyle, S3Cloud, S3Connection,
+    S3RepositoryCatalog, S3TlsVerification, S3TransportOptions, WorkingTreeCoordinator,
 };
+use serde::{Deserialize, Serialize};
 
 use super::conflicts::SyncConflictRecord;
 use super::local_state::LocalSyncStateService;
@@ -39,10 +41,26 @@ const QINGYU_SYNCIGNORE_DIRECTORY: &str = ".qingyu";
 const QINGYU_SYNCIGNORE_FILE: &str = "syncignore";
 const QINGYU_SYNCIGNORE_PROTECTED_PATH: &str = "/.qingyu/syncignore";
 const MAX_SYNCIGNORE_BYTES: usize = 1024 * 1024;
+const REPOSITORY_RELOCATION_VERSION: u32 = 1;
+const REPOSITORY_RELOCATION_JOURNAL: &str = "relocation.json";
+const REPOSITORY_RELOCATION_BACKUP: &str = "repo.relocation-backup";
+const MAX_REPOSITORY_RELOCATION_BYTES: usize = 16 * 1024;
 
 type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 pub(crate) trait RepositoryCatalogValidator: Send + Sync {
+    fn create_repository<'a>(
+        &'a self,
+        repository_id: &'a str,
+        display_name: &'a str,
+        created_at: i64,
+    ) -> BoxFuture<'a, Result<RepositoryMetadata, RepositoryJobError>>;
+
+    fn delete_repository<'a>(
+        &'a self,
+        repository_id: &'a str,
+    ) -> BoxFuture<'a, Result<(), RepositoryJobError>>;
+
     fn read_repository<'a>(
         &'a self,
         repository_id: &'a str,
@@ -62,19 +80,52 @@ impl S3RepositoryCatalogValidator {
 }
 
 impl RepositoryCatalogValidator for S3RepositoryCatalogValidator {
+    fn create_repository<'a>(
+        &'a self,
+        repository_id: &'a str,
+        display_name: &'a str,
+        created_at: i64,
+    ) -> BoxFuture<'a, Result<RepositoryMetadata, RepositoryJobError>> {
+        Box::pin(async move {
+            let catalog = self.catalog()?;
+            catalog
+                .create(repository_id, display_name, created_at)
+                .await
+                .map_err(map_catalog_error)
+        })
+    }
+
+    fn delete_repository<'a>(
+        &'a self,
+        repository_id: &'a str,
+    ) -> BoxFuture<'a, Result<(), RepositoryJobError>> {
+        Box::pin(async move {
+            let catalog = self.catalog()?;
+            catalog
+                .delete_repository(repository_id)
+                .await
+                .map_err(map_catalog_error)
+        })
+    }
+
     fn read_repository<'a>(
         &'a self,
         repository_id: &'a str,
     ) -> BoxFuture<'a, Result<RepositoryMetadata, RepositoryJobError>> {
         Box::pin(async move {
-            let snapshot = ready_snapshot_at_app_data(&self.app_data, None)
-                .map_err(|_| RepositoryJobError::ConfigUnavailable)?;
-            let parameters = repository_cloud_parameters(snapshot.target, String::new())?;
-            let (connection, options) = s3_transport(&parameters)?;
-            let catalog =
-                S3RepositoryCatalog::new(connection, options).map_err(map_catalog_error)?;
+            let catalog = self.catalog()?;
             catalog.read(repository_id).await.map_err(map_catalog_error)
         })
+    }
+}
+
+impl S3RepositoryCatalogValidator {
+    fn catalog(&self) -> Result<S3RepositoryCatalog, RepositoryJobError> {
+        let snapshot = ready_snapshot_at_app_data(&self.app_data, None)
+            .map_err(|_| RepositoryJobError::ConfigUnavailable)?;
+        let parameters = repository_cloud_parameters(snapshot.target, String::new())?;
+        let (connection, options) = s3_transport(&parameters)?;
+        S3RepositoryCatalog::new(connection, options).map_err(map_catalog_error)
     }
 }
 
@@ -474,6 +525,7 @@ where
     if expected_notes_root.is_some_and(|expected| expected != binding.notes_root) {
         return Err(RepositoryJobError::InvalidBinding);
     }
+    recover_pending_repository_relocation(app_data, &repository_id, &binding.notes_root)?;
     let key_bytes = STANDARD
         .decode(&local_state.repo_key)
         .map_err(|_| RepositoryJobError::RepositoryUnavailable)?;
@@ -711,6 +763,248 @@ fn prepare_repository_layout(
     Ok(prepared)
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct RepositoryRelocationJournal {
+    version: u32,
+    repository_id: String,
+    old_notes_root: PathBuf,
+    new_notes_root: PathBuf,
+}
+
+pub(super) struct LocalRepositoryRelocation {
+    app_data: PathBuf,
+    repository_id: String,
+    old_notes_root: PathBuf,
+    new_notes_root: PathBuf,
+}
+
+impl LocalRepositoryRelocation {
+    pub(super) fn commit(self) -> Result<(), RepositoryJobError> {
+        recover_pending_repository_relocation(
+            &self.app_data,
+            &self.repository_id,
+            &self.new_notes_root,
+        )
+    }
+
+    pub(super) fn rollback(self) -> Result<(), RepositoryJobError> {
+        recover_pending_repository_relocation(
+            &self.app_data,
+            &self.repository_id,
+            &self.old_notes_root,
+        )
+    }
+}
+
+pub(super) fn begin_local_repository_relocation(
+    app_data_path: &Path,
+    repository_id: &str,
+    old_notes_root: &Path,
+    new_notes_root: &Path,
+) -> Result<LocalRepositoryRelocation, RepositoryJobError> {
+    let repository_id = canonical_repository_id(repository_id)?;
+    recover_pending_repository_relocation(app_data_path, &repository_id, old_notes_root)?;
+    let prepared = prepare_repository_layout(app_data_path, &repository_id)?;
+    prepared.revalidate()?;
+    ensure_relocation_entry_absent(&prepared.repository, REPOSITORY_RELOCATION_BACKUP)?;
+    ensure_relocation_entry_absent(&prepared.repository, REPOSITORY_RELOCATION_JOURNAL)?;
+    let journal = RepositoryRelocationJournal {
+        version: REPOSITORY_RELOCATION_VERSION,
+        repository_id: repository_id.clone(),
+        old_notes_root: old_notes_root.to_path_buf(),
+        new_notes_root: new_notes_root.to_path_buf(),
+    };
+    let bytes = serde_json::to_vec_pretty(&journal)
+        .map_err(|_| RepositoryJobError::RepositoryUnavailable)?;
+    write_cap_file_safer(
+        &prepared.repository.directory,
+        OsStr::new(REPOSITORY_RELOCATION_JOURNAL),
+        &bytes,
+        0o600,
+    )
+    .map_err(|_| RepositoryJobError::RepositoryUnavailable)?;
+    sync_directory(&prepared.repository.directory)
+        .map_err(|_| RepositoryJobError::RepositoryUnavailable)?;
+
+    let PreparedRepositoryPaths {
+        repository,
+        repo,
+        history,
+        temp,
+    } = prepared;
+    drop(repo);
+    let staged = (|| {
+        repository
+            .directory
+            .rename("repo", &repository.directory, REPOSITORY_RELOCATION_BACKUP)
+            .map_err(|_| RepositoryJobError::RepositoryUnavailable)?;
+        sync_directory(&repository.directory)
+            .map_err(|_| RepositoryJobError::RepositoryUnavailable)?;
+        let replacement = open_or_create_directory(&repository.directory, "repo")?;
+        sync_directory(&repository.directory)
+            .map_err(|_| RepositoryJobError::RepositoryUnavailable)?;
+        let replacement =
+            RetainedRepositoryDirectory::new(repository.path.join("repo"), replacement)?;
+        replacement.revalidate()?;
+        history.revalidate()?;
+        temp.revalidate()?;
+        Ok(())
+    })();
+    drop(repository);
+    if let Err(error) = staged {
+        let rollback =
+            recover_pending_repository_relocation(app_data_path, &repository_id, old_notes_root);
+        return rollback.and(Err(error));
+    }
+    Ok(LocalRepositoryRelocation {
+        app_data: app_data_path.to_path_buf(),
+        repository_id,
+        old_notes_root: old_notes_root.to_path_buf(),
+        new_notes_root: new_notes_root.to_path_buf(),
+    })
+}
+
+pub(super) fn recover_pending_repository_relocation(
+    app_data_path: &Path,
+    repository_id: &str,
+    bound_notes_root: &Path,
+) -> Result<(), RepositoryJobError> {
+    let repository_id = canonical_repository_id(repository_id)?;
+    let prepared = prepare_repository_layout(app_data_path, &repository_id)?;
+    prepared.revalidate()?;
+    let Some(journal) = read_relocation_journal(&prepared.repository)? else {
+        ensure_relocation_entry_absent(&prepared.repository, REPOSITORY_RELOCATION_BACKUP)?;
+        return Ok(());
+    };
+    if journal.version != REPOSITORY_RELOCATION_VERSION
+        || journal.repository_id != repository_id
+        || (bound_notes_root != journal.old_notes_root
+            && bound_notes_root != journal.new_notes_root)
+    {
+        return Err(RepositoryJobError::RepositoryUnavailable);
+    }
+
+    let PreparedRepositoryPaths {
+        repository,
+        repo,
+        history,
+        temp,
+    } = prepared;
+    drop(repo);
+    history.revalidate()?;
+    temp.revalidate()?;
+    let backup_exists = relocation_directory_exists(&repository, REPOSITORY_RELOCATION_BACKUP)?;
+    if bound_notes_root == journal.old_notes_root {
+        if backup_exists {
+            repository
+                .directory
+                .remove_dir_all("repo")
+                .map_err(|_| RepositoryJobError::RepositoryUnavailable)?;
+            repository
+                .directory
+                .rename(REPOSITORY_RELOCATION_BACKUP, &repository.directory, "repo")
+                .map_err(|_| RepositoryJobError::RepositoryUnavailable)?;
+            sync_directory(&repository.directory)
+                .map_err(|_| RepositoryJobError::RepositoryUnavailable)?;
+        }
+    } else if backup_exists {
+        repository
+            .directory
+            .remove_dir_all(REPOSITORY_RELOCATION_BACKUP)
+            .map_err(|_| RepositoryJobError::RepositoryUnavailable)?;
+        sync_directory(&repository.directory)
+            .map_err(|_| RepositoryJobError::RepositoryUnavailable)?;
+    }
+    remove_relocation_journal(&repository)?;
+    repository.revalidate()?;
+    Ok(())
+}
+
+fn ensure_relocation_entry_absent(
+    repository: &RetainedRepositoryDirectory,
+    name: &str,
+) -> Result<(), RepositoryJobError> {
+    match repository.directory.symlink_metadata(name) {
+        Ok(_) => Err(RepositoryJobError::RepositoryUnavailable),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(_) => Err(RepositoryJobError::RepositoryUnavailable),
+    }
+}
+
+fn relocation_directory_exists(
+    repository: &RetainedRepositoryDirectory,
+    name: &str,
+) -> Result<bool, RepositoryJobError> {
+    match repository.directory.symlink_metadata(name) {
+        Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => Ok(true),
+        Ok(_) => Err(RepositoryJobError::RepositoryUnavailable),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(_) => Err(RepositoryJobError::RepositoryUnavailable),
+    }
+}
+
+fn read_relocation_journal(
+    repository: &RetainedRepositoryDirectory,
+) -> Result<Option<RepositoryRelocationJournal>, RepositoryJobError> {
+    let addressed = match repository
+        .directory
+        .symlink_metadata(REPOSITORY_RELOCATION_JOURNAL)
+    {
+        Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => metadata,
+        Ok(_) => return Err(RepositoryJobError::RepositoryUnavailable),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err(RepositoryJobError::RepositoryUnavailable),
+    };
+    if addressed.len() > MAX_REPOSITORY_RELOCATION_BYTES as u64 {
+        return Err(RepositoryJobError::RepositoryUnavailable);
+    }
+    let addressed_identity = unique_regular_file_identity(&addressed)
+        .ok_or(RepositoryJobError::RepositoryUnavailable)?;
+    let mut file = repository
+        .directory
+        .open_with(REPOSITORY_RELOCATION_JOURNAL, &nonfollowing_read_options())
+        .map_err(|_| RepositoryJobError::RepositoryUnavailable)?;
+    let retained = file
+        .metadata()
+        .map_err(|_| RepositoryJobError::RepositoryUnavailable)?;
+    if unique_regular_file_identity(&retained) != Some(addressed_identity) {
+        return Err(RepositoryJobError::RepositoryUnavailable);
+    }
+    let mut bytes = Vec::with_capacity(retained.len() as usize);
+    Read::by_ref(&mut file)
+        .take(MAX_REPOSITORY_RELOCATION_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| RepositoryJobError::RepositoryUnavailable)?;
+    if bytes.len() > MAX_REPOSITORY_RELOCATION_BYTES {
+        return Err(RepositoryJobError::RepositoryUnavailable);
+    }
+    let final_metadata = file
+        .metadata()
+        .map_err(|_| RepositoryJobError::RepositoryUnavailable)?;
+    if unique_regular_file_identity(&final_metadata) != Some(addressed_identity) {
+        return Err(RepositoryJobError::RepositoryUnavailable);
+    }
+    repository.revalidate()?;
+    serde_json::from_slice(&bytes)
+        .map(Some)
+        .map_err(|_| RepositoryJobError::RepositoryUnavailable)
+}
+
+fn remove_relocation_journal(
+    repository: &RetainedRepositoryDirectory,
+) -> Result<(), RepositoryJobError> {
+    match repository
+        .directory
+        .remove_file(REPOSITORY_RELOCATION_JOURNAL)
+    {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => return Err(RepositoryJobError::RepositoryUnavailable),
+    }
+    sync_directory(&repository.directory).map_err(|_| RepositoryJobError::RepositoryUnavailable)
+}
+
 fn reset_local_repository_storage(
     app_data_path: &Path,
     repository_id: &str,
@@ -925,18 +1219,20 @@ mod tests {
     use base64::Engine;
     use futures::FutureExt;
     use qingyu_dejavu::{
-        Cloud, CloudError, LocalCloud, NoopWorkingTreeCoordinator, RepoError, S3AddressingStyle,
-        S3Connection, S3RepositoryCatalog, S3TlsVerification, S3TransportOptions,
-        WorkingTreeChange, WorkingTreeCoordinator, WorkingTreePermit,
+        Cloud, CloudError, LocalCloud, RepoError, S3AddressingStyle, S3Connection,
+        S3RepositoryCatalog, S3TlsVerification, S3TransportOptions, WorkingTreeChange,
+        WorkingTreeCoordinator, WorkingTreePermit,
     };
     use tempfile::{tempdir, TempDir};
 
     use super::{
-        config_addressing_style, config_tls_verification, map_repo_error, ConfigAddressingStyle,
+        begin_local_repository_relocation, config_addressing_style, config_tls_verification,
+        map_repo_error, recover_pending_repository_relocation, ConfigAddressingStyle,
         ConfigTlsVerification, DejavuLocalPurgeRepository, DejavuRepositoryMaintenance,
         DejavuRepositoryRunner, RepositoryCloudFactory, RepositoryCloudParameters,
-        WorkingTreeCoordinatorFactory,
+        WorkingTreeCoordinatorFactory, REPOSITORY_RELOCATION_BACKUP, REPOSITORY_RELOCATION_JOURNAL,
     };
+    use crate::dejavu_sync::local_state::{LocalSyncStateService, RepositoryBinding};
     use crate::dejavu_sync::maintenance::LocalPurgeRepositoryOps;
     use crate::dejavu_sync::service::{
         DejavuSyncService, JobCancellationToken, RepositoryJobError, RepositoryJobRunner,
@@ -1077,17 +1373,6 @@ mod tests {
         }
     }
 
-    struct LiveNoopCoordinatorFactory;
-
-    impl WorkingTreeCoordinatorFactory for LiveNoopCoordinatorFactory {
-        fn create(
-            &self,
-            _context: &SyncAttemptContext,
-        ) -> Result<Arc<dyn WorkingTreeCoordinator>, RepositoryJobError> {
-            Ok(Arc::new(NoopWorkingTreeCoordinator))
-        }
-    }
-
     #[derive(Default)]
     struct LiveStatusEmitter {
         events: Mutex<Vec<RepositorySyncStatus>>,
@@ -1222,7 +1507,7 @@ mod tests {
         async fn enqueue_and_wait(&self) -> Result<(String, Arc<LiveStatusEmitter>), &'static str> {
             let runner = Arc::new(DejavuRepositoryRunner::new(
                 &self.app_data,
-                Arc::new(LiveNoopCoordinatorFactory),
+                Arc::new(FakeCoordinatorFactory),
             ));
             let emitter = Arc::new(LiveStatusEmitter::default());
             let status_store = Arc::new(RepositoryStatusStore::new(
@@ -1840,6 +2125,122 @@ mod tests {
         assert!(!repository_root.join("repo/old-key-object").exists());
         assert!(repository_root.join("history/keep-history").is_file());
         assert!(repository_root.join("temp/keep-temp").is_file());
+        assert!(fixture.notes_root.join("journal.md").is_file());
+    }
+
+    #[test]
+    fn relocation_rollback_after_state_write_failure_restores_old_binding_and_cache() {
+        let fixture = Fixture::new();
+        let new_root = fixture._root.path().join("new-notes");
+        std::fs::create_dir(&new_root).unwrap();
+        let repository_root = fixture
+            .app_data
+            .join("sync/repositories")
+            .join(&fixture.repository_id);
+        std::fs::create_dir_all(repository_root.join("repo")).unwrap();
+        std::fs::write(repository_root.join("repo/old-index"), b"old-cache").unwrap();
+
+        let relocation = begin_local_repository_relocation(
+            &fixture.app_data,
+            &fixture.repository_id,
+            &fixture.notes_root.canonicalize().unwrap(),
+            &new_root.canonicalize().unwrap(),
+        )
+        .unwrap();
+        relocation.rollback().unwrap();
+
+        let state = LocalSyncStateService::new(&fixture.app_data)
+            .load()
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            state.bindings[0].notes_root,
+            fixture.notes_root.canonicalize().unwrap()
+        );
+        assert_eq!(
+            std::fs::read(repository_root.join("repo/old-index")).unwrap(),
+            b"old-cache"
+        );
+        assert!(!repository_root.join(REPOSITORY_RELOCATION_BACKUP).exists());
+        assert!(!repository_root.join(REPOSITORY_RELOCATION_JOURNAL).exists());
+        assert!(fixture.notes_root.join("journal.md").is_file());
+    }
+
+    #[test]
+    fn relocation_journal_recovers_the_old_cache_before_binding_publication() {
+        let fixture = Fixture::new();
+        let new_root = fixture._root.path().join("new-notes");
+        std::fs::create_dir(&new_root).unwrap();
+        let old_root = fixture.notes_root.canonicalize().unwrap();
+        let new_root = new_root.canonicalize().unwrap();
+        let repository_root = fixture
+            .app_data
+            .join("sync/repositories")
+            .join(&fixture.repository_id);
+        std::fs::create_dir_all(repository_root.join("repo")).unwrap();
+        std::fs::write(repository_root.join("repo/old-index"), b"old-cache").unwrap();
+
+        let relocation = begin_local_repository_relocation(
+            &fixture.app_data,
+            &fixture.repository_id,
+            &old_root,
+            &new_root,
+        )
+        .unwrap();
+        drop(relocation);
+        recover_pending_repository_relocation(&fixture.app_data, &fixture.repository_id, &old_root)
+            .unwrap();
+
+        assert_eq!(
+            std::fs::read(repository_root.join("repo/old-index")).unwrap(),
+            b"old-cache"
+        );
+        assert!(!repository_root.join(REPOSITORY_RELOCATION_BACKUP).exists());
+        assert!(!repository_root.join(REPOSITORY_RELOCATION_JOURNAL).exists());
+    }
+
+    #[test]
+    fn relocation_journal_finishes_the_new_cache_after_binding_publication() {
+        let fixture = Fixture::new();
+        let new_root = fixture._root.path().join("new-notes");
+        std::fs::create_dir(&new_root).unwrap();
+        let old_root = fixture.notes_root.canonicalize().unwrap();
+        let new_root = new_root.canonicalize().unwrap();
+        let repository_root = fixture
+            .app_data
+            .join("sync/repositories")
+            .join(&fixture.repository_id);
+        std::fs::create_dir_all(repository_root.join("repo")).unwrap();
+        std::fs::write(repository_root.join("repo/old-index"), b"old-cache").unwrap();
+
+        let relocation = begin_local_repository_relocation(
+            &fixture.app_data,
+            &fixture.repository_id,
+            &old_root,
+            &new_root,
+        )
+        .unwrap();
+        let state_service = LocalSyncStateService::new(&fixture.app_data);
+        let mut state = state_service.load().unwrap().unwrap();
+        state_service
+            .bind_repository(
+                &mut state,
+                RepositoryBinding {
+                    repository_id: fixture.repository_id.clone(),
+                    display_name: "Journal".to_owned(),
+                    notes_root: new_root.clone(),
+                    enabled: true,
+                },
+            )
+            .unwrap();
+        drop(relocation);
+        recover_pending_repository_relocation(&fixture.app_data, &fixture.repository_id, &new_root)
+            .unwrap();
+
+        assert!(repository_root.join("repo").is_dir());
+        assert!(!repository_root.join("repo/old-index").exists());
+        assert!(!repository_root.join(REPOSITORY_RELOCATION_BACKUP).exists());
+        assert!(!repository_root.join(REPOSITORY_RELOCATION_JOURNAL).exists());
         assert!(fixture.notes_root.join("journal.md").is_file());
     }
 

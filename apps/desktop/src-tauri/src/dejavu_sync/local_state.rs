@@ -337,11 +337,13 @@ impl LocalSyncStateService {
         let mut updated = state.clone();
         match (repository_index, root_index) {
             (None, None) => updated.bindings.push(binding),
+            (Some(repository_index), None) => {
+                updated.bindings[repository_index] = binding;
+            }
             (Some(repository_index), Some(root_index)) if repository_index == root_index => {
                 updated.bindings[repository_index].display_name = binding.display_name;
                 updated.bindings[repository_index].enabled = true;
             }
-            (Some(_), _) => return Err(LocalSyncStateError::duplicate_repository()),
             (_, Some(_)) => return Err(LocalSyncStateError::duplicate_root()),
         }
         self.save(&updated)?;

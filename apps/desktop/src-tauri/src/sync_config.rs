@@ -586,15 +586,28 @@ async fn execute_application_sync_dispatch(
                         .to_string()
                 })?
                 .ok_or_else(|| "dejavu-invalid-binding".to_string())?;
-            let binding = state
+            let repository_id = match state
                 .bindings
-                .into_iter()
+                .iter()
                 .find(|binding| binding.enabled && binding.notes_root == notes_root)
-                .ok_or_else(|| "dejavu-invalid-binding".to_string())?;
+            {
+                Some(binding) => binding.repository_id.clone(),
+                None => {
+                    if trigger != SyncTrigger::Manual
+                        || state
+                            .bindings
+                            .iter()
+                            .any(|binding| binding.notes_root == notes_root)
+                    {
+                        return Err("dejavu-invalid-binding".to_string());
+                    }
+                    uuid::Uuid::new_v4().to_string()
+                }
+            };
             run_portable_settings().await?;
             enqueue_dejavu(crate::dejavu_sync::service::SyncJobRequest {
                 notes_root,
-                repository_id: binding.repository_id,
+                repository_id,
                 trigger,
             })
             .await
@@ -612,19 +625,21 @@ fn production_application_sync_operations(
     trigger: SyncTrigger,
     previous_status: Option<SyncStatus>,
 ) -> ApplicationSyncDispatchOperations {
-    let dejavu_service = app
+    let dejavu_available = app
         .try_state::<crate::dejavu_sync::commands::DejavuSyncServiceOwner>()
-        .and_then(|owner| owner.installed_service().ok());
+        .is_some_and(|owner| owner.installed_service().is_ok());
+    let dejavu_app = app.clone();
     let legacy_app = app.clone();
     let legacy_app_data = app_data;
     let legacy_notes_root = canonical_notes_root;
     let legacy_snapshot = snapshot.clone();
     let portable_app = app;
     let portable_snapshot = snapshot;
-    let enqueue_dejavu = dejavu_service.map(|service| -> DejavuEnqueueOperation {
+    let enqueue_dejavu = dejavu_available.then(|| -> DejavuEnqueueOperation {
         Box::new(move |job_request| {
+            let app = dejavu_app.clone();
             Box::pin(async move {
-                service
+                app.state::<crate::dejavu_sync::commands::DejavuSyncServiceOwner>()
                     .enqueue(job_request)
                     .await
                     .map_err(|error| error.safe_code().to_string())
@@ -1654,13 +1669,75 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn provider_s3_dispatch_bootstraps_an_unbound_keyed_notebook_through_dejavu() {
+        let app_data = tempdir().unwrap();
+        let notes_parent = tempdir().unwrap();
+        let notes = notes_parent.path().join("First notebook");
+        fs::create_dir(&notes).unwrap();
+        let canonical_notes = notes.canonicalize().unwrap();
+        LocalSyncStateService::new(app_data.path())
+            .load_or_initialize(Some("test-key"))
+            .unwrap();
+
+        let portable_runs = Arc::new(AtomicUsize::new(0));
+        let queue_runs = Arc::new(AtomicUsize::new(0));
+        let portable_runs_for_dispatch = portable_runs.clone();
+        let queue_runs_for_dispatch = queue_runs.clone();
+        let expected_notes = canonical_notes.clone();
+
+        let dispatch = execute_application_sync_dispatch(
+            SyncProvider::S3,
+            app_data.path(),
+            canonical_notes.clone(),
+            SyncTrigger::Manual,
+            ApplicationSyncDispatchOperations {
+                enqueue_dejavu: Some(Box::new(move |request| {
+                    Box::pin(async move {
+                        queue_runs_for_dispatch.fetch_add(1, Ordering::SeqCst);
+                        assert_eq!(request.notes_root, expected_notes);
+                        assert_eq!(request.trigger, SyncTrigger::Manual);
+                        assert_eq!(
+                            uuid::Uuid::parse_str(&request.repository_id)
+                                .unwrap()
+                                .to_string(),
+                            request.repository_id
+                        );
+                        Ok(AcceptedSyncJob::completed_for_test(
+                            "00000000-0000-4000-8000-000000000211",
+                            request.repository_id,
+                            request.notes_root,
+                        ))
+                    })
+                })),
+                run_legacy: Box::new(|| {
+                    Box::pin(async { Err("legacy notes must not run".to_string()) })
+                }),
+                run_portable_settings: Box::new(move || {
+                    Box::pin(async move {
+                        portable_runs_for_dispatch.fetch_add(1, Ordering::SeqCst);
+                        Ok(())
+                    })
+                }),
+            },
+        )
+        .await
+        .unwrap();
+
+        let SyncDispatchResult::Accepted { job } = dispatch else {
+            panic!("the first S3 sync must return an accepted Dejavu job");
+        };
+        assert_eq!(job.notes_root, canonical_notes);
+        assert_eq!(portable_runs.load(Ordering::SeqCst), 1);
+        assert_eq!(queue_runs.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
     async fn provider_s3_dispatch_rejects_unavailable_service_or_invalid_state_before_network_work()
     {
         #[derive(Clone, Copy, Debug)]
         enum AdmissionCase {
             ServiceMissing,
             StateMissing,
-            BindingMissing,
             BindingDisabled,
             StateCorrupt,
         }
@@ -1671,7 +1748,6 @@ mod tests {
                 "dejavu-repository-unavailable",
             ),
             (AdmissionCase::StateMissing, "dejavu-invalid-binding"),
-            (AdmissionCase::BindingMissing, "dejavu-invalid-binding"),
             (AdmissionCase::BindingDisabled, "dejavu-invalid-binding"),
             (AdmissionCase::StateCorrupt, "dejavu-invalid-binding"),
         ] {
@@ -1697,9 +1773,6 @@ mod tests {
                         .unwrap();
                 }
                 AdmissionCase::StateMissing => {}
-                AdmissionCase::BindingMissing => {
-                    state_service.load_or_initialize(Some("test-key")).unwrap();
-                }
                 AdmissionCase::BindingDisabled => {
                     let mut state = state_service.load_or_initialize(Some("test-key")).unwrap();
                     state_service

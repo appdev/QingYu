@@ -259,9 +259,7 @@ where
     match scenario {
         Ok(scenario) => finish_s3_scenario(run_id, scenario, cleanup),
         Err(panic) => {
-            if cleanup.is_err() {
-                eprintln!("Live S3 panic cleanup failed for isolated scenario");
-            }
+            drop(cleanup);
             std::panic::resume_unwind(panic)
         }
     }
