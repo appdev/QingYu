@@ -340,6 +340,7 @@ describe("codeMirrorBlockDragPlugin", () => {
     expect(changedRanges).toHaveLength(1);
     expect(changedRanges[0]?.from).toBeGreaterThan(0);
     expect(changedRanges[0]?.to).toBeLessThan(doc.length);
+    expect(forceParsing(view, view.state.doc.length, 1_000)).toBe(true);
 
     const childLine = Array.from(
       view.dom.querySelectorAll<HTMLElement>(".cm-markra-list-item"),
@@ -372,6 +373,7 @@ describe("codeMirrorBlockDragPlugin", () => {
       "- Middle item",
       "- Last item",
     ].join("\n"));
+    expect(forceParsing(view, view.state.doc.length, 1_000)).toBe(true);
     const movedLine = Array.from(
       view.dom.querySelectorAll<HTMLElement>(".cm-line"),
     ).find((line) => line.textContent?.includes("Moved title"));
@@ -401,6 +403,7 @@ describe("codeMirrorBlockDragPlugin", () => {
       "    - **Moved title**: Body",
       "- Last item",
     ].join("\n"));
+    expect(forceParsing(view, view.state.doc.length, 1_000)).toBe(true);
     const movedLine = Array.from(
       view.dom.querySelectorAll<HTMLElement>(".cm-line"),
     ).find((line) => line.textContent?.includes("Moved title"));
@@ -424,6 +427,7 @@ describe("codeMirrorBlockDragPlugin", () => {
     expect(view.state.doc.toString()).toBe(
       "- Parent\n  - Child paragraph\n\nAfter",
     );
+    expect(forceParsing(view, view.state.doc.length, 1_000)).toBe(true);
     const childLine = Array.from(
       view.dom.querySelectorAll<HTMLElement>(".cm-line"),
     ).find((line) => line.textContent === "Child paragraph");
