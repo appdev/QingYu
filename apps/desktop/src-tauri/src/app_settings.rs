@@ -714,6 +714,8 @@ impl AppSettingsService {
             if let Some(mut value) = self.backend.get(key)? {
                 if key == EXPORT_SETTINGS_KEY {
                     value = portable_export_settings(value);
+                } else if key == EDITOR_PREFERENCES_KEY {
+                    value = portable_editor_preferences(value);
                 }
                 object.insert(key.to_string(), value);
             }
@@ -1261,6 +1263,16 @@ fn portable_export_settings(mut value: Value) -> Value {
     value
 }
 
+fn portable_editor_preferences(mut value: Value) -> Value {
+    if let Some(customizations) = value
+        .get_mut("viewModeCustomizations")
+        .and_then(Value::as_object_mut)
+    {
+        customizations.remove("recentFolders");
+    }
+    value
+}
+
 fn merge_defaults(defaults: Value, stored: Option<Value>) -> Value {
     let mut defaults = defaults.as_object().cloned().unwrap_or_default();
     if let Some(stored) = stored.and_then(|value| value.as_object().cloned()) {
@@ -1773,17 +1785,21 @@ fn valid_view_mode_customizations(value: &Value) -> bool {
         "openButton",
         "outline",
         "quickCreateButton",
-        "recentFolders",
         "sidebarLayout",
         "statusBar",
         "titlebarActions",
         "viewModeToggle",
         "wordCount",
     ];
-    object_has_exact(value, KEYS).is_some_and(|object| {
+    value.as_object().is_some_and(|object| {
         object
-            .values()
-            .all(|visibility| string_in(visibility, &["visible", "hidden"]))
+            .keys()
+            .all(|key| KEYS.contains(&key.as_str()) || key == "recentFolders")
+            && KEYS.iter().all(|key| {
+                object
+                    .get(*key)
+                    .is_some_and(|visibility| string_in(visibility, &["visible", "hidden"]))
+            })
     })
 }
 
@@ -1944,6 +1960,8 @@ pub(crate) fn portable_settings_from_bytes(
         if let Some(mut value) = raw.get(key).cloned() {
             if key == EXPORT_SETTINGS_KEY {
                 value = portable_export_settings(value);
+            } else if key == EDITOR_PREFERENCES_KEY {
+                value = portable_editor_preferences(value);
             }
             portable.insert(key.to_string(), value);
         }
@@ -2537,6 +2555,21 @@ mod tests {
     }
 
     #[test]
+    fn legacy_recent_folders_is_inert_in_canonical_portable_settings() {
+        let mut legacy = portable_golden_store();
+        legacy["editorPreferences"]["viewModeCustomizations"]["recentFolders"] =
+            json!("malformed-but-ignored");
+        let bytes = serde_json::to_vec(&legacy).unwrap();
+
+        validate_portable_settings_bytes(&bytes).unwrap();
+        let canonical = portable_settings_from_bytes(Some(&bytes)).unwrap();
+
+        assert!(canonical["editorPreferences"]["viewModeCustomizations"]
+            .get("recentFolders")
+            .is_none());
+    }
+
+    #[test]
     fn portable_settings_validator_requires_complete_writer_owned_nested_objects() {
         let cases: &[&[&str]] = &[
             &["editorPreferences", "extendedSyntax", "highlight"],
@@ -2814,6 +2847,26 @@ mod tests {
 
         assert_eq!(value[LANGUAGE_KEY], json!("zh-CN"));
         assert!(value.get("mcp").is_none());
+    }
+
+    #[test]
+    fn portable_snapshot_omits_legacy_recent_folders_without_migrating_the_store() {
+        let mut preferences = portable_golden_store()[EDITOR_PREFERENCES_KEY].clone();
+        preferences["viewModeCustomizations"]["recentFolders"] = json!("hidden");
+        let backend = Arc::new(MemoryBackend::with([(EDITOR_PREFERENCES_KEY, preferences)]));
+        let service = service_with_backend(backend.clone());
+
+        let snapshot = service.portable_settings_snapshot().unwrap();
+        let value: Value = serde_json::from_slice(snapshot.bytes().unwrap()).unwrap();
+
+        assert!(value[EDITOR_PREFERENCES_KEY]["viewModeCustomizations"]
+            .get("recentFolders")
+            .is_none());
+        assert!(
+            backend.values.lock().unwrap()[EDITOR_PREFERENCES_KEY]["viewModeCustomizations"]
+                .get("recentFolders")
+                .is_some()
+        );
     }
 
     #[test]
