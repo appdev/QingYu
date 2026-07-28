@@ -1,3 +1,15 @@
+## [2.1.0](https://github.com/markrahq/markra/compare/v2.0.0...v2.1.0) (2026-07-28)
+
+### Features
+
+* **editor:** add Mermaid preview fullscreen control ([#597](https://github.com/markrahq/markra/issues/597)) ([8eedebf](https://github.com/markrahq/markra/commit/8eedebf074f03ee020c3b8f996e633e080d6be5a)), closes [#593](https://github.com/markrahq/markra/issues/593)
+* **editor:** add task list and today slash commands ([#596](https://github.com/markrahq/markra/issues/596)) ([c274768](https://github.com/markrahq/markra/commit/c27476845055e710e1d82da3e509e2dc13896667)), closes [#584](https://github.com/markrahq/markra/issues/584)
+
+### Bug Fixes
+
+* **editor:** sync visual table edits to markdown ([#598](https://github.com/markrahq/markra/issues/598)) ([8c56cb1](https://github.com/markrahq/markra/commit/8c56cb1957f9b24e609e20703b414b063ef129fd))
+* **windows:** open new windows from shortcuts and drops ([#595](https://github.com/markrahq/markra/issues/595)) ([ca9558d](https://github.com/markrahq/markra/commit/ca9558d7917c4e9785170b17ab82e8b1d0a31759))
+
 ## [2.0.0](https://github.com/markrahq/markra/compare/v1.7.4...v2.0.0) (2026-07-28)
 
 ### Features
