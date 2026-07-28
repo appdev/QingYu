@@ -502,15 +502,184 @@ describe("SyncSettings application scope", () => {
     expect(summary).not.toHaveTextContent("other-repository-failed");
   });
 
+  it("adopts a newly bound Dejavu event only when it belongs to the current root", async () => {
+    const events = createEventBus();
+    let currentRootStatus: DejavuRepositoryStatus | null = null;
+    let initialLoadPending = true;
+    let resolveInitialStatus!: (status: DejavuRepositoryStatus | null) => unknown;
+    const runtime = createDefaultAppRuntime();
+    runtime.events = events.events;
+    runtime.syncConfig.loadRepositoryStatus = () => {
+      if (!initialLoadPending) return Promise.resolve(currentRootStatus);
+      return new Promise<DejavuRepositoryStatus | null>((resolve) => {
+        resolveInitialStatus = resolve;
+      });
+    };
+    configureAppRuntime(runtime);
+    renderS3Settings();
+    await waitFor(() => expect(events.listenerCount("qingyu://dejavu-sync-status-changed")).toBe(1));
+    await waitFor(() => expect(resolveInitialStatus).toBeDefined());
+
+    await act(async () => {
+      initialLoadPending = false;
+      resolveInitialStatus(null);
+    });
+    expect(screen.getByText("The current notebook is not bound to a Dejavu repository.")).toBeVisible();
+
+    await act(async () => {
+      await events.emit("qingyu://dejavu-sync-status-changed", repositoryStatus({
+        error: {
+          code: "other-repository-failed",
+          operation: "repository-sync"
+        },
+        phase: "failed",
+        repositoryId: "00000000-0000-4000-8000-0000000000ff"
+      }));
+    });
+    expect(screen.queryByRole("status", { name: "Dejavu background sync" })).not.toBeInTheDocument();
+
+    currentRootStatus = repositoryStatus({
+      phase: "attempting",
+      trigger: "manual"
+    });
+    await act(async () => {
+      await events.emit("qingyu://dejavu-sync-status-changed", currentRootStatus);
+    });
+
+    const summary = await screen.findByRole("status", { name: "Dejavu background sync" });
+    expect(summary).toHaveTextContent("Syncing");
+    expect(summary).toHaveTextContent("Trigger: Manual");
+    expect(summary).not.toHaveTextContent("other-repository-failed");
+
+    await act(async () => {
+      await events.emit("qingyu://dejavu-sync-status-changed", repositoryStatus({
+        error: {
+          code: "later-other-repository-failed",
+          operation: "repository-sync"
+        },
+        phase: "failed",
+        repositoryId: "00000000-0000-4000-8000-0000000000ff"
+      }));
+    });
+    expect(summary).toHaveTextContent("Syncing");
+    expect(summary).not.toHaveTextContent("later-other-repository-failed");
+  });
+
+  it("keeps a current-root bind event that arrives before a stale null snapshot", async () => {
+    const events = createEventBus();
+    let currentRootStatus: DejavuRepositoryStatus | null = null;
+    let initialLoadPending = true;
+    let resolveInitialStatus!: (status: DejavuRepositoryStatus | null) => unknown;
+    const runtime = createDefaultAppRuntime();
+    runtime.events = events.events;
+    runtime.syncConfig.loadRepositoryStatus = () => {
+      if (!initialLoadPending) return Promise.resolve(currentRootStatus);
+      return new Promise<DejavuRepositoryStatus | null>((resolve) => {
+        resolveInitialStatus = resolve;
+      });
+    };
+    configureAppRuntime(runtime);
+    renderS3Settings();
+    await waitFor(() => expect(events.listenerCount("qingyu://dejavu-sync-status-changed")).toBe(1));
+    await waitFor(() => expect(resolveInitialStatus).toBeDefined());
+
+    currentRootStatus = repositoryStatus({
+      phase: "attempting",
+      trigger: "manual"
+    });
+    await act(async () => {
+      await events.emit("qingyu://dejavu-sync-status-changed", repositoryStatus({
+        phase: "failed",
+        repositoryId: "00000000-0000-4000-8000-0000000000ff"
+      }));
+      await events.emit("qingyu://dejavu-sync-status-changed", currentRootStatus);
+      initialLoadPending = false;
+      resolveInitialStatus(null);
+    });
+
+    const summary = await screen.findByRole("status", { name: "Dejavu background sync" });
+    expect(summary).toHaveTextContent("Syncing");
+    expect(summary).toHaveTextContent("Trigger: Manual");
+    expect(summary).not.toHaveTextContent("Failed");
+  });
+
+  it("does not let an older current-root ownership reload replace a newer binding", async () => {
+    const events = createEventBus();
+    let resolveOlderReload!: (status: DejavuRepositoryStatus) => unknown;
+    let resolveNewerReload!: (status: DejavuRepositoryStatus) => unknown;
+    let loadCount = 0;
+    const olderStatus = repositoryStatus({
+      error: {
+        code: "stale-older-binding",
+        operation: "repository-sync"
+      },
+      phase: "failed",
+      repositoryId: "00000000-0000-4000-8000-0000000000aa"
+    });
+    const newerStatus = repositoryStatus({
+      phase: "attempting",
+      repositoryId: "00000000-0000-4000-8000-0000000000bb",
+      trigger: "manual"
+    });
+    const runtime = createDefaultAppRuntime();
+    runtime.events = events.events;
+    runtime.syncConfig.loadRepositoryStatus = () => {
+      loadCount += 1;
+      if (loadCount === 1) return Promise.resolve(null);
+      if (loadCount === 2) {
+        return new Promise<DejavuRepositoryStatus>((resolve) => {
+          resolveOlderReload = resolve;
+        });
+      }
+      return new Promise<DejavuRepositoryStatus>((resolve) => {
+        resolveNewerReload = resolve;
+      });
+    };
+    configureAppRuntime(runtime);
+    renderS3Settings();
+    await screen.findByText("The current notebook is not bound to a Dejavu repository.");
+    await waitFor(() => expect(events.listenerCount("qingyu://dejavu-sync-status-changed")).toBe(1));
+
+    let olderEvent!: Promise<unknown>;
+    let newerEvent!: Promise<unknown>;
+    await act(async () => {
+      olderEvent = events.emit("qingyu://dejavu-sync-status-changed", olderStatus);
+      newerEvent = events.emit("qingyu://dejavu-sync-status-changed", newerStatus);
+      await waitFor(() => expect(resolveNewerReload).toBeDefined());
+      resolveNewerReload(newerStatus);
+      await newerEvent;
+    });
+
+    const summary = await screen.findByRole("status", { name: "Dejavu background sync" });
+    expect(summary).toHaveTextContent("Syncing");
+    await act(async () => {
+      resolveOlderReload(olderStatus);
+      await olderEvent;
+    });
+    expect(summary).toHaveTextContent("Syncing");
+    expect(summary).not.toHaveTextContent("stale-older-binding");
+  });
+
   it("renders only safe Dejavu diagnostics and relative conflict paths", async () => {
-    const absolutePath = "/Users/alice/Private/credentials.md";
+    const unsafePaths = [
+      ["00000000-0000-4000-8000-0000000000e1", "/Users/alice/Private/credentials.md"],
+      ["00000000-0000-4000-8000-0000000000e2", "C:Users\\alice\\secret.md"],
+      ["00000000-0000-4000-8000-0000000000e3", "C:\\Users\\alice\\secret.md"],
+      ["00000000-0000-4000-8000-0000000000e4", "\\\\server\\share\\secret.md"],
+      ["00000000-0000-4000-8000-0000000000e5", "file:///Users/alice/secret.md"],
+      ["00000000-0000-4000-8000-0000000000e6", "notes/\0secret.md"],
+      ["00000000-0000-4000-8000-0000000000e7", "notes/./secret.md"],
+      ["00000000-0000-4000-8000-0000000000e8", "notes/../secret.md"],
+      ["00000000-0000-4000-8000-0000000000e9", "notes/name:stream"],
+      ["00000000-0000-4000-8000-0000000000ea", "notes/trailing."],
+      ["00000000-0000-4000-8000-0000000000eb", "notes/trailing "],
+      ["00000000-0000-4000-8000-0000000000ec", "notes//secret.md"],
+      ["00000000-0000-4000-8000-0000000000ed", "notes/\u0085secret.md"]
+    ] as const;
     const status = repositoryStatus({
       conflicts: [
         conflict({ relativePath: "notes/safe.md" }),
-        conflict({
-          conflictId: "00000000-0000-4000-8000-0000000000d6",
-          relativePath: absolutePath
-        })
+        ...unsafePaths.map(([conflictId, relativePath]) => conflict({ conflictId, relativePath }))
       ],
       error: {
         code: "repository-sync-failed",
@@ -526,8 +695,10 @@ describe("SyncSettings application scope", () => {
     const summary = await screen.findByRole("status", { name: "Dejavu background sync" });
     expect(summary).toHaveTextContent("Error code: repository-sync-failed");
     expect(summary).toHaveTextContent("notes/safe.md");
-    expect(summary).toHaveTextContent("Unresolved conflicts: 2");
-    expect(summary).not.toHaveTextContent(absolutePath);
+    expect(summary).toHaveTextContent("Unresolved conflicts: 14");
+    for (const [, path] of unsafePaths) {
+      expect(summary.textContent).not.toContain(path);
+    }
     expect(summary).not.toHaveTextContent(status.jobId);
     expect(summary).not.toHaveTextContent("secret-value");
   });

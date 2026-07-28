@@ -121,14 +121,19 @@ function isSafeRelativeStatusPath(value: string) {
   if (
     !value
     || value.startsWith("/")
-    || value.startsWith("\\")
-    || /^[a-z]:[\\/]/iu.test(value)
-    || /^file:/iu.test(value)
-    || value.includes("\0")
+    || value.includes("\\")
+    || /[\u0000-\u001f\u007f-\u009f]/u.test(value)
   ) {
     return false;
   }
-  return value.split(/[\\/]/u).every((segment) => segment !== "" && segment !== "." && segment !== "..");
+  return value.split("/").every((segment) => (
+    segment !== ""
+    && segment !== "."
+    && segment !== ".."
+    && !segment.includes(":")
+    && !segment.endsWith(".")
+    && !segment.endsWith(" ")
+  ));
 }
 
 function DejavuStatusSummary({
@@ -326,12 +331,30 @@ export function SyncSettings({
     let cleanup: (() => unknown) | null = null;
     let initialLoadComplete = false;
     let repositoryId: string | null = null;
+    let nextOwnershipProbe = 0;
+    let adoptedOwnershipEvent = 0;
     const pendingEvents = new Map<string, DejavuRepositoryStatus>();
     setDejavuRepositoryStatus(null);
     if (!primaryRoot) {
       return;
     }
     const runtime = getAppRuntime();
+    const adoptStatusForCurrentRoot = async (payload: DejavuRepositoryStatus) => {
+      const ownershipEvent = ++nextOwnershipProbe;
+      try {
+        const current = await runtime.syncConfig.loadRepositoryStatus({ notesRoot: primaryRoot });
+        if (
+          !active
+          || current?.repositoryId !== payload.repositoryId
+          || ownershipEvent < adoptedOwnershipEvent
+        ) return;
+        adoptedOwnershipEvent = ownershipEvent;
+        repositoryId = current.repositoryId;
+        setDejavuRepositoryStatus(current);
+      } catch {
+        // An event never bypasses current-root ownership when the binding cannot be reloaded.
+      }
+    };
     const handleStatus = ({ payload }: { payload: DejavuRepositoryStatus }) => {
       if (!active) return;
       if (!initialLoadComplete) {
@@ -339,6 +362,7 @@ export function SyncSettings({
         return;
       }
       if (repositoryId === payload.repositoryId) setDejavuRepositoryStatus(payload);
+      else if (repositoryId === null) return adoptStatusForCurrentRoot(payload);
     };
     const initializeStatus = async () => {
       if (runtime.events.isAvailable()) {
@@ -355,7 +379,10 @@ export function SyncSettings({
       }
       if (!active) return;
       try {
-        const next = await runtime.syncConfig.loadRepositoryStatus({ notesRoot: primaryRoot });
+        let next = await runtime.syncConfig.loadRepositoryStatus({ notesRoot: primaryRoot });
+        if (next === null && pendingEvents.size > 0) {
+          next = await runtime.syncConfig.loadRepositoryStatus({ notesRoot: primaryRoot });
+        }
         if (!active) return;
         repositoryId = next?.repositoryId ?? null;
         initialLoadComplete = true;
