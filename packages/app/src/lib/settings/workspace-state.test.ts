@@ -7,8 +7,10 @@ import {
   saveStoredWorkspaceState
 } from "./app-settings";
 import {
+  defaultWorkspaceState,
   managedDocumentAbsolutePath,
-  managedDocumentRelativePath
+  managedDocumentRelativePath,
+  normalizeWorkspaceState
 } from "./workspace-state";
 
 const settingsStore = createSettingsStoreHarness();
@@ -21,6 +23,13 @@ describe("workspace state settings", () => {
 
   afterEach(() => {
     resetSettingsStoreRuntime();
+  });
+
+  it("ignores the obsolete recent-directory expansion field", () => {
+    expect(normalizeWorkspaceState({
+      ...defaultWorkspaceState,
+      recentFoldersOpen: false
+    })).toEqual(defaultWorkspaceState);
   });
 
   describe("managed document paths", () => {
@@ -404,56 +413,6 @@ describe("workspace state settings", () => {
           folderName: "mock-files",
           folderPath: "/mock-files",
           openFilePaths: ["/mock-files/secondary-next.md"]
-        }
-      }
-    });
-  });
-
-  it("persists recent folder collapse state for only the targeted window", async () => {
-    store.get.mockResolvedValue({
-      openWindows: [],
-      windowStates: {
-        main: {
-          filePath: "/mock-files/main.md",
-          fileTreeOpen: true,
-          folderName: "mock-files",
-          folderPath: "/mock-files",
-          openFilePaths: ["/mock-files/main.md"],
-          recentFoldersOpen: true
-        },
-        "markra-editor-1": {
-          filePath: "/mock-files/secondary.md",
-          fileTreeOpen: true,
-          folderName: "mock-files",
-          folderPath: "/mock-files",
-          openFilePaths: ["/mock-files/secondary.md"],
-          recentFoldersOpen: true
-        }
-      }
-    });
-
-    await saveStoredWorkspaceState({
-      recentFoldersOpen: false
-    }, { windowLabel: "markra-editor-1" });
-
-    expect(store.set).toHaveBeenCalledWith("workspace", {
-      openWindows: [],
-      windowStates: {
-        main: {
-          filePath: "/mock-files/main.md",
-          fileTreeOpen: true,
-          folderName: "mock-files",
-          folderPath: "/mock-files",
-          openFilePaths: ["/mock-files/main.md"],
-          recentFoldersOpen: true
-        },
-        "markra-editor-1": {
-          filePath: "/mock-files/secondary.md",
-          fileTreeOpen: true,
-          folderName: "mock-files",
-          folderPath: "/mock-files",
-          openFilePaths: ["/mock-files/secondary.md"],
-          recentFoldersOpen: false
         }
       }
     });

@@ -354,7 +354,6 @@ function workspaceWindowStateIsEmpty(state: StoredWorkspaceWindowState) {
     !state.folderName &&
     !state.folderPath &&
     state.openFilePaths.length === 0 &&
-    state.recentFoldersOpen !== false &&
     !state.sideBySideGroup
   );
 }

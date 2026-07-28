@@ -157,7 +157,6 @@ export function useMarkdownFileTree({
   const [settingsProjectRoot, setSettingsProjectRoot] = useState<string | null>(null);
   const [sourcePath, setSourcePath] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
-  const [recentFoldersOpen, setRecentFoldersOpenState] = useState(true);
   const [fileTreeSortByWorkspace, setFileTreeSortByWorkspace] = useState<StoredFileTreeSortByWorkspace>({});
   const [fileTreeAssetsVisible, setFileTreeAssetsVisibleState] = useState(true);
   const [width, setWidth] = useState(markdownFileTreeDefaultWidth);
@@ -626,11 +625,6 @@ export function useMarkdownFileTree({
     };
   }, [abortCurrentFileTreeLoad, cancelPendingFileTreeBatchFlush]);
 
-  const setRecentFoldersOpen = useCallback((openRecentFolders: boolean) => {
-    setRecentFoldersOpenState(openRecentFolders);
-    persistWorkspaceState({ recentFoldersOpen: openRecentFolders });
-  }, [persistWorkspaceState]);
-
   const setFileTreeAssetsVisible = useCallback((assetsVisible: boolean) => {
     setFileTreeAssetsVisibleState(assetsVisible);
     persistWorkspaceState({ fileTreeAssetsVisible: assetsVisible });
@@ -751,7 +745,6 @@ export function useMarkdownFileTree({
     getStoredWorkspaceState().then((workspace) => {
       if (active) {
         if (!openChangedBeforeWorkspaceRestoreRef.current) setOpen(workspace.fileTreeOpen);
-        setRecentFoldersOpenState(workspace.recentFoldersOpen ?? true);
         setFileTreeAssetsVisibleState(workspace.fileTreeAssetsVisible ?? true);
       }
     }).catch(() => {});
@@ -867,7 +860,6 @@ export function useMarkdownFileTree({
     files: visibleFiles,
     fileTreeAssetsVisible,
     fileTreeSort,
-    recentFoldersOpen,
     resizing,
     width,
     maxWidth: markdownFileTreeMaxWidth,
@@ -876,7 +868,6 @@ export function useMarkdownFileTree({
     openFolderPath,
     projectRoot,
     settingsProjectRoot,
-    setRecentFoldersOpen,
     setFileTreeAssetsVisible,
     setFileTreeSort,
     moveFile,
