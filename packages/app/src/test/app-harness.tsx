@@ -253,11 +253,8 @@ vi.mock("../lib/tauri/updater", () => ({
 }));
 
 vi.mock("../lib/settings/local-state", () => ({
-  getStoredRecentNotebooks: vi.fn(async () => []),
   isValidManagedNotebookName: vi.fn(() => true),
   loadPrimaryWorkspaceState: vi.fn(),
-  removeStoredRecentNotebook: vi.fn(async () => []),
-  saveStoredRecentNotebook: vi.fn(async (notebook) => [notebook]),
   savePrimaryWorkspaceState: vi.fn()
 }));
 

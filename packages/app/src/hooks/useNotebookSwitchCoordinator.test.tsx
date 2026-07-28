@@ -1,13 +1,10 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import type { SyncConfigDocument, SyncRunResult } from "../lib/sync-config";
-import {
-  getStoredRecentNotebooks
-} from "../lib/settings/local-state";
-import * as localStateModule from "../lib/settings/local-state";
 import type { NotebookSwitchRequest } from "../lib/notebook-switch-events";
 import {
   configureAppRuntime,
   createDefaultAppRuntime,
+  getAppRuntime,
   resetAppRuntimeForTests
 } from "../runtime";
 import type { AppSyncCoordinator } from "./useAppSyncCoordinator";
@@ -171,6 +168,19 @@ describe("notebook switch coordinator", () => {
     const order: string[] = [];
     const drain = deferred<undefined>();
     const release = deferred<undefined>();
+    const localStateSet = vi.fn(async () => undefined);
+    const runtime = getAppRuntime();
+    configureAppRuntime({
+      ...runtime,
+      settings: {
+        loadStore: vi.fn(async () => ({
+          delete: vi.fn(async () => true),
+          get: vi.fn(async () => undefined),
+          save: vi.fn(async () => undefined),
+          set: localStateSet
+        }))
+      }
+    });
     const appSync = createAppSync({
       beginNotebookSwitch: vi.fn(async () => {
         order.push("block");
@@ -218,6 +228,10 @@ describe("notebook switch coordinator", () => {
       "flush", "block", "drain", "persist", "release", "settled", "sync"
     ]);
     expect(appSync.run).toHaveBeenCalledWith("app-launch", "rev-1");
+    expect(localStateSet).not.toHaveBeenCalledWith(
+      "recentNotebooks",
+      expect.anything()
+    );
   });
 
   it("leaves the old root active when the desktop picker is cancelled", async () => {
@@ -724,62 +738,13 @@ describe("notebook switch coordinator", () => {
     expect(commitDesktopRoot).toHaveBeenCalledWith("/Workspace/C");
   });
 
-  it("records only a successful canonical transaction as a recent notebook", async () => {
-    const commitDesktopRoot = vi.fn(async (path: string) => (
-      path === "/Broken" ? null : "/Canonical/Good"
-    ));
-    const primaryWorkspace = createPrimaryWorkspace({ commitDesktopRoot });
-    const { result, rerender } = renderCoordinator({ primaryWorkspace });
-
-    await expect(result.current.switchDesktopNotebook("/Broken")).resolves.toBeNull();
-    expect(await getStoredRecentNotebooks()).toEqual([]);
-
-    const switching = result.current.switchDesktopNotebook("/Alias/Good");
-    await waitFor(() => expect(commitDesktopRoot).toHaveBeenCalledTimes(2));
-    rerender({ root: "/Canonical/Good" });
-    await switching;
-
-    expect(await getStoredRecentNotebooks()).toEqual([
-      { name: "Good", path: "/Canonical/Good" }
-    ]);
-    await waitFor(() => expect(result.current.recentNotebooks).toEqual([
-      { name: "Good", path: "/Canonical/Good" }
-    ]));
-  });
-
-  it("ignores a slow initial recent-notebook load after a newer removal", async () => {
-    const initialLoad = deferred<Array<{ name: string; path: string }>>();
-    vi.spyOn(localStateModule, "getStoredRecentNotebooks").mockReturnValueOnce(initialLoad.promise);
-    vi.spyOn(localStateModule, "removeStoredRecentNotebook").mockResolvedValueOnce([]);
-    const { result } = renderCoordinator();
-
-    await act(async () => {
-      await result.current.removeRecentNotebook("/Stale");
-    });
-    await act(async () => {
-      initialLoad.resolve([{ name: "Stale", path: "/Stale" }]);
-      await initialLoad.promise;
-    });
-
-    expect(result.current.recentNotebooks).toEqual([]);
-  });
-
   it("does not own switching from an external editor window", async () => {
-    const removeStoredRecentNotebook = vi
-      .spyOn(localStateModule, "removeStoredRecentNotebook")
-      .mockResolvedValueOnce([]);
-    const saveStoredRecentNotebook = vi
-      .spyOn(localStateModule, "saveStoredRecentNotebook")
-      .mockResolvedValueOnce([]);
     const primaryWorkspace = createPrimaryWorkspace();
     const { result } = renderCoordinator({ primaryWindowOwner: false, primaryWorkspace });
 
     await expect(result.current.switchDesktopNotebook("/New")).resolves.toBeNull();
-    await result.current.removeRecentNotebook("/Recent");
 
     expect(primaryWorkspace.commitDesktopRoot).not.toHaveBeenCalled();
-    expect(saveStoredRecentNotebook).not.toHaveBeenCalled();
-    expect(removeStoredRecentNotebook).not.toHaveBeenCalled();
   });
 
   it("queues a second realtime directory drain while the first switch is still mounting", async () => {

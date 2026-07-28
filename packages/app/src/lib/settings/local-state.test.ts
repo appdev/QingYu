@@ -6,14 +6,11 @@ import {
 } from "../../runtime";
 import {
   defaultPrimaryWorkspaceState,
-  getStoredRecentNotebooks,
   loadLocalPandocPath,
   loadPrimaryWorkspaceState,
   normalizePrimaryWorkspaceState,
-  removeStoredRecentNotebook,
   saveCanonicalPrimaryWorkspaceState,
   saveLocalPandocPath,
-  saveStoredRecentNotebook,
   savePrimaryWorkspaceState,
   updatePrimaryWorkspaceState
 } from "./local-state";
@@ -233,50 +230,6 @@ describe("device-local application state", () => {
       onboardingCompleted: true,
       version: 3
     });
-  });
-
-  it("round-trips an exact recent notebook name and path", async () => {
-    const notebook = {
-      name: " 个人 笔记 ",
-      path: " /Users/test/个人 笔记 "
-    };
-
-    await expect(saveStoredRecentNotebook(notebook)).resolves.toEqual([notebook]);
-    await expect(getStoredRecentNotebooks()).resolves.toEqual([notebook]);
-    expect(storeValue("local-state.json", "recentNotebooks")).toEqual([notebook]);
-  });
-
-  it("removes an exact recent notebook path with trailing whitespace", async () => {
-    const notebook = { name: "Notes ", path: "/Users/test/Notes " };
-    seedStore("local-state.json", "recentNotebooks", [notebook]);
-
-    await expect(removeStoredRecentNotebook(notebook.path)).resolves.toEqual([]);
-  });
-
-  it("serializes a remove followed by a save without resurrecting the removed notebook", async () => {
-    const oldNotebook = { name: "Old", path: "/Old" };
-    const newNotebook = { name: "New", path: "/New" };
-    seedStore("local-state.json", "recentNotebooks", [oldNotebook]);
-
-    await Promise.all([
-      removeStoredRecentNotebook(oldNotebook.path),
-      saveStoredRecentNotebook(newNotebook)
-    ]);
-
-    expect(storeValue("local-state.json", "recentNotebooks")).toEqual([newNotebook]);
-  });
-
-  it("serializes a save followed by a remove without losing the saved notebook", async () => {
-    const oldNotebook = { name: "Old", path: "/Old" };
-    const newNotebook = { name: "New", path: "/New" };
-    seedStore("local-state.json", "recentNotebooks", [oldNotebook]);
-
-    await Promise.all([
-      saveStoredRecentNotebook(newNotebook),
-      removeStoredRecentNotebook(oldNotebook.path)
-    ]);
-
-    expect(storeValue("local-state.json", "recentNotebooks")).toEqual([newNotebook]);
   });
 
   it("merges primary workspace changes into normalized local state", async () => {

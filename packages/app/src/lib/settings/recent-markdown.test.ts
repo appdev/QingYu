@@ -5,10 +5,7 @@ import {
   removeStoredRecentMarkdownFile,
   saveStoredRecentMarkdownFile
 } from "./app-settings";
-import {
-  normalizeRecentMarkdownFiles,
-  normalizeRecentNotebooks
-} from "./recent-markdown";
+import { normalizeRecentMarkdownFiles } from "./recent-markdown";
 
 const settingsStore = createSettingsStoreHarness();
 const { loadStore: mockedLoadStore, store } = settingsStore;
@@ -20,19 +17,6 @@ describe("recent markdown settings", () => {
 
   afterEach(() => {
     resetSettingsStoreRuntime();
-  });
-
-  it("preserves exact notebook names and paths while deduplicating only exact paths", () => {
-    expect(normalizeRecentNotebooks([
-      { name: " 个人笔记 ", path: " /mock-files/个人笔记 " },
-      { name: "same exact path", path: " /mock-files/个人笔记 " },
-      { name: "trimmed path stays distinct", path: "/mock-files/个人笔记" },
-      { name: "", path: "/mock-files/missing-name" },
-      { name: "missing path", path: "" }
-    ])).toEqual([
-      { name: " 个人笔记 ", path: " /mock-files/个人笔记 " },
-      { name: "trimmed path stays distinct", path: "/mock-files/个人笔记" }
-    ]);
   });
 
   it("normalizes recently used markdown files", () => {

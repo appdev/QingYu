@@ -80,10 +80,7 @@ export type {
   FileIgnoreSettings
 } from "./file-ignore-settings";
 export type { McpConfig, McpSettingsSnapshot } from "../mcp";
-export type {
-  RecentMarkdownFile,
-  RecentMarkdownFolder
-} from "./recent-markdown";
+export type { RecentMarkdownFile } from "./recent-markdown";
 export type {
   StoredFileTreeSort,
   StoredFileTreeSortByWorkspace,

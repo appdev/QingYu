@@ -130,8 +130,6 @@ function mockNotebookSwitchRouting() {
     notebookSwitchCoordinatorModule,
     "useNotebookSwitchCoordinator"
   ).mockReturnValue({
-    recentNotebooks: [],
-    removeRecentNotebook: vi.fn(async () => undefined),
     restoreDesktopNotebook: vi.fn(async () => null),
     restoreManagedNotebook: vi.fn(async () => null),
     switchDesktopNotebook,
@@ -1102,8 +1100,6 @@ describe("QingYu workspace", () => {
       notebookSwitchCoordinatorModule,
       "useNotebookSwitchCoordinator"
     ).mockReturnValue({
-      recentNotebooks: [{ name: "Notes", path: "/Recent/Notes" }],
-      removeRecentNotebook: vi.fn(async () => undefined),
       restoreDesktopNotebook: vi.fn(async () => null),
       restoreManagedNotebook: vi.fn(async () => null),
       switchDesktopNotebook,
@@ -1130,8 +1126,6 @@ describe("QingYu workspace", () => {
       notebookSwitchCoordinatorModule,
       "useNotebookSwitchCoordinator"
     ).mockReturnValue({
-      recentNotebooks: [],
-      removeRecentNotebook: vi.fn(async () => undefined),
       restoreDesktopNotebook,
       restoreManagedNotebook: vi.fn(async () => null),
       switchDesktopNotebook: vi.fn(async () => null),
@@ -1204,8 +1198,6 @@ describe("QingYu workspace", () => {
       notebookSwitchCoordinatorModule,
       "useNotebookSwitchCoordinator"
     ).mockReturnValue({
-      recentNotebooks: [],
-      removeRecentNotebook: vi.fn(async () => undefined),
       restoreDesktopNotebook,
       restoreManagedNotebook: vi.fn(async () => null),
       switchDesktopNotebook: vi.fn(async () => null),
@@ -1257,8 +1249,6 @@ describe("QingYu workspace", () => {
       notebookSwitchCoordinatorModule,
       "useNotebookSwitchCoordinator"
     ).mockReturnValue({
-      recentNotebooks: [],
-      removeRecentNotebook: vi.fn(async () => undefined),
       restoreDesktopNotebook,
       restoreManagedNotebook: vi.fn(async () => null),
       switchDesktopNotebook: vi.fn(async () => null),
@@ -1332,8 +1322,6 @@ describe("QingYu workspace", () => {
       notebookSwitchCoordinatorModule,
       "useNotebookSwitchCoordinator"
     ).mockReturnValue({
-      recentNotebooks: [],
-      removeRecentNotebook: vi.fn(async () => undefined),
       restoreDesktopNotebook,
       restoreManagedNotebook: vi.fn(async () => null),
       switchDesktopNotebook: vi.fn(async () => null),
@@ -1383,8 +1371,6 @@ describe("QingYu workspace", () => {
       notebookSwitchCoordinatorModule,
       "useNotebookSwitchCoordinator"
     ).mockReturnValue({
-      recentNotebooks: [],
-      removeRecentNotebook: vi.fn(async () => undefined),
       restoreDesktopNotebook,
       restoreManagedNotebook: vi.fn(async () => null),
       switchDesktopNotebook: vi.fn(async () => null),
@@ -1433,8 +1419,6 @@ describe("QingYu workspace", () => {
       notebookSwitchCoordinatorModule,
       "useNotebookSwitchCoordinator"
     ).mockReturnValue({
-      recentNotebooks: [],
-      removeRecentNotebook: vi.fn(async () => undefined),
       restoreDesktopNotebook,
       restoreManagedNotebook: vi.fn(async () => null),
       switchDesktopNotebook: vi.fn(async () => null),
@@ -1479,8 +1463,6 @@ describe("QingYu workspace", () => {
       notebookSwitchCoordinatorModule,
       "useNotebookSwitchCoordinator"
     ).mockReturnValue({
-      recentNotebooks: [],
-      removeRecentNotebook: vi.fn(async () => undefined),
       restoreDesktopNotebook,
       restoreManagedNotebook: vi.fn(async () => null),
       switchDesktopNotebook: vi.fn(async () => null),
@@ -1572,8 +1554,6 @@ describe("QingYu workspace", () => {
       notebookSwitchCoordinatorModule,
       "useNotebookSwitchCoordinator"
     ).mockReturnValue({
-      recentNotebooks: [],
-      removeRecentNotebook: vi.fn(async () => undefined),
       restoreDesktopNotebook,
       restoreManagedNotebook: vi.fn(async () => null),
       switchDesktopNotebook: vi.fn(async () => null),
@@ -1656,8 +1636,6 @@ describe("QingYu workspace", () => {
       notebookSwitchCoordinatorModule,
       "useNotebookSwitchCoordinator"
     ).mockReturnValue({
-      recentNotebooks: [],
-      removeRecentNotebook: vi.fn(async () => undefined),
       restoreDesktopNotebook,
       restoreManagedNotebook: vi.fn(async () => null),
       switchDesktopNotebook: vi.fn(async () => null),
@@ -1867,8 +1845,6 @@ describe("QingYu workspace", () => {
       notebookSwitchCoordinatorModule,
       "useNotebookSwitchCoordinator"
     ).mockReturnValue({
-      recentNotebooks: [],
-      removeRecentNotebook: vi.fn(async () => undefined),
       restoreDesktopNotebook: vi.fn(async () => null),
       restoreManagedNotebook,
       switchDesktopNotebook: vi.fn(async () => null),
