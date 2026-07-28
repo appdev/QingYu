@@ -166,6 +166,26 @@ Only the active third-party stylesheet is loaded. Unscoped `:root`, `.markdown-p
 
 These root/editor selectors and the variables below are the stable theme surface. Standard Markdown elements below `.markdown-paper`, such as headings, paragraphs, links, lists, blockquotes, tables, `code`, `pre`, `mark`, `kbd`, and images, may also be styled. Internal `.markra-*`, `.ProseMirror`, `.cm-*`, Milkdown, and component selectors are available to full CSS themes but are less stable and may change with the application or editor implementation.
 
+Themes should set the following application-chrome variables on their ID-scoped `:root` selector. Themes should not target sidebar internal classes. Every variable is optional and may be omitted safely; QingYu then uses the documented fallback.
+
+| Variable | Fallback |
+| --- | --- |
+| `--bg-titlebar` | Windows top app chrome `--bg-chrome`; macOS and document titlebars `--bg-primary` |
+| `--bg-sidebar` | Windows `--bg-chrome`; other platforms `--bg-secondary` |
+| `--bg-sidebar-header` | `--bg-sidebar`, then the platform sidebar fallback |
+| `--bg-toolbar` | `--bg-sidebar`, then the platform sidebar fallback |
+| `--bg-outline` | `--bg-sidebar`, then the platform sidebar fallback |
+| `--bg-sidebar-footer` | `--bg-sidebar`, then the platform sidebar fallback |
+| `--border-chrome` | `--border-default` |
+| `--bg-tree-current` | `--bg-active` |
+| `--text-tree-current` | `--text-heading` |
+| `--tree-current-indicator` | `--text-secondary` |
+| `--bg-tree-selected` | `--accent-soft` |
+| `--text-tree-selected` | `--text-heading` |
+| `--tree-selected-indicator` | `--accent` |
+| `--bg-outline-current` | `--bg-active` |
+| `--text-outline-current` | `--text-heading` |
+
 Application variables:
 
 - backgrounds: `--bg-primary`, `--bg-secondary`, `--bg-chrome`, `--bg-code`, `--bg-hover`, `--bg-active`;

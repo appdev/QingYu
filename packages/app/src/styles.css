@@ -3627,3 +3627,83 @@
     }
   }
 }
+
+/* Stable third-party theme chrome contract. */
+.theme-titlebar-legacy-primary {
+  --theme-titlebar-legacy-surface: var(--bg-primary);
+}
+
+.theme-titlebar-legacy-chrome {
+  --theme-titlebar-legacy-surface: var(--bg-chrome);
+}
+
+.theme-titlebar-surface {
+  background-color: var(--bg-titlebar, var(--theme-titlebar-legacy-surface));
+}
+
+.theme-sidebar-legacy-secondary {
+  --theme-sidebar-legacy-surface: var(--bg-secondary);
+}
+
+.theme-sidebar-legacy-chrome {
+  --theme-sidebar-legacy-surface: var(--bg-chrome);
+}
+
+.theme-sidebar-surface {
+  background-color: var(--bg-sidebar, var(--theme-sidebar-legacy-surface));
+}
+
+.theme-sidebar-header-surface {
+  background-color: var(--bg-sidebar-header, var(--bg-sidebar, var(--theme-sidebar-legacy-surface)));
+}
+
+.theme-toolbar-surface {
+  background-color: var(--bg-toolbar, var(--bg-sidebar, var(--theme-sidebar-legacy-surface)));
+}
+
+.theme-outline-surface {
+  background-color: var(--bg-outline, var(--bg-sidebar, var(--theme-sidebar-legacy-surface)));
+}
+
+.theme-sidebar-footer-surface {
+  background-color: var(--bg-sidebar-footer, var(--bg-sidebar, var(--theme-sidebar-legacy-surface)));
+}
+
+.theme-chrome-border {
+  border-color: var(--border-chrome, var(--border-default));
+}
+
+.theme-chrome-border:focus {
+  border-color: var(--border-strong);
+}
+
+.theme-chrome-divider {
+  background-color: var(--border-chrome, var(--border-default));
+}
+
+.theme-chrome-divider-control:is(:hover, :focus-visible) > .theme-chrome-divider {
+  background-color: var(--border-strong);
+}
+
+.theme-tree-current-surface[aria-current="page"] {
+  background-color: var(--bg-tree-current, var(--bg-active));
+  color: var(--text-tree-current, var(--text-heading));
+}
+
+.theme-tree-row[aria-current="page"] {
+  border-left: 3px solid var(--tree-current-indicator, var(--text-secondary));
+  background-color: var(--bg-tree-current, var(--bg-active));
+  color: var(--text-tree-current, var(--text-heading));
+}
+
+.theme-tree-row[aria-selected="true"] {
+  border-left: 3px solid var(--tree-selected-indicator, var(--accent));
+  background-color: var(--bg-tree-selected, var(--accent-soft));
+  color: var(--text-tree-selected, var(--text-heading));
+}
+
+.theme-outline-item[aria-current="location"] {
+  background-color: var(--bg-outline-current, var(--bg-active));
+  color: var(--text-outline-current, var(--text-heading));
+  font-weight: 620;
+}

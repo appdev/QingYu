@@ -72,8 +72,8 @@ describe("native theme runtime", () => {
     expect(mockedConvertFileSrc).not.toHaveBeenCalled();
   });
 
-  it("converts stylesheet paths and appends an encoded fingerprint query", async () => {
-    mockedConvertFileSrc.mockReturnValue("http://asset.local/theme.css");
+  it("converts the stylesheet directory and appends an encoded fingerprint query", async () => {
+    mockedConvertFileSrc.mockReturnValue("http://asset.local");
     mockedInvoke.mockResolvedValue({
       fingerprint: "drake fingerprint/?&",
       id: "drake-ayu",
@@ -90,11 +90,67 @@ describe("native theme runtime", () => {
       },
       token: "resource-token"
     });
-    expect(mockedConvertFileSrc).toHaveBeenCalledWith("/app/themes/drake ayu/theme.css");
+    expect(mockedConvertFileSrc).toHaveBeenCalledWith("/app/themes/drake ayu");
+  });
+
+  it("keeps relative resource URLs inside the converted theme directory", async () => {
+    mockedConvertFileSrc.mockImplementation((path) =>
+      `asset://localhost/${encodeURIComponent(path)}`
+    );
+    mockedInvoke.mockResolvedValue({
+      fingerprint: "drake-fingerprint",
+      id: "drake-ayu",
+      source: { kind: "stylesheet", path: "/app/themes/drake ayu/theme.css" },
+      token: "resource-token"
+    });
+
+    const payload = await prepareNativeThemeActivation("drake-ayu", "drake-fingerprint");
+    if (payload.source.kind !== "stylesheet") throw new Error("expected stylesheet payload");
+
+    expect(new URL("./assets/fonts/JetBrainsMono-Regular.woff2", payload.source.href).href).toBe(
+      "asset://localhost/%2Fapp%2Fthemes%2Fdrake%20ayu/assets/fonts/JetBrainsMono-Regular.woff2"
+    );
+  });
+
+  it.each([
+    {
+      name: "drive-letter",
+      path: "C:\\Users\\Ying Chen\\AppData\\Roaming\\QingYu\\themes\\drake-ayu\\theme.css",
+      expectedDirectory: "C:\\Users\\Ying Chen\\AppData\\Roaming\\QingYu\\themes\\drake-ayu",
+      expectedHref: "http://asset.localhost/C%3A%5CUsers%5CYing%20Chen%5CAppData%5CRoaming%5CQingYu%5Cthemes%5Cdrake-ayu/theme.css?fingerprint=windows-fingerprint"
+    },
+    {
+      name: "UNC",
+      path: "\\\\theme-server\\shared themes\\drake-ayu\\theme.css",
+      expectedDirectory: "\\\\theme-server\\shared themes\\drake-ayu",
+      expectedHref: "http://asset.localhost/%5C%5Ctheme-server%5Cshared%20themes%5Cdrake-ayu/theme.css?fingerprint=windows-fingerprint"
+    }
+  ])("preserves the $name directory with Tauri's Windows convertFileSrc shape", async ({
+    expectedDirectory,
+    expectedHref,
+    path
+  }) => {
+    mockedConvertFileSrc.mockImplementation((filePath, protocol = "asset") =>
+      `http://${protocol}.localhost/${encodeURIComponent(filePath)}`
+    );
+    mockedInvoke.mockResolvedValue({
+      fingerprint: "windows-fingerprint",
+      id: "drake-ayu",
+      source: { kind: "stylesheet", path },
+      token: "resource-token"
+    });
+
+    await expect(prepareNativeThemeActivation("drake-ayu", "windows-fingerprint")).resolves.toMatchObject({
+      source: {
+        kind: "stylesheet",
+        href: expectedHref
+      }
+    });
+    expect(mockedConvertFileSrc).toHaveBeenCalledWith(expectedDirectory);
   });
 
   it("preserves an existing asset query and fragment when adding the fingerprint", async () => {
-    mockedConvertFileSrc.mockReturnValue("asset://localhost/theme.css?scope=lease#face");
+    mockedConvertFileSrc.mockReturnValue("asset://localhost/lease?scope=lease#face");
     mockedInvoke.mockResolvedValue({
       fingerprint: "drake fingerprint",
       id: "drake-ayu",
@@ -105,7 +161,7 @@ describe("native theme runtime", () => {
     await expect(prepareNativeThemeActivation("drake-ayu", "drake fingerprint")).resolves.toMatchObject({
       source: {
         kind: "stylesheet",
-        href: "asset://localhost/theme.css?scope=lease&fingerprint=drake%20fingerprint#face"
+        href: "asset://localhost/lease/theme.css?scope=lease&fingerprint=drake%20fingerprint#face"
       }
     });
   });

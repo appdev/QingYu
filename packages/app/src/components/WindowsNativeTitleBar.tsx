@@ -129,14 +129,14 @@ export function WindowsNativeTitleBar({
   onToggleWindowMaximized
 }: WindowsNativeTitleBarProps) {
   const showWindowsAppChrome = nativeWindowChrome;
-  const windowsAppChromeSurfaceClassName = "bg-(--bg-chrome)";
-  const windowsTitlebarSurfaceClassName = "bg-(--bg-primary)";
+  const windowsAppChromeSurfaceClassName = "theme-titlebar-legacy-chrome theme-titlebar-surface";
+  const windowsTitlebarSurfaceClassName = "theme-titlebar-legacy-primary theme-titlebar-surface";
   const windowsTitlebarTopClassName = showWindowsAppChrome ? "top-10" : "top-0";
   const windowsTitlebarLeft = markdownFilesWidth + (showWindowsAppChrome ? -1 : 1);
   const windowsTitlebarEdgeClassName = showWindowsAppChrome
     ? markdownFilesOpen
       ? "rounded-tl-md"
-      : "border-t border-(--border-default)"
+      : "border-t theme-chrome-border"
     : "";
   const windowsTitlebarPositionTransitionClassName = markdownFilesResizing
     ? "transition-none"
@@ -364,26 +364,26 @@ export function WindowsNativeTitleBar({
   const renderWindowsTitlebarCornerMask = () => showWindowsAppChrome && markdownFilesOpen ? (
     <span
       aria-hidden="true"
-      className="windows-titlebar-corner-mask pointer-events-none fixed top-10 z-[9] h-3 bg-(--bg-chrome)"
+      className="windows-titlebar-corner-mask pointer-events-none fixed top-10 z-[9] h-3 theme-titlebar-legacy-chrome theme-titlebar-surface"
       style={{ left: Math.max(0, windowsTitlebarLeft - 1), width: 3 }}
     />
   ) : null;
   const renderWindowsTitlebarSidebarDivider = () => showWindowsAppChrome && markdownFilesOpen ? (
     <span
       aria-hidden="true"
-      className="windows-titlebar-sidebar-divider pointer-events-none absolute top-1.5 bottom-0 left-0 w-px bg-(--border-default)"
+      className="windows-titlebar-sidebar-divider pointer-events-none absolute top-1.5 bottom-0 left-0 w-px theme-chrome-divider"
     />
   ) : null;
   const renderWindowsTitlebarTopDivider = () => showWindowsAppChrome && markdownFilesOpen ? (
     <span
       aria-hidden="true"
-      className="windows-titlebar-top-divider pointer-events-none absolute top-0 right-0 left-1.5 h-px bg-(--border-default)"
+      className="windows-titlebar-top-divider pointer-events-none absolute top-0 right-0 left-1.5 h-px theme-chrome-divider"
     />
   ) : null;
   const renderWindowsTitlebarCornerDivider = () => showWindowsAppChrome && markdownFilesOpen ? (
     <span
       aria-hidden="true"
-      className="windows-titlebar-corner-divider pointer-events-none absolute top-0 left-0 size-1.5 rounded-tl-md border-t border-l border-(--border-default)"
+      className="windows-titlebar-corner-divider pointer-events-none absolute top-0 left-0 size-1.5 rounded-tl-md border-t border-l theme-chrome-border"
     />
   ) : null;
 

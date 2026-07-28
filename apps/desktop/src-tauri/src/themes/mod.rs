@@ -243,6 +243,40 @@ mod tests {
         ThemeStorageKind,
     };
 
+    const FAITHFUL_THEME_FILES: &[&str] = &[
+        "manifest.json",
+        "theme.css",
+        "assets/fonts/JetBrainsMono-Regular.woff2",
+        "assets/fonts/JetBrainsMono-Bold.woff2",
+        "assets/fonts/JetBrainsMono-Italic.woff2",
+        "assets/fonts/JetBrainsMono-BoldItalic.woff2",
+        "licenses/THEME-LICENSE.txt",
+        "licenses/FONT-LICENSE.txt",
+    ];
+
+    fn faithful_theme_source(id: &str) -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../..")
+            .join("themes/external")
+            .join(id)
+    }
+
+    fn faithful_theme_archive(root: &Path, id: &str) -> std::path::PathBuf {
+        let source = faithful_theme_source(id);
+        let archive = root.join(format!("{id}.theme"));
+        let output = fs::File::create(&archive).unwrap();
+        let mut writer = ZipWriter::new(output);
+        let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+        for name in FAITHFUL_THEME_FILES {
+            writer.start_file(*name, options).unwrap();
+            writer
+                .write_all(&fs::read(source.join(name)).unwrap())
+                .unwrap();
+        }
+        writer.finish().unwrap();
+        archive
+    }
+
     fn css(id: &str, suffix: &str) -> Vec<u8> {
         format!(
             "/*\n@qingyu-theme\nid: {id}\nname: {id}\nappearance: light\npreview-background: #ffffff\npreview-panel: #f6f8fa\npreview-text: #1f2328\npreview-accent: #0969da\n*/\n:root {{ --suffix: {suffix}; }}\n"
@@ -377,5 +411,41 @@ mod tests {
         assert_ne!(initially_read.descriptor.id, "changed-id");
         assert_eq!(error.code, super::ThemeErrorCode::ThemeNotFound);
         assert_eq!(catalog.find_descriptor("replace").unwrap(), original);
+    }
+
+    #[test]
+    fn faithful_drake_archives_import_through_the_production_core() {
+        for (id, appearance) in [
+            ("drake-faithful-light", super::ThemeAppearance::Light),
+            ("drake-faithful-ayu", super::ThemeAppearance::Dark),
+        ] {
+            let temp = tempdir().unwrap();
+            let catalog = ThemeCatalog::at(temp.path().join("themes"));
+            let archive = faithful_theme_archive(temp.path(), id);
+
+            let result =
+                import_external_theme(&catalog, archive.to_string_lossy().into_owned()).unwrap();
+            let ThemeImportResult::Imported { theme } = result else {
+                panic!("faithful theme unexpectedly conflicted");
+            };
+
+            assert_eq!(theme.id, id);
+            assert_eq!(theme.appearance, appearance);
+            assert_eq!(theme.storage_kind, ThemeStorageKind::ResourceDirectory);
+            let snapshot = catalog.scan().unwrap();
+            assert_eq!(snapshot.themes, vec![theme.clone()]);
+            let activation_root = catalog
+                .validated_resource_root_with_hint(id, &theme.fingerprint, Some(&theme))
+                .unwrap()
+                .unwrap();
+            assert_eq!(activation_root, catalog.root_path().join(id));
+            for name in FAITHFUL_THEME_FILES {
+                assert!(activation_root.join(name).is_file());
+            }
+
+            catalog.delete(id, &theme.fingerprint).unwrap();
+            assert!(catalog.scan().unwrap().themes.is_empty());
+            assert!(!catalog.root_path().join(id).exists());
+        }
     }
 }

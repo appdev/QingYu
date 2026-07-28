@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 
 const seededThemeIds = [
@@ -22,6 +23,214 @@ const seededThemeIds = [
   "drake-light",
   "drake-ayu"
 ] as const;
+
+const externalThemeIds = ["drake-faithful-light", "drake-faithful-ayu"] as const;
+
+const expectedExternalThemeManifests = {
+  "drake-faithful-light": {
+    schemaVersion: 1,
+    id: "drake-faithful-light",
+    name: "轻语 · Drake Light",
+    appearance: "light",
+    entry: "theme.css",
+    author: "劉強東 / 轻语",
+    version: "2.9.6-light-voice.1",
+    preview: {
+      background: "#ffffff",
+      panel: "#f6f8fa",
+      text: "#333333",
+      accent: "#e95f59"
+    },
+    licenseFiles: ["licenses/THEME-LICENSE.txt", "licenses/FONT-LICENSE.txt"]
+  },
+  "drake-faithful-ayu": {
+    schemaVersion: 1,
+    id: "drake-faithful-ayu",
+    name: "轻语 · Drake Ayu",
+    appearance: "dark",
+    entry: "theme.css",
+    author: "劉強東 / 轻语",
+    version: "2.9.6-light-voice.1",
+    preview: {
+      background: "#20242f",
+      panel: "#151924",
+      text: "#b0b1ac",
+      accent: "#fcc65c"
+    },
+    licenseFiles: ["licenses/THEME-LICENSE.txt", "licenses/FONT-LICENSE.txt"]
+  }
+} as const;
+
+const expectedFontHashes = {
+  "JetBrainsMono-Bold.woff2": "df3f86c04988d8f7fc516db3e95ec6b630cdc67bec91fe4297c6f8e132be1037",
+  "JetBrainsMono-BoldItalic.woff2": "3aa30cac2529ca86f6b8ef479f143d924378682657510541d10d8e8b6d07120b",
+  "JetBrainsMono-Italic.woff2": "9aef9fe9f1292b1cc4b1af075e4e9bc5f2adf23fef54908e58e2ebe338f33a65",
+  "JetBrainsMono-Regular.woff2": "bceff0710e3a7fe5b3622265c48b6fbc055cf071df80ef5f36ffc69550296664"
+} as const;
+
+const expectedThemeDeclarations = {
+  "drake-faithful-light": [
+    "--bg-primary: #ffffff;",
+    "--bg-secondary: #f6f8fa;",
+    "--bg-chrome: #f8f8f8;",
+    "--bg-code: #f6f8fa;",
+    "--bg-hover: #E5E5E596;",
+    "--bg-active: #E5E5E596;",
+    "--bg-titlebar: #ffffff;",
+    "--bg-sidebar: #f6f8fa;",
+    "--bg-sidebar-header: #f8f8f8;",
+    "--bg-toolbar: #ffffff;",
+    "--bg-outline: #f8f8f8;",
+    "--bg-sidebar-footer: #f8f8f8;",
+    "--border-chrome: #dfe2e5;",
+    "--bg-tree-current: #E5E5E596;",
+    "--text-tree-current: #273849;",
+    "--tree-current-indicator: #e95f59;",
+    "--bg-tree-selected: #fdefee;",
+    "--text-tree-selected: #273849;",
+    "--tree-selected-indicator: #e95f59;",
+    "--bg-outline-current: #E5E5E596;",
+    "--text-outline-current: #d63200;",
+    "--text-primary: #333333;",
+    "--text-heading: #273849;",
+    "--text-secondary: #777777;",
+    "--text-md-char: #777777;",
+    "--border-default: #dfe2e5;",
+    "--border-strong: #dfe2e5;",
+    "--accent: #e95f59;",
+    "--accent-soft: #fdefee;",
+    "--accent-hover: #d63200;",
+    "--danger: #ff0000;",
+    "--link-color: #d63200;",
+    "--scrollbar-track: transparent;",
+    "--scrollbar-thumb: #dfe2e5;",
+    "--scrollbar-thumb-hover: #777777;",
+    "--scrollbar-thumb-active: #e95f59;",
+    "--editor-paper-bg: #ffffff;",
+    "--editor-text-primary: #333333;",
+    "--editor-text-heading: #273849;",
+    "--editor-text-secondary: #777777;",
+    "--editor-border: #dfe2e5;",
+    "--editor-border-strong: #dfe2e5;",
+    "--editor-bg-secondary: #f8f8f8;",
+    "--editor-inline-code-bg: #fdefee;",
+    "--editor-inline-code-text: #d63200;",
+    "--editor-code-bg: #f6f8fa;",
+    "--editor-code-line-bg: #f6f8fa;",
+    "--editor-code-text: #24292e;",
+    "--editor-code-control-bg: #ffffff;",
+    "--editor-link-color: #d63200;",
+    "--editor-hl-keyword: #708;",
+    "--editor-hl-string: #008000;",
+    "--editor-hl-number: #4A86E8;",
+    "--editor-hl-title: #0000ff;",
+    "--editor-hl-type: #00627A;",
+    "--editor-hl-meta: #24292e;",
+    "--editor-hl-symbol: #4A86E8;",
+    "--editor-hl-deletion: #ff0000;"
+  ],
+  "drake-faithful-ayu": [
+    "--bg-primary: #20242f;",
+    "--bg-secondary: #20242f;",
+    "--bg-chrome: #1a1e29;",
+    "--bg-code: #151924;",
+    "--bg-hover: #151924;",
+    "--bg-active: #151924;",
+    "--bg-titlebar: #1a1e29;",
+    "--bg-sidebar: #20242f;",
+    "--bg-sidebar-header: #1a1e29;",
+    "--bg-toolbar: #151924;",
+    "--bg-outline: #20242f;",
+    "--bg-sidebar-footer: #1a1e29;",
+    "--border-chrome: #111520;",
+    "--bg-tree-current: #151924;",
+    "--text-tree-current: #cbcdbf;",
+    "--tree-current-indicator: #fcc65c;",
+    "--bg-tree-selected: #3473B068;",
+    "--text-tree-selected: #cbcdbf;",
+    "--tree-selected-indicator: #fcc65c;",
+    "--bg-outline-current: #151924;",
+    "--text-outline-current: #ffcc66;",
+    "--text-primary: #b0b1ac;",
+    "--text-heading: #cbcdbf;",
+    "--text-secondary: #676773;",
+    "--text-md-char: #676773;",
+    "--border-default: #111520;",
+    "--border-strong: #111520;",
+    "--accent: #fcc65c;",
+    "--accent-soft: #3473B068;",
+    "--accent-hover: #ffcc66;",
+    "--danger: #d1675a;",
+    "--link-color: #ffcc66;",
+    "--scrollbar-track: transparent;",
+    "--scrollbar-thumb: #676773;",
+    "--scrollbar-thumb-hover: #b0b1ac;",
+    "--scrollbar-thumb-active: #fcc65c;",
+    "--editor-paper-bg: #20242f;",
+    "--editor-text-primary: #b0b1ac;",
+    "--editor-text-heading: #cbcdbf;",
+    "--editor-text-secondary: #676773;",
+    "--editor-border: #111520;",
+    "--editor-border-strong: #111520;",
+    "--editor-bg-secondary: #1a1e29;",
+    "--editor-inline-code-bg: #151924;",
+    "--editor-inline-code-text: #ffcc66;",
+    "--editor-code-bg: #151924;",
+    "--editor-code-line-bg: #151924;",
+    "--editor-code-text: #b0b1ac;",
+    "--editor-code-control-bg: #151924;",
+    "--editor-link-color: #ffcc66;",
+    "--editor-hl-keyword: #ffa759;",
+    "--editor-hl-string: #9cc16b;",
+    "--editor-hl-number: #6897BB;",
+    "--editor-hl-title: #ffd580;",
+    "--editor-hl-type: #AABBCC;",
+    "--editor-hl-meta: #BBB529;",
+    "--editor-hl-symbol: #ffa759;",
+    "--editor-hl-deletion: #d1675a;"
+  ]
+} as const;
+
+const expectedAyuSyntaxRules = [
+  `.markdown-paper[data-editor-theme="drake-faithful-ayu"] .hljs-property {
+  color: #FFC66D;
+}`,
+  `.markdown-paper[data-editor-theme="drake-faithful-ayu"] .hljs-attr,
+.markdown-paper[data-editor-theme="drake-faithful-ayu"] .hljs-attribute,
+.markdown-paper[data-editor-theme="drake-faithful-ayu"] .hljs-variable.language_ {
+  color: #9876AA;
+}`,
+  `.markdown-paper[data-editor-theme="drake-faithful-ayu"] .hljs-comment {
+  color: #5c6773;
+}`,
+  `.markdown-paper[data-editor-theme="drake-faithful-ayu"] .hljs-tag,
+.markdown-paper[data-editor-theme="drake-faithful-ayu"] .hljs-name,
+.markdown-paper[data-editor-theme="drake-faithful-ayu"] .hljs-punctuation {
+  color: #E8BF6A;
+}`,
+  `.markdown-paper[data-editor-theme="drake-faithful-ayu"] .hljs-built_in {
+  color: #FF9E59;
+}`,
+  `.markdown-paper[data-editor-theme="drake-faithful-ayu"] .hljs-quote {
+  color: #a6e22e;
+}`,
+  `.markdown-paper[data-editor-theme="drake-faithful-ayu"] .hljs-section {
+  color: #FFD760;
+}`,
+  `.markdown-paper[data-editor-theme="drake-faithful-ayu"] .markra-code-block code::selection {
+  background: #214283;
+}`
+] as const;
+
+function readRuleDeclarations(styles: string, selector: string) {
+  const ruleStart = styles.indexOf(`${selector} {`);
+  const declarationsStart = ruleStart + selector.length + 2;
+  const ruleEnd = styles.indexOf("\n}", declarationsStart);
+
+  expect(ruleStart).toBeGreaterThanOrEqual(0);
+  expect(ruleEnd).toBeGreaterThan(declarationsStart);
+  return styles.slice(declarationsStart, ruleEnd);
+}
 
 function readSeededThemeStyles(themeId: typeof seededThemeIds[number]) {
   const fixturePath = themeId === "drake-light" || themeId === "drake-ayu"
@@ -1290,6 +1499,57 @@ describe("editor stylesheet", () => {
     }
   });
 
+  it("keeps Drake-faithful external packages licensed, self-contained, and source-faithful", () => {
+    const catalogSource = readFileSync(
+      `${process.cwd()}/../../apps/desktop/src-tauri/src/themes/catalog.rs`,
+      "utf8"
+    );
+
+    for (const id of externalThemeIds) {
+      const root = `${process.cwd()}/../../themes/external/${id}`;
+      const manifest = JSON.parse(readFileSync(`${root}/manifest.json`, "utf8"));
+      const styles = readFileSync(`${root}/theme.css`, "utf8");
+      const rootDeclarations = readRuleDeclarations(styles, `:root[data-theme="${id}"]`);
+      const editorDeclarations = readRuleDeclarations(
+        styles,
+        `.markdown-paper[data-editor-theme="${id}"]`
+      );
+
+      expect(manifest).toEqual(expectedExternalThemeManifests[id]);
+      expect(catalogSource).not.toContain(`id: "${id}"`);
+      expect(styles.match(/@font-face/gu)).toHaveLength(4);
+      expect(styles).toContain(`:root[data-theme="${id}"]`);
+      expect(styles).toContain(`.markdown-paper[data-editor-theme="${id}"]`);
+      expect(styles).toContain(`.markdown-source-paper[data-editor-theme="${id}"]`);
+      expect(styles).not.toContain("oklch");
+      expect(styles).not.toContain("@import");
+      expect(styles).not.toContain("@include-when-export");
+      expect(styles).not.toContain("#typora-");
+      expect(styles).not.toContain(".cm-s-inner");
+
+      for (const [fileName, expectedHash] of Object.entries(expectedFontHashes)) {
+        const bytes = readFileSync(`${root}/assets/fonts/${fileName}`);
+        expect(bytes.subarray(0, 4).toString("ascii")).toBe("wOF2");
+        expect(createHash("sha256").update(bytes).digest("hex")).toBe(expectedHash);
+      }
+
+      expectedThemeDeclarations[id].forEach((declaration) => {
+        const declarations = declaration.startsWith("--editor-")
+          ? editorDeclarations
+          : rootDeclarations;
+        expect(declarations).toContain(declaration);
+      });
+      expect(styles).not.toMatch(/url\(\s*["']?(?:https?:|\/\/|file:)/u);
+      expect(readFileSync(`${root}/licenses/THEME-LICENSE.txt`, "utf8")).toContain("MIT License");
+      expect(readFileSync(`${root}/licenses/FONT-LICENSE.txt`, "utf8")).toContain(
+        "SIL OPEN FONT LICENSE Version 1.1"
+      );
+      if (id === "drake-faithful-ayu") {
+        expectedAyuSyntaxRules.forEach((rule) => expect(styles).toContain(rule));
+      }
+    }
+  });
+
   it("keeps the GitHub theme aligned with Primer light Markdown colors", () => {
     const appThemeStyles = readSeededThemeStyles("github");
     const editorThemeStyles = appThemeStyles;
@@ -1370,5 +1630,58 @@ describe("editor stylesheet", () => {
     expect(styles).toContain("user-select: text");
     expect(styles).toContain("cursor: var(--editor-text-cursor)");
     expect(styles).toContain(".markdown-paper a");
+  });
+
+  it("defines stable chrome surfaces with platform-aware legacy fallbacks", () => {
+    const styles = readFileSync(`${process.cwd()}/src/styles.css`, "utf8");
+
+    expect(styles).toContain("--theme-titlebar-legacy-surface: var(--bg-primary);");
+    expect(styles).toContain("--theme-titlebar-legacy-surface: var(--bg-chrome);");
+    expect(styles).toContain(
+      "background-color: var(--bg-titlebar, var(--theme-titlebar-legacy-surface));"
+    );
+    expect(styles).toContain("--theme-sidebar-legacy-surface: var(--bg-secondary);");
+    expect(styles).toContain("--theme-sidebar-legacy-surface: var(--bg-chrome);");
+    expect(styles).toContain(
+      "background-color: var(--bg-sidebar, var(--theme-sidebar-legacy-surface));"
+    );
+    expect(styles).toContain(
+      "background-color: var(--bg-sidebar-header, var(--bg-sidebar, var(--theme-sidebar-legacy-surface)));"
+    );
+    expect(styles).toContain(
+      "background-color: var(--bg-toolbar, var(--bg-sidebar, var(--theme-sidebar-legacy-surface)));"
+    );
+    expect(styles).toContain(
+      "background-color: var(--bg-outline, var(--bg-sidebar, var(--theme-sidebar-legacy-surface)));"
+    );
+    expect(styles).toContain(
+      "background-color: var(--bg-sidebar-footer, var(--bg-sidebar, var(--theme-sidebar-legacy-surface)));"
+    );
+    expect(styles).toContain("border-color: var(--border-chrome, var(--border-default));");
+    expect(styles).toContain("background-color: var(--border-chrome, var(--border-default));");
+
+    const currentRule = styles.indexOf('.theme-tree-row[aria-current="page"]');
+    const selectedRule = styles.indexOf('.theme-tree-row[aria-selected="true"]');
+    expect(currentRule).toBeGreaterThanOrEqual(0);
+    expect(selectedRule).toBeGreaterThan(currentRule);
+    expect(styles).toContain("var(--bg-tree-current, var(--bg-active))");
+    expect(styles).toContain("var(--text-tree-current, var(--text-heading))");
+    expect(styles).toContain("var(--tree-current-indicator, var(--text-secondary))");
+    expect(styles).toContain("var(--bg-tree-selected, var(--accent-soft))");
+    expect(styles).toContain("var(--text-tree-selected, var(--text-heading))");
+    expect(styles).toContain("var(--tree-selected-indicator, var(--accent))");
+    expect(styles).toContain("var(--bg-outline-current, var(--bg-active))");
+    expect(styles).toContain("var(--text-outline-current, var(--text-heading))");
+  });
+
+  it("keeps semantic chrome focus and resizer interaction states above layered utilities", () => {
+    const styles = readFileSync(`${process.cwd()}/src/styles.css`, "utf8");
+
+    expect(styles).toContain(
+      ".theme-chrome-border:focus {\n  border-color: var(--border-strong);\n}"
+    );
+    expect(styles).toContain(
+      ".theme-chrome-divider-control:is(:hover, :focus-visible) > .theme-chrome-divider {\n  background-color: var(--border-strong);\n}"
+    );
   });
 });
