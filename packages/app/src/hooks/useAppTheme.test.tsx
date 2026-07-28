@@ -499,6 +499,33 @@ describe("useAppTheme", () => {
     expect(runtime.themes.commitActivation).not.toHaveBeenCalled();
   });
 
+  it("keeps the protected theme usable when native validation rejects malicious CSS", async () => {
+    const runtime = runtimeWithThemes(
+      { appearanceMode: "dark", darkTheme: nord.id, lightTheme: "light" },
+      [nord]
+    );
+    runtime.themes.prepareActivation = vi.fn(async () => {
+      throw new Error("Theme CSS contains an unsafe application selector");
+    });
+    const { result } = renderHook(() => useAppTheme());
+
+    await waitFor(() => expect(result.current.darkTheme).toBe("dark"));
+    await waitFor(() => expect(result.current.ready).toBe(true));
+
+    expect(result.current.themeError).toContain("unsafe application selector");
+    expect(document.documentElement.dataset.theme).toBe("dark");
+    expect(document.documentElement.dataset.themeAppearance).toBe("dark");
+    expect(document.querySelector(
+      "#markra-third-party-theme-style, #markra-third-party-theme-link, [data-markra-theme-candidate]"
+    )).not.toBeInTheDocument();
+    expect(runtime.themes.commitActivation).not.toHaveBeenCalled();
+    expect(runtime.themes.cancelActivation).not.toHaveBeenCalled();
+    expect(runtime.settings.writeGroup).toHaveBeenCalledWith(
+      "appearance",
+      expect.objectContaining({ darkTheme: "dark" })
+    );
+  });
+
   it("cancels a deferred activation once when a later selection makes its effect stale", async () => {
     const runtime = runtimeWithThemes(
       { appearanceMode: "light", darkTheme: "dark", lightTheme: "light" },

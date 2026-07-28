@@ -2,6 +2,7 @@ pub(crate) mod activation;
 mod activation_cleanup;
 mod archive;
 mod catalog;
+mod css_security;
 mod manifest;
 mod migration;
 mod parser;

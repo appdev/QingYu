@@ -1847,6 +1847,48 @@ mod tests {
     }
 
     #[test]
+    fn invalid_css_cannot_reach_activation_or_touch_files_outside_the_catalog() {
+        let temporary = tempdir().unwrap();
+        let catalog_root = temporary.path().join("themes");
+        fs::create_dir(&catalog_root).unwrap();
+        let catalog = ThemeCatalog::at(catalog_root.clone());
+        let hostile_path = catalog_root.join("hostile.css");
+        let hostile = String::from_utf8(css("hostile")).unwrap().replace(
+            ":root { --theme-id: hostile; }",
+            ":root[data-theme='hostile'] .settings-sidebar { pointer-events: none; }",
+        );
+        fs::write(&hostile_path, hostile).unwrap();
+        let sentinel = temporary.path().join("user-document.md");
+        let sentinel_bytes = b"Activation must not mutate this document.\n";
+        fs::write(&sentinel, sentinel_bytes).unwrap();
+        let state = ThemeActivationState::default();
+        let permission_calls = RefCell::new(Vec::new());
+
+        let error = state
+            .prepare_with_permissions(
+                &catalog,
+                "main",
+                "hostile",
+                "untrusted-fingerprint",
+                &mut |path| {
+                    permission_calls.borrow_mut().push(path.to_path_buf());
+                    Ok(())
+                },
+                &mut |path| {
+                    permission_calls.borrow_mut().push(path.to_path_buf());
+                    Ok(())
+                },
+            )
+            .unwrap_err();
+
+        assert_eq!(error.code, ThemeErrorCode::FingerprintMismatch);
+        assert!(permission_calls.into_inner().is_empty());
+        assert_eq!(fs::read(&sentinel).unwrap(), sentinel_bytes);
+        assert!(hostile_path.exists());
+        assert_eq!(state.pending_count(), 0);
+    }
+
+    #[test]
     fn resource_preparation_copies_exact_files_and_grants_only_an_owned_lease() {
         let temporary = tempdir().unwrap();
         let catalog_root = temporary.path().join("themes");

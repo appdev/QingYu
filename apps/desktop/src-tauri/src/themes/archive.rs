@@ -1825,6 +1825,37 @@ mod tests {
         assert_no_staging(&catalog);
     }
 
+    #[test]
+    fn malicious_css_import_preserves_files_outside_the_theme_catalog() {
+        let temp = tempdir().unwrap();
+        let catalog = temp.path().join("catalog");
+        fs::create_dir(&catalog).unwrap();
+        let sentinel = temp.path().join("user-note.md");
+        let sentinel_bytes = b"This file must survive every malicious theme import.\n";
+        fs::write(&sentinel, sentinel_bytes).unwrap();
+        let source = temp.path().join("hostile.theme");
+
+        for css in [
+            b":root button { display: none; }".as_slice(),
+            b".markdown-paper[data-editor-theme='fixture-theme'] { position: fixed; inset: 0; z-index: 2147483647; }",
+            b"@keyframes spin { to { opacity: 0; } }",
+            b":root { background: url('data:text/html;base64,PHNjcmlwdD4='); }",
+        ] {
+            let archive = zip_entries(
+                CompressionMethod::Stored,
+                &[("manifest.json", MANIFEST), ("theme.css", css)],
+            );
+            fs::write(&source, archive).unwrap();
+
+            let error = prepare_external_theme(&source, &catalog).unwrap_err();
+
+            assert_eq!(error.code, ThemeErrorCode::UnsafeResource);
+            assert_eq!(fs::read(&sentinel).unwrap(), sentinel_bytes);
+            assert!(source.exists());
+            assert_no_staging(&catalog);
+        }
+    }
+
     #[cfg(unix)]
     #[test]
     fn rejects_staging_root_substitution_without_writing_to_the_substitute() {
