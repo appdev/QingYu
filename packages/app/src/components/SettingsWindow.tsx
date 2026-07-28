@@ -146,6 +146,7 @@ export function SettingsWindow() {
     }
     return getAppRuntime().syncConfig.readDejavuConflictHistory({
       conflictId: conflict.conflictId,
+      notesRoot: selection.notesRoot,
       repositoryId: conflict.repositoryId
     });
   }, [openSyncConflictHistory, syncView.primaryRoot]);

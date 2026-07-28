@@ -101,6 +101,12 @@ describe("useSyncConflictHistory", () => {
 
     await waitFor(() => expect(result.current.entries).toEqual([initial]));
     expect(showAppToast).not.toHaveBeenCalled();
+    await result.current.read(initial);
+    expect(getAppRuntime().syncConfig.readDejavuConflictHistory).toHaveBeenCalledWith({
+      conflictId: initial.conflictId,
+      notesRoot: "/notes",
+      repositoryId: initial.repositoryId
+    });
   });
 
   it("keeps the persisted baseline when event subscription is unavailable", async () => {
@@ -175,5 +181,82 @@ describe("useSyncConflictHistory", () => {
     expect(showAppToast).toHaveBeenCalledWith(expect.objectContaining({
       id: `sync-conflict-${next.conflictId}`
     }));
+  });
+
+  it("notifies a buffered conflict already present in the first persisted history read", async () => {
+    const firstHistory = deferred<SyncConflictRecord[]>();
+    const next = conflict("00000000-0000-4000-8000-0000000000a7", "caught-up-during-load.md");
+    const runtime = createDefaultAppRuntime();
+    runtime.events.isAvailable = () => true;
+    runtime.events.listen = vi.fn(async (event, handler) => {
+      listeners.set(event, handler as (event: RuntimeEvent<unknown>) => unknown);
+      return () => listeners.delete(event);
+    });
+    runtime.syncConfig.loadRepositoryStatus = vi.fn(async () => status([initial]));
+    runtime.syncConfig.listDejavuConflictHistory = vi.fn()
+      .mockImplementationOnce(() => firstHistory.promise)
+      .mockResolvedValue([initial, next]);
+    configureAppRuntime(runtime);
+
+    const { result } = renderHook(() => useSyncConflictHistory({
+      notesRoot: "/notes",
+      translate: (key) => key
+    }));
+    await waitFor(() => expect(runtime.syncConfig.listDejavuConflictHistory).toHaveBeenCalledOnce());
+
+    await act(async () => {
+      await listeners.get(dejavuSyncStatusChangedEvent)?.({ payload: status([initial, next]) });
+      firstHistory.resolve([initial, next]);
+      await firstHistory.promise;
+    });
+
+    await waitFor(() => expect(result.current.entries).toEqual([initial, next]));
+    expect(showAppToast).toHaveBeenCalledOnce();
+    expect(showAppToast).toHaveBeenCalledWith(expect.objectContaining({
+      id: `sync-conflict-${next.conflictId}`
+    }));
+  });
+
+  it("serializes startup reconciliation before later event refreshes", async () => {
+    const firstHistory = deferred<SyncConflictRecord[]>();
+    const startupReconciliation = deferred<SyncConflictRecord[]>();
+    const later = conflict("00000000-0000-4000-8000-0000000000a8", "later.md");
+    const runtime = createDefaultAppRuntime();
+    runtime.events.isAvailable = () => true;
+    runtime.events.listen = vi.fn(async (event, handler) => {
+      listeners.set(event, handler as (event: RuntimeEvent<unknown>) => unknown);
+      return () => listeners.delete(event);
+    });
+    runtime.syncConfig.loadRepositoryStatus = vi.fn(async () => status([initial]));
+    runtime.syncConfig.listDejavuConflictHistory = vi.fn()
+      .mockImplementationOnce(() => firstHistory.promise)
+      .mockImplementationOnce(() => startupReconciliation.promise)
+      .mockResolvedValue([initial, later]);
+    configureAppRuntime(runtime);
+
+    const { result } = renderHook(() => useSyncConflictHistory({
+      notesRoot: "/notes",
+      translate: (key) => key
+    }));
+    await waitFor(() => expect(runtime.syncConfig.listDejavuConflictHistory).toHaveBeenCalledOnce());
+    await act(async () => {
+      await listeners.get(dejavuSyncStatusChangedEvent)?.({ payload: status([initial]) });
+      firstHistory.resolve([initial]);
+      await firstHistory.promise;
+    });
+    await waitFor(() => expect(runtime.syncConfig.listDejavuConflictHistory).toHaveBeenCalledTimes(2));
+
+    await act(async () => {
+      await listeners.get(dejavuSyncStatusChangedEvent)?.({ payload: status([initial, later]) });
+      await Promise.resolve();
+    });
+    expect(runtime.syncConfig.listDejavuConflictHistory).toHaveBeenCalledTimes(2);
+
+    await act(async () => {
+      startupReconciliation.resolve([initial]);
+      await startupReconciliation.promise;
+    });
+    await waitFor(() => expect(runtime.syncConfig.listDejavuConflictHistory).toHaveBeenCalledTimes(3));
+    await waitFor(() => expect(result.current.entries).toEqual([initial, later]));
   });
 });

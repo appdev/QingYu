@@ -2058,7 +2058,7 @@ mod tests {
             return Err("conflict_not_completed");
         }
         let first_versions = history
-            .read_history(repository_id, &first.conflict_id)
+            .read_history(&target.notes_root, repository_id, &first.conflict_id)
             .map_err(|_| "conflict_history_read")?;
         if first_versions.remote.text.as_deref() != Some("remote conflict one\n") {
             return Err("conflict_history_bytes");

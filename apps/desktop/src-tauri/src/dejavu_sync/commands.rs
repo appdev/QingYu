@@ -76,6 +76,7 @@ pub(crate) struct ExportGlobalKeyRequest {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct ReadConflictRequest {
+    pub(crate) notes_root: PathBuf,
     pub(crate) repository_id: String,
     pub(crate) conflict_id: String,
 }
@@ -526,8 +527,11 @@ impl DejavuSyncServiceOwner {
         &self,
         request: ReadConflictRequest,
     ) -> Result<ConflictVersions, RepositoryJobError> {
-        self.conflicts()?
-            .read_history(&request.repository_id, &request.conflict_id)
+        self.conflicts()?.read_history(
+            &request.notes_root,
+            &request.repository_id,
+            &request.conflict_id,
+        )
     }
 
     pub(crate) fn repository_status_for_root(

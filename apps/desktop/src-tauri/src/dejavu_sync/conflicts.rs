@@ -102,11 +102,15 @@ impl ConflictStore {
 
     pub(crate) fn read_history(
         &self,
+        notes_root: &Path,
         repository_id: &str,
         conflict_id: &str,
     ) -> Result<ConflictVersions, RepositoryJobError> {
         canonical_uuid(repository_id)?;
         canonical_uuid(conflict_id)?;
+        let notes_root = notes_root
+            .canonicalize()
+            .map_err(|_| RepositoryJobError::ConflictUnavailable)?;
         let conflict = load_repository_sync_status(&self.app_data, repository_id)?
             .and_then(|status| {
                 status
@@ -120,12 +124,14 @@ impl ConflictStore {
             .load()
             .map_err(RepositoryJobError::from)?
             .ok_or(RepositoryJobError::ConflictUnavailable)?;
-        let notes_root = state
-            .bindings
-            .iter()
-            .find(|binding| binding.repository_id == repository_id)
-            .map(|binding| binding.notes_root.clone())
-            .ok_or(RepositoryJobError::ConflictUnavailable)?;
+        let binding_matches_request = state.bindings.iter().any(|binding| {
+            binding.enabled
+                && binding.repository_id == repository_id
+                && binding.notes_root == notes_root
+        });
+        if !binding_matches_request {
+            return Err(RepositoryJobError::ConflictUnavailable);
+        }
         let relative = validated_relative_path(&conflict.relative_path)?;
         let history_root = conflict_history_root(&self.app_data, &conflict)?;
         let remote = read_version(&history_root, &relative)?
@@ -716,7 +722,9 @@ mod tests {
                 .repository_id,
             REPOSITORY_ID
         );
-        let versions = store.read_history(REPOSITORY_ID, CONFLICT_ID).unwrap();
+        let versions = store
+            .read_history(&fixture.notes_root, REPOSITORY_ID, CONFLICT_ID)
+            .unwrap();
         assert_eq!(
             versions.local.as_ref().unwrap().text.as_deref(),
             Some("local text")
@@ -735,11 +743,17 @@ mod tests {
 
         assert!(store.list_history(REPOSITORY_ID).unwrap().is_empty());
         assert_eq!(
-            store.read_history(REPOSITORY_ID, CONFLICT_ID),
+            store.read_history(&fixture.notes_root, REPOSITORY_ID, CONFLICT_ID),
             Err(RepositoryJobError::ConflictUnavailable)
         );
         assert_eq!(
-            store.read_history(OTHER_REPOSITORY_ID, CONFLICT_ID),
+            store.read_history(&fixture.notes_root, OTHER_REPOSITORY_ID, CONFLICT_ID),
+            Err(RepositoryJobError::ConflictUnavailable)
+        );
+        let another_root = fixture._temporary.path().join("another-notes-root");
+        std::fs::create_dir(&another_root).unwrap();
+        assert_eq!(
+            store.read_history(&another_root, REPOSITORY_ID, CONFLICT_ID),
             Err(RepositoryJobError::ConflictUnavailable)
         );
     }
@@ -751,7 +765,7 @@ mod tests {
         std::fs::write(fixture.notes_root.join("document.md"), [0xff, 0xfe]).unwrap();
 
         let versions = ConflictStore::new(&fixture.app_data)
-            .read_history(REPOSITORY_ID, CONFLICT_ID)
+            .read_history(&fixture.notes_root, REPOSITORY_ID, CONFLICT_ID)
             .unwrap();
         assert_eq!(versions.remote.byte_size, MAX_CONFLICT_TEXT_BYTES + 1);
         assert_eq!(versions.remote.text, None);

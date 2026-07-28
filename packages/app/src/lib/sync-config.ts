@@ -387,6 +387,7 @@ export type AppSyncConfigRuntime = {
   requestApply(input: SyncApplyUpdate): Promise<SyncApplyWriteResult>;
   readDejavuConflictHistory(input: {
     conflictId: string;
+    notesRoot: string;
     repositoryId: string;
   }): Promise<ConflictVersions>;
   reset(input: {

@@ -48,13 +48,19 @@ export function useSyncConflictHistory({
     let activeRepositoryId: string | null = null;
     const bufferedStatuses = new Map<string, DejavuRepositoryStatus>();
     let reconciliation = Promise.resolve();
-    const applyHistory = (records: readonly SyncConflictRecord[], notify: boolean) => {
+    const applyHistory = (
+      records: readonly SyncConflictRecord[],
+      notify: boolean | ReadonlySet<string>
+    ) => {
       if (!active) return;
       const next = historyRecords(records);
       for (const conflict of next) {
         if (noticedConflictIds.has(conflict.conflictId)) continue;
         noticedConflictIds.add(conflict.conflictId);
-        if (!notify) continue;
+        const shouldNotify = notify === true || (
+          notify !== false && notify.has(conflict.conflictId)
+        );
+        if (!shouldNotify) continue;
         showAppToast({
           id: `sync-conflict-${conflict.conflictId}`,
           message: translateRef.current("sync.conflict.notice"),
@@ -104,6 +110,9 @@ export function useSyncConflictHistory({
         const status = await getAppRuntime().syncConfig.loadRepositoryStatus({ notesRoot });
         if (!active) return;
         const nextRepositoryId = status?.repositoryId ?? null;
+        const baselineConflictIds = new Set(
+          status?.conflicts.map((conflict) => conflict.conflictId) ?? []
+        );
         const initial = nextRepositoryId
           ? await getAppRuntime().syncConfig.listDejavuConflictHistory({ repositoryId: nextRepositoryId })
           : [];
@@ -111,11 +120,22 @@ export function useSyncConflictHistory({
         const nextConflicts = historyRecords(initial);
         activeRepositoryId = nextRepositoryId;
         setRepositoryId(nextRepositoryId);
-        applyHistory(nextConflicts, false);
+        const bufferedStatus = nextRepositoryId
+          ? bufferedStatuses.get(nextRepositoryId)
+          : undefined;
+        const bufferedConflictIds = new Set(
+          bufferedStatus?.conflicts
+            .map((conflict) => conflict.conflictId)
+            .filter((conflictId) => !baselineConflictIds.has(conflictId)) ?? []
+        );
+        applyHistory(nextConflicts, bufferedConflictIds);
         baselineReady = true;
-        const buffered = nextRepositoryId ? bufferedStatuses.has(nextRepositoryId) : false;
+        const buffered = bufferedStatus !== undefined;
         bufferedStatuses.clear();
-        await reconcilePersistedHistory(buffered);
+        if (buffered) {
+          reconciliation = reconciliation.then(() => reconcilePersistedHistory(true));
+          await reconciliation;
+        }
       } catch {
         if (!active) return;
         activeRepositoryId = null;
@@ -136,12 +156,14 @@ export function useSyncConflictHistory({
     };
   }, [notesRoot]);
 
-  const read = useCallback((conflict: SyncConflictRecord) => (
-    getAppRuntime().syncConfig.readDejavuConflictHistory({
+  const read = useCallback((conflict: SyncConflictRecord) => {
+    if (!notesRoot) return Promise.reject(new Error("sync-conflict-ownership-changed"));
+    return getAppRuntime().syncConfig.readDejavuConflictHistory({
       conflictId: conflict.conflictId,
+      notesRoot,
       repositoryId: conflict.repositoryId
-    })
-  ), []);
+    });
+  }, [notesRoot]);
 
   return useMemo(() => ({
     entries,

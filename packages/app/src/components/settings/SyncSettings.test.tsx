@@ -678,6 +678,42 @@ describe("SyncSettings application scope", () => {
     expect(summary).not.toHaveTextContent("stale-older-binding");
   });
 
+  it("adopts a new repository binding for the same current root", async () => {
+    const events = createEventBus();
+    const oldStatus = repositoryStatus({
+      repositoryId: "00000000-0000-4000-8000-0000000000aa"
+    });
+    const newStatus = repositoryStatus({
+      repositoryId: "00000000-0000-4000-8000-0000000000bb"
+    });
+    let currentStatus = oldStatus;
+    const onRepositoryIdentityChange = vi.fn();
+    const runtime = createDefaultAppRuntime();
+    runtime.events = events.events;
+    runtime.syncConfig.loadRepositoryStatus = vi.fn(async () => currentStatus);
+    configureAppRuntime(runtime);
+    const s3Document = document({ config: { ...config, provider: "s3" } });
+    render(<SyncSettings {...createProps({
+      configDocument: s3Document,
+      loadResult: { ...s3Document, status: "loaded" },
+      onRepositoryIdentityChange
+    })} />);
+
+    await waitFor(() => expect(onRepositoryIdentityChange).toHaveBeenLastCalledWith({
+      notesRoot: "/Notes",
+      repositoryId: oldStatus.repositoryId
+    }));
+    currentStatus = newStatus;
+    await act(async () => {
+      await events.emit("qingyu://dejavu-sync-status-changed", newStatus);
+    });
+
+    await waitFor(() => expect(onRepositoryIdentityChange).toHaveBeenLastCalledWith({
+      notesRoot: "/Notes",
+      repositoryId: newStatus.repositoryId
+    }));
+  });
+
   it("renders only safe Dejavu diagnostics and relative conflict paths", async () => {
     const unsafePaths = [
       ["00000000-0000-4000-8000-0000000000e1", "/Users/alice/Private/credentials.md"],

@@ -372,7 +372,7 @@ export function SyncSettings({
         return;
       }
       if (repositoryId === payload.repositoryId) setDejavuRepositoryStatus(payload);
-      else if (repositoryId === null) return adoptStatusForCurrentRoot(payload);
+      else adoptStatusForCurrentRoot(payload).catch(() => {});
     };
     const initializeStatus = async () => {
       if (runtime.events.isAvailable()) {
