@@ -22,10 +22,9 @@ use crate::{
             SyncConfigReadiness, SyncConnectionTestResult, SyncMode, SyncProvider,
         },
         ready_snapshot_at_app_data,
-        status::{
-            SyncCompletionState, SyncRunResult, SyncSafeError, SyncStatus, SyncSummary, SyncTrigger,
-        },
+        status::{SyncCompletionState, SyncSafeError, SyncStatus, SyncSummary, SyncTrigger},
         storage::{load_from_app_data, patch_batch_at_app_data},
+        SyncDispatchResult,
     },
 };
 
@@ -148,6 +147,7 @@ impl std::error::Error for SyncServiceError {}
 pub(crate) enum SyncRunState {
     Queued,
     Running,
+    Accepted,
     Succeeded,
     Failed,
     Cancelled,
@@ -155,8 +155,18 @@ pub(crate) enum SyncRunState {
 
 impl SyncRunState {
     fn terminal(self) -> bool {
-        matches!(self, Self::Succeeded | Self::Failed | Self::Cancelled)
+        matches!(
+            self,
+            Self::Accepted | Self::Succeeded | Self::Failed | Self::Cancelled
+        )
     }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SanitizedAcceptedSyncJob {
+    pub(crate) job_id: String,
+    pub(crate) repository_id: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -166,6 +176,8 @@ pub(crate) struct SyncRunStatus {
     pub(crate) revision: String,
     pub(crate) provider: SyncProvider,
     pub(crate) state: SyncRunState,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) accepted_job: Option<SanitizedAcceptedSyncJob>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) summary: Option<SyncSummary>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -207,7 +219,7 @@ pub(crate) trait SyncRunner: Send + Sync {
         &self,
         notes_root: PathBuf,
         revision: String,
-    ) -> Pin<Box<dyn Future<Output = Result<SyncRunResult, String>> + Send + 'static>>;
+    ) -> Pin<Box<dyn Future<Output = Result<SyncDispatchResult, String>> + Send + 'static>>;
 }
 
 struct NativeSyncRunner {
@@ -219,25 +231,16 @@ impl SyncRunner for NativeSyncRunner {
         &self,
         notes_root: PathBuf,
         revision: String,
-    ) -> Pin<Box<dyn Future<Output = Result<SyncRunResult, String>> + Send + 'static>> {
+    ) -> Pin<Box<dyn Future<Output = Result<SyncDispatchResult, String>> + Send + 'static>> {
         let app = self.app.clone();
         Box::pin(async move {
-            let current = crate::primary_workspace::resolve_sync_primary_workspace(&app)?;
-            if current != notes_root {
-                return Err(crate::primary_workspace::sync_primary_workspace_mismatch());
-            }
-            let app_data = app.path().app_data_dir().map_err(|_| {
-                "app-data-unavailable: The application data directory is unavailable.".to_string()
-            })?;
-            let snapshot = ready_snapshot_at_app_data(&app_data, Some(&revision))?;
-            crate::remote_sync::service::run_application_sync(
-                &app,
+            crate::sync_config::run_primary_application_sync(
+                app,
                 notes_root,
-                snapshot,
+                revision,
                 SyncTrigger::Manual,
             )
             .await
-            .map_err(|error| error.to_string())
         })
     }
 }
@@ -292,6 +295,7 @@ impl SyncRunRegistry {
             revision: revision.to_string(),
             provider,
             state: SyncRunState::Queued,
+            accepted_job: None,
             summary: None,
             error_code: None,
         };
@@ -316,7 +320,7 @@ impl SyncRunRegistry {
         }
     }
 
-    fn complete(&self, run_id: Uuid, outcome: Result<SyncRunResult, String>) {
+    fn complete(&self, run_id: Uuid, outcome: Result<SyncDispatchResult, String>) {
         let Ok(mut inner) = self.inner.lock() else {
             return;
         };
@@ -324,13 +328,24 @@ impl SyncRunRegistry {
             return;
         };
         match outcome {
-            Ok(result) => {
+            Ok(SyncDispatchResult::Completed { result }) => {
                 entry.status.state = SyncRunState::Succeeded;
+                entry.status.accepted_job = None;
                 entry.status.summary = Some(result.summary);
+                entry.status.error_code = None;
+            }
+            Ok(SyncDispatchResult::Accepted { job }) => {
+                entry.status.state = SyncRunState::Accepted;
+                entry.status.accepted_job = Some(SanitizedAcceptedSyncJob {
+                    job_id: job.job_id,
+                    repository_id: job.repository_id,
+                });
+                entry.status.summary = None;
                 entry.status.error_code = None;
             }
             Err(error) => {
                 entry.status.state = SyncRunState::Failed;
+                entry.status.accepted_job = None;
                 entry.status.summary = None;
                 entry.status.error_code = Some(safe_sync_error_code(&error));
             }
@@ -755,6 +770,8 @@ fn safe_sync_error_code(error: &str) -> String {
     let code = error.split(':').next().unwrap_or_default();
     match code {
         "app-data-unavailable"
+        | "dejavu-invalid-binding"
+        | "dejavu-repository-unavailable"
         | "notes-root-unavailable"
         | "remote-http-error"
         | "revision-conflict"
@@ -785,13 +802,15 @@ mod tests {
 
     use tempfile::tempdir;
 
-    use super::{safe_sync_error_code, SyncRunner, SyncService};
-    use crate::sync_config::{
-        model::{SyncConfigPatch, SyncProvider},
-        status::{
-            write_sync_status_at_app_data, SyncRunResult, SyncStatus, SyncSummary, SyncTrigger,
+    use super::{safe_sync_error_code, SyncRunRegistry, SyncRunState, SyncRunner, SyncService};
+    use crate::{
+        dejavu_sync::service::AcceptedSyncJob,
+        sync_config::{
+            model::{SyncConfigPatch, SyncProvider},
+            status::{write_sync_status_at_app_data, SyncStatus, SyncSummary, SyncTrigger},
+            storage::{enable_at_app_data, patch_batch_at_app_data},
+            SyncDispatchResult,
         },
-        storage::{enable_at_app_data, patch_batch_at_app_data},
     };
 
     struct UnusedRunner;
@@ -801,7 +820,8 @@ mod tests {
             &self,
             _notes_root: std::path::PathBuf,
             _revision: String,
-        ) -> Pin<Box<dyn Future<Output = Result<SyncRunResult, String>> + Send + 'static>> {
+        ) -> Pin<Box<dyn Future<Output = Result<SyncDispatchResult, String>> + Send + 'static>>
+        {
             Box::pin(async { unreachable!("status reads do not start sync") })
         }
     }
@@ -915,5 +935,54 @@ mod tests {
             safe_sync_error_code("settings-reconcile-failed: path omitted"),
             "settings-reconcile-failed"
         );
+        assert_eq!(
+            safe_sync_error_code("dejavu-invalid-binding"),
+            "dejavu-invalid-binding"
+        );
+        assert_eq!(
+            safe_sync_error_code("dejavu-repository-unavailable"),
+            "dejavu-repository-unavailable"
+        );
+    }
+
+    #[test]
+    fn accepted_dejavu_dispatch_is_a_terminal_sanitized_mcp_result() {
+        let fixture = tempdir().unwrap();
+        let notes = fixture.path().join("notes");
+        std::fs::create_dir(&notes).unwrap();
+        let canonical_notes = notes.canonicalize().unwrap();
+        let runs = SyncRunRegistry::default();
+        let (queued, leader) = runs
+            .begin(canonical_notes.clone(), "revision-1", SyncProvider::S3)
+            .unwrap();
+        assert!(leader);
+        runs.mark_running(queued.run_id);
+        runs.complete(
+            queued.run_id,
+            Ok(SyncDispatchResult::Accepted {
+                job: AcceptedSyncJob::completed_for_test(
+                    "dejavu-job-1",
+                    "repository-1".into(),
+                    canonical_notes.clone(),
+                ),
+            }),
+        );
+
+        let accepted = tauri::async_runtime::block_on(runs.wait(queued.run_id)).unwrap();
+        assert_eq!(accepted.state, SyncRunState::Accepted);
+        assert_eq!(accepted.summary, None);
+        assert_eq!(accepted.error_code, None);
+        let serialized = serde_json::to_value(&accepted).unwrap();
+        assert_eq!(serialized["state"], "accepted");
+        assert_eq!(
+            serialized["acceptedJob"],
+            serde_json::json!({
+                "jobId": "dejavu-job-1",
+                "repositoryId": "repository-1"
+            })
+        );
+        assert!(!serde_json::to_string(&accepted)
+            .unwrap()
+            .contains(&canonical_notes.to_string_lossy().to_string()));
     }
 }

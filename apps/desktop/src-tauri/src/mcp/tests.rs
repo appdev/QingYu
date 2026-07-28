@@ -96,6 +96,7 @@ use crate::sync_config::{
     model::{SyncConfigLoadResponse, SyncConfigPatch, SyncProvider},
     status::{SyncRunResult, SyncSummary, SyncTrigger},
     storage::{enable_at_app_data, load_from_app_data, patch_batch_at_app_data},
+    SyncDispatchResult,
 };
 use rmcp::{ClientHandler, ServiceExt};
 
@@ -1894,23 +1895,25 @@ impl SyncRunner for FakeSyncRunner {
         notes_root: std::path::PathBuf,
         revision: String,
     ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<SyncRunResult, String>> + Send + 'static>,
+        Box<dyn std::future::Future<Output = Result<SyncDispatchResult, String>> + Send + 'static>,
     > {
         self.calls
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Box::pin(async move {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-            Ok(SyncRunResult {
-                notebook_name: notes_root
-                    .file_name()
-                    .unwrap()
-                    .to_string_lossy()
-                    .into_owned(),
-                notes_root: notes_root.to_string_lossy().to_string(),
-                provider: SyncProvider::Webdav,
-                revision,
-                summary: SyncSummary::default(),
-                trigger: SyncTrigger::Manual,
+            Ok(SyncDispatchResult::Completed {
+                result: SyncRunResult {
+                    notebook_name: notes_root
+                        .file_name()
+                        .unwrap()
+                        .to_string_lossy()
+                        .into_owned(),
+                    notes_root: notes_root.to_string_lossy().to_string(),
+                    provider: SyncProvider::Webdav,
+                    revision,
+                    summary: SyncSummary::default(),
+                    trigger: SyncTrigger::Manual,
+                },
             })
         })
     }

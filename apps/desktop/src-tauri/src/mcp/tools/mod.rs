@@ -1157,8 +1157,8 @@ mod tests {
         remote_sync::mcp_service::{SyncRunner, SyncService},
         sync_config::{
             model::SyncConfigPatch,
-            status::SyncRunResult,
             storage::{enable_at_app_data, patch_at_app_data},
+            SyncDispatchResult,
         },
     };
 
@@ -1169,7 +1169,8 @@ mod tests {
             &self,
             _notes_root: PathBuf,
             _revision: String,
-        ) -> Pin<Box<dyn Future<Output = Result<SyncRunResult, String>> + Send + 'static>> {
+        ) -> Pin<Box<dyn Future<Output = Result<SyncDispatchResult, String>> + Send + 'static>>
+        {
             Box::pin(async { panic!("mutation option preparation must not start synchronization") })
         }
     }

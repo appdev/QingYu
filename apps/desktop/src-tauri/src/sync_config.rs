@@ -866,6 +866,31 @@ pub(crate) async fn sync_application(
     execute_application_sync(app, validated_root, request).await
 }
 
+pub(crate) async fn run_primary_application_sync(
+    app: tauri::AppHandle,
+    notes_root: PathBuf,
+    revision: String,
+    trigger: SyncTrigger,
+) -> Result<SyncDispatchResult, String> {
+    let notes_root_text = notes_root
+        .to_str()
+        .ok_or_else(|| "notes-root-unavailable: The notes directory is unavailable.".to_string())?;
+    let notebook_name = crate::notebook_scope::notebook_name_from_root(&notes_root)?;
+    sync_application(
+        app,
+        SyncApplicationRequest {
+            apply_token: None,
+            bootstrap: false,
+            notebook_name: Some(notebook_name),
+            notes_root: Some(notes_root_text.to_string()),
+            prepared_target_lease: None,
+            revision,
+            trigger,
+        },
+    )
+    .await
+}
+
 #[tauri::command]
 pub(crate) async fn test_sync_connection(
     app: tauri::AppHandle,
@@ -1232,6 +1257,40 @@ mod tests {
             assert!(
                 !body.contains(bypass),
                 "production command execution bypassed the unique provider dispatcher with {bypass}"
+            );
+        }
+    }
+
+    #[test]
+    fn native_mcp_sync_runner_uses_the_provider_aware_application_dispatch() {
+        let mcp_source = include_str!("remote_sync/mcp_service.rs");
+        let body = rust_function_body(mcp_source, "impl SyncRunner for NativeSyncRunner");
+
+        assert!(
+            body.contains("run_primary_application_sync"),
+            "MCP sync_run must enter the same provider-aware application dispatcher as Tauri"
+        );
+        for bypass in ["ready_snapshot_at_app_data", "run_application_sync("] {
+            assert!(
+                !body.contains(bypass),
+                "MCP sync_run bypassed the provider-aware dispatcher with {bypass}"
+            );
+        }
+
+        let shared = rust_function_body(
+            include_str!("sync_config.rs"),
+            "pub(crate) async fn run_primary_application_sync",
+        );
+        assert_eq!(shared.matches("sync_application(").count(), 1);
+        for bypass in [
+            "execute_application_sync_dispatch(",
+            "execute_legacy_application_sync(",
+            "run_application_s3_portable_settings(",
+            ".enqueue(",
+        ] {
+            assert!(
+                !shared.contains(bypass),
+                "shared MCP/Tauri entry copied provider state-machine behavior with {bypass}"
             );
         }
     }
