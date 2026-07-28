@@ -2803,7 +2803,7 @@ export function MarkdownFileTreeDrawer({
 
           {outlineResizerVisible ? (
             <div
-              className="markdown-file-tree-outline-resizer group relative h-2 shrink-0 cursor-row-resize touch-none outline-none"
+              className="markdown-file-tree-outline-resizer theme-chrome-divider-control group relative h-2 shrink-0 cursor-row-resize touch-none outline-none"
               role="separator"
               tabIndex={0}
               aria-label={label("app.resizeOutline")}
@@ -2911,7 +2911,7 @@ export function MarkdownFileTreeDrawer({
 
           {documentLinksResizerVisible ? (
             <div
-              className="markdown-file-tree-document-links-resizer group relative h-2 shrink-0 cursor-row-resize touch-none outline-none"
+              className="markdown-file-tree-document-links-resizer theme-chrome-divider-control group relative h-2 shrink-0 cursor-row-resize touch-none outline-none"
               role="separator"
               tabIndex={0}
               aria-label={label("app.resizeDocumentLinks")}

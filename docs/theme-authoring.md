@@ -179,7 +179,7 @@ Themes should set the following application-chrome variables on their ID-scoped 
 | `--border-chrome` | `--border-default` |
 | `--bg-tree-current` | `--bg-active` |
 | `--text-tree-current` | `--text-heading` |
-| `--tree-current-indicator` | `--accent` |
+| `--tree-current-indicator` | `--text-secondary` |
 | `--bg-tree-selected` | `--accent-soft` |
 | `--text-tree-selected` | `--text-heading` |
 | `--tree-selected-indicator` | `--accent` |

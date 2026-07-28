@@ -3673,8 +3673,16 @@
   border-color: var(--border-chrome, var(--border-default));
 }
 
+.theme-chrome-border:focus {
+  border-color: var(--border-strong);
+}
+
 .theme-chrome-divider {
   background-color: var(--border-chrome, var(--border-default));
+}
+
+.theme-chrome-divider-control:is(:hover, :focus-visible) > .theme-chrome-divider {
+  background-color: var(--border-strong);
 }
 
 .theme-tree-current-surface[aria-current="page"] {
@@ -3683,7 +3691,7 @@
 }
 
 .theme-tree-row[aria-current="page"] {
-  border-left: 3px solid var(--tree-current-indicator, var(--accent));
+  border-left: 3px solid var(--tree-current-indicator, var(--text-secondary));
   background-color: var(--bg-tree-current, var(--bg-active));
   color: var(--text-tree-current, var(--text-heading));
 }

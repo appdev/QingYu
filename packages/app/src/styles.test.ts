@@ -1666,11 +1666,22 @@ describe("editor stylesheet", () => {
     expect(selectedRule).toBeGreaterThan(currentRule);
     expect(styles).toContain("var(--bg-tree-current, var(--bg-active))");
     expect(styles).toContain("var(--text-tree-current, var(--text-heading))");
-    expect(styles).toContain("var(--tree-current-indicator, var(--accent))");
+    expect(styles).toContain("var(--tree-current-indicator, var(--text-secondary))");
     expect(styles).toContain("var(--bg-tree-selected, var(--accent-soft))");
     expect(styles).toContain("var(--text-tree-selected, var(--text-heading))");
     expect(styles).toContain("var(--tree-selected-indicator, var(--accent))");
     expect(styles).toContain("var(--bg-outline-current, var(--bg-active))");
     expect(styles).toContain("var(--text-outline-current, var(--text-heading))");
+  });
+
+  it("keeps semantic chrome focus and resizer interaction states above layered utilities", () => {
+    const styles = readFileSync(`${process.cwd()}/src/styles.css`, "utf8");
+
+    expect(styles).toContain(
+      ".theme-chrome-border:focus {\n  border-color: var(--border-strong);\n}"
+    );
+    expect(styles).toContain(
+      ".theme-chrome-divider-control:is(:hover, :focus-visible) > .theme-chrome-divider {\n  background-color: var(--border-strong);\n}"
+    );
   });
 });

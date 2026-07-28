@@ -320,8 +320,17 @@ describe("MarkdownFileTreeDrawer", () => {
       "theme-sidebar-footer-surface",
       "theme-chrome-border"
     );
-    expect(container.querySelectorAll(".theme-chrome-divider").length).toBeGreaterThanOrEqual(2);
+    fireEvent.click(screen.getByRole("button", { name: "Search Markdown files" }));
+    expect(screen.getByRole("searchbox", { name: "Search Markdown files" })).toHaveClass("theme-chrome-border");
     expect(container.querySelector(".markdown-file-tree-resizer > .theme-chrome-divider")).toBeInTheDocument();
+    expect(container.querySelector(".markdown-file-tree-outline-resizer > .theme-chrome-divider")).toBeInTheDocument();
+    expect(container.querySelector(".markdown-file-tree-document-links-resizer > .theme-chrome-divider")).toBeInTheDocument();
+    expect(container.querySelector(".markdown-file-tree-outline-resizer")).toHaveClass(
+      "theme-chrome-divider-control"
+    );
+    expect(container.querySelector(".markdown-file-tree-document-links-resizer")).toHaveClass(
+      "theme-chrome-divider-control"
+    );
     fireEvent.click(screen.getByRole("button", { name: "deploy" }));
     expect(container.querySelector("ol.border-l")).toHaveClass("theme-chrome-border");
   });
