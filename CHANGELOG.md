@@ -1,3 +1,9 @@
+## [2.0.0-beta.9](https://github.com/markrahq/markra/compare/v2.0.0-beta.8...v2.0.0-beta.9) (2026-07-28)
+
+### Bug Fixes
+
+* **settings:** show active sidebar category ([#592](https://github.com/markrahq/markra/issues/592)) ([8306eb2](https://github.com/markrahq/markra/commit/8306eb26b6d6cc5082f1b17da61b0c155ac04d43))
+
 ## [2.0.0-beta.8](https://github.com/markrahq/markra/compare/v2.0.0-beta.7...v2.0.0-beta.8) (2026-07-27)
 
 ### Bug Fixes
