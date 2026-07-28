@@ -21,7 +21,9 @@ const seededThemeIds = [
   "academic",
   "minimal",
   "drake-light",
-  "drake-ayu"
+  "drake-ayu",
+  "wenkai-paper-light",
+  "wenkai-paper-dark"
 ] as const;
 
 const externalThemeIds = ["drake-faithful-light", "drake-faithful-ayu"] as const;
@@ -279,6 +281,12 @@ function readRuleDeclarations(styles: string, selector: string) {
 }
 
 function readSeededThemeStyles(themeId: typeof seededThemeIds[number]) {
+  if (themeId === "wenkai-paper-light" || themeId === "wenkai-paper-dark") {
+    return readFileSync(
+      `${process.cwd()}/../../themes/external/${themeId}/theme.css`,
+      "utf8"
+    );
+  }
   const fixturePath = themeId === "drake-light" || themeId === "drake-ayu"
     ? `${themeId}/theme.css`
     : `${themeId}.css`;
@@ -1542,6 +1550,56 @@ describe("editor stylesheet", () => {
       expect(styles).not.toContain("fonts.googleapis.com");
       expect(styles).not.toContain("CodeMirror");
       expect(styles).not.toContain("#typora-");
+    }
+  });
+
+  it("keeps WenKai Paper packages licensed, self-contained, and complete across app chrome", () => {
+    for (const theme of ["wenkai-paper-light", "wenkai-paper-dark"] as const) {
+      const root = `${process.cwd()}/../../themes/external/${theme}`;
+      const styles = readSeededThemeStyles(theme);
+      const manifest = JSON.parse(readFileSync(`${root}/manifest.json`, "utf8"));
+
+      expect(manifest.author).toBe("轻语");
+      expect(manifest.id).toBe(theme);
+      expect(manifest.licenseFiles).toEqual([
+        "licenses/THEME-LICENSE.txt",
+        "licenses/FONT-LICENSE.txt",
+        "licenses/WEBFONT-LICENSE.txt"
+      ]);
+      expect(styles.match(/@font-face/gu)).toHaveLength(97);
+      expect(styles).toContain(`:root[data-theme="${theme}"]`);
+      expect(styles).toContain(`.markdown-paper[data-editor-theme="${theme}"]`);
+      expect(styles).toContain(`.markdown-source-paper[data-editor-theme="${theme}"]`);
+      expect(styles).toContain('font-family: "LXGW WenKai Screen"');
+      expect(styles).toContain("font-family: ui-monospace");
+      for (const token of [
+        "--bg-titlebar",
+        "--bg-sidebar",
+        "--bg-sidebar-header",
+        "--bg-toolbar",
+        "--bg-tree-current",
+        "--bg-tree-selected",
+        "--bg-outline",
+        "--bg-outline-current",
+        "--bg-sidebar-footer",
+        "--border-chrome",
+        "--editor-paper-bg",
+        "--editor-font-family",
+        "--source-editor-font-family"
+      ]) {
+        expect(styles).toContain(token);
+      }
+      expect(styles).not.toContain("@import");
+      expect(styles).not.toMatch(/url\(\s*["']?(?:https?:|\/\/|file:)/u);
+      expect(readFileSync(`${root}/licenses/THEME-LICENSE.txt`, "utf8")).toContain(
+        "independent theme for 轻语"
+      );
+      expect(readFileSync(`${root}/licenses/FONT-LICENSE.txt`, "utf8")).toContain(
+        "SIL OPEN FONT LICENSE Version 1.1"
+      );
+      expect(readFileSync(`${root}/licenses/WEBFONT-LICENSE.txt`, "utf8")).toContain(
+        "Copyright (c) 2022 Chawye Hsu"
+      );
     }
   });
 

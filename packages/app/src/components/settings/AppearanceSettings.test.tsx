@@ -27,6 +27,18 @@ const sepia: ThemeDescriptor = {
   storageKind: "inlineCss"
 };
 
+const wenkaiPaperLight: ThemeDescriptor = {
+  appearance: "light",
+  author: "轻语",
+  fileName: "wenkai-paper-light",
+  fingerprint: "c".repeat(64),
+  id: "wenkai-paper-light",
+  name: "轻语 · 文楷纸白",
+  preview: { accent: "#1c5d33", background: "#ffffff", panel: "#f5f5f5", text: "#202124" },
+  source: "bundled",
+  storageKind: "resourceDirectory"
+};
+
 type ThemeController = ComponentProps<typeof AppearanceSettings>["themeController"];
 
 function createThemeController(overrides: Partial<ThemeController> = {}): ThemeController {
@@ -127,6 +139,26 @@ describe("AppearanceSettings", () => {
 
     await waitFor(() => expect(controller.catalog.deleteTheme).toHaveBeenCalledWith(nord));
     expect(confirm).toHaveBeenCalledWith("Delete theme “Nord”?");
+  });
+
+  it("never offers deletion for bundled WenKai themes", () => {
+    const controller = createThemeController();
+    controller.catalog.lightThemes = [
+      protectedThemeDescriptors[0],
+      wenkaiPaperLight,
+      sepia
+    ];
+    controller.catalog.themes = [
+      ...controller.catalog.lightThemes,
+      ...controller.catalog.darkThemes
+    ];
+
+    render(<AppearanceSettings themeController={controller} translate={translate} />);
+
+    expect(screen.getByRole("radio", { name: "轻语 · 文楷纸白" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Delete theme: 轻语 · 文楷纸白" }))
+      .not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Delete theme: Sepia" })).toBeInTheDocument();
   });
 
   it("keeps refresh and selection on mobile while hiding desktop file actions", () => {

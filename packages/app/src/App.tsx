@@ -35,6 +35,7 @@ import {
 import { NativeTitleBar } from "./components/NativeTitleBar";
 import { QuietStatus } from "./components/QuietStatus";
 import { QuickOpenPanel } from "./components/QuickOpenPanel";
+import { SettingsWindowLoadingShell } from "./components/SettingsWindowLoadingShell";
 import { SideDocumentPane } from "./components/SideDocumentPane";
 import type { SidebarSyncButtonState } from "./components/SidebarSyncButton";
 import { WorkspaceLayout } from "./components/WorkspaceLayout";
@@ -412,7 +413,7 @@ function SettingsRouteApp() {
   }, [handleCloseSettings]);
 
   return (
-    <Suspense fallback={null}>
+    <Suspense fallback={<SettingsWindowLoadingShell onClose={handleCloseSettings} />}>
       <SettingsWindow />
     </Suspense>
   );

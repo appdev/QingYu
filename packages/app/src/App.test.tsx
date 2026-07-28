@@ -5556,7 +5556,8 @@ describe("QingYu workspace", () => {
     const { container } = renderApp();
 
     await waitFor(() => expect(mockedGetStoredLanguage).toHaveBeenCalledTimes(1));
-    expect(container.querySelector(".settings-window")).not.toBeInTheDocument();
+    expect(container.querySelector(".settings-window-loading")).toHaveAttribute("aria-busy", "true");
+    expect(container.querySelectorAll(".settings-loading-shimmer").length).toBeGreaterThan(0);
     expect(mockedMarkSettingsWindowReady).not.toHaveBeenCalled();
 
     act(() => {
@@ -5564,6 +5565,7 @@ describe("QingYu workspace", () => {
     });
 
     expect(await screen.findByRole("button", { name: "Général" })).toBeInTheDocument();
+    expect(container.querySelector(".settings-window-loading")).not.toBeInTheDocument();
     await waitFor(() => expect(mockedMarkSettingsWindowReady).toHaveBeenCalledTimes(1));
   });
 

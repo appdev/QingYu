@@ -45,6 +45,41 @@
   }
 }
 
+@keyframes markra-settings-shimmer {
+  to {
+    transform: translateX(120%);
+  }
+}
+
+.settings-loading-shimmer {
+  position: relative;
+  display: block;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--text-secondary) 18%, var(--bg-secondary));
+}
+
+.settings-loading-shimmer::after {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--text-heading) 12%, transparent),
+    transparent
+  );
+  content: "";
+  transform: translateX(-120%);
+  animation: markra-settings-shimmer 1.45s cubic-bezier(0.16, 1, 0.3, 1) infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .settings-loading-shimmer::after {
+    animation: none;
+    opacity: 0.35;
+    transform: none;
+  }
+}
+
 @media screen {
   .markdown-export-document {
     position: fixed;

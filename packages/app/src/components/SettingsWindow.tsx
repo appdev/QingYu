@@ -31,6 +31,7 @@ import { getAppRuntime } from "../runtime";
 import type { SettingsCategory } from "../hooks/useSettingsWindowState";
 import { requestPrimaryNotebookSwitch } from "../lib/notebook-switch-events";
 import { RemoteNotebookDialog } from "./notebooks/RemoteNotebookDialog";
+import { SettingsWindowLoadingShell } from "./SettingsWindowLoadingShell";
 
 export function SettingsWindow() {
   const settingsState = useSettingsWindowState();
@@ -145,7 +146,7 @@ export function SettingsWindow() {
     markSettingsWindowReady().catch(() => {});
   }, [settingsStartupReady]);
 
-  if (!settingsStartupReady) return null;
+  if (!settingsStartupReady) return <SettingsWindowLoadingShell onClose={handleCloseSettings} />;
 
   return (
     <main
