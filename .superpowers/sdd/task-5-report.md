@@ -495,3 +495,98 @@ passed
 git diff --check
 passed
 ```
+
+---
+
+# Task 5: Dejavu recovery integration automated gates
+
+Date: 2026-07-28
+
+## Scope and environment
+
+- Worktree: `/Volumes/extendData/Data/IdeaProjects/markra/.worktrees/dejavu-full-recovery`
+- Branch: `codex/dejavu-full-recovery`
+- Starting HEAD: `93991841a879cba83e21fb69a6728fcbedd9be95`
+- Validated code HEAD: `df81086c31f2f4c68aff7cd2b64c4f8181e5518a`
+- Node: `v24.18.0`, selected before every JavaScript gate with `eval "$(fnm env --shell zsh)" && fnm use 24.18.0`
+- pnpm: `10.30.3`
+- Rust toolchain: `cargo 1.96.0`, `rustc 1.96.0`
+- `.serena/` remained untracked and was not read, changed, staged, or committed.
+- No credentials, endpoints, or live-server data were used in this task.
+
+The machine-local `~/.cargo/bin/cargo` and `rustc` links resolve through a broken
+`~/.cargo/bin/rustup -> /opt/homebrew/bin/rustup-init` link. The installed stable
+toolchain itself is healthy, and `/opt/homebrew/bin/rustup` resolves it. Rust gates
+therefore used the existing stable toolchain directory on `PATH` without changing
+the repository or machine configuration.
+
+## Gate results
+
+| Gate | Exact command | Result |
+| --- | --- | --- |
+| Install | `pnpm install --frozen-lockfile` | PASS; 11 workspace projects, lockfile up to date, no dependency changes |
+| Rust tests | `cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml` | PASS twice; final run: 1099 passed, 0 failed, 2 ignored; binary and doc tests also passed |
+| Workspace tests | `pnpm test` | PASS after the TDD repair below; 2779 tests passed across all package commands |
+| Test typecheck | `pnpm typecheck:test` | PASS; 10 of 11 workspace projects with test typecheck scripts completed |
+| Build | `pnpm build` | PASS; 10 of 11 workspace projects built and desktop verified 12 vendor chunks |
+| Brand verification | `pnpm brand:verify` | PASS; brand copy verification passed |
+| Dejavu oracle unit | `pnpm test:dejavu-oracle:unit` | PASS; 5 passed, 0 failed |
+
+The final successful `pnpm test` included:
+
+- `packages/scripts`: 64/64
+- `packages/shared`: 73/73
+- `packages/ui`: 22/22
+- `apps/site`: 48/48 Vitest plus 55/55 Node tests
+- `packages/markdown`: 46/46
+- `packages/editor`: 335/335
+- `packages/editor-react`: 6/6
+- `packages/app`: 1861/1861
+- `apps/web`: 45/45
+- `apps/desktop`: 224/224
+
+## Failure investigation and repair
+
+The first unmodified `pnpm test` run under Node 24.18.0 proved that the earlier
+Node 26 `localStorage` failure was environmental and no longer occurred. It found
+one real intermittent failure instead:
+
+- `packages/editor/src/codemirror/block-drag.test.ts`
+- `preserves parsed child-item styling by changing only the moved region`
+- Expected the block move to return `true`, but the selected third block was
+  intermittently `undefined`.
+
+Systematic reproduction established the pattern:
+
+- The original focused file passed 15/15 five consecutive times.
+- The full editor package ran PASS, PASS, then FAIL with the same one failure out
+  of 334 tests.
+- The files were byte-identical to current `main`, so this was not introduced by
+  the Dejavu merge.
+- CodeMirror documents `syntaxTree(state)` as potentially incomplete. Its initial
+  parser state intentionally covers at most the first 3000 characters. The block
+  drag reader treated that partial tree as a complete document tree, so CPU load
+  could hide later blocks even in a short document.
+
+TDD evidence:
+
+1. RED: added a cold editor state whose final list item starts at offset 5890.
+   The old implementation returned its last parsed block at offset 2995, proving
+   the initial parser viewport boundary deterministically.
+2. GREEN: `readCodeMirrorBlockRanges` now asks CodeMirror to ensure a tree through
+   the document end, falling back to the current tree only if the bounded parser
+   cannot complete.
+3. Focused result after the repair: 16/16 passed.
+4. The original `pnpm test` command then passed completely without retries,
+   skips, localStorage flags, or test deletions.
+
+Repair commit: `df81086c31f2f4c68aff7cd2b64c4f8181e5518a`
+
+## Remaining issues
+
+- No repository test, typecheck, build, branding, or oracle-unit issue remains.
+- The broken machine-local `~/.cargo/bin/rustup` link remains an external shell
+  environment issue. The installed Homebrew rustup executable and stable toolchain
+  are usable, so it did not prevent any required gate.
+- Live S3/MinIO, Go oracle/interop, and app UI verification were intentionally not
+  run because they belong to Tasks 6, 7, and 8.
