@@ -3653,6 +3653,10 @@
   background-color: var(--bg-sidebar, var(--theme-sidebar-legacy-surface));
 }
 
+.theme-sidebar-root {
+  font-family: var(--sidebar-font-family, inherit);
+}
+
 .theme-sidebar-header-surface {
   background-color: var(--bg-sidebar-header, var(--bg-sidebar, var(--theme-sidebar-legacy-surface)));
 }
@@ -3690,10 +3694,37 @@
   color: var(--text-tree-current, var(--text-heading));
 }
 
+.theme-tree-row {
+  color: var(--text-tree, var(--text-secondary));
+  font-size: var(--sidebar-tree-font-size, 13px);
+  font-weight: var(--sidebar-tree-font-weight, 400);
+  line-height: var(--sidebar-tree-line-height, 20px);
+}
+
+.theme-tree-label {
+  line-height: inherit;
+}
+
+.theme-tree-input {
+  font: inherit;
+  line-height: 20px;
+}
+
+.theme-tree-row:not([data-file-tree-drop-target="true"]):is(:hover, :focus-visible) {
+  background-color: var(--bg-tree-hover, var(--bg-hover));
+  color: var(--text-tree-hover, var(--text-heading));
+}
+
+.theme-tree-row[data-file-tree-drop-target="true"] {
+  background-color: var(--bg-active);
+  color: var(--text-heading);
+}
+
 .theme-tree-row[aria-current="page"] {
   border-left: 3px solid var(--tree-current-indicator, var(--text-secondary));
   background-color: var(--bg-tree-current, var(--bg-active));
   color: var(--text-tree-current, var(--text-heading));
+  font-weight: var(--sidebar-tree-current-font-weight, var(--sidebar-tree-font-weight, 400));
 }
 
 .theme-tree-row[aria-selected="true"] {
@@ -3702,8 +3733,84 @@
   color: var(--text-tree-selected, var(--text-heading));
 }
 
+.theme-outline-row {
+  min-height: var(--sidebar-outline-row-min-height, 28px);
+}
+
+.theme-outline-row[data-outline-level="1"] {
+  --markra-outline-level-font-size: var(--sidebar-outline-h1-font-size, var(--sidebar-outline-font-size, 13px));
+  --markra-outline-level-font-weight: var(--sidebar-outline-h1-font-weight, var(--sidebar-outline-font-weight, 400));
+  --markra-outline-level-text: var(--sidebar-outline-h1-text, var(--text-outline, var(--text-secondary)));
+  margin-block-start: var(--sidebar-outline-h1-space-before, 0px);
+}
+
+.theme-outline-row[data-outline-level="2"] {
+  --markra-outline-level-font-size: var(--sidebar-outline-h2-font-size, var(--sidebar-outline-font-size, 13px));
+  --markra-outline-level-font-weight: var(--sidebar-outline-h2-font-weight, var(--sidebar-outline-font-weight, 400));
+  --markra-outline-level-text: var(--sidebar-outline-h2-text, var(--text-outline, var(--text-secondary)));
+  margin-block-start: var(--sidebar-outline-h2-space-before, 0px);
+}
+
+.theme-outline-row[data-outline-level="3"] {
+  --markra-outline-level-font-size: var(--sidebar-outline-h3-font-size, var(--sidebar-outline-font-size, 13px));
+  --markra-outline-level-font-weight: var(--sidebar-outline-h3-font-weight, var(--sidebar-outline-font-weight, 400));
+  --markra-outline-level-text: var(--sidebar-outline-h3-text, var(--text-outline, var(--text-secondary)));
+  margin-block-start: var(--sidebar-outline-h3-space-before, 0px);
+}
+
+.theme-outline-row[data-outline-level="4"] {
+  --markra-outline-level-font-size: var(--sidebar-outline-h4-font-size, var(--sidebar-outline-font-size, 13px));
+  --markra-outline-level-font-weight: var(--sidebar-outline-h4-font-weight, var(--sidebar-outline-font-weight, 400));
+  --markra-outline-level-text: var(--sidebar-outline-h4-text, var(--text-outline, var(--text-secondary)));
+  margin-block-start: var(--sidebar-outline-h4-space-before, 0px);
+}
+
+.theme-outline-row[data-outline-level="5"] {
+  --markra-outline-level-font-size: var(--sidebar-outline-h5-font-size, var(--sidebar-outline-font-size, 13px));
+  --markra-outline-level-font-weight: var(--sidebar-outline-h5-font-weight, var(--sidebar-outline-font-weight, 400));
+  --markra-outline-level-text: var(--sidebar-outline-h5-text, var(--text-outline, var(--text-secondary)));
+  margin-block-start: var(--sidebar-outline-h5-space-before, 0px);
+}
+
+.theme-outline-row[data-outline-level="6"] {
+  --markra-outline-level-font-size: var(--sidebar-outline-h6-font-size, var(--sidebar-outline-font-size, 13px));
+  --markra-outline-level-font-weight: var(--sidebar-outline-h6-font-weight, var(--sidebar-outline-font-weight, 400));
+  --markra-outline-level-text: var(--sidebar-outline-h6-text, var(--text-outline, var(--text-secondary)));
+  margin-block-start: var(--sidebar-outline-h6-space-before, 0px);
+}
+
+.markdown-file-tree-outline-list > li:first-child > .theme-outline-row {
+  margin-block-start: 0;
+}
+
+.theme-outline-item {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: var(--sidebar-outline-max-lines, 1);
+  padding-block: 4px;
+  color: var(--markra-outline-level-text, var(--text-outline, var(--text-secondary)));
+  font-size: var(--markra-outline-level-font-size, var(--sidebar-outline-font-size, 13px));
+  font-weight: var(--markra-outline-level-font-weight, var(--sidebar-outline-font-weight, 400));
+  line-height: var(--sidebar-outline-line-height, 20px);
+  white-space: normal;
+}
+
+.theme-outline-item:is(:hover, :focus-visible) {
+  background-color: var(--bg-outline-hover, var(--bg-hover));
+  color: var(--text-outline-hover, var(--text-heading));
+}
+
 .theme-outline-item[aria-current="location"] {
   background-color: var(--bg-outline-current, var(--bg-active));
   color: var(--text-outline-current, var(--text-heading));
-  font-weight: 620;
+  font-weight: var(--sidebar-outline-current-font-weight, 620);
+}
+
+.theme-outline-item :where(strong, em, code, mark, .markra-outline-title-math) {
+  color: inherit;
+}
+
+.theme-outline-item[aria-current="location"] strong {
+  font-weight: inherit;
 }

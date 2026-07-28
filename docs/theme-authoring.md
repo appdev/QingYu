@@ -199,6 +199,31 @@ Themes should set the following application-chrome variables on their ID-scoped 
 | `--bg-outline-current` | `--bg-active` |
 | `--text-outline-current` | `--text-heading` |
 
+Sidebar typography and outline rhythm are also optional. They are consumed by APP-owned semantic classes, so themes can adapt the sidebar without targeting its internal component selectors. When omitted, these variables preserve QingYu's current compact sidebar behavior.
+
+| Variable | Fallback |
+| --- | --- |
+| `--sidebar-font-family` | Inherit the active theme's root/application font |
+| `--sidebar-tree-font-size` | `13px` |
+| `--sidebar-tree-font-weight` | `400` |
+| `--sidebar-tree-line-height` | `20px` |
+| `--text-tree` | `--text-secondary` |
+| `--bg-tree-hover` | `--bg-hover` |
+| `--text-tree-hover` | `--text-heading` |
+| `--sidebar-tree-current-font-weight` | `--sidebar-tree-font-weight`, then `400` |
+| `--sidebar-outline-font-size` | `13px` |
+| `--sidebar-outline-font-weight` | `400` |
+| `--sidebar-outline-line-height` | `20px` |
+| `--sidebar-outline-row-min-height` | `28px` |
+| `--sidebar-outline-max-lines` | `1` |
+| `--text-outline` | `--text-secondary` |
+| `--bg-outline-hover` | `--bg-hover` |
+| `--text-outline-hover` | `--text-heading` |
+| `--sidebar-outline-current-font-weight` | `620` |
+| `--sidebar-outline-h1-*` through `--sidebar-outline-h6-*` | The common outline value, with `0px` for spacing |
+
+Each per-level outline prefix supports `font-size`, `font-weight`, `text`, and `space-before`, for example `--sidebar-outline-h2-font-weight` and `--sidebar-outline-h2-space-before`. The first visible outline row never receives extra leading space. `--sidebar-outline-max-lines` controls APP-owned line clamping; use a small positive integer such as `1` or `2`.
+
 Application variables:
 
 - backgrounds: `--bg-primary`, `--bg-secondary`, `--bg-chrome`, `--bg-code`, `--bg-hover`, `--bg-active`;

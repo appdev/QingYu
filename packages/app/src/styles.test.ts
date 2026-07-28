@@ -83,13 +83,36 @@ const expectedThemeDeclarations = {
     "--bg-outline: #f8f8f8;",
     "--bg-sidebar-footer: #f8f8f8;",
     "--border-chrome: #dfe2e5;",
+    "--sidebar-font-family: \"JetBrains Mono\", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;",
+    "--sidebar-tree-font-size: 15.4px;",
+    "--sidebar-tree-font-weight: 400;",
+    "--sidebar-tree-line-height: 1.6;",
+    "--text-tree: #333333;",
+    "--bg-tree-hover: #E5E5E596;",
+    "--text-tree-hover: #333333;",
+    "--sidebar-tree-current-font-weight: 400;",
+    "--sidebar-outline-font-size: 14px;",
+    "--sidebar-outline-font-weight: 400;",
+    "--sidebar-outline-line-height: 1.6;",
+    "--sidebar-outline-row-min-height: 28px;",
+    "--sidebar-outline-max-lines: 2;",
+    "--text-outline: #333333;",
+    "--bg-outline-hover: #E5E5E596;",
+    "--text-outline-hover: #333333;",
+    "--sidebar-outline-current-font-weight: 500;",
+    "--sidebar-outline-h1-font-weight: 600;",
+    "--sidebar-outline-h1-text: #273849;",
+    "--sidebar-outline-h1-space-before: 8px;",
+    "--sidebar-outline-h2-font-weight: 600;",
+    "--sidebar-outline-h2-text: #273849;",
+    "--sidebar-outline-h2-space-before: 6px;",
     "--bg-tree-current: #E5E5E596;",
     "--text-tree-current: #273849;",
     "--tree-current-indicator: #e95f59;",
     "--bg-tree-selected: #fdefee;",
     "--text-tree-selected: #273849;",
     "--tree-selected-indicator: #e95f59;",
-    "--bg-outline-current: #E5E5E596;",
+    "--bg-outline-current: transparent;",
     "--text-outline-current: #d63200;",
     "--text-primary: #333333;",
     "--text-heading: #273849;",
@@ -143,13 +166,36 @@ const expectedThemeDeclarations = {
     "--bg-outline: #20242f;",
     "--bg-sidebar-footer: #1a1e29;",
     "--border-chrome: #111520;",
+    "--sidebar-font-family: \"JetBrains Mono\", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;",
+    "--sidebar-tree-font-size: 15.4px;",
+    "--sidebar-tree-font-weight: 400;",
+    "--sidebar-tree-line-height: 1.6;",
+    "--text-tree: #b0b1ac;",
+    "--bg-tree-hover: #151924;",
+    "--text-tree-hover: #b0b1ac;",
+    "--sidebar-tree-current-font-weight: 400;",
+    "--sidebar-outline-font-size: 14px;",
+    "--sidebar-outline-font-weight: 400;",
+    "--sidebar-outline-line-height: 1.6;",
+    "--sidebar-outline-row-min-height: 28px;",
+    "--sidebar-outline-max-lines: 2;",
+    "--text-outline: #b0b1ac;",
+    "--bg-outline-hover: #151924;",
+    "--text-outline-hover: #b0b1ac;",
+    "--sidebar-outline-current-font-weight: 500;",
+    "--sidebar-outline-h1-font-weight: 600;",
+    "--sidebar-outline-h1-text: #cbcdbf;",
+    "--sidebar-outline-h1-space-before: 8px;",
+    "--sidebar-outline-h2-font-weight: 600;",
+    "--sidebar-outline-h2-text: #cbcdbf;",
+    "--sidebar-outline-h2-space-before: 6px;",
     "--bg-tree-current: #151924;",
     "--text-tree-current: #cbcdbf;",
     "--tree-current-indicator: #fcc65c;",
     "--bg-tree-selected: #3473B068;",
     "--text-tree-selected: #cbcdbf;",
     "--tree-selected-indicator: #fcc65c;",
-    "--bg-outline-current: #151924;",
+    "--bg-outline-current: transparent;",
     "--text-outline-current: #ffcc66;",
     "--text-primary: #b0b1ac;",
     "--text-heading: #cbcdbf;",
@@ -1672,6 +1718,56 @@ describe("editor stylesheet", () => {
     expect(styles).toContain("var(--tree-selected-indicator, var(--accent))");
     expect(styles).toContain("var(--bg-outline-current, var(--bg-active))");
     expect(styles).toContain("var(--text-outline-current, var(--text-heading))");
+  });
+
+  it("exposes P0 sidebar typography, state, wrapping, and outline-level fallbacks", () => {
+    const styles = readFileSync(`${process.cwd()}/src/styles.css`, "utf8");
+
+    const sidebarRule = readRuleDeclarations(styles, ".theme-sidebar-root");
+    const treeRule = readRuleDeclarations(styles, ".theme-tree-row");
+    const outlineRowRule = readRuleDeclarations(styles, ".theme-outline-row");
+    const outlineRule = readRuleDeclarations(styles, ".theme-outline-item");
+    const outlineInlineRule = readRuleDeclarations(
+      styles,
+      ".theme-outline-item :where(strong, em, code, mark, .markra-outline-title-math)"
+    );
+    const outlineCurrentRule = readRuleDeclarations(
+      styles,
+      '.theme-outline-item[aria-current="location"]'
+    );
+
+    expect(sidebarRule).toContain("font-family: var(--sidebar-font-family, inherit);");
+    expect(treeRule).toContain("color: var(--text-tree, var(--text-secondary));");
+    expect(treeRule).toContain("font-size: var(--sidebar-tree-font-size, 13px);");
+    expect(treeRule).toContain("font-weight: var(--sidebar-tree-font-weight, 400);");
+    expect(treeRule).toContain("line-height: var(--sidebar-tree-line-height, 20px);");
+    expect(styles).toContain("var(--bg-tree-hover, var(--bg-hover))");
+    expect(styles).toContain("var(--text-tree-hover, var(--text-heading))");
+    expect(styles).toContain("var(--sidebar-tree-current-font-weight, var(--sidebar-tree-font-weight, 400))");
+    expect(outlineRowRule).toContain("min-height: var(--sidebar-outline-row-min-height, 28px);");
+    expect(outlineRule).toContain(
+      "color: var(--markra-outline-level-text, var(--text-outline, var(--text-secondary)));"
+    );
+    expect(outlineRule).toContain(
+      "font-size: var(--markra-outline-level-font-size, var(--sidebar-outline-font-size, 13px));"
+    );
+    expect(outlineRule).toContain(
+      "font-weight: var(--markra-outline-level-font-weight, var(--sidebar-outline-font-weight, 400));"
+    );
+    expect(outlineRule).toContain("line-height: var(--sidebar-outline-line-height, 20px);");
+    expect(outlineRule).toContain("-webkit-line-clamp: var(--sidebar-outline-max-lines, 1);");
+    expect(outlineInlineRule).toContain("color: inherit;");
+    expect(styles).toContain("var(--bg-outline-hover, var(--bg-hover))");
+    expect(styles).toContain("var(--text-outline-hover, var(--text-heading))");
+    expect(outlineCurrentRule).toContain("font-weight: var(--sidebar-outline-current-font-weight, 620);");
+
+    for (const level of [1, 2, 3, 4, 5, 6]) {
+      expect(styles).toContain(`.theme-outline-row[data-outline-level="${level}"]`);
+      expect(styles).toContain(`--sidebar-outline-h${level}-font-size`);
+      expect(styles).toContain(`--sidebar-outline-h${level}-font-weight`);
+      expect(styles).toContain(`--sidebar-outline-h${level}-text`);
+      expect(styles).toContain(`--sidebar-outline-h${level}-space-before`);
+    }
   });
 
   it("keeps semantic chrome focus and resizer interaction states above layered utilities", () => {

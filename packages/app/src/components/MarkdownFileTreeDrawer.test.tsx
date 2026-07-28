@@ -283,6 +283,7 @@ describe("MarkdownFileTreeDrawer", () => {
     );
 
     expect(container.querySelector(".markdown-file-tree")).toHaveClass(
+      "theme-sidebar-root",
       "theme-sidebar-legacy-secondary",
       "theme-sidebar-surface",
       "theme-chrome-border"
@@ -332,6 +333,7 @@ describe("MarkdownFileTreeDrawer", () => {
       "theme-chrome-divider-control"
     );
     fireEvent.click(screen.getByRole("button", { name: "deploy" }));
+    expect(screen.getByRole("button", { name: "deploy" })).toHaveClass("theme-tree-row");
     expect(container.querySelector("ol.border-l")).toHaveClass("theme-chrome-border");
   });
 
@@ -378,14 +380,15 @@ describe("MarkdownFileTreeDrawer", () => {
     expect(screen.queryByText("Outline")).not.toBeInTheDocument();
   });
 
-  it("uses safe line height for truncated compact labels", () => {
+  it("exposes outline levels and leaves label wrapping to the sidebar theme contract", () => {
     const { container } = render(
       <MarkdownFileTreeDrawer
         currentPath="/vault/Untitled.md"
         files={markdownFiles}
         open
         outlineItems={[
-          { level: 1, title: "plugin gap" }
+          { level: 1, title: "plugin gap" },
+          { level: 2, title: "theme contract" }
         ]}
         rootName="Obsidian Vault"
         onOpenFile={() => {}}
@@ -396,10 +399,14 @@ describe("MarkdownFileTreeDrawer", () => {
     const fileButton = screen.getByRole("button", { name: "Untitled.md" });
     const folderButton = screen.getByRole("button", { name: "deploy" });
     const outlineButton = screen.getByRole("button", { name: "plugin gap" });
+    const outlineRows = container.querySelectorAll(".theme-outline-row");
 
-    expect(within(fileButton).getByText("Untitled.md")).toHaveClass("truncate", "leading-5");
-    expect(within(folderButton).getByText("deploy")).toHaveClass("truncate", "leading-5");
-    expect(outlineButton).toHaveClass("truncate", "leading-5");
+    expect(within(fileButton).getByText("Untitled.md")).toHaveClass("truncate", "theme-tree-label");
+    expect(within(folderButton).getByText("deploy")).toHaveClass("truncate", "theme-tree-label");
+    expect(outlineRows).toHaveLength(2);
+    expect(outlineRows[0]).toHaveAttribute("data-outline-level", "1");
+    expect(outlineRows[1]).toHaveAttribute("data-outline-level", "2");
+    expect(outlineButton).not.toHaveClass("truncate", "h-7");
     expect(outlineButton).not.toHaveClass("leading-none");
   });
 
@@ -467,7 +474,9 @@ describe("MarkdownFileTreeDrawer", () => {
     expect(outlineList).toHaveClass("markdown-file-tree-outline-list", "px-2", "py-1");
     expect(outlineList).toHaveTextContent("Intro");
     expect(outlineList).toHaveTextContent("Details");
-    expect(screen.getByRole("button", { name: "Intro" })).toHaveClass("h-7");
+    const introOutlineButton = screen.getByRole("button", { name: "Intro" });
+    expect(introOutlineButton).not.toHaveClass("h-7");
+    expect(introOutlineButton.closest(".theme-outline-row")).toHaveAttribute("data-outline-level", "1");
     expect(screen.getAllByText("Outline")).toHaveLength(1);
     expect(screen.getByRole("button", { name: "Collapse outline headings" })).toHaveClass("ml-auto");
     expect(container.querySelector(".markdown-file-tree-outline")).toHaveClass("flex-1");
@@ -2381,6 +2390,8 @@ describe("MarkdownFileTreeDrawer", () => {
     fireEvent.click(screen.getByRole("button", { name: "New" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "New file" }));
     const newFileInput = screen.getByRole("textbox", { name: "New file name" });
+    expect(newFileInput).toHaveClass("theme-tree-input");
+    expect(newFileInput.parentElement).toHaveClass("theme-tree-row");
     fireEvent.change(newFileInput, { target: { value: "Daily note" } });
     fireEvent.keyDown(newFileInput, { key: "Enter" });
 
@@ -2393,6 +2404,8 @@ describe("MarkdownFileTreeDrawer", () => {
     });
 
     const renameInput = screen.getByRole("textbox", { name: "Rename file" });
+    expect(renameInput).toHaveClass("theme-tree-input");
+    expect(renameInput.parentElement).toHaveClass("theme-tree-row");
     fireEvent.change(renameInput, { target: { value: "Renamed.md" } });
     fireEvent.keyDown(renameInput, { key: "Enter" });
 
@@ -3969,8 +3982,10 @@ describe("MarkdownFileTreeDrawer", () => {
 
     expect(boldTitle.tagName).toBe("STRONG");
     expect(boldTitle).toHaveClass("font-[760]");
+    expect(boldTitle).not.toHaveClass("text-(--text-heading)");
     expect(italicTitle.tagName).toBe("EM");
     expect(italicTitle).toHaveClass("italic");
+    expect(italicTitle).not.toHaveClass("text-(--text-primary)");
     expect(italicTitle.getAttribute("style")).toContain("font-style: italic");
     expect(italicTitle.getAttribute("style")).toContain("font-synthesis: style");
     expect(deletedTitle.tagName).toBe("DEL");
@@ -4001,7 +4016,9 @@ describe("MarkdownFileTreeDrawer", () => {
 
     expect(highlightedTitle.tagName).toBe("MARK");
     expect(highlightedTitle).toHaveClass("bg-(--accent-soft)");
+    expect(highlightedTitle).not.toHaveClass("text-(--text-heading)");
     expect(mathTitle).toHaveClass("markra-outline-title-math");
+    expect(mathTitle).not.toHaveClass("text-(--text-heading)");
   });
 
   it("keeps links and images as plain outline title text", () => {

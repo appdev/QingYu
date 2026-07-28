@@ -233,36 +233,36 @@ const fileTreeDropListTargetClassName = "rounded-sm bg-(--bg-active)";
 const sidebarPanelTabBaseClassName = "relative -mb-px h-10 cursor-pointer border-0 border-b border-transparent bg-transparent px-2 text-[13px] leading-none font-[560] transition-colors duration-150 ease-out focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-(--accent)";
 const sidebarPanelTabActiveClassName = "border-(--text-secondary) text-(--text-heading)";
 const sidebarPanelTabInactiveClassName = "text-(--text-secondary) hover:text-(--text-heading)";
-const outlineButtonBaseClassName = "theme-outline-item h-7 min-w-0 cursor-pointer truncate rounded-sm border-0 bg-transparent px-1 text-left text-[13px] leading-5 text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-heading) focus-visible:bg-(--bg-hover) focus-visible:text-(--text-heading) focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-(--accent)";
+const outlineButtonBaseClassName = "theme-outline-item min-w-0 cursor-pointer rounded-sm border-0 bg-transparent px-1 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-(--accent)";
 const outlineTitleMarkdownPlugins = [remarkGfm, remarkMath, markraHighlightRemarkPlugin];
 const outlineTitleMarkdownComponents = {
   a: ({ children }) => <>{children}</>,
   code: ({ children, className }) => {
     const isMath = typeof className === "string" && className.split(/\s+/u).includes("math-inline");
     if (isMath) {
-      return <span className="markra-outline-title-math font-mono text-[0.92em] text-(--text-heading)">{children}</span>;
+      return <span className="markra-outline-title-math font-mono text-[0.92em]">{children}</span>;
     }
 
     return (
-      <code className="rounded-sm bg-(--bg-active) px-0.75 py-px font-mono text-[0.92em] text-(--text-heading)">
+      <code className="rounded-sm bg-(--bg-active) px-0.75 py-px font-mono text-[0.92em]">
         {children}
       </code>
     );
   },
   del: ({ children }) => <del className="line-through decoration-(--text-tertiary) decoration-1">{children}</del>,
   em: ({ children }) => (
-    <em className="italic text-(--text-primary)" style={{ fontStyle: "italic", fontSynthesis: "style" }}>
+    <em className="italic" style={{ fontStyle: "italic", fontSynthesis: "style" }}>
       {children}
     </em>
   ),
   img: ({ alt }) => <>{alt}</>,
   mark: ({ children }) => (
-    <mark className="rounded-sm bg-(--accent-soft) px-0.5 text-(--text-heading)">
+    <mark className="rounded-sm bg-(--accent-soft) px-0.5">
       {children}
     </mark>
   ),
   p: ({ children }) => <>{children}</>,
-  strong: ({ children }) => <strong className="font-[760] text-(--text-heading)">{children}</strong>
+  strong: ({ children }) => <strong className="font-[760]">{children}</strong>
 } satisfies Components;
 
 function sidebarPanelTabClassName(selected: boolean) {
@@ -1794,14 +1794,14 @@ export function MarkdownFileTreeDrawer({
     if (createType === "file") {
       return (
         <div
-          className={`relative grid h-8 ${creatingTemplate ? "grid-cols-[17px_minmax(0,1fr)_auto]" : "grid-cols-[17px_minmax(0,1fr)]"} items-center gap-1.5 py-0 pr-2 text-[13px] leading-none text-(--text-secondary) ${rowIndentClass} ${rowBranchClass}`}
+          className={`theme-tree-row relative grid h-8 ${creatingTemplate ? "grid-cols-[17px_minmax(0,1fr)_auto]" : "grid-cols-[17px_minmax(0,1fr)]"} items-center gap-1.5 py-0 pr-2 ${rowIndentClass} ${rowBranchClass}`}
           style={rowIndentStyle}
         >
           <FileText aria-hidden="true" className="shrink-0" size={15} />
           <input
             aria-label={label("app.newMarkdownFileName")}
             autoFocus
-            className="h-6 min-w-0 rounded-md border border-(--accent) bg-(--bg-primary) px-1.5 text-[13px] leading-5 text-(--text-primary) outline-none"
+            className="theme-tree-input h-6 min-w-0 rounded-md border border-(--accent) bg-(--bg-primary) px-1.5 text-(--text-primary) outline-none"
             ref={selectPrefilledFileNameInput}
             type="text"
             value={newFileName}
@@ -1836,14 +1836,14 @@ export function MarkdownFileTreeDrawer({
 
     return (
       <div
-        className={`relative grid h-8 grid-cols-[17px_minmax(0,1fr)] items-center gap-1.5 py-0 pr-2 text-[13px] leading-none text-(--text-secondary) ${rowIndentClass} ${rowBranchClass}`}
+        className={`theme-tree-row relative grid h-8 grid-cols-[17px_minmax(0,1fr)] items-center gap-1.5 py-0 pr-2 ${rowIndentClass} ${rowBranchClass}`}
         style={rowIndentStyle}
       >
         <Folder aria-hidden="true" className="shrink-0" size={15} />
         <input
           aria-label={label("app.newMarkdownFolderName")}
           autoFocus
-          className="h-6 min-w-0 rounded-md border border-(--accent) bg-(--bg-primary) px-1.5 text-[13px] leading-5 text-(--text-primary) outline-none"
+          className="theme-tree-input h-6 min-w-0 rounded-md border border-(--accent) bg-(--bg-primary) px-1.5 text-(--text-primary) outline-none"
           type="text"
           value={newFolderName}
           placeholder={label("app.newMarkdownFolder")}
@@ -1912,7 +1912,7 @@ export function MarkdownFileTreeDrawer({
 
     return (
       <div
-        className={`relative grid h-8 w-full items-center py-0 pr-2 text-[13px] leading-none text-(--text-secondary) ${folder ? "grid-cols-[13px_16px_minmax(0,1fr)] gap-1" : "grid-cols-[17px_minmax(0,1fr)] gap-1.5"} ${rowIndentClass} ${rowBranchClass}`}
+        className={`theme-tree-row relative grid h-8 w-full items-center py-0 pr-2 ${folder ? "grid-cols-[13px_16px_minmax(0,1fr)] gap-1" : "grid-cols-[17px_minmax(0,1fr)] gap-1.5"} ${rowIndentClass} ${rowBranchClass}`}
         style={rowIndentStyle}
       >
         {folder ? <span aria-hidden="true" /> : null}
@@ -1920,7 +1920,7 @@ export function MarkdownFileTreeDrawer({
         <input
           aria-label={folder ? label("app.renameMarkdownFolder") : label("app.renameMarkdownFile")}
           autoFocus
-          className="h-6 min-w-0 rounded-md border border-(--accent) bg-(--bg-primary) px-1.5 text-[13px] leading-5 text-(--text-primary) outline-none"
+          className="theme-tree-input h-6 min-w-0 rounded-md border border-(--accent) bg-(--bg-primary) px-1.5 text-(--text-primary) outline-none"
           ref={folder ? selectAllPrefilledFileTreeInput : selectPrefilledFileNameInput}
           type="text"
           value={renameFileName}
@@ -1976,10 +1976,11 @@ export function MarkdownFileTreeDrawer({
                   dropTargetProps.setNodeRef,
                   dragSource.setNodeRef
                 )}
-                className={`relative flex h-8 w-full cursor-pointer touch-none items-center gap-1 border-0 py-0 pr-2 text-left text-[13px] leading-none text-(--text-secondary) focus-visible:outline-none ${folderRowStateClassName} ${dragSource.isDragging ? "opacity-70" : ""} ${fileTreeContextRowSelectionClassName} ${rowIndentClass} ${rowBranchClass}`}
+                className={`theme-tree-row relative flex h-8 w-full cursor-pointer touch-none items-center gap-1 border-0 py-0 pr-2 text-left focus-visible:outline-none ${folderRowStateClassName} ${dragSource.isDragging ? "opacity-70" : ""} ${fileTreeContextRowSelectionClassName} ${rowIndentClass} ${rowBranchClass}`}
                 style={rowIndentStyle}
                 type="button"
                 aria-expanded={expanded}
+                data-file-tree-drop-target={dropTarget ? "true" : undefined}
                 onContextMenu={(event) => openContextMenu(event, folderFile, node.path)}
                 onClick={() => {
                   finishFileTreeInputsBeforeRowNavigation();
@@ -1996,7 +1997,7 @@ export function MarkdownFileTreeDrawer({
                   <ChevronRight aria-hidden="true" className="shrink-0" size={13} />
                 )}
                 <Folder aria-hidden="true" className="shrink-0" size={16} />
-                <span className="min-w-0 truncate leading-5">
+                <span className="theme-tree-label min-w-0 truncate">
                   {node.name}
                 </span>
               </button>
@@ -2155,7 +2156,7 @@ export function MarkdownFileTreeDrawer({
           <Tooltip content={node.file.path}>
           <button
             ref={dragSource.setNodeRef}
-            className={`theme-tree-current-surface theme-tree-row relative grid h-8 w-full cursor-pointer touch-none grid-cols-[17px_minmax(0,1fr)] items-center gap-1.5 border-0 bg-transparent py-0 pr-2 text-left text-[13px] leading-none text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-heading) focus-visible:bg-(--bg-hover) focus-visible:text-(--text-heading) focus-visible:outline-none ${dragSource.isDragging ? "opacity-70" : ""} ${fileTreeContextRowSelectionClassName} ${rowIndentClass} ${rowBranchClass}`}
+            className={`theme-tree-current-surface theme-tree-row relative grid h-8 w-full cursor-pointer touch-none grid-cols-[17px_minmax(0,1fr)] items-center gap-1.5 border-0 bg-transparent py-0 pr-2 text-left focus-visible:outline-none ${dragSource.isDragging ? "opacity-70" : ""} ${fileTreeContextRowSelectionClassName} ${rowIndentClass} ${rowBranchClass}`}
             style={rowIndentStyle}
             type="button"
             aria-current={active ? "page" : undefined}
@@ -2175,7 +2176,7 @@ export function MarkdownFileTreeDrawer({
             onKeyDown={(event) => handleFileTreeRowDeleteKey(event, node.file)}
           >
             <FileIcon aria-hidden="true" className="shrink-0" size={15} />
-            <span className="min-w-0 truncate leading-5">
+            <span className="theme-tree-label min-w-0 truncate">
               {node.name}
             </span>
           </button>
@@ -2285,7 +2286,8 @@ export function MarkdownFileTreeDrawer({
           return (
             <li key={key}>
               <div
-                className="grid h-7 w-full grid-cols-[24px_minmax(0,1fr)] items-center gap-1 py-0 pr-1 text-[13px] leading-none"
+                className="theme-outline-row grid w-full grid-cols-[24px_minmax(0,1fr)] items-center gap-1 py-0 pr-1"
+                data-outline-level={item.level}
                 style={{ paddingLeft: `${outlineIndent}px` }}
               >
                 {hasChildren ? (
@@ -2659,7 +2661,7 @@ export function MarkdownFileTreeDrawer({
       ) : null}
 
       <aside
-        className={`markdown-file-tree relative flex h-full min-h-0 w-full flex-col overflow-hidden border-r theme-chrome-border ${fileTreeSurfaceClassName} ${drawerTopPaddingClassName} will-change-[width,min-width,max-width] ${drawerWidthTransitionClassName} ${drawerStateClass}`}
+        className={`markdown-file-tree theme-sidebar-root relative flex h-full min-h-0 w-full flex-col overflow-hidden border-r theme-chrome-border ${fileTreeSurfaceClassName} ${drawerTopPaddingClassName} will-change-[width,min-width,max-width] ${drawerWidthTransitionClassName} ${drawerStateClass}`}
         aria-label={label("app.markdownFileTree")}
         aria-hidden={!open}
         inert={!open}
