@@ -45,8 +45,7 @@ import {
   Search,
   Settings,
   TableOfContents,
-  Trash2,
-  X
+  Trash2
 } from "lucide-react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -66,7 +65,7 @@ import type { NativeMarkdownFolderFile } from "../lib/tauri";
 import { normalizeMovedPath, sameNativePath } from "../lib/path-move";
 import { readNativeClipboardText, showNativeMarkdownFileTreeContextMenu } from "../lib/tauri";
 import { resolveDesktopPlatform, type DesktopPlatform } from "../lib/platform";
-import type { RecentMarkdownFolder, SidebarLayoutMode } from "../lib/settings/app-settings";
+import type { SidebarLayoutMode } from "../lib/settings/app-settings";
 import {
   workspaceBacklinksForPath,
   workspaceUnlinkedMentionsForPath,
@@ -153,9 +152,6 @@ type MarkdownFileTreeDrawerProps = {
   outlineItems: MarkdownOutlineItem[];
   outlineVisible?: boolean;
   platform?: DesktopPlatform;
-  recentFolders?: readonly RecentMarkdownFolder[];
-  recentFoldersOpen?: boolean;
-  recentFoldersVisible?: boolean;
   revealPathRequest?: { id: number; path: string | null } | null;
   resizing?: boolean;
   rootPath?: string | null;
@@ -182,12 +178,9 @@ type MarkdownFileTreeDrawerProps = {
   onOpenContainingFolder?: (path: string) => unknown | Promise<unknown>;
   onOpenFileToSide?: (file: NativeMarkdownFolderFile) => unknown | Promise<unknown>;
   onOpenFolder?: () => unknown | Promise<unknown>;
-  onOpenRecentFolder?: (folder: RecentMarkdownFolder) => unknown | Promise<unknown>;
   onOpenSettings?: () => unknown | Promise<unknown>;
   onSyncNow?: () => unknown | Promise<unknown>;
   onInstallAvailableUpdate?: () => unknown | Promise<unknown>;
-  onRecentFoldersOpenChange?: (open: boolean) => unknown;
-  onRemoveRecentFolder?: (folder: RecentMarkdownFolder) => unknown | Promise<unknown>;
   onMoveFile?: (file: NativeMarkdownFolderFile, targetParentPath: string | null) => unknown | Promise<unknown>;
   onRenameFile?: (file: NativeMarkdownFolderFile, fileName: string) => unknown | Promise<unknown>;
   onResize?: (width: number) => unknown;
@@ -231,7 +224,6 @@ function cancelFileTreeAnimationFrame(handle: number) {
   cancel(handle);
 }
 const documentLinksResizeKeyboardStepPercent = 5;
-const recentFolderPathDisplayMaxLength = 48;
 const fileTreeContextRowSelectionClassName = "select-none [-webkit-user-select:none]";
 const fileTreeDropTargetClassName = "bg-(--bg-active) text-(--text-heading)";
 const fileTreeDropListTargetClassName = "rounded-sm bg-(--bg-active)";
@@ -271,42 +263,6 @@ const outlineTitleMarkdownComponents = {
 
 function sidebarPanelTabClassName(selected: boolean) {
   return `${sidebarPanelTabBaseClassName} ${selected ? sidebarPanelTabActiveClassName : sidebarPanelTabInactiveClassName}`;
-}
-
-function recentFolderNameKey(folder: RecentMarkdownFolder) {
-  return folder.name.trim().toLocaleLowerCase();
-}
-
-function duplicateRecentFolderNameKeys(folders: readonly RecentMarkdownFolder[]) {
-  const counts = new Map<string, number>();
-
-  folders.forEach((folder) => {
-    const key = recentFolderNameKey(folder);
-    counts.set(key, (counts.get(key) ?? 0) + 1);
-  });
-
-  return new Set(Array.from(counts.entries()).filter(([, count]) => count > 1).map(([key]) => key));
-}
-
-function compactRecentFolderPath(path: string, maxLength = recentFolderPathDisplayMaxLength) {
-  if (path.length <= maxLength) return path;
-
-  const separator = path.includes("\\") && !path.includes("/") ? "\\" : "/";
-  const hasLeadingSeparator = path.startsWith("/") || path.startsWith("\\");
-  const segments = path.split(/[\\/]/u).filter(Boolean);
-
-  if (segments.length >= 4) {
-    const leadingPath = segments.slice(0, 2).join(separator);
-    const trailingPath = segments.slice(-2).join(separator);
-    const candidate = `${hasLeadingSeparator ? separator : ""}${leadingPath}${separator}...${separator}${trailingPath}`;
-    if (candidate.length <= maxLength) return candidate;
-  }
-
-  const remainingLength = Math.max(2, maxLength - 3);
-  const leadingLength = Math.ceil(remainingLength / 2);
-  const trailingLength = Math.floor(remainingLength / 2);
-
-  return `${path.slice(0, leadingLength)}...${path.slice(-trailingLength)}`;
 }
 
 function OutlineTitle({ item }: { item: MarkdownOutlineItem }) {
@@ -472,9 +428,6 @@ export function MarkdownFileTreeDrawer({
   outlineItems,
   outlineVisible = true,
   platform = resolveDesktopPlatform(),
-  recentFolders = [],
-  recentFoldersOpen: controlledRecentFoldersOpen,
-  recentFoldersVisible = true,
   revealPathRequest = null,
   resizing = false,
   rootPath = null,
@@ -495,12 +448,9 @@ export function MarkdownFileTreeDrawer({
   onOpenContainingFolder,
   onOpenFileToSide,
   onOpenFolder,
-  onOpenRecentFolder,
   onOpenSettings = () => {},
   onSyncNow,
   onInstallAvailableUpdate,
-  onRecentFoldersOpenChange,
-  onRemoveRecentFolder,
   onMoveFile,
   onRenameFile,
   onResize,
@@ -527,11 +477,8 @@ export function MarkdownFileTreeDrawer({
   const pendingFileTreeScrollOffsetRef = useRef(fileTreeScrollOffset);
   const fileTreeScrollAnimationFrameRef = useRef<number | null>(null);
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(() => new Set());
-  const [hoveredRecentFolderPath, setHoveredRecentFolderPath] = useState<string | null>(null);
-  const [focusedRecentFolderActionPath, setFocusedRecentFolderActionPath] = useState<string | null>(null);
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
-  const [localRecentFoldersOpen, setLocalRecentFoldersOpen] = useState(true);
   const [fileTreeListOpen, setFileTreeListOpen] = useState(true);
   const [outlineOpen, setOutlineOpen] = useState(true);
   const [localDocumentLinksOpen, setLocalDocumentLinksOpen] = useState(true);
@@ -612,23 +559,6 @@ export function MarkdownFileTreeDrawer({
     [fileTreeAssetsVisible, fullTree]
   );
   const tree = useMemo(() => filterMarkdownFileTree(assetFilteredTree, searchQuery), [assetFilteredTree, searchQuery]);
-  const recentFoldersOpen = controlledRecentFoldersOpen ?? localRecentFoldersOpen;
-  const setRecentFoldersExpanded = useCallback((openRecentFolders: boolean) => {
-    if (controlledRecentFoldersOpen === undefined) {
-      setLocalRecentFoldersOpen(openRecentFolders);
-    }
-
-    onRecentFoldersOpenChange?.(openRecentFolders);
-  }, [controlledRecentFoldersOpen, onRecentFoldersOpenChange]);
-  const toggleRecentFoldersExpanded = useCallback(() => {
-    setRecentFoldersExpanded(!recentFoldersOpen);
-  }, [recentFoldersOpen, setRecentFoldersExpanded]);
-  const handleRecentFoldersHeaderKeyDown = useCallback((event: ReactKeyboardEvent<HTMLDivElement>) => {
-    if (event.key !== "Enter" && event.key !== " ") return;
-
-    event.preventDefault();
-    toggleRecentFoldersExpanded();
-  }, [toggleRecentFoldersExpanded]);
   const visibleFileTreeRows = useMemo(
     () => buildVisibleFileTreeRows(
       tree,
@@ -785,13 +715,7 @@ export function MarkdownFileTreeDrawer({
     return null;
   }, [currentPath, normalizeTreeCreateParentPath, rootPath]);
   const activeCreateParentPath = selectedCreateParentPath ?? currentDocumentCreateParentPath;
-  const recentFolderChoices = useMemo(() => recentFolders.slice(0, 5), [recentFolders]);
-  const duplicateRecentFolderNames = useMemo(
-    () => duplicateRecentFolderNameKeys(recentFolderChoices),
-    [recentFolderChoices]
-  );
   const documentLinksOpen = controlledDocumentLinksOpen ?? localDocumentLinksOpen;
-  const recentFolderAreaVisible = recentFoldersVisible && recentFolderChoices.length > 0 && Boolean(onOpenRecentFolder);
   const tabbedSidebarLayout = sidebarLayoutMode === "tabs";
   const activeFileInLinkIndex = Boolean(
     linkIndex && currentPath && linkIndex.files.some((file) => file.file.path === currentPath)
@@ -843,9 +767,6 @@ export function MarkdownFileTreeDrawer({
     fileTreeListOpen;
   const documentLinksResizerVisible = !tabbedSidebarLayout && linkPanelAvailable && documentLinksOpen;
   const fileSearchVisible = filePanelRendered;
-  const folderAccessVisible =
-    recentFolderAreaVisible &&
-    filePanelRendered;
   const fileTreeSurfaceClassName = platform === "windows" ? "bg-(--bg-chrome)" : "bg-(--bg-secondary)";
   const outlineToolbarVisible = !tabbedSidebarLayout ||
     (outlinePanelOpen && (outlineItems.length > 0 || outlineExpansionAvailable));
@@ -2471,109 +2392,6 @@ export function MarkdownFileTreeDrawer({
     </button>
   );
 
-  const renderFolderAccessArea = () => (
-    recentFolderAreaVisible ? (
-      <div className={`shrink-0 border-b border-(--border-default) ${fileTreeSurfaceClassName}`}>
-        {recentFolderAreaVisible && onOpenRecentFolder ? (
-          <section
-            className="markdown-file-tree-recent-folders py-1"
-            role="region"
-            aria-label={label("app.recentMarkdownFolders")}
-          >
-            <div
-              aria-expanded={recentFoldersOpen}
-              aria-label={recentFoldersOpen ? label("app.hideRecentMarkdownFolders") : label("app.showRecentMarkdownFolders")}
-              className="flex h-8 cursor-pointer items-center gap-1 px-3 pr-2 text-[12px] text-(--text-secondary) transition-colors hover:bg-(--bg-hover) hover:text-(--text-heading) focus-visible:bg-(--bg-hover) focus-visible:text-(--text-heading) focus-visible:outline-none"
-              role="button"
-              tabIndex={0}
-              onClick={toggleRecentFoldersExpanded}
-              onKeyDown={handleRecentFoldersHeaderKeyDown}
-            >
-              <h3 className="m-0 min-w-0 flex-1 truncate text-[12px] leading-5 font-[560] tracking-normal text-(--text-secondary)">
-                {label("app.recentMarkdownFolders")}
-              </h3>
-              <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md" aria-hidden="true">
-                {recentFoldersOpen ? (
-                  <ChevronDown size={14} />
-                ) : (
-                  <ChevronRight size={14} />
-                )}
-              </span>
-            </div>
-            {recentFoldersOpen ? (
-              <div className="space-y-0.5 px-2 pb-1">
-                {recentFolderChoices.map((folder) => {
-                  const duplicateName = duplicateRecentFolderNames.has(recentFolderNameKey(folder));
-                  const currentRecentFolder = Boolean(rootPath && sameNativePath(folder.path, rootPath));
-                  const folderActionLabel = duplicateName ? `${folder.name} ${folder.path}` : folder.name;
-                  const folderPathLabel = compactRecentFolderPath(folder.path);
-                  const RecentFolderIcon = currentRecentFolder ? FolderOpen : Folder;
-                  const recentFolderButtonStateClassName = currentRecentFolder
-                    ? "bg-(--bg-active) text-(--text-heading) hover:bg-(--bg-active) focus-visible:bg-(--bg-active)"
-                    : "bg-transparent text-(--text-secondary) hover:bg-(--bg-hover) hover:text-(--text-heading) focus-visible:bg-(--bg-hover) focus-visible:text-(--text-heading)";
-
-                  return (
-                    <div
-                      className={`markdown-file-tree-recent-folder grid ${duplicateName ? "h-10" : "h-7"} grid-cols-[minmax(0,1fr)_auto] items-center gap-1`}
-                      key={folder.path}
-                      onMouseEnter={() => setHoveredRecentFolderPath(folder.path)}
-                      onMouseLeave={() => {
-                        setHoveredRecentFolderPath((path) => (path === folder.path ? null : path));
-                        setFocusedRecentFolderActionPath((path) => (path === folder.path ? null : path));
-                      }}
-                    >
-                      <Tooltip content={folder.path}>
-                        <button
-                          aria-label={folderActionLabel}
-                          aria-current={currentRecentFolder ? "page" : undefined}
-                          className={`flex ${duplicateName ? "h-10 items-center" : "h-7 items-center"} min-w-0 cursor-pointer gap-2 rounded-sm border-0 px-2 text-left text-[12px] leading-none focus-visible:outline-none ${recentFolderButtonStateClassName}`}
-                          type="button"
-                          onClick={() => onOpenRecentFolder(folder)}
-                        >
-                          <RecentFolderIcon aria-hidden="true" className="shrink-0" size={14} />
-                          <span className="flex min-w-0 flex-col gap-0.5">
-                            <span className="min-w-0 truncate leading-4">{folder.name}</span>
-                            {duplicateName ? (
-                              <span className="min-w-0 truncate text-[10px] leading-4 text-(--text-tertiary)">
-                                {folderPathLabel}
-                              </span>
-                            ) : null}
-                          </span>
-                        </button>
-                      </Tooltip>
-                      {onRemoveRecentFolder ? (
-                        (() => {
-                          const actionVisible =
-                            hoveredRecentFolderPath === folder.path || focusedRecentFolderActionPath === folder.path;
-
-                          return (
-                            <IconButton
-                              className="rounded-md transition-opacity duration-150 ease-[cubic-bezier(0.22,1,0.36,1)]"
-                              label={`${label("app.removeRecentMarkdownFolder")}: ${folderActionLabel}`}
-                              style={{
-                                opacity: actionVisible ? 1 : 0,
-                                pointerEvents: actionVisible ? "auto" : "none"
-                              }}
-                              onBlur={() => setFocusedRecentFolderActionPath((path) => (path === folder.path ? null : path))}
-                              onFocus={() => setFocusedRecentFolderActionPath(folder.path)}
-                              onClick={() => onRemoveRecentFolder(folder)}
-                            >
-                              <X aria-hidden="true" size={13} />
-                            </IconButton>
-                          );
-                        })()
-                      ) : null}
-                    </div>
-                  );
-                })}
-              </div>
-            ) : null}
-          </section>
-        ) : null}
-      </div>
-    ) : null
-  );
-
   const sidebarPanelLabelKey = (panel: SidebarPanel): Parameters<typeof t>[1] => {
     if (panel === "files") return "app.files";
     if (panel === "outline") return "app.outline";
@@ -2865,8 +2683,6 @@ export function MarkdownFileTreeDrawer({
             </h2>
           </div>
         ) : null}
-
-        {folderAccessVisible ? renderFolderAccessArea() : null}
 
         <div ref={fileTreeBodyRef} className="markdown-file-tree-body flex min-h-0 flex-1 flex-col">
           {filePanelRendered ? (

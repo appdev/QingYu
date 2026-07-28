@@ -166,7 +166,6 @@ import {
   saveStoredEditorPreferences,
   saveStoredWorkspaceState,
   type RecentMarkdownFile,
-  type RecentMarkdownFolder,
   type EditorPreferences,
   type StoredWorkspaceSideBySideGroup,
   type TitlebarActionPreference
@@ -697,7 +696,6 @@ function WorkspaceApp() {
     open: fileTreeOpen,
     openFolderPath,
     renameFile: renameMarkdownTreeFile,
-    recentFoldersOpen: recentMarkdownFoldersOpen,
     refresh: refreshMarkdownFileTree,
     resizing: fileTreeResizing,
     resize: resizeFileTree,
@@ -707,7 +705,6 @@ function WorkspaceApp() {
     setRootFromMarkdownFilePath,
     setFileTreeSort,
     setFileTreeAssetsVisible,
-    setRecentFoldersOpen: setRecentMarkdownFoldersOpen,
     startResize: startFileTreeResize,
     toggle: toggleFileTree,
     width: fileTreeWidth,
@@ -1465,7 +1462,6 @@ function WorkspaceApp() {
   // preferences still win, and view mode can only hide what they allow.
   const documentLinksVisible = viewModeChrome.documentLinks && editorPreferences.preferences.documentLinksVisible;
   const fileTreeContentVisible =
-    viewModeChrome.recentFolders ||
     viewModeChrome.fileList ||
     viewModeChrome.outline ||
     documentLinksVisible;
@@ -3647,18 +3643,6 @@ function WorkspaceApp() {
     openMobileNotebookDialog,
     primaryWindowOwner
   ]);
-  const handleOpenRecentMarkdownFolder = useCallback(async (folder: RecentMarkdownFolder) => {
-    if (compactMode.trueMobile) return;
-    if (primaryWindowOwner) {
-      await notebookSwitch.switchDesktopNotebook(folder.path);
-      return;
-    }
-    await requestPrimaryNotebookSwitch({ path: folder.path, source: "recent" });
-  }, [
-    compactMode.trueMobile,
-    notebookSwitch.switchDesktopNotebook,
-    primaryWindowOwner
-  ]);
   const handleOpenContainingFolder = useCallback((path: string) => {
     openNativeContainingFolder(path).catch(() => {});
   }, []);
@@ -4532,9 +4516,6 @@ function WorkspaceApp() {
             open: visibleFileTreeOpen,
             outlineItems,
             outlineVisible: viewModeChrome.outline,
-            recentFolders: notebookSwitch.recentNotebooks,
-            recentFoldersOpen: recentMarkdownFoldersOpen,
-            recentFoldersVisible: viewModeChrome.recentFolders,
             revealPathRequest: fileTreeRevealPathRequest,
             resizing: fileTreeResizing,
             rootPath: fileTree.sourcePath,
@@ -4560,14 +4541,9 @@ function WorkspaceApp() {
               ? handleOpenTreeFileToSide
               : undefined,
             onOpenFolder: handleOpenMarkdownFolder,
-            onOpenRecentFolder: handleOpenRecentMarkdownFolder,
             onOpenSettings: handleOpenSettings,
             onSyncNow: sidebarSyncAvailable ? runApplicationSyncNow : undefined,
             onInstallAvailableUpdate: appUpdater.installAvailableUpdate,
-            onRecentFoldersOpenChange: setRecentMarkdownFoldersOpen,
-            onRemoveRecentFolder: primaryWindowOwner
-              ? (folder) => notebookSwitch.removeRecentNotebook(folder.path)
-              : undefined,
             onRenameFile: handleRenameMarkdownTreeFile,
             onResize: compactViewport ? undefined : resizeFileTree,
             onResizeEnd: compactViewport ? undefined : endFileTreeResize,

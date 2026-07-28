@@ -1095,8 +1095,9 @@ describe("QingYu workspace", () => {
     await waitFor(() => expect(controller.commitDesktopRoot).toHaveBeenCalledWith("/Chosen"));
   });
 
-  it("renders recent notebook history and routes a selection through the switch coordinator", async () => {
-    const switchDesktopNotebook = vi.fn(async () => "/Recent/Notes");
+  it("omits recent directory history while preserving controlled notebook switching", async () => {
+    mockedResolveDesktopPlatform.mockReturnValue("windows");
+    const switchDesktopNotebook = vi.fn(async () => "/Chosen");
     const coordinatorSpy = vi.spyOn(
       notebookSwitchCoordinatorModule,
       "useNotebookSwitchCoordinator"
@@ -1113,57 +1114,13 @@ describe("QingYu workspace", () => {
     mockedListNativeMarkdownFilesForPath.mockResolvedValue([]);
 
     renderApp();
-    const recentSection = await screen.findByRole("region", { name: "Recently used directories" });
-    fireEvent.click(within(recentSection).getByRole("button", { name: "Notes" }));
+    fireEvent.click(screen.getByRole("button", { name: "Toggle workspace sidebar" }));
 
-    await waitFor(() => expect(switchDesktopNotebook).toHaveBeenCalledWith("/Recent/Notes"));
-    coordinatorSpy.mockRestore();
-  });
+    expect(screen.queryByRole("region", { name: "Recently used directories" })).not.toBeInTheDocument();
+    fireEvent.click(await screen.findByRole("button", { name: "Switch Notebook Directory" }));
 
-  it("does not expose recent-notebook removal from an external file window", async () => {
-    const notePath = `${mockFolderPath}/external.md`;
-    const removeRecentNotebook = vi.fn(async () => undefined);
-    const requestPrimaryNotebookSwitch = vi.fn(async () => undefined);
-    const runtime = getAppRuntime();
-    configureAppRuntime({
-      ...runtime,
-      files: {
-        ...runtime.files,
-        requestPrimaryNotebookSwitch
-      }
-    });
-    const coordinatorSpy = vi.spyOn(
-      notebookSwitchCoordinatorModule,
-      "useNotebookSwitchCoordinator"
-    ).mockReturnValue({
-      recentNotebooks: [{ name: "Notes", path: "/Recent/Notes" }],
-      removeRecentNotebook,
-      restoreDesktopNotebook: vi.fn(async () => null),
-      restoreManagedNotebook: vi.fn(async () => null),
-      switchDesktopNotebook: vi.fn(async () => null),
-      switchManagedNotebook: vi.fn(async () => null),
-      switching: false
-    });
-    window.history.replaceState({}, "", `/?path=${encodeURIComponent(notePath)}`);
-    mockedReadNativeMarkdownFile.mockResolvedValue({
-      content: "# External note",
-      name: "external.md",
-      path: notePath
-    });
-
-    renderApp();
-
-    expect(await screen.findByRole("heading", { name: "External note" })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Toggle file list" }));
-    const recentSection = await screen.findByRole("region", { name: "Recently used directories" });
-    const recentNotebook = within(recentSection).getByRole("button", { name: "Notes" });
-    expect(recentNotebook).toBeInTheDocument();
-    expect(within(recentSection).queryByRole("button", {
-      name: "Remove from recent directories: Notes"
-    })).not.toBeInTheDocument();
-    fireEvent.click(recentNotebook);
-    await waitFor(() => expect(requestPrimaryNotebookSwitch).toHaveBeenCalledWith("/Recent/Notes"));
-    expect(removeRecentNotebook).not.toHaveBeenCalled();
+    expect(switchDesktopNotebook).toHaveBeenCalledTimes(1);
+    expect(switchDesktopNotebook).toHaveBeenCalledWith();
     coordinatorSpy.mockRestore();
   });
 
