@@ -239,6 +239,61 @@ const expectedThemeDeclarations = {
   ]
 } as const;
 
+const expectedWenkaiSidebarDeclarations = {
+  "wenkai-paper-light": [
+    "--sidebar-font-family: \"LXGW WenKai Screen\", \"Kaiti SC\", KaiTi, STKaiti, ui-serif, serif;",
+    "--sidebar-tree-font-size: 14px;",
+    "--sidebar-tree-font-weight: 400;",
+    "--sidebar-tree-line-height: 20px;",
+    "--text-tree: #262626;",
+    "--bg-tree-hover: rgba(38, 38, 38, 0.055);",
+    "--text-tree-hover: #262626;",
+    "--sidebar-tree-current-font-weight: 400;",
+    "--sidebar-outline-font-size: 14px;",
+    "--sidebar-outline-font-weight: 400;",
+    "--sidebar-outline-line-height: 20px;",
+    "--sidebar-outline-row-min-height: 28px;",
+    "--sidebar-outline-max-lines: 1;",
+    "--text-outline: #262626;",
+    "--bg-outline-hover: rgba(38, 38, 38, 0.055);",
+    "--text-outline-hover: #262626;",
+    "--sidebar-outline-current-font-weight: 500;",
+    "--sidebar-outline-h1-font-size: 16px;",
+    "--sidebar-outline-h1-font-weight: 600;",
+    "--sidebar-outline-h1-text: #1c5d33;",
+    "--sidebar-outline-h1-space-before: 8px;",
+    "--sidebar-outline-h2-font-weight: 600;",
+    "--sidebar-outline-h2-text: #262626;",
+    "--sidebar-outline-h2-space-before: 6px;"
+  ],
+  "wenkai-paper-dark": [
+    "--sidebar-font-family: \"LXGW WenKai Screen\", \"Kaiti SC\", KaiTi, STKaiti, ui-serif, serif;",
+    "--sidebar-tree-font-size: 14px;",
+    "--sidebar-tree-font-weight: 400;",
+    "--sidebar-tree-line-height: 20px;",
+    "--text-tree: #e7e9ea;",
+    "--bg-tree-hover: rgba(255, 255, 255, 0.055);",
+    "--text-tree-hover: #ffffff;",
+    "--sidebar-tree-current-font-weight: 400;",
+    "--sidebar-outline-font-size: 14px;",
+    "--sidebar-outline-font-weight: 400;",
+    "--sidebar-outline-line-height: 20px;",
+    "--sidebar-outline-row-min-height: 28px;",
+    "--sidebar-outline-max-lines: 1;",
+    "--text-outline: #e7e9ea;",
+    "--bg-outline-hover: rgba(255, 255, 255, 0.055);",
+    "--text-outline-hover: #ffffff;",
+    "--sidebar-outline-current-font-weight: 500;",
+    "--sidebar-outline-h1-font-size: 16px;",
+    "--sidebar-outline-h1-font-weight: 600;",
+    "--sidebar-outline-h1-text: #54c59f;",
+    "--sidebar-outline-h1-space-before: 8px;",
+    "--sidebar-outline-h2-font-weight: 600;",
+    "--sidebar-outline-h2-text: #ffffff;",
+    "--sidebar-outline-h2-space-before: 6px;"
+  ]
+} as const;
+
 const expectedAyuSyntaxRules = [
   `.markdown-paper[data-editor-theme="drake-faithful-ayu"] .hljs-property {
   color: #FFC66D;
@@ -1588,6 +1643,9 @@ describe("editor stylesheet", () => {
         "--source-editor-font-family"
       ]) {
         expect(styles).toContain(token);
+      }
+      for (const declaration of expectedWenkaiSidebarDeclarations[theme]) {
+        expect(styles).toContain(declaration);
       }
       expect(styles).not.toContain("@import");
       expect(styles).not.toMatch(/url\(\s*["']?(?:https?:|\/\/|file:)/u);
