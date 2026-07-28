@@ -31,6 +31,7 @@ const settingsEventsSourceId =
 
 type ThemeChangedPayload = {
   preferences?: AppThemePreferences;
+  sourceId?: string;
   theme?: unknown;
 };
 
@@ -75,13 +76,18 @@ function isEditorPreferencesPayload(value: unknown) {
 export async function notifyAppThemeChanged(preferences: AppThemePreferences) {
   if (!getAppRuntime().events.isAvailable()) return;
 
-  await getAppRuntime().events.emit(themeChangedEvent, { preferences: normalizeAppThemePreferences(preferences) });
+  await getAppRuntime().events.emit(themeChangedEvent, {
+    preferences: normalizeAppThemePreferences(preferences),
+    sourceId: settingsEventsSourceId
+  });
 }
 
 export async function listenAppThemeChanged(onThemeChanged: (preferences: AppThemePreferences) => unknown) {
   if (!getAppRuntime().events.isAvailable()) return () => {};
 
   return getAppRuntime().events.listen<ThemeChangedPayload>(themeChangedEvent, (event) => {
+    if (event.payload.sourceId === settingsEventsSourceId) return;
+
     if (event.payload.preferences) {
       onThemeChanged(normalizeAppThemePreferences(event.payload.preferences));
       return;

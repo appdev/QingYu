@@ -446,9 +446,6 @@ vi.mock("../lib/settings/app-settings", () => ({
     darkTheme: "dark",
     lightTheme: "light"
   },
-  approveThemeFingerprint: vi.fn(async () => undefined),
-  forgetApprovedThemeFingerprint: vi.fn(async () => undefined),
-  getApprovedThemeFingerprint: vi.fn(async () => null),
   isThemeId: vi.fn((value) => typeof value === "string" && /^[a-z0-9][a-z0-9-]{0,63}$/u.test(value)),
   normalizeAppThemePreferences: vi.fn((preferences) => {
     const value = typeof preferences === "object" && preferences !== null
@@ -1026,7 +1023,6 @@ export function installAppTestHarness() {
       canImport: true,
       canOpenDirectory: true
     };
-    runtime.themes.confirmActivation = vi.fn(async () => true);
     runtime.themes.list = vi.fn(async () => ({ invalidFiles: [], themes: appHarnessThemeDescriptors }));
     runtime.themes.prepareActivation = vi.fn(async (id, expectedFingerprint) => ({
       fingerprint: expectedFingerprint,

@@ -132,7 +132,6 @@ export type AppThemeRuntime = {
   cancelActivation: (token: string) => Promise<unknown>;
   capabilities: ThemeRuntimeCapabilities;
   commitActivation: (token: string) => Promise<unknown>;
-  confirmActivation: (themeName: string) => Promise<boolean>;
   delete: (id: string, expectedFingerprint: string) => Promise<unknown>;
   importFile: () => Promise<ThemeImportResult | null>;
   list: () => Promise<ThemeCatalogSnapshot>;
@@ -773,7 +772,6 @@ export function createDefaultAppRuntime(): AppRuntime {
         canOpenDirectory: false
       },
       commitActivation: () => unsupportedFeature("commitThemeActivation"),
-      confirmActivation: async () => false,
       delete: () => unsupportedFeature("deleteTheme"),
       importFile: () => unsupportedFeature("importTheme"),
       list: async () => ({ invalidFiles: [], themes: [] }),

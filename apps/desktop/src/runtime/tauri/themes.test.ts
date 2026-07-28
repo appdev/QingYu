@@ -1,8 +1,7 @@
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
-import { ask, open } from "@tauri-apps/plugin-dialog";
+import { open } from "@tauri-apps/plugin-dialog";
 import { openPath } from "@tauri-apps/plugin-opener";
 import {
-  confirmNativeThemeActivation,
   commitNativeThemeActivation,
   cancelNativeThemeActivation,
   deleteNativeTheme,
@@ -15,13 +14,12 @@ import {
 } from "./themes";
 
 vi.mock("@tauri-apps/api/core", () => ({ convertFileSrc: vi.fn(), invoke: vi.fn() }));
-vi.mock("@tauri-apps/plugin-dialog", () => ({ ask: vi.fn(), open: vi.fn() }));
+vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
 vi.mock("@tauri-apps/plugin-opener", () => ({ openPath: vi.fn() }));
 
 const mockedInvoke = vi.mocked(invoke);
 const mockedConvertFileSrc = vi.mocked(convertFileSrc);
 const mockedOpen = vi.mocked(open);
-const mockedAsk = vi.mocked(ask);
 const mockedOpenPath = vi.mocked(openPath);
 
 describe("native theme runtime", () => {
@@ -142,9 +140,4 @@ describe("native theme runtime", () => {
     expect(mockedOpenPath).toHaveBeenCalledWith("/app/themes");
   });
 
-  it("fails closed when the native activation dialog rejects", async () => {
-    mockedAsk.mockRejectedValue(new Error("dialog unavailable"));
-
-    await expect(confirmNativeThemeActivation("Nord")).resolves.toBe(false);
-  });
 });

@@ -7,14 +7,12 @@ import {
 } from "../../runtime";
 import {
   darkEditorThemeOptions,
-  approveThemeFingerprint,
   defaultCustomThemeCss,
   defaultExportSettings,
   defaultFileIgnoreSettings,
   defaultEditorPreferences,
   exportStoredAppSettings,
   getStoredThemePreferences,
-  getApprovedThemeFingerprint,
   getStoredCustomThemeCss,
   getStoredWorkspaceState,
   appThemeOptions,
@@ -29,7 +27,6 @@ import {
   isAppTheme,
   lightEditorThemeOptions,
   importStoredAppSettings,
-  forgetApprovedThemeFingerprint,
   isThemeId,
   resetWelcomeDocumentState,
   normalizeEditorPreferences,
@@ -176,20 +173,6 @@ describe("app settings", () => {
     expect(isThemeId("user-theme-2")).toBe(true);
     expect(isThemeId("qingyu-private")).toBe(false);
     expect(isThemeId("../theme")).toBe(false);
-  });
-
-  it("stores approved theme fingerprints locally and forgets deleted themes", async () => {
-    const fingerprint = "a".repeat(64);
-    let approvals: unknown;
-    store.get.mockImplementation(async (key: string) => key === "approvedThemeFingerprints" ? approvals : undefined);
-    store.set.mockImplementation(async (key: string, value: unknown) => {
-      if (key === "approvedThemeFingerprints") approvals = value;
-    });
-
-    await approveThemeFingerprint("nord", fingerprint);
-    await expect(getApprovedThemeFingerprint("nord")).resolves.toBe(fingerprint);
-    await forgetApprovedThemeFingerprint("nord");
-    await expect(getApprovedThemeFingerprint("nord")).resolves.toBeNull();
   });
 
   it("resolves the active editor theme from appearance mode and saved palettes", () => {

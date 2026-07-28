@@ -156,13 +156,20 @@ describe("settings events", () => {
     };
 
     await notifyAppThemeChanged(preferences);
-    listener?.({ payload: { preferences } } as Parameters<NonNullable<typeof listener>>[0]);
+    const localPayload = mockedEmit.mock.calls[0]?.[1];
+    listener?.({ payload: localPayload } as Parameters<NonNullable<typeof listener>>[0]);
+    listener?.({
+      payload: { preferences, sourceId: "another-window" }
+    } as Parameters<NonNullable<typeof listener>>[0]);
     listener?.({ payload: { theme: "newsprint" } } as Parameters<NonNullable<typeof listener>>[0]);
     listener?.({ payload: { theme: "dracula" } } as Parameters<NonNullable<typeof listener>>[0]);
     cleanup();
 
     expect(mockedListen).toHaveBeenCalledWith("markra://theme-changed", expect.any(Function));
-    expect(mockedEmit).toHaveBeenCalledWith("markra://theme-changed", { preferences });
+    expect(mockedEmit).toHaveBeenCalledWith("markra://theme-changed", {
+      preferences,
+      sourceId: expect.any(String)
+    });
     expect(onThemeChanged).toHaveBeenCalledWith(preferences);
     expect(onThemeChanged).toHaveBeenCalledWith({
       appearanceMode: "light",

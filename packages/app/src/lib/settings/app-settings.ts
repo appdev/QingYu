@@ -98,7 +98,6 @@ const lightThemeKey = "lightThemeId";
 const darkThemeKey = "darkThemeId";
 const legacyLightThemeKey = "lightTheme";
 const legacyDarkThemeKey = "darkTheme";
-const approvedThemeFingerprintsKey = "approvedThemeFingerprints";
 const customThemeCssKey = "customThemeCss";
 const lightCustomThemeCssKey = "lightCustomThemeCss";
 const darkCustomThemeCssKey = "darkCustomThemeCss";
@@ -689,33 +688,6 @@ export async function saveStoredThemePreferences(preferences: AppThemePreference
   await store.save();
 }
 
-export async function getApprovedThemeFingerprint(id: string) {
-  if (!isThemeId(id)) return null;
-  const store = await loadSettingsStore();
-  const approvals = await store.get<unknown>(approvedThemeFingerprintsKey);
-  if (typeof approvals !== "object" || approvals === null || Array.isArray(approvals)) return null;
-  const fingerprint = (approvals as Record<string, unknown>)[id];
-
-  return typeof fingerprint === "string" && /^[a-f0-9]{64}$/u.test(fingerprint) ? fingerprint : null;
-}
-
-export async function approveThemeFingerprint(id: string, fingerprint: string) {
-  if (!isThemeId(id) || !/^[a-f0-9]{64}$/u.test(fingerprint)) return;
-  const store = await loadSettingsStore();
-  const stored = await store.get<unknown>(approvedThemeFingerprintsKey);
-  const approvals = typeof stored === "object" && stored !== null && !Array.isArray(stored)
-    ? { ...(stored as Record<string, unknown>) }
-    : {};
-  const normalized = Object.fromEntries(
-    Object.entries(approvals)
-      .filter(([themeId, value]) => isThemeId(themeId) && typeof value === "string" && /^[a-f0-9]{64}$/u.test(value))
-      .slice(-99)
-  );
-  normalized[id] = fingerprint;
-  await store.set(approvedThemeFingerprintsKey, normalized);
-  await store.save();
-}
-
 export async function getStoredCustomThemeCss() {
   const grouped = await readSettingsGroup<CustomThemeCssValues>("customThemeCss");
   if (grouped !== undefined && grouped !== null) return normalizeCustomThemeCssValues(grouped);
@@ -738,16 +710,6 @@ export async function saveStoredCustomThemeCss(css: CustomThemeCssValues) {
 
   await store.set(lightCustomThemeCssKey, normalizedCss.light);
   await store.set(darkCustomThemeCssKey, normalizedCss.dark);
-  await store.save();
-}
-
-export async function forgetApprovedThemeFingerprint(id: string) {
-  const store = await loadSettingsStore();
-  const stored = await store.get<unknown>(approvedThemeFingerprintsKey);
-  if (typeof stored !== "object" || stored === null || Array.isArray(stored)) return;
-  const approvals = { ...(stored as Record<string, unknown>) };
-  delete approvals[id];
-  await store.set(approvedThemeFingerprintsKey, approvals);
   await store.save();
 }
 

@@ -8,7 +8,6 @@ import type {
 import {
   editorParagraphSpacingPxMax,
   editorParagraphSpacingPxMin,
-  forgetApprovedThemeFingerprint,
   type AppAppearanceMode,
   type EditorPreferences
 } from "../../lib/settings/app-settings";
@@ -185,9 +184,7 @@ function AppearanceDetail({ controller }: { controller: CompactAppController }) 
 
   function deleteTheme(theme: ThemeDescriptor) {
     if (!window.confirm(`${translate("settings.theme.deleteTheme")} “${theme.name}”?`)) return;
-    catalog.deleteTheme(theme)
-      .then(() => forgetApprovedThemeFingerprint(theme.id))
-      .catch(() => {});
+    catalog.deleteTheme(theme).catch(() => {});
   }
 
   return (

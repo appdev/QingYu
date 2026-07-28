@@ -2,10 +2,7 @@ import { diagnosticErrorMessage } from "@markra/shared";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   appAppearanceModeOptions,
-  approveThemeFingerprint,
   defaultAppThemePreferences,
-  forgetApprovedThemeFingerprint,
-  getApprovedThemeFingerprint,
   getStoredThemePreferences,
   isThemeId,
   normalizeAppThemePreferences,
@@ -191,11 +188,6 @@ function startupThemePreferencesFromLocation(): AppThemePreferences | null {
   return normalizeAppThemePreferences({ appearanceMode, darkTheme, lightTheme });
 }
 
-type PendingSelection = {
-  next: AppThemePreferences;
-  previous: AppThemePreferences;
-};
-
 export function useAppTheme() {
   const startupThemePreferencesRef = useRef<AppThemePreferences | null>(startupThemePreferencesFromLocation());
   const [themePreferences, setThemePreferences] = useState<AppThemePreferences>(
@@ -210,7 +202,6 @@ export function useAppTheme() {
   const activeNativeActivationRef = useRef(false);
   const themePreparationQueueRef = useRef<Promise<unknown>>(Promise.resolve());
   const repairThemeErrorRef = useRef<string | null>(null);
-  const pendingSelectionRef = useRef<PendingSelection | null>(null);
   const themeCatalog = useThemeCatalog();
   const editorTheme = resolveAppThemePreferencesEditorTheme(themePreferences, systemTheme);
   const resolvedTheme = resolveAppThemePreferencesAppearance(themePreferences, systemTheme);
@@ -226,7 +217,6 @@ export function useAppTheme() {
 
   const commitThemePreferences = useCallback((nextPreferences: AppThemePreferences) => {
     const normalizedPreferences = normalizeAppThemePreferences(nextPreferences);
-    pendingSelectionRef.current = null;
     setThemePreferences(normalizedPreferences);
     liveThemePreferencesReceivedRef.current = true;
     setThemePreferencesReady(true);
@@ -274,7 +264,6 @@ export function useAppTheme() {
     listenAppThemeChanged((nextPreferences) => {
       if (!active) return;
       liveThemePreferencesReceivedRef.current = true;
-      pendingSelectionRef.current = null;
       setThemePreferences(nextPreferences);
       setThemePreferencesReady(true);
     }).then((stopListening) => {
@@ -335,7 +324,6 @@ export function useAppTheme() {
         ...themePreferences,
         [resolvedTheme === "dark" ? "darkTheme" : "lightTheme"]: fallback
       };
-      pendingSelectionRef.current = null;
       applyProtectedTheme(fallback);
       if (activationError) repairThemeErrorRef.current = activationError;
       setThemePreferences(repaired);
@@ -359,12 +347,6 @@ export function useAppTheme() {
     let pendingActivationToken: string | null = null;
     let pendingStylesheetLoad: PendingStylesheetLoad | null = null;
     let installedElement: HTMLLinkElement | HTMLStyleElement | null = null;
-    const selectionKey = activeTheme.appearance === "dark" ? "darkTheme" : "lightTheme";
-    const selectionAtActivationStart = pendingSelectionRef.current;
-    const ownedPendingSelection = selectionAtActivationStart?.next[selectionKey] === activeTheme.id
-      ? selectionAtActivationStart
-      : null;
-
     const sequenceIsCurrent = () => !cancelled && token === activationTokenRef.current;
 
     const removeInstalledElement = () => {
@@ -423,58 +405,6 @@ export function useAppTheme() {
         }
         applyThemeRoot(theme.id, theme.appearance);
 
-        const approvedFingerprint = await getApprovedThemeFingerprint(theme.id);
-        if (!sequenceIsCurrent()) {
-          removeInstalledElement();
-          await cancelPendingActivation();
-          return;
-        }
-        if (approvedFingerprint !== theme.fingerprint) {
-          const accepted = await themes.confirmActivation(theme.name);
-          if (!sequenceIsCurrent()) {
-            removeInstalledElement();
-            await cancelPendingActivation();
-            return;
-          }
-          if (!accepted) {
-            removeInstalledElement();
-            try {
-              await cancelPendingActivation();
-            } catch (cleanupError) {
-              if (sequenceIsCurrent()) {
-                setThemeError(diagnosticErrorMessage(cleanupError));
-              }
-            }
-            if (!sequenceIsCurrent()) return;
-            const restoreOwnedSelection = ownedPendingSelection !== null &&
-              pendingSelectionRef.current === ownedPendingSelection;
-            if (restoreOwnedSelection) pendingSelectionRef.current = null;
-            await forgetApprovedThemeFingerprint(theme.id);
-            if (!sequenceIsCurrent()) return;
-            if (restoreOwnedSelection) {
-              setThemePreferences(ownedPendingSelection.previous);
-            } else if (ownedPendingSelection === null) {
-              repairMissingTheme();
-            }
-            return;
-          }
-          await approveThemeFingerprint(theme.id, theme.fingerprint);
-          if (!sequenceIsCurrent()) {
-            removeInstalledElement();
-            await cancelPendingActivation();
-            return;
-          }
-        }
-
-        if (ownedPendingSelection !== null && pendingSelectionRef.current === ownedPendingSelection) {
-          pendingSelectionRef.current = null;
-          await persistThemePreferences(ownedPendingSelection.next);
-        }
-        if (!sequenceIsCurrent()) {
-          removeInstalledElement();
-          await cancelPendingActivation();
-          return;
-        }
         activeNativeActivationRef.current = true;
         await themes.commitActivation(payload.token);
         if (!sequenceIsCurrent()) return;
@@ -518,17 +448,8 @@ export function useAppTheme() {
 
   const selectAppearanceMode = useCallback((appearanceMode: AppAppearanceMode) => {
     const nextPreferences = normalizeAppThemePreferences({ ...themePreferences, appearanceMode });
-    const nextAppearance = resolveAppThemePreferencesAppearance(nextPreferences, systemTheme);
-    const nextThemeId = resolveAppThemePreferencesEditorTheme(nextPreferences, systemTheme);
-    const nextTheme = findThemeDescriptor(themeCatalog, nextThemeId);
-    if (nextTheme?.source === "third-party" && nextTheme.appearance === nextAppearance) {
-      pendingSelectionRef.current = { next: nextPreferences, previous: themePreferences };
-      setThemePreferences(nextPreferences);
-      setThemeActivationReady(false);
-      return;
-    }
     commitThemePreferences(nextPreferences);
-  }, [commitThemePreferences, systemTheme, themeCatalog, themePreferences]);
+  }, [commitThemePreferences, themePreferences]);
 
   const selectTheme = useCallback((theme: ThemeDescriptor) => {
     const key = theme.appearance === "dark" ? "darkTheme" : "lightTheme";
@@ -537,18 +458,8 @@ export function useAppTheme() {
       [key]: theme.id
     });
 
-    if (theme.source === "default" || theme.appearance !== resolvedTheme) {
-      commitThemePreferences(nextPreferences);
-      return;
-    }
-
-    pendingSelectionRef.current = {
-      next: nextPreferences,
-      previous: themePreferences
-    };
-    setThemePreferences(nextPreferences);
-    setThemeActivationReady(false);
-  }, [commitThemePreferences, resolvedTheme, themePreferences]);
+    commitThemePreferences(nextPreferences);
+  }, [commitThemePreferences, themePreferences]);
 
   const selectLightTheme = useCallback((themeId: string) => {
     const theme = themeCatalog.lightThemes.find(({ id }) => id === themeId);

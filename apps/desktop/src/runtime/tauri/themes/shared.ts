@@ -3,7 +3,6 @@ import type {
   ThemeCatalogSnapshot
 } from "@markra/app/runtime";
 import { convertFileSrc } from "@tauri-apps/api/core";
-import { ask } from "@tauri-apps/plugin-dialog";
 import { invokeNative } from "../invoke";
 
 export function listNativeThemes() {
@@ -66,15 +65,4 @@ export function releaseNativeThemeActivation() {
 
 export function deleteNativeTheme(id: string, expectedFingerprint: string) {
   return invokeNative("delete_theme", { id, expectedFingerprint });
-}
-
-export async function confirmNativeThemeActivation(themeName: string) {
-  try {
-    return await ask(`Keep the third-party theme “${themeName}”?`, {
-      kind: "warning",
-      title: "Confirm theme"
-    });
-  } catch {
-    return false;
-  }
 }

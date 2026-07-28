@@ -203,7 +203,6 @@ export const desktopRuntime = {
       canOpenDirectory: true
     },
     commitActivation: themes.commitNativeThemeActivation,
-    confirmActivation: themes.confirmNativeThemeActivation,
     delete: themes.deleteNativeTheme,
     importFile: themes.importNativeTheme,
     list: themes.listNativeThemes,
