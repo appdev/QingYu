@@ -72,9 +72,57 @@ rows, so they are not double-counted.
 | R33 | Ordinary S3 note synchronization must dispatch only to `DejavuSyncService::enqueue`; WebDAV remains legacy; S3 portable settings remain on their protected legacy settings scope; frontend understands accepted vs completed. Design S3 cutover acceptance; conflict plan Task 7. | `missing` | `apps/desktop/src-tauri/src/sync_config.rs::sync_application` still returns only `SyncRunResult`; `remote_sync/service.rs::run_application_sync_inner` constructs legacy `S3Backend` values for both notes and settings and calls `build_sync_scopes`; `build_sync_scopes` constructs `RemoteSyncScope::notes(..., "manifest.json", ...)`; `apps/desktop/src/runtime/tauri/sync-config/shared.ts::syncApplication` invokes `sync_application` as `SyncRunResult`; `useAppSyncCoordinator.ts` has no accepted-job branch. See repair M2. |
 | R34 | After cutover, remove only unreachable legacy S3 note constructors/catalog/tests/live fixtures and add a static boundary that S3 notes cannot reach manifest or `remote-conflict` code. Conflict plan Task 8. | `missing` | No production routing-boundary test exists. The current S3 note route still reaches `RemoteSyncScope::notes` and `manifest.json`; `remote_sync/engine.rs` still contains `MANIFEST_VERSION` and `remote_conflict_file_name`, and they remain reachable for S3 notes through `run_application_sync_inner`. Removal cannot safely start before R33. See repair M3. |
 | R35 | Preserve WebDAV behavior and portable `settings.json` synchronization while changing only S3 note data. Design “本期不包含/验收条件”; conflict plan Tasks 7–8. | `present` | `remote_sync/service.rs` retains the WebDAV branch and `prepare_portable_settings_sync`; `RemoteSyncScope::portable_settings` remains isolated from notes; focused portable-settings durability and legacy-MCP sanitation tests remain. R33 must preserve these anchors. |
-| R36 | Merging `main` must not reintroduce removed AI/Agent/provider, spellcheck, proxy/Network/SOCKS, or theme-export product surfaces. 2026-07-28 recovery design “Isolation and integration strategy”. | `present` | `git diff --name-status main..HEAD` is empty for known removed feature paths (`packages/ai`, AI settings/components/runtime, spellcheck modules). Current `rg --files` has none of the deleted feature modules. The branch adds only Dejavu-related files for names matching the audit. The current tree retains ordinary theme selection and HTML `spellCheck={false}` attributes, not the removed product features. |
+| R36 | Merging `main` must not reintroduce removed AI/Agent/provider, spellcheck, proxy/Network/SOCKS, or theme-export product surfaces. 2026-07-28 recovery design “Isolation and integration strategy”. | `present` | The reproducible, per-capability negative gates below scan current production routes, settings, locales, runtimes, package manifests, and the lockfile for the removed symbols, keys, commands, dependencies, and module names. All four gates exit 0. Existing boundaries add positive allowlist evidence: `compact-settings.test.ts` rejects AI/providers/network/spellcheck categories, `SettingsShell.test.tsx` rejects desktop Network, desktop theme runtime capabilities are exact, and `builder_boundary_desktop_preserves_the_complete_command_surface` requires the exact registered Tauri command set. `main..HEAD` path comparison is corroboration only, not the primary evidence. |
 | R37 | Preserve current-main V2 CodeMirror behavior while integrating Dejavu path guards and conflict UI; old Milkdown-specific implementation locations are no longer authoritative. Recovery design main-conflict rule. | `adapted` | `packages/editor/package.json` and `packages/editor/src/codemirror/` use CodeMirror 6; no Milkdown dependency remains. `App.tsx` uses `useCodeMirrorEditorController`, installs `useSyncPathGuard`, derives per-path read-only state, and renders `SyncConflictIndicator`; `useMarkdownDocument::saveDirtyMarkdownPaths` supplies the editor flush boundary. This is the approved V2 replacement of the old editor integration shape. |
 | R38 | Historical milestone/full-suite verification tasks prove the current merged branch. Core plan Task 9; S3 plan Task 8; background plan Task 8; conflict plan Task 8 verification steps. | `obsolete` | Pre-merge historical pass states cannot certify `a89211e`. The 2026-07-28 recovery design explicitly supersedes them with a new focused-repair, full Rust/frontend/build, Go oracle, seven-scenario interop, live S3, and desktop Computer Use sequence. This audit intentionally runs only focused evidence checks. |
+
+## Current-main hard-removal boundary detail
+
+R36 remains `present` only because the current tree passes these separate
+audit-time gates. They deliberately use removed contract symbols rather than
+broad words: ordinary sync `provider` fields and networking stay supported;
+MCP client-installation copy may describe an AI tool; HTML/CodeMirror
+`spellcheck=false` remains a browser control; theme import, activation, and
+selection remain supported.
+
+### AI, Agent, and model-provider surfaces
+
+```bash
+test ! -e packages/ai
+test ! -e packages/providers
+! rg -n '@markra/(ai|providers)|@ai-sdk/|@earendil-works/pi|AiAgent|AiCommand|AiProvider|AgentPanel|AgentSession|AI_EDITOR_PREVIEW|toggleAi|aiEnabled|aiAgent|aiChat|aiProvider|aiModel|aiCommand|aiWorkspace|aiPreview|aiSelection|agentSession|acpAgent|ai_chat_attachments|ai_http|native_ai|settings\.ai\.|settings\.providers\.|settings\.webSearch\.' packages apps package.json pnpm-lock.yaml --glob '!**/node_modules/**'
+! rg --files packages apps | rg '(^|/)(ai|providers)(/|$)|AiAgent|AiProvider|AiCommand|AgentPanel|SpellcheckSuggestion|ai-chat-attachments|native-ai'
+```
+
+Result: exit 0 with no forbidden source, dependency, setting key, runtime
+symbol, or module path.
+
+### Custom spellcheck surface
+
+```bash
+! rg -n 'Spellchecker|markraSpellcheck|spellcheckEnabled|spellcheckIgnoredWords|spellcheckLanguage|openSpellcheckSuggestions|spellcheck_dictionary|requestWebResource|request_web_resource|cspell-trie-lib|@cspell/|settings\.spellcheck\.' packages apps package.json pnpm-lock.yaml --glob '!**/node_modules/**'
+```
+
+Result: exit 0. This intentionally does not match controls that set native
+spellchecking to `false`.
+
+### Application proxy, Network settings, and SOCKS surface
+
+```bash
+! rg -n 'NetworkSettings|defaultNetworkSettings|normalizeNetworkSettings|getStoredNetworkSettings|saveStoredNetworkSettings|proxyEnabled|proxyUrl|proxyHost|proxyPort|proxyUsername|proxyPassword|bypassLocalAddresses|apply_network_settings|networkProxy|settings\.network\.|settings\.categories\.network|settings\.sections\.networkProxy|socks5|socksProxy|socks_proxy' packages apps package.json pnpm-lock.yaml docs/privacy.md --glob '!**/node_modules/**'
+```
+
+Result: exit 0. Provider-specific WebDAV/S3 endpoints and default networking
+are outside this removed application-proxy contract.
+
+### Theme-export surface
+
+```bash
+! rg -n 'export_theme_file|exportNativeTheme|exportCurrent|canExport|exportTheme|themeExport|settings\.theme\.exportCurrent' apps packages docs/theme-authoring.md --glob '!**/node_modules/**'
+```
+
+Result: exit 0. Theme import, replacement, activation, deletion, and ordinary
+document export remain supported.
 
 ## Implementation-plan task coverage index
 
@@ -125,8 +173,9 @@ its checkbox state as evidence.
 `packages/app/src/components/settings/SyncSettings.tsx`. Render phase, trigger,
 last attempt, last success, next scheduled time, transfer totals, safe error,
 maintenance timing, and unresolved conflict count/paths from
-`dejavuRepositoryStatus`. Keep the legacy `SyncStatusSummary` only for the
-legacy/WebDAV surface until R33 is complete.
+`dejavuRepositoryStatus`. Keep the legacy `SyncStatusSummary` for WebDAV during
+and after M2/M3 unless a separate, verified replacement preserves WebDAV status
+semantics.
 
 **Focused test:** Extend
 `packages/app/src/components/settings/SyncSettings.test.tsx` with a running,
@@ -193,6 +242,19 @@ Focused verification results are recorded here after execution:
   cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --lib
   dejavu_sync::maintenance::tests::purge_execution_runs_inside_the_injected_repository_transaction
   -- --exact` — passed: 1 test.
+- Review round 1 reran all four per-capability R36 static gates from
+  “Current-main hard-removal boundary detail”; each exited 0 with no forbidden
+  match.
+- `pnpm --filter @markra/app exec vitest run
+  src/lib/compact-settings.test.ts src/components/SettingsShell.test.tsx
+  src/lib/diagnostics/diagnostics-report.test.ts` — passed: 3 files, 29 tests.
+- `pnpm --filter @markra/desktop exec vitest run src/runtime/index.test.ts
+  src/runtime/tauri/themes.test.ts` — passed: 2 files, 34 tests.
+- `PATH=/Users/ying/.rustup/toolchains/stable-aarch64-apple-darwin/bin:$PATH
+  cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --lib
+  builder_boundary_tests::builder_boundary_desktop_preserves_the_complete_command_surface
+  -- --exact` — passed: 1 test; the exact desktop Tauri command allowlist
+  remains intact.
 - The first shell invocation of the three Cargo checks found no `cargo` on
   `PATH` and did not start tests. The commands above are the successful retries
   with the repository's stable Rust toolchain path.
