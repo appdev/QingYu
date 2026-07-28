@@ -1,15 +1,19 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type {
+  DejavuRepositoryStatus,
   QingYuSyncConfig,
   SyncConfigDocument,
   SyncConfigPatch,
-  SyncConfigLoadResult
+  SyncConfigLoadResult,
+  SyncConflictRecord
 } from "../../lib/sync-config";
 import { translate } from "../../test/settings-components";
 import {
   configureAppRuntime,
   createDefaultAppRuntime,
-  resetAppRuntimeForTests
+  resetAppRuntimeForTests,
+  type AppEventsRuntime,
+  type RuntimeEvent
 } from "../../runtime";
 import { SyncSettings, type SyncSettingsProps } from "./SyncSettings";
 
@@ -73,7 +77,107 @@ function createProps(overrides: Partial<SyncSettingsProps> = {}): SyncSettingsPr
   };
 }
 
+const repositoryId = "00000000-0000-4000-8000-0000000000d1";
+
+function conflict(overrides: Partial<SyncConflictRecord> = {}): SyncConflictRecord {
+  return {
+    conflictId: "00000000-0000-4000-8000-0000000000d2",
+    occurredAt: "2026-07-28T09:00:00Z",
+    relativePath: "notes/conflicted.md",
+    repositoryId,
+    resolution: null,
+    ...overrides
+  };
+}
+
+function repositoryStatus(
+  overrides: Partial<DejavuRepositoryStatus> = {}
+): DejavuRepositoryStatus {
+  return {
+    attempt: 1,
+    automaticFailureCount: 0,
+    conflicts: [],
+    error: null,
+    jobId: "00000000-0000-4000-8000-0000000000d3",
+    lastAttemptAt: "2026-07-28T10:00:00Z",
+    lastDnsRetryAt: null,
+    lastSuccessfulSyncAt: null,
+    maintenance: {
+      lastLocalPurgeAt: null,
+      nextLocalPurgeAt: null
+    },
+    nextScheduledAt: null,
+    phase: "attempting",
+    repositoryId,
+    sameCount: 0,
+    transfer: {
+      downloadBytes: 0,
+      downloadChunks: 0,
+      downloadFiles: 0,
+      uploadBytes: 0,
+      uploadChunks: 0,
+      uploadFiles: 0
+    },
+    trigger: "manual",
+    version: 1,
+    ...overrides
+  };
+}
+
+function formattedDate(value: string) {
+  return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(
+    new Date(value)
+  );
+}
+
+function createEventBus() {
+  const listeners = new Map<string, Set<(event: RuntimeEvent<unknown>) => unknown>>();
+  const events: AppEventsRuntime = {
+    emit: async <TPayload,>(event: string, payload: TPayload) => {
+      for (const listener of listeners.get(event) ?? []) {
+        await listener({ payload });
+      }
+    },
+    isAvailable: () => true,
+    listen: async <TPayload,>(
+      event: string,
+      listener: (event: RuntimeEvent<TPayload>) => unknown
+    ) => {
+      const registered = listeners.get(event) ?? new Set();
+      const normalizedListener = listener as (event: RuntimeEvent<unknown>) => unknown;
+      registered.add(normalizedListener);
+      listeners.set(event, registered);
+      return () => registered.delete(normalizedListener);
+    }
+  };
+  return {
+    events,
+    emit: events.emit,
+    listenerCount: (event: string) => listeners.get(event)?.size ?? 0
+  };
+}
+
+function configureRepositoryStatus(
+  status: DejavuRepositoryStatus,
+  events?: AppEventsRuntime
+) {
+  const runtime = createDefaultAppRuntime();
+  runtime.syncConfig.loadRepositoryStatus = async () => status;
+  if (events) runtime.events = events;
+  configureAppRuntime(runtime);
+}
+
+function renderS3Settings() {
+  const s3Document = document({ config: { ...config, provider: "s3" } });
+  return render(<SyncSettings {...createProps({
+    configDocument: s3Document,
+    loadResult: { ...s3Document, status: "loaded" }
+  })} />);
+}
+
 describe("SyncSettings application scope", () => {
+  afterEach(() => resetAppRuntimeForTests());
+
   it("groups S3 settings from basic choices through connection status", () => {
     const s3Document = document({ config: { ...config, provider: "s3" } });
     render(<SyncSettings {...createProps({
@@ -225,6 +329,207 @@ describe("SyncSettings application scope", () => {
       resetAppRuntimeForTests();
       vi.restoreAllMocks();
     }
+  });
+
+  it("shows the active Dejavu phase trigger attempt time and next schedule", async () => {
+    configureRepositoryStatus(repositoryStatus({
+      lastAttemptAt: "2026-07-28T10:00:00Z",
+      nextScheduledAt: "2026-07-28T11:00:00Z",
+      phase: "attempting",
+      trigger: "interval"
+    }));
+
+    renderS3Settings();
+
+    const summary = await screen.findByRole("status", { name: "Dejavu background sync" });
+    expect(summary).toHaveTextContent("Syncing");
+    expect(summary).toHaveTextContent("Trigger: Scheduled interval");
+    expect(summary).toHaveTextContent(`Last attempt: ${formattedDate("2026-07-28T10:00:00Z")}`);
+    expect(summary).toHaveTextContent(`Next scheduled sync: ${formattedDate("2026-07-28T11:00:00Z")}`);
+  });
+
+  it("shows the retained Dejavu success time and safe failure details", async () => {
+    configureRepositoryStatus(repositoryStatus({
+      error: {
+        code: "repository-auth-failed",
+        operation: "repository-sync"
+      },
+      lastAttemptAt: "2026-07-28T11:00:00Z",
+      lastSuccessfulSyncAt: "2026-07-28T09:00:00Z",
+      phase: "failed",
+      trigger: "save"
+    }));
+
+    renderS3Settings();
+
+    const summary = await screen.findByRole("status", { name: "Dejavu background sync" });
+    expect(summary).toHaveTextContent("Failed");
+    expect(summary).toHaveTextContent(`Last success: ${formattedDate("2026-07-28T09:00:00Z")}`);
+    expect(summary).toHaveTextContent("Error code: repository-auth-failed");
+    expect(summary).toHaveTextContent("Operation: repository-sync");
+  });
+
+  it("shows Dejavu transfer maintenance and unresolved conflict totals", async () => {
+    configureRepositoryStatus(repositoryStatus({
+      conflicts: [
+        conflict(),
+        conflict({
+          conflictId: "00000000-0000-4000-8000-0000000000d4",
+          relativePath: "notes/second.md"
+        }),
+        conflict({
+          conflictId: "00000000-0000-4000-8000-0000000000d5",
+          relativePath: "notes/resolved.md",
+          resolution: "keep-local"
+        })
+      ],
+      lastSuccessfulSyncAt: "2026-07-28T10:00:00Z",
+      maintenance: {
+        lastLocalPurgeAt: "2026-07-28T08:00:00Z",
+        nextLocalPurgeAt: "2026-07-29T08:00:00Z"
+      },
+      phase: "succeeded",
+      transfer: {
+        downloadBytes: 600,
+        downloadChunks: 4,
+        downloadFiles: 2,
+        uploadBytes: 700,
+        uploadChunks: 5,
+        uploadFiles: 3
+      }
+    }));
+
+    renderS3Settings();
+
+    const summary = await screen.findByRole("status", { name: "Dejavu background sync" });
+    expect(summary).toHaveTextContent("Succeeded");
+    expect(summary).toHaveTextContent("Uploaded files: 3");
+    expect(summary).toHaveTextContent("Uploaded chunks: 5");
+    expect(summary).toHaveTextContent("Bytes uploaded: 700");
+    expect(summary).toHaveTextContent("Downloaded files: 2");
+    expect(summary).toHaveTextContent("Downloaded chunks: 4");
+    expect(summary).toHaveTextContent("Bytes downloaded: 600");
+    expect(summary).toHaveTextContent(`Last local cleanup: ${formattedDate("2026-07-28T08:00:00Z")}`);
+    expect(summary).toHaveTextContent(`Next local cleanup: ${formattedDate("2026-07-29T08:00:00Z")}`);
+    expect(summary).toHaveTextContent("Unresolved conflicts: 2");
+    expect(summary).toHaveTextContent("notes/conflicted.md");
+    expect(summary).toHaveTextContent("notes/second.md");
+    expect(summary).not.toHaveTextContent("notes/resolved.md");
+  });
+
+  it("updates the visible Dejavu fields from a status event while mounted", async () => {
+    const events = createEventBus();
+    configureRepositoryStatus(repositoryStatus({
+      phase: "attempting",
+      trigger: "manual"
+    }), events.events);
+    renderS3Settings();
+    const summary = await screen.findByRole("status", { name: "Dejavu background sync" });
+    expect(summary).toHaveTextContent("Syncing");
+    await waitFor(() => expect(events.listenerCount("qingyu://dejavu-sync-status-changed")).toBe(1));
+
+    await act(async () => {
+      await events.emit("qingyu://dejavu-sync-status-changed", repositoryStatus({
+        phase: "failed",
+        repositoryId: "00000000-0000-4000-8000-0000000000ff"
+      }));
+      await events.emit("qingyu://dejavu-sync-status-changed", repositoryStatus({
+        lastSuccessfulSyncAt: "2026-07-28T12:00:00Z",
+        phase: "succeeded",
+        transfer: {
+          downloadBytes: 20,
+          downloadChunks: 2,
+          downloadFiles: 1,
+          uploadBytes: 10,
+          uploadChunks: 1,
+          uploadFiles: 1
+        }
+      }));
+    });
+
+    expect(summary).toHaveTextContent("Succeeded");
+    expect(summary).toHaveTextContent(`Last success: ${formattedDate("2026-07-28T12:00:00Z")}`);
+    expect(summary).toHaveTextContent("Bytes uploaded: 10");
+    expect(summary).toHaveTextContent("Bytes downloaded: 20");
+  });
+
+  it("keeps a newer Dejavu event when the initial status load resolves late", async () => {
+    const events = createEventBus();
+    let resolveInitialStatus!: (status: DejavuRepositoryStatus) => unknown;
+    const runtime = createDefaultAppRuntime();
+    runtime.events = events.events;
+    runtime.syncConfig.loadRepositoryStatus = () => new Promise<DejavuRepositoryStatus>((resolve) => {
+      resolveInitialStatus = resolve;
+    });
+    configureAppRuntime(runtime);
+    renderS3Settings();
+    await waitFor(() => expect(events.listenerCount("qingyu://dejavu-sync-status-changed")).toBe(1));
+
+    await act(async () => {
+      await events.emit("qingyu://dejavu-sync-status-changed", repositoryStatus({
+        lastSuccessfulSyncAt: "2026-07-28T12:00:00Z",
+        phase: "succeeded",
+        transfer: {
+          downloadBytes: 20,
+          downloadChunks: 2,
+          downloadFiles: 1,
+          uploadBytes: 10,
+          uploadChunks: 1,
+          uploadFiles: 1
+        }
+      }));
+      resolveInitialStatus(repositoryStatus({
+        phase: "attempting",
+        trigger: "interval"
+      }));
+    });
+
+    const summary = await screen.findByRole("status", { name: "Dejavu background sync" });
+    expect(summary).toHaveTextContent("Succeeded");
+    expect(summary).toHaveTextContent("Bytes uploaded: 10");
+
+    await act(async () => {
+      await events.emit("qingyu://dejavu-sync-status-changed", repositoryStatus({
+        error: {
+          code: "other-repository-failed",
+          operation: "repository-sync"
+        },
+        phase: "failed",
+        repositoryId: "00000000-0000-4000-8000-0000000000ff"
+      }));
+    });
+    expect(summary).toHaveTextContent("Succeeded");
+    expect(summary).not.toHaveTextContent("other-repository-failed");
+  });
+
+  it("renders only safe Dejavu diagnostics and relative conflict paths", async () => {
+    const absolutePath = "/Users/alice/Private/credentials.md";
+    const status = repositoryStatus({
+      conflicts: [
+        conflict({ relativePath: "notes/safe.md" }),
+        conflict({
+          conflictId: "00000000-0000-4000-8000-0000000000d6",
+          relativePath: absolutePath
+        })
+      ],
+      error: {
+        code: "repository-sync-failed",
+        operation: "repository-sync"
+      },
+      jobId: "00000000-0000-4000-8000-0000000000d7",
+      phase: "failed"
+    });
+    configureRepositoryStatus(status);
+
+    renderS3Settings();
+
+    const summary = await screen.findByRole("status", { name: "Dejavu background sync" });
+    expect(summary).toHaveTextContent("Error code: repository-sync-failed");
+    expect(summary).toHaveTextContent("notes/safe.md");
+    expect(summary).toHaveTextContent("Unresolved conflicts: 2");
+    expect(summary).not.toHaveTextContent(absolutePath);
+    expect(summary).not.toHaveTextContent(status.jobId);
+    expect(summary).not.toHaveTextContent("secret-value");
   });
 
   it("keeps an empty S3 region while showing the automatic runtime value", () => {

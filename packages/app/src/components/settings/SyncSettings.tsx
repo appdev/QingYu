@@ -111,6 +111,102 @@ function statusTriggerLabel(trigger: SyncTrigger, translate: SettingsTranslate) 
   return translate("settings.sync.trigger.interval");
 }
 
+function dejavuStatusPhaseLabel(status: DejavuRepositoryStatus, translate: SettingsTranslate) {
+  if (status.phase === "attempting") return translate("settings.sync.status.attempting");
+  if (status.phase === "failed") return translate("settings.sync.status.failed");
+  return translate("settings.sync.status.succeeded");
+}
+
+function isSafeRelativeStatusPath(value: string) {
+  if (
+    !value
+    || value.startsWith("/")
+    || value.startsWith("\\")
+    || /^[a-z]:[\\/]/iu.test(value)
+    || /^file:/iu.test(value)
+    || value.includes("\0")
+  ) {
+    return false;
+  }
+  return value.split(/[\\/]/u).every((segment) => segment !== "" && segment !== "." && segment !== "..");
+}
+
+function DejavuStatusSummary({
+  status,
+  translate
+}: {
+  status: DejavuRepositoryStatus;
+  translate: SettingsTranslate;
+}) {
+  const unresolvedConflicts = status.conflicts.filter((conflict) => conflict.resolution === null);
+  const visibleConflicts = unresolvedConflicts.filter(
+    (conflict) => isSafeRelativeStatusPath(conflict.relativePath)
+  );
+  return (
+    <div
+      aria-label={translate("settings.sync.dejavuStatus.title")}
+      className="py-4 text-[12px] leading-5 text-(--text-secondary)"
+      role="status"
+    >
+      <p className="m-0 font-[650] text-(--text-heading)">
+        {translate("settings.sync.dejavuStatus.title")}
+      </p>
+      <div className="mt-1 grid gap-1">
+        <p className="m-0 font-[650] text-(--text-heading)">
+          {dejavuStatusPhaseLabel(status, translate)}
+        </p>
+        <p className="m-0">
+          {translate("settings.sync.status.trigger")}: {statusTriggerLabel(status.trigger, translate)}
+        </p>
+        <p className="m-0">
+          {translate("settings.sync.status.lastAttempt")}: {formatStatusDate(status.lastAttemptAt, translate)}
+        </p>
+        <p className="m-0">
+          {translate("settings.sync.status.lastSuccess")}: {formatStatusDate(status.lastSuccessfulSyncAt, translate)}
+        </p>
+        <p className="m-0">
+          {translate("settings.sync.status.nextScheduled")}: {formatStatusDate(status.nextScheduledAt, translate)}
+        </p>
+        {status.error ? (
+          <div className="mt-1 rounded-md bg-(--bg-secondary) p-2" aria-label={translate("settings.sync.status.error")}>
+            <p className="m-0 font-[650] text-(--text-heading)">{translate("settings.sync.status.error")}</p>
+            <p className="m-0">{translate("settings.sync.status.errorCode")}: {status.error.code}</p>
+            <p className="m-0">{translate("settings.sync.status.operation")}: {status.error.operation}</p>
+          </div>
+        ) : null}
+        <div className="mt-1 grid gap-0.5" aria-label={translate("settings.sync.status.summary")}>
+          <p className="m-0 font-[650] text-(--text-heading)">{translate("settings.sync.status.summary")}</p>
+          <p className="m-0">{translate("settings.sync.status.uploadedFiles")}: {status.transfer.uploadFiles}</p>
+          <p className="m-0">{translate("settings.sync.status.uploadedChunks")}: {status.transfer.uploadChunks}</p>
+          <p className="m-0">{translate("settings.sync.status.bytesUploaded")}: {status.transfer.uploadBytes}</p>
+          <p className="m-0">{translate("settings.sync.status.downloadedFiles")}: {status.transfer.downloadFiles}</p>
+          <p className="m-0">{translate("settings.sync.status.downloadedChunks")}: {status.transfer.downloadChunks}</p>
+          <p className="m-0">{translate("settings.sync.status.bytesDownloaded")}: {status.transfer.downloadBytes}</p>
+        </div>
+        <p className="m-0">
+          {translate("settings.sync.status.lastLocalPurge")}: {formatStatusDate(status.maintenance.lastLocalPurgeAt, translate)}
+        </p>
+        <p className="m-0">
+          {translate("settings.sync.status.nextLocalPurge")}: {formatStatusDate(status.maintenance.nextLocalPurgeAt, translate)}
+        </p>
+        <p className="m-0">
+          {translate("settings.sync.status.unresolvedConflicts")}: {unresolvedConflicts.length}
+        </p>
+        {visibleConflicts.map((conflict) => (
+          <button
+            className="block w-full break-all py-1 text-left text-[12px] text-(--danger) underline-offset-2 hover:underline"
+            key={conflict.conflictId}
+            type="button"
+            onClick={() => getAppRuntime().events.emit("qingyu://open-dejavu-conflict", conflict).catch(() => {})}
+          >
+            {conflict.relativePath}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function SyncStatusSummary({ status, translate }: { status: SyncStatus | null; translate: SettingsTranslate }) {
   return (
     <div className="py-4 text-[12px] leading-5 text-(--text-secondary)" role="status" aria-label={translate("settings.sync.lastSync")}>
@@ -228,31 +324,55 @@ export function SyncSettings({
   useEffect(() => {
     let active = true;
     let cleanup: (() => unknown) | null = null;
+    let initialLoadComplete = false;
+    let repositoryId: string | null = null;
+    const pendingEvents = new Map<string, DejavuRepositoryStatus>();
+    setDejavuRepositoryStatus(null);
     if (!primaryRoot) {
-      setDejavuRepositoryStatus(null);
       return;
     }
-    getAppRuntime().syncConfig.loadRepositoryStatus({ notesRoot: primaryRoot }).then((next) => {
-      if (active) setDejavuRepositoryStatus(next);
-    }).catch(() => {
-      if (active) setDejavuRepositoryStatus(null);
-    });
-    if (getAppRuntime().events.isAvailable()) {
-      getAppRuntime().events.listen<DejavuRepositoryStatus>(
-        "qingyu://dejavu-sync-status-changed",
-        ({ payload }) => {
-          if (!active) return;
-          setDejavuRepositoryStatus((current) => (
-            current?.repositoryId === payload.repositoryId ? payload : current
-          ));
+    const runtime = getAppRuntime();
+    const handleStatus = ({ payload }: { payload: DejavuRepositoryStatus }) => {
+      if (!active) return;
+      if (!initialLoadComplete) {
+        pendingEvents.set(payload.repositoryId, payload);
+        return;
+      }
+      if (repositoryId === payload.repositoryId) setDejavuRepositoryStatus(payload);
+    };
+    const initializeStatus = async () => {
+      if (runtime.events.isAvailable()) {
+        try {
+          const stop = await runtime.events.listen<DejavuRepositoryStatus>(
+            "qingyu://dejavu-sync-status-changed",
+            handleStatus
+          );
+          if (!active) return stop();
+          cleanup = stop;
+        } catch {
+          // The persisted snapshot remains available when native events are unavailable.
         }
-      ).then((stop) => {
-        if (!active) return stop();
-        cleanup = stop;
-      }).catch(() => {});
-    }
+      }
+      if (!active) return;
+      try {
+        const next = await runtime.syncConfig.loadRepositoryStatus({ notesRoot: primaryRoot });
+        if (!active) return;
+        repositoryId = next?.repositoryId ?? null;
+        initialLoadComplete = true;
+        const pending = repositoryId ? pendingEvents.get(repositoryId) : null;
+        pendingEvents.clear();
+        setDejavuRepositoryStatus(pending ?? next);
+      } catch {
+        if (!active) return;
+        initialLoadComplete = true;
+        pendingEvents.clear();
+        setDejavuRepositoryStatus(null);
+      }
+    };
+    initializeStatus().catch(() => {});
     return () => {
       active = false;
+      pendingEvents.clear();
       cleanup?.();
     };
   }, [primaryRoot]);
@@ -554,6 +674,9 @@ export function SyncSettings({
           ) : (
             <>
               <p className="m-0 py-2 text-[11px] text-(--text-secondary)">{repositoryId}</p>
+              {dejavuRepositoryStatus ? (
+                <DejavuStatusSummary status={dejavuRepositoryStatus} translate={translate} />
+              ) : null}
               <SettingsRow title={translate("settings.sync.repository.rebuild")} description={translate("settings.sync.repository.rebuildDescription")} action={
                 <SettingsButton disabled={pendingRepositoryOperation === "rebuild"} label={translate("settings.sync.repository.rebuild")} onClick={() => runRepositoryOperation(
                   "rebuild",
@@ -582,16 +705,6 @@ export function SyncSettings({
                   () => getAppRuntime().syncConfig.deleteRemoteRepository({ confirmed: true, repositoryId })
                 )}>{translate("settings.sync.repository.delete")}</SettingsButton>
               } />
-              {(dejavuRepositoryStatus?.conflicts ?? []).filter((conflict) => conflict.resolution === null).map((conflict) => (
-                <button
-                  className="block w-full break-all py-1 text-left text-[12px] text-(--danger) underline-offset-2 hover:underline"
-                  key={conflict.conflictId}
-                  type="button"
-                  onClick={() => getAppRuntime().events.emit("qingyu://open-dejavu-conflict", conflict).catch(() => {})}
-                >
-                  {conflict.relativePath}
-                </button>
-              ))}
               {repositoryFeedback ? <p className="m-0 py-2 text-[12px] text-(--text-secondary)" role="status">{repositoryFeedback}</p> : null}
             </>
           )}
