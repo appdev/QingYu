@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 
 const seededThemeIds = [
@@ -22,6 +23,138 @@ const seededThemeIds = [
   "drake-light",
   "drake-ayu"
 ] as const;
+
+const externalThemeIds = ["drake-faithful-light", "drake-faithful-ayu"] as const;
+
+const expectedFontHashes = {
+  "JetBrainsMono-Bold.woff2": "df3f86c04988d8f7fc516db3e95ec6b630cdc67bec91fe4297c6f8e132be1037",
+  "JetBrainsMono-BoldItalic.woff2": "3aa30cac2529ca86f6b8ef479f143d924378682657510541d10d8e8b6d07120b",
+  "JetBrainsMono-Italic.woff2": "9aef9fe9f1292b1cc4b1af075e4e9bc5f2adf23fef54908e58e2ebe338f33a65",
+  "JetBrainsMono-Regular.woff2": "bceff0710e3a7fe5b3622265c48b6fbc055cf071df80ef5f36ffc69550296664"
+} as const;
+
+const expectedThemeDeclarations = {
+  "drake-faithful-light": [
+    "--bg-primary: #ffffff;",
+    "--bg-secondary: #f6f8fa;",
+    "--bg-chrome: #f8f8f8;",
+    "--bg-code: #f6f8fa;",
+    "--bg-hover: #E5E5E596;",
+    "--bg-active: #E5E5E596;",
+    "--bg-titlebar: #ffffff;",
+    "--bg-sidebar: #f6f8fa;",
+    "--bg-sidebar-header: #f8f8f8;",
+    "--bg-toolbar: #ffffff;",
+    "--bg-outline: #f8f8f8;",
+    "--bg-sidebar-footer: #f8f8f8;",
+    "--border-chrome: #dfe2e5;",
+    "--bg-tree-current: #E5E5E596;",
+    "--text-tree-current: #273849;",
+    "--tree-current-indicator: #e95f59;",
+    "--bg-tree-selected: #fdefee;",
+    "--text-tree-selected: #273849;",
+    "--tree-selected-indicator: #e95f59;",
+    "--bg-outline-current: #E5E5E596;",
+    "--text-outline-current: #d63200;",
+    "--text-primary: #333333;",
+    "--text-heading: #273849;",
+    "--text-secondary: #777777;",
+    "--text-md-char: #777777;",
+    "--border-default: #dfe2e5;",
+    "--border-strong: #dfe2e5;",
+    "--accent: #e95f59;",
+    "--accent-soft: #fdefee;",
+    "--accent-hover: #d63200;",
+    "--danger: #ff0000;",
+    "--link-color: #d63200;",
+    "--scrollbar-track: transparent;",
+    "--scrollbar-thumb: #dfe2e5;",
+    "--scrollbar-thumb-hover: #777777;",
+    "--scrollbar-thumb-active: #e95f59;",
+    "--editor-paper-bg: #ffffff;",
+    "--editor-text-primary: #333333;",
+    "--editor-text-heading: #273849;",
+    "--editor-text-secondary: #777777;",
+    "--editor-border: #dfe2e5;",
+    "--editor-border-strong: #dfe2e5;",
+    "--editor-bg-secondary: #f8f8f8;",
+    "--editor-inline-code-bg: #fdefee;",
+    "--editor-inline-code-text: #d63200;",
+    "--editor-code-bg: #f6f8fa;",
+    "--editor-code-line-bg: #f6f8fa;",
+    "--editor-code-text: #24292e;",
+    "--editor-code-control-bg: #ffffff;",
+    "--editor-link-color: #d63200;",
+    "--editor-hl-keyword: #708;",
+    "--editor-hl-string: #008000;",
+    "--editor-hl-number: #4A86E8;",
+    "--editor-hl-title: #0000ff;",
+    "--editor-hl-type: #00627A;",
+    "--editor-hl-meta: #24292e;",
+    "--editor-hl-symbol: #4A86E8;",
+    "--editor-hl-deletion: #ff0000;"
+  ],
+  "drake-faithful-ayu": [
+    "--bg-primary: #20242f;",
+    "--bg-secondary: #20242f;",
+    "--bg-chrome: #1a1e29;",
+    "--bg-code: #151924;",
+    "--bg-hover: #151924;",
+    "--bg-active: #151924;",
+    "--bg-titlebar: #1a1e29;",
+    "--bg-sidebar: #20242f;",
+    "--bg-sidebar-header: #1a1e29;",
+    "--bg-toolbar: #151924;",
+    "--bg-outline: #20242f;",
+    "--bg-sidebar-footer: #1a1e29;",
+    "--border-chrome: #111520;",
+    "--bg-tree-current: #151924;",
+    "--text-tree-current: #cbcdbf;",
+    "--tree-current-indicator: #fcc65c;",
+    "--bg-tree-selected: #3473B068;",
+    "--text-tree-selected: #cbcdbf;",
+    "--tree-selected-indicator: #fcc65c;",
+    "--bg-outline-current: #151924;",
+    "--text-outline-current: #ffcc66;",
+    "--text-primary: #b0b1ac;",
+    "--text-heading: #cbcdbf;",
+    "--text-secondary: #676773;",
+    "--text-md-char: #676773;",
+    "--border-default: #111520;",
+    "--border-strong: #111520;",
+    "--accent: #fcc65c;",
+    "--accent-soft: #3473B068;",
+    "--accent-hover: #ffcc66;",
+    "--danger: #d1675a;",
+    "--link-color: #ffcc66;",
+    "--scrollbar-track: transparent;",
+    "--scrollbar-thumb: #676773;",
+    "--scrollbar-thumb-hover: #b0b1ac;",
+    "--scrollbar-thumb-active: #fcc65c;",
+    "--editor-paper-bg: #20242f;",
+    "--editor-text-primary: #b0b1ac;",
+    "--editor-text-heading: #cbcdbf;",
+    "--editor-text-secondary: #676773;",
+    "--editor-border: #111520;",
+    "--editor-border-strong: #111520;",
+    "--editor-bg-secondary: #1a1e29;",
+    "--editor-inline-code-bg: #151924;",
+    "--editor-inline-code-text: #ffcc66;",
+    "--editor-code-bg: #151924;",
+    "--editor-code-line-bg: #151924;",
+    "--editor-code-text: #b0b1ac;",
+    "--editor-code-control-bg: #151924;",
+    "--editor-link-color: #ffcc66;",
+    "--editor-hl-keyword: #ffa759;",
+    "--editor-hl-string: #9cc16b;",
+    "--editor-hl-number: #6897BB;",
+    "--editor-hl-title: #ffd580;",
+    "--editor-hl-type: #AABBCC;",
+    "--editor-hl-meta: #BBB529;",
+    "--editor-hl-symbol: #ffa759;",
+    "--editor-hl-deletion: #d1675a;"
+  ]
+} as const;
 
 function readSeededThemeStyles(themeId: typeof seededThemeIds[number]) {
   const fixturePath = themeId === "drake-light" || themeId === "drake-ayu"
@@ -1287,6 +1420,40 @@ describe("editor stylesheet", () => {
       expect(styles).not.toContain("fonts.googleapis.com");
       expect(styles).not.toContain("CodeMirror");
       expect(styles).not.toContain("#typora-");
+    }
+  });
+
+  it("keeps Drake-faithful external packages licensed, self-contained, and source-faithful", () => {
+    for (const id of externalThemeIds) {
+      const root = `${process.cwd()}/../../themes/external/${id}`;
+      const manifest = JSON.parse(readFileSync(`${root}/manifest.json`, "utf8"));
+      const styles = readFileSync(`${root}/theme.css`, "utf8");
+
+      expect(manifest.id).toBe(id);
+      expect(manifest.name).toMatch(/^轻语 · Drake /u);
+      expect(seededThemeIds).not.toContain(id);
+      expect(styles.match(/@font-face/gu)).toHaveLength(4);
+      expect(styles).toContain(`:root[data-theme="${id}"]`);
+      expect(styles).toContain(`.markdown-paper[data-editor-theme="${id}"]`);
+      expect(styles).toContain(`.markdown-source-paper[data-editor-theme="${id}"]`);
+      expect(styles).not.toContain("oklch");
+      expect(styles).not.toContain("@import");
+      expect(styles).not.toContain("@include-when-export");
+      expect(styles).not.toContain("#typora-");
+      expect(styles).not.toContain(".cm-s-inner");
+
+      for (const [fileName, expectedHash] of Object.entries(expectedFontHashes)) {
+        const bytes = readFileSync(`${root}/assets/fonts/${fileName}`);
+        expect(bytes.subarray(0, 4).toString("ascii")).toBe("wOF2");
+        expect(createHash("sha256").update(bytes).digest("hex")).toBe(expectedHash);
+      }
+
+      expectedThemeDeclarations[id].forEach((declaration) => expect(styles).toContain(declaration));
+      expect(styles).not.toMatch(/url\(\s*["']?(?:https?:|\/\/|file:)/u);
+      expect(readFileSync(`${root}/licenses/THEME-LICENSE.txt`, "utf8")).toContain("MIT License");
+      expect(readFileSync(`${root}/licenses/FONT-LICENSE.txt`, "utf8")).toContain(
+        "SIL OPEN FONT LICENSE Version 1.1"
+      );
     }
   });
 
