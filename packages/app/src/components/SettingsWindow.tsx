@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { AppToaster } from "./AppToaster";
 import {
   AppearanceSettings,
@@ -31,6 +31,8 @@ import { getAppRuntime } from "../runtime";
 import type { SettingsCategory } from "../hooks/useSettingsWindowState";
 import { requestPrimaryNotebookSwitch } from "../lib/notebook-switch-events";
 import { RemoteNotebookDialog } from "./notebooks/RemoteNotebookDialog";
+import { SyncConflictHistoryDialog } from "./sync/SyncConflictHistoryDialog";
+import type { SyncConflictRecord } from "../lib/sync-config";
 
 export function SettingsWindow() {
   const settingsState = useSettingsWindowState();
@@ -88,6 +90,7 @@ export function SettingsWindow() {
   const showMacosWindowChrome = platform === "macos" && appFeatures.nativeWindowChrome;
   const liveSettingsStartupReady = appLanguage.ready && appTheme.ready;
   const [settingsStartupReady, setSettingsStartupReady] = useState(liveSettingsStartupReady);
+  const [openSyncConflictHistory, setOpenSyncConflictHistory] = useState<SyncConflictRecord | null>(null);
   useEffect(() => {
     if (!settingsStartupReady && liveSettingsStartupReady) setSettingsStartupReady(true);
   }, [liveSettingsStartupReady, settingsStartupReady]);
@@ -95,8 +98,15 @@ export function SettingsWindow() {
     ? "settings-layout absolute inset-x-0 top-10 bottom-0 grid grid-cols-[180px_minmax(0,1fr)] max-[700px]:grid-cols-1 max-[700px]:grid-rows-[auto_minmax(0,1fr)]"
     : "settings-layout grid h-screen grid-cols-[180px_minmax(0,1fr)] max-[700px]:grid-cols-1 max-[700px]:grid-rows-[auto_minmax(0,1fr)]";
   const handleCloseSettings = () => {
+    setOpenSyncConflictHistory(null);
     hideSettingsWindow().catch(() => {});
   };
+  const handleReadSyncConflictHistory = useCallback((conflict: SyncConflictRecord) => (
+    getAppRuntime().syncConfig.readDejavuConflictHistory({
+      conflictId: conflict.conflictId,
+      repositoryId: conflict.repositoryId
+    })
+  ), []);
   const handleCopyRuntimeLogs = (contents: string) => {
     const writeText = navigator.clipboard?.writeText?.bind(navigator.clipboard);
     if (!writeText) {
@@ -247,6 +257,7 @@ export function SettingsWindow() {
               testing={syncView.testing}
               translate={translate}
               onEnable={syncSession.enable}
+              onOpenConflictHistory={setOpenSyncConflictHistory}
               onPatch={syncSession.patch}
               onReset={syncSession.reset}
               onRunSync={syncSession.runImmediate}
@@ -339,6 +350,14 @@ export function SettingsWindow() {
           onCancel={remoteNotebookDialog.cancel}
           onRefresh={remoteNotebookDialog.refresh}
           onRestore={remoteNotebookDialog.restore}
+        />
+      ) : null}
+      {openSyncConflictHistory ? (
+        <SyncConflictHistoryDialog
+          conflict={openSyncConflictHistory}
+          language={appLanguage.language}
+          onClose={() => setOpenSyncConflictHistory(null)}
+          onRead={handleReadSyncConflictHistory}
         />
       ) : null}
     </main>

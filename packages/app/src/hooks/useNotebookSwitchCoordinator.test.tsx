@@ -33,6 +33,7 @@ function configuredDocument(enabled = true): SyncConfigDocument {
     config: {
       enabled,
       intervalSeconds: 30,
+      generateConflictDocument: false,
       mode: "automatic",
       provider: "webdav",
       remoteRoot: "qingyu",

@@ -9,6 +9,7 @@ function loaded(revision: string, password: string): SyncConfigLoadResult {
     config: {
       enabled: true,
       intervalSeconds: 30,
+      generateConflictDocument: false,
       mode: "automatic",
       provider: "webdav",
       remoteRoot: "qingyu",

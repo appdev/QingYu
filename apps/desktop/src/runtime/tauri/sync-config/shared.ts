@@ -66,22 +66,16 @@ export function loadNativeDejavuRepositoryStatus(
   return invokeNative("load_dejavu_repository_status", { notesRoot: input.notesRoot });
 }
 
-export function listNativeDejavuConflicts(
-  input: Parameters<AppSyncConfigRuntime["listConflicts"]>[0]
+export function listNativeDejavuConflictHistory(
+  input: Parameters<AppSyncConfigRuntime["listDejavuConflictHistory"]>[0]
 ): Promise<SyncConflictRecord[]> {
-  return invokeNative("list_dejavu_conflicts", { repositoryId: input.repositoryId });
+  return invokeNative("list_dejavu_conflict_history", { repositoryId: input.repositoryId });
 }
 
-export function readNativeDejavuConflict(
-  input: Parameters<AppSyncConfigRuntime["readConflict"]>[0]
+export function readNativeDejavuConflictHistory(
+  input: Parameters<AppSyncConfigRuntime["readDejavuConflictHistory"]>[0]
 ): Promise<ConflictVersions> {
-  return invokeNative("read_dejavu_conflict", { request: input });
-}
-
-export function resolveNativeDejavuConflict(
-  input: Parameters<AppSyncConfigRuntime["resolveConflict"]>[0]
-): Promise<AcceptedSyncJob> {
-  return invokeNative("resolve_dejavu_conflict", { request: input });
+  return invokeNative("read_dejavu_conflict_history", { request: input });
 }
 
 export function loadNativeDejavuKeyState(): Promise<DejavuKeyState> {

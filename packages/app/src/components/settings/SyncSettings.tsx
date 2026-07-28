@@ -10,6 +10,7 @@ import {
   type SyncConfigPatch,
   type SyncConfigReadiness,
   type SyncConnectionTestResult,
+  type SyncConflictRecord,
   type SyncStatus,
   type SyncTrigger
 } from "../../lib/sync-config";
@@ -36,6 +37,7 @@ export type SyncSettingsProps = {
   testing: boolean;
   translate: SettingsTranslate;
   onEnable: () => Promise<unknown>;
+  onOpenConflictHistory: (conflict: SyncConflictRecord) => unknown;
   onPatch: (patch: SyncConfigPatch) => Promise<unknown>;
   onReset: () => Promise<unknown>;
   onRunSync: () => Promise<unknown>;
@@ -137,14 +139,16 @@ function isSafeRelativeStatusPath(value: string) {
 }
 
 function DejavuStatusSummary({
+  onOpenConflictHistory,
   status,
   translate
 }: {
+  onOpenConflictHistory: (conflict: SyncConflictRecord) => unknown;
   status: DejavuRepositoryStatus;
   translate: SettingsTranslate;
 }) {
-  const unresolvedConflicts = status.conflicts.filter((conflict) => conflict.resolution === null);
-  const visibleConflicts = unresolvedConflicts.filter(
+  const conflictHistory = status.conflicts;
+  const visibleConflictHistory = conflictHistory.filter(
     (conflict) => isSafeRelativeStatusPath(conflict.relativePath)
   );
   return (
@@ -195,14 +199,14 @@ function DejavuStatusSummary({
           {translate("settings.sync.status.nextLocalPurge")}: {formatStatusDate(status.maintenance.nextLocalPurgeAt, translate)}
         </p>
         <p className="m-0">
-          {translate("settings.sync.status.unresolvedConflicts")}: {unresolvedConflicts.length}
+          {translate("settings.sync.status.conflictHistory")}: {conflictHistory.length}
         </p>
-        {visibleConflicts.map((conflict) => (
+        {visibleConflictHistory.map((conflict) => (
           <button
-            className="block w-full break-all py-1 text-left text-[12px] text-(--danger) underline-offset-2 hover:underline"
+            className="block w-full break-all py-1 text-left text-[12px] text-(--text-secondary) underline-offset-2 hover:underline"
             key={conflict.conflictId}
             type="button"
-            onClick={() => getAppRuntime().events.emit("qingyu://open-dejavu-conflict", conflict).catch(() => {})}
+            onClick={() => onOpenConflictHistory(conflict)}
           >
             {conflict.relativePath}
           </button>
@@ -274,6 +278,7 @@ export function SyncSettings({
   configDocument,
   loadResult,
   onEnable,
+  onOpenConflictHistory,
   onPatch,
   onReset,
   onRunSync,
@@ -702,7 +707,11 @@ export function SyncSettings({
             <>
               <p className="m-0 py-2 text-[11px] text-(--text-secondary)">{repositoryId}</p>
               {dejavuRepositoryStatus ? (
-                <DejavuStatusSummary status={dejavuRepositoryStatus} translate={translate} />
+              <DejavuStatusSummary
+                onOpenConflictHistory={onOpenConflictHistory}
+                status={dejavuRepositoryStatus}
+                translate={translate}
+              />
               ) : null}
               <SettingsRow title={translate("settings.sync.repository.rebuild")} description={translate("settings.sync.repository.rebuildDescription")} action={
                 <SettingsButton disabled={pendingRepositoryOperation === "rebuild"} label={translate("settings.sync.repository.rebuild")} onClick={() => runRepositoryOperation(
@@ -737,6 +746,7 @@ export function SyncSettings({
           )}
         </SettingsSection>
         <SettingsSection label={translate("settings.sync.section.advanced")}>
+          <SettingsRow title={translate("settings.sync.generateConflictDocument")} description={translate("settings.sync.generateConflictDocumentDescription")} action={<SettingsSwitch checked={config.generateConflictDocument} label={translate("settings.sync.generateConflictDocument")} onChange={() => queuePatch({ field: "generateConflictDocument", value: !config.generateConflictDocument })} />} />
           <SettingsRow title={translate("settings.sync.s3RequestTimeout")} description={translate("settings.sync.s3RequestTimeoutDescription")} action={<SettingsNumberInput label={translate("settings.sync.s3RequestTimeout")} min={5} max={600} unit={translate("settings.sync.seconds")} value={config.s3.requestTimeoutSeconds} onChange={(value) => queuePatch({ field: "s3.requestTimeoutSeconds", value })} />} />
           <SettingsRow title={translate("settings.sync.s3AddressingStyle")} description={translate("settings.sync.s3AddressingStyleDescription")} action={<SettingsSelect label={translate("settings.sync.s3AddressingStyle")} options={[
             { label: translate("settings.sync.s3AddressingStyle.auto"), value: "auto" },

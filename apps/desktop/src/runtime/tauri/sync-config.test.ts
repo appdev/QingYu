@@ -29,6 +29,7 @@ describe("native application sync config runtime", () => {
       remoteRoot: "qingyu",
       mode: "startup-exit" as const,
       intervalSeconds: 300,
+      generateConflictDocument: false,
       webdav: { serverUrl: "https://dav.example.test", username: "writer", password: "password" },
       s3: {
         endpointUrl: "",

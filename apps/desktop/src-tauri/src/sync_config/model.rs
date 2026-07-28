@@ -20,6 +20,8 @@ pub(crate) struct SyncConfig {
     pub(crate) remote_root: String,
     pub(crate) mode: SyncMode,
     pub(crate) interval_seconds: u32,
+    #[serde(default)]
+    pub(crate) generate_conflict_document: bool,
     pub(crate) webdav: WebDavConfig,
     pub(crate) s3: S3Config,
 }
@@ -206,6 +208,8 @@ pub(crate) enum SyncConfigPatch {
     Mode(SyncMode),
     #[serde(rename = "intervalSeconds")]
     IntervalSeconds(u32),
+    #[serde(rename = "generateConflictDocument")]
+    GenerateConflictDocument(bool),
     #[serde(rename = "webdav.serverUrl")]
     WebDavServerUrl(String),
     #[serde(rename = "webdav.username")]
@@ -296,6 +300,7 @@ impl Default for SyncConfig {
             remote_root: "qingyu".into(),
             mode: SyncMode::Automatic,
             interval_seconds: 30,
+            generate_conflict_document: false,
             webdav: WebDavConfig::default(),
             s3: S3Config::default(),
         }
@@ -383,6 +388,9 @@ impl SyncConfig {
             SyncConfigPatch::RemoteRoot(value) => self.remote_root = value,
             SyncConfigPatch::Mode(value) => self.mode = value,
             SyncConfigPatch::IntervalSeconds(value) => self.interval_seconds = value,
+            SyncConfigPatch::GenerateConflictDocument(value) => {
+                self.generate_conflict_document = value
+            }
             SyncConfigPatch::WebDavServerUrl(value) => self.webdav.server_url = value,
             SyncConfigPatch::WebDavUsername(value) => self.webdav.username = value,
             SyncConfigPatch::WebDavPassword(value) => self.webdav.password = value,
@@ -429,6 +437,7 @@ mod tests {
         assert_eq!(value["remoteRoot"], "qingyu");
         assert_eq!(value["mode"], "automatic");
         assert_eq!(value["intervalSeconds"], 30);
+        assert_eq!(value["generateConflictDocument"], false);
         assert!(value.get("autoSyncOnSave").is_none());
         assert!(value.get("intervalMinutes").is_none());
         assert_eq!(value["s3"]["endpointUrl"], "");
@@ -509,6 +518,32 @@ mod tests {
         assert_eq!(value["webdav"]["password"], "private");
         assert_eq!(value["s3"]["accessKeyId"], "access");
         assert_eq!(value["s3"]["secretAccessKey"], "secret");
+    }
+
+    #[test]
+    fn conflict_document_preference_defaults_off_and_round_trips_through_patch() {
+        let mut value = serde_json::to_value(SyncConfig::default()).unwrap();
+        value
+            .as_object_mut()
+            .unwrap()
+            .remove("generateConflictDocument");
+        let mut config = serde_json::from_value::<SyncConfig>(value).unwrap();
+
+        assert_eq!(
+            serde_json::to_value(&config).unwrap()["generateConflictDocument"],
+            false
+        );
+        config.apply_patch(
+            serde_json::from_value(serde_json::json!({
+                "field": "generateConflictDocument",
+                "value": true
+            }))
+            .unwrap(),
+        );
+        assert_eq!(
+            serde_json::to_value(config).unwrap()["generateConflictDocument"],
+            true
+        );
     }
 
     #[test]

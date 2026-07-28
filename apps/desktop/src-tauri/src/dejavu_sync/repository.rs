@@ -17,7 +17,7 @@ use qingyu_dejavu::{
 };
 use serde::{Deserialize, Serialize};
 
-use super::conflicts::SyncConflictRecord;
+use super::conflicts::{create_conflict_document, ConflictResolutionKind, SyncConflictRecord};
 use super::local_state::LocalSyncStateService;
 use super::maintenance::LocalPurgeRepositoryOps;
 use super::service::{
@@ -410,6 +410,7 @@ impl DejavuRepositoryRunner {
         })?;
         let snapshot = ready_snapshot_at_app_data(&self.app_data, None)
             .map_err(|_| RepositoryJobError::ConfigUnavailable)?;
+        let generate_conflict_document = snapshot.config.generate_conflict_document;
         let opened = open_bound_local_repository(
             &self.app_data,
             &request.repository_id,
@@ -426,7 +427,7 @@ impl DejavuRepositoryRunner {
 
         // Repo::sync owns the attempt's indexing and lifecycle/operation guards.
         let (merge, traffic) = repo
-            .sync(cloud, coordinator)
+            .sync(cloud, Arc::clone(&coordinator))
             .await
             .map_err(map_repo_error)?;
         paths.revalidate()?;
@@ -452,10 +453,21 @@ impl DejavuRepositoryRunner {
                     repository_id: request.repository_id.clone(),
                     relative_path,
                     occurred_at: occurred_at.clone(),
-                    resolution: None,
+                    resolution: Some(ConflictResolutionKind::KeepLocal),
                 })
             })
             .collect::<Result<Vec<_>, RepositoryJobError>>()?;
+        if generate_conflict_document {
+            for conflict in &conflicts {
+                let _conflict_document_result = create_conflict_document(
+                    &self.app_data,
+                    &request.notes_root,
+                    conflict,
+                    Arc::clone(&coordinator),
+                )
+                .await;
+            }
+        }
         Ok(RepositorySyncResult {
             data_changed,
             transfer: RepositoryTransferSummary {
@@ -1232,6 +1244,9 @@ mod tests {
         DejavuRepositoryRunner, RepositoryCloudFactory, RepositoryCloudParameters,
         WorkingTreeCoordinatorFactory, REPOSITORY_RELOCATION_BACKUP, REPOSITORY_RELOCATION_JOURNAL,
     };
+    use crate::dejavu_sync::conflicts::{
+        create_conflict_document, ConflictResolutionKind, ConflictStore,
+    };
     use crate::dejavu_sync::local_state::{LocalSyncStateService, RepositoryBinding};
     use crate::dejavu_sync::maintenance::LocalPurgeRepositoryOps;
     use crate::dejavu_sync::service::{
@@ -1333,12 +1348,25 @@ mod tests {
 
     struct FakeCoordinatorFactory;
 
+    struct RejectConflictDocumentCoordinator;
+
+    struct RejectConflictDocumentCoordinatorFactory;
+
     impl WorkingTreeCoordinatorFactory for FakeCoordinatorFactory {
         fn create(
             &self,
             _context: &SyncAttemptContext,
         ) -> Result<Arc<dyn WorkingTreeCoordinator>, RepositoryJobError> {
             Ok(Arc::new(FakeCoordinator))
+        }
+    }
+
+    impl WorkingTreeCoordinatorFactory for RejectConflictDocumentCoordinatorFactory {
+        fn create(
+            &self,
+            _context: &SyncAttemptContext,
+        ) -> Result<Arc<dyn WorkingTreeCoordinator>, RepositoryJobError> {
+            Ok(Arc::new(RejectConflictDocumentCoordinator))
         }
     }
 
@@ -1359,6 +1387,46 @@ mod tests {
             Self: 'async_trait,
         {
             Box::pin(async { Ok(WorkingTreePermit::new(())) })
+        }
+
+        fn release<'life0, 'async_trait>(
+            &'life0 self,
+            _permit: WorkingTreePermit,
+        ) -> Pin<Box<dyn Future<Output = ()> + Send + 'async_trait>>
+        where
+            'life0: 'async_trait,
+            Self: 'async_trait,
+        {
+            Box::pin(async {})
+        }
+    }
+
+    impl WorkingTreeCoordinator for RejectConflictDocumentCoordinator {
+        fn prepare<'life0, 'life1, 'async_trait>(
+            &'life0 self,
+            changes: &'life1 [WorkingTreeChange],
+        ) -> Pin<
+            Box<
+                dyn Future<Output = Result<WorkingTreePermit, qingyu_dejavu::RepoError>>
+                    + Send
+                    + 'async_trait,
+            >,
+        >
+        where
+            'life0: 'async_trait,
+            'life1: 'async_trait,
+            Self: 'async_trait,
+        {
+            let rejects = changes
+                .iter()
+                .any(|change| change.path.as_str().contains("-Conflicted-"));
+            Box::pin(async move {
+                if rejects {
+                    Err(qingyu_dejavu::RepoError::WorkingTreeChanged)
+                } else {
+                    Ok(WorkingTreePermit::new(()))
+                }
+            })
         }
 
         fn release<'life0, 'async_trait>(
@@ -1452,6 +1520,7 @@ mod tests {
                 "remoteRoot": "ignored-by-dejavu-layout",
                 "mode": "automatic",
                 "intervalSeconds": 30,
+                "generateConflictDocument": false,
                 "webdav": {
                     "serverUrl": "",
                     "username": "",
@@ -1504,6 +1573,19 @@ mod tests {
     }
 
     impl LiveApplicationClient {
+        fn set_generate_conflict_document(&self, enabled: bool) -> Result<(), &'static str> {
+            let path = self.app_data.join("sync-config.json");
+            let mut config: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&path).map_err(|_| "config_read")?)
+                    .map_err(|_| "config_parse")?;
+            config["generateConflictDocument"] = serde_json::json!(enabled);
+            std::fs::write(
+                path,
+                serde_json::to_vec_pretty(&config).map_err(|_| "config_encode")?,
+            )
+            .map_err(|_| "config_write")
+        }
+
         async fn enqueue_and_wait(&self) -> Result<(String, Arc<LiveStatusEmitter>), &'static str> {
             let runner = Arc::new(DejavuRepositoryRunner::new(
                 &self.app_data,
@@ -1785,6 +1867,14 @@ mod tests {
     }
 
     impl MatrixClient {
+        fn set_generate_conflict_document(&self, enabled: bool) {
+            let path = self.app_data.join("sync-config.json");
+            let mut config: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            config["generateConflictDocument"] = serde_json::json!(enabled);
+            std::fs::write(path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
+        }
+
         async fn bind_and_sync(
             &self,
             cloud_root: &Path,
@@ -1940,6 +2030,68 @@ mod tests {
             || events.iter().any(|status| status.job_id != target_job_id)
         {
             return Err("status_event_sequence");
+        }
+        drop(events);
+
+        tokio::time::sleep(Duration::from_millis(1_100)).await;
+        std::fs::write(
+            source.notes_root.join("remote.md"),
+            b"remote conflict one\n",
+        )
+        .map_err(|_| "source_conflict_write")?;
+        source.enqueue_and_wait().await?;
+        tokio::time::sleep(Duration::from_millis(1_100)).await;
+        std::fs::write(target.notes_root.join("remote.md"), b"local conflict one\n")
+            .map_err(|_| "target_conflict_write")?;
+        target.enqueue_and_wait().await?;
+        if std::fs::read(target.notes_root.join("remote.md")).map_err(|_| "target_conflict_read")?
+            != b"local conflict one\n"
+        {
+            return Err("conflict_local_not_retained");
+        }
+        let history = ConflictStore::new(&target.app_data);
+        let first_entries = history
+            .list_history(repository_id)
+            .map_err(|_| "conflict_history_list")?;
+        let first = first_entries.last().ok_or("conflict_history_missing")?;
+        if first.resolution != Some(ConflictResolutionKind::KeepLocal) {
+            return Err("conflict_not_completed");
+        }
+        let first_versions = history
+            .read_history(repository_id, &first.conflict_id)
+            .map_err(|_| "conflict_history_read")?;
+        if first_versions.remote.text.as_deref() != Some("remote conflict one\n") {
+            return Err("conflict_history_bytes");
+        }
+        if std::fs::read_dir(&target.notes_root)
+            .map_err(|_| "conflict_copy_list")?
+            .filter_map(Result::ok)
+            .any(|entry| entry.file_name().to_string_lossy().contains("-Conflicted-"))
+        {
+            return Err("disabled_conflict_copy_created");
+        }
+
+        source.enqueue_and_wait().await?;
+        tokio::time::sleep(Duration::from_millis(1_100)).await;
+        std::fs::write(
+            source.notes_root.join("remote.md"),
+            b"remote conflict two\n",
+        )
+        .map_err(|_| "source_second_conflict_write")?;
+        source.enqueue_and_wait().await?;
+        tokio::time::sleep(Duration::from_millis(1_100)).await;
+        std::fs::write(target.notes_root.join("remote.md"), b"local conflict two\n")
+            .map_err(|_| "target_second_conflict_write")?;
+        target.set_generate_conflict_document(true)?;
+        target.enqueue_and_wait().await?;
+        let conflict_copies = std::fs::read_dir(&target.notes_root)
+            .map_err(|_| "conflict_copy_list")?
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().contains("-Conflicted-"))
+            .map(|entry| std::fs::read(entry.path()).map_err(|_| "conflict_copy_read"))
+            .collect::<Result<Vec<_>, _>>()?;
+        if conflict_copies != [b"remote conflict two\n".to_vec()] {
+            return Err("enabled_conflict_copy_bytes");
         }
         Ok(())
     }
@@ -2376,6 +2528,18 @@ mod tests {
             ["same.md"]
         );
         assert_eq!(
+            result.conflicts[0].resolution,
+            Some(ConflictResolutionKind::KeepLocal)
+        );
+        assert_eq!(
+            result
+                .conflicts
+                .iter()
+                .filter(|conflict| conflict.resolution.is_none())
+                .count(),
+            0
+        );
+        assert_eq!(
             std::fs::read(target.notes_root.join("same.md")).unwrap(),
             b"local"
         );
@@ -2388,6 +2552,127 @@ mod tests {
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
         assert_eq!(remote_versions, [b"remote".to_vec()]);
+    }
+
+    #[tokio::test]
+    async fn enabled_conflict_document_preference_writes_the_remote_markdown_beside_local() {
+        let environment = MatrixEnvironment::new("00000000-0000-4000-8000-000000000066");
+        let source = environment.client("source", &[("notes/same.md", b"remote")]);
+        source
+            .bind_and_sync(&environment.cloud_root, 69)
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(1_100)).await;
+        let target = environment.client("target", &[("notes/same.md", b"local")]);
+        target.set_generate_conflict_document(true);
+
+        let result = target
+            .bind_and_sync(&environment.cloud_root, 70)
+            .await
+            .unwrap();
+
+        assert_eq!(result.conflicts.len(), 1);
+        let copies = std::fs::read_dir(target.notes_root.join("notes"))
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                name.starts_with("same-Conflicted-") && name.ends_with(".md")
+            })
+            .map(|entry| std::fs::read(entry.path()).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(copies, [b"remote".to_vec()]);
+        assert_eq!(
+            std::fs::read(target.notes_root.join("notes/same.md")).unwrap(),
+            b"local"
+        );
+
+        create_conflict_document(
+            &target.app_data,
+            &target.notes_root,
+            &result.conflicts[0],
+            Arc::new(FakeCoordinator),
+        )
+        .await
+        .unwrap();
+        let mut copy_names = std::fs::read_dir(target.notes_root.join("notes"))
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with("same-Conflicted-") && name.ends_with(".md"))
+            .collect::<Vec<_>>();
+        copy_names.sort();
+        assert_eq!(copy_names.len(), 2);
+        assert!(copy_names.iter().any(|name| name.ends_with("-2.md")));
+    }
+
+    #[tokio::test]
+    async fn enabled_conflict_document_preference_keeps_non_markdown_conflicts_history_only() {
+        let environment = MatrixEnvironment::new("00000000-0000-4000-8000-000000000067");
+        let source = environment.client("source", &[("notes/same.txt", b"remote")]);
+        source
+            .bind_and_sync(&environment.cloud_root, 71)
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(1_100)).await;
+        let target = environment.client("target", &[("notes/same.txt", b"local")]);
+        target.set_generate_conflict_document(true);
+
+        let result = target
+            .bind_and_sync(&environment.cloud_root, 72)
+            .await
+            .unwrap();
+
+        assert_eq!(result.conflicts.len(), 1);
+        let names = std::fs::read_dir(target.notes_root.join("notes"))
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(names, ["same.txt"]);
+    }
+
+    #[tokio::test]
+    async fn conflict_document_coordinator_rejection_does_not_fail_the_completed_sync() {
+        let environment = MatrixEnvironment::new("00000000-0000-4000-8000-000000000068");
+        let source = environment.client("source", &[("notes/same.md", b"remote")]);
+        source
+            .bind_and_sync(&environment.cloud_root, 73)
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(1_100)).await;
+        let target = environment.client("target", &[("notes/same.md", b"local")]);
+        target.set_generate_conflict_document(true);
+        let runner = DejavuRepositoryRunner::with_cloud_factory(
+            &target.app_data,
+            Arc::new(RejectConflictDocumentCoordinatorFactory),
+            Arc::new(LocalCloudFactory::new(environment.cloud_root.clone())),
+        );
+
+        let result = runner
+            .bind_and_sync(SyncAttemptContext {
+                request: SyncJobRequest {
+                    notes_root: target.notes_root.clone(),
+                    repository_id: target.repository_id.clone(),
+                    trigger: SyncTrigger::Manual,
+                },
+                job_id: "30000000-0000-4000-8000-000000000074".to_owned(),
+                attempt: 1,
+                cancellation: JobCancellationToken::new(),
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(result.conflicts.len(), 1);
+        assert_eq!(
+            std::fs::read(target.notes_root.join("notes/same.md")).unwrap(),
+            b"local"
+        );
+        assert!(std::fs::read_dir(target.notes_root.join("notes"))
+            .unwrap()
+            .filter_map(Result::ok)
+            .all(|entry| !entry.file_name().to_string_lossy().contains("-Conflicted-")));
     }
 
     #[test]

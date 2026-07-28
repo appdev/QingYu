@@ -707,7 +707,7 @@ export function createDefaultAppRuntime(): AppRuntime {
       load: () => unsupportedFeature("loadSyncConfig"),
       loadKeyState: async () => ({ configured: false }),
       listNotebooks: () => unsupportedFeature("listRemoteNotebooks"),
-      listConflicts: async () => [],
+      listDejavuConflictHistory: async () => [],
       loadEditing: async () => ({
         counter: syncEditingCounter,
         pendingApply: syncPendingApply,
@@ -749,7 +749,7 @@ export function createDefaultAppRuntime(): AppRuntime {
         };
         return { broadcasted: false, event: syncPendingApply };
       },
-      readConflict: () => unsupportedFeature("readDejavuConflict"),
+      readDejavuConflictHistory: () => unsupportedFeature("readDejavuConflictHistory"),
       rebuildLocalRepository: () => unsupportedFeature("rebuildDejavuLocalRepository"),
       reset: () => unsupportedFeature("resetSyncConfig"),
       setEditing: async (input) => {
@@ -771,7 +771,6 @@ export function createDefaultAppRuntime(): AppRuntime {
         };
       },
       stopRepositorySync: () => unsupportedFeature("stopDejavuRepositorySync"),
-      resolveConflict: () => unsupportedFeature("resolveDejavuConflict"),
       sync: () => unsupportedFeature("syncApplication"),
       testConnection: () => unsupportedFeature("testSyncConnection")
     },
@@ -890,7 +889,6 @@ export {
   type AcceptedSyncJob,
   type AcceptedMaintenanceJob,
   type AppSyncConfigRuntime,
-  type ConflictResolution,
   type ConflictResolutionKind,
   type ConflictVersion,
   type ConflictVersions,

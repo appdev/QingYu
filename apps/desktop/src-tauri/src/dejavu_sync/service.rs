@@ -66,16 +66,6 @@ impl AcceptedSyncJob {
         }
     }
 
-    pub(crate) fn completed(repository_id: String, notes_root: PathBuf) -> Self {
-        let (_completion_tx, completion) = watch::channel(Some(Ok(())));
-        Self::new(
-            uuid::Uuid::new_v4().to_string(),
-            repository_id,
-            notes_root,
-            completion,
-        )
-    }
-
     #[cfg(test)]
     pub(crate) fn completed_for_test(
         job_id: &str,

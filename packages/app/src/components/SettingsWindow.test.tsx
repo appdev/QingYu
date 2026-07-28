@@ -78,6 +78,7 @@ describe("SettingsWindow notes workspace", () => {
           config: {
             enabled: false,
             intervalSeconds: 900,
+            generateConflictDocument: false,
             mode: "automatic",
             provider: "webdav",
             remoteRoot: "qingyu/main",
@@ -137,6 +138,7 @@ describe("SettingsWindow notes workspace", () => {
           config: {
             enabled: true,
             intervalSeconds: 900,
+            generateConflictDocument: false,
             mode: "automatic",
             provider: "webdav",
             remoteRoot: "qingyu/main",
@@ -184,5 +186,111 @@ describe("SettingsWindow notes workspace", () => {
       .not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Select Cloud Notebook" }))
       .toBeInTheDocument();
+  });
+
+  it("opens conflict history inside Settings with the actual local and remote contents", async () => {
+    settingsPrimaryWorkspaceState.current = {
+      ...settingsPrimaryWorkspaceState.current,
+      root: "/Workspace/Current",
+      status: "ready",
+      workspaceRoot: "/Workspace"
+    };
+    const conflict = {
+      conflictId: "00000000-0000-4000-8000-0000000000c2",
+      occurredAt: "2026-07-29T02:42:00Z",
+      relativePath: "notes/conflicted.md",
+      repositoryId: "00000000-0000-4000-8000-0000000000c1",
+      resolution: "keep-local" as const
+    };
+    const listeners = new Map<string, Set<(event: { payload: unknown }) => unknown>>();
+    const runtime = getAppRuntime();
+    configureAppRuntime({
+      ...runtime,
+      events: {
+        emit: async (event, payload) => {
+          for (const listener of listeners.get(event) ?? []) await listener({ payload });
+        },
+        isAvailable: () => true,
+        listen: async (event, listener) => {
+          const registered = listeners.get(event) ?? new Set();
+          registered.add(listener as (event: { payload: unknown }) => unknown);
+          listeners.set(event, registered);
+          return () => registered.delete(listener as (event: { payload: unknown }) => unknown);
+        }
+      },
+      syncConfig: {
+        ...runtime.syncConfig,
+        load: async () => ({
+          config: {
+            enabled: true,
+            generateConflictDocument: false,
+            intervalSeconds: 900,
+            mode: "fully-manual",
+            provider: "s3",
+            remoteRoot: "qingyu/test",
+            s3: {
+              accessKeyId: "",
+              addressingStyle: "auto",
+              bucket: "test",
+              endpointUrl: "https://s3.example.test",
+              region: "us-east-1",
+              requestTimeoutSeconds: 60,
+              secretAccessKey: "",
+              tlsVerification: "verify"
+            },
+            version: 3,
+            webdav: {
+              password: "",
+              serverUrl: "",
+              username: ""
+            }
+          },
+          configured: true,
+          issues: [],
+          readiness: "ready",
+          revision: "rev-conflict",
+          status: "loaded"
+        }),
+        loadRepositoryStatus: async () => ({
+          attempt: 1,
+          automaticFailureCount: 0,
+          conflicts: [conflict],
+          error: null,
+          jobId: "00000000-0000-4000-8000-0000000000c3",
+          lastAttemptAt: "2026-07-29T02:42:00Z",
+          lastDnsRetryAt: null,
+          lastSuccessfulSyncAt: "2026-07-29T02:42:00Z",
+          maintenance: { lastLocalPurgeAt: null, nextLocalPurgeAt: null },
+          nextScheduledAt: null,
+          phase: "succeeded",
+          repositoryId: conflict.repositoryId,
+          sameCount: 0,
+          transfer: {
+            downloadBytes: 0,
+            downloadChunks: 0,
+            downloadFiles: 0,
+            uploadBytes: 0,
+            uploadChunks: 0,
+            uploadFiles: 0
+          },
+          trigger: "manual",
+          version: 1
+        }),
+        readDejavuConflictHistory: vi.fn(async () => ({
+          conflict,
+          local: { byteSize: 13, text: "local content" },
+          remote: { byteSize: 14, text: "remote content" }
+        }))
+      }
+    });
+    render(<SettingsWindow />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Sync" }));
+    fireEvent.click(await screen.findByRole("button", { name: "notes/conflicted.md" }));
+
+    const dialog = await screen.findByRole("dialog", { name: "Sync conflict history" });
+    expect(within(dialog).getByText("local content")).toBeInTheDocument();
+    expect(within(dialog).getByText("remote content")).toBeInTheDocument();
+    expect(mockedHideSettingsWindow).not.toHaveBeenCalled();
   });
 });

@@ -304,7 +304,9 @@ describe("i18n", () => {
       "settings.sync.s3TlsVerification",
       "settings.sync.s3TlsVerificationDescription",
       "settings.sync.s3TlsVerification.verify",
-      "settings.sync.s3TlsVerification.skip"
+      "settings.sync.s3TlsVerification.skip",
+      "settings.sync.generateConflictDocument",
+      "settings.sync.generateConflictDocumentDescription"
     ]);
     for (const [language, messages] of Object.entries(nonEnglishLocaleMessages)) {
       if (language === "zh-CN") continue;

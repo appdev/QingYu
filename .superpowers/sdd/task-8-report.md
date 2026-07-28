@@ -1,4 +1,4 @@
-# Task 8 Report: Tauri UI, Repository Bootstrap, and Relocation
+# Task 8 Report: Tauri UI, Repository Bootstrap, Relocation, and SiYuan-Style Conflicts
 
 ## Outcome
 
@@ -16,13 +16,19 @@ creation, editing, saving, and deletion remained available. The Task 8 QA
 repository and every exact Task 8 prefix were removed and independently
 verified after the run.
 
-Conflict interaction is deliberately not changed by this task. Real UI testing
-found that an unresolved conflict created after the main hook initially loaded
-without a binding is visible in Settings but does not reach the main conflict
-dialog. A temporary late-binding hook correction proved the diagnosis, but it
-was reverted before commit because the approved SiYuan-style conflict design
-will replace that interaction. No temporary hook code or test is part of the
-Task 8 result.
+The follow-up conflict redesign is now included. Same-path conflicts complete
+automatically: the working copy and newly published cloud version use the local
+bytes, the displaced remote bytes remain in repository history, and the
+persisted record is completed as `keep-local`. The application emits a
+non-blocking one-time notice for a new event and never opens a mandatory choice
+dialog. Settings exposes safe conflict-history paths and opens the actual local
+and remote contents in a read-only preview inside the Settings window.
+
+An optional local-only `generateConflictDocument` preference follows SiYuan's
+conflict-document behavior and defaults off. When enabled for Markdown, it
+creates a safe timestamped sibling from the remote history bytes. Non-Markdown
+files remain history-only, and a failed optional copy never turns a completed
+sync into a failure.
 
 ## Product Behavior
 
@@ -45,6 +51,11 @@ Task 8 result.
   or finishes deleting it when the new root is authoritative.
 - History, temporary repository data, and the user's notes are preserved while
   only the repository cache is reset.
+- Same-path conflicts no longer create unresolved work. Dejavu's merge result
+  remains local-wins, the remote version stays in retained history, and users
+  are informed without being asked to choose a version they cannot evaluate.
+- Manual keep-local/use-remote/keep-both commands, the titlebar marker, and the
+  old resolution dialog are removed from the product command graph.
 
 ## Source-Boundary Corrections
 
@@ -77,24 +88,31 @@ and remained masked.
   stale local cache was not reused.
 - A deliberately invalid connection failed visibly; restoring the valid
   configuration made connection testing and synchronization retry succeed.
-- Divergent edits to the same path produced exactly one unresolved conflict.
-  Settings displayed the conflict and both local and remote versions remained
-  available. No resolution action was selected because conflict behavior is
-  owned by the follow-up SiYuan-style design.
+- Divergent edits to the same path completed successfully with exactly one
+  `keep-local` history record. The main window stayed usable and no modal
+  appeared. The local file retained the first client's exact text, no sibling
+  conflict document was created while the option was off, and Settings opened
+  a read-only comparison containing the exact local text and the exact remote
+  history text.
+- The first comparison implementation accidentally opened behind the separate
+  Settings window. A focused regression test reproduced the issue; the final
+  implementation owns the preview in Settings itself, and a rebuilt real app
+  confirmed both versions are visible there without closing Settings.
 - The application exited normally after testing.
 
 ## Cleanup and Security
 
 - The generated Task 8 repository was deleted through the repository catalog,
   and a following catalog read returned `NotFound`.
+- The separate conflict-QA repository was also deleted by its exact repository
+  ID, and a following catalog read returned `NotFound`.
 - The exact Task 8 protected-settings prefix was cleaned, then the independent
   read-only isolated-prefix verifier returned empty.
 - The final local live run independently verified its generated prefix empty;
   the public application parity run did the same for its generated prefix.
-- The three isolated notes roots, isolated app-data directory, stable QA app
-  bundles, and the temporary cleanup helper were moved to the macOS Trash. All
-  original paths were verified absent. The user-supplied credential source file
-  was not modified or deleted.
+- The isolated notes roots, app-data directories, QA app bundles, temporary
+  configuration, and one-shot cleanup helper were moved to the macOS Trash.
+  The user-supplied credential source file was not modified or deleted.
 - Credentials were read only into process-local environment variables from the
   supplied temporary source. They were not printed, copied into source, added
   to a report, or committed. Endpoint evidence uses only `local` and `public`
@@ -102,16 +120,20 @@ and remained masked.
 
 ## Verification
 
-Final verification after removing the temporary conflict-hook experiment:
+Verification for the recovered synchronization path and the SiYuan-style
+conflict redesign:
 
-- `cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml`: 1112 passed,
+- `cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml`: 1113 passed,
   0 failed, 4 ignored.
 - `cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml -- --check`:
   passed.
-- Final `@markra/app` suite: 147 files and 1861 tests passed.
-- `pnpm test`: all workspace projects passed before the temporary two-test
-  conflict experiment was removed; the affected application package was then
-  rerun in full with the final 1861-test state above.
+- Focused Settings/conflict regression suite: 4 files and 44 tests passed.
+- `pnpm test`: every workspace project passed; `@markra/app` passed 146 files
+  and 1860 tests, and `@markra/desktop` passed 20 files and 224 tests. The
+  final test-only enum correction was rerun in its focused Settings file.
+- The isolated macOS Tauri QA bundle built successfully after aligning the
+  JavaScript and Rust logging-plugin versions and removing the stale
+  `Assets.car` resource mapping.
 - `pnpm typecheck:test`: passed for all participating packages.
 - `pnpm build`: passed; desktop verification imported 12 vendor chunks.
 - `pnpm brand:verify`: passed.
@@ -123,11 +145,12 @@ Final verification after removing the temporary conflict-hook experiment:
 - `local` real S3: 3 application tests, 1 independent prefix verifier, and 1
   Dejavu matrix passed.
 - `public` parity: 3 application tests and 1 independent prefix verifier
-  passed.
+  plus 1 Dejavu matrix passed.
 - `git diff --check`: passed.
 
 ## Scope
 
-- `.serena/` and the new conflict-design plan are intentionally excluded.
-- No conflict-resolution semantic change is included.
-- No push or merge into `main` was performed by Task 8.
+- `.serena/` remains intentionally excluded.
+- No credentials, endpoint configuration, generated bundle, or temporary QA
+  data is included.
+- No push was performed.

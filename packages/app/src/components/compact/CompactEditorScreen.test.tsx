@@ -91,6 +91,7 @@ function controller(overrides: {
           config: {
             enabled: true,
             intervalSeconds: 30,
+            generateConflictDocument: false,
             mode: "startup-exit",
             provider: "webdav",
             remoteRoot: "qingyu",

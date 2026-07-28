@@ -39,6 +39,7 @@ function syncDocument(revision: string, remoteRoot = "qingyu"): SyncConfigDocume
     config: {
       enabled: true,
       intervalSeconds: 30,
+      generateConflictDocument: false,
       mode: "startup-exit",
       provider: "webdav",
       remoteRoot,

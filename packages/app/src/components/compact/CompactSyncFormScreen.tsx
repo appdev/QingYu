@@ -32,6 +32,7 @@ function defaultSyncConfig(provider: SyncProvider = "webdav"): QingYuSyncConfig 
   return {
     enabled: false,
     intervalSeconds: 30,
+    generateConflictDocument: false,
     mode: "automatic",
     provider,
     remoteRoot: "qingyu",

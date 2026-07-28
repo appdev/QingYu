@@ -8,11 +8,10 @@ import {
   type RuntimeEvent
 } from "../runtime";
 import {
-  conflictRelativePath,
   dejavuSyncStatusChangedEvent,
-  resetSyncConflictNoticeStateForTests,
-  useSyncConflicts
-} from "./useSyncConflicts";
+  resetSyncConflictHistoryNoticeStateForTests,
+  useSyncConflictHistory
+} from "./useSyncConflictHistory";
 
 vi.mock("../lib/app-toast", () => ({ showAppToast: vi.fn() }));
 
@@ -24,7 +23,7 @@ function conflict(conflictId: string, relativePath = "folder/note.md"): SyncConf
     occurredAt: "2026-07-28T10:00:00Z",
     relativePath,
     repositoryId,
-    resolution: null
+    resolution: "keep-local"
   };
 }
 
@@ -56,13 +55,13 @@ function status(conflicts: SyncConflictRecord[]): DejavuRepositoryStatus {
   };
 }
 
-describe("useSyncConflicts", () => {
+describe("useSyncConflictHistory", () => {
   const listeners = new Map<string, (event: RuntimeEvent<unknown>) => unknown>();
   const initial = conflict("00000000-0000-4000-8000-0000000000a3");
 
   beforeEach(() => {
     listeners.clear();
-    resetSyncConflictNoticeStateForTests();
+    resetSyncConflictHistoryNoticeStateForTests();
     vi.mocked(showAppToast).mockReset();
     const runtime = createDefaultAppRuntime();
     runtime.events.isAvailable = () => true;
@@ -71,36 +70,32 @@ describe("useSyncConflicts", () => {
       return () => listeners.delete(event);
     });
     runtime.syncConfig.loadRepositoryStatus = vi.fn(async () => status([initial]));
-    runtime.syncConfig.listConflicts = vi.fn(async () => [initial, initial]);
-    runtime.syncConfig.readConflict = vi.fn(async () => ({
+    runtime.syncConfig.listDejavuConflictHistory = vi.fn(async () => [initial, initial]);
+    runtime.syncConfig.readDejavuConflictHistory = vi.fn(async () => ({
       conflict: initial,
       local: { byteSize: 5, text: "local" },
       remote: { byteSize: 6, text: "remote" }
     }));
-    runtime.syncConfig.resolveConflict = vi.fn(async () => ({
-      jobId: "00000000-0000-4000-8000-0000000000a4",
-      notesRoot: "/notes",
-      repositoryId
-    }));
     configureAppRuntime(runtime);
   });
 
-  afterEach(() => resetAppRuntimeForTests());
+  afterEach(() => {
+    resetAppRuntimeForTests();
+    resetSyncConflictHistoryNoticeStateForTests();
+  });
 
-  it("loads persisted conflicts without replaying old notices and matches only the active file", async () => {
-    const { result } = renderHook(() => useSyncConflicts({
+  it("loads completed conflict history without replaying old notices and matches only the active file", async () => {
+    const { result } = renderHook(() => useSyncConflictHistory({
       notesRoot: "/notes",
       translate: (key) => key
     }));
 
-    await waitFor(() => expect(result.current.conflicts).toEqual([initial]));
+    await waitFor(() => expect(result.current.entries).toEqual([initial]));
     expect(showAppToast).not.toHaveBeenCalled();
-    expect(result.current.conflictForPath("/notes/folder/note.md")).toEqual(initial);
-    expect(result.current.conflictForPath("/notes/other.md")).toBeNull();
   });
 
-  it("notifies once for a newly emitted id and drops it after accepted resolution", async () => {
-    const { result } = renderHook(() => useSyncConflicts({
+  it("notifies once for newly completed history without asking for a resolution", async () => {
+    const { result } = renderHook(() => useSyncConflictHistory({
       notesRoot: "/notes",
       translate: (key) => key
     }));
@@ -113,17 +108,10 @@ describe("useSyncConflicts", () => {
     });
     expect(showAppToast).toHaveBeenCalledTimes(1);
     expect(showAppToast).toHaveBeenCalledWith(expect.objectContaining({
-      id: `sync-conflict-${next.conflictId}`
+      id: `sync-conflict-${next.conflictId}`,
+      message: "sync.conflict.notice",
+      status: "success"
     }));
-
-    await act(async () => {
-      await result.current.resolve(next, { kind: "keep-local" });
-    });
-    expect(result.current.conflicts).toEqual([initial]);
-  });
-
-  it("normalizes Windows and POSIX roots without accepting prefix lookalikes", () => {
-    expect(conflictRelativePath("C:\\Notes", "c:/notes/Folder/Note.md")).toBe("folder/note.md");
-    expect(conflictRelativePath("/notes", "/notes-archive/note.md")).toBeNull();
+    expect(result.current.entries).toEqual([initial, next]);
   });
 });

@@ -740,7 +740,9 @@ const messages: LocaleMessages = {
     "settings.sync.s3TlsVerification": "TLS 憑證驗證",
     "settings.sync.s3TlsVerificationDescription": "僅當自建 HTTPS 服務使用自簽或不受信任憑證時，才關閉驗證。",
     "settings.sync.s3TlsVerification.verify": "驗證憑證",
-    "settings.sync.s3TlsVerification.skip": "略過驗證（不安全）"
+    "settings.sync.s3TlsVerification.skip": "略過驗證（不安全）",
+    "settings.sync.generateConflictDocument": "產生衝突文件",
+    "settings.sync.generateConflictDocumentDescription": "發生衝突時，同時在本機筆記旁儲存一份遠端 Markdown 版本。預設關閉；遠端版本始終保留在同步歷史中。"
   }
 };
 

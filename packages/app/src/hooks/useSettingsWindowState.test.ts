@@ -40,6 +40,7 @@ function document(revision: string, remoteRoot = "qingyu"): SyncConfigDocument {
     config: {
       enabled: true,
       intervalSeconds: 30,
+      generateConflictDocument: false,
       mode: "startup-exit",
       provider: "webdav",
       remoteRoot,

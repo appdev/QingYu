@@ -12,6 +12,7 @@ export type QingYuSyncConfig = {
   remoteRoot: string;
   mode: SyncMode;
   intervalSeconds: number;
+  generateConflictDocument: boolean;
   webdav: {
     serverUrl: string;
     username: string;
@@ -35,6 +36,7 @@ export type SyncConfigPatch =
   | { field: "remoteRoot"; value: string }
   | { field: "mode"; value: SyncMode }
   | { field: "intervalSeconds"; value: number }
+  | { field: "generateConflictDocument"; value: boolean }
   | { field: "webdav.serverUrl" | "webdav.username" | "webdav.password"; value: string }
   | {
       field:
@@ -58,6 +60,9 @@ export function applySyncConfigPatch(
   if (patch.field === "remoteRoot") return { ...config, remoteRoot: patch.value };
   if (patch.field === "mode") return { ...config, mode: patch.value };
   if (patch.field === "intervalSeconds") return { ...config, intervalSeconds: patch.value };
+  if (patch.field === "generateConflictDocument") {
+    return { ...config, generateConflictDocument: patch.value };
+  }
   if (patch.field === "webdav.serverUrl") {
     return { ...config, webdav: { ...config.webdav, serverUrl: patch.value } };
   }
@@ -291,7 +296,7 @@ export type AcceptedMaintenanceJob = {
 
 export type DejavuKeyState = { configured: boolean };
 
-export type ConflictResolutionKind = "keep-local" | "use-remote" | "keep-both";
+export type ConflictResolutionKind = "keep-local";
 
 export type SyncConflictRecord = {
   conflictId: string;
@@ -311,11 +316,6 @@ export type ConflictVersions = {
   local: ConflictVersion | null;
   remote: ConflictVersion;
 };
-
-export type ConflictResolution =
-  | { kind: "keep-local" }
-  | { kind: "use-remote" }
-  | { destinationRelativePath: string; kind: "keep-both" };
 
 export type DejavuRepositoryStatus = {
   attempt: number;
@@ -364,7 +364,7 @@ export type AppSyncConfigRuntime = {
   load(): Promise<SyncConfigLoadResult>;
   loadKeyState(): Promise<DejavuKeyState>;
   listNotebooks(input: { revision: string }): Promise<RemoteNotebookCatalogEntry[]>;
-  listConflicts(input: { repositoryId: string }): Promise<SyncConflictRecord[]>;
+  listDejavuConflictHistory(input: { repositoryId: string }): Promise<SyncConflictRecord[]>;
   loadEditing(): Promise<SyncEditingSnapshot>;
   loadRepositoryStatus(input: { notesRoot: string }): Promise<DejavuRepositoryStatus | null>;
   loadStatus(): Promise<SyncStatus | null>;
@@ -385,7 +385,7 @@ export type AppSyncConfigRuntime = {
     repositoryId: string;
   }): Promise<AcceptedMaintenanceJob>;
   requestApply(input: SyncApplyUpdate): Promise<SyncApplyWriteResult>;
-  readConflict(input: {
+  readDejavuConflictHistory(input: {
     conflictId: string;
     repositoryId: string;
   }): Promise<ConflictVersions>;
@@ -398,11 +398,6 @@ export type AppSyncConfigRuntime = {
     confirmed: true;
     repositoryId: string;
   }): Promise<AcceptedMaintenanceJob>;
-  resolveConflict(input: {
-    conflictId: string;
-    repositoryId: string;
-    resolution: ConflictResolution;
-  }): Promise<AcceptedSyncJob>;
   sync(input: SyncRunRequest): Promise<SyncDispatchResult>;
   testConnection(input: { revision: string }): Promise<SyncConnectionTestResult>;
 };

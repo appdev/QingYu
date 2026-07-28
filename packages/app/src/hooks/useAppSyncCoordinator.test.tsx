@@ -40,6 +40,7 @@ function configDocument(revision = "rev-1", patch: Partial<SyncConfigDocument["c
     config: {
       enabled: true,
       intervalSeconds: 30,
+      generateConflictDocument: false,
       mode: "automatic",
       provider: "webdav",
       remoteRoot: "qingyu",

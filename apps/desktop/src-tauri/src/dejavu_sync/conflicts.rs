@@ -1,3 +1,4 @@
+use std::ffi::OsStr;
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
@@ -5,24 +6,19 @@ use std::sync::Arc;
 use cap_fs_ext::DirExt;
 use qingyu_dejavu::{
     write_cap_file_safer, ExpectedRevision, RepoError, RepositoryRelativePath, WorkingTreeAction,
-    WorkingTreeChange,
+    WorkingTreeChange, WorkingTreeCoordinator,
 };
 use serde::{Deserialize, Serialize};
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 
 use super::local_state::LocalSyncStateService;
-use super::repository::WorkingTreeCoordinatorFactory;
-use super::service::{
-    AcceptedSyncJob, DejavuSyncService, JobCancellationToken, RepositoryJobError,
-    SyncAttemptContext, SyncJobRequest,
-};
-use super::status::{load_repository_sync_status, RepositoryStatusStore, RepositorySyncStatus};
+use super::service::RepositoryJobError;
+use super::status::{load_repository_sync_status, RepositorySyncStatus};
 use crate::storage_capability::{
     nonfollowing_read_options, open_canonical_directory_nofollow, unique_regular_file_identity,
     UniqueRegularFileIdentity,
 };
-use crate::sync_config::status::SyncTrigger;
 
 const MAX_CONFLICT_TEXT_BYTES: u64 = 2 * 1024 * 1024;
 
@@ -30,8 +26,6 @@ const MAX_CONFLICT_TEXT_BYTES: u64 = 2 * 1024 * 1024;
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum ConflictResolutionKind {
     KeepLocal,
-    UseRemote,
-    KeepBoth,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -59,47 +53,8 @@ pub(crate) struct ConflictVersions {
     pub(crate) remote: ConflictVersion,
 }
 
-#[derive(Clone, Debug, Deserialize)]
-#[serde(
-    rename_all = "kebab-case",
-    rename_all_fields = "camelCase",
-    tag = "kind",
-    deny_unknown_fields
-)]
-pub(crate) enum ConflictResolution {
-    KeepLocal,
-    UseRemote,
-    KeepBoth { destination_relative_path: String },
-}
-
-impl ConflictResolution {
-    fn kind(&self) -> ConflictResolutionKind {
-        match self {
-            Self::KeepLocal => ConflictResolutionKind::KeepLocal,
-            Self::UseRemote => ConflictResolutionKind::UseRemote,
-            Self::KeepBoth { .. } => ConflictResolutionKind::KeepBoth,
-        }
-    }
-}
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct ResolveConflictRequest {
-    pub(crate) repository_id: String,
-    pub(crate) conflict_id: String,
-    pub(crate) resolution: ConflictResolution,
-}
-
 pub(crate) struct ConflictStore {
     app_data: PathBuf,
-}
-
-pub(crate) struct ConflictResolver {
-    app_data: PathBuf,
-    service: DejavuSyncService,
-    store: Arc<ConflictStore>,
-    status: Arc<RepositoryStatusStore>,
-    coordinator_factory: Arc<dyn WorkingTreeCoordinatorFactory>,
 }
 
 impl ConflictStore {
@@ -128,7 +83,7 @@ impl ConflictStore {
             .ok_or(RepositoryJobError::InvalidBinding)
     }
 
-    pub(crate) fn list(
+    pub(crate) fn list_history(
         &self,
         repository_id: &str,
     ) -> Result<Vec<SyncConflictRecord>, RepositoryJobError> {
@@ -139,16 +94,13 @@ impl ConflictStore {
                 status
                     .conflicts
                     .into_iter()
-                    .filter(|conflict| {
-                        conflict.resolution.is_none()
-                            && conflict_history_exists(&self.app_data, conflict)
-                    })
+                    .filter(|conflict| conflict_history_exists(&self.app_data, conflict))
                     .collect()
             })
             .unwrap_or_default())
     }
 
-    pub(crate) fn read(
+    pub(crate) fn read_history(
         &self,
         repository_id: &str,
         conflict_id: &str,
@@ -162,9 +114,7 @@ impl ConflictStore {
                     .into_iter()
                     .find(|conflict| conflict.conflict_id == conflict_id)
             })
-            .filter(|conflict| {
-                conflict.repository_id == repository_id && conflict.resolution.is_none()
-            })
+            .filter(|conflict| conflict.repository_id == repository_id)
             .ok_or(RepositoryJobError::ConflictUnavailable)?;
         let state = LocalSyncStateService::new(&self.app_data)
             .load()
@@ -210,185 +160,80 @@ impl ConflictStore {
         };
         load_repository_sync_status(&self.app_data, &binding.repository_id)
     }
-
-    fn find(
-        &self,
-        repository_id: &str,
-        conflict_id: &str,
-    ) -> Result<SyncConflictRecord, RepositoryJobError> {
-        load_repository_sync_status(&self.app_data, repository_id)?
-            .and_then(|status| {
-                status.conflicts.into_iter().find(|conflict| {
-                    conflict.conflict_id == conflict_id
-                        && conflict.repository_id == repository_id
-                        && conflict.resolution.is_none()
-                })
-            })
-            .filter(|conflict| conflict_history_exists(&self.app_data, conflict))
-            .ok_or(RepositoryJobError::ConflictUnavailable)
-    }
 }
 
-impl ConflictResolver {
-    pub(crate) fn new<CoordinatorFactory>(
-        app_data: impl AsRef<Path>,
-        service: DejavuSyncService,
-        store: Arc<ConflictStore>,
-        status: Arc<RepositoryStatusStore>,
-        coordinator_factory: Arc<CoordinatorFactory>,
-    ) -> Self
-    where
-        CoordinatorFactory: WorkingTreeCoordinatorFactory + 'static,
+pub(crate) async fn create_conflict_document(
+    app_data: &Path,
+    notes_root: &Path,
+    conflict: &SyncConflictRecord,
+    coordinator: Arc<dyn WorkingTreeCoordinator>,
+) -> Result<(), RepositoryJobError> {
+    let source_relative = validated_relative_path(&conflict.relative_path)?;
+    if source_relative
+        .extension()
+        .and_then(OsStr::to_str)
+        .is_none_or(|extension| !extension.eq_ignore_ascii_case("md"))
     {
-        let coordinator_factory: Arc<dyn WorkingTreeCoordinatorFactory> = coordinator_factory;
-        Self {
-            app_data: app_data.as_ref().to_path_buf(),
-            service,
-            store,
-            status,
-            coordinator_factory,
-        }
+        return Ok(());
     }
-
-    pub(crate) async fn resolve(
-        &self,
-        request: ResolveConflictRequest,
-    ) -> Result<AcceptedSyncJob, RepositoryJobError> {
-        canonical_uuid(&request.repository_id)?;
-        canonical_uuid(&request.conflict_id)?;
-        let reservation = self
-            .service
-            .reserve_repository_maintenance(&request.repository_id)?;
-        let state = LocalSyncStateService::new(&self.app_data)
-            .load()
-            .map_err(RepositoryJobError::from)?
-            .ok_or(RepositoryJobError::ConflictUnavailable)?;
-        let binding = state
-            .bindings
-            .iter()
-            .find(|binding| binding.repository_id == request.repository_id && binding.enabled)
-            .cloned()
-            .ok_or(RepositoryJobError::ConflictUnavailable)?;
-        let status = Arc::clone(&self.status);
-        let store = Arc::clone(&self.store);
-        let factory = Arc::clone(&self.coordinator_factory);
-        let repository_id = request.repository_id.clone();
-        let conflict_id = request.conflict_id.clone();
-        let resolution_kind = request.resolution.kind();
-        let job_id = uuid::Uuid::new_v4().to_string();
-        let notes_root = binding.notes_root.clone();
-        let cancellation = JobCancellationToken::new();
-        let sync_request = SyncJobRequest {
-            notes_root: notes_root.clone(),
-            repository_id: repository_id.clone(),
-            trigger: SyncTrigger::Manual,
+    let occurred = OffsetDateTime::parse(&conflict.occurred_at, &Rfc3339)
+        .map_err(|_| RepositoryJobError::ConflictUnavailable)?;
+    let history_root = conflict_history_root(app_data, conflict)?;
+    let (remote_bytes, _) = read_all_bytes(&history_root, &source_relative)?
+        .ok_or(RepositoryJobError::ConflictUnavailable)?;
+    let stem = source_relative
+        .file_stem()
+        .and_then(OsStr::to_str)
+        .ok_or(RepositoryJobError::ConflictUnavailable)?;
+    let name_prefix = format!(
+        "{stem}-Conflicted-{:04}{:02}{:02}-{:02}{:02}{:02}",
+        occurred.year(),
+        u8::from(occurred.month()),
+        occurred.day(),
+        occurred.hour(),
+        occurred.minute(),
+        occurred.second()
+    );
+    let parent = source_relative.parent().unwrap_or_else(|| Path::new(""));
+    let mut ordinal = 1_u32;
+    let destination = loop {
+        let suffix = if ordinal == 1 {
+            String::new()
+        } else {
+            format!("-{ordinal}")
         };
-        let coordinator = factory.create(&SyncAttemptContext {
-            request: sync_request.clone(),
-            job_id,
-            attempt: 1,
-            cancellation,
-        })?;
-        let reserved_repository_id = repository_id.clone();
-        let reserved_notes_root = notes_root.clone();
-
-        reservation
-            .run(async move {
-                let conflict = store.find(&reserved_repository_id, &conflict_id)?;
-                match request.resolution {
-                    ConflictResolution::KeepLocal => {}
-                    ConflictResolution::UseRemote => {
-                        let source_relative = validated_relative_path(&conflict.relative_path)?;
-                        let history_root = conflict_history_root(&store.app_data, &conflict)?;
-                        let (remote_bytes, _) = read_all_bytes(&history_root, &source_relative)?
-                            .ok_or(RepositoryJobError::ConflictUnavailable)?;
-                        let before = file_identity_at(&reserved_notes_root, &source_relative)?;
-                        let change = WorkingTreeChange {
-                            path: RepositoryRelativePath::new(conflict.relative_path.clone())
-                                .map_err(|_| RepositoryJobError::ConflictUnavailable)?,
-                            expected_revision: ExpectedRevision::Absent,
-                            action: WorkingTreeAction::Write,
-                        };
-                        let permit = coordinator
-                            .prepare(std::slice::from_ref(&change))
-                            .await
-                            .map_err(map_working_tree_error)?;
-                        let operation = (|| {
-                            if file_identity_at(&reserved_notes_root, &source_relative)? != before {
-                                return Err(RepositoryJobError::WorkingTreeChanged);
-                            }
-                            if let Some((local_bytes, _)) =
-                                read_all_bytes(&reserved_notes_root, &source_relative)?
-                            {
-                                let archive_relative =
-                                    PathBuf::from(".qingyu-local").join(&source_relative);
-                                write_relative_file(
-                                    &history_root,
-                                    &archive_relative,
-                                    &local_bytes,
-                                    false,
-                                )?;
-                            }
-                            write_relative_file(
-                                &reserved_notes_root,
-                                &source_relative,
-                                &remote_bytes,
-                                false,
-                            )
-                        })();
-                        coordinator.release(permit).await;
-                        operation?;
-                    }
-                    ConflictResolution::KeepBoth {
-                        destination_relative_path,
-                    } => {
-                        let source_relative = validated_relative_path(&conflict.relative_path)?;
-                        let destination = validated_relative_path(&destination_relative_path)?;
-                        if destination == source_relative {
-                            return Err(RepositoryJobError::ConflictUnavailable);
-                        }
-                        let history_root = conflict_history_root(&store.app_data, &conflict)?;
-                        let (remote_bytes, _) = read_all_bytes(&history_root, &source_relative)?
-                            .ok_or(RepositoryJobError::ConflictUnavailable)?;
-                        let before = file_identity_at(&reserved_notes_root, &destination)?;
-                        if before.is_some() {
-                            return Err(RepositoryJobError::ConflictUnavailable);
-                        }
-                        let change = WorkingTreeChange {
-                            path: RepositoryRelativePath::new(destination_relative_path)
-                                .map_err(|_| RepositoryJobError::ConflictUnavailable)?,
-                            expected_revision: ExpectedRevision::Absent,
-                            action: WorkingTreeAction::Write,
-                        };
-                        let permit = coordinator
-                            .prepare(std::slice::from_ref(&change))
-                            .await
-                            .map_err(map_working_tree_error)?;
-                        let operation = (|| {
-                            if file_identity_at(&reserved_notes_root, &destination)? != before {
-                                return Err(RepositoryJobError::WorkingTreeChanged);
-                            }
-                            write_relative_file(
-                                &reserved_notes_root,
-                                &destination,
-                                &remote_bytes,
-                                true,
-                            )
-                        })();
-                        coordinator.release(permit).await;
-                        operation?;
-                    }
-                }
-                status.resolve_conflict(&reserved_repository_id, &conflict_id, resolution_kind)?;
-                Ok::<_, RepositoryJobError>(())
-            })
-            .await?;
-
-        if resolution_kind == ConflictResolutionKind::KeepLocal {
-            return Ok(AcceptedSyncJob::completed(repository_id, notes_root));
+        let candidate = parent.join(format!("{name_prefix}{suffix}.md"));
+        if file_identity_at(notes_root, &candidate)?.is_none() {
+            break candidate;
         }
-        self.service.enqueue(sync_request).await
-    }
+        ordinal = ordinal
+            .checked_add(1)
+            .filter(|next| *next <= 10_000)
+            .ok_or(RepositoryJobError::WorkingTreeChanged)?;
+    };
+    let change = WorkingTreeChange {
+        path: RepositoryRelativePath::new(
+            destination
+                .to_str()
+                .ok_or(RepositoryJobError::ConflictUnavailable)?
+                .replace('\\', "/"),
+        )
+        .map_err(|_| RepositoryJobError::ConflictUnavailable)?,
+        expected_revision: ExpectedRevision::Absent,
+        action: WorkingTreeAction::Write,
+    };
+    let permit = coordinator
+        .prepare(std::slice::from_ref(&change))
+        .await
+        .map_err(map_working_tree_error)?;
+    let operation = (|| {
+        if file_identity_at(notes_root, &destination)?.is_some() {
+            return Err(RepositoryJobError::WorkingTreeChanged);
+        }
+        write_relative_file(notes_root, &destination, &remote_bytes, true)
+    })();
+    coordinator.release(permit).await;
+    operation
 }
 
 pub(crate) fn conflict_history_exists(app_data: &Path, conflict: &SyncConflictRecord) -> bool {
@@ -534,7 +379,23 @@ fn file_identity_at(
     root: &Path,
     relative: &Path,
 ) -> Result<Option<UniqueRegularFileIdentity>, RepositoryJobError> {
-    read_all_bytes(root, relative).map(|value| value.map(|(_, identity)| identity))
+    let root = match open_canonical_directory_nofollow(root) {
+        Ok(root) => root,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err(RepositoryJobError::ConflictUnavailable),
+    };
+    let (directory, name) = open_relative_parent(root, relative, false)?;
+    let Some(name) = name else {
+        return Ok(None);
+    };
+    let addressed = match directory.symlink_metadata(&name) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err(RepositoryJobError::ConflictUnavailable),
+    };
+    unique_regular_file_identity(&addressed)
+        .map(Some)
+        .ok_or(RepositoryJobError::ConflictUnavailable)
 }
 
 fn write_relative_file(
@@ -620,30 +481,22 @@ fn canonical_uuid(value: &str) -> Result<(), RepositoryJobError> {
 
 #[cfg(test)]
 mod tests {
-    use std::future::Future;
     use std::path::PathBuf;
-    use std::pin::Pin;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::{Arc, Mutex};
+    use std::sync::Arc;
 
     use base64::engine::general_purpose::STANDARD;
     use base64::Engine;
-    use qingyu_dejavu::{WorkingTreeChange, WorkingTreeCoordinator, WorkingTreePermit};
     use tempfile::tempdir;
 
     use super::{
-        ConflictResolution, ConflictResolutionKind, ConflictResolver, ConflictStore,
-        ResolveConflictRequest, SyncConflictRecord, MAX_CONFLICT_TEXT_BYTES,
+        ConflictResolutionKind, ConflictStore, SyncConflictRecord, MAX_CONFLICT_TEXT_BYTES,
     };
     use crate::dejavu_sync::local_state::{LocalSyncStateService, RepositoryBinding};
-    use crate::dejavu_sync::repository::WorkingTreeCoordinatorFactory;
     use crate::dejavu_sync::service::{
-        DejavuSyncService, RepositoryJobError, RepositoryJobRunner, RepositoryStatusSink,
-        RepositorySyncResult, SyncAttemptContext, SyncJobRequest,
+        RepositoryJobError, RepositoryStatusSink, RepositorySyncResult, SyncJobRequest,
     };
     use crate::dejavu_sync::status::{
-        load_repository_sync_status, RepositoryStatusEventEmitter, RepositoryStatusStore,
-        RepositorySyncStatus,
+        RepositoryStatusEventEmitter, RepositoryStatusStore, RepositorySyncStatus,
     };
     use crate::sync_config::status::SyncTrigger;
 
@@ -657,83 +510,6 @@ mod tests {
     impl RepositoryStatusEventEmitter for NoopEmitter {
         fn emit(&self, _status: &RepositorySyncStatus) -> Result<(), RepositoryJobError> {
             Ok(())
-        }
-    }
-
-    struct NoopRunner;
-
-    impl RepositoryJobRunner for NoopRunner {
-        fn validate(&self, request: SyncJobRequest) -> Result<SyncJobRequest, RepositoryJobError> {
-            Ok(request)
-        }
-
-        fn run_attempt<'a>(
-            &'a self,
-            _context: SyncAttemptContext,
-        ) -> Pin<
-            Box<dyn Future<Output = Result<RepositorySyncResult, RepositoryJobError>> + Send + 'a>,
-        > {
-            Box::pin(async { Ok(RepositorySyncResult::default()) })
-        }
-    }
-
-    #[derive(Default)]
-    struct RecordingCoordinator {
-        prepared: Mutex<Vec<Vec<String>>>,
-        releases: AtomicUsize,
-    }
-
-    impl WorkingTreeCoordinator for RecordingCoordinator {
-        fn prepare<'life0, 'life1, 'async_trait>(
-            &'life0 self,
-            changes: &'life1 [WorkingTreeChange],
-        ) -> Pin<
-            Box<
-                dyn Future<Output = Result<WorkingTreePermit, qingyu_dejavu::RepoError>>
-                    + Send
-                    + 'async_trait,
-            >,
-        >
-        where
-            'life0: 'async_trait,
-            'life1: 'async_trait,
-            Self: 'async_trait,
-        {
-            Box::pin(async move {
-                self.prepared.lock().unwrap().push(
-                    changes
-                        .iter()
-                        .map(|change| change.path.as_str().to_owned())
-                        .collect(),
-                );
-                Ok(WorkingTreePermit::new(()))
-            })
-        }
-
-        fn release<'life0, 'async_trait>(
-            &'life0 self,
-            _permit: WorkingTreePermit,
-        ) -> Pin<Box<dyn Future<Output = ()> + Send + 'async_trait>>
-        where
-            'life0: 'async_trait,
-            Self: 'async_trait,
-        {
-            Box::pin(async move {
-                self.releases.fetch_add(1, Ordering::SeqCst);
-            })
-        }
-    }
-
-    struct RecordingCoordinatorFactory {
-        coordinator: Arc<RecordingCoordinator>,
-    }
-
-    impl WorkingTreeCoordinatorFactory for RecordingCoordinatorFactory {
-        fn create(
-            &self,
-            _context: &SyncAttemptContext,
-        ) -> Result<Arc<dyn WorkingTreeCoordinator>, RepositoryJobError> {
-            Ok(self.coordinator.clone())
         }
     }
 
@@ -792,7 +568,7 @@ mod tests {
                         repository_id: REPOSITORY_ID.to_owned(),
                         relative_path: "document.md".to_owned(),
                         occurred_at: OCCURRED_AT.to_owned(),
-                        resolution: None,
+                        resolution: Some(ConflictResolutionKind::KeepLocal),
                     }],
                 },
             );
@@ -807,48 +583,22 @@ mod tests {
                 history_file,
             }
         }
-
-        fn resolver(&self) -> (ConflictResolver, Arc<RecordingCoordinator>) {
-            let status = Arc::new(RepositoryStatusStore::new(
-                &self.app_data,
-                Arc::new(NoopEmitter),
-            ));
-            let service = DejavuSyncService::new(Arc::new(NoopRunner), Arc::clone(&status));
-            let coordinator = Arc::new(RecordingCoordinator::default());
-            let resolver = ConflictResolver::new(
-                &self.app_data,
-                service,
-                Arc::new(ConflictStore::new(&self.app_data)),
-                status,
-                Arc::new(RecordingCoordinatorFactory {
-                    coordinator: Arc::clone(&coordinator),
-                }),
-            );
-            (resolver, coordinator)
-        }
-
-        fn resolution(&self) -> Option<ConflictResolutionKind> {
-            load_repository_sync_status(&self.app_data, REPOSITORY_ID)
-                .unwrap()
-                .unwrap()
-                .conflicts
-                .into_iter()
-                .find(|conflict| conflict.conflict_id == CONFLICT_ID)
-                .unwrap()
-                .resolution
-        }
     }
 
     #[tokio::test]
-    async fn list_and_read_return_only_relative_metadata_and_bounded_text_versions() {
+    async fn list_and_read_return_completed_relative_metadata_and_bounded_text_versions() {
         let fixture = Fixture::new(b"remote text").await;
         let store = ConflictStore::new(&fixture.app_data);
 
         assert!(store.key_configured().unwrap());
         assert_eq!(store.export_key().unwrap(), STANDARD.encode([3_u8; 32]));
-        let listed = store.list(REPOSITORY_ID).unwrap();
+        let listed = store.list_history(REPOSITORY_ID).unwrap();
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].relative_path, "document.md");
+        assert_eq!(
+            listed[0].resolution,
+            Some(ConflictResolutionKind::KeepLocal)
+        );
         assert_eq!(
             store
                 .status_for_root(&fixture.notes_root)
@@ -857,7 +607,7 @@ mod tests {
                 .repository_id,
             REPOSITORY_ID
         );
-        let versions = store.read(REPOSITORY_ID, CONFLICT_ID).unwrap();
+        let versions = store.read_history(REPOSITORY_ID, CONFLICT_ID).unwrap();
         assert_eq!(
             versions.local.as_ref().unwrap().text.as_deref(),
             Some("local text")
@@ -874,13 +624,13 @@ mod tests {
         std::fs::remove_file(&fixture.history_file).unwrap();
         let store = ConflictStore::new(&fixture.app_data);
 
-        assert!(store.list(REPOSITORY_ID).unwrap().is_empty());
+        assert!(store.list_history(REPOSITORY_ID).unwrap().is_empty());
         assert_eq!(
-            store.read(REPOSITORY_ID, CONFLICT_ID),
+            store.read_history(REPOSITORY_ID, CONFLICT_ID),
             Err(RepositoryJobError::ConflictUnavailable)
         );
         assert_eq!(
-            store.read(OTHER_REPOSITORY_ID, CONFLICT_ID),
+            store.read_history(OTHER_REPOSITORY_ID, CONFLICT_ID),
             Err(RepositoryJobError::ConflictUnavailable)
         );
     }
@@ -892,131 +642,10 @@ mod tests {
         std::fs::write(fixture.notes_root.join("document.md"), [0xff, 0xfe]).unwrap();
 
         let versions = ConflictStore::new(&fixture.app_data)
-            .read(REPOSITORY_ID, CONFLICT_ID)
+            .read_history(REPOSITORY_ID, CONFLICT_ID)
             .unwrap();
         assert_eq!(versions.remote.byte_size, MAX_CONFLICT_TEXT_BYTES + 1);
         assert_eq!(versions.remote.text, None);
         assert_eq!(versions.local.unwrap().text, None);
-    }
-
-    #[tokio::test]
-    async fn keep_local_marks_the_conflict_without_touching_the_working_tree() {
-        let fixture = Fixture::new(b"remote text").await;
-        let (resolver, coordinator) = fixture.resolver();
-
-        let accepted = resolver
-            .resolve(ResolveConflictRequest {
-                repository_id: REPOSITORY_ID.to_owned(),
-                conflict_id: CONFLICT_ID.to_owned(),
-                resolution: ConflictResolution::KeepLocal,
-            })
-            .await
-            .unwrap();
-        accepted.wait_for_completion().await.unwrap();
-
-        assert_eq!(
-            std::fs::read(fixture.notes_root.join("document.md")).unwrap(),
-            b"local text"
-        );
-        assert_eq!(
-            fixture.resolution(),
-            Some(ConflictResolutionKind::KeepLocal)
-        );
-        assert!(coordinator.prepared.lock().unwrap().is_empty());
-    }
-
-    #[tokio::test]
-    async fn use_remote_archives_local_then_replaces_and_enqueues_sync() {
-        let fixture = Fixture::new(b"remote text").await;
-        let (resolver, coordinator) = fixture.resolver();
-
-        let accepted = resolver
-            .resolve(ResolveConflictRequest {
-                repository_id: REPOSITORY_ID.to_owned(),
-                conflict_id: CONFLICT_ID.to_owned(),
-                resolution: ConflictResolution::UseRemote,
-            })
-            .await
-            .unwrap();
-        accepted.wait_for_completion().await.unwrap();
-
-        assert_eq!(
-            std::fs::read(fixture.notes_root.join("document.md")).unwrap(),
-            b"remote text"
-        );
-        assert_eq!(
-            std::fs::read(
-                fixture
-                    .history_file
-                    .parent()
-                    .unwrap()
-                    .join(".qingyu-local/document.md")
-            )
-            .unwrap(),
-            b"local text"
-        );
-        assert_eq!(
-            fixture.resolution(),
-            Some(ConflictResolutionKind::UseRemote)
-        );
-        assert_eq!(
-            coordinator.prepared.lock().unwrap().as_slice(),
-            &[vec!["document.md".to_owned()]]
-        );
-        assert_eq!(coordinator.releases.load(Ordering::SeqCst), 1);
-    }
-
-    #[tokio::test]
-    async fn keep_both_writes_remote_to_an_absent_destination_and_rejects_traversal() {
-        let fixture = Fixture::new(b"remote text").await;
-        let (resolver, coordinator) = fixture.resolver();
-
-        let traversal = resolver
-            .resolve(ResolveConflictRequest {
-                repository_id: REPOSITORY_ID.to_owned(),
-                conflict_id: CONFLICT_ID.to_owned(),
-                resolution: ConflictResolution::KeepBoth {
-                    destination_relative_path: "../escaped.md".to_owned(),
-                },
-            })
-            .await;
-        assert!(matches!(
-            traversal,
-            Err(RepositoryJobError::ConflictUnavailable)
-        ));
-        assert_eq!(fixture.resolution(), None);
-
-        let accepted = resolver
-            .resolve(ResolveConflictRequest {
-                repository_id: REPOSITORY_ID.to_owned(),
-                conflict_id: CONFLICT_ID.to_owned(),
-                resolution: ConflictResolution::KeepBoth {
-                    destination_relative_path: "Copies/document.remote.md".to_owned(),
-                },
-            })
-            .await
-            .unwrap();
-        accepted.wait_for_completion().await.unwrap();
-
-        assert_eq!(
-            std::fs::read(fixture.notes_root.join("document.md")).unwrap(),
-            b"local text"
-        );
-        assert_eq!(
-            std::fs::read(fixture.notes_root.join("Copies/document.remote.md")).unwrap(),
-            b"remote text"
-        );
-        assert!(!fixture
-            .notes_root
-            .parent()
-            .unwrap()
-            .join("escaped.md")
-            .exists());
-        assert_eq!(fixture.resolution(), Some(ConflictResolutionKind::KeepBoth));
-        assert_eq!(
-            coordinator.prepared.lock().unwrap().as_slice(),
-            &[vec!["Copies/document.remote.md".to_owned()]]
-        );
-        assert_eq!(coordinator.releases.load(Ordering::SeqCst), 1);
     }
 }

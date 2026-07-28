@@ -407,6 +407,7 @@ function readyProjectConfigResult(projectRoot: string, revision = "rev-app-ready
     config: {
       enabled: true,
       intervalSeconds: 30,
+      generateConflictDocument: false,
       mode: "automatic" as const,
       provider: "webdav" as const,
       remoteRoot: "notes",
@@ -501,6 +502,7 @@ function readySyncConfigResult(
     config: {
       enabled: true,
       intervalSeconds: 30,
+      generateConflictDocument: false,
       mode: "automatic" as const,
       provider,
       remoteRoot: provider === "s3" ? "project-b-prefix" : "notes",

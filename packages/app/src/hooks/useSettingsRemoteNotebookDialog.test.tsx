@@ -22,6 +22,7 @@ function document(revision = "rev-2"): SyncConfigDocument {
     config: {
       enabled: true,
       intervalSeconds: 30,
+      generateConflictDocument: false,
       mode: "startup-exit",
       provider: "webdav",
       remoteRoot: "qingyu",

@@ -15,6 +15,7 @@ describe("application sync config contract", () => {
       remoteRoot: "qingyu",
       mode: "automatic",
       intervalSeconds: 30,
+      generateConflictDocument: false,
       webdav: { serverUrl: "https://dav.old", username: "old", password: "secret" },
       s3: {
         endpointUrl: "",
@@ -69,6 +70,7 @@ describe("application sync config contract", () => {
       remoteRoot: "qingyu",
       mode: "fully-manual",
       intervalSeconds: 43_200,
+      generateConflictDocument: false,
       webdav: { serverUrl: "", username: "", password: "" },
       s3: {
         endpointUrl: "",
@@ -106,6 +108,7 @@ describe("application sync config contract", () => {
       config: {
         enabled: false,
         intervalSeconds: 30,
+        generateConflictDocument: false,
         mode: "automatic" as const,
         provider: "webdav" as const,
         remoteRoot: configured ? "qingyu" : "",

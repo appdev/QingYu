@@ -48,7 +48,6 @@
     ],
     "macOS": {
       "files": {
-        "Resources/Assets.car": "icons/generated/Assets.car",
         "Resources/de.lproj": "macos-locales/de.lproj",
         "Resources/en.lproj": "macos-locales/en.lproj",
         "Resources/es.lproj": "macos-locales/es.lproj",

@@ -19,6 +19,7 @@ import { SyncSettings, type SyncSettingsProps } from "./SyncSettings";
 
 const config: QingYuSyncConfig = {
   enabled: true,
+  generateConflictDocument: false,
   intervalSeconds: 900,
   mode: "automatic",
   provider: "webdav",
@@ -68,6 +69,7 @@ function createProps(overrides: Partial<SyncSettingsProps> = {}): SyncSettingsPr
     testing: false,
     translate,
     onEnable: vi.fn(async () => undefined),
+    onOpenConflictHistory: vi.fn(),
     onPatch: vi.fn(async (_patch: SyncConfigPatch) => undefined),
     onReset: vi.fn(async () => undefined),
     onRunSync: vi.fn(async () => undefined),
@@ -85,7 +87,7 @@ function conflict(overrides: Partial<SyncConflictRecord> = {}): SyncConflictReco
     occurredAt: "2026-07-28T09:00:00Z",
     relativePath: "notes/conflicted.md",
     repositoryId,
-    resolution: null,
+    resolution: "keep-local",
     ...overrides
   };
 }
@@ -269,6 +271,22 @@ describe("SyncSettings application scope", () => {
     expect(onPatch).toHaveBeenCalledWith({ field: "s3.tlsVerification", value: "skip" });
   });
 
+  it("keeps SiYuan-style conflict document generation off by default and persists the switch", () => {
+    const onPatch = vi.fn(async (_patch: SyncConfigPatch) => undefined);
+    const s3Document = document({ config: { ...config, provider: "s3" } });
+    render(<SyncSettings {...createProps({
+      configDocument: s3Document,
+      loadResult: { ...s3Document, status: "loaded" },
+      onPatch
+    })} />);
+
+    const preference = screen.getByRole("switch", { name: "Create conflict document" });
+    expect(preference).not.toBeChecked();
+    fireEvent.click(preference);
+
+    expect(onPatch).toHaveBeenCalledWith({ field: "generateConflictDocument", value: true });
+  });
+
   it("imports a local key and dispatches repository maintenance as accepted background work", async () => {
     const runtime = createDefaultAppRuntime();
     const initializeGlobalKey = vi.fn(async () => ({ configured: true }));
@@ -369,7 +387,7 @@ describe("SyncSettings application scope", () => {
     expect(summary).toHaveTextContent("Operation: repository-sync");
   });
 
-  it("shows Dejavu transfer maintenance and unresolved conflict totals", async () => {
+  it("shows Dejavu transfer maintenance and read-only conflict history", async () => {
     configureRepositoryStatus(repositoryStatus({
       conflicts: [
         conflict(),
@@ -411,10 +429,10 @@ describe("SyncSettings application scope", () => {
     expect(summary).toHaveTextContent("Bytes downloaded: 600");
     expect(summary).toHaveTextContent(`Last local cleanup: ${formattedDate("2026-07-28T08:00:00Z")}`);
     expect(summary).toHaveTextContent(`Next local cleanup: ${formattedDate("2026-07-29T08:00:00Z")}`);
-    expect(summary).toHaveTextContent("Unresolved conflicts: 2");
+    expect(summary).toHaveTextContent("Conflict history: 3");
     expect(summary).toHaveTextContent("notes/conflicted.md");
     expect(summary).toHaveTextContent("notes/second.md");
-    expect(summary).not.toHaveTextContent("notes/resolved.md");
+    expect(summary).toHaveTextContent("notes/resolved.md");
   });
 
   it("updates the visible Dejavu fields from a status event while mounted", async () => {
@@ -695,7 +713,7 @@ describe("SyncSettings application scope", () => {
     const summary = await screen.findByRole("status", { name: "Dejavu background sync" });
     expect(summary).toHaveTextContent("Error code: repository-sync-failed");
     expect(summary).toHaveTextContent("notes/safe.md");
-    expect(summary).toHaveTextContent("Unresolved conflicts: 14");
+    expect(summary).toHaveTextContent("Conflict history: 14");
     for (const [, path] of unsafePaths) {
       expect(summary.textContent).not.toContain(path);
     }
