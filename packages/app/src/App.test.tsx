@@ -868,7 +868,6 @@ function createStoredEditorPreferences(
       openButton: "visible",
       outline: "visible",
       quickCreateButton: "visible",
-      recentFolders: "visible",
       sidebarLayout: "visible",
       statusBar: "visible",
       titlebarActions: "visible",
@@ -4299,7 +4298,6 @@ describe("QingYu workspace", () => {
           openButton: "visible",
           outline: "visible",
           quickCreateButton: "visible",
-          recentFolders: "visible",
           sidebarLayout: "visible",
           statusBar: "visible",
           titlebarActions: "visible",
@@ -4358,7 +4356,6 @@ describe("QingYu workspace", () => {
           openButton: "visible",
           outline: "visible",
           quickCreateButton: "visible",
-          recentFolders: "visible",
           sidebarLayout: "visible",
           statusBar: "visible",
           titlebarActions: "visible",
@@ -4726,7 +4723,6 @@ describe("QingYu workspace", () => {
         ...defaultPreferences.viewModeCustomizations,
         fileList: "hidden",
         outline: "hidden",
-        recentFolders: "hidden"
       }
     }));
     mockedGetStoredWorkspaceState.mockResolvedValue({
@@ -5919,7 +5915,6 @@ describe("QingYu workspace", () => {
         openButton: "visible",
         outline: "visible",
         quickCreateButton: "visible",
-        recentFolders: "visible",
         sidebarLayout: "visible",
         statusBar: "visible",
         titlebarActions: "visible",
@@ -8481,7 +8476,6 @@ describe("QingYu workspace", () => {
         openButton: "visible",
         outline: "visible",
         quickCreateButton: "visible",
-        recentFolders: "visible",
         sidebarLayout: "visible",
         statusBar: "visible",
         titlebarActions: "visible",
@@ -8634,7 +8628,6 @@ describe("QingYu workspace", () => {
         openButton: "visible",
         outline: "visible",
         quickCreateButton: "visible",
-        recentFolders: "visible",
         sidebarLayout: "visible",
         statusBar: "visible",
         titlebarActions: "visible",

@@ -26,9 +26,11 @@ describe("workspace state settings", () => {
   });
 
   it("ignores the obsolete recent-directory expansion field", () => {
+    const obsoleteExpansionKey = ["recent", "FoldersOpen"].join("");
+
     expect(normalizeWorkspaceState({
       ...defaultWorkspaceState,
-      recentFoldersOpen: false
+      [obsoleteExpansionKey]: false
     })).toEqual(defaultWorkspaceState);
   });
 

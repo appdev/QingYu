@@ -357,7 +357,6 @@ vi.mock("../lib/settings/app-settings", () => ({
       openButton: "visible",
       outline: "visible",
       quickCreateButton: "visible",
-      recentFolders: "visible",
       statusBar: "visible",
       titlebarActions: "visible",
       viewModeToggle: "visible"
@@ -1347,7 +1346,6 @@ export function installAppTestHarness() {
         openButton: "visible",
         outline: "visible",
         quickCreateButton: "visible",
-        recentFolders: "visible",
         sidebarLayout: "visible",
         statusBar: "visible",
         titlebarActions: "visible",

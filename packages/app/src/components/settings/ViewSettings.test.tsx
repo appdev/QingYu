@@ -50,7 +50,9 @@ describe("ViewSettings", () => {
 
     expect(visibilityGrid.queryByRole("switch", { name: "File tree" })).not.toBeInTheDocument();
     expect(sidebarGroup.getByRole("switch", { name: "Sidebar" })).toBeChecked();
-    expect(sidebarGroup.getByRole("switch", { name: "Recently used directories" })).toBeInTheDocument();
+    expect(sidebarGroup.queryByRole("switch", {
+      name: "Recently used directories"
+    })).not.toBeInTheDocument();
     expect(sidebarGroup.getByRole("switch", { name: "File list" })).toBeInTheDocument();
     expect(sidebarGroup.getByRole("switch", { name: "Outline" })).toBeInTheDocument();
     expect(sidebarGroup.queryByRole("switch", { name: "Sidebar layout" })).not.toBeInTheDocument();
@@ -99,8 +101,7 @@ describe("ViewSettings", () => {
         ...defaultEditorPreferences.viewModeCustomizations,
         documentLinks: "hidden",
         fileList: "hidden",
-        outline: "hidden",
-        recentFolders: "hidden"
+        outline: "hidden"
       }
     });
   });
@@ -136,8 +137,7 @@ describe("ViewSettings", () => {
         ...preferences.viewModeCustomizations,
         documentLinks: "hidden",
         fileList: "hidden",
-        outline: "hidden",
-        recentFolders: "hidden"
+        outline: "hidden"
       }
     });
   });
@@ -162,7 +162,6 @@ describe("ViewSettings", () => {
     expect(within(visibilityList).queryByRole("switch")).not.toBeInTheDocument();
     expect(screen.queryByText("Current state for each element in this view mode.")).not.toBeInTheDocument();
     expect(screen.queryByRole("listitem", { name: "File tree: Hidden" })).not.toBeInTheDocument();
-    expect(screen.getByRole("listitem", { name: "Recently used directories: Hidden" })).toBeInTheDocument();
     expect(screen.getByRole("listitem", { name: "File list: Hidden" })).toBeInTheDocument();
     expect(screen.getByRole("listitem", { name: "Outline: Hidden" })).toBeInTheDocument();
     expect(screen.getByRole("listitem", { name: "File list button: Hidden" })).toBeInTheDocument();
@@ -190,7 +189,6 @@ describe("ViewSettings", () => {
             fileList: "hidden",
             openButton: "hidden",
             outline: "hidden",
-            recentFolders: "hidden",
             wordCount: "hidden"
           }
         }}
@@ -202,7 +200,6 @@ describe("ViewSettings", () => {
     const visibilityGrid = within(screen.getByRole("list", { name: "Element visibility" }));
 
     expect(screen.queryByRole("listitem", { name: "File tree: Visible" })).not.toBeInTheDocument();
-    expect(screen.getByRole("listitem", { name: "Recently used directories: Hidden" })).toBeInTheDocument();
     expect(screen.getByRole("listitem", { name: "File list: Hidden" })).toBeInTheDocument();
     expect(screen.getByRole("listitem", { name: "Outline: Hidden" })).toBeInTheDocument();
     expect(screen.getByRole("listitem", { name: "File list button: Hidden" })).toBeInTheDocument();
@@ -214,7 +211,6 @@ describe("ViewSettings", () => {
     expect(screen.queryByRole("listitem", { name: "View mode button: Visible" })).not.toBeInTheDocument();
     expect(visibilityGrid.queryByRole("switch", { name: "File tree" })).not.toBeInTheDocument();
     expect(within(screen.getByRole("group", { name: "Sidebar" })).getByRole("switch", { name: "Sidebar" })).not.toBeChecked();
-    expect(within(screen.getByRole("group", { name: "Sidebar" })).getByRole("switch", { name: "Recently used directories" })).not.toBeChecked();
     expect(within(screen.getByRole("group", { name: "Sidebar" })).getByRole("switch", { name: "File list" })).not.toBeChecked();
     expect(within(screen.getByRole("group", { name: "Sidebar" })).getByRole("switch", { name: "Outline" })).not.toBeChecked();
     expect(within(screen.getByRole("group", { name: "Title bar" })).getByRole("switch", { name: "Title bar" })).toBeChecked();

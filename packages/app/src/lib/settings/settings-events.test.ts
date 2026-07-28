@@ -253,7 +253,6 @@ describe("settings events", () => {
         openButton: "visible",
         outline: "visible",
         quickCreateButton: "visible",
-        recentFolders: "visible",
         sidebarLayout: "visible",
         statusBar: "visible",
         titlebarActions: "visible",

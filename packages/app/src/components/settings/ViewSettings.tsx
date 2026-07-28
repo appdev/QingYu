@@ -40,10 +40,6 @@ const viewModeCustomizationGroups: Array<{
     labelKey: "settings.editor.viewMode.group.sidebar",
     options: [
       {
-        key: "recentFolders",
-        labelKey: "settings.editor.viewMode.recentFolders"
-      },
-      {
         key: "fileList",
         labelKey: "settings.editor.viewMode.fileList"
       },
