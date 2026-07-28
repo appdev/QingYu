@@ -2694,7 +2694,7 @@ export function MarkdownFileTreeDrawer({
           </div>
         ) : null}
 
-        {recentFoldersOpen && recentFolders.length > 0 ? (
+        {recentFoldersOpen && onOpenRecentFolder && recentFolders.length > 0 ? (
           <div className="markdown-file-tree-folder-access theme-sidebar-surface flex shrink-0 items-center gap-1 border-b theme-chrome-border px-3 py-1">
             {recentFolders.map((folder) => {
               const current = Boolean(rootPath && sameNativePath(folder.path, rootPath));

@@ -326,6 +326,26 @@ describe("MarkdownFileTreeDrawer", () => {
     expect(container.querySelector("ol.border-l")).toHaveClass("theme-chrome-border");
   });
 
+  it("does not render recent folders without an open callback", () => {
+    const { container } = render(
+      <MarkdownFileTreeDrawer
+        currentPath="/vault/Untitled.md"
+        files={markdownFiles}
+        open
+        outlineItems={[]}
+        recentFolders={[{ name: "vault", path: "/vault" }]}
+        recentFoldersOpen
+        rootName="vault"
+        rootPath="/vault"
+        onOpenFile={() => {}}
+        onSelectOutlineItem={() => {}}
+      />
+    );
+
+    expect(container.querySelector(".markdown-file-tree-folder-access")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "vault" })).not.toBeInTheDocument();
+  });
+
   it("hides the file list and outline independently for view mode chrome", () => {
     render(
       <MarkdownFileTreeDrawer
