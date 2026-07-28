@@ -4102,6 +4102,10 @@
     box-shadow: none;
   }
 
+  .markdown-paper .cm-markra-code-top-gap:has(+ .cm-line .markra-code-block[data-mermaid-mode="preview"]) {
+    display: none;
+  }
+
   .markdown-paper .markra-code-block[data-mermaid-mode="preview"] .markra-code-line-numbers,
   .markdown-paper .markra-code-block[data-mermaid-mode="preview"] pre,
   .markdown-paper .markra-code-block[data-mermaid-mode="preview"] .markra-code-copy-button,
@@ -4208,6 +4212,21 @@
     height: min(88vh, 44rem);
     max-width: min(92vw, 80rem);
     min-height: min(28rem, 88vh);
+  }
+
+  .markra-mermaid-zoom-dialog[data-fullscreen="true"] {
+    padding: 0;
+  }
+
+  .markra-mermaid-zoom-dialog[data-fullscreen="true"] .markra-mermaid-zoom-panel {
+    width: 100%;
+    height: 100%;
+    max-width: none;
+    max-height: none;
+    min-height: 0;
+    border-width: 0;
+    border-radius: 0;
+    box-shadow: none;
   }
 
   .markra-mermaid-zoom-toolbar {
