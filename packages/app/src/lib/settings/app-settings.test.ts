@@ -8,6 +8,7 @@ import {
 import {
   darkEditorThemeOptions,
   approveThemeFingerprint,
+  defaultCustomThemeCss,
   defaultExportSettings,
   defaultFileIgnoreSettings,
   defaultEditorPreferences,
@@ -54,6 +55,22 @@ describe("app settings", () => {
 
   afterEach(() => {
     resetSettingsStoreRuntime();
+  });
+
+  it("documents the supported heading tokens in the default custom theme CSS", () => {
+    expect(defaultCustomThemeCss).toContain("--editor-heading-font-weight: 760;");
+    expect(defaultCustomThemeCss).toContain("--editor-heading-letter-spacing: 0;");
+    expect(defaultCustomThemeCss).toContain("--editor-h1-font-size-compact: 34px;");
+    expect(defaultCustomThemeCss).toContain("--editor-h2-font-size-compact: 26px;");
+
+    for (const level of [1, 2, 3, 4, 5, 6]) {
+      expect(defaultCustomThemeCss).toContain(`--editor-h${level}-color: var(--editor-text-heading);`);
+      expect(defaultCustomThemeCss).toContain(`--editor-h${level}-font-size:`);
+      expect(defaultCustomThemeCss).toContain(
+        `--editor-h${level}-font-weight: var(--editor-heading-font-weight);`
+      );
+      expect(defaultCustomThemeCss).toContain(`--editor-h${level}-line-height:`);
+    }
   });
 
   it("consumes and persists the first welcome document state in the Tauri app data store", async () => {
@@ -320,6 +337,12 @@ describe("app settings", () => {
     expect(defaultEditorPreferences.autoRevealActiveFile).toBe(false);
     expect(normalizeEditorPreferences({ autoRevealActiveFile: false }).autoRevealActiveFile).toBe(false);
     expect(normalizeEditorPreferences({ autoRevealActiveFile: "sometimes" }).autoRevealActiveFile).toBe(false);
+  });
+
+  it("normalizes the dropped file tab preference", () => {
+    expect(defaultEditorPreferences.openDroppedFilesInTabs).toBe(false);
+    expect(normalizeEditorPreferences({ openDroppedFilesInTabs: true }).openDroppedFilesInTabs).toBe(true);
+    expect(normalizeEditorPreferences({ openDroppedFilesInTabs: "yes" }).openDroppedFilesInTabs).toBe(false);
   });
 
   it("normalizes the document links visibility preference", () => {

@@ -341,6 +341,7 @@ vi.mock("../lib/settings/app-settings", () => ({
     paragraphSpacingPx: 8,
     restoreWorkspaceOnStartup: true,
     showDocumentTabs: true,
+    hideHeadingMarkersOnFocus: false,
     splitVisualPanePercent: 50,
     tableColumnWidthMode: "auto",
     titlebarActions: [
@@ -585,6 +586,7 @@ vi.mock("../lib/settings/app-settings", () => ({
     },
     restoreWorkspaceOnStartup: true,
     showDocumentTabs: true,
+    hideHeadingMarkersOnFocus: false,
     splitVisualPanePercent: 50,
     titlebarActions: [
       { id: "viewMode", visible: true },
@@ -1323,10 +1325,12 @@ export function installAppTestHarness() {
       lineHeight: 1.65,
       markdownShortcuts: defaultMarkdownShortcuts,
       markdownTemplates: [],
+      openDroppedFilesInTabs: false,
       paragraphSpacingPx: 8,
       restoreWorkspaceOnStartup: true,
       sidebarLayoutMode: "stacked",
       showDocumentTabs: true,
+      hideHeadingMarkersOnFocus: false,
       splitVisualPanePercent: 50,
       tableColumnWidthMode: "auto",
         titlebarActions: [

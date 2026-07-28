@@ -115,6 +115,7 @@ describe("editor preferences", () => {
           suggestedName: "{{date}} standup"
         }
       ],
+      openDroppedFilesInTabs: false,
       paragraphSpacingPx: 8,
       restoreWorkspaceOnStartup: false,
       sidebarLayoutMode: "stacked",
@@ -145,6 +146,7 @@ describe("editor preferences", () => {
         viewModeToggle: "visible",
         wordCount: "visible"
       },
+      hideHeadingMarkersOnFocus: false,
       showLineNumbers: false,
       showWordCount: false,
       typewriterModeEnabled: false,
@@ -165,6 +167,15 @@ describe("editor preferences", () => {
     expect((normalizeEditorPreferences({ typewriterModeEnabled: true }) as Record<string, unknown>).typewriterModeEnabled).toBe(true);
     expect((normalizeEditorPreferences({ typewriterModeEnabled: false }) as Record<string, unknown>).typewriterModeEnabled).toBe(false);
     expect((normalizeEditorPreferences({ typewriterModeEnabled: "yes" }) as Record<string, unknown>).typewriterModeEnabled).toBe(false);
+  });
+
+  it("normalizes and migrates the automatic heading marker hiding preference", () => {
+    expect((defaultEditorPreferences as Record<string, unknown>).hideHeadingMarkersOnFocus).toBe(false);
+    expect((normalizeEditorPreferences({ hideHeadingMarkersOnFocus: true }) as Record<string, unknown>).hideHeadingMarkersOnFocus).toBe(true);
+    expect((normalizeEditorPreferences({ hideHeadingMarkersOnFocus: false }) as Record<string, unknown>).hideHeadingMarkersOnFocus).toBe(false);
+    expect((normalizeEditorPreferences({ hideHeadingMarkersOnFocus: "no" }) as Record<string, unknown>).hideHeadingMarkersOnFocus).toBe(false);
+    expect((normalizeEditorPreferences({ revealMarkdownMarkersOnFocus: true }) as Record<string, unknown>).hideHeadingMarkersOnFocus).toBe(false);
+    expect((normalizeEditorPreferences({ revealMarkdownMarkersOnFocus: false }) as Record<string, unknown>).hideHeadingMarkersOnFocus).toBe(true);
   });
 
   it("normalizes view mode preferences", () => {
@@ -430,6 +441,7 @@ describe("editor preferences", () => {
           suggestedName: "{{date}} weekly"
         }
       ],
+      openDroppedFilesInTabs: false,
       paragraphSpacingPx: 8,
       restoreWorkspaceOnStartup: false,
       sidebarLayoutMode: "tabs",
@@ -460,6 +472,7 @@ describe("editor preferences", () => {
         viewModeToggle: "visible",
         wordCount: "visible"
       },
+      hideHeadingMarkersOnFocus: true,
       showLineNumbers: false,
       showWordCount: false,
       typewriterModeEnabled: false,
@@ -499,6 +512,7 @@ describe("editor preferences", () => {
           suggestedName: "{{date}} weekly"
         }
       ],
+      openDroppedFilesInTabs: false,
       paragraphSpacingPx: 8,
       restoreWorkspaceOnStartup: false,
       sidebarLayoutMode: "tabs",
@@ -529,6 +543,7 @@ describe("editor preferences", () => {
         viewModeToggle: "visible",
         wordCount: "visible"
       },
+      hideHeadingMarkersOnFocus: true,
       showLineNumbers: false,
       showWordCount: false,
       typewriterModeEnabled: false,

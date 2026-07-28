@@ -1418,6 +1418,7 @@ fn valid_portable_editor_preferences(value: &Value) -> bool {
         "lineHeight",
         "markdownShortcuts",
         "markdownTemplates",
+        "openDroppedFilesInTabs",
         "paragraphSpacingPx",
         "restoreWorkspaceOnStartup",
         "sidebarLayoutMode",
@@ -1430,6 +1431,7 @@ fn valid_portable_editor_preferences(value: &Value) -> bool {
         "viewModeCustomizations",
         "showLineNumbers",
         "showWordCount",
+        "hideHeadingMarkersOnFocus",
         "vimModeEnabled",
         "wrapCodeBlocks",
     ];
@@ -1442,6 +1444,8 @@ fn valid_portable_editor_preferences(value: &Value) -> bool {
         | "autoUpdateEnabled"
         | "documentLinksOpen"
         | "documentLinksVisible"
+        | "hideHeadingMarkersOnFocus"
+        | "openDroppedFilesInTabs"
         | "restoreWorkspaceOnStartup"
         | "showDocumentTabs"
         | "showLineNumbers"

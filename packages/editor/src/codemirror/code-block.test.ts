@@ -46,9 +46,11 @@ afterEach(() => {
 describe("codeBlockPreviewPlugin", () => {
   it("renders a language header and code body while preserving Markdown", () => {
     const view = createView();
+    const header = view.dom.querySelector<HTMLElement>(".cm-markra-code-header");
 
-    expect(view.dom.querySelector(".cm-markra-code-header")?.textContent).toBe(
-      "ts",
+    expect(header?.textContent).toBe("ts");
+    expect(header && getComputedStyle(header).fontFamily).toContain(
+      "var(--font-ui",
     );
     expect(
       view.dom.querySelectorAll(".cm-markra-code-content-line"),
@@ -79,6 +81,29 @@ describe("codeBlockPreviewPlugin", () => {
         ?.getAttribute("data-code-block-active"),
     ).toBe("true");
     expect(view.dom.querySelector(".markra-code-language-select")).not.toBeNull();
+  });
+
+  it("uses measured top gaps for consecutive code blocks", () => {
+    const source = [
+      "```sh",
+      "first_command",
+      "```",
+      "",
+      "```python",
+      "second_value = 2",
+      "```",
+    ].join("\n");
+    const view = createView(source);
+    const topGaps = [
+      ...view.dom.querySelectorAll<HTMLElement>(".cm-markra-code-top-gap"),
+    ];
+
+    expect(topGaps).toHaveLength(2);
+    expect(topGaps.map((gap) => getComputedStyle(gap).height)).toEqual([
+      "12px",
+      "12px",
+    ]);
+    expect(view.state.doc.toString()).toBe(source);
   });
 
   it("keeps a lone unfinished opening fence editable until Enter", () => {

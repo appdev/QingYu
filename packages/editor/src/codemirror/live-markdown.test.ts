@@ -147,6 +147,38 @@ describe("liveMarkdown", () => {
     expect(renderedLines(view)[0]).toBe("# Project notes");
   });
 
+  it("reveals a heading marker only at its boundary when automatic heading hiding is enabled", () => {
+    const headingView = createView({
+      extensions: [liveMarkdown({ hideHeadingMarkersOnFocus: true })],
+    });
+
+    headingView.dispatch({ selection: { anchor: 5 } });
+    expect(renderedLines(headingView)[0]).toBe("Project notes");
+
+    headingView.dispatch({ selection: { anchor: 0 } });
+    expect(renderedLines(headingView)[0]).toBe("# Project notes");
+  });
+
+  it.each([
+    ["bold", "**Synthetic**"],
+    ["italic", "*Synthetic*"],
+    ["strikethrough", "~~Synthetic~~"],
+    ["highlight", "==Synthetic=="],
+    ["inline code", "`Synthetic`"],
+    ["nested bold and italic", "***Synthetic***"],
+  ])("keeps complete %s markers visible when automatic heading hiding is enabled", (
+    _label,
+    doc,
+  ) => {
+    const view = createView({
+      doc,
+      anchor: doc.indexOf("Synthetic") + 2,
+      extensions: [liveMarkdown({ hideHeadingMarkersOnFocus: true })],
+    });
+
+    expect(renderedLines(view)[0]).toBe(doc);
+  });
+
   it("keeps the heading marker visible while dragging a selection from its text", () => {
     const doc = "## Synthetic heading";
     const view = createView({ doc, anchor: doc.length });

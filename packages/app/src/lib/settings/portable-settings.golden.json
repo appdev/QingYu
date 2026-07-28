@@ -57,6 +57,7 @@
         }
       ],
       "paragraphSpacingPx": 8,
+      "openDroppedFilesInTabs": false,
       "restoreWorkspaceOnStartup": true,
       "sidebarLayoutMode": "stacked",
       "showDocumentTabs": true,
@@ -89,6 +90,7 @@
       },
       "showLineNumbers": false,
       "showWordCount": true,
+      "hideHeadingMarkersOnFocus": false,
       "vimModeEnabled": false,
       "wrapCodeBlocks": true
     },

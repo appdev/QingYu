@@ -118,6 +118,11 @@ export const appAppearanceModeOptions = ["system", "light", "dark"] as const;
 export type AppAppearanceMode = typeof appAppearanceModeOptions[number];
 export type SidebarLayoutMode = "stacked" | "tabs";
 export type TableColumnWidthModePreference = "auto" | "even";
+type LegacyEditorPreferences = {
+  // The replacement uses opposite boolean semantics, so normalization must
+  // invert this value when upgrading preferences written by beta.6/beta.7.
+  revealMarkdownMarkersOnFocus?: boolean;
+};
 export const editorThemeOptions = [
   "light",
   "dark",
@@ -232,6 +237,7 @@ export type EditorPreferences = {
   lineHeight: number;
   markdownShortcuts: MarkdownShortcutBindings;
   markdownTemplates: MarkdownTemplateEntry[];
+  openDroppedFilesInTabs: boolean;
   paragraphSpacingPx: number;
   restoreWorkspaceOnStartup: boolean;
   sidebarLayoutMode: SidebarLayoutMode;
@@ -241,6 +247,7 @@ export type EditorPreferences = {
   titlebarActions: TitlebarActionPreference[];
   viewMode: ViewMode;
   viewModeCustomizations: ViewModeCustomizations;
+  hideHeadingMarkersOnFocus: boolean;
   showLineNumbers: boolean;
   showWordCount: boolean;
   typewriterModeEnabled: boolean;
@@ -274,6 +281,34 @@ export const defaultCustomThemeCss = `:root[data-theme="custom"] {
   --editor-text-primary: var(--text-primary);
   --editor-text-heading: var(--text-heading);
   --editor-text-secondary: var(--text-secondary);
+  --editor-heading-font-weight: 760;
+  --editor-heading-letter-spacing: 0;
+  --editor-h1-color: var(--editor-text-heading);
+  --editor-h1-font-size: 44px;
+  --editor-h1-font-size-compact: 34px;
+  --editor-h1-font-weight: var(--editor-heading-font-weight);
+  --editor-h1-line-height: 1.15;
+  --editor-h2-color: var(--editor-text-heading);
+  --editor-h2-font-size: 31px;
+  --editor-h2-font-size-compact: 26px;
+  --editor-h2-font-weight: var(--editor-heading-font-weight);
+  --editor-h2-line-height: 1.22;
+  --editor-h3-color: var(--editor-text-heading);
+  --editor-h3-font-size: 24px;
+  --editor-h3-font-weight: var(--editor-heading-font-weight);
+  --editor-h3-line-height: 1.28;
+  --editor-h4-color: var(--editor-text-heading);
+  --editor-h4-font-size: 19px;
+  --editor-h4-font-weight: var(--editor-heading-font-weight);
+  --editor-h4-line-height: 1.35;
+  --editor-h5-color: var(--editor-text-heading);
+  --editor-h5-font-size: 16px;
+  --editor-h5-font-weight: var(--editor-heading-font-weight);
+  --editor-h5-line-height: 1.45;
+  --editor-h6-color: var(--editor-text-heading);
+  --editor-h6-font-size: 16px;
+  --editor-h6-font-weight: var(--editor-heading-font-weight);
+  --editor-h6-line-height: 1.45;
   --editor-border: var(--border-default);
   --editor-border-strong: var(--border-strong);
   --editor-bg-secondary: var(--bg-secondary);
@@ -330,6 +365,7 @@ export const defaultEditorPreferences: EditorPreferences = {
   lineHeight: 1.65,
   markdownShortcuts: defaultMarkdownShortcuts,
   markdownTemplates: [],
+  openDroppedFilesInTabs: false,
   paragraphSpacingPx: 8,
   restoreWorkspaceOnStartup: true,
   sidebarLayoutMode: "stacked",
@@ -339,6 +375,7 @@ export const defaultEditorPreferences: EditorPreferences = {
   titlebarActions: [...defaultTitlebarActions],
   viewMode: "daily",
   viewModeCustomizations: { ...defaultViewModeCustomizations },
+  hideHeadingMarkersOnFocus: false,
   showLineNumbers: false,
   showWordCount: true,
   typewriterModeEnabled: false,
@@ -823,7 +860,7 @@ export function normalizeEditorPreferences(value: unknown): EditorPreferences {
     };
   }
 
-  const preferences = value as Partial<EditorPreferences>;
+  const preferences = value as Partial<EditorPreferences> & LegacyEditorPreferences;
 
   return {
     autoRevealActiveFile:
@@ -863,6 +900,10 @@ export function normalizeEditorPreferences(value: unknown): EditorPreferences {
       : defaultEditorPreferences.lineHeight,
     markdownShortcuts: normalizeMarkdownShortcuts(preferences.markdownShortcuts),
     markdownTemplates: normalizeMarkdownTemplateEntries(preferences.markdownTemplates),
+    openDroppedFilesInTabs:
+      typeof preferences.openDroppedFilesInTabs === "boolean"
+        ? preferences.openDroppedFilesInTabs
+        : defaultEditorPreferences.openDroppedFilesInTabs,
     paragraphSpacingPx: normalizeEditorParagraphSpacingPx(preferences.paragraphSpacingPx),
     restoreWorkspaceOnStartup:
       typeof preferences.restoreWorkspaceOnStartup === "boolean"
@@ -878,6 +919,12 @@ export function normalizeEditorPreferences(value: unknown): EditorPreferences {
     titlebarActions: normalizeTitlebarActions(preferences.titlebarActions),
     viewMode: isViewMode(preferences.viewMode) ? preferences.viewMode : defaultEditorPreferences.viewMode,
     viewModeCustomizations: normalizeViewModeCustomizations(preferences.viewModeCustomizations),
+    hideHeadingMarkersOnFocus:
+      typeof preferences.hideHeadingMarkersOnFocus === "boolean"
+        ? preferences.hideHeadingMarkersOnFocus
+        : typeof preferences.revealMarkdownMarkersOnFocus === "boolean"
+          ? !preferences.revealMarkdownMarkersOnFocus
+          : defaultEditorPreferences.hideHeadingMarkersOnFocus,
     showLineNumbers:
       typeof preferences.showLineNumbers === "boolean"
         ? preferences.showLineNumbers

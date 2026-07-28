@@ -77,6 +77,15 @@ describe("SettingsShell", () => {
     expect(inactiveCategory).not.toHaveAttribute("aria-current");
   });
 
+  it("styles the active settings category when aria-current is page", () => {
+    renderSettingsSidebar();
+
+    expect(screen.getByRole("button", { name: "General" })).toHaveClass(
+      "aria-[current=page]:bg-(--bg-active)",
+      "aria-[current=page]:text-(--accent)"
+    );
+  });
+
   it("keeps settings shell chrome treatment scoped to Windows", () => {
     const defaultContent = renderSettingsContent();
 

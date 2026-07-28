@@ -220,6 +220,7 @@ function headingAriaLabel(source: string, setext: boolean) {
 export interface LivePreviewConfig {
   resolveLinkTarget?: (context: MarkraLinkSourceContext) => string | null;
   reveal?: RevealPolicy;
+  hideHeadingMarkersOnFocus?: boolean;
   taskCheckboxes?: boolean;
 }
 
@@ -303,6 +304,7 @@ function pushHiddenRange(
 function buildDecorations(
   view: EditorView,
   reveal: RevealPolicy,
+  hideHeadingMarkersOnFocus: boolean,
   taskCheckboxes: boolean,
   resolveLinkTarget: LivePreviewConfig["resolveLinkTarget"],
   typedBoundary: number | null,
@@ -625,16 +627,23 @@ function buildDecorations(
       }
     } else if (node.name === "HeaderMark") {
       const heading = node.node.parent;
-      if (heading && HEADING_CLASSES[heading.name]) {
-        // Heading source follows the same edit affordance as paired inline
-        // wrappers: entering its rendered text reveals the complete marker.
+      if (
+        !hideHeadingMarkersOnFocus &&
+        heading &&
+        HEADING_CLASSES[heading.name]
+      ) {
+        // When automatic hiding is disabled, entering the rendered heading
+        // reveals its complete source marker for direct editing.
         revealFrom = heading.from;
         revealTo = heading.to;
         revealScope = "heading";
       }
     } else if (INLINE_WRAPPER_MARKS.has(node.name)) {
       const wrapper = node.node.parent;
-      if (wrapper && INLINE_WRAPPERS.has(wrapper.name)) {
+      if (
+        wrapper &&
+        INLINE_WRAPPERS.has(wrapper.name)
+      ) {
         // Paired delimiters must reveal as one unit. Revealing each mark by
         // itself leaves an orphan closing marker when the text is active.
         revealFrom = wrapper.from;
@@ -726,6 +735,8 @@ function buildDecorations(
 
 function previewPlugin(config: LivePreviewConfig): Extension {
   const reveal = config.reveal ?? revealActiveLine;
+  const hideHeadingMarkersOnFocus =
+    config.hideHeadingMarkersOnFocus ?? false;
   const taskCheckboxes = config.taskCheckboxes ?? true;
   const resolveLinkTarget = config.resolveLinkTarget;
 
@@ -748,6 +759,7 @@ function previewPlugin(config: LivePreviewConfig): Extension {
         this.decorations = buildDecorations(
           view,
           reveal,
+          hideHeadingMarkersOnFocus,
           taskCheckboxes,
           resolveLinkTarget,
           this.typedBoundary,
@@ -804,6 +816,7 @@ function previewPlugin(config: LivePreviewConfig): Extension {
           this.decorations = buildDecorations(
             update.view,
             reveal,
+            hideHeadingMarkersOnFocus,
             taskCheckboxes,
             resolveLinkTarget,
             this.typedBoundary,
