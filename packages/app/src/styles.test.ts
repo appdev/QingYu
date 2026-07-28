@@ -1371,4 +1371,46 @@ describe("editor stylesheet", () => {
     expect(styles).toContain("cursor: var(--editor-text-cursor)");
     expect(styles).toContain(".markdown-paper a");
   });
+
+  it("defines stable chrome surfaces with platform-aware legacy fallbacks", () => {
+    const styles = readFileSync(`${process.cwd()}/src/styles.css`, "utf8");
+
+    expect(styles).toContain("--theme-titlebar-legacy-surface: var(--bg-primary);");
+    expect(styles).toContain("--theme-titlebar-legacy-surface: var(--bg-chrome);");
+    expect(styles).toContain(
+      "background-color: var(--bg-titlebar, var(--theme-titlebar-legacy-surface));"
+    );
+    expect(styles).toContain("--theme-sidebar-legacy-surface: var(--bg-secondary);");
+    expect(styles).toContain("--theme-sidebar-legacy-surface: var(--bg-chrome);");
+    expect(styles).toContain(
+      "background-color: var(--bg-sidebar, var(--theme-sidebar-legacy-surface));"
+    );
+    expect(styles).toContain(
+      "background-color: var(--bg-sidebar-header, var(--bg-sidebar, var(--theme-sidebar-legacy-surface)));"
+    );
+    expect(styles).toContain(
+      "background-color: var(--bg-toolbar, var(--bg-sidebar, var(--theme-sidebar-legacy-surface)));"
+    );
+    expect(styles).toContain(
+      "background-color: var(--bg-outline, var(--bg-sidebar, var(--theme-sidebar-legacy-surface)));"
+    );
+    expect(styles).toContain(
+      "background-color: var(--bg-sidebar-footer, var(--bg-sidebar, var(--theme-sidebar-legacy-surface)));"
+    );
+    expect(styles).toContain("border-color: var(--border-chrome, var(--border-default));");
+    expect(styles).toContain("background-color: var(--border-chrome, var(--border-default));");
+
+    const currentRule = styles.indexOf('.theme-tree-row[aria-current="page"]');
+    const selectedRule = styles.indexOf('.theme-tree-row[aria-selected="true"]');
+    expect(currentRule).toBeGreaterThanOrEqual(0);
+    expect(selectedRule).toBeGreaterThan(currentRule);
+    expect(styles).toContain("var(--bg-tree-current, var(--bg-active))");
+    expect(styles).toContain("var(--text-tree-current, var(--text-heading))");
+    expect(styles).toContain("var(--tree-current-indicator, var(--accent))");
+    expect(styles).toContain("var(--bg-tree-selected, var(--accent-soft))");
+    expect(styles).toContain("var(--text-tree-selected, var(--text-heading))");
+    expect(styles).toContain("var(--tree-selected-indicator, var(--accent))");
+    expect(styles).toContain("var(--bg-outline-current, var(--bg-active))");
+    expect(styles).toContain("var(--text-outline-current, var(--text-heading))");
+  });
 });
