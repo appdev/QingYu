@@ -61,6 +61,27 @@ describe("codeMirrorBlockDragPlugin", () => {
     expect(view.state.doc.toString()).toBe(doc);
   });
 
+  it("discovers blocks beyond the initial syntax parser viewport", () => {
+    const doc = [
+      ...Array.from({ length: 400 }, (_, index) => `Paragraph ${index}`),
+      "- Final list item",
+    ].join("\n\n");
+    const state = EditorState.create({
+      doc,
+      extensions: [
+        liveMarkdown({
+          plugins: [codeMirrorBlockDragPlugin(), horizontalRulePlugin()],
+          slashMenu: true,
+        }),
+      ],
+    });
+
+    expect(readCodeMirrorBlockRanges(state).at(-1)).toMatchObject({
+      from: doc.lastIndexOf("- Final list item"),
+      name: "ListItem",
+    });
+  });
+
   it("reorders one list item without moving the entire list", () => {
     const doc = "- First\n- Second\n- Third\n\nAfter";
     const view = createView(doc);

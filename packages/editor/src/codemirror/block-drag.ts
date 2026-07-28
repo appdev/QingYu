@@ -1,4 +1,4 @@
-import { syntaxTree } from "@codemirror/language";
+import { ensureSyntaxTree, syntaxTree } from "@codemirror/language";
 import {
   EditorSelection,
   EditorState,
@@ -45,6 +45,7 @@ const defaultLabels: CodeMirrorBlockDragLabels = {
 export function readCodeMirrorBlockRanges(
   state: CodeMirrorState,
 ): CodeMirrorBlockRange[] {
+  const tree = ensureSyntaxTree(state, state.doc.length) ?? syntaxTree(state);
   const ranges: CodeMirrorBlockRange[] = [];
   const frontmatter = readCodeMirrorFrontmatter(state.doc.toString());
   if (frontmatter) {
@@ -81,7 +82,7 @@ export function readCodeMirrorBlockRanges(
     }
   };
 
-  let node = syntaxTree(state).topNode.firstChild;
+  let node = tree.topNode.firstChild;
   while (node) {
     const next = node.nextSibling;
     if (!frontmatter || node.from >= frontmatter.to) {
