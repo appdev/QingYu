@@ -736,3 +736,31 @@ git diff --check: passed
 
 No Task 6, Task 7, Task 8, live-server, credential, or `.serena/` work was
 performed in this review fix.
+
+### Post-commit parser-timing stabilization
+
+A post-commit complete-editor rerun exposed one test-only race in
+`clamps a child drop to the deepest available parent level`: the document move
+had succeeded, but the test immediately inspected list-style DOM attributes
+before CodeMirror's background parser had necessarily published the replacement
+tree. The same focused file then passed 20/20 and passed ten consecutive focused
+runs, confirming that the assertion depended on parser scheduling under suite
+load.
+
+The four move tests that inspect syntax-derived list DOM attributes now call
+CodeMirror's official `forceParsing` helper before those assertions. This is test
+code only; no synchronous parser call was added to product decoration,
+pointer-move, or document-change paths.
+
+Stabilization commit: `04ad818fd9844645a465af9528d04b178f7ab0db`
+
+Verification after the stabilization:
+
+```text
+focused block-drag: 20 passed, 0 failed
+focused block-drag repeated before the stabilization: 10 consecutive passes
+complete editor: 339 passed twice consecutively
+pnpm test: 2783 passed twice consecutively
+pnpm typecheck:test: passed across all configured workspaces
+git diff --check: passed
+```
