@@ -56,14 +56,22 @@ const completeSyntaxTrees = new WeakMap<
 >();
 
 function completeSyntaxTree(state: CodeMirrorState) {
-  if (syntaxTreeAvailable(state)) return syntaxTree(state);
   const cached = completeSyntaxTrees.get(state);
   if (cached) return cached;
+
+  const published = syntaxTree(state);
+  if (
+    published.length >= state.doc.length &&
+    syntaxTreeAvailable(state)
+  ) {
+    completeSyntaxTrees.set(state, published);
+    return published;
+  }
 
   const parser = state.facet(language)?.parser;
   const tree = parser
     ? parser.parse(state.doc.toString())
-    : syntaxTree(state);
+    : published;
   completeSyntaxTrees.set(state, tree);
   return tree;
 }
@@ -99,19 +107,21 @@ function readCodeMirrorBlockRangesIn(
       enter(node) {
         if (frontmatter && node.from < frontmatter.to) return;
         if (node.name === "ListItem") {
-          let topLevel = node.node;
-          while (topLevel.parent?.parent) topLevel = topLevel.parent;
-          if (
-            topLevel.name !== "BulletList" &&
-            topLevel.name !== "OrderedList"
-          ) {
-            return;
-          }
           let depth = 0;
-          let parent = node.node.parent;
-          while (parent) {
-            if (parent.name === "ListItem") depth += 1;
-            parent = parent.parent;
+          let item = node.node;
+          while (true) {
+            const list = item.parent;
+            if (
+              list?.name !== "BulletList" &&
+              list?.name !== "OrderedList"
+            ) {
+              return;
+            }
+            const owner = list.parent;
+            if (!owner || owner.parent === null) break;
+            if (owner.name !== "ListItem") return;
+            depth += 1;
+            item = owner;
           }
           const line = state.doc.lineAt(node.from);
           appendRange({

@@ -1,6 +1,10 @@
 import { history, undo } from "@codemirror/commands";
 import { markdown } from "@codemirror/lang-markdown";
-import { forceParsing } from "@codemirror/language";
+import {
+  ensureSyntaxTree,
+  forceParsing,
+  syntaxTreeAvailable,
+} from "@codemirror/language";
 import { EditorSelection, EditorState, type Extension } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -192,6 +196,48 @@ describe("codeMirrorBlockDragPlugin", () => {
     ]);
   });
 
+  it("keeps quoted nested lists inside their top-level list item", () => {
+    const doc = [
+      "- Top",
+      "  > - Quoted nested one",
+      "  > - Quoted nested two",
+      "- Next",
+    ].join("\n");
+    const state = EditorState.create({
+      doc,
+      extensions: [markdown()],
+    });
+
+    expect(readCodeMirrorBlockRanges(state).map((block) => ({
+      name: block.name,
+      source: state.sliceDoc(block.from, block.to),
+    }))).toEqual([
+      {
+        name: "ListItem",
+        source: "- Top\n  > - Quoted nested one\n  > - Quoted nested two",
+      },
+      { name: "ListItem", source: "- Next" },
+    ]);
+  });
+
+  it("ignores a completed parser context until its tree is published", () => {
+    const doc = [
+      ...Array.from({ length: 400 }, (_, index) => `Paragraph ${index}`),
+      "- Final list item",
+    ].join("\n\n");
+    const state = EditorState.create({
+      doc,
+      extensions: [markdown()],
+    });
+
+    expect(ensureSyntaxTree(state, doc.length, 1_000)).not.toBeNull();
+    expect(syntaxTreeAvailable(state)).toBe(true);
+    expect(readCodeMirrorBlockRanges(state).at(-1)).toMatchObject({
+      from: doc.lastIndexOf("- Final list item"),
+      name: "ListItem",
+    });
+  });
+
   it("does not synchronously request full parsing from the doc-change decoration path", () => {
     const doc = Array.from(
       { length: 10_000 },
@@ -267,10 +313,16 @@ describe("codeMirrorBlockDragPlugin", () => {
 
     syntaxTreeIterations.splice(0);
     expect(forceParsing(deferredView, doc.length, 1_000)).toBe(true);
-    expect(syntaxTreeIterations.length).toBeGreaterThan(0);
+    expect(syntaxTreeIterations).toEqual(
+      deferredView.visibleRanges.map(({ from, to }) => ({ from, to })),
+    );
     expect(
       deferredView.dom.querySelector('[data-markra-block-from="0"]'),
     ).not.toBeNull();
+
+    syntaxTreeIterations.splice(0);
+    deferredView.dispatch({});
+    expect(syntaxTreeIterations).toHaveLength(0);
   });
 
   it("reorders one list item without moving the entire list", () => {
