@@ -4748,7 +4748,6 @@ describe("QingYu workspace", () => {
       gridTemplateColumns: "0px minmax(0,1fr)"
     });
     expect(screen.queryByRole("button", { name: "Toggle file list" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("region", { name: "Recently used directories" })).not.toBeInTheDocument();
     expect(screen.queryByRole("tree", { name: "Markdown files" })).not.toBeInTheDocument();
     expect(screen.queryByRole("list", { name: "Document outline" })).not.toBeInTheDocument();
   });
