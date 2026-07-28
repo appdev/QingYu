@@ -178,3 +178,127 @@ Files touched in this review fix:
 - `apps/desktop/src-tauri/src/remote_sync/engine.rs` and `remote_sync.rs`: mechanical routing and module cleanup;
 - `apps/desktop/src-tauri/src/remote_sync/windows_noreplace.rs`: removed after moving the same retained-handle implementation to the shared helper;
 - `.superpowers/sdd/task-4-report.md`: corrected Windows claims and added RED/GREEN/compile evidence.
+
+---
+
+# Task 4 M3 Addendum: Remove the Legacy S3 Ordinary-Notes Path
+
+## Status and commit
+
+M3 is complete. Starting from M2 review commit
+`403659f9be27578ab1f82cde1c974318f26b62a9`, implementation commit
+`a9c42b662c83326da55a0209845db5c9145d04fc` removes the unreachable legacy S3
+ordinary-notes capability graph. It does not change the accepted Dejavu route
+introduced by M2, does not remove WebDAV ordinary-note synchronization, and does
+not remove S3/WebDAV portable settings synchronization.
+
+## Capability classification
+
+Removed as S3 ordinary-note-only code:
+
+- the `SyncTarget::S3` branch in legacy `run_application_sync_inner`, including
+  construction of legacy S3 notes/settings backends and `build_sync_scopes`;
+- the legacy S3 notebook `CommonPrefixes` catalog API, XML parser, pagination
+  guard, and catalog-specific tests;
+- the legacy S3 ordinary-note MinIO scenario matrix, manifest/conflict fixtures,
+  and the final-replace hook used only by those fixtures;
+- the broad live-test selector that also matched removed ordinary-note tests.
+
+Retained because it remains reachable and supported:
+
+- the complete WebDAV ordinary-note engine, notes scope, manifest/conflict
+  behavior, restore paths, and real-request namespace test;
+- the generic S3 backend operations, connection test, protected `/app`
+  portable-settings transport, journal/reconciliation/sanitation behavior, and
+  credential confinement;
+- Dejavu S3 catalog, sync, conflicts, scenarios, and opt-in real MinIO suite;
+- shared filesystem, publication, and safety helpers still used by WebDAV or
+  portable settings.
+
+## Strict RED/GREEN evidence
+
+The structural test was added before production deletion:
+
+```bash
+cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --lib \
+  sync_config::tests::legacy_notes_capability_graph_is_webdav_only_and_live_s3_notes_are_dejavu_owned \
+  -- --exact
+```
+
+RED: exit 101 because `run_application_sync_inner` still contained
+`SyncTarget::S3`. GREEN: 1 passed, 0 failed after removing the capability edge.
+
+The live-wrapper expectation was also changed before the script:
+
+```bash
+pnpm --filter @markra/scripts exec vitest run \
+  src/test-s3-sync-live.test.mjs \
+  -t "spawns Cargo|runs only protected"
+```
+
+RED: 2 focused failures because the wrapper still selected `live_minio_`.
+GREEN: both focused tests passed after narrowing the selector to
+`live_minio_s3_`; the final wrapper file passed all 11 tests.
+
+The first full Rust library run then exposed one stale source-boundary assertion
+that referenced a deleted invalid-credential live scenario. The replacement
+assertion preserves the actual contract: exact credential environment names,
+isolated `/app` remote prefixes, and no filesystem/environment writes or debug
+printing from the live fixture. Its focused test and the fresh full Rust suite
+both passed.
+
+## Final verification
+
+- `cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml -- --check`:
+  passed.
+- `cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml`: 1097 library
+  tests passed, 0 failed, 2 ignored; binary/doc-test targets passed.
+- `cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml -p
+  qingyu-dejavu`: 231 library, 1 provenance, 56 S3 HTTP/catalog, and 5 scenario
+  tests passed. The ignored/opt-in MinIO target took its disabled path; no real
+  server was contacted.
+- M2 provider-routing tests: 3 passed; final structural and WebDAV real-request
+  tests: 1 passed each.
+- `pnpm --filter @markra/desktop test`: 20 files, 224 tests passed.
+- `pnpm --filter @markra/scripts test`: 7 files, 64 tests passed.
+- `pnpm --filter @markra/app exec vitest run --maxWorkers=1
+  --no-file-parallelism` with an isolated Node localStorage backing file: 147
+  files, 1861 tests passed.
+- `pnpm typecheck:test` and `pnpm build`: passed; desktop vendor-chunk
+  verification passed.
+- The four R36 hard-removal gates for AI/provider, custom spellcheck,
+  application proxy/SOCKS, and theme export all exited 0. The M3 negative gates
+  found no deleted legacy S3 catalog or ordinary-note live-fixture symbol.
+- `git diff --check`: passed before implementation commit.
+
+On Node 26.5.0, plain `pnpm test` initially failed because Node exposed no
+localStorage without `--localstorage-file`. A shared backing file reduced this
+to two unchanged `apps/site` locale/persistence failures and caused three
+cross-worker `packages/app` log-state failures. The serial isolated
+`packages/app` run above passed all 1861 tests, confirming the M3 packages are
+green without expanding this deletion task into unrelated Node 26/site harness
+work.
+
+## Files and deletion result
+
+The implementation changed eight files with 231 insertions and 2166 deletions:
+
+- `remote_sync/service.rs`, `s3_backend.rs`, `live_tests.rs`, and `engine.rs`:
+  capability removal and retained transport/WebDAV coverage;
+- `sync_config.rs`: production-graph structural regression test;
+- `mobile_platform_config_tests.rs`: updated live-fixture privacy boundary;
+- `scripts/test-s3-sync-live.mjs` and its package test: protected-settings-only
+  legacy filter followed by the Dejavu MinIO target.
+
+## Concerns and boundaries
+
+- Real MinIO credentials were not available and `pnpm test:s3-sync:live` was not
+  run. The wrapper behavior and disabled MinIO test path passed, but this report
+  does not claim a real-server pass.
+- Generic legacy engine tests still exercise notes scope, manifests, and remote
+  conflict handling because WebDAV still owns that engine. Their S3-flavored
+  in-memory fixture names do not create a production S3 route; the structural
+  boundary locks the production capability graph instead of deleting shared
+  WebDAV safety coverage.
+- `.serena/` remained untracked and unstaged. No main update or push was
+  performed.
