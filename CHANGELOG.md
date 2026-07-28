@@ -1,3 +1,26 @@
+## [2.0.0](https://github.com/markrahq/markra/compare/v1.7.4...v2.0.0) (2026-07-28)
+
+### Features
+
+* **app:** add collapsible file list controls and dropped file tab option ([#578](https://github.com/markrahq/markra/issues/578), [#588](https://github.com/markrahq/markra/issues/588))
+* **app:** add safe unused image cleanup ([#567](https://github.com/markrahq/markra/issues/567))
+* **app:** unify default fonts across platforms ([#586](https://github.com/markrahq/markra/issues/586))
+* **desktop:** add adaptive macOS app icon ([#523](https://github.com/markrahq/markra/issues/523))
+* **editor:** replace Milkdown with CodeMirror and restore feature parity
+* **editor:** add Typewriter and Vim modes ([#557](https://github.com/markrahq/markra/issues/557), [#568](https://github.com/markrahq/markra/issues/568))
+* **editor:** improve frontmatter, reference, code paste, and slash-menu editing ([#589](https://github.com/markrahq/markra/issues/589))
+* **settings:** add custom theme and Markdown marker controls ([#577](https://github.com/markrahq/markra/issues/577), [#582](https://github.com/markrahq/markra/issues/582))
+* **shortcuts:** support Alt-only keybindings ([#573](https://github.com/markrahq/markra/issues/573))
+* **updater:** add preview release channel
+
+### Bug Fixes
+
+* **app:** isolate editor mode changes by tab ([#585](https://github.com/markrahq/markra/issues/585))
+* **editor:** stabilize code blocks, headings, tables, links, images, and Mermaid editing
+* **editor:** improve caret, selection, drag, spellcheck, and IME behavior
+* **settings:** show active sidebar category ([#592](https://github.com/markrahq/markra/issues/592))
+* **release:** improve prerelease, Homebrew, and Debian packaging
+
 ## [2.0.0-beta.9](https://github.com/markrahq/markra/compare/v2.0.0-beta.8...v2.0.0-beta.9) (2026-07-28)
 
 ### Bug Fixes
