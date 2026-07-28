@@ -71,7 +71,3 @@ preview-accent: #7f1d1d
     --editor-hl-string: oklch(37% 0.09 139);
     --editor-hl-title: oklch(36% 0.11 250);
   }
-
-.markdown-paper[data-editor-theme="gothic"] .ProseMirror::selection {
-    background: color-mix(in srgb, var(--accent) 16%, transparent);
-  }

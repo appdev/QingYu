@@ -102,8 +102,8 @@ test("release workflow keeps signed desktop releases optional", () => {
   assert.match(job, /tauri\.updater\.conf\.json/);
 });
 
-test("release version sources are ready for v1.7.9", () => {
-  const expectedVersion = "1.7.9";
+test("release version sources are ready for v2.0.0-beta.5", () => {
+  const expectedVersion = "2.0.0-beta.5";
   const cargoToml = fs.readFileSync(path.join(repoRoot, "apps/desktop/src-tauri/Cargo.toml"), "utf8");
   const cargoLock = fs.readFileSync(path.join(repoRoot, "apps/desktop/src-tauri/Cargo.lock"), "utf8");
   const versions = [

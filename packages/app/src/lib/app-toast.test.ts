@@ -7,7 +7,8 @@ vi.mock("sonner", () => ({
     dismiss: vi.fn(),
     error: vi.fn(),
     loading: vi.fn(),
-    success: vi.fn()
+    success: vi.fn(),
+    warning: vi.fn()
   }
 }));
 
@@ -20,9 +21,10 @@ describe("appToast", () => {
     mockedToast.error.mockReset();
     mockedToast.loading.mockReset();
     mockedToast.success.mockReset();
+    mockedToast.warning.mockReset();
   });
 
-  it("routes success, loading, error, and dismiss through one shared toast API", () => {
+  it("routes success, loading, warning, error, and dismiss through one shared toast API", () => {
     const action = {
       label: "Restart",
       onClick: vi.fn()
@@ -30,6 +32,7 @@ describe("appToast", () => {
 
     showAppToast({ message: "Saved", status: "success" });
     showAppToast({ action, id: "update-test", message: "Downloading", status: "loading" });
+    showAppToast({ id: "warning-test", message: "Check this setting", status: "warning" });
     showAppToast({
       id: "provider-test",
       message: "Failed",
@@ -50,6 +53,10 @@ describe("appToast", () => {
     expect(mockedToast.error).toHaveBeenCalledWith("Failed", {
       duration: 2000,
       id: "provider-test"
+    });
+    expect(mockedToast.warning).toHaveBeenCalledWith("Check this setting", {
+      duration: 2000,
+      id: "warning-test"
     });
     expect(mockedToast.success).toHaveBeenCalledWith("Ready", {
       duration: Infinity,

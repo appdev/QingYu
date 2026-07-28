@@ -1,3 +1,152 @@
++## [2.0.0-beta.5](https://github.com/markrahq/markra/compare/v2.0.0-beta.4...v2.0.0-beta.5) (2026-07-26)
+
+### Features
+
+* **app:** add collapsible file list controls ([#578](https://github.com/markrahq/markra/issues/578)) ([5c06c29](https://github.com/markrahq/markra/commit/5c06c294e6b3742a82a88e7262bd948ee61bffc5)), closes [#575](https://github.com/markrahq/markra/issues/575)
+* **settings:** add custom theme toggle ([#577](https://github.com/markrahq/markra/issues/577)) ([e90f862](https://github.com/markrahq/markra/commit/e90f862b02768dadfead21c0bbef61f83022464e))
+* **shortcuts:** support Alt-only keybindings ([#573](https://github.com/markrahq/markra/issues/573)) ([0d9216f](https://github.com/markrahq/markra/commit/0d9216f3a0db59f49d05f8d202c43635e4b110a3))
+
+## [2.0.0-beta.4](https://github.com/markrahq/markra/compare/v2.0.0-beta.3...v2.0.0-beta.4) (2026-07-25)
+
+### Bug Fixes
+
+* **editor:** stabilize fenced code block editing ([#572](https://github.com/markrahq/markra/issues/572)) ([bc7f281](https://github.com/markrahq/markra/commit/bc7f2817a0067a70094ad09d045233daeb519cbf)), closes [#570](https://github.com/markrahq/markra/issues/570)
+
+## [2.0.0-beta.3](https://github.com/markrahq/markra/compare/v2.0.0-beta.2...v2.0.0-beta.3) (2026-07-25)
+
+### Features
+
+* **editor:** add CodeMirror Vim mode ([#568](https://github.com/markrahq/markra/issues/568)) ([8d59edc](https://github.com/markrahq/markra/commit/8d59edcb5b3b7c27f25a11c8374a11d2e85aaf36)), closes [#29](https://github.com/markrahq/markra/issues/29)
+
+### Bug Fixes
+
+* **editor:** mute Markdown syntax markers ([#569](https://github.com/markrahq/markra/issues/569)) ([e55b596](https://github.com/markrahq/markra/commit/e55b5969ffa88d8e1c6d66a360fc656f5a1dbc49))
+
+## [2.0.0-beta.2](https://github.com/markrahq/markra/compare/v2.0.0-beta.1...v2.0.0-beta.2) (2026-07-25)
+
+### Features
+
+* **app:** add safe unused image cleanup ([#567](https://github.com/markrahq/markra/issues/567)) ([e2fe13c](https://github.com/markrahq/markra/commit/e2fe13c6d46e73b20437e740c402b0291b4a2bd9)), closes [#366](https://github.com/markrahq/markra/issues/366)
+* **desktop:** add adaptive macOS app icon ([#523](https://github.com/markrahq/markra/issues/523)) ([fe2eb2b](https://github.com/markrahq/markra/commit/fe2eb2b903de444f8d140b36eda07cd32ea777f6))
+* **editor:** add typewriter mode ([#557](https://github.com/markrahq/markra/issues/557)) ([41b83ba](https://github.com/markrahq/markra/commit/41b83ba58fbd14aee8d9a75835fef02c8b116f23))
+
+## [2.0.0-beta.1](https://github.com/markrahq/markra/compare/v2.0.0-alpha.11...v2.0.0-beta.1) (2026-07-24)
+
+### Bug Fixes
+
+* resolve outstanding issue regressions ([#566](https://github.com/markrahq/markra/issues/566)) ([8b50423](https://github.com/markrahq/markra/commit/8b50423ded92126bc958229f82d83fc347f86fe8))
+
+## [2.0.0-alpha.11](https://github.com/markrahq/markra/compare/v2.0.0-alpha.10...v2.0.0-alpha.11) (2026-07-24)
+
+### Bug Fixes
+
+* **editor:** preserve source while dragging selections ([dd4a2fc](https://github.com/markrahq/markra/commit/dd4a2fcff0bc2acecea6de4a57335c8628872ffe))
+
+## [2.0.0-alpha.10](https://github.com/markrahq/markra/compare/v2.0.0-alpha.9...v2.0.0-alpha.10) (2026-07-24)
+
+### Bug Fixes
+
+* **editor:** preserve Mermaid source selections ([#565](https://github.com/markrahq/markra/issues/565)) ([e089a55](https://github.com/markrahq/markra/commit/e089a5537b7718b4749e1b9119ff1b46c01246ec))
+* **editor:** restore Mermaid zoom interactions ([#564](https://github.com/markrahq/markra/issues/564)) ([ebfacef](https://github.com/markrahq/markra/commit/ebfacef80de038fa7822aeed51b23bf1251544fd)), closes [#563](https://github.com/markrahq/markra/issues/563)
+
+## [2.0.0-alpha.9](https://github.com/markrahq/markra/compare/v2.0.0-alpha.8...v2.0.0-alpha.9) (2026-07-24)
+
+### Bug Fixes
+
+* **editor:** stabilize image previews during IME input ([7f38cf9](https://github.com/markrahq/markra/commit/7f38cf943923882a4eb3792297bf2c37cb309677))
+
+## [2.0.0-alpha.8](https://github.com/markrahq/markra/compare/v2.0.0-alpha.7...v2.0.0-alpha.8) (2026-07-23)
+
+### Bug Fixes
+
+* **editor:** accept short GFM table delimiters ([cb38a7e](https://github.com/markrahq/markra/commit/cb38a7e7cfeb9a260a8f2c7416b619c7429a76da))
+* **editor:** exclude fold controls from selections ([624326c](https://github.com/markrahq/markra/commit/624326cea0a13b6822f6ce43981efa3ad1d96910))
+* **editor:** stabilize heading selection source ([f33a81c](https://github.com/markrahq/markra/commit/f33a81c275dff7249f664032eb1562902f73c420))
+
+## [2.0.0-alpha.7](https://github.com/markrahq/markra/compare/v2.0.0-alpha.6...v2.0.0-alpha.7) (2026-07-23)
+
+### Features
+
+* **editor:** make frontmatter cards directly editable ([60e3baf](https://github.com/markrahq/markra/commit/60e3baf1b88db262eb24009da8a343090370167b))
+
+### Bug Fixes
+
+* **editor:** remove frontmatter cards at visual boundaries ([e899b9e](https://github.com/markrahq/markra/commit/e899b9e8546bdab2bfc83a47e9a300f5a8c9ef46))
+
+## [2.0.0-alpha.6](https://github.com/markrahq/markra/compare/v2.0.0-alpha.5...v2.0.0-alpha.6) (2026-07-22)
+
+### Features
+
+* **editor:** detect pasted code blocks ([2f95a5a](https://github.com/markrahq/markra/commit/2f95a5ad5dfc0e5e38a2997921070b5956f277d2))
+* **editor:** show pointer for modifier link navigation ([e755b9c](https://github.com/markrahq/markra/commit/e755b9ca9613e17af3970d1afed26c4086423cb9))
+
+### Bug Fixes
+
+* **editor:** align code block borders ([7ea3dc8](https://github.com/markrahq/markra/commit/7ea3dc8d506d63870b23296e878090236e1fd585))
+* **editor:** keep code language selector visible ([45405f9](https://github.com/markrahq/markra/commit/45405f9ef19e7433c92ba91f3e59b99866ff8f0f))
+* **editor:** let live preview resolve link targets through the host app ([#560](https://github.com/markrahq/markra/issues/560)) ([ecd7dda](https://github.com/markrahq/markra/commit/ecd7ddab311309c06b0e7e49bf456133a1e2daea)), closes [markrahq/markra#559](https://github.com/markrahq/markra/issues/559)
+* **editor:** stabilize link and image input boundaries ([cc23c91](https://github.com/markrahq/markra/commit/cc23c9197f50d7bdfd5f6a0d8ba636896165e5d2))
+
+## [2.0.0-alpha.5](https://github.com/markrahq/markra/compare/v2.0.0-alpha.4...v2.0.0-alpha.5) (2026-07-22)
+
+### Features
+
+* **editor:** support footnote and reference source editing ([2751bcc](https://github.com/markrahq/markra/commit/2751bccc57faa8ef572b72fc8d271dc5de0a6c30))
+
+### Bug Fixes
+
+* **editor:** keep heading controls outside text flow ([76b8ccb](https://github.com/markrahq/markra/commit/76b8ccb41abb2fd0fcb1049ffee546ddbb4e455e))
+* **editor:** preserve pasted code source ([3415cbd](https://github.com/markrahq/markra/commit/3415cbdb6b1089910d584d928d22f77bfff8c0b3))
+* **editor:** prevent IME selection flicker ([09fe15b](https://github.com/markrahq/markra/commit/09fe15bc3202e04405ce1a6d695af075e62b39b6))
+* **editor:** restore visual code block editing ([4842317](https://github.com/markrahq/markra/commit/4842317ec629c60e4319bf9ec15e6a567909cb2f))
+* **editor:** reveal heading source while editing ([6ed8495](https://github.com/markrahq/markra/commit/6ed849525a9cb1d417a3d76871ae182b23800731))
+
+## [2.0.0-alpha.4](https://github.com/markrahq/markra/compare/v2.0.0-alpha.3...v2.0.0-alpha.4) (2026-07-22)
+
+### Bug Fixes
+
+* **build:** support desktop ES2022 target ([6a61c91](https://github.com/markrahq/markra/commit/6a61c91598e3b3dd992e8b140dad5c068a58f91c))
+
+## [2.0.0-alpha.3](https://github.com/markrahq/markra/compare/v2.0.0-alpha.2...v2.0.0-alpha.3) (2026-07-22)
+
+### Bug Fixes
+
+* **app:** separate heading block controls ([4de49d4](https://github.com/markrahq/markra/commit/4de49d4583499cc971d13ac1e5f36e8efcd309d4))
+* **editor:** allow selection across visual tables ([52cc31f](https://github.com/markrahq/markra/commit/52cc31f2b3e055a3bbf30395bc5b452159abaccb))
+* **editor:** preserve nested block move styling ([499eb4d](https://github.com/markrahq/markra/commit/499eb4d87259e2665e03addc1cafe47ad2d49d1c))
+* **editor:** reveal complete inline wrappers ([c161d95](https://github.com/markrahq/markra/commit/c161d95438ed3408633243d8184d1ca0b6030f9a))
+* **release:** exclude deb package internals ([e5b038f](https://github.com/markrahq/markra/commit/e5b038f15414f1e58a17e5b5e65b17994c62c16e))
+
+## [2.0.0-alpha.2](https://github.com/markrahq/markra/compare/v2.0.0-alpha.1...v2.0.0-alpha.2) (2026-07-21)
+
+### Bug Fixes
+
+* **editor:** activate spellcheck after preference load ([3b38a85](https://github.com/markrahq/markra/commit/3b38a8534a61435d50ce8740f8ffdaaa6eef3a58))
+
+## [2.0.0-alpha.1](https://github.com/markrahq/markra/compare/v2.0.0-alpha.0...v2.0.0-alpha.1) (2026-07-21)
+
+### Features
+
+* **updater:** add preview release channel ([f810809](https://github.com/markrahq/markra/commit/f8108092e94505854d3d0d35290675c983ade154))
+
+### Bug Fixes
+
+* **editor:** keep typed horizontal rules editable ([a106b38](https://github.com/markrahq/markra/commit/a106b38237fd1d3336096f8f76c9a4b52c4efc36))
+* **editor:** render horizontal rules as one line ([957dee0](https://github.com/markrahq/markra/commit/957dee0381836174a0e8efce9e72ad0b534eacf4))
+* **editor:** support pointer block dragging ([38629d3](https://github.com/markrahq/markra/commit/38629d3fd4c279526c6c4e4a6156abf76646dcef))
+
+## [2.0.0-alpha.0](https://github.com/markrahq/markra/compare/v1.7.4...v2.0.0-alpha.0) (2026-07-21)
+
+### Features
+
+* **editor:** replace Milkdown with CodeMirror ([d364b39](https://github.com/markrahq/markra/commit/d364b3948141188cdc6a4e48006d177650285600))
+* **editor:** restore CodeMirror feature parity ([2581000](https://github.com/markrahq/markra/commit/2581000277d343205e6205b235bf553d7012e23c))
+
+### Bug Fixes
+
+* **release:** skip Homebrew updates for prereleases ([fe43fd2](https://github.com/markrahq/markra/commit/fe43fd20159291168b04f0501c4f2eedf1c77ad6))
+
+
 ## [1.7.9](https://github.com/appdev/QingYu/compare/v1.7.8...v1.7.9) (2026-07-23)
 
 ### Features

@@ -17,6 +17,7 @@ import type {
   NativeMarkdownFileHistoryFile,
   NativeMarkdownFolder,
   NativeMarkdownFolderFile,
+  NativeMarkdownAssetTrashSummary,
   NativeMarkdownPickerLabels,
   NativeLocalFile,
   NativeSettingsFile,
@@ -39,7 +40,8 @@ import type {
   SaveNativePdfFileInput,
   SaveNativeSettingsFileInput,
   TrashWorkspaceResourceInput,
-  TrashWorkspaceResourceResult
+  TrashWorkspaceResourceResult,
+  TrashNativeMarkdownAssetsInput
 } from "../lib/tauri/file";
 import type {
   NativeEditorContextMenuEntryOptions,
@@ -234,10 +236,14 @@ export type AppFileRuntime = {
     path: string,
     options?: ListNativeMarkdownFilesOptions
   ) => Promise<NativeMarkdownFolderFile[]>;
+  listMarkdownReferenceFilesForPath?: (path: string) => Promise<NativeMarkdownFolderFile[]>;
   loadMarkdownFilesForPath?: (
     path: string,
     options?: LoadNativeMarkdownFilesForPathOptions
   ) => Promise<NativeMarkdownFolderFile[]>;
+  trashMarkdownAssets?: (
+    input: TrashNativeMarkdownAssetsInput
+  ) => Promise<NativeMarkdownAssetTrashSummary>;
   moveMarkdownTreeFile: (
     rootPath: string,
     path: string,

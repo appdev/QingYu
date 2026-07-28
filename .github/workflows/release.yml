@@ -137,7 +137,7 @@ jobs:
         include:
           - name: macOS (Apple Silicon)
             artifact_name: macOS-apple-silicon
-            os: macos-15
+            os: macos-26
             target: aarch64-apple-darwin
             asset_platform: macos
             asset_arch: arm64
@@ -145,7 +145,7 @@ jobs:
             args: --target aarch64-apple-darwin
           - name: macOS (Intel)
             artifact_name: macOS-intel
-            os: macos-15-intel
+            os: macos-26-intel
             target: x86_64-apple-darwin
             asset_platform: macos
             asset_arch: x64
@@ -234,10 +234,23 @@ jobs:
       - name: Install frontend dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Resolve updater endpoint
+        id: updater_endpoint
+        shell: bash
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          RELEASE_TAG: ${{ env.RELEASE_TAG }}
+        run: |
+          set -euo pipefail
+
+          endpoint="$(node .release-scripts/scripts/release/resolve-updater-endpoint.mjs)"
+          echo "endpoint=${endpoint}" >> "${GITHUB_OUTPUT}"
+
       - name: Prepare updater config
         if: needs.validate_release.outputs.signed_release == 'true'
         shell: bash
         env:
+          TAURI_UPDATER_ENDPOINT: ${{ steps.updater_endpoint.outputs.endpoint }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_UPDATER_PUBLIC_KEY: ${{ secrets.TAURI_UPDATER_PUBLIC_KEY }}
         run: |
@@ -742,6 +755,7 @@ jobs:
         run: node scripts/release/generate-updater-manifest.mjs
 
       - name: Generate Homebrew cask
+        if: ${{ !contains(env.RELEASE_TAG, '-') }}
         env:
           GITHUB_REPOSITORY: ${{ github.repository }}
           OUTPUT_PATH: generated/homebrew/Casks/markra.rb
@@ -749,6 +763,7 @@ jobs:
         run: node scripts/release/generate-homebrew-cask.mjs
 
       - name: Upload Homebrew cask artifact
+        if: ${{ !contains(env.RELEASE_TAG, '-') }}
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.APP_SLUG }}-homebrew-cask
@@ -761,7 +776,13 @@ jobs:
         run: |
           set -euo pipefail
 
-          find release-assets -type f ! -name 'release-metadata.json' | sort > release-files.txt
+          # Tauri leaves the deb package internals beside the finished installer.
+          # Publishing those generic filenames makes Linux architectures collide.
+          find release-assets -type f \
+            ! -name 'release-metadata.json' \
+            ! -name 'control.tar.gz' \
+            ! -name 'data.tar.gz' \
+            | sort > release-files.txt
 
           {
             echo 'paths<<__FILES__'
@@ -782,8 +803,27 @@ jobs:
           fail_on_unmatched_files: true
           files: ${{ steps.release_files.outputs.paths }}
 
+      - name: Publish preview updater manifest
+        if: ${{ github.event_name != 'workflow_dispatch' || !inputs.draft }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          if ! gh release view preview --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            gh release create preview \
+              --repo "${GITHUB_REPOSITORY}" \
+              --target "${GITHUB_SHA}" \
+              --title "${APP_PRODUCT_NAME} Preview Update Channel" \
+              --notes "Rolling updater manifest for QingYu preview and stable releases." \
+              --prerelease
+          fi
+
+          gh release upload preview release-assets/latest.json --clobber --repo "${GITHUB_REPOSITORY}"
+
       - name: Prepare Homebrew tap checkout
-        if: env.HOMEBREW_TAP_TOKEN != ''
+        if: env.HOMEBREW_TAP_TOKEN != '' && !contains(env.RELEASE_TAG, '-')
         shell: bash
         run: |
           set -euo pipefail
@@ -810,7 +850,7 @@ jobs:
           fi
 
       - name: Publish Homebrew cask to tap
-        if: env.HOMEBREW_TAP_TOKEN != ''
+        if: env.HOMEBREW_TAP_TOKEN != '' && !contains(env.RELEASE_TAG, '-')
         shell: bash
         run: |
           set -euo pipefail

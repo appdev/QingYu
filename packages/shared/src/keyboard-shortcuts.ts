@@ -11,6 +11,8 @@ export const keyboardShortcutActions = [
   "toggleSourceMode",
   "toggleReadOnlyMode",
   "toggleViewMode",
+  "toggleTypewriterMode",
+  "toggleVimMode",
   "bold",
   "italic",
   "strikethrough",
@@ -72,12 +74,28 @@ export const defaultKeyboardShortcuts: KeyboardShortcutBindings = {
   toggleMarkdownFiles: "Mod+Shift+M",
   toggleReadOnlyMode: "Mod+Alt+L",
   toggleSourceMode: "Mod+Alt+S",
+  toggleTypewriterMode: "Mod+Shift+Y",
+  toggleVimMode: "Mod+Alt+V",
   toggleViewMode: "F8"
 };
 
 const previousDefaultKeyboardShortcuts: Partial<KeyboardShortcutBindings> = {
   table: "Mod+Alt+T",
-  toggleSourceMode: "Mod+Alt+V"
+  toggleSourceMode: "Mod+Alt+V",
+  toggleTypewriterMode: "Mod+Alt+W"
+};
+
+const introducedKeyboardShortcutFallbacks: Partial<Record<KeyboardShortcutAction, readonly string[]>> = {
+  toggleTypewriterMode: [
+    "Mod+Shift+Alt+Y",
+    "Mod+Shift+Alt+U",
+    "Mod+Shift+Alt+W"
+  ],
+  toggleVimMode: [
+    "Mod+Shift+Alt+V",
+    "Mod+Shift+Alt+I",
+    "Mod+Shift+Alt+M"
+  ]
 };
 
 const reservedKeyboardShortcutChords = new Set([
@@ -97,6 +115,7 @@ const reservedKeyboardShortcutChords = new Set([
   "Mod+Z",
   "Mod+Alt+F",
   "Mod+Alt+P",
+  "Mod+Alt+W",
   "Mod+Shift+E",
   "Mod+Shift+F",
   "Mod+Shift+O",
@@ -114,10 +133,11 @@ export type ParsedKeyboardShortcut = {
 
 export type KeyboardShortcutEventInit = Pick<KeyboardEventInit, "altKey" | "code" | "shiftKey"> & {
   key: string;
+  modKey: boolean;
 };
 
 export function isKeyboardShortcutModKey(event: Pick<KeyboardEvent, "ctrlKey" | "metaKey">) {
-  return event.metaKey || event.ctrlKey;
+  return event.metaKey !== event.ctrlKey;
 }
 
 export function matchesKeyboardShortcut(
@@ -218,7 +238,13 @@ function shortcutKeyFromKeyboardEvent(
   const physicalKey = event.code ? shortcutKeyByPhysicalCode[event.code] : null;
   if (physicalKey) return physicalKey;
 
-  return normalizeShortcutKey(event.key);
+  const normalizedKey = normalizeShortcutKey(event.key);
+  if (normalizedKey) return normalizedKey;
+
+  // macOS Option+letter shortcuts can report the generated symbol (for example, Option+W as "∑")
+  // instead of the letter. Fall back only when key is unusable so non-QWERTY layouts keep their
+  // normal character-based behavior for unmodified letter shortcuts.
+  return event.code?.match(/^Key([A-Z])$/u)?.[1] ?? null;
 }
 
 export function parseKeyboardShortcut(shortcut: unknown): ParsedKeyboardShortcut | null {
@@ -261,7 +287,7 @@ export function parseKeyboardShortcut(shortcut: unknown): ParsedKeyboardShortcut
   }
 
   if (key === null) return null;
-  if (!mod && (!isFunctionShortcutKey(key) || alt || shift)) return null;
+  if (!mod && !alt && (!isFunctionShortcutKey(key) || shift)) return null;
 
   return {
     alt,
@@ -288,9 +314,15 @@ export function keyboardShortcutToKeyboardEventInit(shortcut: unknown): Keyboard
   if (!parsed) return null;
 
   const code = physicalCodeByShortcutKey[parsed.key];
+  // DOM KeyboardEvent.key uses lowercase letters unless Shift is pressed.
+  // CodeMirror matches this value exactly for synthetic toolbar/menu commands.
+  const key = /^[A-Z]$/u.test(parsed.key)
+    ? parsed.shift ? parsed.key : parsed.key.toLocaleLowerCase()
+    : parsed.shift && code ? shiftedKeyByPhysicalCode[code] ?? parsed.key : parsed.key;
   const eventInit: KeyboardShortcutEventInit = {
     altKey: parsed.alt,
-    key: parsed.shift && code ? shiftedKeyByPhysicalCode[code] ?? parsed.key : parsed.key,
+    key,
+    modKey: parsed.mod,
     shiftKey: parsed.shift
   };
   if (code) eventInit.code = code;
@@ -301,6 +333,7 @@ export function keyboardShortcutToKeyboardEventInit(shortcut: unknown): Keyboard
 export function keyboardShortcutFromKeyboardEvent(
   event: Pick<KeyboardEvent, "altKey" | "ctrlKey" | "key" | "metaKey" | "shiftKey"> & Partial<Pick<KeyboardEvent, "code">>
 ) {
+  if (event.metaKey && event.ctrlKey) return null;
   if (event.key === "Alt" || event.key === "Control" || event.key === "Meta" || event.key === "Shift") {
     return null;
   }
@@ -308,7 +341,7 @@ export function keyboardShortcutFromKeyboardEvent(
   const key = shortcutKeyFromKeyboardEvent(event);
   if (!key) return null;
   const mod = isKeyboardShortcutModKey(event);
-  if (!mod && (!isFunctionShortcutKey(key) || event.altKey || event.shiftKey)) return null;
+  if (!mod && !event.altKey && (!isFunctionShortcutKey(key) || event.shiftKey)) return null;
 
   return formatKeyboardShortcut([
     mod ? "Mod" : null,
@@ -335,17 +368,49 @@ export function normalizeKeyboardShortcuts(value: unknown): KeyboardShortcutBind
 
   const input = value as KeyboardShortcutMap;
   const candidates: KeyboardShortcutBindings = { ...defaultKeyboardShortcuts };
+  const explicitActions = new Set<KeyboardShortcutAction>();
   const shortcuts = { ...defaultKeyboardShortcuts };
-  const shortcutCounts = new Map<string, number>();
 
   for (const action of keyboardShortcutActions) {
     const fallback = defaultKeyboardShortcuts[action];
     const formattedCandidate = formatKeyboardShortcut(input[action]);
-    const candidate = formattedCandidate === previousDefaultKeyboardShortcuts[action]
+    const usesPreviousDefault = formattedCandidate === previousDefaultKeyboardShortcuts[action];
+    const candidate = usesPreviousDefault
       ? fallback
       : formattedCandidate;
 
     candidates[action] = !candidate || reservedKeyboardShortcutChords.has(candidate) ? fallback : candidate;
+    if (formattedCandidate && !usesPreviousDefault && !reservedKeyboardShortcutChords.has(formattedCandidate)) {
+      explicitActions.add(action);
+    }
+  }
+
+  const occupiedShortcuts = new Set(Object.values(candidates));
+  for (const action of keyboardShortcutActions) {
+    const fallbacks = introducedKeyboardShortcutFallbacks[action];
+    if (!fallbacks || explicitActions.has(action)) continue;
+
+    // A newly introduced default must not evict an older, explicitly saved custom binding.
+    // Move only the new action so existing users keep the shortcut they chose.
+    const conflictsWithExplicitAction = keyboardShortcutActions.some(
+      (candidateAction) =>
+        candidateAction !== action &&
+        explicitActions.has(candidateAction) &&
+        candidates[candidateAction] === candidates[action]
+    );
+    if (!conflictsWithExplicitAction) continue;
+
+    const availableFallback = fallbacks.find(
+      (fallback) => !occupiedShortcuts.has(fallback) && !reservedKeyboardShortcutChords.has(fallback)
+    );
+    if (!availableFallback) continue;
+
+    candidates[action] = availableFallback;
+    occupiedShortcuts.add(availableFallback);
+  }
+
+  const shortcutCounts = new Map<string, number>();
+  for (const action of keyboardShortcutActions) {
     shortcutCounts.set(candidates[action], (shortcutCounts.get(candidates[action]) ?? 0) + 1);
   }
 
@@ -365,6 +430,8 @@ export function matchesKeyboardShortcutEvent(
   if (!parsed) return false;
   const key = shortcutKeyFromKeyboardEvent(event);
   if (!key) return false;
+  // Keep capture and matching symmetrical for the invalid Control+Meta chord.
+  if (event.metaKey && event.ctrlKey) return false;
 
   return (
     isKeyboardShortcutModKey(event) === parsed.mod &&

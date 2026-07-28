@@ -1425,10 +1425,12 @@ fn valid_portable_editor_preferences(value: &Value) -> bool {
         "splitVisualPanePercent",
         "tableColumnWidthMode",
         "titlebarActions",
+        "typewriterModeEnabled",
         "viewMode",
         "viewModeCustomizations",
         "showLineNumbers",
         "showWordCount",
+        "vimModeEnabled",
         "wrapCodeBlocks",
     ];
     let Some(object) = object_has_exact(value, KEYS) else {
@@ -1444,6 +1446,8 @@ fn valid_portable_editor_preferences(value: &Value) -> bool {
         | "showDocumentTabs"
         | "showLineNumbers"
         | "showWordCount"
+        | "typewriterModeEnabled"
+        | "vimModeEnabled"
         | "wrapCodeBlocks" => value.is_boolean(),
         "autoSaveIntervalMinutes" => integer_between(value, 1, 120),
         "bodyFontSize" => integer_in(value, &[14, 15, 16, 17, 18, 20]),
@@ -1541,6 +1545,8 @@ fn valid_markdown_shortcuts(value: &Value) -> bool {
         ("toggleDocumentHistory", "Mod+Shift+H", None),
         ("toggleSourceMode", "Mod+Alt+S", Some("Mod+Alt+V")),
         ("toggleReadOnlyMode", "Mod+Alt+L", None),
+        ("toggleTypewriterMode", "Mod+Shift+Y", Some("Mod+Alt+W")),
+        ("toggleVimMode", "Mod+Alt+V", None),
         ("toggleViewMode", "F8", None),
         ("bold", "Mod+B", None),
         ("italic", "Mod+I", None),

@@ -42,6 +42,8 @@ const markdownShortcutLabelKeys: Record<MarkdownShortcutAction, I18nKey> = {
   toggleMarkdownFiles: "app.toggleMarkdownFiles",
   toggleReadOnlyMode: "app.toggleReadOnlyMode",
   toggleSourceMode: "app.switchToSourceMode",
+  toggleTypewriterMode: "settings.editor.typewriterMode",
+  toggleVimMode: "settings.editor.vimMode",
   toggleViewMode: "app.toggleViewMode"
 };
 
@@ -58,6 +60,8 @@ const keyboardShortcutSections: Array<{
       "toggleDocumentHistory",
       "toggleSourceMode",
       "toggleReadOnlyMode",
+      "toggleTypewriterMode",
+      "toggleVimMode",
       "toggleViewMode"
     ]
   },
@@ -221,7 +225,24 @@ export function KeyboardShortcutsSettings({
       }
 
       const nextShortcut = markdownShortcutFromKeyboardEvent(event);
-      if (!nextShortcut) return;
+      if (!nextShortcut) {
+        if (event.key === "Alt" || event.key === "Control" || event.key === "Meta" || event.key === "Shift") {
+          event.preventDefault();
+          event.stopPropagation();
+          return;
+        }
+
+        event.preventDefault();
+        event.stopPropagation();
+        showAppToast({
+          duration: 4500,
+          id: "keyboard-shortcut-unsupported",
+          message: translate("settings.editor.shortcutUnsupported"),
+          status: "error"
+        });
+        setActiveAction(null);
+        return;
+      }
 
       event.preventDefault();
       event.stopPropagation();
@@ -243,6 +264,14 @@ export function KeyboardShortcutsSettings({
         ...preferences,
         markdownShortcuts: nextShortcuts
       });
+      if (!parseMarkdownShortcut(nextShortcut)?.mod) {
+        showAppToast({
+          duration: 4500,
+          id: "keyboard-shortcut-alt-only-warning",
+          message: translate("settings.editor.shortcutAltOnlyWarning"),
+          status: "warning"
+        });
+      }
       setActiveAction(null);
     };
 

@@ -66,8 +66,8 @@ targets:
           - pt-BR
           - it
           - ru
-        CFBundleShortVersionString: 1.7.9
-        CFBundleVersion: "1.7.9"
+        CFBundleShortVersionString: 2.0.0-beta.5
+        CFBundleVersion: "2.0.0-beta.5"
     entitlements:
       path: markra_iOS/markra_iOS.entitlements
     scheme:

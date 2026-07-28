@@ -85,7 +85,7 @@ Rust 可以使用 trait、RAII、类型化错误、异步任务和每仓库对�
 
 ## 总体架构
 
-实现位于 Markra monorepo 内的独立 Rust crate。它是轻语内部依赖，不作为独立通用
+实现位于 QingYu monorepo 内的独立 Rust crate。它是轻语内部依赖，不作为独立通用
 产品发布。
 
 模块分为四层：

@@ -175,14 +175,14 @@ describe("native menu", () => {
 
     await installNativeApplicationMenu(handlers, "fr", {
       bold: "Mod+Alt+B",
-      syncNow: "Mod+Shift+Y"
+      syncNow: "Mod+Shift+U"
     }, recentFiles);
 
     expect(mockedListen).toHaveBeenCalledWith("markra://menu-command", expect.any(Function));
     expect(mockedInvoke).toHaveBeenCalledWith("install_application_menu", {
       accelerators: {
         formatBold: "CmdOrCtrl+Alt+B",
-        syncNow: "CmdOrCtrl+Shift+Y"
+        syncNow: "CmdOrCtrl+Shift+U"
       },
       language: "fr",
       recentFiles

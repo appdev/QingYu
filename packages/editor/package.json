@@ -9,6 +9,10 @@
       "types": "./src/index.ts",
       "default": "./src/index.ts"
     },
+    "./codemirror": {
+      "types": "./src/codemirror/index.ts",
+      "default": "./src/codemirror/index.ts"
+    },
     "./package.json": "./package.json"
   },
   "scripts": {
@@ -17,20 +21,29 @@
     "typecheck:test": "tsc -p tsconfig.test.json --noEmit"
   },
   "dependencies": {
+    "@codemirror/commands": "6.10.3",
+    "@codemirror/lang-markdown": "6.5.0",
+    "@codemirror/language": "6.12.3",
+    "@codemirror/search": "6.7.0",
+    "@codemirror/state": "6.6.0",
+    "@codemirror/view": "6.41.1",
+    "@lezer/highlight": "1.2.3",
+    "@lezer/markdown": "1.6.3",
     "@markra/markdown": "workspace:*",
     "@markra/shared": "workspace:*",
-    "@milkdown/kit": "^7.20.0",
+    "@replit/codemirror-vim": "6.3.0",
     "katex": "0.16.45",
     "lowlight": "3.3.0",
     "lucide": "1.14.0",
     "mermaid": "11.15.0",
     "micromark-util-decode-string": "2.0.1",
-    "prosemirror-tables": "1.8.5",
     "remark-frontmatter": "5.0.0",
-    "remark-math": "6.0.0"
+    "remark-math": "6.0.0",
+    "turndown": "7.2.4"
   },
   "devDependencies": {
     "@types/node": "24.10.0",
+    "@types/turndown": "5.0.6",
     "typescript": "6.0.3",
     "vitest": "4.1.5"
   }

@@ -303,6 +303,7 @@ esac
 
 test("release workflow generates and publishes the Homebrew cask separately from release assets", () => {
   const workflow = fs.readFileSync(releaseWorkflowPath, "utf8");
+  const prereleaseGuards = workflow.match(/!contains\(env\.RELEASE_TAG, '-'\)/gu) ?? [];
 
   assert.match(workflow, /Generate Homebrew cask/);
   assert.match(workflow, /generate-homebrew-cask\.mjs/);
@@ -318,4 +319,5 @@ test("release workflow generates and publishes the Homebrew cask separately from
   assert.match(workflow, /tap_url="https:\/\/github\.com\/markrahq\/homebrew-tap\.git"/);
   assert.match(workflow, /git -C homebrew-tap push -u "https:\/\/x-access-token:\$\{HOMEBREW_TAP_TOKEN\}@github\.com\/markrahq\/homebrew-tap\.git" "HEAD:\$\{tap_branch\}"/);
   assert.match(workflow, /git -C homebrew-tap status --porcelain -- Casks\/markra\.rb/);
+  assert.equal(prereleaseGuards.length, 4);
 });

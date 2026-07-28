@@ -13,7 +13,7 @@ import {
   type MarkdownShortcutAction,
   type MarkdownShortcutMap
 } from "@markra/editor";
-import { matchesKeyboardShortcutEvent, type AppLanguage } from "@markra/shared";
+import { isKeyboardShortcutModKey, matchesKeyboardShortcutEvent, type AppLanguage } from "@markra/shared";
 import { resolveDesktopPlatform, type DesktopPlatform } from "../lib/platform";
 import { focusedEditableTextInput } from "../lib/editable-target";
 
@@ -39,7 +39,10 @@ type NativeMenuHandlerOptions = {
   openQuickOpen?: () => unknown | Promise<unknown>;
   openSettings?: () => unknown | Promise<unknown>;
   openRecentFile?: (file: RecentMarkdownFile) => unknown | Promise<unknown>;
-  runEditorShortcut: (key: string, modifiers?: Pick<KeyboardEventInit, "altKey" | "code" | "shiftKey">) => unknown;
+  runEditorShortcut: (
+    key: string,
+    modifiers?: Pick<KeyboardEventInit, "altKey" | "code" | "shiftKey"> & { modKey?: boolean }
+  ) => unknown;
   saveDocument: () => unknown | Promise<unknown>;
   saveDocumentAs: () => unknown | Promise<unknown>;
   syncNow?: () => unknown | Promise<unknown>;
@@ -71,6 +74,8 @@ type ApplicationShortcutOptions = {
   toggleMarkdownFiles?: () => unknown | Promise<unknown>;
   toggleReadOnlyMode?: () => unknown | Promise<unknown>;
   toggleSourceMode?: () => unknown | Promise<unknown>;
+  toggleTypewriterMode?: () => unknown | Promise<unknown>;
+  toggleVimMode?: () => unknown | Promise<unknown>;
   toggleViewMode?: () => unknown | Promise<unknown>;
 };
 
@@ -96,7 +101,7 @@ function runFocusedEditableTextCommand(command: "redo" | "undo") {
 }
 
 function isSettingsWindowShortcutEvent(event: KeyboardEvent) {
-  const isModKey = event.metaKey || event.ctrlKey;
+  const isModKey = isKeyboardShortcutModKey(event);
   return isModKey && !event.altKey && !event.shiftKey && (event.key === "," || event.code === "Comma");
 }
 
@@ -279,6 +284,7 @@ export function useNativeMenuHandlers({
     latestOptionsRef.current.runEditorShortcut(shortcut.key, {
       altKey: Boolean(shortcut.altKey),
       code: shortcut.code,
+      modKey: shortcut.modKey,
       shiftKey: Boolean(shortcut.shiftKey)
     });
   }
@@ -414,6 +420,8 @@ export function useApplicationShortcuts({
   toggleMarkdownFiles,
   toggleReadOnlyMode,
   toggleSourceMode,
+  toggleTypewriterMode,
+  toggleVimMode,
   toggleViewMode
 }: ApplicationShortcutOptions) {
   const normalizedMarkdownShortcuts = useMemo(
@@ -430,6 +438,8 @@ export function useApplicationShortcuts({
 
       if (handleSettingsWindowShortcut(event, openSettings)) return;
 
+      // Alt-only configurable bindings must be checked before the Mod guard
+      // that still protects all fixed application shortcuts below.
       const configurableActions: Array<[string, (() => unknown | Promise<unknown>) | undefined]> = [
         [normalizedMarkdownShortcuts.openQuickOpen, openQuickOpen],
         [normalizedMarkdownShortcuts.syncNow, syncNow],
@@ -437,6 +447,8 @@ export function useApplicationShortcuts({
         [normalizedMarkdownShortcuts.toggleDocumentHistory, toggleDocumentHistory],
         [normalizedMarkdownShortcuts.toggleSourceMode, toggleSourceMode],
         [normalizedMarkdownShortcuts.toggleReadOnlyMode, toggleReadOnlyMode],
+        [normalizedMarkdownShortcuts.toggleTypewriterMode, toggleTypewriterMode],
+        [normalizedMarkdownShortcuts.toggleVimMode, toggleVimMode],
         [normalizedMarkdownShortcuts.toggleViewMode, toggleViewMode]
       ];
 
@@ -445,7 +457,7 @@ export function useApplicationShortcuts({
 
         event.preventDefault();
         event.stopPropagation();
-        handler();
+        if (!event.repeat) handler();
         return;
       }
 
@@ -527,6 +539,8 @@ export function useApplicationShortcuts({
     toggleMarkdownFiles,
     toggleReadOnlyMode,
     toggleSourceMode,
+    toggleTypewriterMode,
+    toggleVimMode,
     toggleViewMode
   ]);
 }

@@ -110,7 +110,7 @@ describe("editor stylesheet", () => {
     const styles = readFileSync(`${process.cwd()}/src/styles.css`, "utf8");
 
     expect(styles).toContain("--editor-text-cursor:");
-    expect(styles).toContain(".markdown-paper .ProseMirror");
+    expect(styles).toContain(".markdown-paper .cm-editor");
     expect(styles).toContain('[data-theme-appearance="dark"] .markdown-paper');
     expect(styles).toContain("cursor: var(--editor-text-cursor)");
     expect(styles).toContain("%231a1c1e");
@@ -118,15 +118,340 @@ describe("editor stylesheet", () => {
     expect(styles).not.toContain(".markdown-source-input");
   });
 
-  it("applies selected visual editor fonts to the editable ProseMirror surface", () => {
+  it("applies selected visual editor fonts to the editable CodeMirror surface", () => {
     const styles = readFileSync(`${process.cwd()}/src/styles.css`, "utf8");
-    const surfaceRuleStart = styles.indexOf(".markdown-paper [data-milkdown-root],");
-    const surfaceRuleEnd = styles.indexOf(".markdown-paper .ProseMirror li", surfaceRuleStart);
+    const surfaceRuleStart = styles.indexOf(".markdown-paper .cm-editor {");
+    const surfaceRuleEnd = styles.indexOf(".markdown-paper .cm-content {", surfaceRuleStart);
     const surfaceRule = styles.slice(surfaceRuleStart, surfaceRuleEnd);
 
     expect(surfaceRuleStart).toBeGreaterThanOrEqual(0);
     expect(surfaceRuleEnd).toBeGreaterThan(surfaceRuleStart);
     expect(surfaceRule).toContain("font-family: var(--editor-font-family);");
+  });
+
+  it("maps QingYu document typography onto CodeMirror without styling its widget buffers as content images", () => {
+    const styles = readFileSync(`${process.cwd()}/src/styles.css`, "utf8");
+
+    expect(styles).toContain(".markdown-paper img:not(.cm-widgetBuffer)");
+    expect(styles).toContain(".markdown-paper .cm-widgetBuffer");
+    expect(styles).toContain("margin: 0 !important");
+    expect(styles).toContain(".markdown-paper .cm-line.cm-markra-h1");
+    expect(styles).toContain("font-size: 44px");
+    expect(styles).toContain(".markdown-paper .cm-line.cm-markra-h2");
+    expect(styles).toContain("font-size: 31px");
+    expect(styles).toContain(".markdown-paper .cm-line.cm-markra-h3");
+    expect(styles).toContain("font-size: 24px");
+    expect(styles).toContain(".markdown-paper .cm-line.cm-markra-empty-line");
+    expect(styles).toContain(".markdown-paper .cm-line.cm-markra-list-item");
+    expect(styles).toContain('[data-markra-list-source="hidden"]::before');
+    expect(styles).toContain('content: "" !important');
+    expect(styles).toContain("opacity: 0 !important");
+  });
+
+  it("keeps CodeMirror's drawn selection background visible", () => {
+    const styles = readFileSync(`${process.cwd()}/src/styles.css`, "utf8");
+
+    expect(styles).not.toContain(
+      ".markdown-paper .cm-selectionBackground {\n    background: transparent !important;",
+    );
+  });
+
+  it("keeps code block selections between the background and foreground", () => {
+    const styles = readFileSync(`${process.cwd()}/src/styles.css`, "utf8");
+    const codeLineStart = styles.indexOf(
+      ".markdown-paper .cm-line.cm-markra-code-content-line {",
+    );
+    const codeLineEnd = styles.indexOf("\n  }", codeLineStart);
+    const codeLineRule = styles.slice(codeLineStart, codeLineEnd);
+    const backdropStart = styles.indexOf(
+      ".markdown-paper .cm-line.cm-markra-code-content-line::after {",
+    );
+    const backdropEnd = styles.indexOf("\n  }", backdropStart);
+    const backdropRule = styles.slice(backdropStart, backdropEnd);
+    const lineNumberStart = styles.indexOf(
+      ".markdown-paper .cm-line.cm-markra-code-content-line::before {",
+    );
+    const lineNumberEnd = styles.indexOf("\n  }", lineNumberStart);
+    const lineNumberRule = styles.slice(lineNumberStart, lineNumberEnd);
+
+    expect(styles).not.toContain(".markdown-paper .cm-selectionLayer {");
+    expect(styles).not.toContain(".markdown-paper .cm-cursorLayer {");
+    expect(codeLineRule).toContain("position: relative");
+    expect(codeLineRule).toContain("background: transparent !important");
+    expect(codeLineRule).toContain("padding-inline: 59px 16px !important");
+    expect(codeLineRule).toContain("text-indent: -59px");
+    expect(backdropStart).toBeGreaterThanOrEqual(0);
+    expect(backdropRule).toContain("z-index: -2");
+    expect(backdropRule).toContain("background: linear-gradient(");
+    expect(lineNumberRule).toContain("position: relative");
+    expect(lineNumberRule).toContain("z-index: 1");
+    expect(lineNumberRule).toContain("border-left: 1px solid var(--editor-border)");
+    expect(lineNumberRule).toContain("background: var(--editor-code-line-bg)");
+    expect(lineNumberRule).not.toContain("border-right:");
+    expect(lineNumberRule).not.toContain("box-shadow:");
+  });
+
+  it("keeps the typewriter active-line highlight visible inside rich blocks", () => {
+    const styles = readFileSync(`${process.cwd()}/src/styles.css`, "utf8");
+    const activeLineSelector =
+      '.markdown-paper .cm-editor[data-typewriter-mode="true"].cm-focused\n' +
+      "    .cm-line.cm-activeLine {";
+    const codeHighlightSelector =
+      '.markdown-paper .cm-editor[data-typewriter-mode="true"].cm-focused\n' +
+      "    .cm-line.cm-activeLine.cm-markra-code-content-line::after {";
+    const calloutHighlightSelector =
+      '.markdown-paper .cm-editor[data-typewriter-mode="true"].cm-focused\n' +
+      "    .cm-line.cm-activeLine.cm-markra-callout {";
+    const activeLineStart = styles.indexOf(activeLineSelector);
+    const activeLineEnd = styles.indexOf("\n  }", activeLineStart);
+    const codeHighlightStart = styles.indexOf(codeHighlightSelector);
+    const codeHighlightEnd = styles.indexOf("\n  }", codeHighlightStart);
+    const calloutHighlightStart = styles.indexOf(calloutHighlightSelector);
+    const calloutHighlightEnd = styles.indexOf(
+      "\n  }",
+      calloutHighlightStart,
+    );
+    const activeLineRule = styles.slice(activeLineStart, activeLineEnd);
+    const codeHighlightRule = styles.slice(
+      codeHighlightStart,
+      codeHighlightEnd,
+    );
+    const calloutHighlightRule = styles.slice(
+      calloutHighlightStart,
+      calloutHighlightEnd,
+    );
+
+    expect(activeLineStart).toBeGreaterThanOrEqual(0);
+    expect(activeLineRule).toContain("--typewriter-active-line-offset: 0px");
+    expect(activeLineRule).toContain("currentColor 8%");
+    expect(activeLineRule).toContain("/ 100% 1lh no-repeat");
+    expect(codeHighlightStart).toBeGreaterThanOrEqual(0);
+    expect(codeHighlightRule).toContain("background:");
+    expect(codeHighlightRule).toContain("var(--typewriter-active-line-color)");
+    expect(codeHighlightRule).toContain("var(--editor-code-bg)");
+    expect(calloutHighlightStart).toBeGreaterThanOrEqual(0);
+    expect(calloutHighlightRule).toContain("background:");
+    expect(calloutHighlightRule).toContain(
+      "var(--typewriter-active-line-color)",
+    );
+    expect(calloutHighlightRule).toContain("var(--callout-bg)");
+  });
+
+  it("aligns the typewriter highlight with text inside padded visual lines", () => {
+    const styles = readFileSync(`${process.cwd()}/src/styles.css`, "utf8");
+
+    expect(styles).toContain(
+      ".cm-line.cm-markra-h1.cm-activeLine {\n" +
+      "    --typewriter-active-line-offset: -8px;",
+    );
+    expect(styles).toContain(
+      ".cm-line.cm-markra-h2.cm-activeLine {\n" +
+      "    --typewriter-active-line-offset: 8px;",
+    );
+    expect(styles).toContain(
+      ".cm-line.cm-markra-list-item.cm-activeLine {\n" +
+      "    --typewriter-active-line-offset: 4px;",
+    );
+    expect(styles).toContain(
+      ".cm-line.cm-activeLine.markra-callout-last {\n" +
+      "    --typewriter-active-line-offset: -7px;",
+    );
+    expect(styles).toContain(
+      ".cm-line.cm-activeLine.markra-callout-first.markra-callout-last {\n" +
+      "    --typewriter-active-line-offset: 0px;",
+    );
+    expect(styles).toContain(
+      ".cm-line.cm-activeLine.cm-markra-code-content-line:has(+ .cm-markra-code-closing-line) {\n" +
+      "    --typewriter-active-line-offset: -8px;",
+    );
+  });
+
+  it("keeps code block controls in the header without extra closing space", () => {
+    const styles = readFileSync(`${process.cwd()}/src/styles.css`, "utf8");
+    const headerActionsStart = styles.indexOf(
+      ".markdown-paper .cm-markra-code-header-actions {",
+    );
+    const headerActionsEnd = styles.indexOf("\n  }", headerActionsStart);
+    const headerActionsRule = styles.slice(
+      headerActionsStart,
+      headerActionsEnd,
+    );
+    const closingLineStart = styles.indexOf(
+      ".markdown-paper .cm-line.cm-markra-code-closing-line {",
+    );
+    const closingLineEnd = styles.indexOf("\n  }", closingLineStart);
+    const closingLineRule = styles.slice(closingLineStart, closingLineEnd);
+    const languageControlStart = styles.indexOf(
+      ".markdown-paper .cm-markra-code-header-actions .markra-code-language-control {",
+    );
+    const languageControlEnd = styles.indexOf("\n  }", languageControlStart);
+    const languageControlRule = styles.slice(
+      languageControlStart,
+      languageControlEnd,
+    );
+
+    expect(headerActionsRule).toContain("opacity: 1 !important");
+    expect(headerActionsRule).toContain("pointer-events: auto !important");
+    expect(headerActionsRule).toContain("transform: none");
+    expect(closingLineRule).toContain("position: relative");
+    expect(closingLineRule).toContain("height: 12px");
+    expect(closingLineRule).toContain("min-height: 12px");
+    expect(languageControlStart).toBeGreaterThanOrEqual(0);
+    expect(languageControlRule).toContain("position: relative");
+    expect(languageControlRule).toContain("padding: 0");
+    expect(languageControlRule).toContain("opacity: 1 !important");
+    expect(languageControlRule).toContain("pointer-events: auto !important");
+    expect(styles).not.toContain(
+      ".markdown-paper .cm-line.cm-markra-code-closing-line .markra-code-language-control {",
+    );
+  });
+
+  it("keeps hidden Markdown empty lines available for pointer hit testing", () => {
+    const styles = readFileSync(`${process.cwd()}/src/styles.css`, "utf8");
+    const emptyLineBreakRule = [
+      '.markdown-paper .cm-line.cm-markra-empty-line[data-markra-empty-source="hidden"] > br {',
+      "    display: none;",
+      "  }",
+    ].join("\n");
+
+    expect(styles).not.toContain(emptyLineBreakRule);
+  });
+
+  it("keeps CodeMirror block rhythm aligned with the original visual editor", () => {
+    const styles = readFileSync(`${process.cwd()}/src/styles.css`, "utf8");
+
+    expect(styles).toContain(
+      ".cm-line.cm-markra-empty-line + .cm-line.cm-markra-blockquote",
+    );
+    expect(styles).toContain(
+      '.cm-line.cm-markra-list-item[data-list-depth="0"] +',
+    );
+    expect(styles).toContain(
+      '.cm-line.cm-markra-list-item[data-list-depth="1"]',
+    );
+    expect(styles).toContain("padding-block-start: 24px !important");
+    expect(styles).toContain(".markdown-paper .cm-line.cm-markra-code-content-line");
+    expect(styles).toContain("font-size: 14.4px !important");
+    expect(styles).toContain(".markdown-paper .cm-markra-code-header-actions");
+    expect(styles).toContain("opacity: 0 !important");
+    expect(styles).toContain(".markdown-paper .cm-markra-table-wrap");
+    expect(styles).toContain("padding: 28px 36px 36px 0 !important");
+    expect(styles).toContain(
+      ".markdown-paper .cm-line:has(> .cm-markra-table-wrap)",
+    );
+    expect(styles).toContain("margin: 24px 0 !important");
+    expect(styles).toContain(
+      '.markdown-paper .cm-markra-table[data-width-mode="auto"]',
+    );
+    expect(styles).toContain(
+      '.markdown-paper .cm-markra-table[data-width-mode="even"]',
+    );
+    expect(styles).toContain(
+      '.markdown-paper[data-editor-theme="github"] .cm-markra-table-wrap',
+    );
+    expect(styles).toContain(
+      '.markdown-paper[data-editor-theme="github-dark"] .cm-markra-table th',
+    );
+    expect(styles).toContain(".markdown-paper .cm-markra-table th");
+    expect(styles).toContain("padding: 8px 12px !important");
+    expect(styles).toContain(
+      ".markdown-paper .cm-line:has(> .cm-markra-horizontal-rule)",
+    );
+    expect(styles).toContain("margin: 16px 0 12px !important");
+  });
+
+  it("uses a white CodeMirror caret on dark editor themes", () => {
+    const styles = readFileSync(`${process.cwd()}/src/styles.css`, "utf8");
+
+    expect(styles).toContain("--editor-caret-color: var(--accent)");
+    expect(styles).toContain("--editor-caret-color: #ffffff");
+    expect(styles).toContain(".markdown-paper .cm-cursor");
+    expect(styles).toContain(
+      "border-left-color: var(--editor-caret-color) !important",
+    );
+  });
+
+  it("uses theme colors for the focused Vim block cursor and hides it when unfocused", () => {
+    const styles = readFileSync(`${process.cwd()}/src/styles.css`, "utf8");
+
+    expect(styles).toContain(
+      ".markdown-paper .cm-vimMode .cm-fat-cursor",
+    );
+    expect(styles).toContain(
+      ".markdown-source-paper .cm-vimMode .cm-fat-cursor",
+    );
+    expect(styles).toContain("background: var(--accent) !important");
+    expect(styles).toContain("color: var(--bg-primary) !important");
+
+    const unfocusedRuleStart = styles.indexOf(
+      ".markdown-paper .cm-editor:not(.cm-focused) .cm-vimMode .cm-fat-cursor",
+    );
+    const unfocusedRuleEnd = styles.indexOf("\n  }", unfocusedRuleStart);
+    const unfocusedRule = styles.slice(unfocusedRuleStart, unfocusedRuleEnd);
+    expect(unfocusedRule).toContain("display: none !important");
+  });
+
+  it("styles the Vim mode panel with editor theme colors", () => {
+    const styles = readFileSync(`${process.cwd()}/src/styles.css`, "utf8");
+
+    expect(styles).toContain(".markdown-paper .cm-vim-panel");
+    expect(styles).toContain(".markdown-source-paper .cm-vim-panel");
+    expect(styles).toContain(".markra-vim-hint");
+    expect(styles).toContain(".markra-vim-feedback");
+    expect(styles).toContain("background: var(--editor-bg-secondary)");
+    expect(styles).toContain("color: var(--accent)");
+  });
+
+  it("reveals inline CodeMirror block controls when their block is hovered", () => {
+    const styles = readFileSync(`${process.cwd()}/src/styles.css`, "utf8");
+    const toolbarRuleStart = styles.indexOf(
+      ".markdown-paper .cm-markra-block-toolbar {",
+    );
+    const toolbarRuleEnd = styles.indexOf("\n  }", toolbarRuleStart);
+    const toolbarRule = styles.slice(toolbarRuleStart, toolbarRuleEnd);
+    const revealRuleStart = styles.indexOf(
+      ".markdown-paper .cm-line:hover > .cm-markra-block-toolbar",
+    );
+    const revealRuleEnd = styles.indexOf("\n  }", revealRuleStart);
+    const revealRule = styles.slice(revealRuleStart, revealRuleEnd);
+
+    expect(toolbarRuleStart).toBeGreaterThanOrEqual(0);
+    expect(toolbarRule).toContain("position: relative");
+    expect(toolbarRule).toContain("margin-inline-start: -54px");
+    expect(toolbarRule).toContain("opacity: 0 !important");
+    expect(toolbarRule).toContain("pointer-events: auto");
+    expect(styles).toContain(
+      ".markdown-paper .cm-markra-block-toolbar::after",
+    );
+    expect(styles).toContain("inset-inline-end: -12px");
+    expect(styles).toContain("width: 12px");
+    expect(revealRuleStart).toBeGreaterThanOrEqual(0);
+    expect(revealRule).toContain("opacity: 0.58 !important");
+    expect(revealRule).toContain("pointer-events: auto");
+  });
+
+  it("keeps heading block tools in a separate slot from fold and level controls", () => {
+    const styles = readFileSync(`${process.cwd()}/src/styles.css`, "utf8");
+    const headingToolbarRuleStart = styles.indexOf(
+      ".markdown-paper .markra-heading-toggle-heading > .cm-markra-block-toolbar {",
+    );
+    const headingToolbarRuleEnd = styles.indexOf("\n  }", headingToolbarRuleStart);
+    const headingToolbarRule = styles.slice(
+      headingToolbarRuleStart,
+      headingToolbarRuleEnd,
+    );
+
+    expect(headingToolbarRuleStart).toBeGreaterThanOrEqual(0);
+    expect(headingToolbarRule).toContain("position: absolute !important");
+    expect(headingToolbarRule).toContain("left: -104px");
+    expect(headingToolbarRule).toContain("margin: 0 !important");
+    expect(headingToolbarRule).toContain(
+      "top: calc(50% + var(--markra-heading-toggle-center-offset))",
+    );
+    expect(headingToolbarRule).toContain("transform: translateY(-50%)");
+    expect(styles).toContain(
+      ".markdown-paper .markra-heading-toggle-heading > .cm-markra-block-toolbar::after",
+    );
   });
 
   it("forces a grabbing cursor during document tab pointer drags", () => {
@@ -149,7 +474,6 @@ describe("editor stylesheet", () => {
     );
     const autoTableRule = styles.slice(autoTableRuleStart, autoTableRuleEnd);
 
-    expect(styles).toContain('@import "@milkdown/kit/prose/tables/style/tables.css"');
     expect(styles).toContain(".markdown-paper table");
     expect(styles).toContain("table-layout: fixed");
     expect(styles).toContain(".markdown-paper .markra-table-scroll");
@@ -305,22 +629,35 @@ describe("editor stylesheet", () => {
     expect(styles).toContain("list-style-type: square;");
   });
 
-  it("shows a quiet inline level list control for the active rendered heading", () => {
+  it("keeps the active heading-level control out of the editable text layout", () => {
     const styles = readFileSync(`${process.cwd()}/src/styles.css`, "utf8");
     const labelStart = styles.indexOf(".markdown-paper .markra-heading-level-control {");
     const labelEnd = styles.indexOf(".markdown-paper .markra-heading-toggle-heading");
     const labelStyles = styles.slice(labelStart, labelEnd);
+    const foldButtonStart = styles.indexOf(
+      ".markdown-paper .markra-heading-toggle-button {",
+    );
+    const foldButtonEnd = styles.indexOf(
+      ".markdown-paper .markra-heading-toggle-heading:hover",
+      foldButtonStart,
+    );
+    const foldButtonStyles = styles.slice(foldButtonStart, foldButtonEnd);
 
     expect(labelStart).toBeGreaterThanOrEqual(0);
     expect(labelEnd).toBeGreaterThan(labelStart);
-    expect(labelStyles).toContain("position: relative");
+    expect(labelStyles).toContain("position: absolute");
     expect(labelStyles).toContain("display: inline-grid");
-    expect(labelStyles).toContain("margin-right");
+    expect(labelStyles).toContain("left: -28px");
+    expect(labelStyles).toContain("margin: 0");
+    expect(labelStyles).toContain(
+      "top: calc(50% + var(--markra-heading-toggle-center-offset))",
+    );
+    expect(labelStyles).toContain("transform: translateY(-50%)");
     expect(labelStyles).toContain(".markdown-paper .markra-heading-level-list");
     expect(labelStyles).toContain("[role=\"option\"]");
     expect(labelStyles).toContain(".markdown-paper .markra-heading-level-button::before");
-    expect(labelStyles).not.toContain("left:");
     expect(labelStyles).toContain("color: color-mix");
+    expect(foldButtonStyles).toContain("left: -54px");
   });
 
   it("keeps table add controls hidden until table hover or focus", () => {
@@ -374,7 +711,6 @@ describe("editor stylesheet", () => {
 
     expect(imageSelectionStart).toBeGreaterThanOrEqual(0);
     expect(imageSelectionEnd).toBeGreaterThan(imageSelectionStart);
-    expect(imageSelectionStyles).toContain(".markdown-paper .markra-image-node.ProseMirror-selectednode");
     expect(imageSelectionStyles).toContain("outline:");
     expect(imageSelectionStyles).toContain("#8cf");
     expect(imageSelectionStyles).not.toContain("var(--accent)");
@@ -382,17 +718,24 @@ describe("editor stylesheet", () => {
     expect(imageSelectionStyles).not.toContain("outline-none");
   });
 
-  it("keeps finalized image source text selection visible while the image block is selected", () => {
+  it("keeps image Markdown source compact instead of inheriting heading typography", () => {
     const styles = readFileSync(`${process.cwd()}/src/styles.css`, "utf8");
-    const sourceSelectionStart = styles.indexOf(".markdown-paper .ProseMirror-hideselection .markra-image-node-source");
-    const sourceSelectionEnd = styles.indexOf(".markdown-paper .markra-image-node-source-invalid", sourceSelectionStart);
-    const sourceSelectionStyles = styles.slice(sourceSelectionStart, sourceSelectionEnd);
+    const imageSourceStart = styles.indexOf(
+      ".markdown-paper .markra-image-node-source {",
+    );
+    const imageSourceEnd = styles.indexOf(
+      ".markdown-paper .markra-image-node-source:focus",
+      imageSourceStart,
+    );
+    const imageSourceStyles = styles.slice(imageSourceStart, imageSourceEnd);
 
-    expect(sourceSelectionStart).toBeGreaterThanOrEqual(0);
-    expect(sourceSelectionEnd).toBeGreaterThan(sourceSelectionStart);
-    expect(sourceSelectionStyles).toContain("caret-color: var(--text-primary) !important");
-    expect(sourceSelectionStyles).toContain(".markdown-paper .ProseMirror-hideselection .markra-image-node-source::selection");
-    expect(sourceSelectionStyles).toContain("background: color-mix(in srgb, var(--accent) 28%, transparent)");
+    expect(imageSourceStart).toBeGreaterThanOrEqual(0);
+    expect(imageSourceEnd).toBeGreaterThan(imageSourceStart);
+    expect(imageSourceStyles).toContain("font-size: 0.875rem");
+    expect(imageSourceStyles).toContain("font-weight: 400");
+    expect(imageSourceStyles).toContain("line-height: 1.5rem");
+    expect(imageSourceStyles).not.toContain("text-[0.95em]");
+    expect(imageSourceStyles).not.toContain("line-height: inherit");
   });
 
   it("lets rendered raw HTML collapse source newlines like browser HTML", () => {
@@ -414,10 +757,16 @@ describe("editor stylesheet", () => {
 
   it("gives horizontal rules a forgiving hit target without heavy selected-node feedback", () => {
     const styles = readFileSync(`${process.cwd()}/src/styles.css`, "utf8");
+    const renderedRuleStart = styles.indexOf(".markdown-paper .cm-markra-horizontal-rule {");
+    const renderedRuleEnd = styles.indexOf(".markdown-paper .cm-markra-task-checkbox", renderedRuleStart);
+    const renderedRuleStyles = styles.slice(renderedRuleStart, renderedRuleEnd);
     const ruleStart = styles.indexOf(".markdown-paper hr {");
     const ruleEnd = styles.indexOf(".markdown-paper::selection", ruleStart);
     const ruleStyles = styles.slice(ruleStart, ruleEnd);
 
+    expect(renderedRuleStart).toBeGreaterThanOrEqual(0);
+    expect(renderedRuleEnd).toBeGreaterThan(renderedRuleStart);
+    expect(renderedRuleStyles).toContain("border-top: 0 !important");
     expect(ruleStart).toBeGreaterThanOrEqual(0);
     expect(ruleEnd).toBeGreaterThan(ruleStart);
     expect(ruleStyles).toContain("@apply my-5 border-0");
@@ -426,8 +775,6 @@ describe("editor stylesheet", () => {
     expect(ruleStyles).toContain("cursor: pointer");
     expect(ruleStyles).toContain("background:");
     expect(ruleStyles).toContain(".markdown-paper hr:hover");
-    expect(ruleStyles).toContain(".markdown-paper hr.ProseMirror-selectednode");
-    expect(ruleStyles).toContain("outline: none");
     expect(ruleStyles).toContain("100% 2px");
   });
 
@@ -440,9 +787,7 @@ describe("editor stylesheet", () => {
     expect(searchChromeStart).toBeGreaterThanOrEqual(0);
     expect(searchChromeEnd).toBeGreaterThan(searchChromeStart);
     expect(searchChromeStyles).toContain("caret-color: transparent");
-    expect(searchChromeStyles).toContain(".markra-math-caret-anchor");
     expect(searchChromeStyles).toContain(".markra-image-node.markra-image-node-selected");
-    expect(searchChromeStyles).toContain(".ProseMirror-selectednode");
     expect(searchChromeStyles).toContain(".markra-image-node-source-row");
   });
 
@@ -457,25 +802,127 @@ describe("editor stylesheet", () => {
     expect(selectionHoldStyles).not.toContain("box-shadow");
   });
 
-  it("styles finalized emphasis marks in the editor", () => {
+  it("styles finalized and live CodeMirror emphasis marks in the editor", () => {
     const styles = readFileSync(`${process.cwd()}/src/styles.css`, "utf8");
 
     expect(styles).toContain(".markdown-paper em");
     expect(styles).toContain("@apply italic");
     expect(styles).toContain("font-synthesis: style");
+
+    const codeMirrorEmphasisStart = styles.indexOf(
+      ".markdown-paper .cm-markra-emphasis {",
+    );
+    const codeMirrorEmphasisEnd = styles.indexOf(
+      ".markdown-paper .cm-markra-inline-code {",
+    );
+    const codeMirrorEmphasisStyles = styles.slice(
+      codeMirrorEmphasisStart,
+      codeMirrorEmphasisEnd,
+    );
+
+    expect(codeMirrorEmphasisStart).toBeGreaterThanOrEqual(0);
+    expect(codeMirrorEmphasisEnd).toBeGreaterThan(codeMirrorEmphasisStart);
+    expect(codeMirrorEmphasisStyles).toContain("font-style: italic");
+    expect(codeMirrorEmphasisStyles).toContain("font-synthesis: style");
   });
 
-  it("positions the native display math caret anchor at the formula block edge", () => {
+  it("preserves the original link preview and source-editing affordances", () => {
     const styles = readFileSync(`${process.cwd()}/src/styles.css`, "utf8");
-    const anchorStart = styles.indexOf(".markdown-paper img.ProseMirror-separator.markra-math-caret-anchor {");
-    const anchorEnd = styles.indexOf(".markdown-paper .markra-math-render-invalid");
-    const anchorStyles = styles.slice(anchorStart, anchorEnd);
+    const sourceLabelStart = styles.indexOf(
+      ".markdown-paper .cm-markra-link-source-label {",
+    );
+    const sourceStart = styles.indexOf(
+      ".markdown-paper .cm-markra-link-source,\n",
+    );
+    const sourceLabelEnd = styles.indexOf(
+      ".markdown-paper .cm-markra-link-icon {",
+    );
+    const sourceLabelStyles = styles.slice(sourceLabelStart, sourceLabelEnd);
+    const iconStyles = styles.slice(
+      sourceLabelEnd,
+      styles.indexOf(".markra-document-link-menu", sourceLabelEnd),
+    );
 
-    expect(styles).toContain(".markdown-paper p:has(.markra-math-caret-anchor)");
-    expect(anchorStyles).toContain("position: absolute");
-    expect(anchorStyles).toContain("right: 0");
-    expect(anchorStyles).toContain("width: 1px !important");
-    expect(anchorStyles).not.toContain("opacity: 0");
+    expect(sourceLabelStart).toBeGreaterThanOrEqual(0);
+    expect(sourceStart).toBeGreaterThanOrEqual(0);
+    expect(sourceLabelEnd).toBeGreaterThan(sourceLabelStart);
+    expect(styles).toContain(
+      ".markdown-paper .cm-markra-link-source,\n  .markdown-paper .cm-markra-link-source * {",
+    );
+    expect(styles.slice(sourceStart, sourceLabelStart)).toContain(
+      "color: var(--editor-markdown-syntax-color)",
+    );
+    expect(styles.slice(sourceStart, sourceLabelStart)).toContain(
+      "text-decoration: none !important",
+    );
+    expect(sourceLabelStyles).toContain("underline");
+    expect(sourceLabelStyles).toContain("cursor: var(--editor-text-cursor)");
+    expect(iconStyles).toContain('content: "↗"');
+    expect(iconStyles).toContain("pointer-events: none");
+  });
+
+  it("uses one quieter theme color for Markdown syntax characters", () => {
+    const styles = readFileSync(`${process.cwd()}/src/styles.css`, "utf8");
+    const syntaxColorStart = styles.indexOf(
+      "--editor-markdown-syntax-color:",
+    );
+    const syntaxRuleStart = styles.indexOf(
+      ".markdown-paper .cm-markra-syntax-character,",
+    );
+    const syntaxRuleEnd = styles.indexOf("\n  }", syntaxRuleStart);
+    const syntaxRule = styles.slice(syntaxRuleStart, syntaxRuleEnd);
+
+    expect(syntaxColorStart).toBeGreaterThanOrEqual(0);
+    expect(styles.slice(syntaxColorStart, syntaxColorStart + 180)).toContain(
+      "color-mix(in srgb, var(--text-md-char) 72%, var(--editor-paper-bg, var(--bg-primary)))",
+    );
+    expect(syntaxRuleStart).toBeGreaterThanOrEqual(0);
+    expect(syntaxRule).toContain(
+      ".markdown-source-paper .cm-markra-syntax-character",
+    );
+    expect(syntaxRule).toContain(
+      "color: var(--editor-markdown-syntax-color) !important",
+    );
+    expect(styles).toContain(
+      ".markdown-paper .markra-md-delimiter {\n    @apply text-(--editor-markdown-syntax-color);",
+    );
+  });
+
+  it("removes CodeMirror's inline baseline around standalone image editors", () => {
+    const styles = readFileSync(`${process.cwd()}/src/styles.css`, "utf8");
+    const imageLineStart = styles.indexOf(
+      ".markdown-paper .cm-line.cm-markra-image-line {",
+    );
+    const imageNodeStart = styles.indexOf(
+      ".markdown-paper .markra-image-node {",
+      imageLineStart,
+    );
+    const imageLineStyles = styles.slice(imageLineStart, imageNodeStart);
+    const standaloneNodeStart = styles.indexOf(
+      ".markdown-paper .cm-line.cm-markra-image-line > .markra-image-node {",
+      imageLineStart,
+    );
+    const standaloneNodeStyles = styles.slice(
+      standaloneNodeStart,
+      imageNodeStart,
+    );
+    const imageNodeImageStart = styles.indexOf(
+      ".markdown-paper .markra-image-node > img {",
+      imageNodeStart,
+    );
+    const imageNodeImageStyles = styles.slice(
+      imageNodeImageStart,
+      styles.indexOf(".markdown-paper .markra-image-upload-placeholder", imageNodeImageStart),
+    );
+
+    expect(imageLineStart).toBeGreaterThanOrEqual(0);
+    expect(imageLineStyles).toContain("line-height: 0");
+    expect(standaloneNodeStart).toBeGreaterThan(imageLineStart);
+    expect(standaloneNodeStyles).toContain("display: inline-block");
+    expect(standaloneNodeStyles).toContain("vertical-align: top");
+    expect(standaloneNodeStyles).toContain("width: 100%");
+    expect(imageNodeImageStyles).toContain("@apply my-0");
+    expect(imageNodeImageStyles).toContain("display: block");
   });
 
   it("keeps hidden markdown delimiters available as zero-width caret anchors", () => {
@@ -597,6 +1044,10 @@ describe("editor stylesheet", () => {
     );
     const mermaidZoomRevealEnd = styles.indexOf(".markdown-paper .markra-mermaid-zoom-button:hover");
     const mermaidZoomRevealStyles = styles.slice(mermaidZoomRevealStart, mermaidZoomRevealEnd);
+    const mermaidZoomButtonStart = styles.indexOf(".markdown-paper .markra-mermaid-zoom-button {");
+    const mermaidZoomButtonEnd =
+      styles.indexOf("\n  }\n", mermaidZoomButtonStart) + "\n  }\n".length;
+    const mermaidZoomButtonStyles = styles.slice(mermaidZoomButtonStart, mermaidZoomButtonEnd);
     const mermaidZoomHoverStart = styles.indexOf(".markdown-paper .markra-mermaid-zoom-button:hover");
     const mermaidZoomHoverEnd = styles.indexOf("\n  }\n", mermaidZoomHoverStart) + "\n  }\n".length;
     const mermaidZoomHoverStyles = styles.slice(mermaidZoomHoverStart, mermaidZoomHoverEnd);
@@ -613,6 +1064,7 @@ describe("editor stylesheet", () => {
     expect(mermaidFoldStyles).toContain(".markra-code-language-control");
     expect(styles).toContain(".markdown-paper .markra-mermaid-preview-button");
     expect(styles).toContain(".markdown-paper .markra-mermaid-zoom-button");
+    expect(mermaidZoomButtonStyles).toContain("top-4");
     expect(mermaidZoomRevealStyles).not.toContain(":focus-within");
     expect(mermaidZoomRevealStyles).toContain("opacity: 1");
     expect(mermaidZoomRevealStyles).toContain("pointer-events: auto");
@@ -779,8 +1231,6 @@ describe("editor stylesheet", () => {
     expect(styles).toContain("-webkit-user-drag: none");
     expect(styles).toContain("user-select: text");
     expect(styles).toContain("cursor: var(--editor-text-cursor)");
-    expect(styles).toContain(".markdown-paper .ProseMirror.markra-link-open-modifier-active a");
-    expect(styles).toContain(".markdown-paper .ProseMirror.markra-link-open-modifier-active .markra-live-link-label");
-    expect(styles).toContain("cursor: pointer");
+    expect(styles).toContain(".markdown-paper a");
   });
 });

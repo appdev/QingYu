@@ -1,5 +1,7 @@
 mod asset;
 #[cfg(desktop)]
+pub(crate) mod asset_cleanup;
+#[cfg(desktop)]
 pub(crate) mod attachment;
 pub(crate) mod document;
 #[cfg(desktop)]

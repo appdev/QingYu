@@ -63,7 +63,3 @@ preview-accent: #2563eb
     --editor-code-line-bg: oklch(94.5% 0.008 106);
     --editor-link-color: oklch(41% 0.14 215);
   }
-
-.markdown-paper[data-editor-theme="whitey"] .ProseMirror::selection {
-    background: color-mix(in srgb, var(--accent) 16%, transparent);
-  }

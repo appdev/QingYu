@@ -1116,11 +1116,7 @@ fn failure_details(code: &str) -> (&'static str, &'static str, bool, &'static st
             true,
             "Restore access to the QingYu audit log and retry.",
         ),
-        "invalid_arguments"
-        | "invalid_query"
-        | "invalid_cursor"
-        | "invalid_document_name"
-        | "invalid_proxy_url" => (
+        "invalid_arguments" | "invalid_query" | "invalid_cursor" | "invalid_document_name" => (
             "invalid_arguments",
             "The tool arguments are invalid.",
             false,

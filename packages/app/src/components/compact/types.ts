@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import type { AppLanguage, MarkdownFormattingShortcutAction } from "@markra/shared";
 import type { SelectionHeadingLevel } from "../../lib/selection-formatting";
 import type { NativeMarkdownFolderFile } from "../../lib/tauri";
-import type { useEditorController } from "../../hooks/useEditorController";
+import type { useCodeMirrorEditorController } from "../../hooks/useCodeMirrorEditorController";
 import type { useEditorPreferences } from "../../hooks/useEditorPreferences";
 import type { useAppLanguage } from "../../hooks/useAppLanguage";
 import type { useAppTheme } from "../../hooks/useAppTheme";
@@ -16,7 +16,7 @@ import type { CompactOverlayPage } from "../../hooks/useCompactNavigation";
 
 type MarkdownDocumentController = ReturnType<typeof useMarkdownDocument>;
 type MarkdownFileTreeController = ReturnType<typeof useMarkdownFileTree>;
-type EditorController = ReturnType<typeof useEditorController>;
+type EditorController = ReturnType<typeof useCodeMirrorEditorController>;
 type EditorPreferencesController = ReturnType<typeof useEditorPreferences>;
 type AppLanguageController = ReturnType<typeof useAppLanguage>;
 type AppThemeController = ReturnType<typeof useAppTheme>;

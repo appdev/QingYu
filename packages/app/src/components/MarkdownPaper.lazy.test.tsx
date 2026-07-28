@@ -19,7 +19,7 @@ describe("MarkdownPaper lazy loading", () => {
       />
     );
 
-    expect(container.querySelector('[data-editor-engine="milkdown"]')).toBeInTheDocument();
-    expect(container.querySelector('[data-editor-engine="milkdown-loading"]')).toBeInTheDocument();
+    expect(container.querySelector('[data-editor-engine="codemirror"]')).toBeInTheDocument();
+    expect(container.querySelector('[data-editor-engine="codemirror-loading"]')).toBeInTheDocument();
   });
 });

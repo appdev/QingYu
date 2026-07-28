@@ -18,9 +18,9 @@ This document only defines engineering conventions for this repository.
 ## Tech Stack
 
 - Desktop shell: Tauri v2.
-- Frontend: React, TypeScript, Milkdown, and Tailwind CSS.
+- Frontend: React, TypeScript, CodeMirror 6, and Tailwind CSS.
 - Icons: prefer `lucide-react`.
-- Styling should use Tailwind CSS as much as practical. Global CSS should be reserved for design tokens, base styles, Milkdown/Markdown generated content, and platform-level polish.
+- Styling should use Tailwind CSS as much as practical. Global CSS should be reserved for design tokens, base styles, CodeMirror/Markdown generated content, and platform-level polish.
 
 ## Code Organization
 

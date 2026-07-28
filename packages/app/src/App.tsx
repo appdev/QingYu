@@ -15,6 +15,7 @@ import {
 import { AppToaster } from "./components/AppToaster";
 import { SelectionToolbar } from "./components/SelectionToolbar";
 import { DocumentHistoryDialog } from "./components/DocumentHistoryDialog";
+import { AssetCleanupDialog } from "./components/AssetCleanupDialog";
 import { DocumentSearchBar } from "./components/DocumentSearchBar";
 import { GlobalSearchPanel } from "./components/GlobalSearchPanel";
 import { ImagePreview } from "./components/ImagePreview";
@@ -54,7 +55,8 @@ import { useFileIgnoreSettings } from "./hooks/useFileIgnoreSettings";
 import { useCompactMode } from "./hooks/useCompactMode";
 import { useCompactAutoSave } from "./hooks/useCompactAutoSave";
 import { usePrimaryWorkspace } from "./hooks/usePrimaryWorkspace";
-import { shouldFocusEditorOnReady, useEditorController } from "./hooks/useEditorController";
+import { useCodeMirrorEditorController } from "./hooks/useCodeMirrorEditorController";
+import { shouldFocusEditorOnReady } from "./lib/editor-focus";
 import { useMarkdownDocument, type ActiveDiskFileContentChange } from "./hooks/useMarkdownDocument";
 import { useMarkdownFileTree } from "./hooks/useMarkdownFileTree";
 import { useCompactSyncSettings } from "./hooks/useCompactSyncSettings";
@@ -74,6 +76,7 @@ import { useRuntimeLogCapture } from "./hooks/useRuntimeLogCapture";
 import { useStartupWindowReveal } from "./hooks/useStartupWindowReveal";
 import { useWorkspaceSearch } from "./hooks/useWorkspaceSearch";
 import { useWorkspaceResourceSnapshotResponder } from "./hooks/useWorkspaceResourceSnapshotResponder";
+import { useWorkspaceAssetCleanup } from "./hooks/useWorkspaceAssetCleanup";
 import {
   useApplicationShortcuts,
   useNativeMarkdownDrop,
@@ -81,7 +84,7 @@ import {
   useNativeMenus,
   useSettingsWindowShortcut
 } from "./hooks/useNativeBindings";
-import type { Editor as MilkdownEditor } from "@milkdown/kit/core";
+import type { EditorView } from "@codemirror/view";
 import {
   clampNumber,
   debug,
@@ -457,7 +460,12 @@ function WorkspaceApp() {
   const desktopPlatform = resolveDesktopPlatform();
   const desktopOsVersion = resolveDesktopOsVersion();
   const webKitScrollWorkaround = webKitScrollWorkaroundForPlatform(desktopPlatform, desktopOsVersion);
+  const nativeRuntimeAvailable = getAppRuntime().events.isAvailable();
   const appFeatures = getAppRuntime().features;
+  const appFiles = getAppRuntime().files;
+  const assetCleanupAvailable = Boolean(
+    appFiles.listMarkdownReferenceFilesForPath && appFiles.trashMarkdownAssets
+  );
   const mcpRuntime = getAppRuntime().mcp;
   const exportFeatureEnabled = appFeatures.export;
   const nativeWindowChromeEnabled = appFeatures.nativeWindowChrome && desktopPlatform !== "linux";
@@ -469,12 +477,15 @@ function WorkspaceApp() {
   useRuntimeLogCapture();
   useRuntimeErrorDiagnostics(appLanguage.language);
   const editorPreferences = useEditorPreferences();
-  const handleCompactPreferencesChange = useCallback((nextPreferences: EditorPreferences) => {
+  const handleCompactPreferencesChange = useCallback((nextPreferencesOrUpdater: EditorPreferences | ((currentPreferences: EditorPreferences) => EditorPreferences)) => {
+    const nextPreferences = typeof nextPreferencesOrUpdater === "function"
+      ? nextPreferencesOrUpdater(editorPreferences.preferences)
+      : nextPreferencesOrUpdater;
     editorPreferences.updatePreferences(nextPreferences);
     saveStoredEditorPreferences(nextPreferences)
       .then(() => notifyAppEditorPreferencesChanged(nextPreferences))
       .catch(() => {});
-  }, [editorPreferences.updatePreferences]);
+  }, [editorPreferences.preferences, editorPreferences.updatePreferences]);
   const fileIgnoreSettings = useFileIgnoreSettings();
   const exportSettings = useExportSettings();
   const [markdownTemplates, setMarkdownTemplates] = useState<MarkdownTemplate[]>([]);
@@ -524,7 +535,7 @@ function WorkspaceApp() {
   const mainDocumentPaneRef = useRef<HTMLDivElement | null>(null);
   const sourceScrollRef = useRef<HTMLElement | null>(null);
   const visualScrollRef = useRef<HTMLElement | null>(null);
-  const mainVisualEditorsRef = useRef(new Map<string, MilkdownEditor>());
+  const mainVisualEditorsRef = useRef(new Map<string, EditorView>());
   const documentTabViewStatesRef = useRef(new Map<string, DocumentTabViewState>());
   const pendingEditorModeScrollRef = useRef<PendingEditorModeScroll | null>(null);
   const splitSurfaceRef = useRef<HTMLDivElement | null>(null);
@@ -596,11 +607,10 @@ function WorkspaceApp() {
     };
   }, [editorPreferences.preferences.markdownTemplates]);
 
-  const editor = useEditorController();
-  const clearEditorSelectionFormatting = editor.clearSelectionFormatting;
+  const editor = useCodeMirrorEditorController();
   const findEditorSearchMatches = editor.findSearchMatches;
   const getEditorCurrentMarkdown = editor.getCurrentMarkdown;
-  const handleMilkdownEditorReady = editor.handleEditorReady;
+  const handleCodeMirrorEditorReady = editor.handleEditorReady;
   const insertEditorMarkdownImage = editor.insertMarkdownImage;
   const insertEditorMarkdownImages = editor.insertMarkdownImages;
   const insertEditorMarkdownImagesAtPoint = editor.insertMarkdownImagesAtPoint;
@@ -614,6 +624,7 @@ function WorkspaceApp() {
   const replaceEditorSearchMatch = editor.replaceSearchMatch;
   const revealEditorSearchMatch = editor.revealSearchMatch;
   const runEditorShortcut = editor.runEditorShortcut;
+  const runEditorSelectionFormattingAction = editor.runSelectionFormattingAction;
   const toggleEditorTaskList = editor.toggleTaskList;
   const getEditorSelectionAnchor = editor.getSelectionAnchor;
   const getEditorSelectionFormattingState = editor.getSelectionFormattingState;
@@ -621,7 +632,6 @@ function WorkspaceApp() {
   const getMarkdownFromEditor = editor.getMarkdownFromEditor;
   const setEditorSelectionHeadingLevel = editor.setSelectionHeadingLevel;
   const showEditorSearchMatches = editor.showSearchMatches;
-  const toggleEditorSelectionHighlight = editor.toggleSelectionHighlight;
   const syncSelectionToolbarFormattingState = useCallback(() => {
     const formattingState = getEditorSelectionFormattingState();
 
@@ -643,9 +653,9 @@ function WorkspaceApp() {
 
     return visualEditorReadyRevisionRef.current === documentRevisionRef.current;
   }, [sourceSurfaceActive]);
-  const handleVisualEditorReady = useCallback((...args: Parameters<typeof handleMilkdownEditorReady>) => {
+  const handleVisualEditorReady = useCallback((...args: Parameters<typeof handleCodeMirrorEditorReady>) => {
     const [readyEditor] = args;
-    handleMilkdownEditorReady(...args);
+    handleCodeMirrorEditorReady(...args);
     if (readyEditor) {
       markAppPerformance("markdown-visual-ready", {
         ...visualEditorReadyDetailRef.current,
@@ -656,7 +666,7 @@ function WorkspaceApp() {
     } else if (visualEditorReadyRevisionRef.current === documentRevisionRef.current) {
       visualEditorReadyRevisionRef.current = null;
     }
-  }, [handleMilkdownEditorReady]);
+  }, [handleCodeMirrorEditorReady]);
   const handleActiveDiskFileContentChange = useCallback((change: ActiveDiskFileContentChange) => {
     if (largeMarkdownVisualBlockedRef.current) return false;
 
@@ -674,11 +684,20 @@ function WorkspaceApp() {
     setActiveOutlineIndex((current) => current === index ? current : index);
   }, []);
   useDefaultContextMenuBlocker();
+  const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth);
   const fileTree = useMarkdownFileTree({
     globalIgnoreRules: fileIgnoreSettings.settings.rules,
     managedAttachmentFolder: editorPreferences.preferences.clipboardImageFolder,
     workspacePersistencePolicy
   });
+  useEffect(() => {
+    const handleViewportResize = () => {
+      setViewportWidth(window.innerWidth);
+    };
+
+    window.addEventListener("resize", handleViewportResize);
+    return () => window.removeEventListener("resize", handleViewportResize);
+  }, []);
   const blankWorkspace = editorWindowContext.kind === "external-blank";
   useEffect(() => {
     if (!primaryWindowOwner) return;
@@ -976,6 +995,24 @@ function WorkspaceApp() {
     return deleteMarkdownTreeFileUnchecked(file)
       .finally(() => lease.release());
   }, [deleteMarkdownTreeFileUnchecked, guardFileMutation, syncPathMutationRegistry]);
+  const getDirtyAssetCleanupDocuments = useCallback(
+    () => documentTabs.flatMap((tab) => {
+      if (!tab.path || !tab.dirty) return [];
+
+      return [{
+        content: getDirtyMarkdownFileContent(tab.path) ?? tab.content,
+        path: tab.path
+      }];
+    }),
+    [documentTabs, getDirtyMarkdownFileContent]
+  );
+  const assetCleanup = useWorkspaceAssetCleanup({
+    getDirtyDocuments: getDirtyAssetCleanupDocuments,
+    globalIgnoreRules: fileIgnoreSettings.settings.rules,
+    managedFolder: editorPreferences.preferences.clipboardImageFolder,
+    onTreeRefresh: refreshMarkdownFileTree,
+    rootPath: fileTreeSourcePath
+  });
   const [notebookRestoreConfigDocument, setNotebookRestoreConfigDocument] = useState<SyncConfigDocument | null>(null);
   const notebookSwitch = useNotebookSwitchCoordinator({
     appSync,
@@ -1619,9 +1656,12 @@ function WorkspaceApp() {
     viewModeChrome.outline ||
     documentLinksVisible;
   const visibleFileTreeOpen = viewModeChrome.fileTree && fileTreeContentVisible && fileTreeOpen;
+  const compactViewport = !nativeRuntimeAvailable && viewportWidth <= 900;
   const visibleWorkspaceLayoutStyle = {
     ...workspaceLayoutStyle,
-    gridTemplateColumns: visibleFileTreeOpen ? `${fileTreeWidth}px minmax(0,1fr)` : "0px minmax(0,1fr)"
+    gridTemplateColumns: visibleFileTreeOpen && !compactViewport
+      ? `${fileTreeWidth}px minmax(0,1fr)`
+      : "0px minmax(0,1fr)"
   } satisfies CSSProperties;
   const sidebarLayoutMode = editorPreferences.preferences.sidebarLayoutMode;
   const documentLinksIndexEnabled = viewModeChrome.fileTree && documentLinksVisible === true && (
@@ -1651,13 +1691,16 @@ function WorkspaceApp() {
   }, [activeImageFile?.path, activeTabId, editorMode]);
   const handleMainVisualEditorReady = useCallback((
     tabId: string,
-    readyEditor: MilkdownEditor | null,
-    options?: Parameters<typeof handleMilkdownEditorReady>[1]
+    readyEditor: EditorView | null,
+    disposedEditor?: EditorView,
+    options?: Parameters<typeof handleCodeMirrorEditorReady>[1]
   ) => {
     if (readyEditor) {
       mainVisualEditorsRef.current.set(tabId, readyEditor);
-    } else {
+    } else if (mainVisualEditorsRef.current.get(tabId) === disposedEditor) {
       mainVisualEditorsRef.current.delete(tabId);
+    } else {
+      return;
     }
 
     const tab = readyEditor ? documentTabs.find((candidate) => candidate.id === tabId) : null;
@@ -1685,7 +1728,7 @@ function WorkspaceApp() {
     if (!activeEditor) return;
 
     handleVisualEditorReady(activeEditor, { autoFocus: false });
-  }, [activeTabId, handleVisualEditorReady]);
+  }, [activeTabId, document.revision, handleVisualEditorReady]);
   useEffect(() => {
     setActiveOutlineIndex(null);
   }, [activeTabId, document.path]);
@@ -2111,6 +2154,40 @@ function WorkspaceApp() {
       editor.clearSelection();
     }
   }, [editor, readOnlyMode]);
+  const persistEditorModePreferenceToggle = useCallback((
+    preference: "typewriterModeEnabled" | "vimModeEnabled"
+  ) => {
+    const previousValue = editorPreferences.preferences[preference];
+    const nextPreferences = {
+      ...editorPreferences.preferences,
+      [preference]: !previousValue
+    };
+
+    editorPreferences.updatePreferences(nextPreferences);
+    saveStoredEditorPreferences(nextPreferences)
+      .then(() => notifyAppEditorPreferencesChanged(nextPreferences))
+      .catch(() => {
+        editorPreferences.updatePreferences((currentPreferences) => {
+          if (currentPreferences[preference] !== nextPreferences[preference]) {
+            return currentPreferences;
+          }
+          return {
+            ...currentPreferences,
+            [preference]: previousValue
+          } satisfies EditorPreferences;
+        });
+        showAppToast({
+          message: translate("app.editorPreferencesSaveFailed"),
+          status: "error"
+        });
+      });
+  }, [editorPreferences.preferences, editorPreferences.updatePreferences, translate]);
+  const handleTypewriterModeToggle = useCallback(() => {
+    persistEditorModePreferenceToggle("typewriterModeEnabled");
+  }, [persistEditorModePreferenceToggle]);
+  const handleVimModeToggle = useCallback(() => {
+    persistEditorModePreferenceToggle("vimModeEnabled");
+  }, [persistEditorModePreferenceToggle]);
   const selectionToolbarVisible =
     !sourceSurfaceActive &&
     !mainEditorReadOnly &&
@@ -3064,7 +3141,7 @@ function WorkspaceApp() {
 
     setDocumentHistoryOpen((current) => !current);
   }, [documentHistoryAvailable]);
-  const handleDocumentHistoryRestore = useCallback((contents: string, historyId: string) => {
+  const handleDocumentHistoryRestore = useCallback(async (contents: string, historyId: string) => {
     debug(() => ["[markra-history] app restore requested", {
       contentsChars: contents.length,
       currentDirty: document.dirty,
@@ -3079,42 +3156,52 @@ function WorkspaceApp() {
       syncPathMutationRegistry.isBlocked(mutation)
     ) {
       guardFileMutation(mutation);
-      return;
+      return false;
     }
     const lease = document.path ? syncPathMutationRegistry.acquire(mutation) : null;
     if (document.path && !lease) {
       guardFileMutation(mutation);
-      return;
+      return false;
     }
 
-    const restored = restoreDocumentContent(contents);
-    debug(() => ["[markra-history] app restore state result", {
-      restored
-    }]);
-    if (!restored) {
-      lease?.release();
-      return;
-    }
+    try {
+      if (document.dirty) {
+        const savedCurrent = await saveCurrentDocument();
+        if (!savedCurrent) {
+          debug(() => ["[markra-history] app restore canceled", {
+            historyId,
+            reason: "current document was not saved"
+          }]);
+          return false;
+        }
+      }
 
-    const editorReplaced = replaceEditorMarkdown(contents);
-    debug(() => ["[markra-history] editor replace requested", {
-      editorReplaced
-    }]);
-    saveCurrentDocumentContent(contents, {
-      historyCursorId: historyId,
-      skipHistorySnapshot: true
-    })
-      .then((savedFile) => {
+      const restored = restoreDocumentContent(contents);
+      debug(() => ["[markra-history] app restore state result", {
+        restored
+      }]);
+      if (!restored) return false;
+
+      const editorReplaced = replaceEditorMarkdown(contents);
+      debug(() => ["[markra-history] editor replace requested", {
+        editorReplaced
+      }]);
+      try {
+        // A normal save snapshots the version that was current immediately before this restore.
+        const savedFile = await saveCurrentDocumentContent(contents);
         debug(() => ["[markra-history] save restored document success", {
           savedPath: savedFile?.path ?? null
         }]);
-      })
-      .catch((error: unknown) => {
+        return savedFile !== null;
+      } catch (error: unknown) {
         debug(() => ["[markra-history] save restored document failed", {
           error: error instanceof Error ? error.message : String(error)
         }]);
-      })
-      .finally(() => lease?.release());
+        return false;
+      }
+    } finally {
+      lease?.release();
+    }
   }, [
     document.dirty,
     document.path,
@@ -3123,6 +3210,7 @@ function WorkspaceApp() {
     guardFileMutation,
     replaceEditorMarkdown,
     restoreDocumentContent,
+    saveCurrentDocument,
     saveCurrentDocumentContent,
     syncPathMutationRegistry
   ]);
@@ -3363,10 +3451,13 @@ function WorkspaceApp() {
   const syncVisualMarkdownAfterEditorCommand = useCallback(() => {
     if (mainEditorReadOnly || !splitMode) return;
 
-    handleVisualMarkdownChange(getEditorCurrentMarkdown(document.content), {
-      documentRevision: document.revision
+    const content = getEditorCurrentMarkdown(document.content);
+    setActiveEditorSurface("visual");
+    handleMarkdownChange(content, {
+      documentRevision: document.revision,
+      surface: "visual"
     });
-  }, [document.content, document.revision, getEditorCurrentMarkdown, handleVisualMarkdownChange, mainEditorReadOnly, splitMode]);
+  }, [document.content, document.revision, getEditorCurrentMarkdown, handleMarkdownChange, mainEditorReadOnly, splitMode]);
   const handleImportLocalImages = useCallback(async () => {
     if (mainEditorReadOnly || !hasOpenDocument || activeImageFile || sourceMode) return;
 
@@ -3550,40 +3641,15 @@ function WorkspaceApp() {
   const handleSelectionToolbarFormattingAction = useCallback((action: SelectionFormattingToolbarAction) => {
     if (activeEditorReadOnly) return;
 
-    if (action === "highlight") {
-      if (!toggleEditorSelectionHighlight()) return;
+    if (!runEditorSelectionFormattingAction(action)) return;
 
-      syncVisualMarkdownAfterEditorCommand();
-      syncSelectionToolbarFormattingState();
-      return;
-    }
-
-    if (action === "clearFormatting") {
-      if (!clearEditorSelectionFormatting()) return;
-
-      syncVisualMarkdownAfterEditorCommand();
-      syncSelectionToolbarFormattingState();
-      return;
-    }
-
-    const normalizedShortcuts = normalizeMarkdownShortcuts(editorPreferences.preferences.markdownShortcuts);
-    const shortcut = markdownShortcutToKeyboardEventInit(normalizedShortcuts[action]);
-    if (!shortcut) return;
-
-    handleRunEditorShortcut(shortcut.key, {
-      altKey: Boolean(shortcut.altKey),
-      code: shortcut.code,
-      shiftKey: Boolean(shortcut.shiftKey)
-    });
+    syncVisualMarkdownAfterEditorCommand();
     syncSelectionToolbarFormattingState();
   }, [
-    clearEditorSelectionFormatting,
-    editorPreferences.preferences.markdownShortcuts,
-    handleRunEditorShortcut,
     activeEditorReadOnly,
+    runEditorSelectionFormattingAction,
     syncSelectionToolbarFormattingState,
-    syncVisualMarkdownAfterEditorCommand,
-    toggleEditorSelectionHighlight
+    syncVisualMarkdownAfterEditorCommand
   ]);
   const handleSelectionToolbarHeadingLevelAction = useCallback((level: SelectionHeadingLevel) => {
     if (activeEditorReadOnly) return;
@@ -4033,6 +4099,8 @@ function WorkspaceApp() {
     toggleMarkdownFiles: handleFileTreeToggle,
     toggleReadOnlyMode: handleReadOnlyModeToggle,
     toggleSourceMode: handleEditorModeToggle,
+    toggleTypewriterMode: handleTypewriterModeToggle,
+    toggleVimMode: handleVimModeToggle,
     toggleViewMode: handleViewModeCycle
   });
 
@@ -4261,13 +4329,15 @@ function WorkspaceApp() {
     () => {
       const availableActions = editorPreferences.preferences.titlebarActions;
 
-      if (viewModeChrome.titlebarActions) {
-        return viewModeChrome.viewModeToggle
-          ? availableActions
-          : availableActions.filter((action) => action.id !== "viewMode");
+      if (!viewModeChrome.titlebarActions) {
+        return editorPreferences.preferences.viewMode === "immersive" && viewModeChrome.viewModeToggle
+          ? availableActions.filter((action) => action.id === "viewMode")
+          : [];
       }
 
-      return [];
+      return viewModeChrome.viewModeToggle
+        ? availableActions
+        : availableActions.filter((action) => action.id !== "viewMode");
     },
     [
       editorPreferences.preferences.titlebarActions,
@@ -4325,7 +4395,9 @@ function WorkspaceApp() {
               markdownShortcuts={editorPreferences.preferences.markdownShortcuts}
               paragraphSpacingPx={editorPreferences.preferences.paragraphSpacingPx}
               onActiveOutlineIndexChange={tabActive ? handleActiveOutlineIndexChange : undefined}
-              onEditorReady={(readyEditor, options) => handleMainVisualEditorReady(tab.id, readyEditor, options)}
+              onEditorReady={(readyEditor, disposedEditor) =>
+                handleMainVisualEditorReady(tab.id, readyEditor, disposedEditor)
+              }
               onMarkdownChange={(content) => {
                 const options = { documentRevision: tab.revision };
                 if (tabActive) {
@@ -4348,6 +4420,8 @@ function WorkspaceApp() {
               scrollRef={tabActive ? visualScrollRef : undefined}
               tableColumnWidthMode={editorPreferences.preferences.tableColumnWidthMode}
               topInset="titlebar"
+              typewriterModeEnabled={editorPreferences.preferences.typewriterModeEnabled}
+              vimModeEnabled={editorPreferences.preferences.vimModeEnabled}
               workspaceFiles={fileTreeFiles}
               wrapCodeBlocks={editorPreferences.preferences.wrapCodeBlocks}
             />
@@ -4591,6 +4665,7 @@ function WorkspaceApp() {
       <AppToaster language={appLanguage.language} />
       <main className="app-shell group/app relative grid h-full w-full grid-rows-[minmax(0,1fr)] overflow-hidden overscroll-none bg-(--bg-primary) text-(--text-primary)">
         <NativeTitleBar
+          compactLayout={compactViewport}
           dirty={!activeImageFile && hasOpenDocument && document.dirty}
           documentKind={titleDocumentKind}
           documentName={titleDocumentName}
@@ -4634,9 +4709,24 @@ function WorkspaceApp() {
 
         {documentHistoryOverlay}
 
+        {assetCleanup.dialogOpen ? (
+          <AssetCleanupDialog
+            error={assetCleanup.error}
+            index={assetCleanup.index}
+            key={assetCleanup.revision}
+            language={appLanguage.language}
+            loading={assetCleanup.loading}
+            trashing={assetCleanup.trashing}
+            onClose={assetCleanup.closeDialog}
+            onRefresh={assetCleanup.refresh}
+            onTrash={assetCleanup.trashAssets}
+          />
+        ) : null}
+
         <span className="screen-reader-title sr-only">{titleDocumentName}</span>
 
         <WorkspaceLayout
+          compactFileTreeOverlay={compactViewport}
           documentSearchAvailable={documentSearchAvailable}
           documentSearchOpen={documentSearchOpen}
           editorDropTargetActive={editorTabDropTargetActive}
@@ -4655,8 +4745,12 @@ function WorkspaceApp() {
             language: appLanguage.language,
             linkIndex: workspaceLinkIndex.index,
             linkIndexLoading: workspaceLinkIndex.loading,
-            maxWidth: fileTreeMaxWidth,
-            minWidth: fileTreeMinWidth,
+            maxWidth: compactViewport
+              ? Math.max(fileTreeMinWidth, viewportWidth - 48)
+              : fileTreeMaxWidth,
+            minWidth: compactViewport
+              ? Math.min(fileTreeMinWidth, Math.max(0, viewportWidth - 48))
+              : fileTreeMinWidth,
             open: visibleFileTreeOpen,
             outlineItems,
             outlineVisible: viewModeChrome.outline,
@@ -4670,7 +4764,10 @@ function WorkspaceApp() {
             sidebarLayoutMode,
             syncState: sidebarSyncState,
             updateAvailable: Boolean(appUpdater.availableUpdate),
-            width: fileTreeWidth,
+            width: compactViewport
+              ? Math.min(fileTreeWidth, Math.max(0, viewportWidth - 48))
+              : fileTreeWidth,
+            onCleanUnusedImages: assetCleanupAvailable ? assetCleanup.openDialog : undefined,
             onCreateFile: handleCreateMarkdownTreeFile,
             onCreateFolder: handleCreateMarkdownTreeFolder,
             onDeleteFile: handleDeleteMarkdownTreeFile,
@@ -4694,9 +4791,9 @@ function WorkspaceApp() {
               ? (folder) => notebookSwitch.removeRecentNotebook(folder.path)
               : undefined,
             onRenameFile: handleRenameMarkdownTreeFile,
-            onResize: resizeFileTree,
-            onResizeEnd: endFileTreeResize,
-            onResizeStart: startFileTreeResize,
+            onResize: compactViewport ? undefined : resizeFileTree,
+            onResizeEnd: compactViewport ? undefined : endFileTreeResize,
+            onResizeStart: compactViewport ? undefined : startFileTreeResize,
             onSaveFileAsTemplate: handleSaveMarkdownFileAsTemplate,
             onSelectOutlineItem: editor.selectOutlineItem,
             onToggleMarkdownFiles: handleFileTreeToggle
@@ -4806,6 +4903,8 @@ function WorkspaceApp() {
                           showLineNumbers={editorPreferences.preferences.showLineNumbers}
                           scrollRef={sourceScrollRef}
                           topInset="titlebar"
+                          typewriterModeEnabled={editorPreferences.preferences.typewriterModeEnabled}
+                          vimModeEnabled={editorPreferences.preferences.vimModeEnabled}
                         />
                       </div>
                     </div>
@@ -4837,6 +4936,8 @@ function WorkspaceApp() {
                           showLineNumbers={editorPreferences.preferences.showLineNumbers}
                           scrollRef={sourceScrollRef}
                           topInset="titlebar"
+                          typewriterModeEnabled={editorPreferences.preferences.typewriterModeEnabled}
+                          vimModeEnabled={editorPreferences.preferences.vimModeEnabled}
                         />
                       ) : null}
                     </div>

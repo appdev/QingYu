@@ -7,7 +7,7 @@ import {
   type SyncErrorToastAction
 } from "../components/SyncErrorToast";
 
-export type AppToastStatus = "error" | "loading" | "success";
+export type AppToastStatus = "error" | "loading" | "success" | "warning";
 export type AppToastSurface = "notice" | "toast";
 export type AppToastAction = ExternalToast["action"];
 export type AppToastPresentation = "default" | "sync-error";
@@ -97,6 +97,11 @@ export function showAppToast({
 
   if (status === "loading") {
     toast.loading(message, options);
+    return;
+  }
+
+  if (status === "warning") {
+    toast.warning(message, options);
     return;
   }
 

@@ -44,6 +44,7 @@ function findFileByBasename(rootDir, fileName) {
 
 const root = process.env.RELEASE_ASSETS_ROOT || "release-assets";
 const version = requireEnv("RELEASE_VERSION");
+const releaseTag = process.env.RELEASE_TAG?.trim() || `v${version.replace(/^v/u, "")}`;
 const notesPath = process.env.RELEASE_NOTES_PATH || "release-notes.md";
 const repository = requireEnv("GITHUB_REPOSITORY");
 const notes = fs.existsSync(notesPath) ? fs.readFileSync(notesPath, "utf8").trim() : "";
@@ -80,9 +81,10 @@ for (const metadataPath of metadataPaths) {
     throw new Error(`Missing updater signature: ${metadata.signatureName} in ${artifactDir}`);
   }
 
+  // Pin assets to this tag because GitHub's /latest route excludes prereleases.
   platforms[metadata.updaterPlatform] = {
     signature: fs.readFileSync(signaturePath, "utf8").trim(),
-    url: `https://github.com/${repository}/releases/latest/download/${metadata.bundleName}`,
+    url: `https://github.com/${repository}/releases/download/${encodeURIComponent(releaseTag)}/${encodeURIComponent(metadata.bundleName)}`,
   };
 }
 

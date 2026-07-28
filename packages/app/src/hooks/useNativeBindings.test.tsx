@@ -178,8 +178,32 @@ describe("useNativeMenuHandlers", () => {
 
     result.current.formatBold?.();
 
-    expect(runEditorShortcut).toHaveBeenCalledWith("B", {
+    expect(runEditorShortcut).toHaveBeenCalledWith("b", {
       altKey: true,
+      code: undefined,
+      modKey: true,
+      shiftKey: false
+    });
+  });
+
+  it("routes native formatting commands through Alt-only custom shortcuts", () => {
+    const runEditorShortcut = vi.fn();
+    const { result } = renderHook(() =>
+      useNativeMenuHandlers({
+        ...baseOptions,
+        markdownShortcuts: {
+          heading1: "Alt+1"
+        },
+        runEditorShortcut
+      })
+    );
+
+    result.current.formatHeading1?.();
+
+    expect(runEditorShortcut).toHaveBeenCalledWith("1", {
+      altKey: true,
+      code: "Digit1",
+      modKey: false,
       shiftKey: false
     });
   });
@@ -198,6 +222,7 @@ describe("useNativeMenuHandlers", () => {
     expect(runEditorShortcut).toHaveBeenCalledWith("*", {
       altKey: false,
       code: "Digit8",
+      modKey: true,
       shiftKey: true
     });
   });
@@ -270,6 +295,7 @@ describe("useNativeMenuHandlers", () => {
 
     expect(runEditorShortcut).toHaveBeenCalledWith("F", {
       altKey: true,
+      modKey: true,
       shiftKey: true
     });
   });
@@ -495,6 +521,70 @@ describe("useApplicationShortcuts", () => {
     });
 
     expect(toggleReadOnlyMode).toHaveBeenCalledTimes(1);
+  });
+
+  it("routes the configurable typewriter mode shortcut", () => {
+    const toggleTypewriterMode = vi.fn();
+    renderHook(() =>
+      useApplicationShortcuts({
+        ...baseOptions,
+        markdownShortcuts: {
+          toggleTypewriterMode: "Mod+Alt+G"
+        },
+        toggleTypewriterMode
+      })
+    );
+
+    fireEvent.keyDown(window, {
+      altKey: true,
+      code: "KeyG",
+      key: "©",
+      metaKey: true,
+    });
+
+    expect(toggleTypewriterMode).toHaveBeenCalledTimes(1);
+  });
+
+  it("routes the configurable Vim mode shortcut", () => {
+    const toggleVimMode = vi.fn();
+    renderHook(() =>
+      useApplicationShortcuts({
+        ...baseOptions,
+        markdownShortcuts: {
+          toggleVimMode: "Mod+Shift+Alt+I"
+        },
+        toggleVimMode
+      })
+    );
+
+    fireEvent.keyDown(window, {
+      altKey: true,
+      code: "KeyI",
+      key: "I",
+      metaKey: true,
+      shiftKey: true
+    });
+
+    expect(toggleVimMode).toHaveBeenCalledTimes(1);
+  });
+
+  it("ignores repeated keydown events for configurable shortcuts", () => {
+    const toggleTypewriterMode = vi.fn();
+    renderHook(() =>
+      useApplicationShortcuts({
+        ...baseOptions,
+        toggleTypewriterMode
+      })
+    );
+
+    fireEvent.keyDown(window, {
+      key: "Y",
+      metaKey: true,
+      repeat: true,
+      shiftKey: true
+    });
+
+    expect(toggleTypewriterMode).not.toHaveBeenCalled();
   });
 
   it("closes the current document from the default close shortcut", () => {
