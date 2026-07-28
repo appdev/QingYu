@@ -615,7 +615,7 @@ export function NativeTitleBar({
 
   const documentActionsClassName =
     "document-actions relative z-10 flex h-10 items-center justify-end gap-0.5 pr-3.5 text-(--text-secondary) opacity-40 transition-opacity duration-200 ease-[cubic-bezier(0.22,1,0.36,1)] group-hover/titlebar:opacity-100 focus-within:opacity-100 motion-reduce:transition-none";
-  const titlebarSurfaceClassName = "bg-(--bg-primary)";
+  const titlebarSurfaceClassName = "theme-titlebar-legacy-primary theme-titlebar-surface";
   const titlebarSidebarWidth = nativeWindowChrome && markdownFilesOpen ? markdownFilesWidth : 0;
   const titlebarSidebarWidthTransitionClassName = markdownFilesResizing
     ? "transition-none"
@@ -635,12 +635,12 @@ export function NativeTitleBar({
   const renderTitlebarSidebarSurface = () => nativeWindowChrome ? (
     <span
       aria-hidden="true"
-      className={`native-titlebar-sidebar-surface pointer-events-none absolute top-0 bottom-0 left-0 z-0 bg-(--bg-secondary) ${titlebarSidebarWidthTransitionClassName}`}
+      className={`native-titlebar-sidebar-surface pointer-events-none absolute top-0 bottom-0 left-0 z-0 theme-sidebar-legacy-secondary theme-sidebar-surface ${titlebarSidebarWidthTransitionClassName}`}
       style={{ width: titlebarSidebarWidth }}
     >
       <span
         aria-hidden="true"
-        className="native-titlebar-sidebar-divider pointer-events-none absolute top-0 right-0 bottom-0 w-px bg-(--border-default) opacity-100"
+        className="native-titlebar-sidebar-divider pointer-events-none absolute top-0 right-0 bottom-0 w-px theme-chrome-divider opacity-100"
       />
     </span>
   ) : null;
