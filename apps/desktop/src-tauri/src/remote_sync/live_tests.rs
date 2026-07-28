@@ -1,7 +1,9 @@
 use std::env;
+use std::future::Future;
 use std::io::{Read, Write};
 use std::net::TcpListener;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::panic::AssertUnwindSafe;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -10,6 +12,7 @@ use super::backend::{RemoteSyncBackend, ValidRemoteRoot};
 use super::s3_backend::{S3Backend, S3SyncSettings};
 use super::{create_webdav_backend, create_webdav_backend_at_validated_prefix, WebDavSyncSettings};
 use crate::notebook_scope::notes_remote_prefix;
+use futures::FutureExt;
 
 static RUN_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -225,69 +228,94 @@ async fn cleanup_backend_prefix(backend: &S3Backend) -> Result<(), String> {
     }
 }
 
-async fn finish_s3_scenario(
-    config: &LiveS3Config,
-    backend: &S3Backend,
+fn finish_s3_scenario(
+    run_id: &str,
     scenario: Result<(), String>,
+    cleanup: Result<(), String>,
 ) -> Result<(), String> {
-    let cleanup = cleanup_backend_prefix(backend).await;
     match (scenario, cleanup) {
         (Ok(()), Ok(())) => Ok(()),
-        (Err(error), Ok(())) => Err(format!(
-            "Live S3 scenario {} failed: {error}",
-            config.run_id
-        )),
-        (Ok(()), Err(error)) => Err(format!("Live S3 cleanup {} failed: {error}", config.run_id)),
+        (Err(error), Ok(())) => Err(format!("Live S3 scenario {run_id} failed: {error}")),
+        (Ok(()), Err(error)) => Err(format!("Live S3 cleanup {run_id} failed: {error}")),
         (Err(scenario), Err(cleanup)) => Err(format!(
-            "Live S3 scenario {} failed: {scenario}; cleanup also failed: {cleanup}",
-            config.run_id
+            "Live S3 scenario {run_id} failed: {scenario}; cleanup also failed: {cleanup}"
         )),
+    }
+}
+
+async fn run_s3_scenario_with_cleanup<Scenario, ScenarioFuture, Cleanup, CleanupFuture>(
+    run_id: &str,
+    scenario: Scenario,
+    cleanup: Cleanup,
+) -> Result<(), String>
+where
+    Scenario: FnOnce() -> ScenarioFuture,
+    ScenarioFuture: Future<Output = Result<(), String>>,
+    Cleanup: FnOnce() -> CleanupFuture,
+    CleanupFuture: Future<Output = Result<(), String>>,
+{
+    let scenario = AssertUnwindSafe(scenario()).catch_unwind().await;
+    let cleanup = cleanup().await;
+    match scenario {
+        Ok(scenario) => finish_s3_scenario(run_id, scenario, cleanup),
+        Err(panic) => {
+            if cleanup.is_err() {
+                eprintln!("Live S3 panic cleanup failed for isolated scenario");
+            }
+            std::panic::resume_unwind(panic)
+        }
     }
 }
 
 async fn run_protected_settings_transport_smoke() -> Result<(), String> {
     let config = LiveS3Config::from_env()?;
     let backend = config.backend_for("protected-settings-transport")?;
-    let scenario = async {
-        let expected = br#"{"language":"en","themeMode":"system"}"#;
-        backend.upload("settings.json", expected, None).await?;
-        let files = backend.list_files().await?;
-        let settings = files
-            .get("settings.json")
-            .ok_or_else(|| "Live S3 settings object was not listed after upload".to_string())?;
-        if backend
-            .download("settings.json", &settings.identity)
-            .await?
-            != expected
-        {
-            return Err("Live S3 settings bytes did not match the uploaded bytes".to_string());
-        }
-        Ok(())
-    }
-    .await;
-    finish_s3_scenario(&config, &backend, scenario).await
+    run_s3_scenario_with_cleanup(
+        &config.run_id,
+        || async {
+            let expected = br#"{"language":"en","themeMode":"system"}"#;
+            backend.upload("settings.json", expected, None).await?;
+            let files = backend.list_files().await?;
+            let settings = files
+                .get("settings.json")
+                .ok_or_else(|| "Live S3 settings object was not listed after upload".to_string())?;
+            if backend
+                .download("settings.json", &settings.identity)
+                .await?
+                != expected
+            {
+                return Err("Live S3 settings bytes did not match the uploaded bytes".to_string());
+            }
+            Ok(())
+        },
+        || cleanup_backend_prefix(&backend),
+    )
+    .await
 }
 
 async fn run_read_only_connection_test_scenario() -> Result<(), String> {
     let config = LiveS3Config::from_env()?;
     let backend = config.backend_for("connection-test")?;
-    let scenario = async {
-        backend
-            .upload("settings.json", br#"{"language":"en"}"#, None)
-            .await?;
-        let before = backend.list_files().await?;
-        let checked_target = backend.test_connection().await?;
-        let after = backend.list_files().await?;
-        if before != after {
-            return Err("Read-only S3 connection test changed the remote snapshot".to_string());
-        }
-        if checked_target.is_empty() {
-            return Err("Read-only S3 connection test returned an empty target".to_string());
-        }
-        Ok(())
-    }
-    .await;
-    finish_s3_scenario(&config, &backend, scenario).await
+    run_s3_scenario_with_cleanup(
+        &config.run_id,
+        || async {
+            backend
+                .upload("settings.json", br#"{"language":"en"}"#, None)
+                .await?;
+            let before = backend.list_files().await?;
+            let checked_target = backend.test_connection().await?;
+            let after = backend.list_files().await?;
+            if before != after {
+                return Err("Read-only S3 connection test changed the remote snapshot".to_string());
+            }
+            if checked_target.is_empty() {
+                return Err("Read-only S3 connection test returned an empty target".to_string());
+            }
+            Ok(())
+        },
+        || cleanup_backend_prefix(&backend),
+    )
+    .await
 }
 
 async fn verify_isolated_prefix_root_is_empty() -> Result<(), String> {
@@ -323,7 +351,54 @@ fn live_minio_s3_connection_test_preserves_remote_snapshot() {
 
 #[test]
 #[ignore = "requires MARKRA_TEST_S3_* and a real MinIO server"]
-fn live_minio_s3_isolated_prefix_root_is_empty() {
+fn verify_live_s3_isolated_prefix_root_is_empty() {
     tauri::async_runtime::block_on(verify_isolated_prefix_root_is_empty())
         .expect("live MinIO isolated prefix root should be empty");
+}
+
+#[test]
+fn panic_in_live_s3_scenario_runs_cleanup_then_resumes_the_same_panic() {
+    tauri::async_runtime::block_on(async {
+        let cleanup_calls = Arc::new(AtomicUsize::new(0));
+        let observed_cleanup = Arc::clone(&cleanup_calls);
+        let panic = AssertUnwindSafe(run_s3_scenario_with_cleanup(
+            "panic-fixture",
+            || async {
+                panic!("live-s3-panic-sentinel");
+                #[allow(unreachable_code)]
+                Ok(())
+            },
+            move || async move {
+                observed_cleanup.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            },
+        ))
+        .catch_unwind()
+        .await
+        .expect_err("scenario panic must be restored after cleanup");
+
+        assert_eq!(cleanup_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            panic.downcast_ref::<&str>(),
+            Some(&"live-s3-panic-sentinel")
+        );
+    });
+}
+
+#[test]
+fn live_s3_scenario_error_remains_primary_when_cleanup_also_fails() {
+    tauri::async_runtime::block_on(async {
+        let error = run_s3_scenario_with_cleanup(
+            "error-fixture",
+            || async { Err("primary-scenario".to_string()) },
+            || async { Err("secondary-cleanup".to_string()) },
+        )
+        .await
+        .expect_err("combined live failure must be reported");
+
+        assert_eq!(
+            error,
+            "Live S3 scenario error-fixture failed: primary-scenario; cleanup also failed: secondary-cleanup"
+        );
+    });
 }

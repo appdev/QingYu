@@ -114,7 +114,7 @@ describe("live S3 test wrapper", () => {
     expect(invocation).not.toContain("private-secret-value");
   });
 
-  it("runs only protected S3 transport checks before the Dejavu ordinary-notes test", async () => {
+  it("runs the isolated-root verifier in its own Cargo process before Dejavu", async () => {
     const wrapper = await loadWrapper();
     expect(wrapper).not.toBeNull();
     if (!wrapper) return;
@@ -123,10 +123,11 @@ describe("live S3 test wrapper", () => {
     const spawnProcess = vi
       .fn()
       .mockImplementationOnce(() => exitingChild(0))
+      .mockImplementationOnce(() => exitingChild(0))
       .mockImplementationOnce(() => exitingChild(0));
 
     await expect(wrapper.runAllLiveS3Tests(environment, spawnProcess)).resolves.toBe(0);
-    expect(spawnProcess).toHaveBeenCalledTimes(2);
+    expect(spawnProcess).toHaveBeenCalledTimes(3);
     expect(spawnProcess.mock.calls[0]).toEqual([
       "cargo",
       [
@@ -142,6 +143,20 @@ describe("live S3 test wrapper", () => {
       { env: environment, stdio: "inherit" }
     ]);
     expect(spawnProcess.mock.calls[1]).toEqual([
+      "cargo",
+      [
+        "test",
+        "--manifest-path",
+        "apps/desktop/src-tauri/Cargo.toml",
+        "verify_live_s3_isolated_prefix_root_is_empty",
+        "--",
+        "--ignored",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      { env: environment, stdio: "inherit" }
+    ]);
+    expect(spawnProcess.mock.calls[2]).toEqual([
       "cargo",
       [
         "test",
@@ -167,7 +182,7 @@ describe("live S3 test wrapper", () => {
     expect(invocations).not.toContain("private-secret-value");
   });
 
-  it("still runs Dejavu after a protected transport failure and returns the first code", async () => {
+  it("still runs cleanup verification and Dejavu after a protected transport failure", async () => {
     const wrapper = await loadWrapper();
     expect(wrapper).not.toBeNull();
     if (!wrapper) return;
@@ -175,12 +190,13 @@ describe("live S3 test wrapper", () => {
     const spawnProcess = vi
       .fn()
       .mockImplementationOnce(() => exitingChild(9))
+      .mockImplementationOnce(() => exitingChild(0))
       .mockImplementationOnce(() => exitingChild(0));
 
     await expect(
       wrapper.runAllLiveS3Tests(completeEnvironment(), spawnProcess)
     ).resolves.toBe(9);
-    expect(spawnProcess).toHaveBeenCalledTimes(2);
+    expect(spawnProcess).toHaveBeenCalledTimes(3);
   });
 
   it.each([
@@ -211,12 +227,13 @@ describe("live S3 test wrapper", () => {
     const spawnProcess = vi
       .fn()
       .mockImplementationOnce(() => erroringChild())
+      .mockImplementationOnce(() => exitingChild(0))
       .mockImplementationOnce(() => exitingChild(0));
 
     await expect(
       wrapper.runAllLiveS3Tests(completeEnvironment(), spawnProcess)
     ).resolves.toBe(1);
-    expect(spawnProcess).toHaveBeenCalledTimes(2);
+    expect(spawnProcess).toHaveBeenCalledTimes(3);
     expect(consoleError).toHaveBeenCalledWith(
       "Failed to start protected S3 settings transport tests"
     );
@@ -231,12 +248,47 @@ describe("live S3 test wrapper", () => {
     const spawnProcess = vi
       .fn()
       .mockImplementationOnce(() => exitingChild(0))
+      .mockImplementationOnce(() => exitingChild(0))
       .mockImplementationOnce(() => exitingChild(7));
 
     await expect(
       wrapper.runAllLiveS3Tests(completeEnvironment(), spawnProcess)
     ).resolves.toBe(7);
-    expect(spawnProcess).toHaveBeenCalledTimes(2);
+    expect(spawnProcess).toHaveBeenCalledTimes(3);
+  });
+
+  it("returns the isolated-root verifier failure after both scenario suites succeed", async () => {
+    const wrapper = await loadWrapper();
+    expect(wrapper).not.toBeNull();
+    if (!wrapper) return;
+
+    const spawnProcess = vi
+      .fn()
+      .mockImplementationOnce(() => exitingChild(0))
+      .mockImplementationOnce(() => exitingChild(6))
+      .mockImplementationOnce(() => exitingChild(0));
+
+    await expect(
+      wrapper.runAllLiveS3Tests(completeEnvironment(), spawnProcess)
+    ).resolves.toBe(6);
+    expect(spawnProcess).toHaveBeenCalledTimes(3);
+  });
+
+  it("keeps a Dejavu scenario failure ahead of an isolated-root verifier failure", async () => {
+    const wrapper = await loadWrapper();
+    expect(wrapper).not.toBeNull();
+    if (!wrapper) return;
+
+    const spawnProcess = vi
+      .fn()
+      .mockImplementationOnce(() => exitingChild(0))
+      .mockImplementationOnce(() => exitingChild(6))
+      .mockImplementationOnce(() => exitingChild(7));
+
+    await expect(
+      wrapper.runAllLiveS3Tests(completeEnvironment(), spawnProcess)
+    ).resolves.toBe(7);
+    expect(spawnProcess).toHaveBeenCalledTimes(3);
   });
 
   it("is the canonical package script entry point", async () => {

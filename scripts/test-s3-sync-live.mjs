@@ -97,6 +97,26 @@ export async function runAllLiveS3Tests(
   );
   if (existingResult.cancelled) return existingResult.code;
 
+  const verifier = spawnProcess(
+    "cargo",
+    [
+      "test",
+      "--manifest-path",
+      "apps/desktop/src-tauri/Cargo.toml",
+      "verify_live_s3_isolated_prefix_root_is_empty",
+      "--",
+      "--ignored",
+      "--nocapture",
+      "--test-threads=1"
+    ],
+    { env: environment, stdio: "inherit" }
+  );
+  const verifierResult = await waitForTestProcess(
+    verifier,
+    "isolated S3 prefix cleanup verifier"
+  );
+  if (verifierResult.cancelled) return verifierResult.code;
+
   const dejavu = spawnProcess(
     "cargo",
     [
@@ -120,7 +140,9 @@ export async function runAllLiveS3Tests(
     dejavu,
     "Dejavu Rust live S3 test"
   );
-  return existingResult.code !== 0 ? existingResult.code : dejavuResult.code;
+  if (existingResult.code !== 0) return existingResult.code;
+  if (dejavuResult.code !== 0) return dejavuResult.code;
+  return verifierResult.code;
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
