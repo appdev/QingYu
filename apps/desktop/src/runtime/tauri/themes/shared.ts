@@ -17,7 +17,16 @@ type NativeThemeActivationPayload = Omit<ThemeActivationPayload, "source"> & {
 };
 
 function stylesheetHref(path: string, fingerprint: string) {
-  const converted = convertFileSrc(path);
+  const separatorIndex = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
+  const directory = separatorIndex === -1 ? path : path.slice(0, separatorIndex);
+  const filename = separatorIndex === -1 ? "theme.css" : path.slice(separatorIndex + 1);
+  const convertedDirectory = convertFileSrc(directory);
+  const suffixIndex = [convertedDirectory.indexOf("?"), convertedDirectory.indexOf("#")]
+    .filter((index) => index !== -1)
+    .reduce((first, index) => Math.min(first, index), convertedDirectory.length);
+  const convertedBase = convertedDirectory.slice(0, suffixIndex);
+  const convertedSuffix = convertedDirectory.slice(suffixIndex);
+  const converted = `${convertedBase}${convertedBase.endsWith("/") ? "" : "/"}${encodeURIComponent(filename)}${convertedSuffix}`;
   const fragmentIndex = converted.indexOf("#");
   const base = fragmentIndex === -1 ? converted : converted.slice(0, fragmentIndex);
   const fragment = fragmentIndex === -1 ? "" : converted.slice(fragmentIndex);
