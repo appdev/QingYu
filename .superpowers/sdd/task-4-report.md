@@ -302,3 +302,85 @@ The implementation changed eight files with 231 insertions and 2166 deletions:
   WebDAV safety coverage.
 - `.serena/` remained untracked and unstaged. No main update or push was
   performed.
+
+---
+
+# Task 4 M3 Review Fix Round 1: MCP Provider Dispatch
+
+## Finding and root cause
+
+The review found one remaining production bypass after M3:
+`remote_sync::mcp_service::NativeSyncRunner` independently resolved the primary
+root and ready snapshot, then called legacy `run_application_sync`. M3 correctly
+made that engine WebDAV-only, so a valid MCP `sync_run` against an S3 snapshot
+deterministically failed with `sync-snapshot-mismatch` instead of submitting a
+Dejavu job.
+
+## Strict RED/GREEN evidence
+
+The call-graph regression was added before the production change:
+
+```bash
+cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --lib \
+  sync_config::tests::native_mcp_sync_runner_uses_the_provider_aware_application_dispatch \
+  -- --exact
+```
+
+RED: exit 101 because the MCP runner did not enter the shared provider-aware
+dispatcher. GREEN: 1 passed, 0 failed after routing the runner through the
+shared application entry.
+
+The handler-level accepted-result test was also written first:
+
+```bash
+cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --lib \
+  remote_sync::mcp_service::tests::accepted_dejavu_dispatch_is_a_terminal_sanitized_mcp_result \
+  -- --exact
+```
+
+RED: compilation exited 101 with the intended `SyncRunResult` versus
+`SyncDispatchResult` type mismatch and missing `SyncRunState::Accepted` variant.
+GREEN: 1 passed, 0 failed after the handler learned the accepted dispatch shape.
+
+## Repair and handler contract
+
+Commit `c76ab657d7abd92eeb87b7d3f7cfff58055b3b16` adds
+`sync_config::run_primary_application_sync` and routes native MCP through
+`sync_application -> execute_application_sync_dispatch`. It reuses the same
+provider state machine as the Tauri command and does not duplicate portable
+settings, snapshot, binding, or enqueue logic.
+
+The handler-level behavior is now:
+
+- S3 `Accepted` becomes terminal MCP state `accepted` with
+  `acceptedJob: { jobId, repositoryId }` and no notes root;
+- WebDAV `Completed` retains terminal MCP state `succeeded` and its summary;
+- missing/disabled binding or unavailable service state retains safe
+  `dejavu-invalid-binding` / `dejavu-repository-unavailable` failures before
+  network work.
+
+The MCP tool layer registers exact input schemas and annotations but has no
+separate output-schema registration API. The accepted output contract is locked
+by exact JSON serialization and wait-to-terminal assertions; the dynamic tool
+catalog schema/annotations test remains unchanged and green.
+
+## Fresh verification
+
+- call-graph regression: 1 passed, 0 failed;
+- accepted handler JSON/terminal-state regression: 1 passed, 0 failed;
+- `remote_sync::mcp_service::tests`: 4 passed, 0 failed;
+- retained MCP WebDAV background behavior: 1 passed, 0 failed;
+- full `mcp::` Rust suite: 100 passed, 0 failed;
+- exact dynamic tool input schema/annotations test: 1 passed, 0 failed;
+- provider routing and pre-network safety: 3 passed, 0 failed;
+- full `cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml`: 1099
+  library tests passed, 0 failed, 2 ignored; binary and doc-test targets passed
+  without warnings;
+- `pnpm typecheck:test`: passed;
+- `cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml -- --check` and
+  `git diff --check`: passed.
+
+The code commit changed four Rust files with 173 insertions and 41 deletions.
+No frontend behavior, portable-settings route, M4 scope, or real MinIO fixture
+was changed. Real MinIO was not run. `.serena/` remained untracked and unstaged;
+no push was performed.

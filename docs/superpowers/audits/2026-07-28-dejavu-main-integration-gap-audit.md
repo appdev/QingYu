@@ -1,7 +1,7 @@
 # Dejavu main integration gap audit
 
 **Date:** 2026-07-28
-**Audited commit:** `a9c42b662c83326da55a0209845db5c9145d04fc`
+**Audited commit:** `c76ab657d7abd92eeb87b7d3f7cfff58055b3b16`
 **Branch:** `codex/dejavu-full-recovery`
 **Integrated main:** `453069dc03783a7f5cf0c30751bd51a4d726091d`
 **Recovery baseline:** `33b14ec30a55d38f1f0702baf487995c8caf2509`
@@ -9,7 +9,7 @@
 ## Scope and method
 
 This is a living document-to-code audit updated through the completed M1-M3
-repair sequence. It compares the merged tree against:
+repair sequence and M3 review round 1. It compares the merged tree against:
 
 - `docs/superpowers/specs/2026-07-25-qingyu-dejavu-s3-sync-rust-port-design.md`;
 - the four `2026-07-25-qingyu-dejavu-*.md` implementation plans;
@@ -69,12 +69,12 @@ rows, so they are not double-counted.
 | R30 | Exact four upstream fixture hashes and all 27 Go/Rust shared JSON scenarios. Design “Go 行为基线/Rust 场景运行器”; core plan Task 8; `UPSTREAM.md`. | `present` | Four fixtures under `tests/fixtures/dejavu/cases/`; exact SHA-256 table in `UPSTREAM.md`; `tests/scenarios.rs`; `scripts/test-dejavu-oracle.mjs` pins and verifies commit/fixtures before Go and Rust tests; package script `test:dejavu-oracle`. |
 | R31 | Bidirectional Go/Rust repository interoperability including both creation directions, independent paths, same-path conflict, protected syncignore oracle, and both languages interrupted before ref publication. Design “跨语言测试”; S3 plan Task 7. | `present` | `scripts/test-dejavu-interop.mjs` declares seven scenarios, including `go-failure-before-ref-publication` and `rust-failure-before-ref-publication`; Rust CLI `src/bin/dejavu-interop.rs`; pinned Go CLI `scripts/dejavu-interop-go/main.go`; package script `test:dejavu-interop`. |
 | R32 | Opt-in real S3/MinIO coverage, unique repository prefix, exact cleanup, merge/conflict/lock scenarios, and live-script integration without committed credentials. Design verification/live boundary; S3 plan Task 6. | `present` | `tests/s3_minio.rs::dejavu_s3_sync_round_trips_through_real_minio`, `exercise_lock_contention`, `cleanup_exact_repository`; `scripts/test-s3-sync-live.mjs::runAllLiveS3Tests` runs the protected legacy S3 settings transport checks and then `-p qingyu-dejavu --test s3_minio` with `QINGYU_S3_LIVE_TESTS=1`; orchestration tests in `packages/scripts/src/test-s3-sync-live.test.mjs` pin the narrowed `live_minio_s3_` filter and prove credentials stay out of argv. This audit did not contact a live server. |
-| R33 | Ordinary S3 note synchronization must dispatch only to `DejavuSyncService::enqueue`; WebDAV remains legacy; S3 portable settings remain on their protected legacy settings scope; frontend understands accepted vs completed. Design S3 cutover acceptance; conflict plan Task 7. | `present` | `sync_config.rs::{SyncDispatchResult,execute_application_sync_dispatch}` routes S3 to `DejavuSyncService::enqueue` after the protected portable-settings step and routes WebDAV to `run_application_sync`; provider-routing tests prove S3/WebDAV separation and fail safely before network work when service/binding state is unavailable. The Tauri bridge returns accepted/completed dispatch, and `useAppSyncCoordinator` treats acceptance as submission completion while terminal state comes from Dejavu status. M2 commits `a108a8ec` and `403659f9`. |
-| R34 | After cutover, remove only unreachable legacy S3 note constructors/catalog/tests/live fixtures and add a static boundary that S3 notes cannot reach manifest or `remote-conflict` code. Conflict plan Task 8. | `present` | `remote_sync/service.rs::run_application_sync_inner` now accepts only `SyncTarget::Webdav`; `s3_backend.rs` no longer exposes the legacy notebook-prefix catalog API/parser; the legacy S3 ordinary-note live scenarios and final-replace-only hook are removed. `sync_config::tests::legacy_notes_capability_graph_is_webdav_only_and_live_s3_notes_are_dejavu_owned` inspects the production dispatch and S3 portable-settings function and rejects `RemoteSyncScope::notes`, legacy note-prefix, manifest, or conflict capability edges. The live wrapper selects only `live_minio_s3_` protected settings tests before the Dejavu MinIO suite. M3 commit `a9c42b66`. |
+| R33 | Ordinary S3 note synchronization must dispatch only to `DejavuSyncService::enqueue`; WebDAV remains legacy; S3 portable settings remain on their protected legacy settings scope; frontend understands accepted vs completed. Design S3 cutover acceptance; conflict plan Task 7. | `present` | `sync_config.rs::{SyncDispatchResult,run_primary_application_sync,sync_application,execute_application_sync_dispatch}` supplies one provider-aware application route shared by Tauri and MCP. It sends S3 to `DejavuSyncService::enqueue` after the protected portable-settings step and WebDAV to `run_application_sync`; provider-routing tests prove separation and fail before network work when service/binding state is unavailable. Tauri returns accepted/completed dispatch; MCP returns terminal `accepted` with only `jobId`/`repositoryId` for S3 and retains completed-to-`succeeded` behavior for WebDAV. `useAppSyncCoordinator` treats acceptance as submission completion while terminal product state comes from Dejavu status. M2 commits `a108a8ec` and `403659f9`; MCP review fix `c76ab657`. |
+| R34 | After cutover, remove only unreachable legacy S3 note constructors/catalog/tests/live fixtures and add a static boundary that S3 notes cannot reach manifest or `remote-conflict` code. Conflict plan Task 8. | `present` | `remote_sync/service.rs::run_application_sync_inner` now accepts only `SyncTarget::Webdav`; `s3_backend.rs` no longer exposes the legacy notebook-prefix catalog API/parser; the legacy S3 ordinary-note live scenarios and final-replace-only hook are removed. `sync_config::tests::{legacy_notes_capability_graph_is_webdav_only_and_live_s3_notes_are_dejavu_owned,native_mcp_sync_runner_uses_the_provider_aware_application_dispatch}` reject both Tauri and native MCP production edges to legacy S3 note scope, manifest, note-prefix, or conflict capabilities and require MCP to enter the shared application dispatcher. The live wrapper selects only `live_minio_s3_` protected settings tests before the Dejavu MinIO suite. M3 commit `a9c42b66`; review fix `c76ab657`. |
 | R35 | Preserve WebDAV behavior and portable `settings.json` synchronization while changing only S3 note data. Design “本期不包含/验收条件”; conflict plan Tasks 7–8. | `present` | `remote_sync/service.rs` retains the WebDAV branch and `prepare_portable_settings_sync`; `RemoteSyncScope::portable_settings` remains isolated from notes; focused portable-settings durability and legacy-MCP sanitation tests remain. `webdav_backends_send_real_requests_to_disjoint_application_namespaces` proves the retained WebDAV notes/app namespaces with real local HTTP requests. |
 | R36 | Merging `main` must not reintroduce removed AI/Agent/provider, spellcheck, proxy/Network/SOCKS, or theme-export product surfaces. 2026-07-28 recovery design “Isolation and integration strategy”. | `present` | The reproducible, per-capability negative gates below scan current production routes, settings, locales, runtimes, package manifests, and the lockfile for the removed symbols, keys, commands, dependencies, and module names. All four gates exit 0. Existing boundaries add positive allowlist evidence: `compact-settings.test.ts` rejects AI/providers/network/spellcheck categories, `SettingsShell.test.tsx` rejects desktop Network, desktop theme runtime capabilities are exact, and `builder_boundary_desktop_preserves_the_complete_command_surface` requires the exact registered Tauri command set. `main..HEAD` path comparison is corroboration only, not the primary evidence. |
 | R37 | Preserve current-main V2 CodeMirror behavior while integrating Dejavu path guards and conflict UI; old Milkdown-specific implementation locations are no longer authoritative. Recovery design main-conflict rule. | `adapted` | `packages/editor/package.json` and `packages/editor/src/codemirror/` use CodeMirror 6; no Milkdown dependency remains. `App.tsx` uses `useCodeMirrorEditorController`, installs `useSyncPathGuard`, derives per-path read-only state, and renders `SyncConflictIndicator`; `useMarkdownDocument::saveDirtyMarkdownPaths` supplies the editor flush boundary. This is the approved V2 replacement of the old editor integration shape. |
-| R38 | Historical milestone/full-suite verification tasks prove the current merged branch. Core plan Task 9; S3 plan Task 8; background plan Task 8; conflict plan Task 8 verification steps. | `obsolete` | Pre-merge historical pass states cannot certify `a9c42b66`. The 2026-07-28 recovery design supersedes them with fresh focused repairs and current-tree verification. M3 ran the full Rust/frontend/build gates locally, while real S3 and desktop Computer Use remain separate opt-in verification steps. |
+| R38 | Historical milestone/full-suite verification tasks prove the current merged branch. Core plan Task 9; S3 plan Task 8; background plan Task 8; conflict plan Task 8 verification steps. | `obsolete` | Pre-merge historical pass states cannot certify `c76ab657`. The 2026-07-28 recovery design supersedes them with fresh focused repairs and current-tree verification. M3 ran the full Rust/frontend/build gates locally; review round 1 reran the full Rust suite with 1099 passed, 0 failed, and 2 ignored, plus focused MCP/provider/typecheck gates. Real S3 and desktop Computer Use remain separate opt-in verification steps. |
 
 ## Current-main hard-removal boundary detail
 
@@ -239,6 +239,29 @@ legacy notes scope, manifest, note-prefix, or remote-conflict capabilities while
 retaining a real-request WebDAV namespace test and the existing portable-settings
 durability coverage.
 
+### M3 review round 1 — Route native MCP through the provider dispatcher
+
+**Finding:** `remote_sync::mcp_service::NativeSyncRunner` independently loaded a
+ready snapshot and called legacy `run_application_sync`. After M3 made that
+engine WebDAV-only, a valid MCP `sync_run` for S3 deterministically failed with
+`sync-snapshot-mismatch` instead of entering Dejavu.
+
+**Repair:** Add `sync_config::run_primary_application_sync` as the shared normal
+application request entry and make the MCP runner call it. This reuses
+`sync_application -> execute_application_sync_dispatch` instead of copying the
+provider state machine. The MCP handler maps `SyncDispatchResult::Accepted` to
+terminal state `accepted` with a sanitized `acceptedJob` containing only
+`jobId` and `repositoryId`; `Completed` retains the existing terminal
+`succeeded` result for WebDAV. Missing/disabled binding or service state retains
+the safe `dejavu-invalid-binding` / `dejavu-repository-unavailable` pre-network
+failures.
+
+**Contract evidence:** The repository generates exact MCP input schemas and
+annotations but has no separate output-schema registration layer. The accepted
+output contract is therefore locked by an exact serialized handler result test,
+which also rejects leakage of the absolute notes root. The tool catalog input
+schema/annotations test remains unchanged and green.
+
 ## Focused command evidence
 
 The audit began with read-only source searches and focused tests. M3 then ran the
@@ -273,8 +296,24 @@ Focused verification results are recorded here after execution:
   `SyncTarget::S3`; the live-wrapper RED failed 2 focused tests because it still
   selected the broad `live_minio_` filter. Both focused tests passed after the
   removal and orchestration changes.
-- `cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml` — passed: 1097
-  library tests, 0 failed, 2 ignored; binary and doc-test targets also passed.
+- Strict review-round RED first failed because the native MCP runner did not
+  reference the provider-aware application dispatcher. A second RED compile
+  failed with the intended `SyncRunResult` versus `SyncDispatchResult` mismatch
+  and missing `SyncRunState::Accepted` variant. Both focused tests passed after
+  implementing the shared entry and accepted handler result.
+- `remote_sync::mcp_service::tests` — passed: 4 tests; the accepted-result test
+  waits for terminal state and asserts exact sanitized JSON.
+- `cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --lib mcp::` —
+  passed: 100 tests, including the retained WebDAV completed-to-`succeeded`
+  behavior and exact dynamic tool input schemas/annotations.
+- M2 provider-routing tests — passed: 3 tests, including missing service and
+  missing/disabled/corrupt binding pre-network rejection.
+- `cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml` after review
+  round 1 — passed: 1099 library tests, 0 failed, 2 ignored; binary and doc-test
+  targets also passed without warnings.
+- `pnpm typecheck:test` — passed after the MCP Rust-only change.
+- The M3 pre-review full `cargo test` run passed 1097 library tests, 0 failed,
+  and 2 ignored; the review-round run above supersedes it with 1099 passed.
 - `cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml -p
   qingyu-dejavu` — passed: 231 library, 1 provenance, 56 S3 HTTP/catalog, 5
   scenario tests, and the opt-in MinIO test's disabled path. No real server was
@@ -313,7 +352,10 @@ local state, scheduler, conflict, path-guard, restore, maintenance, oracle,
 interoperability, and live-test harnesses. M1 renders authoritative background
 status, M2 sends ordinary S3 notes only to accepted Dejavu jobs, and M3 removes
 the unreachable legacy S3 ordinary-notes path while preserving WebDAV and
-portable settings. The current-main hard-removal boundary and CodeMirror V2
+portable settings. M3 review round 1 also closes the native MCP bypass: Tauri
+and MCP now share the same provider-aware application dispatcher, and the MCP
+handler exposes a sanitized accepted job for S3 without changing WebDAV
+completion semantics. The current-main hard-removal boundary and CodeMirror V2
 editor remain intact.
 
 No document-to-production route gap remains in the 38-row matrix. Real MinIO
