@@ -1124,6 +1124,11 @@ mod tests {
             occurred_at: "2026-07-25T08:00:00Z".to_owned(),
             resolution: None,
         }];
+        let history = app_data.path().join(format!(
+            "sync/repositories/{repository_id}/history/2026-07-25-080000-sync/notes/conflict.md"
+        ));
+        std::fs::create_dir_all(history.parent().unwrap()).unwrap();
+        std::fs::write(history, b"remote").unwrap();
         status.schedule = RepositorySchedule {
             same_count: 4,
             automatic_failure_count: 7,
