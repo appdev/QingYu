@@ -1,52 +1,95 @@
-# Task 7 Report: Every Folder Open Switches the Notebook
+# Task 7 Report: Real S3 and MinIO Verification
 
 ## Outcome
 
-Task 7 is complete. QingYu no longer has an external-folder window or temporary folder-mount mode. Every directory entry point now routes to the central notebook switch coordinator, while standalone Markdown files continue to open as unsynchronized external documents without mounting their parent directory.
+Task 7 is complete at code commit `50b4542dae9222c801dc8a1b9fac4c6e902c5dc1`.
 
-## Product and Runtime Wiring
+The local and public test endpoints both passed authenticated S3 transport, QingYu application-service restore/status, protected-settings transport, and the expanded Dejavu sync matrix. Every scenario used a generated repository UUID or an isolated run prefix, and all exact repository/prefix cleanup checks passed. No credential or endpoint configuration was added to source control.
 
-- Desktop titlebar, native menu, `Shift+Cmd+O`, compact file-list action, recent-notebook selection, directory drop, queued CLI/second-instance paths, and OS directory-open events all request one notebook switch.
-- The coordinator remains the only owner of successful switch ordering: flush the active document, enter the sync barrier, commit the new primary root, wait for it to mount, update notebook recents, release the barrier, and launch sync for the new scope.
-- The file picker is now file-only. External file windows preserve relative link and asset resolution from the file path but do not create a notebook/file-tree root.
-- The folder picker primitive remains available to notebook switch and restore flows.
-- The legacy `recentMarkdownFolders` storage and file-tree recents writer were removed. The drawer reads `recentNotebooks`; only completed coordinator switches write that list, and recent-item clicks route back through the coordinator.
-- Native cold start with any directory creates a restore-capable primary window and queues all supplied paths. A mixed folder/file request therefore switches the folder and still forwards the files for external opening.
-- macOS `RunEvent::Opened` now uses that same restore-capable reveal route. Once the primary React tree has rendered, queued and live native directories enter the coordinator's one request pump; simultaneous requests still coalesce to the latest path, while a later drain received during an active transaction waits and runs next instead of being dropped. The pump rechecks pending work after its `finally` handoff, closing the settle-callback microtask window without introducing another scheduler.
-- External editor and settings windows resolve a folder locally and call a durable desktop command. The command validates the exact directory, queues it in native state, and creates/focuses a restore-capable primary window when none exists, so menu, drop, and recent-directory requests do not depend on a live cross-window listener.
-- Native directory delivery is race-safe across startup: Rust queues the directory before spawning the primary window, React installs its event listener before a follow-up durable queue drain, and live callbacks treat that queue as authoritative to avoid duplicate handling.
-- An owner unmount closes both already-queued requests and transactions whose asynchronous root commit completes afterward; mount waiting fails closed instead of registering an unreachable waiter.
-- macOS now exposes the same explicit “Open Markdown File” / “Switch Notebook Directory...” choice menu as other supported titlebar layouts; the unified label no longer performs a file-only action.
-- Recent-notebook reads remain available in every editor window, while only the primary-window owner may save or remove entries. External single-file windows can select a recent notebook through the durable primary-window request but do not expose or execute recent deletion. Primary-window reads and mutations retain the per-runtime serialization and generation guard, and removal compares the exact path without trimming valid trailing whitespace.
-- CLI and second-instance argument filtering uses trimmed text only to identify empty values and options; path resolution receives the original argument so valid Unix/macOS directory names with trailing spaces remain exact.
-- The deleted surface includes `openMarkdownFolderInNewWindow`, `open_markdown_folder_in_new_window`, `editor_window_url_for_folder`, the combined `openMarkdownPath` picker, and the `external-folder` URL context.
-- Native and shared folder actions use localized “Switch Notebook Directory” copy. Log-folder and reveal/containing-folder behavior is unchanged.
-- MCP remains application-level and current-notebook-only; no MCP tools or authority behavior changed.
+## Test Boundaries Added
 
-## Verification
+- The Dejavu real-S3 matrix now explicitly covers:
+  - initial upload;
+  - second-device download;
+  - independent edits from two devices;
+  - create and delete propagation;
+  - same-path conflict with local-wins working tree and remote history retention;
+  - a one-shot failure immediately before `refs/latest` publication;
+  - verification that failed publication does not advance `refs/latest`;
+  - retry from the same local repository and convergence on the second device;
+  - remote-lock contention and release.
+- A QingYu application-level ignored live test now uses the production `DejavuRepositoryRunner`, `DejavuSyncService`, S3 cloud factory, and `RepositoryStatusStore` to upload from one application client and restore into an empty second client.
+- The application-level test verifies the accepted job's `attempting` to `succeeded` event sequence, persisted job ID, terminal transfer counters, restored bytes, and exact catalog cleanup.
+- A read-only live verifier checks that the configured isolated prefix root contains no objects. It never deletes outside the exact per-run repository/prefix.
+- Existing protected-settings transport and read-only connection tests remain part of the same live entry point.
 
-- Final `App.test.tsx` run: 273 passed, 0 failed.
-- Final notebook-switch coordinator run: 18 passed, 0 failed, including direct and native-event requests arriving during an active switch, the pump-finally microtask handoff, and deferred-commit owner unmount.
-- Focused review-remediation runs cover titlebar, notebook coordinator, notebook switch requests, local state, native startup delivery, external-window recent ownership, and exact CLI path handling.
-- Desktop file runtime run: 63 tests passed.
-- Web file runtime: 21 tests passed.
-- Full `pnpm test`: passed; the application package reported 129 files and 2,021 tests, and the desktop package reported 19 files and 211 tests.
+The real service is not the only coverage for these behaviors. The pinned Dejavu scenario fixtures cover delete and conflict semantics, the Go/Rust interop suite covers both directions of failure-before-ref-publication, and local QingYu service/status tests cover non-blocking acceptance, persistence ordering, retry, and listener removal.
+
+## Local Endpoint
+
+Endpoint label: `local`.
+
+Final isolated run prefix ID: `19012b6b-51c4-4a10-83a5-bd0d681b4a44`.
+
+- `pnpm test:s3-sync:live` with Node 24.18.0:
+  - QingYu application live tests: 4 passed, 0 failed;
+  - Dejavu real-S3 matrix: 1 passed, 0 failed;
+  - Dejavu matrix duration: 17.65 seconds;
+  - process exit: 0.
+- An explicit post-run root-list check for that exact prefix passed with an empty result.
+- Earlier local wrapper prefix `78bf7a5e-3f43-4be1-971f-03fdda8e1b03` was also explicitly rechecked and was empty.
+
+## Public Endpoint Parity
+
+Endpoint label: `public`.
+
+- QingYu application parity prefix ID: `7fdf3291-fd5e-408d-bf9a-e25da2858eba`.
+- Dejavu diagnostic run isolation ID: `d41bf10b-61b0-4b45-a6e3-6464d788867e`.
+- QingYu authenticated application parity: 3 passed, 0 failed in 32.71 seconds.
+- Dejavu authenticated real-S3 matrix: 1 passed, 0 failed in 131.01 seconds.
+- The existing 120-second scenario timeout was not changed. The scenario completed within it; exact repository cleanup accounted for the remaining wall time.
+- Explicit post-run root-list verification for the QingYu parity prefix passed with an empty result.
+- Earlier public wrapper prefix `84a3da65-7eae-42ed-86d4-795d8da7177a` was also explicitly rechecked and was empty.
+
+## Cleanup Evidence
+
+- Dejavu creates a random canonical repository UUID and always runs `delete_repository(repository_id)` after success, failure, timeout, or panic. The test returns success only when a following catalog read returns `NotFound`.
+- The QingYu background restore test applies the same catalog deletion and `NotFound` verification.
+- Protected-settings scenarios delete every object listed below their exact run/scenario prefix and require a second list to be empty.
+- The new isolated-root verifier performs a final read-only recursive list against the exact `MARKRA_TEST_S3_PREFIX_ROOT` used by the run.
+- Local application data and note roots use `tempfile::TempDir`; they are removed when each scenario exits.
+- No bucket-wide delete, broad prefix delete, or cleanup of pre-existing objects was performed.
+
+## Failure and Fix
+
+The first expanded local run failed at the new delete assertion. The test initially expected the uploading client to report a remove in its merge result. The pinned Dejavu fixtures define the production behavior differently: the uploader publishes its local deletion with zero merge removals, while the second client reports one removal when applying the remote deletion. The assertion was corrected to that established behavior, and the expanded matrix then passed locally and publicly. The failed run's exact repository cleanup succeeded.
+
+No product-code defect was found during Task 7, so no production behavior was changed.
+
+## Regression Verification
+
+- `cargo test -p qingyu-dejavu --lib --tests -- --test-threads=1`:
+  - 231 library tests passed;
+  - 1 provenance test passed;
+  - 56 S3 HTTP/signing/catalog tests passed;
+  - 5 pinned scenario tests passed;
+  - no failures.
+- QingYu repository-runner focused suite: 18 passed, 1 live test ignored, 0 failed.
+- Remote transport focused suite without credentials: 1 WebDAV test passed, 3 live S3 tests ignored, 0 failed.
+- `@markra/scripts` tests: 7 files and 64 tests passed.
 - `pnpm typecheck:test`: all participating workspace packages passed.
-- `pnpm build`: all workspace builds passed, including desktop vendor-chunk verification.
-- `cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml menu`: 21 passed.
-- `cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml windows`: 55 passed.
-- `cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml mcp`: 85 passed.
-- CLI mixed folder/file cold-start regression: 1 passed.
-- Full Rust suite: 607 passed, 22 ignored, 0 failed.
-- `cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml -- --check`: passed.
-- Required stale-path audit returned no matches.
+- `cargo fmt`: passed.
 - `git diff --check`: passed.
+- Credential literal audit: zero matches in the diff and zero matches in tracked files.
 
-The brief names `src/hooks/useNativeMarkdownDrop.test.tsx`, but this repository has no such file. Native drop behavior is covered by `useMarkdownDocument.test.tsx` and the App routing tests.
+## Security and Scope
 
-The first full Rust run exposed one obsolete source-inspection test that still required the deleted combined picker. The stale assertion was removed, its remaining path-classification test was renamed for runtime open targets, and the complete Rust suite then passed.
+- Credentials were parsed only inside the test process from the user-supplied temporary file.
+- Credentials were not copied into source files, reports, environment files, or commits.
+- Retained test evidence and this report use only `local` and `public` endpoint labels.
+- `.serena/` was not modified, staged, or committed.
+- No push, Task 8 UI operation, or merge into `main` was performed.
 
-## Concerns
+## Remaining Work
 
-- No known Task 7 blocker remains.
-- Live S3/WebDAV provider validation remains outside Task 7 and was not started.
+Task 8 must still run the actual Tauri application through Computer Use and verify interactive responsiveness while background restore is active. Task 7 proves the real S3 transport and production service/status seams, but it does not replace that UI/runtime test.
