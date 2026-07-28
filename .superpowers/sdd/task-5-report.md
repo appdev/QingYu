@@ -764,3 +764,77 @@ pnpm test: 2783 passed twice consecutively
 pnpm typecheck:test: passed across all configured workspaces
 git diff --check: passed
 ```
+
+## Review Fix Round 3: container ancestry and published-tree completeness
+
+The third review found two product defects and one test-precision gap:
+
+1. A list nested through a blockquote inside a top-level list item could still
+   be promoted to overlapping draggable list-item blocks.
+2. `syntaxTreeAvailable(state)` reflects the mutable parse context. An explicit
+   `ensureSyntaxTree` can complete that context without publishing its tree into
+   the immutable editor state, so the function could return `true` while
+   `syntaxTree(state)` still exposed only the initial partial tree.
+3. The background-publication regression asserted only that some iteration
+   occurred. It did not prove exactly one rebuild over the visible ranges or
+   prove that a subsequent dispatch with the same published tree caused none.
+
+### RED and baseline evidence
+
+The two product regressions failed independently before the repair:
+
+- `keeps quoted nested lists inside their top-level list item` expected only the
+  outer `- Top ...` and `- Next` list items. The old traversal also returned the
+  two `> - Quoted nested ...` descendants as overlapping `ListItem` blocks.
+- `ignores a completed parser context until its tree is published` first used
+  `ensureSyntaxTree` to make `syntaxTreeAvailable(state)` true without a state
+  publication. The exported complete reader then returned the partial-tree
+  boundary at offset 2995 with name `Paragraph` instead of the final list item at
+  offset 5890.
+
+The tightened background-publication test was already green before product code
+changed: one publication iterated exactly the current `visibleRanges`, and a
+following empty dispatch over the same tree performed zero iterations. This was
+recorded honestly as an existing invariant with insufficient prior coverage,
+rather than manufacturing a third failing result.
+
+### GREEN
+
+- List-item ownership now follows the original structural boundary at every
+  level: `ListItem -> BulletList|OrderedList -> document` for a top-level item,
+  or `ListItem -> BulletList|OrderedList -> owning ListItem` for a directly
+  nested item. Encountering a blockquote or any other container in that chain
+  rejects the descendant as an independent block. Existing direct nested-list
+  behavior and depth calculation remain covered.
+- `completeSyntaxTree` first checks the per-immutable-state `WeakMap`. Without a
+  cached tree, it reads the published tree and reuses it only when its actual
+  length covers the complete document and `syntaxTreeAvailable(state)` is true.
+  Otherwise it parses with the active language parser and caches that complete
+  result. A completed mutable context can therefore no longer make an old
+  published snapshot look complete.
+- Decoration and pointer-move paths remain unchanged: they still consume only
+  the current published syntax snapshot over `visibleRanges`; no synchronous
+  full parse was added to an edit or pointer hot path.
+- The publication test now asserts one exact visible-range iteration set for one
+  new tree and zero iterations for the same tree afterward.
+
+Repair commit: `516092311cff1b2857b9cf04d5cf54790689fd20`
+
+Final sequential verification on Node 24.18.0:
+
+```text
+two product regressions: independently RED before repair and GREEN after
+publication precision regression: GREEN before and after, with exact assertions
+focused block-drag: 22 passed, 0 failed
+complete editor: 30 files, 341 passed, 0 failed
+pnpm test run 1: 2785 passed across workspace package commands
+pnpm test run 2: 2785 passed across workspace package commands
+pnpm typecheck:test: passed across all configured workspaces
+pnpm build: passed, including 12 desktop vendor chunk imports
+cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml:
+  1099 passed, 0 failed, 2 ignored; binary and doc tests passed
+git diff --check: passed
+```
+
+No Task 6, Task 7, Task 8, live-server, credential, or `.serena/` work was
+performed in this review fix.
