@@ -30,7 +30,7 @@ export function runLiveS3Tests(environment = process.env, spawnProcess = spawn) 
       "test",
       "--manifest-path",
       "apps/desktop/src-tauri/Cargo.toml",
-      "live_minio_",
+      "live_minio_s3_",
       "--",
       "--ignored",
       "--nocapture",
@@ -83,7 +83,7 @@ export async function runAllLiveS3Tests(
       "test",
       "--manifest-path",
       "apps/desktop/src-tauri/Cargo.toml",
-      "live_minio_",
+      "live_minio_s3_",
       "--",
       "--ignored",
       "--nocapture",
@@ -93,7 +93,7 @@ export async function runAllLiveS3Tests(
   );
   const existingResult = await waitForTestProcess(
     existing,
-    "existing live S3 tests"
+    "protected S3 settings transport tests"
   );
   if (existingResult.cancelled) return existingResult.code;
 

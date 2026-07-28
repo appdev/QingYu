@@ -101,7 +101,7 @@ describe("live S3 test wrapper", () => {
         "test",
         "--manifest-path",
         "apps/desktop/src-tauri/Cargo.toml",
-        "live_minio_",
+        "live_minio_s3_",
         "--",
         "--ignored",
         "--nocapture",
@@ -114,7 +114,7 @@ describe("live S3 test wrapper", () => {
     expect(invocation).not.toContain("private-secret-value");
   });
 
-  it("runs the existing suite before the Dejavu crate test with one credential environment", async () => {
+  it("runs only protected S3 transport checks before the Dejavu ordinary-notes test", async () => {
     const wrapper = await loadWrapper();
     expect(wrapper).not.toBeNull();
     if (!wrapper) return;
@@ -133,7 +133,7 @@ describe("live S3 test wrapper", () => {
         "test",
         "--manifest-path",
         "apps/desktop/src-tauri/Cargo.toml",
-        "live_minio_",
+        "live_minio_s3_",
         "--",
         "--ignored",
         "--nocapture",
@@ -167,7 +167,7 @@ describe("live S3 test wrapper", () => {
     expect(invocations).not.toContain("private-secret-value");
   });
 
-  it("still runs the Dejavu crate test after an existing failure and returns the existing code", async () => {
+  it("still runs Dejavu after a protected transport failure and returns the first code", async () => {
     const wrapper = await loadWrapper();
     expect(wrapper).not.toBeNull();
     if (!wrapper) return;
@@ -187,7 +187,7 @@ describe("live S3 test wrapper", () => {
     ["SIGINT", 130],
     ["SIGTERM", 1]
   ])(
-    "stops after the existing suite exits on %s and returns %i",
+    "stops after the protected transport suite exits on %s and returns %i",
     async (signal, expectedCode) => {
       const wrapper = await loadWrapper();
       expect(wrapper).not.toBeNull();
@@ -202,7 +202,7 @@ describe("live S3 test wrapper", () => {
     }
   );
 
-  it("continues after the existing child emits an error and preserves its failure code", async () => {
+  it("continues after the protected transport child errors and preserves its failure code", async () => {
     const wrapper = await loadWrapper();
     expect(wrapper).not.toBeNull();
     if (!wrapper) return;
@@ -218,12 +218,12 @@ describe("live S3 test wrapper", () => {
     ).resolves.toBe(1);
     expect(spawnProcess).toHaveBeenCalledTimes(2);
     expect(consoleError).toHaveBeenCalledWith(
-      "Failed to start existing live S3 tests"
+      "Failed to start protected S3 settings transport tests"
     );
     consoleError.mockRestore();
   });
 
-  it("returns the Dejavu crate failure when the existing suite succeeds", async () => {
+  it("returns the Dejavu crate failure when the protected transport suite succeeds", async () => {
     const wrapper = await loadWrapper();
     expect(wrapper).not.toBeNull();
     if (!wrapper) return;

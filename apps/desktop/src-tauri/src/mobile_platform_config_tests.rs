@@ -306,8 +306,22 @@ fn mobile_platform_config_live_s3_environment_contract_is_exact() {
             "MARKRA_TEST_S3_SECRET_ACCESS_KEY".to_string(),
         ])
     );
-    assert!(live_tests.contains("error.contains(&config.secret_access_key)"));
-    assert!(live_tests.contains("error.to_ascii_lowercase().contains(\"authorization\")"));
+    assert!(live_tests.contains("remote_path: format!(\"{}/{}/{scenario}/app\""));
+    for forbidden in [
+        "std::fs",
+        "fs::write",
+        "env::set_var",
+        "println!",
+        "eprintln!",
+        "dbg!",
+        "{config:?}",
+        "{self:?}",
+    ] {
+        assert!(
+            !live_tests.contains(forbidden),
+            "live S3 fixture can persist or print credential-bearing state through {forbidden}"
+        );
+    }
 }
 
 #[test]

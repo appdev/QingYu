@@ -348,7 +348,7 @@ async fn run_application_sync_with_source<R: Runtime>(
         },
     )?;
 
-    match run_application_sync_inner(app, notes_root, source, snapshot, trigger, &run_id).await {
+    match run_application_sync_inner(app, notes_root, source, snapshot, trigger).await {
         Ok(result) => {
             let succeeded = attempting.succeeded(sync_status_timestamp(), result.summary.clone());
             persist_status(app, &app_data, &notes_root_identity, &revision, &succeeded).map_err(
@@ -417,7 +417,6 @@ async fn run_application_sync_inner<R: Runtime>(
     source: ApplicationSyncSource,
     snapshot: SyncSnapshot,
     trigger: SyncTrigger,
-    run_id: &str,
 ) -> Result<SyncRunResult, SyncRunError> {
     let app_data = app.path().app_data_dir().map_err(|_| {
         run_error(
@@ -498,178 +497,88 @@ async fn run_application_sync_inner<R: Runtime>(
         )
     })?;
     let settings_prefix = remote_root.app_prefix();
-    match snapshot.target {
-        SyncTarget::Webdav {
-            remote_root: _,
-            server_url,
-            username,
-            password,
-        } => {
-            let notes_backend = create_webdav_backend_at_validated_prefix(WebDavSyncSettings {
-                password: password.clone(),
-                remote_path: notes_prefix.clone(),
-                server_url: server_url.clone(),
-                username: username.clone(),
-            })
-            .await
-            .map_err(|error| {
-                run_error(
-                    safe_error_code(&error),
-                    &snapshot.revision,
-                    trigger,
-                    SyncSummary::default(),
-                )
-            })?;
-            let settings_backend = create_webdav_backend_at_validated_prefix(WebDavSyncSettings {
-                password,
-                remote_path: settings_prefix,
-                server_url,
-                username,
-            })
-            .await
-            .map_err(|error| {
-                run_error(
-                    safe_error_code(&error),
-                    &snapshot.revision,
-                    trigger,
-                    SyncSummary::default(),
-                )
-            })?;
-            let (notebook, notes_scope, settings_state) = build_sync_scopes(
-                &canonical_notes,
-                &snapshot.state_root,
-                &remote_root,
-                &notes_backend,
-                &settings_backend,
-                global_ignore_rules,
-                source,
-            )
-            .map_err(|error| {
-                run_error(
-                    safe_error_code(&error),
-                    &snapshot.revision,
-                    trigger,
-                    SyncSummary::default(),
-                )
-            })?;
-            if notebook.name != notebook_name || notebook.remote_prefix != notes_prefix {
-                return Err(run_error(
-                    "sync-notebook-scope-mismatch",
-                    &snapshot.revision,
-                    trigger,
-                    SyncSummary::default(),
-                ));
-            }
-            run_prepared_scoped_sync_pair(
-                &snapshot.revision,
-                provider,
-                trigger,
-                &app_data,
-                &notes_scope,
-                &notes_backend,
-                settings_state,
-                &settings_backend,
-                &settings_service,
-                || async { Ok(()) },
-            )
-            .await
-        }
-        SyncTarget::S3 {
-            access_key_id,
-            addressing_style,
-            bucket,
-            endpoint_url,
-            region,
-            remote_root: _,
-            request_timeout_seconds,
-            secret_access_key,
-            tls_verification,
-        } => {
-            let transport = S3TransportOptions {
-                addressing_style,
-                request_timeout_seconds,
-                tls_verification,
-            };
-            let notes_backend = S3Backend::new_at_validated_prefix_with_transport(
-                S3SyncSettings {
-                    access_key_id: access_key_id.clone(),
-                    bucket: bucket.clone(),
-                    endpoint_url: endpoint_url.clone(),
-                    region: region.clone(),
-                    remote_path: notes_prefix.clone(),
-                    secret_access_key: secret_access_key.clone(),
-                },
-                transport,
-            )
-            .map_err(|error| {
-                run_error(
-                    safe_error_code(&error),
-                    &snapshot.revision,
-                    trigger,
-                    SyncSummary::default(),
-                )
-            })?
-            .with_diagnostic_context(SyncDiagnosticContext::new(run_id, "notes"));
-            let settings_backend = S3Backend::new_at_validated_prefix_with_transport(
-                S3SyncSettings {
-                    access_key_id,
-                    bucket,
-                    endpoint_url,
-                    region,
-                    remote_path: settings_prefix,
-                    secret_access_key,
-                },
-                transport,
-            )
-            .map_err(|error| {
-                run_error(
-                    safe_error_code(&error),
-                    &snapshot.revision,
-                    trigger,
-                    SyncSummary::default(),
-                )
-            })?
-            .with_diagnostic_context(SyncDiagnosticContext::new(run_id, "settings"));
-            let (notebook, notes_scope, settings_state) = build_sync_scopes(
-                &canonical_notes,
-                &snapshot.state_root,
-                &remote_root,
-                &notes_backend,
-                &settings_backend,
-                global_ignore_rules,
-                source,
-            )
-            .map_err(|error| {
-                run_error(
-                    safe_error_code(&error),
-                    &snapshot.revision,
-                    trigger,
-                    SyncSummary::default(),
-                )
-            })?;
-            if notebook.name != notebook_name || notebook.remote_prefix != notes_prefix {
-                return Err(run_error(
-                    "sync-notebook-scope-mismatch",
-                    &snapshot.revision,
-                    trigger,
-                    SyncSummary::default(),
-                ));
-            }
-            run_prepared_scoped_sync_pair(
-                &snapshot.revision,
-                provider,
-                trigger,
-                &app_data,
-                &notes_scope,
-                &notes_backend,
-                settings_state,
-                &settings_backend,
-                &settings_service,
-                || async { Ok(()) },
-            )
-            .await
-        }
+    let SyncTarget::Webdav {
+        remote_root: _,
+        server_url,
+        username,
+        password,
+    } = snapshot.target
+    else {
+        return Err(run_error(
+            "sync-snapshot-mismatch",
+            &snapshot.revision,
+            trigger,
+            SyncSummary::default(),
+        ));
+    };
+    let notes_backend = create_webdav_backend_at_validated_prefix(WebDavSyncSettings {
+        password: password.clone(),
+        remote_path: notes_prefix.clone(),
+        server_url: server_url.clone(),
+        username: username.clone(),
+    })
+    .await
+    .map_err(|error| {
+        run_error(
+            safe_error_code(&error),
+            &snapshot.revision,
+            trigger,
+            SyncSummary::default(),
+        )
+    })?;
+    let settings_backend = create_webdav_backend_at_validated_prefix(WebDavSyncSettings {
+        password,
+        remote_path: settings_prefix,
+        server_url,
+        username,
+    })
+    .await
+    .map_err(|error| {
+        run_error(
+            safe_error_code(&error),
+            &snapshot.revision,
+            trigger,
+            SyncSummary::default(),
+        )
+    })?;
+    let (notebook, notes_scope, settings_state) = build_sync_scopes(
+        &canonical_notes,
+        &snapshot.state_root,
+        &remote_root,
+        &notes_backend,
+        &settings_backend,
+        global_ignore_rules,
+        source,
+    )
+    .map_err(|error| {
+        run_error(
+            safe_error_code(&error),
+            &snapshot.revision,
+            trigger,
+            SyncSummary::default(),
+        )
+    })?;
+    if notebook.name != notebook_name || notebook.remote_prefix != notes_prefix {
+        return Err(run_error(
+            "sync-notebook-scope-mismatch",
+            &snapshot.revision,
+            trigger,
+            SyncSummary::default(),
+        ));
     }
+    run_prepared_scoped_sync_pair(
+        &snapshot.revision,
+        provider,
+        trigger,
+        &app_data,
+        &notes_scope,
+        &notes_backend,
+        settings_state,
+        &settings_backend,
+        &settings_service,
+        || async { Ok(()) },
+    )
+    .await
 }
 
 fn build_sync_scopes<NotesBackend, SettingsBackend>(
@@ -1562,7 +1471,6 @@ mod tests {
         execute_remote_sync_pair_locked, preserve_remote_settings_conflict_with_directory_syncs,
         RemoteSyncSummary, SettingsSyncOutcome,
     };
-    use crate::remote_sync::s3_backend::{S3Backend, S3SyncSettings};
     use crate::remote_sync::scope::RemoteSyncScope;
     use crate::remote_sync::settings_scope::{
         capture_settings_file_state, read_portable_settings_pending,
@@ -2459,26 +2367,6 @@ mod tests {
 
         let result = validate_snapshot_target(&s3_config(), &webdav_target(), &root);
         assert!(result.is_err());
-    }
-
-    #[test]
-    fn provider_notes_target_preserves_the_exact_validated_child_name() {
-        let remote_root = ValidRemoteRoot::parse("root").unwrap();
-        let remote_path =
-            crate::notebook_scope::notes_remote_prefix(&remote_root, "  个人 笔记  ").unwrap();
-        let backend = S3Backend::new_at_validated_prefix(S3SyncSettings {
-            access_key_id: "access".into(),
-            bucket: "bucket".into(),
-            endpoint_url: "https://s3.example.test".into(),
-            region: "region".into(),
-            remote_path,
-            secret_access_key: "secret".into(),
-        })
-        .unwrap();
-
-        assert!(backend
-            .target_fingerprint_source()
-            .ends_with("|root/notes/  个人 笔记  /"));
     }
 
     #[test]

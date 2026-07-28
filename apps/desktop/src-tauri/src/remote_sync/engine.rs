@@ -64,14 +64,6 @@ pub(crate) struct RemoteSyncExecutionHooks {
 }
 
 impl RemoteSyncExecutionHooks {
-    #[cfg(test)]
-    pub(crate) fn with_final_replace(hook: FinalMutationTestHook) -> Self {
-        Self {
-            final_replace: Some(hook),
-            ..Default::default()
-        }
-    }
-
     fn run_atomic_replace(&self, path: &Path) -> Result<(), String> {
         let _ = path;
         #[cfg(test)]

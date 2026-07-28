@@ -1237,6 +1237,86 @@ mod tests {
     }
 
     #[test]
+    fn legacy_notes_capability_graph_is_webdav_only_and_live_s3_notes_are_dejavu_owned() {
+        let dispatch = rust_function_body(
+            include_str!("sync_config.rs"),
+            "async fn execute_application_sync_dispatch",
+        );
+        for forbidden in [
+            "RemoteSyncScope::notes",
+            "manifest.json",
+            "notes_remote_prefix",
+            "remote_conflict_file_name",
+        ] {
+            assert!(
+                !dispatch.contains(forbidden),
+                "production provider dispatch retained legacy S3 notes capability {forbidden}"
+            );
+        }
+
+        let service = include_str!("remote_sync/service.rs");
+        let portable_settings = rust_function_body(
+            service,
+            "pub(crate) async fn run_application_s3_portable_settings",
+        );
+        for forbidden in [
+            "RemoteSyncScope::notes",
+            "notes_remote_prefix",
+            "remote_conflict_file_name",
+        ] {
+            assert!(
+                !portable_settings.contains(forbidden),
+                "protected S3 settings operation retained notes capability {forbidden}"
+            );
+        }
+        let legacy_notes = rust_function_body(service, "async fn run_application_sync_inner");
+        assert!(legacy_notes.contains("SyncTarget::Webdav"));
+        for forbidden in [
+            "SyncTarget::S3",
+            "S3Backend",
+            "S3SyncSettings",
+            "S3TransportOptions",
+        ] {
+            assert!(
+                !legacy_notes.contains(forbidden),
+                "legacy ordinary-notes execution retained the S3 capability {forbidden}"
+            );
+        }
+
+        let legacy_s3_backend = include_str!("remote_sync/s3_backend.rs");
+        for removed_catalog_capability in [
+            "fn list_notebook_page(",
+            "fn list_notebook_names(",
+            "fn parse_list_notebook_prefixes(",
+            "struct ListNotebookPrefixesPage",
+        ] {
+            assert!(
+                !legacy_s3_backend.contains(removed_catalog_capability),
+                "legacy S3 backend retained obsolete notebook catalog capability {removed_catalog_capability}"
+            );
+        }
+
+        let live_fixture = include_str!("remote_sync/live_tests.rs");
+        for removed_legacy_notes_fixture in [
+            "execute_scoped_remote_sync",
+            "execute_scoped_remote_sync_with_hooks",
+            "run_named_notebooks_scenario",
+            "s3-manifest.json",
+        ] {
+            assert!(
+                !live_fixture.contains(removed_legacy_notes_fixture),
+                "legacy S3 ordinary-notes live fixture survived: {removed_legacy_notes_fixture}"
+            );
+        }
+
+        let live_wrapper = include_str!("../../../../scripts/test-s3-sync-live.mjs");
+        assert!(live_wrapper.contains("live_minio_s3_"));
+        assert!(!live_wrapper.contains("\"live_minio_\","));
+        assert!(live_wrapper.contains("qingyu-dejavu"));
+        assert!(live_wrapper.contains("s3_minio"));
+    }
+
+    #[test]
     fn completed_application_sync_dispatch_serializes_with_its_legacy_result() {
         let dispatch = SyncDispatchResult::Completed {
             result: SyncRunResult {

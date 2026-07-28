@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 use quick_xml::escape::unescape;
@@ -88,12 +88,6 @@ struct ListObjectsPage {
 }
 
 #[derive(Debug, Default)]
-struct ListNotebookPrefixesPage {
-    names: BTreeSet<String>,
-    next_continuation_token: Option<String>,
-}
-
-#[derive(Debug, Default)]
 struct ListObjectEntry {
     etag: Option<String>,
     key: String,
@@ -120,11 +114,6 @@ impl S3Backend {
     ) -> Result<Self, String> {
         let prefix_segments = normalize_prefix_segments(&settings.remote_path)?;
         Self::new_with_prefix_segments(settings, prefix_segments, transport)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn new_at_validated_prefix(settings: S3SyncSettings) -> Result<Self, String> {
-        Self::new_at_validated_prefix_with_transport(settings, S3TransportOptions::default())
     }
 
     pub(crate) fn new_at_validated_prefix_with_transport(
@@ -493,83 +482,6 @@ impl S3Backend {
         Ok(page)
     }
 
-    async fn list_notebook_page(
-        &self,
-        continuation_token: Option<&str>,
-    ) -> Result<ListNotebookPrefixesPage, RemoteSyncError> {
-        let mut url = s3_bucket_url(&self.connection)?;
-        {
-            let mut query = url.query_pairs_mut();
-            query.append_pair("list-type", "2");
-            query.append_pair("prefix", &self.prefix);
-            query.append_pair("delimiter", "/");
-            if let Some(token) = continuation_token {
-                query.append_pair("continuation-token", token);
-            }
-        }
-        let response = self
-            .send_get_bytes_with_retry(
-                &self.connection_test_client,
-                &url,
-                SyncProviderOperation::Catalog,
-                &self.prefix,
-            )
-            .await?;
-        let status = response.status.as_u16();
-        let body = std::str::from_utf8(&response.body).map_err(|_| {
-            s3_integrity_failure(
-                &self.diagnostic_context,
-                SyncProviderOperation::Catalog,
-                "GET",
-                &self.prefix,
-                "s3-catalog-response-invalid",
-                response.started_at.elapsed(),
-            )
-        })?;
-        let page = parse_list_notebook_prefixes(&body, &self.prefix).map_err(|_| {
-            s3_integrity_failure(
-                &self.diagnostic_context,
-                SyncProviderOperation::Catalog,
-                "GET",
-                &self.prefix,
-                "s3-catalog-response-invalid",
-                response.started_at.elapsed(),
-            )
-        })?;
-        record_s3_request_succeeded(
-            &self.diagnostic_context,
-            "GET",
-            SyncProviderOperation::Catalog,
-            &self.prefix,
-            status,
-            response.started_at.elapsed(),
-        );
-        Ok(page)
-    }
-
-    pub(crate) async fn list_notebook_names(&self) -> Result<Vec<String>, String> {
-        let mut names = BTreeSet::new();
-        let mut continuation_token = None;
-        let mut seen_continuation_tokens = BTreeSet::new();
-        loop {
-            let page = self
-                .list_notebook_page(continuation_token.as_deref())
-                .await?;
-            names.extend(page.names);
-            let Some(next_token) = page.next_continuation_token else {
-                break;
-            };
-            if next_token.is_empty() {
-                return Err("S3 catalog returned an invalid continuation token".to_string());
-            }
-            if !seen_continuation_tokens.insert(next_token.clone()) {
-                return Err("S3 catalog returned a repeated continuation token".to_string());
-            }
-            continuation_token = Some(next_token);
-        }
-        Ok(names.into_iter().collect())
-    }
-
     pub(crate) async fn test_connection(&self) -> Result<String, String> {
         let checked_target = self.prefix.trim_end_matches('/');
         let mut url =
@@ -647,15 +559,6 @@ fn object_segments(prefix_segments: &[String], relative_path: &str) -> Result<Ve
         .cloned()
         .chain(relative_path.split('/').map(ToString::to_string))
         .collect())
-}
-
-#[cfg(test)]
-pub(super) fn object_key_for_test(
-    remote_path: &str,
-    relative_path: &str,
-) -> Result<String, String> {
-    object_segments(&normalize_prefix_segments(remote_path)?, relative_path)
-        .map(|segments| segments.join("/"))
 }
 
 fn connection_test_query(remote_path: &str) -> Result<String, String> {
@@ -1079,102 +982,6 @@ fn parse_list_objects_v2(body: &str, prefix: &str) -> Result<ListObjectsPage, St
     Ok(page)
 }
 
-fn parse_list_notebook_prefixes(
-    body: &str,
-    prefix: &str,
-) -> Result<ListNotebookPrefixesPage, String> {
-    let mut reader = Reader::from_str(body);
-    reader.config_mut().trim_text(true);
-    let mut page = ListNotebookPrefixesPage::default();
-    let mut current_field = String::new();
-    let mut common_prefix = None;
-    let mut is_truncated = false;
-
-    loop {
-        match reader.read_event().map_err(|error| error.to_string())? {
-            Event::Start(element) => {
-                let name = String::from_utf8_lossy(element.local_name().as_ref()).into_owned();
-                if name == "CommonPrefixes" {
-                    common_prefix = Some(String::new());
-                }
-                current_field = name;
-            }
-            Event::Text(text) => {
-                let decoded = text
-                    .decode()
-                    .map_err(|error| error.to_string())?
-                    .into_owned();
-                let value = unescape(&decoded)
-                    .map_err(|error| error.to_string())?
-                    .into_owned();
-                if let Some(common_prefix) =
-                    common_prefix.as_mut().filter(|_| current_field == "Prefix")
-                {
-                    common_prefix.push_str(&value);
-                } else {
-                    match current_field.as_str() {
-                        "IsTruncated" => is_truncated = value.eq_ignore_ascii_case("true"),
-                        "NextContinuationToken" => {
-                            page.next_continuation_token
-                                .get_or_insert_with(String::new)
-                                .push_str(&value);
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            Event::GeneralRef(reference) => {
-                let reference = reference.decode().map_err(|error| error.to_string())?;
-                let encoded = format!("&{reference};");
-                let value = unescape(&encoded)
-                    .map_err(|error| error.to_string())?
-                    .into_owned();
-                if let Some(common_prefix) =
-                    common_prefix.as_mut().filter(|_| current_field == "Prefix")
-                {
-                    common_prefix.push_str(&value);
-                } else if current_field == "NextContinuationToken" {
-                    page.next_continuation_token
-                        .get_or_insert_with(String::new)
-                        .push_str(&value);
-                }
-            }
-            Event::End(element) => {
-                let name = String::from_utf8_lossy(element.local_name().as_ref()).into_owned();
-                if name == "CommonPrefixes" {
-                    if let Some(common_prefix) = common_prefix.take() {
-                        add_notebook_common_prefix(&mut page.names, &common_prefix, prefix);
-                    }
-                }
-                current_field.clear();
-            }
-            Event::Eof => break,
-            _ => {}
-        }
-    }
-    if !is_truncated {
-        page.next_continuation_token = None;
-    } else if page.next_continuation_token.is_none() {
-        return Err("S3 catalog is truncated without a continuation token".to_string());
-    }
-    Ok(page)
-}
-
-fn add_notebook_common_prefix(names: &mut BTreeSet<String>, value: &str, prefix: &str) {
-    let Some(relative) = value
-        .strip_prefix(prefix)
-        .and_then(|value| value.strip_suffix('/'))
-    else {
-        return;
-    };
-    if relative.contains('/') {
-        return;
-    }
-    if let Ok(name) = crate::notebook_scope::validate_notebook_name(relative) {
-        names.insert(name);
-    }
-}
-
 fn add_list_entry(
     files: &mut BTreeMap<String, RemoteSyncFile>,
     entry: ListObjectEntry,
@@ -1267,9 +1074,8 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use super::{
-        connection_test_query, normalize_prefix_segments, object_identity,
-        parse_list_notebook_prefixes, parse_list_objects_v2, s3_client_policy, S3Backend,
-        S3SyncSettings, S3TransportOptions,
+        connection_test_query, normalize_prefix_segments, object_identity, parse_list_objects_v2,
+        s3_client_policy, S3Backend, S3SyncSettings, S3TransportOptions,
     };
     use crate::remote_sync::backend::RemoteSyncBackend;
     use crate::remote_sync::diagnostics::SyncDiagnosticContext;
@@ -1902,124 +1708,6 @@ mod tests {
         assert!(deletes[0]
             .to_ascii_lowercase()
             .contains("if-match: \"etag-1\""));
-    }
-
-    #[test]
-    fn parses_only_direct_common_prefixes_for_the_notebook_catalog() {
-        let body = r#"<?xml version="1.0" encoding="UTF-8"?>
-<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
-  <IsTruncated>true</IsTruncated>
-  <Contents><Key>root/notes/root.md</Key><Size>12</Size></Contents>
-  <Contents><Key>root/notes/Phantom/nested.md</Key><Size>12</Size></Contents>
-  <CommonPrefixes><Prefix>root/notes/Alpha/</Prefix></CommonPrefixes>
-  <CommonPrefixes><Prefix>root/notes/R&amp;D/</Prefix></CommonPrefixes>
-  <CommonPrefixes><Prefix>root/notes/  个人 笔记  /</Prefix></CommonPrefixes>
-  <CommonPrefixes><Prefix>root/notes/.QINGYU/</Prefix></CommonPrefixes>
-  <CommonPrefixes><Prefix>root/notes/.MARKRA-SYNC/</Prefix></CommonPrefixes>
-  <CommonPrefixes><Prefix>root/notes/.markra-sync-stage-123/</Prefix></CommonPrefixes>
-  <CommonPrefixes><Prefix>root/notes/Alpha/nested/</Prefix></CommonPrefixes>
-  <CommonPrefixes><Prefix>root/notes/.markra-sync/</Prefix></CommonPrefixes>
-  <CommonPrefixes><Prefix>outside/notes/Outside/</Prefix></CommonPrefixes>
-  <NextContinuationToken>next token</NextContinuationToken>
-</ListBucketResult>"#;
-
-        let page =
-            parse_list_notebook_prefixes(body, "root/notes/").expect("catalog page should parse");
-
-        assert_eq!(
-            page.names.into_iter().collect::<Vec<_>>(),
-            vec!["  个人 笔记  ", "Alpha", "R&D"]
-        );
-        assert_eq!(page.next_continuation_token.as_deref(), Some("next token"));
-    }
-
-    #[test]
-    fn notebook_catalog_uses_delimited_paginated_get_requests_only() {
-        let first_body = r#"<?xml version="1.0"?><ListBucketResult>
-  <IsTruncated>true</IsTruncated>
-  <CommonPrefixes><Prefix>root/notes/Beta/</Prefix></CommonPrefixes>
-  <NextContinuationToken>next token</NextContinuationToken>
-</ListBucketResult>"#;
-        let second_body = r#"<?xml version="1.0"?><ListBucketResult>
-  <IsTruncated>false</IsTruncated>
-  <CommonPrefixes><Prefix>root/notes/Alpha/</Prefix></CommonPrefixes>
-  <CommonPrefixes><Prefix>root/notes/Beta/</Prefix></CommonPrefixes>
-</ListBucketResult>"#;
-        let response = |body: &str| {
-            format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/xml\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                body.len()
-            )
-        };
-        let (endpoint_url, requests, handle) =
-            spawn_s3_responses_fixture(vec![response(first_body), response(second_body)]);
-        let backend = S3Backend::new_at_validated_prefix(S3SyncSettings {
-            access_key_id: "private-access-key".into(),
-            bucket: "notes-bucket".into(),
-            endpoint_url,
-            region: "test-region-1".into(),
-            remote_path: "root/notes".into(),
-            secret_access_key: "private-secret-key".into(),
-        })
-        .expect("S3 catalog backend");
-
-        let names = tauri::async_runtime::block_on(backend.list_notebook_names())
-            .expect("catalog should paginate");
-        handle.join().expect("fixture should finish");
-
-        assert_eq!(names, vec!["Alpha", "Beta"]);
-        let requests = requests.lock().expect("fixture request log");
-        assert_eq!(requests.len(), 2);
-        assert!(requests[0].starts_with("GET /notes-bucket?"));
-        assert!(requests[0].contains("list-type=2"));
-        assert!(requests[0].contains("prefix=root%2Fnotes%2F"));
-        assert!(requests[0].contains("delimiter=%2F"));
-        assert!(!requests[0].contains("continuation-token="));
-        assert!(requests[1].starts_with("GET /notes-bucket?"));
-        assert!(requests[1].contains("continuation-token=next+token"));
-        for request in requests.iter() {
-            assert!(!request.starts_with("HEAD "));
-            assert!(!request.starts_with("PUT "));
-            assert!(!request.starts_with("DELETE "));
-        }
-    }
-
-    #[test]
-    fn notebook_catalog_rejects_any_repeated_continuation_token() {
-        let page = |token: &str| {
-            let body = format!(
-                r#"<?xml version="1.0"?><ListBucketResult>
-  <IsTruncated>true</IsTruncated>
-  <NextContinuationToken>{token}</NextContinuationToken>
-</ListBucketResult>"#
-            );
-            format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/xml\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                body.len()
-            )
-        };
-        let (endpoint_url, requests, handle) =
-            spawn_s3_responses_fixture(vec![page("A"), page("B"), page("A")]);
-        let backend = S3Backend::new_at_validated_prefix(S3SyncSettings {
-            access_key_id: "private-access-key".into(),
-            bucket: "notes-bucket".into(),
-            endpoint_url,
-            region: "test-region-1".into(),
-            remote_path: "root/notes".into(),
-            secret_access_key: "private-secret-key".into(),
-        })
-        .expect("S3 catalog backend");
-
-        let error = tauri::async_runtime::block_on(backend.list_notebook_names())
-            .expect_err("a repeated pagination token must fail closed");
-        handle.join().expect("fixture should finish");
-
-        assert_eq!(error, "S3 catalog returned a repeated continuation token");
-        let requests = requests.lock().expect("fixture request log");
-        assert_eq!(requests.len(), 3);
-        assert!(!requests[0].contains("continuation-token="));
-        assert!(requests[1].contains("continuation-token=A"));
-        assert!(requests[2].contains("continuation-token=B"));
     }
 
     #[test]
