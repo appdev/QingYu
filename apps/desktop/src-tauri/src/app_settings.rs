@@ -23,6 +23,8 @@ use crate::storage_capability::{
 };
 
 const SETTINGS_STORE_PATH: &str = "settings.json";
+pub(crate) const DEFAULT_LIGHT_THEME_ID: &str = "wenkai-paper-light";
+pub(crate) const DEFAULT_DARK_THEME_ID: &str = "wenkai-paper-dark";
 const APPEARANCE_MODE_KEY: &str = "appearanceMode";
 const LIGHT_THEME_KEY: &str = "lightThemeId";
 const DARK_THEME_KEY: &str = "darkThemeId";
@@ -436,8 +438,8 @@ impl AppSettingsService {
                 }
                 Ok(Some(json!({
                     "appearanceMode": mode.unwrap_or_else(|| json!("system")),
-                    "lightTheme": light.unwrap_or_else(|| json!("light")),
-                    "darkTheme": dark.unwrap_or_else(|| json!("dark")),
+                    "lightTheme": light.unwrap_or_else(|| json!(DEFAULT_LIGHT_THEME_ID)),
+                    "darkTheme": dark.unwrap_or_else(|| json!(DEFAULT_DARK_THEME_ID)),
                 })))
             }
             AppSettingsGroup::CustomThemeCss => {
@@ -1225,7 +1227,11 @@ fn normalize_file_ignore_rules(rules: &str) -> String {
 }
 
 fn default_appearance() -> Value {
-    json!({ "appearanceMode": "system", "lightTheme": "light", "darkTheme": "dark" })
+    json!({
+        "appearanceMode": "system",
+        "lightTheme": DEFAULT_LIGHT_THEME_ID,
+        "darkTheme": DEFAULT_DARK_THEME_ID,
+    })
 }
 
 fn default_editor() -> Value {
@@ -1977,8 +1983,8 @@ fn portable_event_groups(
         .ok_or_else(AppSettingsError::reconcile_failed)?;
     let appearance = json!({
         "appearanceMode": object.get(APPEARANCE_MODE_KEY).cloned().unwrap_or_else(|| json!("system")),
-        "lightTheme": object.get(LIGHT_THEME_KEY).cloned().unwrap_or_else(|| json!("light")),
-        "darkTheme": object.get(DARK_THEME_KEY).cloned().unwrap_or_else(|| json!("dark")),
+        "lightTheme": object.get(LIGHT_THEME_KEY).cloned().unwrap_or_else(|| json!(DEFAULT_LIGHT_THEME_ID)),
+        "darkTheme": object.get(DARK_THEME_KEY).cloned().unwrap_or_else(|| json!(DEFAULT_DARK_THEME_ID)),
     });
     let custom_css = json!({
         "light": object.get("lightCustomThemeCss").cloned().unwrap_or(Value::Null),
@@ -2246,6 +2252,27 @@ mod tests {
     }
 
     #[test]
+    fn partial_appearance_settings_use_the_bundled_wenkai_defaults() {
+        let backend = Arc::new(MemoryBackend::with([(
+            APPEARANCE_MODE_KEY,
+            json!("system"),
+        )]));
+        let appearance = service_with_backend(backend)
+            .read_group(AppSettingsGroup::Appearance)
+            .expect("read appearance settings")
+            .expect("partial appearance settings");
+
+        assert_eq!(
+            appearance,
+            json!({
+                "appearanceMode": "system",
+                "lightTheme": "wenkai-paper-light",
+                "darkTheme": "wenkai-paper-dark",
+            })
+        );
+    }
+
+    #[test]
     fn exposed_read_omits_unapproved_store_keys() {
         let backend = Arc::new(MemoryBackend::with([
             ("workspace", json!({ "path": "/private/notes" })),
@@ -2312,6 +2339,8 @@ mod tests {
         assert!(emitted.iter().any(|(event, payload)| {
             event == "markra://theme-changed"
                 && payload["preferences"]["appearanceMode"] == json!("system")
+                && payload["preferences"]["lightTheme"] == json!("wenkai-paper-light")
+                && payload["preferences"]["darkTheme"] == json!("wenkai-paper-dark")
         }));
         assert!(emitted
             .iter()

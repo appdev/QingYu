@@ -23,6 +23,22 @@ function renderDesktopIndex(search = "") {
 }
 
 describe("settings startup shell", () => {
+  it("uses the WenKai palettes when startup theme parameters are absent", () => {
+    const lightDom = renderDesktopIndex("?settings=1&startupAppearanceMode=light");
+    const lightShell = lightDom.querySelector(".settings-startup-shell") as Element;
+    expect(lightDom.documentElement.dataset.theme).toBe("wenkai-paper-light");
+    expect(lightDom.documentElement.style.backgroundColor).toBe("rgb(255, 255, 255)");
+    expect(window.getComputedStyle(lightShell).getPropertyValue("--settings-startup-sidebar")).toBe("#ffffff");
+    expect(window.getComputedStyle(lightShell).getPropertyValue("--settings-startup-border")).toBe("#ededed");
+
+    const darkDom = renderDesktopIndex("?settings=1&startupAppearanceMode=dark");
+    const darkShell = darkDom.querySelector(".settings-startup-shell") as Element;
+    expect(darkDom.documentElement.dataset.theme).toBe("wenkai-paper-dark");
+    expect(darkDom.documentElement.style.backgroundColor).toBe("rgb(35, 40, 45)");
+    expect(window.getComputedStyle(darkShell).getPropertyValue("--settings-startup-sidebar")).toBe("#23282d");
+    expect(window.getComputedStyle(darkShell).getPropertyValue("--settings-startup-border")).toBe("#33373c");
+  });
+
   it("shows a static shimmer shell before the settings module starts", () => {
     const dom = renderDesktopIndex("?settings=1&startupAppearanceMode=dark");
     const shell = dom.querySelector(".settings-startup-shell");

@@ -74,6 +74,7 @@ import type {
   ThemeImportResult,
   ThemeRuntimeCapabilities
 } from "../lib/themes/theme-catalog";
+import { defaultDarkThemeId, defaultLightThemeId } from "../lib/themes/default-theme-ids";
 
 export type { WorkspaceSearchRequest, WorkspaceSearchResponse } from "../lib/workspace-search";
 export type { AppLogArea, AppLogEvent, AppLogLevel, AppLogWriter } from "../lib/app-logger";
@@ -501,8 +502,8 @@ function createMemorySettingsRuntime(): AppSettingsRuntime {
 
         return {
           appearanceMode: appearanceMode ?? "system",
-          darkTheme: darkTheme ?? "dark",
-          lightTheme: lightTheme ?? "light"
+          darkTheme: darkTheme ?? defaultDarkThemeId,
+          lightTheme: lightTheme ?? defaultLightThemeId
         } as TValue;
       }
       const key = group === "language" ? "language" : group;

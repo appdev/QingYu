@@ -7,6 +7,7 @@ import {
 } from "../../runtime";
 import {
   darkEditorThemeOptions,
+  defaultAppThemePreferences,
   defaultCustomThemeCss,
   defaultExportSettings,
   defaultFileIgnoreSettings,
@@ -115,6 +116,17 @@ describe("app settings", () => {
     await expect(getStoredTheme()).resolves.toBe("system");
   });
 
+  it("uses the bundled WenKai pair when no split theme preference has been selected", async () => {
+    store.get.mockResolvedValue(undefined);
+
+    expect(defaultAppThemePreferences).toEqual({
+      appearanceMode: "system",
+      darkTheme: "wenkai-paper-dark",
+      lightTheme: "wenkai-paper-light"
+    });
+    await expect(getStoredThemePreferences()).resolves.toEqual(defaultAppThemePreferences);
+  });
+
   it("persists the selected global theme", async () => {
     await saveStoredTheme("solarized-dark");
 
@@ -131,7 +143,7 @@ describe("app settings", () => {
 
     await expect(getStoredThemePreferences()).resolves.toEqual({
       appearanceMode: "light",
-      darkTheme: "dark",
+      darkTheme: "wenkai-paper-dark",
       lightTheme: "sepia"
     });
 

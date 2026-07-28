@@ -173,7 +173,7 @@ describe("settings events", () => {
     expect(onThemeChanged).toHaveBeenCalledWith(preferences);
     expect(onThemeChanged).toHaveBeenCalledWith({
       appearanceMode: "light",
-      darkTheme: "dark",
+      darkTheme: "wenkai-paper-dark",
       lightTheme: "newsprint"
     });
     expect(onThemeChanged).toHaveBeenCalledTimes(2);

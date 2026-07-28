@@ -18,9 +18,9 @@
           appearanceMode === "light" || (appearanceMode === "system" && !prefersDark) ? "light" : "dark";
         const theme =
           resolvedAppearance === "dark"
-            ? params.get("startupDarkTheme") || "dark"
-            : params.get("startupLightTheme") || "light";
-        const background = resolvedAppearance === "dark" ? "#1e1e1e" : "#ffffff";
+            ? params.get("startupDarkTheme") || "wenkai-paper-dark"
+            : params.get("startupLightTheme") || "wenkai-paper-light";
+        const background = resolvedAppearance === "dark" ? "#23282d" : "#ffffff";
         const root = document.documentElement;
 
         if (isSettingsWindow) root.dataset.window = "settings";
@@ -44,10 +44,10 @@
 
       .settings-startup-shell {
         --settings-startup-bg: #ffffff;
-        --settings-startup-sidebar: #fafafa;
-        --settings-startup-border: #eeeeee;
-        --settings-startup-block: #e8e8e8;
-        --settings-startup-highlight: rgba(51, 51, 51, 0.1);
+        --settings-startup-sidebar: #ffffff;
+        --settings-startup-border: #ededed;
+        --settings-startup-block: #ededed;
+        --settings-startup-highlight: rgba(28, 93, 51, 0.1);
         display: none;
         height: 100vh;
         grid-template-columns: 180px minmax(0, 1fr);
@@ -56,11 +56,11 @@
       }
 
       html[data-theme-appearance="dark"] .settings-startup-shell {
-        --settings-startup-bg: #1e1e1e;
-        --settings-startup-sidebar: #252526;
-        --settings-startup-border: #333333;
-        --settings-startup-block: #363638;
-        --settings-startup-highlight: rgba(224, 224, 224, 0.11);
+        --settings-startup-bg: #23282d;
+        --settings-startup-sidebar: #23282d;
+        --settings-startup-border: #33373c;
+        --settings-startup-block: #363d45;
+        --settings-startup-highlight: rgba(84, 197, 159, 0.12);
       }
 
       html[data-window="settings"] .settings-startup-shell {

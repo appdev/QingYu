@@ -54,6 +54,30 @@ const midnight: ThemeDescriptor = {
   storageKind: "resourceDirectory"
 };
 
+const wenkaiPaperLight: ThemeDescriptor = {
+  appearance: "light",
+  author: "轻语",
+  fileName: null,
+  fingerprint: "e".repeat(64),
+  id: "wenkai-paper-light",
+  name: "轻语 · 文楷纸白",
+  preview: { accent: "#1c5d33", background: "#ffffff", panel: "#f7f7f7", text: "#262626" },
+  source: "bundled",
+  storageKind: "resourceDirectory"
+};
+
+const wenkaiPaperDark: ThemeDescriptor = {
+  appearance: "dark",
+  author: "轻语",
+  fileName: null,
+  fingerprint: "f".repeat(64),
+  id: "wenkai-paper-dark",
+  name: "轻语 · 文楷夜读",
+  preview: { accent: "#54c59f", background: "#23282d", panel: "#282e33", text: "#e7e9ea" },
+  source: "bundled",
+  storageKind: "resourceDirectory"
+};
+
 function deferred<T>() {
   let resolvePromise: (value: T) => unknown = () => undefined;
   const promise = new Promise<T>((resolve) => {
@@ -103,7 +127,7 @@ function dispatchStylesheetEvent(link: HTMLLinkElement, type: "error" | "load") 
   });
 }
 
-function runtimeWithThemes(preferences: AppThemePreferences, themes: ThemeDescriptor[]) {
+function runtimeWithThemes(preferences: AppThemePreferences | null, themes: ThemeDescriptor[]) {
   const runtime = createDefaultAppRuntime();
   runtime.settings.readGroup = vi.fn(async (group) => group === "appearance" ? preferences : null) as typeof runtime.settings.readGroup;
   runtime.settings.writeGroup = vi.fn(async () => undefined);
@@ -168,6 +192,27 @@ describe("useAppTheme", () => {
 
     act(() => frameCallbacks.shift()?.(16));
     expect(document.documentElement).not.toHaveAttribute("data-theme-transition");
+  });
+
+  it("activates the bundled WenKai theme when no appearance preference exists", async () => {
+    const runtime = runtimeWithThemes(null, [wenkaiPaperLight, wenkaiPaperDark]);
+    const { result } = renderHook(() => useAppTheme());
+    const candidate = await waitForCandidate("wenkai-paper-light-token");
+
+    dispatchStylesheetEvent(candidate, "load");
+
+    await waitFor(() => expect(result.current.ready).toBe(true));
+
+    expect(result.current.themePreferences).toEqual({
+      appearanceMode: "system",
+      darkTheme: "wenkai-paper-dark",
+      lightTheme: "wenkai-paper-light"
+    });
+    expect(runtime.themes.prepareActivation).toHaveBeenCalledWith(
+      "wenkai-paper-light",
+      wenkaiPaperLight.fingerprint
+    );
+    expect(document.documentElement.dataset.theme).toBe("wenkai-paper-light");
   });
 
   it("loads a stored third-party theme without a confirmation transaction", async () => {

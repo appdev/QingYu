@@ -9,6 +9,7 @@ use std::{
 };
 
 use crate::{
+    app_settings::{DEFAULT_DARK_THEME_ID, DEFAULT_LIGHT_THEME_ID},
     language::{resolve_startup_language, AppLanguage},
     menu::remember_native_menu_webview_window,
     menu_labels,
@@ -136,8 +137,8 @@ impl SettingsWindowStartupPreferences {
         Self {
             language,
             appearance_mode: "system".to_string(),
-            light_theme: "light".to_string(),
-            dark_theme: "dark".to_string(),
+            light_theme: DEFAULT_LIGHT_THEME_ID.to_string(),
+            dark_theme: DEFAULT_DARK_THEME_ID.to_string(),
         }
     }
 }
@@ -763,7 +764,7 @@ fn settings_window_background_color_for_preferences(
         return Some(Color(255, 255, 255, 255));
     }
 
-    Some(Color(30, 30, 30, 255))
+    Some(Color(35, 40, 45, 255))
 }
 
 fn settings_window_title(language: AppLanguage) -> String {
@@ -2228,7 +2229,7 @@ mod tests {
         );
         assert_eq!(
             settings_window_background_color_for_preferences("windows", &startup_preferences),
-            Some(Color(30, 30, 30, 255))
+            Some(Color(35, 40, 45, 255))
         );
 
         let light_startup_preferences = SettingsWindowStartupPreferences {
@@ -2241,6 +2242,19 @@ mod tests {
         assert_eq!(
             settings_window_background_color_for_preferences("windows", &light_startup_preferences),
             Some(Color(255, 255, 255, 255))
+        );
+    }
+
+    #[test]
+    fn settings_window_defaults_to_the_bundled_wenkai_pair() {
+        assert_eq!(
+            SettingsWindowStartupPreferences::default(),
+            SettingsWindowStartupPreferences {
+                language: AppLanguage::En,
+                appearance_mode: "system".to_string(),
+                light_theme: "wenkai-paper-light".to_string(),
+                dark_theme: "wenkai-paper-dark".to_string(),
+            }
         );
     }
 
@@ -2315,7 +2329,7 @@ mod tests {
 
         assert_eq!(
             settings_window_url(Some("sync"), None, None, None, false, &startup_preferences),
-            "index.html?settings=1&startupLanguage=en&startupAppearanceMode=system&startupLightTheme=light&startupDarkTheme=dark&settingsTarget=sync"
+            "index.html?settings=1&startupLanguage=en&startupAppearanceMode=system&startupLightTheme=wenkai-paper-light&startupDarkTheme=wenkai-paper-dark&settingsTarget=sync"
         );
     }
 
@@ -2330,7 +2344,7 @@ mod tests {
                 false,
                 &SettingsWindowStartupPreferences::default(),
             ),
-            "index.html?settings=1&startupLanguage=en&startupAppearanceMode=system&startupLightTheme=light&startupDarkTheme=dark"
+            "index.html?settings=1&startupLanguage=en&startupAppearanceMode=system&startupLightTheme=wenkai-paper-light&startupDarkTheme=wenkai-paper-dark"
         );
     }
 
@@ -2345,7 +2359,7 @@ mod tests {
                 true,
                 &SettingsWindowStartupPreferences::default(),
             ),
-            "index.html?settings=1&startupLanguage=en&startupAppearanceMode=system&startupLightTheme=light&startupDarkTheme=dark&settingsTarget=sync&settingsProjectContext=1&settingsProjectRoot=%2Fmock%20files%2Fproject-a&settingsWorkspaceContext=1&settingsWorkspaceSourcePath=%2Fmock%20files%2Fproject-a%2Fnotes%2Fstandalone.md&settingsSourceWindowLabel=markra-editor-2"
+            "index.html?settings=1&startupLanguage=en&startupAppearanceMode=system&startupLightTheme=wenkai-paper-light&startupDarkTheme=wenkai-paper-dark&settingsTarget=sync&settingsProjectContext=1&settingsProjectRoot=%2Fmock%20files%2Fproject-a&settingsWorkspaceContext=1&settingsWorkspaceSourcePath=%2Fmock%20files%2Fproject-a%2Fnotes%2Fstandalone.md&settingsSourceWindowLabel=markra-editor-2"
         );
         assert_eq!(
             settings_window_url(
@@ -2356,7 +2370,7 @@ mod tests {
                 true,
                 &SettingsWindowStartupPreferences::default(),
             ),
-            "index.html?settings=1&startupLanguage=en&startupAppearanceMode=system&startupLightTheme=light&startupDarkTheme=dark&settingsTarget=sync&settingsProjectContext=1&settingsWorkspaceContext=1&settingsWorkspaceSourcePath=%2Fnotes%2Fstandalone.md&settingsSourceWindowLabel=main"
+            "index.html?settings=1&startupLanguage=en&startupAppearanceMode=system&startupLightTheme=wenkai-paper-light&startupDarkTheme=wenkai-paper-dark&settingsTarget=sync&settingsProjectContext=1&settingsWorkspaceContext=1&settingsWorkspaceSourcePath=%2Fnotes%2Fstandalone.md&settingsSourceWindowLabel=main"
         );
     }
 
@@ -2438,7 +2452,7 @@ mod tests {
             SettingsWindowStartupPreferences {
                 language: AppLanguage::En,
                 appearance_mode: "dark".to_string(),
-                light_theme: "light".to_string(),
+                light_theme: "wenkai-paper-light".to_string(),
                 dark_theme: "night".to_string(),
             }
         );
@@ -2448,7 +2462,7 @@ mod tests {
                 language: AppLanguage::En,
                 appearance_mode: "light".to_string(),
                 light_theme: "sepia".to_string(),
-                dark_theme: "dark".to_string(),
+                dark_theme: "wenkai-paper-dark".to_string(),
             }
         );
     }

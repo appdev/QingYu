@@ -11,6 +11,7 @@ import {
   type EditorFontFamilyPreference
 } from "../editor-font";
 import { normalizeMarkdownTemplateEntries, type MarkdownTemplateEntry } from "../templates";
+import { defaultDarkThemeId, defaultLightThemeId } from "../themes/default-theme-ids";
 import {
   defaultViewModeCustomizations,
   isViewMode,
@@ -182,8 +183,8 @@ export type AppThemePreferences = {
 };
 export const defaultAppThemePreferences: AppThemePreferences = {
   appearanceMode: "system",
-  darkTheme: "dark",
-  lightTheme: "light"
+  darkTheme: defaultDarkThemeId,
+  lightTheme: defaultLightThemeId
 };
 export type TitlebarActionId = "viewMode" | "sourceMode" | "history" | "save" | "theme";
 export type TitlebarActionPreference = {

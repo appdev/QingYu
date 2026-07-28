@@ -335,6 +335,29 @@ function readRuleDeclarations(styles: string, selector: string) {
   return styles.slice(declarationsStart, ruleEnd);
 }
 
+function readCustomPropertyNames(declarations: string) {
+  return Array.from(
+    declarations.matchAll(/^\s*(--[a-z0-9-]+)\s*:/gmu),
+    ([, name]) => name
+  );
+}
+
+function readNestedRuleDeclarations(styles: string, selector: string) {
+  const ruleStart = styles.indexOf(`${selector} {`);
+  const declarationsStart = styles.indexOf("{", ruleStart) + 1;
+  let depth = 1;
+
+  expect(ruleStart).toBeGreaterThanOrEqual(0);
+  for (let index = declarationsStart; index < styles.length; index += 1) {
+    if (styles[index] === "{") depth += 1;
+    if (styles[index] !== "}") continue;
+    depth -= 1;
+    if (depth === 0) return styles.slice(declarationsStart, index);
+  }
+
+  throw new Error(`CSS rule ${selector} is not closed`);
+}
+
 function readSeededThemeStyles(themeId: typeof seededThemeIds[number]) {
   if (themeId === "wenkai-paper-light" || themeId === "wenkai-paper-dark") {
     return readFileSync(
@@ -1609,6 +1632,12 @@ describe("editor stylesheet", () => {
   });
 
   it("keeps WenKai Paper packages licensed, self-contained, and complete across app chrome", () => {
+    const appStyles = readFileSync(`${process.cwd()}/src/styles.css`, "utf8");
+    const defaultAppTokens = readCustomPropertyNames(readNestedRuleDeclarations(appStyles, "  :root"));
+    const defaultEditorTokens = readCustomPropertyNames(
+      readNestedRuleDeclarations(appStyles, "  .markdown-paper")
+    );
+
     for (const theme of ["wenkai-paper-light", "wenkai-paper-dark"] as const) {
       const root = `${process.cwd()}/../../themes/external/${theme}`;
       const styles = readSeededThemeStyles(theme);
@@ -1627,6 +1656,14 @@ describe("editor stylesheet", () => {
       expect(styles).toContain(`.markdown-source-paper[data-editor-theme="${theme}"]`);
       expect(styles).toContain('font-family: "LXGW WenKai Screen"');
       expect(styles).toContain("font-family: ui-monospace");
+      const rootTokens = readCustomPropertyNames(
+        readRuleDeclarations(styles, `:root[data-theme="${theme}"]`)
+      );
+      const editorTokens = readCustomPropertyNames(
+        readRuleDeclarations(styles, `.markdown-paper[data-editor-theme="${theme}"]`)
+      );
+      expect(rootTokens).toEqual(expect.arrayContaining(defaultAppTokens));
+      expect(editorTokens).toEqual(expect.arrayContaining(defaultEditorTokens));
       for (const token of [
         "--bg-titlebar",
         "--bg-sidebar",

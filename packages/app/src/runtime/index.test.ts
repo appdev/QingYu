@@ -53,6 +53,21 @@ describe("app runtime logging", () => {
 });
 
 describe("default app runtime capabilities", () => {
+  it("fills a partial appearance group with the bundled WenKai defaults", async () => {
+    const runtime = createDefaultAppRuntime();
+    const store = await runtime.settings.loadStore("settings.json", {
+      autoSave: false,
+      defaults: {}
+    });
+    await store.set("appearanceMode", "system");
+
+    await expect(runtime.settings.readGroup?.("appearance")).resolves.toEqual({
+      appearanceMode: "system",
+      darkTheme: "wenkai-paper-dark",
+      lightTheme: "wenkai-paper-light"
+    });
+  });
+
   it("exposes the complete disabled feature matrix", () => {
     const runtime = createDefaultAppRuntime();
 
