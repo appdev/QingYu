@@ -157,7 +157,6 @@ import {
   listenNativeApplicationMenuCommands,
   openBlankEditorWindow,
   openNativeExternalUrl,
-  openSettingsWindow,
   showNativeAppAbout,
   toggleNativeWindowFullscreen,
   toggleNativeWindowMaximized
@@ -185,7 +184,11 @@ import {
 import {
   notifyAppEditorPreferencesChanged
 } from "./lib/settings/settings-events";
-import { getAppRuntime } from "./runtime";
+import {
+  getAppRuntime,
+  type NativeSettingsWindowContext,
+  type NativeSettingsWindowTarget
+} from "./runtime";
 import type {
   RemoteNotebookCatalogEntry,
   SyncConfigDocument
@@ -438,6 +441,12 @@ function SettingsRouteApp() {
   );
 }
 
+type SettingsModalRequest = {
+  context: NativeSettingsWindowContext;
+  generation: number;
+  target?: NativeSettingsWindowTarget;
+};
+
 function WorkspaceApp() {
   const compactMode = useCompactMode();
   const editorWindowContext = useMemo(
@@ -488,6 +497,54 @@ function WorkspaceApp() {
   const fileIgnoreSettings = useFileIgnoreSettings();
   const exportSettings = useExportSettings();
   const [markdownTemplates, setMarkdownTemplates] = useState<MarkdownTemplate[]>([]);
+  const [settingsModalRequest, setSettingsModalRequest] = useState<SettingsModalRequest | null>(null);
+  const settingsModalGenerationRef = useRef(0);
+  const settingsModalOpenRef = useRef(false);
+  const settingsModalReturnFocusRef = useRef<HTMLElement | null>(null);
+  const openSettingsModal = useCallback(async (
+    target?: NativeSettingsWindowTarget,
+    projectRoot: string | null = null,
+    workspaceSourcePath: string | null = null
+  ) => {
+    if (!settingsModalOpenRef.current) {
+      settingsModalReturnFocusRef.current = globalThis.document.activeElement instanceof HTMLElement
+        ? globalThis.document.activeElement
+        : null;
+    }
+    settingsModalOpenRef.current = true;
+    const generation = settingsModalGenerationRef.current + 1;
+    settingsModalGenerationRef.current = generation;
+    setSettingsModalRequest({
+      context: {
+        projectRoot,
+        sourceWindowLabel: null,
+        workspaceSourcePath
+      },
+      generation,
+      target
+    });
+
+    try {
+      const sourceWindowLabel = await getAppRuntime().window.getCurrentWindowLabel();
+      setSettingsModalRequest((current) => current?.generation === generation
+        ? {
+            ...current,
+            context: { ...current.context, sourceWindowLabel }
+          }
+        : current);
+    } catch {
+      // The modal can still operate without a native window label.
+    }
+  }, []);
+  const closeSettingsModal = useCallback(() => {
+    settingsModalOpenRef.current = false;
+    const returnFocus = settingsModalReturnFocusRef.current;
+    settingsModalReturnFocusRef.current = null;
+    setSettingsModalRequest(null);
+    window.requestAnimationFrame(() => {
+      if (returnFocus?.isConnected) returnFocus.focus();
+    });
+  }, []);
   const [activeImageFile, setActiveImageFile] = useState<NativeMarkdownFolderFile | null>(null);
   const [imagePreviewObjectUrl, setImagePreviewObjectUrl] = useState<string | null>(null);
   const [imageTabs, setImageTabs] = useState<ImageDocumentTab[]>([]);
@@ -818,6 +875,7 @@ function WorkspaceApp() {
     globalIgnoreRules: fileIgnoreSettings.settings.rules,
     isCurrentMarkdownEquivalent: isCurrentMarkdownEquivalentForDocument,
     managedWorkspace: compactMode.trueMobile,
+    nativeCloseBlocked: settingsModalRequest !== null,
     nativeOpenPolicy: compactMode.trueMobile
       ? "managed"
       : primaryWindowOwner
@@ -1161,7 +1219,7 @@ function WorkspaceApp() {
       !currentResult.configured ||
       !currentResult.revision
     ) {
-      await openSettingsWindow("sync", null, null);
+      await openSettingsModal("sync", null, null);
       return;
     }
 
@@ -1187,6 +1245,7 @@ function WorkspaceApp() {
   }, [
     compactMode.trueMobile,
     loadRemoteNotebookCatalog,
+    openSettingsModal,
     primaryWorkspace.root,
     primaryWorkspace.status,
     primaryWorkspace.workspaceRoot,
@@ -1239,11 +1298,11 @@ function WorkspaceApp() {
     const revision = syncConfig.appliedDocument?.revision;
     if (!revision) {
       closeRemoteNotebookDialog();
-      await openSettingsWindow("sync", null, null);
+      await openSettingsModal("sync", null, null);
       return;
     }
     await loadRemoteNotebookCatalog(revision);
-  }, [closeRemoteNotebookDialog, loadRemoteNotebookCatalog, syncConfig.appliedDocument?.revision]);
+  }, [closeRemoteNotebookDialog, loadRemoteNotebookCatalog, openSettingsModal, syncConfig.appliedDocument?.revision]);
   const requireCurrentRemoteNotebookCatalogRevision = useCallback(() => {
     const configuredRevision = syncConfig.status === "loaded" && syncConfig.loadResult?.status === "loaded"
       ? syncConfig.loadResult.revision
@@ -3195,12 +3254,12 @@ function WorkspaceApp() {
     setDocumentHistoryRefreshKey((current) => current + 1);
   }, [document.path, documentHistoryOpen]);
   const handleOpenSettings = useCallback(() => {
-    openSettingsWindow(
+    openSettingsModal(
       undefined,
       primaryRoot,
       fileTreeSourcePath ?? document.path ?? primaryRoot
     ).catch(() => {});
-  }, [document.path, fileTreeSourcePath, primaryRoot]);
+  }, [document.path, fileTreeSourcePath, openSettingsModal, primaryRoot]);
   const handleOpenBlankEditorWindow = useCallback(() => {
     openBlankEditorWindow().catch(() => {});
   }, []);
@@ -3982,10 +4041,17 @@ function WorkspaceApp() {
         setPathLabel: translate("app.setPandocPath"),
         title: translate("app.pandocRequiredTitle")
       })
-        .then((action) => runPandocSetupAction(
-          action,
-          blankWorkspace ? null : fileTree.settingsProjectRoot
-        ))
+        .then((action) => {
+          const settingsProjectRoot = blankWorkspace ? null : fileTree.settingsProjectRoot;
+          if (action === "setPath") {
+            return openSettingsModal(
+              "exportPandocPath",
+              settingsProjectRoot,
+              fileTreeSourcePath ?? exportContextRef.current.path ?? settingsProjectRoot
+            );
+          }
+          return runPandocSetupAction(action, settingsProjectRoot);
+        })
         .catch(() => {});
     });
   }, [
@@ -3995,6 +4061,8 @@ function WorkspaceApp() {
     pandocFeatureEnabled,
     blankWorkspace,
     fileTree.settingsProjectRoot,
+    fileTreeSourcePath,
+    openSettingsModal,
     readCurrentMarkdownForDocument,
     translate
   ]);
@@ -4090,14 +4158,17 @@ function WorkspaceApp() {
     toggleSourceMode: handleEditorModeToggle
   });
 
-  useNativeMarkdownDrop(handleNativeMarkdownDrop, appFeatures.fileDrop);
+  useNativeMarkdownDrop(
+    handleNativeMarkdownDrop,
+    appFeatures.fileDrop && settingsModalRequest === null
+  );
   useNativeMenus(nativeMenuHandlers, appLanguage.ready ? appLanguage.language : null, {
-    enabled: appFeatures.applicationMenu,
+    enabled: appFeatures.applicationMenu && settingsModalRequest === null,
     markdownShortcuts: editorPreferences.preferences.markdownShortcuts,
     recentFiles: recentMarkdownFiles
   });
   useApplicationShortcuts({
-    enabled: appFeatures.applicationShortcuts,
+    enabled: appFeatures.applicationShortcuts && settingsModalRequest === null,
     closeDocument: handleCloseCurrentFile,
     exportHtml: exportFeatureEnabled ? exportHtmlDocument : undefined,
     exportPdf: exportFeatureEnabled ? exportPdfDocument : undefined,
@@ -4636,25 +4707,52 @@ function WorkspaceApp() {
         onRestore={selectDesktopRemoteNotebook}
       />
     ) : null;
+  const settingsModal = settingsModalRequest && !compactMode.trueMobile ? (
+    <Suspense
+      fallback={(
+        <SettingsWindowLoadingShell
+          onClose={closeSettingsModal}
+          presentation="modal"
+        />
+      )}
+    >
+      <SettingsWindow
+        key={settingsModalRequest.generation}
+        context={settingsModalRequest.context}
+        initialTarget={settingsModalRequest.target}
+        onClose={closeSettingsModal}
+        presentation="modal"
+      />
+    </Suspense>
+  ) : null;
 
   if (onboardingVisible && !compactNavigationRequest) {
     return (
       <>
         <AppToaster language={appLanguage.language} />
-        <WelcomeScreen
-          error={primaryWorkspace.error}
-          formFactor={compactMode.trueMobile ? "mobile" : "desktop"}
-          language={appLanguage.language}
-          status={primaryWorkspace.status}
-          onChooseDesktopRoot={() => notebookSwitch.switchDesktopNotebook()}
-          onCreateMobileRoot={openMobileNotebookDialog}
-          onDeferDesktopSetup={primaryWorkspace.deferDesktopSetup}
-          onOpenExternalFile={openExternalFileInNewWindow}
-          onRestoreFromCloud={compactMode.trueMobile ? undefined : openDesktopRemoteNotebookDialog}
-          onRetry={primaryWorkspace.retry}
-        />
-        {desktopRemoteNotebookDialog}
-        {mobileNotebookDialog}
+        <div
+          className="contents"
+          data-settings-modal-background
+          data-settings-project-root={settingsModalRequest?.context.projectRoot ?? undefined}
+          data-settings-workspace-source-path={settingsModalRequest?.context.workspaceSourcePath ?? undefined}
+          inert={settingsModalRequest ? true : undefined}
+        >
+          <WelcomeScreen
+            error={primaryWorkspace.error}
+            formFactor={compactMode.trueMobile ? "mobile" : "desktop"}
+            language={appLanguage.language}
+            status={primaryWorkspace.status}
+            onChooseDesktopRoot={() => notebookSwitch.switchDesktopNotebook()}
+            onCreateMobileRoot={openMobileNotebookDialog}
+            onDeferDesktopSetup={primaryWorkspace.deferDesktopSetup}
+            onOpenExternalFile={openExternalFileInNewWindow}
+            onRestoreFromCloud={compactMode.trueMobile ? undefined : openDesktopRemoteNotebookDialog}
+            onRetry={primaryWorkspace.retry}
+          />
+          {desktopRemoteNotebookDialog}
+          {mobileNotebookDialog}
+        </div>
+        {settingsModal}
       </>
     );
   }
@@ -4662,24 +4760,40 @@ function WorkspaceApp() {
   return compactMode.compact ? (
     <>
       <AppToaster language={appLanguage.language} />
-      <CompactAppShell
-        controller={compactController}
-        onNavigationRequestComplete={completeCompactNavigationRequest}
-        subscribeToSystemBack={
-          compactMode.trueMobile
-            ? getAppRuntime().navigation.subscribeToSystemBack
-            : undefined
-        }
-      />
-      {documentSearchOverlay}
-      {documentHistoryOverlay}
-      {desktopRemoteNotebookDialog}
-      {mobileNotebookDialog}
+      <div
+        className="contents"
+        data-settings-modal-background
+        data-settings-project-root={settingsModalRequest?.context.projectRoot ?? undefined}
+        data-settings-workspace-source-path={settingsModalRequest?.context.workspaceSourcePath ?? undefined}
+        inert={settingsModalRequest ? true : undefined}
+      >
+        <CompactAppShell
+          controller={compactController}
+          onNavigationRequestComplete={completeCompactNavigationRequest}
+          subscribeToSystemBack={
+            compactMode.trueMobile
+              ? getAppRuntime().navigation.subscribeToSystemBack
+              : undefined
+          }
+        />
+        {documentSearchOverlay}
+        {documentHistoryOverlay}
+        {desktopRemoteNotebookDialog}
+        {mobileNotebookDialog}
+      </div>
+      {settingsModal}
     </>
   ) : (
     <>
       <AppToaster language={appLanguage.language} />
-      <main className="app-shell group/app relative grid h-full w-full grid-rows-[minmax(0,1fr)] overflow-hidden overscroll-none bg-(--bg-primary) text-(--text-primary)">
+      <div
+        className="contents"
+        data-settings-modal-background
+        data-settings-project-root={settingsModalRequest?.context.projectRoot ?? undefined}
+        data-settings-workspace-source-path={settingsModalRequest?.context.workspaceSourcePath ?? undefined}
+        inert={settingsModalRequest ? true : undefined}
+      >
+        <main className="app-shell group/app relative grid h-full w-full grid-rows-[minmax(0,1fr)] overflow-hidden overscroll-none bg-(--bg-primary) text-(--text-primary)">
         <NativeTitleBar
           compactLayout={compactViewport}
           dirty={!activeImageFile && hasOpenDocument && document.dirty}
@@ -5050,16 +5164,18 @@ function WorkspaceApp() {
           onSetHeadingLevel={handleSelectionToolbarHeadingLevelAction}
           open={selectionToolbarAnchor !== null}
         />
-      </main>
-      {exportFeatureEnabled ? (
-        <MarkdownExportDocument
-          snapshot={exportSnapshot}
-          extendedSyntax={editorPreferences.preferences.extendedSyntax}
-          resolveImageSrc={resolveExportImageSrc}
-          onRendered={handleRenderedExport}
-        />
-      ) : null}
-      {desktopRemoteNotebookDialog}
+        </main>
+        {exportFeatureEnabled ? (
+          <MarkdownExportDocument
+            snapshot={exportSnapshot}
+            extendedSyntax={editorPreferences.preferences.extendedSyntax}
+            resolveImageSrc={resolveExportImageSrc}
+            onRendered={handleRenderedExport}
+          />
+        ) : null}
+        {desktopRemoteNotebookDialog}
+      </div>
+      {settingsModal}
     </>
   );
 }

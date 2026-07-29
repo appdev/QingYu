@@ -231,6 +231,38 @@ describe("settings application sync session", () => {
     expect(runtime.completeSettingsWindowHide).toHaveBeenCalledWith(7);
   });
 
+  it("prepares an embedded modal close without invoking native window lifecycle", async () => {
+    const previousTitle = globalThis.document.title;
+    globalThis.document.documentElement.dataset.window = "editor";
+    const runtime = installRuntime("/Notes");
+    const { result } = renderHook(() => useSettingsWindowState({
+      context: {
+        projectRoot: "/Notes",
+        sourceWindowLabel: "main",
+        workspaceSourcePath: "/Notes/current.md"
+      },
+      initialTarget: "sync",
+      presentation: "modal"
+    }));
+    await waitFor(() => expect(result.current.syncView.configDocument?.revision).toBe("rev-1"));
+    await act(async () => result.current.syncSession.patch({ field: "remoteRoot", value: "qingyu/team" }));
+
+    let canClose = false;
+    await act(async () => {
+      canClose = await result.current.prepareSettingsClose();
+    });
+
+    expect(canClose).toBe(true);
+    expect(runtime.requestApply).toHaveBeenCalledWith(expect.objectContaining({ exitReason: "window-close" }));
+    expect(runtime.completeSettingsWindowHide).not.toHaveBeenCalled();
+    expect(runtime.cancelSettingsWindowHide).not.toHaveBeenCalled();
+    expect(result.current.settingsSourceWindowLabel).toBe("main");
+    expect(result.current.settingsWorkspaceSourcePath).toBe("/Notes/current.md");
+    expect(globalThis.document.documentElement).toHaveAttribute("data-window", "editor");
+    expect(globalThis.document.title).toBe(previousTitle);
+    delete globalThis.document.documentElement.dataset.window;
+  });
+
   it("keeps the sync category and native settings window open after an unsaved field", async () => {
     const runtime = installRuntime("/Notes", async () => {
       throw new Error("disk full");

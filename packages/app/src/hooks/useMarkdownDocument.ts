@@ -159,6 +159,7 @@ type UseMarkdownDocumentOptions = {
   globalIgnoreRules?: string;
   isCurrentMarkdownEquivalent?: (markdown: string) => boolean | undefined;
   managedWorkspace?: boolean;
+  nativeCloseBlocked?: boolean;
   nativeOpenPolicy?: "editor" | "managed" | "spawn-external";
   onActiveDiskFileContentChange?: (change: ActiveDiskFileContentChange) => boolean | undefined;
   onMarkdownTreeChange?: (path: string) => unknown | Promise<unknown>;
@@ -320,6 +321,7 @@ export function useMarkdownDocument({
   globalIgnoreRules = "",
   isCurrentMarkdownEquivalent,
   managedWorkspace = false,
+  nativeCloseBlocked = false,
   nativeOpenPolicy,
   onActiveDiskFileContentChange,
   onMarkdownTreeChange,
@@ -351,6 +353,8 @@ export function useMarkdownDocument({
   const externalFolderStartupPathRef = useRef<string | null>(null);
   const startupWorkspaceRestoreKeyRef = useRef<string | null>(null);
   const nativeWindowCloseScheduledRef = useRef(false);
+  const nativeCloseBlockedRef = useRef(nativeCloseBlocked);
+  nativeCloseBlockedRef.current = nativeCloseBlocked;
   const dirtyFileSavePromiseRef = useRef<Promise<SavedNativeMarkdownFile[]> | null>(null);
   const dirtyFileWriteTailRef = useRef<Promise<unknown>>(Promise.resolve());
   const editorSyncStateRef = useRef<EditorSyncState | null>(null);
@@ -2041,6 +2045,7 @@ export function useMarkdownDocument({
 
     listenNativeWindowCloseRequested(async (event) => {
       event.preventDefault();
+      if (nativeCloseBlockedRef.current) return;
       if (nativeWindowCloseScheduledRef.current) return;
 
       const draftPersistence = persistActiveDocumentDraftSnapshot();
@@ -2083,6 +2088,7 @@ export function useMarkdownDocument({
     let cleanup: (() => unknown) | null = null;
 
     listenNativeAppExitRequested(async () => {
+      if (nativeCloseBlockedRef.current) return;
       const draftPersistence = persistActiveDocumentDraftSnapshot();
       const canDiscard = await confirmCanDiscardCurrentDocument();
       if (canDiscard) {

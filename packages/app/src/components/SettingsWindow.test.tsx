@@ -2,7 +2,8 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { SettingsWindow } from "./SettingsWindow";
 import {
   installAppTestHarness,
-  mockedHideSettingsWindow
+  mockedHideSettingsWindow,
+  mockedMarkSettingsWindowReady
 } from "../test/app-harness";
 import { configureAppRuntime, getAppRuntime } from "../runtime";
 
@@ -47,6 +48,37 @@ describe("SettingsWindow notes workspace", () => {
     expect(screen.getByText("Not configured")).toBeInTheDocument();
     expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Switch Notebook Directory" })).toBeInTheDocument();
+  });
+
+  it("renders embedded Settings as a modal with only its platform close control", async () => {
+    const onClose = vi.fn();
+
+    render(
+      <SettingsWindow
+        context={{
+          projectRoot: null,
+          sourceWindowLabel: "main",
+          workspaceSourcePath: "/Workspace/Current"
+        }}
+        onClose={onClose}
+        presentation="modal"
+      />
+    );
+
+    await waitFor(() => expect(document.querySelector(".settings-window")).toBeInTheDocument());
+    const dialog = screen.getByRole("dialog", { name: "Settings" });
+    const close = within(dialog).getByRole("button", { name: /close window/i });
+
+    expect(close).toHaveAttribute("data-settings-modal-close", "macos");
+    expect(within(dialog).getByRole("banner")).not.toHaveAttribute("data-tauri-drag-region");
+    expect(within(dialog).queryByRole("button", { name: "Minimize window" })).not.toBeInTheDocument();
+    expect(within(dialog).queryByRole("button", { name: "Toggle full screen" })).not.toBeInTheDocument();
+    expect(mockedMarkSettingsWindowReady).not.toHaveBeenCalled();
+
+    fireEvent.click(close);
+
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    expect(mockedHideSettingsWindow).not.toHaveBeenCalled();
   });
 
   it("chooses a notebook locally and sends a durable request to the primary window", async () => {
