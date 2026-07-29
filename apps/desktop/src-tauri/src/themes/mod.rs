@@ -183,11 +183,16 @@ fn replace_external_theme(
 pub(crate) fn list_themes(
     app: tauri::AppHandle,
     state: tauri::State<'_, ThemeActivationState>,
+    refresh: Option<bool>,
 ) -> Result<ThemeCatalogSnapshot, ThemeError> {
-    let snapshot = migration::initialize_catalog(&app)?;
     let catalog = catalog_for_app(&app)?;
-    state.remember_catalog_snapshot(&catalog, &snapshot)?;
-    Ok(snapshot)
+    if refresh.unwrap_or(false) {
+        let snapshot = migration::initialize_catalog(&app)?;
+        state.remember_catalog_snapshot(&catalog, &snapshot)?;
+        return Ok(snapshot);
+    }
+
+    state.catalog_snapshot_or_initialize(&catalog, || migration::initialize_catalog(&app))
 }
 
 #[tauri::command]
@@ -202,20 +207,28 @@ pub(crate) fn read_theme_css(
 #[tauri::command]
 pub(crate) fn import_theme_file(
     app: tauri::AppHandle,
+    state: tauri::State<'_, ThemeActivationState>,
     source_path: String,
 ) -> Result<ThemeImportResult, ThemeError> {
-    let catalog = prepared_catalog(&app)?;
-    import_external_theme(&catalog, source_path)
+    let catalog = catalog_for_app(&app)?;
+    let result = import_external_theme(&catalog, source_path)?;
+    if matches!(result, ThemeImportResult::Imported { .. }) {
+        state.invalidate_catalog_snapshot(&catalog)?;
+    }
+    Ok(result)
 }
 
 #[tauri::command]
 pub(crate) fn replace_theme_file(
     app: tauri::AppHandle,
+    state: tauri::State<'_, ThemeActivationState>,
     source_path: String,
     expected_fingerprint: String,
 ) -> Result<ThemeDescriptor, ThemeError> {
-    let catalog = prepared_catalog(&app)?;
-    replace_external_theme(&catalog, source_path, &expected_fingerprint)
+    let catalog = catalog_for_app(&app)?;
+    let theme = replace_external_theme(&catalog, source_path, &expected_fingerprint)?;
+    state.invalidate_catalog_snapshot(&catalog)?;
+    Ok(theme)
 }
 
 #[tauri::command]
@@ -225,14 +238,13 @@ pub(crate) fn delete_theme(
     id: String,
     expected_fingerprint: String,
 ) -> Result<(), ThemeError> {
-    let catalog = prepared_catalog(&app)?;
-    activation::delete_theme_for_app(&app, &state, &catalog, &id, &expected_fingerprint)
+    let catalog = catalog_for_app(&app)?;
+    activation::delete_theme_for_app(&app, &state, &catalog, &id, &expected_fingerprint)?;
+    state.invalidate_catalog_snapshot(&catalog)
 }
 
 #[tauri::command]
 pub(crate) fn theme_directory_path(app: tauri::AppHandle) -> Result<String, ThemeError> {
-    let catalog = prepared_catalog(&app)?;
-    catalog.scan()?;
     migration::theme_directory(&app).map(|path| path.to_string_lossy().into_owned())
 }
 
@@ -280,61 +292,6 @@ mod tests {
         }
         writer.finish().unwrap();
         archive
-    }
-
-    fn resource_theme_source(id: &str) -> std::path::PathBuf {
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../..")
-            .join("themes/external")
-            .join(id)
-    }
-
-    fn collect_package_files(root: &Path, current: &Path, files: &mut Vec<String>) {
-        let mut entries = fs::read_dir(current)
-            .unwrap()
-            .map(|entry| entry.unwrap())
-            .collect::<Vec<_>>();
-        entries.sort_by_key(|entry| entry.file_name());
-        for entry in entries {
-            let path = entry.path();
-            if path.is_dir() {
-                collect_package_files(root, &path, files);
-                continue;
-            }
-            files.push(
-                path.strip_prefix(root)
-                    .unwrap()
-                    .to_string_lossy()
-                    .replace('\\', "/"),
-            );
-        }
-    }
-
-    fn resource_theme_archive(
-        root: &Path,
-        source_id: &str,
-        package_id: &str,
-    ) -> (std::path::PathBuf, Vec<String>) {
-        let source = resource_theme_source(source_id);
-        let mut files = Vec::new();
-        collect_package_files(&source, &source, &mut files);
-        let archive = root.join(format!("{package_id}.theme"));
-        let output = fs::File::create(&archive).unwrap();
-        let mut writer = ZipWriter::new(output);
-        let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
-        for name in &files {
-            writer.start_file(name, options).unwrap();
-            let mut bytes = fs::read(source.join(name)).unwrap();
-            if matches!(name.as_str(), "manifest.json" | "theme.css") {
-                bytes = String::from_utf8(bytes)
-                    .unwrap()
-                    .replace(source_id, package_id)
-                    .into_bytes();
-            }
-            writer.write_all(&bytes).unwrap();
-        }
-        writer.finish().unwrap();
-        (archive, files)
     }
 
     fn css(id: &str, suffix: &str) -> Vec<u8> {
@@ -506,77 +463,6 @@ mod tests {
             catalog.delete(id, &theme.fingerprint).unwrap();
             assert!(catalog.scan().unwrap().themes.is_empty());
             assert!(!catalog.root_path().join(id).exists());
-        }
-    }
-
-    #[test]
-    fn qingyu_wenkai_archives_import_fonts_and_chrome_tokens_through_production_core() {
-        for (source_id, id, appearance) in [
-            (
-                "wenkai-paper-light",
-                "wenkai-paper-light-import-probe",
-                super::ThemeAppearance::Light,
-            ),
-            (
-                "wenkai-paper-dark",
-                "wenkai-paper-dark-import-probe",
-                super::ThemeAppearance::Dark,
-            ),
-        ] {
-            let temp = tempdir().unwrap();
-            let catalog = ThemeCatalog::at(temp.path().join("themes"));
-            let (archive, files) = resource_theme_archive(temp.path(), source_id, id);
-
-            assert_eq!(
-                files.iter().filter(|name| name.ends_with(".woff2")).count(),
-                18
-            );
-            for license in [
-                "licenses/THEME-LICENSE.txt",
-                "licenses/FONT-LICENSE.txt",
-                "licenses/FONT-SOURCE.txt",
-            ] {
-                assert!(files.iter().any(|name| name == license));
-            }
-
-            let result =
-                import_external_theme(&catalog, archive.to_string_lossy().into_owned()).unwrap();
-            let ThemeImportResult::Imported { theme } = result else {
-                panic!("WenKai theme unexpectedly conflicted");
-            };
-
-            assert_eq!(theme.id, id);
-            assert_eq!(theme.appearance, appearance);
-            assert_eq!(theme.author.as_deref(), Some("轻语"));
-            assert_eq!(theme.storage_kind, ThemeStorageKind::ResourceDirectory);
-            let activation_root = catalog
-                .validated_resource_root_with_hint(id, &theme.fingerprint, Some(&theme))
-                .unwrap()
-                .unwrap();
-            let css = fs::read_to_string(activation_root.join("theme.css")).unwrap();
-            for token in [
-                "--bg-titlebar",
-                "--bg-sidebar",
-                "--bg-sidebar-header",
-                "--bg-toolbar",
-                "--bg-tree-current",
-                "--bg-tree-selected",
-                "--bg-outline",
-                "--bg-outline-current",
-                "--bg-sidebar-footer",
-                "--editor-paper-bg",
-                "--editor-font-family",
-                "--source-editor-font-family",
-            ] {
-                assert!(css.contains(token), "{id} is missing {token}");
-            }
-            assert!(css.contains("LXGW WenKai Lite"));
-            assert!(!css.contains("TsangerJinKai02"));
-
-            catalog.delete(id, &theme.fingerprint).unwrap();
-            assert!(catalog.scan().unwrap().themes.is_empty());
-            assert!(!catalog.root_path().join(id).exists());
-            assert!(archive.is_file());
         }
     }
 }

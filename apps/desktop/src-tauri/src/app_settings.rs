@@ -24,8 +24,8 @@ use crate::storage_capability::{
 };
 
 const SETTINGS_STORE_PATH: &str = "settings.json";
-pub(crate) const DEFAULT_LIGHT_THEME_ID: &str = "wenkai-paper-light";
-pub(crate) const DEFAULT_DARK_THEME_ID: &str = "wenkai-paper-dark";
+pub(crate) const DEFAULT_LIGHT_THEME_ID: &str = "light";
+pub(crate) const DEFAULT_DARK_THEME_ID: &str = "dark";
 const APPEARANCE_MODE_KEY: &str = "appearanceMode";
 const LIGHT_THEME_KEY: &str = "lightThemeId";
 const DARK_THEME_KEY: &str = "darkThemeId";
@@ -3226,7 +3226,7 @@ mod tests {
     }
 
     #[test]
-    fn partial_appearance_settings_use_the_bundled_wenkai_defaults() {
+    fn partial_appearance_settings_use_base_theme_defaults() {
         let backend = Arc::new(MemoryBackend::with([(
             APPEARANCE_MODE_KEY,
             json!("system"),
@@ -3240,8 +3240,8 @@ mod tests {
             appearance,
             json!({
                 "appearanceMode": "system",
-                "lightTheme": "wenkai-paper-light",
-                "darkTheme": "wenkai-paper-dark",
+                "lightTheme": "light",
+                "darkTheme": "dark",
             })
         );
     }
@@ -3360,8 +3360,8 @@ mod tests {
         assert!(emitted.iter().any(|(event, payload)| {
             event == "markra://theme-changed"
                 && payload["preferences"]["appearanceMode"] == json!("system")
-                && payload["preferences"]["lightTheme"] == json!("wenkai-paper-light")
-                && payload["preferences"]["darkTheme"] == json!("wenkai-paper-dark")
+                && payload["preferences"]["lightTheme"] == json!("light")
+                && payload["preferences"]["darkTheme"] == json!("dark")
         }));
         assert!(emitted
             .iter()
@@ -4069,7 +4069,13 @@ mod tests {
 
     #[test]
     fn appearance_accepts_dynamic_theme_ids_and_rejects_reserved_or_malformed_ids() {
-        for value in [json!("nord-custom"), json!("light"), json!("dark")] {
+        for value in [
+            json!("nord-custom"),
+            json!("light"),
+            json!("dark"),
+            json!("classic-light"),
+            json!("classic-dark"),
+        ] {
             assert!(validate_field("appearance.lightTheme", &value).is_ok());
         }
         for value in [

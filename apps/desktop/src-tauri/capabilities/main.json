@@ -44,6 +44,14 @@
         }
       ]
     },
+    {
+      "identifier": "opener:allow-open-path",
+      "allow": [
+        {
+          "path": "$APPDATA/themes"
+        }
+      ]
+    },
     "os:default",
     "process:allow-restart",
     "store:allow-delete",

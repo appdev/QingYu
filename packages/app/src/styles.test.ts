@@ -21,9 +21,7 @@ const seededThemeIds = [
   "academic",
   "minimal",
   "drake-light",
-  "drake-ayu",
-  "wenkai-paper-light",
-  "wenkai-paper-dark"
+  "drake-ayu"
 ] as const;
 
 const externalThemeIds = ["drake-faithful-light", "drake-faithful-ayu"] as const;
@@ -239,9 +237,9 @@ const expectedThemeDeclarations = {
   ]
 } as const;
 
-const expectedWenkaiSidebarDeclarations = {
-  "wenkai-paper-light": [
-    "--sidebar-font-family: \"LXGW WenKai Lite\", \"Kaiti SC\", KaiTi, STKaiti, ui-serif, serif;",
+const expectedPaperSidebarDeclarations = {
+  light: [
+    "--sidebar-font-family: \"Light Whisper ZhenKai\", \"Kaiti SC\", KaiTi, STKaiti, ui-serif, serif;",
     "--sidebar-tree-font-size: 14px;",
     "--sidebar-tree-font-weight: 400;",
     "--sidebar-tree-line-height: 20px;",
@@ -257,17 +255,17 @@ const expectedWenkaiSidebarDeclarations = {
     "--text-outline: #262626;",
     "--bg-outline-hover: rgba(38, 38, 38, 0.055);",
     "--text-outline-hover: #262626;",
-    "--sidebar-outline-current-font-weight: 500;",
+    "--sidebar-outline-current-font-weight: 600;",
     "--sidebar-outline-h1-font-size: 16px;",
-    "--sidebar-outline-h1-font-weight: 500;",
+    "--sidebar-outline-h1-font-weight: 600;",
     "--sidebar-outline-h1-text: #1c5d33;",
     "--sidebar-outline-h1-space-before: 8px;",
-    "--sidebar-outline-h2-font-weight: 500;",
+    "--sidebar-outline-h2-font-weight: 600;",
     "--sidebar-outline-h2-text: #262626;",
     "--sidebar-outline-h2-space-before: 6px;"
   ],
-  "wenkai-paper-dark": [
-    "--sidebar-font-family: \"LXGW WenKai Lite\", \"Kaiti SC\", KaiTi, STKaiti, ui-serif, serif;",
+  dark: [
+    "--sidebar-font-family: \"Light Whisper ZhenKai\", \"Kaiti SC\", KaiTi, STKaiti, ui-serif, serif;",
     "--sidebar-tree-font-size: 14px;",
     "--sidebar-tree-font-weight: 400;",
     "--sidebar-tree-line-height: 20px;",
@@ -283,20 +281,20 @@ const expectedWenkaiSidebarDeclarations = {
     "--text-outline: #e7e9ea;",
     "--bg-outline-hover: rgba(255, 255, 255, 0.055);",
     "--text-outline-hover: #ffffff;",
-    "--sidebar-outline-current-font-weight: 500;",
+    "--sidebar-outline-current-font-weight: 600;",
     "--sidebar-outline-h1-font-size: 16px;",
-    "--sidebar-outline-h1-font-weight: 500;",
+    "--sidebar-outline-h1-font-weight: 600;",
     "--sidebar-outline-h1-text: #54c59f;",
     "--sidebar-outline-h1-space-before: 8px;",
-    "--sidebar-outline-h2-font-weight: 500;",
+    "--sidebar-outline-h2-font-weight: 600;",
     "--sidebar-outline-h2-text: #ffffff;",
     "--sidebar-outline-h2-space-before: 6px;"
   ]
 } as const;
 
-const expectedWenkaiTypographyDeclarations = {
-  "wenkai-paper-light": [
-    "--editor-heading-font-weight: 500;",
+const expectedPaperTypographyDeclarations = {
+  light: [
+    "--editor-heading-font-weight: 600;",
     "--editor-heading-letter-spacing: 0.02em;",
     "--editor-h1-color: #7a3dad;",
     "--editor-h1-font-size: 2rem;",
@@ -318,8 +316,8 @@ const expectedWenkaiTypographyDeclarations = {
     "--editor-h6-letter-spacing: 0.02em;",
     "--editor-h6-line-height: 1.74;"
   ],
-  "wenkai-paper-dark": [
-    "--editor-heading-font-weight: 500;",
+  dark: [
+    "--editor-heading-font-weight: 600;",
     "--editor-heading-letter-spacing: 0.02em;",
     "--editor-h1-color: #a178ff;",
     "--editor-h1-font-size: 2rem;",
@@ -408,12 +406,6 @@ function readNestedRuleDeclarations(styles: string, selector: string) {
 }
 
 function readSeededThemeStyles(themeId: typeof seededThemeIds[number]) {
-  if (themeId === "wenkai-paper-light" || themeId === "wenkai-paper-dark") {
-    return readFileSync(
-      `${process.cwd()}/../../themes/external/${themeId}/theme.css`,
-      "utf8"
-    );
-  }
   const fixturePath = themeId === "drake-light" || themeId === "drake-ayu"
     ? `${themeId}/theme.css`
     : `${themeId}.css`;
@@ -1037,7 +1029,7 @@ describe("editor stylesheet", () => {
   it("uses app-themed custom scrollbars across scroll containers", () => {
     const styles = readFileSync(`${process.cwd()}/src/styles.css`, "utf8");
 
-    expect(styles).toContain("--scrollbar-thumb: color-mix");
+    expect(styles).toContain("--scrollbar-thumb:");
     expect(styles).toContain("scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track)");
     expect(styles).toContain("scrollbar-width: thin");
     expect(styles).toContain("*::-webkit-scrollbar");
@@ -1470,7 +1462,10 @@ describe("editor stylesheet", () => {
   });
 
   it("keeps secondary text readable in the low-contrast dark themes", () => {
-    const styles = readFileSync(`${process.cwd()}/src/styles.css`, "utf8");
+    const classicDark = readFileSync(
+      `${process.cwd()}/src/themes/classic-dark.css`,
+      "utf8",
+    );
     const oneDark = readFileSync(
       `${process.cwd()}/../../apps/desktop/src-tauri/themes/third-party/one-dark.css`,
       "utf8",
@@ -1479,12 +1474,8 @@ describe("editor stylesheet", () => {
       `${process.cwd()}/../../apps/desktop/src-tauri/themes/third-party/one-dark-pro.css`,
       "utf8",
     );
-    const sharedDarkStart = styles.indexOf('[data-theme="dark"] {');
-    const sharedDarkEnd = styles.indexOf("\n  }", sharedDarkStart);
-
-    expect(styles.slice(sharedDarkStart, sharedDarkEnd)).toContain(
-      "--text-secondary: #858585;",
-    );
+    expect(classicDark).toContain("--text-secondary: #858585;");
+    expect(classicDark).toContain("--editor-text-secondary: #858585;");
     for (const theme of [oneDark, oneDarkPro]) {
       expect(theme).toContain("--text-secondary: #8f96a3;");
       expect(theme).toContain("--editor-text-secondary: #8f96a3;");
@@ -1768,42 +1759,70 @@ describe("editor stylesheet", () => {
     }
   });
 
-  it("keeps the default Paper packages licensed, self-contained, and complete across app chrome", () => {
+  it("keeps frontend-owned Paper themes licensed, self-contained, and complete across app chrome", () => {
     const appStyles = readFileSync(`${process.cwd()}/src/styles.css`, "utf8");
+    const themeRoot = `${process.cwd()}/src/themes`;
+    const fontStyles = readFileSync(`${themeRoot}/zhenkai-font.css`, "utf8");
     const defaultAppTokens = readCustomPropertyNames(readNestedRuleDeclarations(appStyles, "  :root"));
     const defaultEditorTokens = readCustomPropertyNames(
       readNestedRuleDeclarations(appStyles, "  .markdown-paper")
     ).filter((token) => token !== "--editor-paragraph-spacing");
 
-    for (const theme of ["wenkai-paper-light", "wenkai-paper-dark"] as const) {
-      const root = `${process.cwd()}/../../themes/external/${theme}`;
-      const styles = readSeededThemeStyles(theme);
-      const manifest = JSON.parse(readFileSync(`${root}/manifest.json`, "utf8"));
+    for (const file of [
+      "zhenkai-font.css",
+      "light.css",
+      "dark.css",
+      "classic-light.css",
+      "classic-dark.css"
+    ]) {
+      expect(appStyles).toContain(`@import "./themes/${file}";`);
+    }
 
-      expect(manifest.author).toBe("轻语");
-      expect(manifest.id).toBe(theme);
-      expect(manifest.version).toBe("1.2.0");
-      expect(manifest.licenseFiles).toEqual([
-        "licenses/THEME-LICENSE.txt",
-        "licenses/FONT-LICENSE.txt",
-        "licenses/FONT-SOURCE.txt"
-      ]);
-      expect(styles.match(/@font-face/gu)).toHaveLength(18);
+    const fontFaces = fontStyles.match(/@font-face\s*\{[^}]+\}/gu) ?? [];
+    expect(fontFaces).toHaveLength(9);
+    for (const fontFace of fontFaces) {
+        expect(fontFace).toContain('font-family: "Light Whisper ZhenKai"');
+        expect(fontFace).toContain("font-weight: 400;");
+        expect(fontFace).not.toContain("font-weight: 500;");
+        expect(fontFace).toContain("zhenkai-gb-regular-subset-");
+        expect(fontFace).toContain('url("./fonts/');
+    }
+
+    for (const theme of ["light", "dark"] as const) {
+      const styles = readFileSync(`${themeRoot}/${theme}.css`, "utf8");
+      const rootSelector = theme === "light"
+        ? ':root:not([data-theme]),\n:root[data-theme="light"]'
+        : ':root[data-theme="dark"]';
+
       expect(styles).toContain(`:root[data-theme="${theme}"]`);
       expect(styles).toContain(`.markdown-paper[data-editor-theme="${theme}"]`);
       expect(styles).toContain(`.markdown-source-paper[data-editor-theme="${theme}"]`);
-      expect(styles).toContain('font-family: "LXGW WenKai Lite"');
+      expect(styles).toContain('font-family: "Light Whisper ZhenKai"');
+      expect(styles).not.toContain("LXGW WenKai Screen");
+      expect(styles).not.toContain("LXGW WenKai Lite");
       expect(styles).toContain("font-weight: 400;");
-      expect(styles).toContain("font-weight: 500;");
+      expect(styles).toContain("font-weight: 600;");
+      expect(styles).not.toContain("font-weight: 500;");
       expect(styles).not.toContain("font-weight: 300;");
+      expect(styles).toContain("font-synthesis: weight;");
+      expect(styles).not.toContain("font-synthesis: none;");
       expect(styles).not.toContain("TsangerJinKai02");
       expect(styles).toContain("font-family: ui-monospace");
-      const rootTokens = readCustomPropertyNames(
-        readRuleDeclarations(styles, `:root[data-theme="${theme}"]`)
+      expect(styles).not.toContain("@font-face");
+      const rootDeclarations = readRuleDeclarations(styles, rootSelector);
+      const editorDeclarations = readRuleDeclarations(
+        styles,
+        `.markdown-paper[data-editor-theme="${theme}"]`
       );
-      const editorTokens = readCustomPropertyNames(
-        readRuleDeclarations(styles, `.markdown-paper[data-editor-theme="${theme}"]`)
+      const sourceDeclarations = readRuleDeclarations(
+        styles,
+        `:root[data-theme="${theme}"] .markdown-source-paper,\n.markdown-source-paper[data-editor-theme="${theme}"]`
       );
+      expect(rootDeclarations).toContain("font-synthesis: weight;");
+      expect(editorDeclarations).toContain("font-synthesis: weight;");
+      expect(sourceDeclarations).toContain("font-synthesis: weight;");
+      const rootTokens = readCustomPropertyNames(rootDeclarations);
+      const editorTokens = readCustomPropertyNames(editorDeclarations);
       expect(rootTokens).toEqual(expect.arrayContaining(defaultAppTokens));
       expect(editorTokens).toEqual(expect.arrayContaining(defaultEditorTokens));
       for (const token of [
@@ -1823,25 +1842,92 @@ describe("editor stylesheet", () => {
       ]) {
         expect(styles).toContain(token);
       }
-      for (const declaration of expectedWenkaiSidebarDeclarations[theme]) {
+      for (const declaration of expectedPaperSidebarDeclarations[theme]) {
         expect(styles).toContain(declaration);
       }
-      for (const declaration of expectedWenkaiTypographyDeclarations[theme]) {
+      for (const declaration of expectedPaperTypographyDeclarations[theme]) {
         expect(styles).toContain(declaration);
       }
       expect(styles).not.toContain("--editor-paragraph-spacing:");
       expect(styles).not.toContain("@import");
       expect(styles).not.toMatch(/url\(\s*["']?(?:https?:|\/\/|file:)/u);
-      expect(readFileSync(`${root}/licenses/THEME-LICENSE.txt`, "utf8")).toContain(
-        "independent theme for 轻语"
-      );
-      expect(readFileSync(`${root}/licenses/FONT-LICENSE.txt`, "utf8")).toContain(
-        "SIL OPEN FONT LICENSE Version 1.1"
-      );
-      expect(readFileSync(`${root}/licenses/FONT-SOURCE.txt`, "utf8")).toContain(
-        "ff67bda3b3251e917a404b629db7d345405d68c7"
-      );
+      expect(styles).not.toContain("wenkai-paper-");
     }
+
+    const fontLicense = readFileSync(`${themeRoot}/licenses/FONT-LICENSE.txt`, "utf8");
+    expect(fontLicense).toContain("SIL OPEN FONT LICENSE Version 1.1");
+    expect(fontLicense).toContain("Reserved Font Name");
+    const fontSource = readFileSync(`${themeRoot}/licenses/FONT-SOURCE.txt`, "utf8");
+    expect(fontSource).toContain("https://github.com/lxgw/LxgwZhenKai");
+    expect(fontSource).toContain("v0.825");
+    expect(fontSource).toContain("099d0d169f12fc21db51e07067a69cb070f5014b");
+    expect(fontSource).toContain("LXGWZhenKaiGB-Regular.ttf");
+    expect(fontSource).toContain("Light Whisper ZhenKai");
+    expect(readFileSync(`${themeRoot}/licenses/THEME-LICENSE.txt`, "utf8")).toContain(
+      "independent theme for 轻语"
+    );
+  });
+
+  it("keeps the original neutral themes as explicit frontend built-ins", () => {
+    const themeRoot = `${process.cwd()}/src/themes`;
+    const cases = [
+      ["classic-light", "#ffffff", "light"],
+      ["classic-dark", "#1e1e1e", "dark"]
+    ] as const;
+
+    for (const [theme, surface, appearance] of cases) {
+      const styles = readFileSync(`${themeRoot}/${theme}.css`, "utf8");
+
+      expect(styles).toContain(`:root[data-theme="${theme}"]`);
+      expect(styles).toContain(`.markdown-paper[data-editor-theme="${theme}"]`);
+      expect(styles).toContain(`--bg-primary: ${surface};`);
+      expect(styles).toContain(`color-scheme: ${appearance};`);
+      expect(styles).toContain('font-family: -apple-system, BlinkMacSystemFont, "Segoe UI"');
+      expect(styles).toContain("--bg-titlebar:");
+      expect(styles).toContain("--bg-sidebar:");
+      expect(styles).toContain("--bg-toolbar:");
+      expect(styles).toContain("--bg-tree-current:");
+      expect(styles).toContain("--bg-tree-selected:");
+      expect(styles).toContain("--bg-outline-current:");
+      expect(styles).toContain("--bg-sidebar-footer:");
+      expect(styles).toContain("--border-chrome:");
+      expect(styles).not.toContain("Light Whisper ZhenKai");
+      expect(styles).not.toContain("wenkai-paper-");
+      expect(styles).not.toContain("@font-face");
+      expect(styles).not.toContain("--editor-paragraph-spacing:");
+    }
+  });
+
+  it("does not leak Paper chrome tokens or typography into catalog-backed themes", () => {
+    const appStyles = readFileSync(`${process.cwd()}/src/styles.css`, "utf8");
+    const lightStyles = readFileSync(`${process.cwd()}/src/themes/light.css`, "utf8");
+    const appRoot = readNestedRuleDeclarations(appStyles, "  :root");
+
+    expect(lightStyles).toContain(':root:not([data-theme]),\n:root[data-theme="light"] {');
+    expect(lightStyles).not.toContain(':root,\n:root[data-theme="light"] {');
+    expect(appRoot).not.toContain("--bg-sidebar:");
+    expect(appRoot).not.toContain("--bg-tree-current:");
+    expect(appRoot).not.toContain("--bg-outline-current:");
+    expect(appRoot).not.toContain("Light Whisper ZhenKai");
+    expect(appRoot).toContain('font-family: -apple-system, BlinkMacSystemFont, "Segoe UI"');
+    expect(appRoot).toContain(
+      "--bg-chrome: color-mix(in oklab, var(--bg-secondary) 82%, var(--bg-primary));"
+    );
+    expect(appRoot).toContain("--danger: #b42318;");
+    expect(appRoot).toContain(
+      "--scrollbar-thumb: color-mix(in srgb, var(--text-secondary) 44%, transparent);"
+    );
+    expect(appRoot).toContain(
+      "--scrollbar-thumb-hover: color-mix(in srgb, var(--text-secondary) 64%, transparent);"
+    );
+    expect(appRoot).toContain(
+      "--scrollbar-thumb-active: color-mix(in srgb, var(--accent) 48%, transparent);"
+    );
+    expect(appRoot).toContain("--floating-menu-shadow: 0 20px 64px rgba(0, 0, 0, 0.16);");
+    expect(appRoot).toContain("--floating-popover-shadow: 0 18px 48px rgba(0, 0, 0, 0.14);");
+    expect(appStyles).toContain("background-color: var(--bg-sidebar, var(--theme-sidebar-legacy-surface));");
+    expect(appStyles).toContain("background-color: var(--bg-tree-current, var(--bg-active));");
+    expect(appStyles).toContain("background-color: var(--bg-outline-current, var(--bg-active));");
   });
 
   it("keeps Drake-faithful external packages licensed, self-contained, and source-faithful", () => {
@@ -1960,9 +2046,12 @@ describe("editor stylesheet", () => {
 
   it("keeps editor links selectable without generated drag artifacts", () => {
     const styles = readFileSync(`${process.cwd()}/src/styles.css`, "utf8");
+    const classicStyles = ["classic-light", "classic-dark"]
+      .map((theme) => readFileSync(`${process.cwd()}/src/themes/${theme}.css`, "utf8"))
+      .join("\n");
 
-    expect(styles).toContain("--link-color: #2f56c6;");
-    expect(styles).toContain("--link-color: #b7c5ff;");
+    expect(classicStyles).toContain("--link-color: #2f56c6;");
+    expect(classicStyles).toContain("--link-color: #b7c5ff;");
     expect(styles).toContain("--editor-link-color: var(--link-color);");
     expect(styles).toContain("color: var(--link-color);");
     expect(styles).toContain(".markdown-paper a[href]::after");

@@ -28,7 +28,8 @@ use serde_json::{Map, Value};
 #[cfg(target_os = "macos")]
 use tauri::TitleBarStyle;
 use tauri::{
-    utils::config::Color, Emitter, Manager, PhysicalPosition, WebviewUrl, WebviewWindowBuilder,
+    utils::config::Color, Emitter, Manager, PhysicalPosition, Theme, WebviewUrl,
+    WebviewWindowBuilder,
 };
 
 mod settings_ownership;
@@ -753,22 +754,44 @@ fn settings_window_resolved_appearance(
         return "light";
     }
 
+    if startup_preferences.appearance_mode == "system" {
+        return "system";
+    }
+
     "dark"
 }
 
 fn settings_window_background_color_for_preferences(
     platform: &str,
     startup_preferences: &SettingsWindowStartupPreferences,
+    system_appearance: &str,
 ) -> Option<Color> {
     if let Some(color) = transparent_window_background_color_for_platform(platform) {
         return Some(color);
     }
 
-    if settings_window_resolved_appearance(startup_preferences) == "light" {
-        return Some(Color(255, 255, 255, 255));
-    }
+    let configured_appearance = settings_window_resolved_appearance(startup_preferences);
+    let appearance = if configured_appearance == "system" && system_appearance == "light" {
+        "light"
+    } else if configured_appearance == "system" {
+        "dark"
+    } else {
+        configured_appearance
+    };
+    let theme = if appearance == "light" {
+        startup_preferences.light_theme.as_str()
+    } else {
+        startup_preferences.dark_theme.as_str()
+    };
+    let color = match (appearance, theme) {
+        ("light", "light" | "classic-light") => Color(255, 255, 255, 255),
+        ("dark", "classic-dark") => Color(30, 30, 30, 255),
+        ("dark", "dark") => Color(35, 40, 45, 255),
+        ("light", _) => Color(255, 255, 255, 255),
+        _ => Color(35, 40, 45, 255),
+    };
 
-    Some(Color(35, 40, 45, 255))
+    Some(color)
 }
 
 fn settings_window_title(language: AppLanguage) -> String {
@@ -1409,9 +1432,15 @@ where
             }
         };
 
+        let system_appearance = match owner_window.theme() {
+            Ok(Theme::Light) => "light",
+            Ok(Theme::Dark) => "dark",
+            Ok(_) | Err(_) => "dark",
+        };
         let builder = if let Some(color) = settings_window_background_color_for_preferences(
             current_window_chrome_platform(),
             &startup_preferences,
+            system_appearance,
         ) {
             builder.background_color(color)
         } else {
@@ -1681,6 +1710,8 @@ mod tests {
     fn settings_window_startup_accepts_dynamic_theme_ids() {
         assert!(is_theme_id("ocean-night"));
         assert!(is_theme_id("light"));
+        assert!(is_theme_id("classic-light"));
+        assert!(is_theme_id("classic-dark"));
         assert!(!is_theme_id("-ocean"));
         assert!(!is_theme_id("Ocean"));
         assert!(!is_theme_id("qingyu-internal"));
@@ -2228,12 +2259,24 @@ mod tests {
         let startup_preferences = SettingsWindowStartupPreferences::default();
 
         assert_eq!(
-            settings_window_background_color_for_preferences("macos", &startup_preferences),
+            settings_window_background_color_for_preferences("macos", &startup_preferences, "dark"),
             Some(Color(255, 255, 255, 0))
         );
         assert_eq!(
-            settings_window_background_color_for_preferences("windows", &startup_preferences),
+            settings_window_background_color_for_preferences(
+                "windows",
+                &startup_preferences,
+                "dark",
+            ),
             Some(Color(35, 40, 45, 255))
+        );
+        assert_eq!(
+            settings_window_background_color_for_preferences(
+                "windows",
+                &startup_preferences,
+                "light",
+            ),
+            Some(Color(255, 255, 255, 255))
         );
 
         let light_startup_preferences = SettingsWindowStartupPreferences {
@@ -2244,20 +2287,52 @@ mod tests {
         };
 
         assert_eq!(
-            settings_window_background_color_for_preferences("windows", &light_startup_preferences),
+            settings_window_background_color_for_preferences(
+                "windows",
+                &light_startup_preferences,
+                "dark",
+            ),
             Some(Color(255, 255, 255, 255))
+        );
+
+        let classic_dark_preferences = SettingsWindowStartupPreferences {
+            language: AppLanguage::En,
+            appearance_mode: "dark".to_string(),
+            light_theme: "classic-light".to_string(),
+            dark_theme: "classic-dark".to_string(),
+        };
+        assert_eq!(
+            settings_window_background_color_for_preferences(
+                "windows",
+                &classic_dark_preferences,
+                "dark",
+            ),
+            Some(Color(30, 30, 30, 255))
+        );
+
+        let unknown_dark_preferences = SettingsWindowStartupPreferences {
+            dark_theme: "ocean-night".to_string(),
+            ..classic_dark_preferences
+        };
+        assert_eq!(
+            settings_window_background_color_for_preferences(
+                "windows",
+                &unknown_dark_preferences,
+                "dark",
+            ),
+            Some(Color(35, 40, 45, 255))
         );
     }
 
     #[test]
-    fn settings_window_defaults_to_the_bundled_wenkai_pair() {
+    fn settings_window_defaults_to_base_theme_pair() {
         assert_eq!(
             SettingsWindowStartupPreferences::default(),
             SettingsWindowStartupPreferences {
                 language: AppLanguage::En,
                 appearance_mode: "system".to_string(),
-                light_theme: "wenkai-paper-light".to_string(),
-                dark_theme: "wenkai-paper-dark".to_string(),
+                light_theme: "light".to_string(),
+                dark_theme: "dark".to_string(),
             }
         );
     }
@@ -2333,7 +2408,7 @@ mod tests {
 
         assert_eq!(
             settings_window_url(Some("sync"), None, None, None, false, &startup_preferences),
-            "index.html?settings=1&startupLanguage=en&startupAppearanceMode=system&startupLightTheme=wenkai-paper-light&startupDarkTheme=wenkai-paper-dark&settingsTarget=sync"
+            "index.html?settings=1&startupLanguage=en&startupAppearanceMode=system&startupLightTheme=light&startupDarkTheme=dark&settingsTarget=sync"
         );
     }
 
@@ -2348,7 +2423,7 @@ mod tests {
                 false,
                 &SettingsWindowStartupPreferences::default(),
             ),
-            "index.html?settings=1&startupLanguage=en&startupAppearanceMode=system&startupLightTheme=wenkai-paper-light&startupDarkTheme=wenkai-paper-dark"
+            "index.html?settings=1&startupLanguage=en&startupAppearanceMode=system&startupLightTheme=light&startupDarkTheme=dark"
         );
     }
 
@@ -2363,7 +2438,7 @@ mod tests {
                 true,
                 &SettingsWindowStartupPreferences::default(),
             ),
-            "index.html?settings=1&startupLanguage=en&startupAppearanceMode=system&startupLightTheme=wenkai-paper-light&startupDarkTheme=wenkai-paper-dark&settingsTarget=sync&settingsProjectContext=1&settingsProjectRoot=%2Fmock%20files%2Fproject-a&settingsWorkspaceContext=1&settingsWorkspaceSourcePath=%2Fmock%20files%2Fproject-a%2Fnotes%2Fstandalone.md&settingsSourceWindowLabel=markra-editor-2"
+            "index.html?settings=1&startupLanguage=en&startupAppearanceMode=system&startupLightTheme=light&startupDarkTheme=dark&settingsTarget=sync&settingsProjectContext=1&settingsProjectRoot=%2Fmock%20files%2Fproject-a&settingsWorkspaceContext=1&settingsWorkspaceSourcePath=%2Fmock%20files%2Fproject-a%2Fnotes%2Fstandalone.md&settingsSourceWindowLabel=markra-editor-2"
         );
         assert_eq!(
             settings_window_url(
@@ -2374,7 +2449,7 @@ mod tests {
                 true,
                 &SettingsWindowStartupPreferences::default(),
             ),
-            "index.html?settings=1&startupLanguage=en&startupAppearanceMode=system&startupLightTheme=wenkai-paper-light&startupDarkTheme=wenkai-paper-dark&settingsTarget=sync&settingsProjectContext=1&settingsWorkspaceContext=1&settingsWorkspaceSourcePath=%2Fnotes%2Fstandalone.md&settingsSourceWindowLabel=main"
+            "index.html?settings=1&startupLanguage=en&startupAppearanceMode=system&startupLightTheme=light&startupDarkTheme=dark&settingsTarget=sync&settingsProjectContext=1&settingsWorkspaceContext=1&settingsWorkspaceSourcePath=%2Fnotes%2Fstandalone.md&settingsSourceWindowLabel=main"
         );
     }
 
@@ -2456,7 +2531,7 @@ mod tests {
             SettingsWindowStartupPreferences {
                 language: AppLanguage::En,
                 appearance_mode: "dark".to_string(),
-                light_theme: "wenkai-paper-light".to_string(),
+                light_theme: "light".to_string(),
                 dark_theme: "night".to_string(),
             }
         );
@@ -2466,7 +2541,7 @@ mod tests {
                 language: AppLanguage::En,
                 appearance_mode: "light".to_string(),
                 light_theme: "sepia".to_string(),
-                dark_theme: "wenkai-paper-dark".to_string(),
+                dark_theme: "dark".to_string(),
             }
         );
     }

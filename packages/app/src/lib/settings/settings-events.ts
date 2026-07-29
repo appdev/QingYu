@@ -57,6 +57,11 @@ type FileIgnoreSettingsChangedPayload = {
   settings: FileIgnoreSettings;
 };
 
+type ThemeCatalogChangedPayload = {
+  revision: string;
+  sourceId?: string;
+};
+
 type McpPolicyChangedPayload = {
   config: McpConfig;
 };
@@ -128,14 +133,16 @@ export async function notifyThemeCatalogChanged() {
   if (!getAppRuntime().events.isAvailable()) return;
 
   await getAppRuntime().events.emit(themeCatalogChangedEvent, {
-    revision: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`
+    revision: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`,
+    sourceId: settingsEventsSourceId
   });
 }
 
 export async function listenThemeCatalogChanged(onCatalogChanged: () => unknown) {
   if (!getAppRuntime().events.isAvailable()) return () => {};
 
-  return getAppRuntime().events.listen<{ revision: string }>(themeCatalogChangedEvent, () => {
+  return getAppRuntime().events.listen<ThemeCatalogChangedPayload>(themeCatalogChangedEvent, (event) => {
+    if (event.payload.sourceId === settingsEventsSourceId) return;
     onCatalogChanged();
   });
 }

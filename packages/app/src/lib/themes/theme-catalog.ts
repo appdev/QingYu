@@ -1,5 +1,7 @@
+import { builtInThemeDescriptors, builtInThemeIds } from "../../themes/registry";
+
 export type ThemeAppearance = "light" | "dark";
-export type ThemeSource = "bundled" | "default" | "third-party";
+export type ThemeSource = "builtin" | "third-party";
 export type ThemeStorageKind = "inlineCss" | "resourceDirectory";
 
 export type ThemePreview = {
@@ -61,39 +63,6 @@ export type ThemeRuntimeCapabilities = {
   canOpenDirectory: boolean;
 };
 
-export const protectedThemeDescriptors = [
-  {
-    appearance: "light",
-    fileName: null,
-    fingerprint: "default:light",
-    id: "light",
-    name: "Light",
-    preview: {
-      accent: "#1a1c1e",
-      background: "#ffffff",
-      panel: "#f6f8fa",
-      text: "#1f2328"
-    },
-    source: "default",
-    storageKind: "inlineCss"
-  },
-  {
-    appearance: "dark",
-    fileName: null,
-    fingerprint: "default:dark",
-    id: "dark",
-    name: "Dark",
-    preview: {
-      accent: "#f4f4f5",
-      background: "#0d1117",
-      panel: "#161b22",
-      text: "#f0f6fc"
-    },
-    source: "default",
-    storageKind: "inlineCss"
-  }
-] as const satisfies readonly ThemeDescriptor[];
-
 function compareThemeDescriptors(left: ThemeDescriptor, right: ThemeDescriptor) {
   const byName = left.name.localeCompare(right.name);
 
@@ -101,15 +70,15 @@ function compareThemeDescriptors(left: ThemeDescriptor, right: ThemeDescriptor) 
 }
 
 export function mergeThemeCatalog(snapshot: ThemeCatalogSnapshot): MergedThemeCatalog {
-  const lightDefault = protectedThemeDescriptors[0];
-  const darkDefault = protectedThemeDescriptors[1];
-  const installedThemes = snapshot.themes.filter(({ source }) => source !== "default");
+  const installedThemes = snapshot.themes.filter(({ id }) => !builtInThemeIds.has(id));
+  const lightBuiltIns = builtInThemeDescriptors.filter(({ appearance }) => appearance === "light");
+  const darkBuiltIns = builtInThemeDescriptors.filter(({ appearance }) => appearance === "dark");
   const lightThemes = [
-    lightDefault,
+    ...lightBuiltIns,
     ...installedThemes.filter(({ appearance }) => appearance === "light").sort(compareThemeDescriptors)
   ];
   const darkThemes = [
-    darkDefault,
+    ...darkBuiltIns,
     ...installedThemes.filter(({ appearance }) => appearance === "dark").sort(compareThemeDescriptors)
   ];
 

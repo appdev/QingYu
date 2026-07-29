@@ -1,12 +1,12 @@
 import {
   mergeThemeCatalog,
-  protectedThemeDescriptors,
   type ThemeCatalogSnapshot,
   type ThemeDescriptor
 } from "./theme-catalog";
+import { builtInThemeDescriptors } from "../../themes/registry";
 
 describe("theme catalog", () => {
-  it("keeps protected defaults first and sorts each appearance independently", () => {
+  it("keeps each appearance's built-ins first and sorts native themes independently", () => {
     const native: ThemeCatalogSnapshot = {
       invalidFiles: [],
       themes: [
@@ -45,9 +45,17 @@ describe("theme catalog", () => {
 
     const merged = mergeThemeCatalog(native);
 
-    expect(merged.lightThemes.map(({ id }) => id)).toEqual(["light", "alpha", "beta"]);
-    expect(merged.darkThemes.map(({ id }) => id)).toEqual(["dark", "zeta"]);
-    expect(merged.themes.map(({ id }) => id)).toEqual(["light", "alpha", "beta", "dark", "zeta"]);
+    expect(merged.lightThemes.map(({ id }) => id)).toEqual(["light", "classic-light", "alpha", "beta"]);
+    expect(merged.darkThemes.map(({ id }) => id)).toEqual(["dark", "classic-dark", "zeta"]);
+    expect(merged.themes.map(({ id }) => id)).toEqual([
+      "light",
+      "classic-light",
+      "alpha",
+      "beta",
+      "dark",
+      "classic-dark",
+      "zeta"
+    ]);
   });
 
   it("preserves the native storage kind for activation routing", () => {
@@ -65,31 +73,35 @@ describe("theme catalog", () => {
       }]
     };
 
-    expect(mergeThemeCatalog(native).darkThemes[1]?.storageKind).toBe("resourceDirectory");
+    expect(mergeThemeCatalog(native).darkThemes.find(({ id }) => id === "drake-ayu")?.storageKind)
+      .toBe("resourceDirectory");
   });
 
-  it("keeps bundled resource themes in the selectable catalog", () => {
-    const bundled: ThemeDescriptor = {
-      appearance: "light",
-      author: "轻语",
-      fileName: "wenkai-paper-light",
-      fingerprint: "c".repeat(64),
-      id: "wenkai-paper-light",
-      name: "轻语 · 文楷纸白",
-      preview: { accent: "#1c5d33", background: "#ffffff", panel: "#f5f5f5", text: "#202124" },
-      source: "bundled",
-      storageKind: "resourceDirectory"
-    };
+  it("filters native descriptors that collide with frontend built-ins", () => {
+    const collisions = builtInThemeDescriptors.map((theme) => ({
+      ...theme,
+      fileName: `${theme.id}.css`,
+      fingerprint: `native:${theme.id}`,
+      name: `Native ${theme.id}`,
+      source: "third-party" as const
+    }));
 
-    const merged = mergeThemeCatalog({ invalidFiles: [], themes: [bundled] });
+    const merged = mergeThemeCatalog({ invalidFiles: [], themes: collisions });
 
-    expect(merged.lightThemes.map(({ id }) => id)).toEqual(["light", "wenkai-paper-light"]);
+    expect(merged.themes.map(({ id, fingerprint }) => ({ fingerprint, id }))).toEqual([
+      { fingerprint: "builtin:light", id: "light" },
+      { fingerprint: "builtin:classic-light", id: "classic-light" },
+      { fingerprint: "builtin:dark", id: "dark" },
+      { fingerprint: "builtin:classic-dark", id: "classic-dark" }
+    ]);
   });
 
-  it("exposes exactly two protected defaults", () => {
-    expect(protectedThemeDescriptors.map(({ id, source }) => ({ id, source }))).toEqual([
-      { id: "light", source: "default" },
-      { id: "dark", source: "default" }
+  it("exposes exactly four frontend built-ins", () => {
+    expect(builtInThemeDescriptors.map(({ id, source }) => ({ id, source }))).toEqual([
+      { id: "light", source: "builtin" },
+      { id: "dark", source: "builtin" },
+      { id: "classic-light", source: "builtin" },
+      { id: "classic-dark", source: "builtin" }
     ]);
   });
 });

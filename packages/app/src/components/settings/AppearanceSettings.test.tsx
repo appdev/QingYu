@@ -1,7 +1,8 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { ComponentProps } from "react";
 import { translate } from "../../test/settings-components";
-import { protectedThemeDescriptors, type ThemeDescriptor } from "../../lib/themes/theme-catalog";
+import type { ThemeDescriptor } from "../../lib/themes/theme-catalog";
+import { builtInThemeDescriptors } from "../../themes/registry";
 import { AppearanceSettings } from "./AppearanceSettings";
 
 const nord: ThemeDescriptor = {
@@ -27,23 +28,11 @@ const sepia: ThemeDescriptor = {
   storageKind: "inlineCss"
 };
 
-const wenkaiPaperLight: ThemeDescriptor = {
-  appearance: "light",
-  author: "轻语",
-  fileName: "wenkai-paper-light",
-  fingerprint: "c".repeat(64),
-  id: "wenkai-paper-light",
-  name: "轻语 · 文楷纸白",
-  preview: { accent: "#1c5d33", background: "#ffffff", panel: "#f5f5f5", text: "#202124" },
-  source: "bundled",
-  storageKind: "resourceDirectory"
-};
-
 type ThemeController = ComponentProps<typeof AppearanceSettings>["themeController"];
 
 function createThemeController(overrides: Partial<ThemeController> = {}): ThemeController {
-  const lightThemes = [protectedThemeDescriptors[0], sepia] as ThemeDescriptor[];
-  const darkThemes = [protectedThemeDescriptors[1], nord] as ThemeDescriptor[];
+  const lightThemes = [builtInThemeDescriptors[0], builtInThemeDescriptors[2], sepia] as ThemeDescriptor[];
+  const darkThemes = [builtInThemeDescriptors[1], builtInThemeDescriptors[3], nord] as ThemeDescriptor[];
 
   return {
     activeTheme: sepia,
@@ -74,15 +63,20 @@ function createThemeController(overrides: Partial<ThemeController> = {}): ThemeC
 describe("AppearanceSettings", () => {
   it("renders independent unequal light and dark catalogs and selects immediately", () => {
     const controller = createThemeController();
-    controller.catalog.darkThemes = [protectedThemeDescriptors[1], nord, { ...nord, id: "midnight", name: "Midnight" }];
+    controller.catalog.darkThemes = [
+      builtInThemeDescriptors[1],
+      builtInThemeDescriptors[3],
+      nord,
+      { ...nord, id: "midnight", name: "Midnight" }
+    ];
 
     render(<AppearanceSettings themeController={controller} translate={translate} />);
 
     const appearanceMode = screen.getByRole("radiogroup", { name: "Appearance mode" });
     const lightPalette = screen.getByRole("radiogroup", { name: "Light palette" });
     const darkPalette = screen.getByRole("radiogroup", { name: "Dark palette" });
-    expect(within(lightPalette).getAllByRole("radio")).toHaveLength(2);
-    expect(within(darkPalette).getAllByRole("radio")).toHaveLength(3);
+    expect(within(lightPalette).getAllByRole("radio")).toHaveLength(3);
+    expect(within(darkPalette).getAllByRole("radio")).toHaveLength(4);
     expect(within(lightPalette).getByRole("radio", { name: "Sepia" })).toHaveAttribute("aria-checked", "true");
     expect(within(darkPalette).getByRole("radio", { name: "Nord" })).toHaveAttribute("aria-checked", "true");
 
@@ -97,13 +91,13 @@ describe("AppearanceSettings", () => {
     const controller = createThemeController();
     render(<AppearanceSettings themeController={controller} translate={translate} />);
 
-    await waitFor(() => expect(controller.catalog.refresh).toHaveBeenCalledTimes(1));
+    expect(controller.catalog.refresh).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByRole("button", { name: "Import theme" }));
     await waitFor(() => expect(controller.catalog.importTheme).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(screen.getByRole("button", { name: "Refresh themes" })).toBeEnabled());
     fireEvent.click(screen.getByRole("button", { name: "Refresh themes" }));
-    await waitFor(() => expect(controller.catalog.refresh).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(controller.catalog.refresh).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(screen.getByRole("button", { name: "Open theme folder" })).toBeEnabled());
     fireEvent.click(screen.getByRole("button", { name: "Open theme folder" }));
 
@@ -141,24 +135,22 @@ describe("AppearanceSettings", () => {
     expect(confirm).toHaveBeenCalledWith("Delete theme “Nord”?");
   });
 
-  it("never offers deletion for bundled WenKai themes", () => {
+  it("labels built-ins and never offers their deletion", () => {
     const controller = createThemeController();
-    controller.catalog.lightThemes = [
-      protectedThemeDescriptors[0],
-      wenkaiPaperLight,
-      sepia
-    ];
-    controller.catalog.themes = [
-      ...controller.catalog.lightThemes,
-      ...controller.catalog.darkThemes
-    ];
 
     render(<AppearanceSettings themeController={controller} translate={translate} />);
 
-    expect(screen.getByRole("radio", { name: "轻语 · 文楷纸白" })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Delete theme: 轻语 · 文楷纸白" }))
+    expect(screen.getByRole("radio", { name: "轻语 · 纸白" })).toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: "经典浅色" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Delete theme: 轻语 · 纸白" }))
+      .not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Delete theme: 经典浅色" }))
       .not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Delete theme: Sepia" })).toBeInTheDocument();
+    expect(within(screen.getByRole("radio", { name: "轻语 · 纸白" })).getByText("Default"))
+      .toBeInTheDocument();
+    expect(within(screen.getByRole("radio", { name: "经典浅色" })).getByText("Built-in"))
+      .toBeInTheDocument();
   });
 
   it("keeps refresh and selection on mobile while hiding desktop file actions", () => {

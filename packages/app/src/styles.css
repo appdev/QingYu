@@ -1,7 +1,12 @@
 @import "tailwindcss";
+@import "katex/dist/katex.css";
+@import "./themes/zhenkai-font.css";
+@import "./themes/light.css";
+@import "./themes/dark.css";
+@import "./themes/classic-light.css";
+@import "./themes/classic-dark.css";
 @source ".";
 @source "../../../packages/ui/src";
-@import "katex/dist/katex.css";
 
 @keyframes markra-history-panel-in {
   from {
@@ -128,24 +133,24 @@
 @layer base {
   :root {
     --bg-primary: #ffffff;
-    --bg-secondary: #fafafa;
+    --bg-secondary: #f7f7f7;
     --bg-chrome: color-mix(in oklab, var(--bg-secondary) 82%, var(--bg-primary));
-    --bg-code: #f8f8f8;
-    --bg-hover: #f5f5f5;
+    --bg-code: #f7f7f7;
+    --bg-hover: rgba(38, 38, 38, 0.055);
     --bg-active: #eeeeee;
 
-    --text-primary: #555555;
-    --text-heading: #333333;
-    --text-secondary: #999999;
-    --text-md-char: #c7c5c5;
+    --text-primary: #262626;
+    --text-heading: #262626;
+    --text-secondary: #6b6b6b;
+    --text-md-char: #767676;
 
-    --border-default: #eeeeee;
-    --border-strong: #dddddd;
-    --accent: #1a1c1e;
-    --accent-soft: rgba(26, 28, 30, 0.1);
-    --accent-hover: #0f1115;
+    --border-default: #ededed;
+    --border-strong: #d1d1d1;
+    --accent: #1c5d33;
+    --accent-soft: rgba(28, 93, 51, 0.12);
+    --accent-hover: #154827;
     --danger: #b42318;
-    --link-color: #2f56c6;
+    --link-color: #0c6ada;
     --scrollbar-track: transparent;
     --scrollbar-thumb: color-mix(in srgb, var(--text-secondary) 44%, transparent);
     --scrollbar-thumb-hover: color-mix(in srgb, var(--text-secondary) 64%, transparent);
@@ -163,37 +168,6 @@
     text-rendering: optimizeLegibility;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
-  }
-
-  [data-theme="dark"] {
-    --bg-primary: #1e1e1e;
-    --bg-secondary: #252526;
-    --bg-code: #1e1e1e;
-    --bg-hover: #2a2d2e;
-    --bg-active: #37373d;
-
-    --text-primary: #d4d4d4;
-    --text-heading: #e0e0e0;
-    --text-secondary: #858585;
-    --text-md-char: #555555;
-
-    --border-default: #333333;
-    --border-strong: #444444;
-    --accent: #f4f4f5;
-    --accent-soft: rgba(244, 244, 245, 0.14);
-    --accent-hover: #fafafa;
-    --danger: #ff8a80;
-    --link-color: #b7c5ff;
-
-    --floating-menu-shadow:
-      0 28px 76px rgba(0, 0, 0, 0.68),
-      0 0 0 1px rgba(255, 255, 255, 0.045),
-      0 0 40px color-mix(in srgb, var(--accent) 9%, transparent);
-    --floating-popover-shadow:
-      0 22px 58px rgba(0, 0, 0, 0.66),
-      0 0 0 1px rgba(255, 255, 255, 0.04),
-      0 0 28px color-mix(in srgb, var(--accent) 7%, transparent);
-    color-scheme: dark;
   }
 
   html[data-theme-transition="suspended"],
@@ -1685,7 +1659,6 @@
     --callout-color: oklch(57% 0.13 28);
   }
 
-  [data-theme="dark"] .markdown-paper blockquote.markra-callout,
   [data-theme-appearance="dark"] .markdown-paper blockquote.markra-callout {
     --callout-bg: color-mix(in srgb, var(--callout-color) 10%, var(--editor-paper-bg));
     --callout-border: color-mix(in srgb, var(--callout-color) 32%, var(--editor-border));
@@ -1743,22 +1716,7 @@
     --callout-color: oklch(57% 0.13 28) !important;
   }
 
-  [data-theme="dark"] .markdown-paper .cm-line.cm-markra-callout,
-  [data-theme="github-dark"] .markdown-paper .cm-line.cm-markra-callout,
-  [data-theme="night"] .markdown-paper .cm-line.cm-markra-callout,
-  [data-theme="one-dark"] .markdown-paper .cm-line.cm-markra-callout,
-  [data-theme="one-dark-pro"] .markdown-paper .cm-line.cm-markra-callout,
-  [data-theme="solarized-dark"] .markdown-paper .cm-line.cm-markra-callout,
-  [data-theme="nord"] .markdown-paper .cm-line.cm-markra-callout,
-  [data-theme="catppuccin-mocha"] .markdown-paper .cm-line.cm-markra-callout,
-  .markdown-paper[data-editor-theme="dark"] .cm-line.cm-markra-callout,
-  .markdown-paper[data-editor-theme="github-dark"] .cm-line.cm-markra-callout,
-  .markdown-paper[data-editor-theme="night"] .cm-line.cm-markra-callout,
-  .markdown-paper[data-editor-theme="one-dark"] .cm-line.cm-markra-callout,
-  .markdown-paper[data-editor-theme="one-dark-pro"] .cm-line.cm-markra-callout,
-  .markdown-paper[data-editor-theme="solarized-dark"] .cm-line.cm-markra-callout,
-  .markdown-paper[data-editor-theme="nord"] .cm-line.cm-markra-callout,
-  .markdown-paper[data-editor-theme="catppuccin-mocha"] .cm-line.cm-markra-callout {
+  [data-theme-appearance="dark"] .markdown-paper .cm-line.cm-markra-callout {
     --callout-bg: color-mix(in srgb, var(--callout-color) 10%, var(--editor-paper-bg));
     --callout-border: color-mix(in srgb, var(--callout-color) 32%, var(--editor-border));
   }

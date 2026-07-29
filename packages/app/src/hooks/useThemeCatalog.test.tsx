@@ -26,8 +26,10 @@ describe("useThemeCatalog", () => {
     });
 
     await waitFor(() => expect(runtime.themes.list).toHaveBeenCalledTimes(2));
-    expect(result.current.lightThemes[0].id).toBe("light");
-    expect(result.current.darkThemes[0].id).toBe("dark");
+    expect(runtime.themes.list).toHaveBeenNthCalledWith(1, false);
+    expect(runtime.themes.list).toHaveBeenNthCalledWith(2, false);
+    expect(result.current.lightThemes.map(({ id }) => id)).toEqual(["light", "classic-light"]);
+    expect(result.current.darkThemes.map(({ id }) => id)).toEqual(["dark", "classic-dark"]);
   });
 
   it("keeps the previous snapshot when a later refresh fails", async () => {
@@ -58,5 +60,7 @@ describe("useThemeCatalog", () => {
 
     expect(result.current.darkThemes.some(({ id }) => id === "nord")).toBe(true);
     expect(result.current.error).toBe("scan failed");
+    expect(runtime.themes.list).toHaveBeenNthCalledWith(1, false);
+    expect(runtime.themes.list).toHaveBeenNthCalledWith(2, true);
   });
 });

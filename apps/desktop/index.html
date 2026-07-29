@@ -18,9 +18,12 @@
           appearanceMode === "light" || (appearanceMode === "system" && !prefersDark) ? "light" : "dark";
         const theme =
           resolvedAppearance === "dark"
-            ? params.get("startupDarkTheme") || "wenkai-paper-dark"
-            : params.get("startupLightTheme") || "wenkai-paper-light";
-        const background = resolvedAppearance === "dark" ? "#23282d" : "#ffffff";
+            ? params.get("startupDarkTheme") || "dark"
+            : params.get("startupLightTheme") || "light";
+        const background =
+          resolvedAppearance === "dark"
+            ? theme === "classic-dark" ? "#1e1e1e" : "#23282d"
+            : "#ffffff";
         const root = document.documentElement;
 
         if (isSettingsWindow) root.dataset.window = "settings";
@@ -61,6 +64,22 @@
         --settings-startup-border: #33373c;
         --settings-startup-block: #363d45;
         --settings-startup-highlight: rgba(84, 197, 159, 0.12);
+      }
+
+      html[data-theme-appearance="light"][data-theme="classic-light"] .settings-startup-shell {
+        --settings-startup-bg: #ffffff;
+        --settings-startup-sidebar: #fafafa;
+        --settings-startup-border: #eeeeee;
+        --settings-startup-block: #eeeeee;
+        --settings-startup-highlight: rgba(26, 28, 30, 0.1);
+      }
+
+      html[data-theme-appearance="dark"][data-theme="classic-dark"] .settings-startup-shell {
+        --settings-startup-bg: #1e1e1e;
+        --settings-startup-sidebar: #252526;
+        --settings-startup-border: #333333;
+        --settings-startup-block: #37373d;
+        --settings-startup-highlight: rgba(244, 244, 245, 0.14);
       }
 
       html[data-window="settings"] .settings-startup-shell {

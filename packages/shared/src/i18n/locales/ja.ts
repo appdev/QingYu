@@ -100,6 +100,7 @@ const messages: LocaleMessages = {
   "settings.theme.refreshThemes": "テーマを更新",
   "settings.theme.openThemeFolder": "テーマフォルダーを開く",
   "settings.theme.defaultBadge": "既定",
+  "settings.theme.builtInBadge": "組み込み",
   "settings.theme.thirdPartyBadge": "サードパーティ",
   "settings.theme.deleteTheme": "テーマを削除",
   "settings.theme.replaceTheme": "テーマを置換",

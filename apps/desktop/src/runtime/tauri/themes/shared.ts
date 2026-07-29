@@ -5,8 +5,8 @@ import type {
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { invokeNative } from "../invoke";
 
-export function listNativeThemes() {
-  return invokeNative<ThemeCatalogSnapshot>("list_themes");
+export function listNativeThemes(refresh = false) {
+  return invokeNative<ThemeCatalogSnapshot>("list_themes", { refresh });
 }
 
 type NativeThemeActivationPayload = Omit<ThemeActivationPayload, "source"> & {

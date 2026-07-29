@@ -93,6 +93,7 @@ const messages: LocaleMessages = {
   "settings.theme.refreshThemes": "Actualizar temas",
   "settings.theme.openThemeFolder": "Abrir carpeta de temas",
   "settings.theme.defaultBadge": "Predeterminado",
+  "settings.theme.builtInBadge": "Integrado",
   "settings.theme.thirdPartyBadge": "De terceros",
   "settings.theme.deleteTheme": "Eliminar tema",
   "settings.theme.replaceTheme": "Reemplazar tema",

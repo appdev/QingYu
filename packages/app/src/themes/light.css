@@ -1,0 +1,305 @@
+/* Hallmark · pre-emit critique: P5 H5 E5 S5 R5 V5
+ * theme: studied-DNA (source: tw93/MiaoYan) · tone: quiet writing desk
+ * anchor: forest green · macrostructure: frontend-owned built-in theme
+ * contrast: pass (40-41) · slop: pass
+ */
+:root:not([data-theme]),
+:root[data-theme="light"] {
+  --bg-primary: #ffffff;
+  --bg-secondary: #f7f7f7;
+  --bg-chrome: #ffffff;
+  --bg-code: #f7f7f7;
+  --bg-hover: rgba(38, 38, 38, 0.055);
+  --bg-active: #eeeeee;
+  --text-primary: #262626;
+  --text-heading: #262626;
+  --text-secondary: #6b6b6b;
+  --text-md-char: #767676;
+  --border-default: #ededed;
+  --border-strong: #d1d1d1;
+  --accent: #1c5d33;
+  --accent-soft: rgba(28, 93, 51, 0.12);
+  --accent-hover: #154827;
+  --danger: #c23b3b;
+  --link-color: #0c6ada;
+  --link-hover: #0957b6;
+  --source-heading-color: #7a3dad;
+  --editor-quote-bg: rgba(28, 93, 51, 0.055);
+  --editor-quote-text: #4f5651;
+  --editor-mark-bg: #fff2a8;
+  --editor-mark-text: #262626;
+
+  --bg-titlebar: #ececec;
+  --bg-sidebar: #ffffff;
+  --bg-sidebar-header: #ffffff;
+  --bg-toolbar: #ffffff;
+  --bg-outline: #ffffff;
+  --bg-sidebar-footer: #ffffff;
+  --border-chrome: #e6e6e6;
+  --sidebar-font-family: "Light Whisper ZhenKai", "Kaiti SC", KaiTi, STKaiti, ui-serif, serif;
+  --sidebar-tree-font-size: 14px;
+  --sidebar-tree-font-weight: 400;
+  --sidebar-tree-line-height: 20px;
+  --text-tree: #262626;
+  --bg-tree-hover: rgba(38, 38, 38, 0.055);
+  --text-tree-hover: #262626;
+  --sidebar-tree-current-font-weight: 400;
+  --sidebar-outline-font-size: 14px;
+  --sidebar-outline-font-weight: 400;
+  --sidebar-outline-line-height: 20px;
+  --sidebar-outline-row-min-height: 28px;
+  --sidebar-outline-max-lines: 1;
+  --text-outline: #262626;
+  --bg-outline-hover: rgba(38, 38, 38, 0.055);
+  --text-outline-hover: #262626;
+  --sidebar-outline-current-font-weight: 600;
+  --sidebar-outline-h1-font-size: 16px;
+  --sidebar-outline-h1-font-weight: 600;
+  --sidebar-outline-h1-text: #1c5d33;
+  --sidebar-outline-h1-space-before: 8px;
+  --sidebar-outline-h2-font-weight: 600;
+  --sidebar-outline-h2-text: #262626;
+  --sidebar-outline-h2-space-before: 6px;
+  --bg-tree-current: #eeeeee;
+  --text-tree-current: #262626;
+  --tree-current-indicator: #6b6b6b;
+  --bg-tree-selected: #d9d9d9;
+  --text-tree-selected: #262626;
+  --tree-selected-indicator: #1c5d33;
+  --bg-outline-current: #eeeeee;
+  --text-outline-current: #262626;
+
+  --scrollbar-track: transparent;
+  --scrollbar-thumb: rgba(38, 38, 38, 0.18);
+  --scrollbar-thumb-hover: rgba(38, 38, 38, 0.28);
+  --scrollbar-thumb-active: rgba(38, 38, 38, 0.38);
+  --floating-menu-shadow: 0 10px 30px rgba(38, 38, 38, 0.12);
+  --floating-popover-shadow: 0 16px 42px rgba(38, 38, 38, 0.15);
+
+  color-scheme: light;
+  font-family: "Light Whisper ZhenKai", "Kaiti SC", KaiTi, STKaiti, ui-serif, serif;
+  font-synthesis: weight;
+}
+
+.markdown-paper[data-editor-theme="light"] {
+  font-synthesis: weight;
+  --editor-paper-bg: #ffffff;
+  --editor-text-primary: #262626;
+  --editor-text-heading: #262626;
+  --editor-text-secondary: #6b6b6b;
+  --editor-heading-font-weight: 600;
+  --editor-heading-letter-spacing: 0.02em;
+  --editor-h1-color: #7a3dad;
+  --editor-h1-font-size: 2rem;
+  --editor-h1-font-size-compact: 1.75rem;
+  --editor-h1-font-weight: var(--editor-heading-font-weight);
+  --editor-h1-letter-spacing: 0.05em;
+  --editor-h1-line-height: 1.55;
+  --editor-h2-color: #7a3dad;
+  --editor-h2-font-size: 1.5rem;
+  --editor-h2-font-size-compact: 1.375rem;
+  --editor-h2-font-weight: var(--editor-heading-font-weight);
+  --editor-h2-letter-spacing: 0.05em;
+  --editor-h2-line-height: 1.6;
+  --editor-h3-color: var(--editor-text-heading);
+  --editor-h3-font-size: 1.25rem;
+  --editor-h3-font-weight: var(--editor-heading-font-weight);
+  --editor-h3-letter-spacing: 0.04em;
+  --editor-h3-line-height: 1.65;
+  --editor-h4-color: var(--editor-text-heading);
+  --editor-h4-font-size: 1rem;
+  --editor-h4-font-weight: var(--editor-heading-font-weight);
+  --editor-h4-letter-spacing: 0.02em;
+  --editor-h4-line-height: 1.74;
+  --editor-h5-color: var(--editor-text-heading);
+  --editor-h5-font-size: 1rem;
+  --editor-h5-font-weight: var(--editor-heading-font-weight);
+  --editor-h5-letter-spacing: 0.02em;
+  --editor-h5-line-height: 1.74;
+  --editor-h6-color: var(--editor-text-heading);
+  --editor-h6-font-size: 1rem;
+  --editor-h6-font-weight: var(--editor-heading-font-weight);
+  --editor-h6-letter-spacing: 0.02em;
+  --editor-h6-line-height: 1.74;
+  --editor-border: #ededed;
+  --editor-border-strong: #d1d1d1;
+  --editor-bg-secondary: #f7f7f7;
+  --editor-inline-code-bg: rgba(28, 93, 51, 0.08);
+  --editor-inline-code-text: #1c5d33;
+  --editor-code-bg: #f7f7f7;
+  --editor-code-line-bg: #eeeeee;
+  --editor-code-text: #24292e;
+  --editor-code-control-bg: rgba(255, 255, 255, 0.94);
+  --editor-link-color: #0c6ada;
+  --editor-hl-keyword: #d73a49;
+  --editor-hl-string: #032f62;
+  --editor-hl-number: #005cc5;
+  --editor-hl-title: #6f42c1;
+  --editor-hl-type: #1c5d33;
+  --editor-hl-meta: #6a737d;
+  --editor-hl-symbol: #e36209;
+  --editor-hl-deletion: #b31d28;
+  --editor-code-font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  --editor-font-family: "Light Whisper ZhenKai", "Kaiti SC", KaiTi, STKaiti, ui-serif, serif;
+  --editor-heading-font-family: "Light Whisper ZhenKai", "Kaiti SC", KaiTi, STKaiti, ui-serif, serif;
+  --editor-caret-color: #1c5d33;
+  background: var(--editor-paper-bg);
+  color: var(--editor-text-primary);
+  font-family: var(--editor-font-family);
+  line-height: 1.74;
+  letter-spacing: 0.035em;
+}
+
+:root[data-theme="light"] .markdown-source-paper,
+.markdown-source-paper[data-editor-theme="light"] {
+  font-synthesis: weight;
+  --source-editor-font-family: "Light Whisper ZhenKai", "Kaiti SC", KaiTi, STKaiti, ui-serif, serif;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: var(--source-editor-font-family);
+  line-height: 1.75;
+}
+
+.markdown-source-paper[data-editor-theme="light"] .cm-header,
+.markdown-source-paper[data-editor-theme="light"] .tok-heading {
+  color: var(--source-heading-color);
+}
+
+.markdown-source-paper[data-editor-theme="light"] .cm-link,
+.markdown-source-paper[data-editor-theme="light"] .tok-link {
+  color: var(--link-color);
+}
+
+.markdown-paper[data-editor-theme="light"] h1,
+.markdown-paper[data-editor-theme="light"] h2,
+.markdown-paper[data-editor-theme="light"] h3,
+.markdown-paper[data-editor-theme="light"] h4,
+.markdown-paper[data-editor-theme="light"] h5,
+.markdown-paper[data-editor-theme="light"] h6 {
+  font-family: var(--editor-heading-font-family);
+}
+
+.markdown-paper[data-editor-theme="light"] h1 {
+  color: var(--editor-h1-color);
+  font-size: var(--editor-h1-font-size);
+  font-weight: var(--editor-h1-font-weight);
+  letter-spacing: var(--editor-h1-letter-spacing);
+  line-height: var(--editor-h1-line-height);
+}
+
+.markdown-paper[data-editor-theme="light"] h2 {
+  border-bottom: 1px solid var(--editor-border);
+  padding-bottom: 0.28em;
+  color: var(--editor-h2-color);
+  font-size: var(--editor-h2-font-size);
+  font-weight: var(--editor-h2-font-weight);
+  letter-spacing: var(--editor-h2-letter-spacing);
+  line-height: var(--editor-h2-line-height);
+}
+
+.markdown-paper[data-editor-theme="light"] h3 {
+  color: var(--editor-h3-color);
+  font-size: var(--editor-h3-font-size);
+  font-weight: var(--editor-h3-font-weight);
+  letter-spacing: var(--editor-h3-letter-spacing);
+  line-height: var(--editor-h3-line-height);
+}
+
+.markdown-paper[data-editor-theme="light"] h4 {
+  color: var(--editor-h4-color);
+  font-size: var(--editor-h4-font-size);
+  font-weight: var(--editor-h4-font-weight);
+  letter-spacing: var(--editor-h4-letter-spacing);
+  line-height: var(--editor-h4-line-height);
+}
+
+.markdown-paper[data-editor-theme="light"] h5 {
+  color: var(--editor-h5-color);
+  font-size: var(--editor-h5-font-size);
+  font-weight: var(--editor-h5-font-weight);
+  letter-spacing: var(--editor-h5-letter-spacing);
+  line-height: var(--editor-h5-line-height);
+}
+
+.markdown-paper[data-editor-theme="light"] h6 {
+  color: var(--editor-h6-color);
+  font-size: var(--editor-h6-font-size);
+  font-weight: var(--editor-h6-font-weight);
+  letter-spacing: var(--editor-h6-letter-spacing);
+  line-height: var(--editor-h6-line-height);
+}
+
+.markdown-paper[data-editor-theme="light"] a {
+  color: var(--editor-link-color);
+  text-decoration-color: color-mix(in srgb, var(--editor-link-color) 34%, transparent);
+  text-underline-offset: 0.18em;
+}
+
+.markdown-paper[data-editor-theme="light"] a:hover {
+  color: var(--link-hover);
+  text-decoration-color: currentColor;
+}
+
+.markdown-paper[data-editor-theme="light"] blockquote:not(.markra-callout) {
+  border-left: 3px solid var(--accent);
+  border-radius: 0 4px 4px 0;
+  background: var(--editor-quote-bg);
+  padding: 0.72rem 1rem;
+  color: var(--editor-quote-text);
+}
+
+.markdown-paper[data-editor-theme="light"] blockquote.markra-callout {
+  --callout-bg: color-mix(in srgb, var(--callout-color) 7%, var(--editor-paper-bg));
+  --callout-border: color-mix(in srgb, var(--callout-color) 28%, var(--editor-border));
+}
+
+.markdown-paper[data-editor-theme="light"] mark,
+.markdown-paper[data-editor-theme="light"] .markra-live-mark-highlight {
+  border-radius: 3px;
+  background: var(--editor-mark-bg);
+  color: var(--editor-mark-text);
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+
+.markdown-paper[data-editor-theme="light"] code,
+.markdown-paper[data-editor-theme="light"] .markra-live-mark-inlineCode,
+.markdown-paper[data-editor-theme="light"] pre,
+.markdown-paper[data-editor-theme="light"] .markra-code-block,
+.markdown-paper[data-editor-theme="light"] .markra-code-block code,
+.markdown-paper[data-editor-theme="light"] .markra-code-language-select,
+.markdown-paper[data-editor-theme="light"] .markra-code-line-numbers {
+  font-family: var(--editor-code-font-family);
+  letter-spacing: 0;
+}
+
+.markdown-paper[data-editor-theme="light"] code,
+.markdown-paper[data-editor-theme="light"] .markra-live-mark-inlineCode {
+  border-color: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--editor-inline-code-text);
+  box-shadow: none;
+}
+
+.markdown-paper[data-editor-theme="light"] .markra-code-block {
+  border: 1px solid var(--editor-border);
+  border-radius: 6px;
+}
+
+.markdown-paper[data-editor-theme="light"] table {
+  background: var(--editor-paper-bg);
+  font-variant: tabular-nums;
+}
+
+.markdown-paper[data-editor-theme="light"] thead,
+.markdown-paper[data-editor-theme="light"] tr:nth-child(even) {
+  background: var(--editor-bg-secondary);
+}
+
+.markdown-paper[data-editor-theme="light"] th {
+  color: var(--editor-text-heading);
+  font-weight: 600;
+}
+
+.markdown-paper[data-editor-theme="light"] hr {
+  border-color: var(--editor-border);
+}

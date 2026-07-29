@@ -6,12 +6,13 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -p tsconfig.app.json && vite build && pnpm verify:chunks",
+    "build": "tsc -p tsconfig.app.json && vite build && pnpm verify:chunks && pnpm verify:theme-assets",
     "build:icon": "node scripts/icon.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck:test": "tsc -p tsconfig.test.json --noEmit",
     "verify:chunks": "node ../../packages/scripts/src/verify-vendor-chunks.mjs dist/assets",
+    "verify:theme-assets": "node ../../packages/scripts/src/verify-built-in-theme-assets.mjs dist",
     "tauri": "tauri"
   },
   "dependencies": {

@@ -15,7 +15,9 @@ use axum::{
 use qingyu_kernel::{
     api::{build_router, TransportPolicy},
     config::KernelConfig,
-    contract::{ApiErrorEnvelope, DomainEvent, ErrorCode, ResourceRefDto, SettingKey},
+    contract::{
+        ApiErrorEnvelope, DomainEvent, ErrorCode, ResourceRefDto, SettingKey, SettingValueDto,
+    },
     events::{EventPublication, EventSink, EventSinkError},
     paths::KernelPaths,
     ports::KernelPorts,
@@ -337,6 +339,37 @@ fn default_read_is_complete_ordered_and_safe() {
     assert!(!serialized.contains("workspace"));
     assert!(!serialized.contains("pandocPath"));
     assert!(!serialized.contains("mcp"));
+}
+
+#[test]
+fn default_read_uses_the_frontend_owned_default_theme_ids() {
+    let service = SettingsService::new(
+        Arc::new(MemorySettingsStore::default()),
+        Arc::new(RecordingEvents::default()),
+    );
+
+    let snapshot = service.read_exposed().expect("read default settings");
+    let value_for = |key| {
+        &snapshot
+            .values
+            .iter()
+            .find(|entry| entry.key == key)
+            .expect("default setting exists")
+            .value
+    };
+
+    assert_eq!(
+        value_for(SettingKey::AppearanceLightTheme),
+        &SettingValueDto::String {
+            value: "light".to_string(),
+        }
+    );
+    assert_eq!(
+        value_for(SettingKey::AppearanceDarkTheme),
+        &SettingValueDto::String {
+            value: "dark".to_string(),
+        }
+    );
 }
 
 #[test]

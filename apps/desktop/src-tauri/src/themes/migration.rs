@@ -12,7 +12,7 @@ use super::{
 };
 
 const CATALOG_VERSION_KEY: &str = "themeCatalogVersion";
-const CATALOG_VERSION: i64 = 4;
+const CATALOG_VERSION: i64 = 2;
 
 pub(crate) fn initialize_catalog<R: Runtime>(
     app: &tauri::AppHandle<R>,
@@ -34,12 +34,8 @@ pub(crate) fn initialize_catalog<R: Runtime>(
         .max(0);
     if stored_catalog_version >= CATALOG_VERSION {
         let snapshot = catalog.scan()?;
-        let (seed_diagnostics, changed) = catalog.reconcile_current_bundled(&snapshot)?;
-        return if changed {
-            scan_with_diagnostics(&catalog, seed_diagnostics)
-        } else {
-            Ok(merge_diagnostics(snapshot, seed_diagnostics))
-        };
+        let seed_diagnostics = catalog.drake_seed_diagnostics()?;
+        return Ok(merge_diagnostics(snapshot, seed_diagnostics));
     }
     let seed_diagnostics = initialize_catalog_files(&catalog, stored_catalog_version)?;
     if !should_migrate_legacy_preferences(stored_catalog_version) {
@@ -154,32 +150,11 @@ fn initialize_catalog_files(
     match catalog_version {
         i64::MIN..=0 => {
             catalog.seed_missing()?;
-            seed_all_resource_packages(catalog)
+            catalog.seed_missing_drake()
         }
-        1 => seed_all_resource_packages(catalog),
-        2 => {
-            let mut diagnostics = catalog.drake_seed_diagnostics()?;
-            diagnostics.extend(catalog.seed_missing_wenkai()?);
-            Ok(diagnostics)
-        }
-        3 => {
-            let mut diagnostics = catalog.drake_seed_diagnostics()?;
-            diagnostics.extend(catalog.refresh_wenkai()?);
-            Ok(diagnostics)
-        }
-        _ => {
-            let snapshot = catalog.scan()?;
-            catalog
-                .reconcile_current_bundled(&snapshot)
-                .map(|(diagnostics, _)| diagnostics)
-        }
+        1 => catalog.seed_missing_drake(),
+        _ => catalog.drake_seed_diagnostics(),
     }
-}
-
-fn seed_all_resource_packages(catalog: &ThemeCatalog) -> Result<Vec<InvalidThemeFile>, ThemeError> {
-    let mut diagnostics = catalog.seed_missing_drake()?;
-    diagnostics.extend(catalog.seed_missing_wenkai()?);
-    Ok(diagnostics)
 }
 
 fn should_migrate_legacy_preferences(catalog_version: i64) -> bool {
@@ -319,9 +294,6 @@ fn is_dark_seed(id: &str) -> bool {
 mod tests {
     use std::fs;
 
-    #[cfg(unix)]
-    use std::os::unix::fs::PermissionsExt;
-
     use tempfile::tempdir;
 
     use super::{
@@ -330,65 +302,30 @@ mod tests {
     };
     use crate::themes::catalog::ThemeCatalog;
 
-    #[cfg(unix)]
     #[test]
-    fn current_bundled_checks_reuse_the_supplied_snapshot_without_rescanning() {
-        let temp = tempdir().unwrap();
-        let root = temp.path().join("themes");
-        let catalog = ThemeCatalog::at(root.clone());
-        assert!(catalog.seed_missing_drake().unwrap().is_empty());
-        assert!(catalog.seed_missing_wenkai().unwrap().is_empty());
-        let snapshot = catalog.scan().unwrap();
-        let original_permissions = fs::metadata(&root).unwrap().permissions();
-        let mut unreadable_permissions = original_permissions.clone();
-        unreadable_permissions.set_mode(0o300);
-        fs::set_permissions(&root, unreadable_permissions).unwrap();
-
-        let reconciliation = catalog.reconcile_current_bundled(&snapshot);
-
-        fs::set_permissions(&root, original_permissions).unwrap();
-        let (diagnostics, changed) = reconciliation.unwrap();
-        assert!(diagnostics.is_empty());
-        assert!(!changed);
-    }
-
-    #[test]
-    fn fresh_catalog_installs_original_css_and_all_bundled_resource_packages() {
+    fn fresh_catalog_installs_original_css_and_drake_without_frontend_builtins() {
         let temp = tempdir().unwrap();
         let catalog = ThemeCatalog::at(temp.path().join("themes"));
 
         assert!(initialize_catalog_files(&catalog, 0).unwrap().is_empty());
         let snapshot = catalog.scan().unwrap();
 
-        assert_eq!(CATALOG_VERSION, 4);
-        assert_eq!(snapshot.themes.len(), 22);
+        assert_eq!(CATALOG_VERSION, 2);
+        assert_eq!(snapshot.themes.len(), 20);
         assert!(snapshot
             .themes
             .iter()
             .any(|theme| theme.id == "drake-light"));
         assert!(snapshot.themes.iter().any(|theme| theme.id == "drake-ayu"));
-        assert!(snapshot
-            .themes
-            .iter()
-            .any(|theme| theme.id == "wenkai-paper-light"));
-        assert!(snapshot
-            .themes
-            .iter()
-            .any(|theme| theme.id == "wenkai-paper-dark"));
-        assert!(snapshot.themes.iter().all(|theme| {
-            !matches!(
-                theme.id.as_str(),
-                "wenkai-paper-light" | "wenkai-paper-dark"
-            ) || theme.source == "bundled"
-        }));
         assert!(temp.path().join("themes/drake-light").is_dir());
         assert!(temp.path().join("themes/drake-ayu").is_dir());
-        assert!(temp.path().join("themes/wenkai-paper-light").is_dir());
-        assert!(temp.path().join("themes/wenkai-paper-dark").is_dir());
+        for id in ["light", "dark", "classic-light", "classic-dark"] {
+            assert!(!temp.path().join("themes").join(id).exists(), "id {id}");
+        }
     }
 
     #[test]
-    fn older_versions_seed_only_their_missing_resource_ids_and_version_three_is_idempotent() {
+    fn version_one_adds_drake_without_restoring_deleted_css_or_overwriting_an_occupied_id() {
         let temp = tempdir().unwrap();
         let catalog = ThemeCatalog::at(temp.path().join("themes"));
         catalog.seed_missing().unwrap();
@@ -417,86 +354,19 @@ mod tests {
             .iter()
             .any(|theme| { theme.id == "drake-light" && theme.file_name == "drake-light.css" }));
         assert!(after_v1.themes.iter().any(|theme| theme.id == "drake-ayu"));
-        assert!(after_v1
-            .themes
-            .iter()
-            .any(|theme| theme.id == "wenkai-paper-light"));
-        assert!(after_v1
-            .themes
-            .iter()
-            .any(|theme| theme.id == "wenkai-paper-dark"));
         assert!(!temp.path().join("themes/drake-light").exists());
 
         assert!(initialize_catalog_files(&catalog, 2).unwrap().is_empty());
         assert_eq!(catalog.scan().unwrap(), after_v1);
-        assert!(initialize_catalog_files(&catalog, 3).unwrap().is_empty());
-        assert_eq!(catalog.scan().unwrap(), after_v1);
     }
 
     #[test]
-    fn version_two_adds_wenkai_without_reseeding_a_deleted_drake_theme() {
+    fn current_catalog_version_does_not_reseed_a_deleted_drake_theme() {
         let temp = tempdir().unwrap();
         let catalog = ThemeCatalog::at(temp.path().join("themes"));
-        catalog.seed_missing().unwrap();
-        assert!(catalog.seed_missing_drake().unwrap().is_empty());
+        assert!(initialize_catalog_files(&catalog, 0).unwrap().is_empty());
         let drake_ayu = catalog.find_descriptor("drake-ayu").unwrap();
         catalog.delete("drake-ayu", &drake_ayu.fingerprint).unwrap();
-
-        assert!(initialize_catalog_files(&catalog, 2).unwrap().is_empty());
-        let snapshot = catalog.scan().unwrap();
-
-        assert!(!snapshot.themes.iter().any(|theme| theme.id == "drake-ayu"));
-        assert!(snapshot
-            .themes
-            .iter()
-            .any(|theme| theme.id == "wenkai-paper-light"));
-        assert!(snapshot
-            .themes
-            .iter()
-            .any(|theme| theme.id == "wenkai-paper-dark"));
-    }
-
-    #[test]
-    fn version_three_replaces_existing_protected_wenkai_with_the_current_bundle() {
-        let temp = tempdir().unwrap();
-        let root = temp.path().join("themes");
-        let catalog = ThemeCatalog::at(root.clone());
-        assert!(catalog.seed_missing_wenkai().unwrap().is_empty());
-
-        let expected = ["wenkai-paper-light", "wenkai-paper-dark"].map(|id| {
-            let descriptor = catalog.find_descriptor(id).unwrap();
-            let css_path = root.join(id).join("theme.css");
-            let css = fs::read_to_string(&css_path).unwrap();
-            fs::write(
-                css_path,
-                format!("{css}\n/* stale bundled WenKai package */\n"),
-            )
-            .unwrap();
-            (id, descriptor.fingerprint)
-        });
-
-        assert!(initialize_catalog_files(&catalog, 3).unwrap().is_empty());
-
-        for (id, expected_fingerprint) in expected {
-            let descriptor = catalog.find_descriptor(id).unwrap();
-            assert_eq!(descriptor.fingerprint, expected_fingerprint);
-            let css = fs::read_to_string(root.join(id).join("theme.css")).unwrap();
-            assert!(!css.contains("stale bundled WenKai package"));
-            assert!(css.contains("LXGW WenKai Lite"));
-        }
-    }
-
-    #[test]
-    fn current_catalog_restores_missing_wenkai_without_reseeding_deleted_drake() {
-        let temp = tempdir().unwrap();
-        let root = temp.path().join("themes");
-        let catalog = ThemeCatalog::at(root.clone());
-        assert!(catalog.seed_missing_drake().unwrap().is_empty());
-        assert!(catalog.seed_missing_wenkai().unwrap().is_empty());
-
-        let drake_ayu = catalog.find_descriptor("drake-ayu").unwrap();
-        catalog.delete("drake-ayu", &drake_ayu.fingerprint).unwrap();
-        fs::remove_dir_all(root.join("wenkai-paper-light")).unwrap();
 
         assert!(initialize_catalog_files(&catalog, CATALOG_VERSION)
             .unwrap()
@@ -504,14 +374,7 @@ mod tests {
         let snapshot = catalog.scan().unwrap();
 
         assert!(!snapshot.themes.iter().any(|theme| theme.id == "drake-ayu"));
-        assert!(snapshot
-            .themes
-            .iter()
-            .any(|theme| theme.id == "wenkai-paper-light"));
-        assert!(snapshot
-            .themes
-            .iter()
-            .any(|theme| theme.id == "wenkai-paper-dark"));
+        assert_eq!(snapshot.themes.len(), 19);
     }
 
     #[test]

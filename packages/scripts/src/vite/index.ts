@@ -3,11 +3,13 @@ import tailwindcss from "@tailwindcss/vite";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "vitest/config";
+import { builtInThemeAssetsPlugin } from "./built-in-theme-assets.ts";
 import { katexFontsPlugin } from "./katex-fonts.ts";
 import { stripDebugPlugin } from "./strip-debug.ts";
 import type { Plugin, UserConfig } from "vite";
 
 export type MarkraAppViteConfigOptions = {
+  builtInThemeLicenseDirectoryUrl?: string | URL;
   browserNodeStubUrl: string | URL;
   packageJsonUrl: string | URL;
   server?: UserConfig["server"];
@@ -129,6 +131,11 @@ export function createMarkraAppViteConfig(options: MarkraAppViteConfigOptions) {
     plugins: [
       react(),
       tailwindcss(),
+      ...(options.builtInThemeLicenseDirectoryUrl
+        ? [builtInThemeAssetsPlugin({
+            licenseDirectoryUrl: options.builtInThemeLicenseDirectoryUrl
+          })]
+        : []),
       katexFontsPlugin(),
       ...(options.stripDebug !== false && mode === "production" ? [stripDebugPlugin()] : [])
     ],

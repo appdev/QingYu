@@ -21,11 +21,11 @@ export function useThemeCatalog() {
   const requestTokenRef = useRef(0);
   const mountedRef = useRef(true);
 
-  const refresh = useCallback(async () => {
+  const load = useCallback(async (refresh = false) => {
     const token = ++requestTokenRef.current;
     setLoading(true);
     try {
-      const snapshot = await getAppRuntime().themes.list();
+      const snapshot = await getAppRuntime().themes.list(refresh);
       if (!mountedRef.current || token !== requestTokenRef.current) return;
       setCatalog(mergeThemeCatalog(snapshot));
       setError(null);
@@ -37,12 +37,14 @@ export function useThemeCatalog() {
     }
   }, []);
 
+  const refresh = useCallback(() => load(true), [load]);
+
   useEffect(() => {
     mountedRef.current = true;
-    refresh().catch(() => {});
+    load(false).catch(() => {});
     let cleanup: (() => unknown) | null = null;
     listenThemeCatalogChanged(() => {
-      refresh().catch(() => {});
+      load(false).catch(() => {});
     }).then((stopListening) => {
       if (!mountedRef.current) {
         stopListening();
@@ -56,7 +58,7 @@ export function useThemeCatalog() {
       requestTokenRef.current += 1;
       cleanup?.();
     };
-  }, [refresh]);
+  }, [load]);
 
   const mutateAndRefresh = useCallback(async <T,>(operation: () => Promise<T>) => {
     const result = await operation();

@@ -1,0 +1,36 @@
+LXGW ZhenKai GB embedded derivative webfont provenance
+
+Upstream repository:
+https://github.com/lxgw/LxgwZhenKai
+
+Pinned upstream release:
+v0.825
+
+Pinned upstream commit:
+099d0d169f12fc21db51e07067a69cb070f5014b
+
+Official release asset and SHA-256:
+
+LXGWZhenKaiGB-Regular.ttf
+40876902a7ce25268ab710ad8fe6e2b63bc002aa4b68d22fd45fc1243726ced5
+
+Official OFL.txt SHA-256:
+71651b1dc30e0c8ab1768640db78e8139c86ca7af096d9b1d8c46eda67eeb524
+
+The bundled WOFF2 files are format-converted, Unicode-partitioned subsets
+created solely for WebView webfont delivery. The upstream glyph outlines and
+OS/2 weight class 400 are retained.
+
+Because conversion and subsetting create a Modified Version under OFL 1.1,
+the user-facing family, full, unique, and PostScript names were changed to the
+non-reserved derivative name "Light Whisper ZhenKai". Copyright and upstream
+attribution remain intact in the font metadata and this provenance file.
+
+The upstream family provides this single real Regular weight. The theme keeps
+semantic CSS requests such as 600 and 700 and permits only weight synthesis so
+WebView can create emphasis without synthesizing italic or small-caps faces.
+
+Ordered WOFF2 bundle SHA-256 (subsets 1 through 9):
+1d2c35a72a03564ee61c771ec5eb5756beef3a6f00464a13e1755060e280e3e5
+
+The official OFL.txt text is preserved as FONT-LICENSE.txt.
