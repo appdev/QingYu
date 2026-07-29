@@ -3,6 +3,8 @@ import { codeFolding } from "@codemirror/language";
 import type { Extension } from "@codemirror/state";
 import { GFM } from "@lezer/markdown";
 import {
+  jsonSyntaxHighlighting,
+  markdownSourceSyntaxHighlighting,
   markdownSyntaxHighlighting,
   markraHighlight,
 } from "./highlight.ts";
@@ -111,6 +113,8 @@ export type {
 } from "./image.ts";
 export { imagePreviewPlugin, resolveSafeImageSource } from "./image.ts";
 export {
+  jsonSyntaxHighlighting,
+  markdownSourceSyntaxHighlighting,
   markdownSyntaxHighlighting,
   markraHighlight,
 } from "./highlight.ts";

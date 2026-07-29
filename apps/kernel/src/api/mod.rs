@@ -1,0 +1,1486 @@
+mod routes;
+pub mod ws;
+
+use std::{fmt, net::SocketAddr, sync::Arc};
+
+use axum::{
+    body::Body,
+    extract::{Request, State},
+    http::{header, HeaderMap, HeaderValue, Method, StatusCode},
+    middleware::{self, Next},
+    response::{IntoResponse, Response},
+    Json, Router,
+};
+use utoipa::ToSchema;
+use uuid::Uuid;
+
+use crate::{
+    contract::{
+        ApiErrorEnvelope, ConnectionId, CreateDocumentRequest, CreatedDocumentDto,
+        DeleteDocumentRequest, DocumentContentDto, DocumentContents, DocumentEntryDto,
+        DocumentHistoryPageDto, DocumentId, DocumentPageDto, DomainEvent, ErrorCode, ErrorDetails,
+        EventSequence, GapReason, InstanceId, ListDocumentsQuery, LiveHealthResponse,
+        MoveDocumentRequest, PageQuery, PatchSettingsRequest, PatchSyncConfigRequest,
+        ProtocolVersion, ReadyHealthResponse, ReadySequence, ReloadScope, RequestId,
+        ResourceRefDto, RestoreDocumentHistoryRequest, Revision, SearchPageDto,
+        SearchWorkspaceQuery, ServerFrame, SettingsSnapshotDto, SnapshotRequired,
+        SyncConfigViewDto, SyncConnectionTestDto, SyncRunAcceptedDto, SyncSafeErrorDto,
+        SyncStatusDto, SystemVersionResponse, TestSyncConnectionRequest, TriggerSyncRunRequest,
+        UpdateDocumentRequest, WorkspaceDto,
+    },
+    error::{http_status_for_error_code, safe_error_envelope},
+    runtime::KernelRuntime,
+};
+
+const API_PREFIX: &str = "/api/v1/";
+const API_ROOT: &str = "/api/v1";
+const LIVE_PATH: &str = "/api/v1/health/live";
+const EVENTS_PATH: &str = "/api/v1/events";
+
+#[derive(Clone)]
+pub struct TransportPolicy {
+    host: HeaderValue,
+    origin: HeaderValue,
+}
+
+impl TransportPolicy {
+    pub fn loopback(host: &str, origin: &str) -> Result<Self, InvalidTransportPolicy> {
+        let address = host
+            .parse::<SocketAddr>()
+            .map_err(|_| InvalidTransportPolicy)?;
+        if address.ip().to_string() != "127.0.0.1" || address.port() == 0 || origin == "*" {
+            return Err(InvalidTransportPolicy);
+        }
+        let host = HeaderValue::from_str(host).map_err(|_| InvalidTransportPolicy)?;
+        let origin = HeaderValue::from_str(origin).map_err(|_| InvalidTransportPolicy)?;
+        Ok(Self { host, origin })
+    }
+}
+
+impl fmt::Debug for TransportPolicy {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("TransportPolicy")
+            .field("host", &self.host)
+            .field("origin", &self.origin)
+            .finish()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct InvalidTransportPolicy;
+
+impl fmt::Display for InvalidTransportPolicy {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("transport policy must use an exact loopback host and origin")
+    }
+}
+
+impl std::error::Error for InvalidTransportPolicy {}
+
+#[derive(Clone)]
+pub(crate) struct ApiState {
+    runtime: Arc<KernelRuntime>,
+    policy: TransportPolicy,
+}
+
+pub fn build_router(runtime: Arc<KernelRuntime>, policy: TransportPolicy) -> Router {
+    let state = ApiState { runtime, policy };
+    routes::router()
+        .fallback(routes::not_found)
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            enforce_transport,
+        ))
+        .with_state(state)
+}
+
+async fn enforce_transport(
+    State(state): State<ApiState>,
+    request: Request,
+    next: Next,
+) -> Response {
+    if !has_one_exact_header(request.headers(), header::HOST, &state.policy.host) {
+        return api_error(ErrorCode::HostNotAllowed, None);
+    }
+
+    let origin = request.headers().get_all(header::ORIGIN);
+    let origin_count = origin.iter().count();
+    let has_allowed_origin =
+        origin_count == 1 && origin.iter().next() == Some(&state.policy.origin);
+    if origin_count > 0 && !has_allowed_origin {
+        return api_error(ErrorCode::OriginNotAllowed, None);
+    }
+
+    if request.method() == Method::OPTIONS {
+        if !has_allowed_origin {
+            return api_error(ErrorCode::OriginNotAllowed, None);
+        }
+        return preflight_response(request, &state.policy);
+    }
+
+    if request.uri().path() == EVENTS_PATH {
+        if !has_allowed_origin {
+            return api_error(ErrorCode::OriginNotAllowed, None);
+        }
+    } else if request.uri().path() != LIVE_PATH
+        && !has_valid_bearer(request.headers(), &state.runtime)
+    {
+        let mut response = api_error(ErrorCode::Unauthorized, None);
+        decorate_response(
+            &mut response,
+            has_allowed_origin.then_some(&state.policy.origin),
+        );
+        return response;
+    }
+
+    if is_api_path(request.uri().path())
+        && !route_accepts_method(request.uri().path(), request.method())
+    {
+        let mut response = api_error(ErrorCode::InvalidRequest, None);
+        decorate_response(
+            &mut response,
+            has_allowed_origin.then_some(&state.policy.origin),
+        );
+        return response;
+    }
+
+    let mut response = next.run(request).await;
+    decorate_response(
+        &mut response,
+        has_allowed_origin.then_some(&state.policy.origin),
+    );
+    response
+}
+
+fn has_one_exact_header(
+    headers: &HeaderMap,
+    name: header::HeaderName,
+    expected: &HeaderValue,
+) -> bool {
+    let values = headers.get_all(name);
+    values.iter().count() == 1 && values.iter().next() == Some(expected)
+}
+
+fn has_valid_bearer(headers: &HeaderMap, runtime: &KernelRuntime) -> bool {
+    let values = headers.get_all(header::AUTHORIZATION);
+    if values.iter().count() != 1 {
+        return false;
+    }
+    values
+        .iter()
+        .next()
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .is_some_and(|candidate| runtime.matches_native_launch_credential(candidate))
+}
+
+fn preflight_response(request: Request<Body>, policy: &TransportPolicy) -> Response {
+    let requested_methods = request
+        .headers()
+        .get_all(header::ACCESS_CONTROL_REQUEST_METHOD);
+    if requested_methods.iter().count() != 1 {
+        return api_error(ErrorCode::InvalidRequest, None);
+    }
+    let Some(requested_method) = requested_methods
+        .iter()
+        .next()
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| Method::from_bytes(value.as_bytes()).ok())
+    else {
+        return api_error(ErrorCode::InvalidRequest, None);
+    };
+    if !route_accepts_method(request.uri().path(), &requested_method)
+        || !requested_headers_are_allowed(request.headers())
+    {
+        return api_error(ErrorCode::InvalidRequest, None);
+    }
+
+    let mut response = StatusCode::NO_CONTENT.into_response();
+    let headers = response.headers_mut();
+    headers.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, policy.origin.clone());
+    headers.insert(
+        header::ACCESS_CONTROL_ALLOW_METHODS,
+        HeaderValue::from_str(requested_method.as_str()).expect("HTTP method is a valid header"),
+    );
+    headers.insert(
+        header::ACCESS_CONTROL_ALLOW_HEADERS,
+        HeaderValue::from_static("Authorization, Content-Type"),
+    );
+    headers.insert(header::VARY, HeaderValue::from_static("Origin"));
+    decorate_response(&mut response, None);
+    response
+}
+
+fn requested_headers_are_allowed(headers: &HeaderMap) -> bool {
+    let values = headers.get_all(header::ACCESS_CONTROL_REQUEST_HEADERS);
+    if values.iter().count() > 1 {
+        return false;
+    }
+    values.iter().next().is_none_or(|value| {
+        value.to_str().is_ok_and(|value| {
+            value.split(',').all(|header| {
+                matches!(
+                    header.trim().to_ascii_lowercase().as_str(),
+                    "authorization" | "content-type"
+                )
+            })
+        })
+    })
+}
+
+fn route_accepts_method(path: &str, method: &Method) -> bool {
+    let accepted: &[Method] = match path {
+        "/api/v1/health/live"
+        | "/api/v1/health/ready"
+        | "/api/v1/system/version"
+        | "/api/v1/runtime"
+        | "/api/v1/workspace"
+        | "/api/v1/search"
+        | "/api/v1/sync/status"
+        | "/api/v1/events" => &[Method::GET],
+        "/api/v1/documents" => &[Method::GET, Method::POST],
+        "/api/v1/settings" | "/api/v1/sync/config" => &[Method::GET, Method::PATCH],
+        "/api/v1/sync/connection-test" | "/api/v1/sync/runs" => &[Method::POST],
+        _ => match path.split('/').collect::<Vec<_>>().as_slice() {
+            ["", "api", "v1", "documents", document_id] if !document_id.is_empty() => {
+                &[Method::GET, Method::PUT]
+            }
+            ["", "api", "v1", "documents", document_id, "move" | "delete"]
+                if !document_id.is_empty() =>
+            {
+                &[Method::POST]
+            }
+            ["", "api", "v1", "documents", document_id, "history"] if !document_id.is_empty() => {
+                &[Method::GET]
+            }
+            ["", "api", "v1", "documents", document_id, "history", snapshot_id, "restore"]
+                if !document_id.is_empty() && !snapshot_id.is_empty() =>
+            {
+                &[Method::POST]
+            }
+            _ => &[],
+        },
+    };
+    accepted.contains(method)
+}
+
+fn decorate_response(response: &mut Response, allowed_origin: Option<&HeaderValue>) {
+    let headers = response.headers_mut();
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    if !headers.contains_key("x-request-id") {
+        headers.insert(
+            "x-request-id",
+            HeaderValue::from_str(&Uuid::new_v4().to_string())
+                .expect("UUID request ID is a valid header"),
+        );
+    }
+    if let Some(origin) = allowed_origin {
+        headers.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, origin.clone());
+        headers.insert(
+            header::ACCESS_CONTROL_EXPOSE_HEADERS,
+            HeaderValue::from_static("X-Request-Id"),
+        );
+        headers.insert(header::VARY, HeaderValue::from_static("Origin"));
+    }
+}
+
+pub(crate) fn api_error(code: ErrorCode, details: Option<ErrorDetails>) -> Response {
+    let request_id = RequestId::new(Uuid::new_v4());
+    let envelope = safe_error_envelope(code, request_id, details).unwrap_or_else(|_| {
+        safe_error_envelope(ErrorCode::InternalError, request_id, None).unwrap()
+    });
+    let status = StatusCode::from_u16(http_status_for_error_code(envelope.code()))
+        .expect("contract status codes are valid HTTP statuses");
+    let mut response = (status, Json::<ApiErrorEnvelope>(envelope)).into_response();
+    response.headers_mut().insert(
+        "x-request-id",
+        HeaderValue::from_str(&request_id.as_uuid().to_string())
+            .expect("UUID request ID is a valid header"),
+    );
+    decorate_response(&mut response, None);
+    response
+}
+
+pub(crate) fn runtime(state: &ApiState) -> &Arc<KernelRuntime> {
+    &state.runtime
+}
+
+pub(crate) fn is_api_path(path: &str) -> bool {
+    path == API_ROOT || path.starts_with(API_PREFIX)
+}
+
+pub struct ApiDoc;
+
+impl ApiDoc {
+    pub fn openapi() -> serde_json::Value {
+        let mut document = serde_json::to_value(<SchemaApiDoc as utoipa::OpenApi>::openapi())
+            .expect("the static OpenAPI schema must serialize");
+        install_paths(&mut document);
+        install_operation_inputs(&mut document);
+        install_operation_errors(&mut document);
+        install_security_scheme(&mut document);
+        patch_literal_and_nullable_schemas(&mut document);
+        document
+    }
+}
+
+pub fn export_openapi_to_string() -> Result<String, OpenApiExportError> {
+    let mut output = serde_json::to_string_pretty(&ApiDoc::openapi())
+        .map_err(|_| OpenApiExportError::Serialization)?;
+    output.push('\n');
+    Ok(output)
+}
+
+pub fn check_openapi_artifact(path: &std::path::Path) -> Result<(), OpenApiExportError> {
+    let actual = std::fs::read(path).map_err(|_| OpenApiExportError::Read)?;
+    let expected = export_openapi_to_string()?;
+    if actual == expected.as_bytes() {
+        Ok(())
+    } else {
+        Err(OpenApiExportError::Drift)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OpenApiExportError {
+    Read,
+    Serialization,
+    Drift,
+}
+
+impl fmt::Display for OpenApiExportError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Read => formatter.write_str("the OpenAPI artifact could not be read"),
+            Self::Serialization => {
+                formatter.write_str("the OpenAPI document could not be serialized")
+            }
+            Self::Drift => {
+                formatter.write_str("the OpenAPI artifact differs from the Rust contract")
+            }
+        }
+    }
+}
+
+impl std::error::Error for OpenApiExportError {}
+
+#[derive(utoipa::OpenApi)]
+#[openapi(
+    info(title = "QingYu Kernel API", version = "1.0.0"),
+    components(schemas(
+        ApiErrorEnvelope,
+        ErrorCode,
+        LiveHealthResponse,
+        ReadyHealthResponse,
+        SystemVersionResponse,
+        crate::contract::RuntimeStateDto,
+        WorkspaceDto,
+        PageQuery,
+        ListDocumentsQuery,
+        DocumentEntryDto,
+        DocumentContentDto,
+        CreatedDocumentDto,
+        DocumentPageDto,
+        CreateDocumentRequest,
+        UpdateDocumentRequest,
+        MoveDocumentRequest,
+        DeleteDocumentRequest,
+        DocumentHistoryPageDto,
+        RestoreDocumentHistoryRequest,
+        SearchWorkspaceQuery,
+        SearchPageDto,
+        SettingsSnapshotDto,
+        PatchSettingsRequest,
+        SyncConfigViewDto,
+        PatchSyncConfigRequest,
+        TestSyncConnectionRequest,
+        SyncConnectionTestDto,
+        SyncSafeErrorDto,
+        SyncStatusDto,
+        TriggerSyncRunRequest,
+        SyncRunAcceptedDto,
+        AuthenticateFrameSchema,
+        ReadyFrame,
+        EventFrame,
+        GapFrame,
+        ErrorFrame,
+        ServerFrame,
+        ResourceRefDto,
+        WorkspaceChangedEvent,
+        DocumentCreatedEvent,
+        DocumentChangedEvent,
+        DocumentMovedEvent,
+        DocumentDeletedEvent,
+        SettingsChangedEvent,
+        SyncConfigChangedEvent,
+        SyncStatusChangedEvent,
+        DomainEvent,
+        SnapshotRequired,
+    ))
+)]
+struct SchemaApiDoc;
+
+#[allow(dead_code)]
+#[derive(ToSchema)]
+#[serde(rename_all = "camelCase")]
+struct AuthenticateFrameSchema {
+    #[serde(rename = "type")]
+    frame_type: AuthenticateFrameKind,
+    protocol_version: ProtocolVersion,
+    #[schema(write_only)]
+    credential: String,
+}
+
+#[allow(dead_code)]
+#[derive(ToSchema)]
+#[serde(rename_all = "kebab-case")]
+enum AuthenticateFrameKind {
+    Authenticate,
+}
+
+#[allow(dead_code)]
+#[derive(ToSchema)]
+#[serde(rename_all = "camelCase")]
+struct ReadyFrame {
+    #[serde(rename = "type")]
+    frame_type: ReadyFrameKind,
+    protocol_version: ProtocolVersion,
+    connection_id: ConnectionId,
+    instance_id: InstanceId,
+    sequence: ReadySequence,
+    snapshot_required: SnapshotRequired,
+}
+
+#[allow(dead_code)]
+#[derive(ToSchema)]
+#[serde(rename_all = "kebab-case")]
+enum ReadyFrameKind {
+    Ready,
+}
+
+#[allow(dead_code)]
+#[derive(ToSchema)]
+#[serde(rename_all = "camelCase")]
+struct EventFrame {
+    #[serde(rename = "type")]
+    frame_type: EventFrameKind,
+    protocol_version: ProtocolVersion,
+    connection_id: ConnectionId,
+    sequence: EventSequence,
+    resource: ResourceRefDto,
+    revision: Revision,
+    event: DomainEvent,
+}
+
+#[allow(dead_code)]
+#[derive(ToSchema)]
+#[serde(rename_all = "kebab-case")]
+enum EventFrameKind {
+    Event,
+}
+
+#[allow(dead_code)]
+#[derive(ToSchema)]
+#[serde(rename_all = "camelCase")]
+struct GapFrame {
+    #[serde(rename = "type")]
+    frame_type: GapFrameKind,
+    protocol_version: ProtocolVersion,
+    connection_id: ConnectionId,
+    sequence: EventSequence,
+    reason: GapReason,
+    reload_scopes: Vec<ReloadScope>,
+}
+
+#[allow(dead_code)]
+#[derive(ToSchema)]
+#[serde(rename_all = "kebab-case")]
+enum GapFrameKind {
+    Gap,
+}
+
+#[allow(dead_code)]
+#[derive(ToSchema)]
+#[serde(rename_all = "camelCase")]
+struct ErrorFrame {
+    #[serde(rename = "type")]
+    frame_type: ErrorFrameKind,
+    protocol_version: ProtocolVersion,
+    code: crate::contract::FrameErrorCode,
+    message: String,
+}
+
+#[allow(dead_code)]
+#[derive(ToSchema)]
+#[serde(rename_all = "kebab-case")]
+enum ErrorFrameKind {
+    Error,
+}
+
+#[allow(dead_code)]
+#[derive(ToSchema)]
+#[serde(rename_all = "camelCase")]
+struct WorkspaceChangedEvent {
+    #[serde(rename = "type")]
+    event_type: WorkspaceChangedKind,
+    workspace: WorkspaceDto,
+}
+
+#[allow(dead_code)]
+#[derive(ToSchema)]
+#[serde(rename_all = "kebab-case")]
+enum WorkspaceChangedKind {
+    WorkspaceChanged,
+}
+
+#[allow(dead_code)]
+#[derive(ToSchema)]
+#[serde(rename_all = "camelCase")]
+struct DocumentCreatedEvent {
+    #[serde(rename = "type")]
+    event_type: DocumentCreatedKind,
+    document: DocumentEntryDto,
+}
+
+#[allow(dead_code)]
+#[derive(ToSchema)]
+#[serde(rename_all = "kebab-case")]
+enum DocumentCreatedKind {
+    DocumentCreated,
+}
+
+#[allow(dead_code)]
+#[derive(ToSchema)]
+#[serde(rename_all = "camelCase")]
+struct DocumentChangedEvent {
+    #[serde(rename = "type")]
+    event_type: DocumentChangedKind,
+    document: DocumentEntryDto,
+}
+
+#[allow(dead_code)]
+#[derive(ToSchema)]
+#[serde(rename_all = "kebab-case")]
+enum DocumentChangedKind {
+    DocumentChanged,
+}
+
+#[allow(dead_code)]
+#[derive(ToSchema)]
+#[serde(rename_all = "camelCase")]
+struct DocumentMovedEvent {
+    #[serde(rename = "type")]
+    event_type: DocumentMovedKind,
+    document: DocumentEntryDto,
+    previous_path: crate::contract::WorkspaceRelativePath,
+}
+
+#[allow(dead_code)]
+#[derive(ToSchema)]
+#[serde(rename_all = "kebab-case")]
+enum DocumentMovedKind {
+    DocumentMoved,
+}
+
+#[allow(dead_code)]
+#[derive(ToSchema)]
+#[serde(rename_all = "camelCase")]
+struct DocumentDeletedEvent {
+    #[serde(rename = "type")]
+    event_type: DocumentDeletedKind,
+    document_id: DocumentId,
+    previous_path: crate::contract::WorkspaceRelativePath,
+    workspace_generation: crate::contract::WorkspaceGeneration,
+    revision: Revision,
+}
+
+#[allow(dead_code)]
+#[derive(ToSchema)]
+#[serde(rename_all = "kebab-case")]
+enum DocumentDeletedKind {
+    DocumentDeleted,
+}
+
+#[allow(dead_code)]
+#[derive(ToSchema)]
+#[serde(rename_all = "camelCase")]
+struct SettingsChangedEvent {
+    #[serde(rename = "type")]
+    event_type: SettingsChangedKind,
+    settings: SettingsSnapshotDto,
+}
+
+#[allow(dead_code)]
+#[derive(ToSchema)]
+#[serde(rename_all = "kebab-case")]
+enum SettingsChangedKind {
+    SettingsChanged,
+}
+
+#[allow(dead_code)]
+#[derive(ToSchema)]
+#[serde(rename_all = "camelCase")]
+struct SyncConfigChangedEvent {
+    #[serde(rename = "type")]
+    event_type: SyncConfigChangedKind,
+    config: SyncConfigViewDto,
+}
+
+#[allow(dead_code)]
+#[derive(ToSchema)]
+#[serde(rename_all = "kebab-case")]
+enum SyncConfigChangedKind {
+    SyncConfigChanged,
+}
+
+#[allow(dead_code)]
+#[derive(ToSchema)]
+#[serde(rename_all = "camelCase")]
+struct SyncStatusChangedEvent {
+    #[serde(rename = "type")]
+    event_type: SyncStatusChangedKind,
+    status: SyncStatusDto,
+}
+
+#[allow(dead_code)]
+#[derive(ToSchema)]
+#[serde(rename_all = "kebab-case")]
+enum SyncStatusChangedKind {
+    SyncStatusChanged,
+}
+
+fn install_paths(document: &mut serde_json::Value) {
+    let paths = document
+        .get_mut("paths")
+        .and_then(serde_json::Value::as_object_mut)
+        .expect("OpenAPI paths is an object");
+    let operations = [
+        (
+            "get",
+            "/api/v1/health/live",
+            "healthLive",
+            "200",
+            "LiveHealthResponse",
+            false,
+        ),
+        (
+            "get",
+            "/api/v1/health/ready",
+            "healthReady",
+            "200",
+            "ReadyHealthResponse",
+            true,
+        ),
+        (
+            "get",
+            "/api/v1/system/version",
+            "getSystemVersion",
+            "200",
+            "SystemVersionResponse",
+            true,
+        ),
+        (
+            "get",
+            "/api/v1/runtime",
+            "getRuntimeState",
+            "200",
+            "RuntimeStateDto",
+            true,
+        ),
+        (
+            "get",
+            "/api/v1/workspace",
+            "getWorkspace",
+            "200",
+            "WorkspaceDto",
+            true,
+        ),
+        (
+            "get",
+            "/api/v1/documents",
+            "listDocuments",
+            "200",
+            "DocumentPageDto",
+            true,
+        ),
+        (
+            "post",
+            "/api/v1/documents",
+            "createDocument",
+            "201",
+            "CreatedDocumentDto",
+            true,
+        ),
+        (
+            "get",
+            "/api/v1/documents/{documentId}",
+            "getDocument",
+            "200",
+            "DocumentContentDto",
+            true,
+        ),
+        (
+            "put",
+            "/api/v1/documents/{documentId}",
+            "updateDocument",
+            "200",
+            "DocumentContentDto",
+            true,
+        ),
+        (
+            "post",
+            "/api/v1/documents/{documentId}/move",
+            "moveDocument",
+            "200",
+            "DocumentEntryDto",
+            true,
+        ),
+        (
+            "post",
+            "/api/v1/documents/{documentId}/delete",
+            "deleteDocument",
+            "204",
+            "",
+            true,
+        ),
+        (
+            "get",
+            "/api/v1/documents/{documentId}/history",
+            "listDocumentHistory",
+            "200",
+            "DocumentHistoryPageDto",
+            true,
+        ),
+        (
+            "post",
+            "/api/v1/documents/{documentId}/history/{snapshotId}/restore",
+            "restoreDocumentHistory",
+            "200",
+            "DocumentContentDto",
+            true,
+        ),
+        (
+            "get",
+            "/api/v1/search",
+            "searchWorkspace",
+            "200",
+            "SearchPageDto",
+            true,
+        ),
+        (
+            "get",
+            "/api/v1/settings",
+            "getSettings",
+            "200",
+            "SettingsSnapshotDto",
+            true,
+        ),
+        (
+            "patch",
+            "/api/v1/settings",
+            "patchSettings",
+            "200",
+            "SettingsSnapshotDto",
+            true,
+        ),
+        (
+            "get",
+            "/api/v1/sync/config",
+            "getSyncConfig",
+            "200",
+            "SyncConfigViewDto",
+            true,
+        ),
+        (
+            "patch",
+            "/api/v1/sync/config",
+            "patchSyncConfig",
+            "200",
+            "SyncConfigViewDto",
+            true,
+        ),
+        (
+            "post",
+            "/api/v1/sync/connection-test",
+            "testSyncConnection",
+            "200",
+            "SyncConnectionTestDto",
+            true,
+        ),
+        (
+            "get",
+            "/api/v1/sync/status",
+            "getSyncStatus",
+            "200",
+            "SyncStatusDto",
+            true,
+        ),
+        (
+            "post",
+            "/api/v1/sync/runs",
+            "triggerSyncRun",
+            "202",
+            "SyncRunAcceptedDto",
+            true,
+        ),
+    ];
+    for (method, path, operation_id, status, schema, protected) in operations {
+        let mut success = if schema.is_empty() {
+            serde_json::json!({ "description": "Success" })
+        } else {
+            serde_json::json!({
+                "description": "Success",
+                "content": {
+                    "application/json": {
+                        "schema": { "$ref": format!("#/components/schemas/{schema}") }
+                    }
+                }
+            })
+        };
+        success["headers"] = serde_json::json!({
+            "X-Request-Id": request_id_response_header()
+        });
+        let mut operation = serde_json::json!({
+            "operationId": operation_id,
+            "responses": { (status): success }
+        });
+        if protected {
+            operation["security"] = serde_json::json!([{ "nativeBearer": [] }]);
+        }
+        paths
+            .entry(path.to_owned())
+            .or_insert_with(|| serde_json::json!({}))[method] = operation;
+    }
+}
+
+fn install_security_scheme(document: &mut serde_json::Value) {
+    document["components"]["securitySchemes"]["nativeBearer"] = serde_json::json!({
+        "type": "http",
+        "scheme": "bearer"
+    });
+}
+
+fn install_operation_inputs(document: &mut serde_json::Value) {
+    set_query_parameters(
+        document,
+        "/api/v1/documents",
+        "get",
+        &[
+            ("cursor", "PageCursor", false),
+            ("limit", "PageLimit", false),
+            ("parent", "WorkspaceRelativePath", false),
+        ],
+    );
+    set_request_body(
+        document,
+        "/api/v1/documents",
+        "post",
+        "CreateDocumentRequest",
+        100 * 1024 * 1024,
+    );
+    for (path, method) in [
+        ("/api/v1/documents/{documentId}", "get"),
+        ("/api/v1/documents/{documentId}", "put"),
+        ("/api/v1/documents/{documentId}/move", "post"),
+        ("/api/v1/documents/{documentId}/delete", "post"),
+        ("/api/v1/documents/{documentId}/history", "get"),
+        (
+            "/api/v1/documents/{documentId}/history/{snapshotId}/restore",
+            "post",
+        ),
+    ] {
+        push_parameter(
+            document,
+            path,
+            method,
+            "documentId",
+            "path",
+            "DocumentId",
+            true,
+        );
+    }
+    for (path, schema, limit) in [
+        (
+            "/api/v1/documents/{documentId}",
+            "UpdateDocumentRequest",
+            100 * 1024 * 1024,
+        ),
+        (
+            "/api/v1/documents/{documentId}/move",
+            "MoveDocumentRequest",
+            1024 * 1024,
+        ),
+        (
+            "/api/v1/documents/{documentId}/delete",
+            "DeleteDocumentRequest",
+            1024 * 1024,
+        ),
+        (
+            "/api/v1/documents/{documentId}/history/{snapshotId}/restore",
+            "RestoreDocumentHistoryRequest",
+            1024 * 1024,
+        ),
+    ] {
+        let method = if path == "/api/v1/documents/{documentId}" {
+            "put"
+        } else {
+            "post"
+        };
+        set_request_body(document, path, method, schema, limit);
+    }
+    set_query_parameters(
+        document,
+        "/api/v1/documents/{documentId}/history",
+        "get",
+        &[
+            ("cursor", "PageCursor", false),
+            ("limit", "PageLimit", false),
+        ],
+    );
+    push_parameter(
+        document,
+        "/api/v1/documents/{documentId}/history/{snapshotId}/restore",
+        "post",
+        "snapshotId",
+        "path",
+        "SnapshotId",
+        true,
+    );
+    set_query_parameters(
+        document,
+        "/api/v1/search",
+        "get",
+        &[
+            ("query", "SearchQuery", true),
+            ("cursor", "PageCursor", false),
+            ("limit", "PageLimit", false),
+        ],
+    );
+    for (path, method, schema) in [
+        ("/api/v1/settings", "patch", "PatchSettingsRequest"),
+        ("/api/v1/sync/config", "patch", "PatchSyncConfigRequest"),
+        (
+            "/api/v1/sync/connection-test",
+            "post",
+            "TestSyncConnectionRequest",
+        ),
+        ("/api/v1/sync/runs", "post", "TriggerSyncRunRequest"),
+    ] {
+        set_request_body(document, path, method, schema, 1024 * 1024);
+    }
+}
+
+fn operation_mut<'a>(
+    document: &'a mut serde_json::Value,
+    path: &str,
+    method: &str,
+) -> &'a mut serde_json::Value {
+    document
+        .get_mut("paths")
+        .and_then(serde_json::Value::as_object_mut)
+        .and_then(|paths| paths.get_mut(path))
+        .and_then(serde_json::Value::as_object_mut)
+        .and_then(|path| path.get_mut(method))
+        .expect("the operation is registered")
+}
+
+fn set_request_body(
+    document: &mut serde_json::Value,
+    path: &str,
+    method: &str,
+    schema: &str,
+    body_limit: usize,
+) {
+    let operation = operation_mut(document, path, method);
+    operation["requestBody"] = serde_json::json!({
+        "required": true,
+        "content": {
+            "application/json": {
+                "schema": { "$ref": format!("#/components/schemas/{schema}") }
+            }
+        }
+    });
+    operation["x-body-limit-bytes"] = serde_json::json!(body_limit);
+}
+
+fn set_query_parameters(
+    document: &mut serde_json::Value,
+    path: &str,
+    method: &str,
+    parameters: &[(&str, &str, bool)],
+) {
+    for (name, schema, required) in parameters {
+        push_parameter(document, path, method, name, "query", schema, *required);
+    }
+}
+
+fn push_parameter(
+    document: &mut serde_json::Value,
+    path: &str,
+    method: &str,
+    name: &str,
+    location: &str,
+    schema: &str,
+    required: bool,
+) {
+    let parameters = operation_mut(document, path, method)["parameters"]
+        .as_array_mut()
+        .map(|parameters| parameters as &mut Vec<serde_json::Value>);
+    let parameter = serde_json::json!({
+        "name": name,
+        "in": location,
+        "required": required,
+        "schema": { "$ref": format!("#/components/schemas/{schema}") }
+    });
+    if let Some(parameters) = parameters {
+        parameters.push(parameter);
+    } else {
+        operation_mut(document, path, method)["parameters"] = serde_json::json!([parameter]);
+    }
+}
+
+fn install_operation_errors(document: &mut serde_json::Value) {
+    const TRANSPORT: &[&str] = &[
+        "host_not_allowed",
+        "origin_not_allowed",
+        "unauthorized",
+        "internal_error",
+    ];
+    const WORKSPACE: &[&str] = &[
+        "kernel_not_ready",
+        "workspace_unavailable",
+        "workspace_locked",
+    ];
+
+    add_operation_errors(
+        document,
+        "/api/v1/health/live",
+        "get",
+        &["host_not_allowed", "origin_not_allowed", "internal_error"],
+    );
+    add_errors_with(
+        document,
+        "/api/v1/health/ready",
+        "get",
+        TRANSPORT,
+        &["kernel_not_ready"],
+    );
+    for (path, method) in [
+        ("/api/v1/system/version", "get"),
+        ("/api/v1/runtime", "get"),
+    ] {
+        add_errors_with(document, path, method, TRANSPORT, &["kernel_not_ready"]);
+    }
+    add_errors_with(document, "/api/v1/workspace", "get", TRANSPORT, WORKSPACE);
+
+    let document_routes = [
+        (
+            "/api/v1/documents",
+            "get",
+            &["invalid_request", "invalid_workspace_path"][..],
+        ),
+        (
+            "/api/v1/documents",
+            "post",
+            &[
+                "invalid_request",
+                "invalid_workspace_path",
+                "invalid_document_name",
+                "document_already_exists",
+                "document_too_large",
+                "document_invalid_encoding",
+                "revision_conflict",
+            ][..],
+        ),
+        (
+            "/api/v1/documents/{documentId}",
+            "get",
+            &[
+                "invalid_request",
+                "document_not_found",
+                "document_invalid_encoding",
+            ][..],
+        ),
+        (
+            "/api/v1/documents/{documentId}",
+            "put",
+            &[
+                "invalid_request",
+                "document_not_found",
+                "document_too_large",
+                "document_invalid_encoding",
+                "revision_conflict",
+            ][..],
+        ),
+        (
+            "/api/v1/documents/{documentId}/move",
+            "post",
+            &[
+                "invalid_request",
+                "invalid_workspace_path",
+                "invalid_document_name",
+                "document_not_found",
+                "document_already_exists",
+                "revision_conflict",
+            ][..],
+        ),
+        (
+            "/api/v1/documents/{documentId}/delete",
+            "post",
+            &["invalid_request", "document_not_found", "revision_conflict"][..],
+        ),
+        (
+            "/api/v1/documents/{documentId}/history",
+            "get",
+            &["invalid_request", "document_not_found"][..],
+        ),
+        (
+            "/api/v1/documents/{documentId}/history/{snapshotId}/restore",
+            "post",
+            &[
+                "invalid_request",
+                "document_not_found",
+                "document_too_large",
+                "document_invalid_encoding",
+                "revision_conflict",
+            ][..],
+        ),
+        (
+            "/api/v1/search",
+            "get",
+            &["invalid_request", "document_invalid_encoding"][..],
+        ),
+    ];
+    for (path, method, specific) in document_routes {
+        let mut codes = TRANSPORT.to_vec();
+        codes.extend_from_slice(WORKSPACE);
+        codes.extend_from_slice(specific);
+        add_operation_errors(document, path, method, &codes);
+    }
+
+    add_errors_with(
+        document,
+        "/api/v1/settings",
+        "get",
+        TRANSPORT,
+        &["settings_unavailable"],
+    );
+    add_errors_with(
+        document,
+        "/api/v1/settings",
+        "patch",
+        TRANSPORT,
+        &[
+            "invalid_request",
+            "settings_unavailable",
+            "settings_revision_conflict",
+            "invalid_settings_field",
+        ],
+    );
+    add_errors_with(
+        document,
+        "/api/v1/sync/config",
+        "get",
+        TRANSPORT,
+        &["sync_config_absent", "sync_config_invalid"],
+    );
+    for (path, method) in [
+        ("/api/v1/sync/config", "patch"),
+        ("/api/v1/sync/connection-test", "post"),
+    ] {
+        add_errors_with(
+            document,
+            path,
+            method,
+            TRANSPORT,
+            &[
+                "invalid_request",
+                "sync_config_absent",
+                "sync_config_invalid",
+                "sync_config_revision_conflict",
+                "sync_not_ready",
+            ],
+        );
+    }
+    add_errors_with(
+        document,
+        "/api/v1/sync/status",
+        "get",
+        TRANSPORT,
+        &["sync_not_ready"],
+    );
+    add_errors_with(
+        document,
+        "/api/v1/sync/runs",
+        "post",
+        TRANSPORT,
+        &[
+            "invalid_request",
+            "sync_not_ready",
+            "sync_run_unavailable",
+            "sync_config_revision_conflict",
+        ],
+    );
+}
+
+fn add_errors_with(
+    document: &mut serde_json::Value,
+    path: &str,
+    method: &str,
+    common: &[&str],
+    specific: &[&str],
+) {
+    let mut codes = common.to_vec();
+    codes.extend_from_slice(specific);
+    add_operation_errors(document, path, method, &codes);
+}
+
+fn add_operation_errors(
+    document: &mut serde_json::Value,
+    path: &str,
+    method: &str,
+    codes: &[&str],
+) {
+    let mut grouped = std::collections::BTreeMap::<u16, Vec<&str>>::new();
+    for code in codes {
+        grouped.entry(error_status(code)).or_default().push(code);
+    }
+    let responses = operation_mut(document, path, method)["responses"]
+        .as_object_mut()
+        .expect("operation responses is an object");
+    for (status, codes) in grouped {
+        responses.insert(
+            status.to_string(),
+            serde_json::json!({
+                "description": "Error",
+                "headers": {
+                    "X-Request-Id": request_id_response_header()
+                },
+                "content": {
+                    "application/json": {
+                        "schema": {
+                            "allOf": [
+                                { "$ref": "#/components/schemas/ApiErrorEnvelope" },
+                                {
+                                    "type": "object",
+                                    "properties": {
+                                        "code": { "type": "string", "enum": codes }
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                }
+            }),
+        );
+    }
+}
+
+fn request_id_response_header() -> serde_json::Value {
+    serde_json::json!({
+        "description": "Correlation ID for this response.",
+        "required": true,
+        "schema": {
+            "type": "string",
+            "format": "uuid"
+        }
+    })
+}
+
+fn error_status(code: &str) -> u16 {
+    match code {
+        "invalid_request" | "invalid_workspace_path" | "invalid_document_name" => 400,
+        "unauthorized" => 401,
+        "host_not_allowed" | "origin_not_allowed" => 403,
+        "document_not_found" | "sync_config_absent" => 404,
+        "document_already_exists"
+        | "revision_conflict"
+        | "settings_revision_conflict"
+        | "sync_config_revision_conflict" => 409,
+        "document_too_large" => 413,
+        "document_invalid_encoding" | "invalid_settings_field" | "sync_config_invalid" => 422,
+        "workspace_locked" => 423,
+        "kernel_not_ready"
+        | "workspace_unavailable"
+        | "settings_unavailable"
+        | "sync_not_ready"
+        | "sync_run_unavailable" => 503,
+        "internal_error" => 500,
+        _ => 500,
+    }
+}
+
+fn patch_literal_and_nullable_schemas(document: &mut serde_json::Value) {
+    document["components"]["schemas"]["SnapshotRequired"] = serde_json::json!({
+        "type": "boolean",
+        "const": true
+    });
+    let schemas = document["components"]["schemas"]
+        .as_object_mut()
+        .expect("OpenAPI schemas is an object");
+    let authenticate = schemas
+        .remove("AuthenticateFrameSchema")
+        .expect("authenticate frame schema is registered");
+    schemas.insert("AuthenticateFrame".to_owned(), authenticate);
+    schemas
+        .get_mut("DocumentContents")
+        .and_then(serde_json::Value::as_object_mut)
+        .expect("DocumentContents schema is an object")
+        .insert(
+            "x-max-utf8-bytes".to_owned(),
+            serde_json::json!(DocumentContents::maximum_bytes()),
+        );
+
+    for schema in schemas.values_mut() {
+        rename_schema_properties_to_camel_case(schema);
+        strip_null_from_optional_properties(schema);
+    }
+    let nullable_names = schemas
+        .keys()
+        .filter(|name| name.starts_with("Nullable_"))
+        .cloned()
+        .collect::<Vec<_>>();
+    for name in nullable_names {
+        let schema = schemas
+            .remove(&name)
+            .expect("the nullable schema was collected from this map");
+        schemas.insert(
+            name,
+            serde_json::json!({
+                "oneOf": [
+                    { "type": "null" },
+                    schema
+                ]
+            }),
+        );
+    }
+}
+
+fn rename_schema_properties_to_camel_case(schema: &mut serde_json::Value) {
+    match schema {
+        serde_json::Value::Object(object) => {
+            if let Some(properties) = object
+                .get_mut("properties")
+                .and_then(serde_json::Value::as_object_mut)
+            {
+                let original = std::mem::take(properties);
+                *properties = original
+                    .into_iter()
+                    .map(|(name, value)| (snake_to_lower_camel(&name), value))
+                    .collect();
+            }
+            if let Some(required) = object
+                .get_mut("required")
+                .and_then(serde_json::Value::as_array_mut)
+            {
+                for name in required {
+                    if let Some(value) = name.as_str() {
+                        *name = serde_json::Value::String(snake_to_lower_camel(value));
+                    }
+                }
+            }
+            for value in object.values_mut() {
+                rename_schema_properties_to_camel_case(value);
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for value in values {
+                rename_schema_properties_to_camel_case(value);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn snake_to_lower_camel(value: &str) -> String {
+    let mut parts = value.split('_');
+    let Some(first) = parts.next() else {
+        return String::new();
+    };
+    let mut output = first.to_owned();
+    for part in parts {
+        let mut characters = part.chars();
+        if let Some(first) = characters.next() {
+            output.extend(first.to_uppercase());
+            output.extend(characters);
+        }
+    }
+    output
+}
+
+fn strip_null_from_optional_properties(schema: &mut serde_json::Value) {
+    let Some(object) = schema.as_object_mut() else {
+        return;
+    };
+    let required = object
+        .get("required")
+        .and_then(serde_json::Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(str::to_owned)
+                .collect::<std::collections::HashSet<_>>()
+        })
+        .unwrap_or_default();
+    if let Some(properties) = object
+        .get_mut("properties")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        for (name, property) in properties {
+            if !required.contains(name) {
+                strip_null_schema(property);
+            }
+            strip_null_from_optional_properties(property);
+        }
+    }
+    for key in ["allOf", "oneOf", "anyOf"] {
+        if let Some(parts) = object
+            .get_mut(key)
+            .and_then(serde_json::Value::as_array_mut)
+        {
+            for part in parts {
+                strip_null_from_optional_properties(part);
+            }
+        }
+    }
+}
+
+fn strip_null_schema(schema: &mut serde_json::Value) {
+    let Some(object) = schema.as_object_mut() else {
+        return;
+    };
+    let single_type = object
+        .get_mut("type")
+        .and_then(serde_json::Value::as_array_mut)
+        .and_then(|types| {
+            types.retain(|value| value.as_str() != Some("null"));
+            (types.len() == 1).then(|| types[0].clone())
+        });
+    if let Some(single_type) = single_type {
+        object.insert("type".to_owned(), single_type);
+    }
+    if let Some(values) = object
+        .get_mut("enum")
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        values.retain(|value| !value.is_null());
+    }
+    for key in ["oneOf", "anyOf"] {
+        let replacement = object
+            .get_mut(key)
+            .and_then(serde_json::Value::as_array_mut)
+            .and_then(|parts| {
+                parts.retain(|part| {
+                    part.get("type").and_then(serde_json::Value::as_str) != Some("null")
+                });
+                (parts.len() == 1).then(|| parts[0].clone())
+            });
+        if let Some(replacement) = replacement {
+            *schema = replacement;
+            return;
+        }
+    }
+    object.remove("nullable");
+}

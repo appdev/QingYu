@@ -16,10 +16,14 @@ use crate::storage_capability::{
     sync_directory, unique_regular_file_identity, UniqueRegularFileIdentity,
 };
 pub(super) const MANIFEST_VERSION: u32 = 3;
-static REMOTE_SYNC_EXECUTION_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 static SYNC_MUTATION_STAGING_SEQUENCE: AtomicUsize = AtomicUsize::new(0);
 pub(super) const MAX_IMMEDIATE_RECHECK_PASSES: usize = 3;
 const STAGED_SYNC_REPLACEMENT_NAME: &str = "replacement";
+
+#[derive(Default)]
+pub(crate) struct RemoteSyncExecutionCoordinator {
+    execution_lock: tokio::sync::Mutex<()>,
+}
 
 #[cfg(test)]
 pub(crate) type AtomicReplaceTestHook =
@@ -264,9 +268,12 @@ pub(crate) async fn execute_remote_sync<B: RemoteSyncBackend>(
     scope: &RemoteSyncScope,
     backend: &B,
 ) -> Result<RemoteSyncSummary, RemoteSyncError> {
-    let _execution_guard = REMOTE_SYNC_EXECUTION_LOCK.lock().await;
-    let hooks = RemoteSyncExecutionHooks::default();
-    execute_remote_sync_locked(scope, backend, &hooks).await
+    let coordinator = RemoteSyncExecutionCoordinator::default();
+    with_remote_sync_execution_lock(&coordinator, || async {
+        let hooks = RemoteSyncExecutionHooks::default();
+        execute_remote_sync_locked(scope, backend, &hooks).await
+    })
+    .await
 }
 
 #[cfg(test)]
@@ -285,7 +292,8 @@ where
     SettingsBackend: RemoteSyncBackend,
     Reconcile: FnOnce(Option<&str>) -> Result<(), String>,
 {
-    with_remote_sync_execution_lock(|| async {
+    let coordinator = RemoteSyncExecutionCoordinator::default();
+    with_remote_sync_execution_lock(&coordinator, || async {
         execute_remote_sync_pair_locked(
             notes_scope,
             notes_backend,
@@ -299,13 +307,14 @@ where
 }
 
 pub(crate) async fn with_remote_sync_execution_lock<Operation, OperationFuture, Output>(
+    coordinator: &RemoteSyncExecutionCoordinator,
     operation: Operation,
 ) -> Output
 where
     Operation: FnOnce() -> OperationFuture,
     OperationFuture: Future<Output = Output>,
 {
-    let _execution_guard = REMOTE_SYNC_EXECUTION_LOCK.lock().await;
+    let _execution_guard = coordinator.execution_lock.lock().await;
     operation().await
 }
 
@@ -380,8 +389,11 @@ pub(crate) async fn execute_remote_sync_with_hooks<B: RemoteSyncBackend>(
     backend: &B,
     hooks: RemoteSyncExecutionHooks,
 ) -> Result<RemoteSyncSummary, RemoteSyncError> {
-    let _execution_guard = REMOTE_SYNC_EXECUTION_LOCK.lock().await;
-    execute_remote_sync_locked(scope, backend, &hooks).await
+    let coordinator = RemoteSyncExecutionCoordinator::default();
+    with_remote_sync_execution_lock(&coordinator, || async {
+        execute_remote_sync_locked(scope, backend, &hooks).await
+    })
+    .await
 }
 
 async fn execute_remote_sync_locked<B: RemoteSyncBackend>(
@@ -2567,6 +2579,62 @@ mod tests {
 
     fn test_scope(root: &Path, manifest_name: &str) -> RemoteSyncScope {
         RemoteSyncScope::notes(root, test_state_root(root), manifest_name, None, None).unwrap()
+    }
+
+    #[tokio::test]
+    async fn execution_coordinator_serializes_shared_state_without_blocking_isolated_state() {
+        let shared = Arc::new(super::RemoteSyncExecutionCoordinator::default());
+        let isolated = Arc::new(super::RemoteSyncExecutionCoordinator::default());
+        let shared_entered = Arc::new(tokio::sync::Notify::new());
+        let shared_release = Arc::new(tokio::sync::Notify::new());
+        let first = tokio::spawn({
+            let shared = Arc::clone(&shared);
+            let shared_entered = Arc::clone(&shared_entered);
+            let shared_release = Arc::clone(&shared_release);
+            async move {
+                super::with_remote_sync_execution_lock(&shared, || async move {
+                    shared_entered.notify_one();
+                    shared_release.notified().await;
+                })
+                .await;
+            }
+        });
+        shared_entered.notified().await;
+        let second_started = Arc::new(tokio::sync::Notify::new());
+        let second_entered = Arc::new(tokio::sync::Notify::new());
+        let second = tokio::spawn({
+            let shared = Arc::clone(&shared);
+            let second_started = Arc::clone(&second_started);
+            let second_entered = Arc::clone(&second_entered);
+            async move {
+                second_started.notify_one();
+                super::with_remote_sync_execution_lock(&shared, || async move {
+                    second_entered.notify_one();
+                })
+                .await;
+            }
+        });
+
+        second_started.notified().await;
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), second_entered.notified())
+                .await
+                .is_err()
+        );
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            super::with_remote_sync_execution_lock(&isolated, || async {}),
+        )
+        .await
+        .expect("an isolated coordinator must not inherit another runtime's lock");
+
+        shared_release.notify_one();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            first.await.unwrap();
+            second.await.unwrap();
+        })
+        .await
+        .expect("the shared coordinator must release the queued operation");
     }
 
     #[test]
@@ -5473,15 +5541,32 @@ mod tests {
     }
 
     #[test]
-    fn serializes_remote_sync_execution_across_entry_points() {
+    fn shared_execution_coordinator_serializes_remote_sync_entry_points() {
         tauri::async_runtime::block_on(async {
             let first_root = temp_root("concurrency-first");
             let second_root = temp_root("concurrency-second");
             let backend = ConcurrencyBackend::default();
+            let coordinator = super::RemoteSyncExecutionCoordinator::default();
+            let first_scope = test_scope(&first_root, "fake-manifest.json");
+            let second_scope = test_scope(&second_root, "fake-manifest.json");
 
             let (first, second) = tokio::join!(
-                execute_remote_sync(&first_root, &backend),
-                execute_remote_sync(&second_root, &backend)
+                super::with_remote_sync_execution_lock(&coordinator, || async {
+                    super::execute_remote_sync_locked(
+                        &first_scope,
+                        &backend,
+                        &super::RemoteSyncExecutionHooks::default(),
+                    )
+                    .await
+                }),
+                super::with_remote_sync_execution_lock(&coordinator, || async {
+                    super::execute_remote_sync_locked(
+                        &second_scope,
+                        &backend,
+                        &super::RemoteSyncExecutionHooks::default(),
+                    )
+                    .await
+                })
             );
 
             first.unwrap();

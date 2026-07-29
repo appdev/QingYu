@@ -1,0 +1,1 @@
+//! Sync scope boundary.

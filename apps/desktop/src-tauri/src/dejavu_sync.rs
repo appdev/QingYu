@@ -48,14 +48,22 @@ pub(crate) fn install_production_graph(app: &tauri::AppHandle) -> Result<(), Rep
     app.state::<PathGuardCoordinatorOwner>()
         .install(path_guard_factory.clone())?;
     let coordinator_factory: Arc<dyn WorkingTreeCoordinatorFactory> = Arc::new(path_guard_factory);
-    let runner = Arc::new(DejavuRepositoryRunner::new(&app_data, coordinator_factory));
+    let repository_runtime = qingyu_dejavu::RepositoryRuntimeState::default();
+    let runner = Arc::new(DejavuRepositoryRunner::new_with_runtime(
+        &app_data,
+        coordinator_factory,
+        repository_runtime.clone(),
+    ));
     let status_store = Arc::new(RepositoryStatusStore::new(
         &app_data,
         Arc::new(TauriRepositoryStatusEmitter::new(app.clone())),
     ));
     let service = DejavuSyncService::new(Arc::clone(&runner), Arc::clone(&status_store));
     let local_purge = Arc::new(LocalPurgeExecutor::new(
-        Arc::new(DejavuLocalPurgeRepository::new(&app_data)),
+        Arc::new(DejavuLocalPurgeRepository::new_with_runtime(
+            &app_data,
+            repository_runtime.clone(),
+        )),
         local_calendar_date_at,
         os_random_index,
     ));
@@ -91,7 +99,10 @@ pub(crate) fn install_production_graph(app: &tauri::AppHandle) -> Result<(), Rep
     service_owner.install_lifecycle(Arc::new(RepositoryLifecycleController::new(
         &app_data,
         service,
-        Arc::new(DejavuRepositoryMaintenance::new(&app_data)),
+        Arc::new(DejavuRepositoryMaintenance::new_with_runtime(
+            &app_data,
+            repository_runtime,
+        )),
         Arc::clone(&status_store),
         Arc::new(scheduler_owner.inner().clone()),
         Arc::clone(&maintenance),

@@ -1,13 +1,13 @@
 use std::sync::{Arc, Mutex, OnceLock};
 
 use serde_json::Value;
-use tauri::{Emitter, Runtime};
+use tauri::{Emitter, Manager, Runtime};
 use tauri_plugin_store::StoreExt;
 
 use super::config::{McpConfig, McpConfigDocument, McpConfigError};
+use crate::app_settings::KernelSettingsOwner;
 
 const LOCAL_STATE_STORE_PATH: &str = "local-state.json";
-const SETTINGS_STORE_PATH: &str = "settings.json";
 const LOCAL_STATE_SCHEMA_VERSION_KEY: &str = "schemaVersion";
 const LOCAL_STATE_SCHEMA_VERSION: u64 = 2;
 const MCP_SETTINGS_KEY: &str = "mcp";
@@ -19,9 +19,8 @@ pub(crate) trait McpSettingsBackend: Send + Sync {
     fn delete_local(&self, key: &str) -> Result<(), McpConfigError>;
     fn save_local(&self) -> Result<(), McpConfigError>;
     fn get_legacy(&self, key: &str) -> Result<Option<Value>, McpConfigError>;
-    fn set_legacy(&self, key: &str, value: Value) -> Result<(), McpConfigError>;
-    fn delete_legacy(&self, key: &str) -> Result<(), McpConfigError>;
-    fn save_legacy(&self) -> Result<(), McpConfigError>;
+    fn remove_legacy_if_matches(&self, key: &str, expected: &Value)
+        -> Result<bool, McpConfigError>;
 }
 
 pub(crate) trait McpPolicyEventSink: Send + Sync {
@@ -29,7 +28,7 @@ pub(crate) trait McpPolicyEventSink: Send + Sync {
 }
 
 struct StoreMcpSettingsBackend<R: Runtime> {
-    legacy: Arc<tauri_plugin_store::Store<R>>,
+    legacy: KernelSettingsOwner,
     local: Arc<tauri_plugin_store::Store<R>>,
 }
 
@@ -53,21 +52,25 @@ impl<R: Runtime> McpSettingsBackend for StoreMcpSettingsBackend<R> {
     }
 
     fn get_legacy(&self, key: &str) -> Result<Option<Value>, McpConfigError> {
-        Ok(self.legacy.get(key))
+        if key != MCP_SETTINGS_KEY {
+            return Err(McpConfigError::read());
+        }
+        self.legacy
+            .read_legacy_mcp_config()
+            .map_err(|_| McpConfigError::read())
     }
 
-    fn set_legacy(&self, key: &str, value: Value) -> Result<(), McpConfigError> {
-        self.legacy.set(key, value);
-        Ok(())
-    }
-
-    fn delete_legacy(&self, key: &str) -> Result<(), McpConfigError> {
-        self.legacy.delete(key);
-        Ok(())
-    }
-
-    fn save_legacy(&self) -> Result<(), McpConfigError> {
-        self.legacy.save().map_err(|_| McpConfigError::write())
+    fn remove_legacy_if_matches(
+        &self,
+        key: &str,
+        expected: &Value,
+    ) -> Result<bool, McpConfigError> {
+        if key != MCP_SETTINGS_KEY {
+            return Err(McpConfigError::write());
+        }
+        self.legacy
+            .remove_legacy_mcp_config_if_matches(expected)
+            .map_err(|_| McpConfigError::write())
     }
 }
 
@@ -99,11 +102,7 @@ impl McpLocalSettingsService {
             .disable_auto_save()
             .build()
             .map_err(|_| McpConfigError::read())?;
-        let legacy = app
-            .store_builder(SETTINGS_STORE_PATH)
-            .disable_auto_save()
-            .build()
-            .map_err(|_| McpConfigError::read())?;
+        let legacy = app.state::<KernelSettingsOwner>().inner().clone();
         Ok(Self {
             backend: Arc::new(StoreMcpSettingsBackend { legacy, local }),
             events: Some(Arc::new(TauriMcpPolicyEventSink { app: app.clone() })),
@@ -197,9 +196,10 @@ impl McpLocalSettingsService {
         };
         if local_is_durable {
             if let Some(legacy) = legacy {
-                self.backend.delete_legacy(MCP_SETTINGS_KEY)?;
-                if let Err(error) = self.backend.save_legacy() {
-                    let _restore_result = self.backend.set_legacy(MCP_SETTINGS_KEY, legacy);
+                if let Err(error) = self
+                    .backend
+                    .remove_legacy_if_matches(MCP_SETTINGS_KEY, &legacy)
+                {
                     eprintln!("QingYu MCP legacy cleanup skipped: {}", error.code);
                 }
             }
@@ -337,23 +337,21 @@ impl McpSettingsBackend for MemoryMcpSettingsBackend {
         Ok(self.legacy(key))
     }
 
-    fn set_legacy(&self, key: &str, value: Value) -> Result<(), McpConfigError> {
-        self.legacy.lock().unwrap().insert(key.to_string(), value);
-        Ok(())
-    }
-
-    fn delete_legacy(&self, key: &str) -> Result<(), McpConfigError> {
+    fn remove_legacy_if_matches(
+        &self,
+        key: &str,
+        expected: &Value,
+    ) -> Result<bool, McpConfigError> {
         self.operations.lock().unwrap().push("delete-legacy");
-        self.legacy.lock().unwrap().remove(key);
-        Ok(())
-    }
-
-    fn save_legacy(&self) -> Result<(), McpConfigError> {
-        self.operations.lock().unwrap().push("save-legacy");
         if Self::consume_failure(&self.fail_legacy_saves) {
             Err(McpConfigError::write())
         } else {
-            Ok(())
+            let mut legacy = self.legacy.lock().unwrap();
+            if legacy.get(key) != Some(expected) {
+                return Ok(false);
+            }
+            legacy.remove(key);
+            Ok(true)
         }
     }
 }

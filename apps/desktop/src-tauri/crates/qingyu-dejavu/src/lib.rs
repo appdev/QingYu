@@ -39,6 +39,7 @@ pub use entity::{
 };
 pub use error::RepoError;
 pub use history::History;
+pub use lifecycle::RepositoryRuntimeState;
 pub use purge::PurgeStat;
 pub use ref_store::RefStore;
 pub use repo::{Device, Repo, RepoOptions, RepoPaths};

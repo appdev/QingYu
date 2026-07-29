@@ -1,8 +1,9 @@
 use std::path::PathBuf;
 
-use serde_json::{json, Value};
+use serde_json::Value;
 use tauri::{Manager, Runtime};
-use tauri_plugin_store::StoreExt;
+
+use crate::app_settings::KernelSettingsOwner;
 
 use super::{
     archive::PreparedThemeImport, catalog::ThemeCatalog, parser::parse_theme_file,
@@ -10,11 +11,8 @@ use super::{
     ThemeErrorCode,
 };
 
-const SETTINGS_STORE_PATH: &str = "settings.json";
 const CATALOG_VERSION_KEY: &str = "themeCatalogVersion";
 const CATALOG_VERSION: i64 = 4;
-const LIGHT_THEME_ID_KEY: &str = "lightThemeId";
-const DARK_THEME_ID_KEY: &str = "darkThemeId";
 
 pub(crate) fn initialize_catalog<R: Runtime>(
     app: &tauri::AppHandle<R>,
@@ -25,13 +23,11 @@ pub(crate) fn initialize_catalog<R: Runtime>(
         .map_err(|error| ThemeError::new(ThemeErrorCode::Io, error.to_string()))?
         .join("themes");
     let catalog = ThemeCatalog::at(root);
-    let store = app.store(SETTINGS_STORE_PATH).map_err(|_| {
-        ThemeError::new(
-            ThemeErrorCode::Io,
-            "The QingYu settings store is unavailable.",
-        )
-    })?;
-    let stored_catalog_version = store
+    let settings_owner = app.state::<KernelSettingsOwner>();
+    let settings = settings_owner
+        .read_theme_catalog_settings()
+        .map_err(theme_settings_unavailable)?;
+    let stored_catalog_version = settings
         .get(CATALOG_VERSION_KEY)
         .and_then(|value| value.as_i64())
         .unwrap_or(0)
@@ -47,44 +43,47 @@ pub(crate) fn initialize_catalog<R: Runtime>(
     }
     let seed_diagnostics = initialize_catalog_files(&catalog, stored_catalog_version)?;
     if !should_migrate_legacy_preferences(stored_catalog_version) {
-        store.set(CATALOG_VERSION_KEY, json!(CATALOG_VERSION));
-        if store.save().is_err() {
-            store.set(CATALOG_VERSION_KEY, json!(stored_catalog_version));
-            return Err(ThemeError::new(
-                ThemeErrorCode::Io,
-                "Theme catalog settings could not be saved.",
-            ));
+        let committed = settings_owner
+            .commit_theme_catalog_settings(stored_catalog_version, CATALOG_VERSION, None)
+            .map_err(theme_settings_save_failed)?;
+        if !committed {
+            return initialize_catalog(app);
         }
         return scan_with_diagnostics(&catalog, seed_diagnostics);
     }
 
-    let legacy_theme = store.get("theme").and_then(json_string);
-    let mut appearance_mode = store
+    let legacy_theme = settings.get("theme").cloned().and_then(json_string);
+    let mut appearance_mode = settings
         .get("appearanceMode")
+        .cloned()
         .and_then(json_string)
         .filter(|value| matches!(value.as_str(), "system" | "light" | "dark"))
         .unwrap_or_else(|| appearance_from_legacy(legacy_theme.as_deref()).to_string());
-    let mut light_theme_id = store
+    let mut light_theme_id = settings
         .get("lightTheme")
+        .cloned()
         .and_then(json_string)
         .unwrap_or_else(|| legacy_light_theme(legacy_theme.as_deref()));
-    let mut dark_theme_id = store
+    let mut dark_theme_id = settings
         .get("darkTheme")
+        .cloned()
         .and_then(json_string)
         .unwrap_or_else(|| legacy_dark_theme(legacy_theme.as_deref()));
 
     if light_theme_id == "custom" {
-        let css = store
+        let css = settings
             .get("lightCustomThemeCss")
-            .or_else(|| store.get("customThemeCss"))
+            .or_else(|| settings.get("customThemeCss"))
+            .cloned()
             .and_then(json_string)
             .unwrap_or_default();
         light_theme_id = migrate_custom_theme(&catalog, ThemeAppearance::Light, &css)?.id;
     }
     if dark_theme_id == "custom" {
-        let css = store
+        let css = settings
             .get("darkCustomThemeCss")
-            .or_else(|| store.get("customThemeCss"))
+            .or_else(|| settings.get("customThemeCss"))
+            .cloned()
             .and_then(json_string)
             .unwrap_or_default();
         dark_theme_id = migrate_custom_theme(&catalog, ThemeAppearance::Dark, &css)?.id;
@@ -111,19 +110,32 @@ pub(crate) fn initialize_catalog<R: Runtime>(
         appearance_mode = "system".to_string();
     }
 
-    store.set("appearanceMode", json!(appearance_mode));
-    store.set(LIGHT_THEME_ID_KEY, json!(light_theme_id));
-    store.set(DARK_THEME_ID_KEY, json!(dark_theme_id));
-    store.set(CATALOG_VERSION_KEY, json!(CATALOG_VERSION));
-    if store.save().is_err() {
-        store.delete(CATALOG_VERSION_KEY);
-        return Err(ThemeError::new(
-            ThemeErrorCode::Io,
-            "Theme catalog settings could not be saved.",
-        ));
+    let committed = settings_owner
+        .commit_theme_catalog_settings(
+            stored_catalog_version,
+            CATALOG_VERSION,
+            Some((&appearance_mode, &light_theme_id, &dark_theme_id)),
+        )
+        .map_err(theme_settings_save_failed)?;
+    if !committed {
+        return initialize_catalog(app);
     }
 
     scan_with_diagnostics(&catalog, seed_diagnostics)
+}
+
+fn theme_settings_unavailable(_error: crate::app_settings::AppSettingsError) -> ThemeError {
+    ThemeError::new(
+        ThemeErrorCode::Io,
+        "The QingYu settings store is unavailable.",
+    )
+}
+
+fn theme_settings_save_failed(_error: crate::app_settings::AppSettingsError) -> ThemeError {
+    ThemeError::new(
+        ThemeErrorCode::Io,
+        "Theme catalog settings could not be saved.",
+    )
 }
 
 pub(crate) fn theme_directory<R: Runtime>(

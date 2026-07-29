@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use rmcp::schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::app_settings::{AppSettingsService, ExposedSettingsPatch};
+use crate::app_settings::ExposedSettingsPatch;
 
 use super::{failure_from_code, McpServices, ToolResult};
 
@@ -26,7 +26,7 @@ pub(super) fn get(services: &McpServices) -> ToolResult {
         .read_exposed()
         .map_err(|error| failure_from_code(error.code, None))?;
     Ok(serde_json::json!({
-        "fields": AppSettingsService::exposed_field_names(),
+        "fields": services.settings.exposed_field_names(),
         "revision": exposed.revision,
         "values": exposed.values,
         "credentialsPresent": exposed.credentials_present,

@@ -13,6 +13,10 @@
       "types": "./src/runtime/index.ts",
       "default": "./src/runtime/index.ts"
     },
+    "./runtime/kernel-compat": {
+      "types": "./src/runtime/kernel-compat.ts",
+      "default": "./src/runtime/kernel-compat.ts"
+    },
     "./settings": {
       "types": "./src/lib/settings/app-settings.ts",
       "default": "./src/lib/settings/app-settings.ts"

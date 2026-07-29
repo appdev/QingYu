@@ -79,6 +79,7 @@ import { defaultDarkThemeId, defaultLightThemeId } from "../lib/themes/default-t
 export type { WorkspaceSearchRequest, WorkspaceSearchResponse } from "../lib/workspace-search";
 export type { AppLogArea, AppLogEvent, AppLogLevel, AppLogWriter } from "../lib/app-logger";
 export { appLogger } from "../lib/app-logger";
+export * from "./kernel-compat";
 
 export type RuntimeCleanup = () => unknown;
 

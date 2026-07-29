@@ -1047,7 +1047,7 @@ mod tests {
     use sha2::{Digest, Sha256};
     use tempfile::tempdir;
 
-    use crate::app_settings::{AppSettingsError, AppSettingsService, SettingsBackend};
+    use crate::app_settings::{AppSettingsError, KernelSettingsOwner, SettingsBackend};
     use crate::dejavu_sync::local_state::{LocalSyncStateService, RepositoryBinding};
     use crate::dejavu_sync::service::AcceptedSyncJob;
     use crate::remote_sync::service::run_prepared_portable_settings_sync;
@@ -1544,7 +1544,7 @@ mod tests {
         let settings_path = app_data_root.join("settings.json");
         let live_settings = BTreeMap::from([("language".to_string(), json!("en"))]);
         fs::write(&settings_path, serde_json::to_vec(&live_settings).unwrap()).unwrap();
-        let settings_service = AppSettingsService::new_for_test(
+        let settings_service = KernelSettingsOwner::new_for_test(
             Arc::new(FileSettingsBackend::new(settings_path, live_settings)),
             None,
         );

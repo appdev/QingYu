@@ -1,0 +1,53 @@
+export {
+  createKernelClient,
+  type CreateKernelClientOptions,
+  type KernelClient,
+  type KernelDocumentsClient,
+  type KernelRequestOptions,
+  type KernelSettingsClient,
+  type KernelSyncClient,
+  type KernelSystemClient,
+  type KernelWorkspaceClient,
+} from "./client.ts";
+export {
+  KernelApiError,
+  KernelEventError,
+  KernelProtocolError,
+  KernelTransportError,
+  type KernelApiErrorCode,
+  type KernelApiErrorDetails,
+  type KernelEventErrorKind,
+  type KernelProtocolErrorKind,
+  type KernelTransportErrorKind,
+} from "./errors.ts";
+export {
+  createKernelEventsClient,
+  type KernelEventConnectOptions,
+  type KernelEventConnection,
+  type KernelEventConnectionState,
+  type KernelEventFrame,
+  type KernelEventHandlers,
+  type KernelEventStream,
+  type KernelEventsClient,
+  type KernelEventsClientOptions,
+  type KernelReadyFrame,
+  type KernelReloadScope,
+  type KernelSnapshotNotice,
+  type KernelSnapshotReason,
+  type ReconnectScheduler,
+  type WebSocketEvent,
+  type WebSocketEventType,
+  type WebSocketFactory,
+  type WebSocketLike,
+} from "./events.ts";
+export {
+  KernelHttpTransport,
+  type FetchLike,
+  type HttpMethod,
+  type HttpQuery,
+  type HttpRequest,
+  type KernelAuthentication,
+  type KernelHttpTransportOptions,
+  type NativeBearerAuthentication,
+} from "./transport.ts";
+export type { components, operations, paths } from "./generated/kernel-v1.ts";

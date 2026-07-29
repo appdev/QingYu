@@ -62,7 +62,25 @@ impl Repo {
         key: [u8; 32],
         options: RepoOptions,
     ) -> Result<Self, RepoError> {
-        Self::open_inner(paths, device, key, options, Arc::new(NoopIndexHook))
+        let runtime = crate::RepositoryRuntimeState::default();
+        Self::open_with_runtime(paths, device, key, options, &runtime)
+    }
+
+    pub fn open_with_runtime(
+        paths: RepoPaths,
+        device: Device,
+        key: [u8; 32],
+        options: RepoOptions,
+        runtime: &crate::RepositoryRuntimeState,
+    ) -> Result<Self, RepoError> {
+        Self::open_inner(
+            paths,
+            device,
+            key,
+            options,
+            runtime,
+            Arc::new(NoopIndexHook),
+        )
     }
 
     #[cfg(test)]
@@ -73,7 +91,8 @@ impl Repo {
         options: RepoOptions,
         index_hook: Arc<dyn IndexHook>,
     ) -> Result<Self, RepoError> {
-        Self::open_inner(paths, device, key, options, index_hook)
+        let runtime = crate::RepositoryRuntimeState::default();
+        Self::open_inner(paths, device, key, options, &runtime, index_hook)
     }
 
     fn open_inner(
@@ -81,6 +100,7 @@ impl Repo {
         device: Device,
         key: [u8; 32],
         options: RepoOptions,
+        runtime: &crate::RepositoryRuntimeState,
         index_hook: Arc<dyn IndexHook>,
     ) -> Result<Self, RepoError> {
         let paths = RepoPaths {
@@ -113,11 +133,11 @@ impl Repo {
         if !data_metadata.file_type().is_dir() || cap_metadata_is_reparse(&data_metadata) {
             return Err(RepoError::UnsafePath);
         }
-        let data_gate = crate::lifecycle::LifecycleGate::for_directory(&data_dir)?;
-        let store = Store::new(&paths.repo, key)?;
+        let data_gate = crate::lifecycle::LifecycleGate::for_directory(&data_dir, runtime)?;
+        let store = Store::new_with_runtime(&paths.repo, key, runtime)?;
         let history = History::new(&paths.history)?;
         let temp_dir = open_or_create_absolute_dir_nofollow(&paths.temp)?;
-        let temp_gate = crate::lifecycle::LifecycleGate::for_directory(&temp_dir)?;
+        let temp_gate = crate::lifecycle::LifecycleGate::for_directory(&temp_dir, runtime)?;
         match temp_gate.try_acquire() {
             Ok(_cleanup_guard) => cleanup_abandoned_downloads(&temp_dir)?,
             Err(RepoError::RepositoryBusy) => {}
@@ -588,12 +608,13 @@ mod tests {
     use tempfile::TempDir;
     use tokio::io::AsyncWriteExt;
 
-    use crate::{Chunk, File, Index, RepoError};
+    use crate::{Chunk, File, Index, RepoError, RepositoryRuntimeState};
 
     use super::{Device, Repo, RepoOptions, RepoPaths};
 
-    fn repo_fixture() -> (TempDir, Repo) {
+    fn repo_fixture_with_runtime() -> (TempDir, RepositoryRuntimeState, Repo) {
         let temp = TempDir::new().unwrap();
+        let runtime = RepositoryRuntimeState::default();
         let paths = RepoPaths {
             data: temp.path().join("data"),
             repo: temp.path().join("repo"),
@@ -601,7 +622,7 @@ mod tests {
             temp: temp.path().join("temp"),
         };
         fs::create_dir_all(&paths.data).unwrap();
-        let repo = Repo::open(
+        let repo = Repo::open_with_runtime(
             paths,
             Device {
                 id: "device".to_owned(),
@@ -610,8 +631,14 @@ mod tests {
             },
             [3; 32],
             RepoOptions::default(),
+            &runtime,
         )
         .unwrap();
+        (temp, runtime, repo)
+    }
+
+    fn repo_fixture() -> (TempDir, Repo) {
+        let (temp, _runtime, repo) = repo_fixture_with_runtime();
         (temp, repo)
     }
 
@@ -632,7 +659,7 @@ mod tests {
 
     #[tokio::test]
     async fn opening_another_repo_does_not_clean_an_active_download_stage() {
-        let (temp, first) = repo_fixture();
+        let (temp, runtime, first) = repo_fixture_with_runtime();
         let staged = first.create_staged_download().unwrap();
         let mut writer = staged.writer().unwrap();
         writer.write_all(b"active").await.unwrap();
@@ -641,7 +668,7 @@ mod tests {
         let second_data = temp.path().join("data-second");
         fs::create_dir_all(&second_data).unwrap();
 
-        let second = Repo::open(
+        let second = Repo::open_with_runtime(
             RepoPaths {
                 data: second_data,
                 repo: temp.path().join("repo-second"),
@@ -655,6 +682,7 @@ mod tests {
             },
             [3; 32],
             RepoOptions::default(),
+            &runtime,
         )
         .unwrap();
 
@@ -718,11 +746,11 @@ mod tests {
 
     #[tokio::test]
     async fn lifecycle_gate_follows_data_directory_identity_across_rename_and_reopen() {
-        let (temp, first) = repo_fixture();
+        let (temp, runtime, first) = repo_fixture_with_runtime();
         fs::write(temp.path().join("data/document.md"), b"document").unwrap();
         let moved_data = temp.path().join("data-moved");
         fs::rename(temp.path().join("data"), &moved_data).unwrap();
-        let second = Repo::open(
+        let second = Repo::open_with_runtime(
             RepoPaths {
                 data: moved_data,
                 repo: temp.path().join("repo-second"),
@@ -736,6 +764,7 @@ mod tests {
             },
             [3; 32],
             RepoOptions::default(),
+            &runtime,
         )
         .unwrap();
         let held = first.acquire_lifecycle().await;
@@ -746,6 +775,60 @@ mod tests {
         ));
         drop(held);
         assert!(second.index("available").is_ok());
+    }
+
+    #[tokio::test]
+    async fn repository_runtime_state_scopes_repo_lifecycle_gates() {
+        let temp = TempDir::new().unwrap();
+        let paths = RepoPaths {
+            data: temp.path().join("data"),
+            repo: temp.path().join("repo"),
+            history: temp.path().join("history"),
+            temp: temp.path().join("temp"),
+        };
+        fs::create_dir_all(&paths.data).unwrap();
+        fs::write(paths.data.join("document.md"), b"document").unwrap();
+        let shared_runtime = RepositoryRuntimeState::default();
+        let isolated_runtime = RepositoryRuntimeState::default();
+        let device = Device {
+            id: "device".to_owned(),
+            name: "QingYu".to_owned(),
+            os: "test".to_owned(),
+        };
+        let first = Repo::open_with_runtime(
+            paths.clone(),
+            device.clone(),
+            [3; 32],
+            RepoOptions::default(),
+            &shared_runtime,
+        )
+        .unwrap();
+        let shared = Repo::open_with_runtime(
+            paths.clone(),
+            device.clone(),
+            [3; 32],
+            RepoOptions::default(),
+            &shared_runtime,
+        )
+        .unwrap();
+        let isolated = Repo::open_with_runtime(
+            paths,
+            device,
+            [3; 32],
+            RepoOptions::default(),
+            &isolated_runtime,
+        )
+        .unwrap();
+        let held = first.acquire_lifecycle().await;
+
+        assert!(matches!(
+            shared.index("shared runtime"),
+            Err(RepoError::RepositoryBusy)
+        ));
+        assert!(isolated.index("isolated runtime").is_ok());
+
+        drop(held);
+        assert!(shared.index("shared runtime released").is_ok());
     }
 
     fn put_chunk(repo: &Repo, data: &[u8]) -> String {

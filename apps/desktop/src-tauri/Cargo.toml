@@ -5,7 +5,7 @@ resolver = "2"
 [package]
 name = "qingyu"
 default-run = "qingyu"
-version = "2.1.0"
+version = "2.2.0"
 description = "Practical Markdown note-taking editor"
 authors = ["QingYu contributors"]
 license = "AGPL-3.0-only"
@@ -42,6 +42,7 @@ icu_casemap = { version = "2.2.0", default-features = false, features = ["compil
 ignore = "0.4.28"
 percent-encoding = "2.3"
 qingyu-dejavu = { path = "crates/qingyu-dejavu" }
+qingyu-kernel = { path = "../../kernel" }
 quick-xml = "0.39.2"
 reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "rustls-tls"] }
 rustls = { version = "0.23.40", default-features = false, features = ["ring", "std"] }

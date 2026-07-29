@@ -18,7 +18,7 @@ preview-accent: #61afef
   --bg-active: #2c313a;
   --text-primary: #abb2bf;
   --text-heading: #e6edf3;
-  --text-secondary: #7f848e;
+  --text-secondary: #8f96a3;
   --text-md-char: #5c6370;
   --border-default: #3e4451;
   --border-strong: #4b5263;
@@ -39,7 +39,7 @@ preview-accent: #61afef
 
     --text-primary: #d4d4d4;
     --text-heading: #e0e0e0;
-    --text-secondary: #808080;
+    --text-secondary: #858585;
     --text-md-char: #555555;
 
     --border-default: #333333;
@@ -70,7 +70,7 @@ preview-accent: #61afef
 
     --text-primary: #abb2bf;
     --text-heading: #e6edf3;
-    --text-secondary: #7f848e;
+    --text-secondary: #8f96a3;
     --text-md-char: #5c6370;
 
     --border-default: #3e4451;
@@ -85,7 +85,7 @@ preview-accent: #61afef
     --editor-paper-bg: #282c34;
     --editor-text-primary: #abb2bf;
     --editor-text-heading: #e6edf3;
-    --editor-text-secondary: #7f848e;
+    --editor-text-secondary: #8f96a3;
     --editor-border: #3e4451;
     --editor-border-strong: #4b5263;
     --editor-bg-secondary: #21252b;

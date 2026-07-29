@@ -59,6 +59,116 @@ impl<R: tauri::Runtime> PrimaryWorkspaceBackend for StorePrimaryWorkspaceBackend
     }
 }
 
+// Deliberately uncomposed until the Task 9 primary-workspace cutover.
+#[allow(dead_code)]
+struct TrustedPreparedWorkspace {
+    authority: qingyu_kernel::runtime::PreparedWorkspaceAuthority,
+    display_name: String,
+}
+
+#[derive(Clone, Eq, PartialEq)]
+#[allow(dead_code)]
+pub(crate) struct TrustedPreparedWorkspaceToken {
+    token: String,
+}
+
+impl std::fmt::Debug for TrustedPreparedWorkspaceToken {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("TrustedPreparedWorkspaceToken([REDACTED])")
+    }
+}
+
+#[allow(dead_code)]
+pub(crate) struct TrustedDesktopWorkspaceAdapter {
+    runtime: Arc<qingyu_kernel::runtime::KernelRuntime>,
+    service: Arc<qingyu_kernel::services::workspace::WorkspaceService>,
+    prepared: Mutex<HashMap<String, TrustedPreparedWorkspace>>,
+}
+
+#[allow(dead_code)]
+impl TrustedDesktopWorkspaceAdapter {
+    pub(crate) fn new(
+        runtime: Arc<qingyu_kernel::runtime::KernelRuntime>,
+        service: Arc<qingyu_kernel::services::workspace::WorkspaceService>,
+    ) -> Self {
+        Self {
+            runtime,
+            service,
+            prepared: Mutex::new(HashMap::new()),
+        }
+    }
+
+    pub(crate) fn current(
+        &self,
+    ) -> Result<
+        qingyu_kernel::contract::WorkspaceDto,
+        qingyu_kernel::services::workspace::WorkspaceServiceError,
+    > {
+        self.service.current()
+    }
+
+    pub(crate) fn prepare_host_workspace(
+        &self,
+        absolute_path: &Path,
+    ) -> Result<
+        TrustedPreparedWorkspaceToken,
+        qingyu_kernel::services::workspace::WorkspaceServiceError,
+    > {
+        self.service.current()?;
+        let display_name =
+            crate::notebook_scope::notebook_name_from_root(absolute_path).map_err(|_| {
+                qingyu_kernel::services::workspace::WorkspaceServiceError::invalid_workspace()
+            })?;
+        let authority = self
+            .runtime
+            .prepare_host_workspace_authority(absolute_path)
+            .map_err(qingyu_kernel::services::workspace::WorkspaceServiceError::from)?;
+        let token = format!(
+            "{}:{}",
+            self.runtime.instance_id().as_uuid(),
+            uuid::Uuid::new_v4()
+        );
+        self.prepared
+            .lock()
+            .map_err(|_| qingyu_kernel::services::workspace::WorkspaceServiceError::unavailable())?
+            .insert(
+                token.clone(),
+                TrustedPreparedWorkspace {
+                    authority,
+                    display_name,
+                },
+            );
+        Ok(TrustedPreparedWorkspaceToken { token })
+    }
+
+    pub(crate) async fn compare_and_set_host_workspace(
+        &self,
+        expected_revision: &qingyu_kernel::contract::Revision,
+        prepared: TrustedPreparedWorkspaceToken,
+    ) -> Result<
+        qingyu_kernel::contract::WorkspaceDto,
+        qingyu_kernel::services::workspace::WorkspaceServiceError,
+    > {
+        let prepared = self
+            .prepared
+            .lock()
+            .map_err(|_| {
+                qingyu_kernel::services::workspace::WorkspaceServiceError::unavailable()
+            })?
+            .remove(&prepared.token)
+            .ok_or_else(
+                qingyu_kernel::services::workspace::WorkspaceServiceError::prepared_authority_mismatch,
+            )?;
+        self.service
+            .compare_and_set_host_workspace(
+                expected_revision,
+                prepared.authority,
+                prepared.display_name,
+            )
+            .await
+    }
+}
+
 struct PrimaryWorkspaceService<'a, Backend: PrimaryWorkspaceBackend + ?Sized> {
     backend: &'a Backend,
     transaction_lock: &'a Mutex<()>,
@@ -812,6 +922,34 @@ mod tests {
                 .lock()
                 .expect("memory values")
                 .insert(key.to_string(), value);
+        }
+    }
+
+    #[derive(Default)]
+    struct KernelPrimaryStore {
+        value: Mutex<Option<Value>>,
+    }
+
+    impl qingyu_kernel::workspace::primary::PrimaryWorkspaceStore for KernelPrimaryStore {
+        fn load(
+            &self,
+        ) -> Result<Option<Value>, qingyu_kernel::workspace::primary::PrimaryWorkspaceStoreError>
+        {
+            Ok(self.value.lock().expect("kernel primary store").clone())
+        }
+
+        fn replace(
+            &self,
+            value: Option<Value>,
+        ) -> Result<(), qingyu_kernel::workspace::primary::PrimaryWorkspaceStoreError> {
+            *self.value.lock().expect("kernel primary store") = value;
+            Ok(())
+        }
+
+        fn save(
+            &self,
+        ) -> Result<(), qingyu_kernel::workspace::primary::PrimaryWorkspaceStoreError> {
+            Ok(())
         }
     }
 
@@ -1710,5 +1848,104 @@ mod tests {
             registry.list_safe().is_empty(),
             "authority must not install stale A after local-state persisted B"
         );
+    }
+
+    #[tokio::test]
+    async fn trusted_kernel_adapter_is_instance_scoped_and_matches_direct_and_api_results() {
+        fn fixture(
+            root: &Path,
+        ) -> (
+            Arc<qingyu_kernel::runtime::KernelRuntime>,
+            Arc<qingyu_kernel::services::workspace::WorkspaceService>,
+        ) {
+            let workspace = root.join("workspace");
+            let app_data = root.join("app-data");
+            let cache = root.join("cache");
+            for path in [&workspace, &app_data, &cache] {
+                std::fs::create_dir_all(path).expect("kernel adapter fixture directory");
+            }
+            let paths = qingyu_kernel::paths::KernelPaths::desktop(&workspace, &app_data, &cache)
+                .expect("kernel adapter paths");
+            let managed =
+                qingyu_kernel::workspace::managed::ManagedWorkspaceCollection::from_paths(&paths)
+                    .expect("managed collection");
+            let runtime = qingyu_kernel::runtime::KernelRuntime::activate(
+                qingyu_kernel::config::KernelConfig::generate().expect("kernel config"),
+                paths,
+                qingyu_kernel::ports::KernelPorts::unavailable(),
+            )
+            .expect("kernel runtime");
+            let service = Arc::new(
+                qingyu_kernel::services::workspace::WorkspaceService::new(
+                    &runtime,
+                    Arc::new(KernelPrimaryStore::default()),
+                    managed,
+                    runtime.event_broker().clone(),
+                    "Initial Workspace",
+                )
+                .expect("workspace service"),
+            );
+            (runtime, service)
+        }
+
+        let temporary = tempfile::tempdir().expect("trusted adapter roots");
+        let first_root = temporary.path().join("first");
+        let second_root = temporary.path().join("second");
+        let target = temporary.path().join("Target Workspace");
+        std::fs::create_dir(&target).expect("target workspace");
+        let (first_runtime, first_service) = fixture(&first_root);
+        let (second_runtime, second_service) = fixture(&second_root);
+        let first_adapter =
+            TrustedDesktopWorkspaceAdapter::new(first_runtime, first_service.clone());
+        let second_adapter =
+            TrustedDesktopWorkspaceAdapter::new(second_runtime, second_service.clone());
+        let direct_before = first_service.current().expect("direct current");
+        let api_before =
+            qingyu_kernel::runtime::WorkspaceApiService::get_workspace(first_service.as_ref())
+                .await
+                .expect("API current");
+        let adapter_before = first_adapter.current().expect("adapter current");
+        let prepared = first_adapter
+            .prepare_host_workspace(&target)
+            .expect("trusted prepare");
+
+        let foreign_error = second_adapter
+            .compare_and_set_host_workspace(
+                &second_service.current().expect("second current").revision,
+                prepared.clone(),
+            )
+            .await
+            .expect_err("prepared token must be instance scoped");
+
+        assert_eq!(direct_before, api_before);
+        assert_eq!(direct_before, adapter_before);
+        assert_eq!(
+            foreign_error.kind(),
+            qingyu_kernel::services::workspace::WorkspaceServiceErrorKind::PreparedAuthorityMismatch
+        );
+
+        let committed = first_adapter
+            .compare_and_set_host_workspace(&direct_before.revision, prepared.clone())
+            .await
+            .expect("trusted CAS");
+        let api_after =
+            qingyu_kernel::runtime::WorkspaceApiService::get_workspace(first_service.as_ref())
+                .await
+                .expect("API committed current");
+
+        assert_eq!(
+            committed,
+            first_service.current().expect("direct committed current")
+        );
+        assert_eq!(committed, api_after);
+        assert_eq!(
+            committed,
+            first_adapter.current().expect("adapter committed current")
+        );
+        assert_eq!(committed.display_name, "Target Workspace");
+        assert!(first_adapter
+            .compare_and_set_host_workspace(&committed.revision, prepared)
+            .await
+            .is_err());
     }
 }

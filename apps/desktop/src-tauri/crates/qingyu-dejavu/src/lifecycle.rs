@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex as StdMutex, OnceLock, Weak};
+use std::sync::{Arc, Mutex as StdMutex, Weak};
 
 use cap_std::fs::Dir;
 use tokio::sync::{Mutex, OwnedMutexGuard};
@@ -12,8 +12,22 @@ struct DirectoryIdentity {
     file: u64,
 }
 
-static REPOSITORY_LIFECYCLES: OnceLock<StdMutex<HashMap<DirectoryIdentity, Weak<Mutex<()>>>>> =
-    OnceLock::new();
+#[derive(Default)]
+struct RepositoryRuntimeInner {
+    operation_guard: Arc<StdMutex<()>>,
+    repository_lifecycles: StdMutex<HashMap<DirectoryIdentity, Weak<Mutex<()>>>>,
+}
+
+#[derive(Clone, Default)]
+pub struct RepositoryRuntimeState {
+    inner: Arc<RepositoryRuntimeInner>,
+}
+
+impl RepositoryRuntimeState {
+    pub(crate) fn operation_guard(&self) -> Arc<StdMutex<()>> {
+        Arc::clone(&self.inner.operation_guard)
+    }
+}
 
 #[derive(Clone)]
 pub(crate) struct LifecycleGate {
@@ -26,10 +40,14 @@ pub(crate) struct LifecyclePermits {
 }
 
 impl LifecycleGate {
-    pub(crate) fn for_directory(directory: &Dir) -> Result<Self, RepoError> {
+    pub(crate) fn for_directory(
+        directory: &Dir,
+        runtime: &RepositoryRuntimeState,
+    ) -> Result<Self, RepoError> {
         let identity = directory_identity(directory)?;
-        let gates = REPOSITORY_LIFECYCLES.get_or_init(|| StdMutex::new(HashMap::new()));
-        let mut gates = gates
+        let mut gates = runtime
+            .inner
+            .repository_lifecycles
             .lock()
             .map_err(|_| RepoError::InvalidData("repository lifecycle registry poisoned"))?;
         gates.retain(|_, gate| gate.strong_count() > 0);
@@ -130,7 +148,7 @@ mod tests {
     use cap_std::fs::Dir;
     use tokio::sync::Barrier;
 
-    use super::LifecycleGate;
+    use super::{LifecycleGate, RepositoryRuntimeState};
 
     #[tokio::test]
     async fn crossed_scope_pairs_acquire_in_identity_order_without_deadlock() {
@@ -139,12 +157,15 @@ mod tests {
         let second_path = temp.path().join("second");
         fs::create_dir(&first_path).unwrap();
         fs::create_dir(&second_path).unwrap();
+        let runtime = RepositoryRuntimeState::default();
         let first = LifecycleGate::for_directory(
             &Dir::open_ambient_dir(first_path, ambient_authority()).unwrap(),
+            &runtime,
         )
         .unwrap();
         let second = LifecycleGate::for_directory(
             &Dir::open_ambient_dir(second_path, ambient_authority()).unwrap(),
+            &runtime,
         )
         .unwrap();
         let start = Arc::new(Barrier::new(3));
@@ -194,12 +215,15 @@ mod tests {
         let second_path = temp.path().join("second");
         fs::create_dir(&first_path).unwrap();
         fs::create_dir(&second_path).unwrap();
+        let runtime = RepositoryRuntimeState::default();
         let left = LifecycleGate::for_directory(
             &Dir::open_ambient_dir(first_path, ambient_authority()).unwrap(),
+            &runtime,
         )
         .unwrap();
         let right = LifecycleGate::for_directory(
             &Dir::open_ambient_dir(second_path, ambient_authority()).unwrap(),
+            &runtime,
         )
         .unwrap();
         let (first, second) = super::ordered_pair(&left, &right);

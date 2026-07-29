@@ -2,7 +2,8 @@ use std::ffi::OsStr;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-use cap_std::fs::Dir;
+use cap_fs_ext::{FollowSymlinks, OpenOptionsFollowExt};
+use cap_std::fs::{Dir, OpenOptions};
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 
 use crate::protected_paths::path_contains_qingyu_control_directory;
@@ -40,10 +41,15 @@ impl MarkdownIgnoreRules {
         directory: &Dir,
         global_rules: Option<&str>,
     ) -> Self {
+        let mut options = OpenOptions::new();
+        options.read(true).follow(FollowSymlinks::No);
         let workspace_rules = directory
-            .open(MARKRA_IGNORE_FILE_NAME)
+            .open_with(MARKRA_IGNORE_FILE_NAME, &options)
             .ok()
             .and_then(|mut file| {
+                if file.metadata().ok()?.len() > 1024 * 1024 {
+                    return None;
+                }
                 let mut rules = String::new();
                 file.read_to_string(&mut rules).ok().map(|_| rules)
             });

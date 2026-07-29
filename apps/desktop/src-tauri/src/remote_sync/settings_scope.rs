@@ -7,11 +7,11 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use super::scope::RemoteSyncScope;
-use crate::app_settings::SettingsPublicationEvent;
 use crate::storage_capability::{
     create_private_file_options, nonfollowing_read_options, open_canonical_directory_nofollow,
     rename_in_directory, sync_directory, unique_regular_file_identity, UniqueRegularFileIdentity,
 };
+use qingyu_kernel::settings::service::SettingsPublicationEvent;
 
 const SETTINGS_FILE_NAME: &str = "settings.json";
 const SETTINGS_FILE_MAX_BYTES: u64 = 16 * 1024 * 1024;
@@ -404,8 +404,8 @@ mod tests {
         portable_settings_pending_contains_legacy_mcp, read_portable_settings_pending,
         write_portable_settings_pending, PortableSettingsJournal,
     };
-    use crate::app_settings::SettingsPublicationEvent;
     use crate::remote_sync::scope::RemoteSyncScope;
+    use qingyu_kernel::settings::service::SettingsPublicationEvent;
 
     #[test]
     fn settings_file_state_detects_content_changes_and_deletion() {

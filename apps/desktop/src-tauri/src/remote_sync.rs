@@ -33,6 +33,7 @@ pub(crate) use backend::{
 };
 use backend::{RemoteSyncBackend, RemoteSyncError, RemoteSyncFile as BackendRemoteSyncFile};
 use engine::validate_relative_path;
+pub(crate) use engine::RemoteSyncExecutionCoordinator;
 use s3_backend::{S3Backend, S3SyncSettings, S3TransportOptions};
 
 const REMOTE_SYNC_TIMEOUT_SECS: u64 = 60;

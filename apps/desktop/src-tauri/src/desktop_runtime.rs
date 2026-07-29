@@ -211,6 +211,7 @@ pub(crate) fn run() {
         .manage(DejavuSyncServiceOwner::default())
         .manage(DejavuSchedulerOwner::default())
         .manage(PathGuardCoordinatorOwner::default())
+        .manage(crate::remote_sync::RemoteSyncExecutionCoordinator::default())
         .manage(crate::themes::ThemeActivationState::default());
 
     #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
@@ -250,6 +251,14 @@ pub(crate) fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(move |app| {
+            let startup_language =
+                crate::language::resolve_startup_language(&app.config().identifier);
+            let settings_owner = crate::app_settings::KernelSettingsOwner::install(&app.handle())
+                .map_err(|error| std::io::Error::other(error.to_string()))?;
+            settings_owner
+                .initialize_startup_language(startup_language.as_code())
+                .map_err(|error| std::io::Error::other(error.to_string()))?;
+            app.manage(settings_owner);
             if let Err(error) = crate::dejavu_sync::install_production_graph(&app.handle()) {
                 eprintln!("QingYu Dejavu sync initialization failed: {error}");
             }

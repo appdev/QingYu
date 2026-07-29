@@ -1,9 +1,9 @@
 use std::{
-    fs, io,
+    fs,
     path::{Path, PathBuf},
 };
 
-use serde_json::{Map, Value};
+use serde_json::Value;
 
 const SETTINGS_STORE_PATH: &str = "settings.json";
 const LANGUAGE_KEY: &str = "language";
@@ -68,14 +68,12 @@ pub(crate) fn resolve_startup_language(identifier: &str) -> AppLanguage {
         return language_for_initial_launch(None, &system_locale_refs);
     };
 
-    let stored_language = read_stored_language_code(&settings_path);
-    let language = language_for_initial_launch(stored_language.as_deref(), &system_locale_refs);
+    resolve_startup_language_at_path(&settings_path, &system_locale_refs)
+}
 
-    if stored_language.as_deref().and_then(AppLanguage::from_code) != Some(language) {
-        let _ = save_language_to_settings(&settings_path, language);
-    }
-
-    language
+fn resolve_startup_language_at_path(path: &Path, system_locales: &[&str]) -> AppLanguage {
+    let stored_language = read_stored_language_code(path);
+    language_for_initial_launch(stored_language.as_deref(), system_locales)
 }
 
 pub(crate) fn language_for_initial_launch(
@@ -163,31 +161,6 @@ fn read_stored_language_code(path: &Path) -> Option<String> {
         .get(LANGUAGE_KEY)
         .and_then(Value::as_str)
         .map(ToOwned::to_owned)
-}
-
-fn save_language_to_settings(path: &Path, language: AppLanguage) -> io::Result<()> {
-    let mut settings = read_settings_object(path);
-    settings.insert(
-        LANGUAGE_KEY.to_string(),
-        Value::String(language.as_code().to_string()),
-    );
-
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-
-    // Keep this JSON shape aligned with @tauri-apps/plugin-store on the frontend.
-    let contents = serde_json::to_string_pretty(&Value::Object(settings))
-        .map_err(|error| io::Error::new(io::ErrorKind::Other, error))?;
-    fs::write(path, contents)
-}
-
-fn read_settings_object(path: &Path) -> Map<String, Value> {
-    fs::read_to_string(path)
-        .ok()
-        .and_then(|contents| serde_json::from_str::<Value>(&contents).ok())
-        .and_then(|settings| settings.as_object().cloned())
-        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -322,5 +295,16 @@ mod tests {
                 .join("dev.markra.app")
                 .join("settings.json")
         );
+    }
+
+    #[test]
+    fn repeated_startup_language_resolution_is_read_only() {
+        let temporary = tempfile::tempdir().unwrap();
+        let path = temporary.path().join("settings.json");
+
+        let language = resolve_startup_language_at_path(&path, &["zh_CN"]);
+
+        assert_eq!(language, AppLanguage::ZhCn);
+        assert!(!path.exists());
     }
 }

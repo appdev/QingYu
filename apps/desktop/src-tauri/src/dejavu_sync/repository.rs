@@ -12,8 +12,9 @@ use base64::Engine;
 use cap_fs_ext::DirExt;
 use qingyu_dejavu::{
     write_cap_file_safer, Cloud, CloudError, Device, Repo, RepoError, RepoOptions, RepoPaths,
-    RepositoryCatalogList, RepositoryMetadata, S3AddressingStyle, S3Cloud, S3Connection,
-    S3RepositoryCatalog, S3TlsVerification, S3TransportOptions, WorkingTreeCoordinator,
+    RepositoryCatalogList, RepositoryMetadata, RepositoryRuntimeState, S3AddressingStyle, S3Cloud,
+    S3Connection, S3RepositoryCatalog, S3TlsVerification, S3TransportOptions,
+    WorkingTreeCoordinator,
 };
 use serde::{Deserialize, Serialize};
 
@@ -207,21 +208,33 @@ pub(crate) struct DejavuRepositoryRunner {
     app_data: PathBuf,
     coordinator_factory: Arc<dyn WorkingTreeCoordinatorFactory>,
     cloud_factory: Arc<dyn RepositoryCloudFactory>,
+    runtime: RepositoryRuntimeState,
 }
 
 pub(crate) struct DejavuLocalPurgeRepository {
     app_data: PathBuf,
+    runtime: RepositoryRuntimeState,
 }
 
 pub(crate) struct DejavuRepositoryMaintenance {
     app_data: PathBuf,
     cloud_factory: Arc<dyn RepositoryCloudFactory>,
+    runtime: RepositoryRuntimeState,
 }
 
 impl DejavuLocalPurgeRepository {
+    #[cfg(test)]
     pub(crate) fn new(app_data: impl AsRef<Path>) -> Self {
+        Self::new_with_runtime(app_data, RepositoryRuntimeState::default())
+    }
+
+    pub(crate) fn new_with_runtime(
+        app_data: impl AsRef<Path>,
+        runtime: RepositoryRuntimeState,
+    ) -> Self {
         Self {
             app_data: app_data.as_ref().to_path_buf(),
+            runtime,
         }
     }
 }
@@ -231,7 +244,13 @@ impl LocalPurgeRepositoryOps for DejavuLocalPurgeRepository {
         &self,
         repository_id: &str,
     ) -> Result<Vec<qingyu_dejavu::Index>, RepositoryJobError> {
-        let opened = open_bound_local_repository(&self.app_data, repository_id, None, |_| {})?;
+        let opened = open_bound_local_repository(
+            &self.app_data,
+            repository_id,
+            None,
+            &self.runtime,
+            |_| {},
+        )?;
         let indexes = opened.repo.list_local_indexes().map_err(map_repo_error)?;
         opened.paths.revalidate()?;
         Ok(indexes)
@@ -243,7 +262,13 @@ impl LocalPurgeRepositoryOps for DejavuLocalPurgeRepository {
         retained_index_ids: &[String],
         cancelled: &std::sync::atomic::AtomicBool,
     ) -> Result<qingyu_dejavu::PurgeStat, RepositoryJobError> {
-        let opened = open_bound_local_repository(&self.app_data, repository_id, None, |_| {})?;
+        let opened = open_bound_local_repository(
+            &self.app_data,
+            repository_id,
+            None,
+            &self.runtime,
+            |_| {},
+        )?;
         let stat = opened
             .repo
             .purge(retained_index_ids, cancelled)
@@ -254,10 +279,19 @@ impl LocalPurgeRepositoryOps for DejavuLocalPurgeRepository {
 }
 
 impl DejavuRepositoryMaintenance {
+    #[allow(dead_code)]
     pub(crate) fn new(app_data: impl AsRef<Path>) -> Self {
+        Self::new_with_runtime(app_data, RepositoryRuntimeState::default())
+    }
+
+    pub(crate) fn new_with_runtime(
+        app_data: impl AsRef<Path>,
+        runtime: RepositoryRuntimeState,
+    ) -> Self {
         Self {
             app_data: app_data.as_ref().to_path_buf(),
             cloud_factory: Arc::new(S3RepositoryCloudFactory),
+            runtime,
         }
     }
 
@@ -273,6 +307,7 @@ impl DejavuRepositoryMaintenance {
         Self {
             app_data: app_data.as_ref().to_path_buf(),
             cloud_factory,
+            runtime: RepositoryRuntimeState::default(),
         }
     }
 
@@ -280,7 +315,13 @@ impl DejavuRepositoryMaintenance {
         &self,
         repository_id: &str,
     ) -> Result<(), RepositoryJobError> {
-        let opened = open_bound_local_repository(&self.app_data, repository_id, None, |_| {})?;
+        let opened = open_bound_local_repository(
+            &self.app_data,
+            repository_id,
+            None,
+            &self.runtime,
+            |_| {},
+        )?;
         opened.paths.revalidate()?;
         drop(opened);
 
@@ -288,7 +329,13 @@ impl DejavuRepositoryMaintenance {
         paths.revalidate()?;
         drop(paths);
 
-        let opened = open_bound_local_repository(&self.app_data, repository_id, None, |_| {})?;
+        let opened = open_bound_local_repository(
+            &self.app_data,
+            repository_id,
+            None,
+            &self.runtime,
+            |_| {},
+        )?;
         opened
             .repo
             .index("Rebuild local repository")
@@ -311,7 +358,13 @@ impl DejavuRepositoryMaintenance {
         let repository_id = canonical_repository_id(repository_id)?;
         let snapshot = ready_snapshot_at_app_data(&self.app_data, None)
             .map_err(|_| RepositoryJobError::ConfigUnavailable)?;
-        let opened = open_bound_local_repository(&self.app_data, &repository_id, None, |_| {})?;
+        let opened = open_bound_local_repository(
+            &self.app_data,
+            &repository_id,
+            None,
+            &self.runtime,
+            |_| {},
+        )?;
         let repository_prefix = format!("qingyu/repositories/{repository_id}/repo");
         let cloud = self.cloud_factory.create(repository_cloud_parameters(
             snapshot.target,
@@ -350,10 +403,23 @@ impl DejavuRepositoryRunner {
         app_data: impl AsRef<Path>,
         coordinator_factory: Arc<dyn WorkingTreeCoordinatorFactory>,
     ) -> Self {
+        Self::new_with_runtime(
+            app_data,
+            coordinator_factory,
+            RepositoryRuntimeState::default(),
+        )
+    }
+
+    pub(crate) fn new_with_runtime(
+        app_data: impl AsRef<Path>,
+        coordinator_factory: Arc<dyn WorkingTreeCoordinatorFactory>,
+        runtime: RepositoryRuntimeState,
+    ) -> Self {
         Self {
             app_data: app_data.as_ref().to_path_buf(),
             coordinator_factory,
             cloud_factory: Arc::new(S3RepositoryCloudFactory),
+            runtime,
         }
     }
 
@@ -373,6 +439,7 @@ impl DejavuRepositoryRunner {
             app_data: app_data.as_ref().to_path_buf(),
             coordinator_factory,
             cloud_factory,
+            runtime: RepositoryRuntimeState::default(),
         }
     }
 
@@ -415,6 +482,7 @@ impl DejavuRepositoryRunner {
             &self.app_data,
             &request.repository_id,
             Some(&request.notes_root),
+            &self.runtime,
             after_layout_prepared,
         )?;
         let repository_prefix = format!("qingyu/repositories/{}/repo", request.repository_id);
@@ -519,6 +587,7 @@ fn open_bound_local_repository<Observe>(
     app_data: &Path,
     repository_id: &str,
     expected_notes_root: Option<&Path>,
+    runtime: &RepositoryRuntimeState,
     after_layout_prepared: Observe,
 ) -> Result<OpenedLocalRepository, RepositoryJobError>
 where
@@ -551,7 +620,7 @@ where
     let paths = prepare_repository_layout(app_data, &repository_id)?;
     after_layout_prepared(paths.root_path());
     paths.revalidate()?;
-    let repo = Repo::open(
+    let repo = Repo::open_with_runtime(
         paths.repo_paths(canonical_notes_root),
         Device {
             id: local_state.device_id,
@@ -563,6 +632,7 @@ where
             ignore_lines,
             protected_include_paths: vec![QINGYU_SYNCIGNORE_PROTECTED_PATH.to_owned()],
         },
+        runtime,
     )
     .map_err(map_repo_error)?;
     paths.revalidate()?;

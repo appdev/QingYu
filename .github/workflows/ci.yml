@@ -55,6 +55,10 @@ jobs:
             package: "@markra/editor"
             args: ""
             shard: ""
+          - label: "@markra/kernel-client"
+            package: "@markra/kernel-client"
+            args: ""
+            shard: ""
           - label: "@markra/markdown"
             package: "@markra/markdown"
             args: ""
@@ -176,6 +180,55 @@ jobs:
             exit 1
           fi
 
+  kernel-rust:
+    name: Kernel Rust (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+          - windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup component add rustfmt clippy
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            apps/kernel -> target
+
+      - name: Check formatting
+        run: cargo fmt --manifest-path apps/kernel/Cargo.toml -- --check
+
+      - name: Lint
+        run: cargo clippy --manifest-path apps/kernel/Cargo.toml --locked --all-targets --all-features -- -D warnings
+
+      - name: Test
+        run: |
+          cargo test --manifest-path apps/kernel/Cargo.toml --locked --all-targets --all-features
+          cargo test --manifest-path apps/kernel/Cargo.toml --locked --doc
+
+      - name: Reject Tauri dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          kernel_tree="$(cargo tree --manifest-path apps/kernel/Cargo.toml --locked --all-features --target all --prefix none)"
+          if grep -Eiq '^tauri([[:space:]-]|$)' <<< "${kernel_tree}"; then
+            echo "The platform-neutral Kernel must not depend on Tauri."
+            exit 1
+          fi
+
   tauri-rust:
     name: Tauri Rust
     runs-on: macos-latest
@@ -202,3 +255,96 @@ jobs:
 
       - name: Test
         run: cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --locked
+
+  android-native:
+    name: Android Native Composition
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.30.3
+          run_install: false
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Install Android Rust target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            apps/desktop/src-tauri -> target
+
+      - name: Configure Android NDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          ndk_home="${ANDROID_NDK_LATEST_HOME:-${ANDROID_NDK_HOME:-}}"
+          if [[ -z "${ndk_home}" || ! -d "${ndk_home}" ]]; then
+            echo "The GitHub runner does not expose a usable Android NDK." >&2
+            exit 1
+          fi
+          echo "NDK_HOME=${ndk_home}" >> "${GITHUB_ENV}"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build debug Android composition
+        run: pnpm app build android --debug --apk --target aarch64 --ci
+
+  ios-native:
+    name: iOS Native Composition
+    runs-on: macos-15
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.30.3
+          run_install: false
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install iOS Simulator Rust target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios-sim
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            apps/desktop/src-tauri -> target
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build debug iOS Simulator composition
+        run: pnpm app build ios --debug --target aarch64-sim --no-sign --ci
