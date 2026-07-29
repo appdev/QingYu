@@ -38,7 +38,7 @@ pub struct WorkspaceService {
 }
 
 impl WorkspaceService {
-    pub fn new(
+    pub async fn new(
         runtime: &Arc<KernelRuntime>,
         store: Arc<dyn PrimaryWorkspaceStore>,
         managed: ManagedWorkspaceCollection,
@@ -48,16 +48,95 @@ impl WorkspaceService {
         runtime
             .verify_instance_lock()
             .map_err(|_| WorkspaceServiceError::unavailable())?;
-        let mutation = runtime
-            .mutation_coordinator()
-            .try_lock()
+        let mutation = runtime.mutation_coordinator().lock().await;
+        runtime
+            .verify_instance_lock()
             .map_err(|_| WorkspaceServiceError::unavailable())?;
         let repository_binding = store.repository_binding();
         let initialization = runtime
             .workspace_initialization(&repository_binding, &mutation)
             .map_err(workspace_initialization_error)?;
         runtime.verify_workspace_initialization(&initialization)?;
-        let previous = store.load()?;
+        let active = initialization.active_snapshot();
+        let previous = match store.load() {
+            Ok(previous) => previous,
+            Err(error) => {
+                let Some(active) = active else {
+                    return Err(error.into());
+                };
+                let (mut transition, terminal) = runtime
+                    .begin_sync_workspace_transition(active, &mutation)
+                    .map_err(|_| WorkspaceServiceError::unavailable())?;
+                transition.arm_recovery_on_drop(None);
+                drop(mutation);
+                runtime
+                    .finish_sync_workspace_transition_start(terminal)
+                    .map_err(|_| WorkspaceServiceError::unavailable())?;
+                transition
+                    .wait_drained()
+                    .await
+                    .map_err(|_| WorkspaceServiceError::unavailable())?;
+                let mutation = runtime.mutation_coordinator().lock().await;
+                runtime
+                    .verify_instance_lock()
+                    .map_err(|_| WorkspaceServiceError::unavailable())?;
+                runtime.verify_workspace_initialization(&initialization)?;
+                let _revalidated_store = store.load();
+                transition
+                    .enter_recovery(None, &mutation)
+                    .map_err(|_| WorkspaceServiceError::unavailable())?;
+                return Err(error.into());
+            }
+        };
+        if let Some(active) = active {
+            let observed = previous
+                .clone()
+                .and_then(|value| serde_json::from_value::<PersistedPrimaryWorkspace>(value).ok())
+                .filter(|persisted| validate_persisted_workspace(persisted).is_ok())
+                .and_then(|persisted| workspace_dto(runtime.instance_id(), &persisted).ok());
+            if observed.as_ref() == Some(active.workspace()) {
+                runtime
+                    .initialize_workspace_snapshot(
+                        &initialization,
+                        observed.expect("equal active workspace was observed"),
+                        repository_binding,
+                        &mutation,
+                    )
+                    .map_err(workspace_initialization_error)?;
+                return Ok(Self {
+                    runtime: Arc::downgrade(runtime),
+                    store,
+                    managed,
+                    events,
+                    mutation_coordinator: runtime.mutation_coordinator().clone(),
+                });
+            }
+
+            let (mut transition, terminal) = runtime
+                .begin_sync_workspace_transition(active, &mutation)
+                .map_err(|_| WorkspaceServiceError::unavailable())?;
+            transition.arm_recovery_on_drop(None);
+            drop(mutation);
+            runtime
+                .finish_sync_workspace_transition_start(terminal)
+                .map_err(|_| WorkspaceServiceError::unavailable())?;
+            transition
+                .wait_drained()
+                .await
+                .map_err(|_| WorkspaceServiceError::unavailable())?;
+            let mutation = runtime.mutation_coordinator().lock().await;
+            runtime.verify_workspace_initialization(&initialization)?;
+            if store.load()? != previous {
+                transition
+                    .enter_recovery(None, &mutation)
+                    .map_err(|_| WorkspaceServiceError::unavailable())?;
+                return Err(WorkspaceServiceError::persistence_unavailable());
+            }
+            transition
+                .enter_recovery(None, &mutation)
+                .map_err(|_| WorkspaceServiceError::unavailable())?;
+            return Err(WorkspaceServiceError::persistence_unavailable());
+        }
         let (persisted, wrote_primary) = match previous.clone() {
             Some(value) => match serde_json::from_value::<PersistedPrimaryWorkspace>(value) {
                 Ok(persisted) => (persisted, false),
@@ -166,10 +245,73 @@ impl WorkspaceService {
             previous_store_value.as_ref(),
             current.workspace(),
         ) {
-            let _recovery = runtime.enter_workspace_recovery(&current, &prepared, &mutation);
+            let (mut transition, terminal) = runtime
+                .begin_sync_workspace_transition(current, &mutation)
+                .map_err(|_| WorkspaceServiceError::unavailable())?;
+            transition.arm_recovery_on_drop(Some(prepared.candidate().clone()));
+            drop(mutation);
+            runtime
+                .finish_sync_workspace_transition_start(terminal)
+                .map_err(|_| WorkspaceServiceError::unavailable())?;
+            transition
+                .wait_drained()
+                .await
+                .map_err(|_| WorkspaceServiceError::unavailable())?;
+            let mutation = self.mutation_coordinator.lock().await;
+            runtime
+                .verify_instance_lock()
+                .map_err(|_| WorkspaceServiceError::unavailable())?;
+            runtime
+                .active_workspace_snapshot()
+                .map_err(WorkspaceServiceError::from)?;
+            let _revalidated_store = self.store.load()?;
+            let _prepared = runtime.verify_prepared_host_workspace_authority(&prepared);
+            transition
+                .enter_recovery(Some(prepared.candidate().clone()), &mutation)
+                .map_err(|_| WorkspaceServiceError::unavailable())?;
             return Err(WorkspaceServiceError::persistence_unavailable());
         }
         runtime.verify_prepared_host_workspace_authority(&prepared)?;
+        let (mut transition, terminal) = runtime
+            .begin_sync_workspace_transition(current.clone(), &mutation)
+            .map_err(|_| WorkspaceServiceError::unavailable())?;
+        drop(mutation);
+        runtime
+            .finish_sync_workspace_transition_start(terminal)
+            .map_err(|_| WorkspaceServiceError::unavailable())?;
+        transition
+            .wait_drained()
+            .await
+            .map_err(|_| WorkspaceServiceError::unavailable())?;
+
+        let mutation = self.mutation_coordinator.lock().await;
+        transition.arm_recovery_on_drop(Some(prepared.candidate().clone()));
+        verify_runtime(&runtime)?;
+        let revalidated = runtime.active_workspace_snapshot()?;
+        if !Arc::ptr_eq(&revalidated, &current)
+            || &revalidated.workspace().revision != expected_revision
+            || !revalidated.matches_repository_binding(&self.store.repository_binding())
+        {
+            transition
+                .enter_recovery(Some(prepared.candidate().clone()), &mutation)
+                .map_err(|_| WorkspaceServiceError::unavailable())?;
+            return Err(WorkspaceServiceError::persistence_unavailable());
+        }
+        if runtime
+            .verify_prepared_host_workspace_authority(&prepared)
+            .is_err()
+        {
+            transition
+                .enter_recovery(Some(prepared.candidate().clone()), &mutation)
+                .map_err(|_| WorkspaceServiceError::unavailable())?;
+            return Err(WorkspaceServiceError::unavailable());
+        }
+        if self.store.load()? != previous_store_value {
+            transition
+                .enter_recovery(Some(prepared.candidate().clone()), &mutation)
+                .map_err(|_| WorkspaceServiceError::unavailable())?;
+            return Err(WorkspaceServiceError::persistence_unavailable());
+        }
         let persisted = PersistedPrimaryWorkspace {
             schema_version: PRIMARY_WORKSPACE_SCHEMA_VERSION,
             revision_seed: Uuid::new_v4().to_string(),
@@ -177,29 +319,51 @@ impl WorkspaceService {
         };
         let next_store_value =
             serde_json::to_value(&persisted).map_err(|_| WorkspaceServiceError::unavailable())?;
-        self.store.replace(Some(next_store_value))?;
+        if let Err(error) = self.store.replace(Some(next_store_value)) {
+            if self.store.load().ok() == Some(previous_store_value.clone()) {
+                transition
+                    .reopen(&mutation)
+                    .map_err(|_| WorkspaceServiceError::unavailable())?;
+            } else {
+                transition
+                    .enter_recovery(Some(prepared.candidate().clone()), &mutation)
+                    .map_err(|_| WorkspaceServiceError::unavailable())?;
+            }
+            return Err(error.into());
+        }
         if let Err(error) = self.store.save() {
             if self
                 .restore_persisted_value(previous_store_value.clone())
                 .is_err()
             {
-                let _recovery = runtime.enter_workspace_recovery(&current, &prepared, &mutation);
+                transition
+                    .enter_recovery(Some(prepared.candidate().clone()), &mutation)
+                    .map_err(|_| WorkspaceServiceError::unavailable())?;
+            } else {
+                transition
+                    .reopen(&mutation)
+                    .map_err(|_| WorkspaceServiceError::unavailable())?;
             }
             return Err(error.into());
         }
 
         let committed = workspace_dto(runtime.instance_id(), &persisted)?;
-        if let Err(error) = runtime.commit_workspace_snapshot(
-            &current,
+        if let Err(error) = runtime.commit_sync_workspace_transition(
+            &mut transition,
             &prepared,
             committed.clone(),
             current.repository_binding(),
             &mutation,
         ) {
             if self.restore_persisted_value(previous_store_value).is_err() {
-                let _recovery = runtime.enter_workspace_recovery(&current, &prepared, &mutation);
+                transition
+                    .enter_recovery(Some(prepared.candidate().clone()), &mutation)
+                    .map_err(|_| WorkspaceServiceError::unavailable())?;
                 return Err(WorkspaceServiceError::persistence_unavailable());
             }
+            transition
+                .reopen(&mutation)
+                .map_err(|_| WorkspaceServiceError::unavailable())?;
             return Err(error.into());
         }
         let publication = EventPublication {
@@ -209,7 +373,14 @@ impl WorkspaceService {
                 workspace: committed.clone(),
             },
         };
+        drop(mutation);
         let _publication_result = self.events.publish(&publication);
+        transition.publication_attempted();
+        let mutation = self.mutation_coordinator.lock().await;
+        verify_runtime(&runtime)?;
+        transition
+            .reopen(&mutation)
+            .map_err(|_| WorkspaceServiceError::unavailable())?;
         Ok(committed)
     }
 
@@ -259,10 +430,77 @@ impl WorkspaceService {
             previous_store_value.as_ref(),
             current.workspace(),
         ) {
-            let _recovery = runtime.enter_workspace_recovery(&current, &prepared, &mutation);
+            let (mut transition, terminal) = runtime
+                .begin_sync_workspace_transition(current, &mutation)
+                .map_err(|_| WorkspaceServiceError::unavailable())?;
+            transition.arm_recovery_on_drop(Some(prepared.candidate().clone()));
+            drop(mutation);
+            runtime
+                .finish_sync_workspace_transition_start(terminal)
+                .map_err(|_| WorkspaceServiceError::unavailable())?;
+            transition
+                .wait_drained()
+                .await
+                .map_err(|_| WorkspaceServiceError::unavailable())?;
+            let mutation = self.mutation_coordinator.lock().await;
+            runtime
+                .verify_instance_lock()
+                .map_err(|_| WorkspaceServiceError::unavailable())?;
+            runtime
+                .active_workspace_snapshot()
+                .map_err(WorkspaceServiceError::from)?;
+            let _revalidated_store = self.store.load()?;
+            let _prepared = runtime.verify_prepared_host_workspace_authority(&prepared);
+            transition
+                .enter_recovery(Some(prepared.candidate().clone()), &mutation)
+                .map_err(|_| WorkspaceServiceError::unavailable())?;
             return Err(WorkspaceServiceError::persistence_unavailable());
         }
         runtime.verify_prepared_host_workspace_authority(&prepared)?;
+        let (mut transition, terminal) = runtime
+            .begin_sync_workspace_transition(current.clone(), &mutation)
+            .map_err(|_| WorkspaceServiceError::unavailable())?;
+        drop(mutation);
+        runtime
+            .finish_sync_workspace_transition_start(terminal)
+            .map_err(|_| WorkspaceServiceError::unavailable())?;
+        transition
+            .wait_drained()
+            .await
+            .map_err(|_| WorkspaceServiceError::unavailable())?;
+
+        let mutation = self.mutation_coordinator.lock().await;
+        transition.arm_recovery_on_drop(Some(prepared.candidate().clone()));
+        verify_runtime(&runtime)?;
+        let revalidated = runtime.active_workspace_snapshot()?;
+        if !Arc::ptr_eq(&revalidated, &current)
+            || &revalidated.workspace().revision != expected_revision
+            || !revalidated.matches_repository_binding(&repository_binding)
+            || !revalidated.matches_repository_binding(&host_transaction.repository_binding())
+            || !prepared
+                .binding()
+                .matches(&host_transaction.authority_binding())
+        {
+            transition
+                .enter_recovery(Some(prepared.candidate().clone()), &mutation)
+                .map_err(|_| WorkspaceServiceError::unavailable())?;
+            return Err(WorkspaceServiceError::persistence_unavailable());
+        }
+        if runtime
+            .verify_prepared_host_workspace_authority(&prepared)
+            .is_err()
+        {
+            transition
+                .enter_recovery(Some(prepared.candidate().clone()), &mutation)
+                .map_err(|_| WorkspaceServiceError::unavailable())?;
+            return Err(WorkspaceServiceError::unavailable());
+        }
+        if self.store.load()? != previous_store_value {
+            transition
+                .enter_recovery(Some(prepared.candidate().clone()), &mutation)
+                .map_err(|_| WorkspaceServiceError::unavailable())?;
+            return Err(WorkspaceServiceError::persistence_unavailable());
+        }
         let persisted = PersistedPrimaryWorkspace {
             schema_version: PRIMARY_WORKSPACE_SCHEMA_VERSION,
             revision_seed: Uuid::new_v4().to_string(),
@@ -275,15 +513,17 @@ impl WorkspaceService {
             .compare_and_commit(previous_store_value.as_ref(), next_store_value.clone())
         {
             return match error.kind() {
-                AtomicHostWorkspaceCommitErrorKind::Conflict => {
-                    Err(WorkspaceServiceError::persistence_unavailable())
-                }
-                AtomicHostWorkspaceCommitErrorKind::NoCommit => {
+                AtomicHostWorkspaceCommitErrorKind::Conflict
+                | AtomicHostWorkspaceCommitErrorKind::NoCommit => {
+                    transition
+                        .reopen(&mutation)
+                        .map_err(|_| WorkspaceServiceError::unavailable())?;
                     Err(WorkspaceServiceError::persistence_unavailable())
                 }
                 AtomicHostWorkspaceCommitErrorKind::OutcomeUnknown => {
-                    let _recovery =
-                        runtime.enter_workspace_recovery(&current, &prepared, &mutation);
+                    transition
+                        .enter_recovery(Some(prepared.candidate().clone()), &mutation)
+                        .map_err(|_| WorkspaceServiceError::unavailable())?;
                     Err(WorkspaceServiceError::persistence_unavailable())
                 }
             };
@@ -291,7 +531,9 @@ impl WorkspaceService {
         match self.store.load() {
             Ok(observed) if observed == Some(next_store_value) => {}
             Ok(_) | Err(_) => {
-                let _recovery = runtime.enter_workspace_recovery(&current, &prepared, &mutation);
+                transition
+                    .enter_recovery(Some(prepared.candidate().clone()), &mutation)
+                    .map_err(|_| WorkspaceServiceError::unavailable())?;
                 return Err(WorkspaceServiceError::persistence_unavailable());
             }
         }
@@ -300,12 +542,14 @@ impl WorkspaceService {
             .verify_prepared_host_workspace_authority(&prepared)
             .is_err()
         {
-            let _recovery = runtime.enter_workspace_recovery(&current, &prepared, &mutation);
+            transition
+                .enter_recovery(Some(prepared.candidate().clone()), &mutation)
+                .map_err(|_| WorkspaceServiceError::unavailable())?;
             return Err(WorkspaceServiceError::persistence_unavailable());
         }
         if runtime
-            .commit_workspace_snapshot(
-                &current,
+            .commit_sync_workspace_transition(
+                &mut transition,
                 &prepared,
                 committed.clone(),
                 repository_binding,
@@ -313,7 +557,9 @@ impl WorkspaceService {
             )
             .is_err()
         {
-            let _recovery = runtime.enter_workspace_recovery(&current, &prepared, &mutation);
+            transition
+                .enter_recovery(Some(prepared.candidate().clone()), &mutation)
+                .map_err(|_| WorkspaceServiceError::unavailable())?;
             return Err(WorkspaceServiceError::persistence_unavailable());
         }
         let publication = EventPublication {
@@ -323,7 +569,14 @@ impl WorkspaceService {
                 workspace: committed.clone(),
             },
         };
+        drop(mutation);
         let _publication_result = self.events.publish(&publication);
+        transition.publication_attempted();
+        let mutation = self.mutation_coordinator.lock().await;
+        verify_runtime(&runtime)?;
+        transition
+            .reopen(&mutation)
+            .map_err(|_| WorkspaceServiceError::unavailable())?;
         Ok(committed)
     }
 

@@ -1,5 +1,6 @@
 use std::future::{poll_fn, Future as _};
 use std::panic::AssertUnwindSafe;
+use std::pin::Pin;
 use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
     mpsc, Arc, Condvar, Mutex, Weak,
@@ -46,7 +47,9 @@ use qingyu_kernel::{
     workspace::{
         managed::ManagedWorkspaceCollection,
         primary::{
-            PrimaryWorkspaceRepositoryBinding, PrimaryWorkspaceStore, PrimaryWorkspaceStoreError,
+            AtomicHostWorkspaceCommitError, AtomicHostWorkspaceTransaction,
+            PreparedWorkspaceAuthorityBinding, PrimaryWorkspaceRepositoryBinding,
+            PrimaryWorkspaceStore, PrimaryWorkspaceStoreError,
         },
     },
 };
@@ -86,6 +89,8 @@ struct CountingExecutor {
 struct MemoryPrimaryWorkspaceStore {
     binding: PrimaryWorkspaceRepositoryBinding,
     block_next_save: Mutex<Option<(mpsc::Sender<()>, mpsc::Receiver<()>)>>,
+    notify_next_save: AtomicBool,
+    save_started: Notify,
     value: Mutex<Option<serde_json::Value>>,
     failing_saves: AtomicUsize,
 }
@@ -100,6 +105,14 @@ impl MemoryPrimaryWorkspaceStore {
         let (release_sender, release_receiver) = mpsc::channel();
         *self.block_next_save.lock().unwrap() = Some((started_sender, release_receiver));
         (started_receiver, release_sender)
+    }
+
+    fn observe_next_save(&self) {
+        self.notify_next_save.store(true, Ordering::SeqCst);
+    }
+
+    async fn wait_for_observed_save(&self) {
+        self.save_started.notified().await;
     }
 }
 
@@ -118,6 +131,9 @@ impl PrimaryWorkspaceStore for MemoryPrimaryWorkspaceStore {
     }
 
     fn save(&self) -> Result<(), PrimaryWorkspaceStoreError> {
+        if self.notify_next_save.swap(false, Ordering::SeqCst) {
+            self.save_started.notify_one();
+        }
         if let Some((started, release)) = self.block_next_save.lock().unwrap().take() {
             started.send(()).unwrap();
             release.recv().unwrap();
@@ -140,12 +156,44 @@ impl PrimaryWorkspaceStore for MemoryPrimaryWorkspaceStore {
     }
 }
 
+struct MemoryHostWorkspaceTransaction {
+    store: Arc<MemoryPrimaryWorkspaceStore>,
+    repository_binding: PrimaryWorkspaceRepositoryBinding,
+    authority_binding: PreparedWorkspaceAuthorityBinding,
+}
+
+impl AtomicHostWorkspaceTransaction for MemoryHostWorkspaceTransaction {
+    fn repository_binding(&self) -> PrimaryWorkspaceRepositoryBinding {
+        self.repository_binding.clone()
+    }
+
+    fn authority_binding(&self) -> PreparedWorkspaceAuthorityBinding {
+        self.authority_binding.clone()
+    }
+
+    fn compare_and_commit(
+        self: Box<Self>,
+        expected_kernel_value: Option<&serde_json::Value>,
+        next_kernel_value: serde_json::Value,
+    ) -> Result<(), AtomicHostWorkspaceCommitError> {
+        if self.store.load().ok().as_ref().and_then(Option::as_ref) != expected_kernel_value {
+            return Err(AtomicHostWorkspaceCommitError::conflict());
+        }
+        self.store
+            .replace(Some(next_kernel_value))
+            .map_err(|_| AtomicHostWorkspaceCommitError::outcome_unknown())?;
+        self.store
+            .save()
+            .map_err(|_| AtomicHostWorkspaceCommitError::outcome_unknown())
+    }
+}
+
 struct InstalledWorkspace {
     service: Arc<WorkspaceService>,
     store: Arc<MemoryPrimaryWorkspaceStore>,
 }
 
-fn install_active_workspace(
+async fn install_active_workspace(
     runtime: &Arc<KernelRuntime>,
     managed: ManagedWorkspaceCollection,
 ) -> InstalledWorkspace {
@@ -155,9 +203,10 @@ fn install_active_workspace(
             runtime,
             store.clone(),
             managed,
-            Arc::new(TestHost),
+            runtime.clone(),
             "Workspace",
         )
+        .await
         .unwrap(),
     );
     InstalledWorkspace { service, store }
@@ -350,6 +399,84 @@ struct PanicOnceExecutor {
     runs: AtomicUsize,
 }
 
+#[derive(Default)]
+struct DropRetainingExecutor {
+    future_dropped: AtomicBool,
+    future_dropped_notification: Notify,
+}
+
+impl DropRetainingExecutor {
+    async fn wait_for_future_drop(&self) {
+        loop {
+            if self.future_dropped.load(Ordering::Acquire) {
+                return;
+            }
+            let notified = self.future_dropped_notification.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if self.future_dropped.load(Ordering::Acquire) {
+                return;
+            }
+            notified.await;
+        }
+    }
+}
+
+struct ReadyRunFuture<'a> {
+    executor: &'a DropRetainingExecutor,
+    _context: Option<SyncRunContext>,
+}
+
+impl std::future::Future for ReadyRunFuture<'_> {
+    type Output = Result<(), SyncExecutionError>;
+
+    fn poll(
+        self: Pin<&mut Self>,
+        _context: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        std::task::Poll::Ready(Ok(()))
+    }
+}
+
+impl Drop for ReadyRunFuture<'_> {
+    fn drop(&mut self) {
+        self.executor.future_dropped.store(true, Ordering::Release);
+        self.executor.future_dropped_notification.notify_waiters();
+    }
+}
+
+impl SyncExecutor for DropRetainingExecutor {
+    fn test_connection<'life0, 'async_trait>(
+        &'life0 self,
+        _config: SyncConfig,
+    ) -> Pin<
+        Box<dyn std::future::Future<Output = Result<(), SyncExecutionError>> + Send + 'async_trait>,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn run<'life0, 'async_trait>(
+        &'life0 self,
+        _config: SyncConfig,
+        context: SyncRunContext,
+    ) -> Pin<
+        Box<dyn std::future::Future<Output = Result<(), SyncExecutionError>> + Send + 'async_trait>,
+    >
+    where
+        'life0: 'async_trait,
+        Self: 'async_trait,
+    {
+        Box::pin(ReadyRunFuture {
+            executor: self,
+            _context: Some(context),
+        })
+    }
+}
+
 #[async_trait]
 impl SyncExecutor for PanicOnceExecutor {
     async fn test_connection(&self, _config: SyncConfig) -> Result<(), SyncExecutionError> {
@@ -461,6 +588,40 @@ impl TaskSpawner for FailingTaskSpawner {
 }
 
 #[derive(Default)]
+struct StatusPoisoningFailSpawner {
+    runtime: Mutex<Weak<KernelRuntime>>,
+}
+
+impl StatusPoisoningFailSpawner {
+    fn bind_runtime(&self, runtime: &Arc<KernelRuntime>) {
+        *self.runtime.lock().unwrap() = Arc::downgrade(runtime);
+    }
+}
+
+impl TaskSpawner for StatusPoisoningFailSpawner {
+    fn spawn(&self, _task: BoxTaskFuture) -> Result<(), PortError> {
+        self.runtime
+            .lock()
+            .unwrap()
+            .upgrade()
+            .expect("runtime must be bound before spawning")
+            .poison_sync_status_for_test();
+        Err(PortError::unavailable())
+    }
+}
+
+async fn assert_sync_run_is_not_reported_drained(runtime: &KernelRuntime) {
+    let mut drained = Box::pin(runtime.wait_for_empty_sync_run_for_test());
+    poll_fn(|context| match drained.as_mut().poll(context) {
+        std::task::Poll::Pending => std::task::Poll::Ready(()),
+        std::task::Poll::Ready(_) => {
+            panic!("a failed lifecycle transition must not synthesize an empty run")
+        }
+    })
+    .await;
+}
+
+#[derive(Default)]
 struct CompletionPublicationGate {
     completion_entered: Notify,
     released: (Mutex<bool>, Condvar),
@@ -496,6 +657,39 @@ impl EventSink for CompletionPublicationGate {
                 }
             }
             _ => {}
+        }
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+struct WorkspacePublicationGate {
+    publication_entered: Notify,
+    released: (Mutex<bool>, Condvar),
+}
+
+impl WorkspacePublicationGate {
+    async fn wait_for_workspace_publication(&self) {
+        self.publication_entered.notified().await;
+    }
+
+    fn release_workspace_publication(&self) {
+        let (released, condition) = &self.released;
+        let mut released = released.lock().unwrap();
+        *released = true;
+        condition.notify_all();
+    }
+}
+
+impl EventSink for WorkspacePublicationGate {
+    fn publish(&self, publication: &EventPublication) -> Result<(), EventSinkError> {
+        if matches!(publication.event, DomainEvent::WorkspaceChanged { .. }) {
+            self.publication_entered.notify_one();
+            let (released, condition) = &self.released;
+            let mut released = released.lock().unwrap();
+            while !*released {
+                released = condition.wait(released).unwrap();
+            }
         }
         Ok(())
     }
@@ -694,7 +888,7 @@ fn test_ports_with_task_spawner(spawner: Arc<dyn TaskSpawner>) -> KernelPorts {
     )
 }
 
-fn active_sync_runtime(
+async fn active_sync_runtime(
     root: &std::path::Path,
     ports: KernelPorts,
 ) -> (Arc<KernelRuntime>, InstalledWorkspace, DurableFileStore) {
@@ -719,7 +913,7 @@ fn active_sync_runtime(
         DurableFileStore::at_instance_data(paths.instance_data_root(), config.launch_epoch())
             .unwrap();
     let runtime = KernelRuntime::activate(config, paths, ports).unwrap();
-    let workspace = install_active_workspace(&runtime, managed);
+    let workspace = install_active_workspace(&runtime, managed).await;
     (runtime, workspace, durable)
 }
 
@@ -1352,7 +1546,7 @@ async fn connection_test_applies_ephemeral_changes_and_calls_executor_exactly_on
         DurableFileStore::at_instance_data(paths.instance_data_root(), config.launch_epoch())
             .unwrap();
     let runtime = KernelRuntime::activate(config, paths, KernelPorts::unavailable()).unwrap();
-    let _workspace = install_active_workspace(&runtime, managed);
+    let _workspace = install_active_workspace(&runtime, managed).await;
     let executor = Arc::new(CountingExecutor::default());
     let service = SyncService::new(
         runtime,
@@ -1489,7 +1683,7 @@ async fn manual_run_is_spawned_once_and_completes_with_safe_status_events() {
         DurableFileStore::at_instance_data(paths.instance_data_root(), config.launch_epoch())
             .unwrap();
     let runtime = KernelRuntime::activate(config, paths, test_ports()).unwrap();
-    let _workspace = install_active_workspace(&runtime, managed);
+    let _workspace = install_active_workspace(&runtime, managed).await;
     let mut events = runtime.event_broker().subscribe();
     let executor = Arc::new(ManualExecutor::default());
     let service = SyncService::new(
@@ -1623,7 +1817,7 @@ async fn completed_status_resets_to_idle_when_config_revision_or_provider_change
             DurableFileStore::at_instance_data(paths.instance_data_root(), config.launch_epoch())
                 .unwrap();
         let runtime = KernelRuntime::activate(config, paths, test_ports()).unwrap();
-        let _workspace = install_active_workspace(&runtime, managed);
+        let _workspace = install_active_workspace(&runtime, managed).await;
         let executor = Arc::new(ManualExecutor::default());
         executor.fail.store(failed, Ordering::Relaxed);
         let service = SyncService::new(
@@ -1746,7 +1940,7 @@ async fn active_manual_run_rejects_duplicate_without_spawning_a_second_executor(
         DurableFileStore::at_instance_data(paths.instance_data_root(), config.launch_epoch())
             .unwrap();
     let runtime = KernelRuntime::activate(config, paths, test_ports()).unwrap();
-    let _workspace = install_active_workspace(&runtime, managed);
+    let _workspace = install_active_workspace(&runtime, managed).await;
     let executor = Arc::new(BlockingExecutor::default());
     let service = SyncService::new(
         runtime,
@@ -1796,7 +1990,7 @@ async fn active_manual_run_rejects_duplicate_without_spawning_a_second_executor(
 #[tokio::test]
 async fn second_sync_service_observes_attempting_and_cannot_patch_or_run() {
     let temporary = tempdir().unwrap();
-    let (runtime, _workspace, durable) = active_sync_runtime(temporary.path(), test_ports());
+    let (runtime, _workspace, durable) = active_sync_runtime(temporary.path(), test_ports()).await;
     let store = Arc::new(SyncConfigStore::new(durable).unwrap());
     let first_executor = Arc::new(BlockingExecutor::default());
     let second_executor = Arc::new(CountingExecutor::default());
@@ -1847,7 +2041,7 @@ async fn second_sync_service_observes_attempting_and_cannot_patch_or_run() {
 #[tokio::test]
 async fn sync_executor_context_is_bound_to_one_workspace_snapshot() {
     let temporary = tempdir().unwrap();
-    let (runtime, workspace, durable) = active_sync_runtime(temporary.path(), test_ports());
+    let (runtime, workspace, durable) = active_sync_runtime(temporary.path(), test_ports()).await;
     let executor = Arc::new(ContextBindingExecutor::default());
     let service = SyncService::new(
         runtime.clone(),
@@ -1872,8 +2066,18 @@ async fn sync_executor_context_is_bound_to_one_workspace_snapshot() {
     assert_eq!(first_observed.2, first.run_id);
     assert_eq!(first_observed.3, SyncTrigger::Manual);
     executor.release.notify_one();
-    let _first_attempting = events.recv().await.unwrap();
-    let _first_terminal = events.recv().await.unwrap();
+    let first_attempting = events.recv().await.unwrap();
+    let first_terminal = events.recv().await.unwrap();
+    assert!(matches!(
+        first_attempting.event,
+        DomainEvent::SyncStatusChanged { status }
+            if status.completion_state == SyncCompletionState::Attempting
+    ));
+    assert!(matches!(
+        first_terminal.event,
+        DomainEvent::SyncStatusChanged { status }
+            if status.completion_state == SyncCompletionState::Succeeded
+    ));
 
     switch_workspace(
         &runtime,
@@ -1882,6 +2086,11 @@ async fn sync_executor_context_is_bound_to_one_workspace_snapshot() {
     )
     .await;
     let after = workspace.service.current().unwrap();
+    let workspace_changed = events.recv().await.unwrap();
+    assert!(matches!(
+        workspace_changed.event,
+        DomainEvent::WorkspaceChanged { workspace } if workspace == after
+    ));
     let second = SyncApiService::trigger_sync_run(
         &service,
         TriggerSyncRunRequest {
@@ -1891,6 +2100,12 @@ async fn sync_executor_context_is_bound_to_one_workspace_snapshot() {
     .await
     .unwrap();
     executor.started.notified().await;
+    let second_attempting = events.recv().await.unwrap();
+    assert!(matches!(
+        second_attempting.event,
+        DomainEvent::SyncStatusChanged { status }
+            if status.completion_state == SyncCompletionState::Attempting
+    ));
     let second_observed = executor.observed.lock().unwrap()[1].clone();
 
     assert_eq!(second_observed.0, after);
@@ -1898,8 +2113,12 @@ async fn sync_executor_context_is_bound_to_one_workspace_snapshot() {
     assert_ne!(first_observed.1, second_observed.1);
 
     executor.release.notify_one();
-    let _second_attempting = events.recv().await.unwrap();
-    let _second_terminal = events.recv().await.unwrap();
+    let second_terminal = events.recv().await.unwrap();
+    assert!(matches!(
+        second_terminal.event,
+        DomainEvent::SyncStatusChanged { status }
+            if status.completion_state == SyncCompletionState::Succeeded
+    ));
 }
 
 #[tokio::test]
@@ -1927,7 +2146,7 @@ async fn active_manual_run_rejects_config_patch_without_write_or_status_drift() 
         DurableFileStore::at_instance_data(paths.instance_data_root(), config.launch_epoch())
             .unwrap();
     let runtime = KernelRuntime::activate(config, paths, test_ports()).unwrap();
-    let _workspace = install_active_workspace(&runtime, managed);
+    let _workspace = install_active_workspace(&runtime, managed).await;
     let mut events = runtime.event_broker().subscribe();
     let executor = Arc::new(BlockingExecutor::default());
     let service = Arc::new(SyncService::new(
@@ -2048,7 +2267,7 @@ async fn completed_run_event_precedes_a_new_config_and_its_idle_status() {
         test_ports_with_event_sink(publication_gate.clone()),
     )
     .unwrap();
-    let _workspace = install_active_workspace(&runtime, managed);
+    let _workspace = install_active_workspace(&runtime, managed).await;
     let mut events = runtime.event_broker().subscribe();
     let executor = Arc::new(BlockingExecutor::default());
     let service = Arc::new(SyncService::new(
@@ -2639,7 +2858,8 @@ async fn workspace_recovery_rejects_sync_run_before_executor_or_spawn() {
     let (runtime, workspace, durable) = active_sync_runtime(
         temporary.path(),
         test_ports_with_task_spawner(spawner.clone()),
-    );
+    )
+    .await;
     let executor = Arc::new(CountingExecutor::default());
     let service = SyncService::new(
         runtime.clone(),
@@ -2679,7 +2899,7 @@ async fn workspace_recovery_rejects_sync_run_before_executor_or_spawn() {
 async fn sync_config_and_connection_test_remain_available_during_workspace_recovery() {
     let temporary = tempdir().unwrap();
     let (runtime, workspace, durable) =
-        active_sync_runtime(temporary.path(), KernelPorts::unavailable());
+        active_sync_runtime(temporary.path(), KernelPorts::unavailable()).await;
     let executor = Arc::new(CountingExecutor::default());
     let service = SyncService::new(
         runtime.clone(),
@@ -2733,7 +2953,8 @@ async fn workspace_background_spawn_after_recovery_never_calls_task_spawner() {
     let (runtime, workspace, _durable) = active_sync_runtime(
         temporary.path(),
         test_ports_with_task_spawner(spawner.clone()),
-    );
+    )
+    .await;
     enter_workspace_recovery(
         &runtime,
         &workspace,
@@ -2754,7 +2975,8 @@ async fn deferred_sync_run_does_not_invoke_executor_after_snapshot_change() {
     let (runtime, workspace, durable) = active_sync_runtime(
         temporary.path(),
         test_ports_with_task_spawner(spawner.clone()),
-    );
+    )
+    .await;
     let executor = Arc::new(CountingExecutor::default());
     let service = SyncService::new(
         runtime.clone(),
@@ -2798,7 +3020,8 @@ async fn accepted_but_unpolled_run_can_be_revoked_and_late_poll_never_calls_exec
     let (runtime, _workspace, durable) = active_sync_runtime(
         temporary.path(),
         test_ports_with_task_spawner(spawner.clone()),
-    );
+    )
+    .await;
     let executor = Arc::new(CountingExecutor::default());
     let service = SyncService::new(
         runtime.clone(),
@@ -2844,13 +3067,92 @@ async fn accepted_but_unpolled_run_can_be_revoked_and_late_poll_never_calls_exec
 }
 
 #[tokio::test]
+async fn dropping_an_accepted_unpolled_task_revokes_its_queued_registration() {
+    let temporary = tempdir().unwrap();
+    let spawner = Arc::new(DeferredTaskSpawner::default());
+    let (runtime, _workspace, durable) = active_sync_runtime(
+        temporary.path(),
+        test_ports_with_task_spawner(spawner.clone()),
+    )
+    .await;
+    let service = SyncService::new(
+        runtime.clone(),
+        Arc::new(SyncConfigStore::new(durable).unwrap()),
+        Arc::new(CountingExecutor::default()),
+    );
+    let config = SyncApiService::get_sync_config(&service).await.unwrap();
+    SyncApiService::trigger_sync_run(
+        &service,
+        TriggerSyncRunRequest {
+            expected_config_revision: config.revision,
+        },
+    )
+    .await
+    .unwrap();
+
+    drop(spawner.take_task());
+
+    let mut drained = Box::pin(runtime.wait_for_empty_sync_run_for_test());
+    let drained_after_drop = poll_fn(|context| match drained.as_mut().poll(context) {
+        std::task::Poll::Ready(Ok(())) => std::task::Poll::Ready(true),
+        std::task::Poll::Ready(Err(error)) => panic!("unexpected drain error: {error}"),
+        std::task::Poll::Pending => std::task::Poll::Ready(false),
+    })
+    .await;
+    assert!(
+        drained_after_drop,
+        "dropped queued task remained registered"
+    );
+    let status = SyncApiService::get_sync_status(&service).await.unwrap();
+    assert_eq!(status.completion_state, SyncCompletionState::Failed);
+}
+
+#[tokio::test]
+async fn aborting_a_running_background_task_quarantines_its_workspace() {
+    let temporary = tempdir().unwrap();
+    let spawner = Arc::new(DeferredTaskSpawner::default());
+    let (runtime, _workspace, durable) = active_sync_runtime(
+        temporary.path(),
+        test_ports_with_task_spawner(spawner.clone()),
+    )
+    .await;
+    let executor = Arc::new(BlockingExecutor::default());
+    let service = SyncService::new(
+        runtime.clone(),
+        Arc::new(SyncConfigStore::new(durable).unwrap()),
+        executor.clone(),
+    );
+    let config = SyncApiService::get_sync_config(&service).await.unwrap();
+    SyncApiService::trigger_sync_run(
+        &service,
+        TriggerSyncRunRequest {
+            expected_config_revision: config.revision,
+        },
+    )
+    .await
+    .unwrap();
+    let task = tokio::spawn(spawner.take_task());
+    executor.started.notified().await;
+
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
+
+    assert!(runtime.active_workspace_snapshot().is_err());
+    assert!(runtime
+        .begin_sync_workspace_transition_for_test()
+        .await
+        .is_err());
+}
+
+#[tokio::test]
 async fn revoked_unpolled_run_releases_old_workspace_lease_before_commit() {
     let temporary = tempdir().unwrap();
     let spawner = Arc::new(DeferredTaskSpawner::default());
     let (runtime, _workspace, durable) = active_sync_runtime(
         temporary.path(),
         test_ports_with_task_spawner(spawner.clone()),
-    );
+    )
+    .await;
     let service = SyncService::new(
         runtime.clone(),
         Arc::new(SyncConfigStore::new(durable).unwrap()),
@@ -2891,7 +3193,8 @@ async fn spawn_failure_releases_runtime_registration_and_shared_status() {
     let (runtime, _workspace, durable) = active_sync_runtime(
         temporary.path(),
         test_ports_with_task_spawner(spawner.clone()),
-    );
+    )
+    .await;
     let service = SyncService::new(
         runtime,
         Arc::new(SyncConfigStore::new(durable).unwrap()),
@@ -2924,7 +3227,7 @@ async fn spawn_failure_releases_runtime_registration_and_shared_status() {
 #[tokio::test]
 async fn cancelled_run_is_failed_with_cancelled_error_not_unknown_provider_error() {
     let temporary = tempdir().unwrap();
-    let (runtime, _workspace, durable) = active_sync_runtime(temporary.path(), test_ports());
+    let (runtime, _workspace, durable) = active_sync_runtime(temporary.path(), test_ports()).await;
     let executor = Arc::new(CancellationAwareExecutor::default());
     let service = SyncService::new(
         runtime.clone(),
@@ -2963,7 +3266,8 @@ async fn cancelled_run_is_failed_with_cancelled_error_not_unknown_provider_error
 async fn cancel_before_waiter_and_waiter_before_cancel_are_lossless() {
     for waiter_first in [false, true] {
         let temporary = tempdir().unwrap();
-        let (runtime, _workspace, durable) = active_sync_runtime(temporary.path(), test_ports());
+        let (runtime, _workspace, durable) =
+            active_sync_runtime(temporary.path(), test_ports()).await;
         let (executor, cancellation_receiver) = CancellationContextExecutor::new();
         let service = SyncService::new(
             runtime.clone(),
@@ -3014,7 +3318,7 @@ async fn cancel_before_waiter_and_waiter_before_cancel_are_lossless() {
 #[tokio::test]
 async fn running_cancel_finalizer_acquires_mutation_before_reporting_drained() {
     let temporary = tempdir().unwrap();
-    let (runtime, _workspace, durable) = active_sync_runtime(temporary.path(), test_ports());
+    let (runtime, _workspace, durable) = active_sync_runtime(temporary.path(), test_ports()).await;
     let executor = Arc::new(GatedCancellationExecutor::default());
     let service = SyncService::new(
         runtime.clone(),
@@ -3058,7 +3362,7 @@ async fn terminal_event_callback_runs_after_mutation_is_released() {
     let temporary = tempdir().unwrap();
     let sink = Arc::new(TerminalReentrantSink::default());
     let (runtime, _workspace, durable) =
-        active_sync_runtime(temporary.path(), test_ports_with_event_sink(sink.clone()));
+        active_sync_runtime(temporary.path(), test_ports_with_event_sink(sink.clone())).await;
     sink.bind_runtime(&runtime);
     let executor = Arc::new(ManualExecutor::default());
     let service = SyncService::new(
@@ -3082,12 +3386,55 @@ async fn terminal_event_callback_runs_after_mutation_is_released() {
     assert!(sink.mutation_available.load(Ordering::SeqCst));
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn executor_future_is_dropped_before_terminal_publication_and_drain() {
+    let temporary = tempdir().unwrap();
+    let publication_gate = Arc::new(CompletionPublicationGate::default());
+    let (runtime, _workspace, durable) = active_sync_runtime(
+        temporary.path(),
+        test_ports_with_event_sink(publication_gate.clone()),
+    )
+    .await;
+    let executor = Arc::new(DropRetainingExecutor::default());
+    let service = SyncService::new(
+        runtime.clone(),
+        Arc::new(SyncConfigStore::new(durable).unwrap()),
+        executor.clone(),
+    );
+    let config = SyncApiService::get_sync_config(&service).await.unwrap();
+
+    SyncApiService::trigger_sync_run(
+        &service,
+        TriggerSyncRunRequest {
+            expected_config_revision: config.revision,
+        },
+    )
+    .await
+    .unwrap();
+    publication_gate.wait_for_completion_publication().await;
+
+    let mut future_dropped = Box::pin(executor.wait_for_future_drop());
+    let dropped_before_publication =
+        poll_fn(|context| match future_dropped.as_mut().poll(context) {
+            std::task::Poll::Ready(()) => std::task::Poll::Ready(true),
+            std::task::Poll::Pending => std::task::Poll::Ready(false),
+        })
+        .await;
+    publication_gate.release_completion_publication();
+
+    assert!(
+        dropped_before_publication,
+        "the completed executor future retained its workspace context into terminal publication"
+    );
+    runtime.wait_for_empty_sync_run_for_test().await.unwrap();
+}
+
 #[tokio::test]
 async fn workspace_transition_rejects_during_terminal_publication_without_deadlock() {
     let temporary = tempdir().unwrap();
     let sink = Arc::new(TerminalReentrantSink::default());
     let (runtime, _workspace, durable) =
-        active_sync_runtime(temporary.path(), test_ports_with_event_sink(sink.clone()));
+        active_sync_runtime(temporary.path(), test_ports_with_event_sink(sink.clone())).await;
     sink.bind_runtime(&runtime);
     let executor = Arc::new(ManualExecutor::default());
     let service = SyncService::new(
@@ -3116,7 +3463,7 @@ async fn natural_terminal_event_precedes_concurrent_workspace_changed() {
     let temporary = tempdir().unwrap();
     let (sink, terminal_started) = TerminalOrderingSink::new();
     let (runtime, workspace, durable) =
-        active_sync_runtime(temporary.path(), test_ports_with_event_sink(sink.clone()));
+        active_sync_runtime(temporary.path(), test_ports_with_event_sink(sink.clone())).await;
     let executor = Arc::new(ManualExecutor::default());
     let service = SyncService::new(
         runtime.clone(),
@@ -3176,7 +3523,8 @@ async fn executor_panic_does_not_strand_running_registration() {
     let (runtime, _workspace, durable) = active_sync_runtime(
         temporary.path(),
         test_ports_with_task_spawner(spawner.clone()),
-    );
+    )
+    .await;
     let executor = Arc::new(PanicOnceExecutor::default());
     let service = SyncService::new(
         runtime,
@@ -3221,8 +3569,8 @@ async fn executor_panic_does_not_strand_running_registration() {
     assert_eq!(succeeded.completion_state, SyncCompletionState::Succeeded);
 }
 
-#[test]
-fn first_snapshot_install_and_lifecycle_open_are_atomic() {
+#[tokio::test]
+async fn first_snapshot_install_and_lifecycle_open_are_atomic() {
     let temporary = tempdir().unwrap();
     let workspace_root = temporary.path().join("workspace");
     let app_data = temporary.path().join("app-data");
@@ -3242,7 +3590,8 @@ fn first_snapshot_install_and_lifecycle_open_are_atomic() {
         managed,
         Arc::new(TestHost),
         "Workspace",
-    );
+    )
+    .await;
 
     assert!(result.is_err());
     assert!(runtime.active_workspace_snapshot().is_err());
@@ -3255,7 +3604,8 @@ async fn poisoned_lifecycle_or_status_never_reports_drained_or_allows_admission(
     let (lifecycle_runtime, _workspace, lifecycle_durable) = active_sync_runtime(
         lifecycle_temporary.path(),
         test_ports_with_task_spawner(lifecycle_spawner.clone()),
-    );
+    )
+    .await;
     let lifecycle_service = SyncService::new(
         lifecycle_runtime.clone(),
         Arc::new(SyncConfigStore::new(lifecycle_durable).unwrap()),
@@ -3286,7 +3636,8 @@ async fn poisoned_lifecycle_or_status_never_reports_drained_or_allows_admission(
     let (status_runtime, _workspace, status_durable) = active_sync_runtime(
         status_temporary.path(),
         test_ports_with_task_spawner(status_spawner.clone()),
-    );
+    )
+    .await;
     let status_service = SyncService::new(
         status_runtime.clone(),
         Arc::new(SyncConfigStore::new(status_durable).unwrap()),
@@ -3313,14 +3664,107 @@ async fn poisoned_lifecycle_or_status_never_reports_drained_or_allows_admission(
     assert_eq!(status_spawner.spawned.load(Ordering::SeqCst), 0);
 }
 
+#[tokio::test]
+async fn queued_revocation_status_failure_retains_a_non_drained_registration() {
+    let temporary = tempdir().unwrap();
+    let spawner = Arc::new(DeferredTaskSpawner::default());
+    let (runtime, _workspace, durable) = active_sync_runtime(
+        temporary.path(),
+        test_ports_with_task_spawner(spawner.clone()),
+    )
+    .await;
+    let service = SyncService::new(
+        runtime.clone(),
+        Arc::new(SyncConfigStore::new(durable).unwrap()),
+        Arc::new(CountingExecutor::default()),
+    );
+    let config = SyncApiService::get_sync_config(&service).await.unwrap();
+    SyncApiService::trigger_sync_run(
+        &service,
+        TriggerSyncRunRequest {
+            expected_config_revision: config.revision,
+        },
+    )
+    .await
+    .unwrap();
+    runtime.poison_sync_status_for_test();
+
+    let transition = runtime.begin_sync_workspace_transition_for_test().await;
+
+    assert!(transition.is_err());
+    assert_sync_run_is_not_reported_drained(runtime.as_ref()).await;
+    drop(spawner.take_task());
+}
+
+#[tokio::test]
+async fn rejected_claim_status_failure_retains_a_non_drained_registration() {
+    let temporary = tempdir().unwrap();
+    let spawner = Arc::new(DeferredTaskSpawner::default());
+    let (runtime, _workspace, durable) = active_sync_runtime(
+        temporary.path(),
+        test_ports_with_task_spawner(spawner.clone()),
+    )
+    .await;
+    let service = SyncService::new(
+        runtime.clone(),
+        Arc::new(SyncConfigStore::new(durable).unwrap()),
+        Arc::new(CountingExecutor::default()),
+    );
+    let config = SyncApiService::get_sync_config(&service).await.unwrap();
+    SyncApiService::trigger_sync_run(
+        &service,
+        TriggerSyncRunRequest {
+            expected_config_revision: config.revision,
+        },
+    )
+    .await
+    .unwrap();
+    runtime.close_sync_admission_for_test().unwrap();
+    runtime.poison_sync_status_for_test();
+
+    spawner.take_task().await;
+
+    assert_sync_run_is_not_reported_drained(runtime.as_ref()).await;
+}
+
+#[tokio::test]
+async fn spawn_failure_status_failure_retains_a_non_drained_registration() {
+    let temporary = tempdir().unwrap();
+    let spawner = Arc::new(StatusPoisoningFailSpawner::default());
+    let (runtime, _workspace, durable) = active_sync_runtime(
+        temporary.path(),
+        test_ports_with_task_spawner(spawner.clone()),
+    )
+    .await;
+    spawner.bind_runtime(&runtime);
+    let service = SyncService::new(
+        runtime.clone(),
+        Arc::new(SyncConfigStore::new(durable).unwrap()),
+        Arc::new(CountingExecutor::default()),
+    );
+    let config = SyncApiService::get_sync_config(&service).await.unwrap();
+
+    let result = SyncApiService::trigger_sync_run(
+        &service,
+        TriggerSyncRunRequest {
+            expected_config_revision: config.revision,
+        },
+    )
+    .await;
+
+    assert!(result.is_err());
+    assert_sync_run_is_not_reported_drained(runtime.as_ref()).await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn deferred_sync_run_waits_for_inflight_workspace_commit_before_executor_admission() {
+async fn deferred_sync_run_is_revoked_before_inflight_workspace_commit() {
     let temporary = tempdir().unwrap();
     let spawner = Arc::new(DeferredTaskSpawner::default());
     let (runtime, workspace, durable) = active_sync_runtime(
         temporary.path(),
         test_ports_with_task_spawner(spawner.clone()),
-    );
+    )
+    .await;
     let executor = Arc::new(CountingExecutor::default());
     let service = SyncService::new(
         runtime.clone(),
@@ -3351,20 +3795,11 @@ async fn deferred_sync_run_waits_for_inflight_workspace_commit_before_executor_a
     commit_started
         .recv_timeout(Duration::from_secs(5))
         .expect("workspace commit must hold the mutation permit before deferred admission");
-
-    let mut background = spawner.take_task();
-    poll_fn(|context| match background.as_mut().poll(context) {
-        std::task::Poll::Pending => std::task::Poll::Ready(()),
-        std::task::Poll::Ready(()) => {
-            panic!("deferred task must wait behind the in-flight workspace commit")
-        }
-    })
-    .await;
     assert_eq!(executor.runs.load(Ordering::SeqCst), 0);
 
     release_commit.send(()).unwrap();
     switch.await.unwrap().unwrap();
-    background.await;
+    spawner.take_task().await;
 
     assert_eq!(executor.runs.load(Ordering::SeqCst), 0);
     assert_eq!(
@@ -3648,4 +4083,330 @@ async fn existing_v3_config_is_exposed_without_inline_credentials() {
     assert!(!serialized.contains("access-key-id"));
     assert!(!serialized.contains("secret-access-key"));
     assert!(!serialized.contains("webdav-password"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn running_sync_blocks_workspace_commit_until_executor_cooperatively_drains() {
+    let temporary = tempdir().unwrap();
+    let (runtime, workspace, durable) = active_sync_runtime(temporary.path(), test_ports()).await;
+    let executor = Arc::new(GatedCancellationExecutor::default());
+    let service = Arc::new(SyncService::new(
+        runtime.clone(),
+        Arc::new(SyncConfigStore::new(durable).unwrap()),
+        executor.clone(),
+    ));
+    let mut events = runtime.event_broker().subscribe();
+    let config = SyncApiService::get_sync_config(service.as_ref())
+        .await
+        .unwrap();
+    SyncApiService::trigger_sync_run(
+        service.as_ref(),
+        TriggerSyncRunRequest {
+            expected_config_revision: config.revision,
+        },
+    )
+    .await
+    .unwrap();
+    executor.started.notified().await;
+    let attempting = events.recv().await.unwrap();
+    assert!(matches!(
+        attempting.event,
+        DomainEvent::SyncStatusChanged { status }
+            if status.completion_state == SyncCompletionState::Attempting
+    ));
+
+    let before = workspace.service.current().unwrap();
+    let target = temporary.path().join("drained-workspace");
+    std::fs::create_dir(&target).unwrap();
+    let prepared = runtime.prepare_host_workspace_authority(&target).unwrap();
+    workspace.store.observe_next_save();
+    let switch_service = workspace.service.clone();
+    let expected_revision = before.revision.clone();
+    let mut switch = Box::pin(tokio::spawn(async move {
+        switch_service
+            .compare_and_set_host_workspace(&expected_revision, prepared, "Drained Workspace")
+            .await
+    }));
+
+    tokio::select! {
+        _ = executor.cancellation_seen.notified() => {}
+        _ = workspace.store.wait_for_observed_save() => {
+            panic!("workspace persistence started before the running executor observed cancellation")
+        }
+    }
+    assert!(runtime.mutation_is_available_for_test());
+    assert_eq!(workspace.service.current().unwrap(), before);
+    poll_fn(|context| match switch.as_mut().poll(context) {
+        std::task::Poll::Pending => std::task::Poll::Ready(()),
+        std::task::Poll::Ready(_) => {
+            panic!("workspace switch completed before the running executor drained")
+        }
+    })
+    .await;
+
+    executor.release.notify_one();
+    let committed = switch.await.unwrap().unwrap();
+    let cancelled = events.recv().await.unwrap();
+    let workspace_changed = events.recv().await.unwrap();
+
+    assert_eq!(workspace.service.current().unwrap(), committed);
+    assert!(matches!(
+        cancelled.event,
+        DomainEvent::SyncStatusChanged { status }
+            if status.completion_state == SyncCompletionState::Failed
+                && status.error.as_ref().is_some_and(|error| error.code() == "cancelled")
+    ));
+    assert!(matches!(
+        workspace_changed.event,
+        DomainEvent::WorkspaceChanged { workspace } if workspace == committed
+    ));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn running_sync_blocks_atomic_workspace_commit_until_executor_drains() {
+    let temporary = tempdir().unwrap();
+    let (runtime, workspace, durable) = active_sync_runtime(temporary.path(), test_ports()).await;
+    let executor = Arc::new(GatedCancellationExecutor::default());
+    let sync = Arc::new(SyncService::new(
+        runtime.clone(),
+        Arc::new(SyncConfigStore::new(durable).unwrap()),
+        executor.clone(),
+    ));
+    let mut events = runtime.event_broker().subscribe();
+    let config = SyncApiService::get_sync_config(sync.as_ref())
+        .await
+        .unwrap();
+    SyncApiService::trigger_sync_run(
+        sync.as_ref(),
+        TriggerSyncRunRequest {
+            expected_config_revision: config.revision,
+        },
+    )
+    .await
+    .unwrap();
+    executor.started.notified().await;
+    let attempting = events.recv().await.unwrap();
+    assert!(matches!(
+        attempting.event,
+        DomainEvent::SyncStatusChanged { status }
+            if status.completion_state == SyncCompletionState::Attempting
+    ));
+
+    let before = workspace.service.current().unwrap();
+    let target = temporary.path().join("atomic-drained-workspace");
+    std::fs::create_dir(&target).unwrap();
+    let prepared = runtime.prepare_host_workspace_authority(&target).unwrap();
+    let transaction = MemoryHostWorkspaceTransaction {
+        store: workspace.store.clone(),
+        repository_binding: workspace.store.repository_binding(),
+        authority_binding: prepared.binding(),
+    };
+    workspace.store.observe_next_save();
+    let switch_service = workspace.service.clone();
+    let expected_revision = before.revision;
+    let switch = tokio::spawn(async move {
+        switch_service
+            .compare_and_set_host_workspace_transaction(
+                &expected_revision,
+                prepared,
+                "Atomic Drained Workspace",
+                Box::new(transaction),
+            )
+            .await
+    });
+
+    tokio::select! {
+        _ = executor.cancellation_seen.notified() => {}
+        _ = workspace.store.wait_for_observed_save() => {
+            panic!("atomic host commit started before the running executor observed cancellation")
+        }
+    }
+    assert!(runtime.mutation_is_available_for_test());
+    executor.release.notify_one();
+    let committed = switch.await.unwrap().unwrap();
+    let cancelled = events.recv().await.unwrap();
+    let workspace_changed = events.recv().await.unwrap();
+
+    assert!(matches!(
+        cancelled.event,
+        DomainEvent::SyncStatusChanged { status }
+            if status.completion_state == SyncCompletionState::Failed
+                && status.error.as_ref().is_some_and(|error| error.code() == "cancelled")
+    ));
+    assert!(matches!(
+        workspace_changed.event,
+        DomainEvent::WorkspaceChanged { workspace } if workspace == committed
+    ));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn dropping_switch_after_workspace_publication_reopens_the_committed_snapshot() {
+    let temporary = tempdir().unwrap();
+    let (runtime, workspace, _durable) = active_sync_runtime(temporary.path(), test_ports()).await;
+    let paths = KernelPaths::desktop(
+        &temporary.path().join("workspace"),
+        &temporary.path().join("app-data"),
+        &temporary.path().join("cache"),
+    )
+    .unwrap();
+    let managed = ManagedWorkspaceCollection::from_paths(&paths).unwrap();
+    let publication_gate = Arc::new(WorkspacePublicationGate::default());
+    let switching_service = Arc::new(
+        WorkspaceService::new(
+            &runtime,
+            workspace.store.clone(),
+            managed,
+            publication_gate.clone(),
+            "Ignored",
+        )
+        .await
+        .unwrap(),
+    );
+    let before = switching_service.current().unwrap();
+    let target = temporary.path().join("published-workspace");
+    std::fs::create_dir(&target).unwrap();
+    let prepared = runtime.prepare_host_workspace_authority(&target).unwrap();
+    let switch_service = switching_service.clone();
+    let mut switch = tokio::spawn(async move {
+        switch_service
+            .compare_and_set_host_workspace(&before.revision, prepared, "Published Workspace")
+            .await
+    });
+
+    publication_gate.wait_for_workspace_publication().await;
+    let mutation = runtime.mutation_coordinator().lock().await;
+    publication_gate.release_workspace_publication();
+    runtime
+        .wait_for_sync_workspace_publication_attempt_for_test()
+        .await;
+    poll_fn(|context| match Pin::new(&mut switch).poll(context) {
+        std::task::Poll::Pending => std::task::Poll::Ready(()),
+        std::task::Poll::Ready(_) => {
+            panic!("switch completed while the final mutation gate was held")
+        }
+    })
+    .await;
+
+    switch.abort();
+    assert!(switch.await.unwrap_err().is_cancelled());
+    drop(mutation);
+
+    assert_eq!(
+        switching_service.current().unwrap().display_name,
+        "Published Workspace"
+    );
+    let transition = runtime
+        .begin_sync_workspace_transition_for_test()
+        .await
+        .unwrap();
+    transition.wait_drained().await.unwrap();
+    transition.reopen_for_test().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn failed_final_reopen_validation_remains_closed_when_guard_drops() {
+    let temporary = tempdir().unwrap();
+    let (runtime, workspace, _durable) = active_sync_runtime(temporary.path(), test_ports()).await;
+    let paths = KernelPaths::desktop(
+        &temporary.path().join("workspace"),
+        &temporary.path().join("app-data"),
+        &temporary.path().join("cache"),
+    )
+    .unwrap();
+    let managed = ManagedWorkspaceCollection::from_paths(&paths).unwrap();
+    let publication_gate = Arc::new(WorkspacePublicationGate::default());
+    let switching_service = Arc::new(
+        WorkspaceService::new(
+            &runtime,
+            workspace.store.clone(),
+            managed,
+            publication_gate.clone(),
+            "Ignored",
+        )
+        .await
+        .unwrap(),
+    );
+    let before = switching_service.current().unwrap();
+    let target = temporary.path().join("invalid-final-workspace");
+    let displaced = temporary.path().join("invalid-final-workspace-displaced");
+    std::fs::create_dir(&target).unwrap();
+    let prepared = runtime.prepare_host_workspace_authority(&target).unwrap();
+    let switch_service = switching_service.clone();
+    let switch = tokio::spawn(async move {
+        switch_service
+            .compare_and_set_host_workspace(&before.revision, prepared, "Invalid Final Workspace")
+            .await
+    });
+
+    publication_gate.wait_for_workspace_publication().await;
+    std::fs::rename(&target, &displaced).unwrap();
+    std::fs::create_dir(&target).unwrap();
+    publication_gate.release_workspace_publication();
+
+    assert!(switch.await.unwrap().is_err());
+    std::fs::remove_dir(&target).unwrap();
+    std::fs::rename(&displaced, &target).unwrap();
+    assert!(runtime.active_workspace_snapshot().is_err());
+    assert!(runtime
+        .begin_sync_workspace_transition_for_test()
+        .await
+        .is_err());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn dropping_prewrite_mismatch_switch_during_drain_stays_in_recovery() {
+    let temporary = tempdir().unwrap();
+    let (runtime, workspace, durable) = active_sync_runtime(temporary.path(), test_ports()).await;
+    let executor = Arc::new(GatedCancellationExecutor::default());
+    let sync = SyncService::new(
+        runtime.clone(),
+        Arc::new(SyncConfigStore::new(durable).unwrap()),
+        executor.clone(),
+    );
+    let config = SyncApiService::get_sync_config(&sync).await.unwrap();
+    SyncApiService::trigger_sync_run(
+        &sync,
+        TriggerSyncRunRequest {
+            expected_config_revision: config.revision,
+        },
+    )
+    .await
+    .unwrap();
+    executor.started.notified().await;
+
+    let before = workspace.service.current().unwrap();
+    let original_store = workspace.store.load().unwrap();
+    workspace
+        .store
+        .replace(Some(serde_json::json!({"corrupt": true})))
+        .unwrap();
+    let target = temporary.path().join("mismatch-target");
+    std::fs::create_dir(&target).unwrap();
+    let prepared = runtime.prepare_host_workspace_authority(&target).unwrap();
+    let switch_service = workspace.service.clone();
+    let mut switch = tokio::spawn(async move {
+        switch_service
+            .compare_and_set_host_workspace(&before.revision, prepared, "Mismatch Target")
+            .await
+    });
+
+    executor.cancellation_seen.notified().await;
+    poll_fn(|context| match Pin::new(&mut switch).poll(context) {
+        std::task::Poll::Pending => std::task::Poll::Ready(()),
+        std::task::Poll::Ready(_) => {
+            panic!("mismatched switch completed before the running executor drained")
+        }
+    })
+    .await;
+    switch.abort();
+    assert!(switch.await.unwrap_err().is_cancelled());
+    executor.release.notify_one();
+    runtime.wait_for_empty_sync_run_for_test().await.unwrap();
+    workspace.store.replace(original_store).unwrap();
+
+    assert!(runtime.active_workspace_snapshot().is_err());
+    assert!(runtime
+        .begin_sync_workspace_transition_for_test()
+        .await
+        .is_err());
 }

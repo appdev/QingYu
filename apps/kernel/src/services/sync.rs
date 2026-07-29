@@ -2,10 +2,14 @@
 
 use std::{
     fmt,
-    future::poll_fn,
+    future::{poll_fn, Future},
     panic::{catch_unwind, AssertUnwindSafe},
-    sync::Arc,
-    task::Poll,
+    pin::Pin,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Weak,
+    },
+    task::{Context, Poll},
 };
 
 use async_trait::async_trait;
@@ -22,6 +26,7 @@ use crate::{
         SyncStatusDto, SyncTrigger, TestSyncConnectionRequest, TriggerSyncRunRequest,
     },
     events::{EventPublication, EventSink as _},
+    ports::BoxTaskFuture,
     runtime::{ClaimedSyncRun, KernelRuntime, ServiceFailure, SyncRunClaim},
     sync::config::{
         SyncConfig, SyncConfigChangeError, SyncConfigLoad, SyncConfigStore,
@@ -46,6 +51,52 @@ pub struct SyncRunContext {
     trigger: SyncTrigger,
     snapshot: Arc<crate::runtime::ActiveWorkspaceSnapshot>,
     cancellation: SyncCancellation,
+}
+
+struct SyncBackgroundTaskDropState {
+    trigger_active: AtomicBool,
+    dropped: AtomicBool,
+}
+
+struct SyncBackgroundTaskGuard {
+    runtime: Weak<KernelRuntime>,
+    run_id: RunId,
+    state: Arc<SyncBackgroundTaskDropState>,
+}
+
+impl Drop for SyncBackgroundTaskGuard {
+    fn drop(&mut self) {
+        self.state.dropped.store(true, Ordering::Release);
+        if !self.state.trigger_active.load(Ordering::Acquire) {
+            if let Some(runtime) = self.runtime.upgrade() {
+                runtime.abandon_sync_background_task(self.run_id);
+            }
+        }
+    }
+}
+
+struct SyncBackgroundTaskEnvelope {
+    inner: Option<BoxTaskFuture>,
+    guard: Option<SyncBackgroundTaskGuard>,
+}
+
+impl Future for SyncBackgroundTaskEnvelope {
+    type Output = ();
+
+    fn poll(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
+        self.inner
+            .as_mut()
+            .expect("sync task envelope retains its inner future")
+            .as_mut()
+            .poll(context)
+    }
+}
+
+impl Drop for SyncBackgroundTaskEnvelope {
+    fn drop(&mut self) {
+        drop(self.inner.take());
+        drop(self.guard.take());
+    }
 }
 
 impl SyncRunContext {
@@ -337,7 +388,16 @@ impl SyncApiService for SyncService {
         let background_runtime = Arc::downgrade(&self.runtime);
         let executor = self.executor.clone();
         let fallback_completed_at = accepted_at.clone();
-        let spawn_result = self.runtime.spawn_sync_background(Box::pin(async move {
+        let drop_state = Arc::new(SyncBackgroundTaskDropState {
+            trigger_active: AtomicBool::new(true),
+            dropped: AtomicBool::new(false),
+        });
+        let drop_guard = SyncBackgroundTaskGuard {
+            runtime: Arc::downgrade(&self.runtime),
+            run_id,
+            state: drop_state.clone(),
+        };
+        let inner: BoxTaskFuture = Box::pin(async move {
             let Some(runtime) = background_runtime.upgrade() else {
                 return;
             };
@@ -363,6 +423,7 @@ impl SyncApiService for SyncService {
                 }
             })
             .await;
+            drop(run);
             let mutation = runtime.mutation_coordinator().lock().await;
             let completed_at = runtime
                 .ports()
@@ -383,8 +444,15 @@ impl SyncApiService for SyncService {
                 runtime.publish_sync_terminal(&terminal);
                 let _finished = runtime.finish_sync_terminal(run_id);
             }
-        }));
-        if spawn_result.is_err() {
+        });
+        let spawn_result =
+            self.runtime
+                .spawn_sync_background(Box::pin(SyncBackgroundTaskEnvelope {
+                    inner: Some(inner),
+                    guard: Some(drop_guard),
+                }));
+        drop_state.trigger_active.store(false, Ordering::Release);
+        if spawn_result.is_err() || drop_state.dropped.load(Ordering::Acquire) {
             let terminal = self
                 .runtime
                 .fail_queued_sync_spawn(run_id, &mutation)

@@ -1326,13 +1326,14 @@ async fn atomic_host_commit_publishes_once_and_rebuilds_the_same_kernel_current(
     assert!(!serde_json::to_string(&host_record.kernel)
         .unwrap()
         .contains(target.to_string_lossy().as_ref()));
-    let publications = events.publications.lock().unwrap();
-    assert_eq!(publications.len(), 1);
-    assert!(matches!(
-        &publications[0].event,
-        DomainEvent::WorkspaceChanged { workspace } if workspace == &committed
-    ));
-    drop(publications);
+    {
+        let publications = events.publications.lock().unwrap();
+        assert_eq!(publications.len(), 1);
+        assert!(matches!(
+            &publications[0].event,
+            DomainEvent::WorkspaceChanged { workspace } if workspace == &committed
+        ));
+    }
 
     let rebuilt = WorkspaceService::new(
         &runtime,

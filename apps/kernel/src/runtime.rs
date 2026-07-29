@@ -265,46 +265,18 @@ impl KernelRuntime {
         initialization.expected.authority().verify_held_directory()
     }
 
-    pub(crate) fn commit_workspace_snapshot(
-        &self,
-        expected: &Arc<ActiveWorkspaceSnapshot>,
-        prepared: &PreparedWorkspaceAuthority,
-        workspace: WorkspaceDto,
-        repository_binding: PrimaryWorkspaceRepositoryBinding,
-        mutation: &MutationPermit<'_>,
-    ) -> Result<Arc<ActiveWorkspaceSnapshot>, WorkspaceAuthorityError> {
-        if !self.mutation_coordinator.recognizes(mutation) {
-            return Err(WorkspaceAuthorityError::unavailable());
-        }
-        prepared.candidate.verify_held_directory()?;
-        self.paths
-            .validate_host_workspace_root(prepared.candidate.root.as_ref())
-            .map_err(WorkspaceAuthorityError::from_path)?;
-        self.owner
-            .commit_snapshot(expected, prepared, workspace, repository_binding)
-    }
-
-    pub(crate) fn enter_workspace_recovery(
-        &self,
-        expected: &Arc<ActiveWorkspaceSnapshot>,
-        prepared: &PreparedWorkspaceAuthority,
-        mutation: &MutationPermit<'_>,
-    ) -> Result<(), WorkspaceAuthorityError> {
-        if !self.mutation_coordinator.recognizes(mutation) {
-            return Err(WorkspaceAuthorityError::unavailable());
-        }
-        self.owner.enter_recovery(
-            WorkspaceOwnerIdentity::Active(expected.clone()),
-            Some(prepared.candidate.clone()),
-        )
-    }
-
     pub(crate) fn enter_workspace_initialization_recovery(
         &self,
         initialization: &WorkspaceInitialization,
         mutation: &MutationPermit<'_>,
     ) -> Result<(), WorkspaceAuthorityError> {
         if !self.mutation_coordinator.recognizes(mutation) {
+            return Err(WorkspaceAuthorityError::unavailable());
+        }
+        if !matches!(
+            &initialization.expected,
+            WorkspaceOwnerIdentity::AuthorityOnly(_)
+        ) {
             return Err(WorkspaceAuthorityError::unavailable());
         }
         self.owner.enter_recovery(
@@ -329,6 +301,97 @@ impl KernelRuntime {
 
     pub(crate) fn spawn_sync_background(&self, task: BoxTaskFuture) -> Result<(), PortError> {
         self.ports.spawn_background(task)
+    }
+
+    pub(crate) fn abandon_sync_background_task(&self, run_id: crate::contract::RunId) {
+        let Ok(mutation) = self.mutation_coordinator.try_lock() else {
+            if let Ok(mut lifecycle) = self.workspace_run_lifecycle.state.lock() {
+                let exact = matches!(
+                    &lifecycle.run,
+                    RegisteredSyncRun::Queued(run)
+                        | RegisteredSyncRun::Running(run)
+                        | RegisteredSyncRun::Finalizing(run)
+                        if run.run_id == run_id
+                );
+                if exact {
+                    lifecycle.admission = SyncRunAdmission::RecoveryClosed;
+                }
+            }
+            self.workspace_run_lifecycle.drained.notify_waiters();
+            return;
+        };
+        let registered = self
+            .workspace_run_lifecycle
+            .state
+            .lock()
+            .ok()
+            .and_then(|lifecycle| match &lifecycle.run {
+                RegisteredSyncRun::Queued(run) if run.run_id == run_id => Some(0_u8),
+                RegisteredSyncRun::Running(run) if run.run_id == run_id => Some(1_u8),
+                RegisteredSyncRun::Finalizing(run) if run.run_id == run_id => Some(2_u8),
+                _ => None,
+            });
+        match registered {
+            Some(0) => {
+                let terminal = self.fail_queued_sync_spawn(run_id, &mutation).ok();
+                drop(mutation);
+                if let Some(terminal) = terminal {
+                    self.publish_sync_terminal(&terminal);
+                    let _finished = self.finish_sync_terminal(run_id);
+                }
+            }
+            Some(1) => {
+                let _recovery = self.quarantine_dropped_running_sync_task(run_id, &mutation);
+                drop(mutation);
+                self.workspace_run_lifecycle.drained.notify_waiters();
+            }
+            Some(2) => {
+                drop(mutation);
+                let _finished = self.finish_sync_terminal(run_id);
+            }
+            _ => {}
+        }
+    }
+
+    fn quarantine_dropped_running_sync_task(
+        &self,
+        run_id: crate::contract::RunId,
+        mutation: &MutationPermit<'_>,
+    ) -> Result<(), WorkspaceRunLifecycleError> {
+        if !self.mutation_coordinator.recognizes(mutation) {
+            return Err(WorkspaceRunLifecycleError);
+        }
+        let mut owner = self
+            .owner
+            .workspace
+            .write()
+            .map_err(|_| WorkspaceRunLifecycleError)?;
+        let mut lifecycle = self
+            .workspace_run_lifecycle
+            .state
+            .lock()
+            .map_err(|_| WorkspaceRunLifecycleError)?;
+        let running = match &lifecycle.run {
+            RegisteredSyncRun::Running(running) if running.run_id == run_id => running.clone(),
+            _ => return Ok(()),
+        };
+        running.cancellation.cancel();
+        let WorkspaceOwnerState::Active(current) = &*owner else {
+            lifecycle.admission = SyncRunAdmission::RecoveryClosed;
+            return Err(WorkspaceRunLifecycleError);
+        };
+        if !Arc::ptr_eq(current, &running.snapshot) {
+            lifecycle.admission = SyncRunAdmission::RecoveryClosed;
+            return Err(WorkspaceRunLifecycleError);
+        }
+        *owner = WorkspaceOwnerState::RecoveryRequired {
+            _hold: WorkspaceRecoveryHold {
+                _last_known: Some(running.snapshot.clone()),
+                _retained_candidate: Some(running.snapshot.authority.clone()),
+            },
+        };
+        lifecycle.admission = SyncRunAdmission::RecoveryClosed;
+        Ok(())
     }
 
     pub(crate) fn queue_sync_run(
@@ -445,6 +508,7 @@ impl KernelRuntime {
             .complete_run(run_id, queued.fallback_completed_at.clone(), false)
             .map_err(|_| {
                 lifecycle.admission = SyncRunAdmission::RecoveryClosed;
+                lifecycle.run = RegisteredSyncRun::Queued(queued.clone());
                 WorkspaceRunLifecycleError
             })?;
         let terminal = SyncTerminalPublication {
@@ -542,6 +606,7 @@ impl KernelRuntime {
             .complete_run(run_id, queued.fallback_completed_at.clone(), false)
             .map_err(|_| {
                 lifecycle.admission = SyncRunAdmission::RecoveryClosed;
+                lifecycle.run = RegisteredSyncRun::Queued(queued.clone());
                 WorkspaceRunLifecycleError
             })?;
         let terminal = SyncTerminalPublication {
@@ -570,6 +635,11 @@ impl KernelRuntime {
         &self,
         run_id: crate::contract::RunId,
     ) -> Result<(), WorkspaceRunLifecycleError> {
+        let mut owner = self
+            .owner
+            .workspace
+            .write()
+            .map_err(|_| WorkspaceRunLifecycleError)?;
         let mut lifecycle = self
             .workspace_run_lifecycle
             .state
@@ -582,22 +652,55 @@ impl KernelRuntime {
                 return Err(WorkspaceRunLifecycleError);
             }
         };
-        drop(finalizing);
-        if matches!(
-            lifecycle.admission,
+        match &lifecycle.admission {
             SyncRunAdmission::Transitioning {
+                expected,
+                recovery_on_drain: Some(retained_candidate),
+                ..
+            } => {
+                let owner_matches = matches!(
+                    &*owner,
+                    WorkspaceOwnerState::Active(current) if Arc::ptr_eq(current, expected)
+                );
+                if !owner_matches {
+                    lifecycle.admission = SyncRunAdmission::RecoveryClosed;
+                    lifecycle.run = RegisteredSyncRun::Finalizing(finalizing.clone());
+                    return Err(WorkspaceRunLifecycleError);
+                }
+                *owner = WorkspaceOwnerState::RecoveryRequired {
+                    _hold: WorkspaceRecoveryHold {
+                        _last_known: Some(expected.clone()),
+                        _retained_candidate: Some(retained_candidate.clone()),
+                    },
+                };
+                lifecycle.admission = SyncRunAdmission::RecoveryClosed;
+            }
+            SyncRunAdmission::Transitioning {
+                expected,
                 abandoned: true,
                 ..
+            } => {
+                if matches!(
+                    &*owner,
+                    WorkspaceOwnerState::Active(current) if Arc::ptr_eq(current, expected)
+                ) {
+                    lifecycle.admission = SyncRunAdmission::Open;
+                } else {
+                    lifecycle.admission = SyncRunAdmission::RecoveryClosed;
+                    lifecycle.run = RegisteredSyncRun::Finalizing(finalizing.clone());
+                    return Err(WorkspaceRunLifecycleError);
+                }
             }
-        ) {
-            lifecycle.admission = SyncRunAdmission::Open;
+            _ => {}
         }
+        drop(finalizing);
+        drop(owner);
         drop(lifecycle);
         self.workspace_run_lifecycle.drained.notify_waiters();
         Ok(())
     }
 
-    fn begin_sync_workspace_transition(
+    pub(crate) fn begin_sync_workspace_transition(
         self: &Arc<Self>,
         expected: Arc<ActiveWorkspaceSnapshot>,
         mutation: &MutationPermit<'_>,
@@ -632,8 +735,9 @@ impl KernelRuntime {
         );
         lifecycle.admission = SyncRunAdmission::Transitioning {
             token,
-            expected,
+            expected: expected.clone(),
             abandoned: false,
+            recovery_on_drain: None,
         };
         let terminal = match std::mem::replace(&mut lifecycle.run, RegisteredSyncRun::Empty) {
             RegisteredSyncRun::Queued(queued) => {
@@ -643,6 +747,7 @@ impl KernelRuntime {
                     .complete_cancelled(queued.run_id)
                     .map_err(|_| {
                         lifecycle.admission = SyncRunAdmission::RecoveryClosed;
+                        lifecycle.run = RegisteredSyncRun::Queued(queued.clone());
                         WorkspaceRunLifecycleError
                     })?;
                 let terminal = SyncTerminalPublication {
@@ -668,10 +773,23 @@ impl KernelRuntime {
             SyncWorkspaceTransition {
                 runtime: Arc::downgrade(self),
                 token,
-                completed: false,
+                drop_policy: SyncWorkspaceTransitionDropPolicy::Reopen,
             },
             terminal,
         ))
+    }
+
+    pub(crate) fn finish_sync_workspace_transition_start(
+        &self,
+        terminal: Option<SyncTerminalPublication>,
+    ) -> Result<(), WorkspaceRunLifecycleError> {
+        if let Some(terminal) = terminal {
+            self.publish_sync_terminal(&terminal);
+            self.finish_sync_terminal(terminal.run_id)
+        } else {
+            self.workspace_run_lifecycle.drained.notify_waiters();
+            Ok(())
+        }
     }
 
     #[doc(hidden)]
@@ -685,12 +803,7 @@ impl KernelRuntime {
             .map_err(|_| WorkspaceRunLifecycleError)?;
         let (transition, terminal) = self.begin_sync_workspace_transition(expected, &mutation)?;
         drop(mutation);
-        if let Some(terminal) = terminal {
-            self.publish_sync_terminal(&terminal);
-            self.finish_sync_terminal(terminal.run_id)?;
-        } else {
-            self.workspace_run_lifecycle.drained.notify_waiters();
-        }
+        self.finish_sync_workspace_transition_start(terminal)?;
         Ok(transition)
     }
 
@@ -708,12 +821,7 @@ impl KernelRuntime {
             .map_err(|_| WorkspaceRunLifecycleError)?;
         let (transition, terminal) = self.begin_sync_workspace_transition(expected, &mutation)?;
         drop(mutation);
-        if let Some(terminal) = terminal {
-            self.publish_sync_terminal(&terminal);
-            self.finish_sync_terminal(terminal.run_id)?;
-        } else {
-            self.workspace_run_lifecycle.drained.notify_waiters();
-        }
+        self.finish_sync_workspace_transition_start(terminal)?;
         Ok(transition)
     }
 
@@ -743,6 +851,35 @@ impl KernelRuntime {
     }
 
     #[doc(hidden)]
+    pub async fn wait_for_sync_workspace_publication_attempt_for_test(&self) {
+        loop {
+            if self
+                .workspace_run_lifecycle
+                .last_publication_attempted
+                .load(Ordering::Acquire)
+                != 0
+            {
+                return;
+            }
+            let notified = self
+                .workspace_run_lifecycle
+                .publication_attempted
+                .notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if self
+                .workspace_run_lifecycle
+                .last_publication_attempted
+                .load(Ordering::Acquire)
+                != 0
+            {
+                return;
+            }
+            notified.await;
+        }
+    }
+
+    #[doc(hidden)]
     pub fn poison_sync_lifecycle_for_test(&self) {
         let _caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let _guard = self
@@ -759,6 +896,20 @@ impl KernelRuntime {
         self.sync_status.poison_for_test();
     }
 
+    #[doc(hidden)]
+    pub fn close_sync_admission_for_test(&self) -> Result<(), WorkspaceRunLifecycleError> {
+        let mut lifecycle = self
+            .workspace_run_lifecycle
+            .state
+            .lock()
+            .map_err(|_| WorkspaceRunLifecycleError)?;
+        if !matches!(lifecycle.admission, SyncRunAdmission::Open) {
+            return Err(WorkspaceRunLifecycleError);
+        }
+        lifecycle.admission = SyncRunAdmission::RecoveryClosed;
+        Ok(())
+    }
+
     fn reopen_sync_workspace_transition(
         &self,
         token: SyncWorkspaceTransitionToken,
@@ -767,8 +918,30 @@ impl KernelRuntime {
         if !self.mutation_coordinator.recognizes(mutation) {
             return Err(WorkspaceRunLifecycleError);
         }
-        self.owner
-            .active_snapshot()
+        self.complete_sync_workspace_transition(token)
+    }
+
+    fn complete_sync_workspace_transition(
+        &self,
+        token: SyncWorkspaceTransitionToken,
+    ) -> Result<(), WorkspaceRunLifecycleError> {
+        if self.verify_instance_lock().is_err() {
+            let _recovery = self.recover_sync_workspace_transition(token, None);
+            self.fail_close_sync_workspace_transition(token);
+            return Err(WorkspaceRunLifecycleError);
+        }
+        let verified = match self.active_workspace_snapshot() {
+            Ok(verified) => verified,
+            Err(_) => {
+                let _recovery = self.recover_sync_workspace_transition(token, None);
+                self.fail_close_sync_workspace_transition(token);
+                return Err(WorkspaceRunLifecycleError);
+            }
+        };
+        let mut owner = self
+            .owner
+            .workspace
+            .write()
             .map_err(|_| WorkspaceRunLifecycleError)?;
         let mut lifecycle = self
             .workspace_run_lifecycle
@@ -776,15 +949,41 @@ impl KernelRuntime {
             .lock()
             .map_err(|_| WorkspaceRunLifecycleError)?;
         if !matches!(lifecycle.run, RegisteredSyncRun::Empty) {
+            lifecycle.admission = SyncRunAdmission::RecoveryClosed;
             return Err(WorkspaceRunLifecycleError);
         }
-        match &lifecycle.admission {
-            SyncRunAdmission::Transitioning { token: current, .. } if *current == token => {
-                lifecycle.admission = SyncRunAdmission::Open;
-                Ok(())
-            }
-            _ => Err(WorkspaceRunLifecycleError),
+        let exact = match &lifecycle.admission {
+            SyncRunAdmission::Transitioning {
+                token: current_token,
+                expected,
+                ..
+            } if *current_token == token => matches!(
+                &*owner,
+                WorkspaceOwnerState::Active(current)
+                    if Arc::ptr_eq(current, expected) && Arc::ptr_eq(current, &verified)
+            ),
+            _ => false,
+        };
+        if exact {
+            lifecycle.admission = SyncRunAdmission::Open;
+            return Ok(());
         }
+        if matches!(
+            lifecycle.admission,
+            SyncRunAdmission::Transitioning { token: current, .. } if current == token
+        ) {
+            if let WorkspaceOwnerState::Active(current) = &*owner {
+                let retained = current.clone();
+                *owner = WorkspaceOwnerState::RecoveryRequired {
+                    _hold: WorkspaceRecoveryHold {
+                        _last_known: Some(retained.clone()),
+                        _retained_candidate: Some(retained.authority.clone()),
+                    },
+                };
+            }
+            lifecycle.admission = SyncRunAdmission::RecoveryClosed;
+        }
+        Err(WorkspaceRunLifecycleError)
     }
 
     fn fail_close_sync_workspace_transition(&self, token: SyncWorkspaceTransitionToken) {
@@ -797,6 +996,121 @@ impl KernelRuntime {
         ) {
             lifecycle.admission = SyncRunAdmission::RecoveryClosed;
         }
+    }
+
+    fn recover_sync_workspace_transition(
+        &self,
+        token: SyncWorkspaceTransitionToken,
+        retained_candidate: Option<Arc<ActiveWorkspaceAuthority>>,
+    ) -> Result<(), WorkspaceRunLifecycleError> {
+        let mut owner = self
+            .owner
+            .workspace
+            .write()
+            .map_err(|_| WorkspaceRunLifecycleError)?;
+        let mut lifecycle = self
+            .workspace_run_lifecycle
+            .state
+            .lock()
+            .map_err(|_| WorkspaceRunLifecycleError)?;
+        let expected = match &lifecycle.admission {
+            SyncRunAdmission::Transitioning {
+                token: current,
+                expected,
+                ..
+            } if *current == token => expected.clone(),
+            _ => {
+                lifecycle.admission = SyncRunAdmission::RecoveryClosed;
+                return Err(WorkspaceRunLifecycleError);
+            }
+        };
+        let owner_matches = matches!(
+            &*owner,
+            WorkspaceOwnerState::Active(current) if Arc::ptr_eq(current, &expected)
+        );
+        if !owner_matches {
+            lifecycle.admission = SyncRunAdmission::RecoveryClosed;
+            return Err(WorkspaceRunLifecycleError);
+        }
+        let retained_candidate = retained_candidate.or_else(|| Some(expected.authority.clone()));
+        if !matches!(lifecycle.run, RegisteredSyncRun::Empty) {
+            let SyncRunAdmission::Transitioning {
+                recovery_on_drain, ..
+            } = &mut lifecycle.admission
+            else {
+                return Err(WorkspaceRunLifecycleError);
+            };
+            *recovery_on_drain = retained_candidate;
+            return Ok(());
+        }
+        *owner = WorkspaceOwnerState::RecoveryRequired {
+            _hold: WorkspaceRecoveryHold {
+                _last_known: Some(expected.clone()),
+                _retained_candidate: retained_candidate,
+            },
+        };
+        lifecycle.admission = SyncRunAdmission::RecoveryClosed;
+        Ok(())
+    }
+
+    pub(crate) fn commit_sync_workspace_transition(
+        &self,
+        transition: &mut SyncWorkspaceTransition,
+        prepared: &PreparedWorkspaceAuthority,
+        workspace: WorkspaceDto,
+        repository_binding: PrimaryWorkspaceRepositoryBinding,
+        mutation: &MutationPermit<'_>,
+    ) -> Result<Arc<ActiveWorkspaceSnapshot>, WorkspaceAuthorityError> {
+        if !self.mutation_coordinator.recognizes(mutation) {
+            return Err(WorkspaceAuthorityError::unavailable());
+        }
+        prepared.candidate.verify_held_directory()?;
+        self.paths
+            .validate_host_workspace_root(prepared.candidate.root.as_ref())
+            .map_err(WorkspaceAuthorityError::from_path)?;
+        let mut owner = self
+            .owner
+            .workspace
+            .write()
+            .map_err(|_| WorkspaceAuthorityError::unavailable())?;
+        let mut lifecycle = self
+            .workspace_run_lifecycle
+            .state
+            .lock()
+            .map_err(|_| WorkspaceAuthorityError::unavailable())?;
+        let WorkspaceOwnerState::Active(current) = &*owner else {
+            lifecycle.admission = SyncRunAdmission::RecoveryClosed;
+            return Err(WorkspaceAuthorityError::unavailable());
+        };
+        if !matches!(
+            &lifecycle.admission,
+            SyncRunAdmission::Transitioning { token, expected, .. }
+                if *token == transition.token && Arc::ptr_eq(expected, current)
+        ) || !matches!(
+            &prepared.expected,
+            WorkspaceOwnerIdentity::Active(prepared_expected)
+                if Arc::ptr_eq(prepared_expected, current)
+        ) || !current.repository_binding.matches(&repository_binding)
+            || !matches!(lifecycle.run, RegisteredSyncRun::Empty)
+        {
+            lifecycle.admission = SyncRunAdmission::RecoveryClosed;
+            return Err(WorkspaceAuthorityError::prepared_authority_mismatch());
+        }
+        let snapshot = Arc::new(ActiveWorkspaceSnapshot::new(
+            prepared.candidate.clone(),
+            workspace,
+            repository_binding,
+        ));
+        *owner = WorkspaceOwnerState::Active(snapshot.clone());
+        let SyncRunAdmission::Transitioning { expected, .. } = &mut lifecycle.admission else {
+            lifecycle.admission = SyncRunAdmission::RecoveryClosed;
+            return Err(WorkspaceAuthorityError::unavailable());
+        };
+        *expected = snapshot.clone();
+        transition.drop_policy = SyncWorkspaceTransitionDropPolicy::Recovery {
+            retained_candidate: Some(prepared.candidate.clone()),
+        };
+        Ok(snapshot)
     }
 
     pub fn install_system_api_service(
@@ -1083,23 +1397,13 @@ impl KernelRuntimeOwner {
                 if Arc::ptr_eq(current, expected)
                     && current.repository_binding.matches(&repository_binding) =>
             {
-                let mut lifecycle = lifecycle
+                let lifecycle = lifecycle
                     .state
                     .lock()
                     .map_err(|_| WorkspaceInitializationError::unavailable())?;
-                if !matches!(lifecycle.admission, SyncRunAdmission::Open)
-                    || !matches!(lifecycle.run, RegisteredSyncRun::Empty)
-                {
+                if !matches!(lifecycle.admission, SyncRunAdmission::Open) {
                     return Err(WorkspaceInitializationError::unavailable());
                 }
-                let retained = current.clone();
-                *owner = WorkspaceOwnerState::RecoveryRequired {
-                    _hold: WorkspaceRecoveryHold {
-                        _last_known: Some(retained),
-                        _retained_candidate: None,
-                    },
-                };
-                lifecycle.admission = SyncRunAdmission::RecoveryClosed;
                 Err(WorkspaceInitializationError::changed_canonical())
             }
             (WorkspaceOwnerState::RecoveryRequired { .. }, _) => {
@@ -1107,39 +1411,6 @@ impl KernelRuntimeOwner {
             }
             _ => Err(WorkspaceInitializationError::foreign_repository()),
         }
-    }
-
-    fn commit_snapshot(
-        &self,
-        expected: &Arc<ActiveWorkspaceSnapshot>,
-        prepared: &PreparedWorkspaceAuthority,
-        workspace: WorkspaceDto,
-        repository_binding: PrimaryWorkspaceRepositoryBinding,
-    ) -> Result<Arc<ActiveWorkspaceSnapshot>, WorkspaceAuthorityError> {
-        let mut state = self
-            .workspace
-            .write()
-            .map_err(|_| WorkspaceAuthorityError::unavailable())?;
-        let WorkspaceOwnerState::Active(current) = &*state else {
-            return Err(WorkspaceAuthorityError::unavailable());
-        };
-        if !Arc::ptr_eq(current, expected)
-            || !matches!(
-                &prepared.expected,
-                WorkspaceOwnerIdentity::Active(prepared_expected)
-                    if Arc::ptr_eq(prepared_expected, expected)
-            )
-            || !expected.repository_binding.matches(&repository_binding)
-        {
-            return Err(WorkspaceAuthorityError::prepared_authority_mismatch());
-        }
-        let snapshot = Arc::new(ActiveWorkspaceSnapshot::new(
-            prepared.candidate.clone(),
-            workspace,
-            repository_binding,
-        ));
-        *state = WorkspaceOwnerState::Active(snapshot.clone());
-        Ok(snapshot)
     }
 
     fn enter_recovery(
@@ -1218,6 +1489,15 @@ impl WorkspaceOwnerIdentity {
 
 pub(crate) struct WorkspaceInitialization {
     expected: WorkspaceOwnerIdentity,
+}
+
+impl WorkspaceInitialization {
+    pub(crate) fn active_snapshot(&self) -> Option<Arc<ActiveWorkspaceSnapshot>> {
+        match &self.expected {
+            WorkspaceOwnerIdentity::AuthorityOnly(_) => None,
+            WorkspaceOwnerIdentity::Active(snapshot) => Some(snapshot.clone()),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1371,19 +1651,23 @@ struct SyncCancellationState {
 
 struct WorkspaceRunLifecycle {
     next_transition: AtomicU64,
+    last_publication_attempted: AtomicU64,
     state: StdMutex<WorkspaceRunLifecycleState>,
     drained: Notify,
+    publication_attempted: Notify,
 }
 
 impl WorkspaceRunLifecycle {
     const fn new() -> Self {
         Self {
             next_transition: AtomicU64::new(1),
+            last_publication_attempted: AtomicU64::new(0),
             state: StdMutex::new(WorkspaceRunLifecycleState {
                 admission: SyncRunAdmission::Uninitialized,
                 run: RegisteredSyncRun::Empty,
             }),
             drained: Notify::const_new(),
+            publication_attempted: Notify::const_new(),
         }
     }
 
@@ -1421,6 +1705,7 @@ enum SyncRunAdmission {
         token: SyncWorkspaceTransitionToken,
         expected: Arc<ActiveWorkspaceSnapshot>,
         abandoned: bool,
+        recovery_on_drain: Option<Arc<ActiveWorkspaceAuthority>>,
     },
     RecoveryClosed,
 }
@@ -1481,7 +1766,16 @@ impl std::error::Error for WorkspaceRunLifecycleError {}
 pub struct SyncWorkspaceTransition {
     runtime: Weak<KernelRuntime>,
     token: SyncWorkspaceTransitionToken,
-    completed: bool,
+    drop_policy: SyncWorkspaceTransitionDropPolicy,
+}
+
+enum SyncWorkspaceTransitionDropPolicy {
+    Reopen,
+    Recovery {
+        retained_candidate: Option<Arc<ActiveWorkspaceAuthority>>,
+    },
+    PublicationAttempted,
+    Complete,
 }
 
 impl SyncWorkspaceTransition {
@@ -1516,23 +1810,93 @@ impl SyncWorkspaceTransition {
         let mutation = runtime.mutation_coordinator.lock().await;
         if let Err(error) = runtime.reopen_sync_workspace_transition(self.token, &mutation) {
             runtime.fail_close_sync_workspace_transition(self.token);
-            self.completed = true;
+            self.drop_policy = SyncWorkspaceTransitionDropPolicy::Complete;
             return Err(error);
         }
-        self.completed = true;
+        self.drop_policy = SyncWorkspaceTransitionDropPolicy::Complete;
         Ok(())
+    }
+
+    pub(crate) fn arm_recovery_on_drop(
+        &mut self,
+        retained_candidate: Option<Arc<ActiveWorkspaceAuthority>>,
+    ) {
+        self.drop_policy = SyncWorkspaceTransitionDropPolicy::Recovery { retained_candidate };
+    }
+
+    pub(crate) fn publication_attempted(&mut self) {
+        self.drop_policy = SyncWorkspaceTransitionDropPolicy::PublicationAttempted;
+        if let Some(runtime) = self.runtime.upgrade() {
+            runtime
+                .workspace_run_lifecycle
+                .last_publication_attempted
+                .store(self.token.0, Ordering::Release);
+            runtime
+                .workspace_run_lifecycle
+                .publication_attempted
+                .notify_waiters();
+        }
+    }
+
+    pub(crate) fn reopen(
+        &mut self,
+        mutation: &MutationPermit<'_>,
+    ) -> Result<(), WorkspaceRunLifecycleError> {
+        let runtime = self.runtime.upgrade().ok_or(WorkspaceRunLifecycleError)?;
+        match runtime.reopen_sync_workspace_transition(self.token, mutation) {
+            Ok(()) => {
+                self.drop_policy = SyncWorkspaceTransitionDropPolicy::Complete;
+                Ok(())
+            }
+            Err(error) => {
+                let _recovery = runtime.recover_sync_workspace_transition(self.token, None);
+                self.drop_policy = SyncWorkspaceTransitionDropPolicy::Complete;
+                Err(error)
+            }
+        }
+    }
+
+    pub(crate) fn enter_recovery(
+        &mut self,
+        retained_candidate: Option<Arc<ActiveWorkspaceAuthority>>,
+        mutation: &MutationPermit<'_>,
+    ) -> Result<(), WorkspaceRunLifecycleError> {
+        let runtime = self.runtime.upgrade().ok_or(WorkspaceRunLifecycleError)?;
+        if !runtime.mutation_coordinator.recognizes(mutation) {
+            return Err(WorkspaceRunLifecycleError);
+        }
+        let result = runtime.recover_sync_workspace_transition(self.token, retained_candidate);
+        self.drop_policy = SyncWorkspaceTransitionDropPolicy::Complete;
+        result
     }
 }
 
 impl Drop for SyncWorkspaceTransition {
     fn drop(&mut self) {
-        if self.completed {
+        let Some(runtime) = self.runtime.upgrade() else {
             return;
-        }
-        if let Some(runtime) = self.runtime.upgrade() {
-            runtime
+        };
+        match &self.drop_policy {
+            SyncWorkspaceTransitionDropPolicy::Reopen => runtime
                 .workspace_run_lifecycle
-                .abandon_transition(self.token);
+                .abandon_transition(self.token),
+            SyncWorkspaceTransitionDropPolicy::Recovery { retained_candidate } => {
+                if runtime
+                    .recover_sync_workspace_transition(self.token, retained_candidate.clone())
+                    .is_err()
+                {
+                    runtime.fail_close_sync_workspace_transition(self.token);
+                }
+            }
+            SyncWorkspaceTransitionDropPolicy::PublicationAttempted => {
+                if runtime
+                    .complete_sync_workspace_transition(self.token)
+                    .is_err()
+                {
+                    runtime.fail_close_sync_workspace_transition(self.token);
+                }
+            }
+            SyncWorkspaceTransitionDropPolicy::Complete => {}
         }
     }
 }
@@ -1582,6 +1946,10 @@ pub struct PreparedWorkspaceAuthority {
 impl PreparedWorkspaceAuthority {
     pub fn binding(&self) -> PreparedWorkspaceAuthorityBinding {
         self.binding.clone()
+    }
+
+    pub(crate) fn candidate(&self) -> &Arc<ActiveWorkspaceAuthority> {
+        &self.candidate
     }
 }
 
