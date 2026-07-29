@@ -756,7 +756,29 @@ fn builder_boundary_sidecar_has_an_explicit_non_default_feature_gate() {
     assert!(manifest.contains("required-features = [\"desktop-sidecar\"]"));
 
     let preparation = source("../../../packages/scripts/src/prepare-qingyu-mcp-sidecar.mjs");
-    assert!(preparation.contains("\"--features\",\n  \"desktop-sidecar\""));
+    assert!(preparation.contains("\"--features\",\n    \"desktop-sidecar\""));
+
+    let kernel_preparation =
+        source("../../../packages/scripts/src/prepare-qingyu-kernel-sidecar.mjs");
+    assert!(kernel_preparation.contains("\"--bin\",\n    \"qingyu-kernel\""));
+    assert!(kernel_preparation.contains("\"--target\",\n    targetTriple"));
+    assert!(kernel_preparation.contains("validatePreparedKernelSidecar"));
+
+    let build_script = source("build.rs");
+    assert!(build_script.contains("ensure_mcp_sidecar_slot"));
+    let kernel_validation = build_script
+        .split("fn align_desktop_sidecar_manifest_check")
+        .nth(1)
+        .and_then(|source| {
+            source
+                .split("fn align_macos_private_api_manifest_check")
+                .next()
+        })
+        .expect("build script should isolate Kernel sidecar validation");
+    assert!(kernel_validation.contains("kernel_sidecar_is_ready"));
+    assert!(kernel_validation.contains("MARKRA_DESKTOP_TARGET"));
+    assert!(!kernel_validation.contains("OpenOptions"));
+    assert!(!kernel_validation.contains("create_new"));
 }
 
 #[test]
@@ -948,12 +970,24 @@ fn builder_boundary_sidecar_and_file_associations_are_desktop_config_only() {
         package.pointer("/scripts/prepare:mobile-build"),
         Some(&serde_json::json!("pnpm --filter @markra/desktop build"))
     );
+    assert_eq!(
+        package.pointer("/scripts/prepare:desktop-build"),
+        Some(&serde_json::json!(
+            "pnpm --filter @markra/desktop build && pnpm prepare:qingyu-kernel-sidecar && pnpm prepare:qingyu-mcp-sidecar"
+        ))
+    );
+    assert_eq!(
+        package.pointer("/scripts/prepare:qingyu-kernel-sidecar"),
+        Some(&serde_json::json!(
+            "node packages/scripts/src/prepare-qingyu-kernel-sidecar.mjs"
+        ))
+    );
 
     for platform in ["macos", "windows", "linux"] {
         let config = json(&format!("tauri.{platform}.conf.json"));
         assert_eq!(
             string_array_at(&config, "/bundle/externalBin"),
-            vec!["binaries/qingyu-mcp"]
+            vec!["binaries/qingyu-mcp", "binaries/qingyu-kernel"]
         );
         assert!(config.pointer("/bundle/fileAssociations").is_some());
         assert_eq!(
@@ -967,6 +1001,9 @@ fn builder_boundary_sidecar_and_file_associations_are_desktop_config_only() {
         macos.pointer("/app/macOSPrivateApi"),
         Some(&serde_json::json!(true))
     );
+
+    let ignore = source("../../../.gitignore");
+    assert!(ignore.contains("apps/desktop/src-tauri/binaries/qingyu-kernel-*"));
 }
 
 #[test]

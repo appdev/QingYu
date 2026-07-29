@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   createTauriCommand,
+  tauriChildEnvironment,
   restoreTauriManifestAfterCliRun,
   tauriExitCode,
 } from "./run-tauri.mjs";
@@ -31,6 +32,26 @@ describe("createTauriCommand", () => {
 
     expect(invocation.args).not.toContain("--config");
     expect(invocation.args.join(" ")).not.toContain("macOSPrivateApi");
+  });
+});
+
+describe("tauriChildEnvironment", () => {
+  it.each([
+    [["build", "--target", "x86_64-pc-windows-msvc"], "x86_64-pc-windows-msvc"],
+    [["build", "--target=aarch64-apple-darwin"], "aarch64-apple-darwin"],
+  ])("forwards the explicit desktop target to sidecar preparation", (args, target) => {
+    expect(tauriChildEnvironment(args, { KEEP: "yes" })).toEqual({
+      KEEP: "yes",
+      MARKRA_DESKTOP_TARGET: target,
+    });
+  });
+
+  it("does not treat abbreviated mobile targets as desktop triples", () => {
+    expect(
+      tauriChildEnvironment(["android", "build", "--target", "aarch64"], {
+        KEEP: "yes",
+      }),
+    ).toEqual({ KEEP: "yes" });
   });
 });
 

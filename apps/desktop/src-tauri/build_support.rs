@@ -43,10 +43,48 @@ pub(crate) fn macos_private_api_validation_override(
     Ok(override_config.to_string())
 }
 
+pub(crate) fn desktop_sidecar_validation_override(
+    existing: Option<&str>,
+    kernel_ready: bool,
+) -> Result<String, String> {
+    let mut override_config = match existing {
+        Some(value) => serde_json::from_str::<serde_json::Value>(value)
+            .map_err(|error| format!("TAURI_CONFIG must be a valid JSON object: {error}"))?,
+        None => serde_json::json!({}),
+    };
+    let root = override_config
+        .as_object_mut()
+        .ok_or_else(|| "TAURI_CONFIG must be a JSON object".to_string())?;
+    let bundle = root
+        .entry("bundle")
+        .or_insert_with(|| serde_json::json!({}))
+        .as_object_mut()
+        .ok_or_else(|| "TAURI_CONFIG bundle must be a JSON object".to_string())?;
+    let binaries = bundle
+        .entry("externalBin")
+        .or_insert_with(|| serde_json::json!([]))
+        .as_array_mut()
+        .ok_or_else(|| "TAURI_CONFIG bundle.externalBin must be an array".to_string())?;
+    let mcp_sidecar = serde_json::json!("binaries/qingyu-mcp");
+    let kernel_sidecar = serde_json::json!("binaries/qingyu-kernel");
+
+    if !kernel_ready {
+        binaries.retain(|binary| binary != &kernel_sidecar);
+    }
+    if !binaries.contains(&mcp_sidecar) {
+        binaries.push(mcp_sidecar);
+    }
+    if kernel_ready && !binaries.contains(&kernel_sidecar) {
+        binaries.push(kernel_sidecar);
+    }
+    Ok(override_config.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        common_tauri_dependency_enables_macos_private_api, macos_private_api_validation_override,
+        common_tauri_dependency_enables_macos_private_api, desktop_sidecar_validation_override,
+        macos_private_api_validation_override,
     };
 
     #[test]
@@ -146,5 +184,104 @@ tauri = { version = "2", features = ["macos-private-api", "protocol-asset"] }
             .expect_err("the app override must remain an object");
 
         assert!(error.contains("TAURI_CONFIG app must be a JSON object"));
+    }
+
+    #[test]
+    fn desktop_sidecar_override_includes_kernel_only_after_real_preparation() {
+        for (kernel_ready, expected) in [
+            (false, serde_json::json!(["binaries/qingyu-mcp"])),
+            (
+                true,
+                serde_json::json!(["binaries/qingyu-mcp", "binaries/qingyu-kernel"]),
+            ),
+        ] {
+            let configured = desktop_sidecar_validation_override(None, kernel_ready)
+                .expect("an absent override should use an empty object");
+            let parsed: serde_json::Value =
+                serde_json::from_str(&configured).expect("generated override should be valid JSON");
+
+            assert_eq!(parsed.pointer("/bundle/externalBin"), Some(&expected));
+        }
+    }
+
+    #[test]
+    fn desktop_sidecar_override_preserves_other_bundle_and_root_keys() {
+        let configured = desktop_sidecar_validation_override(
+            Some(r#"{"bundle":{"active":false},"plugins":{"updater":{"pubkey":"value"}}}"#),
+            true,
+        )
+        .expect("a valid object override should be accepted");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&configured).expect("generated override should be valid JSON");
+
+        assert_eq!(
+            parsed.pointer("/bundle/active"),
+            Some(&serde_json::json!(false))
+        );
+        assert_eq!(
+            parsed.pointer("/plugins/updater/pubkey"),
+            Some(&serde_json::json!("value"))
+        );
+        assert_eq!(
+            parsed.pointer("/bundle/externalBin"),
+            Some(&serde_json::json!([
+                "binaries/qingyu-mcp",
+                "binaries/qingyu-kernel"
+            ]))
+        );
+    }
+
+    #[test]
+    fn desktop_sidecar_override_preserves_existing_external_binaries() {
+        let configured = desktop_sidecar_validation_override(
+            Some(
+                r#"{"bundle":{"externalBin":["binaries/upstream-helper","binaries/qingyu-kernel"]}}"#,
+            ),
+            false,
+        )
+        .expect("an existing external binary list should be extended in place");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&configured).expect("generated override should be valid JSON");
+
+        assert_eq!(
+            parsed.pointer("/bundle/externalBin"),
+            Some(&serde_json::json!([
+                "binaries/upstream-helper",
+                "binaries/qingyu-mcp"
+            ]))
+        );
+    }
+
+    #[test]
+    fn desktop_sidecar_override_does_not_duplicate_managed_binaries() {
+        let configured = desktop_sidecar_validation_override(
+            Some(
+                r#"{"bundle":{"externalBin":["binaries/qingyu-mcp","binaries/qingyu-kernel","binaries/upstream-helper"]}}"#,
+            ),
+            true,
+        )
+        .expect("already configured managed binaries should remain singular");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&configured).expect("generated override should be valid JSON");
+
+        assert_eq!(
+            parsed.pointer("/bundle/externalBin"),
+            Some(&serde_json::json!([
+                "binaries/qingyu-mcp",
+                "binaries/qingyu-kernel",
+                "binaries/upstream-helper"
+            ]))
+        );
+    }
+
+    #[test]
+    fn desktop_sidecar_override_rejects_non_array_external_binaries() {
+        let error = desktop_sidecar_validation_override(
+            Some(r#"{"bundle":{"externalBin":"binaries/upstream-helper"}}"#),
+            true,
+        )
+        .expect_err("an invalid external binary list must not be overwritten");
+
+        assert!(error.contains("TAURI_CONFIG bundle.externalBin must be an array"));
     }
 }

@@ -365,6 +365,7 @@ jobs:
         uses: tauri-apps/tauri-action@v0.6.0
         env:
           LINUXDEPLOY_EXCLUDED_LIBRARIES: libwayland-client.so*
+          MARKRA_DESKTOP_TARGET: ${{ matrix.target }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
@@ -418,6 +419,27 @@ jobs:
         run: |
           node scripts/release/verify-linux-appimage-libraries.mjs
           node scripts/release/verify-linux-appimage-gtk-ime.mjs
+
+      - name: Verify bundled Kernel
+        shell: bash
+        env:
+          ASSET_PLATFORM: ${{ matrix.asset_platform }}
+          BUNDLE_ROOT: ${{ env.DESKTOP_DIR }}/src-tauri/target/${{ matrix.target }}/release/bundle
+          ENABLE_SIGNED_RELEASE: ${{ needs.validate_release.outputs.signed_release }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+
+          verify_args=(
+            --bundle-root "${BUNDLE_ROOT}"
+            --platform "${ASSET_PLATFORM}"
+            --product-name "${APP_PRODUCT_NAME}"
+            --target "${TARGET}"
+          )
+          if [[ "${ASSET_PLATFORM}" == "macos" && "${ENABLE_SIGNED_RELEASE}" == "true" ]]; then
+            verify_args+=(--require-signature)
+          fi
+          node packages/scripts/src/verify-qingyu-kernel-bundle.mjs "${verify_args[@]}"
 
       - name: Normalize release asset names
         shell: bash

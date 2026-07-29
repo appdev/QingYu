@@ -72,10 +72,31 @@ export function createTauriCommand(args, platform = process.platform) {
   };
 }
 
+export function tauriChildEnvironment(args, environment = process.env) {
+  let target;
+  for (let index = 0; index < args.length; index += 1) {
+    if (args[index] === "--target") {
+      target = args[index + 1];
+      break;
+    }
+    if (args[index].startsWith("--target=")) {
+      target = args[index].slice("--target=".length);
+      break;
+    }
+  }
+  const desktopTarget = /-(?:apple-darwin|unknown-linux-(?:gnu|musl)|pc-windows-(?:msvc|gnu))$/u;
+  return target && desktopTarget.test(target)
+    ? { ...environment, MARKRA_DESKTOP_TARGET: target }
+    : { ...environment };
+}
+
 export function runTauri(args = process.argv.slice(2)) {
   const invocation = createTauriCommand(args);
   const manifestBefore = readFileSync(tauriManifestPath, "utf8");
-  const child = spawn(invocation.command, invocation.args, { stdio: "inherit" });
+  const child = spawn(invocation.command, invocation.args, {
+    env: tauriChildEnvironment(args),
+    stdio: "inherit",
+  });
   let spawnError;
   const signalHandlers = new Map(
     ["SIGINT", "SIGTERM", "SIGHUP"].map((signal) => [

@@ -20,7 +20,8 @@
   },
   "bundle": {
     "externalBin": [
-      "binaries/qingyu-mcp"
+      "binaries/qingyu-mcp",
+      "binaries/qingyu-kernel"
     ],
     "fileAssociations": [
       {
