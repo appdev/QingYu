@@ -37,7 +37,9 @@ use qingyu_kernel::{
     services::workspace::WorkspaceService,
     workspace::{
         managed::ManagedWorkspaceCollection,
-        primary::{PrimaryWorkspaceStore, PrimaryWorkspaceStoreError},
+        primary::{
+            PrimaryWorkspaceRepositoryBinding, PrimaryWorkspaceStore, PrimaryWorkspaceStoreError,
+        },
     },
 };
 use serde_json::Value;
@@ -45,14 +47,21 @@ use sha2::{Digest as _, Sha256};
 use uuid::Uuid;
 
 #[derive(Default)]
-struct MemoryWorkspaceStore(Mutex<Option<Value>>);
+struct MemoryWorkspaceStore {
+    binding: PrimaryWorkspaceRepositoryBinding,
+    value: Mutex<Option<Value>>,
+}
 
 impl PrimaryWorkspaceStore for MemoryWorkspaceStore {
+    fn repository_binding(&self) -> PrimaryWorkspaceRepositoryBinding {
+        self.binding.clone()
+    }
+
     fn load(&self) -> Result<Option<Value>, PrimaryWorkspaceStoreError> {
-        Ok(self.0.lock().unwrap().clone())
+        Ok(self.value.lock().unwrap().clone())
     }
     fn replace(&self, value: Option<Value>) -> Result<(), PrimaryWorkspaceStoreError> {
-        *self.0.lock().unwrap() = value;
+        *self.value.lock().unwrap() = value;
         Ok(())
     }
     fn save(&self) -> Result<(), PrimaryWorkspaceStoreError> {

@@ -3,8 +3,9 @@ use std::{
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc, Mutex,
+        mpsc, Arc, Mutex,
     },
+    time::Duration,
 };
 
 use qingyu_kernel::{
@@ -18,8 +19,9 @@ use qingyu_kernel::{
     workspace::{
         managed::ManagedWorkspaceCollection,
         primary::{
-            AtomicHostWorkspaceCommitError, AtomicHostWorkspaceTransaction, PrimaryWorkspaceStore,
-            PrimaryWorkspaceStoreError,
+            AtomicHostWorkspaceCommitError, AtomicHostWorkspaceTransaction,
+            PreparedWorkspaceAuthorityBinding, PrimaryWorkspaceRepositoryBinding,
+            PrimaryWorkspaceStore, PrimaryWorkspaceStoreError,
         },
     },
 };
@@ -28,6 +30,7 @@ use tempfile::tempdir;
 
 #[derive(Default)]
 struct MemoryPrimaryWorkspaceStore {
+    binding: PrimaryWorkspaceRepositoryBinding,
     value: Mutex<Option<Value>>,
     durable: Mutex<Option<Value>>,
     fail_next_save: AtomicBool,
@@ -38,6 +41,10 @@ struct MemoryPrimaryWorkspaceStore {
 }
 
 impl PrimaryWorkspaceStore for MemoryPrimaryWorkspaceStore {
+    fn repository_binding(&self) -> PrimaryWorkspaceRepositoryBinding {
+        self.binding.clone()
+    }
+
     fn load(&self) -> Result<Option<Value>, PrimaryWorkspaceStoreError> {
         self.loads.fetch_add(1, Ordering::SeqCst);
         Ok(self.value.lock().unwrap().clone())
@@ -87,6 +94,7 @@ struct MemoryHostRecordValue {
 struct MemoryAtomicHostRecord {
     value: Arc<Mutex<MemoryHostRecordValue>>,
     commits: Arc<std::sync::atomic::AtomicUsize>,
+    binding: PrimaryWorkspaceRepositoryBinding,
 }
 
 impl MemoryAtomicHostRecord {
@@ -97,6 +105,7 @@ impl MemoryAtomicHostRecord {
                 private_workspace: private_workspace.to_string(),
             })),
             commits: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            binding: PrimaryWorkspaceRepositoryBinding::new(),
         })
     }
 
@@ -108,9 +117,15 @@ impl MemoryAtomicHostRecord {
         self.value.lock().unwrap().private_workspace = value.to_string();
     }
 
-    fn transaction(self: &Arc<Self>, next: &str) -> MemoryHostWorkspaceTransaction {
+    fn transaction(
+        self: &Arc<Self>,
+        next: &str,
+        authority_binding: PreparedWorkspaceAuthorityBinding,
+    ) -> MemoryHostWorkspaceTransaction {
         MemoryHostWorkspaceTransaction {
             record: self.clone(),
+            binding: self.binding.clone(),
+            authority_binding,
             expected_record: self.snapshot(),
             next: next.to_string(),
             fail_persist: false,
@@ -121,6 +136,10 @@ impl MemoryAtomicHostRecord {
 }
 
 impl PrimaryWorkspaceStore for MemoryAtomicHostRecord {
+    fn repository_binding(&self) -> PrimaryWorkspaceRepositoryBinding {
+        self.binding.clone()
+    }
+
     fn load(&self) -> Result<Option<Value>, PrimaryWorkspaceStoreError> {
         Ok(self.value.lock().unwrap().kernel.clone())
     }
@@ -137,6 +156,8 @@ impl PrimaryWorkspaceStore for MemoryAtomicHostRecord {
 
 struct MemoryHostWorkspaceTransaction {
     record: Arc<MemoryAtomicHostRecord>,
+    binding: PrimaryWorkspaceRepositoryBinding,
+    authority_binding: PreparedWorkspaceAuthorityBinding,
     expected_record: MemoryHostRecordValue,
     next: String,
     fail_persist: bool,
@@ -145,6 +166,14 @@ struct MemoryHostWorkspaceTransaction {
 }
 
 impl AtomicHostWorkspaceTransaction for MemoryHostWorkspaceTransaction {
+    fn repository_binding(&self) -> PrimaryWorkspaceRepositoryBinding {
+        self.binding.clone()
+    }
+
+    fn authority_binding(&self) -> PreparedWorkspaceAuthorityBinding {
+        self.authority_binding.clone()
+    }
+
     fn compare_and_commit(
         self: Box<Self>,
         expected_kernel_value: Option<&Value>,
@@ -172,6 +201,74 @@ impl AtomicHostWorkspaceTransaction for MemoryHostWorkspaceTransaction {
             return Err(AtomicHostWorkspaceCommitError::outcome_unknown());
         }
         Ok(())
+    }
+}
+
+struct BlockingHostWorkspaceTransaction {
+    inner: MemoryHostWorkspaceTransaction,
+    started: mpsc::Sender<()>,
+    release: mpsc::Receiver<()>,
+}
+
+impl AtomicHostWorkspaceTransaction for BlockingHostWorkspaceTransaction {
+    fn repository_binding(&self) -> PrimaryWorkspaceRepositoryBinding {
+        self.inner.repository_binding()
+    }
+
+    fn authority_binding(&self) -> PreparedWorkspaceAuthorityBinding {
+        self.inner.authority_binding()
+    }
+
+    fn compare_and_commit(
+        self: Box<Self>,
+        expected_kernel_value: Option<&Value>,
+        next_kernel_value: Value,
+    ) -> Result<(), AtomicHostWorkspaceCommitError> {
+        let Self {
+            inner,
+            started,
+            release,
+        } = *self;
+        started
+            .send(())
+            .map_err(|_| AtomicHostWorkspaceCommitError::no_commit())?;
+        release
+            .recv()
+            .map_err(|_| AtomicHostWorkspaceCommitError::no_commit())?;
+        Box::new(inner).compare_and_commit(expected_kernel_value, next_kernel_value)
+    }
+}
+
+struct ReadOnlyReentrantHostWorkspaceTransaction {
+    inner: MemoryHostWorkspaceTransaction,
+    runtime: Arc<KernelRuntime>,
+    service: Arc<WorkspaceService>,
+    observed: Arc<AtomicBool>,
+}
+
+impl AtomicHostWorkspaceTransaction for ReadOnlyReentrantHostWorkspaceTransaction {
+    fn repository_binding(&self) -> PrimaryWorkspaceRepositoryBinding {
+        self.inner.repository_binding()
+    }
+
+    fn authority_binding(&self) -> PreparedWorkspaceAuthorityBinding {
+        self.inner.authority_binding()
+    }
+
+    fn compare_and_commit(
+        self: Box<Self>,
+        expected_kernel_value: Option<&Value>,
+        next_kernel_value: Value,
+    ) -> Result<(), AtomicHostWorkspaceCommitError> {
+        self.runtime
+            .active_workspace_authority()
+            .verify_held_directory()
+            .map_err(|_| AtomicHostWorkspaceCommitError::no_commit())?;
+        self.service
+            .current()
+            .map_err(|_| AtomicHostWorkspaceCommitError::no_commit())?;
+        self.observed.store(true, Ordering::SeqCst);
+        Box::new(self.inner).compare_and_commit(expected_kernel_value, next_kernel_value)
     }
 }
 
@@ -380,7 +477,7 @@ async fn host_persistence_failure_does_not_switch_kernel_authority() {
     let before_host_record = store.snapshot();
     let before_authority = runtime.active_workspace_authority();
     let prepared = runtime.prepare_host_workspace_authority(&next).unwrap();
-    let mut host_transaction = store.transaction("workspace-b");
+    let mut host_transaction = store.transaction("workspace-b", prepared.binding());
     host_transaction.fail_persist = true;
 
     let error = service
@@ -431,6 +528,7 @@ async fn stale_prepared_authority_is_rejected_before_host_persistence() {
     let winning = runtime
         .prepare_host_workspace_authority(&winning_target)
         .unwrap();
+    let transaction = store.transaction("stale-target", stale.binding());
     runtime.commit_host_workspace_authority(winning).unwrap();
 
     let error = service
@@ -438,7 +536,7 @@ async fn stale_prepared_authority_is_rejected_before_host_persistence() {
             &before.revision,
             stale,
             "Stale Target",
-            Box::new(store.transaction("stale-target")),
+            Box::new(transaction),
         )
         .await
         .unwrap_err();
@@ -471,13 +569,14 @@ async fn stale_revision_is_rejected_before_host_persistence() {
     let before_host_record = store.snapshot();
     let before_authority = runtime.active_workspace_authority();
     let prepared = runtime.prepare_host_workspace_authority(&next).unwrap();
+    let transaction = store.transaction("workspace-b", prepared.binding());
 
     let error = service
         .compare_and_set_host_workspace_transaction(
             &Revision::parse("stale-revision").unwrap(),
             prepared,
             "Next Workspace",
-            Box::new(store.transaction("workspace-b")),
+            Box::new(transaction),
         )
         .await
         .unwrap_err();
@@ -510,7 +609,7 @@ async fn stale_host_record_cas_does_not_overwrite_newer_private_state() {
     let before = service.current().unwrap();
     let before_authority = runtime.active_workspace_authority();
     let prepared = runtime.prepare_host_workspace_authority(&next).unwrap();
-    let transaction = store.transaction("workspace-b");
+    let transaction = store.transaction("workspace-b", prepared.binding());
     store.replace_private_workspace("newer-host-state");
 
     let error = service
@@ -541,6 +640,159 @@ async fn stale_host_record_cas_does_not_overwrite_newer_private_state() {
 }
 
 #[tokio::test]
+async fn stale_service_canonical_cannot_overwrite_a_newer_host_canonical_value() {
+    let temporary = tempdir().unwrap();
+    let next = temporary.path().join("next");
+    fs::create_dir(&next).unwrap();
+    let store = MemoryAtomicHostRecord::new("workspace-a");
+    let events = Arc::new(RecordingEventSink::default());
+    let (runtime, service) =
+        DesktopFixture::new(temporary.path()).into_service(store.clone(), events.clone());
+    let before = service.current().unwrap();
+    let before_authority = runtime.active_workspace_authority();
+    let prepared = runtime.prepare_host_workspace_authority(&next).unwrap();
+    let newer_kernel_value = serde_json::json!({
+        "schemaVersion": 1,
+        "revisionSeed": "external-newer-revision",
+        "displayName": "Externally Updated Workspace"
+    });
+    PrimaryWorkspaceStore::replace(store.as_ref(), Some(newer_kernel_value.clone())).unwrap();
+    let transaction = store.transaction("workspace-b", prepared.binding());
+
+    let error = service
+        .compare_and_set_host_workspace_transaction(
+            &before.revision,
+            prepared,
+            "Next Workspace",
+            Box::new(transaction),
+        )
+        .await
+        .unwrap_err();
+
+    assert_eq!(
+        error.kind(),
+        WorkspaceServiceErrorKind::PersistenceUnavailable
+    );
+    assert_eq!(store.commits.load(Ordering::SeqCst), 0);
+    assert_eq!(store.snapshot().kernel, Some(newer_kernel_value));
+    assert!(Arc::ptr_eq(
+        &before_authority,
+        &runtime.active_workspace_authority()
+    ));
+    assert_eq!(
+        service.current().unwrap_err().kind(),
+        WorkspaceServiceErrorKind::WorkspaceUnavailable
+    );
+    assert!(events.publications.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn foreign_repository_transaction_is_rejected_before_any_host_write() {
+    let temporary = tempdir().unwrap();
+    let next = temporary.path().join("next");
+    fs::create_dir(&next).unwrap();
+    let local_store = MemoryAtomicHostRecord::new("local-workspace");
+    let foreign_store = MemoryAtomicHostRecord::new("foreign-workspace");
+    let foreign_before = foreign_store.snapshot();
+    let events = Arc::new(RecordingEventSink::default());
+    let (runtime, service) =
+        DesktopFixture::new(temporary.path()).into_service(local_store.clone(), events.clone());
+    let before = service.current().unwrap();
+    let local_before = local_store.snapshot();
+    let before_authority = runtime.active_workspace_authority();
+    let prepared = runtime.prepare_host_workspace_authority(&next).unwrap();
+    let foreign_transaction = foreign_store.transaction("foreign-next", prepared.binding());
+
+    let error = service
+        .compare_and_set_host_workspace_transaction(
+            &before.revision,
+            prepared,
+            "Next Workspace",
+            Box::new(foreign_transaction),
+        )
+        .await
+        .unwrap_err();
+
+    assert_eq!(
+        error.kind(),
+        WorkspaceServiceErrorKind::PersistenceUnavailable
+    );
+    assert_eq!(local_store.commits.load(Ordering::SeqCst), 0);
+    assert_eq!(foreign_store.commits.load(Ordering::SeqCst), 0);
+    assert_eq!(local_store.snapshot().kernel, local_before.kernel);
+    assert_eq!(
+        local_store.snapshot().private_workspace,
+        local_before.private_workspace
+    );
+    assert_eq!(foreign_store.snapshot().kernel, foreign_before.kernel);
+    assert_eq!(
+        foreign_store.snapshot().private_workspace,
+        foreign_before.private_workspace
+    );
+    assert!(Arc::ptr_eq(
+        &before_authority,
+        &runtime.active_workspace_authority()
+    ));
+    assert_eq!(service.current().unwrap(), before);
+    assert!(events.publications.lock().unwrap().is_empty());
+    assert_eq!(
+        format!("{:?}", local_store.repository_binding()),
+        "PrimaryWorkspaceRepositoryBinding([REDACTED])"
+    );
+}
+
+#[tokio::test]
+async fn transaction_for_another_prepared_authority_is_rejected_before_host_write() {
+    let temporary = tempdir().unwrap();
+    let target_a = temporary.path().join("target-a");
+    let target_b = temporary.path().join("target-b");
+    fs::create_dir(&target_a).unwrap();
+    fs::create_dir(&target_b).unwrap();
+    let store = MemoryAtomicHostRecord::new("workspace-a");
+    let events = Arc::new(RecordingEventSink::default());
+    let (runtime, service) =
+        DesktopFixture::new(temporary.path()).into_service(store.clone(), events.clone());
+    let before = service.current().unwrap();
+    let before_host_record = store.snapshot();
+    let before_authority = runtime.active_workspace_authority();
+    let prepared_a = runtime.prepare_host_workspace_authority(&target_a).unwrap();
+    let prepared_b = runtime.prepare_host_workspace_authority(&target_b).unwrap();
+    let transaction = store.transaction("workspace-b", prepared_b.binding());
+
+    let error = service
+        .compare_and_set_host_workspace_transaction(
+            &before.revision,
+            prepared_a,
+            "Target A",
+            Box::new(transaction),
+        )
+        .await
+        .unwrap_err();
+
+    assert_eq!(
+        error.kind(),
+        WorkspaceServiceErrorKind::PersistenceUnavailable
+    );
+    assert_eq!(store.commits.load(Ordering::SeqCst), 0);
+    let after_host_record = store.snapshot();
+    assert_eq!(after_host_record.kernel, before_host_record.kernel);
+    assert_eq!(
+        after_host_record.private_workspace,
+        before_host_record.private_workspace
+    );
+    assert!(Arc::ptr_eq(
+        &before_authority,
+        &runtime.active_workspace_authority()
+    ));
+    assert_eq!(service.current().unwrap(), before);
+    assert!(events.publications.lock().unwrap().is_empty());
+    assert_eq!(
+        format!("{:?}", prepared_b.binding()),
+        "PreparedWorkspaceAuthorityBinding([REDACTED])"
+    );
+}
+
+#[tokio::test]
 async fn atomic_host_commit_publishes_once_and_rebuilds_the_same_kernel_current() {
     let temporary = tempdir().unwrap();
     let target = temporary.path().join("Private Absolute Workspace");
@@ -554,13 +806,14 @@ async fn atomic_host_commit_publishes_once_and_rebuilds_the_same_kernel_current(
     let (runtime, service) = fixture.into_service(store.clone(), events.clone());
     let before = service.current().unwrap();
     let prepared = runtime.prepare_host_workspace_authority(&target).unwrap();
+    let transaction = store.transaction(target.to_str().unwrap(), prepared.binding());
 
     let committed = service
         .compare_and_set_host_workspace_transaction(
             &before.revision,
             prepared,
             "Private Absolute Workspace",
-            Box::new(store.transaction(target.to_str().unwrap())),
+            Box::new(transaction),
         )
         .await
         .unwrap();
@@ -599,7 +852,7 @@ async fn atomic_host_commit_publishes_once_and_rebuilds_the_same_kernel_current(
     assert!(!wire_json.contains("desktopPath"));
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn concurrent_host_switches_are_serialized_and_only_one_revision_wins() {
     let temporary = tempdir().unwrap();
     let target_a = temporary.path().join("Target A");
@@ -614,36 +867,115 @@ async fn concurrent_host_switches_are_serialized_and_only_one_revision_wins() {
     let before = service.current().unwrap();
     let prepared_a = runtime.prepare_host_workspace_authority(&target_a).unwrap();
     let prepared_b = runtime.prepare_host_workspace_authority(&target_b).unwrap();
-    let first = service.compare_and_set_host_workspace_transaction(
-        &before.revision,
-        prepared_a,
-        "Target A",
-        Box::new(store.transaction("host-a")),
-    );
-    let second = service.compare_and_set_host_workspace_transaction(
-        &before.revision,
-        prepared_b,
-        "Target B",
-        Box::new(store.transaction("host-b")),
-    );
+    let first_transaction = store.transaction("host-a", prepared_a.binding());
+    let second_transaction = store.transaction("host-b", prepared_b.binding());
+    let (first_started_sender, first_started_receiver) = mpsc::channel();
+    let (release_first_sender, release_first_receiver) = mpsc::channel();
+    let first_service = service.clone();
+    let expected_revision = before.revision.clone();
+    let first = tokio::spawn(async move {
+        first_service
+            .compare_and_set_host_workspace_transaction(
+                &expected_revision,
+                prepared_a,
+                "Target A",
+                Box::new(BlockingHostWorkspaceTransaction {
+                    inner: first_transaction,
+                    started: first_started_sender,
+                    release: release_first_receiver,
+                }),
+            )
+            .await
+    });
+    tokio::task::spawn_blocking(move || {
+        first_started_receiver.recv_timeout(Duration::from_secs(5))
+    })
+    .await
+    .unwrap()
+    .expect("first transaction must reach its host commit");
 
-    let (first_result, second_result) = tokio::join!(first, second);
+    let (second_started_sender, second_started_receiver) = mpsc::channel();
+    let second_service = service.clone();
+    let expected_revision = before.revision.clone();
+    let second = tokio::spawn(async move {
+        second_started_sender.send(()).unwrap();
+        second_service
+            .compare_and_set_host_workspace_transaction(
+                &expected_revision,
+                prepared_b,
+                "Target B",
+                Box::new(second_transaction),
+            )
+            .await
+    });
+    tokio::task::spawn_blocking(move || {
+        second_started_receiver.recv_timeout(Duration::from_secs(5))
+    })
+    .await
+    .unwrap()
+    .expect("second task must start while the first transaction is blocked");
+    tokio::task::yield_now().await;
+    assert!(!second.is_finished());
+    assert_eq!(store.commits.load(Ordering::SeqCst), 0);
 
-    let (winner, loser) = match (first_result, second_result) {
-        (Ok(winner), Err(loser)) | (Err(loser), Ok(winner)) => (winner, loser),
-        unexpected => panic!("exactly one host switch must win: {unexpected:?}"),
-    };
+    release_first_sender.send(()).unwrap();
+    let winner = first.await.unwrap().unwrap();
+    let loser = second.await.unwrap().unwrap_err();
+
     assert_eq!(loser.kind(), WorkspaceServiceErrorKind::RevisionConflict);
     assert_eq!(loser.current_revision(), Some(&winner.revision));
     assert_eq!(store.commits.load(Ordering::SeqCst), 1);
     assert_eq!(service.current().unwrap(), winner);
     assert_eq!(events.publications.lock().unwrap().len(), 1);
-    let private_workspace = store.snapshot().private_workspace;
-    match service.current().unwrap().display_name.as_str() {
-        "Target A" => assert_eq!(private_workspace, "host-a"),
-        "Target B" => assert_eq!(private_workspace, "host-b"),
-        unexpected => panic!("unexpected winner: {unexpected}"),
-    }
+    assert_eq!(service.current().unwrap().display_name, "Target A");
+    assert_eq!(store.snapshot().private_workspace, "host-a");
+}
+
+#[test]
+fn host_commit_may_reenter_read_only_runtime_and_service_checks_without_deadlock() {
+    let temporary = tempdir().unwrap();
+    let target = temporary.path().join("target");
+    fs::create_dir(&target).unwrap();
+    let store = MemoryAtomicHostRecord::new("workspace-a");
+    let events = Arc::new(RecordingEventSink::default());
+    let (runtime, service) =
+        DesktopFixture::new(temporary.path()).into_service(store.clone(), events.clone());
+    let service = Arc::new(service);
+    let before = service.current().unwrap();
+    let prepared = runtime.prepare_host_workspace_authority(&target).unwrap();
+    let inner = store.transaction("workspace-b", prepared.binding());
+    let observed = Arc::new(AtomicBool::new(false));
+    let transaction = ReadOnlyReentrantHostWorkspaceTransaction {
+        inner,
+        runtime: runtime.clone(),
+        service: service.clone(),
+        observed: observed.clone(),
+    };
+    let (completed_sender, completed_receiver) = mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        let asynchronous = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let result = asynchronous.block_on(service.compare_and_set_host_workspace_transaction(
+            &before.revision,
+            prepared,
+            "Target",
+            Box::new(transaction),
+        ));
+        completed_sender.send(result).unwrap();
+    });
+
+    let committed = completed_receiver
+        .recv_timeout(Duration::from_secs(5))
+        .expect("read-only host callback must not deadlock")
+        .unwrap();
+    worker.join().unwrap();
+
+    assert!(observed.load(Ordering::SeqCst));
+    assert_eq!(committed.display_name, "Target");
+    assert_eq!(store.commits.load(Ordering::SeqCst), 1);
+    assert_eq!(events.publications.lock().unwrap().len(), 1);
 }
 
 #[tokio::test]
@@ -658,7 +990,7 @@ async fn unknown_host_commit_outcome_quarantines_the_workspace_service() {
     let before = service.current().unwrap();
     let before_authority = runtime.active_workspace_authority();
     let prepared = runtime.prepare_host_workspace_authority(&target).unwrap();
-    let mut transaction = store.transaction("workspace-b");
+    let mut transaction = store.transaction("workspace-b", prepared.binding());
     transaction.outcome_unknown_after_commit = true;
 
     let error = service
@@ -699,7 +1031,7 @@ async fn candidate_replacement_after_durable_commit_quarantines_without_publicat
     let before = service.current().unwrap();
     let before_authority = runtime.active_workspace_authority();
     let prepared = runtime.prepare_host_workspace_authority(&target).unwrap();
-    let mut transaction = store.transaction("workspace-b");
+    let mut transaction = store.transaction("workspace-b", prepared.binding());
     transaction.replace_target_after_commit = Some((target.clone(), displaced.clone()));
 
     let error = service

@@ -50,6 +50,7 @@ pub(crate) trait TrustedDesktopWorkspacePersistence: Send + Sync {
     fn prepare_host_workspace_transaction(
         &self,
         absolute_path: &Path,
+        authority_binding: qingyu_kernel::workspace::primary::PreparedWorkspaceAuthorityBinding,
     ) -> Result<
         Box<dyn qingyu_kernel::workspace::primary::AtomicHostWorkspaceTransaction>,
         qingyu_kernel::services::workspace::WorkspaceServiceError,
@@ -144,7 +145,7 @@ impl TrustedDesktopWorkspaceAdapter {
             .map_err(qingyu_kernel::services::workspace::WorkspaceServiceError::from)?;
         let host_transaction = self
             .persistence
-            .prepare_host_workspace_transaction(absolute_path)?;
+            .prepare_host_workspace_transaction(absolute_path, authority.binding())?;
         let token = format!(
             "{}:{}",
             self.runtime.instance_id().as_uuid(),
@@ -951,6 +952,7 @@ mod tests {
 
     struct AtomicDesktopHostRecord {
         value: Arc<Mutex<Value>>,
+        binding: qingyu_kernel::workspace::primary::PrimaryWorkspaceRepositoryBinding,
     }
 
     impl AtomicDesktopHostRecord {
@@ -960,6 +962,12 @@ mod tests {
     }
 
     impl qingyu_kernel::workspace::primary::PrimaryWorkspaceStore for AtomicDesktopHostRecord {
+        fn repository_binding(
+            &self,
+        ) -> qingyu_kernel::workspace::primary::PrimaryWorkspaceRepositoryBinding {
+            self.binding.clone()
+        }
+
         fn load(
             &self,
         ) -> Result<Option<Value>, qingyu_kernel::workspace::primary::PrimaryWorkspaceStoreError>
@@ -997,6 +1005,8 @@ mod tests {
 
     struct AtomicDesktopHostTransaction {
         record: Arc<Mutex<Value>>,
+        binding: qingyu_kernel::workspace::primary::PrimaryWorkspaceRepositoryBinding,
+        authority_binding: qingyu_kernel::workspace::primary::PreparedWorkspaceAuthorityBinding,
         expected_record: Value,
         target: PathBuf,
     }
@@ -1004,6 +1014,18 @@ mod tests {
     impl qingyu_kernel::workspace::primary::AtomicHostWorkspaceTransaction
         for AtomicDesktopHostTransaction
     {
+        fn repository_binding(
+            &self,
+        ) -> qingyu_kernel::workspace::primary::PrimaryWorkspaceRepositoryBinding {
+            self.binding.clone()
+        }
+
+        fn authority_binding(
+            &self,
+        ) -> qingyu_kernel::workspace::primary::PreparedWorkspaceAuthorityBinding {
+            self.authority_binding.clone()
+        }
+
         fn compare_and_commit(
             self: Box<Self>,
             expected_kernel_value: Option<&Value>,
@@ -1033,6 +1055,7 @@ mod tests {
         fn prepare_host_workspace_transaction(
             &self,
             absolute_path: &Path,
+            authority_binding: qingyu_kernel::workspace::primary::PreparedWorkspaceAuthorityBinding,
         ) -> Result<
             Box<dyn qingyu_kernel::workspace::primary::AtomicHostWorkspaceTransaction>,
             qingyu_kernel::services::workspace::WorkspaceServiceError,
@@ -1040,6 +1063,8 @@ mod tests {
             let expected_record = self.value.lock().expect("desktop host record").clone();
             Ok(Box::new(AtomicDesktopHostTransaction {
                 record: self.value.clone(),
+                binding: self.binding.clone(),
+                authority_binding,
                 expected_record,
                 target: absolute_path.to_path_buf(),
             }))
@@ -1971,6 +1996,8 @@ mod tests {
             .expect("kernel runtime");
             let store = Arc::new(AtomicDesktopHostRecord {
                 value: Arc::new(Mutex::new(json!({ "desktopPath": workspace }))),
+                binding: qingyu_kernel::workspace::primary::PrimaryWorkspaceRepositoryBinding::new(
+                ),
             });
             let service = Arc::new(
                 qingyu_kernel::services::workspace::WorkspaceService::new(

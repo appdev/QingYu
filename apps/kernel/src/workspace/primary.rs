@@ -1,8 +1,67 @@
 //! Primary-workspace persistence boundary.
 
 use std::fmt;
+use std::sync::Arc;
 
 use serde_json::Value;
+
+/// Process-local identity for one host-owned primary-workspace repository.
+///
+/// Clones preserve identity, while `new` always creates a distinct binding.
+/// The identity has no serializable representation and its debug form exposes
+/// neither an address nor host-private repository details.
+#[derive(Clone)]
+pub struct PrimaryWorkspaceRepositoryBinding {
+    identity: Arc<()>,
+}
+
+impl PrimaryWorkspaceRepositoryBinding {
+    pub fn new() -> Self {
+        Self {
+            identity: Arc::new(()),
+        }
+    }
+
+    pub fn matches(&self, candidate: &Self) -> bool {
+        Arc::ptr_eq(&self.identity, &candidate.identity)
+    }
+}
+
+impl Default for PrimaryWorkspaceRepositoryBinding {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl fmt::Debug for PrimaryWorkspaceRepositoryBinding {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("PrimaryWorkspaceRepositoryBinding([REDACTED])")
+    }
+}
+
+/// Unforgeable process-local identity minted for one prepared authority.
+#[derive(Clone)]
+pub struct PreparedWorkspaceAuthorityBinding {
+    identity: Arc<()>,
+}
+
+impl PreparedWorkspaceAuthorityBinding {
+    pub(crate) fn new() -> Self {
+        Self {
+            identity: Arc::new(()),
+        }
+    }
+
+    pub(crate) fn matches(&self, candidate: &Self) -> bool {
+        Arc::ptr_eq(&self.identity, &candidate.identity)
+    }
+}
+
+impl fmt::Debug for PreparedWorkspaceAuthorityBinding {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("PreparedWorkspaceAuthorityBinding([REDACTED])")
+    }
+}
 
 /// Host-owned persistence for the opaque primary-workspace state.
 ///
@@ -12,6 +71,7 @@ use serde_json::Value;
 /// interface does not itself prove failure atomicity; new host-selected
 /// workspace changes must use `AtomicHostWorkspaceTransaction`.
 pub trait PrimaryWorkspaceStore: Send + Sync {
+    fn repository_binding(&self) -> PrimaryWorkspaceRepositoryBinding;
     fn load(&self) -> Result<Option<Value>, PrimaryWorkspaceStoreError>;
     fn replace(&self, value: Option<Value>) -> Result<(), PrimaryWorkspaceStoreError>;
     fn save(&self) -> Result<(), PrimaryWorkspaceStoreError>;
@@ -31,7 +91,17 @@ pub trait PrimaryWorkspaceStore: Send + Sync {
 /// failure before the durable commit is `NoCommit`; any ambiguity discovered
 /// after the commit starts is `OutcomeUnknown`. Absolute paths stay inside the
 /// host implementation and never enter the canonical `Value`.
+///
+/// The binding accessors must be side-effect-free, non-blocking identity
+/// reads. `compare_and_commit` runs without the Kernel's current-workspace or
+/// active-authority locks, so a host may perform read-only runtime/service
+/// checks. The caller holds the workspace mutation coordinator across every
+/// trait call: no method may synchronously re-enter a mutation that needs that
+/// same coordinator.
 pub trait AtomicHostWorkspaceTransaction: Send {
+    fn repository_binding(&self) -> PrimaryWorkspaceRepositoryBinding;
+    fn authority_binding(&self) -> PreparedWorkspaceAuthorityBinding;
+
     fn compare_and_commit(
         self: Box<Self>,
         expected_kernel_value: Option<&Value>,
