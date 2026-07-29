@@ -423,8 +423,8 @@ fn runtime_clones_keep_cross_process_leases_alive_until_the_last_owner_drops() {
     );
 }
 
-#[test]
-fn runtime_spawned_deferred_task_keeps_leases_until_the_task_finishes() {
+#[tokio::test]
+async fn runtime_spawned_deferred_task_keeps_leases_until_the_task_finishes() {
     let temporary = tempdir().unwrap();
     let roots = LockRoots::create(temporary.path(), "runtime-task");
     let task_spawner = Arc::new(DeferredTaskSpawner::default());
@@ -434,7 +434,7 @@ fn runtime_spawned_deferred_task_keeps_leases_until_the_task_finishes() {
         test_ports(task_spawner.clone()),
     )
     .unwrap();
-    let _workspace_service = initialize_workspace(&runtime, &roots);
+    let _workspace_service = initialize_workspace(&runtime, &roots).await;
 
     runtime.spawn_background(Box::pin(async {})).unwrap();
     drop(runtime);
@@ -583,7 +583,7 @@ async fn background_task_started_before_switch_retains_the_old_workspace_lock_un
         test_ports(task_spawner.clone()),
     )
     .unwrap();
-    let workspace_service = initialize_workspace(&runtime, &initial);
+    let workspace_service = initialize_workspace(&runtime, &initial).await;
 
     runtime.spawn_background(Box::pin(async {})).unwrap();
     let prepared = runtime
@@ -954,7 +954,7 @@ fn test_ports(task_spawner: Arc<dyn TaskSpawner>) -> KernelPorts {
     )
 }
 
-fn initialize_workspace(runtime: &Arc<KernelRuntime>, roots: &LockRoots) -> WorkspaceService {
+async fn initialize_workspace(runtime: &Arc<KernelRuntime>, roots: &LockRoots) -> WorkspaceService {
     WorkspaceService::new(
         runtime,
         Arc::new(MemoryPrimaryWorkspaceStore::default()),
@@ -962,6 +962,7 @@ fn initialize_workspace(runtime: &Arc<KernelRuntime>, roots: &LockRoots) -> Work
         Arc::new(TestUnavailablePort),
         "Initial",
     )
+    .await
     .unwrap()
 }
 

@@ -200,7 +200,7 @@ struct Fixture {
 }
 
 impl Fixture {
-    fn new() -> Self {
+    async fn new() -> Self {
         let temporary = tempdir().unwrap().keep();
         let root = temporary.join("workspace");
         let app_data = temporary.join("app-data");
@@ -225,6 +225,7 @@ impl Fixture {
                 runtime.event_broker().clone(),
                 "Documents",
             )
+            .await
             .unwrap(),
         );
         let deletion = Arc::new(RecordingDeletionPort {
@@ -247,7 +248,7 @@ impl Fixture {
     }
 }
 
-fn enter_global_workspace_recovery(fixture: &Fixture) {
+async fn enter_global_workspace_recovery(fixture: &Fixture) {
     fixture
         .store
         .replace(Some(serde_json::json!({
@@ -268,6 +269,7 @@ fn enter_global_workspace_recovery(fixture: &Fixture) {
         fixture.runtime.event_broker().clone(),
         "Ignored",
     )
+    .await
     .is_err());
 }
 
@@ -308,7 +310,7 @@ fn assert_workspace_is_acquirable(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn document_request_retains_old_snapshot_lease_until_request_finishes() {
-    let fixture = Fixture::new();
+    let fixture = Fixture::new().await;
     fs::write(fixture.root.join("old.md"), "old").unwrap();
     let (started_sender, started_receiver) = mpsc::channel();
     let (release_sender, release_receiver) = mpsc::channel();
@@ -369,7 +371,7 @@ async fn document_request_retains_old_snapshot_lease_until_request_finishes() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn document_request_never_crosses_authority_and_generation() {
-    let fixture = Fixture::new();
+    let fixture = Fixture::new().await;
     fs::write(fixture.root.join("old.md"), "old").unwrap();
     let admitted = fixture.workspace.current().unwrap();
     let (started_sender, started_receiver) = mpsc::channel();
@@ -445,8 +447,8 @@ async fn document_request_never_crosses_authority_and_generation() {
 
 #[tokio::test]
 async fn documents_remain_unavailable_after_quarantine_even_through_service_rebuild() {
-    let fixture = Fixture::new();
-    enter_global_workspace_recovery(&fixture);
+    let fixture = Fixture::new().await;
+    enter_global_workspace_recovery(&fixture).await;
     let query = || ListDocumentsQuery {
         cursor: None,
         limit: None,
@@ -475,7 +477,7 @@ async fn documents_remain_unavailable_after_quarantine_even_through_service_rebu
 
 #[tokio::test]
 async fn service_creates_without_clobbering_and_lists_signed_relative_entries() {
-    let fixture = Fixture::new();
+    let fixture = Fixture::new().await;
     let generation = fixture.workspace.current().unwrap().generation;
     let created = fixture
         .service
@@ -532,7 +534,7 @@ async fn service_creates_without_clobbering_and_lists_signed_relative_entries() 
 
 #[tokio::test]
 async fn service_rejects_stale_generation_traversal_and_symlink_or_hardlink_replacement() {
-    let fixture = Fixture::new();
+    let fixture = Fixture::new().await;
     let stale = WorkspaceGeneration::parse("stale").unwrap();
     let error = fixture
         .service
@@ -578,7 +580,7 @@ async fn service_rejects_stale_generation_traversal_and_symlink_or_hardlink_repl
 
 #[tokio::test]
 async fn update_history_move_and_delete_preserve_conflict_and_identity_semantics() {
-    let fixture = Fixture::new();
+    let fixture = Fixture::new().await;
     let generation = fixture.workspace.current().unwrap().generation;
     let created = fixture
         .service
@@ -667,7 +669,7 @@ async fn update_history_move_and_delete_preserve_conflict_and_identity_semantics
 
 #[tokio::test]
 async fn moving_a_document_preserves_history_under_the_new_document_identity() {
-    let fixture = Fixture::new();
+    let fixture = Fixture::new().await;
     let generation = fixture.workspace.current().unwrap().generation;
     let created = fixture
         .service
@@ -732,7 +734,7 @@ async fn moving_a_document_preserves_history_under_the_new_document_identity() {
 
 #[tokio::test]
 async fn delete_does_not_publish_success_until_the_original_capability_target_is_absent() {
-    let fixture = Fixture::new();
+    let fixture = Fixture::new().await;
     let service = WorkspaceDocumentService::new(
         &fixture.runtime,
         Arc::new(NoopDeletionPort),
@@ -774,7 +776,7 @@ async fn delete_does_not_publish_success_until_the_original_capability_target_is
 
 #[tokio::test]
 async fn content_limits_invalid_utf8_and_generation_bound_cursors_are_enforced() {
-    let fixture = Fixture::new();
+    let fixture = Fixture::new().await;
     let generation = fixture.workspace.current().unwrap().generation;
     let maximum = "x".repeat(16 * 1024 * 1024);
     let created = fixture
@@ -866,7 +868,7 @@ async fn content_limits_invalid_utf8_and_generation_bound_cursors_are_enforced()
 
 #[tokio::test]
 async fn read_dto_contents_size_and_revision_always_come_from_one_stable_retained_snapshot() {
-    let fixture = Fixture::new();
+    let fixture = Fixture::new().await;
     let created = fixture
         .service
         .create_document(CreateDocumentRequest::File {
@@ -915,7 +917,7 @@ async fn read_dto_contents_size_and_revision_always_come_from_one_stable_retaine
 
 #[tokio::test]
 async fn search_is_utf8_precise_bounded_cursor_bound_and_skips_unsafe_or_ignored_inputs() {
-    let fixture = Fixture::new();
+    let fixture = Fixture::new().await;
     let ignored = HashSet::from([
         "workspace-hidden.md".to_string(),
         "global-hidden.md".to_string(),
@@ -1053,7 +1055,7 @@ async fn search_is_utf8_precise_bounded_cursor_bound_and_skips_unsafe_or_ignored
 
 #[tokio::test]
 async fn direct_and_http_adapters_return_the_same_dto_and_safe_error_code() {
-    let fixture = Fixture::new();
+    let fixture = Fixture::new().await;
     let generation = fixture.workspace.current().unwrap().generation;
     let created = fixture
         .service

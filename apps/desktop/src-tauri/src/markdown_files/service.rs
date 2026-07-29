@@ -3103,6 +3103,7 @@ mod kernel_deletion_adapter_tests {
                 runtime.event_broker().clone(),
                 "Tauri parity",
             )
+            .await
             .unwrap(),
         );
         let retained = Dir::open_ambient_dir(&root, cap_std::ambient_authority()).unwrap();

@@ -1970,7 +1970,7 @@ mod tests {
 
     #[tokio::test]
     async fn trusted_kernel_adapter_is_instance_scoped_and_matches_direct_and_api_results() {
-        fn fixture(
+        async fn fixture(
             root: &Path,
         ) -> (
             Arc<qingyu_kernel::runtime::KernelRuntime>,
@@ -2007,6 +2007,7 @@ mod tests {
                     runtime.event_broker().clone(),
                     "Initial Workspace",
                 )
+                .await
                 .expect("workspace service"),
             );
             (runtime, service, store)
@@ -2017,8 +2018,8 @@ mod tests {
         let second_root = temporary.path().join("second");
         let target = temporary.path().join("Target Workspace");
         std::fs::create_dir(&target).expect("target workspace");
-        let (first_runtime, first_service, first_store) = fixture(&first_root);
-        let (second_runtime, second_service, second_store) = fixture(&second_root);
+        let (first_runtime, first_service, first_store) = fixture(&first_root).await;
+        let (second_runtime, second_service, second_store) = fixture(&second_root).await;
         let first_adapter = TrustedDesktopWorkspaceAdapter::new(
             first_runtime,
             first_service.clone(),

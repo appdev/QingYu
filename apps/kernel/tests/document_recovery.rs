@@ -363,7 +363,7 @@ struct Fixture {
 }
 
 impl Fixture {
-    fn new() -> Self {
+    async fn new() -> Self {
         let temporary = tempfile::tempdir().unwrap().keep();
         let root = temporary.join("workspace");
         let app_data = temporary.join("app-data");
@@ -388,6 +388,7 @@ impl Fixture {
                 runtime.event_broker().clone(),
                 "Recovery",
             )
+            .await
             .unwrap(),
         );
         Self {
@@ -407,7 +408,7 @@ impl Fixture {
     }
 }
 
-fn enter_global_workspace_recovery(fixture: &Fixture) {
+async fn enter_global_workspace_recovery(fixture: &Fixture) {
     fixture
         .store
         .replace(Some(serde_json::json!({
@@ -428,6 +429,7 @@ fn enter_global_workspace_recovery(fixture: &Fixture) {
         fixture.runtime.event_broker().clone(),
         "Ignored",
     )
+    .await
     .is_err());
 }
 
@@ -468,7 +470,7 @@ fn assert_workspace_is_acquirable(
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn recovery_retains_one_snapshot_and_old_lease_until_completion() {
-    let fixture = Fixture::new();
+    let fixture = Fixture::new().await;
     let (started_sender, started_receiver) = mpsc::channel();
     let (release_sender, release_receiver) = mpsc::channel();
     let recovery = Arc::new(BlockingPendingRecoveryStore::new(
@@ -523,9 +525,9 @@ async fn recovery_retains_one_snapshot_and_old_lease_until_completion() {
     );
 }
 
-#[test]
-fn recovery_does_not_touch_journal_after_global_quarantine() {
-    let fixture = Fixture::new();
+#[tokio::test]
+async fn recovery_does_not_touch_journal_after_global_quarantine() {
+    let fixture = Fixture::new().await;
     let recovery = Arc::new(CountingRecoveryStore::default());
     let service = WorkspaceDocumentService::new_with_recovery(
         &fixture.runtime,
@@ -535,7 +537,7 @@ fn recovery_does_not_touch_journal_after_global_quarantine() {
     )
     .unwrap();
     assert_eq!(recovery.pending_calls(), 1);
-    enter_global_workspace_recovery(&fixture);
+    enter_global_workspace_recovery(&fixture).await;
 
     assert_eq!(
         service.recover().unwrap_err().kind(),
@@ -580,7 +582,7 @@ fn content_revision(contents: &[u8]) -> Revision {
 
 #[tokio::test]
 async fn create_returns_contents_and_revision_from_one_installed_snapshot() {
-    let fixture = Fixture::new();
+    let fixture = Fixture::new().await;
     let recovery = Arc::new(ReplacingOnCompletionRecoveryStore::new(
         fixture.root.clone(),
     ));
@@ -615,7 +617,7 @@ async fn create_returns_contents_and_revision_from_one_installed_snapshot() {
 
 #[tokio::test]
 async fn history_failure_prevents_publication_and_leaves_the_document_unchanged() {
-    let fixture = Fixture::new();
+    let fixture = Fixture::new().await;
     let service = fixture.service(Arc::new(FailingHistory));
     let (id, revision) = create(&service, &fixture.workspace).await;
     let mut events = fixture.runtime.event_broker().subscribe();
@@ -646,7 +648,7 @@ async fn history_failure_prevents_publication_and_leaves_the_document_unchanged(
 
 #[tokio::test]
 async fn restore_preserves_the_current_revision_before_atomically_publishing_history() {
-    let fixture = Fixture::new();
+    let fixture = Fixture::new().await;
     let history = Arc::new(MemoryDocumentHistoryStore::default());
     let service = fixture.service(history);
     let (id, revision) = create(&service, &fixture.workspace).await;
@@ -686,7 +688,7 @@ async fn restore_preserves_the_current_revision_before_atomically_publishing_his
 
 #[tokio::test]
 async fn history_pagination_uses_the_same_created_at_and_snapshot_id_order_as_its_cursor() {
-    let fixture = Fixture::new();
+    let fixture = Fixture::new().await;
     let history = Arc::new(MemoryDocumentHistoryStore::default());
     let service = fixture.service(history.clone());
     let (id, _) = create(&service, &fixture.workspace).await;
@@ -732,7 +734,7 @@ async fn history_pagination_uses_the_same_created_at_and_snapshot_id_order_as_it
 
 #[tokio::test]
 async fn document_mutations_share_the_runtime_sync_serialization_gate() {
-    let fixture = Fixture::new();
+    let fixture = Fixture::new().await;
     let service = fixture.service(Arc::new(MemoryDocumentHistoryStore::default()));
     let (id, revision) = create(&service, &fixture.workspace).await;
     let guard = fixture.runtime.mutation_coordinator().lock().await;
@@ -758,7 +760,7 @@ async fn document_mutations_share_the_runtime_sync_serialization_gate() {
 
 #[tokio::test]
 async fn no_clobber_failures_leave_no_staged_document_artifacts() {
-    let fixture = Fixture::new();
+    let fixture = Fixture::new().await;
     let service = fixture.service(Arc::new(MemoryDocumentHistoryStore::default()));
     create(&service, &fixture.workspace).await;
     let error = service
@@ -780,7 +782,7 @@ async fn no_clobber_failures_leave_no_staged_document_artifacts() {
 
 #[tokio::test]
 async fn rename_that_published_before_completion_failure_is_finalized_on_restart_idempotently() {
-    let fixture = Fixture::new();
+    let fixture = Fixture::new().await;
     let recovery = Arc::new(MemoryDocumentRecoveryStore::default());
     let service = Arc::new(
         WorkspaceDocumentService::new_with_recovery(
@@ -830,7 +832,7 @@ async fn rename_that_published_before_completion_failure_is_finalized_on_restart
 #[tokio::test]
 async fn stage_tampering_during_atomic_install_keeps_recovery_intent_and_publishes_no_event() {
     for mode in [1, 2, 3] {
-        let fixture = Fixture::new();
+        let fixture = Fixture::new().await;
         let recovery = Arc::new(MemoryDocumentRecoveryStore::default());
         let atomic = Arc::new(TamperingAtomicInstallPort::default());
         let service = Arc::new(
@@ -872,7 +874,7 @@ async fn stage_tampering_during_atomic_install_keeps_recovery_intent_and_publish
 
 #[tokio::test]
 async fn directory_content_change_during_install_fails_closed_after_publication() {
-    let fixture = Fixture::new();
+    let fixture = Fixture::new().await;
     let recovery = Arc::new(MemoryDocumentRecoveryStore::default());
     let atomic = Arc::new(TamperingAtomicInstallPort::default());
     let service = WorkspaceDocumentService::new_with_ports(
@@ -911,7 +913,7 @@ async fn directory_content_change_during_install_fails_closed_after_publication(
 
 #[tokio::test]
 async fn update_does_not_overwrite_a_target_replaced_during_the_final_atomic_install() {
-    let fixture = Fixture::new();
+    let fixture = Fixture::new().await;
     let recovery = Arc::new(MemoryDocumentRecoveryStore::default());
     let atomic = Arc::new(ReplacingTargetAtomicInstallPort::default());
     let service = Arc::new(
@@ -950,7 +952,7 @@ async fn update_does_not_overwrite_a_target_replaced_during_the_final_atomic_ins
 
 #[tokio::test]
 async fn move_rolls_back_when_the_source_is_replaced_during_the_final_rename() {
-    let fixture = Fixture::new();
+    let fixture = Fixture::new().await;
     let recovery = Arc::new(MemoryDocumentRecoveryStore::default());
     let move_install = Arc::new(ReplacingSourceMoveInstallPort::default());
     let service = Arc::new(
@@ -992,7 +994,7 @@ async fn move_rolls_back_when_the_source_is_replaced_during_the_final_rename() {
 
 #[tokio::test]
 async fn directory_create_published_before_completion_failure_is_finalized_on_restart() {
-    let fixture = Fixture::new();
+    let fixture = Fixture::new().await;
     let recovery = Arc::new(MemoryDocumentRecoveryStore::default());
     let service = WorkspaceDocumentService::new_with_recovery(
         &fixture.runtime,
@@ -1025,9 +1027,9 @@ async fn directory_create_published_before_completion_failure_is_finalized_on_re
     assert_eq!(recovery.intent_count(), 0);
 }
 
-#[test]
-fn orphan_stage_is_rolled_back_and_repeated_recovery_is_a_noop() {
-    let fixture = Fixture::new();
+#[tokio::test]
+async fn orphan_stage_is_rolled_back_and_repeated_recovery_is_a_noop() {
+    let fixture = Fixture::new().await;
     let recovery = Arc::new(MemoryDocumentRecoveryStore::default());
     let stage_name = ".qingyu-kernel-update-00000000000000000000000000000000.tmp";
     fs::write(fixture.root.join(stage_name), "orphan").unwrap();
@@ -1058,9 +1060,9 @@ fn orphan_stage_is_rolled_back_and_repeated_recovery_is_a_noop() {
     );
 }
 
-#[test]
-fn recovery_never_deletes_an_unknown_entry_at_a_valid_stage_name() {
-    let fixture = Fixture::new();
+#[tokio::test]
+async fn recovery_never_deletes_an_unknown_entry_at_a_valid_stage_name() {
+    let fixture = Fixture::new().await;
     let recovery = Arc::new(MemoryDocumentRecoveryStore::default());
     let stage_name = ".qingyu-kernel-update-22222222222222222222222222222222.tmp";
     fs::write(fixture.root.join("note.md"), "final contents").unwrap();
@@ -1095,9 +1097,9 @@ fn recovery_never_deletes_an_unknown_entry_at_a_valid_stage_name() {
     assert_eq!(recovery.intent_count(), 1);
 }
 
-#[test]
-fn recovery_rejects_an_unowned_stage_name_without_deleting_a_workspace_entry() {
-    let fixture = Fixture::new();
+#[tokio::test]
+async fn recovery_rejects_an_unowned_stage_name_without_deleting_a_workspace_entry() {
+    let fixture = Fixture::new().await;
     let recovery = Arc::new(MemoryDocumentRecoveryStore::default());
     fs::write(fixture.root.join("victim.md"), "must remain").unwrap();
     recovery
@@ -1238,7 +1240,7 @@ fn directory_revision_length_prefixes_entries_and_file_contents() {
 
 #[tokio::test]
 async fn directory_move_published_before_completion_is_recovered_with_path_stable_revision() {
-    let fixture = Fixture::new();
+    let fixture = Fixture::new().await;
     let recovery = Arc::new(MemoryDocumentRecoveryStore::default());
     let service = Arc::new(
         WorkspaceDocumentService::new_with_recovery(
