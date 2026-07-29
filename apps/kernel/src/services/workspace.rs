@@ -67,7 +67,9 @@ impl WorkspaceService {
                 let (mut transition, terminal) = runtime
                     .begin_sync_workspace_transition(active, &mutation)
                     .map_err(|_| WorkspaceServiceError::unavailable())?;
-                transition.arm_recovery_on_drop(None);
+                transition
+                    .arm_recovery_on_drop(None)
+                    .map_err(|_| WorkspaceServiceError::unavailable())?;
                 drop(mutation);
                 runtime
                     .finish_sync_workspace_transition_start(terminal)
@@ -115,7 +117,9 @@ impl WorkspaceService {
             let (mut transition, terminal) = runtime
                 .begin_sync_workspace_transition(active, &mutation)
                 .map_err(|_| WorkspaceServiceError::unavailable())?;
-            transition.arm_recovery_on_drop(None);
+            transition
+                .arm_recovery_on_drop(None)
+                .map_err(|_| WorkspaceServiceError::unavailable())?;
             drop(mutation);
             runtime
                 .finish_sync_workspace_transition_start(terminal)
@@ -248,7 +252,9 @@ impl WorkspaceService {
             let (mut transition, terminal) = runtime
                 .begin_sync_workspace_transition(current, &mutation)
                 .map_err(|_| WorkspaceServiceError::unavailable())?;
-            transition.arm_recovery_on_drop(Some(prepared.candidate().clone()));
+            transition
+                .arm_recovery_on_drop(Some(prepared.candidate().clone()))
+                .map_err(|_| WorkspaceServiceError::unavailable())?;
             drop(mutation);
             runtime
                 .finish_sync_workspace_transition_start(terminal)
@@ -285,7 +291,9 @@ impl WorkspaceService {
             .map_err(|_| WorkspaceServiceError::unavailable())?;
 
         let mutation = self.mutation_coordinator.lock().await;
-        transition.arm_recovery_on_drop(Some(prepared.candidate().clone()));
+        transition
+            .arm_recovery_on_drop(Some(prepared.candidate().clone()))
+            .map_err(|_| WorkspaceServiceError::unavailable())?;
         verify_runtime(&runtime)?;
         let revalidated = runtime.active_workspace_snapshot()?;
         if !Arc::ptr_eq(&revalidated, &current)
@@ -433,7 +441,9 @@ impl WorkspaceService {
             let (mut transition, terminal) = runtime
                 .begin_sync_workspace_transition(current, &mutation)
                 .map_err(|_| WorkspaceServiceError::unavailable())?;
-            transition.arm_recovery_on_drop(Some(prepared.candidate().clone()));
+            transition
+                .arm_recovery_on_drop(Some(prepared.candidate().clone()))
+                .map_err(|_| WorkspaceServiceError::unavailable())?;
             drop(mutation);
             runtime
                 .finish_sync_workspace_transition_start(terminal)
@@ -470,7 +480,9 @@ impl WorkspaceService {
             .map_err(|_| WorkspaceServiceError::unavailable())?;
 
         let mutation = self.mutation_coordinator.lock().await;
-        transition.arm_recovery_on_drop(Some(prepared.candidate().clone()));
+        transition
+            .arm_recovery_on_drop(Some(prepared.candidate().clone()))
+            .map_err(|_| WorkspaceServiceError::unavailable())?;
         verify_runtime(&runtime)?;
         let revalidated = runtime.active_workspace_snapshot()?;
         if !Arc::ptr_eq(&revalidated, &current)

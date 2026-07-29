@@ -367,6 +367,13 @@ impl KernelRuntime {
             _ => return Ok(()),
         };
         dropped.cancellation.cancel();
+        let retained_candidate = match &lifecycle.admission {
+            SyncRunAdmission::Transitioning {
+                task_drop_candidate: Some(candidate),
+                ..
+            } => candidate.clone(),
+            _ => dropped.snapshot.authority.clone(),
+        };
         let current = match &*owner {
             WorkspaceOwnerState::Active(current) => current,
             WorkspaceOwnerState::RecoveryRequired { .. } => {
@@ -385,7 +392,7 @@ impl KernelRuntime {
         *owner = WorkspaceOwnerState::RecoveryRequired {
             _hold: WorkspaceRecoveryHold {
                 _last_known: Some(dropped.snapshot.clone()),
-                _retained_candidate: Some(dropped.snapshot.authority.clone()),
+                _retained_candidate: Some(retained_candidate),
             },
         };
         lifecycle.admission = SyncRunAdmission::RecoveryClosed;
@@ -736,6 +743,7 @@ impl KernelRuntime {
             expected: expected.clone(),
             abandoned: false,
             recovery_on_drain: None,
+            task_drop_candidate: None,
         };
         let terminal = match std::mem::replace(&mut lifecycle.run, RegisteredSyncRun::Empty) {
             RegisteredSyncRun::Queued(queued) => {
@@ -1048,6 +1056,33 @@ impl KernelRuntime {
             },
         };
         lifecycle.admission = SyncRunAdmission::RecoveryClosed;
+        Ok(())
+    }
+
+    fn retain_sync_workspace_transition_candidate(
+        &self,
+        token: SyncWorkspaceTransitionToken,
+        retained_candidate: Option<Arc<ActiveWorkspaceAuthority>>,
+    ) -> Result<(), WorkspaceRunLifecycleError> {
+        let mut lifecycle = self
+            .workspace_run_lifecycle
+            .state
+            .lock()
+            .map_err(|_| WorkspaceRunLifecycleError)?;
+        let SyncRunAdmission::Transitioning {
+            token: current,
+            expected,
+            task_drop_candidate,
+            ..
+        } = &mut lifecycle.admission
+        else {
+            return Err(WorkspaceRunLifecycleError);
+        };
+        if *current != token {
+            return Err(WorkspaceRunLifecycleError);
+        }
+        *task_drop_candidate =
+            Some(retained_candidate.unwrap_or_else(|| expected.authority.clone()));
         Ok(())
     }
 
@@ -1704,6 +1739,7 @@ enum SyncRunAdmission {
         expected: Arc<ActiveWorkspaceSnapshot>,
         abandoned: bool,
         recovery_on_drain: Option<Arc<ActiveWorkspaceAuthority>>,
+        task_drop_candidate: Option<Arc<ActiveWorkspaceAuthority>>,
     },
     RecoveryClosed,
 }
@@ -1818,8 +1854,12 @@ impl SyncWorkspaceTransition {
     pub(crate) fn arm_recovery_on_drop(
         &mut self,
         retained_candidate: Option<Arc<ActiveWorkspaceAuthority>>,
-    ) {
-        self.drop_policy = SyncWorkspaceTransitionDropPolicy::Recovery { retained_candidate };
+    ) -> Result<(), WorkspaceRunLifecycleError> {
+        self.drop_policy = SyncWorkspaceTransitionDropPolicy::Recovery {
+            retained_candidate: retained_candidate.clone(),
+        };
+        let runtime = self.runtime.upgrade().ok_or(WorkspaceRunLifecycleError)?;
+        runtime.retain_sync_workspace_transition_candidate(self.token, retained_candidate)
     }
 
     pub(crate) fn publication_attempted(&mut self) {

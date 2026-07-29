@@ -29,7 +29,7 @@ use qingyu_kernel::{
         DiagnosticRecord, DiagnosticsSink, KernelPorts, NetworkReachability, PortError, Sleeper,
         TaskSpawner,
     },
-    runtime::{KernelRuntime, SyncApiService},
+    runtime::{KernelRuntime, KernelStartupErrorKind, SyncApiService},
     services::{
         sync::{
             SyncCancellation, SyncExecutionError, SyncExecutor, SyncRunContext, SyncService,
@@ -4858,4 +4858,66 @@ async fn dropping_prewrite_mismatch_switch_during_drain_stays_in_recovery() {
         .begin_sync_workspace_transition_for_test()
         .await
         .is_err());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn aborting_sync_during_mismatch_recovery_retains_the_candidate_lease() {
+    let temporary = tempdir().unwrap();
+    let spawner = Arc::new(DeferredTaskSpawner::default());
+    let (runtime, workspace, durable) = active_sync_runtime(
+        temporary.path(),
+        test_ports_with_task_spawner(spawner.clone()),
+    )
+    .await;
+    let executor = Arc::new(GatedCancellationExecutor::default());
+    let sync = SyncService::new(
+        runtime.clone(),
+        Arc::new(SyncConfigStore::new(durable).unwrap()),
+        executor.clone(),
+    );
+    let config = SyncApiService::get_sync_config(&sync).await.unwrap();
+    SyncApiService::trigger_sync_run(
+        &sync,
+        TriggerSyncRunRequest {
+            expected_config_revision: config.revision,
+        },
+    )
+    .await
+    .unwrap();
+    let background = tokio::spawn(spawner.take_task());
+    executor.started.notified().await;
+
+    let before = workspace.service.current().unwrap();
+    workspace
+        .store
+        .replace(Some(serde_json::json!({"corrupt": true})))
+        .unwrap();
+    let target = temporary.path().join("retained-mismatch-candidate");
+    std::fs::create_dir(&target).unwrap();
+    let prepared = runtime.prepare_host_workspace_authority(&target).unwrap();
+    let switch_service = workspace.service.clone();
+    let switch = tokio::spawn(async move {
+        switch_service
+            .compare_and_set_host_workspace(&before.revision, prepared, "Retained Candidate")
+            .await
+    });
+    executor.cancellation_seen.notified().await;
+
+    background.abort();
+    assert!(background.await.unwrap_err().is_cancelled());
+    assert!(switch.await.unwrap().is_err());
+
+    let contender_app_data = temporary.path().join("candidate-contender-app-data");
+    let contender_cache = temporary.path().join("candidate-contender-cache");
+    std::fs::create_dir(&contender_app_data).unwrap();
+    std::fs::create_dir(&contender_cache).unwrap();
+    let contender_paths =
+        KernelPaths::desktop(&target, &contender_app_data, &contender_cache).unwrap();
+    let error = KernelRuntime::activate(
+        KernelConfig::generate().unwrap(),
+        contender_paths,
+        KernelPorts::unavailable(),
+    )
+    .unwrap_err();
+    assert_eq!(error.kind(), KernelStartupErrorKind::WorkspaceLocked);
 }
