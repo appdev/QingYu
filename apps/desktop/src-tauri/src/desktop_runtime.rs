@@ -469,16 +469,16 @@ mod tests {
     #[test]
     fn mcp_serve_selects_headless_service_mode() {
         assert_eq!(
-            super::test_desktop_launch_mode(&["markra", "mcp", "serve"]),
+            super::test_desktop_launch_mode(&["qingyu", "mcp", "serve"]),
             "mcp-service"
         );
     }
 
     #[test]
     fn ordinary_launch_selects_normal_mode() {
-        assert_eq!(super::test_desktop_launch_mode(&["markra"]), "normal");
+        assert_eq!(super::test_desktop_launch_mode(&["qingyu"]), "normal");
         assert_eq!(
-            super::test_desktop_launch_mode(&["markra", "mcp", "serve", "unexpected"]),
+            super::test_desktop_launch_mode(&["qingyu", "mcp", "serve", "unexpected"]),
             "normal"
         );
     }
@@ -645,7 +645,7 @@ mod tests {
     #[test]
     fn cli_opened_directories_are_queued_for_the_primary_notebook_switch() {
         let root = std::env::temp_dir().join(format!(
-            "markra-cli-window-fallback-{}",
+            "qingyu-cli-window-fallback-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("system clock should be after epoch")

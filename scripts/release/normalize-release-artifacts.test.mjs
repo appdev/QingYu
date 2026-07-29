@@ -25,7 +25,6 @@ function runNormalizeScript(rootDir, env) {
     env: {
       ...process.env,
       APP_PRODUCT_NAME: "QingYu",
-      APP_SLUG: "markra",
       DESKTOP_DIR: path.join(rootDir, "apps", "desktop"),
       RELEASE_VERSION: "0.0.8",
       ...env,
@@ -111,7 +110,7 @@ test("normalize-release-artifacts adds macOS platform labels to updater and dmg 
     "release",
     "bundle",
   );
-  const oldUpdater = path.join(bundleRoot, "macos", "markra_0.0.8_x64.app.tar.gz");
+  const oldUpdater = path.join(bundleRoot, "macos", "qingyu_0.0.8_x64.app.tar.gz");
   const oldDmg = path.join(bundleRoot, "dmg", "QingYu_0.0.8_x64.dmg");
 
   writeFile(oldUpdater);
@@ -149,7 +148,7 @@ test("normalize-release-artifacts adds Windows platform labels and creates a por
   const oldMsi = path.join(bundleRoot, "msi", "QingYu_0.0.8_x64_en-US.msi");
   const portableZip = path.join(bundleRoot, "portable", "QingYu_0.0.8_windows_x64_portable.zip");
 
-  writeFile(path.join(releaseRoot, "markra.exe"), "portable-binary");
+  writeFile(path.join(releaseRoot, "qingyu.exe"), "portable-binary");
   writeFile(path.join(releaseRoot, "support.dll"), "portable-library");
   writeFile(oldSetup);
   writeFile(`${oldSetup}.sig`, "setup-signature");
@@ -175,8 +174,33 @@ test("normalize-release-artifacts adds Windows platform labels and creates a por
 
   const zipContents = fs.readFileSync(portableZip);
   assert.equal(zipContents.subarray(0, 4).toString("latin1"), "PK\u0003\u0004");
-  assert.match(zipContents.toString("latin1"), /QingYu\/markra\.exe/);
+  assert.match(zipContents.toString("latin1"), /QingYu\/qingyu\.exe/);
   assert.match(zipContents.toString("latin1"), /QingYu\/support\.dll/);
+});
+
+test("normalize-release-artifacts rejects the legacy markra Windows executable", () => {
+  const rootDir = makeTempDir();
+  const releaseRoot = path.join(
+    rootDir,
+    "apps",
+    "desktop",
+    "src-tauri",
+    "target",
+    "x86_64-pc-windows-msvc",
+    "release",
+  );
+
+  fs.mkdirSync(path.join(releaseRoot, "bundle"), { recursive: true });
+  writeFile(path.join(releaseRoot, "markra.exe"), "legacy-binary");
+
+  const result = runNormalizeScript(rootDir, {
+    ASSET_ARCH: "x64",
+    ASSET_PLATFORM: "windows",
+    TARGET: "x86_64-pc-windows-msvc",
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /Windows portable executable not found/);
 });
 
 test("normalize-release-artifacts adds Linux platform labels to package assets", () => {

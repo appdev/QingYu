@@ -203,11 +203,22 @@ describe("i18n", () => {
       ).not.toMatch(staleCliCopy);
     }
     expect(t("en", "settings.shellCommand.descriptionMissing")).toBe(
-      "Install the markra command to switch notebook directories or open Markdown files from Terminal."
+      "Install the qingyu command to switch notebook directories or open Markdown files from Terminal."
     );
     expect(t("zh-CN", "settings.shellCommand.descriptionMissing")).toBe(
-      "安装 markra 命令后，可从终端切换笔记目录或打开 Markdown 文件。"
+      "安装 qingyu 命令后，可从终端切换笔记目录或打开 Markdown 文件。"
     );
+  });
+
+  it("names qingyu in every shell-command message", () => {
+    for (const [language, messages] of Object.entries(localeMessages)) {
+      for (const [key, value] of Object.entries(messages)) {
+        if (!key.startsWith("settings.shellCommand.")) continue;
+
+        expect(value, `${language}:${key}`).toContain("qingyu");
+        expect(value, `${language}:${key}`).not.toContain("markra");
+      }
+    }
   });
 
   it("uses reviewed English as the fallback copy for remaining Compact keys in other locales", () => {

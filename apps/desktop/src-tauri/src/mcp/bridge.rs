@@ -165,11 +165,11 @@ fn app_launch_request(
         .ok_or(BridgeError::AppLaunchFailed)?;
     let executable_name = match platform {
         #[cfg(any(target_os = "macos", test))]
-        BridgePlatform::MacOs => "markra",
+        BridgePlatform::MacOs => "qingyu",
         #[cfg(any(target_os = "linux", test))]
-        BridgePlatform::Linux => "markra",
+        BridgePlatform::Linux => "qingyu",
         #[cfg(any(target_os = "windows", test))]
-        BridgePlatform::Windows => "markra.exe",
+        BridgePlatform::Windows => "qingyu.exe",
     };
     Ok(AppLaunchRequest {
         executable: directory.join(executable_name),

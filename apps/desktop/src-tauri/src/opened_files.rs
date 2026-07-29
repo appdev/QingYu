@@ -109,7 +109,7 @@ mod tests {
 
     fn test_root(name: &str) -> std::path::PathBuf {
         std::env::temp_dir().join(format!(
-            "markra-opened-files-{name}-{}",
+            "qingyu-opened-files-{name}-{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .expect("system clock should be after epoch")
@@ -129,7 +129,7 @@ mod tests {
         fs::write(&unsupported_file, "png").expect("unsupported file should be created");
 
         let paths = opened_markdown_paths_from_args([
-            "/Applications/QingYu.app/Contents/MacOS/markra".to_string(),
+            "/Applications/QingYu.app/Contents/MacOS/qingyu".to_string(),
             "--ignored".to_string(),
             markdown_file.to_string_lossy().to_string(),
             unsupported_file.to_string_lossy().to_string(),
@@ -164,7 +164,7 @@ mod tests {
 
         let paths = opened_markdown_paths_from_args_with_cwd(
             [
-                "/Applications/QingYu.app/Contents/MacOS/markra".to_string(),
+                "/Applications/QingYu.app/Contents/MacOS/qingyu".to_string(),
                 ".".to_string(),
                 "notes.md".to_string(),
             ],
@@ -194,7 +194,7 @@ mod tests {
         fs::create_dir_all(&notebook).expect("trailing-space folder should be created");
 
         let paths = opened_markdown_paths_from_args([
-            "/Applications/QingYu.app/Contents/MacOS/markra".to_string(),
+            "/Applications/QingYu.app/Contents/MacOS/qingyu".to_string(),
             notebook.to_string_lossy().to_string(),
         ]);
 

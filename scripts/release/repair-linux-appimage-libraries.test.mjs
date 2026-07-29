@@ -40,7 +40,7 @@ test("repair-linux-appimage-libraries removes bundled Wayland client libraries",
 
 test("repair-linux-appimage-libraries succeeds when there is nothing to remove", () => {
   const appDir = makeTempDir();
-  writeFile(path.join(appDir, "usr", "bin", "markra"));
+  writeFile(path.join(appDir, "usr", "bin", "qingyu"));
 
   const result = runRepair(appDir);
 

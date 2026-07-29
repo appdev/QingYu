@@ -3,8 +3,8 @@ members = [".", "crates/qingyu-dejavu"]
 resolver = "2"
 
 [package]
-name = "markra"
-default-run = "markra"
+name = "qingyu"
+default-run = "qingyu"
 version = "2.1.0"
 description = "Practical Markdown note-taking editor"
 authors = ["QingYu contributors"]

@@ -26,11 +26,14 @@ test("release validation builds and tags the workflow dispatch commit", () => {
   assert.match(job, /ref: \$\{\{ github\.sha \}\}/);
   assert.match(job, /apps\/desktop\/package\.json/);
   assert.match(job, /apps\/web\/package\.json/);
-  assert.match(job, /apps\/site\/package\.json/);
   assert.match(job, /src-tauri\/tauri\.conf\.json/);
   assert.match(job, /src-tauri\/Cargo\.toml/);
   assert.match(job, /refs\/tags\/\$\{RELEASE_TAG\}/);
   assert.match(job, /GITHUB_SHA/);
+});
+
+test("release workflow uses qingyu for executable artifact coordination", () => {
+  assert.match(workflow, /^  APP_SLUG: qingyu$/m);
 });
 
 test("release workflow builds and uploads an unsigned Android ARM64 APK", () => {
@@ -102,18 +105,20 @@ test("release workflow keeps signed desktop releases optional", () => {
   assert.match(job, /tauri\.updater\.conf\.json/);
 });
 
-test("release version sources are ready for v2.0.0-beta.5", () => {
-  const expectedVersion = "2.0.0-beta.5";
+test("release version sources match the root package version", () => {
+  const expectedVersion = readJson("package.json").version;
   const cargoToml = fs.readFileSync(path.join(repoRoot, "apps/desktop/src-tauri/Cargo.toml"), "utf8");
   const cargoLock = fs.readFileSync(path.join(repoRoot, "apps/desktop/src-tauri/Cargo.lock"), "utf8");
+
+  assert.match(cargoToml, /^\[package\]\nname = "qingyu"\ndefault-run = "qingyu"/m);
+
   const versions = [
     readJson("package.json").version,
     readJson("apps/desktop/package.json").version,
     readJson("apps/web/package.json").version,
-    readJson("apps/site/package.json").version,
     readJson("apps/desktop/src-tauri/tauri.conf.json").version,
     cargoToml.match(/^version\s*=\s*"([^"]+)"/m)?.[1],
-    cargoLock.match(/\[\[package\]\]\nname = "markra"\nversion = "([^"]+)"/)?.[1],
+    cargoLock.match(/\[\[package\]\]\nname = "qingyu"\nversion = "([^"]+)"/)?.[1],
   ];
 
   assert.deepEqual(versions, Array(versions.length).fill(expectedVersion));

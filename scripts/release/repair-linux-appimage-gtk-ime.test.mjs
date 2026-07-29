@@ -95,7 +95,7 @@ done
 
 test("repair-linux-appimage-gtk-ime fails when the GTK AppRun hook is missing", () => {
   const appDir = makeTempDir();
-  writeFile(path.join(appDir, "usr", "bin", "markra"));
+  writeFile(path.join(appDir, "usr", "bin", "qingyu"));
 
   const result = runRepair(appDir);
 

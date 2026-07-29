@@ -192,45 +192,57 @@ describe("GeneralSettings", () => {
       <GeneralSettings
         {...baseProps}
         shellCommandStatus={{
-          commandPath: "/mock-bin/markra",
-          targetPath: "/Applications/QingYu.app/Contents/MacOS/markra",
+          commandPath: "/mock-bin/qingyu",
+          targetPath: "/Applications/QingYu.app/Contents/MacOS/qingyu",
           status: "missing"
         }}
       />
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Install markra command" }));
+    fireEvent.click(screen.getByRole("button", { name: "Install qingyu command" }));
     expect(onInstallShellCommand).toHaveBeenCalledTimes(1);
 
     rerender(
       <GeneralSettings
         {...baseProps}
         shellCommandStatus={{
-          commandPath: "/mock-bin/markra",
-          targetPath: "/Applications/QingYu.app/Contents/MacOS/markra",
+          commandPath: "/mock-bin/qingyu",
+          targetPath: "/Applications/QingYu.app/Contents/MacOS/qingyu",
           status: "needsRepair"
         }}
       />
     );
-    fireEvent.click(screen.getByRole("button", { name: "Repair markra command" }));
+    fireEvent.click(screen.getByRole("button", { name: "Repair qingyu command" }));
     expect(onInstallShellCommand).toHaveBeenCalledTimes(2);
 
     rerender(
       <GeneralSettings
         {...baseProps}
         shellCommandStatus={{
-          commandPath: "/mock-bin/markra",
-          targetPath: "/Applications/QingYu.app/Contents/MacOS/markra",
+          commandPath: "/mock-bin/qingyu",
+          targetPath: "/Applications/QingYu.app/Contents/MacOS/qingyu",
           status: "installed"
         }}
       />
     );
-    expect(screen.getByText(/Installed at \/mock-bin\/markra/)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Uninstall markra command" }));
-    fireEvent.click(screen.getByRole("button", { name: "Refresh markra command status" }));
+    expect(screen.getByText(/qingyu command installed at \/mock-bin\/qingyu/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Uninstall qingyu command" }));
+    fireEvent.click(screen.getByRole("button", { name: "Refresh qingyu command status" }));
 
     expect(onUninstallShellCommand).toHaveBeenCalledTimes(1);
     expect(onRefreshShellCommand).toHaveBeenCalledTimes(1);
+
+    rerender(
+      <GeneralSettings
+        {...baseProps}
+        shellCommandStatus={{
+          commandPath: null,
+          targetPath: "/Applications/QingYu.app/Contents/MacOS/qingyu",
+          status: "installed"
+        }}
+      />
+    );
+    expect(screen.getByText("qingyu command installed at qingyu")).toBeInTheDocument();
   });
 
   it("exports and imports portable settings from general settings", () => {

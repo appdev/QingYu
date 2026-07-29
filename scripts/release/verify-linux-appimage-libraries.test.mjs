@@ -51,7 +51,7 @@ test("verify-linux-appimage-libraries rejects bundled Wayland client library var
 
 test("verify-linux-appimage-libraries can read the AppDir path from the environment", () => {
   const appDir = makeTempDir();
-  writeFile(path.join(appDir, "usr", "bin", "markra"));
+  writeFile(path.join(appDir, "usr", "bin", "qingyu"));
 
   const result = spawnSync(process.execPath, ["scripts/release/verify-linux-appimage-libraries.mjs"], {
     cwd: repoRoot,

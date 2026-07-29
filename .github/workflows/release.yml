@@ -17,7 +17,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  APP_SLUG: markra
+  APP_SLUG: qingyu
   APP_PRODUCT_NAME: QingYu
   DESKTOP_DIR: apps/desktop
   NODE_VERSION: 24
@@ -63,7 +63,7 @@ jobs:
               "Cargo lock version",
               fs
                 .readFileSync(`${desktopDir}/src-tauri/Cargo.lock`, "utf8")
-                .match(/\[\[package\]\]\nname = "markra"\nversion = "([^"]+)"/)?.[1],
+                .match(/\[\[package\]\]\nname = "qingyu"\nversion = "([^"]+)"/)?.[1],
             ],
           ];
           for (const [label, version] of sources) {

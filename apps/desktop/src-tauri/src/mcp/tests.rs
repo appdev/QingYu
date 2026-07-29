@@ -20,7 +20,7 @@ use super::{
 
 #[test]
 fn sidecar_command_is_resolved_beside_the_application_executable() {
-    let app = std::path::Path::new("/Applications/QingYu Preview.app/Contents/MacOS/QingYu");
+    let app = std::path::Path::new("/Applications/QingYu Preview.app/Contents/MacOS/qingyu");
     assert_eq!(
         super::sidecar_command_for_executable(app, ""),
         Some(std::path::PathBuf::from(
@@ -31,7 +31,7 @@ fn sidecar_command_is_resolved_beside_the_application_executable() {
 
 #[test]
 fn sidecar_command_uses_the_platform_executable_suffix() {
-    let app = std::path::Path::new("/opt/qingyu/QingYu.exe");
+    let app = std::path::Path::new("/opt/qingyu/qingyu.exe");
     assert_eq!(
         super::sidecar_command_for_executable(app, ".exe"),
         Some(std::path::PathBuf::from("/opt/qingyu/qingyu-mcp.exe"))
@@ -39,32 +39,32 @@ fn sidecar_command_uses_the_platform_executable_suffix() {
 }
 
 #[test]
-fn resolves_macos_markra_beside_mcp_bridge() {
+fn resolves_macos_qingyu_beside_mcp_bridge() {
     let bridge = std::path::Path::new("/Applications/QingYu.app/Contents/MacOS/qingyu-mcp");
     let (executable, arguments) = test_app_launch_request(bridge, "macos");
 
     assert_eq!(
         executable,
-        std::path::PathBuf::from("/Applications/QingYu.app/Contents/MacOS/markra")
+        std::path::PathBuf::from("/Applications/QingYu.app/Contents/MacOS/qingyu")
     );
     assert_eq!(arguments, ["mcp", "serve"]);
 }
 
 #[test]
-fn resolves_windows_markra_beside_mcp_bridge() {
+fn resolves_windows_qingyu_beside_mcp_bridge() {
     let bridge = std::path::Path::new("/QingYu/qingyu-mcp.exe");
     let (executable, arguments) = test_app_launch_request(bridge, "windows");
 
-    assert_eq!(executable, std::path::PathBuf::from("/QingYu/markra.exe"));
+    assert_eq!(executable, std::path::PathBuf::from("/QingYu/qingyu.exe"));
     assert_eq!(arguments, ["mcp", "serve"]);
 }
 
 #[test]
-fn resolves_linux_markra_beside_mcp_bridge() {
+fn resolves_linux_qingyu_beside_mcp_bridge() {
     let bridge = std::path::Path::new("/opt/qingyu/qingyu-mcp");
     let (executable, arguments) = test_app_launch_request(bridge, "linux");
 
-    assert_eq!(executable, std::path::PathBuf::from("/opt/qingyu/markra"));
+    assert_eq!(executable, std::path::PathBuf::from("/opt/qingyu/qingyu"));
     assert_eq!(arguments, ["mcp", "serve"]);
 }
 

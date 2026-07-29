@@ -1226,18 +1226,18 @@ export function installAppTestHarness() {
       src: "assets/imported-file.pdf"
     });
     mockedGetNativeShellCommandStatus.mockResolvedValue({
-      commandPath: "/mock-bin/markra",
-      targetPath: "/mock-app/markra",
+      commandPath: "/mock-bin/qingyu",
+      targetPath: "/mock-app/qingyu",
       status: "missing"
     });
     mockedInstallNativeShellCommand.mockResolvedValue({
-      commandPath: "/mock-bin/markra",
-      targetPath: "/mock-app/markra",
+      commandPath: "/mock-bin/qingyu",
+      targetPath: "/mock-app/qingyu",
       status: "installed"
     });
     mockedUninstallNativeShellCommand.mockResolvedValue({
-      commandPath: "/mock-bin/markra",
-      targetPath: "/mock-app/markra",
+      commandPath: "/mock-bin/qingyu",
+      targetPath: "/mock-app/qingyu",
       status: "missing"
     });
     mockedCheckNativeAppUpdate.mockResolvedValue(null);

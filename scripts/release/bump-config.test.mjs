@@ -11,7 +11,7 @@ test("bumpp updates app package manifests directly", () => {
 
 test("cargo version sync updates only the package version", () => {
   const cargoManifest = `[package]
-name = "markra"
+name = "qingyu"
 version = "0.3.0"
 
 [dependencies]
@@ -25,7 +25,7 @@ objc2-foundation = { version = "0.3.0", default-features = false }
   assert.equal(
     updateCargoPackageVersion(cargoManifest, "0.4.0"),
     `[package]
-name = "markra"
+name = "qingyu"
 version = "0.4.0"
 
 [dependencies]

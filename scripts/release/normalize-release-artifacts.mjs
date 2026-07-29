@@ -275,7 +275,7 @@ function writeZip(outputPath, inputFiles) {
 }
 
 function findWindowsExecutable(releaseRoot, context) {
-  const { appSlug, productName } = context;
+  const { appSlug } = context;
   const explicitPath = process.env.WINDOWS_EXECUTABLE_PATH?.trim();
 
   if (explicitPath) {
@@ -286,25 +286,12 @@ function findWindowsExecutable(releaseRoot, context) {
     return explicitPath;
   }
 
-  const candidates = [path.join(releaseRoot, `${appSlug}.exe`), path.join(releaseRoot, `${productName}.exe`)];
-
-  for (const candidate of candidates) {
-    if (fs.existsSync(candidate)) {
-      return candidate;
-    }
+  const executablePath = path.join(releaseRoot, `${appSlug}.exe`);
+  if (!fs.existsSync(executablePath)) {
+    throw new Error(`Windows portable executable not found: ${executablePath}`);
   }
 
-  const executable = fs
-    .readdirSync(releaseRoot, { withFileTypes: true })
-    .filter((entry) => entry.isFile() && entry.name.toLowerCase().endsWith(".exe"))
-    .map((entry) => path.join(releaseRoot, entry.name))
-    .find((candidate) => !/setup|install/i.test(path.basename(candidate)));
-
-  if (!executable) {
-    throw new Error(`Windows portable executable not found in ${releaseRoot}.`);
-  }
-
-  return executable;
+  return executablePath;
 }
 
 function createWindowsPortableZip(releaseRoot, bundleRoot, context) {
@@ -334,7 +321,7 @@ function createWindowsPortableZip(releaseRoot, bundleRoot, context) {
   writeZip(outputPath, portableFiles);
 }
 
-const appSlug = process.env.APP_SLUG?.trim() || "markra";
+const appSlug = process.env.APP_SLUG?.trim() || "qingyu";
 const productName = process.env.APP_PRODUCT_NAME?.trim() || "QingYu";
 const desktopDir = process.env.DESKTOP_DIR?.trim() || "apps/desktop";
 const target = requireEnv("TARGET");

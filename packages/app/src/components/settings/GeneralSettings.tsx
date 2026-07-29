@@ -51,15 +51,15 @@ function shellCommandDescription(
   if (!status) return translate("settings.shellCommand.descriptionChecking");
 
   if (status.status === "installed") {
-    return `${translate("settings.shellCommand.descriptionInstalled")} ${status.commandPath ?? "markra"}`;
+    return `${translate("settings.shellCommand.descriptionInstalled")} ${status.commandPath ?? "qingyu"}`;
   }
 
   if (status.status === "needsRepair") {
-    return `${translate("settings.shellCommand.descriptionNeedsRepair")} ${status.commandPath ?? "markra"}`;
+    return `${translate("settings.shellCommand.descriptionNeedsRepair")} ${status.commandPath ?? "qingyu"}`;
   }
 
   if (status.status === "conflict") {
-    return `${translate("settings.shellCommand.descriptionConflict")} ${status.commandPath ?? "markra"}`;
+    return `${translate("settings.shellCommand.descriptionConflict")} ${status.commandPath ?? "qingyu"}`;
   }
 
   if (status.status === "unavailable") {
