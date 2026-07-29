@@ -1,3 +1,4 @@
+use std::future::poll_fn;
 use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
     mpsc, Arc, Condvar, Mutex,
@@ -269,7 +270,6 @@ struct TestHost;
 #[derive(Default)]
 struct DeferredTaskSpawner {
     spawned: AtomicUsize,
-    started: Arc<Notify>,
     task: Mutex<Option<BoxTaskFuture>>,
 }
 
@@ -282,13 +282,9 @@ impl DeferredTaskSpawner {
 impl TaskSpawner for DeferredTaskSpawner {
     fn spawn(&self, task: BoxTaskFuture) -> Result<(), PortError> {
         self.spawned.fetch_add(1, Ordering::SeqCst);
-        let started = self.started.clone();
         let mut pending = self.task.lock().unwrap();
         assert!(pending.is_none(), "only one deferred task is expected");
-        *pending = Some(Box::pin(async move {
-            started.notify_one();
-            task.await;
-        }));
+        *pending = Some(task);
         Ok(())
     }
 }
@@ -2462,13 +2458,19 @@ async fn deferred_sync_run_waits_for_inflight_workspace_commit_before_executor_a
         .recv_timeout(Duration::from_secs(5))
         .expect("workspace commit must hold the mutation permit before deferred admission");
 
-    let background = tokio::spawn(spawner.take_task());
-    spawner.started.notified().await;
+    let mut background = spawner.take_task();
+    poll_fn(|context| match background.as_mut().poll(context) {
+        std::task::Poll::Pending => std::task::Poll::Ready(()),
+        std::task::Poll::Ready(()) => {
+            panic!("deferred task must wait behind the in-flight workspace commit")
+        }
+    })
+    .await;
     assert_eq!(executor.runs.load(Ordering::SeqCst), 0);
 
     release_commit.send(()).unwrap();
     switch.await.unwrap().unwrap();
-    background.await.unwrap();
+    background.await;
 
     assert_eq!(executor.runs.load(Ordering::SeqCst), 0);
     assert_eq!(
