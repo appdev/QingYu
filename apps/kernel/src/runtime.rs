@@ -1,7 +1,7 @@
 use std::{
     fmt,
     path::Path,
-    sync::{Arc, OnceLock, RwLock},
+    sync::{Arc, OnceLock, RwLock, RwLockWriteGuard},
 };
 
 use async_trait::async_trait;
@@ -157,22 +157,33 @@ impl KernelRuntime {
         &self,
         prepared: PreparedWorkspaceAuthority,
     ) -> Result<Arc<ActiveWorkspaceAuthority>, WorkspaceAuthorityError> {
+        self.pin_host_workspace_authority_installation(prepared)?
+            .install()
+    }
+
+    pub(crate) fn pin_host_workspace_authority_installation(
+        &self,
+        prepared: PreparedWorkspaceAuthority,
+    ) -> Result<PinnedWorkspaceAuthorityInstallation<'_>, WorkspaceAuthorityError> {
         if self.paths.profile() != HostProfile::Desktop {
             return Err(WorkspaceAuthorityError::unsupported_profile());
         }
-        let mut current = self
+        let current = self
             .active_workspace
             .write()
             .map_err(|_| WorkspaceAuthorityError::unavailable())?;
         if !Arc::ptr_eq(&current, &prepared.expected) {
             return Err(WorkspaceAuthorityError::prepared_authority_mismatch());
         }
+        prepared.candidate.verify_held_directory()?;
         self.paths
             .validate_host_workspace_root(prepared.candidate.root.as_ref())
             .map_err(WorkspaceAuthorityError::from_path)?;
-        let installed = prepared.candidate;
-        *current = installed.clone();
-        Ok(installed)
+        Ok(PinnedWorkspaceAuthorityInstallation {
+            current,
+            candidate: prepared.candidate,
+            paths: &self.paths,
+        })
     }
 
     pub const fn event_broker(&self) -> &Arc<EventBroker> {
@@ -298,6 +309,31 @@ impl fmt::Debug for ActiveWorkspaceAuthority {
 pub struct PreparedWorkspaceAuthority {
     expected: Arc<ActiveWorkspaceAuthority>,
     candidate: Arc<ActiveWorkspaceAuthority>,
+}
+
+pub(crate) struct PinnedWorkspaceAuthorityInstallation<'a> {
+    current: RwLockWriteGuard<'a, Arc<ActiveWorkspaceAuthority>>,
+    candidate: Arc<ActiveWorkspaceAuthority>,
+    paths: &'a KernelPaths,
+}
+
+impl PinnedWorkspaceAuthorityInstallation<'_> {
+    pub(crate) fn install(
+        mut self,
+    ) -> Result<Arc<ActiveWorkspaceAuthority>, WorkspaceAuthorityError> {
+        self.candidate.verify_held_directory()?;
+        self.paths
+            .validate_host_workspace_root(self.candidate.root.as_ref())
+            .map_err(WorkspaceAuthorityError::from_path)?;
+        *self.current = self.candidate.clone();
+        Ok(self.candidate)
+    }
+}
+
+impl fmt::Debug for PinnedWorkspaceAuthorityInstallation<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("PinnedWorkspaceAuthorityInstallation { authority: retained }")
+    }
 }
 
 impl fmt::Debug for PreparedWorkspaceAuthority {

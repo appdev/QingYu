@@ -41,6 +41,21 @@ struct StorePrimaryWorkspaceBackend<R: tauri::Runtime> {
     store: Arc<tauri_plugin_store::Store<R>>,
 }
 
+/// Host-private preparation for the future desktop runtime-owner cut.
+///
+/// Implementations retain the selected path and an atomic path-transition
+/// reservation internally. The returned Kernel transaction exposes only the
+/// opaque canonical workspace value at commit time.
+pub(crate) trait TrustedDesktopWorkspacePersistence: Send + Sync {
+    fn prepare_host_workspace_transaction(
+        &self,
+        absolute_path: &Path,
+    ) -> Result<
+        Box<dyn qingyu_kernel::workspace::primary::AtomicHostWorkspaceTransaction>,
+        qingyu_kernel::services::workspace::WorkspaceServiceError,
+    >;
+}
+
 impl<R: tauri::Runtime> PrimaryWorkspaceBackend for StorePrimaryWorkspaceBackend<R> {
     fn delete(&self, key: &str) {
         self.store.delete(key);
@@ -64,6 +79,7 @@ impl<R: tauri::Runtime> PrimaryWorkspaceBackend for StorePrimaryWorkspaceBackend
 struct TrustedPreparedWorkspace {
     authority: qingyu_kernel::runtime::PreparedWorkspaceAuthority,
     display_name: String,
+    host_transaction: Box<dyn qingyu_kernel::workspace::primary::AtomicHostWorkspaceTransaction>,
 }
 
 #[derive(Clone, Eq, PartialEq)]
@@ -82,6 +98,7 @@ impl std::fmt::Debug for TrustedPreparedWorkspaceToken {
 pub(crate) struct TrustedDesktopWorkspaceAdapter {
     runtime: Arc<qingyu_kernel::runtime::KernelRuntime>,
     service: Arc<qingyu_kernel::services::workspace::WorkspaceService>,
+    persistence: Arc<dyn TrustedDesktopWorkspacePersistence>,
     prepared: Mutex<HashMap<String, TrustedPreparedWorkspace>>,
 }
 
@@ -90,10 +107,12 @@ impl TrustedDesktopWorkspaceAdapter {
     pub(crate) fn new(
         runtime: Arc<qingyu_kernel::runtime::KernelRuntime>,
         service: Arc<qingyu_kernel::services::workspace::WorkspaceService>,
+        persistence: Arc<dyn TrustedDesktopWorkspacePersistence>,
     ) -> Self {
         Self {
             runtime,
             service,
+            persistence,
             prepared: Mutex::new(HashMap::new()),
         }
     }
@@ -123,6 +142,9 @@ impl TrustedDesktopWorkspaceAdapter {
             .runtime
             .prepare_host_workspace_authority(absolute_path)
             .map_err(qingyu_kernel::services::workspace::WorkspaceServiceError::from)?;
+        let host_transaction = self
+            .persistence
+            .prepare_host_workspace_transaction(absolute_path)?;
         let token = format!(
             "{}:{}",
             self.runtime.instance_id().as_uuid(),
@@ -136,6 +158,7 @@ impl TrustedDesktopWorkspaceAdapter {
                 TrustedPreparedWorkspace {
                     authority,
                     display_name,
+                    host_transaction,
                 },
             );
         Ok(TrustedPreparedWorkspaceToken { token })
@@ -160,10 +183,11 @@ impl TrustedDesktopWorkspaceAdapter {
                 qingyu_kernel::services::workspace::WorkspaceServiceError::prepared_authority_mismatch,
             )?;
         self.service
-            .compare_and_set_host_workspace(
+            .compare_and_set_host_workspace_transaction(
                 expected_revision,
                 prepared.authority,
                 prepared.display_name,
+                prepared.host_transaction,
             )
             .await
     }
@@ -925,24 +949,42 @@ mod tests {
         }
     }
 
-    #[derive(Default)]
-    struct KernelPrimaryStore {
-        value: Mutex<Option<Value>>,
+    struct AtomicDesktopHostRecord {
+        value: Arc<Mutex<Value>>,
     }
 
-    impl qingyu_kernel::workspace::primary::PrimaryWorkspaceStore for KernelPrimaryStore {
+    impl AtomicDesktopHostRecord {
+        fn raw(&self) -> Value {
+            self.value.lock().expect("desktop host record").clone()
+        }
+    }
+
+    impl qingyu_kernel::workspace::primary::PrimaryWorkspaceStore for AtomicDesktopHostRecord {
         fn load(
             &self,
         ) -> Result<Option<Value>, qingyu_kernel::workspace::primary::PrimaryWorkspaceStoreError>
         {
-            Ok(self.value.lock().expect("kernel primary store").clone())
+            Ok(self
+                .value
+                .lock()
+                .expect("desktop host record")
+                .get("kernelWorkspace")
+                .cloned())
         }
 
         fn replace(
             &self,
             value: Option<Value>,
         ) -> Result<(), qingyu_kernel::workspace::primary::PrimaryWorkspaceStoreError> {
-            *self.value.lock().expect("kernel primary store") = value;
+            let mut record = self.value.lock().expect("desktop host record");
+            let object = record.as_object_mut().ok_or_else(
+                qingyu_kernel::workspace::primary::PrimaryWorkspaceStoreError::unavailable,
+            )?;
+            if let Some(value) = value {
+                object.insert("kernelWorkspace".to_string(), value);
+            } else {
+                object.remove("kernelWorkspace");
+            }
             Ok(())
         }
 
@@ -950,6 +992,57 @@ mod tests {
             &self,
         ) -> Result<(), qingyu_kernel::workspace::primary::PrimaryWorkspaceStoreError> {
             Ok(())
+        }
+    }
+
+    struct AtomicDesktopHostTransaction {
+        record: Arc<Mutex<Value>>,
+        expected_record: Value,
+        target: PathBuf,
+    }
+
+    impl qingyu_kernel::workspace::primary::AtomicHostWorkspaceTransaction
+        for AtomicDesktopHostTransaction
+    {
+        fn compare_and_commit(
+            self: Box<Self>,
+            expected_kernel_value: Option<&Value>,
+            next_kernel_value: Value,
+        ) -> Result<(), qingyu_kernel::workspace::primary::AtomicHostWorkspaceCommitError> {
+            let mut record = self.record.lock().expect("desktop host record");
+            if *record != self.expected_record
+                || record.get("kernelWorkspace") != expected_kernel_value
+            {
+                return Err(
+                    qingyu_kernel::workspace::primary::AtomicHostWorkspaceCommitError::conflict(),
+                );
+            }
+            let object = record.as_object_mut().ok_or_else(
+                qingyu_kernel::workspace::primary::AtomicHostWorkspaceCommitError::no_commit,
+            )?;
+            object.insert(
+                "desktopPath".to_string(),
+                Value::String(self.target.to_string_lossy().into_owned()),
+            );
+            object.insert("kernelWorkspace".to_string(), next_kernel_value);
+            Ok(())
+        }
+    }
+
+    impl TrustedDesktopWorkspacePersistence for AtomicDesktopHostRecord {
+        fn prepare_host_workspace_transaction(
+            &self,
+            absolute_path: &Path,
+        ) -> Result<
+            Box<dyn qingyu_kernel::workspace::primary::AtomicHostWorkspaceTransaction>,
+            qingyu_kernel::services::workspace::WorkspaceServiceError,
+        > {
+            let expected_record = self.value.lock().expect("desktop host record").clone();
+            Ok(Box::new(AtomicDesktopHostTransaction {
+                record: self.value.clone(),
+                expected_record,
+                target: absolute_path.to_path_buf(),
+            }))
         }
     }
 
@@ -1857,6 +1950,7 @@ mod tests {
         ) -> (
             Arc<qingyu_kernel::runtime::KernelRuntime>,
             Arc<qingyu_kernel::services::workspace::WorkspaceService>,
+            Arc<AtomicDesktopHostRecord>,
         ) {
             let workspace = root.join("workspace");
             let app_data = root.join("app-data");
@@ -1875,17 +1969,20 @@ mod tests {
                 qingyu_kernel::ports::KernelPorts::unavailable(),
             )
             .expect("kernel runtime");
+            let store = Arc::new(AtomicDesktopHostRecord {
+                value: Arc::new(Mutex::new(json!({ "desktopPath": workspace }))),
+            });
             let service = Arc::new(
                 qingyu_kernel::services::workspace::WorkspaceService::new(
                     &runtime,
-                    Arc::new(KernelPrimaryStore::default()),
+                    store.clone(),
                     managed,
                     runtime.event_broker().clone(),
                     "Initial Workspace",
                 )
                 .expect("workspace service"),
             );
-            (runtime, service)
+            (runtime, service, store)
         }
 
         let temporary = tempfile::tempdir().expect("trusted adapter roots");
@@ -1893,12 +1990,18 @@ mod tests {
         let second_root = temporary.path().join("second");
         let target = temporary.path().join("Target Workspace");
         std::fs::create_dir(&target).expect("target workspace");
-        let (first_runtime, first_service) = fixture(&first_root);
-        let (second_runtime, second_service) = fixture(&second_root);
-        let first_adapter =
-            TrustedDesktopWorkspaceAdapter::new(first_runtime, first_service.clone());
-        let second_adapter =
-            TrustedDesktopWorkspaceAdapter::new(second_runtime, second_service.clone());
+        let (first_runtime, first_service, first_store) = fixture(&first_root);
+        let (second_runtime, second_service, second_store) = fixture(&second_root);
+        let first_adapter = TrustedDesktopWorkspaceAdapter::new(
+            first_runtime,
+            first_service.clone(),
+            first_store.clone(),
+        );
+        let second_adapter = TrustedDesktopWorkspaceAdapter::new(
+            second_runtime,
+            second_service.clone(),
+            second_store,
+        );
         let direct_before = first_service.current().expect("direct current");
         let api_before =
             qingyu_kernel::runtime::WorkspaceApiService::get_workspace(first_service.as_ref())
@@ -1908,6 +2011,7 @@ mod tests {
         let prepared = first_adapter
             .prepare_host_workspace(&target)
             .expect("trusted prepare");
+        let prepared_debug = format!("{prepared:?}");
 
         let foreign_error = second_adapter
             .compare_and_set_host_workspace(
@@ -1919,6 +2023,8 @@ mod tests {
 
         assert_eq!(direct_before, api_before);
         assert_eq!(direct_before, adapter_before);
+        assert_eq!(prepared_debug, "TrustedPreparedWorkspaceToken([REDACTED])");
+        assert!(!prepared_debug.contains(target.to_string_lossy().as_ref()));
         assert_eq!(
             foreign_error.kind(),
             qingyu_kernel::services::workspace::WorkspaceServiceErrorKind::PreparedAuthorityMismatch
@@ -1943,6 +2049,17 @@ mod tests {
             first_adapter.current().expect("adapter committed current")
         );
         assert_eq!(committed.display_name, "Target Workspace");
+        let host_record = first_store.raw();
+        assert_eq!(host_record.get("desktopPath"), Some(&json!(target)));
+        assert_eq!(
+            host_record.get("kernelWorkspace"),
+            qingyu_kernel::workspace::primary::PrimaryWorkspaceStore::load(first_store.as_ref())
+                .expect("same host record")
+                .as_ref()
+        );
+        assert!(!serde_json::to_string(&committed)
+            .expect("workspace wire JSON")
+            .contains(target.to_string_lossy().as_ref()));
         assert!(first_adapter
             .compare_and_set_host_workspace(&committed.revision, prepared)
             .await

@@ -17,7 +17,10 @@ use qingyu_kernel::{
     services::workspace::{WorkspaceService, WorkspaceServiceErrorKind},
     workspace::{
         managed::ManagedWorkspaceCollection,
-        primary::{PrimaryWorkspaceStore, PrimaryWorkspaceStoreError},
+        primary::{
+            AtomicHostWorkspaceCommitError, AtomicHostWorkspaceTransaction, PrimaryWorkspaceStore,
+            PrimaryWorkspaceStoreError,
+        },
     },
 };
 use serde_json::Value;
@@ -75,6 +78,103 @@ impl MemoryPrimaryWorkspaceStore {
     }
 }
 
+#[derive(Clone)]
+struct MemoryHostRecordValue {
+    kernel: Option<Value>,
+    private_workspace: String,
+}
+
+struct MemoryAtomicHostRecord {
+    value: Arc<Mutex<MemoryHostRecordValue>>,
+    commits: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl MemoryAtomicHostRecord {
+    fn new(private_workspace: &str) -> Arc<Self> {
+        Arc::new(Self {
+            value: Arc::new(Mutex::new(MemoryHostRecordValue {
+                kernel: None,
+                private_workspace: private_workspace.to_string(),
+            })),
+            commits: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        })
+    }
+
+    fn snapshot(&self) -> MemoryHostRecordValue {
+        self.value.lock().unwrap().clone()
+    }
+
+    fn replace_private_workspace(&self, value: &str) {
+        self.value.lock().unwrap().private_workspace = value.to_string();
+    }
+
+    fn transaction(self: &Arc<Self>, next: &str) -> MemoryHostWorkspaceTransaction {
+        MemoryHostWorkspaceTransaction {
+            record: self.clone(),
+            expected_record: self.snapshot(),
+            next: next.to_string(),
+            fail_persist: false,
+            outcome_unknown_after_commit: false,
+            replace_target_after_commit: None,
+        }
+    }
+}
+
+impl PrimaryWorkspaceStore for MemoryAtomicHostRecord {
+    fn load(&self) -> Result<Option<Value>, PrimaryWorkspaceStoreError> {
+        Ok(self.value.lock().unwrap().kernel.clone())
+    }
+
+    fn replace(&self, value: Option<Value>) -> Result<(), PrimaryWorkspaceStoreError> {
+        self.value.lock().unwrap().kernel = value;
+        Ok(())
+    }
+
+    fn save(&self) -> Result<(), PrimaryWorkspaceStoreError> {
+        Ok(())
+    }
+}
+
+struct MemoryHostWorkspaceTransaction {
+    record: Arc<MemoryAtomicHostRecord>,
+    expected_record: MemoryHostRecordValue,
+    next: String,
+    fail_persist: bool,
+    outcome_unknown_after_commit: bool,
+    replace_target_after_commit: Option<(PathBuf, PathBuf)>,
+}
+
+impl AtomicHostWorkspaceTransaction for MemoryHostWorkspaceTransaction {
+    fn compare_and_commit(
+        self: Box<Self>,
+        expected_kernel_value: Option<&Value>,
+        next_kernel_value: Value,
+    ) -> Result<(), AtomicHostWorkspaceCommitError> {
+        if self.fail_persist {
+            return Err(AtomicHostWorkspaceCommitError::no_commit());
+        }
+        let mut record = self.record.value.lock().unwrap();
+        if record.kernel.as_ref() != expected_kernel_value
+            || record.kernel != self.expected_record.kernel
+            || record.private_workspace != self.expected_record.private_workspace
+        {
+            return Err(AtomicHostWorkspaceCommitError::conflict());
+        }
+        record.kernel = Some(next_kernel_value);
+        record.private_workspace = self.next.clone();
+        drop(record);
+        self.record.commits.fetch_add(1, Ordering::SeqCst);
+        if let Some((target, displaced)) = self.replace_target_after_commit.as_ref() {
+            fs::rename(target, displaced).unwrap();
+            fs::create_dir(target).unwrap();
+        }
+        if self.outcome_unknown_after_commit {
+            return Err(AtomicHostWorkspaceCommitError::outcome_unknown());
+        }
+        Ok(())
+    }
+}
+
 #[derive(Default)]
 struct RecordingEventSink {
     publications: Mutex<Vec<EventPublication>>,
@@ -98,6 +198,7 @@ struct DesktopFixture {
     managed: ManagedWorkspaceCollection,
     workspace: PathBuf,
     app_data: PathBuf,
+    cache: PathBuf,
 }
 
 impl DesktopFixture {
@@ -121,6 +222,7 @@ impl DesktopFixture {
             managed,
             workspace,
             app_data,
+            cache,
         }
     }
 
@@ -263,6 +365,368 @@ async fn save_failure_rolls_back_store_and_authority_without_an_event() {
         &runtime.active_workspace_authority()
     ));
     assert!(events.publications.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn host_persistence_failure_does_not_switch_kernel_authority() {
+    let temporary = tempdir().unwrap();
+    let next = temporary.path().join("next");
+    fs::create_dir(&next).unwrap();
+    let store = MemoryAtomicHostRecord::new("workspace-a");
+    let events = Arc::new(RecordingEventSink::default());
+    let (runtime, service) =
+        DesktopFixture::new(temporary.path()).into_service(store.clone(), events.clone());
+    let before = service.current().unwrap();
+    let before_host_record = store.snapshot();
+    let before_authority = runtime.active_workspace_authority();
+    let prepared = runtime.prepare_host_workspace_authority(&next).unwrap();
+    let mut host_transaction = store.transaction("workspace-b");
+    host_transaction.fail_persist = true;
+
+    let error = service
+        .compare_and_set_host_workspace_transaction(
+            &before.revision,
+            prepared,
+            "Next Workspace",
+            Box::new(host_transaction),
+        )
+        .await
+        .unwrap_err();
+
+    assert_eq!(
+        error.kind(),
+        WorkspaceServiceErrorKind::PersistenceUnavailable
+    );
+    let after_host_record = store.snapshot();
+    assert_eq!(
+        after_host_record.private_workspace,
+        before_host_record.private_workspace
+    );
+    assert_eq!(after_host_record.kernel, before_host_record.kernel);
+    assert_eq!(store.commits.load(Ordering::SeqCst), 0);
+    assert_eq!(service.current().unwrap(), before);
+    assert!(Arc::ptr_eq(
+        &before_authority,
+        &runtime.active_workspace_authority()
+    ));
+    assert!(events.publications.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn stale_prepared_authority_is_rejected_before_host_persistence() {
+    let temporary = tempdir().unwrap();
+    let stale_target = temporary.path().join("stale-target");
+    let winning_target = temporary.path().join("winning-target");
+    fs::create_dir(&stale_target).unwrap();
+    fs::create_dir(&winning_target).unwrap();
+    let store = MemoryAtomicHostRecord::new("workspace-a");
+    let events = Arc::new(RecordingEventSink::default());
+    let (runtime, service) =
+        DesktopFixture::new(temporary.path()).into_service(store.clone(), events.clone());
+    let before = service.current().unwrap();
+    let before_host_record = store.snapshot();
+    let stale = runtime
+        .prepare_host_workspace_authority(&stale_target)
+        .unwrap();
+    let winning = runtime
+        .prepare_host_workspace_authority(&winning_target)
+        .unwrap();
+    runtime.commit_host_workspace_authority(winning).unwrap();
+
+    let error = service
+        .compare_and_set_host_workspace_transaction(
+            &before.revision,
+            stale,
+            "Stale Target",
+            Box::new(store.transaction("stale-target")),
+        )
+        .await
+        .unwrap_err();
+
+    assert_eq!(
+        error.kind(),
+        WorkspaceServiceErrorKind::PreparedAuthorityMismatch
+    );
+    assert_eq!(store.commits.load(Ordering::SeqCst), 0);
+    let after_host_record = store.snapshot();
+    assert_eq!(after_host_record.kernel, before_host_record.kernel);
+    assert_eq!(
+        after_host_record.private_workspace,
+        before_host_record.private_workspace
+    );
+    assert_eq!(service.current().unwrap(), before);
+    assert!(events.publications.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn stale_revision_is_rejected_before_host_persistence() {
+    let temporary = tempdir().unwrap();
+    let next = temporary.path().join("next");
+    fs::create_dir(&next).unwrap();
+    let store = MemoryAtomicHostRecord::new("workspace-a");
+    let events = Arc::new(RecordingEventSink::default());
+    let (runtime, service) =
+        DesktopFixture::new(temporary.path()).into_service(store.clone(), events.clone());
+    let before = service.current().unwrap();
+    let before_host_record = store.snapshot();
+    let before_authority = runtime.active_workspace_authority();
+    let prepared = runtime.prepare_host_workspace_authority(&next).unwrap();
+
+    let error = service
+        .compare_and_set_host_workspace_transaction(
+            &Revision::parse("stale-revision").unwrap(),
+            prepared,
+            "Next Workspace",
+            Box::new(store.transaction("workspace-b")),
+        )
+        .await
+        .unwrap_err();
+
+    assert_eq!(error.kind(), WorkspaceServiceErrorKind::RevisionConflict);
+    assert_eq!(error.current_revision(), Some(&before.revision));
+    assert_eq!(store.commits.load(Ordering::SeqCst), 0);
+    let after_host_record = store.snapshot();
+    assert_eq!(after_host_record.kernel, before_host_record.kernel);
+    assert_eq!(
+        after_host_record.private_workspace,
+        before_host_record.private_workspace
+    );
+    assert!(Arc::ptr_eq(
+        &before_authority,
+        &runtime.active_workspace_authority()
+    ));
+    assert!(events.publications.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn stale_host_record_cas_does_not_overwrite_newer_private_state() {
+    let temporary = tempdir().unwrap();
+    let next = temporary.path().join("next");
+    fs::create_dir(&next).unwrap();
+    let store = MemoryAtomicHostRecord::new("workspace-a");
+    let events = Arc::new(RecordingEventSink::default());
+    let (runtime, service) =
+        DesktopFixture::new(temporary.path()).into_service(store.clone(), events.clone());
+    let before = service.current().unwrap();
+    let before_authority = runtime.active_workspace_authority();
+    let prepared = runtime.prepare_host_workspace_authority(&next).unwrap();
+    let transaction = store.transaction("workspace-b");
+    store.replace_private_workspace("newer-host-state");
+
+    let error = service
+        .compare_and_set_host_workspace_transaction(
+            &before.revision,
+            prepared,
+            "Next Workspace",
+            Box::new(transaction),
+        )
+        .await
+        .unwrap_err();
+
+    assert_eq!(
+        error.kind(),
+        WorkspaceServiceErrorKind::PersistenceUnavailable
+    );
+    assert_eq!(store.commits.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        store.snapshot().private_workspace,
+        "newer-host-state".to_string()
+    );
+    assert!(Arc::ptr_eq(
+        &before_authority,
+        &runtime.active_workspace_authority()
+    ));
+    assert_eq!(service.current().unwrap(), before);
+    assert!(events.publications.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn atomic_host_commit_publishes_once_and_rebuilds_the_same_kernel_current() {
+    let temporary = tempdir().unwrap();
+    let target = temporary.path().join("Private Absolute Workspace");
+    fs::create_dir(&target).unwrap();
+    let fixture = DesktopFixture::new(temporary.path());
+    let rebuild_paths =
+        KernelPaths::desktop(&fixture.workspace, &fixture.app_data, &fixture.cache).unwrap();
+    let rebuild_managed = ManagedWorkspaceCollection::from_paths(&rebuild_paths).unwrap();
+    let store = MemoryAtomicHostRecord::new("workspace-a");
+    let events = Arc::new(RecordingEventSink::default());
+    let (runtime, service) = fixture.into_service(store.clone(), events.clone());
+    let before = service.current().unwrap();
+    let prepared = runtime.prepare_host_workspace_authority(&target).unwrap();
+
+    let committed = service
+        .compare_and_set_host_workspace_transaction(
+            &before.revision,
+            prepared,
+            "Private Absolute Workspace",
+            Box::new(store.transaction(target.to_str().unwrap())),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(store.commits.load(Ordering::SeqCst), 1);
+    assert_eq!(service.current().unwrap(), committed);
+    let host_record = store.snapshot();
+    assert_eq!(
+        host_record.private_workspace,
+        target.to_string_lossy().as_ref()
+    );
+    assert_eq!(host_record.kernel, store.load().unwrap());
+    assert!(!serde_json::to_string(&host_record.kernel)
+        .unwrap()
+        .contains(target.to_string_lossy().as_ref()));
+    let publications = events.publications.lock().unwrap();
+    assert_eq!(publications.len(), 1);
+    assert!(matches!(
+        &publications[0].event,
+        DomainEvent::WorkspaceChanged { workspace } if workspace == &committed
+    ));
+    drop(publications);
+
+    let rebuilt = WorkspaceService::new(
+        &runtime,
+        store,
+        rebuild_managed,
+        Arc::new(RecordingEventSink::default()),
+        "Ignored Rebuild Name",
+    )
+    .unwrap();
+    assert_eq!(rebuilt.current().unwrap(), committed);
+
+    let wire_json = serde_json::to_string(&committed).unwrap();
+    assert!(!wire_json.contains(target.to_string_lossy().as_ref()));
+    assert!(!wire_json.contains("desktopPath"));
+}
+
+#[tokio::test]
+async fn concurrent_host_switches_are_serialized_and_only_one_revision_wins() {
+    let temporary = tempdir().unwrap();
+    let target_a = temporary.path().join("Target A");
+    let target_b = temporary.path().join("Target B");
+    fs::create_dir(&target_a).unwrap();
+    fs::create_dir(&target_b).unwrap();
+    let store = MemoryAtomicHostRecord::new("workspace-initial");
+    let events = Arc::new(RecordingEventSink::default());
+    let (runtime, service) =
+        DesktopFixture::new(temporary.path()).into_service(store.clone(), events.clone());
+    let service = Arc::new(service);
+    let before = service.current().unwrap();
+    let prepared_a = runtime.prepare_host_workspace_authority(&target_a).unwrap();
+    let prepared_b = runtime.prepare_host_workspace_authority(&target_b).unwrap();
+    let first = service.compare_and_set_host_workspace_transaction(
+        &before.revision,
+        prepared_a,
+        "Target A",
+        Box::new(store.transaction("host-a")),
+    );
+    let second = service.compare_and_set_host_workspace_transaction(
+        &before.revision,
+        prepared_b,
+        "Target B",
+        Box::new(store.transaction("host-b")),
+    );
+
+    let (first_result, second_result) = tokio::join!(first, second);
+
+    let (winner, loser) = match (first_result, second_result) {
+        (Ok(winner), Err(loser)) | (Err(loser), Ok(winner)) => (winner, loser),
+        unexpected => panic!("exactly one host switch must win: {unexpected:?}"),
+    };
+    assert_eq!(loser.kind(), WorkspaceServiceErrorKind::RevisionConflict);
+    assert_eq!(loser.current_revision(), Some(&winner.revision));
+    assert_eq!(store.commits.load(Ordering::SeqCst), 1);
+    assert_eq!(service.current().unwrap(), winner);
+    assert_eq!(events.publications.lock().unwrap().len(), 1);
+    let private_workspace = store.snapshot().private_workspace;
+    match service.current().unwrap().display_name.as_str() {
+        "Target A" => assert_eq!(private_workspace, "host-a"),
+        "Target B" => assert_eq!(private_workspace, "host-b"),
+        unexpected => panic!("unexpected winner: {unexpected}"),
+    }
+}
+
+#[tokio::test]
+async fn unknown_host_commit_outcome_quarantines_the_workspace_service() {
+    let temporary = tempdir().unwrap();
+    let target = temporary.path().join("target");
+    fs::create_dir(&target).unwrap();
+    let store = MemoryAtomicHostRecord::new("workspace-a");
+    let events = Arc::new(RecordingEventSink::default());
+    let (runtime, service) =
+        DesktopFixture::new(temporary.path()).into_service(store.clone(), events.clone());
+    let before = service.current().unwrap();
+    let before_authority = runtime.active_workspace_authority();
+    let prepared = runtime.prepare_host_workspace_authority(&target).unwrap();
+    let mut transaction = store.transaction("workspace-b");
+    transaction.outcome_unknown_after_commit = true;
+
+    let error = service
+        .compare_and_set_host_workspace_transaction(
+            &before.revision,
+            prepared,
+            "Target",
+            Box::new(transaction),
+        )
+        .await
+        .unwrap_err();
+
+    assert_eq!(
+        error.kind(),
+        WorkspaceServiceErrorKind::PersistenceUnavailable
+    );
+    assert!(Arc::ptr_eq(
+        &before_authority,
+        &runtime.active_workspace_authority()
+    ));
+    assert_eq!(
+        service.current().unwrap_err().kind(),
+        WorkspaceServiceErrorKind::WorkspaceUnavailable
+    );
+    assert!(events.publications.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn candidate_replacement_after_durable_commit_quarantines_without_publication() {
+    let temporary = tempdir().unwrap();
+    let target = temporary.path().join("target");
+    let displaced = temporary.path().join("target-displaced");
+    fs::create_dir(&target).unwrap();
+    let store = MemoryAtomicHostRecord::new("workspace-a");
+    let events = Arc::new(RecordingEventSink::default());
+    let (runtime, service) =
+        DesktopFixture::new(temporary.path()).into_service(store.clone(), events.clone());
+    let before = service.current().unwrap();
+    let before_authority = runtime.active_workspace_authority();
+    let prepared = runtime.prepare_host_workspace_authority(&target).unwrap();
+    let mut transaction = store.transaction("workspace-b");
+    transaction.replace_target_after_commit = Some((target.clone(), displaced.clone()));
+
+    let error = service
+        .compare_and_set_host_workspace_transaction(
+            &before.revision,
+            prepared,
+            "Target",
+            Box::new(transaction),
+        )
+        .await
+        .unwrap_err();
+
+    assert_eq!(
+        error.kind(),
+        WorkspaceServiceErrorKind::PersistenceUnavailable
+    );
+    assert!(Arc::ptr_eq(
+        &before_authority,
+        &runtime.active_workspace_authority()
+    ));
+    assert_eq!(
+        service.current().unwrap_err().kind(),
+        WorkspaceServiceErrorKind::WorkspaceUnavailable
+    );
+    assert!(events.publications.lock().unwrap().is_empty());
+    assert!(displaced.is_dir());
+    assert!(target.is_dir());
 }
 
 #[tokio::test]

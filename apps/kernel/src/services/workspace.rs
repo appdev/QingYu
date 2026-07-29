@@ -1,6 +1,9 @@
 //! Workspace service composition boundary.
 
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, Mutex, Weak,
+};
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -19,7 +22,10 @@ use crate::{
     },
     workspace::{
         managed::{ManagedWorkspaceCollection, ManagedWorkspaceError, ManagedWorkspaceErrorKind},
-        primary::{PrimaryWorkspaceStore, PrimaryWorkspaceStoreError},
+        primary::{
+            AtomicHostWorkspaceCommitErrorKind, AtomicHostWorkspaceTransaction,
+            PrimaryWorkspaceStore, PrimaryWorkspaceStoreError,
+        },
     },
 };
 
@@ -32,6 +38,7 @@ pub struct WorkspaceService {
     events: Arc<dyn EventSink>,
     mutation_coordinator: Arc<MutationCoordinator>,
     current: Mutex<WorkspaceDto>,
+    uncertain_host_commit: AtomicBool,
 }
 
 impl WorkspaceService {
@@ -74,6 +81,7 @@ impl WorkspaceService {
             events,
             mutation_coordinator: runtime.mutation_coordinator().clone(),
             current: Mutex::new(current),
+            uncertain_host_commit: AtomicBool::new(false),
         })
     }
 
@@ -138,6 +146,91 @@ impl WorkspaceService {
         Ok(committed)
     }
 
+    /// Commits one host-selected workspace using an atomic transaction over
+    /// the host's existing durable primary-workspace record.
+    ///
+    /// The transaction is consumed and has no compensating rollback. Unlike
+    /// `compare_and_set_host_workspace`, this path never performs a second
+    /// `PrimaryWorkspaceStore::save`; the transaction must codec the supplied
+    /// canonical value into the same record observed by `self.store`.
+    ///
+    /// This is an uncomposed staging seam. It must not be connected to live
+    /// document traffic until the runtime-owner cut unifies authority and DTO
+    /// snapshots; that later boundary removes the current cross-lock snapshot
+    /// window.
+    #[doc(hidden)]
+    pub async fn compare_and_set_host_workspace_transaction(
+        &self,
+        expected_revision: &Revision,
+        prepared: PreparedWorkspaceAuthority,
+        safe_display_name: impl Into<String>,
+        host_transaction: Box<dyn AtomicHostWorkspaceTransaction>,
+    ) -> Result<WorkspaceDto, WorkspaceServiceError> {
+        let safe_display_name = safe_display_name.into();
+        let _mutation = self.mutation_coordinator.lock().await;
+        let runtime = self.verified_runtime()?;
+        let mut current = self
+            .current
+            .lock()
+            .map_err(|_| WorkspaceServiceError::unavailable())?;
+        if &current.revision != expected_revision {
+            return Err(WorkspaceServiceError::revision_conflict(
+                current.revision.clone(),
+            ));
+        }
+        validate_display_name(&safe_display_name)?;
+        let installation = runtime.pin_host_workspace_authority_installation(prepared)?;
+
+        let previous_store_value = self.store.load()?;
+        let persisted = PersistedPrimaryWorkspace {
+            schema_version: PRIMARY_WORKSPACE_SCHEMA_VERSION,
+            revision_seed: Uuid::new_v4().to_string(),
+            display_name: safe_display_name,
+        };
+        let next_store_value =
+            serde_json::to_value(&persisted).map_err(|_| WorkspaceServiceError::unavailable())?;
+        let committed = workspace_dto(runtime.instance_id(), &persisted)?;
+        if let Err(error) = host_transaction
+            .compare_and_commit(previous_store_value.as_ref(), next_store_value.clone())
+        {
+            return match error.kind() {
+                AtomicHostWorkspaceCommitErrorKind::Conflict => {
+                    Err(WorkspaceServiceError::persistence_unavailable())
+                }
+                AtomicHostWorkspaceCommitErrorKind::NoCommit => {
+                    Err(WorkspaceServiceError::persistence_unavailable())
+                }
+                AtomicHostWorkspaceCommitErrorKind::OutcomeUnknown => {
+                    self.uncertain_host_commit.store(true, Ordering::SeqCst);
+                    Err(WorkspaceServiceError::persistence_unavailable())
+                }
+            };
+        }
+        match self.store.load() {
+            Ok(observed) if observed == Some(next_store_value) => {}
+            Ok(_) | Err(_) => {
+                self.uncertain_host_commit.store(true, Ordering::SeqCst);
+                return Err(WorkspaceServiceError::persistence_unavailable());
+            }
+        }
+
+        if installation.install().is_err() {
+            self.uncertain_host_commit.store(true, Ordering::SeqCst);
+            return Err(WorkspaceServiceError::persistence_unavailable());
+        }
+        *current = committed.clone();
+        drop(current);
+        let publication = EventPublication {
+            resource: ResourceRefDto::Workspace { id: committed.id },
+            revision: committed.revision.clone(),
+            event: DomainEvent::WorkspaceChanged {
+                workspace: committed.clone(),
+            },
+        };
+        let _publication_result = self.events.publish(&publication);
+        Ok(committed)
+    }
+
     pub async fn create_managed_workspace(
         &self,
         name: &str,
@@ -155,6 +248,9 @@ impl WorkspaceService {
     }
 
     fn verified_runtime(&self) -> Result<Arc<KernelRuntime>, WorkspaceServiceError> {
+        if self.uncertain_host_commit.load(Ordering::SeqCst) {
+            return Err(WorkspaceServiceError::unavailable());
+        }
         let runtime = self
             .runtime
             .upgrade()
@@ -300,6 +396,13 @@ impl WorkspaceServiceError {
     pub const fn prepared_authority_mismatch() -> Self {
         Self {
             kind: WorkspaceServiceErrorKind::PreparedAuthorityMismatch,
+            current_revision: None,
+        }
+    }
+
+    const fn persistence_unavailable() -> Self {
+        Self {
+            kind: WorkspaceServiceErrorKind::PersistenceUnavailable,
             current_revision: None,
         }
     }
