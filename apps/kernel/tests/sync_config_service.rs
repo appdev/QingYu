@@ -55,7 +55,7 @@ use qingyu_kernel::{
 };
 use sha2::Digest as _;
 use tempfile::tempdir;
-use tokio::sync::Notify;
+use tokio::sync::{Barrier, Notify};
 use tower::ServiceExt as _;
 
 const HOST: &str = "127.0.0.1:43125";
@@ -160,6 +160,29 @@ struct MemoryHostWorkspaceTransaction {
     store: Arc<MemoryPrimaryWorkspaceStore>,
     repository_binding: PrimaryWorkspaceRepositoryBinding,
     authority_binding: PreparedWorkspaceAuthorityBinding,
+}
+
+struct NoCommitHostWorkspaceTransaction {
+    repository_binding: PrimaryWorkspaceRepositoryBinding,
+    authority_binding: PreparedWorkspaceAuthorityBinding,
+}
+
+impl AtomicHostWorkspaceTransaction for NoCommitHostWorkspaceTransaction {
+    fn repository_binding(&self) -> PrimaryWorkspaceRepositoryBinding {
+        self.repository_binding.clone()
+    }
+
+    fn authority_binding(&self) -> PreparedWorkspaceAuthorityBinding {
+        self.authority_binding.clone()
+    }
+
+    fn compare_and_commit(
+        self: Box<Self>,
+        _expected_kernel_value: Option<&serde_json::Value>,
+        _next_kernel_value: serde_json::Value,
+    ) -> Result<(), AtomicHostWorkspaceCommitError> {
+        Err(AtomicHostWorkspaceCommitError::no_commit())
+    }
 }
 
 impl AtomicHostWorkspaceTransaction for MemoryHostWorkspaceTransaction {
@@ -273,6 +296,29 @@ struct BlockingExecutor {
     release: Notify,
     runs: AtomicUsize,
     started: Notify,
+}
+
+#[derive(Default)]
+struct BlockingConnectionExecutor {
+    connection_started: Notify,
+    release_connection: Notify,
+}
+
+#[async_trait]
+impl SyncExecutor for BlockingConnectionExecutor {
+    async fn test_connection(&self, _config: SyncConfig) -> Result<(), SyncExecutionError> {
+        self.connection_started.notify_one();
+        self.release_connection.notified().await;
+        Ok(())
+    }
+
+    async fn run(
+        &self,
+        _config: SyncConfig,
+        _context: SyncRunContext,
+    ) -> Result<(), SyncExecutionError> {
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -557,6 +603,28 @@ struct TestHost;
 struct DeferredTaskSpawner {
     spawned: AtomicUsize,
     task: Mutex<Option<BoxTaskFuture>>,
+}
+
+#[derive(Default)]
+struct CollectingDeferredTaskSpawner {
+    spawned: AtomicUsize,
+    tasks: Mutex<Vec<BoxTaskFuture>>,
+}
+
+impl CollectingDeferredTaskSpawner {
+    fn take_only_task(&self) -> BoxTaskFuture {
+        let mut tasks = self.tasks.lock().unwrap();
+        assert_eq!(tasks.len(), 1, "exactly one background task is expected");
+        tasks.pop().unwrap()
+    }
+}
+
+impl TaskSpawner for CollectingDeferredTaskSpawner {
+    fn spawn(&self, task: BoxTaskFuture) -> Result<(), PortError> {
+        self.spawned.fetch_add(1, Ordering::SeqCst);
+        self.tasks.lock().unwrap().push(task);
+        Ok(())
+    }
 }
 
 impl DeferredTaskSpawner {
@@ -4317,6 +4385,307 @@ async fn running_sync_blocks_atomic_workspace_commit_until_executor_drains() {
         workspace_changed.event,
         DomainEvent::WorkspaceChanged { workspace } if workspace == committed
     ));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn dropping_workspace_switch_waiter_does_not_strand_transition() {
+    let temporary = tempdir().unwrap();
+    let (runtime, workspace, durable) = active_sync_runtime(temporary.path(), test_ports()).await;
+    let executor = Arc::new(GatedCancellationExecutor::default());
+    let sync = Arc::new(SyncService::new(
+        runtime.clone(),
+        Arc::new(SyncConfigStore::new(durable).unwrap()),
+        executor.clone(),
+    ));
+    let config = SyncApiService::get_sync_config(sync.as_ref())
+        .await
+        .unwrap();
+    let request = TriggerSyncRunRequest {
+        expected_config_revision: config.revision,
+    };
+    SyncApiService::trigger_sync_run(sync.as_ref(), request.clone())
+        .await
+        .unwrap();
+    executor.started.notified().await;
+
+    let before = workspace.service.current().unwrap();
+    let target = temporary.path().join("abandoned-switch-target");
+    std::fs::create_dir(&target).unwrap();
+    let prepared = runtime.prepare_host_workspace_authority(&target).unwrap();
+    let switch_service = workspace.service.clone();
+    let expected_revision = before.revision.clone();
+    let mut switch = tokio::spawn(async move {
+        switch_service
+            .compare_and_set_host_workspace(&expected_revision, prepared, "Abandoned Switch Target")
+            .await
+    });
+
+    executor.cancellation_seen.notified().await;
+    poll_fn(|context| match Pin::new(&mut switch).poll(context) {
+        std::task::Poll::Pending => std::task::Poll::Ready(()),
+        std::task::Poll::Ready(_) => {
+            panic!("workspace switch escaped Phase B before the executor drained")
+        }
+    })
+    .await;
+    switch.abort();
+    assert!(switch.await.unwrap_err().is_cancelled());
+
+    executor.release.notify_one();
+    runtime.wait_for_empty_sync_run_for_test().await.unwrap();
+    assert_eq!(workspace.service.current().unwrap(), before);
+
+    let accepted = SyncApiService::trigger_sync_run(sync.as_ref(), request)
+        .await
+        .unwrap();
+    executor.started.notified().await;
+    assert_eq!(
+        SyncApiService::get_sync_status(sync.as_ref())
+            .await
+            .unwrap()
+            .active_run_id
+            .as_ref()
+            .copied(),
+        Some(accepted.run_id)
+    );
+
+    let cleanup = runtime
+        .begin_sync_workspace_transition_for_test()
+        .await
+        .unwrap();
+    executor.cancellation_seen.notified().await;
+    executor.release.notify_one();
+    cleanup.wait_drained().await.unwrap();
+    cleanup.reopen_for_test().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sync_run_and_second_workspace_transition_are_rejected_while_transitioning() {
+    let temporary = tempdir().unwrap();
+    let (runtime, workspace, durable) = active_sync_runtime(temporary.path(), test_ports()).await;
+    let executor = Arc::new(GatedCancellationExecutor::default());
+    let sync = Arc::new(SyncService::new(
+        runtime.clone(),
+        Arc::new(SyncConfigStore::new(durable).unwrap()),
+        executor.clone(),
+    ));
+    let config = SyncApiService::get_sync_config(sync.as_ref())
+        .await
+        .unwrap();
+    let request = TriggerSyncRunRequest {
+        expected_config_revision: config.revision,
+    };
+    SyncApiService::trigger_sync_run(sync.as_ref(), request.clone())
+        .await
+        .unwrap();
+    executor.started.notified().await;
+
+    let before = workspace.service.current().unwrap();
+    let first_target = temporary.path().join("first-transition-target");
+    std::fs::create_dir(&first_target).unwrap();
+    let first_prepared = runtime
+        .prepare_host_workspace_authority(&first_target)
+        .unwrap();
+    let first_service = workspace.service.clone();
+    let first_revision = before.revision.clone();
+    let first_switch = tokio::spawn(async move {
+        first_service
+            .compare_and_set_host_workspace(
+                &first_revision,
+                first_prepared,
+                "First Transition Target",
+            )
+            .await
+    });
+    executor.cancellation_seen.notified().await;
+
+    let run_error = SyncApiService::trigger_sync_run(sync.as_ref(), request)
+        .await
+        .unwrap_err();
+    let second_transition = runtime.try_begin_sync_workspace_transition_for_test();
+
+    assert_eq!(run_error.code(), ErrorCode::SyncRunUnavailable);
+    assert!(second_transition.is_err());
+    executor.release.notify_one();
+    let committed = first_switch.await.unwrap().unwrap();
+    assert_eq!(workspace.service.current().unwrap(), committed);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn running_connection_test_is_not_cancelled_by_workspace_transition() {
+    let temporary = tempdir().unwrap();
+    let (runtime, workspace, durable) = active_sync_runtime(temporary.path(), test_ports()).await;
+    let executor = Arc::new(BlockingConnectionExecutor::default());
+    let sync = Arc::new(SyncService::new(
+        runtime.clone(),
+        Arc::new(SyncConfigStore::new(durable).unwrap()),
+        executor.clone(),
+    ));
+    let config = SyncApiService::get_sync_config(sync.as_ref())
+        .await
+        .unwrap();
+    let expected_revision = config.revision.clone();
+    let connection_service = sync.clone();
+    let mut connection = tokio::spawn(async move {
+        SyncApiService::test_sync_connection(
+            connection_service.as_ref(),
+            qingyu_kernel::contract::TestSyncConnectionRequest {
+                expected_revision,
+                changes: SyncConfigChangesDto::default(),
+            },
+        )
+        .await
+    });
+    executor.connection_started.notified().await;
+
+    switch_workspace(
+        &runtime,
+        &workspace,
+        &temporary.path().join("connection-test-next-workspace"),
+    )
+    .await;
+    poll_fn(|context| match Pin::new(&mut connection).poll(context) {
+        std::task::Poll::Pending => std::task::Poll::Ready(()),
+        std::task::Poll::Ready(_) => {
+            panic!("workspace transition completed by cancelling the connection test")
+        }
+    })
+    .await;
+
+    executor.release_connection.notify_one();
+    let tested = connection.await.unwrap().unwrap();
+    assert_eq!(tested.config_revision, config.revision);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn successful_switch_admits_only_one_concurrent_run_bound_to_new_workspace() {
+    let temporary = tempdir().unwrap();
+    let spawner = Arc::new(CollectingDeferredTaskSpawner::default());
+    let (runtime, workspace, durable) = active_sync_runtime(
+        temporary.path(),
+        test_ports_with_task_spawner(spawner.clone()),
+    )
+    .await;
+    switch_workspace(
+        &runtime,
+        &workspace,
+        &temporary.path().join("concurrent-trigger-workspace"),
+    )
+    .await;
+    let workspace_b = workspace.service.current().unwrap();
+    let executor = Arc::new(ContextBindingExecutor::default());
+    let sync = Arc::new(SyncService::new(
+        runtime,
+        Arc::new(SyncConfigStore::new(durable).unwrap()),
+        executor.clone(),
+    ));
+    let config = SyncApiService::get_sync_config(sync.as_ref())
+        .await
+        .unwrap();
+    let request = TriggerSyncRunRequest {
+        expected_config_revision: config.revision,
+    };
+    let barrier = Arc::new(Barrier::new(3));
+    let first_service = sync.clone();
+    let first_request = request.clone();
+    let first_barrier = barrier.clone();
+    let first = tokio::spawn(async move {
+        first_barrier.wait().await;
+        SyncApiService::trigger_sync_run(first_service.as_ref(), first_request).await
+    });
+    let second_service = sync.clone();
+    let second_barrier = barrier.clone();
+    let second = tokio::spawn(async move {
+        second_barrier.wait().await;
+        SyncApiService::trigger_sync_run(second_service.as_ref(), request).await
+    });
+    barrier.wait().await;
+
+    let first = first.await.unwrap();
+    let second = second.await.unwrap();
+    let (_accepted, rejected) = match (first, second) {
+        (Ok(accepted), Err(rejected)) | (Err(rejected), Ok(accepted)) => (accepted, rejected),
+        (Ok(_), Ok(_)) => panic!("both concurrent sync runs were accepted"),
+        (Err(first), Err(second)) => {
+            panic!("both concurrent sync runs were rejected: {first:?}, {second:?}")
+        }
+    };
+    assert_eq!(rejected.code(), ErrorCode::SyncRunUnavailable);
+
+    assert_eq!(spawner.spawned.load(Ordering::SeqCst), 1);
+    let mut background = tokio::spawn(spawner.take_only_task());
+    tokio::select! {
+        _ = executor.started.notified() => {}
+        completed = &mut background => {
+            panic!("the unique accepted run never reached its executor: {completed:?}")
+        }
+    }
+    let observed = executor.observed.lock().unwrap().clone();
+    assert_eq!(observed.len(), 1);
+    assert_eq!(observed[0].0, workspace_b);
+    assert_eq!(observed[0].3, SyncTrigger::Manual);
+    executor.release.notify_one();
+    background.await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn atomic_no_commit_reopens_old_workspace_sync_admission() {
+    let temporary = tempdir().unwrap();
+    let spawner = Arc::new(DeferredTaskSpawner::default());
+    let (runtime, workspace, durable) = active_sync_runtime(
+        temporary.path(),
+        test_ports_with_task_spawner(spawner.clone()),
+    )
+    .await;
+    let workspace_a = workspace.service.current().unwrap();
+    let snapshot_a = runtime.active_workspace_snapshot().unwrap();
+    let target = temporary.path().join("no-commit-workspace");
+    std::fs::create_dir(&target).unwrap();
+    let prepared = runtime.prepare_host_workspace_authority(&target).unwrap();
+    let transaction = NoCommitHostWorkspaceTransaction {
+        repository_binding: workspace.store.repository_binding(),
+        authority_binding: prepared.binding(),
+    };
+
+    workspace
+        .service
+        .compare_and_set_host_workspace_transaction(
+            &workspace_a.revision,
+            prepared,
+            "No Commit Workspace",
+            Box::new(transaction),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(workspace.service.current().unwrap(), workspace_a);
+    assert!(Arc::ptr_eq(
+        &runtime.active_workspace_snapshot().unwrap(),
+        &snapshot_a
+    ));
+
+    let executor = Arc::new(ContextBindingExecutor::default());
+    let sync = SyncService::new(
+        runtime,
+        Arc::new(SyncConfigStore::new(durable).unwrap()),
+        executor.clone(),
+    );
+    let config = SyncApiService::get_sync_config(&sync).await.unwrap();
+    SyncApiService::trigger_sync_run(
+        &sync,
+        TriggerSyncRunRequest {
+            expected_config_revision: config.revision,
+        },
+    )
+    .await
+    .unwrap();
+
+    let background = tokio::spawn(spawner.take_task());
+    executor.started.notified().await;
+    let observed = executor.observed.lock().unwrap().clone();
+    assert_eq!(observed.len(), 1);
+    assert_eq!(observed[0].0, workspace_a);
+    executor.release.notify_one();
+    background.await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
