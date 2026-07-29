@@ -6,6 +6,7 @@ import { minimalSetup } from "codemirror";
 import { t, type AppLanguage, type SearchRange } from "@markra/shared";
 import {
   codeMirrorTypewriterMode,
+  markdownSourceSyntaxHighlighting,
   markdownSyntaxHighlighting,
   markraHighlight,
   reconfigureCodeMirrorVimMode
@@ -185,7 +186,9 @@ function markdownSourceTheme(): Extension {
       overflow: "visible"
     },
     ".cm-selectionBackground, &.cm-focused .cm-selectionBackground": {
-      backgroundColor: "color-mix(in srgb, var(--accent) 22%, transparent)"
+      // CodeMirror's focused light fallback is more specific, so this
+      // theme-aware color must win explicitly on dark writing surfaces.
+      backgroundColor: "color-mix(in srgb, var(--accent) 22%, transparent) !important"
     }
   });
 }
@@ -293,6 +296,7 @@ export function MarkdownSourceEditor({
         extensions: [markraHighlight]
       }),
       markdownSyntaxHighlighting,
+      markdownSourceSyntaxHighlighting,
       EditorView.lineWrapping,
       contentAttributesCompartmentRef.current.of(markdownSourceContentAttributes(sourceLabel, readOnly)),
       editableCompartmentRef.current.of(EditorView.editable.of(!readOnly)),

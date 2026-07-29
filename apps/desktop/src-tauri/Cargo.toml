@@ -5,7 +5,7 @@ resolver = "2"
 [package]
 name = "markra"
 default-run = "markra"
-version = "2.1.0"
+version = "2.2.0"
 description = "Practical Markdown note-taking editor"
 authors = ["QingYu contributors"]
 license = "AGPL-3.0-only"
