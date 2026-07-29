@@ -25,18 +25,30 @@ pub enum AtomicInstallMode {
     ReplaceExisting,
 }
 
+#[derive(Clone, Copy)]
+pub enum PinnedInstallSource<'a> {
+    File(&'a cap_std::fs::File),
+    Directory(&'a Dir),
+}
+
 pub struct AtomicInstallRequest<'a> {
     pub directory: &'a Dir,
     pub target: &'a WorkspaceRelativePath,
     pub stage_name: &'a str,
     pub target_name: &'a str,
     pub mode: AtomicInstallMode,
+    pub expected_stage: PinnedInstallSource<'a>,
     pub expected_target: Option<&'a cap_std::fs::File>,
     pub expected_revision: Option<&'a Revision>,
 }
 
-/// Host-overridable atomic installation seam. On Windows, composition must
-/// provide a `ReplaceFileW`-backed implementation for `ReplaceExisting`.
+/// Host-overridable atomic installation seam.
+///
+/// The source capability is retained from staging through publication. Default
+/// platform adapters use it as the mutation authority where the OS supports a
+/// handle-relative rename. Revision checks protect cooperating Kernel writers;
+/// this is not a strict operating-system compare-and-swap against arbitrary
+/// external mutators.
 pub trait AtomicInstallPort: Send + Sync {
     fn install(&self, request: AtomicInstallRequest<'_>) -> Result<(), AtomicInstallPortError>;
 }

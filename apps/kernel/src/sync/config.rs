@@ -607,7 +607,11 @@ impl SyncConfigStore {
             Ok(outcome) => {
                 let verified =
                     self.verify_installed(candidate_bytes, Some(&outcome.installed_revision));
-                if outcome.commit_state == CommitState::Durable && verified.is_ok() {
+                if matches!(
+                    outcome.commit_state,
+                    CommitState::Durable | CommitState::AtomicVisibility
+                ) && verified.is_ok()
+                {
                     Ok(outcome)
                 } else {
                     state.recovery_required = true;
@@ -971,6 +975,29 @@ mod tests {
             store.load().unwrap_err().kind(),
             SyncConfigStoreErrorKind::RecoveryRequired
         );
+    }
+
+    #[test]
+    fn platform_atomic_visibility_is_verified_and_does_not_latch_the_sync_store() {
+        let (_temporary, store, current_revision) =
+            faulted_sync_store(DurableFileTestFault::PlatformDirectorySyncUncertain);
+        let candidate = SyncConfig {
+            remote_root: "candidate-root".to_string(),
+            ..SyncConfig::default()
+        };
+
+        let (_, installed_revision) = store
+            .replace(&current_revision, candidate)
+            .expect("atomic visibility is a completed platform publication");
+        let loaded = store.load().expect("future reads stay available");
+
+        assert!(matches!(
+            loaded,
+            SyncConfigLoad::Loaded {
+                config,
+                revision
+            } if config.remote_root == "candidate-root" && revision == installed_revision
+        ));
     }
 
     #[test]

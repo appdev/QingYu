@@ -1,14 +1,14 @@
 use std::{
     fmt,
-    io::{self, Read as _, Write as _},
+    io::{self, Read as _, Seek as _, SeekFrom, Write as _},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 use cap_fs_ext::OpenOptionsExt;
 use cap_fs_ext::{FollowSymlinks, MetadataExt, OpenOptionsFollowExt};
-use cap_std::fs::{Dir, OpenOptions};
+use cap_std::fs::{Dir, File, OpenOptions};
 use serde::{de::Error as _, Deserialize, Deserializer, Serialize};
 use sha2::{Digest as _, Sha256};
 use uuid::Uuid;
@@ -138,28 +138,29 @@ impl DurableFileStore {
 
         let previous = self.read_named(request.target.as_str(), MAX_INTERNAL_FILE_BYTES)?;
         verify_expected(request.expected, previous.as_ref())?;
+        let previous_guard = previous
+            .as_ref()
+            .map(|stored| self.open_revision_guard(request.target.as_str(), &stored.revision))
+            .transpose()?;
 
         let transaction = RecoveryTransactionId(Uuid::new_v4());
         let stage_name = transaction.stage_name();
         let intent_name = transaction.intent_name();
-        #[cfg(windows)]
-        let transient_backup = previous.as_ref().map(|_| transaction.backup_name());
-        #[cfg(not(windows))]
         let transient_backup: Option<String> = None;
 
-        if let Err(error) = self.write_new_file(&stage_name, request.bytes) {
-            let _ = self.remove_regular_if_present(&stage_name);
-            return Err(error);
-        }
-        let staged = match self.read_named(&stage_name, MAX_INTERNAL_FILE_BYTES) {
-            Ok(Some(staged)) => staged,
-            Ok(None) | Err(_) => {
+        let staged_file = match self.write_new_file(&stage_name, request.bytes) {
+            Ok(file) => file,
+            Err(error) => {
                 let _ = self.remove_regular_if_present(&stage_name);
-                return Err(DurableFileFailure::not_published(Some(transaction)));
+                return Err(error);
             }
         };
         let intended_revision = FileRevision::digest(request.bytes);
-        if staged.revision != intended_revision {
+        if self
+            .read_retained_named(&stage_name, &staged_file, MAX_INTERNAL_FILE_BYTES)
+            .is_err()
+        {
+            drop(staged_file);
             let _ = self.remove_regular_if_present(&stage_name);
             return Err(DurableFileFailure::not_published(Some(transaction)));
         }
@@ -167,17 +168,20 @@ impl DurableFileStore {
         let current = match self.read_named(request.target.as_str(), MAX_INTERNAL_FILE_BYTES) {
             Ok(current) => current,
             Err(error) => {
+                drop(staged_file);
                 let _ = self.remove_regular_if_present(&stage_name);
                 return Err(error);
             }
         };
         if verify_expected(request.expected, current.as_ref()).is_err() {
+            drop(staged_file);
             self.remove_regular_if_present(&stage_name)?;
             return Err(DurableFileFailure::revision_conflict());
         }
         if current.as_ref().map(|stored| &stored.revision)
             != previous.as_ref().map(|stored| &stored.revision)
         {
+            drop(staged_file);
             self.remove_regular_if_present(&stage_name)?;
             return Err(DurableFileFailure::revision_conflict());
         }
@@ -185,10 +189,12 @@ impl DurableFileStore {
         let preserved_as = match (request.preserve_previous, previous.as_ref()) {
             (PreservePrevious::Required { recovery_name }, Some(previous)) => {
                 if let Err(error) = self.write_new_file(recovery_name.as_str(), &previous.bytes) {
+                    drop(staged_file);
                     let _ = self.remove_regular_if_present(&stage_name);
                     return Err(error);
                 }
                 if self.sync_parent_directory().is_err() {
+                    drop(staged_file);
                     self.remove_regular_if_present(&stage_name)?;
                     return Err(DurableFileFailure::not_published(Some(transaction)));
                 }
@@ -208,6 +214,7 @@ impl DurableFileStore {
             intended_revision: intended_revision.clone(),
         };
         if let Err(error) = self.write_intent(&intent_name, &intent) {
+            drop(staged_file);
             let _ = self.cleanup_unpublished(&intent_name, &stage_name);
             return Err(error);
         }
@@ -217,6 +224,7 @@ impl DurableFileStore {
             self.sync_parent_directory()
         };
         if intent_sync.is_err() {
+            drop(staged_file);
             self.cleanup_unpublished(&intent_name, &stage_name)?;
             return Err(DurableFileFailure::not_published(Some(transaction)));
         }
@@ -225,6 +233,7 @@ impl DurableFileStore {
             return Err(DurableFileFailure::publish_uncertain(transaction));
         }
         if self.faults.fail_at(FaultPoint::BeforePublish) {
+            drop(staged_file);
             self.cleanup_unpublished(&intent_name, &stage_name)?;
             return Err(DurableFileFailure::not_published(Some(transaction)));
         }
@@ -235,71 +244,101 @@ impl DurableFileStore {
             request.target.as_str(),
         );
         let stage_before_publish = self
-            .read_named(&stage_name, MAX_INTERNAL_FILE_BYTES)
+            .read_retained_named(&stage_name, &staged_file, MAX_INTERNAL_FILE_BYTES)
             .map_err(|_| DurableFileFailure::publish_uncertain(transaction))?;
-        if !stage_before_publish
-            .as_ref()
-            .is_some_and(|stored| stored.revision == intended_revision)
-        {
+        if stage_before_publish.revision != intended_revision {
+            drop(staged_file);
             self.cleanup_unpublished(&intent_name, &stage_name)?;
             return Err(DurableFileFailure::not_published(Some(transaction)));
         }
         let target_before_publish = self
             .read_named(request.target.as_str(), MAX_INTERNAL_FILE_BYTES)
             .map_err(|_| DurableFileFailure::publish_uncertain(transaction))?;
-        if !revisions_match(target_before_publish.as_ref(), previous.as_ref()) {
+        if self
+            .verify_revision_guard(
+                request.target.as_str(),
+                previous_guard.as_ref(),
+                previous.as_ref(),
+            )
+            .is_err()
+        {
+            drop(staged_file);
             self.cleanup_unpublished(&intent_name, &stage_name)?;
             return Err(DurableFileFailure::revision_conflict());
         }
-        if validate_ambient_publication_root(&self.directory, &self.canonical_root).is_err() {
+        if !revisions_match(target_before_publish.as_ref(), previous.as_ref()) {
+            drop(staged_file);
             self.cleanup_unpublished(&intent_name, &stage_name)?;
-            return Err(DurableFileFailure::not_published(Some(transaction)));
+            return Err(DurableFileFailure::revision_conflict());
         }
-
         #[cfg(test)]
         self.faults.after_final_publish_validation(
             &self.canonical_root,
             &stage_name,
             request.target.as_str(),
         );
+        let stage_at_publish = self
+            .read_retained_named(&stage_name, &staged_file, MAX_INTERNAL_FILE_BYTES)
+            .map_err(|_| DurableFileFailure::publish_uncertain(transaction))?;
+        if stage_at_publish.revision != intended_revision {
+            return Err(DurableFileFailure::publish_uncertain(transaction));
+        }
         let target_at_publish = self
             .read_named(request.target.as_str(), MAX_INTERNAL_FILE_BYTES)
             .map_err(|_| DurableFileFailure::publish_uncertain(transaction))?;
+        if self
+            .verify_revision_guard(
+                request.target.as_str(),
+                previous_guard.as_ref(),
+                previous.as_ref(),
+            )
+            .is_err()
+        {
+            drop(staged_file);
+            self.cleanup_unpublished(&intent_name, &stage_name)?;
+            return Err(DurableFileFailure::revision_conflict());
+        }
         if !revisions_match(target_at_publish.as_ref(), previous.as_ref()) {
+            drop(staged_file);
             self.cleanup_unpublished(&intent_name, &stage_name)?;
             return Err(DurableFileFailure::revision_conflict());
         }
 
         let mut publish_result = publish_atomic(
             &self.directory,
-            &self.canonical_root,
+            &staged_file,
             &stage_name,
             request.target.as_str(),
-            transient_backup.as_deref(),
             previous.is_some(),
         );
         if self.faults.fail_at(FaultPoint::AfterPublishReportsFailure) {
             publish_result = Err(io::Error::other("injected publish result"));
         }
-        if validate_ambient_publication_root(&self.directory, &self.canonical_root).is_err() {
-            return Err(DurableFileFailure::publish_uncertain(transaction));
-        }
-
         let target_after = self
             .read_named(request.target.as_str(), MAX_INTERNAL_FILE_BYTES)
             .map_err(|_| DurableFileFailure::publish_uncertain(transaction))?;
         let target_is_intended = target_after
             .as_ref()
             .is_some_and(|stored| stored.revision == intended_revision);
+        if target_is_intended
+            && self
+                .read_retained_named(
+                    request.target.as_str(),
+                    &staged_file,
+                    MAX_INTERNAL_FILE_BYTES,
+                )
+                .is_err()
+        {
+            return Err(DurableFileFailure::publish_uncertain(transaction));
+        }
         if !target_is_intended {
             let stage_after = self
-                .read_named(&stage_name, MAX_INTERNAL_FILE_BYTES)
+                .read_retained_named(&stage_name, &staged_file, MAX_INTERNAL_FILE_BYTES)
                 .map_err(|_| DurableFileFailure::publish_uncertain(transaction))?;
             let target_is_previous = revisions_match(target_after.as_ref(), previous.as_ref());
-            let stage_is_intended = stage_after
-                .as_ref()
-                .is_some_and(|stored| stored.revision == intended_revision);
+            let stage_is_intended = stage_after.revision == intended_revision;
             if publish_result.is_err() && target_is_previous && stage_is_intended {
+                drop(staged_file);
                 self.cleanup_unpublished(&intent_name, &stage_name)?;
                 return Err(DurableFileFailure::not_published(Some(transaction)));
             }
@@ -312,7 +351,7 @@ impl DurableFileStore {
             Err(_) => CommitState::PublishedDurabilityUncertain,
         };
 
-        if matches!(parent_sync, Ok(state) if state.is_durable())
+        if parent_sync.is_ok()
             && (self.faults.fail_at(FaultPoint::FinalizeFailure)
                 || self.finalize_committed(&intent_name, &intent).is_err())
         {
@@ -391,14 +430,23 @@ impl DurableFileStore {
         }))
     }
 
-    fn write_new_file(&self, name: &str, bytes: &[u8]) -> Result<(), DurableFileFailure> {
+    fn write_new_file(&self, name: &str, bytes: &[u8]) -> Result<File, DurableFileFailure> {
         let mut options = OpenOptions::new();
         options
+            .read(true)
             .write(true)
             .create_new(true)
             .follow(FollowSymlinks::No);
         #[cfg(unix)]
         options.mode(0o600);
+        #[cfg(windows)]
+        options
+            .access_mode(
+                windows_sys::Win32::Foundation::GENERIC_READ
+                    | windows_sys::Win32::Foundation::GENERIC_WRITE
+                    | windows_sys::Win32::Storage::FileSystem::DELETE,
+            )
+            .share_mode(windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ);
         let mut file = self
             .directory
             .open_with(name, &options)
@@ -419,18 +467,148 @@ impl DurableFileStore {
             self.cleanup_failed_new_file(name)?;
             return Err(DurableFileFailure::not_published(None));
         }
-        drop(file);
-        let stored = self.read_named(name, u64::try_from(bytes.len()).unwrap_or(u64::MAX));
+        let stored =
+            self.read_retained_named(name, &file, u64::try_from(bytes.len()).unwrap_or(u64::MAX));
         let verified = stored
             .as_ref()
-            .ok()
-            .and_then(Option::as_ref)
-            .is_some_and(|stored| stored.revision == FileRevision::digest(bytes));
+            .is_ok_and(|stored| stored.revision == FileRevision::digest(bytes));
         if !verified {
+            drop(file);
             self.cleanup_failed_new_file(name)?;
             return Err(DurableFileFailure::not_published(None));
         }
-        Ok(())
+        Ok(file)
+    }
+
+    fn read_retained_named(
+        &self,
+        name: &str,
+        retained: &File,
+        max_bytes: u64,
+    ) -> Result<StoredFile, DurableFileFailure> {
+        let addressed = regular_file_identity(
+            &self
+                .directory
+                .symlink_metadata(name)
+                .map_err(|_| DurableFileFailure::unsafe_entry())?,
+        )?;
+        let before = regular_file_identity(
+            &retained
+                .metadata()
+                .map_err(|_| DurableFileFailure::unavailable())?,
+        )?;
+        if addressed != before || before.length > max_bytes {
+            return Err(DurableFileFailure::unsafe_entry());
+        }
+        let mut reader = retained
+            .try_clone()
+            .map_err(|_| DurableFileFailure::unavailable())?;
+        reader
+            .seek(SeekFrom::Start(0))
+            .map_err(|_| DurableFileFailure::unavailable())?;
+        let mut bytes = Zeroizing::new(Vec::with_capacity(
+            usize::try_from(before.length).unwrap_or(0),
+        ));
+        std::io::Read::by_ref(&mut reader)
+            .take(max_bytes.saturating_add(1))
+            .read_to_end(&mut bytes)
+            .map_err(|_| DurableFileFailure::unavailable())?;
+        if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > max_bytes {
+            return Err(DurableFileFailure::too_large());
+        }
+        let retained_after = regular_file_identity(
+            &retained
+                .metadata()
+                .map_err(|_| DurableFileFailure::unavailable())?,
+        )?;
+        let addressed_after = regular_file_identity(
+            &self
+                .directory
+                .symlink_metadata(name)
+                .map_err(|_| DurableFileFailure::unsafe_entry())?,
+        )?;
+        if retained_after != before
+            || addressed_after != before
+            || before.length != bytes.len() as u64
+        {
+            return Err(DurableFileFailure::unsafe_entry());
+        }
+        Ok(StoredFile {
+            revision: FileRevision::digest(&bytes),
+            bytes: std::mem::take(&mut *bytes),
+        })
+    }
+
+    fn open_revision_guard(
+        &self,
+        name: &str,
+        expected: &FileRevision,
+    ) -> Result<File, DurableFileFailure> {
+        let mut options = OpenOptions::new();
+        options.read(true).follow(FollowSymlinks::No);
+        #[cfg(windows)]
+        options.share_mode(windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ);
+        let file = self
+            .directory
+            .open_with(name, &options)
+            .map_err(|_| DurableFileFailure::revision_conflict())?;
+        let stored = self
+            .read_retained_named(name, &file, MAX_INTERNAL_FILE_BYTES)
+            .map_err(|_| DurableFileFailure::revision_conflict())?;
+        if &stored.revision != expected {
+            return Err(DurableFileFailure::revision_conflict());
+        }
+        Ok(file)
+    }
+
+    fn verify_revision_guard(
+        &self,
+        name: &str,
+        guard: Option<&File>,
+        expected: Option<&StoredFile>,
+    ) -> Result<(), DurableFileFailure> {
+        match (guard, expected) {
+            (Some(guard), Some(expected)) => {
+                let stored = self
+                    .read_retained_named(name, guard, MAX_INTERNAL_FILE_BYTES)
+                    .map_err(|_| DurableFileFailure::revision_conflict())?;
+                if stored.revision == expected.revision {
+                    Ok(())
+                } else {
+                    Err(DurableFileFailure::revision_conflict())
+                }
+            }
+            (None, None) => Ok(()),
+            _ => Err(DurableFileFailure::revision_conflict()),
+        }
+    }
+
+    #[cfg(windows)]
+    fn open_recovery_source_guard(
+        &self,
+        name: &str,
+        expected: &FileRevision,
+    ) -> Result<File, DurableFileFailure> {
+        let mut options = OpenOptions::new();
+        options
+            .read(true)
+            .access_mode(
+                windows_sys::Win32::Foundation::GENERIC_READ
+                    | windows_sys::Win32::Storage::FileSystem::DELETE,
+            )
+            .share_mode(windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ)
+            .follow(FollowSymlinks::No);
+        let file = self
+            .directory
+            .open_with(name, &options)
+            .map_err(|_| DurableFileFailure::recovery_required(None))?;
+        let stored = self
+            .read_retained_named(name, &file, MAX_INTERNAL_FILE_BYTES)
+            .map_err(|_| DurableFileFailure::recovery_required(None))?;
+        if &stored.revision != expected {
+            return Err(DurableFileFailure::recovery_required(None));
+        }
+        Ok(file)
     }
 
     fn cleanup_failed_new_file(&self, name: &str) -> Result<(), DurableFileFailure> {
@@ -441,7 +619,7 @@ impl DurableFileStore {
     fn write_intent(&self, name: &str, intent: &RecoveryIntent) -> Result<(), DurableFileFailure> {
         let bytes =
             serde_json::to_vec(intent).map_err(|_| DurableFileFailure::not_published(None))?;
-        self.write_new_file(name, &bytes)
+        self.write_new_file(name, &bytes).map(drop)
     }
 
     fn sync_parent_directory(&self) -> Result<ParentSyncState, DurableFileFailure> {
@@ -700,27 +878,23 @@ impl DurableFileStore {
                     .as_ref()
                     .is_some_and(|stored| stored.revision == *previous)
                 {
-                    if validate_ambient_publication_root(&self.directory, &self.canonical_root)
-                        .is_err()
+                    #[cfg(windows)]
                     {
-                        return Ok(RecoveryOutcome::ManualInterventionRequired {
-                            transaction: intent.transaction,
-                        });
+                        let backup_guard = self.open_recovery_source_guard(backup, previous)?;
+                        windows_rename_retained_file(
+                            &backup_guard,
+                            &self.directory,
+                            intent.target.as_str(),
+                            false,
+                        )
+                        .map_err(|_| {
+                            DurableFileFailure::recovery_required(Some(intent.transaction))
+                        })?;
                     }
-                    rename_no_replace(
-                        &self.directory,
-                        &self.canonical_root,
-                        backup,
-                        intent.target.as_str(),
-                    )
-                    .map_err(|_| DurableFileFailure::recovery_required(Some(intent.transaction)))?;
-                    if validate_ambient_publication_root(&self.directory, &self.canonical_root)
-                        .is_err()
-                    {
-                        return Ok(RecoveryOutcome::ManualInterventionRequired {
-                            transaction: intent.transaction,
-                        });
-                    }
+                    #[cfg(not(windows))]
+                    rename_no_replace(&self.directory, backup, intent.target.as_str()).map_err(
+                        |_| DurableFileFailure::recovery_required(Some(intent.transaction)),
+                    )?;
                     let restored =
                         self.read_named(intent.target.as_str(), MAX_INTERNAL_FILE_BYTES)?;
                     if !restored
@@ -913,9 +1087,14 @@ impl fmt::Debug for ReplaceRequest<'_> {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CommitState {
     Durable,
+    /// The new file is atomically visible and its contents were synchronized,
+    /// but this platform cannot prove Unix-style parent-directory durability.
+    /// Publication is complete and does not require recovery.
+    AtomicVisibility,
     /// The target is published, but the platform could not prove directory
-    /// durability. Do not replay the write; call [`DurableFileStore::recover`]
-    /// before attempting another mutation in this workspace.
+    /// durability because a commit or finalization operation failed. Do not
+    /// replay the write; call [`DurableFileStore::recover`] before attempting
+    /// another mutation in this workspace.
     PublishedDurabilityUncertain,
 }
 
@@ -1081,12 +1260,13 @@ impl RecoveryIntent {
 fn transient_backup_is_valid(intent: &RecoveryIntent) -> bool {
     #[cfg(windows)]
     {
-        intent.transient_backup.as_deref()
-            == intent
-                .previous_revision
-                .as_ref()
-                .map(|_| intent.transaction.backup_name())
-                .as_deref()
+        intent.transient_backup.is_none()
+            || intent.transient_backup.as_deref()
+                == intent
+                    .previous_revision
+                    .as_ref()
+                    .map(|_| intent.transaction.backup_name())
+                    .as_deref()
     }
     #[cfg(not(windows))]
     {
@@ -1119,21 +1299,12 @@ enum ParentSyncState {
 }
 
 impl ParentSyncState {
-    const fn is_durable(self) -> bool {
-        match self {
-            #[cfg(any(test, unix))]
-            Self::Durable => true,
-            #[cfg(any(test, not(unix)))]
-            Self::PlatformUncertain => false,
-        }
-    }
-
     const fn into_commit_state(self) -> CommitState {
         match self {
             #[cfg(any(test, unix))]
             Self::Durable => CommitState::Durable,
             #[cfg(any(test, not(unix)))]
-            Self::PlatformUncertain => CommitState::PublishedDurabilityUncertain,
+            Self::PlatformUncertain => CommitState::AtomicVisibility,
         }
     }
 }
@@ -1267,6 +1438,8 @@ enum FaultPoint {
     MutateTargetAfterValidation,
     #[cfg(test)]
     MutateTargetAfterFinalValidation,
+    #[cfg(test)]
+    SwapStageAfterFinalValidation,
 }
 
 #[cfg(test)]
@@ -1276,6 +1449,7 @@ pub(crate) enum DurableFileTestFault {
     FinalizeFailure,
     LeavePrepared,
     ParentSyncFailure,
+    PlatformDirectorySyncUncertain,
 }
 
 #[cfg(test)]
@@ -1286,6 +1460,7 @@ impl DurableFileTestFault {
             Self::FinalizeFailure => FaultPoint::FinalizeFailure,
             Self::LeavePrepared => FaultPoint::LeavePrepared,
             Self::ParentSyncFailure => FaultPoint::ParentSyncFailure,
+            Self::PlatformDirectorySyncUncertain => FaultPoint::ParentSyncUncertain,
         }
     }
 }
@@ -1321,43 +1496,12 @@ fn sync_directory(_directory: &Dir) -> io::Result<ParentSyncState> {
     Ok(ParentSyncState::PlatformUncertain)
 }
 
-#[cfg(windows)]
-fn validate_ambient_publication_root(directory: &Dir, canonical_root: &Path) -> io::Result<()> {
-    use cap_fs_ext::DirExt as _;
-
-    let parent_path = canonical_root
-        .parent()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "storage root is invalid"))?;
-    let name = canonical_root
-        .file_name()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "storage root is invalid"))?;
-    let parent = Dir::open_ambient_dir(parent_path, cap_std::ambient_authority())?;
-    let ambient = parent.open_dir_nofollow(name)?;
-    let retained = directory.dir_metadata()?;
-    let addressed = ambient.dir_metadata()?;
-    if MetadataExt::dev(&retained) != MetadataExt::dev(&addressed)
-        || MetadataExt::ino(&retained) != MetadataExt::ino(&addressed)
-    {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "storage root identity changed",
-        ));
-    }
-    Ok(())
-}
-
-#[cfg(not(windows))]
-fn validate_ambient_publication_root(_directory: &Dir, _canonical_root: &Path) -> io::Result<()> {
-    Ok(())
-}
-
 #[cfg(unix)]
 fn publish_atomic(
     directory: &Dir,
-    _canonical_root: &Path,
+    _stage_file: &File,
     stage: &str,
     target: &str,
-    _backup: Option<&str>,
     target_exists: bool,
 ) -> io::Result<()> {
     if target_exists {
@@ -1376,50 +1520,21 @@ fn publish_atomic(
 
 #[cfg(windows)]
 fn publish_atomic(
-    _directory: &Dir,
-    canonical_root: &Path,
-    stage: &str,
+    directory: &Dir,
+    stage_file: &File,
+    _stage: &str,
     target: &str,
-    backup: Option<&str>,
     target_exists: bool,
 ) -> io::Result<()> {
-    use windows_sys::Win32::Storage::FileSystem::{
-        MoveFileExW, ReplaceFileW, MOVEFILE_WRITE_THROUGH,
-    };
-
-    let stage = wide_path(&canonical_root.join(stage))?;
-    let target = wide_path(&canonical_root.join(target))?;
-    let result = if target_exists {
-        let backup = wide_path(&canonical_root.join(backup.ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidInput, "replacement backup is missing")
-        })?))?;
-        unsafe {
-            ReplaceFileW(
-                target.as_ptr(),
-                stage.as_ptr(),
-                backup.as_ptr(),
-                0,
-                std::ptr::null(),
-                std::ptr::null(),
-            )
-        }
-    } else {
-        unsafe { MoveFileExW(stage.as_ptr(), target.as_ptr(), MOVEFILE_WRITE_THROUGH) }
-    };
-    if result == 0 {
-        Err(io::Error::last_os_error())
-    } else {
-        Ok(())
-    }
+    windows_rename_retained_file(stage_file, directory, target, target_exists)
 }
 
 #[cfg(not(any(unix, windows)))]
 fn publish_atomic(
     directory: &Dir,
-    _canonical_root: &Path,
+    _stage_file: &File,
     stage: &str,
     target: &str,
-    _backup: Option<&str>,
     target_exists: bool,
 ) -> io::Result<()> {
     if target_exists {
@@ -1433,12 +1548,7 @@ fn publish_atomic(
 }
 
 #[cfg(unix)]
-fn rename_no_replace(
-    directory: &Dir,
-    _canonical_root: &Path,
-    source: &str,
-    target: &str,
-) -> io::Result<()> {
+fn rename_no_replace(directory: &Dir, source: &str, target: &str) -> io::Result<()> {
     rustix::fs::renameat_with(
         directory,
         source,
@@ -1449,32 +1559,8 @@ fn rename_no_replace(
     .map_err(Into::into)
 }
 
-#[cfg(windows)]
-fn rename_no_replace(
-    _directory: &Dir,
-    canonical_root: &Path,
-    source: &str,
-    target: &str,
-) -> io::Result<()> {
-    use windows_sys::Win32::Storage::FileSystem::{MoveFileExW, MOVEFILE_WRITE_THROUGH};
-
-    let source = wide_path(&canonical_root.join(source))?;
-    let target = wide_path(&canonical_root.join(target))?;
-    let result = unsafe { MoveFileExW(source.as_ptr(), target.as_ptr(), MOVEFILE_WRITE_THROUGH) };
-    if result == 0 {
-        Err(io::Error::last_os_error())
-    } else {
-        Ok(())
-    }
-}
-
 #[cfg(not(any(unix, windows)))]
-fn rename_no_replace(
-    _directory: &Dir,
-    _canonical_root: &Path,
-    _source: &str,
-    _target: &str,
-) -> io::Result<()> {
+fn rename_no_replace(_directory: &Dir, _source: &str, _target: &str) -> io::Result<()> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
         "atomic recovery is unsupported",
@@ -1482,18 +1568,82 @@ fn rename_no_replace(
 }
 
 #[cfg(windows)]
-fn wide_path(path: &Path) -> io::Result<Vec<u16>> {
-    use std::os::windows::ffi::OsStrExt as _;
+fn windows_rename_retained_file(
+    source: &File,
+    destination: &Dir,
+    destination_name: &str,
+    replace: bool,
+) -> io::Result<()> {
+    use std::os::windows::io::AsRawHandle as _;
 
-    let mut value = path.as_os_str().encode_wide().collect::<Vec<_>>();
-    if value.is_empty() || value.contains(&0) {
+    use windows_sys::Win32::{
+        Storage::FileSystem::{FileRenameInfoEx, SetFileInformationByHandle, FILE_RENAME_INFO},
+        System::WindowsProgramming::{
+            FILE_RENAME_FLAG_POSIX_SEMANTICS, FILE_RENAME_FLAG_REPLACE_IF_EXISTS,
+        },
+    };
+
+    let destination_name = destination_name.encode_utf16().collect::<Vec<_>>();
+    if destination_name.is_empty() || destination_name.contains(&0) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "storage path is invalid",
+            "storage destination name is invalid",
         ));
     }
-    value.push(0);
-    Ok(value)
+    let destination_name_bytes = destination_name
+        .len()
+        .checked_mul(std::mem::size_of::<u16>())
+        .and_then(|length| u32::try_from(length).ok())
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "storage destination name is too long",
+            )
+        })?;
+    let offset = std::mem::offset_of!(FILE_RENAME_INFO, FileName);
+    let buffer_bytes = offset
+        .checked_add(destination_name_bytes as usize)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "storage rename buffer is too large",
+            )
+        })?;
+    let mut buffer = vec![0usize; buffer_bytes.div_ceil(std::mem::size_of::<usize>())];
+    let rename_info = buffer.as_mut_ptr().cast::<FILE_RENAME_INFO>();
+    let renamed = unsafe {
+        (*rename_info).Anonymous.Flags = if replace {
+            // The retained target guard denies ordinary writers and deletes.
+            // POSIX replacement retires it atomically, but an external actor
+            // can use the same flag, so revision checks remain optimistic.
+            FILE_RENAME_FLAG_REPLACE_IF_EXISTS | FILE_RENAME_FLAG_POSIX_SEMANTICS
+        } else {
+            0
+        };
+        (*rename_info).RootDirectory = destination.as_raw_handle();
+        (*rename_info).FileNameLength = destination_name_bytes;
+        std::ptr::copy_nonoverlapping(
+            destination_name.as_ptr(),
+            buffer.as_mut_ptr().cast::<u8>().add(offset).cast::<u16>(),
+            destination_name.len(),
+        );
+        SetFileInformationByHandle(
+            source.as_raw_handle(),
+            FileRenameInfoEx,
+            rename_info.cast(),
+            u32::try_from(buffer_bytes).map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "storage rename buffer is too large",
+                )
+            })?,
+        )
+    };
+    if renamed == 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -1670,7 +1820,7 @@ mod tests {
     }
 
     #[test]
-    fn platform_uncertain_commit_keeps_recovery_material() {
+    fn platform_without_directory_sync_reports_atomic_visibility_and_allows_the_next_write() {
         let temporary = tempdir().expect("temporary root");
         let target = StorageFileName::parse("state.json").expect("target");
         let store = test_store(temporary.path(), FaultPoint::ParentSyncUncertain);
@@ -1684,11 +1834,16 @@ mod tests {
             })
             .expect("publication is visible even when durability is uncertain");
 
-        assert_eq!(
-            outcome.commit_state,
-            CommitState::PublishedDurabilityUncertain
-        );
-        assert_eq!(artifact_count(temporary.path(), ".intent"), 1);
+        assert_eq!(outcome.commit_state, CommitState::AtomicVisibility);
+        assert_eq!(artifact_count(temporary.path(), ".intent"), 0);
+        store
+            .replace(ReplaceRequest {
+                target: &target,
+                bytes: b"newer",
+                expected: ExpectedFile::Revision(&outcome.installed_revision),
+                preserve_previous: PreservePrevious::None,
+            })
+            .expect("platform-level directory uncertainty must not latch recovery");
     }
 
     #[test]
@@ -1724,68 +1879,7 @@ mod tests {
     }
 
     #[test]
-    fn platform_uncertain_commit_requires_a_new_writer_epoch_to_finalize() {
-        let temporary = tempdir().expect("temporary root");
-        let target = StorageFileName::parse("state.json").expect("target");
-        let store = test_store(temporary.path(), FaultPoint::ParentSyncUncertain);
-        let outcome = store
-            .replace(ReplaceRequest {
-                target: &target,
-                bytes: b"new",
-                expected: ExpectedFile::Absent,
-                preserve_previous: PreservePrevious::None,
-            })
-            .expect("publication remains visible");
-        assert_eq!(
-            outcome.commit_state,
-            CommitState::PublishedDurabilityUncertain
-        );
-        let same_epoch = store.recover().expect("same-epoch recovery");
-        assert!(matches!(
-            same_epoch.as_slice(),
-            [RecoveryOutcome::Committed {
-                commit_state: CommitState::PublishedDurabilityUncertain,
-                ..
-            }]
-        ));
-        assert_eq!(artifact_count(temporary.path(), ".intent"), 1);
-        assert_eq!(
-            store
-                .replace(ReplaceRequest {
-                    target: &target,
-                    bytes: b"must remain blocked",
-                    expected: ExpectedFile::Revision(&outcome.installed_revision),
-                    preserve_previous: PreservePrevious::None,
-                })
-                .expect_err("same writer epoch must not consume uncertain evidence")
-                .kind(),
-            DurableFileFailureKind::RecoveryRequired
-        );
-        drop(store);
-
-        let recovering = test_store(temporary.path(), FaultPoint::RecoverySyncUncertain);
-        let recovered = recovering.recover().expect("cross-epoch recovery");
-
-        assert!(matches!(
-            recovered.as_slice(),
-            [RecoveryOutcome::Committed {
-                commit_state: CommitState::PublishedDurabilityUncertain,
-                ..
-            }]
-        ));
-        assert_eq!(artifact_count(temporary.path(), ".intent"), 0);
-        recovering
-            .replace(ReplaceRequest {
-                target: &target,
-                bytes: b"newer",
-                expected: ExpectedFile::Revision(&outcome.installed_revision),
-                preserve_previous: PreservePrevious::None,
-            })
-            .expect("cross-epoch recovery must unblock future writes");
-    }
-
-    #[test]
-    fn rebuilding_a_store_in_the_same_kernel_launch_does_not_finalize_uncertain_evidence() {
+    fn rebuilding_a_store_after_atomic_visibility_has_no_latched_recovery() {
         let temporary = tempdir().expect("temporary root");
         let target = StorageFileName::parse("state.json").expect("target");
         let launch_epoch = Uuid::new_v4();
@@ -1794,39 +1888,39 @@ mod tests {
             FaultPoint::ParentSyncUncertain,
             launch_epoch,
         );
-        store
+        let outcome = store
             .replace(ReplaceRequest {
                 target: &target,
                 bytes: b"new",
                 expected: ExpectedFile::Absent,
                 preserve_previous: PreservePrevious::None,
             })
-            .expect("visible uncertain publication");
+            .expect("atomically visible publication");
+        assert_eq!(outcome.commit_state, CommitState::AtomicVisibility);
         drop(store);
 
-        let recovering = test_store_with_epoch(
-            temporary.path(),
-            FaultPoint::RecoverySyncUncertain,
-            launch_epoch,
-        );
+        let recovering = no_fault_store(temporary.path());
         let recovered = recovering.recover().expect("same-launch recovery");
 
-        assert!(matches!(
-            recovered.as_slice(),
-            [RecoveryOutcome::Committed {
-                commit_state: CommitState::PublishedDurabilityUncertain,
-                ..
-            }]
-        ));
-        assert_eq!(artifact_count(temporary.path(), ".intent"), 1);
+        assert!(recovered.is_empty());
+        assert_eq!(artifact_count(temporary.path(), ".intent"), 0);
+        recovering
+            .replace(ReplaceRequest {
+                target: &target,
+                bytes: b"newer",
+                expected: ExpectedFile::Revision(&outcome.installed_revision),
+                preserve_previous: PreservePrevious::None,
+            })
+            .expect("reconstruction must not latch platform-level uncertainty");
     }
 
     #[cfg(windows)]
     #[test]
-    fn recovery_retries_after_backup_cleanup_completed_before_intent_cleanup() {
+    fn windows_atomic_visibility_replacement_does_not_latch_the_store() {
         let temporary = tempdir().expect("temporary root");
         let target = StorageFileName::parse("state.json").expect("target");
-        let initial = no_fault_store(temporary.path())
+        let store = no_fault_store(temporary.path());
+        let initial = store
             .replace(ReplaceRequest {
                 target: &target,
                 bytes: b"previous",
@@ -1834,43 +1928,98 @@ mod tests {
                 preserve_previous: PreservePrevious::None,
             })
             .expect("initial state");
-        let uncertain = test_store(temporary.path(), FaultPoint::ParentSyncUncertain)
+        let replaced = store
             .replace(ReplaceRequest {
                 target: &target,
                 bytes: b"intended",
                 expected: ExpectedFile::Revision(&initial.installed_revision),
                 preserve_previous: PreservePrevious::None,
             })
-            .expect("uncertain replacement");
-        assert_eq!(
-            uncertain.commit_state,
-            CommitState::PublishedDurabilityUncertain
-        );
+            .expect("handle-relative replacement");
 
-        let backup = std::fs::read_dir(temporary.path())
-            .expect("storage entries")
-            .map(|entry| entry.expect("entry").path())
-            .find(|path| {
-                path.extension()
-                    .is_some_and(|extension| extension == "backup")
-            })
-            .expect("transient backup");
-        std::fs::remove_file(backup).expect("simulated completed backup cleanup");
-
-        let outcomes = no_fault_store(temporary.path())
-            .recover()
-            .expect("idempotent cleanup recovery");
-
-        assert!(matches!(
-            outcomes.as_slice(),
-            [RecoveryOutcome::Committed { revision, .. }]
-                if *revision == uncertain.installed_revision
-        ));
+        assert_eq!(replaced.commit_state, CommitState::AtomicVisibility);
         assert_eq!(artifact_count(temporary.path(), ".intent"), 0);
         assert_eq!(
             std::fs::read(temporary.path().join(target.as_str())).unwrap(),
             b"intended"
         );
+        store
+            .replace(ReplaceRequest {
+                target: &target,
+                bytes: b"newer",
+                expected: ExpectedFile::Revision(&replaced.installed_revision),
+                preserve_previous: PreservePrevious::None,
+            })
+            .expect("normal Windows publication must not block the next write");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_guards_block_ordinary_mutators_but_posix_handle_replace_preserves_identities() {
+        let temporary = tempdir().expect("temporary root");
+        let store = no_fault_store(temporary.path());
+        std::fs::write(temporary.path().join("state.json"), b"previous").unwrap();
+        let previous_revision = FileRevision::digest(b"previous");
+        let target_guard = store
+            .open_revision_guard("state.json", &previous_revision)
+            .expect("retained target guard");
+        assert!(std::fs::OpenOptions::new()
+            .write(true)
+            .open(temporary.path().join("state.json"))
+            .is_err());
+        assert!(std::fs::remove_file(temporary.path().join("state.json")).is_err());
+
+        let staged = store
+            .write_new_file("stage.tmp", b"intended")
+            .expect("retained stage");
+        assert!(std::fs::OpenOptions::new()
+            .write(true)
+            .open(temporary.path().join("stage.tmp"))
+            .is_err());
+        assert!(std::fs::rename(
+            temporary.path().join("stage.tmp"),
+            temporary.path().join("swapped.tmp")
+        )
+        .is_err());
+
+        windows_rename_retained_file(&staged, &store.directory, "state.json", true)
+            .expect("POSIX handle replacement");
+
+        assert_eq!(
+            store
+                .read_retained_named("state.json", &staged, 64)
+                .unwrap()
+                .bytes,
+            b"intended"
+        );
+        let mut old_reader = target_guard.try_clone().unwrap();
+        old_reader.seek(SeekFrom::Start(0)).unwrap();
+        let mut old_bytes = Vec::new();
+        old_reader.read_to_end(&mut old_bytes).unwrap();
+        assert_eq!(old_bytes, b"previous");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_invalid_handle_rename_fails_closed_without_an_ambient_fallback() {
+        let temporary = tempdir().expect("temporary root");
+        let store = no_fault_store(temporary.path());
+        let staged = store
+            .write_new_file("stage.tmp", b"intended")
+            .expect("retained stage");
+
+        assert!(
+            windows_rename_retained_file(&staged, &store.directory, "invalid\0target", false)
+                .is_err()
+        );
+        assert_eq!(
+            store
+                .read_retained_named("stage.tmp", &staged, 64)
+                .unwrap()
+                .bytes,
+            b"intended"
+        );
+        assert!(!temporary.path().join("invalid").exists());
     }
 
     #[test]
@@ -2038,6 +2187,29 @@ mod tests {
     }
 
     #[test]
+    fn stage_name_swap_after_final_validation_never_publishes_the_replacement_entry() {
+        let temporary = tempdir().expect("temporary root");
+        let target = StorageFileName::parse("state.json").expect("target");
+        let store = test_store(temporary.path(), FaultPoint::SwapStageAfterFinalValidation);
+
+        let error = store
+            .replace(ReplaceRequest {
+                target: &target,
+                bytes: b"intended",
+                expected: ExpectedFile::Absent,
+                preserve_previous: PreservePrevious::None,
+            })
+            .expect_err("a swapped stage name must fail closed");
+
+        assert_eq!(error.kind(), DurableFileFailureKind::PublishStateUncertain);
+        assert!(!temporary.path().join(target.as_str()).exists());
+        assert_eq!(
+            std::fs::read(temporary.path().join("swapped-stage")).unwrap(),
+            b"intended"
+        );
+    }
+
+    #[test]
     fn tampered_intent_cannot_redirect_recovery_to_an_unrelated_file() {
         let temporary = tempdir().expect("temporary root");
         let transaction = RecoveryTransactionId(Uuid::new_v4());
@@ -2069,7 +2241,7 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
-    fn windows_root_swap_during_rollback_never_moves_the_replacement_roots_artifact() {
+    fn windows_root_swap_during_rollback_restores_only_the_retained_root() {
         let parent = tempdir().expect("temporary parent");
         let root = parent.path().join("state");
         std::fs::create_dir(&root).expect("storage root");
@@ -2108,14 +2280,19 @@ mod tests {
 
         assert!(matches!(
             outcomes.as_slice(),
-            [RecoveryOutcome::ManualInterventionRequired { transaction: found }]
-                if *found == transaction
+            [RecoveryOutcome::RolledBack { revision: Some(found) }]
+                if *found == previous_revision
         ));
         assert!(!root.join(target.as_str()).exists());
         assert_eq!(
             std::fs::read(root.join(transaction.backup_name())).unwrap(),
             b"attacker"
         );
+        assert_eq!(
+            std::fs::read(retained_root.join(target.as_str())).unwrap(),
+            b"previous"
+        );
+        assert!(!retained_root.join(transaction.backup_name()).exists());
     }
 
     fn test_store(root: &Path, point: FaultPoint) -> DurableFileStore {
@@ -2178,11 +2355,22 @@ mod tests {
             }
         }
 
-        fn after_final_publish_validation(&self, root: &Path, _stage: &str, target: &str) {
-            if self.point == FaultPoint::MutateTargetAfterFinalValidation
-                && !self.fired.swap(true, Ordering::SeqCst)
-            {
-                std::fs::write(root.join(target), b"other").expect("replace target after check");
+        fn after_final_publish_validation(&self, root: &Path, stage: &str, target: &str) {
+            if self.fired.swap(true, Ordering::SeqCst) {
+                return;
+            }
+            match self.point {
+                FaultPoint::MutateTargetAfterFinalValidation => {
+                    std::fs::write(root.join(target), b"other")
+                        .expect("replace target after check");
+                }
+                FaultPoint::SwapStageAfterFinalValidation => {
+                    std::fs::rename(root.join(stage), root.join("swapped-stage"))
+                        .expect("swap retained stage name");
+                    std::fs::write(root.join(stage), b"attacker")
+                        .expect("install replacement stage entry");
+                }
+                _ => self.fired.store(false, Ordering::SeqCst),
             }
         }
 

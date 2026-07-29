@@ -14,11 +14,15 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
+#[cfg(not(windows))]
+use qingyu_kernel::documents::AtomicInstallMode;
+#[cfg(windows)]
+use qingyu_kernel::documents::CapabilityAtomicInstallPort;
 use qingyu_kernel::{
     contract::{DeletionPolicy as KernelDeletionPolicy, DocumentKind},
     documents::{
-        AtomicInstallMode, AtomicInstallPort, AtomicInstallPortError, AtomicInstallRequest,
-        DeletionPort, DeletionPortError, DocumentDeletionTarget, DocumentIgnorePort,
+        AtomicInstallPort, AtomicInstallPortError, AtomicInstallRequest, DeletionPort,
+        DeletionPortError, DocumentDeletionTarget, DocumentIgnorePort,
     },
     runtime::{DocumentsApiService, ServiceFailure},
 };
@@ -155,8 +159,8 @@ impl KernelDocumentsTauriFacade {
 }
 
 /// Uncomposed host adapter for Kernel atomic installs. Its Windows branch
-/// reaches `ReplaceFileW` through the existing desktop implementation while
-/// the Kernel passes only a relative logical target and retained capability.
+/// delegates to the Kernel's retained-handle implementation after verifying
+/// that the supplied parent belongs to this workspace root.
 pub(crate) struct KernelDocumentAtomicInstallAdapter {
     workspace_root: PathBuf,
     retained_root: Dir,
@@ -225,25 +229,42 @@ impl KernelDocumentAtomicInstallAdapter {
 impl AtomicInstallPort for KernelDocumentAtomicInstallAdapter {
     fn install(&self, request: AtomicInstallRequest<'_>) -> Result<(), AtomicInstallPortError> {
         let (parent, ambient_parent) = self.verified_parent(request.target, request.directory)?;
-        let target_ambient = ambient_parent.join(request.target_name);
-        let stage_ambient = ambient_parent.join(request.stage_name);
-        match request.mode {
-            AtomicInstallMode::CreateNoReplace => rename_document_noreplace(
-                &parent,
-                request.stage_name,
-                &parent,
-                request.target_name,
-                &stage_ambient,
-                &target_ambient,
-            ),
-            AtomicInstallMode::ReplaceExisting => replace_kernel_document_compare_exchange(
-                &parent,
-                &request,
-                &stage_ambient,
-                &target_ambient,
-            ),
+        #[cfg(windows)]
+        {
+            let _ = ambient_parent;
+            return CapabilityAtomicInstallPort.install(AtomicInstallRequest {
+                directory: &parent,
+                target: request.target,
+                stage_name: request.stage_name,
+                target_name: request.target_name,
+                mode: request.mode,
+                expected_stage: request.expected_stage,
+                expected_target: request.expected_target,
+                expected_revision: request.expected_revision,
+            });
         }
-        .map_err(|_| AtomicInstallPortError)
+        #[cfg(not(windows))]
+        {
+            let target_ambient = ambient_parent.join(request.target_name);
+            let stage_ambient = ambient_parent.join(request.stage_name);
+            match request.mode {
+                AtomicInstallMode::CreateNoReplace => rename_document_noreplace(
+                    &parent,
+                    request.stage_name,
+                    &parent,
+                    request.target_name,
+                    &stage_ambient,
+                    &target_ambient,
+                ),
+                AtomicInstallMode::ReplaceExisting => replace_kernel_document_compare_exchange(
+                    &parent,
+                    &request,
+                    &stage_ambient,
+                    &target_ambient,
+                ),
+            }
+            .map_err(|_| AtomicInstallPortError)
+        }
     }
 }
 
@@ -1829,79 +1850,6 @@ fn replace_kernel_document_compare_exchange_with_hook(
     directory.remove_file(request.stage_name)
 }
 
-#[cfg(windows)]
-fn replace_kernel_document_compare_exchange(
-    directory: &Dir,
-    request: &AtomicInstallRequest<'_>,
-    staging_ambient: &Path,
-    target_ambient: &Path,
-) -> io::Result<()> {
-    use std::{os::windows::ffi::OsStrExt, ptr};
-    use windows_sys::Win32::Storage::FileSystem::{ReplaceFileW, REPLACEFILE_WRITE_THROUGH};
-
-    let (Some(expected_target), Some(expected_revision)) =
-        (request.expected_target, request.expected_revision)
-    else {
-        return Err(kernel_atomic_install_error());
-    };
-    verify_kernel_named_retained_identity(directory, request.target_name, expected_target)?;
-    if kernel_revision_for_retained_file(expected_target)? != *expected_revision {
-        return Err(kernel_atomic_install_error());
-    }
-    verify_kernel_named_retained_identity(directory, request.target_name, expected_target)?;
-    let retired_name = format!("{}.retired", request.stage_name);
-    let retired_ambient = staging_ambient.with_file_name(&retired_name);
-    let wide = |path: &Path| {
-        path.as_os_str()
-            .encode_wide()
-            .chain(std::iter::once(0))
-            .collect::<Vec<_>>()
-    };
-    let target = wide(target_ambient);
-    let staging = wide(staging_ambient);
-    let retired = wide(&retired_ambient);
-    let replaced = unsafe {
-        ReplaceFileW(
-            target.as_ptr(),
-            staging.as_ptr(),
-            retired.as_ptr(),
-            REPLACEFILE_WRITE_THROUGH,
-            ptr::null_mut(),
-            ptr::null_mut(),
-        )
-    };
-    if replaced == 0 {
-        return Err(io::Error::last_os_error());
-    }
-    match verify_kernel_retired_target(directory, &retired_name, expected_target, expected_revision)
-    {
-        Ok(()) => {}
-        Err(KernelRetiredTargetVerificationError::RevisionMismatch) => {
-            verify_kernel_named_retained_identity(directory, &retired_name, expected_target)?;
-            let rolled_back = unsafe {
-                ReplaceFileW(
-                    target.as_ptr(),
-                    retired.as_ptr(),
-                    staging.as_ptr(),
-                    REPLACEFILE_WRITE_THROUGH,
-                    ptr::null_mut(),
-                    ptr::null_mut(),
-                )
-            };
-            if rolled_back == 0 {
-                return Err(io::Error::last_os_error());
-            }
-            return Err(kernel_atomic_install_error());
-        }
-        Err(
-            KernelRetiredTargetVerificationError::NamedIdentityLost
-            | KernelRetiredTargetVerificationError::RetainedReadUncertain,
-        ) => return Err(kernel_atomic_install_error()),
-    }
-    verify_kernel_named_retained_identity(directory, &retired_name, expected_target)?;
-    directory.remove_file(&retired_name)
-}
-
 #[cfg(not(any(unix, windows)))]
 fn replace_kernel_document_compare_exchange(
     _directory: &Dir,
@@ -1915,6 +1863,7 @@ fn replace_kernel_document_compare_exchange(
     ))
 }
 
+#[cfg(unix)]
 fn verify_kernel_retired_target(
     directory: &Dir,
     name: &str,
@@ -1934,6 +1883,7 @@ fn verify_kernel_retired_target(
         .map_err(|_| KernelRetiredTargetVerificationError::NamedIdentityLost)
 }
 
+#[cfg(unix)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum KernelRetiredTargetVerificationError {
     NamedIdentityLost,
@@ -1941,6 +1891,7 @@ enum KernelRetiredTargetVerificationError {
     RetainedReadUncertain,
 }
 
+#[cfg(unix)]
 fn verify_kernel_named_retained_identity(
     directory: &Dir,
     name: &str,
@@ -1958,6 +1909,7 @@ fn verify_kernel_named_retained_identity(
     Ok(())
 }
 
+#[cfg(unix)]
 fn kernel_revision_for_retained_file(
     expected_target: &cap_std::fs::File,
 ) -> io::Result<qingyu_kernel::contract::Revision> {
@@ -1986,6 +1938,7 @@ fn kernel_revision_for_retained_file(
         .map_err(|_| kernel_atomic_install_error())
 }
 
+#[cfg(unix)]
 fn kernel_trusted_file_metadata(metadata: &cap_std::fs::Metadata) -> bool {
     metadata.is_file() && !metadata.file_type().is_symlink() && kernel_link_count(metadata) == 1
 }
@@ -1995,17 +1948,7 @@ fn kernel_link_count(metadata: &cap_std::fs::Metadata) -> u64 {
     MetadataExt::nlink(metadata)
 }
 
-#[cfg(windows)]
-fn kernel_link_count(metadata: &cap_std::fs::Metadata) -> u64 {
-    use cap_std::fs::MetadataExt as _;
-    metadata.number_of_links().unwrap_or(0)
-}
-
-#[cfg(not(any(unix, windows)))]
-fn kernel_link_count(_metadata: &cap_std::fs::Metadata) -> u64 {
-    1
-}
-
+#[cfg(not(windows))]
 fn kernel_atomic_install_error() -> io::Error {
     io::Error::other("kernel atomic install target changed")
 }
@@ -2439,8 +2382,10 @@ pub(super) fn read_trusted_markdown_file(path: &Path) -> Result<MarkdownFile, St
 mod kernel_deletion_adapter_tests {
     use std::sync::{Arc, Mutex};
 
+    #[cfg(windows)]
+    use cap_fs_ext::OpenOptionsExt as _;
     use cap_fs_ext::{DirExt as _, FollowSymlinks, OpenOptionsFollowExt as _};
-    use cap_std::fs::{Dir, OpenOptions};
+    use cap_std::fs::{Dir, File, OpenOptions};
     use qingyu_kernel::{
         config::KernelConfig,
         contract::{
@@ -2452,7 +2397,7 @@ mod kernel_deletion_adapter_tests {
         documents::{
             history::MemoryDocumentRecoveryStore, service::WorkspaceDocumentService,
             AtomicInstallMode, AtomicInstallPort, AtomicInstallRequest, DeletionPort,
-            DocumentDeletionTarget, DocumentIgnorePort,
+            DocumentDeletionTarget, DocumentIgnorePort, PinnedInstallSource,
         },
         paths::KernelPaths,
         ports::KernelPorts,
@@ -2466,10 +2411,11 @@ mod kernel_deletion_adapter_tests {
     use serde_json::Value;
     use sha2::{Digest as _, Sha256};
 
+    #[cfg(unix)]
+    use super::replace_kernel_document_compare_exchange_with_hook;
     use super::{
-        rename_document_capability_noreplace, replace_kernel_document_compare_exchange_with_hook,
-        KernelDocumentAtomicInstallAdapter, KernelDocumentDeletionAdapter,
-        KernelDocumentIgnoreAdapter, KernelDocumentsTauriFacade,
+        rename_document_capability_noreplace, KernelDocumentAtomicInstallAdapter,
+        KernelDocumentDeletionAdapter, KernelDocumentIgnoreAdapter, KernelDocumentsTauriFacade,
     };
     use crate::markdown_files::history::KernelDocumentHistoryAdapter;
 
@@ -2498,6 +2444,20 @@ mod kernel_deletion_adapter_tests {
             revision: Revision::parse(format!("{:x}", Sha256::digest(contents.as_bytes())))
                 .unwrap(),
         }
+    }
+
+    fn open_pinned_stage(directory: &Dir, name: &str) -> File {
+        let mut options = OpenOptions::new();
+        options.read(true).write(true).follow(FollowSymlinks::No);
+        #[cfg(windows)]
+        options
+            .access_mode(
+                windows_sys::Win32::Foundation::GENERIC_READ
+                    | windows_sys::Win32::Foundation::GENERIC_WRITE
+                    | windows_sys::Win32::Storage::FileSystem::DELETE,
+            )
+            .share_mode(windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ);
+        directory.open_with(name, &options).unwrap()
     }
 
     #[test]
@@ -2769,7 +2729,10 @@ mod kernel_deletion_adapter_tests {
         let adapter = KernelDocumentAtomicInstallAdapter::new(&root).unwrap();
         let mut expected_options = OpenOptions::new();
         expected_options.read(true).follow(FollowSymlinks::No);
+        #[cfg(windows)]
+        expected_options.share_mode(windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ);
         let expected_target = directory.open_with("note.md", &expected_options).unwrap();
+        let expected_stage = open_pinned_stage(&directory, "stage.tmp");
         let expected_revision =
             Revision::parse(format!("{:x}", Sha256::digest(b"before"))).unwrap();
         adapter
@@ -2779,6 +2742,7 @@ mod kernel_deletion_adapter_tests {
                 stage_name: "stage.tmp",
                 target_name: "note.md",
                 mode: AtomicInstallMode::ReplaceExisting,
+                expected_stage: PinnedInstallSource::File(&expected_stage),
                 expected_target: Some(&expected_target),
                 expected_revision: Some(&expected_revision),
             })
@@ -2789,6 +2753,7 @@ mod kernel_deletion_adapter_tests {
         );
 
         std::fs::write(root.join("create.tmp"), "created").unwrap();
+        let create_stage = open_pinned_stage(&directory, "create.tmp");
         adapter
             .install(AtomicInstallRequest {
                 directory: &directory,
@@ -2796,6 +2761,7 @@ mod kernel_deletion_adapter_tests {
                 stage_name: "create.tmp",
                 target_name: "created.md",
                 mode: AtomicInstallMode::CreateNoReplace,
+                expected_stage: PinnedInstallSource::File(&create_stage),
                 expected_target: None,
                 expected_revision: None,
             })
@@ -2818,6 +2784,7 @@ mod kernel_deletion_adapter_tests {
         let mut expected_options = OpenOptions::new();
         expected_options.read(true).follow(FollowSymlinks::No);
         let expected_target = directory.open_with("note.md", &expected_options).unwrap();
+        let expected_stage = open_pinned_stage(&directory, "stage.tmp");
         let expected_revision =
             Revision::parse(format!("{:x}", Sha256::digest(b"before"))).unwrap();
         let request = AtomicInstallRequest {
@@ -2826,6 +2793,7 @@ mod kernel_deletion_adapter_tests {
             stage_name: "stage.tmp",
             target_name: "note.md",
             mode: AtomicInstallMode::ReplaceExisting,
+            expected_stage: PinnedInstallSource::File(&expected_stage),
             expected_target: Some(&expected_target),
             expected_revision: Some(&expected_revision),
         };
@@ -2863,6 +2831,7 @@ mod kernel_deletion_adapter_tests {
         std::fs::create_dir(&root).unwrap();
         std::fs::write(root.join("stage.tmp"), "replacement").unwrap();
         let replacement = Dir::open_ambient_dir(&root, cap_std::ambient_authority()).unwrap();
+        let replacement_stage = open_pinned_stage(&replacement, "stage.tmp");
 
         assert!(adapter
             .install(AtomicInstallRequest {
@@ -2871,6 +2840,7 @@ mod kernel_deletion_adapter_tests {
                 stage_name: "stage.tmp",
                 target_name: "note.md",
                 mode: AtomicInstallMode::CreateNoReplace,
+                expected_stage: PinnedInstallSource::File(&replacement_stage),
                 expected_target: None,
                 expected_revision: None,
             })
