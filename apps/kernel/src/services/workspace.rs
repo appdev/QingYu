@@ -1,9 +1,6 @@
 //! Workspace service composition boundary.
 
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc, Mutex, Weak,
-};
+use std::sync::{Arc, Weak};
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -19,12 +16,13 @@ use crate::{
     runtime::{
         KernelRuntime, MutationCoordinator, PreparedWorkspaceAuthority, ServiceFailure,
         WorkspaceApiService, WorkspaceAuthorityError, WorkspaceAuthorityErrorKind,
+        WorkspaceInitializationError, WorkspaceInitializationErrorKind,
     },
     workspace::{
         managed::{ManagedWorkspaceCollection, ManagedWorkspaceError, ManagedWorkspaceErrorKind},
         primary::{
             AtomicHostWorkspaceCommitErrorKind, AtomicHostWorkspaceTransaction,
-            PrimaryWorkspaceRepositoryBinding, PrimaryWorkspaceStore, PrimaryWorkspaceStoreError,
+            PrimaryWorkspaceStore, PrimaryWorkspaceStoreError,
         },
     },
 };
@@ -37,9 +35,6 @@ pub struct WorkspaceService {
     managed: ManagedWorkspaceCollection,
     events: Arc<dyn EventSink>,
     mutation_coordinator: Arc<MutationCoordinator>,
-    current: Mutex<WorkspaceDto>,
-    uncertain_host_commit: AtomicBool,
-    repository_binding: PrimaryWorkspaceRepositoryBinding,
 }
 
 impl WorkspaceService {
@@ -50,12 +45,28 @@ impl WorkspaceService {
         events: Arc<dyn EventSink>,
         initial_display_name: impl Into<String>,
     ) -> Result<Self, WorkspaceServiceError> {
-        verify_runtime(runtime)?;
+        runtime
+            .verify_instance_lock()
+            .map_err(|_| WorkspaceServiceError::unavailable())?;
+        let mutation = runtime
+            .mutation_coordinator()
+            .try_lock()
+            .map_err(|_| WorkspaceServiceError::unavailable())?;
         let repository_binding = store.repository_binding();
+        let initialization = runtime
+            .workspace_initialization(&repository_binding, &mutation)
+            .map_err(workspace_initialization_error)?;
+        runtime.verify_workspace_initialization(&initialization)?;
         let previous = store.load()?;
-        let persisted = match previous.clone() {
-            Some(value) => serde_json::from_value::<PersistedPrimaryWorkspace>(value)
-                .map_err(|_| WorkspaceServiceError::unavailable())?,
+        let (persisted, wrote_primary) = match previous.clone() {
+            Some(value) => match serde_json::from_value::<PersistedPrimaryWorkspace>(value) {
+                Ok(persisted) => (persisted, false),
+                Err(_) => {
+                    let _recovery =
+                        runtime.enter_workspace_initialization_recovery(&initialization, &mutation);
+                    return Err(WorkspaceServiceError::unavailable());
+                }
+            },
             None => {
                 let persisted = PersistedPrimaryWorkspace {
                     schema_version: PRIMARY_WORKSPACE_SCHEMA_VERSION,
@@ -68,32 +79,65 @@ impl WorkspaceService {
                         .map_err(|_| WorkspaceServiceError::unavailable())?,
                 ))?;
                 if let Err(error) = store.save() {
-                    let _restore_result = store.replace(previous);
+                    if store
+                        .replace(previous.clone())
+                        .and_then(|()| store.save())
+                        .is_err()
+                    {
+                        let _recovery = runtime
+                            .enter_workspace_initialization_recovery(&initialization, &mutation);
+                    }
                     return Err(error.into());
                 }
-                persisted
+                (persisted, true)
             }
         };
-        validate_persisted_workspace(&persisted)?;
-        let current = workspace_dto(runtime.instance_id(), &persisted)?;
+        if validate_persisted_workspace(&persisted).is_err() {
+            let _recovery =
+                runtime.enter_workspace_initialization_recovery(&initialization, &mutation);
+            return Err(WorkspaceServiceError::unavailable());
+        }
+        let current = match workspace_dto(runtime.instance_id(), &persisted) {
+            Ok(current) => current,
+            Err(error) => {
+                let _recovery =
+                    runtime.enter_workspace_initialization_recovery(&initialization, &mutation);
+                return Err(error);
+            }
+        };
+        if let Err(error) = runtime.verify_workspace_initialization(&initialization) {
+            if wrote_primary {
+                let _rollback = store.replace(previous.clone()).and_then(|()| store.save());
+            }
+            let _recovery =
+                runtime.enter_workspace_initialization_recovery(&initialization, &mutation);
+            return Err(error.into());
+        }
+        if let Err(error) = runtime.initialize_workspace_snapshot(
+            &initialization,
+            current,
+            repository_binding,
+            &mutation,
+        ) {
+            let _recovery =
+                runtime.enter_workspace_initialization_recovery(&initialization, &mutation);
+            return Err(workspace_initialization_error(error));
+        }
         Ok(Self {
             runtime: Arc::downgrade(runtime),
             store,
             managed,
             events,
             mutation_coordinator: runtime.mutation_coordinator().clone(),
-            current: Mutex::new(current),
-            uncertain_host_commit: AtomicBool::new(false),
-            repository_binding,
         })
     }
 
     pub fn current(&self) -> Result<WorkspaceDto, WorkspaceServiceError> {
-        self.verified_runtime()?;
-        self.current
-            .lock()
-            .map(|current| current.clone())
-            .map_err(|_| WorkspaceServiceError::unavailable())
+        Ok(self
+            .verified_runtime()?
+            .active_workspace_snapshot()?
+            .workspace()
+            .clone())
     }
 
     pub async fn compare_and_set_host_workspace(
@@ -105,23 +149,27 @@ impl WorkspaceService {
         let safe_display_name = safe_display_name.into();
         let mutation = self.mutation_coordinator.lock().await;
         let runtime = self.verified_runtime()?;
-        let mut current = self
-            .current
-            .lock()
-            .map_err(|_| WorkspaceServiceError::unavailable())?;
-        if &current.revision != expected_revision {
+        let current = runtime.active_workspace_snapshot()?;
+        if &current.workspace().revision != expected_revision {
             return Err(WorkspaceServiceError::revision_conflict(
-                current.revision.clone(),
+                current.workspace().revision.clone(),
             ));
         }
         validate_display_name(&safe_display_name)?;
+        if !current.matches_repository_binding(&self.store.repository_binding()) {
+            return Err(WorkspaceServiceError::persistence_unavailable());
+        }
 
         let previous_store_value = self.store.load()?;
-        self.verify_store_matches_current(
+        if !store_matches_workspace(
             runtime.instance_id(),
             previous_store_value.as_ref(),
-            &current,
-        )?;
+            current.workspace(),
+        ) {
+            let _recovery = runtime.enter_workspace_recovery(&current, &prepared, &mutation);
+            return Err(WorkspaceServiceError::persistence_unavailable());
+        }
+        runtime.verify_prepared_host_workspace_authority(&prepared)?;
         let persisted = PersistedPrimaryWorkspace {
             schema_version: PRIMARY_WORKSPACE_SCHEMA_VERSION,
             revision_seed: Uuid::new_v4().to_string(),
@@ -131,20 +179,29 @@ impl WorkspaceService {
             serde_json::to_value(&persisted).map_err(|_| WorkspaceServiceError::unavailable())?;
         self.store.replace(Some(next_store_value))?;
         if let Err(error) = self.store.save() {
-            let _restore_result = self.store.replace(previous_store_value);
-            return Err(error.into());
-        }
-
-        if let Err(error) =
-            runtime.commit_host_workspace_authority_with_mutation(prepared, &mutation)
-        {
-            self.restore_persisted_value(previous_store_value)?;
+            if self
+                .restore_persisted_value(previous_store_value.clone())
+                .is_err()
+            {
+                let _recovery = runtime.enter_workspace_recovery(&current, &prepared, &mutation);
+            }
             return Err(error.into());
         }
 
         let committed = workspace_dto(runtime.instance_id(), &persisted)?;
-        *current = committed.clone();
-        drop(current);
+        if let Err(error) = runtime.commit_workspace_snapshot(
+            &current,
+            &prepared,
+            committed.clone(),
+            current.repository_binding(),
+            &mutation,
+        ) {
+            if self.restore_persisted_value(previous_store_value).is_err() {
+                let _recovery = runtime.enter_workspace_recovery(&current, &prepared, &mutation);
+                return Err(WorkspaceServiceError::persistence_unavailable());
+            }
+            return Err(error.into());
+        }
         let publication = EventPublication {
             resource: ResourceRefDto::Workspace { id: committed.id },
             revision: committed.revision.clone(),
@@ -164,10 +221,10 @@ impl WorkspaceService {
     /// `PrimaryWorkspaceStore::save`; the transaction must codec the supplied
     /// canonical value into the same record observed by `self.store`.
     ///
-    /// This is an uncomposed staging seam. It must not be connected to live
-    /// document, sync, or background traffic until the runtime-owner cut
-    /// unifies authority and DTO snapshots; that later boundary also makes a
-    /// recovery latch process-global rather than service-local.
+    /// This remains an uncomposed staging seam. The runtime owner now commits
+    /// authority and DTO as one snapshot and latches recovery process-wide,
+    /// but production Tauri and server transports are intentionally not wired
+    /// to this adapter in this phase.
     #[doc(hidden)]
     pub async fn compare_and_set_host_workspace_transaction(
         &self,
@@ -179,22 +236,16 @@ impl WorkspaceService {
         let safe_display_name = safe_display_name.into();
         let mutation = self.mutation_coordinator.lock().await;
         let runtime = self.verified_runtime()?;
-        let current = {
-            let current = self
-                .current
-                .lock()
-                .map_err(|_| WorkspaceServiceError::unavailable())?;
-            if &current.revision != expected_revision {
-                return Err(WorkspaceServiceError::revision_conflict(
-                    current.revision.clone(),
-                ));
-            }
-            current.clone()
-        };
+        let current = runtime.active_workspace_snapshot()?;
+        if &current.workspace().revision != expected_revision {
+            return Err(WorkspaceServiceError::revision_conflict(
+                current.workspace().revision.clone(),
+            ));
+        }
         validate_display_name(&safe_display_name)?;
-        if !self
-            .repository_binding
-            .matches(&host_transaction.repository_binding())
+        let repository_binding = self.store.repository_binding();
+        if !current.matches_repository_binding(&repository_binding)
+            || !current.matches_repository_binding(&host_transaction.repository_binding())
             || !prepared
                 .binding()
                 .matches(&host_transaction.authority_binding())
@@ -203,11 +254,14 @@ impl WorkspaceService {
         }
 
         let previous_store_value = self.store.load()?;
-        self.verify_store_matches_current(
+        if !store_matches_workspace(
             runtime.instance_id(),
             previous_store_value.as_ref(),
-            &current,
-        )?;
+            current.workspace(),
+        ) {
+            let _recovery = runtime.enter_workspace_recovery(&current, &prepared, &mutation);
+            return Err(WorkspaceServiceError::persistence_unavailable());
+        }
         runtime.verify_prepared_host_workspace_authority(&prepared)?;
         let persisted = PersistedPrimaryWorkspace {
             schema_version: PRIMARY_WORKSPACE_SCHEMA_VERSION,
@@ -228,7 +282,8 @@ impl WorkspaceService {
                     Err(WorkspaceServiceError::persistence_unavailable())
                 }
                 AtomicHostWorkspaceCommitErrorKind::OutcomeUnknown => {
-                    self.uncertain_host_commit.store(true, Ordering::SeqCst);
+                    let _recovery =
+                        runtime.enter_workspace_recovery(&current, &prepared, &mutation);
                     Err(WorkspaceServiceError::persistence_unavailable())
                 }
             };
@@ -236,28 +291,31 @@ impl WorkspaceService {
         match self.store.load() {
             Ok(observed) if observed == Some(next_store_value) => {}
             Ok(_) | Err(_) => {
-                self.uncertain_host_commit.store(true, Ordering::SeqCst);
+                let _recovery = runtime.enter_workspace_recovery(&current, &prepared, &mutation);
                 return Err(WorkspaceServiceError::persistence_unavailable());
             }
         }
 
         if runtime
-            .commit_host_workspace_authority_with_mutation(prepared, &mutation)
+            .verify_prepared_host_workspace_authority(&prepared)
             .is_err()
         {
-            self.uncertain_host_commit.store(true, Ordering::SeqCst);
+            let _recovery = runtime.enter_workspace_recovery(&current, &prepared, &mutation);
             return Err(WorkspaceServiceError::persistence_unavailable());
         }
-        let mut current_guard = self
-            .current
-            .lock()
-            .map_err(|_| WorkspaceServiceError::unavailable())?;
-        if *current_guard != current {
-            self.uncertain_host_commit.store(true, Ordering::SeqCst);
+        if runtime
+            .commit_workspace_snapshot(
+                &current,
+                &prepared,
+                committed.clone(),
+                repository_binding,
+                &mutation,
+            )
+            .is_err()
+        {
+            let _recovery = runtime.enter_workspace_recovery(&current, &prepared, &mutation);
             return Err(WorkspaceServiceError::persistence_unavailable());
         }
-        *current_guard = committed.clone();
-        drop(current_guard);
         let publication = EventPublication {
             resource: ResourceRefDto::Workspace { id: committed.id },
             revision: committed.revision.clone(),
@@ -286,9 +344,6 @@ impl WorkspaceService {
     }
 
     fn verified_runtime(&self) -> Result<Arc<KernelRuntime>, WorkspaceServiceError> {
-        if self.uncertain_host_commit.load(Ordering::SeqCst) {
-            return Err(WorkspaceServiceError::unavailable());
-        }
         let runtime = self
             .runtime
             .upgrade()
@@ -305,31 +360,6 @@ impl WorkspaceService {
         self.store.save()?;
         Ok(())
     }
-
-    fn verify_store_matches_current(
-        &self,
-        instance_id: InstanceId,
-        persisted: Option<&serde_json::Value>,
-        current: &WorkspaceDto,
-    ) -> Result<(), WorkspaceServiceError> {
-        let observed = persisted
-            .cloned()
-            .ok_or_else(WorkspaceServiceError::persistence_unavailable)
-            .and_then(|value| {
-                serde_json::from_value::<PersistedPrimaryWorkspace>(value)
-                    .map_err(|_| WorkspaceServiceError::persistence_unavailable())
-            })
-            .and_then(|value| {
-                validate_persisted_workspace(&value)
-                    .map_err(|_| WorkspaceServiceError::persistence_unavailable())?;
-                workspace_dto(instance_id, &value)
-            });
-        if observed.as_ref().is_ok_and(|observed| observed == current) {
-            return Ok(());
-        }
-        self.uncertain_host_commit.store(true, Ordering::SeqCst);
-        Err(WorkspaceServiceError::persistence_unavailable())
-    }
 }
 
 fn verify_runtime(runtime: &KernelRuntime) -> Result<(), WorkspaceServiceError> {
@@ -337,9 +367,34 @@ fn verify_runtime(runtime: &KernelRuntime) -> Result<(), WorkspaceServiceError> 
         .verify_instance_lock()
         .map_err(|_| WorkspaceServiceError::unavailable())?;
     runtime
-        .active_workspace_authority()
-        .verify_held_directory()
+        .active_workspace_snapshot()
+        .map(|_| ())
         .map_err(WorkspaceServiceError::from)
+}
+
+fn store_matches_workspace(
+    instance_id: InstanceId,
+    persisted: Option<&serde_json::Value>,
+    current: &WorkspaceDto,
+) -> bool {
+    persisted
+        .cloned()
+        .and_then(|value| serde_json::from_value::<PersistedPrimaryWorkspace>(value).ok())
+        .filter(|value| validate_persisted_workspace(value).is_ok())
+        .and_then(|value| workspace_dto(instance_id, &value).ok())
+        .as_ref()
+        .is_some_and(|observed| observed == current)
+}
+
+fn workspace_initialization_error(error: WorkspaceInitializationError) -> WorkspaceServiceError {
+    match error.kind() {
+        WorkspaceInitializationErrorKind::ForeignRepository
+        | WorkspaceInitializationErrorKind::ChangedCanonical => {
+            WorkspaceServiceError::persistence_unavailable()
+        }
+        WorkspaceInitializationErrorKind::RecoveryRequired
+        | WorkspaceInitializationErrorKind::Unavailable => WorkspaceServiceError::unavailable(),
+    }
 }
 
 #[async_trait]

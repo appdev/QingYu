@@ -18,8 +18,16 @@ use qingyu_kernel::{
         PortErrorKind, Sleeper, TaskSpawner,
     },
     runtime::KernelRuntime,
-    workspace::lock::{KernelLockErrorKind, RuntimeLockLease},
+    services::workspace::WorkspaceService,
+    workspace::{
+        lock::{KernelLockErrorKind, RuntimeLockLease},
+        managed::ManagedWorkspaceCollection,
+        primary::{
+            PrimaryWorkspaceRepositoryBinding, PrimaryWorkspaceStore, PrimaryWorkspaceStoreError,
+        },
+    },
 };
+use serde_json::Value;
 use tempfile::tempdir;
 
 #[test]
@@ -424,6 +432,7 @@ fn runtime_spawned_deferred_task_keeps_leases_until_the_task_finishes() {
         test_ports(task_spawner.clone()),
     )
     .unwrap();
+    let _workspace_service = initialize_workspace(&runtime, &roots);
 
     runtime.spawn_background(Box::pin(async {})).unwrap();
     drop(runtime);
@@ -548,8 +557,8 @@ fn stale_prepared_authority_is_consumed_without_replacing_the_committed_authorit
     );
 }
 
-#[test]
-fn background_task_started_before_switch_retains_the_old_workspace_lock_until_completion() {
+#[tokio::test]
+async fn background_task_started_before_switch_retains_the_old_workspace_lock_until_completion() {
     let temporary = tempdir().unwrap();
     let initial = LockRoots::create(temporary.path(), "background-switch-initial");
     let next = LockRoots::create(temporary.path(), "background-switch-next");
@@ -561,12 +570,17 @@ fn background_task_started_before_switch_retains_the_old_workspace_lock_until_co
         test_ports(task_spawner.clone()),
     )
     .unwrap();
+    let workspace_service = initialize_workspace(&runtime, &initial);
 
     runtime.spawn_background(Box::pin(async {})).unwrap();
     let prepared = runtime
         .prepare_host_workspace_authority(&next.workspace)
         .unwrap();
-    runtime.commit_host_workspace_authority(prepared).unwrap();
+    let current = workspace_service.current().unwrap();
+    workspace_service
+        .compare_and_set_host_workspace(&current.revision, prepared, "Next")
+        .await
+        .unwrap();
 
     run_lock_probe(
         &initial.workspace,
@@ -788,6 +802,31 @@ struct LockRoots {
 }
 
 #[derive(Default)]
+struct MemoryPrimaryWorkspaceStore {
+    binding: PrimaryWorkspaceRepositoryBinding,
+    value: Mutex<Option<Value>>,
+}
+
+impl PrimaryWorkspaceStore for MemoryPrimaryWorkspaceStore {
+    fn repository_binding(&self) -> PrimaryWorkspaceRepositoryBinding {
+        self.binding.clone()
+    }
+
+    fn load(&self) -> Result<Option<Value>, PrimaryWorkspaceStoreError> {
+        Ok(self.value.lock().unwrap().clone())
+    }
+
+    fn replace(&self, value: Option<Value>) -> Result<(), PrimaryWorkspaceStoreError> {
+        *self.value.lock().unwrap() = value;
+        Ok(())
+    }
+
+    fn save(&self) -> Result<(), PrimaryWorkspaceStoreError> {
+        Ok(())
+    }
+}
+
+#[derive(Default)]
 struct DeferredTaskSpawner {
     task: Mutex<Option<BoxTaskFuture>>,
 }
@@ -868,6 +907,17 @@ fn test_ports(task_spawner: Arc<dyn TaskSpawner>) -> KernelPorts {
         unavailable.clone(),
         unavailable,
     )
+}
+
+fn initialize_workspace(runtime: &Arc<KernelRuntime>, roots: &LockRoots) -> WorkspaceService {
+    WorkspaceService::new(
+        runtime,
+        Arc::new(MemoryPrimaryWorkspaceStore::default()),
+        ManagedWorkspaceCollection::from_paths(&roots.paths()).unwrap(),
+        Arc::new(TestUnavailablePort),
+        "Initial",
+    )
+    .unwrap()
 }
 
 impl LockRoots {

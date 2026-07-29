@@ -26,7 +26,7 @@ use crate::{
     ports::{BoxTaskFuture, KernelPorts, PortError},
     workspace::{
         lock::{InstanceLockLease, KernelLockError, KernelLockErrorKind, WorkspaceLockLease},
-        primary::PreparedWorkspaceAuthorityBinding,
+        primary::{PreparedWorkspaceAuthorityBinding, PrimaryWorkspaceRepositoryBinding},
     },
 };
 
@@ -35,7 +35,7 @@ pub struct KernelRuntime {
     paths: KernelPaths,
     ports: KernelPorts,
     mutation_coordinator: Arc<MutationCoordinator>,
-    active_workspace: RwLock<Arc<ActiveWorkspaceAuthority>>,
+    owner: KernelRuntimeOwner,
     event_broker: Arc<EventBroker>,
     system_api: OnceLock<Arc<dyn SystemApiService>>,
     workspace_api: OnceLock<Arc<dyn WorkspaceApiService>>,
@@ -73,7 +73,7 @@ impl KernelRuntime {
             paths,
             ports,
             mutation_coordinator: Arc::new(MutationCoordinator::new()),
-            active_workspace: RwLock::new(active_workspace),
+            owner: KernelRuntimeOwner::new(active_workspace),
             event_broker: Arc::new(EventBroker::new()),
             system_api: OnceLock::new(),
             workspace_api: OnceLock::new(),
@@ -118,11 +118,19 @@ impl KernelRuntime {
         self._instance_lease.verify_held_lock()
     }
 
+    /// Transitional authority-only accessor for path-policy compatibility.
+    /// Workspace consumers must use `active_workspace_snapshot` so recovery
+    /// cannot be bypassed and metadata cannot be observed separately.
     pub fn active_workspace_authority(&self) -> Arc<ActiveWorkspaceAuthority> {
-        self.active_workspace.read().map_or_else(
-            |poisoned| poisoned.into_inner().clone(),
-            |value| value.clone(),
-        )
+        self.owner.compatibility_authority()
+    }
+
+    pub fn active_workspace_snapshot(
+        &self,
+    ) -> Result<Arc<ActiveWorkspaceSnapshot>, WorkspaceAuthorityError> {
+        let snapshot = self.owner.active_snapshot()?;
+        snapshot.authority.verify_held_directory()?;
+        Ok(snapshot)
     }
 
     pub fn prepare_host_workspace_authority(
@@ -132,13 +140,14 @@ impl KernelRuntime {
         if self.paths.profile() != HostProfile::Desktop {
             return Err(WorkspaceAuthorityError::unsupported_profile());
         }
-        let expected = self.active_workspace_authority();
+        let expected = self.owner.preparation_identity()?;
+        let expected_authority = expected.authority();
         let root = self
             .paths
             .prepare_host_workspace_root(path)
             .map_err(WorkspaceAuthorityError::from_path)?;
-        let candidate = if expected.root.same_identity(root.as_ref()) {
-            expected.clone()
+        let candidate = if expected_authority.root.same_identity(root.as_ref()) {
+            expected_authority
         } else {
             let lease = Arc::new(
                 WorkspaceLockLease::acquire(root.as_ref())
@@ -148,6 +157,7 @@ impl KernelRuntime {
                 .map_err(WorkspaceAuthorityError::from_path)?;
             Arc::new(ActiveWorkspaceAuthority::new(root, lease))
         };
+        self.owner.verify_identity(&expected)?;
         Ok(PreparedWorkspaceAuthority {
             expected,
             candidate,
@@ -180,20 +190,13 @@ impl KernelRuntime {
         if !self.mutation_coordinator.recognizes(mutation) {
             return Err(WorkspaceAuthorityError::unavailable());
         }
-        let mut current = self
-            .active_workspace
-            .write()
-            .map_err(|_| WorkspaceAuthorityError::unavailable())?;
-        if !Arc::ptr_eq(&current, &prepared.expected) {
-            return Err(WorkspaceAuthorityError::prepared_authority_mismatch());
-        }
+        self.owner
+            .verify_authority_only_identity(&prepared.expected)?;
         prepared.candidate.verify_held_directory()?;
         self.paths
             .validate_host_workspace_root(prepared.candidate.root.as_ref())
             .map_err(WorkspaceAuthorityError::from_path)?;
-        let installed = prepared.candidate;
-        *current = installed.clone();
-        Ok(installed)
+        self.owner.commit_authority_only(prepared)
     }
 
     pub(crate) fn verify_prepared_host_workspace_authority(
@@ -203,17 +206,93 @@ impl KernelRuntime {
         if self.paths.profile() != HostProfile::Desktop {
             return Err(WorkspaceAuthorityError::unsupported_profile());
         }
-        let current = self
-            .active_workspace
-            .read()
-            .map_err(|_| WorkspaceAuthorityError::unavailable())?;
-        if !Arc::ptr_eq(&current, &prepared.expected) {
-            return Err(WorkspaceAuthorityError::prepared_authority_mismatch());
+        self.owner.verify_identity(&prepared.expected)?;
+        prepared.candidate.verify_held_directory()?;
+        self.paths
+            .validate_host_workspace_root(prepared.candidate.root.as_ref())
+            .map_err(WorkspaceAuthorityError::from_path)?;
+        self.owner.verify_identity(&prepared.expected)
+    }
+
+    pub(crate) fn workspace_initialization(
+        &self,
+        repository_binding: &PrimaryWorkspaceRepositoryBinding,
+        mutation: &MutationPermit<'_>,
+    ) -> Result<WorkspaceInitialization, WorkspaceInitializationError> {
+        if !self.mutation_coordinator.recognizes(mutation) {
+            return Err(WorkspaceInitializationError::unavailable());
+        }
+        self.owner.initialization(repository_binding)
+    }
+
+    pub(crate) fn initialize_workspace_snapshot(
+        &self,
+        initialization: &WorkspaceInitialization,
+        workspace: WorkspaceDto,
+        repository_binding: PrimaryWorkspaceRepositoryBinding,
+        mutation: &MutationPermit<'_>,
+    ) -> Result<Arc<ActiveWorkspaceSnapshot>, WorkspaceInitializationError> {
+        if !self.mutation_coordinator.recognizes(mutation) {
+            return Err(WorkspaceInitializationError::unavailable());
+        }
+        self.owner
+            .initialize_snapshot(initialization, workspace, repository_binding)
+    }
+
+    pub(crate) fn verify_workspace_initialization(
+        &self,
+        initialization: &WorkspaceInitialization,
+    ) -> Result<(), WorkspaceAuthorityError> {
+        self.owner.verify_identity(&initialization.expected)?;
+        initialization.expected.authority().verify_held_directory()
+    }
+
+    pub(crate) fn commit_workspace_snapshot(
+        &self,
+        expected: &Arc<ActiveWorkspaceSnapshot>,
+        prepared: &PreparedWorkspaceAuthority,
+        workspace: WorkspaceDto,
+        repository_binding: PrimaryWorkspaceRepositoryBinding,
+        mutation: &MutationPermit<'_>,
+    ) -> Result<Arc<ActiveWorkspaceSnapshot>, WorkspaceAuthorityError> {
+        if !self.mutation_coordinator.recognizes(mutation) {
+            return Err(WorkspaceAuthorityError::unavailable());
         }
         prepared.candidate.verify_held_directory()?;
         self.paths
             .validate_host_workspace_root(prepared.candidate.root.as_ref())
-            .map_err(WorkspaceAuthorityError::from_path)
+            .map_err(WorkspaceAuthorityError::from_path)?;
+        self.owner
+            .commit_snapshot(expected, prepared, workspace, repository_binding)
+    }
+
+    pub(crate) fn enter_workspace_recovery(
+        &self,
+        expected: &Arc<ActiveWorkspaceSnapshot>,
+        prepared: &PreparedWorkspaceAuthority,
+        mutation: &MutationPermit<'_>,
+    ) -> Result<(), WorkspaceAuthorityError> {
+        if !self.mutation_coordinator.recognizes(mutation) {
+            return Err(WorkspaceAuthorityError::unavailable());
+        }
+        self.owner.enter_recovery(
+            WorkspaceOwnerIdentity::Active(expected.clone()),
+            Some(prepared.candidate.clone()),
+        )
+    }
+
+    pub(crate) fn enter_workspace_initialization_recovery(
+        &self,
+        initialization: &WorkspaceInitialization,
+        mutation: &MutationPermit<'_>,
+    ) -> Result<(), WorkspaceAuthorityError> {
+        if !self.mutation_coordinator.recognizes(mutation) {
+            return Err(WorkspaceAuthorityError::unavailable());
+        }
+        self.owner.enter_recovery(
+            initialization.expected.clone(),
+            Some(initialization.expected.authority()),
+        )
     }
 
     pub const fn event_broker(&self) -> &Arc<EventBroker> {
@@ -221,7 +300,9 @@ impl KernelRuntime {
     }
 
     pub fn spawn_background(&self, task: BoxTaskFuture) -> Result<(), PortError> {
-        let workspace = self.active_workspace_authority();
+        let workspace = self
+            .active_workspace_snapshot()
+            .map_err(|_| PortError::unavailable())?;
         self.ports.spawn_background(Box::pin(async move {
             task.await;
             drop(workspace);
@@ -306,6 +387,401 @@ impl fmt::Debug for KernelRuntime {
     }
 }
 
+pub struct KernelRuntimeOwner {
+    workspace: RwLock<WorkspaceOwnerState>,
+}
+
+impl KernelRuntimeOwner {
+    fn new(authority: Arc<ActiveWorkspaceAuthority>) -> Self {
+        Self {
+            workspace: RwLock::new(WorkspaceOwnerState::AuthorityOnly(authority)),
+        }
+    }
+
+    fn compatibility_authority(&self) -> Arc<ActiveWorkspaceAuthority> {
+        let state = self
+            .workspace
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match &*state {
+            WorkspaceOwnerState::AuthorityOnly(authority) => authority.clone(),
+            WorkspaceOwnerState::Active(snapshot) => snapshot.authority.clone(),
+            WorkspaceOwnerState::RecoveryRequired(hold) => hold
+                .last_known
+                .as_ref()
+                .map(|snapshot| snapshot.authority.clone())
+                .or_else(|| hold.retained_candidate.clone())
+                .expect("recovery always retains at least one workspace authority"),
+        }
+    }
+
+    fn active_snapshot(&self) -> Result<Arc<ActiveWorkspaceSnapshot>, WorkspaceAuthorityError> {
+        let state = self
+            .workspace
+            .read()
+            .map_err(|_| WorkspaceAuthorityError::unavailable())?;
+        match &*state {
+            WorkspaceOwnerState::Active(snapshot) => Ok(snapshot.clone()),
+            WorkspaceOwnerState::AuthorityOnly(_) | WorkspaceOwnerState::RecoveryRequired(_) => {
+                Err(WorkspaceAuthorityError::unavailable())
+            }
+        }
+    }
+
+    fn preparation_identity(&self) -> Result<WorkspaceOwnerIdentity, WorkspaceAuthorityError> {
+        let state = self
+            .workspace
+            .read()
+            .map_err(|_| WorkspaceAuthorityError::unavailable())?;
+        match &*state {
+            WorkspaceOwnerState::AuthorityOnly(authority) => {
+                Ok(WorkspaceOwnerIdentity::AuthorityOnly(authority.clone()))
+            }
+            WorkspaceOwnerState::Active(snapshot) => {
+                Ok(WorkspaceOwnerIdentity::Active(snapshot.clone()))
+            }
+            WorkspaceOwnerState::RecoveryRequired(_) => Err(WorkspaceAuthorityError::unavailable()),
+        }
+    }
+
+    fn verify_identity(
+        &self,
+        expected: &WorkspaceOwnerIdentity,
+    ) -> Result<(), WorkspaceAuthorityError> {
+        let state = self
+            .workspace
+            .read()
+            .map_err(|_| WorkspaceAuthorityError::unavailable())?;
+        if expected.matches(&state) {
+            Ok(())
+        } else if matches!(&*state, WorkspaceOwnerState::RecoveryRequired(_)) {
+            Err(WorkspaceAuthorityError::unavailable())
+        } else {
+            Err(WorkspaceAuthorityError::prepared_authority_mismatch())
+        }
+    }
+
+    fn verify_authority_only_identity(
+        &self,
+        expected: &WorkspaceOwnerIdentity,
+    ) -> Result<(), WorkspaceAuthorityError> {
+        let state = self
+            .workspace
+            .read()
+            .map_err(|_| WorkspaceAuthorityError::unavailable())?;
+        match (&*state, expected) {
+            (
+                WorkspaceOwnerState::AuthorityOnly(current),
+                WorkspaceOwnerIdentity::AuthorityOnly(expected),
+            ) if Arc::ptr_eq(current, expected) => Ok(()),
+            (WorkspaceOwnerState::AuthorityOnly(_), _) => {
+                Err(WorkspaceAuthorityError::prepared_authority_mismatch())
+            }
+            (WorkspaceOwnerState::Active(_), _) | (WorkspaceOwnerState::RecoveryRequired(_), _) => {
+                Err(WorkspaceAuthorityError::unavailable())
+            }
+        }
+    }
+
+    fn commit_authority_only(
+        &self,
+        prepared: PreparedWorkspaceAuthority,
+    ) -> Result<Arc<ActiveWorkspaceAuthority>, WorkspaceAuthorityError> {
+        let mut state = self
+            .workspace
+            .write()
+            .map_err(|_| WorkspaceAuthorityError::unavailable())?;
+        match (&*state, &prepared.expected) {
+            (
+                WorkspaceOwnerState::AuthorityOnly(current),
+                WorkspaceOwnerIdentity::AuthorityOnly(expected),
+            ) if Arc::ptr_eq(current, expected) => {
+                let installed = prepared.candidate;
+                *state = WorkspaceOwnerState::AuthorityOnly(installed.clone());
+                Ok(installed)
+            }
+            (WorkspaceOwnerState::AuthorityOnly(_), _) => {
+                Err(WorkspaceAuthorityError::prepared_authority_mismatch())
+            }
+            (WorkspaceOwnerState::Active(_), _) | (WorkspaceOwnerState::RecoveryRequired(_), _) => {
+                Err(WorkspaceAuthorityError::unavailable())
+            }
+        }
+    }
+
+    fn initialization(
+        &self,
+        repository_binding: &PrimaryWorkspaceRepositoryBinding,
+    ) -> Result<WorkspaceInitialization, WorkspaceInitializationError> {
+        let state = self
+            .workspace
+            .read()
+            .map_err(|_| WorkspaceInitializationError::unavailable())?;
+        match &*state {
+            WorkspaceOwnerState::AuthorityOnly(authority) => Ok(WorkspaceInitialization {
+                expected: WorkspaceOwnerIdentity::AuthorityOnly(authority.clone()),
+            }),
+            WorkspaceOwnerState::Active(snapshot)
+                if snapshot.repository_binding.matches(repository_binding) =>
+            {
+                Ok(WorkspaceInitialization {
+                    expected: WorkspaceOwnerIdentity::Active(snapshot.clone()),
+                })
+            }
+            WorkspaceOwnerState::Active(_) => {
+                Err(WorkspaceInitializationError::foreign_repository())
+            }
+            WorkspaceOwnerState::RecoveryRequired(_) => {
+                Err(WorkspaceInitializationError::recovery_required())
+            }
+        }
+    }
+
+    fn initialize_snapshot(
+        &self,
+        initialization: &WorkspaceInitialization,
+        workspace: WorkspaceDto,
+        repository_binding: PrimaryWorkspaceRepositoryBinding,
+    ) -> Result<Arc<ActiveWorkspaceSnapshot>, WorkspaceInitializationError> {
+        let mut state = self
+            .workspace
+            .write()
+            .map_err(|_| WorkspaceInitializationError::unavailable())?;
+        match (&*state, &initialization.expected) {
+            (
+                WorkspaceOwnerState::AuthorityOnly(current),
+                WorkspaceOwnerIdentity::AuthorityOnly(expected),
+            ) if Arc::ptr_eq(current, expected) => {
+                let snapshot = Arc::new(ActiveWorkspaceSnapshot::new(
+                    current.clone(),
+                    workspace,
+                    repository_binding,
+                ));
+                *state = WorkspaceOwnerState::Active(snapshot.clone());
+                Ok(snapshot)
+            }
+            (WorkspaceOwnerState::Active(current), WorkspaceOwnerIdentity::Active(expected))
+                if Arc::ptr_eq(current, expected)
+                    && current.repository_binding.matches(&repository_binding)
+                    && current.workspace == workspace =>
+            {
+                Ok(current.clone())
+            }
+            (WorkspaceOwnerState::Active(current), WorkspaceOwnerIdentity::Active(expected))
+                if Arc::ptr_eq(current, expected)
+                    && current.repository_binding.matches(&repository_binding) =>
+            {
+                let retained = current.clone();
+                *state = WorkspaceOwnerState::RecoveryRequired(WorkspaceRecoveryHold {
+                    last_known: Some(retained),
+                    retained_candidate: None,
+                });
+                Err(WorkspaceInitializationError::changed_canonical())
+            }
+            (WorkspaceOwnerState::RecoveryRequired(_), _) => {
+                Err(WorkspaceInitializationError::recovery_required())
+            }
+            _ => Err(WorkspaceInitializationError::foreign_repository()),
+        }
+    }
+
+    fn commit_snapshot(
+        &self,
+        expected: &Arc<ActiveWorkspaceSnapshot>,
+        prepared: &PreparedWorkspaceAuthority,
+        workspace: WorkspaceDto,
+        repository_binding: PrimaryWorkspaceRepositoryBinding,
+    ) -> Result<Arc<ActiveWorkspaceSnapshot>, WorkspaceAuthorityError> {
+        let mut state = self
+            .workspace
+            .write()
+            .map_err(|_| WorkspaceAuthorityError::unavailable())?;
+        let WorkspaceOwnerState::Active(current) = &*state else {
+            return Err(WorkspaceAuthorityError::unavailable());
+        };
+        if !Arc::ptr_eq(current, expected)
+            || !matches!(
+                &prepared.expected,
+                WorkspaceOwnerIdentity::Active(prepared_expected)
+                    if Arc::ptr_eq(prepared_expected, expected)
+            )
+            || !expected.repository_binding.matches(&repository_binding)
+        {
+            return Err(WorkspaceAuthorityError::prepared_authority_mismatch());
+        }
+        let snapshot = Arc::new(ActiveWorkspaceSnapshot::new(
+            prepared.candidate.clone(),
+            workspace,
+            repository_binding,
+        ));
+        *state = WorkspaceOwnerState::Active(snapshot.clone());
+        Ok(snapshot)
+    }
+
+    fn enter_recovery(
+        &self,
+        expected: WorkspaceOwnerIdentity,
+        retained_candidate: Option<Arc<ActiveWorkspaceAuthority>>,
+    ) -> Result<(), WorkspaceAuthorityError> {
+        let mut state = self
+            .workspace
+            .write()
+            .map_err(|_| WorkspaceAuthorityError::unavailable())?;
+        if matches!(&*state, WorkspaceOwnerState::RecoveryRequired(_)) {
+            return Ok(());
+        }
+        if !expected.matches(&state) {
+            return Err(WorkspaceAuthorityError::prepared_authority_mismatch());
+        }
+        let last_known = match &expected {
+            WorkspaceOwnerIdentity::AuthorityOnly(_) => None,
+            WorkspaceOwnerIdentity::Active(snapshot) => Some(snapshot.clone()),
+        };
+        let retained_candidate = retained_candidate.or_else(|| Some(expected.authority()));
+        *state = WorkspaceOwnerState::RecoveryRequired(WorkspaceRecoveryHold {
+            last_known,
+            retained_candidate,
+        });
+        Ok(())
+    }
+}
+
+impl fmt::Debug for KernelRuntimeOwner {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("KernelRuntimeOwner { workspace: [REDACTED] }")
+    }
+}
+
+enum WorkspaceOwnerState {
+    AuthorityOnly(Arc<ActiveWorkspaceAuthority>),
+    Active(Arc<ActiveWorkspaceSnapshot>),
+    RecoveryRequired(WorkspaceRecoveryHold),
+}
+
+struct WorkspaceRecoveryHold {
+    last_known: Option<Arc<ActiveWorkspaceSnapshot>>,
+    retained_candidate: Option<Arc<ActiveWorkspaceAuthority>>,
+}
+
+#[derive(Clone)]
+enum WorkspaceOwnerIdentity {
+    AuthorityOnly(Arc<ActiveWorkspaceAuthority>),
+    Active(Arc<ActiveWorkspaceSnapshot>),
+}
+
+impl WorkspaceOwnerIdentity {
+    fn authority(&self) -> Arc<ActiveWorkspaceAuthority> {
+        match self {
+            Self::AuthorityOnly(authority) => authority.clone(),
+            Self::Active(snapshot) => snapshot.authority.clone(),
+        }
+    }
+
+    fn matches(&self, state: &WorkspaceOwnerState) -> bool {
+        match (self, state) {
+            (Self::AuthorityOnly(expected), WorkspaceOwnerState::AuthorityOnly(current)) => {
+                Arc::ptr_eq(expected, current)
+            }
+            (Self::Active(expected), WorkspaceOwnerState::Active(current)) => {
+                Arc::ptr_eq(expected, current)
+            }
+            _ => false,
+        }
+    }
+}
+
+pub(crate) struct WorkspaceInitialization {
+    expected: WorkspaceOwnerIdentity,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum WorkspaceInitializationErrorKind {
+    ForeignRepository,
+    ChangedCanonical,
+    RecoveryRequired,
+    Unavailable,
+}
+
+pub(crate) struct WorkspaceInitializationError {
+    kind: WorkspaceInitializationErrorKind,
+}
+
+impl WorkspaceInitializationError {
+    const fn foreign_repository() -> Self {
+        Self {
+            kind: WorkspaceInitializationErrorKind::ForeignRepository,
+        }
+    }
+
+    const fn changed_canonical() -> Self {
+        Self {
+            kind: WorkspaceInitializationErrorKind::ChangedCanonical,
+        }
+    }
+
+    const fn recovery_required() -> Self {
+        Self {
+            kind: WorkspaceInitializationErrorKind::RecoveryRequired,
+        }
+    }
+
+    const fn unavailable() -> Self {
+        Self {
+            kind: WorkspaceInitializationErrorKind::Unavailable,
+        }
+    }
+
+    pub(crate) const fn kind(&self) -> WorkspaceInitializationErrorKind {
+        self.kind
+    }
+}
+
+pub struct ActiveWorkspaceSnapshot {
+    authority: Arc<ActiveWorkspaceAuthority>,
+    workspace: WorkspaceDto,
+    repository_binding: PrimaryWorkspaceRepositoryBinding,
+}
+
+impl ActiveWorkspaceSnapshot {
+    fn new(
+        authority: Arc<ActiveWorkspaceAuthority>,
+        workspace: WorkspaceDto,
+        repository_binding: PrimaryWorkspaceRepositoryBinding,
+    ) -> Self {
+        Self {
+            authority,
+            workspace,
+            repository_binding,
+        }
+    }
+
+    pub const fn workspace(&self) -> &WorkspaceDto {
+        &self.workspace
+    }
+
+    #[allow(dead_code)] // Consumed by the Task 2 document snapshot migration.
+    pub(crate) fn authority(&self) -> &Arc<ActiveWorkspaceAuthority> {
+        &self.authority
+    }
+
+    pub(crate) fn repository_binding(&self) -> PrimaryWorkspaceRepositoryBinding {
+        self.repository_binding.clone()
+    }
+
+    pub(crate) fn matches_repository_binding(
+        &self,
+        candidate: &PrimaryWorkspaceRepositoryBinding,
+    ) -> bool {
+        self.repository_binding.matches(candidate)
+    }
+}
+
+impl fmt::Debug for ActiveWorkspaceSnapshot {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ActiveWorkspaceSnapshot { authority: held, workspace: opaque }")
+    }
+}
+
 pub struct ActiveWorkspaceAuthority {
     root: Arc<WorkspaceRoot>,
     lease: Arc<WorkspaceLockLease>,
@@ -337,7 +813,7 @@ impl fmt::Debug for ActiveWorkspaceAuthority {
 }
 
 pub struct PreparedWorkspaceAuthority {
-    expected: Arc<ActiveWorkspaceAuthority>,
+    expected: WorkspaceOwnerIdentity,
     candidate: Arc<ActiveWorkspaceAuthority>,
     binding: PreparedWorkspaceAuthorityBinding,
 }
@@ -480,7 +956,7 @@ impl MutationCoordinator {
         }
     }
 
-    fn try_lock(&self) -> Result<MutationPermit<'_>, tokio::sync::TryLockError> {
+    pub(crate) fn try_lock(&self) -> Result<MutationPermit<'_>, tokio::sync::TryLockError> {
         Ok(MutationPermit {
             coordinator: self,
             _guard: self.gate.try_lock()?,
