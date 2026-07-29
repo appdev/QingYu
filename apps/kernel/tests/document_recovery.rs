@@ -3,7 +3,7 @@ use std::{
     path::PathBuf,
     sync::{
         atomic::{AtomicU8, Ordering},
-        Arc, Mutex,
+        mpsc, Arc, Mutex,
     },
     time::Duration,
 };
@@ -33,7 +33,7 @@ use qingyu_kernel::{
     },
     paths::KernelPaths,
     ports::KernelPorts,
-    runtime::KernelRuntime,
+    runtime::{KernelRuntime, KernelStartupErrorKind},
     services::workspace::WorkspaceService,
     workspace::{
         managed::ManagedWorkspaceCollection,
@@ -124,6 +124,87 @@ struct ReplacingOnCompletionRecoveryStore {
     inner: MemoryDocumentRecoveryStore,
     root: PathBuf,
     replace_next: AtomicU8,
+}
+
+struct BlockingPendingRecoveryStore {
+    inner: MemoryDocumentRecoveryStore,
+    block_next: AtomicU8,
+    started: Mutex<Option<mpsc::Sender<()>>>,
+    release: Mutex<mpsc::Receiver<()>>,
+}
+
+#[derive(Default)]
+struct CountingRecoveryStore {
+    inner: MemoryDocumentRecoveryStore,
+    pending_calls: AtomicU8,
+}
+
+impl CountingRecoveryStore {
+    fn pending_calls(&self) -> u8 {
+        self.pending_calls.load(Ordering::SeqCst)
+    }
+}
+
+impl DocumentRecoveryStore for CountingRecoveryStore {
+    fn prepare(&self, intent: &DocumentRecoveryIntent) -> Result<(), DocumentRecoveryError> {
+        self.inner.prepare(intent)
+    }
+
+    fn pending(&self) -> Result<Vec<DocumentRecoveryIntent>, DocumentRecoveryError> {
+        self.pending_calls.fetch_add(1, Ordering::SeqCst);
+        self.inner.pending()
+    }
+
+    fn complete(&self, transaction_id: Uuid) -> Result<(), DocumentRecoveryError> {
+        self.inner.complete(transaction_id)
+    }
+
+    fn clear(&self, transaction_id: Uuid) -> Result<(), DocumentRecoveryError> {
+        self.inner.clear(transaction_id)
+    }
+}
+
+impl BlockingPendingRecoveryStore {
+    fn new(started: mpsc::Sender<()>, release: mpsc::Receiver<()>) -> Self {
+        Self {
+            inner: MemoryDocumentRecoveryStore::default(),
+            block_next: AtomicU8::new(0),
+            started: Mutex::new(Some(started)),
+            release: Mutex::new(release),
+        }
+    }
+
+    fn block_next_pending(&self) {
+        self.block_next.store(1, Ordering::SeqCst);
+    }
+}
+
+impl DocumentRecoveryStore for BlockingPendingRecoveryStore {
+    fn prepare(&self, intent: &DocumentRecoveryIntent) -> Result<(), DocumentRecoveryError> {
+        self.inner.prepare(intent)
+    }
+
+    fn pending(&self) -> Result<Vec<DocumentRecoveryIntent>, DocumentRecoveryError> {
+        if self.block_next.swap(0, Ordering::SeqCst) == 1 {
+            self.started
+                .lock()
+                .unwrap()
+                .take()
+                .unwrap()
+                .send(())
+                .unwrap();
+            self.release.lock().unwrap().recv().unwrap();
+        }
+        self.inner.pending()
+    }
+
+    fn complete(&self, transaction_id: Uuid) -> Result<(), DocumentRecoveryError> {
+        self.inner.complete(transaction_id)
+    }
+
+    fn clear(&self, transaction_id: Uuid) -> Result<(), DocumentRecoveryError> {
+        self.inner.clear(transaction_id)
+    }
 }
 
 impl ReplacingOnCompletionRecoveryStore {
@@ -276,6 +357,7 @@ impl DocumentHistoryStore for FailingHistory {
 
 struct Fixture {
     runtime: Arc<KernelRuntime>,
+    store: Arc<MemoryWorkspaceStore>,
     workspace: Arc<WorkspaceService>,
     root: PathBuf,
 }
@@ -297,10 +379,11 @@ impl Fixture {
             KernelPorts::unavailable(),
         )
         .unwrap();
+        let store = Arc::new(MemoryWorkspaceStore::default());
         let workspace = Arc::new(
             WorkspaceService::new(
                 &runtime,
-                Arc::new(MemoryWorkspaceStore::default()),
+                store.clone(),
                 managed,
                 runtime.event_broker().clone(),
                 "Recovery",
@@ -309,6 +392,7 @@ impl Fixture {
         );
         Self {
             runtime,
+            store,
             workspace,
             root,
         }
@@ -317,11 +401,158 @@ impl Fixture {
     fn service(&self, history: Arc<dyn DocumentHistoryStore>) -> Arc<WorkspaceDocumentService> {
         Arc::new(WorkspaceDocumentService::new(
             &self.runtime,
-            self.workspace.clone(),
             Arc::new(PermanentDeletion(self.root.clone())),
             history,
         ))
     }
+}
+
+fn enter_global_workspace_recovery(fixture: &Fixture) {
+    fixture
+        .store
+        .replace(Some(serde_json::json!({
+            "schemaVersion": 1,
+            "revisionSeed": "external-change",
+            "displayName": "External"
+        })))
+        .unwrap();
+    fixture.store.save().unwrap();
+    let root = fixture.root.parent().unwrap();
+    let paths =
+        KernelPaths::desktop(&fixture.root, &root.join("app-data"), &root.join("cache")).unwrap();
+    let managed = ManagedWorkspaceCollection::from_paths(&paths).unwrap();
+    assert!(WorkspaceService::new(
+        &fixture.runtime,
+        fixture.store.clone(),
+        managed,
+        fixture.runtime.event_broker().clone(),
+        "Ignored",
+    )
+    .is_err());
+}
+
+fn assert_workspace_is_locked(workspace: &std::path::Path, root: &std::path::Path, label: &str) {
+    let app_data = root.join(format!("{label}-app-data"));
+    let cache = root.join(format!("{label}-cache"));
+    fs::create_dir_all(&app_data).unwrap();
+    fs::create_dir_all(&cache).unwrap();
+    let paths = KernelPaths::desktop(workspace, &app_data, &cache).unwrap();
+    let error = KernelRuntime::activate(
+        KernelConfig::generate().unwrap(),
+        paths,
+        KernelPorts::unavailable(),
+    )
+    .unwrap_err();
+
+    assert_eq!(error.kind(), KernelStartupErrorKind::WorkspaceLocked);
+}
+
+fn assert_workspace_is_acquirable(
+    workspace: &std::path::Path,
+    root: &std::path::Path,
+    label: &str,
+) {
+    let app_data = root.join(format!("{label}-app-data"));
+    let cache = root.join(format!("{label}-cache"));
+    fs::create_dir_all(&app_data).unwrap();
+    fs::create_dir_all(&cache).unwrap();
+    let paths = KernelPaths::desktop(workspace, &app_data, &cache).unwrap();
+    let runtime = KernelRuntime::activate(
+        KernelConfig::generate().unwrap(),
+        paths,
+        KernelPorts::unavailable(),
+    )
+    .unwrap();
+    drop(runtime);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn recovery_retains_one_snapshot_and_old_lease_until_completion() {
+    let fixture = Fixture::new();
+    let (started_sender, started_receiver) = mpsc::channel();
+    let (release_sender, release_receiver) = mpsc::channel();
+    let recovery = Arc::new(BlockingPendingRecoveryStore::new(
+        started_sender,
+        release_receiver,
+    ));
+    let service = Arc::new(
+        WorkspaceDocumentService::new_with_recovery(
+            &fixture.runtime,
+            Arc::new(PermanentDeletion(fixture.root.clone())),
+            Arc::new(MemoryDocumentHistoryStore::default()),
+            recovery.clone(),
+        )
+        .unwrap(),
+    );
+    recovery.block_next_pending();
+    let recovery_service = service.clone();
+    let request = std::thread::spawn(move || recovery_service.recover());
+    tokio::task::spawn_blocking(move || started_receiver.recv_timeout(Duration::from_secs(5)))
+        .await
+        .unwrap()
+        .expect("recovery must retain its context before reading the journal");
+
+    let next = fixture
+        .root
+        .parent()
+        .unwrap()
+        .join("next-recovery-workspace");
+    fs::create_dir(&next).unwrap();
+    let current = fixture.workspace.current().unwrap();
+    let prepared = fixture
+        .runtime
+        .prepare_host_workspace_authority(&next)
+        .unwrap();
+    fixture
+        .workspace
+        .compare_and_set_host_workspace(&current.revision, prepared, "Next")
+        .await
+        .unwrap();
+
+    assert_workspace_is_locked(
+        &fixture.root,
+        fixture.root.parent().unwrap(),
+        "recovery-retained",
+    );
+    release_sender.send(()).unwrap();
+    request.join().unwrap().unwrap();
+    assert_workspace_is_acquirable(
+        &fixture.root,
+        fixture.root.parent().unwrap(),
+        "recovery-released",
+    );
+}
+
+#[test]
+fn recovery_does_not_touch_journal_after_global_quarantine() {
+    let fixture = Fixture::new();
+    let recovery = Arc::new(CountingRecoveryStore::default());
+    let service = WorkspaceDocumentService::new_with_recovery(
+        &fixture.runtime,
+        Arc::new(PermanentDeletion(fixture.root.clone())),
+        Arc::new(MemoryDocumentHistoryStore::default()),
+        recovery.clone(),
+    )
+    .unwrap();
+    assert_eq!(recovery.pending_calls(), 1);
+    enter_global_workspace_recovery(&fixture);
+
+    assert_eq!(
+        service.recover().unwrap_err().kind(),
+        DocumentServiceErrorKind::Unavailable
+    );
+    assert_eq!(recovery.pending_calls(), 1);
+    let rebuilt = WorkspaceDocumentService::new_with_recovery(
+        &fixture.runtime,
+        Arc::new(PermanentDeletion(fixture.root.clone())),
+        Arc::new(MemoryDocumentHistoryStore::default()),
+        recovery.clone(),
+    );
+    assert!(matches!(
+        rebuilt,
+        Err(error) if error.kind() == DocumentServiceErrorKind::Unavailable
+    ));
+    assert_eq!(recovery.pending_calls(), 1);
 }
 
 async fn create(
@@ -355,7 +586,6 @@ async fn create_returns_contents_and_revision_from_one_installed_snapshot() {
     ));
     let service = WorkspaceDocumentService::new_with_recovery(
         &fixture.runtime,
-        fixture.workspace.clone(),
         Arc::new(PermanentDeletion(fixture.root.clone())),
         Arc::new(MemoryDocumentHistoryStore::default()),
         recovery.clone(),
@@ -555,7 +785,6 @@ async fn rename_that_published_before_completion_failure_is_finalized_on_restart
     let service = Arc::new(
         WorkspaceDocumentService::new_with_recovery(
             &fixture.runtime,
-            fixture.workspace.clone(),
             Arc::new(PermanentDeletion(fixture.root.clone())),
             Arc::new(MemoryDocumentHistoryStore::default()),
             recovery.clone(),
@@ -585,7 +814,6 @@ async fn rename_that_published_before_completion_failure_is_finalized_on_restart
 
     let restarted = WorkspaceDocumentService::new_with_recovery(
         &fixture.runtime,
-        fixture.workspace.clone(),
         Arc::new(PermanentDeletion(fixture.root.clone())),
         Arc::new(MemoryDocumentHistoryStore::default()),
         recovery.clone(),
@@ -608,7 +836,6 @@ async fn stage_tampering_during_atomic_install_keeps_recovery_intent_and_publish
         let service = Arc::new(
             WorkspaceDocumentService::new_with_ports(
                 &fixture.runtime,
-                fixture.workspace.clone(),
                 Arc::new(PermanentDeletion(fixture.root.clone())),
                 Arc::new(MemoryDocumentHistoryStore::default()),
                 recovery.clone(),
@@ -650,7 +877,6 @@ async fn directory_content_change_during_install_fails_closed_after_publication(
     let atomic = Arc::new(TamperingAtomicInstallPort::default());
     let service = WorkspaceDocumentService::new_with_ports(
         &fixture.runtime,
-        fixture.workspace.clone(),
         Arc::new(PermanentDeletion(fixture.root.clone())),
         Arc::new(MemoryDocumentHistoryStore::default()),
         recovery.clone(),
@@ -691,7 +917,6 @@ async fn update_does_not_overwrite_a_target_replaced_during_the_final_atomic_ins
     let service = Arc::new(
         WorkspaceDocumentService::new_with_ports(
             &fixture.runtime,
-            fixture.workspace.clone(),
             Arc::new(PermanentDeletion(fixture.root.clone())),
             Arc::new(MemoryDocumentHistoryStore::default()),
             recovery.clone(),
@@ -731,7 +956,6 @@ async fn move_rolls_back_when_the_source_is_replaced_during_the_final_rename() {
     let service = Arc::new(
         WorkspaceDocumentService::new_with_mutation_ports(
             &fixture.runtime,
-            fixture.workspace.clone(),
             Arc::new(PermanentDeletion(fixture.root.clone())),
             Arc::new(MemoryDocumentHistoryStore::default()),
             recovery.clone(),
@@ -772,7 +996,6 @@ async fn directory_create_published_before_completion_failure_is_finalized_on_re
     let recovery = Arc::new(MemoryDocumentRecoveryStore::default());
     let service = WorkspaceDocumentService::new_with_recovery(
         &fixture.runtime,
-        fixture.workspace.clone(),
         Arc::new(PermanentDeletion(fixture.root.clone())),
         Arc::new(MemoryDocumentHistoryStore::default()),
         recovery.clone(),
@@ -794,7 +1017,6 @@ async fn directory_create_published_before_completion_failure_is_finalized_on_re
 
     WorkspaceDocumentService::new_with_recovery(
         &fixture.runtime,
-        fixture.workspace.clone(),
         Arc::new(PermanentDeletion(fixture.root.clone())),
         Arc::new(MemoryDocumentHistoryStore::default()),
         recovery.clone(),
@@ -823,7 +1045,6 @@ fn orphan_stage_is_rolled_back_and_repeated_recovery_is_a_noop() {
 
     let service = WorkspaceDocumentService::new_with_recovery(
         &fixture.runtime,
-        fixture.workspace.clone(),
         Arc::new(PermanentDeletion(fixture.root.clone())),
         Arc::new(MemoryDocumentHistoryStore::default()),
         recovery.clone(),
@@ -858,7 +1079,6 @@ fn recovery_never_deletes_an_unknown_entry_at_a_valid_stage_name() {
 
     let result = WorkspaceDocumentService::new_with_recovery(
         &fixture.runtime,
-        fixture.workspace.clone(),
         Arc::new(PermanentDeletion(fixture.root.clone())),
         Arc::new(MemoryDocumentHistoryStore::default()),
         recovery.clone(),
@@ -894,7 +1114,6 @@ fn recovery_rejects_an_unowned_stage_name_without_deleting_a_workspace_entry() {
 
     let result = WorkspaceDocumentService::new_with_recovery(
         &fixture.runtime,
-        fixture.workspace.clone(),
         Arc::new(PermanentDeletion(fixture.root.clone())),
         Arc::new(MemoryDocumentHistoryStore::default()),
         recovery.clone(),
@@ -1024,7 +1243,6 @@ async fn directory_move_published_before_completion_is_recovered_with_path_stabl
     let service = Arc::new(
         WorkspaceDocumentService::new_with_recovery(
             &fixture.runtime,
-            fixture.workspace.clone(),
             Arc::new(PermanentDeletion(fixture.root.clone())),
             Arc::new(MemoryDocumentHistoryStore::default()),
             recovery.clone(),
@@ -1075,7 +1293,6 @@ async fn directory_move_published_before_completion_is_recovered_with_path_stabl
 
     WorkspaceDocumentService::new_with_recovery(
         &fixture.runtime,
-        fixture.workspace.clone(),
         Arc::new(PermanentDeletion(fixture.root.clone())),
         Arc::new(MemoryDocumentHistoryStore::default()),
         recovery.clone(),

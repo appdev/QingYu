@@ -4,8 +4,9 @@ use std::{
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc, Mutex,
+        mpsc, Arc, Mutex,
     },
+    time::Duration,
 };
 
 use axum::{
@@ -34,7 +35,7 @@ use qingyu_kernel::{
     },
     paths::KernelPaths,
     ports::KernelPorts,
-    runtime::{DocumentsApiService, KernelRuntime},
+    runtime::{DocumentsApiService, KernelRuntime, KernelStartupErrorKind},
     services::workspace::WorkspaceService,
     workspace::{
         managed::ManagedWorkspaceCollection,
@@ -148,6 +149,21 @@ impl DocumentIgnorePort for PathIgnorePort {
     }
 }
 
+struct BlockingIgnorePort {
+    started: Mutex<Option<mpsc::Sender<()>>>,
+    release: Mutex<mpsc::Receiver<()>>,
+}
+
+impl DocumentIgnorePort for BlockingIgnorePort {
+    fn is_ignored(&self, _path: &WorkspaceRelativePath, _kind: DocumentKind) -> bool {
+        if let Some(started) = self.started.lock().unwrap().take() {
+            started.send(()).unwrap();
+            self.release.lock().unwrap().recv().unwrap();
+        }
+        false
+    }
+}
+
 impl DeletionPort for RecordingDeletionPort {
     fn delete(
         &self,
@@ -176,6 +192,7 @@ impl DeletionPort for NoopDeletionPort {
 
 struct Fixture {
     runtime: Arc<KernelRuntime>,
+    store: Arc<MemoryWorkspaceStore>,
     workspace: Arc<WorkspaceService>,
     service: Arc<WorkspaceDocumentService>,
     root: PathBuf,
@@ -199,10 +216,11 @@ impl Fixture {
             KernelPorts::unavailable(),
         )
         .unwrap();
+        let store = Arc::new(MemoryWorkspaceStore::default());
         let workspace = Arc::new(
             WorkspaceService::new(
                 &runtime,
-                Arc::new(MemoryWorkspaceStore::default()),
+                store.clone(),
                 managed,
                 runtime.event_broker().clone(),
                 "Documents",
@@ -215,18 +233,244 @@ impl Fixture {
         });
         let service = Arc::new(WorkspaceDocumentService::new(
             &runtime,
-            workspace.clone(),
             deletion.clone(),
             Arc::new(MemoryDocumentHistoryStore::default()),
         ));
         Self {
             runtime,
+            store,
             workspace,
             service,
             root,
             deletion,
         }
     }
+}
+
+fn enter_global_workspace_recovery(fixture: &Fixture) {
+    fixture
+        .store
+        .replace(Some(serde_json::json!({
+            "schemaVersion": 1,
+            "revisionSeed": "external-change",
+            "displayName": "External"
+        })))
+        .unwrap();
+    fixture.store.save().unwrap();
+    let root = fixture.root.parent().unwrap();
+    let paths =
+        KernelPaths::desktop(&fixture.root, &root.join("app-data"), &root.join("cache")).unwrap();
+    let managed = ManagedWorkspaceCollection::from_paths(&paths).unwrap();
+    assert!(WorkspaceService::new(
+        &fixture.runtime,
+        fixture.store.clone(),
+        managed,
+        fixture.runtime.event_broker().clone(),
+        "Ignored",
+    )
+    .is_err());
+}
+
+fn assert_workspace_is_locked(workspace: &std::path::Path, root: &std::path::Path, label: &str) {
+    let app_data = root.join(format!("{label}-app-data"));
+    let cache = root.join(format!("{label}-cache"));
+    fs::create_dir_all(&app_data).unwrap();
+    fs::create_dir_all(&cache).unwrap();
+    let paths = KernelPaths::desktop(workspace, &app_data, &cache).unwrap();
+    let error = KernelRuntime::activate(
+        KernelConfig::generate().unwrap(),
+        paths,
+        KernelPorts::unavailable(),
+    )
+    .unwrap_err();
+
+    assert_eq!(error.kind(), KernelStartupErrorKind::WorkspaceLocked);
+}
+
+fn assert_workspace_is_acquirable(
+    workspace: &std::path::Path,
+    root: &std::path::Path,
+    label: &str,
+) {
+    let app_data = root.join(format!("{label}-app-data"));
+    let cache = root.join(format!("{label}-cache"));
+    fs::create_dir_all(&app_data).unwrap();
+    fs::create_dir_all(&cache).unwrap();
+    let paths = KernelPaths::desktop(workspace, &app_data, &cache).unwrap();
+    let runtime = KernelRuntime::activate(
+        KernelConfig::generate().unwrap(),
+        paths,
+        KernelPorts::unavailable(),
+    )
+    .unwrap();
+    drop(runtime);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn document_request_retains_old_snapshot_lease_until_request_finishes() {
+    let fixture = Fixture::new();
+    fs::write(fixture.root.join("old.md"), "old").unwrap();
+    let (started_sender, started_receiver) = mpsc::channel();
+    let (release_sender, release_receiver) = mpsc::channel();
+    let service = Arc::new(
+        WorkspaceDocumentService::new_with_ports(
+            &fixture.runtime,
+            fixture.deletion.clone(),
+            Arc::new(MemoryDocumentHistoryStore::default()),
+            Arc::new(MemoryDocumentRecoveryStore::default()),
+            Arc::new(CapabilityAtomicInstallPort),
+            Arc::new(BlockingIgnorePort {
+                started: Mutex::new(Some(started_sender)),
+                release: Mutex::new(release_receiver),
+            }),
+        )
+        .unwrap(),
+    );
+    let request = tokio::spawn(async move {
+        service
+            .list_documents(ListDocumentsQuery {
+                cursor: None,
+                limit: None,
+                parent: WorkspaceRelativePath::default(),
+            })
+            .await
+    });
+    tokio::task::spawn_blocking(move || started_receiver.recv_timeout(Duration::from_secs(5)))
+        .await
+        .unwrap()
+        .expect("document request must retain its context before workspace switch");
+
+    let next = fixture.root.parent().unwrap().join("next-workspace-lease");
+    fs::create_dir(&next).unwrap();
+    let current = fixture.workspace.current().unwrap();
+    let prepared = fixture
+        .runtime
+        .prepare_host_workspace_authority(&next)
+        .unwrap();
+    fixture
+        .workspace
+        .compare_and_set_host_workspace(&current.revision, prepared, "Next")
+        .await
+        .unwrap();
+
+    assert_workspace_is_locked(
+        &fixture.root,
+        fixture.root.parent().unwrap(),
+        "document-request-retained",
+    );
+    release_sender.send(()).unwrap();
+    request.await.unwrap().unwrap();
+    assert_workspace_is_acquirable(
+        &fixture.root,
+        fixture.root.parent().unwrap(),
+        "document-request-released",
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn document_request_never_crosses_authority_and_generation() {
+    let fixture = Fixture::new();
+    fs::write(fixture.root.join("old.md"), "old").unwrap();
+    let admitted = fixture.workspace.current().unwrap();
+    let (started_sender, started_receiver) = mpsc::channel();
+    let (release_sender, release_receiver) = mpsc::channel();
+    let service = Arc::new(
+        WorkspaceDocumentService::new_with_ports(
+            &fixture.runtime,
+            fixture.deletion.clone(),
+            Arc::new(MemoryDocumentHistoryStore::default()),
+            Arc::new(MemoryDocumentRecoveryStore::default()),
+            Arc::new(CapabilityAtomicInstallPort),
+            Arc::new(BlockingIgnorePort {
+                started: Mutex::new(Some(started_sender)),
+                release: Mutex::new(release_receiver),
+            }),
+        )
+        .unwrap(),
+    );
+    let first_service = service.clone();
+    let first = tokio::spawn(async move {
+        first_service
+            .list_documents(ListDocumentsQuery {
+                cursor: None,
+                limit: None,
+                parent: WorkspaceRelativePath::default(),
+            })
+            .await
+    });
+    tokio::task::spawn_blocking(move || started_receiver.recv_timeout(Duration::from_secs(5)))
+        .await
+        .unwrap()
+        .expect("first request must retain its context before workspace switch");
+
+    let next = fixture
+        .root
+        .parent()
+        .unwrap()
+        .join("next-workspace-consistency");
+    fs::create_dir(&next).unwrap();
+    fs::write(next.join("new.md"), "new").unwrap();
+    let prepared = fixture
+        .runtime
+        .prepare_host_workspace_authority(&next)
+        .unwrap();
+    let installed = fixture
+        .workspace
+        .compare_and_set_host_workspace(&admitted.revision, prepared, "Next")
+        .await
+        .unwrap();
+    release_sender.send(()).unwrap();
+
+    let first_page = first.await.unwrap().unwrap();
+    assert_eq!(first_page.items.len(), 1);
+    assert_eq!(first_page.items[0].path.as_str(), "old.md");
+    DocumentIdentityCodec::new(fixture.runtime.wire_identity_key())
+        .verify(&first_page.items[0].id, &admitted, DocumentKind::File)
+        .unwrap();
+
+    let second_page = service
+        .list_documents(ListDocumentsQuery {
+            cursor: None,
+            limit: None,
+            parent: WorkspaceRelativePath::default(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(second_page.items.len(), 1);
+    assert_eq!(second_page.items[0].path.as_str(), "new.md");
+    DocumentIdentityCodec::new(fixture.runtime.wire_identity_key())
+        .verify(&second_page.items[0].id, &installed, DocumentKind::File)
+        .unwrap();
+}
+
+#[tokio::test]
+async fn documents_remain_unavailable_after_quarantine_even_through_service_rebuild() {
+    let fixture = Fixture::new();
+    enter_global_workspace_recovery(&fixture);
+    let query = || ListDocumentsQuery {
+        cursor: None,
+        limit: None,
+        parent: WorkspaceRelativePath::default(),
+    };
+
+    assert_eq!(
+        fixture
+            .service
+            .list_documents(query())
+            .await
+            .unwrap_err()
+            .kind(),
+        DocumentServiceErrorKind::Unavailable
+    );
+    let rebuilt = WorkspaceDocumentService::new(
+        &fixture.runtime,
+        fixture.deletion.clone(),
+        Arc::new(MemoryDocumentHistoryStore::default()),
+    );
+    assert_eq!(
+        rebuilt.list_documents(query()).await.unwrap_err().kind(),
+        DocumentServiceErrorKind::Unavailable
+    );
 }
 
 #[tokio::test]
@@ -491,7 +735,6 @@ async fn delete_does_not_publish_success_until_the_original_capability_target_is
     let fixture = Fixture::new();
     let service = WorkspaceDocumentService::new(
         &fixture.runtime,
-        fixture.workspace.clone(),
         Arc::new(NoopDeletionPort),
         Arc::new(MemoryDocumentHistoryStore::default()),
     );
@@ -681,7 +924,6 @@ async fn search_is_utf8_precise_bounded_cursor_bound_and_skips_unsafe_or_ignored
     let service = Arc::new(
         WorkspaceDocumentService::new_with_ports(
             &fixture.runtime,
-            fixture.workspace.clone(),
             fixture.deletion.clone(),
             Arc::new(MemoryDocumentHistoryStore::default()),
             Arc::new(MemoryDocumentRecoveryStore::default()),

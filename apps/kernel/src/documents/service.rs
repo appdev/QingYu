@@ -39,15 +39,13 @@ use crate::{
         PinnedInstallSource, PinnedMoveSource,
     },
     events::{EventPublication, EventSink as _},
-    runtime::{DocumentsApiService, KernelRuntime, ServiceFailure},
-    services::workspace::WorkspaceService,
+    runtime::{ActiveWorkspaceSnapshot, DocumentsApiService, KernelRuntime, ServiceFailure},
 };
 
 const MAX_SEARCH_MATCHES: usize = 10_000;
 
 pub struct WorkspaceDocumentService {
     runtime: Weak<KernelRuntime>,
-    workspace: Arc<WorkspaceService>,
     deletion: Arc<dyn DeletionPort>,
     history: Arc<dyn DocumentHistoryStore>,
     recovery: Arc<dyn DocumentRecoveryStore>,
@@ -74,13 +72,11 @@ impl MoveInstallPort for CapabilityMoveInstallPort {
 impl WorkspaceDocumentService {
     pub fn new(
         runtime: &Arc<KernelRuntime>,
-        workspace: Arc<WorkspaceService>,
         deletion: Arc<dyn DeletionPort>,
         history: Arc<dyn DocumentHistoryStore>,
     ) -> Self {
         Self {
             runtime: Arc::downgrade(runtime),
-            workspace,
             deletion,
             history,
             recovery: Arc::new(MemoryDocumentRecoveryStore::default()),
@@ -92,14 +88,12 @@ impl WorkspaceDocumentService {
 
     pub fn new_with_recovery(
         runtime: &Arc<KernelRuntime>,
-        workspace: Arc<WorkspaceService>,
         deletion: Arc<dyn DeletionPort>,
         history: Arc<dyn DocumentHistoryStore>,
         recovery: Arc<dyn DocumentRecoveryStore>,
     ) -> Result<Self, DocumentServiceError> {
         let service = Self {
             runtime: Arc::downgrade(runtime),
-            workspace,
             deletion,
             history,
             recovery,
@@ -114,7 +108,6 @@ impl WorkspaceDocumentService {
     #[allow(clippy::too_many_arguments)]
     pub fn new_with_ports(
         runtime: &Arc<KernelRuntime>,
-        workspace: Arc<WorkspaceService>,
         deletion: Arc<dyn DeletionPort>,
         history: Arc<dyn DocumentHistoryStore>,
         recovery: Arc<dyn DocumentRecoveryStore>,
@@ -123,7 +116,6 @@ impl WorkspaceDocumentService {
     ) -> Result<Self, DocumentServiceError> {
         let service = Self {
             runtime: Arc::downgrade(runtime),
-            workspace,
             deletion,
             history,
             recovery,
@@ -138,7 +130,6 @@ impl WorkspaceDocumentService {
     #[allow(clippy::too_many_arguments)]
     pub fn new_with_mutation_ports(
         runtime: &Arc<KernelRuntime>,
-        workspace: Arc<WorkspaceService>,
         deletion: Arc<dyn DeletionPort>,
         history: Arc<dyn DocumentHistoryStore>,
         recovery: Arc<dyn DocumentRecoveryStore>,
@@ -148,7 +139,6 @@ impl WorkspaceDocumentService {
     ) -> Result<Self, DocumentServiceError> {
         let service = Self {
             runtime: Arc::downgrade(runtime),
-            workspace,
             deletion,
             history,
             recovery,
@@ -217,9 +207,12 @@ impl WorkspaceDocumentService {
         entries.sort_by(|left, right| left.path.as_str().cmp(right.path.as_str()));
 
         let normalized = query.parent.as_str();
-        let cursor_context =
-            PageCursorContext::new("documents-list", normalized, &context.workspace.generation)
-                .map_err(|_| DocumentServiceError::invalid_cursor())?;
+        let cursor_context = PageCursorContext::new(
+            "documents-list",
+            normalized,
+            &context.workspace().generation,
+        )
+        .map_err(|_| DocumentServiceError::invalid_cursor())?;
         let start = match query.cursor.as_ref() {
             Some(cursor) => {
                 let last = context
@@ -283,7 +276,7 @@ impl WorkspaceDocumentService {
                 None,
             ),
         };
-        self.verify_generation(&context.workspace, &generation)?;
+        self.verify_generation(context.workspace(), &generation)?;
         let directory = open_directory(&context.root, &parent)?;
         ensure_absent(&directory, &name)?;
         let path = join_relative(&parent, &name)?;
@@ -352,7 +345,7 @@ impl WorkspaceDocumentService {
         let runtime = self.runtime()?;
         let _mutation = runtime.mutation_coordinator().lock().await;
         let context = self.context_with_runtime(runtime.clone())?;
-        self.verify_generation(&context.workspace, &request.workspace_generation)?;
+        self.verify_generation(context.workspace(), &request.workspace_generation)?;
         let path = self.verify_id(&context, &document_id, DocumentKind::File)?;
         let current = read_file(&context.root, &path)?;
         if current.revision != request.expected_revision {
@@ -383,7 +376,7 @@ impl WorkspaceDocumentService {
         let runtime = self.runtime()?;
         let _mutation = runtime.mutation_coordinator().lock().await;
         let context = self.context_with_runtime(runtime.clone())?;
-        self.verify_generation(&context.workspace, &request.workspace_generation)?;
+        self.verify_generation(context.workspace(), &request.workspace_generation)?;
         let (kind, source) = self.verify_any_id(&context, &document_id)?;
         let source_snapshot = match kind {
             DocumentKind::File => MoveSourceSnapshot::File(read_file(&context.root, &source)?),
@@ -432,7 +425,7 @@ impl WorkspaceDocumentService {
         let runtime = self.runtime()?;
         let _mutation = runtime.mutation_coordinator().lock().await;
         let context = self.context_with_runtime(runtime.clone())?;
-        self.verify_generation(&context.workspace, &request.workspace_generation)?;
+        self.verify_generation(context.workspace(), &request.workspace_generation)?;
         let (kind, path) = self.verify_any_id(&context, &document_id)?;
         let metadata = metadata_at(&context.root, &path)?;
         let current_revision = revision_for_metadata_and_contents(&context.root, &path, &metadata)?;
@@ -466,7 +459,7 @@ impl WorkspaceDocumentService {
             event: crate::contract::DomainEvent::DocumentDeleted {
                 document_id,
                 previous_path: path,
-                workspace_generation: context.workspace.generation,
+                workspace_generation: context.workspace().generation.clone(),
                 revision: current_revision,
             },
         };
@@ -489,7 +482,7 @@ impl WorkspaceDocumentService {
         let cursor_context = PageCursorContext::new(
             "document-history",
             path.as_str(),
-            &context.workspace.generation,
+            &context.workspace().generation,
         )
         .map_err(|_| DocumentServiceError::invalid_cursor())?;
         let start = match query.cursor.as_ref() {
@@ -549,7 +542,7 @@ impl WorkspaceDocumentService {
         let runtime = self.runtime()?;
         let _mutation = runtime.mutation_coordinator().lock().await;
         let context = self.context_with_runtime(runtime.clone())?;
-        self.verify_generation(&context.workspace, &request.workspace_generation)?;
+        self.verify_generation(context.workspace(), &request.workspace_generation)?;
         let path = self.verify_id(&context, &document_id, DocumentKind::File)?;
         let current = read_file(&context.root, &path)?;
         if current.revision != request.expected_revision {
@@ -595,7 +588,7 @@ impl WorkspaceDocumentService {
         let cursor_context = PageCursorContext::new(
             "workspace-search",
             query.query.as_str(),
-            &context.workspace.generation,
+            &context.workspace().generation,
         )
         .map_err(|_| DocumentServiceError::invalid_cursor())?;
         let start = match query.cursor.as_ref() {
@@ -1002,24 +995,20 @@ impl WorkspaceDocumentService {
         runtime
             .verify_instance_lock()
             .map_err(|_| DocumentServiceError::unavailable())?;
-        let authority = runtime.active_workspace_authority();
-        authority
-            .verify_held_directory()
+        let snapshot = runtime
+            .active_workspace_snapshot()
             .map_err(|_| DocumentServiceError::unavailable())?;
-        let workspace = self
-            .workspace
-            .current()
-            .map_err(|_| DocumentServiceError::unavailable())?;
-        if workspace.readiness != WorkspaceReadiness::Ready {
+        if snapshot.workspace().readiness != WorkspaceReadiness::Ready {
             return Err(DocumentServiceError::unavailable());
         }
-        let root = authority
+        let root = snapshot
+            .authority()
             .root()
             .try_clone_dir()
             .map_err(|_| DocumentServiceError::unavailable())?;
         Ok(DocumentContext {
             runtime,
-            workspace,
+            snapshot,
             root,
         })
     }
@@ -1044,7 +1033,7 @@ impl WorkspaceDocumentService {
         kind: DocumentKind,
     ) -> Result<WorkspaceRelativePath, DocumentServiceError> {
         DocumentIdentityCodec::new(context.runtime.wire_identity_key())
-            .verify(id, &context.workspace, kind)
+            .verify(id, context.workspace(), kind)
             .map_err(|_| DocumentServiceError::not_found())
     }
 
@@ -1114,7 +1103,7 @@ impl WorkspaceDocumentService {
             .map_err(|_| DocumentServiceError::invalid_name())?;
         Ok(DocumentEntryDto {
             id: DocumentIdentityCodec::new(context.runtime.wire_identity_key())
-                .issue(&context.workspace, kind, &path)
+                .issue(context.workspace(), kind, &path)
                 .map_err(|_| DocumentServiceError::unavailable())?,
             path,
             parent,
@@ -1298,8 +1287,14 @@ fn remove_recovery_artifact_if_expected(
 
 struct DocumentContext {
     runtime: Arc<KernelRuntime>,
-    workspace: WorkspaceDto,
+    snapshot: Arc<ActiveWorkspaceSnapshot>,
     root: Dir,
+}
+
+impl DocumentContext {
+    fn workspace(&self) -> &WorkspaceDto {
+        self.snapshot.workspace()
+    }
 }
 enum DocumentEvent {
     Created,

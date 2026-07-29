@@ -3109,7 +3109,6 @@ mod kernel_deletion_adapter_tests {
         let service = Arc::new(
             WorkspaceDocumentService::new_with_ports(
                 &runtime,
-                workspace.clone(),
                 Arc::new(
                     KernelDocumentDeletionAdapter::new(
                         &root,
