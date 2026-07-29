@@ -67,6 +67,9 @@ describe("app settings", () => {
       expect(defaultCustomThemeCss).toContain(
         `--editor-h${level}-font-weight: var(--editor-heading-font-weight);`
       );
+      expect(defaultCustomThemeCss).toContain(
+        `--editor-h${level}-letter-spacing: var(--editor-heading-letter-spacing);`
+      );
       expect(defaultCustomThemeCss).toContain(`--editor-h${level}-line-height:`);
     }
   });

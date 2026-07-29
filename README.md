@@ -47,6 +47,8 @@ brew install --cask markrahq/tap/markra
 
 ## 文档
 
+- [主题制作教程与能力边界](docs/theme-authoring.md)
+- [默认文楷主题设计与完整案例](docs/default-theme-wenkai.md)
 - [轻语 MCP 配置与安全说明](docs/qingyu-mcp.md)
 - [更新日志](CHANGELOG.md)
 - [隐私与数据流](docs/privacy.md)

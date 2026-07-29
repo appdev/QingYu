@@ -241,7 +241,7 @@ const expectedThemeDeclarations = {
 
 const expectedWenkaiSidebarDeclarations = {
   "wenkai-paper-light": [
-    "--sidebar-font-family: \"LXGW WenKai Screen\", \"Kaiti SC\", KaiTi, STKaiti, ui-serif, serif;",
+    "--sidebar-font-family: \"LXGW WenKai Lite\", \"Kaiti SC\", KaiTi, STKaiti, ui-serif, serif;",
     "--sidebar-tree-font-size: 14px;",
     "--sidebar-tree-font-weight: 400;",
     "--sidebar-tree-line-height: 20px;",
@@ -259,15 +259,15 @@ const expectedWenkaiSidebarDeclarations = {
     "--text-outline-hover: #262626;",
     "--sidebar-outline-current-font-weight: 500;",
     "--sidebar-outline-h1-font-size: 16px;",
-    "--sidebar-outline-h1-font-weight: 600;",
+    "--sidebar-outline-h1-font-weight: 500;",
     "--sidebar-outline-h1-text: #1c5d33;",
     "--sidebar-outline-h1-space-before: 8px;",
-    "--sidebar-outline-h2-font-weight: 600;",
+    "--sidebar-outline-h2-font-weight: 500;",
     "--sidebar-outline-h2-text: #262626;",
     "--sidebar-outline-h2-space-before: 6px;"
   ],
   "wenkai-paper-dark": [
-    "--sidebar-font-family: \"LXGW WenKai Screen\", \"Kaiti SC\", KaiTi, STKaiti, ui-serif, serif;",
+    "--sidebar-font-family: \"LXGW WenKai Lite\", \"Kaiti SC\", KaiTi, STKaiti, ui-serif, serif;",
     "--sidebar-tree-font-size: 14px;",
     "--sidebar-tree-font-weight: 400;",
     "--sidebar-tree-line-height: 20px;",
@@ -285,12 +285,61 @@ const expectedWenkaiSidebarDeclarations = {
     "--text-outline-hover: #ffffff;",
     "--sidebar-outline-current-font-weight: 500;",
     "--sidebar-outline-h1-font-size: 16px;",
-    "--sidebar-outline-h1-font-weight: 600;",
+    "--sidebar-outline-h1-font-weight: 500;",
     "--sidebar-outline-h1-text: #54c59f;",
     "--sidebar-outline-h1-space-before: 8px;",
-    "--sidebar-outline-h2-font-weight: 600;",
+    "--sidebar-outline-h2-font-weight: 500;",
     "--sidebar-outline-h2-text: #ffffff;",
     "--sidebar-outline-h2-space-before: 6px;"
+  ]
+} as const;
+
+const expectedWenkaiTypographyDeclarations = {
+  "wenkai-paper-light": [
+    "--editor-heading-font-weight: 500;",
+    "--editor-heading-letter-spacing: 0.02em;",
+    "--editor-h1-color: #7a3dad;",
+    "--editor-h1-font-size: 2rem;",
+    "--editor-h1-font-size-compact: 1.75rem;",
+    "--editor-h1-letter-spacing: 0.05em;",
+    "--editor-h1-line-height: 1.55;",
+    "--editor-h2-color: #7a3dad;",
+    "--editor-h2-font-size: 1.5rem;",
+    "--editor-h2-font-size-compact: 1.375rem;",
+    "--editor-h2-letter-spacing: 0.05em;",
+    "--editor-h2-line-height: 1.6;",
+    "--editor-h3-font-size: 1.25rem;",
+    "--editor-h3-letter-spacing: 0.04em;",
+    "--editor-h3-line-height: 1.65;",
+    "--editor-h4-letter-spacing: 0.02em;",
+    "--editor-h4-line-height: 1.74;",
+    "--editor-h5-letter-spacing: 0.02em;",
+    "--editor-h5-line-height: 1.74;",
+    "--editor-h6-letter-spacing: 0.02em;",
+    "--editor-h6-line-height: 1.74;"
+  ],
+  "wenkai-paper-dark": [
+    "--editor-heading-font-weight: 500;",
+    "--editor-heading-letter-spacing: 0.02em;",
+    "--editor-h1-color: #a178ff;",
+    "--editor-h1-font-size: 2rem;",
+    "--editor-h1-font-size-compact: 1.75rem;",
+    "--editor-h1-letter-spacing: 0.05em;",
+    "--editor-h1-line-height: 1.55;",
+    "--editor-h2-color: #a178ff;",
+    "--editor-h2-font-size: 1.5rem;",
+    "--editor-h2-font-size-compact: 1.375rem;",
+    "--editor-h2-letter-spacing: 0.05em;",
+    "--editor-h2-line-height: 1.6;",
+    "--editor-h3-font-size: 1.25rem;",
+    "--editor-h3-letter-spacing: 0.04em;",
+    "--editor-h3-line-height: 1.65;",
+    "--editor-h4-letter-spacing: 0.02em;",
+    "--editor-h4-line-height: 1.74;",
+    "--editor-h5-letter-spacing: 0.02em;",
+    "--editor-h5-line-height: 1.74;",
+    "--editor-h6-letter-spacing: 0.02em;",
+    "--editor-h6-line-height: 1.74;"
   ]
 } as const;
 
@@ -509,19 +558,27 @@ describe("editor stylesheet", () => {
       const colorVariable = `--editor-h${level}-color`;
       const fontSizeVariable = `--editor-h${level}-font-size`;
       const fontWeightVariable = `--editor-h${level}-font-weight`;
+      const letterSpacingVariable = `--editor-h${level}-letter-spacing`;
       const lineHeightVariable = `--editor-h${level}-line-height`;
 
       expect(styles).toContain(`${colorVariable}: var(--editor-text-heading);`);
       expect(styles).toContain(`${fontSizeVariable}: ${fontSize};`);
       expect(styles).toContain(`${fontWeightVariable}: var(--editor-heading-font-weight);`);
+      expect(styles).toContain(`${letterSpacingVariable}: var(--editor-heading-letter-spacing);`);
       expect(styles).toContain(`${lineHeightVariable}: ${lineHeight};`);
       expect(styles).toContain(`color: var(${colorVariable}) !important;`);
       expect(styles).toContain(`font-size: var(${fontSizeVariable}) !important;`);
       expect(styles).toContain(`font-weight: var(${fontWeightVariable}) !important;`);
+      expect(styles).toContain(
+        `letter-spacing: var(${letterSpacingVariable}, var(--editor-heading-letter-spacing)) !important;`
+      );
       expect(styles).toContain(`line-height: var(${lineHeightVariable}) !important;`);
       expect(styles).toContain(`color: var(${colorVariable});`);
       expect(styles).toContain(`font-size: var(${fontSizeVariable});`);
       expect(styles).toContain(`font-weight: var(${fontWeightVariable});`);
+      expect(styles).toContain(
+        `letter-spacing: var(${letterSpacingVariable}, var(--editor-heading-letter-spacing));`
+      );
       expect(styles).toContain(`line-height: var(${lineHeightVariable});`);
     }
   });
@@ -1631,12 +1688,12 @@ describe("editor stylesheet", () => {
     }
   });
 
-  it("keeps WenKai Paper packages licensed, self-contained, and complete across app chrome", () => {
+  it("keeps the default Paper packages licensed, self-contained, and complete across app chrome", () => {
     const appStyles = readFileSync(`${process.cwd()}/src/styles.css`, "utf8");
     const defaultAppTokens = readCustomPropertyNames(readNestedRuleDeclarations(appStyles, "  :root"));
     const defaultEditorTokens = readCustomPropertyNames(
       readNestedRuleDeclarations(appStyles, "  .markdown-paper")
-    );
+    ).filter((token) => token !== "--editor-paragraph-spacing");
 
     for (const theme of ["wenkai-paper-light", "wenkai-paper-dark"] as const) {
       const root = `${process.cwd()}/../../themes/external/${theme}`;
@@ -1645,16 +1702,21 @@ describe("editor stylesheet", () => {
 
       expect(manifest.author).toBe("轻语");
       expect(manifest.id).toBe(theme);
+      expect(manifest.version).toBe("1.2.0");
       expect(manifest.licenseFiles).toEqual([
         "licenses/THEME-LICENSE.txt",
         "licenses/FONT-LICENSE.txt",
-        "licenses/WEBFONT-LICENSE.txt"
+        "licenses/FONT-SOURCE.txt"
       ]);
-      expect(styles.match(/@font-face/gu)).toHaveLength(97);
+      expect(styles.match(/@font-face/gu)).toHaveLength(18);
       expect(styles).toContain(`:root[data-theme="${theme}"]`);
       expect(styles).toContain(`.markdown-paper[data-editor-theme="${theme}"]`);
       expect(styles).toContain(`.markdown-source-paper[data-editor-theme="${theme}"]`);
-      expect(styles).toContain('font-family: "LXGW WenKai Screen"');
+      expect(styles).toContain('font-family: "LXGW WenKai Lite"');
+      expect(styles).toContain("font-weight: 400;");
+      expect(styles).toContain("font-weight: 500;");
+      expect(styles).not.toContain("font-weight: 300;");
+      expect(styles).not.toContain("TsangerJinKai02");
       expect(styles).toContain("font-family: ui-monospace");
       const rootTokens = readCustomPropertyNames(
         readRuleDeclarations(styles, `:root[data-theme="${theme}"]`)
@@ -1684,6 +1746,10 @@ describe("editor stylesheet", () => {
       for (const declaration of expectedWenkaiSidebarDeclarations[theme]) {
         expect(styles).toContain(declaration);
       }
+      for (const declaration of expectedWenkaiTypographyDeclarations[theme]) {
+        expect(styles).toContain(declaration);
+      }
+      expect(styles).not.toContain("--editor-paragraph-spacing:");
       expect(styles).not.toContain("@import");
       expect(styles).not.toMatch(/url\(\s*["']?(?:https?:|\/\/|file:)/u);
       expect(readFileSync(`${root}/licenses/THEME-LICENSE.txt`, "utf8")).toContain(
@@ -1692,8 +1758,8 @@ describe("editor stylesheet", () => {
       expect(readFileSync(`${root}/licenses/FONT-LICENSE.txt`, "utf8")).toContain(
         "SIL OPEN FONT LICENSE Version 1.1"
       );
-      expect(readFileSync(`${root}/licenses/WEBFONT-LICENSE.txt`, "utf8")).toContain(
-        "Copyright (c) 2022 Chawye Hsu"
+      expect(readFileSync(`${root}/licenses/FONT-SOURCE.txt`, "utf8")).toContain(
+        "ff67bda3b3251e917a404b629db7d345405d68c7"
       );
     }
   });

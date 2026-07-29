@@ -12,7 +12,7 @@ use super::{
 
 const SETTINGS_STORE_PATH: &str = "settings.json";
 const CATALOG_VERSION_KEY: &str = "themeCatalogVersion";
-const CATALOG_VERSION: i64 = 3;
+const CATALOG_VERSION: i64 = 4;
 const LIGHT_THEME_ID_KEY: &str = "lightThemeId";
 const DARK_THEME_ID_KEY: &str = "darkThemeId";
 
@@ -36,10 +36,16 @@ pub(crate) fn initialize_catalog<R: Runtime>(
         .and_then(|value| value.as_i64())
         .unwrap_or(0)
         .max(0);
-    let seed_diagnostics = initialize_catalog_files(&catalog, stored_catalog_version)?;
     if stored_catalog_version >= CATALOG_VERSION {
-        return scan_with_diagnostics(&catalog, seed_diagnostics);
+        let snapshot = catalog.scan()?;
+        let (seed_diagnostics, changed) = catalog.reconcile_current_bundled(&snapshot)?;
+        return if changed {
+            scan_with_diagnostics(&catalog, seed_diagnostics)
+        } else {
+            Ok(merge_diagnostics(snapshot, seed_diagnostics))
+        };
     }
+    let seed_diagnostics = initialize_catalog_files(&catalog, stored_catalog_version)?;
     if !should_migrate_legacy_preferences(stored_catalog_version) {
         store.set(CATALOG_VERSION_KEY, json!(CATALOG_VERSION));
         if store.save().is_err() {
@@ -144,10 +150,16 @@ fn initialize_catalog_files(
             diagnostics.extend(catalog.seed_missing_wenkai()?);
             Ok(diagnostics)
         }
-        _ => {
+        3 => {
             let mut diagnostics = catalog.drake_seed_diagnostics()?;
-            diagnostics.extend(catalog.seed_missing_wenkai()?);
+            diagnostics.extend(catalog.refresh_wenkai()?);
             Ok(diagnostics)
+        }
+        _ => {
+            let snapshot = catalog.scan()?;
+            catalog
+                .reconcile_current_bundled(&snapshot)
+                .map(|(diagnostics, _)| diagnostics)
         }
     }
 }
@@ -166,7 +178,15 @@ fn scan_with_diagnostics(
     catalog: &ThemeCatalog,
     seed_diagnostics: Vec<InvalidThemeFile>,
 ) -> Result<ThemeCatalogSnapshot, ThemeError> {
-    let mut snapshot = catalog.scan()?;
+    catalog
+        .scan()
+        .map(|snapshot| merge_diagnostics(snapshot, seed_diagnostics))
+}
+
+fn merge_diagnostics(
+    mut snapshot: ThemeCatalogSnapshot,
+    seed_diagnostics: Vec<InvalidThemeFile>,
+) -> ThemeCatalogSnapshot {
     for diagnostic in seed_diagnostics {
         snapshot
             .invalid_files
@@ -176,7 +196,7 @@ fn scan_with_diagnostics(
     snapshot
         .invalid_files
         .sort_by(|left, right| left.file_name.cmp(&right.file_name));
-    Ok(snapshot)
+    snapshot
 }
 
 fn migrate_custom_theme(
@@ -287,6 +307,9 @@ fn is_dark_seed(id: &str) -> bool {
 mod tests {
     use std::fs;
 
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+
     use tempfile::tempdir;
 
     use super::{
@@ -294,6 +317,28 @@ mod tests {
         should_migrate_legacy_preferences, CATALOG_VERSION,
     };
     use crate::themes::catalog::ThemeCatalog;
+
+    #[cfg(unix)]
+    #[test]
+    fn current_bundled_checks_reuse_the_supplied_snapshot_without_rescanning() {
+        let temp = tempdir().unwrap();
+        let root = temp.path().join("themes");
+        let catalog = ThemeCatalog::at(root.clone());
+        assert!(catalog.seed_missing_drake().unwrap().is_empty());
+        assert!(catalog.seed_missing_wenkai().unwrap().is_empty());
+        let snapshot = catalog.scan().unwrap();
+        let original_permissions = fs::metadata(&root).unwrap().permissions();
+        let mut unreadable_permissions = original_permissions.clone();
+        unreadable_permissions.set_mode(0o300);
+        fs::set_permissions(&root, unreadable_permissions).unwrap();
+
+        let reconciliation = catalog.reconcile_current_bundled(&snapshot);
+
+        fs::set_permissions(&root, original_permissions).unwrap();
+        let (diagnostics, changed) = reconciliation.unwrap();
+        assert!(diagnostics.is_empty());
+        assert!(!changed);
+    }
 
     #[test]
     fn fresh_catalog_installs_original_css_and_all_bundled_resource_packages() {
@@ -303,7 +348,7 @@ mod tests {
         assert!(initialize_catalog_files(&catalog, 0).unwrap().is_empty());
         let snapshot = catalog.scan().unwrap();
 
-        assert_eq!(CATALOG_VERSION, 3);
+        assert_eq!(CATALOG_VERSION, 4);
         assert_eq!(snapshot.themes.len(), 22);
         assert!(snapshot
             .themes
@@ -397,6 +442,36 @@ mod tests {
             .themes
             .iter()
             .any(|theme| theme.id == "wenkai-paper-dark"));
+    }
+
+    #[test]
+    fn version_three_replaces_existing_protected_wenkai_with_the_current_bundle() {
+        let temp = tempdir().unwrap();
+        let root = temp.path().join("themes");
+        let catalog = ThemeCatalog::at(root.clone());
+        assert!(catalog.seed_missing_wenkai().unwrap().is_empty());
+
+        let expected = ["wenkai-paper-light", "wenkai-paper-dark"].map(|id| {
+            let descriptor = catalog.find_descriptor(id).unwrap();
+            let css_path = root.join(id).join("theme.css");
+            let css = fs::read_to_string(&css_path).unwrap();
+            fs::write(
+                css_path,
+                format!("{css}\n/* stale bundled WenKai package */\n"),
+            )
+            .unwrap();
+            (id, descriptor.fingerprint)
+        });
+
+        assert!(initialize_catalog_files(&catalog, 3).unwrap().is_empty());
+
+        for (id, expected_fingerprint) in expected {
+            let descriptor = catalog.find_descriptor(id).unwrap();
+            assert_eq!(descriptor.fingerprint, expected_fingerprint);
+            let css = fs::read_to_string(root.join(id).join("theme.css")).unwrap();
+            assert!(!css.contains("stale bundled WenKai package"));
+            assert!(css.contains("LXGW WenKai Lite"));
+        }
     }
 
     #[test]

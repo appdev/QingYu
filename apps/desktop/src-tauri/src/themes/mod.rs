@@ -137,9 +137,13 @@ pub(crate) enum ThemeImportResult {
     },
 }
 
+fn catalog_for_app(app: &tauri::AppHandle) -> Result<ThemeCatalog, ThemeError> {
+    migration::theme_directory(app).map(ThemeCatalog::at)
+}
+
 fn prepared_catalog(app: &tauri::AppHandle) -> Result<ThemeCatalog, ThemeError> {
     migration::initialize_catalog(app)?;
-    Ok(ThemeCatalog::at(migration::theme_directory(app)?))
+    catalog_for_app(app)
 }
 
 fn read_external_theme(
@@ -181,7 +185,7 @@ pub(crate) fn list_themes(
     state: tauri::State<'_, ThemeActivationState>,
 ) -> Result<ThemeCatalogSnapshot, ThemeError> {
     let snapshot = migration::initialize_catalog(&app)?;
-    let catalog = prepared_catalog(&app)?;
+    let catalog = catalog_for_app(&app)?;
     state.remember_catalog_snapshot(&catalog, &snapshot)?;
     Ok(snapshot)
 }
@@ -525,12 +529,12 @@ mod tests {
 
             assert_eq!(
                 files.iter().filter(|name| name.ends_with(".woff2")).count(),
-                97
+                18
             );
             for license in [
                 "licenses/THEME-LICENSE.txt",
                 "licenses/FONT-LICENSE.txt",
-                "licenses/WEBFONT-LICENSE.txt",
+                "licenses/FONT-SOURCE.txt",
             ] {
                 assert!(files.iter().any(|name| name == license));
             }
@@ -566,7 +570,8 @@ mod tests {
             ] {
                 assert!(css.contains(token), "{id} is missing {token}");
             }
-            assert!(css.contains("LXGW WenKai Screen"));
+            assert!(css.contains("LXGW WenKai Lite"));
+            assert!(!css.contains("TsangerJinKai02"));
 
             catalog.delete(id, &theme.fingerprint).unwrap();
             assert!(catalog.scan().unwrap().themes.is_empty());

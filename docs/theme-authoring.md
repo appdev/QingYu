@@ -5,7 +5,9 @@ QingYu supports two third-party theme forms:
 - A single UTF-8 `.css` file is enough when the theme needs only CSS rules, CSS variables, same-document fragments, or small passive base64 `data:` resources. It cannot carry a local font, image, icon, or license beside the CSS.
 - An unpacked resource-theme directory is the authoring format when the theme has fonts, images, icons, or license files. For distribution, its root contents can be packaged externally as a portable `.theme` archive.
 
-One CSS file, resource directory, or `.theme` package represents exactly one `light` or `dark` theme. The protected Light and Dark themes remain built in.
+One CSS file, resource directory, or `.theme` package represents exactly one `light` or `dark` theme. QingYu keeps two protected fallback themes (`light` and `dark`) and two protected bundled defaults (`wenkai-paper-light` and `wenkai-paper-dark`). Users may select all four, but cannot delete or replace them through third-party theme operations.
+
+For a worked explanation of the bundled defaults—including palette, typography, sidebar states, real font-weight mapping, and the decisions that should or should not be copied—see [Default WenKai theme design](default-theme-wenkai.md).
 
 ## Single-file CSS themes
 
@@ -237,9 +239,71 @@ Visual-editor variables on `.markdown-paper`:
 - borders: `--editor-border`, `--editor-border-strong`;
 - code: `--editor-inline-code-bg`, `--editor-inline-code-text`, `--editor-code-bg`, `--editor-code-line-bg`, `--editor-code-text`, `--editor-code-control-bg`;
 - links and syntax: `--editor-link-color`, `--editor-hl-keyword`, `--editor-hl-string`, `--editor-hl-number`, `--editor-hl-title`, `--editor-hl-type`, `--editor-hl-meta`, `--editor-hl-symbol`, `--editor-hl-deletion`;
-- typography: `--editor-font-family`, `--editor-heading-font-family`.
+- typography families: `--editor-font-family`, `--editor-heading-font-family`;
+- heading defaults: `--editor-heading-font-weight`, `--editor-heading-letter-spacing`;
+- per-level heading values: `--editor-h1-color` through `--editor-h6-color`, `--editor-h1-font-size` through `--editor-h6-font-size`, `--editor-h1-font-weight` through `--editor-h6-font-weight`, `--editor-h1-letter-spacing` through `--editor-h6-letter-spacing`, and `--editor-h1-line-height` through `--editor-h6-line-height`;
+- compact heading sizes: `--editor-h1-font-size-compact` and `--editor-h2-font-size-compact`, used by QingYu below its compact editor breakpoint;
+- caret: `--editor-caret-color`.
+
+Every per-level letter-spacing variable falls back to `--editor-heading-letter-spacing`. A theme can therefore set one common value, then override only the levels that need a different rhythm:
+
+```css
+.markdown-paper[data-editor-theme="ocean-night"] {
+  --editor-heading-font-weight: 700;
+  --editor-heading-letter-spacing: 0;
+
+  --editor-h1-color: #8bd5ca;
+  --editor-h1-font-size: 2rem;
+  --editor-h1-font-size-compact: 1.75rem;
+  --editor-h1-font-weight: var(--editor-heading-font-weight);
+  --editor-h1-letter-spacing: 0.04em;
+  --editor-h1-line-height: 1.5;
+
+  --editor-h2-color: #a6da95;
+  --editor-h2-font-size: 1.5rem;
+  --editor-h2-font-size-compact: 1.375rem;
+  --editor-h2-font-weight: var(--editor-heading-font-weight);
+  --editor-h2-letter-spacing: 0.03em;
+  --editor-h2-line-height: 1.6;
+}
+```
+
+QingYu consumes the same per-level tokens for CodeMirror live headings and rendered Markdown headings. Do not duplicate hard-coded heading values in `.cm-markra-*` selectors unless the theme knowingly accepts an editor-internal compatibility risk.
 
 The visual-editor font variables are theme-controlled while the editor font preference is set to use the theme; an explicitly selected user font is applied inline and wins. The source editor follows the same rule for `--source-editor-font-family` on `.markdown-source-paper`. Its colors inherit the application text, secondary-text, and accent variables. Paragraph spacing is always applied inline from the user's editor preference, so `--editor-paragraph-spacing` is not an author-controlled theme token.
+
+### Capability and precedence model
+
+Theme values are resolved in this order:
+
+1. An explicit user preference wins for editor font, source-editor font, font size, line-height preference, content width, and paragraph spacing where QingYu applies that preference inline.
+2. The selected theme supplies stable semantic variables and Markdown presentation rules.
+3. QingYu's built-in stylesheet supplies documented fallbacks for anything omitted.
+
+The stable theme surface can change paint, type, and Markdown presentation without changing product behavior:
+
+| Area | Stable capability | Boundary |
+| --- | --- | --- |
+| Application chrome | Backgrounds, foregrounds, borders, scrollbars, shadows, titlebar/sidebar/tool/outline/footer surfaces | Themes cannot reorder, hide, resize, or intercept application controls. |
+| File tree | Normal, hover, current, multi-selected, indicators, font family, size, weight, and line height | Tree indentation, disclosure behavior, drag/drop, row ownership, and selection logic remain application-owned. |
+| Outline | Normal, hover, current, common rhythm, per-heading-level size/weight/text/leading space, and line clamp | Heading extraction, navigation, nesting, and row structure remain application-owned. |
+| Visual editor | Paper, text, headings, caret, borders, links, code, syntax colors, Markdown element presentation, and packaged passive assets | Selection behavior, cursor geometry, widgets, commands, undo, and Markdown semantics remain application-owned. |
+| Source editor | Font fallback and inherited semantic colors; scoped descendant styling is available | CodeMirror implementation classes are not a stable public contract. |
+| Fonts and assets | Packaged WOFF2, passive raster images, and validated SVG resources | No network resources, scripts, HTML components, animated SVG, or arbitrary file access. |
+
+### Minimum complete-theme checklist
+
+Before distributing a theme, verify all of these states rather than checking only the editor paper:
+
+- titlebar, sidebar header, file toolbar, file tree, outline, sidebar footer, and the editor paper;
+- file-tree normal, hover, current document, multi-selected, and keyboard-focus-visible states;
+- outline normal, hover, current heading, H1 through H6 hierarchy, and long-title clamping;
+- visual-editor body text, H1 through H6, links, inline code, fenced code, quotes, callouts, lists, tasks, tables, marks, images, Mermaid, selection, caret, and search matches;
+- source editor headings, links, selection, caret, and long wrapped lines;
+- floating menus, popovers, scrollbars, dialogs, danger actions, and disabled controls;
+- both the theme's normal window size and QingYu's compact breakpoint for H1/H2.
+
+If a light and dark design are distributed as a pair, package them as two independent themes and run the checklist for each. Do not assume that changing only the background and foreground produces a usable dark theme; borders, selection fills, syntax colors, shadows, muted text, and scrollbar contrast all need independent values.
 
 ## Fonts, assets, and URL rules
 

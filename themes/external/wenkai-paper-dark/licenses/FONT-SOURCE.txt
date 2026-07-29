@@ -1,0 +1,26 @@
+LXGW WenKai Lite embedded webfont provenance
+
+Upstream repository:
+https://github.com/lxgw/LxgwWenKai-Lite
+
+Pinned upstream commit:
+ff67bda3b3251e917a404b629db7d345405d68c7
+
+Original TrueType files and SHA-256:
+
+LXGWWenKaiLite-Regular.ttf
+140c99ba4e28e817cec49bf82a0c5fcdc4fe633fb9dfda16d0ee8d59a8545f15
+
+LXGWWenKaiLite-Medium.ttf
+02eb0f8deed11b00481393f5720630ae1a44424f37f4157ea160a69a1c72a0b6
+
+The bundled WOFF2 files are format-converted, Unicode-partitioned subsets
+created solely for webfont delivery. They retain the original 400 and 500
+OS/2 weight classes. No glyph outlines were intentionally redesigned.
+
+The official family also provides Light 300. This theme does not bundle it
+because no current theme role uses that weight and including an unused third
+font would exceed QingYu's 16 MiB compressed theme-import limit.
+
+The upstream OFL.txt, including its Reserved Font Name additional permission
+for WOFF/WOFF2 webfont subsets, is preserved as FONT-LICENSE.txt.
