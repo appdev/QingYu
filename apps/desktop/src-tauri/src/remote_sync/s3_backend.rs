@@ -191,6 +191,9 @@ impl S3Backend {
             if let Some(extra_headers) = extra_headers {
                 headers.extend(extra_headers.clone());
             }
+            if method == Method::DELETE {
+                headers.insert(CONTENT_LENGTH, HeaderValue::from_static("0"));
+            }
             let mut request = client.request(method.clone(), url.clone()).headers(headers);
             if let Some(bytes) = body {
                 request = request.body(bytes.to_vec());
@@ -1672,7 +1675,9 @@ mod tests {
             .iter()
             .find(|request| request.starts_with("DELETE "))
             .expect("delete request");
-        assert!(delete.to_ascii_lowercase().contains("if-match: \"etag-1\""));
+        let delete = delete.to_ascii_lowercase();
+        assert!(delete.contains("if-match: \"etag-1\""));
+        assert!(delete.contains("\r\ncontent-length: 0\r\n"), "{delete}");
     }
 
     #[test]

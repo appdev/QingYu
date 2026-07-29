@@ -54,7 +54,6 @@ jobs:
           const sources = [
             ["Desktop package version", JSON.parse(fs.readFileSync("apps/desktop/package.json", "utf8")).version],
             ["Web package version", JSON.parse(fs.readFileSync("apps/web/package.json", "utf8")).version],
-            ["Site package version", JSON.parse(fs.readFileSync("apps/site/package.json", "utf8")).version],
             ["Tauri version", JSON.parse(fs.readFileSync(`${desktopDir}/src-tauri/tauri.conf.json`, "utf8")).version],
             [
               "Cargo version",
@@ -243,7 +242,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          endpoint="$(node .release-scripts/scripts/release/resolve-updater-endpoint.mjs)"
+          endpoint="$(node scripts/release/resolve-updater-endpoint.mjs)"
           echo "endpoint=${endpoint}" >> "${GITHUB_OUTPUT}"
 
       - name: Prepare updater config
@@ -755,7 +754,7 @@ jobs:
         run: node scripts/release/generate-updater-manifest.mjs
 
       - name: Generate Homebrew cask
-        if: ${{ !contains(env.RELEASE_TAG, '-') }}
+        if: ${{ needs.validate_release.outputs.signed_release == 'true' && !contains(env.RELEASE_TAG, '-') }}
         env:
           GITHUB_REPOSITORY: ${{ github.repository }}
           OUTPUT_PATH: generated/homebrew/Casks/markra.rb
@@ -763,7 +762,7 @@ jobs:
         run: node scripts/release/generate-homebrew-cask.mjs
 
       - name: Upload Homebrew cask artifact
-        if: ${{ !contains(env.RELEASE_TAG, '-') }}
+        if: ${{ needs.validate_release.outputs.signed_release == 'true' && !contains(env.RELEASE_TAG, '-') }}
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.APP_SLUG }}-homebrew-cask
@@ -773,16 +772,29 @@ jobs:
       - name: Collect release files
         id: release_files
         shell: bash
+        env:
+          SIGNED_RELEASE: ${{ needs.validate_release.outputs.signed_release }}
         run: |
           set -euo pipefail
 
           # Tauri leaves the deb package internals beside the finished installer.
           # Publishing those generic filenames makes Linux architectures collide.
-          find release-assets -type f \
-            ! -name 'release-metadata.json' \
-            ! -name 'control.tar.gz' \
-            ! -name 'data.tar.gz' \
-            | sort > release-files.txt
+          if [[ "${SIGNED_RELEASE}" == "true" ]]; then
+            find release-assets -type f \
+              ! -name 'release-metadata.json' \
+              ! -name 'control.tar.gz' \
+              ! -name 'data.tar.gz' \
+              | sort > release-files.txt
+          else
+            find release-assets -type f \
+              ! -name 'release-metadata.json' \
+              ! -name 'control.tar.gz' \
+              ! -name 'data.tar.gz' \
+              ! -name '*_updater.app.tar.gz' \
+              ! -name '*.sig' \
+              ! -name 'latest.json' \
+              | sort > release-files.txt
+          fi
 
           {
             echo 'paths<<__FILES__'
@@ -804,7 +816,7 @@ jobs:
           files: ${{ steps.release_files.outputs.paths }}
 
       - name: Publish preview updater manifest
-        if: ${{ github.event_name != 'workflow_dispatch' || !inputs.draft }}
+        if: ${{ needs.validate_release.outputs.signed_release == 'true' && (github.event_name != 'workflow_dispatch' || !inputs.draft) }}
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -823,7 +835,7 @@ jobs:
           gh release upload preview release-assets/latest.json --clobber --repo "${GITHUB_REPOSITORY}"
 
       - name: Prepare Homebrew tap checkout
-        if: env.HOMEBREW_TAP_TOKEN != '' && !contains(env.RELEASE_TAG, '-')
+        if: needs.validate_release.outputs.signed_release == 'true' && env.HOMEBREW_TAP_TOKEN != '' && !contains(env.RELEASE_TAG, '-')
         shell: bash
         run: |
           set -euo pipefail
@@ -850,7 +862,7 @@ jobs:
           fi
 
       - name: Publish Homebrew cask to tap
-        if: env.HOMEBREW_TAP_TOKEN != '' && !contains(env.RELEASE_TAG, '-')
+        if: needs.validate_release.outputs.signed_release == 'true' && env.HOMEBREW_TAP_TOKEN != '' && !contains(env.RELEASE_TAG, '-')
         shell: bash
         run: |
           set -euo pipefail
