@@ -14,10 +14,10 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-#[cfg(not(windows))]
-use qingyu_kernel::documents::AtomicInstallMode;
 #[cfg(windows)]
 use qingyu_kernel::documents::CapabilityAtomicInstallPort;
+#[cfg(not(windows))]
+use qingyu_kernel::documents::{AtomicInstallMode, PinnedInstallSource};
 use qingyu_kernel::{
     contract::{DeletionPolicy as KernelDeletionPolicy, DocumentKind},
     documents::{
@@ -245,6 +245,15 @@ impl AtomicInstallPort for KernelDocumentAtomicInstallAdapter {
         }
         #[cfg(not(windows))]
         {
+            // These legacy helpers publish by name. Confirm that name still
+            // resolves to the retained stage and that its logical contents
+            // can be read stably before any target mutation.
+            verify_kernel_named_pinned_install_source(
+                &parent,
+                request.stage_name,
+                request.expected_stage,
+            )
+            .map_err(|_| AtomicInstallPortError)?;
             let target_ambient = ambient_parent.join(request.target_name);
             let stage_ambient = ambient_parent.join(request.stage_name);
             match request.mode {
@@ -1782,6 +1791,68 @@ fn rename_document_noreplace(
 }
 
 #[cfg(unix)]
+fn verify_kernel_named_pinned_install_source(
+    directory: &Dir,
+    name: &str,
+    expected: PinnedInstallSource<'_>,
+) -> io::Result<()> {
+    verify_kernel_named_pinned_install_identity(directory, name, expected)?;
+    match expected {
+        PinnedInstallSource::File(file) => {
+            kernel_revision_for_retained_file(file)?;
+        }
+        PinnedInstallSource::Directory(directory) => {
+            qingyu_kernel::documents::service::directory_revision_for_capability(directory)
+                .map_err(|_| kernel_atomic_install_error())?;
+        }
+    }
+    verify_kernel_named_pinned_install_identity(directory, name, expected)
+}
+
+#[cfg(unix)]
+fn verify_kernel_named_pinned_install_identity(
+    directory: &Dir,
+    name: &str,
+    expected: PinnedInstallSource<'_>,
+) -> io::Result<()> {
+    let named = directory.symlink_metadata(name)?;
+    let retained = match expected {
+        PinnedInstallSource::File(file) => file.metadata()?,
+        PinnedInstallSource::Directory(directory) => directory.dir_metadata()?,
+    };
+    let trusted = match expected {
+        PinnedInstallSource::File(_) => {
+            kernel_trusted_file_metadata(&named) && kernel_trusted_file_metadata(&retained)
+        }
+        PinnedInstallSource::Directory(_) => {
+            named.is_dir()
+                && retained.is_dir()
+                && !named.file_type().is_symlink()
+                && !retained.file_type().is_symlink()
+        }
+    };
+    if !trusted
+        || MetadataExt::dev(&named) != MetadataExt::dev(&retained)
+        || MetadataExt::ino(&named) != MetadataExt::ino(&retained)
+    {
+        return Err(kernel_atomic_install_error());
+    }
+    Ok(())
+}
+
+#[cfg(not(any(unix, windows)))]
+fn verify_kernel_named_pinned_install_source(
+    _directory: &Dir,
+    _name: &str,
+    _expected: PinnedInstallSource<'_>,
+) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "kernel staged-source verification is unsupported",
+    ))
+}
+
+#[cfg(unix)]
 fn replace_kernel_document_compare_exchange(
     directory: &Dir,
     request: &AtomicInstallRequest<'_>,
@@ -2769,6 +2840,124 @@ mod kernel_deletion_adapter_tests {
         assert_eq!(
             std::fs::read_to_string(root.join("created.md")).unwrap(),
             "created"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_install_adapter_never_creates_from_a_swapped_file_stage() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("workspace");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("stage.tmp"), "intended").unwrap();
+        let directory = Dir::open_ambient_dir(&root, cap_std::ambient_authority()).unwrap();
+        let adapter = KernelDocumentAtomicInstallAdapter::new(&root).unwrap();
+        let expected_stage = open_pinned_stage(&directory, "stage.tmp");
+        std::fs::rename(root.join("stage.tmp"), root.join("retained.tmp")).unwrap();
+        std::fs::write(root.join("stage.tmp"), "attacker").unwrap();
+
+        let result = adapter.install(AtomicInstallRequest {
+            directory: &directory,
+            target: &WorkspaceRelativePath::parse("created.md").unwrap(),
+            stage_name: "stage.tmp",
+            target_name: "created.md",
+            mode: AtomicInstallMode::CreateNoReplace,
+            expected_stage: PinnedInstallSource::File(&expected_stage),
+            expected_target: None,
+            expected_revision: None,
+        });
+
+        assert!(result.is_err());
+        assert!(!root.join("created.md").exists());
+        assert_eq!(
+            std::fs::read_to_string(root.join("retained.tmp")).unwrap(),
+            "intended"
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("stage.tmp")).unwrap(),
+            "attacker"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_install_adapter_never_replaces_from_a_swapped_file_stage() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("workspace");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("note.md"), "before").unwrap();
+        std::fs::write(root.join("stage.tmp"), "intended").unwrap();
+        let directory = Dir::open_ambient_dir(&root, cap_std::ambient_authority()).unwrap();
+        let adapter = KernelDocumentAtomicInstallAdapter::new(&root).unwrap();
+        let mut expected_options = OpenOptions::new();
+        expected_options.read(true).follow(FollowSymlinks::No);
+        let expected_target = directory.open_with("note.md", &expected_options).unwrap();
+        let expected_stage = open_pinned_stage(&directory, "stage.tmp");
+        let expected_revision =
+            Revision::parse(format!("{:x}", Sha256::digest(b"before"))).unwrap();
+        std::fs::rename(root.join("stage.tmp"), root.join("retained.tmp")).unwrap();
+        std::fs::write(root.join("stage.tmp"), "attacker").unwrap();
+
+        let result = adapter.install(AtomicInstallRequest {
+            directory: &directory,
+            target: &WorkspaceRelativePath::parse("note.md").unwrap(),
+            stage_name: "stage.tmp",
+            target_name: "note.md",
+            mode: AtomicInstallMode::ReplaceExisting,
+            expected_stage: PinnedInstallSource::File(&expected_stage),
+            expected_target: Some(&expected_target),
+            expected_revision: Some(&expected_revision),
+        });
+
+        assert!(result.is_err());
+        assert_eq!(
+            std::fs::read_to_string(root.join("note.md")).unwrap(),
+            "before"
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("retained.tmp")).unwrap(),
+            "intended"
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("stage.tmp")).unwrap(),
+            "attacker"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_install_adapter_never_creates_from_a_swapped_directory_stage() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("workspace");
+        std::fs::create_dir_all(root.join("stage.tmp")).unwrap();
+        std::fs::write(root.join("stage.tmp/intended.md"), "intended").unwrap();
+        let directory = Dir::open_ambient_dir(&root, cap_std::ambient_authority()).unwrap();
+        let adapter = KernelDocumentAtomicInstallAdapter::new(&root).unwrap();
+        let expected_stage = directory.open_dir_nofollow("stage.tmp").unwrap();
+        std::fs::rename(root.join("stage.tmp"), root.join("retained.tmp")).unwrap();
+        std::fs::create_dir(root.join("stage.tmp")).unwrap();
+        std::fs::write(root.join("stage.tmp/attacker.md"), "attacker").unwrap();
+
+        let result = adapter.install(AtomicInstallRequest {
+            directory: &directory,
+            target: &WorkspaceRelativePath::parse("created").unwrap(),
+            stage_name: "stage.tmp",
+            target_name: "created",
+            mode: AtomicInstallMode::CreateNoReplace,
+            expected_stage: PinnedInstallSource::Directory(&expected_stage),
+            expected_target: None,
+            expected_revision: None,
+        });
+
+        assert!(result.is_err());
+        assert!(!root.join("created").exists());
+        assert_eq!(
+            std::fs::read_to_string(root.join("retained.tmp/intended.md")).unwrap(),
+            "intended"
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("stage.tmp/attacker.md")).unwrap(),
+            "attacker"
         );
     }
 
