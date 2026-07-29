@@ -711,12 +711,13 @@ impl WorkspaceDocumentService {
             let _clear_result = self.recovery.clear(transaction_id);
             return Err(map_create_error(&error));
         }
-        let staged = directory
-            .open_dir_nofollow(&stage_name)
-            .map_err(|_| DocumentServiceError::recovery_required())?;
+        let staged = open_staged_directory(directory, &stage_name)?;
         let staged_identity = staged
             .dir_metadata()
             .map_err(|_| DocumentServiceError::recovery_required())?;
+        // Creating the directory and retaining its handle are separate host
+        // operations. The initial and post-publication revision checks keep a
+        // changed directory fail-closed, but do not claim a strict OS CAS.
         if directory_revision_for_capability(&staged)? != intended_revision {
             return Err(DocumentServiceError::recovery_required());
         }
@@ -733,14 +734,11 @@ impl WorkspaceDocumentService {
             })
             .map_err(|_| DocumentServiceError::recovery_required())?;
         sync_dir(directory).map_err(|_| DocumentServiceError::recovery_required())?;
-        let installed = directory
-            .open_dir_nofollow(name)
-            .map_err(|_| DocumentServiceError::recovery_required())?;
-        let installed_identity = installed
-            .dir_metadata()
+        let installed_identity = directory
+            .symlink_metadata(name)
             .map_err(|_| DocumentServiceError::recovery_required())?;
         if !same_file(&staged_identity, &installed_identity)
-            || directory_revision_for_capability(&installed)? != intended_revision
+            || directory_revision_for_capability(&staged)? != intended_revision
         {
             return Err(DocumentServiceError::recovery_required());
         }
@@ -1956,6 +1954,35 @@ fn stage_named(
     Ok(StagedDocument { file, identity })
 }
 
+fn open_staged_directory(directory: &Dir, name: &str) -> Result<Dir, DocumentServiceError> {
+    #[cfg(windows)]
+    {
+        // The retained handle starts guarding the staged directory as soon as
+        // the portable create/open sequence permits. DELETE is required for
+        // handle-relative publication; share-read-only blocks ordinary
+        // deletion or renaming of this directory entry. It does not prevent
+        // child mutations, which the revision checks must detect.
+        let mut options = OpenOptions::new();
+        options
+            .read(true)
+            .access_mode(
+                windows_sys::Win32::Foundation::GENERIC_READ
+                    | windows_sys::Win32::Storage::FileSystem::DELETE,
+            )
+            .share_mode(windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ)
+            .custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_BACKUP_SEMANTICS)
+            .follow(FollowSymlinks::No);
+        let file = directory
+            .open_with(name, &options)
+            .map_err(|_| DocumentServiceError::recovery_required())?;
+        Ok(Dir::from_std_file(file.into_std()))
+    }
+    #[cfg(not(windows))]
+    directory
+        .open_dir_nofollow(name)
+        .map_err(|_| DocumentServiceError::recovery_required())
+}
+
 fn verify_staged_identity(
     directory: &Dir,
     name: &str,
@@ -2233,14 +2260,25 @@ fn capability_atomic_install_with_retired_hook(
         request.expected_stage,
     )?;
     match request.mode {
-        AtomicInstallMode::CreateNoReplace => rustix::fs::renameat_with(
-            request.directory,
-            request.stage_name,
-            request.directory,
-            request.target_name,
-            rustix::fs::RenameFlags::NOREPLACE,
-        )
-        .map_err(|_| AtomicInstallPortError),
+        AtomicInstallMode::CreateNoReplace => {
+            before_retired_verification();
+            // Unix has no portable rename-by-source-handle operation. This
+            // second identity check closes the injectable validation window,
+            // while the external-mutator contract remains optimistic.
+            verify_named_pinned_install_source(
+                request.directory,
+                request.stage_name,
+                request.expected_stage,
+            )?;
+            rustix::fs::renameat_with(
+                request.directory,
+                request.stage_name,
+                request.directory,
+                request.target_name,
+                rustix::fs::RenameFlags::NOREPLACE,
+            )
+            .map_err(|_| AtomicInstallPortError)
+        }
         AtomicInstallMode::ReplaceExisting => {
             let (Some(expected_target), Some(expected_revision)) =
                 (request.expected_target, request.expected_revision)
@@ -2379,6 +2417,14 @@ fn revision_for_retained_file(file: &File) -> Result<Revision, AtomicInstallPort
 fn capability_atomic_install(
     request: AtomicInstallRequest<'_>,
 ) -> Result<(), AtomicInstallPortError> {
+    capability_atomic_install_with_prepublication_hook(request, || {})
+}
+
+#[cfg(windows)]
+fn capability_atomic_install_with_prepublication_hook(
+    request: AtomicInstallRequest<'_>,
+    before_publication: impl FnOnce(),
+) -> Result<(), AtomicInstallPortError> {
     verify_named_pinned_install_source(
         request.directory,
         request.stage_name,
@@ -2388,17 +2434,19 @@ fn capability_atomic_install(
         AtomicInstallMode::CreateNoReplace => {
             ensure_absent(request.directory, request.target_name)
                 .map_err(|_| AtomicInstallPortError)?;
+            before_publication();
             match request.expected_stage {
-                PinnedInstallSource::File(staged) => windows_rename_retained_file(
+                PinnedInstallSource::File(staged) => windows_rename_retained_entry(
                     staged,
                     request.directory,
                     request.target_name,
                     false,
                 ),
-                PinnedInstallSource::Directory(_) => request.directory.rename(
-                    request.stage_name,
+                PinnedInstallSource::Directory(staged) => windows_rename_retained_entry(
+                    staged,
                     request.directory,
                     request.target_name,
+                    false,
                 ),
             }
             .map_err(|_| AtomicInstallPortError)
@@ -2429,7 +2477,8 @@ fn capability_atomic_install(
                 request.stage_name,
                 request.expected_stage,
             )?;
-            windows_rename_retained_file(staged, request.directory, request.target_name, true)
+            before_publication();
+            windows_rename_retained_entry(staged, request.directory, request.target_name, true)
                 .map_err(|_| AtomicInstallPortError)
         }
     }
@@ -2465,8 +2514,8 @@ fn verify_named_pinned_install_source(
 }
 
 #[cfg(windows)]
-fn windows_rename_retained_file(
-    source: &File,
+fn windows_rename_retained_entry(
+    source: &impl std::os::windows::io::AsRawHandle,
     destination: &Dir,
     destination_name: &str,
     replace: bool,
@@ -2783,6 +2832,50 @@ mod atomic_exchange_safety_tests {
         assert_eq!(directory.read("retained.tmp").unwrap(), b"intended new");
         assert!(directory.symlink_metadata("note.md").is_err());
     }
+
+    #[test]
+    fn a_directory_stage_swapped_after_validation_is_never_published() {
+        let fixture = tempfile::tempdir().unwrap();
+        let directory =
+            Dir::open_ambient_dir(fixture.path(), cap_std::ambient_authority()).unwrap();
+        directory.create_dir("stage.tmp").unwrap();
+        let expected_stage = directory.open_dir_nofollow("stage.tmp").unwrap();
+        let target = WorkspaceRelativePath::parse("created").unwrap();
+
+        let result = capability_atomic_install_with_retired_hook(
+            AtomicInstallRequest {
+                directory: &directory,
+                target: &target,
+                stage_name: "stage.tmp",
+                target_name: "created",
+                mode: AtomicInstallMode::CreateNoReplace,
+                expected_stage: PinnedInstallSource::Directory(&expected_stage),
+                expected_target: None,
+                expected_revision: None,
+            },
+            || {
+                directory
+                    .rename("stage.tmp", &directory, "retained.tmp")
+                    .unwrap();
+                directory.create_dir("stage.tmp").unwrap();
+                directory
+                    .open_dir_nofollow("stage.tmp")
+                    .unwrap()
+                    .write("attacker", b"replacement")
+                    .unwrap();
+            },
+        );
+
+        assert!(result.is_err());
+        assert!(directory.symlink_metadata("created").is_err());
+        assert!(directory
+            .open_dir_nofollow("retained.tmp")
+            .unwrap()
+            .entries()
+            .unwrap()
+            .next()
+            .is_none());
+    }
 }
 
 #[cfg(test)]
@@ -2873,7 +2966,7 @@ mod windows_atomic_install_tests {
         let mut staged = stage_named(&directory, "stage.tmp", b"intended").unwrap();
 
         assert!(
-            windows_rename_retained_file(&staged.file, &directory, "invalid\0target", false)
+            windows_rename_retained_entry(&staged.file, &directory, "invalid\0target", false)
                 .is_err()
         );
         verify_staged_identity(
@@ -2883,5 +2976,59 @@ mod windows_atomic_install_tests {
             &revision_for_bytes(b"intended").unwrap(),
         )
         .unwrap();
+    }
+
+    #[test]
+    fn directory_create_renames_the_retained_handle_after_a_source_name_swap() {
+        let fixture = tempfile::tempdir().unwrap();
+        let directory =
+            Dir::open_ambient_dir(fixture.path(), cap_std::ambient_authority()).unwrap();
+        directory.create_dir("stage.tmp").unwrap();
+        let staged = open_staged_directory(&directory, "stage.tmp").unwrap();
+        let staged_identity = staged.dir_metadata().unwrap();
+        let target = WorkspaceRelativePath::parse("created").unwrap();
+
+        assert!(std::fs::rename(
+            fixture.path().join("stage.tmp"),
+            fixture.path().join("ordinary-swap")
+        )
+        .is_err());
+
+        capability_atomic_install_with_prepublication_hook(
+            AtomicInstallRequest {
+                directory: &directory,
+                target: &target,
+                stage_name: "stage.tmp",
+                target_name: "created",
+                mode: AtomicInstallMode::CreateNoReplace,
+                expected_stage: PinnedInstallSource::Directory(&staged),
+                expected_target: None,
+                expected_revision: None,
+            },
+            || {
+                windows_rename_retained_entry(&staged, &directory, "retained.tmp", false).unwrap();
+                directory.create_dir("stage.tmp").unwrap();
+                directory
+                    .open_dir_nofollow("stage.tmp")
+                    .unwrap()
+                    .write("attacker", b"replacement")
+                    .unwrap();
+            },
+        )
+        .unwrap();
+
+        assert!(same_file(
+            &staged_identity,
+            &directory.symlink_metadata("created").unwrap()
+        ));
+        assert!(staged.entries().unwrap().next().is_none());
+        assert_eq!(
+            directory
+                .open_dir_nofollow("stage.tmp")
+                .unwrap()
+                .read("attacker")
+                .unwrap(),
+            b"replacement"
+        );
     }
 }

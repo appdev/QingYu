@@ -29,6 +29,7 @@ use qingyu_kernel::{
         AllowAllDocumentIgnorePort, AtomicInstallMode, AtomicInstallPort, AtomicInstallPortError,
         AtomicInstallRequest, CapabilityMoveInstallPort, DeletionPort, DeletionPortError,
         DocumentDeletionTarget, MoveInstallPort, MoveInstallPortError, MoveInstallRequest,
+        PinnedInstallSource,
     },
     paths::KernelPaths,
     ports::KernelPorts,
@@ -213,6 +214,12 @@ impl AtomicInstallPort for TamperingAtomicInstallPort {
                     format!(".external-hardlink-{}", Uuid::new_v4()),
                 )
                 .map_err(|_| AtomicInstallPortError)?,
+            4 => match request.expected_stage {
+                PinnedInstallSource::Directory(directory) => directory
+                    .write("externally-added.md", b"tampered")
+                    .map_err(|_| AtomicInstallPortError)?,
+                PinnedInstallSource::File(_) => return Err(AtomicInstallPortError),
+            },
             _ => {}
         }
         CapabilityAtomicInstallPort.install(request)
@@ -625,6 +632,46 @@ async fn stage_tampering_during_atomic_install_keeps_recovery_intent_and_publish
                 .is_err()
         );
     }
+}
+
+#[tokio::test]
+async fn directory_content_change_during_install_fails_closed_after_publication() {
+    let fixture = Fixture::new();
+    let recovery = Arc::new(MemoryDocumentRecoveryStore::default());
+    let atomic = Arc::new(TamperingAtomicInstallPort::default());
+    let service = WorkspaceDocumentService::new_with_ports(
+        &fixture.runtime,
+        fixture.workspace.clone(),
+        Arc::new(PermanentDeletion(fixture.root.clone())),
+        Arc::new(MemoryDocumentHistoryStore::default()),
+        recovery.clone(),
+        atomic.clone(),
+        Arc::new(AllowAllDocumentIgnorePort),
+    )
+    .unwrap();
+    let mut events = fixture.runtime.event_broker().subscribe();
+    atomic.tamper_next(4);
+
+    let error = service
+        .create_document(CreateDocumentRequest::Directory {
+            workspace_generation: fixture.workspace.current().unwrap().generation,
+            parent: WorkspaceRelativePath::default(),
+            name: DocumentName::parse("folder").unwrap(),
+        })
+        .await
+        .unwrap_err();
+
+    assert_eq!(error.kind(), DocumentServiceErrorKind::RecoveryRequired);
+    assert_eq!(
+        fs::read(fixture.root.join("folder/externally-added.md")).unwrap(),
+        b"tampered"
+    );
+    assert_eq!(recovery.intent_count(), 1);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), events.recv())
+            .await
+            .is_err()
+    );
 }
 
 #[tokio::test]
