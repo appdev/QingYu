@@ -20,6 +20,7 @@ import {
   exitNativeApp,
   listNativeEditorWindowRestoreStates,
   openNativeMarkdownFile,
+  openNativeMarkdownFolderInNewWindow,
   openNativeMarkdownFileInNewWindow,
   readNativeMarkdownFile,
   resolveNativeMarkdownPath,
@@ -347,6 +348,7 @@ export function useMarkdownDocument({
   const untitledTabIndexRef = useRef(1);
   const openedFromNativeRef = useRef(false);
   const nativeOpenedPathsInitializationRef = useRef<Promise<boolean> | null>(null);
+  const externalFolderStartupPathRef = useRef<string | null>(null);
   const startupWorkspaceRestoreKeyRef = useRef<string | null>(null);
   const nativeWindowCloseScheduledRef = useRef(false);
   const dirtyFileSavePromiseRef = useRef<Promise<SavedNativeMarkdownFile[]> | null>(null);
@@ -1881,6 +1883,21 @@ export function useMarkdownDocument({
 
   const handleDroppedMarkdownPath = useCallback(
     async (target: NativeMarkdownDroppedTarget) => {
+      const workspaceRootPath = workspaceRootForSource(workspaceSourcePath, documentRef.current.path);
+      if (
+        target.kind !== "image" &&
+        workspaceRootPath &&
+        !isPathWithinRoot(target.path, workspaceRootPath)
+      ) {
+        // Keep each window bound to one workspace; tab reuse only applies to paths inside it.
+        if (target.kind === "folder") {
+          await openNativeMarkdownFolderInNewWindow(target.path);
+        } else {
+          await openNativeMarkdownFileInNewWindow(target.path);
+        }
+        return;
+      }
+
       if (target.kind === "folder") {
         if (!onSwitchNotebookDirectory) return false;
         const switchedRoot = await onSwitchNotebookDirectory(target.path);
@@ -2104,6 +2121,23 @@ export function useMarkdownDocument({
       active = false;
     };
   }, [applyNativeMarkdownFile, managedWorkspace, readMarkdownFileWithPerformance, windowContext]);
+
+  const externalFolderPath = windowContext.kind === "external-folder"
+    ? windowContext.path
+    : null;
+
+  useEffect(() => {
+    if (managedWorkspace || !externalFolderPath) return;
+    if (externalFolderStartupPathRef.current === externalFolderPath) return;
+    externalFolderStartupPathRef.current = externalFolderPath;
+
+    Promise.resolve().then(() => onTreeRootFromFolderPath(
+      externalFolderPath,
+      pathNameFromPath(externalFolderPath),
+      true,
+      true
+    )).catch(() => {});
+  }, [externalFolderPath, managedWorkspace, onTreeRootFromFolderPath]);
 
   useEffect(() => {
     if (resolvedNativeOpenPolicy === "managed") {

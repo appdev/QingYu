@@ -251,6 +251,24 @@ describe("web file runtime", () => {
     expect(fileUrl.searchParams.has("folder")).toBe(false);
   });
 
+  it("opens a web folder path in a new browser window route", async () => {
+    const openedUrls: string[] = [];
+    const runtime = createWebRuntime({
+      document,
+      indexedDB: new FakeIndexedDbFactory().indexedDB,
+      openExternalUrl: async (url) => {
+        openedUrls.push(url);
+      }
+    });
+
+    await runtime.files.openMarkdownFolderInNewWindow("web-folder://folder-id");
+
+    const folderUrl = new URL(openedUrls[0]);
+
+    expect(folderUrl.searchParams.get("folder")).toBe("web-folder://folder-id");
+    expect(folderUrl.searchParams.has("path")).toBe(false);
+  });
+
   it("reports containing-folder actions as desktop-only", async () => {
     const runtime = createWebRuntime({
       indexedDB: new FakeIndexedDbFactory().indexedDB

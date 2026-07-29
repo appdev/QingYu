@@ -33,6 +33,7 @@ const messages: LocaleMessages = {
   "settings.sections.fileOpening": "Abrir archivos",
   "settings.sections.saving": "Guardado",
   "settings.sections.fileScanning": "Escaneo de archivos",
+  "settings.sections.documentExport": "HTML y PDF",
   "settings.sections.pdfExport": "Exportación PDF",
   "settings.sections.pdfMetadata": "Texto de página",
   "settings.sections.pandocExport": "Exportación Pandoc",
@@ -477,6 +478,9 @@ const messages: LocaleMessages = {
   "settings.editor.shortcutDocumentSearch": "Buscar en el documento",
   "settings.editor.shortcutRecording": "Pulsa las teclas",
   "settings.editor.shortcutUnsupported": "Este atajo no es compatible. Usa Cmd/Ctrl o Alt/Option con una letra, un número o una tecla de puntuación.",
+  "settings.export.fontFamily": "Fuente de exportación",
+  "settings.export.fontFamilyDescription": "Elige una fuente instalada para las exportaciones HTML y PDF.",
+  "settings.export.fontFamily.default": "Predeterminada",
   "settings.export.pageSize": "Tamaño de página",
   "settings.export.pageSizeDescription": "Tamaño de papel usado para exportar PDF.",
   "settings.export.pageSize.default": "Predeterminado",
@@ -559,6 +563,7 @@ const messages: LocaleMessages = {
   "menu.heading2": "Encabezado 2",
   "menu.heading3": "Encabezado 3",
   "menu.bulletList": "Lista con viñetas",
+  "menu.taskList": "Lista de tareas",
   "menu.orderedList": "Lista numerada",
   "menu.quote": "Cita",
   "menu.callout": "Aviso",
@@ -568,6 +573,7 @@ const messages: LocaleMessages = {
   "menu.importLocalImages": "Importar imágenes locales...",
   "menu.importLocalFiles": "Importar archivos locales...",
   "menu.table": "Tabla",
+  "menu.today": "Hoy",
   ...syncEnMessages
 };
 

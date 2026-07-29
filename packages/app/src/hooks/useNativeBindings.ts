@@ -62,6 +62,7 @@ type ApplicationShortcutOptions = {
   openDocument: () => unknown | Promise<unknown>;
   openDocumentReplace?: () => unknown | Promise<unknown>;
   openDocumentSearch?: () => unknown | Promise<unknown>;
+  openBlankEditorWindow?: () => unknown | Promise<unknown>;
   openSettings?: () => unknown | Promise<unknown>;
   openWorkspaceSearch?: () => unknown | Promise<unknown>;
   openFolder: () => unknown | Promise<unknown>;
@@ -405,6 +406,7 @@ export function useApplicationShortcuts({
   exportHtml,
   exportPdf,
   markdownShortcuts,
+  openBlankEditorWindow,
   openDocument,
   openDocumentReplace,
   openDocumentSearch,
@@ -490,6 +492,17 @@ export function useApplicationShortcuts({
           exportPdf();
         }
         return;
+      } else if (
+        platform === "windows" &&
+        key === "n" &&
+        event.ctrlKey &&
+        !event.metaKey &&
+        !event.shiftKey &&
+        openBlankEditorWindow
+      ) {
+        event.preventDefault();
+        event.stopPropagation();
+        if (!event.repeat) openBlankEditorWindow();
       } else if (key === "s" && event.shiftKey) {
         event.preventDefault();
         saveDocumentAs();
@@ -524,6 +537,7 @@ export function useApplicationShortcuts({
     closeDocument,
     enabled,
     normalizedMarkdownShortcuts,
+    openBlankEditorWindow,
     openDocument,
     openDocumentReplace,
     openDocumentSearch,

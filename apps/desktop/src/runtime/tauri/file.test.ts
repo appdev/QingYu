@@ -26,6 +26,7 @@ import {
   openNativeMarkdownAttachment,
   openNativeMarkdownFolder,
   openNativeMarkdownFile,
+  openNativeMarkdownFolderInNewWindow,
   openNativeMarkdownFileInNewWindow,
   openNativeSettingsFile,
   readNativeMarkdownFileHistory,
@@ -1721,13 +1722,17 @@ describe("native file access", () => {
     }
   });
 
-  it("opens only markdown file paths in a new native window", async () => {
+  it("opens markdown file and folder paths in a new native window", async () => {
     mockedInvoke.mockResolvedValue(undefined);
 
     await openNativeMarkdownFileInNewWindow(mockReadmePath);
+    await openNativeMarkdownFolderInNewWindow(mockFolderPath);
 
     expect(mockedInvoke).toHaveBeenCalledWith("open_markdown_file_in_new_window", {
       path: mockReadmePath
+    });
+    expect(mockedInvoke).toHaveBeenCalledWith("open_markdown_folder_in_new_window", {
+      path: mockFolderPath
     });
   });
 

@@ -379,6 +379,7 @@ const messages: LocaleMessages = {
   "settings.sections.fileOpening": "打开文件",
   "settings.sections.saving": "保存",
   "settings.sections.fileScanning": "文件扫描",
+  "settings.sections.documentExport": "HTML 与 PDF",
   "settings.sections.pdfExport": "PDF 导出",
   "settings.sections.pdfMetadata": "页面文字",
   "settings.sections.pandocExport": "Pandoc 导出",
@@ -753,6 +754,9 @@ const messages: LocaleMessages = {
   "settings.editor.shortcutDocumentSearch": "在文档中查找",
   "settings.editor.shortcutRecording": "按下快捷键",
   "settings.editor.shortcutUnsupported": "不支持此快捷键。请将 Cmd/Ctrl 或 Alt/Option 与字母、数字或标点键组合使用。",
+  "settings.export.fontFamily": "导出字体",
+  "settings.export.fontFamilyDescription": "选择导出 HTML 和 PDF 时使用的已安装字体。",
+  "settings.export.fontFamily.default": "默认",
   "settings.export.pageSize": "页面大小",
   "settings.export.pageSizeDescription": "导出 PDF 时使用的纸张大小。",
   "settings.export.pageSize.default": "默认",
@@ -1070,6 +1074,7 @@ const messages: LocaleMessages = {
   "menu.heading2": "标题 2",
   "menu.heading3": "标题 3",
   "menu.bulletList": "无序列表",
+  "menu.taskList": "任务列表",
   "menu.orderedList": "有序列表",
   "menu.quote": "引用",
   "menu.callout": "提示块",
@@ -1078,7 +1083,8 @@ const messages: LocaleMessages = {
   "menu.image": "图片",
   "menu.importLocalImages": "导入本地图片...",
   "menu.importLocalFiles": "导入本地文件...",
-  "menu.table": "表格"
+  "menu.table": "表格",
+  "menu.today": "今天"
 };
 
 export default messages;

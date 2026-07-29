@@ -155,6 +155,7 @@ import {
   closeNativeWindow,
   hideSettingsWindow,
   listenNativeApplicationMenuCommands,
+  openBlankEditorWindow,
   openNativeExternalUrl,
   openSettingsWindow,
   showNativeAppAbout,
@@ -3200,6 +3201,9 @@ function WorkspaceApp() {
       fileTreeSourcePath ?? document.path ?? primaryRoot
     ).catch(() => {});
   }, [document.path, fileTreeSourcePath, primaryRoot]);
+  const handleOpenBlankEditorWindow = useCallback(() => {
+    openBlankEditorWindow().catch(() => {});
+  }, []);
   const handleShowAbout = useCallback(() => {
     showNativeAppAbout().catch(() => {});
   }, []);
@@ -3917,6 +3921,7 @@ function WorkspaceApp() {
     const pdfSettings = exported.kind === "pdf" ? exportSettings.settings : null;
     const contents = buildMarkdownHtmlDocument({
       bodyHtml: exported.bodyHtml,
+      fontFamily: exportSettings.settings.fontFamily,
       language: appLanguage.language,
       pdfAuthor: pdfSettings?.pdfAuthor,
       pdfFooter: pdfSettings?.pdfFooter,
@@ -4097,6 +4102,7 @@ function WorkspaceApp() {
     exportHtml: exportFeatureEnabled ? exportHtmlDocument : undefined,
     exportPdf: exportFeatureEnabled ? exportPdfDocument : undefined,
     markdownShortcuts: editorPreferences.preferences.markdownShortcuts,
+    openBlankEditorWindow: windowsSelfDrawnChromeEnabled ? handleOpenBlankEditorWindow : undefined,
     openDocument: handleOpenMarkdownFile,
     openDocumentReplace: handleDocumentReplaceOpen,
     openDocumentSearch: handleDocumentSearchOpen,
@@ -4701,6 +4707,7 @@ function WorkspaceApp() {
           onSelectViewMode={handleViewModeSelect}
           onCreateMarkdownFile={handleQuickCreateMarkdownTreeFile}
           onExitApp={handleExitApp}
+          onOpenBlankEditorWindow={windowsSelfDrawnChromeEnabled ? handleOpenBlankEditorWindow : undefined}
           onOpenMarkdown={handleOpenMarkdownFile}
           onOpenMarkdownFolder={handleOpenMarkdownFolder}
           onOpenSettings={handleOpenSettings}

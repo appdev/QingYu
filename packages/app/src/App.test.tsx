@@ -7,6 +7,7 @@ import { defaultMarkdownShortcuts } from "@markra/editor";
 import * as editorExports from "@markra/editor";
 import { it as registerTest } from "vitest";
 import desktopPackage from "../package.json";
+import { defaultExportSettings } from "./lib/settings/app-settings";
 import {
   appHarnessResourceThemeDescriptor,
   installAppTestHarness,
@@ -55,6 +56,7 @@ import {
   mockedNotifyAppLanguageChanged,
   mockedNotifyAppThemeChanged,
   mockedOpenNativeMarkdownFile,
+  mockedOpenNativeMarkdownFolderInNewWindow,
   mockedOpenNativeMarkdownFileInNewWindow,
   mockedOpenNativeLocalImages,
   mockedOpenNativeLocalFiles,
@@ -9158,13 +9160,23 @@ describe("QingYu workspace", () => {
     expect(screen.queryByRole("tab", { name: /dropped\.md/ })).not.toBeInTheDocument();
   });
 
-  it("ignores the removed legacy folder URL context", async () => {
+  it("loads a folder URL in an isolated external editor window", async () => {
+    const controller = mockDesktopPrimaryWorkspace({ root: "/Primary", status: "ready" });
+    mockedListNativeMarkdownFilesForPath.mockResolvedValue([]);
     window.history.pushState({}, "", "/?folder=%2Fmock-files%2Fvault");
 
     renderApp();
 
-    expect(await screen.findByText("Welcome to QingYu")).toBeInTheDocument();
-    expect(mockedListNativeMarkdownFilesForPath).not.toHaveBeenCalledWith(mockFolderPath, expect.anything());
+    await waitFor(() => expect(mockedListNativeMarkdownFilesForPath).toHaveBeenCalledWith(
+      mockFolderPath,
+      defaultFileTreeListOptions
+    ));
+    expect(screen.queryByText("Welcome to QingYu")).not.toBeInTheDocument();
+    expect(mockedListNativeMarkdownFilesForPath).not.toHaveBeenCalledWith(
+      "/Primary",
+      expect.anything()
+    );
+    expect(controller.commitDesktopRoot).not.toHaveBeenCalled();
   });
 
   it("opens a dropped markdown file in the current empty editor", async () => {
@@ -9234,43 +9246,35 @@ describe("QingYu workspace", () => {
     expect(requestPrimaryNotebookSwitch).toHaveBeenCalledWith(mockFolderPath);
   });
 
-  it("routes a dropped folder from an empty primary editor through notebook switching", async () => {
-    const listen = configureNotebookSwitchEventBus();
+  it("opens a dropped folder outside the primary workspace in a new window", async () => {
     const controller = mockDesktopPrimaryWorkspace({ root: "/Current", status: "ready" });
     mockedListNativeMarkdownFilesForPath.mockResolvedValue([]);
 
     renderApp();
     await waitFor(() => expect(mockedInstallNativeMarkdownFileDrop).toHaveBeenCalled());
-    await waitFor(() => expect(listen).toHaveBeenCalledWith(
-      "qingyu://notebook-switch-requested",
-      expect.any(Function)
-    ));
     const handleDrop = mockedInstallNativeMarkdownFileDrop.mock.calls.at(-1)?.[0];
 
     await act(async () => {
       await handleDrop?.({ kind: "folder", name: "vault", path: mockFolderPath });
     });
 
-    await waitFor(() => expect(controller.commitDesktopRoot).toHaveBeenCalledWith(mockFolderPath));
+    expect(mockedOpenNativeMarkdownFolderInNewWindow).toHaveBeenCalledWith(mockFolderPath);
+    expect(controller.commitDesktopRoot).not.toHaveBeenCalled();
   });
 
-  it("routes a dropped folder through notebook switching even when the editor has content", async () => {
-    const listen = configureNotebookSwitchEventBus();
+  it("keeps the current primary workspace when a dropped folder opens separately", async () => {
     const controller = mockDesktopPrimaryWorkspace({ root: "/Current", status: "ready" });
     mockedListNativeMarkdownFilesForPath.mockResolvedValue([]);
     renderApp();
     await waitFor(() => expect(mockedInstallNativeMarkdownFileDrop).toHaveBeenCalled());
-    await waitFor(() => expect(listen).toHaveBeenCalledWith(
-      "qingyu://notebook-switch-requested",
-      expect.any(Function)
-    ));
     const handleDrop = mockedInstallNativeMarkdownFileDrop.mock.calls.at(-1)?.[0];
 
     await act(async () => {
       await handleDrop?.({ kind: "folder", name: "vault", path: mockFolderPath });
     });
 
-    await waitFor(() => expect(controller.commitDesktopRoot).toHaveBeenCalledWith(mockFolderPath));
+    expect(mockedOpenNativeMarkdownFolderInNewWindow).toHaveBeenCalledWith(mockFolderPath);
+    expect(controller.commitDesktopRoot).not.toHaveBeenCalled();
   });
 
   it("saves an untitled document with the native save dialog shortcut", async () => {
@@ -10978,6 +10982,56 @@ describe("QingYu workspace", () => {
     expect(screen.queryByLabelText("Unsaved changes")).not.toBeInTheDocument();
   });
 
+  it("syncs visual table cell edits to source in split mode and saves them", async () => {
+    mockOpenMarkdownFile({
+      content: ["| Field | Value |", "| --- | --- |", "| Name | Before |"].join("\n"),
+      name: "table.md",
+      path: mockNativePath
+    });
+    mockedSaveNativeMarkdownFile.mockResolvedValue({
+      name: "table.md",
+      path: mockNativePath
+    });
+    const { container } = renderApp();
+
+    fireEvent.keyDown(window, { key: "o", metaKey: true });
+    await selectEditorViewMode("Preview + Source");
+    const sourceEditor = await screen.findByRole("textbox", { name: "Markdown source" });
+    const cell = await waitFor(() => {
+      const nextCell = container.querySelector<HTMLTableCellElement>(
+        ".cm-markra-table tbody td:nth-child(2)"
+      );
+      expect(nextCell).toBeInTheDocument();
+      return nextCell!;
+    });
+
+    cell.focus();
+    cell.textContent = "After";
+    fireEvent.input(cell.closest("table")!);
+    const editedCell = await waitFor(() => {
+      const nextCell = container.querySelector<HTMLTableCellElement>(
+        ".cm-markra-table tbody td:nth-child(2)"
+      );
+      expect(nextCell).toHaveTextContent("After");
+      expect(nextCell).toHaveFocus();
+      return nextCell!;
+    });
+    await waitFor(() =>
+      expect(readMarkdownSource(sourceEditor)).toContain("| Name | After |")
+    );
+    fireEvent.keyDown(editedCell, { key: "s", metaKey: true });
+
+    await waitFor(() =>
+      expect(mockedSaveNativeMarkdownFile).toHaveBeenCalledWith(
+        expect.objectContaining({
+          contents: ["| Field | Value |", "| --- | --- |", "| Name | After |"].join("\n"),
+          path: mockNativePath,
+          suggestedName: "table.md"
+        })
+      )
+    );
+  });
+
   it("keeps a clean file unmodified when toggling markdown source mode without edits", async () => {
     const originalContent = "Native file\n===========\n\nOpened from disk.";
     mockOpenMarkdownFile({
@@ -11485,6 +11539,10 @@ describe("QingYu workspace", () => {
   });
 
   it("exports the current markdown document as standalone HTML from the native menu", async () => {
+    mockedGetStoredExportSettings.mockResolvedValue({
+      ...defaultExportSettings,
+      fontFamily: "Example Serif"
+    });
     mockOpenMarkdownFile({
       content: "# Exportable\n\nRendered from markdown.",
       name: "exportable.md",
@@ -11520,6 +11578,7 @@ describe("QingYu workspace", () => {
     const exportedHtml = mockedSaveNativeHtmlFile.mock.calls.at(-1)?.[0].contents ?? "";
     expect(exportedHtml).toContain("<p>Rendered from markdown.</p>");
     expect(exportedHtml).toContain("<title>exportable.md</title>");
+    expect(exportedHtml).toContain('font-family: "Example Serif", ui-serif');
   });
 
   it("exports the current markdown document as PDF from the native menu", async () => {
@@ -11529,6 +11588,7 @@ describe("QingYu workspace", () => {
       path: "/mock-files/printable.pdf"
     });
     mockedGetStoredExportSettings.mockResolvedValue({
+      fontFamily: null,
       pandocArgs: "",
       pandocPath: "",
       pdfAuthor: "Ada & Co",
@@ -11591,6 +11651,7 @@ describe("QingYu workspace", () => {
       path: "/mock-files/portable.docx"
     });
     mockedGetStoredExportSettings.mockResolvedValue({
+      fontFamily: null,
       pandocArgs: "--toc",
       pandocPath: "/usr/local/bin/pandoc",
       pdfAuthor: "",
@@ -11684,6 +11745,7 @@ describe("QingYu workspace", () => {
   it("opens settings directly to the Pandoc path target", async () => {
     window.history.pushState({}, "", "/?settings=1&settingsTarget=exportPandocPath");
     mockedGetStoredExportSettings.mockResolvedValue({
+      fontFamily: null,
       pandocArgs: "",
       pandocPath: "",
       pdfAuthor: "",
@@ -11707,6 +11769,7 @@ describe("QingYu workspace", () => {
     window.history.pushState({}, "", "/?settings=1&settingsTarget=exportPandocPath");
     mockedDetectNativePandocPath.mockResolvedValue("/opt/homebrew/bin/pandoc");
     mockedGetStoredExportSettings.mockResolvedValue({
+      fontFamily: null,
       pandocArgs: "",
       pandocPath: "",
       pdfAuthor: "",
@@ -11737,6 +11800,7 @@ describe("QingYu workspace", () => {
   it("saves the PDF export margin from the settings export page", async () => {
     window.history.pushState({}, "", "/?settings");
     mockedGetStoredExportSettings.mockResolvedValue({
+      fontFamily: null,
       pandocArgs: "",
       pandocPath: "",
       pdfAuthor: "",

@@ -47,7 +47,7 @@ const PORTABLE_SETTINGS_KEYS: [&str; 9] = [
     EXPORT_SETTINGS_KEY,
 ];
 
-const EXPOSED_FIELDS: [&str; 23] = [
+const EXPOSED_FIELDS: [&str; 24] = [
     "appearance.mode",
     "appearance.lightTheme",
     "appearance.darkTheme",
@@ -62,6 +62,7 @@ const EXPOSED_FIELDS: [&str; 23] = [
     "editor.wrapCodeBlocks",
     "editor.viewMode",
     "files.ignoreRules",
+    "export.fontFamily",
     "export.pdfAuthor",
     "export.pdfFooter",
     "export.pdfHeader",
@@ -549,6 +550,7 @@ impl AppSettingsService {
         }
         insert(&mut values, "files.ignoreRules", &files, "rules");
         for key in [
+            "fontFamily",
             "pdfAuthor",
             "pdfFooter",
             "pdfHeader",
@@ -715,7 +717,7 @@ impl AppSettingsService {
         for key in PORTABLE_SETTINGS_KEYS {
             if let Some(mut value) = self.backend.get(key)? {
                 if key == EXPORT_SETTINGS_KEY {
-                    value = portable_export_settings(value);
+                    value = portable_local_export_settings(value);
                 } else if key == EDITOR_PREFERENCES_KEY {
                     value = portable_editor_preferences(value);
                 }
@@ -1152,6 +1154,7 @@ fn validate_field(field: &str, value: &Value) -> Result<(), AppSettingsError> {
         "editor.showWordCount" | "editor.wrapCodeBlocks" => value.is_boolean(),
         "editor.viewMode" => string_in(value, &["full", "daily", "focus", "immersive", "custom"]),
         "files.ignoreRules" => value.as_str().is_some_and(|text| text.len() <= 50_000),
+        "export.fontFamily" => valid_optional_system_font_family(value),
         "export.pdfAuthor" | "export.pdfFooter" | "export.pdfHeader" => {
             value.as_str().is_some_and(|text| text.len() <= 200)
         }
@@ -1250,6 +1253,7 @@ fn default_editor() -> Value {
 
 fn default_export() -> Value {
     json!({
+        "fontFamily": null,
         "pdfAuthor": "",
         "pdfFooter": "",
         "pdfHeader": "",
@@ -1265,6 +1269,16 @@ fn default_export() -> Value {
 fn portable_export_settings(mut value: Value) -> Value {
     if let Some(settings) = value.as_object_mut() {
         settings.remove("pandocPath");
+    }
+    value
+}
+
+fn portable_local_export_settings(value: Value) -> Value {
+    let mut value = portable_export_settings(value);
+    if let Some(settings) = value.as_object_mut() {
+        settings
+            .entry("fontFamily".to_string())
+            .or_insert(Value::Null);
     }
     value
 }
@@ -1386,7 +1400,17 @@ pub(crate) fn sanitize_legacy_remote_portable_settings(
     let object = value
         .as_object_mut()
         .ok_or_else(AppSettingsError::remote_invalid)?;
-    if object.remove("mcp").is_none() {
+    let mut changed = object.remove("mcp").is_some();
+    if let Some(export_settings) = object
+        .get_mut(EXPORT_SETTINGS_KEY)
+        .and_then(Value::as_object_mut)
+    {
+        if !export_settings.contains_key("fontFamily") {
+            export_settings.insert("fontFamily".to_string(), Value::Null);
+            changed = true;
+        }
+    }
+    if !changed {
         return Ok(None);
     }
     let sanitized = serde_json::to_vec(&value).map_err(|_| AppSettingsError::remote_invalid())?;
@@ -1539,6 +1563,18 @@ fn valid_strict_font_family(value: &Value) -> bool {
             _ => false,
         }
     })
+}
+
+fn valid_optional_system_font_family(value: &Value) -> bool {
+    value.is_null()
+        || value.as_str().is_some_and(|family| {
+            !family.is_empty()
+                && family.trim() == family
+                && utf16_len(family) <= 160
+                && !family
+                    .chars()
+                    .any(|character| character <= '\u{001f}' || character == '\u{007f}')
+        })
 }
 
 fn valid_image_upload_settings(value: &Value) -> bool {
@@ -1820,6 +1856,7 @@ fn valid_portable_file_ignore_settings(value: &Value) -> bool {
 
 fn valid_portable_export_settings(value: &Value) -> bool {
     const KEYS: &[&str] = &[
+        "fontFamily",
         "pandocArgs",
         "pdfAuthor",
         "pdfFooter",
@@ -1866,6 +1903,7 @@ fn valid_portable_export_settings(value: &Value) -> bool {
     dimensions_valid
         && margin_valid
         && object.iter().all(|(key, value)| match key.as_str() {
+            "fontFamily" => valid_optional_system_font_family(value),
             "pandocArgs" => canonical_trimmed_text(value, 1_000, true),
             "pdfAuthor" | "pdfFooter" | "pdfHeader" => canonical_trimmed_text(value, 200, true),
             "pdfHeightMm" | "pdfWidthMm" => true,
@@ -2233,7 +2271,7 @@ mod tests {
                 .collect::<BTreeSet<_>>(),
             expected
         );
-        assert_eq!(AppSettingsService::exposed_field_names().len(), 23);
+        assert_eq!(AppSettingsService::exposed_field_names().len(), 24);
         for forbidden in [
             "mcp.enabled",
             "workspace",
@@ -2289,12 +2327,59 @@ mod tests {
             .read_exposed()
             .expect("read exposed settings");
 
-        assert_eq!(exposed.values.len(), 23);
+        assert_eq!(exposed.values.len(), 24);
         assert!(exposed.credentials_present.is_empty());
         let serialized = serde_json::to_string(&exposed).expect("serialize exposed settings");
         assert!(!serialized.contains("secret"));
         assert!(!serialized.contains("/private/notes"));
         assert!(!serialized.contains("/private/bin/pandoc"));
+    }
+
+    #[test]
+    fn exposed_read_includes_the_export_font_family() {
+        let backend = Arc::new(MemoryBackend::with([(
+            EXPORT_SETTINGS_KEY,
+            json!({ "fontFamily": "Noto Sans CJK SC" }),
+        )]));
+        let exposed = service_with_backend(backend)
+            .read_exposed()
+            .expect("read exposed settings");
+
+        assert_eq!(
+            exposed.values.get("export.fontFamily"),
+            Some(&json!("Noto Sans CJK SC"))
+        );
+    }
+
+    #[test]
+    fn export_font_family_changes_invalidate_the_exposed_revision() {
+        let backend = Arc::new(MemoryBackend::with([(
+            EXPORT_SETTINGS_KEY,
+            json!({ "fontFamily": null }),
+        )]));
+        let service = service_with_backend(backend.clone());
+        let before = service.read_exposed().expect("read initial settings");
+        backend.values.lock().expect("memory values").insert(
+            EXPORT_SETTINGS_KEY.to_string(),
+            json!({ "fontFamily": "Noto Sans CJK SC" }),
+        );
+
+        let after = service.read_exposed().expect("read changed settings");
+        assert_ne!(after.revision, before.revision);
+        let error = service
+            .patch_exposed(ExposedSettingsPatch {
+                expected_revision: before.revision,
+                values: BTreeMap::from([("language".to_string(), json!("fr"))]),
+            })
+            .expect_err("a font-only change must make the previous revision stale");
+
+        assert_eq!(error.code, "settings_revision_conflict");
+        assert_eq!(backend.saves.load(Ordering::Relaxed), 0);
+        assert!(!backend
+            .values
+            .lock()
+            .expect("memory values")
+            .contains_key(LANGUAGE_KEY));
     }
 
     #[test]
@@ -2480,6 +2565,31 @@ mod tests {
         assert_eq!(export["pandocArgs"], json!("--toc"));
         assert_eq!(export["pdfAuthor"], json!("QingYu"));
         assert!(export.get("pandocPath").is_none());
+    }
+
+    #[test]
+    fn portable_snapshot_upgrades_a_legacy_local_export_font_family() {
+        let mut legacy_export = portable_golden_store()[EXPORT_SETTINGS_KEY].clone();
+        legacy_export
+            .as_object_mut()
+            .expect("legacy export settings")
+            .remove("fontFamily");
+        let backend = Arc::new(MemoryBackend::with([(
+            EXPORT_SETTINGS_KEY,
+            legacy_export.clone(),
+        )]));
+        let service = service_with_backend(backend.clone());
+
+        let snapshot = service
+            .portable_settings_snapshot()
+            .expect("legacy local settings should remain exportable");
+        let portable: Value = serde_json::from_slice(snapshot.bytes().unwrap()).unwrap();
+
+        assert!(portable[EXPORT_SETTINGS_KEY]["fontFamily"].is_null());
+        assert_eq!(
+            backend.values.lock().expect("memory values")[EXPORT_SETTINGS_KEY],
+            legacy_export
+        );
     }
 
     fn portable_golden_store() -> Value {
@@ -2853,6 +2963,24 @@ mod tests {
                 .unwrap_err();
 
         assert_eq!(error.code, "remote-settings-invalid");
+    }
+
+    #[test]
+    fn legacy_remote_export_settings_gain_the_default_font_family() {
+        let mut legacy = portable_golden_store();
+        legacy[EXPORT_SETTINGS_KEY]
+            .as_object_mut()
+            .unwrap()
+            .remove("fontFamily");
+
+        let sanitized =
+            sanitize_legacy_remote_portable_settings(&serde_json::to_vec(&legacy).unwrap())
+                .unwrap()
+                .expect("legacy export settings should be upgraded");
+        let upgraded: Value = serde_json::from_slice(&sanitized).unwrap();
+
+        assert!(upgraded[EXPORT_SETTINGS_KEY]["fontFamily"].is_null());
+        validate_portable_settings_bytes(&sanitized).unwrap();
     }
 
     #[test]

@@ -39,6 +39,7 @@ const messages: LocaleMessages = {
   "settings.sections.fileOpening": "ファイルを開く",
   "settings.sections.saving": "保存",
   "settings.sections.fileScanning": "ファイルスキャン",
+  "settings.sections.documentExport": "HTML と PDF",
   "settings.sections.pdfExport": "PDF 書き出し",
   "settings.sections.pdfMetadata": "ページテキスト",
   "settings.sections.pandocExport": "Pandoc 書き出し",
@@ -477,6 +478,9 @@ const messages: LocaleMessages = {
   "settings.editor.shortcutDocumentSearch": "文書内を検索",
   "settings.editor.shortcutRecording": "キーを押してください",
   "settings.editor.shortcutUnsupported": "このショートカットはサポートされていません。Cmd/Ctrl または Alt/Option と文字、数字、句読点キーを組み合わせてください。",
+  "settings.export.fontFamily": "書き出しフォント",
+  "settings.export.fontFamilyDescription": "HTML と PDF の書き出しに使用するインストール済みフォントを選択します。",
+  "settings.export.fontFamily.default": "デフォルト",
   "settings.export.pageSize": "ページサイズ",
   "settings.export.pageSizeDescription": "PDF 書き出しに使う用紙サイズです。",
   "settings.export.pageSize.default": "デフォルト",
@@ -559,6 +563,7 @@ const messages: LocaleMessages = {
   "menu.heading2": "見出し 2",
   "menu.heading3": "見出し 3",
   "menu.bulletList": "箇条書き",
+  "menu.taskList": "タスクリスト",
   "menu.orderedList": "番号付きリスト",
   "menu.quote": "引用",
   "menu.callout": "コールアウト",
@@ -568,6 +573,7 @@ const messages: LocaleMessages = {
   "menu.importLocalImages": "ローカル画像を読み込む...",
   "menu.importLocalFiles": "ローカルファイルを読み込む...",
   "menu.table": "表",
+  "menu.today": "今日",
   ...syncEnMessages
 };
 

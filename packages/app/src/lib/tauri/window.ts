@@ -43,6 +43,10 @@ export function hideSettingsWindow() {
   return getAppRuntime().window.hideSettingsWindow();
 }
 
+export function openBlankEditorWindow() {
+  return getAppRuntime().window.openBlankEditorWindow();
+}
+
 export function acknowledgeSettingsWindowHide(generation: number) {
   return getAppRuntime().window.acknowledgeSettingsWindowHide(generation);
 }

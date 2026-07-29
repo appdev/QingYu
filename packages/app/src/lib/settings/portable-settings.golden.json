@@ -95,6 +95,7 @@
     },
     "fileIgnoreSettings": { "rules": "dist/" },
     "exportSettings": {
+      "fontFamily": null,
       "pandocArgs": "--toc",
       "pdfAuthor": "QingYu",
       "pdfFooter": "",
