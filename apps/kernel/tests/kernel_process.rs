@@ -1,7 +1,6 @@
 use std::{
     io::{BufRead as _, BufReader, Read as _, Write as _},
     net::TcpStream,
-    path::Path,
     process::{Child, ChildStdin, Command, ExitStatus, Output, Stdio},
     sync::mpsc,
     thread,
@@ -11,10 +10,13 @@ use std::{
 use serde_json::{json, Value};
 use tempfile::tempdir;
 
+use qingyu_kernel::host::native::{
+    NativeHostControl, NativeHostReady, NATIVE_HOST_PROTOCOL_VERSION,
+};
+
 const PROCESS_TIMEOUT: Duration = Duration::from_secs(10);
 const IO_TIMEOUT: Duration = Duration::from_secs(2);
 const VALID_CREDENTIAL: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
-const NATIVE_HOST_PROTOCOL_VERSION: u64 = 1;
 
 #[test]
 fn desktop_startup_reports_public_readiness_and_serves_live_probe() {
@@ -39,6 +41,8 @@ fn desktop_startup_reports_public_readiness_and_serves_live_probe() {
     let mut process = KernelProcess::spawn(&startup.to_string());
     let readiness_line = process.read_stdout_line(PROCESS_TIMEOUT);
     let readiness: Value = serde_json::from_str(readiness_line.trim()).unwrap();
+    let parsed_readiness =
+        NativeHostReady::read_json_line(&mut BufReader::new(readiness_line.as_bytes())).unwrap();
 
     assert_eq!(
         readiness.as_object().unwrap().keys().collect::<Vec<_>>(),
@@ -50,6 +54,11 @@ fn desktop_startup_reports_public_readiness_and_serves_live_probe() {
     assert!(!readiness_line.contains(VALID_CREDENTIAL));
 
     let port = readiness["port"].as_u64().unwrap();
+    assert_eq!(parsed_readiness.port(), u16::try_from(port).unwrap());
+    assert_eq!(
+        serde_json::to_value(parsed_readiness.instance_id()).unwrap(),
+        readiness["instanceId"]
+    );
     let response = live_probe(u16::try_from(port).unwrap());
     assert!(
         response.starts_with("HTTP/1.1 200 OK\r\n"),
@@ -107,49 +116,13 @@ fn standalone_process_installs_durable_settings_and_reports_the_capability() {
 }
 
 #[test]
-#[ignore = "run inside an isolated Server container with an empty writable /data mount"]
-fn server_startup_uses_fixed_data_state_and_reports_process_readiness() {
-    let data_root = Path::new("/data");
-    assert!(data_root.is_dir(), "the container must mount /data");
-    assert!(
-        std::fs::read_dir(data_root).unwrap().next().is_none(),
-        "the container integration test requires an empty /data mount"
-    );
-    let startup = json!({
-        "type": "start",
-        "protocolVersion": NATIVE_HOST_PROTOCOL_VERSION,
-        "profile": "server",
-        "origin": "http://127.0.0.1:3000",
-        "credential": VALID_CREDENTIAL,
-    });
-    let mut process = KernelProcess::spawn(&startup.to_string());
-    let readiness: Value =
-        serde_json::from_str(process.read_stdout_line(PROCESS_TIMEOUT).trim()).unwrap();
-    let port = u16::try_from(readiness["port"].as_u64().unwrap()).unwrap();
-
-    let runtime = authorized_get(port, "/api/v1/runtime");
-    assert!(runtime.starts_with("HTTP/1.1 200 OK\r\n"), "{runtime}");
-    let runtime_body: Value = serde_json::from_str(response_body(&runtime)).unwrap();
-    assert_eq!(runtime_body["profile"], "server");
-    assert_eq!(runtime_body["capabilities"]["settings"], true);
-    assert!(Path::new("/data/workspace").is_dir());
-    assert!(Path::new("/data/config").is_dir());
-    assert!(Path::new("/data/state/settings.json").is_file());
-    assert!(Path::new("/data/logs").is_dir());
-    assert_eq!(process.child_mut().try_wait().unwrap(), None);
-}
-
-#[test]
 fn explicit_shutdown_frame_stops_the_process_cleanly_without_extra_stdout() {
     let (startup, _root) = desktop_startup_fixture();
     let mut process = KernelProcess::spawn(&startup.to_string());
     let readiness = process.read_stdout_line(PROCESS_TIMEOUT);
     assert!(readiness.contains(r#""type":"ready""#));
 
-    process.write_control(&json!({
-        "type": "shutdown",
-        "protocolVersion": NATIVE_HOST_PROTOCOL_VERSION,
-    }));
+    process.write_shutdown();
     let output = process.wait_for_output(PROCESS_TIMEOUT);
 
     assert!(output.status.success(), "stderr: {}", utf8(&output.stderr));
@@ -172,7 +145,7 @@ fn closing_the_control_lease_stops_the_process_cleanly() {
 }
 
 #[test]
-fn duplicate_or_malformed_control_frames_fail_without_disclosing_startup_data() {
+fn a_second_start_frame_is_rejected_as_control_without_disclosing_startup_data() {
     let secret_path_marker = "kernel-protocol-private-path-marker";
     let root = tempdir().unwrap();
     let workspace = root.path().join(secret_path_marker);
@@ -451,8 +424,9 @@ impl KernelProcess {
             .expect("kernel did not report readiness before timeout")
     }
 
-    fn write_control(&mut self, control: &Value) {
-        self.write_raw(format!("{control}\n").as_bytes());
+    fn write_shutdown(&mut self) {
+        let stdin = self.stdin.as_mut().expect("kernel control lease is closed");
+        NativeHostControl::write_shutdown_json_line(stdin).unwrap();
     }
 
     fn write_raw(&mut self, bytes: &[u8]) {

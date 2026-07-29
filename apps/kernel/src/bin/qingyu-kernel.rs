@@ -15,7 +15,7 @@ use qingyu_kernel::{
         ApiVersion, HostProfile, InstanceId, ReadyHealthResponse, ReadyStatus,
         RuntimeCapabilitiesDto, RuntimeStateDto, StartupState, SystemVersionResponse,
     },
-    host::native::{NativeHostControl, NativeHostLaunch, NativeHostReady, NativeHostStart},
+    host::native::{NativeHostControl, NativeHostReady, NativeHostStart},
     paths::KernelPaths,
     ports::KernelPorts,
     runtime::{KernelRuntime, ServiceFailure, SystemApiService},
@@ -41,21 +41,9 @@ async fn run() -> Result<(), ()> {
 
     let mut control_reader = BufReader::new(std::io::stdin());
     let startup = NativeHostStart::read_json_line(&mut control_reader).map_err(|_| ())?;
-    let (launch, origin, credential) = startup.into_parts();
-    let paths = match launch {
-        NativeHostLaunch::Desktop {
-            workspace_root,
-            app_data_root,
-            cache_root,
-        } => KernelPaths::desktop(&workspace_root, &app_data_root, &cache_root),
-        NativeHostLaunch::Server => KernelPaths::server().activate(),
-        NativeHostLaunch::Mobile {
-            app_data_root,
-            cache_root,
-            managed_name,
-        } => KernelPaths::mobile(&app_data_root, &cache_root, &managed_name),
-    }
-    .map_err(|_| ())?;
+    let (workspace_root, app_data_root, cache_root, origin, credential) = startup.into_parts();
+    let paths =
+        KernelPaths::desktop(&workspace_root, &app_data_root, &cache_root).map_err(|_| ())?;
     let config =
         KernelConfig::generate_with_native_launch_credential(credential).map_err(|_| ())?;
     let profile = paths.profile();
@@ -90,16 +78,20 @@ async fn run() -> Result<(), ()> {
     let policy = TransportPolicy::loopback(&address.to_string(), &origin).map_err(|_| ())?;
     let router = build_router(runtime.clone(), policy);
 
+    let (control_sender, control_receiver) = tokio::sync::oneshot::channel();
+    std::thread::Builder::new()
+        .name("qingyu-kernel-control".to_owned())
+        .spawn(move || {
+            let signal = NativeHostControl::read_json_line(&mut control_reader);
+            let _send_result = control_sender.send(signal);
+        })
+        .map_err(|_| ())?;
+
     let readiness = NativeHostReady::new(address.port(), runtime.instance_id());
     let mut stdout = std::io::stdout().lock();
     readiness.write_json_line(&mut stdout).map_err(|_| ())?;
     drop(stdout);
 
-    let (control_sender, control_receiver) = tokio::sync::oneshot::channel();
-    std::thread::spawn(move || {
-        let signal = NativeHostControl::read_json_line(&mut control_reader);
-        let _send_result = control_sender.send(signal);
-    });
     let protocol_failed = Arc::new(AtomicBool::new(false));
     let protocol_failed_on_shutdown = Arc::clone(&protocol_failed);
     axum::serve(listener, router)
