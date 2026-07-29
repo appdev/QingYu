@@ -71,13 +71,9 @@ impl SyncService {
         self.editing.clone()
     }
 
-    fn verify_authority(&self, code: ErrorCode) -> Result<(), ServiceFailure> {
+    fn verify_instance(&self, code: ErrorCode) -> Result<(), ServiceFailure> {
         self.runtime
             .verify_instance_lock()
-            .map_err(|_| failure(code))?;
-        self.runtime
-            .active_workspace_authority()
-            .verify_held_directory()
             .map_err(|_| failure(code))
     }
 }
@@ -85,7 +81,7 @@ impl SyncService {
 #[async_trait]
 impl SyncApiService for SyncService {
     async fn get_sync_config(&self) -> Result<SyncConfigViewDto, ServiceFailure> {
-        self.verify_authority(ErrorCode::SyncConfigInvalid)?;
+        self.verify_instance(ErrorCode::SyncConfigInvalid)?;
         match self
             .store
             .load()
@@ -105,13 +101,13 @@ impl SyncApiService for SyncService {
         &self,
         request: PatchSyncConfigRequest,
     ) -> Result<SyncConfigViewDto, ServiceFailure> {
-        self.verify_authority(ErrorCode::SyncConfigInvalid)?;
+        self.verify_instance(ErrorCode::SyncConfigInvalid)?;
         request
             .changes
             .validate()
             .map_err(|_| failure(ErrorCode::InvalidRequest))?;
         let _mutation = self.runtime.mutation_coordinator().lock().await;
-        self.verify_authority(ErrorCode::SyncConfigInvalid)?;
+        self.verify_instance(ErrorCode::SyncConfigInvalid)?;
         if self
             .status
             .is_attempting()
@@ -164,10 +160,10 @@ impl SyncApiService for SyncService {
         &self,
         request: TestSyncConnectionRequest,
     ) -> Result<SyncConnectionTestDto, ServiceFailure> {
-        self.verify_authority(ErrorCode::SyncConfigInvalid)?;
+        self.verify_instance(ErrorCode::SyncConfigInvalid)?;
         let (config, revision) = {
             let _mutation = self.runtime.mutation_coordinator().lock().await;
-            self.verify_authority(ErrorCode::SyncConfigInvalid)?;
+            self.verify_instance(ErrorCode::SyncConfigInvalid)?;
             let (mut config, revision) = match self.store.load().map_err(store_failure)? {
                 SyncConfigLoad::Absent => return Err(failure(ErrorCode::SyncConfigAbsent)),
                 SyncConfigLoad::Loaded { config, revision } => (config, revision),
@@ -189,7 +185,7 @@ impl SyncApiService for SyncService {
             }
             (*config, request.expected_revision)
         };
-        self.verify_authority(ErrorCode::SyncConfigInvalid)?;
+        self.verify_instance(ErrorCode::SyncConfigInvalid)?;
         self.executor
             .test_connection(config.clone())
             .await
@@ -202,9 +198,9 @@ impl SyncApiService for SyncService {
     }
 
     async fn get_sync_status(&self) -> Result<SyncStatusDto, ServiceFailure> {
-        self.verify_authority(ErrorCode::SyncNotReady)?;
+        self.verify_instance(ErrorCode::SyncNotReady)?;
         let _mutation = self.runtime.mutation_coordinator().lock().await;
-        self.verify_authority(ErrorCode::SyncNotReady)?;
+        self.verify_instance(ErrorCode::SyncNotReady)?;
         let exposed = match self
             .store
             .load()
@@ -228,9 +224,13 @@ impl SyncApiService for SyncService {
         &self,
         request: TriggerSyncRunRequest,
     ) -> Result<SyncRunAcceptedDto, ServiceFailure> {
-        self.verify_authority(ErrorCode::SyncNotReady)?;
+        self.verify_instance(ErrorCode::SyncNotReady)?;
         let _mutation = self.runtime.mutation_coordinator().lock().await;
-        self.verify_authority(ErrorCode::SyncNotReady)?;
+        self.verify_instance(ErrorCode::SyncNotReady)?;
+        let admitted_workspace = self
+            .runtime
+            .active_workspace_snapshot()
+            .map_err(|_| failure(ErrorCode::SyncNotReady))?;
         let (config, revision) = match self
             .store
             .load()
@@ -277,12 +277,11 @@ impl SyncApiService for SyncService {
         let config_revision = request.expected_config_revision.clone();
         let fallback_completed_at = accepted_at.clone();
         let spawn_result = self.runtime.spawn_background(Box::pin(async move {
-            let authority_held = background_runtime.verify_instance_lock().is_ok()
+            let same_workspace = background_runtime.verify_instance_lock().is_ok()
                 && background_runtime
-                    .active_workspace_authority()
-                    .verify_held_directory()
-                    .is_ok();
-            let result = if authority_held {
+                    .active_workspace_snapshot()
+                    .is_ok_and(|current| Arc::ptr_eq(&current, &admitted_workspace));
+            let result = if same_workspace {
                 executor.run(config, run_id, SyncTrigger::Manual).await
             } else {
                 Err(SyncExecutionError)

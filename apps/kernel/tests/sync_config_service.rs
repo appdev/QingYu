@@ -26,13 +26,22 @@ use qingyu_kernel::{
         TaskSpawner,
     },
     runtime::{KernelRuntime, SyncApiService},
-    services::sync::{SyncExecutionError, SyncExecutor, SyncService},
+    services::{
+        sync::{SyncExecutionError, SyncExecutor, SyncService},
+        workspace::WorkspaceService,
+    },
     storage::DurableFileStore,
     sync::config::{SyncConfig, SyncConfigLoad, SyncConfigStore, SyncConfigStoreErrorKind},
     sync::editing::{
         SyncApplyDisposition, SyncApplyExitReason, SyncApplyFailure, SyncApplyRequest,
         SyncApplySource, SyncApplyState, SyncApplySuccess, SyncEditingRegistry,
         SyncEditingRegistryErrorKind,
+    },
+    workspace::{
+        managed::ManagedWorkspaceCollection,
+        primary::{
+            PrimaryWorkspaceRepositoryBinding, PrimaryWorkspaceStore, PrimaryWorkspaceStoreError,
+        },
     },
 };
 use sha2::Digest as _;
@@ -66,6 +75,107 @@ impl SyncExecutor for RecordingExecutor {
 struct CountingExecutor {
     connection_tests: AtomicUsize,
     runs: AtomicUsize,
+}
+
+#[derive(Default)]
+struct MemoryPrimaryWorkspaceStore {
+    binding: PrimaryWorkspaceRepositoryBinding,
+    value: Mutex<Option<serde_json::Value>>,
+    failing_saves: AtomicUsize,
+}
+
+impl MemoryPrimaryWorkspaceStore {
+    fn fail_next_saves(&self, count: usize) {
+        self.failing_saves.store(count, Ordering::SeqCst);
+    }
+}
+
+impl PrimaryWorkspaceStore for MemoryPrimaryWorkspaceStore {
+    fn repository_binding(&self) -> PrimaryWorkspaceRepositoryBinding {
+        self.binding.clone()
+    }
+
+    fn load(&self) -> Result<Option<serde_json::Value>, PrimaryWorkspaceStoreError> {
+        Ok(self.value.lock().unwrap().clone())
+    }
+
+    fn replace(&self, value: Option<serde_json::Value>) -> Result<(), PrimaryWorkspaceStoreError> {
+        *self.value.lock().unwrap() = value;
+        Ok(())
+    }
+
+    fn save(&self) -> Result<(), PrimaryWorkspaceStoreError> {
+        let failed = self
+            .failing_saves
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
+                if remaining > 0 {
+                    Some(remaining - 1)
+                } else {
+                    None
+                }
+            })
+            .is_ok();
+        if failed {
+            Err(PrimaryWorkspaceStoreError::unavailable())
+        } else {
+            Ok(())
+        }
+    }
+}
+
+struct InstalledWorkspace {
+    service: Arc<WorkspaceService>,
+    store: Arc<MemoryPrimaryWorkspaceStore>,
+}
+
+fn install_active_workspace(
+    runtime: &Arc<KernelRuntime>,
+    managed: ManagedWorkspaceCollection,
+) -> InstalledWorkspace {
+    let store = Arc::new(MemoryPrimaryWorkspaceStore::default());
+    let service = Arc::new(
+        WorkspaceService::new(
+            runtime,
+            store.clone(),
+            managed,
+            Arc::new(TestHost),
+            "Workspace",
+        )
+        .unwrap(),
+    );
+    InstalledWorkspace { service, store }
+}
+
+async fn enter_workspace_recovery(
+    runtime: &Arc<KernelRuntime>,
+    workspace: &InstalledWorkspace,
+    target: &std::path::Path,
+) {
+    std::fs::create_dir(target).unwrap();
+    let before = workspace.service.current().unwrap();
+    let prepared = runtime.prepare_host_workspace_authority(target).unwrap();
+    workspace.store.fail_next_saves(2);
+    workspace
+        .service
+        .compare_and_set_host_workspace(&before.revision, prepared, "Recovery Target")
+        .await
+        .unwrap_err();
+    assert!(runtime.active_workspace_snapshot().is_err());
+}
+
+async fn switch_workspace(
+    runtime: &Arc<KernelRuntime>,
+    workspace: &InstalledWorkspace,
+    target: &std::path::Path,
+) {
+    std::fs::create_dir(target).unwrap();
+    let before = workspace.service.current().unwrap();
+    let prepared = runtime.prepare_host_workspace_authority(target).unwrap();
+    workspace
+        .service
+        .compare_and_set_host_workspace(&before.revision, prepared, "Next Workspace")
+        .await
+        .unwrap();
 }
 
 #[async_trait]
@@ -143,6 +253,28 @@ impl SyncExecutor for ManualExecutor {
 
 #[derive(Default)]
 struct TestHost;
+
+#[derive(Default)]
+struct DeferredTaskSpawner {
+    spawned: AtomicUsize,
+    task: Mutex<Option<BoxTaskFuture>>,
+}
+
+impl DeferredTaskSpawner {
+    fn take_task(&self) -> BoxTaskFuture {
+        self.task.lock().unwrap().take().expect("one deferred task")
+    }
+}
+
+impl TaskSpawner for DeferredTaskSpawner {
+    fn spawn(&self, task: BoxTaskFuture) -> Result<(), PortError> {
+        self.spawned.fetch_add(1, Ordering::SeqCst);
+        let mut pending = self.task.lock().unwrap();
+        assert!(pending.is_none(), "only one deferred task is expected");
+        *pending = Some(task);
+        Ok(())
+    }
+}
 
 #[derive(Default)]
 struct CompletionPublicationGate {
@@ -266,6 +398,48 @@ fn test_ports_with_event_sink(event_sink: Arc<dyn EventSink>) -> KernelPorts {
         host.clone(),
         host,
     )
+}
+
+fn test_ports_with_task_spawner(spawner: Arc<dyn TaskSpawner>) -> KernelPorts {
+    let host = Arc::new(TestHost);
+    KernelPorts::new(
+        host.clone(),
+        host.clone(),
+        host.clone(),
+        spawner,
+        host.clone(),
+        host.clone(),
+        host,
+    )
+}
+
+fn active_sync_runtime(
+    root: &std::path::Path,
+    ports: KernelPorts,
+) -> (Arc<KernelRuntime>, InstalledWorkspace, DurableFileStore) {
+    let workspace = root.join("workspace");
+    let app_data = root.join("app-data");
+    let cache = root.join("cache");
+    std::fs::create_dir(&workspace).unwrap();
+    std::fs::create_dir(&app_data).unwrap();
+    std::fs::create_dir(&cache).unwrap();
+    let mut config_value: serde_json::Value =
+        serde_json::from_slice(&s3_config_bytes("https://s3.example.test")).unwrap();
+    config_value["enabled"] = serde_json::json!(true);
+    std::fs::write(
+        app_data.join("sync-config.json"),
+        serde_json::to_vec_pretty(&config_value).unwrap(),
+    )
+    .unwrap();
+    let config = KernelConfig::generate().unwrap();
+    let paths = KernelPaths::desktop(&workspace, &app_data, &cache).unwrap();
+    let managed = ManagedWorkspaceCollection::from_paths(&paths).unwrap();
+    let durable =
+        DurableFileStore::at_instance_data(paths.instance_data_root(), config.launch_epoch())
+            .unwrap();
+    let runtime = KernelRuntime::activate(config, paths, ports).unwrap();
+    let workspace = install_active_workspace(&runtime, managed);
+    (runtime, workspace, durable)
 }
 
 #[tokio::test]
@@ -892,10 +1066,12 @@ async fn connection_test_applies_ephemeral_changes_and_calls_executor_exactly_on
     std::fs::write(app_data.join("sync-config.json"), &original).unwrap();
     let config = KernelConfig::generate().unwrap();
     let paths = KernelPaths::desktop(&workspace, &app_data, &cache).unwrap();
+    let managed = ManagedWorkspaceCollection::from_paths(&paths).unwrap();
     let durable =
         DurableFileStore::at_instance_data(paths.instance_data_root(), config.launch_epoch())
             .unwrap();
     let runtime = KernelRuntime::activate(config, paths, KernelPorts::unavailable()).unwrap();
+    let _workspace = install_active_workspace(&runtime, managed);
     let executor = Arc::new(CountingExecutor::default());
     let service = SyncService::new(
         runtime,
@@ -1027,10 +1203,12 @@ async fn manual_run_is_spawned_once_and_completes_with_safe_status_events() {
     .unwrap();
     let config = KernelConfig::generate().unwrap();
     let paths = KernelPaths::desktop(&workspace, &app_data, &cache).unwrap();
+    let managed = ManagedWorkspaceCollection::from_paths(&paths).unwrap();
     let durable =
         DurableFileStore::at_instance_data(paths.instance_data_root(), config.launch_epoch())
             .unwrap();
     let runtime = KernelRuntime::activate(config, paths, test_ports()).unwrap();
+    let _workspace = install_active_workspace(&runtime, managed);
     let mut events = runtime.event_broker().subscribe();
     let executor = Arc::new(ManualExecutor::default());
     let service = SyncService::new(
@@ -1159,10 +1337,12 @@ async fn completed_status_resets_to_idle_when_config_revision_or_provider_change
         .unwrap();
         let config = KernelConfig::generate().unwrap();
         let paths = KernelPaths::desktop(&workspace, &app_data, &cache).unwrap();
+        let managed = ManagedWorkspaceCollection::from_paths(&paths).unwrap();
         let durable =
             DurableFileStore::at_instance_data(paths.instance_data_root(), config.launch_epoch())
                 .unwrap();
         let runtime = KernelRuntime::activate(config, paths, test_ports()).unwrap();
+        let _workspace = install_active_workspace(&runtime, managed);
         let executor = Arc::new(ManualExecutor::default());
         executor.fail.store(failed, Ordering::Relaxed);
         let service = SyncService::new(
@@ -1280,10 +1460,12 @@ async fn active_manual_run_rejects_duplicate_without_spawning_a_second_executor(
     .unwrap();
     let config = KernelConfig::generate().unwrap();
     let paths = KernelPaths::desktop(&workspace, &app_data, &cache).unwrap();
+    let managed = ManagedWorkspaceCollection::from_paths(&paths).unwrap();
     let durable =
         DurableFileStore::at_instance_data(paths.instance_data_root(), config.launch_epoch())
             .unwrap();
     let runtime = KernelRuntime::activate(config, paths, test_ports()).unwrap();
+    let _workspace = install_active_workspace(&runtime, managed);
     let executor = Arc::new(BlockingExecutor::default());
     let service = SyncService::new(
         runtime,
@@ -1350,10 +1532,12 @@ async fn active_manual_run_rejects_config_patch_without_write_or_status_drift() 
         .expose_secret()
         .to_string();
     let paths = KernelPaths::desktop(&workspace, &app_data, &cache).unwrap();
+    let managed = ManagedWorkspaceCollection::from_paths(&paths).unwrap();
     let durable =
         DurableFileStore::at_instance_data(paths.instance_data_root(), config.launch_epoch())
             .unwrap();
     let runtime = KernelRuntime::activate(config, paths, test_ports()).unwrap();
+    let _workspace = install_active_workspace(&runtime, managed);
     let mut events = runtime.event_broker().subscribe();
     let executor = Arc::new(BlockingExecutor::default());
     let service = Arc::new(SyncService::new(
@@ -1464,6 +1648,7 @@ async fn completed_run_event_precedes_a_new_config_and_its_idle_status() {
     .unwrap();
     let config = KernelConfig::generate().unwrap();
     let paths = KernelPaths::desktop(&workspace, &app_data, &cache).unwrap();
+    let managed = ManagedWorkspaceCollection::from_paths(&paths).unwrap();
     let durable =
         DurableFileStore::at_instance_data(paths.instance_data_root(), config.launch_epoch())
             .unwrap();
@@ -1474,6 +1659,7 @@ async fn completed_run_event_precedes_a_new_config_and_its_idle_status() {
         test_ports_with_event_sink(publication_gate.clone()),
     )
     .unwrap();
+    let _workspace = install_active_workspace(&runtime, managed);
     let mut events = runtime.event_broker().subscribe();
     let executor = Arc::new(BlockingExecutor::default());
     let service = Arc::new(SyncService::new(
@@ -2062,77 +2248,161 @@ async fn direct_and_http_get_patch_have_identical_sync_dtos_and_revisions() {
 }
 
 #[tokio::test]
-async fn every_sync_operation_revalidates_runtime_and_workspace_authority() {
+async fn workspace_recovery_rejects_sync_run_before_executor_or_spawn() {
     let temporary = tempdir().unwrap();
-    let workspace = temporary.path().join("workspace");
-    let moved_workspace = temporary.path().join("moved-workspace");
-    let app_data = temporary.path().join("app-data");
-    let cache = temporary.path().join("cache");
-    std::fs::create_dir(&workspace).unwrap();
-    std::fs::create_dir(&app_data).unwrap();
-    std::fs::create_dir(&cache).unwrap();
-    let mut config_value: serde_json::Value =
-        serde_json::from_slice(&s3_config_bytes("https://s3.example.test")).unwrap();
-    config_value["enabled"] = serde_json::json!(true);
-    let original = serde_json::to_vec_pretty(&config_value).unwrap();
-    std::fs::write(app_data.join("sync-config.json"), &original).unwrap();
-    let config = KernelConfig::generate().unwrap();
-    let paths = KernelPaths::desktop(&workspace, &app_data, &cache).unwrap();
-    let durable =
-        DurableFileStore::at_instance_data(paths.instance_data_root(), config.launch_epoch())
-            .unwrap();
-    let runtime = KernelRuntime::activate(config, paths, test_ports()).unwrap();
+    let spawner = Arc::new(DeferredTaskSpawner::default());
+    let (runtime, workspace, durable) = active_sync_runtime(
+        temporary.path(),
+        test_ports_with_task_spawner(spawner.clone()),
+    );
     let executor = Arc::new(CountingExecutor::default());
     let service = SyncService::new(
-        runtime,
+        runtime.clone(),
+        Arc::new(SyncConfigStore::new(durable).unwrap()),
+        executor.clone(),
+    );
+    let config = SyncApiService::get_sync_config(&service).await.unwrap();
+    enter_workspace_recovery(
+        &runtime,
+        &workspace,
+        &temporary.path().join("recovery-target"),
+    )
+    .await;
+
+    let error = SyncApiService::trigger_sync_run(
+        &service,
+        TriggerSyncRunRequest {
+            expected_config_revision: config.revision,
+        },
+    )
+    .await
+    .unwrap_err();
+
+    assert_eq!(error.code(), ErrorCode::SyncNotReady);
+    assert_eq!(spawner.spawned.load(Ordering::SeqCst), 0);
+    assert_eq!(executor.runs.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        SyncApiService::get_sync_status(&service)
+            .await
+            .unwrap()
+            .completion_state,
+        SyncCompletionState::Idle
+    );
+}
+
+#[tokio::test]
+async fn sync_config_and_connection_test_remain_available_during_workspace_recovery() {
+    let temporary = tempdir().unwrap();
+    let (runtime, workspace, durable) =
+        active_sync_runtime(temporary.path(), KernelPorts::unavailable());
+    let executor = Arc::new(CountingExecutor::default());
+    let service = SyncService::new(
+        runtime.clone(),
         Arc::new(SyncConfigStore::new(durable).unwrap()),
         executor.clone(),
     );
     let before = SyncApiService::get_sync_config(&service).await.unwrap();
-    std::fs::rename(&workspace, &moved_workspace).unwrap();
+    enter_workspace_recovery(
+        &runtime,
+        &workspace,
+        &temporary.path().join("recovery-target"),
+    )
+    .await;
 
-    let get_error = SyncApiService::get_sync_config(&service).await.unwrap_err();
-    let patch_error = SyncApiService::patch_sync_config(
+    let observed = SyncApiService::get_sync_config(&service).await.unwrap();
+    assert_eq!(observed, before);
+    let patched = SyncApiService::patch_sync_config(
         &service,
         PatchSyncConfigRequest {
-            expected_revision: before.revision.clone(),
+            expected_revision: before.revision,
             changes: SyncConfigChangesDto {
-                remote_root: Some("must-not-write".to_string()),
+                remote_root: Some("recovery-tools".to_string()),
                 ..SyncConfigChangesDto::default()
             },
         },
     )
     .await
-    .unwrap_err();
-    let connection_error = SyncApiService::test_sync_connection(
+    .unwrap();
+    let tested = SyncApiService::test_sync_connection(
         &service,
         qingyu_kernel::contract::TestSyncConnectionRequest {
-            expected_revision: before.revision.clone(),
+            expected_revision: patched.revision.clone(),
             changes: SyncConfigChangesDto::default(),
         },
     )
     .await
-    .unwrap_err();
-    let status_error = SyncApiService::get_sync_status(&service).await.unwrap_err();
-    let run_error = SyncApiService::trigger_sync_run(
+    .unwrap();
+    let status = SyncApiService::get_sync_status(&service).await.unwrap();
+
+    assert_eq!(tested.config_revision, patched.revision);
+    assert_eq!(tested.checked_target, "recovery-tools");
+    assert_eq!(executor.connection_tests.load(Ordering::SeqCst), 1);
+    assert_eq!(executor.runs.load(Ordering::SeqCst), 0);
+    assert_eq!(status.completion_state, SyncCompletionState::Idle);
+}
+
+#[tokio::test]
+async fn workspace_background_spawn_after_recovery_never_calls_task_spawner() {
+    let temporary = tempdir().unwrap();
+    let spawner = Arc::new(DeferredTaskSpawner::default());
+    let (runtime, workspace, _durable) = active_sync_runtime(
+        temporary.path(),
+        test_ports_with_task_spawner(spawner.clone()),
+    );
+    enter_workspace_recovery(
+        &runtime,
+        &workspace,
+        &temporary.path().join("recovery-target"),
+    )
+    .await;
+
+    let result = runtime.spawn_background(Box::pin(async {}));
+
+    assert!(result.is_err());
+    assert_eq!(spawner.spawned.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn deferred_sync_run_does_not_invoke_executor_after_snapshot_change() {
+    let temporary = tempdir().unwrap();
+    let spawner = Arc::new(DeferredTaskSpawner::default());
+    let (runtime, workspace, durable) = active_sync_runtime(
+        temporary.path(),
+        test_ports_with_task_spawner(spawner.clone()),
+    );
+    let executor = Arc::new(CountingExecutor::default());
+    let service = SyncService::new(
+        runtime.clone(),
+        Arc::new(SyncConfigStore::new(durable).unwrap()),
+        executor.clone(),
+    );
+    let config = SyncApiService::get_sync_config(&service).await.unwrap();
+    SyncApiService::trigger_sync_run(
         &service,
         TriggerSyncRunRequest {
-            expected_config_revision: before.revision,
+            expected_config_revision: config.revision,
         },
     )
     .await
-    .unwrap_err();
+    .unwrap();
+    assert_eq!(spawner.spawned.load(Ordering::SeqCst), 1);
+    assert_eq!(executor.runs.load(Ordering::SeqCst), 0);
 
-    assert_eq!(get_error.code(), ErrorCode::SyncConfigInvalid);
-    assert_eq!(patch_error.code(), ErrorCode::SyncConfigInvalid);
-    assert_eq!(connection_error.code(), ErrorCode::SyncConfigInvalid);
-    assert_eq!(status_error.code(), ErrorCode::SyncNotReady);
-    assert_eq!(run_error.code(), ErrorCode::SyncNotReady);
-    assert_eq!(executor.connection_tests.load(Ordering::Relaxed), 0);
-    assert_eq!(executor.runs.load(Ordering::Relaxed), 0);
+    switch_workspace(
+        &runtime,
+        &workspace,
+        &temporary.path().join("next-workspace"),
+    )
+    .await;
+    spawner.take_task().await;
+
+    assert_eq!(executor.runs.load(Ordering::SeqCst), 0);
     assert_eq!(
-        std::fs::read(app_data.join("sync-config.json")).unwrap(),
-        original
+        SyncApiService::get_sync_status(&service)
+            .await
+            .unwrap()
+            .completion_state,
+        SyncCompletionState::Failed
     );
 }
 
