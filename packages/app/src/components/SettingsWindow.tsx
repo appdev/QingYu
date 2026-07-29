@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { AppToaster } from "./AppToaster";
 import {
   AppearanceSettings,
@@ -15,7 +15,10 @@ import {
   ViewSettings
 } from "./SettingsSections";
 import { SettingsContent, SettingsSidebar } from "./SettingsShell";
-import { useSettingsWindowState } from "../hooks/useSettingsWindowState";
+import {
+  useSettingsWindowState,
+  type SettingsWindowPresentation
+} from "../hooks/useSettingsWindowState";
 import { useAutoUpdater } from "../hooks/useAutoUpdater";
 import { useDefaultContextMenuBlocker } from "../hooks/useDefaultContextMenuBlocker";
 import { useRuntimeLogCapture } from "../hooks/useRuntimeLogCapture";
@@ -27,21 +30,38 @@ import { resolveDesktopPlatform } from "../lib/platform";
 import { hideSettingsWindow, markSettingsWindowReady } from "../lib/tauri";
 import { MacWindowControls } from "./MacWindowControls";
 import { WindowsWindowControls } from "./WindowsWindowControls";
-import { getAppRuntime } from "../runtime";
+import {
+  getAppRuntime,
+  type NativeSettingsWindowContext,
+  type NativeSettingsWindowTarget
+} from "../runtime";
 import type { SettingsCategory } from "../hooks/useSettingsWindowState";
 import { requestPrimaryNotebookSwitch } from "../lib/notebook-switch-events";
 import { RemoteNotebookDialog } from "./notebooks/RemoteNotebookDialog";
 import { SyncConflictHistoryDialog } from "./sync/SyncConflictHistoryDialog";
 import type { SyncConflictRecord } from "../lib/sync-config";
 import { SettingsWindowLoadingShell } from "./SettingsWindowLoadingShell";
+import { SettingsModalFrame } from "./SettingsModalFrame";
 
 type OpenSyncConflictHistory = {
   conflict: SyncConflictRecord;
   notesRoot: string;
 };
 
-export function SettingsWindow() {
-  const settingsState = useSettingsWindowState();
+type SettingsWindowProps = {
+  context?: NativeSettingsWindowContext;
+  initialTarget?: NativeSettingsWindowTarget;
+  onClose?: () => unknown | Promise<unknown>;
+  presentation?: SettingsWindowPresentation;
+};
+
+export function SettingsWindow({
+  context,
+  initialTarget,
+  onClose,
+  presentation = "window"
+}: SettingsWindowProps = {}) {
+  const settingsState = useSettingsWindowState({ context, initialTarget, presentation });
   const runtimeLog = useRuntimeLogEntries();
   const {
     activeCategory,
@@ -65,6 +85,7 @@ export function SettingsWindow() {
     handleUpdateMarkdownTemplate,
     handleUpdateExportSettings,
     markdownTemplates,
+    prepareSettingsClose,
     primaryWorkspace,
     remoteNotebookDialog,
     setActiveCategory,
@@ -92,20 +113,35 @@ export function SettingsWindow() {
   ];
   const activeSettingsCategory = hiddenCategories.includes(activeCategory) ? "general" : activeCategory;
   const platform = resolveDesktopPlatform();
-  const showWindowsWindowChrome = platform === "windows" && appFeatures.nativeWindowChrome;
-  const showMacosWindowChrome = platform === "macos" && appFeatures.nativeWindowChrome;
+  const modalPresentation = presentation === "modal";
+  const windowsChromeLayout = platform === "windows" && appFeatures.nativeWindowChrome;
+  const showWindowsWindowChrome = !modalPresentation && windowsChromeLayout;
+  const showMacosWindowChrome = !modalPresentation && platform === "macos" && appFeatures.nativeWindowChrome;
   const liveSettingsStartupReady = appLanguage.ready && appTheme.ready;
   const [settingsStartupReady, setSettingsStartupReady] = useState(liveSettingsStartupReady);
   const [openSyncConflictHistory, setOpenSyncConflictHistory] = useState<OpenSyncConflictHistory | null>(null);
+  const closePromiseRef = useRef<Promise<unknown> | null>(null);
   useEffect(() => {
     if (!settingsStartupReady && liveSettingsStartupReady) setSettingsStartupReady(true);
   }, [liveSettingsStartupReady, settingsStartupReady]);
-  const settingsLayoutClassName = showWindowsWindowChrome
+  const settingsLayoutClassName = windowsChromeLayout
     ? "settings-layout absolute inset-x-0 top-10 bottom-0 grid grid-cols-[180px_minmax(0,1fr)] max-[700px]:grid-cols-1 max-[700px]:grid-rows-[auto_minmax(0,1fr)]"
-    : "settings-layout grid h-screen grid-cols-[180px_minmax(0,1fr)] max-[700px]:grid-cols-1 max-[700px]:grid-rows-[auto_minmax(0,1fr)]";
+    : `settings-layout grid ${modalPresentation ? "h-full" : "h-screen"} grid-cols-[180px_minmax(0,1fr)] max-[700px]:grid-cols-1 max-[700px]:grid-rows-[auto_minmax(0,1fr)]`;
   const handleCloseSettings = () => {
     setOpenSyncConflictHistory(null);
-    hideSettingsWindow().catch(() => {});
+    if (!modalPresentation) {
+      hideSettingsWindow().catch(() => {});
+      return;
+    }
+    if (closePromiseRef.current) return closePromiseRef.current;
+
+    const closePromise = prepareSettingsClose()
+      .then((canClose) => canClose ? onClose?.() : undefined)
+      .finally(() => {
+        if (closePromiseRef.current === closePromise) closePromiseRef.current = null;
+      });
+    closePromiseRef.current = closePromise;
+    return closePromise;
   };
   const handleOpenSyncConflictHistory = useCallback((conflict: SyncConflictRecord) => {
     if (!syncView.primaryRoot) return;
@@ -193,19 +229,26 @@ export function SettingsWindow() {
     currentVersion: appVersion
   });
   useEffect(() => {
-    if (!settingsStartupReady) return;
+    if (!settingsStartupReady || modalPresentation) return;
 
     markSettingsWindowReady().catch(() => {});
-  }, [settingsStartupReady]);
+  }, [modalPresentation, settingsStartupReady]);
 
-  if (!settingsStartupReady) return <SettingsWindowLoadingShell onClose={handleCloseSettings} />;
+  if (!settingsStartupReady) {
+    return (
+      <SettingsWindowLoadingShell
+        onClose={handleCloseSettings}
+        presentation={presentation}
+      />
+    );
+  }
 
-  return (
+  const settingsContent = (
     <main
-      className="settings-window relative h-screen overflow-hidden overscroll-none bg-(--bg-primary) text-(--text-primary)"
+      className={`settings-window relative ${modalPresentation ? "h-full" : "h-screen"} overflow-hidden overscroll-none bg-(--bg-primary) text-(--text-primary)`}
       aria-label={translate("settings.aria.main")}
     >
-      <AppToaster language={appLanguage.language} />
+      {!modalPresentation ? <AppToaster language={appLanguage.language} /> : null}
       {showMacosWindowChrome ? (
         <div
           className="settings-drag-region fixed inset-x-0 top-0 z-10 h-9.5 select-none [-webkit-user-select:none]"
@@ -219,25 +262,25 @@ export function SettingsWindow() {
           onClose={handleCloseSettings}
         />
       ) : null}
-      {showWindowsWindowChrome ? (
+      {windowsChromeLayout ? (
         <header
-          className="settings-window-chrome fixed inset-x-0 top-0 z-30 grid h-10 grid-cols-[minmax(0,1fr)_auto] select-none items-center bg-(--bg-chrome) [-webkit-user-select:none]"
+          className={`settings-window-chrome ${modalPresentation ? "absolute" : "fixed"} inset-x-0 top-0 z-30 grid h-10 grid-cols-[minmax(0,1fr)_auto] select-none items-center bg-(--bg-chrome) [-webkit-user-select:none]`}
           aria-label={translate("settings.aria.dragRegion")}
-          data-tauri-drag-region
+          data-tauri-drag-region={showWindowsWindowChrome ? true : undefined}
         >
           <div
             className="relative z-20 flex h-10 items-center px-3 text-[12px] leading-none font-[620] text-(--text-heading)"
-            data-tauri-drag-region
+            data-tauri-drag-region={showWindowsWindowChrome ? true : undefined}
           >
             QingYu
           </div>
           <div
             className="pointer-events-none absolute top-0 left-1/2 z-10 flex h-10 -translate-x-1/2 items-center justify-center px-6 text-[12px] leading-none font-[620] text-(--text-heading)"
-            data-tauri-drag-region
+            data-tauri-drag-region={showWindowsWindowChrome ? true : undefined}
           >
             {translate("settings.title")}
           </div>
-          <WindowsWindowControls onClose={handleCloseSettings} />
+          {showWindowsWindowChrome ? <WindowsWindowControls onClose={handleCloseSettings} /> : null}
         </header>
       ) : null}
       <div className={settingsLayoutClassName}>
@@ -253,7 +296,8 @@ export function SettingsWindow() {
           activeCategory={activeSettingsCategory}
           platform={platform}
           translate={translate}
-          onClose={platform === "linux" ? handleCloseSettings : undefined}
+          windowDragRegion={!modalPresentation}
+          onClose={!modalPresentation && platform === "linux" ? handleCloseSettings : undefined}
         >
           {activeSettingsCategory === "general" ? (
             <GeneralSettings
@@ -407,5 +451,18 @@ export function SettingsWindow() {
         />
       ) : null}
     </main>
+  );
+
+  if (!modalPresentation) return settingsContent;
+
+  return (
+    <SettingsModalFrame
+      closeLabel={translate("menu.closeWindow")}
+      label={translate("settings.title")}
+      onClose={handleCloseSettings}
+      platform={platform}
+    >
+      {settingsContent}
+    </SettingsModalFrame>
   );
 }

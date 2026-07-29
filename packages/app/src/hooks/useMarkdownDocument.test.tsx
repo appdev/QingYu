@@ -1920,6 +1920,53 @@ describe("useMarkdownDocument", () => {
     expect(preventDefault).toHaveBeenCalledTimes(1);
   });
 
+  it("blocks native window close while an application modal is open", async () => {
+    let closeRequestHandler: ((event: MockWindowCloseRequestEvent) => unknown | Promise<unknown>) | null = null;
+    const confirmDiscardUnsavedChanges = vi.fn(() => true);
+    mockedListenNativeWindowCloseRequested.mockImplementation(async (handler) => {
+      closeRequestHandler = handler;
+      return () => {};
+    });
+    mockedReadNativeMarkdownFile.mockResolvedValue({
+      content: "# Guide\n\nOriginal",
+      name: "guide.md",
+      path: "/mock-files/guide.md"
+    });
+    const { result } = renderHook(() =>
+      useMarkdownDocument({
+        confirmDiscardUnsavedChanges,
+        getCurrentMarkdown: (fallbackContent) => fallbackContent,
+        nativeCloseBlocked: true,
+        onTreeRootFromFilePath: vi.fn(),
+        onTreeRootFromFolderPath: vi.fn(),
+        preferencesReady: false,
+        restoreWorkspaceOnStartup: false
+      })
+    );
+
+    await waitFor(() => expect(mockedListenNativeWindowCloseRequested).toHaveBeenCalled());
+    await act(async () => {
+      await result.current.openTreeMarkdownFile({
+        name: "guide.md",
+        path: "/mock-files/guide.md",
+        relativePath: "guide.md"
+      });
+    });
+    act(() => {
+      result.current.handleMarkdownChange("# Guide\n\nDraft");
+    });
+
+    const preventDefault = vi.fn();
+    await act(async () => {
+      if (!closeRequestHandler) throw new Error("native close request handler was not registered");
+      await closeRequestHandler({ preventDefault });
+    });
+
+    expect(preventDefault).toHaveBeenCalledTimes(1);
+    expect(confirmDiscardUnsavedChanges).not.toHaveBeenCalled();
+    expect(mockedDestroyNativeWindow).not.toHaveBeenCalled();
+  });
+
   it("allows native window close when dirty document discard is confirmed", async () => {
     let closeRequestHandler: ((event: MockWindowCloseRequestEvent) => unknown | Promise<unknown>) | null = null;
     const confirmDiscardUnsavedChanges = vi.fn(() => true);
@@ -2244,6 +2291,32 @@ describe("useMarkdownDocument", () => {
     });
 
     expect(confirmDiscardUnsavedChanges).toHaveBeenCalledWith(expect.objectContaining({ name: "guide.md" }));
+    expect(mockedExitNativeApp).not.toHaveBeenCalled();
+  });
+
+  it("blocks native app exit while an application modal is open", async () => {
+    let appExitHandler: (() => unknown | Promise<unknown>) | null = null;
+    mockedListenNativeAppExitRequested.mockImplementation(async (handler) => {
+      appExitHandler = handler;
+      return () => {};
+    });
+    renderHook(() =>
+      useMarkdownDocument({
+        getCurrentMarkdown: (fallbackContent) => fallbackContent,
+        nativeCloseBlocked: true,
+        onTreeRootFromFilePath: vi.fn(),
+        onTreeRootFromFolderPath: vi.fn(),
+        preferencesReady: false,
+        restoreWorkspaceOnStartup: false
+      })
+    );
+
+    await waitFor(() => expect(mockedListenNativeAppExitRequested).toHaveBeenCalled());
+    await act(async () => {
+      if (!appExitHandler) throw new Error("native app exit handler was not registered");
+      await appExitHandler();
+    });
+
     expect(mockedExitNativeApp).not.toHaveBeenCalled();
   });
 

@@ -3,6 +3,8 @@ import { WindowsWindowControls } from "./WindowsWindowControls";
 import { resolveDesktopPlatform } from "../lib/platform";
 import { hideSettingsWindow } from "../lib/tauri";
 import { getAppRuntime } from "../runtime";
+import type { SettingsWindowPresentation } from "../hooks/useSettingsWindowState";
+import { SettingsModalFrame } from "./SettingsModalFrame";
 
 const loadingCategoryWidths = ["w-14", "w-20", "w-11", "w-12", "w-16", "w-13", "w-15", "w-18"];
 const loadingSectionRows = [1, 2, 1, 1];
@@ -90,21 +92,29 @@ function SettingsLoadingContent({ platform }: { platform: ReturnType<typeof reso
   );
 }
 
-export function SettingsWindowLoadingShell({ onClose }: { onClose?: () => unknown }) {
+export function SettingsWindowLoadingShell({
+  onClose,
+  presentation = "window"
+}: {
+  onClose?: () => unknown;
+  presentation?: SettingsWindowPresentation;
+}) {
   const appRuntime = getAppRuntime();
   const platform = resolveDesktopPlatform();
-  const showWindowsWindowChrome = platform === "windows" && appRuntime.features.nativeWindowChrome;
-  const showMacosWindowChrome = platform === "macos" && appRuntime.features.nativeWindowChrome;
-  const settingsLayoutClassName = showWindowsWindowChrome
+  const modalPresentation = presentation === "modal";
+  const windowsChromeLayout = platform === "windows" && appRuntime.features.nativeWindowChrome;
+  const showWindowsWindowChrome = !modalPresentation && windowsChromeLayout;
+  const showMacosWindowChrome = !modalPresentation && platform === "macos" && appRuntime.features.nativeWindowChrome;
+  const settingsLayoutClassName = windowsChromeLayout
     ? "settings-layout absolute inset-x-0 top-10 bottom-0 grid grid-cols-[180px_minmax(0,1fr)] max-[700px]:grid-cols-1 max-[700px]:grid-rows-[auto_minmax(0,1fr)]"
-    : "settings-layout grid h-screen grid-cols-[180px_minmax(0,1fr)] max-[700px]:grid-cols-1 max-[700px]:grid-rows-[auto_minmax(0,1fr)]";
+    : `settings-layout grid ${modalPresentation ? "h-full" : "h-screen"} grid-cols-[180px_minmax(0,1fr)] max-[700px]:grid-cols-1 max-[700px]:grid-rows-[auto_minmax(0,1fr)]`;
   const handleCloseSettings = onClose ?? (() => {
     hideSettingsWindow().catch(() => {});
   });
 
-  return (
+  const loadingContent = (
     <main
-      className="settings-window-loading relative h-screen overflow-hidden overscroll-none bg-(--bg-primary) text-(--text-primary)"
+      className={`settings-window-loading relative ${modalPresentation ? "h-full" : "h-screen"} overflow-hidden overscroll-none bg-(--bg-primary) text-(--text-primary)`}
       aria-busy="true"
       aria-label="QingYu settings"
     >
@@ -121,25 +131,25 @@ export function SettingsWindowLoadingShell({ onClose }: { onClose?: () => unknow
           onClose={handleCloseSettings}
         />
       ) : null}
-      {showWindowsWindowChrome ? (
+      {windowsChromeLayout ? (
         <header
-          className="settings-window-chrome fixed inset-x-0 top-0 z-30 grid h-10 grid-cols-[minmax(0,1fr)_auto] select-none items-center bg-(--bg-chrome) [-webkit-user-select:none]"
+          className={`settings-window-chrome ${modalPresentation ? "absolute" : "fixed"} inset-x-0 top-0 z-30 grid h-10 grid-cols-[minmax(0,1fr)_auto] select-none items-center bg-(--bg-chrome) [-webkit-user-select:none]`}
           aria-label="QingYu"
-          data-tauri-drag-region
+          data-tauri-drag-region={showWindowsWindowChrome ? true : undefined}
         >
           <div
             className="relative z-20 flex h-10 items-center px-3 text-[12px] leading-none font-[620] text-(--text-heading)"
-            data-tauri-drag-region
+            data-tauri-drag-region={showWindowsWindowChrome ? true : undefined}
           >
             QingYu
           </div>
           <div
             className="pointer-events-none absolute top-0 left-1/2 z-10 flex h-10 -translate-x-1/2 items-center justify-center"
-            data-tauri-drag-region
+            data-tauri-drag-region={showWindowsWindowChrome ? true : undefined}
           >
             <ShimmerBlock className="h-3 w-16 rounded" />
           </div>
-          <WindowsWindowControls onClose={handleCloseSettings} />
+          {showWindowsWindowChrome ? <WindowsWindowControls onClose={handleCloseSettings} /> : null}
         </header>
       ) : null}
 
@@ -148,5 +158,17 @@ export function SettingsWindowLoadingShell({ onClose }: { onClose?: () => unknow
         <SettingsLoadingContent platform={platform} />
       </div>
     </main>
+  );
+
+  if (!modalPresentation) return loadingContent;
+
+  return (
+    <SettingsModalFrame
+      label="Settings"
+      onClose={handleCloseSettings}
+      platform={platform}
+    >
+      {loadingContent}
+    </SettingsModalFrame>
   );
 }

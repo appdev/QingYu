@@ -1168,7 +1168,9 @@ describe("QingYu workspace", () => {
     const incompleteApp = renderApp();
     fireEvent.click(await screen.findByRole("button", { name: "Restore from cloud" }));
 
-    await waitFor(() => expect(mockedOpenSettingsWindow).toHaveBeenCalledWith("sync", null, null));
+    expect(await screen.findByRole("dialog", { name: "Settings" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Sync" })).toBeInTheDocument();
+    expect(mockedOpenSettingsWindow).not.toHaveBeenCalled();
     expect(incompleteListNotebooks).not.toHaveBeenCalled();
     incompleteApp.unmount();
 
@@ -1830,7 +1832,9 @@ describe("QingYu workspace", () => {
       renderApp();
       fireEvent.click(await screen.findByRole("button", { name: "Restore from cloud" }));
 
-      await waitFor(() => expect(mockedOpenSettingsWindow).toHaveBeenCalledWith("sync", null, null));
+      expect(await screen.findByRole("dialog", { name: "Settings" })).toBeInTheDocument();
+      expect(await screen.findByRole("heading", { name: "Sync" })).toBeInTheDocument();
+      expect(mockedOpenSettingsWindow).not.toHaveBeenCalled();
       expect(listNotebooks).not.toHaveBeenCalled();
       expect(screen.queryByRole("dialog", { name: "Restore notebook from cloud" }))
         .not.toBeInTheDocument();
@@ -4435,15 +4439,31 @@ describe("QingYu workspace", () => {
     );
   });
 
-  it("opens settings from the lower-left settings launcher", async () => {
+  it("opens modal settings, blocks the workspace, and restores focus after closing", async () => {
     const { container } = renderApp();
 
     await screen.findByText("Welcome to QingYu");
 
-    fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+    const launcher = screen.getByRole("button", { name: "Settings" });
+    launcher.focus();
+    fireEvent.click(launcher);
 
-    expect(mockedOpenSettingsWindow).toHaveBeenCalledTimes(1);
-    expect(mockedOpenSettingsWindow).toHaveBeenCalledWith(undefined, null, null);
+    await waitFor(() => expect(document.querySelector(".settings-window")).toBeInTheDocument());
+    const dialog = screen.getByRole("dialog", { name: "Settings" });
+    const background = container.querySelector("[data-settings-modal-background]");
+    const close = within(dialog).getByRole("button", { name: /close window/i });
+
+    expect(background).toHaveAttribute("inert");
+    expect(close).toHaveAttribute("data-settings-modal-close", "macos");
+    expect(within(dialog).queryByRole("button", { name: "Minimize window" })).not.toBeInTheDocument();
+    expect(within(dialog).queryByRole("button", { name: "Toggle full screen" })).not.toBeInTheDocument();
+    expect(mockedOpenSettingsWindow).not.toHaveBeenCalled();
+
+    fireEvent.click(close);
+
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Settings" })).not.toBeInTheDocument());
+    expect(background).not.toHaveAttribute("inert");
+    await waitFor(() => expect(launcher).toHaveFocus());
   });
 
   it("opens settings with the active folder project root", async () => {
@@ -4459,7 +4479,13 @@ describe("QingYu workspace", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Settings" }));
 
-    expect(mockedOpenSettingsWindow).toHaveBeenCalledWith(undefined, mockFolderPath, mockFolderPath);
+    await waitFor(() => expect(document.querySelector(".settings-window")).toBeInTheDocument());
+    expect(screen.getByRole("dialog", { name: "Settings" })).toBeInTheDocument();
+    expect(document.querySelector("[data-settings-modal-background]"))
+      .toHaveAttribute("data-settings-project-root", mockFolderPath);
+    expect(document.querySelector("[data-settings-modal-background]"))
+      .toHaveAttribute("data-settings-workspace-source-path", mockFolderPath);
+    expect(mockedOpenSettingsWindow).not.toHaveBeenCalled();
   });
 
   it("keeps an external standalone source separate from the primary settings root", async () => {
@@ -4477,7 +4503,13 @@ describe("QingYu workspace", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Settings" }));
 
-    expect(mockedOpenSettingsWindow).toHaveBeenCalledWith(undefined, null, mockNativePath);
+    await waitFor(() => expect(document.querySelector(".settings-window")).toBeInTheDocument());
+    expect(screen.getByRole("dialog", { name: "Settings" })).toBeInTheDocument();
+    expect(document.querySelector("[data-settings-modal-background]"))
+      .not.toHaveAttribute("data-settings-project-root");
+    expect(document.querySelector("[data-settings-modal-background]"))
+      .toHaveAttribute("data-settings-workspace-source-path", mockNativePath);
+    expect(mockedOpenSettingsWindow).not.toHaveBeenCalled();
   });
 
   it("opens settings with a selected folder while its file tree is still loading", async () => {
@@ -4503,8 +4535,13 @@ describe("QingYu workspace", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Settings" }));
 
-    expect(mockedOpenSettingsWindow).toHaveBeenCalledWith(undefined, mockFolderPath, mockFolderPath);
-    expect(mockedLoadSyncConfig).not.toHaveBeenCalled();
+    await waitFor(() => expect(document.querySelector(".settings-window")).toBeInTheDocument());
+    expect(screen.getByRole("dialog", { name: "Settings" })).toBeInTheDocument();
+    expect(document.querySelector("[data-settings-modal-background]"))
+      .toHaveAttribute("data-settings-project-root", mockFolderPath);
+    expect(document.querySelector("[data-settings-modal-background]"))
+      .toHaveAttribute("data-settings-workspace-source-path", mockFolderPath);
+    expect(mockedOpenSettingsWindow).not.toHaveBeenCalled();
     expect(mockedSyncApplication).not.toHaveBeenCalled();
 
     await act(async () => {
@@ -5281,11 +5318,13 @@ describe("QingYu workspace", () => {
       expect(screen.getByRole("button", { name: "Toggle file list" })).toHaveAttribute("aria-pressed", "false")
     );
     fireEvent.click(screen.getByRole("button", { name: "Settings" }));
-    expect(mockedOpenSettingsWindow).toHaveBeenCalledWith(
-      undefined,
-      "/mock-files/deleted-notes",
-      "/mock-files/deleted-notes"
-    );
+    await waitFor(() => expect(document.querySelector(".settings-window")).toBeInTheDocument());
+    expect(screen.getByRole("dialog", { name: "Settings" })).toBeInTheDocument();
+    expect(document.querySelector("[data-settings-modal-background]"))
+      .toHaveAttribute("data-settings-project-root", "/mock-files/deleted-notes");
+    expect(document.querySelector("[data-settings-modal-background]"))
+      .toHaveAttribute("data-settings-workspace-source-path", "/mock-files/deleted-notes");
+    expect(mockedOpenSettingsWindow).not.toHaveBeenCalled();
     expect(screen.queryByText("Welcome to QingYu")).not.toBeInTheDocument();
     expect(mockedLoadSyncConfig).toHaveBeenCalledWith();
     expect(mockedSyncApplication).not.toHaveBeenCalled();
@@ -11739,7 +11778,10 @@ describe("QingYu workspace", () => {
     await act(async () => {
       await menuHandlers.exportDocx?.();
     });
-    expect(mockedOpenSettingsWindow).toHaveBeenCalledWith("exportPandocPath", null);
+    expect(await screen.findByRole("dialog", { name: "Settings" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Export" })).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByLabelText("Pandoc path")).toHaveFocus());
+    expect(mockedOpenSettingsWindow).not.toHaveBeenCalled();
   });
 
   it("opens settings directly to the Pandoc path target", async () => {

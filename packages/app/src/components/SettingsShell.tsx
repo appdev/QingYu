@@ -182,19 +182,21 @@ export function SettingsContent({
   children,
   onClose,
   platform,
-  translate
+  translate,
+  windowDragRegion = true
 }: {
   activeCategory: SettingsCategory;
   children: ReactNode;
   onClose?: () => unknown;
   platform?: DesktopPlatform;
   translate: Translate;
+  windowDragRegion?: boolean;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const contentSurfaceClassName = platform === "windows"
     ? "border-t border-l border-(--border-default) rounded-tl-md"
     : "";
-  const contentHeaderDragRegion = platform === "linux" ? undefined : true;
+  const contentHeaderDragRegion = windowDragRegion && platform !== "linux" ? true : undefined;
 
   useLayoutEffect(() => {
     const scrollElement = scrollRef.current;

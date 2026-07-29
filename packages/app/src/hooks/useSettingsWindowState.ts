@@ -81,6 +81,14 @@ export type SettingsCategory =
 
 export type SettingsFocusTarget = "pandocPath";
 
+export type SettingsWindowPresentation = "modal" | "window";
+
+type UseSettingsWindowStateOptions = {
+  context?: NativeSettingsWindowContext;
+  initialTarget?: NativeSettingsWindowTarget;
+  presentation?: SettingsWindowPresentation;
+};
+
 const settingsExportSuggestedName = "markra-settings.json";
 
 function settingsTargetFromSearch(search: string): NativeSettingsWindowTarget | null {
@@ -159,12 +167,23 @@ export function canonicalizeEditorFontFamilyPreference(
   };
 }
 
-export function useSettingsWindowState() {
+export function useSettingsWindowState({
+  context,
+  initialTarget,
+  presentation = "window"
+}: UseSettingsWindowStateOptions = {}) {
   const appTheme = useAppTheme();
   const appLanguage = useAppLanguage();
   const primaryWorkspace = usePrimaryWorkspace({ trueMobile: false });
-  const initialSettingsTarget = settingsTargetFromSearch(window.location.search);
-  const initialWindowContext = settingsWindowContextFromSearch(window.location.search);
+  const nativeLifecycle = presentation === "window";
+  const initialSettingsTarget = initialTarget ?? settingsTargetFromSearch(window.location.search);
+  const initialWindowContext = context
+    ? {
+        sourceWindowLabel: context.sourceWindowLabel,
+        workspaceContextProvided: true,
+        workspaceSourcePath: context.workspaceSourcePath
+      }
+    : settingsWindowContextFromSearch(window.location.search);
   const [activeCategory, setActiveCategory] = useState<SettingsCategory>(() =>
     settingsCategoryForTarget(initialSettingsTarget)
   );
@@ -260,16 +279,18 @@ export function useSettingsWindowState() {
   }, []);
 
   useLayoutEffect(() => {
+    if (!nativeLifecycle) return;
     document.documentElement.dataset.window = "settings";
 
     return () => {
       delete document.documentElement.dataset.window;
     };
-  }, []);
+  }, [nativeLifecycle]);
 
   useLayoutEffect(() => {
+    if (!nativeLifecycle) return;
     document.title = translate("settings.title");
-  }, [translate]);
+  }, [nativeLifecycle, translate]);
 
   const applySyncPrimaryRoot = useCallback(async (
     nextPrimaryRoot: string | null,
@@ -310,6 +331,24 @@ export function useSettingsWindowState() {
     }
     return recoverVisibleSyncSession();
   }, [activeCategory, recoverVisibleSyncSession]);
+
+  useEffect(() => {
+    if (nativeLifecycle || !context) return;
+    setSettingsWorkspaceContext({
+      resolved: true,
+      sourceWindowLabel: context.sourceWindowLabel,
+      workspaceSourcePath: context.workspaceSourcePath
+    });
+  }, [
+    context?.sourceWindowLabel,
+    context?.workspaceSourcePath,
+    nativeLifecycle
+  ]);
+
+  useEffect(() => {
+    if (nativeLifecycle || !initialTarget) return;
+    handleSettingsWindowTarget(initialTarget);
+  }, [handleSettingsWindowTarget, initialTarget, nativeLifecycle]);
 
   useEffect(() => {
     if (activeCategory !== "sync" || !syncPrimaryRootResolved) return;
@@ -371,6 +410,7 @@ export function useSettingsWindowState() {
   ]);
 
   useEffect(() => {
+    if (!nativeLifecycle) return;
     let cancelled = false;
     let stopListening: (() => unknown) | null = null;
 
@@ -386,9 +426,10 @@ export function useSettingsWindowState() {
       cancelled = true;
       stopListening?.();
     };
-  }, [completeRequestedSettingsHide]);
+  }, [completeRequestedSettingsHide, nativeLifecycle]);
 
   useEffect(() => {
+    if (!nativeLifecycle) return;
     let cancelled = false;
     let stopListening: (() => unknown) | null = null;
 
@@ -407,7 +448,7 @@ export function useSettingsWindowState() {
       cancelled = true;
       stopListening?.();
     };
-  }, [handleSettingsWindowContext, handleSettingsWindowTarget]);
+  }, [handleSettingsWindowContext, handleSettingsWindowTarget, nativeLifecycle]);
 
   useEffect(() => {
     let cancelled = false;
@@ -753,6 +794,26 @@ export function useSettingsWindowState() {
     }
   }, [applyImportedSettings, settingsTransferRunning, translate]);
 
+  const prepareSettingsClose = useCallback(async () => {
+    if (activeCategory !== "sync" && !remoteNotebookDialog.open) return true;
+    try {
+      await remoteNotebookDialog.leaveSync("window-close");
+      return true;
+    } catch {
+      if (activeCategory === "sync" && syncPrimaryRootResolvedRef.current) {
+        await recoverVisibleSyncSession();
+      }
+      showSyncExitFailure();
+      return false;
+    }
+  }, [
+    activeCategory,
+    recoverVisibleSyncSession,
+    remoteNotebookDialog.leaveSync,
+    remoteNotebookDialog.open,
+    showSyncExitFailure
+  ]);
+
   return {
     activeCategory,
     appLanguage,
@@ -777,6 +838,7 @@ export function useSettingsWindowState() {
     setActiveCategory: handleSelectCategory,
     markdownTemplates,
     primaryWorkspace,
+    prepareSettingsClose,
     remoteNotebookDialog,
     settingsFocusTarget,
     settingsSourceWindowLabel: settingsWorkspaceContext.sourceWindowLabel,
