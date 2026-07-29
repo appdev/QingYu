@@ -72,6 +72,42 @@
   --accent-hover: #ffcc66;
   --danger: #ff6b6b;
   --link-color: #ffcc66;
+
+  --bg-titlebar: var(--bg-primary);
+  --bg-sidebar: var(--bg-primary);
+  --bg-sidebar-header: var(--bg-sidebar);
+  --bg-toolbar: var(--bg-sidebar);
+  --bg-outline: var(--bg-sidebar);
+  --bg-sidebar-footer: var(--bg-sidebar);
+  --border-chrome: #1f2430;
+
+  --bg-tree-current: var(--bg-hover);
+  --text-tree-current: var(--text-primary);
+  --tree-current-indicator: var(--accent);
+  --bg-tree-selected: var(--bg-hover);
+  --text-tree-selected: var(--text-primary);
+  --tree-selected-indicator: var(--accent);
+  --bg-outline-current: transparent;
+  --text-outline-current: var(--accent-hover);
+
+  --sidebar-font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  --sidebar-tree-font-size: 15.4px;
+  --sidebar-tree-font-weight: 400;
+  --sidebar-tree-line-height: 20px;
+  --text-tree: var(--text-secondary);
+  --bg-tree-hover: var(--bg-hover);
+  --text-tree-hover: var(--text-heading);
+  --sidebar-tree-current-font-weight: 400;
+  --sidebar-outline-font-size: 14px;
+  --sidebar-outline-font-weight: 400;
+  --sidebar-outline-line-height: 20px;
+  --sidebar-outline-row-min-height: 28px;
+  --sidebar-outline-max-lines: 1;
+  --text-outline: var(--text-secondary);
+  --bg-outline-hover: var(--bg-hover);
+  --text-outline-hover: var(--text-heading);
+  --sidebar-outline-current-font-weight: 500;
+
   color-scheme: dark;
   font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   font-feature-settings: "liga" 1, "calt" 1;
