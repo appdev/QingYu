@@ -3524,7 +3524,6 @@ dependencies = [
  "hmac",
  "http-body-util",
  "ignore",
- "qingyu-dejavu",
  "quick-xml 0.39.4",
  "reqwest 0.12.28",
  "rustix",

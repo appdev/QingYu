@@ -19,8 +19,8 @@ use tauri_plugin_store::StoreExt;
 use crate::mcp::config::{McpConfig, McpConfigDocument};
 use crate::mcp::local_settings::McpLocalSettingsService;
 use crate::storage_capability::{
-    create_private_file_options, open_canonical_directory_nofollow, rename_in_directory,
-    sync_directory, unique_regular_file_identity,
+    create_private_replaceable_file_options, open_canonical_directory_nofollow,
+    rename_retained_file_in_directory, sync_directory, unique_regular_file_identity,
 };
 
 const SETTINGS_STORE_PATH: &str = "settings.json";
@@ -1464,15 +1464,17 @@ fn replace_settings_file_atomically(
     app_data_root: &Path,
     bytes: &[u8],
 ) -> Result<SettingsFileReplacement, AppSettingsError> {
-    replace_settings_file_atomically_with_directory_sync(app_data_root, bytes, sync_directory)
+    replace_settings_file_atomically_with_hooks(app_data_root, bytes, || {}, sync_directory)
 }
 
-fn replace_settings_file_atomically_with_directory_sync<SyncDirectory>(
+fn replace_settings_file_atomically_with_hooks<BeforePublish, SyncDirectory>(
     app_data_root: &Path,
     bytes: &[u8],
+    before_publish: BeforePublish,
     sync_after_rename: SyncDirectory,
 ) -> Result<SettingsFileReplacement, AppSettingsError>
 where
+    BeforePublish: FnOnce(),
     SyncDirectory: FnOnce(&cap_std::fs::Dir) -> io::Result<()>,
 {
     static SEQUENCE: AtomicUsize = AtomicUsize::new(0);
@@ -1489,7 +1491,7 @@ where
         .find_map(|_| {
             let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
             let name = format!(".settings-{}-{sequence}.tmp", std::process::id());
-            match directory.open_with(&name, &create_private_file_options()) {
+            match directory.open_with(&name, &create_private_replaceable_file_options()) {
                 Ok(file) => Some(Ok((name, file))),
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => None,
                 Err(_) => Some(Err(AppSettingsError::unavailable())),
@@ -1505,36 +1507,60 @@ where
         let _cleanup = directory.remove_file(&staged_name);
         return Err(AppSettingsError::unavailable());
     }
-    drop(staged);
+    let staged_identity = match staged.metadata() {
+        Ok(metadata) => match unique_regular_file_identity(&metadata) {
+            Some(identity) => identity,
+            None => {
+                drop(staged);
+                let _cleanup = directory.remove_file(&staged_name);
+                return Err(AppSettingsError::unavailable());
+            }
+        },
+        Err(_) => {
+            drop(staged);
+            let _cleanup = directory.remove_file(&staged_name);
+            return Err(AppSettingsError::unavailable());
+        }
+    };
+    before_publish();
     let retained = match directory.symlink_metadata(SETTINGS_STORE_PATH) {
         Ok(metadata) => match unique_regular_file_identity(&metadata) {
             Some(identity) => Some(identity),
             None => {
+                drop(staged);
                 let _cleanup = directory.remove_file(&staged_name);
                 return Err(AppSettingsError::unavailable());
             }
         },
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
         Err(_) => {
+            drop(staged);
             let _cleanup = directory.remove_file(&staged_name);
             return Err(AppSettingsError::unavailable());
         }
     };
     if retained != existing {
+        drop(staged);
         let _cleanup = directory.remove_file(&staged_name);
         return Err(AppSettingsError::reconcile_failed());
     }
-    if rename_in_directory(
+    if let Err(error) = rename_retained_file_in_directory(
         &directory,
+        &staged,
         &staged_name,
+        staged_identity,
         SETTINGS_STORE_PATH,
         existing.is_some(),
-    )
-    .is_err()
-    {
+    ) {
+        drop(staged);
         let _cleanup = directory.remove_file(&staged_name);
-        return Err(AppSettingsError::unavailable());
+        return Err(if error.kind() == io::ErrorKind::InvalidData {
+            AppSettingsError::reconcile_failed()
+        } else {
+            AppSettingsError::unavailable()
+        });
     }
+    drop(staged);
     Ok(match sync_after_rename(&directory) {
         Ok(()) => SettingsFileReplacement::Durable,
         Err(_) => SettingsFileReplacement::PublishedWithoutDirectoryDurability,
@@ -3428,9 +3454,10 @@ mod tests {
         let replacement_bytes = serde_json::to_vec(&replacement).unwrap();
         let mut cache = before;
 
-        let publication = replace_settings_file_atomically_with_directory_sync(
+        let publication = replace_settings_file_atomically_with_hooks(
             &app_data_root,
             &replacement_bytes,
+            || {},
             |_| {
                 Err(io::Error::other(
                     "injected post-rename directory sync failure",
@@ -3456,6 +3483,43 @@ mod tests {
             serde_json::from_slice(&fs::read(settings_path).unwrap()).unwrap();
         assert_eq!(disk, replacement);
         assert_eq!(cache, disk);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_settings_replacement_rejects_a_swapped_staged_file() {
+        let app_data = tempdir().unwrap();
+        let app_data_root = app_data.path().canonicalize().unwrap();
+        let settings_path = app_data_root.join(SETTINGS_STORE_PATH);
+        let original = br#"{"language":"en"}"#;
+        let desired = br#"{"language":"zh-CN"}"#;
+        let swapped = br#"{"language":"attacker"}"#;
+        fs::write(&settings_path, original).unwrap();
+
+        let result = replace_settings_file_atomically_with_hooks(
+            &app_data_root,
+            desired,
+            || {
+                let staged_path = fs::read_dir(&app_data_root)
+                    .unwrap()
+                    .map(|entry| entry.unwrap().path())
+                    .find(|path| {
+                        path.file_name()
+                            .and_then(|name| name.to_str())
+                            .is_some_and(|name| {
+                                name.starts_with(".settings-") && name.ends_with(".tmp")
+                            })
+                    })
+                    .expect("staged settings file");
+                fs::rename(&staged_path, app_data_root.join("captured-stage")).unwrap();
+                fs::write(staged_path, swapped).unwrap();
+            },
+            |_| Ok(()),
+        );
+
+        let error = result.expect_err("a swapped staged file must not be published");
+        assert_eq!(error.code, "settings-reconcile-failed");
+        assert_eq!(fs::read(settings_path).unwrap(), original);
     }
 
     #[test]

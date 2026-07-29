@@ -22,7 +22,6 @@ fs2 = "0.4.3"
 hmac = "0.12"
 http-body-util = "0.1"
 ignore = "0.4.28"
-qingyu-dejavu = { path = "../desktop/src-tauri/crates/qingyu-dejavu" }
 quick-xml = "0.39.2"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
