@@ -96,11 +96,17 @@ describe("editor stylesheet", () => {
     }
   });
 
-  it("keeps CodeMirror's drawn selection background visible", () => {
+  it("keeps CodeMirror's preview selection theme-aware and readable", () => {
     const styles = readFileSync(`${process.cwd()}/src/styles.css`, "utf8");
+    const selectionStart = styles.indexOf(
+      ".markdown-paper .cm-selectionBackground {",
+    );
+    const selectionEnd = styles.indexOf("\n  }", selectionStart);
+    const selectionRule = styles.slice(selectionStart, selectionEnd);
 
-    expect(styles).not.toContain(
-      ".markdown-paper .cm-selectionBackground {\n    background: transparent !important;",
+    expect(selectionStart).toBeGreaterThanOrEqual(0);
+    expect(selectionRule).toContain(
+      "background: color-mix(in srgb, var(--editor-caret-color, var(--accent)) 20%, transparent) !important;",
     );
   });
 
@@ -912,31 +918,115 @@ describe("editor stylesheet", () => {
     expect(iconStyles).toContain("pointer-events: none");
   });
 
-  it("uses one quieter theme color for Markdown syntax characters", () => {
+  it("keeps Markdown markers readable in dark themes", () => {
     const styles = readFileSync(`${process.cwd()}/src/styles.css`, "utf8");
-    const syntaxColorStart = styles.indexOf(
+    const visualSyntaxColorStart = styles.indexOf(
       "--editor-markdown-syntax-color:",
     );
-    const syntaxRuleStart = styles.indexOf(
-      ".markdown-paper .cm-markra-syntax-character,",
+    const sourceSyntaxColorStart = styles.indexOf(
+      "--source-markdown-syntax-color:",
     );
-    const syntaxRuleEnd = styles.indexOf("\n  }", syntaxRuleStart);
-    const syntaxRule = styles.slice(syntaxRuleStart, syntaxRuleEnd);
+    const darkSyntaxStart = styles.indexOf(
+      '.markdown-paper[data-editor-theme="dark"],',
+    );
+    const darkSyntaxEnd = styles.indexOf("\n  }", darkSyntaxStart);
+    const darkSyntax = styles.slice(
+      darkSyntaxStart,
+      darkSyntaxEnd,
+    );
+    const visualSyntaxRuleStart = styles.indexOf(
+      ".markdown-paper .cm-markra-syntax-character {",
+    );
+    const visualSyntaxRuleEnd = styles.indexOf(
+      "\n  }",
+      visualSyntaxRuleStart,
+    );
+    const visualSyntaxRule = styles.slice(
+      visualSyntaxRuleStart,
+      visualSyntaxRuleEnd,
+    );
+    const sourceSyntaxRuleStart = styles.indexOf(
+      ".markdown-source-paper .cm-markra-syntax-character {",
+    );
+    const sourceSyntaxRuleEnd = styles.indexOf(
+      "\n  }",
+      sourceSyntaxRuleStart,
+    );
+    const sourceSyntaxRule = styles.slice(
+      sourceSyntaxRuleStart,
+      sourceSyntaxRuleEnd,
+    );
 
-    expect(syntaxColorStart).toBeGreaterThanOrEqual(0);
-    expect(styles.slice(syntaxColorStart, syntaxColorStart + 180)).toContain(
+    expect(visualSyntaxColorStart).toBeGreaterThanOrEqual(0);
+    expect(
+      styles.slice(visualSyntaxColorStart, visualSyntaxColorStart + 180),
+    ).toContain(
       "color-mix(in srgb, var(--text-md-char) 72%, var(--editor-paper-bg, var(--bg-primary)))",
     );
-    expect(syntaxRuleStart).toBeGreaterThanOrEqual(0);
-    expect(syntaxRule).toContain(
-      ".markdown-source-paper .cm-markra-syntax-character",
+    expect(sourceSyntaxColorStart).toBeGreaterThanOrEqual(0);
+    expect(
+      styles.slice(sourceSyntaxColorStart, sourceSyntaxColorStart + 120),
+    ).toContain("var(--editor-markdown-syntax-color)");
+    expect(darkSyntaxStart).toBeGreaterThanOrEqual(0);
+    expect(darkSyntax).toContain(
+      "--editor-markdown-syntax-color: var(--editor-text-primary)",
     );
-    expect(syntaxRule).toContain(
+    expect(darkSyntax).not.toContain(".markdown-source-paper");
+    const darkSourceSyntaxStart = styles.indexOf(
+      '[data-theme="dark"] .markdown-source-paper,',
+    );
+    const darkSourceSyntaxEnd = styles.indexOf("\n  }", darkSourceSyntaxStart);
+    expect(styles.slice(darkSourceSyntaxStart, darkSourceSyntaxEnd)).toContain(
+      "--source-markdown-syntax-color: var(--text-primary)",
+    );
+    expect(visualSyntaxRuleStart).toBeGreaterThanOrEqual(0);
+    expect(visualSyntaxRule).toContain(
       "color: var(--editor-markdown-syntax-color) !important",
+    );
+    expect(sourceSyntaxRuleStart).toBeGreaterThanOrEqual(0);
+    expect(sourceSyntaxRule).toContain(
+      "color: var(--source-markdown-syntax-color) !important",
     );
     expect(styles).toContain(
       ".markdown-paper .markra-md-delimiter {\n    @apply text-(--editor-markdown-syntax-color);",
     );
+  });
+
+  it("keeps secondary text readable in the low-contrast dark themes", () => {
+    const styles = readFileSync(`${process.cwd()}/src/styles.css`, "utf8");
+    const sharedDarkStart = styles.indexOf('[data-theme="dark"],');
+    const sharedDarkEnd = styles.indexOf("\n  }", sharedDarkStart);
+    const oneDarkStart = styles.indexOf('[data-theme="one-dark"] {');
+    const oneDarkEnd = styles.indexOf("\n  }", oneDarkStart);
+    const oneDarkProStart = styles.indexOf('[data-theme="one-dark-pro"] {');
+    const oneDarkProEnd = styles.indexOf("\n  }", oneDarkProStart);
+    const oneDarkEditorStart = styles.indexOf(
+      ':root:not([data-theme="dark"]) .markdown-paper[data-editor-theme="one-dark"] {',
+    );
+    const oneDarkEditorEnd = styles.indexOf("\n  }", oneDarkEditorStart);
+    const oneDarkProEditorStart = styles.indexOf(
+      ':root:not([data-theme="dark"]) .markdown-paper[data-editor-theme="one-dark-pro"] {',
+    );
+    const oneDarkProEditorEnd = styles.indexOf(
+      "\n  }",
+      oneDarkProEditorStart,
+    );
+
+    expect(styles.slice(sharedDarkStart, sharedDarkEnd)).toContain(
+      "--text-secondary: #858585;",
+    );
+    expect(styles.slice(oneDarkStart, oneDarkEnd)).toContain(
+      "--text-secondary: #8f96a3;",
+    );
+    expect(styles.slice(oneDarkProStart, oneDarkProEnd)).toContain(
+      "--text-secondary: #8f96a3;",
+    );
+    expect(styles.slice(oneDarkEditorStart, oneDarkEditorEnd)).toContain(
+      "--editor-text-secondary: #8f96a3;",
+    );
+    expect(
+      styles.slice(oneDarkProEditorStart, oneDarkProEditorEnd),
+    ).toContain("--editor-text-secondary: #8f96a3;");
   });
 
   it("removes CodeMirror's inline baseline around standalone image editors", () => {
