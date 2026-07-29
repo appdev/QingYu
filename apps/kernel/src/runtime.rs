@@ -305,18 +305,7 @@ impl KernelRuntime {
 
     pub(crate) fn abandon_sync_background_task(&self, run_id: crate::contract::RunId) {
         let Ok(mutation) = self.mutation_coordinator.try_lock() else {
-            if let Ok(mut lifecycle) = self.workspace_run_lifecycle.state.lock() {
-                let exact = matches!(
-                    &lifecycle.run,
-                    RegisteredSyncRun::Queued(run)
-                        | RegisteredSyncRun::Running(run)
-                        | RegisteredSyncRun::Finalizing(run)
-                        if run.run_id == run_id
-                );
-                if exact {
-                    lifecycle.admission = SyncRunAdmission::RecoveryClosed;
-                }
-            }
+            let _recovery = self.quarantine_dropped_sync_task(run_id);
             self.workspace_run_lifecycle.drained.notify_waiters();
             return;
         };
@@ -341,7 +330,7 @@ impl KernelRuntime {
                 }
             }
             Some(1) => {
-                let _recovery = self.quarantine_dropped_running_sync_task(run_id, &mutation);
+                let _recovery = self.quarantine_dropped_sync_task(run_id);
                 drop(mutation);
                 self.workspace_run_lifecycle.drained.notify_waiters();
             }
@@ -353,14 +342,10 @@ impl KernelRuntime {
         }
     }
 
-    fn quarantine_dropped_running_sync_task(
+    fn quarantine_dropped_sync_task(
         &self,
         run_id: crate::contract::RunId,
-        mutation: &MutationPermit<'_>,
     ) -> Result<(), WorkspaceRunLifecycleError> {
-        if !self.mutation_coordinator.recognizes(mutation) {
-            return Err(WorkspaceRunLifecycleError);
-        }
         let mut owner = self
             .owner
             .workspace
@@ -371,23 +356,36 @@ impl KernelRuntime {
             .state
             .lock()
             .map_err(|_| WorkspaceRunLifecycleError)?;
-        let running = match &lifecycle.run {
-            RegisteredSyncRun::Running(running) if running.run_id == run_id => running.clone(),
+        let dropped = match &lifecycle.run {
+            RegisteredSyncRun::Queued(run)
+            | RegisteredSyncRun::Running(run)
+            | RegisteredSyncRun::Finalizing(run)
+                if run.run_id == run_id =>
+            {
+                run.clone()
+            }
             _ => return Ok(()),
         };
-        running.cancellation.cancel();
-        let WorkspaceOwnerState::Active(current) = &*owner else {
-            lifecycle.admission = SyncRunAdmission::RecoveryClosed;
-            return Err(WorkspaceRunLifecycleError);
+        dropped.cancellation.cancel();
+        let current = match &*owner {
+            WorkspaceOwnerState::Active(current) => current,
+            WorkspaceOwnerState::RecoveryRequired { .. } => {
+                lifecycle.admission = SyncRunAdmission::RecoveryClosed;
+                return Ok(());
+            }
+            WorkspaceOwnerState::AuthorityOnly(_) => {
+                lifecycle.admission = SyncRunAdmission::RecoveryClosed;
+                return Err(WorkspaceRunLifecycleError);
+            }
         };
-        if !Arc::ptr_eq(current, &running.snapshot) {
+        if !Arc::ptr_eq(current, &dropped.snapshot) {
             lifecycle.admission = SyncRunAdmission::RecoveryClosed;
             return Err(WorkspaceRunLifecycleError);
         }
         *owner = WorkspaceOwnerState::RecoveryRequired {
             _hold: WorkspaceRecoveryHold {
-                _last_known: Some(running.snapshot.clone()),
-                _retained_candidate: Some(running.snapshot.authority.clone()),
+                _last_known: Some(dropped.snapshot.clone()),
+                _retained_candidate: Some(dropped.snapshot.authority.clone()),
             },
         };
         lifecycle.admission = SyncRunAdmission::RecoveryClosed;

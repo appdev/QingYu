@@ -3108,6 +3108,43 @@ async fn dropping_an_accepted_unpolled_task_revokes_its_queued_registration() {
 }
 
 #[tokio::test]
+async fn dropping_an_unpolled_task_while_mutation_is_busy_quarantines() {
+    let temporary = tempdir().unwrap();
+    let spawner = Arc::new(DeferredTaskSpawner::default());
+    let (runtime, _workspace, durable) = active_sync_runtime(
+        temporary.path(),
+        test_ports_with_task_spawner(spawner.clone()),
+    )
+    .await;
+    let service = SyncService::new(
+        runtime.clone(),
+        Arc::new(SyncConfigStore::new(durable).unwrap()),
+        Arc::new(CountingExecutor::default()),
+    );
+    let config = SyncApiService::get_sync_config(&service).await.unwrap();
+    SyncApiService::trigger_sync_run(
+        &service,
+        TriggerSyncRunRequest {
+            expected_config_revision: config.revision,
+        },
+    )
+    .await
+    .unwrap();
+    let queued = spawner.take_task();
+    let mutation = runtime.mutation_coordinator().lock().await;
+
+    drop(queued);
+
+    assert!(runtime.active_workspace_snapshot().is_err());
+    drop(mutation);
+    assert!(runtime.active_workspace_snapshot().is_err());
+    assert!(runtime
+        .begin_sync_workspace_transition_for_test()
+        .await
+        .is_err());
+}
+
+#[tokio::test]
 async fn aborting_a_running_background_task_quarantines_its_workspace() {
     let temporary = tempdir().unwrap();
     let spawner = Arc::new(DeferredTaskSpawner::default());
@@ -3137,6 +3174,49 @@ async fn aborting_a_running_background_task_quarantines_its_workspace() {
     task.abort();
     assert!(task.await.unwrap_err().is_cancelled());
 
+    assert!(runtime.active_workspace_snapshot().is_err());
+    assert!(runtime
+        .begin_sync_workspace_transition_for_test()
+        .await
+        .is_err());
+}
+
+#[tokio::test]
+async fn aborting_a_running_background_task_while_mutation_is_busy_still_quarantines() {
+    let temporary = tempdir().unwrap();
+    let spawner = Arc::new(DeferredTaskSpawner::default());
+    let (runtime, _workspace, durable) = active_sync_runtime(
+        temporary.path(),
+        test_ports_with_task_spawner(spawner.clone()),
+    )
+    .await;
+    let executor = Arc::new(BlockingExecutor::default());
+    let service = SyncService::new(
+        runtime.clone(),
+        Arc::new(SyncConfigStore::new(durable).unwrap()),
+        executor.clone(),
+    );
+    let config = SyncApiService::get_sync_config(&service).await.unwrap();
+    SyncApiService::trigger_sync_run(
+        &service,
+        TriggerSyncRunRequest {
+            expected_config_revision: config.revision,
+        },
+    )
+    .await
+    .unwrap();
+    let task = tokio::spawn(spawner.take_task());
+    executor.started.notified().await;
+    let mutation = runtime.mutation_coordinator().lock().await;
+
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
+
+    assert!(
+        runtime.active_workspace_snapshot().is_err(),
+        "a dropped running task must quarantine even while another mutation owns the permit"
+    );
+    drop(mutation);
     assert!(runtime.active_workspace_snapshot().is_err());
     assert!(runtime
         .begin_sync_workspace_transition_for_test()
