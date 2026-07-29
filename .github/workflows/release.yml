@@ -242,7 +242,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          endpoint="$(node .release-scripts/scripts/release/resolve-updater-endpoint.mjs)"
+          endpoint="$(node scripts/release/resolve-updater-endpoint.mjs)"
           echo "endpoint=${endpoint}" >> "${GITHUB_OUTPUT}"
 
       - name: Prepare updater config
