@@ -143,6 +143,7 @@ pub(crate) struct ExposedAppSettings {
 pub(crate) struct AppSettingsError {
     pub(crate) code: &'static str,
     message: &'static str,
+    publish_uncertain: bool,
 }
 
 impl AppSettingsError {
@@ -150,6 +151,15 @@ impl AppSettingsError {
         Self {
             code: "settings_unavailable",
             message: "The QingYu settings store is unavailable.",
+            publish_uncertain: false,
+        }
+    }
+
+    fn publish_uncertain() -> Self {
+        Self {
+            code: "settings_unavailable",
+            message: "The QingYu settings store is unavailable.",
+            publish_uncertain: true,
         }
     }
 
@@ -157,6 +167,7 @@ impl AppSettingsError {
         Self {
             code: "invalid_settings_group",
             message: "The settings group is invalid.",
+            publish_uncertain: false,
         }
     }
 
@@ -164,6 +175,7 @@ impl AppSettingsError {
         Self {
             code: "invalid_settings_field",
             message: "The settings patch contains an unknown or invalid field.",
+            publish_uncertain: false,
         }
     }
 
@@ -171,6 +183,7 @@ impl AppSettingsError {
         Self {
             code: "settings_revision_conflict",
             message: "The settings changed after the supplied revision was read.",
+            publish_uncertain: false,
         }
     }
 
@@ -178,6 +191,7 @@ impl AppSettingsError {
         Self {
             code: "remote-settings-invalid",
             message: "The remote portable settings are invalid.",
+            publish_uncertain: false,
         }
     }
 
@@ -185,7 +199,12 @@ impl AppSettingsError {
         Self {
             code: "settings-reconcile-failed",
             message: "The synchronized settings could not be reconciled safely.",
+            publish_uncertain: false,
         }
+    }
+
+    fn is_publish_uncertain(self) -> bool {
+        self.publish_uncertain
     }
 }
 
@@ -212,9 +231,130 @@ pub(crate) trait SettingsEventSink: Send + Sync {
     fn emit(&self, event: &str, payload: Value) -> Result<(), AppSettingsError>;
 }
 
+/// Bridges the Kernel's ordered settings publication batch to the desktop's
+/// typed and legacy event transports. Task 9 owns installing this seam in the
+/// production composition root.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) struct DesktopSettingsBatchSink {
+    typed: Arc<dyn qingyu_kernel::events::EventSink>,
+    legacy: Arc<dyn SettingsEventSink>,
+}
+
+impl DesktopSettingsBatchSink {
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn new(
+        typed: Arc<dyn qingyu_kernel::events::EventSink>,
+        legacy: Arc<dyn SettingsEventSink>,
+    ) -> Self {
+        Self { typed, legacy }
+    }
+}
+
+impl qingyu_kernel::settings::service::SettingsPublicationBatchSink for DesktopSettingsBatchSink {
+    fn publish(
+        &self,
+        batch: &qingyu_kernel::settings::service::SettingsPublicationBatch,
+    ) -> Result<(), qingyu_kernel::events::EventSinkError> {
+        let mut first_error = self.typed.publish(batch.publication()).err();
+        for publication in batch.publications() {
+            let legacy_error = self
+                .legacy
+                .emit(publication.event_name(), publication.payload().clone())
+                .err()
+                .map(|_| qingyu_kernel::events::EventSinkError);
+            first_error = first_error.or(legacy_error);
+        }
+        if let Some(error) = first_error {
+            Err(error)
+        } else {
+            Ok(())
+        }
+    }
+}
+
+/// Temporary host adapter used while desktop command composition remains on
+/// the legacy service. Task 9 can install this exact backend in the Kernel
+/// without creating a second `settings.json` owner. Task 9 must build one
+/// shared `SettingsRuntimeCoordinator` with this adapter's transaction gate.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) struct KernelSettingsStoreAdapter {
+    backend: Arc<dyn SettingsBackend>,
+    transaction_gate: Arc<Mutex<()>>,
+}
+
+impl KernelSettingsStoreAdapter {
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn new(backend: Arc<dyn SettingsBackend>) -> Self {
+        Self {
+            backend,
+            transaction_gate: app_settings_transaction_gate(),
+        }
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn transaction_gate(&self) -> Arc<Mutex<()>> {
+        self.transaction_gate.clone()
+    }
+}
+
+fn kernel_settings_store_error(
+    error: AppSettingsError,
+) -> qingyu_kernel::settings::storage::SettingsStoreError {
+    if error.is_publish_uncertain() {
+        qingyu_kernel::settings::storage::SettingsStoreError::publish_uncertain()
+    } else {
+        qingyu_kernel::settings::storage::SettingsStoreError::unavailable()
+    }
+}
+
+impl qingyu_kernel::settings::storage::SettingsStore for KernelSettingsStoreAdapter {
+    fn get(
+        &self,
+        key: &str,
+    ) -> Result<Option<Value>, qingyu_kernel::settings::storage::SettingsStoreError> {
+        self.backend.get(key).map_err(kernel_settings_store_error)
+    }
+
+    fn set(
+        &self,
+        key: &str,
+        value: Value,
+    ) -> Result<(), qingyu_kernel::settings::storage::SettingsStoreError> {
+        self.backend
+            .set(key, value)
+            .map_err(kernel_settings_store_error)
+    }
+
+    fn delete(
+        &self,
+        key: &str,
+    ) -> Result<(), qingyu_kernel::settings::storage::SettingsStoreError> {
+        self.backend
+            .delete(key)
+            .map_err(kernel_settings_store_error)
+    }
+
+    fn save(&self) -> Result<(), qingyu_kernel::settings::storage::SettingsStoreError> {
+        self.backend.save().map_err(kernel_settings_store_error)
+    }
+
+    fn replace_portable_atomically(
+        &self,
+        desired: &Map<String, Value>,
+    ) -> Result<(), qingyu_kernel::settings::storage::SettingsStoreError> {
+        self.backend
+            .replace_portable_atomically(desired)
+            .map_err(kernel_settings_store_error)
+    }
+}
+
 struct StoreSettingsBackend<R: Runtime> {
     app_data_root: PathBuf,
     store: Arc<tauri_plugin_store::Store<R>>,
+}
+
+fn classify_non_atomic_store_save<T, E>(result: Result<T, E>) -> Result<T, AppSettingsError> {
+    result.map_err(|_| AppSettingsError::publish_uncertain())
 }
 
 impl<R: Runtime> SettingsBackend for StoreSettingsBackend<R> {
@@ -233,9 +373,7 @@ impl<R: Runtime> SettingsBackend for StoreSettingsBackend<R> {
     }
 
     fn save(&self) -> Result<(), AppSettingsError> {
-        self.store
-            .save()
-            .map_err(|_| AppSettingsError::unavailable())
+        classify_non_atomic_store_save(self.store.save())
     }
 
     fn replace_portable_atomically(
@@ -923,7 +1061,7 @@ where
     match publication {
         SettingsFileReplacement::Durable => Ok(()),
         SettingsFileReplacement::PublishedWithoutDirectoryDurability => {
-            Err(AppSettingsError::unavailable())
+            Err(AppSettingsError::publish_uncertain())
         }
     }
 }
@@ -1009,9 +1147,17 @@ where
     })
 }
 
+fn app_settings_transaction_gate_ref() -> &'static Arc<Mutex<()>> {
+    static GATE: OnceLock<Arc<Mutex<()>>> = OnceLock::new();
+    GATE.get_or_init(|| Arc::new(Mutex::new(())))
+}
+
+pub(crate) fn app_settings_transaction_gate() -> Arc<Mutex<()>> {
+    app_settings_transaction_gate_ref().clone()
+}
+
 fn app_settings_transaction_lock() -> &'static Mutex<()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
+    app_settings_transaction_gate_ref().as_ref()
 }
 
 fn storage_changes(
@@ -2158,6 +2304,8 @@ mod tests {
         values: Mutex<BTreeMap<String, Value>>,
         fail_atomic_replaces: AtomicUsize,
         fail_save: Mutex<bool>,
+        publish_uncertain_atomic_replaces: AtomicUsize,
+        publish_uncertain_saves: AtomicUsize,
         saves: AtomicUsize,
     }
 
@@ -2172,6 +2320,8 @@ mod tests {
                 ),
                 fail_atomic_replaces: AtomicUsize::new(0),
                 fail_save: Mutex::new(false),
+                publish_uncertain_atomic_replaces: AtomicUsize::new(0),
+                publish_uncertain_saves: AtomicUsize::new(0),
                 saves: AtomicUsize::new(0),
             }
         }
@@ -2197,7 +2347,15 @@ mod tests {
 
         fn save(&self) -> Result<(), AppSettingsError> {
             self.saves.fetch_add(1, Ordering::Relaxed);
-            if *self.fail_save.lock().expect("fail save") {
+            if self
+                .publish_uncertain_saves
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |remaining| {
+                    remaining.checked_sub(1)
+                })
+                .is_ok()
+            {
+                Err(AppSettingsError::publish_uncertain())
+            } else if *self.fail_save.lock().expect("fail save") {
                 Err(AppSettingsError::unavailable())
             } else {
                 Ok(())
@@ -2227,7 +2385,17 @@ mod tests {
                     .map(|(key, value)| (key.clone(), value.clone())),
             );
             self.saves.fetch_add(1, Ordering::Relaxed);
-            Ok(())
+            if self
+                .publish_uncertain_atomic_replaces
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |remaining| {
+                    remaining.checked_sub(1)
+                })
+                .is_ok()
+            {
+                Err(AppSettingsError::publish_uncertain())
+            } else {
+                Ok(())
+            }
         }
     }
 
@@ -2246,6 +2414,252 @@ mod tests {
 
     fn service_with_backend(backend: Arc<MemoryBackend>) -> AppSettingsService {
         AppSettingsService::new_for_test(backend, Some(Arc::new(MemoryEvents::default())))
+    }
+
+    #[derive(Default)]
+    struct KernelEvents;
+
+    impl qingyu_kernel::events::EventSink for KernelEvents {
+        fn publish(
+            &self,
+            _publication: &qingyu_kernel::events::EventPublication,
+        ) -> Result<(), qingyu_kernel::events::EventSinkError> {
+            Ok(())
+        }
+    }
+
+    struct OrderedKernelEvents {
+        fail: bool,
+        order: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl qingyu_kernel::events::EventSink for OrderedKernelEvents {
+        fn publish(
+            &self,
+            _publication: &qingyu_kernel::events::EventPublication,
+        ) -> Result<(), qingyu_kernel::events::EventSinkError> {
+            self.order.lock().unwrap().push("typed".to_string());
+            if self.fail {
+                Err(qingyu_kernel::events::EventSinkError)
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    struct OrderedLegacyEvents {
+        fail_on: Option<&'static str>,
+        order: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl SettingsEventSink for OrderedLegacyEvents {
+        fn emit(&self, event: &str, _payload: Value) -> Result<(), AppSettingsError> {
+            self.order.lock().unwrap().push(event.to_string());
+            if self.fail_on == Some(event) {
+                Err(AppSettingsError::unavailable())
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    fn kernel_deferred_with_desktop_batch_sink(
+        typed_fails: bool,
+        legacy_failure: Option<&'static str>,
+        order: Arc<Mutex<Vec<String>>>,
+    ) -> qingyu_kernel::settings::service::DeferredSettingsPublication {
+        let adapter = Arc::new(KernelSettingsStoreAdapter::new(Arc::new(
+            MemoryBackend::with([
+                (APPEARANCE_MODE_KEY, json!("light")),
+                (LANGUAGE_KEY, json!("en")),
+            ]),
+        )));
+        let sink = Arc::new(DesktopSettingsBatchSink::new(
+            Arc::new(OrderedKernelEvents {
+                fail: typed_fails,
+                order: order.clone(),
+            }),
+            Arc::new(OrderedLegacyEvents {
+                fail_on: legacy_failure,
+                order,
+            }),
+        ));
+        let coordinator = Arc::new(
+            qingyu_kernel::settings::service::SettingsRuntimeCoordinator::with_batch_sink_and_transaction_gate(
+                sink,
+                adapter.transaction_gate(),
+            ),
+        );
+        let service = qingyu_kernel::settings::service::SettingsService::with_coordinator(
+            adapter,
+            coordinator,
+        );
+        let before = service.read_exposed().unwrap();
+        service
+            .patch_exposed_deferred(
+                serde_json::from_value(json!({
+                    "expectedRevision": before.revision.as_str(),
+                    "values": [
+                        {
+                            "key": "appearance.mode",
+                            "value": { "type": "string", "value": "dark" }
+                        },
+                        {
+                            "key": "language",
+                            "value": { "type": "string", "value": "fr" }
+                        }
+                    ]
+                }))
+                .unwrap(),
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn desktop_batch_sink_publishes_typed_then_every_legacy_event_in_order() {
+        let order = Arc::new(Mutex::new(Vec::new()));
+        let deferred = kernel_deferred_with_desktop_batch_sink(false, None, order.clone());
+
+        deferred.publish().unwrap();
+
+        assert_eq!(
+            *order.lock().unwrap(),
+            vec![
+                "typed",
+                "markra://theme-changed",
+                "markra://language-changed"
+            ]
+        );
+    }
+
+    #[test]
+    fn desktop_batch_sink_attempts_every_legacy_event_when_typed_publication_fails() {
+        let order = Arc::new(Mutex::new(Vec::new()));
+        let deferred = kernel_deferred_with_desktop_batch_sink(true, None, order.clone());
+
+        deferred.publish().unwrap_err();
+
+        assert_eq!(
+            *order.lock().unwrap(),
+            vec![
+                "typed",
+                "markra://theme-changed",
+                "markra://language-changed"
+            ]
+        );
+    }
+
+    #[test]
+    fn desktop_batch_sink_attempts_later_legacy_events_after_a_legacy_failure() {
+        let order = Arc::new(Mutex::new(Vec::new()));
+        let deferred = kernel_deferred_with_desktop_batch_sink(
+            false,
+            Some("markra://theme-changed"),
+            order.clone(),
+        );
+
+        deferred.publish().unwrap_err();
+
+        assert_eq!(
+            *order.lock().unwrap(),
+            vec![
+                "typed",
+                "markra://theme-changed",
+                "markra://language-changed"
+            ]
+        );
+    }
+
+    #[test]
+    fn kernel_store_adapter_reads_and_patches_the_existing_desktop_backend() {
+        let backend = Arc::new(MemoryBackend::with([(
+            LANGUAGE_KEY,
+            serde_json::json!("en"),
+        )]));
+        let adapter = Arc::new(KernelSettingsStoreAdapter::new(backend.clone()));
+        let coordinator = Arc::new(
+            qingyu_kernel::settings::service::SettingsRuntimeCoordinator::with_transaction_gate(
+                Arc::new(KernelEvents),
+                adapter.transaction_gate(),
+            ),
+        );
+        let service = qingyu_kernel::settings::service::SettingsService::with_coordinator(
+            adapter.clone(),
+            coordinator,
+        );
+        let before = service.read_exposed().expect("read through adapter");
+        let patch = serde_json::from_value(serde_json::json!({
+            "expectedRevision": before.revision.as_str(),
+            "values": [{
+                "key": "language",
+                "value": { "type": "string", "value": "fr" }
+            }]
+        }))
+        .unwrap();
+
+        let after = service.patch_exposed(patch).expect("patch through adapter");
+
+        assert_ne!(after.revision, before.revision);
+        assert_eq!(backend.saves.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            backend.values.lock().unwrap()[LANGUAGE_KEY],
+            serde_json::json!("fr")
+        );
+    }
+
+    #[test]
+    fn kernel_store_adapter_preserves_publish_uncertain_replacements() {
+        let backend = Arc::new(MemoryBackend::with([(
+            LANGUAGE_KEY,
+            serde_json::json!("en"),
+        )]));
+        backend
+            .publish_uncertain_atomic_replaces
+            .store(1, Ordering::Relaxed);
+        let adapter = KernelSettingsStoreAdapter::new(backend);
+
+        let error = qingyu_kernel::settings::storage::SettingsStore::replace_portable_atomically(
+            &adapter,
+            serde_json::json!({ "language": "fr" }).as_object().unwrap(),
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            error.kind(),
+            qingyu_kernel::settings::storage::SettingsStoreErrorKind::PublishUncertain
+        );
+    }
+
+    #[test]
+    fn non_atomic_plugin_store_save_errors_are_publish_uncertain() {
+        let error = classify_non_atomic_store_save::<(), _>(Err("partial write"))
+            .expect_err("non-atomic save failure has an uncertain publication boundary");
+
+        assert!(error.is_publish_uncertain());
+    }
+
+    #[test]
+    fn kernel_store_adapter_preserves_publish_uncertain_saves() {
+        let backend = Arc::new(MemoryBackend::default());
+        backend.publish_uncertain_saves.store(1, Ordering::Relaxed);
+        let adapter = KernelSettingsStoreAdapter::new(backend);
+
+        let error = qingyu_kernel::settings::storage::SettingsStore::save(&adapter).unwrap_err();
+
+        assert_eq!(
+            error.kind(),
+            qingyu_kernel::settings::storage::SettingsStoreErrorKind::PublishUncertain
+        );
+    }
+
+    #[test]
+    fn kernel_store_adapter_exposes_the_legacy_writer_gate() {
+        let adapter = KernelSettingsStoreAdapter::new(Arc::new(MemoryBackend::default()));
+
+        assert!(Arc::ptr_eq(
+            &adapter.transaction_gate(),
+            &app_settings_transaction_gate()
+        ));
     }
 
     fn merge_portable_for_test(
@@ -2541,6 +2955,7 @@ mod tests {
         .expect_err("post-rename durability failure remains observable");
 
         assert_eq!(error.code, "settings_unavailable");
+        assert!(error.is_publish_uncertain());
         let disk: BTreeMap<String, Value> =
             serde_json::from_slice(&fs::read(settings_path).unwrap()).unwrap();
         assert_eq!(disk, replacement);

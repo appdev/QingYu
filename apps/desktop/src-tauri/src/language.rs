@@ -68,14 +68,38 @@ pub(crate) fn resolve_startup_language(identifier: &str) -> AppLanguage {
         return language_for_initial_launch(None, &system_locale_refs);
     };
 
-    let stored_language = read_stored_language_code(&settings_path);
-    let language = language_for_initial_launch(stored_language.as_deref(), &system_locale_refs);
+    resolve_startup_language_at_path(&settings_path, &system_locale_refs)
+}
+
+pub(crate) fn initialize_startup_language(identifier: &str) -> AppLanguage {
+    let system_locales = system_locale_candidates();
+    let system_locale_refs = system_locales
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    let Some(settings_path) = settings_store_path(identifier) else {
+        return language_for_initial_launch(None, &system_locale_refs);
+    };
+    initialize_startup_language_at_path(&settings_path, &system_locale_refs)
+        .unwrap_or_else(|_| resolve_startup_language_at_path(&settings_path, &system_locale_refs))
+}
+
+fn resolve_startup_language_at_path(path: &Path, system_locales: &[&str]) -> AppLanguage {
+    let stored_language = read_stored_language_code(path);
+    language_for_initial_launch(stored_language.as_deref(), system_locales)
+}
+
+fn initialize_startup_language_at_path(
+    path: &Path,
+    system_locales: &[&str],
+) -> io::Result<AppLanguage> {
+    let stored_language = read_stored_language_code(path);
+    let language = language_for_initial_launch(stored_language.as_deref(), system_locales);
 
     if stored_language.as_deref().and_then(AppLanguage::from_code) != Some(language) {
-        let _ = save_language_to_settings(&settings_path, language);
+        save_language_to_settings(path, language)?;
     }
-
-    language
+    Ok(language)
 }
 
 pub(crate) fn language_for_initial_launch(
@@ -322,5 +346,30 @@ mod tests {
                 .join("dev.markra.app")
                 .join("settings.json")
         );
+    }
+
+    #[test]
+    fn repeated_startup_language_resolution_is_read_only() {
+        let temporary = tempfile::tempdir().unwrap();
+        let path = temporary.path().join("settings.json");
+
+        let language = resolve_startup_language_at_path(&path, &["zh_CN"]);
+
+        assert_eq!(language, AppLanguage::ZhCn);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn one_time_startup_language_initialization_preserves_other_settings() {
+        let temporary = tempfile::tempdir().unwrap();
+        let path = temporary.path().join("settings.json");
+        fs::write(&path, r#"{ "unrelated": { "kept": true } }"#).unwrap();
+
+        let language = initialize_startup_language_at_path(&path, &["fr_FR"]).unwrap();
+        let stored: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+
+        assert_eq!(language, AppLanguage::Fr);
+        assert_eq!(stored["language"], "fr");
+        assert_eq!(stored["unrelated"]["kept"], true);
     }
 }

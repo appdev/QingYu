@@ -1,18 +1,27 @@
 use std::{
     fmt,
-    io::{self, Read, Write},
+    io::{self, Read, Seek, SeekFrom, Write},
     path::{Component, Path, PathBuf},
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
 };
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-use cap_fs_ext::{DirExt, FollowSymlinks, OpenOptionsExt, OpenOptionsFollowExt};
+use cap_fs_ext::{DirExt, FollowSymlinks, MetadataExt, OpenOptionsExt, OpenOptionsFollowExt};
 use cap_std::fs::{Dir, OpenOptions};
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
+
+use qingyu_kernel::{
+    contract::{DeletionPolicy as KernelDeletionPolicy, DocumentKind},
+    documents::{
+        AtomicInstallMode, AtomicInstallPort, AtomicInstallPortError, AtomicInstallRequest,
+        DeletionPort, DeletionPortError, DocumentDeletionTarget, DocumentIgnorePort,
+    },
+    runtime::{DocumentsApiService, ServiceFailure},
+};
 
 use crate::mcp::{
     config::{DeletionPolicy, SyncAfterWritePolicy},
@@ -35,8 +44,479 @@ const CURSOR_VERSION: u8 = 1;
 const UPDATE_TEMP_PREFIX: &str = ".qingyu-mcp-update-";
 
 type SystemTrash = dyn Fn(&Path) -> Result<(), String> + Send + Sync;
+const MAX_KERNEL_DOCUMENT_BYTES: usize = 16 * 1024 * 1024;
 #[cfg(test)]
 type BeforeAtomicDocumentMutation = dyn Fn() + Send + Sync;
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub(crate) struct KernelTauriDocumentError {
+    code: qingyu_kernel::contract::ErrorCode,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    details: Option<qingyu_kernel::contract::ErrorDetails>,
+}
+
+impl KernelTauriDocumentError {
+    pub(crate) const fn code(&self) -> qingyu_kernel::contract::ErrorCode {
+        self.code
+    }
+}
+
+impl From<ServiceFailure> for KernelTauriDocumentError {
+    fn from(error: ServiceFailure) -> Self {
+        Self {
+            code: error.code(),
+            details: error.details().cloned(),
+        }
+    }
+}
+
+/// Thin uncomposed compatibility facade for future Tauri command ownership.
+/// It deliberately returns the exact Kernel DTOs and safe error codes.
+pub(crate) struct KernelDocumentsTauriFacade {
+    service: Arc<dyn DocumentsApiService>,
+}
+
+impl KernelDocumentsTauriFacade {
+    pub(crate) fn new(service: Arc<dyn DocumentsApiService>) -> Self {
+        Self { service }
+    }
+
+    pub(crate) async fn list(
+        &self,
+        query: qingyu_kernel::contract::ListDocumentsQuery,
+    ) -> Result<qingyu_kernel::contract::DocumentPageDto, KernelTauriDocumentError> {
+        self.service.list_documents(query).await.map_err(Into::into)
+    }
+
+    pub(crate) async fn create(
+        &self,
+        request: qingyu_kernel::contract::CreateDocumentRequest,
+    ) -> Result<qingyu_kernel::contract::CreatedDocumentDto, KernelTauriDocumentError> {
+        self.service
+            .create_document(request)
+            .await
+            .map_err(Into::into)
+    }
+
+    pub(crate) async fn read(
+        &self,
+        document_id: qingyu_kernel::contract::DocumentId,
+    ) -> Result<qingyu_kernel::contract::DocumentContentDto, KernelTauriDocumentError> {
+        self.service
+            .get_document(document_id)
+            .await
+            .map_err(Into::into)
+    }
+
+    pub(crate) async fn write(
+        &self,
+        document_id: qingyu_kernel::contract::DocumentId,
+        request: qingyu_kernel::contract::UpdateDocumentRequest,
+    ) -> Result<qingyu_kernel::contract::DocumentContentDto, KernelTauriDocumentError> {
+        self.service
+            .update_document(document_id, request)
+            .await
+            .map_err(Into::into)
+    }
+
+    pub(crate) async fn history(
+        &self,
+        document_id: qingyu_kernel::contract::DocumentId,
+        query: qingyu_kernel::contract::PageQuery,
+    ) -> Result<qingyu_kernel::contract::DocumentHistoryPageDto, KernelTauriDocumentError> {
+        self.service
+            .list_document_history(document_id, query)
+            .await
+            .map_err(Into::into)
+    }
+
+    pub(crate) async fn restore(
+        &self,
+        document_id: qingyu_kernel::contract::DocumentId,
+        snapshot_id: qingyu_kernel::contract::SnapshotId,
+        request: qingyu_kernel::contract::RestoreDocumentHistoryRequest,
+    ) -> Result<qingyu_kernel::contract::DocumentContentDto, KernelTauriDocumentError> {
+        self.service
+            .restore_document_history(document_id, snapshot_id, request)
+            .await
+            .map_err(Into::into)
+    }
+
+    pub(crate) async fn search(
+        &self,
+        query: qingyu_kernel::contract::SearchWorkspaceQuery,
+    ) -> Result<qingyu_kernel::contract::SearchPageDto, KernelTauriDocumentError> {
+        self.service
+            .search_workspace(query)
+            .await
+            .map_err(Into::into)
+    }
+}
+
+/// Uncomposed host adapter for Kernel atomic installs. Its Windows branch
+/// reaches `ReplaceFileW` through the existing desktop implementation while
+/// the Kernel passes only a relative logical target and retained capability.
+pub(crate) struct KernelDocumentAtomicInstallAdapter {
+    workspace_root: PathBuf,
+    retained_root: Dir,
+    root_identity: cap_std::fs::Metadata,
+}
+
+impl KernelDocumentAtomicInstallAdapter {
+    pub(crate) fn new(workspace_root: &Path) -> Result<Self, String> {
+        let workspace_root = workspace_root
+            .canonicalize()
+            .map_err(|error| error.to_string())?;
+        let retained_root = Dir::open_ambient_dir(&workspace_root, cap_std::ambient_authority())
+            .map_err(|error| error.to_string())?;
+        let root_identity = retained_root
+            .dir_metadata()
+            .map_err(|error| error.to_string())?;
+        Ok(Self {
+            workspace_root,
+            retained_root,
+            root_identity,
+        })
+    }
+
+    fn verified_parent(
+        &self,
+        target: &qingyu_kernel::contract::WorkspaceRelativePath,
+        supplied: &Dir,
+    ) -> Result<(Dir, PathBuf), AtomicInstallPortError> {
+        let current = Dir::open_ambient_dir(&self.workspace_root, cap_std::ambient_authority())
+            .and_then(|directory| directory.dir_metadata())
+            .map_err(|_| AtomicInstallPortError)?;
+        if MetadataExt::dev(&self.root_identity) != MetadataExt::dev(&current)
+            || MetadataExt::ino(&self.root_identity) != MetadataExt::ino(&current)
+        {
+            return Err(AtomicInstallPortError);
+        }
+        let relative = Path::new(target.as_str());
+        let parent_relative = relative.parent().unwrap_or_else(|| Path::new(""));
+        let mut retained = self
+            .retained_root
+            .try_clone()
+            .map_err(|_| AtomicInstallPortError)?;
+        for component in parent_relative.components() {
+            let Component::Normal(segment) = component else {
+                return Err(AtomicInstallPortError);
+            };
+            retained = retained
+                .open_dir_nofollow(segment)
+                .map_err(|_| AtomicInstallPortError)?;
+        }
+        let expected = retained
+            .dir_metadata()
+            .map_err(|_| AtomicInstallPortError)?;
+        let actual = supplied
+            .dir_metadata()
+            .map_err(|_| AtomicInstallPortError)?;
+        if MetadataExt::dev(&expected) != MetadataExt::dev(&actual)
+            || MetadataExt::ino(&expected) != MetadataExt::ino(&actual)
+        {
+            return Err(AtomicInstallPortError);
+        }
+        Ok((retained, self.workspace_root.join(parent_relative)))
+    }
+}
+
+impl AtomicInstallPort for KernelDocumentAtomicInstallAdapter {
+    fn install(&self, request: AtomicInstallRequest<'_>) -> Result<(), AtomicInstallPortError> {
+        let (parent, ambient_parent) = self.verified_parent(request.target, request.directory)?;
+        let target_ambient = ambient_parent.join(request.target_name);
+        let stage_ambient = ambient_parent.join(request.stage_name);
+        match request.mode {
+            AtomicInstallMode::CreateNoReplace => rename_document_noreplace(
+                &parent,
+                request.stage_name,
+                &parent,
+                request.target_name,
+                &stage_ambient,
+                &target_ambient,
+            ),
+            AtomicInstallMode::ReplaceExisting => replace_kernel_document_compare_exchange(
+                &parent,
+                &request,
+                &stage_ambient,
+                &target_ambient,
+            ),
+        }
+        .map_err(|_| AtomicInstallPortError)
+    }
+}
+
+pub(crate) struct KernelDocumentIgnoreAdapter {
+    workspace_root: PathBuf,
+    rules: MarkdownIgnoreRules,
+}
+
+impl KernelDocumentIgnoreAdapter {
+    pub(crate) fn new(
+        workspace_root: &Path,
+        retained_root: &Dir,
+        global_rules: Option<&str>,
+    ) -> Result<Self, String> {
+        let workspace_root = workspace_root
+            .canonicalize()
+            .map_err(|error| error.to_string())?;
+        Ok(Self {
+            rules: MarkdownIgnoreRules::for_retained_root(
+                &workspace_root,
+                retained_root,
+                global_rules,
+            ),
+            workspace_root,
+        })
+    }
+}
+
+impl DocumentIgnorePort for KernelDocumentIgnoreAdapter {
+    fn is_ignored(
+        &self,
+        path: &qingyu_kernel::contract::WorkspaceRelativePath,
+        kind: DocumentKind,
+    ) -> bool {
+        self.rules.ignores(
+            &self.workspace_root.join(path.as_str()),
+            kind == DocumentKind::Directory,
+        )
+    }
+}
+
+/// Uncomposed Phase 1 adapter seam. It captures the trusted desktop workspace
+/// root once; Kernel callers can provide only validated relative identities.
+pub(crate) struct KernelDocumentDeletionAdapter {
+    workspace_root: PathBuf,
+    retained_root: Dir,
+    root_identity: cap_std::fs::Metadata,
+    system_trash: Arc<SystemTrash>,
+    #[cfg(test)]
+    before_delete: Option<Arc<dyn Fn() + Send + Sync>>,
+}
+
+impl KernelDocumentDeletionAdapter {
+    pub(crate) fn new(
+        workspace_root: &Path,
+        system_trash: Arc<SystemTrash>,
+    ) -> Result<Self, String> {
+        let workspace_root = workspace_root
+            .canonicalize()
+            .map_err(|error| error.to_string())?;
+        let retained_root = Dir::open_ambient_dir(&workspace_root, cap_std::ambient_authority())
+            .map_err(|error| error.to_string())?;
+        let root_identity = retained_root
+            .dir_metadata()
+            .map_err(|error| error.to_string())?;
+        Ok(Self {
+            retained_root,
+            root_identity,
+            workspace_root,
+            system_trash,
+            #[cfg(test)]
+            before_delete: None,
+        })
+    }
+
+    #[cfg(test)]
+    fn with_before_delete(mut self, hook: Arc<dyn Fn() + Send + Sync>) -> Self {
+        self.before_delete = Some(hook);
+        self
+    }
+
+    fn verify_root(&self) -> Result<(), DeletionPortError> {
+        let current = Dir::open_ambient_dir(&self.workspace_root, cap_std::ambient_authority())
+            .and_then(|directory| directory.dir_metadata())
+            .map_err(|_| DeletionPortError)?;
+        (MetadataExt::dev(&self.root_identity) == MetadataExt::dev(&current)
+            && MetadataExt::ino(&self.root_identity) == MetadataExt::ino(&current))
+        .then_some(())
+        .ok_or(DeletionPortError)
+    }
+
+    fn parent_and_name(
+        &self,
+        target: &DocumentDeletionTarget,
+    ) -> Result<(Dir, String), DeletionPortError> {
+        if target.path.as_str().is_empty() {
+            return Err(DeletionPortError);
+        }
+        let path = Path::new(target.path.as_str());
+        let name = path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .ok_or(DeletionPortError)?;
+        let mut parent = self
+            .retained_root
+            .try_clone()
+            .map_err(|_| DeletionPortError)?;
+        for component in path.parent().unwrap_or_else(|| Path::new("")).components() {
+            let Component::Normal(segment) = component else {
+                return Err(DeletionPortError);
+            };
+            parent = parent
+                .open_dir_nofollow(segment)
+                .map_err(|_| DeletionPortError)?;
+        }
+        Ok((parent, name.to_string()))
+    }
+
+    fn verify_target(
+        &self,
+        target: &DocumentDeletionTarget,
+        parent: &Dir,
+        name: &str,
+    ) -> Result<(), DeletionPortError> {
+        let metadata = parent
+            .symlink_metadata(name)
+            .map_err(|_| DeletionPortError)?;
+        if metadata.file_type().is_symlink()
+            || (target.kind == DocumentKind::File && !metadata.is_file())
+            || (target.kind == DocumentKind::Directory && !metadata.is_dir())
+        {
+            return Err(DeletionPortError);
+        }
+        let actual = if metadata.is_file() {
+            if !kernel_trusted_file_metadata(&metadata)
+                || metadata.len() > MAX_KERNEL_DOCUMENT_BYTES as u64
+            {
+                return Err(DeletionPortError);
+            }
+            let mut options = OpenOptions::new();
+            options.read(true).follow(FollowSymlinks::No);
+            let mut file = parent
+                .open_with(name, &options)
+                .map_err(|_| DeletionPortError)?;
+            let before = file.metadata().map_err(|_| DeletionPortError)?;
+            if !kernel_trusted_file_metadata(&before)
+                || MetadataExt::dev(&metadata) != MetadataExt::dev(&before)
+                || MetadataExt::ino(&metadata) != MetadataExt::ino(&before)
+                || before.len() != metadata.len()
+            {
+                return Err(DeletionPortError);
+            }
+            let mut bytes = Vec::with_capacity(before.len() as usize);
+            (&mut file)
+                .take(MAX_KERNEL_DOCUMENT_BYTES as u64 + 1)
+                .read_to_end(&mut bytes)
+                .map_err(|_| DeletionPortError)?;
+            let after = file.metadata().map_err(|_| DeletionPortError)?;
+            let latest = parent
+                .symlink_metadata(name)
+                .map_err(|_| DeletionPortError)?;
+            if bytes.len() > MAX_KERNEL_DOCUMENT_BYTES
+                || !kernel_trusted_file_metadata(&after)
+                || !kernel_trusted_file_metadata(&latest)
+                || MetadataExt::dev(&before) != MetadataExt::dev(&after)
+                || MetadataExt::ino(&before) != MetadataExt::ino(&after)
+                || MetadataExt::dev(&after) != MetadataExt::dev(&latest)
+                || MetadataExt::ino(&after) != MetadataExt::ino(&latest)
+                || before.len() != after.len()
+                || after.len() != bytes.len() as u64
+                || before.modified().ok() != after.modified().ok()
+            {
+                return Err(DeletionPortError);
+            }
+            format!("{:x}", Sha256::digest(bytes))
+        } else {
+            let retained = parent
+                .open_dir_nofollow(name)
+                .map_err(|_| DeletionPortError)?;
+            let retained_metadata = retained.dir_metadata().map_err(|_| DeletionPortError)?;
+            if MetadataExt::dev(&metadata) != MetadataExt::dev(&retained_metadata)
+                || MetadataExt::ino(&metadata) != MetadataExt::ino(&retained_metadata)
+            {
+                return Err(DeletionPortError);
+            }
+            qingyu_kernel::documents::service::directory_revision_for_capability(&retained)
+                .map_err(|_| DeletionPortError)?
+                .as_str()
+                .to_string()
+        };
+        (actual == target.revision.as_str())
+            .then_some(())
+            .ok_or(DeletionPortError)
+    }
+}
+
+impl DeletionPort for KernelDocumentDeletionAdapter {
+    fn delete(
+        &self,
+        target: &DocumentDeletionTarget,
+        policy: KernelDeletionPolicy,
+    ) -> Result<(), DeletionPortError> {
+        self.verify_root()?;
+        let (parent, name) = self.parent_and_name(target)?;
+        self.verify_target(target, &parent, &name)?;
+        #[cfg(test)]
+        if let Some(hook) = self.before_delete.as_ref() {
+            hook();
+        }
+        self.verify_target(target, &parent, &name)?;
+        let quarantine = format!(".qingyu-delete-{}.tmp", Uuid::new_v4());
+        let original_ambient = self.workspace_root.join(target.path.as_str());
+        let quarantine_ambient = self.workspace_root.join(&quarantine);
+        rename_document_noreplace(
+            &parent,
+            &name,
+            &self.retained_root,
+            &quarantine,
+            &original_ambient,
+            &quarantine_ambient,
+        )
+        .map_err(|_| DeletionPortError)?;
+        if self
+            .verify_target(target, &self.retained_root, &quarantine)
+            .is_err()
+        {
+            let _root_sync = sync_directory(&self.retained_root);
+            let _parent_sync = sync_directory(&parent);
+            return Err(DeletionPortError);
+        }
+        let result = match policy {
+            KernelDeletionPolicy::Recoverable => {
+                self.verify_root()?;
+                let trash_result = (self.system_trash)(&quarantine_ambient);
+                let root_is_still_current = self.verify_root().is_ok();
+                let quarantine_is_absent = matches!(
+                    self.retained_root.symlink_metadata(&quarantine),
+                    Err(error) if error.kind() == io::ErrorKind::NotFound
+                );
+                if trash_result.is_ok() && root_is_still_current && quarantine_is_absent {
+                    Ok(())
+                } else {
+                    Err(DeletionPortError)
+                }
+            }
+            KernelDeletionPolicy::Permanent if target.kind == DocumentKind::File => self
+                .retained_root
+                .remove_file(&quarantine)
+                .map_err(|_| DeletionPortError),
+            KernelDeletionPolicy::Permanent => self
+                .retained_root
+                .remove_dir_all(&quarantine)
+                .map_err(|_| DeletionPortError),
+        };
+        if result.is_err()
+            && self
+                .verify_target(target, &self.retained_root, &quarantine)
+                .is_ok()
+        {
+            let _rollback = rename_document_noreplace(
+                &self.retained_root,
+                &quarantine,
+                &parent,
+                &name,
+                &quarantine_ambient,
+                &original_ambient,
+            );
+        }
+        sync_directory(&self.retained_root).map_err(|_| DeletionPortError)?;
+        sync_directory(&parent).map_err(|_| DeletionPortError)?;
+        result
+    }
+}
 
 #[derive(Clone)]
 pub(crate) enum DocumentScope {
@@ -1083,10 +1563,10 @@ impl DocumentService {
     }
 }
 
-fn mutation_workspace<'a>(
-    scope: &'a DocumentScope,
+fn mutation_workspace(
+    scope: &DocumentScope,
     workspace_id: Uuid,
-) -> Result<&'a ResolvedWorkspace, DocumentServiceError> {
+) -> Result<&ResolvedWorkspace, DocumentServiceError> {
     let workspace = scope.authorized_workspace()?;
     if workspace.workspace_id != workspace_id {
         return Err(DocumentServiceError::scope());
@@ -1241,38 +1721,28 @@ fn rename_document_noreplace(
 
 #[cfg(windows)]
 fn rename_document_noreplace(
-    _source: &Dir,
-    _source_name: impl AsRef<Path>,
-    _destination: &Dir,
-    _destination_name: impl AsRef<Path>,
-    source_ambient: &Path,
-    destination_ambient: &Path,
+    source: &Dir,
+    source_name: impl AsRef<Path>,
+    destination: &Dir,
+    destination_name: impl AsRef<Path>,
+    _source_ambient: &Path,
+    _destination_ambient: &Path,
 ) -> io::Result<()> {
-    use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::Storage::FileSystem::{MoveFileExW, MOVEFILE_WRITE_THROUGH};
+    rename_document_capability_noreplace(source, source_name, destination, destination_name)
+}
 
-    let source = source_ambient
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect::<Vec<_>>();
-    let destination = destination_ambient
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect::<Vec<_>>();
-    let moved = unsafe {
-        MoveFileExW(
-            source.as_ptr(),
-            destination.as_ptr(),
-            MOVEFILE_WRITE_THROUGH,
-        )
-    };
-    if moved == 0 {
-        Err(io::Error::last_os_error())
-    } else {
-        Ok(())
-    }
+fn rename_document_capability_noreplace(
+    source: &Dir,
+    source_name: impl AsRef<Path>,
+    destination: &Dir,
+    destination_name: impl AsRef<Path>,
+) -> io::Result<()> {
+    crate::atomic_noreplace::rename_noreplace(
+        source,
+        source_name.as_ref(),
+        destination,
+        destination_name.as_ref(),
+    )
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -1288,6 +1758,256 @@ fn rename_document_noreplace(
         io::ErrorKind::Unsupported,
         "atomic no-overwrite rename is unsupported",
     ))
+}
+
+#[cfg(unix)]
+fn replace_kernel_document_compare_exchange(
+    directory: &Dir,
+    request: &AtomicInstallRequest<'_>,
+    staging_ambient: &Path,
+    target_ambient: &Path,
+) -> io::Result<()> {
+    replace_kernel_document_compare_exchange_with_hook(
+        directory,
+        request,
+        staging_ambient,
+        target_ambient,
+        || {},
+    )
+}
+
+#[cfg(unix)]
+fn replace_kernel_document_compare_exchange_with_hook(
+    directory: &Dir,
+    request: &AtomicInstallRequest<'_>,
+    _staging_ambient: &Path,
+    _target_ambient: &Path,
+    before_retired_verification: impl FnOnce(),
+) -> io::Result<()> {
+    let (Some(expected_target), Some(expected_revision)) =
+        (request.expected_target, request.expected_revision)
+    else {
+        return Err(kernel_atomic_install_error());
+    };
+    verify_kernel_named_retained_identity(directory, request.target_name, expected_target)?;
+    if kernel_revision_for_retained_file(expected_target)? != *expected_revision {
+        return Err(kernel_atomic_install_error());
+    }
+    verify_kernel_named_retained_identity(directory, request.target_name, expected_target)?;
+    rustix::fs::renameat_with(
+        directory,
+        request.stage_name,
+        directory,
+        request.target_name,
+        rustix::fs::RenameFlags::EXCHANGE,
+    )?;
+    before_retired_verification();
+    match verify_kernel_retired_target(
+        directory,
+        request.stage_name,
+        expected_target,
+        expected_revision,
+    ) {
+        Ok(()) => {}
+        Err(KernelRetiredTargetVerificationError::RevisionMismatch) => {
+            verify_kernel_named_retained_identity(directory, request.stage_name, expected_target)?;
+            rustix::fs::renameat_with(
+                directory,
+                request.stage_name,
+                directory,
+                request.target_name,
+                rustix::fs::RenameFlags::EXCHANGE,
+            )?;
+            return Err(kernel_atomic_install_error());
+        }
+        Err(
+            KernelRetiredTargetVerificationError::NamedIdentityLost
+            | KernelRetiredTargetVerificationError::RetainedReadUncertain,
+        ) => return Err(kernel_atomic_install_error()),
+    }
+    verify_kernel_named_retained_identity(directory, request.stage_name, expected_target)?;
+    directory.remove_file(request.stage_name)
+}
+
+#[cfg(windows)]
+fn replace_kernel_document_compare_exchange(
+    directory: &Dir,
+    request: &AtomicInstallRequest<'_>,
+    staging_ambient: &Path,
+    target_ambient: &Path,
+) -> io::Result<()> {
+    use std::{os::windows::ffi::OsStrExt, ptr};
+    use windows_sys::Win32::Storage::FileSystem::{ReplaceFileW, REPLACEFILE_WRITE_THROUGH};
+
+    let (Some(expected_target), Some(expected_revision)) =
+        (request.expected_target, request.expected_revision)
+    else {
+        return Err(kernel_atomic_install_error());
+    };
+    verify_kernel_named_retained_identity(directory, request.target_name, expected_target)?;
+    if kernel_revision_for_retained_file(expected_target)? != *expected_revision {
+        return Err(kernel_atomic_install_error());
+    }
+    verify_kernel_named_retained_identity(directory, request.target_name, expected_target)?;
+    let retired_name = format!("{}.retired", request.stage_name);
+    let retired_ambient = staging_ambient.with_file_name(&retired_name);
+    let wide = |path: &Path| {
+        path.as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect::<Vec<_>>()
+    };
+    let target = wide(target_ambient);
+    let staging = wide(staging_ambient);
+    let retired = wide(&retired_ambient);
+    let replaced = unsafe {
+        ReplaceFileW(
+            target.as_ptr(),
+            staging.as_ptr(),
+            retired.as_ptr(),
+            REPLACEFILE_WRITE_THROUGH,
+            ptr::null_mut(),
+            ptr::null_mut(),
+        )
+    };
+    if replaced == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    match verify_kernel_retired_target(directory, &retired_name, expected_target, expected_revision)
+    {
+        Ok(()) => {}
+        Err(KernelRetiredTargetVerificationError::RevisionMismatch) => {
+            verify_kernel_named_retained_identity(directory, &retired_name, expected_target)?;
+            let rolled_back = unsafe {
+                ReplaceFileW(
+                    target.as_ptr(),
+                    retired.as_ptr(),
+                    staging.as_ptr(),
+                    REPLACEFILE_WRITE_THROUGH,
+                    ptr::null_mut(),
+                    ptr::null_mut(),
+                )
+            };
+            if rolled_back == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            return Err(kernel_atomic_install_error());
+        }
+        Err(
+            KernelRetiredTargetVerificationError::NamedIdentityLost
+            | KernelRetiredTargetVerificationError::RetainedReadUncertain,
+        ) => return Err(kernel_atomic_install_error()),
+    }
+    verify_kernel_named_retained_identity(directory, &retired_name, expected_target)?;
+    directory.remove_file(&retired_name)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn replace_kernel_document_compare_exchange(
+    _directory: &Dir,
+    _request: &AtomicInstallRequest<'_>,
+    _staging_ambient: &Path,
+    _target_ambient: &Path,
+) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "kernel compare-and-exchange replacement is unsupported",
+    ))
+}
+
+fn verify_kernel_retired_target(
+    directory: &Dir,
+    name: &str,
+    expected_target: &cap_std::fs::File,
+    expected_revision: &qingyu_kernel::contract::Revision,
+) -> Result<(), KernelRetiredTargetVerificationError> {
+    verify_kernel_named_retained_identity(directory, name, expected_target)
+        .map_err(|_| KernelRetiredTargetVerificationError::NamedIdentityLost)?;
+    let actual = kernel_revision_for_retained_file(expected_target)
+        .map_err(|_| KernelRetiredTargetVerificationError::RetainedReadUncertain)?;
+    if actual != *expected_revision {
+        verify_kernel_named_retained_identity(directory, name, expected_target)
+            .map_err(|_| KernelRetiredTargetVerificationError::NamedIdentityLost)?;
+        return Err(KernelRetiredTargetVerificationError::RevisionMismatch);
+    }
+    verify_kernel_named_retained_identity(directory, name, expected_target)
+        .map_err(|_| KernelRetiredTargetVerificationError::NamedIdentityLost)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum KernelRetiredTargetVerificationError {
+    NamedIdentityLost,
+    RevisionMismatch,
+    RetainedReadUncertain,
+}
+
+fn verify_kernel_named_retained_identity(
+    directory: &Dir,
+    name: &str,
+    expected_target: &cap_std::fs::File,
+) -> io::Result<()> {
+    let named = directory.symlink_metadata(name)?;
+    let retained = expected_target.metadata()?;
+    if !kernel_trusted_file_metadata(&named)
+        || !kernel_trusted_file_metadata(&retained)
+        || MetadataExt::dev(&named) != MetadataExt::dev(&retained)
+        || MetadataExt::ino(&named) != MetadataExt::ino(&retained)
+    {
+        return Err(kernel_atomic_install_error());
+    }
+    Ok(())
+}
+
+fn kernel_revision_for_retained_file(
+    expected_target: &cap_std::fs::File,
+) -> io::Result<qingyu_kernel::contract::Revision> {
+    let mut file = expected_target.try_clone()?;
+    let before = file.metadata()?;
+    if !kernel_trusted_file_metadata(&before) || before.len() > MAX_KERNEL_DOCUMENT_BYTES as u64 {
+        return Err(kernel_atomic_install_error());
+    }
+    file.seek(SeekFrom::Start(0))?;
+    let mut bytes = Vec::with_capacity(before.len() as usize);
+    (&mut file)
+        .take(MAX_KERNEL_DOCUMENT_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)?;
+    let after = file.metadata()?;
+    if bytes.len() > MAX_KERNEL_DOCUMENT_BYTES
+        || !kernel_trusted_file_metadata(&after)
+        || MetadataExt::dev(&before) != MetadataExt::dev(&after)
+        || MetadataExt::ino(&before) != MetadataExt::ino(&after)
+        || before.len() != after.len()
+        || after.len() != bytes.len() as u64
+        || before.modified().ok() != after.modified().ok()
+    {
+        return Err(kernel_atomic_install_error());
+    }
+    qingyu_kernel::contract::Revision::parse(format!("{:x}", Sha256::digest(bytes)))
+        .map_err(|_| kernel_atomic_install_error())
+}
+
+fn kernel_trusted_file_metadata(metadata: &cap_std::fs::Metadata) -> bool {
+    metadata.is_file() && !metadata.file_type().is_symlink() && kernel_link_count(metadata) == 1
+}
+
+#[cfg(unix)]
+fn kernel_link_count(metadata: &cap_std::fs::Metadata) -> u64 {
+    MetadataExt::nlink(metadata)
+}
+
+#[cfg(windows)]
+fn kernel_link_count(metadata: &cap_std::fs::Metadata) -> u64 {
+    use cap_std::fs::MetadataExt as _;
+    metadata.number_of_links().unwrap_or(0)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn kernel_link_count(_metadata: &cap_std::fs::Metadata) -> u64 {
+    1
+}
+
+fn kernel_atomic_install_error() -> io::Error {
+    io::Error::other("kernel atomic install target changed")
 }
 
 #[cfg(unix)]
@@ -1713,4 +2433,653 @@ pub(super) fn read_trusted_markdown_file(path: &Path) -> Result<MarkdownFile, St
         contents,
         size_bytes,
     })
+}
+
+#[cfg(test)]
+mod kernel_deletion_adapter_tests {
+    use std::sync::{Arc, Mutex};
+
+    use cap_fs_ext::{DirExt as _, FollowSymlinks, OpenOptionsFollowExt as _};
+    use cap_std::fs::{Dir, OpenOptions};
+    use qingyu_kernel::{
+        config::KernelConfig,
+        contract::{
+            CreateDocumentRequest, DeletionPolicy, DocumentContents, DocumentKind,
+            FileDocumentName, ListDocumentsQuery, PageQuery, RestoreDocumentHistoryRequest,
+            Revision, SearchQuery, SearchWorkspaceQuery, UpdateDocumentRequest,
+            WorkspaceGeneration, WorkspaceRelativePath,
+        },
+        documents::{
+            history::MemoryDocumentRecoveryStore, service::WorkspaceDocumentService,
+            AtomicInstallMode, AtomicInstallPort, AtomicInstallRequest, DeletionPort,
+            DocumentDeletionTarget, DocumentIgnorePort,
+        },
+        paths::KernelPaths,
+        ports::KernelPorts,
+        runtime::{DocumentsApiService, KernelRuntime},
+        services::workspace::WorkspaceService,
+        workspace::{
+            managed::ManagedWorkspaceCollection,
+            primary::{PrimaryWorkspaceStore, PrimaryWorkspaceStoreError},
+        },
+    };
+    use serde_json::Value;
+    use sha2::{Digest as _, Sha256};
+
+    use super::{
+        rename_document_capability_noreplace, replace_kernel_document_compare_exchange_with_hook,
+        KernelDocumentAtomicInstallAdapter, KernelDocumentDeletionAdapter,
+        KernelDocumentIgnoreAdapter, KernelDocumentsTauriFacade,
+    };
+    use crate::markdown_files::history::KernelDocumentHistoryAdapter;
+
+    #[derive(Default)]
+    struct MemoryWorkspaceStore(Mutex<Option<Value>>);
+
+    impl PrimaryWorkspaceStore for MemoryWorkspaceStore {
+        fn load(&self) -> Result<Option<Value>, PrimaryWorkspaceStoreError> {
+            Ok(self.0.lock().unwrap().clone())
+        }
+
+        fn replace(&self, value: Option<Value>) -> Result<(), PrimaryWorkspaceStoreError> {
+            *self.0.lock().unwrap() = value;
+            Ok(())
+        }
+
+        fn save(&self) -> Result<(), PrimaryWorkspaceStoreError> {
+            Ok(())
+        }
+    }
+
+    fn target(path: &str, contents: &str) -> DocumentDeletionTarget {
+        DocumentDeletionTarget {
+            path: WorkspaceRelativePath::parse(path).unwrap(),
+            kind: DocumentKind::File,
+            revision: Revision::parse(format!("{:x}", Sha256::digest(contents.as_bytes())))
+                .unwrap(),
+        }
+    }
+
+    #[test]
+    fn adapter_keeps_absolute_workspace_authority_outside_the_kernel_port() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("workspace");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("recover.md"), "recover").unwrap();
+        std::fs::write(root.join("permanent.md"), "permanent").unwrap();
+        let trashed = Arc::new(Mutex::new(Vec::new()));
+        let seen = trashed.clone();
+        let adapter = KernelDocumentDeletionAdapter::new(
+            &root,
+            Arc::new(move |path| {
+                seen.lock().unwrap().push(path.to_path_buf());
+                std::fs::remove_file(path).map_err(|error| error.to_string())
+            }),
+        )
+        .unwrap();
+
+        adapter
+            .delete(
+                &target("recover.md", "recover"),
+                DeletionPolicy::Recoverable,
+            )
+            .unwrap();
+        adapter
+            .delete(
+                &target("permanent.md", "permanent"),
+                DeletionPolicy::Permanent,
+            )
+            .unwrap();
+
+        let trashed = trashed.lock().unwrap();
+        assert_eq!(trashed.len(), 1);
+        assert_eq!(
+            trashed[0].parent(),
+            Some(root.canonicalize().unwrap().as_path())
+        );
+        assert!(trashed[0]
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with(".qingyu-delete-"));
+        assert!(!root.join("recover.md").exists());
+        assert!(!root.join("permanent.md").exists());
+        assert!(WorkspaceRelativePath::parse("../outside.md").is_err());
+    }
+
+    #[test]
+    fn adapter_rejects_replaced_workspace_root() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("workspace");
+        let moved = fixture.path().join("moved");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("note.md"), "original").unwrap();
+        let adapter = KernelDocumentDeletionAdapter::new(&root, Arc::new(|_| Ok(()))).unwrap();
+        std::fs::rename(&root, &moved).unwrap();
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("note.md"), "replacement").unwrap();
+
+        assert!(adapter
+            .delete(&target("note.md", "original"), DeletionPolicy::Permanent)
+            .is_err());
+        assert_eq!(
+            std::fs::read_to_string(root.join("note.md")).unwrap(),
+            "replacement"
+        );
+        assert_eq!(
+            std::fs::read_to_string(moved.join("note.md")).unwrap(),
+            "original"
+        );
+    }
+
+    #[test]
+    fn adapter_rejects_replaced_target_revision() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("workspace");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("note.md"), "original").unwrap();
+        let adapter = KernelDocumentDeletionAdapter::new(&root, Arc::new(|_| Ok(()))).unwrap();
+        let expected = target("note.md", "original");
+        std::fs::write(root.join("note.md"), "replacement").unwrap();
+
+        assert!(adapter
+            .delete(&expected, DeletionPolicy::Permanent)
+            .is_err());
+        assert_eq!(
+            std::fs::read_to_string(root.join("note.md")).unwrap(),
+            "replacement"
+        );
+    }
+
+    #[test]
+    fn deletion_adapter_uses_the_kernel_directory_revision_contract() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("workspace");
+        std::fs::create_dir_all(root.join("folder/nested")).unwrap();
+        std::fs::write(root.join("folder/nested/note.md"), "contents").unwrap();
+        let retained =
+            Dir::open_ambient_dir(root.join("folder"), cap_std::ambient_authority()).unwrap();
+        let revision =
+            qingyu_kernel::documents::service::directory_revision_for_capability(&retained)
+                .unwrap();
+        let adapter = KernelDocumentDeletionAdapter::new(&root, Arc::new(|_| Ok(()))).unwrap();
+        adapter
+            .delete(
+                &DocumentDeletionTarget {
+                    path: WorkspaceRelativePath::parse("folder").unwrap(),
+                    kind: DocumentKind::Directory,
+                    revision,
+                },
+                DeletionPolicy::Permanent,
+            )
+            .unwrap();
+        assert!(!root.join("folder").exists());
+    }
+
+    #[test]
+    fn adapter_quarantines_then_revalidates_a_target_replaced_during_delete() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("workspace");
+        let saved = root.join("saved.md");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("note.md"), "original").unwrap();
+        let hook_root = root.clone();
+        let hook_saved = saved.clone();
+        let adapter = KernelDocumentDeletionAdapter::new(&root, Arc::new(|_| Ok(())))
+            .unwrap()
+            .with_before_delete(Arc::new(move || {
+                std::fs::rename(hook_root.join("note.md"), &hook_saved).unwrap();
+                std::fs::write(hook_root.join("note.md"), "replacement").unwrap();
+            }));
+
+        assert!(adapter
+            .delete(&target("note.md", "original"), DeletionPolicy::Permanent)
+            .is_err());
+        assert_eq!(
+            std::fs::read_to_string(root.join("note.md")).unwrap(),
+            "replacement"
+        );
+        assert_eq!(std::fs::read_to_string(saved).unwrap(), "original");
+    }
+
+    #[test]
+    fn recoverable_delete_is_not_redirected_by_a_nested_parent_replacement() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("workspace");
+        std::fs::create_dir_all(root.join("folder")).unwrap();
+        std::fs::write(root.join("folder/note.md"), "original").unwrap();
+        let trash_root = root.clone();
+        let adapter = KernelDocumentDeletionAdapter::new(
+            &root,
+            Arc::new(move |path| {
+                let quarantine_name = path.file_name().unwrap().to_owned();
+                std::fs::rename(trash_root.join("folder"), trash_root.join("saved"))
+                    .map_err(|error| error.to_string())?;
+                std::fs::create_dir(trash_root.join("folder"))
+                    .map_err(|error| error.to_string())?;
+                std::fs::write(trash_root.join("folder").join(quarantine_name), "decoy")
+                    .map_err(|error| error.to_string())?;
+                std::fs::remove_file(path).map_err(|error| error.to_string())
+            }),
+        )
+        .unwrap();
+
+        adapter
+            .delete(
+                &DocumentDeletionTarget {
+                    path: WorkspaceRelativePath::parse("folder/note.md").unwrap(),
+                    kind: DocumentKind::File,
+                    revision: target("note.md", "original").revision,
+                },
+                DeletionPolicy::Recoverable,
+            )
+            .unwrap();
+
+        let saved_entries = std::fs::read_dir(root.join("saved"))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert!(
+            saved_entries.is_empty(),
+            "the original must not survive under the renamed parent"
+        );
+        let decoys = std::fs::read_dir(root.join("folder"))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(decoys.len(), 1);
+        assert_eq!(std::fs::read_to_string(decoys[0].path()).unwrap(), "decoy");
+    }
+
+    #[test]
+    fn recoverable_delete_never_rolls_an_unknown_quarantine_name_into_the_document() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("workspace");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("note.md"), "original").unwrap();
+        let adapter = KernelDocumentDeletionAdapter::new(
+            &root,
+            Arc::new(|path| {
+                std::fs::remove_file(path).map_err(|error| error.to_string())?;
+                std::fs::write(path, "unknown entry").map_err(|error| error.to_string())?;
+                Err("trash failed after replacement".to_string())
+            }),
+        )
+        .unwrap();
+
+        assert!(adapter
+            .delete(&target("note.md", "original"), DeletionPolicy::Recoverable)
+            .is_err());
+        assert!(!root.join("note.md").exists());
+        let quarantine = std::fs::read_dir(&root)
+            .unwrap()
+            .map(|entry| entry.unwrap())
+            .find(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".qingyu-delete-")
+            })
+            .expect("the unknown entry must be retained for manual recovery");
+        assert_eq!(
+            std::fs::read_to_string(quarantine.path()).unwrap(),
+            "unknown entry"
+        );
+    }
+
+    #[test]
+    fn capability_rename_moves_the_retained_entry_after_ambient_parent_replacement() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("workspace");
+        std::fs::create_dir_all(root.join("folder")).unwrap();
+        std::fs::write(root.join("folder/note.md"), "original").unwrap();
+        let retained_root = Dir::open_ambient_dir(&root, cap_std::ambient_authority()).unwrap();
+        let retained_parent = retained_root.open_dir_nofollow("folder").unwrap();
+        std::fs::rename(root.join("folder"), root.join("saved")).unwrap();
+        std::fs::create_dir(root.join("folder")).unwrap();
+        std::fs::write(root.join("folder/note.md"), "replacement").unwrap();
+
+        rename_document_capability_noreplace(
+            &retained_parent,
+            "note.md",
+            &retained_root,
+            "quarantine.tmp",
+        )
+        .unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(root.join("folder/note.md")).unwrap(),
+            "replacement"
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("quarantine.tmp")).unwrap(),
+            "original"
+        );
+        assert!(!root.join("saved/note.md").exists());
+    }
+
+    #[test]
+    fn atomic_install_adapter_replaces_existing_and_creates_without_overwrite() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("workspace");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("note.md"), "before").unwrap();
+        std::fs::write(root.join("stage.tmp"), "after").unwrap();
+        let directory = Dir::open_ambient_dir(&root, cap_std::ambient_authority()).unwrap();
+        let adapter = KernelDocumentAtomicInstallAdapter::new(&root).unwrap();
+        let mut expected_options = OpenOptions::new();
+        expected_options.read(true).follow(FollowSymlinks::No);
+        let expected_target = directory.open_with("note.md", &expected_options).unwrap();
+        let expected_revision =
+            Revision::parse(format!("{:x}", Sha256::digest(b"before"))).unwrap();
+        adapter
+            .install(AtomicInstallRequest {
+                directory: &directory,
+                target: &WorkspaceRelativePath::parse("note.md").unwrap(),
+                stage_name: "stage.tmp",
+                target_name: "note.md",
+                mode: AtomicInstallMode::ReplaceExisting,
+                expected_target: Some(&expected_target),
+                expected_revision: Some(&expected_revision),
+            })
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(root.join("note.md")).unwrap(),
+            "after"
+        );
+
+        std::fs::write(root.join("create.tmp"), "created").unwrap();
+        adapter
+            .install(AtomicInstallRequest {
+                directory: &directory,
+                target: &WorkspaceRelativePath::parse("created.md").unwrap(),
+                stage_name: "create.tmp",
+                target_name: "created.md",
+                mode: AtomicInstallMode::CreateNoReplace,
+                expected_target: None,
+                expected_revision: None,
+            })
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(root.join("created.md")).unwrap(),
+            "created"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_install_never_rolls_an_unknown_retired_name_into_the_target() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("workspace");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("note.md"), "before").unwrap();
+        std::fs::write(root.join("stage.tmp"), "after").unwrap();
+        let directory = Dir::open_ambient_dir(&root, cap_std::ambient_authority()).unwrap();
+        let mut expected_options = OpenOptions::new();
+        expected_options.read(true).follow(FollowSymlinks::No);
+        let expected_target = directory.open_with("note.md", &expected_options).unwrap();
+        let expected_revision =
+            Revision::parse(format!("{:x}", Sha256::digest(b"before"))).unwrap();
+        let request = AtomicInstallRequest {
+            directory: &directory,
+            target: &WorkspaceRelativePath::parse("note.md").unwrap(),
+            stage_name: "stage.tmp",
+            target_name: "note.md",
+            mode: AtomicInstallMode::ReplaceExisting,
+            expected_target: Some(&expected_target),
+            expected_revision: Some(&expected_revision),
+        };
+
+        let result = replace_kernel_document_compare_exchange_with_hook(
+            &directory,
+            &request,
+            &root.join("stage.tmp"),
+            &root.join("note.md"),
+            || {
+                directory.remove_file("stage.tmp").unwrap();
+                directory.write("stage.tmp", b"unknown entry").unwrap();
+            },
+        );
+
+        assert!(result.is_err());
+        assert_eq!(
+            std::fs::read_to_string(root.join("note.md")).unwrap(),
+            "after"
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("stage.tmp")).unwrap(),
+            "unknown entry"
+        );
+    }
+
+    #[test]
+    fn atomic_install_adapter_rejects_a_replaced_workspace_root() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("workspace");
+        let moved = fixture.path().join("moved");
+        std::fs::create_dir(&root).unwrap();
+        let adapter = KernelDocumentAtomicInstallAdapter::new(&root).unwrap();
+        std::fs::rename(&root, &moved).unwrap();
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("stage.tmp"), "replacement").unwrap();
+        let replacement = Dir::open_ambient_dir(&root, cap_std::ambient_authority()).unwrap();
+
+        assert!(adapter
+            .install(AtomicInstallRequest {
+                directory: &replacement,
+                target: &WorkspaceRelativePath::parse("note.md").unwrap(),
+                stage_name: "stage.tmp",
+                target_name: "note.md",
+                mode: AtomicInstallMode::CreateNoReplace,
+                expected_target: None,
+                expected_revision: None,
+            })
+            .is_err());
+        assert_eq!(
+            std::fs::read_to_string(root.join("stage.tmp")).unwrap(),
+            "replacement"
+        );
+    }
+
+    #[test]
+    fn ignore_adapter_combines_workspace_global_and_protected_rules() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("workspace");
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join(".markraignore"), "workspace-hidden.md\n").unwrap();
+        let retained = Dir::open_ambient_dir(&root, cap_std::ambient_authority()).unwrap();
+        let adapter =
+            KernelDocumentIgnoreAdapter::new(&root, &retained, Some("global-hidden.md\n")).unwrap();
+
+        for path in [
+            "workspace-hidden.md",
+            "global-hidden.md",
+            ".QINGYU/hidden.md",
+            ".MARKRA-SYNC/hidden.md",
+        ] {
+            assert!(adapter.is_ignored(
+                &WorkspaceRelativePath::parse(path).unwrap(),
+                DocumentKind::File
+            ));
+        }
+        assert!(!adapter.is_ignored(
+            &WorkspaceRelativePath::parse("visible.md").unwrap(),
+            DocumentKind::File
+        ));
+    }
+
+    #[tokio::test]
+    async fn tauri_facade_preserves_direct_dtos_errors_revisions_history_search_and_events() {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path().join("workspace");
+        let app_data = fixture.path().join("app-data");
+        let cache = fixture.path().join("cache");
+        for path in [&root, &app_data, &cache] {
+            std::fs::create_dir(path).unwrap();
+        }
+        std::fs::write(root.join(".markraignore"), "workspace-hidden.md\n").unwrap();
+        let paths = KernelPaths::desktop(&root, &app_data, &cache).unwrap();
+        let managed = ManagedWorkspaceCollection::from_paths(&paths).unwrap();
+        let runtime = KernelRuntime::activate(
+            KernelConfig::generate().unwrap(),
+            paths,
+            KernelPorts::unavailable(),
+        )
+        .unwrap();
+        let workspace = Arc::new(
+            WorkspaceService::new(
+                &runtime,
+                Arc::new(MemoryWorkspaceStore::default()),
+                managed,
+                runtime.event_broker().clone(),
+                "Tauri parity",
+            )
+            .unwrap(),
+        );
+        let retained = Dir::open_ambient_dir(&root, cap_std::ambient_authority()).unwrap();
+        let service = Arc::new(
+            WorkspaceDocumentService::new_with_ports(
+                &runtime,
+                workspace.clone(),
+                Arc::new(
+                    KernelDocumentDeletionAdapter::new(
+                        &root,
+                        Arc::new(|path| {
+                            std::fs::remove_file(path).map_err(|error| error.to_string())
+                        }),
+                    )
+                    .unwrap(),
+                ),
+                Arc::new(KernelDocumentHistoryAdapter::new(&app_data.join("history")).unwrap()),
+                Arc::new(MemoryDocumentRecoveryStore::default()),
+                Arc::new(KernelDocumentAtomicInstallAdapter::new(&root).unwrap()),
+                Arc::new(
+                    KernelDocumentIgnoreAdapter::new(&root, &retained, Some("global-hidden.md\n"))
+                        .unwrap(),
+                ),
+            )
+            .unwrap(),
+        );
+        let facade = KernelDocumentsTauriFacade::new(service.clone());
+        let generation = workspace.current().unwrap().generation;
+        let created = facade
+            .create(CreateDocumentRequest::File {
+                workspace_generation: generation.clone(),
+                parent: WorkspaceRelativePath::default(),
+                name: FileDocumentName::parse("note.md").unwrap(),
+                contents: DocumentContents::parse("needle first").unwrap(),
+            })
+            .await
+            .unwrap();
+        let (id, revision) = match created {
+            qingyu_kernel::contract::CreatedDocumentDto::File { id, revision, .. } => {
+                (id, revision)
+            }
+            _ => panic!("file expected"),
+        };
+        std::fs::write(root.join("workspace-hidden.md"), "needle hidden").unwrap();
+        std::fs::write(root.join("global-hidden.md"), "needle hidden").unwrap();
+        std::fs::create_dir_all(root.join(".MARKRA-SYNC")).unwrap();
+        std::fs::write(root.join(".MARKRA-SYNC/hidden.md"), "needle hidden").unwrap();
+        let list_query = ListDocumentsQuery {
+            cursor: None,
+            limit: None,
+            parent: WorkspaceRelativePath::default(),
+        };
+        let tauri_list = facade.list(list_query.clone()).await.unwrap();
+        let direct_list = DocumentsApiService::list_documents(service.as_ref(), list_query)
+            .await
+            .unwrap();
+        assert_eq!(tauri_list, direct_list);
+        assert_eq!(tauri_list.items.len(), 1);
+        assert_eq!(tauri_list.items[0].path.as_str(), "note.md");
+        assert_eq!(
+            facade.read(id.clone()).await.unwrap(),
+            DocumentsApiService::get_document(service.as_ref(), id.clone())
+                .await
+                .unwrap()
+        );
+        let search_query = SearchWorkspaceQuery {
+            cursor: None,
+            limit: None,
+            query: SearchQuery::parse("needle").unwrap(),
+        };
+        let tauri_search = facade.search(search_query.clone()).await.unwrap();
+        let direct_search = DocumentsApiService::search_workspace(service.as_ref(), search_query)
+            .await
+            .unwrap();
+        assert_eq!(tauri_search, direct_search);
+        assert_eq!(tauri_search.items.len(), 1);
+        assert_eq!(tauri_search.items[0].document.path.as_str(), "note.md");
+
+        let mut events = runtime.event_broker().subscribe();
+        let updated = facade
+            .write(
+                id.clone(),
+                UpdateDocumentRequest {
+                    workspace_generation: generation.clone(),
+                    expected_revision: revision,
+                    contents: DocumentContents::parse("second").unwrap(),
+                },
+            )
+            .await
+            .unwrap();
+        let publication = events.recv().await.unwrap();
+        assert_eq!(publication.revision, updated.revision);
+        match publication.event {
+            qingyu_kernel::contract::DomainEvent::DocumentChanged { document } => {
+                assert_eq!(document.revision, updated.revision);
+            }
+            _ => panic!("document changed event expected"),
+        }
+        assert_eq!(
+            updated,
+            DocumentsApiService::get_document(service.as_ref(), id.clone())
+                .await
+                .unwrap()
+        );
+
+        let page_query = PageQuery {
+            cursor: None,
+            limit: None,
+        };
+        let history = facade
+            .history(id.clone(), page_query.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            history,
+            DocumentsApiService::list_document_history(service.as_ref(), id.clone(), page_query)
+                .await
+                .unwrap()
+        );
+        let restored = facade
+            .restore(
+                id.clone(),
+                history.items[0].snapshot_id,
+                RestoreDocumentHistoryRequest {
+                    workspace_generation: generation,
+                    expected_revision: updated.revision,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(restored.contents.as_str(), "needle first");
+
+        let stale = runtime
+            .wire_identity_key()
+            .issue_document_id(
+                workspace.current().unwrap().id,
+                &WorkspaceGeneration::parse("stale-generation").unwrap(),
+                DocumentKind::File,
+                &WorkspaceRelativePath::parse("note.md").unwrap(),
+            )
+            .unwrap();
+        let direct_error = DocumentsApiService::get_document(service.as_ref(), stale.clone())
+            .await
+            .unwrap_err();
+        let tauri_error = facade.read(stale).await.unwrap_err();
+        assert_eq!(tauri_error.code(), direct_error.code());
+        assert_eq!(tauri_error.details.as_ref(), direct_error.details());
+    }
 }

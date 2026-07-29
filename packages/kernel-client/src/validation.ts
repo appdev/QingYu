@@ -1,0 +1,112 @@
+import type { components } from "./generated/kernel-v1.ts";
+import { isRfc3339Utc } from "./datetime.ts";
+import {
+  isDocumentEntry,
+  isSettingsSnapshot,
+  isSyncConfig,
+  isSyncStatus,
+  isWorkspace,
+} from "./events.ts";
+
+type Schemas = components["schemas"];
+
+export function isLiveHealth(value: unknown): value is Schemas["LiveHealthResponse"] {
+  return isRecord(value) && value.apiVersion === "v1" && value.status === "live" && exact(value, ["apiVersion", "status"]);
+}
+
+export function isReadyHealth(value: unknown): value is Schemas["ReadyHealthResponse"] {
+  return isRecord(value) && value.apiVersion === "v1" && isUuid(value.instanceId) && value.status === "ready" && exact(value, ["apiVersion", "instanceId", "status"]);
+}
+
+export function isVersion(value: unknown): value is Schemas["SystemVersionResponse"] {
+  return isRecord(value) && value.apiVersion === "v1" && isUuid(value.instanceId) && typeof value.kernelVersion === "string" && exact(value, ["apiVersion", "instanceId", "kernelVersion"]);
+}
+
+export function isRuntime(value: unknown): value is Schemas["RuntimeStateDto"] {
+  if (!isRecord(value) || !isRecord(value.capabilities)) return false;
+  const capabilities = value.capabilities;
+  const capabilityKeys = ["documents", "history", "portableSettings", "s3", "search", "settings", "sync", "webdav"];
+  return capabilityKeys.every((key) => typeof capabilities[key] === "boolean") && exact(capabilities, capabilityKeys) && isUuid(value.instanceId) && ["desktop", "server", "mobile"].includes(String(value.profile)) && ["starting", "needs-owner", "needs-workspace-initialization", "needs-cloud-binding", "ready", "recoverable-error", "fatal-error"].includes(String(value.startupState)) && exact(value, ["capabilities", "instanceId", "profile", "startupState"]);
+}
+
+export { isWorkspace, isDocumentEntry, isSettingsSnapshot, isSyncConfig, isSyncStatus };
+
+export function isDocumentPage(value: unknown): value is Schemas["DocumentPageDto"] {
+  return page(value, isDocumentEntry);
+}
+
+export function isSearchPage(value: unknown): value is Schemas["SearchPageDto"] {
+  return page(value, (item) => isRecord(item) && positive(item.column) && isDocumentEntry(item.document) && positive(item.line) && typeof item.preview === "string" && exact(item, ["column", "document", "line", "preview"]));
+}
+
+export function isCreatedDocument(value: unknown): value is Schemas["CreatedDocumentDto"] {
+  if (!isDocumentBase(value)) return false;
+  return value.kind === "file"
+    ? isContents(value.contents) && exact(value, [...DOCUMENT_KEYS, "contents"])
+    : value.kind === "directory" && exact(value, DOCUMENT_KEYS);
+}
+
+export function isDocumentContent(value: unknown): value is Schemas["DocumentContentDto"] {
+  return isDocumentBase(value) && value.kind === "file" && isContents(value.contents) && exact(value, [...DOCUMENT_KEYS, "contents"]);
+}
+
+export function isHistoryPage(value: unknown): value is Schemas["DocumentHistoryPageDto"] {
+  return page(value, (item) => isRecord(item) && isRfc3339Utc(item.createdAt) && isDocumentId(item.documentId) && isRevision(item.revision) && nonNegative(item.sizeBytes) && isUuid(item.snapshotId) && exact(item, ["createdAt", "documentId", "revision", "sizeBytes", "snapshotId"]));
+}
+
+export function isSyncConnection(value: unknown): value is Schemas["SyncConnectionTestDto"] {
+  return isRecord(value) && typeof value.checkedTarget === "string" && isRevision(value.configRevision) && (value.provider === "s3" || value.provider === "webdav") && exact(value, ["checkedTarget", "configRevision", "provider"]);
+}
+
+export function isSyncRun(value: unknown): value is Schemas["SyncRunAcceptedDto"] {
+  return isRecord(value) && isRfc3339Utc(value.acceptedAt) && isRevision(value.configRevision) && isUuid(value.runId) && exact(value, ["acceptedAt", "configRevision", "runId"]);
+}
+
+const DOCUMENT_KEYS = ["id", "kind", "modifiedAt", "name", "parent", "path", "revision", "sizeBytes"];
+
+function isDocumentBase(value: unknown): value is Record<string, unknown> {
+  if (!isRecord(value)) return false;
+  const entry: Record<string, unknown> = {};
+  for (const key of DOCUMENT_KEYS) entry[key] = value[key];
+  return isDocumentEntry(entry);
+}
+
+function page(value: unknown, item: (candidate: unknown) => boolean) {
+  return isRecord(value) && Array.isArray(value.items) && value.items.every(item) && (value.nextCursor === null || isCursor(value.nextCursor)) && exact(value, ["items", "nextCursor"]);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function exact(value: Record<string, unknown>, keys: readonly string[]) {
+  return Object.keys(value).length === keys.length && Object.keys(value).every((key) => keys.includes(key));
+}
+
+function isUuid(value: unknown): value is string {
+  return typeof value === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu.test(value);
+}
+
+function isDocumentId(value: unknown): value is string {
+  return typeof value === "string" && value.length <= 8_192 && /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/u.test(value);
+}
+
+function isCursor(value: unknown): value is string {
+  return typeof value === "string" && value.length <= 2_048 && /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/u.test(value);
+}
+
+function isRevision(value: unknown): value is string {
+  return typeof value === "string" && value !== "";
+}
+
+function isContents(value: unknown): value is string {
+  return typeof value === "string" && new TextEncoder().encode(value).length <= 16 * 1024 * 1024;
+}
+
+function positive(value: unknown) {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+}
+
+function nonNegative(value: unknown) {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}

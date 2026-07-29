@@ -1,0 +1,1 @@
+//! Sync service implementation boundary.

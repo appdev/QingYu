@@ -1,0 +1,52 @@
+[package]
+name = "qingyu-kernel"
+version = "2.1.0"
+description = "Platform-neutral QingYu domain kernel"
+authors = ["QingYu contributors"]
+license = "AGPL-3.0-only"
+repository = "https://github.com/appdev/QingYu"
+edition = "2021"
+
+[lib]
+name = "qingyu_kernel"
+path = "src/lib.rs"
+
+[dependencies]
+async-trait = "0.1"
+axum = { version = "0.8.9", features = ["http1", "json", "tokio", "ws"] }
+base64 = "0.22"
+cap-fs-ext = "4.0.2"
+cap-std = "4.0.2"
+getrandom = "0.4"
+fs2 = "0.4.3"
+hmac = "0.12"
+http-body-util = "0.1"
+ignore = "0.4.28"
+qingyu-dejavu = { path = "../desktop/src-tauri/crates/qingyu-dejavu" }
+quick-xml = "0.39.2"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+subtle = "2.6"
+time = { version = "0.3.44", features = ["formatting", "parsing", "serde", "serde-well-known"] }
+tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+tower = { version = "0.5.3", features = ["util"] }
+tower-http = { version = "0.6.8", features = ["limit"] }
+utoipa = { version = "5.5.0", features = ["time", "uuid"] }
+utoipa-axum = "0.2.0"
+uuid = { version = "1", features = ["serde", "v4"] }
+zeroize = "1"
+
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1.1.4", features = ["fs"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
+
+[dev-dependencies]
+futures = "0.3.32"
+futures-util = "0.3"
+static_assertions = "1"
+tempfile = "3"
+tokio = { version = "1", features = ["test-util"] }

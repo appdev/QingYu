@@ -250,6 +250,7 @@ pub(crate) fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(move |app| {
+            crate::language::initialize_startup_language(&app.config().identifier);
             if let Err(error) = crate::dejavu_sync::install_production_graph(&app.handle()) {
                 eprintln!("QingYu Dejavu sync initialization failed: {error}");
             }
