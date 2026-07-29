@@ -772,16 +772,29 @@ jobs:
       - name: Collect release files
         id: release_files
         shell: bash
+        env:
+          SIGNED_RELEASE: ${{ needs.validate_release.outputs.signed_release }}
         run: |
           set -euo pipefail
 
           # Tauri leaves the deb package internals beside the finished installer.
           # Publishing those generic filenames makes Linux architectures collide.
-          find release-assets -type f \
-            ! -name 'release-metadata.json' \
-            ! -name 'control.tar.gz' \
-            ! -name 'data.tar.gz' \
-            | sort > release-files.txt
+          if [[ "${SIGNED_RELEASE}" == "true" ]]; then
+            find release-assets -type f \
+              ! -name 'release-metadata.json' \
+              ! -name 'control.tar.gz' \
+              ! -name 'data.tar.gz' \
+              | sort > release-files.txt
+          else
+            find release-assets -type f \
+              ! -name 'release-metadata.json' \
+              ! -name 'control.tar.gz' \
+              ! -name 'data.tar.gz' \
+              ! -name '*_updater.app.tar.gz' \
+              ! -name '*.sig' \
+              ! -name 'latest.json' \
+              | sort > release-files.txt
+          fi
 
           {
             echo 'paths<<__FILES__'
