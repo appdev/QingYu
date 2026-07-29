@@ -1,3 +1,13 @@
+## [2.2.0](https://github.com/markrahq/markra/compare/v2.1.0...v2.2.0) (2026-07-29)
+
+### Features
+
+* **export:** add configurable document fonts ([#599](https://github.com/markrahq/markra/issues/599)) ([0512c9a](https://github.com/markrahq/markra/commit/0512c9a84c30053f3b0ed143c9a3803ac15e1a40))
+
+### Bug Fixes
+
+* **editor:** improve dark theme contrast ([#602](https://github.com/markrahq/markra/issues/602)) ([e44cce5](https://github.com/markrahq/markra/commit/e44cce5adf01305038d75609bd69cee238674e62)), closes [#601](https://github.com/markrahq/markra/issues/601)
+
 ## [2.1.0](https://github.com/markrahq/markra/compare/v2.0.0...v2.1.0) (2026-07-28)
 
 ### Features
