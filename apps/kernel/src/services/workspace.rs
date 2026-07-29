@@ -103,7 +103,7 @@ impl WorkspaceService {
         safe_display_name: impl Into<String>,
     ) -> Result<WorkspaceDto, WorkspaceServiceError> {
         let safe_display_name = safe_display_name.into();
-        let _mutation = self.mutation_coordinator.lock().await;
+        let mutation = self.mutation_coordinator.lock().await;
         let runtime = self.verified_runtime()?;
         let mut current = self
             .current
@@ -135,7 +135,9 @@ impl WorkspaceService {
             return Err(error.into());
         }
 
-        if let Err(error) = runtime.commit_host_workspace_authority(prepared) {
+        if let Err(error) =
+            runtime.commit_host_workspace_authority_with_mutation(prepared, &mutation)
+        {
             self.restore_persisted_value(previous_store_value)?;
             return Err(error.into());
         }
@@ -175,7 +177,7 @@ impl WorkspaceService {
         host_transaction: Box<dyn AtomicHostWorkspaceTransaction>,
     ) -> Result<WorkspaceDto, WorkspaceServiceError> {
         let safe_display_name = safe_display_name.into();
-        let _mutation = self.mutation_coordinator.lock().await;
+        let mutation = self.mutation_coordinator.lock().await;
         let runtime = self.verified_runtime()?;
         let current = {
             let current = self
@@ -239,7 +241,10 @@ impl WorkspaceService {
             }
         }
 
-        if runtime.commit_host_workspace_authority(prepared).is_err() {
+        if runtime
+            .commit_host_workspace_authority_with_mutation(prepared, &mutation)
+            .is_err()
+        {
             self.uncertain_host_commit.store(true, Ordering::SeqCst);
             return Err(WorkspaceServiceError::persistence_unavailable());
         }

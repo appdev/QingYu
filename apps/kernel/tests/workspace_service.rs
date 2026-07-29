@@ -14,7 +14,7 @@ use qingyu_kernel::{
     events::{EventPublication, EventSink, EventSinkError},
     paths::KernelPaths,
     ports::KernelPorts,
-    runtime::{KernelRuntime, WorkspaceApiService},
+    runtime::{KernelRuntime, WorkspaceApiService, WorkspaceAuthorityErrorKind},
     services::workspace::{WorkspaceService, WorkspaceServiceErrorKind},
     workspace::{
         managed::ManagedWorkspaceCollection,
@@ -244,6 +244,39 @@ struct ReadOnlyReentrantHostWorkspaceTransaction {
     runtime: Arc<KernelRuntime>,
     service: Arc<WorkspaceService>,
     observed: Arc<AtomicBool>,
+}
+
+struct RacingDirectAuthorityCommitTransaction {
+    inner: MemoryHostWorkspaceTransaction,
+    racer_started: mpsc::Sender<()>,
+    racer_finished: mpsc::Receiver<Result<(), WorkspaceAuthorityErrorKind>>,
+    racer_outcome: Arc<Mutex<Option<Result<(), WorkspaceAuthorityErrorKind>>>>,
+}
+
+impl AtomicHostWorkspaceTransaction for RacingDirectAuthorityCommitTransaction {
+    fn repository_binding(&self) -> PrimaryWorkspaceRepositoryBinding {
+        self.inner.repository_binding()
+    }
+
+    fn authority_binding(&self) -> PreparedWorkspaceAuthorityBinding {
+        self.inner.authority_binding()
+    }
+
+    fn compare_and_commit(
+        self: Box<Self>,
+        expected_kernel_value: Option<&Value>,
+        next_kernel_value: Value,
+    ) -> Result<(), AtomicHostWorkspaceCommitError> {
+        self.racer_started
+            .send(())
+            .map_err(|_| AtomicHostWorkspaceCommitError::no_commit())?;
+        let outcome = self
+            .racer_finished
+            .recv_timeout(Duration::from_secs(5))
+            .map_err(|_| AtomicHostWorkspaceCommitError::no_commit())?;
+        *self.racer_outcome.lock().unwrap() = Some(outcome);
+        Box::new(self.inner).compare_and_commit(expected_kernel_value, next_kernel_value)
+    }
 }
 
 impl AtomicHostWorkspaceTransaction for ReadOnlyReentrantHostWorkspaceTransaction {
@@ -975,6 +1008,67 @@ fn host_commit_may_reenter_read_only_runtime_and_service_checks_without_deadlock
     assert!(observed.load(Ordering::SeqCst));
     assert_eq!(committed.display_name, "Target");
     assert_eq!(store.commits.load(Ordering::SeqCst), 1);
+    assert_eq!(events.publications.lock().unwrap().len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn direct_authority_commit_cannot_cross_atomic_host_transaction_window() {
+    let temporary = tempdir().unwrap();
+    let service_target = temporary.path().join("service-target");
+    let direct_target = temporary.path().join("direct-target");
+    fs::create_dir(&service_target).unwrap();
+    fs::create_dir(&direct_target).unwrap();
+    let store = MemoryAtomicHostRecord::new("workspace-a");
+    let events = Arc::new(RecordingEventSink::default());
+    let (runtime, service) =
+        DesktopFixture::new(temporary.path()).into_service(store.clone(), events.clone());
+    let before = service.current().unwrap();
+    let service_prepared = runtime
+        .prepare_host_workspace_authority(&service_target)
+        .unwrap();
+    let direct_prepared = runtime
+        .prepare_host_workspace_authority(&direct_target)
+        .unwrap();
+    let inner = store.transaction("service-target", service_prepared.binding());
+    let (racer_started_sender, racer_started_receiver) = mpsc::channel();
+    let (racer_finished_sender, racer_finished_receiver) = mpsc::channel();
+    let racer_outcome = Arc::new(Mutex::new(None));
+    let racing_runtime = runtime.clone();
+    let racer = std::thread::spawn(move || {
+        racer_started_receiver
+            .recv_timeout(Duration::from_secs(5))
+            .expect("host callback must open the direct-commit race window");
+        let result = racing_runtime
+            .commit_host_workspace_authority(direct_prepared)
+            .map(|_| ())
+            .map_err(|error| error.kind());
+        racer_finished_sender.send(result).unwrap();
+    });
+
+    let result = service
+        .compare_and_set_host_workspace_transaction(
+            &before.revision,
+            service_prepared,
+            "Service Target",
+            Box::new(RacingDirectAuthorityCommitTransaction {
+                inner,
+                racer_started: racer_started_sender,
+                racer_finished: racer_finished_receiver,
+                racer_outcome: racer_outcome.clone(),
+            }),
+        )
+        .await;
+    racer.join().unwrap();
+
+    assert_eq!(store.commits.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        *racer_outcome.lock().unwrap(),
+        Some(Err(WorkspaceAuthorityErrorKind::WorkspaceUnavailable))
+    );
+    let committed = result.unwrap();
+    assert_eq!(committed.display_name, "Service Target");
+    assert_eq!(service.current().unwrap(), committed);
+    assert_eq!(store.snapshot().private_workspace, "service-target");
     assert_eq!(events.publications.lock().unwrap().len(), 1);
 }
 

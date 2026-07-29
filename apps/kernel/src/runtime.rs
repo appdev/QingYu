@@ -155,12 +155,30 @@ impl KernelRuntime {
         })
     }
 
+    /// Attempts a direct authority installation under the shared mutation
+    /// coordinator. This synchronous compatibility seam fails unavailable
+    /// instead of waiting when another mutation owns the coordinator.
     pub fn commit_host_workspace_authority(
         &self,
         prepared: PreparedWorkspaceAuthority,
     ) -> Result<Arc<ActiveWorkspaceAuthority>, WorkspaceAuthorityError> {
+        let mutation = self
+            .mutation_coordinator
+            .try_lock()
+            .map_err(|_| WorkspaceAuthorityError::unavailable())?;
+        self.commit_host_workspace_authority_with_mutation(prepared, &mutation)
+    }
+
+    pub(crate) fn commit_host_workspace_authority_with_mutation(
+        &self,
+        prepared: PreparedWorkspaceAuthority,
+        mutation: &MutationPermit<'_>,
+    ) -> Result<Arc<ActiveWorkspaceAuthority>, WorkspaceAuthorityError> {
         if self.paths.profile() != HostProfile::Desktop {
             return Err(WorkspaceAuthorityError::unsupported_profile());
+        }
+        if !self.mutation_coordinator.recognizes(mutation) {
+            return Err(WorkspaceAuthorityError::unavailable());
         }
         let mut current = self
             .active_workspace
@@ -455,8 +473,34 @@ impl MutationCoordinator {
         }
     }
 
-    pub async fn lock(&self) -> MutexGuard<'_, ()> {
-        self.gate.lock().await
+    pub async fn lock(&self) -> MutationPermit<'_> {
+        MutationPermit {
+            coordinator: self,
+            _guard: self.gate.lock().await,
+        }
+    }
+
+    fn try_lock(&self) -> Result<MutationPermit<'_>, tokio::sync::TryLockError> {
+        Ok(MutationPermit {
+            coordinator: self,
+            _guard: self.gate.try_lock()?,
+        })
+    }
+
+    fn recognizes(&self, permit: &MutationPermit<'_>) -> bool {
+        std::ptr::eq(self, permit.coordinator)
+    }
+}
+
+#[must_use = "the mutation gate is released when this permit is dropped"]
+pub struct MutationPermit<'a> {
+    coordinator: &'a MutationCoordinator,
+    _guard: MutexGuard<'a, ()>,
+}
+
+impl fmt::Debug for MutationPermit<'_> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("MutationPermit { gate: held }")
     }
 }
 
