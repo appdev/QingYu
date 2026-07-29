@@ -11,7 +11,7 @@ use serde_json::{json, Value};
 use tempfile::tempdir;
 
 use qingyu_kernel::host::native::{
-    NativeHostControl, NativeHostReady, NATIVE_HOST_PROTOCOL_VERSION,
+    NativeHostControl, NativeHostReady, NativeHostWorkspaceState, NATIVE_HOST_PROTOCOL_VERSION,
 };
 
 const PROCESS_TIMEOUT: Duration = Duration::from_secs(10);
@@ -35,6 +35,7 @@ fn desktop_startup_reports_public_readiness_and_serves_live_probe() {
         "workspaceRoot": workspace,
         "appDataRoot": app_data,
         "cacheRoot": cache,
+        "workspaceState": workspace_state(&workspace),
         "origin": "tauri://localhost",
         "credential": VALID_CREDENTIAL,
     });
@@ -93,6 +94,7 @@ fn standalone_process_installs_durable_settings_and_reports_the_capability() {
         "workspaceRoot": workspace,
         "appDataRoot": app_data,
         "cacheRoot": cache,
+        "workspaceState": workspace_state(&workspace),
         "origin": "tauri://localhost",
         "credential": VALID_CREDENTIAL,
     });
@@ -113,6 +115,114 @@ fn standalone_process_installs_durable_settings_and_reports_the_capability() {
     assert!(settings_body["revision"].as_str().is_some());
     assert!(app_data.join("settings.json").is_file());
     assert_eq!(process.child_mut().try_wait().unwrap(), None);
+}
+
+#[test]
+fn standalone_process_installs_the_host_committed_workspace_across_restarts() {
+    let (startup, root) = desktop_startup_fixture();
+    let mut first = KernelProcess::spawn(&startup.to_string());
+    let first_readiness: Value =
+        serde_json::from_str(first.read_stdout_line(PROCESS_TIMEOUT).trim()).unwrap();
+    let first_port = u16::try_from(first_readiness["port"].as_u64().unwrap()).unwrap();
+    let first_response = authorized_get(first_port, "/api/v1/workspace");
+    assert!(
+        first_response.starts_with("HTTP/1.1 200 OK\r\n"),
+        "{first_response}"
+    );
+    let first_workspace: Value = serde_json::from_str(response_body(&first_response)).unwrap();
+    assert_eq!(first_workspace["displayName"], "Notes");
+    let revision_seed = startup["workspaceState"]["primaryWorkspace"]["revisionSeed"]
+        .as_str()
+        .unwrap()
+        .as_bytes();
+    for entry in std::fs::read_dir(root.path().join("app-data")).unwrap() {
+        let entry = entry.unwrap();
+        if entry.file_type().unwrap().is_file() {
+            let bytes = std::fs::read(entry.path()).unwrap();
+            assert!(
+                !bytes
+                    .windows(revision_seed.len())
+                    .any(|window| window == revision_seed),
+                "the child must not create a second durable workspace authority"
+            );
+        }
+    }
+    first.write_shutdown();
+    assert!(first.wait_for_output(PROCESS_TIMEOUT).status.success());
+
+    let mut second = KernelProcess::spawn(&startup.to_string());
+    let second_readiness: Value =
+        serde_json::from_str(second.read_stdout_line(PROCESS_TIMEOUT).trim()).unwrap();
+    let second_port = u16::try_from(second_readiness["port"].as_u64().unwrap()).unwrap();
+    let second_response = authorized_get(second_port, "/api/v1/workspace");
+    assert!(
+        second_response.starts_with("HTTP/1.1 200 OK\r\n"),
+        "{second_response}"
+    );
+    let second_workspace: Value = serde_json::from_str(response_body(&second_response)).unwrap();
+
+    assert_ne!(
+        first_readiness["instanceId"],
+        second_readiness["instanceId"]
+    );
+    assert_eq!(first_workspace, second_workspace);
+}
+
+#[test]
+fn composition_failure_after_lock_acquisition_releases_roots_before_exit() {
+    let (startup, root) = desktop_startup_fixture();
+    let private_marker = "private-invalid-settings-marker";
+    std::fs::write(root.path().join("app-data/settings.json"), private_marker).unwrap();
+
+    let failed = KernelProcess::spawn(&startup.to_string()).wait_for_output(PROCESS_TIMEOUT);
+    assert!(!failed.status.success());
+    assert!(failed.stdout.is_empty());
+    assert_eq!(utf8(&failed.stderr).trim(), "QingYu Kernel startup failed.");
+    assert!(!utf8(&failed.stderr).contains(private_marker));
+
+    std::fs::remove_file(root.path().join("app-data/settings.json")).unwrap();
+    let mut restarted = KernelProcess::spawn(&startup.to_string());
+    let readiness = restarted.read_stdout_line(PROCESS_TIMEOUT);
+    assert!(readiness.contains(r#""type":"ready""#));
+}
+
+#[test]
+fn committed_workspace_state_cannot_be_reused_for_another_physical_root() {
+    let root = tempdir().unwrap();
+    let committed_workspace = root.path().join("committed-workspace");
+    let other_workspace = root.path().join("other-workspace");
+    let app_data = root.path().join("app-data");
+    let cache = root.path().join("cache");
+    for path in [&committed_workspace, &other_workspace, &app_data, &cache] {
+        std::fs::create_dir(path).unwrap();
+    }
+    let workspace_state = workspace_state(&committed_workspace);
+    let mismatched = json!({
+        "type": "start",
+        "protocolVersion": NATIVE_HOST_PROTOCOL_VERSION,
+        "profile": "desktop",
+        "workspaceRoot": other_workspace,
+        "appDataRoot": app_data,
+        "cacheRoot": cache,
+        "workspaceState": workspace_state,
+        "origin": "tauri://localhost",
+        "credential": VALID_CREDENTIAL,
+    });
+
+    let rejected = KernelProcess::spawn(&mismatched.to_string()).wait_for_output(PROCESS_TIMEOUT);
+    assert!(!rejected.status.success());
+    assert!(rejected.stdout.is_empty());
+    assert_eq!(
+        utf8(&rejected.stderr).trim(),
+        "QingYu Kernel startup failed."
+    );
+
+    let mut matched = mismatched;
+    matched["workspaceRoot"] = json!(committed_workspace);
+    let mut restarted = KernelProcess::spawn(&matched.to_string());
+    assert!(restarted
+        .read_stdout_line(PROCESS_TIMEOUT)
+        .contains(r#""type":"ready""#));
 }
 
 #[test]
@@ -161,6 +271,7 @@ fn a_second_start_frame_is_rejected_as_control_without_disclosing_startup_data()
         "workspaceRoot": workspace,
         "appDataRoot": app_data,
         "cacheRoot": cache,
+        "workspaceState": workspace_state(&workspace),
         "origin": "tauri://localhost",
         "credential": VALID_CREDENTIAL,
     });
@@ -216,9 +327,18 @@ fn invalid_startup_framing_fails_generically() {
     startup["unknownField"] = json!("private-unknown-field-marker");
     let (mut future_version, _future_root) = desktop_startup_fixture();
     future_version["protocolVersion"] = json!(NATIVE_HOST_PROTOCOL_VERSION + 1);
+    let (mut missing_workspace_state, _missing_workspace_root) = desktop_startup_fixture();
+    missing_workspace_state
+        .as_object_mut()
+        .unwrap()
+        .remove("workspaceState");
+    let (mut invalid_root_binding, _invalid_binding_root) = desktop_startup_fixture();
+    invalid_root_binding["workspaceState"]["rootBinding"] = json!("private-invalid-binding");
     let cases = [
         FramedInput::line(startup.to_string()),
         FramedInput::line(future_version.to_string()),
+        FramedInput::line(missing_workspace_state.to_string()),
+        FramedInput::line(invalid_root_binding.to_string()),
         FramedInput::unterminated(
             json!({
                 "type": "start",
@@ -227,6 +347,7 @@ fn invalid_startup_framing_fails_generically() {
                 "workspaceRoot": "/unterminated-private-path-marker",
                 "appDataRoot": "/unterminated-private-app-data-marker",
                 "cacheRoot": "/unterminated-private-cache-marker",
+                "workspaceState": unbound_workspace_state(),
                 "origin": "tauri://localhost",
                 "credential": VALID_CREDENTIAL,
             })
@@ -262,6 +383,7 @@ fn invalid_or_missing_credentials_fail_generically_without_secret_disclosure() {
             "workspaceRoot": "/not/observed/before-credential-validation",
             "appDataRoot": "/not/observed/before-credential-validation-app-data",
             "cacheRoot": "/not/observed/before-credential-validation-cache",
+            "workspaceState": unbound_workspace_state(),
             "origin": "tauri://localhost",
             "credential": secret,
         }),
@@ -272,6 +394,7 @@ fn invalid_or_missing_credentials_fail_generically_without_secret_disclosure() {
             "workspaceRoot": "/missing-credential-secret-marker",
             "appDataRoot": "/missing-credential-secret-marker-app-data",
             "cacheRoot": "/missing-credential-secret-marker-cache",
+            "workspaceState": unbound_workspace_state(),
             "origin": "tauri://localhost",
         }),
     ];
@@ -308,11 +431,28 @@ fn desktop_startup_fixture() -> (Value, tempfile::TempDir) {
             "workspaceRoot": workspace,
             "appDataRoot": app_data,
             "cacheRoot": cache,
+            "workspaceState": workspace_state(&workspace),
             "origin": "tauri://localhost",
             "credential": VALID_CREDENTIAL,
         }),
         root,
     )
+}
+
+fn workspace_state(workspace: &std::path::Path) -> Value {
+    serde_json::to_value(NativeHostWorkspaceState::for_workspace(workspace, "Notes").unwrap())
+        .unwrap()
+}
+
+fn unbound_workspace_state() -> Value {
+    json!({
+        "primaryWorkspace": {
+            "schemaVersion": 1,
+            "revisionSeed": "8b14d937-76b2-4776-9ae4-a9c6e0c403c4",
+            "displayName": "Notes",
+        },
+        "rootBinding": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    })
 }
 
 fn live_probe(port: u16) -> String {

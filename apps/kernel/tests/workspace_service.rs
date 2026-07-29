@@ -798,6 +798,61 @@ async fn rebuilding_the_service_in_one_runtime_preserves_current_id_generation_a
 }
 
 #[tokio::test]
+async fn rebuilding_the_same_committed_workspace_in_a_new_runtime_preserves_its_identity() {
+    let temporary = tempdir().unwrap();
+    let workspace = temporary.path().join("workspace");
+    let app_data = temporary.path().join("app-data");
+    let cache = temporary.path().join("cache");
+    for path in [&workspace, &app_data, &cache] {
+        fs::create_dir(path).unwrap();
+    }
+    let store = Arc::new(MemoryPrimaryWorkspaceStore::default());
+
+    let first_paths = KernelPaths::desktop(&workspace, &app_data, &cache).unwrap();
+    let first_managed = ManagedWorkspaceCollection::from_paths(&first_paths).unwrap();
+    let first_runtime = KernelRuntime::activate(
+        KernelConfig::generate().unwrap(),
+        first_paths,
+        KernelPorts::unavailable(),
+    )
+    .unwrap();
+    let first_instance = first_runtime.instance_id();
+    let first_service = WorkspaceService::new(
+        &first_runtime,
+        store.clone(),
+        first_managed,
+        Arc::new(RecordingEventSink::default()),
+        "Initial Workspace",
+    )
+    .await
+    .unwrap();
+    let first_workspace = first_service.current().unwrap();
+    drop(first_service);
+    drop(first_runtime);
+
+    let second_paths = KernelPaths::desktop(&workspace, &app_data, &cache).unwrap();
+    let second_managed = ManagedWorkspaceCollection::from_paths(&second_paths).unwrap();
+    let second_runtime = KernelRuntime::activate(
+        KernelConfig::generate().unwrap(),
+        second_paths,
+        KernelPorts::unavailable(),
+    )
+    .unwrap();
+    let second_service = WorkspaceService::new(
+        &second_runtime,
+        store,
+        second_managed,
+        Arc::new(RecordingEventSink::default()),
+        "Ignored Existing Display Name",
+    )
+    .await
+    .unwrap();
+
+    assert_ne!(first_instance, second_runtime.instance_id());
+    assert_eq!(first_workspace, second_service.current().unwrap());
+}
+
+#[tokio::test]
 async fn active_workspace_snapshot_retains_authority_and_metadata_as_one_unit() {
     let temporary = tempdir().unwrap();
     let target = temporary.path().join("snapshot-target");

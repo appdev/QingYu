@@ -7,20 +7,12 @@ use std::{
     },
 };
 
-use async_trait::async_trait;
 use qingyu_kernel::{
     api::{build_router, TransportPolicy},
+    composition::compose_fixed_native_kernel,
     config::KernelConfig,
-    contract::{
-        ApiVersion, HostProfile, InstanceId, ReadyHealthResponse, ReadyStatus,
-        RuntimeCapabilitiesDto, RuntimeStateDto, StartupState, SystemVersionResponse,
-    },
     host::native::{NativeHostControl, NativeHostReady, NativeHostStart},
     paths::KernelPaths,
-    ports::KernelPorts,
-    runtime::{KernelRuntime, ServiceFailure, SystemApiService},
-    settings::{service::SettingsService, storage::AtomicJsonSettingsStore},
-    storage::DurableFileStore,
 };
 
 #[tokio::main]
@@ -41,34 +33,14 @@ async fn run() -> Result<(), ()> {
 
     let mut control_reader = BufReader::new(std::io::stdin());
     let startup = NativeHostStart::read_json_line(&mut control_reader).map_err(|_| ())?;
-    let (workspace_root, app_data_root, cache_root, origin, credential) = startup.into_parts();
+    let (workspace_root, app_data_root, cache_root, workspace_state, origin, credential) =
+        startup.into_parts();
     let paths =
         KernelPaths::desktop(&workspace_root, &app_data_root, &cache_root).map_err(|_| ())?;
     let config =
         KernelConfig::generate_with_native_launch_credential(credential).map_err(|_| ())?;
-    let profile = paths.profile();
-    let settings_store = Arc::new(
-        AtomicJsonSettingsStore::new(
-            DurableFileStore::at_instance_data(paths.instance_data_root(), config.launch_epoch())
-                .map_err(|_| ())?,
-        )
-        .map_err(|_| ())?,
-    );
-    let runtime =
-        KernelRuntime::activate(config, paths, KernelPorts::unavailable()).map_err(|_| ())?;
-    let settings_service = Arc::new(SettingsService::new(
-        settings_store,
-        runtime.event_broker().clone(),
-    ));
-    settings_service.migrate_schema().map_err(|_| ())?;
-    runtime
-        .install_settings_api_service(settings_service)
-        .map_err(|_| ())?;
-    runtime
-        .install_system_api_service(Arc::new(BasicSystemService {
-            instance_id: runtime.instance_id(),
-            profile,
-        }))
+    let runtime = compose_fixed_native_kernel(config, paths, workspace_state)
+        .await
         .map_err(|_| ())?;
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -114,47 +86,5 @@ async fn run() -> Result<(), ()> {
         Err(())
     } else {
         Ok(())
-    }
-}
-
-struct BasicSystemService {
-    instance_id: InstanceId,
-    profile: HostProfile,
-}
-
-#[async_trait]
-impl SystemApiService for BasicSystemService {
-    async fn ready(&self) -> Result<ReadyHealthResponse, ServiceFailure> {
-        Ok(ReadyHealthResponse {
-            status: ReadyStatus::Ready,
-            api_version: ApiVersion::V1,
-            instance_id: self.instance_id,
-        })
-    }
-
-    async fn version(&self) -> Result<SystemVersionResponse, ServiceFailure> {
-        Ok(SystemVersionResponse {
-            api_version: ApiVersion::V1,
-            kernel_version: env!("CARGO_PKG_VERSION").to_owned(),
-            instance_id: self.instance_id,
-        })
-    }
-
-    async fn runtime_state(&self) -> Result<RuntimeStateDto, ServiceFailure> {
-        Ok(RuntimeStateDto {
-            profile: self.profile,
-            startup_state: StartupState::Ready,
-            capabilities: RuntimeCapabilitiesDto {
-                documents: false,
-                history: false,
-                search: false,
-                settings: true,
-                sync: false,
-                webdav: false,
-                s3: false,
-                portable_settings: true,
-            },
-            instance_id: self.instance_id,
-        })
     }
 }

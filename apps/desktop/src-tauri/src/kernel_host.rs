@@ -1561,10 +1561,16 @@ mod tests {
     }
 
     fn startup() -> NativeHostStart {
+        let workspace = std::env::temp_dir();
         NativeHostStart::desktop(
-            PathBuf::from("workspace"),
+            workspace.clone(),
             PathBuf::from("app-data"),
             PathBuf::from("cache"),
+            qingyu_kernel::host::native::NativeHostWorkspaceState::for_workspace(
+                &workspace,
+                "Workspace",
+            )
+            .unwrap(),
             "tauri://localhost".to_owned(),
             NativeLaunchCredential::generate().unwrap(),
         )

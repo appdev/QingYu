@@ -4,13 +4,132 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
+use cap_fs_ext::MetadataExt as _;
+use cap_std::fs::Dir;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest as _, Sha256};
 use zeroize::{Zeroize as _, Zeroizing};
 
-use crate::{config::NativeLaunchCredential, contract::InstanceId};
+use crate::{
+    config::NativeLaunchCredential, contract::InstanceId, workspace::primary::PrimaryWorkspaceState,
+};
 
-pub const NATIVE_HOST_PROTOCOL_VERSION: u16 = 1;
+pub const NATIVE_HOST_PROTOCOL_VERSION: u16 = 2;
 pub const MAX_NATIVE_HOST_FRAME_BYTES: usize = 64 * 1024;
+
+#[derive(Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct NativeHostWorkspaceState {
+    primary_workspace: PrimaryWorkspaceState,
+    root_binding: String,
+}
+
+impl NativeHostWorkspaceState {
+    pub fn for_workspace(
+        workspace_root: &Path,
+        display_name: impl Into<String>,
+    ) -> Result<Self, NativeHostProtocolError> {
+        let directory = Dir::open_ambient_dir(workspace_root, cap_std::ambient_authority())
+            .map_err(|_| NativeHostProtocolError)?;
+        let state = Self {
+            primary_workspace: PrimaryWorkspaceState::new(display_name)
+                .map_err(|_| NativeHostProtocolError)?,
+            root_binding: root_binding(&directory)?,
+        };
+        state.validate()?;
+        Ok(state)
+    }
+
+    fn validate(&self) -> Result<(), NativeHostProtocolError> {
+        self.primary_workspace
+            .validate()
+            .map_err(|_| NativeHostProtocolError)?;
+        let decoded = URL_SAFE_NO_PAD
+            .decode(self.root_binding.as_bytes())
+            .map_err(|_| NativeHostProtocolError)?;
+        if decoded.len() != 32 || URL_SAFE_NO_PAD.encode(decoded) != self.root_binding {
+            return Err(NativeHostProtocolError);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn validate_directory(
+        &self,
+        directory: &Dir,
+    ) -> Result<(), NativeHostProtocolError> {
+        self.validate()?;
+        if self.root_binding != root_binding(directory)? {
+            return Err(NativeHostProtocolError);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn into_primary_workspace(self) -> PrimaryWorkspaceState {
+        self.primary_workspace
+    }
+
+    pub fn display_name(&self) -> &str {
+        self.primary_workspace.display_name()
+    }
+}
+
+impl fmt::Debug for NativeHostWorkspaceState {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("NativeHostWorkspaceState([REDACTED])")
+    }
+}
+
+#[cfg(not(windows))]
+fn root_binding(directory: &Dir) -> Result<String, NativeHostProtocolError> {
+    let metadata = directory
+        .dir_metadata()
+        .map_err(|_| NativeHostProtocolError)?;
+    if !metadata.is_dir() {
+        return Err(NativeHostProtocolError);
+    }
+    let mut hasher = Sha256::new();
+    hasher.update(b"qingyu-native-workspace-root-unix-v1\0");
+    hasher.update(metadata.dev().to_le_bytes());
+    hasher.update(metadata.ino().to_le_bytes());
+    Ok(URL_SAFE_NO_PAD.encode(hasher.finalize()))
+}
+
+#[cfg(windows)]
+fn root_binding(directory: &Dir) -> Result<String, NativeHostProtocolError> {
+    use std::{mem, os::windows::io::AsRawHandle as _};
+
+    use windows_sys::Win32::{
+        Foundation::HANDLE,
+        Storage::FileSystem::{FileIdInfo, GetFileInformationByHandleEx, FILE_ID_INFO},
+    };
+
+    let metadata = directory
+        .dir_metadata()
+        .map_err(|_| NativeHostProtocolError)?;
+    if !metadata.is_dir() {
+        return Err(NativeHostProtocolError);
+    }
+    let mut info = FILE_ID_INFO::default();
+    // SAFETY: `directory` owns a live directory handle, `info` is writable for
+    // exactly the supplied `FILE_ID_INFO` size, and the call does not retain it.
+    let result = unsafe {
+        GetFileInformationByHandleEx(
+            directory.as_raw_handle() as HANDLE,
+            FileIdInfo,
+            (&mut info as *mut FILE_ID_INFO).cast(),
+            u32::try_from(mem::size_of::<FILE_ID_INFO>()).map_err(|_| NativeHostProtocolError)?,
+        )
+    };
+    if result == 0 {
+        return Err(NativeHostProtocolError);
+    }
+    let mut hasher = Sha256::new();
+    hasher.update(b"qingyu-native-workspace-root-windows-v1\0");
+    hasher.update(info.VolumeSerialNumber.to_le_bytes());
+    hasher.update(info.FileId.Identifier);
+    Ok(URL_SAFE_NO_PAD.encode(hasher.finalize()))
+}
 
 /// A native host launch request read from the inherited control pipe.
 ///
@@ -21,6 +140,7 @@ pub struct NativeHostStart {
     workspace_root: PathBuf,
     app_data_root: PathBuf,
     cache_root: PathBuf,
+    workspace_state: NativeHostWorkspaceState,
     origin: String,
     credential: NativeLaunchCredential,
 }
@@ -30,6 +150,7 @@ impl NativeHostStart {
         workspace_root: PathBuf,
         app_data_root: PathBuf,
         cache_root: PathBuf,
+        workspace_state: NativeHostWorkspaceState,
         origin: String,
         credential: NativeLaunchCredential,
     ) -> Self {
@@ -37,6 +158,7 @@ impl NativeHostStart {
             workspace_root,
             app_data_root,
             cache_root,
+            workspace_state,
             origin,
             credential,
         }
@@ -70,6 +192,7 @@ impl NativeHostStart {
                 workspace_root: &self.workspace_root,
                 app_data_root: &self.app_data_root,
                 cache_root: &self.cache_root,
+                workspace_state: &self.workspace_state,
                 origin: &self.origin,
                 credential: self.credential.expose_secret(),
             },
@@ -77,11 +200,21 @@ impl NativeHostStart {
         .map_err(|_| NativeHostProtocolError)
     }
 
-    pub fn into_parts(self) -> (PathBuf, PathBuf, PathBuf, String, NativeLaunchCredential) {
+    pub fn into_parts(
+        self,
+    ) -> (
+        PathBuf,
+        PathBuf,
+        PathBuf,
+        NativeHostWorkspaceState,
+        String,
+        NativeLaunchCredential,
+    ) {
         (
             self.workspace_root,
             self.app_data_root,
             self.cache_root,
+            self.workspace_state,
             self.origin,
             self.credential,
         )
@@ -205,6 +338,7 @@ struct RawStartFrame {
     workspace_root: PathBuf,
     app_data_root: PathBuf,
     cache_root: PathBuf,
+    workspace_state: NativeHostWorkspaceState,
     origin: String,
     credential: CredentialInput,
 }
@@ -218,10 +352,15 @@ impl TryFrom<RawStartFrame> for NativeHostStart {
         }
         let StartFrameKind::Start = frame.kind;
         let DesktopProfile::Desktop = frame.profile;
+        frame
+            .workspace_state
+            .validate()
+            .map_err(|_| NativeHostProtocolError)?;
         Ok(Self {
             workspace_root: frame.workspace_root,
             app_data_root: frame.app_data_root,
             cache_root: frame.cache_root,
+            workspace_state: frame.workspace_state,
             origin: frame.origin,
             credential: frame.credential.into_native()?,
         })
@@ -238,6 +377,7 @@ struct StartFrameRef<'a> {
     workspace_root: &'a Path,
     app_data_root: &'a Path,
     cache_root: &'a Path,
+    workspace_state: &'a NativeHostWorkspaceState,
     origin: &'a str,
     credential: &'a str,
 }
@@ -372,6 +512,11 @@ mod tests {
 
     const CREDENTIAL: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 
+    fn workspace_state(display_name: &str) -> NativeHostWorkspaceState {
+        let directory = tempfile::tempdir().unwrap();
+        NativeHostWorkspaceState::for_workspace(directory.path(), display_name).unwrap()
+    }
+
     #[test]
     fn secret_bearing_start_is_not_cloneable_or_generically_serializable() {
         assert_not_impl_any!(NativeHostStart: Clone, Serialize);
@@ -383,6 +528,7 @@ mod tests {
             PathBuf::from("private-workspace"),
             PathBuf::from("private-app-data"),
             PathBuf::from("private-cache"),
+            workspace_state("Private Workspace"),
             "tauri://localhost".to_owned(),
             NativeLaunchCredential::from_secret(CREDENTIAL.to_owned()).unwrap(),
         );
@@ -396,6 +542,7 @@ mod tests {
             PathBuf::from("workspace"),
             PathBuf::from("app-data"),
             PathBuf::from("cache"),
+            workspace_state("Workspace"),
             "tauri://localhost".to_owned(),
             NativeLaunchCredential::from_secret(CREDENTIAL.to_owned()).unwrap(),
         );
@@ -404,13 +551,43 @@ mod tests {
 
         let decoded =
             NativeHostStart::read_json_line(&mut BufReader::new(Cursor::new(encoded))).unwrap();
-        let (workspace, app_data, cache, origin, credential) = decoded.into_parts();
+        let (workspace, app_data, cache, workspace_state, origin, credential) =
+            decoded.into_parts();
 
         assert_eq!(workspace, PathBuf::from("workspace"));
         assert_eq!(app_data, PathBuf::from("app-data"));
         assert_eq!(cache, PathBuf::from("cache"));
+        assert_eq!(workspace_state.display_name(), "Workspace");
         assert_eq!(origin, "tauri://localhost");
         assert!(credential.matches(CREDENTIAL));
+    }
+
+    #[test]
+    fn start_parser_accepts_a_committed_opaque_workspace_state() {
+        let encoded = format!(
+            "{}\n",
+            serde_json::json!({
+                "type": "start",
+                "protocolVersion": NATIVE_HOST_PROTOCOL_VERSION,
+                "profile": "desktop",
+                "workspaceRoot": "workspace",
+                "appDataRoot": "app-data",
+                "cacheRoot": "cache",
+                "workspaceState": {
+                    "primaryWorkspace": {
+                        "schemaVersion": 1,
+                        "revisionSeed": "8b14d937-76b2-4776-9ae4-a9c6e0c403c4",
+                        "displayName": "Notes"
+                    },
+                    "rootBinding": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+                },
+                "origin": "tauri://localhost",
+                "credential": CREDENTIAL,
+            })
+        );
+
+        NativeHostStart::read_json_line(&mut BufReader::new(Cursor::new(encoded)))
+            .expect("a host-committed workspace state must be accepted");
     }
 
     #[test]
@@ -419,6 +596,7 @@ mod tests {
             PathBuf::from("workspace"),
             PathBuf::from("app-data"),
             PathBuf::from("cache"),
+            workspace_state("Workspace"),
             "x".repeat(MAX_NATIVE_HOST_FRAME_BYTES),
             NativeLaunchCredential::from_secret(CREDENTIAL.to_owned()).unwrap(),
         );

@@ -25,7 +25,7 @@ use crate::{
     },
     error::{safe_error_envelope, safe_message_for_error_code},
     events::{EventBroker, EventPublication, EventSink, EventSinkError},
-    paths::{KernelPaths, PathPolicyError, PathPolicyErrorKind, WorkspaceRoot},
+    paths::{InstanceDataRoot, KernelPaths, PathPolicyError, PathPolicyErrorKind, WorkspaceRoot},
     ports::{BoxTaskFuture, KernelPorts, PortError},
     sync::status::SyncStatusState,
     workspace::{
@@ -102,6 +102,10 @@ impl KernelRuntime {
 
     pub const fn launch_epoch(&self) -> &KernelLaunchEpoch {
         self.config.launch_epoch()
+    }
+
+    pub(crate) const fn instance_data_root(&self) -> &InstanceDataRoot {
+        self.paths.instance_data_root()
     }
 
     /// Deliberately exposes the per-launch bearer value only for the native
