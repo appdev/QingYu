@@ -404,6 +404,44 @@ describe("useApplicationShortcuts", () => {
     expect(openSettings).toHaveBeenCalledTimes(1);
   });
 
+  it("opens a blank editor window from Ctrl+N on Windows", () => {
+    const openBlankEditorWindow = vi.fn();
+    renderHook(() =>
+      useApplicationShortcuts({
+        ...baseOptions,
+        openBlankEditorWindow,
+        platform: "windows"
+      })
+    );
+
+    const handled = fireEvent.keyDown(window, {
+      ctrlKey: true,
+      key: "n"
+    });
+
+    expect(handled).toBe(false);
+    expect(openBlankEditorWindow).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not treat Control+Meta as the platform modifier for static shortcuts", () => {
+    const openSettings = vi.fn();
+    renderHook(() =>
+      useApplicationShortcuts({
+        ...baseOptions,
+        openSettings
+      })
+    );
+
+    const handled = fireEvent.keyDown(window, {
+      code: "Comma",
+      ctrlKey: true,
+      key: ",",
+      metaKey: true
+    });
+
+    expect(handled).toBe(true);
+    expect(openSettings).not.toHaveBeenCalled();
+  });
   it("runs manual sync from the default shortcut", () => {
     const syncNow = vi.fn();
     renderHook(() =>

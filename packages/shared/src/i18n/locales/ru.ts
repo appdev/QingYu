@@ -33,6 +33,7 @@ const messages: LocaleMessages = {
   "settings.sections.fileOpening": "Открытие файлов",
   "settings.sections.saving": "Сохранение",
   "settings.sections.fileScanning": "Сканирование файлов",
+  "settings.sections.documentExport": "HTML и PDF",
   "settings.sections.pdfExport": "Экспорт PDF",
   "settings.sections.pdfMetadata": "Текст страницы",
   "settings.sections.pandocExport": "Экспорт Pandoc",
@@ -477,6 +478,9 @@ const messages: LocaleMessages = {
   "settings.editor.shortcutDocumentSearch": "Найти в документе",
   "settings.editor.shortcutRecording": "Нажмите клавиши",
   "settings.editor.shortcutUnsupported": "Это сочетание не поддерживается. Используйте Cmd/Ctrl или Alt/Option с буквой, цифрой или клавишей пунктуации.",
+  "settings.export.fontFamily": "Шрифт экспорта",
+  "settings.export.fontFamilyDescription": "Выберите установленный шрифт для экспорта HTML и PDF.",
+  "settings.export.fontFamily.default": "По умолчанию",
   "settings.export.pageSize": "Размер страницы",
   "settings.export.pageSizeDescription": "Размер бумаги для экспорта PDF.",
   "settings.export.pageSize.default": "По умолчанию",
@@ -559,6 +563,7 @@ const messages: LocaleMessages = {
   "menu.heading2": "Заголовок 2",
   "menu.heading3": "Заголовок 3",
   "menu.bulletList": "Маркированный список",
+  "menu.taskList": "Список задач",
   "menu.orderedList": "Нумерованный список",
   "menu.quote": "Цитата",
   "menu.callout": "Выноска",
@@ -568,6 +573,7 @@ const messages: LocaleMessages = {
   "menu.importLocalImages": "Импорт локальных изображений...",
   "menu.importLocalFiles": "Импорт локальных файлов...",
   "menu.table": "Таблица",
+  "menu.today": "Сегодня",
   ...syncEnMessages
 };
 

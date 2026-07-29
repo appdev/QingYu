@@ -427,6 +427,7 @@ const messages: BaseLocaleMessages = {
   "settings.sections.fileOpening": "Opening files",
   "settings.sections.saving": "Saving",
   "settings.sections.fileScanning": "File scanning",
+  "settings.sections.documentExport": "HTML and PDF",
   "settings.sections.pdfExport": "PDF export",
   "settings.sections.pdfMetadata": "Page text",
   "settings.sections.pandocExport": "Pandoc export",
@@ -785,6 +786,9 @@ const messages: BaseLocaleMessages = {
   "settings.editor.shortcutDocumentSearch": "Search document",
   "settings.editor.shortcutRecording": "Press keys",
   "settings.editor.shortcutUnsupported": "This shortcut is not supported. Use Cmd/Ctrl or Alt/Option with a letter, number, or punctuation key.",
+  "settings.export.fontFamily": "Export font",
+  "settings.export.fontFamilyDescription": "Choose an installed font for HTML and PDF exports.",
+  "settings.export.fontFamily.default": "Default",
   "settings.export.pageSize": "Page size",
   "settings.export.pageSizeDescription": "Paper size used for PDF export.",
   "settings.export.pageSize.default": "Default",
@@ -1102,6 +1106,7 @@ const messages: BaseLocaleMessages = {
   "menu.heading2": "Heading 2",
   "menu.heading3": "Heading 3",
   "menu.bulletList": "Bullet List",
+  "menu.taskList": "Task List",
   "menu.orderedList": "Ordered List",
   "menu.quote": "Quote",
   "menu.callout": "Callout",
@@ -1110,7 +1115,8 @@ const messages: BaseLocaleMessages = {
   "menu.image": "Image",
   "menu.importLocalImages": "Import Local Images...",
   "menu.importLocalFiles": "Import Local Files...",
-  "menu.table": "Table"
+  "menu.table": "Table",
+  "menu.today": "Today"
 };
 
 export const syncEnMessages = Object.fromEntries(

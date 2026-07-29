@@ -399,6 +399,10 @@ export async function openNativeMarkdownFileInNewWindow(path: string) {
   await invokeNative("open_markdown_file_in_new_window", { path });
 }
 
+export async function openNativeMarkdownFolderInNewWindow(path: string) {
+  await invokeNative("open_markdown_folder_in_new_window", { path });
+}
+
 export async function openNativeContainingFolder(path: string) {
   await invokeNative("open_containing_folder", { path });
 }

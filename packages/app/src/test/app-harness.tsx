@@ -24,6 +24,7 @@ import {
   openNativeMarkdownAttachment,
   openNativeMarkdownFile,
   openNativeMarkdownFolder,
+  openNativeMarkdownFolderInNewWindow,
   openNativeMarkdownFileInNewWindow,
   listenNativeAppExitRequested,
   listenNativeWindowCloseRequested,
@@ -201,6 +202,7 @@ vi.mock("../lib/tauri", () => ({
   openNativeMarkdownAttachment: vi.fn(),
   openNativeMarkdownFile: vi.fn(),
   openNativeMarkdownFolder: vi.fn(),
+  openNativeMarkdownFolderInNewWindow: vi.fn(),
   openNativeMarkdownFileInNewWindow: vi.fn(),
   listenNativeOpenedMarkdownPaths: vi.fn(),
   listNativeMarkdownFileHistory: vi.fn(),
@@ -523,6 +525,7 @@ vi.mock("../lib/settings/app-settings", () => ({
     { id: "theme", visible: true }
   ],
   defaultExportSettings: {
+    fontFamily: null,
     pandocArgs: "",
     pandocPath: "",
     pdfAuthor: "",
@@ -651,6 +654,7 @@ vi.mock("../lib/settings/app-settings", () => ({
     return nextActions;
   }),
   normalizeExportSettings: vi.fn((settings) => ({
+    fontFamily: null,
     pandocArgs: "",
     pandocPath: "",
     pdfAuthor: "",
@@ -720,6 +724,7 @@ export const mockedDetectNativePandocPath = vi.mocked(detectNativePandocPath);
 export const mockedDownloadNativeWebImage = vi.mocked(downloadNativeWebImage);
 export const mockedGetNativeShellCommandStatus = vi.mocked(getNativeShellCommandStatus);
 export const mockedInstallNativeShellCommand = vi.mocked(installNativeShellCommand);
+export const mockedOpenNativeMarkdownFolderInNewWindow = vi.mocked(openNativeMarkdownFolderInNewWindow);
 export const mockedOpenNativeMarkdownFileInNewWindow = vi.mocked(openNativeMarkdownFileInNewWindow);
 export const mockedListenNativeOpenedMarkdownPaths = vi.mocked(listenNativeOpenedMarkdownPaths);
 export const mockedReadNativeLocalImageFile = vi.mocked(readNativeLocalImageFile);
@@ -1063,6 +1068,7 @@ export function installAppTestHarness() {
     mockedOpenNativeMarkdownFile.mockReset();
     mockedLoadPrimaryWorkspaceState.mockReset();
     mockedSavePrimaryWorkspaceState.mockReset();
+    mockedOpenNativeMarkdownFolderInNewWindow.mockReset();
     mockedOpenNativeMarkdownFileInNewWindow.mockReset();
     mockedListenNativeOpenedMarkdownPaths.mockReset();
     mockedListNativeMarkdownFileHistory.mockReset();
@@ -1355,6 +1361,7 @@ export function installAppTestHarness() {
       wrapCodeBlocks: true
     });
     mockedGetStoredExportSettings.mockResolvedValue({
+      fontFamily: null,
       pandocArgs: "",
       pandocPath: "",
       pdfAuthor: "",

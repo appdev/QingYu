@@ -490,6 +490,27 @@ export function createWebFileRuntime(
     await openExternalUrl(routeUrl);
   }
 
+  function createMarkdownFolderRouteUrl(path: string) {
+    const windowTarget = browserWindowTarget();
+    if (!windowTarget) return null;
+
+    const url = new URL(windowTarget.location.href);
+    url.searchParams.delete("path");
+    url.searchParams.delete("blank");
+    url.searchParams.delete("settings");
+    url.searchParams.delete("settingsTarget");
+    url.searchParams.set("folder", path);
+
+    return url.href;
+  }
+
+  async function openMarkdownFolderRouteInNewWindow(path: string) {
+    const routeUrl = createMarkdownFolderRouteUrl(path);
+    if (!routeUrl) return;
+
+    await openExternalUrl(routeUrl);
+  }
+
   async function resolveDirectory(root: WebDirectoryHandle, relativePath: string) {
     let directory = root;
     for (const segment of relativePath.split("/").filter(Boolean)) {
@@ -1019,6 +1040,7 @@ export function createWebFileRuntime(
       return markdownFileFromHandle(handle);
     },
     openMarkdownFileInNewWindow: openMarkdownFileRouteInNewWindow,
+    openMarkdownFolderInNewWindow: openMarkdownFolderRouteInNewWindow,
     async openContainingFolder() {
       throw new Error("Opening containing folders requires the desktop runtime.");
     },

@@ -33,6 +33,7 @@ const messages: LocaleMessages = {
   "settings.sections.fileOpening": "Ouverture des fichiers",
   "settings.sections.saving": "Enregistrement",
   "settings.sections.fileScanning": "Analyse des fichiers",
+  "settings.sections.documentExport": "HTML et PDF",
   "settings.sections.pdfExport": "Export PDF",
   "settings.sections.pdfMetadata": "Texte de page",
   "settings.sections.pandocExport": "Export Pandoc",
@@ -477,6 +478,9 @@ const messages: LocaleMessages = {
   "settings.editor.shortcutDocumentSearch": "Rechercher dans le document",
   "settings.editor.shortcutRecording": "Appuyez sur les touches",
   "settings.editor.shortcutUnsupported": "Ce raccourci n’est pas pris en charge. Utilisez Cmd/Ctrl ou Alt/Option avec une lettre, un chiffre ou une touche de ponctuation.",
+  "settings.export.fontFamily": "Police d’exportation",
+  "settings.export.fontFamilyDescription": "Choisissez une police installée pour les exports HTML et PDF.",
+  "settings.export.fontFamily.default": "Par défaut",
   "settings.export.pageSize": "Taille de page",
   "settings.export.pageSizeDescription": "Format de papier utilisé pour l’export PDF.",
   "settings.export.pageSize.default": "Par défaut",
@@ -559,6 +563,7 @@ const messages: LocaleMessages = {
   "menu.heading2": "Titre 2",
   "menu.heading3": "Titre 3",
   "menu.bulletList": "Liste à puces",
+  "menu.taskList": "Liste de tâches",
   "menu.orderedList": "Liste numérotée",
   "menu.quote": "Citation",
   "menu.callout": "Encadré",
@@ -568,6 +573,7 @@ const messages: LocaleMessages = {
   "menu.importLocalImages": "Importer des images locales...",
   "menu.importLocalFiles": "Importer des fichiers locaux...",
   "menu.table": "Tableau",
+  "menu.today": "Aujourd’hui",
   ...syncEnMessages
 };
 

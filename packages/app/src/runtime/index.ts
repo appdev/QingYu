@@ -255,6 +255,7 @@ export type AppFileRuntime = {
   openMarkdownAttachment: (input: OpenNativeMarkdownAttachmentInput) => Promise<unknown>;
   openMarkdownFile: (labels?: NativeMarkdownPickerLabels) => Promise<NativeMarkdownFile | null>;
   openMarkdownFileInNewWindow: (path: string) => Promise<unknown>;
+  openMarkdownFolderInNewWindow: (path: string) => Promise<unknown>;
   openMarkdownFolder: (labels?: NativeMarkdownPickerLabels) => Promise<NativeMarkdownFolder | null>;
   requestPrimaryNotebookSwitch?: (path: string) => Promise<unknown>;
   openSettingsFile: (labels?: NativeMarkdownPickerLabels) => Promise<NativeSettingsFile | null>;
@@ -405,6 +406,7 @@ export type AppWindowRuntime = {
     onCloseRequested: (event: NativeWindowCloseRequestEvent) => unknown | Promise<unknown>
   ) => Promise<RuntimeCleanup>;
   minimizeWindow: () => Promise<unknown>;
+  openBlankEditorWindow: () => Promise<unknown>;
   openExternalUrl: (url: string) => Promise<unknown>;
   openSettingsWindow: (
     target?: NativeSettingsWindowTarget,
@@ -587,6 +589,7 @@ function createDefaultFileRuntime(): AppFileRuntime {
     openMarkdownAttachment: () => unsupportedFeature("openMarkdownAttachment"),
     openMarkdownFile: async () => null,
     openMarkdownFileInNewWindow: () => unsupportedFeature("openMarkdownFileInNewWindow"),
+    openMarkdownFolderInNewWindow: () => unsupportedFeature("openMarkdownFolderInNewWindow"),
     openMarkdownFolder: async () => null,
     openSettingsFile: async () => null,
     readLocalImageFile: () => unsupportedFeature("readLocalImageFile"),
@@ -821,6 +824,7 @@ export function createDefaultAppRuntime(): AppRuntime {
       listenSettingsWindowTarget: async () => () => undefined,
       listenWindowCloseRequested: async () => () => undefined,
       minimizeWindow: async () => undefined,
+      openBlankEditorWindow: async () => undefined,
       openExternalUrl: async (url) => {
         if (typeof window !== "undefined") {
           window.open(url, "_blank", "noopener,noreferrer");

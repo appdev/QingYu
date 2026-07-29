@@ -326,6 +326,7 @@ describe("settings events", () => {
     const cleanup = await listenAppExportSettingsChanged(onSettingsChanged);
     const listener = mockedListen.mock.calls[0]?.[1];
     const settings = {
+      fontFamily: null,
       pandocArgs: "--toc",
       pandocPath: "/usr/local/bin/pandoc",
       pdfAuthor: "",
@@ -356,6 +357,7 @@ describe("settings events", () => {
     const unlisten = vi.fn();
     const onSettingsChanged = vi.fn();
     const portableSettings = {
+      fontFamily: null,
       pandocArgs: "--toc",
       pdfAuthor: "QingYu",
       pdfFooter: "",
@@ -395,6 +397,7 @@ describe("settings events", () => {
     cleanup();
 
     expect(onSettingsChanged).toHaveBeenCalledWith({
+      fontFamily: null,
       pandocArgs: "",
       pandocPath: "/opt/homebrew/bin/pandoc",
       pdfAuthor: "",

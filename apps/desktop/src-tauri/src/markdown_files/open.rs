@@ -4,7 +4,9 @@ use std::{
     process::Command,
 };
 
-use crate::windows::{editor_window_url_for_path, spawn_editor_window};
+use crate::windows::{
+    editor_window_url_for_folder, editor_window_url_for_path, spawn_editor_window,
+};
 
 use super::path::{
     is_markdown_open_file, is_markdown_tree_attachment_file, markdown_open_path_for_path,
@@ -330,6 +332,15 @@ pub(crate) fn open_markdown_file_in_new_window(
     path: String,
 ) -> Result<(), String> {
     spawn_editor_window(app, editor_window_url_for_path(&path));
+    Ok(())
+}
+
+#[tauri::command]
+pub(crate) fn open_markdown_folder_in_new_window(
+    app: tauri::AppHandle,
+    path: String,
+) -> Result<(), String> {
+    spawn_editor_window(app, editor_window_url_for_folder(&path));
     Ok(())
 }
 

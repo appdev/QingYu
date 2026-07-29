@@ -349,6 +349,7 @@ pub(crate) fn run() {
             crate::markdown_files::tree::delete_markdown_tree_file,
             crate::markdown_files::asset_cleanup::trash_markdown_assets,
             crate::markdown_files::open::open_markdown_file_in_new_window,
+            crate::markdown_files::open::open_markdown_folder_in_new_window,
             crate::markdown_files::open::open_containing_folder,
             crate::markdown_files::open::open_markdown_attachment,
             crate::markdown_files::open::resolve_markdown_path,

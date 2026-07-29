@@ -68,6 +68,10 @@ export function hideSettingsWindow() {
   return invokeNative("hide_settings_window");
 }
 
+export function openNativeBlankEditorWindow() {
+  return invokeNative("open_blank_editor_window");
+}
+
 export function acknowledgeSettingsWindowHide(generation: number) {
   return invokeNative("acknowledge_settings_window_hide", { generation });
 }

@@ -398,6 +398,10 @@ pub(crate) fn editor_window_url_for_path(path: &str) -> String {
     format!("index.html?path={}", encode_url_query_component(path))
 }
 
+pub(crate) fn editor_window_url_for_folder(path: &str) -> String {
+    format!("index.html?folder={}", encode_url_query_component(path))
+}
+
 fn normalized_settings_window_target(target: Option<&str>) -> Option<&'static str> {
     match target {
         Some(SETTINGS_WINDOW_TARGET_EXPORT_PANDOC_PATH) => {
@@ -2472,6 +2476,10 @@ mod tests {
         assert_eq!(
             editor_window_url_for_path("/mock files/read me.md"),
             "index.html?path=%2Fmock%20files%2Fread%20me.md"
+        );
+        assert_eq!(
+            editor_window_url_for_folder("/mock files/vault"),
+            "index.html?folder=%2Fmock%20files%2Fvault"
         );
         assert_eq!(
             editor_window_url_for_path("/mock/中文.md"),

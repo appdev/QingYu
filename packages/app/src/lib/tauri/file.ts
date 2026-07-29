@@ -374,6 +374,10 @@ export function openNativeMarkdownFileInNewWindow(path: string) {
   return getAppRuntime().files.openMarkdownFileInNewWindow(path);
 }
 
+export function openNativeMarkdownFolderInNewWindow(path: string) {
+  return getAppRuntime().files.openMarkdownFolderInNewWindow(path);
+}
+
 export function openNativeMarkdownFile(labels?: NativeMarkdownPickerLabels) {
   return getAppRuntime().files.openMarkdownFile(labels);
 }

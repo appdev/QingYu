@@ -331,6 +331,7 @@ export type I18nKey =
   | "settings.sections.fileOpening"
   | "settings.sections.saving"
   | "settings.sections.fileScanning"
+  | "settings.sections.documentExport"
   | "settings.sections.pdfExport"
   | "settings.sections.pdfMetadata"
   | "settings.sections.pandocExport"
@@ -705,6 +706,9 @@ export type I18nKey =
   | "settings.editor.shortcutDocumentSearch"
   | "settings.editor.shortcutRecording"
   | "settings.editor.shortcutUnsupported"
+  | "settings.export.fontFamily"
+  | "settings.export.fontFamilyDescription"
+  | "settings.export.fontFamily.default"
   | "settings.export.pageSize"
   | "settings.export.pageSizeDescription"
   | "settings.export.pageSize.default"
@@ -1022,6 +1026,7 @@ export type I18nKey =
   | "menu.heading2"
   | "menu.heading3"
   | "menu.bulletList"
+  | "menu.taskList"
   | "menu.orderedList"
   | "menu.quote"
   | "menu.callout"
@@ -1030,7 +1035,8 @@ export type I18nKey =
   | "menu.image"
   | "menu.importLocalImages"
   | "menu.importLocalFiles"
-  | "menu.table";
+  | "menu.table"
+  | "menu.today";
 
 export type BaseLocaleMessages = Record<I18nKey, string>;
 export type LocaleMessages = Partial<Record<I18nKey, string>>;

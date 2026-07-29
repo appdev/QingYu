@@ -126,6 +126,7 @@ const DESKTOP_COMMANDS: &[&str] = &[
     "delete_markdown_tree_file",
     "trash_markdown_assets",
     "open_markdown_file_in_new_window",
+    "open_markdown_folder_in_new_window",
     "open_containing_folder",
     "open_markdown_attachment",
     "resolve_markdown_path",
