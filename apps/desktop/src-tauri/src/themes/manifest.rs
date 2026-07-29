@@ -74,7 +74,7 @@ pub(crate) fn parse_theme_manifest(bytes: &[u8]) -> Result<ThemeManifest, ThemeE
 }
 
 pub(crate) fn valid_theme_id(id: &str) -> bool {
-    if matches!(id, "light" | "dark")
+    if is_reserved_theme_id(id)
         || id.starts_with("qingyu-")
         || id.is_empty()
         || id.len() > MAX_THEME_ID_CHARS
@@ -85,6 +85,10 @@ pub(crate) fn valid_theme_id(id: &str) -> bool {
     id.bytes().enumerate().all(|(index, byte)| {
         byte.is_ascii_lowercase() || byte.is_ascii_digit() || (index > 0 && byte == b'-')
     })
+}
+
+pub(crate) fn is_reserved_theme_id(id: &str) -> bool {
+    matches!(id, "light" | "dark" | "classic-light" | "classic-dark")
 }
 
 pub(crate) fn normalize_bounded_text(value: &str, max_chars: usize) -> Option<String> {
@@ -294,6 +298,8 @@ mod tests {
             "",
             "light",
             "dark",
+            "classic-light",
+            "classic-dark",
             "qingyu-owned",
             "Upper",
             "-leading",

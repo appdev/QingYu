@@ -119,13 +119,13 @@ describe("app settings", () => {
     await expect(getStoredTheme()).resolves.toBe("system");
   });
 
-  it("uses the bundled WenKai pair when no split theme preference has been selected", async () => {
+  it("uses the frontend base pair when no split theme preference has been selected", async () => {
     store.get.mockResolvedValue(undefined);
 
     expect(defaultAppThemePreferences).toEqual({
       appearanceMode: "system",
-      darkTheme: "wenkai-paper-dark",
-      lightTheme: "wenkai-paper-light"
+      darkTheme: "dark",
+      lightTheme: "light"
     });
     await expect(getStoredThemePreferences()).resolves.toEqual(defaultAppThemePreferences);
   });
@@ -146,7 +146,7 @@ describe("app settings", () => {
 
     await expect(getStoredThemePreferences()).resolves.toEqual({
       appearanceMode: "light",
-      darkTheme: "wenkai-paper-dark",
+      darkTheme: "dark",
       lightTheme: "sepia"
     });
 

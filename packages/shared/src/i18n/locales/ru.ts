@@ -93,6 +93,7 @@ const messages: LocaleMessages = {
   "settings.theme.refreshThemes": "Обновить темы",
   "settings.theme.openThemeFolder": "Открыть папку тем",
   "settings.theme.defaultBadge": "По умолчанию",
+  "settings.theme.builtInBadge": "Встроенная",
   "settings.theme.thirdPartyBadge": "Сторонняя",
   "settings.theme.deleteTheme": "Удалить тему",
   "settings.theme.replaceTheme": "Заменить тему",

@@ -166,9 +166,9 @@ function applyThemeRoot(themeId: string, appearance: ThemeAppearance) {
   document.documentElement.style.colorScheme = appearance;
 }
 
-function applyProtectedTheme(appearance: ThemeAppearance) {
+function applyBuiltInTheme(themeId: string, appearance: ThemeAppearance) {
   removeThirdPartyThemeElements();
-  applyThemeRoot(appearance, appearance);
+  applyThemeRoot(themeId, appearance);
 }
 
 function isAppAppearanceMode(value: string | null): value is AppAppearanceMode {
@@ -209,6 +209,8 @@ export function useAppTheme() {
     () => findThemeDescriptor(themeCatalog, editorTheme),
     [editorTheme, themeCatalog]
   );
+  const activeBuiltInTheme = activeTheme?.source === "builtin"
+    && activeTheme.appearance === resolvedTheme;
 
   const persistThemePreferences = useCallback(async (nextPreferences: AppThemePreferences) => {
     await saveStoredThemePreferences(nextPreferences);
@@ -305,11 +307,6 @@ export function useAppTheme() {
       setThemeError(null);
     }
 
-    if (themeCatalog.loading) {
-      applyProtectedTheme(resolvedTheme);
-      return;
-    }
-
     const releaseNativeActivation = (force = false) => {
       if (!force && !activeNativeActivationRef.current) return;
       activeNativeActivationRef.current = false;
@@ -318,13 +315,25 @@ export function useAppTheme() {
       });
     };
 
+    if (activeBuiltInTheme) {
+      applyBuiltInTheme(activeTheme.id, activeTheme.appearance);
+      releaseNativeActivation();
+      setThemeActivationReady(true);
+      return;
+    }
+
+    if (themeCatalog.loading) {
+      applyBuiltInTheme(resolvedTheme, resolvedTheme);
+      return;
+    }
+
     const repairMissingTheme = (activationError?: string) => {
       const fallback = resolvedTheme;
       const repaired = {
         ...themePreferences,
         [resolvedTheme === "dark" ? "darkTheme" : "lightTheme"]: fallback
       };
-      applyProtectedTheme(fallback);
+      applyBuiltInTheme(fallback, resolvedTheme);
       if (activationError) repairThemeErrorRef.current = activationError;
       setThemePreferences(repaired);
       setThemeActivationReady(true);
@@ -333,13 +342,6 @@ export function useAppTheme() {
 
     if (!activeTheme || activeTheme.appearance !== resolvedTheme) {
       repairMissingTheme();
-      return;
-    }
-
-    if (activeTheme.source === "default") {
-      applyProtectedTheme(activeTheme.appearance);
-      releaseNativeActivation();
-      setThemeActivationReady(true);
       return;
     }
 
@@ -420,7 +422,7 @@ export function useAppTheme() {
         if (!sequenceIsCurrent()) return;
         const activationError = diagnosticErrorMessage(error);
         setThemeError(activationError);
-        applyProtectedTheme(theme.appearance);
+        applyBuiltInTheme(theme.appearance, theme.appearance);
         releaseNativeActivation(true);
         repairMissingTheme(activationError);
       }
@@ -438,6 +440,7 @@ export function useAppTheme() {
       if (pendingToken) themes.cancelActivation(pendingToken).catch(() => {});
     };
   }, [
+    activeBuiltInTheme,
     activeTheme,
     persistThemePreferences,
     resolvedTheme,
@@ -482,7 +485,9 @@ export function useAppTheme() {
     darkTheme: themePreferences.darkTheme,
     editorTheme,
     lightTheme: themePreferences.lightTheme,
-    ready: themePreferencesReady && !themeCatalog.loading && themeActivationReady,
+    ready: themePreferencesReady
+      && themeActivationReady
+      && (activeBuiltInTheme || !themeCatalog.loading),
     resolvedTheme,
     selectAppearanceMode,
     selectDarkTheme,

@@ -14,9 +14,8 @@ use serde::Serialize;
 use tauri::Manager;
 
 use super::{
-    catalog::{
-        is_protected_theme_id, CatalogActivationSource, ThemeCatalog, ACTIVATION_LEASE_PARENT_NAME,
-    },
+    catalog::{CatalogActivationSource, ThemeCatalog, ACTIVATION_LEASE_PARENT_NAME},
+    manifest::is_reserved_theme_id,
     resources::{
         validate_theme_directory_from_retained, ValidatedThemeDirectory, ValidatedThemeFile,
         MAX_PACKAGE_BYTES, MAX_PACKAGE_ENTRIES,
@@ -187,43 +186,57 @@ impl ActivationRegistry {
 
 pub(crate) struct ThemeActivationState {
     registry: Mutex<ActivationRegistry>,
-    catalog_hints: Mutex<BTreeMap<(PathBuf, String, String), ThemeDescriptor>>,
+    catalogs: Mutex<ThemeCatalogRegistry>,
+}
+
+#[derive(Default)]
+struct ThemeCatalogRegistry {
+    hints: BTreeMap<(PathBuf, String, String), ThemeDescriptor>,
+    invalidated_hints: BTreeSet<(PathBuf, String, String)>,
+    snapshots: BTreeMap<PathBuf, ThemeCatalogSnapshot>,
 }
 
 impl Default for ThemeActivationState {
     fn default() -> Self {
         Self {
             registry: Mutex::new(ActivationRegistry::default()),
-            catalog_hints: Mutex::new(BTreeMap::new()),
+            catalogs: Mutex::new(ThemeCatalogRegistry::default()),
         }
     }
 }
 
 impl ThemeActivationState {
+    pub(crate) fn catalog_snapshot_or_initialize(
+        &self,
+        catalog: &ThemeCatalog,
+        initialize: impl FnOnce() -> Result<ThemeCatalogSnapshot, ThemeError>,
+    ) -> Result<ThemeCatalogSnapshot, ThemeError> {
+        let mut catalogs = self.catalogs.lock().map_err(|_| activation_state_error())?;
+        if let Some(snapshot) = catalogs.snapshots.get(catalog.root_path()) {
+            return Ok(snapshot.clone());
+        }
+
+        let snapshot = initialize()?;
+        remember_catalog_snapshot(&mut catalogs, catalog, &snapshot);
+        Ok(snapshot)
+    }
+
+    pub(crate) fn invalidate_catalog_snapshot(
+        &self,
+        catalog: &ThemeCatalog,
+    ) -> Result<(), ThemeError> {
+        let mut catalogs = self.catalogs.lock().map_err(|_| activation_state_error())?;
+        catalogs.snapshots.remove(catalog.root_path());
+        Ok(())
+    }
+
     pub(crate) fn remember_catalog_snapshot(
         &self,
         catalog: &ThemeCatalog,
         snapshot: &ThemeCatalogSnapshot,
     ) -> Result<(), ThemeError> {
-        let mut hints = self
-            .catalog_hints
-            .lock()
-            .map_err(|_| activation_state_error())?;
-        for descriptor in &snapshot.themes {
-            hints.retain(|(root, id, fingerprint), _| {
-                root != catalog.root_path()
-                    || id != &descriptor.id
-                    || fingerprint == &descriptor.fingerprint
-            });
-            hints.insert(
-                (
-                    catalog.root_path().to_path_buf(),
-                    descriptor.id.clone(),
-                    descriptor.fingerprint.clone(),
-                ),
-                descriptor.clone(),
-            );
-        }
+        let mut catalogs = self.catalogs.lock().map_err(|_| activation_state_error())?;
+        remember_catalog_snapshot(&mut catalogs, catalog, snapshot);
         Ok(())
     }
 
@@ -312,16 +325,18 @@ impl ThemeActivationState {
             }
             registry.theme_generations.get(id).copied().unwrap_or(0)
         };
-        let hint = self
-            .catalog_hints
-            .lock()
-            .map_err(|_| activation_state_error())?
-            .get(&(
-                catalog.root_path().to_path_buf(),
-                id.to_string(),
-                expected_fingerprint.to_string(),
-            ))
-            .cloned();
+        let key = (
+            catalog.root_path().to_path_buf(),
+            id.to_string(),
+            expected_fingerprint.to_string(),
+        );
+        let hint = {
+            let catalogs = self.catalogs.lock().map_err(|_| activation_state_error())?;
+            if catalogs.invalidated_hints.contains(&key) {
+                return Err(fingerprint_mismatch());
+            }
+            catalogs.hints.get(&key).cloned()
+        };
         let prepared =
             catalog.prepare_activation_with_hint(id, expected_fingerprint, hint.as_ref())?;
         prepare_hook(ActivationPrepareHookPoint::AfterCatalogValidation)?;
@@ -626,16 +641,16 @@ impl ThemeActivationState {
         id: &str,
         expected_fingerprint: &str,
     ) -> Result<Option<ThemeDescriptor>, ThemeError> {
-        Ok(self
-            .catalog_hints
-            .lock()
-            .map_err(|_| activation_state_error())?
-            .get(&(
-                catalog.root_path().to_path_buf(),
-                id.to_string(),
-                expected_fingerprint.to_string(),
-            ))
-            .cloned())
+        let key = (
+            catalog.root_path().to_path_buf(),
+            id.to_string(),
+            expected_fingerprint.to_string(),
+        );
+        let catalogs = self.catalogs.lock().map_err(|_| activation_state_error())?;
+        if catalogs.invalidated_hints.contains(&key) {
+            return Err(fingerprint_mismatch());
+        }
+        Ok(catalogs.hints.get(&key).cloned())
     }
 
     fn begin_delete_operation(&self, id: &str) -> Result<ActivationRegistry, ThemeError> {
@@ -830,6 +845,47 @@ impl ThemeActivationState {
     fn orphaned_allowed_count(&self) -> usize {
         self.registry.lock().unwrap().orphaned_allowed.len()
     }
+}
+
+fn remember_catalog_snapshot(
+    catalogs: &mut ThemeCatalogRegistry,
+    catalog: &ThemeCatalog,
+    snapshot: &ThemeCatalogSnapshot,
+) {
+    let next_keys = snapshot
+        .themes
+        .iter()
+        .map(|descriptor| {
+            (
+                catalog.root_path().to_path_buf(),
+                descriptor.id.clone(),
+                descriptor.fingerprint.clone(),
+            )
+        })
+        .collect::<BTreeSet<_>>();
+    let removed_keys = catalogs
+        .hints
+        .keys()
+        .filter(|(root, _, _)| root == catalog.root_path())
+        .filter(|key| !next_keys.contains(*key))
+        .cloned()
+        .collect::<Vec<_>>();
+    catalogs.invalidated_hints.extend(removed_keys);
+    catalogs
+        .hints
+        .retain(|(root, _, _), _| root != catalog.root_path());
+    for descriptor in &snapshot.themes {
+        let key = (
+            catalog.root_path().to_path_buf(),
+            descriptor.id.clone(),
+            descriptor.fingerprint.clone(),
+        );
+        catalogs.invalidated_hints.remove(&key);
+        catalogs.hints.insert(key, descriptor.clone());
+    }
+    catalogs
+        .snapshots
+        .insert(catalog.root_path().to_path_buf(), snapshot.clone());
 }
 
 fn cleanup_retired_leases(registry: &mut ActivationRegistry) {
@@ -1566,7 +1622,7 @@ pub(crate) fn delete_theme_with_permissions(
     allow_directory: &mut dyn FnMut(&Path) -> Result<(), ThemeError>,
     forbid_directory: &mut dyn FnMut(&Path) -> Result<(), ThemeError>,
 ) -> Result<(), ThemeError> {
-    if is_protected_theme_id(id) {
+    if is_reserved_theme_id(id) {
         return catalog.delete(id, expected_fingerprint);
     }
     let hint = state.catalog_hint(catalog, id, expected_fingerprint)?;
@@ -1628,7 +1684,7 @@ pub(crate) fn prepare_theme_activation(
     id: String,
     expected_fingerprint: String,
 ) -> Result<ThemeActivationPayload, ThemeError> {
-    let catalog = super::prepared_catalog(window.app_handle())?;
+    let catalog = super::catalog_for_app(window.app_handle())?;
     state.prepare_with_permissions(
         &catalog,
         window.label(),
@@ -1713,7 +1769,7 @@ pub(crate) fn delete_theme_for_app(
 #[cfg(test)]
 mod tests {
     use std::{
-        cell::RefCell,
+        cell::{Cell, RefCell},
         collections::BTreeSet,
         fs,
         path::{Path, PathBuf},
@@ -1786,6 +1842,69 @@ mod tests {
 
     fn permission_error() -> ThemeError {
         ThemeError::new(ThemeErrorCode::Io, "Injected asset permission failure.")
+    }
+
+    #[test]
+    fn catalog_snapshot_initializes_once_until_explicitly_invalidated() {
+        let temporary = tempdir().unwrap();
+        let catalog = ThemeCatalog::at(temporary.path().join("themes"));
+        let state = ThemeActivationState::default();
+        let loads = Cell::new(0);
+        let snapshot = crate::themes::ThemeCatalogSnapshot::default();
+
+        for _attempt in 0..2 {
+            state
+                .catalog_snapshot_or_initialize(&catalog, || {
+                    loads.set(loads.get() + 1);
+                    Ok(snapshot.clone())
+                })
+                .unwrap();
+        }
+        assert_eq!(loads.get(), 1);
+
+        state.invalidate_catalog_snapshot(&catalog).unwrap();
+        state
+            .catalog_snapshot_or_initialize(&catalog, || {
+                loads.set(loads.get() + 1);
+                Ok(snapshot)
+            })
+            .unwrap();
+        assert_eq!(loads.get(), 2);
+    }
+
+    #[test]
+    fn listed_theme_activation_validates_cached_storage_without_rescanning_catalog() {
+        let temporary = tempdir().unwrap();
+        let catalog_root = temporary.path().join("themes");
+        write_resource(&catalog_root.join("author-choice"), "direct-resource");
+        let catalog = ThemeCatalog::at(catalog_root.clone());
+        let snapshot = catalog.scan().unwrap();
+        let descriptor = snapshot.themes[0].clone();
+        let state = ThemeActivationState::default();
+        state
+            .remember_catalog_snapshot(&catalog, &snapshot)
+            .unwrap();
+        write_resource(&catalog_root.join("duplicate-choice"), "direct-resource");
+        assert!(catalog
+            .scan()
+            .unwrap()
+            .themes
+            .iter()
+            .all(|theme| theme.id != "direct-resource"));
+
+        let activation = state.prepare_with_permissions(
+            &catalog,
+            "main",
+            &descriptor.id,
+            &descriptor.fingerprint,
+            &mut |_| Ok(()),
+            &mut |_| Ok(()),
+        );
+
+        assert!(matches!(
+            activation.unwrap().source,
+            ThemeActivationSource::Stylesheet { .. }
+        ));
     }
 
     fn stylesheet_path(payload: &super::ThemeActivationPayload) -> PathBuf {
@@ -2902,59 +3021,18 @@ mod tests {
         .unwrap();
 
         assert!(forbidden.into_inner().is_empty());
-        let error = delete_theme_with_permissions(
-            &catalog,
-            &state,
-            "light",
-            "default:light",
-            &mut |_| Ok(()),
-            &mut |_| panic!("protected themes have no resource scope"),
-        )
-        .unwrap_err();
-        assert_eq!(error.code, ThemeErrorCode::ProtectedTheme);
-    }
-
-    #[test]
-    fn rejecting_bundled_wenkai_deletion_preserves_its_active_lease() {
-        let temporary = tempdir().unwrap();
-        let catalog_root = temporary.path().join("themes");
-        let catalog = ThemeCatalog::at(catalog_root.clone());
-        assert!(catalog.seed_missing_wenkai().unwrap().is_empty());
-        let descriptor = catalog.find_descriptor("wenkai-paper-light").unwrap();
-        let state = ThemeActivationState::default();
-        let prepared = state
-            .prepare_with_permissions(
+        for id in ["light", "dark", "classic-light", "classic-dark"] {
+            let error = delete_theme_with_permissions(
                 &catalog,
-                "main",
-                &descriptor.id,
-                &descriptor.fingerprint,
+                &state,
+                id,
+                "builtin:fingerprint",
                 &mut |_| Ok(()),
-                &mut |_| Ok(()),
+                &mut |_| panic!("protected themes have no resource scope"),
             )
-            .unwrap();
-        state
-            .commit_with_permissions("main", &prepared.token, &mut |_| Ok(()), &mut |_| Ok(()))
-            .unwrap();
-        let active_root = state.active_root("main").unwrap();
-        let forbidden = RefCell::new(Vec::new());
-
-        let error = delete_theme_with_permissions(
-            &catalog,
-            &state,
-            &descriptor.id,
-            &descriptor.fingerprint,
-            &mut |_| Ok(()),
-            &mut |path| {
-                forbidden.borrow_mut().push(path.to_path_buf());
-                Ok(())
-            },
-        )
-        .unwrap_err();
-
-        assert_eq!(error.code, ThemeErrorCode::ProtectedTheme);
-        assert!(forbidden.into_inner().is_empty());
-        assert_eq!(state.active_root("main"), Some(active_root));
-        assert!(catalog_root.join("wenkai-paper-light").is_dir());
+            .unwrap_err();
+            assert_eq!(error.code, ThemeErrorCode::ProtectedTheme, "id {id}");
+        }
     }
 
     #[test]

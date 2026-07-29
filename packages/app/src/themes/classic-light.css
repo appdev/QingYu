@@ -1,0 +1,136 @@
+/* 轻语原有的中性浅色主题，作为非默认内置主题保留。 */
+:root[data-theme="classic-light"] {
+  --bg-primary: #ffffff;
+  --bg-secondary: #fafafa;
+  --bg-chrome: color-mix(in oklab, var(--bg-secondary) 82%, var(--bg-primary));
+  --bg-code: #f8f8f8;
+  --bg-hover: #f5f5f5;
+  --bg-active: #eeeeee;
+  --text-primary: #555555;
+  --text-heading: #333333;
+  --text-secondary: #999999;
+  --text-md-char: #c7c5c5;
+  --border-default: #eeeeee;
+  --border-strong: #dddddd;
+  --accent: #1a1c1e;
+  --accent-soft: rgba(26, 28, 30, 0.1);
+  --accent-hover: #0f1115;
+  --danger: #b42318;
+  --link-color: #2f56c6;
+
+  --bg-titlebar: #ffffff;
+  --bg-sidebar: #fafafa;
+  --bg-sidebar-header: #fafafa;
+  --bg-toolbar: #fafafa;
+  --bg-outline: #fafafa;
+  --bg-sidebar-footer: #fafafa;
+  --border-chrome: #eeeeee;
+  --sidebar-font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  --sidebar-tree-font-size: 13px;
+  --sidebar-tree-font-weight: 400;
+  --sidebar-tree-line-height: 20px;
+  --text-tree: #777777;
+  --bg-tree-hover: #f5f5f5;
+  --text-tree-hover: #333333;
+  --sidebar-tree-current-font-weight: 400;
+  --bg-tree-current: #eeeeee;
+  --text-tree-current: #333333;
+  --tree-current-indicator: #999999;
+  --bg-tree-selected: rgba(26, 28, 30, 0.1);
+  --text-tree-selected: #333333;
+  --tree-selected-indicator: #1a1c1e;
+  --sidebar-outline-font-size: 13px;
+  --sidebar-outline-font-weight: 400;
+  --sidebar-outline-line-height: 20px;
+  --sidebar-outline-row-min-height: 28px;
+  --sidebar-outline-max-lines: 1;
+  --text-outline: #777777;
+  --bg-outline-hover: #f5f5f5;
+  --text-outline-hover: #333333;
+  --sidebar-outline-current-font-weight: 620;
+  --bg-outline-current: #eeeeee;
+  --text-outline-current: #333333;
+
+  --scrollbar-track: transparent;
+  --scrollbar-thumb: color-mix(in srgb, var(--text-secondary) 44%, transparent);
+  --scrollbar-thumb-hover: color-mix(in srgb, var(--text-secondary) 64%, transparent);
+  --scrollbar-thumb-active: color-mix(in srgb, var(--accent) 48%, transparent);
+  --floating-menu-shadow: 0 20px 64px rgba(0, 0, 0, 0.16);
+  --floating-popover-shadow: 0 18px 48px rgba(0, 0, 0, 0.14);
+
+  color: var(--text-primary);
+  background: var(--bg-primary);
+  color-scheme: light;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  font-synthesis: none;
+}
+
+.markdown-paper[data-editor-theme="classic-light"] {
+  --editor-paper-bg: #ffffff;
+  --editor-text-primary: #555555;
+  --editor-text-heading: #333333;
+  --editor-text-secondary: #999999;
+  --editor-heading-font-weight: 760;
+  --editor-heading-letter-spacing: 0;
+  --editor-h1-color: var(--editor-text-heading);
+  --editor-h1-font-size: 44px;
+  --editor-h1-font-size-compact: 34px;
+  --editor-h1-font-weight: var(--editor-heading-font-weight);
+  --editor-h1-letter-spacing: var(--editor-heading-letter-spacing);
+  --editor-h1-line-height: 1.15;
+  --editor-h2-color: var(--editor-text-heading);
+  --editor-h2-font-size: 31px;
+  --editor-h2-font-size-compact: 26px;
+  --editor-h2-font-weight: var(--editor-heading-font-weight);
+  --editor-h2-letter-spacing: var(--editor-heading-letter-spacing);
+  --editor-h2-line-height: 1.22;
+  --editor-h3-color: var(--editor-text-heading);
+  --editor-h3-font-size: 24px;
+  --editor-h3-font-weight: var(--editor-heading-font-weight);
+  --editor-h3-letter-spacing: var(--editor-heading-letter-spacing);
+  --editor-h3-line-height: 1.28;
+  --editor-h4-color: var(--editor-text-heading);
+  --editor-h4-font-size: 19px;
+  --editor-h4-font-weight: var(--editor-heading-font-weight);
+  --editor-h4-letter-spacing: var(--editor-heading-letter-spacing);
+  --editor-h4-line-height: 1.35;
+  --editor-h5-color: var(--editor-text-heading);
+  --editor-h5-font-size: 16px;
+  --editor-h5-font-weight: var(--editor-heading-font-weight);
+  --editor-h5-letter-spacing: var(--editor-heading-letter-spacing);
+  --editor-h5-line-height: 1.45;
+  --editor-h6-color: var(--editor-text-heading);
+  --editor-h6-font-size: 16px;
+  --editor-h6-font-weight: var(--editor-heading-font-weight);
+  --editor-h6-letter-spacing: var(--editor-heading-letter-spacing);
+  --editor-h6-line-height: 1.45;
+  --editor-border: #eeeeee;
+  --editor-border-strong: #dddddd;
+  --editor-bg-secondary: #fafafa;
+  --editor-inline-code-bg: #f8f8f8;
+  --editor-inline-code-text: oklch(40% 0.13 247);
+  --editor-code-bg: #f8f8f8;
+  --editor-code-line-bg: color-mix(in srgb, #fafafa 72%, #f8f8f8);
+  --editor-code-text: #555555;
+  --editor-code-control-bg: rgba(255, 255, 255, 0.94);
+  --editor-link-color: #2f56c6;
+  --editor-hl-keyword: oklch(43% 0.17 283);
+  --editor-hl-string: oklch(42% 0.13 151);
+  --editor-hl-number: oklch(47% 0.16 42);
+  --editor-hl-title: oklch(44% 0.15 247);
+  --editor-hl-type: oklch(39% 0.13 210);
+  --editor-hl-meta: oklch(44% 0.15 330);
+  --editor-hl-symbol: oklch(40% 0.12 190);
+  --editor-hl-deletion: oklch(45% 0.17 29);
+  --editor-font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  --editor-heading-font-family: var(--editor-font-family);
+  --editor-caret-color: #1a1c1e;
+  color: var(--editor-text-primary);
+  font-family: var(--editor-font-family);
+  font-synthesis: none;
+}
+
+:root[data-theme="classic-light"] .markdown-source-paper,
+.markdown-source-paper[data-editor-theme="classic-light"] {
+  --source-editor-font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+}

@@ -506,6 +506,7 @@ const messages: BaseLocaleMessages = {
   "settings.theme.refreshThemes": "Refresh themes",
   "settings.theme.openThemeFolder": "Open theme folder",
   "settings.theme.defaultBadge": "Default",
+  "settings.theme.builtInBadge": "Built-in",
   "settings.theme.thirdPartyBadge": "Third-party",
   "settings.theme.deleteTheme": "Delete theme",
   "settings.theme.replaceTheme": "Replace theme",

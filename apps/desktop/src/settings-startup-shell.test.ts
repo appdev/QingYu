@@ -23,20 +23,58 @@ function renderDesktopIndex(search = "") {
 }
 
 describe("settings startup shell", () => {
-  it("uses the WenKai palettes when startup theme parameters are absent", () => {
+  it("uses the Paper palettes when startup theme parameters are absent", () => {
     const lightDom = renderDesktopIndex("?settings=1&startupAppearanceMode=light");
     const lightShell = lightDom.querySelector(".settings-startup-shell") as Element;
-    expect(lightDom.documentElement.dataset.theme).toBe("wenkai-paper-light");
+    expect(lightDom.documentElement.dataset.theme).toBe("light");
     expect(lightDom.documentElement.style.backgroundColor).toBe("rgb(255, 255, 255)");
     expect(window.getComputedStyle(lightShell).getPropertyValue("--settings-startup-sidebar")).toBe("#ffffff");
     expect(window.getComputedStyle(lightShell).getPropertyValue("--settings-startup-border")).toBe("#ededed");
 
     const darkDom = renderDesktopIndex("?settings=1&startupAppearanceMode=dark");
     const darkShell = darkDom.querySelector(".settings-startup-shell") as Element;
-    expect(darkDom.documentElement.dataset.theme).toBe("wenkai-paper-dark");
+    expect(darkDom.documentElement.dataset.theme).toBe("dark");
     expect(darkDom.documentElement.style.backgroundColor).toBe("rgb(35, 40, 45)");
     expect(window.getComputedStyle(darkShell).getPropertyValue("--settings-startup-sidebar")).toBe("#23282d");
     expect(window.getComputedStyle(darkShell).getPropertyValue("--settings-startup-border")).toBe("#33373c");
+  });
+
+  it("uses exact classic palettes and Paper fallbacks before hydration", () => {
+    const classicLightDom = renderDesktopIndex(
+      "?settings=1&startupAppearanceMode=light&startupLightTheme=classic-light"
+    );
+    const classicLightShell = classicLightDom.querySelector(".settings-startup-shell") as Element;
+    expect(classicLightDom.documentElement.dataset.theme).toBe("classic-light");
+    expect(classicLightDom.documentElement.style.backgroundColor).toBe("rgb(255, 255, 255)");
+    expect(window.getComputedStyle(classicLightShell).getPropertyValue("--settings-startup-sidebar")).toBe("#fafafa");
+
+    const classicDarkDom = renderDesktopIndex(
+      "?settings=1&startupAppearanceMode=dark&startupDarkTheme=classic-dark"
+    );
+    const classicDarkShell = classicDarkDom.querySelector(".settings-startup-shell") as Element;
+    expect(classicDarkDom.documentElement.dataset.theme).toBe("classic-dark");
+    expect(classicDarkDom.documentElement.style.backgroundColor).toBe("rgb(30, 30, 30)");
+    expect(window.getComputedStyle(classicDarkShell).getPropertyValue("--settings-startup-sidebar")).toBe("#252526");
+
+    const unknownDarkDom = renderDesktopIndex(
+      "?settings=1&startupAppearanceMode=dark&startupDarkTheme=ocean-night"
+    );
+    expect(unknownDarkDom.documentElement.dataset.theme).toBe("ocean-night");
+    expect(unknownDarkDom.documentElement.style.backgroundColor).toBe("rgb(35, 40, 45)");
+
+    const mismatchedLightDom = renderDesktopIndex(
+      "?settings=1&startupAppearanceMode=light&startupLightTheme=classic-dark"
+    );
+    const mismatchedLightShell = mismatchedLightDom.querySelector(".settings-startup-shell") as Element;
+    expect(mismatchedLightDom.documentElement.style.backgroundColor).toBe("rgb(255, 255, 255)");
+    expect(window.getComputedStyle(mismatchedLightShell).getPropertyValue("--settings-startup-bg")).toBe("#ffffff");
+
+    const mismatchedDarkDom = renderDesktopIndex(
+      "?settings=1&startupAppearanceMode=dark&startupDarkTheme=classic-light"
+    );
+    const mismatchedDarkShell = mismatchedDarkDom.querySelector(".settings-startup-shell") as Element;
+    expect(mismatchedDarkDom.documentElement.style.backgroundColor).toBe("rgb(35, 40, 45)");
+    expect(window.getComputedStyle(mismatchedDarkShell).getPropertyValue("--settings-startup-bg")).toBe("#23282d");
   });
 
   it("shows a static shimmer shell before the settings module starts", () => {

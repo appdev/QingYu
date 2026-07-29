@@ -46,12 +46,22 @@ describe("native theme runtime", () => {
     await deleteNativeTheme("nord", "fingerprint");
 
     expect(mockedInvoke.mock.calls.map(([command, args]) => [command, args])).toEqual([
-      ["list_themes", undefined],
+      ["list_themes", { refresh: false }],
       ["prepare_theme_activation", { id: "nord", expectedFingerprint: "fingerprint" }],
       ["commit_theme_activation", { token: "commit-token" }],
       ["cancel_theme_activation", { token: "cancel-token" }],
       ["release_theme_activation", undefined],
       ["delete_theme", { id: "nord", expectedFingerprint: "fingerprint" }]
+    ]);
+  });
+
+  it("marks only explicit catalog refreshes as filesystem rescans", async () => {
+    await listNativeThemes();
+    await listNativeThemes(true);
+
+    expect(mockedInvoke.mock.calls).toEqual([
+      ["list_themes", { refresh: false }],
+      ["list_themes", { refresh: true }]
     ]);
   });
 

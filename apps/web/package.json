@@ -6,10 +6,11 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -p tsconfig.app.json && vite build",
+    "build": "tsc -p tsconfig.app.json && vite build && pnpm verify:theme-assets",
     "test": "vitest run",
     "test:watch": "vitest",
-    "typecheck:test": "tsc -p tsconfig.test.json --noEmit"
+    "typecheck:test": "tsc -p tsconfig.test.json --noEmit",
+    "verify:theme-assets": "node ../../packages/scripts/src/verify-built-in-theme-assets.mjs dist"
   },
   "dependencies": {
     "@markra/app": "workspace:*",

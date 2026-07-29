@@ -1,6 +1,6 @@
 import { diagnosticErrorMessage } from "@markra/shared";
 import { Monitor, Moon, Sun, type LucideIcon } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Tooltip } from "@markra/ui";
 import {
   appAppearanceModeOptions,
@@ -96,10 +96,6 @@ export function AppearanceSettings({
   const [actionError, setActionError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const { catalog } = themeController;
-
-  useEffect(() => {
-    catalog.refresh().catch(() => {});
-  }, [catalog.refresh]);
 
   async function runAction(action: () => Promise<unknown>) {
     setBusy(true);

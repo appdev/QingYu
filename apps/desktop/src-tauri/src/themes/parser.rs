@@ -746,7 +746,15 @@ mod tests {
 
     #[test]
     fn rejects_reserved_or_malformed_ids() {
-        for id in ["light", "dark", "qingyu-owned", "Upper", "-leading"] {
+        for id in [
+            "light",
+            "dark",
+            "classic-light",
+            "classic-dark",
+            "qingyu-owned",
+            "Upper",
+            "-leading",
+        ] {
             let error = parse_theme_file(&theme_css(id, "Bad", "light", ":root {}"), "bad.css")
                 .unwrap_err();
             assert_eq!(error.code, ThemeErrorCode::InvalidMetadata);

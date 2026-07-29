@@ -10,8 +10,8 @@ use crate::contract::{
     SettingValueDto, SettingsSnapshotDto,
 };
 
-pub const DEFAULT_LIGHT_THEME_ID: &str = "wenkai-paper-light";
-pub const DEFAULT_DARK_THEME_ID: &str = "wenkai-paper-dark";
+pub const DEFAULT_LIGHT_THEME_ID: &str = "light";
+pub const DEFAULT_DARK_THEME_ID: &str = "dark";
 pub const PORTABLE_SETTINGS_MAX_BYTES: usize = 16 * 1024 * 1024;
 
 pub const PORTABLE_SETTINGS_KEYS: [&str; 9] = [

@@ -253,6 +253,7 @@ const messages: LocaleMessages = {
   "settings.theme.refreshThemes": "重新整理主題",
   "settings.theme.openThemeFolder": "開啟主題資料夾",
   "settings.theme.defaultBadge": "預設",
+  "settings.theme.builtInBadge": "內建",
   "settings.theme.thirdPartyBadge": "第三方",
   "settings.theme.deleteTheme": "刪除主題",
   "settings.theme.replaceTheme": "取代主題",

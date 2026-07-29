@@ -5715,17 +5715,12 @@ describe("QingYu workspace", () => {
     expect(document.documentElement.style.colorScheme).toBe("dark");
   });
 
-  it("keeps the Settings window mounted while Appearance refreshes the theme catalog", async () => {
+  it("keeps the Settings window mounted while Appearance reuses the loaded theme catalog", async () => {
     mockedConsumeWelcomeDocumentState.mockResolvedValue(false);
     window.history.pushState({}, "", "/?settings=1");
     const runtime = getAppRuntime();
     const catalogSnapshot = await runtime.themes.list();
-    let resolveThemeRefresh: ((snapshot: typeof catalogSnapshot) => unknown) | null = null;
-    runtime.themes.list = vi.fn()
-      .mockResolvedValueOnce(catalogSnapshot)
-      .mockImplementationOnce(() => new Promise<typeof catalogSnapshot>((resolve) => {
-        resolveThemeRefresh = resolve;
-      }));
+    runtime.themes.list = vi.fn().mockResolvedValue(catalogSnapshot);
 
     const { container } = renderApp();
 
@@ -5735,16 +5730,9 @@ describe("QingYu workspace", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Appearance" }));
 
-    await waitFor(() => expect(runtime.themes.list).toHaveBeenCalledTimes(2));
     expect(container.querySelector(".settings-window")).toBeInTheDocument();
     expect(screen.getByRole("heading", { level: 2, name: "Appearance" })).toBeInTheDocument();
-
-    act(() => {
-      resolveThemeRefresh?.(catalogSnapshot);
-    });
-
-    await waitFor(() => expect(screen.getByRole("heading", { level: 2, name: "Appearance" })).toBeInTheDocument());
-    expect(runtime.themes.list).toHaveBeenCalledTimes(2);
+    expect(runtime.themes.list).toHaveBeenCalledTimes(1);
     expect(mockedMarkSettingsWindowReady).toHaveBeenCalledTimes(1);
   });
 

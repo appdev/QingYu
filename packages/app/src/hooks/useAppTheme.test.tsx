@@ -2,11 +2,18 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import { configureAppRuntime, createDefaultAppRuntime, resetAppRuntimeForTests } from "../runtime";
 import type { AppThemePreferences } from "../lib/settings/app-settings";
 import {
-  protectedThemeDescriptors,
   type ThemeActivationPayload,
   type ThemeDescriptor
 } from "../lib/themes/theme-catalog";
+import { builtInThemeDescriptors } from "../themes/registry";
 import { useAppTheme } from "./useAppTheme";
+
+function builtInTheme(id: "light" | "dark" | "classic-light" | "classic-dark") {
+  const theme = builtInThemeDescriptors.find((candidate) => candidate.id === id);
+  if (!theme) throw new Error(`Missing built-in theme fixture: ${id}`);
+
+  return theme;
+}
 
 const nord: ThemeDescriptor = {
   appearance: "dark",
@@ -51,30 +58,6 @@ const midnight: ThemeDescriptor = {
   name: "Midnight",
   preview: { accent: "#61afef", background: "#10131a", panel: "#171b24", text: "#e6e9ef" },
   source: "third-party",
-  storageKind: "resourceDirectory"
-};
-
-const wenkaiPaperLight: ThemeDescriptor = {
-  appearance: "light",
-  author: "轻语",
-  fileName: null,
-  fingerprint: "e".repeat(64),
-  id: "wenkai-paper-light",
-  name: "轻语 · 文楷纸白",
-  preview: { accent: "#1c5d33", background: "#ffffff", panel: "#f7f7f7", text: "#262626" },
-  source: "bundled",
-  storageKind: "resourceDirectory"
-};
-
-const wenkaiPaperDark: ThemeDescriptor = {
-  appearance: "dark",
-  author: "轻语",
-  fileName: null,
-  fingerprint: "f".repeat(64),
-  id: "wenkai-paper-dark",
-  name: "轻语 · 文楷夜读",
-  preview: { accent: "#54c59f", background: "#23282d", panel: "#282e33", text: "#e7e9ea" },
-  source: "bundled",
   storageKind: "resourceDirectory"
 };
 
@@ -168,7 +151,7 @@ describe("useAppTheme", () => {
     resetAppRuntimeForTests();
   });
 
-  it("suppresses transitions until the new protected theme has painted", async () => {
+  it("suppresses transitions until the new built-in theme has painted", async () => {
     runtimeWithThemes({ appearanceMode: "light", darkTheme: "dark", lightTheme: "light" }, []);
     const { result } = renderHook(() => useAppTheme());
     await waitFor(() => expect(result.current.ready).toBe(true));
@@ -194,25 +177,62 @@ describe("useAppTheme", () => {
     expect(document.documentElement).not.toHaveAttribute("data-theme-transition");
   });
 
-  it("activates the bundled WenKai theme when no appearance preference exists", async () => {
-    const runtime = runtimeWithThemes(null, [wenkaiPaperLight, wenkaiPaperDark]);
+  it("activates the frontend base theme directly when no appearance preference exists", async () => {
+    const runtime = runtimeWithThemes(null, []);
     const { result } = renderHook(() => useAppTheme());
-    const candidate = await waitForCandidate("wenkai-paper-light-token");
-
-    dispatchStylesheetEvent(candidate, "load");
 
     await waitFor(() => expect(result.current.ready).toBe(true));
 
     expect(result.current.themePreferences).toEqual({
       appearanceMode: "system",
-      darkTheme: "wenkai-paper-dark",
-      lightTheme: "wenkai-paper-light"
+      darkTheme: "dark",
+      lightTheme: "light"
     });
-    expect(runtime.themes.prepareActivation).toHaveBeenCalledWith(
-      "wenkai-paper-light",
-      wenkaiPaperLight.fingerprint
+    expect(runtime.themes.prepareActivation).not.toHaveBeenCalled();
+    expect(runtime.themes.commitActivation).not.toHaveBeenCalled();
+    expect(runtime.themes.cancelActivation).not.toHaveBeenCalled();
+    expect(runtime.themes.releaseActivation).not.toHaveBeenCalled();
+    expect(document.documentElement.dataset.theme).toBe("light");
+    expect(document.documentElement.dataset.themeAppearance).toBe("light");
+  });
+
+  it("selects a classic built-in without entering native activation", async () => {
+    const runtime = runtimeWithThemes(
+      { appearanceMode: "light", darkTheme: "dark", lightTheme: "light" },
+      []
     );
-    expect(document.documentElement.dataset.theme).toBe("wenkai-paper-light");
+    const { result } = renderHook(() => useAppTheme());
+    await waitFor(() => expect(result.current.ready).toBe(true));
+
+    act(() => result.current.selectTheme(builtInTheme("classic-light")));
+
+    await waitFor(() => expect(document.documentElement.dataset.theme).toBe("classic-light"));
+    expect(result.current.lightTheme).toBe("classic-light");
+    expect(document.documentElement.dataset.themeAppearance).toBe("light");
+    expect(runtime.themes.prepareActivation).not.toHaveBeenCalled();
+    expect(runtime.themes.commitActivation).not.toHaveBeenCalled();
+    expect(runtime.themes.cancelActivation).not.toHaveBeenCalled();
+    expect(runtime.themes.releaseActivation).not.toHaveBeenCalled();
+  });
+
+  it("activates a stored classic built-in before the native catalog finishes loading", async () => {
+    const runtime = runtimeWithThemes(
+      { appearanceMode: "light", darkTheme: "classic-dark", lightTheme: "classic-light" },
+      []
+    );
+    const pendingCatalog = deferred<{ invalidFiles: []; themes: ThemeDescriptor[] }>();
+    runtime.themes.list = vi.fn(() => pendingCatalog.promise);
+
+    const { result } = renderHook(() => useAppTheme());
+
+    await waitFor(() => expect(document.documentElement.dataset.theme).toBe("classic-light"));
+    expect(result.current.ready).toBe(true);
+    expect(runtime.themes.prepareActivation).not.toHaveBeenCalled();
+    expect(runtime.themes.commitActivation).not.toHaveBeenCalled();
+    expect(runtime.themes.cancelActivation).not.toHaveBeenCalled();
+    expect(runtime.themes.releaseActivation).not.toHaveBeenCalled();
+
+    await act(async () => pendingCatalog.resolve({ invalidFiles: [], themes: [] }));
   });
 
   it("loads a stored third-party theme without a confirmation transaction", async () => {
@@ -453,7 +473,7 @@ describe("useAppTheme", () => {
     dispatchStylesheetEvent(candidate, "load");
     await waitFor(() => expect(result.current.ready).toBe(true));
 
-    act(() => result.current.selectTheme(protectedThemeDescriptors[1]));
+    act(() => result.current.selectTheme(builtInTheme("dark")));
 
     await waitFor(() => expect(document.documentElement.dataset.theme).toBe("dark"));
     await waitFor(() => expect(runtime.themes.releaseActivation).toHaveBeenCalled());
@@ -586,7 +606,7 @@ describe("useAppTheme", () => {
       sepia.id,
       sepia.fingerprint
     ));
-    act(() => result.current.selectTheme(protectedThemeDescriptors[0]));
+    act(() => result.current.selectTheme(builtInTheme("light")));
     await waitFor(() => expect(result.current.lightTheme).toBe("light"));
 
     await act(async () => {

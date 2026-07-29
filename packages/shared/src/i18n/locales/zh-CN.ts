@@ -474,6 +474,7 @@ const messages: LocaleMessages = {
   "settings.theme.refreshThemes": "刷新主题",
   "settings.theme.openThemeFolder": "打开主题文件夹",
   "settings.theme.defaultBadge": "默认",
+  "settings.theme.builtInBadge": "内置",
   "settings.theme.thirdPartyBadge": "第三方",
   "settings.theme.deleteTheme": "删除主题",
   "settings.theme.replaceTheme": "替换主题",

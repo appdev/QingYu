@@ -1,66 +1,66 @@
 ---
 version: alpha
-name: QingYu
-description: Local-first WYSIWYG Markdown desktop editor with quiet writing surfaces and a restrained ink-black interaction system.
+name: 轻语
+description: Local-first WYSIWYG Markdown editor with quiet Chinese reading surfaces, ZhenKai typography, and restrained green actions.
 colors:
-  primary: "#1A1C1E"
-  primary-hover: "#0F1115"
-  primary-soft: "#E8E8E9"
-  primary-inverse: "#F4F4F5"
-  primary-inverse-hover: "#FAFAFA"
-  primary-inverse-soft: "#3A3A3D"
+  primary: "#1C5D33"
+  primary-hover: "#154827"
+  primary-soft: "rgba(28, 93, 51, 0.12)"
+  primary-inverse: "#54C59F"
+  primary-inverse-hover: "#75D6B5"
+  primary-inverse-soft: "rgba(84, 197, 159, 0.14)"
   background: "#FFFFFF"
-  surface: "#FAFAFA"
-  surface-muted: "#F8F8F8"
-  surface-hover: "#F5F5F5"
+  surface: "#F7F7F7"
+  surface-muted: "#F7F7F7"
+  surface-hover: "rgba(38, 38, 38, 0.055)"
   surface-active: "#EEEEEE"
-  text: "#555555"
-  text-strong: "#333333"
-  text-muted: "#999999"
-  markdown-syntax: "#D7D5D5"
-  border: "#EEEEEE"
-  border-strong: "#DDDDDD"
-  ghost: "#C0C0C0"
+  text: "#262626"
+  text-strong: "#262626"
+  text-muted: "#6B6B6B"
+  markdown-syntax: "#767676"
+  border: "#EDEDED"
+  border-strong: "#D1D1D1"
+  ghost: "#767676"
   overlay-ink: "#1F232C"
 typography:
   editor-h1:
-    fontFamily: '"Noto Sans SC Variable", "Noto Sans SC", "Noto Sans CJK SC", sans-serif'
-    fontSize: 44px
-    fontWeight: 760
-    lineHeight: 1.15
-    letterSpacing: 0em
+    fontFamily: '"Light Whisper ZhenKai", "Kaiti SC", KaiTi, STKaiti, ui-serif, serif'
+    fontSize: 2rem
+    fontWeight: 600
+    lineHeight: 1.55
+    letterSpacing: 0.05em
   editor-h2:
-    fontFamily: '"Noto Sans SC Variable", "Noto Sans SC", "Noto Sans CJK SC", sans-serif'
-    fontSize: 31px
-    fontWeight: 760
-    lineHeight: 1.22
-    letterSpacing: 0em
+    fontFamily: '"Light Whisper ZhenKai", "Kaiti SC", KaiTi, STKaiti, ui-serif, serif'
+    fontSize: 1.5rem
+    fontWeight: 600
+    lineHeight: 1.6
+    letterSpacing: 0.05em
   editor-h3:
-    fontFamily: '"Noto Sans SC Variable", "Noto Sans SC", "Noto Sans CJK SC", sans-serif'
-    fontSize: 24px
-    fontWeight: 760
-    lineHeight: 1.28
-    letterSpacing: 0em
+    fontFamily: '"Light Whisper ZhenKai", "Kaiti SC", KaiTi, STKaiti, ui-serif, serif'
+    fontSize: 1.25rem
+    fontWeight: 600
+    lineHeight: 1.65
+    letterSpacing: 0.04em
   editor-body:
-    fontFamily: '"Noto Sans SC Variable", "Noto Sans SC", "Noto Sans CJK SC", sans-serif'
+    fontFamily: '"Light Whisper ZhenKai", "Kaiti SC", KaiTi, STKaiti, ui-serif, serif'
     fontSize: 16px
     fontWeight: 400
-    lineHeight: 1.65
-    letterSpacing: 0em
+    lineHeight: 1.74
+    letterSpacing: 0.035em
   ui-body:
-    fontFamily: '"Noto Sans SC Variable", "Noto Sans SC", "Noto Sans CJK SC", sans-serif'
+    fontFamily: '"Light Whisper ZhenKai", "Kaiti SC", KaiTi, STKaiti, ui-serif, serif'
     fontSize: 13px
     fontWeight: 520
     lineHeight: 1.54
     letterSpacing: 0em
   ui-label:
-    fontFamily: '"Noto Sans SC Variable", "Noto Sans SC", "Noto Sans CJK SC", sans-serif'
+    fontFamily: '"Light Whisper ZhenKai", "Kaiti SC", KaiTi, STKaiti, ui-serif, serif'
     fontSize: 12px
     fontWeight: 560
     lineHeight: 1.67
     letterSpacing: 0em
   ui-control:
-    fontFamily: '"Noto Sans SC Variable", "Noto Sans SC", "Noto Sans CJK SC", sans-serif'
+    fontFamily: '"Light Whisper ZhenKai", "Kaiti SC", KaiTi, STKaiti, ui-serif, serif'
     fontSize: 12px
     fontWeight: 620
     lineHeight: 1.67
@@ -192,42 +192,42 @@ components:
     backgroundColor: "{colors.overlay-ink}"
 ---
 
-# QingYu Design System
+# 轻语 Design System
 
 ## Overview
 
-QingYu should feel like a native writing instrument: calm, fast, local, and precise. The interface gives most of its attention to the Markdown document, while file navigation, search, settings, and export tools stay quiet until needed.
+轻语 should feel like a native writing instrument: calm, fast, local, and precise. The interface gives most of its attention to the Markdown document, while file navigation, search, settings, and export tools stay quiet until needed.
 
-The default visual language is light, neutral, and editorial. It avoids decorative branding, heavy panels, and marketing-style composition. The primary ink-black is reserved for interaction, focus, and active states; it should not flood the workspace.
+The default visual language is a quiet Chinese writing desk: paper-white or charcoal reading surfaces, restrained green actions, purple article-title accents, and 霞鹜臻楷 typography. The application shell, editor, titlebar, sidebar, toolbar, tree states, outline, and footer are designed as one semantic theme rather than unrelated component colors.
 
 The product serves writers, engineers, researchers, and documentation-heavy teams. Screens should feel trustworthy for long-form reading and repeated editing, with enough density for desktop productivity and enough air around the document to keep the writing surface comfortable.
 
 ## Colors
 
-The palette is based on clean neutrals and one restrained ink-black accent.
+The default palette uses calm neutrals, a restrained forest-green action color, and a separate purple article-heading role.
 
-- **Primary (#1A1C1E):** A deep ink-black interaction color. Use for primary actions, focus rings, active toggles, drop indicators, selected status, and links.
-- **Primary Hover (#0F1115):** A near-black hover color for pressed states and selected link states.
-- **Primary Soft (#E8E8E9):** A quiet ink-tinted container used behind selected pills and quiet emphasis. Pair it with Primary Hover for text when WCAG AA contrast is required.
-- **Primary Inverse (#F4F4F5):** The dark-mode interaction color. Use it as the inverted form of Primary on dark surfaces instead of reintroducing blue.
-- **Primary Inverse Hover (#FAFAFA):** The brighter dark-mode hover color for primary controls.
-- **Primary Inverse Soft (#3A3A3D):** A dark neutral container for selected dark-mode pills and subtle active states.
+- **Primary (#1C5D33):** Forest green for actions, focus, current indicators, tasks, and type accents.
+- **Primary Hover (#154827):** The deeper light-mode green used for hover and pressed states.
+- **Primary Soft (rgba(28, 93, 51, 0.12)):** A low-chroma selection and quiet-emphasis container.
+- **Primary Inverse (#54C59F):** The dark-mode action green.
+- **Primary Inverse Hover (#75D6B5):** The brighter dark-mode hover color.
+- **Primary Inverse Soft (rgba(84, 197, 159, 0.14)):** The dark-mode selection container.
 - **Background (#FFFFFF):** The main application and editor surface.
-- **Surface (#FAFAFA), Surface Muted (#F8F8F8), Surface Hover (#F5F5F5), Surface Active (#EEEEEE):** Layered neutral surfaces for panels, code, hover feedback, and selected controls.
-- **Text (#555555) and Text Strong (#333333):** Body text and headings. Strong text is for document headings, selected labels, and critical UI labels.
-- **Text Muted (#999999):** Secondary labels, empty states, helper text, metadata, and inactive controls.
-- **Markdown Syntax (#D7D5D5):** Low-emphasis rendered Markdown markers and source-mode syntax characters. Theme variants derive the same quiet role by mixing their syntax token toward the editor background.
-- **Border (#EEEEEE) and Border Strong (#DDDDDD):** Fine separation for tool surfaces, tables, inputs, and editor structure.
+- **Surface (#F7F7F7), Surface Hover (rgba(38, 38, 38, 0.055)), Surface Active (#EEEEEE):** Layered neutral surfaces for panels, code, hover feedback, and selected controls.
+- **Text / Text Strong (#262626):** Body text, controls, and most headings.
+- **Text Muted (#6B6B6B):** Secondary labels, Markdown markers, helper text, metadata, and inactive controls.
+- **Article Heading (#7A3DAD):** H1/H2 and source-heading emphasis; it is not an action color.
+- **Border (#EDEDED) and Border Strong (#D1D1D1):** Fine separation for shell regions, tables, inputs, and editor structure.
 
-Do not introduce extra brand colors for primary flows. Semantic colors may appear for table delete affordances, callout types, syntax highlighting, or destructive confirmation, but they should stay localized to those contexts.
+Do not collapse actions, links, article headings, and destructive states into one accent. Green is for action/state, blue is for links, purple is for article headings, and red remains local to destructive or error semantics.
 
 ## Typography
 
-QingYu uses the system UI stack for both application chrome and the default editor theme. This keeps the desktop app native-feeling across macOS, Windows, and Linux while avoiding font loading cost.
+轻语's default `light` and `dark` themes use the bundled `Light Whisper ZhenKai` family, derived from the official 霞鹜臻楷 GB Regular. The real face is weight 400; `font-synthesis: weight` permits 600/700 emphasis. `classic-light` and `classic-dark` retain the system UI stack as selectable non-default built-ins.
 
-Editor typography is larger and calmer than UI typography. Body copy defaults to 16px with a 1.65 line-height for comfortable long-form writing. Headings use strong weight, normal tracking, and clear scale jumps: H1 at 44px, H2 at 31px, and H3 at 24px.
+Editor body copy defaults to 16px, `1.74` line height, and `0.035em` tracking for comfortable Chinese long-form writing. Headings use synthesized weight 600 with explicit size, tracking, and line-height tokens: H1 `2rem`, H2 `1.5rem`, and H3 `1.25rem`.
 
-Application controls use compact desktop sizes. Most settings, menus, inputs, and list controls sit between 12px and 13px, with medium-to-semibold weights for clarity. Letter spacing remains 0 across the UI.
+Application controls remain compact. The file tree and outline use 14px / 20px rhythm; current tree rows use surface and indicator changes without turning every active filename bold. Outline H1/H2 and the current outline row may request synthesized 600 for hierarchy.
 
 Use typographic hierarchy before adding decoration. Prefer weight, size, tone, and spacing changes over colored badges or boxed labels.
 
@@ -243,7 +243,7 @@ Mobile and narrow responsive states should simplify side surfaces before shrinki
 
 ## Elevation & Depth
 
-QingYu uses tonal layering, fine borders, and selective shadows instead of heavy elevation. The main document surface should feel flat and stable. Popovers, modals, drag ghosts, and table controls may use shadows to clarify temporary floating state.
+轻语 uses tonal layering, fine borders, and selective shadows instead of heavy elevation. The main document surface should feel flat and stable. Popovers, modals, drag ghosts, and table controls may use shadows to clarify temporary floating state.
 
 Shadows should be soft and functional. They signal that a surface is transient or layered above the editor; they should not make every panel feel like a card. Persistent workspace regions rely on background contrast and borders.
 
@@ -257,7 +257,7 @@ Avoid oversized rounded rectangles in dense desktop UI. Rounded corners should s
 
 ## Components
 
-Primary buttons use the primary ink-black background with white text and switch to primary-hover on hover or pressed states. Use them only for the most important confirmation in a local surface.
+Primary buttons use the theme's green primary background with white text and switch to primary-hover on hover or pressed states. Use them only for the most important confirmation in a local surface.
 
 Secondary buttons use the background surface, strong text, and neutral borders. Ghost buttons are text-first and should reveal hover background only when interaction is likely.
 
@@ -269,7 +269,7 @@ Segmented controls sit on surface backgrounds with compact spacing. The selected
 
 Toggles use primary for checked state and neutral surface for unchecked state. Toggle labels should be short and operational.
 
-The editor paper uses background white, body text gray, strong headings, and neutral dividers. Code blocks use muted surfaces. Tables use strong borders, compact cell padding, and neutral alternating rows.
+The light editor paper uses white, `#262626` body text, purple H1/H2, and neutral dividers; the dark paper uses `#23282d` with independently tuned text, borders, and syntax colors. Code blocks use secondary surfaces. Tables use strong borders, compact cell padding, and neutral alternating rows.
 
 Temporary decision surfaces such as confirmation dialogs may use stronger shadow and accent focus. Accent shadows must be derived from the current theme token, such as `color-mix(... var(--accent) ...)`, rather than hardcoded to one color.
 
@@ -278,13 +278,13 @@ Callouts use localized semantic colors by callout type, but the surrounding syst
 ## Do's and Don'ts
 
 - Do keep the document as the visual anchor of every workspace screen.
-- Do use `#1A1C1E` for primary interaction, focus, active state, and selected status.
+- Do use the active theme's semantic action color (`#1C5D33` light / `#54C59F` dark) for interaction, focus, and state indicators.
 - Do use neutral surfaces and borders for persistent structure before adding shadow.
 - Do keep component text compact and readable, especially in title bars, menus, settings, and panels.
 - Do preserve WCAG AA contrast for interactive text and controls.
 - Do make hover, focus, pressed, loading, disabled, empty, and error states explicit.
 - Do use Tailwind CSS and shared UI components where practical.
-- Don't introduce a second dominant brand accent beside the primary ink-black.
+- Don't use the purple article-heading color as an application action color, or the green action color as a link replacement.
 - Don't turn persistent app sections into floating card stacks.
 - Don't use large marketing-style hero layouts inside the desktop app.
 - Don't over-round dense controls; use 6px as the default radius and full radius only for pills/toggles.
@@ -298,7 +298,7 @@ The product website extends this system without changing the desktop workspace. 
 ### Genre and structure
 
 - Genre: editorial with an austere product voice.
-- Marketing macrostructure: **Workbench**. Real QingYu captures are the primary evidence; prose explains what is visible.
+- Marketing macrostructure: **Workbench**. Real 轻语 captures are the primary evidence; prose explains what is visible.
 - Navigation: **N9 Edge-aligned minimal**. Brand at the start edge, language and product action at the end edge, no centred link row.
 - Footer: **Ft2 Inline single line**. Project and legal links close the page without a sitemap grid.
 - Feature voice: annotated real screenshots with labels outside the image. Never draw browser, editor, IDE, or phone chrome.

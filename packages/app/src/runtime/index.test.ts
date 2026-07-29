@@ -53,7 +53,7 @@ describe("app runtime logging", () => {
 });
 
 describe("default app runtime capabilities", () => {
-  it("fills a partial appearance group with the bundled WenKai defaults", async () => {
+  it("fills a partial appearance group with the frontend base-theme defaults", async () => {
     const runtime = createDefaultAppRuntime();
     const store = await runtime.settings.loadStore("settings.json", {
       autoSave: false,
@@ -63,8 +63,8 @@ describe("default app runtime capabilities", () => {
 
     await expect(runtime.settings.readGroup?.("appearance")).resolves.toEqual({
       appearanceMode: "system",
-      darkTheme: "wenkai-paper-dark",
-      lightTheme: "wenkai-paper-light"
+      darkTheme: "dark",
+      lightTheme: "light"
     });
   });
 

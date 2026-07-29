@@ -6,7 +6,7 @@ import type {
 } from "../../hooks/useCompactNavigation";
 import { defaultMcpConfig, type McpSettingsSnapshot } from "../../lib/mcp";
 import { defaultEditorPreferences, type EditorPreferences } from "../../lib/settings/app-settings";
-import { protectedThemeDescriptors } from "../../lib/themes/theme-catalog";
+import { builtInThemeDescriptors } from "../../themes/registry";
 import type { AppMcpRuntime } from "../../runtime";
 import { CompactSettingsDetail } from "./CompactSettingsDetail";
 import type { CompactAppController } from "./types";
@@ -54,21 +54,21 @@ function mcpRuntime(): AppMcpRuntime {
 function controller(overrides: Partial<CompactAppController> = {}) {
   return {
     appearance: {
-      activeTheme: protectedThemeDescriptors[0],
+      activeTheme: builtInThemeDescriptors[0],
       appearanceMode: "system",
       catalog: {
         capabilities: { canDelete: true, canImport: false, canOpenDirectory: false },
-        darkThemes: [protectedThemeDescriptors[1]],
+        darkThemes: [builtInThemeDescriptors[1], builtInThemeDescriptors[3]],
         deleteTheme: vi.fn(async () => undefined),
         error: null,
         importTheme: vi.fn(async () => null),
         invalidFiles: [],
-        lightThemes: [protectedThemeDescriptors[0]],
+        lightThemes: [builtInThemeDescriptors[0], builtInThemeDescriptors[2]],
         loading: false,
         openDirectory: vi.fn(async () => undefined),
         refresh: vi.fn(async () => undefined),
-        replaceTheme: vi.fn(async () => protectedThemeDescriptors[0]),
-        themes: [...protectedThemeDescriptors]
+        replaceTheme: vi.fn(async () => builtInThemeDescriptors[0]),
+        themes: [...builtInThemeDescriptors]
       },
       darkTheme: "dark",
       lightTheme: "light",
@@ -118,7 +118,7 @@ describe("CompactSettingsDetail", () => {
       storageKind: "resourceDirectory" as const
     };
     const setup = controller();
-    setup.appearance.catalog.darkThemes = [protectedThemeDescriptors[1], nord];
+    setup.appearance.catalog.darkThemes = [builtInThemeDescriptors[1], builtInThemeDescriptors[3], nord];
     setup.appearance.catalog.themes = [...setup.appearance.catalog.lightThemes, ...setup.appearance.catalog.darkThemes];
     vi.spyOn(window, "confirm").mockReturnValue(true);
 

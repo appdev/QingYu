@@ -1,13 +1,13 @@
-# QingYu Theme Authoring
+# 轻语主题制作指南
 
-QingYu supports two third-party theme forms:
+轻语 supports two third-party theme forms:
 
 - A single UTF-8 `.css` file is enough when the theme needs only CSS rules, CSS variables, same-document fragments, or small passive base64 `data:` resources. It cannot carry a local font, image, icon, or license beside the CSS.
 - An unpacked resource-theme directory is the authoring format when the theme has fonts, images, icons, or license files. For distribution, its root contents can be packaged externally as a portable `.theme` archive.
 
-One CSS file, resource directory, or `.theme` package represents exactly one `light` or `dark` theme. QingYu keeps two protected fallback themes (`light` and `dark`) and two protected bundled defaults (`wenkai-paper-light` and `wenkai-paper-dark`). Users may select all four, but cannot delete or replace them through third-party theme operations.
+One CSS file, resource directory, or `.theme` package represents exactly one light-appearance or dark-appearance theme. 轻语 provides four frontend-owned built-ins: the default `light` / `dark` pair and the original neutral `classic-light` / `classic-dark` pair. Users may select all four, but cannot delete, replace, or shadow them through third-party theme operations. These built-ins never enter the native theme directory or its scan/import pipeline.
 
-For a worked explanation of the bundled defaults—including palette, typography, sidebar states, real font-weight mapping, and the decisions that should or should not be copied—see [Default WenKai theme design](default-theme-wenkai.md).
+For a worked explanation of the defaults—including palette, typography, sidebar states, real font-weight mapping, frontend ownership, and the decisions that should or should not be copied—see [轻语默认臻楷主题设计](default-theme-zhenkai.md).
 
 ## Single-file CSS themes
 
@@ -43,7 +43,7 @@ preview-accent: #52c7c7
 }
 ```
 
-The file limit is 256 KiB. IDs must match `^[a-z0-9][a-z0-9-]{0,63}$`; `light`, `dark`, and every ID beginning with `qingyu-` are reserved. Names and authors are limited to 120 Unicode scalar values, versions to 64, and preview values must be valid non-transparent CSS colors. Single-file CSS rejects `@import` and every relative or external URL. Same-document fragments such as `url(#marker)` and bounded base64 data for PNG, JPEG, GIF, WebP, or WOFF2 content are accepted; HTML, XML, SVG, unknown MIME types, and non-base64 data are rejected.
+The file limit is 256 KiB. IDs must match `^[a-z0-9][a-z0-9-]{0,63}$`; `light`, `dark`, `classic-light`, `classic-dark`, and every ID beginning with the internal `qingyu-` namespace are reserved. Names and authors are limited to 120 Unicode scalar values, versions to 64, and preview values must be valid non-transparent CSS colors. Single-file CSS rejects `@import` and every relative or external URL. Same-document fragments such as `url(#marker)` and bounded base64 data for PNG, JPEG, GIF, WebP, or WOFF2 content are accepted; HTML, XML, SVG, unknown MIME types, and non-base64 data are rejected.
 
 ## Resource-theme directory
 
@@ -107,7 +107,7 @@ A complete manifest for a font-bearing theme is:
 }
 ```
 
-Every declared license must exist and contain UTF-8 text. A package containing a font must declare at least one existing UTF-8 license. QingYu checks the declaration and readability, while the distributor remains responsible for having the legal right to redistribute every bundled resource.
+Every declared license must exist and contain UTF-8 text. A package containing a font must declare at least one existing UTF-8 license. 轻语 checks the declaration and readability, while the distributor remains responsible for having the legal right to redistribute every bundled resource.
 
 ### Smallest copyable starter
 
@@ -181,7 +181,7 @@ The validator preserves ordinary theme authoring while preventing a stylesheet f
 
 CSS is treated as presentation data: it is never evaluated as JavaScript and receives no file-operation API. Resource activation grants the asset protocol access only to the validated, application-owned copy of that theme package. Rejected imports are cleaned from staging without rewriting the source package or files outside the theme catalog.
 
-Themes should set the following application-chrome variables on their ID-scoped `:root` selector. Themes should not target sidebar internal classes. Every variable is optional and may be omitted safely; QingYu then uses the documented fallback.
+Themes should set the following application-chrome variables on their ID-scoped `:root` selector. Themes should not target sidebar internal classes. Every variable is optional and may be omitted safely; 轻语 then uses the documented fallback.
 
 | Variable | Fallback |
 | --- | --- |
@@ -201,7 +201,7 @@ Themes should set the following application-chrome variables on their ID-scoped 
 | `--bg-outline-current` | `--bg-active` |
 | `--text-outline-current` | `--text-heading` |
 
-Sidebar typography and outline rhythm are also optional. They are consumed by APP-owned semantic classes, so themes can adapt the sidebar without targeting its internal component selectors. When omitted, these variables preserve QingYu's current compact sidebar behavior.
+Sidebar typography and outline rhythm are also optional. They are consumed by application-owned semantic classes, so themes can adapt the sidebar without targeting its internal component selectors. When omitted, these variables preserve 轻语's current compact sidebar behavior.
 
 | Variable | Fallback |
 | --- | --- |
@@ -242,7 +242,7 @@ Visual-editor variables on `.markdown-paper`:
 - typography families: `--editor-font-family`, `--editor-heading-font-family`;
 - heading defaults: `--editor-heading-font-weight`, `--editor-heading-letter-spacing`;
 - per-level heading values: `--editor-h1-color` through `--editor-h6-color`, `--editor-h1-font-size` through `--editor-h6-font-size`, `--editor-h1-font-weight` through `--editor-h6-font-weight`, `--editor-h1-letter-spacing` through `--editor-h6-letter-spacing`, and `--editor-h1-line-height` through `--editor-h6-line-height`;
-- compact heading sizes: `--editor-h1-font-size-compact` and `--editor-h2-font-size-compact`, used by QingYu below its compact editor breakpoint;
+- compact heading sizes: `--editor-h1-font-size-compact` and `--editor-h2-font-size-compact`, used by 轻语 below its compact editor breakpoint;
 - caret: `--editor-caret-color`.
 
 Every per-level letter-spacing variable falls back to `--editor-heading-letter-spacing`. A theme can therefore set one common value, then override only the levels that need a different rhythm:
@@ -268,7 +268,7 @@ Every per-level letter-spacing variable falls back to `--editor-heading-letter-s
 }
 ```
 
-QingYu consumes the same per-level tokens for CodeMirror live headings and rendered Markdown headings. Do not duplicate hard-coded heading values in `.cm-markra-*` selectors unless the theme knowingly accepts an editor-internal compatibility risk.
+轻语 consumes the same per-level tokens for CodeMirror live headings and rendered Markdown headings. Do not duplicate hard-coded heading values in `.cm-markra-*` selectors unless the theme knowingly accepts an editor-internal compatibility risk.
 
 The visual-editor font variables are theme-controlled while the editor font preference is set to use the theme; an explicitly selected user font is applied inline and wins. The source editor follows the same rule for `--source-editor-font-family` on `.markdown-source-paper`. Its colors inherit the application text, secondary-text, and accent variables. Paragraph spacing is always applied inline from the user's editor preference, so `--editor-paragraph-spacing` is not an author-controlled theme token.
 
@@ -276,9 +276,9 @@ The visual-editor font variables are theme-controlled while the editor font pref
 
 Theme values are resolved in this order:
 
-1. An explicit user preference wins for editor font, source-editor font, font size, line-height preference, content width, and paragraph spacing where QingYu applies that preference inline.
+1. An explicit user preference wins for editor font, source-editor font, font size, line-height preference, content width, and paragraph spacing where 轻语 applies that preference inline.
 2. The selected theme supplies stable semantic variables and Markdown presentation rules.
-3. QingYu's built-in stylesheet supplies documented fallbacks for anything omitted.
+3. 轻语's base stylesheet supplies documented fallbacks for anything omitted.
 
 The stable theme surface can change paint, type, and Markdown presentation without changing product behavior:
 
@@ -301,7 +301,7 @@ Before distributing a theme, verify all of these states rather than checking onl
 - visual-editor body text, H1 through H6, links, inline code, fenced code, quotes, callouts, lists, tasks, tables, marks, images, Mermaid, selection, caret, and search matches;
 - source editor headings, links, selection, caret, and long wrapped lines;
 - floating menus, popovers, scrollbars, dialogs, danger actions, and disabled controls;
-- both the theme's normal window size and QingYu's compact breakpoint for H1/H2.
+- both the theme's normal window size and 轻语's compact breakpoint for H1/H2.
 
 If a light and dark design are distributed as a pair, package them as two independent themes and run the checklist for each. Do not assume that changing only the background and foreground produces a usable dark theme; borders, selection fills, syntax colors, shadows, muted text, and scrollbar contrast all need independent values.
 
@@ -357,7 +357,7 @@ background-image: url("data:image/png;base64,iVBORw0KGgo=");
 ```
 
 Every `./assets/...` reference is percent-decoded and Unicode-normalized, and the referenced regular file must exist. A `data:` resource counts toward the 256 KiB CSS limit and must use one of the passive base64 MIME types listed above.
-Quoted `image-set()` and `-webkit-image-set()` candidates follow the same URL rules. Dynamic `var()`, `env()`, or `attr()` substitution is not accepted inside those functions because QingYu cannot validate the resulting resource before the stylesheet loads.
+Quoted `image-set()` and `-webkit-image-set()` candidates follow the same URL rules. Dynamic `var()`, `env()`, or `attr()` substitution is not accepted inside those functions because 轻语 cannot validate the resulting resource before the stylesheet loads.
 
 Rejected examples include:
 
@@ -416,13 +416,13 @@ On desktop:
 
 Desktop **Import theme** accepts both `.css` and `.theme`. Importing a new ID installs it. Importing an ID that already exists asks before replacement and checks the installed theme's expected fingerprint; replacement is atomic, so validation or publication failure leaves the old theme intact. Unpacked author directories are not rewritten by Refresh.
 
-To distribute a resource theme, create a standard ZIP archive whose root contains `manifest.json`, `theme.css`, and any referenced `assets/` or declared `licenses/`, then rename the archive to use the `.theme` extension. Do not add a wrapper directory. QingYu validates the complete archive during import and does not provide an in-app theme export or packaging action.
+To distribute a resource theme, create a standard ZIP archive whose root contains `manifest.json`, `theme.css`, and any referenced `assets/` or declared `licenses/`, then rename the archive to use the `.theme` extension. Do not add a wrapper directory. 轻语 validates the complete archive during import and does not provide an in-app theme export or packaging action.
 
 Compact/mobile installations can discover and use valid legacy or resource themes already present in their theme folder. They provide theme selection, Refresh, and deletion, but do not expose Import theme or Open theme folder actions. Light and dark lists are independent, may contain different numbers of themes, and retain their current selections.
 
 ## Fingerprints and atomic updates
 
-QingYu computes a content fingerprint from the normalized manifest plus every sorted path and file byte. ZIP compression or entry order does not change it, while changing the manifest, CSS, font, image, icon, or license does. Selection activates the current validated fingerprint immediately. A stale expected fingerprint cannot replace or delete a newer theme, and a changed author directory is revalidated before its stylesheet can be exposed.
+轻语 computes a content fingerprint from the normalized manifest plus every sorted path and file byte. ZIP compression or entry order does not change it, while changing the manifest, CSS, font, image, icon, or license does. Selection activates the current validated fingerprint immediately. A stale expected fingerprint cannot replace or delete a newer theme, and a changed author directory is revalidated before its stylesheet can be exposed.
 
 ## Current non-goals
 

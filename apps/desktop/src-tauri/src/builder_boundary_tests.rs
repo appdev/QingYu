@@ -902,6 +902,30 @@ fn builder_boundary_capabilities_are_platform_disjoint() {
             "{name} opener scope should allow only HTTP and HTTPS"
         );
     }
+
+    let desktop_theme_path_opener = desktop
+        .pointer("/permissions")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|permissions| {
+            permissions.iter().find(|permission| {
+                permission
+                    .pointer("/identifier")
+                    .and_then(serde_json::Value::as_str)
+                    == Some("opener:allow-open-path")
+            })
+        })
+        .expect("desktop should allow opening the owned theme directory");
+    assert_eq!(
+        desktop_theme_path_opener.pointer("/allow"),
+        Some(&serde_json::json!([{ "path": "$APPDATA/themes" }])),
+        "desktop opener scope should allow only the owned theme directory"
+    );
+    assert!(
+        permission_identifiers(&mobile)
+            .iter()
+            .all(|permission| *permission != "opener:allow-open-path"),
+        "mobile capability should not expose local path opening"
+    );
 }
 
 #[test]

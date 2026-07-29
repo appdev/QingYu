@@ -173,7 +173,7 @@ describe("settings events", () => {
     expect(onThemeChanged).toHaveBeenCalledWith(preferences);
     expect(onThemeChanged).toHaveBeenCalledWith({
       appearanceMode: "light",
-      darkTheme: "wenkai-paper-dark",
+      darkTheme: "dark",
       lightTheme: "newsprint"
     });
     expect(onThemeChanged).toHaveBeenCalledTimes(2);
@@ -314,6 +314,34 @@ describe("settings events", () => {
     cleanup();
 
     expect(onPreferencesChanged).not.toHaveBeenCalled();
+    expect(unlisten).toHaveBeenCalledTimes(1);
+  });
+
+  it("ignores theme catalog events emitted by the current window", async () => {
+    const unlisten = vi.fn();
+    const onCatalogChanged = vi.fn();
+    eventsAvailable = true;
+    mockedListen.mockResolvedValue(unlisten);
+
+    const cleanup = await settingsEvents.listenThemeCatalogChanged(onCatalogChanged);
+    const listener = mockedListen.mock.calls[0]?.[1];
+    await settingsEvents.notifyThemeCatalogChanged();
+    const localPayload = mockedEmit.mock.calls[0]?.[1];
+
+    listener?.({ payload: localPayload } as Parameters<NonNullable<typeof listener>>[0]);
+    expect(onCatalogChanged).not.toHaveBeenCalled();
+
+    listener?.({
+      payload: { revision: "remote-revision", sourceId: "another-window" }
+    } as Parameters<NonNullable<typeof listener>>[0]);
+    cleanup();
+
+    expect(mockedListen).toHaveBeenCalledWith("markra://theme-catalog-changed", expect.any(Function));
+    expect(mockedEmit).toHaveBeenCalledWith("markra://theme-catalog-changed", {
+      revision: expect.any(String),
+      sourceId: expect.any(String)
+    });
+    expect(onCatalogChanged).toHaveBeenCalledTimes(1);
     expect(unlisten).toHaveBeenCalledTimes(1);
   });
 

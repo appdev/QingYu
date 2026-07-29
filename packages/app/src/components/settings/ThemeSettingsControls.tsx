@@ -125,7 +125,11 @@ function ThemeCard({
         </span>
         <span className="block truncate text-[12px] leading-4.5 font-[650] text-(--text-heading)">{theme.name}</span>
         <span className="mt-0.5 block truncate text-[10px] leading-4 text-(--text-secondary)">
-          {theme.source === "default" ? translate("settings.theme.defaultBadge") : theme.author ?? translate("settings.theme.thirdPartyBadge")}
+          {theme.source === "builtin"
+            ? translate(theme.id === theme.appearance
+              ? "settings.theme.defaultBadge"
+              : "settings.theme.builtInBadge")
+            : theme.author ?? translate("settings.theme.thirdPartyBadge")}
         </span>
       </button>
       {canDelete && theme.source === "third-party" ? (

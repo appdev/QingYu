@@ -426,6 +426,7 @@ export type I18nKey =
   | "settings.theme.refreshThemes"
   | "settings.theme.openThemeFolder"
   | "settings.theme.defaultBadge"
+  | "settings.theme.builtInBadge"
   | "settings.theme.thirdPartyBadge"
   | "settings.theme.deleteTheme"
   | "settings.theme.replaceTheme"

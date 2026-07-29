@@ -93,6 +93,7 @@ const messages: LocaleMessages = {
   "settings.theme.refreshThemes": "테마 새로 고침",
   "settings.theme.openThemeFolder": "테마 폴더 열기",
   "settings.theme.defaultBadge": "기본",
+  "settings.theme.builtInBadge": "내장",
   "settings.theme.thirdPartyBadge": "타사",
   "settings.theme.deleteTheme": "테마 삭제",
   "settings.theme.replaceTheme": "테마 교체",
