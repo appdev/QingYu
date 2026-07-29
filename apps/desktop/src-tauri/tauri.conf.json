@@ -29,7 +29,8 @@
         "enable": true,
         "scope": []
       },
-      "csp": null,
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' asset: http://asset.localhost; img-src 'self' asset: http://asset.localhost data: blob: https: http:; font-src 'self' asset: http://asset.localhost data:; worker-src 'self' blob:; connect-src 'self' ipc: http://ipc.localhost; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'; frame-ancestors 'none'",
+      "dangerousDisableAssetCspModification": ["style-src"],
       "capabilities": [
         "main",
         "mobile"

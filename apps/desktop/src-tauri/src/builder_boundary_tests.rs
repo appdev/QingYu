@@ -86,6 +86,7 @@ const MOBILE_COMMANDS: &[&str] = &[
 ];
 
 const DESKTOP_COMMANDS: &[&str] = &[
+    "read_native_kernel_bootstrap",
     "get_mcp_settings",
     "update_mcp_settings",
     "set_mcp_primary_workspace",
@@ -434,6 +435,20 @@ fn builder_boundary_mobile_registers_only_approved_shared_commands() {
 }
 
 #[test]
+fn builder_boundary_native_kernel_bootstrap_is_desktop_only_and_dormant() {
+    let desktop = source("src/desktop_runtime.rs");
+    let mobile = source("src/mobile_runtime.rs");
+    let desktop_commands = handler_identifiers(&desktop);
+    let mobile_commands = handler_identifiers(&mobile);
+
+    assert!(desktop_commands.contains("read_native_kernel_bootstrap"));
+    assert!(!mobile_commands.contains("read_native_kernel_bootstrap"));
+    assert!(!desktop.contains("KernelHostSupervisor"));
+    assert!(!desktop.contains(".manage(crate::kernel_host"));
+    assert!(!desktop.contains("crate::kernel_host::"));
+}
+
+#[test]
 fn builder_boundary_theme_activation_uses_window_identity_and_narrow_lifetimes() {
     let activation = source("src/themes/activation.rs");
     let themes = source("src/themes/mod.rs");
@@ -603,6 +618,7 @@ fn builder_boundary_dispatcher_cfg_gates_desktop_only_modules() {
         "app_logs",
         "clipboard",
         "fonts",
+        "kernel_bootstrap",
         "language",
         "menu",
         "menu_labels",

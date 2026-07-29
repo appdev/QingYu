@@ -318,6 +318,7 @@ pub(crate) fn run() {
             emit_native_menu_command_payload(app, payload);
         })
         .invoke_handler(tauri::generate_handler![
+            crate::kernel_bootstrap::read_native_kernel_bootstrap,
             crate::mcp::get_mcp_settings,
             crate::mcp::update_mcp_settings,
             crate::mcp::set_mcp_primary_workspace,

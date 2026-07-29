@@ -3,6 +3,11 @@
 //! This module is intentionally not registered with the production Tauri
 //! builder yet. Its process seams are exercised with deterministic fakes until
 //! the Kernel owns every workspace mutation path.
+//!
+//! The dormant supervisor also intentionally does not retain the UI's parent
+//! credential. Before Task 6 registers it, the Ready state must own an endpoint
+//! and same-generation credential lease together, then revoke both on failure,
+//! stop, or drop as part of the atomic legacy-writer cutover.
 
 #![cfg_attr(not(test), allow(dead_code))]
 

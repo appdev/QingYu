@@ -12,6 +12,8 @@ mod desktop_runtime;
 #[cfg(desktop)]
 mod fonts;
 #[cfg(desktop)]
+mod kernel_bootstrap;
+#[cfg(desktop)]
 mod kernel_host;
 #[cfg(desktop)]
 mod language;
