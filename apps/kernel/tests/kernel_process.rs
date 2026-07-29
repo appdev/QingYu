@@ -2,7 +2,7 @@ use std::{
     io::{BufRead as _, BufReader, Read as _, Write as _},
     net::TcpStream,
     path::Path,
-    process::{Child, Command, Output, Stdio},
+    process::{Child, ChildStdin, Command, ExitStatus, Output, Stdio},
     sync::mpsc,
     thread,
     time::{Duration, Instant},
@@ -14,6 +14,7 @@ use tempfile::tempdir;
 const PROCESS_TIMEOUT: Duration = Duration::from_secs(10);
 const IO_TIMEOUT: Duration = Duration::from_secs(2);
 const VALID_CREDENTIAL: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+const NATIVE_HOST_PROTOCOL_VERSION: u64 = 1;
 
 #[test]
 fn desktop_startup_reports_public_readiness_and_serves_live_probe() {
@@ -26,6 +27,8 @@ fn desktop_startup_reports_public_readiness_and_serves_live_probe() {
     std::fs::create_dir(&cache).unwrap();
 
     let startup = json!({
+        "type": "start",
+        "protocolVersion": NATIVE_HOST_PROTOCOL_VERSION,
         "profile": "desktop",
         "workspaceRoot": workspace,
         "appDataRoot": app_data,
@@ -39,8 +42,10 @@ fn desktop_startup_reports_public_readiness_and_serves_live_probe() {
 
     assert_eq!(
         readiness.as_object().unwrap().keys().collect::<Vec<_>>(),
-        vec!["instanceId", "port"]
+        vec!["instanceId", "port", "protocolVersion", "type"]
     );
+    assert_eq!(readiness["type"], "ready");
+    assert_eq!(readiness["protocolVersion"], NATIVE_HOST_PROTOCOL_VERSION);
     assert!(readiness["instanceId"].as_str().is_some());
     assert!(!readiness_line.contains(VALID_CREDENTIAL));
 
@@ -51,6 +56,14 @@ fn desktop_startup_reports_public_readiness_and_serves_live_probe() {
         "unexpected live response: {response}"
     );
     assert!(response.contains(r#""status":"live""#));
+
+    let ready_response = authorized_get(u16::try_from(port).unwrap(), "/api/v1/health/ready");
+    assert!(
+        ready_response.starts_with("HTTP/1.1 200 OK\r\n"),
+        "unexpected ready response: {ready_response}"
+    );
+    let ready_body: Value = serde_json::from_str(response_body(&ready_response)).unwrap();
+    assert_eq!(ready_body["instanceId"], readiness["instanceId"]);
     assert_eq!(process.child_mut().try_wait().unwrap(), None);
 }
 
@@ -65,6 +78,8 @@ fn standalone_process_installs_durable_settings_and_reports_the_capability() {
     std::fs::create_dir(&cache).unwrap();
 
     let startup = json!({
+        "type": "start",
+        "protocolVersion": NATIVE_HOST_PROTOCOL_VERSION,
         "profile": "desktop",
         "workspaceRoot": workspace,
         "appDataRoot": app_data,
@@ -101,6 +116,8 @@ fn server_startup_uses_fixed_data_state_and_reports_process_readiness() {
         "the container integration test requires an empty /data mount"
     );
     let startup = json!({
+        "type": "start",
+        "protocolVersion": NATIVE_HOST_PROTOCOL_VERSION,
         "profile": "server",
         "origin": "http://127.0.0.1:3000",
         "credential": VALID_CREDENTIAL,
@@ -123,10 +140,151 @@ fn server_startup_uses_fixed_data_state_and_reports_process_readiness() {
 }
 
 #[test]
+fn explicit_shutdown_frame_stops_the_process_cleanly_without_extra_stdout() {
+    let (startup, _root) = desktop_startup_fixture();
+    let mut process = KernelProcess::spawn(&startup.to_string());
+    let readiness = process.read_stdout_line(PROCESS_TIMEOUT);
+    assert!(readiness.contains(r#""type":"ready""#));
+
+    process.write_control(&json!({
+        "type": "shutdown",
+        "protocolVersion": NATIVE_HOST_PROTOCOL_VERSION,
+    }));
+    let output = process.wait_for_output(PROCESS_TIMEOUT);
+
+    assert!(output.status.success(), "stderr: {}", utf8(&output.stderr));
+    assert_eq!(utf8(&output.stdout).lines().count(), 1);
+    assert!(output.stderr.is_empty());
+}
+
+#[test]
+fn closing_the_control_lease_stops_the_process_cleanly() {
+    let (startup, _root) = desktop_startup_fixture();
+    let mut process = KernelProcess::spawn(&startup.to_string());
+    process.read_stdout_line(PROCESS_TIMEOUT);
+
+    process.close_control();
+    let output = process.wait_for_output(PROCESS_TIMEOUT);
+
+    assert!(output.status.success(), "stderr: {}", utf8(&output.stderr));
+    assert_eq!(utf8(&output.stdout).lines().count(), 1);
+    assert!(output.stderr.is_empty());
+}
+
+#[test]
+fn duplicate_or_malformed_control_frames_fail_without_disclosing_startup_data() {
+    let secret_path_marker = "kernel-protocol-private-path-marker";
+    let root = tempdir().unwrap();
+    let workspace = root.path().join(secret_path_marker);
+    let app_data = root.path().join("app-data");
+    let cache = root.path().join("cache");
+    std::fs::create_dir(&workspace).unwrap();
+    std::fs::create_dir(&app_data).unwrap();
+    std::fs::create_dir(&cache).unwrap();
+    let startup = json!({
+        "type": "start",
+        "protocolVersion": NATIVE_HOST_PROTOCOL_VERSION,
+        "profile": "desktop",
+        "workspaceRoot": workspace,
+        "appDataRoot": app_data,
+        "cacheRoot": cache,
+        "origin": "tauri://localhost",
+        "credential": VALID_CREDENTIAL,
+    });
+    let mut process = KernelProcess::spawn(&startup.to_string());
+    process.read_stdout_line(PROCESS_TIMEOUT);
+
+    process.write_raw(format!("{}\n", startup).as_bytes());
+    let output = process.wait_for_output(PROCESS_TIMEOUT);
+    let stdout = utf8(&output.stdout);
+    let stderr = utf8(&output.stderr);
+
+    assert!(!output.status.success());
+    assert_eq!(stdout.lines().count(), 1);
+    assert_eq!(stderr.trim(), "QingYu Kernel startup failed.");
+    assert!(!stderr.contains(VALID_CREDENTIAL));
+    assert!(!stderr.contains(secret_path_marker));
+}
+
+#[test]
+fn malformed_or_oversized_control_frames_fail_generically() {
+    let controls = [
+        "{\n".to_owned(),
+        format!(
+            "{}\n",
+            json!({
+                "type": "shutdown",
+                "protocolVersion": NATIVE_HOST_PROTOCOL_VERSION,
+                "unknownField": "private-control-marker",
+            })
+        ),
+        format!("{}\n", "x".repeat(64 * 1024 + 1)),
+    ];
+
+    for control in controls {
+        let (startup, _root) = desktop_startup_fixture();
+        let mut process = KernelProcess::spawn(&startup.to_string());
+        process.read_stdout_line(PROCESS_TIMEOUT);
+        process.write_raw(control.as_bytes());
+
+        let output = process.wait_for_output(PROCESS_TIMEOUT);
+        let stdout = utf8(&output.stdout);
+        let stderr = utf8(&output.stderr);
+        assert!(!output.status.success());
+        assert_eq!(stdout.lines().count(), 1);
+        assert_eq!(stderr.trim(), "QingYu Kernel startup failed.");
+        assert!(!stderr.contains("private-control-marker"));
+    }
+}
+
+#[test]
+fn invalid_startup_framing_fails_generically() {
+    let (mut startup, _root) = desktop_startup_fixture();
+    startup["unknownField"] = json!("private-unknown-field-marker");
+    let (mut future_version, _future_root) = desktop_startup_fixture();
+    future_version["protocolVersion"] = json!(NATIVE_HOST_PROTOCOL_VERSION + 1);
+    let cases = [
+        FramedInput::line(startup.to_string()),
+        FramedInput::line(future_version.to_string()),
+        FramedInput::unterminated(
+            json!({
+                "type": "start",
+                "protocolVersion": NATIVE_HOST_PROTOCOL_VERSION,
+                "profile": "desktop",
+                "workspaceRoot": "/unterminated-private-path-marker",
+                "appDataRoot": "/unterminated-private-app-data-marker",
+                "cacheRoot": "/unterminated-private-cache-marker",
+                "origin": "tauri://localhost",
+                "credential": VALID_CREDENTIAL,
+            })
+            .to_string(),
+        ),
+        FramedInput::line("x".repeat(64 * 1024 + 1)),
+    ];
+
+    for input in cases {
+        let output = KernelProcess::spawn_framed(input).wait_for_output(PROCESS_TIMEOUT);
+        let stdout = utf8(&output.stdout);
+        let stderr = utf8(&output.stderr);
+
+        assert!(!output.status.success());
+        assert!(
+            stdout.is_empty(),
+            "failed startup emitted stdout: {stdout:?}"
+        );
+        assert_eq!(stderr.trim(), "QingYu Kernel startup failed.");
+        assert!(!stderr.contains(VALID_CREDENTIAL));
+        assert!(!stderr.contains("private"));
+    }
+}
+
+#[test]
 fn invalid_or_missing_credentials_fail_generically_without_secret_disclosure() {
     let secret = "invalid-private-launch-secret";
     let cases = [
         json!({
+            "type": "start",
+            "protocolVersion": NATIVE_HOST_PROTOCOL_VERSION,
             "profile": "desktop",
             "workspaceRoot": "/not/observed/before-credential-validation",
             "appDataRoot": "/not/observed/before-credential-validation-app-data",
@@ -135,6 +293,8 @@ fn invalid_or_missing_credentials_fail_generically_without_secret_disclosure() {
             "credential": secret,
         }),
         json!({
+            "type": "start",
+            "protocolVersion": NATIVE_HOST_PROTOCOL_VERSION,
             "profile": "desktop",
             "workspaceRoot": "/missing-credential-secret-marker",
             "appDataRoot": "/missing-credential-secret-marker-app-data",
@@ -157,6 +317,29 @@ fn invalid_or_missing_credentials_fail_generically_without_secret_disclosure() {
         assert!(!stderr.contains(secret));
         assert!(!stderr.contains("missing-credential-secret-marker"));
     }
+}
+
+fn desktop_startup_fixture() -> (Value, tempfile::TempDir) {
+    let root = tempdir().unwrap();
+    let workspace = root.path().join("workspace");
+    let app_data = root.path().join("app-data");
+    let cache = root.path().join("cache");
+    std::fs::create_dir(&workspace).unwrap();
+    std::fs::create_dir(&app_data).unwrap();
+    std::fs::create_dir(&cache).unwrap();
+    (
+        json!({
+            "type": "start",
+            "protocolVersion": NATIVE_HOST_PROTOCOL_VERSION,
+            "profile": "desktop",
+            "workspaceRoot": workspace,
+            "appDataRoot": app_data,
+            "cacheRoot": cache,
+            "origin": "tauri://localhost",
+            "credential": VALID_CREDENTIAL,
+        }),
+        root,
+    )
 }
 
 fn live_probe(port: u16) -> String {
@@ -200,10 +383,18 @@ fn response_body(response: &str) -> &str {
 
 struct KernelProcess {
     child: Option<Child>,
+    stdin: Option<ChildStdin>,
+    stdout_lines: mpsc::Receiver<String>,
+    stdout_output: mpsc::Receiver<Vec<u8>>,
+    stderr_output: mpsc::Receiver<Vec<u8>>,
 }
 
 impl KernelProcess {
     fn spawn(startup_json: &str) -> Self {
+        Self::spawn_framed(FramedInput::line(startup_json.to_owned()))
+    }
+
+    fn spawn_framed(input: FramedInput) -> Self {
         let mut child = Command::new(env!("CARGO_BIN_EXE_qingyu-kernel"))
             .arg("serve")
             .stdin(Stdio::piped())
@@ -212,9 +403,42 @@ impl KernelProcess {
             .spawn()
             .unwrap();
         let mut stdin = child.stdin.take().unwrap();
-        stdin.write_all(startup_json.as_bytes()).unwrap();
-        drop(stdin);
-        Self { child: Some(child) }
+        stdin.write_all(input.bytes.as_slice()).unwrap();
+        stdin.flush().unwrap();
+        let stdin = input.keep_open.then_some(stdin);
+        let (stdout_lines_sender, stdout_lines) = mpsc::channel();
+        let (stdout_output_sender, stdout_output) = mpsc::sync_channel(1);
+        let stdout = child.stdout.take().unwrap();
+        thread::spawn(move || {
+            let mut reader = BufReader::new(stdout);
+            let mut output = Vec::new();
+            loop {
+                let mut line = Vec::new();
+                match reader.read_until(b'\n', &mut line) {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => {
+                        output.extend_from_slice(&line);
+                        let _send_result =
+                            stdout_lines_sender.send(String::from_utf8_lossy(&line).into_owned());
+                    }
+                }
+            }
+            let _send_result = stdout_output_sender.send(output);
+        });
+        let (stderr_output_sender, stderr_output) = mpsc::sync_channel(1);
+        let mut stderr = child.stderr.take().unwrap();
+        thread::spawn(move || {
+            let mut output = Vec::new();
+            let _read_result = stderr.read_to_end(&mut output);
+            let _send_result = stderr_output_sender.send(output);
+        });
+        Self {
+            child: Some(child),
+            stdin,
+            stdout_lines,
+            stdout_output,
+            stderr_output,
+        }
     }
 
     fn child_mut(&mut self) -> &mut Child {
@@ -222,24 +446,33 @@ impl KernelProcess {
     }
 
     fn read_stdout_line(&mut self, timeout: Duration) -> String {
-        let stdout = self.child_mut().stdout.take().unwrap();
-        let (sender, receiver) = mpsc::sync_channel(1);
-        thread::spawn(move || {
-            let mut line = String::new();
-            let result = BufReader::new(stdout).read_line(&mut line).map(|_| line);
-            let _result = sender.send(result);
-        });
-        receiver
+        self.stdout_lines
             .recv_timeout(timeout)
             .expect("kernel did not report readiness before timeout")
-            .expect("failed to read kernel readiness")
+    }
+
+    fn write_control(&mut self, control: &Value) {
+        self.write_raw(format!("{control}\n").as_bytes());
+    }
+
+    fn write_raw(&mut self, bytes: &[u8]) {
+        let stdin = self.stdin.as_mut().expect("kernel control lease is closed");
+        stdin.write_all(bytes).unwrap();
+        stdin.flush().unwrap();
+    }
+
+    fn close_control(&mut self) {
+        self.stdin.take();
     }
 
     fn wait_for_output(mut self, timeout: Duration) -> Output {
         let deadline = Instant::now() + timeout;
         loop {
-            if self.child_mut().try_wait().unwrap().is_some() {
-                return self.child.take().unwrap().wait_with_output().unwrap();
+            if let Some(status) = self.child_mut().try_wait().unwrap() {
+                let _waited_status = self.child.take().unwrap().wait().unwrap();
+                let stdout = self.stdout_output.recv_timeout(IO_TIMEOUT).unwrap();
+                let stderr = self.stderr_output.recv_timeout(IO_TIMEOUT).unwrap();
+                return output(status, stdout, stderr);
             }
             assert!(
                 Instant::now() < deadline,
@@ -248,6 +481,41 @@ impl KernelProcess {
             thread::sleep(Duration::from_millis(10));
         }
     }
+}
+
+struct FramedInput {
+    bytes: Vec<u8>,
+    keep_open: bool,
+}
+
+impl FramedInput {
+    fn line(input: String) -> Self {
+        let mut bytes = input.into_bytes();
+        bytes.push(b'\n');
+        Self {
+            bytes,
+            keep_open: true,
+        }
+    }
+
+    fn unterminated(input: String) -> Self {
+        Self {
+            bytes: input.into_bytes(),
+            keep_open: false,
+        }
+    }
+}
+
+fn output(status: ExitStatus, stdout: Vec<u8>, stderr: Vec<u8>) -> Output {
+    Output {
+        status,
+        stdout,
+        stderr,
+    }
+}
+
+fn utf8(bytes: &[u8]) -> &str {
+    std::str::from_utf8(bytes).unwrap()
 }
 
 impl Drop for KernelProcess {

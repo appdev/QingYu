@@ -6,6 +6,7 @@ pub mod contract;
 pub mod documents;
 pub mod error;
 pub mod events;
+pub mod host;
 pub mod paths;
 pub mod ports;
 pub mod runtime;
