@@ -1,6 +1,7 @@
 use std::{
     io::{BufRead as _, BufReader, Read as _, Write as _},
     net::TcpStream,
+    path::Path,
     process::{Child, Command, Output, Stdio},
     sync::mpsc,
     thread,
@@ -50,6 +51,74 @@ fn desktop_startup_reports_public_readiness_and_serves_live_probe() {
         "unexpected live response: {response}"
     );
     assert!(response.contains(r#""status":"live""#));
+    assert_eq!(process.child_mut().try_wait().unwrap(), None);
+}
+
+#[test]
+fn standalone_process_installs_durable_settings_and_reports_the_capability() {
+    let root = tempdir().unwrap();
+    let workspace = root.path().join("workspace");
+    let app_data = root.path().join("app-data");
+    let cache = root.path().join("cache");
+    std::fs::create_dir(&workspace).unwrap();
+    std::fs::create_dir(&app_data).unwrap();
+    std::fs::create_dir(&cache).unwrap();
+
+    let startup = json!({
+        "profile": "desktop",
+        "workspaceRoot": workspace,
+        "appDataRoot": app_data,
+        "cacheRoot": cache,
+        "origin": "tauri://localhost",
+        "credential": VALID_CREDENTIAL,
+    });
+    let mut process = KernelProcess::spawn(&startup.to_string());
+    let readiness: Value =
+        serde_json::from_str(process.read_stdout_line(PROCESS_TIMEOUT).trim()).unwrap();
+    let port = u16::try_from(readiness["port"].as_u64().unwrap()).unwrap();
+
+    let runtime = authorized_get(port, "/api/v1/runtime");
+    assert!(runtime.starts_with("HTTP/1.1 200 OK\r\n"), "{runtime}");
+    let runtime_body: Value = serde_json::from_str(response_body(&runtime)).unwrap();
+    assert_eq!(runtime_body["capabilities"]["settings"], true);
+    assert_eq!(runtime_body["capabilities"]["portableSettings"], true);
+
+    let settings = authorized_get(port, "/api/v1/settings");
+    assert!(settings.starts_with("HTTP/1.1 200 OK\r\n"), "{settings}");
+    let settings_body: Value = serde_json::from_str(response_body(&settings)).unwrap();
+    assert!(settings_body["revision"].as_str().is_some());
+    assert!(app_data.join("settings.json").is_file());
+    assert_eq!(process.child_mut().try_wait().unwrap(), None);
+}
+
+#[test]
+#[ignore = "run inside an isolated Server container with an empty writable /data mount"]
+fn server_startup_uses_fixed_data_state_and_reports_process_readiness() {
+    let data_root = Path::new("/data");
+    assert!(data_root.is_dir(), "the container must mount /data");
+    assert!(
+        std::fs::read_dir(data_root).unwrap().next().is_none(),
+        "the container integration test requires an empty /data mount"
+    );
+    let startup = json!({
+        "profile": "server",
+        "origin": "http://127.0.0.1:3000",
+        "credential": VALID_CREDENTIAL,
+    });
+    let mut process = KernelProcess::spawn(&startup.to_string());
+    let readiness: Value =
+        serde_json::from_str(process.read_stdout_line(PROCESS_TIMEOUT).trim()).unwrap();
+    let port = u16::try_from(readiness["port"].as_u64().unwrap()).unwrap();
+
+    let runtime = authorized_get(port, "/api/v1/runtime");
+    assert!(runtime.starts_with("HTTP/1.1 200 OK\r\n"), "{runtime}");
+    let runtime_body: Value = serde_json::from_str(response_body(&runtime)).unwrap();
+    assert_eq!(runtime_body["profile"], "server");
+    assert_eq!(runtime_body["capabilities"]["settings"], true);
+    assert!(Path::new("/data/workspace").is_dir());
+    assert!(Path::new("/data/config").is_dir());
+    assert!(Path::new("/data/state/settings.json").is_file());
+    assert!(Path::new("/data/logs").is_dir());
     assert_eq!(process.child_mut().try_wait().unwrap(), None);
 }
 
@@ -104,6 +173,29 @@ fn live_probe(port: u16) -> String {
     let mut response = String::new();
     stream.read_to_string(&mut response).unwrap();
     response
+}
+
+fn authorized_get(port: u16, path: &str) -> String {
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+    stream.set_read_timeout(Some(IO_TIMEOUT)).unwrap();
+    stream.set_write_timeout(Some(IO_TIMEOUT)).unwrap();
+    write!(
+        stream,
+        "GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Bearer {VALID_CREDENTIAL}\r\nConnection: close\r\n\r\n"
+    )
+    .unwrap();
+    stream.flush().unwrap();
+
+    let mut response = String::new();
+    stream.read_to_string(&mut response).unwrap();
+    response
+}
+
+fn response_body(response: &str) -> &str {
+    response
+        .split_once("\r\n\r\n")
+        .map(|(_, body)| body)
+        .unwrap()
 }
 
 struct KernelProcess {

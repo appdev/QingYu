@@ -23,8 +23,9 @@ use qingyu_kernel::{
     settings::{
         model::{sanitize_legacy_remote_portable_settings, validate_portable_settings_bytes},
         service::{
-            SettingsPublicationBatch, SettingsPublicationBatchSink, SettingsRuntimeCoordinator,
-            SettingsService, SettingsServiceErrorKind,
+            SettingsGroup, SettingsPublicationBatch, SettingsPublicationBatchSink,
+            SettingsPublicationEvent, SettingsRuntimeCoordinator, SettingsService,
+            SettingsServiceErrorKind, SETTINGS_SCHEMA_VERSION,
         },
         storage::{AtomicJsonSettingsStore, SettingsStore, SettingsStoreError},
     },
@@ -42,6 +43,7 @@ struct MemorySettingsStore {
     values: Mutex<BTreeMap<String, Value>>,
     corrupt_replaces: AtomicUsize,
     fail_replace_on_call: AtomicUsize,
+    fail_get: AtomicBool,
     fail_set_from_call: AtomicUsize,
     fail_save: AtomicBool,
     fail_delete: AtomicBool,
@@ -66,6 +68,7 @@ impl MemorySettingsStore {
             ),
             corrupt_replaces: AtomicUsize::new(0),
             fail_replace_on_call: AtomicUsize::new(usize::MAX),
+            fail_get: AtomicBool::new(false),
             fail_set_from_call: AtomicUsize::new(usize::MAX),
             fail_save: AtomicBool::new(false),
             fail_delete: AtomicBool::new(false),
@@ -105,6 +108,9 @@ impl Default for MemorySettingsStore {
 
 impl SettingsStore for MemorySettingsStore {
     fn get(&self, key: &str) -> Result<Option<Value>, SettingsStoreError> {
+        if self.fail_get.load(Ordering::Relaxed) {
+            return Err(SettingsStoreError::unavailable());
+        }
         Ok(self.values.lock().unwrap().get(key).cloned())
     }
 
@@ -200,6 +206,19 @@ struct RecordingEvents {
 struct GateCheckingEvents {
     gate: Arc<Mutex<()>>,
     observed_unlocked: AtomicBool,
+}
+
+struct GateCheckingSettingsBatchSink {
+    gate: Arc<Mutex<()>>,
+    observed_unlocked: AtomicBool,
+}
+
+impl SettingsPublicationBatchSink for GateCheckingSettingsBatchSink {
+    fn publish(&self, _batch: &SettingsPublicationBatch) -> Result<(), EventSinkError> {
+        self.observed_unlocked
+            .store(self.gate.try_lock().is_ok(), Ordering::Relaxed);
+        Ok(())
+    }
 }
 
 #[derive(Default)]
@@ -897,6 +916,446 @@ fn dropping_a_durable_deferred_commit_latches_recovery_instead_of_losing_legacy_
 }
 
 #[test]
+fn cancelling_a_deferred_commit_drains_later_publications_without_emitting_it() {
+    let store = Arc::new(MemorySettingsStore::default());
+    let batches = Arc::new(RecordingSettingsBatches::default());
+    let coordinator = Arc::new(SettingsRuntimeCoordinator::with_batch_sink(batches.clone()));
+    let service = SettingsService::with_coordinator(store, coordinator);
+    let before = service.read_exposed().unwrap();
+    let first = service
+        .patch_exposed_deferred(
+            serde_json::from_value(serde_json::json!({
+                "expectedRevision": before.revision.as_str(),
+                "values": [{
+                    "key": "appearance.mode",
+                    "value": { "type": "string", "value": "dark" }
+                }]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    let second = service
+        .patch_exposed_deferred(
+            serde_json::from_value(serde_json::json!({
+                "expectedRevision": first.settings().revision.as_str(),
+                "values": [{
+                    "key": "language",
+                    "value": { "type": "string", "value": "fr" }
+                }]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+    second.publish().unwrap();
+    assert!(batches.batches.lock().unwrap().is_empty());
+    first.cancel().unwrap();
+
+    let published = batches.batches.lock().unwrap();
+    assert_eq!(published.len(), 1);
+    assert_eq!(
+        published[0].publications()[0].event_name(),
+        "markra://language-changed"
+    );
+    drop(published);
+    assert!(service.read_exposed().is_ok());
+}
+
+#[test]
+fn stale_conditional_publication_is_superseded_without_latching_recovery() {
+    let store = Arc::new(MemorySettingsStore::default());
+    let batches = Arc::new(RecordingSettingsBatches::default());
+    let coordinator = Arc::new(SettingsRuntimeCoordinator::with_batch_sink(batches.clone()));
+    let service = SettingsService::with_coordinator(store, coordinator);
+    let before = service.portable_snapshot().unwrap();
+    let deferred = service
+        .replace_portable_deferred(Some(br#"{"language":"fr"}"#), before.revision())
+        .unwrap();
+
+    let published = service
+        .publish_if_portable_revision(
+            deferred,
+            &qingyu_kernel::contract::Revision::parse("sha256:stale").unwrap(),
+        )
+        .unwrap();
+
+    assert!(!published);
+    assert!(batches.batches.lock().unwrap().is_empty());
+    assert!(service.portable_snapshot().is_ok());
+}
+
+#[test]
+fn conditional_publication_releases_the_settings_transaction_before_events() {
+    let gate = Arc::new(Mutex::new(()));
+    let events = Arc::new(GateCheckingEvents {
+        gate: gate.clone(),
+        observed_unlocked: AtomicBool::new(false),
+    });
+    let coordinator = Arc::new(SettingsRuntimeCoordinator::with_transaction_gate(
+        events.clone(),
+        gate,
+    ));
+    let service =
+        SettingsService::with_coordinator(Arc::new(MemorySettingsStore::default()), coordinator);
+    let before = service.portable_snapshot().unwrap();
+    let deferred = service
+        .replace_portable_deferred(Some(br#"{"language":"fr"}"#), before.revision())
+        .unwrap();
+    let committed = service.portable_snapshot().unwrap();
+
+    assert!(service
+        .publish_if_portable_revision(deferred, committed.revision())
+        .unwrap());
+
+    assert!(events.observed_unlocked.load(Ordering::Relaxed));
+}
+
+#[test]
+fn conditional_publication_read_failure_supersedes_without_latching_recovery() {
+    let store = Arc::new(MemorySettingsStore::default());
+    let service = SettingsService::new(store.clone(), Arc::new(RecordingEvents::default()));
+    let before = service.portable_snapshot().unwrap();
+    let deferred = service
+        .replace_portable_deferred(Some(br#"{"language":"fr"}"#), before.revision())
+        .unwrap();
+    let committed = service.portable_snapshot().unwrap();
+    store.fail_get.store(true, Ordering::Relaxed);
+
+    let error = service
+        .publish_if_portable_revision(deferred, committed.revision())
+        .unwrap_err();
+
+    assert_eq!(error.kind(), SettingsServiceErrorKind::Unavailable);
+    store.fail_get.store(false, Ordering::Relaxed);
+    assert!(service.portable_snapshot().is_ok());
+}
+
+#[test]
+fn conditional_read_failure_releases_the_gate_before_cancelling_and_draining_a_later_ticket() {
+    let gate = Arc::new(Mutex::new(()));
+    let batches = Arc::new(GateCheckingSettingsBatchSink {
+        gate: gate.clone(),
+        observed_unlocked: AtomicBool::new(false),
+    });
+    let coordinator = Arc::new(
+        SettingsRuntimeCoordinator::with_batch_sink_and_transaction_gate(batches.clone(), gate),
+    );
+    let store = Arc::new(MemorySettingsStore::default());
+    let service = SettingsService::with_coordinator(store.clone(), coordinator);
+    let before = service.portable_snapshot().unwrap();
+    let first = service
+        .replace_portable_deferred(Some(br#"{"language":"fr"}"#), before.revision())
+        .unwrap();
+    let after_first = service.portable_snapshot().unwrap();
+    let second = service
+        .replace_portable_deferred(Some(br#"{"language":"de"}"#), after_first.revision())
+        .unwrap();
+    let after_second = service.portable_snapshot().unwrap();
+    second.publish().unwrap();
+    store.fail_get.store(true, Ordering::Relaxed);
+
+    let error = service
+        .publish_if_portable_revision(first, after_second.revision())
+        .unwrap_err();
+
+    assert_eq!(error.kind(), SettingsServiceErrorKind::Unavailable);
+    assert!(batches.observed_unlocked.load(Ordering::Relaxed));
+    store.fail_get.store(false, Ordering::Relaxed);
+    assert!(service.portable_snapshot().is_ok());
+}
+
+#[test]
+fn portable_preflight_failure_never_mutates_or_allocates_an_unsettled_publication() {
+    let store = Arc::new(MemorySettingsStore::with([(
+        "language",
+        serde_json::json!("en"),
+    )]));
+    let service = SettingsService::new(store.clone(), Arc::new(RecordingEvents::default()));
+    let before = service.portable_snapshot().unwrap();
+    let preflights = AtomicUsize::new(0);
+
+    let error = service
+        .replace_portable_deferred_with_preflight(
+            Some(br#"{"language":"fr"}"#),
+            before.revision(),
+            || {
+                preflights.fetch_add(1, Ordering::Relaxed);
+                false
+            },
+        )
+        .unwrap_err();
+
+    assert_eq!(error.kind(), SettingsServiceErrorKind::ReconcileFailed);
+    assert_eq!(preflights.load(Ordering::Relaxed), 1);
+    assert_eq!(store.replaces.load(Ordering::Relaxed), 0);
+    assert_eq!(
+        service.portable_snapshot().unwrap().revision(),
+        before.revision()
+    );
+}
+
+#[test]
+fn publication_phase_can_be_reconstructed_after_a_process_restart() {
+    let store = Arc::new(MemorySettingsStore::with([(
+        "language",
+        serde_json::json!("en"),
+    )]));
+    let first = SettingsService::new(store.clone(), Arc::new(RecordingEvents::default()));
+    let before = first.portable_snapshot().unwrap();
+    let desired = br#"{"language":"fr"}"#;
+    let preview = first
+        .preview_merge(Some(desired), before.revision())
+        .unwrap();
+    let committed = first
+        .replace_portable_deferred(Some(desired), before.revision())
+        .unwrap();
+    let applied_revision = preview.applied_revision().clone();
+    std::mem::forget(committed);
+
+    let batches = Arc::new(RecordingSettingsBatches::default());
+    let restarted = SettingsService::with_coordinator(
+        store,
+        Arc::new(SettingsRuntimeCoordinator::with_batch_sink(batches.clone())),
+    );
+    let resumed = restarted
+        .resume_portable_publication(&applied_revision, preview.publications().to_vec())
+        .unwrap();
+    resumed.publish().unwrap();
+
+    let published = batches.batches.lock().unwrap();
+    assert_eq!(published.len(), 1);
+    assert_eq!(
+        published[0].publication().revision,
+        resumed_revision(&restarted)
+    );
+    assert_eq!(
+        published[0].publications(),
+        &[SettingsPublicationEvent::new(
+            "markra://language-changed",
+            serde_json::json!({ "language": "fr" }),
+        )]
+    );
+}
+
+fn resumed_revision(service: &SettingsService) -> qingyu_kernel::contract::Revision {
+    service.read_exposed().unwrap().revision
+}
+
+#[test]
+fn compatibility_groups_round_trip_through_the_kernel_owner() {
+    let golden = portable_golden_store();
+    let store = Arc::new(MemorySettingsStore::default());
+    let service = SettingsService::new(store, Arc::new(RecordingEvents::default()));
+    let cases = [
+        (
+            SettingsGroup::Appearance,
+            serde_json::json!({
+                "appearanceMode": golden["appearanceMode"],
+                "lightTheme": golden["lightThemeId"],
+                "darkTheme": golden["darkThemeId"],
+            }),
+        ),
+        (
+            SettingsGroup::CustomThemeCss,
+            serde_json::json!({
+                "light": golden["lightCustomThemeCss"],
+                "dark": golden["darkCustomThemeCss"],
+            }),
+        ),
+        (SettingsGroup::Language, golden["language"].clone()),
+        (
+            SettingsGroup::EditorPreferences,
+            golden["editorPreferences"].clone(),
+        ),
+        (
+            SettingsGroup::FileIgnoreSettings,
+            golden["fileIgnoreSettings"].clone(),
+        ),
+        (
+            SettingsGroup::ExportSettings,
+            golden["exportSettings"].clone(),
+        ),
+    ];
+
+    for (group, value) in cases {
+        let (stored, deferred) = service.write_group_deferred(group, value.clone()).unwrap();
+        assert_eq!(stored, value);
+        deferred.supersede().unwrap();
+        assert_eq!(service.read_group(group).unwrap(), Some(value));
+    }
+}
+
+#[test]
+fn schema_migration_persists_marker_and_values_in_one_save() {
+    let store = Arc::new(MemorySettingsStore::with([
+        ("lightTheme", serde_json::json!("newsprint")),
+        ("darkTheme", serde_json::json!("night")),
+    ]));
+    let service = SettingsService::new(store.clone(), Arc::new(RecordingEvents::default()));
+
+    service.migrate_schema().unwrap();
+
+    let values = store.values.lock().unwrap();
+    assert_eq!(
+        values["settingsSchemaVersion"],
+        serde_json::json!(SETTINGS_SCHEMA_VERSION)
+    );
+    assert_eq!(values["lightThemeId"], serde_json::json!("newsprint"));
+    assert_eq!(values["darkThemeId"], serde_json::json!("night"));
+    assert_eq!(values["lightTheme"], serde_json::json!("newsprint"));
+    assert_eq!(values["darkTheme"], serde_json::json!("night"));
+    drop(values);
+    assert_eq!(store.saves.load(Ordering::Relaxed), 1);
+
+    service.migrate_schema().unwrap();
+    assert_eq!(store.saves.load(Ordering::Relaxed), 1);
+    let portable = service.portable_snapshot().unwrap();
+    assert!(!String::from_utf8(portable.bytes().unwrap().to_vec())
+        .unwrap()
+        .contains("settingsSchemaVersion"));
+}
+
+#[test]
+fn schema_migration_does_not_copy_invalid_legacy_theme_ids() {
+    let store = Arc::new(MemorySettingsStore::with([
+        ("lightTheme", serde_json::json!("qingyu-reserved")),
+        ("darkTheme", serde_json::json!(7)),
+    ]));
+    let service = SettingsService::new(store.clone(), Arc::new(RecordingEvents::default()));
+
+    service.migrate_schema().unwrap();
+
+    let values = store.values.lock().unwrap();
+    assert!(!values.contains_key("lightThemeId"));
+    assert!(!values.contains_key("darkThemeId"));
+    assert_eq!(
+        values["settingsSchemaVersion"],
+        serde_json::json!(SETTINGS_SCHEMA_VERSION)
+    );
+}
+
+#[test]
+fn startup_language_initialization_uses_the_owner_transaction_and_preserves_valid_values() {
+    let store = Arc::new(MemorySettingsStore::with([(
+        "language",
+        serde_json::json!("fr"),
+    )]));
+    let service = SettingsService::new(store.clone(), Arc::new(RecordingEvents::default()));
+
+    assert!(!service.initialize_language_if_invalid("zh-CN").unwrap());
+    assert_eq!(
+        store.values.lock().unwrap()["language"],
+        serde_json::json!("fr")
+    );
+    assert_eq!(store.saves.load(Ordering::Relaxed), 0);
+
+    store
+        .values
+        .lock()
+        .unwrap()
+        .insert("language".to_string(), serde_json::json!("unsupported"));
+    assert!(service.initialize_language_if_invalid("zh-CN").unwrap());
+    assert_eq!(
+        store.values.lock().unwrap()["language"],
+        serde_json::json!("zh-CN")
+    );
+    assert_eq!(store.saves.load(Ordering::Relaxed), 1);
+}
+
+#[test]
+fn theme_catalog_migration_reads_legacy_metadata_and_commits_once_with_cas() {
+    let store = Arc::new(MemorySettingsStore::with([
+        ("themeCatalogVersion", serde_json::json!(0)),
+        ("theme", serde_json::json!("dark")),
+        ("customThemeCss", serde_json::json!("legacy-css")),
+        ("unrelated", serde_json::json!({ "kept": true })),
+    ]));
+    let service = SettingsService::new(store.clone(), Arc::new(RecordingEvents::default()));
+
+    let snapshot = service.read_theme_catalog_settings().unwrap();
+    assert_eq!(snapshot["theme"], serde_json::json!("dark"));
+    assert_eq!(snapshot["customThemeCss"], serde_json::json!("legacy-css"));
+    assert!(!snapshot.contains_key("unrelated"));
+    assert!(service
+        .commit_theme_catalog_settings(0, 4, Some(("dark", "paper", "night")))
+        .unwrap());
+    assert!(!service
+        .commit_theme_catalog_settings(0, 4, Some(("light", "other", "other-dark")))
+        .unwrap());
+
+    let values = store.values.lock().unwrap();
+    assert_eq!(values["themeCatalogVersion"], serde_json::json!(4));
+    assert_eq!(values["appearanceMode"], serde_json::json!("dark"));
+    assert_eq!(values["lightThemeId"], serde_json::json!("paper"));
+    assert_eq!(values["darkThemeId"], serde_json::json!("night"));
+    assert_eq!(values["unrelated"]["kept"], serde_json::json!(true));
+    drop(values);
+    assert_eq!(store.saves.load(Ordering::Relaxed), 1);
+}
+
+#[test]
+fn theme_catalog_migration_save_failure_restores_every_changed_field() {
+    let store = Arc::new(MemorySettingsStore::with([
+        ("appearanceMode", serde_json::json!("light")),
+        ("lightThemeId", serde_json::json!("old-light")),
+        ("darkThemeId", serde_json::json!("old-dark")),
+    ]));
+    let before = store.values.lock().unwrap().clone();
+    store.fail_save.store(true, Ordering::Relaxed);
+    let service = SettingsService::new(store.clone(), Arc::new(RecordingEvents::default()));
+
+    let error = service
+        .commit_theme_catalog_settings(0, 4, Some(("dark", "new-light", "new-dark")))
+        .unwrap_err();
+
+    assert_eq!(error.kind(), SettingsServiceErrorKind::Unavailable);
+    assert_eq!(*store.values.lock().unwrap(), before);
+    store.fail_save.store(false, Ordering::Relaxed);
+    assert!(service.read_exposed().is_ok());
+}
+
+#[test]
+fn ordinary_schema_migration_save_failure_restores_the_prior_cache() {
+    let store = Arc::new(MemorySettingsStore::with([(
+        "lightTheme",
+        serde_json::json!("newsprint"),
+    )]));
+    store.fail_save.store(true, Ordering::Relaxed);
+    let service = SettingsService::new(store.clone(), Arc::new(RecordingEvents::default()));
+
+    let error = service.migrate_schema().unwrap_err();
+
+    assert_eq!(error.kind(), SettingsServiceErrorKind::Unavailable);
+    let values = store.values.lock().unwrap();
+    assert_eq!(values.len(), 1);
+    assert_eq!(values["lightTheme"], serde_json::json!("newsprint"));
+    drop(values);
+    store.fail_save.store(false, Ordering::Relaxed);
+    assert!(service.read_exposed().is_ok());
+}
+
+#[test]
+fn uncertain_schema_migration_save_requires_owner_recovery() {
+    let store = Arc::new(MemorySettingsStore::default());
+    store
+        .publish_uncertain_on_save
+        .store(true, Ordering::Relaxed);
+    let service = SettingsService::new(store.clone(), Arc::new(RecordingEvents::default()));
+
+    let error = service.migrate_schema().unwrap_err();
+
+    assert_eq!(error.kind(), SettingsServiceErrorKind::RecoveryRequired);
+    assert_eq!(
+        store.values.lock().unwrap()["settingsSchemaVersion"],
+        serde_json::json!(SETTINGS_SCHEMA_VERSION)
+    );
+    assert_eq!(
+        service.read_exposed().unwrap_err().kind(),
+        SettingsServiceErrorKind::RecoveryRequired
+    );
+}
+
+#[test]
 fn save_failure_restores_the_exact_prior_cache_and_publishes_nothing() {
     let store = Arc::new(MemorySettingsStore::with([
         ("appearanceMode", serde_json::json!("light")),
@@ -1288,6 +1747,65 @@ fn patch_scrubs_polluted_groups_without_publishing_local_paths_or_unknown_secret
 }
 
 #[test]
+fn portable_replace_preserves_valid_local_only_nested_settings() {
+    let golden = portable_golden_store();
+    let mut editor = golden["editorPreferences"].clone();
+    editor["viewModeCustomizations"]["recentFolders"] = serde_json::json!("hidden");
+    let mut export = golden["exportSettings"].clone();
+    export["pandocPath"] = serde_json::json!("/private/bin/pandoc");
+    let store = Arc::new(MemorySettingsStore::with([
+        ("editorPreferences", editor),
+        ("exportSettings", export),
+    ]));
+    let service = SettingsService::new(store.clone(), Arc::new(RecordingEvents::default()));
+    let before = service.portable_snapshot().unwrap();
+    let desired = serde_json::json!({ "language": "zh-CN" });
+    let bytes = serde_json::to_vec(&desired).unwrap();
+
+    service
+        .replace_portable_deferred(Some(&bytes), before.revision())
+        .unwrap()
+        .cancel()
+        .unwrap();
+
+    let stored = store.values.lock().unwrap();
+    assert_eq!(
+        stored["editorPreferences"]["viewModeCustomizations"]["recentFolders"],
+        serde_json::json!("hidden")
+    );
+    assert_eq!(
+        stored["exportSettings"]["pandocPath"],
+        serde_json::json!("/private/bin/pandoc")
+    );
+    drop(stored);
+    assert_eq!(
+        serde_json::from_slice::<Value>(service.portable_snapshot().unwrap().bytes().unwrap())
+            .unwrap(),
+        desired
+    );
+}
+
+#[test]
+fn legacy_mcp_cleanup_is_conditional_and_uses_the_settings_transaction() {
+    let legacy = serde_json::json!({ "version": 1, "enabled": true });
+    let store = Arc::new(MemorySettingsStore::with([("mcp", legacy.clone())]));
+    let service = SettingsService::new(store.clone(), Arc::new(RecordingEvents::default()));
+
+    assert_eq!(
+        service.read_legacy_mcp_config().unwrap(),
+        Some(legacy.clone())
+    );
+    assert!(!service
+        .remove_legacy_mcp_config_if_matches(&serde_json::json!({ "enabled": false }))
+        .unwrap());
+    assert!(service
+        .remove_legacy_mcp_config_if_matches(&legacy)
+        .unwrap());
+    assert_eq!(service.read_legacy_mcp_config().unwrap(), None);
+    assert_eq!(store.saves.load(Ordering::Relaxed), 1);
+}
+
+#[test]
 fn portable_snapshot_rejects_an_invalid_local_portable_group() {
     let store = Arc::new(MemorySettingsStore::with([(
         "editorPreferences",
@@ -1323,6 +1841,16 @@ fn legacy_remote_cleanup_removes_mcp_and_adds_null_export_font_family() {
 fn failed_portable_verification_restores_the_previous_snapshot_and_local_fields() {
     let store = Arc::new(MemorySettingsStore::with([
         ("language", serde_json::json!("en")),
+        (
+            "editorPreferences",
+            serde_json::json!({
+                "viewModeCustomizations": { "recentFolders": "hidden" }
+            }),
+        ),
+        (
+            "exportSettings",
+            serde_json::json!({ "pandocPath": "/private/bin/pandoc" }),
+        ),
         ("localOnly", serde_json::json!({ "path": "/private/state" })),
     ]));
     store.corrupt_replaces.store(1, Ordering::Relaxed);
@@ -1340,6 +1868,14 @@ fn failed_portable_verification_restores_the_previous_snapshot_and_local_fields(
     assert_eq!(
         values["localOnly"],
         serde_json::json!({ "path": "/private/state" })
+    );
+    assert_eq!(
+        values["editorPreferences"]["viewModeCustomizations"]["recentFolders"],
+        serde_json::json!("hidden")
+    );
+    assert_eq!(
+        values["exportSettings"]["pandocPath"],
+        serde_json::json!("/private/bin/pandoc")
     );
 }
 

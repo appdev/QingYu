@@ -46,7 +46,7 @@ use tauri::{Emitter, Manager};
 
 #[cfg(any(desktop, feature = "desktop-sidecar"))]
 use crate::{
-    app_settings::AppSettingsService, markdown_files::DocumentService,
+    app_settings::KernelSettingsOwner, markdown_files::DocumentService,
     remote_sync::mcp_service::SyncService,
 };
 
@@ -129,7 +129,7 @@ pub(crate) fn initialize(app: &tauri::AppHandle) -> Result<Arc<McpState>, String
         .map_err(|error| error.to_string())?;
     let runtime_root = app_data_dir.join("mcp-runtime");
     std::fs::create_dir_all(&runtime_root).map_err(|error| error.to_string())?;
-    let settings = Arc::new(AppSettingsService::from_app(app).map_err(|error| error.to_string())?);
+    let settings = Arc::new(app.state::<KernelSettingsOwner>().inner().clone());
     let mcp_settings = McpLocalSettingsService::from_app(app).map_err(|error| error.to_string())?;
     let config = Arc::new(McpConfigManager::load(mcp_settings).map_err(|error| error.to_string())?);
     let snapshot = config.snapshot().map_err(|error| error.to_string())?;

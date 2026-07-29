@@ -32,7 +32,7 @@ use super::settings_scope::{
 use super::{create_webdav_backend_at_validated_prefix, WebDavSyncSettings};
 use crate::app_settings::{
     portable_settings_from_bytes, sanitize_legacy_remote_portable_settings, AppSettingsError,
-    AppSettingsService, DeferredSettingsPublication, SettingsPublicationEvent,
+    KernelSettingsOwner,
 };
 use crate::notebook_scope::{
     notebook_name_from_root, notes_remote_prefix, resolve_notebook_sync_scope,
@@ -44,6 +44,7 @@ use crate::sync_config::status::{
     write_sync_status_at_app_data, SyncRunResult, SyncSafeError, SyncStatus, SyncSummary,
     SyncTrigger,
 };
+use qingyu_kernel::settings::service::{DeferredSettingsPublication, SettingsPublicationEvent};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct SyncRunError {
@@ -55,6 +56,7 @@ pub(crate) struct SyncRunError {
 }
 
 struct PreparedPortableSettingsSync {
+    applied_portable_revision: Option<String>,
     expected_portable_revision: String,
     publication_events: Vec<SettingsPublicationEvent>,
     phase: PortableSettingsJournalPhase,
@@ -157,14 +159,7 @@ pub(crate) async fn run_application_s3_portable_settings<R: Runtime>(
             SyncSummary::default(),
         )
     })?;
-    let settings_service = AppSettingsService::from_app(app).map_err(|error| {
-        run_error(
-            safe_error_code(&error.to_string()),
-            &snapshot.revision,
-            trigger,
-            SyncSummary::default(),
-        )
-    })?;
+    let settings_service = app.state::<KernelSettingsOwner>();
     let SyncTarget::S3 {
         access_key_id,
         addressing_style,
@@ -223,7 +218,7 @@ pub(crate) async fn run_application_s3_portable_settings<R: Runtime>(
         &app_data,
         settings_state,
         &settings_backend,
-        &settings_service,
+        settings_service.inner(),
         || async { Ok(()) },
     )
     .await
@@ -463,14 +458,7 @@ async fn run_application_sync_inner<R: Runtime>(
             SyncSummary::default(),
         )
     })?;
-    let settings_service = AppSettingsService::from_app(app).map_err(|error| {
-        run_error(
-            safe_error_code(&error.to_string()),
-            &snapshot.revision,
-            trigger,
-            SyncSummary::default(),
-        )
-    })?;
+    let settings_service = app.state::<KernelSettingsOwner>();
     let global_ignore_rules = settings_service.file_ignore_rules().map_err(|error| {
         run_error(
             safe_error_code(&error.to_string()),
@@ -654,7 +642,7 @@ where
 }
 
 fn prepare_portable_settings_sync(
-    service: &AppSettingsService,
+    service: &KernelSettingsOwner,
     app_data: &Path,
     settings_state: PathBuf,
     manifest_name: &str,
@@ -669,7 +657,7 @@ fn prepare_portable_settings_sync(
 }
 
 fn prepare_portable_settings_sync_with_conflict_preserver<PreserveConflict>(
-    service: &AppSettingsService,
+    service: &KernelSettingsOwner,
     app_data: &Path,
     settings_state: PathBuf,
     manifest_name: &str,
@@ -700,19 +688,23 @@ where
         }
         match journal.phase {
             PortableSettingsJournalPhase::Prepared
-                if snapshot.revision() != journal.expected_portable_revision => {}
+                if snapshot.revision().as_str() != journal.expected_portable_revision => {}
             PortableSettingsJournalPhase::Publication
-                if journal.applied_portable_revision.as_deref() != Some(snapshot.revision()) => {}
+                if journal.applied_portable_revision.as_deref()
+                    != Some(snapshot.revision().as_str()) => {}
             PortableSettingsJournalPhase::Reconcile
-                if snapshot.revision() != journal.expected_portable_revision =>
+                if snapshot.revision().as_str() != journal.expected_portable_revision =>
             {
-                if journal.applied_portable_revision.as_deref() == Some(snapshot.revision()) {
+                if journal.applied_portable_revision.as_deref()
+                    == Some(snapshot.revision().as_str())
+                {
                     let mut publication = journal;
                     publication.phase = PortableSettingsJournalPhase::Publication;
                     write_portable_settings_pending(&scope, &publication)?;
                     let staged = publication.staged_bytes()?;
                     restore_portable_settings_stage(&scope, staged.as_deref())?;
                     return Ok(PreparedPortableSettingsSync {
+                        applied_portable_revision: publication.applied_portable_revision,
                         expected_portable_revision: publication.expected_portable_revision,
                         publication_events: publication.publication_events,
                         phase: publication.phase,
@@ -726,6 +718,7 @@ where
                 let staged = journal.staged_bytes()?;
                 restore_portable_settings_stage(&scope, staged.as_deref())?;
                 return Ok(PreparedPortableSettingsSync {
+                    applied_portable_revision: journal.applied_portable_revision,
                     expected_portable_revision: journal.expected_portable_revision,
                     publication_events: journal.publication_events,
                     phase: journal.phase,
@@ -734,11 +727,13 @@ where
             }
         }
     }
-    let mut journal = PortableSettingsJournal::prepared(snapshot.revision(), snapshot.bytes());
+    let mut journal =
+        PortableSettingsJournal::prepared(snapshot.revision().as_str(), snapshot.bytes());
     journal.prepared_manifest_revision = capture_portable_settings_manifest_revision(&scope)?;
     write_portable_settings_pending(&scope, &journal)?;
     restore_portable_settings_stage(&scope, snapshot.bytes())?;
     Ok(PreparedPortableSettingsSync {
+        applied_portable_revision: None,
         expected_portable_revision: journal.expected_portable_revision,
         publication_events: Vec::new(),
         phase: PortableSettingsJournalPhase::Prepared,
@@ -805,7 +800,7 @@ async fn sanitize_legacy_remote_settings<Backend: RemoteSyncBackend>(
 
 #[cfg(test)]
 fn reconcile_prepared_settings_after_scope(
-    service: &AppSettingsService,
+    service: &KernelSettingsOwner,
     app_data: &Path,
     prepared: &PreparedPortableSettingsSync,
     expected_local_hash: Option<&str>,
@@ -822,7 +817,7 @@ fn reconcile_prepared_settings_after_scope(
 }
 
 fn reconcile_prepared_settings_after_scope_defer_publication(
-    service: &AppSettingsService,
+    service: &KernelSettingsOwner,
     _app_data: &Path,
     prepared: &PreparedPortableSettingsSync,
     expected_local_hash: Option<&str>,
@@ -830,7 +825,13 @@ fn reconcile_prepared_settings_after_scope_defer_publication(
     let mut journal = read_portable_settings_pending(&prepared.scope)?
         .ok_or_else(|| AppSettingsError::reconcile_failed().to_string())?;
     if journal.phase == PortableSettingsJournalPhase::Publication {
-        return Ok(service.deferred_settings_publication(journal.publication_events));
+        let expected_revision = journal
+            .applied_portable_revision
+            .as_deref()
+            .ok_or_else(|| AppSettingsError::reconcile_failed().to_string())?;
+        return service
+            .resume_portable_settings_publication(expected_revision, journal.publication_events)
+            .map_err(|error| error.to_string());
     }
     let staged = capture_settings_file_state(prepared.scope.source_root())?;
     journal.phase = PortableSettingsJournalPhase::Reconcile;
@@ -846,6 +847,7 @@ fn reconcile_prepared_settings_after_scope_defer_publication(
         .portable_settings_snapshot()
         .map_err(|error| error.to_string())?
         .revision()
+        .as_str()
         != prepared.expected_portable_revision
     {
         return Err(AppSettingsError::reconcile_failed().to_string());
@@ -877,23 +879,30 @@ fn reconcile_prepared_settings_after_scope_defer_publication(
     match result {
         Ok(publication) => {
             journal.phase = PortableSettingsJournalPhase::Publication;
-            journal.publication_events = publication.publications().to_vec();
-            write_portable_settings_pending(&prepared.scope, &journal)?;
-            Ok(publication)
+            match write_portable_settings_pending(&prepared.scope, &journal) {
+                Ok(()) => Ok(publication),
+                Err(error) => {
+                    publication
+                        .supersede()
+                        .map_err(|publish_error| publish_error.to_string())?;
+                    Err(error)
+                }
+            }
         }
         Err(error) => Err(error.to_string()),
     }
 }
 
 fn replace_publication_with_current_prepared_settings(
-    service: &AppSettingsService,
+    service: &KernelSettingsOwner,
     scope: &RemoteSyncScope,
 ) -> Result<(), String> {
     loop {
         let snapshot = service
             .portable_settings_snapshot()
             .map_err(|error| error.to_string())?;
-        let mut journal = PortableSettingsJournal::prepared(snapshot.revision(), snapshot.bytes());
+        let mut journal =
+            PortableSettingsJournal::prepared(snapshot.revision().as_str(), snapshot.bytes());
         journal.prepared_manifest_revision = capture_portable_settings_manifest_revision(scope)?;
         write_portable_settings_pending(scope, &journal)?;
         restore_portable_settings_stage(scope, snapshot.bytes())?;
@@ -910,8 +919,8 @@ fn replace_publication_with_current_prepared_settings(
 
 async fn finish_portable_settings_publication<Reload, ReloadFuture>(
     scope: &RemoteSyncScope,
-    service: &AppSettingsService,
-    publication: &DeferredSettingsPublication,
+    service: &KernelSettingsOwner,
+    publication: DeferredSettingsPublication,
     mut reload: Reload,
 ) -> Result<(), String>
 where
@@ -919,23 +928,43 @@ where
     ReloadFuture: Future<Output = Result<(), String>>,
 {
     let reload_result = reload().await;
-    let journal = read_portable_settings_pending(scope)?
-        .filter(|journal| journal.phase == PortableSettingsJournalPhase::Publication)
-        .ok_or_else(|| AppSettingsError::reconcile_failed().to_string())?;
-    let expected_revision = journal
-        .applied_portable_revision
-        .as_deref()
-        .ok_or_else(|| AppSettingsError::reconcile_failed().to_string())?;
-    if service
-        .portable_settings_snapshot()
-        .map_err(|error| error.to_string())?
-        .revision()
-        != expected_revision
-    {
+    let journal = match read_portable_settings_pending(scope) {
+        Ok(Some(journal)) if journal.phase == PortableSettingsJournalPhase::Publication => journal,
+        Ok(_) => {
+            publication.supersede().map_err(|error| error.to_string())?;
+            return Err(AppSettingsError::reconcile_failed().to_string());
+        }
+        Err(error) => {
+            publication
+                .supersede()
+                .map_err(|publish_error| publish_error.to_string())?;
+            return Err(error);
+        }
+    };
+    let Some(expected_revision) = journal.applied_portable_revision.as_deref() else {
+        publication.supersede().map_err(|error| error.to_string())?;
+        return Err(AppSettingsError::reconcile_failed().to_string());
+    };
+    let snapshot = match service.portable_settings_snapshot() {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            publication
+                .supersede()
+                .map_err(|publish_error| publish_error.to_string())?;
+            return Err(error.to_string());
+        }
+    };
+    if snapshot.revision().as_str() != expected_revision {
+        publication.supersede().map_err(|error| error.to_string())?;
         replace_publication_with_current_prepared_settings(service, scope)?;
         return Err("settings-state-changed: The settings changed during publication.".to_string());
     }
-    reload_result?;
+    if let Err(error) = reload_result {
+        publication
+            .supersede()
+            .map_err(|publish_error| publish_error.to_string())?;
+        return Err(error);
+    }
     if !service
         .publish_deferred_if_portable_revision(publication, expected_revision)
         .map_err(|error| error.to_string())?
@@ -946,6 +975,22 @@ where
     clear_portable_settings_pending(scope)
 }
 
+fn resume_prepared_portable_settings_publication(
+    service: &KernelSettingsOwner,
+    prepared: &PreparedPortableSettingsSync,
+) -> Result<DeferredSettingsPublication, String> {
+    let expected_revision = prepared
+        .applied_portable_revision
+        .as_deref()
+        .ok_or_else(|| AppSettingsError::reconcile_failed().to_string())?;
+    service
+        .resume_portable_settings_publication(
+            expected_revision,
+            prepared.publication_events.clone(),
+        )
+        .map_err(|error| error.to_string())
+}
+
 #[cfg(test)]
 pub(crate) async fn run_prepared_portable_settings_sync<SettingsBackend, Reload, ReloadFuture>(
     revision: &str,
@@ -954,7 +999,7 @@ pub(crate) async fn run_prepared_portable_settings_sync<SettingsBackend, Reload,
     app_data: &Path,
     settings_state: PathBuf,
     settings_backend: &SettingsBackend,
-    settings_service: &AppSettingsService,
+    settings_service: &KernelSettingsOwner,
     reload: Reload,
 ) -> Result<SyncSummary, SyncRunError>
 where
@@ -990,7 +1035,7 @@ async fn run_prepared_portable_settings_sync_with_coordinator<
     app_data: &Path,
     settings_state: PathBuf,
     settings_backend: &SettingsBackend,
-    settings_service: &AppSettingsService,
+    settings_service: &KernelSettingsOwner,
     mut reload: Reload,
 ) -> Result<SyncSummary, SyncRunError>
 where
@@ -1015,11 +1060,19 @@ where
         })?;
         if prepared.phase == PortableSettingsJournalPhase::Publication {
             let pending_publication =
-                settings_service.deferred_settings_publication(prepared.publication_events.clone());
+                resume_prepared_portable_settings_publication(settings_service, &prepared)
+                    .map_err(|error| {
+                        run_error(
+                            safe_error_code(&error),
+                            revision,
+                            trigger,
+                            SyncSummary::default(),
+                        )
+                    })?;
             finish_portable_settings_publication(
                 prepared.scope(),
                 settings_service,
-                &pending_publication,
+                pending_publication,
                 &mut reload,
             )
             .await
@@ -1076,7 +1129,7 @@ where
         let result = settings_result
             .map(|_| summary.clone())
             .map_err(|error| remote_run_error(error, revision, trigger, summary.clone()));
-        let publication_result = match publication.as_ref() {
+        let publication_result = match publication.take() {
             Some(publication) => {
                 finish_portable_settings_publication(
                     prepared.scope(),
@@ -1112,7 +1165,7 @@ async fn run_prepared_scoped_sync_pair<NotesBackend, SettingsBackend, Reload, Re
     notes_backend: &NotesBackend,
     settings_state: PathBuf,
     settings_backend: &SettingsBackend,
-    settings_service: &AppSettingsService,
+    settings_service: &KernelSettingsOwner,
     reload: Reload,
 ) -> Result<SyncRunResult, SyncRunError>
 where
@@ -1154,7 +1207,7 @@ async fn run_prepared_scoped_sync_pair_with_coordinator<
     notes_backend: &NotesBackend,
     settings_state: PathBuf,
     settings_backend: &SettingsBackend,
-    settings_service: &AppSettingsService,
+    settings_service: &KernelSettingsOwner,
     mut reload: Reload,
 ) -> Result<SyncRunResult, SyncRunError>
 where
@@ -1180,11 +1233,19 @@ where
         })?;
         if prepared.phase == PortableSettingsJournalPhase::Publication {
             let pending_publication =
-                settings_service.deferred_settings_publication(prepared.publication_events.clone());
+                resume_prepared_portable_settings_publication(settings_service, &prepared)
+                    .map_err(|error| {
+                        run_error(
+                            safe_error_code(&error),
+                            revision,
+                            trigger,
+                            SyncSummary::default(),
+                        )
+                    })?;
             finish_portable_settings_publication(
                 prepared.scope(),
                 settings_service,
-                &pending_publication,
+                pending_publication,
                 &mut reload,
             )
             .await
@@ -1246,7 +1307,7 @@ where
             notes_result,
             settings_result,
         );
-        let publication_result = match publication.as_ref() {
+        let publication_result = match publication.take() {
             Some(publication) => {
                 finish_portable_settings_publication(
                     prepared.scope(),
@@ -1569,6 +1630,7 @@ mod tests {
     use std::thread;
     use std::time::Duration;
 
+    use qingyu_kernel::settings::service::SettingsPublicationEvent;
     use serde_json::{json, Value};
     use sha2::{Digest, Sha256};
     use tempfile::tempdir;
@@ -1582,8 +1644,7 @@ mod tests {
         settings_state_root, sync_safe_error, validate_snapshot_target, ApplicationSyncSource,
     };
     use crate::app_settings::{
-        AppSettingsError, AppSettingsGroup, AppSettingsService, SettingsBackend, SettingsEventSink,
-        SettingsPublicationEvent,
+        AppSettingsError, AppSettingsGroup, KernelSettingsOwner, SettingsBackend, SettingsEventSink,
     };
     use crate::remote_sync::backend::{
         RemoteSyncBackend, RemoteSyncDiagnostic, RemoteSyncError, RemoteSyncFile,
@@ -1777,7 +1838,7 @@ mod tests {
             let settings_path = app_data_root.join("settings.json");
             let live = BTreeMap::from([("language".into(), json!("en"))]);
             fs::write(&settings_path, serde_json::to_vec(&live).unwrap()).unwrap();
-            let settings_service = AppSettingsService::new_for_test(
+            let settings_service = KernelSettingsOwner::new_for_test(
                 Arc::new(FileSettingsBackend::new(settings_path, live)),
                 None,
             );
@@ -1829,7 +1890,7 @@ mod tests {
             let live = BTreeMap::from([("language".into(), json!("en"))]);
             fs::write(&settings_path, serde_json::to_vec(&live).unwrap()).unwrap();
             let events = Arc::new(RetryingSettingsEvents::default());
-            let settings_service = AppSettingsService::new_for_test(
+            let settings_service = KernelSettingsOwner::new_for_test(
                 Arc::new(FileSettingsBackend::new(settings_path, live)),
                 Some(events.clone()),
             );
@@ -1941,7 +2002,7 @@ mod tests {
             let live = BTreeMap::from([("language".into(), json!("en"))]);
             fs::write(&settings_path, serde_json::to_vec(&live).unwrap()).unwrap();
             let events = Arc::new(RetryingSettingsEvents::default());
-            let settings_service = AppSettingsService::new_for_test(
+            let settings_service = KernelSettingsOwner::new_for_test(
                 Arc::new(FileSettingsBackend::new(settings_path.clone(), live)),
                 Some(events.clone()),
             );
@@ -2023,7 +2084,7 @@ mod tests {
                 .filter(|(event, _)| event == "markra://language-changed")
                 .map(|(_, payload)| payload["language"].clone())
                 .collect::<Vec<_>>();
-            assert_eq!(language_events, vec![json!("fr")]);
+            assert!(language_events.is_empty());
             let persisted: Value =
                 serde_json::from_slice(&fs::read(settings_path).unwrap()).unwrap();
             assert_eq!(persisted["language"], json!("fr"));
@@ -2165,7 +2226,7 @@ mod tests {
             let settings_path = app_data_root.join("settings.json");
             let live = BTreeMap::from([("language".into(), json!("en"))]);
             fs::write(&settings_path, serde_json::to_vec(&live).unwrap()).unwrap();
-            let settings_service = AppSettingsService::new_for_test(
+            let settings_service = KernelSettingsOwner::new_for_test(
                 Arc::new(FileSettingsBackend::new(settings_path, live)),
                 None,
             );
@@ -2254,7 +2315,7 @@ mod tests {
             let settings_path = app_data_root.join("settings.json");
             let live = BTreeMap::from([("language".into(), json!("en"))]);
             fs::write(&settings_path, serde_json::to_vec(&live).unwrap()).unwrap();
-            let settings_service = AppSettingsService::new_for_test(
+            let settings_service = KernelSettingsOwner::new_for_test(
                 Arc::new(FileSettingsBackend::new(settings_path, live)),
                 None,
             );
@@ -2521,7 +2582,7 @@ mod tests {
         let settings_path = app_data_root.join("settings.json");
         let live = BTreeMap::from([("language".into(), json!("en"))]);
         fs::write(&settings_path, serde_json::to_vec(&live).unwrap()).unwrap();
-        let settings_service = AppSettingsService::new_for_test(
+        let settings_service = KernelSettingsOwner::new_for_test(
             Arc::new(FileSettingsBackend::new(settings_path, live)),
             None,
         );
@@ -2621,7 +2682,7 @@ mod tests {
             let sync_state = app_data_root.join("sync-state");
             let settings_path = app_data_root.join("settings.json");
             fs::write(&settings_path, b"{}").unwrap();
-            let settings_service = AppSettingsService::new_for_test(
+            let settings_service = KernelSettingsOwner::new_for_test(
                 Arc::new(FileSettingsBackend::new(settings_path, BTreeMap::new())),
                 None,
             );
@@ -2717,7 +2778,7 @@ mod tests {
             let settings_state = sync_state.join("settings");
             let settings_path = app_data_root.join("settings.json");
             fs::write(&settings_path, b"{}").unwrap();
-            let settings_service = AppSettingsService::new_for_test(
+            let settings_service = KernelSettingsOwner::new_for_test(
                 Arc::new(FileSettingsBackend::new(settings_path, BTreeMap::new())),
                 None,
             );
@@ -2828,7 +2889,7 @@ mod tests {
                 ("welcomeDocumentSeen".into(), json!(true)),
             ]);
             fs::write(&settings_path, serde_json::to_vec(&live).unwrap()).unwrap();
-            let settings_service = AppSettingsService::new_for_test(
+            let settings_service = KernelSettingsOwner::new_for_test(
                 Arc::new(FileSettingsBackend::new(
                     settings_path.clone(),
                     live.clone(),
@@ -2881,7 +2942,12 @@ mod tests {
             drop(remote);
             assert_eq!(
                 serde_json::from_slice::<Value>(&fs::read(settings_path).unwrap()).unwrap(),
-                serde_json::to_value(live).unwrap()
+                json!({
+                    "language": "zh-CN",
+                    "settingsSchemaVersion": 1,
+                    "welcomeDocumentSeen": true,
+                    "workspace": { "path": "/Users/example/Workspace/A" },
+                })
             );
         });
     }
@@ -2908,7 +2974,7 @@ mod tests {
                 settings_path.clone(),
                 live.clone(),
             ));
-            let settings_service = AppSettingsService::new_for_test(store_backend.clone(), None);
+            let settings_service = KernelSettingsOwner::new_for_test(store_backend.clone(), None);
             let notes_scope = RemoteSyncScope::notes(
                 notes.path(),
                 &state,
@@ -2957,7 +3023,12 @@ mod tests {
             assert_eq!(error.code(), "settings-reconcile-failed");
             assert_eq!(
                 serde_json::from_slice::<Value>(&fs::read(&settings_path).unwrap()).unwrap(),
-                serde_json::to_value(&live).unwrap()
+                json!({
+                    "language": "en",
+                    "settingsSchemaVersion": 1,
+                    "welcomeDocumentSeen": true,
+                    "workspace": { "path": "/Users/example/Workspace/A" },
+                })
             );
 
             run_prepared_scoped_sync_pair(
@@ -3005,7 +3076,7 @@ mod tests {
                 ("welcomeDocumentSeen".into(), json!(true)),
             ]);
             fs::write(&settings_path, serde_json::to_vec(&live).unwrap()).unwrap();
-            let settings_service = AppSettingsService::new_for_test(
+            let settings_service = KernelSettingsOwner::new_for_test(
                 Arc::new(FileSettingsBackend::new(
                     settings_path.clone(),
                     live.clone(),
@@ -3312,7 +3383,7 @@ mod tests {
         let settings_path = app_data_root.join("settings.json");
         let live = BTreeMap::from([("language".into(), json!("en"))]);
         fs::write(&settings_path, serde_json::to_vec(&live).unwrap()).unwrap();
-        let settings_service = AppSettingsService::new_for_test(
+        let settings_service = KernelSettingsOwner::new_for_test(
             Arc::new(FileSettingsBackend::new(settings_path, live)),
             None,
         );
@@ -3431,7 +3502,7 @@ mod tests {
             let notes_backend = FakeBackend::new("notes");
             let settings_backend = FakeBackend::new("settings");
             let store_backend = Arc::new(FileSettingsBackend::new(settings_path.clone(), live));
-            let settings_service = AppSettingsService::new_for_test(store_backend.clone(), None);
+            let settings_service = KernelSettingsOwner::new_for_test(store_backend.clone(), None);
 
             run_prepared_scoped_sync_pair(
                 "revision-race",
@@ -3519,7 +3590,7 @@ mod tests {
             ]);
             fs::write(&settings_path, serde_json::to_vec(&live).unwrap()).unwrap();
             let store_backend = Arc::new(FileSettingsBackend::new(settings_path.clone(), live));
-            let settings_service = AppSettingsService::new_for_test(store_backend.clone(), None);
+            let settings_service = KernelSettingsOwner::new_for_test(store_backend.clone(), None);
             let notes_scope = RemoteSyncScope::notes(
                 notes.path(),
                 &state,
@@ -3605,7 +3676,7 @@ mod tests {
                 &fs::read(&settings_path).unwrap(),
             )
             .unwrap();
-            let restarted_service = AppSettingsService::new_for_test(
+            let restarted_service = KernelSettingsOwner::new_for_test(
                 Arc::new(FileSettingsBackend::new(
                     settings_path.clone(),
                     restarted_live,
@@ -3654,7 +3725,7 @@ mod tests {
             let settings_path = app_data_root.join("settings.json");
             let live = BTreeMap::from([("language".into(), json!("en"))]);
             fs::write(&settings_path, serde_json::to_vec(&live).unwrap()).unwrap();
-            let settings_service = AppSettingsService::new_for_test(
+            let settings_service = KernelSettingsOwner::new_for_test(
                 Arc::new(FileSettingsBackend::new(settings_path.clone(), live)),
                 None,
             );
@@ -3748,7 +3819,7 @@ mod tests {
         let live = BTreeMap::from([("language".into(), json!("en"))]);
         fs::write(&settings_path, serde_json::to_vec(&live).unwrap()).unwrap();
         let store_backend = Arc::new(FileSettingsBackend::new(settings_path, live));
-        let settings_service = AppSettingsService::new_for_test(store_backend.clone(), None);
+        let settings_service = KernelSettingsOwner::new_for_test(store_backend.clone(), None);
         let prepared = prepare_portable_settings_sync(
             &settings_service,
             &app_data_root,
@@ -3778,6 +3849,7 @@ mod tests {
                 .portable_settings_snapshot()
                 .unwrap()
                 .revision()
+                .as_str()
                 .to_string(),
         );
         write_portable_settings_pending(prepared.scope(), &journal).unwrap();
@@ -3884,7 +3956,7 @@ mod tests {
                     app_data_root.join("settings.json"),
                     BTreeMap::new(),
                 ));
-                let settings_service = AppSettingsService::new_for_test(store_backend, None);
+                let settings_service = KernelSettingsOwner::new_for_test(store_backend, None);
                 run_prepared_scoped_sync_pair_with_coordinator(
                     &second_execution_coordinator,
                     "revision-lock-b",

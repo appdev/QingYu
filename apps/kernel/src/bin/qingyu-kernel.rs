@@ -16,6 +16,8 @@ use qingyu_kernel::{
     paths::KernelPaths,
     ports::KernelPorts,
     runtime::{KernelRuntime, ServiceFailure, SystemApiService},
+    settings::{service::SettingsService, storage::AtomicJsonSettingsStore},
+    storage::DurableFileStore,
 };
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroize as _;
@@ -106,8 +108,23 @@ async fn run() -> Result<(), ()> {
     }
     .map_err(|_| ())?;
     let profile = paths.profile();
+    let settings_store = Arc::new(
+        AtomicJsonSettingsStore::new(
+            DurableFileStore::at_instance_data(paths.instance_data_root(), config.launch_epoch())
+                .map_err(|_| ())?,
+        )
+        .map_err(|_| ())?,
+    );
     let runtime =
         KernelRuntime::activate(config, paths, KernelPorts::unavailable()).map_err(|_| ())?;
+    let settings_service = Arc::new(SettingsService::new(
+        settings_store,
+        runtime.event_broker().clone(),
+    ));
+    settings_service.migrate_schema().map_err(|_| ())?;
+    runtime
+        .install_settings_api_service(settings_service)
+        .map_err(|_| ())?;
     runtime
         .install_system_api_service(Arc::new(BasicSystemService {
             instance_id: runtime.instance_id(),
@@ -237,11 +254,11 @@ impl SystemApiService for BasicSystemService {
                 documents: false,
                 history: false,
                 search: false,
-                settings: false,
+                settings: true,
                 sync: false,
                 webdav: false,
                 s3: false,
-                portable_settings: false,
+                portable_settings: true,
             },
             instance_id: self.instance_id,
         })

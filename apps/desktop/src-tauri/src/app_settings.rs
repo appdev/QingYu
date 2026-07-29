@@ -11,6 +11,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
+#[cfg(test)]
 use sha2::{Digest, Sha256};
 use tauri::{Emitter, Manager, Runtime};
 use tauri_plugin_store::StoreExt;
@@ -28,13 +29,16 @@ pub(crate) const DEFAULT_DARK_THEME_ID: &str = "wenkai-paper-dark";
 const APPEARANCE_MODE_KEY: &str = "appearanceMode";
 const LIGHT_THEME_KEY: &str = "lightThemeId";
 const DARK_THEME_KEY: &str = "darkThemeId";
+#[cfg(test)]
 const LEGACY_LIGHT_THEME_KEY: &str = "lightTheme";
+#[cfg(test)]
 const LEGACY_DARK_THEME_KEY: &str = "darkTheme";
 const LANGUAGE_KEY: &str = "language";
 const EDITOR_PREFERENCES_KEY: &str = "editorPreferences";
 const FILE_IGNORE_SETTINGS_KEY: &str = "fileIgnoreSettings";
 const EXPORT_SETTINGS_KEY: &str = "exportSettings";
 const PORTABLE_SETTINGS_MAX_BYTES: usize = 16 * 1024 * 1024;
+const KERNEL_SETTINGS_CHANGED_EVENT: &str = "qingyu://kernel-settings-changed";
 const PORTABLE_SETTINGS_KEYS: [&str; 9] = [
     APPEARANCE_MODE_KEY,
     LIGHT_THEME_KEY,
@@ -86,6 +90,7 @@ pub(crate) enum AppSettingsGroup {
 }
 
 impl AppSettingsGroup {
+    #[cfg(test)]
     fn event(self) -> Option<(&'static str, &'static str)> {
         match self {
             Self::Appearance => Some(("markra://theme-changed", "preferences")),
@@ -272,10 +277,8 @@ impl qingyu_kernel::settings::service::SettingsPublicationBatchSink for DesktopS
     }
 }
 
-/// Temporary host adapter used while desktop command composition remains on
-/// the legacy service. Task 9 can install this exact backend in the Kernel
-/// without creating a second `settings.json` owner. Task 9 must build one
-/// shared `SettingsRuntimeCoordinator` with this adapter's transaction gate.
+/// Adapts the host's one plugin-store instance to the Kernel settings boundary.
+/// Every desktop/mobile settings surface shares this adapter's transaction gate.
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct KernelSettingsStoreAdapter {
     backend: Arc<dyn SettingsBackend>,
@@ -348,6 +351,476 @@ impl qingyu_kernel::settings::storage::SettingsStore for KernelSettingsStoreAdap
     }
 }
 
+struct TauriKernelSettingsEventSink<R: Runtime> {
+    app: tauri::AppHandle<R>,
+}
+
+impl<R: Runtime> qingyu_kernel::events::EventSink for TauriKernelSettingsEventSink<R> {
+    fn publish(
+        &self,
+        publication: &qingyu_kernel::events::EventPublication,
+    ) -> Result<(), qingyu_kernel::events::EventSinkError> {
+        self.app
+            .emit(
+                KERNEL_SETTINGS_CHANGED_EVENT,
+                json!({
+                    "resource": publication.resource,
+                    "revision": publication.revision.as_str(),
+                    "event": publication.event,
+                }),
+            )
+            .map_err(|_| qingyu_kernel::events::EventSinkError)
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct KernelSettingsOwner {
+    service: Arc<qingyu_kernel::settings::service::SettingsService>,
+}
+
+impl KernelSettingsOwner {
+    pub(crate) fn install<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<Self, AppSettingsError> {
+        let store = app
+            .store_builder(SETTINGS_STORE_PATH)
+            .disable_auto_save()
+            .build()
+            .map_err(|_| AppSettingsError::unavailable())?;
+        let app_data_root = app
+            .path()
+            .app_data_dir()
+            .map_err(|_| AppSettingsError::unavailable())?;
+        Self::new(
+            Arc::new(StoreSettingsBackend {
+                app_data_root,
+                store,
+            }),
+            Arc::new(TauriKernelSettingsEventSink { app: app.clone() }),
+            Arc::new(TauriSettingsEventSink { app: app.clone() }),
+        )
+    }
+
+    fn new(
+        backend: Arc<dyn SettingsBackend>,
+        typed: Arc<dyn qingyu_kernel::events::EventSink>,
+        legacy: Arc<dyn SettingsEventSink>,
+    ) -> Result<Self, AppSettingsError> {
+        let adapter = Arc::new(KernelSettingsStoreAdapter::new(backend));
+        let coordinator = Arc::new(
+            qingyu_kernel::settings::service::SettingsRuntimeCoordinator::with_batch_sink_and_transaction_gate(
+                Arc::new(DesktopSettingsBatchSink::new(typed, legacy)),
+                adapter.transaction_gate(),
+            ),
+        );
+        let service = Arc::new(
+            qingyu_kernel::settings::service::SettingsService::with_coordinator(
+                adapter,
+                coordinator,
+            ),
+        );
+        service
+            .migrate_schema()
+            .map_err(map_kernel_settings_error)?;
+        Ok(Self { service })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_for_test(
+        backend: Arc<dyn SettingsBackend>,
+        events: Option<Arc<dyn SettingsEventSink>>,
+    ) -> Self {
+        Self::new(
+            backend,
+            Arc::new(SilentKernelSettingsEvents),
+            events.unwrap_or_else(|| Arc::new(SilentLegacySettingsEvents)),
+        )
+        .expect("test settings owner")
+    }
+
+    pub(crate) fn exposed_field_names(&self) -> &'static [&'static str] {
+        &EXPOSED_FIELDS
+    }
+
+    pub(crate) fn initialize_startup_language(
+        &self,
+        language: &str,
+    ) -> Result<(), AppSettingsError> {
+        self.service
+            .initialize_language_if_invalid(language)
+            .map(|_changed| ())
+            .map_err(map_kernel_settings_error)
+    }
+
+    pub(crate) fn read_theme_catalog_settings(
+        &self,
+    ) -> Result<BTreeMap<String, Value>, AppSettingsError> {
+        self.service
+            .read_theme_catalog_settings()
+            .map_err(map_kernel_settings_error)
+    }
+
+    pub(crate) fn commit_theme_catalog_settings(
+        &self,
+        expected_catalog_version: i64,
+        catalog_version: i64,
+        appearance: Option<(&str, &str, &str)>,
+    ) -> Result<bool, AppSettingsError> {
+        self.service
+            .commit_theme_catalog_settings(expected_catalog_version, catalog_version, appearance)
+            .map_err(map_kernel_settings_error)
+    }
+
+    pub(crate) fn read_group(
+        &self,
+        group: AppSettingsGroup,
+    ) -> Result<Option<Value>, AppSettingsError> {
+        self.service
+            .read_group(kernel_settings_group(group))
+            .map_err(map_kernel_settings_error)
+    }
+
+    pub(crate) fn write_group(
+        &self,
+        group: AppSettingsGroup,
+        value: Value,
+    ) -> Result<Value, AppSettingsError> {
+        let (stored, deferred) = self
+            .service
+            .write_group_deferred(kernel_settings_group(group), value)
+            .map_err(map_kernel_settings_error)?;
+        let _cancel_result = deferred.cancel();
+        Ok(stored)
+    }
+
+    pub(crate) fn replace_portable_settings(
+        &self,
+        settings: Value,
+    ) -> Result<Value, AppSettingsError> {
+        let portable = kernel_portable_settings_from_compatibility_value(&settings)?;
+        let bytes = serde_json::to_vec(&portable).map_err(|_| AppSettingsError::invalid_group())?;
+        let before = self
+            .service
+            .portable_snapshot()
+            .map_err(map_kernel_settings_error)?;
+        let deferred = self
+            .service
+            .replace_portable_deferred(Some(&bytes), before.revision())
+            .map_err(map_kernel_settings_error)?;
+        deferred
+            .publish()
+            .map_err(|_| AppSettingsError::unavailable())?;
+        Ok(settings)
+    }
+
+    pub(crate) fn read_exposed(&self) -> Result<ExposedAppSettings, AppSettingsError> {
+        self.service
+            .read_exposed()
+            .map_err(map_kernel_settings_error)
+            .and_then(kernel_snapshot_to_exposed)
+    }
+
+    pub(crate) fn patch_exposed(
+        &self,
+        patch: ExposedSettingsPatch,
+    ) -> Result<ExposedAppSettings, AppSettingsError> {
+        let request = kernel_patch_from_exposed(patch)?;
+        self.service
+            .patch_exposed(request)
+            .map_err(map_kernel_settings_error)
+            .and_then(kernel_snapshot_to_exposed)
+    }
+
+    pub(crate) fn file_ignore_rules(&self) -> Result<Option<String>, AppSettingsError> {
+        Ok(self
+            .read_group(AppSettingsGroup::FileIgnoreSettings)?
+            .and_then(|settings| {
+                settings
+                    .get("rules")
+                    .and_then(Value::as_str)
+                    .map(normalize_file_ignore_rules)
+            })
+            .filter(|rules| !rules.is_empty()))
+    }
+
+    pub(crate) fn read_legacy_mcp_config(&self) -> Result<Option<Value>, AppSettingsError> {
+        self.service
+            .read_legacy_mcp_config()
+            .map_err(map_kernel_settings_error)
+    }
+
+    pub(crate) fn remove_legacy_mcp_config_if_matches(
+        &self,
+        expected: &Value,
+    ) -> Result<bool, AppSettingsError> {
+        self.service
+            .remove_legacy_mcp_config_if_matches(expected)
+            .map_err(map_kernel_settings_error)
+    }
+
+    pub(crate) fn portable_settings_snapshot(
+        &self,
+    ) -> Result<qingyu_kernel::settings::model::PortableSettingsSnapshot, AppSettingsError> {
+        self.service
+            .portable_snapshot()
+            .map_err(map_kernel_settings_error)
+    }
+
+    pub(crate) fn preview_portable_settings_merge(
+        &self,
+        bytes: Option<&[u8]>,
+        expected_portable_revision: &str,
+    ) -> Result<
+        (
+            String,
+            Vec<qingyu_kernel::settings::service::SettingsPublicationEvent>,
+        ),
+        AppSettingsError,
+    > {
+        let expected = qingyu_kernel::contract::Revision::parse(expected_portable_revision)
+            .map_err(|_| AppSettingsError::reconcile_failed())?;
+        let preview = self
+            .service
+            .preview_merge(bytes, &expected)
+            .map_err(map_kernel_settings_error)?;
+        Ok((
+            preview.applied_revision().as_str().to_string(),
+            preview.publications().to_vec(),
+        ))
+    }
+
+    pub(crate) fn merge_portable_settings_bytes_defer_publication_with_preflight<
+        Preflight,
+        Verify,
+    >(
+        &self,
+        bytes: Option<&[u8]>,
+        expected_portable_revision: &str,
+        preflight: Preflight,
+        verify: Verify,
+    ) -> Result<qingyu_kernel::settings::service::DeferredSettingsPublication, AppSettingsError>
+    where
+        Preflight: FnOnce() -> Result<(), AppSettingsError>,
+        Verify: FnOnce(&Value) -> Result<(), AppSettingsError>,
+    {
+        let expected = qingyu_kernel::contract::Revision::parse(expected_portable_revision)
+            .map_err(|_| AppSettingsError::reconcile_failed())?;
+        let mut preflight_error = None;
+        let mut verify_error = None;
+        let result = self
+            .service
+            .replace_portable_deferred_with_preflight_and_verify(
+                bytes,
+                &expected,
+                || match preflight() {
+                    Ok(()) => true,
+                    Err(error) => {
+                        preflight_error = Some(error);
+                        false
+                    }
+                },
+                |actual| match verify(actual) {
+                    Ok(()) => true,
+                    Err(error) => {
+                        verify_error = Some(error);
+                        false
+                    }
+                },
+            );
+        match result {
+            Ok(publication) => Ok(publication),
+            Err(_) if preflight_error.is_some() => {
+                Err(preflight_error.expect("preflight error was checked as present"))
+            }
+            Err(_) if verify_error.is_some() => {
+                Err(verify_error.expect("verify error was checked as present"))
+            }
+            Err(_) => Err(AppSettingsError::reconcile_failed()),
+        }
+    }
+
+    pub(crate) fn resume_portable_settings_publication(
+        &self,
+        expected_portable_revision: &str,
+        publications: Vec<qingyu_kernel::settings::service::SettingsPublicationEvent>,
+    ) -> Result<qingyu_kernel::settings::service::DeferredSettingsPublication, AppSettingsError>
+    {
+        let expected = qingyu_kernel::contract::Revision::parse(expected_portable_revision)
+            .map_err(|_| AppSettingsError::reconcile_failed())?;
+        self.service
+            .resume_portable_publication(&expected, publications)
+            .map_err(map_kernel_settings_error)
+    }
+
+    pub(crate) fn publish_deferred_if_portable_revision(
+        &self,
+        publication: qingyu_kernel::settings::service::DeferredSettingsPublication,
+        expected_portable_revision: &str,
+    ) -> Result<bool, AppSettingsError> {
+        let expected = qingyu_kernel::contract::Revision::parse(expected_portable_revision)
+            .map_err(|_| AppSettingsError::reconcile_failed())?;
+        self.service
+            .publish_if_portable_revision(publication, &expected)
+            .map_err(|_| AppSettingsError::reconcile_failed())
+    }
+}
+
+#[cfg(test)]
+struct SilentKernelSettingsEvents;
+
+#[cfg(test)]
+impl qingyu_kernel::events::EventSink for SilentKernelSettingsEvents {
+    fn publish(
+        &self,
+        _publication: &qingyu_kernel::events::EventPublication,
+    ) -> Result<(), qingyu_kernel::events::EventSinkError> {
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+struct SilentLegacySettingsEvents;
+
+#[cfg(test)]
+impl SettingsEventSink for SilentLegacySettingsEvents {
+    fn emit(&self, _event: &str, _payload: Value) -> Result<(), AppSettingsError> {
+        Ok(())
+    }
+}
+
+fn kernel_settings_group(
+    group: AppSettingsGroup,
+) -> qingyu_kernel::settings::service::SettingsGroup {
+    use qingyu_kernel::settings::service::SettingsGroup;
+    match group {
+        AppSettingsGroup::Appearance => SettingsGroup::Appearance,
+        AppSettingsGroup::CustomThemeCss => SettingsGroup::CustomThemeCss,
+        AppSettingsGroup::Language => SettingsGroup::Language,
+        AppSettingsGroup::EditorPreferences => SettingsGroup::EditorPreferences,
+        AppSettingsGroup::FileIgnoreSettings => SettingsGroup::FileIgnoreSettings,
+        AppSettingsGroup::ExportSettings => SettingsGroup::ExportSettings,
+    }
+}
+
+fn map_kernel_settings_error(
+    error: qingyu_kernel::settings::service::SettingsServiceError,
+) -> AppSettingsError {
+    use qingyu_kernel::settings::service::SettingsServiceErrorKind;
+    match error.kind() {
+        SettingsServiceErrorKind::InvalidField => AppSettingsError::invalid_field(),
+        SettingsServiceErrorKind::RevisionConflict => AppSettingsError::stale(),
+        SettingsServiceErrorKind::ReconcileFailed => AppSettingsError::reconcile_failed(),
+        SettingsServiceErrorKind::Unavailable | SettingsServiceErrorKind::RecoveryRequired => {
+            AppSettingsError::unavailable()
+        }
+    }
+}
+
+fn kernel_portable_settings_from_compatibility_value(
+    settings: &Value,
+) -> Result<Value, AppSettingsError> {
+    let object = settings
+        .as_object()
+        .ok_or_else(AppSettingsError::invalid_group)?;
+    let expected = BTreeSet::from([
+        "appearanceMode",
+        "customThemeCss",
+        "darkTheme",
+        "editorPreferences",
+        "exportSettings",
+        "fileIgnoreSettings",
+        "language",
+        "lightTheme",
+    ]);
+    if object.keys().map(String::as_str).collect::<BTreeSet<_>>() != expected {
+        return Err(AppSettingsError::invalid_group());
+    }
+    let custom_css = object["customThemeCss"]
+        .as_object()
+        .filter(|css| {
+            css.keys().map(String::as_str).collect::<BTreeSet<_>>()
+                == BTreeSet::from(["dark", "light"])
+        })
+        .ok_or_else(AppSettingsError::invalid_group)?;
+    Ok(json!({
+        "appearanceMode": object["appearanceMode"],
+        "lightThemeId": object["lightTheme"],
+        "darkThemeId": object["darkTheme"],
+        "lightCustomThemeCss": custom_css["light"],
+        "darkCustomThemeCss": custom_css["dark"],
+        "language": object["language"],
+        "editorPreferences": object["editorPreferences"],
+        "fileIgnoreSettings": object["fileIgnoreSettings"],
+        "exportSettings": portable_export_settings(object["exportSettings"].clone()),
+    }))
+}
+
+fn kernel_snapshot_to_exposed(
+    snapshot: qingyu_kernel::contract::SettingsSnapshotDto,
+) -> Result<ExposedAppSettings, AppSettingsError> {
+    let mut values = BTreeMap::new();
+    for entry in snapshot.values {
+        let serialized =
+            serde_json::to_value(entry).map_err(|_| AppSettingsError::unavailable())?;
+        let key = serialized
+            .get("key")
+            .and_then(Value::as_str)
+            .ok_or_else(AppSettingsError::unavailable)?;
+        let value = serialized
+            .get("value")
+            .and_then(|value| value.get("value"))
+            .cloned()
+            .ok_or_else(AppSettingsError::unavailable)?;
+        values.insert(key.to_string(), value);
+    }
+    Ok(ExposedAppSettings {
+        revision: snapshot.revision.as_str().to_string(),
+        values,
+        credentials_present: BTreeMap::new(),
+    })
+}
+
+fn kernel_patch_from_exposed(
+    patch: ExposedSettingsPatch,
+) -> Result<qingyu_kernel::contract::PatchSettingsRequest, AppSettingsError> {
+    if patch.values.is_empty()
+        || patch
+            .values
+            .keys()
+            .any(|field| !EXPOSED_FIELDS.contains(&field.as_str()))
+    {
+        return Err(AppSettingsError::invalid_field());
+    }
+    let expected_revision = qingyu_kernel::contract::Revision::parse(patch.expected_revision)
+        .map_err(|_| AppSettingsError::stale())?;
+    let mut entries = Vec::with_capacity(patch.values.len());
+    for (key, value) in patch.values {
+        validate_field(&key, &value)?;
+        let value_type = match key.as_str() {
+            "editor.showWordCount" | "editor.wrapCodeBlocks" | "export.pdfPageBreakOnH1" => {
+                "boolean"
+            }
+            "editor.bodyFontSize"
+            | "editor.paragraphSpacingPx"
+            | "export.pdfHeightMm"
+            | "export.pdfMarginMm"
+            | "export.pdfWidthMm" => "integer",
+            "editor.lineHeight" => "number",
+            "editor.contentWidthPx" => "nullable-integer",
+            "editor.fontFamily" => "font-family",
+            "export.fontFamily" => "nullable-string",
+            _ => "string",
+        };
+        entries.push(json!({
+            "key": key,
+            "value": { "type": value_type, "value": value },
+        }));
+    }
+    serde_json::from_value(json!({
+        "expectedRevision": expected_revision.as_str(),
+        "values": entries,
+    }))
+    .map_err(|_| AppSettingsError::invalid_field())
+}
+
 struct StoreSettingsBackend<R: Runtime> {
     app_data_root: PathBuf,
     store: Arc<tauri_plugin_store::Store<R>>,
@@ -417,6 +890,7 @@ impl<R: Runtime> SettingsEventSink for TauriSettingsEventSink<R> {
 }
 
 #[derive(Clone)]
+#[cfg(test)]
 pub(crate) struct AppSettingsService {
     backend: Arc<dyn SettingsBackend>,
     events: Option<Arc<dyn SettingsEventSink>>,
@@ -424,11 +898,13 @@ pub(crate) struct AppSettingsService {
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
+#[cfg(test)]
 pub(crate) struct SettingsPublicationEvent {
     event: String,
     payload: Value,
 }
 
+#[cfg(test)]
 impl SettingsPublicationEvent {
     pub(crate) fn new(event: &str, payload: Value) -> Self {
         Self {
@@ -436,23 +912,22 @@ impl SettingsPublicationEvent {
             payload,
         }
     }
-
-    pub(crate) fn event_name(&self) -> &str {
-        &self.event
-    }
 }
 
 #[derive(Clone)]
+#[cfg(test)]
 pub(crate) struct DeferredSettingsPublication {
     events: Option<Arc<dyn SettingsEventSink>>,
     publications: Vec<SettingsPublicationEvent>,
 }
 
+#[cfg(test)]
 pub(crate) struct PortableSettingsSnapshot {
     bytes: Option<Vec<u8>>,
     revision: String,
 }
 
+#[cfg(test)]
 impl PortableSettingsSnapshot {
     pub(crate) fn bytes(&self) -> Option<&[u8]> {
         self.bytes.as_deref()
@@ -463,6 +938,7 @@ impl PortableSettingsSnapshot {
     }
 }
 
+#[cfg(test)]
 impl DeferredSettingsPublication {
     pub(crate) fn publish(&self) -> Result<(), AppSettingsError> {
         let Some(events) = &self.events else {
@@ -473,42 +949,10 @@ impl DeferredSettingsPublication {
         }
         Ok(())
     }
-
-    pub(crate) fn publications(&self) -> &[SettingsPublicationEvent] {
-        &self.publications
-    }
 }
 
+#[cfg(test)]
 impl AppSettingsService {
-    pub(crate) fn from_app<R: Runtime>(
-        app: &tauri::AppHandle<R>,
-    ) -> Result<Self, AppSettingsError> {
-        Self::from_app_with_events(app, true)
-    }
-
-    fn from_app_with_events<R: Runtime>(
-        app: &tauri::AppHandle<R>,
-        emit_events: bool,
-    ) -> Result<Self, AppSettingsError> {
-        let store = app
-            .store_builder(SETTINGS_STORE_PATH)
-            .disable_auto_save()
-            .build()
-            .map_err(|_| AppSettingsError::unavailable())?;
-        let app_data_root = app
-            .path()
-            .app_data_dir()
-            .map_err(|_| AppSettingsError::unavailable())?;
-        Ok(Self {
-            backend: Arc::new(StoreSettingsBackend {
-                app_data_root,
-                store,
-            }),
-            events: emit_events
-                .then(|| Arc::new(TauriSettingsEventSink { app: app.clone() }) as Arc<_>),
-        })
-    }
-
     #[cfg(test)]
     pub(crate) fn new_for_test(
         backend: Arc<dyn SettingsBackend>,
@@ -523,33 +967,6 @@ impl AppSettingsService {
             backend: Arc::new(EmptySettingsBackend::default()),
             events: None,
         }
-    }
-
-    pub(crate) fn deferred_settings_publication(
-        &self,
-        publications: Vec<SettingsPublicationEvent>,
-    ) -> DeferredSettingsPublication {
-        DeferredSettingsPublication {
-            events: self.events.clone(),
-            publications,
-        }
-    }
-
-    pub(crate) fn publish_deferred_if_portable_revision(
-        &self,
-        publication: &DeferredSettingsPublication,
-        expected_portable_revision: &str,
-    ) -> Result<bool, AppSettingsError> {
-        let _settings_guard = app_settings_transaction_lock()
-            .lock()
-            .map_err(|_| AppSettingsError::unavailable())?;
-        let snapshot = self.portable_store_snapshot()?;
-        let bytes = portable_settings_snapshot_bytes(&snapshot)?;
-        if portable_settings_revision(bytes.as_deref()) != expected_portable_revision {
-            return Ok(false);
-        }
-        publication.publish()?;
-        Ok(true)
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
@@ -884,32 +1301,6 @@ impl AppSettingsService {
         Ok(PortableSettingsSnapshot { bytes, revision })
     }
 
-    pub(crate) fn preview_portable_settings_merge(
-        &self,
-        bytes: Option<&[u8]>,
-        expected_portable_revision: &str,
-    ) -> Result<(String, Vec<SettingsPublicationEvent>), AppSettingsError> {
-        if let Some(bytes) = bytes {
-            validate_portable_settings_bytes(bytes)?;
-        }
-        let desired = portable_settings_from_bytes(bytes)?;
-        let _settings_guard = app_settings_transaction_lock()
-            .lock()
-            .map_err(|_| AppSettingsError::unavailable())?;
-        let before = self.portable_store_snapshot()?;
-        let before_bytes = portable_settings_snapshot_bytes(&before)?;
-        if portable_settings_revision(before_bytes.as_deref()) != expected_portable_revision {
-            return Err(AppSettingsError::reconcile_failed());
-        }
-        let desired_bytes = portable_settings_snapshot_bytes(&desired)?;
-        let applied_revision = portable_settings_revision(desired_bytes.as_deref());
-        let publications = portable_settings_change_events_from_values(&before, &desired)?
-            .into_iter()
-            .map(|(event, payload)| SettingsPublicationEvent::new(event, payload))
-            .collect();
-        Ok((applied_revision, publications))
-    }
-
     pub(crate) fn merge_portable_settings_bytes_defer_publication_with_preflight<
         Preflight,
         Verify,
@@ -960,10 +1351,12 @@ impl AppSettingsService {
     }
 }
 
+#[cfg(test)]
 fn portable_settings_revision(bytes: Option<&[u8]>) -> String {
     format!("sha256:{:x}", Sha256::digest(bytes.unwrap_or_default()))
 }
 
+#[cfg(test)]
 fn portable_settings_snapshot_bytes(snapshot: &Value) -> Result<Option<Vec<u8>>, AppSettingsError> {
     if snapshot.as_object().is_some_and(Map::is_empty) {
         Ok(None)
@@ -1031,6 +1424,7 @@ impl SettingsBackend for EmptySettingsBackend {
     }
 }
 
+#[cfg(test)]
 fn restore_settings(backend: &dyn SettingsBackend, previous: &BTreeMap<String, Option<Value>>) {
     for (key, value) in previous {
         match value {
@@ -1156,10 +1550,12 @@ pub(crate) fn app_settings_transaction_gate() -> Arc<Mutex<()>> {
     app_settings_transaction_gate_ref().clone()
 }
 
+#[cfg(test)]
 fn app_settings_transaction_lock() -> &'static Mutex<()> {
     app_settings_transaction_gate_ref().as_ref()
 }
 
+#[cfg(test)]
 fn storage_changes(
     groups: &BTreeMap<AppSettingsGroup, Value>,
 ) -> Result<BTreeMap<String, Value>, AppSettingsError> {
@@ -1220,6 +1616,7 @@ fn storage_changes(
     Ok(changes)
 }
 
+#[cfg(test)]
 fn validate_group(group: AppSettingsGroup, value: &Value) -> Result<(), AppSettingsError> {
     match group {
         AppSettingsGroup::Appearance => {
@@ -1263,6 +1660,7 @@ fn validate_group(group: AppSettingsGroup, value: &Value) -> Result<(), AppSetti
     }
 }
 
+#[cfg(test)]
 fn validate_object_exposed(
     value: &Value,
     prefix: &str,
@@ -1321,6 +1719,7 @@ fn validate_field(field: &str, value: &Value) -> Result<(), AppSettingsError> {
     }
 }
 
+#[cfg(test)]
 fn field_group(field: &str) -> Option<AppSettingsGroup> {
     if field.starts_with("appearance.") {
         Some(AppSettingsGroup::Appearance)
@@ -1337,6 +1736,7 @@ fn field_group(field: &str) -> Option<AppSettingsGroup> {
     }
 }
 
+#[cfg(test)]
 fn apply_field(target: &mut Value, field: &str, value: Value) -> Result<(), AppSettingsError> {
     if field == "language" {
         *target = value;
@@ -1360,6 +1760,7 @@ fn apply_field(target: &mut Value, field: &str, value: Value) -> Result<(), AppS
     Ok(())
 }
 
+#[cfg(test)]
 fn default_group(group: AppSettingsGroup) -> Value {
     match group {
         AppSettingsGroup::Appearance => default_appearance(),
@@ -1375,6 +1776,7 @@ fn normalize_file_ignore_rules(rules: &str) -> String {
     rules.replace("\r\n", "\n").replace('\r', "\n")
 }
 
+#[cfg(test)]
 fn default_appearance() -> Value {
     json!({
         "appearanceMode": "system",
@@ -1383,6 +1785,7 @@ fn default_appearance() -> Value {
     })
 }
 
+#[cfg(test)]
 fn default_editor() -> Value {
     json!({
         "bodyFontSize": 16,
@@ -1397,6 +1800,7 @@ fn default_editor() -> Value {
     })
 }
 
+#[cfg(test)]
 fn default_export() -> Value {
     json!({
         "fontFamily": null,
@@ -1419,6 +1823,7 @@ fn portable_export_settings(mut value: Value) -> Value {
     value
 }
 
+#[cfg(test)]
 fn portable_local_export_settings(value: Value) -> Value {
     let mut value = portable_export_settings(value);
     if let Some(settings) = value.as_object_mut() {
@@ -1439,6 +1844,7 @@ fn portable_editor_preferences(mut value: Value) -> Value {
     value
 }
 
+#[cfg(test)]
 fn merge_defaults(defaults: Value, stored: Option<Value>) -> Value {
     let mut defaults = defaults.as_object().cloned().unwrap_or_default();
     if let Some(stored) = stored.and_then(|value| value.as_object().cloned()) {
@@ -1447,12 +1853,14 @@ fn merge_defaults(defaults: Value, stored: Option<Value>) -> Value {
     Value::Object(defaults)
 }
 
+#[cfg(test)]
 fn insert(values: &mut BTreeMap<String, Value>, field: &str, object: &Value, key: &str) {
     if let Some(value) = object.get(key) {
         values.insert(field.to_string(), value.clone());
     }
 }
 
+#[cfg(test)]
 fn settings_revision(values: &BTreeMap<String, Value>) -> Result<String, AppSettingsError> {
     let bytes = serde_json::to_vec(values).map_err(|_| AppSettingsError::unavailable())?;
     Ok(format!("{:x}", Sha256::digest(bytes)))
@@ -2071,6 +2479,7 @@ fn portable_settings_change_events(
     portable_settings_change_events_from_values(&before, &after)
 }
 
+#[cfg(test)]
 fn portable_settings_change_events_from_values(
     before: &Value,
     after: &Value,
@@ -2100,6 +2509,7 @@ fn portable_settings_change_events_from_values(
 }
 
 #[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg(test)]
 enum PortableEventGroup {
     Appearance,
     CustomThemeCss,
@@ -2109,6 +2519,7 @@ enum PortableEventGroup {
     ExportSettings,
 }
 
+#[cfg(test)]
 impl PortableEventGroup {
     fn event(self, value: Value) -> (&'static str, Value) {
         match self {
@@ -2159,6 +2570,7 @@ pub(crate) fn portable_settings_from_bytes(
     Ok(Value::Object(portable))
 }
 
+#[cfg(test)]
 fn portable_event_groups(
     value: &Value,
 ) -> Result<BTreeMap<PortableEventGroup, Value>, AppSettingsError> {
@@ -2214,37 +2626,34 @@ const LANGUAGES: &[&str] = &[
 ];
 #[tauri::command]
 pub(crate) fn read_app_settings_group(
-    app: tauri::AppHandle,
+    owner: tauri::State<'_, KernelSettingsOwner>,
     group: AppSettingsGroup,
 ) -> Result<Option<Value>, String> {
-    AppSettingsService::from_app(&app)
-        .and_then(|service| service.read_group(group))
-        .map_err(|error| error.to_string())
+    owner.read_group(group).map_err(|error| error.to_string())
 }
 
 #[tauri::command]
 pub(crate) fn write_app_settings_group(
-    app: tauri::AppHandle,
+    owner: tauri::State<'_, KernelSettingsOwner>,
     group: AppSettingsGroup,
     value: Value,
 ) -> Result<Value, String> {
-    // Existing UI hooks emit source-aware events after this command resolves. Suppress the
-    // service event here so the initiating window does not replay its own change twice.
-    AppSettingsService::from_app_with_events(&app, false)
-        .and_then(|service| service.write_group(group, value))
+    // Existing UI hooks emit source-aware events after this command resolves. The Kernel
+    // mutation is authoritative, while its compatibility publication is explicitly cancelled
+    // so the initiating window emits exactly one source-tagged event.
+    owner
+        .write_group(group, value)
         .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
 pub(crate) async fn replace_portable_app_settings(
-    app: tauri::AppHandle,
+    owner: tauri::State<'_, KernelSettingsOwner>,
     settings: Value,
 ) -> Result<Value, String> {
-    let (stored, publication) = AppSettingsService::from_app(&app)
-        .and_then(|service| service.replace_portable_settings_defer_publication(settings))
-        .map_err(|error| error.to_string())?;
-    publication.publish().map_err(|error| error.to_string())?;
-    Ok(stored)
+    owner
+        .replace_portable_settings(settings)
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -2270,20 +2679,18 @@ pub(crate) fn update_mcp_policy(
 
 #[tauri::command]
 pub(crate) fn read_exposed_app_settings(
-    app: tauri::AppHandle,
+    owner: tauri::State<'_, KernelSettingsOwner>,
 ) -> Result<ExposedAppSettings, String> {
-    AppSettingsService::from_app(&app)
-        .and_then(|service| service.read_exposed())
-        .map_err(|error| error.to_string())
+    owner.read_exposed().map_err(|error| error.to_string())
 }
 
 #[tauri::command]
 pub(crate) fn patch_exposed_app_settings(
-    app: tauri::AppHandle,
+    owner: tauri::State<'_, KernelSettingsOwner>,
     patch: ExposedSettingsPatch,
 ) -> Result<ExposedAppSettings, String> {
-    AppSettingsService::from_app(&app)
-        .and_then(|service| service.patch_exposed(patch))
+    owner
+        .patch_exposed(patch)
         .map_err(|error| error.to_string())
 }
 
@@ -2424,6 +2831,19 @@ mod tests {
             &self,
             _publication: &qingyu_kernel::events::EventPublication,
         ) -> Result<(), qingyu_kernel::events::EventSinkError> {
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct CountingKernelEvents(AtomicUsize);
+
+    impl qingyu_kernel::events::EventSink for CountingKernelEvents {
+        fn publish(
+            &self,
+            _publication: &qingyu_kernel::events::EventPublication,
+        ) -> Result<(), qingyu_kernel::events::EventSinkError> {
+            self.0.fetch_add(1, Ordering::Relaxed);
             Ok(())
         }
     }
@@ -2660,6 +3080,82 @@ mod tests {
             &adapter.transaction_gate(),
             &app_settings_transaction_gate()
         ));
+    }
+
+    #[test]
+    fn kernel_settings_owner_runs_migration_and_serializes_legacy_and_mcp_writers() {
+        let backend = Arc::new(MemoryBackend::with([
+            ("lightTheme", json!("newsprint")),
+            (LANGUAGE_KEY, json!("en")),
+        ]));
+        let legacy_events = Arc::new(MemoryEvents::default());
+        let owner = KernelSettingsOwner::new(
+            backend.clone(),
+            Arc::new(KernelEvents),
+            legacy_events.clone(),
+        )
+        .unwrap();
+        assert_eq!(backend.saves.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            backend.values.lock().unwrap()["settingsSchemaVersion"],
+            json!(qingyu_kernel::settings::service::SETTINGS_SCHEMA_VERSION)
+        );
+
+        owner
+            .write_group(AppSettingsGroup::Language, json!("fr"))
+            .unwrap();
+        assert!(legacy_events.0.lock().unwrap().is_empty());
+        let before = owner.read_exposed().unwrap();
+        let before_revision = before.revision.clone();
+        let after = owner
+            .patch_exposed(ExposedSettingsPatch {
+                expected_revision: before.revision,
+                values: BTreeMap::from([("appearance.mode".to_string(), json!("dark"))]),
+            })
+            .unwrap();
+
+        assert_ne!(after.revision, before_revision);
+        assert_eq!(
+            legacy_events.0.lock().unwrap()[0].0,
+            "markra://theme-changed"
+        );
+        assert_eq!(
+            owner.read_group(AppSettingsGroup::Language).unwrap(),
+            Some(json!("fr"))
+        );
+    }
+
+    #[test]
+    fn kernel_settings_owner_portable_import_publishes_typed_and_legacy_events() {
+        let backend = Arc::new(MemoryBackend::default());
+        let typed_events = Arc::new(CountingKernelEvents::default());
+        let legacy_events = Arc::new(MemoryEvents::default());
+        let owner =
+            KernelSettingsOwner::new(backend, typed_events.clone(), legacy_events.clone()).unwrap();
+
+        owner
+            .replace_portable_settings(portable_import_payload())
+            .unwrap();
+
+        assert_eq!(typed_events.0.load(Ordering::Relaxed), 1);
+        let event_names = legacy_events
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(event, _payload)| event.clone())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            event_names,
+            BTreeSet::from([
+                "markra://custom-theme-css-changed".to_string(),
+                "markra://editor-preferences-changed".to_string(),
+                "markra://export-settings-changed".to_string(),
+                "markra://file-ignore-settings-changed".to_string(),
+                "markra://language-changed".to_string(),
+                "markra://theme-changed".to_string(),
+            ])
+        );
     }
 
     fn merge_portable_for_test(

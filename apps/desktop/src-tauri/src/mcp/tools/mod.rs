@@ -25,7 +25,7 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use crate::{
-    app_settings::AppSettingsService,
+    app_settings::{ExposedAppSettings, ExposedSettingsPatch, KernelSettingsOwner},
     markdown_files::{DocumentService, MutationOptions},
     remote_sync::mcp_service::SyncService,
 };
@@ -41,12 +41,56 @@ use super::{
 
 pub(super) type ToolResult = Result<Value, McpToolFailure>;
 
+pub(crate) trait McpSettingsPort: Send + Sync {
+    fn exposed_field_names(&self) -> &'static [&'static str];
+    fn read_exposed(&self) -> Result<ExposedAppSettings, crate::app_settings::AppSettingsError>;
+    fn patch_exposed(
+        &self,
+        patch: ExposedSettingsPatch,
+    ) -> Result<ExposedAppSettings, crate::app_settings::AppSettingsError>;
+}
+
+impl McpSettingsPort for KernelSettingsOwner {
+    fn exposed_field_names(&self) -> &'static [&'static str] {
+        Self::exposed_field_names(self)
+    }
+
+    fn read_exposed(&self) -> Result<ExposedAppSettings, crate::app_settings::AppSettingsError> {
+        Self::read_exposed(self)
+    }
+
+    fn patch_exposed(
+        &self,
+        patch: ExposedSettingsPatch,
+    ) -> Result<ExposedAppSettings, crate::app_settings::AppSettingsError> {
+        Self::patch_exposed(self, patch)
+    }
+}
+
+#[cfg(test)]
+impl McpSettingsPort for crate::app_settings::AppSettingsService {
+    fn exposed_field_names(&self) -> &'static [&'static str] {
+        Self::exposed_field_names()
+    }
+
+    fn read_exposed(&self) -> Result<ExposedAppSettings, crate::app_settings::AppSettingsError> {
+        Self::read_exposed(self)
+    }
+
+    fn patch_exposed(
+        &self,
+        patch: ExposedSettingsPatch,
+    ) -> Result<ExposedAppSettings, crate::app_settings::AppSettingsError> {
+        Self::patch_exposed(self, patch)
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct McpServices {
     pub(crate) config: Arc<McpConfigManager>,
     pub(crate) workspaces: Arc<WorkspaceRegistry>,
     pub(crate) documents: Arc<DocumentService>,
-    pub(crate) settings: Arc<AppSettingsService>,
+    pub(crate) settings: Arc<dyn McpSettingsPort>,
     pub(crate) sync: Arc<SyncService>,
     pub(crate) policy: Arc<PolicyEngine>,
     pub(crate) audit: Arc<AuditSink>,

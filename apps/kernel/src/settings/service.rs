@@ -1,7 +1,7 @@
 //! Settings service implementation boundary.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fmt,
     sync::{Arc, Mutex},
 };
@@ -131,7 +131,20 @@ impl SettingsRuntimeCoordinator {
         ticket: u64,
         disposition: PublicationDisposition,
     ) -> Result<(), crate::events::EventSinkError> {
-        let should_drain = {
+        let should_drain = self.prepare_publication(ticket, disposition)?;
+        if should_drain {
+            self.drain_publications()
+        } else {
+            Ok(())
+        }
+    }
+
+    fn prepare_publication(
+        &self,
+        ticket: u64,
+        disposition: PublicationDisposition,
+    ) -> Result<bool, crate::events::EventSinkError> {
+        {
             let mut state = self
                 .publications
                 .lock()
@@ -140,14 +153,14 @@ impl SettingsRuntimeCoordinator {
                 return Err(crate::events::EventSinkError);
             }
             if ticket < state.next_publication {
-                return Ok(());
+                return Ok(false);
             }
             let pending = state
                 .pending
                 .get_mut(&ticket)
                 .ok_or(crate::events::EventSinkError)?;
             pending.disposition = disposition;
-            if state.draining
+            let should_drain = if state.draining
                 || state
                     .pending
                     .get(&state.next_publication)
@@ -157,12 +170,12 @@ impl SettingsRuntimeCoordinator {
             } else {
                 state.draining = true;
                 true
-            }
-        };
-        if !should_drain {
-            return Ok(());
+            };
+            Ok(should_drain)
         }
+    }
 
+    fn drain_publications(&self) -> Result<(), crate::events::EventSinkError> {
         let mut first_error = None;
         loop {
             let next = {
@@ -226,6 +239,7 @@ struct PendingPublication {
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum PublicationDisposition {
     Awaiting,
+    Cancelled,
     Ready,
 }
 
@@ -254,6 +268,33 @@ pub struct SettingsService {
     coordinator: Arc<SettingsRuntimeCoordinator>,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SettingsGroup {
+    Appearance,
+    CustomThemeCss,
+    Language,
+    EditorPreferences,
+    FileIgnoreSettings,
+    ExportSettings,
+}
+
+pub const SETTINGS_SCHEMA_VERSION: u64 = 1;
+const SETTINGS_SCHEMA_VERSION_KEY: &str = "settingsSchemaVersion";
+const LEGACY_MCP_CONFIG_KEY: &str = "mcp";
+const THEME_CATALOG_SETTINGS_KEYS: &[&str] = &[
+    "themeCatalogVersion",
+    "theme",
+    "appearanceMode",
+    "lightTheme",
+    "darkTheme",
+    "lightCustomThemeCss",
+    "customThemeCss",
+    "darkCustomThemeCss",
+    "lightThemeId",
+    "darkThemeId",
+];
+
 impl SettingsService {
     pub fn new(store: Arc<dyn SettingsStore>, events: Arc<dyn EventSink>) -> Self {
         Self::with_coordinator(store, Arc::new(SettingsRuntimeCoordinator::new(events)))
@@ -276,6 +317,248 @@ impl SettingsService {
             .map_err(|_| SettingsServiceError::unavailable())?;
         self.coordinator.ensure_available()?;
         self.read_exposed_unlocked()
+    }
+
+    pub fn migrate_schema(&self) -> Result<(), SettingsServiceError> {
+        let _transaction = self
+            .coordinator
+            .transaction_gate
+            .lock()
+            .map_err(|_| SettingsServiceError::unavailable())?;
+        self.coordinator.ensure_available()?;
+        let stored_version = self
+            .store
+            .get(SETTINGS_SCHEMA_VERSION_KEY)?
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0);
+        if stored_version >= SETTINGS_SCHEMA_VERSION {
+            return Ok(());
+        }
+
+        let mut changes = BTreeMap::from([(
+            SETTINGS_SCHEMA_VERSION_KEY.to_string(),
+            Value::from(SETTINGS_SCHEMA_VERSION),
+        )]);
+        for (current, legacy) in [("lightThemeId", "lightTheme"), ("darkThemeId", "darkTheme")] {
+            if self.store.get(current)?.is_none() {
+                if let Some(value) = self
+                    .store
+                    .get(legacy)?
+                    .filter(|value| valid_migrated_theme_id(current, value))
+                {
+                    changes.insert(current.to_string(), value);
+                }
+            }
+        }
+        let mut previous = BTreeMap::new();
+        for key in changes.keys() {
+            previous.insert(key.clone(), self.store.get(key)?);
+        }
+        for (key, value) in &changes {
+            if let Err(error) = self.store.set(key, value.clone()) {
+                if self.restore(&previous).is_err() {
+                    self.coordinator.require_recovery();
+                    return Err(SettingsServiceError::recovery_required());
+                }
+                return Err(error.into());
+            }
+        }
+        if let Err(error) = self.store.save() {
+            if error.kind() == SettingsStoreErrorKind::PublishUncertain {
+                self.coordinator.require_recovery();
+                return Err(SettingsServiceError::recovery_required());
+            }
+            if self.restore(&previous).is_err() {
+                self.coordinator.require_recovery();
+                return Err(SettingsServiceError::recovery_required());
+            }
+            return Err(error.into());
+        }
+        Ok(())
+    }
+
+    pub fn initialize_language_if_invalid(
+        &self,
+        language: &str,
+    ) -> Result<bool, SettingsServiceError> {
+        let language = Value::String(language.to_string());
+        if !valid_single_portable_value("language", &language) {
+            return Err(SettingsServiceError::invalid());
+        }
+        let _transaction = self
+            .coordinator
+            .transaction_gate
+            .lock()
+            .map_err(|_| SettingsServiceError::unavailable())?;
+        self.coordinator.ensure_available()?;
+        let previous = self.store.get("language")?;
+        if previous
+            .as_ref()
+            .is_some_and(|value| valid_single_portable_value("language", value))
+        {
+            return Ok(false);
+        }
+        if let Err(error) = self.store.set("language", language) {
+            let rollback = match previous.as_ref() {
+                Some(value) => self.store.set("language", value.clone()),
+                None => self.store.delete("language"),
+            };
+            if rollback.is_err() {
+                self.coordinator.require_recovery();
+                return Err(SettingsServiceError::recovery_required());
+            }
+            return Err(error.into());
+        }
+        if let Err(error) = self.store.save() {
+            if error.kind() == SettingsStoreErrorKind::PublishUncertain {
+                self.coordinator.require_recovery();
+                return Err(SettingsServiceError::recovery_required());
+            }
+            let rollback = match previous {
+                Some(value) => self.store.set("language", value),
+                None => self.store.delete("language"),
+            };
+            if rollback.is_err() {
+                self.coordinator.require_recovery();
+                return Err(SettingsServiceError::recovery_required());
+            }
+            return Err(error.into());
+        }
+        Ok(true)
+    }
+
+    pub fn read_theme_catalog_settings(
+        &self,
+    ) -> Result<BTreeMap<String, Value>, SettingsServiceError> {
+        let _transaction = self
+            .coordinator
+            .transaction_gate
+            .lock()
+            .map_err(|_| SettingsServiceError::unavailable())?;
+        self.coordinator.ensure_available()?;
+        let mut values = BTreeMap::new();
+        for key in THEME_CATALOG_SETTINGS_KEYS {
+            if let Some(value) = self.store.get(key)? {
+                values.insert((*key).to_string(), value);
+            }
+        }
+        Ok(values)
+    }
+
+    pub fn commit_theme_catalog_settings(
+        &self,
+        expected_catalog_version: i64,
+        catalog_version: i64,
+        appearance: Option<(&str, &str, &str)>,
+    ) -> Result<bool, SettingsServiceError> {
+        if expected_catalog_version < 0 || catalog_version < 0 {
+            return Err(SettingsServiceError::invalid());
+        }
+        let mut changes = BTreeMap::from([(
+            "themeCatalogVersion".to_string(),
+            Value::from(catalog_version),
+        )]);
+        if let Some((appearance_mode, light_theme_id, dark_theme_id)) = appearance {
+            let portable_values = [
+                ("appearanceMode", Value::String(appearance_mode.to_string())),
+                ("lightThemeId", Value::String(light_theme_id.to_string())),
+                ("darkThemeId", Value::String(dark_theme_id.to_string())),
+            ];
+            if portable_values
+                .iter()
+                .any(|(key, value)| !valid_single_portable_value(key, value))
+            {
+                return Err(SettingsServiceError::invalid());
+            }
+            changes.extend(
+                portable_values
+                    .into_iter()
+                    .map(|(key, value)| (key.to_string(), value)),
+            );
+        }
+
+        let _transaction = self
+            .coordinator
+            .transaction_gate
+            .lock()
+            .map_err(|_| SettingsServiceError::unavailable())?;
+        self.coordinator.ensure_available()?;
+        let current_version = self
+            .store
+            .get("themeCatalogVersion")?
+            .and_then(|value| value.as_i64())
+            .unwrap_or(0)
+            .max(0);
+        if current_version != expected_catalog_version {
+            return Ok(false);
+        }
+        let mut previous = BTreeMap::new();
+        for key in changes.keys() {
+            previous.insert(key.clone(), self.store.get(key)?);
+        }
+        for (key, value) in &changes {
+            if let Err(error) = self.store.set(key, value.clone()) {
+                if self.restore(&previous).is_err() {
+                    self.coordinator.require_recovery();
+                    return Err(SettingsServiceError::recovery_required());
+                }
+                return Err(error.into());
+            }
+        }
+        if let Err(error) = self.store.save() {
+            if error.kind() == SettingsStoreErrorKind::PublishUncertain {
+                self.coordinator.require_recovery();
+                return Err(SettingsServiceError::recovery_required());
+            }
+            if self.restore(&previous).is_err() {
+                self.coordinator.require_recovery();
+                return Err(SettingsServiceError::recovery_required());
+            }
+            return Err(error.into());
+        }
+        Ok(true)
+    }
+
+    pub fn read_legacy_mcp_config(&self) -> Result<Option<Value>, SettingsServiceError> {
+        let _transaction = self
+            .coordinator
+            .transaction_gate
+            .lock()
+            .map_err(|_| SettingsServiceError::unavailable())?;
+        self.coordinator.ensure_available()?;
+        self.store.get(LEGACY_MCP_CONFIG_KEY).map_err(Into::into)
+    }
+
+    pub fn remove_legacy_mcp_config_if_matches(
+        &self,
+        expected: &Value,
+    ) -> Result<bool, SettingsServiceError> {
+        let _transaction = self
+            .coordinator
+            .transaction_gate
+            .lock()
+            .map_err(|_| SettingsServiceError::unavailable())?;
+        self.coordinator.ensure_available()?;
+        if self.store.get(LEGACY_MCP_CONFIG_KEY)?.as_ref() != Some(expected) {
+            return Ok(false);
+        }
+        self.store.delete(LEGACY_MCP_CONFIG_KEY)?;
+        if let Err(error) = self.store.save() {
+            if error.kind() == SettingsStoreErrorKind::PublishUncertain {
+                self.coordinator.require_recovery();
+                return Err(SettingsServiceError::recovery_required());
+            }
+            if self
+                .store
+                .set(LEGACY_MCP_CONFIG_KEY, expected.clone())
+                .is_err()
+            {
+                self.coordinator.require_recovery();
+                return Err(SettingsServiceError::recovery_required());
+            }
+            return Err(error.into());
+        }
+        Ok(true)
     }
 
     fn read_exposed_unlocked(&self) -> Result<SettingsSnapshotDto, SettingsServiceError> {
@@ -389,6 +672,101 @@ impl SettingsService {
         self.portable_snapshot_unlocked()
     }
 
+    pub fn read_group(&self, group: SettingsGroup) -> Result<Option<Value>, SettingsServiceError> {
+        let _transaction = self
+            .coordinator
+            .transaction_gate
+            .lock()
+            .map_err(|_| SettingsServiceError::unavailable())?;
+        self.coordinator.ensure_available()?;
+        self.read_group_unlocked(group)
+    }
+
+    fn read_group_unlocked(
+        &self,
+        group: SettingsGroup,
+    ) -> Result<Option<Value>, SettingsServiceError> {
+        match group {
+            SettingsGroup::Appearance => {
+                let mode = self.store.get("appearanceMode")?;
+                let light = self
+                    .store
+                    .get("lightThemeId")?
+                    .or(self.store.get("lightTheme")?);
+                let dark = self
+                    .store
+                    .get("darkThemeId")?
+                    .or(self.store.get("darkTheme")?);
+                if mode.is_none() && light.is_none() && dark.is_none() {
+                    return Ok(None);
+                }
+                Ok(Some(json!({
+                    "appearanceMode": mode.unwrap_or_else(|| json!("system")),
+                    "lightTheme": light.unwrap_or_else(|| json!(super::model::DEFAULT_LIGHT_THEME_ID)),
+                    "darkTheme": dark.unwrap_or_else(|| json!(super::model::DEFAULT_DARK_THEME_ID)),
+                })))
+            }
+            SettingsGroup::CustomThemeCss => {
+                let light = self.store.get("lightCustomThemeCss")?;
+                let dark = self.store.get("darkCustomThemeCss")?;
+                if light.is_none() && dark.is_none() {
+                    return Ok(None);
+                }
+                Ok(Some(json!({
+                    "light": light.unwrap_or_else(|| json!("")),
+                    "dark": dark.unwrap_or_else(|| json!("")),
+                })))
+            }
+            SettingsGroup::Language => self.store.get("language").map_err(Into::into),
+            SettingsGroup::EditorPreferences => self
+                .store
+                .get("editorPreferences")
+                .map(|value| value.map(|value| editor_publication_value(Some(value))))
+                .map_err(Into::into),
+            SettingsGroup::FileIgnoreSettings => {
+                self.store.get("fileIgnoreSettings").map_err(Into::into)
+            }
+            SettingsGroup::ExportSettings => self
+                .store
+                .get("exportSettings")
+                .map(|value| value.map(|value| export_publication_value(Some(value))))
+                .map_err(Into::into),
+        }
+    }
+
+    pub fn write_group_deferred(
+        &self,
+        group: SettingsGroup,
+        value: Value,
+    ) -> Result<(Value, DeferredSettingsPublication), SettingsServiceError> {
+        let _transaction = self
+            .coordinator
+            .transaction_gate
+            .lock()
+            .map_err(|_| SettingsServiceError::unavailable())?;
+        self.coordinator.ensure_available()?;
+        let before = self.portable_snapshot_unlocked()?;
+        let before_value = portable_settings_from_bytes(before.bytes())
+            .map_err(|_| SettingsServiceError::reconcile_failed())?;
+        let mut desired = before_value.clone();
+        apply_settings_group(
+            desired
+                .as_object_mut()
+                .ok_or_else(SettingsServiceError::reconcile_failed)?,
+            group,
+            value,
+        )?;
+        let desired_bytes =
+            serde_json::to_vec(&desired).map_err(|_| SettingsServiceError::reconcile_failed())?;
+        validate_portable_settings_bytes(&desired_bytes)
+            .map_err(|_| SettingsServiceError::invalid())?;
+        let deferred = self.replace_portable_value_unlocked(&desired, &before_value, |_| true)?;
+        let stored = self
+            .read_group_unlocked(group)?
+            .ok_or_else(SettingsServiceError::reconcile_failed)?;
+        Ok((stored, deferred))
+    }
+
     fn portable_snapshot_unlocked(&self) -> Result<PortableSettingsSnapshot, SettingsServiceError> {
         let portable = self.portable_value_unlocked()?;
         let portable = portable
@@ -410,7 +788,21 @@ impl SettingsService {
         let mut portable = Map::new();
         for key in PORTABLE_SETTINGS_KEYS {
             if let Some(value) = self.store.get(key)? {
-                portable.insert(key.to_string(), normalize_portable_value(key, value));
+                if is_local_only_storage_group(key, &value) {
+                    continue;
+                }
+                let normalized = normalize_portable_value(key, value);
+                portable.insert(key.to_string(), normalized);
+            }
+        }
+        Ok(Value::Object(portable))
+    }
+
+    fn portable_storage_value_unlocked(&self) -> Result<Value, SettingsServiceError> {
+        let mut portable = Map::new();
+        for key in PORTABLE_SETTINGS_KEYS {
+            if let Some(value) = self.store.get(key)? {
+                portable.insert(key.to_string(), value);
             }
         }
         Ok(Value::Object(portable))
@@ -538,11 +930,39 @@ impl SettingsService {
         bytes: Option<&[u8]>,
         expected_revision: &Revision,
     ) -> Result<DeferredSettingsPublication, SettingsServiceError> {
+        self.replace_portable_deferred_with_preflight(bytes, expected_revision, || true)
+    }
+
+    pub fn replace_portable_deferred_with_preflight<Preflight>(
+        &self,
+        bytes: Option<&[u8]>,
+        expected_revision: &Revision,
+        preflight: Preflight,
+    ) -> Result<DeferredSettingsPublication, SettingsServiceError>
+    where
+        Preflight: FnOnce() -> bool,
+    {
+        self.replace_portable_deferred_with_preflight_and_verify(
+            bytes,
+            expected_revision,
+            preflight,
+            |_| true,
+        )
+    }
+
+    pub fn replace_portable_deferred_with_preflight_and_verify<Preflight, Verify>(
+        &self,
+        bytes: Option<&[u8]>,
+        expected_revision: &Revision,
+        preflight: Preflight,
+        verify: Verify,
+    ) -> Result<DeferredSettingsPublication, SettingsServiceError>
+    where
+        Preflight: FnOnce() -> bool,
+        Verify: FnOnce(&Value) -> bool,
+    {
         let desired = portable_settings_from_bytes(bytes)
             .map_err(|_| SettingsServiceError::reconcile_failed())?;
-        let desired_object = desired
-            .as_object()
-            .ok_or_else(SettingsServiceError::reconcile_failed)?;
         let _transaction = self
             .coordinator
             .transaction_gate
@@ -555,8 +975,33 @@ impl SettingsService {
         }
         let before_value = portable_settings_from_bytes(before.bytes())
             .map_err(|_| SettingsServiceError::reconcile_failed())?;
+        if !preflight() {
+            return Err(SettingsServiceError::reconcile_failed());
+        }
+        self.replace_portable_value_unlocked(&desired, &before_value, verify)
+    }
 
-        match self.store.replace_portable_atomically(desired_object) {
+    fn replace_portable_value_unlocked<Verify>(
+        &self,
+        desired: &Value,
+        before_value: &Value,
+        verify: Verify,
+    ) -> Result<DeferredSettingsPublication, SettingsServiceError>
+    where
+        Verify: FnOnce(&Value) -> bool,
+    {
+        let desired_object = desired
+            .as_object()
+            .ok_or_else(SettingsServiceError::reconcile_failed)?;
+        let before_storage_value = self.portable_storage_value_unlocked()?;
+        let mut storage_desired = desired_object.clone();
+        preserve_local_only_settings(
+            &mut storage_desired,
+            self.store.get("editorPreferences")?,
+            self.store.get("exportSettings")?,
+        );
+
+        match self.store.replace_portable_atomically(&storage_desired) {
             Ok(()) => {}
             Err(error) if error.kind() == SettingsStoreErrorKind::PublishUncertain => {
                 self.coordinator.require_recovery();
@@ -571,20 +1016,33 @@ impl SettingsService {
                     .map_err(|_| SettingsServiceError::reconcile_failed())
             })
             .and_then(|actual| {
-                (actual == desired)
+                (actual == *desired)
                     .then_some(actual)
                     .ok_or_else(SettingsServiceError::reconcile_failed)
             });
         let actual = match actual {
             Ok(actual) => actual,
             Err(_) => {
-                if self.restore_portable(&before_value).is_err() {
+                if self
+                    .restore_portable_storage(&before_storage_value)
+                    .is_err()
+                {
                     self.coordinator.require_recovery();
                     return Err(SettingsServiceError::recovery_required());
                 }
                 return Err(SettingsServiceError::reconcile_failed());
             }
         };
+        if !verify(&actual) {
+            if self
+                .restore_portable_storage(&before_storage_value)
+                .is_err()
+            {
+                self.coordinator.require_recovery();
+                return Err(SettingsServiceError::recovery_required());
+            }
+            return Err(SettingsServiceError::reconcile_failed());
+        }
 
         let committed = self.read_exposed_unlocked()?;
         let publication = crate::events::EventPublication {
@@ -594,7 +1052,7 @@ impl SettingsService {
                 settings: committed.clone(),
             },
         };
-        let legacy_publications = legacy_change_publications(&before_value, &actual)?;
+        let legacy_publications = legacy_change_publications(before_value, &actual)?;
         let ticket = self
             .coordinator
             .register_publication(SettingsPublicationBatch {
@@ -607,6 +1065,85 @@ impl SettingsService {
             settled: false,
             ticket,
         })
+    }
+
+    pub fn resume_portable_publication(
+        &self,
+        expected_revision: &Revision,
+        publications: Vec<SettingsPublicationEvent>,
+    ) -> Result<DeferredSettingsPublication, SettingsServiceError> {
+        let _transaction = self
+            .coordinator
+            .transaction_gate
+            .lock()
+            .map_err(|_| SettingsServiceError::unavailable())?;
+        self.coordinator.ensure_available()?;
+        let portable = self.portable_snapshot_unlocked()?;
+        if portable.revision() != expected_revision {
+            return Err(SettingsServiceError::reconcile_failed());
+        }
+        let settings = self.read_exposed_unlocked()?;
+        let publication = crate::events::EventPublication {
+            resource: crate::contract::ResourceRefDto::Settings {},
+            revision: settings.revision.clone(),
+            event: crate::contract::DomainEvent::SettingsChanged {
+                settings: settings.clone(),
+            },
+        };
+        let ticket = self
+            .coordinator
+            .register_publication(SettingsPublicationBatch {
+                publication,
+                publications,
+            })?;
+        Ok(DeferredSettingsPublication {
+            coordinator: self.coordinator.clone(),
+            settings,
+            settled: false,
+            ticket,
+        })
+    }
+
+    pub fn publish_if_portable_revision(
+        &self,
+        mut publication: DeferredSettingsPublication,
+        expected_revision: &Revision,
+    ) -> Result<bool, SettingsServiceError> {
+        let evaluation = (|| {
+            let _transaction = self
+                .coordinator
+                .transaction_gate
+                .lock()
+                .map_err(|_| SettingsServiceError::unavailable())?;
+            self.coordinator.ensure_available()?;
+            let current = self.portable_snapshot_unlocked()?;
+            let matches = current.revision() == expected_revision;
+            let disposition = if matches {
+                PublicationDisposition::Ready
+            } else {
+                PublicationDisposition::Cancelled
+            };
+            let should_drain = publication
+                .coordinator
+                .prepare_publication(publication.ticket, disposition)
+                .map_err(|_| SettingsServiceError::unavailable())?;
+            publication.settled = true;
+            Ok::<_, SettingsServiceError>((matches, should_drain))
+        })();
+        let (matches, should_drain) = match evaluation {
+            Ok(result) => result,
+            Err(error) => {
+                let _supersede_result = publication.supersede();
+                return Err(error);
+            }
+        };
+        if should_drain {
+            publication
+                .coordinator
+                .drain_publications()
+                .map_err(|_| SettingsServiceError::unavailable())?;
+        }
+        Ok(matches)
     }
 
     pub fn preview_merge(
@@ -667,17 +1204,14 @@ impl SettingsService {
         }
     }
 
-    fn restore_portable(&self, previous: &Value) -> Result<(), SettingsServiceError> {
+    fn restore_portable_storage(&self, previous: &Value) -> Result<(), SettingsServiceError> {
         let previous_object = previous
             .as_object()
             .ok_or_else(SettingsServiceError::recovery_required)?;
         self.store
             .replace_portable_atomically(previous_object)
             .map_err(|_| SettingsServiceError::recovery_required())?;
-        let restored = self.portable_snapshot_unlocked().and_then(|snapshot| {
-            portable_settings_from_bytes(snapshot.bytes())
-                .map_err(|_| SettingsServiceError::recovery_required())
-        })?;
+        let restored = self.portable_storage_value_unlocked()?;
         if restored != *previous {
             return Err(SettingsServiceError::recovery_required());
         }
@@ -699,6 +1233,70 @@ impl PortableMergePreview {
     pub fn publications(&self) -> &[SettingsPublicationEvent] {
         &self.publications
     }
+}
+
+fn apply_settings_group(
+    desired: &mut Map<String, Value>,
+    group: SettingsGroup,
+    value: Value,
+) -> Result<(), SettingsServiceError> {
+    match group {
+        SettingsGroup::Appearance => {
+            let object =
+                exact_group_object(&value, &["appearanceMode", "lightTheme", "darkTheme"])?;
+            desired.insert(
+                "appearanceMode".to_string(),
+                object["appearanceMode"].clone(),
+            );
+            desired.insert("lightThemeId".to_string(), object["lightTheme"].clone());
+            desired.insert("darkThemeId".to_string(), object["darkTheme"].clone());
+        }
+        SettingsGroup::CustomThemeCss => {
+            let object = exact_group_object(&value, &["light", "dark"])?;
+            desired.insert("lightCustomThemeCss".to_string(), object["light"].clone());
+            desired.insert("darkCustomThemeCss".to_string(), object["dark"].clone());
+        }
+        SettingsGroup::Language => {
+            desired.insert("language".to_string(), value);
+        }
+        SettingsGroup::EditorPreferences => {
+            desired.insert("editorPreferences".to_string(), value);
+        }
+        SettingsGroup::FileIgnoreSettings => {
+            desired.insert("fileIgnoreSettings".to_string(), value);
+        }
+        SettingsGroup::ExportSettings => {
+            desired.insert("exportSettings".to_string(), value);
+        }
+    }
+    Ok(())
+}
+
+fn exact_group_object<'a>(
+    value: &'a Value,
+    expected: &[&str],
+) -> Result<&'a Map<String, Value>, SettingsServiceError> {
+    let object = value
+        .as_object()
+        .ok_or_else(SettingsServiceError::invalid)?;
+    let actual = object.keys().map(String::as_str).collect::<BTreeSet<_>>();
+    let expected = expected.iter().copied().collect::<BTreeSet<_>>();
+    (actual == expected)
+        .then_some(object)
+        .ok_or_else(SettingsServiceError::invalid)
+}
+
+fn valid_migrated_theme_id(key: &str, value: &Value) -> bool {
+    valid_single_portable_value(key, value)
+}
+
+fn valid_single_portable_value(key: &str, value: &Value) -> bool {
+    serde_json::to_vec(&Value::Object(Map::from_iter([(
+        key.to_string(),
+        value.clone(),
+    )])))
+    .ok()
+    .is_some_and(|bytes| validate_portable_settings_bytes(&bytes).is_ok())
 }
 
 const EDITOR_STORAGE_FIELDS: &[&str] = &[
@@ -896,6 +1494,65 @@ fn export_storage_values(stored: Option<Value>) -> Map<String, Value> {
     values
 }
 
+fn preserve_local_only_settings(
+    desired: &mut Map<String, Value>,
+    current_editor: Option<Value>,
+    current_export: Option<Value>,
+) {
+    let recent_folders = editor_storage_values(current_editor)
+        .get("viewModeCustomizations")
+        .and_then(Value::as_object)
+        .and_then(|customizations| customizations.get("recentFolders"))
+        .cloned();
+    if let Some(recent_folders) = recent_folders {
+        let editor = desired
+            .entry("editorPreferences".to_string())
+            .or_insert_with(|| Value::Object(Map::new()));
+        if let Some(editor) = editor.as_object_mut() {
+            let customizations = editor
+                .entry("viewModeCustomizations".to_string())
+                .or_insert_with(|| Value::Object(Map::new()));
+            if let Some(customizations) = customizations.as_object_mut() {
+                customizations.insert("recentFolders".to_string(), recent_folders);
+            }
+        }
+    }
+
+    let pandoc_path = export_storage_values(current_export)
+        .get("pandocPath")
+        .cloned();
+    if let Some(pandoc_path) = pandoc_path {
+        let export = desired
+            .entry("exportSettings".to_string())
+            .or_insert_with(|| Value::Object(Map::new()));
+        if let Some(export) = export.as_object_mut() {
+            export.insert("pandocPath".to_string(), pandoc_path);
+        }
+    }
+}
+
+fn is_local_only_storage_group(key: &str, value: &Value) -> bool {
+    let Some(values) = value.as_object() else {
+        return false;
+    };
+    match key {
+        "editorPreferences" if values.len() == 1 => values
+            .get("viewModeCustomizations")
+            .and_then(Value::as_object)
+            .is_some_and(|customizations| {
+                customizations.len() == 1
+                    && customizations
+                        .get("recentFolders")
+                        .and_then(Value::as_str)
+                        .is_some_and(|visibility| matches!(visibility, "visible" | "hidden"))
+            }),
+        "exportSettings" if values.len() == 1 => {
+            values.get("pandocPath").and_then(Value::as_str).is_some()
+        }
+        _ => false,
+    }
+}
+
 fn allowlisted_group(
     mut defaults: Map<String, Value>,
     stored: Option<Value>,
@@ -1040,6 +1697,18 @@ impl DeferredSettingsPublication {
             .mark_publication(self.ticket, PublicationDisposition::Ready);
         self.settled = true;
         result
+    }
+
+    pub fn cancel(mut self) -> Result<(), crate::events::EventSinkError> {
+        let result = self
+            .coordinator
+            .mark_publication(self.ticket, PublicationDisposition::Cancelled);
+        self.settled = true;
+        result
+    }
+
+    pub fn supersede(self) -> Result<(), crate::events::EventSinkError> {
+        self.cancel()
     }
 
     pub const fn settings(&self) -> &SettingsSnapshotDto {
