@@ -597,7 +597,7 @@ mod tests {
     use crate::{
         CheckIndex, CheckIndexFile, Chunk, Cloud, CloudError, CloudObject, CloudOperation,
         CloudUploadSource, Device, File, Index, LocalCloud, RawObjectKind, RefStore, Repo,
-        RepoError, RepoOptions, RepoPaths, Store,
+        RepoError, RepoOptions, RepoPaths, RepositoryRuntimeState, Store,
     };
 
     use super::{collect_flat_ids, collect_object_ids, purge_store_with_cancel_check};
@@ -622,6 +622,7 @@ mod tests {
     struct PurgeFixture {
         _temp: TempDir,
         repo: Repo,
+        runtime: RepositoryRuntimeState,
         unreachable_encoded_size: i64,
     }
 
@@ -773,7 +774,8 @@ mod tests {
             temp: temp.path().join("temp"),
         };
         fs::create_dir_all(&paths.data).unwrap();
-        let repo = Repo::open(
+        let runtime = RepositoryRuntimeState::default();
+        let repo = Repo::open_with_runtime(
             paths,
             Device {
                 id: "device".to_owned(),
@@ -782,6 +784,7 @@ mod tests {
             },
             [9; 32],
             RepoOptions::default(),
+            &runtime,
         )
         .unwrap();
 
@@ -874,6 +877,7 @@ mod tests {
         PurgeFixture {
             _temp: temp,
             repo,
+            runtime,
             unreachable_encoded_size,
         }
     }
@@ -2073,7 +2077,7 @@ mod tests {
     #[test]
     fn purge_delete_phase_excludes_cross_open_ref_and_index_publication() {
         let fixture = fixture();
-        let second_repo = Repo::open(
+        let second_repo = Repo::open_with_runtime(
             RepoPaths {
                 data: fixture._temp.path().join("data"),
                 repo: fixture._temp.path().join("repo"),
@@ -2087,6 +2091,7 @@ mod tests {
             },
             [9; 32],
             RepoOptions::default(),
+            &fixture.runtime,
         )
         .unwrap();
         let ref_target = index(UNREFERENCED_INDEX, UNREFERENCED_FILE, UNREFERENCED_CHECK);
@@ -2185,7 +2190,7 @@ mod tests {
         assert!(original_repo_root.is_dir());
         fs::rename(&original_repo_root, &moved_repo_root).unwrap();
 
-        let reopened_repo = Repo::open(
+        let reopened_repo = Repo::open_with_runtime(
             RepoPaths {
                 data: fixture._temp.path().join("data"),
                 repo: moved_repo_root.clone(),
@@ -2199,9 +2204,11 @@ mod tests {
             },
             [9; 32],
             RepoOptions::default(),
+            &fixture.runtime,
         )
         .unwrap();
-        let reopened_store = Store::new(&moved_repo_root, [9; 32]).unwrap();
+        let reopened_store =
+            Store::new_with_runtime(&moved_repo_root, [9; 32], &fixture.runtime).unwrap();
         let ref_target = index(UNREFERENCED_INDEX, UNREFERENCED_FILE, UNREFERENCED_CHECK);
         let mut concurrent_index = index(CONCURRENT_INDEX, UNREFERENCED_FILE, "");
         concurrent_index.files.clear();

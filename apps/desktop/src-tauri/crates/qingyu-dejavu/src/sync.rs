@@ -1156,8 +1156,9 @@ mod tests {
 
     use crate::{
         Cloud, CloudError, CloudObject, CloudUploadSource, Device, File, LocalCloud,
-        NoopWorkingTreeCoordinator, Repo, RepoError, RepoOptions, RepoPaths, Store,
-        WorkingTreeChange, WorkingTreeCoordinator, WorkingTreePermit,
+        NoopWorkingTreeCoordinator, Repo, RepoError, RepoOptions, RepoPaths,
+        RepositoryRuntimeState, Store, WorkingTreeChange, WorkingTreeCoordinator,
+        WorkingTreePermit,
     };
 
     struct RepoFixture {
@@ -1165,6 +1166,7 @@ mod tests {
         data: PathBuf,
         history: PathBuf,
         repo: Repo,
+        runtime: RepositoryRuntimeState,
     }
 
     fn repo_fixture(name: &str, options: RepoOptions) -> RepoFixture {
@@ -1172,7 +1174,8 @@ mod tests {
         let data = root.path().join("data");
         let history = root.path().join("history");
         fs::create_dir_all(&data).unwrap();
-        let repo = Repo::open(
+        let runtime = RepositoryRuntimeState::default();
+        let repo = Repo::open_with_runtime(
             RepoPaths {
                 data: data.clone(),
                 repo: root.path().join("repo"),
@@ -1186,6 +1189,7 @@ mod tests {
             },
             [7; 32],
             options,
+            &runtime,
         )
         .unwrap();
         RepoFixture {
@@ -1193,6 +1197,7 @@ mod tests {
             data,
             history,
             repo,
+            runtime,
         }
     }
 
@@ -2450,7 +2455,7 @@ mod tests {
             history: shared.history.clone(),
             temp: shared._root.path().join("temp"),
         };
-        let reopened = Repo::open(
+        let reopened = Repo::open_with_runtime(
             paths,
             Device {
                 id: "device-shared".to_owned(),
@@ -2459,6 +2464,7 @@ mod tests {
             },
             [7; 32],
             RepoOptions::default(),
+            &shared.runtime,
         )
         .unwrap();
         let blocking = Arc::new(BlockingCoordinator {
@@ -2519,9 +2525,10 @@ mod tests {
         let shared_repo = root.path().join("shared-repo");
         fs::create_dir_all(&first_data).unwrap();
         fs::create_dir_all(&other_data).unwrap();
-        let standalone_before = Store::new(&shared_repo, [7; 32]).unwrap();
+        let runtime = RepositoryRuntimeState::default();
+        let standalone_before = Store::new_with_runtime(&shared_repo, [7; 32], &runtime).unwrap();
         let first = Arc::new(
-            Repo::open(
+            Repo::open_with_runtime(
                 RepoPaths {
                     data: first_data.clone(),
                     repo: shared_repo.clone(),
@@ -2535,11 +2542,12 @@ mod tests {
                 },
                 [7; 32],
                 RepoOptions::default(),
+                &runtime,
             )
             .unwrap(),
         );
-        let standalone_after = Store::new(&shared_repo, [7; 32]).unwrap();
-        let same_repo = Repo::open(
+        let standalone_after = Store::new_with_runtime(&shared_repo, [7; 32], &runtime).unwrap();
+        let same_repo = Repo::open_with_runtime(
             RepoPaths {
                 data: other_data,
                 repo: shared_repo,
@@ -2553,9 +2561,10 @@ mod tests {
             },
             [7; 32],
             RepoOptions::default(),
+            &runtime,
         )
         .unwrap();
-        let same_data = Repo::open(
+        let same_data = Repo::open_with_runtime(
             RepoPaths {
                 data: first_data,
                 repo: root.path().join("other-repo"),
@@ -2569,6 +2578,7 @@ mod tests {
             },
             [7; 32],
             RepoOptions::default(),
+            &runtime,
         )
         .unwrap();
         let blocking = Arc::new(BlockingCoordinator {
@@ -2846,6 +2856,7 @@ mod tests {
             data,
             history: _,
             repo,
+            runtime: _,
         } = repo_fixture("second", RepoOptions::default());
         write_file(&data, "local.md", b"local", 1_700_000_000_000);
         let repo = Arc::new(repo);

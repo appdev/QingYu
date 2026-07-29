@@ -211,6 +211,7 @@ pub(crate) fn run() {
         .manage(DejavuSyncServiceOwner::default())
         .manage(DejavuSchedulerOwner::default())
         .manage(PathGuardCoordinatorOwner::default())
+        .manage(crate::remote_sync::RemoteSyncExecutionCoordinator::default())
         .manage(crate::themes::ThemeActivationState::default());
 
     #[cfg(any(target_os = "macos", windows, target_os = "linux"))]

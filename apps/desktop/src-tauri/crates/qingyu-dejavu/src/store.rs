@@ -3,7 +3,7 @@ use std::io::{BufReader, Cursor, Read, Seek, SeekFrom, Write};
 use std::path::{Component, Path, PathBuf};
 use std::pin::Pin;
 use std::rc::Rc;
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use cap_fs_ext::{DirExt, FollowSymlinks, OpenOptionsFollowExt};
 use cap_std::ambient_authority;
@@ -35,8 +35,6 @@ pub enum RawObjectKind {
     Index,
     CheckIndex,
 }
-
-static OPERATION_GUARD: OnceLock<OperationGuard> = OnceLock::new();
 
 pub struct Store {
     root: PathBuf,
@@ -79,9 +77,18 @@ impl CloudUploadSource for StoreUploadSource {
 
 impl Store {
     pub fn new(root: impl Into<PathBuf>, key: [u8; 32]) -> Result<Self, RepoError> {
+        let runtime = crate::RepositoryRuntimeState::default();
+        Self::new_with_runtime(root, key, &runtime)
+    }
+
+    pub fn new_with_runtime(
+        root: impl Into<PathBuf>,
+        key: [u8; 32],
+        runtime: &crate::RepositoryRuntimeState,
+    ) -> Result<Self, RepoError> {
         let root = absolute_lexical_root(root.into())?;
         let (anchor, relative_root) = store_anchor(&root)?;
-        let operation_guard = Arc::clone(OPERATION_GUARD.get_or_init(|| Arc::new(Mutex::new(()))));
+        let operation_guard = runtime.operation_guard();
         let mut repository_dir = anchor.try_clone()?;
         for component in relative_root.components() {
             let Component::Normal(name) = component else {
@@ -90,7 +97,7 @@ impl Store {
             repository_dir = open_child_directory(&repository_dir, name, true)?;
         }
         validate_store_directory(&repository_dir)?;
-        let repo_gate = crate::lifecycle::LifecycleGate::for_directory(&repository_dir)?;
+        let repo_gate = crate::lifecycle::LifecycleGate::for_directory(&repository_dir, runtime)?;
         let mut compressor = zstd::bulk::Compressor::new(zstd::DEFAULT_COMPRESSION_LEVEL)
             .map_err(RepoError::Compression)?;
         compressor
@@ -1243,7 +1250,9 @@ mod tests {
     use super::{Store, MAX_CHUNK_DECODED_SIZE};
     use crate::atomic_write::{stage_cap_file, write_file_safer, PublishOutcome};
     use crate::cloud::CloudUploadSource;
-    use crate::{CheckIndex, CheckIndexFile, Chunk, File, Index, RepoError};
+    use crate::{
+        CheckIndex, CheckIndexFile, Chunk, File, Index, RepoError, RepositoryRuntimeState,
+    };
 
     const FILE_ID: &str = "9088f936691086d6a0c11e516cf2ec1b2cef77d6";
     const GOLDEN_FILE_ID: &str = "0123456789abcdef0123456789abcdef01234567";
@@ -1738,6 +1747,66 @@ mod tests {
 
         assert_eq!(store.get_chunk(&first_id).unwrap().data, b"first");
         assert_eq!(store.get_chunk(&second_id).unwrap().data, b"second");
+    }
+
+    #[test]
+    fn repository_runtime_state_scopes_store_operation_serialization() {
+        let temp = tempfile::tempdir().unwrap();
+        let shared_runtime = RepositoryRuntimeState::default();
+        let isolated_runtime = RepositoryRuntimeState::default();
+        let first =
+            Store::new_with_runtime(temp.path().join("first"), fixture_key(), &shared_runtime)
+                .unwrap();
+        let shared =
+            Store::new_with_runtime(temp.path().join("shared"), fixture_key(), &shared_runtime)
+                .unwrap();
+        let isolated = Store::new_with_runtime(
+            temp.path().join("isolated"),
+            fixture_key(),
+            &isolated_runtime,
+        )
+        .unwrap();
+        let held = first.lock_operation().unwrap();
+        let (shared_tx, shared_rx) = std::sync::mpsc::channel();
+        let (shared_started_tx, shared_started_rx) = std::sync::mpsc::channel();
+        let shared = std::thread::spawn(move || {
+            shared_started_tx.send(()).unwrap();
+            shared_tx
+                .send(shared.list_raw_ids(super::RawObjectKind::Index))
+                .unwrap();
+        });
+        let (isolated_tx, isolated_rx) = std::sync::mpsc::channel();
+        let isolated = std::thread::spawn(move || {
+            isolated_tx
+                .send(isolated.list_raw_ids(super::RawObjectKind::Index))
+                .unwrap();
+        });
+
+        assert_eq!(
+            isolated_rx
+                .recv_timeout(std::time::Duration::from_secs(1))
+                .unwrap()
+                .unwrap(),
+            Vec::<String>::new()
+        );
+        shared_started_rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .unwrap();
+        assert!(matches!(
+            shared_rx.recv_timeout(std::time::Duration::from_millis(100)),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+        ));
+
+        drop(held);
+        assert_eq!(
+            shared_rx
+                .recv_timeout(std::time::Duration::from_secs(1))
+                .unwrap()
+                .unwrap(),
+            Vec::<String>::new()
+        );
+        shared.join().unwrap();
+        isolated.join().unwrap();
     }
 
     #[test]

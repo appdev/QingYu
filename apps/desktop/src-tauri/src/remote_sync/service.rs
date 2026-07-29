@@ -14,13 +14,11 @@ use super::diagnostics::{
     create_sync_run_id, record_sync_failed, record_sync_started, record_sync_succeeded,
     SyncDiagnosticContext,
 };
-#[cfg(test)]
-use super::engine::execute_remote_sync_pair;
 use super::engine::{
     complete_remote_first_restore_locked, execute_portable_settings_sync_locked,
     execute_remote_sync_pair_locked, preserve_remote_settings_conflict,
-    with_remote_sync_execution_lock, RemoteSyncSummary, SettingsSyncOutcome,
-    MAX_IMMEDIATE_RECHECK_PASSES,
+    with_remote_sync_execution_lock, RemoteSyncExecutionCoordinator, RemoteSyncSummary,
+    SettingsSyncOutcome, MAX_IMMEDIATE_RECHECK_PASSES,
 };
 use super::s3_backend::{S3Backend, S3SyncSettings, S3TransportOptions};
 use super::scope::RemoteSyncScope;
@@ -216,7 +214,9 @@ pub(crate) async fn run_application_s3_portable_settings<R: Runtime>(
         &settings_backend.target_fingerprint_source(),
         remote_root.as_str(),
     );
-    run_prepared_portable_settings_sync(
+    let execution_coordinator = app.state::<RemoteSyncExecutionCoordinator>();
+    run_prepared_portable_settings_sync_with_coordinator(
+        &execution_coordinator,
         &snapshot.revision,
         SyncProvider::S3,
         trigger,
@@ -566,7 +566,9 @@ async fn run_application_sync_inner<R: Runtime>(
             SyncSummary::default(),
         ));
     }
-    run_prepared_scoped_sync_pair(
+    let execution_coordinator = app.state::<RemoteSyncExecutionCoordinator>();
+    run_prepared_scoped_sync_pair_with_coordinator(
+        &execution_coordinator,
         &snapshot.revision,
         provider,
         trigger,
@@ -944,7 +946,44 @@ where
     clear_portable_settings_pending(scope)
 }
 
+#[cfg(test)]
 pub(crate) async fn run_prepared_portable_settings_sync<SettingsBackend, Reload, ReloadFuture>(
+    revision: &str,
+    _provider: SyncProvider,
+    trigger: SyncTrigger,
+    app_data: &Path,
+    settings_state: PathBuf,
+    settings_backend: &SettingsBackend,
+    settings_service: &AppSettingsService,
+    reload: Reload,
+) -> Result<SyncSummary, SyncRunError>
+where
+    SettingsBackend: RemoteSyncBackend,
+    Reload: FnMut() -> ReloadFuture,
+    ReloadFuture: Future<Output = Result<(), String>>,
+{
+    let execution_coordinator = RemoteSyncExecutionCoordinator::default();
+    run_prepared_portable_settings_sync_with_coordinator(
+        &execution_coordinator,
+        revision,
+        _provider,
+        trigger,
+        app_data,
+        settings_state,
+        settings_backend,
+        settings_service,
+        reload,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_prepared_portable_settings_sync_with_coordinator<
+    SettingsBackend,
+    Reload,
+    ReloadFuture,
+>(
+    execution_coordinator: &RemoteSyncExecutionCoordinator,
     revision: &str,
     _provider: SyncProvider,
     trigger: SyncTrigger,
@@ -959,7 +998,7 @@ where
     Reload: FnMut() -> ReloadFuture,
     ReloadFuture: Future<Output = Result<(), String>>,
 {
-    with_remote_sync_execution_lock(|| async {
+    with_remote_sync_execution_lock(execution_coordinator, || async {
         let mut prepared = prepare_portable_settings_sync(
             settings_service,
             app_data,
@@ -1063,7 +1102,50 @@ where
     .await
 }
 
+#[cfg(test)]
 async fn run_prepared_scoped_sync_pair<NotesBackend, SettingsBackend, Reload, ReloadFuture>(
+    revision: &str,
+    provider: SyncProvider,
+    trigger: SyncTrigger,
+    app_data: &Path,
+    notes_scope: &RemoteSyncScope,
+    notes_backend: &NotesBackend,
+    settings_state: PathBuf,
+    settings_backend: &SettingsBackend,
+    settings_service: &AppSettingsService,
+    reload: Reload,
+) -> Result<SyncRunResult, SyncRunError>
+where
+    NotesBackend: RemoteSyncBackend,
+    SettingsBackend: RemoteSyncBackend,
+    Reload: FnMut() -> ReloadFuture,
+    ReloadFuture: Future<Output = Result<(), String>>,
+{
+    let execution_coordinator = RemoteSyncExecutionCoordinator::default();
+    run_prepared_scoped_sync_pair_with_coordinator(
+        &execution_coordinator,
+        revision,
+        provider,
+        trigger,
+        app_data,
+        notes_scope,
+        notes_backend,
+        settings_state,
+        settings_backend,
+        settings_service,
+        reload,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_prepared_scoped_sync_pair_with_coordinator<
+    NotesBackend,
+    SettingsBackend,
+    Reload,
+    ReloadFuture,
+>(
+    execution_coordinator: &RemoteSyncExecutionCoordinator,
     revision: &str,
     provider: SyncProvider,
     trigger: SyncTrigger,
@@ -1081,7 +1163,7 @@ where
     Reload: FnMut() -> ReloadFuture,
     ReloadFuture: Future<Output = Result<(), String>>,
 {
-    with_remote_sync_execution_lock(|| async {
+    with_remote_sync_execution_lock(execution_coordinator, || async {
         let mut prepared = prepare_portable_settings_sync(
             settings_service,
             app_data,
@@ -1216,14 +1298,53 @@ where
     SettingsBackend: RemoteSyncBackend,
     Reconcile: FnOnce(Option<&str>) -> Result<(), String>,
 {
-    let (notes_result, settings_result) = execute_remote_sync_pair(
+    let execution_coordinator = RemoteSyncExecutionCoordinator::default();
+    run_scoped_sync_pair_with_coordinator(
+        &execution_coordinator,
+        revision,
+        provider,
+        trigger,
+        _app_data,
         notes_scope,
         notes_backend,
         settings_scope,
         settings_backend,
         reconcile,
     )
-    .await;
+    .await
+}
+
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+async fn run_scoped_sync_pair_with_coordinator<NotesBackend, SettingsBackend, Reconcile>(
+    execution_coordinator: &RemoteSyncExecutionCoordinator,
+    revision: &str,
+    provider: SyncProvider,
+    trigger: SyncTrigger,
+    _app_data: &Path,
+    notes_scope: &RemoteSyncScope,
+    notes_backend: &NotesBackend,
+    settings_scope: &RemoteSyncScope,
+    settings_backend: &SettingsBackend,
+    reconcile: Reconcile,
+) -> Result<SyncRunResult, SyncRunError>
+where
+    NotesBackend: RemoteSyncBackend,
+    SettingsBackend: RemoteSyncBackend,
+    Reconcile: FnOnce(Option<&str>) -> Result<(), String>,
+{
+    let (notes_result, settings_result) =
+        with_remote_sync_execution_lock(execution_coordinator, || async {
+            execute_remote_sync_pair_locked(
+                notes_scope,
+                notes_backend,
+                settings_scope,
+                settings_backend,
+                reconcile,
+            )
+            .await
+        })
+        .await;
     scoped_sync_pair_result(
         revision,
         provider,
@@ -1456,7 +1577,8 @@ mod tests {
         build_sync_scopes, prepare_portable_settings_sync,
         prepare_portable_settings_sync_with_conflict_preserver,
         reconcile_prepared_settings_after_scope, run_prepared_portable_settings_sync,
-        run_prepared_scoped_sync_pair, run_scoped_sync_pair, scoped_sync_pair_result,
+        run_prepared_scoped_sync_pair, run_prepared_scoped_sync_pair_with_coordinator,
+        run_scoped_sync_pair, run_scoped_sync_pair_with_coordinator, scoped_sync_pair_result,
         settings_state_root, sync_safe_error, validate_snapshot_target, ApplicationSyncSource,
     };
     use crate::app_settings::{
@@ -1469,7 +1591,7 @@ mod tests {
     };
     use crate::remote_sync::engine::{
         execute_remote_sync_pair_locked, preserve_remote_settings_conflict_with_directory_syncs,
-        RemoteSyncSummary, SettingsSyncOutcome,
+        RemoteSyncExecutionCoordinator, RemoteSyncSummary, SettingsSyncOutcome,
     };
     use crate::remote_sync::scope::RemoteSyncScope;
     use crate::remote_sync::settings_scope::{
@@ -3683,6 +3805,8 @@ mod tests {
     fn application_sync_lock_covers_settings_reconciliation() {
         let (reconcile_entered_tx, reconcile_entered_rx) = mpsc::channel();
         let (release_reconcile_tx, release_reconcile_rx) = mpsc::channel();
+        let execution_coordinator = Arc::new(RemoteSyncExecutionCoordinator::default());
+        let first_execution_coordinator = Arc::clone(&execution_coordinator);
         let first = thread::spawn(move || {
             tauri::async_runtime::block_on(async move {
                 let notes = tempdir().unwrap();
@@ -3705,7 +3829,8 @@ mod tests {
                 )
                 .unwrap();
 
-                run_scoped_sync_pair(
+                run_scoped_sync_pair_with_coordinator(
+                    &first_execution_coordinator,
                     "revision-lock-a",
                     SyncProvider::S3,
                     SyncTrigger::Manual,
@@ -3732,6 +3857,7 @@ mod tests {
 
         let (second_listed_tx, second_listed_rx) = mpsc::channel();
         let (second_state_tx, second_state_rx) = mpsc::channel();
+        let second_execution_coordinator = Arc::clone(&execution_coordinator);
         let second = thread::spawn(move || {
             tauri::async_runtime::block_on(async move {
                 let notes = tempdir().unwrap();
@@ -3759,7 +3885,8 @@ mod tests {
                     BTreeMap::new(),
                 ));
                 let settings_service = AppSettingsService::new_for_test(store_backend, None);
-                run_prepared_scoped_sync_pair(
+                run_prepared_scoped_sync_pair_with_coordinator(
+                    &second_execution_coordinator,
                     "revision-lock-b",
                     SyncProvider::S3,
                     SyncTrigger::Manual,
