@@ -1,23 +1,38 @@
 use std::{
     fs,
+    future::{poll_fn, Future as _},
     path::PathBuf,
+    pin::Pin,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         mpsc, Arc, Mutex, Weak,
     },
     time::Duration,
 };
 
+use async_trait::async_trait;
 use qingyu_kernel::{
     config::KernelConfig,
-    contract::{DomainEvent, ResourceRefDto, Revision, WorkspaceDto},
+    contract::{
+        DomainEvent, ResourceRefDto, Revision, Rfc3339Utc, TriggerSyncRunRequest, WorkspaceDto,
+    },
     events::{EventPublication, EventSink, EventSinkError},
     paths::KernelPaths,
-    ports::KernelPorts,
-    runtime::{
-        KernelRuntime, KernelStartupErrorKind, WorkspaceApiService, WorkspaceAuthorityErrorKind,
+    ports::{
+        BoxSleepFuture, BoxTaskFuture, Clock, CredentialSecret, CredentialSlot, CredentialStore,
+        DiagnosticRecord, DiagnosticsSink, KernelPorts, NetworkReachability, PortError, Sleeper,
+        TaskSpawner,
     },
-    services::workspace::{WorkspaceService, WorkspaceServiceErrorKind},
+    runtime::{
+        KernelRuntime, KernelStartupErrorKind, SyncApiService, WorkspaceApiService,
+        WorkspaceAuthorityErrorKind,
+    },
+    services::{
+        sync::{SyncExecutionError, SyncExecutor, SyncRunContext, SyncService},
+        workspace::{WorkspaceService, WorkspaceServiceErrorKind},
+    },
+    storage::DurableFileStore,
+    sync::config::{SyncConfig, SyncConfigStore},
     workspace::{
         managed::ManagedWorkspaceCollection,
         primary::{
@@ -29,6 +44,7 @@ use qingyu_kernel::{
 };
 use serde_json::Value;
 use tempfile::tempdir;
+use tokio::sync::Notify;
 
 #[derive(Default)]
 struct MemoryPrimaryWorkspaceStore {
@@ -239,6 +255,39 @@ struct MemoryHostWorkspaceTransaction {
     replace_target_after_commit: Option<(PathBuf, PathBuf)>,
 }
 
+struct OutcomeUnknownMemoryStoreTransaction {
+    authority_binding: PreparedWorkspaceAuthorityBinding,
+    repository_binding: PrimaryWorkspaceRepositoryBinding,
+    store: Arc<MemoryPrimaryWorkspaceStore>,
+}
+
+impl AtomicHostWorkspaceTransaction for OutcomeUnknownMemoryStoreTransaction {
+    fn repository_binding(&self) -> PrimaryWorkspaceRepositoryBinding {
+        self.repository_binding.clone()
+    }
+
+    fn authority_binding(&self) -> PreparedWorkspaceAuthorityBinding {
+        self.authority_binding.clone()
+    }
+
+    fn compare_and_commit(
+        self: Box<Self>,
+        expected_kernel_value: Option<&Value>,
+        next_kernel_value: Value,
+    ) -> Result<(), AtomicHostWorkspaceCommitError> {
+        if self.store.load().ok().as_ref().and_then(Option::as_ref) != expected_kernel_value {
+            return Err(AtomicHostWorkspaceCommitError::conflict());
+        }
+        self.store
+            .replace(Some(next_kernel_value))
+            .map_err(|_| AtomicHostWorkspaceCommitError::outcome_unknown())?;
+        self.store
+            .save()
+            .map_err(|_| AtomicHostWorkspaceCommitError::outcome_unknown())?;
+        Err(AtomicHostWorkspaceCommitError::outcome_unknown())
+    }
+}
+
 impl AtomicHostWorkspaceTransaction for MemoryHostWorkspaceTransaction {
     fn repository_binding(&self) -> PrimaryWorkspaceRepositoryBinding {
         self.binding.clone()
@@ -417,6 +466,101 @@ impl EventSink for RecordingEventSink {
     }
 }
 
+#[derive(Default)]
+struct SyncTestHost;
+
+impl EventSink for SyncTestHost {
+    fn publish(&self, _publication: &EventPublication) -> Result<(), EventSinkError> {
+        Ok(())
+    }
+}
+
+impl Clock for SyncTestHost {
+    fn now(&self) -> Result<Rfc3339Utc, PortError> {
+        Rfc3339Utc::parse("2026-07-30T00:00:00Z").map_err(|_| PortError::unavailable())
+    }
+}
+
+impl Sleeper for SyncTestHost {
+    fn sleep(&self, _duration: Duration) -> BoxSleepFuture<'_> {
+        Box::pin(async { Ok(()) })
+    }
+}
+
+impl TaskSpawner for SyncTestHost {
+    fn spawn(&self, task: BoxTaskFuture) -> Result<(), PortError> {
+        tokio::spawn(task);
+        Ok(())
+    }
+}
+
+impl CredentialStore for SyncTestHost {
+    fn is_present(&self, _slot: CredentialSlot) -> Result<bool, PortError> {
+        Ok(false)
+    }
+
+    fn replace(&self, _slot: CredentialSlot, _value: &CredentialSecret) -> Result<(), PortError> {
+        Ok(())
+    }
+
+    fn clear(&self, _slot: CredentialSlot) -> Result<(), PortError> {
+        Ok(())
+    }
+}
+
+impl DiagnosticsSink for SyncTestHost {
+    fn emit(&self, _record: DiagnosticRecord) -> Result<(), PortError> {
+        Ok(())
+    }
+}
+
+impl NetworkReachability for SyncTestHost {
+    fn is_reachable(&self) -> Result<bool, PortError> {
+        Ok(true)
+    }
+}
+
+#[derive(Default)]
+struct GatedCancellationExecutor {
+    cancellation_seen: Notify,
+    release: Notify,
+    runs: AtomicUsize,
+    started: Notify,
+}
+
+#[async_trait]
+impl SyncExecutor for GatedCancellationExecutor {
+    async fn test_connection(&self, _config: SyncConfig) -> Result<(), SyncExecutionError> {
+        Ok(())
+    }
+
+    async fn run(
+        &self,
+        _config: SyncConfig,
+        context: SyncRunContext,
+    ) -> Result<(), SyncExecutionError> {
+        self.runs.fetch_add(1, Ordering::SeqCst);
+        self.started.notify_one();
+        context.cancellation().cancelled().await;
+        self.cancellation_seen.notify_one();
+        self.release.notified().await;
+        Ok(())
+    }
+}
+
+fn sync_test_ports() -> KernelPorts {
+    let host = Arc::new(SyncTestHost);
+    KernelPorts::new(
+        host.clone(),
+        host.clone(),
+        host.clone(),
+        host.clone(),
+        host.clone(),
+        host.clone(),
+        host,
+    )
+}
+
 struct DesktopFixture {
     runtime: Arc<KernelRuntime>,
     managed: ManagedWorkspaceCollection,
@@ -466,6 +610,130 @@ impl DesktopFixture {
         .unwrap();
         (self.runtime, service)
     }
+}
+
+struct ActiveRunningSyncFixture {
+    executor: Arc<GatedCancellationExecutor>,
+    rebuild_managed: ManagedWorkspaceCollection,
+    runtime: Arc<KernelRuntime>,
+    store: Arc<MemoryPrimaryWorkspaceStore>,
+    sync: Arc<SyncService>,
+    workspace: Arc<WorkspaceService>,
+}
+
+async fn active_running_sync_fixture(root: &std::path::Path) -> ActiveRunningSyncFixture {
+    let workspace_path = root.join("workspace");
+    let app_data = root.join("app-data");
+    let cache = root.join("cache");
+    for path in [&workspace_path, &app_data, &cache] {
+        fs::create_dir(path).unwrap();
+    }
+    fs::write(
+        app_data.join("sync-config.json"),
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "version": 3,
+            "enabled": true,
+            "provider": "s3",
+            "remoteRoot": "qingyu",
+            "mode": "automatic",
+            "intervalSeconds": 30,
+            "generateConflictDocument": false,
+            "webdav": { "serverUrl": "", "username": "", "password": "" },
+            "s3": {
+                "endpointUrl": "https://s3.example.test",
+                "region": "us-east-1",
+                "bucket": "notes",
+                "accessKeyId": "access-key-id",
+                "secretAccessKey": "secret-access-key",
+                "requestTimeoutSeconds": 60,
+                "addressingStyle": "auto",
+                "tlsVerification": "verify"
+            }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let config = KernelConfig::generate().unwrap();
+    let paths = KernelPaths::desktop(&workspace_path, &app_data, &cache).unwrap();
+    let managed = ManagedWorkspaceCollection::from_paths(&paths).unwrap();
+    let rebuild_managed = ManagedWorkspaceCollection::from_paths(&paths).unwrap();
+    let durable =
+        DurableFileStore::at_instance_data(paths.instance_data_root(), config.launch_epoch())
+            .unwrap();
+    let runtime = KernelRuntime::activate(config, paths, sync_test_ports()).unwrap();
+    let store = Arc::new(MemoryPrimaryWorkspaceStore::default());
+    let workspace = Arc::new(
+        WorkspaceService::new(
+            &runtime,
+            store.clone(),
+            managed,
+            Arc::new(RecordingEventSink::default()),
+            "Initial Workspace",
+        )
+        .await
+        .unwrap(),
+    );
+    let executor = Arc::new(GatedCancellationExecutor::default());
+    let sync = Arc::new(SyncService::new(
+        runtime.clone(),
+        Arc::new(SyncConfigStore::new(durable).unwrap()),
+        executor.clone(),
+    ));
+    let config = SyncApiService::get_sync_config(sync.as_ref())
+        .await
+        .unwrap();
+    SyncApiService::trigger_sync_run(
+        sync.as_ref(),
+        TriggerSyncRunRequest {
+            expected_config_revision: config.revision,
+        },
+    )
+    .await
+    .unwrap();
+    executor.started.notified().await;
+
+    ActiveRunningSyncFixture {
+        executor,
+        rebuild_managed,
+        runtime,
+        store,
+        sync,
+        workspace,
+    }
+}
+
+async fn assert_task_is_pending<T>(task: &mut tokio::task::JoinHandle<T>) {
+    poll_fn(|context| match Pin::new(&mut *task).poll(context) {
+        std::task::Poll::Pending => std::task::Poll::Ready(()),
+        std::task::Poll::Ready(_) => panic!("task completed before its deterministic release"),
+    })
+    .await;
+}
+
+async fn cancel_running_sync_and_reopen(
+    runtime: &Arc<KernelRuntime>,
+    executor: &GatedCancellationExecutor,
+) {
+    let transition = runtime
+        .begin_sync_workspace_transition_for_test()
+        .await
+        .unwrap();
+    executor.cancellation_seen.notified().await;
+    executor.release.notify_one();
+    transition.wait_drained().await.unwrap();
+    transition.reopen_for_test().await.unwrap();
+}
+
+async fn assert_sync_admission_is_closed(sync: &SyncService) {
+    let config = SyncApiService::get_sync_config(sync).await.unwrap();
+    assert!(SyncApiService::trigger_sync_run(
+        sync,
+        TriggerSyncRunRequest {
+            expected_config_revision: config.revision,
+        },
+    )
+    .await
+    .is_err());
 }
 
 #[tokio::test]
@@ -846,6 +1114,269 @@ async fn same_binding_changed_canonical_rebuild_enters_global_recovery_without_o
         WorkspaceAuthorityErrorKind::WorkspaceUnavailable
     );
     assert_ne!(before.display_name, "External");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn changed_canonical_rebuild_reloads_after_running_sync_drain_before_recovery() {
+    let temporary = tempdir().unwrap();
+    let fixture = active_running_sync_fixture(temporary.path()).await;
+    let before = fixture.runtime.active_workspace_snapshot().unwrap();
+    let phase_a_value = serde_json::json!({
+        "schemaVersion": 1,
+        "revisionSeed": "phase-a-external",
+        "displayName": "Phase A External"
+    });
+    fixture.store.replace(Some(phase_a_value)).unwrap();
+    fixture.store.save().unwrap();
+    let loads_before_rebuild = fixture.store.access_counts().0;
+    let runtime = fixture.runtime.clone();
+    let store = fixture.store.clone();
+    let mut rebuild = tokio::spawn(async move {
+        WorkspaceService::new(
+            &runtime,
+            store,
+            fixture.rebuild_managed,
+            Arc::new(RecordingEventSink::default()),
+            "Ignored",
+        )
+        .await
+    });
+
+    fixture.executor.cancellation_seen.notified().await;
+    assert_task_is_pending(&mut rebuild).await;
+    assert_eq!(
+        fixture.store.access_counts().0,
+        loads_before_rebuild + 1,
+        "Phase A must read the changed canonical exactly once before drain"
+    );
+    assert!(Arc::ptr_eq(
+        &before,
+        &fixture.runtime.active_workspace_snapshot().unwrap()
+    ));
+    fixture
+        .store
+        .replace(Some(serde_json::json!({
+            "schemaVersion": 1,
+            "revisionSeed": "phase-b-external",
+            "displayName": "Phase B External"
+        })))
+        .unwrap();
+
+    fixture.executor.release.notify_one();
+    let error = match rebuild.await.unwrap() {
+        Ok(_) => panic!("changed canonical rebuild must enter recovery"),
+        Err(error) => error,
+    };
+
+    assert_eq!(
+        error.kind(),
+        WorkspaceServiceErrorKind::PersistenceUnavailable
+    );
+    assert_eq!(
+        fixture.store.access_counts().0,
+        loads_before_rebuild + 2,
+        "Phase B must reload and revalidate the store after drain"
+    );
+    assert_eq!(fixture.executor.runs.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        fixture
+            .runtime
+            .active_workspace_snapshot()
+            .unwrap_err()
+            .kind(),
+        WorkspaceAuthorityErrorKind::WorkspaceUnavailable
+    );
+    assert_sync_admission_is_closed(fixture.sync.as_ref()).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn equal_rebuild_preserves_running_sync_without_cancellation() {
+    let temporary = tempdir().unwrap();
+    let fixture = active_running_sync_fixture(temporary.path()).await;
+    let before = fixture.runtime.active_workspace_snapshot().unwrap();
+    let runtime = fixture.runtime.clone();
+    let store = fixture.store.clone();
+    let mut rebuild = tokio::spawn(async move {
+        WorkspaceService::new(
+            &runtime,
+            store,
+            fixture.rebuild_managed,
+            Arc::new(RecordingEventSink::default()),
+            "Ignored",
+        )
+        .await
+    });
+
+    let rebuilt = tokio::select! {
+        result = &mut rebuild => result.unwrap().unwrap(),
+        _ = fixture.executor.cancellation_seen.notified() => {
+            fixture.executor.release.notify_one();
+            let _result = rebuild.await;
+            panic!("equal rebuild cancelled the active sync run")
+        }
+    };
+
+    assert_eq!(
+        rebuilt.current().unwrap(),
+        fixture.workspace.current().unwrap()
+    );
+    assert!(Arc::ptr_eq(
+        &before,
+        &fixture.runtime.active_workspace_snapshot().unwrap()
+    ));
+    assert_eq!(fixture.executor.runs.load(Ordering::SeqCst), 1);
+    cancel_running_sync_and_reopen(&fixture.runtime, fixture.executor.as_ref()).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn foreign_rebuild_rejects_before_store_io_without_cancelling_running_sync() {
+    let temporary = tempdir().unwrap();
+    let fixture = active_running_sync_fixture(temporary.path()).await;
+    let before = fixture.runtime.active_workspace_snapshot().unwrap();
+    let foreign_store = Arc::new(MemoryPrimaryWorkspaceStore::default());
+    let runtime = fixture.runtime.clone();
+    let tested_store = foreign_store.clone();
+    let mut rebuild = tokio::spawn(async move {
+        WorkspaceService::new(
+            &runtime,
+            tested_store,
+            fixture.rebuild_managed,
+            Arc::new(RecordingEventSink::default()),
+            "Foreign",
+        )
+        .await
+    });
+    let result = tokio::select! {
+        result = &mut rebuild => result.unwrap(),
+        _ = fixture.executor.cancellation_seen.notified() => {
+            fixture.executor.release.notify_one();
+            let _result = rebuild.await;
+            panic!("foreign rebuild cancelled the active sync run")
+        }
+    };
+    let error = match result {
+        Ok(_) => panic!("foreign repository must be rejected"),
+        Err(error) => error,
+    };
+
+    assert_eq!(
+        error.kind(),
+        WorkspaceServiceErrorKind::PersistenceUnavailable
+    );
+    assert_eq!(foreign_store.access_counts(), (0, 0, 0));
+    assert!(Arc::ptr_eq(
+        &before,
+        &fixture.runtime.active_workspace_snapshot().unwrap()
+    ));
+    assert_eq!(fixture.executor.runs.load(Ordering::SeqCst), 1);
+    cancel_running_sync_and_reopen(&fixture.runtime, fixture.executor.as_ref()).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn outcome_unknown_waits_for_running_sync_drain_then_closes_admission() {
+    let temporary = tempdir().unwrap();
+    let fixture = active_running_sync_fixture(temporary.path()).await;
+    let before = fixture.runtime.active_workspace_snapshot().unwrap();
+    let target = temporary.path().join("outcome-unknown-target");
+    fs::create_dir(&target).unwrap();
+    let prepared = fixture
+        .runtime
+        .prepare_host_workspace_authority(&target)
+        .unwrap();
+    let transaction = OutcomeUnknownMemoryStoreTransaction {
+        authority_binding: prepared.binding(),
+        repository_binding: fixture.store.repository_binding(),
+        store: fixture.store.clone(),
+    };
+    let service = fixture.workspace.clone();
+    let expected_revision = before.workspace().revision.clone();
+    let mut switching = tokio::spawn(async move {
+        service
+            .compare_and_set_host_workspace_transaction(
+                &expected_revision,
+                prepared,
+                "Outcome Unknown Target",
+                Box::new(transaction),
+            )
+            .await
+    });
+
+    fixture.executor.cancellation_seen.notified().await;
+    assert_task_is_pending(&mut switching).await;
+    assert!(Arc::ptr_eq(
+        &before,
+        &fixture.runtime.active_workspace_snapshot().unwrap()
+    ));
+
+    fixture.executor.release.notify_one();
+    let error = switching.await.unwrap().unwrap_err();
+
+    assert_eq!(
+        error.kind(),
+        WorkspaceServiceErrorKind::PersistenceUnavailable
+    );
+    assert_eq!(
+        fixture
+            .runtime
+            .active_workspace_snapshot()
+            .unwrap_err()
+            .kind(),
+        WorkspaceAuthorityErrorKind::WorkspaceUnavailable
+    );
+    assert_sync_admission_is_closed(fixture.sync.as_ref()).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn failed_legacy_rollback_waits_for_running_sync_drain_then_closes_admission() {
+    let temporary = tempdir().unwrap();
+    let fixture = active_running_sync_fixture(temporary.path()).await;
+    let before = fixture.runtime.active_workspace_snapshot().unwrap();
+    let target = temporary.path().join("failed-rollback-target");
+    let displaced = temporary.path().join("failed-rollback-target-displaced");
+    fs::create_dir(&target).unwrap();
+    let prepared = fixture
+        .runtime
+        .prepare_host_workspace_authority(&target)
+        .unwrap();
+    fixture
+        .store
+        .replace_target_on_next_save(target.clone(), displaced.clone());
+    fixture
+        .store
+        .fail_replace_on_call(fixture.store.access_counts().1 + 2);
+    let service = fixture.workspace.clone();
+    let expected_revision = before.workspace().revision.clone();
+    let mut switching = tokio::spawn(async move {
+        service
+            .compare_and_set_host_workspace(&expected_revision, prepared, "Failed Rollback Target")
+            .await
+    });
+
+    fixture.executor.cancellation_seen.notified().await;
+    assert_task_is_pending(&mut switching).await;
+    assert!(Arc::ptr_eq(
+        &before,
+        &fixture.runtime.active_workspace_snapshot().unwrap()
+    ));
+
+    fixture.executor.release.notify_one();
+    let error = switching.await.unwrap().unwrap_err();
+
+    assert_eq!(
+        error.kind(),
+        WorkspaceServiceErrorKind::PersistenceUnavailable
+    );
+    assert!(target.is_dir());
+    assert!(displaced.is_dir());
+    assert_eq!(
+        fixture
+            .runtime
+            .active_workspace_snapshot()
+            .unwrap_err()
+            .kind(),
+        WorkspaceAuthorityErrorKind::WorkspaceUnavailable
+    );
+    assert_sync_admission_is_closed(fixture.sync.as_ref()).await;
 }
 
 #[tokio::test]
