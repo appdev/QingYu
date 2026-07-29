@@ -105,20 +105,12 @@ fn directory_identity(directory: &Dir) -> Result<DirectoryIdentity, RepoError> {
 
 #[cfg(windows)]
 fn directory_identity(directory: &Dir) -> Result<DirectoryIdentity, RepoError> {
-    use cap_std::fs::MetadataExt;
+    use cap_fs_ext::MetadataExt;
 
     let metadata = directory.dir_metadata()?;
-    let volume = metadata
-        .volume_serial_number()
-        .ok_or(RepoError::InvalidData(
-            "repository data directory volume identity is unavailable",
-        ))?;
-    let file = metadata.file_index().ok_or(RepoError::InvalidData(
-        "repository data directory file identity is unavailable",
-    ))?;
     Ok(DirectoryIdentity {
-        volume: u64::from(volume),
-        file,
+        volume: metadata.dev(),
+        file: metadata.ino(),
     })
 }
 
