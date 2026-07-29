@@ -277,14 +277,17 @@ impl SyncApiService for SyncService {
         let config_revision = request.expected_config_revision.clone();
         let fallback_completed_at = accepted_at.clone();
         let spawn_result = self.runtime.spawn_background(Box::pin(async move {
-            let same_workspace = background_runtime.verify_instance_lock().is_ok()
-                && background_runtime
-                    .active_workspace_snapshot()
-                    .is_ok_and(|current| Arc::ptr_eq(&current, &admitted_workspace));
-            let result = if same_workspace {
-                executor.run(config, run_id, SyncTrigger::Manual).await
-            } else {
-                Err(SyncExecutionError)
+            let admitted_run = {
+                let _mutation = background_runtime.mutation_coordinator().lock().await;
+                let same_workspace = background_runtime.verify_instance_lock().is_ok()
+                    && background_runtime
+                        .active_workspace_snapshot()
+                        .is_ok_and(|current| Arc::ptr_eq(&current, &admitted_workspace));
+                same_workspace.then(|| executor.run(config, run_id, SyncTrigger::Manual))
+            };
+            let result = match admitted_run {
+                Some(run) => run.await,
+                None => Err(SyncExecutionError),
             };
             let _mutation = background_runtime.mutation_coordinator().lock().await;
             let completed_at = background_runtime

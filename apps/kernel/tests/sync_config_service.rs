@@ -1,6 +1,6 @@
 use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
-    Arc, Condvar, Mutex,
+    mpsc, Arc, Condvar, Mutex,
 };
 use std::time::Duration;
 
@@ -80,6 +80,7 @@ struct CountingExecutor {
 #[derive(Default)]
 struct MemoryPrimaryWorkspaceStore {
     binding: PrimaryWorkspaceRepositoryBinding,
+    block_next_save: Mutex<Option<(mpsc::Sender<()>, mpsc::Receiver<()>)>>,
     value: Mutex<Option<serde_json::Value>>,
     failing_saves: AtomicUsize,
 }
@@ -87,6 +88,13 @@ struct MemoryPrimaryWorkspaceStore {
 impl MemoryPrimaryWorkspaceStore {
     fn fail_next_saves(&self, count: usize) {
         self.failing_saves.store(count, Ordering::SeqCst);
+    }
+
+    fn block_next_save(&self) -> (mpsc::Receiver<()>, mpsc::Sender<()>) {
+        let (started_sender, started_receiver) = mpsc::channel();
+        let (release_sender, release_receiver) = mpsc::channel();
+        *self.block_next_save.lock().unwrap() = Some((started_sender, release_receiver));
+        (started_receiver, release_sender)
     }
 }
 
@@ -105,6 +113,10 @@ impl PrimaryWorkspaceStore for MemoryPrimaryWorkspaceStore {
     }
 
     fn save(&self) -> Result<(), PrimaryWorkspaceStoreError> {
+        if let Some((started, release)) = self.block_next_save.lock().unwrap().take() {
+            started.send(()).unwrap();
+            release.recv().unwrap();
+        }
         let failed = self
             .failing_saves
             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
@@ -257,6 +269,7 @@ struct TestHost;
 #[derive(Default)]
 struct DeferredTaskSpawner {
     spawned: AtomicUsize,
+    started: Arc<Notify>,
     task: Mutex<Option<BoxTaskFuture>>,
 }
 
@@ -269,9 +282,13 @@ impl DeferredTaskSpawner {
 impl TaskSpawner for DeferredTaskSpawner {
     fn spawn(&self, task: BoxTaskFuture) -> Result<(), PortError> {
         self.spawned.fetch_add(1, Ordering::SeqCst);
+        let started = self.started.clone();
         let mut pending = self.task.lock().unwrap();
         assert!(pending.is_none(), "only one deferred task is expected");
-        *pending = Some(task);
+        *pending = Some(Box::pin(async move {
+            started.notify_one();
+            task.await;
+        }));
         Ok(())
     }
 }
@@ -2395,6 +2412,63 @@ async fn deferred_sync_run_does_not_invoke_executor_after_snapshot_change() {
     )
     .await;
     spawner.take_task().await;
+
+    assert_eq!(executor.runs.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        SyncApiService::get_sync_status(&service)
+            .await
+            .unwrap()
+            .completion_state,
+        SyncCompletionState::Failed
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn deferred_sync_run_waits_for_inflight_workspace_commit_before_executor_admission() {
+    let temporary = tempdir().unwrap();
+    let spawner = Arc::new(DeferredTaskSpawner::default());
+    let (runtime, workspace, durable) = active_sync_runtime(
+        temporary.path(),
+        test_ports_with_task_spawner(spawner.clone()),
+    );
+    let executor = Arc::new(CountingExecutor::default());
+    let service = SyncService::new(
+        runtime.clone(),
+        Arc::new(SyncConfigStore::new(durable).unwrap()),
+        executor.clone(),
+    );
+    let config = SyncApiService::get_sync_config(&service).await.unwrap();
+    SyncApiService::trigger_sync_run(
+        &service,
+        TriggerSyncRunRequest {
+            expected_config_revision: config.revision,
+        },
+    )
+    .await
+    .unwrap();
+
+    let target = temporary.path().join("inflight-target");
+    std::fs::create_dir(&target).unwrap();
+    let before = workspace.service.current().unwrap();
+    let prepared = runtime.prepare_host_workspace_authority(&target).unwrap();
+    let (commit_started, release_commit) = workspace.store.block_next_save();
+    let workspace_service = workspace.service.clone();
+    let switch = tokio::spawn(async move {
+        workspace_service
+            .compare_and_set_host_workspace(&before.revision, prepared, "Inflight Target")
+            .await
+    });
+    commit_started
+        .recv_timeout(Duration::from_secs(5))
+        .expect("workspace commit must hold the mutation permit before deferred admission");
+
+    let background = tokio::spawn(spawner.take_task());
+    spawner.started.notified().await;
+    assert_eq!(executor.runs.load(Ordering::SeqCst), 0);
+
+    release_commit.send(()).unwrap();
+    switch.await.unwrap().unwrap();
+    background.await.unwrap();
 
     assert_eq!(executor.runs.load(Ordering::SeqCst), 0);
     assert_eq!(
