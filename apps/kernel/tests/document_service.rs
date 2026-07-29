@@ -4,7 +4,7 @@ use std::{
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, Ordering},
-        mpsc, Arc, Mutex,
+        mpsc, Arc, Condvar, Mutex, Weak,
     },
     time::Duration,
 };
@@ -19,10 +19,10 @@ use qingyu_kernel::{
     config::KernelConfig,
     contract::{
         CreateDocumentRequest, DeleteDocumentRequest, DeletionPolicy, DocumentContents,
-        DocumentKind, DocumentName, FileDocumentName, ListDocumentsQuery, MoveDocumentRequest,
-        Nullable, PageLimit, PageQuery, Revision, SearchQuery, SearchWorkspaceQuery,
-        UpdateDocumentRequest, WireIdentityKey, WorkspaceDto, WorkspaceGeneration, WorkspaceId,
-        WorkspaceReadiness, WorkspaceRelativePath,
+        DocumentKind, DocumentName, DomainEvent, FileDocumentName, ListDocumentsQuery,
+        MoveDocumentRequest, Nullable, PageLimit, PageQuery, Revision, SearchQuery,
+        SearchWorkspaceQuery, UpdateDocumentRequest, WireIdentityKey, WorkspaceDto,
+        WorkspaceGeneration, WorkspaceId, WorkspaceReadiness, WorkspaceRelativePath,
     },
     documents::{
         history::MemoryDocumentHistoryStore,
@@ -33,6 +33,7 @@ use qingyu_kernel::{
         },
         DeletionPort, DeletionPortError, DocumentDeletionTarget, DocumentIgnorePort,
     },
+    events::{EventPublication, EventSink, EventSinkError},
     paths::KernelPaths,
     ports::KernelPorts,
     runtime::{DocumentsApiService, KernelRuntime, KernelStartupErrorKind},
@@ -154,6 +155,50 @@ struct BlockingIgnorePort {
     release: Mutex<mpsc::Receiver<()>>,
 }
 
+#[derive(Default)]
+struct WorkspacePublicationGate {
+    publication_entered: tokio::sync::Notify,
+    released: (Mutex<bool>, Condvar),
+    runtime: Mutex<Option<Weak<KernelRuntime>>>,
+}
+
+impl WorkspacePublicationGate {
+    fn bind_runtime(&self, runtime: &Arc<KernelRuntime>) {
+        *self.runtime.lock().unwrap() = Some(Arc::downgrade(runtime));
+    }
+
+    async fn wait_for_workspace_publication(&self) {
+        self.publication_entered.notified().await;
+    }
+
+    fn release_workspace_publication(&self) {
+        let (released, condition) = &self.released;
+        *released.lock().unwrap() = true;
+        condition.notify_all();
+    }
+}
+
+impl EventSink for WorkspacePublicationGate {
+    fn publish(&self, publication: &EventPublication) -> Result<(), EventSinkError> {
+        if matches!(publication.event, DomainEvent::WorkspaceChanged { .. }) {
+            self.publication_entered.notify_one();
+            let (released, condition) = &self.released;
+            let mut released = released.lock().unwrap();
+            while !*released {
+                released = condition.wait(released).unwrap();
+            }
+        }
+        let runtime = self
+            .runtime
+            .lock()
+            .unwrap()
+            .as_ref()
+            .and_then(Weak::upgrade)
+            .ok_or(EventSinkError)?;
+        runtime.event_broker().publish(publication)
+    }
+}
+
 impl DocumentIgnorePort for BlockingIgnorePort {
     fn is_ignored(&self, _path: &WorkspaceRelativePath, _kind: DocumentKind) -> bool {
         if let Some(started) = self.started.lock().unwrap().take() {
@@ -201,6 +246,10 @@ struct Fixture {
 
 impl Fixture {
     async fn new() -> Self {
+        Self::new_with_workspace_events(None).await
+    }
+
+    async fn new_with_workspace_events(events: Option<Arc<dyn EventSink>>) -> Self {
         let temporary = tempdir().unwrap().keep();
         let root = temporary.join("workspace");
         let app_data = temporary.join("app-data");
@@ -217,16 +266,11 @@ impl Fixture {
         )
         .unwrap();
         let store = Arc::new(MemoryWorkspaceStore::default());
+        let events = events.unwrap_or_else(|| runtime.event_broker().clone());
         let workspace = Arc::new(
-            WorkspaceService::new(
-                &runtime,
-                store.clone(),
-                managed,
-                runtime.event_broker().clone(),
-                "Documents",
-            )
-            .await
-            .unwrap(),
+            WorkspaceService::new(&runtime, store.clone(), managed, events, "Documents")
+                .await
+                .unwrap(),
         );
         let deletion = Arc::new(RecordingDeletionPort {
             root: root.clone(),
@@ -246,6 +290,81 @@ impl Fixture {
             deletion,
         }
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn document_mutation_is_rejected_until_workspace_changed_is_published() {
+    let publication_gate = Arc::new(WorkspacePublicationGate::default());
+    let fixture = Fixture::new_with_workspace_events(Some(publication_gate.clone())).await;
+    publication_gate.bind_runtime(&fixture.runtime);
+    let mut events = fixture.runtime.event_broker().subscribe();
+    let current = fixture.workspace.current().unwrap();
+    let next = fixture.root.parent().unwrap().join("next-workspace-events");
+    fs::create_dir(&next).unwrap();
+    let prepared = fixture
+        .runtime
+        .prepare_host_workspace_authority(&next)
+        .unwrap();
+    let workspace = fixture.workspace.clone();
+    let switch = tokio::spawn(async move {
+        workspace
+            .compare_and_set_host_workspace(&current.revision, prepared, "Next")
+            .await
+    });
+    publication_gate.wait_for_workspace_publication().await;
+
+    let committed = fixture.workspace.current().unwrap();
+    let blocked = fixture
+        .service
+        .create_document(CreateDocumentRequest::File {
+            workspace_generation: committed.generation.clone(),
+            parent: WorkspaceRelativePath::default(),
+            name: FileDocumentName::parse("ordered.md").unwrap(),
+            contents: DocumentContents::parse("blocked").unwrap(),
+        })
+        .await;
+    let wrote_before_publication = next.join("ordered.md").exists();
+
+    publication_gate.release_workspace_publication();
+    let switched = switch.await.unwrap().unwrap();
+    assert_eq!(switched, committed);
+    assert_eq!(
+        blocked.unwrap_err().kind(),
+        DocumentServiceErrorKind::Unavailable
+    );
+    assert!(!wrote_before_publication);
+
+    fixture
+        .service
+        .create_document(CreateDocumentRequest::File {
+            workspace_generation: committed.generation,
+            parent: WorkspaceRelativePath::default(),
+            name: FileDocumentName::parse("ordered.md").unwrap(),
+            contents: DocumentContents::parse("published").unwrap(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        fs::read_to_string(next.join("ordered.md")).unwrap(),
+        "published"
+    );
+
+    let workspace_event = tokio::time::timeout(Duration::from_secs(5), events.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    let document_event = tokio::time::timeout(Duration::from_secs(5), events.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        workspace_event.event,
+        DomainEvent::WorkspaceChanged { .. }
+    ));
+    assert!(matches!(
+        document_event.event,
+        DomainEvent::DocumentCreated { .. }
+    ));
 }
 
 async fn enter_global_workspace_recovery(fixture: &Fixture) {

@@ -742,6 +742,7 @@ impl KernelRuntime {
             token,
             expected: expected.clone(),
             abandoned: false,
+            publication_pending: false,
             recovery_on_drain: None,
             task_drop_candidate: None,
         };
@@ -1135,15 +1136,48 @@ impl KernelRuntime {
             repository_binding,
         ));
         *owner = WorkspaceOwnerState::Active(snapshot.clone());
-        let SyncRunAdmission::Transitioning { expected, .. } = &mut lifecycle.admission else {
+        let SyncRunAdmission::Transitioning {
+            expected,
+            publication_pending,
+            ..
+        } = &mut lifecycle.admission
+        else {
             lifecycle.admission = SyncRunAdmission::RecoveryClosed;
             return Err(WorkspaceAuthorityError::unavailable());
         };
         *expected = snapshot.clone();
+        *publication_pending = true;
         transition.drop_policy = SyncWorkspaceTransitionDropPolicy::Recovery {
             retained_candidate: Some(prepared.candidate.clone()),
         };
         Ok(snapshot)
+    }
+
+    pub(crate) fn verify_document_mutation_admission(
+        &self,
+        mutation: &MutationPermit<'_>,
+    ) -> Result<(), WorkspaceRunLifecycleError> {
+        if !self.mutation_coordinator.recognizes(mutation) {
+            return Err(WorkspaceRunLifecycleError);
+        }
+        let lifecycle = self
+            .workspace_run_lifecycle
+            .state
+            .lock()
+            .map_err(|_| WorkspaceRunLifecycleError)?;
+        match &lifecycle.admission {
+            SyncRunAdmission::Open
+            | SyncRunAdmission::Transitioning {
+                publication_pending: false,
+                ..
+            } => Ok(()),
+            SyncRunAdmission::Uninitialized
+            | SyncRunAdmission::Transitioning {
+                publication_pending: true,
+                ..
+            }
+            | SyncRunAdmission::RecoveryClosed => Err(WorkspaceRunLifecycleError),
+        }
     }
 
     pub fn install_system_api_service(
@@ -1738,6 +1772,7 @@ enum SyncRunAdmission {
         token: SyncWorkspaceTransitionToken,
         expected: Arc<ActiveWorkspaceSnapshot>,
         abandoned: bool,
+        publication_pending: bool,
         recovery_on_drain: Option<Arc<ActiveWorkspaceAuthority>>,
         task_drop_candidate: Option<Arc<ActiveWorkspaceAuthority>>,
     },

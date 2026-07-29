@@ -249,7 +249,10 @@ impl WorkspaceDocumentService {
         request: CreateDocumentRequest,
     ) -> Result<CreatedDocumentDto, DocumentServiceError> {
         let runtime = self.runtime()?;
-        let _mutation = runtime.mutation_coordinator().lock().await;
+        let mutation = runtime.mutation_coordinator().lock().await;
+        runtime
+            .verify_document_mutation_admission(&mutation)
+            .map_err(|_| DocumentServiceError::unavailable())?;
         let context = self.context_with_runtime(runtime.clone())?;
         let (generation, parent, name, kind, contents) = match request {
             CreateDocumentRequest::File {
@@ -343,7 +346,10 @@ impl WorkspaceDocumentService {
         request: UpdateDocumentRequest,
     ) -> Result<DocumentContentDto, DocumentServiceError> {
         let runtime = self.runtime()?;
-        let _mutation = runtime.mutation_coordinator().lock().await;
+        let mutation = runtime.mutation_coordinator().lock().await;
+        runtime
+            .verify_document_mutation_admission(&mutation)
+            .map_err(|_| DocumentServiceError::unavailable())?;
         let context = self.context_with_runtime(runtime.clone())?;
         self.verify_generation(context.workspace(), &request.workspace_generation)?;
         let path = self.verify_id(&context, &document_id, DocumentKind::File)?;
@@ -374,7 +380,10 @@ impl WorkspaceDocumentService {
         request: MoveDocumentRequest,
     ) -> Result<DocumentEntryDto, DocumentServiceError> {
         let runtime = self.runtime()?;
-        let _mutation = runtime.mutation_coordinator().lock().await;
+        let mutation = runtime.mutation_coordinator().lock().await;
+        runtime
+            .verify_document_mutation_admission(&mutation)
+            .map_err(|_| DocumentServiceError::unavailable())?;
         let context = self.context_with_runtime(runtime.clone())?;
         self.verify_generation(context.workspace(), &request.workspace_generation)?;
         let (kind, source) = self.verify_any_id(&context, &document_id)?;
@@ -423,7 +432,10 @@ impl WorkspaceDocumentService {
         request: DeleteDocumentRequest,
     ) -> Result<(), DocumentServiceError> {
         let runtime = self.runtime()?;
-        let _mutation = runtime.mutation_coordinator().lock().await;
+        let mutation = runtime.mutation_coordinator().lock().await;
+        runtime
+            .verify_document_mutation_admission(&mutation)
+            .map_err(|_| DocumentServiceError::unavailable())?;
         let context = self.context_with_runtime(runtime.clone())?;
         self.verify_generation(context.workspace(), &request.workspace_generation)?;
         let (kind, path) = self.verify_any_id(&context, &document_id)?;
@@ -540,7 +552,10 @@ impl WorkspaceDocumentService {
         request: crate::contract::RestoreDocumentHistoryRequest,
     ) -> Result<DocumentContentDto, DocumentServiceError> {
         let runtime = self.runtime()?;
-        let _mutation = runtime.mutation_coordinator().lock().await;
+        let mutation = runtime.mutation_coordinator().lock().await;
+        runtime
+            .verify_document_mutation_admission(&mutation)
+            .map_err(|_| DocumentServiceError::unavailable())?;
         let context = self.context_with_runtime(runtime.clone())?;
         self.verify_generation(context.workspace(), &request.workspace_generation)?;
         let path = self.verify_id(&context, &document_id, DocumentKind::File)?;
