@@ -308,13 +308,8 @@ describe("KernelHttpTransport", () => {
     }
   });
 
-  it("confines native bearer credentials to explicit loopback base URLs", async () => {
-    for (const baseUrl of [
-      "http://127.0.0.1:6608",
-      "https://127.255.10.20:6608",
-      "http://[::1]:6608",
-      "https://localhost:6608",
-    ]) {
+  it("confines native bearer credentials to the server's exact loopback host", async () => {
+    for (const baseUrl of ["http://127.0.0.1:6608"]) {
       const transport = new KernelHttpTransport({
         baseUrl,
         fetch: async () => jsonResponse({}),
@@ -327,6 +322,12 @@ describe("KernelHttpTransport", () => {
 
     for (const baseUrl of [
       "https://attacker.example",
+      "https://127.0.0.1:6608",
+      "https://127.255.10.20:6608",
+      "http://[::1]:6608",
+      "https://localhost:6608",
+      "http://127.0.0.1",
+      "http://127.0.0.1:0",
       "http://foo.localhost:6608",
       "http://localhost.:6608",
       "http://127.1:6608",

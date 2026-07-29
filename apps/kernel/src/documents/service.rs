@@ -1674,7 +1674,7 @@ fn try_read_stable_file(
         return Err(DocumentServiceError::unsafe_target());
     }
     let mut bytes = Vec::with_capacity(metadata.len() as usize);
-    file.read_to_end(&mut bytes)
+    read_to_end_bounded(&mut file, &mut bytes, DocumentContents::maximum_bytes())
         .map_err(|_| DocumentServiceError::unavailable())?;
     if bytes.len() > DocumentContents::maximum_bytes() {
         return Err(DocumentServiceError::too_large());
@@ -1814,8 +1814,11 @@ fn hash_directory_contents(
                 return Err(DocumentServiceError::unsafe_target());
             }
             let mut bytes = Vec::with_capacity(metadata.len() as usize);
-            file.read_to_end(&mut bytes)
+            read_to_end_bounded(&mut file, &mut bytes, DocumentContents::maximum_bytes())
                 .map_err(|_| DocumentServiceError::unavailable())?;
+            if bytes.len() > DocumentContents::maximum_bytes() {
+                return Err(DocumentServiceError::too_large());
+            }
             let after = file
                 .metadata()
                 .map_err(|_| DocumentServiceError::unavailable())?;
@@ -1976,7 +1979,15 @@ fn verify_named_staged_identity(
     }
     staged.file.seek(SeekFrom::Start(0)).map_err(|_| ())?;
     let mut bytes = Vec::new();
-    staged.file.read_to_end(&mut bytes).map_err(|_| ())?;
+    read_to_end_bounded(
+        &mut staged.file,
+        &mut bytes,
+        DocumentContents::maximum_bytes(),
+    )
+    .map_err(|_| ())?;
+    if bytes.len() > DocumentContents::maximum_bytes() {
+        return Err(());
+    }
     let actual = revision_for_bytes(&bytes).map_err(|_| ())?;
     (&actual == expected).then_some(()).ok_or(())
 }
@@ -1991,6 +2002,9 @@ fn revision_in_directory(directory: &Dir, name: &str) -> Result<Revision, Docume
     if !trusted_metadata(&metadata) {
         return Err(DocumentServiceError::unsafe_target());
     }
+    if metadata.len() > DocumentContents::maximum_bytes() as u64 {
+        return Err(DocumentServiceError::too_large());
+    }
     let mut options = OpenOptions::new();
     options.read(true).follow(FollowSymlinks::No);
     let mut file = directory
@@ -2003,9 +2017,23 @@ fn revision_in_directory(directory: &Dir, name: &str) -> Result<Revision, Docume
         return Err(DocumentServiceError::unsafe_target());
     }
     let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes)
+    read_to_end_bounded(&mut file, &mut bytes, DocumentContents::maximum_bytes())
         .map_err(|_| DocumentServiceError::unavailable())?;
+    if bytes.len() > DocumentContents::maximum_bytes() {
+        return Err(DocumentServiceError::too_large());
+    }
     revision_for_bytes(&bytes)
+}
+
+fn read_to_end_bounded(
+    reader: &mut impl io::Read,
+    bytes: &mut Vec<u8>,
+    maximum_bytes: usize,
+) -> io::Result<()> {
+    reader
+        .take(maximum_bytes as u64 + 1)
+        .read_to_end(bytes)
+        .map(|_| ())
 }
 fn revision_in_directory_for_kind(
     directory: &Dir,
@@ -2548,5 +2576,35 @@ mod atomic_exchange_safety_tests {
         assert!(result.is_err());
         assert_eq!(directory.read("note.md").unwrap(), b"intended new");
         assert_eq!(directory.read("stage.tmp").unwrap(), b"unknown entry");
+    }
+}
+
+#[cfg(test)]
+mod bounded_read_tests {
+    use std::io::{self, Read};
+
+    use super::read_to_end_bounded;
+
+    struct EndlessReader {
+        consumed: usize,
+    }
+
+    impl Read for EndlessReader {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            buffer.fill(b'x');
+            self.consumed += buffer.len();
+            Ok(buffer.len())
+        }
+    }
+
+    #[test]
+    fn bounded_document_reads_never_consume_past_the_sentinel_byte() {
+        let mut reader = EndlessReader { consumed: 0 };
+        let mut bytes = Vec::new();
+
+        read_to_end_bounded(&mut reader, &mut bytes, 32).unwrap();
+
+        assert_eq!(bytes.len(), 33);
+        assert_eq!(reader.consumed, 33);
     }
 }

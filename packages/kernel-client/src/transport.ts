@@ -181,37 +181,14 @@ export function parseKernelBaseUrl(value: string | URL) {
 }
 
 function isExplicitLoopback(raw: string, parsed: URL) {
-  const authority = /^https?:\/\/([^/?#]+)\/?$/iu.exec(raw)?.[1];
-  if (authority === undefined || authority.includes("@")) return false;
-
-  let host: string;
-  if (authority.startsWith("[")) {
-    const closingBracket = authority.indexOf("]");
-    if (closingBracket < 0 || !/^(?::\d+)?$/u.test(authority.slice(closingBracket + 1))) {
-      return false;
-    }
-    host = authority.slice(0, closingBracket + 1);
-  } else {
-    const match = /^([^:]+)(?::\d+)?$/u.exec(authority);
-    if (match === null) return false;
-    host = match[1]!;
-  }
-
-  if (host.toLowerCase() === "localhost") {
-    return parsed.hostname === "localhost";
-  }
-  if (host.toLowerCase() === "[::1]") {
-    return parsed.hostname === "[::1]";
-  }
-  const octets = host.split(".");
+  const match = /^http:\/\/127\.0\.0\.1:([1-9]\d{0,4})\/?$/u.exec(raw);
+  if (match === null) return false;
+  const port = match[1]!;
   return (
-    octets.length === 4 &&
-    octets[0] === "127" &&
-    octets.every(
-      (octet) =>
-        /^(?:0|[1-9]\d{0,2})$/u.test(octet) && Number(octet) <= 255,
-    ) &&
-    parsed.hostname === host
+    Number(port) <= 65_535 &&
+    parsed.protocol === "http:" &&
+    parsed.hostname === "127.0.0.1" &&
+    parsed.port === port
   );
 }
 
