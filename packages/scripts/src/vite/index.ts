@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { defineConfig } from "vitest/config";
 import { katexFontsPlugin } from "./katex-fonts.ts";
 import { stripDebugPlugin } from "./strip-debug.ts";
-import type { UserConfig } from "vite";
+import type { Plugin, UserConfig } from "vite";
 
 export type MarkraAppViteConfigOptions = {
   browserNodeStubUrl: string | URL;
@@ -71,6 +71,25 @@ const diagramDependencies = dependencyPattern([
 ]);
 const syntaxHighlightDependencies = dependencyPattern(["highlight.js", "lowlight"]);
 const toastDependencies = dependencyPattern(["sonner"]);
+
+function workerCharacterReferencePlugin(): Plugin {
+  return {
+    name: "markra-worker-character-reference",
+    enforce: "pre",
+    async resolveId(source, importer, options) {
+      if (source !== "decode-named-character-reference" || !importer) return null;
+
+      const resolved = await this.resolve(source, importer, { ...options, skipSelf: true });
+      if (!resolved?.id.endsWith("/index.dom.js")) return resolved;
+
+      return {
+        ...resolved,
+        id: resolved.id.replace(/\/index\.dom\.js$/, "/index.js")
+      };
+    }
+  };
+}
+
 function vendorChunkName(id: string) {
   if (reactDependencies.test(id)) return "react-vendor";
   if (markdownDependencies.test(id)) return "markdown-vendor";
@@ -113,6 +132,9 @@ export function createMarkraAppViteConfig(options: MarkraAppViteConfigOptions) {
       katexFontsPlugin(),
       ...(options.stripDebug !== false && mode === "production" ? [stripDebugPlugin()] : [])
     ],
+    worker: {
+      plugins: () => [workerCharacterReferencePlugin()]
+    },
     build: {
       chunkSizeWarningLimit: chunkSizeWarningLimitKb,
       rolldownOptions: {

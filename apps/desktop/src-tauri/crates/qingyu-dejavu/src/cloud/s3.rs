@@ -8,7 +8,7 @@ use std::task::{Context, Poll};
 use std::time::Duration;
 
 use reqwest::dns::{Addrs, Name, Resolve, Resolving};
-use reqwest::header::{HeaderMap, HeaderValue, CACHE_CONTROL};
+use reqwest::header::{HeaderMap, HeaderValue, CACHE_CONTROL, CONTENT_LENGTH};
 use reqwest::{Method, Response, Url};
 use sha2::{Digest, Sha256};
 use time::OffsetDateTime;
@@ -325,7 +325,10 @@ impl S3Cloud {
         method: Method,
         url: Url,
     ) -> Result<reqwest::RequestBuilder, CloudError> {
-        let headers = self.signer.sign_empty_at(&method, &url, (self.now)())?;
+        let mut headers = self.signer.sign_empty_at(&method, &url, (self.now)())?;
+        if method == Method::DELETE {
+            headers.insert(CONTENT_LENGTH, HeaderValue::from_static("0"));
+        }
         Ok(self.client.request(method, url).headers(headers))
     }
 
@@ -964,7 +967,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use reqwest::dns::{Name, Resolve, Resolving};
-    use reqwest::header::AUTHORIZATION;
+    use reqwest::header::{AUTHORIZATION, CONTENT_LENGTH};
     use tokio::net::{TcpListener, TcpStream};
 
     use super::*;
@@ -1227,5 +1230,24 @@ mod tests {
             with_query.headers()[AUTHORIZATION],
             without_query[AUTHORIZATION]
         );
+    }
+
+    #[test]
+    fn delete_requests_declare_an_explicit_zero_content_length() {
+        let cloud = S3Cloud::new(
+            connection(),
+            options(),
+            "qingyu/repositories/01234567-89ab-4def-8123-456789abcdef/repo",
+        )
+        .expect("valid S3 cloud");
+        let url = cloud.object_url("locks/sync").expect("valid object URL");
+
+        let request = cloud
+            .signed_empty_request(Method::DELETE, url)
+            .expect("signed empty request")
+            .build()
+            .expect("built empty request");
+
+        assert_eq!(request.headers().get(CONTENT_LENGTH).unwrap(), "0");
     }
 }
