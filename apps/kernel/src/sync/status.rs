@@ -115,6 +115,34 @@ impl SyncStatusState {
         }
         Ok(status.clone())
     }
+
+    pub fn complete_cancelled(&self, run_id: RunId) -> Result<SyncStatusDto, SyncStatusStateError> {
+        let mut current = self.current.lock().map_err(|_| SyncStatusStateError)?;
+        let status = current.as_mut().ok_or(SyncStatusStateError)?;
+        if status.active_run_id.as_ref() != Some(&run_id) {
+            return Err(SyncStatusStateError);
+        }
+        status.active_run_id = Nullable::null();
+        status.summary = Nullable::null();
+        status.completion_state = SyncCompletionState::Failed;
+        status.error = Nullable::value(
+            SyncSafeErrorDto::new(
+                status.provider,
+                SyncSafeErrorOperation::SyncRun,
+                SyncSafeErrorCode::Cancelled,
+            )
+            .with_run_id(run_id),
+        );
+        Ok(status.clone())
+    }
+
+    #[doc(hidden)]
+    pub fn poison_for_test(&self) {
+        let _caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = self.current.lock().expect("status lock before poison");
+            panic!("deterministic status poison");
+        }));
+    }
 }
 
 impl Default for SyncStatusState {

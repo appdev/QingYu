@@ -880,7 +880,7 @@ mod tests {
     use super::*;
     use crate::{
         config::KernelConfig,
-        contract::{ErrorCode, PatchSyncConfigRequest, RunId, SyncConfigChangesDto, SyncTrigger},
+        contract::{ErrorCode, PatchSyncConfigRequest, SyncConfigChangesDto},
         paths::KernelPaths,
         ports::KernelPorts,
         runtime::{KernelRuntime, SyncApiService},
@@ -1231,8 +1231,7 @@ mod tests {
         async fn run(
             &self,
             _config: SyncConfig,
-            _run_id: RunId,
-            _trigger: SyncTrigger,
+            _context: crate::services::sync::SyncRunContext,
         ) -> Result<(), SyncExecutionError> {
             Ok(())
         }

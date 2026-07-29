@@ -1,10 +1,19 @@
 //! Sync service composition boundary.
 
-use std::{fmt, sync::Arc};
+use std::{
+    fmt,
+    future::poll_fn,
+    panic::{catch_unwind, AssertUnwindSafe},
+    sync::Arc,
+    task::Poll,
+};
 
 use async_trait::async_trait;
 
-pub use crate::runtime::SyncApiService;
+pub use crate::runtime::{
+    ActiveWorkspaceSnapshotIdentity as SyncWorkspaceSnapshotIdentity, SyncApiService,
+    SyncCancellation,
+};
 
 use crate::{
     contract::{
@@ -13,7 +22,7 @@ use crate::{
         SyncStatusDto, SyncTrigger, TestSyncConnectionRequest, TriggerSyncRunRequest,
     },
     events::{EventPublication, EventSink as _},
-    runtime::{KernelRuntime, ServiceFailure},
+    runtime::{ClaimedSyncRun, KernelRuntime, ServiceFailure, SyncRunClaim},
     sync::config::{
         SyncConfig, SyncConfigChangeError, SyncConfigLoad, SyncConfigStore,
         SyncConfigStoreErrorKind,
@@ -28,9 +37,52 @@ pub trait SyncExecutor: Send + Sync {
     async fn run(
         &self,
         config: SyncConfig,
-        run_id: RunId,
-        trigger: SyncTrigger,
+        context: SyncRunContext,
     ) -> Result<(), SyncExecutionError>;
+}
+
+pub struct SyncRunContext {
+    run_id: RunId,
+    trigger: SyncTrigger,
+    snapshot: Arc<crate::runtime::ActiveWorkspaceSnapshot>,
+    cancellation: SyncCancellation,
+}
+
+impl SyncRunContext {
+    fn new(claimed: ClaimedSyncRun) -> Self {
+        Self {
+            run_id: claimed.run_id,
+            trigger: claimed.trigger,
+            snapshot: claimed.snapshot,
+            cancellation: claimed.cancellation,
+        }
+    }
+
+    pub const fn run_id(&self) -> RunId {
+        self.run_id
+    }
+
+    pub const fn trigger(&self) -> SyncTrigger {
+        self.trigger
+    }
+
+    pub fn workspace(&self) -> &crate::contract::WorkspaceDto {
+        self.snapshot.workspace()
+    }
+
+    pub fn snapshot_identity(&self) -> SyncWorkspaceSnapshotIdentity {
+        self.snapshot.identity()
+    }
+
+    pub const fn cancellation(&self) -> &SyncCancellation {
+        &self.cancellation
+    }
+}
+
+impl fmt::Debug for SyncRunContext {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("SyncRunContext { workspace: [OPAQUE] }")
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -59,11 +111,11 @@ impl SyncService {
         executor: Arc<dyn SyncExecutor>,
     ) -> Self {
         Self {
+            status: runtime.sync_status(),
             runtime,
             store,
             executor,
             editing: Arc::new(SyncEditingRegistry::new()),
-            status: Arc::new(SyncStatusState::new()),
         }
     }
 
@@ -106,12 +158,16 @@ impl SyncApiService for SyncService {
             .changes
             .validate()
             .map_err(|_| failure(ErrorCode::InvalidRequest))?;
-        let _mutation = self.runtime.mutation_coordinator().lock().await;
+        let mutation = self.runtime.mutation_coordinator().lock().await;
         self.verify_instance(ErrorCode::SyncConfigInvalid)?;
         if self
-            .status
-            .is_attempting()
+            .runtime
+            .sync_run_registered(&mutation)
             .map_err(|_| failure(ErrorCode::SyncNotReady))?
+            || self
+                .status
+                .is_attempting()
+                .map_err(|_| failure(ErrorCode::SyncNotReady))?
         {
             return Err(failure(ErrorCode::SyncNotReady));
         }
@@ -225,7 +281,7 @@ impl SyncApiService for SyncService {
         request: TriggerSyncRunRequest,
     ) -> Result<SyncRunAcceptedDto, ServiceFailure> {
         self.verify_instance(ErrorCode::SyncNotReady)?;
-        let _mutation = self.runtime.mutation_coordinator().lock().await;
+        let mutation = self.runtime.mutation_coordinator().lock().await;
         self.verify_instance(ErrorCode::SyncNotReady)?;
         let admitted_workspace = self
             .runtime
@@ -260,63 +316,84 @@ impl SyncApiService for SyncService {
             .now()
             .map_err(|_| failure(ErrorCode::SyncRunUnavailable))?;
         let run_id = RunId::new(uuid::Uuid::new_v4());
-        let attempting = self
-            .status
-            .begin_run(&exposed, run_id, accepted_at.clone(), SyncTrigger::Manual)
+        let queued = self
+            .runtime
+            .queue_sync_run(
+                admitted_workspace,
+                &exposed,
+                run_id,
+                accepted_at.clone(),
+                SyncTrigger::Manual,
+                &mutation,
+            )
             .map_err(|_| failure(ErrorCode::SyncRunUnavailable))?;
         publish_status(
             self.runtime.as_ref(),
-            attempting,
+            queued.attempting,
             request.expected_config_revision.clone(),
             Nullable::value(run_id),
         );
 
-        let background_runtime = self.runtime.clone();
-        let background_status = self.status.clone();
+        let background_runtime = Arc::downgrade(&self.runtime);
         let executor = self.executor.clone();
-        let config_revision = request.expected_config_revision.clone();
         let fallback_completed_at = accepted_at.clone();
-        let spawn_result = self.runtime.spawn_background(Box::pin(async move {
-            let admitted_run = {
-                let _mutation = background_runtime.mutation_coordinator().lock().await;
-                let same_workspace = background_runtime.verify_instance_lock().is_ok()
-                    && background_runtime
-                        .active_workspace_snapshot()
-                        .is_ok_and(|current| Arc::ptr_eq(&current, &admitted_workspace));
-                same_workspace.then(|| executor.run(config, run_id, SyncTrigger::Manual))
+        let spawn_result = self.runtime.spawn_sync_background(Box::pin(async move {
+            let Some(runtime) = background_runtime.upgrade() else {
+                return;
             };
-            let result = match admitted_run {
-                Some(run) => run.await,
-                None => Err(SyncExecutionError),
+            let claim = {
+                let mutation = runtime.mutation_coordinator().lock().await;
+                runtime.claim_sync_run(run_id, &mutation)
             };
-            let _mutation = background_runtime.mutation_coordinator().lock().await;
-            let completed_at = background_runtime
+            let claimed = match claim {
+                Ok(SyncRunClaim::Ready(claimed)) => claimed,
+                Ok(SyncRunClaim::Rejected(Some(terminal))) => {
+                    runtime.publish_sync_terminal(&terminal);
+                    let _finished = runtime.finish_sync_terminal(run_id);
+                    return;
+                }
+                Ok(SyncRunClaim::Rejected(None)) | Err(_) => return,
+            };
+            let mut run = executor.run(config, SyncRunContext::new(claimed));
+            let result = poll_fn(|context| {
+                match catch_unwind(AssertUnwindSafe(|| run.as_mut().poll(context))) {
+                    Ok(Poll::Ready(result)) => Poll::Ready(Ok(result)),
+                    Ok(Poll::Pending) => Poll::Pending,
+                    Err(_) => Poll::Ready(Err(())),
+                }
+            })
+            .await;
+            let mutation = runtime.mutation_coordinator().lock().await;
+            let completed_at = runtime
                 .ports()
                 .clock()
                 .now()
                 .unwrap_or(fallback_completed_at);
-            if let Ok(completed) =
-                background_status.complete_run(run_id, completed_at, result.is_ok())
-            {
-                publish_status(
-                    background_runtime.as_ref(),
-                    completed,
-                    config_revision,
-                    Nullable::value(run_id),
-                );
+            let terminal = runtime
+                .finalize_running_sync_run(
+                    run_id,
+                    matches!(result, Ok(Ok(()))),
+                    completed_at,
+                    &mutation,
+                )
+                .ok()
+                .flatten();
+            drop(mutation);
+            if let Some(terminal) = terminal {
+                runtime.publish_sync_terminal(&terminal);
+                let _finished = runtime.finish_sync_terminal(run_id);
             }
         }));
         if spawn_result.is_err() {
-            let failed = self
-                .status
-                .complete_run(run_id, accepted_at.clone(), false)
+            let terminal = self
+                .runtime
+                .fail_queued_sync_spawn(run_id, &mutation)
                 .map_err(|_| failure(ErrorCode::SyncRunUnavailable))?;
-            publish_status(
-                self.runtime.as_ref(),
-                failed,
-                request.expected_config_revision.clone(),
-                Nullable::value(run_id),
-            );
+            drop(mutation);
+            self.runtime.publish_sync_terminal(&terminal);
+            self.runtime
+                .finish_sync_terminal(run_id)
+                .map_err(|_| failure(ErrorCode::SyncRunUnavailable))?;
             return Err(failure(ErrorCode::SyncRunUnavailable));
         }
         Ok(SyncRunAcceptedDto {

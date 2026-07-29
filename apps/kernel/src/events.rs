@@ -13,6 +13,13 @@ pub struct EventPublication {
     pub event: DomainEvent,
 }
 
+/// Synchronous host publication boundary.
+///
+/// The sync run's pre-existing `Attempting` event is emitted while the Kernel
+/// mutation permit is held. A sink must therefore not synchronously re-enter a
+/// mutation API from that callback. Terminal sync events and workspace-change
+/// events are emitted after releasing the mutation permit and may perform
+/// ordinary synchronous observation without inheriting that restriction.
 pub trait EventSink: Send + Sync {
     fn publish(&self, publication: &EventPublication) -> Result<(), EventSinkError>;
 }
