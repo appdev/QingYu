@@ -266,7 +266,9 @@ fn active_workspace_authority_fails_closed_after_its_lock_address_is_replaced() 
         KernelPorts::unavailable(),
     )
     .unwrap();
-    let authority = runtime.active_workspace_authority();
+    let authority = runtime
+        .active_workspace_authority()
+        .expect("workspace authority");
     let lock_path = roots.workspace.join(".qingyu/workspace.lock");
     let displaced_lock = roots.workspace.join(".qingyu/displaced-workspace.lock");
 
@@ -468,17 +470,26 @@ fn desktop_switch_installs_one_new_authority_while_an_old_snapshot_retains_its_l
         KernelPorts::unavailable(),
     )
     .unwrap();
-    let old = runtime.active_workspace_authority();
+    let old = runtime
+        .active_workspace_authority()
+        .expect("workspace authority");
 
     let prepared = runtime
         .prepare_host_workspace_authority(&next.workspace)
         .unwrap();
-    assert!(Arc::ptr_eq(&old, &runtime.active_workspace_authority()));
+    assert!(Arc::ptr_eq(
+        &old,
+        &runtime
+            .active_workspace_authority()
+            .expect("workspace authority")
+    ));
 
     let installed = runtime.commit_host_workspace_authority(prepared).unwrap();
     assert!(Arc::ptr_eq(
         &installed,
-        &runtime.active_workspace_authority()
+        &runtime
+            .active_workspace_authority()
+            .expect("workspace authority")
     ));
     assert!(!Arc::ptr_eq(&old, &installed));
 
@@ -546,7 +557,9 @@ fn stale_prepared_authority_is_consumed_without_replacing_the_committed_authorit
     );
     assert!(Arc::ptr_eq(
         &installed,
-        &runtime.active_workspace_authority()
+        &runtime
+            .active_workspace_authority()
+            .expect("workspace authority")
     ));
     run_lock_probe(
         &stale.workspace,
@@ -614,7 +627,9 @@ fn mobile_runtime_rejects_host_workspace_prepare_without_changing_authority() {
         KernelPorts::unavailable(),
     )
     .unwrap();
-    let before = runtime.active_workspace_authority();
+    let before = runtime
+        .active_workspace_authority()
+        .expect("workspace authority");
 
     let error = runtime
         .prepare_host_workspace_authority(&alternate)
@@ -624,7 +639,12 @@ fn mobile_runtime_rejects_host_workspace_prepare_without_changing_authority() {
         error.kind(),
         qingyu_kernel::runtime::WorkspaceAuthorityErrorKind::UnsupportedProfile
     );
-    assert!(Arc::ptr_eq(&before, &runtime.active_workspace_authority()));
+    assert!(Arc::ptr_eq(
+        &before,
+        &runtime
+            .active_workspace_authority()
+            .expect("workspace authority")
+    ));
 }
 
 #[test]
@@ -637,7 +657,9 @@ fn desktop_prepare_rejects_private_root_overlap_without_changing_authority() {
         KernelPorts::unavailable(),
     )
     .unwrap();
-    let before = runtime.active_workspace_authority();
+    let before = runtime
+        .active_workspace_authority()
+        .expect("workspace authority");
 
     for private_root in [&roots.app_data, &roots.cache] {
         let error = runtime
@@ -648,7 +670,12 @@ fn desktop_prepare_rejects_private_root_overlap_without_changing_authority() {
             qingyu_kernel::runtime::WorkspaceAuthorityErrorKind::OverlappingRoots
         );
         assert!(!format!("{error:?}").contains(temporary.path().to_string_lossy().as_ref()));
-        assert!(Arc::ptr_eq(&before, &runtime.active_workspace_authority()));
+        assert!(Arc::ptr_eq(
+            &before,
+            &runtime
+                .active_workspace_authority()
+                .expect("workspace authority")
+        ));
     }
 }
 
@@ -664,7 +691,9 @@ fn commit_revalidates_the_prepared_address_and_leaves_current_authority_unchange
         KernelPorts::unavailable(),
     )
     .unwrap();
-    let before = runtime.active_workspace_authority();
+    let before = runtime
+        .active_workspace_authority()
+        .expect("workspace authority");
     let prepared = runtime
         .prepare_host_workspace_authority(&next.workspace)
         .unwrap();
@@ -679,7 +708,12 @@ fn commit_revalidates_the_prepared_address_and_leaves_current_authority_unchange
         error.kind(),
         qingyu_kernel::runtime::WorkspaceAuthorityErrorKind::UnsafeEntry
     );
-    assert!(Arc::ptr_eq(&before, &runtime.active_workspace_authority()));
+    assert!(Arc::ptr_eq(
+        &before,
+        &runtime
+            .active_workspace_authority()
+            .expect("workspace authority")
+    ));
 }
 
 #[test]
@@ -695,7 +729,9 @@ fn prepare_rejects_a_locked_target_without_changing_current_authority() {
         KernelPorts::unavailable(),
     )
     .unwrap();
-    let before = runtime.active_workspace_authority();
+    let before = runtime
+        .active_workspace_authority()
+        .expect("workspace authority");
 
     let error = runtime
         .prepare_host_workspace_authority(&target.workspace)
@@ -705,7 +741,12 @@ fn prepare_rejects_a_locked_target_without_changing_current_authority() {
         error.kind(),
         qingyu_kernel::runtime::WorkspaceAuthorityErrorKind::WorkspaceLocked
     );
-    assert!(Arc::ptr_eq(&before, &runtime.active_workspace_authority()));
+    assert!(Arc::ptr_eq(
+        &before,
+        &runtime
+            .active_workspace_authority()
+            .expect("workspace authority")
+    ));
     drop(target_lease);
     assert!(runtime
         .prepare_host_workspace_authority(&target.workspace)
@@ -730,7 +771,9 @@ fn prepared_authority_cannot_be_committed_by_another_runtime() {
         KernelPorts::unavailable(),
     )
     .unwrap();
-    let second_before = second_runtime.active_workspace_authority();
+    let second_before = second_runtime
+        .active_workspace_authority()
+        .expect("workspace authority");
     let prepared = first_runtime
         .prepare_host_workspace_authority(&candidate.workspace)
         .unwrap();
@@ -745,7 +788,9 @@ fn prepared_authority_cannot_be_committed_by_another_runtime() {
     );
     assert!(Arc::ptr_eq(
         &second_before,
-        &second_runtime.active_workspace_authority()
+        &second_runtime
+            .active_workspace_authority()
+            .expect("workspace authority")
     ));
 }
 

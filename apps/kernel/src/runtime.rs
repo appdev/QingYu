@@ -121,7 +121,9 @@ impl KernelRuntime {
     /// Transitional authority-only accessor for path-policy compatibility.
     /// Workspace consumers must use `active_workspace_snapshot` so recovery
     /// cannot be bypassed and metadata cannot be observed separately.
-    pub fn active_workspace_authority(&self) -> Arc<ActiveWorkspaceAuthority> {
+    pub fn active_workspace_authority(
+        &self,
+    ) -> Result<Arc<ActiveWorkspaceAuthority>, WorkspaceAuthorityError> {
         self.owner.compatibility_authority()
     }
 
@@ -398,20 +400,19 @@ impl KernelRuntimeOwner {
         }
     }
 
-    fn compatibility_authority(&self) -> Arc<ActiveWorkspaceAuthority> {
+    fn compatibility_authority(
+        &self,
+    ) -> Result<Arc<ActiveWorkspaceAuthority>, WorkspaceAuthorityError> {
         let state = self
             .workspace
             .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+            .map_err(|_| WorkspaceAuthorityError::unavailable())?;
         match &*state {
-            WorkspaceOwnerState::AuthorityOnly(authority) => authority.clone(),
-            WorkspaceOwnerState::Active(snapshot) => snapshot.authority.clone(),
-            WorkspaceOwnerState::RecoveryRequired(hold) => hold
-                .last_known
-                .as_ref()
-                .map(|snapshot| snapshot.authority.clone())
-                .or_else(|| hold.retained_candidate.clone())
-                .expect("recovery always retains at least one workspace authority"),
+            WorkspaceOwnerState::AuthorityOnly(authority) => Ok(authority.clone()),
+            WorkspaceOwnerState::Active(snapshot) => Ok(snapshot.authority.clone()),
+            WorkspaceOwnerState::RecoveryRequired { .. } => {
+                Err(WorkspaceAuthorityError::unavailable())
+            }
         }
     }
 
@@ -422,7 +423,8 @@ impl KernelRuntimeOwner {
             .map_err(|_| WorkspaceAuthorityError::unavailable())?;
         match &*state {
             WorkspaceOwnerState::Active(snapshot) => Ok(snapshot.clone()),
-            WorkspaceOwnerState::AuthorityOnly(_) | WorkspaceOwnerState::RecoveryRequired(_) => {
+            WorkspaceOwnerState::AuthorityOnly(_)
+            | WorkspaceOwnerState::RecoveryRequired { .. } => {
                 Err(WorkspaceAuthorityError::unavailable())
             }
         }
@@ -440,7 +442,9 @@ impl KernelRuntimeOwner {
             WorkspaceOwnerState::Active(snapshot) => {
                 Ok(WorkspaceOwnerIdentity::Active(snapshot.clone()))
             }
-            WorkspaceOwnerState::RecoveryRequired(_) => Err(WorkspaceAuthorityError::unavailable()),
+            WorkspaceOwnerState::RecoveryRequired { .. } => {
+                Err(WorkspaceAuthorityError::unavailable())
+            }
         }
     }
 
@@ -454,7 +458,7 @@ impl KernelRuntimeOwner {
             .map_err(|_| WorkspaceAuthorityError::unavailable())?;
         if expected.matches(&state) {
             Ok(())
-        } else if matches!(&*state, WorkspaceOwnerState::RecoveryRequired(_)) {
+        } else if matches!(&*state, WorkspaceOwnerState::RecoveryRequired { .. }) {
             Err(WorkspaceAuthorityError::unavailable())
         } else {
             Err(WorkspaceAuthorityError::prepared_authority_mismatch())
@@ -477,7 +481,8 @@ impl KernelRuntimeOwner {
             (WorkspaceOwnerState::AuthorityOnly(_), _) => {
                 Err(WorkspaceAuthorityError::prepared_authority_mismatch())
             }
-            (WorkspaceOwnerState::Active(_), _) | (WorkspaceOwnerState::RecoveryRequired(_), _) => {
+            (WorkspaceOwnerState::Active(_), _)
+            | (WorkspaceOwnerState::RecoveryRequired { .. }, _) => {
                 Err(WorkspaceAuthorityError::unavailable())
             }
         }
@@ -503,7 +508,8 @@ impl KernelRuntimeOwner {
             (WorkspaceOwnerState::AuthorityOnly(_), _) => {
                 Err(WorkspaceAuthorityError::prepared_authority_mismatch())
             }
-            (WorkspaceOwnerState::Active(_), _) | (WorkspaceOwnerState::RecoveryRequired(_), _) => {
+            (WorkspaceOwnerState::Active(_), _)
+            | (WorkspaceOwnerState::RecoveryRequired { .. }, _) => {
                 Err(WorkspaceAuthorityError::unavailable())
             }
         }
@@ -531,7 +537,7 @@ impl KernelRuntimeOwner {
             WorkspaceOwnerState::Active(_) => {
                 Err(WorkspaceInitializationError::foreign_repository())
             }
-            WorkspaceOwnerState::RecoveryRequired(_) => {
+            WorkspaceOwnerState::RecoveryRequired { .. } => {
                 Err(WorkspaceInitializationError::recovery_required())
             }
         }
@@ -572,13 +578,15 @@ impl KernelRuntimeOwner {
                     && current.repository_binding.matches(&repository_binding) =>
             {
                 let retained = current.clone();
-                *state = WorkspaceOwnerState::RecoveryRequired(WorkspaceRecoveryHold {
-                    last_known: Some(retained),
-                    retained_candidate: None,
-                });
+                *state = WorkspaceOwnerState::RecoveryRequired {
+                    _hold: WorkspaceRecoveryHold {
+                        _last_known: Some(retained),
+                        _retained_candidate: None,
+                    },
+                };
                 Err(WorkspaceInitializationError::changed_canonical())
             }
-            (WorkspaceOwnerState::RecoveryRequired(_), _) => {
+            (WorkspaceOwnerState::RecoveryRequired { .. }, _) => {
                 Err(WorkspaceInitializationError::recovery_required())
             }
             _ => Err(WorkspaceInitializationError::foreign_repository()),
@@ -627,7 +635,7 @@ impl KernelRuntimeOwner {
             .workspace
             .write()
             .map_err(|_| WorkspaceAuthorityError::unavailable())?;
-        if matches!(&*state, WorkspaceOwnerState::RecoveryRequired(_)) {
+        if matches!(&*state, WorkspaceOwnerState::RecoveryRequired { .. }) {
             return Ok(());
         }
         if !expected.matches(&state) {
@@ -638,10 +646,12 @@ impl KernelRuntimeOwner {
             WorkspaceOwnerIdentity::Active(snapshot) => Some(snapshot.clone()),
         };
         let retained_candidate = retained_candidate.or_else(|| Some(expected.authority()));
-        *state = WorkspaceOwnerState::RecoveryRequired(WorkspaceRecoveryHold {
-            last_known,
-            retained_candidate,
-        });
+        *state = WorkspaceOwnerState::RecoveryRequired {
+            _hold: WorkspaceRecoveryHold {
+                _last_known: last_known,
+                _retained_candidate: retained_candidate,
+            },
+        };
         Ok(())
     }
 }
@@ -655,12 +665,12 @@ impl fmt::Debug for KernelRuntimeOwner {
 enum WorkspaceOwnerState {
     AuthorityOnly(Arc<ActiveWorkspaceAuthority>),
     Active(Arc<ActiveWorkspaceSnapshot>),
-    RecoveryRequired(WorkspaceRecoveryHold),
+    RecoveryRequired { _hold: WorkspaceRecoveryHold },
 }
 
 struct WorkspaceRecoveryHold {
-    last_known: Option<Arc<ActiveWorkspaceSnapshot>>,
-    retained_candidate: Option<Arc<ActiveWorkspaceAuthority>>,
+    _last_known: Option<Arc<ActiveWorkspaceSnapshot>>,
+    _retained_candidate: Option<Arc<ActiveWorkspaceAuthority>>,
 }
 
 #[derive(Clone)]
@@ -1210,7 +1220,7 @@ pub trait SyncApiService: Send + Sync {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
+    use std::{fs, sync::Arc, thread};
 
     use tempfile::tempdir;
 
@@ -1242,6 +1252,44 @@ mod tests {
         assert_eq!(
             error.kind(),
             WorkspaceAuthorityErrorKind::UnsupportedProfile
+        );
+    }
+
+    #[test]
+    fn raw_workspace_authority_fails_closed_when_owner_lock_is_poisoned() {
+        let temporary = tempdir().expect("temporary server authority fixture");
+        let data_root = temporary.path().join("data");
+        let cache_root = temporary.path().join("cache");
+        fs::create_dir(&data_root).expect("server data root");
+        let paths = ServerPathLayout::for_test(&data_root, &cache_root)
+            .activate()
+            .expect("server paths");
+        let runtime = Arc::new(
+            KernelRuntime::activate(
+                KernelConfig::generate().expect("kernel config"),
+                paths,
+                KernelPorts::unavailable(),
+            )
+            .expect("server runtime"),
+        );
+        let poisoning_runtime = Arc::clone(&runtime);
+
+        let poisoned = thread::spawn(move || {
+            let _guard = poisoning_runtime
+                .owner
+                .workspace
+                .write()
+                .expect("workspace owner lock");
+            panic!("poison workspace owner lock");
+        });
+        assert!(poisoned.join().is_err());
+
+        let error = runtime
+            .active_workspace_authority()
+            .expect_err("poisoned owner lock must not expose retained authority");
+        assert_eq!(
+            error.kind(),
+            WorkspaceAuthorityErrorKind::WorkspaceUnavailable
         );
     }
 }

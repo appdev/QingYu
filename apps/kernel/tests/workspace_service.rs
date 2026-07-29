@@ -369,6 +369,7 @@ impl AtomicHostWorkspaceTransaction for ReadOnlyReentrantHostWorkspaceTransactio
     ) -> Result<(), AtomicHostWorkspaceCommitError> {
         self.runtime
             .active_workspace_authority()
+            .expect("workspace authority")
             .verify_held_directory()
             .map_err(|_| AtomicHostWorkspaceCommitError::no_commit())?;
         self.service
@@ -835,7 +836,9 @@ async fn stale_cas_leaves_identity_authority_and_events_unchanged() {
     let (runtime, service) =
         DesktopFixture::new(temporary.path()).into_service(store, events.clone());
     let before = service.current().unwrap();
-    let before_authority = runtime.active_workspace_authority();
+    let before_authority = runtime
+        .active_workspace_authority()
+        .expect("workspace authority");
     let prepared = runtime.prepare_host_workspace_authority(&next).unwrap();
 
     let error = service
@@ -852,7 +855,9 @@ async fn stale_cas_leaves_identity_authority_and_events_unchanged() {
     assert_eq!(service.current().unwrap(), before);
     assert!(Arc::ptr_eq(
         &before_authority,
-        &runtime.active_workspace_authority()
+        &runtime
+            .active_workspace_authority()
+            .expect("workspace authority")
     ));
     assert!(events.publications.lock().unwrap().is_empty());
 }
@@ -868,7 +873,9 @@ async fn save_failure_rolls_back_store_and_authority_without_an_event() {
         DesktopFixture::new(temporary.path()).into_service(store.clone(), events.clone());
     let before = service.current().unwrap();
     let before_durable = store.durable();
-    let before_authority = runtime.active_workspace_authority();
+    let before_authority = runtime
+        .active_workspace_authority()
+        .expect("workspace authority");
     let prepared = runtime.prepare_host_workspace_authority(&next).unwrap();
     store.fail_next_save();
 
@@ -886,7 +893,9 @@ async fn save_failure_rolls_back_store_and_authority_without_an_event() {
     assert_eq!(service.current().unwrap(), before);
     assert!(Arc::ptr_eq(
         &before_authority,
-        &runtime.active_workspace_authority()
+        &runtime
+            .active_workspace_authority()
+            .expect("workspace authority")
     ));
     assert!(events.publications.lock().unwrap().is_empty());
 }
@@ -902,7 +911,9 @@ async fn host_persistence_failure_does_not_switch_kernel_authority() {
         DesktopFixture::new(temporary.path()).into_service(store.clone(), events.clone());
     let before = service.current().unwrap();
     let before_host_record = store.snapshot();
-    let before_authority = runtime.active_workspace_authority();
+    let before_authority = runtime
+        .active_workspace_authority()
+        .expect("workspace authority");
     let prepared = runtime.prepare_host_workspace_authority(&next).unwrap();
     let mut host_transaction = store.transaction("workspace-b", prepared.binding());
     host_transaction.fail_persist = true;
@@ -931,7 +942,9 @@ async fn host_persistence_failure_does_not_switch_kernel_authority() {
     assert_eq!(service.current().unwrap(), before);
     assert!(Arc::ptr_eq(
         &before_authority,
-        &runtime.active_workspace_authority()
+        &runtime
+            .active_workspace_authority()
+            .expect("workspace authority")
     ));
     assert!(events.publications.lock().unwrap().is_empty());
 }
@@ -1005,7 +1018,9 @@ async fn stale_revision_is_rejected_before_host_persistence() {
         DesktopFixture::new(temporary.path()).into_service(store.clone(), events.clone());
     let before = service.current().unwrap();
     let before_host_record = store.snapshot();
-    let before_authority = runtime.active_workspace_authority();
+    let before_authority = runtime
+        .active_workspace_authority()
+        .expect("workspace authority");
     let prepared = runtime.prepare_host_workspace_authority(&next).unwrap();
     let transaction = store.transaction("workspace-b", prepared.binding());
 
@@ -1030,7 +1045,9 @@ async fn stale_revision_is_rejected_before_host_persistence() {
     );
     assert!(Arc::ptr_eq(
         &before_authority,
-        &runtime.active_workspace_authority()
+        &runtime
+            .active_workspace_authority()
+            .expect("workspace authority")
     ));
     assert!(events.publications.lock().unwrap().is_empty());
 }
@@ -1045,7 +1062,9 @@ async fn stale_host_record_cas_does_not_overwrite_newer_private_state() {
     let (runtime, service) =
         DesktopFixture::new(temporary.path()).into_service(store.clone(), events.clone());
     let before = service.current().unwrap();
-    let before_authority = runtime.active_workspace_authority();
+    let before_authority = runtime
+        .active_workspace_authority()
+        .expect("workspace authority");
     let prepared = runtime.prepare_host_workspace_authority(&next).unwrap();
     let transaction = store.transaction("workspace-b", prepared.binding());
     store.replace_private_workspace("newer-host-state");
@@ -1071,7 +1090,9 @@ async fn stale_host_record_cas_does_not_overwrite_newer_private_state() {
     );
     assert!(Arc::ptr_eq(
         &before_authority,
-        &runtime.active_workspace_authority()
+        &runtime
+            .active_workspace_authority()
+            .expect("workspace authority")
     ));
     assert_eq!(service.current().unwrap(), before);
     assert!(events.publications.lock().unwrap().is_empty());
@@ -1087,7 +1108,6 @@ async fn stale_service_canonical_cannot_overwrite_a_newer_host_canonical_value()
     let (runtime, service) =
         DesktopFixture::new(temporary.path()).into_service(store.clone(), events.clone());
     let before = service.current().unwrap();
-    let before_authority = runtime.active_workspace_authority();
     let prepared = runtime.prepare_host_workspace_authority(&next).unwrap();
     let newer_kernel_value = serde_json::json!({
         "schemaVersion": 1,
@@ -1113,10 +1133,10 @@ async fn stale_service_canonical_cannot_overwrite_a_newer_host_canonical_value()
     );
     assert_eq!(store.commits.load(Ordering::SeqCst), 0);
     assert_eq!(store.snapshot().kernel, Some(newer_kernel_value));
-    assert!(Arc::ptr_eq(
-        &before_authority,
-        &runtime.active_workspace_authority()
-    ));
+    assert_eq!(
+        runtime.active_workspace_authority().unwrap_err().kind(),
+        WorkspaceAuthorityErrorKind::WorkspaceUnavailable
+    );
     assert_eq!(
         service.current().unwrap_err().kind(),
         WorkspaceServiceErrorKind::WorkspaceUnavailable
@@ -1137,7 +1157,9 @@ async fn foreign_repository_transaction_is_rejected_before_any_host_write() {
         DesktopFixture::new(temporary.path()).into_service(local_store.clone(), events.clone());
     let before = service.current().unwrap();
     let local_before = local_store.snapshot();
-    let before_authority = runtime.active_workspace_authority();
+    let before_authority = runtime
+        .active_workspace_authority()
+        .expect("workspace authority");
     let prepared = runtime.prepare_host_workspace_authority(&next).unwrap();
     let foreign_transaction = foreign_store.transaction("foreign-next", prepared.binding());
 
@@ -1169,7 +1191,9 @@ async fn foreign_repository_transaction_is_rejected_before_any_host_write() {
     );
     assert!(Arc::ptr_eq(
         &before_authority,
-        &runtime.active_workspace_authority()
+        &runtime
+            .active_workspace_authority()
+            .expect("workspace authority")
     ));
     assert_eq!(service.current().unwrap(), before);
     assert!(events.publications.lock().unwrap().is_empty());
@@ -1192,7 +1216,9 @@ async fn transaction_for_another_prepared_authority_is_rejected_before_host_writ
         DesktopFixture::new(temporary.path()).into_service(store.clone(), events.clone());
     let before = service.current().unwrap();
     let before_host_record = store.snapshot();
-    let before_authority = runtime.active_workspace_authority();
+    let before_authority = runtime
+        .active_workspace_authority()
+        .expect("workspace authority");
     let prepared_a = runtime.prepare_host_workspace_authority(&target_a).unwrap();
     let prepared_b = runtime.prepare_host_workspace_authority(&target_b).unwrap();
     let transaction = store.transaction("workspace-b", prepared_b.binding());
@@ -1220,7 +1246,9 @@ async fn transaction_for_another_prepared_authority_is_rejected_before_host_writ
     );
     assert!(Arc::ptr_eq(
         &before_authority,
-        &runtime.active_workspace_authority()
+        &runtime
+            .active_workspace_authority()
+            .expect("workspace authority")
     ));
     assert_eq!(service.current().unwrap(), before);
     assert!(events.publications.lock().unwrap().is_empty());
@@ -1498,7 +1526,6 @@ async fn outcome_unknown_quarantines_runtime_not_only_one_service() {
     )
     .unwrap();
     let before = service.current().unwrap();
-    let before_authority = runtime.active_workspace_authority();
     let prepared = runtime.prepare_host_workspace_authority(&target).unwrap();
     let mut transaction = store.transaction("workspace-b", prepared.binding());
     transaction.outcome_unknown_after_commit = true;
@@ -1517,10 +1544,10 @@ async fn outcome_unknown_quarantines_runtime_not_only_one_service() {
         error.kind(),
         WorkspaceServiceErrorKind::PersistenceUnavailable
     );
-    assert!(Arc::ptr_eq(
-        &before_authority,
-        &runtime.active_workspace_authority()
-    ));
+    assert_eq!(
+        runtime.active_workspace_authority().unwrap_err().kind(),
+        WorkspaceAuthorityErrorKind::WorkspaceUnavailable
+    );
     assert_eq!(
         service.current().unwrap_err().kind(),
         WorkspaceServiceErrorKind::WorkspaceUnavailable
@@ -1681,7 +1708,6 @@ async fn candidate_replacement_after_durable_commit_quarantines_without_publicat
     let (runtime, service) =
         DesktopFixture::new(temporary.path()).into_service(store.clone(), events.clone());
     let before = service.current().unwrap();
-    let before_authority = runtime.active_workspace_authority();
     let prepared = runtime.prepare_host_workspace_authority(&target).unwrap();
     let mut transaction = store.transaction("workspace-b", prepared.binding());
     transaction.replace_target_after_commit = Some((target.clone(), displaced.clone()));
@@ -1700,10 +1726,10 @@ async fn candidate_replacement_after_durable_commit_quarantines_without_publicat
         error.kind(),
         WorkspaceServiceErrorKind::PersistenceUnavailable
     );
-    assert!(Arc::ptr_eq(
-        &before_authority,
-        &runtime.active_workspace_authority()
-    ));
+    assert_eq!(
+        runtime.active_workspace_authority().unwrap_err().kind(),
+        WorkspaceAuthorityErrorKind::WorkspaceUnavailable
+    );
     assert_eq!(
         service.current().unwrap_err().kind(),
         WorkspaceServiceErrorKind::WorkspaceUnavailable
@@ -1958,7 +1984,9 @@ async fn commit_address_replacement_restores_persisted_state_and_maps_to_workspa
         DesktopFixture::new(temporary.path()).into_service(store.clone(), events.clone());
     let before = service.current().unwrap();
     let before_store = store.durable();
-    let before_authority = runtime.active_workspace_authority();
+    let before_authority = runtime
+        .active_workspace_authority()
+        .expect("workspace authority");
     let prepared = runtime.prepare_host_workspace_authority(&next).unwrap();
     fs::rename(&next, &displaced).unwrap();
     fs::create_dir(&next).unwrap();
@@ -1977,7 +2005,9 @@ async fn commit_address_replacement_restores_persisted_state_and_maps_to_workspa
     assert_eq!(service.current().unwrap(), before);
     assert!(Arc::ptr_eq(
         &before_authority,
-        &runtime.active_workspace_authority()
+        &runtime
+            .active_workspace_authority()
+            .expect("workspace authority")
     ));
     assert!(events.publications.lock().unwrap().is_empty());
 }
