@@ -200,7 +200,7 @@ impl SystemApiService for NativeSystemService {
                 settings: true,
                 sync: true,
                 webdav: true,
-                s3: false,
+                s3: true,
                 portable_settings: true,
             },
             instance_id: self.instance_id,

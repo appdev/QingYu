@@ -111,7 +111,7 @@ fn standalone_process_installs_durable_settings_and_sync_services_with_exact_cap
     assert_eq!(runtime_body["capabilities"]["portableSettings"], true);
     assert_eq!(runtime_body["capabilities"]["sync"], true);
     assert_eq!(runtime_body["capabilities"]["webdav"], true);
-    assert_eq!(runtime_body["capabilities"]["s3"], false);
+    assert_eq!(runtime_body["capabilities"]["s3"], true);
 
     let settings = authorized_get(port, "/api/v1/settings");
     assert!(settings.starts_with("HTTP/1.1 200 OK\r\n"), "{settings}");
