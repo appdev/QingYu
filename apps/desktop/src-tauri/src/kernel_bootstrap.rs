@@ -238,6 +238,20 @@ impl NativeKernelBootstrapOwner {
             }),
         }
     }
+
+    #[cfg(test)]
+    pub(crate) fn poison_state_for_test(&self) {
+        let shared = Arc::clone(&self.shared);
+        let result = std::thread::spawn(move || {
+            let _state = shared
+                .state
+                .lock()
+                .expect("test bootstrap state should begin unpoisoned");
+            panic!("poison native Kernel bootstrap state for test");
+        })
+        .join();
+        assert!(result.is_err(), "test bootstrap poison should panic");
+    }
 }
 
 impl NativeKernelBootstrapSession {
@@ -392,12 +406,16 @@ impl NativeKernelBootstrapSession {
         if self.is_closed() {
             return Ok(false);
         }
-        let mut state = self
-            .inner
-            .shared
-            .state
-            .lock()
-            .map_err(|_| bootstrap_unavailable())?;
+        let mut state = match self.inner.shared.state.lock() {
+            Ok(state) => state,
+            Err(poisoned) => {
+                let mut state = poisoned.into_inner();
+                if self.owns_transition(&state) {
+                    state.publication.revoke_access();
+                }
+                return Err(bootstrap_unavailable());
+            }
+        };
         if self.is_closed()
             || !self.owns_transition(&state)
             || state.publication.generation() != Some(generation)

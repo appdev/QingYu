@@ -1169,14 +1169,15 @@ fn publish_failure(
     generation: u64,
     failure: KernelHostFailure,
 ) {
-    if matches!(bootstrap.fail_generation(generation), Ok(true)) {
-        snapshots.send_replace(KernelHostSnapshot {
-            phase: KernelHostPhase::Failed,
-            generation,
-            endpoint: None,
-            failure: Some(failure),
-        });
+    if matches!(bootstrap.fail_generation(generation), Ok(false)) {
+        return;
     }
+    snapshots.send_replace(KernelHostSnapshot {
+        phase: KernelHostPhase::Failed,
+        generation,
+        endpoint: None,
+        failure: Some(failure),
+    });
 }
 
 #[cfg(test)]
@@ -1208,6 +1209,7 @@ mod tests {
     #[derive(Clone)]
     struct RunningBehavior {
         exit: AsyncAction,
+        exit_gate: Option<Arc<Notify>>,
         graceful_stop: AsyncAction,
         force_reap: AsyncAction,
         force_reap_gate: Option<Arc<Notify>>,
@@ -1217,6 +1219,7 @@ mod tests {
         const fn graceful() -> Self {
             Self {
                 exit: AsyncAction::Hang,
+                exit_gate: None,
                 graceful_stop: AsyncAction::Complete,
                 force_reap: AsyncAction::Complete,
                 force_reap_gate: None,
@@ -1226,6 +1229,7 @@ mod tests {
         const fn requires_force() -> Self {
             Self {
                 exit: AsyncAction::Hang,
+                exit_gate: None,
                 graceful_stop: AsyncAction::Hang,
                 force_reap: AsyncAction::Complete,
                 force_reap_gate: None,
@@ -1449,6 +1453,9 @@ mod tests {
     impl RunningKernel for ScriptedRunning {
         fn wait_exit(&mut self) -> HostFuture<'_, Result<(), KernelHostFailure>> {
             Box::pin(async move {
+                if let Some(gate) = self.behavior.exit_gate.clone() {
+                    gate.notified().await;
+                }
                 match self.behavior.exit {
                     AsyncAction::Complete => {
                         self.active.store(false, Ordering::SeqCst);
@@ -1717,6 +1724,7 @@ mod tests {
                 },
                 RunningBehavior {
                     exit: AsyncAction::Complete,
+                    exit_gate: None,
                     graceful_stop: AsyncAction::Complete,
                     force_reap: AsyncAction::Complete,
                     force_reap_gate: None,
@@ -1778,6 +1786,7 @@ mod tests {
                 },
                 RunningBehavior {
                     exit: AsyncAction::Complete,
+                    exit_gate: None,
                     graceful_stop: AsyncAction::Complete,
                     force_reap: AsyncAction::Complete,
                     force_reap_gate: None,
@@ -1844,6 +1853,7 @@ mod tests {
             },
             RunningBehavior {
                 exit: AsyncAction::Complete,
+                exit_gate: None,
                 graceful_stop: AsyncAction::Complete,
                 force_reap: AsyncAction::Complete,
                 force_reap_gate: None,
@@ -2161,6 +2171,7 @@ mod tests {
                 },
                 RunningBehavior {
                     exit: AsyncAction::Fail,
+                    exit_gate: None,
                     graceful_stop: AsyncAction::Complete,
                     force_reap: AsyncAction::Complete,
                     force_reap_gate: None,
@@ -2198,6 +2209,7 @@ mod tests {
             },
             RunningBehavior {
                 exit: AsyncAction::Fail,
+                exit_gate: None,
                 graceful_stop: AsyncAction::Complete,
                 force_reap: AsyncAction::Complete,
                 force_reap_gate: Some(force_reap_gate.clone()),
@@ -2223,6 +2235,50 @@ mod tests {
                 "bootstrapVersion": 1,
                 "generation": "1",
             })
+        );
+
+        force_reap_gate.notify_one();
+    }
+
+    #[tokio::test]
+    async fn poisoned_bootstrap_failure_is_local_failed_and_revokes_ready() {
+        let instance = InstanceId::new(Uuid::new_v4());
+        let exit_gate = Arc::new(Notify::new());
+        let force_reap_gate = Arc::new(Notify::new());
+        let factory = Arc::new(ScriptedFactory::new([PendingScript::ready(
+            ReadyEvidence {
+                ready: NativeHostReady::new(43123, instance),
+                authenticated_instance: instance,
+            },
+            RunningBehavior {
+                exit: AsyncAction::Fail,
+                exit_gate: Some(exit_gate.clone()),
+                graceful_stop: AsyncAction::Complete,
+                force_reap: AsyncAction::Complete,
+                force_reap_gate: Some(force_reap_gate.clone()),
+            },
+        )]));
+        let bootstrap = crate::kernel_bootstrap::NativeKernelBootstrapOwner::new();
+        let supervisor = KernelHostSupervisor::new_with_bootstrap(
+            factory.clone(),
+            KernelHostTimeouts::uniform(Duration::from_secs(5)),
+            bootstrap.clone(),
+        );
+        let access = supervisor.start(startup()).await.unwrap();
+        assert_eq!(supervisor.snapshot().phase, KernelHostPhase::Ready);
+
+        bootstrap.poison_state_for_test();
+        exit_gate.notify_one();
+        wait_for_event(&factory, "running-force").await;
+
+        assert!(!access.credential.is_available());
+        assert!(bootstrap.read().is_err());
+        assert_eq!(supervisor.snapshot().phase, KernelHostPhase::Failed);
+        assert_eq!(supervisor.snapshot().generation, 1);
+        assert_eq!(supervisor.snapshot().endpoint, None);
+        assert_eq!(
+            supervisor.snapshot().failure,
+            Some(KernelHostFailure::UnexpectedExit)
         );
 
         force_reap_gate.notify_one();
