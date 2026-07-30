@@ -2,6 +2,7 @@
 
 pub(crate) use qingyu_kernel::protected_paths::{
     is_protected_sync_relative_path, is_qingyu_control_directory_name,
-    path_contains_qingyu_control_directory, LEGACY_SYNC_DIR, QINGYU_CONTROL_DIR,
-    SYNC_MUTATION_STAGING_PREFIX,
+    path_contains_qingyu_control_directory,
 };
+#[cfg(test)]
+pub(crate) use qingyu_kernel::protected_paths::{LEGACY_SYNC_DIR, QINGYU_CONTROL_DIR};
