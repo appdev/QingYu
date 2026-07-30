@@ -4,7 +4,7 @@ use std::{fmt, sync::Arc, time::Duration};
 
 use crate::{
     api::{ServerApiActivation, ServerApiProcess},
-    composition::install_fixed_kernel_services,
+    composition::{install_fixed_kernel_services, FixedKernelCompositionError},
     config::KernelConfig,
     paths::KernelPaths,
     ports::system::system_kernel_ports,
@@ -108,7 +108,7 @@ pub async fn compose_fixed_server_kernel(
         SERVER_WORKSPACE_DISPLAY_NAME,
     )
     .await
-    .map_err(|_| ServerRuntimeCompositionError::FixedServices)?;
+    .map_err(ServerRuntimeCompositionError::from_fixed_services)?;
     let authentication = Arc::new(
         ServerAuthenticationStore::open(runtime.config_root())
             .map_err(|_| ServerRuntimeCompositionError::AuthenticationStore)?,
@@ -156,19 +156,49 @@ pub enum ServerRuntimeCompositionError {
     ManagedPaths,
     RuntimeActivation,
     PrimaryWorkspaceStore,
-    FixedServices,
+    FixedSettingsStore,
+    FixedSyncStore,
+    FixedWorkspaceService,
+    FixedSettingsMigration,
+    FixedWorkspaceInstall,
+    FixedWorkspaceSnapshot,
+    FixedDocumentStorage,
+    FixedDocumentService,
+    FixedServiceInstall,
     AuthenticationStore,
     AuthenticationSecurity,
     ApiActivation,
 }
 
 impl ServerRuntimeCompositionError {
+    const fn from_fixed_services(error: FixedKernelCompositionError) -> Self {
+        match error {
+            FixedKernelCompositionError::SettingsStore => Self::FixedSettingsStore,
+            FixedKernelCompositionError::SyncStore => Self::FixedSyncStore,
+            FixedKernelCompositionError::WorkspaceService => Self::FixedWorkspaceService,
+            FixedKernelCompositionError::SettingsMigration => Self::FixedSettingsMigration,
+            FixedKernelCompositionError::WorkspaceInstall => Self::FixedWorkspaceInstall,
+            FixedKernelCompositionError::WorkspaceSnapshot => Self::FixedWorkspaceSnapshot,
+            FixedKernelCompositionError::DocumentStorage => Self::FixedDocumentStorage,
+            FixedKernelCompositionError::DocumentService => Self::FixedDocumentService,
+            FixedKernelCompositionError::ServiceInstall => Self::FixedServiceInstall,
+        }
+    }
+
     pub const fn diagnostic_code(self) -> &'static str {
         match self {
             Self::ManagedPaths => "QK-SRV-COMPOSE-MANAGED-PATHS",
             Self::RuntimeActivation => "QK-SRV-COMPOSE-RUNTIME-ACTIVATE",
             Self::PrimaryWorkspaceStore => "QK-SRV-COMPOSE-PRIMARY-WORKSPACE",
-            Self::FixedServices => "QK-SRV-COMPOSE-FIXED-SERVICES",
+            Self::FixedSettingsStore => "QK-SRV-COMPOSE-FIXED-SETTINGS-STORE",
+            Self::FixedSyncStore => "QK-SRV-COMPOSE-FIXED-SYNC-STORE",
+            Self::FixedWorkspaceService => "QK-SRV-COMPOSE-FIXED-WORKSPACE",
+            Self::FixedSettingsMigration => "QK-SRV-COMPOSE-FIXED-SETTINGS-MIGRATION",
+            Self::FixedWorkspaceInstall => "QK-SRV-COMPOSE-FIXED-WORKSPACE-INSTALL",
+            Self::FixedWorkspaceSnapshot => "QK-SRV-COMPOSE-FIXED-WORKSPACE-SNAPSHOT",
+            Self::FixedDocumentStorage => "QK-SRV-COMPOSE-FIXED-DOCUMENT-STORAGE",
+            Self::FixedDocumentService => "QK-SRV-COMPOSE-FIXED-DOCUMENT-SERVICE",
+            Self::FixedServiceInstall => "QK-SRV-COMPOSE-FIXED-SERVICE-INSTALL",
             Self::AuthenticationStore => "QK-SRV-COMPOSE-AUTH-STORE",
             Self::AuthenticationSecurity => "QK-SRV-COMPOSE-AUTH-SECURITY",
             Self::ApiActivation => "QK-SRV-AUTH-API",
@@ -413,8 +443,11 @@ mod tests {
             .await
             .unwrap_err();
 
-        assert_eq!(error, ServerRuntimeCompositionError::FixedServices);
-        assert_eq!(error.diagnostic_code(), "QK-SRV-COMPOSE-FIXED-SERVICES");
+        assert_eq!(error, ServerRuntimeCompositionError::FixedSettingsStore);
+        assert_eq!(
+            error.diagnostic_code(),
+            "QK-SRV-COMPOSE-FIXED-SETTINGS-STORE"
+        );
         assert!(!error.to_string().contains("fixed-services-marker"));
     }
 
@@ -469,8 +502,40 @@ mod tests {
                 "QK-SRV-COMPOSE-PRIMARY-WORKSPACE",
             ),
             (
-                ServerRuntimeCompositionError::FixedServices,
-                "QK-SRV-COMPOSE-FIXED-SERVICES",
+                ServerRuntimeCompositionError::FixedSettingsStore,
+                "QK-SRV-COMPOSE-FIXED-SETTINGS-STORE",
+            ),
+            (
+                ServerRuntimeCompositionError::FixedSyncStore,
+                "QK-SRV-COMPOSE-FIXED-SYNC-STORE",
+            ),
+            (
+                ServerRuntimeCompositionError::FixedWorkspaceService,
+                "QK-SRV-COMPOSE-FIXED-WORKSPACE",
+            ),
+            (
+                ServerRuntimeCompositionError::FixedSettingsMigration,
+                "QK-SRV-COMPOSE-FIXED-SETTINGS-MIGRATION",
+            ),
+            (
+                ServerRuntimeCompositionError::FixedWorkspaceInstall,
+                "QK-SRV-COMPOSE-FIXED-WORKSPACE-INSTALL",
+            ),
+            (
+                ServerRuntimeCompositionError::FixedWorkspaceSnapshot,
+                "QK-SRV-COMPOSE-FIXED-WORKSPACE-SNAPSHOT",
+            ),
+            (
+                ServerRuntimeCompositionError::FixedDocumentStorage,
+                "QK-SRV-COMPOSE-FIXED-DOCUMENT-STORAGE",
+            ),
+            (
+                ServerRuntimeCompositionError::FixedDocumentService,
+                "QK-SRV-COMPOSE-FIXED-DOCUMENT-SERVICE",
+            ),
+            (
+                ServerRuntimeCompositionError::FixedServiceInstall,
+                "QK-SRV-COMPOSE-FIXED-SERVICE-INSTALL",
             ),
             (
                 ServerRuntimeCompositionError::AuthenticationStore,

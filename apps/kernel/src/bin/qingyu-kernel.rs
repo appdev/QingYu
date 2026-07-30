@@ -677,9 +677,9 @@ mod tests {
             ),
             (
                 KernelStartupError::Server(ServerStartupStage::Composition(
-                    ServerRuntimeCompositionError::FixedServices,
+                    ServerRuntimeCompositionError::FixedWorkspaceService,
                 )),
-                "QingYu Kernel startup failed [QK-SRV-COMPOSE-FIXED-SERVICES].",
+                "QingYu Kernel startup failed [QK-SRV-COMPOSE-FIXED-WORKSPACE].",
             ),
             (
                 KernelStartupError::Server(ServerStartupStage::AuthenticationApi),

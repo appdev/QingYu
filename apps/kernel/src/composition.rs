@@ -80,9 +80,9 @@ pub(crate) async fn install_fixed_kernel_services(
                 runtime.instance_data_root(),
                 runtime.launch_epoch(),
             )
-            .map_err(|_| FixedKernelCompositionError)?,
+            .map_err(|_| FixedKernelCompositionError::SettingsStore)?,
         )
-        .map_err(|_| FixedKernelCompositionError)?,
+        .map_err(|_| FixedKernelCompositionError::SettingsStore)?,
     );
     let workspace_service = Arc::new(
         WorkspaceService::new(
@@ -93,7 +93,7 @@ pub(crate) async fn install_fixed_kernel_services(
             display_name,
         )
         .await
-        .map_err(|_| FixedKernelCompositionError)?,
+        .map_err(|_| FixedKernelCompositionError::WorkspaceService)?,
     );
     let settings_service = Arc::new(SettingsService::new(
         settings_store,
@@ -101,16 +101,16 @@ pub(crate) async fn install_fixed_kernel_services(
     ));
     settings_service
         .migrate_schema()
-        .map_err(|_| FixedKernelCompositionError)?;
+        .map_err(|_| FixedKernelCompositionError::SettingsMigration)?;
     let sync_store = Arc::new(
         SyncConfigStore::new(
             DurableFileStore::at_instance_data(
                 runtime.instance_data_root(),
                 runtime.launch_epoch(),
             )
-            .map_err(|_| FixedKernelCompositionError)?,
+            .map_err(|_| FixedKernelCompositionError::SyncStore)?,
         )
-        .map_err(|_| FixedKernelCompositionError)?,
+        .map_err(|_| FixedKernelCompositionError::SyncStore)?,
     );
     let sync_executor = Arc::new(ProductionSyncExecutor::new(
         runtime.clone(),
@@ -119,36 +119,36 @@ pub(crate) async fn install_fixed_kernel_services(
     let sync_service = Arc::new(SyncService::new(runtime.clone(), sync_store, sync_executor));
     runtime
         .install_workspace_api_service(workspace_service)
-        .map_err(|_| FixedKernelCompositionError)?;
+        .map_err(|_| FixedKernelCompositionError::WorkspaceInstall)?;
     let workspace = runtime
         .active_workspace_snapshot()
-        .map_err(|_| FixedKernelCompositionError)?;
+        .map_err(|_| FixedKernelCompositionError::WorkspaceSnapshot)?;
     let documents_root = open_or_create_child(
         &runtime
             .instance_data_root()
             .try_clone_dir()
-            .map_err(|_| FixedKernelCompositionError)?,
+            .map_err(|_| FixedKernelCompositionError::DocumentStorage)?,
         "documents-v1",
     )
-    .map_err(|_| FixedKernelCompositionError)?;
+    .map_err(|_| FixedKernelCompositionError::DocumentStorage)?;
     let workspace_documents_root = open_or_create_child(
         &documents_root,
         &workspace.workspace().id.as_uuid().to_string(),
     )
-    .map_err(|_| FixedKernelCompositionError)?;
+    .map_err(|_| FixedKernelCompositionError::DocumentStorage)?;
     let history_directory = open_or_create_child(&workspace_documents_root, "history")
-        .map_err(|_| FixedKernelCompositionError)?;
+        .map_err(|_| FixedKernelCompositionError::DocumentStorage)?;
     let recovery_directory = open_or_create_child(&workspace_documents_root, "recovery")
-        .map_err(|_| FixedKernelCompositionError)?;
+        .map_err(|_| FixedKernelCompositionError::DocumentStorage)?;
     let deletion = Arc::new(
         WorkspaceRecycleDeletionPort::new(
             workspace
                 .authority()
                 .root()
                 .try_clone_dir()
-                .map_err(|_| FixedKernelCompositionError)?,
+                .map_err(|_| FixedKernelCompositionError::DocumentStorage)?,
         )
-        .map_err(|_| FixedKernelCompositionError)?,
+        .map_err(|_| FixedKernelCompositionError::DocumentStorage)?,
     );
     let ignore: Arc<dyn WorkspaceIgnorePort> =
         Arc::new(SettingsWorkspaceIgnorePort::new(settings_service.clone()));
@@ -161,31 +161,41 @@ pub(crate) async fn install_fixed_kernel_services(
             Arc::new(CapabilityAtomicInstallPort),
             ignore.clone(),
         )
-        .map_err(|_| FixedKernelCompositionError)?,
+        .map_err(|_| FixedKernelCompositionError::DocumentService)?,
     );
     runtime
         .install_documents_api_service(documents_service)
-        .map_err(|_| FixedKernelCompositionError)?;
+        .map_err(|_| FixedKernelCompositionError::ServiceInstall)?;
     runtime
         .install_resources_api_service(Arc::new(WorkspaceResourceService::new(&runtime, ignore)))
-        .map_err(|_| FixedKernelCompositionError)?;
+        .map_err(|_| FixedKernelCompositionError::ServiceInstall)?;
     runtime
         .install_settings_api_service(settings_service)
-        .map_err(|_| FixedKernelCompositionError)?;
+        .map_err(|_| FixedKernelCompositionError::ServiceInstall)?;
     runtime
         .install_sync_api_service(sync_service)
-        .map_err(|_| FixedKernelCompositionError)?;
+        .map_err(|_| FixedKernelCompositionError::ServiceInstall)?;
     runtime
         .install_system_api_service(Arc::new(FixedSystemService {
             instance_id: runtime.instance_id(),
             profile: runtime.host_profile(),
         }))
-        .map_err(|_| FixedKernelCompositionError)?;
+        .map_err(|_| FixedKernelCompositionError::ServiceInstall)?;
     Ok(())
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct FixedKernelCompositionError;
+pub(crate) enum FixedKernelCompositionError {
+    SettingsStore,
+    SyncStore,
+    WorkspaceService,
+    SettingsMigration,
+    WorkspaceInstall,
+    WorkspaceSnapshot,
+    DocumentStorage,
+    DocumentService,
+    ServiceInstall,
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct NativeCompositionError;
