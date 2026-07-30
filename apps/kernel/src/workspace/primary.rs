@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use uuid::Uuid;
+use uuid::{Uuid, Variant, Version};
 
 const PRIMARY_WORKSPACE_SCHEMA_VERSION: u64 = 1;
 
@@ -57,6 +57,23 @@ impl PrimaryWorkspaceState {
 
     pub(crate) fn validate_display_name(value: &str) -> Result<(), PrimaryWorkspaceStateError> {
         validate_display_name(value)
+    }
+
+    pub(crate) fn validate_native_host_identity(&self) -> Result<(), PrimaryWorkspaceStateError> {
+        self.validate()?;
+        let revision_seed =
+            Uuid::parse_str(&self.revision_seed).map_err(|_| PrimaryWorkspaceStateError)?;
+        if revision_seed.get_variant() != Variant::RFC4122
+            || revision_seed.get_version() != Some(Version::Random)
+            || revision_seed.hyphenated().to_string() != self.revision_seed
+        {
+            return Err(PrimaryWorkspaceStateError);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn has_same_revision_identity(&self, candidate: &Self) -> bool {
+        self.revision_seed == candidate.revision_seed
     }
 }
 

@@ -14,8 +14,6 @@ const LOCAL_STATE_STORE_PATH: &str = "local-state.json";
 const LOCAL_STATE_SCHEMA_VERSION_KEY: &str = "schemaVersion";
 const LOCAL_STATE_SCHEMA_VERSION: u64 = 2;
 const PRIMARY_WORKSPACE_KEY: &str = "primaryWorkspace";
-const NATIVE_HOST_WORKSPACE_STATES_KEY: &str = "nativeHostWorkspaceStates";
-const NATIVE_HOST_WORKSPACE_STATES_SCHEMA_VERSION: u64 = 1;
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -43,66 +41,28 @@ struct StorePrimaryWorkspaceBackend<R: tauri::Runtime> {
     store: Arc<tauri_plugin_store::Store<R>>,
 }
 
-#[derive(Deserialize, Serialize)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
-struct StoredNativeHostWorkspaceStates {
-    schema_version: u64,
-    states: Vec<Value>,
-}
-
-impl StoredNativeHostWorkspaceStates {
-    fn decode(
-        value: Option<Value>,
-    ) -> Result<Vec<qingyu_kernel::host::native::NativeHostWorkspaceState>, String> {
-        let Some(value) = value else {
-            return Ok(Vec::new());
-        };
-        let stored = serde_json::from_value::<Self>(value).map_err(|_| persistence_error())?;
-        if stored.schema_version != NATIVE_HOST_WORKSPACE_STATES_SCHEMA_VERSION {
-            return Err(persistence_error());
-        }
-        stored
-            .states
-            .into_iter()
-            .map(|value| {
-                qingyu_kernel::host::native::NativeHostWorkspaceState::from_value(value)
-                    .map_err(|_| persistence_error())
-            })
-            .collect()
-    }
-
-    fn encode(
-        states: &[qingyu_kernel::host::native::NativeHostWorkspaceState],
-    ) -> Result<Value, String> {
-        let states = states
-            .iter()
-            .map(|state| state.to_value().map_err(|_| persistence_error()))
-            .collect::<Result<Vec<_>, _>>()?;
-        serde_json::to_value(Self {
-            schema_version: NATIVE_HOST_WORKSPACE_STATES_SCHEMA_VERSION,
-            states,
-        })
-        .map_err(|_| persistence_error())
-    }
-}
-
 /// Host-private, path-free identities for child Kernel launches.
 ///
-/// The registry deliberately uses a separate local-state key rather than a
-/// field of React-owned `primaryWorkspace`. This preserves identities across
-/// A-B-A switches and prevents a whole-object frontend write from replacing
-/// the opaque Kernel state.
+/// React-owned local-state supplies only the current path guard. The opaque
+/// registry is owned by a separate native durable store that is never encoded
+/// into the plugin-store record.
 struct NativeHostWorkspaceStatePersistence<'a, Backend: PrimaryWorkspaceBackend + ?Sized> {
     backend: &'a Backend,
+    native_store: &'a qingyu_kernel::host::native::NativeHostWorkspaceStore,
     transaction_lock: &'a Mutex<()>,
 }
 
 impl<'a, Backend: PrimaryWorkspaceBackend + ?Sized>
     NativeHostWorkspaceStatePersistence<'a, Backend>
 {
-    fn new(backend: &'a Backend, transaction_lock: &'a Mutex<()>) -> Self {
+    fn new(
+        backend: &'a Backend,
+        native_store: &'a qingyu_kernel::host::native::NativeHostWorkspaceStore,
+        transaction_lock: &'a Mutex<()>,
+    ) -> Self {
         Self {
             backend,
+            native_store,
             transaction_lock,
         }
     }
@@ -129,58 +89,11 @@ impl<'a, Backend: PrimaryWorkspaceBackend + ?Sized>
             return Err(sync_primary_workspace_mismatch());
         }
 
-        let previous_registry = self.backend.get(NATIVE_HOST_WORKSPACE_STATES_KEY);
-        let mut states = StoredNativeHostWorkspaceStates::decode(previous_registry.clone())?;
-        let mut matched = None;
-        for state in &states {
-            match state.matches_workspace(&authoritative) {
-                Ok(true) => {
-                    if matched.as_ref().is_some_and(
-                        |existing: &qingyu_kernel::host::native::NativeHostWorkspaceState| {
-                            existing != state
-                        },
-                    ) {
-                        return Err(persistence_error());
-                    }
-                    matched = Some(state.clone());
-                }
-                Ok(false) => {}
-                Err(_) => return Err(persistence_error()),
-            }
-        }
-        if let Some(state) = matched {
-            return Ok(state);
-        }
-
         let display_name = crate::notebook_scope::notebook_name_from_root(&authoritative)
             .map_err(|_| sync_primary_workspace_unavailable())?;
-        let state = qingyu_kernel::host::native::NativeHostWorkspaceState::for_workspace(
-            &authoritative,
-            display_name,
-        )
-        .map_err(|_| persistence_error())?;
-        states.push(state.clone());
-        let encoded = StoredNativeHostWorkspaceStates::encode(&states)?;
-        let previous_schema_version = self.backend.get(LOCAL_STATE_SCHEMA_VERSION_KEY);
-        self.backend.set(
-            LOCAL_STATE_SCHEMA_VERSION_KEY,
-            Value::from(LOCAL_STATE_SCHEMA_VERSION),
-        );
-        self.backend.set(NATIVE_HOST_WORKSPACE_STATES_KEY, encoded);
-        if let Err(error) = self.backend.save() {
-            self.restore_value(NATIVE_HOST_WORKSPACE_STATES_KEY, previous_registry);
-            self.restore_value(LOCAL_STATE_SCHEMA_VERSION_KEY, previous_schema_version);
-            return Err(error);
-        }
-        Ok(state)
-    }
-
-    fn restore_value(&self, key: &str, value: Option<Value>) {
-        if let Some(value) = value {
-            self.backend.set(key, value);
-        } else {
-            self.backend.delete(key);
-        }
+        self.native_store
+            .load_or_create(&authoritative, display_name)
+            .map_err(|_| persistence_error())
     }
 }
 
@@ -438,7 +351,7 @@ impl<'a, Backend: PrimaryWorkspaceBackend + ?Sized> PrimaryWorkspaceService<'a, 
     }
 }
 
-fn transaction_lock() -> &'static Mutex<()> {
+pub(crate) fn primary_workspace_transaction_gate() -> &'static Mutex<()> {
     static TRANSACTION_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     TRANSACTION_LOCK.get_or_init(|| Mutex::new(()))
 }
@@ -584,7 +497,7 @@ impl ConsumedPreparedDesktopNotebookTarget {
             .store(LOCAL_STATE_STORE_PATH)
             .map_err(|_| persistence_error())?;
         let backend = StorePrimaryWorkspaceBackend { store };
-        self.commit_primary_workspace_with_backend(&backend, transaction_lock())
+        self.commit_primary_workspace_with_backend(&backend, primary_workspace_transaction_gate())
     }
 }
 
@@ -873,7 +786,7 @@ fn read_primary_workspace_value<R: tauri::Runtime>(
         .store(LOCAL_STATE_STORE_PATH)
         .map_err(|_| persistence_error())?;
     let backend = StorePrimaryWorkspaceBackend { store };
-    PrimaryWorkspaceService::new(&backend, transaction_lock()).read()
+    PrimaryWorkspaceService::new(&backend, primary_workspace_transaction_gate()).read()
 }
 
 /// Resolves the selected desktop workspace to its stable, host-owned child
@@ -883,13 +796,18 @@ fn read_primary_workspace_value<R: tauri::Runtime>(
 pub(crate) fn load_or_create_native_host_workspace_state<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     workspace_root: &Path,
+    native_store: &qingyu_kernel::host::native::NativeHostWorkspaceStore,
 ) -> Result<qingyu_kernel::host::native::NativeHostWorkspaceState, String> {
     let store = app
         .store(LOCAL_STATE_STORE_PATH)
         .map_err(|_| persistence_error())?;
     let backend = StorePrimaryWorkspaceBackend { store };
-    NativeHostWorkspaceStatePersistence::new(&backend, transaction_lock())
-        .load_or_create(workspace_root)
+    NativeHostWorkspaceStatePersistence::new(
+        &backend,
+        native_store,
+        primary_workspace_transaction_gate(),
+    )
+    .load_or_create(workspace_root)
 }
 
 pub(crate) fn with_primary_workspace_transaction<R: tauri::Runtime, T>(
@@ -900,7 +818,7 @@ pub(crate) fn with_primary_workspace_transaction<R: tauri::Runtime, T>(
         .store(LOCAL_STATE_STORE_PATH)
         .map_err(|_| persistence_error())?;
     let backend = StorePrimaryWorkspaceBackend { store };
-    let service = PrimaryWorkspaceService::new(&backend, transaction_lock());
+    let service = PrimaryWorkspaceService::new(&backend, primary_workspace_transaction_gate());
 
     #[cfg(mobile)]
     let app_data_root = app
@@ -1004,11 +922,12 @@ pub(crate) fn write_primary_workspace_state(
         .store(LOCAL_STATE_STORE_PATH)
         .map_err(|_| persistence_error())?;
     let backend = StorePrimaryWorkspaceBackend { store };
-    PrimaryWorkspaceService::new(&backend, transaction_lock()).write_with_primary_root_guard(
-        input,
-        proposed_root.as_deref(),
-        crate::dejavu_sync::path_guard::native_working_tree_registry(),
-    )
+    PrimaryWorkspaceService::new(&backend, primary_workspace_transaction_gate())
+        .write_with_primary_root_guard(
+            input,
+            proposed_root.as_deref(),
+            crate::dejavu_sync::path_guard::native_working_tree_registry(),
+        )
 }
 
 #[tauri::command]
@@ -1332,14 +1251,34 @@ mod tests {
         })
     }
 
+    fn native_host_workspace_store(
+        workspace: &Path,
+        app_data: &Path,
+        cache: &Path,
+    ) -> qingyu_kernel::host::native::NativeHostWorkspaceStore {
+        let paths = qingyu_kernel::paths::KernelPaths::desktop(workspace, app_data, cache)
+            .expect("native host state paths");
+        let config = qingyu_kernel::config::KernelConfig::generate()
+            .expect("native host state launch epoch");
+        qingyu_kernel::host::native::NativeHostWorkspaceStore::at_instance_data(
+            paths.instance_data_root(),
+            config.launch_epoch(),
+        )
+        .expect("native host state store")
+    }
+
     #[test]
     fn native_host_workspace_state_survives_restart_and_a_b_a_switches() {
         let temporary = tempfile::tempdir().expect("native host workspace roots");
         let parent = temporary.path().join("workspaces");
         let workspace_a = parent.join("Workspace A");
         let workspace_b = parent.join("Workspace B");
+        let app_data = temporary.path().join("app-data");
+        let cache = temporary.path().join("cache");
         std::fs::create_dir_all(&workspace_a).expect("workspace A");
         std::fs::create_dir(&workspace_b).expect("workspace B");
+        std::fs::create_dir(&app_data).expect("app data");
+        std::fs::create_dir(&cache).expect("cache");
         let backend = MemoryBackend::with([
             (
                 LOCAL_STATE_SCHEMA_VERSION_KEY,
@@ -1348,21 +1287,25 @@ mod tests {
             (PRIMARY_WORKSPACE_KEY, completed_state(workspace_a.to_str())),
         ]);
         let transaction_lock = Mutex::new(());
+        let native_store = native_host_workspace_store(&workspace_a, &app_data, &cache);
 
-        let first = NativeHostWorkspaceStatePersistence::new(&backend, &transaction_lock)
-            .load_or_create(&workspace_a)
-            .expect("persist workspace A");
-        let restarted = NativeHostWorkspaceStatePersistence::new(&backend, &transaction_lock)
-            .load_or_create(&workspace_a)
-            .expect("reuse workspace A after child restart");
+        let first =
+            NativeHostWorkspaceStatePersistence::new(&backend, &native_store, &transaction_lock)
+                .load_or_create(&workspace_a)
+                .expect("persist workspace A");
+        let restarted =
+            NativeHostWorkspaceStatePersistence::new(&backend, &native_store, &transaction_lock)
+                .load_or_create(&workspace_a)
+                .expect("reuse workspace A after child restart");
         assert_eq!(first, restarted);
 
         PrimaryWorkspaceService::new(&backend, &transaction_lock)
             .write(write_input(workspace_b.to_str().expect("workspace B path")))
             .expect("switch to workspace B");
-        let second = NativeHostWorkspaceStatePersistence::new(&backend, &transaction_lock)
-            .load_or_create(&workspace_b)
-            .expect("persist workspace B");
+        let second =
+            NativeHostWorkspaceStatePersistence::new(&backend, &native_store, &transaction_lock)
+                .load_or_create(&workspace_b)
+                .expect("persist workspace B");
         assert_ne!(first, second);
 
         let mut return_to_a = write_input(workspace_a.to_str().expect("workspace A path"));
@@ -1373,72 +1316,17 @@ mod tests {
         PrimaryWorkspaceService::new(&backend, &transaction_lock)
             .write(return_to_a)
             .expect("return to workspace A through React-owned state");
-        let returned = NativeHostWorkspaceStatePersistence::new(&backend, &transaction_lock)
-            .load_or_create(&workspace_a)
-            .expect("reuse workspace A after A-B-A switch");
+        let returned =
+            NativeHostWorkspaceStatePersistence::new(&backend, &native_store, &transaction_lock)
+                .load_or_create(&workspace_a)
+                .expect("reuse workspace A after A-B-A switch");
 
         assert_eq!(first, returned);
         assert_eq!(
             format!("{returned:?}"),
             "NativeHostWorkspaceState([REDACTED])"
         );
-        let persisted = backend
-            .value(NATIVE_HOST_WORKSPACE_STATES_KEY)
-            .expect("host-private registry");
-        let encoded = serde_json::to_string(&persisted).expect("registry JSON");
-        assert!(!encoded.contains(workspace_a.to_string_lossy().as_ref()));
-        assert!(!encoded.contains(workspace_b.to_string_lossy().as_ref()));
-        assert_eq!(persisted["states"].as_array().map(Vec::len), Some(2));
-    }
-
-    #[test]
-    fn native_host_workspace_state_creation_rolls_back_when_save_fails() {
-        let temporary = tempfile::tempdir().expect("native host workspace root");
-        let workspace = temporary.path().join("Workspace");
-        std::fs::create_dir(&workspace).expect("workspace");
-        let backend =
-            MemoryBackend::with([(PRIMARY_WORKSPACE_KEY, completed_state(workspace.to_str()))]);
-        backend.fail_save.store(true, Ordering::Relaxed);
-        let transaction_lock = Mutex::new(());
-
-        NativeHostWorkspaceStatePersistence::new(&backend, &transaction_lock)
-            .load_or_create(&workspace)
-            .expect_err("failed durable save must not publish a host state");
-
-        assert_eq!(backend.value(NATIVE_HOST_WORKSPACE_STATES_KEY), None);
-        assert_eq!(backend.value(LOCAL_STATE_SCHEMA_VERSION_KEY), None);
-    }
-
-    #[test]
-    fn native_host_workspace_state_rejects_ambiguous_persisted_identities() {
-        let temporary = tempfile::tempdir().expect("native host workspace root");
-        let workspace = temporary.path().join("Workspace");
-        std::fs::create_dir(&workspace).expect("workspace");
-        let first = qingyu_kernel::host::native::NativeHostWorkspaceState::for_workspace(
-            &workspace, "First",
-        )
-        .expect("first identity");
-        let second = qingyu_kernel::host::native::NativeHostWorkspaceState::for_workspace(
-            &workspace, "Second",
-        )
-        .expect("second identity");
-        let registry =
-            StoredNativeHostWorkspaceStates::encode(&[first, second]).expect("ambiguous registry");
-        let backend = MemoryBackend::with([
-            (PRIMARY_WORKSPACE_KEY, completed_state(workspace.to_str())),
-            (NATIVE_HOST_WORKSPACE_STATES_KEY, registry.clone()),
-        ]);
-        let transaction_lock = Mutex::new(());
-
-        NativeHostWorkspaceStatePersistence::new(&backend, &transaction_lock)
-            .load_or_create(&workspace)
-            .expect_err("ambiguous revision seeds must fail closed");
-
-        assert_eq!(
-            backend.value(NATIVE_HOST_WORKSPACE_STATES_KEY),
-            Some(registry)
-        );
-        assert_eq!(backend.saves.load(Ordering::Relaxed), 0);
+        assert_eq!(backend.value("nativeHostWorkspaceStates"), None);
     }
 
     #[test]

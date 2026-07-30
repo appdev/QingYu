@@ -1,11 +1,12 @@
 use std::{
+    ffi::OsString,
     fmt,
     io::{BufRead, Write},
     path::{Path, PathBuf},
 };
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-use cap_fs_ext::MetadataExt as _;
+use cap_fs_ext::{DirExt as _, MetadataExt as _};
 use cap_std::fs::Dir;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -13,11 +14,25 @@ use sha2::{Digest as _, Sha256};
 use zeroize::{Zeroize as _, Zeroizing};
 
 use crate::{
-    config::NativeLaunchCredential, contract::InstanceId, workspace::primary::PrimaryWorkspaceState,
+    config::{KernelLaunchEpoch, NativeLaunchCredential},
+    contract::InstanceId,
+    paths::InstanceDataRoot,
+    storage::{
+        directory_identity, open_canonical_directory_nofollow, sync_directory,
+        DurableFileFailureKind, DurableFileStore, ExpectedFile, PreservePrevious, RecoveryOutcome,
+        ReplaceRequest, StorageFileName,
+    },
+    workspace::primary::PrimaryWorkspaceState,
 };
 
 pub const NATIVE_HOST_PROTOCOL_VERSION: u16 = 2;
 pub const MAX_NATIVE_HOST_FRAME_BYTES: usize = 64 * 1024;
+const NATIVE_HOST_WORKSPACE_DIRECTORY: &str = ".qingyu-native-host";
+const NATIVE_HOST_WORKSPACE_FILE: &str = "workspace-identities.v1";
+const NATIVE_HOST_WORKSPACE_REGISTRY_SCHEMA_VERSION: u8 = 1;
+const MAX_NATIVE_HOST_WORKSPACE_STATES: usize = 128;
+const MAX_NATIVE_HOST_WORKSPACE_REGISTRY_BYTES: u64 = 64 * 1024;
+const NATIVE_HOST_WORKSPACE_REGISTRY_MAGIC: &[u8] = b"QY-NATIVE-HOST-WORKSPACES-V1\0";
 
 #[derive(Clone, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -33,10 +48,19 @@ impl NativeHostWorkspaceState {
     ) -> Result<Self, NativeHostProtocolError> {
         let directory = Dir::open_ambient_dir(workspace_root, cap_std::ambient_authority())
             .map_err(|_| NativeHostProtocolError)?;
+        let state = Self::for_root_binding(root_binding(&directory)?, display_name)?;
+        state.validate()?;
+        Ok(state)
+    }
+
+    fn for_root_binding(
+        root_binding: String,
+        display_name: impl Into<String>,
+    ) -> Result<Self, NativeHostProtocolError> {
         let state = Self {
             primary_workspace: PrimaryWorkspaceState::new(display_name)
                 .map_err(|_| NativeHostProtocolError)?,
-            root_binding: root_binding(&directory)?,
+            root_binding,
         };
         state.validate()?;
         Ok(state)
@@ -73,7 +97,7 @@ impl NativeHostWorkspaceState {
 
     fn validate(&self) -> Result<(), NativeHostProtocolError> {
         self.primary_workspace
-            .validate()
+            .validate_native_host_identity()
             .map_err(|_| NativeHostProtocolError)?;
         let decoded = URL_SAFE_NO_PAD
             .decode(self.root_binding.as_bytes())
@@ -108,6 +132,358 @@ impl fmt::Debug for NativeHostWorkspaceState {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("NativeHostWorkspaceState([REDACTED])")
     }
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct StoredNativeHostWorkspaceRegistry {
+    schema_version: u8,
+    states: Vec<Value>,
+}
+
+fn validate_native_host_workspace_states(
+    states: &[NativeHostWorkspaceState],
+) -> Result<(), NativeHostProtocolError> {
+    if states.len() > MAX_NATIVE_HOST_WORKSPACE_STATES {
+        return Err(NativeHostProtocolError);
+    }
+    for (index, state) in states.iter().enumerate() {
+        state.validate()?;
+        for candidate in &states[index + 1..] {
+            if state.root_binding == candidate.root_binding
+                || state
+                    .primary_workspace
+                    .has_same_revision_identity(&candidate.primary_workspace)
+            {
+                return Err(NativeHostProtocolError);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn decode_native_host_workspace_registry(
+    bytes: &[u8],
+) -> Result<Vec<NativeHostWorkspaceState>, NativeHostProtocolError> {
+    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAX_NATIVE_HOST_WORKSPACE_REGISTRY_BYTES {
+        return Err(NativeHostProtocolError);
+    }
+    let payload = bytes
+        .strip_prefix(NATIVE_HOST_WORKSPACE_REGISTRY_MAGIC)
+        .ok_or(NativeHostProtocolError)?;
+    let stored: StoredNativeHostWorkspaceRegistry =
+        serde_json::from_slice(payload).map_err(|_| NativeHostProtocolError)?;
+    if stored.schema_version != NATIVE_HOST_WORKSPACE_REGISTRY_SCHEMA_VERSION
+        || stored.states.len() > MAX_NATIVE_HOST_WORKSPACE_STATES
+    {
+        return Err(NativeHostProtocolError);
+    }
+    let states = stored
+        .states
+        .into_iter()
+        .map(NativeHostWorkspaceState::from_value)
+        .collect::<Result<Vec<_>, _>>()?;
+    validate_native_host_workspace_states(&states)?;
+    Ok(states)
+}
+
+fn encode_native_host_workspace_registry(
+    states: &[NativeHostWorkspaceState],
+) -> Result<Vec<u8>, NativeHostProtocolError> {
+    validate_native_host_workspace_states(states)?;
+    let states = states
+        .iter()
+        .map(NativeHostWorkspaceState::to_value)
+        .collect::<Result<Vec<_>, _>>()?;
+    let payload = serde_json::to_vec(&StoredNativeHostWorkspaceRegistry {
+        schema_version: NATIVE_HOST_WORKSPACE_REGISTRY_SCHEMA_VERSION,
+        states,
+    })
+    .map_err(|_| NativeHostProtocolError)?;
+    let total_len = NATIVE_HOST_WORKSPACE_REGISTRY_MAGIC
+        .len()
+        .checked_add(payload.len())
+        .ok_or(NativeHostProtocolError)?;
+    if u64::try_from(total_len).unwrap_or(u64::MAX) > MAX_NATIVE_HOST_WORKSPACE_REGISTRY_BYTES {
+        return Err(NativeHostProtocolError);
+    }
+    let mut encoded = Vec::with_capacity(total_len);
+    encoded.extend_from_slice(NATIVE_HOST_WORKSPACE_REGISTRY_MAGIC);
+    encoded.extend_from_slice(&payload);
+    Ok(encoded)
+}
+
+/// Native-only durable storage for path-free child Kernel workspace identities.
+///
+/// The registry lives in its own retained instance-data child directory so its
+/// recovery artifacts cannot collide with settings or sync transactions. The
+/// host must not expose this file through a renderer filesystem/store bridge.
+pub struct NativeHostWorkspaceStore {
+    instance_data: Dir,
+    instance_data_identity: crate::storage::DirectoryIdentity,
+    instance_data_address_parent: Dir,
+    instance_data_address_parent_identity: crate::storage::DirectoryIdentity,
+    instance_data_address_name: OsString,
+    state_directory_identity: crate::storage::DirectoryIdentity,
+    durable: DurableFileStore,
+    target: StorageFileName,
+}
+
+impl NativeHostWorkspaceStore {
+    pub fn at_instance_data(
+        root: &InstanceDataRoot,
+        launch_epoch: &KernelLaunchEpoch,
+    ) -> Result<Self, NativeHostProtocolError> {
+        let opened = open_native_host_workspace_directory(root)?;
+        let durable_directory = opened
+            .state_directory
+            .try_clone()
+            .map_err(|_| NativeHostProtocolError)?;
+        let durable = DurableFileStore::at_retained_directory(
+            durable_directory,
+            root.canonical_path().join(NATIVE_HOST_WORKSPACE_DIRECTORY),
+            launch_epoch.value(),
+        );
+        Ok(Self {
+            instance_data: opened.instance_data,
+            instance_data_identity: opened.instance_data_identity,
+            instance_data_address_parent: opened.instance_data_address_parent,
+            instance_data_address_parent_identity: opened.instance_data_address_parent_identity,
+            instance_data_address_name: opened.instance_data_address_name,
+            state_directory_identity: opened.state_directory_identity,
+            durable,
+            target: StorageFileName::parse(NATIVE_HOST_WORKSPACE_FILE)
+                .map_err(|_| NativeHostProtocolError)?,
+        })
+    }
+
+    #[cfg(test)]
+    fn at_instance_data_with_test_fault(
+        root: &InstanceDataRoot,
+        launch_epoch: &KernelLaunchEpoch,
+        fault: crate::storage::DurableFileTestFault,
+    ) -> Result<Self, NativeHostProtocolError> {
+        let opened = open_native_host_workspace_directory(root)?;
+        let durable_directory = opened
+            .state_directory
+            .try_clone()
+            .map_err(|_| NativeHostProtocolError)?;
+        let durable = DurableFileStore::at_retained_directory_with_test_fault(
+            durable_directory,
+            root.canonical_path().join(NATIVE_HOST_WORKSPACE_DIRECTORY),
+            launch_epoch.value(),
+            fault,
+        );
+        Ok(Self {
+            instance_data: opened.instance_data,
+            instance_data_identity: opened.instance_data_identity,
+            instance_data_address_parent: opened.instance_data_address_parent,
+            instance_data_address_parent_identity: opened.instance_data_address_parent_identity,
+            instance_data_address_name: opened.instance_data_address_name,
+            state_directory_identity: opened.state_directory_identity,
+            durable,
+            target: StorageFileName::parse(NATIVE_HOST_WORKSPACE_FILE)
+                .map_err(|_| NativeHostProtocolError)?,
+        })
+    }
+
+    pub fn load_or_create(
+        &self,
+        workspace_root: &Path,
+        display_name: impl Into<String>,
+    ) -> Result<NativeHostWorkspaceState, NativeHostProtocolError> {
+        self.load_or_create_with_pre_publish_hook(workspace_root, display_name, || {})
+    }
+
+    fn load_or_create_with_pre_publish_hook<BeforeValidation>(
+        &self,
+        workspace_root: &Path,
+        display_name: impl Into<String>,
+        mut before_validation: BeforeValidation,
+    ) -> Result<NativeHostWorkspaceState, NativeHostProtocolError>
+    where
+        BeforeValidation: FnMut(),
+    {
+        self.reconcile()?;
+        self.verify_directory()?;
+        let display_name = display_name.into();
+        PrimaryWorkspaceState::validate_display_name(&display_name)
+            .map_err(|_| NativeHostProtocolError)?;
+        let workspace = Dir::open_ambient_dir(workspace_root, cap_std::ambient_authority())
+            .map_err(|_| NativeHostProtocolError)?;
+        let binding = root_binding(&workspace)?;
+        let stored = self
+            .durable
+            .read(&self.target, MAX_NATIVE_HOST_WORKSPACE_REGISTRY_BYTES)
+            .map_err(|_| NativeHostProtocolError)?;
+        let mut states = stored
+            .as_ref()
+            .map(|stored| decode_native_host_workspace_registry(&stored.bytes))
+            .transpose()?
+            .unwrap_or_default();
+        if let Some(state) = states
+            .iter()
+            .find(|state| state.root_binding == binding)
+            .cloned()
+        {
+            self.verify_directory()?;
+            return Ok(state);
+        }
+        if states.len() >= MAX_NATIVE_HOST_WORKSPACE_STATES {
+            return Err(NativeHostProtocolError);
+        }
+
+        let state = NativeHostWorkspaceState::for_root_binding(binding, display_name)?;
+        states.push(state.clone());
+        let encoded = encode_native_host_workspace_registry(&states)?;
+        let expected = stored.as_ref().map_or(ExpectedFile::Absent, |stored| {
+            ExpectedFile::Revision(&stored.revision)
+        });
+        let replaced = self.durable.replace_with_address_validation(
+            ReplaceRequest {
+                target: &self.target,
+                bytes: &encoded,
+                expected,
+                preserve_previous: PreservePrevious::None,
+            },
+            || {
+                before_validation();
+                self.verify_directory().is_ok()
+            },
+        );
+        if let Err(error) = replaced {
+            if error.kind() != DurableFileFailureKind::PublishStateUncertain
+                || !self.registry_contains(&state)?
+            {
+                return Err(NativeHostProtocolError);
+            }
+        }
+        self.verify_directory()?;
+        if !self.registry_contains(&state)? {
+            return Err(NativeHostProtocolError);
+        }
+        Ok(state)
+    }
+
+    pub fn reconcile(&self) -> Result<(), NativeHostProtocolError> {
+        self.verify_directory()?;
+        let outcomes = self
+            .durable
+            .recover()
+            .map_err(|_| NativeHostProtocolError)?;
+        if outcomes
+            .iter()
+            .any(|outcome| matches!(outcome, RecoveryOutcome::ManualInterventionRequired { .. }))
+        {
+            return Err(NativeHostProtocolError);
+        }
+        self.verify_directory()
+    }
+
+    fn registry_contains(
+        &self,
+        expected: &NativeHostWorkspaceState,
+    ) -> Result<bool, NativeHostProtocolError> {
+        let stored = self
+            .durable
+            .read(&self.target, MAX_NATIVE_HOST_WORKSPACE_REGISTRY_BYTES)
+            .map_err(|_| NativeHostProtocolError)?
+            .ok_or(NativeHostProtocolError)?;
+        let states = decode_native_host_workspace_registry(&stored.bytes)?;
+        Ok(states.iter().any(|state| state == expected))
+    }
+
+    fn verify_directory(&self) -> Result<(), NativeHostProtocolError> {
+        if directory_identity(&self.instance_data_address_parent)
+            .map_err(|_| NativeHostProtocolError)?
+            != self.instance_data_address_parent_identity
+        {
+            return Err(NativeHostProtocolError);
+        }
+        let addressed_instance_data = self
+            .instance_data_address_parent
+            .open_dir_nofollow(&self.instance_data_address_name)
+            .map_err(|_| NativeHostProtocolError)?;
+        if directory_identity(&addressed_instance_data).map_err(|_| NativeHostProtocolError)?
+            != self.instance_data_identity
+        {
+            return Err(NativeHostProtocolError);
+        }
+        if directory_identity(&self.instance_data).map_err(|_| NativeHostProtocolError)?
+            != self.instance_data_identity
+        {
+            return Err(NativeHostProtocolError);
+        }
+        let addressed = self
+            .instance_data
+            .open_dir_nofollow(NATIVE_HOST_WORKSPACE_DIRECTORY)
+            .map_err(|_| NativeHostProtocolError)?;
+        if directory_identity(&addressed).map_err(|_| NativeHostProtocolError)?
+            != self.state_directory_identity
+        {
+            return Err(NativeHostProtocolError);
+        }
+        Ok(())
+    }
+}
+
+impl fmt::Debug for NativeHostWorkspaceStore {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("NativeHostWorkspaceStore([REDACTED])")
+    }
+}
+
+struct OpenedNativeHostWorkspaceDirectory {
+    instance_data: Dir,
+    instance_data_identity: crate::storage::DirectoryIdentity,
+    instance_data_address_parent: Dir,
+    instance_data_address_parent_identity: crate::storage::DirectoryIdentity,
+    instance_data_address_name: OsString,
+    state_directory: Dir,
+    state_directory_identity: crate::storage::DirectoryIdentity,
+}
+
+fn open_native_host_workspace_directory(
+    root: &InstanceDataRoot,
+) -> Result<OpenedNativeHostWorkspaceDirectory, NativeHostProtocolError> {
+    root.verify_held_directory()
+        .map_err(|_| NativeHostProtocolError)?;
+    let instance_data = root.try_clone_dir().map_err(|_| NativeHostProtocolError)?;
+    let instance_data_identity =
+        directory_identity(&instance_data).map_err(|_| NativeHostProtocolError)?;
+    let instance_data_path = root.canonical_path();
+    let instance_data_address_parent_path =
+        instance_data_path.parent().ok_or(NativeHostProtocolError)?;
+    let instance_data_address_name = instance_data_path
+        .file_name()
+        .ok_or(NativeHostProtocolError)?
+        .to_os_string();
+    let instance_data_address_parent =
+        open_canonical_directory_nofollow(instance_data_address_parent_path)
+            .map_err(|_| NativeHostProtocolError)?;
+    let instance_data_address_parent_identity =
+        directory_identity(&instance_data_address_parent).map_err(|_| NativeHostProtocolError)?;
+    match instance_data.create_dir(NATIVE_HOST_WORKSPACE_DIRECTORY) {
+        Ok(()) => {
+            sync_directory(&instance_data).map_err(|_| NativeHostProtocolError)?;
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(_) => return Err(NativeHostProtocolError),
+    }
+    let state_directory = instance_data
+        .open_dir_nofollow(NATIVE_HOST_WORKSPACE_DIRECTORY)
+        .map_err(|_| NativeHostProtocolError)?;
+    let state_directory_identity =
+        directory_identity(&state_directory).map_err(|_| NativeHostProtocolError)?;
+    Ok(OpenedNativeHostWorkspaceDirectory {
+        instance_data,
+        instance_data_identity,
+        instance_data_address_parent,
+        instance_data_address_parent_identity,
+        instance_data_address_name,
+        state_directory,
+        state_directory_identity,
+    })
 }
 
 #[cfg(not(windows))]
@@ -657,6 +1033,238 @@ mod tests {
             NativeHostWorkspaceState::from_value(value).expect_err("unknown path field"),
             NativeHostProtocolError
         );
+
+        let mut value = state.to_value().expect("persisted workspace state");
+        value["primaryWorkspace"]["revisionSeed"] = Value::String("external-change".to_string());
+        assert_eq!(
+            NativeHostWorkspaceState::from_value(value).expect_err("noncanonical revision seed"),
+            NativeHostProtocolError
+        );
+    }
+
+    fn raw_native_registry(values: Vec<Value>) -> Vec<u8> {
+        let payload = serde_json::to_vec(&serde_json::json!({
+            "schemaVersion": NATIVE_HOST_WORKSPACE_REGISTRY_SCHEMA_VERSION,
+            "states": values,
+        }))
+        .expect("raw native registry");
+        let mut encoded = NATIVE_HOST_WORKSPACE_REGISTRY_MAGIC.to_vec();
+        encoded.extend_from_slice(&payload);
+        encoded
+    }
+
+    #[test]
+    fn native_registry_is_strictly_bounded_and_rejects_cross_directory_identity_reuse() {
+        let first = tempfile::tempdir().expect("first workspace");
+        let second = tempfile::tempdir().expect("second workspace");
+        let first_state =
+            NativeHostWorkspaceState::for_workspace(first.path(), "First").expect("first state");
+        let second_state =
+            NativeHostWorkspaceState::for_workspace(second.path(), "Second").expect("second state");
+        let first_value = first_state.to_value().expect("first value");
+        let mut reused_identity = second_state.to_value().expect("second value");
+        reused_identity["primaryWorkspace"]["revisionSeed"] =
+            first_value["primaryWorkspace"]["revisionSeed"].clone();
+
+        decode_native_host_workspace_registry(&raw_native_registry(vec![
+            first_value.clone(),
+            reused_identity,
+        ]))
+        .expect_err("one revision identity cannot belong to two directories");
+
+        let oversized = vec![first_value; MAX_NATIVE_HOST_WORKSPACE_STATES + 1];
+        decode_native_host_workspace_registry(&raw_native_registry(oversized))
+            .expect_err("registry entry count is bounded before decoding entries");
+    }
+
+    #[test]
+    fn native_registry_rejects_multiple_identities_for_one_directory() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let first = NativeHostWorkspaceState::for_workspace(workspace.path(), "First")
+            .expect("first state");
+        let second = NativeHostWorkspaceState::for_workspace(workspace.path(), "Second")
+            .expect("second state");
+
+        decode_native_host_workspace_registry(&raw_native_registry(vec![
+            first.to_value().expect("first value"),
+            second.to_value().expect("second value"),
+        ]))
+        .expect_err("one directory cannot select between revision identities");
+    }
+
+    fn native_state_store(
+        workspace: &Path,
+        app_data: &Path,
+        cache: &Path,
+    ) -> NativeHostWorkspaceStore {
+        let paths = crate::paths::KernelPaths::desktop(workspace, app_data, cache)
+            .expect("native host store paths");
+        let config = crate::config::KernelConfig::generate().expect("native host store config");
+        NativeHostWorkspaceStore::at_instance_data(
+            paths.instance_data_root(),
+            config.launch_epoch(),
+        )
+        .expect("native host state store")
+    }
+
+    #[test]
+    fn native_state_store_reuses_identity_across_restart_and_a_b_a() {
+        let temporary = tempfile::tempdir().expect("native host store roots");
+        let workspace_a = temporary.path().join("Workspace A");
+        let workspace_b = temporary.path().join("Workspace B");
+        let app_data = temporary.path().join("app-data");
+        let cache = temporary.path().join("cache");
+        for path in [&workspace_a, &workspace_b, &app_data, &cache] {
+            std::fs::create_dir(path).expect("native host store directory");
+        }
+
+        let store = native_state_store(&workspace_a, &app_data, &cache);
+        let first = store
+            .load_or_create(&workspace_a, "Workspace A")
+            .expect("persist A");
+        assert_eq!(
+            store
+                .load_or_create(&workspace_a, "Workspace A")
+                .expect("child restart A"),
+            first
+        );
+        let second = store
+            .load_or_create(&workspace_b, "Workspace B")
+            .expect("persist B");
+        assert_ne!(first, second);
+        assert_eq!(
+            store
+                .load_or_create(&workspace_a, "Workspace A")
+                .expect("return to A"),
+            first
+        );
+        drop(store);
+
+        assert_eq!(
+            native_state_store(&workspace_a, &app_data, &cache)
+                .load_or_create(&workspace_a, "Workspace A")
+                .expect("application restart A"),
+            first
+        );
+
+        let encoded = std::fs::read(
+            app_data
+                .join(NATIVE_HOST_WORKSPACE_DIRECTORY)
+                .join(NATIVE_HOST_WORKSPACE_FILE),
+        )
+        .expect("native-only registry bytes");
+        assert!(encoded.starts_with(NATIVE_HOST_WORKSPACE_REGISTRY_MAGIC));
+        assert!(
+            serde_json::from_slice::<std::collections::HashMap<String, Value>>(&encoded).is_err()
+        );
+        let workspace_a_path = workspace_a.to_string_lossy();
+        let workspace_b_path = workspace_b.to_string_lossy();
+        assert!(!encoded
+            .windows(workspace_a_path.len())
+            .any(|window| window == workspace_a_path.as_bytes()));
+        assert!(!encoded
+            .windows(workspace_b_path.len())
+            .any(|window| window == workspace_b_path.as_bytes()));
+    }
+
+    #[test]
+    fn native_state_store_recovers_prepublication_and_uncertain_publication() {
+        let temporary = tempfile::tempdir().expect("native host store roots");
+        let workspace = temporary.path().join("Workspace");
+        let app_data = temporary.path().join("app-data");
+        let cache = temporary.path().join("cache");
+        for path in [&workspace, &app_data, &cache] {
+            std::fs::create_dir(path).expect("native host store directory");
+        }
+        let paths = crate::paths::KernelPaths::desktop(&workspace, &app_data, &cache)
+            .expect("native host store paths");
+        let first_config =
+            crate::config::KernelConfig::generate().expect("native host store config");
+        let interrupted = NativeHostWorkspaceStore::at_instance_data_with_test_fault(
+            paths.instance_data_root(),
+            first_config.launch_epoch(),
+            crate::storage::DurableFileTestFault::LeavePrepared,
+        )
+        .expect("faulted native host store");
+        interrupted
+            .load_or_create(&workspace, "Workspace")
+            .expect_err("prepublication interruption");
+        drop(interrupted);
+
+        let second_config = crate::config::KernelConfig::generate().expect("recovery store config");
+        let uncertain = NativeHostWorkspaceStore::at_instance_data_with_test_fault(
+            paths.instance_data_root(),
+            second_config.launch_epoch(),
+            crate::storage::DurableFileTestFault::ParentSyncFailure,
+        )
+        .expect("uncertain native host store");
+        let published = uncertain
+            .load_or_create(&workspace, "Workspace")
+            .expect("uncertain publication remains a verified success");
+        drop(uncertain);
+
+        assert_eq!(
+            native_state_store(&workspace, &app_data, &cache)
+                .load_or_create(&workspace, "Workspace")
+                .expect("reconcile published state"),
+            published
+        );
+    }
+
+    #[test]
+    fn native_state_store_never_publishes_into_a_replacement_instance_data_address() {
+        let temporary = tempfile::tempdir().expect("native host store roots");
+        let workspace = temporary.path().join("Workspace");
+        let app_data = temporary.path().join("app-data");
+        let displaced = temporary.path().join("displaced-app-data");
+        let cache = temporary.path().join("cache");
+        for path in [&workspace, &app_data, &cache] {
+            std::fs::create_dir(path).expect("native host store directory");
+        }
+        let store = native_state_store(&workspace, &app_data, &cache);
+        std::fs::rename(&app_data, &displaced).expect("displace instance data root");
+        std::fs::create_dir(&app_data).expect("replacement instance data root");
+
+        store
+            .load_or_create(&workspace, "Workspace")
+            .expect_err("replacement instance data address must fail closed");
+
+        assert!(!app_data.join(NATIVE_HOST_WORKSPACE_DIRECTORY).exists());
+        assert!(!displaced
+            .join(NATIVE_HOST_WORKSPACE_DIRECTORY)
+            .join(NATIVE_HOST_WORKSPACE_FILE)
+            .exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn native_state_store_stops_publication_when_instance_data_is_replaced_at_final_validation() {
+        let temporary = tempfile::tempdir().expect("native host store roots");
+        let workspace = temporary.path().join("Workspace");
+        let app_data = temporary.path().join("app-data");
+        let replacement = temporary.path().join("replacement-app-data");
+        let displaced = temporary.path().join("displaced-app-data");
+        let cache = temporary.path().join("cache");
+        for path in [&workspace, &app_data, &replacement, &cache] {
+            std::fs::create_dir(path).expect("native host store directory");
+        }
+        let store = native_state_store(&workspace, &app_data, &cache);
+
+        store
+            .load_or_create_with_pre_publish_hook(&workspace, "Workspace", || {
+                std::fs::rename(&app_data, &displaced).expect("displace instance data root");
+                std::fs::rename(&replacement, &app_data).expect("replace instance data root");
+            })
+            .expect_err("final address validation must stop publication");
+
+        assert!(!app_data
+            .join(NATIVE_HOST_WORKSPACE_DIRECTORY)
+            .join(NATIVE_HOST_WORKSPACE_FILE)
+            .exists());
+        assert!(!displaced
+            .join(NATIVE_HOST_WORKSPACE_DIRECTORY)
+            .join(NATIVE_HOST_WORKSPACE_FILE)
+            .exists());
     }
 
     #[test]
