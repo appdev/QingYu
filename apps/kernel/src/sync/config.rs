@@ -12,7 +12,7 @@ use crate::{
         SyncConfigReadiness, SyncConfigViewDto, SyncIntervalSeconds, SyncIssueCode, SyncIssueDto,
         SyncMode, SyncProvider, WebDavConfigViewDto,
     },
-    ports::CredentialSlot,
+    ports::{CredentialSecret, CredentialSlot},
     storage::{
         CommitState, DurableFileFailure, DurableFileFailureKind, DurableFileStore, ExpectedFile,
         FileRevision, PreservePrevious, RecoveryOutcome, ReplaceRequest, StorageFileName,
@@ -221,6 +221,43 @@ impl SyncConfig {
         self.remote_root.clone()
     }
 
+    #[allow(dead_code)] // Consumed by the staged production executor.
+    pub(crate) fn into_execution_plan(
+        mut self,
+    ) -> Result<SyncExecutionPlan, SyncExecutionPlanError> {
+        let view = self
+            .to_view(Revision::parse("execution-plan").expect("static revision is valid"))
+            .map_err(|_| SyncExecutionPlanError)?;
+        if view.readiness != SyncConfigReadiness::Ready {
+            return Err(SyncExecutionPlanError);
+        }
+        let target = match self.provider {
+            SyncProvider::Webdav => SyncExecutionTarget::WebDav {
+                server_url: std::mem::take(&mut self.webdav.server_url),
+                username: std::mem::take(&mut self.webdav.username),
+                password: CredentialSecret::new(std::mem::take(&mut self.webdav.password.0)),
+            },
+            SyncProvider::S3 => SyncExecutionTarget::S3 {
+                endpoint_url: std::mem::take(&mut self.s3.endpoint_url),
+                region: std::mem::take(&mut self.s3.region),
+                bucket: std::mem::take(&mut self.s3.bucket),
+                access_key_id: CredentialSecret::new(std::mem::take(&mut self.s3.access_key_id.0)),
+                secret_access_key: CredentialSecret::new(std::mem::take(
+                    &mut self.s3.secret_access_key.0,
+                )),
+                request_timeout_seconds: self.s3.request_timeout_seconds,
+                addressing_style: self.s3.addressing_style,
+                tls_verification: self.s3.tls_verification,
+            },
+        };
+        Ok(SyncExecutionPlan {
+            provider: self.provider,
+            remote_root: std::mem::take(&mut self.remote_root),
+            generate_conflict_document: self.generate_conflict_document,
+            target,
+        })
+    }
+
     pub fn apply_changes(
         &mut self,
         changes: &SyncConfigChangesDto,
@@ -368,6 +405,57 @@ impl SyncConfig {
         issues
     }
 }
+
+#[allow(dead_code)] // Consumed by the staged production executor.
+pub(crate) struct SyncExecutionPlan {
+    pub(crate) provider: SyncProvider,
+    pub(crate) remote_root: String,
+    pub(crate) generate_conflict_document: bool,
+    pub(crate) target: SyncExecutionTarget,
+}
+
+#[allow(dead_code)] // Consumed by the staged production executor.
+pub(crate) enum SyncExecutionTarget {
+    WebDav {
+        server_url: String,
+        username: String,
+        password: CredentialSecret,
+    },
+    S3 {
+        endpoint_url: String,
+        region: String,
+        bucket: String,
+        access_key_id: CredentialSecret,
+        secret_access_key: CredentialSecret,
+        request_timeout_seconds: u32,
+        addressing_style: S3AddressingStyle,
+        tls_verification: S3TlsVerification,
+    },
+}
+
+impl fmt::Debug for SyncExecutionPlan {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("SyncExecutionPlan([REDACTED])")
+    }
+}
+
+impl fmt::Debug for SyncExecutionTarget {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("SyncExecutionTarget([REDACTED])")
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[allow(dead_code)] // Consumed by the staged production executor.
+pub(crate) struct SyncExecutionPlanError;
+
+impl fmt::Display for SyncExecutionPlanError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("sync execution plan is unavailable")
+    }
+}
+
+impl std::error::Error for SyncExecutionPlanError {}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SyncConfigChangeError {
@@ -890,6 +978,95 @@ mod tests {
     use async_trait::async_trait;
     use std::{sync::Arc, time::Duration};
     use tempfile::{tempdir, TempDir};
+
+    #[test]
+    fn ready_config_moves_secrets_into_one_redacted_execution_plan() {
+        let mut config = SyncConfig {
+            enabled: true,
+            ..SyncConfig::default()
+        };
+        config.s3.endpoint_url = "https://s3.example.test".to_owned();
+        config.s3.region = "test-1".to_owned();
+        config.s3.bucket = "notes".to_owned();
+        config.s3.access_key_id = SensitiveConfigString::new("access-secret");
+        config.s3.secret_access_key = SensitiveConfigString::new("key-secret");
+        config.generate_conflict_document = true;
+
+        let plan = config.into_execution_plan().unwrap();
+
+        assert_eq!(plan.provider, SyncProvider::S3);
+        assert_eq!(plan.remote_root, "qingyu");
+        assert!(plan.generate_conflict_document);
+        let SyncExecutionTarget::S3 {
+            endpoint_url,
+            region,
+            bucket,
+            access_key_id,
+            secret_access_key,
+            request_timeout_seconds,
+            addressing_style,
+            tls_verification,
+        } = &plan.target
+        else {
+            panic!("expected S3 execution target");
+        };
+        assert_eq!(endpoint_url, "https://s3.example.test");
+        assert_eq!(region, "test-1");
+        assert_eq!(bucket, "notes");
+        assert_eq!(access_key_id.expose_secret(), "access-secret");
+        assert_eq!(secret_access_key.expose_secret(), "key-secret");
+        assert_eq!(*request_timeout_seconds, 60);
+        assert_eq!(*addressing_style, S3AddressingStyle::Auto);
+        assert_eq!(*tls_verification, S3TlsVerification::Verify);
+        let debug = format!("{plan:?} {:?}", plan.target);
+        assert_eq!(
+            debug,
+            "SyncExecutionPlan([REDACTED]) SyncExecutionTarget([REDACTED])"
+        );
+        assert!(!debug.contains("secret"));
+        assert!(!debug.contains("s3.example"));
+    }
+
+    #[test]
+    fn disabled_or_incomplete_config_cannot_create_an_execution_plan() {
+        assert!(SyncConfig::default().into_execution_plan().is_err());
+
+        let incomplete = SyncConfig {
+            enabled: true,
+            ..SyncConfig::default()
+        };
+        assert!(incomplete.into_execution_plan().is_err());
+    }
+
+    #[test]
+    fn webdav_execution_plan_retains_credentials_only_in_the_redacted_target() {
+        let mut config = SyncConfig {
+            enabled: true,
+            provider: SyncProvider::Webdav,
+            ..SyncConfig::default()
+        };
+        config.webdav.server_url = "https://dav.example.test".to_owned();
+        config.webdav.username = "alice".to_owned();
+        config.webdav.password = SensitiveConfigString::new("webdav-secret");
+
+        let plan = config.into_execution_plan().unwrap();
+        let SyncExecutionTarget::WebDav {
+            server_url,
+            username,
+            password,
+        } = &plan.target
+        else {
+            panic!("expected WebDAV execution target");
+        };
+
+        assert_eq!(server_url, "https://dav.example.test");
+        assert_eq!(username, "alice");
+        assert_eq!(password.expose_secret(), "webdav-secret");
+        assert_eq!(
+            format!("{:?}", plan.target),
+            "SyncExecutionTarget([REDACTED])"
+        );
+    }
 
     #[test]
     fn serialized_sync_config_bytes_are_zeroizing_from_the_api_boundary() {
