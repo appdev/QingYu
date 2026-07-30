@@ -89,6 +89,7 @@ impl ServerAuthenticationCoordinator {
         password: String,
     ) -> Result<ServerLogin, ServerAuthenticationCoordinatorError> {
         self.ensure_security_available()?;
+        let now = self.observe_time(now)?;
         let permit = {
             let mut limiter = self.lock_rate_limiter()?;
             limiter
@@ -140,9 +141,11 @@ impl ServerAuthenticationCoordinator {
                 }
                 drop(password);
                 self.record_success(permit)?;
+                let _session_mutation = self.lock_session_mutation_lifecycle()?;
+                let session_now = self.fresh_time()?;
                 let session = self
                     .lock_sessions()?
-                    .issue(now)
+                    .issue(session_now)
                     .map_err(map_session_issue_error)?;
                 Ok(ServerLogin {
                     session,
@@ -179,9 +182,11 @@ impl ServerAuthenticationCoordinator {
         new_password: String,
     ) -> Result<usize, ServerAuthenticationCoordinatorError> {
         self.ensure_security_available()?;
+        let now = self.observe_time(now)?;
         let current_password = Zeroizing::new(current_password);
         let new_password = Zeroizing::new(new_password);
         {
+            let _session_mutation = self.lock_session_mutation_lifecycle()?;
             let mut sessions = self.lock_sessions()?;
             authorize_state_change(&mut sessions, credential, csrf_token, now)?;
         }
@@ -195,18 +200,52 @@ impl ServerAuthenticationCoordinator {
                 )
                 .map_err(map_rate_limit_decision)?
         };
+        let prepared = match self.authentication.prepare_owner_password_change(
+            current_password.as_str().to_owned(),
+            new_password.as_str().to_owned(),
+        ) {
+            Ok(prepared) => prepared,
+            Err(OwnerPasswordUpdateError::InvalidCurrentPassword) => {
+                self.record_failure(permit, now)?;
+                return Err(ServerAuthenticationCoordinatorError::InvalidCredentials);
+            }
+            Err(OwnerPasswordUpdateError::InvalidNewPassword) => {
+                self.record_success(permit)?;
+                return Err(ServerAuthenticationCoordinatorError::InvalidPassword);
+            }
+            Err(
+                error @ (OwnerPasswordUpdateError::StateUnavailable
+                | OwnerPasswordUpdateError::StateUncertain),
+            ) => {
+                let revocation = {
+                    let _session_mutation = self.lock_session_mutation_lifecycle()?;
+                    self.lock_sessions()
+                        .map(|mut sessions| sessions.revoke_all())
+                };
+                let settlement = self.settle_unavailable_attempt(permit, now);
+                if error == OwnerPasswordUpdateError::StateUncertain {
+                    self.security.fail_closed();
+                }
+                revocation?;
+                settlement?;
+                return Err(map_password_update_error(error));
+            }
+        };
         let _password_lifecycle = self.lock_password_lifecycle()?;
+        let _session_mutation = self.lock_session_mutation_lifecycle()?;
+        let authorization_now = self.fresh_time()?;
         {
             let mut sessions = self.lock_sessions()?;
-            if let Err(error) = authorize_state_change(&mut sessions, credential, csrf_token, now) {
-                drop(permit);
+            if let Err(error) =
+                authorize_state_change(&mut sessions, credential, csrf_token, authorization_now)
+            {
+                self.record_success(permit)?;
                 return Err(error);
             }
         }
-        let update = self.authentication.change_owner_password(
-            current_password.as_str().to_owned(),
-            new_password.as_str().to_owned(),
-        );
+        let update = self
+            .authentication
+            .commit_prepared_owner_password_change(prepared);
         match update {
             Ok(()) => {
                 let revoked = self.lock_sessions()?.revoke_all();
@@ -247,6 +286,9 @@ impl ServerAuthenticationCoordinator {
         now: Duration,
     ) -> Result<SessionAuthorization, ServerAuthenticationCoordinatorError> {
         self.ensure_security_available()?;
+        self.observe_time(now)?;
+        let _session_mutation = self.lock_session_mutation_lifecycle()?;
+        let now = self.fresh_time()?;
         Ok(self
             .lock_sessions()?
             .authorize(credential, csrf_token, intent, now))
@@ -259,6 +301,9 @@ impl ServerAuthenticationCoordinator {
         now: Duration,
     ) -> Result<bool, ServerAuthenticationCoordinatorError> {
         self.ensure_security_available()?;
+        self.observe_time(now)?;
+        let _session_mutation = self.lock_session_mutation_lifecycle()?;
+        let now = self.fresh_time()?;
         let mut sessions = self.lock_sessions()?;
         authorize_state_change(&mut sessions, credential, csrf_token, now)?;
         Ok(sessions.revoke(credential))
@@ -271,6 +316,9 @@ impl ServerAuthenticationCoordinator {
         now: Duration,
     ) -> Result<usize, ServerAuthenticationCoordinatorError> {
         self.ensure_security_available()?;
+        self.observe_time(now)?;
+        let _session_mutation = self.lock_session_mutation_lifecycle()?;
+        let now = self.fresh_time()?;
         let mut sessions = self.lock_sessions()?;
         authorize_state_change(&mut sessions, credential, csrf_token, now)?;
         Ok(sessions.revoke_all())
@@ -365,6 +413,38 @@ impl ServerAuthenticationCoordinator {
                 self.security.fail_closed();
                 ServerAuthenticationCoordinatorError::StateUnavailable
             })
+    }
+
+    fn lock_session_mutation_lifecycle(
+        &self,
+    ) -> Result<MutexGuard<'_, ()>, ServerAuthenticationCoordinatorError> {
+        if !self.security.is_available() {
+            return Err(ServerAuthenticationCoordinatorError::StateUnavailable);
+        }
+        self.security
+            .session_mutation_lifecycle
+            .lock()
+            .map_err(|_poisoned| {
+                self.security.fail_closed();
+                ServerAuthenticationCoordinatorError::StateUnavailable
+            })
+    }
+
+    fn observe_time(
+        &self,
+        candidate: Duration,
+    ) -> Result<Duration, ServerAuthenticationCoordinatorError> {
+        self.security.observe_time(candidate).map_err(|()| {
+            self.security.fail_closed();
+            ServerAuthenticationCoordinatorError::StateUnavailable
+        })
+    }
+
+    fn fresh_time(&self) -> Result<Duration, ServerAuthenticationCoordinatorError> {
+        self.security.fresh_time().map_err(|()| {
+            self.security.fail_closed();
+            ServerAuthenticationCoordinatorError::StateUnavailable
+        })
     }
 }
 
@@ -465,7 +545,10 @@ mod tests {
         fs,
         panic::{catch_unwind, AssertUnwindSafe},
         path::Path,
-        sync::{mpsc, Arc, Mutex},
+        sync::{
+            atomic::{AtomicU64, Ordering},
+            mpsc, Arc, Mutex,
+        },
         thread,
         time::{Duration, Instant},
     };
@@ -480,6 +563,29 @@ mod tests {
     };
 
     const OWNER_PASSWORD: &str = "correct horse battery staple";
+
+    struct ManualAuthenticationTimeSource {
+        milliseconds: AtomicU64,
+    }
+
+    impl ManualAuthenticationTimeSource {
+        fn new() -> Self {
+            Self {
+                milliseconds: AtomicU64::new(0),
+            }
+        }
+
+        fn advance(&self, duration: Duration) {
+            let milliseconds = u64::try_from(duration.as_millis()).unwrap();
+            self.milliseconds.fetch_add(milliseconds, Ordering::AcqRel);
+        }
+    }
+
+    impl crate::server::security::AuthenticationTimeSource for ManualAuthenticationTimeSource {
+        fn elapsed(&self) -> Duration {
+            Duration::from_millis(self.milliseconds.load(Ordering::Acquire))
+        }
+    }
 
     fn fixture_paths(root: &Path) -> KernelPaths {
         let workspace = root.join("workspace");
@@ -727,7 +833,7 @@ mod tests {
     }
 
     #[test]
-    fn password_hashing_does_not_hold_the_session_mutex_for_authorize_or_logout() {
+    fn logout_that_finishes_while_password_change_is_preparing_prevents_the_commit() {
         let temporary = tempdir().unwrap();
         let paths = fixture_paths(temporary.path());
         let authentication =
@@ -799,19 +905,154 @@ mod tests {
 
         let authorize_early = authorize_receiver.recv_timeout(Duration::from_secs(1));
         let logout_early = logout_receiver.recv_timeout(Duration::from_secs(1));
+        let authorize_early = authorize_early.expect("read-only authorize waited on Argon2");
+        let logout_early = logout_early.expect("logout waited on Argon2");
         hash_release_sender.send(()).unwrap();
-        change_worker.join().unwrap().unwrap();
+        let change_result = change_worker.join().unwrap();
         authorize_worker.join().unwrap();
         logout_worker.join().unwrap();
 
-        assert!(
-            authorize_early.is_ok(),
-            "authorize waited on the hashing operation"
+        assert!(matches!(
+            authorize_early.unwrap(),
+            SessionAuthorization::Authorized { .. } | SessionAuthorization::InvalidSession
+        ));
+        assert!(logout_early.unwrap());
+        assert_eq!(
+            change_result.unwrap_err(),
+            ServerAuthenticationCoordinatorError::InvalidSession
         );
+        coordinator
+            .login(7, Duration::from_secs(3), OWNER_PASSWORD.to_owned())
+            .expect("a revoked prepared change must not replace the old password");
+    }
+
+    #[test]
+    fn logout_waits_for_an_entered_password_commit_and_observes_revocation() {
+        let temporary = tempdir().unwrap();
+        let paths = fixture_paths(temporary.path());
+        let authentication =
+            Arc::new(ServerAuthenticationStore::open(paths.config_root()).unwrap());
+        authentication
+            .initialize_owner_password(OWNER_PASSWORD.to_owned())
+            .unwrap();
+        let (commit_entered_sender, commit_entered_receiver) = mpsc::sync_channel(1);
+        let (commit_release_sender, commit_release_receiver) = mpsc::sync_channel(1);
+        let commit_release_receiver = Mutex::new(commit_release_receiver);
+        authentication.set_password_commit_test_hook(Arc::new(move || {
+            commit_entered_sender.send(()).unwrap();
+            commit_release_receiver.lock().unwrap().recv().unwrap();
+        }));
+        let policy =
+            RateLimitPolicy::new(3, Duration::from_secs(60), Duration::from_secs(30)).unwrap();
+        let coordinator = Arc::new(ServerAuthenticationCoordinator::new(
+            authentication,
+            AuthenticationRateLimiter::new(policy, policy),
+            SessionStore::new(SessionPolicy::new(Duration::from_secs(300)).unwrap()),
+        ));
+        let login = coordinator
+            .login(7, Duration::from_secs(0), OWNER_PASSWORD.to_owned())
+            .unwrap();
+        let credential = login.session().credential().to_owned();
+        let csrf = login.session().csrf_token().to_owned();
+        let change_coordinator = Arc::clone(&coordinator);
+        let change_credential = credential.clone();
+        let change_csrf = csrf.clone();
+        let change_worker = thread::spawn(move || {
+            change_coordinator.change_password(
+                &change_credential,
+                Some(&change_csrf),
+                Duration::from_secs(1),
+                OWNER_PASSWORD.to_owned(),
+                "new owner password material".to_owned(),
+            )
+        });
+        commit_entered_receiver
+            .recv_timeout(Duration::from_secs(5))
+            .expect("password change never entered its commit boundary");
+
+        let (logout_sender, logout_receiver) = mpsc::sync_channel(1);
+        let logout_coordinator = Arc::clone(&coordinator);
+        let logout_worker = thread::spawn(move || {
+            logout_sender
+                .send(logout_coordinator.logout(&credential, Some(&csrf), Duration::from_secs(2)))
+                .unwrap();
+        });
         assert!(
-            logout_early.is_ok(),
-            "logout waited on the hashing operation"
+            logout_receiver
+                .recv_timeout(Duration::from_millis(100))
+                .is_err(),
+            "logout crossed an active password commit boundary"
         );
+        commit_release_sender.send(()).unwrap();
+
+        assert_eq!(change_worker.join().unwrap().unwrap(), 1);
+        assert_eq!(
+            logout_receiver
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap()
+                .unwrap_err(),
+            ServerAuthenticationCoordinatorError::InvalidSession
+        );
+        logout_worker.join().unwrap();
+    }
+
+    #[test]
+    fn session_expiry_during_password_preparation_prevents_the_commit() {
+        let temporary = tempdir().unwrap();
+        let paths = fixture_paths(temporary.path());
+        let authentication =
+            Arc::new(ServerAuthenticationStore::open(paths.config_root()).unwrap());
+        authentication
+            .initialize_owner_password(OWNER_PASSWORD.to_owned())
+            .unwrap();
+        let (hash_entered_sender, hash_entered_receiver) = mpsc::sync_channel(1);
+        let (hash_release_sender, hash_release_receiver) = mpsc::sync_channel(1);
+        let hash_release_receiver = Mutex::new(hash_release_receiver);
+        authentication.set_password_update_test_hook(Arc::new(move || {
+            hash_entered_sender.send(()).unwrap();
+            hash_release_receiver.lock().unwrap().recv().unwrap();
+        }));
+        let policy =
+            RateLimitPolicy::new(3, Duration::from_secs(60), Duration::from_secs(30)).unwrap();
+        let time_source = Arc::new(ManualAuthenticationTimeSource::new());
+        let security = Arc::new(AuthenticationSecurityState::new_with_time_source(
+            AuthenticationRateLimiter::new(policy, policy),
+            SessionStore::new(SessionPolicy::new(Duration::from_millis(10)).unwrap()),
+            time_source.clone(),
+        ));
+        let coordinator = Arc::new(ServerAuthenticationCoordinator::from_security(
+            authentication,
+            security,
+        ));
+        let login = coordinator
+            .login(7, Duration::from_secs(0), OWNER_PASSWORD.to_owned())
+            .unwrap();
+        let credential = login.session().credential().to_owned();
+        let csrf = login.session().csrf_token().to_owned();
+        let worker_coordinator = Arc::clone(&coordinator);
+        let worker = thread::spawn(move || {
+            worker_coordinator.change_password(
+                &credential,
+                Some(&csrf),
+                Duration::from_secs(0),
+                OWNER_PASSWORD.to_owned(),
+                "new owner password material".to_owned(),
+            )
+        });
+
+        hash_entered_receiver
+            .recv_timeout(Duration::from_secs(5))
+            .expect("password update never reached the preparation boundary");
+        time_source.advance(Duration::from_millis(30));
+        hash_release_sender.send(()).unwrap();
+
+        assert_eq!(
+            worker.join().unwrap().unwrap_err(),
+            ServerAuthenticationCoordinatorError::InvalidSession
+        );
+        coordinator
+            .login(7, Duration::from_secs(1), OWNER_PASSWORD.to_owned())
+            .expect("an expired prepared change must not replace the old password");
     }
 
     #[test]

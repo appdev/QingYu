@@ -30,9 +30,10 @@ impl ServerInitializationCoordinator {
             security.fail_closed();
             return Err(ServerInitializationCoordinatorError::StateUnavailable);
         }
-        let status = authentication
-            .status()
-            .map_err(|_| ServerInitializationCoordinatorError::StateUnavailable)?;
+        let status = authentication.status().map_err(|_| {
+            security.fail_closed();
+            ServerInitializationCoordinatorError::StateUnavailable
+        })?;
         let gate = match status {
             ServerAuthenticationStatus::Ready => InitializationGate::initialized(),
             ServerAuthenticationStatus::NeedsInitialization => InitializationGate::pending(
@@ -53,10 +54,28 @@ impl ServerInitializationCoordinator {
             self.security.fail_closed();
         }
         if self.state_unavailable || !self.security.is_available() {
-            InitializationStatus::Unavailable
-        } else {
-            self.gate.status()
+            return InitializationStatus::Unavailable;
         }
+        let status = self.gate.status();
+        if status == InitializationStatus::Unavailable {
+            self.security.fail_closed();
+        }
+        status
+    }
+
+    #[cfg(test)]
+    pub(crate) fn poison_gate_for_test(&self) {
+        self.gate.poison_for_test();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn poison_gate_commit_for_test(&mut self) {
+        self.gate.poison_commit_for_test();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn poison_gate_abort_for_test(&mut self) {
+        self.gate.poison_abort_for_test();
     }
 
     /// Initializes the fixed single-user owner.
@@ -77,6 +96,7 @@ impl ServerInitializationCoordinator {
         if self.state_unavailable || !self.security.is_available() {
             return Err(ServerOwnerInitializationError::StateUnavailable);
         }
+        let now = self.observe_time(now)?;
         let authentication_permit = {
             let mut limiter = self.lock_rate_limiter()?;
             limiter
@@ -96,7 +116,9 @@ impl ServerInitializationCoordinator {
                 return Err(map_gate_error(error));
             }
             Err(InitializationError::InvalidPermit | InitializationError::StateUnavailable) => {
-                self.settle_unavailable_attempt(authentication_permit, now)?;
+                let settlement = self.settle_unavailable_attempt(authentication_permit, now);
+                self.security.fail_closed();
+                settlement?;
                 return Err(ServerOwnerInitializationError::StateUnavailable);
             }
         };
@@ -125,8 +147,9 @@ impl ServerInitializationCoordinator {
         {
             Ok(()) => {
                 if self.gate.commit(permit).is_err() {
-                    self.gate = InitializationGate::initialized();
-                    self.record_success(authentication_permit)?;
+                    let settlement = self.record_success(authentication_permit);
+                    self.security.fail_closed();
+                    settlement?;
                     return Err(ServerOwnerInitializationError::StateUnavailable);
                 }
                 self.record_success(authentication_permit)?;
@@ -226,9 +249,10 @@ impl ServerInitializationCoordinator {
         &mut self,
         permit: super::InitializationPermit,
     ) -> Result<(), ServerOwnerInitializationError> {
-        self.gate
-            .abort(permit)
-            .map_err(|_| ServerOwnerInitializationError::StateUnavailable)
+        self.gate.abort(permit).map_err(|_| {
+            self.security.fail_closed();
+            ServerOwnerInitializationError::StateUnavailable
+        })
     }
 
     fn reconcile_persistent_state(&mut self) -> Result<(), ServerOwnerInitializationError> {
@@ -238,9 +262,20 @@ impl ServerInitializationCoordinator {
                 Ok(())
             }
             Ok(ServerAuthenticationStatus::NeedsInitialization) | Err(_) => {
+                self.security.fail_closed();
                 Err(ServerOwnerInitializationError::StateUnavailable)
             }
         }
+    }
+
+    fn observe_time(
+        &self,
+        candidate: Duration,
+    ) -> Result<Duration, ServerOwnerInitializationError> {
+        self.security.observe_time(candidate).map_err(|()| {
+            self.security.fail_closed();
+            ServerOwnerInitializationError::StateUnavailable
+        })
     }
 }
 

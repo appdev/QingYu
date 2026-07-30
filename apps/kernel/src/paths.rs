@@ -410,6 +410,9 @@ pub struct ConfigRoot {
     address_anchor: ExactDirectoryAddress,
 }
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(crate) struct ConfigRootIdentity(DirectoryIdentity);
+
 impl ConfigRoot {
     fn new(opened: OpenedDirectory) -> Result<Self, PathPolicyError> {
         let address_anchor = ExactDirectoryAddress::new(&opened.canonical_path)?;
@@ -448,6 +451,10 @@ impl ConfigRoot {
 
     pub(crate) fn canonical_path(&self) -> &Path {
         &self.canonical_path
+    }
+
+    pub(crate) const fn identity(&self) -> ConfigRootIdentity {
+        ConfigRootIdentity(self.identity)
     }
 }
 

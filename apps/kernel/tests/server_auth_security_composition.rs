@@ -1,4 +1,10 @@
-use std::{fs, path::Path, sync::Arc, time::Duration};
+use std::{
+    fs,
+    path::Path,
+    sync::{Arc, Barrier},
+    thread,
+    time::Duration,
+};
 
 use qingyu_kernel::{
     paths::KernelPaths,
@@ -103,6 +109,132 @@ fn reopening_the_same_authentication_root_cannot_create_a_second_security_owner(
     );
     assert!(matches!(second, Err(ServerAuthenticationError)));
     drop(first);
+}
+
+#[test]
+fn a_derived_coordinator_retains_the_root_claim_after_the_security_factory_is_dropped() {
+    let temporary = tempdir().unwrap();
+    let paths = fixture_paths(temporary.path());
+    let first_store = Arc::new(ServerAuthenticationStore::open(paths.config_root()).unwrap());
+    let second_store = Arc::new(ServerAuthenticationStore::open(paths.config_root()).unwrap());
+    let policy = rate_policy(3);
+    let first = ServerAuthenticationSecurity::claim(
+        first_store,
+        AuthenticationRateLimiter::new(policy, policy),
+        SessionStore::new(SessionPolicy::new(Duration::from_secs(300)).unwrap()),
+    )
+    .unwrap();
+    let coordinator = first.authentication_coordinator();
+    drop(first);
+
+    let overlapping = ServerAuthenticationSecurity::claim(
+        Arc::clone(&second_store),
+        AuthenticationRateLimiter::new(policy, policy),
+        SessionStore::new(SessionPolicy::new(Duration::from_secs(300)).unwrap()),
+    );
+    assert!(matches!(overlapping, Err(ServerAuthenticationError)));
+
+    drop(coordinator);
+    ServerAuthenticationSecurity::claim(
+        second_store,
+        AuthenticationRateLimiter::new(policy, policy),
+        SessionStore::new(SessionPolicy::new(Duration::from_secs(300)).unwrap()),
+    )
+    .expect("the failed claim must be retryable after the last old coordinator drops");
+}
+
+#[test]
+fn a_failed_reopened_store_claim_is_retryable_after_the_current_owner_drops() {
+    let temporary = tempdir().unwrap();
+    let paths = fixture_paths(temporary.path());
+    let first_store = Arc::new(ServerAuthenticationStore::open(paths.config_root()).unwrap());
+    let second_store = Arc::new(ServerAuthenticationStore::open(paths.config_root()).unwrap());
+    let policy = rate_policy(3);
+    let first = ServerAuthenticationSecurity::claim(
+        first_store,
+        AuthenticationRateLimiter::new(policy, policy),
+        SessionStore::new(SessionPolicy::new(Duration::from_secs(300)).unwrap()),
+    )
+    .unwrap();
+
+    assert!(ServerAuthenticationSecurity::claim(
+        Arc::clone(&second_store),
+        AuthenticationRateLimiter::new(policy, policy),
+        SessionStore::new(SessionPolicy::new(Duration::from_secs(300)).unwrap()),
+    )
+    .is_err());
+    drop(first);
+
+    ServerAuthenticationSecurity::claim(
+        second_store,
+        AuthenticationRateLimiter::new(policy, policy),
+        SessionStore::new(SessionPolicy::new(Duration::from_secs(300)).unwrap()),
+    )
+    .expect("a global root collision must not permanently consume the losing store");
+}
+
+#[cfg(unix)]
+#[test]
+fn renaming_the_same_physical_config_root_cannot_bypass_the_owner_claim() {
+    let temporary = tempdir().unwrap();
+    let original_paths = fixture_paths(temporary.path());
+    let first_store =
+        Arc::new(ServerAuthenticationStore::open(original_paths.config_root()).unwrap());
+    let policy = rate_policy(3);
+    let first = ServerAuthenticationSecurity::claim(
+        first_store,
+        AuthenticationRateLimiter::new(policy, policy),
+        SessionStore::new(SessionPolicy::new(Duration::from_secs(300)).unwrap()),
+    )
+    .unwrap();
+    let moved_config = temporary.path().join("moved-config");
+    fs::rename(temporary.path().join("config"), &moved_config).unwrap();
+    let moved_paths = KernelPaths::desktop(
+        &temporary.path().join("workspace"),
+        &moved_config,
+        &temporary.path().join("cache"),
+    )
+    .unwrap();
+    let reopened = Arc::new(ServerAuthenticationStore::open(moved_paths.config_root()).unwrap());
+
+    let overlapping = ServerAuthenticationSecurity::claim(
+        reopened,
+        AuthenticationRateLimiter::new(policy, policy),
+        SessionStore::new(SessionPolicy::new(Duration::from_secs(300)).unwrap()),
+    );
+    assert!(matches!(overlapping, Err(ServerAuthenticationError)));
+    drop(first);
+}
+
+#[test]
+fn concurrent_reopened_store_claims_publish_exactly_one_owner() {
+    let temporary = tempdir().unwrap();
+    let paths = fixture_paths(temporary.path());
+    let stores = (0..8)
+        .map(|_| Arc::new(ServerAuthenticationStore::open(paths.config_root()).unwrap()))
+        .collect::<Vec<_>>();
+    let barrier = Arc::new(Barrier::new(stores.len()));
+    let policy = rate_policy(3);
+    let workers = stores
+        .into_iter()
+        .map(|store| {
+            let barrier = Arc::clone(&barrier);
+            thread::spawn(move || {
+                barrier.wait();
+                ServerAuthenticationSecurity::claim(
+                    store,
+                    AuthenticationRateLimiter::new(policy, policy),
+                    SessionStore::new(SessionPolicy::new(Duration::from_secs(300)).unwrap()),
+                )
+            })
+        })
+        .collect::<Vec<_>>();
+    let results = workers
+        .into_iter()
+        .map(|worker| worker.join().unwrap())
+        .collect::<Vec<_>>();
+
+    assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
 }
 
 #[test]

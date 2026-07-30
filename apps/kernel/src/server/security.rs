@@ -2,6 +2,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Mutex,
 };
+use std::time::{Duration, Instant};
 
 use super::{
     AuthenticationRateLimiter, InitializationToken, ServerAuthenticationCoordinator,
@@ -9,20 +10,136 @@ use super::{
     ServerInitializationCoordinatorError, SessionStore,
 };
 
+pub(crate) trait AuthenticationTimeSource: Send + Sync {
+    fn elapsed(&self) -> Duration;
+}
+
+struct SystemAuthenticationTimeSource {
+    origin: Instant,
+}
+
+impl SystemAuthenticationTimeSource {
+    fn new() -> Self {
+        Self {
+            origin: Instant::now(),
+        }
+    }
+}
+
+impl AuthenticationTimeSource for SystemAuthenticationTimeSource {
+    fn elapsed(&self) -> Duration {
+        self.origin.elapsed()
+    }
+}
+
+struct AuthenticationTimeState {
+    source_at: Duration,
+    logical_now: Duration,
+}
+
+struct AuthenticationTimekeeper {
+    source: Arc<dyn AuthenticationTimeSource>,
+    state: Mutex<AuthenticationTimeState>,
+}
+
+impl AuthenticationTimekeeper {
+    fn production() -> Self {
+        Self::with_source(Arc::new(SystemAuthenticationTimeSource::new()))
+    }
+
+    fn with_source(source: Arc<dyn AuthenticationTimeSource>) -> Self {
+        let source_at = source.elapsed();
+        Self {
+            source,
+            state: Mutex::new(AuthenticationTimeState {
+                source_at,
+                logical_now: Duration::ZERO,
+            }),
+        }
+    }
+
+    fn observe(&self, candidate: Duration) -> Result<Duration, ()> {
+        let source_now = self.source.elapsed();
+        let mut state = self.state.lock().map_err(|_poisoned| ())?;
+        let projected = state
+            .logical_now
+            .saturating_add(source_now.saturating_sub(state.source_at));
+        state.logical_now = projected.max(candidate);
+        state.source_at = source_now;
+        Ok(state.logical_now)
+    }
+
+    fn fresh(&self) -> Result<Duration, ()> {
+        self.observe(Duration::ZERO)
+    }
+
+    fn is_poisoned(&self) -> bool {
+        self.state.is_poisoned()
+    }
+}
+
 pub(crate) struct AuthenticationSecurityState {
     pub(crate) rate_limiter: Mutex<AuthenticationRateLimiter>,
     pub(crate) sessions: Mutex<SessionStore>,
     pub(crate) password_lifecycle: Mutex<()>,
+    pub(crate) session_mutation_lifecycle: Mutex<()>,
+    timekeeper: AuthenticationTimekeeper,
     failed_closed: AtomicBool,
+    _owner_claim: Option<Arc<()>>,
 }
 
 impl AuthenticationSecurityState {
+    #[cfg(test)]
     pub(crate) fn new(rate_limiter: AuthenticationRateLimiter, sessions: SessionStore) -> Self {
+        Self::with_owner_claim_and_timekeeper(
+            rate_limiter,
+            sessions,
+            None,
+            AuthenticationTimekeeper::production(),
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_with_time_source(
+        rate_limiter: AuthenticationRateLimiter,
+        sessions: SessionStore,
+        source: Arc<dyn AuthenticationTimeSource>,
+    ) -> Self {
+        Self::with_owner_claim_and_timekeeper(
+            rate_limiter,
+            sessions,
+            None,
+            AuthenticationTimekeeper::with_source(source),
+        )
+    }
+
+    fn with_owner_claim(
+        rate_limiter: AuthenticationRateLimiter,
+        sessions: SessionStore,
+        owner_claim: Option<Arc<()>>,
+    ) -> Self {
+        Self::with_owner_claim_and_timekeeper(
+            rate_limiter,
+            sessions,
+            owner_claim,
+            AuthenticationTimekeeper::production(),
+        )
+    }
+
+    fn with_owner_claim_and_timekeeper(
+        rate_limiter: AuthenticationRateLimiter,
+        sessions: SessionStore,
+        owner_claim: Option<Arc<()>>,
+        timekeeper: AuthenticationTimekeeper,
+    ) -> Self {
         Self {
             rate_limiter: Mutex::new(rate_limiter),
             sessions: Mutex::new(sessions),
             password_lifecycle: Mutex::new(()),
+            session_mutation_lifecycle: Mutex::new(()),
+            timekeeper,
             failed_closed: AtomicBool::new(false),
+            _owner_claim: owner_claim,
         }
     }
 
@@ -32,7 +149,9 @@ impl AuthenticationSecurityState {
         }
         let available = !self.rate_limiter.is_poisoned()
             && !self.sessions.is_poisoned()
-            && !self.password_lifecycle.is_poisoned();
+            && !self.password_lifecycle.is_poisoned()
+            && !self.session_mutation_lifecycle.is_poisoned()
+            && !self.timekeeper.is_poisoned();
         if !available {
             self.fail_closed();
         }
@@ -41,6 +160,14 @@ impl AuthenticationSecurityState {
 
     pub(crate) fn fail_closed(&self) {
         self.failed_closed.store(true, Ordering::Release);
+    }
+
+    pub(crate) fn observe_time(&self, candidate: Duration) -> Result<Duration, ()> {
+        self.timekeeper.observe(candidate)
+    }
+
+    pub(crate) fn fresh_time(&self) -> Result<Duration, ()> {
+        self.timekeeper.fresh()
     }
 }
 
@@ -53,7 +180,6 @@ impl AuthenticationSecurityState {
 pub struct ServerAuthenticationSecurity {
     authentication: Arc<ServerAuthenticationStore>,
     state: Arc<AuthenticationSecurityState>,
-    _owner_claim: Arc<()>,
 }
 
 impl ServerAuthenticationSecurity {
@@ -65,8 +191,11 @@ impl ServerAuthenticationSecurity {
         let owner_claim = authentication.claim_security_owner()?;
         Ok(Self {
             authentication,
-            state: Arc::new(AuthenticationSecurityState::new(rate_limiter, sessions)),
-            _owner_claim: owner_claim,
+            state: Arc::new(AuthenticationSecurityState::with_owner_claim(
+                rate_limiter,
+                sessions,
+                Some(owner_claim),
+            )),
         })
     }
 
@@ -161,7 +290,7 @@ mod tests {
 
     #[test]
     fn poisoning_any_process_security_mutex_latches_every_public_authentication_entry_closed() {
-        for poisoned_component in 0..3 {
+        for poisoned_component in 0..5 {
             let temporary = tempdir().unwrap();
             let security = security(temporary.path(), 2);
             let mut initialization = security
@@ -183,6 +312,8 @@ mod tests {
                 0 => poison(&security.state.rate_limiter),
                 1 => poison(&security.state.sessions),
                 2 => poison(&security.state.password_lifecycle),
+                3 => poison(&security.state.session_mutation_lifecycle),
+                4 => poison(&security.state.timekeeper.state),
                 _ => unreachable!(),
             }
 
@@ -242,6 +373,140 @@ mod tests {
                 ServerOwnerInitializationError::StateUnavailable
             );
         }
+    }
+
+    #[test]
+    fn poisoned_initialization_gate_status_latches_every_authentication_entry_closed() {
+        let temporary = tempdir().unwrap();
+        let security = security(temporary.path(), 2);
+        let mut initialization = security
+            .initialization_coordinator(Some(initialization_token()))
+            .unwrap();
+        initialization
+            .initialize(
+                7,
+                Duration::from_secs(0),
+                INITIALIZATION_TOKEN,
+                OWNER_PASSWORD.to_owned(),
+            )
+            .unwrap();
+        let authentication = security.authentication_coordinator();
+        let login = authentication
+            .login(7, Duration::from_secs(1), OWNER_PASSWORD.to_owned())
+            .unwrap();
+        initialization.poison_gate_for_test();
+
+        assert_eq!(initialization.status(), InitializationStatus::Unavailable);
+        assert_eq!(
+            authentication.authorize(
+                login.session().credential(),
+                None,
+                RequestIntent::ReadOnly,
+                Duration::from_secs(2),
+            ),
+            Err(ServerAuthenticationCoordinatorError::StateUnavailable)
+        );
+    }
+
+    #[test]
+    fn poisoned_initialization_gate_begin_latches_every_authentication_entry_closed() {
+        let temporary = tempdir().unwrap();
+        let security = security(temporary.path(), 2);
+        let mut initialization = security
+            .initialization_coordinator(Some(initialization_token()))
+            .unwrap();
+        initialization
+            .initialize(
+                7,
+                Duration::from_secs(0),
+                INITIALIZATION_TOKEN,
+                OWNER_PASSWORD.to_owned(),
+            )
+            .unwrap();
+        let authentication = security.authentication_coordinator();
+        let login = authentication
+            .login(7, Duration::from_secs(1), OWNER_PASSWORD.to_owned())
+            .unwrap();
+        initialization.poison_gate_for_test();
+
+        assert_eq!(
+            initialization
+                .initialize(
+                    7,
+                    Duration::from_secs(2),
+                    INITIALIZATION_TOKEN,
+                    OWNER_PASSWORD.to_owned(),
+                )
+                .unwrap_err(),
+            ServerOwnerInitializationError::StateUnavailable
+        );
+        assert_eq!(
+            authentication.authorize(
+                login.session().credential(),
+                None,
+                RequestIntent::ReadOnly,
+                Duration::from_secs(3),
+            ),
+            Err(ServerAuthenticationCoordinatorError::StateUnavailable)
+        );
+    }
+
+    #[test]
+    fn poisoned_initialization_gate_commit_latches_every_authentication_entry_closed() {
+        let temporary = tempdir().unwrap();
+        let security = security(temporary.path(), 2);
+        let mut initialization = security
+            .initialization_coordinator(Some(initialization_token()))
+            .unwrap();
+        let authentication = security.authentication_coordinator();
+        initialization.poison_gate_commit_for_test();
+
+        assert_eq!(
+            initialization
+                .initialize(
+                    7,
+                    Duration::from_secs(0),
+                    INITIALIZATION_TOKEN,
+                    OWNER_PASSWORD.to_owned(),
+                )
+                .unwrap_err(),
+            ServerOwnerInitializationError::StateUnavailable
+        );
+        assert_eq!(
+            authentication
+                .login(7, Duration::from_secs(1), OWNER_PASSWORD.to_owned())
+                .unwrap_err(),
+            ServerAuthenticationCoordinatorError::StateUnavailable
+        );
+    }
+
+    #[test]
+    fn poisoned_initialization_gate_abort_latches_every_authentication_entry_closed() {
+        let temporary = tempdir().unwrap();
+        let security = security(temporary.path(), 2);
+        let mut initialization = security
+            .initialization_coordinator(Some(initialization_token()))
+            .unwrap();
+        let authentication = security.authentication_coordinator();
+        initialization.poison_gate_abort_for_test();
+
+        assert_eq!(
+            initialization
+                .initialize(
+                    7,
+                    Duration::from_secs(0),
+                    INITIALIZATION_TOKEN,
+                    "short".to_owned(),
+                )
+                .unwrap_err(),
+            ServerOwnerInitializationError::StateUnavailable
+        );
+        assert_eq!(
+            authentication
+                .login(7, Duration::from_secs(1), OWNER_PASSWORD.to_owned())
+                .unwrap_err(),
+            ServerAuthenticationCoordinatorError::StateUnavailable
+        );
     }
 
     #[test]

@@ -16,7 +16,7 @@ use uuid::Uuid;
 use zeroize::{Zeroize as _, Zeroizing};
 
 use crate::{
-    paths::ConfigRoot,
+    paths::{ConfigRoot, ConfigRootIdentity},
     storage::{
         CommitState, DurableFileFailureKind, DurableFileStore, ExpectedFile, FileRevision,
         PreservePrevious, RecoveryOutcome, ReplaceRequest, StorageFileName,
@@ -34,7 +34,7 @@ const ARGON2_PARALLELISM: u32 = 1;
 const ARGON2_OUTPUT_BYTES: usize = 32;
 const ARGON2_VERSION_NUMBER: u32 = 19;
 
-type ClaimedSecurityOwnerRoots = Vec<(PathBuf, Weak<()>)>;
+type ClaimedSecurityOwnerRoots = Vec<(ConfigRootIdentity, PathBuf, Weak<()>)>;
 
 static CLAIMED_SECURITY_OWNER_ROOTS: OnceLock<Mutex<ClaimedSecurityOwnerRoots>> = OnceLock::new();
 
@@ -62,6 +62,17 @@ pub enum OwnerPasswordUpdateError {
     InvalidNewPassword,
     StateUnavailable,
     StateUncertain,
+}
+
+pub(super) struct PreparedOwnerPasswordChange {
+    expected_revision: FileRevision,
+    serialized: Zeroizing<Vec<u8>>,
+}
+
+impl Drop for PreparedOwnerPasswordChange {
+    fn drop(&mut self) {
+        self.serialized.zeroize();
+    }
 }
 
 impl fmt::Display for OwnerPasswordUpdateError {
@@ -117,6 +128,8 @@ pub struct ServerAuthenticationStore {
     security_owner_claimed: AtomicBool,
     #[cfg(test)]
     password_update_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    #[cfg(test)]
+    password_commit_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
 impl ServerAuthenticationStore {
@@ -183,6 +196,8 @@ impl ServerAuthenticationStore {
             security_owner_claimed: AtomicBool::new(false),
             #[cfg(test)]
             password_update_hook: Mutex::new(None),
+            #[cfg(test)]
+            password_commit_hook: Mutex::new(None),
         };
         let _state = this.read_snapshot()?;
         this.config_root
@@ -195,20 +210,33 @@ impl ServerAuthenticationStore {
         self.security_owner_claimed
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .map_err(|_already_claimed| ServerAuthenticationError)?;
+        let claim = self.claim_unowned_security_root();
+        if claim.is_err() {
+            self.security_owner_claimed.store(false, Ordering::Release);
+        }
+        claim
+    }
+
+    fn claim_unowned_security_root(&self) -> Result<Arc<()>, ServerAuthenticationError> {
         let mut claimed_roots = CLAIMED_SECURITY_OWNER_ROOTS
             .get_or_init(|| Mutex::new(Vec::new()))
             .lock()
             .map_err(|_poisoned| ServerAuthenticationError)?;
-        let root = self.config_root.canonical_path();
-        claimed_roots.retain(|(_claimed, owner)| owner.strong_count() != 0);
+        let root_path = self.config_root.canonical_path();
+        let root_identity = self.config_root.identity();
+        claimed_roots.retain(|(_identity, _path, owner)| owner.strong_count() != 0);
         if claimed_roots
             .iter()
-            .any(|(claimed, _owner)| claimed == root)
+            .any(|(identity, path, _owner)| *identity == root_identity || path == root_path)
         {
             return Err(ServerAuthenticationError);
         }
         let owner = Arc::new(());
-        claimed_roots.push((root.to_path_buf(), Arc::downgrade(&owner)));
+        claimed_roots.push((
+            root_identity,
+            root_path.to_path_buf(),
+            Arc::downgrade(&owner),
+        ));
         Ok(owner)
     }
 
@@ -219,6 +247,11 @@ impl ServerAuthenticationStore {
     #[cfg(test)]
     pub(super) fn set_password_update_test_hook(&self, hook: Arc<dyn Fn() + Send + Sync>) {
         *self.password_update_hook.lock().unwrap() = Some(hook);
+    }
+
+    #[cfg(test)]
+    pub(super) fn set_password_commit_test_hook(&self, hook: Arc<dyn Fn() + Send + Sync>) {
+        *self.password_commit_hook.lock().unwrap() = Some(hook);
     }
 
     pub fn status(&self) -> Result<ServerAuthenticationStatus, ServerAuthenticationError> {
@@ -354,6 +387,15 @@ impl ServerAuthenticationStore {
         current_password: String,
         new_password: String,
     ) -> Result<(), OwnerPasswordUpdateError> {
+        let prepared = self.prepare_owner_password_change(current_password, new_password)?;
+        self.commit_prepared_owner_password_change(prepared)
+    }
+
+    pub(super) fn prepare_owner_password_change(
+        &self,
+        current_password: String,
+        new_password: String,
+    ) -> Result<PreparedOwnerPasswordChange, OwnerPasswordUpdateError> {
         let current_password = Zeroizing::new(current_password);
         let new_password = Zeroizing::new(new_password);
         self.ensure_update_available()?;
@@ -372,11 +414,20 @@ impl ServerAuthenticationStore {
         if !valid_owner_password(new_password.as_bytes()) {
             return Err(OwnerPasswordUpdateError::InvalidNewPassword);
         }
+        let prepared = self.prepare_password_hash(snapshot.revision, new_password.as_bytes())?;
         #[cfg(test)]
         if let Some(hook) = self.password_update_hook.lock().unwrap().clone() {
             hook();
         }
-        self.replace_password_hash(&snapshot.revision, new_password.as_bytes())
+        Ok(prepared)
+    }
+
+    pub(super) fn commit_prepared_owner_password_change(
+        &self,
+        prepared: PreparedOwnerPasswordChange,
+    ) -> Result<(), OwnerPasswordUpdateError> {
+        self.ensure_update_available()?;
+        self.publish_prepared_password_hash(&prepared)
     }
 
     fn replace_password_hash(
@@ -384,9 +435,15 @@ impl ServerAuthenticationStore {
         expected_revision: &FileRevision,
         password: &[u8],
     ) -> Result<(), OwnerPasswordUpdateError> {
-        self.config_root
-            .verify_held_directory()
-            .map_err(|_| OwnerPasswordUpdateError::StateUnavailable)?;
+        let prepared = self.prepare_password_hash(expected_revision.clone(), password)?;
+        self.publish_prepared_password_hash(&prepared)
+    }
+
+    fn prepare_password_hash(
+        &self,
+        expected_revision: FileRevision,
+        password: &[u8],
+    ) -> Result<PreparedOwnerPasswordChange, OwnerPasswordUpdateError> {
         let state = PersistentAuthenticationState {
             schema_version: AUTHENTICATION_SCHEMA_VERSION,
             password_hash: hash_owner_password(password)
@@ -395,11 +452,28 @@ impl ServerAuthenticationStore {
         let serialized = Zeroizing::new(
             serde_json::to_vec(&state).map_err(|_| OwnerPasswordUpdateError::StateUnavailable)?,
         );
+        Ok(PreparedOwnerPasswordChange {
+            expected_revision,
+            serialized,
+        })
+    }
+
+    fn publish_prepared_password_hash(
+        &self,
+        prepared: &PreparedOwnerPasswordChange,
+    ) -> Result<(), OwnerPasswordUpdateError> {
+        self.config_root
+            .verify_held_directory()
+            .map_err(|_| OwnerPasswordUpdateError::StateUnavailable)?;
+        #[cfg(test)]
+        if let Some(hook) = self.password_commit_hook.lock().unwrap().clone() {
+            hook();
+        }
         let outcome = match self.store.replace_with_address_validation(
             ReplaceRequest {
                 target: &self.target,
-                bytes: serialized.as_slice(),
-                expected: ExpectedFile::Revision(expected_revision),
+                bytes: prepared.serialized.as_slice(),
+                expected: ExpectedFile::Revision(&prepared.expected_revision),
                 preserve_previous: PreservePrevious::None,
             },
             || self.config_root.verify_held_directory().is_ok(),
@@ -580,6 +654,7 @@ fn password_hash_needs_rehash(hash: &PasswordHash<'_>) -> bool {
 mod tests {
     use std::{fs, path::Path};
 
+    use static_assertions::assert_not_impl_any;
     use tempfile::tempdir;
 
     use super::*;
@@ -587,6 +662,8 @@ mod tests {
 
     const OWNER_PASSWORD: &str = "correct horse battery staple";
     const NEW_PASSWORD: &str = "new owner password material";
+
+    assert_not_impl_any!(PreparedOwnerPasswordChange: Clone, Copy, fmt::Debug, Serialize);
 
     fn fixture_paths(root: &Path) -> KernelPaths {
         let workspace = root.join("workspace");

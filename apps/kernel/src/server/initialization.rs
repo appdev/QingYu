@@ -101,6 +101,15 @@ enum InitializationState {
 pub struct InitializationGate {
     gate_id: Uuid,
     state: Arc<Mutex<InitializationState>>,
+    #[cfg(test)]
+    operation_fault: Option<InitializationGateOperationFault>,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum InitializationGateOperationFault {
+    Commit,
+    Abort,
 }
 
 impl InitializationGate {
@@ -108,6 +117,8 @@ impl InitializationGate {
         Self {
             gate_id: Uuid::new_v4(),
             state: Arc::new(Mutex::new(InitializationState::Pending(token))),
+            #[cfg(test)]
+            operation_fault: None,
         }
     }
 
@@ -115,6 +126,8 @@ impl InitializationGate {
         Self {
             gate_id: Uuid::new_v4(),
             state: Arc::new(Mutex::new(InitializationState::Initialized)),
+            #[cfg(test)]
+            operation_fault: None,
         }
     }
 
@@ -127,6 +140,26 @@ impl InitializationGate {
             InitializationState::InProgress { .. } => InitializationStatus::InProgress,
             InitializationState::Initialized => InitializationStatus::Initialized,
         }
+    }
+
+    #[cfg(test)]
+    pub(super) fn poison_for_test(&self) {
+        let state = Arc::clone(&self.state);
+        let poisoned = std::panic::catch_unwind(move || {
+            let _guard = state.lock().unwrap();
+            panic!("poison initialization gate for coordinator test");
+        });
+        assert!(poisoned.is_err());
+    }
+
+    #[cfg(test)]
+    pub(super) fn poison_commit_for_test(&mut self) {
+        self.operation_fault = Some(InitializationGateOperationFault::Commit);
+    }
+
+    #[cfg(test)]
+    pub(super) fn poison_abort_for_test(&mut self) {
+        self.operation_fault = Some(InitializationGateOperationFault::Abort);
     }
 
     pub fn begin(&mut self, candidate: &str) -> Result<InitializationPermit, InitializationError> {
@@ -160,6 +193,10 @@ impl InitializationGate {
     }
 
     pub fn commit(&mut self, mut permit: InitializationPermit) -> Result<(), InitializationError> {
+        #[cfg(test)]
+        if self.operation_fault.take() == Some(InitializationGateOperationFault::Commit) {
+            self.poison_for_test();
+        }
         if permit.gate_id != self.gate_id || !permit.state.ptr_eq(&Arc::downgrade(&self.state)) {
             return Err(InitializationError::InvalidPermit);
         }
@@ -177,6 +214,10 @@ impl InitializationGate {
     }
 
     pub fn abort(&mut self, mut permit: InitializationPermit) -> Result<(), InitializationError> {
+        #[cfg(test)]
+        if self.operation_fault.take() == Some(InitializationGateOperationFault::Abort) {
+            self.poison_for_test();
+        }
         if permit.gate_id != self.gate_id || !permit.state.ptr_eq(&Arc::downgrade(&self.state)) {
             return Err(InitializationError::InvalidPermit);
         }
@@ -273,5 +314,27 @@ mod tests {
             gate.begin("initialization-secret-with-at-least-32-bytes"),
             Err(InitializationError::StateUnavailable)
         ));
+    }
+
+    #[test]
+    fn poisoned_initialization_state_rejects_commit_and_abort_permits() {
+        for operation in ["commit", "abort"] {
+            let token = InitializationToken::from_secret(
+                "initialization-secret-with-at-least-32-bytes".to_owned(),
+            )
+            .unwrap();
+            let mut gate = InitializationGate::pending(token);
+            let permit = gate
+                .begin("initialization-secret-with-at-least-32-bytes")
+                .unwrap();
+            gate.poison_for_test();
+
+            let result = match operation {
+                "commit" => gate.commit(permit),
+                "abort" => gate.abort(permit),
+                _ => unreachable!(),
+            };
+            assert_eq!(result, Err(InitializationError::StateUnavailable));
+        }
     }
 }
