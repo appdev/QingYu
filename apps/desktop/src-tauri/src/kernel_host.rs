@@ -1,13 +1,9 @@
 //! Desktop Kernel child lifecycle state machine.
 //!
-//! This module is intentionally not registered with the production Tauri
-//! builder yet. Its process seams are exercised with deterministic fakes until
-//! the Kernel owns every workspace mutation path.
-//!
-//! The dormant supervisor also intentionally does not retain the UI's parent
-//! credential. Before Task 6 registers it, the Ready state must own an endpoint
-//! and same-generation credential lease together, then revoke both on failure,
-//! stop, or drop as part of the atomic legacy-writer cutover.
+//! The supervisor keeps endpoint publication and the same-generation parent
+//! credential lease in one Ready state. Every failure, stop, and Drop path
+//! revokes that lease while synchronously retaining child-process ownership.
+//! Production registration remains a separate atomic legacy-writer cutover.
 
 #![cfg_attr(not(test), allow(dead_code))]
 
@@ -19,8 +15,9 @@ use std::{
 };
 
 use qingyu_kernel::{
+    config::NativeLaunchCredential,
     contract::InstanceId,
-    host::native::{NativeHostReady, NativeHostStart},
+    host::native::{NativeHostReady, NativeHostStart, NativeHostWorkspaceState},
 };
 use tokio::{
     sync::{mpsc, oneshot, watch, Mutex as AsyncMutex},
@@ -39,10 +36,95 @@ pub(crate) trait KernelProcessFactory: Send + Sync + 'static {
     /// [`ReadyEvidence`].
     fn spawn(
         &self,
-        startup: NativeHostStart,
+        launch: NativeKernelLaunch,
         generation: u64,
         ownership: &KernelOwnership,
     ) -> Result<Box<dyn PendingKernel>, KernelHostFailure>;
+}
+
+pub(crate) struct NativeKernelLaunch {
+    startup: NativeHostStart,
+    credential: NativeKernelCredentialLease,
+}
+
+impl NativeKernelLaunch {
+    pub(crate) fn desktop(
+        workspace_root: std::path::PathBuf,
+        app_data_root: std::path::PathBuf,
+        cache_root: std::path::PathBuf,
+        workspace_state: NativeHostWorkspaceState,
+        origin: String,
+    ) -> Result<Self, KernelHostFailure> {
+        let credential =
+            NativeLaunchCredential::generate().map_err(|_| KernelHostFailure::Spawn)?;
+        let child_credential =
+            NativeLaunchCredential::from_secret(credential.expose_secret().to_owned())
+                .map_err(|_| KernelHostFailure::Spawn)?;
+        Ok(Self {
+            startup: NativeHostStart::desktop(
+                workspace_root,
+                app_data_root,
+                cache_root,
+                workspace_state,
+                origin,
+                child_credential,
+            ),
+            credential: NativeKernelCredentialLease::new(credential),
+        })
+    }
+
+    pub(crate) fn into_parts(self) -> (NativeHostStart, NativeKernelCredentialLease) {
+        (self.startup, self.credential)
+    }
+}
+
+#[derive(Clone)]
+pub(crate) struct NativeKernelCredentialLease {
+    credential: Arc<Mutex<Option<NativeLaunchCredential>>>,
+}
+
+impl NativeKernelCredentialLease {
+    fn new(credential: NativeLaunchCredential) -> Self {
+        Self {
+            credential: Arc::new(Mutex::new(Some(credential))),
+        }
+    }
+
+    pub(crate) fn with_secret<T>(
+        &self,
+        use_secret: impl FnOnce(&str) -> T,
+    ) -> Result<T, KernelHostFailure> {
+        let credential = self
+            .credential
+            .lock()
+            .map_err(|_| KernelHostFailure::Cancelled)?;
+        let credential = credential.as_ref().ok_or(KernelHostFailure::Cancelled)?;
+        Ok(use_secret(credential.expose_secret()))
+    }
+
+    pub(crate) fn revoke(&self) {
+        match self.credential.lock() {
+            Ok(mut credential) => {
+                credential.take();
+            }
+            Err(poisoned) => {
+                poisoned.into_inner().take();
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_available(&self) -> bool {
+        self.credential
+            .lock()
+            .is_ok_and(|credential| credential.is_some())
+    }
+}
+
+impl std::fmt::Debug for NativeKernelCredentialLease {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("NativeKernelCredentialLease([REDACTED])")
+    }
 }
 
 /// Synchronous last-resort ownership for one spawned child.
@@ -156,6 +238,7 @@ impl KernelSpawnPermit<'_> {
 /// when the actor task itself is cancelled.
 pub(crate) trait PendingKernel: Send {
     fn wait_ready(&mut self) -> HostFuture<'_, Result<ReadyEvidence, KernelHostFailure>>;
+    fn credential_lease(&self) -> NativeKernelCredentialLease;
     fn cancel_and_reap(&mut self) -> HostFuture<'_, Result<(), KernelHostFailure>>;
     fn force_kill_and_reap(&mut self) -> HostFuture<'_, Result<(), KernelHostFailure>>;
     fn into_running(self: Box<Self>) -> Result<Box<dyn RunningKernel>, KernelHostFailure>;
@@ -182,6 +265,12 @@ pub(crate) struct KernelEndpoint {
     pub(crate) generation: u64,
     pub(crate) port: u16,
     pub(crate) instance_id: InstanceId,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct NativeKernelAccess {
+    pub(crate) endpoint: KernelEndpoint,
+    pub(crate) credential: NativeKernelCredentialLease,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -282,13 +371,13 @@ impl KernelHostSupervisor {
 
     pub(crate) async fn start(
         &self,
-        startup: NativeHostStart,
-    ) -> Result<KernelEndpoint, KernelHostFailure> {
+        launch: NativeKernelLaunch,
+    ) -> Result<NativeKernelAccess, KernelHostFailure> {
         let (response, receiver) = oneshot::channel();
         {
             let _enqueue_guard = self.enqueue_gate.lock().await;
             self.starts
-                .try_send(StartCommand { startup, response })
+                .try_send(StartCommand { launch, response })
                 .map_err(|error| match error {
                     mpsc::error::TrySendError::Full(_) => KernelHostFailure::Busy,
                     mpsc::error::TrySendError::Closed(_) => KernelHostFailure::Spawn,
@@ -321,12 +410,12 @@ impl Drop for KernelHostSupervisor {
 }
 
 struct StartCommand {
-    startup: NativeHostStart,
-    response: oneshot::Sender<Result<KernelEndpoint, KernelHostFailure>>,
+    launch: NativeKernelLaunch,
+    response: oneshot::Sender<Result<NativeKernelAccess, KernelHostFailure>>,
 }
 
 struct ReadyKernel {
-    endpoint: KernelEndpoint,
+    access: NativeKernelAccess,
     process: Box<dyn RunningKernel>,
 }
 
@@ -350,7 +439,7 @@ async fn run_actor(
         mode = match mode {
             ActorMode::Idle => {
                 enum IdleCommand {
-                    Start(StartCommand),
+                    Start(Box<StartCommand>),
                     Stop(oneshot::Sender<Result<(), KernelHostFailure>>),
                 }
                 let command = tokio::select! {
@@ -360,12 +449,13 @@ async fn run_actor(
                         None => return,
                     },
                     command = starts.recv() => match command {
-                        Some(command) => IdleCommand::Start(command),
+                        Some(command) => IdleCommand::Start(Box::new(command)),
                         None => return,
                     },
                 };
                 match command {
-                    IdleCommand::Start(StartCommand { startup, response }) => {
+                    IdleCommand::Start(command) => {
+                        let StartCommand { launch, response } = *command;
                         generation = generation.saturating_add(1);
                         match start_transition(
                             &mut starts,
@@ -376,7 +466,7 @@ async fn run_actor(
                             enqueue_gate.as_ref(),
                             timeouts,
                             generation,
-                            startup,
+                            launch,
                             response,
                         )
                         .await
@@ -429,8 +519,8 @@ async fn start_transition(
     enqueue_gate: &AsyncMutex<()>,
     timeouts: KernelHostTimeouts,
     generation: u64,
-    startup: NativeHostStart,
-    response: oneshot::Sender<Result<KernelEndpoint, KernelHostFailure>>,
+    launch: NativeKernelLaunch,
+    response: oneshot::Sender<Result<NativeKernelAccess, KernelHostFailure>>,
 ) -> Option<ReadyKernel> {
     snapshots.send_replace(KernelHostSnapshot {
         phase: KernelHostPhase::Starting,
@@ -438,7 +528,7 @@ async fn start_transition(
         endpoint: None,
         failure: None,
     });
-    let mut pending = match factory.spawn(startup, generation, ownership) {
+    let mut pending = match factory.spawn(launch, generation, ownership) {
         Ok(pending) => pending,
         Err(error) => {
             publish_failure(snapshots, generation, error);
@@ -541,6 +631,10 @@ async fn start_transition(
         port: evidence.ready.port(),
         instance_id: evidence.authenticated_instance,
     };
+    let access = NativeKernelAccess {
+        endpoint,
+        credential: pending.credential_lease(),
+    };
     let process = match pending.into_running() {
         Ok(process) => process,
         Err(error) => {
@@ -555,8 +649,8 @@ async fn start_transition(
         endpoint: Some(endpoint),
         failure: None,
     });
-    let _send_result = response.send(Ok(endpoint));
-    Some(ReadyKernel { endpoint, process })
+    let _send_result = response.send(Ok(access.clone()));
+    Some(ReadyKernel { access, process })
 }
 
 async fn ready_transition(
@@ -597,10 +691,11 @@ async fn ready_transition(
 
     match wait {
         ReadyWait::Exit(Ok(())) => {
-            ownership.clear_reaped(ready.endpoint.generation);
+            ready.access.credential.revoke();
+            ownership.clear_reaped(ready.access.endpoint.generation);
             publish_failure(
                 snapshots,
-                ready.endpoint.generation,
+                ready.access.endpoint.generation,
                 KernelHostFailure::UnexpectedExit,
             );
         }
@@ -608,25 +703,25 @@ async fn ready_transition(
             let reported = force_reap_running(
                 &mut *ready.process,
                 ownership,
-                ready.endpoint.generation,
+                ready.access.endpoint.generation,
                 timeouts,
             )
             .await
             .err()
             .unwrap_or(error);
-            publish_failure(snapshots, ready.endpoint.generation, reported);
+            publish_failure(snapshots, ready.access.endpoint.generation, reported);
         }
         ReadyWait::Stop(response) => {
             snapshots.send_replace(KernelHostSnapshot {
                 phase: KernelHostPhase::Stopping,
-                generation: ready.endpoint.generation,
+                generation: ready.access.endpoint.generation,
                 endpoint: None,
                 failure: None,
             });
             let result = stop_running(
                 &mut *ready.process,
                 ownership,
-                ready.endpoint.generation,
+                ready.access.endpoint.generation,
                 timeouts,
             )
             .await;
@@ -634,12 +729,12 @@ async fn ready_transition(
                 Ok(()) => {
                     snapshots.send_replace(KernelHostSnapshot {
                         phase: KernelHostPhase::Dormant,
-                        generation: ready.endpoint.generation,
+                        generation: ready.access.endpoint.generation,
                         endpoint: None,
                         failure: None,
                     });
                 }
-                Err(error) => publish_failure(snapshots, ready.endpoint.generation, error),
+                Err(error) => publish_failure(snapshots, ready.access.endpoint.generation, error),
             };
             finish_stop_barrier(starts, enqueue_gate, response, result).await;
         }
@@ -647,7 +742,7 @@ async fn ready_transition(
             let _cleanup_result = stop_running(
                 &mut *ready.process,
                 ownership,
-                ready.endpoint.generation,
+                ready.access.endpoint.generation,
                 timeouts,
             )
             .await;
@@ -745,11 +840,7 @@ mod tests {
         time::Duration,
     };
 
-    use qingyu_kernel::{
-        config::NativeLaunchCredential,
-        contract::InstanceId,
-        host::native::{NativeHostReady, NativeHostStart},
-    };
+    use qingyu_kernel::{contract::InstanceId, host::native::NativeHostReady};
     use tokio::sync::Notify;
     use uuid::Uuid;
 
@@ -852,7 +943,7 @@ mod tests {
     impl KernelProcessFactory for ScriptedFactory {
         fn spawn(
             &self,
-            _startup: NativeHostStart,
+            launch: NativeKernelLaunch,
             generation: u64,
             ownership: &KernelOwnership,
         ) -> Result<Box<dyn PendingKernel>, KernelHostFailure> {
@@ -869,11 +960,13 @@ mod tests {
                 events: Arc::clone(&self.events),
                 active: Arc::clone(&active),
             }));
+            let (_startup, credential) = launch.into_parts();
             Ok(Box::new(ScriptedPending {
                 script,
                 events: Arc::clone(&self.events),
                 active,
                 armed: true,
+                credential,
             }))
         }
     }
@@ -896,6 +989,7 @@ mod tests {
         events: Arc<Mutex<Vec<&'static str>>>,
         active: Arc<AtomicBool>,
         armed: bool,
+        credential: NativeKernelCredentialLease,
     }
 
     impl PendingKernel for ScriptedPending {
@@ -918,6 +1012,10 @@ mod tests {
             })
         }
 
+        fn credential_lease(&self) -> NativeKernelCredentialLease {
+            self.credential.clone()
+        }
+
         fn cancel_and_reap(&mut self) -> HostFuture<'_, Result<(), KernelHostFailure>> {
             Box::pin(async move {
                 self.events.lock().unwrap().push("pending-cancel");
@@ -928,6 +1026,7 @@ mod tests {
                 match action {
                     AsyncAction::Complete => {
                         self.active.store(false, Ordering::SeqCst);
+                        self.credential.revoke();
                         self.armed = false;
                         Ok(())
                     }
@@ -947,6 +1046,7 @@ mod tests {
                 match action {
                     AsyncAction::Complete => {
                         self.active.store(false, Ordering::SeqCst);
+                        self.credential.revoke();
                         self.armed = false;
                         Ok(())
                     }
@@ -967,14 +1067,18 @@ mod tests {
                 events: Arc::clone(&self.events),
                 active: Arc::clone(&self.active),
                 armed: true,
+                credential: self.credential.clone(),
             }))
         }
     }
 
     impl Drop for ScriptedPending {
         fn drop(&mut self) {
-            if self.armed && self.active.swap(false, Ordering::SeqCst) {
-                self.events.lock().unwrap().push("pending-drop-terminate");
+            if self.armed {
+                self.credential.revoke();
+                if self.active.swap(false, Ordering::SeqCst) {
+                    self.events.lock().unwrap().push("pending-drop-terminate");
+                }
             }
         }
     }
@@ -984,6 +1088,7 @@ mod tests {
         events: Arc<Mutex<Vec<&'static str>>>,
         active: Arc<AtomicBool>,
         armed: bool,
+        credential: NativeKernelCredentialLease,
     }
 
     impl RunningKernel for ScriptedRunning {
@@ -992,6 +1097,7 @@ mod tests {
                 match self.behavior.exit {
                     AsyncAction::Complete => {
                         self.active.store(false, Ordering::SeqCst);
+                        self.credential.revoke();
                         self.armed = false;
                         Ok(())
                     }
@@ -1007,6 +1113,7 @@ mod tests {
                 match self.behavior.graceful_stop {
                     AsyncAction::Complete => {
                         self.active.store(false, Ordering::SeqCst);
+                        self.credential.revoke();
                         self.armed = false;
                         Ok(())
                     }
@@ -1022,6 +1129,7 @@ mod tests {
                 match self.behavior.force_reap {
                     AsyncAction::Complete => {
                         self.active.store(false, Ordering::SeqCst);
+                        self.credential.revoke();
                         self.armed = false;
                         Ok(())
                     }
@@ -1034,8 +1142,11 @@ mod tests {
 
     impl Drop for ScriptedRunning {
         fn drop(&mut self) {
-            if self.armed && self.active.swap(false, Ordering::SeqCst) {
-                self.events.lock().unwrap().push("running-drop-terminate");
+            if self.armed {
+                self.credential.revoke();
+                if self.active.swap(false, Ordering::SeqCst) {
+                    self.events.lock().unwrap().push("running-drop-terminate");
+                }
             }
         }
     }
@@ -1078,14 +1189,17 @@ mod tests {
             KernelHostTimeouts::uniform(Duration::from_millis(100)),
         );
 
-        let endpoint = supervisor.start(startup()).await.unwrap();
+        let access = supervisor.start(startup()).await.unwrap();
+        let endpoint = access.endpoint;
 
         assert_eq!(endpoint.port, 43123);
         assert_eq!(endpoint.instance_id, instance);
         assert_eq!(supervisor.snapshot().phase, KernelHostPhase::Ready);
         assert_eq!(supervisor.snapshot().endpoint, Some(endpoint));
+        assert!(access.credential.is_available());
         supervisor.stop().await.unwrap();
         assert_eq!(supervisor.snapshot().phase, KernelHostPhase::Dormant);
+        assert!(!access.credential.is_available());
         assert_eq!(factory.events(), vec!["running-shutdown"]);
     }
 
@@ -1246,7 +1360,7 @@ mod tests {
         let (busy_response, busy_result) = oneshot::channel();
         starts
             .send(StartCommand {
-                startup: startup(),
+                launch: startup(),
                 response: busy_response,
             })
             .await
@@ -1302,7 +1416,7 @@ mod tests {
         let (busy_response, busy_result) = oneshot::channel();
         starts
             .send(StartCommand {
-                startup: startup(),
+                launch: startup(),
                 response: busy_response,
             })
             .await
@@ -1326,9 +1440,9 @@ mod tests {
         )
         .await;
 
-        let endpoint = start_result.await.unwrap().unwrap();
+        let access = start_result.await.unwrap().unwrap();
         assert_eq!(snapshot.borrow().phase, KernelHostPhase::Ready);
-        assert_eq!(snapshot.borrow().endpoint, Some(endpoint));
+        assert_eq!(snapshot.borrow().endpoint, Some(access.endpoint));
         assert!(ready.is_some());
         drop(start_receiver.try_recv().unwrap());
         assert!(busy_result.await.is_err());
@@ -1347,11 +1461,15 @@ mod tests {
         let ownership = KernelOwnership::default();
         let mut pending = factory.spawn(startup(), 1, &ownership).unwrap();
         let evidence = pending.wait_ready().await.unwrap();
+        let credential = pending.credential_lease();
         let ready = ReadyKernel {
-            endpoint: KernelEndpoint {
-                generation: 1,
-                port: evidence.ready.port(),
-                instance_id: evidence.authenticated_instance,
+            access: NativeKernelAccess {
+                endpoint: KernelEndpoint {
+                    generation: 1,
+                    port: evidence.ready.port(),
+                    instance_id: evidence.authenticated_instance,
+                },
+                credential,
             },
             process: pending.into_running().unwrap(),
         };
@@ -1360,7 +1478,7 @@ mod tests {
         let (busy_response, busy_result) = oneshot::channel();
         starts
             .send(StartCommand {
-                startup: startup(),
+                launch: startup(),
                 response: busy_response,
             })
             .await
@@ -1370,7 +1488,7 @@ mod tests {
         let (snapshots, snapshot) = watch::channel(KernelHostSnapshot {
             phase: KernelHostPhase::Ready,
             generation: 1,
-            endpoint: Some(ready.endpoint),
+            endpoint: Some(ready.access.endpoint),
             failure: None,
         });
         let enqueue_gate = AsyncMutex::new(());
@@ -1560,9 +1678,9 @@ mod tests {
         assert!(!production_runtime.contains("kernel_host"));
     }
 
-    fn startup() -> NativeHostStart {
+    fn startup() -> NativeKernelLaunch {
         let workspace = std::env::temp_dir();
-        NativeHostStart::desktop(
+        NativeKernelLaunch::desktop(
             workspace.clone(),
             PathBuf::from("app-data"),
             PathBuf::from("cache"),
@@ -1572,7 +1690,7 @@ mod tests {
             )
             .unwrap(),
             "tauri://localhost".to_owned(),
-            NativeLaunchCredential::generate().unwrap(),
         )
+        .unwrap()
     }
 }

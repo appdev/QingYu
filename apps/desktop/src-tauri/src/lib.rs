@@ -16,6 +16,8 @@ mod kernel_bootstrap;
 #[cfg(desktop)]
 mod kernel_host;
 #[cfg(desktop)]
+mod kernel_process;
+#[cfg(desktop)]
 mod language;
 mod managed_workspace;
 mod markdown_files;
