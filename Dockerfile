@@ -17,6 +17,7 @@ COPY packages/markdown/package.json packages/markdown/package.json
 COPY packages/scripts/package.json packages/scripts/package.json
 COPY packages/shared/package.json packages/shared/package.json
 COPY packages/ui/package.json packages/ui/package.json
+COPY deploy/docker/verify-web-dist.mjs deploy/docker/verify-web-dist.mjs
 
 RUN pnpm install --frozen-lockfile
 
@@ -24,6 +25,7 @@ COPY apps/web apps/web
 COPY packages packages
 
 RUN pnpm --filter @markra/web build
+RUN node deploy/docker/verify-web-dist.mjs apps/web/dist
 
 FROM rust:1.92-bookworm AS kernel-build
 

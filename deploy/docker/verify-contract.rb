@@ -1,11 +1,15 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+require "digest"
 require "shellwords"
 require "yaml"
 
 Instruction = Struct.new(:name, :arguments, :line, keyword_init: true)
 Stage = Struct.new(:base, :alias_name, :instructions, keyword_init: true)
+
+CANONICAL_DOCKERIGNORE_SHA256 =
+  "5b8e84a7e25a385040213570ca7847548e61bba617c0ccbf13c337fd95e04644"
 
 def fail_contract(message)
   warn "FAIL: #{message}"
@@ -94,6 +98,16 @@ def instruction_includes?(stage, name, required_text)
   end
 end
 
+def assert_canonical_stage(stage, expected_base, expected_instructions, message)
+  actual_instructions = stage.instructions.map do |instruction|
+    [instruction.name, instruction.arguments.gsub(/\s+/, " ")]
+  end
+  assert_contract(
+    stage.base == expected_base && actual_instructions == expected_instructions,
+    message
+  )
+end
+
 def verify_dockerfile(path)
   stages = parse_dockerfile(path)
   web_stage = require_stage(
@@ -113,6 +127,14 @@ def verify_dockerfile(path)
     "qingyu-runtime",
     /\Adebian:[^\s]+\z/,
     "Dockerfile must contain one Debian qingyu-runtime stage"
+  )
+
+  assert_contract(
+    stages.length == 3 &&
+      stages[0].equal?(web_stage) &&
+      stages[1].equal?(kernel_stage) &&
+      stages[2].equal?(runtime_stage),
+    "Dockerfile must contain exactly the frozen web-build, kernel-build, and qingyu-runtime stages"
   )
 
   assert_contract(
@@ -217,6 +239,84 @@ def verify_dockerfile(path)
   assert_contract(
     !has_build_time_runtime_input,
     "runtime inputs and data-root overrides must not enter image instructions"
+  )
+
+  assert_canonical_stage(
+    web_stage,
+    "node:24-bookworm-slim",
+    [
+      ["WORKDIR", "/src"],
+      ["RUN", "corepack enable && corepack prepare pnpm@10.30.3 --activate"],
+      ["COPY", "package.json pnpm-lock.yaml pnpm-workspace.yaml ./"],
+      ["COPY", "apps/web/package.json apps/web/package.json"],
+      ["COPY", "packages/app/package.json packages/app/package.json"],
+      ["COPY", "packages/editor/package.json packages/editor/package.json"],
+      ["COPY", "packages/editor-react/package.json packages/editor-react/package.json"],
+      ["COPY", "packages/kernel-client/package.json packages/kernel-client/package.json"],
+      ["COPY", "packages/markdown/package.json packages/markdown/package.json"],
+      ["COPY", "packages/scripts/package.json packages/scripts/package.json"],
+      ["COPY", "packages/shared/package.json packages/shared/package.json"],
+      ["COPY", "packages/ui/package.json packages/ui/package.json"],
+      ["COPY", "deploy/docker/verify-web-dist.mjs deploy/docker/verify-web-dist.mjs"],
+      ["RUN", "pnpm install --frozen-lockfile"],
+      ["COPY", "apps/web apps/web"],
+      ["COPY", "packages packages"],
+      ["RUN", "pnpm --filter @markra/web build"],
+      ["RUN", "node deploy/docker/verify-web-dist.mjs apps/web/dist"]
+    ],
+    "web-build instruction sequence must match the frozen contract"
+  )
+  assert_canonical_stage(
+    kernel_stage,
+    "rust:1.92-bookworm",
+    [
+      ["WORKDIR", "/src"],
+      ["COPY", "apps/kernel/Cargo.toml apps/kernel/Cargo.lock apps/kernel/"],
+      ["COPY", "apps/kernel/src apps/kernel/src"],
+      [
+        "RUN",
+        "cargo build --locked --release --manifest-path apps/kernel/Cargo.toml --bin qingyu-kernel"
+      ]
+    ],
+    "kernel-build instruction sequence must match the frozen contract"
+  )
+  assert_canonical_stage(
+    runtime_stage,
+    "debian:bookworm-slim",
+    [
+      [
+        "RUN",
+        "apt-get update && apt-get install --yes --no-install-recommends ca-certificates " \
+          "&& rm -rf /var/lib/apt/lists/* && groupadd --gid 10001 qingyu " \
+          "&& useradd --uid 10001 --gid 10001 --home-dir /nonexistent " \
+          "--shell /usr/sbin/nologin --no-create-home qingyu " \
+          "&& install -d -o 10001 -g 10001 -m 0700 /data /tmp/qingyu " \
+          "&& install -d -o 0 -g 0 -m 0755 /opt/qingyu/web"
+      ],
+      [
+        "COPY",
+        "--from=kernel-build /src/apps/kernel/target/release/qingyu-kernel " \
+          "/usr/local/bin/qingyu-kernel"
+      ],
+      ["COPY", "--from=web-build /src/apps/web/dist /opt/qingyu/web"],
+      [
+        "COPY",
+        "--chmod=0555 deploy/docker/entrypoint.sh /usr/local/bin/qingyu-server-entrypoint"
+      ],
+      [
+        "LABEL",
+        'dev.qingyu.image.kind="kernel-api-with-unserved-web-assets" ' \
+          'dev.qingyu.image.phase-gate="static-web-serving-required" ' \
+          'dev.qingyu.image.web-assets="/opt/qingyu/web"'
+      ],
+      ["USER", "10001:10001"],
+      ["WORKDIR", "/data"],
+      ["EXPOSE", "3210"],
+      ["STOPSIGNAL", "SIGTERM"],
+      ["HEALTHCHECK", "NONE"],
+      ["ENTRYPOINT", '["/usr/local/bin/qingyu-server-entrypoint"]']
+    ],
+    "qingyu-runtime instruction sequence must match the frozen contract"
   )
 
   stages
@@ -422,6 +522,11 @@ def verify_dockerignore(path, repo_root, stages)
       ".dockerignore excludes required Docker build input: #{relative_path}"
     )
   end
+
+  assert_contract(
+    Digest::SHA256.file(path).hexdigest == CANONICAL_DOCKERIGNORE_SHA256,
+    "Docker build context policy must match the frozen .dockerignore contract"
+  )
 end
 
 repo_root = File.expand_path("../..", __dir__)

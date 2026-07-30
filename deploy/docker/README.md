@@ -21,7 +21,7 @@ Run the packaging check with Ruby/Psych (the YAML parser bundled with Ruby):
 deploy/docker/verify-contract.sh
 ```
 
-The verifier parses Compose as YAML, parses Dockerfile stage boundaries, and verifies the build context denylist. Run its adversarial mutation suite with:
+The verifier parses Compose as YAML and freezes the complete Dockerfile stage instruction sequences plus the complete `.dockerignore` policy. The Web build stage ends by running `verify-web-dist.mjs`; no later instruction may modify `apps/web/dist` before the final image copies that verified layer. The artifact verifier rejects symlinks, non-regular files, executable mode bits, executable binary magic, unsupported extensions, files larger than 16 MiB, and distributions larger than 128 MiB. Run the adversarial contract and artifact mutation suite with:
 
 ```sh
 deploy/docker/test-verify-contract-mutations.sh

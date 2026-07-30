@@ -74,6 +74,21 @@ inspect_built_image() {
     set -eu
     test -x /usr/local/bin/qingyu-kernel
     test -f /opt/qingyu/web/index.html
+    if find /opt/qingyu/web \( -type l -o -type f -perm /111 \) -print -quit | grep -q .; then
+      printf "unexpected symlink or executable Web asset in final image\n" >&2
+      exit 1
+    fi
+    find /opt/qingyu/web -type f -exec sh -c '\''
+      for asset do
+        magic=$(od -An -tx1 -N4 "$asset" | tr -d " \n")
+        case "$magic" in
+          7f454c46|cafebabe|bebafeca|cafebabf|bfbafeca|feedface|cefaedfe|feedfacf|cffaedfe|4d5a*)
+            printf "unexpected executable binary Web asset: %s\n" "$asset" >&2
+            exit 1
+            ;;
+        esac
+      done
+    '\'' sh {} +
     for executable in node nodejs npm pnpm yarn bun corepack; do
       if command -v "$executable" >/dev/null 2>&1; then
         printf "unexpected Node toolchain executable: %s\n" "$executable" >&2
