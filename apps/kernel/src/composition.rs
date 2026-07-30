@@ -10,8 +10,13 @@ use crate::{
         ApiVersion, HostProfile, InstanceId, ReadyHealthResponse, ReadyStatus,
         RuntimeCapabilitiesDto, RuntimeStateDto, StartupState, SystemVersionResponse,
     },
+    documents::{
+        deletion::WorkspaceRecycleDeletionPort,
+        history::{FileDocumentHistoryStore, FileDocumentRecoveryStore},
+        service::WorkspaceDocumentService,
+    },
     host::native::NativeHostWorkspaceState,
-    paths::KernelPaths,
+    paths::{open_or_create_child, KernelPaths},
     ports::KernelPorts,
     runtime::{KernelRuntime, ServiceFailure, SystemApiService},
     services::workspace::WorkspaceService,
@@ -77,6 +82,48 @@ pub async fn compose_fixed_native_kernel(
     runtime
         .install_workspace_api_service(workspace_service)
         .map_err(|_| NativeCompositionError)?;
+    let workspace = runtime
+        .active_workspace_snapshot()
+        .map_err(|_| NativeCompositionError)?;
+    let documents_root = open_or_create_child(
+        &runtime
+            .instance_data_root()
+            .try_clone_dir()
+            .map_err(|_| NativeCompositionError)?,
+        "documents-v1",
+    )
+    .map_err(|_| NativeCompositionError)?;
+    let workspace_documents_root = open_or_create_child(
+        &documents_root,
+        &workspace.workspace().id.as_uuid().to_string(),
+    )
+    .map_err(|_| NativeCompositionError)?;
+    let history_directory = open_or_create_child(&workspace_documents_root, "history")
+        .map_err(|_| NativeCompositionError)?;
+    let recovery_directory = open_or_create_child(&workspace_documents_root, "recovery")
+        .map_err(|_| NativeCompositionError)?;
+    let deletion = Arc::new(
+        WorkspaceRecycleDeletionPort::new(
+            workspace
+                .authority()
+                .root()
+                .try_clone_dir()
+                .map_err(|_| NativeCompositionError)?,
+        )
+        .map_err(|_| NativeCompositionError)?,
+    );
+    let documents_service = Arc::new(
+        WorkspaceDocumentService::new_with_recovery(
+            &runtime,
+            deletion,
+            Arc::new(FileDocumentHistoryStore::new(history_directory)),
+            Arc::new(FileDocumentRecoveryStore::new(recovery_directory)),
+        )
+        .map_err(|_| NativeCompositionError)?,
+    );
+    runtime
+        .install_documents_api_service(documents_service)
+        .map_err(|_| NativeCompositionError)?;
     runtime
         .install_settings_api_service(settings_service)
         .map_err(|_| NativeCompositionError)?;
@@ -128,9 +175,9 @@ impl SystemApiService for NativeSystemService {
             profile: self.profile,
             startup_state: StartupState::Ready,
             capabilities: RuntimeCapabilitiesDto {
-                documents: false,
-                history: false,
-                search: false,
+                documents: true,
+                history: true,
+                search: true,
                 settings: true,
                 sync: false,
                 webdav: false,

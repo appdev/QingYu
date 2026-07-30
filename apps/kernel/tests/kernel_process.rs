@@ -17,6 +17,7 @@ use qingyu_kernel::host::native::{
 const PROCESS_TIMEOUT: Duration = Duration::from_secs(10);
 const IO_TIMEOUT: Duration = Duration::from_secs(2);
 const VALID_CREDENTIAL: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+const ROTATED_CREDENTIAL: &str = "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE";
 
 #[test]
 fn desktop_startup_reports_public_readiness_and_serves_live_probe() {
@@ -166,6 +167,228 @@ fn standalone_process_installs_the_host_committed_workspace_across_restarts() {
         second_readiness["instanceId"]
     );
     assert_eq!(first_workspace, second_workspace);
+}
+
+#[test]
+fn standalone_process_persists_documents_search_and_history_across_restarts() {
+    let (startup, root) = desktop_startup_fixture();
+    let mut first = KernelProcess::spawn(&startup.to_string());
+    let first_readiness: Value =
+        serde_json::from_str(first.read_stdout_line(PROCESS_TIMEOUT).trim()).unwrap();
+    let first_port = u16::try_from(first_readiness["port"].as_u64().unwrap()).unwrap();
+    let workspace = response_json(&authorized_request(
+        first_port,
+        VALID_CREDENTIAL,
+        "GET",
+        "/api/v1/workspace",
+        None,
+    ));
+    let generation = workspace["generation"].as_str().unwrap();
+
+    let runtime = response_json(&authorized_request(
+        first_port,
+        VALID_CREDENTIAL,
+        "GET",
+        "/api/v1/runtime",
+        None,
+    ));
+    assert_eq!(runtime["capabilities"]["documents"], true);
+    assert_eq!(runtime["capabilities"]["history"], true);
+    assert_eq!(runtime["capabilities"]["search"], true);
+
+    let created_response = authorized_request(
+        first_port,
+        VALID_CREDENTIAL,
+        "POST",
+        "/api/v1/documents",
+        Some(&json!({
+            "kind": "file",
+            "workspaceGeneration": generation,
+            "parent": "",
+            "name": "restart.md",
+            "contents": "# Restart\nold-token",
+        })),
+    );
+    assert!(
+        created_response.starts_with("HTTP/1.1 201 Created\r\n"),
+        "{created_response}"
+    );
+    let created = response_json(&created_response);
+    let first_document_id = created["id"].as_str().unwrap();
+    let first_revision = created["revision"].as_str().unwrap();
+
+    let updated_response = authorized_request(
+        first_port,
+        VALID_CREDENTIAL,
+        "PUT",
+        &format!("/api/v1/documents/{first_document_id}"),
+        Some(&json!({
+            "workspaceGeneration": generation,
+            "expectedRevision": first_revision,
+            "contents": "# Restart\nrestart-token",
+        })),
+    );
+    assert!(
+        updated_response.starts_with("HTTP/1.1 200 OK\r\n"),
+        "{updated_response}"
+    );
+    let updated = response_json(&updated_response);
+    let updated_revision = updated["revision"].as_str().unwrap().to_owned();
+    assert_ne!(updated_revision, first_revision);
+
+    let history_response = authorized_request(
+        first_port,
+        VALID_CREDENTIAL,
+        "GET",
+        &format!("/api/v1/documents/{first_document_id}/history?limit=100"),
+        None,
+    );
+    assert!(
+        history_response.starts_with("HTTP/1.1 200 OK\r\n"),
+        "{history_response}"
+    );
+    let history = response_json(&history_response);
+    assert_eq!(history["items"].as_array().unwrap().len(), 1);
+    let snapshot_id = history["items"][0]["snapshotId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(history["items"][0]["revision"], first_revision);
+
+    first.write_shutdown();
+    assert!(first.wait_for_output(PROCESS_TIMEOUT).status.success());
+
+    let mut restarted_startup = startup;
+    restarted_startup["credential"] = json!(ROTATED_CREDENTIAL);
+    let mut second = KernelProcess::spawn(&restarted_startup.to_string());
+    let second_readiness: Value =
+        serde_json::from_str(second.read_stdout_line(PROCESS_TIMEOUT).trim()).unwrap();
+    let second_port = u16::try_from(second_readiness["port"].as_u64().unwrap()).unwrap();
+    assert_ne!(
+        first_readiness["instanceId"],
+        second_readiness["instanceId"]
+    );
+
+    let stale_credential = authorized_request(
+        second_port,
+        VALID_CREDENTIAL,
+        "GET",
+        "/api/v1/documents",
+        None,
+    );
+    assert!(
+        stale_credential.starts_with("HTTP/1.1 401 Unauthorized\r\n"),
+        "{stale_credential}"
+    );
+    let stale_document_id = authorized_request(
+        second_port,
+        ROTATED_CREDENTIAL,
+        "GET",
+        &format!("/api/v1/documents/{first_document_id}"),
+        None,
+    );
+    assert!(
+        stale_document_id.starts_with("HTTP/1.1 404 Not Found\r\n"),
+        "{stale_document_id}"
+    );
+
+    let listed_response = authorized_request(
+        second_port,
+        ROTATED_CREDENTIAL,
+        "GET",
+        "/api/v1/documents?limit=100",
+        None,
+    );
+    assert!(
+        listed_response.starts_with("HTTP/1.1 200 OK\r\n"),
+        "{listed_response}"
+    );
+    let listed = response_json(&listed_response);
+    let restarted_entry = listed["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["path"] == "restart.md")
+        .unwrap();
+    let restarted_document_id = restarted_entry["id"].as_str().unwrap();
+    assert_eq!(restarted_entry["revision"], updated_revision);
+
+    let read_response = authorized_request(
+        second_port,
+        ROTATED_CREDENTIAL,
+        "GET",
+        &format!("/api/v1/documents/{restarted_document_id}"),
+        None,
+    );
+    assert!(
+        read_response.starts_with("HTTP/1.1 200 OK\r\n"),
+        "{read_response}"
+    );
+    let read = response_json(&read_response);
+    assert_eq!(read["contents"], "# Restart\nrestart-token");
+
+    let restarted_history_response = authorized_request(
+        second_port,
+        ROTATED_CREDENTIAL,
+        "GET",
+        &format!("/api/v1/documents/{restarted_document_id}/history?limit=100"),
+        None,
+    );
+    assert!(
+        restarted_history_response.starts_with("HTTP/1.1 200 OK\r\n"),
+        "{restarted_history_response}"
+    );
+    let restarted_history = response_json(&restarted_history_response);
+    assert_eq!(restarted_history["items"][0]["snapshotId"], snapshot_id);
+    assert_eq!(restarted_history["items"][0]["revision"], first_revision);
+    assert_eq!(
+        restarted_history["items"][0]["documentId"],
+        restarted_document_id
+    );
+
+    let search_response = authorized_request(
+        second_port,
+        ROTATED_CREDENTIAL,
+        "GET",
+        "/api/v1/search?query=restart-token&limit=100",
+        None,
+    );
+    assert!(
+        search_response.starts_with("HTTP/1.1 200 OK\r\n"),
+        "{search_response}"
+    );
+    let search = response_json(&search_response);
+    assert_eq!(search["items"][0]["document"]["path"], "restart.md");
+
+    let delete_response = authorized_request(
+        second_port,
+        ROTATED_CREDENTIAL,
+        "POST",
+        &format!("/api/v1/documents/{restarted_document_id}/delete"),
+        Some(&json!({
+            "workspaceGeneration": generation,
+            "expectedRevision": updated_revision,
+            "deletionPolicy": "recoverable",
+        })),
+    );
+    assert!(
+        delete_response.starts_with("HTTP/1.1 204 No Content\r\n"),
+        "{delete_response}"
+    );
+    assert!(response_body(&delete_response).is_empty());
+    assert!(!root.path().join("workspace/restart.md").exists());
+    assert!(root
+        .path()
+        .join("workspace/.qingyu/recycle-bin-v1")
+        .is_dir());
+    let after_delete = response_json(&authorized_request(
+        second_port,
+        ROTATED_CREDENTIAL,
+        "GET",
+        "/api/v1/documents?limit=100",
+        None,
+    ));
+    assert!(after_delete["items"].as_array().unwrap().is_empty());
 }
 
 #[test]
@@ -472,19 +695,42 @@ fn live_probe(port: u16) -> String {
 }
 
 fn authorized_get(port: u16, path: &str) -> String {
+    authorized_request(port, VALID_CREDENTIAL, "GET", path, None)
+}
+
+fn authorized_request(
+    port: u16,
+    credential: &str,
+    method: &str,
+    path: &str,
+    body: Option<&Value>,
+) -> String {
     let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
     stream.set_read_timeout(Some(IO_TIMEOUT)).unwrap();
     stream.set_write_timeout(Some(IO_TIMEOUT)).unwrap();
-    write!(
-        stream,
-        "GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Bearer {VALID_CREDENTIAL}\r\nConnection: close\r\n\r\n"
-    )
-    .unwrap();
+    let body = body.map(serde_json::to_vec).transpose().unwrap();
+    write!(stream, "{method} {path} HTTP/1.1\r\n").unwrap();
+    write!(stream, "Host: 127.0.0.1:{port}\r\n").unwrap();
+    write!(stream, "Authorization: Bearer {credential}\r\n").unwrap();
+    write!(stream, "Origin: tauri://localhost\r\n").unwrap();
+    write!(stream, "Accept: application/json\r\n").unwrap();
+    if let Some(body) = body.as_ref() {
+        write!(stream, "Content-Type: application/json\r\n").unwrap();
+        write!(stream, "Content-Length: {}\r\n", body.len()).unwrap();
+    }
+    write!(stream, "Connection: close\r\n\r\n").unwrap();
+    if let Some(body) = body {
+        stream.write_all(&body).unwrap();
+    }
     stream.flush().unwrap();
 
     let mut response = String::new();
     stream.read_to_string(&mut response).unwrap();
     response
+}
+
+fn response_json(response: &str) -> Value {
+    serde_json::from_str(response_body(response)).unwrap()
 }
 
 fn response_body(response: &str) -> &str {
