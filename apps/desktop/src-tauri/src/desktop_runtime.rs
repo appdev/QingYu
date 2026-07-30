@@ -251,6 +251,7 @@ pub(crate) fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(move |app| {
+            app.manage(crate::kernel_bootstrap::NativeKernelBootstrapOwner::new());
             let startup_language =
                 crate::language::resolve_startup_language(&app.config().identifier);
             let settings_owner = crate::app_settings::KernelSettingsOwner::install(&app.handle())
