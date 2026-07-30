@@ -9,6 +9,7 @@ import {
   isDocumentEntry,
   isDocumentPage,
   isHistoryPage,
+  isHistorySnapshot,
   isLiveHealth,
   isReadyHealth,
   isRuntime,
@@ -76,6 +77,11 @@ export interface KernelDocumentsClient {
     query?: Schemas["PageQuery"],
     options?: KernelRequestOptions,
   ): Promise<Schemas["DocumentHistoryPageDto"]>;
+  getHistory(
+    documentId: Schemas["DocumentId"],
+    snapshotId: Schemas["SnapshotId"],
+    options?: KernelRequestOptions,
+  ): Promise<Schemas["DocumentHistorySnapshotDto"]>;
   restoreHistory(
     documentId: Schemas["DocumentId"],
     snapshotId: Schemas["SnapshotId"],
@@ -216,6 +222,12 @@ export function createKernelClient(options: CreateKernelClientOptions): KernelCl
           query,
           signal: requestOptions?.signal,
         }, { status: 200, validate: isHistoryPage }),
+      getHistory: (documentId, snapshotId, requestOptions) =>
+        transport.request({
+          method: "GET",
+          path: `${documentPath(documentId)}/history/${encodeURIComponent(snapshotId)}`,
+          signal: requestOptions?.signal,
+        }, { status: 200, validate: isHistorySnapshot }),
       restoreHistory: (documentId, snapshotId, request, requestOptions) =>
         transport.request({
           method: "POST",

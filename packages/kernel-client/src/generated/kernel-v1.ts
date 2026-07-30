@@ -63,6 +63,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/documents/{documentId}/history/{snapshotId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getDocumentHistory"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/documents/{documentId}/history/{snapshotId}/restore": {
         parameters: {
             query?: never;
@@ -395,6 +411,14 @@ export interface components {
         DocumentHistoryPageDto: {
             items: components["schemas"]["HistoryEntryDto"][];
             nextCursor: components["schemas"]["Nullable_PageCursor"];
+        };
+        DocumentHistorySnapshotDto: {
+            contents: components["schemas"]["DocumentContents"];
+            createdAt: components["schemas"]["Rfc3339Utc"];
+            documentId: components["schemas"]["DocumentId"];
+            revision: components["schemas"]["Revision"];
+            sizeBytes: components["schemas"]["SafeUnsignedInteger"];
+            snapshotId: components["schemas"]["SnapshotId"];
         };
         DocumentId: string;
         /** @enum {string} */
@@ -1719,6 +1743,157 @@ export interface operations {
                     "application/json": components["schemas"]["ApiErrorEnvelope"] & {
                         /** @enum {string} */
                         code?: "document_not_found";
+                    };
+                };
+            };
+            /** @description Error */
+            423: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "workspace_locked";
+                    };
+                };
+            };
+            /** @description Error */
+            500: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "internal_error";
+                    };
+                };
+            };
+            /** @description Error */
+            503: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "kernel_not_ready" | "workspace_unavailable";
+                    };
+                };
+            };
+        };
+    };
+    getDocumentHistory: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                documentId: components["schemas"]["DocumentId"];
+                snapshotId: components["schemas"]["SnapshotId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Success */
+            200: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DocumentHistorySnapshotDto"];
+                };
+            };
+            /** @description Error */
+            400: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "invalid_request";
+                    };
+                };
+            };
+            /** @description Error */
+            401: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "unauthorized";
+                    };
+                };
+            };
+            /** @description Error */
+            403: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "host_not_allowed" | "origin_not_allowed";
+                    };
+                };
+            };
+            /** @description Error */
+            404: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "document_not_found";
+                    };
+                };
+            };
+            /** @description Error */
+            413: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "document_too_large";
+                    };
+                };
+            };
+            /** @description Error */
+            422: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "document_invalid_encoding";
                     };
                 };
             };

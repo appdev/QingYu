@@ -34,6 +34,11 @@ const HTTP_OPERATIONS: &[(&str, &str, &str)] = &[
         "listDocumentHistory",
     ),
     (
+        "get",
+        "/api/v1/documents/{documentId}/history/{snapshotId}",
+        "getDocumentHistory",
+    ),
+    (
         "post",
         "/api/v1/documents/{documentId}/history/{snapshotId}/restore",
         "restoreDocumentHistory",
@@ -214,7 +219,7 @@ fn assert_optional_non_null(document: &Value, schema: &str, field: &str) {
 }
 
 #[test]
-fn openapi_has_exactly_the_frozen_twenty_one_http_operations() {
+fn openapi_has_exactly_the_frozen_twenty_two_http_operations() {
     let document = api_document();
     let paths = document["paths"].as_object().expect("OpenAPI paths");
     assert!(
@@ -226,7 +231,7 @@ fn openapi_has_exactly_the_frozen_twenty_one_http_operations() {
         .iter()
         .map(|(method, path, operation)| ((*method, *path), *operation))
         .collect();
-    assert_eq!(expected.len(), 21);
+    assert_eq!(expected.len(), 22);
 
     let mut actual = BTreeMap::new();
     for (path, path_item) in paths {

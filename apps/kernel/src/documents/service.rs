@@ -20,10 +20,10 @@ use uuid::Uuid;
 use crate::{
     contract::{
         CreateDocumentRequest, CreatedDocumentDto, DeleteDocumentRequest, DocumentContentDto,
-        DocumentContents, DocumentEntryDto, DocumentHistoryPageDto, DocumentId, DocumentKind,
-        ErrorCode, ErrorDetails, FileDocumentKind, FileDocumentName, HistoryEntryDto,
-        ListDocumentsQuery, MoveDocumentRequest, Nullable, PageCursorContext, PageQuery,
-        PositiveSafeInteger, ResourceRefDto, Revision, Rfc3339Utc, SafeUnsignedInteger,
+        DocumentContents, DocumentEntryDto, DocumentHistoryPageDto, DocumentHistorySnapshotDto,
+        DocumentId, DocumentKind, ErrorCode, ErrorDetails, FileDocumentKind, FileDocumentName,
+        HistoryEntryDto, ListDocumentsQuery, MoveDocumentRequest, Nullable, PageCursorContext,
+        PageQuery, PositiveSafeInteger, ResourceRefDto, Revision, Rfc3339Utc, SafeUnsignedInteger,
         SearchMatchDto, SearchPageDto, SearchWorkspaceQuery, SnapshotId, UpdateDocumentRequest,
         WorkspaceDto, WorkspaceReadiness, WorkspaceRelativePath,
     },
@@ -543,6 +543,35 @@ impl WorkspaceDocumentService {
             Nullable::null()
         };
         Ok(DocumentHistoryPageDto { items, next_cursor })
+    }
+
+    pub async fn get_document_history(
+        &self,
+        document_id: DocumentId,
+        snapshot_id: SnapshotId,
+    ) -> Result<DocumentHistorySnapshotDto, DocumentServiceError> {
+        let context = self.context()?;
+        let path = self.verify_id(&context, &document_id, DocumentKind::File)?;
+        let snapshot = self
+            .history
+            .get(&path, snapshot_id)
+            .map_err(|_| DocumentServiceError::history_unavailable())?
+            .ok_or_else(DocumentServiceError::not_found)?;
+        let size_bytes = SafeUnsignedInteger::new(snapshot.contents.len() as u64)
+            .map_err(|_| DocumentServiceError::too_large())?;
+        let contents = DocumentContents::parse(
+            String::from_utf8(snapshot.contents)
+                .map_err(|_| DocumentServiceError::invalid_encoding())?,
+        )
+        .map_err(|_| DocumentServiceError::too_large())?;
+        Ok(DocumentHistorySnapshotDto {
+            snapshot_id: snapshot.snapshot_id,
+            document_id,
+            created_at: snapshot.created_at,
+            size_bytes,
+            revision: snapshot.revision,
+            contents,
+        })
     }
 
     pub async fn restore_document_history(
@@ -1532,6 +1561,15 @@ impl DocumentsApiService for WorkspaceDocumentService {
         query: PageQuery,
     ) -> Result<DocumentHistoryPageDto, ServiceFailure> {
         WorkspaceDocumentService::list_document_history(self, document_id, query)
+            .await
+            .map_err(service_failure)
+    }
+    async fn get_document_history(
+        &self,
+        document_id: DocumentId,
+        snapshot_id: SnapshotId,
+    ) -> Result<DocumentHistorySnapshotDto, ServiceFailure> {
+        WorkspaceDocumentService::get_document_history(self, document_id, snapshot_id)
             .await
             .map_err(service_failure)
     }

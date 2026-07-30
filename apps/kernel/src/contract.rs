@@ -974,6 +974,17 @@ pub struct DocumentHistoryPageDto {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct DocumentHistorySnapshotDto {
+    pub snapshot_id: SnapshotId,
+    pub document_id: DocumentId,
+    pub created_at: Rfc3339Utc,
+    pub size_bytes: SafeUnsignedInteger,
+    pub revision: Revision,
+    pub contents: DocumentContents,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct RestoreDocumentHistoryRequest {
     pub workspace_generation: WorkspaceGeneration,
     pub expected_revision: Revision,

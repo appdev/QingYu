@@ -54,6 +54,17 @@ export function isHistoryPage(value: unknown): value is Schemas["DocumentHistory
   return page(value, (item) => isRecord(item) && isRfc3339Utc(item.createdAt) && isDocumentId(item.documentId) && isRevision(item.revision) && nonNegative(item.sizeBytes) && isUuid(item.snapshotId) && exact(item, ["createdAt", "documentId", "revision", "sizeBytes", "snapshotId"]));
 }
 
+export function isHistorySnapshot(value: unknown): value is Schemas["DocumentHistorySnapshotDto"] {
+  return isRecord(value) &&
+    isContents(value.contents) &&
+    isRfc3339Utc(value.createdAt) &&
+    isDocumentId(value.documentId) &&
+    isRevision(value.revision) &&
+    nonNegative(value.sizeBytes) &&
+    isUuid(value.snapshotId) &&
+    exact(value, ["contents", "createdAt", "documentId", "revision", "sizeBytes", "snapshotId"]);
+}
+
 export function isSyncConnection(value: unknown): value is Schemas["SyncConnectionTestDto"] {
   return isRecord(value) && typeof value.checkedTarget === "string" && isRevision(value.configRevision) && (value.provider === "s3" || value.provider === "webdav") && exact(value, ["checkedTarget", "configRevision", "provider"]);
 }

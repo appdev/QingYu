@@ -15,13 +15,14 @@ use crate::{
     config::{KernelConfig, KernelLaunchEpoch},
     contract::{
         CreateDocumentRequest, CreatedDocumentDto, DeleteDocumentRequest, DocumentContentDto,
-        DocumentHistoryPageDto, DocumentId, DocumentPageDto, ErrorCode, ErrorDetails, HostProfile,
-        InstanceId, ListDocumentsQuery, MoveDocumentRequest, PageQuery, PatchSettingsRequest,
-        PatchSyncConfigRequest, ReadyHealthResponse, RestoreDocumentHistoryRequest, Revision,
-        Rfc3339Utc, SearchPageDto, SearchWorkspaceQuery, SettingsSnapshotDto, SnapshotId,
-        SyncConfigViewDto, SyncConnectionTestDto, SyncRunAcceptedDto, SyncStatusDto, SyncTrigger,
-        SystemVersionResponse, TestSyncConnectionRequest, TriggerSyncRunRequest,
-        UpdateDocumentRequest, WireIdentityKey, WorkspaceDto,
+        DocumentHistoryPageDto, DocumentHistorySnapshotDto, DocumentId, DocumentPageDto, ErrorCode,
+        ErrorDetails, HostProfile, InstanceId, ListDocumentsQuery, MoveDocumentRequest, PageQuery,
+        PatchSettingsRequest, PatchSyncConfigRequest, ReadyHealthResponse,
+        RestoreDocumentHistoryRequest, Revision, Rfc3339Utc, SearchPageDto, SearchWorkspaceQuery,
+        SettingsSnapshotDto, SnapshotId, SyncConfigViewDto, SyncConnectionTestDto,
+        SyncRunAcceptedDto, SyncStatusDto, SyncTrigger, SystemVersionResponse,
+        TestSyncConnectionRequest, TriggerSyncRunRequest, UpdateDocumentRequest, WireIdentityKey,
+        WorkspaceDto,
     },
     error::{safe_error_envelope, safe_message_for_error_code},
     events::{EventBroker, EventPublication, EventSink, EventSinkError},
@@ -2440,6 +2441,11 @@ pub trait DocumentsApiService: Send + Sync {
         document_id: DocumentId,
         query: PageQuery,
     ) -> Result<DocumentHistoryPageDto, ServiceFailure>;
+    async fn get_document_history(
+        &self,
+        document_id: DocumentId,
+        snapshot_id: SnapshotId,
+    ) -> Result<DocumentHistorySnapshotDto, ServiceFailure>;
     async fn restore_document_history(
         &self,
         document_id: DocumentId,

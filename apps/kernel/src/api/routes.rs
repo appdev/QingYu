@@ -39,6 +39,7 @@ enum ServiceOperation {
     MoveDocument,
     DeleteDocument,
     ListDocumentHistory,
+    GetDocumentHistory,
     RestoreDocumentHistory,
     SearchWorkspace,
     GetSettings,
@@ -73,6 +74,10 @@ pub(crate) fn router() -> Router<ApiState> {
         .route(
             "/api/v1/documents/{document_id}/history",
             get(list_document_history),
+        )
+        .route(
+            "/api/v1/documents/{document_id}/history/{snapshot_id}",
+            get(get_document_history),
         )
         .route(
             "/api/v1/documents/{document_id}/history/{snapshot_id}/restore",
@@ -282,6 +287,23 @@ async fn list_document_history(
         service.list_document_history(document_id, query).await,
         StatusCode::OK,
         ServiceOperation::ListDocumentHistory,
+    )
+}
+
+async fn get_document_history(
+    State(state): State<ApiState>,
+    path: Result<Path<(DocumentId, SnapshotId)>, PathRejection>,
+) -> Response {
+    let Ok(Path((document_id, snapshot_id))) = path else {
+        return api_error(ErrorCode::InvalidRequest, None);
+    };
+    let Some(service) = runtime(&state).documents_api_service() else {
+        return unavailable(ServiceOperation::GetDocumentHistory);
+    };
+    service_response(
+        service.get_document_history(document_id, snapshot_id).await,
+        StatusCode::OK,
+        ServiceOperation::GetDocumentHistory,
     )
 }
 
@@ -672,6 +694,15 @@ impl ServiceOperation {
                 E::InvalidRequest,
                 E::DocumentNotFound,
             ],
+            Self::GetDocumentHistory => &[
+                E::KernelNotReady,
+                E::WorkspaceUnavailable,
+                E::WorkspaceLocked,
+                E::InvalidRequest,
+                E::DocumentNotFound,
+                E::DocumentTooLarge,
+                E::DocumentInvalidEncoding,
+            ],
             Self::RestoreDocumentHistory => &[
                 E::KernelNotReady,
                 E::WorkspaceUnavailable,
@@ -726,6 +757,7 @@ impl ServiceOperation {
             | Self::MoveDocument
             | Self::DeleteDocument
             | Self::ListDocumentHistory
+            | Self::GetDocumentHistory
             | Self::RestoreDocumentHistory
             | Self::SearchWorkspace => ErrorCode::KernelNotReady,
             Self::GetSettings | Self::PatchSettings => ErrorCode::SettingsUnavailable,

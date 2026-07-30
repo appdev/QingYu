@@ -78,6 +78,11 @@ describe("createKernelClient", () => {
       { cursor: "history-cursor", limit: 5 },
       { signal },
     );
+    await client.documents.getHistory(
+      "document/1",
+      "snapshot/1",
+      { signal },
+    );
     await client.documents.restoreHistory(
       "document/1",
       "snapshot/1",
@@ -124,6 +129,7 @@ describe("createKernelClient", () => {
       "POST /api/v1/documents/document%2F1/move",
       "POST /api/v1/documents/document%2F1/delete",
       "GET /api/v1/documents/document%2F1/history?cursor=history-cursor&limit=5",
+      "GET /api/v1/documents/document%2F1/history/snapshot%2F1",
       "POST /api/v1/documents/document%2F1/history/snapshot%2F1/restore",
       "GET /api/v1/settings",
       "PATCH /api/v1/settings",
@@ -143,10 +149,10 @@ describe("createKernelClient", () => {
     expect(JSON.parse(String(calls[9]?.init.body))).toMatchObject({
       expectedRevision: "revision-1",
     });
-    expect(JSON.parse(String(calls[15]?.init.body))).toMatchObject({
+    expect(JSON.parse(String(calls[16]?.init.body))).toMatchObject({
       expectedRevision: "settings-1",
     });
-    expect(JSON.parse(String(calls[20]?.init.body))).toMatchObject({
+    expect(JSON.parse(String(calls[21]?.init.body))).toMatchObject({
       expectedConfigRevision: "sync-3",
     });
   });
@@ -422,6 +428,7 @@ function operationCalls(client: KernelClient): Array<() => Promise<unknown>> {
         deletionPolicy: "recoverable",
       }),
     () => client.documents.listHistory(documentId),
+    () => client.documents.getHistory(documentId, "snapshot-1"),
     () => client.documents.restoreHistory(documentId, "snapshot-1", request),
     () => client.settings.get(),
     () =>
@@ -450,6 +457,14 @@ const ENTRY = {
   sizeBytes: 4,
 };
 const CONTENT = { ...ENTRY, contents: "note" };
+const HISTORY_SNAPSHOT = {
+  contents: "previous note",
+  createdAt: "2026-01-01T00:00:00Z",
+  documentId: "payload.signature",
+  revision: "revision-0",
+  sizeBytes: 13,
+  snapshotId: UUID,
+};
 const SETTINGS = { revision: "settings-1", values: [] };
 const SYNC_CONFIG = {
   configured: true,
@@ -496,6 +511,9 @@ function operationResponseWithoutRequestId(path: string, method: string) {
   if (path === "/api/v1/documents" && method === "POST") return Response.json(CONTENT, { status: 201 });
   if (path.endsWith("/delete")) return new Response(null, { status: 204 });
   if (path.endsWith("/history")) return Response.json({ items: [], nextCursor: null });
+  if (path.includes("/history/") && !path.endsWith("/restore")) {
+    return Response.json(HISTORY_SNAPSHOT);
+  }
   if (path.includes("/documents/")) return Response.json(path.endsWith("/move") ? ENTRY : CONTENT);
   if (path === "/api/v1/settings") return Response.json(SETTINGS);
   if (path === "/api/v1/sync/config") return Response.json(SYNC_CONFIG);

@@ -914,6 +914,17 @@ async fn moving_a_document_preserves_history_under_the_new_document_identity() {
         .await
         .unwrap();
     assert_eq!(history.items.len(), 1);
+    let preview = fixture
+        .service
+        .get_document_history(moved.id.clone(), history.items[0].snapshot_id)
+        .await
+        .unwrap();
+    assert_eq!(preview.snapshot_id, history.items[0].snapshot_id);
+    assert_eq!(preview.document_id, moved.id);
+    assert_eq!(preview.created_at, history.items[0].created_at);
+    assert_eq!(preview.size_bytes, history.items[0].size_bytes);
+    assert_eq!(preview.revision, history.items[0].revision);
+    assert_eq!(preview.contents.as_str(), "first");
     let restored = fixture
         .service
         .restore_document_history(
@@ -1441,6 +1452,34 @@ async fn direct_and_http_adapters_return_the_same_dto_and_safe_error_code() {
     let http_history: qingyu_kernel::contract::DocumentHistoryPageDto =
         serde_json::from_slice(&bytes).unwrap();
     assert_eq!(http_history, direct_history);
+
+    let snapshot_id = http_history.items[0].snapshot_id;
+    let direct_preview = DocumentsApiService::get_document_history(
+        fixture.service.as_ref(),
+        document_id.clone(),
+        snapshot_id,
+    )
+    .await
+    .unwrap();
+    let request = Request::builder()
+        .method("GET")
+        .uri(format!(
+            "/api/v1/documents/{}/history/{}",
+            document_id.as_str(),
+            snapshot_id.as_uuid()
+        ))
+        .header(header::HOST, "127.0.0.1:43123")
+        .header(header::AUTHORIZATION, format!("Bearer {credential}"))
+        .body(Body::empty())
+        .unwrap();
+    let response = router.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = to_bytes(response.into_body(), 2 * 1024 * 1024)
+        .await
+        .unwrap();
+    let http_preview: qingyu_kernel::contract::DocumentHistorySnapshotDto =
+        serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(http_preview, direct_preview);
 
     let direct_write_error = DocumentsApiService::update_document(
         fixture.service.as_ref(),

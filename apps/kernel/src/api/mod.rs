@@ -18,15 +18,15 @@ use crate::{
     contract::{
         ApiErrorEnvelope, ConnectionId, CreateDocumentRequest, CreatedDocumentDto,
         DeleteDocumentRequest, DocumentContentDto, DocumentContents, DocumentEntryDto,
-        DocumentHistoryPageDto, DocumentId, DocumentPageDto, DomainEvent, ErrorCode, ErrorDetails,
-        EventSequence, GapReason, InstanceId, ListDocumentsQuery, LiveHealthResponse,
-        MoveDocumentRequest, PageQuery, PatchSettingsRequest, PatchSyncConfigRequest,
-        ProtocolVersion, ReadyHealthResponse, ReadySequence, ReloadScope, RequestId,
-        ResourceRefDto, RestoreDocumentHistoryRequest, Revision, SearchPageDto,
-        SearchWorkspaceQuery, ServerFrame, SettingsSnapshotDto, SnapshotRequired,
-        SyncConfigViewDto, SyncConnectionTestDto, SyncRunAcceptedDto, SyncSafeErrorDto,
-        SyncStatusDto, SystemVersionResponse, TestSyncConnectionRequest, TriggerSyncRunRequest,
-        UpdateDocumentRequest, WorkspaceDto,
+        DocumentHistoryPageDto, DocumentHistorySnapshotDto, DocumentId, DocumentPageDto,
+        DomainEvent, ErrorCode, ErrorDetails, EventSequence, GapReason, InstanceId,
+        ListDocumentsQuery, LiveHealthResponse, MoveDocumentRequest, PageQuery,
+        PatchSettingsRequest, PatchSyncConfigRequest, ProtocolVersion, ReadyHealthResponse,
+        ReadySequence, ReloadScope, RequestId, ResourceRefDto, RestoreDocumentHistoryRequest,
+        Revision, SearchPageDto, SearchWorkspaceQuery, ServerFrame, SettingsSnapshotDto,
+        SnapshotRequired, SyncConfigViewDto, SyncConnectionTestDto, SyncRunAcceptedDto,
+        SyncSafeErrorDto, SyncStatusDto, SystemVersionResponse, TestSyncConnectionRequest,
+        TriggerSyncRunRequest, UpdateDocumentRequest, WorkspaceDto,
     },
     error::{http_status_for_error_code, safe_error_envelope},
     runtime::KernelRuntime,
@@ -254,6 +254,11 @@ fn route_accepts_method(path: &str, method: &Method) -> bool {
             ["", "api", "v1", "documents", document_id, "history"] if !document_id.is_empty() => {
                 &[Method::GET]
             }
+            ["", "api", "v1", "documents", document_id, "history", snapshot_id]
+                if !document_id.is_empty() && !snapshot_id.is_empty() =>
+            {
+                &[Method::GET]
+            }
             ["", "api", "v1", "documents", document_id, "history", snapshot_id, "restore"]
                 if !document_id.is_empty() && !snapshot_id.is_empty() =>
             {
@@ -387,6 +392,7 @@ impl std::error::Error for OpenApiExportError {}
         MoveDocumentRequest,
         DeleteDocumentRequest,
         DocumentHistoryPageDto,
+        DocumentHistorySnapshotDto,
         RestoreDocumentHistoryRequest,
         SearchWorkspaceQuery,
         SearchPageDto,
@@ -753,6 +759,14 @@ fn install_paths(document: &mut serde_json::Value) {
             true,
         ),
         (
+            "get",
+            "/api/v1/documents/{documentId}/history/{snapshotId}",
+            "getDocumentHistory",
+            "200",
+            "DocumentHistorySnapshotDto",
+            true,
+        ),
+        (
             "post",
             "/api/v1/documents/{documentId}/history/{snapshotId}/restore",
             "restoreDocumentHistory",
@@ -885,6 +899,7 @@ fn install_operation_inputs(document: &mut serde_json::Value) {
         ("/api/v1/documents/{documentId}/move", "post"),
         ("/api/v1/documents/{documentId}/delete", "post"),
         ("/api/v1/documents/{documentId}/history", "get"),
+        ("/api/v1/documents/{documentId}/history/{snapshotId}", "get"),
         (
             "/api/v1/documents/{documentId}/history/{snapshotId}/restore",
             "post",
@@ -937,6 +952,15 @@ fn install_operation_inputs(document: &mut serde_json::Value) {
             ("cursor", "PageCursor", false),
             ("limit", "PageLimit", false),
         ],
+    );
+    push_parameter(
+        document,
+        "/api/v1/documents/{documentId}/history/{snapshotId}",
+        "get",
+        "snapshotId",
+        "path",
+        "SnapshotId",
+        true,
     );
     push_parameter(
         document,
@@ -1134,6 +1158,16 @@ fn install_operation_errors(document: &mut serde_json::Value) {
             "/api/v1/documents/{documentId}/history",
             "get",
             &["invalid_request", "document_not_found"][..],
+        ),
+        (
+            "/api/v1/documents/{documentId}/history/{snapshotId}",
+            "get",
+            &[
+                "invalid_request",
+                "document_not_found",
+                "document_too_large",
+                "document_invalid_encoding",
+            ][..],
         ),
         (
             "/api/v1/documents/{documentId}/history/{snapshotId}/restore",

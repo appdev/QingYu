@@ -14,14 +14,14 @@ use qingyu_kernel::{
     contract::{
         ApiErrorEnvelope, ApiVersion, CreateDocumentRequest, CreatedDocumentDto,
         DeleteDocumentRequest, DocumentContentDto, DocumentEntryDto, DocumentHistoryPageDto,
-        DocumentId, DocumentKind, DocumentPageDto, ErrorCode, ErrorDetails, ListDocumentsQuery,
-        MoveDocumentRequest, PageQuery, PatchSettingsRequest, ReadyHealthResponse, ReadyStatus,
-        RestoreDocumentHistoryRequest, Revision, RuntimeCapabilitiesDto, RuntimeStateDto,
-        SearchPageDto, SearchWorkspaceQuery, SettingsSnapshotDto, SnapshotId, StartupState,
-        SyncConfigViewDto, SyncConnectionTestDto, SyncRunAcceptedDto, SyncStatusDto,
-        SystemVersionResponse, TestSyncConnectionRequest, TriggerSyncRunRequest,
-        UpdateDocumentRequest, WorkspaceDto, WorkspaceGeneration, WorkspaceId, WorkspaceReadiness,
-        WorkspaceRelativePath,
+        DocumentHistorySnapshotDto, DocumentId, DocumentKind, DocumentPageDto, ErrorCode,
+        ErrorDetails, ListDocumentsQuery, MoveDocumentRequest, PageQuery, PatchSettingsRequest,
+        ReadyHealthResponse, ReadyStatus, RestoreDocumentHistoryRequest, Revision,
+        RuntimeCapabilitiesDto, RuntimeStateDto, SearchPageDto, SearchWorkspaceQuery,
+        SettingsSnapshotDto, SnapshotId, StartupState, SyncConfigViewDto, SyncConnectionTestDto,
+        SyncRunAcceptedDto, SyncStatusDto, SystemVersionResponse, TestSyncConnectionRequest,
+        TriggerSyncRunRequest, UpdateDocumentRequest, WorkspaceDto, WorkspaceGeneration,
+        WorkspaceId, WorkspaceReadiness, WorkspaceRelativePath,
     },
     paths::KernelPaths,
     ports::KernelPorts,
@@ -135,6 +135,14 @@ impl DocumentsApiService for TestDocumentsService {
         _document_id: DocumentId,
         _query: PageQuery,
     ) -> Result<DocumentHistoryPageDto, ServiceFailure> {
+        unreachable!("not used by this transport fixture")
+    }
+
+    async fn get_document_history(
+        &self,
+        _document_id: DocumentId,
+        _snapshot_id: SnapshotId,
+    ) -> Result<DocumentHistorySnapshotDto, ServiceFailure> {
         unreachable!("not used by this transport fixture")
     }
 
