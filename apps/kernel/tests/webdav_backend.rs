@@ -1,27 +1,10 @@
-mod ports {
-    pub use qingyu_kernel::ports::*;
-}
-
-mod protected_paths {
-    pub use qingyu_kernel::protected_paths::*;
-}
-
-mod sync {
-    pub mod backend {
-        pub use qingyu_kernel::sync::backend::*;
-    }
-
-    pub mod execution {
-        pub use qingyu_kernel::sync::execution::*;
-    }
-}
-
-#[path = "../src/sync/webdav_backend.rs"]
-mod webdav_backend;
-
-use ports::CredentialSecret;
-use sync::backend::{RemoteSyncBackend, ValidRemoteRoot};
-use webdav_backend::{WebDavBackend, WebDavSyncSettings};
+use qingyu_kernel::{
+    ports::CredentialSecret,
+    sync::{
+        backend::{RemoteSyncBackend, ValidRemoteRoot},
+        webdav_backend::{WebDavBackend, WebDavSyncSettings},
+    },
+};
 
 fn spawn_webdav_fixture(
     responses: Vec<String>,
@@ -134,13 +117,18 @@ async fn connect_creates_encoded_root_and_lists_remote_files() {
     ];
     let (server_url, requests, handle) = spawn_webdav_fixture(responses);
     let backend = WebDavBackend::connect(WebDavSyncSettings::new(
-        server_url,
+        server_url.clone(),
         "alice",
         CredentialSecret::new("private-password"),
         ValidRemoteRoot::parse("qingyu/team notes/notes").unwrap(),
     ))
     .await
     .expect("existing or newly created WebDAV root should connect");
+
+    let debug = format!("{backend:?}");
+    assert!(debug.contains("[REDACTED]"));
+    assert!(!debug.contains(&server_url));
+    assert!(!debug.contains("private-password"));
 
     let files = backend.list_files().await.expect("listing should succeed");
     handle.join().expect("fixture should finish");
@@ -283,6 +271,7 @@ async fn download_fails_closed_when_get_identity_differs_from_metadata_probe() {
         "private-user",
         "private-password",
         replacement_body,
+        "draft.md",
     ] {
         assert!(
             !error.to_string().contains(forbidden),

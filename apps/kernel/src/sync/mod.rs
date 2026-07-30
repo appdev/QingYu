@@ -15,3 +15,4 @@ pub mod scope;
 pub mod service;
 pub mod settings_scope;
 pub mod status;
+pub mod webdav_backend;

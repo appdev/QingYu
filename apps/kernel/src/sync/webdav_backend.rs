@@ -118,7 +118,7 @@ impl fmt::Debug for WebDavBackend {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("WebDavBackend")
-            .field("root_url", &self.root_url)
+            .field("root_url", &"[REDACTED]")
             .field("settings", &self.settings)
             .finish_non_exhaustive()
     }
@@ -869,24 +869,22 @@ fn unsafe_remote_path_error() -> RemoteSyncError {
 }
 
 fn request_error(action: &str, method: &str, relative_path: &str) -> RemoteSyncError {
+    let _ = relative_path;
     RemoteSyncError::unclassified(format!(
-        "webdav-transport-failed: WebDAV {action} failed: {method} {}: request failed.",
-        diagnostic_path(relative_path)
+        "webdav-transport-failed: WebDAV {action} failed: {method}: request failed."
     ))
 }
 
 fn status_error(action: &str, method: &str, relative_path: &str, status: u16) -> RemoteSyncError {
+    let _ = relative_path;
     RemoteSyncError::unclassified(format!(
-        "webdav-http-failed: WebDAV {action} failed: {method} {}: HTTP {status}.",
-        diagnostic_path(relative_path)
+        "webdav-http-failed: WebDAV {action} failed: {method}: HTTP {status}."
     ))
 }
 
 fn remote_changed_error(relative_path: &str) -> RemoteSyncError {
-    RemoteSyncError::unclassified(format!(
-        "webdav-remote-changed: Remote sync file changed during sync: {}.",
-        diagnostic_path(relative_path)
-    ))
+    let _ = relative_path;
+    RemoteSyncError::unclassified("webdav-remote-changed: Remote sync file changed during sync.")
 }
 
 fn diagnostic_path(path: &str) -> String {
