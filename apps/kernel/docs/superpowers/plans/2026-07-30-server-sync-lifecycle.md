@@ -137,12 +137,12 @@
 
 **Integration check:** Focused blocking-executor shutdown tests, binary shutdown tests, then all Kernel tests.
 
-- [x] Add a blocking-executor test proving shutdown rejects new triggers, signals cancellation, and waits for settlement; run and observe the missing shutdown API.
-- [x] Add a restart-after-drain test proving instance/workspace locks release.
-- [x] Add binary orchestration tests proving HTTP and Kernel futures both drain and one deadline bounds them.
-- [x] Implement close/cancel/wait state transitions and explicit Server lifecycle ownership.
-- [x] Re-run scheduler, sync lifecycle, Server composition, and binary tests.
-- [x] Commit the shutdown layer.
+- [ ] Add a blocking-executor test proving shutdown rejects new triggers, signals cancellation, and waits for settlement; run and observe the missing shutdown API.
+- [ ] Add a restart-after-drain test proving instance/workspace locks release.
+- [ ] Add binary orchestration tests proving HTTP and Kernel futures both drain and one deadline bounds them.
+- [ ] Implement close/cancel/wait state transitions and explicit Server lifecycle ownership.
+- [ ] Re-run scheduler, sync lifecycle, Server composition, and binary tests.
+- [ ] Commit the shutdown layer.
 
 ### Task 4: Combined verification and review
 
@@ -167,8 +167,8 @@
 
 **Integration check:** `cargo test --manifest-path apps/kernel/Cargo.toml --locked --all-targets --all-features --no-fail-fast`, clippy with warnings denied, and fmt check.
 
-- [x] Run `cargo fmt --manifest-path apps/kernel/Cargo.toml -- --check`.
-- [x] Run all Kernel tests with all targets/features.
-- [x] Run Kernel clippy with `-D warnings`.
-- [x] Review `git diff --check`, changed paths, credential handling, and shutdown ordering.
-- [x] Report layer SHAs and exact verification output.
+- [ ] Run `cargo fmt --manifest-path apps/kernel/Cargo.toml -- --check`.
+- [ ] Run all Kernel tests with all targets/features.
+- [ ] Run Kernel clippy with `-D warnings`.
+- [ ] Review `git diff --check`, changed paths, credential handling, and shutdown ordering.
+- [ ] Report layer SHAs and exact verification output.
