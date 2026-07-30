@@ -20,8 +20,9 @@ use qingyu_kernel::{
 use tokio::sync::oneshot;
 
 use crate::kernel_host::{
-    KernelHostFailure, KernelOwnership, KernelProcessFactory, NativeKernelCredentialLease,
-    NativeKernelLaunch, PendingKernel, ReadyEvidence, RunningKernel, SynchronousKernelGuard,
+    KernelHostFailure, KernelOwnership, KernelProcessFactory, KernelSpawnPermit,
+    NativeKernelCredentialLease, NativeKernelLaunch, PendingKernel, ReadyEvidence, RunningKernel,
+    SynchronousKernelGuard,
 };
 
 const STDERR_TAIL_LIMIT: usize = 8 * 1024;
@@ -55,9 +56,10 @@ impl KernelProcessFactory for NativeKernelProcessFactory {
     fn spawn(
         &self,
         launch: NativeKernelLaunch,
-        generation: u64,
+        permit: KernelSpawnPermit,
         ownership: &KernelOwnership,
     ) -> Result<Box<dyn PendingKernel>, KernelHostFailure> {
+        let generation = permit.into_generation();
         let permit = ownership.begin_spawn(generation)?;
         let (startup, credential) = launch.into_parts();
         let mut child = Command::new(&self.executable)

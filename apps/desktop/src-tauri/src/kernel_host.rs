@@ -39,9 +39,27 @@ pub(crate) trait KernelProcessFactory: Send + Sync + 'static {
     fn spawn(
         &self,
         launch: NativeKernelLaunch,
-        generation: u64,
+        permit: KernelSpawnPermit,
         ownership: &KernelOwnership,
     ) -> Result<Box<dyn PendingKernel>, KernelHostFailure>;
+}
+
+/// Single-use proof that writer authority was published before an OS spawn.
+///
+/// The constructor and generation field are private to this module. Process
+/// factories can consume this proof, but production siblings cannot mint one.
+pub(crate) struct KernelSpawnPermit {
+    generation: u64,
+}
+
+impl KernelSpawnPermit {
+    fn new(generation: u64) -> Self {
+        Self { generation }
+    }
+
+    pub(crate) fn into_generation(self) -> u64 {
+        self.generation
+    }
 }
 
 pub(crate) struct NativeKernelLaunch {
@@ -212,7 +230,7 @@ impl KernelOwnership {
     pub(crate) fn begin_spawn(
         &self,
         generation: u64,
-    ) -> Result<KernelSpawnPermit<'_>, KernelHostFailure> {
+    ) -> Result<KernelOwnershipPermit<'_>, KernelHostFailure> {
         let state = self.state.lock().map_err(|_| KernelHostFailure::Spawn)?;
         if state.closed {
             return Err(KernelHostFailure::Cancelled);
@@ -220,7 +238,7 @@ impl KernelOwnership {
         if state.active.is_some() {
             return Err(KernelHostFailure::Busy);
         }
-        Ok(KernelSpawnPermit { generation, state })
+        Ok(KernelOwnershipPermit { generation, state })
     }
 
     fn owns(&self, generation: u64) -> bool {
@@ -265,12 +283,12 @@ impl KernelOwnership {
     }
 }
 
-pub(crate) struct KernelSpawnPermit<'a> {
+pub(crate) struct KernelOwnershipPermit<'a> {
     generation: u64,
     state: MutexGuard<'a, KernelOwnershipState>,
 }
 
-impl KernelSpawnPermit<'_> {
+impl KernelOwnershipPermit<'_> {
     pub(crate) fn register(mut self, guard: Arc<dyn SynchronousKernelGuard>) {
         self.state.active = Some(OwnedKernelGuard {
             generation: self.generation,
@@ -887,8 +905,19 @@ async fn spawn_transition(
             return StartOutcome::Closed;
         }
     }
+    if Instant::now() >= startup_deadline {
+        writer_gate.fail_closed();
+        publish_failure(
+            snapshots,
+            bootstrap,
+            generation,
+            KernelHostFailure::StartupTimeout,
+        );
+        return StartOutcome::Failed(KernelHostFailure::StartupTimeout);
+    }
     let plan = launch.recovery_plan();
-    let mut pending = match factory.spawn(launch, generation, ownership) {
+    let spawn_permit = KernelSpawnPermit::new(generation);
+    let mut pending = match factory.spawn(launch, spawn_permit, ownership) {
         Ok(pending) => pending,
         Err(error) => {
             publish_failure(snapshots, bootstrap, generation, error);
@@ -898,6 +927,14 @@ async fn spawn_transition(
     if !ownership.owns(generation) {
         publish_failure(snapshots, bootstrap, generation, KernelHostFailure::Spawn);
         return StartOutcome::Failed(KernelHostFailure::Spawn);
+    }
+    if Instant::now() >= startup_deadline {
+        let reported = cleanup_pending(&mut *pending, ownership, generation, timeouts)
+            .await
+            .err()
+            .unwrap_or(KernelHostFailure::StartupTimeout);
+        publish_failure(snapshots, bootstrap, generation, reported);
+        return StartOutcome::Failed(reported);
     }
 
     enum StartWait {
@@ -919,8 +956,8 @@ async fn spawn_transition(
                     Some(response) => break StartWait::Stop(response),
                     None => break StartWait::Closed,
                 },
-                result = &mut ready => break StartWait::Ready(result),
                 _expired = &mut deadline => break StartWait::Timeout,
+                result = &mut ready => break StartWait::Ready(result),
                 command = starts.recv() => match command {
                     Some(StartCommand { response, .. }) => {
                         let _send_result = response.send(Err(KernelHostFailure::Busy));
@@ -1039,13 +1076,19 @@ async fn wait_for_writer_publication_before_spawn(
             }
             Err(mpsc::error::TryRecvError::Empty) => {}
         }
-        match writer_gate.try_publish(generation) {
-            Ok(true) => return WriterPublicationWait::Published,
-            Ok(false) => {}
-            Err(_) => return WriterPublicationWait::Failed,
-        }
         if Instant::now() >= startup_deadline {
             return WriterPublicationWait::Timeout;
+        }
+        match writer_gate.try_publish(generation) {
+            Ok(true) => {
+                return if Instant::now() >= startup_deadline {
+                    WriterPublicationWait::Timeout
+                } else {
+                    WriterPublicationWait::Published
+                };
+            }
+            Ok(false) => {}
+            Err(_) => return WriterPublicationWait::Failed,
         }
         let retry = sleep(Duration::from_millis(5));
         let deadline = sleep_until(startup_deadline);
@@ -1429,6 +1472,7 @@ mod tests {
             atomic::{AtomicBool, AtomicUsize, Ordering},
             Mutex,
         },
+        thread,
         time::Duration,
     };
 
@@ -1442,6 +1486,40 @@ mod tests {
         KernelGeneration, KernelWriterPublicationGate, WorkspaceRootIdentity, WriterAuthority,
         WriterAuthorityError, WriterAuthorityState,
     };
+
+    macro_rules! assert_not_impl_any {
+        ($type:ty: $($trait:path),+ $(,)?) => {
+            const _: fn() = || {
+                trait AmbiguousIfImpl<Marker> {
+                    fn marker() {}
+                }
+                impl<Value: ?Sized> AmbiguousIfImpl<()> for Value {}
+                $({
+                    struct EscapeTrait;
+                    impl<Value: ?Sized + $trait> AmbiguousIfImpl<EscapeTrait> for Value {}
+                })+
+                let _ = <$type as AmbiguousIfImpl<_>>::marker;
+            };
+        };
+    }
+
+    assert_not_impl_any!(KernelSpawnPermit: Clone, Copy);
+
+    #[test]
+    fn production_mints_spawn_permit_only_at_the_supervisor_spawn_boundary() {
+        let production_host = include_str!("kernel_host.rs")
+            .split("#[cfg(test)]\nmod tests")
+            .next()
+            .expect("production Kernel host source should precede its tests");
+        let process_driver = include_str!("kernel_process.rs");
+
+        assert_eq!(
+            production_host.matches("KernelSpawnPermit::new(").count(),
+            1
+        );
+        assert!(!process_driver.contains("KernelSpawnPermit::new("));
+        assert!(!process_driver.contains("KernelSpawnPermit {"));
+    }
 
     #[derive(Clone, Copy)]
     enum AsyncAction {
@@ -1547,9 +1625,10 @@ mod tests {
         fn spawn(
             &self,
             launch: NativeKernelLaunch,
-            generation: u64,
+            permit: KernelSpawnPermit,
             ownership: &KernelOwnership,
         ) -> Result<Box<dyn PendingKernel>, KernelHostFailure> {
+            let generation = permit.into_generation();
             self.spawn_count.fetch_add(1, Ordering::SeqCst);
             let script = self
                 .scripts
@@ -1596,12 +1675,41 @@ mod tests {
         fn spawn(
             &self,
             launch: NativeKernelLaunch,
-            generation: u64,
+            permit: KernelSpawnPermit,
             ownership: &KernelOwnership,
         ) -> Result<Box<dyn PendingKernel>, KernelHostFailure> {
             std::fs::write(&self.recovery_marker, b"child recovery ran")
                 .map_err(|_| KernelHostFailure::Spawn)?;
-            self.inner.spawn(launch, generation, ownership)
+            self.inner.spawn(launch, permit, ownership)
+        }
+    }
+
+    struct BlockingSpawnFactory {
+        inner: ScriptedFactory,
+        delay: Duration,
+    }
+
+    impl BlockingSpawnFactory {
+        fn ready(delay: Duration, evidence: ReadyEvidence) -> Self {
+            Self {
+                inner: ScriptedFactory::new([PendingScript::ready(
+                    evidence,
+                    RunningBehavior::graceful(),
+                )]),
+                delay,
+            }
+        }
+    }
+
+    impl KernelProcessFactory for BlockingSpawnFactory {
+        fn spawn(
+            &self,
+            launch: NativeKernelLaunch,
+            permit: KernelSpawnPermit,
+            ownership: &KernelOwnership,
+        ) -> Result<Box<dyn PendingKernel>, KernelHostFailure> {
+            thread::sleep(self.delay);
+            self.inner.spawn(launch, permit, ownership)
         }
     }
 
@@ -1841,6 +1949,116 @@ mod tests {
         assert_eq!(supervisor.snapshot().phase, KernelHostPhase::Dormant);
         assert!(!access.credential.is_available());
         assert_eq!(factory.events(), vec!["running-shutdown"]);
+    }
+
+    #[tokio::test]
+    async fn zero_startup_deadline_fails_closed_before_any_child_spawn() {
+        let workspace = tempfile::tempdir().expect("workspace root should be created");
+        let root = WorkspaceRootIdentity::open(workspace.path())
+            .expect("workspace root identity should open");
+        let authority = WriterAuthority::new(root.clone());
+        let writer_gate = KernelWriterPublicationGate::new(authority.clone(), root)
+            .expect("matching authority and root should form a publication gate");
+        let instance = InstanceId::new(Uuid::new_v4());
+        let factory = Arc::new(ScriptedFactory::new([PendingScript::ready(
+            ReadyEvidence {
+                ready: NativeHostReady::new(43123, instance),
+                authenticated_instance: instance,
+            },
+            RunningBehavior::graceful(),
+        )]));
+        let supervisor = KernelHostSupervisor::new(
+            factory.clone(),
+            KernelHostTimeouts::uniform(Duration::ZERO),
+            writer_gate,
+        );
+
+        assert_eq!(
+            supervisor.start(startup()).await.unwrap_err(),
+            KernelHostFailure::StartupTimeout
+        );
+        assert_eq!(factory.spawn_count.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            authority.snapshot().state,
+            WriterAuthorityState::FailedClosed
+        );
+        assert_eq!(supervisor.snapshot().phase, KernelHostPhase::Failed);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn legacy_drain_after_the_startup_deadline_cannot_publish_kernel_authority() {
+        let workspace = tempfile::tempdir().expect("workspace root should be created");
+        let root = WorkspaceRootIdentity::open(workspace.path())
+            .expect("workspace root identity should open");
+        let authority = WriterAuthority::new(root.clone());
+        let legacy_writer = authority
+            .acquire_legacy_writer(&root)
+            .expect("Legacy should admit the in-flight writer");
+        let writer_gate = KernelWriterPublicationGate::new(authority.clone(), root)
+            .expect("matching authority and root should form a publication gate");
+        writer_gate.begin_initial(1).unwrap();
+        let deadline = Instant::now();
+        tokio::time::advance(Duration::from_millis(1)).await;
+        drop(legacy_writer);
+        let (_starts, mut start_receiver) = mpsc::channel(1);
+        let (_stops, mut stop_receiver) = mpsc::unbounded_channel();
+
+        let result = wait_for_writer_publication_before_spawn(
+            &mut start_receiver,
+            &mut stop_receiver,
+            &SupervisorWriterGate::Required(writer_gate.clone()),
+            1,
+            deadline,
+        )
+        .await;
+
+        assert!(matches!(result, WriterPublicationWait::Timeout));
+        assert_eq!(
+            authority.snapshot().state,
+            WriterAuthorityState::Transitioning
+        );
+        writer_gate.fail_closed();
+    }
+
+    #[tokio::test]
+    async fn synchronous_spawn_crossing_deadline_is_reaped_without_ready_publication() {
+        let workspace = tempfile::tempdir().expect("workspace root should be created");
+        let root = WorkspaceRootIdentity::open(workspace.path())
+            .expect("workspace root identity should open");
+        let authority = WriterAuthority::new(root.clone());
+        let writer_gate = KernelWriterPublicationGate::new(authority.clone(), root)
+            .expect("matching authority and root should form a publication gate");
+        let instance = InstanceId::new(Uuid::new_v4());
+        let factory = Arc::new(BlockingSpawnFactory::ready(
+            Duration::from_millis(20),
+            ReadyEvidence {
+                ready: NativeHostReady::new(43123, instance),
+                authenticated_instance: instance,
+            },
+        ));
+        let bootstrap = crate::kernel_bootstrap::NativeKernelBootstrapOwner::new();
+        let supervisor = KernelHostSupervisor::new_with_bootstrap(
+            factory.clone(),
+            KernelHostTimeouts::uniform(Duration::from_millis(1)),
+            bootstrap.clone(),
+            writer_gate,
+        );
+
+        assert_eq!(
+            supervisor.start(startup()).await.unwrap_err(),
+            KernelHostFailure::StartupTimeout
+        );
+        assert_eq!(factory.inner.spawn_count.load(Ordering::SeqCst), 1);
+        assert_eq!(factory.inner.events(), vec!["pending-cancel"]);
+        assert_eq!(
+            authority.snapshot().state,
+            WriterAuthorityState::FailedClosed
+        );
+        assert_eq!(supervisor.snapshot().phase, KernelHostPhase::Failed);
+        assert_eq!(
+            serde_json::to_value(bootstrap.read().unwrap()).unwrap()["status"],
+            json!("failed")
+        );
     }
 
     #[tokio::test]
@@ -2696,7 +2914,9 @@ mod tests {
         let ownership = KernelOwnership::default();
         let launch = startup();
         let plan = launch.recovery_plan();
-        let mut pending = factory.spawn(launch, 1, &ownership).unwrap();
+        let mut pending = factory
+            .spawn(launch, KernelSpawnPermit::new(1), &ownership)
+            .unwrap();
         let evidence = pending.wait_ready().await.unwrap();
         let credential = pending.credential_lease();
         let ready = ReadyKernel {
