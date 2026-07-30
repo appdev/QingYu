@@ -37,7 +37,9 @@ use super::{policy::protected_resource_component, ResourceServiceError};
 const STREAM_BUFFER_BYTES: usize = 64 * 1024;
 const MAGIC_BYTES: usize = 12;
 const MAX_IMMEDIATE_INVENTORY_CANDIDATES: usize = 50_000;
-const MAX_INVENTORY_SNAPSHOT_NODES: u64 = 100_000;
+const MAX_INVENTORY_PAGE_DIRECTORY_SCANS: u64 = 4;
+const MAX_INVENTORY_SNAPSHOT_NODES: u64 =
+    MAX_IMMEDIATE_INVENTORY_CANDIDATES as u64 * MAX_INVENTORY_PAGE_DIRECTORY_SCANS;
 const MAX_INVENTORY_CONTENT_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_INVENTORY_METADATA_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_INVENTORY_TREE_DEPTH: usize = 128;
@@ -45,7 +47,6 @@ const MAX_CONCURRENT_INVENTORY_SCANS: usize = 2;
 const MAX_INVENTORY_REVISION_BYTES: usize = 71;
 const MAX_INVENTORY_TIMESTAMP_BYTES: usize = 64;
 const MAX_INVENTORY_MEDIA_TYPE_BYTES: usize = "application/octet-stream".len();
-const MAX_INVENTORY_ID_KIND_VARIATION_BYTES: usize = 16;
 
 #[cfg(test)]
 thread_local! {
@@ -107,9 +108,7 @@ impl WorkspaceResourceService {
             |names, budget| {
                 reserve_inventory_output(
                     &context,
-                    &directory,
                     &query.parent,
-                    &ignore,
                     names,
                     InventoryOutputKind::Page { maximum: limit },
                     budget,
@@ -197,9 +196,7 @@ impl WorkspaceResourceService {
         let names_digest = entry_names_digest(&scanned_names.names)?;
         reserve_inventory_output(
             context,
-            &directory,
             parent,
-            &ignore,
             &scanned_names.names,
             InventoryOutputKind::Direct,
             budget,
@@ -712,14 +709,11 @@ enum InventoryOutputKind {
 
 fn reserve_inventory_output(
     context: &ResourceContext,
-    directory: &Dir,
     parent: &WorkspaceRelativePath,
-    ignore: &WorkspaceIgnoreSnapshot,
     names: &[String],
     output_kind: InventoryOutputKind,
     budget: &mut InventorySnapshotBudget,
 ) -> Result<(), ResourceServiceError> {
-    let mut included = 0_usize;
     let mut retained_total = 0_usize;
     let mut maximum_retained = 0_usize;
     let mut maximum_transient = MAX_INVENTORY_TIMESTAMP_BYTES;
@@ -737,76 +731,60 @@ fn reserve_inventory_output(
         }
         let path = join_relative(parent, name)?;
         maximum_transient = maximum_transient.max(path_bytes);
-        let addressed = directory
-            .symlink_metadata(name)
-            .map_err(|_| ResourceServiceError::unsafe_target())?;
-        if addressed.file_type().is_symlink() {
-            return Err(ResourceServiceError::unsafe_target());
-        }
-        let document_kind = if addressed.is_dir() {
-            Some(DocumentKind::Directory)
-        } else if addressed.is_file() && markdown_name(name) {
-            Some(DocumentKind::File)
-        } else if addressed.is_file() {
-            None
-        } else {
-            return Err(ResourceServiceError::unsafe_target());
-        };
-        let ignore_kind = document_kind.unwrap_or(DocumentKind::File);
-        if ignore.is_ignored(&path, ignore_kind) {
-            continue;
-        }
-        let allocation = if let Some(kind) = document_kind {
+        let allocations = [
             context.runtime.wire_identity_key().document_id_allocation(
                 context.workspace().id,
                 &context.workspace().generation,
-                kind,
+                DocumentKind::File,
                 &path,
-            )
-        } else {
+            ),
+            context.runtime.wire_identity_key().document_id_allocation(
+                context.workspace().id,
+                &context.workspace().generation,
+                DocumentKind::Directory,
+                &path,
+            ),
             context.runtime.wire_identity_key().resource_id_allocation(
                 context.workspace().id,
                 &context.workspace().generation,
                 ResourceKind::Attachment,
                 &path,
-            )
+            ),
+            context.runtime.wire_identity_key().resource_id_allocation(
+                context.workspace().id,
+                &context.workspace().generation,
+                ResourceKind::Image,
+                &path,
+            ),
+        ];
+        let mut maximum_token_bytes = 0_usize;
+        let mut maximum_identity_transient_bytes = 0_usize;
+        for allocation in allocations {
+            let allocation = allocation.map_err(|_| ResourceServiceError::unavailable())?;
+            maximum_token_bytes = maximum_token_bytes.max(allocation.token_bytes());
+            maximum_identity_transient_bytes =
+                maximum_identity_transient_bytes.max(allocation.transient_bytes());
         }
-        .map_err(|_| ResourceServiceError::unavailable())?;
         let retained = path_bytes
             .checked_add(parent.as_str().len())
             .and_then(|bytes| bytes.checked_add(name.len()))
             .and_then(|bytes| bytes.checked_add(MAX_INVENTORY_REVISION_BYTES))
             .and_then(|bytes| bytes.checked_add(MAX_INVENTORY_TIMESTAMP_BYTES))
-            .and_then(|bytes| bytes.checked_add(allocation.token_bytes()))
-            .and_then(|bytes| bytes.checked_add(MAX_INVENTORY_ID_KIND_VARIATION_BYTES))
-            .and_then(|bytes| {
-                bytes.checked_add(if document_kind.is_none() {
-                    MAX_INVENTORY_MEDIA_TYPE_BYTES
-                } else {
-                    0
-                })
-            })
+            .and_then(|bytes| bytes.checked_add(maximum_token_bytes))
+            .and_then(|bytes| bytes.checked_add(MAX_INVENTORY_MEDIA_TYPE_BYTES))
             .ok_or_else(ResourceServiceError::unavailable)?;
         retained_total = retained_total
             .checked_add(retained)
             .ok_or_else(ResourceServiceError::unavailable)?;
         maximum_retained = maximum_retained.max(retained);
         maximum_transient = maximum_transient
-            .max(
-                allocation
-                    .transient_bytes()
-                    .checked_add(MAX_INVENTORY_ID_KIND_VARIATION_BYTES)
-                    .ok_or_else(ResourceServiceError::unavailable)?,
-            )
+            .max(maximum_identity_transient_bytes)
             .max(name.len());
-        included = included
-            .checked_add(1)
-            .ok_or_else(ResourceServiceError::unavailable)?;
     }
     let (vector_elements, retained_bytes) = match output_kind {
         InventoryOutputKind::Direct => (names.len(), retained_total),
         InventoryOutputKind::Page { maximum } => {
-            let elements = included.min(maximum);
+            let elements = names.len().min(maximum);
             let bytes = maximum_retained
                 .checked_mul(elements)
                 .ok_or_else(ResourceServiceError::unavailable)?;
@@ -2083,6 +2061,47 @@ mod tests {
         super::TEST_FORCE_CONTENT_HASH.set(false);
         super::TEST_INVENTORY_LIMITS.set(None);
         (result, reads)
+    }
+
+    #[tokio::test]
+    async fn every_name_reserves_all_possible_inventory_output_kinds() {
+        use crate::inventory_snapshot::{InventorySnapshotBudget, InventorySnapshotLimits};
+
+        let fixture = InventoryFixture::new().await;
+        let context = fixture.service.context().unwrap();
+        let mut budget = InventorySnapshotBudget::new(InventorySnapshotLimits {
+            maximum_nodes: 10,
+            maximum_content_bytes: 1024,
+            maximum_metadata_bytes: 10_000,
+            maximum_depth: 10,
+        });
+        let before = budget.remaining_metadata_bytes();
+
+        super::reserve_inventory_output(
+            &context,
+            &WorkspaceRelativePath::default(),
+            &["payload.bin".to_string()],
+            super::InventoryOutputKind::Direct,
+            &mut budget,
+        )
+        .unwrap();
+
+        let vector_and_transient =
+            u64::try_from(std::mem::size_of::<super::WorkspaceInventoryEntry>())
+                .unwrap()
+                .checked_add(u64::try_from(super::MAX_INVENTORY_TIMESTAMP_BYTES).unwrap())
+                .unwrap();
+        assert!(before - budget.remaining_metadata_bytes() > vector_and_transient);
+    }
+
+    #[test]
+    fn paged_candidate_limit_fits_all_reserved_directory_scans() {
+        let required = u64::try_from(super::MAX_IMMEDIATE_INVENTORY_CANDIDATES)
+            .unwrap()
+            .checked_mul(super::MAX_INVENTORY_PAGE_DIRECTORY_SCANS)
+            .unwrap();
+
+        assert!(super::MAX_INVENTORY_SNAPSHOT_NODES >= required);
     }
 
     #[tokio::test]
