@@ -185,6 +185,17 @@ export type AppPlatformRuntime = {
   resolveFormFactor: () => AppFormFactor;
 };
 
+export type AppWorkspaceRootPolicy =
+  | {
+      canChooseLocalRoot: true;
+      kind: "selectable";
+    }
+  | {
+      canChooseLocalRoot: false;
+      kind: "fixed";
+      resolveRoot: () => Promise<string>;
+    };
+
 export type AppWorkspaceRuntime = {
   discardPreparedDesktopNotebookTarget?: (lease: string) => Promise<unknown>;
   isDocumentInRoot?: (documentPath: string, rootPath: string) => Promise<boolean>;
@@ -197,6 +208,7 @@ export type AppWorkspaceRuntime = {
     notesRoot: string;
   } | null>;
   resolveManagedRoot: (name: string) => Promise<string | null>;
+  rootPolicy?: AppWorkspaceRootPolicy;
 };
 
 export type AppDialogRuntime = {
@@ -861,7 +873,11 @@ export function createDefaultAppRuntime(): AppRuntime {
     workspace: {
       isDocumentInRoot: async () => false,
       listManagedNotebookNames: async () => [],
-      resolveManagedRoot: async (_name) => null
+      resolveManagedRoot: async (_name) => null,
+      rootPolicy: {
+        canChooseLocalRoot: true,
+        kind: "selectable"
+      }
     }
   };
 }

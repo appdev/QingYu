@@ -72,6 +72,8 @@ export function usePrimaryWorkspace({
   const persistedStateRef = useRef<PrimaryWorkspaceState | null>(null);
   const stateRef = useRef(state);
   const trueMobileRef = useRef(trueMobile);
+  const rootPolicy = getAppRuntime().workspace.rootPolicy;
+  const fixedRootPolicy = rootPolicy?.kind === "fixed" ? rootPolicy : null;
   stateRef.current = state;
   trueMobileRef.current = trueMobile;
 
@@ -94,6 +96,30 @@ export function usePrimaryWorkspace({
     transition(loadingState);
     return generation;
   }, [transition]);
+
+  const resolveFixedState = useCallback(async (generation: number) => {
+    if (!fixedRootPolicy) return null;
+
+    try {
+      const root = await fixedRootPolicy.resolveRoot();
+      if (!root.trim()) throw new Error("Fixed workspace is unavailable.");
+      transitionIfCurrent(generation, {
+        error: null,
+        root,
+        status: "ready",
+        workspaceRoot: null
+      });
+      return root;
+    } catch (error: unknown) {
+      transitionIfCurrent(generation, {
+        error: primaryWorkspaceError(error),
+        root: null,
+        status: "error",
+        workspaceRoot: null
+      });
+      return null;
+    }
+  }, [fixedRootPolicy, transitionIfCurrent]);
 
   const publishChange = useCallback(async () => {
     const generation = eventGenerationRef.current + 1;
@@ -255,6 +281,11 @@ export function usePrimaryWorkspace({
 
     const resolveInitialState = async () => {
       try {
+        if (fixedRootPolicy) {
+          await resolveFixedState(generation);
+          return;
+        }
+
         const persistedState = persistedStateRef.current ?? await loadPrimaryWorkspaceState();
         if (!mountedRef.current || generation !== generationRef.current) return;
         persistedStateRef.current = persistedState;
@@ -287,7 +318,15 @@ export function usePrimaryWorkspace({
     return () => {
       if (generationRef.current === generation) generationRef.current += 1;
     };
-  }, [resolveDesktopState, resolveMobileState, transition, transitionIfCurrent, trueMobile]);
+  }, [
+    fixedRootPolicy,
+    resolveDesktopState,
+    resolveFixedState,
+    resolveMobileState,
+    transition,
+    transitionIfCurrent,
+    trueMobile
+  ]);
 
   const reloadFromApplicationEvent = useCallback(async (payload: PrimaryWorkspaceChangedPayload) => {
     const lastGeneration = receivedEventGenerationsRef.current.get(payload.sourceId) ?? -1;
@@ -313,6 +352,8 @@ export function usePrimaryWorkspace({
   }, [beginOperation, resolveDesktopState, resolveMobileState, transitionIfCurrent]);
 
   useEffect(() => {
+    if (fixedRootPolicy) return undefined;
+
     let cancelled = false;
     let cleanup: (() => unknown) | null = null;
 
@@ -331,9 +372,10 @@ export function usePrimaryWorkspace({
       cancelled = true;
       cleanup?.();
     };
-  }, [reloadFromApplicationEvent]);
+  }, [fixedRootPolicy, reloadFromApplicationEvent]);
 
   const commitDesktopRoot = useCallback(async (path: string) => {
+    if (fixedRootPolicy) return stateRef.current.root;
     if (trueMobileRef.current) return null;
 
     const previousState = stateRef.current;
@@ -379,9 +421,10 @@ export function usePrimaryWorkspace({
           });
       return null;
     }
-  }, [beginOperation, publishChange, transitionIfCurrent]);
+  }, [beginOperation, fixedRootPolicy, publishChange, transitionIfCurrent]);
 
   const commitManagedRoot = useCallback(async (name: string) => {
+    if (fixedRootPolicy) return stateRef.current.root;
     if (!trueMobileRef.current) return null;
 
     const previousState = stateRef.current;
@@ -419,9 +462,10 @@ export function usePrimaryWorkspace({
           });
       return null;
     }
-  }, [beginOperation, publishChange, transitionIfCurrent]);
+  }, [beginOperation, fixedRootPolicy, publishChange, transitionIfCurrent]);
 
   const deferDesktopSetup = useCallback(async () => {
+    if (fixedRootPolicy) return stateRef.current.root;
     if (trueMobileRef.current) return null;
 
     const generation = beginOperation();
@@ -452,9 +496,11 @@ export function usePrimaryWorkspace({
       });
       return null;
     }
-  }, [beginOperation, publishChange, transitionIfCurrent]);
+  }, [beginOperation, fixedRootPolicy, publishChange, transitionIfCurrent]);
 
   const resetOnboarding = useCallback(async () => {
+    if (fixedRootPolicy) return stateRef.current.root;
+
     try {
       const currentState = persistedStateRef.current ?? await loadPrimaryWorkspaceState();
       const persistedState = await savePrimaryWorkspaceState({
@@ -466,9 +512,14 @@ export function usePrimaryWorkspace({
     } catch {
       return null;
     }
-  }, []);
+  }, [fixedRootPolicy]);
 
   const retry = useCallback(async () => {
+    if (fixedRootPolicy) {
+      const generation = beginOperation();
+      return resolveFixedState(generation);
+    }
+
     const persistedState = persistedStateRef.current;
     if (!persistedState) {
       const generation = beginOperation();
@@ -494,18 +545,20 @@ export function usePrimaryWorkspace({
     return resolveDesktopState(persistedState, generation);
   }, [
     beginOperation,
+    fixedRootPolicy,
     resolveDesktopState,
+    resolveFixedState,
     resolveMobileState,
     transitionIfCurrent
   ]);
 
   return {
     ...state,
-    canChooseDesktopRoot: !trueMobile,
+    canChooseDesktopRoot: !fixedRootPolicy && !trueMobile,
     commitDesktopRoot,
     commitManagedRoot,
     deferDesktopSetup,
-    managedName: persistedStateRef.current?.managedName ?? null,
+    managedName: fixedRootPolicy ? null : persistedStateRef.current?.managedName ?? null,
     resetOnboarding,
     retry
   };

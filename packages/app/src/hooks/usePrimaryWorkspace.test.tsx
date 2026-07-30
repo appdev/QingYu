@@ -110,6 +110,78 @@ describe("primary workspace controller", () => {
     vi.restoreAllMocks();
   });
 
+  it("uses a runtime-fixed workspace without reading persisted onboarding state", async () => {
+    const runtime = getAppRuntime();
+    const resolveRoot = vi.fn(async () => "kernel-workspace://primary");
+    configureAppRuntime({
+      ...runtime,
+      workspace: {
+        ...runtime.workspace,
+        rootPolicy: {
+          canChooseLocalRoot: false,
+          kind: "fixed",
+          resolveRoot
+        }
+      }
+    });
+
+    const { result } = renderHook(() => usePrimaryWorkspace({ trueMobile: false }));
+
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    expect(result.current).toMatchObject({
+      canChooseDesktopRoot: false,
+      error: null,
+      managedName: null,
+      root: "kernel-workspace://primary",
+      workspaceRoot: null
+    });
+    expect(resolveRoot).toHaveBeenCalledOnce();
+    expect(mockLoadStore).not.toHaveBeenCalled();
+    expect(mockResolveManagedRoot).not.toHaveBeenCalled();
+    expect(mockResolveMarkdownFolder).not.toHaveBeenCalled();
+  });
+
+  it("keeps a runtime-fixed workspace unchanged when local onboarding actions are invoked", async () => {
+    const runtime = getAppRuntime();
+    const resolveRoot = vi.fn(async () => "kernel-workspace://primary");
+    configureAppRuntime({
+      ...runtime,
+      workspace: {
+        ...runtime.workspace,
+        rootPolicy: {
+          canChooseLocalRoot: false,
+          kind: "fixed",
+          resolveRoot
+        }
+      }
+    });
+
+    const { result } = renderHook(() => usePrimaryWorkspace({ trueMobile: true }));
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    let desktopResult: string | null = null;
+    let managedResult: string | null = null;
+    await act(async () => {
+      desktopResult = await result.current.commitDesktopRoot("/attacker-selected");
+      managedResult = await result.current.commitManagedRoot("attacker-managed");
+      await result.current.deferDesktopSetup();
+      await result.current.resetOnboarding();
+    });
+
+    expect(desktopResult).toBe("kernel-workspace://primary");
+    expect(managedResult).toBe("kernel-workspace://primary");
+    expect(result.current).toMatchObject({
+      canChooseDesktopRoot: false,
+      root: "kernel-workspace://primary",
+      status: "ready",
+      workspaceRoot: null
+    });
+    expect(resolveRoot).toHaveBeenCalledOnce();
+    expect(mockLoadStore).not.toHaveBeenCalled();
+    expect(mockResolveManagedRoot).not.toHaveBeenCalled();
+    expect(mockResolveMarkdownFolder).not.toHaveBeenCalled();
+  });
+
   it("keeps narrow desktop semantics even when compact layout is active", async () => {
     Object.defineProperty(window, "innerWidth", { configurable: true, value: 375 });
 
