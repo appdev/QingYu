@@ -57,6 +57,20 @@ impl DurableFileStore {
         ))
     }
 
+    /// Builds a store around a directory capability that has already been
+    /// admitted and retained by another Kernel boundary.
+    ///
+    /// The caller must keep the matching process/run lock for this store's
+    /// lifetime and reuse one writer epoch for every store rebuilt during the
+    /// same process launch.
+    pub(crate) fn at_retained_directory(
+        directory: Dir,
+        canonical_root: PathBuf,
+        writer_epoch: Uuid,
+    ) -> Self {
+        Self::new(directory, canonical_root, writer_epoch, Arc::new(NoFaults))
+    }
+
     #[cfg(test)]
     pub(crate) fn at_instance_data_with_test_fault(
         root: &InstanceDataRoot,

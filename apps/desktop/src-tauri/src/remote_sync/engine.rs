@@ -6,7 +6,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use cap_fs_ext::{DirExt, FollowSymlinks, MetadataExt, OpenOptionsExt, OpenOptionsFollowExt};
 use cap_std::fs::Dir;
-use serde::{Deserialize, Serialize};
+use qingyu_kernel::sync::repository::{
+    SyncManifest, SyncManifestEntry, SyncManifestRepository,
+};
+use serde::Serialize;
 use sha2::{Digest, Sha256};
 use time::OffsetDateTime;
 
@@ -15,7 +18,6 @@ use super::scope::RemoteSyncScope;
 use crate::storage_capability::{
     sync_directory, unique_regular_file_identity, UniqueRegularFileIdentity,
 };
-pub(super) const MANIFEST_VERSION: u32 = 3;
 static SYNC_MUTATION_STAGING_SEQUENCE: AtomicUsize = AtomicUsize::new(0);
 pub(super) const MAX_IMMEDIATE_RECHECK_PASSES: usize = 3;
 const STAGED_SYNC_REPLACEMENT_NAME: &str = "replacement";
@@ -147,48 +149,6 @@ pub(crate) struct RemoteSyncSummary {
 pub(crate) struct SettingsSyncOutcome {
     pub(crate) summary: RemoteSyncSummary,
     pub(crate) expected_local_hash: Option<String>,
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
-struct SyncManifestEntry {
-    local_hash: String,
-    #[serde(alias = "remote_etag")]
-    remote_identity: String,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-struct SyncManifest {
-    #[serde(default)]
-    entries: BTreeMap<String, SyncManifestEntry>,
-    #[serde(default)]
-    target_fingerprint: String,
-    #[serde(default)]
-    local_identity: String,
-    #[serde(default)]
-    version: u32,
-    #[serde(default)]
-    full_scan_completed: bool,
-    #[serde(default)]
-    restore_generation: Option<String>,
-    #[serde(default)]
-    restore_generation_completed: bool,
-    #[serde(default)]
-    restore_local_only_paths: BTreeMap<String, String>,
-}
-
-impl Default for SyncManifest {
-    fn default() -> Self {
-        Self {
-            entries: BTreeMap::new(),
-            target_fingerprint: String::new(),
-            local_identity: String::new(),
-            version: MANIFEST_VERSION,
-            full_scan_completed: false,
-            restore_generation: None,
-            restore_generation_completed: false,
-            restore_local_only_paths: BTreeMap::new(),
-        }
-    }
 }
 
 #[derive(Debug)]
@@ -404,9 +364,12 @@ async fn execute_remote_sync_locked<B: RemoteSyncBackend>(
     let _state_root = scope.open_state_root()?;
     cleanup_stale_state_staging(scope)?;
     let target_fingerprint = sha256_hex(backend.target_fingerprint_source().as_bytes());
-    let (mut manifest, mut has_effective_baseline) =
-        load_sync_manifest(scope, &target_fingerprint)?;
-    if prepare_remote_first_restore(scope, &mut manifest)? {
+    let repository = SyncManifestRepository::open(scope)
+        .map_err(|error| RemoteSyncError::from(error.to_string()))?;
+    let (mut manifest, mut has_effective_baseline) = repository
+        .load(&target_fingerprint)
+        .map_err(|error| RemoteSyncError::from(error.to_string()))?;
+    if prepare_remote_first_restore(scope, &repository, &mut manifest)? {
         has_effective_baseline = false;
     }
     let mut summary = RemoteSyncSummary::default();
@@ -531,7 +494,7 @@ async fn execute_remote_sync_locked<B: RemoteSyncBackend>(
                             remote_identity,
                         },
                     );
-                    save_sync_manifest(scope, &manifest)?;
+                    save_sync_manifest(&repository, &manifest)?;
                 }
                 FileSyncAction::Download => {
                     let remote = required_remote(remote_file, "download", &relative_path)?;
@@ -576,7 +539,7 @@ async fn execute_remote_sync_locked<B: RemoteSyncBackend>(
                             remote_identity: remote.identity.clone(),
                         },
                     );
-                    save_sync_manifest(scope, &manifest)?;
+                    save_sync_manifest(&repository, &manifest)?;
                 }
                 FileSyncAction::DeleteLocal => {
                     let local = required_local(local_file, "delete", &relative_path)?;
@@ -597,7 +560,7 @@ async fn execute_remote_sync_locked<B: RemoteSyncBackend>(
                     }
                     expected_local_hashes.remove(&relative_path);
                     manifest.entries.remove(&relative_path);
-                    save_sync_manifest(scope, &manifest)?;
+                    save_sync_manifest(&repository, &manifest)?;
                 }
                 FileSyncAction::DeleteRemote => {
                     let remote = required_remote(remote_file, "delete", &relative_path)?;
@@ -611,7 +574,7 @@ async fn execute_remote_sync_locked<B: RemoteSyncBackend>(
                         Err(error) => return Err(error),
                     }
                     manifest.entries.remove(&relative_path);
-                    save_sync_manifest(scope, &manifest)?;
+                    save_sync_manifest(&repository, &manifest)?;
                 }
                 FileSyncAction::Skip => {
                     if let (Some(local), Some(remote)) = (local_file, remote_file) {
@@ -623,7 +586,7 @@ async fn execute_remote_sync_locked<B: RemoteSyncBackend>(
                                 remote_identity: remote.identity.clone(),
                             },
                         );
-                        save_sync_manifest(scope, &manifest)?;
+                        save_sync_manifest(&repository, &manifest)?;
                     }
                 }
                 FileSyncAction::Conflict => {
@@ -654,7 +617,7 @@ async fn execute_remote_sync_locked<B: RemoteSyncBackend>(
                                 remote_identity: remote.identity.clone(),
                             },
                         );
-                        save_sync_manifest(scope, &manifest)?;
+                        save_sync_manifest(&repository, &manifest)?;
                         continue;
                     }
                     let file_name = local
@@ -700,7 +663,7 @@ async fn execute_remote_sync_locked<B: RemoteSyncBackend>(
                             remote_identity: remote.identity.clone(),
                         },
                     );
-                    save_sync_manifest(scope, &manifest)?;
+                    save_sync_manifest(&repository, &manifest)?;
                 }
             }
         }
@@ -741,7 +704,7 @@ async fn execute_remote_sync_locked<B: RemoteSyncBackend>(
             current_local_files.contains_key(path) || remote_files.contains_key(path)
         });
         manifest.full_scan_completed = true;
-        save_sync_manifest(scope, &manifest)?;
+        save_sync_manifest(&repository, &manifest)?;
         break;
     }
     Ok(summary)
@@ -775,6 +738,7 @@ fn is_stale_remote_plan(error: &RemoteSyncError) -> bool {
 
 fn prepare_remote_first_restore(
     scope: &RemoteSyncScope,
+    repository: &SyncManifestRepository<'_>,
     manifest: &mut SyncManifest,
 ) -> Result<bool, String> {
     if !scope.remote_first_restore() {
@@ -793,7 +757,7 @@ fn prepare_remote_first_restore(
     if same_generation {
         manifest.restore_generation_completed = false;
         manifest.restore_local_only_paths.clear();
-        save_sync_manifest(scope, manifest)?;
+        save_sync_manifest(repository, manifest)?;
         return Ok(false);
     }
 
@@ -802,7 +766,7 @@ fn prepare_remote_first_restore(
     manifest.restore_generation = Some(requested_generation.to_string());
     manifest.restore_generation_completed = false;
     manifest.restore_local_only_paths.clear();
-    save_sync_manifest(scope, manifest)?;
+    save_sync_manifest(repository, manifest)?;
     Ok(true)
 }
 
@@ -810,21 +774,17 @@ pub(crate) fn complete_remote_first_restore_locked(scope: &RemoteSyncScope) -> R
     if !scope.remote_first_restore() {
         return Ok(());
     }
-    let state = scope.open_state_root()?;
-    let mut file = state
-        .open_with(scope.manifest_name(), &nonfollowing_read_options())
-        .map_err(|_| "Sync manifest path is unsafe".to_string())?;
-    let mut contents = String::new();
-    file.read_to_string(&mut contents)
-        .map_err(|error| error.to_string())?;
-    let mut manifest =
-        serde_json::from_str::<SyncManifest>(&contents).map_err(|error| error.to_string())?;
+    let repository = SyncManifestRepository::open(scope).map_err(|error| error.to_string())?;
+    let mut manifest = repository
+        .load_current()
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "Remote restore checkpoint is incomplete".to_string())?;
     if manifest.restore_generation.is_none() || !manifest.full_scan_completed {
         return Err("Remote restore checkpoint is incomplete".to_string());
     }
     manifest.restore_generation_completed = true;
     manifest.restore_local_only_paths.clear();
-    save_sync_manifest(scope, &manifest)
+    save_sync_manifest(&repository, &manifest)
 }
 
 fn required_local<'a>(
@@ -2125,92 +2085,16 @@ fn load_sync_manifest(
     scope: &RemoteSyncScope,
     target_fingerprint: &str,
 ) -> Result<(SyncManifest, bool), String> {
-    let state = scope.open_state_root()?;
-    let (mut manifest, manifest_exists) = match state.symlink_metadata(scope.manifest_name()) {
-        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
-            return Err("Sync manifest path is unsafe".to_string())
-        }
-        Ok(_) => {
-            let mut file = state
-                .open_with(scope.manifest_name(), &nonfollowing_read_options())
-                .map_err(|_| "Sync manifest path is unsafe".to_string())?;
-            let mut contents = String::new();
-            file.read_to_string(&mut contents)
-                .map_err(|error| error.to_string())?;
-            (
-                serde_json::from_str(&contents).map_err(|error| error.to_string())?,
-                true,
-            )
-        }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => (SyncManifest::default(), false),
-        Err(error) => return Err(error.to_string()),
-    };
-    let version_matches = manifest.version == MANIFEST_VERSION;
-    let target_matches = manifest.target_fingerprint == target_fingerprint;
-    let local_identity = scope.local_identity().unwrap_or_default();
-    let local_identity_matches = manifest.local_identity == local_identity;
-    let has_effective_baseline = manifest_exists
-        && version_matches
-        && target_matches
-        && local_identity_matches
-        && manifest.full_scan_completed;
-    if !version_matches {
-        manifest.entries.clear();
-    }
-    if manifest.target_fingerprint.is_empty() {
-        manifest.target_fingerprint = target_fingerprint.to_string();
-    } else if manifest.target_fingerprint != target_fingerprint {
-        manifest.entries.clear();
-        manifest.target_fingerprint = target_fingerprint.to_string();
-    }
-    if manifest.local_identity.is_empty() {
-        manifest.local_identity = local_identity.to_string();
-    } else if manifest.local_identity != local_identity {
-        manifest.entries.clear();
-        manifest.local_identity = local_identity.to_string();
-    }
-    if !manifest_exists || !version_matches || !target_matches || !local_identity_matches {
-        manifest.full_scan_completed = false;
-    }
-    manifest.version = MANIFEST_VERSION;
-    Ok((manifest, has_effective_baseline))
+    SyncManifestRepository::open(scope)
+        .and_then(|repository| repository.load(target_fingerprint))
+        .map_err(|error| error.to_string())
 }
 
-fn save_sync_manifest(scope: &RemoteSyncScope, manifest: &SyncManifest) -> Result<(), String> {
-    let state = scope.open_state_root()?;
-    let contents = serde_json::to_vec_pretty(manifest).map_err(|error| error.to_string())?;
-    for _ in 0..1000 {
-        let sequence = SYNC_MUTATION_STAGING_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let name = format!(".manifest-{}-{sequence}.tmp", std::process::id());
-        let mut options = cap_std::fs::OpenOptions::new();
-        options
-            .write(true)
-            .create_new(true)
-            .follow(FollowSymlinks::No);
-        let mut file = match state.open_with(&name, &options) {
-            Ok(file) => file,
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
-            Err(error) => return Err(error.to_string()),
-        };
-        let written = file
-            .write_all(&contents)
-            .and_then(|()| file.sync_all())
-            .map_err(|error| error.to_string());
-        drop(file);
-        if let Err(error) = written {
-            let _cleanup = state.remove_file(&name);
-            return Err(error);
-        }
-        scope.open_state_root()?;
-        let result = state
-            .rename(&name, &state, scope.manifest_name())
-            .map_err(|error| error.to_string());
-        if result.is_err() {
-            let _cleanup = state.remove_file(&name);
-        }
-        return result;
-    }
-    Err("Sync manifest staging name is unavailable".to_string())
+fn save_sync_manifest(
+    repository: &SyncManifestRepository<'_>,
+    manifest: &SyncManifest,
+) -> Result<(), String> {
+    repository.save(manifest).map_err(|error| error.to_string())
 }
 
 fn remote_conflict_file_name(file_name: &str, timestamp: &str) -> String {

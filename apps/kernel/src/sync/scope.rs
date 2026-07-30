@@ -371,6 +371,8 @@ impl RemoteSyncScope {
                     if error.kind() != io::ErrorKind::AlreadyExists {
                         return Err(unsafe_state_root_error());
                     }
+                } else {
+                    sync_created_directory_parent(&root)?;
                 }
             }
             Err(_) => return Err(unsafe_state_root_error()),
@@ -585,11 +587,26 @@ fn open_or_create_directory_nofollow(path: &Path) -> Result<Dir, String> {
                 if error.kind() != io::ErrorKind::AlreadyExists {
                     return Err(unsafe_state_root_error());
                 }
+            } else {
+                sync_created_directory_parent(&parent)?;
             }
             open_child_directory_nofollow(&parent, name)
         }
         Err(_) => Err(unsafe_state_root_error()),
     }
+}
+
+#[cfg(unix)]
+fn sync_created_directory_parent(parent: &Dir) -> Result<(), String> {
+    parent
+        .try_clone()
+        .and_then(|directory| directory.into_std_file().sync_all())
+        .map_err(|_| unsafe_state_root_error())
+}
+
+#[cfg(not(unix))]
+fn sync_created_directory_parent(_parent: &Dir) -> Result<(), String> {
+    Ok(())
 }
 
 fn open_existing_directory_nofollow(path: &Path) -> Result<Dir, String> {
