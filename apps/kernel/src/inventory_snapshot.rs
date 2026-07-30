@@ -13,6 +13,7 @@ use std::{
     num::NonZeroUsize,
     path::{Component, Path},
     sync::{Mutex, MutexGuard},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use cap_fs_ext::{FollowSymlinks, OpenOptionsFollowExt};
@@ -21,7 +22,7 @@ use serde::{Serialize, Serializer};
 
 use crate::contract::WorkspaceRelativePath;
 
-const INVENTORY_SNAPSHOT_FORMAT_VERSION: u8 = 1;
+const INVENTORY_SNAPSHOT_FORMAT_VERSION: u8 = 2;
 
 /// A version observation for one retained regular file.
 ///
@@ -293,34 +294,100 @@ impl InventoryCandidateSnapshot {
         logical_path: WorkspaceRelativePath,
         entry_type: InventoryCandidateType,
         digest: ContentDigest,
+        modified_at: InventoryModifiedTime,
     ) -> Self {
         Self {
             format_version: INVENTORY_SNAPSHOT_FORMAT_VERSION,
             logical_path,
             entry_type,
-            version: InventoryCandidateVersion::ContentSha256 { digest },
+            version: InventoryCandidateVersion::ContentSha256 {
+                digest,
+                modified_at,
+            },
         }
     }
 
     pub(crate) const fn from_tree_digest(
         logical_path: WorkspaceRelativePath,
         digest: ContentDigest,
+        modified_at: InventoryModifiedTime,
     ) -> Self {
         Self {
             format_version: INVENTORY_SNAPSHOT_FORMAT_VERSION,
             logical_path,
             entry_type: InventoryCandidateType::Directory,
-            version: InventoryCandidateVersion::TreeSha256 { digest },
+            version: InventoryCandidateVersion::TreeSha256 {
+                digest,
+                modified_at,
+            },
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct InventoryModifiedTime {
+    seconds: i64,
+    nanoseconds: u32,
+}
+
+impl InventoryModifiedTime {
+    pub(crate) fn capture(metadata: &Metadata) -> io::Result<Self> {
+        Self::from_system_time(metadata.modified()?.into_std())
+    }
+
+    fn from_system_time(value: SystemTime) -> io::Result<Self> {
+        match value.duration_since(UNIX_EPOCH) {
+            Ok(duration) => Ok(Self {
+                seconds: i64::try_from(duration.as_secs()).map_err(|_| invalid_modified_time())?,
+                nanoseconds: duration.subsec_nanos(),
+            }),
+            Err(error) => {
+                let duration = error.duration();
+                let magnitude =
+                    i64::try_from(duration.as_secs()).map_err(|_| invalid_modified_time())?;
+                if duration.subsec_nanos() == 0 {
+                    Ok(Self {
+                        seconds: magnitude.checked_neg().ok_or_else(invalid_modified_time)?,
+                        nanoseconds: 0,
+                    })
+                } else {
+                    Ok(Self {
+                        seconds: magnitude
+                            .checked_neg()
+                            .and_then(|seconds| seconds.checked_sub(1))
+                            .ok_or_else(invalid_modified_time)?,
+                        nanoseconds: 1_000_000_000 - duration.subsec_nanos(),
+                    })
+                }
+            }
+        }
+    }
+}
+
+fn invalid_modified_time() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidData,
+        "inventory modified time is out of range",
+    )
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 enum InventoryCandidateVersion {
-    StrongFileStamp { stamp: StrongFileVersionStamp },
-    ContentSha256 { digest: ContentDigest },
-    TreeSha256 { digest: ContentDigest },
+    StrongFileStamp {
+        stamp: StrongFileVersionStamp,
+    },
+    ContentSha256 {
+        digest: ContentDigest,
+        #[serde(rename = "modifiedAt")]
+        modified_at: InventoryModifiedTime,
+    },
+    TreeSha256 {
+        digest: ContentDigest,
+        #[serde(rename = "modifiedAt")]
+        modified_at: InventoryModifiedTime,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -554,9 +621,9 @@ mod tests {
 
     use super::{
         ContentDigest, ContentRevisionCache, ContentRevisionCacheKey, FileVersionStamp,
-        InventoryCandidateSnapshot, InventoryCandidateType, InventorySnapshotBudget,
-        InventorySnapshotBudgetError, InventorySnapshotLimits, RetainedInventoryFile,
-        StrongFileVersionStamp,
+        InventoryCandidateSnapshot, InventoryCandidateType, InventoryModifiedTime,
+        InventorySnapshotBudget, InventorySnapshotBudgetError, InventorySnapshotLimits,
+        RetainedInventoryFile, StrongFileVersionStamp,
     };
 
     #[cfg(unix)]
@@ -609,6 +676,10 @@ mod tests {
             path,
             InventoryCandidateType::ResourceFile,
             digest,
+            InventoryModifiedTime {
+                seconds: 1,
+                nanoseconds: 2,
+            },
         );
 
         assert_eq!(snapshot.logical_path().as_str(), "assets/photo.png");
@@ -619,9 +690,9 @@ mod tests {
         assert_eq!(
             String::from_utf8(first).unwrap(),
             concat!(
-                r#"{"formatVersion":1,"logicalPath":"assets/photo.png","entryType":"resource-file","version":{"kind":"content-sha256","digest":""#,
+                r#"{"formatVersion":2,"logicalPath":"assets/photo.png","entryType":"resource-file","version":{"kind":"content-sha256","digest":""#,
                 "abababababababababababababababababababababababababababababababab",
-                r#""}}"#,
+                r#"","modifiedAt":{"seconds":1,"nanoseconds":2}}}"#,
             )
         );
     }
@@ -637,6 +708,40 @@ mod tests {
         .unwrap_err();
 
         assert_eq!(error.to_string(), "inventory content hash required");
+    }
+
+    #[test]
+    fn fallback_snapshots_include_modified_time_in_cursor_identity() {
+        let path = WorkspaceRelativePath::parse("assets/file.bin").unwrap();
+        let digest = ContentDigest::new([0x11; 32]);
+        let first_modified = InventoryModifiedTime {
+            seconds: 1,
+            nanoseconds: 0,
+        };
+        let second_modified = InventoryModifiedTime {
+            seconds: 2,
+            nanoseconds: 0,
+        };
+
+        let first_file = InventoryCandidateSnapshot::from_content_digest(
+            path.clone(),
+            InventoryCandidateType::ResourceFile,
+            digest,
+            first_modified,
+        );
+        let second_file = InventoryCandidateSnapshot::from_content_digest(
+            path.clone(),
+            InventoryCandidateType::ResourceFile,
+            digest,
+            second_modified,
+        );
+        let first_tree =
+            InventoryCandidateSnapshot::from_tree_digest(path.clone(), digest, first_modified);
+        let second_tree =
+            InventoryCandidateSnapshot::from_tree_digest(path, digest, second_modified);
+
+        assert_ne!(first_file, second_file);
+        assert_ne!(first_tree, second_tree);
     }
 
     #[test]

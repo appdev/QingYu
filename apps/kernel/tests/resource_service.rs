@@ -81,11 +81,16 @@ struct Fixture {
 struct LiveIgnorePort {
     captures: AtomicUsize,
     global_rules: Mutex<String>,
+    replacement_after_capture: Mutex<Option<(PathBuf, PathBuf)>>,
 }
 
 impl LiveIgnorePort {
     fn set_global_rules(&self, rules: &str) {
         *self.global_rules.lock().unwrap() = rules.to_string();
+    }
+
+    fn replace_root_after_capture(&self, root: PathBuf, retired: PathBuf) {
+        *self.replacement_after_capture.lock().unwrap() = Some((root, retired));
     }
 }
 
@@ -116,6 +121,10 @@ impl WorkspaceIgnorePort for LiveIgnorePort {
             retained_root,
             Some(&global_rules),
         )?;
+        if let Some((root, retired)) = self.replacement_after_capture.lock().unwrap().take() {
+            fs::rename(&root, retired).map_err(|_| WorkspaceIgnoreError)?;
+            fs::create_dir(root).map_err(|_| WorkspaceIgnoreError)?;
+        }
         Ok(WorkspaceIgnoreSnapshot::from_matcher(Arc::new(
             CapturedIgnorePort {
                 root: root_path.to_path_buf(),
@@ -156,6 +165,7 @@ impl Fixture {
         let ignore = Arc::new(LiveIgnorePort {
             captures: AtomicUsize::new(0),
             global_rules: Mutex::new(String::new()),
+            replacement_after_capture: Mutex::new(None),
         });
         let service = WorkspaceResourceService::new(&runtime, ignore.clone());
         Self {
@@ -312,6 +322,27 @@ async fn inventory_pages_continue_unchanged_and_reject_a_changed_collection() {
         .unwrap_err();
 
     assert_eq!(error.kind(), ResourceServiceErrorKind::InvalidCursor);
+}
+
+#[tokio::test]
+async fn inventory_page_rejects_a_replaced_workspace_root_before_returning() {
+    let fixture = Fixture::new().await;
+    fs::write(fixture.root.join("visible.bin"), b"visible").unwrap();
+    let retired = fixture.root.with_extension("retired");
+    fixture
+        .ignore
+        .replace_root_after_capture(fixture.root.clone(), retired);
+
+    let error = fixture
+        .service
+        .list_inventory_page(ListWorkspaceInventoryQuery {
+            cursor: None,
+            limit: Some(PageLimit::new(10).unwrap()),
+            parent: WorkspaceRelativePath::default(),
+        })
+        .unwrap_err();
+
+    assert_eq!(error.kind(), ResourceServiceErrorKind::Unavailable);
 }
 
 #[cfg(unix)]

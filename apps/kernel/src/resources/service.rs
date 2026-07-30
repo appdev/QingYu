@@ -21,7 +21,7 @@ use crate::{
     ignore_rules::{WorkspaceIgnorePort, WorkspaceIgnoreSnapshot},
     inventory_snapshot::{
         ContentDigest, FileVersionStamp, InventoryCandidateSnapshot, InventoryCandidateType,
-        InventorySnapshotBudget, InventorySnapshotLimits,
+        InventoryModifiedTime, InventorySnapshotBudget, InventorySnapshotLimits,
     },
     runtime::{ActiveWorkspaceSnapshot, KernelRuntime, ResourcesApiService, ServiceFailure},
     storage::nonfollowing_read_options,
@@ -34,6 +34,7 @@ const MAGIC_BYTES: usize = 12;
 const MAX_IMMEDIATE_INVENTORY_CANDIDATES: usize = 50_000;
 const MAX_INVENTORY_SNAPSHOT_NODES: u64 = 100_000;
 const MAX_INVENTORY_FALLBACK_BYTES: u64 = 512 * 1024 * 1024;
+const MAX_INVENTORY_TREE_DEPTH: usize = 128;
 
 #[derive(Clone)]
 pub struct WorkspaceResourceService {
@@ -111,6 +112,11 @@ impl WorkspaceResourceService {
         if inventory_candidates(&directory, &query.parent, &ignore, &mut budget)? != candidates {
             return Err(ResourceServiceError::unsafe_target());
         }
+        context
+            .snapshot
+            .authority()
+            .verify_held_directory()
+            .map_err(|_| ResourceServiceError::unavailable())?;
         let next_cursor = if end < candidates.len() {
             let last = items
                 .last()
@@ -391,6 +397,8 @@ fn inventory_candidates(
             if !same_file(&addressed, &retained) {
                 return Err(ResourceServiceError::unsafe_target());
             }
+            let retained_modified = InventoryModifiedTime::capture(&retained)
+                .map_err(|_| ResourceServiceError::unavailable())?;
             let digest = tree_snapshot_digest(&child, &path, budget)?;
             let after = trusted_directory_metadata(&child)?;
             let named = directory
@@ -400,10 +408,16 @@ fn inventory_candidates(
                 || named.file_type().is_symlink()
                 || !same_file(&retained, &after)
                 || !same_file(&retained, &named)
+                || InventoryModifiedTime::capture(&after)
+                    .map_err(|_| ResourceServiceError::unavailable())?
+                    != retained_modified
+                || InventoryModifiedTime::capture(&named)
+                    .map_err(|_| ResourceServiceError::unavailable())?
+                    != retained_modified
             {
                 return Err(ResourceServiceError::unsafe_target());
             }
-            InventoryCandidateSnapshot::from_tree_digest(path.clone(), digest)
+            InventoryCandidateSnapshot::from_tree_digest(path.clone(), digest, retained_modified)
         } else {
             inventory_file_snapshot(directory, name, path.clone(), &addressed, budget)?
         };
@@ -449,14 +463,14 @@ fn inventory_file_snapshot(
     match InventoryCandidateSnapshot::from_file_stamp(path.clone(), entry_type, stamp) {
         Ok(snapshot) => Ok(snapshot),
         Err(_) => {
-            budget
-                .charge_fallback_bytes(addressed.len())
+            let inspected = inspect_regular_file_with_budget(directory, name, addressed, budget)?;
+            let modified_at = InventoryModifiedTime::capture(&inspected.metadata)
                 .map_err(|_| ResourceServiceError::unavailable())?;
-            let inspected = inspect_regular_file(directory, name, addressed)?;
             Ok(InventoryCandidateSnapshot::from_content_digest(
                 path,
                 entry_type,
                 inspected.content_digest,
+                modified_at,
             ))
         }
     }
@@ -467,8 +481,22 @@ fn tree_snapshot_digest(
     path: &WorkspaceRelativePath,
     budget: &mut InventorySnapshotBudget,
 ) -> Result<ContentDigest, ResourceServiceError> {
+    tree_snapshot_digest_at_depth(directory, path, budget, 0)
+}
+
+fn tree_snapshot_digest_at_depth(
+    directory: &Dir,
+    path: &WorkspaceRelativePath,
+    budget: &mut InventorySnapshotBudget,
+    depth: usize,
+) -> Result<ContentDigest, ResourceServiceError> {
+    if depth > MAX_INVENTORY_TREE_DEPTH {
+        return Err(ResourceServiceError::unavailable());
+    }
     let before = trusted_directory_metadata(directory)?;
     let before_stamp = FileVersionStamp::capture_metadata(&before);
+    let before_modified =
+        InventoryModifiedTime::capture(&before).map_err(|_| ResourceServiceError::unavailable())?;
     let names = tree_entry_names(directory)?;
     let mut manifest = Vec::with_capacity(names.len().saturating_add(1));
     if let Ok(directory_stamp) = InventoryCandidateSnapshot::from_file_stamp(
@@ -503,7 +531,10 @@ fn tree_snapshot_digest(
             if !same_file(&addressed, &retained) {
                 return Err(ResourceServiceError::unsafe_target());
             }
-            let digest = tree_snapshot_digest(&child, &child_path, budget)?;
+            let child_depth = depth
+                .checked_add(1)
+                .ok_or_else(ResourceServiceError::unavailable)?;
+            let digest = tree_snapshot_digest_at_depth(&child, &child_path, budget, child_depth)?;
             let after = trusted_directory_metadata(&child)?;
             let named = directory
                 .symlink_metadata(name)
@@ -515,8 +546,21 @@ fn tree_snapshot_digest(
             {
                 return Err(ResourceServiceError::unsafe_target());
             }
+            let modified_at = InventoryModifiedTime::capture(&after)
+                .map_err(|_| ResourceServiceError::unavailable())?;
+            if InventoryModifiedTime::capture(&retained)
+                .map_err(|_| ResourceServiceError::unavailable())?
+                != modified_at
+                || InventoryModifiedTime::capture(&named)
+                    .map_err(|_| ResourceServiceError::unavailable())?
+                    != modified_at
+            {
+                return Err(ResourceServiceError::unsafe_target());
+            }
             manifest.push(InventoryCandidateSnapshot::from_tree_digest(
-                child_path, digest,
+                child_path,
+                digest,
+                modified_at,
             ));
         } else if addressed.is_file() {
             manifest.push(inventory_file_snapshot(
@@ -530,7 +574,12 @@ fn tree_snapshot_digest(
         return Err(ResourceServiceError::unsafe_target());
     }
     let after = trusted_directory_metadata(directory)?;
-    if !same_file(&before, &after) || FileVersionStamp::capture_metadata(&after) != before_stamp {
+    if !same_file(&before, &after)
+        || FileVersionStamp::capture_metadata(&after) != before_stamp
+        || InventoryModifiedTime::capture(&after)
+            .map_err(|_| ResourceServiceError::unavailable())?
+            != before_modified
+    {
         return Err(ResourceServiceError::unsafe_target());
     }
     let serialized =
@@ -732,6 +781,24 @@ fn inspect_regular_file(
     name: &str,
     addressed: &Metadata,
 ) -> Result<InspectedFile, ResourceServiceError> {
+    inspect_regular_file_inner(directory, name, addressed, None)
+}
+
+fn inspect_regular_file_with_budget(
+    directory: &Dir,
+    name: &str,
+    addressed: &Metadata,
+    budget: &mut InventorySnapshotBudget,
+) -> Result<InspectedFile, ResourceServiceError> {
+    inspect_regular_file_inner(directory, name, addressed, Some(budget))
+}
+
+fn inspect_regular_file_inner(
+    directory: &Dir,
+    name: &str,
+    addressed: &Metadata,
+    fallback_budget: Option<&mut InventorySnapshotBudget>,
+) -> Result<InspectedFile, ResourceServiceError> {
     if !trusted_regular_file(addressed) {
         return Err(ResourceServiceError::unsafe_target());
     }
@@ -744,27 +811,43 @@ fn inspect_regular_file(
     if !trusted_regular_file(&retained) || !same_file(addressed, &retained) {
         return Err(ResourceServiceError::unsafe_target());
     }
+    if let Some(budget) = fallback_budget {
+        budget
+            .charge_fallback_bytes(retained.len())
+            .map_err(|_| ResourceServiceError::unavailable())?;
+    }
+    let addressed_modified = addressed
+        .modified()
+        .map_err(|_| ResourceServiceError::unavailable())?;
     let expected_modified = retained
         .modified()
         .map_err(|_| ResourceServiceError::unavailable())?;
+    let expected_stamp = FileVersionStamp::capture_metadata(&retained);
+    if addressed.len() != retained.len()
+        || addressed_modified != expected_modified
+        || FileVersionStamp::capture_metadata(addressed) != expected_stamp
+    {
+        return Err(ResourceServiceError::unsafe_target());
+    }
     let mut digest = Sha256::new();
     let mut total = 0_u64;
     let mut magic = [0_u8; MAGIC_BYTES];
     let mut magic_len = 0;
     let mut buffer = [0_u8; STREAM_BUFFER_BYTES];
-    loop {
+    while total < retained.len() {
+        let remaining = retained.len() - total;
+        let limit = usize::try_from(remaining)
+            .unwrap_or(buffer.len())
+            .min(buffer.len());
         let read = file
-            .read(&mut buffer)
+            .read(&mut buffer[..limit])
             .map_err(|_| ResourceServiceError::unavailable())?;
         if read == 0 {
-            break;
+            return Err(ResourceServiceError::unsafe_target());
         }
         total = total
             .checked_add(read as u64)
             .ok_or_else(ResourceServiceError::unsafe_target)?;
-        if total > retained.len() {
-            return Err(ResourceServiceError::unsafe_target());
-        }
         let copy = (MAGIC_BYTES - magic_len).min(read);
         magic[magic_len..magic_len + copy].copy_from_slice(&buffer[..copy]);
         magic_len += copy;
@@ -776,6 +859,12 @@ fn inspect_regular_file(
     let named = directory
         .symlink_metadata(name)
         .map_err(|_| ResourceServiceError::unsafe_target())?;
+    let after_modified = after
+        .modified()
+        .map_err(|_| ResourceServiceError::unavailable())?;
+    let named_modified = named
+        .modified()
+        .map_err(|_| ResourceServiceError::unavailable())?;
     if !trusted_regular_file(&after)
         || !trusted_regular_file(&named)
         || !same_file(&retained, &after)
@@ -783,8 +872,10 @@ fn inspect_regular_file(
         || total != retained.len()
         || after.len() != retained.len()
         || named.len() != retained.len()
-        || after.modified().ok() != Some(expected_modified)
-        || named.modified().ok() != Some(expected_modified)
+        || after_modified != expected_modified
+        || named_modified != expected_modified
+        || FileVersionStamp::capture_metadata(&after) != expected_stamp
+        || FileVersionStamp::capture_metadata(&named) != expected_stamp
     {
         return Err(ResourceServiceError::unsafe_target());
     }
@@ -810,12 +901,26 @@ fn inspect_regular_file(
 }
 
 fn ordinary_entry_names(directory: &Dir) -> Result<Vec<String>, ResourceServiceError> {
+    ordinary_entry_names_with_limit(directory, MAX_IMMEDIATE_INVENTORY_CANDIDATES)
+}
+
+fn ordinary_entry_names_with_limit(
+    directory: &Dir,
+    maximum_raw_entries: usize,
+) -> Result<Vec<String>, ResourceServiceError> {
     let mut names = Vec::new();
+    let mut raw_entries = 0_usize;
     for entry in directory
         .entries()
         .map_err(|_| ResourceServiceError::unavailable())?
     {
         let entry = entry.map_err(|_| ResourceServiceError::unavailable())?;
+        raw_entries = raw_entries
+            .checked_add(1)
+            .ok_or_else(ResourceServiceError::unavailable)?;
+        if raw_entries > maximum_raw_entries {
+            return Err(ResourceServiceError::unavailable());
+        }
         let name = entry
             .file_name()
             .to_str()
@@ -826,9 +931,6 @@ fn ordinary_entry_names(directory: &Dir) -> Result<Vec<String>, ResourceServiceE
         }
         ResourceName::parse(&name).map_err(|_| ResourceServiceError::invalid_path())?;
         names.push(name);
-        if names.len() > MAX_IMMEDIATE_INVENTORY_CANDIDATES {
-            return Err(ResourceServiceError::unavailable());
-        }
     }
     names.sort();
     Ok(names)
@@ -1095,4 +1197,75 @@ fn stream_changed() -> io::Error {
         io::ErrorKind::InvalidData,
         "retained resource changed while streaming",
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use cap_std::{ambient_authority, fs::Dir};
+    use tempfile::tempdir;
+
+    use crate::resources::ResourceServiceErrorKind;
+
+    use super::{inventory_snapshot_budget, tree_snapshot_digest, WorkspaceRelativePath};
+
+    #[test]
+    fn tree_snapshot_rejects_excessive_nesting() {
+        let temporary = tempdir().unwrap();
+        let mut path = temporary.path().to_path_buf();
+        for _ in 0..130 {
+            path.push("d");
+            fs::create_dir(&path).unwrap();
+        }
+        let directory = Dir::open_ambient_dir(temporary.path(), ambient_authority()).unwrap();
+        let mut budget = inventory_snapshot_budget();
+
+        let error =
+            tree_snapshot_digest(&directory, &WorkspaceRelativePath::default(), &mut budget)
+                .unwrap_err();
+
+        assert_eq!(error.kind(), ResourceServiceErrorKind::Unavailable);
+    }
+
+    #[test]
+    fn raw_protected_entries_are_counted_before_filtering() {
+        let temporary = tempdir().unwrap();
+        fs::create_dir(temporary.path().join(".qingyu-first")).unwrap();
+        fs::create_dir(temporary.path().join(".qingyu-second")).unwrap();
+        let directory = Dir::open_ambient_dir(temporary.path(), ambient_authority()).unwrap();
+
+        let error = super::ordinary_entry_names_with_limit(&directory, 1).unwrap_err();
+
+        assert_eq!(error.kind(), ResourceServiceErrorKind::Unavailable);
+    }
+
+    #[test]
+    fn fallback_budget_charges_the_retained_length_before_reading() {
+        use crate::inventory_snapshot::{InventorySnapshotBudget, InventorySnapshotLimits};
+
+        let temporary = tempdir().unwrap();
+        let path = temporary.path().join("growing.bin");
+        fs::write(&path, b"a").unwrap();
+        let directory = Dir::open_ambient_dir(temporary.path(), ambient_authority()).unwrap();
+        let addressed = directory.symlink_metadata("growing.bin").unwrap();
+        fs::write(path, b"grown").unwrap();
+        let mut budget = InventorySnapshotBudget::new(InventorySnapshotLimits {
+            maximum_nodes: 1,
+            maximum_fallback_bytes: 1,
+        });
+
+        let result = super::inspect_regular_file_with_budget(
+            &directory,
+            "growing.bin",
+            &addressed,
+            &mut budget,
+        );
+        let error = match result {
+            Err(error) => error,
+            Ok(_) => panic!("grown fallback file must exceed the retained-length budget"),
+        };
+
+        assert_eq!(error.kind(), ResourceServiceErrorKind::Unavailable);
+    }
 }
