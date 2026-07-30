@@ -16,6 +16,8 @@ const WORKSPACE_ID = "123e4567-e89b-42d3-a456-426614174001";
 const REQUEST_ID = "123e4567-e89b-42d3-a456-426614174002";
 const CREDENTIAL = "kernel-credential-must-remain-private";
 const BASE_URL = "http://127.0.0.1:49152/";
+const PROCESS_GENERATION = "7";
+const WORKSPACE_GENERATION = "123e4567-e89b-42d3-a456-426614174003";
 
 describe("desktop Kernel domain adapter", () => {
   it("accepts both the native bootstrap and the explicit connection contract", () => {
@@ -23,8 +25,8 @@ describe("desktop Kernel domain adapter", () => {
     expectTypeOf<{
       authentication: DesktopKernelConnection["authentication"];
       baseUrl: string;
-      generation: string;
       instanceId: string;
+      processGeneration: string;
     }>().toMatchTypeOf<DesktopKernelConnection>();
   });
 
@@ -95,7 +97,6 @@ describe("desktop Kernel domain adapter", () => {
       "/api/v1/runtime",
       { ...runtimeBody(), capabilities: { ...runtimeBody().capabilities, documents: false } },
     ],
-    ["workspace generation", "/api/v1/workspace", { ...workspaceBody(), generation: "8" }],
     ["workspace readiness", "/api/v1/workspace", { ...workspaceBody(), readiness: "locked" }],
   ])("fails initialization when the %s handshake field differs", async (_name, path, body) => {
     const release = vi.fn(() => undefined);
@@ -162,7 +163,7 @@ describe("desktop Kernel domain adapter", () => {
     });
     await expect(adapter.port.workspace.read()).resolves.toEqual({
       displayName: "Notes",
-      generation: "7",
+      generation: WORKSPACE_GENERATION,
       id: WORKSPACE_ID,
       readiness: "ready",
       revision: "workspace-revision-1",
@@ -193,7 +194,7 @@ describe("desktop Kernel domain adapter", () => {
     };
     const adapter = await createDesktopKernelDomainAdapter(connection(), { fetch });
     const locator = documentId as KernelDocumentLocator;
-    const workspaceGeneration = "7" as KernelWorkspaceGeneration;
+    const workspaceGeneration = WORKSPACE_GENERATION as KernelWorkspaceGeneration;
 
     const read = await adapter.port.documents.read({ locator, workspaceGeneration });
     const updated = await adapter.port.documents.update({
@@ -231,7 +232,7 @@ describe("desktop Kernel domain adapter", () => {
         body: {
           contents: "updated",
           expectedRevision: "revision-1",
-          workspaceGeneration: "7",
+          workspaceGeneration: WORKSPACE_GENERATION,
         },
         method: "PUT",
         pathname: "/api/v1/documents/document.signature",
@@ -269,7 +270,7 @@ describe("desktop Kernel domain adapter", () => {
     await expect(
       adapter.port.documents.read({
         locator: "document.signature" as KernelDocumentLocator,
-        workspaceGeneration: "7" as KernelWorkspaceGeneration,
+        workspaceGeneration: WORKSPACE_GENERATION as KernelWorkspaceGeneration,
       }),
     ).rejects.toMatchObject({ code: "released" });
     expect(documentRequests).toBe(0);
@@ -342,7 +343,7 @@ describe("desktop Kernel domain adapter", () => {
     await expect(
       adapter.port.documents.read({
         locator: "document.signature" as KernelDocumentLocator,
-        workspaceGeneration: "7" as KernelWorkspaceGeneration,
+        workspaceGeneration: WORKSPACE_GENERATION as KernelWorkspaceGeneration,
       }),
     ).rejects.toMatchObject({ code: "protocol-mismatch" });
     await expect(adapter.port.workspace.read()).rejects.toMatchObject({ code: "released" });
@@ -350,16 +351,21 @@ describe("desktop Kernel domain adapter", () => {
   });
 });
 
+type ExplicitDesktopKernelConnection = Extract<
+  DesktopKernelConnection,
+  { processGeneration: string }
+>;
+
 function connection(
-  overrides: Partial<DesktopKernelConnection> = {},
-): DesktopKernelConnection {
+  overrides: Partial<ExplicitDesktopKernelConnection> = {},
+): ExplicitDesktopKernelConnection {
   return {
     authentication: {
       kind: "native-bearer",
       getCredential: () => CREDENTIAL,
     },
     baseUrl: BASE_URL,
-    generation: "7",
+    processGeneration: PROCESS_GENERATION,
     instanceId: INSTANCE_ID,
     ...overrides,
   };
@@ -403,7 +409,7 @@ function runtimeBody() {
 function workspaceBody() {
   return {
     displayName: "Notes",
-    generation: "7",
+    generation: WORKSPACE_GENERATION,
     id: WORKSPACE_ID,
     readiness: "ready" as const,
     revision: "workspace-revision-1",

@@ -15,13 +15,23 @@ import type {
 } from "@markra/kernel-client";
 import { createKernelClient } from "@markra/kernel-client";
 
-export interface DesktopKernelConnection {
+interface DesktopKernelConnectionBase {
   readonly authentication: NativeBearerAuthentication;
   readonly baseUrl: string;
-  readonly generation: string;
   readonly instanceId: string;
   readonly release?: () => unknown;
 }
+
+export type DesktopKernelConnection = DesktopKernelConnectionBase & (
+  | {
+      readonly generation: string;
+      readonly processGeneration?: never;
+    }
+  | {
+      readonly generation?: never;
+      readonly processGeneration: string;
+    }
+);
 
 export interface DesktopKernelDomainAdapter {
   readonly port: KernelDomainPort;
@@ -59,7 +69,8 @@ export async function createDesktopKernelDomainAdapter(
   connection: DesktopKernelConnection,
   options: DesktopKernelDomainAdapterOptions = {},
 ): Promise<DesktopKernelDomainAdapter> {
-  const { baseUrl, generation, instanceId, release } = connection;
+  const { baseUrl, instanceId, release } = connection;
+  const processGeneration = connection.processGeneration ?? connection.generation;
   let authentication: NativeBearerAuthentication | undefined = connection.authentication;
   let lifecycle: "initializing" | "active" | "closed" = "initializing";
   let ownershipReleased = false;
@@ -93,6 +104,9 @@ export async function createDesktopKernelDomainAdapter(
   };
 
   try {
+    if (!isCanonicalProcessGeneration(processGeneration)) {
+      throw new DesktopKernelDomainAdapterError("initialization-failed");
+    }
     const client = createKernelClient({
       auth: {
         kind: "native-bearer",
@@ -116,13 +130,15 @@ export async function createDesktopKernelDomainAdapter(
       throw new DesktopKernelDomainAdapterError("initialization-failed");
     }
     const workspace = await client.workspace.get({ signal: requests.signal });
-    if (!matchesDesktopWorkspace(workspace, generation)) {
+    if (!matchesReadyWorkspace(workspace)) {
       throw new DesktopKernelDomainAdapterError("initialization-failed");
     }
+    const workspaceGeneration = workspace.generation as KernelWorkspaceGeneration;
+    const workspaceId = workspace.id;
 
     lifecycle = "active";
     const assertWorkspaceGeneration = (candidate: KernelWorkspaceGeneration) => {
-      if (candidate !== generation) {
+      if (candidate !== workspaceGeneration) {
         throw new DesktopKernelDomainAdapterError("workspace-generation-mismatch");
       }
     };
@@ -178,7 +194,7 @@ export async function createDesktopKernelDomainAdapter(
           assertActive();
           const current = await client.workspace.get({ signal: requests.signal });
           assertActive();
-          if (!matchesDesktopWorkspace(current, generation)) {
+          if (!matchesDesktopWorkspace(current, workspaceId, workspaceGeneration)) {
             return protocolMismatch();
           }
           return mapWorkspace(current);
@@ -209,8 +225,25 @@ function matchesDesktopRuntime(runtime: RuntimeSource, instanceId: string) {
   );
 }
 
-function matchesDesktopWorkspace(workspace: WorkspaceSource, generation: string) {
-  return workspace.generation === generation && workspace.readiness === "ready";
+function matchesReadyWorkspace(workspace: WorkspaceSource) {
+  return workspace.readiness === "ready" && workspace.generation.length > 0;
+}
+
+function matchesDesktopWorkspace(
+  workspace: WorkspaceSource,
+  workspaceId: string,
+  generation: KernelWorkspaceGeneration,
+) {
+  return (
+    matchesReadyWorkspace(workspace) &&
+    workspace.id === workspaceId &&
+    workspace.generation === generation
+  );
+}
+
+function isCanonicalProcessGeneration(value: string) {
+  if (!/^(?:0|[1-9][0-9]*)$/u.test(value) || value.length > 20) return false;
+  return BigInt(value) <= BigInt("18446744073709551615");
 }
 
 function mapCapabilities(
