@@ -9,6 +9,14 @@ import {
   type KernelDomainPort,
   type NativeShellPort
 } from "@markra/app/runtime";
+import {
+  readNativeKernelBootstrap,
+  type NativeKernelBootstrap
+} from "../kernel-bootstrap";
+import {
+  createDesktopKernelDomainAdapter,
+  type DesktopKernelDomainAdapter
+} from "./kernel";
 import { createDesktopNativeShellPort } from "./native-shell";
 import * as dialog from "./tauri/dialog";
 import * as files from "./tauri/file/desktop";
@@ -70,6 +78,13 @@ export type DesktopRuntimeAdapters = {
   kernel: KernelDomainPort;
   nativeShell: NativeShellPort;
 };
+
+export interface DesktopRuntimeCompositionOptions {
+  readonly createKernelDomainAdapter?: (
+    bootstrap: NativeKernelBootstrap
+  ) => Promise<DesktopKernelDomainAdapter>;
+  readonly readKernelBootstrap?: () => Promise<NativeKernelBootstrap | null>;
+}
 
 export function createDesktopRuntime({
   kernel = createUnavailableKernelDomainPort(),
@@ -285,6 +300,38 @@ export function createDesktopRuntime({
     resolveManagedRoot: managedWorkspace.resolveNativeManagedWorkspaceRoot
   }
   };
+}
+
+export async function loadDesktopRuntime({
+  createKernelDomainAdapter = createDesktopKernelDomainAdapter,
+  readKernelBootstrap = readNativeKernelBootstrap
+}: DesktopRuntimeCompositionOptions = {}): Promise<AppRuntime> {
+  const bootstrap = await readKernelBootstrap();
+
+  if (bootstrap === null) {
+    return createDesktopRuntime();
+  }
+
+  let adapter: DesktopKernelDomainAdapter;
+  try {
+    adapter = await createKernelDomainAdapter(bootstrap);
+  } catch (cause: unknown) {
+    try {
+      bootstrap.release();
+    } catch {
+      // Credential release is best-effort while preserving the initialization failure.
+    }
+    throw cause;
+  }
+
+  try {
+    const runtime = createDesktopRuntime({ kernel: adapter.port });
+    window.addEventListener("pagehide", adapter.release, { once: true });
+    return runtime;
+  } catch (cause: unknown) {
+    adapter.release();
+    throw cause;
+  }
 }
 
 export const desktopRuntime = createDesktopRuntime();

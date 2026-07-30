@@ -4,7 +4,7 @@ import type { AppRuntime } from "@markra/app/runtime";
 export type NativeRuntimeKind = "desktop" | "mobile";
 
 type NativeRuntimeLoaders = {
-  desktop: () => Promise<{ desktopRuntime: AppRuntime }>;
+  desktop: () => Promise<{ loadDesktopRuntime: () => Promise<AppRuntime> }>;
   mobile: () => Promise<{ mobileRuntime: AppRuntime }>;
 };
 
@@ -26,12 +26,12 @@ export async function loadNativeRuntime(
   try {
     platform = readPlatform();
   } catch {
-    return (await loaders.desktop()).desktopRuntime;
+    return (await loaders.desktop()).loadDesktopRuntime();
   }
 
   if (nativeRuntimeKind(platform) === "mobile") {
     return (await loaders.mobile()).mobileRuntime;
   }
 
-  return (await loaders.desktop()).desktopRuntime;
+  return (await loaders.desktop()).loadDesktopRuntime();
 }

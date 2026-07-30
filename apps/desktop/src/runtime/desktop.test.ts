@@ -2,7 +2,24 @@ import {
   createUnavailableKernelDomainPort,
   createUnavailableNativeShellPort
 } from "@markra/app/runtime";
-import { createDesktopRuntime } from "./desktop";
+import type { NativeKernelBootstrap } from "../kernel-bootstrap";
+import {
+  createDesktopRuntime,
+  loadDesktopRuntime
+} from "./desktop";
+
+function createReadyBootstrap(): NativeKernelBootstrap {
+  return {
+    authentication: {
+      getCredential: () => "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      kind: "native-bearer"
+    },
+    baseUrl: "http://127.0.0.1:49152/",
+    generation: "1",
+    instanceId: "123e4567-e89b-42d3-a456-426614174000",
+    release: vi.fn(() => undefined)
+  };
+}
 
 describe("desktop runtime composition", () => {
   it("injects domain and native-shell adapters by identity", () => {
@@ -13,5 +30,78 @@ describe("desktop runtime composition", () => {
 
     expect(runtime.kernel).toBe(kernel);
     expect(runtime.nativeShell).toBe(nativeShell);
+  });
+
+  it("keeps the Kernel port unavailable while the native bootstrap is dormant", async () => {
+    const createKernelDomainAdapter = vi.fn();
+
+    const runtime = await loadDesktopRuntime({
+      createKernelDomainAdapter,
+      readKernelBootstrap: async () => null
+    });
+
+    expect(runtime.kernel.availability).toBe("unavailable");
+    expect(createKernelDomainAdapter).not.toHaveBeenCalled();
+  });
+
+  it("injects the ready native Kernel adapter into the production desktop runtime", async () => {
+    const bootstrap = createReadyBootstrap();
+    const kernel = createUnavailableKernelDomainPort();
+    const release = vi.fn(() => undefined);
+    const createKernelDomainAdapter = vi.fn(async () => ({ port: kernel, release }));
+
+    const runtime = await loadDesktopRuntime({
+      createKernelDomainAdapter,
+      readKernelBootstrap: async () => bootstrap
+    });
+
+    expect(createKernelDomainAdapter).toHaveBeenCalledWith(bootstrap);
+    expect(runtime.kernel).toBe(kernel);
+
+    window.dispatchEvent(new Event("pagehide"));
+  });
+
+  it("fails closed when the native Kernel bootstrap cannot be read", async () => {
+    const bootstrapError = new Error("invalid native Kernel bootstrap");
+    const createKernelDomainAdapter = vi.fn();
+
+    await expect(loadDesktopRuntime({
+      createKernelDomainAdapter,
+      readKernelBootstrap: async () => {
+        throw bootstrapError;
+      }
+    })).rejects.toBe(bootstrapError);
+    expect(createKernelDomainAdapter).not.toHaveBeenCalled();
+  });
+
+  it("fails closed and releases bootstrap ownership when adapter initialization rejects", async () => {
+    const bootstrap = createReadyBootstrap();
+    const adapterError = new Error("Kernel readiness rejected");
+
+    await expect(loadDesktopRuntime({
+      createKernelDomainAdapter: async () => {
+        throw adapterError;
+      },
+      readKernelBootstrap: async () => bootstrap
+    })).rejects.toBe(adapterError);
+    expect(bootstrap.release).toHaveBeenCalledTimes(1);
+  });
+
+  it("releases the active Kernel adapter exactly once when the page lifecycle ends", async () => {
+    const bootstrap = createReadyBootstrap();
+    const release = vi.fn(() => undefined);
+
+    await loadDesktopRuntime({
+      createKernelDomainAdapter: async () => ({
+        port: createUnavailableKernelDomainPort(),
+        release
+      }),
+      readKernelBootstrap: async () => bootstrap
+    });
+
+    window.dispatchEvent(new Event("pagehide"));
+    window.dispatchEvent(new Event("pagehide"));
+
+    expect(release).toHaveBeenCalledTimes(1);
   });
 });

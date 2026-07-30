@@ -44,13 +44,15 @@ const mockedInvoke = vi.mocked(invoke);
 function createInjectedLoaders() {
   const injectedDesktopRuntime = createDefaultAppRuntime();
   const injectedMobileRuntime = createDefaultAppRuntime();
-  const desktop = vi.fn(async () => ({ desktopRuntime: injectedDesktopRuntime }));
+  const loadDesktopRuntime = vi.fn(async () => injectedDesktopRuntime);
+  const desktop = vi.fn(async () => ({ loadDesktopRuntime }));
   const mobile = vi.fn(async () => ({ mobileRuntime: injectedMobileRuntime }));
 
   return {
     desktop,
     injectedDesktopRuntime,
     injectedMobileRuntime,
+    loadDesktopRuntime,
     mobile
   };
 }
@@ -80,6 +82,7 @@ describe("native runtime selection", () => {
 
     await expect(nativeRuntime.loadNativeRuntime(() => platform, loaders)).resolves.toBe(loaders.injectedDesktopRuntime);
     expect(loaders.desktop).toHaveBeenCalledTimes(1);
+    expect(loaders.loadDesktopRuntime).toHaveBeenCalledTimes(1);
     expect(loaders.mobile).not.toHaveBeenCalled();
   });
 
@@ -91,6 +94,7 @@ describe("native runtime selection", () => {
 
     await expect(nativeRuntime.loadNativeRuntime(readPlatform, loaders)).resolves.toBe(loaders.injectedDesktopRuntime);
     expect(loaders.desktop).toHaveBeenCalledTimes(1);
+    expect(loaders.loadDesktopRuntime).toHaveBeenCalledTimes(1);
     expect(loaders.mobile).not.toHaveBeenCalled();
   });
 
@@ -102,6 +106,17 @@ describe("native runtime selection", () => {
     await expect(nativeRuntime.loadNativeRuntime(() => "android", loaders)).rejects.toBe(loadError);
     expect(loaders.mobile).toHaveBeenCalledTimes(1);
     expect(loaders.desktop).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when desktop runtime composition rejects", async () => {
+    const loaders = createInjectedLoaders();
+    const loadError = new Error("desktop Kernel adapter rejected bootstrap");
+    loaders.loadDesktopRuntime.mockRejectedValueOnce(loadError);
+
+    await expect(nativeRuntime.loadNativeRuntime(() => "linux", loaders)).rejects.toBe(loadError);
+    expect(loaders.desktop).toHaveBeenCalledTimes(1);
+    expect(loaders.loadDesktopRuntime).toHaveBeenCalledTimes(1);
+    expect(loaders.mobile).not.toHaveBeenCalled();
   });
 });
 

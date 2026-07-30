@@ -1,6 +1,3 @@
-import { readdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
-
 import { readNativeKernelBootstrap } from "./kernel-bootstrap";
 
 const INSTANCE_ID = "123e4567-e89b-42d3-a456-426614174000";
@@ -26,19 +23,6 @@ describe("native Kernel bootstrap reader", () => {
 
     await expect(readNativeKernelBootstrap(invoke)).resolves.toBeNull();
     expect(invoke).toHaveBeenCalledWith("read_native_kernel_bootstrap");
-  });
-
-  it("remains disconnected from every production application module", () => {
-    const productionSources = collectProductionSources("src").filter(
-      (path) => path !== join("src", "kernel-bootstrap.ts")
-    );
-
-    for (const path of productionSources) {
-      const source = readFileSync(path, "utf8");
-      expect(source, path).not.toContain("kernel-bootstrap");
-      expect(source, path).not.toContain("readNativeKernelBootstrap");
-      expect(source, path).not.toContain("read_native_kernel_bootstrap");
-    }
   });
 
   it("exposes a fixed loopback endpoint while keeping the credential only behind a closure", async () => {
@@ -201,16 +185,3 @@ describe("native Kernel bootstrap reader", () => {
     }
   );
 });
-
-function collectProductionSources(directory: string): string[] {
-  return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
-    const path = join(directory, entry.name);
-    if (entry.isDirectory()) {
-      return collectProductionSources(path);
-    }
-    if (!/\.tsx?$/u.test(entry.name) || /\.test\.tsx?$/u.test(entry.name)) {
-      return [];
-    }
-    return [path];
-  });
-}
