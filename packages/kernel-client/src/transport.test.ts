@@ -264,7 +264,10 @@ describe("KernelHttpTransport", () => {
           requestId: REQUEST_ID,
           details: { type: "rate-limit", retryAfterSeconds: 31 },
         },
-        { status: 429, headers: { "x-request-id": REQUEST_ID } },
+        {
+          status: 429,
+          headers: { "retry-after": "31", "x-request-id": REQUEST_ID },
+        },
       ),
     );
 
@@ -288,13 +291,86 @@ describe("KernelHttpTransport", () => {
             requestId: REQUEST_ID,
             details: { type: "rate-limit", retryAfterSeconds },
           },
-          { status: 429, headers: { "x-request-id": REQUEST_ID } },
+          {
+            status: 429,
+            headers: { "retry-after": "31", "x-request-id": REQUEST_ID },
+          },
         ),
       );
       await expect(
         invalid.request({ method: "POST", path: "/api/v1/auth/session", body: {} }),
       ).rejects.toBeInstanceOf(KernelProtocolError);
     }
+
+    const invalidRetryHints: Array<{
+      details?: { type: string; retryAfterSeconds: number };
+      retryAfter?: string;
+    }> = [
+      { retryAfter: "31" },
+      { details: { type: "rate-limit", retryAfterSeconds: 31 } },
+      { details: { type: "rate-limit", retryAfterSeconds: 31 }, retryAfter: "30" },
+      { details: { type: "rate-limit", retryAfterSeconds: 31 }, retryAfter: "0" },
+      { details: { type: "rate-limit", retryAfterSeconds: 31 }, retryAfter: "01" },
+      { details: { type: "rate-limit", retryAfterSeconds: 31 }, retryAfter: "+31" },
+      { details: { type: "rate-limit", retryAfterSeconds: 31 }, retryAfter: "31.0" },
+      { details: { type: "rate-limit", retryAfterSeconds: 31 }, retryAfter: "3 1" },
+      {
+        details: { type: "rate-limit", retryAfterSeconds: 31 },
+        retryAfter: String(Number.MAX_SAFE_INTEGER + 1),
+      },
+    ];
+    for (const { details: invalidDetails, retryAfter } of invalidRetryHints) {
+      const invalid = createTransport(async () =>
+        jsonResponse(
+          {
+            code: "authentication_rate_limited",
+            message: "Authentication is temporarily limited.",
+            requestId: REQUEST_ID,
+            ...(invalidDetails === undefined ? {} : { details: invalidDetails }),
+          },
+          {
+            status: 429,
+            headers: {
+              ...(retryAfter === undefined ? {} : { "retry-after": retryAfter }),
+              "x-request-id": REQUEST_ID,
+            },
+          },
+        ),
+      );
+      await expect(
+        invalid.request({ method: "POST", path: "/api/v1/auth/session", body: {} }),
+      ).rejects.toBeInstanceOf(KernelProtocolError);
+    }
+
+    const maximum = createTransport(async () =>
+      jsonResponse(
+        {
+          code: "authentication_rate_limited",
+          message: "Authentication is temporarily limited.",
+          requestId: REQUEST_ID,
+          details: {
+            type: "rate-limit",
+            retryAfterSeconds: Number.MAX_SAFE_INTEGER,
+          },
+        },
+        {
+          status: 429,
+          headers: {
+            "retry-after": String(Number.MAX_SAFE_INTEGER),
+            "x-request-id": REQUEST_ID,
+          },
+        },
+      ),
+    );
+    await expect(
+      maximum.request({ method: "POST", path: "/api/v1/auth/session", body: {} }),
+    ).rejects.toMatchObject({
+      code: "authentication_rate_limited",
+      details: {
+        type: "rate-limit",
+        retryAfterSeconds: Number.MAX_SAFE_INTEGER,
+      },
+    });
   });
 
   it("rejects unsafe API error messages and mismatched status, details, or validation fields", async () => {

@@ -1429,7 +1429,8 @@
       },
       "PositiveSafeInteger": {
         "format": "int64",
-        "minimum": 0,
+        "maximum": 9007199254740991,
+        "minimum": 1,
         "type": "integer"
       },
       "ProtocolVersion": {
@@ -3196,8 +3197,31 @@
                             "authentication_rate_limited"
                           ],
                           "type": "string"
+                        },
+                        "details": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "retryAfterSeconds": {
+                              "$ref": "#/components/schemas/PositiveSafeInteger"
+                            },
+                            "type": {
+                              "enum": [
+                                "rate-limit"
+                              ],
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "type",
+                            "retryAfterSeconds"
+                          ],
+                          "type": "object"
                         }
                       },
+                      "required": [
+                        "code",
+                        "details"
+                      ],
                       "type": "object"
                     }
                   ]
@@ -3210,8 +3234,7 @@
                 "description": "Whole seconds until another authentication attempt is allowed.",
                 "required": true,
                 "schema": {
-                  "minimum": 1,
-                  "type": "integer"
+                  "$ref": "#/components/schemas/PositiveSafeInteger"
                 }
               },
               "X-Request-Id": {
@@ -3616,8 +3639,31 @@
                             "authentication_rate_limited"
                           ],
                           "type": "string"
+                        },
+                        "details": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "retryAfterSeconds": {
+                              "$ref": "#/components/schemas/PositiveSafeInteger"
+                            },
+                            "type": {
+                              "enum": [
+                                "rate-limit"
+                              ],
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "type",
+                            "retryAfterSeconds"
+                          ],
+                          "type": "object"
                         }
                       },
+                      "required": [
+                        "code",
+                        "details"
+                      ],
                       "type": "object"
                     }
                   ]
@@ -3630,8 +3676,7 @@
                 "description": "Whole seconds until another authentication attempt is allowed.",
                 "required": true,
                 "schema": {
-                  "minimum": 1,
-                  "type": "integer"
+                  "$ref": "#/components/schemas/PositiveSafeInteger"
                 }
               },
               "X-Request-Id": {
@@ -4085,8 +4130,31 @@
                             "authentication_rate_limited"
                           ],
                           "type": "string"
+                        },
+                        "details": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "retryAfterSeconds": {
+                              "$ref": "#/components/schemas/PositiveSafeInteger"
+                            },
+                            "type": {
+                              "enum": [
+                                "rate-limit"
+                              ],
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "type",
+                            "retryAfterSeconds"
+                          ],
+                          "type": "object"
                         }
                       },
+                      "required": [
+                        "code",
+                        "details"
+                      ],
                       "type": "object"
                     }
                   ]
@@ -4099,8 +4167,7 @@
                 "description": "Whole seconds until another authentication attempt is allowed.",
                 "required": true,
                 "schema": {
-                  "minimum": 1,
-                  "type": "integer"
+                  "$ref": "#/components/schemas/PositiveSafeInteger"
                 }
               },
               "X-Request-Id": {
@@ -11057,5 +11124,9 @@
         ]
       }
     }
-  }
+  },
+  "x-cors-exposed-response-headers": [
+    "Retry-After",
+    "X-Request-Id"
+  ]
 }

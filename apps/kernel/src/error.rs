@@ -39,6 +39,11 @@ pub fn safe_error_envelope(
     request_id: RequestId,
     details: Option<ErrorDetails>,
 ) -> Result<ApiErrorEnvelope, InvalidErrorDetails> {
+    if matches!(code, ErrorCode::AuthenticationRateLimited)
+        && !matches!(details.as_ref(), Some(ErrorDetails::RateLimit { .. }))
+    {
+        return Err(InvalidErrorDetails);
+    }
     if details
         .as_ref()
         .is_some_and(|details| !error_details_are_allowed(code, details))

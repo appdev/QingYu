@@ -338,6 +338,8 @@ impl ApiDoc {
         install_operation_errors(&mut document);
         install_security_scheme(&mut document);
         patch_literal_and_nullable_schemas(&mut document);
+        document["x-cors-exposed-response-headers"] =
+            serde_json::json!(["Retry-After", "X-Request-Id"]);
         document
     }
 }
@@ -1577,8 +1579,27 @@ fn add_operation_errors(
                 "description": "Whole seconds until another authentication attempt is allowed.",
                 "required": true,
                 "schema": {
-                    "type": "integer",
-                    "minimum": 1
+                    "$ref": "#/components/schemas/PositiveSafeInteger"
+                }
+            });
+        }
+        let mut error_refinement = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "code": { "type": "string", "enum": codes }
+            }
+        });
+        if status == 429 {
+            error_refinement["required"] = serde_json::json!(["code", "details"]);
+            error_refinement["properties"]["details"] = serde_json::json!({
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["type", "retryAfterSeconds"],
+                "properties": {
+                    "type": { "type": "string", "enum": ["rate-limit"] },
+                    "retryAfterSeconds": {
+                        "$ref": "#/components/schemas/PositiveSafeInteger"
+                    }
                 }
             });
         }
@@ -1592,12 +1613,7 @@ fn add_operation_errors(
                         "schema": {
                             "allOf": [
                                 { "$ref": "#/components/schemas/ApiErrorEnvelope" },
-                                {
-                                    "type": "object",
-                                    "properties": {
-                                        "code": { "type": "string", "enum": codes }
-                                    }
-                                }
+                                error_refinement
                             ]
                         }
                     }
@@ -1657,6 +1673,15 @@ fn patch_literal_and_nullable_schemas(document: &mut serde_json::Value) {
         .remove("AuthenticateFrameSchema")
         .expect("authenticate frame schema is registered");
     schemas.insert("AuthenticateFrame".to_owned(), authenticate);
+    let positive_safe_integer = schemas
+        .get_mut("PositiveSafeInteger")
+        .and_then(serde_json::Value::as_object_mut)
+        .expect("PositiveSafeInteger schema is an object");
+    positive_safe_integer.insert("minimum".to_owned(), serde_json::json!(1));
+    positive_safe_integer.insert(
+        "maximum".to_owned(),
+        serde_json::json!(crate::contract::MAX_SAFE_INTEGER),
+    );
     schemas
         .get_mut("DocumentContents")
         .and_then(serde_json::Value::as_object_mut)

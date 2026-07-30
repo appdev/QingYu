@@ -249,7 +249,11 @@ async function apiError(response: Response, headerRequestId: string) {
       requestId: headerRequestId,
     });
   }
-  if (!isApiErrorEnvelope(body, response.status) || headerRequestId !== body.requestId) {
+  if (
+    !isApiErrorEnvelope(body, response.status) ||
+    headerRequestId !== body.requestId ||
+    !hasMatchingRetryAfter(response, body)
+  ) {
     return new KernelProtocolError("invalid-http-response", {
       status: response.status,
       requestId: headerRequestId,
@@ -366,7 +370,7 @@ function isApiErrorCode(value: unknown): value is KernelApiErrorCode {
 }
 
 function isErrorDetails(value: unknown, code: KernelApiErrorCode) {
-  if (value === undefined) return true;
+  if (value === undefined) return code !== "authentication_rate_limited";
   if (typeof value !== "object" || value === null) return false;
   const details = value as Record<string, unknown>;
   switch (details.type) {
@@ -402,6 +406,19 @@ function isErrorDetails(value: unknown, code: KernelApiErrorCode) {
     default:
       return false;
   }
+}
+
+function hasMatchingRetryAfter(response: Response, body: ApiErrorEnvelope) {
+  if (body.code !== "authentication_rate_limited") return true;
+  if (body.details?.type !== "rate-limit") return false;
+  const retryAfter = parsePositiveSafeIntegerHeader(response.headers.get("retry-after"));
+  return retryAfter !== undefined && retryAfter === body.details.retryAfterSeconds;
+}
+
+function parsePositiveSafeIntegerHeader(value: string | null) {
+  if (value === null || !/^[1-9]\d*$/u.test(value)) return undefined;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) ? parsed : undefined;
 }
 
 function isValidationIssue(value: unknown) {

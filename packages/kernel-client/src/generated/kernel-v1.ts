@@ -1217,7 +1217,7 @@ export interface operations {
             429: {
                 headers: {
                     /** @description Whole seconds until another authentication attempt is allowed. */
-                    "Retry-After": number;
+                    "Retry-After": components["schemas"]["PositiveSafeInteger"];
                     /** @description Correlation ID for this response. */
                     "X-Request-Id": string;
                     [name: string]: unknown;
@@ -1225,7 +1225,12 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ApiErrorEnvelope"] & {
                         /** @enum {string} */
-                        code?: "authentication_rate_limited";
+                        code: "authentication_rate_limited";
+                        details: {
+                            retryAfterSeconds: components["schemas"]["PositiveSafeInteger"];
+                            /** @enum {string} */
+                            type: "rate-limit";
+                        };
                     };
                 };
             };
@@ -1403,7 +1408,7 @@ export interface operations {
             429: {
                 headers: {
                     /** @description Whole seconds until another authentication attempt is allowed. */
-                    "Retry-After": number;
+                    "Retry-After": components["schemas"]["PositiveSafeInteger"];
                     /** @description Correlation ID for this response. */
                     "X-Request-Id": string;
                     [name: string]: unknown;
@@ -1411,7 +1416,12 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ApiErrorEnvelope"] & {
                         /** @enum {string} */
-                        code?: "authentication_rate_limited";
+                        code: "authentication_rate_limited";
+                        details: {
+                            retryAfterSeconds: components["schemas"]["PositiveSafeInteger"];
+                            /** @enum {string} */
+                            type: "rate-limit";
+                        };
                     };
                 };
             };
@@ -1607,7 +1617,7 @@ export interface operations {
             429: {
                 headers: {
                     /** @description Whole seconds until another authentication attempt is allowed. */
-                    "Retry-After": number;
+                    "Retry-After": components["schemas"]["PositiveSafeInteger"];
                     /** @description Correlation ID for this response. */
                     "X-Request-Id": string;
                     [name: string]: unknown;
@@ -1615,7 +1625,12 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ApiErrorEnvelope"] & {
                         /** @enum {string} */
-                        code?: "authentication_rate_limited";
+                        code: "authentication_rate_limited";
+                        details: {
+                            retryAfterSeconds: components["schemas"]["PositiveSafeInteger"];
+                            /** @enum {string} */
+                            type: "rate-limit";
+                        };
                     };
                 };
             };

@@ -7,7 +7,7 @@ use sha2::{Digest, Sha256};
 use time::{format_description::well_known::Rfc3339, OffsetDateTime, UtcOffset};
 use utoipa::ToSchema;
 use uuid::Uuid;
-use zeroize::Zeroize;
+use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 #[cfg(test)]
 thread_local! {
@@ -755,11 +755,31 @@ pub struct InitializeServerOwnerRequest {
     password: String,
 }
 
+pub struct ServerAuthenticationSecret(Zeroizing<String>);
+
+impl ZeroizeOnDrop for ServerAuthenticationSecret {}
+
+impl ServerAuthenticationSecret {
+    fn new(value: String) -> Self {
+        Self(Zeroizing::new(value))
+    }
+
+    pub fn expose_secret(&self) -> &str {
+        self.0.as_str()
+    }
+}
+
+impl fmt::Debug for ServerAuthenticationSecret {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ServerAuthenticationSecret([REDACTED])")
+    }
+}
+
 impl InitializeServerOwnerRequest {
-    pub fn into_parts(mut self) -> (String, String) {
+    pub fn into_parts(mut self) -> (ServerAuthenticationSecret, ServerAuthenticationSecret) {
         (
-            std::mem::take(&mut self.initialization_token),
-            std::mem::take(&mut self.password),
+            ServerAuthenticationSecret::new(std::mem::take(&mut self.initialization_token)),
+            ServerAuthenticationSecret::new(std::mem::take(&mut self.password)),
         )
     }
 }
@@ -789,8 +809,8 @@ pub struct CreateServerSessionRequest {
 }
 
 impl CreateServerSessionRequest {
-    pub fn into_password(mut self) -> String {
-        std::mem::take(&mut self.password)
+    pub fn into_password(mut self) -> ServerAuthenticationSecret {
+        ServerAuthenticationSecret::new(std::mem::take(&mut self.password))
     }
 }
 
@@ -819,10 +839,10 @@ pub struct ChangeServerOwnerPasswordRequest {
 }
 
 impl ChangeServerOwnerPasswordRequest {
-    pub fn into_parts(mut self) -> (String, String) {
+    pub fn into_parts(mut self) -> (ServerAuthenticationSecret, ServerAuthenticationSecret) {
         (
-            std::mem::take(&mut self.current_password),
-            std::mem::take(&mut self.new_password),
+            ServerAuthenticationSecret::new(std::mem::take(&mut self.current_password)),
+            ServerAuthenticationSecret::new(std::mem::take(&mut self.new_password)),
         )
     }
 }

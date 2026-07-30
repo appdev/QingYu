@@ -2,18 +2,21 @@ use qingyu_kernel::{
     api::ApiDoc,
     contract::{
         ChangeServerOwnerPasswordRequest, CreateServerSessionRequest, ErrorCode, ErrorDetails,
-        InitializeServerOwnerRequest, PositiveSafeInteger, ServerAuthenticationStatusDto,
-        ServerInitializationState, ServerSessionDto, ServerSessionState,
+        InitializeServerOwnerRequest, PositiveSafeInteger, ServerAuthenticationSecret,
+        ServerAuthenticationStatusDto, ServerInitializationState, ServerSessionDto,
+        ServerSessionState, MAX_SAFE_INTEGER,
     },
     error::{http_status_for_error_code, safe_error_envelope},
 };
 use serde_json::{json, Value};
-use static_assertions::assert_not_impl_any;
+use static_assertions::{assert_impl_all, assert_not_impl_any};
 use uuid::Uuid;
 
 assert_not_impl_any!(InitializeServerOwnerRequest: serde::Serialize, Clone);
 assert_not_impl_any!(CreateServerSessionRequest: serde::Serialize, Clone);
 assert_not_impl_any!(ChangeServerOwnerPasswordRequest: serde::Serialize, Clone);
+assert_not_impl_any!(ServerAuthenticationSecret: serde::Serialize, Clone);
+assert_impl_all!(ServerAuthenticationSecret: zeroize::ZeroizeOnDrop);
 
 #[test]
 fn server_authentication_dtos_freeze_exact_camel_case_wire_shapes() {
@@ -37,26 +40,38 @@ fn server_authentication_dtos_freeze_exact_camel_case_wire_shapes() {
         "password": "owner-password",
     }))
     .unwrap();
+    let (initialization_token, owner_password): (
+        ServerAuthenticationSecret,
+        ServerAuthenticationSecret,
+    ) = initialize.into_parts();
+    assert_eq!(initialization_token.expose_secret(), "one-time-token");
+    assert_eq!(owner_password.expose_secret(), "owner-password");
     assert_eq!(
-        initialize.into_parts(),
-        ("one-time-token".to_owned(), "owner-password".to_owned())
+        format!("{initialization_token:?} {owner_password:?}"),
+        "ServerAuthenticationSecret([REDACTED]) ServerAuthenticationSecret([REDACTED])"
     );
 
     let session: CreateServerSessionRequest =
         serde_json::from_value(json!({ "password": "owner-password" })).unwrap();
-    assert_eq!(session.into_password(), "owner-password");
+    let owner_password: ServerAuthenticationSecret = session.into_password();
+    assert_eq!(owner_password.expose_secret(), "owner-password");
+    assert_eq!(
+        format!("{owner_password:?}"),
+        "ServerAuthenticationSecret([REDACTED])"
+    );
 
     let password: ChangeServerOwnerPasswordRequest = serde_json::from_value(json!({
         "currentPassword": "current-owner-password",
         "newPassword": "new-owner-password",
     }))
     .unwrap();
+    let (current_password, new_password): (ServerAuthenticationSecret, ServerAuthenticationSecret) =
+        password.into_parts();
+    assert_eq!(current_password.expose_secret(), "current-owner-password");
+    assert_eq!(new_password.expose_secret(), "new-owner-password");
     assert_eq!(
-        password.into_parts(),
-        (
-            "current-owner-password".to_owned(),
-            "new-owner-password".to_owned()
-        )
+        format!("{current_password:?} {new_password:?}"),
+        "ServerAuthenticationSecret([REDACTED]) ServerAuthenticationSecret([REDACTED])"
     );
 }
 
@@ -118,6 +133,10 @@ fn server_authentication_errors_have_stable_statuses_and_safe_rate_limit_details
     for (code, status) in expected {
         assert_eq!(http_status_for_error_code(code), status);
     }
+
+    let request_id = qingyu_kernel::contract::RequestId::new(Uuid::nil());
+    assert!(safe_error_envelope(ErrorCode::AuthenticationRateLimited, request_id, None).is_err());
+    assert!(safe_error_envelope(ErrorCode::Unauthorized, request_id, None).is_ok());
 
     let details = ErrorDetails::RateLimit {
         retry_after_seconds: PositiveSafeInteger::new(31).unwrap(),
@@ -233,9 +252,36 @@ fn openapi_freezes_server_auth_routes_and_browser_security_composition() {
         let retry_after =
             &document["paths"][path][method]["responses"]["429"]["headers"]["Retry-After"];
         assert_eq!(retry_after["required"], true);
-        assert_eq!(retry_after["schema"]["type"], "integer");
-        assert_eq!(retry_after["schema"]["minimum"], 1);
+        assert_eq!(
+            retry_after["schema"]["$ref"],
+            "#/components/schemas/PositiveSafeInteger"
+        );
+
+        let rate_limit_response = &document["paths"][path][method]["responses"]["429"]["content"]
+            ["application/json"]["schema"]["allOf"][1];
+        assert_eq!(rate_limit_response["required"], json!(["code", "details"]));
+        assert_eq!(
+            rate_limit_response["properties"]["details"]["required"],
+            json!(["type", "retryAfterSeconds"])
+        );
+        assert_eq!(
+            rate_limit_response["properties"]["details"]["properties"]["retryAfterSeconds"]["$ref"],
+            "#/components/schemas/PositiveSafeInteger"
+        );
     }
+
+    assert_eq!(
+        document["components"]["schemas"]["PositiveSafeInteger"]["minimum"],
+        1
+    );
+    assert_eq!(
+        document["components"]["schemas"]["PositiveSafeInteger"]["maximum"],
+        MAX_SAFE_INTEGER
+    );
+    assert_eq!(
+        document["x-cors-exposed-response-headers"],
+        json!(["Retry-After", "X-Request-Id"])
+    );
 }
 
 fn assert_request_schema(document: &Value, method: &str, path: &str, schema: &str) {
