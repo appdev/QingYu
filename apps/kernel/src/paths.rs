@@ -265,7 +265,7 @@ impl WorkspaceRoot {
         self.identity == other.identity
     }
 
-    fn canonical_path(&self) -> &Path {
+    pub(crate) fn canonical_path(&self) -> &Path {
         &self.canonical_path
     }
 }
