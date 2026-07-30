@@ -8,6 +8,7 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use cap_fs_ext::MetadataExt as _;
 use cap_std::fs::Dir;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use sha2::{Digest as _, Sha256};
 use zeroize::{Zeroize as _, Zeroizing};
 
@@ -39,6 +40,35 @@ impl NativeHostWorkspaceState {
         };
         state.validate()?;
         Ok(state)
+    }
+
+    /// Decodes a host-persisted, path-free workspace identity.
+    ///
+    /// Native shells own this value as an opaque record. Decoding always
+    /// revalidates its schema and canonical root binding before it can be
+    /// supplied to a child Kernel.
+    pub fn from_value(value: Value) -> Result<Self, NativeHostProtocolError> {
+        let state: Self = serde_json::from_value(value).map_err(|_| NativeHostProtocolError)?;
+        state.validate()?;
+        Ok(state)
+    }
+
+    /// Encodes the opaque state for host-owned persistence.
+    pub fn to_value(&self) -> Result<Value, NativeHostProtocolError> {
+        self.validate()?;
+        serde_json::to_value(self).map_err(|_| NativeHostProtocolError)
+    }
+
+    /// Checks whether this persisted identity belongs to the retained
+    /// filesystem object currently addressed by `workspace_root`.
+    pub fn matches_workspace(
+        &self,
+        workspace_root: &Path,
+    ) -> Result<bool, NativeHostProtocolError> {
+        self.validate()?;
+        let directory = Dir::open_ambient_dir(workspace_root, cap_std::ambient_authority())
+            .map_err(|_| NativeHostProtocolError)?;
+        Ok(self.root_binding == root_binding(&directory)?)
     }
 
     fn validate(&self) -> Result<(), NativeHostProtocolError> {
@@ -588,6 +618,45 @@ mod tests {
 
         NativeHostStart::read_json_line(&mut BufReader::new(Cursor::new(encoded)))
             .expect("a host-committed workspace state must be accepted");
+    }
+
+    #[test]
+    fn persisted_workspace_state_round_trips_and_matches_only_its_directory() {
+        let first = tempfile::tempdir().expect("first workspace");
+        let second = tempfile::tempdir().expect("second workspace");
+        let state = NativeHostWorkspaceState::for_workspace(first.path(), "Notes")
+            .expect("workspace state");
+
+        let decoded = NativeHostWorkspaceState::from_value(
+            state.to_value().expect("persisted workspace state"),
+        )
+        .expect("decoded workspace state");
+
+        assert_eq!(decoded, state);
+        assert!(decoded
+            .matches_workspace(first.path())
+            .expect("matching workspace"));
+        assert!(!decoded
+            .matches_workspace(second.path())
+            .expect("different workspace"));
+    }
+
+    #[test]
+    fn persisted_workspace_state_rejects_noncanonical_or_unknown_fields() {
+        let state = workspace_state("Notes");
+        let mut value = state.to_value().expect("persisted workspace state");
+        value["rootBinding"] = Value::String("not-canonical".to_string());
+        assert_eq!(
+            NativeHostWorkspaceState::from_value(value).expect_err("invalid binding"),
+            NativeHostProtocolError
+        );
+
+        let mut value = state.to_value().expect("persisted workspace state");
+        value["workspacePath"] = Value::String("/private/notes".to_string());
+        assert_eq!(
+            NativeHostWorkspaceState::from_value(value).expect_err("unknown path field"),
+            NativeHostProtocolError
+        );
     }
 
     #[test]
