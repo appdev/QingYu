@@ -2657,7 +2657,10 @@ fn rename_noreplace(
 }
 #[cfg(unix)]
 fn sync_dir(directory: &Dir) -> Result<(), DocumentServiceError> {
-    rustix::fs::fsync(directory).map_err(|_| DocumentServiceError::unavailable())
+    directory
+        .open(".")
+        .and_then(|sync_handle| sync_handle.sync_all())
+        .map_err(|_| DocumentServiceError::unavailable())
 }
 #[cfg(not(unix))]
 fn sync_dir(_directory: &Dir) -> Result<(), DocumentServiceError> {
@@ -2735,6 +2738,20 @@ fn collect_search(
         }
     }
     Ok(())
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod linux_directory_sync_tests {
+    use super::*;
+
+    #[test]
+    fn workspace_directory_sync_uses_an_fsync_capable_descriptor() {
+        let temporary = tempfile::tempdir().expect("temporary root");
+        let directory = Dir::open_ambient_dir(temporary.path(), cap_std::ambient_authority())
+            .expect("open temporary root");
+
+        sync_dir(&directory).expect("sync retained Linux workspace directory descriptor");
+    }
 }
 fn search_identity(hit: &SearchMatchDto) -> String {
     format!(
