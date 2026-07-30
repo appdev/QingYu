@@ -720,19 +720,21 @@ fn open_or_create_ambient_directory(path: &Path) -> Result<OpenedDirectory, Path
 }
 
 pub(crate) fn open_or_create_child(parent: &Dir, name: &str) -> Result<Dir, PathPolicyError> {
+    let mut created = false;
     match parent.symlink_metadata(name) {
         Ok(metadata) => {
             if metadata.file_type().is_symlink() || !metadata.is_dir() {
                 return Err(PathPolicyError::unsafe_entry());
             }
         }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            if let Err(create_error) = parent.create_dir(name) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => match parent.create_dir(name) {
+            Ok(()) => created = true,
+            Err(create_error) => {
                 if create_error.kind() != io::ErrorKind::AlreadyExists {
                     return Err(PathPolicyError::unavailable());
                 }
             }
-        }
+        },
         Err(_) => return Err(PathPolicyError::unavailable()),
     }
 
@@ -742,9 +744,39 @@ pub(crate) fn open_or_create_child(parent: &Dir, name: &str) -> Result<Dir, Path
     if metadata.file_type().is_symlink() || !metadata.is_dir() {
         return Err(PathPolicyError::unsafe_entry());
     }
-    parent
+    let child = parent
         .open_dir_nofollow(name)
-        .map_err(|_| PathPolicyError::unsafe_entry())
+        .map_err(|_| PathPolicyError::unsafe_entry())?;
+    if created {
+        crate::storage::sync_directory(parent).map_err(|_| PathPolicyError::unavailable())?;
+        record_created_child_parent_sync();
+    }
+    Ok(child)
+}
+
+#[cfg(test)]
+thread_local! {
+    static CREATED_CHILD_PARENT_SYNC_COUNT: std::cell::Cell<usize> = const {
+        std::cell::Cell::new(0)
+    };
+}
+
+#[cfg(test)]
+fn record_created_child_parent_sync() {
+    CREATED_CHILD_PARENT_SYNC_COUNT.with(|count| count.set(count.get().saturating_add(1)));
+}
+
+#[cfg(not(test))]
+fn record_created_child_parent_sync() {}
+
+#[cfg(test)]
+fn reset_created_child_parent_sync_count() {
+    CREATED_CHILD_PARENT_SYNC_COUNT.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+fn created_child_parent_sync_count() -> usize {
+    CREATED_CHILD_PARENT_SYNC_COUNT.with(std::cell::Cell::get)
 }
 
 fn reject_overlapping_roots<const N: usize>(
@@ -873,7 +905,28 @@ mod tests {
 
     use tempfile::tempdir;
 
-    use super::{KernelPaths, ServerPathLayout};
+    use super::{
+        created_child_parent_sync_count, open_or_create_child,
+        reset_created_child_parent_sync_count, KernelPaths, ServerPathLayout,
+    };
+
+    #[test]
+    fn fresh_child_creation_synchronizes_its_retained_parent_once() {
+        let temporary = tempdir().expect("temporary root");
+        let parent =
+            cap_std::fs::Dir::open_ambient_dir(temporary.path(), cap_std::ambient_authority())
+                .expect("open parent");
+
+        reset_created_child_parent_sync_count();
+        let child = open_or_create_child(&parent, "created").expect("create child");
+        drop(child);
+        assert_eq!(created_child_parent_sync_count(), 1);
+
+        reset_created_child_parent_sync_count();
+        let existing = open_or_create_child(&parent, "created").expect("open existing child");
+        drop(existing);
+        assert_eq!(created_child_parent_sync_count(), 0);
+    }
 
     #[test]
     fn fixture_server_layout_activates_without_weakening_production_server_policy() {

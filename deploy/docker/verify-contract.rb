@@ -294,6 +294,14 @@ def verify_dockerfile(path)
     [
       ["WORKDIR", "/src"],
       ["COPY", "apps/kernel/Cargo.toml apps/kernel/Cargo.lock apps/kernel/"],
+      [
+        "COPY",
+        "apps/kernel/crates/qingyu-dejavu/Cargo.toml apps/kernel/crates/qingyu-dejavu/"
+      ],
+      [
+        "COPY",
+        "apps/kernel/crates/qingyu-dejavu/src apps/kernel/crates/qingyu-dejavu/src"
+      ],
       ["COPY", "apps/kernel/src apps/kernel/src"],
       [
         "RUN",

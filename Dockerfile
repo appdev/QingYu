@@ -32,6 +32,8 @@ FROM rust:1.92-bookworm AS kernel-build
 WORKDIR /src
 
 COPY apps/kernel/Cargo.toml apps/kernel/Cargo.lock apps/kernel/
+COPY apps/kernel/crates/qingyu-dejavu/Cargo.toml apps/kernel/crates/qingyu-dejavu/
+COPY apps/kernel/crates/qingyu-dejavu/src apps/kernel/crates/qingyu-dejavu/src
 COPY apps/kernel/src apps/kernel/src
 
 RUN cargo build --locked --release --manifest-path apps/kernel/Cargo.toml --bin qingyu-kernel
