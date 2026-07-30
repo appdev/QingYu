@@ -102,16 +102,15 @@ pub(crate) async fn install_fixed_kernel_services(
     settings_service
         .migrate_schema()
         .map_err(|_| FixedKernelCompositionError::SettingsMigration)?;
-    let sync_store = Arc::new(
-        SyncConfigStore::new(
-            DurableFileStore::at_instance_data(
-                runtime.instance_data_root(),
-                runtime.launch_epoch(),
-            )
+    let sync_store = SyncConfigStore::new(
+        DurableFileStore::at_instance_data(runtime.instance_data_root(), runtime.launch_epoch())
             .map_err(|_| FixedKernelCompositionError::SyncStore)?,
-        )
-        .map_err(|_| FixedKernelCompositionError::SyncStore)?,
-    );
+    )
+    .map_err(|_| FixedKernelCompositionError::SyncStore)?;
+    sync_store
+        .initialize_default_if_absent()
+        .map_err(|_| FixedKernelCompositionError::SyncStore)?;
+    let sync_store = Arc::new(sync_store);
     let sync_executor = Arc::new(ProductionSyncExecutor::new(
         runtime.clone(),
         settings_service.clone(),

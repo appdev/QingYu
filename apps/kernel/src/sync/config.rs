@@ -558,6 +558,41 @@ impl SyncConfigStore {
         classify(&stored)
     }
 
+    /// Installs the disabled v3 default exactly once for a genuinely empty
+    /// instance. Existing valid state is retained byte-for-byte, while corrupt
+    /// or unsupported state remains visible for explicit recovery instead of
+    /// being replaced during startup.
+    pub(crate) fn initialize_default_if_absent(&self) -> Result<(), SyncConfigStoreError> {
+        let mut state = self.lock_state()?;
+        Self::ensure_available(&state)?;
+        if let Some(stored) = self
+            .durable
+            .read(&self.target, MAX_SYNC_CONFIG_BYTES)
+            .map_err(SyncConfigStoreError::from)?
+        {
+            return match classify(&stored)? {
+                SyncConfigLoad::Loaded { .. } => Ok(()),
+                SyncConfigLoad::Corrupt { .. } | SyncConfigLoad::Unsupported { .. } => Err(
+                    SyncConfigStoreError::new(SyncConfigStoreErrorKind::NotRecoverable),
+                ),
+                SyncConfigLoad::Absent => unreachable!("a retained file cannot classify absent"),
+            };
+        }
+
+        let bytes = serialized_config(&SyncConfig::default())?;
+        self.replace_durably(
+            &mut state,
+            &bytes,
+            ReplaceRequest {
+                target: &self.target,
+                bytes: &bytes,
+                expected: ExpectedFile::Absent,
+                preserve_previous: PreservePrevious::None,
+            },
+        )?;
+        Ok(())
+    }
+
     pub fn is_absent(&self) -> Result<bool, SyncConfigStoreError> {
         self.load()
             .map(|load| matches!(load, SyncConfigLoad::Absent))

@@ -223,7 +223,9 @@ mod tests {
     use crate::{
         api::{build_server_router, TransportPolicy},
         config::KernelConfig,
-        contract::{HostProfile, ServerAuthenticationSecret},
+        contract::{
+            HostProfile, PatchSyncConfigRequest, ServerAuthenticationSecret, SyncConfigChangesDto,
+        },
         paths::KernelPaths,
         server::{
             ServerAuthenticationStatus, ServerInitializationCoordinatorError,
@@ -283,6 +285,94 @@ mod tests {
             composition.authentication_status().unwrap(),
             ServerAuthenticationStatus::NeedsInitialization
         );
+    }
+
+    #[tokio::test]
+    async fn fresh_server_initializes_one_disabled_sync_configuration_that_can_be_patched() {
+        let temporary = tempdir().unwrap();
+        let paths = fixture_paths(temporary.path());
+
+        let composition = compose_fixed_server_kernel(KernelConfig::generate().unwrap(), paths)
+            .await
+            .unwrap();
+
+        let sync = composition.runtime().sync_api_service().unwrap();
+        let config = sync.get_sync_config().await.unwrap();
+        assert!(!config.enabled);
+        assert_eq!(
+            config.readiness,
+            crate::contract::SyncConfigReadiness::Disabled
+        );
+        assert!(temporary
+            .path()
+            .join("data/state/sync-config.json")
+            .is_file());
+
+        let patched = sync
+            .patch_sync_config(PatchSyncConfigRequest {
+                expected_revision: config.revision,
+                changes: SyncConfigChangesDto {
+                    remote_root: Some("server-notes".to_owned()),
+                    ..SyncConfigChangesDto::default()
+                },
+            })
+            .await
+            .unwrap();
+        assert_eq!(patched.remote_root, "server-notes");
+    }
+
+    #[tokio::test]
+    async fn server_composition_preserves_an_existing_valid_sync_configuration_byte_for_byte() {
+        let temporary = tempdir().unwrap();
+        let paths = fixture_paths(temporary.path());
+        let existing = br#"{
+  "version": 3,
+  "enabled": false,
+  "provider": "s3",
+  "remoteRoot": "existing-root",
+  "mode": "automatic",
+  "intervalSeconds": 30,
+  "generateConflictDocument": false,
+  "webdav": {"serverUrl": "", "username": "", "password": ""},
+  "s3": {
+    "endpointUrl": "",
+    "region": "",
+    "bucket": "",
+    "accessKeyId": "",
+    "secretAccessKey": "",
+    "requestTimeoutSeconds": 60,
+    "addressingStyle": "auto",
+    "tlsVerification": "verify"
+  }
+}
+"#;
+        let target = temporary.path().join("data/state/sync-config.json");
+        fs::write(&target, existing).unwrap();
+
+        let composition = compose_fixed_server_kernel(KernelConfig::generate().unwrap(), paths)
+            .await
+            .unwrap();
+
+        let sync = composition.runtime().sync_api_service().unwrap();
+        let config = sync.get_sync_config().await.unwrap();
+        assert_eq!(config.remote_root, "existing-root");
+        assert_eq!(fs::read(target).unwrap(), existing);
+    }
+
+    #[tokio::test]
+    async fn server_composition_never_replaces_a_corrupt_sync_configuration() {
+        let temporary = tempdir().unwrap();
+        let paths = fixture_paths(temporary.path());
+        let corrupt = b"private-corrupt-sync-config-marker";
+        let target = temporary.path().join("data/state/sync-config.json");
+        fs::write(&target, corrupt).unwrap();
+
+        let error = compose_fixed_server_kernel(KernelConfig::generate().unwrap(), paths)
+            .await
+            .unwrap_err();
+
+        assert_eq!(error, ServerRuntimeCompositionError::FixedSyncStore);
+        assert_eq!(fs::read(target).unwrap(), corrupt);
     }
 
     #[tokio::test]
