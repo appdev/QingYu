@@ -6,6 +6,7 @@
 mod auth_store;
 mod csrf;
 mod initialization;
+mod initialization_coordinator;
 mod rate_limit;
 mod secret;
 mod session;
@@ -19,9 +20,13 @@ pub use initialization::{
     InitializationError, InitializationGate, InitializationPermit, InitializationStatus,
     InitializationToken, InvalidInitializationToken,
 };
+pub use initialization_coordinator::{
+    ServerInitializationCoordinator, ServerInitializationCoordinatorError,
+    ServerOwnerInitializationError,
+};
 pub use rate_limit::{
-    AuthenticationFlow, AuthenticationRateLimiter, InvalidRateLimitPolicy, RateLimitDecision,
-    RateLimitPolicy,
+    AuthenticationAttemptPermit, AuthenticationFlow, AuthenticationRateLimiter,
+    InvalidAuthenticationAttempt, InvalidRateLimitPolicy, RateLimitDecision, RateLimitPolicy,
 };
 pub use session::{
     InvalidSessionPolicy, IssuedSession, SessionAuthorization, SessionIssueError, SessionPolicy,
