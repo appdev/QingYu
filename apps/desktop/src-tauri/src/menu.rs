@@ -19,6 +19,7 @@ const SETTINGS_WINDOW_COMMAND: &str = "openSettings";
 const SETTINGS_WINDOW_ACCELERATOR: &str = "CmdOrCtrl+Comma";
 const SYNC_NOW_DEFAULT_ACCELERATOR: &str = "CmdOrCtrl+Alt+R";
 const CHECK_FOR_UPDATES_COMMAND: &str = "checkForUpdates";
+const QUIT_APPLICATION_COMMAND: &str = "quitApplication";
 const EDIT_UNDO_COMMAND: &str = "editUndo";
 const EDIT_REDO_COMMAND: &str = "editRedo";
 const MARKRA_GITHUB_URL: &str = "https://github.com/appdev/QingYu";
@@ -430,6 +431,7 @@ fn create_markra_app_submenu<R: tauri::Runtime>(
     )?;
     let check_updates =
         app_menu_item_without_accelerator(app, CHECK_FOR_UPDATES_COMMAND, labels.check_updates)?;
+    let quit = app_menu_item(app, QUIT_APPLICATION_COMMAND, labels.quit, "CmdOrCtrl+Q")?;
 
     SubmenuBuilder::with_id(app, "markra:app", labels.app_name)
         .about(Some(application_about_metadata(labels.app_name)))
@@ -440,7 +442,7 @@ fn create_markra_app_submenu<R: tauri::Runtime>(
         .hide_others_with_text(labels.hide_others)
         .show_all_with_text(labels.show_all)
         .separator()
-        .quit_with_text(labels.quit)
+        .item(&quit)
         .build()
 }
 
@@ -1029,6 +1031,7 @@ pub(crate) fn is_frontend_menu_command(command: &str) -> bool {
     matches!(
         command,
         CHECK_FOR_UPDATES_COMMAND
+            | QUIT_APPLICATION_COMMAND
             | CLEAR_RECENT_FILES_COMMAND
             | SETTINGS_WINDOW_COMMAND
             | EDIT_UNDO_COMMAND
@@ -1101,6 +1104,7 @@ mod tests {
     fn recognizes_frontend_menu_commands() {
         assert!(!is_frontend_menu_command("newDocument"));
         assert!(is_frontend_menu_command("checkForUpdates"));
+        assert!(is_frontend_menu_command("quitApplication"));
         assert!(is_frontend_menu_command("openDocument"));
         assert!(is_frontend_menu_command("openRecentFile:0"));
         assert!(is_frontend_menu_command("clearRecentFiles"));

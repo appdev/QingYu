@@ -39,6 +39,7 @@ type NativeMenuHandlerOptions = {
   openQuickOpen?: () => unknown | Promise<unknown>;
   openSettings?: () => unknown | Promise<unknown>;
   openRecentFile?: (file: RecentMarkdownFile) => unknown | Promise<unknown>;
+  quitApplication?: () => unknown | Promise<unknown>;
   runEditorShortcut: (
     key: string,
     modifiers?: Pick<KeyboardEventInit, "altKey" | "code" | "shiftKey"> & { modKey?: boolean }
@@ -137,6 +138,7 @@ export function useNativeMenuHandlers({
   openQuickOpen,
   openSettings,
   openRecentFile,
+  quitApplication,
   runEditorShortcut,
   saveDocument,
   saveDocumentAs,
@@ -173,6 +175,7 @@ export function useNativeMenuHandlers({
     openQuickOpen,
     openSettings,
     openRecentFile,
+    quitApplication,
     runEditorShortcut,
     saveDocument,
     saveDocumentAs,
@@ -205,6 +208,7 @@ export function useNativeMenuHandlers({
     openQuickOpen,
     openSettings,
     openRecentFile,
+    quitApplication,
     runEditorShortcut,
     saveDocument,
     saveDocumentAs,
@@ -264,6 +268,7 @@ export function useNativeMenuHandlers({
       if (openRecentFile) handlers.openRecentFile = (file) => latestOptionsRef.current.openRecentFile?.(file);
       if (openQuickOpen) handlers.openQuickOpen = () => latestOptionsRef.current.openQuickOpen?.();
       if (openSettings) handlers.openSettings = () => latestOptionsRef.current.openSettings?.();
+      if (quitApplication) handlers.quitApplication = () => latestOptionsRef.current.quitApplication?.();
       if (syncNow) handlers.syncNow = () => latestOptionsRef.current.syncNow?.();
       if (toggleDocumentHistory) {
         handlers.toggleDocumentHistory = () => latestOptionsRef.current.toggleDocumentHistory?.();

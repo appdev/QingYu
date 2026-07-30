@@ -702,6 +702,18 @@ export function useMarkdownDocument({
     hasDiscardableTabChanges
   ]);
 
+  const requestAppExit = useCallback(async () => {
+    if (nativeCloseBlockedRef.current) return;
+
+    const draftPersistence = persistActiveDocumentDraftSnapshot();
+    const canDiscard = await confirmCanDiscardCurrentDocument();
+    if (!canDiscard) return;
+
+    await draftPersistence;
+    await persistNativeEditorWindowRestoreSnapshot();
+    await exitNativeApp();
+  }, [confirmCanDiscardCurrentDocument, persistActiveDocumentDraftSnapshot, persistNativeEditorWindowRestoreSnapshot]);
+
   const handleMarkdownChange = useCallback((content: string, options: MarkdownChangeOptions = {}) => {
     if (!resolveEditorReady(editorReady)) return;
 
@@ -2087,16 +2099,7 @@ export function useMarkdownDocument({
     let active = true;
     let cleanup: (() => unknown) | null = null;
 
-    listenNativeAppExitRequested(async () => {
-      if (nativeCloseBlockedRef.current) return;
-      const draftPersistence = persistActiveDocumentDraftSnapshot();
-      const canDiscard = await confirmCanDiscardCurrentDocument();
-      if (canDiscard) {
-        await draftPersistence;
-        await persistNativeEditorWindowRestoreSnapshot();
-        await exitNativeApp();
-      }
-    }).then((nextCleanup) => {
+    listenNativeAppExitRequested(requestAppExit).then((nextCleanup) => {
       if (active) {
         cleanup = nextCleanup;
         return;
@@ -2109,7 +2112,7 @@ export function useMarkdownDocument({
       active = false;
       cleanup?.();
     };
-  }, [confirmCanDiscardCurrentDocument, persistActiveDocumentDraftSnapshot, persistNativeEditorWindowRestoreSnapshot]);
+  }, [requestAppExit]);
 
   useEffect(() => {
     if (managedWorkspace) return;
@@ -2605,6 +2608,7 @@ export function useMarkdownDocument({
     outlineItems,
     replaceOpenDocumentFile,
     replaceMovedOpenDocumentFile,
+    requestAppExit,
     recentFiles,
     restoreDocumentContent,
     saveCurrentDocumentContent,

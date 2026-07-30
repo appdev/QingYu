@@ -58,6 +58,21 @@ describe("useNativeMenuHandlers", () => {
     expect(openSettings).toHaveBeenCalledTimes(1);
   });
 
+  it("routes the native quit menu command through the guarded app exit flow", () => {
+    const quitApplication = vi.fn();
+    const { result } = renderHook(() =>
+      useNativeMenuHandlers({
+        ...baseOptions,
+        ...({ quitApplication } as object)
+      })
+    );
+
+    const handler = (result.current as Record<string, (() => unknown) | undefined>).quitApplication;
+    handler?.();
+
+    expect(quitApplication).toHaveBeenCalledTimes(1);
+  });
+
   it("routes the insert table menu command to the editor table insertion", () => {
     const insertMarkdownLink = vi.fn();
     const insertMarkdownImage = vi.fn();
