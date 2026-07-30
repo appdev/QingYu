@@ -76,6 +76,34 @@ export interface NativeKernelSessionOwnerOptions {
   readonly onError?: (error: Error) => unknown;
 }
 
+type NativeKernelAdoptionPhase =
+  | "adopting"
+  | "flushing"
+  | "committed"
+  | "retired";
+
+type NativeKernelAdoptionNotice =
+  | {
+      readonly kind: "error";
+      readonly value: DesktopKernelEventsErrorNotice;
+    }
+  | {
+      readonly kind: "invalidation";
+      readonly value: DesktopKernelDomainInvalidation;
+    }
+  | {
+      readonly kind: "state";
+      readonly value: DesktopKernelEventsStateNotice;
+    };
+
+interface NativeKernelAdoptionToken {
+  readonly epoch: number;
+  readonly generation: string;
+  readonly instanceId: string;
+  readonly pending: NativeKernelAdoptionNotice[];
+  phase: NativeKernelAdoptionPhase;
+}
+
 export function createNativeKernelSessionOwner(
   {
     addPagehideListener = addBrowserPagehideListener,
@@ -163,15 +191,33 @@ export function createNativeKernelSessionOwner(
     );
   };
 
-  const isCurrentAdoption = (
-    token: { readonly epoch: number; readonly committed: boolean },
+  const matchesAdoptionIdentity = (
+    token: NativeKernelAdoptionToken,
     identity: { readonly generation: string; readonly instanceId: string }
   ) => {
     return (
-      token.committed &&
+      token.generation === identity.generation &&
+      token.instanceId === identity.instanceId &&
       token.epoch === adoptionEpoch &&
+      !closed
+    );
+  };
+
+  const isCurrentAdoption = (
+    token: NativeKernelAdoptionToken,
+    identity: { readonly generation: string; readonly instanceId: string }
+  ) => {
+    return (
+      token.phase === "committed" &&
+      matchesAdoptionIdentity(token, identity) &&
       isCurrentIdentity(identity)
     );
+  };
+
+  const retireAdoption = (token: NativeKernelAdoptionToken) => {
+    token.phase = "retired";
+    token.pending.length = 0;
+    return undefined;
   };
 
   const reconcile = async () => {
@@ -230,34 +276,68 @@ export function createNativeKernelSessionOwner(
     }
 
     let events: DesktopKernelEventsAdapter;
-    const adoptionToken = { committed: false, epoch: adoption };
+    const adoptionToken: NativeKernelAdoptionToken = {
+      epoch: adoption,
+      generation: lifecycle.generation,
+      instanceId: lifecycle.instanceId,
+      pending: [],
+      phase: "adopting"
+    };
+    const deliverAdoptionNotice = (notification: NativeKernelAdoptionNotice) => {
+      if (!matchesAdoptionIdentity(adoptionToken, notification.value)) {
+        return undefined;
+      }
+      if (notification.kind === "error") {
+        notifyConsumer(onEventsError, notification.value);
+      } else if (notification.kind === "invalidation") {
+        notifyConsumer(onInvalidation, notification.value);
+      } else {
+        notifyConsumer(onEventsStateChange, notification.value);
+      }
+      return undefined;
+    };
+    const queueOrDeliverAdoptionNotice = (
+      notification: NativeKernelAdoptionNotice
+    ) => {
+      if (!matchesAdoptionIdentity(adoptionToken, notification.value)) {
+        return undefined;
+      }
+      if (
+        adoptionToken.phase === "adopting" ||
+        adoptionToken.phase === "flushing"
+      ) {
+        adoptionToken.pending.push(notification);
+      } else if (isCurrentAdoption(adoptionToken, notification.value)) {
+        deliverAdoptionNotice(notification);
+      }
+      return undefined;
+    };
     try {
       events = createEventsAdapter({
         onError: (notice) => {
-          if (isCurrentAdoption(adoptionToken, notice)) {
-            notifyConsumer(onEventsError, notice);
-          }
+          queueOrDeliverAdoptionNotice({ kind: "error", value: notice });
           return undefined;
         },
         onInvalidation: (invalidation) => {
-          if (isCurrentAdoption(adoptionToken, invalidation)) {
-            notifyConsumer(onInvalidation, invalidation);
-          }
+          queueOrDeliverAdoptionNotice({
+            kind: "invalidation",
+            value: invalidation
+          });
           return undefined;
         },
         onStateChange: (notice) => {
-          if (isCurrentAdoption(adoptionToken, notice)) {
-            notifyConsumer(onEventsStateChange, notice);
-          }
+          queueOrDeliverAdoptionNotice({ kind: "state", value: notice });
           return undefined;
         }
       });
     } catch (cause: unknown) {
+      retireAdoption(adoptionToken);
       safelyCall(domain.release);
       safelyRelease(eventsLease);
       throw failClosed(cause);
     }
     if (closed || adoption !== adoptionEpoch) {
+      retireAdoption(adoptionToken);
       safelyCall(domain.release);
       safelyCall(events.close);
       safelyRelease(eventsLease);
@@ -267,12 +347,14 @@ export function createNativeKernelSessionOwner(
     try {
       events.replaceConnection(eventsLease);
     } catch (cause: unknown) {
+      retireAdoption(adoptionToken);
       safelyCall(domain.release);
       safelyCall(events.close);
       safelyRelease(eventsLease);
       throw failClosed(cause);
     }
     if (closed || adoption !== adoptionEpoch) {
+      retireAdoption(adoptionToken);
       safelyCall(domain.release);
       safelyCall(events.close);
       safelyRelease(eventsLease);
@@ -284,13 +366,43 @@ export function createNativeKernelSessionOwner(
       generation: lifecycle.generation,
       instanceId: lifecycle.instanceId
     });
-    adoptionToken.committed = true;
-    publish(Object.freeze({
+    adoptionToken.phase = "flushing";
+    const readySnapshot = Object.freeze({
       domain: domain.port,
       generation: lifecycle.generation,
       instanceId: lifecycle.instanceId,
       status: "ready" as const
-    }));
+    });
+    const readyPublication = publicationEpoch + 1;
+    publish(readySnapshot);
+    let pendingIndex = 0;
+    while (pendingIndex < adoptionToken.pending.length) {
+      if (
+        adoptionToken.phase !== "flushing" ||
+        adoptionToken.epoch !== adoptionEpoch ||
+        readyPublication !== publicationEpoch ||
+        snapshot !== readySnapshot ||
+        !isCurrentIdentity(adoptionToken)
+      ) {
+        retireAdoption(adoptionToken);
+        return undefined;
+      }
+      const notification = adoptionToken.pending[pendingIndex];
+      pendingIndex += 1;
+      if (notification !== undefined) deliverAdoptionNotice(notification);
+    }
+    adoptionToken.pending.length = 0;
+    if (
+      adoptionToken.phase === "flushing" &&
+      adoptionToken.epoch === adoptionEpoch &&
+      readyPublication === publicationEpoch &&
+      snapshot === readySnapshot &&
+      isCurrentIdentity(adoptionToken)
+    ) {
+      adoptionToken.phase = "committed";
+    } else {
+      retireAdoption(adoptionToken);
+    }
     return undefined;
   };
 

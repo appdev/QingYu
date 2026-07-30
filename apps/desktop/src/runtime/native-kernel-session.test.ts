@@ -1,11 +1,14 @@
 import type { KernelDomainPort } from "@markra/app/runtime";
+import { KernelEventError } from "@markra/kernel-client";
 
 import type { NativeKernelBootstrap } from "../kernel-bootstrap";
 import type { DesktopKernelDomainAdapter } from "./kernel";
 import type {
   DesktopKernelDomainInvalidation,
   DesktopKernelEventsAdapter,
-  DesktopKernelEventsAdapterOptions
+  DesktopKernelEventsAdapterOptions,
+  DesktopKernelEventsErrorNotice,
+  DesktopKernelEventsStateNotice
 } from "./kernel-events";
 import {
   createNativeKernelSessionOwner,
@@ -223,12 +226,74 @@ describe("native Kernel session owner", () => {
     owner.close();
   });
 
+  it("publishes synchronous event adoption notices in order after the ready session commits", async () => {
+    const listener = new ListenerHarness();
+    const domains = new DomainHarness();
+    const deliveries: string[] = [];
+    let owner: ReturnType<typeof createNativeKernelSessionOwner>;
+    owner = createNativeKernelSessionOwner({
+      addPagehideListener: listener.addPagehideListener,
+      createDomainAdapter: domains.create,
+      createEventsAdapter: (options) => {
+        let adopted: NativeKernelBootstrap | undefined;
+        const close = vi.fn(() => {
+          adopted?.release();
+          adopted = undefined;
+          return undefined;
+        });
+        return {
+          get identity() {
+            return adopted === undefined ? null : {
+              generation: adopted.generation,
+              instanceId: adopted.instanceId
+            };
+          },
+          close,
+          replaceConnection: (bootstrap) => {
+            expect(bootstrap).not.toBeNull();
+            adopted = bootstrap ?? undefined;
+            const identity = {
+              generation: bootstrap!.generation,
+              instanceId: bootstrap!.instanceId
+            };
+            options.onStateChange?.({ ...identity, state: "connecting" });
+            options.onError?.({
+              ...identity,
+              error: new KernelEventError("connection")
+            });
+            options.onStateChange?.({ ...identity, state: "reconnecting" });
+            return undefined;
+          }
+        };
+      },
+      invokeCommand: async () => readyBootstrap("6", INSTANCE_A, CREDENTIAL_A),
+      listenBootstrapChanged: listener.listen,
+      onEventsError: (notice) => {
+        deliveries.push(`${owner.getSnapshot()?.status}:${notice.error.kind}`);
+      },
+      onEventsStateChange: (notice) => {
+        deliveries.push(`${owner.getSnapshot()?.status}:${notice.state}`);
+      }
+    });
+
+    await owner.start();
+
+    expect(deliveries).toEqual([
+      "ready:connecting",
+      "ready:connection",
+      "ready:reconnecting"
+    ]);
+    owner.close();
+  });
+
   it.each(["before-callback", "after-callback"] as const)(
     "fails closed and retires both leases when event connection adoption throws %s",
     async (failurePoint) => {
       const listener = new ListenerHarness();
       const domains = new DomainHarness();
       const invalidations: DesktopKernelDomainInvalidation[] = [];
+      const eventErrors: DesktopKernelEventsErrorNotice[] = [];
+      const eventStates: DesktopKernelEventsStateNotice[] = [];
       let capturedEventsLease: NativeKernelBootstrap | undefined;
       const closeEvents = vi.fn(() => {
         if (failurePoint === "after-callback") capturedEventsLease?.release();
@@ -243,13 +308,22 @@ describe("native Kernel session owner", () => {
           replaceConnection: (bootstrap) => {
             capturedEventsLease = bootstrap ?? undefined;
             if (failurePoint === "after-callback") {
+              const identity = { generation: "6", instanceId: INSTANCE_A };
+              options.onStateChange?.({ ...identity, state: "connecting" });
+              options.onError?.({
+                ...identity,
+                error: new KernelEventError("connection")
+              });
               options.onInvalidation(snapshotInvalidation(INSTANCE_A, "6"));
+              options.onStateChange?.({ ...identity, state: "reconnecting" });
             }
             throw new Error("event connection adoption failed");
           }
         }),
         invokeCommand: async () => readyBootstrap("6", INSTANCE_A, CREDENTIAL_A),
         listenBootstrapChanged: listener.listen,
+        onEventsError: (notice) => eventErrors.push(notice),
+        onEventsStateChange: (notice) => eventStates.push(notice),
         onInvalidation: (invalidation) => invalidations.push(invalidation)
       });
 
@@ -259,6 +333,8 @@ describe("native Kernel session owner", () => {
         expect(() => capturedEventsLease?.authentication.getCredential()).toThrow(
           "native Kernel credential unavailable"
         );
+        expect(eventErrors).toEqual([]);
+        expect(eventStates).toEqual([]);
         expect(invalidations).toEqual([]);
         expect(closeEvents).toHaveBeenCalledTimes(1);
         expect(domains.adapters[0]?.release).toHaveBeenCalledTimes(1);
