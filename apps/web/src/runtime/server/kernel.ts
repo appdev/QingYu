@@ -34,8 +34,28 @@ export type ServerKernelDomainAdapterOptions = {
   readonly workspaceId: string;
 };
 
+export type ServerKernelHistorySnapshot = {
+  readonly contents: string;
+  readonly documentLocator: KernelDocumentLocator;
+  readonly revision: KernelRevision;
+  readonly snapshotId: KernelHistorySnapshotId;
+  readonly workspaceGeneration: KernelWorkspaceGeneration;
+};
+
+export type ServerKernelDomainPort = Omit<KernelDomainPort, "documents"> & {
+  readonly documents: Omit<KernelDomainPort["documents"], "history"> & {
+    readonly history: KernelDomainPort["documents"]["history"] & {
+      readonly read: (input: {
+        readonly locator: KernelDocumentLocator;
+        readonly snapshotId: KernelHistorySnapshotId;
+        readonly workspaceGeneration: KernelWorkspaceGeneration;
+      }) => Promise<ServerKernelHistorySnapshot>;
+    };
+  };
+};
+
 export type ServerKernelDomainAdapter = {
-  readonly port: KernelDomainPort;
+  readonly port: ServerKernelDomainPort;
   readonly release: () => undefined;
 };
 
@@ -136,7 +156,7 @@ export async function createServerKernelDomainAdapter(
     if (actual !== expected) protocolMismatch();
   };
 
-  const port: KernelDomainPort = {
+  const port: ServerKernelDomainPort = {
     availability: "available",
     documents: {
       create: async (input) => {
@@ -211,6 +231,24 @@ export async function createServerKernelDomainAdapter(
           assertDocumentIdentity(document.id, input.locator);
           await confirmWorkspaceIdentity();
           return mapDocument(document, workspaceGeneration);
+        },
+        read: async (input) => {
+          await prepareDocumentOperation(input.workspaceGeneration);
+          const history = await request(() => client.documents.getHistory(
+            input.locator,
+            input.snapshotId,
+            { signal: requests.signal },
+          ));
+          assertDocumentIdentity(history.documentId, input.locator);
+          if (history.snapshotId !== input.snapshotId) protocolMismatch();
+          await confirmWorkspaceIdentity();
+          return {
+            contents: history.contents,
+            documentLocator: history.documentId as KernelDocumentLocator,
+            revision: history.revision as KernelRevision,
+            snapshotId: history.snapshotId as KernelHistorySnapshotId,
+            workspaceGeneration,
+          };
         },
       },
       list: async (input) => {

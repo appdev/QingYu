@@ -3,17 +3,49 @@ import type { KernelDomainPort } from "@markra/app/runtime";
 import { createServerWebRuntime, createWebRuntime } from "./index";
 
 describe("web runtime", () => {
-  it("uses the authenticated server Kernel port without changing browser services", () => {
-    const kernel = {} as KernelDomainPort;
+  it("uses the authenticated server Kernel port without changing browser services", async () => {
+    const showDirectoryPicker = vi.fn(() => {
+      throw new Error("directory picker must be unreachable");
+    });
+    const indexedDbOpen = vi.fn(() => {
+      throw new Error("IndexedDB owner must be unreachable");
+    });
+    const kernel = {
+      documents: {
+        list: vi.fn(async () => ({ items: [], nextCursor: null, workspaceGeneration: "generation-1" })),
+      },
+      workspace: {
+        read: vi.fn(async () => ({ displayName: "Notes", generation: "generation-1" })),
+      },
+    } as unknown as KernelDomainPort;
 
     const runtime = createServerWebRuntime(kernel, {
       eventTarget: new EventTarget(),
-      indexedDB: new FakeIndexedDbFactory().indexedDB,
+      indexedDB: { open: indexedDbOpen } as unknown as IDBFactory,
+      showDirectoryPicker,
     });
 
     expect(runtime.kernel).toBe(kernel);
     expect(runtime.events.isAvailable()).toBe(true);
     expect(runtime.features.nativeWindowChrome).toBe(false);
+    expect(runtime.features.fileDrop).toBe(false);
+    expect(runtime.workspace.rootPolicy).toMatchObject({
+      canChooseLocalRoot: false,
+      kind: "fixed"
+    });
+    if (runtime.workspace.rootPolicy?.kind !== "fixed") {
+      throw new Error("Server workspace root policy is not fixed.");
+    }
+    await expect(runtime.workspace.rootPolicy.resolveRoot()).resolves.toBe("kernel-workspace://primary");
+    await expect(runtime.files.listMarkdownFilesForPath("kernel-workspace://primary"))
+      .resolves.toEqual([]);
+    const store = await runtime.settings.loadStore("local-state.json", {
+      autoSave: false,
+      defaults: {},
+    });
+    await store.save();
+    expect(showDirectoryPicker).not.toHaveBeenCalled();
+    expect(indexedDbOpen).not.toHaveBeenCalled();
   });
 
   it("creates a browser runtime with IndexedDB settings", async () => {

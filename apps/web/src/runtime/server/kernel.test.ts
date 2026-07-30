@@ -1,6 +1,8 @@
 import type { KernelClient } from "@markra/kernel-client";
 import { KernelApiError } from "@markra/kernel-client";
 import type {
+  KernelDocumentLocator,
+  KernelHistorySnapshotId,
   KernelRevision,
   KernelWorkspaceGeneration,
 } from "@markra/app/runtime";
@@ -50,6 +52,18 @@ describe("Server Kernel domain adapter", () => {
       limit: undefined,
       parent: undefined,
     }, { signal: expect.any(AbortSignal) });
+
+    await expect(adapter.port.documents.history.read({
+      locator: "signed-document-1" as KernelDocumentLocator,
+      snapshotId: "snapshot-1" as KernelHistorySnapshotId,
+      workspaceGeneration: GENERATION,
+    })).resolves.toEqual({
+      contents: "older",
+      documentLocator: "signed-document-1",
+      revision: "revision-history-1",
+      snapshotId: "snapshot-1",
+      workspaceGeneration: GENERATION,
+    });
   });
 
   it("rejects a caller generation mismatch before issuing a document request", async () => {
@@ -155,6 +169,12 @@ function kernelClient(overrides: {
       create: vi.fn(),
       delete: vi.fn(),
       get: vi.fn(),
+      getHistory: vi.fn(async () => ({
+        contents: "older",
+        documentId: "signed-document-1",
+        revision: "revision-history-1",
+        snapshotId: "snapshot-1",
+      })),
       listHistory: vi.fn(),
       move: vi.fn(),
       restoreHistory: vi.fn(),
