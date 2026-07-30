@@ -11,7 +11,9 @@ const revision = "sync-revision-1" as KernelRevision;
 describe("server sync config facade", () => {
   it("loads and patches the basic sync contract through Kernel", async () => {
     const kernel = kernelPort();
-    const syncConfig = createServerSyncConfigRuntime(kernel);
+    const syncConfig = createServerSyncConfigRuntime(kernel, {
+      delay: async () => undefined,
+    });
 
     await expect(syncConfig.load()).resolves.toMatchObject({
       status: "loaded",
@@ -56,14 +58,48 @@ describe("server sync config facade", () => {
       revision,
       trigger: "manual",
     })).resolves.toEqual({
-      job: {
-        jobId: "run-1",
+      result: {
+        notebookName: "Notes",
         notesRoot: "kernel-workspace://primary",
-        repositoryId: "server-workspace",
+        provider: "s3",
+        revision,
+        summary: {
+          bytesDownloaded: 0,
+          bytesUploaded: 1,
+          conflictFiles: 0,
+          downloadedFiles: 0,
+          scannedFiles: 1,
+          skippedFiles: 0,
+          uploadedFiles: 1,
+        },
+        trigger: "manual",
       },
-      status: "accepted",
+      status: "completed",
     });
     expect(kernel.sync.trigger).toHaveBeenCalledWith(revision);
+  });
+
+  it("correlates an attempting run by run id before accepting its terminal status", async () => {
+    const kernel = kernelPort();
+    vi.mocked(kernel.sync.readStatus).mockResolvedValueOnce({
+      ...successfulStatus(),
+      activeRunId: "run-1",
+      completionState: "attempting",
+      lastSuccessfulSyncAt: null,
+      summary: null,
+    });
+    const delay = vi.fn(async () => undefined);
+    const syncConfig = createServerSyncConfigRuntime(kernel, { delay });
+
+    await expect(syncConfig.sync({
+      notebookName: "Notes",
+      notesRoot: "kernel-workspace://primary",
+      revision,
+      trigger: "manual",
+    })).resolves.toMatchObject({ status: "completed" });
+
+    expect(delay).toHaveBeenCalledWith(250);
+    expect(kernel.sync.readStatus).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -115,7 +151,7 @@ function kernelPort() {
     sync: {
       patchConfig: vi.fn(async (input) => config(input.changes.enabled ?? true)),
       readConfig,
-      readStatus: unavailable(),
+      readStatus: vi.fn(async () => successfulStatus()),
       testConnection: vi.fn(async () => ({
         checkedTarget: "bucket/notes",
         configRevision: revision,
@@ -129,4 +165,26 @@ function kernelPort() {
     },
     workspace: { read: unavailable() },
   } as unknown as KernelDomainPort;
+}
+
+function successfulStatus() {
+  return {
+    activeRunId: null,
+    completionState: "succeeded" as const,
+    configRevision: revision,
+    error: null,
+    lastAttemptAt: "2026-07-30T00:00:00Z",
+    lastSuccessfulSyncAt: "2026-07-30T00:00:01Z",
+    lastTrigger: "manual" as const,
+    provider: "s3" as const,
+    summary: {
+      bytesDownloaded: 0,
+      bytesUploaded: 1,
+      conflictFiles: 0,
+      downloadedFiles: 0,
+      scannedFiles: 1,
+      skippedFiles: 0,
+      uploadedFiles: 1,
+    },
+  };
 }

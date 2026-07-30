@@ -15,6 +15,7 @@ import { serverWorkspaceRoot } from "./files";
 
 export function createServerSyncConfigRuntime(
   kernel: KernelDomainPort,
+  options: ServerSyncConfigRuntimeOptions = {},
 ): AppSyncConfigRuntime {
   const fallback = createDefaultAppRuntime().syncConfig;
   return {
@@ -47,13 +48,27 @@ export function createServerSyncConfigRuntime(
     ),
     sync: async (input) => {
       const run = await kernel.sync.trigger(input.revision as KernelRevision);
+      if (run.configRevision !== input.revision) {
+        throw new ServerSyncRunError("protocol-mismatch");
+      }
+      const status = await waitForTerminalRun(kernel, run, options);
+      if (status.completionState !== "succeeded" || status.summary === null) {
+        throw new ServerSyncRunError(
+          "run-failed",
+          status.error?.code ?? "sync-run-failed",
+        );
+      }
+      const notesRoot = "notesRoot" in input ? input.notesRoot : serverWorkspaceRoot;
       return {
-        job: {
-          jobId: run.runId,
-          notesRoot: "notesRoot" in input ? input.notesRoot : serverWorkspaceRoot,
-          repositoryId: "server-workspace",
+        result: {
+          notebookName: "notebookName" in input ? input.notebookName : "Server",
+          notesRoot,
+          provider: status.provider,
+          revision: run.configRevision,
+          summary: { ...status.summary },
+          trigger: input.trigger,
         },
-        status: "accepted",
+        status: "completed",
       };
     },
     testConnection: async ({ revision }) => {
@@ -67,6 +82,69 @@ export function createServerSyncConfigRuntime(
       };
     },
   };
+}
+
+export interface ServerSyncConfigRuntimeOptions {
+  readonly delay?: (milliseconds: number) => Promise<unknown>;
+  readonly maxStatusReads?: number;
+  readonly statusPollMilliseconds?: number;
+}
+
+export type ServerSyncRunErrorCode = "protocol-mismatch" | "run-failed" | "timeout";
+
+export class ServerSyncRunError extends Error {
+  readonly code: ServerSyncRunErrorCode;
+  readonly safeReason: string;
+
+  constructor(code: ServerSyncRunErrorCode, safeReason: string = code) {
+    super(`The Server sync run did not complete (${safeReason}).`);
+    this.name = "ServerSyncRunError";
+    this.code = code;
+    this.safeReason = safeReason;
+  }
+}
+
+async function waitForTerminalRun(
+  kernel: KernelDomainPort,
+  run: Awaited<ReturnType<KernelDomainPort["sync"]["trigger"]>>,
+  options: ServerSyncConfigRuntimeOptions,
+) {
+  const delay = options.delay ?? ((milliseconds: number) => new Promise<undefined>((resolve) => {
+    globalThis.setTimeout(() => resolve(undefined), milliseconds);
+  }));
+  const maxStatusReads = options.maxStatusReads ?? 120;
+  if (!Number.isSafeInteger(maxStatusReads) || maxStatusReads < 1) {
+    throw new ServerSyncRunError("protocol-mismatch");
+  }
+
+  for (let attempt = 0; attempt < maxStatusReads; attempt += 1) {
+    const status = await kernel.sync.readStatus();
+    if (
+      status.configRevision !== run.configRevision ||
+      status.lastAttemptAt !== run.acceptedAt
+    ) {
+      throw new ServerSyncRunError("protocol-mismatch");
+    }
+    if (status.completionState === "attempting") {
+      if (status.activeRunId !== run.runId) {
+        throw new ServerSyncRunError("protocol-mismatch");
+      }
+      await delay(options.statusPollMilliseconds ?? 250);
+      continue;
+    }
+    if (status.activeRunId !== null || status.completionState === "idle") {
+      throw new ServerSyncRunError("protocol-mismatch");
+    }
+    if (
+      status.completionState === "failed" &&
+      status.error?.runId !== undefined &&
+      status.error.runId !== run.runId
+    ) {
+      throw new ServerSyncRunError("protocol-mismatch");
+    }
+    return status;
+  }
+  throw new ServerSyncRunError("timeout");
 }
 
 function mapConfig(config: KernelSyncConfigSnapshot): SyncConfigDocument {
