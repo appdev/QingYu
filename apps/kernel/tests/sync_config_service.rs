@@ -35,9 +35,9 @@ use qingyu_kernel::{
     runtime::{KernelRuntime, KernelStartupErrorKind, SyncApiService},
     services::{
         sync::{
-            KernelSyncTriggerDisposition, KernelSyncTriggerRejection, SyncCancellation,
-            SyncExecutionError, SyncExecutor, SyncRunContext, SyncService,
-            SyncWorkspaceSnapshotIdentity,
+            KernelSyncSchedulerCloseTestHook, KernelSyncTriggerDisposition,
+            KernelSyncTriggerRejection, SyncCancellation, SyncExecutionError, SyncExecutor,
+            SyncRunContext, SyncService, SyncWorkspaceSnapshotIdentity,
         },
         sync_scheduler::KernelSyncScheduler,
         workspace::WorkspaceService,
@@ -5804,6 +5804,62 @@ async fn kernel_sync_scheduler_exposes_explicit_host_seams_and_closes_idempotent
         KernelSyncTriggerDisposition::Rejected(KernelSyncTriggerRejection::Closing)
     );
     settlement.wait().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn scheduler_close_is_not_observable_before_its_service_gate_is_closed() {
+    let temporary = tempdir().unwrap();
+    let sleeper = Arc::new(ControlledSleeper::default());
+    let close_hook = Arc::new(KernelSyncSchedulerCloseTestHook::default());
+    let (_runtime, service) = sync_service_with_policy(
+        &temporary.path().join("scheduler-close-linearization"),
+        true,
+        true,
+        "automatic",
+        test_ports_with_sleeper(sleeper.clone()),
+        Arc::new(CountingExecutor::default()),
+    )
+    .await;
+    let scheduler = Arc::new(
+        KernelSyncScheduler::start_with_close_hook_for_test(service.clone(), close_hook.clone())
+            .unwrap(),
+    );
+    let pending_interval = sleeper.next_request().await;
+
+    let first_scheduler = scheduler.clone();
+    let first_close = tokio::spawn(async move {
+        first_scheduler.close().await;
+    });
+    close_hook.wait_until_blocked().await;
+    assert!(
+        pending_interval.fire(),
+        "the blocked close must leave the scheduler task available to observe close state"
+    );
+
+    let second_scheduler = scheduler.clone();
+    let mut second_close = tokio::spawn(async move {
+        second_scheduler.close().await;
+    });
+    let early_second_close =
+        tokio::time::timeout(Duration::from_millis(100), &mut second_close).await;
+    let second_close_returned_before_gate = early_second_close.is_ok();
+
+    close_hook.release();
+    first_close.await.unwrap();
+    match early_second_close {
+        Ok(result) => result.unwrap(),
+        Err(_) => second_close.await.unwrap(),
+    }
+
+    assert!(
+        !second_close_returned_before_gate,
+        "a concurrent close must not observe scheduler end before the service gate closes"
+    );
+    assert_kernel_trigger_is_closing(scheduler.app_launch().await).await;
+    assert_kernel_trigger_is_closing(scheduler.save().await).await;
+    assert_kernel_trigger_is_closing(scheduler.settings_exit().await).await;
+    assert_kernel_trigger_is_closing(service.trigger_kernel_sync(SyncTrigger::Interval).await)
+        .await;
 }
 
 #[tokio::test]

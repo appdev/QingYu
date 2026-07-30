@@ -16,7 +16,10 @@ use crate::{
     contract::{DomainEvent, Revision, SyncConfigReadiness, SyncMode, SyncTrigger},
     events::EventSubscription,
     runtime::SyncApiService as _,
-    services::sync::{KernelSyncSchedulerClaim, KernelSyncTriggerResult, SyncService},
+    services::sync::{
+        KernelSyncSchedulerClaim, KernelSyncSchedulerCloseTestHook, KernelSyncTriggerResult,
+        SyncService,
+    },
 };
 
 pub struct KernelSyncScheduler {
@@ -27,10 +30,30 @@ pub struct KernelSyncScheduler {
 
 impl KernelSyncScheduler {
     pub fn start(service: Arc<SyncService>) -> Result<Self, KernelSyncSchedulerStartError> {
+        Self::start_inner(service, None)
+    }
+
+    #[doc(hidden)]
+    pub fn start_with_close_hook_for_test(
+        service: Arc<SyncService>,
+        close_hook: Arc<KernelSyncSchedulerCloseTestHook>,
+    ) -> Result<Self, KernelSyncSchedulerStartError> {
+        Self::start_inner(service, Some(close_hook))
+    }
+
+    fn start_inner(
+        service: Arc<SyncService>,
+        close_hook: Option<Arc<KernelSyncSchedulerCloseTestHook>>,
+    ) -> Result<Self, KernelSyncSchedulerStartError> {
         let runtime = service.runtime().clone();
-        let claim = service
-            .claim_kernel_sync_scheduler()
-            .map_err(|_| KernelSyncSchedulerStartError)?;
+        let claim = match close_hook {
+            Some(close_hook) => service
+                .claim_kernel_sync_scheduler_with_close_hook_for_test(close_hook)
+                .map_err(|_| KernelSyncSchedulerStartError)?,
+            None => service
+                .claim_kernel_sync_scheduler()
+                .map_err(|_| KernelSyncSchedulerStartError)?,
+        };
         let control = Arc::new(SchedulerControl::default());
         let task_control = control.clone();
         let task_service = service.clone();
@@ -117,8 +140,8 @@ struct SchedulerControl {
 
 impl SchedulerControl {
     fn close(&self, claim: &KernelSyncSchedulerClaim) {
+        claim.close();
         if !self.closed.swap(true, Ordering::AcqRel) {
-            claim.close();
             self.wake.notify_waiters();
         }
     }
@@ -183,8 +206,8 @@ impl std::future::Future for SchedulerTask {
 
 impl Drop for SchedulerTask {
     fn drop(&mut self) {
-        self.state.dropped.store(true, Ordering::Release);
         self.state.control.close(&self.state.claim);
+        self.state.dropped.store(true, Ordering::Release);
         self.state.control.finish();
     }
 }

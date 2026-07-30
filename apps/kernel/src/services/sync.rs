@@ -7,13 +7,13 @@ use std::{
     pin::Pin,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc, Mutex as StdMutex, Weak,
+        Arc, Condvar, Mutex as StdMutex, Weak,
     },
     task::{Context, Poll},
 };
 
 use async_trait::async_trait;
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, Notify};
 
 pub use crate::runtime::{
     ActiveWorkspaceSnapshotIdentity as SyncWorkspaceSnapshotIdentity, SyncApiService,
@@ -320,6 +320,56 @@ pub struct SyncService {
     kernel_trigger_gate: StdMutex<KernelTriggerGateState>,
 }
 
+#[doc(hidden)]
+#[derive(Default)]
+pub struct KernelSyncSchedulerCloseTestHook {
+    blocked: AtomicBool,
+    blocked_notification: Notify,
+    released: StdMutex<bool>,
+    release_notification: Condvar,
+}
+
+impl KernelSyncSchedulerCloseTestHook {
+    pub async fn wait_until_blocked(&self) {
+        loop {
+            if self.blocked.load(Ordering::Acquire) {
+                return;
+            }
+            let notified = self.blocked_notification.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if self.blocked.load(Ordering::Acquire) {
+                return;
+            }
+            notified.await;
+        }
+    }
+
+    pub fn release(&self) {
+        let mut released = self
+            .released
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *released = true;
+        self.release_notification.notify_all();
+    }
+
+    fn block_before_service_gate_close(&self) {
+        self.blocked.store(true, Ordering::Release);
+        self.blocked_notification.notify_waiters();
+        let mut released = self
+            .released
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        while !*released {
+            released = self
+                .release_notification
+                .wait(released)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+    }
+}
+
 #[derive(Default)]
 struct KernelTriggerGateState {
     closing: bool,
@@ -332,27 +382,23 @@ pub(crate) struct KernelSyncSchedulerClaim {
 }
 
 struct KernelSyncSchedulerClaimState {
-    closed: AtomicBool,
+    close_hook: Option<Arc<KernelSyncSchedulerCloseTestHook>>,
     owner: uuid::Uuid,
     service: Weak<SyncService>,
 }
 
 impl KernelSyncSchedulerClaim {
     pub(crate) fn close(&self) {
-        if !self.state.closed.swap(true, Ordering::AcqRel) {
-            if let Some(service) = self.state.service.upgrade() {
-                service.close_kernel_sync_scheduler(self.state.owner);
-            }
+        if let Some(service) = self.state.service.upgrade() {
+            service.close_kernel_sync_scheduler(self.state.owner, self.state.close_hook.as_deref());
         }
     }
 }
 
 impl Drop for KernelSyncSchedulerClaimState {
     fn drop(&mut self) {
-        if !self.closed.swap(true, Ordering::AcqRel) {
-            if let Some(service) = self.service.upgrade() {
-                service.close_kernel_sync_scheduler(self.owner);
-            }
+        if let Some(service) = self.service.upgrade() {
+            service.close_kernel_sync_scheduler(self.owner, self.close_hook.as_deref());
         }
     }
 }
@@ -445,6 +491,20 @@ impl SyncService {
     pub(crate) fn claim_kernel_sync_scheduler(
         self: &Arc<Self>,
     ) -> Result<KernelSyncSchedulerClaim, KernelSyncSchedulerClaimError> {
+        self.claim_kernel_sync_scheduler_with_close_hook(None)
+    }
+
+    pub(crate) fn claim_kernel_sync_scheduler_with_close_hook_for_test(
+        self: &Arc<Self>,
+        close_hook: Arc<KernelSyncSchedulerCloseTestHook>,
+    ) -> Result<KernelSyncSchedulerClaim, KernelSyncSchedulerClaimError> {
+        self.claim_kernel_sync_scheduler_with_close_hook(Some(close_hook))
+    }
+
+    fn claim_kernel_sync_scheduler_with_close_hook(
+        self: &Arc<Self>,
+        close_hook: Option<Arc<KernelSyncSchedulerCloseTestHook>>,
+    ) -> Result<KernelSyncSchedulerClaim, KernelSyncSchedulerClaimError> {
         let mut gate = self
             .kernel_trigger_gate
             .lock()
@@ -456,14 +516,21 @@ impl SyncService {
         gate.scheduler_owner = Some(owner);
         Ok(KernelSyncSchedulerClaim {
             state: Arc::new(KernelSyncSchedulerClaimState {
-                closed: AtomicBool::new(false),
+                close_hook,
                 owner,
                 service: Arc::downgrade(self),
             }),
         })
     }
 
-    fn close_kernel_sync_scheduler(&self, owner: uuid::Uuid) {
+    fn close_kernel_sync_scheduler(
+        &self,
+        owner: uuid::Uuid,
+        close_hook: Option<&KernelSyncSchedulerCloseTestHook>,
+    ) {
+        if let Some(close_hook) = close_hook {
+            close_hook.block_before_service_gate_close();
+        }
         let mut gate = self
             .kernel_trigger_gate
             .lock()
