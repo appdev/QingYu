@@ -7,12 +7,13 @@ use std::{
     pin::Pin,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc, Weak,
+        Arc, Mutex as StdMutex, Weak,
     },
     task::{Context, Poll},
 };
 
 use async_trait::async_trait;
+use tokio::sync::oneshot;
 
 pub use crate::runtime::{
     ActiveWorkspaceSnapshotIdentity as SyncWorkspaceSnapshotIdentity, SyncApiService,
@@ -22,14 +23,14 @@ pub use crate::runtime::{
 use crate::{
     contract::{
         DomainEvent, ErrorCode, ErrorDetails, Nullable, PatchSyncConfigRequest, ResourceRefDto,
-        RunId, SyncConfigReadiness, SyncConfigViewDto, SyncConnectionTestDto, SyncRunAcceptedDto,
-        SyncSafeErrorCategory, SyncSafeErrorCode, SyncSafeErrorDto, SyncSafeErrorOperation,
-        SyncStatusDto, SyncSummaryDto, SyncTrigger, TestSyncConnectionRequest,
-        TriggerSyncRunRequest,
+        Revision, RunId, SyncConfigReadiness, SyncConfigViewDto, SyncConnectionTestDto, SyncMode,
+        SyncRunAcceptedDto, SyncSafeErrorCategory, SyncSafeErrorCode, SyncSafeErrorDto,
+        SyncSafeErrorOperation, SyncStatusDto, SyncSummaryDto, SyncTrigger,
+        TestSyncConnectionRequest, TriggerSyncRunRequest,
     },
     events::{EventPublication, EventSink as _},
     ports::BoxTaskFuture,
-    runtime::{ClaimedSyncRun, KernelRuntime, ServiceFailure, SyncRunClaim},
+    runtime::{ClaimedSyncRun, KernelRuntime, MutationPermit, ServiceFailure, SyncRunClaim},
     sync::config::{
         SyncConfig, SyncConfigChangeError, SyncConfigLoad, SyncConfigStore,
         SyncConfigStoreErrorKind,
@@ -48,6 +49,107 @@ pub trait SyncExecutor: Send + Sync {
     ) -> Result<SyncSummaryDto, SyncExecutionError>;
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum KernelSyncTriggerRejection {
+    ActiveRun,
+    Closing,
+    Disabled,
+    Incomplete,
+    ModeDisallowed,
+    Unavailable,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum KernelSyncTriggerDisposition {
+    Accepted(SyncRunAcceptedDto),
+    Rejected(KernelSyncTriggerRejection),
+}
+
+#[must_use = "Kernel trigger results carry a settlement barrier"]
+pub struct KernelSyncTriggerResult {
+    disposition: KernelSyncTriggerDisposition,
+    settlement: SyncRunSettlement,
+}
+
+impl KernelSyncTriggerResult {
+    fn accepted(run: StartedSyncRun) -> Self {
+        Self {
+            disposition: KernelSyncTriggerDisposition::Accepted(run.accepted),
+            settlement: run.settlement,
+        }
+    }
+
+    fn rejected(rejection: KernelSyncTriggerRejection) -> Self {
+        Self {
+            disposition: KernelSyncTriggerDisposition::Rejected(rejection),
+            settlement: SyncRunSettlement::settled(),
+        }
+    }
+
+    pub fn into_parts(self) -> (KernelSyncTriggerDisposition, SyncRunSettlement) {
+        (self.disposition, self.settlement)
+    }
+}
+
+#[must_use = "wait on the settlement barrier when shutdown ordering matters"]
+pub struct SyncRunSettlement {
+    receiver: oneshot::Receiver<()>,
+}
+
+impl SyncRunSettlement {
+    fn channel() -> (Arc<SyncRunSettlementState>, Self) {
+        let (sender, receiver) = oneshot::channel();
+        (
+            Arc::new(SyncRunSettlementState {
+                sender: StdMutex::new(Some(sender)),
+            }),
+            Self { receiver },
+        )
+    }
+
+    fn settled() -> Self {
+        let (sender, receiver) = oneshot::channel();
+        let _settled = sender.send(());
+        Self { receiver }
+    }
+
+    pub async fn wait(self) {
+        let _settled = self.receiver.await;
+    }
+}
+
+struct SyncRunSettlementState {
+    sender: StdMutex<Option<oneshot::Sender<()>>>,
+}
+
+impl SyncRunSettlementState {
+    fn settle(&self) {
+        let sender = self
+            .sender
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(sender) = sender {
+            let _settled = sender.send(());
+        }
+    }
+}
+
+struct StartedSyncRun {
+    accepted: SyncRunAcceptedDto,
+    settlement: SyncRunSettlement,
+}
+
+enum SyncRunTriggerFailure {
+    ActiveRun,
+    Disabled,
+    Incomplete,
+    ModeDisallowed,
+    NotReady,
+    RevisionConflict(Revision),
+    Unavailable,
+}
+
 pub struct SyncRunContext {
     run_id: RunId,
     trigger: SyncTrigger,
@@ -58,6 +160,7 @@ pub struct SyncRunContext {
 struct SyncBackgroundTaskDropState {
     trigger_active: AtomicBool,
     dropped: AtomicBool,
+    settlement: Arc<SyncRunSettlementState>,
 }
 
 struct SyncBackgroundTaskGuard {
@@ -96,8 +199,15 @@ impl Future for SyncBackgroundTaskEnvelope {
 
 impl Drop for SyncBackgroundTaskEnvelope {
     fn drop(&mut self) {
+        let settlement = self
+            .guard
+            .as_ref()
+            .map(|guard| guard.state.settlement.clone());
         drop(self.inner.take());
         drop(self.guard.take());
+        if let Some(settlement) = settlement {
+            settlement.settle();
+        }
     }
 }
 
@@ -207,6 +317,7 @@ pub struct SyncService {
     executor: Arc<dyn SyncExecutor>,
     editing: Arc<SyncEditingRegistry>,
     status: Arc<SyncStatusState>,
+    kernel_trigger_gate: StdMutex<bool>,
 }
 
 impl SyncService {
@@ -221,6 +332,7 @@ impl SyncService {
             store,
             executor,
             editing: Arc::new(SyncEditingRegistry::new()),
+            kernel_trigger_gate: StdMutex::new(false),
         }
     }
 
@@ -228,10 +340,211 @@ impl SyncService {
         self.editing.clone()
     }
 
+    pub async fn trigger_kernel_sync(&self, trigger: SyncTrigger) -> KernelSyncTriggerResult {
+        if self.verify_instance(ErrorCode::SyncNotReady).is_err() {
+            return KernelSyncTriggerResult::rejected(KernelSyncTriggerRejection::Unavailable);
+        }
+        let mutation = self.runtime.mutation_coordinator().lock().await;
+        if self.verify_instance(ErrorCode::SyncNotReady).is_err() {
+            return KernelSyncTriggerResult::rejected(KernelSyncTriggerRejection::Unavailable);
+        }
+        let closing = match self.kernel_trigger_gate.lock() {
+            Ok(closing) => closing,
+            Err(_) => {
+                return KernelSyncTriggerResult::rejected(KernelSyncTriggerRejection::Unavailable)
+            }
+        };
+        if *closing {
+            return KernelSyncTriggerResult::rejected(KernelSyncTriggerRejection::Closing);
+        }
+        let registered = self.runtime.sync_run_registered(&mutation);
+        let attempting = self.status.is_attempting();
+        match (registered, attempting) {
+            (Ok(true), _) | (_, Ok(true)) => {
+                return KernelSyncTriggerResult::rejected(KernelSyncTriggerRejection::ActiveRun)
+            }
+            (Ok(false), Ok(false)) => {}
+            (Err(_), _) | (_, Err(_)) => {
+                return KernelSyncTriggerResult::rejected(KernelSyncTriggerRejection::Unavailable)
+            }
+        }
+        match self.start_sync_run(trigger, None, mutation) {
+            Ok(run) => KernelSyncTriggerResult::accepted(run),
+            Err(error) => KernelSyncTriggerResult::rejected(kernel_trigger_rejection(error)),
+        }
+    }
+
+    pub fn close_kernel_triggers(&self) {
+        let mut closing = self
+            .kernel_trigger_gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *closing = true;
+    }
+
     fn verify_instance(&self, code: ErrorCode) -> Result<(), ServiceFailure> {
         self.runtime
             .verify_instance_lock()
             .map_err(|_| failure(code))
+    }
+
+    fn start_sync_run(
+        &self,
+        trigger: SyncTrigger,
+        expected_revision: Option<Revision>,
+        mutation: MutationPermit<'_>,
+    ) -> Result<StartedSyncRun, SyncRunTriggerFailure> {
+        let admitted_workspace = self
+            .runtime
+            .active_workspace_snapshot()
+            .map_err(|_| SyncRunTriggerFailure::NotReady)?;
+        let (config, revision) = match self
+            .store
+            .load()
+            .map_err(|_| SyncRunTriggerFailure::NotReady)?
+        {
+            SyncConfigLoad::Loaded { config, revision } => (config, revision),
+            SyncConfigLoad::Absent
+            | SyncConfigLoad::Corrupt { .. }
+            | SyncConfigLoad::Unsupported { .. } => return Err(SyncRunTriggerFailure::NotReady),
+        };
+        if expected_revision
+            .as_ref()
+            .is_some_and(|expected| expected != &revision)
+        {
+            return Err(SyncRunTriggerFailure::RevisionConflict(revision));
+        }
+        let exposed = config
+            .to_view(revision.clone())
+            .map_err(|_| SyncRunTriggerFailure::NotReady)?;
+        match exposed.readiness {
+            SyncConfigReadiness::Disabled => return Err(SyncRunTriggerFailure::Disabled),
+            SyncConfigReadiness::Incomplete => return Err(SyncRunTriggerFailure::Incomplete),
+            SyncConfigReadiness::Ready => {}
+        }
+        if !sync_mode_allows_trigger(exposed.mode, trigger) {
+            return Err(SyncRunTriggerFailure::ModeDisallowed);
+        }
+        let config = *config;
+        let accepted_at = self
+            .runtime
+            .ports()
+            .clock()
+            .now()
+            .map_err(|_| SyncRunTriggerFailure::Unavailable)?;
+        let run_id = RunId::new(uuid::Uuid::new_v4());
+        let queued = self
+            .runtime
+            .queue_sync_run(
+                admitted_workspace,
+                &exposed,
+                run_id,
+                accepted_at.clone(),
+                trigger,
+                &mutation,
+            )
+            .map_err(|_| SyncRunTriggerFailure::ActiveRun)?;
+        publish_status(
+            self.runtime.as_ref(),
+            queued.attempting,
+            revision.clone(),
+            Nullable::value(run_id),
+        );
+
+        let (settlement_state, settlement) = SyncRunSettlement::channel();
+        let background_runtime = Arc::downgrade(&self.runtime);
+        let executor = self.executor.clone();
+        let fallback_completed_at = accepted_at.clone();
+        let drop_state = Arc::new(SyncBackgroundTaskDropState {
+            trigger_active: AtomicBool::new(true),
+            dropped: AtomicBool::new(false),
+            settlement: settlement_state.clone(),
+        });
+        let drop_guard = SyncBackgroundTaskGuard {
+            runtime: Arc::downgrade(&self.runtime),
+            run_id,
+            state: drop_state.clone(),
+        };
+        let inner: BoxTaskFuture = Box::pin(async move {
+            let Some(runtime) = background_runtime.upgrade() else {
+                return;
+            };
+            let claim = {
+                let mutation = runtime.mutation_coordinator().lock().await;
+                runtime.claim_sync_run(run_id, &mutation)
+            };
+            let claimed = match claim {
+                Ok(SyncRunClaim::Ready(claimed)) => claimed,
+                Ok(SyncRunClaim::Rejected(Some(terminal))) => {
+                    runtime.publish_sync_terminal(&terminal);
+                    let _finished = runtime.finish_sync_terminal(run_id);
+                    return;
+                }
+                Ok(SyncRunClaim::Rejected(None)) | Err(_) => return,
+            };
+            let provider = config.provider();
+            let mut run = executor.run(config, SyncRunContext::new(claimed));
+            let result = poll_fn(|context| {
+                match catch_unwind(AssertUnwindSafe(|| run.as_mut().poll(context))) {
+                    Ok(Poll::Ready(result)) => Poll::Ready(Ok(result)),
+                    Ok(Poll::Pending) => Poll::Pending,
+                    Err(_) => Poll::Ready(Err(())),
+                }
+            })
+            .await;
+            drop(run);
+            let mutation = runtime.mutation_coordinator().lock().await;
+            let completed_at = runtime
+                .ports()
+                .clock()
+                .now()
+                .unwrap_or(fallback_completed_at);
+            let completion = match result {
+                Ok(Ok(summary)) => SyncRunCompletion::Succeeded(summary),
+                Ok(Err(error)) => error.into_completion(provider, run_id),
+                Err(()) => SyncRunCompletion::UnknownFailure,
+            };
+            let terminal = runtime
+                .finalize_running_sync_run(run_id, completion, completed_at, &mutation)
+                .ok()
+                .flatten();
+            drop(mutation);
+            if let Some(terminal) = terminal {
+                runtime.publish_sync_terminal(&terminal);
+                let _finished = runtime.finish_sync_terminal(run_id);
+            }
+        });
+        let spawn_result =
+            self.runtime
+                .spawn_sync_background(Box::pin(SyncBackgroundTaskEnvelope {
+                    inner: Some(inner),
+                    guard: Some(drop_guard),
+                }));
+        drop_state.trigger_active.store(false, Ordering::Release);
+        if spawn_result.is_err() || drop_state.dropped.load(Ordering::Acquire) {
+            let terminal = match self.runtime.fail_queued_sync_spawn(run_id, &mutation) {
+                Ok(terminal) => terminal,
+                Err(_) => {
+                    settlement_state.settle();
+                    return Err(SyncRunTriggerFailure::Unavailable);
+                }
+            };
+            drop(mutation);
+            self.runtime.publish_sync_terminal(&terminal);
+            let finished = self.runtime.finish_sync_terminal(run_id);
+            settlement_state.settle();
+            finished.map_err(|_| SyncRunTriggerFailure::Unavailable)?;
+            return Err(SyncRunTriggerFailure::Unavailable);
+        }
+        drop(mutation);
+        Ok(StartedSyncRun {
+            accepted: SyncRunAcceptedDto {
+                run_id,
+                accepted_at,
+                config_revision: revision,
+            },
+            settlement,
+        })
     }
 }
 
@@ -388,142 +701,50 @@ impl SyncApiService for SyncService {
         self.verify_instance(ErrorCode::SyncNotReady)?;
         let mutation = self.runtime.mutation_coordinator().lock().await;
         self.verify_instance(ErrorCode::SyncNotReady)?;
-        let admitted_workspace = self
-            .runtime
-            .active_workspace_snapshot()
-            .map_err(|_| failure(ErrorCode::SyncNotReady))?;
-        let (config, revision) = match self
-            .store
-            .load()
-            .map_err(|_| failure(ErrorCode::SyncNotReady))?
-        {
-            SyncConfigLoad::Loaded { config, revision } => (config, revision),
-            SyncConfigLoad::Absent
-            | SyncConfigLoad::Corrupt { .. }
-            | SyncConfigLoad::Unsupported { .. } => {
-                return Err(failure(ErrorCode::SyncNotReady));
-            }
-        };
-        if request.expected_config_revision != revision {
-            return Err(revision_conflict(revision));
-        }
-        let exposed = config
-            .to_view(request.expected_config_revision.clone())
-            .map_err(|_| failure(ErrorCode::SyncNotReady))?;
-        if exposed.readiness != SyncConfigReadiness::Ready {
-            return Err(failure(ErrorCode::SyncNotReady));
-        }
-        let config = *config;
-        let accepted_at = self
-            .runtime
-            .ports()
-            .clock()
-            .now()
-            .map_err(|_| failure(ErrorCode::SyncRunUnavailable))?;
-        let run_id = RunId::new(uuid::Uuid::new_v4());
-        let queued = self
-            .runtime
-            .queue_sync_run(
-                admitted_workspace,
-                &exposed,
-                run_id,
-                accepted_at.clone(),
-                SyncTrigger::Manual,
-                &mutation,
-            )
-            .map_err(|_| failure(ErrorCode::SyncRunUnavailable))?;
-        publish_status(
-            self.runtime.as_ref(),
-            queued.attempting,
-            request.expected_config_revision.clone(),
-            Nullable::value(run_id),
-        );
+        self.start_sync_run(
+            SyncTrigger::Manual,
+            Some(request.expected_config_revision),
+            mutation,
+        )
+        .map(|run| run.accepted)
+        .map_err(api_trigger_failure)
+    }
+}
 
-        let background_runtime = Arc::downgrade(&self.runtime);
-        let executor = self.executor.clone();
-        let fallback_completed_at = accepted_at.clone();
-        let drop_state = Arc::new(SyncBackgroundTaskDropState {
-            trigger_active: AtomicBool::new(true),
-            dropped: AtomicBool::new(false),
-        });
-        let drop_guard = SyncBackgroundTaskGuard {
-            runtime: Arc::downgrade(&self.runtime),
-            run_id,
-            state: drop_state.clone(),
-        };
-        let inner: BoxTaskFuture = Box::pin(async move {
-            let Some(runtime) = background_runtime.upgrade() else {
-                return;
-            };
-            let claim = {
-                let mutation = runtime.mutation_coordinator().lock().await;
-                runtime.claim_sync_run(run_id, &mutation)
-            };
-            let claimed = match claim {
-                Ok(SyncRunClaim::Ready(claimed)) => claimed,
-                Ok(SyncRunClaim::Rejected(Some(terminal))) => {
-                    runtime.publish_sync_terminal(&terminal);
-                    let _finished = runtime.finish_sync_terminal(run_id);
-                    return;
-                }
-                Ok(SyncRunClaim::Rejected(None)) | Err(_) => return,
-            };
-            let provider = config.provider();
-            let mut run = executor.run(config, SyncRunContext::new(claimed));
-            let result = poll_fn(|context| {
-                match catch_unwind(AssertUnwindSafe(|| run.as_mut().poll(context))) {
-                    Ok(Poll::Ready(result)) => Poll::Ready(Ok(result)),
-                    Ok(Poll::Pending) => Poll::Pending,
-                    Err(_) => Poll::Ready(Err(())),
-                }
-            })
-            .await;
-            drop(run);
-            let mutation = runtime.mutation_coordinator().lock().await;
-            let completed_at = runtime
-                .ports()
-                .clock()
-                .now()
-                .unwrap_or(fallback_completed_at);
-            let completion = match result {
-                Ok(Ok(summary)) => SyncRunCompletion::Succeeded(summary),
-                Ok(Err(error)) => error.into_completion(provider, run_id),
-                Err(()) => SyncRunCompletion::UnknownFailure,
-            };
-            let terminal = runtime
-                .finalize_running_sync_run(run_id, completion, completed_at, &mutation)
-                .ok()
-                .flatten();
-            drop(mutation);
-            if let Some(terminal) = terminal {
-                runtime.publish_sync_terminal(&terminal);
-                let _finished = runtime.finish_sync_terminal(run_id);
-            }
-        });
-        let spawn_result =
-            self.runtime
-                .spawn_sync_background(Box::pin(SyncBackgroundTaskEnvelope {
-                    inner: Some(inner),
-                    guard: Some(drop_guard),
-                }));
-        drop_state.trigger_active.store(false, Ordering::Release);
-        if spawn_result.is_err() || drop_state.dropped.load(Ordering::Acquire) {
-            let terminal = self
-                .runtime
-                .fail_queued_sync_spawn(run_id, &mutation)
-                .map_err(|_| failure(ErrorCode::SyncRunUnavailable))?;
-            drop(mutation);
-            self.runtime.publish_sync_terminal(&terminal);
-            self.runtime
-                .finish_sync_terminal(run_id)
-                .map_err(|_| failure(ErrorCode::SyncRunUnavailable))?;
-            return Err(failure(ErrorCode::SyncRunUnavailable));
+const fn sync_mode_allows_trigger(mode: SyncMode, trigger: SyncTrigger) -> bool {
+    match mode {
+        SyncMode::Automatic => true,
+        SyncMode::StartupExit => matches!(
+            trigger,
+            SyncTrigger::AppLaunch | SyncTrigger::Manual | SyncTrigger::SettingsExit
+        ),
+        SyncMode::FullyManual => matches!(trigger, SyncTrigger::Manual),
+    }
+}
+
+fn kernel_trigger_rejection(error: SyncRunTriggerFailure) -> KernelSyncTriggerRejection {
+    match error {
+        SyncRunTriggerFailure::ActiveRun => KernelSyncTriggerRejection::ActiveRun,
+        SyncRunTriggerFailure::Disabled => KernelSyncTriggerRejection::Disabled,
+        SyncRunTriggerFailure::Incomplete => KernelSyncTriggerRejection::Incomplete,
+        SyncRunTriggerFailure::ModeDisallowed => KernelSyncTriggerRejection::ModeDisallowed,
+        SyncRunTriggerFailure::NotReady
+        | SyncRunTriggerFailure::RevisionConflict(_)
+        | SyncRunTriggerFailure::Unavailable => KernelSyncTriggerRejection::Unavailable,
+    }
+}
+
+fn api_trigger_failure(error: SyncRunTriggerFailure) -> ServiceFailure {
+    match error {
+        SyncRunTriggerFailure::RevisionConflict(current_revision) => {
+            revision_conflict(current_revision)
         }
-        Ok(SyncRunAcceptedDto {
-            run_id,
-            accepted_at,
-            config_revision: request.expected_config_revision,
-        })
+        SyncRunTriggerFailure::Disabled
+        | SyncRunTriggerFailure::Incomplete
+        | SyncRunTriggerFailure::NotReady => failure(ErrorCode::SyncNotReady),
+        SyncRunTriggerFailure::ActiveRun
+        | SyncRunTriggerFailure::ModeDisallowed
+        | SyncRunTriggerFailure::Unavailable => failure(ErrorCode::SyncRunUnavailable),
     }
 }
 
