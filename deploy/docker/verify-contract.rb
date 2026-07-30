@@ -2,6 +2,7 @@
 # frozen_string_literal: true
 
 require "digest"
+require "open3"
 require "shellwords"
 require "yaml"
 
@@ -10,6 +11,8 @@ Stage = Struct.new(:base, :alias_name, :instructions, keyword_init: true)
 
 CANONICAL_DOCKERIGNORE_SHA256 =
   "5b8e84a7e25a385040213570ca7847548e61bba617c0ccbf13c337fd95e04644"
+CANONICAL_DOCKERFILE_SYNTAX = "# syntax=docker/dockerfile:1.7"
+DOCKERFILE_PARSER_DIRECTIVE = /\A\s*#\s*(?:syntax|escape|check)\s*=/i
 
 def fail_contract(message)
   warn "FAIL: #{message}"
@@ -18,6 +21,16 @@ end
 
 def assert_contract(condition, message)
   fail_contract(message) unless condition
+end
+
+def verify_dockerfile_parser_directives(path)
+  lines = File.readlines(path, chomp: true)
+  parser_directives = lines.select { |line| line.match?(DOCKERFILE_PARSER_DIRECTIVE) }
+  assert_contract(
+    lines.first == CANONICAL_DOCKERFILE_SYNTAX &&
+      parser_directives == [CANONICAL_DOCKERFILE_SYNTAX],
+    "Dockerfile must declare only # syntax=docker/dockerfile:1.7"
+  )
 end
 
 def read_logical_dockerfile_instructions(path)
@@ -109,6 +122,7 @@ def assert_canonical_stage(stage, expected_base, expected_instructions, message)
 end
 
 def verify_dockerfile(path)
+  verify_dockerfile_parser_directives(path)
   stages = parse_dockerfile(path)
   web_stage = require_stage(
     stages,
@@ -177,8 +191,8 @@ def verify_dockerfile(path)
 
   runtime_copies = instructions_named(runtime_stage, "COPY").map(&:arguments)
   assert_contract(
-    runtime_copies.length == 3,
-    "runtime image must contain only the Kernel, Web asset, and entrypoint copies"
+    runtime_copies.length == 4,
+    "runtime image must contain only the Kernel, Web asset, entrypoint, and asset verifier copies"
   )
   assert_contract(
     runtime_copies.any? do |arguments|
@@ -204,6 +218,14 @@ def verify_dockerfile(path)
     end,
     "runtime image must install the fixed server entrypoint"
   )
+  assert_contract(
+    runtime_copies.any? do |arguments|
+      arguments.match?(
+        /(?:\A|\s)--chmod=0555(?:\s|=).*deploy\/docker\/verify-final-web-assets\.sh\s+\/usr\/local\/bin\/qingyu-verify-final-web-assets\z/
+      )
+    end,
+    "runtime image must install the fixed final Web asset verifier"
+  )
 
   users = instructions_named(runtime_stage, "USER").map(&:arguments)
   assert_contract(users == ["10001:10001"], "runtime image must use only UID/GID 10001:10001")
@@ -224,8 +246,8 @@ def verify_dockerfile(path)
     "runtime image must not add an alternate command"
   )
   assert_contract(
-    instructions_named(runtime_stage, "RUN").length == 1,
-    "runtime image must contain only its single base-system setup instruction"
+    instructions_named(runtime_stage, "RUN").length == 2,
+    "runtime image must contain only base-system setup and final Web asset verification"
   )
 
   forbidden_runtime_input =
@@ -303,6 +325,12 @@ def verify_dockerfile(path)
         "COPY",
         "--chmod=0555 deploy/docker/entrypoint.sh /usr/local/bin/qingyu-server-entrypoint"
       ],
+      [
+        "COPY",
+        "--chmod=0555 deploy/docker/verify-final-web-assets.sh " \
+          "/usr/local/bin/qingyu-verify-final-web-assets"
+      ],
+      ["RUN", "/usr/local/bin/qingyu-verify-final-web-assets /opt/qingyu/web"],
       [
         "LABEL",
         'dev.qingyu.image.kind="kernel-api-with-unserved-web-assets" ' \
@@ -478,7 +506,72 @@ def local_copy_sources(stages)
   end.flatten
 end
 
-def verify_dockerignore(path, repo_root, stages)
+def validate_tracked_build_inputs(paths, description)
+  assert_contract(!paths.empty?, "#{description} must not be empty")
+  paths.each do |path|
+    components = path.split("/", -1)
+    assert_contract(
+      path.valid_encoding? &&
+        !path.empty? &&
+        !path.start_with?("/") &&
+        !path.include?("\\") &&
+        !path.match?(/[[:cntrl:]]/) &&
+        components.none? { |component| component.empty? || component == "." || component == ".." },
+      "#{description} contains an unsafe path"
+    )
+  end
+  assert_contract(
+    paths == paths.uniq.sort,
+    "#{description} must contain unique byte-sorted paths"
+  )
+  paths
+end
+
+def read_tracked_build_inputs_manifest(path)
+  assert_contract(File.file?(path), "missing tracked Docker build input manifest: #{path}")
+  validate_tracked_build_inputs(
+    File.readlines(path, chomp: true),
+    "tracked Docker build input fallback manifest"
+  )
+end
+
+def git_tracked_build_inputs(repo_root, sources)
+  stdout, _stderr, status = Open3.capture3(
+    "git",
+    "-C",
+    repo_root,
+    "ls-files",
+    "-z",
+    "--",
+    *sources
+  )
+  return nil unless status.success?
+
+  paths = stdout.split("\0", -1)
+  paths.pop if paths.last == ""
+  validate_tracked_build_inputs(paths.sort, "Git tracked Docker build inputs")
+end
+
+def tracked_build_inputs(repo_root, stages, manifest_path)
+  sources = [".dockerignore", "Dockerfile", *local_copy_sources(stages)].uniq
+  sources.each do |source|
+    assert_contract(
+      File.exist?(File.join(repo_root, source)),
+      "Docker build input is missing: #{source}"
+    )
+  end
+  fallback = read_tracked_build_inputs_manifest(manifest_path)
+  discovered = git_tracked_build_inputs(repo_root, sources)
+  return fallback unless discovered
+
+  assert_contract(
+    discovered == fallback,
+    "tracked Docker build input fallback manifest is stale"
+  )
+  discovered
+end
+
+def verify_dockerignore(path, repo_root, stages, tracked_inputs_manifest)
   patterns = dockerignore_patterns(path)
   mandatory_patterns = %w[
     .git .git/** **/.git **/.git/**
@@ -495,31 +588,12 @@ def verify_dockerignore(path, repo_root, stages)
     ".dockerignore is missing mandatory exclusions: #{missing_patterns.join(', ')}"
   )
 
-  required_inputs = [
-    "Dockerfile",
-    "package.json",
-    "pnpm-lock.yaml",
-    "pnpm-workspace.yaml",
-    "apps/web/package.json",
-    "apps/web/src/main.tsx",
-    "apps/kernel/Cargo.toml",
-    "apps/kernel/Cargo.lock",
-    "apps/kernel/src/bin/qingyu-kernel.rs",
-    "packages/app/package.json",
-    "packages/app/src/index.ts",
-    "packages/kernel-client/package.json",
-    "packages/kernel-client/src/index.ts",
-    "packages/shared/package.json",
-    "packages/shared/src/index.ts",
-    "deploy/docker/entrypoint.sh"
-  ]
-  required_inputs.concat(local_copy_sources(stages))
-  required_inputs.uniq.each do |relative_path|
+  tracked_build_inputs(repo_root, stages, tracked_inputs_manifest).each do |relative_path|
     absolute_path = File.join(repo_root, relative_path)
-    assert_contract(File.exist?(absolute_path), "Docker build input is missing: #{relative_path}")
+    assert_contract(File.file?(absolute_path), "tracked Docker build input is missing: #{relative_path}")
     assert_contract(
       !dockerignore_excludes?(patterns, relative_path),
-      ".dockerignore excludes required Docker build input: #{relative_path}"
+      ".dockerignore excludes tracked Docker build input: #{relative_path}"
     )
   end
 
@@ -536,6 +610,10 @@ compose_file = ENV.fetch(
   File.join(repo_root, "deploy/docker/compose.contract.yaml")
 )
 dockerignore = ENV.fetch("QINGYU_VERIFY_DOCKERIGNORE", File.join(repo_root, ".dockerignore"))
+tracked_inputs_manifest = ENV.fetch(
+  "QINGYU_VERIFY_TRACKED_INPUTS_MANIFEST",
+  File.join(repo_root, "deploy/docker/tracked-build-inputs.txt")
+)
 
 [[dockerfile, "root Dockerfile"], [compose_file, "Compose contract"], [dockerignore, ".dockerignore"]].each do |path, description|
   assert_contract(File.file?(path), "missing #{description}: #{path}")
@@ -543,4 +621,4 @@ end
 
 stages = verify_dockerfile(dockerfile)
 verify_compose(compose_file)
-verify_dockerignore(dockerignore, repo_root, stages)
+verify_dockerignore(dockerignore, repo_root, stages, tracked_inputs_manifest)

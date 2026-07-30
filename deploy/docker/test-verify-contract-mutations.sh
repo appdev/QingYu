@@ -6,6 +6,7 @@ repo_root=$(CDPATH= cd -- "$(dirname "$0")/../.." && pwd)
 verifier="$repo_root/deploy/docker/verify-contract.sh"
 compose_file="$repo_root/deploy/docker/compose.contract.yaml"
 dockerfile="$repo_root/Dockerfile"
+tracked_inputs_manifest="$repo_root/deploy/docker/tracked-build-inputs.txt"
 web_dist_tests="$repo_root/deploy/docker/verify-web-dist.test.mjs"
 
 fail() {
@@ -31,6 +32,32 @@ expect_rejection() {
   grep -F -- "$expected_message" "$output_file" >/dev/null \
     || fail "$mutation_name failed without the expected semantic diagnostic"
 }
+
+custom_frontend_dockerfile="$temporary_directory/Dockerfile.custom-frontend"
+ruby -e '
+  lines = File.readlines(ARGV.fetch(0))
+  abort "Dockerfile syntax directive not found" unless lines.first&.start_with?("# syntax=")
+  lines[0] = "# syntax=attacker.invalid/custom-frontend:latest\n"
+  File.write(ARGV.fetch(1), lines.join)
+' "$dockerfile" "$custom_frontend_dockerfile"
+
+expect_rejection \
+  dockerfile-custom-frontend \
+  'Dockerfile must declare only # syntax=docker/dockerfile:1.7' \
+  env QINGYU_VERIFY_DOCKERFILE="$custom_frontend_dockerfile" "$verifier"
+
+extra_parser_directive_dockerfile="$temporary_directory/Dockerfile.extra-parser-directive"
+ruby -e '
+  lines = File.readlines(ARGV.fetch(0))
+  abort "Dockerfile syntax directive not found" unless lines.first&.start_with?("# syntax=")
+  lines.insert(1, "# check=skip=all\n")
+  File.write(ARGV.fetch(1), lines.join)
+' "$dockerfile" "$extra_parser_directive_dockerfile"
+
+expect_rejection \
+  dockerfile-extra-parser-directive \
+  'Dockerfile must declare only # syntax=docker/dockerfile:1.7' \
+  env QINGYU_VERIFY_DOCKERFILE="$extra_parser_directive_dockerfile" "$verifier"
 
 mutated_dockerfile="$temporary_directory/Dockerfile.nodejs-in-final-stage"
 awk '
@@ -93,7 +120,7 @@ overbroad_dockerignore="$temporary_directory/dockerignore.excludes-packages"
 
 expect_rejection \
   dockerignore-excludes-build-source \
-  '.dockerignore excludes required Docker build input: packages/app/package.json' \
+  '.dockerignore excludes tracked Docker build input: packages/app/package.json' \
   env QINGYU_VERIFY_DOCKERIGNORE="$overbroad_dockerignore" "$verifier"
 
 negated_dockerignore="$temporary_directory/dockerignore.reincludes-root-env"
@@ -115,8 +142,17 @@ tracked_input_dockerignore="$temporary_directory/dockerignore.excludes-tracked-u
 
 expect_rejection \
   dockerignore-excludes-tracked-ui-source \
-  'Docker build context policy must match the frozen .dockerignore contract' \
+  '.dockerignore excludes tracked Docker build input: packages/ui/src/Badge.test.tsx' \
   env QINGYU_VERIFY_DOCKERIGNORE="$tracked_input_dockerignore" "$verifier"
+
+stale_tracked_inputs_manifest="$temporary_directory/tracked-build-inputs.stale.txt"
+awk '$0 != "packages/ui/src/Badge.test.tsx" { print }' \
+  "$tracked_inputs_manifest" >"$stale_tracked_inputs_manifest"
+
+expect_rejection \
+  tracked-build-input-fallback-manifest-stale \
+  'tracked Docker build input fallback manifest is stale' \
+  env QINGYU_VERIFY_TRACKED_INPUTS_MANIFEST="$stale_tracked_inputs_manifest" "$verifier"
 
 shell_spliced_node_dockerfile="$temporary_directory/Dockerfile.shell-spliced-nodejs"
 ruby -e '
@@ -147,5 +183,28 @@ expect_rejection \
   web-build-dist-node-smuggle \
   'web-build instruction sequence must match the frozen contract' \
   env QINGYU_VERIFY_DOCKERFILE="$smuggled_web_dist_dockerfile" "$verifier"
+
+missing_final_verifier_dockerfile="$temporary_directory/Dockerfile.missing-final-web-verifier"
+awk '$0 != "RUN /usr/local/bin/qingyu-verify-final-web-assets /opt/qingyu/web" { print }' \
+  "$dockerfile" >"$missing_final_verifier_dockerfile"
+
+expect_rejection \
+  runtime-missing-final-web-verification \
+  'runtime image must contain only base-system setup and final Web asset verification' \
+  env QINGYU_VERIFY_DOCKERFILE="$missing_final_verifier_dockerfile" "$verifier"
+
+post_verification_write_dockerfile="$temporary_directory/Dockerfile.post-verification-write"
+ruby -e '
+  source = File.read(ARGV.fetch(0))
+  verification = "RUN /usr/local/bin/qingyu-verify-final-web-assets /opt/qingyu/web\n"
+  abort "Final Web verification instruction not found" unless source.include?(verification)
+  mutation = "RUN printf unsafe > /opt/qingyu/web/assets/late.js\n"
+  File.write(ARGV.fetch(1), source.sub(verification, verification + mutation))
+' "$dockerfile" "$post_verification_write_dockerfile"
+
+expect_rejection \
+  runtime-post-verification-web-write \
+  'runtime image must contain only base-system setup and final Web asset verification' \
+  env QINGYU_VERIFY_DOCKERFILE="$post_verification_write_dockerfile" "$verifier"
 
 printf '%s\n' 'PASS: Docker contract semantic mutations are rejected.'

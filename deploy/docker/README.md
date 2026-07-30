@@ -21,13 +21,15 @@ Run the packaging check with Ruby/Psych (the YAML parser bundled with Ruby):
 deploy/docker/verify-contract.sh
 ```
 
-The verifier parses Compose as YAML and freezes the complete Dockerfile stage instruction sequences plus the complete `.dockerignore` policy. The Web build stage ends by running `verify-web-dist.mjs`; no later instruction may modify `apps/web/dist` before the final image copies that verified layer. The artifact verifier rejects symlinks, non-regular files, executable mode bits, executable binary magic, unsupported extensions, files larger than 16 MiB, and distributions larger than 128 MiB. Run the adversarial contract and artifact mutation suite with:
+The verifier parses Compose as YAML, freezes the only Docker parser directive and every stage instruction, and freezes the complete `.dockerignore` policy. Its tracked-input fallback manifest must exactly match Git whenever repository metadata is available, so archive verification remains reproducible without allowing a tracked `COPY` descendant to disappear from the context. The Web build stage ends by running `verify-web-dist.mjs`; no later instruction may modify `apps/web/dist` before the final image copies that verified layer. The artifact verifier streams directory entries and rejects symlinks, hard links, non-regular files, executable mode bits, executable binary magic, unsupported extensions, excessive depth, more than 10,000 total nodes, more than 16 MiB of logical-path metadata, files larger than 16 MiB, and distributions larger than 128 MiB. Retained files must keep one stable device, inode, link count, size, mode, modification time, and change time before, during, and after inspection.
+
+The runtime stage executes the independent `verify-final-web-assets.sh` scanner after copying `/opt/qingyu/web`, and the built-image probe executes the same scanner again. This keeps hard-link, node/path, depth, extension, mode, magic, and size limits active on the actual final filesystem instead of trusting only the earlier build-stage path. Run the adversarial contract and artifact mutation suite with:
 
 ```sh
 deploy/docker/test-verify-contract-mutations.sh
 ```
 
-If a usable Docker daemon is present, `verify-contract.sh` additionally builds the final stage and inspects its configured user, entrypoint, Kernel/Web artifacts, and absence of Node toolchain executables. Without a usable daemon it reports that image evidence as unavailable and keeps the `static-web-serving-required` profile gate explicit. Neither result means the browser server is complete.
+If a usable Docker daemon is present, `verify-contract.sh` additionally builds the final stage and inspects its configured user, entrypoint, complete Web asset tree, Kernel artifact, and absence of Node toolchain executables. Without a usable daemon it reports that image evidence as unavailable and keeps the `static-web-serving-required` profile gate explicit. Neither result means the browser server is complete.
 
 ## Fixed runtime contract
 

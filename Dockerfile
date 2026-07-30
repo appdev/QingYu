@@ -50,6 +50,9 @@ RUN apt-get update \
 COPY --from=kernel-build /src/apps/kernel/target/release/qingyu-kernel /usr/local/bin/qingyu-kernel
 COPY --from=web-build /src/apps/web/dist /opt/qingyu/web
 COPY --chmod=0555 deploy/docker/entrypoint.sh /usr/local/bin/qingyu-server-entrypoint
+COPY --chmod=0555 deploy/docker/verify-final-web-assets.sh /usr/local/bin/qingyu-verify-final-web-assets
+
+RUN /usr/local/bin/qingyu-verify-final-web-assets /opt/qingyu/web
 
 LABEL dev.qingyu.image.kind="kernel-api-with-unserved-web-assets" \
       dev.qingyu.image.phase-gate="static-web-serving-required" \
