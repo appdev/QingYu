@@ -41,6 +41,15 @@ struct StorePrimaryWorkspaceBackend<R: tauri::Runtime> {
     store: Arc<tauri_plugin_store::Store<R>>,
 }
 
+fn primary_local_state_store<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Result<Arc<tauri_plugin_store::Store<R>>, String> {
+    app.store_builder(LOCAL_STATE_STORE_PATH)
+        .disable_auto_save()
+        .build()
+        .map_err(|_| persistence_error())
+}
+
 /// Host-private, path-free identities for child Kernel launches.
 ///
 /// React-owned local-state supplies only the current path guard. The opaque
@@ -493,9 +502,7 @@ impl ConsumedPreparedDesktopNotebookTarget {
         &self,
         app: &tauri::AppHandle<R>,
     ) -> Result<PrimaryWorkspaceWriteResult, String> {
-        let store = app
-            .store(LOCAL_STATE_STORE_PATH)
-            .map_err(|_| persistence_error())?;
+        let store = primary_local_state_store(app)?;
         let backend = StorePrimaryWorkspaceBackend { store };
         self.commit_primary_workspace_with_backend(&backend, primary_workspace_transaction_gate())
     }
@@ -782,9 +789,7 @@ fn validate_primary_workspace_identity(
 fn read_primary_workspace_value<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> Result<Option<Value>, String> {
-    let store = app
-        .store(LOCAL_STATE_STORE_PATH)
-        .map_err(|_| persistence_error())?;
+    let store = primary_local_state_store(app)?;
     let backend = StorePrimaryWorkspaceBackend { store };
     PrimaryWorkspaceService::new(&backend, primary_workspace_transaction_gate()).read()
 }
@@ -798,9 +803,7 @@ pub(crate) fn load_or_create_native_host_workspace_state<R: tauri::Runtime>(
     workspace_root: &Path,
     native_store: &qingyu_kernel::host::native::NativeHostWorkspaceStore,
 ) -> Result<qingyu_kernel::host::native::NativeHostWorkspaceState, String> {
-    let store = app
-        .store(LOCAL_STATE_STORE_PATH)
-        .map_err(|_| persistence_error())?;
+    let store = primary_local_state_store(app)?;
     let backend = StorePrimaryWorkspaceBackend { store };
     NativeHostWorkspaceStatePersistence::new(
         &backend,
@@ -814,9 +817,7 @@ pub(crate) fn with_primary_workspace_transaction<R: tauri::Runtime, T>(
     app: &tauri::AppHandle<R>,
     operation: impl FnOnce(Result<PathBuf, String>) -> Result<T, String>,
 ) -> Result<T, String> {
-    let store = app
-        .store(LOCAL_STATE_STORE_PATH)
-        .map_err(|_| persistence_error())?;
+    let store = primary_local_state_store(app)?;
     let backend = StorePrimaryWorkspaceBackend { store };
     let service = PrimaryWorkspaceService::new(&backend, primary_workspace_transaction_gate());
 
@@ -918,9 +919,7 @@ pub(crate) fn write_primary_workspace_state(
     input: PrimaryWorkspaceWriteInput,
 ) -> Result<PrimaryWorkspaceWriteResult, String> {
     let proposed_root = proposed_primary_workspace_root(&app, &input.state);
-    let store = app
-        .store(LOCAL_STATE_STORE_PATH)
-        .map_err(|_| persistence_error())?;
+    let store = primary_local_state_store(&app)?;
     let backend = StorePrimaryWorkspaceBackend { store };
     PrimaryWorkspaceService::new(&backend, primary_workspace_transaction_gate())
         .write_with_primary_root_guard(
@@ -963,6 +962,25 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn primary_workspace_store_creation_never_uses_default_auto_save() {
+        let source = include_str!("primary_workspace.rs");
+        let default_store = [".", "store(", "LOCAL_STATE_STORE_PATH"].concat();
+        let configured_store = [
+            ".store_builder(LOCAL_STATE_STORE_PATH)",
+            ".disable_auto_save()",
+            ".build()",
+        ]
+        .concat();
+        let compact_source = source
+            .chars()
+            .filter(|character| !character.is_whitespace())
+            .collect::<String>();
+
+        assert!(!source.contains(&default_store));
+        assert_eq!(compact_source.matches(&configured_store).count(), 1);
+    }
 
     fn prepared_target_count() -> usize {
         super::prepared_desktop_notebook_targets()
