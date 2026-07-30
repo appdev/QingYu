@@ -1,20 +1,26 @@
-//! Read-only compatibility with the desktop DejaVu repository binding state.
+//! Compatibility with the host-owned DejaVu repository binding state.
 
 use std::{collections::HashSet, fmt, io::Read, path::PathBuf};
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
-use serde::{Deserialize, Deserializer};
+use serde::{Deserialize, Deserializer, Serialize};
 use zeroize::Zeroizing;
 
 use crate::{
+    config::KernelLaunchEpoch,
     paths::{InstanceDataRoot, WorkspaceRoot},
-    storage::{nonfollowing_read_options, unique_regular_file_identity},
+    runtime::{ActiveInstanceAuthority, ActiveWorkspaceAuthority},
+    storage::{
+        nonfollowing_read_options, unique_regular_file_identity, CommitState, DurableFileStore,
+        ExpectedFile, PreservePrevious, RecoveryOutcome, ReplaceRequest, StorageFileName,
+    },
     sync::dejavu_runner::DejavuRepositoryKey,
 };
 
 const LOCAL_SYNC_STATE_FILE: &str = "local-sync.json";
 const LOCAL_SYNC_STATE_VERSION: u32 = 1;
 const MAX_LOCAL_SYNC_STATE_BYTES: usize = 1024 * 1024;
+const SERVER_WORKSPACE_DISPLAY_NAME: &str = "Server notes";
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -52,6 +58,24 @@ struct LegacyRepositoryBinding {
     enabled: bool,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ServerLocalSyncState<'a> {
+    version: u32,
+    device_id: &'a str,
+    repo_key: &'a str,
+    bindings: [ServerRepositoryBinding<'a>; 1],
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ServerRepositoryBinding<'a> {
+    repository_id: &'a str,
+    display_name: &'static str,
+    notes_root: &'a std::path::Path,
+    enabled: bool,
+}
+
 pub(crate) struct DejavuLocalRepositoryBinding {
     repository_id: String,
     device_id: String,
@@ -74,6 +98,114 @@ impl fmt::Debug for DejavuLocalRepositoryBinding {
 pub(crate) enum DejavuLocalStateError {
     InvalidState,
     Storage,
+}
+
+/// Installs the one fixed Server repository identity exactly once.
+///
+/// The caller must already own both retained process locks. Existing state is
+/// validated but never rewritten, including valid state that has no active
+/// binding for the fixed Server workspace.
+pub(crate) fn initialize_server_dejavu_binding(
+    instance: &ActiveInstanceAuthority,
+    workspace: &ActiveWorkspaceAuthority,
+    launch_epoch: &KernelLaunchEpoch,
+) -> Result<(), DejavuLocalStateError> {
+    verify_server_authorities(instance, workspace)?;
+    let store = DurableFileStore::at_instance_data(instance.root(), launch_epoch)
+        .map_err(|_| DejavuLocalStateError::Storage)?;
+    let target = StorageFileName::parse(LOCAL_SYNC_STATE_FILE)
+        .map_err(|_| DejavuLocalStateError::Storage)?;
+    if store
+        .read(&target, MAX_LOCAL_SYNC_STATE_BYTES as u64)
+        .map_err(|_| DejavuLocalStateError::Storage)?
+        .is_some()
+    {
+        return require_active_server_binding(instance, workspace);
+    }
+
+    let recovery = store
+        .recover()
+        .map_err(|_| DejavuLocalStateError::Storage)?;
+    if recovery.iter().any(|outcome| {
+        matches!(
+            outcome,
+            RecoveryOutcome::Committed {
+                commit_state: CommitState::PublishedDurabilityUncertain,
+                ..
+            } | RecoveryOutcome::ManualInterventionRequired { .. }
+        )
+    }) {
+        return Err(DejavuLocalStateError::Storage);
+    }
+    if store
+        .read(&target, MAX_LOCAL_SYNC_STATE_BYTES as u64)
+        .map_err(|_| DejavuLocalStateError::Storage)?
+        .is_some()
+    {
+        return require_active_server_binding(instance, workspace);
+    }
+
+    let repository_id = uuid::Uuid::new_v4().to_string();
+    let device_id = uuid::Uuid::new_v4().to_string();
+    let mut repository_key = Zeroizing::new([0_u8; 32]);
+    getrandom::fill(repository_key.as_mut()).map_err(|_| DejavuLocalStateError::Storage)?;
+    let repository_key_base64 = Zeroizing::new(STANDARD.encode(repository_key.as_slice()));
+    let state = ServerLocalSyncState {
+        version: LOCAL_SYNC_STATE_VERSION,
+        device_id: &device_id,
+        repo_key: repository_key_base64.as_str(),
+        bindings: [ServerRepositoryBinding {
+            repository_id: &repository_id,
+            display_name: SERVER_WORKSPACE_DISPLAY_NAME,
+            notes_root: workspace.root().canonical_path(),
+            enabled: true,
+        }],
+    };
+    let mut bytes = Zeroizing::new(
+        serde_json::to_vec_pretty(&state).map_err(|_| DejavuLocalStateError::Storage)?,
+    );
+    if bytes.len() > MAX_LOCAL_SYNC_STATE_BYTES {
+        return Err(DejavuLocalStateError::Storage);
+    }
+    let outcome = store
+        .replace_with_address_validation(
+            ReplaceRequest {
+                target: &target,
+                bytes: bytes.as_slice(),
+                expected: ExpectedFile::Absent,
+                preserve_previous: PreservePrevious::None,
+            },
+            || verify_server_authorities(instance, workspace).is_ok(),
+        )
+        .map_err(|_| DejavuLocalStateError::Storage)?;
+    bytes.fill(0);
+    if outcome.commit_state == CommitState::PublishedDurabilityUncertain {
+        return Err(DejavuLocalStateError::Storage);
+    }
+    require_active_server_binding(instance, workspace)
+}
+
+fn require_active_server_binding(
+    instance: &ActiveInstanceAuthority,
+    workspace: &ActiveWorkspaceAuthority,
+) -> Result<(), DejavuLocalStateError> {
+    verify_server_authorities(instance, workspace)?;
+    if read_active_dejavu_binding(instance.root(), workspace.root())?.is_none() {
+        return Err(DejavuLocalStateError::InvalidState);
+    }
+    verify_server_authorities(instance, workspace)
+}
+
+fn verify_server_authorities(
+    instance: &ActiveInstanceAuthority,
+    workspace: &ActiveWorkspaceAuthority,
+) -> Result<(), DejavuLocalStateError> {
+    instance
+        .verify_held_directory()
+        .map_err(|_| DejavuLocalStateError::Storage)?;
+    workspace
+        .verify_held_directory()
+        .map_err(|_| DejavuLocalStateError::Storage)
 }
 
 pub(crate) fn read_active_dejavu_binding(

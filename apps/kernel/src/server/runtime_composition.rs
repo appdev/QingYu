@@ -10,6 +10,7 @@ use crate::{
     ports::system::system_kernel_ports,
     runtime::KernelRuntime,
     services::{sync::SyncService, sync_scheduler::KernelSyncScheduler},
+    sync::local_state::initialize_server_dejavu_binding,
     workspace::{managed::ManagedWorkspaceCollection, primary::DurableServerPrimaryWorkspaceStore},
 };
 
@@ -142,6 +143,16 @@ pub async fn compose_fixed_server_kernel(
         .map_err(|_| ServerRuntimeCompositionError::ManagedPaths)?;
     let runtime = KernelRuntime::activate(config, paths, system_kernel_ports())
         .map_err(|_| ServerRuntimeCompositionError::RuntimeActivation)?;
+    let workspace_authority = runtime
+        .active_workspace_authority()
+        .map_err(|_| ServerRuntimeCompositionError::DejavuBinding)?;
+    let instance_authority = runtime.active_instance_authority();
+    initialize_server_dejavu_binding(
+        instance_authority.as_ref(),
+        workspace_authority.as_ref(),
+        runtime.launch_epoch(),
+    )
+    .map_err(|_| ServerRuntimeCompositionError::DejavuBinding)?;
     let primary_workspace = Arc::new(
         DurableServerPrimaryWorkspaceStore::open(
             runtime.instance_data_root(),
@@ -210,6 +221,7 @@ fn production_authentication_security(
 pub enum ServerRuntimeCompositionError {
     ManagedPaths,
     RuntimeActivation,
+    DejavuBinding,
     PrimaryWorkspaceStore,
     FixedSettingsStore,
     FixedSyncStore,
@@ -245,6 +257,7 @@ impl ServerRuntimeCompositionError {
         match self {
             Self::ManagedPaths => "QK-SRV-COMPOSE-MANAGED-PATHS",
             Self::RuntimeActivation => "QK-SRV-COMPOSE-RUNTIME-ACTIVATE",
+            Self::DejavuBinding => "QK-SRV-COMPOSE-DEJAVU-BINDING",
             Self::PrimaryWorkspaceStore => "QK-SRV-COMPOSE-PRIMARY-WORKSPACE",
             Self::FixedSettingsStore => "QK-SRV-COMPOSE-FIXED-SETTINGS-STORE",
             Self::FixedSyncStore => "QK-SRV-COMPOSE-FIXED-SYNC-STORE",
@@ -289,6 +302,7 @@ mod tests {
             ServerAuthenticationStatus, ServerInitializationCoordinatorError,
             ServerLaunchEnvironment,
         },
+        sync::local_state::read_active_dejavu_binding,
     };
 
     use super::*;
@@ -343,6 +357,212 @@ mod tests {
             composition.authentication_status().unwrap(),
             ServerAuthenticationStatus::NeedsInitialization
         );
+    }
+
+    #[tokio::test]
+    async fn fresh_server_owns_one_private_stable_dejavu_binding_before_ready() {
+        let temporary = tempdir().unwrap();
+        let paths = fixture_paths(temporary.path());
+        let first = compose_fixed_server_kernel(KernelConfig::generate().unwrap(), paths)
+            .await
+            .unwrap();
+        let target = temporary.path().join("data/state/local-sync.json");
+        let first_bytes = fs::read(&target).expect("fresh Server DejaVu binding state");
+        assert!(first_bytes.len() <= 1024 * 1024);
+        let first_workspace = first.runtime().active_workspace_snapshot().unwrap();
+        let (repository_id, device_id, repository_key) = read_active_dejavu_binding(
+            first.runtime().instance_data_root(),
+            first_workspace.authority().root(),
+        )
+        .expect("valid Server binding state")
+        .expect("enabled fixed-workspace binding")
+        .into_parts();
+        for identifier in [&repository_id, &device_id] {
+            let parsed = uuid::Uuid::parse_str(identifier).expect("canonical UUID");
+            assert_eq!(parsed.get_version(), Some(uuid::Version::Random));
+            assert_eq!(parsed.to_string(), *identifier);
+        }
+        assert_eq!(
+            format!("{repository_key:?}"),
+            "DejavuRepositoryKey([REDACTED])"
+        );
+        let json: serde_json::Value = serde_json::from_slice(&first_bytes).unwrap();
+        assert_eq!(
+            base64::Engine::decode(
+                &base64::engine::general_purpose::STANDARD,
+                json["repoKey"].as_str().unwrap(),
+            )
+            .unwrap()
+            .len(),
+            32
+        );
+        assert_eq!(
+            json["bindings"][0]["notesRoot"],
+            temporary
+                .path()
+                .join("data/workspace")
+                .canonicalize()
+                .unwrap()
+                .to_str()
+                .unwrap()
+        );
+        assert_eq!(json["bindings"][0]["enabled"], true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            assert_eq!(
+                fs::metadata(&target).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+        drop(first_workspace);
+        drop(first);
+
+        let restarted = compose_fixed_server_kernel(
+            KernelConfig::generate().unwrap(),
+            fixture_paths(temporary.path()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(fs::read(target).unwrap(), first_bytes);
+        let restarted_workspace = restarted.runtime().active_workspace_snapshot().unwrap();
+        let restarted_binding = read_active_dejavu_binding(
+            restarted.runtime().instance_data_root(),
+            restarted_workspace.authority().root(),
+        )
+        .unwrap()
+        .unwrap();
+        let (restarted_repository, restarted_device, _) = restarted_binding.into_parts();
+        assert_eq!(restarted_repository, repository_id);
+        assert_eq!(restarted_device, device_id);
+    }
+
+    #[tokio::test]
+    async fn server_fails_closed_without_replacing_an_existing_inactive_dejavu_state() {
+        let temporary = tempdir().unwrap();
+        let paths = fixture_paths(temporary.path());
+        let target = temporary.path().join("data/state/local-sync.json");
+        let existing = serde_json::to_vec(&serde_json::json!({
+            "version": 1,
+            "deviceId": "eb473600-dace-4d7e-bdad-7dac05933099",
+            "repoKey": base64::Engine::encode(
+                &base64::engine::general_purpose::STANDARD,
+                [7_u8; 32],
+            ),
+            "bindings": [{
+                "repositoryId": "323df833-764a-44b3-a534-492640c258f2",
+                "displayName": "Server notes",
+                "notesRoot": temporary.path().join("data/workspace"),
+                "enabled": false,
+            }],
+        }))
+        .unwrap();
+        fs::write(&target, &existing).unwrap();
+
+        let error = compose_fixed_server_kernel(KernelConfig::generate().unwrap(), paths)
+            .await
+            .unwrap_err();
+
+        assert_eq!(error, ServerRuntimeCompositionError::DejavuBinding);
+        assert_eq!(error.diagnostic_code(), "QK-SRV-COMPOSE-DEJAVU-BINDING");
+        assert_eq!(fs::read(target).unwrap(), existing);
+        assert!(!error.to_string().contains("eb473600"));
+    }
+
+    #[tokio::test]
+    async fn server_never_replaces_invalid_oversized_or_nonregular_dejavu_state() {
+        for scenario in ["unknown-field", "oversized", "directory"] {
+            let temporary = tempdir().unwrap();
+            let paths = fixture_paths(temporary.path());
+            let target = temporary.path().join("data/state/local-sync.json");
+            let expected = match scenario {
+                "unknown-field" => {
+                    let bytes = serde_json::to_vec(&serde_json::json!({
+                        "version": 1,
+                        "deviceId": "eb473600-dace-4d7e-bdad-7dac05933099",
+                        "repoKey": base64::Engine::encode(
+                            &base64::engine::general_purpose::STANDARD,
+                            [7_u8; 32],
+                        ),
+                        "bindings": [{
+                            "repositoryId": "323df833-764a-44b3-a534-492640c258f2",
+                            "displayName": "Server notes",
+                            "notesRoot": temporary.path().join("data/workspace"),
+                            "enabled": true,
+                        }],
+                        "private-invalid-marker": true,
+                    }))
+                    .unwrap();
+                    fs::write(&target, &bytes).unwrap();
+                    bytes
+                }
+                "oversized" => {
+                    let bytes = vec![b'X'; 1024 * 1024 + 1];
+                    fs::write(&target, &bytes).unwrap();
+                    bytes
+                }
+                "directory" => {
+                    fs::create_dir(&target).unwrap();
+                    fs::write(target.join("private-marker"), b"untouched").unwrap();
+                    Vec::new()
+                }
+                _ => unreachable!(),
+            };
+
+            let error = compose_fixed_server_kernel(KernelConfig::generate().unwrap(), paths)
+                .await
+                .unwrap_err();
+
+            assert_eq!(error, ServerRuntimeCompositionError::DejavuBinding);
+            assert_eq!(error.diagnostic_code(), "QK-SRV-COMPOSE-DEJAVU-BINDING");
+            if scenario == "directory" {
+                assert_eq!(
+                    fs::read(target.join("private-marker")).unwrap(),
+                    b"untouched"
+                );
+            } else {
+                assert_eq!(fs::read(target).unwrap(), expected);
+            }
+            assert!(!error.to_string().contains("private-invalid-marker"));
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn server_never_follows_or_replaces_linked_dejavu_state() {
+        use std::os::unix::fs::symlink;
+
+        for link_kind in ["symlink", "hardlink"] {
+            let temporary = tempdir().unwrap();
+            let paths = fixture_paths(temporary.path());
+            let target = temporary.path().join("data/state/local-sync.json");
+            let outside = temporary.path().join("outside-private-state");
+            let bytes = b"private-linked-state-marker";
+            fs::write(&outside, bytes).unwrap();
+            if link_kind == "symlink" {
+                symlink(&outside, &target).unwrap();
+            } else {
+                fs::hard_link(&outside, &target).unwrap();
+            }
+
+            let error = compose_fixed_server_kernel(KernelConfig::generate().unwrap(), paths)
+                .await
+                .unwrap_err();
+
+            assert_eq!(error, ServerRuntimeCompositionError::DejavuBinding);
+            assert_eq!(fs::read(&outside).unwrap(), bytes);
+            assert_eq!(fs::read(&target).unwrap(), bytes);
+            if link_kind == "symlink" {
+                assert!(fs::symlink_metadata(&target)
+                    .unwrap()
+                    .file_type()
+                    .is_symlink());
+            } else {
+                use std::os::unix::fs::MetadataExt as _;
+                assert_eq!(fs::metadata(&target).unwrap().nlink(), 2);
+            }
+            assert!(!error.to_string().contains("private-linked-state-marker"));
+        }
     }
 
     #[tokio::test]
@@ -763,6 +983,10 @@ mod tests {
             (
                 ServerRuntimeCompositionError::RuntimeActivation,
                 "QK-SRV-COMPOSE-RUNTIME-ACTIVATE",
+            ),
+            (
+                ServerRuntimeCompositionError::DejavuBinding,
+                "QK-SRV-COMPOSE-DEJAVU-BINDING",
             ),
             (
                 ServerRuntimeCompositionError::PrimaryWorkspaceStore,

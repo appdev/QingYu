@@ -1524,6 +1524,7 @@ mod tests {
                 RemoteSyncDiagnostic, RemoteSyncError, SyncFailureCategory, SyncProviderOperation,
             },
             config::{SyncConfig, SyncConfigStore},
+            local_state::initialize_server_dejavu_binding,
         },
         workspace::{
             managed::ManagedWorkspaceCollection,
@@ -1864,6 +1865,60 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn fresh_server_s3_run_reaches_dejavu_without_a_preexisting_binding() {
+        let server = S3Fixture::start();
+        let factory = Arc::new(FixedDejavuFactory::watching(server.state.clone()));
+        let kernel = TestKernel::start_fresh_server_s3(factory.clone(), &server.endpoint()).await;
+        assert_eq!(
+            kernel.runtime.host_profile(),
+            crate::contract::HostProfile::Server
+        );
+        let sync = SyncService::new(
+            kernel.runtime.clone(),
+            Arc::new(SyncConfigStore::new(kernel.sync_store).expect("sync config store")),
+            kernel.executor.clone(),
+        );
+        let exposed = SyncApiService::get_sync_config(&sync)
+            .await
+            .expect("ready fresh Server S3 config");
+
+        SyncApiService::trigger_sync_run(
+            &sync,
+            TriggerSyncRunRequest {
+                expected_config_revision: exposed.revision,
+            },
+        )
+        .await
+        .expect("accept fresh Server S3 run");
+
+        let completed = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let status = SyncApiService::get_sync_status(&sync)
+                    .await
+                    .expect("read fresh Server S3 status");
+                if status.completion_state != SyncCompletionState::Attempting {
+                    break status;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("fresh Server S3 sync should complete");
+
+        assert_eq!(completed.completion_state, SyncCompletionState::Succeeded);
+        assert_eq!(factory.calls.load(Ordering::Acquire), 1);
+        let repository_id = factory
+            .repository_id
+            .lock()
+            .expect("recorded repository")
+            .clone()
+            .expect("fresh repository identity");
+        let repository = uuid::Uuid::parse_str(&repository_id).expect("repository UUID");
+        assert_eq!(repository.get_version(), Some(uuid::Version::Random));
+        assert_eq!(repository.to_string(), repository_id);
+    }
+
+    #[tokio::test]
     async fn s3_dejavu_failure_retains_the_completed_settings_summary_and_error_class() {
         let server = S3Fixture::start();
         let kernel = TestKernel::start_s3(
@@ -1997,28 +2052,71 @@ mod tests {
         _workspace_service: WorkspaceService,
     }
 
+    #[derive(Clone, Copy)]
+    enum LocalBindingFixture {
+        Absent,
+        LegacyDesktop,
+        FreshServer,
+    }
+
     impl TestKernel {
         async fn start(endpoint: &str, ready_sync_config: bool) -> Self {
             let config = ready_sync_config.then(|| webdav_config(endpoint, "qingyu", "run-secret"));
-            Self::start_with_config(config, None, false).await
+            Self::start_with_config(config, None, LocalBindingFixture::Absent).await
         }
 
         async fn start_s3(factory: Arc<dyn DejavuRunnerFactory>, endpoint: &str) -> Self {
-            Self::start_with_config(Some(s3_config(endpoint)), Some(factory), true).await
+            Self::start_with_config(
+                Some(s3_config(endpoint)),
+                Some(factory),
+                LocalBindingFixture::LegacyDesktop,
+            )
+            .await
+        }
+
+        async fn start_fresh_server_s3(
+            factory: Arc<dyn DejavuRunnerFactory>,
+            endpoint: &str,
+        ) -> Self {
+            Self::start_with_config(
+                Some(s3_config(endpoint)),
+                Some(factory),
+                LocalBindingFixture::FreshServer,
+            )
+            .await
         }
 
         async fn start_with_config(
             ready_sync_config: Option<SyncConfig>,
             dejavu_factory: Option<Arc<dyn DejavuRunnerFactory>>,
-            write_local_sync_state: bool,
+            local_binding: LocalBindingFixture,
         ) -> Self {
             let temporary = tempdir().expect("temporary Kernel roots");
-            let workspace = temporary.path().join("Workspace");
-            let app_data = temporary.path().join("app-data");
             let cache = temporary.path().join("cache");
-            std::fs::create_dir(&workspace).expect("workspace");
-            std::fs::create_dir(&app_data).expect("app data");
-            std::fs::create_dir(&cache).expect("cache");
+            let (workspace, app_data, paths) = match local_binding {
+                LocalBindingFixture::FreshServer => {
+                    let data = temporary.path().join("data");
+                    std::fs::create_dir(&data).expect("Server data");
+                    let paths = crate::paths::ServerPathLayout::for_test(&data, &cache)
+                        .activate()
+                        .expect("Server Kernel paths");
+                    (
+                        paths.workspace_root().canonical_path().to_path_buf(),
+                        paths.instance_data_root().canonical_path().to_path_buf(),
+                        paths,
+                    )
+                }
+                LocalBindingFixture::Absent | LocalBindingFixture::LegacyDesktop => {
+                    let workspace = temporary.path().join("Workspace");
+                    let app_data = temporary.path().join("app-data");
+                    std::fs::create_dir(&workspace).expect("workspace");
+                    std::fs::create_dir(&app_data).expect("app data");
+                    std::fs::create_dir(&cache).expect("cache");
+                    let paths =
+                        KernelPaths::desktop(&workspace, &app_data, &cache).expect("Kernel paths");
+                    (workspace, app_data, paths)
+                }
+            };
             if let Some(config) = ready_sync_config {
                 std::fs::write(
                     app_data.join("sync-config.json"),
@@ -2026,7 +2124,7 @@ mod tests {
                 )
                 .expect("write sync config");
             }
-            if write_local_sync_state {
+            if matches!(local_binding, LocalBindingFixture::LegacyDesktop) {
                 std::fs::write(
                     app_data.join("local-sync.json"),
                     serde_json::to_vec_pretty(&serde_json::json!({
@@ -2049,17 +2147,30 @@ mod tests {
             }
 
             let config = KernelConfig::generate().expect("Kernel config");
-            let paths = KernelPaths::desktop(&workspace, &app_data, &cache).expect("Kernel paths");
             let managed =
                 ManagedWorkspaceCollection::from_paths(&paths).expect("managed collection");
+            let runtime = KernelRuntime::activate(config, paths, system_kernel_ports())
+                .expect("Kernel runtime");
+            if matches!(local_binding, LocalBindingFixture::FreshServer) {
+                let instance = runtime.active_instance_authority();
+                let workspace = runtime
+                    .active_workspace_authority()
+                    .expect("locked Server workspace");
+                initialize_server_dejavu_binding(
+                    instance.as_ref(),
+                    workspace.as_ref(),
+                    runtime.launch_epoch(),
+                )
+                .expect("fresh Server DejaVu binding");
+            }
             let settings_store = DurableFileStore::at_instance_data(
-                paths.instance_data_root(),
-                config.launch_epoch(),
+                runtime.instance_data_root(),
+                runtime.launch_epoch(),
             )
             .expect("settings durable store");
             let sync_store = DurableFileStore::at_instance_data(
-                paths.instance_data_root(),
-                config.launch_epoch(),
+                runtime.instance_data_root(),
+                runtime.launch_epoch(),
             )
             .expect("sync durable store");
             let settings_store =
@@ -2068,8 +2179,6 @@ mod tests {
                 .set("language", serde_json::json!("en"))
                 .expect("set portable language");
             settings_store.save().expect("save portable language");
-            let runtime = KernelRuntime::activate(config, paths, system_kernel_ports())
-                .expect("Kernel runtime");
             let primary = PrimaryWorkspaceState::new("Workspace").expect("primary workspace");
             let primary = Arc::new(
                 FixedPrimaryWorkspaceStore::new(primary).expect("fixed primary workspace"),
