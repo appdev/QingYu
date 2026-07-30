@@ -13,22 +13,24 @@ use std::{
 use tokio::sync::Notify;
 
 use crate::{
-    contract::{DomainEvent, SyncConfigReadiness, SyncMode, SyncTrigger},
+    contract::{DomainEvent, Revision, SyncConfigReadiness, SyncMode, SyncTrigger},
     events::EventSubscription,
-    runtime::{KernelRuntime, SyncApiService as _},
-    services::sync::{KernelSyncTriggerResult, SyncService},
+    runtime::SyncApiService as _,
+    services::sync::{KernelSyncSchedulerClaim, KernelSyncTriggerResult, SyncService},
 };
 
 pub struct KernelSyncScheduler {
+    claim: KernelSyncSchedulerClaim,
     control: Arc<SchedulerControl>,
     service: Arc<SyncService>,
 }
 
 impl KernelSyncScheduler {
-    pub fn start(
-        runtime: Arc<KernelRuntime>,
-        service: Arc<SyncService>,
-    ) -> Result<Self, KernelSyncSchedulerStartError> {
+    pub fn start(service: Arc<SyncService>) -> Result<Self, KernelSyncSchedulerStartError> {
+        let runtime = service.runtime().clone();
+        let claim = service
+            .claim_kernel_sync_scheduler()
+            .map_err(|_| KernelSyncSchedulerStartError)?;
         let control = Arc::new(SchedulerControl::default());
         let task_control = control.clone();
         let task_service = service.clone();
@@ -36,6 +38,7 @@ impl KernelSyncScheduler {
         let subscription = runtime.event_broker().subscribe();
         let task_state = Arc::new(SchedulerTaskState {
             control: task_control.clone(),
+            claim: claim.clone(),
             dropped: AtomicBool::new(false),
         });
         let task = SchedulerTask {
@@ -49,10 +52,14 @@ impl KernelSyncScheduler {
         };
         let spawn_result = runtime.ports().spawn_background(Box::pin(task));
         if spawn_result.is_err() || task_state.dropped.load(Ordering::Acquire) {
-            control.close(&service);
+            control.close(&claim);
             return Err(KernelSyncSchedulerStartError);
         }
-        Ok(Self { control, service })
+        Ok(Self {
+            claim,
+            control,
+            service,
+        })
     }
 
     pub async fn app_launch(&self) -> KernelSyncTriggerResult {
@@ -72,14 +79,14 @@ impl KernelSyncScheduler {
     }
 
     pub async fn close(&self) {
-        self.control.close(&self.service);
+        self.control.close(&self.claim);
         self.control.wait_ended().await;
     }
 }
 
 impl Drop for KernelSyncScheduler {
     fn drop(&mut self) {
-        self.control.close(&self.service);
+        self.control.close(&self.claim);
     }
 }
 
@@ -109,9 +116,9 @@ struct SchedulerControl {
 }
 
 impl SchedulerControl {
-    fn close(&self, service: &SyncService) {
+    fn close(&self, claim: &KernelSyncSchedulerClaim) {
         if !self.closed.swap(true, Ordering::AcqRel) {
-            service.close_kernel_triggers();
+            claim.close();
             self.wake.notify_waiters();
         }
     }
@@ -153,6 +160,7 @@ impl SchedulerControl {
 }
 
 struct SchedulerTaskState {
+    claim: KernelSyncSchedulerClaim,
     control: Arc<SchedulerControl>,
     dropped: AtomicBool,
 }
@@ -176,6 +184,7 @@ impl std::future::Future for SchedulerTask {
 impl Drop for SchedulerTask {
     fn drop(&mut self) {
         self.state.dropped.store(true, Ordering::Release);
+        self.state.control.close(&self.state.claim);
         self.state.control.finish();
     }
 }
@@ -198,7 +207,7 @@ async fn run_scheduler(
             }
             continue;
         };
-        let sleep = sleeper.sleep(interval);
+        let sleep = sleeper.sleep(interval.duration);
         tokio::pin!(sleep);
         let slept = tokio::select! {
             _closed = control.wait_closed() => return,
@@ -213,22 +222,28 @@ async fn run_scheduler(
             continue;
         }
         let (_disposition, settlement) = service
-            .trigger_kernel_sync(SyncTrigger::Interval)
+            .trigger_kernel_sync_at_revision(SyncTrigger::Interval, interval.revision)
             .await
             .into_parts();
         settlement.wait().await;
     }
 }
 
-async fn current_interval(service: &SyncService) -> Option<Duration> {
+struct ScheduledInterval {
+    duration: Duration,
+    revision: Revision,
+}
+
+async fn current_interval(service: &SyncService) -> Option<ScheduledInterval> {
     let config = service.get_sync_config().await.ok()?;
     if config.enabled
         && config.readiness == SyncConfigReadiness::Ready
         && config.mode == SyncMode::Automatic
     {
-        Some(Duration::from_secs(u64::from(
-            config.interval_seconds.get(),
-        )))
+        Some(ScheduledInterval {
+            duration: Duration::from_secs(u64::from(config.interval_seconds.get())),
+            revision: config.revision,
+        })
     } else {
         None
     }

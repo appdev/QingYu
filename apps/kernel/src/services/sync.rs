@@ -317,7 +317,44 @@ pub struct SyncService {
     executor: Arc<dyn SyncExecutor>,
     editing: Arc<SyncEditingRegistry>,
     status: Arc<SyncStatusState>,
-    kernel_trigger_gate: StdMutex<bool>,
+    kernel_trigger_gate: StdMutex<KernelTriggerGateState>,
+}
+
+#[derive(Default)]
+struct KernelTriggerGateState {
+    closing: bool,
+    scheduler_owner: Option<uuid::Uuid>,
+}
+
+#[derive(Clone)]
+pub(crate) struct KernelSyncSchedulerClaim {
+    state: Arc<KernelSyncSchedulerClaimState>,
+}
+
+struct KernelSyncSchedulerClaimState {
+    closed: AtomicBool,
+    owner: uuid::Uuid,
+    service: Weak<SyncService>,
+}
+
+impl KernelSyncSchedulerClaim {
+    pub(crate) fn close(&self) {
+        if !self.state.closed.swap(true, Ordering::AcqRel) {
+            if let Some(service) = self.state.service.upgrade() {
+                service.close_kernel_sync_scheduler(self.state.owner);
+            }
+        }
+    }
+}
+
+impl Drop for KernelSyncSchedulerClaimState {
+    fn drop(&mut self) {
+        if !self.closed.swap(true, Ordering::AcqRel) {
+            if let Some(service) = self.service.upgrade() {
+                service.close_kernel_sync_scheduler(self.owner);
+            }
+        }
+    }
 }
 
 impl SyncService {
@@ -332,7 +369,7 @@ impl SyncService {
             store,
             executor,
             editing: Arc::new(SyncEditingRegistry::new()),
-            kernel_trigger_gate: StdMutex::new(false),
+            kernel_trigger_gate: StdMutex::new(KernelTriggerGateState::default()),
         }
     }
 
@@ -340,7 +377,28 @@ impl SyncService {
         self.editing.clone()
     }
 
+    pub(crate) fn runtime(&self) -> &Arc<KernelRuntime> {
+        &self.runtime
+    }
+
     pub async fn trigger_kernel_sync(&self, trigger: SyncTrigger) -> KernelSyncTriggerResult {
+        self.trigger_kernel_sync_with_revision(trigger, None).await
+    }
+
+    pub(crate) async fn trigger_kernel_sync_at_revision(
+        &self,
+        trigger: SyncTrigger,
+        expected_revision: Revision,
+    ) -> KernelSyncTriggerResult {
+        self.trigger_kernel_sync_with_revision(trigger, Some(expected_revision))
+            .await
+    }
+
+    async fn trigger_kernel_sync_with_revision(
+        &self,
+        trigger: SyncTrigger,
+        expected_revision: Option<Revision>,
+    ) -> KernelSyncTriggerResult {
         if self.verify_instance(ErrorCode::SyncNotReady).is_err() {
             return KernelSyncTriggerResult::rejected(KernelSyncTriggerRejection::Unavailable);
         }
@@ -354,9 +412,10 @@ impl SyncService {
                 return KernelSyncTriggerResult::rejected(KernelSyncTriggerRejection::Unavailable)
             }
         };
-        if *closing {
+        if closing.closing {
             return KernelSyncTriggerResult::rejected(KernelSyncTriggerRejection::Closing);
         }
+        drop(closing);
         let registered = self.runtime.sync_run_registered(&mutation);
         let attempting = self.status.is_attempting();
         match (registered, attempting) {
@@ -368,18 +427,51 @@ impl SyncService {
                 return KernelSyncTriggerResult::rejected(KernelSyncTriggerRejection::Unavailable)
             }
         }
-        match self.start_sync_run(trigger, None, mutation) {
+        match self.start_sync_run(trigger, expected_revision, mutation) {
             Ok(run) => KernelSyncTriggerResult::accepted(run),
             Err(error) => KernelSyncTriggerResult::rejected(kernel_trigger_rejection(error)),
         }
     }
 
     pub fn close_kernel_triggers(&self) {
-        let mut closing = self
+        let mut gate = self
             .kernel_trigger_gate
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        *closing = true;
+        gate.closing = true;
+        gate.scheduler_owner = None;
+    }
+
+    pub(crate) fn claim_kernel_sync_scheduler(
+        self: &Arc<Self>,
+    ) -> Result<KernelSyncSchedulerClaim, KernelSyncSchedulerClaimError> {
+        let mut gate = self
+            .kernel_trigger_gate
+            .lock()
+            .map_err(|_| KernelSyncSchedulerClaimError)?;
+        if gate.closing || gate.scheduler_owner.is_some() {
+            return Err(KernelSyncSchedulerClaimError);
+        }
+        let owner = uuid::Uuid::new_v4();
+        gate.scheduler_owner = Some(owner);
+        Ok(KernelSyncSchedulerClaim {
+            state: Arc::new(KernelSyncSchedulerClaimState {
+                closed: AtomicBool::new(false),
+                owner,
+                service: Arc::downgrade(self),
+            }),
+        })
+    }
+
+    fn close_kernel_sync_scheduler(&self, owner: uuid::Uuid) {
+        let mut gate = self
+            .kernel_trigger_gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if gate.scheduler_owner == Some(owner) {
+            gate.scheduler_owner = None;
+            gate.closing = true;
+        }
     }
 
     fn verify_instance(&self, code: ErrorCode) -> Result<(), ServiceFailure> {
@@ -547,6 +639,9 @@ impl SyncService {
         })
     }
 }
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct KernelSyncSchedulerClaimError;
 
 #[async_trait]
 impl SyncApiService for SyncService {
