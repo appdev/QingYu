@@ -9,6 +9,8 @@ use std::{
 use qingyu_kernel::{
     config::KernelConfig,
     contract::{DocumentKind, ResourceKind, WorkspaceRelativePath},
+    documents::DocumentIgnorePort,
+    ignore_rules::MarkdownIgnoreRules,
     paths::KernelPaths,
     ports::KernelPorts,
     resources::{
@@ -59,7 +61,29 @@ struct Fixture {
     _runtime: Arc<KernelRuntime>,
     _workspace: Arc<WorkspaceService>,
     service: WorkspaceResourceService,
+    ignore: Arc<LiveIgnorePort>,
     root: PathBuf,
+}
+
+struct LiveIgnorePort {
+    root: PathBuf,
+    global_rules: Mutex<String>,
+}
+
+impl LiveIgnorePort {
+    fn set_global_rules(&self, rules: &str) {
+        *self.global_rules.lock().unwrap() = rules.to_string();
+    }
+}
+
+impl DocumentIgnorePort for LiveIgnorePort {
+    fn is_ignored(&self, path: &WorkspaceRelativePath, kind: DocumentKind) -> bool {
+        let global_rules = self.global_rules.lock().unwrap();
+        MarkdownIgnoreRules::for_root(&self.root, Some(&global_rules)).ignores(
+            &self.root.join(path.as_str()),
+            kind == DocumentKind::Directory,
+        )
+    }
 }
 
 impl Fixture {
@@ -90,11 +114,16 @@ impl Fixture {
             .await
             .unwrap(),
         );
-        let service = WorkspaceResourceService::new(&runtime);
+        let ignore = Arc::new(LiveIgnorePort {
+            root: root.clone(),
+            global_rules: Mutex::new(String::new()),
+        });
+        let service = WorkspaceResourceService::new(&runtime, ignore.clone());
         Self {
             _runtime: runtime,
             _workspace: workspace,
             service,
+            ignore,
             root,
         }
     }
@@ -144,6 +173,111 @@ fn markdown_href_rejects_external_ambiguous_or_escaping_paths() {
     }
 }
 
+#[test]
+fn markdown_href_rejects_a_document_inside_a_protected_parent() {
+    for document in [
+        ".qingyu/note.md",
+        "notes/.markra-sync/note.md",
+        "notes/.git/note.md",
+        "notes/node_modules/note.md",
+    ] {
+        let document = WorkspaceRelativePath::parse(document).unwrap();
+
+        let error = resolve_markdown_href(&document, "image.png").unwrap_err();
+
+        assert_eq!(error.kind(), ResourceServiceErrorKind::InvalidPath);
+    }
+}
+
+#[tokio::test]
+async fn inventory_applies_workspace_ignore_rules_to_documents_and_resources() {
+    let fixture = Fixture::new().await;
+    fs::create_dir(fixture.root.join("ignored")).unwrap();
+    fs::write(fixture.root.join("ignored/hidden.bin"), b"hidden").unwrap();
+    fs::write(fixture.root.join("hidden.bin"), b"hidden").unwrap();
+    fs::write(fixture.root.join("visible.bin"), b"visible").unwrap();
+    fs::write(
+        fixture.root.join(".markraignore"),
+        b"ignored/\nhidden.bin\n",
+    )
+    .unwrap();
+
+    let inventory = fixture
+        .service
+        .list_inventory(&WorkspaceRelativePath::default())
+        .unwrap();
+
+    assert_eq!(
+        inventory
+            .iter()
+            .map(|entry| entry.path().as_str())
+            .collect::<Vec<_>>(),
+        ["visible.bin"]
+    );
+}
+
+#[tokio::test]
+async fn an_existing_resource_id_cannot_bypass_changed_workspace_ignore_rules() {
+    let fixture = Fixture::new().await;
+    fs::write(fixture.root.join("asset.bin"), b"asset").unwrap();
+    let entry = fixture
+        .service
+        .list_inventory(&WorkspaceRelativePath::default())
+        .unwrap()
+        .into_iter()
+        .find_map(|entry| match entry {
+            WorkspaceInventoryEntry::Resource(entry) => Some(entry),
+            WorkspaceInventoryEntry::Document(_) => None,
+        })
+        .unwrap();
+    fs::write(fixture.root.join(".markraignore"), b"asset.bin\n").unwrap();
+
+    let error = fixture
+        .service
+        .open_resource(&entry.id, ResourceKind::Attachment)
+        .unwrap_err();
+
+    assert_eq!(error.kind(), ResourceServiceErrorKind::NotFound);
+}
+
+#[tokio::test]
+async fn inventory_and_existing_resource_ids_apply_changed_global_ignore_rules() {
+    let fixture = Fixture::new().await;
+    fs::write(fixture.root.join("asset.bin"), b"asset").unwrap();
+    fs::write(fixture.root.join("visible.bin"), b"visible").unwrap();
+    let entry = fixture
+        .service
+        .list_inventory(&WorkspaceRelativePath::default())
+        .unwrap()
+        .into_iter()
+        .find_map(|entry| match entry {
+            WorkspaceInventoryEntry::Resource(entry) if entry.path.as_str() == "asset.bin" => {
+                Some(entry)
+            }
+            _ => None,
+        })
+        .unwrap();
+    fixture.ignore.set_global_rules("asset.bin\n");
+
+    let inventory = fixture
+        .service
+        .list_inventory(&WorkspaceRelativePath::default())
+        .unwrap();
+    let error = fixture
+        .service
+        .open_resource(&entry.id, ResourceKind::Attachment)
+        .unwrap_err();
+
+    assert_eq!(
+        inventory
+            .iter()
+            .map(|entry| entry.path().as_str())
+            .collect::<Vec<_>>(),
+        ["visible.bin"]
+    );
+    assert_eq!(error.kind(), ResourceServiceErrorKind::NotFound);
+}
+
 #[tokio::test]
 async fn inventory_lists_every_immediate_kind_and_classifies_images_from_magic_and_extension() {
     let fixture = Fixture::new().await;
@@ -178,14 +312,7 @@ async fn inventory_lists_every_immediate_kind_and_classifies_images_from_magic_a
 
     assert_eq!(
         by_path.keys().map(String::as_str).collect::<Vec<_>>(),
-        [
-            "archive.bin",
-            "fake.png",
-            "folder",
-            "image.png",
-            "note.md",
-            "vector.svg"
-        ]
+        ["fake.png", "folder", "image.png", "note.md", "vector.svg"]
     );
     assert!(matches!(
         by_path.get("folder").unwrap(),
@@ -202,7 +329,7 @@ async fn inventory_lists_every_immediate_kind_and_classifies_images_from_magic_a
                 && entry.media_type == "image/png"
                 && entry.previewable
     ));
-    for path in ["archive.bin", "fake.png", "vector.svg"] {
+    for path in ["fake.png", "vector.svg"] {
         assert!(matches!(
             by_path.get(path).unwrap(),
             WorkspaceInventoryEntry::Resource(entry)
@@ -334,6 +461,7 @@ async fn resource_revision_streams_beyond_the_document_limit_and_opens_by_signed
         io::copy(&mut retained, &mut io::sink()).unwrap(),
         16 * 1024 * 1024 + 1
     );
+    retained.verify_complete().unwrap();
 }
 
 #[tokio::test]
@@ -361,10 +489,169 @@ async fn retained_resource_fails_at_eof_when_its_workspace_name_is_replaced() {
     fs::write(&path, b"replaced").unwrap();
 
     let mut bytes = Vec::new();
-    let error = retained.read_to_end(&mut bytes).unwrap_err();
+    retained.read_to_end(&mut bytes).unwrap();
+    let error = retained.verify_complete().unwrap_err();
 
     assert_eq!(error.kind(), io::ErrorKind::InvalidData);
     assert_eq!(bytes, b"original");
+}
+
+#[tokio::test]
+async fn retained_resource_rejects_a_same_inode_rewrite_with_restored_length_and_mtime() {
+    let fixture = Fixture::new().await;
+    let path = fixture.root.join("asset.bin");
+    fs::write(&path, b"original").unwrap();
+    let original_mtime = fs::metadata(&path).unwrap().modified().unwrap();
+    let entry = fixture
+        .service
+        .list_inventory(&WorkspaceRelativePath::default())
+        .unwrap()
+        .into_iter()
+        .find_map(|entry| match entry {
+            WorkspaceInventoryEntry::Resource(entry) => Some(entry),
+            WorkspaceInventoryEntry::Document(_) => None,
+        })
+        .unwrap();
+    let mut retained = fixture
+        .service
+        .open_resource(&entry.id, ResourceKind::Attachment)
+        .unwrap();
+    let mut writer = fs::OpenOptions::new().write(true).open(&path).unwrap();
+    writer.write_all(b"modified").unwrap();
+    writer.sync_all().unwrap();
+    writer
+        .set_times(fs::FileTimes::new().set_modified(original_mtime))
+        .unwrap();
+
+    let mut bytes = Vec::new();
+    retained.read_to_end(&mut bytes).unwrap();
+    let error = retained.verify_complete().unwrap_err();
+
+    assert_eq!(bytes, b"modified");
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+}
+
+#[tokio::test]
+async fn retained_resource_rejects_mixed_bytes_even_when_metadata_is_restored() {
+    let fixture = Fixture::new().await;
+    let path = fixture.root.join("asset.bin");
+    let original = vec![b'a'; 128 * 1024];
+    fs::write(&path, &original).unwrap();
+    let original_mtime = fs::metadata(&path).unwrap().modified().unwrap();
+    let entry = fixture
+        .service
+        .list_inventory(&WorkspaceRelativePath::default())
+        .unwrap()
+        .into_iter()
+        .find_map(|entry| match entry {
+            WorkspaceInventoryEntry::Resource(entry) => Some(entry),
+            WorkspaceInventoryEntry::Document(_) => None,
+        })
+        .unwrap();
+    let mut retained = fixture
+        .service
+        .open_resource(&entry.id, ResourceKind::Attachment)
+        .unwrap();
+    let mut streamed = vec![0_u8; 64 * 1024];
+    retained.read_exact(&mut streamed).unwrap();
+    let mut writer = fs::OpenOptions::new().write(true).open(&path).unwrap();
+    let replacement = vec![b'b'; 64 * 1024];
+    writer.seek(SeekFrom::Start(64 * 1024)).unwrap();
+    writer.write_all(&replacement).unwrap();
+    writer.sync_all().unwrap();
+    writer
+        .set_times(fs::FileTimes::new().set_modified(original_mtime))
+        .unwrap();
+
+    retained.read_to_end(&mut streamed).unwrap();
+    let error = retained.verify_complete().unwrap_err();
+
+    assert_eq!(&streamed[..64 * 1024], &original[..64 * 1024]);
+    assert_eq!(&streamed[64 * 1024..], replacement.as_slice());
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+}
+
+#[tokio::test]
+async fn exact_content_length_requires_explicit_completion_verification() {
+    let fixture = Fixture::new().await;
+    fs::write(fixture.root.join("asset.bin"), b"original").unwrap();
+    let entry = fixture
+        .service
+        .list_inventory(&WorkspaceRelativePath::default())
+        .unwrap()
+        .into_iter()
+        .find_map(|entry| match entry {
+            WorkspaceInventoryEntry::Resource(entry) => Some(entry),
+            WorkspaceInventoryEntry::Document(_) => None,
+        })
+        .unwrap();
+    let mut retained = fixture
+        .service
+        .open_resource(&entry.id, ResourceKind::Attachment)
+        .unwrap();
+    let mut bytes = [0_u8; 8];
+
+    retained.read_exact(&mut bytes).unwrap();
+
+    assert_eq!(&bytes, b"original");
+    retained.verify_complete().unwrap();
+}
+
+#[tokio::test]
+async fn an_empty_read_does_not_mark_the_resource_as_verified() {
+    let fixture = Fixture::new().await;
+    let path = fixture.root.join("asset.bin");
+    fs::write(&path, b"original").unwrap();
+    let entry = fixture
+        .service
+        .list_inventory(&WorkspaceRelativePath::default())
+        .unwrap()
+        .into_iter()
+        .find_map(|entry| match entry {
+            WorkspaceInventoryEntry::Resource(entry) => Some(entry),
+            WorkspaceInventoryEntry::Document(_) => None,
+        })
+        .unwrap();
+    let mut retained = fixture
+        .service
+        .open_resource(&entry.id, ResourceKind::Attachment)
+        .unwrap();
+    let mut bytes = [0_u8; 8];
+    retained.read_exact(&mut bytes).unwrap();
+    assert_eq!(retained.read(&mut []).unwrap(), 0);
+    fs::rename(&path, fixture.root.join("retired.bin")).unwrap();
+    fs::write(&path, b"replaced").unwrap();
+
+    let error = retained.verify_complete().unwrap_err();
+
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+}
+
+#[tokio::test]
+async fn completion_verification_rejects_an_incomplete_stream() {
+    let fixture = Fixture::new().await;
+    fs::write(fixture.root.join("asset.bin"), b"original").unwrap();
+    let entry = fixture
+        .service
+        .list_inventory(&WorkspaceRelativePath::default())
+        .unwrap()
+        .into_iter()
+        .find_map(|entry| match entry {
+            WorkspaceInventoryEntry::Resource(entry) => Some(entry),
+            WorkspaceInventoryEntry::Document(_) => None,
+        })
+        .unwrap();
+    let mut retained = fixture
+        .service
+        .open_resource(&entry.id, ResourceKind::Attachment)
+        .unwrap();
+    let mut prefix = [0_u8; 4];
+    retained.read_exact(&mut prefix).unwrap();
+
+    let error = retained.verify_complete().unwrap_err();
+
+    assert_eq!(prefix, *b"orig");
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
 }
 
 #[tokio::test]

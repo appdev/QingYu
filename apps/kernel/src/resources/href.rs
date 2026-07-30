@@ -15,6 +15,15 @@ pub fn resolve_markdown_href(
         return Err(ResourceServiceError::invalid_path());
     }
 
+    if let Some((parent, _name)) = document_path.as_str().rsplit_once('/') {
+        for component in parent.split('/') {
+            if component.is_empty() || protected_resource_component(component) {
+                return Err(ResourceServiceError::invalid_path());
+            }
+            ResourceName::parse(component).map_err(|_| ResourceServiceError::invalid_path())?;
+        }
+    }
+
     let mut resolved = document_path
         .as_str()
         .rsplit_once('/')

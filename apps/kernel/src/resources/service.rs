@@ -15,7 +15,7 @@ use crate::{
         ResourceName, Revision, Rfc3339Utc, SafeUnsignedInteger, WorkspaceDto, WorkspaceReadiness,
         WorkspaceRelativePath,
     },
-    documents::service::directory_revision_for_capability,
+    documents::{service::directory_revision_for_capability, DocumentIgnorePort},
     runtime::{ActiveWorkspaceSnapshot, KernelRuntime},
     storage::nonfollowing_read_options,
 };
@@ -27,12 +27,14 @@ const MAGIC_BYTES: usize = 12;
 
 pub struct WorkspaceResourceService {
     runtime: Weak<KernelRuntime>,
+    ignore: Arc<dyn DocumentIgnorePort>,
 }
 
 impl WorkspaceResourceService {
-    pub fn new(runtime: &Arc<KernelRuntime>) -> Self {
+    pub fn new(runtime: &Arc<KernelRuntime>, ignore: Arc<dyn DocumentIgnorePort>) -> Self {
         Self {
             runtime: Arc::downgrade(runtime),
+            ignore,
         }
     }
 
@@ -49,7 +51,11 @@ impl WorkspaceResourceService {
         let names = ordinary_entry_names(&directory)?;
         let mut entries = Vec::with_capacity(names.len());
         for name in &names {
-            entries.push(inspect_inventory_entry(&context, &directory, parent, name)?);
+            if let Some(entry) =
+                inspect_inventory_entry(&context, self.ignore.as_ref(), &directory, parent, name)?
+            {
+                entries.push(entry);
+            }
         }
         if ordinary_entry_names(&directory)? != names {
             return Err(ResourceServiceError::unsafe_target());
@@ -87,6 +93,9 @@ impl WorkspaceResourceService {
         let (parent_path, name) = parent_and_name(&path)?;
         if protected_resource_component(&name) {
             return Err(ResourceServiceError::invalid_path());
+        }
+        if self.ignore.is_ignored(&path, DocumentKind::File) {
+            return Err(ResourceServiceError::not_found());
         }
         let resource_name =
             ResourceName::parse(&name).map_err(|_| ResourceServiceError::invalid_path())?;
@@ -126,7 +135,8 @@ impl WorkspaceResourceService {
             entry,
             expected: inspected.metadata,
             remaining,
-            verified_eof: false,
+            stream_digest: Sha256::new(),
+            verified_complete: false,
         })
     }
 
@@ -192,10 +202,11 @@ impl ResourceContext {
 
 fn inspect_inventory_entry(
     context: &ResourceContext,
+    ignore: &dyn DocumentIgnorePort,
     directory: &Dir,
     parent: &WorkspaceRelativePath,
     name: &str,
-) -> Result<WorkspaceInventoryEntry, ResourceServiceError> {
+) -> Result<Option<WorkspaceInventoryEntry>, ResourceServiceError> {
     let addressed = directory
         .symlink_metadata(name)
         .map_err(|_| ResourceServiceError::unsafe_target())?;
@@ -203,6 +214,16 @@ fn inspect_inventory_entry(
         return Err(ResourceServiceError::unsafe_target());
     }
     let path = join_relative(parent, name)?;
+    let ignore_kind = if addressed.is_dir() {
+        DocumentKind::Directory
+    } else if addressed.is_file() {
+        DocumentKind::File
+    } else {
+        return Err(ResourceServiceError::unsafe_target());
+    };
+    if ignore.is_ignored(&path, ignore_kind) {
+        return Ok(None);
+    }
     if addressed.is_dir() {
         let child = directory
             .open_dir_nofollow(name)
@@ -233,7 +254,7 @@ fn inspect_inventory_entry(
             &after,
             revision,
         )?;
-        return Ok(WorkspaceInventoryEntry::Document(entry));
+        return Ok(Some(WorkspaceInventoryEntry::Document(entry)));
     }
     if !addressed.is_file() {
         return Err(ResourceServiceError::unsafe_target());
@@ -249,7 +270,7 @@ fn inspect_inventory_entry(
             &inspected.metadata,
             inspected.revision,
         )?;
-        Ok(WorkspaceInventoryEntry::Document(entry))
+        Ok(Some(WorkspaceInventoryEntry::Document(entry)))
     } else {
         let classification = classify_resource(name, &inspected.magic);
         let resource_name =
@@ -264,7 +285,7 @@ fn inspect_inventory_entry(
                 &path,
             )
             .map_err(|_| ResourceServiceError::unavailable())?;
-        Ok(WorkspaceInventoryEntry::Resource(ResourceEntryDto {
+        Ok(Some(WorkspaceInventoryEntry::Resource(ResourceEntryDto {
             id,
             path,
             parent: parent.clone(),
@@ -275,7 +296,7 @@ fn inspect_inventory_entry(
             revision: inspected.revision,
             media_type: classification.media_type.to_string(),
             previewable: classification.previewable,
-        }))
+        })))
     }
 }
 
@@ -559,10 +580,11 @@ fn classify_resource(name: &str, magic: &[u8; MAGIC_BYTES]) -> ResourceClassific
 
 /// Retained resource capability for a later transport adapter.
 ///
-/// Identity, length, modification time, the directory-relative name, and the
-/// workspace authority are revalidated only when `Read::read` returns `Ok(0)`.
-/// A consumer that stops early has an incomplete stream and must not report an
-/// integrity-checked success.
+/// A transport must call [`RetainedResource::verify_complete`] after it has
+/// emitted the declared content length. Neither `Read::read` returning `Ok(0)`
+/// nor an empty-buffer read proves stream integrity. Completion revalidates the
+/// identity, metadata, workspace authority, and the SHA-256 of the exact bytes
+/// emitted by this reader against the signed resource entry revision.
 pub struct RetainedResource {
     snapshot: Arc<ActiveWorkspaceSnapshot>,
     parent: Dir,
@@ -570,7 +592,8 @@ pub struct RetainedResource {
     entry: ResourceEntryDto,
     expected: Metadata,
     remaining: u64,
-    verified_eof: bool,
+    stream_digest: Sha256,
+    verified_complete: bool,
 }
 
 impl RetainedResource {
@@ -578,7 +601,18 @@ impl RetainedResource {
         &self.entry
     }
 
-    fn verify_eof(&mut self) -> io::Result<()> {
+    /// Verifies that the transport consumed exactly the declared content and
+    /// that the emitted bytes still match the entry revision.
+    ///
+    /// Transport adapters must treat a failure as a failed response even when
+    /// they have already read exactly `entry.size_bytes` bytes.
+    pub fn verify_complete(&mut self) -> io::Result<()> {
+        if self.verified_complete {
+            return Ok(());
+        }
+        if self.remaining != 0 {
+            return Err(stream_changed());
+        }
         let mut sentinel = [0_u8; 1];
         if self.file.read(&mut sentinel)? != 0 {
             return Err(stream_changed());
@@ -600,11 +634,15 @@ impl RetainedResource {
         {
             return Err(stream_changed());
         }
+        let streamed_revision = format!("sha256:{:x}", self.stream_digest.clone().finalize());
+        if streamed_revision != self.entry.revision.as_str() {
+            return Err(stream_changed());
+        }
         self.snapshot
             .authority()
             .verify_held_directory()
             .map_err(|_| stream_changed())?;
-        self.verified_eof = true;
+        self.verified_complete = true;
         Ok(())
     }
 }
@@ -617,11 +655,7 @@ impl fmt::Debug for RetainedResource {
 
 impl io::Read for RetainedResource {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-        if buffer.is_empty() || self.verified_eof {
-            return Ok(0);
-        }
-        if self.remaining == 0 {
-            self.verify_eof()?;
+        if buffer.is_empty() || self.verified_complete || self.remaining == 0 {
             return Ok(0);
         }
         let limit = usize::try_from(self.remaining)
@@ -631,6 +665,7 @@ impl io::Read for RetainedResource {
         if read == 0 {
             return Err(stream_changed());
         }
+        self.stream_digest.update(&buffer[..read]);
         self.remaining -= read as u64;
         Ok(read)
     }
