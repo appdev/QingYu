@@ -18,7 +18,7 @@ use crate::storage_capability::{
 
 mod directory;
 
-use directory::DirectoryWatcher;
+use directory::{DirectoryWatcher, DirectoryWatcherNotice};
 
 const MARKDOWN_FILE_CHANGED_EVENT: &str = "markra://file-changed";
 const MARKDOWN_TREE_CHANGED_EVENT: &str = "markra://tree-changed";
@@ -40,19 +40,39 @@ impl MarkdownWatcherHealth {
         self.faulted.store(true, Ordering::Release);
     }
 
+    fn mark_faulted_by(&self, _error: &notify::Error) {
+        self.mark_faulted();
+    }
+
+    fn mark_healthy(&self) {
+        self.faulted.store(false, Ordering::Release);
+    }
+
     fn is_faulted(&self) -> bool {
         self.faulted.load(Ordering::Acquire)
     }
 }
 
-fn watcher_event_for_callback(
-    result: notify::Result<Event>,
+enum MarkdownWatcherCallback {
+    Event(Event),
+    Recovered,
+}
+
+fn watcher_notice_for_callback(
+    notice: DirectoryWatcherNotice,
     health: &MarkdownWatcherHealth,
-) -> Option<Event> {
-    match result {
-        Ok(event) => Some(event),
-        Err(_) => {
-            health.mark_faulted();
+) -> Option<MarkdownWatcherCallback> {
+    match notice {
+        DirectoryWatcherNotice::Event(event) => {
+            health.mark_healthy();
+            Some(MarkdownWatcherCallback::Event(event))
+        }
+        DirectoryWatcherNotice::Recovered => {
+            health.mark_healthy();
+            Some(MarkdownWatcherCallback::Recovered)
+        }
+        DirectoryWatcherNotice::Error(error) => {
+            health.mark_faulted_by(&error);
             None
         }
     }
@@ -449,43 +469,56 @@ pub(crate) fn watch_markdown_file(
     let callback_health = Arc::clone(&health);
 
     // Watch the parent tree so atomic saves and adjacent pasted assets are still visible.
-    let watcher = DirectoryWatcher::new(
-        &watch_root,
-        Arc::clone(&ignore_rules),
-        move |result: notify::Result<Event>| {
-            let Some(event) = watcher_event_for_callback(result, &callback_health) else {
-                return;
-            };
+    let watcher = DirectoryWatcher::new(&watch_root, Arc::clone(&ignore_rules), move |notice| {
+        let Some(callback) = watcher_notice_for_callback(notice, &callback_health) else {
+            return;
+        };
 
-            let Ok(mut ignore_rules) = callback_ignore_rules.lock() else {
-                return;
-            };
-            let Ok(current_ignore_rules) = ignore_rules.current() else {
-                return;
-            };
+        let MarkdownWatcherCallback::Event(event) = callback else {
+            let _ = app.emit(
+                MARKDOWN_FILE_CHANGED_EVENT,
+                MarkdownFileChanged {
+                    path: emitted_path.clone(),
+                },
+            );
+            let _ = app.emit(
+                MARKDOWN_TREE_CHANGED_EVENT,
+                MarkdownTreeChanged {
+                    path: emitted_root.clone(),
+                    root_path: emitted_root.clone(),
+                },
+            );
+            return;
+        };
 
-            if is_target_file_event(&event, &callback_path) {
-                let _ = app.emit(
-                    MARKDOWN_FILE_CHANGED_EVENT,
-                    MarkdownFileChanged {
-                        path: emitted_path.clone(),
-                    },
-                );
-            }
+        let Ok(mut ignore_rules) = callback_ignore_rules.lock() else {
+            return;
+        };
+        let Ok(current_ignore_rules) = ignore_rules.current() else {
+            return;
+        };
 
-            if let Some(event_path) =
-                markdown_tree_event_path(&event, &callback_root, current_ignore_rules)
-            {
-                let _ = app.emit(
-                    MARKDOWN_TREE_CHANGED_EVENT,
-                    MarkdownTreeChanged {
-                        path: event_path.to_string_lossy().to_string(),
-                        root_path: emitted_root.clone(),
-                    },
-                );
-            }
-        },
-    )?;
+        if is_target_file_event(&event, &callback_path) {
+            let _ = app.emit(
+                MARKDOWN_FILE_CHANGED_EVENT,
+                MarkdownFileChanged {
+                    path: emitted_path.clone(),
+                },
+            );
+        }
+
+        if let Some(event_path) =
+            markdown_tree_event_path(&event, &callback_root, current_ignore_rules)
+        {
+            let _ = app.emit(
+                MARKDOWN_TREE_CHANGED_EVENT,
+                MarkdownTreeChanged {
+                    path: event_path.to_string_lossy().to_string(),
+                    root_path: emitted_root.clone(),
+                },
+            );
+        }
+    })?;
 
     remember_active_watcher(
         &watcher_state.0,
@@ -549,34 +582,41 @@ pub(crate) fn watch_markdown_tree(
     let callback_health = Arc::clone(&health);
 
     let callback_app = app.clone();
-    let watcher = DirectoryWatcher::new(
-        &watch_root,
-        Arc::clone(&ignore_rules),
-        move |result: notify::Result<Event>| {
-            let Some(event) = watcher_event_for_callback(result, &callback_health) else {
-                return;
-            };
+    let watcher = DirectoryWatcher::new(&watch_root, Arc::clone(&ignore_rules), move |notice| {
+        let Some(callback) = watcher_notice_for_callback(notice, &callback_health) else {
+            return;
+        };
 
-            let Ok(mut ignore_rules) = callback_ignore_rules.lock() else {
-                return;
-            };
-            let Ok(current_ignore_rules) = ignore_rules.current() else {
-                return;
-            };
-            if let Some(event_path) =
-                markdown_tree_event_path(&event, &callback_root, current_ignore_rules)
-            {
-                scheduler_owner_for(&callback_app).record_file_change(&callback_root, event_path);
-                let _ = callback_app.emit(
-                    MARKDOWN_TREE_CHANGED_EVENT,
-                    MarkdownTreeChanged {
-                        path: event_path.to_string_lossy().to_string(),
-                        root_path: emitted_root.clone(),
-                    },
-                );
-            }
-        },
-    )?;
+        let MarkdownWatcherCallback::Event(event) = callback else {
+            let _ = callback_app.emit(
+                MARKDOWN_TREE_CHANGED_EVENT,
+                MarkdownTreeChanged {
+                    path: emitted_root.clone(),
+                    root_path: emitted_root.clone(),
+                },
+            );
+            return;
+        };
+
+        let Ok(mut ignore_rules) = callback_ignore_rules.lock() else {
+            return;
+        };
+        let Ok(current_ignore_rules) = ignore_rules.current() else {
+            return;
+        };
+        if let Some(event_path) =
+            markdown_tree_event_path(&event, &callback_root, current_ignore_rules)
+        {
+            scheduler_owner_for(&callback_app).record_file_change(&callback_root, event_path);
+            let _ = callback_app.emit(
+                MARKDOWN_TREE_CHANGED_EVENT,
+                MarkdownTreeChanged {
+                    path: event_path.to_string_lossy().to_string(),
+                    root_path: emitted_root.clone(),
+                },
+            );
+        }
+    })?;
 
     remember_active_watcher(
         &watcher_state.0,
@@ -643,13 +683,24 @@ mod tests {
     fn callback_errors_mark_the_watcher_faulted() {
         let health = MarkdownWatcherHealth::default();
 
-        let event = watcher_event_for_callback(
-            Err(notify::Error::generic("watch backend failed")),
+        let event = watcher_notice_for_callback(
+            DirectoryWatcherNotice::Error(notify::Error::generic("watch backend failed")),
             &health,
         );
 
         assert!(event.is_none());
         assert!(health.is_faulted());
+    }
+
+    #[test]
+    fn recovered_backends_request_a_rescan_without_faulting_the_subscription() {
+        let health = MarkdownWatcherHealth::default();
+        health.mark_faulted();
+
+        let callback = watcher_notice_for_callback(DirectoryWatcherNotice::Recovered, &health);
+
+        assert!(matches!(callback, Some(MarkdownWatcherCallback::Recovered)));
+        assert!(!health.is_faulted());
     }
 
     #[test]

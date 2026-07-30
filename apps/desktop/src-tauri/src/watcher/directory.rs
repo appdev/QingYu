@@ -20,6 +20,28 @@ use crate::storage_capability::{
     directory_identity, open_canonical_directory_nofollow, DirectoryIdentity,
 };
 
+const WATCH_BACKEND_RECOVERY_ATTEMPTS: usize = 3;
+
+fn recover_supervised_watch_backend<B>(
+    backend: &mut B,
+    initial_error: String,
+    mut rebuild: impl FnMut() -> Result<B, String>,
+) -> Result<(), String> {
+    let mut final_error = "watch backend rebuild was not attempted".to_string();
+    for _ in 0..WATCH_BACKEND_RECOVERY_ATTEMPTS {
+        match rebuild() {
+            Ok(replacement) => {
+                *backend = replacement;
+                return Ok(());
+            }
+            Err(error) => final_error = error,
+        }
+    }
+    Err(format!(
+        "{initial_error}; watch backend recovery failed after {WATCH_BACKEND_RECOVERY_ATTEMPTS} attempts: {final_error}"
+    ))
+}
+
 struct DirectoryWatchRoot {
     path: PathBuf,
     retained: cap_std::fs::Dir,
@@ -137,7 +159,7 @@ trait DirectoryWatchBackend {
     fn unwatch_directory(&mut self, path: &Path) -> Result<(), String>;
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", test))]
 impl DirectoryWatchBackend for RecommendedWatcher {
     fn watch_directory(&mut self, path: &Path) -> Result<(), String> {
         self.watch(path, RecursiveMode::NonRecursive)
@@ -324,13 +346,60 @@ fn event_requires_reconciliation(event: &Event, ignore_rules: &MarkdownWatchIgno
             .any(|path| ignore_rules.is_control_file(path))
 }
 
+pub(super) enum DirectoryWatcherNotice {
+    Event(Event),
+    Recovered,
+    Error(notify::Error),
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum DirectoryWatcherSupervisionOutcome {
+    Delivered,
+    Recovered,
+    Failed,
+}
+
+fn supervise_directory_backend_event<B>(
+    backend: &mut B,
+    result: notify::Result<Event>,
+    prepare: impl FnOnce(&mut B, &Event) -> Result<(), String>,
+    rebuild: impl FnMut() -> Result<B, String>,
+    handler: &mut impl FnMut(DirectoryWatcherNotice),
+) -> DirectoryWatcherSupervisionOutcome {
+    let recovery_reason = match result {
+        Ok(event) => match prepare(backend, &event) {
+            Ok(()) => {
+                handler(DirectoryWatcherNotice::Event(event));
+                return DirectoryWatcherSupervisionOutcome::Delivered;
+            }
+            Err(error) => error,
+        },
+        Err(error) => error.to_string(),
+    };
+
+    match recover_supervised_watch_backend(backend, recovery_reason, rebuild) {
+        Ok(()) => DirectoryWatcherSupervisionOutcome::Recovered,
+        Err(error) => {
+            handler(DirectoryWatcherNotice::Error(notify::Error::generic(
+                &error,
+            )));
+            DirectoryWatcherSupervisionOutcome::Failed
+        }
+    }
+}
+
+fn recommended_watcher_for_coordinator(
+    event_sender: std::sync::mpsc::Sender<CoordinatorMessage>,
+) -> Result<RecommendedWatcher, String> {
+    notify::recommended_watcher(move |result| {
+        let _ = event_sender.send(CoordinatorMessage::BackendEvent(result));
+    })
+    .map_err(|error| error.to_string())
+}
+
 pub(super) struct DirectoryWatcher {
-    #[cfg(target_os = "linux")]
-    coordinator: LinuxDirectoryWatcher,
-    #[cfg(not(target_os = "linux"))]
-    _watcher: RecommendedWatcher,
+    coordinator: SupervisedDirectoryWatcher,
     ignore_rules: Arc<Mutex<MarkdownWatchIgnoreRules>>,
-    watch_root: Arc<DirectoryWatchRoot>,
 }
 
 impl DirectoryWatcher {
@@ -340,76 +409,14 @@ impl DirectoryWatcher {
         handler: F,
     ) -> Result<Self, String>
     where
-        F: FnMut(notify::Result<Event>) + Send + 'static,
+        F: FnMut(DirectoryWatcherNotice) + Send + 'static,
     {
         let watch_root = Arc::new(DirectoryWatchRoot::capture(root)?);
-        #[cfg(target_os = "linux")]
-        {
-            debug_assert_eq!(
-                directory_watch_strategy(),
-                DirectoryWatchStrategy::VisibleDirectories
-            );
-            return LinuxDirectoryWatcher::new(
-                Arc::clone(&watch_root),
-                Arc::clone(&ignore_rules),
-                handler,
-            )
+        SupervisedDirectoryWatcher::new(Arc::clone(&watch_root), Arc::clone(&ignore_rules), handler)
             .map(|coordinator| Self {
                 coordinator,
                 ignore_rules,
-                watch_root,
-            });
-        }
-
-        #[cfg(not(target_os = "linux"))]
-        {
-            debug_assert_eq!(
-                directory_watch_strategy(),
-                DirectoryWatchStrategy::RecursiveRoot
-            );
-            let callback_rules = Arc::clone(&ignore_rules);
-            let callback_root = Arc::clone(&watch_root);
-            let mut handler = handler;
-            let mut watcher = notify::recommended_watcher(move |result| match result {
-                Err(error) => {
-                    if let Ok(mut rules) = callback_rules.lock() {
-                        rules.invalidate();
-                    }
-                    handler(Err(error));
-                }
-                Ok(event) => {
-                    let preparation = callback_root.verify_current().and_then(|()| {
-                        callback_rules
-                            .lock()
-                            .map_err(|_| "markdown ignore rules lock is poisoned".to_string())
-                            .and_then(|mut rules| {
-                                if let Some(candidate) = rules.stage_for_event(&event)? {
-                                    rules.finish_reconcile(candidate, Ok(()))?;
-                                }
-                                rules.current().map(|_| ())
-                            })
-                    });
-                    match preparation {
-                        Ok(()) => handler(Ok(event)),
-                        Err(error) => {
-                            if let Ok(mut rules) = callback_rules.lock() {
-                                rules.invalidate();
-                            }
-                            handler(Err(notify::Error::generic(&error)));
-                        }
-                    }
-                }
             })
-            .map_err(|error| error.to_string())?;
-            watcher
-                .watch(root, RecursiveMode::Recursive)
-                .map_err(|error| error.to_string())?;
-            Ok(Self {
-                _watcher: watcher,
-                ignore_rules,
-                watch_root,
-            })
-        }
     }
 
     pub(super) fn replace_rules(
@@ -426,30 +433,15 @@ impl DirectoryWatcher {
                 return Err(error);
             }
         };
-        #[cfg(target_os = "linux")]
-        {
-            return self.coordinator.replace_rules(candidate);
-        }
-
-        #[cfg(not(target_os = "linux"))]
-        {
-            let mut rules = self
-                .ignore_rules
-                .lock()
-                .map_err(|_| "markdown ignore rules lock is poisoned".to_string())?;
-            let result = self.watch_root.verify_current();
-            rules.finish_reconcile(candidate, result)
-        }
+        self.coordinator.replace_rules(candidate)
     }
 }
 
-#[cfg(target_os = "linux")]
-struct LinuxDirectoryWatcher {
+struct SupervisedDirectoryWatcher {
     coordinator: Option<std::thread::JoinHandle<()>>,
     sender: std::sync::mpsc::Sender<CoordinatorMessage>,
 }
 
-#[cfg(target_os = "linux")]
 enum CoordinatorMessage {
     BackendEvent(notify::Result<Event>),
     ReplaceRules(
@@ -459,45 +451,63 @@ enum CoordinatorMessage {
     Shutdown,
 }
 
-#[cfg(target_os = "linux")]
-impl LinuxDirectoryWatcher {
+impl SupervisedDirectoryWatcher {
     fn new<F>(
         watch_root: Arc<DirectoryWatchRoot>,
         ignore_rules: Arc<Mutex<MarkdownWatchIgnoreRules>>,
         handler: F,
     ) -> Result<Self, String>
     where
-        F: FnMut(notify::Result<Event>) + Send + 'static,
+        F: FnMut(DirectoryWatcherNotice) + Send + 'static,
     {
         let (sender, receiver) = std::sync::mpsc::channel();
-        let event_sender = sender.clone();
-        let mut watcher = notify::recommended_watcher(move |result| {
-            let _ = event_sender.send(CoordinatorMessage::BackendEvent(result));
-        })
-        .map_err(|error| error.to_string())?;
-        let mut watched_directories = {
-            let mut rules = ignore_rules
-                .lock()
-                .map_err(|_| "markdown ignore rules lock is poisoned".to_string())?;
-            visible_watch_directories(&watch_root, &mut rules)?
-        };
-        let mut initial_directories = watched_directories.iter().collect::<Vec<_>>();
-        initial_directories.sort();
-        for directory in initial_directories {
-            watcher
-                .watch(directory, RecursiveMode::NonRecursive)
-                .map_err(|error| error.to_string())?;
-        }
-
+        let mut watcher = recommended_watcher_for_coordinator(sender.clone())?;
         let coordinator_rules = Arc::clone(&ignore_rules);
         let coordinator_root = Arc::clone(&watch_root);
         let coordinator_sender = sender.clone();
+
+        #[cfg(target_os = "linux")]
+        let mut watched_directories = {
+            debug_assert_eq!(
+                directory_watch_strategy(),
+                DirectoryWatchStrategy::VisibleDirectories
+            );
+            let mut rules = ignore_rules
+                .lock()
+                .map_err(|_| "markdown ignore rules lock is poisoned".to_string())?;
+            let watched_directories = visible_watch_directories(&watch_root, &mut rules)?;
+            register_linux_directories(&mut watcher, &watched_directories)?;
+            watched_directories
+        };
+
+        #[cfg(not(target_os = "linux"))]
+        {
+            debug_assert_eq!(
+                directory_watch_strategy(),
+                DirectoryWatchStrategy::RecursiveRoot
+            );
+            watcher
+                .watch(&watch_root.path, RecursiveMode::Recursive)
+                .map_err(|error| error.to_string())?;
+        }
+
         let coordinator = std::thread::Builder::new()
             .name("markra-directory-watcher".to_string())
             .spawn(move || {
+                #[cfg(target_os = "linux")]
                 run_linux_coordinator(
                     watcher,
                     &mut watched_directories,
+                    &coordinator_root,
+                    &coordinator_rules,
+                    handler,
+                    receiver,
+                    coordinator_sender,
+                );
+
+                #[cfg(not(target_os = "linux"))]
+                run_recursive_coordinator(
+                    watcher,
                     &coordinator_root,
                     &coordinator_rules,
                     handler,
@@ -524,8 +534,7 @@ impl LinuxDirectoryWatcher {
     }
 }
 
-#[cfg(target_os = "linux")]
-impl Drop for LinuxDirectoryWatcher {
+impl Drop for SupervisedDirectoryWatcher {
     fn drop(&mut self) {
         let _ = self.sender.send(CoordinatorMessage::Shutdown);
         if let Some(coordinator) = self.coordinator.take() {
@@ -534,7 +543,193 @@ impl Drop for LinuxDirectoryWatcher {
     }
 }
 
-#[cfg(target_os = "linux")]
+fn recapture_watch_rules(
+    ignore_rules: &Arc<Mutex<MarkdownWatchIgnoreRules>>,
+) -> Result<MarkdownWatchIgnoreRules, String> {
+    let (root, global_rules) = {
+        let rules = ignore_rules
+            .lock()
+            .map_err(|_| "markdown ignore rules lock is poisoned".to_string())?;
+        (rules.root.clone(), rules.global_rules.clone())
+    };
+    MarkdownWatchIgnoreRules::try_new(&root, global_rules.as_deref())
+}
+
+fn commit_recaptured_watch_rules(
+    ignore_rules: &Arc<Mutex<MarkdownWatchIgnoreRules>>,
+    candidate: MarkdownWatchIgnoreRules,
+) -> Result<(), String> {
+    ignore_rules
+        .lock()
+        .map_err(|_| "markdown ignore rules lock is poisoned".to_string())?
+        .finish_reconcile(candidate, Ok(()))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn build_recursive_watch_backend(
+    watch_root: &DirectoryWatchRoot,
+    event_sender: std::sync::mpsc::Sender<CoordinatorMessage>,
+) -> Result<RecommendedWatcher, String> {
+    watch_root.verify_current()?;
+    let mut watcher = recommended_watcher_for_coordinator(event_sender)?;
+    watcher
+        .watch(&watch_root.path, RecursiveMode::Recursive)
+        .map_err(|error| error.to_string())?;
+    watch_root.verify_current()?;
+    Ok(watcher)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn rebuild_recursive_watch_subscription(
+    watch_root: &DirectoryWatchRoot,
+    ignore_rules: &Arc<Mutex<MarkdownWatchIgnoreRules>>,
+    event_sender: std::sync::mpsc::Sender<CoordinatorMessage>,
+) -> Result<RecommendedWatcher, String> {
+    let candidate = recapture_watch_rules(ignore_rules)?;
+    let watcher = build_recursive_watch_backend(watch_root, event_sender)?;
+    commit_recaptured_watch_rules(ignore_rules, candidate)?;
+    Ok(watcher)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn prepare_recursive_event(
+    watch_root: &DirectoryWatchRoot,
+    ignore_rules: &Arc<Mutex<MarkdownWatchIgnoreRules>>,
+    event: &Event,
+) -> Result<(), String> {
+    watch_root.verify_current()?;
+    let mut rules = ignore_rules
+        .lock()
+        .map_err(|_| "markdown ignore rules lock is poisoned".to_string())?;
+    if let Some(candidate) = rules.stage_for_event(event)? {
+        rules.finish_reconcile(candidate, Ok(()))?;
+    }
+    rules.current().map(|_| ())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn run_recursive_coordinator<F>(
+    mut watcher: RecommendedWatcher,
+    watch_root: &DirectoryWatchRoot,
+    ignore_rules: &Arc<Mutex<MarkdownWatchIgnoreRules>>,
+    mut handler: F,
+    receiver: std::sync::mpsc::Receiver<CoordinatorMessage>,
+    event_sender: std::sync::mpsc::Sender<CoordinatorMessage>,
+) where
+    F: FnMut(DirectoryWatcherNotice),
+{
+    while let Ok(message) = receiver.recv() {
+        match message {
+            CoordinatorMessage::BackendEvent(result) => {
+                let outcome = supervise_directory_backend_event(
+                    &mut watcher,
+                    result,
+                    |_, event| prepare_recursive_event(watch_root, ignore_rules, event),
+                    || {
+                        rebuild_recursive_watch_subscription(
+                            watch_root,
+                            ignore_rules,
+                            event_sender.clone(),
+                        )
+                    },
+                    &mut handler,
+                );
+                if outcome == DirectoryWatcherSupervisionOutcome::Recovered {
+                    handler(DirectoryWatcherNotice::Recovered);
+                }
+            }
+            CoordinatorMessage::ReplaceRules(candidate, result_sender) => {
+                let result = ignore_rules
+                    .lock()
+                    .map_err(|_| "markdown ignore rules lock is poisoned".to_string())
+                    .and_then(|mut rules| {
+                        rules.finish_reconcile(candidate, watch_root.verify_current())
+                    });
+                let _ = result_sender.send(result);
+            }
+            CoordinatorMessage::Shutdown => break,
+        }
+    }
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn register_linux_directories(
+    watcher: &mut RecommendedWatcher,
+    directories: &HashSet<PathBuf>,
+) -> Result<(), String> {
+    let mut directories = directories.iter().collect::<Vec<_>>();
+    directories.sort();
+    for directory in directories {
+        watcher
+            .watch(directory, RecursiveMode::NonRecursive)
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn build_linux_watch_backend(
+    watch_root: &DirectoryWatchRoot,
+    watched_directories: &HashSet<PathBuf>,
+    event_sender: std::sync::mpsc::Sender<CoordinatorMessage>,
+) -> Result<RecommendedWatcher, String> {
+    watch_root.verify_current()?;
+    let mut watcher = recommended_watcher_for_coordinator(event_sender)?;
+    register_linux_directories(&mut watcher, watched_directories)?;
+    watch_root.verify_current()?;
+    Ok(watcher)
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn prepare_linux_event(
+    watcher: &mut RecommendedWatcher,
+    watched_directories: &mut HashSet<PathBuf>,
+    watch_root: &DirectoryWatchRoot,
+    ignore_rules: &Arc<Mutex<MarkdownWatchIgnoreRules>>,
+    event: &Event,
+    event_sender: &std::sync::mpsc::Sender<CoordinatorMessage>,
+) -> Result<(), String> {
+    watch_root.verify_current()?;
+    let should_reconcile = ignore_rules
+        .lock()
+        .map(|rules| event_requires_reconciliation(event, &rules))
+        .unwrap_or(true);
+    let candidate = ignore_rules
+        .lock()
+        .map_err(|_| "markdown ignore rules lock is poisoned".to_string())?
+        .stage_for_event(event)?;
+    if let Some(mut candidate) = candidate {
+        let result = reconcile_linux_directories(
+            watcher,
+            watched_directories,
+            watch_root,
+            &mut candidate,
+            event_sender,
+        );
+        return ignore_rules
+            .lock()
+            .map_err(|_| "markdown ignore rules lock is poisoned".to_string())?
+            .finish_reconcile(candidate, result);
+    }
+    let mut rules = ignore_rules
+        .lock()
+        .map_err(|_| "markdown ignore rules lock is poisoned".to_string())?;
+    if should_reconcile {
+        if let Err(error) = reconcile_linux_directories(
+            watcher,
+            watched_directories,
+            watch_root,
+            &mut rules,
+            event_sender,
+        ) {
+            rules.invalidate();
+            return Err(error);
+        }
+    }
+    rules.current().map(|_| ())
+}
+
+#[cfg(any(target_os = "linux", test))]
 fn run_linux_coordinator<F>(
     mut watcher: RecommendedWatcher,
     watched_directories: &mut HashSet<PathBuf>,
@@ -544,68 +739,47 @@ fn run_linux_coordinator<F>(
     receiver: std::sync::mpsc::Receiver<CoordinatorMessage>,
     event_sender: std::sync::mpsc::Sender<CoordinatorMessage>,
 ) where
-    F: FnMut(notify::Result<Event>),
+    F: FnMut(DirectoryWatcherNotice),
 {
     while let Ok(message) = receiver.recv() {
         match message {
             CoordinatorMessage::BackendEvent(result) => {
-                let event = match result {
-                    Ok(event) => event,
-                    Err(error) => {
-                        if let Ok(mut rules) = ignore_rules.lock() {
-                            rules.invalidate();
-                        }
-                        handler(Err(error));
-                        continue;
-                    }
-                };
-                let preparation = (|| -> Result<(), String> {
-                    watch_root.verify_current()?;
-                    let should_reconcile = ignore_rules
-                        .lock()
-                        .map(|rules| event_requires_reconciliation(&event, &rules))
-                        .unwrap_or(true);
-                    let candidate = ignore_rules
-                        .lock()
-                        .map_err(|_| "markdown ignore rules lock is poisoned".to_string())?
-                        .stage_for_event(&event)?;
-                    if let Some(mut candidate) = candidate {
-                        let result = reconcile_linux_directories(
-                            &mut watcher,
+                let mut recovered_directories = None;
+                let outcome = supervise_directory_backend_event(
+                    &mut watcher,
+                    result,
+                    |watcher, event| {
+                        prepare_linux_event(
+                            watcher,
                             watched_directories,
                             watch_root,
-                            &mut candidate,
+                            ignore_rules,
+                            event,
                             &event_sender,
-                        );
-                        return ignore_rules
-                            .lock()
-                            .map_err(|_| "markdown ignore rules lock is poisoned".to_string())?
-                            .finish_reconcile(candidate, result);
-                    }
-                    let mut rules = ignore_rules
-                        .lock()
-                        .map_err(|_| "markdown ignore rules lock is poisoned".to_string())?;
-                    if should_reconcile {
-                        if let Err(error) = reconcile_linux_directories(
-                            &mut watcher,
-                            watched_directories,
+                        )
+                    },
+                    || {
+                        let mut candidate = recapture_watch_rules(ignore_rules)?;
+                        let desired_directories =
+                            visible_watch_directories(watch_root, &mut candidate)?;
+                        let replacement = build_linux_watch_backend(
                             watch_root,
-                            &mut rules,
-                            &event_sender,
-                        ) {
-                            rules.invalidate();
-                            return Err(error);
-                        }
-                    }
-                    rules.current().map(|_| ())
-                })();
-                match preparation {
-                    Ok(()) => handler(Ok(event)),
-                    Err(error) => {
-                        if let Ok(mut rules) = ignore_rules.lock() {
-                            rules.invalidate();
-                        }
-                        handler(Err(notify::Error::generic(&error)));
+                            &desired_directories,
+                            event_sender.clone(),
+                        )?;
+                        commit_recaptured_watch_rules(ignore_rules, candidate)?;
+                        recovered_directories = Some(desired_directories);
+                        Ok(replacement)
+                    },
+                    &mut handler,
+                );
+                if outcome == DirectoryWatcherSupervisionOutcome::Recovered {
+                    *watched_directories = recovered_directories
+                        .expect("successful Linux watcher recovery records its watch set");
+                    handler(DirectoryWatcherNotice::Recovered);
+                } else if outcome == DirectoryWatcherSupervisionOutcome::Failed {
+                    if let Ok(mut rules) = ignore_rules.lock() {
+                        rules.invalidate();
                     }
                 }
             }
@@ -628,7 +802,7 @@ fn run_linux_coordinator<F>(
     }
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", test))]
 fn reconcile_linux_directories(
     watcher: &mut RecommendedWatcher,
     watched_directories: &mut HashSet<PathBuf>,
@@ -643,18 +817,8 @@ fn reconcile_linux_directories(
         watched_directories,
         &desired_directories,
         move |desired| {
-            let callback_sender = rebuild_sender.clone();
-            let mut replacement = notify::recommended_watcher(move |result| {
-                let _ = callback_sender.send(CoordinatorMessage::BackendEvent(result));
-            })
-            .map_err(|error| error.to_string())?;
-            let mut directories = desired.iter().collect::<Vec<_>>();
-            directories.sort();
-            for directory in directories {
-                replacement
-                    .watch(directory, RecursiveMode::NonRecursive)
-                    .map_err(|error| error.to_string())?;
-            }
+            let mut replacement = recommended_watcher_for_coordinator(rebuild_sender.clone())?;
+            register_linux_directories(&mut replacement, desired)?;
             Ok(replacement)
         },
     )
@@ -676,6 +840,263 @@ mod tests {
         fail_watch: HashSet<PathBuf>,
         fail_unwatch: HashSet<PathBuf>,
         watched: HashSet<PathBuf>,
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    struct ReplaceableTestWatchBackend {
+        generation: usize,
+    }
+
+    #[test]
+    fn bounded_recovery_replaces_a_faulted_backend_for_existing_subscriptions() {
+        let mut backend = ReplaceableTestWatchBackend { generation: 1 };
+        let rebuilds = std::cell::Cell::new(0);
+
+        recover_supervised_watch_backend(&mut backend, "notify backend failed".to_string(), || {
+            rebuilds.set(rebuilds.get() + 1);
+            Ok(ReplaceableTestWatchBackend { generation: 2 })
+        })
+        .expect("the existing subscription should adopt a fresh backend");
+
+        assert_eq!(rebuilds.get(), 1);
+        assert_eq!(backend, ReplaceableTestWatchBackend { generation: 2 });
+    }
+
+    #[test]
+    fn bounded_recovery_retries_without_waiting_for_a_new_subscription() {
+        let mut backend = ReplaceableTestWatchBackend { generation: 1 };
+        let rebuilds = std::cell::Cell::new(0);
+
+        recover_supervised_watch_backend(&mut backend, "notify backend failed".to_string(), || {
+            let attempt = rebuilds.get() + 1;
+            rebuilds.set(attempt);
+            if attempt < WATCH_BACKEND_RECOVERY_ATTEMPTS {
+                return Err(format!("rebuild attempt {attempt} failed"));
+            }
+            Ok(ReplaceableTestWatchBackend { generation: 2 })
+        })
+        .expect("the bounded retry should recover the existing subscription");
+
+        assert_eq!(rebuilds.get(), WATCH_BACKEND_RECOVERY_ATTEMPTS);
+        assert_eq!(backend, ReplaceableTestWatchBackend { generation: 2 });
+    }
+
+    #[test]
+    fn bounded_recovery_reports_the_source_and_final_rebuild_failure() {
+        let mut backend = ReplaceableTestWatchBackend { generation: 1 };
+        let rebuilds = std::cell::Cell::new(0);
+
+        let error = recover_supervised_watch_backend(
+            &mut backend,
+            "notify backend failed".to_string(),
+            || {
+                let attempt = rebuilds.get() + 1;
+                rebuilds.set(attempt);
+                Err(format!("rebuild attempt {attempt} failed"))
+            },
+        )
+        .expect_err("exhausted recovery must remain observable");
+
+        assert_eq!(rebuilds.get(), WATCH_BACKEND_RECOVERY_ATTEMPTS);
+        assert!(error.contains("notify backend failed"));
+        assert!(error.contains("rebuild attempt 3 failed"));
+        assert_eq!(backend, ReplaceableTestWatchBackend { generation: 1 });
+    }
+
+    #[test]
+    fn supervisor_recovers_a_backend_error_and_delivers_the_next_event() {
+        let mut backend = ReplaceableTestWatchBackend { generation: 1 };
+        let mut notices = Vec::new();
+        let mut handler = |notice| match notice {
+            DirectoryWatcherNotice::Event(_) => notices.push("event"),
+            DirectoryWatcherNotice::Recovered => notices.push("recovered"),
+            DirectoryWatcherNotice::Error(_) => notices.push("error"),
+        };
+
+        let recovery = supervise_directory_backend_event(
+            &mut backend,
+            Err(notify::Error::generic("backend failed")),
+            |_, _| Ok(()),
+            || Ok(ReplaceableTestWatchBackend { generation: 2 }),
+            &mut handler,
+        );
+        if recovery == DirectoryWatcherSupervisionOutcome::Recovered {
+            handler(DirectoryWatcherNotice::Recovered);
+        }
+        let delivery = supervise_directory_backend_event(
+            &mut backend,
+            Ok(Event::new(EventKind::Any)),
+            |_, _| Ok(()),
+            || Ok(ReplaceableTestWatchBackend { generation: 3 }),
+            &mut handler,
+        );
+
+        assert_eq!(recovery, DirectoryWatcherSupervisionOutcome::Recovered);
+        assert_eq!(delivery, DirectoryWatcherSupervisionOutcome::Delivered);
+        assert_eq!(backend, ReplaceableTestWatchBackend { generation: 2 });
+        assert_eq!(notices, ["recovered", "event"]);
+    }
+
+    #[test]
+    fn supervisor_rebuilds_after_event_preparation_fails() {
+        let mut backend = ReplaceableTestWatchBackend { generation: 1 };
+        let mut notices = Vec::new();
+
+        let outcome = supervise_directory_backend_event(
+            &mut backend,
+            Ok(Event::new(EventKind::Any)),
+            |_, _| Err("event preparation failed".to_string()),
+            || Ok(ReplaceableTestWatchBackend { generation: 2 }),
+            &mut |notice| match notice {
+                DirectoryWatcherNotice::Event(_) => notices.push("event"),
+                DirectoryWatcherNotice::Recovered => notices.push("recovered"),
+                DirectoryWatcherNotice::Error(_) => notices.push("error"),
+            },
+        );
+        if outcome == DirectoryWatcherSupervisionOutcome::Recovered {
+            notices.push("recovered");
+        }
+
+        assert_eq!(outcome, DirectoryWatcherSupervisionOutcome::Recovered);
+        assert_eq!(backend, ReplaceableTestWatchBackend { generation: 2 });
+        assert_eq!(notices, ["recovered"]);
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn recursive_watcher_recovers_without_a_new_subscription_after_backend_error() {
+        enum ObservedNotice {
+            Event(Event),
+            Recovered,
+            Error,
+        }
+
+        let root = test_root("recursive-recovery");
+        fs::create_dir_all(&root).expect("test root should be created");
+        let rules = Arc::new(Mutex::new(
+            MarkdownWatchIgnoreRules::try_new(&root, None).expect("watcher rules should load"),
+        ));
+        let (notice_sender, notice_receiver) = std::sync::mpsc::channel();
+        let watcher = DirectoryWatcher::new(&root, rules, move |notice| {
+            let observed = match notice {
+                DirectoryWatcherNotice::Event(event) => ObservedNotice::Event(event),
+                DirectoryWatcherNotice::Recovered => ObservedNotice::Recovered,
+                DirectoryWatcherNotice::Error(_) => ObservedNotice::Error,
+            };
+            let _ = notice_sender.send(observed);
+        })
+        .expect("recursive watcher should start");
+
+        watcher
+            .coordinator
+            .sender
+            .send(CoordinatorMessage::BackendEvent(Err(
+                notify::Error::generic("injected backend failure"),
+            )))
+            .expect("backend failure should reach the supervisor");
+        assert!(matches!(
+            notice_receiver
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .expect("recovery notice should arrive"),
+            ObservedNotice::Recovered
+        ));
+
+        let note = root.join("recovered.md");
+        fs::write(&note, "recovered").expect("post-recovery file should be written");
+        let observed_change = (0..10).any(|_| {
+            matches!(
+                notice_receiver.recv_timeout(std::time::Duration::from_secs(1)),
+                Ok(ObservedNotice::Event(event))
+                    if event.paths.iter().any(|path| path.file_name() == note.file_name())
+            )
+        });
+
+        drop(watcher);
+        fs::remove_dir_all(root).expect("test root should be removed");
+        assert!(
+            observed_change,
+            "the rebuilt backend should deliver later events"
+        );
+    }
+
+    #[test]
+    fn linux_coordinator_recovers_without_a_new_subscription_after_backend_error() {
+        enum ObservedNotice {
+            Event(Event),
+            Recovered,
+            Error,
+        }
+
+        let root = test_root("linux-coordinator-recovery");
+        fs::create_dir_all(&root).expect("test root should be created");
+        let watch_root =
+            Arc::new(DirectoryWatchRoot::capture(&root).expect("watch root should capture"));
+        let rules = Arc::new(Mutex::new(
+            MarkdownWatchIgnoreRules::try_new(&root, None).expect("watcher rules should load"),
+        ));
+        let watched_directories = HashSet::from([root.clone()]);
+        let (coordinator_sender, coordinator_receiver) = std::sync::mpsc::channel();
+        let watcher = build_linux_watch_backend(
+            &watch_root,
+            &watched_directories,
+            coordinator_sender.clone(),
+        )
+        .expect("non-recursive backend should start");
+        let (notice_sender, notice_receiver) = std::sync::mpsc::channel();
+        let coordinator_root = Arc::clone(&watch_root);
+        let coordinator_rules = Arc::clone(&rules);
+        let event_sender = coordinator_sender.clone();
+        let coordinator = std::thread::spawn(move || {
+            let mut watched_directories = watched_directories;
+            run_linux_coordinator(
+                watcher,
+                &mut watched_directories,
+                &coordinator_root,
+                &coordinator_rules,
+                move |notice| {
+                    let observed = match notice {
+                        DirectoryWatcherNotice::Event(event) => ObservedNotice::Event(event),
+                        DirectoryWatcherNotice::Recovered => ObservedNotice::Recovered,
+                        DirectoryWatcherNotice::Error(_) => ObservedNotice::Error,
+                    };
+                    let _ = notice_sender.send(observed);
+                },
+                coordinator_receiver,
+                event_sender,
+            );
+        });
+
+        coordinator_sender
+            .send(CoordinatorMessage::BackendEvent(Err(
+                notify::Error::generic("injected Linux backend failure"),
+            )))
+            .expect("backend failure should reach the Linux coordinator");
+        assert!(matches!(
+            notice_receiver
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .expect("Linux recovery notice should arrive"),
+            ObservedNotice::Recovered
+        ));
+
+        let note = root.join("recovered-linux.md");
+        fs::write(&note, "recovered").expect("post-recovery file should be written");
+        let observed_change = (0..10).any(|_| {
+            matches!(
+                notice_receiver.recv_timeout(std::time::Duration::from_secs(1)),
+                Ok(ObservedNotice::Event(event))
+                    if event.paths.iter().any(|path| path.file_name() == note.file_name())
+            )
+        });
+
+        coordinator_sender
+            .send(CoordinatorMessage::Shutdown)
+            .expect("Linux coordinator should stop");
+        coordinator.join().expect("Linux coordinator should join");
+        fs::remove_dir_all(root).expect("test root should be removed");
+        assert!(
+            observed_change,
+            "the rebuilt Linux backend should deliver later events"
+        );
     }
 
     impl DirectoryWatchBackend for FaultingDirectoryWatchBackend {
