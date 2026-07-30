@@ -9,6 +9,7 @@ pub mod error;
 pub mod events;
 pub mod host;
 pub mod ignore_rules;
+pub(crate) mod inventory_snapshot;
 pub mod paths;
 pub mod ports;
 pub mod protected_paths;
