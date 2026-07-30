@@ -625,7 +625,10 @@ fn recovery_link_count(_metadata: &cap_std::fs::Metadata) -> u64 {
 
 #[cfg(unix)]
 fn sync_recovery_directory(directory: &Dir) -> Result<(), DocumentRecoveryError> {
-    rustix::fs::fsync(directory).map_err(|_| DocumentRecoveryError)
+    directory
+        .open(".")
+        .and_then(|sync_handle| sync_handle.sync_all())
+        .map_err(|_| DocumentRecoveryError)
 }
 
 #[cfg(not(unix))]
@@ -636,6 +639,17 @@ fn sync_recovery_directory(_directory: &Dir) -> Result<(), DocumentRecoveryError
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_recovery_directory_sync_uses_an_fsync_capable_descriptor() {
+        let temporary = tempfile::tempdir().expect("temporary root");
+        let directory = Dir::open_ambient_dir(temporary.path(), cap_std::ambient_authority())
+            .expect("open temporary root");
+
+        sync_recovery_directory(&directory)
+            .expect("sync retained Linux recovery directory descriptor");
+    }
 
     #[test]
     fn memory_relocation_unions_nonconflicting_target_history() {
