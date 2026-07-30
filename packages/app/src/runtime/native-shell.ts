@@ -74,6 +74,7 @@ export type NativeShellPort = {
   };
   standalone: {
     read: (handle: NativeStandaloneDocumentHandle) => Promise<NativeStandaloneDocumentSnapshot>;
+    release: (handle: NativeStandaloneDocumentHandle) => Promise<unknown>;
     write: (input: NativeStandaloneWriteInput) => Promise<NativeStandaloneDocumentSnapshot>;
   };
 };
@@ -110,6 +111,7 @@ export function createUnavailableNativeShellPort(): NativeShellPort {
     },
     standalone: {
       read: rejectUnavailable,
+      release: rejectUnavailable,
       write: rejectUnavailable,
     },
   };

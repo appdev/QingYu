@@ -10,7 +10,7 @@ use super::types::MarkdownFile;
 
 const UPDATE_TEMP_PREFIX: &str = ".qingyu-ui-update-";
 
-fn trusted_parent(path: &Path) -> Result<(Dir, PathBuf, std::ffi::OsString), String> {
+pub(super) fn trusted_parent(path: &Path) -> Result<(Dir, PathBuf, std::ffi::OsString), String> {
     let parent = path
         .parent()
         .ok_or_else(|| "Document parent is unavailable".to_string())?
@@ -74,7 +74,7 @@ fn stage_document_contents_with_candidates(
     Err("Document staging could not be created".to_string())
 }
 
-fn stage_document_contents(directory: &Dir, bytes: &[u8]) -> Result<String, String> {
+pub(super) fn stage_document_contents(directory: &Dir, bytes: &[u8]) -> Result<String, String> {
     let candidates = (0..32)
         .map(|_| random_staging_name())
         .collect::<Result<Vec<_>, _>>()?;
@@ -152,7 +152,7 @@ fn rename_document_noreplace(
 }
 
 #[cfg(unix)]
-fn replace_document_atomic(
+pub(super) fn replace_document_atomic(
     directory: &Dir,
     staging_name: &str,
     target_name: &std::ffi::OsStr,
@@ -163,7 +163,7 @@ fn replace_document_atomic(
 }
 
 #[cfg(windows)]
-fn replace_document_atomic(
+pub(super) fn replace_document_atomic(
     _directory: &Dir,
     _staging_name: &str,
     _target_name: &std::ffi::OsStr,
@@ -201,7 +201,7 @@ fn replace_document_atomic(
 }
 
 #[cfg(not(any(unix, windows)))]
-fn replace_document_atomic(
+pub(super) fn replace_document_atomic(
     directory: &Dir,
     staging_name: &str,
     target_name: &std::ffi::OsStr,
@@ -212,12 +212,12 @@ fn replace_document_atomic(
 }
 
 #[cfg(unix)]
-fn sync_directory(directory: &Dir) -> io::Result<()> {
+pub(super) fn sync_directory(directory: &Dir) -> io::Result<()> {
     rustix::fs::fsync(directory).map_err(Into::into)
 }
 
 #[cfg(not(unix))]
-fn sync_directory(_directory: &Dir) -> io::Result<()> {
+pub(super) fn sync_directory(_directory: &Dir) -> io::Result<()> {
     Ok(())
 }
 

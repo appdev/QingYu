@@ -29,6 +29,9 @@ describe("NativeShellPort", () => {
       contents: string;
       handle: NativeStandaloneDocumentHandle;
     }>();
+    expectTypeOf<NativeShellPort["standalone"]["release"]>().toMatchTypeOf<
+      (handle: NativeStandaloneDocumentHandle) => Promise<unknown>
+    >();
   });
 
   it("reports every native capability unavailable and rejects instead of emulating a cancel", async () => {
@@ -44,6 +47,11 @@ describe("NativeShellPort", () => {
       name: "NativeShellUnavailableError",
     });
     await expect(port.paths.classify("/notes" as NativeAbsolutePath)).rejects.toMatchObject({
+      name: "NativeShellUnavailableError",
+    });
+    await expect(port.standalone.release(
+      "opaque-handle" as NativeStandaloneDocumentHandle,
+    )).rejects.toMatchObject({
       name: "NativeShellUnavailableError",
     });
   });

@@ -6,6 +6,7 @@ import type {
   NativeStandaloneRevision
 } from "@markra/app/runtime";
 import * as desktopFiles from "./tauri/file/desktop";
+import { invokeNative } from "./tauri/invoke";
 import { openNativeExternalUrl } from "./tauri/opener";
 
 type NativeMarkdownFile = {
@@ -32,14 +33,26 @@ export type DesktopNativeShellDependencies = {
   openExternalUrl: (url: string) => Promise<unknown>;
   openMarkdownFile: () => Promise<NativeMarkdownFile | null>;
   openMarkdownFolder: () => Promise<NativeMarkdownFolder | null>;
-  readMarkdownFile: (path: string) => Promise<NativeMarkdownFile>;
+  readStandaloneDocument: (path: string) => Promise<NativeStandaloneDocumentData>;
   resolveMarkdownFolder: (path: string) => Promise<NativeMarkdownFolder>;
   resolveMarkdownPath: (path: string) => Promise<NativeResolvedPath>;
-  saveMarkdownFile: (input: {
+  writeStandaloneDocumentCas: (input: {
     contents: string;
-    path: string | null;
-    suggestedName: string;
-  }) => Promise<{ name: string; path: string } | null>;
+    expectedRevision: NativeStandaloneRevision;
+    path: string;
+  }) => Promise<NativeStandaloneDocumentData>;
+};
+
+type NativeStandaloneDocumentData = {
+  contents: string;
+  displayName: string;
+  revision: NativeStandaloneRevision;
+};
+
+type NativeStandaloneDocumentResponse = {
+  contents: unknown;
+  displayName: unknown;
+  revision: unknown;
 };
 
 type StandaloneRecord = {
@@ -47,16 +60,56 @@ type StandaloneRecord = {
   path: string;
 };
 
+const maxStandaloneDocumentHandles = 256;
+
+function standaloneDocumentDataFromResponse(
+  response: NativeStandaloneDocumentResponse
+): NativeStandaloneDocumentData {
+  if (
+    typeof response.contents !== "string" ||
+    typeof response.displayName !== "string" ||
+    typeof response.revision !== "string" ||
+    !/^native-v2-[0-9a-f]{64}$/.test(response.revision)
+  ) {
+    throw new NativeStandaloneDocumentUnavailableError();
+  }
+  return {
+    contents: response.contents,
+    displayName: response.displayName,
+    revision: response.revision as NativeStandaloneRevision
+  };
+}
+
+async function readStandaloneDocument(path: string): Promise<NativeStandaloneDocumentData> {
+  const response = await invokeNative<NativeStandaloneDocumentResponse>(
+    "read_standalone_document",
+    { path }
+  );
+  return standaloneDocumentDataFromResponse(response);
+}
+
+async function writeStandaloneDocumentCas(input: {
+  contents: string;
+  expectedRevision: NativeStandaloneRevision;
+  path: string;
+}): Promise<NativeStandaloneDocumentData> {
+  const response = await invokeNative<NativeStandaloneDocumentResponse>(
+    "write_standalone_document_cas",
+    input
+  );
+  return standaloneDocumentDataFromResponse(response);
+}
+
 const defaultDependencies: DesktopNativeShellDependencies = {
   newHandle: () => globalThis.crypto.randomUUID(),
   openContainingFolder: desktopFiles.openNativeContainingFolder,
   openExternalUrl: openNativeExternalUrl,
   openMarkdownFile: desktopFiles.openNativeMarkdownFile,
   openMarkdownFolder: desktopFiles.openNativeMarkdownFolder,
-  readMarkdownFile: desktopFiles.readNativeMarkdownFile,
+  readStandaloneDocument,
   resolveMarkdownFolder: desktopFiles.resolveNativeMarkdownFolder,
   resolveMarkdownPath: desktopFiles.resolveNativeMarkdownPath,
-  saveMarkdownFile: desktopFiles.saveNativeMarkdownFile
+  writeStandaloneDocumentCas
 };
 
 export class NativeStandaloneDocumentUnavailableError extends Error {
@@ -73,28 +126,31 @@ export class NativeStandaloneConflictError extends Error {
   }
 }
 
-async function standaloneRevision(contents: string): Promise<NativeStandaloneRevision> {
-  const digest = await globalThis.crypto.subtle.digest(
-    "SHA-256",
-    new TextEncoder().encode(contents)
-  );
-  const fingerprint = Array.from(new Uint8Array(digest), (byte) =>
-    byte.toString(16).padStart(2, "0")
-  ).join("");
-  return `native-v1-${fingerprint}` as NativeStandaloneRevision;
+function nativeWriteError(error: unknown): Error {
+  if (error === "standalone-document-conflict") {
+    return new NativeStandaloneConflictError();
+  }
+  return new NativeStandaloneDocumentUnavailableError();
 }
 
 export function createDesktopNativeShellPort(
   dependencies: DesktopNativeShellDependencies = defaultDependencies
 ): NativeShellPort {
   const records = new Map<NativeStandaloneDocumentHandle, StandaloneRecord>();
+  const handlesByPath = new Map<string, NativeStandaloneDocumentHandle>();
   const writeQueues = new Map<NativeStandaloneDocumentHandle, Promise<unknown>>();
 
   function register(file: NativeMarkdownFile): NativeStandaloneDocumentHandle {
+    const existing = handlesByPath.get(file.path);
+    if (existing && records.has(existing)) return existing;
+    if (records.size >= maxStandaloneDocumentHandles) {
+      throw new NativeStandaloneDocumentUnavailableError();
+    }
     for (let attempt = 0; attempt < 16; attempt += 1) {
       const handle = dependencies.newHandle() as NativeStandaloneDocumentHandle;
       if (!handle.trim() || records.has(handle)) continue;
       records.set(handle, { displayName: file.name, path: file.path });
+      handlesByPath.set(file.path, handle);
       return handle;
     }
     throw new NativeStandaloneDocumentUnavailableError();
@@ -108,15 +164,15 @@ export function createDesktopNativeShellPort(
 
   async function read(handle: NativeStandaloneDocumentHandle): Promise<NativeStandaloneDocumentSnapshot> {
     const record = recordFor(handle);
-    const file = await dependencies.readMarkdownFile(record.path).catch(() => {
+    const file = await dependencies.readStandaloneDocument(record.path).catch(() => {
       throw new NativeStandaloneDocumentUnavailableError();
     });
-    record.displayName = file.name;
+    record.displayName = file.displayName;
     return {
-      contents: file.content,
-      displayName: file.name,
+      contents: file.contents,
+      displayName: file.displayName,
       handle,
-      revision: await standaloneRevision(file.content)
+      revision: file.revision
     };
   }
 
@@ -156,10 +212,10 @@ export function createDesktopNativeShellPort(
             : { kind: "unsupported" };
         }
         if (target.kind !== "file") return { kind: "unsupported" };
-        const file = await dependencies.readMarkdownFile(target.path).catch(() => null);
-        return file
-          ? { kind: "standalone-document", handle: register(file) }
-          : { kind: "unsupported" };
+        return {
+          kind: "standalone-document",
+          handle: register({ content: "", name: target.name, path: target.path })
+        };
       }
     },
     pickers: {
@@ -179,23 +235,26 @@ export function createDesktopNativeShellPort(
     },
     standalone: {
       read,
+      async release(handle) {
+        const record = records.get(handle);
+        if (!record) return;
+        records.delete(handle);
+        if (handlesByPath.get(record.path) === handle) handlesByPath.delete(record.path);
+      },
       write: (input) => writeSerially(input.handle, async () => {
         const record = recordFor(input.handle);
-        const current = await read(input.handle);
-        if (current.revision !== input.expectedRevision) {
-          throw new NativeStandaloneConflictError();
-        }
-        const saved = await dependencies.saveMarkdownFile({
+        const saved = await dependencies.writeStandaloneDocumentCas({
           contents: input.contents,
-          path: record.path,
-          suggestedName: record.displayName
-        }).catch(() => {
-          throw new NativeStandaloneDocumentUnavailableError();
+          expectedRevision: input.expectedRevision,
+          path: record.path
+        }).catch((error: unknown) => {
+          throw nativeWriteError(error);
         });
-        if (!saved) throw new NativeStandaloneDocumentUnavailableError();
-        record.displayName = saved.name;
-        record.path = saved.path;
-        return read(input.handle);
+        record.displayName = saved.displayName;
+        return {
+          ...saved,
+          handle: input.handle
+        };
       })
     }
   };

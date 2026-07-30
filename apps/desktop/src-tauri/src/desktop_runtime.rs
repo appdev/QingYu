@@ -367,6 +367,8 @@ pub(crate) fn run() {
             crate::markdown_files::resource::resolve_workspace_resource_root,
             crate::markdown_files::resource::trash_workspace_resources,
             crate::markdown_files::document::read_markdown_file,
+            crate::markdown_files::standalone::read_standalone_document,
+            crate::markdown_files::standalone::write_standalone_document_cas,
             crate::text_file::read_text_file,
             crate::markdown_files::history::list_markdown_file_history,
             crate::markdown_files::history::read_markdown_file_history,

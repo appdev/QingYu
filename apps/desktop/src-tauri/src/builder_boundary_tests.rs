@@ -135,6 +135,8 @@ const DESKTOP_COMMANDS: &[&str] = &[
     "resolve_workspace_resource_root",
     "trash_workspace_resources",
     "read_markdown_file",
+    "read_standalone_document",
+    "write_standalone_document_cas",
     "read_text_file",
     "list_markdown_file_history",
     "read_markdown_file_history",
