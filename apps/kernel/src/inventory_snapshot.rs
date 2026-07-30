@@ -435,6 +435,7 @@ impl std::error::Error for ContentHashRequired {}
 pub(crate) struct InventorySnapshotLimits {
     pub(crate) maximum_nodes: u64,
     pub(crate) maximum_content_bytes: u64,
+    pub(crate) maximum_metadata_bytes: u64,
     pub(crate) maximum_depth: usize,
 }
 
@@ -442,6 +443,7 @@ pub(crate) struct InventorySnapshotLimits {
 pub(crate) struct InventorySnapshotBudget {
     remaining_nodes: u64,
     remaining_content_bytes: u64,
+    remaining_metadata_bytes: u64,
     maximum_depth: usize,
 }
 
@@ -450,6 +452,7 @@ impl InventorySnapshotBudget {
         Self {
             remaining_nodes: limits.maximum_nodes,
             remaining_content_bytes: limits.maximum_content_bytes,
+            remaining_metadata_bytes: limits.maximum_metadata_bytes,
             maximum_depth: limits.maximum_depth,
         }
     }
@@ -473,6 +476,17 @@ impl InventorySnapshotBudget {
         Ok(())
     }
 
+    pub(crate) fn charge_metadata_bytes(
+        &mut self,
+        bytes: u64,
+    ) -> Result<(), InventorySnapshotBudgetError> {
+        let Some(remaining) = self.remaining_metadata_bytes.checked_sub(bytes) else {
+            return Err(InventorySnapshotBudgetError::MetadataBytes);
+        };
+        self.remaining_metadata_bytes = remaining;
+        Ok(())
+    }
+
     pub(crate) fn require_depth(&self, depth: usize) -> Result<(), InventorySnapshotBudgetError> {
         if depth <= self.maximum_depth {
             Ok(())
@@ -488,12 +502,17 @@ impl InventorySnapshotBudget {
     pub(crate) const fn remaining_content_bytes(self) -> u64 {
         self.remaining_content_bytes
     }
+
+    pub(crate) const fn remaining_metadata_bytes(self) -> u64 {
+        self.remaining_metadata_bytes
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum InventorySnapshotBudgetError {
     NodeLimit,
     ContentBytes,
+    MetadataBytes,
     Depth,
 }
 
@@ -503,6 +522,9 @@ impl fmt::Display for InventorySnapshotBudgetError {
             Self::NodeLimit => formatter.write_str("inventory snapshot node limit exceeded"),
             Self::ContentBytes => {
                 formatter.write_str("inventory snapshot content byte limit exceeded")
+            }
+            Self::MetadataBytes => {
+                formatter.write_str("inventory snapshot metadata byte limit exceeded")
             }
             Self::Depth => formatter.write_str("inventory snapshot depth limit exceeded"),
         }
@@ -760,11 +782,18 @@ mod tests {
         let mut budget = InventorySnapshotBudget::new(InventorySnapshotLimits {
             maximum_nodes: 2,
             maximum_content_bytes: 8,
+            maximum_metadata_bytes: 6,
             maximum_depth: 1,
         });
 
         budget.charge_node().unwrap();
         budget.charge_content_bytes(5).unwrap();
+        budget.charge_metadata_bytes(5).unwrap();
+        assert_eq!(
+            budget.charge_metadata_bytes(2),
+            Err(InventorySnapshotBudgetError::MetadataBytes)
+        );
+        assert_eq!(budget.remaining_metadata_bytes(), 1);
         assert_eq!(
             budget.charge_content_bytes(4),
             Err(InventorySnapshotBudgetError::ContentBytes)
