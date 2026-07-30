@@ -72,6 +72,24 @@ impl DurableFileStore {
     }
 
     #[cfg(test)]
+    pub(crate) fn at_retained_directory_with_test_fault(
+        directory: Dir,
+        canonical_root: PathBuf,
+        writer_epoch: Uuid,
+        fault: DurableFileTestFault,
+    ) -> Self {
+        Self::new(
+            directory,
+            canonical_root,
+            writer_epoch,
+            Arc::new(DurableFileTestFaultInjector {
+                point: fault.point(),
+                fired: std::sync::atomic::AtomicBool::new(false),
+            }),
+        )
+    }
+
+    #[cfg(test)]
     pub(crate) fn at_instance_data_with_test_fault(
         root: &InstanceDataRoot,
         launch_epoch: &KernelLaunchEpoch,
@@ -122,7 +140,22 @@ impl DurableFileStore {
             .transaction_gate
             .lock()
             .map_err(|_| DurableFileFailure::recovery_required(None))?;
-        self.replace_locked(request)
+        self.replace_locked(request, &mut || true)
+    }
+
+    pub(crate) fn replace_with_address_validation<Validate>(
+        &self,
+        request: ReplaceRequest<'_>,
+        mut validate_address: Validate,
+    ) -> Result<ReplaceOutcome, DurableFileFailure>
+    where
+        Validate: FnMut() -> bool,
+    {
+        let _transaction = self
+            .transaction_gate
+            .lock()
+            .map_err(|_| DurableFileFailure::recovery_required(None))?;
+        self.replace_locked(request, &mut validate_address)
     }
 
     pub fn recover(&self) -> Result<Vec<RecoveryOutcome>, DurableFileFailure> {
@@ -142,6 +175,7 @@ impl DurableFileStore {
     fn replace_locked(
         &self,
         request: ReplaceRequest<'_>,
+        validate_address: &mut dyn FnMut() -> bool,
     ) -> Result<ReplaceOutcome, DurableFileFailure> {
         if u64::try_from(request.bytes.len()).unwrap_or(u64::MAX) > MAX_INTERNAL_FILE_BYTES {
             return Err(DurableFileFailure::too_large());
@@ -317,6 +351,11 @@ impl DurableFileStore {
             self.cleanup_unpublished(&intent_name, &stage_name)?;
             return Err(DurableFileFailure::revision_conflict());
         }
+        if !validate_address() {
+            drop(staged_file);
+            self.cleanup_unpublished(&intent_name, &stage_name)?;
+            return Err(DurableFileFailure::unsafe_entry());
+        }
 
         let mut publish_result = publish_atomic(
             &self.directory,
@@ -356,6 +395,9 @@ impl DurableFileStore {
                 self.cleanup_unpublished(&intent_name, &stage_name)?;
                 return Err(DurableFileFailure::not_published(Some(transaction)));
             }
+            return Err(DurableFileFailure::publish_uncertain(transaction));
+        }
+        if !validate_address() {
             return Err(DurableFileFailure::publish_uncertain(transaction));
         }
 

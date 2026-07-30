@@ -10,14 +10,16 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::scope::RemoteSyncScope;
+#[cfg(test)]
+use crate::storage::DurableFileTestFault;
 use crate::storage::{
     CommitState, DurableFileFailure, DurableFileFailureKind, DurableFileStore, ExpectedFile,
     FileRevision, PreservePrevious, RecoveryOutcome, ReplaceRequest, StorageFileName,
 };
 
 pub const MANIFEST_VERSION: u32 = 3;
-const MAX_MANIFEST_BYTES: u64 = 8 * 1024 * 1024;
-const MAX_MANIFEST_ENTRIES: usize = 100_000;
+const MAX_MANIFEST_BYTES: u64 = 256 * 1024 * 1024;
+const MAX_MANIFEST_ENTRIES: usize = 1_000_000;
 const MAX_MANIFEST_PATH_BYTES: usize = 4 * 1024;
 const MAX_MANIFEST_VALUE_BYTES: usize = 8 * 1024;
 static SYNC_REPOSITORY_WRITER_EPOCH: OnceLock<Uuid> = OnceLock::new();
@@ -85,11 +87,45 @@ impl<'scope> SyncManifestRepository<'scope> {
             scope.state_root().to_path_buf(),
             *SYNC_REPOSITORY_WRITER_EPOCH.get_or_init(Uuid::new_v4),
         );
+        Self::open_with_store(scope, manifest_name, store)
+    }
+
+    #[cfg(test)]
+    fn open_with_test_fault(
+        scope: &'scope RemoteSyncScope,
+        fault: DurableFileTestFault,
+    ) -> Result<Self, SyncManifestRepositoryError> {
+        let directory = scope.open_state_root().map_err(|_| {
+            SyncManifestRepositoryError::new(SyncManifestRepositoryErrorKind::Unsafe)
+        })?;
+        let manifest_name = StorageFileName::parse(scope.manifest_name()).map_err(|_| {
+            SyncManifestRepositoryError::new(SyncManifestRepositoryErrorKind::Unsafe)
+        })?;
+        let store = DurableFileStore::at_retained_directory_with_test_fault(
+            directory,
+            scope.state_root().to_path_buf(),
+            *SYNC_REPOSITORY_WRITER_EPOCH.get_or_init(Uuid::new_v4),
+            fault,
+        );
+        Self::open_with_store(scope, manifest_name, store)
+    }
+
+    fn open_with_store(
+        scope: &'scope RemoteSyncScope,
+        manifest_name: StorageFileName,
+        store: DurableFileStore,
+    ) -> Result<Self, SyncManifestRepositoryError> {
         let recovery = store.recover().map_err(SyncManifestRepositoryError::from)?;
-        if recovery
-            .iter()
-            .any(|outcome| matches!(outcome, RecoveryOutcome::ManualInterventionRequired { .. }))
-        {
+        if recovery.iter().any(|outcome| {
+            matches!(
+                outcome,
+                RecoveryOutcome::ManualInterventionRequired { .. }
+                    | RecoveryOutcome::Committed {
+                        commit_state: CommitState::PublishedDurabilityUncertain,
+                        ..
+                    }
+            )
+        }) {
             return Err(SyncManifestRepositoryError::new(
                 SyncManifestRepositoryErrorKind::RecoveryRequired,
             ));
@@ -188,6 +224,17 @@ impl<'scope> SyncManifestRepository<'scope> {
     }
 
     pub fn save(&self, manifest: &SyncManifest) -> Result<(), SyncManifestRepositoryError> {
+        self.save_with_pre_publish_hook(manifest, || {})
+    }
+
+    fn save_with_pre_publish_hook<BeforeValidation>(
+        &self,
+        manifest: &SyncManifest,
+        mut before_validation: BeforeValidation,
+    ) -> Result<(), SyncManifestRepositoryError>
+    where
+        BeforeValidation: FnMut(),
+    {
         self.verify_state_address()?;
         validate_manifest(manifest)?;
         let bytes = serde_json::to_vec_pretty(manifest).map_err(|_| {
@@ -207,12 +254,18 @@ impl<'scope> SyncManifestRepository<'scope> {
         };
         let outcome = self
             .store
-            .replace(ReplaceRequest {
-                target: &self.manifest_name,
-                bytes: &bytes,
-                expected,
-                preserve_previous: PreservePrevious::None,
-            })
+            .replace_with_address_validation(
+                ReplaceRequest {
+                    target: &self.manifest_name,
+                    bytes: &bytes,
+                    expected,
+                    preserve_previous: PreservePrevious::None,
+                },
+                || {
+                    before_validation();
+                    self.verify_state_address().is_ok()
+                },
+            )
             .map_err(SyncManifestRepositoryError::from)?;
         *current_revision = Some(outcome.installed_revision);
         if outcome.commit_state == CommitState::PublishedDurabilityUncertain {
@@ -343,6 +396,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::{SyncManifestEntry, SyncManifestRepository, MANIFEST_VERSION};
+    use crate::storage::DurableFileTestFault;
     use crate::sync::scope::RemoteSyncScope;
 
     fn temporary_root() -> TempDir {
@@ -456,6 +510,31 @@ mod tests {
         assert_eq!(error.safe_code(), "sync-manifest-changed");
     }
 
+    #[test]
+    fn durability_uncertainty_blocks_reopen_for_the_same_process_launch() {
+        let temporary = temporary_root();
+        let source = temporary.path().join("notes");
+        let state = temporary.path().join("state");
+        std::fs::create_dir(&source).expect("source root");
+        let scope = notes_scope(&source, &state, "workspace-a");
+        let repository = SyncManifestRepository::open_with_test_fault(
+            &scope,
+            DurableFileTestFault::ParentSyncFailure,
+        )
+        .expect("repository");
+        let (manifest, _) = repository.load("remote-a").expect("initial load");
+
+        let error = repository
+            .save(&manifest)
+            .expect_err("directory durability must remain uncertain");
+        assert_eq!(error.safe_code(), "sync-manifest-durability-uncertain");
+        drop(repository);
+
+        let error = SyncManifestRepository::open(&scope)
+            .expect_err("same-launch recovery must stay latched");
+        assert_eq!(error.safe_code(), "sync-manifest-recovery-required");
+    }
+
     #[cfg(unix)]
     #[test]
     fn manifest_symlink_is_rejected() {
@@ -546,5 +625,31 @@ mod tests {
             .expect_err("replaced state address must be rejected");
         assert_eq!(error.safe_code(), "sync-manifest-unsafe");
         assert!(!state.join("manifest-v3.json").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn replacing_state_root_during_publish_never_reports_success() {
+        let temporary = temporary_root();
+        let source = temporary.path().join("notes");
+        let state = temporary.path().join("state");
+        let replacement = temporary.path().join("replacement");
+        let retained = temporary.path().join("retained-state");
+        std::fs::create_dir(&source).expect("source root");
+        std::fs::create_dir(&replacement).expect("replacement root");
+        let scope = notes_scope(&source, &state, "workspace-a");
+        let repository = SyncManifestRepository::open(&scope).expect("repository");
+        let (manifest, _) = repository.load("remote-a").expect("initial load");
+
+        let error = repository
+            .save_with_pre_publish_hook(&manifest, || {
+                std::fs::rename(&state, &retained).expect("move admitted state");
+                std::fs::rename(&replacement, &state).expect("replace state address");
+            })
+            .expect_err("replaced state address must stop publication");
+
+        assert_eq!(error.safe_code(), "sync-manifest-unsafe");
+        assert!(!state.join("manifest-v3.json").exists());
+        assert!(!retained.join("manifest-v3.json").exists());
     }
 }
