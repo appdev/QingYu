@@ -63,10 +63,7 @@ fn watcher_notice_for_callback(
     health: &MarkdownWatcherHealth,
 ) -> Option<MarkdownWatcherCallback> {
     match notice {
-        DirectoryWatcherNotice::Event(event) => {
-            health.mark_healthy();
-            Some(MarkdownWatcherCallback::Event(event))
-        }
+        DirectoryWatcherNotice::Event(event) => Some(MarkdownWatcherCallback::Event(event)),
         DirectoryWatcherNotice::Recovered => {
             health.mark_healthy();
             Some(MarkdownWatcherCallback::Recovered)
@@ -689,6 +686,23 @@ mod tests {
         );
 
         assert!(event.is_none());
+        assert!(health.is_faulted());
+    }
+
+    #[test]
+    fn ordinary_events_do_not_clear_an_exhausted_recovery_fault() {
+        let health = MarkdownWatcherHealth::default();
+        let _ = watcher_notice_for_callback(
+            DirectoryWatcherNotice::Error(notify::Error::generic("watch backend failed")),
+            &health,
+        );
+
+        let callback = watcher_notice_for_callback(
+            DirectoryWatcherNotice::Event(Event::new(EventKind::Any)),
+            &health,
+        );
+
+        assert!(matches!(callback, Some(MarkdownWatcherCallback::Event(_))));
         assert!(health.is_faulted());
     }
 

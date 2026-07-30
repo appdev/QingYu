@@ -565,6 +565,19 @@ fn commit_recaptured_watch_rules(
         .finish_reconcile(candidate, Ok(()))
 }
 
+fn rebuild_recursive_watch_subscription_with_backend<B>(
+    ignore_rules: &Arc<Mutex<MarkdownWatchIgnoreRules>>,
+    build_backend: impl FnOnce() -> Result<B, String>,
+) -> Result<B, String> {
+    let backend = build_backend()?;
+    // Events emitted while the replacement backend starts are queued for the
+    // coordinator. Capture the rules only after activation so the replacement
+    // cannot publish an older ignore snapshot in front of those events.
+    let candidate = recapture_watch_rules(ignore_rules)?;
+    commit_recaptured_watch_rules(ignore_rules, candidate)?;
+    Ok(backend)
+}
+
 #[cfg(not(target_os = "linux"))]
 fn build_recursive_watch_backend(
     watch_root: &DirectoryWatchRoot,
@@ -585,10 +598,9 @@ fn rebuild_recursive_watch_subscription(
     ignore_rules: &Arc<Mutex<MarkdownWatchIgnoreRules>>,
     event_sender: std::sync::mpsc::Sender<CoordinatorMessage>,
 ) -> Result<RecommendedWatcher, String> {
-    let candidate = recapture_watch_rules(ignore_rules)?;
-    let watcher = build_recursive_watch_backend(watch_root, event_sender)?;
-    commit_recaptured_watch_rules(ignore_rules, candidate)?;
-    Ok(watcher)
+    rebuild_recursive_watch_subscription_with_backend(ignore_rules, || {
+        build_recursive_watch_backend(watch_root, event_sender)
+    })
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -681,6 +693,33 @@ fn build_linux_watch_backend(
 }
 
 #[cfg(any(target_os = "linux", test))]
+fn rebuild_linux_watch_subscription<B: DirectoryWatchBackend>(
+    watch_root: &DirectoryWatchRoot,
+    ignore_rules: &Arc<Mutex<MarkdownWatchIgnoreRules>>,
+    mut build_backend: impl FnMut(&HashSet<PathBuf>) -> Result<B, String>,
+) -> Result<(B, HashSet<PathBuf>), String> {
+    let mut initial_candidate = recapture_watch_rules(ignore_rules)?;
+    let initial_directories = visible_watch_directories(watch_root, &mut initial_candidate)?;
+    let mut backend = build_backend(&initial_directories)?;
+
+    // Once the replacement is active, recapture the latest rules and bring its
+    // complete non-recursive registration set up to date before publishing it.
+    // Backend events generated during this window remain queued behind the
+    // coordinator's current recovery message.
+    let mut candidate = recapture_watch_rules(ignore_rules)?;
+    let desired_directories = visible_watch_directories(watch_root, &mut candidate)?;
+    let mut watched_directories = initial_directories;
+    reconcile_directory_watch_set_with_rebuild(
+        &mut backend,
+        &mut watched_directories,
+        &desired_directories,
+        |desired| build_backend(desired),
+    )?;
+    commit_recaptured_watch_rules(ignore_rules, candidate)?;
+    Ok((backend, watched_directories))
+}
+
+#[cfg(any(target_os = "linux", test))]
 fn prepare_linux_event(
     watcher: &mut RecommendedWatcher,
     watched_directories: &mut HashSet<PathBuf>,
@@ -759,15 +798,17 @@ fn run_linux_coordinator<F>(
                         )
                     },
                     || {
-                        let mut candidate = recapture_watch_rules(ignore_rules)?;
-                        let desired_directories =
-                            visible_watch_directories(watch_root, &mut candidate)?;
-                        let replacement = build_linux_watch_backend(
+                        let (replacement, desired_directories) = rebuild_linux_watch_subscription(
                             watch_root,
-                            &desired_directories,
-                            event_sender.clone(),
+                            ignore_rules,
+                            |desired_directories| {
+                                build_linux_watch_backend(
+                                    watch_root,
+                                    desired_directories,
+                                    event_sender.clone(),
+                                )
+                            },
                         )?;
-                        commit_recaptured_watch_rules(ignore_rules, candidate)?;
                         recovered_directories = Some(desired_directories);
                         Ok(replacement)
                     },
@@ -960,6 +1001,74 @@ mod tests {
         assert_eq!(outcome, DirectoryWatcherSupervisionOutcome::Recovered);
         assert_eq!(backend, ReplaceableTestWatchBackend { generation: 2 });
         assert_eq!(notices, ["recovered"]);
+    }
+
+    #[test]
+    fn recursive_recovery_commits_rules_captured_after_backend_activation() {
+        let root = test_root("recursive-latest-rules");
+        fs::create_dir_all(root.join("old")).expect("old directory should be created");
+        fs::create_dir_all(root.join("new")).expect("new directory should be created");
+        fs::write(root.join(".markraignore"), "new/\n")
+            .expect("initial workspace rules should be written");
+        let rules = Arc::new(Mutex::new(
+            MarkdownWatchIgnoreRules::try_new(&root, None).expect("watcher rules should load"),
+        ));
+
+        rebuild_recursive_watch_subscription_with_backend(&rules, || {
+            fs::write(root.join(".markraignore"), "old/\n")
+                .expect("rules should change during backend activation");
+            Ok(ReplaceableTestWatchBackend { generation: 2 })
+        })
+        .expect("recursive backend should rebuild");
+
+        let mut rules_guard = rules.lock().expect("watcher rules should lock");
+        let current = rules_guard
+            .current()
+            .expect("watcher rules should remain valid");
+        assert!(current.ignores(&root.join("old"), true));
+        assert!(!current.ignores(&root.join("new"), true));
+        drop(rules_guard);
+        fs::remove_dir_all(root).expect("test root should be removed");
+    }
+
+    #[test]
+    fn linux_recovery_reconciles_to_rules_captured_after_backend_activation() {
+        let root = test_root("linux-latest-rules");
+        let old = root.join("old");
+        let new = root.join("new");
+        fs::create_dir_all(&old).expect("old directory should be created");
+        fs::create_dir_all(&new).expect("new directory should be created");
+        fs::write(root.join(".markraignore"), "new/\n")
+            .expect("initial workspace rules should be written");
+        let watch_root = DirectoryWatchRoot::capture(&root).expect("watch root should capture");
+        let rules = Arc::new(Mutex::new(
+            MarkdownWatchIgnoreRules::try_new(&root, None).expect("watcher rules should load"),
+        ));
+        let builds = std::cell::Cell::new(0);
+
+        let (backend, watched_directories) =
+            rebuild_linux_watch_subscription(&watch_root, &rules, |desired_directories| {
+                builds.set(builds.get() + 1);
+                if builds.get() == 1 {
+                    fs::write(root.join(".markraignore"), "old/\n")
+                        .expect("rules should change during backend activation");
+                }
+                Ok(rebuilt_test_backend(desired_directories))
+            })
+            .expect("Linux backend should rebuild");
+
+        assert!(watched_directories.contains(&root));
+        assert!(!watched_directories.contains(&old));
+        assert!(watched_directories.contains(&new));
+        assert_eq!(backend.watched, watched_directories);
+        let mut rules_guard = rules.lock().expect("watcher rules should lock");
+        let current = rules_guard
+            .current()
+            .expect("watcher rules should remain valid");
+        assert!(current.ignores(&old, true));
+        assert!(!current.ignores(&new, true));
+        drop(rules_guard);
+        fs::remove_dir_all(root).expect("test root should be removed");
     }
 
     #[cfg(not(target_os = "linux"))]
