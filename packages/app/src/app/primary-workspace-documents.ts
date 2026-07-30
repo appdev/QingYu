@@ -24,16 +24,20 @@ export type PrimaryWorkspaceCreateDocumentInput =
 
 export type PrimaryWorkspaceDocumentControllerErrorCode =
   | "document-not-indexed"
+  | "invalid-dirty-overlay"
   | "protocol-mismatch"
   | "rebuild-required"
   | "workspace-generation-drift";
 
 const ERROR_MESSAGES: Record<PrimaryWorkspaceDocumentControllerErrorCode, string> = {
   "document-not-indexed": "The primary workspace document is not indexed.",
+  "invalid-dirty-overlay": "The primary workspace dirty overlay contains duplicate document paths.",
   "protocol-mismatch": "The primary workspace document response did not match its request.",
   "rebuild-required": "The primary workspace document controller must be rebuilt.",
   "workspace-generation-drift": "The primary workspace changed and the document controller must be rebuilt."
 };
+
+const MAX_SEARCH_MATCHES = 10_000;
 
 export class PrimaryWorkspaceDocumentControllerError extends Error {
   readonly code: PrimaryWorkspaceDocumentControllerErrorCode;
@@ -80,6 +84,11 @@ export interface PrimaryWorkspaceDocumentControllerOptions {
   readonly workspace: KernelWorkspaceSnapshot;
 }
 
+/**
+ * This controller remains staged behind the primary UI activation gate until the Kernel contract
+ * provides snapshot-consistent multi-page initialization, explicit search case/truncation metadata,
+ * event/resource/history integration, and typed reconciliation for uncertain mutation outcomes.
+ */
 export async function createPrimaryWorkspaceDocumentController({
   kernel,
   workspace
@@ -100,6 +109,17 @@ export async function createPrimaryWorkspaceDocumentController({
   const protocolMismatch = (): never => {
     invalidation ??= new PrimaryWorkspaceDocumentControllerError("protocol-mismatch");
     throw invalidation;
+  };
+  const markRebuildRequired = () => {
+    invalidation ??= new PrimaryWorkspaceDocumentControllerError("rebuild-required");
+  };
+  const hasCachedAncestor = (relativePath: KernelWorkspaceRelativePath) => {
+    let ancestor = parentWorkspacePath(relativePath);
+    while (ancestor !== "") {
+      if (entriesByPath.has(ancestor)) return true;
+      ancestor = parentWorkspacePath(ancestor);
+    }
+    return false;
   };
   const storeEntry = (
     entry: KernelDocumentEntrySnapshot,
@@ -185,12 +205,17 @@ export async function createPrimaryWorkspaceDocumentController({
         ...input,
         workspaceGeneration: workspace.generation
       });
+      assertGeneration(created.workspaceGeneration);
+      if (input.kind === "file" && (created.kind !== "file" || created.contents !== input.contents)) {
+        protocolMismatch();
+      }
       storeEntry(created, {
         kind: input.kind,
         name: input.name,
         parent: input.parent,
         relativePath: joinWorkspacePath(input.parent, input.name)
       }, false);
+      if (hasCachedAncestor(created.relativePath)) markRebuildRequired();
       return { ...created };
     },
     delete: async ({ deletionPolicy, relativePath }) => {
@@ -202,7 +227,9 @@ export async function createPrimaryWorkspaceDocumentController({
         locator: current.locator,
         workspaceGeneration: workspace.generation
       });
+      const invalidatedCachedAncestor = hasCachedAncestor(relativePath);
       invalidatePath(relativePath);
+      if (invalidatedCachedAncestor) markRebuildRequired();
       return undefined;
     },
     entries: () => {
@@ -222,24 +249,24 @@ export async function createPrimaryWorkspaceDocumentController({
         workspaceGeneration: workspace.generation
       });
       const targetPath = joinWorkspacePath(targetParent, name);
+      const invalidatedCachedAncestor = hasCachedAncestor(relativePath) || hasCachedAncestor(targetPath);
       assertGeneration(moved.workspaceGeneration);
       if (
         moved.kind !== current.kind ||
-        moved.locator !== current.locator ||
         moved.name !== name ||
         moved.parent !== targetParent ||
         moved.relativePath !== targetPath ||
+        (targetPath !== relativePath && moved.locator === current.locator) ||
         (entriesByPath.has(targetPath) && targetPath !== relativePath) ||
-        pathsByLocator.get(moved.locator) !== relativePath
+        pathsByLocator.get(current.locator) !== relativePath ||
+        (pathsByLocator.has(moved.locator) && pathsByLocator.get(moved.locator) !== relativePath)
       ) {
         protocolMismatch();
       }
       invalidatePath(relativePath);
       entriesByPath.set(targetPath, copyEntry(moved));
       pathsByLocator.set(moved.locator, targetPath);
-      if (current.kind === "directory") {
-        invalidation = new PrimaryWorkspaceDocumentControllerError("rebuild-required");
-      }
+      if (current.kind === "directory" || invalidatedCachedAncestor) markRebuildRequired();
       return { ...moved };
     },
     read: async (relativePath) => {
@@ -260,6 +287,13 @@ export async function createPrimaryWorkspaceDocumentController({
     },
     search: async ({ dirtyOverlay = [], query }) => {
       assertActive();
+      const overlayPaths = new Set<KernelWorkspaceRelativePath>();
+      for (const overlay of dirtyOverlay) {
+        if (overlayPaths.has(overlay.relativePath)) {
+          throw new PrimaryWorkspaceDocumentControllerError("invalid-dirty-overlay");
+        }
+        overlayPaths.add(overlay.relativePath);
+      }
       const matches: KernelSearchMatchSnapshot[] = [];
       const seenCursors = new Set<KernelPageCursor>();
       let cursor: KernelPageCursor | undefined;
@@ -273,9 +307,15 @@ export async function createPrimaryWorkspaceDocumentController({
         assertGeneration(page.workspaceGeneration);
         for (const match of page.items) {
           const current = entriesByPath.get(match.document.relativePath) ?? protocolMismatch();
+          assertGeneration(match.document.workspaceGeneration);
           if (
             current.kind !== "file" ||
             match.document.kind !== "file" ||
+            match.document.locator !== current.locator ||
+            match.document.name !== current.name ||
+            match.document.parent !== current.parent ||
+            match.document.relativePath !== current.relativePath ||
+            pathsByLocator.get(current.locator) !== current.relativePath ||
             !Number.isSafeInteger(match.line) ||
             match.line < 1 ||
             !Number.isSafeInteger(match.column) ||
@@ -283,18 +323,13 @@ export async function createPrimaryWorkspaceDocumentController({
           ) {
             protocolMismatch();
           }
-          storeEntry(match.document, {
-            kind: current.kind,
-            locator: current.locator,
-            name: current.name,
-            parent: current.parent,
-            relativePath: current.relativePath
-          }, true);
           matches.push({
             ...match,
             document: { ...match.document }
           });
+          if (matches.length >= MAX_SEARCH_MATCHES) break;
         }
+        if (matches.length >= MAX_SEARCH_MATCHES) break;
         if (page.nextCursor !== null) {
           if (seenCursors.has(page.nextCursor)) protocolMismatch();
           seenCursors.add(page.nextCursor);
@@ -302,18 +337,31 @@ export async function createPrimaryWorkspaceDocumentController({
         cursor = page.nextCursor ?? undefined;
       } while (cursor !== undefined);
 
-      const overlayPaths = new Set(dirtyOverlay.map((overlay) => overlay.relativePath));
       const merged = matches.filter((match) => !overlayPaths.has(match.document.relativePath));
       const needle = query.trim();
-      for (const overlay of dirtyOverlay) {
+      let overlayMatchCount = 0;
+      const sortedDirtyOverlay = [...dirtyOverlay].sort((left, right) =>
+        left.relativePath.localeCompare(right.relativePath));
+      for (const overlay of sortedDirtyOverlay) {
         const current = requireEntry(entriesByPath, overlay.relativePath);
         if (current.kind !== "file") protocolMismatch();
-        merged.push(...findDirtyOverlayMatches(current, overlay.contents, needle));
+        const overlayMatches = findDirtyOverlayMatches(
+          current,
+          overlay.contents,
+          needle,
+          MAX_SEARCH_MATCHES - overlayMatchCount
+        );
+        overlayMatchCount += overlayMatches.length;
+        merged.push(...overlayMatches);
+        if (overlayMatchCount >= MAX_SEARCH_MATCHES) break;
       }
-      return merged.sort(compareSearchMatches).map((match) => ({
-        ...match,
-        document: { ...match.document }
-      }));
+      return merged
+        .sort(compareSearchMatches)
+        .slice(0, MAX_SEARCH_MATCHES)
+        .map((match) => ({
+          ...match,
+          document: { ...match.document }
+        }));
     },
     update: async ({ contents, relativePath }) => {
       assertActive();
@@ -324,6 +372,8 @@ export async function createPrimaryWorkspaceDocumentController({
         locator: current.locator,
         workspaceGeneration: workspace.generation
       });
+      assertGeneration(document.workspaceGeneration);
+      if (document.contents !== contents) protocolMismatch();
       storeEntry(document, {
         kind: "file",
         locator: current.locator,
@@ -331,6 +381,7 @@ export async function createPrimaryWorkspaceDocumentController({
         parent: current.parent,
         relativePath
       }, true);
+      if (hasCachedAncestor(relativePath)) markRebuildRequired();
       return { ...document };
     }
   };
@@ -351,6 +402,11 @@ function joinWorkspacePath(parent: KernelWorkspaceRelativePath, name: string) {
   return (parent === "" ? name : `${parent}/${name}`) as KernelWorkspaceRelativePath;
 }
 
+function parentWorkspacePath(relativePath: KernelWorkspaceRelativePath) {
+  const separator = relativePath.lastIndexOf("/");
+  return (separator < 0 ? "" : relativePath.slice(0, separator)) as KernelWorkspaceRelativePath;
+}
+
 function copyEntry(entry: KernelDocumentEntrySnapshot): KernelDocumentEntrySnapshot {
   return {
     kind: entry.kind,
@@ -368,9 +424,10 @@ function copyEntry(entry: KernelDocumentEntrySnapshot): KernelDocumentEntrySnaps
 function findDirtyOverlayMatches(
   document: KernelDocumentEntrySnapshot,
   contents: string,
-  needle: string
+  needle: string,
+  limit: number
 ): KernelSearchMatchSnapshot[] {
-  if (needle === "") return [];
+  if (needle === "" || limit <= 0) return [];
   const matches: KernelSearchMatchSnapshot[] = [];
   const lines = contents.split(/\r?\n/u);
 
@@ -385,6 +442,7 @@ function findDirtyOverlayMatches(
         line: lineIndex + 1,
         preview: boundedSearchPreview(line, matchIndex, needle)
       });
+      if (matches.length >= limit) return matches;
       searchStart = matchIndex + needle.length;
     }
   }
