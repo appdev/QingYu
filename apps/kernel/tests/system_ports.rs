@@ -1,18 +1,3 @@
-mod contract {
-    pub use qingyu_kernel::contract::*;
-}
-
-mod events {
-    pub use qingyu_kernel::events::*;
-}
-
-mod ports {
-    pub use qingyu_kernel::ports::*;
-}
-
-#[path = "../src/ports/system.rs"]
-mod system;
-
 use std::{
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -28,16 +13,16 @@ use qingyu_kernel::{
     },
     events::{EventPublication, EventSink as _},
     ports::{
+        system::{
+            system_kernel_ports, AlwaysReachableNetwork, MemoryCredentialStore,
+            NoopDiagnosticsSink, NoopEventSink, TokioSleeper, TokioTaskSpawner, UtcSystemClock,
+        },
         Clock as _, CredentialSecret, CredentialSlot, CredentialStore as _, DiagnosticRecord,
         DiagnosticsSink as _, NetworkReachability as _, PortErrorKind, Sleeper as _,
         TaskSpawner as _,
     },
 };
 use static_assertions::assert_not_impl_any;
-use system::{
-    system_kernel_ports, AlwaysReachableNetwork, MemoryCredentialStore, NoopDiagnosticsSink,
-    NoopEventSink, TokioSleeper, TokioTaskSpawner, UtcSystemClock,
-};
 use time::{format_description::well_known::Rfc3339, OffsetDateTime, UtcOffset};
 
 assert_not_impl_any!(MemoryCredentialStore: Clone, Copy);
