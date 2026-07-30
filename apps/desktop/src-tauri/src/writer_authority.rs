@@ -781,6 +781,154 @@ impl WriterAuthority {
     }
 }
 
+#[derive(Clone)]
+pub(crate) struct KernelWriterPublicationGate {
+    authority: WriterAuthority,
+    root: WorkspaceRootIdentity,
+    lifecycle: Arc<Mutex<KernelWriterPublicationLifecycle>>,
+}
+
+enum KernelWriterPublicationLifecycle {
+    Legacy,
+    Transitioning(KernelGeneration),
+    Published(KernelWriterLease),
+    FailedClosed,
+}
+
+impl KernelWriterPublicationGate {
+    pub(crate) fn new(
+        authority: WriterAuthority,
+        root: WorkspaceRootIdentity,
+    ) -> Result<Self, WriterAuthorityError> {
+        if !authority.matches_root(&root) {
+            authority.fail_closed();
+            return Err(WriterAuthorityError::WorkspaceRootMismatch);
+        }
+        Ok(Self {
+            authority,
+            root,
+            lifecycle: Arc::new(Mutex::new(KernelWriterPublicationLifecycle::Legacy)),
+        })
+    }
+
+    pub(crate) fn begin_initial(&self, value: u64) -> Result<(), WriterAuthorityError> {
+        let generation = self.generation_or_fail_closed(value)?;
+        let mut lifecycle = self.lock_lifecycle()?;
+        if !matches!(*lifecycle, KernelWriterPublicationLifecycle::Legacy) {
+            return Err(self.fail_invalid_transition(&mut lifecycle));
+        }
+        if let Err(error) = self
+            .authority
+            .begin_kernel_transition(&self.root, generation)
+        {
+            *lifecycle = KernelWriterPublicationLifecycle::FailedClosed;
+            self.authority.fail_closed();
+            return Err(error);
+        }
+        *lifecycle = KernelWriterPublicationLifecycle::Transitioning(generation);
+        Ok(())
+    }
+
+    pub(crate) fn advance_recovery(&self, value: u64) -> Result<(), WriterAuthorityError> {
+        let replacement = self.generation_or_fail_closed(value)?;
+        let mut lifecycle = self.lock_lifecycle()?;
+        let previous = std::mem::replace(
+            &mut *lifecycle,
+            KernelWriterPublicationLifecycle::FailedClosed,
+        );
+        let result = match previous {
+            KernelWriterPublicationLifecycle::Published(lease) => lease.begin_recovery(replacement),
+            KernelWriterPublicationLifecycle::Transitioning(failed) => self
+                .authority
+                .replace_failed_kernel_transition(&self.root, failed, replacement),
+            KernelWriterPublicationLifecycle::Legacy
+            | KernelWriterPublicationLifecycle::FailedClosed => {
+                self.authority.fail_closed();
+                Err(WriterAuthorityError::InvalidTransition)
+            }
+        };
+        match result {
+            Ok(()) => {
+                *lifecycle = KernelWriterPublicationLifecycle::Transitioning(replacement);
+                Ok(())
+            }
+            Err(error) => {
+                self.authority.fail_closed();
+                Err(error)
+            }
+        }
+    }
+
+    pub(crate) fn try_publish(&self, value: u64) -> Result<bool, WriterAuthorityError> {
+        let expected = self.generation_or_fail_closed(value)?;
+        let mut lifecycle = self.lock_lifecycle()?;
+        if !matches!(
+            *lifecycle,
+            KernelWriterPublicationLifecycle::Transitioning(target) if target == expected
+        ) {
+            return Err(self.fail_invalid_transition(&mut lifecycle));
+        }
+        let claim = match self.authority.try_claim_kernel(expected) {
+            Ok(claim) => claim,
+            Err(WriterAuthorityError::LegacyWritersActive(_)) => return Ok(false),
+            Err(error) => {
+                *lifecycle = KernelWriterPublicationLifecycle::FailedClosed;
+                self.authority.fail_closed();
+                return Err(error);
+            }
+        };
+        match claim.publish() {
+            Ok(lease) => {
+                *lifecycle = KernelWriterPublicationLifecycle::Published(lease);
+                Ok(true)
+            }
+            Err(error) => {
+                *lifecycle = KernelWriterPublicationLifecycle::FailedClosed;
+                self.authority.fail_closed();
+                Err(error)
+            }
+        }
+    }
+
+    pub(crate) fn fail_closed(&self) {
+        self.authority.fail_closed();
+        match self.lifecycle.lock() {
+            Ok(mut lifecycle) => {
+                *lifecycle = KernelWriterPublicationLifecycle::FailedClosed;
+            }
+            Err(poisoned) => {
+                *poisoned.into_inner() = KernelWriterPublicationLifecycle::FailedClosed;
+            }
+        }
+    }
+
+    fn lock_lifecycle(
+        &self,
+    ) -> Result<MutexGuard<'_, KernelWriterPublicationLifecycle>, WriterAuthorityError> {
+        self.lifecycle.lock().map_err(|poisoned| {
+            self.authority.fail_closed();
+            *poisoned.into_inner() = KernelWriterPublicationLifecycle::FailedClosed;
+            WriterAuthorityError::Poisoned
+        })
+    }
+
+    fn generation_or_fail_closed(
+        &self,
+        value: u64,
+    ) -> Result<KernelGeneration, WriterAuthorityError> {
+        KernelGeneration::new(value).inspect_err(|_| self.fail_closed())
+    }
+
+    fn fail_invalid_transition(
+        &self,
+        lifecycle: &mut KernelWriterPublicationLifecycle,
+    ) -> WriterAuthorityError {
+        *lifecycle = KernelWriterPublicationLifecycle::FailedClosed;
+        self.authority.fail_closed();
+        WriterAuthorityError::InvalidTransition
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum WriterSurfaceDisposition {
     RequiresWorkspaceFence,
@@ -1053,6 +1201,23 @@ mod tests {
         assert_eq!(authority.snapshot().state, WriterAuthorityState::Legacy);
         assert_eq!(authority.snapshot().active_legacy_writers, 0);
         assert!(authority.matches_root(&root));
+    }
+
+    #[test]
+    fn publication_gate_invalid_generation_latches_failed_closed() {
+        let root = root_identity();
+        let authority = WriterAuthority::new(root.clone());
+        let gate = KernelWriterPublicationGate::new(authority.clone(), root)
+            .expect("matching authority and root should form a publication gate");
+
+        assert_eq!(
+            gate.begin_initial(0).unwrap_err(),
+            WriterAuthorityError::InvalidGeneration
+        );
+        assert_eq!(
+            authority.snapshot().state,
+            WriterAuthorityState::FailedClosed
+        );
     }
 
     #[test]

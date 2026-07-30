@@ -22,8 +22,10 @@ use qingyu_kernel::{
 use tokio::{
     sync::{mpsc, oneshot, watch, Mutex as AsyncMutex},
     task::JoinHandle,
-    time::{sleep, timeout},
+    time::{sleep, sleep_until, timeout, Instant},
 };
+
+use crate::writer_authority::KernelWriterPublicationGate;
 
 type HostFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
@@ -402,6 +404,7 @@ pub(crate) struct KernelHostSupervisor {
     enqueue_gate: Arc<AsyncMutex<()>>,
     snapshots: watch::Receiver<KernelHostSnapshot>,
     bootstrap_session: crate::kernel_bootstrap::NativeKernelBootstrapSession,
+    writer_gate: Option<KernelWriterPublicationGate>,
     ownership: Arc<KernelOwnership>,
     actor: JoinHandle<()>,
 }
@@ -423,6 +426,24 @@ impl KernelHostSupervisor {
         timeouts: KernelHostTimeouts,
         bootstrap: crate::kernel_bootstrap::NativeKernelBootstrapOwner,
     ) -> Self {
+        Self::new_with_optional_writer_gate(factory, timeouts, bootstrap, None)
+    }
+
+    pub(crate) fn new_with_bootstrap_and_writer_gate(
+        factory: Arc<dyn KernelProcessFactory>,
+        timeouts: KernelHostTimeouts,
+        bootstrap: crate::kernel_bootstrap::NativeKernelBootstrapOwner,
+        writer_gate: KernelWriterPublicationGate,
+    ) -> Self {
+        Self::new_with_optional_writer_gate(factory, timeouts, bootstrap, Some(writer_gate))
+    }
+
+    fn new_with_optional_writer_gate(
+        factory: Arc<dyn KernelProcessFactory>,
+        timeouts: KernelHostTimeouts,
+        bootstrap: crate::kernel_bootstrap::NativeKernelBootstrapOwner,
+        writer_gate: Option<KernelWriterPublicationGate>,
+    ) -> Self {
         let (starts, start_receiver) = mpsc::channel(8);
         let (stops, stop_receiver) = mpsc::unbounded_channel();
         let (snapshot_sender, snapshots) = watch::channel(KernelHostSnapshot::dormant());
@@ -435,6 +456,7 @@ impl KernelHostSupervisor {
             snapshot_sender,
             factory,
             bootstrap_session.clone(),
+            writer_gate.clone(),
             Arc::clone(&ownership),
             Arc::clone(&enqueue_gate),
             timeouts,
@@ -445,6 +467,7 @@ impl KernelHostSupervisor {
             enqueue_gate,
             snapshots,
             bootstrap_session,
+            writer_gate,
             ownership,
             actor,
         }
@@ -486,6 +509,9 @@ impl KernelHostSupervisor {
 impl Drop for KernelHostSupervisor {
     fn drop(&mut self) {
         self.bootstrap_session.close();
+        if let Some(writer_gate) = &self.writer_gate {
+            writer_gate.fail_closed();
+        }
         self.ownership.close_and_terminate();
         self.actor.abort();
     }
@@ -508,6 +534,7 @@ enum ActorMode {
     Ready(Box<ReadyKernel>),
 }
 
+#[derive(Clone, Copy)]
 enum StartKind {
     Manual,
     Recovery,
@@ -537,11 +564,15 @@ async fn run_actor(
     snapshots: watch::Sender<KernelHostSnapshot>,
     factory: Arc<dyn KernelProcessFactory>,
     bootstrap: crate::kernel_bootstrap::NativeKernelBootstrapSession,
+    writer_gate: Option<KernelWriterPublicationGate>,
     ownership: Arc<KernelOwnership>,
     enqueue_gate: Arc<AsyncMutex<()>>,
     timeouts: KernelHostTimeouts,
 ) {
     let Ok(mut generation) = bootstrap.last_generation() else {
+        if let Some(writer_gate) = &writer_gate {
+            writer_gate.fail_closed();
+        }
         return;
     };
     let mut mode = ActorMode::Idle;
@@ -573,6 +604,7 @@ async fn run_actor(
                             &snapshots,
                             factory.as_ref(),
                             &bootstrap,
+                            writer_gate.as_ref(),
                             ownership.as_ref(),
                             enqueue_gate.as_ref(),
                             timeouts,
@@ -587,6 +619,9 @@ async fn run_actor(
                         }
                     }
                     IdleCommand::Stop(response) => {
+                        if let Some(writer_gate) = &writer_gate {
+                            writer_gate.fail_closed();
+                        }
                         ownership.terminate_active();
                         snapshots.send_replace(KernelHostSnapshot {
                             phase: KernelHostPhase::Dormant,
@@ -606,6 +641,7 @@ async fn run_actor(
                 &mut stops,
                 &snapshots,
                 &bootstrap,
+                writer_gate.as_ref(),
                 ownership.as_ref(),
                 enqueue_gate.as_ref(),
                 timeouts,
@@ -623,6 +659,7 @@ async fn run_actor(
                     &snapshots,
                     factory.as_ref(),
                     &bootstrap,
+                    writer_gate.as_ref(),
                     ownership.as_ref(),
                     enqueue_gate.as_ref(),
                     timeouts,
@@ -650,6 +687,7 @@ async fn start_transition(
     snapshots: &watch::Sender<KernelHostSnapshot>,
     factory: &dyn KernelProcessFactory,
     bootstrap: &crate::kernel_bootstrap::NativeKernelBootstrapSession,
+    writer_gate: Option<&KernelWriterPublicationGate>,
     ownership: &KernelOwnership,
     enqueue_gate: &AsyncMutex<()>,
     timeouts: KernelHostTimeouts,
@@ -663,6 +701,7 @@ async fn start_transition(
         snapshots,
         factory,
         bootstrap,
+        writer_gate,
         ownership,
         enqueue_gate,
         timeouts,
@@ -678,14 +717,25 @@ async fn start_transition(
             Some(ready)
         }
         StartOutcome::Failed(error) => {
+            if let Some(writer_gate) = writer_gate {
+                writer_gate.fail_closed();
+            }
             let _send_result = response.send(Err(error));
             None
         }
         StartOutcome::Stopped => {
+            if let Some(writer_gate) = writer_gate {
+                writer_gate.fail_closed();
+            }
             let _send_result = response.send(Err(KernelHostFailure::Cancelled));
             None
         }
-        StartOutcome::Closed => None,
+        StartOutcome::Closed => {
+            if let Some(writer_gate) = writer_gate {
+                writer_gate.fail_closed();
+            }
+            None
+        }
     }
 }
 
@@ -696,6 +746,7 @@ async fn spawn_transition(
     snapshots: &watch::Sender<KernelHostSnapshot>,
     factory: &dyn KernelProcessFactory,
     bootstrap: &crate::kernel_bootstrap::NativeKernelBootstrapSession,
+    writer_gate: Option<&KernelWriterPublicationGate>,
     ownership: &KernelOwnership,
     enqueue_gate: &AsyncMutex<()>,
     timeouts: KernelHostTimeouts,
@@ -704,6 +755,17 @@ async fn spawn_transition(
     kind: StartKind,
     recovery_attempts: u8,
 ) -> StartOutcome {
+    if matches!(kind, StartKind::Manual)
+        && writer_gate.is_some_and(|writer_gate| writer_gate.begin_initial(generation).is_err())
+    {
+        snapshots.send_replace(KernelHostSnapshot {
+            phase: KernelHostPhase::Failed,
+            generation,
+            endpoint: None,
+            failure: Some(KernelHostFailure::Cancelled),
+        });
+        return StartOutcome::Failed(KernelHostFailure::Cancelled);
+    }
     let bootstrap_result = match kind {
         StartKind::Manual => bootstrap.begin_start(generation),
         StartKind::Recovery => bootstrap.continue_start(generation),
@@ -717,6 +779,7 @@ async fn spawn_transition(
         endpoint: None,
         failure: None,
     });
+    let startup_deadline = Instant::now() + timeouts.startup;
     let plan = launch.recovery_plan();
     let mut pending = match factory.spawn(launch, generation, ownership) {
         Ok(pending) => pending,
@@ -740,7 +803,7 @@ async fn spawn_transition(
     let wait = {
         let ready = pending.wait_ready();
         tokio::pin!(ready);
-        let deadline = sleep(timeouts.startup);
+        let deadline = sleep_until(startup_deadline);
         tokio::pin!(deadline);
         loop {
             tokio::select! {
@@ -780,6 +843,9 @@ async fn spawn_transition(
             return StartOutcome::Failed(reported);
         }
         StartWait::Stop(stop_response) => {
+            if let Some(writer_gate) = writer_gate {
+                writer_gate.fail_closed();
+            }
             let stopped = cleanup_pending(&mut *pending, ownership, generation, timeouts).await;
             match stopped {
                 Ok(()) => {
@@ -797,6 +863,9 @@ async fn spawn_transition(
             return StartOutcome::Stopped;
         }
         StartWait::Closed => {
+            if let Some(writer_gate) = writer_gate {
+                writer_gate.fail_closed();
+            }
             let _cleanup_result =
                 cleanup_pending(&mut *pending, ownership, generation, timeouts).await;
             return StartOutcome::Closed;
@@ -811,6 +880,96 @@ async fn spawn_transition(
         publish_failure(snapshots, bootstrap, generation, reported);
         return StartOutcome::Failed(reported);
     }
+    if let Some(writer_gate) = writer_gate {
+        enum WriterPublicationWait {
+            Published,
+            Timeout,
+            Stop(oneshot::Sender<Result<(), KernelHostFailure>>),
+            Failed,
+            Closed,
+        }
+
+        let publication_wait = loop {
+            match stops.try_recv() {
+                Ok(response) => break WriterPublicationWait::Stop(response),
+                Err(mpsc::error::TryRecvError::Disconnected) => {
+                    break WriterPublicationWait::Closed;
+                }
+                Err(mpsc::error::TryRecvError::Empty) => {}
+            }
+            match writer_gate.try_publish(generation) {
+                Ok(true) => break WriterPublicationWait::Published,
+                Ok(false) => {}
+                Err(_) => break WriterPublicationWait::Failed,
+            }
+            if Instant::now() >= startup_deadline {
+                break WriterPublicationWait::Timeout;
+            }
+            let retry = sleep(Duration::from_millis(5));
+            let deadline = sleep_until(startup_deadline);
+            tokio::pin!(retry);
+            tokio::pin!(deadline);
+            tokio::select! {
+                biased;
+                response = stops.recv() => match response {
+                    Some(response) => break WriterPublicationWait::Stop(response),
+                    None => break WriterPublicationWait::Closed,
+                },
+                _expired = &mut deadline => break WriterPublicationWait::Timeout,
+                _retry = &mut retry => {}
+                command = starts.recv() => match command {
+                    Some(StartCommand { response, .. }) => {
+                        let _send_result = response.send(Err(KernelHostFailure::Busy));
+                    }
+                    None => break WriterPublicationWait::Closed,
+                },
+            }
+        };
+
+        match publication_wait {
+            WriterPublicationWait::Published => {}
+            WriterPublicationWait::Timeout => {
+                let reported = cleanup_pending(&mut *pending, ownership, generation, timeouts)
+                    .await
+                    .err()
+                    .unwrap_or(KernelHostFailure::StartupTimeout);
+                publish_failure(snapshots, bootstrap, generation, reported);
+                return StartOutcome::Failed(reported);
+            }
+            WriterPublicationWait::Stop(stop_response) => {
+                writer_gate.fail_closed();
+                let stopped = cleanup_pending(&mut *pending, ownership, generation, timeouts).await;
+                match stopped {
+                    Ok(()) => {
+                        snapshots.send_replace(KernelHostSnapshot {
+                            phase: KernelHostPhase::Dormant,
+                            generation,
+                            endpoint: None,
+                            failure: None,
+                        });
+                        let _finish_result = bootstrap.finish_stop(generation);
+                    }
+                    Err(error) => publish_failure(snapshots, bootstrap, generation, error),
+                }
+                finish_stop_barrier(starts, enqueue_gate, stop_response, stopped).await;
+                return StartOutcome::Stopped;
+            }
+            WriterPublicationWait::Failed => {
+                let reported = cleanup_pending(&mut *pending, ownership, generation, timeouts)
+                    .await
+                    .err()
+                    .unwrap_or(KernelHostFailure::Cancelled);
+                publish_failure(snapshots, bootstrap, generation, reported);
+                return StartOutcome::Failed(reported);
+            }
+            WriterPublicationWait::Closed => {
+                writer_gate.fail_closed();
+                let _cleanup_result =
+                    cleanup_pending(&mut *pending, ownership, generation, timeouts).await;
+                return StartOutcome::Closed;
+            }
+        }
+    }
     let endpoint = KernelEndpoint {
         generation,
         port: evidence.ready.port(),
@@ -823,12 +982,18 @@ async fn spawn_transition(
     let mut process = match pending.into_running() {
         Ok(process) => process,
         Err(error) => {
+            if let Some(writer_gate) = writer_gate {
+                writer_gate.fail_closed();
+            }
             ownership.terminate_active();
             publish_failure(snapshots, bootstrap, generation, error);
             return StartOutcome::Failed(error);
         }
     };
     if bootstrap.publish(access.clone()).is_err() {
+        if let Some(writer_gate) = writer_gate {
+            writer_gate.fail_closed();
+        }
         let reported = stop_running(&mut *process, ownership, generation, timeouts)
             .await
             .err()
@@ -856,6 +1021,7 @@ async fn ready_transition(
     stops: &mut mpsc::UnboundedReceiver<oneshot::Sender<Result<(), KernelHostFailure>>>,
     snapshots: &watch::Sender<KernelHostSnapshot>,
     bootstrap: &crate::kernel_bootstrap::NativeKernelBootstrapSession,
+    writer_gate: Option<&KernelWriterPublicationGate>,
     ownership: &KernelOwnership,
     enqueue_gate: &AsyncMutex<()>,
     timeouts: KernelHostTimeouts,
@@ -919,6 +1085,9 @@ async fn ready_transition(
                     failure: error,
                 },
                 Err(reported) => {
+                    if let Some(writer_gate) = writer_gate {
+                        writer_gate.fail_closed();
+                    }
                     publish_failure(
                         snapshots,
                         bootstrap,
@@ -931,6 +1100,9 @@ async fn ready_transition(
         }
         ReadyWait::Stop(response) => {
             let generation = ready.access.endpoint.generation;
+            if let Some(writer_gate) = writer_gate {
+                writer_gate.fail_closed();
+            }
             snapshots.send_replace(KernelHostSnapshot {
                 phase: KernelHostPhase::Stopping,
                 generation,
@@ -954,6 +1126,9 @@ async fn ready_transition(
             ReadyOutcome::Idle
         }
         ReadyWait::Closed => {
+            if let Some(writer_gate) = writer_gate {
+                writer_gate.fail_closed();
+            }
             let _cleanup_result = stop_running(
                 &mut *ready.process,
                 ownership,
@@ -974,6 +1149,7 @@ async fn recover_transition(
     snapshots: &watch::Sender<KernelHostSnapshot>,
     factory: &dyn KernelProcessFactory,
     bootstrap: &crate::kernel_bootstrap::NativeKernelBootstrapSession,
+    writer_gate: Option<&KernelWriterPublicationGate>,
     ownership: &KernelOwnership,
     enqueue_gate: &AsyncMutex<()>,
     timeouts: KernelHostTimeouts,
@@ -984,13 +1160,33 @@ async fn recover_transition(
 ) -> Option<Box<ReadyKernel>> {
     loop {
         if attempts >= timeouts.max_recovery_attempts {
+            if let Some(writer_gate) = writer_gate {
+                writer_gate.fail_closed();
+            }
             publish_failure(snapshots, bootstrap, *generation, last_failure);
             return None;
         }
         attempts = attempts.saturating_add(1);
         *generation = generation.saturating_add(1);
         let attempt_generation = *generation;
+        if writer_gate
+            .is_some_and(|writer_gate| writer_gate.advance_recovery(attempt_generation).is_err())
+        {
+            if let Some(writer_gate) = writer_gate {
+                writer_gate.fail_closed();
+            }
+            publish_failure(
+                snapshots,
+                bootstrap,
+                attempt_generation,
+                KernelHostFailure::Cancelled,
+            );
+            return None;
+        }
         if bootstrap.begin_retry(attempt_generation).is_err() {
+            if let Some(writer_gate) = writer_gate {
+                writer_gate.fail_closed();
+            }
             return None;
         }
         snapshots.send_replace(KernelHostSnapshot {
@@ -1028,6 +1224,9 @@ async fn recover_transition(
         match wait {
             RecoveryWait::Retry => {}
             RecoveryWait::Stop(response) => {
+                if let Some(writer_gate) = writer_gate {
+                    writer_gate.fail_closed();
+                }
                 snapshots.send_replace(KernelHostSnapshot {
                     phase: KernelHostPhase::Dormant,
                     generation: attempt_generation,
@@ -1039,6 +1238,9 @@ async fn recover_transition(
                 return None;
             }
             RecoveryWait::Closed => {
+                if let Some(writer_gate) = writer_gate {
+                    writer_gate.fail_closed();
+                }
                 let _clear_result = bootstrap.clear_generation(attempt_generation);
                 return None;
             }
@@ -1058,6 +1260,7 @@ async fn recover_transition(
             snapshots,
             factory,
             bootstrap,
+            writer_gate,
             ownership,
             enqueue_gate,
             timeouts,
@@ -1073,6 +1276,9 @@ async fn recover_transition(
                 last_failure = error;
             }
             StartOutcome::Failed(_) | StartOutcome::Stopped | StartOutcome::Closed => {
+                if let Some(writer_gate) = writer_gate {
+                    writer_gate.fail_closed();
+                }
                 return None;
             }
         }
@@ -1198,6 +1404,10 @@ mod tests {
     use uuid::Uuid;
 
     use super::*;
+    use crate::writer_authority::{
+        KernelGeneration, KernelWriterPublicationGate, WorkspaceRootIdentity, WriterAuthority,
+        WriterAuthorityError, WriterAuthorityState,
+    };
 
     #[derive(Clone, Copy)]
     enum AsyncAction {
@@ -1566,6 +1776,318 @@ mod tests {
         assert_eq!(supervisor.snapshot().phase, KernelHostPhase::Dormant);
         assert!(!access.credential.is_available());
         assert_eq!(factory.events(), vec!["running-shutdown"]);
+    }
+
+    #[tokio::test]
+    async fn writer_gate_withholds_ready_until_every_legacy_writer_drains() {
+        let workspace = tempfile::tempdir().expect("workspace root should be created");
+        let root = WorkspaceRootIdentity::open(workspace.path())
+            .expect("workspace root identity should open");
+        let authority = WriterAuthority::new(root.clone());
+        let legacy_writer = authority
+            .acquire_legacy_writer(&root)
+            .expect("Legacy should admit the in-flight writer");
+        let writer_gate = KernelWriterPublicationGate::new(authority.clone(), root.clone())
+            .expect("matching authority and root should form a publication gate");
+        let instance = InstanceId::new(Uuid::new_v4());
+        let factory = Arc::new(ScriptedFactory::new([PendingScript::ready(
+            ReadyEvidence {
+                ready: NativeHostReady::new(43123, instance),
+                authenticated_instance: instance,
+            },
+            RunningBehavior::graceful(),
+        )]));
+        let bootstrap = crate::kernel_bootstrap::NativeKernelBootstrapOwner::new();
+        let supervisor = Arc::new(KernelHostSupervisor::new_with_bootstrap_and_writer_gate(
+            factory,
+            KernelHostTimeouts::uniform(Duration::from_secs(1)),
+            bootstrap.clone(),
+            writer_gate,
+        ));
+        let starting_supervisor = Arc::clone(&supervisor);
+        let start = tokio::spawn(async move { starting_supervisor.start(startup()).await });
+
+        for _attempt in 0..100 {
+            if authority.snapshot().state == WriterAuthorityState::Transitioning {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+
+        assert_eq!(
+            authority.snapshot().state,
+            WriterAuthorityState::Transitioning
+        );
+        assert_eq!(authority.snapshot().active_legacy_writers, 1);
+        assert_eq!(supervisor.snapshot().phase, KernelHostPhase::Starting);
+        assert!(!start.is_finished());
+        assert_eq!(
+            authority.acquire_legacy_writer(&root).unwrap_err(),
+            WriterAuthorityError::LegacyWriterRejected
+        );
+        assert_eq!(
+            serde_json::to_value(bootstrap.read().unwrap()).unwrap()["status"],
+            json!("starting")
+        );
+
+        drop(legacy_writer);
+        let access = timeout(Duration::from_secs(1), start)
+            .await
+            .expect("ready publication should resume after the writer drain")
+            .expect("start task should remain healthy")
+            .expect("Kernel should become ready");
+
+        assert_eq!(
+            authority.snapshot().state,
+            WriterAuthorityState::Kernel(
+                KernelGeneration::new(access.endpoint.generation)
+                    .expect("published host generation should be valid")
+            )
+        );
+        assert_eq!(supervisor.snapshot().phase, KernelHostPhase::Ready);
+        assert_eq!(
+            serde_json::to_value(bootstrap.read().unwrap()).unwrap()["status"],
+            json!("ready")
+        );
+
+        supervisor.stop().await.unwrap();
+        assert_eq!(
+            authority.snapshot().state,
+            WriterAuthorityState::FailedClosed
+        );
+    }
+
+    #[tokio::test]
+    async fn writer_gate_fails_closed_when_the_initial_child_never_becomes_ready() {
+        let workspace = tempfile::tempdir().expect("workspace root should be created");
+        let root = WorkspaceRootIdentity::open(workspace.path())
+            .expect("workspace root identity should open");
+        let authority = WriterAuthority::new(root.clone());
+        let writer_gate = KernelWriterPublicationGate::new(authority.clone(), root)
+            .expect("matching authority and root should form a publication gate");
+        let factory = Arc::new(ScriptedFactory::new([PendingScript::Fail(
+            KernelHostFailure::Protocol,
+        )]));
+        let bootstrap = crate::kernel_bootstrap::NativeKernelBootstrapOwner::new();
+        let supervisor = KernelHostSupervisor::new_with_bootstrap_and_writer_gate(
+            factory,
+            KernelHostTimeouts::uniform(Duration::from_millis(100)),
+            bootstrap.clone(),
+            writer_gate,
+        );
+
+        assert_eq!(
+            supervisor.start(startup()).await.unwrap_err(),
+            KernelHostFailure::Protocol
+        );
+
+        assert_eq!(
+            authority.snapshot().state,
+            WriterAuthorityState::FailedClosed
+        );
+        assert_eq!(supervisor.snapshot().phase, KernelHostPhase::Failed);
+        assert_eq!(supervisor.snapshot().endpoint, None);
+        assert_eq!(
+            serde_json::to_value(bootstrap.read().unwrap()).unwrap()["status"],
+            json!("failed")
+        );
+    }
+
+    #[tokio::test]
+    async fn bootstrap_publication_failure_revokes_the_published_writer_authority() {
+        let workspace = tempfile::tempdir().expect("workspace root should be created");
+        let root = WorkspaceRootIdentity::open(workspace.path())
+            .expect("workspace root identity should open");
+        let authority = WriterAuthority::new(root.clone());
+        let legacy_writer = authority
+            .acquire_legacy_writer(&root)
+            .expect("Legacy should admit the in-flight writer");
+        let writer_gate = KernelWriterPublicationGate::new(authority.clone(), root)
+            .expect("matching authority and root should form a publication gate");
+        let instance = InstanceId::new(Uuid::new_v4());
+        let factory = Arc::new(ScriptedFactory::new([PendingScript::ready(
+            ReadyEvidence {
+                ready: NativeHostReady::new(43123, instance),
+                authenticated_instance: instance,
+            },
+            RunningBehavior::graceful(),
+        )]));
+        let bootstrap = crate::kernel_bootstrap::NativeKernelBootstrapOwner::new();
+        let supervisor = Arc::new(KernelHostSupervisor::new_with_bootstrap_and_writer_gate(
+            factory.clone(),
+            KernelHostTimeouts::uniform(Duration::from_secs(1)),
+            bootstrap.clone(),
+            writer_gate,
+        ));
+        let starting_supervisor = Arc::clone(&supervisor);
+        let start = tokio::spawn(async move { starting_supervisor.start(startup()).await });
+
+        for _attempt in 0..100 {
+            if authority.snapshot().state == WriterAuthorityState::Transitioning {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        bootstrap.poison_state_for_test();
+        drop(legacy_writer);
+
+        assert_eq!(
+            timeout(Duration::from_secs(1), start)
+                .await
+                .expect("failed publication should terminate the start")
+                .expect("start task should remain healthy")
+                .unwrap_err(),
+            KernelHostFailure::Cancelled
+        );
+        assert_eq!(
+            authority.snapshot().state,
+            WriterAuthorityState::FailedClosed
+        );
+        assert_eq!(supervisor.snapshot().phase, KernelHostPhase::Failed);
+        assert_eq!(supervisor.snapshot().endpoint, None);
+        assert_eq!(factory.events(), vec!["running-shutdown"]);
+    }
+
+    #[tokio::test]
+    async fn stop_while_writer_gate_is_draining_never_publishes_ready() {
+        let workspace = tempfile::tempdir().expect("workspace root should be created");
+        let root = WorkspaceRootIdentity::open(workspace.path())
+            .expect("workspace root identity should open");
+        let authority = WriterAuthority::new(root.clone());
+        let legacy_writer = authority
+            .acquire_legacy_writer(&root)
+            .expect("Legacy should admit the in-flight writer");
+        let writer_gate = KernelWriterPublicationGate::new(authority.clone(), root)
+            .expect("matching authority and root should form a publication gate");
+        let instance = InstanceId::new(Uuid::new_v4());
+        let factory = Arc::new(ScriptedFactory::new([PendingScript::ready(
+            ReadyEvidence {
+                ready: NativeHostReady::new(43123, instance),
+                authenticated_instance: instance,
+            },
+            RunningBehavior::graceful(),
+        )]));
+        let bootstrap = crate::kernel_bootstrap::NativeKernelBootstrapOwner::new();
+        let supervisor = Arc::new(KernelHostSupervisor::new_with_bootstrap_and_writer_gate(
+            factory,
+            KernelHostTimeouts::uniform(Duration::from_secs(1)),
+            bootstrap.clone(),
+            writer_gate,
+        ));
+        let starting_supervisor = Arc::clone(&supervisor);
+        let start = tokio::spawn(async move { starting_supervisor.start(startup()).await });
+
+        for _attempt in 0..100 {
+            if authority.snapshot().state == WriterAuthorityState::Transitioning {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        supervisor.stop().await.unwrap();
+
+        assert_eq!(
+            start.await.unwrap().unwrap_err(),
+            KernelHostFailure::Cancelled
+        );
+        assert_eq!(
+            authority.snapshot().state,
+            WriterAuthorityState::FailedClosed
+        );
+        assert_eq!(supervisor.snapshot().phase, KernelHostPhase::Dormant);
+        assert_eq!(supervisor.snapshot().endpoint, None);
+        assert_eq!(
+            serde_json::to_value(bootstrap.read().unwrap()).unwrap()["status"],
+            json!("dormant")
+        );
+        drop(legacy_writer);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn writer_gate_revokes_the_old_generation_before_recovery_publication() {
+        let workspace = tempfile::tempdir().expect("workspace root should be created");
+        let root = WorkspaceRootIdentity::open(workspace.path())
+            .expect("workspace root identity should open");
+        let authority = WriterAuthority::new(root.clone());
+        let writer_gate = KernelWriterPublicationGate::new(authority.clone(), root.clone())
+            .expect("matching authority and root should form a publication gate");
+        let exit_gate = Arc::new(Notify::new());
+        let first_instance = InstanceId::new(Uuid::new_v4());
+        let second_instance = InstanceId::new(Uuid::new_v4());
+        let factory = Arc::new(ScriptedFactory::new([
+            PendingScript::ready(
+                ReadyEvidence {
+                    ready: NativeHostReady::new(43123, first_instance),
+                    authenticated_instance: first_instance,
+                },
+                RunningBehavior {
+                    exit: AsyncAction::Complete,
+                    exit_gate: Some(exit_gate.clone()),
+                    graceful_stop: AsyncAction::Complete,
+                    force_reap: AsyncAction::Complete,
+                    force_reap_gate: None,
+                },
+            ),
+            PendingScript::Fail(KernelHostFailure::EarlyExit),
+            PendingScript::ready(
+                ReadyEvidence {
+                    ready: NativeHostReady::new(43124, second_instance),
+                    authenticated_instance: second_instance,
+                },
+                RunningBehavior::graceful(),
+            ),
+        ]));
+        let bootstrap = crate::kernel_bootstrap::NativeKernelBootstrapOwner::new();
+        let supervisor = KernelHostSupervisor::new_with_bootstrap_and_writer_gate(
+            factory,
+            recovery_timeouts(3),
+            bootstrap.clone(),
+            writer_gate,
+        );
+
+        let first = supervisor.start(startup()).await.unwrap();
+        assert_eq!(
+            authority.snapshot().state,
+            WriterAuthorityState::Kernel(KernelGeneration::new(1).unwrap())
+        );
+
+        exit_gate.notify_one();
+        wait_for_phase(&supervisor, KernelHostPhase::Retrying).await;
+
+        assert!(!first.credential.is_available());
+        assert_eq!(
+            authority.snapshot().state,
+            WriterAuthorityState::Transitioning
+        );
+        assert_eq!(
+            authority.acquire_legacy_writer(&root).unwrap_err(),
+            WriterAuthorityError::LegacyWriterRejected
+        );
+        assert_eq!(
+            serde_json::to_value(bootstrap.read().unwrap()).unwrap()["status"],
+            json!("retrying")
+        );
+
+        tokio::time::advance(Duration::from_secs(1)).await;
+        wait_for_generation(&supervisor, 3).await;
+        assert_eq!(
+            authority.snapshot().state,
+            WriterAuthorityState::Transitioning
+        );
+        tokio::time::advance(Duration::from_secs(2)).await;
+        wait_for_phase(&supervisor, KernelHostPhase::Ready).await;
+
+        assert_eq!(
+            authority.snapshot().state,
+            WriterAuthorityState::Kernel(KernelGeneration::new(3).unwrap())
+        );
+        let recovered = serde_json::to_value(bootstrap.read().unwrap()).unwrap();
+        assert_eq!(recovered["status"], json!("ready"));
+        assert_eq!(recovered["generation"], json!("3"));
+        supervisor.stop().await.unwrap();
+        assert_eq!(
+            authority.snapshot().state,
+            WriterAuthorityState::FailedClosed
+        );
     }
 
     #[tokio::test]
@@ -1949,6 +2471,7 @@ mod tests {
             &snapshots,
             &factory,
             &bootstrap,
+            None,
             &ownership,
             &enqueue_gate,
             KernelHostTimeouts::uniform(Duration::from_millis(100)),
@@ -2006,6 +2529,7 @@ mod tests {
             &snapshots,
             &factory,
             &bootstrap,
+            None,
             &ownership,
             &enqueue_gate,
             KernelHostTimeouts::uniform(Duration::from_millis(100)),
@@ -2081,6 +2605,7 @@ mod tests {
             &mut stop_receiver,
             &snapshots,
             &bootstrap,
+            None,
             &ownership,
             &enqueue_gate,
             KernelHostTimeouts::uniform(Duration::from_millis(100)),
