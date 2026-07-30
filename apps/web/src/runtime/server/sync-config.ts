@@ -112,12 +112,15 @@ async function waitForTerminalRun(
   const delay = options.delay ?? ((milliseconds: number) => new Promise<undefined>((resolve) => {
     globalThis.setTimeout(() => resolve(undefined), milliseconds);
   }));
-  const maxStatusReads = options.maxStatusReads ?? 120;
-  if (!Number.isSafeInteger(maxStatusReads) || maxStatusReads < 1) {
+  const maxStatusReads = options.maxStatusReads;
+  if (
+    maxStatusReads !== undefined &&
+    (!Number.isSafeInteger(maxStatusReads) || maxStatusReads < 1)
+  ) {
     throw new ServerSyncRunError("protocol-mismatch");
   }
 
-  for (let attempt = 0; attempt < maxStatusReads; attempt += 1) {
+  for (let attempt = 0; maxStatusReads === undefined || attempt < maxStatusReads; attempt += 1) {
     const status = await kernel.sync.readStatus();
     if (
       status.configRevision !== run.configRevision ||

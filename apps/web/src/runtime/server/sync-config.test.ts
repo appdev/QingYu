@@ -101,6 +101,34 @@ describe("server sync config facade", () => {
     expect(delay).toHaveBeenCalledWith(250);
     expect(kernel.sync.readStatus).toHaveBeenCalledTimes(2);
   });
+
+  it("does not impose the container drain window as a production sync timeout", async () => {
+    const kernel = kernelPort();
+    let reads = 0;
+    vi.mocked(kernel.sync.readStatus).mockImplementation(async () => {
+      reads += 1;
+      return reads <= 121
+        ? {
+            ...successfulStatus(),
+            activeRunId: "run-1",
+            completionState: "attempting",
+            lastSuccessfulSyncAt: null,
+            summary: null,
+          }
+        : successfulStatus();
+    });
+    const syncConfig = createServerSyncConfigRuntime(kernel, {
+      delay: async () => undefined,
+    });
+
+    await expect(syncConfig.sync({
+      notebookName: "Notes",
+      notesRoot: "kernel-workspace://primary",
+      revision,
+      trigger: "manual",
+    })).resolves.toMatchObject({ status: "completed" });
+    expect(reads).toBe(122);
+  });
 });
 
 function config(enabled = true): KernelSyncConfigSnapshot {
