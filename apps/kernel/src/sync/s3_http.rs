@@ -31,7 +31,7 @@ impl fmt::Debug for S3Connection {
             .field("access_key_id", &"[REDACTED]")
             .field("addressing_style", &self.addressing_style)
             .field("bucket", &self.bucket)
-            .field("endpoint_url", &self.endpoint_url)
+            .field("endpoint_url", &"[REDACTED]")
             .field("region", &self.region)
             .field("secret_access_key", &"[REDACTED]")
             .finish()
@@ -440,7 +440,7 @@ mod tests {
     #[test]
     fn connection_debug_output_redacts_signing_credentials() {
         let connection = S3Connection::new(
-            "https://s3.example.test",
+            "https://s3.example.test/private-tenant-token",
             "us-east-1",
             "notes",
             "private-access-key",
@@ -452,6 +452,7 @@ mod tests {
 
         assert!(!output.contains("private-access-key"));
         assert!(!output.contains("private-secret-key"));
+        assert!(!output.contains("private-tenant-token"));
         assert!(output.contains("[REDACTED]"));
     }
 

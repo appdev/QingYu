@@ -146,6 +146,19 @@ pub fn capture_settings_file_state(app_data: &Path) -> Result<SettingsFileState,
     let directory = open_canonical_directory_nofollow(app_data).map_err(|_| {
         "settings-state-unavailable: The settings state is unavailable.".to_string()
     })?;
+    capture_settings_file_state_from_directory(&directory)
+}
+
+pub fn capture_scoped_settings_file_state(
+    scope: &RemoteSyncScope,
+) -> Result<SettingsFileState, String> {
+    let directory = scope.open_source_root()?;
+    capture_settings_file_state_from_directory(&directory)
+}
+
+fn capture_settings_file_state_from_directory(
+    directory: &cap_std::fs::Dir,
+) -> Result<SettingsFileState, String> {
     let addressed = match directory.symlink_metadata(SETTINGS_FILE_NAME) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == io::ErrorKind::NotFound => {

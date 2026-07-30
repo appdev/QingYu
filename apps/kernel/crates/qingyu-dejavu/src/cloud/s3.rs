@@ -23,6 +23,8 @@ use super::{
 
 const CONTENT_TYPE_BINARY: &str = "application/octet-stream";
 const MAX_REQUEST_ID_BYTES: usize = 128;
+const MAX_S3_ERROR_BODY_BYTES: usize = 64 * 1024;
+const MAX_S3_ERROR_CODE_BYTES: usize = 128;
 const CATALOG_ROOT_PREFIX: &str = "qingyu/repositories";
 
 pub(crate) struct S3CatalogDirectoryListing {
@@ -391,7 +393,7 @@ impl S3Cloud {
                     if response.status().is_success() {
                         return Ok(response);
                     }
-                    let error = response_error(&response);
+                    let error = response_error(response).await;
                     if error.is_retryable() && attempt + 1 < self.options.max_attempts {
                         continue;
                     }
@@ -420,7 +422,7 @@ impl S3Cloud {
                         return u64::try_from(bytes.len())
                             .map_err(|_| CloudError::backend("payload_length_overflow"));
                     }
-                    let error = response_error(&response);
+                    let error = response_error(response).await;
                     if error.is_retryable() && attempt + 1 < self.options.max_attempts {
                         continue;
                     }
@@ -509,7 +511,7 @@ impl Cloud for S3Cloud {
             let mut response = match response {
                 Ok(response) if response.status().is_success() => response,
                 Ok(response) => {
-                    let error = response_error(&response);
+                    let error = response_error(response).await;
                     if error.is_retryable() && attempt + 1 < self.options.max_attempts {
                         continue;
                     }
@@ -577,7 +579,7 @@ impl Cloud for S3Cloud {
             let mut response = match response {
                 Ok(response) if response.status().is_success() => response,
                 Ok(response) => {
-                    let error = response_error(&response);
+                    let error = response_error(response).await;
                     if error.is_retryable() && attempt + 1 < self.options.max_attempts {
                         continue;
                     }
@@ -671,7 +673,7 @@ impl Cloud for S3Cloud {
                     if response.status().is_success() {
                         return Ok(expected);
                     }
-                    let error = response_error(&response);
+                    let error = response_error(response).await;
                     if error.is_retryable() && attempt + 1 < self.options.max_attempts {
                         continue;
                     }
@@ -899,8 +901,28 @@ fn validate_repository_prefix(repository_prefix: &str) -> Result<(), CloudError>
     }
 }
 
-fn response_error(response: &Response) -> CloudError {
+async fn response_error(mut response: Response) -> CloudError {
     let status = response.status().as_u16();
+    let request_id = provider_request_id(response.headers());
+    let header_code = provider_error_code_header(response.headers());
+    if let Some(error) = header_code
+        .as_deref()
+        .and_then(classify_provider_error_code)
+    {
+        return error;
+    }
+    if response
+        .content_length()
+        .is_none_or(|length| length <= MAX_S3_ERROR_BODY_BYTES as u64)
+    {
+        if let Some(error) = bounded_s3_error_code(&mut response)
+            .await
+            .as_deref()
+            .and_then(classify_provider_error_code)
+        {
+            return error;
+        }
+    }
     match status {
         401 => return CloudError::Auth,
         403 => return CloudError::Forbidden,
@@ -909,8 +931,71 @@ fn response_error(response: &Response) -> CloudError {
     }
     CloudError::S3Response {
         status,
-        request_id: provider_request_id(response.headers()),
+        request_id,
         retryable: matches!(status, 408 | 429 | 500 | 502 | 503 | 504),
+    }
+}
+
+fn provider_error_code_header(headers: &HeaderMap) -> Option<String> {
+    ["x-amz-error-code", "x-minio-error-code"]
+        .into_iter()
+        .filter_map(|name| headers.get(name))
+        .filter_map(|value| value.to_str().ok())
+        .map(str::trim)
+        .find(|value| valid_provider_error_code(value))
+        .map(str::to_owned)
+}
+
+async fn bounded_s3_error_code(response: &mut Response) -> Option<String> {
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await.ok()? {
+        if body.len().saturating_add(chunk.len()) > MAX_S3_ERROR_BODY_BYTES {
+            return None;
+        }
+        body.extend_from_slice(&chunk);
+    }
+    let start = body
+        .windows(b"<Code>".len())
+        .position(|window| window == b"<Code>")?
+        + b"<Code>".len();
+    let remainder = &body[start..];
+    let end = remainder
+        .windows(b"</Code>".len())
+        .position(|window| window == b"</Code>")?;
+    let code = std::str::from_utf8(&remainder[..end]).ok()?.trim();
+    valid_provider_error_code(code).then(|| code.to_owned())
+}
+
+fn valid_provider_error_code(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= MAX_S3_ERROR_CODE_BYTES
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+}
+
+fn classify_provider_error_code(code: &str) -> Option<CloudError> {
+    match code {
+        "RequestTimeTooSkewed" | "RequestExpired" => Some(CloudError::ClockSkew),
+        "QuotaExceeded"
+        | "StorageQuotaExceeded"
+        | "BucketQuotaExceeded"
+        | "TooManyBuckets"
+        | "TooManyAccessPoints" => Some(CloudError::QuotaExceeded),
+        "SlowDown"
+        | "Throttling"
+        | "ThrottlingException"
+        | "RequestLimitExceeded"
+        | "TooManyRequests" => Some(CloudError::RateLimited),
+        "InvalidAccessKeyId"
+        | "InvalidToken"
+        | "ExpiredToken"
+        | "TokenRefreshRequired"
+        | "SignatureDoesNotMatch"
+        | "AuthorizationHeaderMalformed" => Some(CloudError::Auth),
+        "AccessDenied" | "AllAccessDisabled" => Some(CloudError::Forbidden),
+        "NoSuchKey" | "NoSuchBucket" | "NoSuchUpload" => Some(CloudError::NotFound),
+        _ => None,
     }
 }
 
@@ -1066,6 +1151,67 @@ mod tests {
 
         let error = cloud.get_bounded("refs/latest", 42).await.unwrap_err();
         assert!(!matches!(error, CloudError::Dns));
+    }
+
+    #[tokio::test]
+    async fn provider_error_codes_preserve_clock_skew_and_quota_types() {
+        for (status, reason, header_code, provider_code, expected_code) in [
+            (403, "Forbidden", None, "RequestTimeTooSkewed", "clock_skew"),
+            (
+                403,
+                "Forbidden",
+                None,
+                "StorageQuotaExceeded",
+                "quota_exceeded",
+            ),
+            (
+                403,
+                "Forbidden",
+                Some("UnknownProxyError"),
+                "RequestTimeTooSkewed",
+                "clock_skew",
+            ),
+        ] {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let endpoint = format!("http://{}", listener.local_addr().unwrap());
+            let server = tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let _request = capture_request(&mut stream).await;
+                let body = format!("<Error><Code>{provider_code}</Code></Error>");
+                let provider_header = header_code
+                    .map(|code| format!("x-amz-error-code: {code}\r\n"))
+                    .unwrap_or_default();
+                let response = format!(
+                    "HTTP/1.1 {status} {reason}\r\nContent-Type: application/xml\r\n{provider_header}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+                stream.shutdown().await.unwrap();
+            });
+            let connection = S3Connection::new(
+                &endpoint,
+                "us-east-1",
+                "qingyu-notes",
+                "test-key",
+                "test-secret",
+                S3AddressingStyle::Path,
+            )
+            .unwrap();
+            let cloud = S3Cloud::new(
+                connection,
+                S3TransportOptions {
+                    max_attempts: 1,
+                    ..options()
+                },
+                "qingyu/repositories/00000000-0000-4000-8000-000000000001/repo",
+            )
+            .unwrap();
+
+            let error = cloud.get_bounded("refs/latest", 42).await.unwrap_err();
+
+            assert_eq!(error.code(), expected_code);
+            server.await.unwrap();
+        }
     }
 
     #[derive(Debug)]

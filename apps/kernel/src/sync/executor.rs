@@ -5,18 +5,27 @@ use std::{
     ffi::OsStr,
     fmt,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+    time::Duration,
 };
 
 use async_trait::async_trait;
+use qingyu_dejavu::{
+    Device, RepositoryRuntimeState, S3AddressingStyle as DejavuAddressingStyle,
+    S3TlsVerification as DejavuTlsVerification,
+};
 
 use crate::{
     contract::{
-        Revision, RunId, SafeUnsignedInteger, SyncProvider, SyncSafeErrorCategory,
-        SyncSafeErrorCode, SyncSafeErrorDto, SyncSafeErrorOperation, SyncSummaryDto,
+        Revision, RunId, S3AddressingStyle, S3TlsVerification, SafeUnsignedInteger, SyncProvider,
+        SyncSafeErrorCategory, SyncSafeErrorCode, SyncSafeErrorDto, SyncSafeErrorOperation,
+        SyncSummaryDto, MAX_SAFE_INTEGER,
     },
     protected_paths::is_qingyu_control_directory_name,
-    runtime::KernelRuntime,
+    runtime::{ActiveInstanceAuthority, KernelRuntime},
     services::sync::{SyncExecutionError, SyncExecutor, SyncRunContext},
     settings::{
         model::portable_settings_from_bytes,
@@ -27,17 +36,24 @@ use crate::{
     sync::{
         backend::{
             notebook_name_available_on_current_platform, sync_state_key, RemoteSyncBackend,
-            RemoteSyncError, RemoteSyncFile, ValidRemoteRoot,
+            RemoteSyncError, RemoteSyncFile, SyncFailureCategory, ValidRemoteRoot,
         },
         config::{SyncConfig, SyncExecutionPlan, SyncExecutionTarget},
+        dejavu_runner::{
+            DejavuRunError, DejavuRunResult, DejavuRunnerInputs, DejavuS3Config, DejavuSecret,
+            KernelDejavuRunner, MutationWorkingTreeCoordinator,
+        },
         execution::{
             complete_remote_first_restore_locked,
+            execute_portable_settings_sync_locked_with_cancellation,
             execute_remote_sync_pair_locked_with_cancellation, preserve_remote_settings_conflict,
             RemoteSyncSummary, SyncExecutionCancellation,
         },
+        local_state::{read_active_dejavu_binding, DejavuLocalStateError},
+        s3_backend::{S3Backend, S3SyncSettings, S3TransportOptions},
         scope::RemoteSyncScope,
         settings_scope::{
-            capture_portable_settings_manifest_revision, capture_settings_file_state,
+            capture_portable_settings_manifest_revision, capture_scoped_settings_file_state,
             clear_portable_settings_manifest, clear_portable_settings_pending,
             portable_settings_pending_contains_legacy_mcp, read_portable_settings_pending,
             replace_portable_settings_stage, write_portable_settings_pending,
@@ -48,17 +64,35 @@ use crate::{
 };
 
 /// Kernel-owned executor for the providers whose full run lifecycle is composed.
-///
-/// S3 deliberately remains unavailable until its Dejavu runner owns the same
-/// cancellation, state, and settings-publication boundaries as WebDAV.
 pub(crate) struct ProductionSyncExecutor {
     runtime: Arc<KernelRuntime>,
     settings: Arc<SettingsService>,
+    dejavu_factory: Arc<dyn DejavuRunnerFactory>,
+    dejavu_runtime: RepositoryRuntimeState,
 }
 
 impl ProductionSyncExecutor {
     pub(crate) fn new(runtime: Arc<KernelRuntime>, settings: Arc<SettingsService>) -> Self {
-        Self { runtime, settings }
+        Self {
+            runtime,
+            settings,
+            dejavu_factory: Arc::new(ProductionDejavuRunnerFactory),
+            dejavu_runtime: RepositoryRuntimeState::default(),
+        }
+    }
+
+    #[cfg(test)]
+    fn new_with_dejavu_factory(
+        runtime: Arc<KernelRuntime>,
+        settings: Arc<SettingsService>,
+        dejavu_factory: Arc<dyn DejavuRunnerFactory>,
+    ) -> Self {
+        Self {
+            runtime,
+            settings,
+            dejavu_factory,
+            dejavu_runtime: RepositoryRuntimeState::default(),
+        }
     }
 
     async fn run_webdav(
@@ -102,14 +136,14 @@ impl ProductionSyncExecutor {
             .root()
             .try_clone_dir()
             .map_err(|_| local_error(provider, run_id))?;
-        let app_data_root = self
-            .runtime
-            .instance_data_root()
-            .canonical_path()
-            .to_path_buf();
-        self.runtime
-            .instance_data_root()
+        let instance_authority = self.runtime.active_instance_authority();
+        instance_authority
             .verify_held_directory()
+            .map_err(|_| local_error(provider, run_id))?;
+        let app_data_root = instance_authority.root().canonical_path().to_path_buf();
+        let app_data_directory = instance_authority
+            .root()
+            .try_clone_dir()
             .map_err(|_| local_error(provider, run_id))?;
 
         let remote_root = ValidRemoteRoot::parse(&remote_root)
@@ -140,13 +174,16 @@ impl ProductionSyncExecutor {
                 workspace_identity.as_bytes(),
             ],
         ));
-        let settings_state = sync_state_root.join("settings").join(sync_state_key(
-            "settings",
-            &[
-                settings_backend.target_fingerprint_source().as_bytes(),
-                remote_root.as_str().as_bytes(),
-            ],
-        ));
+        let settings_state_relative =
+            PathBuf::from("sync-state")
+                .join("settings")
+                .join(sync_state_key(
+                    "settings",
+                    &[
+                        settings_backend.target_fingerprint_source().as_bytes(),
+                        remote_root.as_str().as_bytes(),
+                    ],
+                ));
         let global_ignore_rules = self
             .settings
             .read_group(SettingsGroup::FileIgnoreSettings)
@@ -167,22 +204,52 @@ impl ProductionSyncExecutor {
             global_ignore_rules,
         )
         .map_err(|_| local_error(provider, run_id))?;
-        let mut prepared =
-            prepare_portable_settings_sync(&self.settings, &app_data_root, settings_state.clone())
-                .map_err(|_| local_error(provider, run_id))?;
+        let mut prepared = prepare_portable_settings_sync(
+            &self.settings,
+            &app_data_root,
+            &app_data_directory,
+            settings_state_relative.clone(),
+            &instance_authority,
+        )
+        .map_err(|_| local_error(provider, run_id))?;
         if prepared.phase == PortableSettingsJournalPhase::Publication {
-            let pending = resume_portable_settings_publication(&self.settings, &prepared)
-                .map_err(|_| local_error(provider, run_id))?;
-            finish_portable_settings_publication(&self.settings, &prepared.scope, pending)
-                .map_err(|_| local_error(provider, run_id))?;
-            prepared =
-                prepare_portable_settings_sync(&self.settings, &app_data_root, settings_state)
-                    .map_err(|_| local_error(provider, run_id))?;
+            let pending = resume_portable_settings_publication(
+                &self.settings,
+                &prepared,
+                &instance_authority,
+            )
+            .map_err(|_| local_error(provider, run_id))?;
+            finish_portable_settings_publication(
+                &self.settings,
+                &prepared.scope,
+                pending,
+                &instance_authority,
+            )
+            .map_err(|_| local_error(provider, run_id))?;
+            prepared = prepare_portable_settings_sync(
+                &self.settings,
+                &app_data_root,
+                &app_data_directory,
+                settings_state_relative,
+                &instance_authority,
+            )
+            .map_err(|_| local_error(provider, run_id))?;
         }
 
         let service_cancellation = context.cancellation().clone();
-        let cancellation =
-            SyncExecutionCancellation::from_callback(move || service_cancellation.is_cancelled());
+        let instance_invalidated = Arc::new(AtomicBool::new(false));
+        let invalidated_for_cancellation = Arc::clone(&instance_invalidated);
+        let instance_for_cancellation = Arc::clone(&instance_authority);
+        let cancellation = SyncExecutionCancellation::from_callback(move || {
+            if service_cancellation.is_cancelled() {
+                return true;
+            }
+            if instance_for_cancellation.verify_held_directory().is_err() {
+                invalidated_for_cancellation.store(true, Ordering::Release);
+                return true;
+            }
+            false
+        });
         let mut publication: Option<DeferredSettingsPublication> = None;
         let (notes_result, settings_result) = execute_remote_sync_pair_locked_with_cancellation(
             &notes_scope,
@@ -195,6 +262,7 @@ impl ProductionSyncExecutor {
                     &self.settings,
                     &prepared,
                     expected_local_hash,
+                    &instance_authority,
                 )?);
                 Ok(())
             },
@@ -210,19 +278,38 @@ impl ProductionSyncExecutor {
         )
         .map_err(|_| local_error(provider, run_id))?;
 
+        if instance_invalidated.load(Ordering::Acquire)
+            || instance_authority.verify_held_directory().is_err()
+        {
+            if let Some(publication) = publication.take() {
+                publication.supersede().map_err(|_| {
+                    local_error(provider, run_id).with_partial_summary(partial.clone())
+                })?;
+            }
+            return Err(local_error(provider, run_id).with_partial_summary(partial));
+        }
         if context.cancellation().is_cancelled() {
             if let Some(publication) = publication.take() {
-                publication
-                    .supersede()
-                    .map_err(|_| local_error(provider, run_id))?;
-                replace_publication_with_current_settings(&self.settings, &prepared.scope)
-                    .map_err(|_| local_error(provider, run_id))?;
+                publication.supersede().map_err(|_| {
+                    local_error(provider, run_id).with_partial_summary(partial.clone())
+                })?;
+                replace_publication_with_current_settings(
+                    &self.settings,
+                    &prepared.scope,
+                    &instance_authority,
+                )
+                .map_err(|_| local_error(provider, run_id).with_partial_summary(partial.clone()))?;
             }
             return Err(cancelled_error(provider, run_id).with_partial_summary(partial));
         }
         if let Some(publication) = publication.take() {
-            finish_portable_settings_publication(&self.settings, &prepared.scope, publication)
-                .map_err(|_| local_error(provider, run_id).with_partial_summary(partial.clone()))?;
+            finish_portable_settings_publication(
+                &self.settings,
+                &prepared.scope,
+                publication,
+                &instance_authority,
+            )
+            .map_err(|_| local_error(provider, run_id).with_partial_summary(partial.clone()))?;
         }
         if let Err(error) = notes_result {
             return Err(remote_error(provider, run_id, &error, Some(partial)));
@@ -233,6 +320,324 @@ impl ProductionSyncExecutor {
         complete_remote_first_restore_locked(&notes_scope)
             .map_err(|_| local_error(provider, run_id).with_partial_summary(partial.clone()))?;
         Ok(partial)
+    }
+
+    async fn run_s3(
+        &self,
+        plan: SyncExecutionPlan,
+        context: SyncRunContext,
+    ) -> Result<SyncSummaryDto, SyncExecutionError> {
+        let provider = plan.provider;
+        let run_id = context.run_id();
+        let SyncExecutionPlan {
+            provider: _,
+            remote_root,
+            generate_conflict_document,
+            target,
+        } = plan;
+        let SyncExecutionTarget::S3 {
+            endpoint_url,
+            region,
+            bucket,
+            access_key_id,
+            secret_access_key,
+            request_timeout_seconds,
+            addressing_style,
+            tls_verification,
+        } = target
+        else {
+            return Err(unavailable_error(provider, Some(run_id)));
+        };
+
+        self.runtime
+            .verify_instance_lock()
+            .map_err(|_| local_error(provider, run_id))?;
+        let active = self
+            .runtime
+            .active_workspace_snapshot()
+            .map_err(|_| local_error(provider, run_id))?;
+        if active.identity() != context.snapshot_identity() {
+            return Err(local_error(provider, run_id));
+        }
+        let authority = context.workspace_authority();
+        authority
+            .verify_held_directory()
+            .map_err(|_| local_error(provider, run_id))?;
+        let instance_authority = self.runtime.active_instance_authority();
+        instance_authority
+            .verify_held_directory()
+            .map_err(|_| local_error(provider, run_id))?;
+        let app_data_root = instance_authority.root().canonical_path().to_path_buf();
+        let app_data_directory = instance_authority
+            .root()
+            .try_clone_dir()
+            .map_err(|_| local_error(provider, run_id))?;
+        let remote_root = ValidRemoteRoot::parse(&remote_root)
+            .map_err(|_| configuration_error(provider, Some(run_id)))?;
+
+        let binding =
+            read_active_dejavu_binding(self.runtime.instance_data_root(), authority.root())
+                .map_err(|error| match error {
+                    DejavuLocalStateError::InvalidState => {
+                        configuration_error(provider, Some(run_id))
+                    }
+                    DejavuLocalStateError::Storage => local_error(provider, run_id),
+                })?
+                .ok_or_else(|| configuration_error(provider, Some(run_id)))?;
+        instance_authority
+            .verify_held_directory()
+            .map_err(|_| local_error(provider, run_id))?;
+        let (repository_id, device_id, repository_key) = binding.into_parts();
+        let transport = S3TransportOptions {
+            addressing_style,
+            request_timeout_seconds,
+            tls_verification,
+        };
+        let settings_backend = S3Backend::new_at_validated_prefix_with_transport(
+            S3SyncSettings {
+                access_key_id: access_key_id.expose_secret().to_owned(),
+                bucket: bucket.clone(),
+                endpoint_url: endpoint_url.clone(),
+                region: region.clone(),
+                remote_path: remote_root.app_prefix(),
+                secret_access_key: secret_access_key.expose_secret().to_owned(),
+            },
+            transport,
+        )
+        .map_err(|_| configuration_error(provider, Some(run_id)))?
+        .with_diagnostic_context(crate::sync::diagnostics::SyncDiagnosticContext::new(
+            run_id.as_uuid().to_string(),
+            "settings",
+        ));
+        let settings_state_relative =
+            PathBuf::from("sync-state")
+                .join("settings")
+                .join(sync_state_key(
+                    "settings",
+                    &[
+                        settings_backend.target_fingerprint_source().as_bytes(),
+                        remote_root.as_str().as_bytes(),
+                    ],
+                ));
+        let mut prepared = prepare_portable_settings_sync(
+            &self.settings,
+            &app_data_root,
+            &app_data_directory,
+            settings_state_relative.clone(),
+            &instance_authority,
+        )
+        .map_err(|_| local_error(provider, run_id))?;
+        if prepared.phase == PortableSettingsJournalPhase::Publication {
+            let pending = resume_portable_settings_publication(
+                &self.settings,
+                &prepared,
+                &instance_authority,
+            )
+            .map_err(|_| local_error(provider, run_id))?;
+            finish_portable_settings_publication(
+                &self.settings,
+                &prepared.scope,
+                pending,
+                &instance_authority,
+            )
+            .map_err(|_| local_error(provider, run_id))?;
+            prepared = prepare_portable_settings_sync(
+                &self.settings,
+                &app_data_root,
+                &app_data_directory,
+                settings_state_relative,
+                &instance_authority,
+            )
+            .map_err(|_| local_error(provider, run_id))?;
+        }
+        let service_cancellation = context.cancellation().clone();
+        let instance_invalidated = Arc::new(AtomicBool::new(false));
+        let invalidated_for_cancellation = Arc::clone(&instance_invalidated);
+        let instance_for_cancellation = Arc::clone(&instance_authority);
+        let settings_cancellation = SyncExecutionCancellation::from_callback(move || {
+            if service_cancellation.is_cancelled() {
+                return true;
+            }
+            if instance_for_cancellation.verify_held_directory().is_err() {
+                invalidated_for_cancellation.store(true, Ordering::Release);
+                return true;
+            }
+            false
+        });
+        let mut publication: Option<DeferredSettingsPublication> = None;
+        let settings_result = execute_portable_settings_sync_locked_with_cancellation(
+            &prepared.scope,
+            &settings_backend,
+            &settings_cancellation,
+            |expected_local_hash| {
+                publication = Some(reconcile_portable_settings(
+                    &self.settings,
+                    &prepared,
+                    expected_local_hash,
+                    &instance_authority,
+                )?);
+                Ok(())
+            },
+        )
+        .await;
+        let settings_partial = combined_summary(
+            None,
+            settings_result
+                .as_ref()
+                .ok()
+                .map(|outcome| &outcome.summary),
+        )
+        .map_err(|_| local_error(provider, run_id))?;
+        if instance_invalidated.load(Ordering::Acquire)
+            || instance_authority.verify_held_directory().is_err()
+        {
+            if let Some(publication) = publication.take() {
+                publication.supersede().map_err(|_| {
+                    local_error(provider, run_id).with_partial_summary(settings_partial.clone())
+                })?;
+            }
+            return Err(local_error(provider, run_id).with_partial_summary(settings_partial));
+        }
+        if context.cancellation().is_cancelled() {
+            if let Some(publication) = publication.take() {
+                publication.supersede().map_err(|_| {
+                    local_error(provider, run_id).with_partial_summary(settings_partial.clone())
+                })?;
+                replace_publication_with_current_settings(
+                    &self.settings,
+                    &prepared.scope,
+                    &instance_authority,
+                )
+                .map_err(|_| {
+                    local_error(provider, run_id).with_partial_summary(settings_partial.clone())
+                })?;
+            }
+            return Err(cancelled_error(provider, run_id).with_partial_summary(settings_partial));
+        }
+        if let Some(publication) = publication.take() {
+            finish_portable_settings_publication(
+                &self.settings,
+                &prepared.scope,
+                publication,
+                &instance_authority,
+            )
+            .map_err(|_| {
+                local_error(provider, run_id).with_partial_summary(settings_partial.clone())
+            })?;
+        }
+        let settings_summary = match settings_result {
+            Ok(outcome) => outcome.summary,
+            Err(error) => {
+                return Err(remote_error(
+                    provider,
+                    run_id,
+                    &error,
+                    Some(settings_partial),
+                ));
+            }
+        };
+        let inputs = DejavuRunnerInputs {
+            workspace: authority.clone(),
+            instance_data: instance_authority.clone(),
+            repository_id,
+            device: Device {
+                id: device_id,
+                name: "QingYu".to_owned(),
+                os: std::env::consts::OS.to_owned(),
+            },
+            repository_key,
+            runtime: self.dejavu_runtime.clone(),
+            coordinator: Arc::new(MutationWorkingTreeCoordinator::new(
+                self.runtime.mutation_coordinator().clone(),
+            )),
+        };
+        let config = DejavuS3Config {
+            endpoint_url,
+            region,
+            bucket,
+            access_key_id: DejavuSecret::new(access_key_id.expose_secret()),
+            secret_access_key: DejavuSecret::new(secret_access_key.expose_secret()),
+            request_timeout: Duration::from_secs(u64::from(request_timeout_seconds)),
+            addressing_style: match addressing_style {
+                S3AddressingStyle::Auto => DejavuAddressingStyle::Auto,
+                S3AddressingStyle::Path => DejavuAddressingStyle::Path,
+                S3AddressingStyle::VirtualHosted => DejavuAddressingStyle::VirtualHosted,
+            },
+            tls_verification: match tls_verification {
+                S3TlsVerification::Verify => DejavuTlsVerification::Verify,
+                S3TlsVerification::Skip => DejavuTlsVerification::Skip,
+            },
+        };
+        let attempt = self
+            .dejavu_factory
+            .create(inputs, config)
+            .map_err(|error| {
+                dejavu_error(provider, run_id, error).with_partial_summary(settings_partial.clone())
+            })?;
+        let cancellation = context.cancellation().clone();
+        let cancelled: Arc<dyn Fn() -> bool + Send + Sync> =
+            Arc::new(move || cancellation.is_cancelled());
+        let result = attempt.run(cancelled).await.map_err(|error| {
+            dejavu_error(provider, run_id, error).with_partial_summary(settings_partial.clone())
+        })?;
+        let notes_summary = dejavu_remote_summary(&result);
+        let completed_partial = combined_summary(Some(&notes_summary), Some(&settings_summary))
+            .map_err(|_| local_error(provider, run_id).with_partial_summary(settings_partial))?;
+        if generate_conflict_document {
+            crate::sync::dejavu_runner::create_conflict_documents(
+                authority.clone(),
+                instance_authority,
+                &result.conflicts,
+                Arc::new(MutationWorkingTreeCoordinator::new(
+                    self.runtime.mutation_coordinator().clone(),
+                )),
+            )
+            .await
+            .map_err(|error| {
+                dejavu_error(provider, run_id, error)
+                    .with_partial_summary(completed_partial.clone())
+            })?;
+        }
+        Ok(completed_partial)
+    }
+}
+
+#[async_trait]
+trait DejavuAttempt: Send + Sync {
+    async fn run(
+        &self,
+        cancelled: Arc<dyn Fn() -> bool + Send + Sync>,
+    ) -> Result<DejavuRunResult, DejavuRunError>;
+}
+
+#[async_trait]
+impl DejavuAttempt for KernelDejavuRunner {
+    async fn run(
+        &self,
+        cancelled: Arc<dyn Fn() -> bool + Send + Sync>,
+    ) -> Result<DejavuRunResult, DejavuRunError> {
+        KernelDejavuRunner::run(self, cancelled).await
+    }
+}
+
+trait DejavuRunnerFactory: Send + Sync {
+    fn create(
+        &self,
+        inputs: DejavuRunnerInputs,
+        config: DejavuS3Config,
+    ) -> Result<Box<dyn DejavuAttempt>, DejavuRunError>;
+}
+
+struct ProductionDejavuRunnerFactory;
+
+impl DejavuRunnerFactory for ProductionDejavuRunnerFactory {
+    fn create(
+        &self,
+        inputs: DejavuRunnerInputs,
+        config: DejavuS3Config,
+    ) -> Result<Box<dyn DejavuAttempt>, DejavuRunError> {
+        KernelDejavuRunner::new_s3(inputs, config)
+            .map(|runner| Box::new(runner) as Box<dyn DejavuAttempt>)
     }
 }
 
@@ -263,7 +668,40 @@ impl SyncExecutor for ProductionSyncExecutor {
                     .map(|_| ())
                     .map_err(|error| connection_error(provider, &error))
             }
-            SyncExecutionTarget::S3 { .. } => Err(test_unavailable_error(provider)),
+            SyncExecutionTarget::S3 {
+                endpoint_url,
+                region,
+                bucket,
+                access_key_id,
+                secret_access_key,
+                request_timeout_seconds,
+                addressing_style,
+                tls_verification,
+            } => {
+                let remote_root = ValidRemoteRoot::parse(&plan.remote_root)
+                    .map_err(|_| test_configuration_error(provider))?;
+                let backend = S3Backend::new_at_validated_prefix_with_transport(
+                    S3SyncSettings {
+                        access_key_id: access_key_id.expose_secret().to_owned(),
+                        bucket,
+                        endpoint_url,
+                        region,
+                        remote_path: remote_root.as_str().to_owned(),
+                        secret_access_key: secret_access_key.expose_secret().to_owned(),
+                    },
+                    S3TransportOptions {
+                        addressing_style,
+                        request_timeout_seconds,
+                        tls_verification,
+                    },
+                )
+                .map_err(|_| test_configuration_error(provider))?;
+                backend
+                    .test_connection_typed()
+                    .await
+                    .map(|_| ())
+                    .map_err(|error| s3_connection_error(provider, &error))
+            }
         }
     }
 
@@ -278,9 +716,7 @@ impl SyncExecutor for ProductionSyncExecutor {
             .map_err(|_| configuration_error(provider, Some(context.run_id())))?;
         match plan.target {
             SyncExecutionTarget::WebDav { .. } => self.run_webdav(plan, context).await,
-            SyncExecutionTarget::S3 { .. } => {
-                Err(unavailable_error(provider, Some(context.run_id())))
-            }
+            SyncExecutionTarget::S3 { .. } => self.run_s3(plan, context).await,
         }
     }
 }
@@ -296,12 +732,27 @@ struct PreparedPortableSettingsSync {
 fn prepare_portable_settings_sync(
     service: &SettingsService,
     app_data_root: &Path,
-    settings_state: PathBuf,
+    app_data_directory: &cap_std::fs::Dir,
+    settings_state_relative: PathBuf,
+    instance_authority: &ActiveInstanceAuthority,
 ) -> Result<PreparedPortableSettingsSync, String> {
-    let scope = RemoteSyncScope::portable_settings(app_data_root, settings_state, "manifest.json")?;
+    let scope = with_instance_authority(instance_authority, || {
+        RemoteSyncScope::portable_settings_from_prepared_directory(
+            app_data_root.to_path_buf(),
+            app_data_directory
+                .try_clone()
+                .map_err(|_| settings_reconcile_error())?,
+            settings_state_relative,
+            "manifest.json",
+        )
+    })?;
     if portable_settings_pending_contains_legacy_mcp(&scope)? {
-        clear_portable_settings_pending(&scope)?;
-        clear_portable_settings_manifest(&scope)?;
+        with_instance_authority(instance_authority, || {
+            clear_portable_settings_pending(&scope)
+        })?;
+        with_instance_authority(instance_authority, || {
+            clear_portable_settings_manifest(&scope)
+        })?;
     }
     let snapshot = service
         .portable_snapshot()
@@ -311,11 +762,13 @@ fn prepare_portable_settings_sync(
             && capture_portable_settings_manifest_revision(&scope)?
                 != journal.prepared_manifest_revision
         {
-            let checkpointed = capture_settings_file_state(scope.source_root())?;
+            let checkpointed = capture_scoped_settings_file_state(&scope)?;
             if checkpointed.bytes() != journal.staged_bytes()?.as_deref() {
                 journal.phase = PortableSettingsJournalPhase::Reconcile;
                 journal.set_staged_bytes(checkpointed.bytes());
-                write_portable_settings_pending(&scope, &journal)?;
+                with_instance_authority(instance_authority, || {
+                    write_portable_settings_pending(&scope, &journal)
+                })?;
             }
         }
         match journal.phase {
@@ -331,17 +784,25 @@ fn prepare_portable_settings_sync(
                     == Some(snapshot.revision().as_str())
                 {
                     journal.phase = PortableSettingsJournalPhase::Publication;
-                    write_portable_settings_pending(&scope, &journal)?;
+                    with_instance_authority(instance_authority, || {
+                        write_portable_settings_pending(&scope, &journal)
+                    })?;
                     let staged = journal.staged_bytes()?;
-                    replace_portable_settings_stage(&scope, staged.as_deref())?;
+                    with_instance_authority(instance_authority, || {
+                        replace_portable_settings_stage(&scope, staged.as_deref())
+                    })?;
                     return Ok(prepared_from_journal(scope, journal));
                 }
                 let staged = journal.staged_bytes()?;
-                preserve_remote_settings_conflict(&scope, staged.as_deref())?;
+                with_instance_authority(instance_authority, || {
+                    preserve_remote_settings_conflict(&scope, staged.as_deref())
+                })?;
             }
             _ => {
                 let staged = journal.staged_bytes()?;
-                replace_portable_settings_stage(&scope, staged.as_deref())?;
+                with_instance_authority(instance_authority, || {
+                    replace_portable_settings_stage(&scope, staged.as_deref())
+                })?;
                 return Ok(prepared_from_journal(scope, journal));
             }
         }
@@ -349,8 +810,12 @@ fn prepare_portable_settings_sync(
     let mut journal =
         PortableSettingsJournal::prepared(snapshot.revision().as_str(), snapshot.bytes());
     journal.prepared_manifest_revision = capture_portable_settings_manifest_revision(&scope)?;
-    write_portable_settings_pending(&scope, &journal)?;
-    replace_portable_settings_stage(&scope, snapshot.bytes())?;
+    with_instance_authority(instance_authority, || {
+        write_portable_settings_pending(&scope, &journal)
+    })?;
+    with_instance_authority(instance_authority, || {
+        replace_portable_settings_stage(&scope, snapshot.bytes())
+    })?;
     Ok(prepared_from_journal(scope, journal))
 }
 
@@ -371,17 +836,20 @@ fn reconcile_portable_settings(
     service: &SettingsService,
     prepared: &PreparedPortableSettingsSync,
     expected_local_hash: Option<&str>,
+    instance_authority: &ActiveInstanceAuthority,
 ) -> Result<DeferredSettingsPublication, String> {
     let mut journal =
         read_portable_settings_pending(&prepared.scope)?.ok_or_else(settings_reconcile_error)?;
     if journal.phase == PortableSettingsJournalPhase::Publication {
-        return resume_portable_settings_publication(service, prepared);
+        return resume_portable_settings_publication(service, prepared, instance_authority);
     }
-    let staged = capture_settings_file_state(prepared.scope.source_root())?;
+    let staged = capture_scoped_settings_file_state(&prepared.scope)?;
     journal.phase = PortableSettingsJournalPhase::Reconcile;
     journal.set_staged_bytes(staged.bytes());
     journal.expected_local_hash = expected_local_hash.map(str::to_string);
-    write_portable_settings_pending(&prepared.scope, &journal)?;
+    with_instance_authority(instance_authority, || {
+        write_portable_settings_pending(&prepared.scope, &journal)
+    })?;
     if !staged.matches_hash(expected_local_hash) {
         return Err(settings_reconcile_error());
     }
@@ -402,20 +870,25 @@ fn reconcile_portable_settings(
         .map_err(|_| settings_reconcile_error())?;
     journal.applied_portable_revision = Some(preview.applied_revision().as_str().to_string());
     journal.publication_events = preview.publications().to_vec();
-    write_portable_settings_pending(&prepared.scope, &journal)?;
+    with_instance_authority(instance_authority, || {
+        write_portable_settings_pending(&prepared.scope, &journal)
+    })?;
     let publication = service
         .replace_portable_deferred_with_preflight_and_verify(
             staged.bytes(),
             &expected_revision,
             || {
-                capture_settings_file_state(prepared.scope.source_root())
-                    .is_ok_and(|actual| actual == staged)
+                instance_authority.verify_held_directory().is_ok()
+                    && capture_scoped_settings_file_state(&prepared.scope)
+                        .is_ok_and(|actual| actual == staged)
             },
-            |actual| actual == &desired,
+            |actual| instance_authority.verify_held_directory().is_ok() && actual == &desired,
         )
         .map_err(|_| settings_reconcile_error())?;
     journal.phase = PortableSettingsJournalPhase::Publication;
-    if let Err(error) = write_portable_settings_pending(&prepared.scope, &journal) {
+    if let Err(error) = with_instance_authority(instance_authority, || {
+        write_portable_settings_pending(&prepared.scope, &journal)
+    }) {
         publication
             .supersede()
             .map_err(|_| settings_reconcile_error())?;
@@ -427,6 +900,7 @@ fn reconcile_portable_settings(
 fn resume_portable_settings_publication(
     service: &SettingsService,
     prepared: &PreparedPortableSettingsSync,
+    instance_authority: &ActiveInstanceAuthority,
 ) -> Result<DeferredSettingsPublication, String> {
     let revision = prepared
         .applied_portable_revision
@@ -435,16 +909,25 @@ fn resume_portable_settings_publication(
         .and_then(|value| {
             Revision::parse(value.to_string()).map_err(|_| settings_reconcile_error())
         })?;
-    service
-        .resume_portable_publication(&revision, prepared.publication_events.clone())
-        .map_err(|_| settings_reconcile_error())
+    with_instance_authority(instance_authority, || {
+        service
+            .resume_portable_publication(&revision, prepared.publication_events.clone())
+            .map_err(|_| settings_reconcile_error())
+    })
 }
 
 fn finish_portable_settings_publication(
     service: &SettingsService,
     scope: &RemoteSyncScope,
     publication: DeferredSettingsPublication,
+    instance_authority: &ActiveInstanceAuthority,
 ) -> Result<(), String> {
+    if instance_authority.verify_held_directory().is_err() {
+        publication
+            .supersede()
+            .map_err(|_| settings_reconcile_error())?;
+        return Err(settings_reconcile_error());
+    }
     let journal = match read_portable_settings_pending(scope) {
         Ok(Some(journal)) if journal.phase == PortableSettingsJournalPhase::Publication => journal,
         _ => {
@@ -482,32 +965,48 @@ fn finish_portable_settings_publication(
         publication
             .supersede()
             .map_err(|_| settings_reconcile_error())?;
-        replace_publication_with_current_settings(service, scope)?;
+        replace_publication_with_current_settings(service, scope, instance_authority)?;
+        return Err(settings_reconcile_error());
+    }
+    if instance_authority.verify_held_directory().is_err() {
+        publication
+            .supersede()
+            .map_err(|_| settings_reconcile_error())?;
         return Err(settings_reconcile_error());
     }
     if !service
         .publish_if_portable_revision(publication, &expected_revision)
         .map_err(|_| settings_reconcile_error())?
     {
-        replace_publication_with_current_settings(service, scope)?;
+        replace_publication_with_current_settings(service, scope, instance_authority)?;
         return Err(settings_reconcile_error());
     }
-    clear_portable_settings_pending(scope)
+    with_instance_authority(instance_authority, || {
+        clear_portable_settings_pending(scope)
+    })
 }
 
 fn replace_publication_with_current_settings(
     service: &SettingsService,
     scope: &RemoteSyncScope,
+    instance_authority: &ActiveInstanceAuthority,
 ) -> Result<(), String> {
     loop {
+        instance_authority
+            .verify_held_directory()
+            .map_err(|_| settings_reconcile_error())?;
         let snapshot = service
             .portable_snapshot()
             .map_err(|_| settings_reconcile_error())?;
         let mut journal =
             PortableSettingsJournal::prepared(snapshot.revision().as_str(), snapshot.bytes());
         journal.prepared_manifest_revision = capture_portable_settings_manifest_revision(scope)?;
-        write_portable_settings_pending(scope, &journal)?;
-        replace_portable_settings_stage(scope, snapshot.bytes())?;
+        with_instance_authority(instance_authority, || {
+            write_portable_settings_pending(scope, &journal)
+        })?;
+        with_instance_authority(instance_authority, || {
+            replace_portable_settings_stage(scope, snapshot.bytes())
+        })?;
         if service
             .portable_snapshot()
             .map_err(|_| settings_reconcile_error())?
@@ -517,6 +1016,16 @@ fn replace_publication_with_current_settings(
             return Ok(());
         }
     }
+}
+
+fn with_instance_authority<T>(
+    instance_authority: &ActiveInstanceAuthority,
+    mutation: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    instance_authority
+        .verify_held_directory()
+        .map_err(|_| settings_reconcile_error())?;
+    mutation()
 }
 
 fn settings_reconcile_error() -> String {
@@ -614,10 +1123,8 @@ fn combined_summary(
     ) -> Result<SafeUnsignedInteger, ()> {
         let notes = notes.map(&select).unwrap_or(0);
         let settings = settings.map(select).unwrap_or(0);
-        notes
-            .checked_add(settings)
-            .and_then(|value| SafeUnsignedInteger::new(value).ok())
-            .ok_or(())
+        SafeUnsignedInteger::new(notes.saturating_add(settings).min(MAX_SAFE_INTEGER))
+            .map_err(|_| ())
     }
 
     Ok(SyncSummaryDto {
@@ -629,6 +1136,90 @@ fn combined_summary(
         skipped_files: value(notes, settings, |summary| summary.skipped_files)?,
         uploaded_files: value(notes, settings, |summary| summary.uploaded_files)?,
     })
+}
+
+fn dejavu_remote_summary(result: &DejavuRunResult) -> RemoteSyncSummary {
+    let conflicts = u64::try_from(result.conflicts.len()).unwrap_or(u64::MAX);
+    RemoteSyncSummary {
+        bytes_downloaded: result.transfer.download_bytes,
+        bytes_uploaded: result.transfer.upload_bytes,
+        conflict_files: conflicts,
+        downloaded_files: result.transfer.download_files,
+        scanned_files: 0,
+        skipped_files: 0,
+        uploaded_files: result.transfer.upload_files,
+    }
+}
+
+fn dejavu_error(
+    provider: SyncProvider,
+    run_id: RunId,
+    error: DejavuRunError,
+) -> SyncExecutionError {
+    match error {
+        DejavuRunError::InvalidConfiguration => configuration_error(provider, Some(run_id)),
+        DejavuRunError::WorkspaceUnavailable | DejavuRunError::RepositoryUnavailable => {
+            local_error(provider, run_id)
+        }
+        DejavuRunError::WorkingTreeChanged => execution_error(
+            provider,
+            SyncSafeErrorOperation::SyncRun,
+            SyncSafeErrorCode::Conflict,
+            Some(SyncSafeErrorCategory::Conflict),
+            Some(run_id),
+        ),
+        DejavuRunError::Cancelled => cancelled_error(provider, run_id),
+        DejavuRunError::CloudUnavailable => unavailable_error(provider, Some(run_id)),
+        DejavuRunError::DnsUnavailable => execution_error(
+            provider,
+            SyncSafeErrorOperation::SyncRun,
+            SyncSafeErrorCode::ConnectionFailed,
+            Some(SyncSafeErrorCategory::Network),
+            Some(run_id),
+        ),
+        DejavuRunError::AuthenticationFailed => execution_error(
+            provider,
+            SyncSafeErrorOperation::SyncRun,
+            SyncSafeErrorCode::AuthenticationFailed,
+            Some(SyncSafeErrorCategory::Authentication),
+            Some(run_id),
+        ),
+        DejavuRunError::PermissionDenied => execution_error(
+            provider,
+            SyncSafeErrorOperation::SyncRun,
+            SyncSafeErrorCode::PermissionDenied,
+            Some(SyncSafeErrorCategory::Authorization),
+            Some(run_id),
+        ),
+        DejavuRunError::RateLimited => execution_error(
+            provider,
+            SyncSafeErrorOperation::SyncRun,
+            SyncSafeErrorCode::RateLimited,
+            Some(SyncSafeErrorCategory::Provider),
+            Some(run_id),
+        ),
+        DejavuRunError::QuotaExceeded | DejavuRunError::ClockSkew => execution_error(
+            provider,
+            SyncSafeErrorOperation::SyncRun,
+            SyncSafeErrorCode::RequestFailed,
+            Some(SyncSafeErrorCategory::Provider),
+            Some(run_id),
+        ),
+        DejavuRunError::IntegrityFailure => execution_error(
+            provider,
+            SyncSafeErrorOperation::SyncRun,
+            SyncSafeErrorCode::RequestFailed,
+            Some(SyncSafeErrorCategory::Transport),
+            Some(run_id),
+        ),
+        DejavuRunError::RemoteConflict => execution_error(
+            provider,
+            SyncSafeErrorOperation::SyncRun,
+            SyncSafeErrorCode::Conflict,
+            Some(SyncSafeErrorCategory::Conflict),
+            Some(run_id),
+        ),
+    }
 }
 
 fn execution_error(
@@ -678,16 +1269,6 @@ fn unavailable_error(provider: SyncProvider, run_id: Option<RunId>) -> SyncExecu
     )
 }
 
-fn test_unavailable_error(provider: SyncProvider) -> SyncExecutionError {
-    execution_error(
-        provider,
-        SyncSafeErrorOperation::TestConnection,
-        SyncSafeErrorCode::RemoteUnavailable,
-        Some(SyncSafeErrorCategory::Provider),
-        None,
-    )
-}
-
 fn local_error(provider: SyncProvider, run_id: RunId) -> SyncExecutionError {
     execution_error(
         provider,
@@ -732,13 +1313,49 @@ fn connection_error(provider: SyncProvider, error: &RemoteSyncError) -> SyncExec
     )
 }
 
+fn s3_connection_error(provider: SyncProvider, error: &RemoteSyncError) -> SyncExecutionError {
+    let (mut code, category) = classify_remote_error(provider, error);
+    if code == SyncSafeErrorCode::RemoteUnavailable {
+        code = SyncSafeErrorCode::ConnectionFailed;
+    }
+    execution_error(
+        provider,
+        SyncSafeErrorOperation::TestConnection,
+        code,
+        category,
+        None,
+    )
+}
+
 fn remote_error(
     provider: SyncProvider,
     run_id: RunId,
     error: &RemoteSyncError,
     partial: Option<SyncSummaryDto>,
 ) -> SyncExecutionError {
-    let (code, category) = match error.safe_code() {
+    let (code, category) = classify_remote_error(provider, error);
+    let result = execution_error(
+        provider,
+        SyncSafeErrorOperation::SyncRun,
+        code,
+        category,
+        Some(run_id),
+    );
+    partial.map_or(result.clone(), |summary| {
+        result.with_partial_summary(summary)
+    })
+}
+
+fn classify_remote_error(
+    provider: SyncProvider,
+    error: &RemoteSyncError,
+) -> (SyncSafeErrorCode, Option<SyncSafeErrorCategory>) {
+    if provider == SyncProvider::S3 {
+        if let Some(classification) = classify_s3_remote_error(error) {
+            return classification;
+        }
+    }
+    match error.safe_code() {
         "sync-run-cancelled" => (SyncSafeErrorCode::Cancelled, None),
         "webdav-endpoint-invalid" | "webdav-remote-path-invalid" => (
             SyncSafeErrorCode::ConfigurationInvalid,
@@ -760,17 +1377,110 @@ fn remote_error(
             SyncSafeErrorCode::LocalIo,
             Some(SyncSafeErrorCategory::Storage),
         ),
+    }
+}
+
+fn classify_s3_remote_error(
+    error: &RemoteSyncError,
+) -> Option<(SyncSafeErrorCode, Option<SyncSafeErrorCategory>)> {
+    let diagnostic = error.details()?;
+    if let Some(code) = diagnostic.provider_error_code.as_deref() {
+        let classified = match code {
+            "InvalidAccessKeyId"
+            | "InvalidToken"
+            | "ExpiredToken"
+            | "TokenRefreshRequired"
+            | "SignatureDoesNotMatch"
+            | "AuthorizationHeaderMalformed" => (
+                SyncSafeErrorCode::AuthenticationFailed,
+                SyncSafeErrorCategory::Authentication,
+            ),
+            "AccessDenied" | "AllAccessDisabled" => (
+                SyncSafeErrorCode::PermissionDenied,
+                SyncSafeErrorCategory::Authorization,
+            ),
+            "SlowDown"
+            | "Throttling"
+            | "ThrottlingException"
+            | "RequestLimitExceeded"
+            | "TooManyRequests" => (
+                SyncSafeErrorCode::RateLimited,
+                SyncSafeErrorCategory::Provider,
+            ),
+            "RequestTimeTooSkewed"
+            | "RequestExpired"
+            | "QuotaExceeded"
+            | "StorageQuotaExceeded"
+            | "BucketQuotaExceeded"
+            | "TooManyBuckets"
+            | "TooManyAccessPoints" => (
+                SyncSafeErrorCode::RequestFailed,
+                SyncSafeErrorCategory::Provider,
+            ),
+            _ => match diagnostic.http_status {
+                Some(401) => (
+                    SyncSafeErrorCode::AuthenticationFailed,
+                    SyncSafeErrorCategory::Authentication,
+                ),
+                Some(403) => (
+                    SyncSafeErrorCode::PermissionDenied,
+                    SyncSafeErrorCategory::Authorization,
+                ),
+                Some(409 | 412) => (SyncSafeErrorCode::Conflict, SyncSafeErrorCategory::Conflict),
+                Some(429) => (
+                    SyncSafeErrorCode::RateLimited,
+                    SyncSafeErrorCategory::Provider,
+                ),
+                Some(408 | 500 | 502 | 503 | 504) => (
+                    SyncSafeErrorCode::RemoteUnavailable,
+                    SyncSafeErrorCategory::Provider,
+                ),
+                _ => (
+                    SyncSafeErrorCode::RequestFailed,
+                    SyncSafeErrorCategory::Provider,
+                ),
+            },
+        };
+        return Some((classified.0, Some(classified.1)));
+    }
+    let classified = match diagnostic.category {
+        SyncFailureCategory::Transport => (
+            SyncSafeErrorCode::RemoteUnavailable,
+            SyncSafeErrorCategory::Network,
+        ),
+        SyncFailureCategory::Integrity if diagnostic.code == "s3-object-changed" => {
+            (SyncSafeErrorCode::Conflict, SyncSafeErrorCategory::Conflict)
+        }
+        SyncFailureCategory::Integrity => (
+            SyncSafeErrorCode::RequestFailed,
+            SyncSafeErrorCategory::Transport,
+        ),
+        SyncFailureCategory::Http => match diagnostic.http_status {
+            Some(401) => (
+                SyncSafeErrorCode::AuthenticationFailed,
+                SyncSafeErrorCategory::Authentication,
+            ),
+            Some(403) => (
+                SyncSafeErrorCode::PermissionDenied,
+                SyncSafeErrorCategory::Authorization,
+            ),
+            Some(409 | 412) => (SyncSafeErrorCode::Conflict, SyncSafeErrorCategory::Conflict),
+            Some(429) => (
+                SyncSafeErrorCode::RateLimited,
+                SyncSafeErrorCategory::Provider,
+            ),
+            Some(408 | 500 | 502 | 503 | 504) => (
+                SyncSafeErrorCode::RemoteUnavailable,
+                SyncSafeErrorCategory::Provider,
+            ),
+            _ => (
+                SyncSafeErrorCode::RequestFailed,
+                SyncSafeErrorCategory::Provider,
+            ),
+        },
+        SyncFailureCategory::Local => (SyncSafeErrorCode::LocalIo, SyncSafeErrorCategory::Storage),
     };
-    let result = execution_error(
-        provider,
-        SyncSafeErrorOperation::SyncRun,
-        code,
-        category,
-        Some(run_id),
-    );
-    partial.map_or(result.clone(), |summary| {
-        result.with_partial_summary(summary)
-    })
+    Some((classified.0, Some(classified.1)))
 }
 
 #[cfg(test)]
@@ -792,7 +1502,7 @@ mod tests {
 
     use crate::{
         config::KernelConfig,
-        contract::{SyncCompletionState, TriggerSyncRunRequest},
+        contract::{SyncCompletionState, SyncProvider, TriggerSyncRunRequest},
         events::EventSink,
         paths::KernelPaths,
         ports::system::system_kernel_ports,
@@ -806,14 +1516,119 @@ mod tests {
             storage::{AtomicJsonSettingsStore, SettingsStore as _},
         },
         storage::DurableFileStore,
-        sync::config::{SyncConfig, SyncConfigStore},
+        sync::{
+            backend::{
+                RemoteSyncDiagnostic, RemoteSyncError, SyncFailureCategory, SyncProviderOperation,
+            },
+            config::{SyncConfig, SyncConfigStore},
+        },
         workspace::{
             managed::ManagedWorkspaceCollection,
             primary::{FixedPrimaryWorkspaceStore, PrimaryWorkspaceState},
         },
     };
 
-    use super::ProductionSyncExecutor;
+    use super::{DejavuAttempt, DejavuRunnerFactory, ProductionSyncExecutor};
+
+    #[test]
+    fn combined_summary_saturates_successful_counts_at_the_wire_limit() {
+        let notes = super::RemoteSyncSummary {
+            bytes_uploaded: u64::MAX,
+            uploaded_files: u64::MAX,
+            ..Default::default()
+        };
+        let settings = super::RemoteSyncSummary {
+            bytes_uploaded: 1,
+            uploaded_files: 1,
+            ..Default::default()
+        };
+
+        let summary =
+            super::combined_summary(Some(&notes), Some(&settings)).expect("saturated safe summary");
+
+        assert_eq!(
+            summary.bytes_uploaded.get(),
+            crate::contract::MAX_SAFE_INTEGER
+        );
+        assert_eq!(
+            summary.uploaded_files.get(),
+            crate::contract::MAX_SAFE_INTEGER
+        );
+    }
+
+    #[test]
+    fn s3_settings_failures_keep_provider_network_conflict_and_authentication_types() {
+        let cases = [
+            (
+                SyncFailureCategory::Http,
+                "s3-upload-http-failed",
+                Some(403),
+                Some("InvalidAccessKeyId"),
+                "authentication_failed",
+                Some("authentication"),
+            ),
+            (
+                SyncFailureCategory::Http,
+                "s3-upload-http-failed",
+                Some(403),
+                Some("AccessDenied"),
+                "permission_denied",
+                Some("authorization"),
+            ),
+            (
+                SyncFailureCategory::Http,
+                "s3-upload-http-failed",
+                Some(429),
+                Some("SlowDown"),
+                "rate_limited",
+                Some("provider"),
+            ),
+            (
+                SyncFailureCategory::Transport,
+                "s3-list-request-failed",
+                None,
+                None,
+                "remote_unavailable",
+                Some("network"),
+            ),
+            (
+                SyncFailureCategory::Integrity,
+                "s3-object-changed",
+                Some(412),
+                None,
+                "conflict",
+                Some("conflict"),
+            ),
+            (
+                SyncFailureCategory::Integrity,
+                "s3-upload-verification-failed",
+                None,
+                None,
+                "request_failed",
+                Some("transport"),
+            ),
+        ];
+        for (category, diagnostic_code, status, provider_code, code, safe_category) in cases {
+            let error = RemoteSyncError::diagnostic(RemoteSyncDiagnostic {
+                category,
+                code: diagnostic_code.to_owned(),
+                http_status: status,
+                method: Some("PUT".to_owned()),
+                object_id: Some("redacted-object".to_owned()),
+                operation: SyncProviderOperation::Upload,
+                provider_error_code: provider_code.map(str::to_owned),
+                request_id: None,
+                run_id: "test-run".to_owned(),
+                scope: "settings".to_owned(),
+            });
+
+            let (actual_code, actual_category) =
+                super::classify_remote_error(SyncProvider::S3, &error);
+
+            assert_eq!(actual_code.as_str(), code);
+            assert_eq!(actual_category.map(|value| value.as_str()), safe_category);
+        }
+    }
 
     #[tokio::test]
     async fn connection_test_is_read_only_and_uses_the_nearest_existing_webdav_parent() {
@@ -901,43 +1716,272 @@ mod tests {
         ));
     }
 
+    #[cfg(unix)]
     #[tokio::test]
-    async fn s3_remains_safely_unavailable_without_exposing_credentials() {
+    async fn portable_settings_prepare_stops_before_mutation_after_instance_lock_replacement() {
         let server = WebDavFixture::start();
         let kernel = TestKernel::start(&server.endpoint(), false).await;
-        let config: SyncConfig = serde_json::from_value(serde_json::json!({
-            "version": 3,
-            "enabled": true,
-            "provider": "s3",
-            "remoteRoot": "qingyu",
-            "mode": "automatic",
-            "intervalSeconds": 30,
-            "generateConflictDocument": false,
-            "webdav": { "serverUrl": "", "username": "", "password": "" },
-            "s3": {
-                "endpointUrl": "https://s3.example.test",
-                "region": "test-1",
-                "bucket": "notes",
-                "accessKeyId": "executor-access-secret",
-                "secretAccessKey": "executor-signing-secret",
-                "requestTimeoutSeconds": 60,
-                "addressingStyle": "auto",
-                "tlsVerification": "verify"
-            }
-        }))
-        .expect("valid S3 config");
+        let authority = kernel.runtime.active_instance_authority();
+        let app_data_root = authority.root().canonical_path().to_path_buf();
+        let app_data_directory = authority
+            .root()
+            .try_clone_dir()
+            .expect("retained app data directory");
+        replace_instance_lock_address(&kernel.app_data);
 
-        let error = kernel
-            .executor
-            .test_connection(config)
+        let result = super::prepare_portable_settings_sync(
+            &kernel.executor.settings,
+            &app_data_root,
+            &app_data_directory,
+            PathBuf::from("sync-state/settings/authority-prepare"),
+            &authority,
+        );
+
+        assert!(result.is_err());
+        assert!(!kernel
+            .app_data
+            .join("sync-state/settings/authority-prepare")
+            .exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn portable_settings_publication_stops_after_instance_lock_replacement() {
+        let server = WebDavFixture::start();
+        let kernel = TestKernel::start(&server.endpoint(), false).await;
+        let authority = kernel.runtime.active_instance_authority();
+        let app_data_root = authority.root().canonical_path().to_path_buf();
+        let app_data_directory = authority
+            .root()
+            .try_clone_dir()
+            .expect("retained app data directory");
+        let relative_state = PathBuf::from("sync-state/settings/authority-publication");
+        let prepared = super::prepare_portable_settings_sync(
+            &kernel.executor.settings,
+            &app_data_root,
+            &app_data_directory,
+            relative_state.clone(),
+            &authority,
+        )
+        .expect("prepare settings journal");
+        let expected_hash =
+            crate::sync::settings_scope::capture_scoped_settings_file_state(&prepared.scope)
+                .expect("capture staged settings")
+                .hash()
+                .map(str::to_owned);
+        let publication = super::reconcile_portable_settings(
+            &kernel.executor.settings,
+            &prepared,
+            expected_hash.as_deref(),
+            &authority,
+        )
+        .expect("defer settings publication");
+        replace_instance_lock_address(&kernel.app_data);
+
+        let result = super::finish_portable_settings_publication(
+            &kernel.executor.settings,
+            &prepared.scope,
+            publication,
+            &authority,
+        );
+
+        assert!(result.is_err());
+        assert!(kernel
+            .app_data
+            .join(relative_state)
+            .join("portable-settings-pending.json")
+            .exists());
+    }
+
+    #[tokio::test]
+    async fn one_s3_run_uses_the_active_legacy_binding_and_dejavu_attempt() {
+        let server = S3Fixture::start();
+        let factory = Arc::new(FixedDejavuFactory::watching(server.state.clone()));
+        let kernel = TestKernel::start_s3(factory.clone(), &server.endpoint()).await;
+        let sync = SyncService::new(
+            kernel.runtime.clone(),
+            Arc::new(SyncConfigStore::new(kernel.sync_store).expect("sync config store")),
+            kernel.executor.clone(),
+        );
+        let exposed = SyncApiService::get_sync_config(&sync)
             .await
-            .expect_err("S3 stays unavailable until the Dejavu runner is composed");
-        let rendered = format!("{error:?} {error}");
+            .expect("ready S3 sync config");
 
-        assert_eq!(rendered.matches("sync execution failed").count(), 1);
-        assert!(!rendered.contains("executor-access-secret"));
-        assert!(!rendered.contains("executor-signing-secret"));
-        assert!(server.requests().is_empty());
+        SyncApiService::trigger_sync_run(
+            &sync,
+            TriggerSyncRunRequest {
+                expected_config_revision: exposed.revision,
+            },
+        )
+        .await
+        .expect("accept S3 sync run");
+
+        let completed = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let status = SyncApiService::get_sync_status(&sync)
+                    .await
+                    .expect("read S3 sync status");
+                if status.completion_state != SyncCompletionState::Attempting {
+                    break status;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("S3 sync should complete");
+
+        assert_eq!(completed.completion_state, SyncCompletionState::Succeeded);
+        let summary = completed.summary.into_option().expect("DejaVu summary");
+        assert_eq!(summary.bytes_downloaded.get(), 11);
+        assert_eq!(summary.bytes_uploaded.get(), 30);
+        assert_eq!(summary.downloaded_files.get(), 2);
+        assert_eq!(summary.uploaded_files.get(), 4);
+        assert_eq!(summary.conflict_files.get(), 1);
+        let remote_settings = server
+            .file("/notes/qingyu/app/settings.json")
+            .expect("portable settings should be uploaded before DejaVu runs");
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&remote_settings)
+                .expect("portable settings JSON"),
+            serde_json::json!({ "language": "en" })
+        );
+        assert!(has_manifest_below(
+            &kernel.app_data.join("sync-state/settings")
+        ));
+        assert_eq!(factory.calls.load(Ordering::Acquire), 1);
+        assert!(factory.settings_seen_before_dejavu.load(Ordering::Acquire));
+        assert_eq!(
+            factory
+                .repository_id
+                .lock()
+                .expect("recorded repository")
+                .as_deref(),
+            Some("323df833-764a-44b3-a534-492640c258f2")
+        );
+    }
+
+    #[tokio::test]
+    async fn s3_dejavu_failure_retains_the_completed_settings_summary_and_error_class() {
+        let server = S3Fixture::start();
+        let kernel = TestKernel::start_s3(
+            Arc::new(FailingDejavuFactory(
+                crate::sync::dejavu_runner::DejavuRunError::AuthenticationFailed,
+            )),
+            &server.endpoint(),
+        )
+        .await;
+        let sync = SyncService::new(
+            kernel.runtime.clone(),
+            Arc::new(SyncConfigStore::new(kernel.sync_store).expect("sync config store")),
+            kernel.executor.clone(),
+        );
+        let exposed = SyncApiService::get_sync_config(&sync)
+            .await
+            .expect("ready S3 sync config");
+        SyncApiService::trigger_sync_run(
+            &sync,
+            TriggerSyncRunRequest {
+                expected_config_revision: exposed.revision,
+            },
+        )
+        .await
+        .expect("accept S3 sync run");
+
+        let failed = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let status = SyncApiService::get_sync_status(&sync)
+                    .await
+                    .expect("read S3 sync status");
+                if status.completion_state != SyncCompletionState::Attempting {
+                    break status;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("S3 sync should settle");
+
+        assert_eq!(failed.completion_state, SyncCompletionState::Failed);
+        let error = failed.error.as_ref().expect("typed DejaVu error");
+        assert_eq!(error.code(), "authentication_failed");
+        assert_eq!(error.category(), Some("authentication"));
+        let summary = failed.summary.as_ref().expect("settings partial summary");
+        assert_eq!(summary.bytes_uploaded.get(), 17);
+        assert_eq!(summary.uploaded_files.get(), 1);
+        assert!(server.file("/notes/qingyu/app/settings.json").is_some());
+    }
+
+    #[tokio::test]
+    async fn s3_dejavu_factory_failure_retains_the_completed_settings_summary() {
+        let server = S3Fixture::start();
+        let kernel = TestKernel::start_s3(
+            Arc::new(RejectingDejavuFactory(
+                crate::sync::dejavu_runner::DejavuRunError::InvalidConfiguration,
+            )),
+            &server.endpoint(),
+        )
+        .await;
+        let sync = SyncService::new(
+            kernel.runtime.clone(),
+            Arc::new(SyncConfigStore::new(kernel.sync_store).expect("sync config store")),
+            kernel.executor.clone(),
+        );
+        let exposed = SyncApiService::get_sync_config(&sync)
+            .await
+            .expect("ready S3 sync config");
+        SyncApiService::trigger_sync_run(
+            &sync,
+            TriggerSyncRunRequest {
+                expected_config_revision: exposed.revision,
+            },
+        )
+        .await
+        .expect("accept S3 sync run");
+
+        let failed = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let status = SyncApiService::get_sync_status(&sync)
+                    .await
+                    .expect("read S3 sync status");
+                if status.completion_state != SyncCompletionState::Attempting {
+                    break status;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("S3 sync should settle");
+
+        assert_eq!(failed.completion_state, SyncCompletionState::Failed);
+        assert_eq!(
+            failed.error.as_ref().expect("typed factory error").code(),
+            "configuration_invalid"
+        );
+        let summary = failed.summary.as_ref().expect("settings partial summary");
+        assert_eq!(summary.bytes_uploaded.get(), 17);
+        assert_eq!(summary.uploaded_files.get(), 1);
+        assert!(server.file("/notes/qingyu/app/settings.json").is_some());
+    }
+
+    #[tokio::test]
+    async fn s3_connection_test_is_read_only_and_does_not_expose_credentials() {
+        let server = S3Fixture::start();
+        let kernel = TestKernel::start(&server.endpoint(), false).await;
+
+        kernel
+            .executor
+            .test_connection(s3_config(&server.endpoint()))
+            .await
+            .expect("read-only S3 catalog probe");
+
+        let requests = server.requests();
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0].starts_with("GET /notes?"));
+        assert!(requests[0].contains("list-type=2"));
+        assert!(requests[0].contains("max-keys=1"));
+        assert!(!requests[0].contains("executor-access-secret"));
+        assert!(!requests[0].contains("executor-signing-secret"));
+        assert!(server.state.lock().expect("S3 state").files.is_empty());
     }
 
     struct TestKernel {
@@ -952,6 +1996,19 @@ mod tests {
 
     impl TestKernel {
         async fn start(endpoint: &str, ready_sync_config: bool) -> Self {
+            let config = ready_sync_config.then(|| webdav_config(endpoint, "qingyu", "run-secret"));
+            Self::start_with_config(config, None, false).await
+        }
+
+        async fn start_s3(factory: Arc<dyn DejavuRunnerFactory>, endpoint: &str) -> Self {
+            Self::start_with_config(Some(s3_config(endpoint)), Some(factory), true).await
+        }
+
+        async fn start_with_config(
+            ready_sync_config: Option<SyncConfig>,
+            dejavu_factory: Option<Arc<dyn DejavuRunnerFactory>>,
+            write_local_sync_state: bool,
+        ) -> Self {
             let temporary = tempdir().expect("temporary Kernel roots");
             let workspace = temporary.path().join("Workspace");
             let app_data = temporary.path().join("app-data");
@@ -959,13 +2016,33 @@ mod tests {
             std::fs::create_dir(&workspace).expect("workspace");
             std::fs::create_dir(&app_data).expect("app data");
             std::fs::create_dir(&cache).expect("cache");
-            if ready_sync_config {
-                let config = webdav_config(endpoint, "qingyu", "run-secret");
+            if let Some(config) = ready_sync_config {
                 std::fs::write(
                     app_data.join("sync-config.json"),
                     serde_json::to_vec_pretty(&config).expect("serialize sync config"),
                 )
                 .expect("write sync config");
+            }
+            if write_local_sync_state {
+                std::fs::write(
+                    app_data.join("local-sync.json"),
+                    serde_json::to_vec_pretty(&serde_json::json!({
+                        "version": 1,
+                        "deviceId": "eb473600-dace-4d7e-bdad-7dac05933099",
+                        "repoKey": base64::Engine::encode(
+                            &base64::engine::general_purpose::STANDARD,
+                            [7_u8; 32],
+                        ),
+                        "bindings": [{
+                            "repositoryId": "323df833-764a-44b3-a534-492640c258f2",
+                            "displayName": "Workspace",
+                            "notesRoot": workspace.canonicalize().expect("canonical workspace"),
+                            "enabled": true
+                        }]
+                    }))
+                    .expect("serialize local sync state"),
+                )
+                .expect("write local sync state");
             }
 
             let config = KernelConfig::generate().expect("Kernel config");
@@ -1000,7 +2077,14 @@ mod tests {
                     .await
                     .expect("active workspace snapshot");
             let settings = Arc::new(SettingsService::new(settings_store, runtime.clone()));
-            let executor = Arc::new(ProductionSyncExecutor::new(runtime.clone(), settings));
+            let executor = Arc::new(match dejavu_factory {
+                Some(factory) => ProductionSyncExecutor::new_with_dejavu_factory(
+                    runtime.clone(),
+                    settings,
+                    factory,
+                ),
+                None => ProductionSyncExecutor::new(runtime.clone(), settings),
+            });
 
             Self {
                 _temporary: temporary,
@@ -1042,6 +2126,148 @@ mod tests {
         .expect("valid WebDAV config")
     }
 
+    fn s3_config(endpoint: &str) -> SyncConfig {
+        serde_json::from_value(serde_json::json!({
+            "version": 3,
+            "enabled": true,
+            "provider": "s3",
+            "remoteRoot": "qingyu",
+            "mode": "automatic",
+            "intervalSeconds": 30,
+            "generateConflictDocument": false,
+            "webdav": { "serverUrl": "", "username": "", "password": "" },
+            "s3": {
+                "endpointUrl": endpoint,
+                "region": "test-1",
+                "bucket": "notes",
+                "accessKeyId": "executor-access-secret",
+                "secretAccessKey": "executor-signing-secret",
+                "requestTimeoutSeconds": 60,
+                "addressingStyle": "auto",
+                "tlsVerification": "verify"
+            }
+        }))
+        .expect("valid S3 config")
+    }
+
+    #[cfg(unix)]
+    fn replace_instance_lock_address(app_data: &Path) {
+        let lock = app_data.join("kernel.lock");
+        let displaced = app_data.join("displaced-kernel.lock");
+        std::fs::rename(&lock, displaced).expect("displace retained instance lock");
+        std::fs::write(lock, b"replacement").expect("install replacement instance lock");
+    }
+
+    #[derive(Default)]
+    struct FixedDejavuFactory {
+        calls: AtomicU64,
+        repository_id: Mutex<Option<String>>,
+        settings_state: Option<Arc<Mutex<S3FixtureState>>>,
+        settings_seen_before_dejavu: AtomicBool,
+    }
+
+    impl FixedDejavuFactory {
+        fn watching(settings_state: Arc<Mutex<S3FixtureState>>) -> Self {
+            Self {
+                settings_state: Some(settings_state),
+                ..Self::default()
+            }
+        }
+    }
+
+    impl DejavuRunnerFactory for FixedDejavuFactory {
+        fn create(
+            &self,
+            inputs: crate::sync::dejavu_runner::DejavuRunnerInputs,
+            _config: crate::sync::dejavu_runner::DejavuS3Config,
+        ) -> Result<Box<dyn DejavuAttempt>, crate::sync::dejavu_runner::DejavuRunError> {
+            self.calls.fetch_add(1, Ordering::AcqRel);
+            *self.repository_id.lock().expect("record repository") = Some(inputs.repository_id);
+            if self.settings_state.as_ref().is_some_and(|state| {
+                state
+                    .lock()
+                    .expect("S3 state before DejaVu")
+                    .files
+                    .contains_key("/notes/qingyu/app/settings.json")
+            }) {
+                self.settings_seen_before_dejavu
+                    .store(true, Ordering::Release);
+            }
+            Ok(Box::new(FixedDejavuAttempt))
+        }
+    }
+
+    struct FixedDejavuAttempt;
+
+    #[async_trait::async_trait]
+    impl DejavuAttempt for FixedDejavuAttempt {
+        async fn run(
+            &self,
+            _cancelled: Arc<dyn Fn() -> bool + Send + Sync>,
+        ) -> Result<
+            crate::sync::dejavu_runner::DejavuRunResult,
+            crate::sync::dejavu_runner::DejavuRunError,
+        > {
+            Ok(crate::sync::dejavu_runner::DejavuRunResult {
+                data_changed: true,
+                transfer: crate::sync::dejavu_runner::DejavuTransferSummary {
+                    download_bytes: 11,
+                    download_chunks: 1,
+                    download_files: 2,
+                    upload_bytes: 13,
+                    upload_chunks: 1,
+                    upload_files: 3,
+                },
+                conflicts: vec![crate::sync::dejavu_runner::DejavuConflict {
+                    conflict_id: "4e8d1180-bd21-4d5b-bcbf-f977032a02e3".to_owned(),
+                    repository_id: "323df833-764a-44b3-a534-492640c258f2".to_owned(),
+                    relative_path: "note.md".to_owned(),
+                    occurred_at: "2026-07-30T00:00:00Z".to_owned(),
+                    resolution: crate::sync::dejavu_runner::DejavuConflictResolution::KeepLocal,
+                }],
+            })
+        }
+    }
+
+    struct FailingDejavuFactory(crate::sync::dejavu_runner::DejavuRunError);
+
+    impl DejavuRunnerFactory for FailingDejavuFactory {
+        fn create(
+            &self,
+            _inputs: crate::sync::dejavu_runner::DejavuRunnerInputs,
+            _config: crate::sync::dejavu_runner::DejavuS3Config,
+        ) -> Result<Box<dyn DejavuAttempt>, crate::sync::dejavu_runner::DejavuRunError> {
+            Ok(Box::new(FailingDejavuAttempt(self.0)))
+        }
+    }
+
+    struct RejectingDejavuFactory(crate::sync::dejavu_runner::DejavuRunError);
+
+    impl DejavuRunnerFactory for RejectingDejavuFactory {
+        fn create(
+            &self,
+            _inputs: crate::sync::dejavu_runner::DejavuRunnerInputs,
+            _config: crate::sync::dejavu_runner::DejavuS3Config,
+        ) -> Result<Box<dyn DejavuAttempt>, crate::sync::dejavu_runner::DejavuRunError> {
+            Err(self.0)
+        }
+    }
+
+    struct FailingDejavuAttempt(crate::sync::dejavu_runner::DejavuRunError);
+
+    #[async_trait::async_trait]
+    impl DejavuAttempt for FailingDejavuAttempt {
+        async fn run(
+            &self,
+            _cancelled: Arc<dyn Fn() -> bool + Send + Sync>,
+        ) -> Result<
+            crate::sync::dejavu_runner::DejavuRunResult,
+            crate::sync::dejavu_runner::DejavuRunError,
+        > {
+            Err(self.0)
+        }
+    }
+
     fn has_manifest_below(root: &Path) -> bool {
         let Ok(entries) = std::fs::read_dir(root) else {
             return false;
@@ -1051,6 +2277,155 @@ mod tests {
             path.file_name().is_some_and(|name| name == "manifest.json")
                 || (path.is_dir() && has_manifest_below(&path))
         })
+    }
+
+    struct S3Fixture {
+        address: std::net::SocketAddr,
+        requests: Arc<Mutex<Vec<String>>>,
+        state: Arc<Mutex<S3FixtureState>>,
+        stop: Arc<AtomicBool>,
+        thread: Option<thread::JoinHandle<()>>,
+    }
+
+    #[derive(Default)]
+    struct S3FixtureState {
+        files: BTreeMap<String, StoredFixtureFile>,
+    }
+
+    impl S3Fixture {
+        fn start() -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0").expect("S3 fixture bind");
+            listener
+                .set_nonblocking(true)
+                .expect("nonblocking S3 fixture");
+            let address = listener.local_addr().expect("S3 fixture address");
+            let requests = Arc::new(Mutex::new(Vec::new()));
+            let state = Arc::new(Mutex::new(S3FixtureState::default()));
+            let stop = Arc::new(AtomicBool::new(false));
+            let recorded = requests.clone();
+            let shared_state = state.clone();
+            let should_stop = stop.clone();
+            let thread = thread::spawn(move || {
+                while !should_stop.load(Ordering::Acquire) {
+                    match listener.accept() {
+                        Ok((stream, _)) => {
+                            stream
+                                .set_nonblocking(false)
+                                .expect("blocking accepted S3 connection");
+                            handle_s3_request(stream, &recorded, &shared_state);
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            thread::sleep(Duration::from_millis(1));
+                        }
+                        Err(_) => break,
+                    }
+                }
+            });
+            Self {
+                address,
+                requests,
+                state,
+                stop,
+                thread: Some(thread),
+            }
+        }
+
+        fn endpoint(&self) -> String {
+            format!("http://{}", self.address)
+        }
+
+        fn requests(&self) -> Vec<String> {
+            self.requests.lock().expect("S3 request log").clone()
+        }
+
+        fn file(&self, path: &str) -> Option<Vec<u8>> {
+            self.state
+                .lock()
+                .expect("S3 state")
+                .files
+                .get(path)
+                .map(|file| file.bytes.clone())
+        }
+    }
+
+    impl Drop for S3Fixture {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::Release);
+            let _wake = TcpStream::connect(self.address);
+            if let Some(thread) = self.thread.take() {
+                thread.join().expect("S3 fixture thread");
+            }
+        }
+    }
+
+    fn handle_s3_request(
+        mut stream: TcpStream,
+        requests: &Mutex<Vec<String>>,
+        state: &Mutex<S3FixtureState>,
+    ) {
+        let request = read_request(&mut stream);
+        requests
+            .lock()
+            .expect("S3 request log")
+            .push(format!("{} {}", request.method, request.path));
+        let object_path = request.path.split('?').next().unwrap_or(&request.path);
+        let response = match request.method.as_str() {
+            "GET" if request.path.contains("list-type=2") => s3_list_response(),
+            "PUT" => fixture_s3_put(state, object_path, request.body),
+            "HEAD" => fixture_s3_get(state, object_path, true),
+            "GET" => fixture_s3_get(state, object_path, false),
+            "DELETE" => {
+                state.lock().expect("S3 state").files.remove(object_path);
+                empty_response("204 No Content")
+            }
+            _ => empty_response("405 Method Not Allowed"),
+        };
+        stream.write_all(&response).expect("write S3 response");
+    }
+
+    fn fixture_s3_put(state: &Mutex<S3FixtureState>, path: &str, body: Vec<u8>) -> Vec<u8> {
+        static VERSION: AtomicU64 = AtomicU64::new(1);
+        let version = VERSION.fetch_add(1, Ordering::Relaxed);
+        state.lock().expect("S3 state").files.insert(
+            path.to_owned(),
+            StoredFixtureFile {
+                bytes: body,
+                version,
+            },
+        );
+        format!(
+            "HTTP/1.1 200 OK\r\nETag: \"v{version}\"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        )
+        .into_bytes()
+    }
+
+    fn fixture_s3_get(state: &Mutex<S3FixtureState>, path: &str, head_only: bool) -> Vec<u8> {
+        let state = state.lock().expect("S3 state");
+        let Some(file) = state.files.get(path) else {
+            return empty_response("404 Not Found");
+        };
+        let body = if head_only {
+            &[][..]
+        } else {
+            file.bytes.as_slice()
+        };
+        let mut response = format!(
+            "HTTP/1.1 200 OK\r\nETag: \"v{}\"\r\nLast-Modified: Wed, 30 Jul 2026 00:00:00 GMT\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            file.version,
+            file.bytes.len()
+        )
+        .into_bytes();
+        response.extend_from_slice(body);
+        response
+    }
+
+    fn s3_list_response() -> Vec<u8> {
+        let body = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><ListBucketResult><IsTruncated>false</IsTruncated></ListBucketResult>";
+        format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/xml\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+        .into_bytes()
     }
 
     struct WebDavFixture {

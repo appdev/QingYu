@@ -1,11 +1,10 @@
 //! Read-only compatibility with the desktop DejaVu repository binding state.
 
-#![allow(dead_code)] // Staged until ProductionSyncExecutor composes the S3 runner.
-
 use std::{collections::HashSet, fmt, io::Read, path::PathBuf};
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
+use zeroize::Zeroizing;
 
 use crate::{
     paths::{InstanceDataRoot, WorkspaceRoot},
@@ -22,15 +21,33 @@ const MAX_LOCAL_SYNC_STATE_BYTES: usize = 1024 * 1024;
 struct LegacyLocalSyncState {
     version: u32,
     device_id: String,
-    repo_key: String,
+    repo_key: LegacySensitiveString,
     bindings: Vec<LegacyRepositoryBinding>,
+}
+
+struct LegacySensitiveString(Zeroizing<String>);
+
+impl LegacySensitiveString {
+    fn as_bytes(&self) -> &[u8] {
+        self.0.as_bytes()
+    }
+}
+
+impl<'de> Deserialize<'de> for LegacySensitiveString {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        String::deserialize(deserializer).map(|value| Self(Zeroizing::new(value)))
+    }
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct LegacyRepositoryBinding {
     repository_id: String,
-    display_name: String,
+    #[serde(rename = "displayName")]
+    _display_name: String,
     notes_root: PathBuf,
     enabled: bool,
 }
@@ -54,7 +71,10 @@ impl fmt::Debug for DejavuLocalRepositoryBinding {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct DejavuLocalStateError;
+pub(crate) enum DejavuLocalStateError {
+    InvalidState,
+    Storage,
+}
 
 pub(crate) fn read_active_dejavu_binding(
     instance_data: &InstanceDataRoot,
@@ -62,87 +82,105 @@ pub(crate) fn read_active_dejavu_binding(
 ) -> Result<Option<DejavuLocalRepositoryBinding>, DejavuLocalStateError> {
     instance_data
         .verify_held_directory()
-        .map_err(|_| DejavuLocalStateError)?;
+        .map_err(|_| DejavuLocalStateError::Storage)?;
     workspace
         .verify_held_directory()
-        .map_err(|_| DejavuLocalStateError)?;
+        .map_err(|_| DejavuLocalStateError::Storage)?;
     let directory = instance_data
         .try_clone_dir()
-        .map_err(|_| DejavuLocalStateError)?;
+        .map_err(|_| DejavuLocalStateError::Storage)?;
     let addressed = match directory.symlink_metadata(LOCAL_SYNC_STATE_FILE) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(_) => return Err(DejavuLocalStateError),
+        Err(_) => return Err(DejavuLocalStateError::Storage),
     };
     if addressed.len() > MAX_LOCAL_SYNC_STATE_BYTES as u64 {
-        return Err(DejavuLocalStateError);
+        return Err(DejavuLocalStateError::InvalidState);
     }
-    let expected = unique_regular_file_identity(&addressed).ok_or(DejavuLocalStateError)?;
+    let expected =
+        unique_regular_file_identity(&addressed).ok_or(DejavuLocalStateError::Storage)?;
     let mut file = directory
         .open_with(LOCAL_SYNC_STATE_FILE, &nonfollowing_read_options())
-        .map_err(|_| DejavuLocalStateError)?;
-    if !expected
-        .matches_retained_regular_file(&file.metadata().map_err(|_| DejavuLocalStateError)?, false)
-    {
-        return Err(DejavuLocalStateError);
+        .map_err(|_| DejavuLocalStateError::Storage)?;
+    if !expected.matches_retained_regular_file(
+        &file
+            .metadata()
+            .map_err(|_| DejavuLocalStateError::Storage)?,
+        false,
+    ) {
+        return Err(DejavuLocalStateError::Storage);
     }
-    let mut bytes = Vec::with_capacity(addressed.len() as usize);
+    let mut bytes = Zeroizing::new(Vec::with_capacity(addressed.len() as usize));
     Read::by_ref(&mut file)
         .take(MAX_LOCAL_SYNC_STATE_BYTES as u64 + 1)
         .read_to_end(&mut bytes)
-        .map_err(|_| DejavuLocalStateError)?;
+        .map_err(|_| DejavuLocalStateError::Storage)?;
     if bytes.len() > MAX_LOCAL_SYNC_STATE_BYTES
         || !expected.matches_retained_regular_file(
-            &file.metadata().map_err(|_| DejavuLocalStateError)?,
+            &file
+                .metadata()
+                .map_err(|_| DejavuLocalStateError::Storage)?,
             false,
         )
         || !expected.matches_retained_regular_file(
             &directory
                 .symlink_metadata(LOCAL_SYNC_STATE_FILE)
-                .map_err(|_| DejavuLocalStateError)?,
+                .map_err(|_| DejavuLocalStateError::Storage)?,
             false,
         )
     {
-        return Err(DejavuLocalStateError);
+        return Err(DejavuLocalStateError::Storage);
     }
     instance_data
         .verify_held_directory()
-        .map_err(|_| DejavuLocalStateError)?;
+        .map_err(|_| DejavuLocalStateError::Storage)?;
     workspace
         .verify_held_directory()
-        .map_err(|_| DejavuLocalStateError)?;
+        .map_err(|_| DejavuLocalStateError::Storage)?;
 
     let state: LegacyLocalSyncState =
-        serde_json::from_slice(&bytes).map_err(|_| DejavuLocalStateError)?;
-    if state.version != LOCAL_SYNC_STATE_VERSION {
-        return Err(DejavuLocalStateError);
+        serde_json::from_slice(&bytes).map_err(|_| DejavuLocalStateError::InvalidState)?;
+    let LegacyLocalSyncState {
+        version,
+        device_id,
+        repo_key,
+        bindings,
+    } = state;
+    if version != LOCAL_SYNC_STATE_VERSION {
+        return Err(DejavuLocalStateError::InvalidState);
     }
-    let device = uuid::Uuid::parse_str(&state.device_id).map_err(|_| DejavuLocalStateError)?;
+    let device =
+        uuid::Uuid::parse_str(&device_id).map_err(|_| DejavuLocalStateError::InvalidState)?;
     if device.get_version() != Some(uuid::Version::Random) {
-        return Err(DejavuLocalStateError);
+        return Err(DejavuLocalStateError::InvalidState);
     }
-    let key = STANDARD
-        .decode(state.repo_key.as_bytes())
-        .ok()
-        .and_then(|decoded| <[u8; 32]>::try_from(decoded).ok())
-        .ok_or(DejavuLocalStateError)?;
+    let decoded = Zeroizing::new(
+        STANDARD
+            .decode(repo_key.as_bytes())
+            .map_err(|_| DejavuLocalStateError::InvalidState)?,
+    );
+    let mut key = Zeroizing::new([0_u8; 32]);
+    if decoded.len() != key.len() {
+        return Err(DejavuLocalStateError::InvalidState);
+    }
+    key.copy_from_slice(decoded.as_slice());
     let mut repository_ids = HashSet::new();
     let mut roots = HashSet::new();
     let mut active = None;
-    for binding in state.bindings {
-        if binding.repository_id.is_empty()
+    for binding in bindings {
+        let repository = uuid::Uuid::parse_str(&binding.repository_id)
+            .map_err(|_| DejavuLocalStateError::InvalidState)?
+            .to_string();
+        if repository != binding.repository_id
             || !binding.notes_root.is_absolute()
-            || !repository_ids.insert(binding.repository_id.clone())
+            || !repository_ids.insert(repository.clone())
             || !roots.insert(binding.notes_root.clone())
         {
-            return Err(DejavuLocalStateError);
+            return Err(DejavuLocalStateError::InvalidState);
         }
         if binding.enabled && binding.notes_root == workspace.canonical_path() {
-            let repository = uuid::Uuid::parse_str(&binding.repository_id)
-                .map_err(|_| DejavuLocalStateError)?
-                .to_string();
-            if repository != binding.repository_id || active.is_some() {
-                return Err(DejavuLocalStateError);
+            if active.is_some() {
+                return Err(DejavuLocalStateError::InvalidState);
             }
             active = Some(repository);
         }
@@ -150,7 +188,7 @@ pub(crate) fn read_active_dejavu_binding(
     Ok(active.map(|repository_id| DejavuLocalRepositoryBinding {
         repository_id,
         device_id: device.to_string(),
-        repository_key: DejavuRepositoryKey::new(key),
+        repository_key: DejavuRepositoryKey::new(*key),
     }))
 }
 
@@ -291,9 +329,36 @@ mod tests {
                     paths.workspace_root(),
                 )
                 .expect_err("invalid state"),
-                super::DejavuLocalStateError
+                super::DejavuLocalStateError::InvalidState
             );
         }
+    }
+
+    #[test]
+    fn malformed_inactive_repository_id_invalidates_an_otherwise_active_state() {
+        let temporary = tempdir().expect("fixture root");
+        let (app_data, paths) = paths(&temporary);
+        let mut state = state_value(paths.workspace_root().canonical_path(), true);
+        state["bindings"]
+            .as_array_mut()
+            .expect("bindings array")
+            .push(json!({
+                "repositoryId": "not-a-repository-uuid",
+                "displayName": "Malformed inactive binding",
+                "notesRoot": "/tmp/inactive",
+                "enabled": false
+            }));
+        fs::write(
+            app_data.join("local-sync.json"),
+            serde_json::to_vec(&state).expect("state JSON"),
+        )
+        .expect("state file");
+
+        assert_eq!(
+            super::read_active_dejavu_binding(paths.instance_data_root(), paths.workspace_root(),)
+                .expect_err("every binding identifier must be valid"),
+            super::DejavuLocalStateError::InvalidState
+        );
     }
 
     #[cfg(unix)]
@@ -321,7 +386,7 @@ mod tests {
                     paths.workspace_root(),
                 )
                 .expect_err("linked state"),
-                super::DejavuLocalStateError
+                super::DejavuLocalStateError::Storage
             );
             assert_eq!(fs::read(outside).expect("untouched target"), bytes);
         }
@@ -340,7 +405,7 @@ mod tests {
         assert_eq!(
             super::read_active_dejavu_binding(paths.instance_data_root(), paths.workspace_root(),)
                 .expect_err("oversized state"),
-            super::DejavuLocalStateError
+            super::DejavuLocalStateError::InvalidState
         );
     }
 }

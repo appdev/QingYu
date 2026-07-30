@@ -503,11 +503,20 @@ impl S3Backend {
         Ok(page)
     }
 
+    #[cfg(test)]
     pub(crate) async fn test_connection(&self) -> Result<String, String> {
+        self.test_connection_typed()
+            .await
+            .map_err(|error| s3_connection_test_error(&error))
+    }
+
+    pub(crate) async fn test_connection_typed(&self) -> Result<String, RemoteSyncError> {
         let checked_target = self.prefix.trim_end_matches('/');
-        let mut url =
-            s3_bucket_url(&self.connection).map_err(|_| s3_connection_test_transport_error())?;
-        url.set_query(Some(&connection_test_query(checked_target)?));
+        let mut url = s3_bucket_url(&self.connection)
+            .map_err(|error| RemoteSyncError::unclassified(error.to_string()))?;
+        url.set_query(Some(
+            &connection_test_query(checked_target).map_err(RemoteSyncError::unclassified)?,
+        ));
         let (response, started_at) = self
             .send_with_retry(
                 &self.connection_test_client,
@@ -520,8 +529,7 @@ impl S3Backend {
                 SyncProviderOperation::Catalog,
                 &self.prefix,
             )
-            .await
-            .map_err(|_| s3_connection_test_transport_error())?;
+            .await?;
         if response.status().as_u16() == 200 {
             record_s3_request_succeeded(
                 &self.diagnostic_context,
@@ -542,7 +550,7 @@ impl S3Backend {
             started_at.elapsed(),
         )
         .await;
-        Err(s3_connection_test_error(&error))
+        Err(error)
     }
 }
 
@@ -598,6 +606,7 @@ fn connection_test_query(remote_path: &str) -> Result<String, String> {
     })
 }
 
+#[cfg(test)]
 fn s3_connection_test_error(error: &RemoteSyncError) -> String {
     let Some(diagnostic) = error.details() else {
         return s3_connection_test_transport_error();
@@ -622,6 +631,7 @@ fn s3_connection_test_error(error: &RemoteSyncError) -> String {
     }
 }
 
+#[cfg(test)]
 fn s3_connection_test_transport_error() -> String {
     "project-connection-test-failed: S3 GET request failed.".to_string()
 }
@@ -648,7 +658,14 @@ impl RemoteSyncBackend for S3Backend {
                 break;
             };
             if next_token.is_empty() {
-                return Err("S3 listing returned an empty continuation token".into());
+                return Err(s3_integrity_failure(
+                    &self.diagnostic_context,
+                    SyncProviderOperation::List,
+                    "GET",
+                    &self.prefix,
+                    "s3-list-response-invalid",
+                    Duration::ZERO,
+                ));
             }
             continuation_token = Some(next_token);
         }
@@ -1096,7 +1113,7 @@ mod tests {
     use std::time::{Duration, Instant};
     use zeroize::{Zeroize, ZeroizeOnDrop};
 
-    use super::super::backend::RemoteSyncBackend;
+    use super::super::backend::{RemoteSyncBackend, SyncFailureCategory};
     use super::super::diagnostics::SyncDiagnosticContext;
     use super::{
         connection_test_query, normalize_prefix_segments, object_identity, parse_list_objects_v2,
@@ -1576,6 +1593,33 @@ mod tests {
         handle.join().unwrap();
 
         assert!(bytes.is_empty());
+    }
+
+    #[test]
+    fn empty_listing_continuation_token_is_a_typed_integrity_failure() {
+        let body = "<ListBucketResult><IsTruncated>true</IsTruncated><NextContinuationToken></NextContinuationToken></ListBucketResult>";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let (endpoint_url, _, handle) = spawn_s3_responses_fixture(vec![response]);
+        let backend = S3Backend::new(S3SyncSettings {
+            access_key_id: "access-key".into(),
+            bucket: "bucket".into(),
+            endpoint_url,
+            region: "us-east-1".into(),
+            remote_path: "root/notes/personal".into(),
+            secret_access_key: "secret-key".into(),
+        })
+        .unwrap()
+        .with_diagnostic_context(SyncDiagnosticContext::new("run-empty-token", "settings"));
+
+        let error = test_block_on(backend.list_files()).expect_err("listing must fail");
+        handle.join().unwrap();
+
+        let diagnostic = error.details().expect("typed integrity failure");
+        assert_eq!(diagnostic.category, SyncFailureCategory::Integrity);
+        assert_eq!(diagnostic.code, "s3-list-response-invalid");
     }
 
     #[test]

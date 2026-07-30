@@ -48,7 +48,7 @@ pub struct KernelRuntime {
     documents_api: OnceLock<Arc<dyn DocumentsApiService>>,
     settings_api: OnceLock<Arc<dyn SettingsApiService>>,
     sync_api: OnceLock<Arc<dyn SyncApiService>>,
-    _instance_lease: Arc<InstanceLockLease>,
+    instance_authority: Arc<ActiveInstanceAuthority>,
 }
 
 impl KernelRuntime {
@@ -61,6 +61,10 @@ impl KernelRuntime {
             InstanceLockLease::acquire(paths.instance_data_root())
                 .map_err(KernelStartupError::from_lock)?,
         );
+        let instance_authority = Arc::new(ActiveInstanceAuthority::new(
+            paths.instance_data_root_authority(),
+            instance_lease.clone(),
+        ));
         let workspace_root = paths.workspace_root_authority();
         workspace_root
             .verify_held_directory()
@@ -88,7 +92,7 @@ impl KernelRuntime {
             documents_api: OnceLock::new(),
             settings_api: OnceLock::new(),
             sync_api: OnceLock::new(),
-            _instance_lease: instance_lease,
+            instance_authority,
         }))
     }
 
@@ -104,8 +108,12 @@ impl KernelRuntime {
         self.config.launch_epoch()
     }
 
-    pub(crate) const fn instance_data_root(&self) -> &InstanceDataRoot {
+    pub(crate) fn instance_data_root(&self) -> &InstanceDataRoot {
         self.paths.instance_data_root()
+    }
+
+    pub(crate) fn active_instance_authority(&self) -> Arc<ActiveInstanceAuthority> {
+        self.instance_authority.clone()
     }
 
     /// Deliberately exposes the per-launch bearer value only for the native
@@ -131,7 +139,7 @@ impl KernelRuntime {
     }
 
     pub fn verify_instance_lock(&self) -> Result<(), KernelLockError> {
-        self._instance_lease.verify_held_lock()
+        self.instance_authority.lease.verify_held_lock()
     }
 
     /// Transitional authority-only accessor for path-policy compatibility.
@@ -2001,6 +2009,39 @@ pub struct ActiveWorkspaceAuthority {
     root: Arc<WorkspaceRoot>,
     lease: Arc<WorkspaceLockLease>,
 }
+
+pub(crate) struct ActiveInstanceAuthority {
+    root: Arc<InstanceDataRoot>,
+    lease: Arc<InstanceLockLease>,
+}
+
+impl ActiveInstanceAuthority {
+    fn new(root: Arc<InstanceDataRoot>, lease: Arc<InstanceLockLease>) -> Self {
+        Self { root, lease }
+    }
+
+    pub(crate) fn verify_held_directory(&self) -> Result<(), ActiveInstanceAuthorityError> {
+        self.root
+            .verify_held_directory()
+            .map_err(|_| ActiveInstanceAuthorityError)?;
+        self.lease
+            .verify_held_lock()
+            .map_err(|_| ActiveInstanceAuthorityError)
+    }
+
+    pub(crate) fn root(&self) -> &InstanceDataRoot {
+        self.root.as_ref()
+    }
+}
+
+impl fmt::Debug for ActiveInstanceAuthority {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ActiveInstanceAuthority { capability: held, lock: held }")
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ActiveInstanceAuthorityError;
 
 impl ActiveWorkspaceAuthority {
     fn new(root: Arc<WorkspaceRoot>, lease: Arc<WorkspaceLockLease>) -> Self {

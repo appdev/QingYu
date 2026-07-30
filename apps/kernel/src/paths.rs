@@ -13,7 +13,7 @@ use crate::contract::HostProfile;
 pub struct KernelPaths {
     profile: HostProfile,
     workspace: Arc<WorkspaceRoot>,
-    instance_data: InstanceDataRoot,
+    instance_data: Arc<InstanceDataRoot>,
     cache: CacheRoot,
     _config: PrivateDirectory,
     _logs: PrivateDirectory,
@@ -35,7 +35,7 @@ impl KernelPaths {
         Ok(Self {
             profile: HostProfile::Desktop,
             workspace: Arc::new(WorkspaceRoot::new_host(workspace)?),
-            instance_data: InstanceDataRoot::new(app_data),
+            instance_data: Arc::new(InstanceDataRoot::new(app_data)?),
             cache: CacheRoot::new(cache),
             _config: config,
             _logs: logs,
@@ -82,7 +82,7 @@ impl KernelPaths {
                 collection_identity,
                 managed_name,
             )),
-            instance_data: InstanceDataRoot::new(app_data),
+            instance_data: Arc::new(InstanceDataRoot::new(app_data)?),
             cache: CacheRoot::new(cache),
             _config: config,
             _logs: logs,
@@ -101,8 +101,12 @@ impl KernelPaths {
         self.workspace.clone()
     }
 
-    pub const fn instance_data_root(&self) -> &InstanceDataRoot {
-        &self.instance_data
+    pub fn instance_data_root(&self) -> &InstanceDataRoot {
+        self.instance_data.as_ref()
+    }
+
+    pub(crate) fn instance_data_root_authority(&self) -> Arc<InstanceDataRoot> {
+        self.instance_data.clone()
     }
 
     pub const fn cache_root(&self) -> &CacheRoot {
@@ -338,19 +342,23 @@ pub struct InstanceDataRoot {
     dir: Dir,
     identity: DirectoryIdentity,
     canonical_path: PathBuf,
+    address_anchor: ExactDirectoryAddress,
 }
 
 impl InstanceDataRoot {
-    fn new(opened: OpenedDirectory) -> Self {
-        Self {
+    fn new(opened: OpenedDirectory) -> Result<Self, PathPolicyError> {
+        let address_anchor = ExactDirectoryAddress::new(&opened.canonical_path)?;
+        Ok(Self {
             dir: opened.dir,
             identity: opened.identity,
             canonical_path: opened.canonical_path,
-        }
+            address_anchor,
+        })
     }
 
     pub fn verify_held_directory(&self) -> Result<(), PathPolicyError> {
-        verify_retained_directory(&self.dir, self.identity)
+        verify_retained_directory(&self.dir, self.identity)?;
+        self.address_anchor.verify(self.identity)
     }
 
     pub(crate) fn try_clone_dir(&self) -> Result<Dir, PathPolicyError> {
@@ -476,7 +484,7 @@ impl ServerPathLayout {
         Ok(KernelPaths {
             profile: HostProfile::Server,
             workspace: Arc::new(WorkspaceRoot::new_host(workspace)?),
-            instance_data: InstanceDataRoot::new(state),
+            instance_data: Arc::new(InstanceDataRoot::new(state)?),
             cache: CacheRoot::new(cache),
             _config: PrivateDirectory::new(config),
             _logs: PrivateDirectory::new(logs),

@@ -31,6 +31,7 @@ pub struct RemoteSyncScope {
     source_identity: DirectoryIdentity,
     source_root: PathBuf,
     state_root: PathBuf,
+    state_directory: Dir,
     state_identity: StateDirectoryIdentity,
     manifest_name: String,
     conflict_root: PathBuf,
@@ -233,7 +234,7 @@ impl RemoteSyncScope {
         if requested_state.starts_with(&source_root) {
             return Err("Remote sync state root must be outside the notes source root".into());
         }
-        let (state_root, state_identity) = secure_state_root(requested_state)?;
+        let (state_root, state_directory, state_identity) = secure_state_root(requested_state)?;
         if state_root.starts_with(&source_root) {
             return Err("Remote sync state root must be outside the notes source root".into());
         }
@@ -247,6 +248,7 @@ impl RemoteSyncScope {
             source_identity,
             source_root,
             state_root,
+            state_directory,
             state_identity,
             manifest_name.into(),
             RemoteSyncIncludePolicy::Notes,
@@ -271,17 +273,57 @@ impl RemoteSyncScope {
         if requested_state == app_data_root || !requested_state.starts_with(&app_data_root) {
             return Err("Portable settings state root must be inside app data".into());
         }
-        let (source_root, _) = secure_state_root(requested_state)?;
+        let (source_root, _, _) = secure_state_root(requested_state)?;
         if source_root == app_data_root || !source_root.starts_with(&app_data_root) {
             return Err("Portable settings state root must be inside app data".into());
         }
         let (source_root, source_directory, source_identity) = secure_source_root(&source_root)?;
-        let (state_root, state_identity) = secure_state_root(&source_root.join("engine"))?;
+        let (state_root, state_directory, state_identity) =
+            secure_state_root(&source_root.join("engine"))?;
         Self::new(
             source_directory,
             source_identity,
             source_root,
             state_root,
+            state_directory,
+            state_identity,
+            manifest_name.into(),
+            RemoteSyncIncludePolicy::ExactFile(PORTABLE_SETTINGS_FILE),
+            None,
+            RemoteContentValidator::PortableSettings,
+            None,
+            false,
+            None,
+        )
+    }
+
+    pub(crate) fn portable_settings_from_prepared_directory(
+        app_data_root: PathBuf,
+        app_data_directory: Dir,
+        state_relative: impl AsRef<Path>,
+        manifest_name: impl Into<String>,
+    ) -> Result<Self, String> {
+        if !app_data_root.is_absolute() {
+            return Err("Portable settings app data is unavailable".to_string());
+        }
+        let state_relative = state_relative.as_ref();
+        let source_directory =
+            open_or_create_relative_directory_nofollow(&app_data_directory, state_relative)?;
+        let source_identity = directory_identity(&source_directory)
+            .map_err(|_| "Portable settings state root is unavailable".to_string())?;
+        let source_root = app_data_root.join(state_relative);
+        let state_directory = open_or_create_child_directory_nofollow(&source_directory, "engine")?;
+        let state_identity = state_directory
+            .dir_metadata()
+            .map(|metadata| state_directory_identity(&metadata))
+            .map_err(|_| unsafe_state_root_error())?;
+        let state_root = source_root.join("engine");
+        Self::new(
+            source_directory,
+            source_identity,
+            source_root,
+            state_root,
+            state_directory,
             state_identity,
             manifest_name.into(),
             RemoteSyncIncludePolicy::ExactFile(PORTABLE_SETTINGS_FILE),
@@ -299,6 +341,7 @@ impl RemoteSyncScope {
         source_identity: DirectoryIdentity,
         source_root: PathBuf,
         state_root: PathBuf,
+        state_directory: Dir,
         state_identity: StateDirectoryIdentity,
         manifest_name: String,
         include: RemoteSyncIncludePolicy,
@@ -316,6 +359,7 @@ impl RemoteSyncScope {
             conflict_root: state_root.join("conflicts"),
             staging_root: state_root.join("staging"),
             state_root,
+            state_directory,
             state_identity,
             manifest_name,
             include,
@@ -347,6 +391,17 @@ impl RemoteSyncScope {
     }
 
     pub fn open_state_root(&self) -> Result<Dir, String> {
+        let retained = self
+            .state_directory
+            .try_clone()
+            .map_err(|_| unsafe_state_root_error())?;
+        let retained_identity = retained
+            .dir_metadata()
+            .map(|metadata| state_directory_identity(&metadata))
+            .map_err(|_| unsafe_state_root_error())?;
+        if retained_identity != self.state_identity {
+            return Err(unsafe_state_root_error());
+        }
         let directory = open_existing_directory_nofollow(&self.state_root)?;
         let identity = directory
             .dir_metadata()
@@ -355,7 +410,7 @@ impl RemoteSyncScope {
         if identity != self.state_identity {
             return Err(unsafe_state_root_error());
         }
-        Ok(directory)
+        Ok(retained)
     }
 
     pub fn open_or_create_state_directory(&self, name: &str) -> Result<Dir, String> {
@@ -560,7 +615,7 @@ fn unsafe_state_root_error() -> String {
     "Remote sync state root is unsafe".into()
 }
 
-fn secure_state_root(path: &Path) -> Result<(PathBuf, StateDirectoryIdentity), String> {
+fn secure_state_root(path: &Path) -> Result<(PathBuf, Dir, StateDirectoryIdentity), String> {
     if !path.is_absolute() {
         return Err(unsafe_state_root_error());
     }
@@ -570,7 +625,47 @@ fn secure_state_root(path: &Path) -> Result<(PathBuf, StateDirectoryIdentity), S
         .dir_metadata()
         .map(|metadata| state_directory_identity(&metadata))
         .map_err(|_| unsafe_state_root_error())?;
-    Ok((canonical, identity))
+    Ok((canonical, directory, identity))
+}
+
+fn open_or_create_relative_directory_nofollow(root: &Dir, relative: &Path) -> Result<Dir, String> {
+    let mut directory = root.try_clone().map_err(|_| unsafe_state_root_error())?;
+    let mut saw_component = false;
+    for component in relative.components() {
+        let Component::Normal(name) = component else {
+            return Err(unsafe_state_root_error());
+        };
+        saw_component = true;
+        directory = open_or_create_child_directory_nofollow(&directory, name)?;
+    }
+    if !saw_component {
+        return Err(unsafe_state_root_error());
+    }
+    Ok(directory)
+}
+
+fn open_or_create_child_directory_nofollow(
+    parent: &Dir,
+    name: impl AsRef<OsStr>,
+) -> Result<Dir, String> {
+    let name = name.as_ref();
+    match parent.symlink_metadata(name) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+            return Err(unsafe_state_root_error());
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            if let Err(error) = parent.create_dir(name) {
+                if error.kind() != io::ErrorKind::AlreadyExists {
+                    return Err(unsafe_state_root_error());
+                }
+            } else {
+                sync_created_directory_parent(parent)?;
+            }
+        }
+        Err(_) => return Err(unsafe_state_root_error()),
+    }
+    open_child_directory_nofollow(parent, name)
 }
 
 fn open_or_create_directory_nofollow(path: &Path) -> Result<Dir, String> {
@@ -648,4 +743,46 @@ fn validate_state_component(value: &str) -> Result<(), String> {
         return Err("Remote sync state file name is unsafe".into());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod prepared_directory_tests {
+    use std::fs;
+
+    use cap_std::fs::Dir;
+    use tempfile::tempdir;
+
+    use super::RemoteSyncScope;
+
+    #[test]
+    fn prepared_portable_settings_never_creates_state_in_a_replacement_app_data_root() {
+        let temporary = tempdir().expect("temporary root");
+        let app_data = temporary.path().join("app-data");
+        let retained = temporary.path().join("retained-app-data");
+        fs::create_dir(&app_data).expect("app data");
+        let directory = Dir::open_ambient_dir(&app_data, cap_std::ambient_authority())
+            .expect("retained app data");
+        fs::rename(&app_data, &retained).expect("retain original app data address");
+        fs::create_dir(&app_data).expect("replacement app data");
+
+        let scope = RemoteSyncScope::portable_settings_from_prepared_directory(
+            app_data.clone(),
+            directory,
+            "sync-state/settings/provider",
+            "manifest.json",
+        )
+        .expect("capability-based settings scope");
+
+        assert!(retained
+            .join("sync-state/settings/provider/engine")
+            .is_dir());
+        assert_eq!(
+            fs::read_dir(&app_data).expect("replacement root").count(),
+            0
+        );
+        scope
+            .open_source_root()
+            .expect("retained source remains open");
+        assert!(scope.open_state_root().is_err());
+    }
 }

@@ -48,7 +48,7 @@ impl fmt::Debug for S3Connection {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("S3Connection")
-            .field("endpoint_url", &self.endpoint_url)
+            .field("endpoint_url", &"[REDACTED]")
             .field("region", &self.region)
             .field("bucket", &self.bucket)
             .field("access_key_id", &"[REDACTED]")
@@ -453,7 +453,7 @@ mod credential_lifecycle_tests {
     #[test]
     fn owned_s3_credentials_are_explicitly_zeroizable_and_zeroize_on_drop() {
         let mut connection = S3Connection::new(
-            "https://s3.example.test",
+            "https://s3.example.test/private-tenant-token",
             "us-east-1",
             "notes",
             "private-access-key",
@@ -466,6 +466,7 @@ mod credential_lifecycle_tests {
         let debug = format!("{connection:?}");
         assert!(!debug.contains("private-access-key"));
         assert!(!debug.contains("private-secret-key"));
+        assert!(!debug.contains("private-tenant-token"));
 
         connection.zeroize();
 
