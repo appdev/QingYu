@@ -7,8 +7,8 @@ use argon2::{
 use qingyu_kernel::{
     paths::KernelPaths,
     server::{
-        OwnerPasswordInitializationError, OwnerPasswordVerification, ServerAuthenticationStatus,
-        ServerAuthenticationStore,
+        OwnerPasswordInitializationError, OwnerPasswordRehash, OwnerPasswordUpdateError,
+        OwnerPasswordVerification, ServerAuthenticationStatus, ServerAuthenticationStore,
     },
 };
 use tempfile::tempdir;
@@ -104,6 +104,106 @@ fn valid_legacy_argon2_parameters_are_authorized_but_require_rehash() {
     assert_eq!(
         store.verify_owner_password(OWNER_PASSWORD).unwrap(),
         OwnerPasswordVerification::Authorized { needs_rehash: true }
+    );
+}
+
+#[test]
+fn legacy_password_hash_is_replaced_with_the_current_policy_using_the_verified_password() {
+    let temporary = tempdir().unwrap();
+    let paths = fixture_paths(temporary.path());
+    let weak = Argon2::new(
+        Algorithm::Argon2id,
+        Version::V0x13,
+        Params::new(4096, 1, 1, Some(32)).unwrap(),
+    );
+    let salt = SaltString::encode_b64(&[7_u8; 16]).unwrap();
+    let hash = weak
+        .hash_password(OWNER_PASSWORD.as_bytes(), &salt)
+        .unwrap()
+        .to_string();
+    let authentication_file = temporary.path().join("config/owner-auth-v1.json");
+    fs::write(
+        &authentication_file,
+        serde_json::to_vec(&serde_json::json!({
+            "schemaVersion": 1,
+            "passwordHash": hash,
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let original = fs::read(&authentication_file).unwrap();
+
+    let store = ServerAuthenticationStore::open(paths.config_root()).unwrap();
+    assert_eq!(
+        store
+            .rehash_owner_password("incorrect owner password material".to_owned())
+            .unwrap_err(),
+        OwnerPasswordUpdateError::InvalidCurrentPassword
+    );
+    assert_eq!(fs::read(&authentication_file).unwrap(), original);
+    assert_eq!(
+        store
+            .rehash_owner_password(OWNER_PASSWORD.to_owned())
+            .unwrap(),
+        OwnerPasswordRehash::Updated
+    );
+    assert_eq!(
+        store.verify_owner_password(OWNER_PASSWORD).unwrap(),
+        OwnerPasswordVerification::Authorized {
+            needs_rehash: false
+        }
+    );
+    let updated = fs::read_to_string(authentication_file).unwrap();
+    assert!(updated.contains("m=19456,t=2,p=1"));
+    assert!(!updated.contains(OWNER_PASSWORD));
+}
+
+#[test]
+fn owner_password_change_is_atomic_and_requires_the_current_password_and_a_valid_replacement() {
+    let temporary = tempdir().unwrap();
+    let paths = fixture_paths(temporary.path());
+    let store = ServerAuthenticationStore::open(paths.config_root()).unwrap();
+    store
+        .initialize_owner_password(OWNER_PASSWORD.to_owned())
+        .unwrap();
+    let authentication_file = temporary.path().join("config/owner-auth-v1.json");
+    let original = fs::read(&authentication_file).unwrap();
+
+    assert_eq!(
+        store
+            .change_owner_password(
+                "incorrect owner password material".to_owned(),
+                "short".to_owned(),
+            )
+            .unwrap_err(),
+        OwnerPasswordUpdateError::InvalidCurrentPassword
+    );
+    assert_eq!(fs::read(&authentication_file).unwrap(), original);
+    assert_eq!(
+        store
+            .change_owner_password(OWNER_PASSWORD.to_owned(), "short".to_owned())
+            .unwrap_err(),
+        OwnerPasswordUpdateError::InvalidNewPassword
+    );
+    assert_eq!(fs::read(&authentication_file).unwrap(), original);
+
+    store
+        .change_owner_password(
+            OWNER_PASSWORD.to_owned(),
+            "new owner password material".to_owned(),
+        )
+        .unwrap();
+    assert_eq!(
+        store.verify_owner_password(OWNER_PASSWORD).unwrap(),
+        OwnerPasswordVerification::Rejected
+    );
+    assert_eq!(
+        store
+            .verify_owner_password("new owner password material")
+            .unwrap(),
+        OwnerPasswordVerification::Authorized {
+            needs_rehash: false
+        }
     );
 }
 
@@ -225,4 +325,14 @@ fn authentication_store_debug_and_errors_never_expose_passwords_or_paths() {
     assert!(!rendered.contains(OWNER_PASSWORD));
     assert!(!rendered.contains("rejected owner password material"));
     assert!(!rendered.contains(temporary.path().to_string_lossy().as_ref()));
+
+    let update_error = store
+        .change_owner_password(
+            "rejected current password material".to_owned(),
+            "new secret password material".to_owned(),
+        )
+        .unwrap_err();
+    let update_rendered = format!("{update_error:?} {update_error}");
+    assert!(!update_rendered.contains("rejected current password material"));
+    assert!(!update_rendered.contains("new secret password material"));
 }

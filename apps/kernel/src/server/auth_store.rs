@@ -1,4 +1,7 @@
-use std::fmt;
+use std::{
+    fmt,
+    sync::atomic::{AtomicBool, Ordering},
+};
 
 use argon2::{
     password_hash::{PasswordHash, PasswordHasher as _, PasswordVerifier as _, SaltString},
@@ -11,8 +14,8 @@ use zeroize::{Zeroize as _, Zeroizing};
 use crate::{
     paths::ConfigRoot,
     storage::{
-        CommitState, DurableFileFailureKind, DurableFileStore, ExpectedFile, PreservePrevious,
-        RecoveryOutcome, ReplaceRequest, StorageFileName,
+        CommitState, DurableFileFailureKind, DurableFileStore, ExpectedFile, FileRevision,
+        PreservePrevious, RecoveryOutcome, ReplaceRequest, StorageFileName,
     },
 };
 
@@ -38,6 +41,33 @@ pub enum OwnerPasswordVerification {
     Authorized { needs_rehash: bool },
     Rejected,
 }
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OwnerPasswordRehash {
+    Unchanged,
+    Updated,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum OwnerPasswordUpdateError {
+    InvalidCurrentPassword,
+    InvalidNewPassword,
+    StateUnavailable,
+    StateUncertain,
+}
+
+impl fmt::Display for OwnerPasswordUpdateError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::InvalidCurrentPassword => "current owner password is not authorized",
+            Self::InvalidNewPassword => "new owner password is invalid",
+            Self::StateUnavailable => "server authentication state is unavailable",
+            Self::StateUncertain => "server authentication publication is uncertain",
+        })
+    }
+}
+
+impl std::error::Error for OwnerPasswordUpdateError {}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum OwnerPasswordInitializationError {
@@ -75,11 +105,14 @@ pub struct ServerAuthenticationStore {
     config_root: ConfigRoot,
     store: DurableFileStore,
     target: StorageFileName,
+    state_uncertain: AtomicBool,
 }
 
 impl ServerAuthenticationStore {
     /// Opens authentication state below the retained, non-synchronized config root.
     /// The caller must retain the matching Kernel instance lock for this store's lifetime.
+    /// Construct exactly one store per server process launch. A publication uncertainty
+    /// latches that store closed; reconstruction is reserved for process-level recovery.
     pub fn open(config_root: &ConfigRoot) -> Result<Self, ServerAuthenticationError> {
         config_root
             .verify_held_directory()
@@ -94,6 +127,35 @@ impl ServerAuthenticationStore {
             config_root.canonical_path().to_path_buf(),
             Uuid::new_v4(),
         );
+        Self::finish_open(config_root, store)
+    }
+
+    #[cfg(test)]
+    pub(super) fn open_with_test_fault(
+        config_root: &ConfigRoot,
+        fault: crate::storage::DurableFileTestFault,
+    ) -> Result<Self, ServerAuthenticationError> {
+        config_root
+            .verify_held_directory()
+            .map_err(|_| ServerAuthenticationError)?;
+        let config_root = config_root
+            .try_clone_root()
+            .map_err(|_| ServerAuthenticationError)?;
+        let store = DurableFileStore::at_retained_directory_with_test_fault(
+            config_root
+                .try_clone_dir()
+                .map_err(|_| ServerAuthenticationError)?,
+            config_root.canonical_path().to_path_buf(),
+            Uuid::new_v4(),
+            fault,
+        );
+        Self::finish_open(config_root, store)
+    }
+
+    fn finish_open(
+        config_root: ConfigRoot,
+        store: DurableFileStore,
+    ) -> Result<Self, ServerAuthenticationError> {
         let recovery = store.recover().map_err(|_| ServerAuthenticationError)?;
         if recovery
             .iter()
@@ -106,8 +168,9 @@ impl ServerAuthenticationStore {
             store,
             target: StorageFileName::parse(AUTHENTICATION_FILE)
                 .map_err(|_| ServerAuthenticationError)?,
+            state_uncertain: AtomicBool::new(false),
         };
-        let _state = this.read_state()?;
+        let _state = this.read_snapshot()?;
         this.config_root
             .verify_held_directory()
             .map_err(|_| ServerAuthenticationError)?;
@@ -115,7 +178,7 @@ impl ServerAuthenticationStore {
     }
 
     pub fn status(&self) -> Result<ServerAuthenticationStatus, ServerAuthenticationError> {
-        Ok(match self.read_state()? {
+        Ok(match self.read_snapshot()? {
             None => ServerAuthenticationStatus::NeedsInitialization,
             Some(_) => ServerAuthenticationStatus::Ready,
         })
@@ -126,13 +189,16 @@ impl ServerAuthenticationStore {
         password: String,
     ) -> Result<(), OwnerPasswordInitializationError> {
         let mut password = Zeroizing::new(password);
+        if self.state_uncertain.load(Ordering::Acquire) {
+            return Err(OwnerPasswordInitializationError::StateUncertain);
+        }
         if !valid_owner_password(password.as_bytes()) {
             return Err(OwnerPasswordInitializationError::InvalidPassword);
         }
         self.config_root
             .verify_held_directory()
             .map_err(|_| OwnerPasswordInitializationError::StateUnavailable)?;
-        match self.read_state() {
+        match self.read_snapshot() {
             Ok(None) => {}
             Ok(Some(_)) => return Err(OwnerPasswordInitializationError::AlreadyInitialized),
             Err(_) => return Err(OwnerPasswordInitializationError::StateUnavailable),
@@ -148,31 +214,35 @@ impl ServerAuthenticationStore {
             serde_json::to_vec(&state)
                 .map_err(|_| OwnerPasswordInitializationError::StateUnavailable)?,
         );
-        let outcome = self
-            .store
-            .replace_with_address_validation(
-                ReplaceRequest {
-                    target: &self.target,
-                    bytes: serialized.as_slice(),
-                    expected: ExpectedFile::Absent,
-                    preserve_previous: PreservePrevious::None,
-                },
-                || self.config_root.verify_held_directory().is_ok(),
-            )
-            .map_err(|error| match error.kind() {
-                DurableFileFailureKind::RevisionConflict => {
-                    OwnerPasswordInitializationError::AlreadyInitialized
-                }
-                DurableFileFailureKind::PublishStateUncertain
-                | DurableFileFailureKind::RecoveryRequired => {
-                    OwnerPasswordInitializationError::StateUncertain
-                }
-                _ => OwnerPasswordInitializationError::StateUnavailable,
-            })?;
+        let outcome = match self.store.replace_with_address_validation(
+            ReplaceRequest {
+                target: &self.target,
+                bytes: serialized.as_slice(),
+                expected: ExpectedFile::Absent,
+                preserve_previous: PreservePrevious::None,
+            },
+            || self.config_root.verify_held_directory().is_ok(),
+        ) {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                return Err(match error.kind() {
+                    DurableFileFailureKind::RevisionConflict => {
+                        OwnerPasswordInitializationError::AlreadyInitialized
+                    }
+                    DurableFileFailureKind::PublishStateUncertain
+                    | DurableFileFailureKind::RecoveryRequired => {
+                        self.latch_uncertain_and_reload();
+                        OwnerPasswordInitializationError::StateUncertain
+                    }
+                    _ => OwnerPasswordInitializationError::StateUnavailable,
+                })
+            }
+        };
         serialized.zeroize();
         match outcome.commit_state {
             CommitState::Durable | CommitState::AtomicVisibility => Ok(()),
             CommitState::PublishedDurabilityUncertain => {
+                self.latch_uncertain_and_reload();
                 Err(OwnerPasswordInitializationError::StateUncertain)
             }
         }
@@ -182,22 +252,143 @@ impl ServerAuthenticationStore {
         &self,
         candidate: &str,
     ) -> Result<OwnerPasswordVerification, ServerAuthenticationError> {
-        let state = self.read_state()?.ok_or(ServerAuthenticationError)?;
-        let parsed = parse_password_hash(&state.password_hash)?;
-        if production_argon2()
-            .verify_password(candidate.as_bytes(), &parsed)
-            .is_err()
-        {
-            return Ok(OwnerPasswordVerification::Rejected);
-        }
-        Ok(OwnerPasswordVerification::Authorized {
-            needs_rehash: password_hash_needs_rehash(&parsed),
-        })
+        let snapshot = self.read_snapshot()?.ok_or(ServerAuthenticationError)?;
+        verify_password_against_state(candidate.as_bytes(), &snapshot.state)
     }
 
-    fn read_state(
+    /// Replaces an accepted legacy PHC with the current Argon2 policy.
+    ///
+    /// The password is verified again against the revision used by the CAS so
+    /// callers cannot publish a rehash based on a stale authentication read.
+    pub fn rehash_owner_password(
         &self,
-    ) -> Result<Option<PersistentAuthenticationState>, ServerAuthenticationError> {
+        password: String,
+    ) -> Result<OwnerPasswordRehash, OwnerPasswordUpdateError> {
+        let password = Zeroizing::new(password);
+        self.ensure_update_available()?;
+        let snapshot = self
+            .read_snapshot()
+            .map_err(|_| OwnerPasswordUpdateError::StateUnavailable)?
+            .ok_or(OwnerPasswordUpdateError::StateUnavailable)?;
+        match verify_password_against_state(password.as_bytes(), &snapshot.state)
+            .map_err(|_| OwnerPasswordUpdateError::StateUnavailable)?
+        {
+            OwnerPasswordVerification::Rejected => {
+                return Err(OwnerPasswordUpdateError::InvalidCurrentPassword);
+            }
+            OwnerPasswordVerification::Authorized {
+                needs_rehash: false,
+            } => return Ok(OwnerPasswordRehash::Unchanged),
+            OwnerPasswordVerification::Authorized { needs_rehash: true } => {}
+        }
+        self.replace_password_hash(&snapshot.revision, password.as_bytes())?;
+        Ok(OwnerPasswordRehash::Updated)
+    }
+
+    /// Atomically replaces the fixed owner's password after verifying the
+    /// current password against the same persistent revision. Any uncertain
+    /// publication latches every read and mutation closed until reconstruction.
+    pub fn change_owner_password(
+        &self,
+        current_password: String,
+        new_password: String,
+    ) -> Result<(), OwnerPasswordUpdateError> {
+        let current_password = Zeroizing::new(current_password);
+        let new_password = Zeroizing::new(new_password);
+        self.ensure_update_available()?;
+        let snapshot = self
+            .read_snapshot()
+            .map_err(|_| OwnerPasswordUpdateError::StateUnavailable)?
+            .ok_or(OwnerPasswordUpdateError::StateUnavailable)?;
+        match verify_password_against_state(current_password.as_bytes(), &snapshot.state)
+            .map_err(|_| OwnerPasswordUpdateError::StateUnavailable)?
+        {
+            OwnerPasswordVerification::Rejected => {
+                return Err(OwnerPasswordUpdateError::InvalidCurrentPassword);
+            }
+            OwnerPasswordVerification::Authorized { .. } => {}
+        }
+        if !valid_owner_password(new_password.as_bytes()) {
+            return Err(OwnerPasswordUpdateError::InvalidNewPassword);
+        }
+        self.replace_password_hash(&snapshot.revision, new_password.as_bytes())
+    }
+
+    fn replace_password_hash(
+        &self,
+        expected_revision: &FileRevision,
+        password: &[u8],
+    ) -> Result<(), OwnerPasswordUpdateError> {
+        self.config_root
+            .verify_held_directory()
+            .map_err(|_| OwnerPasswordUpdateError::StateUnavailable)?;
+        let state = PersistentAuthenticationState {
+            schema_version: AUTHENTICATION_SCHEMA_VERSION,
+            password_hash: hash_owner_password(password)
+                .map_err(|_| OwnerPasswordUpdateError::StateUnavailable)?,
+        };
+        let serialized = Zeroizing::new(
+            serde_json::to_vec(&state).map_err(|_| OwnerPasswordUpdateError::StateUnavailable)?,
+        );
+        let outcome = match self.store.replace_with_address_validation(
+            ReplaceRequest {
+                target: &self.target,
+                bytes: serialized.as_slice(),
+                expected: ExpectedFile::Revision(expected_revision),
+                preserve_previous: PreservePrevious::None,
+            },
+            || self.config_root.verify_held_directory().is_ok(),
+        ) {
+            Ok(outcome) => outcome,
+            Err(error) => return Err(self.reconcile_update_failure(error.kind())),
+        };
+        match outcome.commit_state {
+            CommitState::Durable | CommitState::AtomicVisibility => {
+                if self.config_root.verify_held_directory().is_err() {
+                    self.latch_uncertain_and_reload();
+                    return Err(OwnerPasswordUpdateError::StateUncertain);
+                }
+                Ok(())
+            }
+            CommitState::PublishedDurabilityUncertain => {
+                Err(self.reconcile_update_failure(DurableFileFailureKind::PublishStateUncertain))
+            }
+        }
+    }
+
+    fn reconcile_update_failure(
+        &self,
+        failure: DurableFileFailureKind,
+    ) -> OwnerPasswordUpdateError {
+        let uncertain = matches!(
+            failure,
+            DurableFileFailureKind::RevisionConflict
+                | DurableFileFailureKind::PublishStateUncertain
+                | DurableFileFailureKind::RecoveryRequired
+        );
+        if !uncertain {
+            return OwnerPasswordUpdateError::StateUnavailable;
+        }
+        self.latch_uncertain_and_reload();
+        OwnerPasswordUpdateError::StateUncertain
+    }
+
+    fn read_snapshot(
+        &self,
+    ) -> Result<Option<PersistentAuthenticationSnapshot>, ServerAuthenticationError> {
+        if self.state_uncertain.load(Ordering::Acquire) {
+            return Err(ServerAuthenticationError);
+        }
+        let snapshot = self.read_snapshot_unchecked()?;
+        if self.state_uncertain.load(Ordering::Acquire) {
+            return Err(ServerAuthenticationError);
+        }
+        Ok(snapshot)
+    }
+
+    fn read_snapshot_unchecked(
+        &self,
+    ) -> Result<Option<PersistentAuthenticationSnapshot>, ServerAuthenticationError> {
         self.config_root
             .verify_held_directory()
             .map_err(|_| ServerAuthenticationError)?;
@@ -220,7 +411,23 @@ impl ServerAuthenticationStore {
             return Err(ServerAuthenticationError);
         }
         let _parsed = parse_password_hash(&state.password_hash)?;
-        Ok(Some(state))
+        Ok(Some(PersistentAuthenticationSnapshot {
+            state,
+            revision: stored.revision.clone(),
+        }))
+    }
+
+    fn ensure_update_available(&self) -> Result<(), OwnerPasswordUpdateError> {
+        if self.state_uncertain.load(Ordering::Acquire) {
+            Err(OwnerPasswordUpdateError::StateUncertain)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn latch_uncertain_and_reload(&self) {
+        self.state_uncertain.store(true, Ordering::Release);
+        let _reconciled_state = self.read_snapshot_unchecked();
     }
 }
 
@@ -235,6 +442,17 @@ impl fmt::Debug for ServerAuthenticationStore {
 struct PersistentAuthenticationState {
     schema_version: u32,
     password_hash: String,
+}
+
+impl Drop for PersistentAuthenticationState {
+    fn drop(&mut self) {
+        self.password_hash.zeroize();
+    }
+}
+
+struct PersistentAuthenticationSnapshot {
+    state: PersistentAuthenticationState,
+    revision: FileRevision,
 }
 
 fn valid_owner_password(password: &[u8]) -> bool {
@@ -268,6 +486,22 @@ fn parse_password_hash(value: &str) -> Result<PasswordHash<'_>, ServerAuthentica
     PasswordHash::new(value).map_err(|_| ServerAuthenticationError)
 }
 
+fn verify_password_against_state(
+    candidate: &[u8],
+    state: &PersistentAuthenticationState,
+) -> Result<OwnerPasswordVerification, ServerAuthenticationError> {
+    let parsed = parse_password_hash(&state.password_hash)?;
+    if production_argon2()
+        .verify_password(candidate, &parsed)
+        .is_err()
+    {
+        return Ok(OwnerPasswordVerification::Rejected);
+    }
+    Ok(OwnerPasswordVerification::Authorized {
+        needs_rehash: password_hash_needs_rehash(&parsed),
+    })
+}
+
 fn password_hash_needs_rehash(hash: &PasswordHash<'_>) -> bool {
     hash.algorithm.as_str() != "argon2id"
         || hash.version != Some(ARGON2_VERSION_NUMBER)
@@ -275,4 +509,140 @@ fn password_hash_needs_rehash(hash: &PasswordHash<'_>) -> bool {
         || hash.params.get_decimal("t") != Some(ARGON2_ITERATIONS)
         || hash.params.get_decimal("p") != Some(ARGON2_PARALLELISM)
         || hash.hash.as_ref().map(|output| output.len()) != Some(ARGON2_OUTPUT_BYTES)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{fs, path::Path};
+
+    use tempfile::tempdir;
+
+    use super::*;
+    use crate::{paths::KernelPaths, storage::DurableFileTestFault};
+
+    const OWNER_PASSWORD: &str = "correct horse battery staple";
+    const NEW_PASSWORD: &str = "new owner password material";
+
+    fn fixture_paths(root: &Path) -> KernelPaths {
+        let workspace = root.join("workspace");
+        let config = root.join("config");
+        let cache = root.join("cache");
+        fs::create_dir_all(&workspace).unwrap();
+        fs::create_dir_all(&config).unwrap();
+        fs::create_dir_all(&cache).unwrap();
+        KernelPaths::desktop(&workspace, &config, &cache).unwrap()
+    }
+
+    #[test]
+    fn stale_revision_is_reloaded_but_the_update_still_fails_closed() {
+        let temporary = tempdir().unwrap();
+        let paths = fixture_paths(temporary.path());
+        let store = ServerAuthenticationStore::open(paths.config_root()).unwrap();
+        store
+            .initialize_owner_password(OWNER_PASSWORD.to_owned())
+            .unwrap();
+        let stale = store.read_snapshot().unwrap().unwrap();
+        store
+            .change_owner_password(OWNER_PASSWORD.to_owned(), NEW_PASSWORD.to_owned())
+            .unwrap();
+
+        assert_eq!(
+            store
+                .replace_password_hash(&stale.revision, b"third owner password material",)
+                .unwrap_err(),
+            OwnerPasswordUpdateError::StateUncertain
+        );
+        assert_eq!(
+            store.verify_owner_password(NEW_PASSWORD),
+            Err(ServerAuthenticationError)
+        );
+        let reopened = ServerAuthenticationStore::open(paths.config_root()).unwrap();
+        assert_eq!(
+            reopened.verify_owner_password(NEW_PASSWORD).unwrap(),
+            OwnerPasswordVerification::Authorized {
+                needs_rehash: false
+            }
+        );
+        assert_eq!(
+            reopened
+                .verify_owner_password("third owner password material")
+                .unwrap(),
+            OwnerPasswordVerification::Rejected
+        );
+    }
+
+    #[test]
+    fn durability_uncertainty_reloads_visible_state_and_never_reports_success() {
+        let temporary = tempdir().unwrap();
+        let paths = fixture_paths(temporary.path());
+        ServerAuthenticationStore::open(paths.config_root())
+            .unwrap()
+            .initialize_owner_password(OWNER_PASSWORD.to_owned())
+            .unwrap();
+        let store = ServerAuthenticationStore::open_with_test_fault(
+            paths.config_root(),
+            DurableFileTestFault::ParentSyncFailure,
+        )
+        .unwrap();
+
+        assert_eq!(
+            store
+                .change_owner_password(OWNER_PASSWORD.to_owned(), NEW_PASSWORD.to_owned())
+                .unwrap_err(),
+            OwnerPasswordUpdateError::StateUncertain
+        );
+        assert_eq!(
+            store.verify_owner_password(NEW_PASSWORD),
+            Err(ServerAuthenticationError)
+        );
+        assert_eq!(
+            store
+                .change_owner_password(
+                    NEW_PASSWORD.to_owned(),
+                    "third owner password material".to_owned(),
+                )
+                .unwrap_err(),
+            OwnerPasswordUpdateError::StateUncertain
+        );
+        drop(store);
+        let reopened = ServerAuthenticationStore::open(paths.config_root()).unwrap();
+        assert_eq!(
+            reopened.verify_owner_password(NEW_PASSWORD).unwrap(),
+            OwnerPasswordVerification::Authorized {
+                needs_rehash: false
+            }
+        );
+    }
+
+    #[test]
+    fn initialization_uncertainty_latches_authentication_until_recovery() {
+        let temporary = tempdir().unwrap();
+        let paths = fixture_paths(temporary.path());
+        let store = ServerAuthenticationStore::open_with_test_fault(
+            paths.config_root(),
+            DurableFileTestFault::ParentSyncFailure,
+        )
+        .unwrap();
+
+        assert_eq!(
+            store
+                .initialize_owner_password(OWNER_PASSWORD.to_owned())
+                .unwrap_err(),
+            OwnerPasswordInitializationError::StateUncertain
+        );
+        assert_eq!(store.status(), Err(ServerAuthenticationError));
+        drop(store);
+
+        let reopened = ServerAuthenticationStore::open(paths.config_root()).unwrap();
+        assert_eq!(
+            reopened.status().unwrap(),
+            ServerAuthenticationStatus::Ready
+        );
+        assert_eq!(
+            reopened.verify_owner_password(OWNER_PASSWORD).unwrap(),
+            OwnerPasswordVerification::Authorized {
+                needs_rehash: false
+            }
+        );
+    }
 }

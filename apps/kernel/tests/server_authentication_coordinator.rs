@@ -249,7 +249,7 @@ fn global_in_flight_admission_happens_before_password_verification() {
 }
 
 #[test]
-fn a_legacy_password_hash_is_authorized_with_a_rehash_signal() {
+fn a_legacy_password_hash_is_upgraded_before_a_session_is_issued() {
     let temporary = tempdir().unwrap();
     let paths = fixture_paths(temporary.path());
     let weak = Argon2::new(
@@ -273,10 +273,183 @@ fn a_legacy_password_hash_is_authorized_with_a_rehash_signal() {
     .unwrap();
     let authentication = Arc::new(ServerAuthenticationStore::open(paths.config_root()).unwrap());
 
-    let login = coordinator(authentication, 3)
+    let login = coordinator(Arc::clone(&authentication), 3)
         .login(7, Duration::from_secs(0), OWNER_PASSWORD.to_owned())
         .unwrap();
-    assert!(login.needs_rehash());
+    assert!(!login.needs_rehash());
+    assert_eq!(
+        authentication
+            .verify_owner_password(OWNER_PASSWORD)
+            .unwrap(),
+        qingyu_kernel::server::OwnerPasswordVerification::Authorized {
+            needs_rehash: false
+        }
+    );
+}
+
+#[test]
+fn password_change_requires_csrf_and_current_password_without_revoking_on_rejection() {
+    let temporary = tempdir().unwrap();
+    let paths = fixture_paths(temporary.path());
+    let coordinator = coordinator(initialized_store(&paths), 3);
+    let login = coordinator
+        .login(7, Duration::from_secs(0), OWNER_PASSWORD.to_owned())
+        .unwrap();
+
+    assert_eq!(
+        coordinator
+            .change_password(
+                login.session().credential(),
+                None,
+                Duration::from_secs(1),
+                OWNER_PASSWORD.to_owned(),
+                "new owner password material".to_owned(),
+            )
+            .unwrap_err(),
+        ServerAuthenticationCoordinatorError::CsrfRejected
+    );
+    assert_eq!(
+        coordinator
+            .change_password(
+                login.session().credential(),
+                Some(login.session().csrf_token()),
+                Duration::from_secs(2),
+                INCORRECT_PASSWORD.to_owned(),
+                "new owner password material".to_owned(),
+            )
+            .unwrap_err(),
+        ServerAuthenticationCoordinatorError::InvalidCredentials
+    );
+    assert_eq!(
+        coordinator
+            .change_password(
+                login.session().credential(),
+                Some(login.session().csrf_token()),
+                Duration::from_secs(3),
+                OWNER_PASSWORD.to_owned(),
+                "short".to_owned(),
+            )
+            .unwrap_err(),
+        ServerAuthenticationCoordinatorError::InvalidPassword
+    );
+    assert_eq!(
+        coordinator
+            .change_password(
+                "invalid session credential",
+                Some(login.session().csrf_token()),
+                Duration::from_secs(3),
+                OWNER_PASSWORD.to_owned(),
+                "new owner password material".to_owned(),
+            )
+            .unwrap_err(),
+        ServerAuthenticationCoordinatorError::InvalidSession
+    );
+    assert!(matches!(
+        coordinator
+            .authorize(
+                login.session().credential(),
+                None,
+                RequestIntent::ReadOnly,
+                Duration::from_secs(4),
+            )
+            .unwrap(),
+        SessionAuthorization::Authorized { .. }
+    ));
+    coordinator
+        .login(7, Duration::from_secs(5), OWNER_PASSWORD.to_owned())
+        .unwrap();
+}
+
+#[test]
+fn successful_password_change_revokes_every_existing_session_and_only_new_password_logs_in() {
+    let temporary = tempdir().unwrap();
+    let paths = fixture_paths(temporary.path());
+    let coordinator = coordinator(initialized_store(&paths), 3);
+    let first = coordinator
+        .login(7, Duration::from_secs(0), OWNER_PASSWORD.to_owned())
+        .unwrap();
+    let second = coordinator
+        .login(8, Duration::from_secs(1), OWNER_PASSWORD.to_owned())
+        .unwrap();
+
+    assert_eq!(
+        coordinator
+            .change_password(
+                first.session().credential(),
+                Some(first.session().csrf_token()),
+                Duration::from_secs(2),
+                OWNER_PASSWORD.to_owned(),
+                "new owner password material".to_owned(),
+            )
+            .unwrap(),
+        2
+    );
+    for login in [&first, &second] {
+        assert_eq!(
+            coordinator
+                .authorize(
+                    login.session().credential(),
+                    None,
+                    RequestIntent::ReadOnly,
+                    Duration::from_secs(3),
+                )
+                .unwrap(),
+            SessionAuthorization::InvalidSession
+        );
+    }
+    assert_eq!(
+        coordinator
+            .login(7, Duration::from_secs(4), OWNER_PASSWORD.to_owned())
+            .unwrap_err(),
+        ServerAuthenticationCoordinatorError::InvalidCredentials
+    );
+    coordinator
+        .login(
+            7,
+            Duration::from_secs(5),
+            "new owner password material".to_owned(),
+        )
+        .unwrap();
+}
+
+#[test]
+fn unavailable_password_state_during_change_revokes_the_authorizing_session() {
+    let temporary = tempdir().unwrap();
+    let paths = fixture_paths(temporary.path());
+    let coordinator = coordinator(initialized_store(&paths), 3);
+    let login = coordinator
+        .login(7, Duration::from_secs(0), OWNER_PASSWORD.to_owned())
+        .unwrap();
+    fs::rename(
+        temporary.path().join("config"),
+        temporary.path().join("displaced-config"),
+    )
+    .unwrap();
+    fs::create_dir(temporary.path().join("config")).unwrap();
+
+    assert_eq!(
+        coordinator
+            .change_password(
+                login.session().credential(),
+                Some(login.session().csrf_token()),
+                Duration::from_secs(1),
+                OWNER_PASSWORD.to_owned(),
+                "new owner password material".to_owned(),
+            )
+            .unwrap_err(),
+        ServerAuthenticationCoordinatorError::StateUnavailable
+    );
+    assert_eq!(
+        coordinator
+            .authorize(
+                login.session().credential(),
+                None,
+                RequestIntent::ReadOnly,
+                Duration::from_secs(2),
+            )
+            .unwrap(),
+        SessionAuthorization::InvalidSession
+    );
 }
 
 #[test]
