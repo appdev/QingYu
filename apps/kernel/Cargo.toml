@@ -1,3 +1,8 @@
+[workspace]
+members = [".", "crates/qingyu-dejavu"]
+default-members = ["."]
+resolver = "2"
+
 [package]
 name = "qingyu-kernel"
 version = "2.1.0"
