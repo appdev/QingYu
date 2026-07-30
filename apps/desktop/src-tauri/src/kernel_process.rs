@@ -433,7 +433,10 @@ mod tests {
     use qingyu_kernel::host::native::NativeHostWorkspaceState;
 
     use super::{sidecar_path_for_executable, NativeKernelProcessFactory};
-    use crate::kernel_host::{KernelHostSupervisor, KernelHostTimeouts, NativeKernelLaunch};
+    use crate::{
+        kernel_host::{KernelHostSupervisor, KernelHostTimeouts, NativeKernelLaunch},
+        writer_authority::{KernelWriterPublicationGate, WorkspaceRootIdentity, WriterAuthority},
+    };
 
     #[test]
     fn sidecar_is_resolved_beside_the_application_executable() {
@@ -467,6 +470,12 @@ mod tests {
         std::fs::create_dir_all(&workspace).unwrap();
         std::fs::create_dir_all(&app_data).unwrap();
         std::fs::create_dir_all(&cache).unwrap();
+        let writer_root = WorkspaceRootIdentity::open(&workspace).unwrap();
+        let writer_gate = KernelWriterPublicationGate::new(
+            WriterAuthority::new(writer_root.clone()),
+            writer_root,
+        )
+        .unwrap();
         let launch = NativeKernelLaunch::desktop(
             workspace.clone(),
             app_data,
@@ -479,6 +488,7 @@ mod tests {
         let supervisor = KernelHostSupervisor::new(
             Arc::new(factory),
             KernelHostTimeouts::uniform(Duration::from_secs(10)),
+            writer_gate,
         );
 
         let access = supervisor.start(launch).await.unwrap();
