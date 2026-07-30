@@ -726,6 +726,124 @@ pub struct SystemVersionResponse {
     pub instance_id: InstanceId,
 }
 
+wire_enum!(ServerInitializationState {
+    Required,
+    Initialized,
+    Unavailable,
+});
+
+wire_enum!(ServerSessionState { Authenticated });
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ServerAuthenticationStatusDto {
+    pub initialization: ServerInitializationState,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ServerSessionDto {
+    pub state: ServerSessionState,
+}
+
+#[derive(Deserialize, Eq, PartialEq, ToSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct InitializeServerOwnerRequest {
+    #[schema(write_only)]
+    initialization_token: String,
+    #[schema(write_only)]
+    password: String,
+}
+
+impl InitializeServerOwnerRequest {
+    pub fn into_parts(mut self) -> (String, String) {
+        (
+            std::mem::take(&mut self.initialization_token),
+            std::mem::take(&mut self.password),
+        )
+    }
+}
+
+impl fmt::Debug for InitializeServerOwnerRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("InitializeServerOwnerRequest")
+            .field("initialization_token", &"[REDACTED]")
+            .field("password", &"[REDACTED]")
+            .finish()
+    }
+}
+
+impl Drop for InitializeServerOwnerRequest {
+    fn drop(&mut self) {
+        self.initialization_token.zeroize();
+        self.password.zeroize();
+    }
+}
+
+#[derive(Deserialize, Eq, PartialEq, ToSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct CreateServerSessionRequest {
+    #[schema(write_only)]
+    password: String,
+}
+
+impl CreateServerSessionRequest {
+    pub fn into_password(mut self) -> String {
+        std::mem::take(&mut self.password)
+    }
+}
+
+impl fmt::Debug for CreateServerSessionRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("CreateServerSessionRequest")
+            .field("password", &"[REDACTED]")
+            .finish()
+    }
+}
+
+impl Drop for CreateServerSessionRequest {
+    fn drop(&mut self) {
+        self.password.zeroize();
+    }
+}
+
+#[derive(Deserialize, Eq, PartialEq, ToSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ChangeServerOwnerPasswordRequest {
+    #[schema(write_only)]
+    current_password: String,
+    #[schema(write_only)]
+    new_password: String,
+}
+
+impl ChangeServerOwnerPasswordRequest {
+    pub fn into_parts(mut self) -> (String, String) {
+        (
+            std::mem::take(&mut self.current_password),
+            std::mem::take(&mut self.new_password),
+        )
+    }
+}
+
+impl fmt::Debug for ChangeServerOwnerPasswordRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ChangeServerOwnerPasswordRequest")
+            .field("current_password", &"[REDACTED]")
+            .field("new_password", &"[REDACTED]")
+            .finish()
+    }
+}
+
+impl Drop for ChangeServerOwnerPasswordRequest {
+    fn drop(&mut self) {
+        self.current_password.zeroize();
+        self.new_password.zeroize();
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct RuntimeCapabilitiesDto {
@@ -2077,6 +2195,12 @@ pub enum ErrorCode {
     InvalidWorkspacePath,
     InvalidDocumentName,
     Unauthorized,
+    InitializationRequired,
+    AlreadyInitialized,
+    InvalidCredentials,
+    CsrfRejected,
+    AuthenticationRateLimited,
+    AuthenticationUnavailable,
     HostNotAllowed,
     OriginNotAllowed,
     KernelNotReady,
@@ -2296,6 +2420,9 @@ pub enum ErrorDetails {
     },
     Startup {
         state: StartupState,
+    },
+    RateLimit {
+        retry_after_seconds: SafeUnsignedInteger,
     },
 }
 

@@ -283,6 +283,12 @@ const API_ERROR_CODES: ReadonlySet<KernelApiErrorCode> = new Set([
   "invalid_workspace_path",
   "invalid_document_name",
   "unauthorized",
+  "initialization_required",
+  "already_initialized",
+  "invalid_credentials",
+  "csrf_rejected",
+  "authentication_rate_limited",
+  "authentication_unavailable",
   "host_not_allowed",
   "origin_not_allowed",
   "kernel_not_ready",
@@ -307,12 +313,15 @@ const API_ERROR_CODES: ReadonlySet<KernelApiErrorCode> = new Set([
 
 const ERROR_STATUS: Record<KernelApiErrorCode, number> = {
   invalid_request: 400, invalid_workspace_path: 400, invalid_document_name: 400,
-  unauthorized: 401, host_not_allowed: 403, origin_not_allowed: 403,
+  unauthorized: 401, invalid_credentials: 401,
+  host_not_allowed: 403, origin_not_allowed: 403, csrf_rejected: 403,
   document_not_found: 404, resource_not_found: 404, sync_config_absent: 404,
-  document_already_exists: 409, revision_conflict: 409, settings_revision_conflict: 409,
+  document_already_exists: 409, initialization_required: 409, already_initialized: 409,
+  revision_conflict: 409, settings_revision_conflict: 409,
   sync_config_revision_conflict: 409, document_too_large: 413,
   document_invalid_encoding: 422, invalid_settings_field: 422, sync_config_invalid: 422,
-  workspace_locked: 423, kernel_not_ready: 503, workspace_unavailable: 503,
+  workspace_locked: 423, authentication_rate_limited: 429,
+  kernel_not_ready: 503, authentication_unavailable: 503, workspace_unavailable: 503,
   settings_unavailable: 503, sync_not_ready: 503, sync_run_unavailable: 503,
   internal_error: 500,
 };
@@ -373,6 +382,14 @@ function isErrorDetails(value: unknown, code: KernelApiErrorCode) {
         typeof details.state === "string" &&
         STARTUP_STATES.has(details.state) &&
         hasOnlyKeys(details, ["type", "state"])
+      );
+    case "rate-limit":
+      return (
+        code === "authentication_rate_limited" &&
+        Number.isSafeInteger(details.retryAfterSeconds) &&
+        typeof details.retryAfterSeconds === "number" &&
+        details.retryAfterSeconds >= 0 &&
+        hasOnlyKeys(details, ["type", "retryAfterSeconds"])
       );
     case "validation":
       return (

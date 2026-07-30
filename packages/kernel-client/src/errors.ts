@@ -5,7 +5,9 @@ export type KernelApiErrorDetails = components["schemas"]["ErrorDetails"];
 
 export const KERNEL_API_ERROR_MESSAGES: Record<KernelApiErrorCode, string> = {
   invalid_request: "The request is invalid.", invalid_workspace_path: "The workspace path is invalid.", invalid_document_name: "The document name is invalid.",
-  unauthorized: "Authentication is required.", host_not_allowed: "The request host is not allowed.", origin_not_allowed: "The request origin is not allowed.",
+  unauthorized: "Authentication is required.", initialization_required: "Server initialization is required.", already_initialized: "Server initialization is already complete.",
+  invalid_credentials: "The credentials are invalid.", csrf_rejected: "The CSRF proof is invalid.", authentication_rate_limited: "Authentication is temporarily limited.",
+  authentication_unavailable: "Authentication is unavailable.", host_not_allowed: "The request host is not allowed.", origin_not_allowed: "The request origin is not allowed.",
   kernel_not_ready: "The Kernel is not ready.", workspace_unavailable: "The workspace is unavailable.", workspace_locked: "The workspace is locked.",
   document_not_found: "The document was not found.", resource_not_found: "The resource was not found.", document_already_exists: "The document already exists.", document_too_large: "The document exceeds the supported size.",
   document_invalid_encoding: "The document encoding is invalid.", revision_conflict: "The document changed since it was loaded.", settings_revision_conflict: "The settings changed since they were loaded.",

@@ -1,4 +1,84 @@
 export interface paths {
+    "/api/v1/auth/initialize": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["initializeServerOwner"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/logout": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["logoutServerSession"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/password": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch: operations["changeServerOwnerPassword"];
+        trace?: never;
+    };
+    "/api/v1/auth/session": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getServerSession"];
+        put?: never;
+        post: operations["createServerSession"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getAuthenticationStatus"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/documents": {
         parameters: {
             query?: never;
@@ -338,6 +418,10 @@ export interface components {
         };
         /** @enum {string} */
         AuthenticateFrameKind: "authenticate";
+        ChangeServerOwnerPasswordRequest: {
+            currentPassword: string;
+            newPassword: string;
+        };
         /** Format: uuid */
         ConnectionId: string;
         CreateDocumentRequest: {
@@ -353,6 +437,9 @@ export interface components {
             name: components["schemas"]["DocumentName"];
             parent: components["schemas"]["WorkspaceRelativePath"];
             workspaceGeneration: components["schemas"]["WorkspaceGeneration"];
+        };
+        CreateServerSessionRequest: {
+            password: string;
         };
         CreatedDocumentDto: {
             contents: components["schemas"]["DocumentContents"];
@@ -505,7 +592,7 @@ export interface components {
             type: "sync-status-changed";
         };
         /** @enum {string} */
-        ErrorCode: "invalid_request" | "invalid_workspace_path" | "invalid_document_name" | "unauthorized" | "host_not_allowed" | "origin_not_allowed" | "kernel_not_ready" | "workspace_unavailable" | "workspace_locked" | "document_not_found" | "resource_not_found" | "document_already_exists" | "document_too_large" | "document_invalid_encoding" | "revision_conflict" | "settings_revision_conflict" | "sync_config_revision_conflict" | "invalid_settings_field" | "settings_unavailable" | "sync_config_absent" | "sync_config_invalid" | "sync_not_ready" | "sync_run_unavailable" | "internal_error";
+        ErrorCode: "invalid_request" | "invalid_workspace_path" | "invalid_document_name" | "unauthorized" | "initialization_required" | "already_initialized" | "invalid_credentials" | "csrf_rejected" | "authentication_rate_limited" | "authentication_unavailable" | "host_not_allowed" | "origin_not_allowed" | "kernel_not_ready" | "workspace_unavailable" | "workspace_locked" | "document_not_found" | "resource_not_found" | "document_already_exists" | "document_too_large" | "document_invalid_encoding" | "revision_conflict" | "settings_revision_conflict" | "sync_config_revision_conflict" | "invalid_settings_field" | "settings_unavailable" | "sync_config_absent" | "sync_config_invalid" | "sync_not_ready" | "sync_run_unavailable" | "internal_error";
         ErrorDetails: {
             currentRevision?: components["schemas"]["Revision"];
             /** @enum {string} */
@@ -518,6 +605,10 @@ export interface components {
             state: components["schemas"]["StartupState"];
             /** @enum {string} */
             type: "startup";
+        } | {
+            retryAfterSeconds: components["schemas"]["SafeUnsignedInteger"];
+            /** @enum {string} */
+            type: "rate-limit";
         };
         ErrorFrame: {
             code: components["schemas"]["FrameErrorCode"];
@@ -579,6 +670,10 @@ export interface components {
         HostProfile: "desktop" | "server" | "mobile";
         /** Format: int32 */
         HttpStatus: number;
+        InitializeServerOwnerRequest: {
+            initializationToken: string;
+            password: string;
+        };
         /** Format: uuid */
         InstanceId: string;
         ListDocumentsQuery: {
@@ -776,6 +871,9 @@ export interface components {
             limit?: components["schemas"]["PageLimit"];
             query: components["schemas"]["SearchQuery"];
         };
+        ServerAuthenticationStatusDto: {
+            initialization: components["schemas"]["ServerInitializationState"];
+        };
         ServerFrame: {
             connectionId: components["schemas"]["ConnectionId"];
             instanceId: components["schemas"]["InstanceId"];
@@ -808,6 +906,13 @@ export interface components {
             /** @enum {string} */
             type: "error";
         };
+        /** @enum {string} */
+        ServerInitializationState: "required" | "initialized" | "unavailable";
+        ServerSessionDto: {
+            state: components["schemas"]["ServerSessionState"];
+        };
+        /** @enum {string} */
+        ServerSessionState: "authenticated";
         SettingEntryDto: {
             key: components["schemas"]["SettingKey"];
             value: components["schemas"]["SettingValueDto"];
@@ -1028,6 +1133,580 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    initializeServerOwner: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["InitializeServerOwnerRequest"];
+            };
+        };
+        responses: {
+            /** @description Success */
+            201: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ServerSessionDto"];
+                };
+            };
+            /** @description Error */
+            400: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "invalid_request";
+                    };
+                };
+            };
+            /** @description Error */
+            401: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "invalid_credentials";
+                    };
+                };
+            };
+            /** @description Error */
+            403: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "host_not_allowed" | "origin_not_allowed";
+                    };
+                };
+            };
+            /** @description Error */
+            409: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "already_initialized";
+                    };
+                };
+            };
+            /** @description Error */
+            429: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "authentication_rate_limited";
+                    };
+                };
+            };
+            /** @description Error */
+            500: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "internal_error";
+                    };
+                };
+            };
+            /** @description Error */
+            503: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "authentication_unavailable";
+                    };
+                };
+            };
+        };
+    };
+    logoutServerSession: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Success */
+            204: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Error */
+            401: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "unauthorized";
+                    };
+                };
+            };
+            /** @description Error */
+            403: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "csrf_rejected" | "host_not_allowed" | "origin_not_allowed";
+                    };
+                };
+            };
+            /** @description Error */
+            500: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "internal_error";
+                    };
+                };
+            };
+            /** @description Error */
+            503: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "authentication_unavailable";
+                    };
+                };
+            };
+        };
+    };
+    changeServerOwnerPassword: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChangeServerOwnerPasswordRequest"];
+            };
+        };
+        responses: {
+            /** @description Success */
+            204: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Error */
+            400: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "invalid_request";
+                    };
+                };
+            };
+            /** @description Error */
+            401: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "invalid_credentials" | "unauthorized";
+                    };
+                };
+            };
+            /** @description Error */
+            403: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "csrf_rejected" | "host_not_allowed" | "origin_not_allowed";
+                    };
+                };
+            };
+            /** @description Error */
+            429: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "authentication_rate_limited";
+                    };
+                };
+            };
+            /** @description Error */
+            500: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "internal_error";
+                    };
+                };
+            };
+            /** @description Error */
+            503: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "authentication_unavailable";
+                    };
+                };
+            };
+        };
+    };
+    getServerSession: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Success */
+            200: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ServerSessionDto"];
+                };
+            };
+            /** @description Error */
+            401: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "unauthorized";
+                    };
+                };
+            };
+            /** @description Error */
+            403: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "host_not_allowed" | "origin_not_allowed";
+                    };
+                };
+            };
+            /** @description Error */
+            500: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "internal_error";
+                    };
+                };
+            };
+            /** @description Error */
+            503: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "authentication_unavailable";
+                    };
+                };
+            };
+        };
+    };
+    createServerSession: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateServerSessionRequest"];
+            };
+        };
+        responses: {
+            /** @description Success */
+            201: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ServerSessionDto"];
+                };
+            };
+            /** @description Error */
+            400: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "invalid_request";
+                    };
+                };
+            };
+            /** @description Error */
+            401: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "invalid_credentials";
+                    };
+                };
+            };
+            /** @description Error */
+            403: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "host_not_allowed" | "origin_not_allowed";
+                    };
+                };
+            };
+            /** @description Error */
+            409: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "initialization_required";
+                    };
+                };
+            };
+            /** @description Error */
+            429: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "authentication_rate_limited";
+                    };
+                };
+            };
+            /** @description Error */
+            500: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "internal_error";
+                    };
+                };
+            };
+            /** @description Error */
+            503: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "authentication_unavailable";
+                    };
+                };
+            };
+        };
+    };
+    getAuthenticationStatus: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Success */
+            200: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ServerAuthenticationStatusDto"];
+                };
+            };
+            /** @description Error */
+            403: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "host_not_allowed" | "origin_not_allowed";
+                    };
+                };
+            };
+            /** @description Error */
+            500: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "internal_error";
+                    };
+                };
+            };
+            /** @description Error */
+            503: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "authentication_unavailable";
+                    };
+                };
+            };
+        };
+    };
     listDocuments: {
         parameters: {
             query?: {
@@ -1132,7 +1811,7 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ApiErrorEnvelope"] & {
                         /** @enum {string} */
-                        code?: "kernel_not_ready" | "workspace_unavailable";
+                        code?: "authentication_unavailable" | "kernel_not_ready" | "workspace_unavailable";
                     };
                 };
             };
@@ -1172,7 +1851,7 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ApiErrorEnvelope"] & {
                         /** @enum {string} */
-                        code?: "invalid_request" | "invalid_workspace_path" | "invalid_document_name";
+                        code?: "invalid_document_name" | "invalid_request" | "invalid_workspace_path";
                     };
                 };
             };
@@ -1200,7 +1879,7 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ApiErrorEnvelope"] & {
                         /** @enum {string} */
-                        code?: "host_not_allowed" | "origin_not_allowed";
+                        code?: "csrf_rejected" | "host_not_allowed" | "origin_not_allowed";
                     };
                 };
             };
@@ -1284,7 +1963,7 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ApiErrorEnvelope"] & {
                         /** @enum {string} */
-                        code?: "kernel_not_ready" | "workspace_unavailable";
+                        code?: "authentication_unavailable" | "kernel_not_ready" | "workspace_unavailable";
                     };
                 };
             };
@@ -1420,7 +2099,7 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ApiErrorEnvelope"] & {
                         /** @enum {string} */
-                        code?: "kernel_not_ready" | "workspace_unavailable";
+                        code?: "authentication_unavailable" | "kernel_not_ready" | "workspace_unavailable";
                     };
                 };
             };
@@ -1490,7 +2169,7 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ApiErrorEnvelope"] & {
                         /** @enum {string} */
-                        code?: "host_not_allowed" | "origin_not_allowed";
+                        code?: "csrf_rejected" | "host_not_allowed" | "origin_not_allowed";
                     };
                 };
             };
@@ -1588,7 +2267,7 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ApiErrorEnvelope"] & {
                         /** @enum {string} */
-                        code?: "kernel_not_ready" | "workspace_unavailable";
+                        code?: "authentication_unavailable" | "kernel_not_ready" | "workspace_unavailable";
                     };
                 };
             };
@@ -1656,7 +2335,7 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ApiErrorEnvelope"] & {
                         /** @enum {string} */
-                        code?: "host_not_allowed" | "origin_not_allowed";
+                        code?: "csrf_rejected" | "host_not_allowed" | "origin_not_allowed";
                     };
                 };
             };
@@ -1726,7 +2405,7 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ApiErrorEnvelope"] & {
                         /** @enum {string} */
-                        code?: "kernel_not_ready" | "workspace_unavailable";
+                        code?: "authentication_unavailable" | "kernel_not_ready" | "workspace_unavailable";
                     };
                 };
             };
@@ -1851,7 +2530,7 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ApiErrorEnvelope"] & {
                         /** @enum {string} */
-                        code?: "kernel_not_ready" | "workspace_unavailable";
+                        code?: "authentication_unavailable" | "kernel_not_ready" | "workspace_unavailable";
                     };
                 };
             };
@@ -2002,7 +2681,7 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ApiErrorEnvelope"] & {
                         /** @enum {string} */
-                        code?: "kernel_not_ready" | "workspace_unavailable";
+                        code?: "authentication_unavailable" | "kernel_not_ready" | "workspace_unavailable";
                     };
                 };
             };
@@ -2073,7 +2752,7 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ApiErrorEnvelope"] & {
                         /** @enum {string} */
-                        code?: "host_not_allowed" | "origin_not_allowed";
+                        code?: "csrf_rejected" | "host_not_allowed" | "origin_not_allowed";
                     };
                 };
             };
@@ -2171,7 +2850,7 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ApiErrorEnvelope"] & {
                         /** @enum {string} */
-                        code?: "kernel_not_ready" | "workspace_unavailable";
+                        code?: "authentication_unavailable" | "kernel_not_ready" | "workspace_unavailable";
                     };
                 };
             };
@@ -2213,7 +2892,7 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ApiErrorEnvelope"] & {
                         /** @enum {string} */
-                        code?: "invalid_request" | "invalid_workspace_path" | "invalid_document_name";
+                        code?: "invalid_document_name" | "invalid_request" | "invalid_workspace_path";
                     };
                 };
             };
@@ -2241,7 +2920,7 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ApiErrorEnvelope"] & {
                         /** @enum {string} */
-                        code?: "host_not_allowed" | "origin_not_allowed";
+                        code?: "csrf_rejected" | "host_not_allowed" | "origin_not_allowed";
                     };
                 };
             };
@@ -2311,7 +2990,7 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ApiErrorEnvelope"] & {
                         /** @enum {string} */
-                        code?: "kernel_not_ready" | "workspace_unavailable";
+                        code?: "authentication_unavailable" | "kernel_not_ready" | "workspace_unavailable";
                     };
                 };
             };
@@ -2439,7 +3118,7 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ApiErrorEnvelope"] & {
                         /** @enum {string} */
-                        code?: "kernel_not_ready";
+                        code?: "authentication_unavailable" | "kernel_not_ready";
                     };
                 };
             };
@@ -2549,7 +3228,7 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ApiErrorEnvelope"] & {
                         /** @enum {string} */
-                        code?: "kernel_not_ready" | "workspace_unavailable";
+                        code?: "authentication_unavailable" | "kernel_not_ready" | "workspace_unavailable";
                     };
                 };
             };
@@ -2681,7 +3360,7 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ApiErrorEnvelope"] & {
                         /** @enum {string} */
-                        code?: "kernel_not_ready" | "workspace_unavailable";
+                        code?: "authentication_unavailable" | "kernel_not_ready" | "workspace_unavailable";
                     };
                 };
             };
@@ -2759,7 +3438,7 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ApiErrorEnvelope"] & {
                         /** @enum {string} */
-                        code?: "kernel_not_ready";
+                        code?: "authentication_unavailable" | "kernel_not_ready";
                     };
                 };
             };
@@ -2883,7 +3562,7 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ApiErrorEnvelope"] & {
                         /** @enum {string} */
-                        code?: "kernel_not_ready" | "workspace_unavailable";
+                        code?: "authentication_unavailable" | "kernel_not_ready" | "workspace_unavailable";
                     };
                 };
             };
@@ -2961,7 +3640,7 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ApiErrorEnvelope"] & {
                         /** @enum {string} */
-                        code?: "settings_unavailable";
+                        code?: "authentication_unavailable" | "settings_unavailable";
                     };
                 };
             };
@@ -3029,7 +3708,7 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ApiErrorEnvelope"] & {
                         /** @enum {string} */
-                        code?: "host_not_allowed" | "origin_not_allowed";
+                        code?: "csrf_rejected" | "host_not_allowed" | "origin_not_allowed";
                     };
                 };
             };
@@ -3085,7 +3764,7 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ApiErrorEnvelope"] & {
                         /** @enum {string} */
-                        code?: "settings_unavailable";
+                        code?: "authentication_unavailable" | "settings_unavailable";
                     };
                 };
             };
@@ -3181,6 +3860,20 @@ export interface operations {
                     };
                 };
             };
+            /** @description Error */
+            503: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "authentication_unavailable";
+                    };
+                };
+            };
         };
     };
     patchSyncConfig: {
@@ -3245,7 +3938,7 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ApiErrorEnvelope"] & {
                         /** @enum {string} */
-                        code?: "host_not_allowed" | "origin_not_allowed";
+                        code?: "csrf_rejected" | "host_not_allowed" | "origin_not_allowed";
                     };
                 };
             };
@@ -3315,7 +4008,7 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ApiErrorEnvelope"] & {
                         /** @enum {string} */
-                        code?: "sync_not_ready";
+                        code?: "authentication_unavailable" | "sync_not_ready";
                     };
                 };
             };
@@ -3383,7 +4076,7 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ApiErrorEnvelope"] & {
                         /** @enum {string} */
-                        code?: "host_not_allowed" | "origin_not_allowed";
+                        code?: "csrf_rejected" | "host_not_allowed" | "origin_not_allowed";
                     };
                 };
             };
@@ -3453,7 +4146,7 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ApiErrorEnvelope"] & {
                         /** @enum {string} */
-                        code?: "sync_not_ready";
+                        code?: "authentication_unavailable" | "sync_not_ready";
                     };
                 };
             };
@@ -3521,7 +4214,7 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ApiErrorEnvelope"] & {
                         /** @enum {string} */
-                        code?: "host_not_allowed" | "origin_not_allowed";
+                        code?: "csrf_rejected" | "host_not_allowed" | "origin_not_allowed";
                     };
                 };
             };
@@ -3563,7 +4256,7 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ApiErrorEnvelope"] & {
                         /** @enum {string} */
-                        code?: "sync_not_ready" | "sync_run_unavailable";
+                        code?: "authentication_unavailable" | "sync_not_ready" | "sync_run_unavailable";
                     };
                 };
             };
@@ -3641,7 +4334,7 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ApiErrorEnvelope"] & {
                         /** @enum {string} */
-                        code?: "sync_not_ready";
+                        code?: "authentication_unavailable" | "sync_not_ready";
                     };
                 };
             };
@@ -3719,7 +4412,7 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ApiErrorEnvelope"] & {
                         /** @enum {string} */
-                        code?: "kernel_not_ready";
+                        code?: "authentication_unavailable" | "kernel_not_ready";
                     };
                 };
             };
@@ -3811,7 +4504,7 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ApiErrorEnvelope"] & {
                         /** @enum {string} */
-                        code?: "kernel_not_ready" | "workspace_unavailable";
+                        code?: "authentication_unavailable" | "kernel_not_ready" | "workspace_unavailable";
                     };
                 };
             };

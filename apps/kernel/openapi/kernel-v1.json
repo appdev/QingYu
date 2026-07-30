@@ -56,6 +56,24 @@
         ],
         "type": "string"
       },
+      "ChangeServerOwnerPasswordRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "currentPassword": {
+            "type": "string",
+            "writeOnly": true
+          },
+          "newPassword": {
+            "type": "string",
+            "writeOnly": true
+          }
+        },
+        "required": [
+          "currentPassword",
+          "newPassword"
+        ],
+        "type": "object"
+      },
       "ConnectionId": {
         "format": "uuid",
         "type": "string"
@@ -119,6 +137,19 @@
             "type": "object"
           }
         ]
+      },
+      "CreateServerSessionRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "password": {
+            "type": "string",
+            "writeOnly": true
+          }
+        },
+        "required": [
+          "password"
+        ],
+        "type": "object"
       },
       "CreatedDocumentDto": {
         "oneOf": [
@@ -742,6 +773,12 @@
           "invalid_workspace_path",
           "invalid_document_name",
           "unauthorized",
+          "initialization_required",
+          "already_initialized",
+          "invalid_credentials",
+          "csrf_rejected",
+          "authentication_rate_limited",
+          "authentication_unavailable",
           "host_not_allowed",
           "origin_not_allowed",
           "kernel_not_ready",
@@ -816,6 +853,24 @@
             },
             "required": [
               "state",
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "retryAfterSeconds": {
+                "$ref": "#/components/schemas/SafeUnsignedInteger"
+              },
+              "type": {
+                "enum": [
+                  "rate-limit"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "retryAfterSeconds",
               "type"
             ],
             "type": "object"
@@ -1045,6 +1100,24 @@
         "format": "int32",
         "minimum": 0,
         "type": "integer"
+      },
+      "InitializeServerOwnerRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "initializationToken": {
+            "type": "string",
+            "writeOnly": true
+          },
+          "password": {
+            "type": "string",
+            "writeOnly": true
+          }
+        },
+        "required": [
+          "initializationToken",
+          "password"
+        ],
+        "type": "object"
       },
       "InstanceId": {
         "format": "uuid",
@@ -1846,6 +1919,18 @@
         ],
         "type": "object"
       },
+      "ServerAuthenticationStatusDto": {
+        "additionalProperties": false,
+        "properties": {
+          "initialization": {
+            "$ref": "#/components/schemas/ServerInitializationState"
+          }
+        },
+        "required": [
+          "initialization"
+        ],
+        "type": "object"
+      },
       "ServerFrame": {
         "oneOf": [
           {
@@ -1984,6 +2069,32 @@
             "type": "object"
           }
         ]
+      },
+      "ServerInitializationState": {
+        "enum": [
+          "required",
+          "initialized",
+          "unavailable"
+        ],
+        "type": "string"
+      },
+      "ServerSessionDto": {
+        "additionalProperties": false,
+        "properties": {
+          "state": {
+            "$ref": "#/components/schemas/ServerSessionState"
+          }
+        },
+        "required": [
+          "state"
+        ],
+        "type": "object"
+      },
+      "ServerSessionState": {
+        "enum": [
+          "authenticated"
+        ],
+        "type": "string"
       },
       "SettingEntryDto": {
         "additionalProperties": false,
@@ -2864,6 +2975,16 @@
       }
     },
     "securitySchemes": {
+      "browserSession": {
+        "in": "cookie",
+        "name": "__Host-qingyu_session",
+        "type": "apiKey"
+      },
+      "csrfToken": {
+        "in": "header",
+        "name": "X-CSRF-Token",
+        "type": "apiKey"
+      },
       "nativeBearer": {
         "scheme": "bearer",
         "type": "http"
@@ -2884,6 +3005,1296 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/api/v1/auth/initialize": {
+      "post": {
+        "operationId": "initializeServerOwner",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InitializeServerOwnerRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServerSessionDto"
+                }
+              }
+            },
+            "description": "Success",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "invalid_request"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Error",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "invalid_credentials"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Error",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "host_not_allowed",
+                            "origin_not_allowed"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Error",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "already_initialized"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Error",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "authentication_rate_limited"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Error",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "internal_error"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Error",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "authentication_unavailable"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Error",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "x-body-limit-bytes": 16384
+      }
+    },
+    "/api/v1/auth/logout": {
+      "post": {
+        "operationId": "logoutServerSession",
+        "responses": {
+          "204": {
+            "description": "Success",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "unauthorized"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Error",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "csrf_rejected",
+                            "host_not_allowed",
+                            "origin_not_allowed"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Error",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "internal_error"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Error",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "authentication_unavailable"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Error",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "browserSession": [],
+            "csrfToken": []
+          }
+        ]
+      }
+    },
+    "/api/v1/auth/password": {
+      "patch": {
+        "operationId": "changeServerOwnerPassword",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChangeServerOwnerPasswordRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Success",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "invalid_request"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Error",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "invalid_credentials",
+                            "unauthorized"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Error",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "csrf_rejected",
+                            "host_not_allowed",
+                            "origin_not_allowed"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Error",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "authentication_rate_limited"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Error",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "internal_error"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Error",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "authentication_unavailable"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Error",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "browserSession": [],
+            "csrfToken": []
+          }
+        ],
+        "x-body-limit-bytes": 16384
+      }
+    },
+    "/api/v1/auth/session": {
+      "get": {
+        "operationId": "getServerSession",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServerSessionDto"
+                }
+              }
+            },
+            "description": "Success",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "unauthorized"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Error",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "host_not_allowed",
+                            "origin_not_allowed"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Error",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "internal_error"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Error",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "authentication_unavailable"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Error",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "browserSession": []
+          }
+        ]
+      },
+      "post": {
+        "operationId": "createServerSession",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateServerSessionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServerSessionDto"
+                }
+              }
+            },
+            "description": "Success",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "invalid_request"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Error",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "invalid_credentials"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Error",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "host_not_allowed",
+                            "origin_not_allowed"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Error",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "initialization_required"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Error",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "authentication_rate_limited"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Error",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "internal_error"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Error",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "authentication_unavailable"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Error",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "x-body-limit-bytes": 16384
+      }
+    },
+    "/api/v1/auth/status": {
+      "get": {
+        "operationId": "getAuthenticationStatus",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServerAuthenticationStatusDto"
+                }
+              }
+            },
+            "description": "Success",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "host_not_allowed",
+                            "origin_not_allowed"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Error",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "internal_error"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Error",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "authentication_unavailable"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Error",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/documents": {
       "get": {
         "operationId": "listDocuments",
@@ -3123,6 +4534,7 @@
                       "properties": {
                         "code": {
                           "enum": [
+                            "authentication_unavailable",
                             "kernel_not_ready",
                             "workspace_unavailable"
                           ],
@@ -3151,6 +4563,9 @@
         "security": [
           {
             "nativeBearer": []
+          },
+          {
+            "browserSession": []
           }
         ]
       },
@@ -3199,9 +4614,9 @@
                       "properties": {
                         "code": {
                           "enum": [
+                            "invalid_document_name",
                             "invalid_request",
-                            "invalid_workspace_path",
-                            "invalid_document_name"
+                            "invalid_workspace_path"
                           ],
                           "type": "string"
                         }
@@ -3271,6 +4686,7 @@
                       "properties": {
                         "code": {
                           "enum": [
+                            "csrf_rejected",
                             "host_not_allowed",
                             "origin_not_allowed"
                           ],
@@ -3483,6 +4899,7 @@
                       "properties": {
                         "code": {
                           "enum": [
+                            "authentication_unavailable",
                             "kernel_not_ready",
                             "workspace_unavailable"
                           ],
@@ -3511,6 +4928,10 @@
         "security": [
           {
             "nativeBearer": []
+          },
+          {
+            "browserSession": [],
+            "csrfToken": []
           }
         ],
         "x-body-limit-bytes": 104857600
@@ -3808,6 +5229,7 @@
                       "properties": {
                         "code": {
                           "enum": [
+                            "authentication_unavailable",
                             "kernel_not_ready",
                             "workspace_unavailable"
                           ],
@@ -3836,6 +5258,9 @@
         "security": [
           {
             "nativeBearer": []
+          },
+          {
+            "browserSession": []
           }
         ]
       },
@@ -3964,6 +5389,7 @@
                       "properties": {
                         "code": {
                           "enum": [
+                            "csrf_rejected",
                             "host_not_allowed",
                             "origin_not_allowed"
                           ],
@@ -4210,6 +5636,7 @@
                       "properties": {
                         "code": {
                           "enum": [
+                            "authentication_unavailable",
                             "kernel_not_ready",
                             "workspace_unavailable"
                           ],
@@ -4238,6 +5665,10 @@
         "security": [
           {
             "nativeBearer": []
+          },
+          {
+            "browserSession": [],
+            "csrfToken": []
           }
         ],
         "x-body-limit-bytes": 104857600
@@ -4362,6 +5793,7 @@
                       "properties": {
                         "code": {
                           "enum": [
+                            "csrf_rejected",
                             "host_not_allowed",
                             "origin_not_allowed"
                           ],
@@ -4538,6 +5970,7 @@
                       "properties": {
                         "code": {
                           "enum": [
+                            "authentication_unavailable",
                             "kernel_not_ready",
                             "workspace_unavailable"
                           ],
@@ -4566,6 +5999,10 @@
         "security": [
           {
             "nativeBearer": []
+          },
+          {
+            "browserSession": [],
+            "csrfToken": []
           }
         ],
         "x-body-limit-bytes": 1048576
@@ -4844,6 +6281,7 @@
                       "properties": {
                         "code": {
                           "enum": [
+                            "authentication_unavailable",
                             "kernel_not_ready",
                             "workspace_unavailable"
                           ],
@@ -4872,6 +6310,9 @@
         "security": [
           {
             "nativeBearer": []
+          },
+          {
+            "browserSession": []
           }
         ]
       }
@@ -5211,6 +6652,7 @@
                       "properties": {
                         "code": {
                           "enum": [
+                            "authentication_unavailable",
                             "kernel_not_ready",
                             "workspace_unavailable"
                           ],
@@ -5239,6 +6681,9 @@
         "security": [
           {
             "nativeBearer": []
+          },
+          {
+            "browserSession": []
           }
         ]
       }
@@ -5377,6 +6822,7 @@
                       "properties": {
                         "code": {
                           "enum": [
+                            "csrf_rejected",
                             "host_not_allowed",
                             "origin_not_allowed"
                           ],
@@ -5623,6 +7069,7 @@
                       "properties": {
                         "code": {
                           "enum": [
+                            "authentication_unavailable",
                             "kernel_not_ready",
                             "workspace_unavailable"
                           ],
@@ -5651,6 +7098,10 @@
         "security": [
           {
             "nativeBearer": []
+          },
+          {
+            "browserSession": [],
+            "csrfToken": []
           }
         ],
         "x-body-limit-bytes": 1048576
@@ -5712,9 +7163,9 @@
                       "properties": {
                         "code": {
                           "enum": [
+                            "invalid_document_name",
                             "invalid_request",
-                            "invalid_workspace_path",
-                            "invalid_document_name"
+                            "invalid_workspace_path"
                           ],
                           "type": "string"
                         }
@@ -5784,6 +7235,7 @@
                       "properties": {
                         "code": {
                           "enum": [
+                            "csrf_rejected",
                             "host_not_allowed",
                             "origin_not_allowed"
                           ],
@@ -5961,6 +7413,7 @@
                       "properties": {
                         "code": {
                           "enum": [
+                            "authentication_unavailable",
                             "kernel_not_ready",
                             "workspace_unavailable"
                           ],
@@ -5989,6 +7442,10 @@
         "security": [
           {
             "nativeBearer": []
+          },
+          {
+            "browserSession": [],
+            "csrfToken": []
           }
         ],
         "x-body-limit-bytes": 1048576
@@ -6234,6 +7691,7 @@
                       "properties": {
                         "code": {
                           "enum": [
+                            "authentication_unavailable",
                             "kernel_not_ready"
                           ],
                           "type": "string"
@@ -6261,6 +7719,9 @@
         "security": [
           {
             "nativeBearer": []
+          },
+          {
+            "browserSession": []
           }
         ]
       }
@@ -6504,6 +7965,7 @@
                       "properties": {
                         "code": {
                           "enum": [
+                            "authentication_unavailable",
                             "kernel_not_ready",
                             "workspace_unavailable"
                           ],
@@ -6532,6 +7994,9 @@
         "security": [
           {
             "nativeBearer": []
+          },
+          {
+            "browserSession": []
           }
         ]
       }
@@ -6843,6 +8308,7 @@
                       "properties": {
                         "code": {
                           "enum": [
+                            "authentication_unavailable",
                             "kernel_not_ready",
                             "workspace_unavailable"
                           ],
@@ -6871,6 +8337,9 @@
         "security": [
           {
             "nativeBearer": []
+          },
+          {
+            "browserSession": []
           }
         ]
       }
@@ -7017,6 +8486,7 @@
                       "properties": {
                         "code": {
                           "enum": [
+                            "authentication_unavailable",
                             "kernel_not_ready"
                           ],
                           "type": "string"
@@ -7044,6 +8514,9 @@
         "security": [
           {
             "nativeBearer": []
+          },
+          {
+            "browserSession": []
           }
         ]
       }
@@ -7321,6 +8794,7 @@
                       "properties": {
                         "code": {
                           "enum": [
+                            "authentication_unavailable",
                             "kernel_not_ready",
                             "workspace_unavailable"
                           ],
@@ -7349,6 +8823,9 @@
         "security": [
           {
             "nativeBearer": []
+          },
+          {
+            "browserSession": []
           }
         ]
       }
@@ -7495,6 +8972,7 @@
                       "properties": {
                         "code": {
                           "enum": [
+                            "authentication_unavailable",
                             "settings_unavailable"
                           ],
                           "type": "string"
@@ -7522,6 +9000,9 @@
         "security": [
           {
             "nativeBearer": []
+          },
+          {
+            "browserSession": []
           }
         ]
       },
@@ -7640,6 +9121,7 @@
                       "properties": {
                         "code": {
                           "enum": [
+                            "csrf_rejected",
                             "host_not_allowed",
                             "origin_not_allowed"
                           ],
@@ -7781,6 +9263,7 @@
                       "properties": {
                         "code": {
                           "enum": [
+                            "authentication_unavailable",
                             "settings_unavailable"
                           ],
                           "type": "string"
@@ -7808,6 +9291,10 @@
         "security": [
           {
             "nativeBearer": []
+          },
+          {
+            "browserSession": [],
+            "csrfToken": []
           }
         ],
         "x-body-limit-bytes": 1048576
@@ -8012,11 +9499,49 @@
                 }
               }
             }
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "authentication_unavailable"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Error",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
           }
         },
         "security": [
           {
             "nativeBearer": []
+          },
+          {
+            "browserSession": []
           }
         ]
       },
@@ -8135,6 +9660,7 @@
                       "properties": {
                         "code": {
                           "enum": [
+                            "csrf_rejected",
                             "host_not_allowed",
                             "origin_not_allowed"
                           ],
@@ -8311,6 +9837,7 @@
                       "properties": {
                         "code": {
                           "enum": [
+                            "authentication_unavailable",
                             "sync_not_ready"
                           ],
                           "type": "string"
@@ -8338,6 +9865,10 @@
         "security": [
           {
             "nativeBearer": []
+          },
+          {
+            "browserSession": [],
+            "csrfToken": []
           }
         ],
         "x-body-limit-bytes": 1048576
@@ -8459,6 +9990,7 @@
                       "properties": {
                         "code": {
                           "enum": [
+                            "csrf_rejected",
                             "host_not_allowed",
                             "origin_not_allowed"
                           ],
@@ -8635,6 +10167,7 @@
                       "properties": {
                         "code": {
                           "enum": [
+                            "authentication_unavailable",
                             "sync_not_ready"
                           ],
                           "type": "string"
@@ -8662,6 +10195,10 @@
         "security": [
           {
             "nativeBearer": []
+          },
+          {
+            "browserSession": [],
+            "csrfToken": []
           }
         ],
         "x-body-limit-bytes": 1048576
@@ -8783,6 +10320,7 @@
                       "properties": {
                         "code": {
                           "enum": [
+                            "csrf_rejected",
                             "host_not_allowed",
                             "origin_not_allowed"
                           ],
@@ -8889,6 +10427,7 @@
                       "properties": {
                         "code": {
                           "enum": [
+                            "authentication_unavailable",
                             "sync_not_ready",
                             "sync_run_unavailable"
                           ],
@@ -8917,6 +10456,10 @@
         "security": [
           {
             "nativeBearer": []
+          },
+          {
+            "browserSession": [],
+            "csrfToken": []
           }
         ],
         "x-body-limit-bytes": 1048576
@@ -9064,6 +10607,7 @@
                       "properties": {
                         "code": {
                           "enum": [
+                            "authentication_unavailable",
                             "sync_not_ready"
                           ],
                           "type": "string"
@@ -9091,6 +10635,9 @@
         "security": [
           {
             "nativeBearer": []
+          },
+          {
+            "browserSession": []
           }
         ]
       }
@@ -9237,6 +10784,7 @@
                       "properties": {
                         "code": {
                           "enum": [
+                            "authentication_unavailable",
                             "kernel_not_ready"
                           ],
                           "type": "string"
@@ -9264,6 +10812,9 @@
         "security": [
           {
             "nativeBearer": []
+          },
+          {
+            "browserSession": []
           }
         ]
       }
@@ -9445,6 +10996,7 @@
                       "properties": {
                         "code": {
                           "enum": [
+                            "authentication_unavailable",
                             "kernel_not_ready",
                             "workspace_unavailable"
                           ],
@@ -9473,6 +11025,9 @@
         "security": [
           {
             "nativeBearer": []
+          },
+          {
+            "browserSession": []
           }
         ]
       }

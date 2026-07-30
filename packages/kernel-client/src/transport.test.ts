@@ -255,6 +255,48 @@ describe("KernelHttpTransport", () => {
     expect(error).toMatchObject({ kind: "invalid-http-response", requestId, status: 500 });
   });
 
+  it("accepts only the frozen authentication rate-limit details", async () => {
+    const transport = createTransport(async () =>
+      jsonResponse(
+        {
+          code: "authentication_rate_limited",
+          message: "Authentication is temporarily limited.",
+          requestId: REQUEST_ID,
+          details: { type: "rate-limit", retryAfterSeconds: 31 },
+        },
+        { status: 429, headers: { "x-request-id": REQUEST_ID } },
+      ),
+    );
+
+    const error = await transport
+      .request({ method: "POST", path: "/api/v1/auth/session", body: {} })
+      .catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(KernelApiError);
+    expect(error).toMatchObject({
+      code: "authentication_rate_limited",
+      details: { type: "rate-limit", retryAfterSeconds: 31 },
+      status: 429,
+    });
+
+    for (const retryAfterSeconds of [-1, 1.5, Number.MAX_SAFE_INTEGER + 1, "31"]) {
+      const invalid = createTransport(async () =>
+        jsonResponse(
+          {
+            code: "authentication_rate_limited",
+            message: "Authentication is temporarily limited.",
+            requestId: REQUEST_ID,
+            details: { type: "rate-limit", retryAfterSeconds },
+          },
+          { status: 429, headers: { "x-request-id": REQUEST_ID } },
+        ),
+      );
+      await expect(
+        invalid.request({ method: "POST", path: "/api/v1/auth/session", body: {} }),
+      ).rejects.toBeInstanceOf(KernelProtocolError);
+    }
+  });
+
   it("rejects unsafe API error messages and mismatched status, details, or validation fields", async () => {
     const requestId = "8a2560cf-88fc-4499-b1e4-258f3fbc0ea6";
     const invalid = [

@@ -7,12 +7,14 @@ pub const fn http_status_for_error_code(code: ErrorCode) -> u16 {
         ErrorCode::InvalidRequest
         | ErrorCode::InvalidWorkspacePath
         | ErrorCode::InvalidDocumentName => 400,
-        ErrorCode::Unauthorized => 401,
-        ErrorCode::HostNotAllowed | ErrorCode::OriginNotAllowed => 403,
+        ErrorCode::Unauthorized | ErrorCode::InvalidCredentials => 401,
+        ErrorCode::HostNotAllowed | ErrorCode::OriginNotAllowed | ErrorCode::CsrfRejected => 403,
         ErrorCode::DocumentNotFound | ErrorCode::ResourceNotFound | ErrorCode::SyncConfigAbsent => {
             404
         }
         ErrorCode::DocumentAlreadyExists
+        | ErrorCode::InitializationRequired
+        | ErrorCode::AlreadyInitialized
         | ErrorCode::RevisionConflict
         | ErrorCode::SettingsRevisionConflict
         | ErrorCode::SyncConfigRevisionConflict => 409,
@@ -21,7 +23,9 @@ pub const fn http_status_for_error_code(code: ErrorCode) -> u16 {
         | ErrorCode::InvalidSettingsField
         | ErrorCode::SyncConfigInvalid => 422,
         ErrorCode::WorkspaceLocked => 423,
+        ErrorCode::AuthenticationRateLimited => 429,
         ErrorCode::KernelNotReady
+        | ErrorCode::AuthenticationUnavailable
         | ErrorCode::WorkspaceUnavailable
         | ErrorCode::SettingsUnavailable
         | ErrorCode::SyncNotReady
@@ -56,6 +60,12 @@ pub const fn safe_message_for_error_code(code: ErrorCode) -> &'static str {
         ErrorCode::InvalidWorkspacePath => "The workspace path is invalid.",
         ErrorCode::InvalidDocumentName => "The document name is invalid.",
         ErrorCode::Unauthorized => "Authentication is required.",
+        ErrorCode::InitializationRequired => "Server initialization is required.",
+        ErrorCode::AlreadyInitialized => "Server initialization is already complete.",
+        ErrorCode::InvalidCredentials => "The credentials are invalid.",
+        ErrorCode::CsrfRejected => "The CSRF proof is invalid.",
+        ErrorCode::AuthenticationRateLimited => "Authentication is temporarily limited.",
+        ErrorCode::AuthenticationUnavailable => "Authentication is unavailable.",
         ErrorCode::HostNotAllowed => "The request host is not allowed.",
         ErrorCode::OriginNotAllowed => "The request origin is not allowed.",
         ErrorCode::KernelNotReady => "The Kernel is not ready.",
@@ -108,6 +118,9 @@ const fn error_details_are_allowed(code: ErrorCode, details: &ErrorDetails) -> b
                 | ErrorCode::SyncNotReady
                 | ErrorCode::SyncRunUnavailable
         ),
+        ErrorDetails::RateLimit { .. } => {
+            matches!(code, ErrorCode::AuthenticationRateLimited)
+        }
     }
 }
 

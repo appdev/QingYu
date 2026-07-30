@@ -17,18 +17,20 @@ use uuid::Uuid;
 
 use crate::{
     contract::{
-        ApiErrorEnvelope, ConnectionId, CreateDocumentRequest, CreatedDocumentDto,
-        DeleteDocumentRequest, DocumentContentDto, DocumentContents, DocumentEntryDto,
-        DocumentHistoryPageDto, DocumentHistorySnapshotDto, DocumentId, DocumentPageDto,
-        DomainEvent, ErrorCode, ErrorDetails, EventSequence, GapReason, InstanceId,
-        ListDocumentsQuery, ListWorkspaceInventoryQuery, LiveHealthResponse, MoveDocumentRequest,
-        PageQuery, PatchSettingsRequest, PatchSyncConfigRequest, ProtocolVersion,
-        ReadyHealthResponse, ReadySequence, ReloadScope, RequestId, ResourceEntryDto, ResourceKind,
-        ResourceRefDto, RestoreDocumentHistoryRequest, Revision, SearchPageDto,
-        SearchWorkspaceQuery, ServerFrame, SettingsSnapshotDto, SnapshotRequired,
-        SyncConfigViewDto, SyncConnectionTestDto, SyncRunAcceptedDto, SyncSafeErrorDto,
-        SyncStatusDto, SystemVersionResponse, TestSyncConnectionRequest, TriggerSyncRunRequest,
-        UpdateDocumentRequest, WorkspaceDto, WorkspaceInventoryEntryDto, WorkspaceInventoryPageDto,
+        ApiErrorEnvelope, ChangeServerOwnerPasswordRequest, ConnectionId, CreateDocumentRequest,
+        CreateServerSessionRequest, CreatedDocumentDto, DeleteDocumentRequest, DocumentContentDto,
+        DocumentContents, DocumentEntryDto, DocumentHistoryPageDto, DocumentHistorySnapshotDto,
+        DocumentId, DocumentPageDto, DomainEvent, ErrorCode, ErrorDetails, EventSequence,
+        GapReason, InitializeServerOwnerRequest, InstanceId, ListDocumentsQuery,
+        ListWorkspaceInventoryQuery, LiveHealthResponse, MoveDocumentRequest, PageQuery,
+        PatchSettingsRequest, PatchSyncConfigRequest, ProtocolVersion, ReadyHealthResponse,
+        ReadySequence, ReloadScope, RequestId, ResourceEntryDto, ResourceKind, ResourceRefDto,
+        RestoreDocumentHistoryRequest, Revision, SearchPageDto, SearchWorkspaceQuery,
+        ServerAuthenticationStatusDto, ServerFrame, ServerSessionDto, SettingsSnapshotDto,
+        SnapshotRequired, SyncConfigViewDto, SyncConnectionTestDto, SyncRunAcceptedDto,
+        SyncSafeErrorDto, SyncStatusDto, SystemVersionResponse, TestSyncConnectionRequest,
+        TriggerSyncRunRequest, UpdateDocumentRequest, WorkspaceDto, WorkspaceInventoryEntryDto,
+        WorkspaceInventoryPageDto,
     },
     error::{http_status_for_error_code, safe_error_envelope},
     runtime::KernelRuntime,
@@ -389,6 +391,11 @@ impl std::error::Error for OpenApiExportError {}
         LiveHealthResponse,
         ReadyHealthResponse,
         SystemVersionResponse,
+        ServerAuthenticationStatusDto,
+        ServerSessionDto,
+        InitializeServerOwnerRequest,
+        CreateServerSessionRequest,
+        ChangeServerOwnerPasswordRequest,
         crate::contract::RuntimeStateDto,
         WorkspaceDto,
         ListWorkspaceInventoryQuery,
@@ -679,6 +686,54 @@ fn install_paths(document: &mut serde_json::Value) {
     let operations = [
         (
             "get",
+            "/api/v1/auth/status",
+            "getAuthenticationStatus",
+            "200",
+            "ServerAuthenticationStatusDto",
+            false,
+        ),
+        (
+            "post",
+            "/api/v1/auth/initialize",
+            "initializeServerOwner",
+            "201",
+            "ServerSessionDto",
+            false,
+        ),
+        (
+            "post",
+            "/api/v1/auth/session",
+            "createServerSession",
+            "201",
+            "ServerSessionDto",
+            false,
+        ),
+        (
+            "get",
+            "/api/v1/auth/session",
+            "getServerSession",
+            "200",
+            "ServerSessionDto",
+            false,
+        ),
+        (
+            "post",
+            "/api/v1/auth/logout",
+            "logoutServerSession",
+            "204",
+            "",
+            false,
+        ),
+        (
+            "patch",
+            "/api/v1/auth/password",
+            "changeServerOwnerPassword",
+            "204",
+            "",
+            false,
+        ),
+        (
+            "get",
             "/api/v1/health/live",
             "healthLive",
             "200",
@@ -891,7 +946,7 @@ fn install_paths(document: &mut serde_json::Value) {
             "responses": { (status): success }
         });
         if protected {
-            operation["security"] = serde_json::json!([{ "nativeBearer": [] }]);
+            operation["security"] = protected_operation_security(method);
         }
         paths
             .entry(path.to_owned())
@@ -916,6 +971,26 @@ fn install_paths(document: &mut serde_json::Value) {
         "required": true,
         "schema": { "type": "string", "const": "nosniff" }
     });
+    operation_mut(document, "/api/v1/auth/session", "get")["security"] =
+        serde_json::json!([{ "browserSession": [] }]);
+    for (path, method) in [
+        ("/api/v1/auth/logout", "post"),
+        ("/api/v1/auth/password", "patch"),
+    ] {
+        operation_mut(document, path, method)["security"] =
+            serde_json::json!([{ "browserSession": [], "csrfToken": [] }]);
+    }
+}
+
+fn protected_operation_security(method: &str) -> serde_json::Value {
+    if method == "get" {
+        serde_json::json!([{ "nativeBearer": [] }, { "browserSession": [] }])
+    } else {
+        serde_json::json!([
+            { "nativeBearer": [] },
+            { "browserSession": [], "csrfToken": [] }
+        ])
+    }
 }
 
 fn install_security_scheme(document: &mut serde_json::Value) {
@@ -923,9 +998,34 @@ fn install_security_scheme(document: &mut serde_json::Value) {
         "type": "http",
         "scheme": "bearer"
     });
+    document["components"]["securitySchemes"]["browserSession"] = serde_json::json!({
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "__Host-qingyu_session"
+    });
+    document["components"]["securitySchemes"]["csrfToken"] = serde_json::json!({
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-CSRF-Token"
+    });
 }
 
 fn install_operation_inputs(document: &mut serde_json::Value) {
+    for (path, method, schema) in [
+        (
+            "/api/v1/auth/initialize",
+            "post",
+            "InitializeServerOwnerRequest",
+        ),
+        ("/api/v1/auth/session", "post", "CreateServerSessionRequest"),
+        (
+            "/api/v1/auth/password",
+            "patch",
+            "ChangeServerOwnerPasswordRequest",
+        ),
+    ] {
+        set_request_body(document, path, method, schema, 16 * 1024);
+    }
     set_query_parameters(
         document,
         "/api/v1/inventory",
@@ -1143,10 +1243,12 @@ fn push_parameter(
 }
 
 fn install_operation_errors(document: &mut serde_json::Value) {
+    const PUBLIC_TRANSPORT: &[&str] = &["host_not_allowed", "origin_not_allowed", "internal_error"];
     const TRANSPORT: &[&str] = &[
         "host_not_allowed",
         "origin_not_allowed",
         "unauthorized",
+        "authentication_unavailable",
         "internal_error",
     ];
     const WORKSPACE: &[&str] = &[
@@ -1154,6 +1256,72 @@ fn install_operation_errors(document: &mut serde_json::Value) {
         "workspace_unavailable",
         "workspace_locked",
     ];
+
+    add_errors_with(
+        document,
+        "/api/v1/auth/status",
+        "get",
+        PUBLIC_TRANSPORT,
+        &["authentication_unavailable"],
+    );
+    add_errors_with(
+        document,
+        "/api/v1/auth/initialize",
+        "post",
+        PUBLIC_TRANSPORT,
+        &[
+            "invalid_request",
+            "already_initialized",
+            "invalid_credentials",
+            "authentication_rate_limited",
+            "authentication_unavailable",
+        ],
+    );
+    add_errors_with(
+        document,
+        "/api/v1/auth/session",
+        "post",
+        PUBLIC_TRANSPORT,
+        &[
+            "invalid_request",
+            "initialization_required",
+            "invalid_credentials",
+            "authentication_rate_limited",
+            "authentication_unavailable",
+        ],
+    );
+    add_errors_with(
+        document,
+        "/api/v1/auth/session",
+        "get",
+        PUBLIC_TRANSPORT,
+        &["unauthorized", "authentication_unavailable"],
+    );
+    add_errors_with(
+        document,
+        "/api/v1/auth/logout",
+        "post",
+        PUBLIC_TRANSPORT,
+        &[
+            "unauthorized",
+            "csrf_rejected",
+            "authentication_unavailable",
+        ],
+    );
+    add_errors_with(
+        document,
+        "/api/v1/auth/password",
+        "patch",
+        PUBLIC_TRANSPORT,
+        &[
+            "invalid_request",
+            "unauthorized",
+            "invalid_credentials",
+            "csrf_rejected",
+            "authentication_rate_limited",
+            "authentication_unavailable",
+        ],
+    );
 
     add_operation_errors(
         document,
@@ -1384,10 +1552,22 @@ fn add_operation_errors(
     for code in codes {
         grouped.entry(error_status(code)).or_default().push(code);
     }
+    let csrf_required = operation_mut(document, path, method)["security"]
+        .as_array()
+        .is_some_and(|requirements| {
+            requirements
+                .iter()
+                .any(|requirement| requirement.get("csrfToken").is_some())
+        });
+    if csrf_required {
+        grouped.entry(403).or_default().push("csrf_rejected");
+    }
     let responses = operation_mut(document, path, method)["responses"]
         .as_object_mut()
         .expect("operation responses is an object");
-    for (status, codes) in grouped {
+    for (status, mut codes) in grouped {
+        codes.sort_unstable();
+        codes.dedup();
         responses.insert(
             status.to_string(),
             serde_json::json!({
@@ -1429,17 +1609,21 @@ fn request_id_response_header() -> serde_json::Value {
 fn error_status(code: &str) -> u16 {
     match code {
         "invalid_request" | "invalid_workspace_path" | "invalid_document_name" => 400,
-        "unauthorized" => 401,
-        "host_not_allowed" | "origin_not_allowed" => 403,
+        "unauthorized" | "invalid_credentials" => 401,
+        "host_not_allowed" | "origin_not_allowed" | "csrf_rejected" => 403,
         "document_not_found" | "resource_not_found" | "sync_config_absent" => 404,
         "document_already_exists"
+        | "initialization_required"
+        | "already_initialized"
         | "revision_conflict"
         | "settings_revision_conflict"
         | "sync_config_revision_conflict" => 409,
         "document_too_large" => 413,
         "document_invalid_encoding" | "invalid_settings_field" | "sync_config_invalid" => 422,
         "workspace_locked" => 423,
+        "authentication_rate_limited" => 429,
         "kernel_not_ready"
+        | "authentication_unavailable"
         | "workspace_unavailable"
         | "settings_unavailable"
         | "sync_not_ready"

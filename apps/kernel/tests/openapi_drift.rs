@@ -11,6 +11,16 @@ use serde_json::Value;
 use tempfile::tempdir;
 
 const HTTP_OPERATIONS: &[(&str, &str, &str)] = &[
+    ("get", "/api/v1/auth/status", "getAuthenticationStatus"),
+    ("post", "/api/v1/auth/initialize", "initializeServerOwner"),
+    ("post", "/api/v1/auth/session", "createServerSession"),
+    ("get", "/api/v1/auth/session", "getServerSession"),
+    ("post", "/api/v1/auth/logout", "logoutServerSession"),
+    (
+        "patch",
+        "/api/v1/auth/password",
+        "changeServerOwnerPassword",
+    ),
     ("get", "/api/v1/health/live", "healthLive"),
     ("get", "/api/v1/health/ready", "healthReady"),
     ("get", "/api/v1/system/version", "getSystemVersion"),
@@ -66,6 +76,12 @@ const ERROR_CODES: &[&str] = &[
     "invalid_workspace_path",
     "invalid_document_name",
     "unauthorized",
+    "initialization_required",
+    "already_initialized",
+    "invalid_credentials",
+    "csrf_rejected",
+    "authentication_rate_limited",
+    "authentication_unavailable",
     "host_not_allowed",
     "origin_not_allowed",
     "kernel_not_ready",
@@ -228,7 +244,7 @@ fn assert_optional_non_null(document: &Value, schema: &str, field: &str) {
 }
 
 #[test]
-fn openapi_has_exactly_the_frozen_twenty_four_http_operations() {
+fn openapi_has_exactly_the_frozen_thirty_http_operations() {
     let document = api_document();
     let paths = document["paths"].as_object().expect("OpenAPI paths");
     assert!(
@@ -240,7 +256,7 @@ fn openapi_has_exactly_the_frozen_twenty_four_http_operations() {
         .iter()
         .map(|(method, path, operation)| ((*method, *path), *operation))
         .collect();
-    assert_eq!(expected.len(), 24);
+    assert_eq!(expected.len(), 30);
 
     let mut actual = BTreeMap::new();
     for (path, path_item) in paths {
@@ -259,7 +275,7 @@ fn openapi_has_exactly_the_frozen_twenty_four_http_operations() {
 }
 
 #[test]
-fn health_live_is_public_and_every_other_http_operation_uses_native_bearer() {
+fn public_auth_bootstrap_and_dual_host_security_are_explicit_per_operation() {
     let document = api_document();
     assert!(
         document.get("security").is_none(),
@@ -268,23 +284,54 @@ fn health_live_is_public_and_every_other_http_operation_uses_native_bearer() {
 
     for (method, path, operation_id) in HTTP_OPERATIONS {
         let operation = &document["paths"][*path][*method];
-        if *operation_id == "healthLive" {
-            assert!(
+        match *operation_id {
+            "healthLive"
+            | "getAuthenticationStatus"
+            | "initializeServerOwner"
+            | "createServerSession" => assert!(
                 operation.get("security").is_none(),
-                "healthLive must have no security requirement"
-            );
-        } else {
-            assert_eq!(
+                "{operation_id} must be public"
+            ),
+            "getServerSession" => assert_eq!(
                 operation.get("security"),
-                Some(&serde_json::json!([{ "nativeBearer": [] }])),
-                "{operation_id} must require exactly nativeBearer"
-            );
+                Some(&serde_json::json!([{ "browserSession": [] }])),
+                "getServerSession must require the browser session"
+            ),
+            "logoutServerSession" | "changeServerOwnerPassword" => assert_eq!(
+                operation.get("security"),
+                Some(&serde_json::json!([{ "browserSession": [], "csrfToken": [] }])),
+                "{operation_id} must require browser session and CSRF"
+            ),
+            _ if *method == "get" => assert_eq!(
+                operation.get("security"),
+                Some(&serde_json::json!([
+                    { "nativeBearer": [] },
+                    { "browserSession": [] }
+                ])),
+                "{operation_id} must accept native bearer or browser session"
+            ),
+            _ => assert_eq!(
+                operation.get("security"),
+                Some(&serde_json::json!([
+                    { "nativeBearer": [] },
+                    { "browserSession": [], "csrfToken": [] }
+                ])),
+                "{operation_id} browser mutations must require CSRF"
+            ),
         }
     }
 
     let native_bearer = &document["components"]["securitySchemes"]["nativeBearer"];
     assert_eq!(native_bearer["type"], "http");
     assert_eq!(native_bearer["scheme"], "bearer");
+    let browser_session = &document["components"]["securitySchemes"]["browserSession"];
+    assert_eq!(browser_session["type"], "apiKey");
+    assert_eq!(browser_session["in"], "cookie");
+    assert_eq!(browser_session["name"], "__Host-qingyu_session");
+    let csrf = &document["components"]["securitySchemes"]["csrfToken"];
+    assert_eq!(csrf["type"], "apiKey");
+    assert_eq!(csrf["in"], "header");
+    assert_eq!(csrf["name"], "X-CSRF-Token");
 }
 
 #[test]
@@ -603,6 +650,8 @@ fn operations_freeze_request_bodies_parameters_and_route_specific_errors() {
         patch_settings_errors,
         BTreeSet::from([
             "host_not_allowed",
+            "authentication_unavailable",
+            "csrf_rejected",
             "internal_error",
             "invalid_request",
             "invalid_settings_field",
