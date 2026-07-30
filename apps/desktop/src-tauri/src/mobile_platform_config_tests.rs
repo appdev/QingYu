@@ -178,7 +178,7 @@ fn mobile_platform_config_android_exposes_no_import_share_or_storage_surface() {
 #[test]
 fn mobile_platform_config_apple_allows_only_local_networking_exception() {
     let project = source("gen/apple/project.yml");
-    let info_plist = source("gen/apple/markra_iOS/Info.plist");
+    let info_plist = source("gen/apple/qingyu_iOS/Info.plist");
     assert!(project.contains("NSLocalNetworkUsageDescription:"));
     assert!(project.contains("NSAppTransportSecurity:\n"));
     assert!(project.contains("NSAllowsLocalNetworking: true"));
@@ -264,7 +264,7 @@ fn mobile_platform_config_commits_no_endpoint_credentials_or_signing_material() 
         source("gen/android/app/src/main/AndroidManifest.xml"),
         source("gen/android/app/src/debug/AndroidManifest.xml"),
         source("gen/apple/project.yml"),
-        source("gen/apple/markra_iOS/Info.plist"),
+        source("gen/apple/qingyu_iOS/Info.plist"),
     ]
     .join("\n");
     let lowercase = metadata.to_ascii_lowercase();

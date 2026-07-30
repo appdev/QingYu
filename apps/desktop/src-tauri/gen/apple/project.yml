@@ -1,8 +1,9 @@
-name: markra
+name: qingyu
 options:
   bundleIdPrefix: dev.markra.app
   deploymentTarget:
     iOS: 14.0
+fileGroups: [../../src]
 configs:
   debug: debug
   release: release
@@ -23,27 +24,24 @@ targetTemplates:
     settings:
       groups: [app]
 targets:
-  markra_iOS:
+  qingyu_iOS:
     type: application
     platform: iOS
     sources:
       - path: Sources
       - path: Assets.xcassets
       - path: Externals
-      - path: markra_iOS
+      - path: qingyu_iOS
       - path: assets
         buildPhase: resources
         type: folder
       - path: LaunchScreen.storyboard
     info:
-      path: markra_iOS/Info.plist
+      path: qingyu_iOS/Info.plist
       properties:
         LSRequiresIPhoneOS: true
         UILaunchStoryboardName: LaunchScreen
         UIRequiredDeviceCapabilities: [arm64, metal]
-        NSLocalNetworkUsageDescription: QingYu uses your local network to connect to sync servers you configure.
-        NSAppTransportSecurity:
-          NSAllowsLocalNetworking: true
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
           - UIInterfaceOrientationLandscapeLeft
@@ -53,6 +51,9 @@ targets:
           - UIInterfaceOrientationPortraitUpsideDown
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
+        NSLocalNetworkUsageDescription: QingYu uses your local network to connect to sync servers you configure.
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
         CFBundleAllowMixedLocalizations: true
         CFBundleLocalizations:
           - en
@@ -69,7 +70,7 @@ targets:
         CFBundleShortVersionString: 2.2.0
         CFBundleVersion: "2.2.0"
     entitlements:
-      path: markra_iOS/markra_iOS.entitlements
+      path: qingyu_iOS/qingyu_iOS.entitlements
     scheme:
       environmentVariables:
         RUST_BACKTRACE: full

@@ -1,13 +1,13 @@
 # Uncomment the next line to define a global platform for your project
 
-target 'markra_iOS' do
+target 'qingyu_iOS' do
 platform :ios, '14.0'
-  # Pods for markra_iOS
+  # Pods for qingyu_iOS
 end
 
-target 'markra_macOS' do
+target 'qingyu_macOS' do
 platform :osx, '11.0'
-  # Pods for markra_macOS
+  # Pods for qingyu_macOS
 end
 
 # Delete the deployment target for iOS and macOS, causing it to be inherited from the Podfile

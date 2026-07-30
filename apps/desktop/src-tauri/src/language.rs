@@ -267,7 +267,7 @@ mod tests {
             serde_json::from_str(include_str!("../tauri.conf.json"))
                 .expect("Tauri config should be valid JSON");
         let apple_project = include_str!("../gen/apple/project.yml");
-        let ios_info_plist = include_str!("../gen/apple/markra_iOS/Info.plist");
+        let ios_info_plist = include_str!("../gen/apple/qingyu_iOS/Info.plist");
 
         assert_eq!(
             tauri_config

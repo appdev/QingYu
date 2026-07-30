@@ -15,10 +15,10 @@
             buildForAnalyzing = "YES">
             <BuildableReference
                BuildableIdentifier = "primary"
-               BlueprintIdentifier = "A35884F764D23D6369C23B8D"
-               BuildableName = "markra_iOS.app"
-               BlueprintName = "markra_iOS"
-               ReferencedContainer = "container:markra.xcodeproj">
+               BlueprintIdentifier = "A6A393C520EA69BD3C1EBBEA"
+               BuildableName = "qingyu_iOS.app"
+               BlueprintName = "qingyu_iOS"
+               ReferencedContainer = "container:qingyu.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
       </BuildActionEntries>
@@ -32,10 +32,10 @@
       <MacroExpansion>
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "A35884F764D23D6369C23B8D"
-            BuildableName = "markra_iOS.app"
-            BlueprintName = "markra_iOS"
-            ReferencedContainer = "container:markra.xcodeproj">
+            BlueprintIdentifier = "A6A393C520EA69BD3C1EBBEA"
+            BuildableName = "qingyu_iOS.app"
+            BlueprintName = "qingyu_iOS"
+            ReferencedContainer = "container:qingyu.xcodeproj">
          </BuildableReference>
       </MacroExpansion>
       <Testables>
@@ -69,10 +69,10 @@
          runnableDebuggingMode = "0">
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "A35884F764D23D6369C23B8D"
-            BuildableName = "markra_iOS.app"
-            BlueprintName = "markra_iOS"
-            ReferencedContainer = "container:markra.xcodeproj">
+            BlueprintIdentifier = "A6A393C520EA69BD3C1EBBEA"
+            BuildableName = "qingyu_iOS.app"
+            BlueprintName = "qingyu_iOS"
+            ReferencedContainer = "container:qingyu.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
       <CommandLineArguments>
@@ -100,10 +100,10 @@
          runnableDebuggingMode = "0">
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "A35884F764D23D6369C23B8D"
-            BuildableName = "markra_iOS.app"
-            BlueprintName = "markra_iOS"
-            ReferencedContainer = "container:markra.xcodeproj">
+            BlueprintIdentifier = "A6A393C520EA69BD3C1EBBEA"
+            BuildableName = "qingyu_iOS.app"
+            BlueprintName = "qingyu_iOS"
+            ReferencedContainer = "container:qingyu.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
       <CommandLineArguments>
