@@ -238,11 +238,14 @@ impl RemoteSyncScope {
         if state_root.starts_with(&source_root) {
             return Err("Remote sync state root must be outside the notes source root".into());
         }
-        let notes_ignore_rules = Some(MarkdownIgnoreRules::for_retained_root(
-            &source_root,
-            &source_directory,
-            global_ignore_rules.as_deref(),
-        ));
+        let notes_ignore_rules = Some(
+            MarkdownIgnoreRules::try_for_retained_root(
+                &source_root,
+                &source_directory,
+                global_ignore_rules.as_deref(),
+            )
+            .map_err(|_| "Remote sync ignore rules are unavailable".to_string())?,
+        );
         Self::new(
             source_directory,
             source_identity,

@@ -80,23 +80,12 @@ struct Fixture {
 
 struct LiveIgnorePort {
     captures: AtomicUsize,
-    root: PathBuf,
     global_rules: Mutex<String>,
 }
 
 impl LiveIgnorePort {
     fn set_global_rules(&self, rules: &str) {
         *self.global_rules.lock().unwrap() = rules.to_string();
-    }
-}
-
-impl DocumentIgnorePort for LiveIgnorePort {
-    fn is_ignored(&self, path: &WorkspaceRelativePath, kind: DocumentKind) -> bool {
-        let global_rules = self.global_rules.lock().unwrap();
-        MarkdownIgnoreRules::for_root(&self.root, Some(&global_rules)).ignores(
-            &self.root.join(path.as_str()),
-            kind == DocumentKind::Directory,
-        )
     }
 }
 
@@ -122,14 +111,15 @@ impl WorkspaceIgnorePort for LiveIgnorePort {
     ) -> Result<WorkspaceIgnoreSnapshot, WorkspaceIgnoreError> {
         self.captures.fetch_add(1, Ordering::SeqCst);
         let global_rules = self.global_rules.lock().unwrap().clone();
+        let rules = MarkdownIgnoreRules::try_for_retained_root(
+            root_path,
+            retained_root,
+            Some(&global_rules),
+        )?;
         Ok(WorkspaceIgnoreSnapshot::from_matcher(Arc::new(
             CapturedIgnorePort {
                 root: root_path.to_path_buf(),
-                rules: MarkdownIgnoreRules::for_retained_root(
-                    root_path,
-                    retained_root,
-                    Some(&global_rules),
-                ),
+                rules,
             },
         )))
     }
@@ -165,7 +155,6 @@ impl Fixture {
         );
         let ignore = Arc::new(LiveIgnorePort {
             captures: AtomicUsize::new(0),
-            root: root.clone(),
             global_rules: Mutex::new(String::new()),
         });
         let service = WorkspaceResourceService::new(&runtime, ignore.clone());

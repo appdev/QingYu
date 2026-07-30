@@ -40,6 +40,35 @@ fn notes_scope_uses_retained_authority_and_shared_ignore_policy() {
 }
 
 #[test]
+fn notes_scope_fails_closed_for_invalid_workspace_and_global_ignore_rules() {
+    let temporary = tempdir_without_symlink_ancestors();
+    let workspace = temporary.path().join("workspace");
+    let state = temporary.path().join("state");
+    std::fs::create_dir(&workspace).unwrap();
+    std::fs::create_dir(&state).unwrap();
+    std::fs::create_dir(workspace.join(".markraignore")).unwrap();
+
+    assert!(RemoteSyncScope::notes(
+        &workspace,
+        &state,
+        "manifest.json",
+        Some("workspace-a".to_string()),
+        None,
+    )
+    .is_err());
+
+    std::fs::remove_dir(workspace.join(".markraignore")).unwrap();
+    assert!(RemoteSyncScope::notes(
+        &workspace,
+        &state,
+        "manifest.json",
+        Some("workspace-a".to_string()),
+        Some("[z-a]\n".to_string()),
+    )
+    .is_err());
+}
+
+#[test]
 fn notes_scope_rejects_state_inside_the_workspace() {
     let temporary = tempdir_without_symlink_ancestors();
     let workspace = temporary.path().join("workspace");

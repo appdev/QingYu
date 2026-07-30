@@ -1,14 +1,14 @@
 //! Workspace ignore rules shared by document discovery, watchers, and sync.
 
 use std::ffi::OsStr;
-use std::io::Read;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use cap_fs_ext::{FollowSymlinks, OpenOptionsFollowExt};
-use cap_std::fs::{Dir, OpenOptions};
+use cap_std::fs::{Dir, Metadata};
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 
+use crate::inventory_snapshot::FileVersionStamp;
 use crate::protected_paths::path_contains_qingyu_control_directory;
 use crate::{
     contract::{DocumentKind, WorkspaceRelativePath},
@@ -18,6 +18,7 @@ use crate::{
 
 pub const MARKRA_IGNORE_FILE_NAME: &str = ".markraignore";
 const MAX_MARKRA_IGNORE_BYTES: u64 = 1024 * 1024;
+const MAX_GLOBAL_IGNORE_RULE_UNITS: usize = 50_000;
 
 pub trait WorkspaceIgnorePort: Send + Sync {
     fn capture(
@@ -160,35 +161,22 @@ fn is_builtin_ignored_directory_name(name: &OsStr) -> bool {
 
 #[derive(Debug)]
 pub struct MarkdownIgnoreRules {
-    global_rules: String,
-    include_workspace_rules: bool,
     root: PathBuf,
     matcher: Gitignore,
 }
 
 impl MarkdownIgnoreRules {
+    #[cfg(test)]
     pub fn for_root(root: &Path, global_rules: Option<&str>) -> Self {
-        Self::build(root, global_rules, true)
+        let workspace_rules = std::fs::read_to_string(root.join(MARKRA_IGNORE_FILE_NAME)).ok();
+        Self::try_from_rules(root, global_rules, workspace_rules.as_deref(), true)
+            .expect("test ignore rules should be valid")
     }
 
+    #[cfg(test)]
     pub fn built_in_only(root: &Path) -> Self {
-        Self::build(root, None, false)
-    }
-
-    pub fn for_retained_root(root: &Path, directory: &Dir, global_rules: Option<&str>) -> Self {
-        let mut options = OpenOptions::new();
-        options.read(true).follow(FollowSymlinks::No);
-        let workspace_rules = directory
-            .open_with(MARKRA_IGNORE_FILE_NAME, &options)
-            .ok()
-            .and_then(|mut file| {
-                if file.metadata().ok()?.len() > 1024 * 1024 {
-                    return None;
-                }
-                let mut rules = String::new();
-                file.read_to_string(&mut rules).ok().map(|_| rules)
-            });
-        Self::from_rules(root, global_rules, workspace_rules.as_deref(), true)
+        Self::try_from_rules(root, None, None, false)
+            .expect("built-in test ignore rules should be valid")
     }
 
     pub fn try_for_retained_root(
@@ -200,54 +188,16 @@ impl MarkdownIgnoreRules {
         Self::try_from_rules(root, global_rules, workspace_rules.as_deref(), true)
     }
 
-    fn build(root: &Path, global_rules: Option<&str>, include_workspace_rules: bool) -> Self {
-        let workspace_rules = include_workspace_rules
-            .then(|| std::fs::read_to_string(root.join(MARKRA_IGNORE_FILE_NAME)).ok())
-            .flatten();
-        Self::from_rules(
-            root,
-            global_rules,
-            workspace_rules.as_deref(),
-            include_workspace_rules,
-        )
-    }
-
-    fn from_rules(
-        root: &Path,
-        global_rules: Option<&str>,
-        workspace_rules: Option<&str>,
-        include_workspace_rules: bool,
-    ) -> Self {
-        let global_rules = global_rules.unwrap_or_default().to_string();
-        let mut builder = GitignoreBuilder::new(root);
-
-        for line in global_rules.lines() {
-            let _ignored_invalid_pattern = builder.add_line(None, line);
-        }
-        if include_workspace_rules {
-            let workspace_rules_path = root.join(MARKRA_IGNORE_FILE_NAME);
-            for line in workspace_rules.unwrap_or_default().lines() {
-                let _ignored_invalid_pattern =
-                    builder.add_line(Some(workspace_rules_path.clone()), line);
-            }
-        }
-        let matcher = builder.build().unwrap_or_else(|_| Gitignore::empty());
-
-        Self {
-            global_rules,
-            include_workspace_rules,
-            root: root.to_path_buf(),
-            matcher,
-        }
-    }
-
     fn try_from_rules(
         root: &Path,
         global_rules: Option<&str>,
         workspace_rules: Option<&str>,
         include_workspace_rules: bool,
     ) -> Result<Self, WorkspaceIgnoreError> {
-        let global_rules = global_rules.unwrap_or_default().to_string();
+        let global_rules = global_rules.unwrap_or_default();
+        if global_rules.len() > MAX_GLOBAL_IGNORE_RULE_UNITS {
+            return Err(WorkspaceIgnoreError);
+        }
         let mut builder = GitignoreBuilder::new(root);
         for line in global_rules.lines() {
             builder
@@ -264,17 +214,9 @@ impl MarkdownIgnoreRules {
         }
         let matcher = builder.build().map_err(|_| WorkspaceIgnoreError)?;
         Ok(Self {
-            global_rules,
-            include_workspace_rules,
             root: root.to_path_buf(),
             matcher,
         })
-    }
-
-    pub fn reload(&mut self) {
-        let root = self.root.clone();
-        let global_rules = self.global_rules.clone();
-        *self = Self::build(&root, Some(&global_rules), self.include_workspace_rules);
     }
 
     pub fn ignores(&self, path: &Path, is_directory: bool) -> bool {
@@ -315,43 +257,104 @@ impl MarkdownIgnoreRules {
 }
 
 fn read_retained_workspace_rules(directory: &Dir) -> Result<Option<String>, WorkspaceIgnoreError> {
-    let mut options = OpenOptions::new();
-    options.read(true).follow(FollowSymlinks::No);
-    let mut file = match directory.open_with(MARKRA_IGNORE_FILE_NAME, &options) {
-        Ok(file) => file,
+    read_retained_workspace_rules_inner(directory, || {})
+}
+
+#[cfg(test)]
+fn read_retained_workspace_rules_with_hook(
+    directory: &Dir,
+    after_read: impl FnOnce(),
+) -> Result<Option<String>, WorkspaceIgnoreError> {
+    read_retained_workspace_rules_inner(directory, after_read)
+}
+
+fn read_retained_workspace_rules_inner(
+    directory: &Dir,
+    after_read: impl FnOnce(),
+) -> Result<Option<String>, WorkspaceIgnoreError> {
+    let addressed = match directory.symlink_metadata(MARKRA_IGNORE_FILE_NAME) {
+        Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(_) => return Err(WorkspaceIgnoreError),
     };
-    let retained = file.metadata().map_err(|_| WorkspaceIgnoreError)?;
-    if !trusted_ignore_file(&retained) || retained.len() > MAX_MARKRA_IGNORE_BYTES {
-        return Err(WorkspaceIgnoreError);
-    }
-    let mut bytes = Vec::with_capacity(retained.len() as usize);
-    file.by_ref()
-        .take(MAX_MARKRA_IGNORE_BYTES + 1)
-        .read_to_end(&mut bytes)
+    validate_ignore_file(&addressed)?;
+    let addressed_stamp = FileVersionStamp::capture_metadata(&addressed);
+    let addressed_modified = addressed.modified().map_err(|_| WorkspaceIgnoreError)?;
+
+    let mut file = directory
+        .open_with(
+            MARKRA_IGNORE_FILE_NAME,
+            &crate::storage::nonfollowing_read_options(),
+        )
         .map_err(|_| WorkspaceIgnoreError)?;
-    if bytes.len() as u64 > MAX_MARKRA_IGNORE_BYTES {
+    let retained = file.metadata().map_err(|_| WorkspaceIgnoreError)?;
+    validate_ignore_file(&retained)?;
+    let retained_stamp = FileVersionStamp::capture_metadata(&retained);
+    let retained_modified = retained.modified().map_err(|_| WorkspaceIgnoreError)?;
+    if !same_ignore_file(&addressed, &retained)
+        || addressed.len() != retained.len()
+        || addressed_modified != retained_modified
+        || addressed_stamp != retained_stamp
+    {
         return Err(WorkspaceIgnoreError);
     }
+    let bytes = read_bounded_ignore_bytes(&mut file, retained.len())?;
+    after_read();
+
+    if retained_stamp.strong().is_none() {
+        file.seek(SeekFrom::Start(0))
+            .map_err(|_| WorkspaceIgnoreError)?;
+        let verification = read_bounded_ignore_bytes(&mut file, retained.len())?;
+        if verification != bytes {
+            return Err(WorkspaceIgnoreError);
+        }
+    }
+
     let after = file.metadata().map_err(|_| WorkspaceIgnoreError)?;
     let named = directory
         .symlink_metadata(MARKRA_IGNORE_FILE_NAME)
         .map_err(|_| WorkspaceIgnoreError)?;
-    if !trusted_ignore_file(&after)
-        || !trusted_ignore_file(&named)
-        || !same_ignore_file(&retained, &after)
+    validate_ignore_file(&after)?;
+    validate_ignore_file(&named)?;
+    let after_modified = after.modified().map_err(|_| WorkspaceIgnoreError)?;
+    let named_modified = named.modified().map_err(|_| WorkspaceIgnoreError)?;
+    if !same_ignore_file(&retained, &after)
         || !same_ignore_file(&retained, &named)
         || retained.len() != after.len()
         || retained.len() != named.len()
-        || retained.modified().ok() != after.modified().ok()
-        || retained.modified().ok() != named.modified().ok()
+        || retained_modified != after_modified
+        || retained_modified != named_modified
+        || retained_stamp != FileVersionStamp::capture_metadata(&after)
+        || retained_stamp != FileVersionStamp::capture_metadata(&named)
     {
         return Err(WorkspaceIgnoreError);
     }
     String::from_utf8(bytes)
         .map(Some)
         .map_err(|_| WorkspaceIgnoreError)
+}
+
+fn validate_ignore_file(metadata: &Metadata) -> Result<(), WorkspaceIgnoreError> {
+    if trusted_ignore_file(metadata) && metadata.len() <= MAX_MARKRA_IGNORE_BYTES {
+        Ok(())
+    } else {
+        Err(WorkspaceIgnoreError)
+    }
+}
+
+fn read_bounded_ignore_bytes(
+    file: &mut cap_std::fs::File,
+    expected_length: u64,
+) -> Result<Vec<u8>, WorkspaceIgnoreError> {
+    let mut bytes = Vec::with_capacity(expected_length as usize);
+    file.by_ref()
+        .take(MAX_MARKRA_IGNORE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| WorkspaceIgnoreError)?;
+    if bytes.len() as u64 != expected_length || bytes.len() as u64 > MAX_MARKRA_IGNORE_BYTES {
+        return Err(WorkspaceIgnoreError);
+    }
+    Ok(bytes)
 }
 
 fn trusted_ignore_file(metadata: &cap_std::fs::Metadata) -> bool {
@@ -558,6 +561,15 @@ mod tests {
             Err(WorkspaceIgnoreError)
         ));
 
+        store.put(
+            "fileIgnoreSettings",
+            json!({ "rules": "a".repeat(MAX_GLOBAL_IGNORE_RULE_UNITS + 1) }),
+        );
+        assert!(matches!(
+            provider.capture(&root, &retained),
+            Err(WorkspaceIgnoreError)
+        ));
+
         store.put("fileIgnoreSettings", json!({ "rules": "" }));
         fs::write(
             root.join(MARKRA_IGNORE_FILE_NAME),
@@ -568,6 +580,64 @@ mod tests {
             provider.capture(&root, &retained),
             Err(WorkspaceIgnoreError)
         ));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn retained_reader_rejects_same_inode_rewrite_with_restored_length_and_mtime() {
+        use std::{thread, time::Duration};
+
+        let root = test_root("same-inode-rewrite");
+        fs::create_dir_all(&root).unwrap();
+        let ignore_path = root.join(MARKRA_IGNORE_FILE_NAME);
+        fs::write(&ignore_path, "first\n").unwrap();
+        let original_modified = fs::metadata(&ignore_path).unwrap().modified().unwrap();
+        let retained = Dir::open_ambient_dir(&root, cap_std::ambient_authority()).unwrap();
+
+        let result = read_retained_workspace_rules_with_hook(&retained, || {
+            thread::sleep(Duration::from_millis(2));
+            fs::write(&ignore_path, "other\n").unwrap();
+            fs::OpenOptions::new()
+                .write(true)
+                .open(&ignore_path)
+                .unwrap()
+                .set_modified(original_modified)
+                .unwrap();
+        });
+
+        assert_eq!(result, Err(WorkspaceIgnoreError));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn retained_reader_rejects_a_fifo_without_waiting_for_a_writer() {
+        use std::{process::Command, sync::mpsc, thread, time::Duration};
+
+        let root = test_root("fifo");
+        fs::create_dir_all(&root).unwrap();
+        let fifo = root.join(MARKRA_IGNORE_FILE_NAME);
+        assert!(Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap()
+            .success());
+        let retained = Dir::open_ambient_dir(&root, cap_std::ambient_authority()).unwrap();
+        let (sender, receiver) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            sender
+                .send(read_retained_workspace_rules(&retained))
+                .unwrap();
+        });
+
+        let prompt_result = receiver.recv_timeout(Duration::from_millis(250));
+        if prompt_result.is_err() {
+            drop(fs::OpenOptions::new().write(true).open(&fifo).unwrap());
+        }
+        worker.join().unwrap();
+
+        assert_eq!(prompt_result, Ok(Err(WorkspaceIgnoreError)));
         fs::remove_dir_all(root).unwrap();
     }
 
