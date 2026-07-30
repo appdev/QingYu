@@ -1,10 +1,6 @@
-#[allow(dead_code, unused_imports)]
-#[path = "../src/server/mod.rs"]
-mod server;
-
 use std::time::Duration;
 
-use server::{
+use qingyu_kernel::server::{
     AuthenticationFlow, AuthenticationRateLimiter, InitializationError, InitializationGate,
     InitializationPermit, InitializationStatus, InitializationToken, IssuedSession,
     RateLimitDecision, RateLimitPolicy, RequestIntent, SessionAuthorization, SessionPolicy,

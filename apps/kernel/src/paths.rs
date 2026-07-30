@@ -15,7 +15,7 @@ pub struct KernelPaths {
     workspace: Arc<WorkspaceRoot>,
     instance_data: Arc<InstanceDataRoot>,
     cache: CacheRoot,
-    _config: PrivateDirectory,
+    config: ConfigRoot,
     _logs: PrivateDirectory,
 }
 
@@ -30,14 +30,14 @@ impl KernelPaths {
         let cache = OpenedDirectory::open_existing(cache)?;
         reject_overlapping_roots([&workspace, &app_data, &cache])?;
 
-        let config = app_data.try_clone_private()?;
+        let config = ConfigRoot::new(app_data.try_clone_opened()?)?;
         let logs = app_data.try_clone_private()?;
         Ok(Self {
             profile: HostProfile::Desktop,
             workspace: Arc::new(WorkspaceRoot::new_host(workspace)?),
             instance_data: Arc::new(InstanceDataRoot::new(app_data)?),
             cache: CacheRoot::new(cache),
-            _config: config,
+            config,
             _logs: logs,
         })
     }
@@ -72,7 +72,7 @@ impl KernelPaths {
             .join(managed_name);
         let workspace = OpenedDirectory::from_open_dir(workspace_dir, workspace_path)?;
 
-        let config = app_data.try_clone_private()?;
+        let config = ConfigRoot::new(app_data.try_clone_opened()?)?;
         let logs = app_data.try_clone_private()?;
         Ok(Self {
             profile: HostProfile::Mobile,
@@ -84,7 +84,7 @@ impl KernelPaths {
             )),
             instance_data: Arc::new(InstanceDataRoot::new(app_data)?),
             cache: CacheRoot::new(cache),
-            _config: config,
+            config,
             _logs: logs,
         })
     }
@@ -111,6 +111,10 @@ impl KernelPaths {
 
     pub const fn cache_root(&self) -> &CacheRoot {
         &self.cache
+    }
+
+    pub const fn config_root(&self) -> &ConfigRoot {
+        &self.config
     }
 
     pub(crate) fn prepare_host_workspace_root(
@@ -176,6 +180,7 @@ impl fmt::Debug for KernelPaths {
             .field("workspace", &"WorkspaceRoot(..)")
             .field("instance_data", &"InstanceDataRoot(..)")
             .field("cache", &"CacheRoot(..)")
+            .field("config", &"ConfigRoot(..)")
             .finish()
     }
 }
@@ -321,6 +326,17 @@ impl ExactDirectoryAddress {
         }
         Ok(())
     }
+
+    fn try_clone(&self) -> Result<Self, PathPolicyError> {
+        Ok(Self {
+            parent: self
+                .parent
+                .try_clone()
+                .map_err(|_| PathPolicyError::unavailable())?,
+            parent_identity: self.parent_identity,
+            name: self.name.clone(),
+        })
+    }
 }
 
 impl fmt::Debug for WorkspaceRoot {
@@ -375,6 +391,69 @@ impl InstanceDataRoot {
 impl fmt::Debug for InstanceDataRoot {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("InstanceDataRoot(..)")
+    }
+}
+
+/// Retained authority for Kernel configuration that must never be synchronized.
+///
+/// ```compile_fail
+/// use qingyu_kernel::paths::ConfigRoot;
+/// fn expose(root: ConfigRoot) {
+///     let ConfigRoot { dir, .. } = root;
+///     drop(dir);
+/// }
+/// ```
+pub struct ConfigRoot {
+    dir: Dir,
+    identity: DirectoryIdentity,
+    canonical_path: PathBuf,
+    address_anchor: ExactDirectoryAddress,
+}
+
+impl ConfigRoot {
+    fn new(opened: OpenedDirectory) -> Result<Self, PathPolicyError> {
+        let address_anchor = ExactDirectoryAddress::new(&opened.canonical_path)?;
+        Ok(Self {
+            dir: opened.dir,
+            identity: opened.identity,
+            canonical_path: opened.canonical_path,
+            address_anchor,
+        })
+    }
+
+    pub fn verify_held_directory(&self) -> Result<(), PathPolicyError> {
+        verify_retained_directory(&self.dir, self.identity)?;
+        self.address_anchor.verify(self.identity)
+    }
+
+    pub(crate) fn try_clone_dir(&self) -> Result<Dir, PathPolicyError> {
+        self.verify_held_directory()?;
+        self.dir
+            .try_clone()
+            .map_err(|_| PathPolicyError::unavailable())
+    }
+
+    pub(crate) fn try_clone_root(&self) -> Result<Self, PathPolicyError> {
+        self.verify_held_directory()?;
+        Ok(Self {
+            dir: self
+                .dir
+                .try_clone()
+                .map_err(|_| PathPolicyError::unavailable())?,
+            identity: self.identity,
+            canonical_path: self.canonical_path.clone(),
+            address_anchor: self.address_anchor.try_clone()?,
+        })
+    }
+
+    pub(crate) fn canonical_path(&self) -> &Path {
+        &self.canonical_path
+    }
+}
+
+impl fmt::Debug for ConfigRoot {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ConfigRoot(..)")
     }
 }
 
@@ -486,7 +565,7 @@ impl ServerPathLayout {
             workspace: Arc::new(WorkspaceRoot::new_host(workspace)?),
             instance_data: Arc::new(InstanceDataRoot::new(state)?),
             cache: CacheRoot::new(cache),
-            _config: PrivateDirectory::new(config),
+            config: ConfigRoot::new(config)?,
             _logs: PrivateDirectory::new(logs),
         })
     }
@@ -566,6 +645,17 @@ impl OpenedDirectory {
         Ok(PrivateDirectory {
             _dir: dir,
             _identity: self.identity,
+        })
+    }
+
+    fn try_clone_opened(&self) -> Result<Self, PathPolicyError> {
+        Ok(Self {
+            dir: self
+                .dir
+                .try_clone()
+                .map_err(|_| PathPolicyError::unavailable())?,
+            identity: self.identity,
+            canonical_path: self.canonical_path.clone(),
         })
     }
 }

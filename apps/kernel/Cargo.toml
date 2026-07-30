@@ -18,6 +18,7 @@ path = "src/lib.rs"
 
 [dependencies]
 async-trait = "0.1"
+argon2 = { version = "0.5", features = ["std"] }
 axum = { version = "0.8.9", features = ["http1", "json", "tokio", "ws"] }
 base64 = "0.22"
 cap-fs-ext = "4.0.2"
