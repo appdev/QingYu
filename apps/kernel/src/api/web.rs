@@ -21,8 +21,9 @@ use crate::{
 
 const INDEX_NAME: &str = "index.html";
 const MAX_WEB_ASSET_BYTES: u64 = 16 * 1024 * 1024;
-const CONTENT_SECURITY_POLICY: &str =
-    "default-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'";
+const CONTENT_SECURITY_POLICY: &str = "default-src 'self'; style-src 'self' 'unsafe-inline'; \
+    img-src 'self' data: blob: https:; font-src 'self' data:; object-src 'none'; \
+    base-uri 'none'; frame-ancestors 'none'";
 
 #[derive(Clone)]
 pub(super) struct ServerWebAssets {

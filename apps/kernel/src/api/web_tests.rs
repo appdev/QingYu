@@ -171,7 +171,7 @@ async fn static_routes_reject_non_get_head_methods_and_apply_browser_security_he
     let response = web.response("GET", "/").await;
     assert_eq!(
         response.headers()[header::CONTENT_SECURITY_POLICY],
-        "default-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+        "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
     );
     assert_eq!(
         response.headers()[header::X_CONTENT_TYPE_OPTIONS],
