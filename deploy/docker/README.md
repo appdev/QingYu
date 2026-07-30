@@ -14,6 +14,7 @@ For that reason:
 - `compose.contract.yaml` requires a future server runtime image and hides the service behind the `server-entrypoint-required` profile;
 - the Compose healthcheck is disabled. Labels record the required live and ready routes without assuming that a future runtime image contains `curl`, `wget`, or another probe binary;
 - `verify-runtime.sh --status` exits with status 78 until the server HTTP entrypoint and composition exist.
+- `verify-contract.sh` validates the Docker and Compose structure, then exits with status 78 and a `kernel-integration-required` blocker until both the `qingyu-dejavu` Kernel source and canonical server launch-environment loader are present on the integration branch. It must not report `PASS` while either prerequisite is absent.
 
 Run the dependency-free static contract check with:
 
@@ -21,7 +22,7 @@ Run the dependency-free static contract check with:
 deploy/docker/verify-contract.sh
 ```
 
-The artifact image can be built when Docker is available, but it is not runnable:
+After the Kernel source prerequisite is integrated, the artifact image can be built when Docker is available, but it is not runnable:
 
 ```sh
 docker build --target kernel-artifact -t qingyu-kernel-artifact .

@@ -7,10 +7,18 @@ dockerfile="$repo_root/Dockerfile"
 compose_file="$repo_root/deploy/docker/compose.contract.yaml"
 runtime_gate="$repo_root/deploy/docker/verify-runtime.sh"
 contract_doc="$repo_root/deploy/docker/README.md"
+dejavu_manifest="$repo_root/apps/kernel/crates/qingyu-dejavu/Cargo.toml"
+dejavu_source="$repo_root/apps/kernel/crates/qingyu-dejavu/src"
+launch_environment="$repo_root/apps/kernel/src/server/launch_environment.rs"
 
 fail() {
   printf 'FAIL: %s\n' "$1" >&2
   exit 1
+}
+
+blocked() {
+  printf 'BLOCKED(%s): %s\n' "$1" "$2" >&2
+  exit 78
 }
 
 require_file() {
@@ -27,6 +35,12 @@ reject_extended() {
   fi
 }
 
+reject_extended_case_insensitive() {
+  if grep -Ei -- "$2" "$1" >/dev/null; then
+    fail "$3"
+  fi
+}
+
 require_file "$dockerfile" "root Dockerfile"
 require_file "$compose_file" "Compose contract"
 require_file "$runtime_gate" "runtime phase gate"
@@ -39,13 +53,17 @@ require_fixed "$dockerfile" \
   "Dockerfile must build the locked release qingyu-kernel artifact"
 grep -Ei '^FROM[[:space:]]scratch[[:space:]]AS[[:space:]]kernel-artifact[[:space:]]*$' "$dockerfile" >/dev/null \
   || fail "Dockerfile must end in a non-runnable scratch artifact stage"
+final_from=$(awk 'toupper($1) == "FROM" { line = $0 } END { print line }' "$dockerfile")
+printf '%s\n' "$final_from" \
+  | grep -Ei '^[[:space:]]*FROM[[:space:]]+scratch[[:space:]]+AS[[:space:]]+kernel-artifact[[:space:]]*$' >/dev/null \
+  || fail "Dockerfile final FROM must be the non-runnable scratch artifact stage"
 require_fixed "$dockerfile" \
   'COPY --from=kernel-build /src/apps/kernel/target/release/qingyu-kernel /qingyu-kernel' \
   "Dockerfile must export the kernel binary from the artifact stage"
 require_fixed "$dockerfile" \
   'COPY apps/kernel/crates/qingyu-dejavu apps/kernel/crates/qingyu-dejavu' \
   "Dockerfile must include the Kernel workspace DejaVu crate in the build context"
-reject_extended "$dockerfile" '^[[:space:]]*(CMD|ENTRYPOINT|EXPOSE|HEALTHCHECK)[[:space:]]' \
+reject_extended_case_insensitive "$dockerfile" '^[[:space:]]*(CMD|ENTRYPOINT|EXPOSE|HEALTHCHECK)[[:space:]]' \
   "artifact-only Dockerfile must not claim a runnable server contract"
 reject_extended "$dockerfile" 'QINGYU_SERVER_INITIALIZATION_TOKEN' \
   "the one-time initialization token must never enter the image build"
@@ -74,7 +92,7 @@ require_fixed "$compose_file" '- "${QINGYU_SERVER_PORT:-3210}:3210"' \
 published_ports=$(grep -Ec '^[[:space:]]*-[[:space:]]+"[^\"]*:[0-9]+"[[:space:]]*$' "$compose_file" || true)
 [ "$published_ports" -eq 1 ] \
   || fail "Compose must publish exactly one container port"
-reject_extended "$compose_file" '^[[:space:]]*expose:' \
+reject_extended_case_insensitive "$compose_file" '^[[:space:]]*expose:' \
   "Compose must not declare additional exposed ports"
 require_fixed "$compose_file" '- qingyu-data:/data' \
   "Compose must mount its single persistent volume at fixed /data"
@@ -91,7 +109,7 @@ require_fixed "$compose_file" 'dev.qingyu.contract.health-live: /api/v1/health/l
   "Compose must record the live-health endpoint contract"
 require_fixed "$compose_file" 'dev.qingyu.contract.health-ready: /api/v1/health/ready' \
   "Compose must record the ready-health endpoint contract"
-reject_extended "$compose_file" '^[[:space:]]*(command|entrypoint|build):' \
+reject_extended_case_insensitive "$compose_file" '^[[:space:]]*(command|entrypoint|build):' \
   "Compose must not invent a command, entrypoint, or runnable image build"
 
 require_fixed "$contract_doc" '`QINGYU_SERVER_INITIALIZATION_TOKEN` must contain at least 32 bytes.' \
@@ -119,5 +137,18 @@ case "$runtime_output" in
   *server-entrypoint-required*) ;;
   *) fail "runtime phase gate must identify the server-entrypoint-required blocker" ;;
 esac
+
+missing_integration=""
+if [ ! -f "$dejavu_manifest" ] || [ ! -d "$dejavu_source" ]; then
+  missing_integration="$missing_integration qingyu-dejavu-source"
+fi
+if [ ! -f "$launch_environment" ] \
+  || ! grep -F -- \
+    'pub const SERVER_INITIALIZATION_TOKEN_ENV: &str = "QINGYU_SERVER_INITIALIZATION_TOKEN";' \
+    "$launch_environment" >/dev/null; then
+  missing_integration="$missing_integration canonical-server-launch-environment"
+fi
+[ -z "$missing_integration" ] \
+  || blocked "kernel-integration-required" "missing:$missing_integration"
 
 printf 'PASS: Docker artifact and Compose contracts are statically valid.\n'
