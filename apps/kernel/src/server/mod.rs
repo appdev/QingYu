@@ -4,6 +4,7 @@
 //! outside this module. Callers inject bootstrap material and monotonic time.
 
 mod auth_store;
+mod authentication_coordinator;
 mod csrf;
 mod initialization;
 mod initialization_coordinator;
@@ -14,6 +15,9 @@ mod session;
 pub use auth_store::{
     OwnerPasswordInitializationError, OwnerPasswordVerification, ServerAuthenticationError,
     ServerAuthenticationStatus, ServerAuthenticationStore,
+};
+pub use authentication_coordinator::{
+    ServerAuthenticationCoordinator, ServerAuthenticationCoordinatorError, ServerLogin,
 };
 pub use csrf::RequestIntent;
 pub use initialization::{
