@@ -43,30 +43,85 @@ struct ServerHostBundle<T> {
 
 struct ServerHostEpochSlotInner<T> {
     current: RwLock<Option<Arc<ServerHostBundle<T>>>>,
-    blocking_gate: Arc<Semaphore>,
+    process: Arc<ServerHostProcessResources>,
 }
 
-/// Owns the replaceable server-host bundle and the process-wide blocking cap.
+/// Process-lifetime server resources shared by every launch and host slot.
 ///
-/// The blocking semaphore intentionally lives outside each launch bundle, so
-/// replacing an epoch cannot bypass work already occupying the bounded pool.
+/// A server composition must construct exactly one owner at process start and
+/// derive every epoch slot from it. Neither a slot nor an epoch can construct a
+/// private semaphore or direct-peer key, so ordinary launch replacement cannot
+/// reset the process-wide blocking capacity or client identity namespace.
+pub(crate) struct ServerHostProcessResources {
+    blocking_gate: Arc<Semaphore>,
+    direct_peer_key: DirectPeerClientIdKey,
+}
+
+impl ServerHostProcessResources {
+    pub(crate) fn new(
+        blocking_capacity: usize,
+    ) -> Result<Arc<Self>, ServerHostProcessResourcesError> {
+        if blocking_capacity == 0 {
+            return Err(ServerHostProcessResourcesError::ZeroBlockingCapacity);
+        }
+        let direct_peer_key = DirectPeerClientIdKey::generate()
+            .map_err(|_| ServerHostProcessResourcesError::ClientIdentityKeyGeneration)?;
+        Self::from_key(blocking_capacity, direct_peer_key)
+    }
+
+    fn from_key(
+        blocking_capacity: usize,
+        direct_peer_key: DirectPeerClientIdKey,
+    ) -> Result<Arc<Self>, ServerHostProcessResourcesError> {
+        if blocking_capacity == 0 {
+            return Err(ServerHostProcessResourcesError::ZeroBlockingCapacity);
+        }
+        Ok(Arc::new(Self {
+            blocking_gate: Arc::new(Semaphore::new(blocking_capacity)),
+            direct_peer_key,
+        }))
+    }
+
+    #[cfg(test)]
+    fn with_key(
+        blocking_capacity: usize,
+        key: [u8; 32],
+    ) -> Result<Arc<Self>, ServerHostProcessResourcesError> {
+        Self::from_key(blocking_capacity, DirectPeerClientIdKey::from_bytes(key))
+    }
+
+    pub(crate) fn epoch_slot<T>(self: &Arc<Self>) -> ServerHostEpochSlot<T> {
+        ServerHostEpochSlot {
+            inner: Arc::new(ServerHostEpochSlotInner {
+                current: RwLock::new(None),
+                process: Arc::clone(self),
+            }),
+        }
+    }
+
+    pub(crate) fn identify_request(
+        &self,
+        direct_peer: Option<SocketAddr>,
+        untrusted_headers: &HeaderMap,
+    ) -> Result<u64, MissingDirectPeer> {
+        self.direct_peer_key
+            .identify_request(direct_peer, untrusted_headers)
+    }
+}
+
+impl fmt::Debug for ServerHostProcessResources {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ServerHostProcessResources([REDACTED])")
+    }
+}
+
+/// Owns one replaceable server-host bundle while borrowing all process-wide
+/// limits and identity material from [`ServerHostProcessResources`].
 pub(crate) struct ServerHostEpochSlot<T> {
     inner: Arc<ServerHostEpochSlotInner<T>>,
 }
 
 impl<T> ServerHostEpochSlot<T> {
-    pub(crate) fn new(blocking_capacity: usize) -> Result<Self, ServerHostEpochSlotError> {
-        if blocking_capacity == 0 {
-            return Err(ServerHostEpochSlotError::ZeroBlockingCapacity);
-        }
-        Ok(Self {
-            inner: Arc::new(ServerHostEpochSlotInner {
-                current: RwLock::new(None),
-                blocking_gate: Arc::new(Semaphore::new(blocking_capacity)),
-            }),
-        })
-    }
-
     /// Atomically replaces the current launch incarnation.
     pub(crate) fn replace(&self, epoch: &KernelLaunchEpoch, state: T) -> ServerHostLease<T> {
         let bundle = Arc::new(ServerHostBundle {
@@ -146,7 +201,7 @@ where
         if !self.is_current() {
             return Err(ServerBlockingError::StaleLaunch);
         }
-        let permit = Arc::clone(&self.slot.blocking_gate)
+        let permit = Arc::clone(&self.slot.process.blocking_gate)
             .try_acquire_owned()
             .map_err(|_| ServerBlockingError::Saturated)?;
         if !self.is_current() {
@@ -220,8 +275,9 @@ fn write_unpoisoned<T>(lock: &RwLock<T>) -> RwLockWriteGuard<'_, T> {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum ServerHostEpochSlotError {
+pub(crate) enum ServerHostProcessResourcesError {
     ZeroBlockingCapacity,
+    ClientIdentityKeyGeneration,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -236,10 +292,10 @@ pub(crate) enum ServerBlockingError {
 /// Only the accepted transport peer is trusted. Ports are discarded, IPv4
 /// mapped IPv6 addresses are canonicalized, and forwarding headers are never
 /// read. The key keeps client identifiers unlinkable across host processes.
-pub(crate) struct DirectPeerClientIdKey([u8; 32]);
+struct DirectPeerClientIdKey([u8; 32]);
 
 impl DirectPeerClientIdKey {
-    pub(crate) fn generate() -> Result<Self, DirectPeerClientIdKeyGenerationError> {
+    fn generate() -> Result<Self, DirectPeerClientIdKeyGenerationError> {
         let mut key = [0_u8; 32];
         getrandom::fill(&mut key).map_err(|_| DirectPeerClientIdKeyGenerationError)?;
         Ok(Self(key))
@@ -252,7 +308,7 @@ impl DirectPeerClientIdKey {
 
     /// `untrusted_headers` is accepted only to make the trust boundary
     /// executable: forwarded and real-IP headers cannot influence identity.
-    pub(crate) fn identify_request(
+    fn identify_request(
         &self,
         direct_peer: Option<SocketAddr>,
         _untrusted_headers: &HeaderMap,
@@ -320,15 +376,14 @@ mod tests {
 
     use axum::http::{HeaderMap, HeaderValue};
 
-    use super::{
-        DirectPeerClientIdKey, ServerBlockingError, ServerHostEpochSlot, ServerHostEpochSlotError,
-    };
+    use super::{ServerBlockingError, ServerHostProcessResources, ServerHostProcessResourcesError};
     use crate::config::KernelConfig;
 
     #[test]
     fn replacing_same_epoch_invalidates_the_old_arc_incarnation() {
         let config = KernelConfig::generate().unwrap();
-        let slot = ServerHostEpochSlot::new(1).unwrap();
+        let process = ServerHostProcessResources::new(1).unwrap();
+        let slot = process.epoch_slot();
         let first = slot.replace(config.launch_epoch(), "first");
         let second = slot.replace(config.launch_epoch(), "second");
 
@@ -344,7 +399,8 @@ mod tests {
     fn replacing_launch_epoch_invalidates_the_old_lease() {
         let first_config = KernelConfig::generate().unwrap();
         let second_config = KernelConfig::generate().unwrap();
-        let slot = ServerHostEpochSlot::new(1).unwrap();
+        let process = ServerHostProcessResources::new(1).unwrap();
+        let slot = process.epoch_slot();
         let first = slot.replace(first_config.launch_epoch(), "first");
         let second = slot.replace(second_config.launch_epoch(), "second");
 
@@ -355,16 +411,54 @@ mod tests {
     #[test]
     fn zero_blocking_capacity_is_rejected() {
         assert_eq!(
-            ServerHostEpochSlot::<()>::new(0).unwrap_err(),
-            ServerHostEpochSlotError::ZeroBlockingCapacity
+            ServerHostProcessResources::new(0).unwrap_err(),
+            ServerHostProcessResourcesError::ZeroBlockingCapacity
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn two_slots_from_one_process_owner_share_the_blocking_capacity() {
+        let first_config = KernelConfig::generate().unwrap();
+        let second_config = KernelConfig::generate().unwrap();
+        let process = ServerHostProcessResources::new(1).unwrap();
+        let first_slot = process.epoch_slot();
+        let second_slot = process.epoch_slot();
+        let first = first_slot.replace(first_config.launch_epoch(), "first");
+        let second = second_slot.replace(second_config.launch_epoch(), "second");
+        let (started_sender, started_receiver) = mpsc::sync_channel(1);
+        let (release_sender, release_receiver) = mpsc::sync_channel(1);
+        let first_task = tokio::spawn(async move {
+            first
+                .run_blocking(move |state| {
+                    started_sender.send(()).unwrap();
+                    release_receiver.recv().unwrap();
+                    *state
+                })
+                .await
+        });
+        tokio::task::spawn_blocking(move || {
+            started_receiver
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap()
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(
+            second.run_blocking(|state| *state).await,
+            Err(ServerBlockingError::Saturated)
+        );
+        release_sender.send(()).unwrap();
+        assert_eq!(first_task.await.unwrap().unwrap(), "first");
+        assert_eq!(second.run_blocking(|state| *state).await.unwrap(), "second");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn blocking_capacity_is_shared_across_epoch_replacement() {
         let first_config = KernelConfig::generate().unwrap();
         let second_config = KernelConfig::generate().unwrap();
-        let slot = ServerHostEpochSlot::new(1).unwrap();
+        let process = ServerHostProcessResources::new(1).unwrap();
+        let slot = process.epoch_slot();
         let first = slot.replace(first_config.launch_epoch(), "first");
         let (started_sender, started_receiver) = mpsc::sync_channel(1);
         let (release_sender, release_receiver) = mpsc::sync_channel(1);
@@ -401,7 +495,8 @@ mod tests {
     async fn stale_lease_never_starts_a_blocking_operation() {
         let first_config = KernelConfig::generate().unwrap();
         let second_config = KernelConfig::generate().unwrap();
-        let slot = ServerHostEpochSlot::new(1).unwrap();
+        let process = ServerHostProcessResources::new(1).unwrap();
+        let slot = process.epoch_slot();
         let first = slot.replace(first_config.launch_epoch(), ());
         let second = slot.replace(second_config.launch_epoch(), ());
         let calls = Arc::new(AtomicUsize::new(0));
@@ -431,7 +526,8 @@ mod tests {
 
         let first_config = KernelConfig::generate().unwrap();
         let second_config = KernelConfig::generate().unwrap();
-        let slot = ServerHostEpochSlot::new(1).unwrap();
+        let process = ServerHostProcessResources::new(1).unwrap();
+        let slot = process.epoch_slot();
         let first = slot.replace(first_config.launch_epoch(), ());
         let calls = Arc::new(AtomicUsize::new(0));
         let drops = Arc::new(AtomicUsize::new(0));
@@ -471,7 +567,8 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn cancelling_the_waiter_does_not_cancel_or_leak_the_blocking_settlement() {
         let config = KernelConfig::generate().unwrap();
-        let slot = ServerHostEpochSlot::new(1).unwrap();
+        let process = ServerHostProcessResources::new(1).unwrap();
+        let slot = process.epoch_slot();
         let lease = slot.replace(config.launch_epoch(), ());
         let cancelled_lease = lease.clone();
         let (started_sender, started_receiver) = mpsc::sync_channel(1);
@@ -528,7 +625,7 @@ mod tests {
 
     #[test]
     fn direct_peer_identity_ignores_ports_and_forwarding_headers() {
-        let key = DirectPeerClientIdKey::from_bytes([7; 32]);
+        let process = ServerHostProcessResources::with_key(1, [7; 32]).unwrap();
         let mut first_headers = HeaderMap::new();
         first_headers.insert(
             "forwarded",
@@ -541,50 +638,58 @@ mod tests {
         let second_peer = SocketAddr::from((Ipv4Addr::new(192, 0, 2, 44), 65000));
 
         assert_eq!(
-            key.identify_request(Some(first_peer), &first_headers)
+            process
+                .identify_request(Some(first_peer), &first_headers)
                 .unwrap(),
-            key.identify_request(Some(second_peer), &second_headers)
+            process
+                .identify_request(Some(second_peer), &second_headers)
                 .unwrap()
         );
     }
 
     #[test]
     fn ipv4_mapped_peer_has_the_same_identity_as_ipv4() {
-        let key = DirectPeerClientIdKey::from_bytes([9; 32]);
+        let process = ServerHostProcessResources::with_key(1, [9; 32]).unwrap();
         let headers = HeaderMap::new();
         let ipv4 = Ipv4Addr::new(203, 0, 113, 7);
         let mapped = ipv4.to_ipv6_mapped();
 
         assert_eq!(
-            key.identify_request(Some(SocketAddr::from((ipv4, 443))), &headers)
+            process
+                .identify_request(Some(SocketAddr::from((ipv4, 443))), &headers)
                 .unwrap(),
-            key.identify_request(Some(SocketAddr::from((mapped, 8443))), &headers)
+            process
+                .identify_request(Some(SocketAddr::from((mapped, 8443))), &headers)
                 .unwrap()
         );
     }
 
     #[test]
     fn client_identity_is_bound_to_the_process_key() {
-        let first_key = DirectPeerClientIdKey::from_bytes([13; 32]);
-        let second_key = DirectPeerClientIdKey::from_bytes([14; 32]);
+        let first_process = ServerHostProcessResources::with_key(1, [13; 32]).unwrap();
+        let second_process = ServerHostProcessResources::with_key(1, [14; 32]).unwrap();
         let headers = HeaderMap::new();
         let peer = SocketAddr::from((Ipv4Addr::new(198, 51, 100, 20), 443));
 
         assert_ne!(
-            first_key.identify_request(Some(peer), &headers).unwrap(),
-            second_key.identify_request(Some(peer), &headers).unwrap()
+            first_process
+                .identify_request(Some(peer), &headers)
+                .unwrap(),
+            second_process
+                .identify_request(Some(peer), &headers)
+                .unwrap()
         );
     }
 
     #[test]
     fn missing_direct_peer_fails_closed_even_with_forwarding_headers() {
-        let key = DirectPeerClientIdKey::from_bytes([11; 32]);
+        let process = ServerHostProcessResources::with_key(1, [11; 32]).unwrap();
         let mut headers = HeaderMap::new();
         headers.insert("forwarded", HeaderValue::from_static("for=203.0.113.99"));
         headers.insert("x-forwarded-for", HeaderValue::from_static("203.0.113.98"));
 
         assert_eq!(
-            key.identify_request(None, &headers),
+            process.identify_request(None, &headers),
             Err(super::MissingDirectPeer)
         );
     }
