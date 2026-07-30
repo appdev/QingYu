@@ -21,6 +21,8 @@ use crate::storage_capability::{
 };
 
 const WATCH_BACKEND_RECOVERY_ATTEMPTS: usize = 3;
+#[cfg(any(target_os = "linux", test))]
+const LINUX_WATCH_SET_STABILIZATION_ATTEMPTS: usize = 3;
 
 fn recover_supervised_watch_backend<B>(
     backend: &mut B,
@@ -566,6 +568,7 @@ fn commit_recaptured_watch_rules(
 }
 
 fn rebuild_recursive_watch_subscription_with_backend<B>(
+    watch_root: &DirectoryWatchRoot,
     ignore_rules: &Arc<Mutex<MarkdownWatchIgnoreRules>>,
     build_backend: impl FnOnce() -> Result<B, String>,
 ) -> Result<B, String> {
@@ -573,7 +576,9 @@ fn rebuild_recursive_watch_subscription_with_backend<B>(
     // Events emitted while the replacement backend starts are queued for the
     // coordinator. Capture the rules only after activation so the replacement
     // cannot publish an older ignore snapshot in front of those events.
+    watch_root.verify_current()?;
     let candidate = recapture_watch_rules(ignore_rules)?;
+    watch_root.verify_current()?;
     commit_recaptured_watch_rules(ignore_rules, candidate)?;
     Ok(backend)
 }
@@ -598,7 +603,7 @@ fn rebuild_recursive_watch_subscription(
     ignore_rules: &Arc<Mutex<MarkdownWatchIgnoreRules>>,
     event_sender: std::sync::mpsc::Sender<CoordinatorMessage>,
 ) -> Result<RecommendedWatcher, String> {
-    rebuild_recursive_watch_subscription_with_backend(ignore_rules, || {
+    rebuild_recursive_watch_subscription_with_backend(watch_root, ignore_rules, || {
         build_recursive_watch_backend(watch_root, event_sender)
     })
 }
@@ -707,16 +712,32 @@ fn rebuild_linux_watch_subscription<B: DirectoryWatchBackend>(
     // Backend events generated during this window remain queued behind the
     // coordinator's current recovery message.
     let mut candidate = recapture_watch_rules(ignore_rules)?;
-    let desired_directories = visible_watch_directories(watch_root, &mut candidate)?;
     let mut watched_directories = initial_directories;
-    reconcile_directory_watch_set_with_rebuild(
-        &mut backend,
-        &mut watched_directories,
-        &desired_directories,
-        |desired| build_backend(desired),
-    )?;
-    commit_recaptured_watch_rules(ignore_rules, candidate)?;
-    Ok((backend, watched_directories))
+    for _ in 0..LINUX_WATCH_SET_STABILIZATION_ATTEMPTS {
+        let desired_directories = visible_watch_directories(watch_root, &mut candidate)?;
+        reconcile_directory_watch_set_with_rebuild(
+            &mut backend,
+            &mut watched_directories,
+            &desired_directories,
+            |desired| build_backend(desired),
+        )?;
+
+        // Every directory used as a parent by this scan is now registered.
+        // A child created before its newly-visible parent was registered is
+        // therefore found here; later children are covered by queued events.
+        let mut post_registration_candidate = recapture_watch_rules(ignore_rules)?;
+        let post_registration_directories =
+            visible_watch_directories(watch_root, &mut post_registration_candidate)?;
+        if post_registration_directories == watched_directories {
+            commit_recaptured_watch_rules(ignore_rules, post_registration_candidate)?;
+            return Ok((backend, watched_directories));
+        }
+        candidate = post_registration_candidate;
+    }
+
+    Err(format!(
+        "Linux watch set did not stabilize after {LINUX_WATCH_SET_STABILIZATION_ATTEMPTS} attempts"
+    ))
 }
 
 #[cfg(any(target_os = "linux", test))]
@@ -883,6 +904,13 @@ mod tests {
         watched: HashSet<PathBuf>,
     }
 
+    struct NestedCreatingWatchBackend {
+        watched: HashSet<PathBuf>,
+        trigger_parent: PathBuf,
+        nested: PathBuf,
+        created: bool,
+    }
+
     #[derive(Debug, PartialEq, Eq)]
     struct ReplaceableTestWatchBackend {
         generation: usize,
@@ -1013,8 +1041,9 @@ mod tests {
         let rules = Arc::new(Mutex::new(
             MarkdownWatchIgnoreRules::try_new(&root, None).expect("watcher rules should load"),
         ));
+        let watch_root = DirectoryWatchRoot::capture(&root).expect("watch root should capture");
 
-        rebuild_recursive_watch_subscription_with_backend(&rules, || {
+        rebuild_recursive_watch_subscription_with_backend(&watch_root, &rules, || {
             fs::write(root.join(".markraignore"), "old/\n")
                 .expect("rules should change during backend activation");
             Ok(ReplaceableTestWatchBackend { generation: 2 })
@@ -1029,6 +1058,29 @@ mod tests {
         assert!(!current.ignores(&root.join("new"), true));
         drop(rules_guard);
         fs::remove_dir_all(root).expect("test root should be removed");
+    }
+
+    #[test]
+    fn recursive_recovery_rejects_a_root_replaced_after_backend_activation() {
+        let root = test_root("recursive-post-activation-root-swap");
+        let displaced = root.with_extension("captured-root");
+        fs::create_dir_all(&root).expect("test root should be created");
+        let rules = Arc::new(Mutex::new(
+            MarkdownWatchIgnoreRules::try_new(&root, None).expect("watcher rules should load"),
+        ));
+        let watch_root = DirectoryWatchRoot::capture(&root).expect("watch root should capture");
+
+        let result = rebuild_recursive_watch_subscription_with_backend(&watch_root, &rules, || {
+            fs::rename(&root, &displaced).expect("captured root should be displaced");
+            fs::create_dir_all(&root).expect("replacement root should be created");
+            Ok(ReplaceableTestWatchBackend { generation: 2 })
+        });
+
+        drop(watch_root);
+        drop(rules);
+        fs::remove_dir_all(&root).expect("replacement root should be removed");
+        fs::remove_dir_all(displaced).expect("captured root should be removed");
+        assert_eq!(result, Err("workspace root changed".to_string()));
     }
 
     #[test]
@@ -1068,6 +1120,42 @@ mod tests {
         assert!(current.ignores(&old, true));
         assert!(!current.ignores(&new, true));
         drop(rules_guard);
+        fs::remove_dir_all(root).expect("test root should be removed");
+    }
+
+    #[test]
+    fn linux_recovery_scans_again_after_registering_a_new_parent() {
+        let root = test_root("linux-post-registration-scan");
+        let old = root.join("old");
+        let nested = old.join("new-nested");
+        fs::create_dir_all(&old).expect("old directory should be created");
+        fs::write(root.join(".markraignore"), "old/\n")
+            .expect("initial workspace rules should be written");
+        let watch_root = DirectoryWatchRoot::capture(&root).expect("watch root should capture");
+        let rules = Arc::new(Mutex::new(
+            MarkdownWatchIgnoreRules::try_new(&root, None).expect("watcher rules should load"),
+        ));
+        let builds = std::cell::Cell::new(0);
+
+        let (backend, watched_directories) =
+            rebuild_linux_watch_subscription(&watch_root, &rules, |desired_directories| {
+                builds.set(builds.get() + 1);
+                if builds.get() == 1 {
+                    fs::write(root.join(".markraignore"), "")
+                        .expect("old directory should become visible during activation");
+                }
+                Ok(NestedCreatingWatchBackend {
+                    watched: desired_directories.clone(),
+                    trigger_parent: old.clone(),
+                    nested: nested.clone(),
+                    created: false,
+                })
+            })
+            .expect("Linux backend should rebuild");
+
+        assert!(nested.is_dir());
+        assert!(watched_directories.contains(&nested));
+        assert_eq!(backend.watched, watched_directories);
         fs::remove_dir_all(root).expect("test root should be removed");
     }
 
@@ -1221,6 +1309,25 @@ mod tests {
             if self.fail_unwatch.remove(path) {
                 return Err(format!("unwatch failed: {}", path.display()));
             }
+            if self.watched.remove(path) {
+                Ok(())
+            } else {
+                Err(format!("watch not found: {}", path.display()))
+            }
+        }
+    }
+
+    impl DirectoryWatchBackend for NestedCreatingWatchBackend {
+        fn watch_directory(&mut self, path: &Path) -> Result<(), String> {
+            if path == self.trigger_parent && !self.created {
+                fs::create_dir_all(&self.nested).map_err(|error| error.to_string())?;
+                self.created = true;
+            }
+            self.watched.insert(path.to_path_buf());
+            Ok(())
+        }
+
+        fn unwatch_directory(&mut self, path: &Path) -> Result<(), String> {
             if self.watched.remove(path) {
                 Ok(())
             } else {
