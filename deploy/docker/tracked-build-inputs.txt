@@ -121,6 +121,18 @@ apps/web/public/favicon.png
 apps/web/src/main.tsx
 apps/web/src/runtime/index.test.ts
 apps/web/src/runtime/index.ts
+apps/web/src/runtime/server/csrf.test.ts
+apps/web/src/runtime/server/csrf.ts
+apps/web/src/runtime/server/files.test.ts
+apps/web/src/runtime/server/files.ts
+apps/web/src/runtime/server/kernel.test.ts
+apps/web/src/runtime/server/kernel.ts
+apps/web/src/runtime/server/settings.test.ts
+apps/web/src/runtime/server/settings.ts
+apps/web/src/runtime/server/sync-config.test.ts
+apps/web/src/runtime/server/sync-config.ts
+apps/web/src/runtime/server/transports.test.ts
+apps/web/src/runtime/server/transports.ts
 apps/web/src/runtime/web/browser.test.ts
 apps/web/src/runtime/web/browser.ts
 apps/web/src/runtime/web/database.ts
@@ -141,6 +153,10 @@ apps/web/src/runtime/web/web-resource.test.ts
 apps/web/src/runtime/web/web-resource.ts
 apps/web/src/runtime/web/window.test.ts
 apps/web/src/runtime/web/window.ts
+apps/web/src/server-application.test.tsx
+apps/web/src/server-application.tsx
+apps/web/src/server-bootstrap.test.ts
+apps/web/src/server-bootstrap.ts
 apps/web/src/test/web-runtime-fakes.ts
 apps/web/src/vite-env.d.ts
 apps/web/tsconfig.app.json
@@ -646,6 +662,7 @@ packages/editor/tsconfig.json
 packages/editor/tsconfig.test.json
 packages/kernel-client/package.json
 packages/kernel-client/scripts/check-generated.mjs
+packages/kernel-client/src/browser-session.test.ts
 packages/kernel-client/src/client.test.ts
 packages/kernel-client/src/client.ts
 packages/kernel-client/src/datetime.ts
