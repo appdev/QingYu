@@ -45,7 +45,15 @@ export interface NativeBearerAuthentication {
   getCredential: () => string;
 }
 
-export type KernelAuthentication = NativeBearerAuthentication;
+export interface BrowserSessionAuthentication {
+  kind: "browser-session";
+  browserOrigin: string | URL;
+  getCsrfToken: () => string | null | undefined;
+}
+
+export type KernelAuthentication =
+  | NativeBearerAuthentication
+  | BrowserSessionAuthentication;
 
 type ApiErrorEnvelope = components["schemas"]["ApiErrorEnvelope"];
 
@@ -55,12 +63,10 @@ export class KernelHttpTransport {
   readonly #auth: KernelAuthentication;
 
   constructor(options: KernelHttpTransportOptions) {
-    this.#baseUrl = parseKernelBaseUrl(options.baseUrl);
+    const authentication = snapshotKernelAuthentication(options.auth);
+    this.#baseUrl = parseKernelBaseUrl(options.baseUrl, authentication);
     this.#fetch = options.fetch;
-    if (options.auth?.kind !== "native-bearer" || typeof options.auth.getCredential !== "function") {
-      throw new KernelTransportError("unsupported-authentication");
-    }
-    this.#auth = options.auth;
+    this.#auth = authentication;
   }
 
   async request<Result = unknown>(
@@ -129,9 +135,12 @@ export class KernelHttpTransport {
   }
 
   async #send(request: HttpRequest): Promise<{ response: Response; requestId: string }> {
+    if ("credentials" in request) {
+      throw new KernelTransportError("invalid-request");
+    }
     const url = this.#requestUrl(request.path, request.query);
     const headers = new Headers();
-    if (request.authenticated !== false) {
+    if (this.#auth.kind === "native-bearer" && request.authenticated !== false) {
       try {
         const credential = this.#auth.getCredential();
         if (
@@ -145,6 +154,20 @@ export class KernelHttpTransport {
       } catch {
         throw new KernelTransportError("credential-unavailable");
       }
+    } else if (this.#auth.kind === "browser-session" && requiresCsrf(request)) {
+      let csrfToken: string | null | undefined;
+      try {
+        csrfToken = this.#auth.getCsrfToken();
+      } catch {
+        throw new KernelTransportError("csrf-unavailable");
+      }
+      if (
+        typeof csrfToken !== "string" ||
+        !/^[A-Za-z0-9_-]+$/u.test(csrfToken)
+      ) {
+        throw new KernelTransportError("csrf-unavailable");
+      }
+      headers.set("x-csrf-token", csrfToken);
     }
 
     let body: string | undefined;
@@ -159,13 +182,17 @@ export class KernelHttpTransport {
 
     let response: Response;
     try {
-      response = await this.#fetch(url.toString(), {
+      const init: RequestInit = {
         method: request.method,
         headers,
         body,
         signal: request.signal,
         redirect: "error",
-      });
+      };
+      if (this.#auth.kind === "browser-session") {
+        init.credentials = "same-origin";
+      }
+      response = await this.#fetch(url.toString(), init);
     } catch (error: unknown) {
       const aborted =
         request.signal?.aborted === true ||
@@ -195,7 +222,10 @@ export class KernelHttpTransport {
   }
 }
 
-export function parseKernelBaseUrl(value: string | URL) {
+export function parseKernelBaseUrl(
+  value: string | URL,
+  authentication?: KernelAuthentication,
+) {
   const raw = typeof value === "string" ? value : value.href;
   let url: URL;
   try {
@@ -203,18 +233,79 @@ export function parseKernelBaseUrl(value: string | URL) {
   } catch {
     throw new KernelTransportError("invalid-base-url");
   }
-  if (
+  const invalidCommon =
     (url.protocol !== "http:" && url.protocol !== "https:") ||
     url.username !== "" ||
     url.password !== "" ||
     url.search !== "" ||
     url.hash !== "" ||
-    url.pathname !== "/" ||
-    !isExplicitLoopback(raw, url)
-  ) {
+    url.pathname !== "/";
+  const validEndpoint = authentication?.kind === "browser-session"
+    ? isExactSecureBrowserOrigin(url, authentication.browserOrigin)
+    : isExplicitLoopback(raw, url);
+  if (invalidCommon || !validEndpoint) {
     throw new KernelTransportError("invalid-base-url");
   }
   return url;
+}
+
+function isKernelAuthentication(value: unknown): value is KernelAuthentication {
+  if (typeof value !== "object" || value === null || !("kind" in value)) {
+    return false;
+  }
+  if (value.kind === "native-bearer") {
+    return "getCredential" in value && typeof value.getCredential === "function";
+  }
+  return value.kind === "browser-session" &&
+    "getCsrfToken" in value && typeof value.getCsrfToken === "function" &&
+    "browserOrigin" in value &&
+    (typeof value.browserOrigin === "string" || value.browserOrigin instanceof URL);
+}
+
+export function snapshotKernelAuthentication(value: unknown): KernelAuthentication {
+  if (!isKernelAuthentication(value)) {
+    throw new KernelTransportError("unsupported-authentication");
+  }
+  if (value.kind === "native-bearer") {
+    return {
+      kind: "native-bearer",
+      getCredential: value.getCredential.bind(value),
+    };
+  }
+  return {
+    kind: "browser-session",
+    browserOrigin: typeof value.browserOrigin === "string"
+      ? value.browserOrigin
+      : value.browserOrigin.href,
+    getCsrfToken: value.getCsrfToken.bind(value),
+  };
+}
+
+function isExactSecureBrowserOrigin(baseUrl: URL, browserOriginValue: string | URL) {
+  let browserOrigin: URL;
+  try {
+    browserOrigin = new URL(browserOriginValue);
+  } catch {
+    return false;
+  }
+  return (
+    baseUrl.protocol === "https:" &&
+    browserOrigin.protocol === "https:" &&
+    browserOrigin.username === "" &&
+    browserOrigin.password === "" &&
+    browserOrigin.pathname === "/" &&
+    browserOrigin.search === "" &&
+    browserOrigin.hash === "" &&
+    baseUrl.origin === browserOrigin.origin
+  );
+}
+
+function requiresCsrf(request: HttpRequest) {
+  if (request.method === "GET") return false;
+  return !(
+    request.method === "POST" &&
+    (request.path === "/api/v1/auth/initialize" || request.path === "/api/v1/auth/session")
+  );
 }
 
 function isExplicitLoopback(raw: string, parsed: URL) {

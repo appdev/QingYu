@@ -10,6 +10,20 @@ import {
 
 type Schemas = components["schemas"];
 
+export function isServerAuthenticationStatus(
+  value: unknown,
+): value is Schemas["ServerAuthenticationStatusDto"] {
+  return isRecord(value) &&
+    (value.initialization === "required" ||
+      value.initialization === "initialized" ||
+      value.initialization === "unavailable") &&
+    exact(value, ["initialization"]);
+}
+
+export function isServerSession(value: unknown): value is Schemas["ServerSessionDto"] {
+  return isRecord(value) && value.state === "authenticated" && exact(value, ["state"]);
+}
+
 export function isLiveHealth(value: unknown): value is Schemas["LiveHealthResponse"] {
   return isRecord(value) && value.apiVersion === "v1" && value.status === "live" && exact(value, ["apiVersion", "status"]);
 }

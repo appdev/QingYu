@@ -15,6 +15,8 @@ import {
   isReadyHealth,
   isRuntime,
   isSearchPage,
+  isServerAuthenticationStatus,
+  isServerSession,
   isSettingsSnapshot,
   isSyncConfig,
   isSyncConnection,
@@ -35,6 +37,24 @@ export interface KernelSystemClient {
   ready(options?: KernelRequestOptions): Promise<Schemas["ReadyHealthResponse"]>;
   version(options?: KernelRequestOptions): Promise<Schemas["SystemVersionResponse"]>;
   runtime(options?: KernelRequestOptions): Promise<Schemas["RuntimeStateDto"]>;
+}
+
+export interface KernelAuthenticationClient {
+  status(options?: KernelRequestOptions): Promise<Schemas["ServerAuthenticationStatusDto"]>;
+  initialize(
+    request: Schemas["InitializeServerOwnerRequest"],
+    options?: KernelRequestOptions,
+  ): Promise<Schemas["ServerSessionDto"]>;
+  login(
+    request: Schemas["CreateServerSessionRequest"],
+    options?: KernelRequestOptions,
+  ): Promise<Schemas["ServerSessionDto"]>;
+  getSession(options?: KernelRequestOptions): Promise<Schemas["ServerSessionDto"]>;
+  logout(options?: KernelRequestOptions): Promise<undefined>;
+  changePassword(
+    request: Schemas["ChangeServerOwnerPasswordRequest"],
+    options?: KernelRequestOptions,
+  ): Promise<undefined>;
 }
 
 export interface KernelWorkspaceClient {
@@ -129,6 +149,7 @@ export interface KernelSyncClient {
 }
 
 export interface KernelClient {
+  readonly auth: KernelAuthenticationClient;
   readonly system: KernelSystemClient;
   readonly workspace: KernelWorkspaceClient;
   readonly resources: KernelResourcesClient;
@@ -147,6 +168,50 @@ export function createKernelClient(options: CreateKernelClientOptions): KernelCl
     `/api/v1/resources/${encodeURIComponent(resourceId)}`;
 
   return {
+    auth: {
+      status: (requestOptions) =>
+        transport.request({
+          method: "GET",
+          path: "/api/v1/auth/status",
+          authenticated: false,
+          signal: requestOptions?.signal,
+        }, { status: 200, validate: isServerAuthenticationStatus }),
+      initialize: (request, requestOptions) =>
+        transport.request({
+          method: "POST",
+          path: "/api/v1/auth/initialize",
+          body: request,
+          authenticated: false,
+          signal: requestOptions?.signal,
+        }, { status: 201, validate: isServerSession }),
+      login: (request, requestOptions) =>
+        transport.request({
+          method: "POST",
+          path: "/api/v1/auth/session",
+          body: request,
+          authenticated: false,
+          signal: requestOptions?.signal,
+        }, { status: 201, validate: isServerSession }),
+      getSession: (requestOptions) =>
+        transport.request({
+          method: "GET",
+          path: "/api/v1/auth/session",
+          signal: requestOptions?.signal,
+        }, { status: 200, validate: isServerSession }),
+      logout: (requestOptions) =>
+        transport.request({
+          method: "POST",
+          path: "/api/v1/auth/logout",
+          signal: requestOptions?.signal,
+        }, { status: 204 }),
+      changePassword: (request, requestOptions) =>
+        transport.request({
+          method: "PATCH",
+          path: "/api/v1/auth/password",
+          body: request,
+          signal: requestOptions?.signal,
+        }, { status: 204 }),
+    },
     system: {
       live: (requestOptions) =>
         transport.request({

@@ -216,12 +216,12 @@ describe("createKernelClient", () => {
     });
   });
 
-  it("does not expose a cookie or session authentication branch", () => {
+  it("does not expose unknown cookie authentication variants", () => {
     if (false) {
       createKernelClient({
         baseUrl: "http://127.0.0.1:6608",
         fetch: async () => Response.json({}),
-        // @ts-expect-error Phase 1 supports only the native launch bearer.
+        // @ts-expect-error Browser sessions use the explicit browser-session contract.
         auth: { kind: "cookie-session" },
       });
     }

@@ -17,6 +17,52 @@ const INSTANCE_1 = "ad6f32f2-72f6-46ce-8200-2527ec98cbe5";
 const WORKSPACE_1 = "f997861d-1741-438c-a533-b7e86978f3cc";
 
 describe("Kernel events", () => {
+  it("uses an exact same-origin WSS endpoint and relies on the browser session cookie", () => {
+    const sockets: FakeWebSocket[] = [];
+    const urls: string[] = [];
+    const client = createKernelEventsClient({
+      baseUrl: "https://notes.example:8443",
+      auth: {
+        kind: "browser-session",
+        browserOrigin: "https://notes.example:8443",
+        getCsrfToken: () => "unused-for-read-only-events",
+      },
+      webSocket: (url) => {
+        urls.push(url);
+        const socket = new FakeWebSocket();
+        sockets.push(socket);
+        return socket;
+      },
+    });
+    const onReady = vi.fn();
+
+    client.connect({ onReady });
+    const socket = sockets[0]!;
+    socket.open();
+    socket.message(readyFrame(CONNECTION_1, INSTANCE_1));
+
+    expect(urls).toEqual(["wss://notes.example:8443/api/v1/events"]);
+    expect(socket.sent).toEqual([]);
+    expect(onReady).toHaveBeenCalledWith(readyFrame(CONNECTION_1, INSTANCE_1));
+  });
+
+  it("rejects insecure or cross-origin browser session event endpoints", () => {
+    for (const [baseUrl, browserOrigin] of [
+      ["http://notes.example", "http://notes.example"],
+      ["https://api.example", "https://notes.example"],
+    ]) {
+      expect(() => createKernelEventsClient({
+        baseUrl,
+        auth: {
+          kind: "browser-session",
+          browserOrigin,
+          getCsrfToken: () => "unused",
+        },
+        webSocket: () => new FakeWebSocket(),
+      })).toThrow();
+    }
+  });
+
   it("sends native bearer authentication as the first frame and never places it in the URL", () => {
     const harness = new EventsHarness();
     const onReady = vi.fn();

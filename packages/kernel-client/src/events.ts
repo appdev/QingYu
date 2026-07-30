@@ -8,6 +8,7 @@ import {
 } from "./errors.ts";
 import {
   parseKernelBaseUrl,
+  snapshotKernelAuthentication,
   type KernelAuthentication,
 } from "./transport.ts";
 
@@ -118,10 +119,19 @@ const defaultScheduleReconnect: ReconnectScheduler = (callback, delayMs) => {
 export function createKernelEventsClient(
   options: KernelEventsClientOptions,
 ): KernelEventsClient {
-  const baseUrl = parseKernelBaseUrl(options.baseUrl);
-  if (options.auth?.kind !== "native-bearer" || typeof options.auth.getCredential !== "function") {
+  if (
+    (options.auth?.kind === "native-bearer" &&
+      typeof options.auth.getCredential !== "function") ||
+    (options.auth?.kind === "browser-session" &&
+      (typeof options.auth.getCsrfToken !== "function" ||
+        !(typeof options.auth.browserOrigin === "string" ||
+          options.auth.browserOrigin instanceof URL))) ||
+    (options.auth?.kind !== "native-bearer" && options.auth?.kind !== "browser-session")
+  ) {
     throw new KernelEventError("connection");
   }
+  const authentication = snapshotKernelAuthentication(options.auth);
+  const baseUrl = parseKernelBaseUrl(options.baseUrl, authentication);
   const eventsUrl = new URL(baseUrl);
   eventsUrl.protocol = eventsUrl.protocol === "https:" ? "wss:" : "ws:";
   eventsUrl.pathname = "/api/v1/events";
@@ -132,7 +142,7 @@ export function createKernelEventsClient(
     connect: (handlers, connectOptions) =>
       connectEvents({
         url: eventsUrl.toString(),
-        auth: options.auth,
+        auth: authentication,
         webSocket: options.webSocket,
         scheduleReconnect,
         reconnectDelayMs,
@@ -320,6 +330,7 @@ function connectEvents(options: ActiveConnectionOptions): KernelEventConnection 
 
     const onOpen = () => {
       if (stopped || terminal || socket !== nextSocket) return;
+      if (options.auth.kind === "browser-session") return;
       try {
         const credential = options.auth.getCredential();
         nextSocket.send(

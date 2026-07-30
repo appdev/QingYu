@@ -40,6 +40,7 @@ export class KernelApiError extends Error {
 export type KernelTransportErrorKind =
   | "aborted"
   | "credential-unavailable"
+  | "csrf-unavailable"
   | "invalid-base-url"
   | "invalid-request"
   | "network"
@@ -48,6 +49,7 @@ export type KernelTransportErrorKind =
 const TRANSPORT_ERROR_MESSAGES: Record<KernelTransportErrorKind, string> = {
   aborted: "The Kernel request was cancelled.",
   "credential-unavailable": "The Kernel credential is unavailable.",
+  "csrf-unavailable": "The Kernel CSRF proof is unavailable.",
   "invalid-base-url": "The Kernel base URL is invalid.",
   "invalid-request": "The Kernel request is invalid.",
   network: "The Kernel request could not be completed.",

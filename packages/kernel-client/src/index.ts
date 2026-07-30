@@ -1,6 +1,7 @@
 export {
   createKernelClient,
   type CreateKernelClientOptions,
+  type KernelAuthenticationClient,
   type KernelClient,
   type KernelDocumentsClient,
   type KernelRequestOptions,
@@ -43,6 +44,7 @@ export {
 } from "./events.ts";
 export {
   KernelHttpTransport,
+  type BrowserSessionAuthentication,
   type FetchLike,
   type HttpBinarySuccessContract,
   type HttpMethod,
