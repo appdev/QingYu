@@ -160,7 +160,7 @@ ruby -ryaml -e '
   abort "runtime Compose runtime inputs are not value-free" unless service.fetch("environment") == ["QINGYU_PUBLIC_ORIGIN", "QINGYU_SERVER_INITIALIZATION_TOKEN"]
   abort "runtime Compose port is not loopback-only" unless service.fetch("ports") == ["127.0.0.1:3210:3210"]
   abort "runtime Compose data root changed" unless service.fetch("volumes") == ["qingyu-data:/data"]
-  abort "runtime Compose stop grace changed" unless service.fetch("stop_grace_period") == "30s"
+  abort "runtime Compose stop grace changed" unless service.fetch("stop_grace_period") == "35s"
   abort "runtime Compose restart policy changed" unless service.fetch("restart") == "unless-stopped"
 ' "$extracted/compose.yaml"
 

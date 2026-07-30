@@ -197,7 +197,7 @@ expect_runtime_compose_rejection host-data \
 expect_runtime_compose_rejection weak-tmpfs \
   'Runtime Compose must provide only the hardened /tmp/qingyu tmpfs' weak-tmpfs
 expect_runtime_compose_rejection short-stop \
-  'Runtime Compose stop_grace_period must be exactly 30s' short-stop
+  'Runtime Compose stop_grace_period must be exactly 35s' short-stop
 expect_runtime_compose_rejection no-restart \
   'Runtime Compose restart policy must be unless-stopped' no-restart
 

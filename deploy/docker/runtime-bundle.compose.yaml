@@ -19,7 +19,7 @@ services:
       - qingyu-data:/data
     tmpfs:
       - /tmp/qingyu:rw,noexec,nosuid,nodev,size=64m,uid=10001,gid=10001,mode=0700
-    stop_grace_period: 30s
+    stop_grace_period: 35s
     restart: unless-stopped
     healthcheck:
       disable: true

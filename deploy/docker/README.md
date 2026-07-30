@@ -37,7 +37,7 @@ If a usable Docker daemon is present, `verify-contract.sh` additionally builds t
 
 - `/data` is the only persistent mount. The Kernel owns `/data/workspace`, `/data/config`, `/data/state`, and `/data/logs`; no command or environment variable can relocate them.
 - `/tmp/qingyu` is the only disposable cache path. Compose supplies it as a UID/GID `10001:10001` tmpfs.
-- The final image and Compose service run as numeric UID/GID `10001:10001`, drop all capabilities, enable `no-new-privileges`, and use a read-only root filesystem.
+- The final image and Compose service run as numeric UID/GID `10001:10001`, drop all capabilities, enable `no-new-privileges`, and use a read-only root filesystem. Compose allows 35 seconds before forced termination so the Kernel's 30-second drain deadline can finish and report its outcome.
 - Only container port 3210 is exposed. Compose binds it to `127.0.0.1:3210`, so a same-host TLS reverse proxy is the intended external ingress.
 - `QINGYU_PUBLIC_ORIGIN` is required at process launch. It is not secret, but it must be the exact canonical HTTPS origin accepted by the Kernel, for example `https://notes.example.com` or `https://notes.example.com:8443`. Do not include a trailing slash, path, query, user information, or an explicit default `:443` port.
 - `QINGYU_SERVER_INITIALIZATION_TOKEN` is optional after initialization and is passed only through the container environment. It never enters a build argument, image environment value, Compose literal, or Compose default.

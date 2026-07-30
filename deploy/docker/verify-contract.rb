@@ -434,8 +434,8 @@ def verify_compose(path)
     "Compose must provide only the hardened /tmp/qingyu tmpfs"
   )
   assert_contract(
-    service["stop_grace_period"] == "30s",
-    "Compose stop_grace_period must be exactly 30s"
+    service["stop_grace_period"] == "35s",
+    "Compose stop_grace_period must be exactly 35s"
   )
   assert_contract(service["restart"] == "unless-stopped", "Compose restart policy must be unless-stopped")
   assert_contract(
@@ -524,8 +524,8 @@ def verify_runtime_compose(path)
     "Runtime Compose must provide only the hardened /tmp/qingyu tmpfs"
   )
   assert_contract(
-    service["stop_grace_period"] == "30s",
-    "Runtime Compose stop_grace_period must be exactly 30s"
+    service["stop_grace_period"] == "35s",
+    "Runtime Compose stop_grace_period must be exactly 35s"
   )
   assert_contract(
     service["restart"] == "unless-stopped",
