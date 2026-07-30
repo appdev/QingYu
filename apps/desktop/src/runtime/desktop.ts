@@ -4,10 +4,10 @@ import { load } from "@tauri-apps/plugin-store";
 import { hasTauriRuntime } from "@markra/shared";
 import {
   createUnavailableKernelDomainPort,
-  createUnavailableNativeShellPort,
   type AppFormFactor,
   type AppRuntime
 } from "@markra/app/runtime";
+import { createDesktopNativeShellPort } from "./native-shell";
 import * as dialog from "./tauri/dialog";
 import * as files from "./tauri/file/desktop";
 import * as fonts from "./tauri/fonts";
@@ -167,7 +167,7 @@ export const desktopRuntime = {
   navigation: {
     subscribeToSystemBack: async (_handler) => () => undefined
   },
-  nativeShell: createUnavailableNativeShellPort(),
+  nativeShell: createDesktopNativeShellPort(),
   platform: {
     resolveDesktopOsVersion,
     resolveDesktopPlatform,
