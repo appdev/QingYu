@@ -109,45 +109,52 @@ impl NativeKernelBootstrap {
 }
 
 pub(crate) struct NativeKernelBootstrapOwner {
-    access: Mutex<Option<NativeKernelAccess>>,
+    state: Mutex<NativeKernelBootstrapState>,
+}
+
+struct NativeKernelBootstrapState {
+    access: Option<NativeKernelAccess>,
+    last_generation: u64,
 }
 
 impl NativeKernelBootstrapOwner {
     pub(crate) const fn new() -> Self {
         Self {
-            access: Mutex::new(None),
+            state: Mutex::new(NativeKernelBootstrapState {
+                access: None,
+                last_generation: 0,
+            }),
         }
     }
 
     pub(crate) fn read(&self) -> Result<NativeKernelBootstrap, String> {
         let access = self
-            .access
+            .state
             .lock()
             .map_err(|_| bootstrap_unavailable())?
+            .access
             .clone();
         Ok(access.map_or_else(NativeKernelBootstrap::dormant, NativeKernelBootstrap::ready))
     }
 
     #[allow(dead_code)] // Published only by the future atomic runtime-owner cutover.
     pub(crate) fn publish(&self, access: NativeKernelAccess) -> Result<(), String> {
-        let mut published = match self.access.lock() {
-            Ok(published) => published,
+        let mut state = match self.state.lock() {
+            Ok(state) => state,
             Err(poisoned) => {
                 access.credential.revoke();
-                if let Some(previous) = poisoned.into_inner().take() {
+                if let Some(previous) = poisoned.into_inner().access.take() {
                     previous.credential.revoke();
                 }
                 return Err(bootstrap_unavailable());
             }
         };
-        if published
-            .as_ref()
-            .is_some_and(|current| current.endpoint.generation >= access.endpoint.generation)
-        {
+        if state.last_generation >= access.endpoint.generation {
             access.credential.revoke();
             return Err(bootstrap_unavailable());
         }
-        if let Some(previous) = published.replace(access) {
+        state.last_generation = access.endpoint.generation;
+        if let Some(previous) = state.access.replace(access) {
             previous.credential.revoke();
         }
         Ok(())
@@ -155,10 +162,10 @@ impl NativeKernelBootstrapOwner {
 
     #[allow(dead_code)] // Cleared by the future supervisor shutdown boundary.
     pub(crate) fn clear(&self) -> Result<(), String> {
-        let previous = match self.access.lock() {
-            Ok(mut published) => published.take(),
+        let previous = match self.state.lock() {
+            Ok(mut state) => state.access.take(),
             Err(poisoned) => {
-                let previous = poisoned.into_inner().take();
+                let previous = poisoned.into_inner().access.take();
                 if let Some(previous) = previous {
                     previous.credential.revoke();
                 }
@@ -174,11 +181,11 @@ impl NativeKernelBootstrapOwner {
 
 impl Drop for NativeKernelBootstrapOwner {
     fn drop(&mut self) {
-        let published = match self.access.get_mut() {
-            Ok(published) => published,
+        let state = match self.state.get_mut() {
+            Ok(state) => state,
             Err(poisoned) => poisoned.into_inner(),
         };
-        if let Some(access) = published.take() {
+        if let Some(access) = state.access.take() {
             access.credential.revoke();
         }
     }
@@ -332,6 +339,27 @@ mod tests {
         assert_eq!(
             serde_json::to_value(owner.read().unwrap()).unwrap()["generation"],
             json!("2")
+        );
+    }
+
+    #[test]
+    fn clearing_ready_keeps_the_generation_fence_against_delayed_publication() {
+        let owner = super::NativeKernelBootstrapOwner::new();
+        let (current, _current_temporary) = ready_access(2);
+        owner.publish(current).unwrap();
+        owner.clear().unwrap();
+
+        for generation in [1, 2] {
+            let (candidate, _candidate_temporary) = ready_access(generation);
+            let candidate_credential = candidate.credential.clone();
+            assert!(owner.publish(candidate).is_err());
+            assert!(candidate_credential.with_secret(str::to_owned).is_err());
+        }
+        let (next, _next_temporary) = ready_access(3);
+        owner.publish(next).unwrap();
+        assert_eq!(
+            serde_json::to_value(owner.read().unwrap()).unwrap()["generation"],
+            json!("3")
         );
     }
 

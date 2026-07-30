@@ -445,6 +445,10 @@ fn builder_boundary_native_kernel_bootstrap_is_desktop_only_and_dormant() {
 
     assert!(desktop_commands.contains("read_native_kernel_bootstrap"));
     assert!(!mobile_commands.contains("read_native_kernel_bootstrap"));
+    assert!(desktop.contains(
+        "app.manage(crate::kernel_bootstrap::NativeKernelBootstrapOwner::new())"
+    ));
+    assert!(!desktop.contains(".publish("));
     assert!(!desktop.contains("KernelHostSupervisor"));
     assert!(!desktop.contains(".manage(crate::kernel_host"));
     assert!(!desktop.contains("crate::kernel_host::"));
