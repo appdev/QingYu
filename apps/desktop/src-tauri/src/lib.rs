@@ -54,6 +54,8 @@ mod window_state;
 #[cfg(desktop)]
 mod windows;
 mod workspace_membership;
+#[cfg(desktop)]
+mod writer_authority;
 
 #[cfg(test)]
 mod builder_boundary_tests;
