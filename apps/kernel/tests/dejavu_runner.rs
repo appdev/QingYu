@@ -4,13 +4,13 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use qingyu_dejavu::{
-    Device, LocalCloud, NoopWorkingTreeCoordinator, RepoOptions, RepositoryRuntimeState,
-};
+use cap_std::fs::Dir;
+use qingyu_dejavu::{Device, LocalCloud, NoopWorkingTreeCoordinator, RepositoryRuntimeState};
+use qingyu_kernel::storage::{directory_identity, DirectoryIdentity};
 use qingyu_kernel::sync::dejavu_runner::{
-    DejavuConflictResolution, DejavuInstanceRoots, DejavuRepositoryKey, DejavuRunError,
-    DejavuRunnerInputs, DejavuS3Config, DejavuSecret, DejavuWorkspaceCapability,
-    DejavuWorkspaceCapabilityError, KernelDejavuRunner,
+    DejavuConflictResolution, DejavuInstanceDataCapability, DejavuInstanceDataCapabilityError,
+    DejavuRepositoryKey, DejavuRunError, DejavuRunnerInputs, DejavuS3Config, DejavuSecret,
+    DejavuWorkspaceCapability, DejavuWorkspaceCapabilityError, KernelDejavuRunner,
 };
 use tempfile::TempDir;
 
@@ -18,27 +18,43 @@ const REPOSITORY_ID: &str = "323df833-764a-44b3-a534-492640c258f2";
 
 struct TestWorkspaceCapability {
     canonical_path: PathBuf,
+    directory: Dir,
+    identity: DirectoryIdentity,
 }
 
 impl TestWorkspaceCapability {
     fn new(path: &Path) -> Self {
+        let canonical_path = path.canonicalize().expect("canonical test workspace");
+        let directory = Dir::open_ambient_dir(&canonical_path, cap_std::ambient_authority())
+            .expect("retained test workspace");
+        let identity = directory_identity(&directory).expect("workspace identity");
         Self {
-            canonical_path: path.canonicalize().expect("canonical test workspace"),
+            canonical_path,
+            directory,
+            identity,
         }
     }
 }
 
 impl DejavuWorkspaceCapability for TestWorkspaceCapability {
     fn verify_held_directory(&self) -> Result<(), DejavuWorkspaceCapabilityError> {
-        let current = self
-            .canonical_path
-            .canonicalize()
+        let current = Dir::open_ambient_dir(&self.canonical_path, cap_std::ambient_authority())
             .map_err(|_| DejavuWorkspaceCapabilityError)?;
-        if current == self.canonical_path {
+        if directory_identity(&self.directory).map_err(|_| DejavuWorkspaceCapabilityError)?
+            == self.identity
+            && directory_identity(&current).map_err(|_| DejavuWorkspaceCapabilityError)?
+                == self.identity
+        {
             Ok(())
         } else {
             Err(DejavuWorkspaceCapabilityError)
         }
+    }
+
+    fn try_clone_directory(&self) -> Result<Dir, DejavuWorkspaceCapabilityError> {
+        self.directory
+            .try_clone()
+            .map_err(|_| DejavuWorkspaceCapabilityError)
     }
 
     fn canonical_path(&self) -> &Path {
@@ -48,14 +64,19 @@ impl DejavuWorkspaceCapability for TestWorkspaceCapability {
 
 struct FailingWorkspaceCapability {
     canonical_path: PathBuf,
+    directory: Dir,
     verification_count: AtomicUsize,
     fail_on: usize,
 }
 
 impl FailingWorkspaceCapability {
     fn new(path: &Path, fail_on: usize) -> Self {
+        let canonical_path = path.canonicalize().expect("canonical test workspace");
+        let directory = Dir::open_ambient_dir(&canonical_path, cap_std::ambient_authority())
+            .expect("retained test workspace");
         Self {
-            canonical_path: path.canonicalize().expect("canonical test workspace"),
+            canonical_path,
+            directory,
             verification_count: AtomicUsize::new(0),
             fail_on,
         }
@@ -70,6 +91,58 @@ impl DejavuWorkspaceCapability for FailingWorkspaceCapability {
         } else {
             Ok(())
         }
+    }
+
+    fn try_clone_directory(&self) -> Result<Dir, DejavuWorkspaceCapabilityError> {
+        self.directory
+            .try_clone()
+            .map_err(|_| DejavuWorkspaceCapabilityError)
+    }
+
+    fn canonical_path(&self) -> &Path {
+        &self.canonical_path
+    }
+}
+
+struct TestInstanceDataCapability {
+    canonical_path: PathBuf,
+    directory: Dir,
+    identity: DirectoryIdentity,
+}
+
+impl TestInstanceDataCapability {
+    fn new(path: &Path) -> Self {
+        let canonical_path = path.canonicalize().expect("canonical instance data");
+        let directory = Dir::open_ambient_dir(&canonical_path, cap_std::ambient_authority())
+            .expect("retained instance data");
+        let identity = directory_identity(&directory).expect("instance-data identity");
+        Self {
+            canonical_path,
+            directory,
+            identity,
+        }
+    }
+}
+
+impl DejavuInstanceDataCapability for TestInstanceDataCapability {
+    fn verify_held_directory(&self) -> Result<(), DejavuInstanceDataCapabilityError> {
+        let current = Dir::open_ambient_dir(&self.canonical_path, cap_std::ambient_authority())
+            .map_err(|_| DejavuInstanceDataCapabilityError)?;
+        if directory_identity(&self.directory).map_err(|_| DejavuInstanceDataCapabilityError)?
+            == self.identity
+            && directory_identity(&current).map_err(|_| DejavuInstanceDataCapabilityError)?
+                == self.identity
+        {
+            Ok(())
+        } else {
+            Err(DejavuInstanceDataCapabilityError)
+        }
+    }
+
+    fn try_clone_directory(&self) -> Result<Dir, DejavuInstanceDataCapabilityError> {
+        self.directory
+            .try_clone()
+            .map_err(|_| DejavuInstanceDataCapabilityError)
     }
 
     fn canonical_path(&self) -> &Path {
@@ -90,18 +163,13 @@ fn runner_inputs(root: &Path, name: &str) -> (PathBuf, DejavuRunnerInputs) {
     fs::create_dir(&instance).expect("instance root");
     let inputs = DejavuRunnerInputs {
         workspace: Arc::new(TestWorkspaceCapability::new(&workspace)),
-        roots: DejavuInstanceRoots::new(
-            instance.join("state"),
-            instance.join("history"),
-            instance.join("temp"),
-        ),
+        instance_data: Arc::new(TestInstanceDataCapability::new(&instance)),
         repository_id: REPOSITORY_ID.to_owned(),
         device: Device {
             id: name.to_owned(),
             name: name.to_owned(),
             os: "test".to_owned(),
         },
-        options: RepoOptions::default(),
         repository_key: DejavuRepositoryKey::new([7; 32]),
         runtime: RepositoryRuntimeState::default(),
         coordinator: Arc::new(NoopWorkingTreeCoordinator),
@@ -141,26 +209,221 @@ fn s3_constructor_builds_a_runner_without_reading_ambient_configuration() {
     let runner = KernelDejavuRunner::new_s3(inputs, config).expect("valid S3 runner");
 
     assert_eq!(format!("{runner:?}"), "KernelDejavuRunner([REDACTED])");
+    assert_eq!(
+        runner.remote_prefix(),
+        "qingyu/repositories/323df833-764a-44b3-a534-492640c258f2/repo"
+    );
 }
 
 #[test]
-fn nested_instance_roots_are_rejected_before_opening_repository_state() {
+fn overlapping_workspace_and_instance_capabilities_are_rejected() {
     let root = tempfile::tempdir().expect("fixture root");
-    let (_workspace, mut inputs) = runner_inputs(root.path(), "nested-roots");
-    let instance = root.path().join("instance");
-    inputs.roots = DejavuInstanceRoots::new(
-        instance.join("state"),
-        instance.join("state/history"),
-        instance.join("temp"),
-    );
+    let (workspace, mut inputs) = runner_inputs(root.path(), "overlapping-roots");
+    inputs.instance_data = Arc::new(TestInstanceDataCapability::new(&workspace));
     let cloud_root = tempfile::tempdir().expect("cloud root");
     let cloud = Arc::new(LocalCloud::new(cloud_root.path()).expect("local cloud"));
 
     let Err(error) = KernelDejavuRunner::new_with_cloud(inputs, cloud) else {
-        panic!("nested instance roots must fail closed");
+        panic!("overlapping retained roots must fail closed");
     };
 
     assert_eq!(error, DejavuRunError::InvalidConfiguration);
+}
+
+#[tokio::test]
+async fn workspace_syncignore_is_the_only_source_of_ignore_options() {
+    let cloud_root = tempfile::tempdir().expect("cloud root");
+    let cloud = Arc::new(LocalCloud::new(cloud_root.path()).expect("local cloud"));
+    let source_root = tempfile::tempdir().expect("source root");
+    let (source_workspace, source_inputs) = runner_inputs(source_root.path(), "source");
+    fs::create_dir(source_workspace.join(".qingyu")).expect("syncignore directory");
+    fs::write(
+        source_workspace.join(".qingyu/syncignore"),
+        b"drafts/**\n.qingyu/**\n",
+    )
+    .expect("syncignore");
+    fs::create_dir(source_workspace.join("drafts")).expect("draft directory");
+    fs::write(
+        source_workspace.join("drafts/private.md"),
+        b"must stay local",
+    )
+    .expect("ignored draft");
+    fs::write(source_workspace.join("note.md"), b"must upload").expect("source note");
+    let source = KernelDejavuRunner::new_with_cloud(source_inputs, cloud.clone()).expect("source");
+
+    let uploaded = source.run(Arc::new(|| false)).await.expect("source upload");
+    assert!(uploaded.transfer.upload_files >= 2);
+
+    let target_root = tempfile::tempdir().expect("target root");
+    let (target_workspace, target_inputs) = runner_inputs(target_root.path(), "target");
+    fs::create_dir(target_workspace.join(".qingyu")).expect("target syncignore directory");
+    fs::write(
+        target_workspace.join(".qingyu/syncignore"),
+        b"drafts/**\n.qingyu/**\n",
+    )
+    .expect("target syncignore");
+    let target = KernelDejavuRunner::new_with_cloud(target_inputs, cloud).expect("target");
+    target
+        .run(Arc::new(|| false))
+        .await
+        .expect("target download");
+    assert_eq!(
+        fs::read(target_workspace.join("note.md")).expect("downloaded note"),
+        b"must upload"
+    );
+    assert!(!target_workspace.join("drafts/private.md").exists());
+    assert_eq!(
+        fs::read(target_workspace.join(".qingyu/syncignore")).expect("protected syncignore"),
+        b"drafts/**\n.qingyu/**\n"
+    );
+}
+
+#[test]
+fn repository_state_is_derived_into_isolated_legacy_compatible_layouts() {
+    let root = tempfile::tempdir().expect("fixture root");
+    let instance = root.path().join("instance");
+    let first_workspace = root.path().join("first-workspace");
+    let second_workspace = root.path().join("second-workspace");
+    fs::create_dir(&instance).expect("instance");
+    fs::create_dir(&first_workspace).expect("first workspace");
+    fs::create_dir(&second_workspace).expect("second workspace");
+    let instance_data = Arc::new(TestInstanceDataCapability::new(&instance));
+    let first_inputs = DejavuRunnerInputs {
+        workspace: Arc::new(TestWorkspaceCapability::new(&first_workspace)),
+        instance_data: instance_data.clone(),
+        repository_id: REPOSITORY_ID.to_owned(),
+        device: Device {
+            id: "first".to_owned(),
+            name: "first".to_owned(),
+            os: "test".to_owned(),
+        },
+        repository_key: DejavuRepositoryKey::new([7; 32]),
+        runtime: RepositoryRuntimeState::default(),
+        coordinator: Arc::new(NoopWorkingTreeCoordinator),
+    };
+    let cloud_root = tempfile::tempdir().expect("cloud root");
+    let cloud = Arc::new(LocalCloud::new(cloud_root.path()).expect("local cloud"));
+    KernelDejavuRunner::new_with_cloud(first_inputs, cloud.clone()).expect("first repository");
+    let second_repository_id = "3f87eaef-ad5a-4ee1-8d2a-85b82b052d5e";
+    let second_inputs = DejavuRunnerInputs {
+        workspace: Arc::new(TestWorkspaceCapability::new(&second_workspace)),
+        instance_data,
+        repository_id: second_repository_id.to_owned(),
+        device: Device {
+            id: "second".to_owned(),
+            name: "second".to_owned(),
+            os: "test".to_owned(),
+        },
+        repository_key: DejavuRepositoryKey::new([7; 32]),
+        runtime: RepositoryRuntimeState::default(),
+        coordinator: Arc::new(NoopWorkingTreeCoordinator),
+    };
+
+    KernelDejavuRunner::new_with_cloud(second_inputs, cloud).expect("second repository");
+
+    for repository_id in [REPOSITORY_ID, second_repository_id] {
+        let repository_root = instance.join("sync/repositories").join(repository_id);
+        assert!(repository_root.join("repo").is_dir());
+        assert!(repository_root.join("history").is_dir());
+        assert!(repository_root.join("temp").is_dir());
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn symlink_syncignore_fails_closed_without_reading_its_target() {
+    use std::os::unix::fs::symlink;
+
+    let cloud_root = tempfile::tempdir().expect("cloud root");
+    let cloud = Arc::new(LocalCloud::new(cloud_root.path()).expect("local cloud"));
+    let root = tempfile::tempdir().expect("fixture root");
+    let (workspace, inputs) = runner_inputs(root.path(), "symlink-syncignore");
+    let outside = root.path().join("outside-syncignore");
+    fs::write(&outside, b"keep me").expect("outside file");
+    fs::create_dir(workspace.join(".qingyu")).expect("syncignore directory");
+    symlink(&outside, workspace.join(".qingyu/syncignore")).expect("syncignore symlink");
+    let runner = KernelDejavuRunner::new_with_cloud(inputs, cloud).expect("runner");
+
+    let result = runner.run(Arc::new(|| false)).await;
+
+    assert_eq!(result, Err(DejavuRunError::RepositoryUnavailable));
+    assert_eq!(fs::read(outside).expect("untouched target"), b"keep me");
+}
+
+#[tokio::test]
+async fn oversized_syncignore_fails_closed_before_repository_open() {
+    let cloud_root = tempfile::tempdir().expect("cloud root");
+    let cloud = Arc::new(LocalCloud::new(cloud_root.path()).expect("local cloud"));
+    let root = tempfile::tempdir().expect("fixture root");
+    let (workspace, inputs) = runner_inputs(root.path(), "oversized-syncignore");
+    fs::create_dir(workspace.join(".qingyu")).expect("syncignore directory");
+    fs::write(
+        workspace.join(".qingyu/syncignore"),
+        vec![b'x'; 1024 * 1024 + 1],
+    )
+    .expect("oversized syncignore");
+    let runner = KernelDejavuRunner::new_with_cloud(inputs, cloud).expect("runner");
+
+    let result = runner.run(Arc::new(|| false)).await;
+
+    assert_eq!(result, Err(DejavuRunError::RepositoryUnavailable));
+}
+
+#[tokio::test]
+async fn non_utf8_syncignore_fails_closed_before_repository_open() {
+    let cloud_root = tempfile::tempdir().expect("cloud root");
+    let cloud = Arc::new(LocalCloud::new(cloud_root.path()).expect("local cloud"));
+    let root = tempfile::tempdir().expect("fixture root");
+    let (workspace, inputs) = runner_inputs(root.path(), "non-utf8-syncignore");
+    fs::create_dir(workspace.join(".qingyu")).expect("syncignore directory");
+    fs::write(workspace.join(".qingyu/syncignore"), [0xff]).expect("non-UTF-8 syncignore");
+    let runner = KernelDejavuRunner::new_with_cloud(inputs, cloud).expect("runner");
+
+    let result = runner.run(Arc::new(|| false)).await;
+
+    assert_eq!(result, Err(DejavuRunError::RepositoryUnavailable));
+}
+
+#[cfg(unix)]
+#[test]
+fn repository_layout_rejects_cross_repository_symlink_reuse() {
+    use std::os::unix::fs::symlink;
+
+    let root = tempfile::tempdir().expect("fixture root");
+    let (workspace, mut inputs) = runner_inputs(root.path(), "cross-repository-link");
+    let instance = root.path().join("instance");
+    let outside_repository = root.path().join("outside-repository");
+    fs::create_dir(&outside_repository).expect("outside repository");
+    let repository = instance.join("sync/repositories").join(REPOSITORY_ID);
+    fs::create_dir_all(&repository).expect("repository layout");
+    symlink(&outside_repository, repository.join("repo")).expect("cross repository symlink");
+    inputs.workspace = Arc::new(TestWorkspaceCapability::new(&workspace));
+    let cloud_root = tempfile::tempdir().expect("cloud root");
+    let cloud = Arc::new(LocalCloud::new(cloud_root.path()).expect("local cloud"));
+
+    let result = KernelDejavuRunner::new_with_cloud(inputs, cloud);
+
+    assert!(matches!(result, Err(DejavuRunError::RepositoryUnavailable)));
+}
+
+#[tokio::test]
+async fn repository_directory_replacement_after_construction_fails_closed() {
+    let root = tempfile::tempdir().expect("fixture root");
+    let (_workspace, inputs) = runner_inputs(root.path(), "replaced-repository");
+    let cloud_root = tempfile::tempdir().expect("cloud root");
+    let cloud = Arc::new(LocalCloud::new(cloud_root.path()).expect("local cloud"));
+    let runner = KernelDejavuRunner::new_with_cloud(inputs, cloud).expect("runner");
+    let repository = root
+        .path()
+        .join("instance/sync/repositories")
+        .join(REPOSITORY_ID);
+    let displaced = root.path().join("displaced-repository");
+    fs::rename(&repository, &displaced).expect("displace repository");
+    fs::create_dir(&repository).expect("replacement repository");
+
+    let result = runner.run(Arc::new(|| false)).await;
+
+    assert_eq!(result, Err(DejavuRunError::RepositoryUnavailable));
 }
 
 #[tokio::test]
