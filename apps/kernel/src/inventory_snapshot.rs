@@ -49,8 +49,9 @@ impl FileVersionStamp {
     /// Captures a nofollow metadata-only observation for inventory phase A.
     ///
     /// This never opens or reads file content. Platforms without a proven
-    /// metadata change token return [`Self::RequiresContentHash`] so phase B
-    /// can hash only candidates selected for the current page.
+    /// metadata change token return [`Self::RequiresContentHash`]. Callers must
+    /// then hash every fallback candidate included in the collection snapshot,
+    /// under one explicit byte budget, before issuing a cursor.
     #[cfg(unix)]
     pub(crate) fn capture_metadata(metadata: &Metadata) -> Self {
         Self::Strong(StrongFileVersionStamp::Unix {

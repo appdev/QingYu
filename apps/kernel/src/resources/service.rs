@@ -19,6 +19,10 @@ use crate::{
     },
     documents::service::directory_revision_for_capability,
     ignore_rules::{WorkspaceIgnorePort, WorkspaceIgnoreSnapshot},
+    inventory_snapshot::{
+        ContentDigest, FileVersionStamp, InventoryCandidateSnapshot, InventoryCandidateType,
+        InventorySnapshotBudget, InventorySnapshotLimits,
+    },
     runtime::{ActiveWorkspaceSnapshot, KernelRuntime, ResourcesApiService, ServiceFailure},
     storage::nonfollowing_read_options,
 };
@@ -27,6 +31,9 @@ use super::{policy::protected_resource_component, ResourceServiceError};
 
 const STREAM_BUFFER_BYTES: usize = 64 * 1024;
 const MAGIC_BYTES: usize = 12;
+const MAX_IMMEDIATE_INVENTORY_CANDIDATES: usize = 50_000;
+const MAX_INVENTORY_SNAPSHOT_NODES: u64 = 100_000;
+const MAX_INVENTORY_FALLBACK_BYTES: u64 = 512 * 1024 * 1024;
 
 #[derive(Clone)]
 pub struct WorkspaceResourceService {
@@ -58,16 +65,19 @@ impl WorkspaceResourceService {
         query: ListWorkspaceInventoryQuery,
     ) -> Result<WorkspaceInventoryPageDto, ResourceServiceError> {
         let context = self.context()?;
-        let entries = self
-            .list_inventory_with_context(&context, &query.parent)?
-            .into_iter()
-            .map(WorkspaceInventoryEntryDto::from)
+        let ignore = self.capture_ignore(&context)?;
+        let directory = open_directory(&context.root, &query.parent)?;
+        let mut budget = inventory_snapshot_budget();
+        let candidates = inventory_candidates(&directory, &query.parent, &ignore, &mut budget)?;
+        let snapshots = candidates
+            .iter()
+            .map(|candidate| &candidate.snapshot)
             .collect::<Vec<_>>();
         let cursor_context = PageCursorContext::new(
             "workspace-inventory",
             query.parent.as_str(),
             &context.workspace().generation,
-            &entries,
+            &snapshots,
         )
         .map_err(|_| ResourceServiceError::invalid_cursor())?;
         let start = match query.cursor.as_ref() {
@@ -77,14 +87,31 @@ impl WorkspaceResourceService {
                     .wire_identity_key()
                     .verify_page_cursor(cursor, &cursor_context)
                     .map_err(|_| ResourceServiceError::invalid_cursor())?;
-                entries.partition_point(|entry| entry.path().as_str() <= last.as_str())
+                candidates.partition_point(|candidate| candidate.path.as_str() <= last.as_str())
             }
             None => 0,
         };
         let limit = query.limit.map_or(100, |limit| usize::from(limit.get()));
-        let end = start.saturating_add(limit).min(entries.len());
-        let items = entries[start..end].to_vec();
-        let next_cursor = if end < entries.len() {
+        let end = start.saturating_add(limit).min(candidates.len());
+        let mut items = Vec::with_capacity(end.saturating_sub(start));
+        for candidate in &candidates[start..end] {
+            let entry = inspect_inventory_entry(
+                &context,
+                &ignore,
+                &directory,
+                &query.parent,
+                &candidate.name,
+            )?
+            .ok_or_else(ResourceServiceError::unsafe_target)?;
+            if entry.path() != &candidate.path {
+                return Err(ResourceServiceError::unsafe_target());
+            }
+            items.push(WorkspaceInventoryEntryDto::from(entry));
+        }
+        if inventory_candidates(&directory, &query.parent, &ignore, &mut budget)? != candidates {
+            return Err(ResourceServiceError::unsafe_target());
+        }
+        let next_cursor = if end < candidates.len() {
             let last = items
                 .last()
                 .ok_or_else(ResourceServiceError::invalid_cursor)?;
@@ -316,6 +343,234 @@ impl From<WorkspaceInventoryEntry> for WorkspaceInventoryEntryDto {
     }
 }
 
+#[derive(Debug, Eq, PartialEq)]
+struct InventoryCandidate {
+    name: String,
+    path: WorkspaceRelativePath,
+    snapshot: InventoryCandidateSnapshot,
+}
+
+fn inventory_candidates(
+    directory: &Dir,
+    parent: &WorkspaceRelativePath,
+    ignore: &WorkspaceIgnoreSnapshot,
+    budget: &mut InventorySnapshotBudget,
+) -> Result<Vec<InventoryCandidate>, ResourceServiceError> {
+    let before = trusted_directory_metadata(directory)?;
+    let names = ordinary_entry_names(directory)?;
+    if names.len() > MAX_IMMEDIATE_INVENTORY_CANDIDATES {
+        return Err(ResourceServiceError::unavailable());
+    }
+    let mut candidates = Vec::with_capacity(names.len());
+    for name in &names {
+        budget
+            .charge_node()
+            .map_err(|_| ResourceServiceError::unavailable())?;
+        let addressed = directory
+            .symlink_metadata(name)
+            .map_err(|_| ResourceServiceError::unsafe_target())?;
+        if addressed.file_type().is_symlink() {
+            return Err(ResourceServiceError::unsafe_target());
+        }
+        let path = join_relative(parent, name)?;
+        let kind = if addressed.is_dir() {
+            DocumentKind::Directory
+        } else if addressed.is_file() {
+            DocumentKind::File
+        } else {
+            return Err(ResourceServiceError::unsafe_target());
+        };
+        if ignore.is_ignored(&path, kind) {
+            continue;
+        }
+        let snapshot = if addressed.is_dir() {
+            let child = directory
+                .open_dir_nofollow(name)
+                .map_err(|_| ResourceServiceError::unsafe_target())?;
+            let retained = trusted_directory_metadata(&child)?;
+            if !same_file(&addressed, &retained) {
+                return Err(ResourceServiceError::unsafe_target());
+            }
+            let digest = tree_snapshot_digest(&child, &path, budget)?;
+            let after = trusted_directory_metadata(&child)?;
+            let named = directory
+                .symlink_metadata(name)
+                .map_err(|_| ResourceServiceError::unsafe_target())?;
+            if !named.is_dir()
+                || named.file_type().is_symlink()
+                || !same_file(&retained, &after)
+                || !same_file(&retained, &named)
+            {
+                return Err(ResourceServiceError::unsafe_target());
+            }
+            InventoryCandidateSnapshot::from_tree_digest(path.clone(), digest)
+        } else {
+            inventory_file_snapshot(directory, name, path.clone(), &addressed, budget)?
+        };
+        candidates.push(InventoryCandidate {
+            name: name.clone(),
+            path,
+            snapshot,
+        });
+    }
+    if ordinary_entry_names(directory)? != names {
+        return Err(ResourceServiceError::unsafe_target());
+    }
+    let after = trusted_directory_metadata(directory)?;
+    if !same_file(&before, &after) {
+        return Err(ResourceServiceError::unsafe_target());
+    }
+    Ok(candidates)
+}
+
+fn inventory_snapshot_budget() -> InventorySnapshotBudget {
+    InventorySnapshotBudget::new(InventorySnapshotLimits {
+        maximum_nodes: MAX_INVENTORY_SNAPSHOT_NODES,
+        maximum_fallback_bytes: MAX_INVENTORY_FALLBACK_BYTES,
+    })
+}
+
+fn inventory_file_snapshot(
+    directory: &Dir,
+    name: &str,
+    path: WorkspaceRelativePath,
+    addressed: &Metadata,
+    budget: &mut InventorySnapshotBudget,
+) -> Result<InventoryCandidateSnapshot, ResourceServiceError> {
+    if !trusted_regular_file(addressed) {
+        return Err(ResourceServiceError::unsafe_target());
+    }
+    let entry_type = if markdown_name(name) {
+        InventoryCandidateType::DocumentFile
+    } else {
+        InventoryCandidateType::ResourceFile
+    };
+    let stamp = FileVersionStamp::capture_metadata(addressed);
+    match InventoryCandidateSnapshot::from_file_stamp(path.clone(), entry_type, stamp) {
+        Ok(snapshot) => Ok(snapshot),
+        Err(_) => {
+            budget
+                .charge_fallback_bytes(addressed.len())
+                .map_err(|_| ResourceServiceError::unavailable())?;
+            let inspected = inspect_regular_file(directory, name, addressed)?;
+            Ok(InventoryCandidateSnapshot::from_content_digest(
+                path,
+                entry_type,
+                inspected.content_digest,
+            ))
+        }
+    }
+}
+
+fn tree_snapshot_digest(
+    directory: &Dir,
+    path: &WorkspaceRelativePath,
+    budget: &mut InventorySnapshotBudget,
+) -> Result<ContentDigest, ResourceServiceError> {
+    let before = trusted_directory_metadata(directory)?;
+    let before_stamp = FileVersionStamp::capture_metadata(&before);
+    let names = tree_entry_names(directory)?;
+    let mut manifest = Vec::with_capacity(names.len().saturating_add(1));
+    if let Ok(directory_stamp) = InventoryCandidateSnapshot::from_file_stamp(
+        path.clone(),
+        InventoryCandidateType::Directory,
+        before_stamp.clone(),
+    ) {
+        manifest.push(directory_stamp);
+    }
+    for name in &names {
+        budget
+            .charge_node()
+            .map_err(|_| ResourceServiceError::unavailable())?;
+        let addressed = directory
+            .symlink_metadata(name)
+            .map_err(|_| ResourceServiceError::unsafe_target())?;
+        if addressed.file_type().is_symlink() {
+            return Err(ResourceServiceError::unsafe_target());
+        }
+        if protected_tree_component(name) {
+            if !addressed.is_dir() && !trusted_regular_file(&addressed) {
+                return Err(ResourceServiceError::unsafe_target());
+            }
+            continue;
+        }
+        let child_path = join_relative(path, name)?;
+        if addressed.is_dir() {
+            let child = directory
+                .open_dir_nofollow(name)
+                .map_err(|_| ResourceServiceError::unsafe_target())?;
+            let retained = trusted_directory_metadata(&child)?;
+            if !same_file(&addressed, &retained) {
+                return Err(ResourceServiceError::unsafe_target());
+            }
+            let digest = tree_snapshot_digest(&child, &child_path, budget)?;
+            let after = trusted_directory_metadata(&child)?;
+            let named = directory
+                .symlink_metadata(name)
+                .map_err(|_| ResourceServiceError::unsafe_target())?;
+            if !named.is_dir()
+                || named.file_type().is_symlink()
+                || !same_file(&retained, &after)
+                || !same_file(&retained, &named)
+            {
+                return Err(ResourceServiceError::unsafe_target());
+            }
+            manifest.push(InventoryCandidateSnapshot::from_tree_digest(
+                child_path, digest,
+            ));
+        } else if addressed.is_file() {
+            manifest.push(inventory_file_snapshot(
+                directory, name, child_path, &addressed, budget,
+            )?);
+        } else {
+            return Err(ResourceServiceError::unsafe_target());
+        }
+    }
+    if tree_entry_names(directory)? != names {
+        return Err(ResourceServiceError::unsafe_target());
+    }
+    let after = trusted_directory_metadata(directory)?;
+    if !same_file(&before, &after) || FileVersionStamp::capture_metadata(&after) != before_stamp {
+        return Err(ResourceServiceError::unsafe_target());
+    }
+    let serialized =
+        serde_json::to_vec(&manifest).map_err(|_| ResourceServiceError::unavailable())?;
+    let mut digest = Sha256::new();
+    digest.update(b"qingyu-inventory-tree-snapshot-v1\0");
+    digest.update((serialized.len() as u64).to_be_bytes());
+    digest.update(serialized);
+    Ok(ContentDigest::new(digest.finalize().into()))
+}
+
+fn tree_entry_names(directory: &Dir) -> Result<Vec<String>, ResourceServiceError> {
+    let mut names = Vec::new();
+    for entry in directory
+        .entries()
+        .map_err(|_| ResourceServiceError::unavailable())?
+    {
+        let entry = entry.map_err(|_| ResourceServiceError::unavailable())?;
+        let name = entry
+            .file_name()
+            .to_str()
+            .map(str::to_owned)
+            .ok_or_else(ResourceServiceError::unsafe_target)?;
+        names.push(name);
+        if names.len() > MAX_INVENTORY_SNAPSHOT_NODES as usize {
+            return Err(ResourceServiceError::unavailable());
+        }
+    }
+    names.sort();
+    Ok(names)
+}
+
+fn protected_tree_component(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower == ".qingyu"
+        || lower == ".markra-sync"
+        || lower.starts_with(".qingyu-")
+        || lower.starts_with(".markra-sync-stage-")
+}
+
 struct ResourceContext {
     runtime: Arc<KernelRuntime>,
     snapshot: Arc<ActiveWorkspaceSnapshot>,
@@ -465,6 +720,7 @@ fn document_entry(
 }
 
 struct InspectedFile {
+    content_digest: ContentDigest,
     file: File,
     metadata: Metadata,
     revision: Revision,
@@ -534,9 +790,18 @@ fn inspect_regular_file(
     }
     file.seek(SeekFrom::Start(0))
         .map_err(|_| ResourceServiceError::unavailable())?;
-    let revision = Revision::parse(format!("sha256:{:x}", digest.finalize()))
-        .map_err(|_| ResourceServiceError::unavailable())?;
+    let content_digest = ContentDigest::new(digest.finalize().into());
+    let revision = Revision::parse(format!(
+        "sha256:{}",
+        content_digest
+            .into_bytes()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    ))
+    .map_err(|_| ResourceServiceError::unavailable())?;
     Ok(InspectedFile {
+        content_digest,
         file,
         metadata: after,
         revision,
@@ -561,6 +826,9 @@ fn ordinary_entry_names(directory: &Dir) -> Result<Vec<String>, ResourceServiceE
         }
         ResourceName::parse(&name).map_err(|_| ResourceServiceError::invalid_path())?;
         names.push(name);
+        if names.len() > MAX_IMMEDIATE_INVENTORY_CANDIDATES {
+            return Err(ResourceServiceError::unavailable());
+        }
     }
     names.sort();
     Ok(names)
@@ -644,9 +912,31 @@ fn link_count(_metadata: &Metadata) -> u64 {
     1
 }
 
+#[cfg(unix)]
 fn same_file(left: &Metadata, right: &Metadata) -> bool {
     MetadataExt::dev(left) == MetadataExt::dev(right)
         && MetadataExt::ino(left) == MetadataExt::ino(right)
+}
+
+#[cfg(windows)]
+fn same_file(left: &Metadata, right: &Metadata) -> bool {
+    use cap_std::fs::MetadataExt as _;
+
+    matches!(
+        (
+            left.volume_serial_number(),
+            left.file_index(),
+            right.volume_serial_number(),
+            right.file_index(),
+        ),
+        (Some(left_volume), Some(left_file), Some(right_volume), Some(right_file))
+            if left_volume == right_volume && left_file == right_file
+    )
+}
+
+#[cfg(not(any(unix, windows)))]
+fn same_file(_left: &Metadata, _right: &Metadata) -> bool {
+    false
 }
 
 fn safe_size(value: u64) -> Result<SafeUnsignedInteger, ResourceServiceError> {

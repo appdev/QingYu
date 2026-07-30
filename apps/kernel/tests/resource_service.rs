@@ -325,6 +325,111 @@ async fn inventory_pages_continue_unchanged_and_reject_a_changed_collection() {
     assert_eq!(error.kind(), ResourceServiceErrorKind::InvalidCursor);
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn a_one_item_inventory_page_does_not_read_later_resource_contents() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let fixture = Fixture::new().await;
+    fs::write(fixture.root.join("first.bin"), b"first").unwrap();
+    let later = fixture.root.join("second.bin");
+    fs::write(&later, b"second").unwrap();
+    let original_permissions = fs::metadata(&later).unwrap().permissions();
+    let mut unreadable = original_permissions.clone();
+    unreadable.set_mode(0o000);
+    fs::set_permissions(&later, unreadable).unwrap();
+
+    let result = fixture
+        .service
+        .list_inventory_page(ListWorkspaceInventoryQuery {
+            cursor: None,
+            limit: Some(PageLimit::new(1).unwrap()),
+            parent: WorkspaceRelativePath::default(),
+        });
+    fs::set_permissions(&later, original_permissions).unwrap();
+
+    let page = result.expect("later pages must not amplify content reads into the first page");
+    assert_eq!(page.items.len(), 1);
+    assert_eq!(page.items[0].path().as_str(), "first.bin");
+    assert!(page.next_cursor.into_option().is_some());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn inventory_cursor_rejects_a_same_length_rewrite_with_restored_mtime() {
+    use std::{thread, time::Duration};
+
+    let fixture = Fixture::new().await;
+    fs::write(fixture.root.join("first.bin"), b"first").unwrap();
+    let second = fixture.root.join("second.bin");
+    fs::write(&second, b"second").unwrap();
+    let query = ListWorkspaceInventoryQuery {
+        cursor: None,
+        limit: Some(PageLimit::new(1).unwrap()),
+        parent: WorkspaceRelativePath::default(),
+    };
+    let first = fixture.service.list_inventory_page(query.clone()).unwrap();
+    let cursor = first.next_cursor.into_option().unwrap();
+    let modified = fs::metadata(&second).unwrap().modified().unwrap();
+    thread::sleep(Duration::from_millis(2));
+    fs::write(&second, b"change").unwrap();
+    fs::OpenOptions::new()
+        .write(true)
+        .open(&second)
+        .unwrap()
+        .set_modified(modified)
+        .unwrap();
+
+    let error = fixture
+        .service
+        .list_inventory_page(ListWorkspaceInventoryQuery {
+            cursor: Some(cursor),
+            ..query
+        })
+        .unwrap_err();
+
+    assert_eq!(error.kind(), ResourceServiceErrorKind::InvalidCursor);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn inventory_cursor_rejects_a_descendant_rewrite_in_a_listed_directory() {
+    use std::{thread, time::Duration};
+
+    let fixture = Fixture::new().await;
+    fs::create_dir(fixture.root.join("folder")).unwrap();
+    let nested = fixture.root.join("folder/nested.bin");
+    fs::write(&nested, b"before").unwrap();
+    fs::write(fixture.root.join("later.bin"), b"later").unwrap();
+    let query = ListWorkspaceInventoryQuery {
+        cursor: None,
+        limit: Some(PageLimit::new(1).unwrap()),
+        parent: WorkspaceRelativePath::default(),
+    };
+    let first = fixture.service.list_inventory_page(query.clone()).unwrap();
+    assert_eq!(first.items[0].path().as_str(), "folder");
+    let cursor = first.next_cursor.into_option().unwrap();
+    let modified = fs::metadata(&nested).unwrap().modified().unwrap();
+    thread::sleep(Duration::from_millis(2));
+    fs::write(&nested, b"after!").unwrap();
+    fs::OpenOptions::new()
+        .write(true)
+        .open(&nested)
+        .unwrap()
+        .set_modified(modified)
+        .unwrap();
+
+    let error = fixture
+        .service
+        .list_inventory_page(ListWorkspaceInventoryQuery {
+            cursor: Some(cursor),
+            ..query
+        })
+        .unwrap_err();
+
+    assert_eq!(error.kind(), ResourceServiceErrorKind::InvalidCursor);
+}
+
 #[tokio::test]
 async fn resource_http_adapter_matches_inventory_and_streams_verified_bytes() {
     let fixture = Fixture::new().await;
