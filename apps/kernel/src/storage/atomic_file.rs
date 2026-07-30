@@ -1482,7 +1482,11 @@ impl FaultInjector for DurableFileTestFaultInjector {
 
 #[cfg(unix)]
 fn sync_directory(directory: &Dir) -> io::Result<ParentSyncState> {
-    directory.try_clone()?.into_std_file().sync_all()?;
+    // `cap_std::fs::Dir` may retain a Linux `O_PATH` descriptor, which is
+    // suitable for capability-relative lookups but rejects `fsync` with
+    // `EBADF`. Re-open the directory through the retained capability to get
+    // a readable descriptor that can be synchronized.
+    directory.open(".")?.sync_all()?;
     Ok(ParentSyncState::Durable)
 }
 

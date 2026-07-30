@@ -2353,6 +2353,7 @@ fn capability_atomic_install_with_retired_hook(
     }
 }
 
+#[cfg(unix)]
 fn verify_retired_target(
     directory: &Dir,
     name: &str,
@@ -2372,6 +2373,7 @@ fn verify_retired_target(
         .map_err(|_| RetiredTargetVerificationError::NamedIdentityLost)
 }
 
+#[cfg(unix)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum RetiredTargetVerificationError {
     NamedIdentityLost,
