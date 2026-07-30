@@ -28,6 +28,7 @@ hmac = "0.12"
 http-body-util = "0.1"
 ignore = "0.4.28"
 quick-xml = "0.39.2"
+qingyu-dejavu = { path = "crates/qingyu-dejavu" }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
