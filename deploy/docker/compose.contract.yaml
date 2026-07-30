@@ -1,0 +1,32 @@
+name: qingyu-server-contract
+
+services:
+  qingyu:
+    profiles: ["server-entrypoint-required"]
+    image: ${QINGYU_SERVER_IMAGE:?P2 server image required}
+    user: "10001:10001"
+    init: true
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      - QINGYU_INIT_TOKEN
+    ports:
+      - "${QINGYU_SERVER_PORT:-3210}:3210"
+    volumes:
+      - qingyu-data:/data
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m
+    restart: unless-stopped
+    healthcheck:
+      disable: true
+    labels:
+      dev.qingyu.contract.runtime-gate: server-entrypoint-required
+      dev.qingyu.contract.data-root: /data
+      dev.qingyu.contract.health-live: /api/v1/health/live
+      dev.qingyu.contract.health-ready: /api/v1/health/ready
+
+volumes:
+  qingyu-data:
