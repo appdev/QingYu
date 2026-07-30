@@ -73,13 +73,15 @@ export class NativeStandaloneConflictError extends Error {
   }
 }
 
-function standaloneRevision(contents: string): NativeStandaloneRevision {
-  let hash = 0x811c9dc5;
-  for (let index = 0; index < contents.length; index += 1) {
-    hash ^= contents.charCodeAt(index);
-    hash = Math.imul(hash, 0x01000193);
-  }
-  return `native-v1-${contents.length.toString(36)}-${(hash >>> 0).toString(16).padStart(8, "0")}` as NativeStandaloneRevision;
+async function standaloneRevision(contents: string): Promise<NativeStandaloneRevision> {
+  const digest = await globalThis.crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(contents)
+  );
+  const fingerprint = Array.from(new Uint8Array(digest), (byte) =>
+    byte.toString(16).padStart(2, "0")
+  ).join("");
+  return `native-v1-${fingerprint}` as NativeStandaloneRevision;
 }
 
 export function createDesktopNativeShellPort(
@@ -114,7 +116,7 @@ export function createDesktopNativeShellPort(
       contents: file.content,
       displayName: file.name,
       handle,
-      revision: standaloneRevision(file.content)
+      revision: await standaloneRevision(file.content)
     };
   }
 
