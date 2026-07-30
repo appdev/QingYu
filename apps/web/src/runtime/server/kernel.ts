@@ -24,14 +24,36 @@ import type {
 } from "@markra/app/runtime";
 import {
   KernelApiError,
+  KernelEventError,
   type KernelClient,
+  type KernelEventConnection,
+  type KernelEventFrame,
+  type KernelEventsClient,
+  type KernelReloadScope,
+  type KernelSnapshotNotice,
 } from "@markra/kernel-client";
 
 export type ServerKernelDomainAdapterOptions = {
+  readonly events?: KernelEventsClient;
   readonly instanceId: string;
   readonly onAuthenticationRequired: () => unknown;
   readonly workspaceGeneration: string;
   readonly workspaceId: string;
+};
+
+export type ServerKernelEventNotice =
+  | { readonly frame: KernelEventFrame; readonly kind: "event" }
+  | {
+      readonly kind: "snapshot-required";
+      readonly reason: KernelSnapshotNotice["reason"];
+      readonly reloadScopes: readonly KernelReloadScope[];
+    };
+
+export type ServerKernelEventSource = {
+  readonly available: boolean;
+  readonly subscribe: (
+    listener: (notice: ServerKernelEventNotice) => unknown,
+  ) => () => undefined;
 };
 
 export type ServerKernelHistorySnapshot = {
@@ -52,6 +74,7 @@ export type ServerKernelDomainPort = Omit<KernelDomainPort, "documents"> & {
       }) => Promise<ServerKernelHistorySnapshot>;
     };
   };
+  readonly serverEvents: ServerKernelEventSource;
 };
 
 export type ServerKernelDomainAdapter = {
@@ -88,6 +111,9 @@ export async function createServerKernelDomainAdapter(
 ): Promise<ServerKernelDomainAdapter> {
   const workspaceGeneration = options.workspaceGeneration as KernelWorkspaceGeneration;
   const requests = new AbortController();
+  const eventListeners = new Set<(notice: ServerKernelEventNotice) => unknown>();
+  let eventConnection: KernelEventConnection | undefined;
+  let eventAvailable = false;
   let active = true;
   let authenticationNoticeSent = false;
 
@@ -95,6 +121,14 @@ export async function createServerKernelDomainAdapter(
     if (!active) return undefined;
     active = false;
     requests.abort();
+    eventAvailable = false;
+    try {
+      eventConnection?.close();
+    } catch {
+      // Closing the optional event stream is best-effort.
+    }
+    eventConnection = undefined;
+    eventListeners.clear();
     return undefined;
   };
   const assertActive = () => {
@@ -105,6 +139,10 @@ export async function createServerKernelDomainAdapter(
     throw new ServerKernelDomainAdapterError("protocol-mismatch");
   };
   const authenticationRequired = (): never => {
+    notifyAuthenticationRequired();
+    throw new ServerKernelDomainAdapterError("authentication-required");
+  };
+  const notifyAuthenticationRequired = () => {
     release();
     if (!authenticationNoticeSent) {
       authenticationNoticeSent = true;
@@ -114,7 +152,18 @@ export async function createServerKernelDomainAdapter(
         // Authentication state ownership cannot depend on a view callback.
       }
     }
-    throw new ServerKernelDomainAdapterError("authentication-required");
+    return undefined;
+  };
+  const publishEvent = (notice: ServerKernelEventNotice) => {
+    if (!active) return undefined;
+    for (const listener of [...eventListeners]) {
+      try {
+        listener(notice);
+      } catch {
+        // A consumer cannot corrupt the connection owner.
+      }
+    }
+    return undefined;
   };
   const request = async <T>(operation: () => Promise<T>) => {
     assertActive();
@@ -324,6 +373,19 @@ export async function createServerKernelDomainAdapter(
         return mapRuntime(runtime);
       },
     },
+    serverEvents: {
+      get available() {
+        return active && eventAvailable;
+      },
+      subscribe: (listener) => {
+        assertActive();
+        eventListeners.add(listener);
+        return () => {
+          eventListeners.delete(listener);
+          return undefined;
+        };
+      },
+    },
     settings: {
       patch: async (input) => {
         await prepareInstanceOperation();
@@ -386,6 +448,38 @@ export async function createServerKernelDomainAdapter(
       read: async () => mapWorkspace(await confirmWorkspaceIdentity()),
     },
   };
+
+  if (options.events !== undefined) {
+    try {
+      eventConnection = options.events.connect({
+        onError: (error) => {
+          if (
+            error instanceof KernelEventError &&
+            error.kind === "server-error" &&
+            error.frameCode === "unauthorized"
+          ) {
+            notifyAuthenticationRequired();
+          }
+        },
+        onEvent: (frame) => publishEvent({ frame, kind: "event" }),
+        onReady: (frame) => {
+          if (frame.instanceId !== options.instanceId) notifyAuthenticationRequired();
+        },
+        onSnapshotRequired: (notice) => publishEvent({
+          kind: "snapshot-required",
+          reason: notice.reason,
+          reloadScopes: [...notice.reloadScopes],
+        }),
+        onStateChange: (state) => {
+          eventAvailable = active && state !== "closed";
+        },
+      }, { signal: requests.signal });
+      eventAvailable = active && eventConnection.state !== "closed";
+    } catch {
+      eventConnection = undefined;
+      eventAvailable = false;
+    }
+  }
 
   return { port, release };
 }

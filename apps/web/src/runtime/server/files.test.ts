@@ -10,7 +10,10 @@ import {
   createServerFileRuntime,
   serverWorkspaceRoot,
 } from "./files";
-import type { ServerKernelDomainPort } from "./kernel";
+import type {
+  ServerKernelDomainPort,
+  ServerKernelEventNotice,
+} from "./kernel";
 import { ServerKernelDomainAdapterError } from "./kernel";
 
 const generation = "generation-1" as KernelWorkspaceGeneration;
@@ -257,7 +260,100 @@ describe("server file facade", () => {
     expect(onChange).not.toHaveBeenCalled();
     expect(onTreeChange).not.toHaveBeenCalled();
   });
+
+  it("prefers Kernel events and reloads document snapshots after reconnect or gaps", async () => {
+    const listeners = new Set<(notice: ServerKernelEventNotice) => unknown>();
+    const serverEvents = {
+      available: true,
+      subscribe: vi.fn((listener: (notice: ServerKernelEventNotice) => unknown) => {
+        listeners.add(listener);
+        return () => {
+          listeners.delete(listener);
+          return undefined;
+        };
+      }),
+    };
+    const kernel = Object.assign(kernelPort(), { serverEvents });
+    const schedule = vi.fn(() => {
+      throw new Error("polling must be unreachable while Kernel events are available");
+    });
+    const files = createServerFileRuntime(kernel, { setInterval: schedule as never });
+    const onFileChange = vi.fn();
+    const onFileTreeChange = vi.fn();
+    const onTreeChange = vi.fn();
+    const stopFile = await files.watchMarkdownFile(
+      `${serverWorkspaceRoot}/note.md`,
+      onFileChange,
+      onFileTreeChange,
+    );
+    const stopTree = await files.watchMarkdownTree(serverWorkspaceRoot, onTreeChange);
+
+    publish(listeners, documentChangedNotice("revision-2"));
+    await vi.waitFor(() => expect(onFileChange).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(onTreeChange).toHaveBeenCalledOnce());
+    expect(onFileTreeChange).not.toHaveBeenCalled();
+
+    publish(listeners, {
+      kind: "snapshot-required",
+      reason: "sequence-gap",
+      reloadScopes: ["documents", "workspace"],
+    });
+    await vi.waitFor(() => expect(onFileChange).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(onFileTreeChange).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(onTreeChange).toHaveBeenCalledTimes(2));
+    expect(schedule).not.toHaveBeenCalled();
+
+    publish(listeners, {
+      kind: "snapshot-required",
+      reason: "reconnect",
+      reloadScopes: ["documents"],
+    });
+    await vi.waitFor(() => expect(onFileChange).toHaveBeenCalledTimes(3));
+    await vi.waitFor(() => expect(onFileTreeChange).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(onTreeChange).toHaveBeenCalledTimes(3));
+
+    stopFile();
+    stopTree();
+    expect(listeners).toHaveLength(0);
+    publish(listeners, documentChangedNotice("revision-3"));
+    expect(onFileChange).toHaveBeenCalledTimes(3);
+    expect(onTreeChange).toHaveBeenCalledTimes(3);
+  });
 });
+
+function publish(
+  listeners: ReadonlySet<(notice: ServerKernelEventNotice) => unknown>,
+  notice: ServerKernelEventNotice,
+) {
+  [...listeners].forEach((listener) => listener(notice));
+}
+
+function documentChangedNotice(revisionValue: string): ServerKernelEventNotice {
+  return {
+    frame: {
+      connectionId: "223e4567-e89b-42d3-a456-426614174000",
+      event: {
+        document: {
+          id: "document-1",
+          kind: "file",
+          modifiedAt: "2026-07-30T00:00:01Z",
+          name: "note.md",
+          parent: "",
+          path: "note.md",
+          revision: revisionValue,
+          sizeBytes: 6,
+        },
+        type: "document-changed",
+      },
+      protocolVersion: 1,
+      resource: { id: "document-1", kind: "document" },
+      revision: revisionValue,
+      sequence: 1,
+      type: "event",
+    },
+    kind: "event",
+  };
+}
 
 function entry(input: {
   kind?: "file" | "directory";

@@ -1,33 +1,29 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import App, { AppErrorBoundary, configureAppRuntime } from "@markra/app";
-import { createKernelClient } from "@markra/kernel-client";
 import "@markra/app/styles.css";
 import { createServerWebRuntime } from "./runtime";
 import { createServerKernelDomainAdapter } from "./runtime/server/kernel";
+import { createServerKernelTransports } from "./runtime/server/transports";
 import {
   ServerStartupShell,
   startServerWebApplication,
 } from "./server-application";
 import { createServerWebBootstrapOwner } from "./server-bootstrap";
-import { readServerCsrfCookie } from "./runtime/server/csrf";
 
 const rootElement = document.getElementById("root");
 if (rootElement === null) throw new Error("Web application root is unavailable.");
 const root = createRoot(rootElement);
-const browserOrigin = new URL("/", window.location.origin);
-const client = createKernelClient({
-  auth: {
-    browserOrigin,
-    getCsrfToken: () => readServerCsrfCookie(document.cookie),
-    kind: "browser-session",
-  },
-  baseUrl: browserOrigin,
+const { client, events } = createServerKernelTransports({
+  browserOrigin: window.location.origin,
   fetch: window.fetch.bind(window),
+  readCookie: () => document.cookie,
+  webSocket: (url) => new WebSocket(url),
 });
 const owner = createServerWebBootstrapOwner({
   client,
-  createDomainAdapter: createServerKernelDomainAdapter,
+  createDomainAdapter: (domainClient, options) =>
+    createServerKernelDomainAdapter(domainClient, { ...options, events }),
 });
 
 const stop = startServerWebApplication({

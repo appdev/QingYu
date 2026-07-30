@@ -16,6 +16,8 @@ import {
 import {
   ServerKernelDomainAdapterError,
   type ServerKernelDomainPort,
+  type ServerKernelEventNotice,
+  type ServerKernelEventSource,
 } from "./kernel";
 
 export const serverWorkspaceRoot = "kernel-workspace://primary";
@@ -42,6 +44,7 @@ export function createServerFileRuntime(
 ): AppFileRuntime {
   const fallback = createDefaultAppRuntime().files;
   const entries = new Map<string, CachedEntry>();
+  const serverEvents = serverEventSource(kernel);
   let workspaceIdentity: Promise<WorkspaceIdentity> | undefined;
 
   const workspace = async () => {
@@ -104,6 +107,10 @@ export function createServerFileRuntime(
   };
 
   const removeCachedTree = (relativePath: string) => {
+    if (relativePath === "") {
+      entries.clear();
+      return;
+    }
     for (const path of [...entries.keys()]) {
       if (path === relativePath || path.startsWith(`${relativePath}/`)) entries.delete(path);
     }
@@ -278,6 +285,38 @@ export function createServerFileRuntime(
     },
     watchMarkdownFile: async (path, onChange, onTreeChange) => {
       const relativePath = relativePathFromServerPath(path);
+      const eventSubscription = subscribeToServerEvents(serverEvents, async (notice) => {
+        if (notice.kind === "snapshot-required") {
+          if (!requiresDocumentReload(notice)) return;
+          entries.delete(relativePath);
+          await onChange(path);
+          await onTreeChange?.(path);
+          return;
+        }
+        const event = notice.frame.event;
+        switch (event.type) {
+          case "document-changed":
+            if (event.document.path !== relativePath) return;
+            entries.delete(relativePath);
+            await onChange(path);
+            return;
+          case "document-moved":
+            if (event.previousPath !== relativePath) return;
+            removeCachedTree(event.previousPath);
+            entries.delete(event.document.path);
+            await onTreeChange?.(path);
+            return;
+          case "document-deleted":
+            if (event.previousPath !== relativePath) return;
+            removeCachedTree(event.previousPath);
+            await onTreeChange?.(path);
+            return;
+          default:
+            return;
+        }
+      });
+      if (eventSubscription !== undefined) return eventSubscription;
+
       let currentRevision = (await resolveEntry(path)).revision;
       return startPolling(async () => {
         entries.delete(relativePath);
@@ -294,6 +333,20 @@ export function createServerFileRuntime(
     },
     watchMarkdownTree: async (path, onTreeChange) => {
       const relativePath = relativePathFromServerPath(path);
+      const eventSubscription = subscribeToServerEvents(serverEvents, async (notice) => {
+        if (notice.kind === "snapshot-required") {
+          if (!requiresDocumentReload(notice)) return;
+          removeCachedTree(relativePath);
+          await onTreeChange(path);
+          return;
+        }
+        const event = notice.frame.event;
+        if (!documentEventTouchesTree(event, relativePath)) return;
+        invalidateDocumentEvent(entries, event);
+        await onTreeChange(path);
+      });
+      if (eventSubscription !== undefined) return eventSubscription;
+
       let fingerprint = treeFingerprint(await listTree(relativePath));
       return startPolling(async () => {
         const next = treeFingerprint(await listTree(relativePath));
@@ -497,4 +550,70 @@ function startPolling(
 function isTerminalAdapterError(error: unknown) {
   return error instanceof ServerKernelDomainAdapterError &&
     (error.code === "authentication-required" || error.code === "released");
+}
+
+function serverEventSource(kernel: KernelDomainPort) {
+  return (kernel as Partial<ServerKernelDomainPort>).serverEvents;
+}
+
+function subscribeToServerEvents(
+  source: ServerKernelEventSource | undefined,
+  listener: (notice: ServerKernelEventNotice) => Promise<unknown>,
+) {
+  if (source?.available !== true) return undefined;
+  return source.subscribe((notice) => {
+    listener(notice).catch(() => undefined);
+  });
+}
+
+function requiresDocumentReload(
+  notice: Extract<ServerKernelEventNotice, { kind: "snapshot-required" }>,
+) {
+  return notice.reloadScopes.some((scope) =>
+    scope === "documents" || scope === "workspace"
+  );
+}
+
+type DocumentDomainEvent = Extract<
+  Extract<ServerKernelEventNotice, { kind: "event" }>["frame"]["event"],
+  { type: "document-created" | "document-changed" | "document-moved" | "document-deleted" }
+>;
+
+function documentEventTouchesTree(
+  event: Extract<ServerKernelEventNotice, { kind: "event" }>["frame"]["event"],
+  relativeRoot: string,
+): event is DocumentDomainEvent {
+  switch (event.type) {
+    case "document-created":
+    case "document-changed":
+      return pathBelongsToTree(event.document.path, relativeRoot);
+    case "document-moved":
+      return pathBelongsToTree(event.previousPath, relativeRoot) ||
+        pathBelongsToTree(event.document.path, relativeRoot);
+    case "document-deleted":
+      return pathBelongsToTree(event.previousPath, relativeRoot);
+    default:
+      return false;
+  }
+}
+
+function pathBelongsToTree(candidate: string, relativeRoot: string) {
+  return relativeRoot === "" ||
+    candidate === relativeRoot ||
+    candidate.startsWith(`${relativeRoot}/`);
+}
+
+function invalidateDocumentEvent(
+  entries: Map<string, CachedEntry>,
+  event: DocumentDomainEvent,
+) {
+  if (event.type === "document-moved" || event.type === "document-deleted") {
+    for (const path of [...entries.keys()]) {
+      if (
+        path === event.previousPath ||
+        path.startsWith(`${event.previousPath}/`)
+      ) entries.delete(path);
+    }
+  }
+  if (event.type !== "document-deleted") entries.delete(event.document.path);
 }

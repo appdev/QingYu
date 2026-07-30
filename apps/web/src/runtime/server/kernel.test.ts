@@ -1,5 +1,9 @@
-import type { KernelClient } from "@markra/kernel-client";
-import { KernelApiError } from "@markra/kernel-client";
+import type {
+  KernelClient,
+  KernelEventHandlers,
+  KernelEventsClient,
+} from "@markra/kernel-client";
+import { KernelApiError, KernelEventError } from "@markra/kernel-client";
 import type {
   KernelDocumentLocator,
   KernelHistorySnapshotId,
@@ -102,6 +106,118 @@ describe("Server Kernel domain adapter", () => {
 
     await expect(adapter.port.workspace.read()).rejects.toBeInstanceOf(ServerKernelDomainAdapterError);
     await expect(adapter.port.runtime.read()).rejects.toMatchObject({ code: "released" });
+  });
+
+  it("owns the authenticated event connection and publishes validated Kernel events", async () => {
+    let handlers: KernelEventHandlers | undefined;
+    const close = vi.fn();
+    const events = {
+      connect: vi.fn((nextHandlers: KernelEventHandlers) => {
+        handlers = nextHandlers;
+        return { close, state: "connecting" as const };
+      }),
+    } satisfies KernelEventsClient;
+    const adapter = await createServerKernelDomainAdapter(kernelClient(), {
+      ...options(),
+      events,
+    });
+    const listener = vi.fn();
+    const unsubscribe = adapter.port.serverEvents.subscribe(listener);
+    const frame = {
+      connectionId: "223e4567-e89b-42d3-a456-426614174000",
+      event: {
+        document: {
+          id: "signed-document-1",
+          kind: "file",
+          modifiedAt: "2026-07-30T00:00:01Z",
+          name: "note.md",
+          parent: "",
+          path: "note.md",
+          revision: "revision-2",
+          sizeBytes: 6,
+        },
+        type: "document-changed",
+      },
+      protocolVersion: 1,
+      resource: { id: "signed-document-1", kind: "document" },
+      revision: "revision-2",
+      sequence: 1,
+      type: "event",
+    } as const;
+
+    handlers?.onEvent?.(frame);
+    expect(listener).toHaveBeenCalledWith({ frame, kind: "event" });
+    handlers?.onSnapshotRequired?.({
+      reason: "sequence-gap",
+      reloadScopes: ["documents", "workspace"],
+    });
+    expect(listener).toHaveBeenLastCalledWith({
+      kind: "snapshot-required",
+      reason: "sequence-gap",
+      reloadScopes: ["documents", "workspace"],
+    });
+    unsubscribe();
+    adapter.release();
+    expect(close).toHaveBeenCalledOnce();
+  });
+
+  it("returns to authentication when the event stream rejects the browser session", async () => {
+    let handlers: KernelEventHandlers | undefined;
+    const close = vi.fn();
+    const onAuthenticationRequired = vi.fn();
+    const events = {
+      connect: vi.fn((nextHandlers: KernelEventHandlers) => {
+        handlers = nextHandlers;
+        return { close, state: "open" as const };
+      }),
+    } satisfies KernelEventsClient;
+    const adapter = await createServerKernelDomainAdapter(kernelClient(), {
+      ...options(),
+      events,
+      onAuthenticationRequired,
+    });
+
+    handlers?.onError?.(new KernelEventError("server-error", {
+      frameCode: "unauthorized",
+    }));
+    handlers?.onError?.(new KernelEventError("server-error", {
+      frameCode: "unauthorized",
+    }));
+
+    expect(onAuthenticationRequired).toHaveBeenCalledOnce();
+    expect(close).toHaveBeenCalledOnce();
+    expect(adapter.port.serverEvents.available).toBe(false);
+    await expect(adapter.port.workspace.read()).rejects.toMatchObject({ code: "released" });
+  });
+
+  it("returns to startup authentication when the event stream reports a new Kernel instance", async () => {
+    let handlers: KernelEventHandlers | undefined;
+    const close = vi.fn();
+    const onAuthenticationRequired = vi.fn();
+    const events = {
+      connect: vi.fn((nextHandlers: KernelEventHandlers) => {
+        handlers = nextHandlers;
+        return { close, state: "connecting" as const };
+      }),
+    } satisfies KernelEventsClient;
+    const adapter = await createServerKernelDomainAdapter(kernelClient(), {
+      ...options(),
+      events,
+      onAuthenticationRequired,
+    });
+
+    handlers?.onReady?.({
+      connectionId: "223e4567-e89b-42d3-a456-426614174000",
+      instanceId: "323e4567-e89b-42d3-a456-426614174000",
+      protocolVersion: 1,
+      sequence: 0,
+      snapshotRequired: true,
+      type: "ready",
+    });
+
+    expect(onAuthenticationRequired).toHaveBeenCalledOnce();
+    expect(close).toHaveBeenCalledOnce();
+    expect(adapter.port.serverEvents.available).toBe(false);
   });
 });
 
