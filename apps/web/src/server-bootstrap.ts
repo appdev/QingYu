@@ -80,6 +80,7 @@ export function createServerWebBootstrapOwner({
   let activeAdapter: ServerKernelDomainAdapter | undefined;
   let closed = false;
   let operationGeneration = 0;
+  let operationRequests = new AbortController();
 
   const publish = (next: ServerWebBootstrapSnapshot) => {
     if (closed && next.phase !== "closed") return undefined;
@@ -106,8 +107,17 @@ export function createServerWebBootstrapOwner({
   const isCurrent = (generation: number) => (
     !closed && generation === operationGeneration
   );
+  const beginOperation = () => {
+    operationRequests.abort();
+    operationRequests = new AbortController();
+    return {
+      generation: ++operationGeneration,
+      signal: operationRequests.signal,
+    };
+  };
   const returnToLogin = () => {
     if (closed) return undefined;
+    operationRequests.abort();
     operationGeneration += 1;
     releaseAdapter();
     publish({ phase: "login", error: null });
@@ -120,15 +130,18 @@ export function createServerWebBootstrapOwner({
     return undefined;
   };
 
-  const bootstrapAuthenticatedRuntime = async (generation: number) => {
+  const bootstrapAuthenticatedRuntime = async (
+    generation: number,
+    signal: AbortSignal,
+  ) => {
     if (!isCurrent(generation)) return undefined;
     publish({ phase: "starting" });
     try {
-      const ready = await client.system.ready();
+      const ready = await client.system.ready({ signal });
       if (!isCurrent(generation)) return undefined;
-      const runtime = await client.system.runtime();
+      const runtime = await client.system.runtime({ signal });
       if (!isCurrent(generation)) return undefined;
-      const workspace = await client.workspace.get();
+      const workspace = await client.workspace.get({ signal });
       if (!isCurrent(generation)) return undefined;
       if (
         ready.instanceId !== runtime.instanceId ||
@@ -171,11 +184,11 @@ export function createServerWebBootstrapOwner({
 
   const start = async () => {
     if (closed) return undefined;
-    const generation = ++operationGeneration;
+    const { generation, signal } = beginOperation();
     releaseAdapter();
     publish({ phase: "checking" });
     try {
-      const status = await client.auth.status();
+      const status = await client.auth.status({ signal });
       if (!isCurrent(generation)) return undefined;
       if (status.initialization === "required") {
         publish({ phase: "initialize", error: null });
@@ -183,7 +196,7 @@ export function createServerWebBootstrapOwner({
       }
       if (status.initialization !== "initialized") return fail(generation);
       try {
-        await client.auth.getSession();
+        await client.auth.getSession({ signal });
       } catch (error: unknown) {
         if (!isCurrent(generation)) return undefined;
         if (isUnauthorized(error)) {
@@ -192,7 +205,7 @@ export function createServerWebBootstrapOwner({
         }
         return fail(generation);
       }
-      return bootstrapAuthenticatedRuntime(generation);
+      return bootstrapAuthenticatedRuntime(generation, signal);
     } catch {
       return fail(generation);
     }
@@ -203,15 +216,15 @@ export function createServerWebBootstrapOwner({
     password: string;
   }) => {
     if (closed || snapshot.phase !== "initialize") return undefined;
-    const generation = ++operationGeneration;
+    const { generation, signal } = beginOperation();
     publish({ phase: "starting" });
     try {
       await client.auth.initialize({
         initializationToken: input.initializationToken,
         password: input.password,
-      });
+      }, { signal });
       if (!isCurrent(generation)) return undefined;
-      return bootstrapAuthenticatedRuntime(generation);
+      return bootstrapAuthenticatedRuntime(generation, signal);
     } catch (error: unknown) {
       if (!isCurrent(generation)) return undefined;
       if (isAlreadyInitialized(error)) {
@@ -228,12 +241,12 @@ export function createServerWebBootstrapOwner({
 
   const login = async (input: { password: string }) => {
     if (closed || snapshot.phase !== "login") return undefined;
-    const generation = ++operationGeneration;
+    const { generation, signal } = beginOperation();
     publish({ phase: "starting" });
     try {
-      await client.auth.login({ password: input.password });
+      await client.auth.login({ password: input.password }, { signal });
       if (!isCurrent(generation)) return undefined;
-      return bootstrapAuthenticatedRuntime(generation);
+      return bootstrapAuthenticatedRuntime(generation, signal);
     } catch (error: unknown) {
       if (!isCurrent(generation)) return undefined;
       if (isInitializationRequired(error)) {
@@ -249,6 +262,7 @@ export function createServerWebBootstrapOwner({
     close: () => {
       if (closed) return undefined;
       closed = true;
+      operationRequests.abort();
       operationGeneration += 1;
       releaseAdapter();
       publish({ phase: "closed" });

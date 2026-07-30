@@ -25,7 +25,10 @@ describe("server Web bootstrap owner", () => {
     const password = "password-must-not-survive";
     await owner.initialize({ initializationToken, password });
 
-    expect(client.auth.initialize).toHaveBeenCalledWith({ initializationToken, password });
+    expect(client.auth.initialize).toHaveBeenCalledWith(
+      { initializationToken, password },
+      { signal: expect.any(AbortSignal) },
+    );
     const rendered = JSON.stringify(owner.getSnapshot());
     expect(rendered).not.toContain(initializationToken);
     expect(rendered).not.toContain(password);
@@ -135,7 +138,49 @@ describe("server Web bootstrap owner", () => {
     expect(release).toHaveBeenCalledOnce();
     expect(owner.getSnapshot()).toEqual({ phase: "login", error: null });
   });
+
+  it("aborts stale bootstrap and secret-bearing requests on retry and close", async () => {
+    const firstStatus = deferred<{ initialization: "required" }>();
+    const client = bootstrapClient({ initialization: "required" });
+    vi.mocked(client.auth.status)
+      .mockImplementationOnce(async () => firstStatus.promise)
+      .mockImplementationOnce(async () => ({ initialization: "required" }));
+    const owner = createServerWebBootstrapOwner({
+      client,
+      createDomainAdapter: domainAdapterFactory(),
+    });
+
+    const firstStart = owner.start();
+    const firstSignal = vi.mocked(client.auth.status).mock.calls[0]?.[0]?.signal;
+    const retry = owner.retry();
+    expect(firstSignal?.aborted).toBe(true);
+    firstStatus.resolve({ initialization: "required" });
+    await Promise.all([firstStart, retry]);
+
+    const pendingInitialization = deferred<{ state: "authenticated" }>();
+    vi.mocked(client.auth.initialize).mockImplementationOnce(
+      async () => pendingInitialization.promise,
+    );
+    const initialization = owner.initialize({
+      initializationToken: "secret-initialization-token",
+      password: "secret-owner-password",
+    });
+    const initializationSignal = vi.mocked(client.auth.initialize).mock.calls[0]?.[1]?.signal;
+    owner.close();
+    expect(initializationSignal?.aborted).toBe(true);
+    pendingInitialization.resolve({ state: "authenticated" });
+    await initialization;
+    expect(owner.getSnapshot()).toEqual({ phase: "closed" });
+  });
 });
+
+function deferred<T>() {
+  let resolve!: (value: T) => unknown;
+  const promise = new Promise<T>((promiseResolve) => {
+    resolve = promiseResolve;
+  });
+  return { promise, resolve };
+}
 
 function domainAdapterFactory() {
   return vi.fn(async () => ({
