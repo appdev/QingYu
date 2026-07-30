@@ -1,0 +1,424 @@
+import type { KernelDomainPort } from "@markra/app/runtime";
+import { listen } from "@tauri-apps/api/event";
+
+import {
+  createNativeKernelBootstrapLifecycleOwner,
+  type NativeKernelBootstrap,
+  type NativeKernelBootstrapLifecycleSnapshot,
+  type NativeKernelBootstrapInvoke
+} from "../kernel-bootstrap";
+import {
+  createDesktopKernelDomainAdapter,
+  type DesktopKernelDomainAdapter,
+  type DesktopKernelDomainAdapterOptions
+} from "./kernel";
+import {
+  createDesktopKernelEventsAdapter,
+  type DesktopKernelDomainInvalidation,
+  type DesktopKernelEventsAdapter,
+  type DesktopKernelEventsAdapterOptions,
+  type DesktopKernelEventsErrorNotice,
+  type DesktopKernelEventsStateNotice
+} from "./kernel-events";
+
+export const NATIVE_KERNEL_BOOTSTRAP_CHANGED_EVENT = "qingyu://kernel-bootstrap-changed";
+
+export type NativeKernelBootstrapChangedListener = (
+  eventName: typeof NATIVE_KERNEL_BOOTSTRAP_CHANGED_EVENT,
+  handler: (event: unknown) => unknown
+) => Promise<() => unknown>;
+
+export type NativeKernelPagehideListener = (
+  handler: () => unknown
+) => () => unknown;
+
+export type NativeKernelSessionSnapshot =
+  | {
+      readonly domain: null;
+      readonly status: "dormant";
+      readonly generation?: string;
+    }
+  | {
+      readonly domain: null;
+      readonly status: "starting" | "retrying" | "failed";
+      readonly generation: string;
+    }
+  | {
+      readonly domain: KernelDomainPort;
+      readonly status: "ready";
+      readonly generation: string;
+      readonly instanceId: string;
+    };
+
+export interface NativeKernelSessionOwner {
+  start(): Promise<undefined>;
+  subscribe(
+    subscriber: (snapshot: NativeKernelSessionSnapshot | null) => unknown
+  ): () => undefined;
+  getSnapshot(): NativeKernelSessionSnapshot | null;
+  close(): undefined;
+}
+
+export interface NativeKernelSessionOwnerOptions {
+  readonly invokeCommand?: NativeKernelBootstrapInvoke;
+  readonly listenBootstrapChanged?: NativeKernelBootstrapChangedListener;
+  readonly addPagehideListener?: NativeKernelPagehideListener;
+  readonly createDomainAdapter?: (
+    bootstrap: NativeKernelBootstrap,
+    options?: DesktopKernelDomainAdapterOptions
+  ) => Promise<DesktopKernelDomainAdapter>;
+  readonly createEventsAdapter?: (
+    options: DesktopKernelEventsAdapterOptions
+  ) => DesktopKernelEventsAdapter;
+  readonly onInvalidation?: (invalidation: DesktopKernelDomainInvalidation) => unknown;
+  readonly onEventsStateChange?: (notice: DesktopKernelEventsStateNotice) => unknown;
+  readonly onEventsError?: (notice: DesktopKernelEventsErrorNotice) => unknown;
+  readonly onError?: (error: Error) => unknown;
+}
+
+export function createNativeKernelSessionOwner(
+  {
+    addPagehideListener = addBrowserPagehideListener,
+    createDomainAdapter = createDesktopKernelDomainAdapter,
+    createEventsAdapter = createDesktopKernelEventsAdapter,
+    invokeCommand,
+    listenBootstrapChanged = listenForNativeKernelBootstrapChange,
+    onError,
+    onEventsError,
+    onEventsStateChange,
+    onInvalidation
+  }: NativeKernelSessionOwnerOptions = {}
+): NativeKernelSessionOwner {
+  const bootstrapOwner = invokeCommand === undefined
+    ? createNativeKernelBootstrapLifecycleOwner()
+    : createNativeKernelBootstrapLifecycleOwner({ invokeCommand });
+  const subscribers = new Set<
+    (snapshot: NativeKernelSessionSnapshot | null) => unknown
+  >();
+  let closed = false;
+  let snapshot: NativeKernelSessionSnapshot | null = null;
+  let startPromise: Promise<undefined> | undefined;
+  let refreshPromise: Promise<undefined> | undefined;
+  let refreshRequested = false;
+  let stopBootstrapListener: (() => unknown) | undefined;
+  let stopPagehideListener: (() => unknown) | undefined;
+  let activeDomain: DesktopKernelDomainAdapter | undefined;
+  let activeEvents: DesktopKernelEventsAdapter | undefined;
+  let activeIdentity:
+    | { readonly generation: string; readonly instanceId: string }
+    | undefined;
+  let adoptionEpoch = 0;
+
+  const publish = (next: NativeKernelSessionSnapshot | null) => {
+    snapshot = next;
+    for (const subscriber of [...subscribers]) {
+      notifyConsumer(subscriber, next);
+    }
+    return undefined;
+  };
+
+  const retireActive = () => {
+    activeIdentity = undefined;
+    snapshot = null;
+    const domain = activeDomain;
+    const events = activeEvents;
+    activeDomain = undefined;
+    activeEvents = undefined;
+    safelyCall(domain?.release);
+    safelyCall(events?.close);
+    return undefined;
+  };
+
+  const failClosed = (cause: unknown) => {
+    adoptionEpoch += 1;
+    retireActive();
+    publish(null);
+    return cause;
+  };
+
+  const isCurrentIdentity = (
+    { generation, instanceId }: {
+      readonly generation: string;
+      readonly instanceId: string;
+    }
+  ) => {
+    return (
+      !closed &&
+      activeIdentity?.generation === generation &&
+      activeIdentity.instanceId === instanceId
+    );
+  };
+
+  const reconcile = async () => {
+    let update;
+    try {
+      update = await bootstrapOwner.refresh();
+    } catch (cause: unknown) {
+      throw failClosed(cause);
+    }
+    if (closed) return undefined;
+
+    const lifecycle = update.snapshot;
+    if (lifecycle.status !== "ready") {
+      if (update.changed || snapshot?.status === "ready") {
+        adoptionEpoch += 1;
+        retireActive();
+        publish(nonReadySnapshot(lifecycle));
+      }
+      return undefined;
+    }
+
+    const sameActivePublication =
+      !update.changed &&
+      activeDomain !== undefined &&
+      activeEvents?.identity?.generation === lifecycle.generation &&
+      activeEvents.identity.instanceId === lifecycle.instanceId &&
+      activeIdentity?.generation === lifecycle.generation &&
+      activeIdentity.instanceId === lifecycle.instanceId;
+    if (sameActivePublication) return undefined;
+
+    adoptionEpoch += 1;
+    const adoption = adoptionEpoch;
+    retireActive();
+    const domainLease = bootstrapOwner.acquireReady();
+    const eventsLease = bootstrapOwner.acquireReady();
+    if (domainLease === null || eventsLease === null) {
+      safelyRelease(domainLease);
+      safelyRelease(eventsLease);
+      throw failClosed(new Error("native Kernel session publication unavailable"));
+    }
+
+    let domain: DesktopKernelDomainAdapter;
+    try {
+      domain = await createDomainAdapter(domainLease);
+    } catch (cause: unknown) {
+      safelyRelease(domainLease);
+      safelyRelease(eventsLease);
+      throw failClosed(cause);
+    }
+    if (closed || adoption !== adoptionEpoch) {
+      safelyCall(domain.release);
+      safelyRelease(eventsLease);
+      return undefined;
+    }
+
+    let events: DesktopKernelEventsAdapter;
+    try {
+      events = createEventsAdapter({
+        onError: (notice) => {
+          if (isCurrentIdentity(notice)) notifyConsumer(onEventsError, notice);
+          return undefined;
+        },
+        onInvalidation: (invalidation) => {
+          if (isCurrentIdentity(invalidation)) notifyConsumer(onInvalidation, invalidation);
+          return undefined;
+        },
+        onStateChange: (notice) => {
+          if (isCurrentIdentity(notice)) notifyConsumer(onEventsStateChange, notice);
+          return undefined;
+        }
+      });
+    } catch (cause: unknown) {
+      safelyCall(domain.release);
+      safelyRelease(eventsLease);
+      throw failClosed(cause);
+    }
+    if (closed || adoption !== adoptionEpoch) {
+      safelyCall(domain.release);
+      safelyCall(events.close);
+      safelyRelease(eventsLease);
+      return undefined;
+    }
+
+    activeDomain = domain;
+    activeEvents = events;
+    activeIdentity = Object.freeze({
+      generation: lifecycle.generation,
+      instanceId: lifecycle.instanceId
+    });
+    try {
+      events.replaceConnection(eventsLease);
+    } catch (cause: unknown) {
+      throw failClosed(cause);
+    }
+    if (closed || adoption !== adoptionEpoch) {
+      retireActive();
+      return undefined;
+    }
+    publish(Object.freeze({
+      domain: domain.port,
+      generation: lifecycle.generation,
+      instanceId: lifecycle.instanceId,
+      status: "ready" as const
+    }));
+    return undefined;
+  };
+
+  const requestRefresh = () => {
+    if (closed) return Promise.reject(sessionClosed());
+    refreshRequested = true;
+    if (refreshPromise !== undefined) return refreshPromise;
+
+    const pending = (async () => {
+      try {
+        while (refreshRequested && !closed) {
+          refreshRequested = false;
+          await reconcile();
+        }
+      } catch (cause: unknown) {
+        refreshRequested = false;
+        throw cause;
+      }
+      return undefined;
+    })();
+    refreshPromise = pending;
+    pending.then(
+      () => {
+        if (refreshPromise === pending) refreshPromise = undefined;
+        return undefined;
+      },
+      () => {
+        if (refreshPromise === pending) refreshPromise = undefined;
+        return undefined;
+      }
+    );
+    return pending;
+  };
+
+  const reportRefreshFailure = (cause: unknown) => {
+    notifyConsumer(onError, safeSessionError(cause));
+    return undefined;
+  };
+
+  const close = () => {
+    if (closed) return undefined;
+    closed = true;
+    refreshRequested = false;
+    adoptionEpoch += 1;
+    retireActive();
+    bootstrapOwner.close();
+    safelyCall(stopBootstrapListener);
+    safelyCall(stopPagehideListener);
+    stopBootstrapListener = undefined;
+    stopPagehideListener = undefined;
+    subscribers.clear();
+    return undefined;
+  };
+
+  const start = () => {
+    if (closed) return Promise.reject(sessionClosed());
+    if (startPromise !== undefined) return startPromise;
+
+    const pending = (async () => {
+      const stop = await listenBootstrapChanged(
+        NATIVE_KERNEL_BOOTSTRAP_CHANGED_EVENT,
+        () => requestRefresh().catch(reportRefreshFailure)
+      );
+      if (closed) {
+        safelyCall(stop);
+        return undefined;
+      }
+      stopBootstrapListener = once(stop);
+      stopPagehideListener = once(addPagehideListener(close));
+      await requestRefresh();
+      return undefined;
+    })();
+    startPromise = pending;
+    return pending;
+  };
+
+  return Object.freeze({
+    start,
+    subscribe: (subscriber: (
+      snapshot: NativeKernelSessionSnapshot | null
+    ) => unknown) => {
+      if (closed) throw sessionClosed();
+      subscribers.add(subscriber);
+      if (snapshot !== null) notifyConsumer(subscriber, snapshot);
+      start().catch(reportRefreshFailure);
+      let subscribed = true;
+      return () => {
+        if (!subscribed) return undefined;
+        subscribed = false;
+        subscribers.delete(subscriber);
+        return undefined;
+      };
+    },
+    getSnapshot: () => snapshot,
+    close
+  });
+}
+
+const listenForNativeKernelBootstrapChange: NativeKernelBootstrapChangedListener =
+  async (eventName, handler) => {
+    const stop = await listen(eventName, () => handler(undefined));
+    return stop;
+  };
+
+const addBrowserPagehideListener: NativeKernelPagehideListener = (handler) => {
+  const listener = () => handler();
+  window.addEventListener("pagehide", listener, { once: true });
+  return () => {
+    window.removeEventListener("pagehide", listener);
+    return undefined;
+  };
+};
+
+function nonReadySnapshot(
+  lifecycle: Exclude<NativeKernelBootstrapLifecycleSnapshot, { readonly status: "ready" }>
+): NativeKernelSessionSnapshot {
+  return Object.freeze({ ...lifecycle, domain: null });
+}
+
+function notifyConsumer<T>(
+  consumer: ((value: T) => unknown) | undefined,
+  value: T
+): undefined {
+  try {
+    consumer?.(value);
+  } catch {
+    // Consumer failures never interrupt credential or connection ownership cleanup.
+  }
+  return undefined;
+}
+
+function once(operation: () => unknown): () => undefined {
+  let active = true;
+  return () => {
+    if (!active) return undefined;
+    active = false;
+    safelyCall(operation);
+    return undefined;
+  };
+}
+
+function safelyCall(operation: (() => unknown) | undefined): undefined {
+  try {
+    operation?.();
+  } catch {
+    // Native listener, adapter, and credential retirement are best-effort.
+  }
+  return undefined;
+}
+
+function safelyRelease(bootstrap: NativeKernelBootstrap | null): undefined {
+  safelyCall(bootstrap?.release);
+  return undefined;
+}
+
+function safeSessionError(cause: unknown): Error {
+  if (
+    cause instanceof Error &&
+    (cause.message === "invalid native Kernel bootstrap" ||
+      cause.message === "native Kernel bootstrap generation regressed" ||
+      cause.message === "native Kernel bootstrap refresh failed" ||
+      cause.message === "native Kernel bootstrap lifecycle owner closed")
+  ) {
+    return cause;
+  }
+  return new Error("native Kernel session refresh failed");
+}
+
+function sessionClosed(): Error {
+  return new Error("native Kernel session owner closed");
+}
