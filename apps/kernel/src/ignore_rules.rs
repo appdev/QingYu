@@ -17,6 +17,7 @@ use crate::{
 };
 
 pub const MARKRA_IGNORE_FILE_NAME: &str = ".markraignore";
+const MAX_MARKRA_IGNORE_BYTES: u64 = 1024 * 1024;
 
 pub trait WorkspaceIgnorePort: Send + Sync {
     fn capture(
@@ -109,14 +110,15 @@ impl WorkspaceIgnorePort for SettingsWorkspaceIgnorePort {
                     .ok_or(WorkspaceIgnoreError)
             })
             .transpose()?;
+        let rules = MarkdownIgnoreRules::try_for_retained_root(
+            root_path,
+            retained_root,
+            global_rules.as_deref(),
+        )?;
         Ok(WorkspaceIgnoreSnapshot::from_matcher(Arc::new(
             CapturedMarkdownIgnore {
                 root: root_path.to_path_buf(),
-                rules: MarkdownIgnoreRules::for_retained_root(
-                    root_path,
-                    retained_root,
-                    global_rules.as_deref(),
-                ),
+                rules,
             },
         )))
     }
@@ -189,6 +191,15 @@ impl MarkdownIgnoreRules {
         Self::from_rules(root, global_rules, workspace_rules.as_deref(), true)
     }
 
+    pub fn try_for_retained_root(
+        root: &Path,
+        directory: &Dir,
+        global_rules: Option<&str>,
+    ) -> Result<Self, WorkspaceIgnoreError> {
+        let workspace_rules = read_retained_workspace_rules(directory)?;
+        Self::try_from_rules(root, global_rules, workspace_rules.as_deref(), true)
+    }
+
     fn build(root: &Path, global_rules: Option<&str>, include_workspace_rules: bool) -> Self {
         let workspace_rules = include_workspace_rules
             .then(|| std::fs::read_to_string(root.join(MARKRA_IGNORE_FILE_NAME)).ok())
@@ -228,6 +239,36 @@ impl MarkdownIgnoreRules {
             root: root.to_path_buf(),
             matcher,
         }
+    }
+
+    fn try_from_rules(
+        root: &Path,
+        global_rules: Option<&str>,
+        workspace_rules: Option<&str>,
+        include_workspace_rules: bool,
+    ) -> Result<Self, WorkspaceIgnoreError> {
+        let global_rules = global_rules.unwrap_or_default().to_string();
+        let mut builder = GitignoreBuilder::new(root);
+        for line in global_rules.lines() {
+            builder
+                .add_line(None, line)
+                .map_err(|_| WorkspaceIgnoreError)?;
+        }
+        if include_workspace_rules {
+            let workspace_rules_path = root.join(MARKRA_IGNORE_FILE_NAME);
+            for line in workspace_rules.unwrap_or_default().lines() {
+                builder
+                    .add_line(Some(workspace_rules_path.clone()), line)
+                    .map_err(|_| WorkspaceIgnoreError)?;
+            }
+        }
+        let matcher = builder.build().map_err(|_| WorkspaceIgnoreError)?;
+        Ok(Self {
+            global_rules,
+            include_workspace_rules,
+            root: root.to_path_buf(),
+            matcher,
+        })
     }
 
     pub fn reload(&mut self) {
@@ -271,6 +312,94 @@ impl MarkdownIgnoreRules {
         path.parent() == Some(self.root.as_path())
             && path.file_name() == Some(OsStr::new(MARKRA_IGNORE_FILE_NAME))
     }
+}
+
+fn read_retained_workspace_rules(directory: &Dir) -> Result<Option<String>, WorkspaceIgnoreError> {
+    let mut options = OpenOptions::new();
+    options.read(true).follow(FollowSymlinks::No);
+    let mut file = match directory.open_with(MARKRA_IGNORE_FILE_NAME, &options) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err(WorkspaceIgnoreError),
+    };
+    let retained = file.metadata().map_err(|_| WorkspaceIgnoreError)?;
+    if !trusted_ignore_file(&retained) || retained.len() > MAX_MARKRA_IGNORE_BYTES {
+        return Err(WorkspaceIgnoreError);
+    }
+    let mut bytes = Vec::with_capacity(retained.len() as usize);
+    file.by_ref()
+        .take(MAX_MARKRA_IGNORE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| WorkspaceIgnoreError)?;
+    if bytes.len() as u64 > MAX_MARKRA_IGNORE_BYTES {
+        return Err(WorkspaceIgnoreError);
+    }
+    let after = file.metadata().map_err(|_| WorkspaceIgnoreError)?;
+    let named = directory
+        .symlink_metadata(MARKRA_IGNORE_FILE_NAME)
+        .map_err(|_| WorkspaceIgnoreError)?;
+    if !trusted_ignore_file(&after)
+        || !trusted_ignore_file(&named)
+        || !same_ignore_file(&retained, &after)
+        || !same_ignore_file(&retained, &named)
+        || retained.len() != after.len()
+        || retained.len() != named.len()
+        || retained.modified().ok() != after.modified().ok()
+        || retained.modified().ok() != named.modified().ok()
+    {
+        return Err(WorkspaceIgnoreError);
+    }
+    String::from_utf8(bytes)
+        .map(Some)
+        .map_err(|_| WorkspaceIgnoreError)
+}
+
+fn trusted_ignore_file(metadata: &cap_std::fs::Metadata) -> bool {
+    metadata.is_file() && !metadata.file_type().is_symlink() && ignore_link_count(metadata) == 1
+}
+
+#[cfg(unix)]
+fn ignore_link_count(metadata: &cap_std::fs::Metadata) -> u64 {
+    cap_fs_ext::MetadataExt::nlink(metadata)
+}
+
+#[cfg(windows)]
+fn ignore_link_count(metadata: &cap_std::fs::Metadata) -> u64 {
+    use cap_std::fs::MetadataExt as _;
+
+    metadata.number_of_links().map_or(0, u64::from)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn ignore_link_count(_metadata: &cap_std::fs::Metadata) -> u64 {
+    1
+}
+
+#[cfg(unix)]
+fn same_ignore_file(left: &cap_std::fs::Metadata, right: &cap_std::fs::Metadata) -> bool {
+    cap_fs_ext::MetadataExt::dev(left) == cap_fs_ext::MetadataExt::dev(right)
+        && cap_fs_ext::MetadataExt::ino(left) == cap_fs_ext::MetadataExt::ino(right)
+}
+
+#[cfg(windows)]
+fn same_ignore_file(left: &cap_std::fs::Metadata, right: &cap_std::fs::Metadata) -> bool {
+    use cap_std::fs::MetadataExt as _;
+
+    matches!(
+        (
+            left.volume_serial_number(),
+            left.file_index(),
+            right.volume_serial_number(),
+            right.file_index(),
+        ),
+        (Some(left_volume), Some(left_file), Some(right_volume), Some(right_file))
+            if left_volume == right_volume && left_file == right_file
+    )
+}
+
+#[cfg(not(any(unix, windows)))]
+fn same_ignore_file(_left: &cap_std::fs::Metadata, _right: &cap_std::fs::Metadata) -> bool {
+    false
 }
 
 #[cfg(test)]
@@ -382,6 +511,59 @@ mod tests {
         let settings = Arc::new(SettingsService::new(store, Arc::new(NoopEventSink)));
         let provider = SettingsWorkspaceIgnorePort::new(settings);
 
+        assert!(matches!(
+            provider.capture(&root, &retained),
+            Err(WorkspaceIgnoreError)
+        ));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn settings_provider_fails_closed_for_invalid_workspace_ignore_files() {
+        let root = test_root("invalid-workspace-provider");
+        fs::create_dir_all(root.join(MARKRA_IGNORE_FILE_NAME)).unwrap();
+        let retained = Dir::open_ambient_dir(&root, cap_std::ambient_authority()).unwrap();
+        let settings = Arc::new(SettingsService::new(
+            Arc::new(MemorySettingsStore::default()),
+            Arc::new(NoopEventSink),
+        ));
+        let provider = SettingsWorkspaceIgnorePort::new(settings);
+
+        assert!(matches!(
+            provider.capture(&root, &retained),
+            Err(WorkspaceIgnoreError)
+        ));
+
+        fs::remove_dir(root.join(MARKRA_IGNORE_FILE_NAME)).unwrap();
+        fs::write(root.join(MARKRA_IGNORE_FILE_NAME), [0xff, 0xfe]).unwrap();
+        assert!(matches!(
+            provider.capture(&root, &retained),
+            Err(WorkspaceIgnoreError)
+        ));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn settings_provider_fails_closed_for_invalid_or_oversized_rules() {
+        let root = test_root("invalid-rules-provider");
+        fs::create_dir_all(&root).unwrap();
+        let retained = Dir::open_ambient_dir(&root, cap_std::ambient_authority()).unwrap();
+        let store = Arc::new(MemorySettingsStore::default());
+        store.put("fileIgnoreSettings", json!({ "rules": "[z-a]\n" }));
+        let settings = Arc::new(SettingsService::new(store.clone(), Arc::new(NoopEventSink)));
+        let provider = SettingsWorkspaceIgnorePort::new(settings);
+
+        assert!(matches!(
+            provider.capture(&root, &retained),
+            Err(WorkspaceIgnoreError)
+        ));
+
+        store.put("fileIgnoreSettings", json!({ "rules": "" }));
+        fs::write(
+            root.join(MARKRA_IGNORE_FILE_NAME),
+            vec![b'a'; MAX_MARKRA_IGNORE_BYTES as usize + 1],
+        )
+        .unwrap();
         assert!(matches!(
             provider.capture(&root, &retained),
             Err(WorkspaceIgnoreError)

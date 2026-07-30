@@ -228,8 +228,8 @@ mod tests {
     use crate::{
         contract::{
             ErrorCode, ListDocumentsQuery, ListWorkspaceInventoryQuery, PatchSettingsRequest,
-            ResourceKind, SettingEntryDto, SettingKey, SettingValueDto, WorkspaceInventoryEntryDto,
-            WorkspaceRelativePath,
+            ResourceKind, SearchQuery, SearchWorkspaceQuery, SettingEntryDto, SettingKey,
+            SettingValueDto, WorkspaceInventoryEntryDto, WorkspaceRelativePath,
         },
         host::native::NativeHostWorkspaceState,
     };
@@ -338,10 +338,44 @@ mod tests {
             .iter()
             .all(|entry| entry.path.as_str() != "global-hidden.md"));
         let error = resources
-            .open_workspace_resource(global_resource.id, ResourceKind::Attachment)
+            .open_workspace_resource(global_resource.id.clone(), ResourceKind::Attachment)
             .await
             .unwrap_err();
         assert_eq!(error.code(), ErrorCode::ResourceNotFound);
+
+        fs::remove_file(workspace.join(crate::ignore_rules::MARKRA_IGNORE_FILE_NAME)).unwrap();
+        fs::create_dir(workspace.join(crate::ignore_rules::MARKRA_IGNORE_FILE_NAME)).unwrap();
+        let inventory_error = resources
+            .list_workspace_inventory(ListWorkspaceInventoryQuery {
+                cursor: None,
+                limit: None,
+                parent: WorkspaceRelativePath::default(),
+            })
+            .await
+            .unwrap_err();
+        let documents_error = documents
+            .list_documents(ListDocumentsQuery {
+                cursor: None,
+                limit: None,
+                parent: WorkspaceRelativePath::default(),
+            })
+            .await
+            .unwrap_err();
+        let search_error = documents
+            .search_workspace(SearchWorkspaceQuery {
+                cursor: None,
+                limit: None,
+                query: SearchQuery::parse("hidden").unwrap(),
+            })
+            .await
+            .unwrap_err();
+        let open_error = resources
+            .open_workspace_resource(global_resource.id, ResourceKind::Attachment)
+            .await
+            .unwrap_err();
+        for error in [inventory_error, documents_error, search_error, open_error] {
+            assert_eq!(error.code(), ErrorCode::WorkspaceUnavailable);
+        }
 
         drop(runtime);
     }
