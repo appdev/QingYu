@@ -606,7 +606,7 @@ export interface components {
             /** @enum {string} */
             type: "startup";
         } | {
-            retryAfterSeconds: components["schemas"]["SafeUnsignedInteger"];
+            retryAfterSeconds: components["schemas"]["PositiveSafeInteger"];
             /** @enum {string} */
             type: "rate-limit";
         };
@@ -1216,6 +1216,8 @@ export interface operations {
             /** @description Error */
             429: {
                 headers: {
+                    /** @description Whole seconds until another authentication attempt is allowed. */
+                    "Retry-After": number;
                     /** @description Correlation ID for this response. */
                     "X-Request-Id": string;
                     [name: string]: unknown;
@@ -1400,6 +1402,8 @@ export interface operations {
             /** @description Error */
             429: {
                 headers: {
+                    /** @description Whole seconds until another authentication attempt is allowed. */
+                    "Retry-After": number;
                     /** @description Correlation ID for this response. */
                     "X-Request-Id": string;
                     [name: string]: unknown;
@@ -1602,6 +1606,8 @@ export interface operations {
             /** @description Error */
             429: {
                 headers: {
+                    /** @description Whole seconds until another authentication attempt is allowed. */
+                    "Retry-After": number;
                     /** @description Correlation ID for this response. */
                     "X-Request-Id": string;
                     [name: string]: unknown;

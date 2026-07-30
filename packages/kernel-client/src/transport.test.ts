@@ -279,7 +279,7 @@ describe("KernelHttpTransport", () => {
       status: 429,
     });
 
-    for (const retryAfterSeconds of [-1, 1.5, Number.MAX_SAFE_INTEGER + 1, "31"]) {
+    for (const retryAfterSeconds of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, "31"]) {
       const invalid = createTransport(async () =>
         jsonResponse(
           {

@@ -388,7 +388,7 @@ function isErrorDetails(value: unknown, code: KernelApiErrorCode) {
         code === "authentication_rate_limited" &&
         Number.isSafeInteger(details.retryAfterSeconds) &&
         typeof details.retryAfterSeconds === "number" &&
-        details.retryAfterSeconds >= 0 &&
+        details.retryAfterSeconds >= 1 &&
         hasOnlyKeys(details, ["type", "retryAfterSeconds"])
       );
     case "validation":

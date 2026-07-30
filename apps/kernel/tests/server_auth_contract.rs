@@ -2,7 +2,7 @@ use qingyu_kernel::{
     api::ApiDoc,
     contract::{
         ChangeServerOwnerPasswordRequest, CreateServerSessionRequest, ErrorCode, ErrorDetails,
-        InitializeServerOwnerRequest, SafeUnsignedInteger, ServerAuthenticationStatusDto,
+        InitializeServerOwnerRequest, PositiveSafeInteger, ServerAuthenticationStatusDto,
         ServerInitializationState, ServerSessionDto, ServerSessionState,
     },
     error::{http_status_for_error_code, safe_error_envelope},
@@ -120,7 +120,7 @@ fn server_authentication_errors_have_stable_statuses_and_safe_rate_limit_details
     }
 
     let details = ErrorDetails::RateLimit {
-        retry_after_seconds: SafeUnsignedInteger::new(31).unwrap(),
+        retry_after_seconds: PositiveSafeInteger::new(31).unwrap(),
     };
     let envelope = safe_error_envelope(
         ErrorCode::AuthenticationRateLimited,
@@ -224,6 +224,18 @@ fn openapi_freezes_server_auth_routes_and_browser_security_composition() {
     let change = &document["components"]["schemas"]["ChangeServerOwnerPasswordRequest"];
     assert_eq!(change["properties"]["currentPassword"]["writeOnly"], true);
     assert_eq!(change["properties"]["newPassword"]["writeOnly"], true);
+
+    for (method, path) in [
+        ("post", "/api/v1/auth/initialize"),
+        ("post", "/api/v1/auth/session"),
+        ("patch", "/api/v1/auth/password"),
+    ] {
+        let retry_after =
+            &document["paths"][path][method]["responses"]["429"]["headers"]["Retry-After"];
+        assert_eq!(retry_after["required"], true);
+        assert_eq!(retry_after["schema"]["type"], "integer");
+        assert_eq!(retry_after["schema"]["minimum"], 1);
+    }
 }
 
 fn assert_request_schema(document: &Value, method: &str, path: &str, schema: &str) {

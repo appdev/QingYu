@@ -2422,7 +2422,7 @@ pub enum ErrorDetails {
         state: StartupState,
     },
     RateLimit {
-        retry_after_seconds: SafeUnsignedInteger,
+        retry_after_seconds: PositiveSafeInteger,
     },
 }
 

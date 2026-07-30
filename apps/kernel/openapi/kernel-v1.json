@@ -860,7 +860,7 @@
           {
             "properties": {
               "retryAfterSeconds": {
-                "$ref": "#/components/schemas/SafeUnsignedInteger"
+                "$ref": "#/components/schemas/PositiveSafeInteger"
               },
               "type": {
                 "enum": [
@@ -3206,6 +3206,14 @@
             },
             "description": "Error",
             "headers": {
+              "Retry-After": {
+                "description": "Whole seconds until another authentication attempt is allowed.",
+                "required": true,
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              },
               "X-Request-Id": {
                 "description": "Correlation ID for this response.",
                 "required": true,
@@ -3618,6 +3626,14 @@
             },
             "description": "Error",
             "headers": {
+              "Retry-After": {
+                "description": "Whole seconds until another authentication attempt is allowed.",
+                "required": true,
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              },
               "X-Request-Id": {
                 "description": "Correlation ID for this response.",
                 "required": true,
@@ -4079,6 +4095,14 @@
             },
             "description": "Error",
             "headers": {
+              "Retry-After": {
+                "description": "Whole seconds until another authentication attempt is allowed.",
+                "required": true,
+                "schema": {
+                  "minimum": 1,
+                  "type": "integer"
+                }
+              },
               "X-Request-Id": {
                 "description": "Correlation ID for this response.",
                 "required": true,

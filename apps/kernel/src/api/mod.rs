@@ -1569,13 +1569,24 @@ fn add_operation_errors(
     for (status, mut codes) in grouped {
         codes.sort_unstable();
         codes.dedup();
+        let mut headers = serde_json::json!({
+            "X-Request-Id": request_id_response_header()
+        });
+        if status == 429 {
+            headers["Retry-After"] = serde_json::json!({
+                "description": "Whole seconds until another authentication attempt is allowed.",
+                "required": true,
+                "schema": {
+                    "type": "integer",
+                    "minimum": 1
+                }
+            });
+        }
         responses.insert(
             status.to_string(),
             serde_json::json!({
                 "description": "Error",
-                "headers": {
-                    "X-Request-Id": request_id_response_header()
-                },
+                "headers": headers,
                 "content": {
                     "application/json": {
                         "schema": {
