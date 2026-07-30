@@ -13,4 +13,5 @@ pub(crate) mod s3_backend;
 pub mod s3_http;
 pub mod scope;
 pub mod service;
+pub mod settings_scope;
 pub mod status;
