@@ -115,14 +115,6 @@ pub(crate) fn initialize_server_dejavu_binding(
         .map_err(|_| DejavuLocalStateError::Storage)?;
     let target = StorageFileName::parse(LOCAL_SYNC_STATE_FILE)
         .map_err(|_| DejavuLocalStateError::Storage)?;
-    if store
-        .read(&target, MAX_LOCAL_SYNC_STATE_BYTES as u64)
-        .map_err(|_| DejavuLocalStateError::Storage)?
-        .is_some()
-    {
-        return require_active_server_binding(instance, workspace);
-    }
-
     let recovery = store
         .recover()
         .map_err(|_| DejavuLocalStateError::Storage)?;
@@ -332,7 +324,16 @@ mod tests {
     use serde_json::json;
     use tempfile::tempdir;
 
-    use crate::paths::KernelPaths;
+    use crate::{
+        config::KernelConfig,
+        paths::{KernelPaths, ServerPathLayout},
+        ports::system::system_kernel_ports,
+        runtime::KernelRuntime,
+        storage::{
+            DurableFileFailureKind, DurableFileStore, DurableFileTestFault, ExpectedFile,
+            PreservePrevious, ReplaceRequest, StorageFileName,
+        },
+    };
 
     const REPOSITORY_ID: &str = "323df833-764a-44b3-a534-492640c258f2";
     const DEVICE_ID: &str = "eb473600-dace-4d7e-bdad-7dac05933099";
@@ -360,6 +361,99 @@ mod tests {
         fs::create_dir(&cache).expect("cache");
         let paths = KernelPaths::desktop(&workspace, &app_data, &cache).expect("Kernel paths");
         (app_data, paths)
+    }
+
+    #[test]
+    fn server_initialization_recovers_a_prior_epoch_intent_before_authoritative_validation() {
+        let temporary = tempdir().expect("fixture root");
+        let data = temporary.path().join("data");
+        let cache = temporary.path().join("cache");
+        fs::create_dir(&data).expect("Server data");
+        let paths = ServerPathLayout::for_test(&data, &cache)
+            .activate()
+            .expect("Server paths");
+        let target_path = data.join("state/local-sync.json");
+        let initial =
+            serde_json::to_vec_pretty(&state_value(paths.workspace_root().canonical_path(), true))
+                .expect("initial state");
+        fs::write(&target_path, &initial).expect("initial binding");
+
+        let prior = KernelConfig::generate().expect("prior launch config");
+        let store = DurableFileStore::at_instance_data_with_test_fault(
+            paths.instance_data_root(),
+            prior.launch_epoch(),
+            DurableFileTestFault::LeavePrepared,
+        )
+        .expect("prior durable store");
+        let target = StorageFileName::parse("local-sync.json").expect("state target");
+        let revision = store
+            .read(&target, super::MAX_LOCAL_SYNC_STATE_BYTES as u64)
+            .expect("read prior binding")
+            .expect("prior binding")
+            .revision
+            .clone();
+        let mut replacement = state_value(paths.workspace_root().canonical_path(), true);
+        replacement["deviceId"] = json!("12c088ee-e331-4f08-bb2a-cd019947a99c");
+        replacement["bindings"][0]["repositoryId"] = json!("c8059130-fe5e-4a71-94fb-f580c80a7302");
+        let replacement = serde_json::to_vec_pretty(&replacement).expect("replacement state");
+        let error = store
+            .replace(ReplaceRequest {
+                target: &target,
+                bytes: &replacement,
+                expected: ExpectedFile::Revision(&revision),
+                preserve_previous: PreservePrevious::None,
+            })
+            .expect_err("simulated prior crash leaves a prepared intent");
+        assert_eq!(error.kind(), DurableFileFailureKind::PublishStateUncertain);
+        drop(store);
+        drop(paths);
+        assert_eq!(storage_artifact_count(&data.join("state")), 2);
+
+        let current_paths = ServerPathLayout::for_test(&data, &cache)
+            .activate()
+            .expect("current Server paths");
+        let runtime = KernelRuntime::activate(
+            KernelConfig::generate().expect("current launch config"),
+            current_paths,
+            system_kernel_ports(),
+        )
+        .expect("locked Server runtime");
+        let instance = runtime.active_instance_authority();
+        let workspace = runtime
+            .active_workspace_authority()
+            .expect("locked Server workspace");
+
+        super::initialize_server_dejavu_binding(
+            instance.as_ref(),
+            workspace.as_ref(),
+            runtime.launch_epoch(),
+        )
+        .expect("recovered Server binding");
+
+        assert_eq!(storage_artifact_count(&data.join("state")), 0);
+        assert_eq!(
+            fs::read(&target_path).expect("authoritative state"),
+            initial
+        );
+        let (repository_id, device_id, _) =
+            super::read_active_dejavu_binding(runtime.instance_data_root(), workspace.root())
+                .expect("valid recovered state")
+                .expect("active recovered binding")
+                .into_parts();
+        assert_eq!(repository_id, REPOSITORY_ID);
+        assert_eq!(device_id, DEVICE_ID);
+    }
+
+    fn storage_artifact_count(state: &Path) -> usize {
+        fs::read_dir(state)
+            .expect("state entries")
+            .filter_map(Result::ok)
+            .filter_map(|entry| entry.file_name().into_string().ok())
+            .filter(|name| {
+                name.starts_with(".qingyu-storage-")
+                    && (name.ends_with(".intent") || name.ends_with(".stage"))
+            })
+            .count()
     }
 
     #[test]
