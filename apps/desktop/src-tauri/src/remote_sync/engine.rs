@@ -6,6 +6,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use cap_fs_ext::{DirExt, FollowSymlinks, MetadataExt, OpenOptionsExt, OpenOptionsFollowExt};
 use cap_std::fs::Dir;
+use qingyu_kernel::sync::engine::{
+    ordered_first_sync_actions, plan_file_sync, plan_incomplete_sync, FileSyncAction,
+    RemoteSyncPhase,
+};
 use qingyu_kernel::sync::repository::{
     SyncManifest, SyncManifestEntry, SyncManifestRepository,
 };
@@ -169,57 +173,6 @@ fn file_identity<T: MetadataExt>(metadata: &T) -> FileIdentity {
     FileIdentity {
         device: metadata.dev(),
         inode: metadata.ino(),
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum FileSyncAction {
-    Conflict,
-    DeleteLocal,
-    DeleteRemote,
-    Download,
-    Skip,
-    Upload,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum RemoteSyncPhase {
-    RemoteHydration,
-    LocalPublication,
-}
-
-fn ordered_first_sync_actions(
-    planned: BTreeMap<String, FileSyncAction>,
-) -> Vec<(RemoteSyncPhase, String, FileSyncAction)> {
-    let mut actions = planned
-        .into_iter()
-        .map(|(path, action)| {
-            let phase = match action {
-                FileSyncAction::Conflict | FileSyncAction::Download => {
-                    RemoteSyncPhase::RemoteHydration
-                }
-                FileSyncAction::DeleteLocal
-                | FileSyncAction::DeleteRemote
-                | FileSyncAction::Skip
-                | FileSyncAction::Upload => RemoteSyncPhase::LocalPublication,
-            };
-            (phase, path, action)
-        })
-        .collect::<Vec<_>>();
-    actions.sort_by(|left, right| {
-        first_sync_action_rank(left.2)
-            .cmp(&first_sync_action_rank(right.2))
-            .then_with(|| left.1.cmp(&right.1))
-    });
-    actions
-}
-
-fn first_sync_action_rank(action: FileSyncAction) -> u8 {
-    match action {
-        FileSyncAction::Conflict | FileSyncAction::Download => 0,
-        FileSyncAction::Skip => 1,
-        FileSyncAction::Upload => 2,
-        FileSyncAction::DeleteLocal | FileSyncAction::DeleteRemote => 3,
     }
 }
 
@@ -2029,56 +1982,6 @@ fn combine_cleanup_errors(
         .into_iter()
         .flatten()
         .fold(cause, |message, cleanup| format!("{message}; {cleanup}"))
-}
-
-fn plan_file_sync(
-    local_hash: Option<&str>,
-    remote_identity: Option<&str>,
-    manifest: Option<&SyncManifestEntry>,
-) -> FileSyncAction {
-    match (local_hash, remote_identity) {
-        (Some(local), None) => match manifest {
-            Some(manifest) if local == manifest.local_hash => FileSyncAction::DeleteLocal,
-            _ => FileSyncAction::Upload,
-        },
-        (None, Some(remote)) => match manifest {
-            Some(manifest) if remote == manifest.remote_identity => FileSyncAction::DeleteRemote,
-            _ => FileSyncAction::Download,
-        },
-        (None, None) => FileSyncAction::Skip,
-        (Some(local), Some(remote)) => {
-            let Some(manifest) = manifest else {
-                return FileSyncAction::Conflict;
-            };
-            match (
-                local != manifest.local_hash,
-                remote != manifest.remote_identity,
-            ) {
-                (false, false) => FileSyncAction::Skip,
-                (true, false) => FileSyncAction::Upload,
-                (false, true) => FileSyncAction::Download,
-                (true, true) => FileSyncAction::Conflict,
-            }
-        }
-    }
-}
-
-fn plan_incomplete_sync(
-    local_hash: Option<&str>,
-    remote_identity: Option<&str>,
-    partial: Option<&SyncManifestEntry>,
-) -> FileSyncAction {
-    match (local_hash, remote_identity) {
-        (Some(_), None) => FileSyncAction::Upload,
-        (None, Some(_)) => FileSyncAction::Download,
-        (None, None) => FileSyncAction::Skip,
-        (Some(local), Some(remote)) => match partial {
-            Some(entry) if entry.local_hash == local && entry.remote_identity == remote => {
-                FileSyncAction::Skip
-            }
-            _ => FileSyncAction::Conflict,
-        },
-    }
 }
 
 fn load_sync_manifest(
