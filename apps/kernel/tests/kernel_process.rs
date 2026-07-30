@@ -79,7 +79,7 @@ fn desktop_startup_reports_public_readiness_and_serves_live_probe() {
 }
 
 #[test]
-fn standalone_process_installs_durable_settings_and_reports_the_capability() {
+fn standalone_process_installs_durable_settings_and_sync_services_with_exact_capabilities() {
     let root = tempdir().unwrap();
     let workspace = root.path().join("workspace");
     let app_data = root.path().join("app-data");
@@ -109,12 +109,23 @@ fn standalone_process_installs_durable_settings_and_reports_the_capability() {
     let runtime_body: Value = serde_json::from_str(response_body(&runtime)).unwrap();
     assert_eq!(runtime_body["capabilities"]["settings"], true);
     assert_eq!(runtime_body["capabilities"]["portableSettings"], true);
+    assert_eq!(runtime_body["capabilities"]["sync"], true);
+    assert_eq!(runtime_body["capabilities"]["webdav"], true);
+    assert_eq!(runtime_body["capabilities"]["s3"], false);
 
     let settings = authorized_get(port, "/api/v1/settings");
     assert!(settings.starts_with("HTTP/1.1 200 OK\r\n"), "{settings}");
     let settings_body: Value = serde_json::from_str(response_body(&settings)).unwrap();
     assert!(settings_body["revision"].as_str().is_some());
     assert!(app_data.join("settings.json").is_file());
+
+    let sync_config = authorized_get(port, "/api/v1/sync/config");
+    assert!(
+        sync_config.starts_with("HTTP/1.1 404 Not Found\r\n"),
+        "{sync_config}"
+    );
+    let sync_error: Value = serde_json::from_str(response_body(&sync_config)).unwrap();
+    assert_eq!(sync_error["code"], "sync_config_absent");
     assert_eq!(process.child_mut().try_wait().unwrap(), None);
 }
 

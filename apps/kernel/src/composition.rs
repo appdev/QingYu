@@ -19,9 +19,10 @@ use crate::{
     paths::{open_or_create_child, KernelPaths},
     ports::system::system_kernel_ports,
     runtime::{KernelRuntime, ServiceFailure, SystemApiService},
-    services::workspace::WorkspaceService,
+    services::{sync::SyncService, workspace::WorkspaceService},
     settings::{service::SettingsService, storage::AtomicJsonSettingsStore},
     storage::DurableFileStore,
+    sync::{config::SyncConfigStore, executor::ProductionSyncExecutor},
     workspace::{managed::ManagedWorkspaceCollection, primary::FixedPrimaryWorkspaceStore},
 };
 
@@ -79,6 +80,21 @@ pub async fn compose_fixed_native_kernel(
     settings_service
         .migrate_schema()
         .map_err(|_| NativeCompositionError)?;
+    let sync_store = Arc::new(
+        SyncConfigStore::new(
+            DurableFileStore::at_instance_data(
+                runtime.instance_data_root(),
+                runtime.launch_epoch(),
+            )
+            .map_err(|_| NativeCompositionError)?,
+        )
+        .map_err(|_| NativeCompositionError)?,
+    );
+    let sync_executor = Arc::new(ProductionSyncExecutor::new(
+        runtime.clone(),
+        settings_service.clone(),
+    ));
+    let sync_service = Arc::new(SyncService::new(runtime.clone(), sync_store, sync_executor));
     runtime
         .install_workspace_api_service(workspace_service)
         .map_err(|_| NativeCompositionError)?;
@@ -126,6 +142,9 @@ pub async fn compose_fixed_native_kernel(
         .map_err(|_| NativeCompositionError)?;
     runtime
         .install_settings_api_service(settings_service)
+        .map_err(|_| NativeCompositionError)?;
+    runtime
+        .install_sync_api_service(sync_service)
         .map_err(|_| NativeCompositionError)?;
     runtime
         .install_system_api_service(Arc::new(NativeSystemService {
@@ -179,8 +198,8 @@ impl SystemApiService for NativeSystemService {
                 history: true,
                 search: true,
                 settings: true,
-                sync: false,
-                webdav: false,
+                sync: true,
+                webdav: true,
                 s3: false,
                 portable_settings: true,
             },

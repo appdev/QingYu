@@ -1,7 +1,5 @@
 //! Production remote-sync execution owned by the Kernel.
 
-#![cfg_attr(not(test), allow(dead_code))]
-
 use std::{
     collections::BTreeMap,
     ffi::OsStr,
