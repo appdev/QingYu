@@ -39,6 +39,7 @@ use crate::{
     },
     events::{EventPublication, EventSink as _},
     ignore_rules::{AllowAllWorkspaceIgnorePort, WorkspaceIgnorePort, WorkspaceIgnoreSnapshot},
+    inventory_snapshot::{FileVersionStamp, InventorySnapshotBudget},
     runtime::{ActiveWorkspaceSnapshot, DocumentsApiService, KernelRuntime, ServiceFailure},
 };
 
@@ -1819,19 +1820,45 @@ fn directory_revision_at(
 pub fn directory_revision_for_capability(
     directory: &Dir,
 ) -> Result<Revision, DocumentServiceError> {
+    directory_revision_for_capability_inner(directory, None)
+}
+
+pub(crate) fn directory_revision_for_capability_with_inventory_budget(
+    directory: &Dir,
+    budget: &mut InventorySnapshotBudget,
+) -> Result<Revision, DocumentServiceError> {
+    directory_revision_for_capability_inner(directory, Some(budget))
+}
+
+fn directory_revision_for_capability_inner(
+    directory: &Dir,
+    mut budget: Option<&mut InventorySnapshotBudget>,
+) -> Result<Revision, DocumentServiceError> {
     let before = directory
         .dir_metadata()
         .map_err(|_| DocumentServiceError::unavailable())?;
     if !before.is_dir() || before.file_type().is_symlink() {
         return Err(DocumentServiceError::unsafe_target());
     }
+    let before_stamp = FileVersionStamp::capture_metadata(&before);
+    let before_modified = before
+        .modified()
+        .map_err(|_| DocumentServiceError::unavailable())?;
     let mut digest = Sha256::new();
     digest.update(b"qingyu-directory-v2\0");
-    hash_directory_contents(directory, &mut digest)?;
+    hash_directory_contents(directory, &mut digest, &mut budget, 0)?;
     let after = directory
         .dir_metadata()
         .map_err(|_| DocumentServiceError::unavailable())?;
-    if !after.is_dir() || after.file_type().is_symlink() || !same_file(&before, &after) {
+    if !after.is_dir()
+        || after.file_type().is_symlink()
+        || !same_file(&before, &after)
+        || after
+            .modified()
+            .map_err(|_| DocumentServiceError::unavailable())?
+            != before_modified
+        || FileVersionStamp::capture_metadata(&after) != before_stamp
+    {
         return Err(DocumentServiceError::unsafe_target());
     }
     Revision::parse(format!("dir:{:x}", digest.finalize()))
@@ -1848,8 +1875,15 @@ fn empty_directory_revision() -> Result<Revision, DocumentServiceError> {
 fn hash_directory_contents(
     directory: &Dir,
     digest: &mut Sha256,
+    budget: &mut Option<&mut InventorySnapshotBudget>,
+    depth: usize,
 ) -> Result<(), DocumentServiceError> {
-    let names = directory_entry_names(directory)?;
+    if let Some(budget) = budget.as_deref() {
+        budget
+            .require_depth(depth)
+            .map_err(|_| DocumentServiceError::unavailable())?;
+    }
+    let names = directory_entry_names(directory, budget)?;
     for name in &names {
         let metadata = directory
             .symlink_metadata(name)
@@ -1864,32 +1898,42 @@ fn hash_directory_contents(
             continue;
         }
         if metadata.is_dir() {
-            hash_directory_entry(directory, name, &metadata, digest)?;
+            hash_directory_entry(directory, name, &metadata, digest, budget, depth)?;
         } else if metadata.is_file() {
-            hash_regular_file_entry(directory, name, &metadata, digest)?;
+            hash_regular_file_entry(directory, name, &metadata, digest, budget)?;
         } else {
             return Err(DocumentServiceError::unsafe_target());
         }
     }
-    if directory_entry_names(directory)? != names {
+    if directory_entry_names(directory, budget)? != names {
         return Err(DocumentServiceError::unsafe_target());
     }
     Ok(())
 }
 
-fn directory_entry_names(directory: &Dir) -> Result<Vec<String>, DocumentServiceError> {
-    let mut names = directory
+fn directory_entry_names(
+    directory: &Dir,
+    budget: &mut Option<&mut InventorySnapshotBudget>,
+) -> Result<Vec<String>, DocumentServiceError> {
+    let mut names = Vec::new();
+    for entry in directory
         .entries()
         .map_err(|_| DocumentServiceError::unavailable())?
-        .map(|entry| {
+    {
+        let entry = entry.map_err(|_| DocumentServiceError::unavailable())?;
+        if let Some(budget) = budget.as_deref_mut() {
+            budget
+                .charge_node()
+                .map_err(|_| DocumentServiceError::unavailable())?;
+        }
+        names.push(
             entry
-                .map_err(|_| DocumentServiceError::unavailable())?
                 .file_name()
                 .to_str()
                 .map(str::to_owned)
-                .ok_or_else(DocumentServiceError::unsafe_target)
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+                .ok_or_else(DocumentServiceError::unsafe_target)?,
+        );
+    }
     names.sort();
     Ok(names)
 }
@@ -1899,6 +1943,8 @@ fn hash_directory_entry(
     name: &str,
     addressed: &Metadata,
     digest: &mut Sha256,
+    budget: &mut Option<&mut InventorySnapshotBudget>,
+    depth: usize,
 ) -> Result<(), DocumentServiceError> {
     let child = parent
         .open_dir_nofollow(name)
@@ -1909,10 +1955,17 @@ fn hash_directory_entry(
     if !retained.is_dir() || retained.file_type().is_symlink() || !same_file(addressed, &retained) {
         return Err(DocumentServiceError::unsafe_target());
     }
+    let retained_stamp = FileVersionStamp::capture_metadata(&retained);
+    let retained_modified = retained
+        .modified()
+        .map_err(|_| DocumentServiceError::unavailable())?;
 
     digest.update(b"d");
     digest_field(digest, name.as_bytes());
-    hash_directory_contents(&child, digest)?;
+    let child_depth = depth
+        .checked_add(1)
+        .ok_or_else(DocumentServiceError::unavailable)?;
+    hash_directory_contents(&child, digest, budget, child_depth)?;
     digest.update(b"e");
 
     let after = child
@@ -1927,6 +1980,16 @@ fn hash_directory_entry(
         || named.file_type().is_symlink()
         || !same_file(&retained, &after)
         || !same_file(&retained, &named)
+        || after
+            .modified()
+            .map_err(|_| DocumentServiceError::unavailable())?
+            != retained_modified
+        || named
+            .modified()
+            .map_err(|_| DocumentServiceError::unavailable())?
+            != retained_modified
+        || FileVersionStamp::capture_metadata(&after) != retained_stamp
+        || FileVersionStamp::capture_metadata(&named) != retained_stamp
     {
         return Err(DocumentServiceError::unsafe_target());
     }
@@ -1938,6 +2001,7 @@ fn hash_regular_file_entry(
     name: &str,
     addressed: &Metadata,
     digest: &mut Sha256,
+    budget: &mut Option<&mut InventorySnapshotBudget>,
 ) -> Result<(), DocumentServiceError> {
     if !trusted_metadata(addressed) {
         return Err(DocumentServiceError::unsafe_target());
@@ -1951,28 +2015,44 @@ fn hash_regular_file_entry(
     if !trusted_metadata(&retained) || !same_file(addressed, &retained) {
         return Err(DocumentServiceError::unsafe_target());
     }
+    if let Some(budget) = budget.as_deref_mut() {
+        budget
+            .charge_content_bytes(retained.len())
+            .map_err(|_| DocumentServiceError::unavailable())?;
+    }
+    let addressed_modified = addressed
+        .modified()
+        .map_err(|_| DocumentServiceError::unavailable())?;
     let expected_modified = retained
         .modified()
         .map_err(|_| DocumentServiceError::unavailable())?;
+    let retained_stamp = FileVersionStamp::capture_metadata(&retained);
+    if addressed.len() != retained.len()
+        || addressed_modified != expected_modified
+        || FileVersionStamp::capture_metadata(addressed) != retained_stamp
+    {
+        return Err(DocumentServiceError::unsafe_target());
+    }
 
     digest.update(b"f");
     digest_field(digest, name.as_bytes());
     digest.update(retained.len().to_be_bytes());
     let mut total = 0_u64;
     let mut buffer = [0_u8; 64 * 1024];
-    loop {
+    while total < retained.len() {
+        let remaining = retained.len() - total;
+        let limit = usize::try_from(remaining)
+            .unwrap_or(buffer.len())
+            .min(buffer.len());
         let read = file
-            .read(&mut buffer)
+            .read(&mut buffer[..limit])
             .map_err(|_| DocumentServiceError::unavailable())?;
         if read == 0 {
-            break;
+            return Err(DocumentServiceError::unsafe_target());
         }
         total = total
             .checked_add(read as u64)
             .ok_or_else(DocumentServiceError::unsafe_target)?;
-        if total > retained.len() {
-            return Err(DocumentServiceError::unsafe_target());
-        }
         digest.update(&buffer[..read]);
     }
 
@@ -1993,6 +2073,8 @@ fn hash_regular_file_entry(
             .modified()
             .map_err(|_| DocumentServiceError::unavailable())?
             != expected_modified
+        || FileVersionStamp::capture_metadata(&after) != retained_stamp
+        || FileVersionStamp::capture_metadata(&named) != retained_stamp
         || named
             .modified()
             .map_err(|_| DocumentServiceError::unavailable())?

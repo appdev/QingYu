@@ -434,66 +434,77 @@ impl std::error::Error for ContentHashRequired {}
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct InventorySnapshotLimits {
     pub(crate) maximum_nodes: u64,
-    pub(crate) maximum_fallback_bytes: u64,
+    pub(crate) maximum_content_bytes: u64,
+    pub(crate) maximum_depth: usize,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct InventorySnapshotBudget {
     remaining_nodes: u64,
-    remaining_fallback_bytes: u64,
+    remaining_content_bytes: u64,
+    maximum_depth: usize,
 }
 
 impl InventorySnapshotBudget {
     pub(crate) const fn new(limits: InventorySnapshotLimits) -> Self {
         Self {
             remaining_nodes: limits.maximum_nodes,
-            remaining_fallback_bytes: limits.maximum_fallback_bytes,
+            remaining_content_bytes: limits.maximum_content_bytes,
+            maximum_depth: limits.maximum_depth,
         }
     }
 
     pub(crate) fn charge_node(&mut self) -> Result<(), InventorySnapshotBudgetError> {
         let Some(remaining) = self.remaining_nodes.checked_sub(1) else {
-            return Err(InventorySnapshotBudgetError::NodeLimitExceeded);
+            return Err(InventorySnapshotBudgetError::NodeLimit);
         };
         self.remaining_nodes = remaining;
         Ok(())
     }
 
-    pub(crate) fn charge_fallback_bytes(
+    pub(crate) fn charge_content_bytes(
         &mut self,
         bytes: u64,
     ) -> Result<(), InventorySnapshotBudgetError> {
-        let Some(remaining) = self.remaining_fallback_bytes.checked_sub(bytes) else {
-            return Err(InventorySnapshotBudgetError::FallbackBytesExceeded);
+        let Some(remaining) = self.remaining_content_bytes.checked_sub(bytes) else {
+            return Err(InventorySnapshotBudgetError::ContentBytes);
         };
-        self.remaining_fallback_bytes = remaining;
+        self.remaining_content_bytes = remaining;
         Ok(())
+    }
+
+    pub(crate) fn require_depth(&self, depth: usize) -> Result<(), InventorySnapshotBudgetError> {
+        if depth <= self.maximum_depth {
+            Ok(())
+        } else {
+            Err(InventorySnapshotBudgetError::Depth)
+        }
     }
 
     pub(crate) const fn remaining_nodes(self) -> u64 {
         self.remaining_nodes
     }
 
-    pub(crate) const fn remaining_fallback_bytes(self) -> u64 {
-        self.remaining_fallback_bytes
+    pub(crate) const fn remaining_content_bytes(self) -> u64 {
+        self.remaining_content_bytes
     }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum InventorySnapshotBudgetError {
-    NodeLimitExceeded,
-    FallbackBytesExceeded,
+    NodeLimit,
+    ContentBytes,
+    Depth,
 }
 
 impl fmt::Display for InventorySnapshotBudgetError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::NodeLimitExceeded => {
-                formatter.write_str("inventory snapshot node limit exceeded")
+            Self::NodeLimit => formatter.write_str("inventory snapshot node limit exceeded"),
+            Self::ContentBytes => {
+                formatter.write_str("inventory snapshot content byte limit exceeded")
             }
-            Self::FallbackBytesExceeded => {
-                formatter.write_str("inventory snapshot fallback byte limit exceeded")
-            }
+            Self::Depth => formatter.write_str("inventory snapshot depth limit exceeded"),
         }
     }
 }
@@ -748,22 +759,28 @@ mod tests {
     fn budget_rejection_preserves_the_remaining_allowance() {
         let mut budget = InventorySnapshotBudget::new(InventorySnapshotLimits {
             maximum_nodes: 2,
-            maximum_fallback_bytes: 8,
+            maximum_content_bytes: 8,
+            maximum_depth: 1,
         });
 
         budget.charge_node().unwrap();
-        budget.charge_fallback_bytes(5).unwrap();
+        budget.charge_content_bytes(5).unwrap();
         assert_eq!(
-            budget.charge_fallback_bytes(4),
-            Err(InventorySnapshotBudgetError::FallbackBytesExceeded)
+            budget.charge_content_bytes(4),
+            Err(InventorySnapshotBudgetError::ContentBytes)
         );
-        assert_eq!(budget.remaining_fallback_bytes(), 3);
+        assert_eq!(budget.remaining_content_bytes(), 3);
         budget.charge_node().unwrap();
         assert_eq!(
             budget.charge_node(),
-            Err(InventorySnapshotBudgetError::NodeLimitExceeded)
+            Err(InventorySnapshotBudgetError::NodeLimit)
         );
         assert_eq!(budget.remaining_nodes(), 0);
+        assert_eq!(budget.require_depth(1), Ok(()));
+        assert_eq!(
+            budget.require_depth(2),
+            Err(InventorySnapshotBudgetError::Depth)
+        );
     }
 
     #[test]

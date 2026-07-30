@@ -144,8 +144,9 @@ impl WorkspaceIgnorePort for BlockingIgnorePort {
     ) -> Result<WorkspaceIgnoreSnapshot, WorkspaceIgnoreError> {
         let mut state = self.state.lock().unwrap();
         state.entered += 1;
+        let should_block = state.entered <= 2;
         self.condition.notify_all();
-        while !state.released {
+        while should_block && !state.released {
             state = self.condition.wait(state).unwrap();
         }
         drop(state);
@@ -384,6 +385,43 @@ async fn inventory_scan_gate_rejects_a_third_concurrent_scan_without_queueing() 
         .unwrap_err();
     assert_eq!(error.kind(), ResourceServiceErrorKind::Unavailable);
     assert_eq!(entered_before_release, 2);
+}
+
+#[tokio::test]
+async fn inventory_scan_gate_does_not_gate_open_resource() {
+    use std::thread;
+
+    let fixture = Fixture::new().await;
+    fs::write(fixture.root.join("visible.bin"), b"visible").unwrap();
+    let resource_id = fixture
+        .service
+        .list_inventory(&WorkspaceRelativePath::default())
+        .unwrap()
+        .into_iter()
+        .find_map(|entry| match entry {
+            WorkspaceInventoryEntry::Resource(resource) => Some(resource.id),
+            WorkspaceInventoryEntry::Document(_) => None,
+        })
+        .unwrap();
+    let blocking = Arc::new(BlockingIgnorePort::default());
+    let service = WorkspaceResourceService::new(&fixture.runtime, blocking.clone());
+    let first_service = service.clone();
+    let first =
+        thread::spawn(move || first_service.list_inventory(&WorkspaceRelativePath::default()));
+    let second_service = service.clone();
+    let second =
+        thread::spawn(move || second_service.list_inventory(&WorkspaceRelativePath::default()));
+    blocking.wait_until_entered(2);
+
+    let opened = service
+        .open_resource(&resource_id, ResourceKind::Attachment)
+        .unwrap();
+    blocking.release();
+    first.join().unwrap().unwrap();
+    second.join().unwrap().unwrap();
+
+    assert_eq!(opened.entry().id, resource_id);
+    assert_eq!(blocking.entered(), 3);
 }
 
 #[tokio::test]

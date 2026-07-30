@@ -20,7 +20,7 @@ use crate::{
         Revision, Rfc3339Utc, SafeUnsignedInteger, WorkspaceDto, WorkspaceInventoryEntryDto,
         WorkspaceInventoryPageDto, WorkspaceReadiness, WorkspaceRelativePath,
     },
-    documents::service::directory_revision_for_capability,
+    documents::service::directory_revision_for_capability_with_inventory_budget,
     ignore_rules::{WorkspaceIgnorePort, WorkspaceIgnoreSnapshot},
     inventory_snapshot::{
         ContentDigest, FileVersionStamp, InventoryCandidateSnapshot, InventoryCandidateType,
@@ -36,7 +36,7 @@ const STREAM_BUFFER_BYTES: usize = 64 * 1024;
 const MAGIC_BYTES: usize = 12;
 const MAX_IMMEDIATE_INVENTORY_CANDIDATES: usize = 50_000;
 const MAX_INVENTORY_SNAPSHOT_NODES: u64 = 100_000;
-const MAX_INVENTORY_FALLBACK_BYTES: u64 = 512 * 1024 * 1024;
+const MAX_INVENTORY_CONTENT_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_INVENTORY_TREE_DEPTH: usize = 128;
 const MAX_CONCURRENT_INVENTORY_SCANS: usize = 2;
 
@@ -65,7 +65,8 @@ impl WorkspaceResourceService {
     ) -> Result<Vec<WorkspaceInventoryEntry>, ResourceServiceError> {
         let _permit = self.inventory_scans.try_acquire()?;
         let context = self.context()?;
-        self.list_inventory_with_context(&context, parent)
+        let mut budget = inventory_snapshot_budget();
+        self.list_inventory_with_context(&context, parent, &mut budget)
     }
 
     pub fn list_inventory_page(
@@ -110,6 +111,7 @@ impl WorkspaceResourceService {
                 &directory,
                 &query.parent,
                 &candidate.name,
+                &mut budget,
             )?
             .ok_or_else(ResourceServiceError::unsafe_target)?;
             if entry.path() != &candidate.path {
@@ -146,20 +148,21 @@ impl WorkspaceResourceService {
         &self,
         context: &ResourceContext,
         parent: &WorkspaceRelativePath,
+        budget: &mut InventorySnapshotBudget,
     ) -> Result<Vec<WorkspaceInventoryEntry>, ResourceServiceError> {
         let ignore = self.capture_ignore(context)?;
         let directory = open_directory(&context.root, parent)?;
         let before = trusted_directory_metadata(&directory)?;
-        let names = ordinary_entry_names(&directory)?;
+        let names = ordinary_entry_names(&directory, budget)?;
         let mut entries = Vec::with_capacity(names.len());
         for name in &names {
             if let Some(entry) =
-                inspect_inventory_entry(context, &ignore, &directory, parent, name)?
+                inspect_inventory_entry(context, &ignore, &directory, parent, name, budget)?
             {
                 entries.push(entry);
             }
         }
-        if ordinary_entry_names(&directory)? != names {
+        if ordinary_entry_names(&directory, budget)? != names {
             return Err(ResourceServiceError::unsafe_target());
         }
         let after = trusted_directory_metadata(&directory)?;
@@ -398,15 +401,12 @@ fn inventory_candidates(
     budget: &mut InventorySnapshotBudget,
 ) -> Result<Vec<InventoryCandidate>, ResourceServiceError> {
     let before = trusted_directory_metadata(directory)?;
-    let names = ordinary_entry_names(directory)?;
+    let names = ordinary_entry_names(directory, budget)?;
     if names.len() > MAX_IMMEDIATE_INVENTORY_CANDIDATES {
         return Err(ResourceServiceError::unavailable());
     }
     let mut candidates = Vec::with_capacity(names.len());
     for name in &names {
-        budget
-            .charge_node()
-            .map_err(|_| ResourceServiceError::unavailable())?;
         let addressed = directory
             .symlink_metadata(name)
             .map_err(|_| ResourceServiceError::unsafe_target())?;
@@ -462,7 +462,7 @@ fn inventory_candidates(
             snapshot,
         });
     }
-    if ordinary_entry_names(directory)? != names {
+    if ordinary_entry_names(directory, budget)? != names {
         return Err(ResourceServiceError::unsafe_target());
     }
     let after = trusted_directory_metadata(directory)?;
@@ -475,7 +475,8 @@ fn inventory_candidates(
 fn inventory_snapshot_budget() -> InventorySnapshotBudget {
     InventorySnapshotBudget::new(InventorySnapshotLimits {
         maximum_nodes: MAX_INVENTORY_SNAPSHOT_NODES,
-        maximum_fallback_bytes: MAX_INVENTORY_FALLBACK_BYTES,
+        maximum_content_bytes: MAX_INVENTORY_CONTENT_BYTES,
+        maximum_depth: MAX_INVENTORY_TREE_DEPTH,
     })
 }
 
@@ -525,14 +526,14 @@ fn tree_snapshot_digest_at_depth(
     budget: &mut InventorySnapshotBudget,
     depth: usize,
 ) -> Result<ContentDigest, ResourceServiceError> {
-    if depth > MAX_INVENTORY_TREE_DEPTH {
-        return Err(ResourceServiceError::unavailable());
-    }
+    budget
+        .require_depth(depth)
+        .map_err(|_| ResourceServiceError::unavailable())?;
     let before = trusted_directory_metadata(directory)?;
     let before_stamp = FileVersionStamp::capture_metadata(&before);
     let before_modified =
         InventoryModifiedTime::capture(&before).map_err(|_| ResourceServiceError::unavailable())?;
-    let names = tree_entry_names(directory)?;
+    let names = tree_entry_names(directory, budget)?;
     let mut manifest = Vec::with_capacity(names.len().saturating_add(1));
     if let Ok(directory_stamp) = InventoryCandidateSnapshot::from_file_stamp(
         path.clone(),
@@ -542,9 +543,6 @@ fn tree_snapshot_digest_at_depth(
         manifest.push(directory_stamp);
     }
     for name in &names {
-        budget
-            .charge_node()
-            .map_err(|_| ResourceServiceError::unavailable())?;
         let addressed = directory
             .symlink_metadata(name)
             .map_err(|_| ResourceServiceError::unsafe_target())?;
@@ -605,7 +603,7 @@ fn tree_snapshot_digest_at_depth(
             return Err(ResourceServiceError::unsafe_target());
         }
     }
-    if tree_entry_names(directory)? != names {
+    if tree_entry_names(directory, budget)? != names {
         return Err(ResourceServiceError::unsafe_target());
     }
     let after = trusted_directory_metadata(directory)?;
@@ -626,13 +624,19 @@ fn tree_snapshot_digest_at_depth(
     Ok(ContentDigest::new(digest.finalize().into()))
 }
 
-fn tree_entry_names(directory: &Dir) -> Result<Vec<String>, ResourceServiceError> {
+fn tree_entry_names(
+    directory: &Dir,
+    budget: &mut InventorySnapshotBudget,
+) -> Result<Vec<String>, ResourceServiceError> {
     let mut names = Vec::new();
     for entry in directory
         .entries()
         .map_err(|_| ResourceServiceError::unavailable())?
     {
         let entry = entry.map_err(|_| ResourceServiceError::unavailable())?;
+        budget
+            .charge_node()
+            .map_err(|_| ResourceServiceError::unavailable())?;
         let name = entry
             .file_name()
             .to_str()
@@ -674,6 +678,7 @@ fn inspect_inventory_entry(
     directory: &Dir,
     parent: &WorkspaceRelativePath,
     name: &str,
+    budget: &mut InventorySnapshotBudget,
 ) -> Result<Option<WorkspaceInventoryEntry>, ResourceServiceError> {
     let addressed = directory
         .symlink_metadata(name)
@@ -700,8 +705,15 @@ fn inspect_inventory_entry(
         if !same_file(&addressed, &retained) {
             return Err(ResourceServiceError::unsafe_target());
         }
-        let revision = directory_revision_for_capability(&child)
-            .map_err(|_| ResourceServiceError::unsafe_target())?;
+        let revision = directory_revision_for_capability_with_inventory_budget(&child, budget)
+            .map_err(|error| {
+                if error.kind() == crate::documents::service::DocumentServiceErrorKind::Unavailable
+                {
+                    ResourceServiceError::unavailable()
+                } else {
+                    ResourceServiceError::unsafe_target()
+                }
+            })?;
         let after = trusted_directory_metadata(&child)?;
         let named = directory
             .symlink_metadata(name)
@@ -727,7 +739,7 @@ fn inspect_inventory_entry(
     if !addressed.is_file() {
         return Err(ResourceServiceError::unsafe_target());
     }
-    let inspected = inspect_regular_file(directory, name, &addressed)?;
+    let inspected = inspect_regular_file_with_budget(directory, name, &addressed, budget)?;
     if markdown_name(name) {
         let entry = document_entry(
             context,
@@ -832,7 +844,7 @@ fn inspect_regular_file_inner(
     directory: &Dir,
     name: &str,
     addressed: &Metadata,
-    fallback_budget: Option<&mut InventorySnapshotBudget>,
+    inventory_budget: Option<&mut InventorySnapshotBudget>,
 ) -> Result<InspectedFile, ResourceServiceError> {
     if !trusted_regular_file(addressed) {
         return Err(ResourceServiceError::unsafe_target());
@@ -846,9 +858,9 @@ fn inspect_regular_file_inner(
     if !trusted_regular_file(&retained) || !same_file(addressed, &retained) {
         return Err(ResourceServiceError::unsafe_target());
     }
-    if let Some(budget) = fallback_budget {
+    if let Some(budget) = inventory_budget {
         budget
-            .charge_fallback_bytes(retained.len())
+            .charge_content_bytes(retained.len())
             .map_err(|_| ResourceServiceError::unavailable())?;
     }
     let addressed_modified = addressed
@@ -935,13 +947,17 @@ fn inspect_regular_file_inner(
     })
 }
 
-fn ordinary_entry_names(directory: &Dir) -> Result<Vec<String>, ResourceServiceError> {
-    ordinary_entry_names_with_limit(directory, MAX_IMMEDIATE_INVENTORY_CANDIDATES)
+fn ordinary_entry_names(
+    directory: &Dir,
+    budget: &mut InventorySnapshotBudget,
+) -> Result<Vec<String>, ResourceServiceError> {
+    ordinary_entry_names_with_limit(directory, MAX_IMMEDIATE_INVENTORY_CANDIDATES, budget)
 }
 
 fn ordinary_entry_names_with_limit(
     directory: &Dir,
     maximum_raw_entries: usize,
+    budget: &mut InventorySnapshotBudget,
 ) -> Result<Vec<String>, ResourceServiceError> {
     let mut names = Vec::new();
     let mut raw_entries = 0_usize;
@@ -956,6 +972,9 @@ fn ordinary_entry_names_with_limit(
         if raw_entries > maximum_raw_entries {
             return Err(ResourceServiceError::unavailable());
         }
+        budget
+            .charge_node()
+            .map_err(|_| ResourceServiceError::unavailable())?;
         let name = entry
             .file_name()
             .to_str()
@@ -1265,12 +1284,19 @@ mod tests {
 
     #[test]
     fn raw_protected_entries_are_counted_before_filtering() {
+        use crate::inventory_snapshot::{InventorySnapshotBudget, InventorySnapshotLimits};
+
         let temporary = tempdir().unwrap();
         fs::create_dir(temporary.path().join(".qingyu-first")).unwrap();
         fs::create_dir(temporary.path().join(".qingyu-second")).unwrap();
         let directory = Dir::open_ambient_dir(temporary.path(), ambient_authority()).unwrap();
+        let mut budget = InventorySnapshotBudget::new(InventorySnapshotLimits {
+            maximum_nodes: 10,
+            maximum_content_bytes: 10,
+            maximum_depth: 10,
+        });
 
-        let error = super::ordinary_entry_names_with_limit(&directory, 1).unwrap_err();
+        let error = super::ordinary_entry_names_with_limit(&directory, 1, &mut budget).unwrap_err();
 
         assert_eq!(error.kind(), ResourceServiceErrorKind::Unavailable);
     }
@@ -1287,7 +1313,8 @@ mod tests {
         fs::write(path, b"grown").unwrap();
         let mut budget = InventorySnapshotBudget::new(InventorySnapshotLimits {
             maximum_nodes: 1,
-            maximum_fallback_bytes: 1,
+            maximum_content_bytes: 1,
+            maximum_depth: 1,
         });
 
         let result = super::inspect_regular_file_with_budget(
@@ -1302,5 +1329,85 @@ mod tests {
         };
 
         assert_eq!(error.kind(), ResourceServiceErrorKind::Unavailable);
+    }
+
+    #[test]
+    fn inventory_content_reader_enforces_a_small_injected_budget() {
+        use crate::inventory_snapshot::{InventorySnapshotBudget, InventorySnapshotLimits};
+
+        let temporary = tempdir().unwrap();
+        fs::write(temporary.path().join("bounded.bin"), b"two").unwrap();
+        let directory = Dir::open_ambient_dir(temporary.path(), ambient_authority()).unwrap();
+        let addressed = directory.symlink_metadata("bounded.bin").unwrap();
+        let mut budget = InventorySnapshotBudget::new(InventorySnapshotLimits {
+            maximum_nodes: 1,
+            maximum_content_bytes: 2,
+            maximum_depth: 1,
+        });
+
+        let result = super::inspect_regular_file_with_budget(
+            &directory,
+            "bounded.bin",
+            &addressed,
+            &mut budget,
+        );
+        let error = match result {
+            Err(error) => error,
+            Ok(_) => panic!("inventory content read must not exceed its injected byte budget"),
+        };
+
+        assert_eq!(error.kind(), ResourceServiceErrorKind::Unavailable);
+    }
+
+    #[test]
+    fn directory_revision_charges_nested_content_to_the_inventory_budget() {
+        use crate::{
+            documents::service::directory_revision_for_capability_with_inventory_budget,
+            inventory_snapshot::{InventorySnapshotBudget, InventorySnapshotLimits},
+        };
+
+        let temporary = tempdir().unwrap();
+        fs::write(temporary.path().join("nested.bin"), b"nested").unwrap();
+        let directory = Dir::open_ambient_dir(temporary.path(), ambient_authority()).unwrap();
+        let mut budget = InventorySnapshotBudget::new(InventorySnapshotLimits {
+            maximum_nodes: 10,
+            maximum_content_bytes: 1,
+            maximum_depth: 10,
+        });
+
+        let error =
+            directory_revision_for_capability_with_inventory_budget(&directory, &mut budget)
+                .unwrap_err();
+
+        assert_eq!(
+            error.kind(),
+            crate::documents::service::DocumentServiceErrorKind::Unavailable
+        );
+    }
+
+    #[test]
+    fn directory_revision_enforces_the_inventory_depth_budget() {
+        use crate::{
+            documents::service::directory_revision_for_capability_with_inventory_budget,
+            inventory_snapshot::{InventorySnapshotBudget, InventorySnapshotLimits},
+        };
+
+        let temporary = tempdir().unwrap();
+        fs::create_dir(temporary.path().join("nested")).unwrap();
+        let directory = Dir::open_ambient_dir(temporary.path(), ambient_authority()).unwrap();
+        let mut budget = InventorySnapshotBudget::new(InventorySnapshotLimits {
+            maximum_nodes: 10,
+            maximum_content_bytes: 10,
+            maximum_depth: 0,
+        });
+
+        let error =
+            directory_revision_for_capability_with_inventory_budget(&directory, &mut budget)
+                .unwrap_err();
+
+        assert_eq!(
+            error.kind(),
+            crate::documents::service::DocumentServiceErrorKind::Unavailable
+        );
     }
 }
