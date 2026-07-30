@@ -42,10 +42,37 @@ pub fn create_private_replaceable_file_options() -> OpenOptions {
 
 pub fn sync_directory(directory: &Dir) -> io::Result<()> {
     #[cfg(unix)]
-    directory.try_clone()?.into_std_file().sync_all()?;
+    {
+        let fsyncable = rustix::fs::openat(
+            directory,
+            ".",
+            rustix::fs::OFlags::RDONLY
+                | rustix::fs::OFlags::DIRECTORY
+                | rustix::fs::OFlags::CLOEXEC
+                | rustix::fs::OFlags::NOFOLLOW,
+            rustix::fs::Mode::empty(),
+        )?;
+        rustix::fs::fsync(&fsyncable)?;
+    }
     #[cfg(not(unix))]
     let _ = directory;
     Ok(())
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod linux_tests {
+    use super::*;
+
+    #[test]
+    fn syncs_a_retained_linux_directory_capability() {
+        let temporary = tempfile::tempdir().unwrap();
+        let directory =
+            Dir::open_ambient_dir(temporary.path(), cap_std::ambient_authority()).unwrap();
+        let flags = rustix::fs::fcntl_getfl(&directory).unwrap();
+
+        assert!(flags.contains(rustix::fs::OFlags::PATH));
+        sync_directory(&directory).unwrap();
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

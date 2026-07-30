@@ -544,7 +544,7 @@ fn private_link_count(_metadata: &cap_std::fs::Metadata) -> u64 {
 
 #[cfg(unix)]
 fn sync_directory(directory: &Dir) -> Result<(), DeletionPortError> {
-    rustix::fs::fsync(directory).map_err(|_| DeletionPortError)
+    crate::storage::sync_directory(directory).map_err(|_| DeletionPortError)
 }
 
 #[cfg(windows)]

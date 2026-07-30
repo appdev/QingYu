@@ -630,7 +630,7 @@ fn history_link_count(_metadata: &cap_std::fs::Metadata) -> u64 {
 
 #[cfg(unix)]
 fn sync_history_directory(directory: &Dir) -> Result<(), DocumentHistoryError> {
-    rustix::fs::fsync(directory).map_err(|_| DocumentHistoryError)
+    crate::storage::sync_directory(directory).map_err(|_| DocumentHistoryError)
 }
 
 #[cfg(not(unix))]
@@ -1086,10 +1086,7 @@ fn recovery_link_count(_metadata: &cap_std::fs::Metadata) -> u64 {
 
 #[cfg(unix)]
 fn sync_recovery_directory(directory: &Dir) -> Result<(), DocumentRecoveryError> {
-    directory
-        .open(".")
-        .and_then(|sync_handle| sync_handle.sync_all())
-        .map_err(|_| DocumentRecoveryError)
+    crate::storage::sync_directory(directory).map_err(|_| DocumentRecoveryError)
 }
 
 #[cfg(not(unix))]

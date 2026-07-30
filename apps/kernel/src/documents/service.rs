@@ -2893,10 +2893,7 @@ fn rename_noreplace(
 }
 #[cfg(unix)]
 fn sync_dir(directory: &Dir) -> Result<(), DocumentServiceError> {
-    directory
-        .open(".")
-        .and_then(|sync_handle| sync_handle.sync_all())
-        .map_err(|_| DocumentServiceError::unavailable())
+    crate::storage::sync_directory(directory).map_err(|_| DocumentServiceError::unavailable())
 }
 #[cfg(not(unix))]
 fn sync_dir(_directory: &Dir) -> Result<(), DocumentServiceError> {
