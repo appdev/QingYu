@@ -458,7 +458,11 @@ impl InventorySnapshotBudget {
     }
 
     pub(crate) fn charge_node(&mut self) -> Result<(), InventorySnapshotBudgetError> {
-        let Some(remaining) = self.remaining_nodes.checked_sub(1) else {
+        self.charge_nodes(1)
+    }
+
+    pub(crate) fn charge_nodes(&mut self, nodes: u64) -> Result<(), InventorySnapshotBudgetError> {
+        let Some(remaining) = self.remaining_nodes.checked_sub(nodes) else {
             return Err(InventorySnapshotBudgetError::NodeLimit);
         };
         self.remaining_nodes = remaining;
