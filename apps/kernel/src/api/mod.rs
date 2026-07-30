@@ -907,11 +907,13 @@ fn install_paths(document: &mut serde_json::Value) {
     paths["/api/v1/resources/{resourceId}"]["get"]["responses"]["200"]["headers"]
         ["Content-Length"] = serde_json::json!({
         "description": "Exact resource size in bytes.",
+        "required": true,
         "schema": { "type": "integer", "format": "int64", "minimum": 0 }
     });
     paths["/api/v1/resources/{resourceId}"]["get"]["responses"]["200"]["headers"]
         ["X-Content-Type-Options"] = serde_json::json!({
         "description": "Disables content sniffing for untrusted workspace resources.",
+        "required": true,
         "schema": { "type": "string", "const": "nosniff" }
     });
 }
@@ -1429,7 +1431,7 @@ fn error_status(code: &str) -> u16 {
         "invalid_request" | "invalid_workspace_path" | "invalid_document_name" => 400,
         "unauthorized" => 401,
         "host_not_allowed" | "origin_not_allowed" => 403,
-        "document_not_found" | "sync_config_absent" => 404,
+        "document_not_found" | "resource_not_found" | "sync_config_absent" => 404,
         "document_already_exists"
         | "revision_conflict"
         | "settings_revision_conflict"

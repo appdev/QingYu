@@ -2572,9 +2572,9 @@ export interface operations {
             200: {
                 headers: {
                     /** @description Exact resource size in bytes. */
-                    "Content-Length"?: number;
+                    "Content-Length": number;
                     /** @description Disables content sniffing for untrusted workspace resources. */
-                    "X-Content-Type-Options"?: "nosniff";
+                    "X-Content-Type-Options": "nosniff";
                     /** @description Correlation ID for this response. */
                     "X-Request-Id": string;
                     [name: string]: unknown;
@@ -2630,6 +2630,20 @@ export interface operations {
                 };
             };
             /** @description Error */
+            404: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "resource_not_found";
+                    };
+                };
+            };
+            /** @description Error */
             423: {
                 headers: {
                     /** @description Correlation ID for this response. */
@@ -2653,7 +2667,7 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ApiErrorEnvelope"] & {
                         /** @enum {string} */
-                        code?: "internal_error" | "resource_not_found";
+                        code?: "internal_error";
                     };
                 };
             };

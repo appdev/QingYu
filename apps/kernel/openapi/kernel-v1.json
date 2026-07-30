@@ -6595,6 +6595,7 @@
             "headers": {
               "Content-Length": {
                 "description": "Exact resource size in bytes.",
+                "required": true,
                 "schema": {
                   "format": "int64",
                   "minimum": 0,
@@ -6603,6 +6604,7 @@
               },
               "X-Content-Type-Options": {
                 "description": "Disables content sniffing for untrusted workspace resources.",
+                "required": true,
                 "schema": {
                   "const": "nosniff",
                   "type": "string"
@@ -6724,6 +6726,41 @@
               }
             }
           },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "resource_not_found"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Error",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          },
           "423": {
             "content": {
               "application/json": {
@@ -6771,8 +6808,7 @@
                       "properties": {
                         "code": {
                           "enum": [
-                            "internal_error",
-                            "resource_not_found"
+                            "internal_error"
                           ],
                           "type": "string"
                         }

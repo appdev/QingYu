@@ -311,6 +311,9 @@ describe("createKernelClient", () => {
       { ...resource, previewable: false },
       { ...resource, name: "../photo.png" },
       { ...resource, path: "other/photo.png" },
+      { ...resource, name: "photo.jpg", path: "assets/photo.jpg" },
+      { ...resource, name: "photo\u0085.png", path: "assets/photo\u0085.png" },
+      { ...resource, parent: "assets\u0085", path: "assets\u0085/photo.png" },
       {
         ...resource,
         kind: "attachment",
@@ -330,6 +333,25 @@ describe("createKernelClient", () => {
       });
       await expect(client.resources.list()).rejects.toBeInstanceOf(KernelProtocolError);
     }
+  });
+
+  it("binds binary response media types to the requested resource kind", async () => {
+    const responses = [
+      binaryResponse("application/octet-stream"),
+      binaryResponse("image/png"),
+    ];
+    const client = createKernelClient({
+      baseUrl: "http://127.0.0.1:6608",
+      fetch: async () => responses.shift() ?? binaryResponse("image/png"),
+      auth: { kind: "native-bearer", getCredential: () => "credential-1" },
+    });
+
+    await expect(client.resources.open("payload.signature", "image")).rejects.toBeInstanceOf(
+      KernelProtocolError,
+    );
+    await expect(
+      client.resources.open("payload.signature", "attachment"),
+    ).rejects.toBeInstanceOf(KernelProtocolError);
   });
 
   it("rejects impossible calendar dates and 24:00 timestamps over HTTP", async () => {
@@ -583,6 +605,17 @@ function jsonResponse(body: unknown, init: ResponseInit = {}) {
   const headers = new Headers(init.headers);
   headers.set("x-request-id", UUID);
   return Response.json(body, { ...init, headers });
+}
+
+function binaryResponse(contentType: string) {
+  return new Response("resource", {
+    headers: {
+      "content-length": "8",
+      "content-type": contentType,
+      "x-content-type-options": "nosniff",
+      "x-request-id": UUID,
+    },
+  });
 }
 
 function emptyResponse() {

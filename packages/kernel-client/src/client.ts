@@ -205,13 +205,9 @@ export function createKernelClient(options: CreateKernelClientOptions): KernelCl
           signal: requestOptions?.signal,
         }, {
           status: 200,
-          mediaTypes: [
-            "application/octet-stream",
-            "image/gif",
-            "image/jpeg",
-            "image/png",
-            "image/webp",
-          ],
+          mediaTypes: kind === "image"
+            ? ["image/gif", "image/jpeg", "image/png", "image/webp"]
+            : ["application/octet-stream"],
         }),
     },
     documents: {

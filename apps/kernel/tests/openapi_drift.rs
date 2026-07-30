@@ -5,6 +5,8 @@ use std::{
 };
 
 use qingyu_kernel::api::{check_openapi_artifact, export_openapi_to_string, ApiDoc};
+use qingyu_kernel::contract::ErrorCode;
+use qingyu_kernel::error::http_status_for_error_code;
 use serde_json::Value;
 use tempfile::tempdir;
 
@@ -306,6 +308,36 @@ fn every_http_response_requires_the_request_id_header() {
 }
 
 #[test]
+fn every_operation_error_status_matches_the_runtime_error_mapping() {
+    let document = api_document();
+
+    for (method, path, operation_id) in HTTP_OPERATIONS {
+        let responses = document["paths"][*path][*method]["responses"]
+            .as_object()
+            .unwrap_or_else(|| panic!("{operation_id} responses must be an object"));
+        for (status, response) in responses {
+            let Some(codes) = response
+                .pointer("/content/application~1json/schema/allOf/1/properties/code/enum")
+                .and_then(Value::as_array)
+            else {
+                continue;
+            };
+            for code in codes {
+                let code: ErrorCode =
+                    serde_json::from_value(code.clone()).expect("error code must deserialize");
+                assert_eq!(
+                    status
+                        .parse::<u16>()
+                        .expect("response status must be numeric"),
+                    http_status_for_error_code(code),
+                    "{operation_id} must publish the runtime status for {code:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn websocket_frames_are_components_but_the_upgrade_is_not_a_path() {
     let document = api_document();
     assert!(document["paths"].get("/api/v1/events").is_none());
@@ -553,11 +585,13 @@ fn operations_freeze_request_bodies_parameters_and_route_specific_errors() {
     }
     let binary_headers =
         &document["paths"]["/api/v1/resources/{resourceId}"]["get"]["responses"]["200"]["headers"];
+    assert_eq!(binary_headers["Content-Length"]["required"], true);
     assert_eq!(
         binary_headers["Content-Length"]["schema"]["type"],
         "integer"
     );
     assert_eq!(binary_headers["Content-Length"]["schema"]["minimum"], 0);
+    assert_eq!(binary_headers["X-Content-Type-Options"]["required"], true);
     assert_eq!(
         binary_headers["X-Content-Type-Options"]["schema"]["const"],
         "nosniff"

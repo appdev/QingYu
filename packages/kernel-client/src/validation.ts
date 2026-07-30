@@ -118,7 +118,7 @@ function isResourceEntry(value: unknown): boolean {
     ? `${value.parent === "" ? "" : `${value.parent}/`}${value.name}`
     : null;
   const mediaMatchesKind = typeof value.mediaType === "string" && (value.kind === "image"
-    ? value.previewable === true && RESOURCE_IMAGE_MEDIA_TYPES.has(value.mediaType)
+    ? value.previewable === true && RESOURCE_IMAGE_MEDIA_TYPES.has(value.mediaType) && imageExtensionMatchesMediaType(value.name, value.mediaType)
     : value.kind === "attachment" && value.previewable === false && value.mediaType === "application/octet-stream");
   return isResourceId(value.id) &&
     mediaMatchesKind &&
@@ -132,6 +132,15 @@ function isResourceEntry(value: unknown): boolean {
 
 const RESOURCE_IMAGE_MEDIA_TYPES = new Set(["image/gif", "image/jpeg", "image/png", "image/webp"]);
 
+function imageExtensionMatchesMediaType(name: unknown, mediaType: string) {
+  if (typeof name !== "string") return false;
+  const lower = name.toLocaleLowerCase("en-US");
+  if (mediaType === "image/jpeg") return lower.endsWith(".jpg") || lower.endsWith(".jpeg");
+  if (mediaType === "image/png") return lower.endsWith(".png");
+  if (mediaType === "image/gif") return lower.endsWith(".gif");
+  return mediaType === "image/webp" && lower.endsWith(".webp");
+}
+
 function isResourceName(value: unknown): value is string {
   if (
     typeof value !== "string" ||
@@ -141,7 +150,7 @@ function isResourceName(value: unknown): value is string {
     value === ".." ||
     value.endsWith(".") ||
     value.endsWith(" ") ||
-    /[\u0000-\u001f\u007f/\\<>:"|?*]/u.test(value)
+    /[\u0000-\u001f\u007f-\u009f/\\<>:"|?*]/u.test(value)
   ) {
     return false;
   }
@@ -165,7 +174,7 @@ function isWorkspaceRelativePath(value: unknown): value is string {
     value.startsWith("/") ||
     value.startsWith("\\") ||
     value.includes("\\") ||
-    /[\u0000-\u001f\u007f]/u.test(value) ||
+    /[\u0000-\u001f\u007f-\u009f]/u.test(value) ||
     /^[A-Za-z]:/u.test(value)
   ) {
     return false;
