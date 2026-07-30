@@ -1006,7 +1006,8 @@ fn install_security_scheme(document: &mut serde_json::Value) {
     document["components"]["securitySchemes"]["csrfToken"] = serde_json::json!({
         "type": "apiKey",
         "in": "header",
-        "name": "X-CSRF-Token"
+        "name": "X-CSRF-Token",
+        "x-csrf-cookie-name": "__Host-qingyu_csrf"
     });
 }
 

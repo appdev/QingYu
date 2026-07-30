@@ -188,7 +188,12 @@ fn openapi_freezes_server_auth_routes_and_browser_security_composition() {
     );
     assert_eq!(
         document["components"]["securitySchemes"]["csrfToken"],
-        json!({ "type": "apiKey", "in": "header", "name": "X-CSRF-Token" })
+        json!({
+            "type": "apiKey",
+            "in": "header",
+            "name": "X-CSRF-Token",
+            "x-csrf-cookie-name": "__Host-qingyu_csrf",
+        })
     );
 
     assert_request_schema(

@@ -332,6 +332,7 @@ fn public_auth_bootstrap_and_dual_host_security_are_explicit_per_operation() {
     assert_eq!(csrf["type"], "apiKey");
     assert_eq!(csrf["in"], "header");
     assert_eq!(csrf["name"], "X-CSRF-Token");
+    assert_eq!(csrf["x-csrf-cookie-name"], "__Host-qingyu_csrf");
 }
 
 #[test]

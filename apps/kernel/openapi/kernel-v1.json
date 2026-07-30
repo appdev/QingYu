@@ -2983,7 +2983,8 @@
       "csrfToken": {
         "in": "header",
         "name": "X-CSRF-Token",
-        "type": "apiKey"
+        "type": "apiKey",
+        "x-csrf-cookie-name": "__Host-qingyu_csrf"
       },
       "nativeBearer": {
         "scheme": "bearer",
