@@ -509,6 +509,12 @@ pub struct SyncConfigStore {
     target: StorageFileName,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum SyncConfigInitialization {
+    Ready,
+    ExistingInvalid,
+}
+
 struct SyncConfigStoreState {
     recovery_required: bool,
 }
@@ -562,7 +568,9 @@ impl SyncConfigStore {
     /// instance. Existing valid state is retained byte-for-byte, while corrupt
     /// or unsupported state remains visible for explicit recovery instead of
     /// being replaced during startup.
-    pub(crate) fn initialize_default_if_absent(&self) -> Result<(), SyncConfigStoreError> {
+    pub(crate) fn initialize_default_if_absent(
+        &self,
+    ) -> Result<SyncConfigInitialization, SyncConfigStoreError> {
         let mut state = self.lock_state()?;
         Self::ensure_available(&state)?;
         if let Some(stored) = self
@@ -571,10 +579,10 @@ impl SyncConfigStore {
             .map_err(SyncConfigStoreError::from)?
         {
             return match classify(&stored)? {
-                SyncConfigLoad::Loaded { .. } => Ok(()),
-                SyncConfigLoad::Corrupt { .. } | SyncConfigLoad::Unsupported { .. } => Err(
-                    SyncConfigStoreError::new(SyncConfigStoreErrorKind::NotRecoverable),
-                ),
+                SyncConfigLoad::Loaded { .. } => Ok(SyncConfigInitialization::Ready),
+                SyncConfigLoad::Corrupt { .. } | SyncConfigLoad::Unsupported { .. } => {
+                    Ok(SyncConfigInitialization::ExistingInvalid)
+                }
                 SyncConfigLoad::Absent => unreachable!("a retained file cannot classify absent"),
             };
         }
@@ -590,7 +598,7 @@ impl SyncConfigStore {
                 preserve_previous: PreservePrevious::None,
             },
         )?;
-        Ok(())
+        Ok(SyncConfigInitialization::Ready)
     }
 
     pub fn is_absent(&self) -> Result<bool, SyncConfigStoreError> {

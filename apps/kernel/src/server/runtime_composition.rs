@@ -360,19 +360,49 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn server_composition_never_replaces_a_corrupt_sync_configuration() {
+    async fn server_composition_preserves_and_reports_a_corrupt_sync_configuration() {
         let temporary = tempdir().unwrap();
         let paths = fixture_paths(temporary.path());
         let corrupt = b"private-corrupt-sync-config-marker";
         let target = temporary.path().join("data/state/sync-config.json");
         fs::write(&target, corrupt).unwrap();
 
-        let error = compose_fixed_server_kernel(KernelConfig::generate().unwrap(), paths)
+        let composition = compose_fixed_server_kernel(KernelConfig::generate().unwrap(), paths)
+            .await
+            .unwrap();
+
+        let error = composition
+            .runtime()
+            .sync_api_service()
+            .unwrap()
+            .get_sync_config()
             .await
             .unwrap_err();
-
-        assert_eq!(error, ServerRuntimeCompositionError::FixedSyncStore);
+        assert_eq!(error.code(), crate::contract::ErrorCode::SyncConfigInvalid);
         assert_eq!(fs::read(target).unwrap(), corrupt);
+    }
+
+    #[tokio::test]
+    async fn server_composition_preserves_and_reports_an_unsupported_sync_configuration() {
+        let temporary = tempdir().unwrap();
+        let paths = fixture_paths(temporary.path());
+        let unsupported = br#"{"version":4,"private":"unsupported-sync-marker"}"#;
+        let target = temporary.path().join("data/state/sync-config.json");
+        fs::write(&target, unsupported).unwrap();
+
+        let composition = compose_fixed_server_kernel(KernelConfig::generate().unwrap(), paths)
+            .await
+            .unwrap();
+
+        let error = composition
+            .runtime()
+            .sync_api_service()
+            .unwrap()
+            .get_sync_config()
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), crate::contract::ErrorCode::SyncConfigInvalid);
+        assert_eq!(fs::read(target).unwrap(), unsupported);
     }
 
     #[tokio::test]

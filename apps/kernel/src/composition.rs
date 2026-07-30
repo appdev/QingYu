@@ -107,7 +107,7 @@ pub(crate) async fn install_fixed_kernel_services(
             .map_err(|_| FixedKernelCompositionError::SyncStore)?,
     )
     .map_err(|_| FixedKernelCompositionError::SyncStore)?;
-    sync_store
+    let _sync_initialization = sync_store
         .initialize_default_if_absent()
         .map_err(|_| FixedKernelCompositionError::SyncStore)?;
     let sync_store = Arc::new(sync_store);
