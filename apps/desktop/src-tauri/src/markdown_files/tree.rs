@@ -6,12 +6,13 @@ use std::sync::{
     Arc, Mutex,
 };
 
-use cap_fs_ext::{DirExt, MetadataExt};
+use cap_fs_ext::MetadataExt;
 use cap_std::fs::Dir;
 
 use super::asset::allow_asset_directory;
 use super::ignore_rules::{
     MarkdownIgnoreRules, RetainedMarkdownIgnoreSnapshot, RetainedMarkdownRoot,
+    RetainedNamedMarkdownDirectory,
 };
 use super::path::{
     is_markdown_tree_asset_file, is_markdown_tree_attachment_file, is_markdown_tree_file,
@@ -96,6 +97,7 @@ fn collect_markdown_tree_files(
     relative_directory: &Path,
     ignore_rules: &MarkdownIgnoreRules,
     files: &mut Vec<MarkdownFolderFile>,
+    after_directory_open: &mut impl FnMut(&Path),
 ) -> Result<(), String> {
     let mut entries = directory
         .entries()
@@ -118,17 +120,27 @@ fn collect_markdown_tree_files(
 
         if file_type.is_dir() {
             if !ignore_rules.ignores(&path, true) {
-                let child = directory
-                    .open_dir_nofollow(&name)
+                let child = RetainedNamedMarkdownDirectory::open(directory, &name)?;
+                after_directory_open(&relative_path);
+                let metadata = child
+                    .directory()
+                    .dir_metadata()
                     .map_err(|error| error.to_string())?;
-                let metadata = child.dir_metadata().map_err(|error| error.to_string())?;
                 files.push(markdown_folder_file_from_retained_metadata(
                     root.root(),
                     &relative_path,
                     MarkdownFolderEntryKind::Folder,
                     &metadata,
                 )?);
-                collect_markdown_tree_files(root, &child, &relative_path, ignore_rules, files)?;
+                collect_markdown_tree_files(
+                    root,
+                    child.directory(),
+                    &relative_path,
+                    ignore_rules,
+                    files,
+                    after_directory_open,
+                )?;
+                child.verify_current()?;
             }
             continue;
         }
@@ -174,6 +186,7 @@ fn collect_markdown_reference_files(
     relative_directory: &Path,
     files: &mut Vec<MarkdownFolderFile>,
     after_type_check: &mut impl FnMut(&Path, bool),
+    after_directory_open: &mut impl FnMut(&Path),
 ) -> Result<(), String> {
     let mut entries = directory
         .entries()
@@ -203,16 +216,17 @@ fn collect_markdown_reference_files(
                 )
             });
             if !is_builtin_ignored && !path_contains_qingyu_control_directory(&path) {
-                let child = directory
-                    .open_dir_nofollow(&name)
-                    .map_err(|_| "workspace directory changed".to_string())?;
+                let child = RetainedNamedMarkdownDirectory::open(directory, &name)?;
+                after_directory_open(&relative_path);
                 collect_markdown_reference_files(
                     root,
-                    &child,
+                    child.directory(),
                     &relative_path,
                     files,
                     after_type_check,
+                    after_directory_open,
                 )?;
+                child.verify_current()?;
             }
             continue;
         }
@@ -292,15 +306,35 @@ fn flush_markdown_tree_load_batch(
     request_id: &str,
     root: &RetainedMarkdownRoot,
     batch: &mut Vec<MarkdownFolderFile>,
+    batch_directories: &mut Vec<Arc<RetainedNamedMarkdownDirectory>>,
     done: bool,
 ) -> Result<(), String> {
-    flush_markdown_tree_load_batch_with_emitter(root, batch, done, |files, done| {
-        emit_markdown_tree_load_event(app, request_id, files, done, None)
-    })
+    let result = flush_markdown_tree_load_batch_with_emitter_and_directories(
+        root,
+        batch_directories,
+        batch,
+        done,
+        |files, done| emit_markdown_tree_load_event(app, request_id, files, done, None),
+    );
+    if result.is_ok() {
+        batch_directories.clear();
+    }
+    result
 }
 
+#[cfg(test)]
 fn flush_markdown_tree_load_batch_with_emitter(
     root: &RetainedMarkdownRoot,
+    batch: &mut Vec<MarkdownFolderFile>,
+    done: bool,
+    emit: impl FnOnce(Vec<MarkdownFolderFile>, bool) -> Result<(), String>,
+) -> Result<(), String> {
+    flush_markdown_tree_load_batch_with_emitter_and_directories(root, &[], batch, done, emit)
+}
+
+fn flush_markdown_tree_load_batch_with_emitter_and_directories(
+    root: &RetainedMarkdownRoot,
+    directories: &[Arc<RetainedNamedMarkdownDirectory>],
     batch: &mut Vec<MarkdownFolderFile>,
     done: bool,
     emit: impl FnOnce(Vec<MarkdownFolderFile>, bool) -> Result<(), String>,
@@ -310,6 +344,9 @@ fn flush_markdown_tree_load_batch_with_emitter(
     }
 
     root.verify_current()?;
+    for directory in directories {
+        directory.verify_current()?;
+    }
     emit(std::mem::take(batch), done)
 }
 
@@ -317,13 +354,23 @@ fn push_markdown_tree_load_file(
     app: &tauri::AppHandle,
     request_id: &str,
     root: &RetainedMarkdownRoot,
+    active_directories: &[Arc<RetainedNamedMarkdownDirectory>],
     batch: &mut Vec<MarkdownFolderFile>,
+    batch_directories: &mut Vec<Arc<RetainedNamedMarkdownDirectory>>,
     first_batch_sent: &mut bool,
     file: MarkdownFolderFile,
 ) -> Result<(), String> {
+    for directory in active_directories {
+        if !batch_directories
+            .iter()
+            .any(|retained| Arc::ptr_eq(retained, directory))
+        {
+            batch_directories.push(Arc::clone(directory));
+        }
+    }
     batch.push(file);
     if batch.len() >= markdown_tree_load_batch_size(*first_batch_sent) {
-        flush_markdown_tree_load_batch(app, request_id, root, batch, false)?;
+        flush_markdown_tree_load_batch(app, request_id, root, batch, batch_directories, false)?;
         *first_batch_sent = true;
     }
 
@@ -339,7 +386,9 @@ fn collect_markdown_tree_files_incrementally(
     relative_directory: &Path,
     ignore_rules: &MarkdownIgnoreRules,
     managed_attachment_folder: Option<&str>,
+    active_directories: &mut Vec<Arc<RetainedNamedMarkdownDirectory>>,
     batch: &mut Vec<MarkdownFolderFile>,
+    batch_directories: &mut Vec<Arc<RetainedNamedMarkdownDirectory>>,
     first_batch_sent: &mut bool,
 ) -> Result<(), String> {
     if cancel.load(Ordering::Relaxed) {
@@ -371,15 +420,24 @@ fn collect_markdown_tree_files_incrementally(
 
         if file_type.is_dir() {
             if !ignore_rules.ignores(&path, true) {
-                let child = directory
-                    .open_dir_nofollow(&name)
+                let child = RetainedNamedMarkdownDirectory::open(directory, &name)?;
+                let child_directory = child
+                    .directory()
+                    .try_clone()
+                    .map_err(|_| "workspace directory changed".to_string())?;
+                let metadata = child
+                    .directory()
+                    .dir_metadata()
                     .map_err(|error| error.to_string())?;
-                let metadata = child.dir_metadata().map_err(|error| error.to_string())?;
+                let child = Arc::new(child);
+                active_directories.push(Arc::clone(&child));
                 push_markdown_tree_load_file(
                     app,
                     request_id,
                     root,
+                    active_directories,
                     batch,
+                    batch_directories,
                     first_batch_sent,
                     markdown_folder_file_from_retained_metadata(
                         root.root(),
@@ -393,13 +451,17 @@ fn collect_markdown_tree_files_incrementally(
                     request_id,
                     cancel,
                     root,
-                    &child,
+                    &child_directory,
                     &relative_path,
                     ignore_rules,
                     managed_attachment_folder,
+                    active_directories,
                     batch,
+                    batch_directories,
                     first_batch_sent,
                 )?;
+                child.verify_current()?;
+                active_directories.pop();
             }
             continue;
         }
@@ -418,7 +480,16 @@ fn collect_markdown_tree_files_incrementally(
                 &metadata,
             )?;
             if should_include_markdown_tree_file(&file, managed_attachment_folder) {
-                push_markdown_tree_load_file(app, request_id, root, batch, first_batch_sent, file)?;
+                push_markdown_tree_load_file(
+                    app,
+                    request_id,
+                    root,
+                    active_directories,
+                    batch,
+                    batch_directories,
+                    first_batch_sent,
+                    file,
+                )?;
             }
         }
     }
@@ -670,6 +741,22 @@ fn list_markdown_files_for_path_with_asset_scope(
     global_ignore_rules: Option<&str>,
     allow_root_assets: impl FnOnce(&Path) -> Result<(), String>,
 ) -> Result<Vec<MarkdownFolderFile>, String> {
+    list_markdown_files_for_path_with_asset_scope_inner(
+        path,
+        managed_attachment_folder,
+        global_ignore_rules,
+        allow_root_assets,
+        &mut |_| {},
+    )
+}
+
+fn list_markdown_files_for_path_with_asset_scope_inner(
+    path: String,
+    managed_attachment_folder: Option<&str>,
+    global_ignore_rules: Option<&str>,
+    allow_root_assets: impl FnOnce(&Path) -> Result<(), String>,
+    after_directory_open: &mut impl FnMut(&Path),
+) -> Result<Vec<MarkdownFolderFile>, String> {
     let source_path = PathBuf::from(path);
     let root = markdown_tree_root_for_path(&source_path)?;
     let mut files = Vec::new();
@@ -685,6 +772,7 @@ fn list_markdown_files_for_path_with_asset_scope(
         Path::new(""),
         snapshot.rules(),
         &mut files,
+        after_directory_open,
     )?;
     files.retain(|file| {
         should_include_markdown_tree_file(file, normalized_managed_attachment_folder.as_deref())
@@ -704,13 +792,19 @@ fn list_markdown_reference_files_for_path_with_scope(
     path: String,
     allow_root_assets: impl FnOnce(&Path) -> Result<(), String>,
 ) -> Result<Vec<MarkdownFolderFile>, String> {
-    list_markdown_reference_files_for_path_with_scope_inner(path, allow_root_assets, |_, _| {})
+    list_markdown_reference_files_for_path_with_scope_inner(
+        path,
+        allow_root_assets,
+        &mut |_, _| {},
+        &mut |_| {},
+    )
 }
 
 fn list_markdown_reference_files_for_path_with_scope_inner(
     path: String,
     allow_root_assets: impl FnOnce(&Path) -> Result<(), String>,
-    mut after_type_check: impl FnMut(&Path, bool),
+    after_type_check: &mut impl FnMut(&Path, bool),
+    after_directory_open: &mut impl FnMut(&Path),
 ) -> Result<Vec<MarkdownFolderFile>, String> {
     let source_path = PathBuf::from(path);
     let root = markdown_tree_root_for_path(&source_path)?;
@@ -724,7 +818,8 @@ fn list_markdown_reference_files_for_path_with_scope_inner(
         &retained_root,
         Path::new(""),
         &mut files,
-        &mut after_type_check,
+        after_type_check,
+        after_directory_open,
     )?;
     files.retain(|file| matches!(file.kind, MarkdownFolderEntryKind::File));
     files.sort_by(|a, b| {
@@ -742,12 +837,27 @@ fn list_markdown_reference_files_for_path_with_scope_inner(
 fn list_markdown_reference_files_for_path_with_scope_and_hook(
     path: String,
     allow_root_assets: impl FnOnce(&Path) -> Result<(), String>,
-    _after_type_check: impl FnMut(&Path, bool),
+    mut after_type_check: impl FnMut(&Path, bool),
 ) -> Result<Vec<MarkdownFolderFile>, String> {
     list_markdown_reference_files_for_path_with_scope_inner(
         path,
         allow_root_assets,
-        _after_type_check,
+        &mut after_type_check,
+        &mut |_| {},
+    )
+}
+
+#[cfg(test)]
+fn list_markdown_reference_files_for_path_with_scope_and_open_hook(
+    path: String,
+    allow_root_assets: impl FnOnce(&Path) -> Result<(), String>,
+    mut after_directory_open: impl FnMut(&Path),
+) -> Result<Vec<MarkdownFolderFile>, String> {
+    list_markdown_reference_files_for_path_with_scope_inner(
+        path,
+        allow_root_assets,
+        &mut |_, _| {},
+        &mut after_directory_open,
     )
 }
 
@@ -832,6 +942,8 @@ fn load_markdown_files_for_path_in_background(
         normalize_managed_attachment_folder(managed_attachment_folder.as_deref());
     let snapshot = RetainedMarkdownIgnoreSnapshot::capture(&root, global_ignore_rules.as_deref())?;
     let mut batch = Vec::new();
+    let mut active_directories = Vec::new();
+    let mut batch_directories = Vec::new();
     let mut first_batch_sent = false;
 
     allow_asset_directory(app, snapshot.root().root())?;
@@ -845,7 +957,9 @@ fn load_markdown_files_for_path_in_background(
         Path::new(""),
         snapshot.rules(),
         normalized_managed_attachment_folder.as_deref(),
+        &mut active_directories,
         &mut batch,
+        &mut batch_directories,
         &mut first_batch_sent,
     )?;
 
@@ -853,7 +967,14 @@ fn load_markdown_files_for_path_in_background(
         return Ok(());
     }
 
-    flush_markdown_tree_load_batch(app, &request_id, snapshot.root(), &mut batch, true)
+    flush_markdown_tree_load_batch(
+        app,
+        &request_id,
+        snapshot.root(),
+        &mut batch,
+        &mut batch_directories,
+        true,
+    )
 }
 
 #[tauri::command]
@@ -1016,6 +1137,23 @@ mod tests {
         displaced
     }
 
+    #[cfg(unix)]
+    fn replace_open_test_child_with_symlink(root: &Path, outside: &Path) {
+        use std::os::unix::fs::symlink;
+
+        fs::rename(root.join("nested"), root.join("captured-directory"))
+            .expect("opened child should be displaced");
+        symlink(outside, root.join("nested"))
+            .expect("external directory symlink should be installed");
+    }
+
+    #[cfg(unix)]
+    fn remove_open_child_swap_fixture(root: &Path, outside: &Path) {
+        fs::remove_file(root.join("nested")).expect("symlink should be removed");
+        fs::remove_dir_all(root).expect("captured root should be removed");
+        fs::remove_dir_all(outside).expect("outside root should be removed");
+    }
+
     fn assert_markdown_folder_file(
         file: &MarkdownFolderFile,
         kind: MarkdownFolderEntryKind,
@@ -1061,6 +1199,128 @@ mod tests {
         assert!(!emitted);
         fs::remove_dir_all(root).expect("replacement root should be removed");
         fs::remove_dir_all(displaced).expect("captured root should be removed");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn background_batch_publication_rejects_a_replaced_open_child() {
+        let root = std::env::temp_dir().join(format!(
+            "markra-background-open-child-swap-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock should be after epoch")
+                .as_nanos()
+        ));
+        let outside = root.with_extension("outside");
+        fs::create_dir_all(root.join("nested")).expect("nested directory should be created");
+        fs::create_dir_all(&outside).expect("outside directory should be created");
+        let snapshot =
+            RetainedMarkdownRoot::capture(&root).expect("background root should be captured");
+        let child = Arc::new(
+            RetainedNamedMarkdownDirectory::open(
+                snapshot.retained_root(),
+                std::ffi::OsStr::new("nested"),
+            )
+            .expect("nested child should be retained"),
+        );
+        let metadata = child
+            .directory()
+            .dir_metadata()
+            .expect("nested metadata should load");
+        let mut batch = vec![markdown_folder_file_from_retained_metadata(
+            &root,
+            Path::new("nested"),
+            MarkdownFolderEntryKind::Folder,
+            &metadata,
+        )
+        .expect("nested entry should be created")];
+        replace_open_test_child_with_symlink(&root, &outside);
+        let mut emitted = false;
+
+        let result = flush_markdown_tree_load_batch_with_emitter_and_directories(
+            &snapshot,
+            &[Arc::clone(&child)],
+            &mut batch,
+            false,
+            |_, _| {
+                emitted = true;
+                Ok(())
+            },
+        );
+
+        remove_open_child_swap_fixture(&root, &outside);
+        assert_eq!(result, Err("workspace directory changed".to_string()));
+        assert!(!emitted);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn tree_listing_rejects_an_open_child_replaced_by_an_external_symlink() {
+        let root = std::env::temp_dir().join(format!(
+            "markra-tree-open-child-swap-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock should be after epoch")
+                .as_nanos()
+        ));
+        let outside = root.with_extension("outside");
+        fs::create_dir_all(root.join("nested")).expect("nested directory should be created");
+        fs::write(root.join("nested/captured.md"), "# Captured")
+            .expect("captured Markdown should be written");
+        fs::create_dir_all(&outside).expect("outside directory should be created");
+        fs::write(outside.join("outside.md"), "# Outside")
+            .expect("outside Markdown should be written");
+        let mut swapped = false;
+
+        let result = list_markdown_files_for_path_with_asset_scope_inner(
+            root.to_string_lossy().to_string(),
+            None,
+            None,
+            |_| Ok(()),
+            &mut |relative_path| {
+                if !swapped && relative_path == Path::new("nested") {
+                    replace_open_test_child_with_symlink(&root, &outside);
+                    swapped = true;
+                }
+            },
+        );
+
+        remove_open_child_swap_fixture(&root, &outside);
+        assert_eq!(result, Err("workspace directory changed".to_string()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reference_listing_rejects_an_open_child_replaced_by_an_external_symlink() {
+        let root = std::env::temp_dir().join(format!(
+            "markra-reference-open-child-swap-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock should be after epoch")
+                .as_nanos()
+        ));
+        let outside = root.with_extension("outside");
+        fs::create_dir_all(root.join("nested")).expect("nested directory should be created");
+        fs::write(root.join("nested/captured.md"), "# Captured")
+            .expect("captured Markdown should be written");
+        fs::create_dir_all(&outside).expect("outside directory should be created");
+        fs::write(outside.join("outside.md"), "# Outside")
+            .expect("outside Markdown should be written");
+        let mut swapped = false;
+
+        let result = list_markdown_reference_files_for_path_with_scope_and_open_hook(
+            root.to_string_lossy().to_string(),
+            |_| Ok(()),
+            |relative_path| {
+                if !swapped && relative_path == Path::new("nested") {
+                    replace_open_test_child_with_symlink(&root, &outside);
+                    swapped = true;
+                }
+            },
+        );
+
+        remove_open_child_swap_fixture(&root, &outside);
+        assert_eq!(result, Err("workspace directory changed".to_string()));
     }
 
     #[test]

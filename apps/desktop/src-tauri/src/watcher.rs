@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use cap_std::fs::Dir;
@@ -23,9 +24,38 @@ const MARKDOWN_FILE_CHANGED_EVENT: &str = "markra://file-changed";
 const MARKDOWN_TREE_CHANGED_EVENT: &str = "markra://tree-changed";
 
 struct ActiveMarkdownWatcher {
+    health: Arc<MarkdownWatcherHealth>,
     subscriber_count: usize,
     watch_root: PathBuf,
     watcher: DirectoryWatcher,
+}
+
+#[derive(Default)]
+struct MarkdownWatcherHealth {
+    faulted: AtomicBool,
+}
+
+impl MarkdownWatcherHealth {
+    fn mark_faulted(&self) {
+        self.faulted.store(true, Ordering::Release);
+    }
+
+    fn is_faulted(&self) -> bool {
+        self.faulted.load(Ordering::Acquire)
+    }
+}
+
+fn watcher_event_for_callback(
+    result: notify::Result<Event>,
+    health: &MarkdownWatcherHealth,
+) -> Option<Event> {
+    match result {
+        Ok(event) => Some(event),
+        Err(_) => {
+            health.mark_faulted();
+            None
+        }
+    }
 }
 
 struct MarkdownWatchIgnoreRules {
@@ -280,11 +310,21 @@ fn has_active_watcher_subscription(
         .map_err(|_| "markdown watcher state lock is poisoned".to_string())?;
 
     if let Some(watcher) = active_watchers.get_mut(path) {
+        if watcher.health.is_faulted() {
+            return Ok(false);
+        }
         // React may subscribe with new settings before the previous async unwatch
         // reaches Rust, so refresh a shared watcher's matcher during subscription.
-        watcher
+        if let Err(error) = watcher
             .watcher
-            .replace_rules(ignore_root, global_ignore_rules)?;
+            .replace_rules(ignore_root, global_ignore_rules)
+        {
+            watcher.health.mark_faulted();
+            return Err(error);
+        }
+        if watcher.health.is_faulted() {
+            return Ok(false);
+        }
         watcher.subscriber_count += 1;
         return Ok(true);
     }
@@ -298,21 +338,41 @@ fn remember_active_watcher(
     watch_root: PathBuf,
     watcher: DirectoryWatcher,
     ignore_rules: Arc<Mutex<MarkdownWatchIgnoreRules>>,
+    health: Arc<MarkdownWatcherHealth>,
 ) -> Result<(), String> {
     let mut active_watchers = watcher_state
         .lock()
         .map_err(|_| "markdown watcher state lock is poisoned".to_string())?;
 
     if let Some(existing_watcher) = active_watchers.get_mut(&path) {
+        if existing_watcher.health.is_faulted() {
+            let subscriber_count = existing_watcher.subscriber_count.saturating_add(1);
+            let displaced = std::mem::replace(
+                existing_watcher,
+                ActiveMarkdownWatcher {
+                    health,
+                    subscriber_count,
+                    watch_root,
+                    watcher,
+                },
+            );
+            drop(active_watchers);
+            drop(displaced);
+            return Ok(());
+        }
         let next_ignore_rules = ignore_rules
             .lock()
             .map_err(|_| "markdown ignore rules lock is poisoned".to_string())?;
         let next_root = next_ignore_rules.root.clone();
         let next_global_rules = next_ignore_rules.global_rules.clone();
         drop(next_ignore_rules);
-        existing_watcher
+        if let Err(error) = existing_watcher
             .watcher
-            .replace_rules(&next_root, next_global_rules.as_deref())?;
+            .replace_rules(&next_root, next_global_rules.as_deref())
+        {
+            existing_watcher.health.mark_faulted();
+            return Err(error);
+        }
         existing_watcher.subscriber_count += 1;
         return Ok(());
     }
@@ -320,6 +380,7 @@ fn remember_active_watcher(
     active_watchers.insert(
         path.clone(),
         ActiveMarkdownWatcher {
+            health,
             subscriber_count: 1,
             watch_root,
             watcher,
@@ -384,13 +445,15 @@ pub(crate) fn watch_markdown_file(
         global_ignore_rules.as_deref(),
     )?));
     let callback_ignore_rules = Arc::clone(&ignore_rules);
+    let health = Arc::new(MarkdownWatcherHealth::default());
+    let callback_health = Arc::clone(&health);
 
     // Watch the parent tree so atomic saves and adjacent pasted assets are still visible.
     let watcher = DirectoryWatcher::new(
         &watch_root,
         Arc::clone(&ignore_rules),
         move |result: notify::Result<Event>| {
-            let Ok(event) = result else {
+            let Some(event) = watcher_event_for_callback(result, &callback_health) else {
                 return;
             };
 
@@ -430,6 +493,7 @@ pub(crate) fn watch_markdown_file(
         watch_root,
         watcher,
         ignore_rules,
+        health,
     )
 }
 
@@ -481,13 +545,15 @@ pub(crate) fn watch_markdown_tree(
         global_ignore_rules.as_deref(),
     )?));
     let callback_ignore_rules = Arc::clone(&ignore_rules);
+    let health = Arc::new(MarkdownWatcherHealth::default());
+    let callback_health = Arc::clone(&health);
 
     let callback_app = app.clone();
     let watcher = DirectoryWatcher::new(
         &watch_root,
         Arc::clone(&ignore_rules),
         move |result: notify::Result<Event>| {
-            let Ok(event) = result else {
+            let Some(event) = watcher_event_for_callback(result, &callback_health) else {
                 return;
             };
 
@@ -518,6 +584,7 @@ pub(crate) fn watch_markdown_tree(
         watch_root.clone(),
         watcher,
         ignore_rules,
+        health,
     )?;
     scheduler_owner.activate_root(&watch_root);
     Ok(())
@@ -559,6 +626,96 @@ mod tests {
                 .expect("system clock should be after epoch")
                 .as_nanos()
         ))
+    }
+
+    fn test_active_directory_watcher(
+        root: &Path,
+    ) -> (DirectoryWatcher, Arc<Mutex<MarkdownWatchIgnoreRules>>) {
+        let rules = Arc::new(Mutex::new(
+            MarkdownWatchIgnoreRules::try_new(root, None).expect("test watcher rules should load"),
+        ));
+        let watcher = DirectoryWatcher::new(root, Arc::clone(&rules), |_| {})
+            .expect("test directory watcher should start");
+        (watcher, rules)
+    }
+
+    #[test]
+    fn callback_errors_mark_the_watcher_faulted() {
+        let health = MarkdownWatcherHealth::default();
+
+        let event = watcher_event_for_callback(
+            Err(notify::Error::generic("watch backend failed")),
+            &health,
+        );
+
+        assert!(event.is_none());
+        assert!(health.is_faulted());
+    }
+
+    #[test]
+    fn faulted_active_watchers_are_not_reused_for_new_subscriptions() {
+        let root = test_root("faulted-reuse");
+        std::fs::create_dir_all(&root).expect("test root should be created");
+        let (watcher, _rules) = test_active_directory_watcher(&root);
+        let health = Arc::new(MarkdownWatcherHealth::default());
+        health.faulted.store(true, Ordering::Release);
+        let watchers = Mutex::new(HashMap::from([(
+            root.clone(),
+            ActiveMarkdownWatcher {
+                health,
+                subscriber_count: 2,
+                watch_root: root.clone(),
+                watcher,
+            },
+        )]));
+
+        let reused = has_active_watcher_subscription(&watchers, &root, &root, None)
+            .expect("faulted watcher lookup should complete");
+
+        assert!(!reused);
+        drop(watchers);
+        std::fs::remove_dir_all(root).expect("test root should be removed");
+    }
+
+    #[test]
+    fn remembering_a_new_watcher_atomically_replaces_a_fault_and_preserves_subscribers() {
+        let root = test_root("faulted-replacement");
+        std::fs::create_dir_all(&root).expect("test root should be created");
+        let (old_watcher, _old_rules) = test_active_directory_watcher(&root);
+        let old_health = Arc::new(MarkdownWatcherHealth::default());
+        old_health.faulted.store(true, Ordering::Release);
+        let watchers = Mutex::new(HashMap::from([(
+            root.clone(),
+            ActiveMarkdownWatcher {
+                health: old_health,
+                subscriber_count: 2,
+                watch_root: root.clone(),
+                watcher: old_watcher,
+            },
+        )]));
+        let (new_watcher, new_rules) = test_active_directory_watcher(&root);
+        let new_health = Arc::new(MarkdownWatcherHealth::default());
+
+        remember_active_watcher(
+            &watchers,
+            root.clone(),
+            root.clone(),
+            new_watcher,
+            new_rules,
+            Arc::clone(&new_health),
+        )
+        .expect("replacement watcher should be remembered");
+
+        let watchers_guard = watchers.lock().expect("watcher state should lock");
+        let active = watchers_guard
+            .get(&root)
+            .expect("replacement watcher should remain active");
+        assert_eq!(active.subscriber_count, 3);
+        assert!(Arc::ptr_eq(&active.health, &new_health));
+        assert!(!active.health.is_faulted());
+        drop(watchers_guard);
+        drop(watchers);
+        std::fs::remove_dir_all(root).expect("test root should be removed");
     }
 
     fn strict_test_rules(root: &Path, global_rules: Option<&str>) -> MarkdownIgnoreRules {

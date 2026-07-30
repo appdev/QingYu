@@ -26,6 +26,55 @@ struct DirectoryWatchRoot {
     identity: DirectoryIdentity,
 }
 
+#[cfg(any(target_os = "linux", test))]
+struct RetainedNamedWatchDirectory {
+    directory: cap_std::fs::Dir,
+    identity: DirectoryIdentity,
+}
+
+#[cfg(any(target_os = "linux", test))]
+impl RetainedNamedWatchDirectory {
+    fn open(parent: &cap_std::fs::Dir, name: &std::ffi::OsStr) -> Result<Self, String> {
+        let directory = parent
+            .open_dir_nofollow(name)
+            .map_err(|_| "workspace directory changed".to_string())?;
+        let identity = directory_identity(&directory)
+            .map_err(|_| "workspace directory changed".to_string())?;
+        let retained = Self {
+            directory,
+            identity,
+        };
+        retained.verify_named(parent, name)?;
+        Ok(retained)
+    }
+
+    fn directory(&self) -> &cap_std::fs::Dir {
+        &self.directory
+    }
+
+    fn verify_named(
+        &self,
+        parent: &cap_std::fs::Dir,
+        name: &std::ffi::OsStr,
+    ) -> Result<(), String> {
+        if directory_identity(&self.directory)
+            .map_err(|_| "workspace directory changed".to_string())?
+            != self.identity
+        {
+            return Err("workspace directory changed".to_string());
+        }
+        let named = parent
+            .open_dir_nofollow(name)
+            .map_err(|_| "workspace directory changed".to_string())?;
+        if directory_identity(&named).map_err(|_| "workspace directory changed".to_string())?
+            != self.identity
+        {
+            return Err("workspace directory changed".to_string());
+        }
+        Ok(())
+    }
+}
+
 impl DirectoryWatchRoot {
     fn capture(path: &Path) -> Result<Self, String> {
         let retained = open_canonical_directory_nofollow(path)
@@ -83,9 +132,107 @@ struct DirectoryWatchDiff {
 }
 
 #[cfg(any(target_os = "linux", test))]
+trait DirectoryWatchBackend {
+    fn watch_directory(&mut self, path: &Path) -> Result<(), String>;
+    fn unwatch_directory(&mut self, path: &Path) -> Result<(), String>;
+}
+
+#[cfg(target_os = "linux")]
+impl DirectoryWatchBackend for RecommendedWatcher {
+    fn watch_directory(&mut self, path: &Path) -> Result<(), String> {
+        self.watch(path, RecursiveMode::NonRecursive)
+            .map_err(|error| error.to_string())
+    }
+
+    fn unwatch_directory(&mut self, path: &Path) -> Result<(), String> {
+        self.unwatch(path).map_err(|error| error.to_string())
+    }
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn apply_directory_watch_diff(
+    watcher: &mut impl DirectoryWatchBackend,
+    watched_directories: &mut HashSet<PathBuf>,
+    desired_directories: &HashSet<PathBuf>,
+) -> Result<(), String> {
+    let diff = directory_watch_diff(watched_directories, desired_directories);
+    let mut additions = diff.add.into_iter().collect::<Vec<_>>();
+    additions.sort();
+    let mut added: Vec<PathBuf> = Vec::new();
+
+    for directory in additions {
+        if let Err(error) = watcher.watch_directory(&directory) {
+            for added_directory in added.into_iter().rev() {
+                if watcher.unwatch_directory(&added_directory).is_err() {
+                    watched_directories.insert(added_directory);
+                }
+            }
+            return Err(error);
+        }
+        added.push(directory);
+    }
+    watched_directories.extend(added);
+
+    let mut removals = diff.remove.into_iter().collect::<Vec<_>>();
+    removals.sort_by_key(|path| std::cmp::Reverse(path.components().count()));
+    let mut first_error = None;
+    for directory in removals {
+        match watcher.unwatch_directory(&directory) {
+            Ok(()) => {
+                watched_directories.remove(&directory);
+            }
+            Err(error) => {
+                if first_error.is_none() {
+                    first_error = Some(error);
+                }
+            }
+        }
+    }
+
+    match first_error {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn reconcile_directory_watch_set_with_rebuild<B: DirectoryWatchBackend>(
+    watcher: &mut B,
+    watched_directories: &mut HashSet<PathBuf>,
+    desired_directories: &HashSet<PathBuf>,
+    rebuild: impl FnOnce(&HashSet<PathBuf>) -> Result<B, String>,
+) -> Result<(), String> {
+    let mutation_error =
+        match apply_directory_watch_diff(watcher, watched_directories, desired_directories) {
+            Ok(()) => return Ok(()),
+            Err(error) => error,
+        };
+
+    // A notify backend can mutate its own path maps before returning an
+    // unwatch error. Do not attempt to reason about that partial state. Build
+    // a complete replacement first, then publish the backend and watch set
+    // together on this coordinator thread.
+    let replacement = rebuild(desired_directories).map_err(|rebuild_error| {
+        format!("{mutation_error}; full watch-set rebuild failed: {rebuild_error}")
+    })?;
+    *watcher = replacement;
+    *watched_directories = desired_directories.clone();
+    Ok(())
+}
+
+#[cfg(any(target_os = "linux", test))]
 fn visible_watch_directories(
     watch_root: &DirectoryWatchRoot,
     watch_rules: &mut MarkdownWatchIgnoreRules,
+) -> Result<HashSet<PathBuf>, String> {
+    visible_watch_directories_with_hook(watch_root, watch_rules, &mut |_| {})
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn visible_watch_directories_with_hook(
+    watch_root: &DirectoryWatchRoot,
+    watch_rules: &mut MarkdownWatchIgnoreRules,
+    after_directory_open: &mut impl FnMut(&Path),
 ) -> Result<HashSet<PathBuf>, String> {
     fn collect(
         root: &Path,
@@ -94,6 +241,7 @@ fn visible_watch_directories(
         ambient_directory: &Path,
         ignore_rules: &MarkdownIgnoreRules,
         directories: &mut HashSet<PathBuf>,
+        after_directory_open: &mut impl FnMut(&Path),
     ) -> Result<(), String> {
         if path_contains_qingyu_control_directory(ambient_directory) {
             return Ok(());
@@ -111,17 +259,18 @@ fn visible_watch_directories(
                 .is_dir()
                 && !ignore_rules.ignores(&path, true)
             {
-                let child = directory
-                    .open_dir_nofollow(&name)
-                    .map_err(|_| "workspace directory changed".to_string())?;
+                let child = RetainedNamedWatchDirectory::open(directory, &name)?;
+                after_directory_open(&relative_path);
                 collect(
                     root,
-                    &child,
+                    child.directory(),
                     &relative_path,
                     &path,
                     ignore_rules,
                     directories,
+                    after_directory_open,
                 )?;
+                child.verify_named(directory, &name)?;
             }
         }
         Ok(())
@@ -141,6 +290,7 @@ fn visible_watch_directories(
         &watch_root.path,
         watch_rules.current()?,
         &mut directories,
+        after_directory_open,
     )?;
     watch_rules.verify_root()?;
     watch_root.verify_current()?;
@@ -341,6 +491,7 @@ impl LinuxDirectoryWatcher {
 
         let coordinator_rules = Arc::clone(&ignore_rules);
         let coordinator_root = Arc::clone(&watch_root);
+        let coordinator_sender = sender.clone();
         let coordinator = std::thread::Builder::new()
             .name("markra-directory-watcher".to_string())
             .spawn(move || {
@@ -351,6 +502,7 @@ impl LinuxDirectoryWatcher {
                     &coordinator_rules,
                     handler,
                     receiver,
+                    coordinator_sender,
                 );
             })
             .map_err(|error| error.to_string())?;
@@ -390,6 +542,7 @@ fn run_linux_coordinator<F>(
     ignore_rules: &Arc<Mutex<MarkdownWatchIgnoreRules>>,
     mut handler: F,
     receiver: std::sync::mpsc::Receiver<CoordinatorMessage>,
+    event_sender: std::sync::mpsc::Sender<CoordinatorMessage>,
 ) where
     F: FnMut(notify::Result<Event>),
 {
@@ -422,6 +575,7 @@ fn run_linux_coordinator<F>(
                             watched_directories,
                             watch_root,
                             &mut candidate,
+                            &event_sender,
                         );
                         return ignore_rules
                             .lock()
@@ -437,6 +591,7 @@ fn run_linux_coordinator<F>(
                             watched_directories,
                             watch_root,
                             &mut rules,
+                            &event_sender,
                         ) {
                             rules.invalidate();
                             return Err(error);
@@ -460,6 +615,7 @@ fn run_linux_coordinator<F>(
                     watched_directories,
                     watch_root,
                     &mut candidate,
+                    &event_sender,
                 );
                 let result = ignore_rules
                     .lock()
@@ -478,56 +634,30 @@ fn reconcile_linux_directories(
     watched_directories: &mut HashSet<PathBuf>,
     watch_root: &DirectoryWatchRoot,
     ignore_rules: &mut MarkdownWatchIgnoreRules,
+    event_sender: &std::sync::mpsc::Sender<CoordinatorMessage>,
 ) -> Result<(), String> {
     let desired_directories = visible_watch_directories(watch_root, ignore_rules)?;
-    let diff = directory_watch_diff(watched_directories, &desired_directories);
-    let mut additions = diff.add.into_iter().collect::<Vec<_>>();
-    additions.sort();
-    let mut added: Vec<PathBuf> = Vec::new();
-
-    // Add the full desired set before pruning stale watches. A failed addition
-    // rolls back only this attempt, preserving the last known-good coverage.
-    // notify invokes callbacks on its backend thread. All watch mutations stay on
-    // this coordinator thread to avoid re-entering inotify and deadlocking it.
-    for directory in additions {
-        if let Err(error) = watcher.watch(&directory, RecursiveMode::NonRecursive) {
-            for added_directory in added.into_iter().rev() {
-                if watcher.unwatch(&added_directory).is_err() {
-                    watched_directories.insert(added_directory);
-                }
+    let rebuild_sender = event_sender.clone();
+    reconcile_directory_watch_set_with_rebuild(
+        watcher,
+        watched_directories,
+        &desired_directories,
+        move |desired| {
+            let callback_sender = rebuild_sender.clone();
+            let mut replacement = notify::recommended_watcher(move |result| {
+                let _ = callback_sender.send(CoordinatorMessage::BackendEvent(result));
+            })
+            .map_err(|error| error.to_string())?;
+            let mut directories = desired.iter().collect::<Vec<_>>();
+            directories.sort();
+            for directory in directories {
+                replacement
+                    .watch(directory, RecursiveMode::NonRecursive)
+                    .map_err(|error| error.to_string())?;
             }
-            return Err(error.to_string());
-        }
-        added.push(directory);
-    }
-    watched_directories.extend(added);
-
-    let mut removals = diff.remove.into_iter().collect::<Vec<_>>();
-    removals.sort_by_key(|path| std::cmp::Reverse(path.components().count()));
-    let mut first_error = None;
-    for directory in removals {
-        if !directory.exists() {
-            let _ = watcher.unwatch(&directory);
-            watched_directories.remove(&directory);
-            continue;
-        }
-
-        match watcher.unwatch(&directory) {
-            Ok(()) => {
-                watched_directories.remove(&directory);
-            }
-            Err(error) => {
-                if first_error.is_none() {
-                    first_error = Some(error.to_string());
-                }
-            }
-        }
-    }
-
-    match first_error {
-        Some(error) => Err(error),
-        None => Ok(()),
-    }
+            Ok(replacement)
+        },
+    )
 }
 
 #[cfg(test)]
@@ -541,6 +671,41 @@ mod tests {
 
     use crate::protected_paths::{LEGACY_SYNC_DIR, QINGYU_CONTROL_DIR};
 
+    #[derive(Default)]
+    struct FaultingDirectoryWatchBackend {
+        fail_watch: HashSet<PathBuf>,
+        fail_unwatch: HashSet<PathBuf>,
+        watched: HashSet<PathBuf>,
+    }
+
+    impl DirectoryWatchBackend for FaultingDirectoryWatchBackend {
+        fn watch_directory(&mut self, path: &Path) -> Result<(), String> {
+            if self.fail_watch.remove(path) {
+                return Err(format!("watch failed: {}", path.display()));
+            }
+            self.watched.insert(path.to_path_buf());
+            Ok(())
+        }
+
+        fn unwatch_directory(&mut self, path: &Path) -> Result<(), String> {
+            if self.fail_unwatch.remove(path) {
+                return Err(format!("unwatch failed: {}", path.display()));
+            }
+            if self.watched.remove(path) {
+                Ok(())
+            } else {
+                Err(format!("watch not found: {}", path.display()))
+            }
+        }
+    }
+
+    fn rebuilt_test_backend(desired: &HashSet<PathBuf>) -> FaultingDirectoryWatchBackend {
+        FaultingDirectoryWatchBackend {
+            watched: desired.clone(),
+            ..FaultingDirectoryWatchBackend::default()
+        }
+    }
+
     fn test_root(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
             "markra-directory-watcher-{name}-{}",
@@ -549,6 +714,180 @@ mod tests {
                 .expect("system clock should be after epoch")
                 .as_nanos()
         ))
+    }
+
+    #[test]
+    fn rebuilds_the_complete_watch_set_after_an_addition_failure() {
+        let root = PathBuf::from("/watch-root");
+        let added = root.join("added");
+        let desired = HashSet::from([root.clone(), added.clone()]);
+        let mut watched = HashSet::from([root.clone()]);
+        let mut backend = FaultingDirectoryWatchBackend {
+            fail_watch: HashSet::from([added]),
+            watched: watched.clone(),
+            ..FaultingDirectoryWatchBackend::default()
+        };
+        let rebuilds = std::cell::Cell::new(0);
+
+        reconcile_directory_watch_set_with_rebuild(
+            &mut backend,
+            &mut watched,
+            &desired,
+            |desired| {
+                rebuilds.set(rebuilds.get() + 1);
+                Ok(rebuilt_test_backend(desired))
+            },
+        )
+        .expect("a fresh backend should recover the desired watch set");
+
+        assert_eq!(rebuilds.get(), 1);
+        assert_eq!(watched, desired);
+        assert_eq!(backend.watched, desired);
+    }
+
+    #[test]
+    fn rebuilds_after_an_addition_and_its_rollback_both_fail() {
+        let root = PathBuf::from("/watch-root");
+        let first = root.join("a-first");
+        let second = root.join("b-second");
+        let desired = HashSet::from([root.clone(), first.clone(), second.clone()]);
+        let mut watched = HashSet::from([root.clone()]);
+        let mut backend = FaultingDirectoryWatchBackend {
+            fail_watch: HashSet::from([second]),
+            fail_unwatch: HashSet::from([first]),
+            watched: watched.clone(),
+        };
+        let rebuilds = std::cell::Cell::new(0);
+
+        reconcile_directory_watch_set_with_rebuild(
+            &mut backend,
+            &mut watched,
+            &desired,
+            |desired| {
+                rebuilds.set(rebuilds.get() + 1);
+                Ok(rebuilt_test_backend(desired))
+            },
+        )
+        .expect("a fresh backend should recover from a failed rollback");
+
+        assert_eq!(rebuilds.get(), 1);
+        assert_eq!(watched, desired);
+        assert_eq!(backend.watched, desired);
+    }
+
+    #[test]
+    fn rebuilds_after_an_existing_watch_cannot_be_removed() {
+        let root = test_root("remove-failure");
+        let removed = root.join("removed");
+        fs::create_dir_all(&removed).expect("removed directory should exist");
+        let desired = HashSet::from([root.clone()]);
+        let mut watched = HashSet::from([root.clone(), removed.clone()]);
+        let mut backend = FaultingDirectoryWatchBackend {
+            fail_unwatch: HashSet::from([removed]),
+            watched: watched.clone(),
+            ..FaultingDirectoryWatchBackend::default()
+        };
+        let rebuilds = std::cell::Cell::new(0);
+
+        reconcile_directory_watch_set_with_rebuild(
+            &mut backend,
+            &mut watched,
+            &desired,
+            |desired| {
+                rebuilds.set(rebuilds.get() + 1);
+                Ok(rebuilt_test_backend(desired))
+            },
+        )
+        .expect("a fresh backend should recover from an unwatch failure");
+
+        assert_eq!(rebuilds.get(), 1);
+        assert_eq!(watched, desired);
+        assert_eq!(backend.watched, desired);
+        fs::remove_dir_all(root).expect("test root should be removed");
+    }
+
+    #[test]
+    fn rebuilds_when_a_missing_watch_cannot_be_removed() {
+        let root = test_root("missing-remove-failure");
+        let missing = root.join("missing");
+        let desired = HashSet::from([root.clone()]);
+        let mut watched = HashSet::from([root.clone(), missing.clone()]);
+        let mut backend = FaultingDirectoryWatchBackend {
+            fail_unwatch: HashSet::from([missing]),
+            watched: watched.clone(),
+            ..FaultingDirectoryWatchBackend::default()
+        };
+        let rebuilds = std::cell::Cell::new(0);
+
+        reconcile_directory_watch_set_with_rebuild(
+            &mut backend,
+            &mut watched,
+            &desired,
+            |desired| {
+                rebuilds.set(rebuilds.get() + 1);
+                Ok(rebuilt_test_backend(desired))
+            },
+        )
+        .expect("a fresh backend should recover the missing watch state");
+
+        assert_eq!(rebuilds.get(), 1);
+        assert_eq!(watched, desired);
+        assert_eq!(backend.watched, desired);
+    }
+
+    #[test]
+    fn reports_a_full_rebuild_failure_after_watch_set_mutation_fails() {
+        let root = PathBuf::from("/watch-root");
+        let added = root.join("added");
+        let desired = HashSet::from([root.clone(), added.clone()]);
+        let mut watched = HashSet::from([root.clone()]);
+        let mut backend = FaultingDirectoryWatchBackend {
+            fail_watch: HashSet::from([added]),
+            watched: watched.clone(),
+            ..FaultingDirectoryWatchBackend::default()
+        };
+
+        let error = reconcile_directory_watch_set_with_rebuild(
+            &mut backend,
+            &mut watched,
+            &desired,
+            |_| Err("full rebuild failed".to_string()),
+        )
+        .expect_err("a failed full rebuild must propagate");
+
+        assert!(error.contains("full rebuild failed"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn visible_watch_set_rejects_an_open_child_replaced_by_an_external_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let root = test_root("open-child-swap");
+        let outside = root.with_extension("outside");
+        let displaced = root.join("captured-directory");
+        fs::create_dir_all(root.join("nested")).expect("nested directory should be created");
+        fs::create_dir_all(&outside).expect("outside directory should be created");
+        let mut rules =
+            MarkdownWatchIgnoreRules::try_new(&root, None).expect("watcher rules should load");
+        let watch_root = DirectoryWatchRoot::capture(&root).expect("watch root should capture");
+        let mut swapped = false;
+
+        let result =
+            visible_watch_directories_with_hook(&watch_root, &mut rules, &mut |relative_path| {
+                if !swapped && relative_path == Path::new("nested") {
+                    fs::rename(root.join("nested"), &displaced)
+                        .expect("opened child should be displaced");
+                    symlink(&outside, root.join("nested"))
+                        .expect("external directory symlink should be installed");
+                    swapped = true;
+                }
+            });
+
+        fs::remove_file(root.join("nested")).expect("symlink should be removed");
+        fs::remove_dir_all(root).expect("captured root should be removed");
+        fs::remove_dir_all(outside).expect("outside root should be removed");
+        assert_eq!(result, Err("workspace directory changed".to_string()));
     }
 
     #[test]

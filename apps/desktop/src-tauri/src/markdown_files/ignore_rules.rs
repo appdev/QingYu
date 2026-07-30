@@ -1,7 +1,9 @@
 //! Compatibility helpers for Kernel-owned workspace ignore rules.
 
+use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 
+use cap_fs_ext::DirExt;
 use cap_std::fs::Dir;
 
 use crate::storage_capability::{
@@ -9,6 +11,48 @@ use crate::storage_capability::{
 };
 
 pub(crate) use qingyu_kernel::ignore_rules::MarkdownIgnoreRules;
+
+pub(crate) struct RetainedNamedMarkdownDirectory {
+    directory: Dir,
+    identity: DirectoryIdentity,
+    name: OsString,
+    parent: Dir,
+}
+
+impl RetainedNamedMarkdownDirectory {
+    pub(crate) fn open(parent: &Dir, name: &OsStr) -> Result<Self, String> {
+        let directory = parent
+            .open_dir_nofollow(name)
+            .map_err(|_| directory_changed())?;
+        let identity = directory_identity(&directory).map_err(|_| directory_changed())?;
+        let retained = Self {
+            directory,
+            identity,
+            name: name.to_os_string(),
+            parent: parent.try_clone().map_err(|_| directory_changed())?,
+        };
+        retained.verify_current()?;
+        Ok(retained)
+    }
+
+    pub(crate) fn directory(&self) -> &Dir {
+        &self.directory
+    }
+
+    pub(crate) fn verify_current(&self) -> Result<(), String> {
+        if directory_identity(&self.directory).map_err(|_| directory_changed())? != self.identity {
+            return Err(directory_changed());
+        }
+        let named = self
+            .parent
+            .open_dir_nofollow(&self.name)
+            .map_err(|_| directory_changed())?;
+        if directory_identity(&named).map_err(|_| directory_changed())? != self.identity {
+            return Err(directory_changed());
+        }
+        Ok(())
+    }
+}
 
 pub(crate) struct RetainedMarkdownRoot {
     root: PathBuf,
@@ -110,4 +154,8 @@ pub(crate) fn try_markdown_ignore_rules_for_root(
 
 fn root_changed() -> String {
     "workspace root changed".to_string()
+}
+
+fn directory_changed() -> String {
+    "workspace directory changed".to_string()
 }
