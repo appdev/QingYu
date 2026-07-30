@@ -27,7 +27,7 @@ use crate::{
     events::{EventBroker, EventPublication, EventSink, EventSinkError},
     paths::{InstanceDataRoot, KernelPaths, PathPolicyError, PathPolicyErrorKind, WorkspaceRoot},
     ports::{BoxTaskFuture, KernelPorts, PortError},
-    sync::status::SyncStatusState,
+    sync::status::{SyncRunCompletion, SyncStatusState},
     workspace::{
         lock::{InstanceLockLease, KernelLockError, KernelLockErrorKind, WorkspaceLockLease},
         primary::{PreparedWorkspaceAuthorityBinding, PrimaryWorkspaceRepositoryBinding},
@@ -514,7 +514,11 @@ impl KernelRuntime {
         }
         let status = self
             .sync_status
-            .complete_run(run_id, queued.fallback_completed_at.clone(), false)
+            .complete_run(
+                run_id,
+                queued.fallback_completed_at.clone(),
+                SyncRunCompletion::UnknownFailure,
+            )
             .map_err(|_| {
                 lifecycle.admission = SyncRunAdmission::RecoveryClosed;
                 lifecycle.run = RegisteredSyncRun::Queued(queued.clone());
@@ -532,7 +536,7 @@ impl KernelRuntime {
     pub(crate) fn finalize_running_sync_run(
         &self,
         run_id: crate::contract::RunId,
-        succeeded: bool,
+        completion: SyncRunCompletion,
         completed_at: Rfc3339Utc,
         mutation: &MutationPermit<'_>,
     ) -> Result<Option<SyncTerminalPublication>, WorkspaceRunLifecycleError> {
@@ -573,8 +577,13 @@ impl KernelRuntime {
         let status = if transition_cancelled || running.cancellation.is_cancelled() {
             self.sync_status.complete_cancelled(run_id)
         } else {
+            let completion = if naturally_admissible {
+                completion
+            } else {
+                SyncRunCompletion::UnknownFailure
+            };
             self.sync_status
-                .complete_run(run_id, completed_at, succeeded && naturally_admissible)
+                .complete_run(run_id, completed_at, completion)
         }
         .map_err(|_| {
             lifecycle.admission = SyncRunAdmission::RecoveryClosed;
@@ -612,7 +621,11 @@ impl KernelRuntime {
         };
         let status = self
             .sync_status
-            .complete_run(run_id, queued.fallback_completed_at.clone(), false)
+            .complete_run(
+                run_id,
+                queued.fallback_completed_at.clone(),
+                SyncRunCompletion::UnknownFailure,
+            )
             .map_err(|_| {
                 lifecycle.admission = SyncRunAdmission::RecoveryClosed;
                 lifecycle.run = RegisteredSyncRun::Queued(queued.clone());

@@ -1232,8 +1232,8 @@ mod tests {
             &self,
             _config: SyncConfig,
             _context: crate::services::sync::SyncRunContext,
-        ) -> Result<(), SyncExecutionError> {
-            Ok(())
+        ) -> Result<crate::contract::SyncSummaryDto, SyncExecutionError> {
+            Ok(crate::contract::SyncSummaryDto::empty())
         }
     }
 }

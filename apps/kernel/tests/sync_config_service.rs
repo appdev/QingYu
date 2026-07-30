@@ -18,9 +18,10 @@ use qingyu_kernel::{
     config::KernelConfig,
     contract::{
         ApiErrorEnvelope, CredentialChange, DomainEvent, ErrorCode, ErrorDetails,
-        PatchSyncConfigRequest, ResourceRefDto, Revision, Rfc3339Utc, RunId, SyncCompletionState,
-        SyncConfigChangesDto, SyncConfigReadiness, SyncProvider, SyncTrigger,
-        TriggerSyncRunRequest, WorkspaceDto,
+        PatchSyncConfigRequest, ResourceRefDto, Revision, Rfc3339Utc, RunId, SafeUnsignedInteger,
+        SyncCompletionState, SyncConfigChangesDto, SyncConfigReadiness, SyncProvider,
+        SyncSafeErrorCategory, SyncSafeErrorCode, SyncSafeErrorDto, SyncSafeErrorOperation,
+        SyncSummaryDto, SyncTrigger, TriggerSyncRunRequest, WorkspaceDto,
     },
     events::{EventPublication, EventSink, EventSinkError},
     paths::KernelPaths,
@@ -74,8 +75,8 @@ impl SyncExecutor for RecordingExecutor {
         &self,
         _config: SyncConfig,
         _context: SyncRunContext,
-    ) -> Result<(), SyncExecutionError> {
-        Ok(())
+    ) -> Result<SyncSummaryDto, SyncExecutionError> {
+        Ok(SyncSummaryDto::empty())
     }
 }
 
@@ -278,9 +279,9 @@ impl SyncExecutor for CountingExecutor {
         &self,
         _config: SyncConfig,
         _context: SyncRunContext,
-    ) -> Result<(), SyncExecutionError> {
+    ) -> Result<SyncSummaryDto, SyncExecutionError> {
         self.runs.fetch_add(1, Ordering::Relaxed);
-        Ok(())
+        Ok(SyncSummaryDto::empty())
     }
 }
 
@@ -316,8 +317,8 @@ impl SyncExecutor for BlockingConnectionExecutor {
         &self,
         _config: SyncConfig,
         _context: SyncRunContext,
-    ) -> Result<(), SyncExecutionError> {
-        Ok(())
+    ) -> Result<SyncSummaryDto, SyncExecutionError> {
+        Ok(SyncSummaryDto::empty())
     }
 }
 
@@ -331,11 +332,11 @@ impl SyncExecutor for BlockingExecutor {
         &self,
         _config: SyncConfig,
         _context: SyncRunContext,
-    ) -> Result<(), SyncExecutionError> {
+    ) -> Result<SyncSummaryDto, SyncExecutionError> {
         self.runs.fetch_add(1, Ordering::Relaxed);
         self.started.notify_one();
         self.release.notified().await;
-        Ok(())
+        Ok(SyncSummaryDto::empty())
     }
 }
 
@@ -347,16 +348,48 @@ impl SyncExecutor for ManualExecutor {
 
     async fn run(
         &self,
-        _config: SyncConfig,
+        config: SyncConfig,
         _context: SyncRunContext,
-    ) -> Result<(), SyncExecutionError> {
+    ) -> Result<SyncSummaryDto, SyncExecutionError> {
         self.runs.fetch_add(1, Ordering::Relaxed);
         self.completed.notify_one();
         if self.fail.load(Ordering::Relaxed) {
-            Err(SyncExecutionError)
+            Err(SyncExecutionError::unknown(config.provider()))
         } else {
-            Ok(())
+            Ok(SyncSummaryDto::empty())
         }
+    }
+}
+
+#[derive(Default)]
+struct ClassifiedFailureExecutor {
+    completed: Notify,
+}
+
+#[async_trait]
+impl SyncExecutor for ClassifiedFailureExecutor {
+    async fn test_connection(&self, _config: SyncConfig) -> Result<(), SyncExecutionError> {
+        Ok(())
+    }
+
+    async fn run(
+        &self,
+        config: SyncConfig,
+        _context: SyncRunContext,
+    ) -> Result<SyncSummaryDto, SyncExecutionError> {
+        self.completed.notify_one();
+        let mut partial = SyncSummaryDto::empty();
+        partial.scanned_files = SafeUnsignedInteger::new(2).unwrap();
+        partial.uploaded_files = SafeUnsignedInteger::new(1).unwrap();
+        Err(SyncExecutionError::new(
+            SyncSafeErrorDto::new(
+                config.provider(),
+                SyncSafeErrorOperation::UploadObject,
+                SyncSafeErrorCode::RemoteUnavailable,
+            )
+            .with_category(SyncSafeErrorCategory::Network),
+        )
+        .with_partial_summary(partial))
     }
 }
 
@@ -393,7 +426,7 @@ impl SyncExecutor for ContextBindingExecutor {
         &self,
         _config: SyncConfig,
         context: SyncRunContext,
-    ) -> Result<(), SyncExecutionError> {
+    ) -> Result<SyncSummaryDto, SyncExecutionError> {
         self.observed.lock().unwrap().push((
             context.workspace().clone(),
             context.snapshot_identity(),
@@ -402,7 +435,7 @@ impl SyncExecutor for ContextBindingExecutor {
         ));
         self.started.notify_one();
         self.release.notified().await;
-        Ok(())
+        Ok(SyncSummaryDto::empty())
     }
 }
 
@@ -421,10 +454,10 @@ impl SyncExecutor for CancellationAwareExecutor {
         &self,
         _config: SyncConfig,
         context: SyncRunContext,
-    ) -> Result<(), SyncExecutionError> {
+    ) -> Result<SyncSummaryDto, SyncExecutionError> {
         self.started.notify_one();
         context.cancellation().cancelled().await;
-        Ok(())
+        Ok(SyncSummaryDto::empty())
     }
 }
 
@@ -474,13 +507,13 @@ struct ReadyRunFuture<'a> {
 }
 
 impl std::future::Future for ReadyRunFuture<'_> {
-    type Output = Result<(), SyncExecutionError>;
+    type Output = Result<SyncSummaryDto, SyncExecutionError>;
 
     fn poll(
         self: Pin<&mut Self>,
         _context: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Self::Output> {
-        std::task::Poll::Ready(Ok(()))
+        std::task::Poll::Ready(Ok(SyncSummaryDto::empty()))
     }
 }
 
@@ -510,7 +543,11 @@ impl SyncExecutor for DropRetainingExecutor {
         _config: SyncConfig,
         context: SyncRunContext,
     ) -> Pin<
-        Box<dyn std::future::Future<Output = Result<(), SyncExecutionError>> + Send + 'async_trait>,
+        Box<
+            dyn std::future::Future<Output = Result<SyncSummaryDto, SyncExecutionError>>
+                + Send
+                + 'async_trait,
+        >,
     >
     where
         'life0: 'async_trait,
@@ -533,11 +570,11 @@ impl SyncExecutor for PanicOnceExecutor {
         &self,
         _config: SyncConfig,
         _context: SyncRunContext,
-    ) -> Result<(), SyncExecutionError> {
+    ) -> Result<SyncSummaryDto, SyncExecutionError> {
         if self.runs.fetch_add(1, Ordering::SeqCst) == 0 {
             panic!("deterministic executor panic");
         }
-        Ok(())
+        Ok(SyncSummaryDto::empty())
     }
 }
 
@@ -551,12 +588,12 @@ impl SyncExecutor for GatedCancellationExecutor {
         &self,
         _config: SyncConfig,
         context: SyncRunContext,
-    ) -> Result<(), SyncExecutionError> {
+    ) -> Result<SyncSummaryDto, SyncExecutionError> {
         self.started.notify_one();
         context.cancellation().cancelled().await;
         self.cancellation_seen.notify_one();
         self.release.notified().await;
-        Ok(())
+        Ok(SyncSummaryDto::empty())
     }
 }
 
@@ -583,7 +620,7 @@ impl SyncExecutor for CancellationContextExecutor {
         &self,
         _config: SyncConfig,
         context: SyncRunContext,
-    ) -> Result<(), SyncExecutionError> {
+    ) -> Result<SyncSummaryDto, SyncExecutionError> {
         self.sender
             .lock()
             .unwrap()
@@ -592,7 +629,7 @@ impl SyncExecutor for CancellationContextExecutor {
             .send(context.cancellation().clone())
             .unwrap();
         self.release.notified().await;
-        Ok(())
+        Ok(SyncSummaryDto::empty())
     }
 }
 
@@ -1858,6 +1895,49 @@ async fn manual_run_is_spawned_once_and_completes_with_safe_status_events() {
             assert!(!serialized.contains(secret));
         }
     }
+}
+
+#[tokio::test]
+async fn executor_failure_preserves_partial_summary_and_classified_safe_error() {
+    let temporary = tempdir().unwrap();
+    let (runtime, _workspace, durable) = active_sync_runtime(temporary.path(), test_ports()).await;
+    let executor = Arc::new(ClassifiedFailureExecutor::default());
+    let service = SyncService::new(
+        runtime,
+        Arc::new(SyncConfigStore::new(durable).unwrap()),
+        executor.clone(),
+    );
+    let config = SyncApiService::get_sync_config(&service).await.unwrap();
+
+    let accepted = SyncApiService::trigger_sync_run(
+        &service,
+        TriggerSyncRunRequest {
+            expected_config_revision: config.revision,
+        },
+    )
+    .await
+    .unwrap();
+    executor.completed.notified().await;
+    let mut terminal = None;
+    for _attempt in 0..100 {
+        let status = SyncApiService::get_sync_status(&service).await.unwrap();
+        if status.completion_state == SyncCompletionState::Failed {
+            terminal = Some(status);
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    let terminal = terminal.expect("classified failure should reach terminal status");
+
+    let summary = terminal.summary.as_ref().expect("partial summary");
+    assert_eq!(summary.scanned_files.get(), 2);
+    assert_eq!(summary.uploaded_files.get(), 1);
+    let error = terminal.error.as_ref().expect("safe error");
+    assert_eq!(error.category(), Some("network"));
+    assert_eq!(error.code(), "remote_unavailable");
+    assert_eq!(error.operation(), "upload_object");
+    assert_eq!(error.provider(), SyncProvider::S3);
+    assert_eq!(error.run_id(), Some(accepted.run_id));
 }
 
 #[tokio::test]

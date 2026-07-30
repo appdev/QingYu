@@ -23,7 +23,9 @@ use crate::{
     contract::{
         DomainEvent, ErrorCode, ErrorDetails, Nullable, PatchSyncConfigRequest, ResourceRefDto,
         RunId, SyncConfigReadiness, SyncConfigViewDto, SyncConnectionTestDto, SyncRunAcceptedDto,
-        SyncStatusDto, SyncTrigger, TestSyncConnectionRequest, TriggerSyncRunRequest,
+        SyncSafeErrorCategory, SyncSafeErrorCode, SyncSafeErrorDto, SyncSafeErrorOperation,
+        SyncStatusDto, SyncSummaryDto, SyncTrigger, TestSyncConnectionRequest,
+        TriggerSyncRunRequest,
     },
     events::{EventPublication, EventSink as _},
     ports::BoxTaskFuture,
@@ -33,7 +35,7 @@ use crate::{
         SyncConfigStoreErrorKind,
     },
     sync::editing::SyncEditingRegistry,
-    sync::status::SyncStatusState,
+    sync::status::{SyncRunCompletion, SyncStatusState},
 };
 
 #[async_trait]
@@ -43,7 +45,7 @@ pub trait SyncExecutor: Send + Sync {
         &self,
         config: SyncConfig,
         context: SyncRunContext,
-    ) -> Result<(), SyncExecutionError>;
+    ) -> Result<SyncSummaryDto, SyncExecutionError>;
 }
 
 pub struct SyncRunContext {
@@ -125,6 +127,11 @@ impl SyncRunContext {
         self.snapshot.identity()
     }
 
+    #[allow(dead_code)] // Consumed by the Kernel-owned sync scope extraction.
+    pub(crate) fn workspace_authority(&self) -> &Arc<crate::runtime::ActiveWorkspaceAuthority> {
+        self.snapshot.authority()
+    }
+
     pub const fn cancellation(&self) -> &SyncCancellation {
         &self.cancellation
     }
@@ -136,8 +143,55 @@ impl fmt::Debug for SyncRunContext {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct SyncExecutionError;
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SyncExecutionError {
+    error: SyncSafeErrorDto,
+    partial_summary: Option<SyncSummaryDto>,
+}
+
+impl SyncExecutionError {
+    pub fn new(error: SyncSafeErrorDto) -> Self {
+        Self {
+            error,
+            partial_summary: None,
+        }
+    }
+
+    pub fn unknown(provider: crate::contract::SyncProvider) -> Self {
+        Self::new(
+            SyncSafeErrorDto::new(
+                provider,
+                SyncSafeErrorOperation::SyncRun,
+                SyncSafeErrorCode::Unknown,
+            )
+            .with_category(SyncSafeErrorCategory::Provider),
+        )
+    }
+
+    pub fn with_partial_summary(mut self, partial_summary: SyncSummaryDto) -> Self {
+        self.partial_summary = Some(partial_summary);
+        self
+    }
+
+    fn into_completion(
+        self,
+        provider: crate::contract::SyncProvider,
+        run_id: RunId,
+    ) -> SyncRunCompletion {
+        if self.error.provider() != provider || self.error.run_id().is_some_and(|id| id != run_id) {
+            return SyncRunCompletion::UnknownFailure;
+        }
+        let error = if self.error.run_id().is_none() {
+            self.error.with_run_id(run_id)
+        } else {
+            self.error
+        };
+        SyncRunCompletion::Failed {
+            error: Box::new(error),
+            partial_summary: self.partial_summary,
+        }
+    }
+}
 
 impl fmt::Display for SyncExecutionError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -414,6 +468,7 @@ impl SyncApiService for SyncService {
                 }
                 Ok(SyncRunClaim::Rejected(None)) | Err(_) => return,
             };
+            let provider = config.provider();
             let mut run = executor.run(config, SyncRunContext::new(claimed));
             let result = poll_fn(|context| {
                 match catch_unwind(AssertUnwindSafe(|| run.as_mut().poll(context))) {
@@ -430,13 +485,13 @@ impl SyncApiService for SyncService {
                 .clock()
                 .now()
                 .unwrap_or(fallback_completed_at);
+            let completion = match result {
+                Ok(Ok(summary)) => SyncRunCompletion::Succeeded(summary),
+                Ok(Err(error)) => error.into_completion(provider, run_id),
+                Err(()) => SyncRunCompletion::UnknownFailure,
+            };
             let terminal = runtime
-                .finalize_running_sync_run(
-                    run_id,
-                    matches!(result, Ok(Ok(()))),
-                    completed_at,
-                    &mutation,
-                )
+                .finalize_running_sync_run(run_id, completion, completed_at, &mutation)
                 .ok()
                 .flatten();
             drop(mutation);

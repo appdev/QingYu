@@ -107,6 +107,8 @@ pub struct InvalidWorkspaceGeneration;
 pub struct SafeUnsignedInteger(u64);
 
 impl SafeUnsignedInteger {
+    pub const ZERO: Self = Self(0);
+
     pub const fn new(value: u64) -> Result<Self, UnsafeWireInteger> {
         if value > MAX_SAFE_INTEGER {
             return Err(UnsafeWireInteger);
@@ -1500,6 +1502,20 @@ pub struct SyncSummaryDto {
     pub scanned_files: SafeUnsignedInteger,
     pub skipped_files: SafeUnsignedInteger,
     pub uploaded_files: SafeUnsignedInteger,
+}
+
+impl SyncSummaryDto {
+    pub const fn empty() -> Self {
+        Self {
+            bytes_downloaded: SafeUnsignedInteger::ZERO,
+            bytes_uploaded: SafeUnsignedInteger::ZERO,
+            conflict_files: SafeUnsignedInteger::ZERO,
+            downloaded_files: SafeUnsignedInteger::ZERO,
+            scanned_files: SafeUnsignedInteger::ZERO,
+            skipped_files: SafeUnsignedInteger::ZERO,
+            uploaded_files: SafeUnsignedInteger::ZERO,
+        }
+    }
 }
 
 macro_rules! sync_safe_value_enum {

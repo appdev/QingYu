@@ -538,13 +538,13 @@ impl SyncExecutor for GatedCancellationExecutor {
         &self,
         _config: SyncConfig,
         context: SyncRunContext,
-    ) -> Result<(), SyncExecutionError> {
+    ) -> Result<qingyu_kernel::contract::SyncSummaryDto, SyncExecutionError> {
         self.runs.fetch_add(1, Ordering::SeqCst);
         self.started.notify_one();
         context.cancellation().cancelled().await;
         self.cancellation_seen.notify_one();
         self.release.notified().await;
-        Ok(())
+        Ok(qingyu_kernel::contract::SyncSummaryDto::empty())
     }
 }
 
