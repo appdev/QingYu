@@ -17,7 +17,7 @@ use crate::{
     },
     host::native::NativeHostWorkspaceState,
     paths::{open_or_create_child, KernelPaths},
-    ports::KernelPorts,
+    ports::system::system_kernel_ports,
     runtime::{KernelRuntime, ServiceFailure, SystemApiService},
     services::workspace::WorkspaceService,
     settings::{service::SettingsService, storage::AtomicJsonSettingsStore},
@@ -46,7 +46,7 @@ pub async fn compose_fixed_native_kernel(
     let display_name = workspace_state.display_name().to_owned();
     let managed =
         ManagedWorkspaceCollection::from_paths(&paths).map_err(|_| NativeCompositionError)?;
-    let runtime = KernelRuntime::activate(config, paths, KernelPorts::unavailable())
+    let runtime = KernelRuntime::activate(config, paths, system_kernel_ports())
         .map_err(|_| NativeCompositionError)?;
     let settings_store = Arc::new(
         AtomicJsonSettingsStore::new(
