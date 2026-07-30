@@ -1,6 +1,7 @@
 import type { FetchLike } from "@markra/kernel-client";
 import type {
   KernelDocumentLocator,
+  KernelDomainPort,
   KernelHistorySnapshotId,
   KernelPageCursor,
   KernelRevision,
@@ -861,6 +862,211 @@ describe("desktop Kernel domain adapter", () => {
     await expect(adapter.port.workspace.read()).rejects.toMatchObject({ code: "released" });
     expect(release).toHaveBeenCalledOnce();
   });
+
+  it("routes settings and sync through the authenticated Kernel with explicit revisions", async () => {
+    const requests: Array<{ body: unknown; method: string; pathname: string }> = [];
+    const fetch: FetchLike = async (url, init = {}) => {
+      const pathname = new URL(url).pathname;
+      if (pathname === "/api/v1/settings") {
+        requests.push({
+          body: init.body === undefined ? undefined : JSON.parse(String(init.body)),
+          method: String(init.method),
+          pathname,
+        });
+        return jsonResponse(settingsBody(init.method === "PATCH" ? "settings-2" : "settings-1"));
+      }
+      if (pathname === "/api/v1/sync/config") {
+        requests.push({
+          body: init.body === undefined ? undefined : JSON.parse(String(init.body)),
+          method: String(init.method),
+          pathname,
+        });
+        return jsonResponse(syncConfigBody(init.method === "PATCH" ? "sync-2" : "sync-1"));
+      }
+      if (pathname === "/api/v1/sync/connection-test") {
+        requests.push({ body: JSON.parse(String(init.body)), method: String(init.method), pathname });
+        return jsonResponse({
+          checkedTarget: "s3://redacted",
+          configRevision: "sync-2",
+          provider: "s3",
+        });
+      }
+      if (pathname === "/api/v1/sync/status") {
+        requests.push({ body: undefined, method: String(init.method), pathname });
+        return jsonResponse({
+          activeRunId: null,
+          completionState: "idle",
+          configRevision: "sync-2",
+          error: null,
+          lastAttemptAt: null,
+          lastSuccessfulSyncAt: null,
+          lastTrigger: null,
+          provider: "s3",
+          summary: null,
+        });
+      }
+      if (pathname === "/api/v1/sync/runs") {
+        requests.push({ body: JSON.parse(String(init.body)), method: String(init.method), pathname });
+        return jsonResponse({
+          acceptedAt: "2026-07-30T00:00:00Z",
+          configRevision: "sync-2",
+          runId: "123e4567-e89b-42d3-a456-426614174060",
+        }, 202);
+      }
+      return handshakeResponse(pathname);
+    };
+    const adapter = await createDesktopKernelDomainAdapter(connection(), { fetch });
+
+    await expect(adapter.port.settings.read()).resolves.toEqual(settingsBody("settings-1"));
+    await expect(adapter.port.settings.patch({
+      expectedRevision: "settings-1" as KernelRevision,
+      token: "must-not-cross-the-domain-boundary",
+      values: [{ key: "language", value: { type: "string", value: "zh-CN" } }],
+    } as Parameters<typeof adapter.port.settings.patch>[0])).resolves.toEqual(
+      settingsBody("settings-2"),
+    );
+    await expect(adapter.port.sync.readConfig()).resolves.toEqual(syncConfigBody("sync-1"));
+    await expect(adapter.port.sync.patchConfig({
+      baseUrl: "http://must-not-cross.invalid",
+      changes: { enabled: true, token: "must-not-cross" },
+      expectedRevision: "sync-1" as KernelRevision,
+    } as Parameters<typeof adapter.port.sync.patchConfig>[0])).resolves.toMatchObject({
+      revision: "sync-2",
+    });
+    await expect(adapter.port.sync.testConnection({
+      changes: {
+        endpoint: "must-not-cross",
+        s3AccessKeyId: { operation: "keep", token: "must-not-cross" },
+      },
+      expectedRevision: "sync-2" as KernelRevision,
+    } as Parameters<typeof adapter.port.sync.testConnection>[0])).resolves.toEqual({
+      checkedTarget: "s3://redacted",
+      configRevision: "sync-2",
+      provider: "s3",
+    });
+    await expect(adapter.port.sync.readStatus()).resolves.toMatchObject({
+      completionState: "idle",
+      configRevision: "sync-2",
+    });
+    await expect(
+      adapter.port.sync.trigger("sync-2" as KernelRevision),
+    ).resolves.toMatchObject({ configRevision: "sync-2" });
+
+    expect(requests).toEqual([
+      { body: undefined, method: "GET", pathname: "/api/v1/settings" },
+      {
+        body: {
+          expectedRevision: "settings-1",
+          values: [{ key: "language", value: { type: "string", value: "zh-CN" } }],
+        },
+        method: "PATCH",
+        pathname: "/api/v1/settings",
+      },
+      { body: undefined, method: "GET", pathname: "/api/v1/sync/config" },
+      {
+        body: { changes: { enabled: true }, expectedRevision: "sync-1" },
+        method: "PATCH",
+        pathname: "/api/v1/sync/config",
+      },
+      {
+        body: {
+          changes: { s3AccessKeyId: { operation: "keep" } },
+          expectedRevision: "sync-2",
+        },
+        method: "POST",
+        pathname: "/api/v1/sync/connection-test",
+      },
+      { body: undefined, method: "GET", pathname: "/api/v1/sync/status" },
+      {
+        body: { expectedConfigRevision: "sync-2" },
+        method: "POST",
+        pathname: "/api/v1/sync/runs",
+      },
+    ]);
+    expect(JSON.stringify(requests)).not.toContain(CREDENTIAL);
+    expect(JSON.stringify(requests)).not.toContain(BASE_URL);
+  });
+
+  it.each([
+    ["settings read", (port: KernelDomainPort) => port.settings.read()],
+    [
+      "settings patch",
+      (port: KernelDomainPort) =>
+        port.settings.patch({
+          expectedRevision: "settings-1" as KernelRevision,
+          values: [],
+        }),
+    ],
+    ["sync config read", (port: KernelDomainPort) => port.sync.readConfig()],
+    [
+      "sync config patch",
+      (port: KernelDomainPort) =>
+        port.sync.patchConfig({ changes: {}, expectedRevision: "sync-1" as KernelRevision }),
+    ],
+    ["sync status read", (port: KernelDomainPort) => port.sync.readStatus()],
+    [
+      "sync connection test",
+      (port: KernelDomainPort) =>
+        port.sync.testConnection({ changes: {}, expectedRevision: "sync-1" as KernelRevision }),
+    ],
+    [
+      "sync trigger",
+      (port: KernelDomainPort) => port.sync.trigger("sync-1" as KernelRevision),
+    ],
+  ])("blocks %s before transport when workspace identity drifted", async (_name, operation) => {
+    let workspaceReads = 0;
+    let domainRequests = 0;
+    const release = vi.fn(() => undefined);
+    const fetch: FetchLike = async (url) => {
+      const pathname = new URL(url).pathname;
+      if (pathname === "/api/v1/workspace") {
+        workspaceReads += 1;
+        return jsonResponse(workspaceReads === 1 ? workspaceBody() : {
+          ...workspaceBody(),
+          generation: "123e4567-e89b-42d3-a456-426614174099",
+        });
+      }
+      if (pathname === "/api/v1/settings" || pathname.startsWith("/api/v1/sync/")) {
+        domainRequests += 1;
+      }
+      return handshakeResponse(pathname);
+    };
+    const adapter = await createDesktopKernelDomainAdapter(connection({ release }), { fetch });
+
+    await expect(operation(adapter.port)).rejects.toMatchObject({ code: "protocol-mismatch" });
+    expect(domainRequests).toBe(0);
+    expect(release).toHaveBeenCalledOnce();
+  });
+
+  it("closes after a settings mutation if the postflight workspace identity drifts", async () => {
+    let workspaceReads = 0;
+    let settingsRequests = 0;
+    const release = vi.fn(() => undefined);
+    const fetch: FetchLike = async (url) => {
+      const pathname = new URL(url).pathname;
+      if (pathname === "/api/v1/workspace") {
+        workspaceReads += 1;
+        return jsonResponse(workspaceReads <= 2 ? workspaceBody() : {
+          ...workspaceBody(),
+          id: "123e4567-e89b-42d3-a456-426614174099",
+        });
+      }
+      if (pathname === "/api/v1/settings") {
+        settingsRequests += 1;
+        return jsonResponse(settingsBody("settings-2"));
+      }
+      return handshakeResponse(pathname);
+    };
+    const adapter = await createDesktopKernelDomainAdapter(connection({ release }), { fetch });
+
+    await expect(adapter.port.settings.patch({
+      expectedRevision: "settings-1" as KernelRevision,
+      values: [],
+    })).rejects.toMatchObject({ code: "protocol-mismatch" });
+    expect(settingsRequests).toBe(1);
+    await expect(adapter.port.sync.readStatus()).rejects.toMatchObject({ code: "released" });
+    expect(release).toHaveBeenCalledOnce();
+  });
 });
 
 type ExplicitDesktopKernelConnection = Extract<
@@ -925,6 +1131,43 @@ function workspaceBody() {
     id: WORKSPACE_ID,
     readiness: "ready" as const,
     revision: "workspace-revision-1",
+  };
+}
+
+function settingsBody(revision: string) {
+  return {
+    revision,
+    values: [{ key: "language" as const, value: { type: "string" as const, value: "zh-CN" } }],
+  };
+}
+
+function syncConfigBody(revision: string) {
+  return {
+    configured: true,
+    enabled: true,
+    generateConflictDocument: true,
+    intervalSeconds: 300,
+    issues: [],
+    mode: "automatic" as const,
+    provider: "s3" as const,
+    readiness: "ready" as const,
+    remoteRoot: "qingyu",
+    revision,
+    s3: {
+      accessKeyId: { present: true },
+      addressingStyle: "path" as const,
+      bucket: "notes",
+      endpointUrl: { redacted: true, value: null },
+      region: "test-1",
+      requestTimeoutSeconds: 60,
+      secretAccessKey: { present: true },
+      tlsVerification: "verify" as const,
+    },
+    webdav: {
+      password: { present: false },
+      serverUrl: { redacted: false, value: null },
+      username: "",
+    },
   };
 }
 

@@ -16,6 +16,7 @@ import type {
   KernelRuntimeSnapshot,
   KernelSearchDocumentsInput,
   KernelSearchPageSnapshot,
+  KernelSyncSafeErrorSnapshot,
   KernelUpdateDocumentInput,
   KernelWorkspaceGeneration,
   KernelWorkspaceRelativePath,
@@ -43,6 +44,8 @@ describe("KernelDomainPort", () => {
     expectTypeOf<Extract<keyof KernelSearchPageSnapshot, ForbiddenHostKey>>()
       .toEqualTypeOf<never>();
     expectTypeOf<Extract<keyof KernelHistoryPageSnapshot, ForbiddenHostKey>>()
+      .toEqualTypeOf<never>();
+    expectTypeOf<Extract<keyof KernelSyncSafeErrorSnapshot, "objectId">>()
       .toEqualTypeOf<never>();
   });
 
@@ -122,6 +125,30 @@ describe("KernelDomainPort", () => {
     await expect(port.workspace.read()).rejects.toMatchObject({
       name: "KernelDomainUnavailableError",
     });
+    await expect(port.settings.read()).rejects.toMatchObject({
+      name: "KernelDomainUnavailableError",
+    });
+    await expect(port.settings.patch({
+      expectedRevision: "settings-revision" as KernelRevision,
+      values: [],
+    })).rejects.toMatchObject({ name: "KernelDomainUnavailableError" });
+    await expect(port.sync.readConfig()).rejects.toMatchObject({
+      name: "KernelDomainUnavailableError",
+    });
+    await expect(port.sync.patchConfig({
+      changes: {},
+      expectedRevision: "sync-revision" as KernelRevision,
+    })).rejects.toMatchObject({ name: "KernelDomainUnavailableError" });
+    await expect(port.sync.readStatus()).rejects.toMatchObject({
+      name: "KernelDomainUnavailableError",
+    });
+    await expect(port.sync.testConnection({
+      changes: {},
+      expectedRevision: "sync-revision" as KernelRevision,
+    })).rejects.toMatchObject({ name: "KernelDomainUnavailableError" });
+    await expect(
+      port.sync.trigger("sync-revision" as KernelRevision),
+    ).rejects.toMatchObject({ name: "KernelDomainUnavailableError" });
     await expect(
       port.documents.list({
         workspaceGeneration: "generation" as KernelWorkspaceGeneration,

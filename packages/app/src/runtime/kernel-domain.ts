@@ -176,6 +176,177 @@ export type KernelRestoreDocumentHistoryInput = KernelReadDocumentInput & {
   snapshotId: KernelHistorySnapshotId;
 };
 
+export type KernelFontFamilyValue =
+  | { family: string | null; source: "theme" }
+  | { family: string; source: "system" };
+
+export type KernelSettingKey =
+  | "appearance.mode"
+  | "appearance.lightTheme"
+  | "appearance.darkTheme"
+  | "theme.customCss.light"
+  | "theme.customCss.dark"
+  | "language"
+  | "editor.bodyFontSize"
+  | "editor.contentWidth"
+  | "editor.contentWidthPx"
+  | "editor.fontFamily"
+  | "editor.lineHeight"
+  | "editor.paragraphSpacingPx"
+  | "editor.showWordCount"
+  | "editor.wrapCodeBlocks"
+  | "editor.viewMode"
+  | "files.ignoreRules"
+  | "export.fontFamily"
+  | "export.pdfAuthor"
+  | "export.pdfFooter"
+  | "export.pdfHeader"
+  | "export.pdfHeightMm"
+  | "export.pdfWidthMm"
+  | "export.pdfMarginMm"
+  | "export.pdfMarginPreset"
+  | "export.pdfPageBreakOnH1"
+  | "export.pdfPageSize";
+
+export type KernelSettingValue =
+  | { type: "boolean"; value: boolean }
+  | { type: "integer"; value: number }
+  | { type: "number"; value: number }
+  | { type: "string"; value: string }
+  | { type: "nullable-integer"; value: number | null }
+  | { type: "nullable-string"; value: string | null }
+  | { type: "font-family"; value: KernelFontFamilyValue };
+
+export type KernelSettingEntrySnapshot = {
+  key: KernelSettingKey;
+  value: KernelSettingValue;
+};
+
+export type KernelSettingsSnapshot = {
+  revision: KernelRevision;
+  values: KernelSettingEntrySnapshot[];
+};
+
+export type KernelPatchSettingsInput = {
+  expectedRevision: KernelRevision;
+  values: KernelSettingEntrySnapshot[];
+};
+
+export type KernelCredentialChange =
+  | { operation: "keep" | "clear" }
+  | { operation: "replace"; value: string };
+
+export type KernelSyncProvider = "s3" | "webdav";
+export type KernelSyncMode = "automatic" | "startup-exit" | "fully-manual";
+
+export type KernelSyncConfigChangesInput = {
+  enabled?: boolean;
+  generateConflictDocument?: boolean;
+  intervalSeconds?: number;
+  mode?: KernelSyncMode;
+  provider?: KernelSyncProvider;
+  remoteRoot?: string;
+  s3AccessKeyId?: KernelCredentialChange;
+  s3AddressingStyle?: "auto" | "path" | "virtual-hosted";
+  s3Bucket?: string;
+  s3EndpointUrl?: string;
+  s3Region?: string;
+  s3RequestTimeoutSeconds?: number;
+  s3SecretAccessKey?: KernelCredentialChange;
+  s3TlsVerification?: "verify" | "skip";
+  webdavPassword?: KernelCredentialChange;
+  webdavServerUrl?: string;
+  webdavUsername?: string;
+};
+
+export type KernelSyncIssueSnapshot = {
+  code: "required" | "invalid-url" | "unsafe-url-components" | "out-of-range" | "invalid-path";
+  field: string;
+  message: string;
+};
+
+export type KernelSyncConfigSnapshot = {
+  configured: boolean;
+  enabled: boolean;
+  generateConflictDocument: boolean;
+  intervalSeconds: number;
+  issues: KernelSyncIssueSnapshot[];
+  mode: KernelSyncMode;
+  provider: KernelSyncProvider;
+  readiness: "disabled" | "incomplete" | "ready";
+  remoteRoot: string;
+  revision: KernelRevision;
+  s3: {
+    accessKeyId: { present: boolean };
+    addressingStyle: "auto" | "path" | "virtual-hosted";
+    bucket: string;
+    endpointUrl: { redacted: boolean; value: string | null };
+    region: string;
+    requestTimeoutSeconds: number;
+    secretAccessKey: { present: boolean };
+    tlsVerification: "verify" | "skip";
+  };
+  webdav: {
+    password: { present: boolean };
+    serverUrl: { redacted: boolean; value: string | null };
+    username: string;
+  };
+};
+
+export type KernelPatchSyncConfigInput = {
+  changes: KernelSyncConfigChangesInput;
+  expectedRevision: KernelRevision;
+};
+
+export type KernelTestSyncConnectionInput = KernelPatchSyncConfigInput;
+
+export type KernelSyncConnectionTestSnapshot = {
+  checkedTarget: string;
+  configRevision: KernelRevision;
+  provider: KernelSyncProvider;
+};
+
+export type KernelSyncSummarySnapshot = {
+  bytesDownloaded: number;
+  bytesUploaded: number;
+  conflictFiles: number;
+  downloadedFiles: number;
+  scannedFiles: number;
+  skippedFiles: number;
+  uploadedFiles: number;
+};
+
+export type KernelSyncSafeErrorSnapshot = {
+  category?: string;
+  code: string;
+  httpStatus?: number;
+  method?: string;
+  operation: string;
+  provider: KernelSyncProvider;
+  providerErrorCode?: string;
+  relativePath?: KernelWorkspaceRelativePath;
+  requestId?: string;
+  runId?: string;
+};
+
+export type KernelSyncStatusSnapshot = {
+  activeRunId: string | null;
+  completionState: "idle" | "attempting" | "failed" | "succeeded";
+  configRevision: KernelRevision | null;
+  error: KernelSyncSafeErrorSnapshot | null;
+  lastAttemptAt: string | null;
+  lastSuccessfulSyncAt: string | null;
+  lastTrigger: "app-launch" | "interval" | "manual" | "save" | "settings-exit" | null;
+  provider: KernelSyncProvider;
+  summary: KernelSyncSummarySnapshot | null;
+};
+
+export type KernelSyncRunSnapshot = {
+  acceptedAt: string;
+  configRevision: KernelRevision;
+  runId: string;
+};
+
 export type KernelDomainPort = {
   availability: "available" | "unavailable";
   documents: {
@@ -193,6 +364,19 @@ export type KernelDomainPort = {
   };
   runtime: {
     read: () => Promise<KernelRuntimeSnapshot>;
+  };
+  settings: {
+    patch: (input: KernelPatchSettingsInput) => Promise<KernelSettingsSnapshot>;
+    read: () => Promise<KernelSettingsSnapshot>;
+  };
+  sync: {
+    patchConfig: (input: KernelPatchSyncConfigInput) => Promise<KernelSyncConfigSnapshot>;
+    readConfig: () => Promise<KernelSyncConfigSnapshot>;
+    readStatus: () => Promise<KernelSyncStatusSnapshot>;
+    testConnection: (
+      input: KernelTestSyncConnectionInput,
+    ) => Promise<KernelSyncConnectionTestSnapshot>;
+    trigger: (expectedConfigRevision: KernelRevision) => Promise<KernelSyncRunSnapshot>;
   };
   workspace: {
     read: () => Promise<KernelWorkspaceSnapshot>;
@@ -228,6 +412,17 @@ export function createUnavailableKernelDomainPort(): KernelDomainPort {
     },
     runtime: {
       read: rejectUnavailable,
+    },
+    settings: {
+      patch: rejectUnavailable,
+      read: rejectUnavailable,
+    },
+    sync: {
+      patchConfig: rejectUnavailable,
+      readConfig: rejectUnavailable,
+      readStatus: rejectUnavailable,
+      testConnection: rejectUnavailable,
+      trigger: rejectUnavailable,
     },
     workspace: {
       read: rejectUnavailable,

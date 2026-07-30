@@ -12,6 +12,12 @@ import type {
   KernelRuntimeCapabilities,
   KernelRuntimeSnapshot,
   KernelSearchPageSnapshot,
+  KernelSettingValue,
+  KernelSettingsSnapshot,
+  KernelSyncConfigSnapshot,
+  KernelSyncConnectionTestSnapshot,
+  KernelSyncRunSnapshot,
+  KernelSyncStatusSnapshot,
   KernelWorkspaceGeneration,
   KernelWorkspaceRelativePath,
   KernelWorkspaceSnapshot,
@@ -166,6 +172,10 @@ export async function createDesktopKernelDomainAdapter(
     const prepareDocumentOperation = async (candidate: KernelWorkspaceGeneration) => {
       assertActive();
       assertWorkspaceGeneration(candidate);
+      await confirmWorkspaceIdentity();
+    };
+    const prepareInstanceOperation = async () => {
+      assertActive();
       await confirmWorkspaceIdentity();
     };
     const port: KernelDomainPort = {
@@ -336,6 +346,68 @@ export async function createDesktopKernelDomainAdapter(
           return mapRuntime(current);
         },
       },
+      settings: {
+        patch: async (input) => {
+          await prepareInstanceOperation();
+          const settings = await client.settings.patch(mapSettingsPatchRequest(input), {
+            signal: requests.signal,
+          });
+          assertActive();
+          await confirmWorkspaceIdentity();
+          return mapSettings(settings);
+        },
+        read: async () => {
+          await prepareInstanceOperation();
+          const settings = await client.settings.get({ signal: requests.signal });
+          assertActive();
+          await confirmWorkspaceIdentity();
+          return mapSettings(settings);
+        },
+      },
+      sync: {
+        patchConfig: async (input) => {
+          await prepareInstanceOperation();
+          const config = await client.sync.patchConfig(mapSyncPatchRequest(input), {
+            signal: requests.signal,
+          });
+          assertActive();
+          await confirmWorkspaceIdentity();
+          return mapSyncConfig(config);
+        },
+        readConfig: async () => {
+          await prepareInstanceOperation();
+          const config = await client.sync.getConfig({ signal: requests.signal });
+          assertActive();
+          await confirmWorkspaceIdentity();
+          return mapSyncConfig(config);
+        },
+        readStatus: async () => {
+          await prepareInstanceOperation();
+          const status = await client.sync.getStatus({ signal: requests.signal });
+          assertActive();
+          await confirmWorkspaceIdentity();
+          return mapSyncStatus(status);
+        },
+        testConnection: async (input) => {
+          await prepareInstanceOperation();
+          const result = await client.sync.testConnection(mapSyncTestRequest(input), {
+            signal: requests.signal,
+          });
+          assertActive();
+          await confirmWorkspaceIdentity();
+          return mapSyncConnectionTest(result);
+        },
+        trigger: async (expectedConfigRevision) => {
+          await prepareInstanceOperation();
+          const run = await client.sync.trigger(
+            { expectedConfigRevision },
+            { signal: requests.signal },
+          );
+          assertActive();
+          await confirmWorkspaceIdentity();
+          return mapSyncRun(run);
+        },
+      },
       workspace: {
         read: async () => {
           assertActive();
@@ -367,6 +439,19 @@ type DocumentEntrySource = Awaited<ReturnType<KernelClient["documents"]["move"]>
 type DocumentPageSource = Awaited<ReturnType<KernelClient["documents"]["list"]>>;
 type HistoryPageSource = Awaited<ReturnType<KernelClient["documents"]["listHistory"]>>;
 type SearchPageSource = Awaited<ReturnType<KernelClient["workspace"]["search"]>>;
+type SettingsSource = Awaited<ReturnType<KernelClient["settings"]["get"]>>;
+type SyncConfigSource = Awaited<ReturnType<KernelClient["sync"]["getConfig"]>>;
+type SyncConnectionTestSource = Awaited<ReturnType<KernelClient["sync"]["testConnection"]>>;
+type SyncRunSource = Awaited<ReturnType<KernelClient["sync"]["trigger"]>>;
+type SyncStatusSource = Awaited<ReturnType<KernelClient["sync"]["getStatus"]>>;
+type SettingsPatchInput = Parameters<KernelDomainPort["settings"]["patch"]>[0];
+type SettingsPatchRequest = Parameters<KernelClient["settings"]["patch"]>[0];
+type SyncPatchInput = Parameters<KernelDomainPort["sync"]["patchConfig"]>[0];
+type SyncPatchRequest = Parameters<KernelClient["sync"]["patchConfig"]>[0];
+type SyncTestInput = Parameters<KernelDomainPort["sync"]["testConnection"]>[0];
+type SyncTestRequest = Parameters<KernelClient["sync"]["testConnection"]>[0];
+type SyncChangesInput = SyncPatchInput["changes"];
+type SyncChangesRequest = SyncPatchRequest["changes"];
 
 function matchesDesktopRuntime(runtime: RuntimeSource, instanceId: string) {
   return (
@@ -429,6 +514,219 @@ function mapWorkspace(workspace: WorkspaceSource): KernelWorkspaceSnapshot {
     id: workspace.id,
     readiness: workspace.readiness,
     revision: workspace.revision as KernelRevision,
+  };
+}
+
+function mapSettings(settings: SettingsSource): KernelSettingsSnapshot {
+  return {
+    revision: settings.revision as KernelRevision,
+    values: settings.values.map((entry) => ({
+      key: entry.key,
+      value: mapSettingValue(entry.value),
+    })),
+  };
+}
+
+function mapSettingsPatchRequest(input: SettingsPatchInput): SettingsPatchRequest {
+  return {
+    expectedRevision: input.expectedRevision,
+    values: input.values.map((entry) => ({
+      key: entry.key,
+      value: mapSettingValue(entry.value),
+    })),
+  };
+}
+
+function mapSyncPatchRequest(input: SyncPatchInput): SyncPatchRequest {
+  return {
+    changes: mapSyncChanges(input.changes),
+    expectedRevision: input.expectedRevision,
+  };
+}
+
+function mapSyncTestRequest(input: SyncTestInput): SyncTestRequest {
+  return {
+    changes: mapSyncChanges(input.changes),
+    expectedRevision: input.expectedRevision,
+  };
+}
+
+function mapSyncChanges(input: SyncChangesInput): SyncChangesRequest {
+  const changes: SyncChangesRequest = {};
+  if (input.enabled !== undefined) changes.enabled = input.enabled;
+  if (input.generateConflictDocument !== undefined) {
+    changes.generateConflictDocument = input.generateConflictDocument;
+  }
+  if (input.intervalSeconds !== undefined) changes.intervalSeconds = input.intervalSeconds;
+  if (input.mode !== undefined) changes.mode = input.mode;
+  if (input.provider !== undefined) changes.provider = input.provider;
+  if (input.remoteRoot !== undefined) changes.remoteRoot = input.remoteRoot;
+  if (input.s3AccessKeyId !== undefined) {
+    changes.s3AccessKeyId = mapCredentialChange(input.s3AccessKeyId);
+  }
+  if (input.s3AddressingStyle !== undefined) {
+    changes.s3AddressingStyle = input.s3AddressingStyle;
+  }
+  if (input.s3Bucket !== undefined) changes.s3Bucket = input.s3Bucket;
+  if (input.s3EndpointUrl !== undefined) changes.s3EndpointUrl = input.s3EndpointUrl;
+  if (input.s3Region !== undefined) changes.s3Region = input.s3Region;
+  if (input.s3RequestTimeoutSeconds !== undefined) {
+    changes.s3RequestTimeoutSeconds = input.s3RequestTimeoutSeconds;
+  }
+  if (input.s3SecretAccessKey !== undefined) {
+    changes.s3SecretAccessKey = mapCredentialChange(input.s3SecretAccessKey);
+  }
+  if (input.s3TlsVerification !== undefined) {
+    changes.s3TlsVerification = input.s3TlsVerification;
+  }
+  if (input.webdavPassword !== undefined) {
+    changes.webdavPassword = mapCredentialChange(input.webdavPassword);
+  }
+  if (input.webdavServerUrl !== undefined) {
+    changes.webdavServerUrl = input.webdavServerUrl;
+  }
+  if (input.webdavUsername !== undefined) changes.webdavUsername = input.webdavUsername;
+  return changes;
+}
+
+function mapCredentialChange(
+  change: NonNullable<SyncChangesInput["s3AccessKeyId"]>,
+): NonNullable<SyncChangesRequest["s3AccessKeyId"]> {
+  switch (change.operation) {
+    case "keep":
+      return { operation: change.operation };
+    case "clear":
+      return { operation: change.operation };
+    case "replace":
+      return { operation: change.operation, value: change.value };
+  }
+}
+
+function mapSettingValue(value: SettingsSource["values"][number]["value"]): KernelSettingValue {
+  switch (value.type) {
+    case "boolean":
+      return { type: value.type, value: value.value };
+    case "integer":
+      return { type: value.type, value: value.value };
+    case "number":
+      return { type: value.type, value: value.value };
+    case "string":
+      return { type: value.type, value: value.value };
+    case "nullable-integer":
+      return { type: value.type, value: value.value };
+    case "nullable-string":
+      return { type: value.type, value: value.value };
+    case "font-family":
+      return {
+        type: value.type,
+        value:
+          value.value.source === "theme"
+            ? {
+                family: value.value.family,
+                source: value.value.source,
+              }
+            : {
+                family: value.value.family,
+                source: value.value.source,
+              },
+      };
+  }
+}
+
+function mapSyncConfig(config: SyncConfigSource): KernelSyncConfigSnapshot {
+  return {
+    configured: config.configured,
+    enabled: config.enabled,
+    generateConflictDocument: config.generateConflictDocument,
+    intervalSeconds: config.intervalSeconds,
+    issues: config.issues.map((issue) => ({
+      code: issue.code,
+      field: issue.field,
+      message: issue.message,
+    })),
+    mode: config.mode,
+    provider: config.provider,
+    readiness: config.readiness,
+    remoteRoot: config.remoteRoot,
+    revision: config.revision as KernelRevision,
+    s3: {
+      accessKeyId: { present: config.s3.accessKeyId.present },
+      addressingStyle: config.s3.addressingStyle,
+      bucket: config.s3.bucket,
+      endpointUrl: {
+        redacted: config.s3.endpointUrl.redacted,
+        value: config.s3.endpointUrl.value,
+      },
+      region: config.s3.region,
+      requestTimeoutSeconds: config.s3.requestTimeoutSeconds,
+      secretAccessKey: { present: config.s3.secretAccessKey.present },
+      tlsVerification: config.s3.tlsVerification,
+    },
+    webdav: {
+      password: { present: config.webdav.password.present },
+      serverUrl: {
+        redacted: config.webdav.serverUrl.redacted,
+        value: config.webdav.serverUrl.value,
+      },
+      username: config.webdav.username,
+    },
+  };
+}
+
+function mapSyncConnectionTest(
+  result: SyncConnectionTestSource,
+): KernelSyncConnectionTestSnapshot {
+  return {
+    checkedTarget: result.checkedTarget,
+    configRevision: result.configRevision as KernelRevision,
+    provider: result.provider,
+  };
+}
+
+function mapSyncRun(run: SyncRunSource): KernelSyncRunSnapshot {
+  return {
+    acceptedAt: run.acceptedAt,
+    configRevision: run.configRevision as KernelRevision,
+    runId: run.runId,
+  };
+}
+
+function mapSyncStatus(status: SyncStatusSource): KernelSyncStatusSnapshot {
+  return {
+    activeRunId: status.activeRunId,
+    completionState: status.completionState,
+    configRevision: status.configRevision as KernelRevision | null,
+    error:
+      status.error === null
+        ? null
+        : {
+            category: status.error.category,
+            code: status.error.code,
+            httpStatus: status.error.httpStatus,
+            method: status.error.method,
+            operation: status.error.operation,
+            provider: status.error.provider,
+            providerErrorCode: status.error.providerErrorCode,
+            relativePath: status.error.relativePath as KernelWorkspaceRelativePath | undefined,
+            requestId: status.error.requestId,
+            runId: status.error.runId,
+          },
+    lastAttemptAt: status.lastAttemptAt,
+    lastSuccessfulSyncAt: status.lastSuccessfulSyncAt,
+    lastTrigger: status.lastTrigger,
+    provider: status.provider,
+    summary:
+      status.summary === null
+        ? null
+        : {
+            bytesDownloaded: status.summary.bytesDownloaded,
+            bytesUploaded: status.summary.bytesUploaded,
+            conflictFiles: status.summary.conflictFiles,
+            downloadedFiles: status.summary.downloadedFiles,
+            scannedFiles: status.summary.scannedFiles,
+            skippedFiles: status.summary.skippedFiles,
+            uploadedFiles: status.summary.uploadedFiles,
+          },
   };
 }
 
