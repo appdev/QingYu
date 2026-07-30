@@ -9,5 +9,5 @@ if [ "${1-}" != "--status" ]; then
 fi
 
 printf '%s\n' \
-  'BLOCKED(static-web-serving-required): qingyu-kernel server exposes the Kernel API but does not serve the Web build copied to /opt/qingyu/web.' >&2
+  'BLOCKED(web-kernel-runtime-required): qingyu-kernel serves /opt/qingyu/web on the API origin, but the Web entrypoint is not yet wired exclusively to KernelClient.' >&2
 exit 78

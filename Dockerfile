@@ -54,9 +54,10 @@ COPY --chmod=0555 deploy/docker/verify-final-web-assets.sh /usr/local/bin/qingyu
 
 RUN /usr/local/bin/qingyu-verify-final-web-assets /opt/qingyu/web
 
-LABEL dev.qingyu.image.kind="kernel-api-with-unserved-web-assets" \
-      dev.qingyu.image.phase-gate="static-web-serving-required" \
-      dev.qingyu.image.web-assets="/opt/qingyu/web"
+LABEL dev.qingyu.image.kind="kernel-api-with-served-web-assets" \
+      dev.qingyu.image.phase-gate="web-kernel-runtime-required" \
+      dev.qingyu.image.web-assets="/opt/qingyu/web" \
+      dev.qingyu.image.web-assets-served="true"
 
 USER 10001:10001
 WORKDIR /data

@@ -1,6 +1,6 @@
 # QingYu single-user Docker packaging
 
-This directory contains the first runnable Kernel image for the confirmed deployment model: one Docker deployment owns one user and one persistent `/data` volume. It is not yet a complete browser deployment.
+This directory contains the first runnable Kernel image for the confirmed deployment model: one Docker deployment owns one user and one persistent `/data` volume. Static same-origin Web delivery is implemented, but the browser bundle is not yet wired exclusively to `KernelClient`.
 
 ## Current boundary
 
@@ -11,9 +11,9 @@ The image now has a real server process boundary:
 - the final image runs `qingyu-kernel server --public-origin <exact HTTPS origin>` as UID/GID `10001:10001`;
 - the final image carries the Web build at `/opt/qingyu/web`.
 
-The Kernel currently exposes its authenticated JSON/WebSocket API and health routes on `0.0.0.0:3210`, but it does **not** serve `/opt/qingyu/web` or `apps/web/dist`. No Node or Vite server is added to hide that missing product boundary. Consequently, opening port 3210 in a browser does not deliver the QingYu Web application.
+The Kernel exposes its authenticated JSON/WebSocket API and health routes on `0.0.0.0:3210`. The same process serves `/opt/qingyu/web`, including real assets and the SPA fallback, so no Node or Vite server is present in the runtime image. Unknown `/api` routes stay JSON and never fall through to the Web entrypoint.
 
-`compose.contract.yaml` therefore keeps the service behind the `static-web-serving-required` profile, and `verify-runtime.sh --status` exits 78 with that blocker. The profile is an integration fixture, not a production deployment recommendation.
+`compose.contract.yaml` keeps the service behind the next `web-kernel-runtime-required` profile, and `verify-runtime.sh --status` exits 78 with that blocker. The served bundle still contains the legacy browser-local runtime until the Web entrypoint is switched to the server `KernelClient`; the profile remains an integration fixture rather than a production deployment recommendation.
 
 Run the packaging check with Ruby/Psych (the YAML parser bundled with Ruby):
 
@@ -29,7 +29,7 @@ The runtime stage executes the independent `verify-final-web-assets.sh` scanner 
 deploy/docker/test-verify-contract-mutations.sh
 ```
 
-If a usable Docker daemon is present, `verify-contract.sh` additionally builds the final stage and inspects its configured user, entrypoint, complete Web asset tree, Kernel artifact, and absence of Node toolchain executables. Without a usable daemon it reports that image evidence as unavailable and keeps the `static-web-serving-required` profile gate explicit. Neither result means the browser server is complete.
+If a usable Docker daemon is present, `verify-contract.sh` additionally builds the final stage and inspects its configured user, entrypoint, complete Web asset tree, Kernel artifact, and absence of Node toolchain executables. Without a usable daemon it reports final-image evidence as pending. Neither result proves the remaining Web `KernelClient` migration.
 
 ## Fixed runtime contract
 
@@ -51,7 +51,7 @@ That command proves image construction only. Until a reviewed static-Web owner i
 
 ## TLS reverse proxy and public origin
 
-The public origin is the browser-visible HTTPS authority, not the container's internal HTTP address. A future supported deployment must terminate TLS at a reverse proxy, serve or route the Web application and Kernel API under that same origin, and proxy Kernel traffic to `127.0.0.1:3210` without rewriting the browser-visible authority.
+The public origin is the browser-visible HTTPS authority, not the container's internal HTTP address. A supported deployment must terminate TLS at a reverse proxy, route the Web application and Kernel API under that same origin, and proxy traffic to `127.0.0.1:3210` without rewriting the browser-visible authority.
 
 For example, a site reached as `https://notes.example.com` must launch the Kernel with exactly:
 
@@ -59,7 +59,7 @@ For example, a site reached as `https://notes.example.com` must launch the Kerne
 QINGYU_PUBLIC_ORIGIN=https://notes.example.com
 ```
 
-TLS certificates and reverse-proxy configuration are intentionally outside this image. The current Compose contract neither provisions TLS nor serves the Web asset directory.
+TLS certificates and reverse-proxy configuration are intentionally outside this image. The current Compose contract does not provision TLS; it serves the Web assets and Kernel API together on internal port 3210 for a same-origin reverse proxy.
 
 ## One-time initialization token
 
@@ -86,7 +86,8 @@ Never place the token in the Dockerfile, image labels, Compose YAML, shell histo
 | First initialization and token-free restart | Kernel capability implemented; container matrix not yet executed here | Empty-volume init, restart, persistence, and secret-leak checks pass in a real container. |
 | Kernel live/readiness routes | Implemented by Kernel; image healthcheck intentionally disabled | Real container probes cover starting, uninitialized, ready, and failure states. |
 | Web static assets in final image | Implemented | Asset inventory matches the `apps/web` build. |
-| Web assets served to the browser | **Blocked: `static-web-serving-required`** | A reviewed same-origin static/fallback routing owner serves the app without a second development server. |
+| Web assets served to the browser | Implemented | Same-origin GET/HEAD, real assets, SPA fallback, API exclusion, exact Host/Origin, CSP, and no-follow checks pass. |
+| Web application uses KernelClient only | **Blocked: `web-kernel-runtime-required`** | The browser entrypoint must use the server bootstrap/runtime and must not expose a local-directory picker or IndexedDB workspace owner. |
 | TLS ingress | Not included | Reverse-proxy tests prove HTTPS origin, headers, cookies, CSRF, and WebSocket upgrades. |
 
-The runtime verifier must remain blocked until the static Web owner exists and the complete browser/container matrix is executable. Docker being unavailable is an environmental limitation, not a passing runtime result.
+The runtime verifier remains blocked until the Web `KernelClient` cutover and complete browser/container matrix are executable. Docker being unavailable is an environmental limitation, not a passing runtime result.

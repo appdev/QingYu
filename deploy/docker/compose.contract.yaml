@@ -2,7 +2,7 @@ name: qingyu-server-contract
 
 services:
   qingyu:
-    profiles: ["static-web-serving-required"]
+    profiles: ["web-kernel-runtime-required"]
     build:
       context: ../..
       dockerfile: Dockerfile
@@ -28,10 +28,10 @@ services:
     healthcheck:
       disable: true
     labels:
-      dev.qingyu.contract.runtime-gate: static-web-serving-required
+      dev.qingyu.contract.runtime-gate: web-kernel-runtime-required
       dev.qingyu.contract.data-root: /data
       dev.qingyu.contract.web-assets: /opt/qingyu/web
-      dev.qingyu.contract.web-assets-served: "false"
+      dev.qingyu.contract.web-assets-served: "true"
       dev.qingyu.contract.health-live: /api/v1/health/live
       dev.qingyu.contract.health-ready: /api/v1/health/ready
 

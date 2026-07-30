@@ -48,10 +48,10 @@ runtime_output=$("$runtime_gate" --status 2>&1)
 runtime_status=$?
 set -e
 [ "$runtime_status" -eq 78 ] \
-  || fail "runtime phase gate must exit 78 while static Web serving is unavailable"
+  || fail "runtime phase gate must exit 78 while the Web KernelClient runtime is unavailable"
 case "$runtime_output" in
-  *static-web-serving-required*) ;;
-  *) fail "runtime phase gate must identify static-web-serving-required" ;;
+  *web-kernel-runtime-required*) ;;
+  *) fail "runtime phase gate must identify web-kernel-runtime-required" ;;
 esac
 
 inspect_built_image() {
@@ -90,7 +90,7 @@ inspect_built_image() {
 if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
   if docker compose version >/dev/null 2>&1; then
     docker compose \
-      --profile static-web-serving-required \
+      --profile web-kernel-runtime-required \
       -f "$compose_file" \
       config >/dev/null \
       || fail "Docker Compose rejected the semantic contract"
@@ -101,8 +101,8 @@ if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
   inspect_built_image "$docker_temporary_directory"
   docker_evidence='Docker final image built and inspected; '
 else
-  docker_evidence='Docker runtime unavailable, so the profile gate remains static-only; '
+  docker_evidence='Docker runtime unavailable, so final-image evidence is pending; '
 fi
 
 printf '%s\n' \
-  "PASS: ${docker_evidence}BLOCKED(static-web-serving-required) remains."
+  "PASS: ${docker_evidence}static Web serving is packaged; BLOCKED(web-kernel-runtime-required) remains."

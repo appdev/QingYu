@@ -6,6 +6,8 @@ apps/kernel/src/api/auth.rs
 apps/kernel/src/api/mod.rs
 apps/kernel/src/api/routes.rs
 apps/kernel/src/api/server_auth_tests.rs
+apps/kernel/src/api/web.rs
+apps/kernel/src/api/web_tests.rs
 apps/kernel/src/api/ws.rs
 apps/kernel/src/bin/qingyu-kernel.rs
 apps/kernel/src/composition.rs

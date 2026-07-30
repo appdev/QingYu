@@ -333,9 +333,10 @@ def verify_dockerfile(path)
       ["RUN", "/usr/local/bin/qingyu-verify-final-web-assets /opt/qingyu/web"],
       [
         "LABEL",
-        'dev.qingyu.image.kind="kernel-api-with-unserved-web-assets" ' \
-          'dev.qingyu.image.phase-gate="static-web-serving-required" ' \
-          'dev.qingyu.image.web-assets="/opt/qingyu/web"'
+        'dev.qingyu.image.kind="kernel-api-with-served-web-assets" ' \
+          'dev.qingyu.image.phase-gate="web-kernel-runtime-required" ' \
+          'dev.qingyu.image.web-assets="/opt/qingyu/web" ' \
+          'dev.qingyu.image.web-assets-served="true"'
       ],
       ["USER", "10001:10001"],
       ["WORKDIR", "/data"],
@@ -379,8 +380,8 @@ def verify_compose(path)
   )
 
   assert_contract(
-    service["profiles"] == ["static-web-serving-required"],
-    "Compose must remain behind only the static-web-serving-required profile gate"
+    service["profiles"] == ["web-kernel-runtime-required"],
+    "Compose must remain behind only the web-kernel-runtime-required profile gate"
   )
   assert_contract(
     service["build"] == {
@@ -430,10 +431,10 @@ def verify_compose(path)
   )
   assert_contract(
     service["labels"] == {
-      "dev.qingyu.contract.runtime-gate" => "static-web-serving-required",
+      "dev.qingyu.contract.runtime-gate" => "web-kernel-runtime-required",
       "dev.qingyu.contract.data-root" => "/data",
       "dev.qingyu.contract.web-assets" => "/opt/qingyu/web",
-      "dev.qingyu.contract.web-assets-served" => "false",
+      "dev.qingyu.contract.web-assets-served" => "true",
       "dev.qingyu.contract.health-live" => "/api/v1/health/live",
       "dev.qingyu.contract.health-ready" => "/api/v1/health/ready"
     },
