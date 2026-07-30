@@ -9,6 +9,7 @@ import {
 import type { SettingsTranslate } from "./translate";
 
 export type NotesWorkspaceSettingsProps = {
+  canChooseLocalRoot?: boolean;
   onChoose: () => unknown;
   onResetOnboarding: () => unknown;
   root: string | null;
@@ -17,6 +18,7 @@ export type NotesWorkspaceSettingsProps = {
 };
 
 export function NotesWorkspaceSettings({
+  canChooseLocalRoot = true,
   onChoose,
   onResetOnboarding,
   root,
@@ -48,34 +50,38 @@ export function NotesWorkspaceSettings({
             </span>
           }
         />
-        <SettingsRow
-          title={translate("settings.notesWorkspace.changeTitle")}
-          description={translate("settings.notesWorkspace.noMoveDescription")}
-          action={
-            <SettingsButton disabled={busy} label={chooseLabel} onClick={onChoose}>
-              <FolderOpen aria-hidden="true" size={13} />
-              {chooseLabel}
-            </SettingsButton>
-          }
-        />
+        {canChooseLocalRoot ? (
+          <SettingsRow
+            title={translate("settings.notesWorkspace.changeTitle")}
+            description={translate("settings.notesWorkspace.noMoveDescription")}
+            action={
+              <SettingsButton disabled={busy} label={chooseLabel} onClick={onChoose}>
+                <FolderOpen aria-hidden="true" size={13} />
+                {chooseLabel}
+              </SettingsButton>
+            }
+          />
+        ) : null}
       </SettingsSection>
 
-      <SettingsSection label={translate("settings.notesWorkspace.onboardingSection")}>
-        <SettingsRow
-          title={translate("settings.notesWorkspace.resetTitle")}
-          description={translate("settings.notesWorkspace.resetDescription")}
-          action={
-            <SettingsButton
-              disabled={busy}
-              label={translate("settings.notesWorkspace.reset")}
-              onClick={onResetOnboarding}
-            >
-              <RotateCcw aria-hidden="true" size={13} />
-              {translate("settings.notesWorkspace.reset")}
-            </SettingsButton>
-          }
-        />
-      </SettingsSection>
+      {canChooseLocalRoot ? (
+        <SettingsSection label={translate("settings.notesWorkspace.onboardingSection")}>
+          <SettingsRow
+            title={translate("settings.notesWorkspace.resetTitle")}
+            description={translate("settings.notesWorkspace.resetDescription")}
+            action={
+              <SettingsButton
+                disabled={busy}
+                label={translate("settings.notesWorkspace.reset")}
+                onClick={onResetOnboarding}
+              >
+                <RotateCcw aria-hidden="true" size={13} />
+                {translate("settings.notesWorkspace.reset")}
+              </SettingsButton>
+            }
+          />
+        </SettingsSection>
+      ) : null}
     </>
   );
 }

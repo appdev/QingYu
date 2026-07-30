@@ -957,16 +957,18 @@ export function mockOpenMarkdownFolder(folder: { name: string; path: string }) {
 export type { NativeMenuHandlers } from "../lib/tauri";
 
 export function mockDesktopPrimaryWorkspace({
+  canChooseDesktopRoot = true,
   error = null,
   root,
   status
 }: {
+  canChooseDesktopRoot?: boolean;
   error?: string | null;
   root: string | null;
   status: PrimaryWorkspaceStatus;
 }) {
   const controller: PrimaryWorkspaceController = {
-    canChooseDesktopRoot: true,
+    canChooseDesktopRoot,
     commitDesktopRoot: vi.fn(async () => root),
     commitManagedRoot: vi.fn(async () => null),
     deferDesktopSetup: vi.fn(async () => undefined),

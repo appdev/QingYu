@@ -42,4 +42,28 @@ describe("NotesWorkspaceSettings", () => {
     expect(screen.getByRole("button", { name: "Switch Notebook Directory" })).toBeVisible();
     expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
   });
+
+  it("shows a runtime-fixed path without switch or onboarding reset actions", () => {
+    const onChoose = vi.fn();
+    const onResetOnboarding = vi.fn();
+
+    render(
+      <NotesWorkspaceSettings
+        canChooseLocalRoot={false}
+        root="kernel-workspace://primary"
+        status="ready"
+        translate={(key) => t("en", key)}
+        onChoose={onChoose}
+        onResetOnboarding={onResetOnboarding}
+      />
+    );
+
+    expect(screen.getByText("kernel-workspace://primary")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Switch Notebook Directory" }))
+      .not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Show onboarding next launch" }))
+      .not.toBeInTheDocument();
+    expect(onChoose).not.toHaveBeenCalled();
+    expect(onResetOnboarding).not.toHaveBeenCalled();
+  });
 });

@@ -15,6 +15,7 @@ export type WelcomeScreenProps = {
   error: string | null;
   formFactor: "desktop" | "mobile";
   language: AppLanguage;
+  localWorkspaceSelectionAllowed?: boolean;
   onChooseDesktopRoot: () => Promise<unknown>;
   onCreateMobileRoot: () => Promise<unknown>;
   onDeferDesktopSetup: () => Promise<unknown>;
@@ -57,6 +58,7 @@ function DesktopExternalActions({
 
 function DesktopWelcome({
   language,
+  localWorkspaceSelectionAllowed = true,
   onChooseDesktopRoot,
   onDeferDesktopSetup,
   onOpenExternalFile,
@@ -102,15 +104,17 @@ function DesktopWelcome({
                         ? label("onboarding.deferred.title")
                         : label("onboarding.desktop.title")}
                 </h1>
-                <p>
-                  {recovery
-                    ? label("onboarding.recovery.description")
-                    : error
-                      ? label("onboarding.error.description")
-                      : deferred
-                        ? label("onboarding.deferred.description")
-                        : label("onboarding.desktop.description")}
-                </p>
+                {localWorkspaceSelectionAllowed || (!recovery && !error) ? (
+                  <p>
+                    {recovery
+                      ? label("onboarding.recovery.description")
+                      : error
+                        ? label("onboarding.error.description")
+                        : deferred
+                          ? label("onboarding.deferred.description")
+                          : label("onboarding.desktop.description")}
+                  </p>
+                ) : null}
               </div>
 
               <div className="welcome-screen__primary-actions">
@@ -124,17 +128,19 @@ function DesktopWelcome({
                     {label("onboarding.action.retry")}
                   </Button>
                 ) : null}
-                <Button
-                  className="welcome-screen__action"
-                  variant={recovery || error ? "secondary" : "primary"}
-                  onClick={onChooseDesktopRoot}
-                >
-                  <FolderPlus aria-hidden="true" size={17} strokeWidth={1.7} />
-                  {recovery || error
-                    ? label("onboarding.action.chooseOtherDirectory")
-                    : label("onboarding.action.chooseLocalDirectory")}
-                </Button>
-                {onRestoreFromCloud ? (
+                {localWorkspaceSelectionAllowed ? (
+                  <Button
+                    className="welcome-screen__action"
+                    variant={recovery || error ? "secondary" : "primary"}
+                    onClick={onChooseDesktopRoot}
+                  >
+                    <FolderPlus aria-hidden="true" size={17} strokeWidth={1.7} />
+                    {recovery || error
+                      ? label("onboarding.action.chooseOtherDirectory")
+                      : label("onboarding.action.chooseLocalDirectory")}
+                  </Button>
+                ) : null}
+                {localWorkspaceSelectionAllowed && onRestoreFromCloud ? (
                   <Button
                     className="welcome-screen__action"
                     variant="secondary"
@@ -144,7 +150,7 @@ function DesktopWelcome({
                     {label("onboarding.action.restoreFromCloud")}
                   </Button>
                 ) : null}
-                {!recovery && !error && !deferred ? (
+                {localWorkspaceSelectionAllowed && !recovery && !error && !deferred ? (
                   <Button
                     className="welcome-screen__action welcome-screen__defer"
                     style={{ color: "var(--text-primary)" }}
@@ -170,10 +176,22 @@ function DesktopWelcome({
 
 type MobileWelcomeProps = Pick<
   WelcomeScreenProps,
-  "error" | "language" | "onCreateMobileRoot" | "onRetry" | "status"
+  | "error"
+  | "language"
+  | "localWorkspaceSelectionAllowed"
+  | "onCreateMobileRoot"
+  | "onRetry"
+  | "status"
 >;
 
-function MobileWelcome({ error, language, onCreateMobileRoot, onRetry, status }: MobileWelcomeProps) {
+function MobileWelcome({
+  error,
+  language,
+  localWorkspaceSelectionAllowed = true,
+  onCreateMobileRoot,
+  onRetry,
+  status
+}: MobileWelcomeProps) {
   const label = (key: string) => t(language, key);
   const brandName = label("onboarding.brand.name");
   const loading = status === "loading";
@@ -200,7 +218,7 @@ function MobileWelcome({ error, language, onCreateMobileRoot, onRetry, status }:
           <LoaderCircle aria-hidden="true" className="welcome-screen__spinner" size={20} />
           <span>{label("onboarding.loading")}</span>
         </div>
-      ) : (
+      ) : failure || localWorkspaceSelectionAllowed ? (
         <div className="welcome-screen__mobile-action">
           <Button
             className="welcome-screen__mobile-button"
@@ -215,7 +233,7 @@ function MobileWelcome({ error, language, onCreateMobileRoot, onRetry, status }:
               : label("onboarding.action.createMobile")}
           </Button>
         </div>
-      )}
+      ) : null}
     </main>
   );
 }
@@ -228,6 +246,7 @@ export function WelcomeScreen(props: WelcomeScreenProps) {
       <MobileWelcome
         error={props.error}
         language={props.language}
+        localWorkspaceSelectionAllowed={props.localWorkspaceSelectionAllowed}
         status={props.status}
         onCreateMobileRoot={props.onCreateMobileRoot}
         onRetry={props.onRetry}
@@ -238,6 +257,7 @@ export function WelcomeScreen(props: WelcomeScreenProps) {
   return (
     <DesktopWelcome
       language={props.language}
+      localWorkspaceSelectionAllowed={props.localWorkspaceSelectionAllowed}
       status={props.status}
       onChooseDesktopRoot={props.onChooseDesktopRoot}
       onDeferDesktopSetup={props.onDeferDesktopSetup}

@@ -370,6 +370,13 @@ describe("useNativeMenuHandlers", () => {
 
     expect(openFolder).toHaveBeenCalledTimes(1);
   });
+
+  it("omits the native open folder command when local workspace selection is unavailable", () => {
+    const { openFolder: _openFolder, ...options } = baseOptions;
+    const { result } = renderHook(() => useNativeMenuHandlers(options));
+
+    expect(result.current.openFolder).toBeUndefined();
+  });
 });
 
 describe("useApplicationShortcuts", () => {
@@ -379,6 +386,24 @@ describe("useApplicationShortcuts", () => {
     saveDocument: vi.fn(),
     saveDocumentAs: vi.fn()
   };
+
+  it("leaves Shift+Mod+O unhandled when local workspace selection is unavailable", () => {
+    const openDocument = vi.fn();
+    renderHook(() => useApplicationShortcuts({
+      openDocument,
+      saveDocument: vi.fn(),
+      saveDocumentAs: vi.fn()
+    }));
+
+    const handled = fireEvent.keyDown(window, {
+      key: "o",
+      metaKey: true,
+      shiftKey: true
+    });
+
+    expect(handled).toBe(true);
+    expect(openDocument).not.toHaveBeenCalled();
+  });
 
   it("does not install application shortcuts when the capability is disabled", () => {
     const openSettings = vi.fn();

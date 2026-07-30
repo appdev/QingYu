@@ -33,6 +33,7 @@ describe("SettingsWindow notes workspace", () => {
   beforeEach(() => {
     settingsPrimaryWorkspaceState.current = {
       ...settingsPrimaryWorkspaceState.current,
+      canChooseDesktopRoot: true,
       root: null,
       status: "deferred",
       workspaceRoot: null
@@ -48,6 +49,24 @@ describe("SettingsWindow notes workspace", () => {
     expect(screen.getByText("Not configured")).toBeInTheDocument();
     expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Switch Notebook Directory" })).toBeInTheDocument();
+  });
+
+  it("keeps a runtime-fixed workspace read-only without local switch or onboarding reset entries", async () => {
+    settingsPrimaryWorkspaceState.current = {
+      ...settingsPrimaryWorkspaceState.current,
+      canChooseDesktopRoot: false,
+      root: "kernel-workspace://primary",
+      status: "ready"
+    };
+
+    render(<SettingsWindow />);
+    fireEvent.click(await screen.findByRole("button", { name: "Notes Workspace" }));
+
+    expect(screen.getByText("kernel-workspace://primary")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Switch Notebook Directory" }))
+      .not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Show onboarding next launch" }))
+      .not.toBeInTheDocument();
   });
 
   it("renders embedded Settings as a modal with only its platform close control", async () => {

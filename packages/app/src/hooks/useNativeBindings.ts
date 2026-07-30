@@ -35,7 +35,7 @@ type NativeMenuHandlerOptions = {
   language?: AppLanguage;
   markdownShortcuts?: MarkdownShortcutMap;
   openDocument: () => unknown | Promise<unknown>;
-  openFolder: () => unknown | Promise<unknown>;
+  openFolder?: () => unknown | Promise<unknown>;
   openQuickOpen?: () => unknown | Promise<unknown>;
   openSettings?: () => unknown | Promise<unknown>;
   openRecentFile?: (file: RecentMarkdownFile) => unknown | Promise<unknown>;
@@ -66,7 +66,7 @@ type ApplicationShortcutOptions = {
   openBlankEditorWindow?: () => unknown | Promise<unknown>;
   openSettings?: () => unknown | Promise<unknown>;
   openWorkspaceSearch?: () => unknown | Promise<unknown>;
-  openFolder: () => unknown | Promise<unknown>;
+  openFolder?: () => unknown | Promise<unknown>;
   openQuickOpen?: () => unknown | Promise<unknown>;
   platform?: DesktopPlatform;
   saveDocument: () => unknown | Promise<unknown>;
@@ -224,7 +224,6 @@ export function useNativeMenuHandlers({
     () => {
       const handlers: NativeMenuHandlers = {
         openDocument: () => latestOptionsRef.current.openDocument(),
-        openFolder: () => latestOptionsRef.current.openFolder(),
         saveDocument: () => latestOptionsRef.current.saveDocument(),
         saveDocumentAs: () => latestOptionsRef.current.saveDocumentAs(),
         editUndo: () => {
@@ -257,6 +256,7 @@ export function useNativeMenuHandlers({
         toggleAllFolds: () => runMarkdownShortcut("toggleAllFolds")
       };
 
+      if (openFolder) handlers.openFolder = () => latestOptionsRef.current.openFolder?.();
       if (clearRecentFiles) handlers.clearRecentFiles = () => latestOptionsRef.current.clearRecentFiles?.();
       if (checkForUpdates) handlers.checkForUpdates = () => latestOptionsRef.current.checkForUpdates?.();
       if (closeDocument) handlers.closeDocument = () => latestOptionsRef.current.closeDocument?.();
@@ -517,10 +517,10 @@ export function useApplicationShortcuts({
       } else if (key === "s") {
         event.preventDefault();
         saveDocument();
-      } else if (key === "o" && event.shiftKey) {
+      } else if (key === "o" && event.shiftKey && openFolder) {
         event.preventDefault();
         openFolder();
-      } else if (key === "o") {
+      } else if (key === "o" && !event.shiftKey) {
         event.preventDefault();
         openDocument();
       } else if (key === "p" && !event.shiftKey && exportPdf) {

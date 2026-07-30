@@ -163,6 +163,33 @@ describe("WelcomeScreen", () => {
     });
   });
 
+  it("never exposes local directory actions for a runtime-fixed desktop workspace", async () => {
+    const props = callbacks();
+
+    render(
+      <WelcomeScreen
+        formFactor="desktop"
+        language="en"
+        localWorkspaceSelectionAllowed={false}
+        status="error"
+        {...props}
+      />
+    );
+
+    expect(screen.queryByRole("button", { name: "Choose another folder…" }))
+      .not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Choose local notes folder…" }))
+      .not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Maybe later" })).not.toBeInTheDocument();
+    expect(screen.queryByText(/choose another local folder/iu)).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+
+    await waitFor(() => expect(props.onRetry).toHaveBeenCalledOnce());
+    expect(props.onChooseDesktopRoot).not.toHaveBeenCalled();
+    expect(props.onDeferDesktopSetup).not.toHaveBeenCalled();
+  });
+
   it("keeps the mobile error state to one bottom retry action", async () => {
     const props = callbacks();
 

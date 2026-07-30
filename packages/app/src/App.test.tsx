@@ -6577,6 +6577,33 @@ describe("QingYu workspace", () => {
     spy.mockRestore();
   });
 
+  it("removes every local workspace switch entry for a runtime-fixed root", async () => {
+    mockedResolveDesktopPlatform.mockReturnValue("windows");
+    const { spy, switchDesktopNotebook } = mockNotebookSwitchRouting();
+    mockDesktopPrimaryWorkspace({
+      canChooseDesktopRoot: false,
+      root: "kernel-workspace://primary",
+      status: "ready"
+    });
+    mockedListNativeMarkdownFilesForPath.mockResolvedValue([]);
+
+    renderApp();
+
+    fireEvent.click(screen.getByRole("button", { name: "Toggle workspace sidebar" }));
+    expect(screen.queryByRole("button", { name: "Switch Notebook Directory" }))
+      .not.toBeInTheDocument();
+
+    await waitFor(() => expect(mockedInstallNativeApplicationMenu).toHaveBeenCalledTimes(1));
+    const menuHandlers = mockedInstallNativeApplicationMenu.mock.calls[0]?.[0] as NativeMenuHandlers;
+    expect(menuHandlers.openFolder).toBeUndefined();
+
+    fireEvent.keyDown(window, { key: "o", metaKey: true, shiftKey: true });
+
+    expect(switchDesktopNotebook).not.toHaveBeenCalled();
+    expect(mockedOpenNativeMarkdownFolder).not.toHaveBeenCalled();
+    spy.mockRestore();
+  });
+
   it("creates a folder inside the selected sidebar folder from the context menu", async () => {
     const docsPath = "/mock-files/vault/docs";
     mockOpenMarkdownTarget({

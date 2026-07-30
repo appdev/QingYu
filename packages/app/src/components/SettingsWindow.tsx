@@ -326,6 +326,7 @@ export function SettingsWindow({
           ) : null}
           {activeSettingsCategory === "notesWorkspace" ? (
             <NotesWorkspaceSettings
+              canChooseLocalRoot={primaryWorkspace.canChooseDesktopRoot}
               root={primaryWorkspace.root}
               status={primaryWorkspace.status}
               translate={translate}

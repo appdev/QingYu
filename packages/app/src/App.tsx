@@ -457,6 +457,10 @@ function WorkspaceApp() {
   const primaryWindowOwner = compactMode.trueMobile || !externalEditorWindow;
   const workspacePersistencePolicy = primaryWindowOwner ? "shared" : "isolated";
   const primaryWorkspace = usePrimaryWorkspace({ trueMobile: compactMode.trueMobile });
+  const fixedWorkspaceRoot = getAppRuntime().workspace.rootPolicy?.kind === "fixed";
+  const canChooseLocalWorkspace = !fixedWorkspaceRoot && (
+    compactMode.trueMobile || primaryWorkspace.canChooseDesktopRoot
+  );
   const primaryRoot = primaryWorkspace.status === "ready" ? primaryWorkspace.root : null;
   const primaryIntegrationRoot = primaryWindowOwner ? primaryRoot : null;
   const onboardingVisible = primaryWindowOwner && (
@@ -852,9 +856,10 @@ function WorkspaceApp() {
     path?: string
   ) => Promise<string | null>>(async () => null);
   const handleNativeNotebookDirectory = useCallback((path: string) => {
+    if (!canChooseLocalWorkspace) return null;
     if (primaryWindowOwner) return switchDesktopNotebookRef.current(path);
     return requestPrimaryNotebookSwitch({ path, source: "native-open" });
-  }, [primaryWindowOwner]);
+  }, [canChooseLocalWorkspace, primaryWindowOwner]);
   const syncStatusLabel = useMemo(() => {
     if (!appSync.status) return null;
     const completionLabel = appSync.status.completionState === "attempting"
@@ -1204,7 +1209,7 @@ function WorkspaceApp() {
   }: {
     requireEstablishedWorkspace?: boolean;
   } = {}) => {
-    if (compactMode.trueMobile) return;
+    if (compactMode.trueMobile || !canChooseLocalWorkspace) return;
     if (
       requireEstablishedWorkspace && (
         primaryWorkspace.status !== "ready" ||
@@ -1244,6 +1249,7 @@ function WorkspaceApp() {
     setRemoteNotebookLoading(true);
     setRemoteNotebookPendingRevision(currentResult.revision);
   }, [
+    canChooseLocalWorkspace,
     compactMode.trueMobile,
     loadRemoteNotebookCatalog,
     openSettingsModal,
@@ -1411,7 +1417,7 @@ function WorkspaceApp() {
     syncConfig.appliedDocument?.revision
   ]);
   const openMobileNotebookDialog = useCallback(async () => {
-    if (!compactMode.trueMobile) return;
+    if (!compactMode.trueMobile || !canChooseLocalWorkspace) return;
     const requestGeneration = remoteNotebookRequestGenerationRef.current + 1;
     remoteNotebookRequestGenerationRef.current = requestGeneration;
     setMobileNotebookDialogOpen(true);
@@ -1459,7 +1465,14 @@ function WorkspaceApp() {
         setRemoteNotebookLoading(false);
       }
     }
-  }, [compactMode.trueMobile, syncConfig.loadResult, syncConfig.reload, syncConfig.status, translate]);
+  }, [
+    canChooseLocalWorkspace,
+    compactMode.trueMobile,
+    syncConfig.loadResult,
+    syncConfig.reload,
+    syncConfig.status,
+    translate
+  ]);
   const switchMobileNotebook = useCallback(async (name: string) => {
     const switchedRoot = await notebookSwitch.switchManagedNotebook(name);
     if (!switchedRoot) throw new Error("Notebook switch did not complete.");
@@ -3940,6 +3953,7 @@ function WorkspaceApp() {
     handleEditorModeSelect(splitMode ? "visual" : "split");
   }, [handleEditorModeSelect, splitMode]);
   const handleOpenMarkdownFolder = useCallback(async () => {
+    if (!canChooseLocalWorkspace) return;
     if (compactMode.trueMobile) {
       await openMobileNotebookDialog();
       return;
@@ -3950,6 +3964,7 @@ function WorkspaceApp() {
     }
     await requestPrimaryNotebookSwitch({ source: "file-menu" });
   }, [
+    canChooseLocalWorkspace,
     compactMode.trueMobile,
     notebookSwitch.switchDesktopNotebook,
     openMobileNotebookDialog,
@@ -4145,7 +4160,7 @@ function WorkspaceApp() {
     openDocument: handleOpenMarkdownFile,
     openRecentFile: handleOpenRecentMarkdownFile,
     clearRecentFiles: clearRecentMarkdownFiles,
-    openFolder: handleOpenMarkdownFolder,
+    openFolder: canChooseLocalWorkspace ? handleOpenMarkdownFolder : undefined,
     openQuickOpen: handleQuickOpenOpen,
     openSettings: handleOpenSettings,
     quitApplication: requestAppExit,
@@ -4181,7 +4196,7 @@ function WorkspaceApp() {
     openDocumentSearch: handleDocumentSearchOpen,
     openSettings: handleOpenSettings,
     openWorkspaceSearch: handleGlobalSearchOpen,
-    openFolder: handleOpenMarkdownFolder,
+    openFolder: canChooseLocalWorkspace ? handleOpenMarkdownFolder : undefined,
     openQuickOpen: handleQuickOpenOpen,
     platform: desktopPlatform,
     saveDocument: handleSaveDocument,
@@ -4584,9 +4599,11 @@ function WorkspaceApp() {
       updatePreferences: handleCompactPreferencesChange
     },
     workspace: {
-      openNotebookManager: compactMode.trueMobile
-        ? openMobileNotebookDialog
-        : () => notebookSwitch.switchDesktopNotebook(),
+      openNotebookManager: canChooseLocalWorkspace
+        ? compactMode.trueMobile
+          ? openMobileNotebookDialog
+          : () => notebookSwitch.switchDesktopNotebook()
+        : undefined,
       primaryRoot: primaryIntegrationRoot,
       syncConfigDocument: syncConfig.appliedDocument
     },
@@ -4607,6 +4624,7 @@ function WorkspaceApp() {
     appTheme.selectAppearanceMode,
     appTheme.selectTheme,
     appTheme.themeError,
+    canChooseLocalWorkspace,
     compactMode.trueMobile,
     compactMode.compact,
     compactSaveState,
@@ -4680,7 +4698,7 @@ function WorkspaceApp() {
       windowsSelfDrawnChrome={!compactMode.compact && windowsSelfDrawnChromeEnabled}
     />
   ) : null;
-  const mobileNotebookDialog = mobileNotebookDialogOpen && compactMode.trueMobile ? (
+  const mobileNotebookDialog = mobileNotebookDialogOpen && compactMode.trueMobile && canChooseLocalWorkspace ? (
     <MobileNotebookDialog
       error={remoteNotebookError}
       language={appLanguage.language}
@@ -4695,6 +4713,7 @@ function WorkspaceApp() {
     />
   ) : null;
   const desktopRemoteNotebookDialog = remoteNotebookDialogOpen &&
+    canChooseLocalWorkspace &&
     primaryWindowOwner &&
     !compactMode.trueMobile ? (
       <RemoteNotebookDialog
@@ -4743,12 +4762,17 @@ function WorkspaceApp() {
             error={primaryWorkspace.error}
             formFactor={compactMode.trueMobile ? "mobile" : "desktop"}
             language={appLanguage.language}
+            localWorkspaceSelectionAllowed={canChooseLocalWorkspace}
             status={primaryWorkspace.status}
             onChooseDesktopRoot={() => notebookSwitch.switchDesktopNotebook()}
             onCreateMobileRoot={openMobileNotebookDialog}
             onDeferDesktopSetup={primaryWorkspace.deferDesktopSetup}
             onOpenExternalFile={openExternalFileInNewWindow}
-            onRestoreFromCloud={compactMode.trueMobile ? undefined : openDesktopRemoteNotebookDialog}
+            onRestoreFromCloud={
+              !compactMode.trueMobile && canChooseLocalWorkspace
+                ? openDesktopRemoteNotebookDialog
+                : undefined
+            }
             onRetry={primaryWorkspace.retry}
           />
           {desktopRemoteNotebookDialog}
@@ -4825,7 +4849,7 @@ function WorkspaceApp() {
           onExitApp={handleExitApp}
           onOpenBlankEditorWindow={windowsSelfDrawnChromeEnabled ? handleOpenBlankEditorWindow : undefined}
           onOpenMarkdown={handleOpenMarkdownFile}
-          onOpenMarkdownFolder={handleOpenMarkdownFolder}
+          onOpenMarkdownFolder={canChooseLocalWorkspace ? handleOpenMarkdownFolder : undefined}
           onOpenSettings={handleOpenSettings}
           onSaveMarkdown={handleSaveDocument}
           onSelectEditorMode={handleEditorModeSelect}
@@ -4911,7 +4935,7 @@ function WorkspaceApp() {
             onOpenFileToSide: editorPreferences.preferences.showDocumentTabs
               ? handleOpenTreeFileToSide
               : undefined,
-            onOpenFolder: handleOpenMarkdownFolder,
+            onOpenFolder: canChooseLocalWorkspace ? handleOpenMarkdownFolder : undefined,
             onOpenSettings: handleOpenSettings,
             onSyncNow: sidebarSyncAvailable ? runApplicationSyncNow : undefined,
             onInstallAvailableUpdate: appUpdater.installAvailableUpdate,
