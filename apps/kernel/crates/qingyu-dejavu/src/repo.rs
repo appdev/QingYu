@@ -16,7 +16,8 @@ use crate::path_security::{
 };
 use crate::purge::{purge_store_with_cancel_check, PurgeStat};
 use crate::store::{
-    open_absolute_dir_nofollow, open_child_directory, open_or_create_absolute_dir_nofollow,
+    absolute_lexical_root, open_absolute_dir_nofollow, open_child_directory,
+    open_or_create_absolute_dir_nofollow,
 };
 use crate::sync_lock::{acquire_remote_lock, RemoteLockGuard};
 use crate::{File, History, Index, RefStore, RepoError, Store};
@@ -40,6 +41,34 @@ pub struct Device {
 pub struct RepoOptions {
     pub ignore_lines: Vec<String>,
     pub protected_include_paths: Vec<String>,
+}
+
+/// Already-open directory authority for every local repository root.
+///
+/// `RepoPaths` remains the logical path surface for compatibility and returned
+/// paths. Filesystem access through this API is anchored exclusively to these
+/// retained directories.
+pub struct RepoDirectoryCapabilities {
+    data: Dir,
+    repo: Dir,
+    history: Dir,
+    temp: Dir,
+}
+
+struct PreparedRepoOptions {
+    protected_include_paths: Vec<String>,
+    ignore_matcher: Gitignore,
+}
+
+impl RepoDirectoryCapabilities {
+    pub fn new(data: Dir, repo: Dir, history: Dir, temp: Dir) -> Self {
+        Self {
+            data,
+            repo,
+            history,
+            temp,
+        }
+    }
 }
 
 pub struct Repo {
@@ -99,6 +128,43 @@ impl Repo {
         )
     }
 
+    pub fn open_with_capabilities(
+        paths: RepoPaths,
+        capabilities: RepoDirectoryCapabilities,
+        device: Device,
+        key: [u8; 32],
+        options: RepoOptions,
+    ) -> Result<Self, RepoError> {
+        let runtime = crate::RepositoryRuntimeState::default();
+        Self::open_with_capabilities_and_runtime(
+            paths,
+            capabilities,
+            device,
+            key,
+            options,
+            &runtime,
+        )
+    }
+
+    pub fn open_with_capabilities_and_runtime(
+        paths: RepoPaths,
+        capabilities: RepoDirectoryCapabilities,
+        device: Device,
+        key: [u8; 32],
+        options: RepoOptions,
+        runtime: &crate::RepositoryRuntimeState,
+    ) -> Result<Self, RepoError> {
+        Self::open_capabilities_inner(
+            paths,
+            capabilities,
+            device,
+            key,
+            options,
+            runtime,
+            Arc::new(NoopIndexHook),
+        )
+    }
+
     #[cfg(test)]
     pub(crate) fn open_with_hook(
         paths: RepoPaths,
@@ -130,30 +196,79 @@ impl Repo {
         validate_root_has_no_symlinks(&paths.repo)?;
         validate_root_has_no_symlinks(&paths.history)?;
         validate_root_has_no_symlinks(&paths.temp)?;
-        let mut protected_include_paths = options
-            .protected_include_paths
-            .iter()
-            .map(|path| normalize_protected_path(path))
-            .collect::<Result<Vec<_>, _>>()?;
-        protected_include_paths.sort();
-        protected_include_paths.dedup();
+        let prepared_options = prepare_repo_options(&paths.data, &options)?;
+        let capabilities = RepoDirectoryCapabilities::new(
+            open_absolute_dir_nofollow(&paths.data)?,
+            open_or_create_absolute_dir_nofollow(&paths.repo)?,
+            open_or_create_absolute_dir_nofollow(&paths.history)?,
+            open_or_create_absolute_dir_nofollow(&paths.temp)?,
+        );
+        Self::open_prepared_capabilities_inner(
+            paths,
+            capabilities,
+            device,
+            *key,
+            prepared_options,
+            runtime,
+            index_hook,
+        )
+    }
 
-        let mut ignore_builder = GitignoreBuilder::new(&paths.data);
-        for line in &options.ignore_lines {
-            ignore_builder
-                .add_line(None, line)
-                .map_err(|_| RepoError::RepoFatal)?;
-        }
-        let ignore_matcher = ignore_builder.build().map_err(|_| RepoError::RepoFatal)?;
-        let data_dir = open_absolute_dir_nofollow(&paths.data)?;
+    fn open_capabilities_inner(
+        paths: RepoPaths,
+        capabilities: RepoDirectoryCapabilities,
+        device: Device,
+        key: [u8; 32],
+        options: RepoOptions,
+        runtime: &crate::RepositoryRuntimeState,
+        index_hook: Arc<dyn IndexHook>,
+    ) -> Result<Self, RepoError> {
+        let key = Zeroizing::new(key);
+        let paths = RepoPaths {
+            data: absolute_lexical_root(paths.data)?,
+            repo: absolute_lexical_root(paths.repo)?,
+            history: absolute_lexical_root(paths.history)?,
+            temp: absolute_lexical_root(paths.temp)?,
+        };
+        let prepared_options = prepare_repo_options(&paths.data, &options)?;
+        Self::open_prepared_capabilities_inner(
+            paths,
+            capabilities,
+            device,
+            *key,
+            prepared_options,
+            runtime,
+            index_hook,
+        )
+    }
+
+    fn open_prepared_capabilities_inner(
+        paths: RepoPaths,
+        capabilities: RepoDirectoryCapabilities,
+        device: Device,
+        key: [u8; 32],
+        options: PreparedRepoOptions,
+        runtime: &crate::RepositoryRuntimeState,
+        index_hook: Arc<dyn IndexHook>,
+    ) -> Result<Self, RepoError> {
+        let key = Zeroizing::new(key);
+        let RepoDirectoryCapabilities {
+            data: data_dir,
+            repo: repo_dir,
+            history: history_dir,
+            temp: temp_dir,
+        } = capabilities;
         let data_metadata = data_dir.dir_metadata()?;
         if !data_metadata.file_type().is_dir() || cap_metadata_is_reparse(&data_metadata) {
             return Err(RepoError::UnsafePath);
         }
         let data_gate = crate::lifecycle::LifecycleGate::for_directory(&data_dir, runtime)?;
-        let store = Store::new_with_runtime(&paths.repo, *key, runtime)?;
-        let history = History::new(&paths.history)?;
-        let temp_dir = open_or_create_absolute_dir_nofollow(&paths.temp)?;
+        let store = Store::new_with_directory_and_runtime(&paths.repo, repo_dir, *key, runtime)?;
+        let history = History::new_with_directory(&paths.history, history_dir)?;
+        let temp_metadata = temp_dir.dir_metadata()?;
+        if !temp_metadata.file_type().is_dir() || cap_metadata_is_reparse(&temp_metadata) {
+            return Err(RepoError::UnsafePath);
+        }
         let temp_gate = crate::lifecycle::LifecycleGate::for_directory(&temp_dir, runtime)?;
         match temp_gate.try_acquire() {
             Ok(_cleanup_guard) => cleanup_abandoned_downloads(&temp_dir)?,
@@ -166,8 +281,8 @@ impl Repo {
             data_gate,
             device,
             key: *key,
-            protected_include_paths,
-            ignore_matcher,
+            protected_include_paths: options.protected_include_paths,
+            ignore_matcher: options.ignore_matcher,
             store,
             temp_dir,
             temp_gate,
@@ -439,6 +554,31 @@ impl Repo {
     }
 }
 
+fn prepare_repo_options(
+    data_path: &Path,
+    options: &RepoOptions,
+) -> Result<PreparedRepoOptions, RepoError> {
+    let mut protected_include_paths = options
+        .protected_include_paths
+        .iter()
+        .map(|path| normalize_protected_path(path))
+        .collect::<Result<Vec<_>, _>>()?;
+    protected_include_paths.sort();
+    protected_include_paths.dedup();
+
+    let mut ignore_builder = GitignoreBuilder::new(data_path);
+    for line in &options.ignore_lines {
+        ignore_builder
+            .add_line(None, line)
+            .map_err(|_| RepoError::RepoFatal)?;
+    }
+    let ignore_matcher = ignore_builder.build().map_err(|_| RepoError::RepoFatal)?;
+    Ok(PreparedRepoOptions {
+        protected_include_paths,
+        ignore_matcher,
+    })
+}
+
 pub(crate) struct RepoStagedDownload {
     staged: CapStagedFile,
     _temp_guard: tokio::sync::OwnedMutexGuard<()>,
@@ -620,6 +760,7 @@ fn unsafe_link_metadata(metadata: &std::fs::Metadata) -> bool {
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::path::Path;
 
     use filetime::FileTime;
     use tempfile::TempDir;
@@ -627,7 +768,7 @@ mod tests {
 
     use crate::{Chunk, File, Index, RepoError, RepositoryRuntimeState};
 
-    use super::{Device, Repo, RepoOptions, RepoPaths};
+    use super::{Device, Repo, RepoDirectoryCapabilities, RepoOptions, RepoPaths};
 
     fn repo_fixture_with_runtime() -> (TempDir, RepositoryRuntimeState, Repo) {
         let temp = TempDir::new().unwrap();
@@ -657,6 +798,87 @@ mod tests {
     fn repo_fixture() -> (TempDir, Repo) {
         let (temp, _runtime, repo) = repo_fixture_with_runtime();
         (temp, repo)
+    }
+
+    #[test]
+    fn capability_open_ignores_ambient_replacements_after_directories_are_retained() {
+        let temp = TempDir::new().unwrap();
+        let addressed = temp.path().join("addressed");
+        let retained = temp.path().join("retained");
+        let paths = RepoPaths {
+            data: addressed.join("data"),
+            repo: addressed.join("repo"),
+            history: addressed.join("history"),
+            temp: addressed.join("temp"),
+        };
+        for root in [&paths.data, &paths.repo, &paths.history, &paths.temp] {
+            fs::create_dir_all(root).unwrap();
+        }
+        fs::write(paths.data.join("retained.md"), b"retained document").unwrap();
+        let abandoned_stage = format!("stage-{}.tmp", "0".repeat(40));
+        fs::write(paths.temp.join(&abandoned_stage), b"retained stage").unwrap();
+        let capabilities = RepoDirectoryCapabilities::new(
+            cap_std::fs::Dir::open_ambient_dir(&paths.data, cap_std::ambient_authority()).unwrap(),
+            cap_std::fs::Dir::open_ambient_dir(&paths.repo, cap_std::ambient_authority()).unwrap(),
+            cap_std::fs::Dir::open_ambient_dir(&paths.history, cap_std::ambient_authority())
+                .unwrap(),
+            cap_std::fs::Dir::open_ambient_dir(&paths.temp, cap_std::ambient_authority()).unwrap(),
+        );
+
+        fs::rename(&addressed, &retained).unwrap();
+        for root in [&paths.data, &paths.repo, &paths.history, &paths.temp] {
+            fs::create_dir_all(root).unwrap();
+        }
+        fs::write(paths.data.join("replacement.md"), b"replacement document").unwrap();
+        fs::write(paths.temp.join(&abandoned_stage), b"replacement stage").unwrap();
+
+        let repo = Repo::open_with_capabilities(
+            paths.clone(),
+            capabilities,
+            Device {
+                id: "device".to_owned(),
+                name: "QingYu".to_owned(),
+                os: "test".to_owned(),
+            },
+            [3; 32],
+            RepoOptions::default(),
+        )
+        .unwrap();
+        let index = repo.index("retained capability roots").unwrap();
+        let stored = repo
+            .history
+            .store_remote_conflict(
+                "2026-07-30-010203",
+                Path::new("notes/document.md"),
+                b"retained history",
+            )
+            .unwrap();
+        let indexed_paths = index
+            .files
+            .iter()
+            .map(|file_id| repo.store.get_file(file_id).unwrap().path)
+            .collect::<Vec<_>>();
+
+        assert!(indexed_paths.iter().any(|path| path == "/retained.md"));
+        assert!(!indexed_paths.iter().any(|path| path == "/replacement.md"));
+        assert!(fs::read_dir(retained.join("repo")).unwrap().count() > 0);
+        assert_eq!(fs::read_dir(&paths.repo).unwrap().count(), 0);
+        assert!(!retained.join("temp").join(&abandoned_stage).exists());
+        assert_eq!(
+            fs::read(paths.temp.join(&abandoned_stage)).unwrap(),
+            b"replacement stage"
+        );
+        assert_eq!(
+            fs::read(retained.join("history/2026-07-30-010203-sync/notes/document.md")).unwrap(),
+            b"retained history"
+        );
+        assert_eq!(
+            stored,
+            paths
+                .history
+                .join("2026-07-30-010203-sync/notes/document.md")
+        );
+        assert_eq!(fs::read_dir(&paths.history).unwrap().count(), 0);
     }
 
     #[test]

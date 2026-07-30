@@ -8,7 +8,9 @@ use std::sync::{Mutex, MutexGuard};
 use cap_std::fs::Dir;
 
 use crate::atomic_write::stage_cap_file;
-use crate::store::{absolute_lexical_root, open_child_directory, store_anchor};
+use crate::store::{
+    absolute_lexical_root, open_child_directory, store_anchor, validate_store_directory,
+};
 use crate::RepoError;
 
 const HISTORY_MODE: u32 = 0o644;
@@ -34,6 +36,20 @@ impl History {
             anchor,
             relative_root,
             history_dir: Mutex::new(history_dir),
+        })
+    }
+
+    pub(crate) fn new_with_directory(
+        root: impl Into<PathBuf>,
+        history_dir: Dir,
+    ) -> Result<Self, RepoError> {
+        let root = absolute_lexical_root(root.into())?;
+        validate_store_directory(&history_dir)?;
+        Ok(Self {
+            root,
+            anchor: history_dir.try_clone()?,
+            relative_root: PathBuf::new(),
+            history_dir: Mutex::new(Some(history_dir)),
         })
     }
 

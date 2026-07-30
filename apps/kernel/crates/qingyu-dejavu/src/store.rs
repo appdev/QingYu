@@ -101,10 +101,8 @@ impl Store {
         key: [u8; 32],
         runtime: &crate::RepositoryRuntimeState,
     ) -> Result<Self, RepoError> {
-        let key = Zeroizing::new(key);
         let root = absolute_lexical_root(root.into())?;
         let (anchor, relative_root) = store_anchor(&root)?;
-        let operation_guard = runtime.operation_guard();
         let mut repository_dir = anchor.try_clone()?;
         for component in relative_root.components() {
             let Component::Normal(name) = component else {
@@ -112,8 +110,22 @@ impl Store {
             };
             repository_dir = open_child_directory(&repository_dir, name, true)?;
         }
+        Self::new_with_directory_and_runtime(root, repository_dir, key, runtime)
+    }
+
+    pub(crate) fn new_with_directory_and_runtime(
+        root: impl Into<PathBuf>,
+        repository_dir: Dir,
+        key: [u8; 32],
+        runtime: &crate::RepositoryRuntimeState,
+    ) -> Result<Self, RepoError> {
+        let key = Zeroizing::new(key);
+        let root = absolute_lexical_root(root.into())?;
         validate_store_directory(&repository_dir)?;
         let repo_gate = crate::lifecycle::LifecycleGate::for_directory(&repository_dir, runtime)?;
+        let anchor = repository_dir.try_clone()?;
+        let relative_root = PathBuf::new();
+        let operation_guard = runtime.operation_guard();
         let mut compressor = zstd::bulk::Compressor::new(zstd::DEFAULT_COMPRESSION_LEVEL)
             .map_err(RepoError::Compression)?;
         compressor
@@ -1214,7 +1226,7 @@ fn map_nofollow_error(parent: &Dir, name: &std::ffi::OsStr, error: std::io::Erro
     }
 }
 
-fn validate_store_directory(directory: &Dir) -> Result<(), RepoError> {
+pub(crate) fn validate_store_directory(directory: &Dir) -> Result<(), RepoError> {
     let metadata = directory.dir_metadata()?;
     if !metadata.file_type().is_dir() || cap_metadata_is_reparse(&metadata) {
         Err(RepoError::UnsafePath)

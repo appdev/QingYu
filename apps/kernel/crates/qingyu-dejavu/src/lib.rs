@@ -42,7 +42,7 @@ pub use history::History;
 pub use lifecycle::RepositoryRuntimeState;
 pub use purge::PurgeStat;
 pub use ref_store::RefStore;
-pub use repo::{Device, Repo, RepoOptions, RepoPaths};
+pub use repo::{Device, Repo, RepoDirectoryCapabilities, RepoOptions, RepoPaths};
 pub use store::{RawObjectKind, Store};
 pub use sync_lock::{RemoteLockGuard, RemoteLockHealthError};
 pub use working_tree::{

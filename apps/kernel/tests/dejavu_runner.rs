@@ -1,13 +1,14 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 use cap_std::fs::Dir;
 use qingyu_dejavu::{
-    Device, LocalCloud, NoopWorkingTreeCoordinator, RepositoryRelativePath, RepositoryRuntimeState,
-    WorkingTreeAction, WorkingTreeChange, WorkingTreeCoordinator,
+    Device, LocalCloud, NoopWorkingTreeCoordinator, RepoError, RepositoryRelativePath,
+    RepositoryRuntimeState, WorkingTreeAction, WorkingTreeChange, WorkingTreeCoordinator,
+    WorkingTreePermit,
 };
 use qingyu_kernel::runtime::MutationCoordinator;
 use qingyu_kernel::storage::{directory_identity, DirectoryIdentity};
@@ -148,6 +149,119 @@ struct TestInstanceDataCapability {
     canonical_path: PathBuf,
     directory: Dir,
     identity: DirectoryIdentity,
+}
+
+struct RetainedInstanceDataCapability {
+    canonical_path: PathBuf,
+    directory: Dir,
+    identity: DirectoryIdentity,
+}
+
+impl RetainedInstanceDataCapability {
+    fn new(path: &Path) -> Self {
+        let canonical_path = path.canonicalize().expect("canonical instance data");
+        let directory = Dir::open_ambient_dir(&canonical_path, cap_std::ambient_authority())
+            .expect("retained instance data");
+        let identity = directory_identity(&directory).expect("instance-data identity");
+        Self {
+            canonical_path,
+            directory,
+            identity,
+        }
+    }
+}
+
+impl DejavuInstanceDataCapability for RetainedInstanceDataCapability {
+    fn verify_held_directory(&self) -> Result<(), DejavuInstanceDataCapabilityError> {
+        if directory_identity(&self.directory).map_err(|_| DejavuInstanceDataCapabilityError)?
+            == self.identity
+        {
+            Ok(())
+        } else {
+            Err(DejavuInstanceDataCapabilityError)
+        }
+    }
+
+    fn try_clone_directory(&self) -> Result<Dir, DejavuInstanceDataCapabilityError> {
+        self.directory
+            .try_clone()
+            .map_err(|_| DejavuInstanceDataCapabilityError)
+    }
+
+    fn canonical_path(&self) -> &Path {
+        &self.canonical_path
+    }
+}
+
+struct ReplaceInstanceOnWorkspacePathRead {
+    inner: TestWorkspaceCapability,
+    instance: PathBuf,
+    displaced: PathBuf,
+    replace_on_path_read: Arc<AtomicBool>,
+}
+
+impl DejavuWorkspaceCapability for ReplaceInstanceOnWorkspacePathRead {
+    fn verify_held_directory(&self) -> Result<(), DejavuWorkspaceCapabilityError> {
+        self.inner.verify_held_directory()
+    }
+
+    fn try_clone_directory(&self) -> Result<Dir, DejavuWorkspaceCapabilityError> {
+        self.inner.try_clone_directory()
+    }
+
+    fn canonical_path(&self) -> &Path {
+        if self.replace_on_path_read.swap(false, Ordering::AcqRel) {
+            fs::rename(&self.instance, &self.displaced).expect("displace instance data");
+            let replacement_repository =
+                self.instance.join("sync/repositories").join(REPOSITORY_ID);
+            for name in ["repo", "history", "temp"] {
+                fs::create_dir_all(replacement_repository.join(name))
+                    .expect("replacement repository layout");
+            }
+        }
+        self.inner.canonical_path()
+    }
+}
+
+struct SwitchableInstanceDataCapability {
+    inner: TestInstanceDataCapability,
+    available: Arc<AtomicBool>,
+}
+
+impl DejavuInstanceDataCapability for SwitchableInstanceDataCapability {
+    fn verify_held_directory(&self) -> Result<(), DejavuInstanceDataCapabilityError> {
+        if !self.available.load(Ordering::Acquire) {
+            return Err(DejavuInstanceDataCapabilityError);
+        }
+        self.inner.verify_held_directory()
+    }
+
+    fn try_clone_directory(&self) -> Result<Dir, DejavuInstanceDataCapabilityError> {
+        self.inner.try_clone_directory()
+    }
+
+    fn canonical_path(&self) -> &Path {
+        self.inner.canonical_path()
+    }
+}
+
+struct InvalidateInstanceOnPrepare {
+    available: Arc<AtomicBool>,
+}
+
+#[async_trait::async_trait]
+impl WorkingTreeCoordinator for InvalidateInstanceOnPrepare {
+    async fn prepare(
+        &self,
+        _changes: &[WorkingTreeChange],
+    ) -> Result<WorkingTreePermit, RepoError> {
+        self.available.store(false, Ordering::Release);
+        Ok(WorkingTreePermit::new(()))
+    }
+
+    async fn release(&self, permit: WorkingTreePermit) {
+        drop(permit);
+    }
 }
 
 impl TestInstanceDataCapability {
@@ -467,6 +581,61 @@ async fn repository_directory_replacement_after_construction_fails_closed() {
 }
 
 #[tokio::test]
+async fn runner_opens_dejavu_from_retained_directories_after_ambient_instance_replacement() {
+    let root = tempfile::tempdir().expect("fixture root");
+    let workspace = root.path().join("workspace");
+    let instance = root.path().join("instance");
+    let displaced = root.path().join("displaced-instance");
+    fs::create_dir(&workspace).expect("workspace");
+    fs::create_dir(&instance).expect("instance");
+    fs::write(workspace.join("retained.md"), b"retained document").expect("workspace note");
+    let replace_on_path_read = Arc::new(AtomicBool::new(false));
+    let inputs = DejavuRunnerInputs {
+        workspace: Arc::new(ReplaceInstanceOnWorkspacePathRead {
+            inner: TestWorkspaceCapability::new(&workspace),
+            instance: instance.clone(),
+            displaced: displaced.clone(),
+            replace_on_path_read: Arc::clone(&replace_on_path_read),
+        }),
+        instance_data: Arc::new(RetainedInstanceDataCapability::new(&instance)),
+        repository_id: REPOSITORY_ID.to_owned(),
+        device: Device {
+            id: "capability-open".to_owned(),
+            name: "capability-open".to_owned(),
+            os: "test".to_owned(),
+        },
+        repository_key: DejavuRepositoryKey::new([7; 32]),
+        runtime: RepositoryRuntimeState::default(),
+        coordinator: Arc::new(NoopWorkingTreeCoordinator),
+    };
+    let cloud_root = tempfile::tempdir().expect("cloud root");
+    let cloud = Arc::new(LocalCloud::new(cloud_root.path()).expect("local cloud"));
+    let runner = KernelDejavuRunner::new_with_cloud(inputs, cloud).expect("runner");
+    replace_on_path_read.store(true, Ordering::Release);
+
+    runner
+        .run(Arc::new(|| false))
+        .await
+        .expect("sync through retained repository roots");
+
+    let retained_repo = displaced
+        .join("sync/repositories")
+        .join(REPOSITORY_ID)
+        .join("repo");
+    let replacement_repo = instance
+        .join("sync/repositories")
+        .join(REPOSITORY_ID)
+        .join("repo");
+    assert!(fs::read_dir(retained_repo).expect("retained repo").count() > 0);
+    assert_eq!(
+        fs::read_dir(replacement_repo)
+            .expect("replacement repo")
+            .count(),
+        0
+    );
+}
+
+#[tokio::test]
 async fn cancellation_before_open_returns_only_the_safe_cancelled_error() {
     let cloud_root = tempfile::tempdir().expect("cloud root");
     let cloud = Arc::new(LocalCloud::new(cloud_root.path()).expect("local cloud"));
@@ -502,6 +671,34 @@ async fn workspace_loss_after_permit_is_not_misreported_as_cancellation() {
     let result = runner.run(Arc::new(|| false)).await;
 
     assert_eq!(result, Err(DejavuRunError::WorkspaceUnavailable));
+}
+
+#[tokio::test]
+async fn instance_authority_loss_after_permit_fails_before_working_tree_writes() {
+    let cloud_root = tempfile::tempdir().expect("cloud root");
+    let cloud = Arc::new(LocalCloud::new(cloud_root.path()).expect("local cloud"));
+    let remote = RunnerFixture::new("remote-instance-authority", Arc::clone(&cloud));
+    fs::write(remote.workspace.join("remote.md"), b"remote").expect("remote note");
+    remote
+        .runner
+        .run(Arc::new(|| false))
+        .await
+        .expect("seed remote repository");
+
+    let root = tempfile::tempdir().expect("fixture root");
+    let (workspace, mut inputs) = runner_inputs(root.path(), "failing-instance");
+    let available = Arc::new(AtomicBool::new(true));
+    inputs.instance_data = Arc::new(SwitchableInstanceDataCapability {
+        inner: TestInstanceDataCapability::new(&root.path().join("instance")),
+        available: Arc::clone(&available),
+    });
+    inputs.coordinator = Arc::new(InvalidateInstanceOnPrepare { available });
+    let runner = KernelDejavuRunner::new_with_cloud(inputs, cloud).expect("runner");
+
+    let result = runner.run(Arc::new(|| false)).await;
+
+    assert_eq!(result, Err(DejavuRunError::RepositoryUnavailable));
+    assert!(!workspace.join("remote.md").exists());
 }
 
 #[tokio::test]
