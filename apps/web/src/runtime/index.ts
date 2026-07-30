@@ -15,6 +15,7 @@ import {
 } from "./web";
 import { createServerFileRuntime, serverWorkspaceRoot } from "./server/files";
 import { createServerSyncConfigRuntime } from "./server/sync-config";
+import { createServerSettingsRuntime } from "./server/settings";
 
 export * from "./web";
 
@@ -89,6 +90,7 @@ export function createServerWebRuntime(
       resolveDesktopPlatform: () => null,
       resolveFormFactor: () => "desktop"
     },
+    settings: createServerSettingsRuntime(kernel),
     syncConfig: createServerSyncConfigRuntime(kernel),
     webResource: createWebResourceRuntime(options),
     window: createWebWindowRuntime(defaultRuntime.window, options),
