@@ -9,6 +9,7 @@ use crate::{
     paths::KernelPaths,
     ports::system::system_kernel_ports,
     runtime::KernelRuntime,
+    services::sync_scheduler::KernelSyncScheduler,
     workspace::{managed::ManagedWorkspaceCollection, primary::DurableServerPrimaryWorkspaceStore},
 };
 
@@ -33,6 +34,7 @@ pub struct ServerRuntimeComposition {
     runtime: Arc<KernelRuntime>,
     _authentication: Arc<ServerAuthenticationStore>,
     security: ServerAuthenticationSecurity,
+    scheduler: Arc<KernelSyncScheduler>,
 }
 
 impl ServerRuntimeComposition {
@@ -46,6 +48,7 @@ impl ServerRuntimeComposition {
             .map_err(|_| ServerRuntimeCompositionError::ApiActivation)?;
         process
             .activate(self.security, environment)
+            .map(|activation| activation.with_sync_scheduler(self.scheduler))
             .map_err(|_| ServerRuntimeCompositionError::ApiActivation)
     }
 
@@ -76,6 +79,11 @@ impl ServerRuntimeComposition {
     fn authentication_coordinator(&self) -> super::ServerAuthenticationCoordinator {
         self.security.authentication_coordinator()
     }
+
+    #[cfg(test)]
+    fn scheduler(&self) -> &Arc<KernelSyncScheduler> {
+        &self.scheduler
+    }
 }
 
 impl fmt::Debug for ServerRuntimeComposition {
@@ -101,7 +109,7 @@ pub async fn compose_fixed_server_kernel(
         )
         .map_err(|_| ServerRuntimeCompositionError::PrimaryWorkspaceStore)?,
     );
-    install_fixed_kernel_services(
+    let services = install_fixed_kernel_services(
         &runtime,
         primary_workspace,
         managed,
@@ -114,10 +122,16 @@ pub async fn compose_fixed_server_kernel(
             .map_err(|_| ServerRuntimeCompositionError::AuthenticationStore)?,
     );
     let security = production_authentication_security(Arc::clone(&authentication))?;
+    let scheduler = Arc::new(
+        KernelSyncScheduler::start(services.sync)
+            .map_err(|_error| ServerRuntimeCompositionError::SyncScheduler)?,
+    );
+    let _app_launch = scheduler.app_launch().await;
     Ok(ServerRuntimeComposition {
         runtime,
         _authentication: authentication,
         security,
+        scheduler,
     })
 }
 
@@ -167,6 +181,7 @@ pub enum ServerRuntimeCompositionError {
     FixedServiceInstall,
     AuthenticationStore,
     AuthenticationSecurity,
+    SyncScheduler,
     ApiActivation,
 }
 
@@ -201,6 +216,7 @@ impl ServerRuntimeCompositionError {
             Self::FixedServiceInstall => "QK-SRV-COMPOSE-FIXED-SERVICE-INSTALL",
             Self::AuthenticationStore => "QK-SRV-COMPOSE-AUTH-STORE",
             Self::AuthenticationSecurity => "QK-SRV-COMPOSE-AUTH-SECURITY",
+            Self::SyncScheduler => "QK-SRV-COMPOSE-SYNC-SCHEDULER",
             Self::ApiActivation => "QK-SRV-AUTH-API",
         }
     }
@@ -225,6 +241,7 @@ mod tests {
         config::KernelConfig,
         contract::{
             HostProfile, PatchSyncConfigRequest, ServerAuthenticationSecret, SyncConfigChangesDto,
+            SyncTrigger,
         },
         paths::KernelPaths,
         server::{
@@ -357,6 +374,65 @@ mod tests {
         let config = sync.get_sync_config().await.unwrap();
         assert_eq!(config.remote_root, "existing-root");
         assert_eq!(fs::read(target).unwrap(), existing);
+    }
+
+    #[tokio::test]
+    async fn configured_server_starts_one_app_launch_sync_before_reporting_ready() {
+        let temporary = tempdir().unwrap();
+        let paths = fixture_paths(temporary.path());
+        fs::write(
+            temporary.path().join("data/state/sync-config.json"),
+            br#"{
+  "version": 3,
+  "enabled": true,
+  "provider": "webdav",
+  "remoteRoot": "server-notes",
+  "mode": "startup-exit",
+  "intervalSeconds": 30,
+  "generateConflictDocument": false,
+  "webdav": {
+    "serverUrl": "http://127.0.0.1:9",
+    "username": "server-user",
+    "password": "server-password"
+  },
+  "s3": {
+    "endpointUrl": "",
+    "region": "",
+    "bucket": "",
+    "accessKeyId": "",
+    "secretAccessKey": "",
+    "requestTimeoutSeconds": 60,
+    "addressingStyle": "auto",
+    "tlsVerification": "verify"
+  }
+}
+"#,
+        )
+        .unwrap();
+
+        let composition = compose_fixed_server_kernel(KernelConfig::generate().unwrap(), paths)
+            .await
+            .unwrap();
+        let sync = composition.runtime().sync_api_service().unwrap();
+
+        let status = sync.get_sync_status().await.unwrap();
+        assert_eq!(status.last_trigger.as_ref(), Some(&SyncTrigger::AppLaunch));
+    }
+
+    #[tokio::test]
+    async fn server_composition_owns_the_only_sync_scheduler_for_its_service() {
+        let temporary = tempdir().unwrap();
+        let paths = fixture_paths(temporary.path());
+        let composition = compose_fixed_server_kernel(KernelConfig::generate().unwrap(), paths)
+            .await
+            .unwrap();
+
+        let second = KernelSyncScheduler::start(composition.scheduler().service().clone());
+
+        assert_eq!(
+            second.unwrap_err(),
+            crate::services::sync_scheduler::KernelSyncSchedulerStartError
+        );
     }
 
     #[tokio::test]
@@ -664,6 +740,10 @@ mod tests {
             (
                 ServerRuntimeCompositionError::AuthenticationSecurity,
                 "QK-SRV-COMPOSE-AUTH-SECURITY",
+            ),
+            (
+                ServerRuntimeCompositionError::SyncScheduler,
+                "QK-SRV-COMPOSE-SYNC-SCHEDULER",
             ),
             (
                 ServerRuntimeCompositionError::ApiActivation,

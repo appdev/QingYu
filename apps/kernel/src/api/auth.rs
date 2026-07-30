@@ -35,6 +35,7 @@ use crate::{
         ServerInitializationCoordinator, ServerLaunchEnvironment, ServerOwnerInitializationError,
         SessionAuthorization,
     },
+    services::sync_scheduler::KernelSyncScheduler,
 };
 
 use super::{api_error, routes::parse_sensitive_auth_json, ApiState};
@@ -125,6 +126,7 @@ impl ServerApiProcess {
         Ok(ServerApiActivation {
             runtime: self.runtime,
             host,
+            sync_scheduler: None,
         })
     }
 }
@@ -191,11 +193,23 @@ impl std::error::Error for ServerApiActivationError {}
 pub struct ServerApiActivation {
     runtime: Arc<KernelRuntime>,
     host: ServerApiHost,
+    sync_scheduler: Option<Arc<KernelSyncScheduler>>,
 }
 
 impl ServerApiActivation {
-    pub(super) fn into_parts(self) -> (Arc<KernelRuntime>, ServerApiHost) {
-        (self.runtime, self.host)
+    pub(crate) fn with_sync_scheduler(mut self, scheduler: Arc<KernelSyncScheduler>) -> Self {
+        self.sync_scheduler = Some(scheduler);
+        self
+    }
+
+    pub(super) fn into_parts(
+        self,
+    ) -> (
+        Arc<KernelRuntime>,
+        ServerApiHost,
+        Option<Arc<KernelSyncScheduler>>,
+    ) {
+        (self.runtime, self.host, self.sync_scheduler)
     }
 }
 

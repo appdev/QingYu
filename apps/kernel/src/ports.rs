@@ -150,6 +150,10 @@ impl KernelPorts {
         }))
     }
 
+    pub(crate) fn spawn_unretained_background(&self, task: BoxTaskFuture) -> Result<(), PortError> {
+        self.task_spawner.spawn(task)
+    }
+
     pub fn credential_store(&self) -> &Arc<dyn CredentialStore> {
         &self.credential_store
     }

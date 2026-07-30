@@ -73,7 +73,10 @@ impl KernelSyncScheduler {
                 subscription,
             )),
         };
-        let spawn_result = runtime.ports().spawn_background(Box::pin(task));
+        // The runtime owner retains the scheduler handle. Keeping a second
+        // instance-lease owner inside this idle control task would delay lock
+        // release after the runtime and scheduler are dropped.
+        let spawn_result = runtime.ports().spawn_unretained_background(Box::pin(task));
         if spawn_result.is_err() || task_state.dropped.load(Ordering::Acquire) {
             control.close(&claim);
             return Err(KernelSyncSchedulerStartError);
@@ -104,6 +107,11 @@ impl KernelSyncScheduler {
     pub async fn close(&self) {
         self.control.close(&self.claim);
         self.control.wait_ended().await;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn service(&self) -> &Arc<SyncService> {
+        &self.service
     }
 }
 

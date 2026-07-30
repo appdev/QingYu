@@ -46,6 +46,7 @@ use crate::{
     },
     error::{http_status_for_error_code, safe_error_envelope},
     runtime::KernelRuntime,
+    services::sync_scheduler::KernelSyncScheduler,
 };
 
 const API_PREFIX: &str = "/api/v1/";
@@ -114,15 +115,16 @@ pub(crate) struct ApiState {
     policy: TransportPolicy,
     server: Option<ServerApiHost>,
     web: Option<web::ServerWebAssets>,
+    _sync_scheduler: Option<Arc<KernelSyncScheduler>>,
 }
 
 pub fn build_router(runtime: Arc<KernelRuntime>, policy: TransportPolicy) -> Router {
-    build_router_with_server(runtime, policy, None, None)
+    build_router_with_server(runtime, policy, None, None, None)
 }
 
 pub fn build_server_router(activation: ServerApiActivation, policy: TransportPolicy) -> Router {
-    let (runtime, server) = activation.into_parts();
-    build_router_with_server(runtime, policy, Some(server), None)
+    let (runtime, server, scheduler) = activation.into_parts();
+    build_router_with_server(runtime, policy, Some(server), None, scheduler)
 }
 
 pub fn build_server_web_router(
@@ -131,12 +133,13 @@ pub fn build_server_web_router(
     web_root: impl AsRef<Path>,
 ) -> Result<Router, InvalidServerWebAssets> {
     let web = web::ServerWebAssets::open(web_root.as_ref())?;
-    let (runtime, server) = activation.into_parts();
+    let (runtime, server, scheduler) = activation.into_parts();
     Ok(build_router_with_server(
         runtime,
         policy,
         Some(server),
         Some(web),
+        scheduler,
     ))
 }
 
@@ -145,12 +148,14 @@ fn build_router_with_server(
     policy: TransportPolicy,
     server: Option<ServerApiHost>,
     web: Option<web::ServerWebAssets>,
+    sync_scheduler: Option<Arc<KernelSyncScheduler>>,
 ) -> Router {
     let state = ApiState {
         runtime,
         policy,
         server,
         web,
+        _sync_scheduler: sync_scheduler,
     };
     let router = if state.server.is_some() {
         routes::router().merge(auth::router())

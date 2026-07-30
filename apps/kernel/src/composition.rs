@@ -53,7 +53,7 @@ pub async fn compose_fixed_native_kernel(
         ManagedWorkspaceCollection::from_paths(&paths).map_err(|_| NativeCompositionError)?;
     let runtime = KernelRuntime::activate(config, paths, system_kernel_ports())
         .map_err(|_| NativeCompositionError)?;
-    install_fixed_kernel_services(
+    let _services = install_fixed_kernel_services(
         &runtime,
         Arc::new(
             FixedPrimaryWorkspaceStore::new(workspace_state).map_err(|_| NativeCompositionError)?,
@@ -73,7 +73,7 @@ pub(crate) async fn install_fixed_kernel_services(
     primary_workspace: Arc<dyn PrimaryWorkspaceStore>,
     managed: ManagedWorkspaceCollection,
     display_name: impl Into<String>,
-) -> Result<(), FixedKernelCompositionError> {
+) -> Result<InstalledFixedKernelServices, FixedKernelCompositionError> {
     let settings_store = Arc::new(
         AtomicJsonSettingsStore::new(
             DurableFileStore::at_instance_data(
@@ -172,7 +172,7 @@ pub(crate) async fn install_fixed_kernel_services(
         .install_settings_api_service(settings_service)
         .map_err(|_| FixedKernelCompositionError::ServiceInstall)?;
     runtime
-        .install_sync_api_service(sync_service)
+        .install_sync_api_service(sync_service.clone())
         .map_err(|_| FixedKernelCompositionError::ServiceInstall)?;
     runtime
         .install_system_api_service(Arc::new(FixedSystemService {
@@ -180,7 +180,11 @@ pub(crate) async fn install_fixed_kernel_services(
             profile: runtime.host_profile(),
         }))
         .map_err(|_| FixedKernelCompositionError::ServiceInstall)?;
-    Ok(())
+    Ok(InstalledFixedKernelServices { sync: sync_service })
+}
+
+pub(crate) struct InstalledFixedKernelServices {
+    pub(crate) sync: Arc<SyncService>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
