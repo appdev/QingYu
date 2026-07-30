@@ -80,6 +80,8 @@ export type { WorkspaceSearchRequest, WorkspaceSearchResponse } from "../lib/wor
 export type { AppLogArea, AppLogEvent, AppLogLevel, AppLogWriter } from "../lib/app-logger";
 export { appLogger } from "../lib/app-logger";
 export * from "./kernel-compat";
+export * from "./kernel-domain";
+export * from "./native-shell";
 
 export type RuntimeCleanup = () => unknown;
 
