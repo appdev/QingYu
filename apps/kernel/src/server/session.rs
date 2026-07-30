@@ -5,17 +5,30 @@ use super::{
     secret::{ExposedSecret, RandomSecretError, SecretDigest},
 };
 
+const DEFAULT_MAXIMUM_ACTIVE_SESSIONS: usize = 8;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SessionPolicy {
     lifetime: Duration,
+    maximum_active_sessions: usize,
 }
 
 impl SessionPolicy {
     pub fn new(lifetime: Duration) -> Result<Self, InvalidSessionPolicy> {
-        if lifetime.is_zero() {
+        Self::with_capacity(lifetime, DEFAULT_MAXIMUM_ACTIVE_SESSIONS)
+    }
+
+    pub fn with_capacity(
+        lifetime: Duration,
+        maximum_active_sessions: usize,
+    ) -> Result<Self, InvalidSessionPolicy> {
+        if lifetime.is_zero() || maximum_active_sessions == 0 {
             return Err(InvalidSessionPolicy);
         }
-        Ok(Self { lifetime })
+        Ok(Self {
+            lifetime,
+            maximum_active_sessions,
+        })
     }
 }
 
@@ -77,11 +90,15 @@ impl SessionStore {
     }
 
     pub fn issue(&mut self, now: Duration) -> Result<IssuedSession, SessionIssueError> {
+        self.prune_expired(now);
         let expires_at = now
             .checked_add(self.policy.lifetime)
             .ok_or(SessionIssueError)?;
         let credential = ExposedSecret::generate().map_err(map_random_error)?;
         let csrf_token = ExposedSecret::generate().map_err(map_random_error)?;
+        if self.sessions.len() == self.policy.maximum_active_sessions {
+            self.sessions.remove(0);
+        }
         self.sessions.push(StoredSession {
             credential: credential.digest(),
             csrf_token: csrf_token.digest(),
@@ -101,7 +118,7 @@ impl SessionStore {
         intent: RequestIntent,
         now: Duration,
     ) -> SessionAuthorization {
-        self.sessions.retain(|session| now < session.expires_at);
+        self.prune_expired(now);
         let Some(session) = self
             .sessions
             .iter()
@@ -119,6 +136,26 @@ impl SessionStore {
         SessionAuthorization::Authorized {
             expires_at: session.expires_at,
         }
+    }
+
+    pub fn revoke(&mut self, credential: &str) -> bool {
+        let mut revoked = false;
+        self.sessions.retain(|session| {
+            let matches = session.credential.matches(credential);
+            revoked |= matches;
+            !matches
+        });
+        revoked
+    }
+
+    pub fn revoke_all(&mut self) -> usize {
+        let revoked = self.sessions.len();
+        self.sessions.clear();
+        revoked
+    }
+
+    fn prune_expired(&mut self, now: Duration) {
+        self.sessions.retain(|session| now < session.expires_at);
     }
 }
 

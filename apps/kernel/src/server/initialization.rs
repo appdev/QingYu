@@ -52,6 +52,7 @@ pub enum InitializationStatus {
     Pending,
     InProgress,
     Initialized,
+    Unavailable,
 }
 
 pub struct InitializationPermit {
@@ -75,7 +76,9 @@ impl Drop for InitializationPermit {
         let Some(state) = self.state.upgrade() else {
             return;
         };
-        let mut state = lock_state(&state);
+        let Ok(mut state) = lock_state(&state) else {
+            return;
+        };
         let _restored = restore_pending(&mut state, self.attempt_id);
     }
 }
@@ -89,6 +92,12 @@ enum InitializationState {
     Initialized,
 }
 
+/// Process-local coordination for one initialization transaction.
+///
+/// A server host must keep the durable initialized marker and an Argon2id PHC
+/// password hash under its fixed data root, treat durable state as authoritative
+/// on restart, and call `commit` only after that state is atomically persisted.
+/// This gate deliberately does not stand in for that activation requirement.
 pub struct InitializationGate {
     gate_id: Uuid,
     state: Arc<Mutex<InitializationState>>,
@@ -110,7 +119,10 @@ impl InitializationGate {
     }
 
     pub fn status(&self) -> InitializationStatus {
-        match &*lock_state(&self.state) {
+        let Ok(state) = lock_state(&self.state) else {
+            return InitializationStatus::Unavailable;
+        };
+        match &*state {
             InitializationState::Pending(_) => InitializationStatus::Pending,
             InitializationState::InProgress { .. } => InitializationStatus::InProgress,
             InitializationState::Initialized => InitializationStatus::Initialized,
@@ -119,7 +131,7 @@ impl InitializationGate {
 
     pub fn begin(&mut self, candidate: &str) -> Result<InitializationPermit, InitializationError> {
         let attempt_id = Uuid::new_v4();
-        let mut state = lock_state(&self.state);
+        let mut state = lock_state(&self.state)?;
         match &*state {
             InitializationState::Pending(token) => {
                 if !token.matches(candidate) {
@@ -148,17 +160,18 @@ impl InitializationGate {
     }
 
     pub fn commit(&mut self, mut permit: InitializationPermit) -> Result<(), InitializationError> {
-        if permit.gate_id != self.gate_id
-            || !permit.state.ptr_eq(&Arc::downgrade(&self.state))
-            || !matches!(
-                &*lock_state(&self.state),
-                InitializationState::InProgress { attempt_id, .. }
-                    if *attempt_id == permit.attempt_id
-            )
-        {
+        if permit.gate_id != self.gate_id || !permit.state.ptr_eq(&Arc::downgrade(&self.state)) {
             return Err(InitializationError::InvalidPermit);
         }
-        *lock_state(&self.state) = InitializationState::Initialized;
+        let mut state = lock_state(&self.state)?;
+        if !matches!(
+            &*state,
+            InitializationState::InProgress { attempt_id, .. }
+                if *attempt_id == permit.attempt_id
+        ) {
+            return Err(InitializationError::InvalidPermit);
+        }
+        *state = InitializationState::Initialized;
         permit.settled = true;
         Ok(())
     }
@@ -167,7 +180,7 @@ impl InitializationGate {
         if permit.gate_id != self.gate_id || !permit.state.ptr_eq(&Arc::downgrade(&self.state)) {
             return Err(InitializationError::InvalidPermit);
         }
-        let mut state = lock_state(&self.state);
+        let mut state = lock_state(&self.state)?;
         if !restore_pending(&mut state, permit.attempt_id) {
             return Err(InitializationError::InvalidPermit);
         }
@@ -195,10 +208,12 @@ fn restore_pending(state: &mut InitializationState, attempt_id: Uuid) -> bool {
     true
 }
 
-fn lock_state(state: &Arc<Mutex<InitializationState>>) -> MutexGuard<'_, InitializationState> {
+fn lock_state(
+    state: &Arc<Mutex<InitializationState>>,
+) -> Result<MutexGuard<'_, InitializationState>, InitializationError> {
     state
         .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .map_err(|_poisoned| InitializationError::StateUnavailable)
 }
 
 impl fmt::Debug for InitializationGate {
@@ -216,6 +231,7 @@ pub enum InitializationError {
     InProgress,
     AlreadyInitialized,
     InvalidPermit,
+    StateUnavailable,
 }
 
 impl fmt::Display for InitializationError {
@@ -225,8 +241,37 @@ impl fmt::Display for InitializationError {
             Self::InProgress => formatter.write_str("initialization is already in progress"),
             Self::AlreadyInitialized => formatter.write_str("initialization is already complete"),
             Self::InvalidPermit => formatter.write_str("initialization permit is invalid"),
+            Self::StateUnavailable => formatter.write_str("initialization state is unavailable"),
         }
     }
 }
 
 impl std::error::Error for InitializationError {}
+
+#[cfg(test)]
+mod tests {
+    use std::{panic::catch_unwind, sync::Arc};
+
+    use super::*;
+
+    #[test]
+    fn poisoned_initialization_state_fails_closed() {
+        let token = InitializationToken::from_secret(
+            "initialization-secret-with-at-least-32-bytes".to_owned(),
+        )
+        .unwrap();
+        let mut gate = InitializationGate::pending(token);
+        let state = Arc::clone(&gate.state);
+        let poisoned = catch_unwind(move || {
+            let _guard = state.lock().unwrap();
+            panic!("poison initialization state for the fail-closed test");
+        });
+        assert!(poisoned.is_err());
+
+        assert_eq!(gate.status(), InitializationStatus::Unavailable);
+        assert!(matches!(
+            gate.begin("initialization-secret-with-at-least-32-bytes"),
+            Err(InitializationError::StateUnavailable)
+        ));
+    }
+}
