@@ -105,6 +105,23 @@ fn portable_settings_scope_uses_the_kernel_validator() {
         .is_err());
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn notes_scope_creates_and_syncs_a_missing_nested_state_tree() {
+    let temporary = tempdir_without_symlink_ancestors();
+    let workspace = temporary.path().join("workspace");
+    let state = temporary.path().join("missing/nested/state");
+    std::fs::create_dir(&workspace).unwrap();
+
+    let scope = RemoteSyncScope::notes(&workspace, &state, "manifest.json", None, None).unwrap();
+    let staging = scope.open_or_create_state_directory("staging").unwrap();
+    let conflicts = scope.open_or_create_state_directory("conflicts").unwrap();
+
+    assert!(state.is_dir());
+    assert!(staging.dir_metadata().unwrap().is_dir());
+    assert!(conflicts.dir_metadata().unwrap().is_dir());
+}
+
 #[cfg(unix)]
 #[test]
 fn replacing_the_state_address_with_a_symlink_fails_closed() {

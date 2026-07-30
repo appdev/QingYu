@@ -696,10 +696,7 @@ fn open_or_create_directory_nofollow(path: &Path) -> Result<Dir, String> {
 
 #[cfg(unix)]
 fn sync_created_directory_parent(parent: &Dir) -> Result<(), String> {
-    parent
-        .try_clone()
-        .and_then(|directory| directory.into_std_file().sync_all())
-        .map_err(|_| unsafe_state_root_error())
+    crate::storage::sync_directory(parent).map_err(|_| unsafe_state_root_error())
 }
 
 #[cfg(not(unix))]
