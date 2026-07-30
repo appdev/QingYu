@@ -22,6 +22,19 @@ const WORKSPACE: KernelWorkspaceSnapshot = {
   revision: "workspace-revision-1" as KernelRevision
 };
 
+type Deferred<T> = {
+  promise: Promise<T>;
+  resolve: (value: T) => unknown;
+};
+
+function deferred<T>(): Deferred<T> {
+  let resolve!: Deferred<T>["resolve"];
+  const promise = new Promise<T>((promiseResolve) => {
+    resolve = promiseResolve;
+  });
+  return { promise, resolve };
+}
+
 function path(value: string) {
   return value as KernelWorkspaceRelativePath;
 }
@@ -206,6 +219,76 @@ describe("primary workspace document controller", () => {
     });
     expect(controller.entries().find((item) => item.relativePath === path("readme.md")))
       .not.toHaveProperty("contents");
+  });
+
+  it("rejects a delayed read instead of rolling back a newer mutation revision", async () => {
+    const pendingRead = deferred<KernelDocumentSnapshot>();
+    const updateCalls: Array<{ expectedRevision: KernelRevision }> = [];
+    const controller = await createPrimaryWorkspaceDocumentController({
+      kernel: createKernelPort({
+        list: listRootReadmeDocument,
+        read: async () => pendingRead.promise,
+        update: async (input) => {
+          updateCalls.push({ expectedRevision: input.expectedRevision });
+          return document("readme.md", input.contents, {
+            revision: `revision:update-${updateCalls.length}` as KernelRevision
+          });
+        }
+      }),
+      workspace: WORKSPACE
+    });
+
+    const staleRead = controller.read(path("readme.md"));
+    await controller.update({ contents: "newer", relativePath: path("readme.md") });
+    pendingRead.resolve(document("readme.md", "older", {
+      revision: "revision:stale-read" as KernelRevision
+    }));
+
+    await expect(staleRead).rejects.toMatchObject({ code: "operation-superseded" });
+    expect(controller.entries()).toContainEqual(expect.objectContaining({
+      relativePath: "readme.md",
+      revision: "revision:update-1"
+    }));
+    await controller.update({ contents: "newest", relativePath: path("readme.md") });
+    expect(updateCalls).toEqual([
+      { expectedRevision: "revision:readme.md" },
+      { expectedRevision: "revision:update-1" }
+    ]);
+  });
+
+  it("requires rebuild when a delayed update response loses its captured sidecar revision", async () => {
+    const firstResponse = deferred<KernelDocumentSnapshot>();
+    const secondResponse = deferred<KernelDocumentSnapshot>();
+    const updateCalls: Array<{ contents: string; expectedRevision: KernelRevision }> = [];
+    const controller = await createPrimaryWorkspaceDocumentController({
+      kernel: createKernelPort({
+        list: listRootReadmeDocument,
+        update: async (input) => {
+          updateCalls.push({ contents: input.contents, expectedRevision: input.expectedRevision });
+          return updateCalls.length === 1 ? firstResponse.promise : secondResponse.promise;
+        }
+      }),
+      workspace: WORKSPACE
+    });
+
+    const staleUpdate = controller.update({ contents: "first", relativePath: path("readme.md") });
+    const newerUpdate = controller.update({ contents: "second", relativePath: path("readme.md") });
+    secondResponse.resolve(document("readme.md", "second", {
+      revision: "revision:second-update" as KernelRevision
+    }));
+    await expect(newerUpdate).resolves.toMatchObject({ revision: "revision:second-update" });
+    firstResponse.resolve(document("readme.md", "first", {
+      revision: "revision:first-update" as KernelRevision
+    }));
+
+    await expect(staleUpdate).rejects.toMatchObject({ code: "rebuild-required" });
+    expect(() => controller.entries()).toThrow(expect.objectContaining({
+      code: "rebuild-required"
+    }));
+    expect(updateCalls).toEqual([
+      { contents: "first", expectedRevision: "revision:readme.md" },
+      { contents: "second", expectedRevision: "revision:readme.md" }
+    ]);
   });
 
   it("creates documents through the Kernel and records the returned sidecar entry", async () => {
@@ -521,6 +604,106 @@ describe("primary workspace document controller", () => {
     }]);
   });
 
+  it("never resurrects a deleted path from a delayed move response", async () => {
+    const pendingMove = deferred<KernelDocumentEntrySnapshot>();
+    const controller = await createPrimaryWorkspaceDocumentController({
+      kernel: createKernelPort({
+        delete: async () => undefined,
+        list: listRootReadmeDocument,
+        move: async () => pendingMove.promise
+      }),
+      workspace: WORKSPACE
+    });
+
+    const staleMove = controller.move({
+      name: "renamed.md",
+      relativePath: path("readme.md"),
+      targetParent: path("")
+    });
+    await controller.delete({
+      deletionPolicy: "recoverable",
+      relativePath: path("readme.md")
+    });
+    pendingMove.resolve(entry("renamed.md", "file", {
+      locator: "signed:renamed.md:v2" as KernelDocumentLocator,
+      revision: "revision:delayed-move" as KernelRevision
+    }));
+
+    await expect(staleMove).rejects.toMatchObject({ code: "rebuild-required" });
+    expect(() => controller.entries()).toThrow(expect.objectContaining({
+      code: "rebuild-required"
+    }));
+  });
+
+  it("rejects a delayed move when its target path changed while the request was in flight", async () => {
+    const pendingMove = deferred<KernelDocumentEntrySnapshot>();
+    const controller = await createPrimaryWorkspaceDocumentController({
+      kernel: createKernelPort({
+        create: async (input) => document("target.md", input.kind === "file" ? input.contents : ""),
+        delete: async () => undefined,
+        list: listRootReadmeDocument,
+        move: async () => pendingMove.promise
+      }),
+      workspace: WORKSPACE
+    });
+
+    const staleMove = controller.move({
+      name: "target.md",
+      relativePath: path("readme.md"),
+      targetParent: path("")
+    });
+    await controller.create({
+      contents: "temporary target",
+      kind: "file",
+      name: "target.md",
+      parent: path("")
+    });
+    await controller.delete({
+      deletionPolicy: "recoverable",
+      relativePath: path("target.md")
+    });
+    pendingMove.resolve(entry("target.md", "file", {
+      locator: "signed:target.md:v2" as KernelDocumentLocator,
+      revision: "revision:delayed-target-move" as KernelRevision
+    }));
+
+    await expect(staleMove).rejects.toMatchObject({ code: "rebuild-required" });
+    expect(() => controller.entries()).toThrow(expect.objectContaining({
+      code: "rebuild-required"
+    }));
+  });
+
+  it("fails closed when a delayed delete returns after the document moved", async () => {
+    const pendingDelete = deferred<undefined>();
+    const controller = await createPrimaryWorkspaceDocumentController({
+      kernel: createKernelPort({
+        delete: async () => pendingDelete.promise,
+        list: listRootReadmeDocument,
+        move: async () => entry("renamed.md", "file", {
+          locator: "signed:renamed.md:v2" as KernelDocumentLocator,
+          revision: "revision:moved-before-delete" as KernelRevision
+        })
+      }),
+      workspace: WORKSPACE
+    });
+
+    const staleDelete = controller.delete({
+      deletionPolicy: "recoverable",
+      relativePath: path("readme.md")
+    });
+    await controller.move({
+      name: "renamed.md",
+      relativePath: path("readme.md"),
+      targetParent: path("")
+    });
+    pendingDelete.resolve(undefined);
+
+    await expect(staleDelete).rejects.toMatchObject({ code: "rebuild-required" });
+    expect(() => controller.entries()).toThrow(expect.objectContaining({
+      code: "rebuild-required"
+    }));
+  });
+
   it("deletes a directory with its signed revision and invalidates every descendant sidecar entry", async () => {
     const deleteCalls: unknown[] = [];
     const controller = await createPrimaryWorkspaceDocumentController({
@@ -618,6 +801,52 @@ describe("primary workspace document controller", () => {
       parent: path("notes")
     })).rejects.toMatchObject({ code: "rebuild-required" });
     expect(createCount).toBe(1);
+  });
+
+  it("never resurrects a deleted path from a delayed create response", async () => {
+    const firstResponse = deferred<KernelDocumentSnapshot>();
+    const secondResponse = deferred<KernelDocumentSnapshot>();
+    let createCount = 0;
+    const controller = await createPrimaryWorkspaceDocumentController({
+      kernel: createKernelPort({
+        create: async () => {
+          createCount += 1;
+          return createCount === 1 ? firstResponse.promise : secondResponse.promise;
+        },
+        delete: async () => undefined,
+        list: async () => ({ items: [], nextCursor: null, workspaceGeneration: GENERATION })
+      }),
+      workspace: WORKSPACE
+    });
+
+    const staleCreate = controller.create({
+      contents: "first",
+      kind: "file",
+      name: "created.md",
+      parent: path("")
+    });
+    const newerCreate = controller.create({
+      contents: "second",
+      kind: "file",
+      name: "created.md",
+      parent: path("")
+    });
+    secondResponse.resolve(document("created.md", "second", {
+      revision: "revision:second-create" as KernelRevision
+    }));
+    await newerCreate;
+    await controller.delete({
+      deletionPolicy: "recoverable",
+      relativePath: path("created.md")
+    });
+    firstResponse.resolve(document("created.md", "first", {
+      revision: "revision:first-create" as KernelRevision
+    }));
+
+    await expect(staleCreate).rejects.toMatchObject({ code: "rebuild-required" });
+    expect(() => controller.entries()).toThrow(expect.objectContaining({
+      code: "rebuild-required"
+    }));
   });
 
   it("returns a committed nested delete and then blocks stale ancestor revisions until rebuild", async () => {
@@ -790,6 +1019,58 @@ describe("primary workspace document controller", () => {
       }
     ]);
     expect(update).not.toHaveBeenCalled();
+  });
+
+  it("rejects delayed search pagination when a mutation changes the indexed sidecar", async () => {
+    const secondPageRequested = deferred<undefined>();
+    const secondPage = deferred<KernelSearchPageSnapshot>();
+    let searchCount = 0;
+    const controller = await createPrimaryWorkspaceDocumentController({
+      kernel: createKernelPort({
+        list: listRootReadmeDocument,
+        search: async () => {
+          searchCount += 1;
+          if (searchCount === 1) {
+            return {
+              items: [{
+                column: 1,
+                document: entry("readme.md", "file"),
+                line: 1,
+                preview: "first needle"
+              }],
+              nextCursor: cursor("search-page-2"),
+              workspaceGeneration: GENERATION
+            };
+          }
+          secondPageRequested.resolve(undefined);
+          return secondPage.promise;
+        },
+        update: async (input) => document("readme.md", input.contents, {
+          revision: "revision:updated-during-search" as KernelRevision
+        })
+      }),
+      workspace: WORKSPACE
+    });
+
+    const staleSearch = controller.search({ query: "needle" });
+    await secondPageRequested.promise;
+    await controller.update({ contents: "newer", relativePath: path("readme.md") });
+    secondPage.resolve({
+      items: [{
+        column: 1,
+        document: entry("readme.md", "file"),
+        line: 2,
+        preview: "second needle"
+      }],
+      nextCursor: null,
+      workspaceGeneration: GENERATION
+    });
+
+    await expect(staleSearch).rejects.toMatchObject({ code: "operation-superseded" });
+    expect(controller.entries()).toContainEqual(expect.objectContaining({
+      relativePath: "readme.md",
+      revision: "revision:updated-during-search"
+    }));
   });
 
   it("validates search identity without overwriting the revision used by mutations", async () => {

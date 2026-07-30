@@ -25,6 +25,7 @@ export type PrimaryWorkspaceCreateDocumentInput =
 export type PrimaryWorkspaceDocumentControllerErrorCode =
   | "document-not-indexed"
   | "invalid-dirty-overlay"
+  | "operation-superseded"
   | "protocol-mismatch"
   | "rebuild-required"
   | "workspace-generation-drift";
@@ -32,6 +33,7 @@ export type PrimaryWorkspaceDocumentControllerErrorCode =
 const ERROR_MESSAGES: Record<PrimaryWorkspaceDocumentControllerErrorCode, string> = {
   "document-not-indexed": "The primary workspace document is not indexed.",
   "invalid-dirty-overlay": "The primary workspace dirty overlay contains duplicate document paths.",
+  "operation-superseded": "The primary workspace document changed while the operation was in flight.",
   "protocol-mismatch": "The primary workspace document response did not match its request.",
   "rebuild-required": "The primary workspace document controller must be rebuilt.",
   "workspace-generation-drift": "The primary workspace changed and the document controller must be rebuilt."
@@ -94,9 +96,11 @@ export async function createPrimaryWorkspaceDocumentController({
   workspace
 }: PrimaryWorkspaceDocumentControllerOptions): Promise<PrimaryWorkspaceDocumentController> {
   const entriesByPath = new Map<KernelWorkspaceRelativePath, KernelDocumentEntrySnapshot>();
+  const pathEpochs = new Map<KernelWorkspaceRelativePath, number>();
   const pathsByLocator = new Map<string, KernelWorkspaceRelativePath>();
   const pendingParents: Array<KernelWorkspaceRelativePath | undefined> = [undefined];
   let invalidation: PrimaryWorkspaceDocumentControllerError | undefined;
+  let sidecarEpoch = 0;
   const assertActive = () => {
     if (invalidation !== undefined) throw invalidation;
   };
@@ -120,6 +124,44 @@ export async function createPrimaryWorkspaceDocumentController({
       ancestor = parentWorkspacePath(ancestor);
     }
     return false;
+  };
+  const pathEpoch = (relativePath: KernelWorkspaceRelativePath) => pathEpochs.get(relativePath) ?? 0;
+  const advancePathEpoch = (relativePath: KernelWorkspaceRelativePath) => {
+    pathEpochs.set(relativePath, pathEpoch(relativePath) + 1);
+    sidecarEpoch += 1;
+  };
+  const captureEntry = (relativePath: KernelWorkspaceRelativePath) => {
+    assertActive();
+    const entry = requireEntry(entriesByPath, relativePath);
+    if (pathsByLocator.get(entry.locator) !== relativePath) protocolMismatch();
+    return {
+      entry,
+      epoch: pathEpoch(relativePath),
+      relativePath
+    };
+  };
+  const capturedEntryIsCurrent = (captured: ReturnType<typeof captureEntry>) => {
+    const latest = entriesByPath.get(captured.relativePath);
+    return pathEpoch(captured.relativePath) === captured.epoch &&
+      latest?.locator === captured.entry.locator &&
+      latest.revision === captured.entry.revision &&
+      pathsByLocator.get(captured.entry.locator) === captured.relativePath;
+  };
+  const assertReadStillCurrent = (captured: ReturnType<typeof captureEntry>) => {
+    assertActive();
+    if (!capturedEntryIsCurrent(captured)) {
+      throw new PrimaryWorkspaceDocumentControllerError("operation-superseded");
+    }
+  };
+  const assertMutationStillCurrent = (captured: ReturnType<typeof captureEntry>) => {
+    assertActive();
+    if (capturedEntryIsCurrent(captured)) return;
+    markRebuildRequired();
+    throw invalidation;
+  };
+  const mutationSuperseded = (): never => {
+    markRebuildRequired();
+    throw invalidation;
   };
   const storeEntry = (
     entry: KernelDocumentEntrySnapshot,
@@ -151,7 +193,11 @@ export async function createPrimaryWorkspaceDocumentController({
     ) {
       protocolMismatch();
     }
-    entriesByPath.set(entry.relativePath, copyEntry(entry));
+    const storedEntry = copyEntry(entry);
+    if (existingEntry === undefined || !entriesAreEqual(existingEntry, storedEntry)) {
+      entriesByPath.set(entry.relativePath, storedEntry);
+      advancePathEpoch(entry.relativePath);
+    }
     pathsByLocator.set(entry.locator, entry.relativePath);
   };
   const invalidatePath = (relativePath: KernelWorkspaceRelativePath) => {
@@ -162,6 +208,7 @@ export async function createPrimaryWorkspaceDocumentController({
       if (pathsByLocator.get(candidate.locator) === candidatePath) {
         pathsByLocator.delete(candidate.locator);
       }
+      advancePathEpoch(candidatePath);
     }
   };
 
@@ -201,11 +248,22 @@ export async function createPrimaryWorkspaceDocumentController({
   return {
     create: async (input) => {
       assertActive();
+      const targetPath = joinWorkspacePath(input.parent, input.name);
+      const capturedTarget = entriesByPath.get(targetPath);
+      const capturedTargetEpoch = pathEpoch(targetPath);
       const created = await kernel.documents.create({
         ...input,
         workspaceGeneration: workspace.generation
       });
       assertGeneration(created.workspaceGeneration);
+      const latestTarget = entriesByPath.get(targetPath);
+      if (
+        pathEpoch(targetPath) !== capturedTargetEpoch ||
+        latestTarget?.locator !== capturedTarget?.locator ||
+        latestTarget?.revision !== capturedTarget?.revision
+      ) {
+        mutationSuperseded();
+      }
       if (input.kind === "file" && (created.kind !== "file" || created.contents !== input.contents)) {
         protocolMismatch();
       }
@@ -213,20 +271,20 @@ export async function createPrimaryWorkspaceDocumentController({
         kind: input.kind,
         name: input.name,
         parent: input.parent,
-        relativePath: joinWorkspacePath(input.parent, input.name)
+        relativePath: targetPath
       }, false);
       if (hasCachedAncestor(created.relativePath)) markRebuildRequired();
       return { ...created };
     },
     delete: async ({ deletionPolicy, relativePath }) => {
-      assertActive();
-      const current = requireEntry(entriesByPath, relativePath);
+      const captured = captureEntry(relativePath);
       await kernel.documents.delete({
         deletionPolicy,
-        expectedRevision: current.revision,
-        locator: current.locator,
+        expectedRevision: captured.entry.revision,
+        locator: captured.entry.locator,
         workspaceGeneration: workspace.generation
       });
+      assertMutationStillCurrent(captured);
       const invalidatedCachedAncestor = hasCachedAncestor(relativePath);
       invalidatePath(relativePath);
       if (invalidatedCachedAncestor) markRebuildRequired();
@@ -239,26 +297,36 @@ export async function createPrimaryWorkspaceDocumentController({
         .map(copyEntry);
     },
     move: async ({ name, relativePath, targetParent }) => {
-      assertActive();
-      const current = requireEntry(entriesByPath, relativePath);
+      const captured = captureEntry(relativePath);
+      const targetPath = joinWorkspacePath(targetParent, name);
+      const capturedTarget = entriesByPath.get(targetPath);
+      const capturedTargetEpoch = pathEpoch(targetPath);
       const moved = await kernel.documents.move({
-        expectedRevision: current.revision,
-        locator: current.locator,
+        expectedRevision: captured.entry.revision,
+        locator: captured.entry.locator,
         name,
         targetParent,
         workspaceGeneration: workspace.generation
       });
-      const targetPath = joinWorkspacePath(targetParent, name);
       const invalidatedCachedAncestor = hasCachedAncestor(relativePath) || hasCachedAncestor(targetPath);
       assertGeneration(moved.workspaceGeneration);
+      assertMutationStillCurrent(captured);
+      const latestTarget = entriesByPath.get(targetPath);
       if (
-        moved.kind !== current.kind ||
+        pathEpoch(targetPath) !== capturedTargetEpoch ||
+        latestTarget?.locator !== capturedTarget?.locator ||
+        latestTarget?.revision !== capturedTarget?.revision
+      ) {
+        mutationSuperseded();
+      }
+      if (
+        moved.kind !== captured.entry.kind ||
         moved.name !== name ||
         moved.parent !== targetParent ||
         moved.relativePath !== targetPath ||
-        (targetPath !== relativePath && moved.locator === current.locator) ||
+        (targetPath !== relativePath && moved.locator === captured.entry.locator) ||
         (entriesByPath.has(targetPath) && targetPath !== relativePath) ||
-        pathsByLocator.get(current.locator) !== relativePath ||
+        pathsByLocator.get(captured.entry.locator) !== relativePath ||
         (pathsByLocator.has(moved.locator) && pathsByLocator.get(moved.locator) !== relativePath)
       ) {
         protocolMismatch();
@@ -266,21 +334,22 @@ export async function createPrimaryWorkspaceDocumentController({
       invalidatePath(relativePath);
       entriesByPath.set(targetPath, copyEntry(moved));
       pathsByLocator.set(moved.locator, targetPath);
-      if (current.kind === "directory" || invalidatedCachedAncestor) markRebuildRequired();
+      advancePathEpoch(targetPath);
+      if (captured.entry.kind === "directory" || invalidatedCachedAncestor) markRebuildRequired();
       return { ...moved };
     },
     read: async (relativePath) => {
-      assertActive();
-      const current = requireEntry(entriesByPath, relativePath);
+      const captured = captureEntry(relativePath);
       const document = await kernel.documents.read({
-        locator: current.locator,
+        locator: captured.entry.locator,
         workspaceGeneration: workspace.generation
       });
+      assertReadStillCurrent(captured);
       storeEntry(document, {
         kind: "file",
-        locator: current.locator,
-        name: current.name,
-        parent: current.parent,
+        locator: captured.entry.locator,
+        name: captured.entry.name,
+        parent: captured.entry.parent,
         relativePath
       }, true);
       return { ...document };
@@ -294,6 +363,7 @@ export async function createPrimaryWorkspaceDocumentController({
         }
         overlayPaths.add(overlay.relativePath);
       }
+      const capturedSidecarEpoch = sidecarEpoch;
       const matches: KernelSearchMatchSnapshot[] = [];
       const seenCursors = new Set<KernelPageCursor>();
       let cursor: KernelPageCursor | undefined;
@@ -304,6 +374,10 @@ export async function createPrimaryWorkspaceDocumentController({
           query,
           workspaceGeneration: workspace.generation
         });
+        assertActive();
+        if (sidecarEpoch !== capturedSidecarEpoch) {
+          throw new PrimaryWorkspaceDocumentControllerError("operation-superseded");
+        }
         assertGeneration(page.workspaceGeneration);
         for (const match of page.items) {
           const current = entriesByPath.get(match.document.relativePath) ?? protocolMismatch();
@@ -364,21 +438,21 @@ export async function createPrimaryWorkspaceDocumentController({
         }));
     },
     update: async ({ contents, relativePath }) => {
-      assertActive();
-      const current = requireEntry(entriesByPath, relativePath);
+      const captured = captureEntry(relativePath);
       const document = await kernel.documents.update({
         contents,
-        expectedRevision: current.revision,
-        locator: current.locator,
+        expectedRevision: captured.entry.revision,
+        locator: captured.entry.locator,
         workspaceGeneration: workspace.generation
       });
       assertGeneration(document.workspaceGeneration);
+      assertMutationStillCurrent(captured);
       if (document.contents !== contents) protocolMismatch();
       storeEntry(document, {
         kind: "file",
-        locator: current.locator,
-        name: current.name,
-        parent: current.parent,
+        locator: captured.entry.locator,
+        name: captured.entry.name,
+        parent: captured.entry.parent,
         relativePath
       }, true);
       if (hasCachedAncestor(relativePath)) markRebuildRequired();
@@ -419,6 +493,21 @@ function copyEntry(entry: KernelDocumentEntrySnapshot): KernelDocumentEntrySnaps
     sizeBytes: entry.sizeBytes,
     workspaceGeneration: entry.workspaceGeneration
   };
+}
+
+function entriesAreEqual(
+  left: KernelDocumentEntrySnapshot,
+  right: KernelDocumentEntrySnapshot
+) {
+  return left.kind === right.kind &&
+    left.locator === right.locator &&
+    left.modifiedAt === right.modifiedAt &&
+    left.name === right.name &&
+    left.parent === right.parent &&
+    left.relativePath === right.relativePath &&
+    left.revision === right.revision &&
+    left.sizeBytes === right.sizeBytes &&
+    left.workspaceGeneration === right.workspaceGeneration;
 }
 
 function findDirtyOverlayMatches(
