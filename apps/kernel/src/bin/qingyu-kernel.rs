@@ -1,5 +1,6 @@
 use std::{
     ffi::OsString,
+    fmt,
     future::IntoFuture,
     io::BufReader,
     net::SocketAddr,
@@ -17,7 +18,7 @@ use qingyu_kernel::{
     config::KernelConfig,
     host::native::{NativeHostControl, NativeHostReady, NativeHostStart},
     paths::KernelPaths,
-    server::{compose_fixed_server_kernel, ServerLaunchEnvironment},
+    server::{compose_fixed_server_kernel, ServerLaunchEnvironment, ServerRuntimeCompositionError},
 };
 
 const SERVER_LISTEN_ADDRESS: &str = "0.0.0.0:3210";
@@ -33,24 +34,90 @@ enum KernelCommand {
     },
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum KernelCommandError {
+    Command,
+    TransportPolicy,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum KernelStartupError {
+    Native,
+    Command,
+    Server(ServerStartupStage),
+}
+
+impl fmt::Display for KernelStartupError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Native => formatter.write_str("QingYu Kernel startup failed."),
+            Self::Command => formatter.write_str("QingYu Kernel startup failed [QK-CMD]."),
+            Self::Server(stage) => write!(
+                formatter,
+                "QingYu Kernel startup failed [{}].",
+                stage.diagnostic_code()
+            ),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ServerStartupStage {
+    TransportPolicy,
+    Environment,
+    Paths,
+    RuntimeConfig,
+    Composition(ServerRuntimeCompositionError),
+    AuthenticationApi,
+    StaticRouter,
+    Listener,
+    Serve,
+}
+
+impl ServerStartupStage {
+    const fn diagnostic_code(self) -> &'static str {
+        match self {
+            Self::TransportPolicy => "QK-SRV-TRANSPORT",
+            Self::Environment => "QK-SRV-ENV",
+            Self::Paths => "QK-SRV-PATHS",
+            Self::RuntimeConfig => "QK-SRV-CONFIG",
+            Self::Composition(error) => error.diagnostic_code(),
+            Self::AuthenticationApi => "QK-SRV-AUTH-API",
+            Self::StaticRouter => "QK-SRV-STATIC-ROUTER",
+            Self::Listener => "QK-SRV-LISTENER",
+            Self::Serve => "QK-SRV-SERVE",
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> ExitCode {
     match run().await {
         Ok(()) => ExitCode::SUCCESS,
-        Err(()) => {
-            eprintln!("QingYu Kernel startup failed.");
+        Err(error) => {
+            eprintln!("{error}");
             ExitCode::FAILURE
         }
     }
 }
 
-async fn run() -> Result<(), ()> {
-    match parse_command(std::env::args_os())? {
-        KernelCommand::NativeServe => run_native_server().await,
+async fn run() -> Result<(), KernelStartupError> {
+    let command = parse_command(std::env::args_os()).map_err(|error| match error {
+        KernelCommandError::Command => KernelStartupError::Command,
+        KernelCommandError::TransportPolicy => {
+            KernelStartupError::Server(ServerStartupStage::TransportPolicy)
+        }
+    })?;
+    match command {
+        KernelCommand::NativeServe => run_native_server()
+            .await
+            .map_err(|()| KernelStartupError::Native),
         KernelCommand::Server {
             public_origin,
             exact_host,
-        } => run_fixed_server(public_origin, exact_host).await,
+        } => run_fixed_server(public_origin, exact_host)
+            .await
+            .map_err(KernelStartupError::Server),
     }
 }
 
@@ -113,18 +180,30 @@ async fn run_native_server() -> Result<(), ()> {
     }
 }
 
-async fn run_fixed_server(public_origin: String, exact_host: String) -> Result<(), ()> {
-    let policy = TransportPolicy::same_origin(&exact_host, &public_origin).map_err(|_| ())?;
-    let environment = ServerLaunchEnvironment::load().map_err(|_| ())?;
-    let paths = environment.layout().activate().map_err(|_| ())?;
-    let composition = compose_fixed_server_kernel(KernelConfig::generate().map_err(|_| ())?, paths)
+async fn run_fixed_server(
+    public_origin: String,
+    exact_host: String,
+) -> Result<(), ServerStartupStage> {
+    let policy = TransportPolicy::same_origin(&exact_host, &public_origin)
+        .map_err(|_| ServerStartupStage::TransportPolicy)?;
+    let environment =
+        ServerLaunchEnvironment::load().map_err(|_| ServerStartupStage::Environment)?;
+    let paths = environment
+        .layout()
+        .activate()
+        .map_err(|_| ServerStartupStage::Paths)?;
+    let config = KernelConfig::generate().map_err(|_| ServerStartupStage::RuntimeConfig)?;
+    let composition = compose_fixed_server_kernel(config, paths)
         .await
-        .map_err(|_| ())?;
-    let activation = composition.activate_api(environment).map_err(|_| ())?;
-    let router = build_server_web_router(activation, policy, SERVER_WEB_ROOT).map_err(|_| ())?;
+        .map_err(ServerStartupStage::Composition)?;
+    let activation = composition
+        .activate_api(environment)
+        .map_err(|_| ServerStartupStage::AuthenticationApi)?;
+    let router = build_server_web_router(activation, policy, SERVER_WEB_ROOT)
+        .map_err(|_| ServerStartupStage::StaticRouter)?;
     let listener = tokio::net::TcpListener::bind(SERVER_LISTEN_ADDRESS)
         .await
-        .map_err(|_| ())?;
+        .map_err(|_| ServerStartupStage::Listener)?;
     let (shutdown_started_sender, shutdown_started_receiver) = tokio::sync::oneshot::channel();
     let serve = axum::serve(
         listener,
@@ -138,33 +217,35 @@ async fn run_fixed_server(public_origin: String, exact_host: String) -> Result<(
     await_bounded_server_shutdown(serve, shutdown_started_receiver, SERVER_SHUTDOWN_DEADLINE)
         .await
         .map(|_outcome| ())
+        .map_err(|()| ServerStartupStage::Serve)
 }
 
-fn parse_command<Arguments, Argument>(args: Arguments) -> Result<KernelCommand, ()>
+fn parse_command<Arguments, Argument>(args: Arguments) -> Result<KernelCommand, KernelCommandError>
 where
     Arguments: IntoIterator<Item = Argument>,
     Argument: Into<OsString>,
 {
     let mut args = args.into_iter().map(Into::into);
-    let _executable = args.next().ok_or(())?;
+    let _executable = args.next().ok_or(KernelCommandError::Command)?;
     let command = args
         .next()
         .and_then(|value| value.into_string().ok())
-        .ok_or(())?;
+        .ok_or(KernelCommandError::Command)?;
     match command.as_str() {
         "serve" if args.next().is_none() => Ok(KernelCommand::NativeServe),
         "server" => {
             if args.next().as_deref() != Some(std::ffi::OsStr::new("--public-origin")) {
-                return Err(());
+                return Err(KernelCommandError::Command);
             }
             let public_origin = args
                 .next()
                 .and_then(|value| value.into_string().ok())
-                .ok_or(())?;
+                .ok_or(KernelCommandError::Command)?;
             if args.next().is_some() {
-                return Err(());
+                return Err(KernelCommandError::Command);
             }
-            let parsed = reqwest::Url::parse(&public_origin).map_err(|_| ())?;
+            let parsed = reqwest::Url::parse(&public_origin)
+                .map_err(|_| KernelCommandError::TransportPolicy)?;
             if parsed.scheme() != "https"
                 || !parsed.username().is_empty()
                 || parsed.password().is_some()
@@ -172,24 +253,25 @@ where
                 || parsed.query().is_some()
                 || parsed.fragment().is_some()
             {
-                return Err(());
+                return Err(KernelCommandError::TransportPolicy);
             }
             let canonical_origin = parsed.origin().ascii_serialization();
             if public_origin != canonical_origin {
-                return Err(());
+                return Err(KernelCommandError::TransportPolicy);
             }
             let exact_host = canonical_origin
                 .strip_prefix("https://")
                 .filter(|authority| !authority.is_empty())
-                .ok_or(())?
+                .ok_or(KernelCommandError::TransportPolicy)?
                 .to_owned();
-            TransportPolicy::same_origin(&exact_host, &public_origin).map_err(|_| ())?;
+            TransportPolicy::same_origin(&exact_host, &public_origin)
+                .map_err(|_| KernelCommandError::TransportPolicy)?;
             Ok(KernelCommand::Server {
                 public_origin,
                 exact_host,
             })
         }
-        _ => Err(()),
+        _ => Err(KernelCommandError::Command),
     }
 }
 
@@ -244,7 +326,7 @@ async fn server_shutdown_signal() {
 mod tests {
     use super::*;
 
-    fn server_command(public_origin: &str) -> Result<KernelCommand, ()> {
+    fn server_command(public_origin: &str) -> Result<KernelCommand, KernelCommandError> {
         parse_command(["qingyu-kernel", "server", "--public-origin", public_origin])
     }
 
@@ -550,5 +632,79 @@ mod tests {
             "https://notes.example.com",
         ])
         .is_err());
+    }
+
+    #[test]
+    fn command_parsing_separates_cli_shape_from_transport_policy() {
+        assert_eq!(
+            parse_command(["qingyu-kernel", "unknown"]).unwrap_err(),
+            KernelCommandError::Command
+        );
+        assert_eq!(
+            parse_command([
+                "qingyu-kernel",
+                "server",
+                "--public-origin",
+                "https://private-host-marker.example/path",
+            ])
+            .unwrap_err(),
+            KernelCommandError::TransportPolicy
+        );
+    }
+
+    #[test]
+    fn command_and_server_startup_failures_emit_only_stable_stage_codes() {
+        for (error, expected) in [
+            (
+                KernelStartupError::Command,
+                "QingYu Kernel startup failed [QK-CMD].",
+            ),
+            (
+                KernelStartupError::Server(ServerStartupStage::TransportPolicy),
+                "QingYu Kernel startup failed [QK-SRV-TRANSPORT].",
+            ),
+            (
+                KernelStartupError::Server(ServerStartupStage::Environment),
+                "QingYu Kernel startup failed [QK-SRV-ENV].",
+            ),
+            (
+                KernelStartupError::Server(ServerStartupStage::Paths),
+                "QingYu Kernel startup failed [QK-SRV-PATHS].",
+            ),
+            (
+                KernelStartupError::Server(ServerStartupStage::RuntimeConfig),
+                "QingYu Kernel startup failed [QK-SRV-CONFIG].",
+            ),
+            (
+                KernelStartupError::Server(ServerStartupStage::Composition(
+                    ServerRuntimeCompositionError::FixedServices,
+                )),
+                "QingYu Kernel startup failed [QK-SRV-COMPOSE-FIXED-SERVICES].",
+            ),
+            (
+                KernelStartupError::Server(ServerStartupStage::AuthenticationApi),
+                "QingYu Kernel startup failed [QK-SRV-AUTH-API].",
+            ),
+            (
+                KernelStartupError::Server(ServerStartupStage::StaticRouter),
+                "QingYu Kernel startup failed [QK-SRV-STATIC-ROUTER].",
+            ),
+            (
+                KernelStartupError::Server(ServerStartupStage::Listener),
+                "QingYu Kernel startup failed [QK-SRV-LISTENER].",
+            ),
+            (
+                KernelStartupError::Server(ServerStartupStage::Serve),
+                "QingYu Kernel startup failed [QK-SRV-SERVE].",
+            ),
+        ] {
+            assert_eq!(error.to_string(), expected);
+            assert!(!error.to_string().contains("private-marker"));
+        }
+
+        assert_eq!(
+            KernelStartupError::Native.to_string(),
+            "QingYu Kernel startup failed."
+        );
     }
 }

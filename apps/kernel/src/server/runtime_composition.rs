@@ -43,10 +43,10 @@ impl ServerRuntimeComposition {
         environment: ServerLaunchEnvironment,
     ) -> Result<ServerApiActivation, ServerRuntimeCompositionError> {
         let process = ServerApiProcess::new(self.runtime, SERVER_BLOCKING_CAPACITY)
-            .map_err(|_| ServerRuntimeCompositionError)?;
+            .map_err(|_| ServerRuntimeCompositionError::ApiActivation)?;
         process
             .activate(self.security, environment)
-            .map_err(|_| ServerRuntimeCompositionError)
+            .map_err(|_| ServerRuntimeCompositionError::ApiActivation)
     }
 
     #[cfg(test)]
@@ -60,7 +60,7 @@ impl ServerRuntimeComposition {
     ) -> Result<super::ServerAuthenticationStatus, ServerRuntimeCompositionError> {
         self._authentication
             .status()
-            .map_err(|_| ServerRuntimeCompositionError)
+            .map_err(|_| ServerRuntimeCompositionError::AuthenticationStore)
     }
 
     #[cfg(test)]
@@ -91,15 +91,15 @@ pub async fn compose_fixed_server_kernel(
     paths: KernelPaths,
 ) -> Result<ServerRuntimeComposition, ServerRuntimeCompositionError> {
     let managed = ManagedWorkspaceCollection::from_paths(&paths)
-        .map_err(|_| ServerRuntimeCompositionError)?;
+        .map_err(|_| ServerRuntimeCompositionError::ManagedPaths)?;
     let runtime = KernelRuntime::activate(config, paths, system_kernel_ports())
-        .map_err(|_| ServerRuntimeCompositionError)?;
+        .map_err(|_| ServerRuntimeCompositionError::RuntimeActivation)?;
     let primary_workspace = Arc::new(
         DurableServerPrimaryWorkspaceStore::open(
             runtime.instance_data_root(),
             runtime.launch_epoch(),
         )
-        .map_err(|_| ServerRuntimeCompositionError)?,
+        .map_err(|_| ServerRuntimeCompositionError::PrimaryWorkspaceStore)?,
     );
     install_fixed_kernel_services(
         &runtime,
@@ -108,10 +108,10 @@ pub async fn compose_fixed_server_kernel(
         SERVER_WORKSPACE_DISPLAY_NAME,
     )
     .await
-    .map_err(|_| ServerRuntimeCompositionError)?;
+    .map_err(|_| ServerRuntimeCompositionError::FixedServices)?;
     let authentication = Arc::new(
         ServerAuthenticationStore::open(runtime.config_root())
-            .map_err(|_| ServerRuntimeCompositionError)?,
+            .map_err(|_| ServerRuntimeCompositionError::AuthenticationStore)?,
     );
     let security = production_authentication_security(Arc::clone(&authentication))?;
     Ok(ServerRuntimeComposition {
@@ -129,30 +129,52 @@ fn production_authentication_security(
         SERVER_AUTH_OBSERVATION_WINDOW,
         SERVER_AUTH_LOCKOUT,
     )
-    .map_err(|_| ServerRuntimeCompositionError)?;
+    .map_err(|_| ServerRuntimeCompositionError::AuthenticationSecurity)?;
     let initialization = RateLimitPolicy::new(
         SERVER_INITIALIZATION_MAXIMUM_FAILURES,
         SERVER_AUTH_OBSERVATION_WINDOW,
         SERVER_AUTH_LOCKOUT,
     )
-    .map_err(|_| ServerRuntimeCompositionError)?;
+    .map_err(|_| ServerRuntimeCompositionError::AuthenticationSecurity)?;
     let rate_limiter = AuthenticationRateLimiter::with_capacity(
         login,
         initialization,
         SERVER_MAXIMUM_AUTH_CLIENTS_PER_FLOW,
         SERVER_MAXIMUM_AUTH_ATTEMPTS_IN_FLIGHT,
     )
-    .map_err(|_| ServerRuntimeCompositionError)?;
+    .map_err(|_| ServerRuntimeCompositionError::AuthenticationSecurity)?;
     let sessions = SessionStore::new(
         SessionPolicy::with_capacity(SERVER_SESSION_LIFETIME, SERVER_MAXIMUM_ACTIVE_SESSIONS)
-            .map_err(|_| ServerRuntimeCompositionError)?,
+            .map_err(|_| ServerRuntimeCompositionError::AuthenticationSecurity)?,
     );
     ServerAuthenticationSecurity::claim(authentication, rate_limiter, sessions)
-        .map_err(|_| ServerRuntimeCompositionError)
+        .map_err(|_| ServerRuntimeCompositionError::AuthenticationSecurity)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ServerRuntimeCompositionError;
+pub enum ServerRuntimeCompositionError {
+    ManagedPaths,
+    RuntimeActivation,
+    PrimaryWorkspaceStore,
+    FixedServices,
+    AuthenticationStore,
+    AuthenticationSecurity,
+    ApiActivation,
+}
+
+impl ServerRuntimeCompositionError {
+    pub const fn diagnostic_code(self) -> &'static str {
+        match self {
+            Self::ManagedPaths => "QK-SRV-COMPOSE-MANAGED-PATHS",
+            Self::RuntimeActivation => "QK-SRV-COMPOSE-RUNTIME-ACTIVATE",
+            Self::PrimaryWorkspaceStore => "QK-SRV-COMPOSE-PRIMARY-WORKSPACE",
+            Self::FixedServices => "QK-SRV-COMPOSE-FIXED-SERVICES",
+            Self::AuthenticationStore => "QK-SRV-COMPOSE-AUTH-STORE",
+            Self::AuthenticationSecurity => "QK-SRV-COMPOSE-AUTH-SECURITY",
+            Self::ApiActivation => "QK-SRV-AUTH-API",
+        }
+    }
+}
 
 impl fmt::Display for ServerRuntimeCompositionError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -345,12 +367,127 @@ mod tests {
         .await
         .unwrap();
 
-        assert!(compose_fixed_server_kernel(
-            KernelConfig::generate().unwrap(),
-            fixture_paths(temporary.path()),
+        assert_eq!(
+            compose_fixed_server_kernel(
+                KernelConfig::generate().unwrap(),
+                fixture_paths(temporary.path()),
+            )
+            .await
+            .unwrap_err(),
+            ServerRuntimeCompositionError::RuntimeActivation
+        );
+    }
+
+    #[tokio::test]
+    async fn malformed_primary_workspace_state_reports_only_its_composition_stage() {
+        let temporary = tempdir().unwrap();
+        let paths = fixture_paths(temporary.path());
+        fs::write(
+            temporary
+                .path()
+                .join("data/state/primary-workspace-v1.json"),
+            br#"{"private":"primary-workspace-marker"}"#,
         )
-        .await
-        .is_err());
+        .unwrap();
+
+        let error = compose_fixed_server_kernel(KernelConfig::generate().unwrap(), paths)
+            .await
+            .unwrap_err();
+
+        assert_eq!(error, ServerRuntimeCompositionError::PrimaryWorkspaceStore);
+        assert_eq!(error.diagnostic_code(), "QK-SRV-COMPOSE-PRIMARY-WORKSPACE");
+        assert!(!error.to_string().contains("primary-workspace-marker"));
+    }
+
+    #[tokio::test]
+    async fn malformed_settings_reports_only_the_fixed_services_stage() {
+        let temporary = tempdir().unwrap();
+        let paths = fixture_paths(temporary.path());
+        fs::write(
+            temporary.path().join("data/state/settings.json"),
+            b"private-invalid-fixed-services-marker",
+        )
+        .unwrap();
+
+        let error = compose_fixed_server_kernel(KernelConfig::generate().unwrap(), paths)
+            .await
+            .unwrap_err();
+
+        assert_eq!(error, ServerRuntimeCompositionError::FixedServices);
+        assert_eq!(error.diagnostic_code(), "QK-SRV-COMPOSE-FIXED-SERVICES");
+        assert!(!error.to_string().contains("fixed-services-marker"));
+    }
+
+    #[tokio::test]
+    async fn malformed_authentication_state_reports_only_the_auth_store_stage() {
+        let temporary = tempdir().unwrap();
+        let paths = fixture_paths(temporary.path());
+        fs::write(
+            temporary.path().join("data/config/owner-auth-v1.json"),
+            br#"{"private":"authentication-store-marker"}"#,
+        )
+        .unwrap();
+
+        let error = compose_fixed_server_kernel(KernelConfig::generate().unwrap(), paths)
+            .await
+            .unwrap_err();
+
+        assert_eq!(error, ServerRuntimeCompositionError::AuthenticationStore);
+        assert_eq!(error.diagnostic_code(), "QK-SRV-COMPOSE-AUTH-STORE");
+        assert!(!error.to_string().contains("authentication-store-marker"));
+    }
+
+    #[tokio::test]
+    async fn an_existing_authentication_owner_reports_only_the_security_stage() {
+        let temporary = tempdir().unwrap();
+        let paths = fixture_paths(temporary.path());
+        let authentication =
+            Arc::new(ServerAuthenticationStore::open(paths.config_root()).unwrap());
+        let _existing_owner = production_authentication_security(authentication).unwrap();
+
+        let error = compose_fixed_server_kernel(KernelConfig::generate().unwrap(), paths)
+            .await
+            .unwrap_err();
+
+        assert_eq!(error, ServerRuntimeCompositionError::AuthenticationSecurity);
+        assert_eq!(error.diagnostic_code(), "QK-SRV-COMPOSE-AUTH-SECURITY");
+    }
+
+    #[test]
+    fn every_composition_stage_has_a_stable_safe_diagnostic_code() {
+        for (error, expected_code) in [
+            (
+                ServerRuntimeCompositionError::ManagedPaths,
+                "QK-SRV-COMPOSE-MANAGED-PATHS",
+            ),
+            (
+                ServerRuntimeCompositionError::RuntimeActivation,
+                "QK-SRV-COMPOSE-RUNTIME-ACTIVATE",
+            ),
+            (
+                ServerRuntimeCompositionError::PrimaryWorkspaceStore,
+                "QK-SRV-COMPOSE-PRIMARY-WORKSPACE",
+            ),
+            (
+                ServerRuntimeCompositionError::FixedServices,
+                "QK-SRV-COMPOSE-FIXED-SERVICES",
+            ),
+            (
+                ServerRuntimeCompositionError::AuthenticationStore,
+                "QK-SRV-COMPOSE-AUTH-STORE",
+            ),
+            (
+                ServerRuntimeCompositionError::AuthenticationSecurity,
+                "QK-SRV-COMPOSE-AUTH-SECURITY",
+            ),
+            (
+                ServerRuntimeCompositionError::ApiActivation,
+                "QK-SRV-AUTH-API",
+            ),
+        ] {
+            assert_eq!(error.diagnostic_code(), expected_code);
+            assert_eq!(error.to_string(), "fixed Server runtime composition failed");
+        }
     }
 
     #[tokio::test]
