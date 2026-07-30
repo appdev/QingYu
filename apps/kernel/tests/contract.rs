@@ -331,7 +331,9 @@ fn page_cursors_are_bound_to_operation_query_generation_and_launch_key() {
     let restarted_key = WireIdentityKey::generate().unwrap();
     let generation = WorkspaceGeneration::parse("generation-7").unwrap();
     let other_generation = WorkspaceGeneration::parse("generation-8").unwrap();
-    let context = PageCursorContext::new("searchWorkspace", "query=kernel", &generation).unwrap();
+    let snapshot = vec!["notes/daily.md", "notes/kernel.md"];
+    let context =
+        PageCursorContext::new("searchWorkspace", "query=kernel", &generation, &snapshot).unwrap();
     let cursor = key.issue_page_cursor(&context, "notes/daily.md").unwrap();
 
     assert_eq!(
@@ -341,19 +343,39 @@ fn page_cursors_are_bound_to_operation_query_generation_and_launch_key() {
     assert!(key
         .verify_page_cursor(
             &cursor,
-            &PageCursorContext::new("listDocuments", "query=kernel", &generation).unwrap(),
+            &PageCursorContext::new("listDocuments", "query=kernel", &generation, &snapshot)
+                .unwrap(),
         )
         .is_err());
     assert!(key
         .verify_page_cursor(
             &cursor,
-            &PageCursorContext::new("searchWorkspace", "query=other", &generation).unwrap(),
+            &PageCursorContext::new("searchWorkspace", "query=other", &generation, &snapshot)
+                .unwrap(),
         )
         .is_err());
     assert!(key
         .verify_page_cursor(
             &cursor,
-            &PageCursorContext::new("searchWorkspace", "query=kernel", &other_generation).unwrap(),
+            &PageCursorContext::new(
+                "searchWorkspace",
+                "query=kernel",
+                &other_generation,
+                &snapshot,
+            )
+            .unwrap(),
+        )
+        .is_err());
+    assert!(key
+        .verify_page_cursor(
+            &cursor,
+            &PageCursorContext::new(
+                "searchWorkspace",
+                "query=kernel",
+                &generation,
+                &vec!["notes/daily.md", "notes/changed.md"],
+            )
+            .unwrap(),
         )
         .is_err());
     assert!(restarted_key.verify_page_cursor(&cursor, &context).is_err());
@@ -381,6 +403,19 @@ fn page_cursors_are_bound_to_operation_query_generation_and_launch_key() {
             DocumentKind::File,
         )
         .is_err());
+}
+
+#[test]
+fn page_cursor_snapshot_binding_does_not_reduce_the_existing_identity_budget() {
+    let key = WireIdentityKey::generate().unwrap();
+    let generation = WorkspaceGeneration::parse("generation-1").unwrap();
+    let context =
+        PageCursorContext::new("documents-list", "", &generation, &Vec::<String>::new()).unwrap();
+    let identity = "a".repeat(1_200);
+
+    let cursor = key.issue_page_cursor(&context, identity.clone()).unwrap();
+
+    assert_eq!(key.verify_page_cursor(&cursor, &context).unwrap(), identity);
 }
 
 fn tampered_document_id(document_id: &DocumentId) -> DocumentId {

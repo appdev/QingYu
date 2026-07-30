@@ -1075,6 +1075,188 @@ async fn content_limits_invalid_utf8_and_generation_bound_cursors_are_enforced()
 }
 
 #[tokio::test]
+async fn document_page_cursor_is_rejected_when_the_collection_changes_between_pages() {
+    let fixture = Fixture::new().await;
+    let generation = fixture.workspace.current().unwrap().generation;
+    for name in ["first.md", "second.md"] {
+        fixture
+            .service
+            .create_document(CreateDocumentRequest::File {
+                workspace_generation: generation.clone(),
+                parent: WorkspaceRelativePath::default(),
+                name: FileDocumentName::parse(name).unwrap(),
+                contents: DocumentContents::parse(name).unwrap(),
+            })
+            .await
+            .unwrap();
+    }
+    let first_page = fixture
+        .service
+        .list_documents(ListDocumentsQuery {
+            cursor: None,
+            limit: Some(PageLimit::new(1).unwrap()),
+            parent: WorkspaceRelativePath::default(),
+        })
+        .await
+        .unwrap();
+    let cursor = first_page.next_cursor.into_option().expect("next cursor");
+
+    fixture
+        .service
+        .create_document(CreateDocumentRequest::File {
+            workspace_generation: generation,
+            parent: WorkspaceRelativePath::default(),
+            name: FileDocumentName::parse("third.md").unwrap(),
+            contents: DocumentContents::parse("third").unwrap(),
+        })
+        .await
+        .unwrap();
+
+    let error = fixture
+        .service
+        .list_documents(ListDocumentsQuery {
+            cursor: Some(cursor),
+            limit: Some(PageLimit::new(1).unwrap()),
+            parent: WorkspaceRelativePath::default(),
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(error.kind(), DocumentServiceErrorKind::InvalidCursor);
+}
+
+#[tokio::test]
+async fn history_page_cursor_is_rejected_when_a_snapshot_is_added_between_pages() {
+    let fixture = Fixture::new().await;
+    let generation = fixture.workspace.current().unwrap().generation;
+    let created = fixture
+        .service
+        .create_document(CreateDocumentRequest::File {
+            workspace_generation: generation.clone(),
+            parent: WorkspaceRelativePath::default(),
+            name: FileDocumentName::parse("history.md").unwrap(),
+            contents: DocumentContents::parse("first").unwrap(),
+        })
+        .await
+        .unwrap();
+    let (document_id, first_revision) = match created {
+        qingyu_kernel::contract::CreatedDocumentDto::File { id, revision, .. } => (id, revision),
+        _ => panic!("file expected"),
+    };
+    let second = fixture
+        .service
+        .update_document(
+            document_id.clone(),
+            UpdateDocumentRequest {
+                workspace_generation: generation.clone(),
+                expected_revision: first_revision,
+                contents: DocumentContents::parse("second").unwrap(),
+            },
+        )
+        .await
+        .unwrap();
+    let third = fixture
+        .service
+        .update_document(
+            document_id.clone(),
+            UpdateDocumentRequest {
+                workspace_generation: generation.clone(),
+                expected_revision: second.revision,
+                contents: DocumentContents::parse("third").unwrap(),
+            },
+        )
+        .await
+        .unwrap();
+    let first_page = fixture
+        .service
+        .list_document_history(
+            document_id.clone(),
+            PageQuery {
+                cursor: None,
+                limit: Some(PageLimit::new(1).unwrap()),
+            },
+        )
+        .await
+        .unwrap();
+    let cursor = first_page.next_cursor.into_option().expect("next cursor");
+
+    fixture
+        .service
+        .update_document(
+            document_id.clone(),
+            UpdateDocumentRequest {
+                workspace_generation: generation,
+                expected_revision: third.revision,
+                contents: DocumentContents::parse("fourth").unwrap(),
+            },
+        )
+        .await
+        .unwrap();
+
+    let error = fixture
+        .service
+        .list_document_history(
+            document_id,
+            PageQuery {
+                cursor: Some(cursor),
+                limit: Some(PageLimit::new(1).unwrap()),
+            },
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.kind(), DocumentServiceErrorKind::InvalidCursor);
+}
+
+#[tokio::test]
+async fn search_page_cursor_is_rejected_when_matches_change_between_pages() {
+    let fixture = Fixture::new().await;
+    let generation = fixture.workspace.current().unwrap().generation;
+    for name in ["first.md", "second.md"] {
+        fixture
+            .service
+            .create_document(CreateDocumentRequest::File {
+                workspace_generation: generation.clone(),
+                parent: WorkspaceRelativePath::default(),
+                name: FileDocumentName::parse(name).unwrap(),
+                contents: DocumentContents::parse("needle").unwrap(),
+            })
+            .await
+            .unwrap();
+    }
+    let first_page = fixture
+        .service
+        .search_workspace(SearchWorkspaceQuery {
+            cursor: None,
+            limit: Some(PageLimit::new(1).unwrap()),
+            query: SearchQuery::parse("needle").unwrap(),
+        })
+        .await
+        .unwrap();
+    let cursor = first_page.next_cursor.into_option().expect("next cursor");
+
+    fixture
+        .service
+        .create_document(CreateDocumentRequest::File {
+            workspace_generation: generation,
+            parent: WorkspaceRelativePath::default(),
+            name: FileDocumentName::parse("third.md").unwrap(),
+            contents: DocumentContents::parse("needle").unwrap(),
+        })
+        .await
+        .unwrap();
+
+    let error = fixture
+        .service
+        .search_workspace(SearchWorkspaceQuery {
+            cursor: Some(cursor),
+            limit: Some(PageLimit::new(1).unwrap()),
+            query: SearchQuery::parse("needle").unwrap(),
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(error.kind(), DocumentServiceErrorKind::InvalidCursor);
+}
+
+#[tokio::test]
 async fn read_dto_contents_size_and_revision_always_come_from_one_stable_retained_snapshot() {
     let fixture = Fixture::new().await;
     let created = fixture

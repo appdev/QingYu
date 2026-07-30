@@ -1,4 +1,4 @@
-use std::{collections::HashSet, fmt};
+use std::{collections::HashSet, fmt, io};
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use hmac::{Hmac, Mac};
@@ -2828,18 +2828,28 @@ pub struct PageCursorContext {
 }
 
 impl PageCursorContext {
-    pub fn new(
+    pub fn new<Snapshot: Serialize + ?Sized>(
         operation: impl Into<String>,
         normalized_query: impl AsRef<str>,
         workspace_generation: &WorkspaceGeneration,
+        collection_snapshot: &Snapshot,
     ) -> Result<Self, InvalidWireIdentity> {
         let operation = operation.into();
         if operation.is_empty() || operation.chars().any(char::is_control) {
             return Err(InvalidWireIdentity);
         }
+        let normalized_query = normalized_query.as_ref().as_bytes();
+        let query_length =
+            u64::try_from(normalized_query.len()).map_err(|_| InvalidWireIdentity)?;
+        let mut context_digest = Sha256::new();
+        context_digest.update(b"qingyu-page-cursor-context-v2\0");
+        context_digest.update(query_length.to_be_bytes());
+        context_digest.update(normalized_query);
+        serde_json::to_writer(DigestWriter(&mut context_digest), collection_snapshot)
+            .map_err(|_| InvalidWireIdentity)?;
         Ok(Self {
             operation,
-            query_digest: Sha256::digest(normalized_query.as_ref().as_bytes()).into(),
+            query_digest: context_digest.finalize().into(),
             workspace_generation: workspace_generation.clone(),
         })
     }
@@ -2873,6 +2883,19 @@ struct PageCursorPayload {
     query_digest: [u8; 32],
     workspace_generation: WorkspaceGeneration,
     last_logical_identity: String,
+}
+
+struct DigestWriter<'a>(&'a mut Sha256);
+
+impl io::Write for DigestWriter<'_> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.0.update(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

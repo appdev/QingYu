@@ -211,6 +211,7 @@ impl WorkspaceDocumentService {
             "documents-list",
             normalized,
             &context.workspace().generation,
+            &entries,
         )
         .map_err(|_| DocumentServiceError::invalid_cursor())?;
         let start = match query.cursor.as_ref() {
@@ -491,27 +492,7 @@ impl WorkspaceDocumentService {
             .list(&path)
             .map_err(|_| DocumentServiceError::history_unavailable())?;
         snapshots.sort_by_key(history_identity);
-        let cursor_context = PageCursorContext::new(
-            "document-history",
-            path.as_str(),
-            &context.workspace().generation,
-        )
-        .map_err(|_| DocumentServiceError::invalid_cursor())?;
-        let start = match query.cursor.as_ref() {
-            Some(cursor) => {
-                let last = context
-                    .runtime
-                    .wire_identity_key()
-                    .verify_page_cursor(cursor, &cursor_context)
-                    .map_err(|_| DocumentServiceError::invalid_cursor())?;
-                snapshots.partition_point(|entry| history_identity(entry) <= last)
-            }
-            None => 0,
-        };
-        let limit = query.limit.map_or(100, |limit| usize::from(limit.get()));
-        let end = start.saturating_add(limit).min(snapshots.len());
-        let selected = &snapshots[start..end];
-        let items = selected
+        let entries = snapshots
             .iter()
             .map(|snapshot| {
                 Ok(HistoryEntryDto {
@@ -524,15 +505,36 @@ impl WorkspaceDocumentService {
                 })
             })
             .collect::<Result<Vec<_>, DocumentServiceError>>()?;
-        let next_cursor = if end < snapshots.len() {
+        let cursor_context = PageCursorContext::new(
+            "document-history",
+            path.as_str(),
+            &context.workspace().generation,
+            &entries,
+        )
+        .map_err(|_| DocumentServiceError::invalid_cursor())?;
+        let start = match query.cursor.as_ref() {
+            Some(cursor) => {
+                let last = context
+                    .runtime
+                    .wire_identity_key()
+                    .verify_page_cursor(cursor, &cursor_context)
+                    .map_err(|_| DocumentServiceError::invalid_cursor())?;
+                entries.partition_point(|entry| history_entry_identity(entry) <= last)
+            }
+            None => 0,
+        };
+        let limit = query.limit.map_or(100, |limit| usize::from(limit.get()));
+        let end = start.saturating_add(limit).min(entries.len());
+        let items = entries[start..end].to_vec();
+        let next_cursor = if end < entries.len() {
             Nullable::value(
                 context
                     .runtime
                     .wire_identity_key()
                     .issue_page_cursor(
                         &cursor_context,
-                        history_identity(
-                            selected
+                        history_entry_identity(
+                            items
                                 .last()
                                 .ok_or_else(DocumentServiceError::invalid_cursor)?,
                         ),
@@ -633,6 +635,7 @@ impl WorkspaceDocumentService {
             "workspace-search",
             query.query.as_str(),
             &context.workspace().generation,
+            &matches,
         )
         .map_err(|_| DocumentServiceError::invalid_cursor())?;
         let start = match query.cursor.as_ref() {
@@ -2904,6 +2907,13 @@ fn history_identity(snapshot: &crate::documents::types::HistorySnapshot) -> Stri
         "{}\0{}",
         snapshot.created_at.as_str(),
         snapshot.snapshot_id.as_uuid()
+    )
+}
+fn history_entry_identity(entry: &HistoryEntryDto) -> String {
+    format!(
+        "{}\0{}",
+        entry.created_at.as_str(),
+        entry.snapshot_id.as_uuid()
     )
 }
 
