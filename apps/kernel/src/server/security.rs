@@ -219,6 +219,10 @@ impl ServerAuthenticationSecurity {
         )
     }
 
+    pub(crate) fn matches_config_root(&self, candidate: &crate::paths::ConfigRoot) -> bool {
+        self.authentication.matches_config_root(candidate)
+    }
+
     pub fn initialization_coordinator(
         &self,
         initialization_token: Option<InitializationToken>,

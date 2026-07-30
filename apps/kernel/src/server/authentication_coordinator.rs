@@ -4,9 +4,7 @@ use std::{
     time::Duration,
 };
 
-use zeroize::Zeroizing;
-
-use super::secret::SecretDigest;
+use super::secret::{SecretDigest, ServerAuthenticationSecret};
 use super::security::AuthenticationSecurityState;
 use super::{
     AuthenticationAttemptPermit, AuthenticationFlow, AuthenticationRateLimiter,
@@ -86,8 +84,9 @@ impl ServerAuthenticationCoordinator {
         &self,
         client_id: u64,
         now: Duration,
-        password: String,
+        password: impl Into<ServerAuthenticationSecret>,
     ) -> Result<ServerLogin, ServerAuthenticationCoordinatorError> {
+        let password = password.into();
         self.ensure_security_available()?;
         let now = self.observe_time(now)?;
         let permit = {
@@ -96,7 +95,6 @@ impl ServerAuthenticationCoordinator {
                 .begin_attempt(AuthenticationFlow::Login, client_id, now)
                 .map_err(map_rate_limit_decision)?
         };
-        let password = Zeroizing::new(password);
         let _password_lifecycle = match self.lock_password_lifecycle() {
             Ok(lifecycle) => lifecycle,
             Err(_unavailable) => {
@@ -105,7 +103,9 @@ impl ServerAuthenticationCoordinator {
                 return Err(ServerAuthenticationCoordinatorError::StateUnavailable);
             }
         };
-        let verification = self.authentication.verify_owner_password(password.as_str());
+        let verification = self
+            .authentication
+            .verify_owner_password(password.expose_secret());
 
         match verification {
             Ok(OwnerPasswordVerification::Rejected) => {
@@ -117,7 +117,7 @@ impl ServerAuthenticationCoordinator {
                 if needs_rehash {
                     let rehash = self
                         .authentication
-                        .rehash_owner_password(password.as_str().to_owned());
+                        .rehash_owner_password(password.duplicate());
                     if let Err(error) = rehash {
                         drop(password);
                         return match error {
@@ -178,13 +178,13 @@ impl ServerAuthenticationCoordinator {
         credential: &str,
         csrf_token: Option<&str>,
         now: Duration,
-        current_password: String,
-        new_password: String,
+        current_password: impl Into<ServerAuthenticationSecret>,
+        new_password: impl Into<ServerAuthenticationSecret>,
     ) -> Result<usize, ServerAuthenticationCoordinatorError> {
+        let current_password = current_password.into();
+        let new_password = new_password.into();
         self.ensure_security_available()?;
         let now = self.observe_time(now)?;
-        let current_password = Zeroizing::new(current_password);
-        let new_password = Zeroizing::new(new_password);
         {
             let _session_mutation = self.lock_session_mutation_lifecycle()?;
             let mut sessions = self.lock_sessions()?;
@@ -207,10 +207,10 @@ impl ServerAuthenticationCoordinator {
                 return Err(ServerAuthenticationCoordinatorError::StateUnavailable);
             }
         };
-        let prepared = match self.authentication.prepare_owner_password_change(
-            current_password.as_str().to_owned(),
-            new_password.as_str().to_owned(),
-        ) {
+        let prepared = match self
+            .authentication
+            .prepare_owner_password_change(current_password, new_password)
+        {
             Ok(prepared) => prepared,
             Err(OwnerPasswordUpdateError::InvalidCurrentPassword) => {
                 self.record_failure(permit)?;

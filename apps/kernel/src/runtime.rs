@@ -120,6 +120,14 @@ impl KernelRuntime {
         self.instance_authority.clone()
     }
 
+    pub(crate) const fn host_profile(&self) -> HostProfile {
+        self.paths.profile()
+    }
+
+    pub(crate) const fn config_root(&self) -> &crate::paths::ConfigRoot {
+        self.paths.config_root()
+    }
+
     /// Deliberately exposes the per-launch bearer value only for the native
     /// host's inherited startup payload.
     pub fn expose_native_launch_credential(&self) -> &str {

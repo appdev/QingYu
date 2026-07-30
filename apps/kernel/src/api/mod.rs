@@ -3,7 +3,10 @@ mod resource_body;
 mod routes;
 pub mod ws;
 
-pub use auth::{ServerApiActivationError, ServerApiHost, ServerApiProcess, ServerApiProcessError};
+pub(crate) use auth::ServerApiHost;
+pub use auth::{
+    ServerApiActivation, ServerApiActivationError, ServerApiProcess, ServerApiProcessError,
+};
 
 #[cfg(test)]
 mod server_auth_tests;
@@ -69,7 +72,7 @@ impl TransportPolicy {
     pub fn same_origin(host: &str, origin: &str) -> Result<Self, InvalidTransportPolicy> {
         let host = HeaderValue::from_str(host).map_err(|_| InvalidTransportPolicy)?;
         let uri = origin.parse::<Uri>().map_err(|_| InvalidTransportPolicy)?;
-        if !matches!(uri.scheme_str(), Some("http" | "https"))
+        if uri.scheme_str() != Some("https")
             || uri.authority().map(|authority| authority.as_str()) != host.to_str().ok()
             || uri.path() != "/"
             || uri.query().is_some()
@@ -113,11 +116,8 @@ pub fn build_router(runtime: Arc<KernelRuntime>, policy: TransportPolicy) -> Rou
     build_router_with_server(runtime, policy, None)
 }
 
-pub fn build_server_router(
-    runtime: Arc<KernelRuntime>,
-    policy: TransportPolicy,
-    server: ServerApiHost,
-) -> Router {
+pub fn build_server_router(activation: ServerApiActivation, policy: TransportPolicy) -> Router {
+    let (runtime, server) = activation.into_parts();
     build_router_with_server(runtime, policy, Some(server))
 }
 
@@ -185,14 +185,19 @@ async fn enforce_transport(
             return api_error(ErrorCode::OriginNotAllowed, None);
         }
         if let Some(server) = state.server.as_ref() {
-            let request_headers = request.headers().clone();
-            match authenticate_browser_request(
-                server,
-                &request_headers,
-                crate::server::RequestIntent::ReadOnly,
-            )
-            .await
-            {
+            let intent = crate::server::RequestIntent::ReadOnly;
+            let credentials = match parse_browser_credentials(request.headers(), intent) {
+                Ok(credentials) => credentials,
+                Err(error) => {
+                    let mut response = auth::operation_error_response(error);
+                    decorate_response(
+                        &mut response,
+                        has_allowed_origin.then_some(&state.policy.origin),
+                    );
+                    return response;
+                }
+            };
+            match authenticate_browser_request(server, credentials, intent).await {
                 Ok(Some(session)) => {
                     request.extensions_mut().insert(session);
                 }
@@ -226,8 +231,18 @@ async fn enforce_transport(
                 return response;
             };
             let intent = auth::request_intent(request.method());
-            let request_headers = request.headers().clone();
-            match authenticate_browser_request(server, &request_headers, intent).await {
+            let credentials = match parse_browser_credentials(request.headers(), intent) {
+                Ok(credentials) => credentials,
+                Err(error) => {
+                    let mut response = auth::operation_error_response(error);
+                    decorate_response(
+                        &mut response,
+                        has_allowed_origin.then_some(&state.policy.origin),
+                    );
+                    return response;
+                }
+            };
+            match authenticate_browser_request(server, credentials, intent).await {
                 Ok(Some(session)) => {
                     request.extensions_mut().insert(session);
                 }
@@ -297,10 +312,32 @@ fn has_valid_bearer(headers: &HeaderMap, runtime: &KernelRuntime) -> bool {
 
 async fn authenticate_browser_request(
     server: &ServerApiHost,
-    headers: &HeaderMap,
+    credentials: Option<(
+        auth::BrowserSessionCredential,
+        Option<auth::BrowserCsrfProof>,
+    )>,
     intent: crate::server::RequestIntent,
 ) -> Result<Option<auth::AuthenticatedBrowserSession>, auth::ServerApiOperationError> {
-    let credentials = auth::browser_credentials(headers, intent).map_err(|error| {
+    let Some((credential, csrf)) = credentials else {
+        return Ok(None);
+    };
+    server
+        .authorize_browser_session(credential, csrf, intent)
+        .await
+        .map(Some)
+}
+
+fn parse_browser_credentials(
+    headers: &HeaderMap,
+    intent: crate::server::RequestIntent,
+) -> Result<
+    Option<(
+        auth::BrowserSessionCredential,
+        Option<auth::BrowserCsrfProof>,
+    )>,
+    auth::ServerApiOperationError,
+> {
+    auth::browser_credentials(headers, intent).map_err(|error| {
         auth::ServerApiOperationError::Authentication(match error {
             auth::BrowserCredentialParseError::Session => {
                 crate::server::ServerAuthenticationCoordinatorError::InvalidSession
@@ -309,14 +346,7 @@ async fn authenticate_browser_request(
                 crate::server::ServerAuthenticationCoordinatorError::CsrfRejected
             }
         })
-    })?;
-    let Some((credential, csrf)) = credentials else {
-        return Ok(None);
-    };
-    server
-        .authorize_browser_session(credential, csrf, intent)
-        .await
-        .map(Some)
+    })
 }
 
 fn preflight_response(request: Request<Body>, policy: &TransportPolicy) -> Response {

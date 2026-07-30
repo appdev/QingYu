@@ -1,7 +1,8 @@
 use std::{
     fmt,
     net::SocketAddr,
-    sync::{Arc, Mutex},
+    path::PathBuf,
+    sync::{Arc, Mutex, OnceLock},
     time::{Duration, Instant},
 };
 
@@ -18,7 +19,7 @@ use zeroize::Zeroizing;
 use crate::{
     contract::{
         ChangeServerOwnerPasswordRequest, CreateServerSessionRequest, ErrorCode, ErrorDetails,
-        InitializeServerOwnerRequest, PositiveSafeInteger, ServerAuthenticationSecret,
+        HostProfile, InitializeServerOwnerRequest, PositiveSafeInteger, ServerAuthenticationSecret,
         ServerAuthenticationStatusDto, ServerInitializationState, ServerSessionDto,
         ServerSessionState,
     },
@@ -26,11 +27,13 @@ use crate::{
         MissingDirectPeer, ServerBlockingError, ServerHostEpochSlot, ServerHostLease,
         ServerHostProcessResources, ServerHostProcessResourcesError,
     },
+    paths::ConfigRootIdentity,
     runtime::KernelRuntime,
     server::{
         InitializationStatus, IssuedSession, RequestIntent, ServerAuthenticationCoordinator,
         ServerAuthenticationCoordinatorError, ServerAuthenticationSecurity,
-        ServerInitializationCoordinator, ServerOwnerInitializationError, SessionAuthorization,
+        ServerInitializationCoordinator, ServerLaunchEnvironment, ServerOwnerInitializationError,
+        SessionAuthorization,
     },
 };
 
@@ -47,20 +50,52 @@ struct ServerApiAuthenticationState {
     authentication: ServerAuthenticationCoordinator,
 }
 
-/// Owns process-wide admission and direct-peer identity resources across
-/// replaceable server launch epochs.
+static CLAIMED_SERVER_API_ROOTS: OnceLock<Mutex<Vec<(ConfigRootIdentity, PathBuf)>>> =
+    OnceLock::new();
+
+/// Owns the one process-wide Server API activation attempt for one config root.
+///
+/// Construction permanently claims the retained config-root identity for this
+/// process, and activation consumes the owner. Dropping the owner or a failed
+/// activation therefore requires a process restart instead of retrying with a
+/// reset admission budget, session store, or direct-peer identity namespace.
 pub struct ServerApiProcess {
+    runtime: Arc<KernelRuntime>,
     resources: Arc<ServerHostProcessResources>,
     slot: ServerHostEpochSlot<ServerApiAuthenticationState>,
     started_at: Instant,
 }
 
 impl ServerApiProcess {
-    pub fn new(blocking_capacity: usize) -> Result<Self, ServerApiProcessError> {
+    pub fn new(
+        runtime: Arc<KernelRuntime>,
+        blocking_capacity: usize,
+    ) -> Result<Self, ServerApiProcessError> {
+        if runtime.host_profile() != HostProfile::Server {
+            return Err(ServerApiProcessError::NonServerProfile);
+        }
         let resources = ServerHostProcessResources::new(blocking_capacity)
             .map_err(ServerApiProcessError::from)?;
+        runtime
+            .config_root()
+            .verify_held_directory()
+            .map_err(|_unavailable| ServerApiProcessError::RuntimeUnavailable)?;
+        let root_identity = runtime.config_root().identity();
+        let root_path = runtime.config_root().canonical_path();
+        let mut claimed_roots = CLAIMED_SERVER_API_ROOTS
+            .get_or_init(|| Mutex::new(Vec::new()))
+            .lock()
+            .map_err(|_poisoned| ServerApiProcessError::RuntimeUnavailable)?;
+        if claimed_roots
+            .iter()
+            .any(|(identity, path)| *identity == root_identity || path == root_path)
+        {
+            return Err(ServerApiProcessError::AlreadyClaimed);
+        }
+        claimed_roots.push((root_identity, root_path.to_path_buf()));
         let slot = resources.epoch_slot();
         Ok(Self {
+            runtime,
             resources,
             slot,
             started_at: Instant::now(),
@@ -68,19 +103,28 @@ impl ServerApiProcess {
     }
 
     pub fn activate(
-        &self,
-        runtime: &KernelRuntime,
-        security: &ServerAuthenticationSecurity,
-        initialization: ServerInitializationCoordinator,
-    ) -> Result<ServerApiHost, ServerApiActivationError> {
+        self,
+        security: ServerAuthenticationSecurity,
+        environment: ServerLaunchEnvironment,
+    ) -> Result<ServerApiActivation, ServerApiActivationError> {
+        if !security.matches_config_root(self.runtime.config_root()) {
+            return Err(ServerApiActivationError::AuthenticationRootMismatch);
+        }
+        let initialization = environment
+            .into_initialization_owner(&security)
+            .map_err(|_unavailable| ServerApiActivationError::AuthenticationUnavailable)?;
         let state = ServerApiAuthenticationState {
             initialization: Mutex::new(initialization),
             authentication: security.authentication_coordinator(),
         };
-        Ok(ServerApiHost {
+        let host = ServerApiHost {
             resources: Arc::clone(&self.resources),
-            lease: self.slot.replace(runtime.launch_epoch(), state),
+            lease: self.slot.replace(self.runtime.launch_epoch(), state),
             started_at: self.started_at,
+        };
+        Ok(ServerApiActivation {
+            runtime: self.runtime,
+            host,
         })
     }
 }
@@ -93,8 +137,11 @@ impl fmt::Debug for ServerApiProcess {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ServerApiProcessError {
+    AlreadyClaimed,
     InvalidBlockingCapacity,
     ClientIdentityUnavailable,
+    NonServerProfile,
+    RuntimeUnavailable,
 }
 
 impl From<ServerHostProcessResourcesError> for ServerApiProcessError {
@@ -111,8 +158,11 @@ impl From<ServerHostProcessResourcesError> for ServerApiProcessError {
 impl fmt::Display for ServerApiProcessError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
+            Self::AlreadyClaimed => "server API is already claimed for this config root",
             Self::InvalidBlockingCapacity => "server blocking capacity must be positive",
             Self::ClientIdentityUnavailable => "server client identity is unavailable",
+            Self::NonServerProfile => "server API requires the server host profile",
+            Self::RuntimeUnavailable => "server runtime is unavailable",
         })
     }
 }
@@ -121,21 +171,42 @@ impl std::error::Error for ServerApiProcessError {}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ServerApiActivationError {
-    NonServerProfile,
+    AuthenticationRootMismatch,
+    AuthenticationUnavailable,
 }
 
 impl fmt::Display for ServerApiActivationError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
-            Self::NonServerProfile => "server API requires the server host profile",
+            Self::AuthenticationRootMismatch => {
+                "server authentication state does not belong to the Kernel config root"
+            }
+            Self::AuthenticationUnavailable => "server authentication state is unavailable",
         })
     }
 }
 
 impl std::error::Error for ServerApiActivationError {}
 
+pub struct ServerApiActivation {
+    runtime: Arc<KernelRuntime>,
+    host: ServerApiHost,
+}
+
+impl ServerApiActivation {
+    pub(super) fn into_parts(self) -> (Arc<KernelRuntime>, ServerApiHost) {
+        (self.runtime, self.host)
+    }
+}
+
+impl fmt::Debug for ServerApiActivation {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ServerApiActivation(..)")
+    }
+}
+
 #[derive(Clone)]
-pub struct ServerApiHost {
+pub(crate) struct ServerApiHost {
     resources: Arc<ServerHostProcessResources>,
     lease: ServerHostLease<ServerApiAuthenticationState>,
     started_at: Instant,
@@ -176,6 +247,7 @@ impl ServerApiHost {
         let started_at = self.started_at;
         self.lease
             .run_blocking(move |state| {
+                let login_password = password.duplicate();
                 let initialization_now = started_at.elapsed();
                 let mut initialization = state
                     .initialization
@@ -186,13 +258,13 @@ impl ServerApiHost {
                         client_id,
                         initialization_now,
                         token.expose_secret(),
-                        password.expose_secret().to_owned(),
+                        password,
                     )
                     .map_err(ServerApiOperationError::Initialization)?;
                 let login_now = started_at.elapsed();
                 state
                     .authentication
-                    .login(client_id, login_now, password.expose_secret().to_owned())
+                    .login(client_id, login_now, login_password)
                     .map(|login| login.into_session())
                     .map_err(ServerApiOperationError::Authentication)
             })
@@ -225,7 +297,7 @@ impl ServerApiHost {
                 let now = started_at.elapsed();
                 state
                     .authentication
-                    .login(client_id, now, password.expose_secret().to_owned())
+                    .login(client_id, now, password)
                     .map(|login| login.into_session())
                     .map_err(ServerApiOperationError::Authentication)
             })
@@ -256,6 +328,7 @@ impl ServerApiHost {
                     SessionAuthorization::Authorized { expires_at } => {
                         Ok(AuthenticatedBrowserSession {
                             credential,
+                            csrf,
                             expires_at,
                         })
                     }
@@ -279,11 +352,22 @@ impl ServerApiHost {
         &self,
         session: AuthenticatedBrowserSession,
     ) -> Result<(), ServerApiOperationError> {
+        let started_at = self.started_at;
         self.lease
             .run_blocking(move |state| {
+                let csrf = session
+                    .csrf
+                    .as_ref()
+                    .ok_or(ServerApiOperationError::Authentication(
+                        ServerAuthenticationCoordinatorError::CsrfRejected,
+                    ))?;
                 state
                     .authentication
-                    .logout(session.credential.expose_secret())
+                    .logout(
+                        session.credential.expose_secret(),
+                        Some(csrf.expose_secret()),
+                        started_at.elapsed(),
+                    )
                     .map(|_revoked| ())
                     .map_err(ServerApiOperationError::Authentication)
             })
@@ -294,13 +378,18 @@ impl ServerApiHost {
     async fn change_password(
         &self,
         session: AuthenticatedBrowserSession,
-        csrf: BrowserCsrfProof,
         current_password: ServerAuthenticationSecret,
         new_password: ServerAuthenticationSecret,
     ) -> Result<(), ServerApiOperationError> {
         let started_at = self.started_at;
         self.lease
             .run_blocking(move |state| {
+                let csrf = session
+                    .csrf
+                    .as_ref()
+                    .ok_or(ServerApiOperationError::Authentication(
+                        ServerAuthenticationCoordinatorError::CsrfRejected,
+                    ))?;
                 let now = started_at.elapsed();
                 state
                     .authentication
@@ -308,8 +397,8 @@ impl ServerApiHost {
                         session.credential.expose_secret(),
                         Some(csrf.expose_secret()),
                         now,
-                        current_password.expose_secret().to_owned(),
-                        new_password.expose_secret().to_owned(),
+                        current_password,
+                        new_password,
                     )
                     .map(|_revoked| ())
                     .map_err(ServerApiOperationError::Authentication)
@@ -344,11 +433,12 @@ impl fmt::Debug for BrowserSessionCredential {
     }
 }
 
-pub(crate) struct BrowserCsrfProof(Zeroizing<String>);
+#[derive(Clone)]
+pub(crate) struct BrowserCsrfProof(Arc<Zeroizing<String>>);
 
 impl BrowserCsrfProof {
     fn new(value: String) -> Self {
-        Self(Zeroizing::new(value))
+        Self(Arc::new(Zeroizing::new(value)))
     }
 
     fn expose_secret(&self) -> &str {
@@ -365,6 +455,7 @@ impl fmt::Debug for BrowserCsrfProof {
 #[derive(Clone, Debug)]
 pub(crate) struct AuthenticatedBrowserSession {
     pub(crate) credential: BrowserSessionCredential,
+    csrf: Option<BrowserCsrfProof>,
     pub(crate) expires_at: Duration,
 }
 
@@ -420,8 +511,8 @@ pub(crate) fn browser_credentials(
     intent: RequestIntent,
 ) -> Result<Option<(BrowserSessionCredential, Option<BrowserCsrfProof>)>, BrowserCredentialParseError>
 {
-    let Some(credential) = one_cookie(headers, SESSION_COOKIE_NAME)
-        .map_err(|()| BrowserCredentialParseError::Session)?
+    let Some(credential) =
+        one_session_cookie(headers).map_err(|()| BrowserCredentialParseError::Session)?
     else {
         return Ok(None);
     };
@@ -432,7 +523,7 @@ pub(crate) fn browser_credentials(
     } else {
         None
     };
-    Ok(Some((BrowserSessionCredential::new(credential), csrf)))
+    Ok(Some((credential, csrf)))
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -441,7 +532,7 @@ pub(crate) enum BrowserCredentialParseError {
     Csrf,
 }
 
-fn one_cookie(headers: &HeaderMap, name: &str) -> Result<Option<String>, ()> {
+fn one_session_cookie(headers: &HeaderMap) -> Result<Option<BrowserSessionCredential>, ()> {
     let values = headers.get_all(header::COOKIE);
     if values.iter().count() > 1 {
         return Err(());
@@ -455,11 +546,13 @@ fn one_cookie(headers: &HeaderMap, name: &str) -> Result<Option<String>, ()> {
         let Some((cookie_name, cookie_value)) = cookie.trim().split_once('=') else {
             return Err(());
         };
-        if cookie_name == name {
+        if cookie_name == SESSION_COOKIE_NAME {
             if found.is_some() || cookie_value.is_empty() {
                 return Err(());
             }
-            found = Some(cookie_value.to_owned());
+            // Wrap the allocation immediately so every later parse-error path
+            // zeroizes the credential before releasing its storage.
+            found = Some(BrowserSessionCredential::new(cookie_value.to_owned()));
         }
     }
     Ok(found)
@@ -563,17 +656,13 @@ async fn change_password(State(state): State<ApiState>, mut request: Request<Bod
     else {
         return api_error(ErrorCode::Unauthorized, None);
     };
-    let csrf = match one_header(request.headers(), CSRF_HEADER_NAME) {
-        Ok(Some(csrf)) => BrowserCsrfProof::new(csrf),
-        Ok(None) | Err(()) => return api_error(ErrorCode::CsrfRejected, None),
-    };
     let request: ChangeServerOwnerPasswordRequest = match parse_sensitive_auth_json(request).await {
         Ok(request) => request,
         Err(response) => return response,
     };
     let (current_password, new_password) = request.into_parts();
     match host
-        .change_password(session, csrf, current_password, new_password)
+        .change_password(session, current_password, new_password)
         .await
     {
         Ok(()) => cleared_session_response(),

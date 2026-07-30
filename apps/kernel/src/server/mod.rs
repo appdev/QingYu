@@ -38,6 +38,7 @@ pub use rate_limit::{
     AuthenticationAttemptPermit, AuthenticationFlow, AuthenticationRateLimiter,
     InvalidAuthenticationAttempt, InvalidRateLimitPolicy, RateLimitDecision, RateLimitPolicy,
 };
+pub use secret::ServerAuthenticationSecret;
 pub use security::ServerAuthenticationSecurity;
 pub use session::{
     InvalidSessionPolicy, IssuedSession, SessionAuthorization, SessionIssueError, SessionPolicy,

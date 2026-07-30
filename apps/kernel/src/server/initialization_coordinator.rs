@@ -4,6 +4,7 @@ use std::{
     time::Duration,
 };
 
+use super::secret::ServerAuthenticationSecret;
 use super::security::AuthenticationSecurityState;
 
 use super::{
@@ -88,8 +89,9 @@ impl ServerInitializationCoordinator {
         client_id: u64,
         now: Duration,
         candidate_token: &str,
-        owner_password: String,
+        owner_password: impl Into<ServerAuthenticationSecret>,
     ) -> Result<(), ServerOwnerInitializationError> {
+        let owner_password = owner_password.into();
         if self.authentication.is_state_uncertain() {
             self.security.fail_closed();
         }

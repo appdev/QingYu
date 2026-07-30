@@ -3,7 +3,50 @@ use std::fmt;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use sha2::{Digest as _, Sha256};
 use subtle::ConstantTimeEq as _;
-use zeroize::Zeroize as _;
+use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
+
+/// Owns one authentication input without exposing clone or serialization
+/// paths. Converting from `String` immediately transfers the same allocation
+/// into a zeroizing owner, so every early return clears the input.
+pub struct ServerAuthenticationSecret(Zeroizing<String>);
+
+impl ServerAuthenticationSecret {
+    pub(crate) fn new(value: String) -> Self {
+        Self(Zeroizing::new(value))
+    }
+
+    pub fn expose_secret(&self) -> &str {
+        self.0.as_str()
+    }
+
+    pub(crate) fn duplicate(&self) -> Self {
+        Self::new(self.expose_secret().to_owned())
+    }
+
+    pub(crate) fn as_bytes(&self) -> &[u8] {
+        self.0.as_bytes()
+    }
+}
+
+impl From<String> for ServerAuthenticationSecret {
+    fn from(value: String) -> Self {
+        Self::new(value)
+    }
+}
+
+impl Zeroize for ServerAuthenticationSecret {
+    fn zeroize(&mut self) {
+        self.0.zeroize();
+    }
+}
+
+impl ZeroizeOnDrop for ServerAuthenticationSecret {}
+
+impl fmt::Debug for ServerAuthenticationSecret {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ServerAuthenticationSecret([REDACTED])")
+    }
+}
 
 pub(crate) struct SecretDigest([u8; 32]);
 

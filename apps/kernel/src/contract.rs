@@ -7,7 +7,9 @@ use sha2::{Digest, Sha256};
 use time::{format_description::well_known::Rfc3339, OffsetDateTime, UtcOffset};
 use utoipa::ToSchema;
 use uuid::Uuid;
-use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
+use zeroize::Zeroize;
+
+pub use crate::server::ServerAuthenticationSecret;
 
 #[cfg(test)]
 thread_local! {
@@ -753,26 +755,6 @@ pub struct InitializeServerOwnerRequest {
     initialization_token: String,
     #[schema(write_only)]
     password: String,
-}
-
-pub struct ServerAuthenticationSecret(Zeroizing<String>);
-
-impl ZeroizeOnDrop for ServerAuthenticationSecret {}
-
-impl ServerAuthenticationSecret {
-    fn new(value: String) -> Self {
-        Self(Zeroizing::new(value))
-    }
-
-    pub fn expose_secret(&self) -> &str {
-        self.0.as_str()
-    }
-}
-
-impl fmt::Debug for ServerAuthenticationSecret {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("ServerAuthenticationSecret([REDACTED])")
-    }
 }
 
 impl InitializeServerOwnerRequest {

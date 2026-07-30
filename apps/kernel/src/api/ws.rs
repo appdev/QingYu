@@ -57,6 +57,26 @@ async fn serve_connection(
             send_authentication_error_and_close(&mut socket, code).await;
             return;
         }
+    } else {
+        let (Some(host), Some(session)) = (server.as_ref(), browser_session.take()) else {
+            send_authentication_error_and_close(&mut socket, FrameErrorCode::Unauthorized).await;
+            return;
+        };
+        match host
+            .authorize_browser_session(
+                session.credential.clone(),
+                None,
+                crate::server::RequestIntent::ReadOnly,
+            )
+            .await
+        {
+            Ok(updated) => browser_session = Some(updated),
+            Err(_error) => {
+                send_authentication_error_and_close(&mut socket, FrameErrorCode::Unauthorized)
+                    .await;
+                return;
+            }
+        }
     }
 
     let mut subscription = runtime.event_broker().subscribe();
@@ -83,6 +103,7 @@ async fn serve_connection(
     tokio::pin!(browser_validation);
     loop {
         tokio::select! {
+            biased;
             () = &mut browser_validation, if browser_session.is_some() => {
                 let (Some(host), Some(session)) = (server.as_ref(), browser_session.take()) else {
                     return;

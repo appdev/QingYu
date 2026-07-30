@@ -1,4 +1,4 @@
-use std::{net::SocketAddr, sync::Arc, time::Duration};
+use std::{ffi::OsString, net::SocketAddr, sync::Arc, time::Duration};
 
 use axum::{
     body::{to_bytes, Body},
@@ -16,7 +16,10 @@ use tokio::{
 };
 use tower::ServiceExt as _;
 
-use super::{build_router, build_server_router, ServerApiProcess, TransportPolicy};
+use super::{
+    build_router, build_server_router, ServerApiActivationError, ServerApiProcess,
+    ServerApiProcessError, TransportPolicy,
+};
 use crate::{
     config::KernelConfig,
     contract::{ApiErrorEnvelope, ErrorCode, FrameErrorCode, ServerFrame},
@@ -24,8 +27,8 @@ use crate::{
     ports::KernelPorts,
     runtime::KernelRuntime,
     server::{
-        AuthenticationRateLimiter, InitializationToken, RateLimitPolicy,
-        ServerAuthenticationSecurity, ServerAuthenticationStore, SessionPolicy, SessionStore,
+        AuthenticationRateLimiter, RateLimitPolicy, ServerAuthenticationSecurity,
+        ServerAuthenticationStore, ServerLaunchEnvironment, SessionPolicy, SessionStore,
     },
 };
 
@@ -56,31 +59,16 @@ impl ServerApiFixture {
         let paths = ServerPathLayout::for_test(&data, &cache)
             .activate()
             .unwrap();
-        let authentication =
-            Arc::new(ServerAuthenticationStore::open(paths.config_root()).unwrap());
-        let rate_policy =
-            RateLimitPolicy::new(2, Duration::from_secs(60), Duration::from_secs(30)).unwrap();
-        let security = ServerAuthenticationSecurity::new(
-            authentication,
-            AuthenticationRateLimiter::new(rate_policy, rate_policy),
-            SessionStore::new(SessionPolicy::new(session_lifetime).unwrap()),
-        );
-        let initialization = security
-            .initialization_coordinator(Some(
-                InitializationToken::from_secret(INITIALIZATION_TOKEN.to_owned()).unwrap(),
-            ))
-            .unwrap();
+        let security = server_security(&paths, session_lifetime);
+        let environment = server_launch_environment();
         let config = KernelConfig::generate().unwrap();
         let native_credential = config.native_launch_credential().expose_secret().to_owned();
         let runtime = KernelRuntime::activate(config, paths, KernelPorts::unavailable()).unwrap();
-        let process = ServerApiProcess::new(2).unwrap();
-        let host = process
-            .activate(&runtime, &security, initialization)
-            .unwrap();
+        let process = ServerApiProcess::new(runtime.clone(), 2).unwrap();
+        let activation = process.activate(security, environment).unwrap();
         let router = build_server_router(
-            runtime.clone(),
+            activation,
             TransportPolicy::same_origin(HOST, ORIGIN).unwrap(),
-            host,
         );
         Self {
             router,
@@ -147,6 +135,29 @@ impl ServerApiFixture {
             .await
             .unwrap()
     }
+}
+
+fn server_launch_environment() -> ServerLaunchEnvironment {
+    ServerLaunchEnvironment::from_lookup(|name| {
+        (name == crate::server::SERVER_INITIALIZATION_TOKEN_ENV)
+            .then(|| OsString::from(INITIALIZATION_TOKEN))
+    })
+    .unwrap()
+}
+
+fn server_security(
+    paths: &KernelPaths,
+    session_lifetime: Duration,
+) -> ServerAuthenticationSecurity {
+    let authentication = Arc::new(ServerAuthenticationStore::open(paths.config_root()).unwrap());
+    let rate_policy =
+        RateLimitPolicy::new(2, Duration::from_secs(60), Duration::from_secs(30)).unwrap();
+    ServerAuthenticationSecurity::claim(
+        authentication,
+        AuthenticationRateLimiter::new(rate_policy, rate_policy),
+        SessionStore::new(SessionPolicy::new(session_lifetime).unwrap()),
+    )
+    .unwrap()
 }
 
 async fn response_json(response: Response) -> Value {
@@ -278,6 +289,21 @@ async fn protected_routes_accept_native_or_browser_and_require_csrf_for_browser_
         api.router
             .clone()
             .oneshot(duplicate_cookie)
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+
+    let mut malformed_after_session = api.request("GET", "/api/v1/runtime");
+    malformed_after_session.headers_mut().insert(
+        header::COOKIE,
+        format!("{session}; malformed").parse().unwrap(),
+    );
+    assert_eq!(
+        api.router
+            .clone()
+            .oneshot(malformed_after_session)
             .await
             .unwrap()
             .status(),
@@ -466,7 +492,7 @@ async fn rate_limit_header_matches_the_safe_body_and_forwarded_headers_are_ignor
     assert!(second.headers().get(header::SET_COOKIE).is_none());
     assert_eq!(
         second.headers()[header::ACCESS_CONTROL_EXPOSE_HEADERS],
-        "Retry-After, X-Request-Id"
+        "Retry-After, X-Request-Id, X-Content-Type-Options"
     );
     let retry_after = second.headers()[header::RETRY_AFTER]
         .to_str()
@@ -653,8 +679,100 @@ async fn desktop_router_does_not_register_server_authentication_routes() {
 }
 
 #[test]
+fn server_activation_rejects_a_non_server_runtime() {
+    let root = tempdir().unwrap();
+    let workspace = root.path().join("workspace");
+    let app_data = root.path().join("app-data");
+    let cache = root.path().join("cache");
+    std::fs::create_dir(&workspace).unwrap();
+    std::fs::create_dir(&app_data).unwrap();
+    std::fs::create_dir(&cache).unwrap();
+    let paths = KernelPaths::desktop(&workspace, &app_data, &cache).unwrap();
+    let security = server_security(&paths, Duration::from_secs(300));
+    let runtime = KernelRuntime::activate(
+        KernelConfig::generate().unwrap(),
+        paths,
+        KernelPorts::unavailable(),
+    )
+    .unwrap();
+
+    drop(security);
+    assert_eq!(
+        ServerApiProcess::new(runtime, 2).unwrap_err(),
+        ServerApiProcessError::NonServerProfile
+    );
+}
+
+#[test]
+fn server_activation_rejects_authentication_from_another_config_root() {
+    let runtime_root = tempdir().unwrap();
+    let runtime_data = runtime_root.path().join("data");
+    let runtime_cache = runtime_root.path().join("cache");
+    std::fs::create_dir(&runtime_data).unwrap();
+    std::fs::create_dir(&runtime_cache).unwrap();
+    let runtime_paths = ServerPathLayout::for_test(&runtime_data, &runtime_cache)
+        .activate()
+        .unwrap();
+    let runtime = KernelRuntime::activate(
+        KernelConfig::generate().unwrap(),
+        runtime_paths,
+        KernelPorts::unavailable(),
+    )
+    .unwrap();
+
+    let authentication_root = tempdir().unwrap();
+    let authentication_data = authentication_root.path().join("data");
+    let authentication_cache = authentication_root.path().join("cache");
+    std::fs::create_dir(&authentication_data).unwrap();
+    std::fs::create_dir(&authentication_cache).unwrap();
+    let authentication_paths =
+        ServerPathLayout::for_test(&authentication_data, &authentication_cache)
+            .activate()
+            .unwrap();
+    let security = server_security(&authentication_paths, Duration::from_secs(300));
+
+    assert_eq!(
+        ServerApiProcess::new(runtime.clone(), 2)
+            .unwrap()
+            .activate(security, server_launch_environment())
+            .unwrap_err(),
+        ServerApiActivationError::AuthenticationRootMismatch
+    );
+    assert_eq!(
+        ServerApiProcess::new(runtime, 2).unwrap_err(),
+        ServerApiProcessError::AlreadyClaimed
+    );
+}
+
+#[test]
+fn server_process_claim_survives_an_unactivated_owner_drop() {
+    let root = tempdir().unwrap();
+    let data = root.path().join("data");
+    let cache = root.path().join("cache");
+    std::fs::create_dir(&data).unwrap();
+    std::fs::create_dir(&cache).unwrap();
+    let paths = ServerPathLayout::for_test(&data, &cache)
+        .activate()
+        .unwrap();
+    let runtime = KernelRuntime::activate(
+        KernelConfig::generate().unwrap(),
+        paths,
+        KernelPorts::unavailable(),
+    )
+    .unwrap();
+
+    drop(ServerApiProcess::new(runtime.clone(), 2).unwrap());
+
+    assert_eq!(
+        ServerApiProcess::new(runtime, 2).unwrap_err(),
+        ServerApiProcessError::AlreadyClaimed
+    );
+}
+
+#[test]
 fn server_transport_policy_requires_one_exact_same_origin_authority() {
     assert!(TransportPolicy::same_origin(HOST, ORIGIN).is_ok());
+    assert!(TransportPolicy::same_origin(HOST, "http://127.0.0.1:43123").is_err());
     assert!(TransportPolicy::same_origin(HOST, "*").is_err());
     assert!(TransportPolicy::same_origin(HOST, "https://attacker.invalid").is_err());
     assert!(TransportPolicy::same_origin(HOST, "https://127.0.0.1:43123/path").is_err());

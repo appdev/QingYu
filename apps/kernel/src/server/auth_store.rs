@@ -23,6 +23,8 @@ use crate::{
     },
 };
 
+use super::secret::ServerAuthenticationSecret;
+
 const AUTHENTICATION_FILE: &str = "owner-auth-v1.json";
 const AUTHENTICATION_SCHEMA_VERSION: u32 = 1;
 const MAXIMUM_AUTHENTICATION_FILE_BYTES: u64 = 16 * 1024;
@@ -156,6 +158,12 @@ impl ServerAuthenticationStore {
             Uuid::new_v4(),
         );
         Self::finish_open(config_root, store)
+    }
+
+    pub(super) fn matches_config_root(&self, candidate: &ConfigRoot) -> bool {
+        self.config_root.identity() == candidate.identity()
+            && self.config_root.verify_held_directory().is_ok()
+            && candidate.verify_held_directory().is_ok()
     }
 
     #[cfg(test)]
@@ -298,9 +306,9 @@ impl ServerAuthenticationStore {
 
     pub fn initialize_owner_password(
         &self,
-        password: String,
+        password: impl Into<ServerAuthenticationSecret>,
     ) -> Result<(), OwnerPasswordInitializationError> {
-        let mut password = Zeroizing::new(password);
+        let mut password = password.into();
         if self.state_uncertain.load(Ordering::Acquire) {
             return Err(OwnerPasswordInitializationError::StateUncertain);
         }
@@ -379,9 +387,9 @@ impl ServerAuthenticationStore {
     /// callers cannot publish a rehash based on a stale authentication read.
     pub fn rehash_owner_password(
         &self,
-        password: String,
+        password: impl Into<ServerAuthenticationSecret>,
     ) -> Result<OwnerPasswordRehash, OwnerPasswordUpdateError> {
-        let password = Zeroizing::new(password);
+        let password = password.into();
         self.ensure_update_available()?;
         let snapshot = self
             .read_snapshot()
@@ -407,8 +415,8 @@ impl ServerAuthenticationStore {
     /// publication latches every read and mutation closed until reconstruction.
     pub fn change_owner_password(
         &self,
-        current_password: String,
-        new_password: String,
+        current_password: impl Into<ServerAuthenticationSecret>,
+        new_password: impl Into<ServerAuthenticationSecret>,
     ) -> Result<(), OwnerPasswordUpdateError> {
         let prepared = self.prepare_owner_password_change(current_password, new_password)?;
         self.commit_prepared_owner_password_change(prepared)
@@ -416,15 +424,15 @@ impl ServerAuthenticationStore {
 
     pub(super) fn prepare_owner_password_change(
         &self,
-        current_password: String,
-        new_password: String,
+        current_password: impl Into<ServerAuthenticationSecret>,
+        new_password: impl Into<ServerAuthenticationSecret>,
     ) -> Result<PreparedOwnerPasswordChange, OwnerPasswordUpdateError> {
         #[cfg(test)]
         if let Some(hook) = self.password_prepare_entry_hook.lock().unwrap().clone() {
             hook();
         }
-        let current_password = Zeroizing::new(current_password);
-        let new_password = Zeroizing::new(new_password);
+        let current_password = current_password.into();
+        let new_password = new_password.into();
         self.ensure_update_available()?;
         let snapshot = self
             .read_snapshot()
