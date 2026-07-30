@@ -95,6 +95,7 @@ export function createNativeKernelBootstrapLifecycleOwner({
   let current: OwnedReadyBootstrap | undefined;
   let currentSnapshot: NativeKernelBootstrapLifecycleSnapshot | undefined;
   let highestGeneration: bigint | undefined;
+  let recoveryFloor: bigint | undefined;
   let refreshTail: Promise<unknown> = Promise.resolve();
 
   const retireCurrent = () => {
@@ -127,9 +128,14 @@ export function createNativeKernelBootstrapLifecycleOwner({
     const generation = generationFor(state);
     if (
       generation !== undefined &&
-      highestGeneration !== undefined &&
-      generation < highestGeneration
+      (
+        (highestGeneration !== undefined && generation < highestGeneration) ||
+        (recoveryFloor !== undefined && generation <= recoveryFloor)
+      )
     ) {
+      retireCurrent();
+      currentSnapshot = undefined;
+      if (highestGeneration !== undefined) recoveryFloor = highestGeneration;
       if (state.status === "ready") releaseBootstrap(state.bootstrap);
       throw generationRegressed();
     }

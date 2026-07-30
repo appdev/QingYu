@@ -299,7 +299,7 @@ describe("native Kernel bootstrap lifecycle owner", () => {
     owner.close();
   });
 
-  it("rejects a stale ready generation without replacing the newer connection", async () => {
+  it("fails closed across regressed generations until a strictly newer generation arrives", async () => {
     const responses = [
       readyBootstrap({
         credential: CREDENTIAL_B,
@@ -312,6 +312,24 @@ describe("native Kernel bootstrap lifecycle owner", () => {
         generation: "32",
         instanceId: INSTANCE_A,
         port: 49_152
+      }),
+      readyBootstrap({
+        credential: CREDENTIAL_B,
+        generation: "33",
+        instanceId: INSTANCE_B,
+        port: 49_153
+      }),
+      readyBootstrap({
+        credential: CREDENTIAL_A,
+        generation: "32",
+        instanceId: INSTANCE_A,
+        port: 49_152
+      }),
+      readyBootstrap({
+        credential: CREDENTIAL_C,
+        generation: "34",
+        instanceId: INSTANCE_A,
+        port: 49_154
       })
     ];
     const owner = createNativeKernelBootstrapLifecycleOwner({
@@ -321,11 +339,43 @@ describe("native Kernel bootstrap lifecycle owner", () => {
     await owner.refresh();
     const current = owner.acquireReady();
 
+    let firstRegression: unknown;
+    try {
+      await owner.refresh();
+    } catch (cause: unknown) {
+      firstRegression = cause;
+    }
+
+    expect(String(firstRegression)).toBe(
+      "Error: native Kernel bootstrap generation regressed"
+    );
+    expect(String(firstRegression)).not.toContain(CREDENTIAL_A);
+    expect(String(firstRegression)).not.toContain(CREDENTIAL_B);
+    expect(() => current?.authentication.getCredential()).toThrow(
+      "native Kernel credential unavailable"
+    );
+    expect(owner.acquireReady()).toBeNull();
+
     await expect(owner.refresh()).rejects.toThrow(
       "native Kernel bootstrap generation regressed"
     );
-    expect(current?.authentication.getCredential()).toBe(CREDENTIAL_B);
-    expect(owner.acquireReady()).toMatchObject({ generation: "33" });
+    expect(owner.acquireReady()).toBeNull();
+
+    await expect(owner.refresh()).rejects.toThrow(
+      "native Kernel bootstrap generation regressed"
+    );
+    expect(owner.acquireReady()).toBeNull();
+
+    await expect(owner.refresh()).resolves.toEqual({
+      changed: true,
+      snapshot: {
+        baseUrl: "http://127.0.0.1:49154/",
+        generation: "34",
+        instanceId: INSTANCE_A,
+        status: "ready"
+      }
+    });
+    expect(owner.acquireReady()?.authentication.getCredential()).toBe(CREDENTIAL_C);
     owner.close();
   });
 
