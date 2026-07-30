@@ -1,11 +1,19 @@
 import type {
+  KernelCreatedDocumentSnapshot,
+  KernelDocumentEntrySnapshot,
   KernelDocumentLocator,
+  KernelDocumentPageSnapshot,
   KernelDocumentSnapshot,
   KernelDomainPort,
+  KernelHistoryPageSnapshot,
+  KernelHistorySnapshotId,
+  KernelPageCursor,
   KernelRevision,
   KernelRuntimeCapabilities,
   KernelRuntimeSnapshot,
+  KernelSearchPageSnapshot,
   KernelWorkspaceGeneration,
+  KernelWorkspaceRelativePath,
   KernelWorkspaceSnapshot,
 } from "@markra/app/runtime";
 import type {
@@ -148,22 +156,159 @@ export async function createDesktopKernelDomainAdapter(
     ) => {
       if (actual !== expected) protocolMismatch();
     };
+    const confirmWorkspaceIdentity = async () => {
+      const current = await client.workspace.get({ signal: requests.signal });
+      assertActive();
+      if (!matchesDesktopWorkspace(current, workspaceId, workspaceGeneration)) {
+        protocolMismatch();
+      }
+    };
+    const prepareDocumentOperation = async (candidate: KernelWorkspaceGeneration) => {
+      assertActive();
+      assertWorkspaceGeneration(candidate);
+      await confirmWorkspaceIdentity();
+    };
     const port: KernelDomainPort = {
       availability: "available",
       documents: {
-        read: async (input) => {
+        create: async (input) => {
+          await prepareDocumentOperation(input.workspaceGeneration);
+          const document = await client.documents.create(
+            input.kind === "file"
+              ? {
+                  contents: input.contents,
+                  kind: input.kind,
+                  name: input.name,
+                  parent: input.parent,
+                  workspaceGeneration: input.workspaceGeneration,
+                }
+              : {
+                  kind: input.kind,
+                  name: input.name,
+                  parent: input.parent,
+                  workspaceGeneration: input.workspaceGeneration,
+                },
+            { signal: requests.signal },
+          );
           assertActive();
-          assertWorkspaceGeneration(input.workspaceGeneration);
+          if (
+            document.kind !== input.kind ||
+            document.name !== input.name ||
+            document.parent !== input.parent ||
+            document.path !== joinWorkspacePath(input.parent, input.name)
+          ) {
+            protocolMismatch();
+          }
+          await confirmWorkspaceIdentity();
+          return mapCreatedDocument(document, input.workspaceGeneration);
+        },
+        delete: async (input) => {
+          await prepareDocumentOperation(input.workspaceGeneration);
+          const deleted = await client.documents.delete(
+            input.locator,
+            {
+              deletionPolicy: input.deletionPolicy,
+              expectedRevision: input.expectedRevision,
+              workspaceGeneration: input.workspaceGeneration,
+            },
+            { signal: requests.signal },
+          );
+          assertActive();
+          await confirmWorkspaceIdentity();
+          return deleted;
+        },
+        history: {
+          list: async (input) => {
+            await prepareDocumentOperation(input.workspaceGeneration);
+            const page = await client.documents.listHistory(
+              input.locator,
+              { cursor: input.cursor, limit: input.limit },
+              { signal: requests.signal },
+            );
+            assertActive();
+            for (const entry of page.items) {
+              assertDocumentIdentity(entry.documentId, input.locator);
+            }
+            await confirmWorkspaceIdentity();
+            return mapHistoryPage(page, input.workspaceGeneration);
+          },
+          restore: async (input) => {
+            await prepareDocumentOperation(input.workspaceGeneration);
+            const document = await client.documents.restoreHistory(
+              input.locator,
+              input.snapshotId,
+              {
+                expectedRevision: input.expectedRevision,
+                workspaceGeneration: input.workspaceGeneration,
+              },
+              { signal: requests.signal },
+            );
+            assertActive();
+            assertDocumentIdentity(document.id, input.locator);
+            await confirmWorkspaceIdentity();
+            return mapDocument(document, input.workspaceGeneration);
+          },
+        },
+        list: async (input) => {
+          await prepareDocumentOperation(input.workspaceGeneration);
+          const page = await client.documents.list(
+            { cursor: input.cursor, limit: input.limit, parent: input.parent },
+            { signal: requests.signal },
+          );
+          assertActive();
+          await confirmWorkspaceIdentity();
+          return mapDocumentPage(page, input.workspaceGeneration);
+        },
+        move: async (input) => {
+          await prepareDocumentOperation(input.workspaceGeneration);
+          const document = await client.documents.move(
+            input.locator,
+            {
+              expectedRevision: input.expectedRevision,
+              name: input.name,
+              targetParent: input.targetParent,
+              workspaceGeneration: input.workspaceGeneration,
+            },
+            { signal: requests.signal },
+          );
+          assertActive();
+          assertDocumentIdentity(document.id, input.locator);
+          if (
+            document.name !== input.name ||
+            document.parent !== input.targetParent ||
+            document.path !== joinWorkspacePath(input.targetParent, input.name)
+          ) {
+            protocolMismatch();
+          }
+          await confirmWorkspaceIdentity();
+          return mapDocumentEntry(document, input.workspaceGeneration);
+        },
+        read: async (input) => {
+          await prepareDocumentOperation(input.workspaceGeneration);
           const document = await client.documents.get(input.locator, {
             signal: requests.signal,
           });
           assertActive();
           assertDocumentIdentity(document.id, input.locator);
+          await confirmWorkspaceIdentity();
           return mapDocument(document, input.workspaceGeneration);
         },
-        update: async (input) => {
+        search: async (input) => {
+          await prepareDocumentOperation(input.workspaceGeneration);
+          const page = await client.workspace.search(
+            {
+              cursor: input.cursor,
+              limit: input.limit,
+              query: input.query,
+            },
+            { signal: requests.signal },
+          );
           assertActive();
-          assertWorkspaceGeneration(input.workspaceGeneration);
+          await confirmWorkspaceIdentity();
+          return mapSearchPage(page, input.workspaceGeneration);
+        },
+        update: async (input) => {
+          await prepareDocumentOperation(input.workspaceGeneration);
           const document = await client.documents.update(
             input.locator,
             {
@@ -175,6 +320,7 @@ export async function createDesktopKernelDomainAdapter(
           );
           assertActive();
           assertDocumentIdentity(document.id, input.locator);
+          await confirmWorkspaceIdentity();
           return mapDocument(document, input.workspaceGeneration);
         },
       },
@@ -215,6 +361,11 @@ export async function createDesktopKernelDomainAdapter(
 type RuntimeSource = Awaited<ReturnType<KernelClient["system"]["runtime"]>>;
 type WorkspaceSource = Awaited<ReturnType<KernelClient["workspace"]["get"]>>;
 type DocumentSource = Awaited<ReturnType<KernelClient["documents"]["get"]>>;
+type CreatedDocumentSource = Awaited<ReturnType<KernelClient["documents"]["create"]>>;
+type DocumentEntrySource = Awaited<ReturnType<KernelClient["documents"]["move"]>>;
+type DocumentPageSource = Awaited<ReturnType<KernelClient["documents"]["list"]>>;
+type HistoryPageSource = Awaited<ReturnType<KernelClient["documents"]["listHistory"]>>;
+type SearchPageSource = Awaited<ReturnType<KernelClient["workspace"]["search"]>>;
 
 function matchesDesktopRuntime(runtime: RuntimeSource, instanceId: string) {
   return (
@@ -286,11 +437,90 @@ function mapDocument(
 ): KernelDocumentSnapshot {
   return {
     contents: document.contents,
+    ...mapDocumentEntry(document, workspaceGeneration),
+    kind: "file",
+  };
+}
+
+function mapCreatedDocument(
+  document: CreatedDocumentSource,
+  workspaceGeneration: KernelWorkspaceGeneration,
+): KernelCreatedDocumentSnapshot {
+  if (document.kind === "file") {
+    return {
+      contents: document.contents,
+      ...mapDocumentEntry(document, workspaceGeneration),
+      kind: "file",
+    };
+  }
+  return {
+    ...mapDocumentEntry(document, workspaceGeneration),
+    kind: "directory",
+  };
+}
+
+function mapDocumentEntry(
+  document: DocumentEntrySource,
+  workspaceGeneration: KernelWorkspaceGeneration,
+): KernelDocumentEntrySnapshot {
+  return {
+    kind: document.kind,
     locator: document.id as KernelDocumentLocator,
     modifiedAt: document.modifiedAt,
     name: document.name,
+    parent: document.parent as KernelWorkspaceRelativePath,
+    relativePath: document.path as KernelWorkspaceRelativePath,
     revision: document.revision as KernelRevision,
     sizeBytes: document.sizeBytes,
     workspaceGeneration,
   };
+}
+
+function mapDocumentPage(
+  page: DocumentPageSource,
+  workspaceGeneration: KernelWorkspaceGeneration,
+): KernelDocumentPageSnapshot {
+  return {
+    items: page.items.map((document) => mapDocumentEntry(document, workspaceGeneration)),
+    nextCursor: page.nextCursor as KernelPageCursor | null,
+    workspaceGeneration,
+  };
+}
+
+function mapSearchPage(
+  page: SearchPageSource,
+  workspaceGeneration: KernelWorkspaceGeneration,
+): KernelSearchPageSnapshot {
+  return {
+    items: page.items.map((item) => ({
+      column: item.column,
+      document: mapDocumentEntry(item.document, workspaceGeneration),
+      line: item.line,
+      preview: item.preview,
+    })),
+    nextCursor: page.nextCursor as KernelPageCursor | null,
+    workspaceGeneration,
+  };
+}
+
+function mapHistoryPage(
+  page: HistoryPageSource,
+  workspaceGeneration: KernelWorkspaceGeneration,
+): KernelHistoryPageSnapshot {
+  return {
+    items: page.items.map((entry) => ({
+      createdAt: entry.createdAt,
+      documentLocator: entry.documentId as KernelDocumentLocator,
+      revision: entry.revision as KernelRevision,
+      sizeBytes: entry.sizeBytes,
+      snapshotId: entry.snapshotId as KernelHistorySnapshotId,
+      workspaceGeneration,
+    })),
+    nextCursor: page.nextCursor as KernelPageCursor | null,
+    workspaceGeneration,
+  };
+}
+
+function joinWorkspacePath(parent: string, name: string) {
+  return parent === "" ? name : `${parent}/${name}`;
 }

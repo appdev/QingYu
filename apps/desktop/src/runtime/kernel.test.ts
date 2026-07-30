@@ -1,8 +1,11 @@
 import type { FetchLike } from "@markra/kernel-client";
 import type {
   KernelDocumentLocator,
+  KernelHistorySnapshotId,
+  KernelPageCursor,
   KernelRevision,
   KernelWorkspaceGeneration,
+  KernelWorkspaceRelativePath,
 } from "@markra/app/runtime";
 import type { NativeKernelBootstrap } from "../kernel-bootstrap";
 
@@ -206,18 +209,24 @@ describe("desktop Kernel domain adapter", () => {
 
     expect(read).toEqual({
       contents: "original",
+      kind: "file",
       locator,
       modifiedAt: "2026-07-30T00:00:00Z",
       name: "draft.md",
+      parent: "private/notes",
+      relativePath: "private/notes/draft.md",
       revision: "revision-1",
       sizeBytes: 8,
       workspaceGeneration,
     });
     expect(updated).toEqual({
       contents: "updated",
+      kind: "file",
       locator,
       modifiedAt: "2026-07-30T00:00:00Z",
       name: "draft.md",
+      parent: "private/notes",
+      relativePath: "private/notes/draft.md",
       revision: "revision-2",
       sizeBytes: 7,
       workspaceGeneration,
@@ -238,9 +247,305 @@ describe("desktop Kernel domain adapter", () => {
         pathname: "/api/v1/documents/document.signature",
       },
     ]);
-    expect(JSON.stringify({ read, updated })).not.toContain("private/notes");
     expect(JSON.stringify({ read, updated })).not.toContain(BASE_URL);
     expect(JSON.stringify({ read, updated })).not.toContain(CREDENTIAL);
+  });
+
+  it("maps paginated file and directory listings plus search results through web-safe fields", async () => {
+    const requests: Array<{ pathname: string; query: Record<string, string> }> = [];
+    const fetch: FetchLike = async (url) => {
+      const parsed = new URL(url);
+      if (parsed.pathname === "/api/v1/documents") {
+        requests.push({ pathname: parsed.pathname, query: Object.fromEntries(parsed.searchParams) });
+        return jsonResponse({
+          items: [
+            documentEntry("file.signature", "file"),
+            documentEntry("directory.signature", "directory", {
+              name: "archive",
+              path: "notes/archive",
+              sizeBytes: 0,
+            }),
+          ],
+          nextCursor: "next.documents",
+        });
+      }
+      if (parsed.pathname === "/api/v1/search") {
+        requests.push({ pathname: parsed.pathname, query: Object.fromEntries(parsed.searchParams) });
+        return jsonResponse({
+          items: [{
+            column: 3,
+            document: documentEntry("file.signature", "file"),
+            line: 2,
+            preview: "a needle in a note",
+          }],
+          nextCursor: "next.search",
+        });
+      }
+      return handshakeResponse(parsed.pathname);
+    };
+    const adapter = await createDesktopKernelDomainAdapter(connection(), { fetch });
+    const workspaceGeneration = WORKSPACE_GENERATION as KernelWorkspaceGeneration;
+
+    const listed = await adapter.port.documents.list({
+      cursor: "cursor.documents" as KernelPageCursor,
+      limit: 2,
+      parent: "notes" as KernelWorkspaceRelativePath,
+      workspaceGeneration,
+    });
+    const searched = await adapter.port.documents.search({
+      cursor: "cursor.search" as KernelPageCursor,
+      limit: 2,
+      query: "needle",
+      workspaceGeneration,
+    });
+
+    expect(listed).toEqual({
+      items: [
+        documentSnapshot("file.signature", "file", workspaceGeneration),
+        documentSnapshot("directory.signature", "directory", workspaceGeneration, {
+          name: "archive",
+          relativePath: "notes/archive",
+          sizeBytes: 0,
+        }),
+      ],
+      nextCursor: "next.documents",
+      workspaceGeneration,
+    });
+    expect(searched).toEqual({
+      items: [{
+        column: 3,
+        document: documentSnapshot("file.signature", "file", workspaceGeneration),
+        line: 2,
+        preview: "a needle in a note",
+      }],
+      nextCursor: "next.search",
+      workspaceGeneration,
+    });
+    expect(requests).toEqual([
+      {
+        pathname: "/api/v1/documents",
+        query: { cursor: "cursor.documents", limit: "2", parent: "notes" },
+      },
+      {
+        pathname: "/api/v1/search",
+        query: { cursor: "cursor.search", limit: "2", query: "needle" },
+      },
+    ]);
+    expect(JSON.stringify({ listed, searched })).not.toContain(BASE_URL);
+    expect(JSON.stringify({ listed, searched })).not.toContain(CREDENTIAL);
+    expect(JSON.stringify({ listed, searched })).not.toContain("absolutePath");
+  });
+
+  it("creates files and directories using the frozen generation-only create contract", async () => {
+    const requests: unknown[] = [];
+    const fetch: FetchLike = async (url, init = {}) => {
+      const pathname = new URL(url).pathname;
+      if (pathname === "/api/v1/documents" && init.method === "POST") {
+        const body = JSON.parse(String(init.body));
+        requests.push(body);
+        if (body.kind === "file") {
+          return jsonResponse({
+            ...documentEntry("created.file", "file", {
+              name: body.name,
+              path: `notes/${body.name}`,
+              sizeBytes: 7,
+            }),
+            contents: body.contents,
+          }, 201);
+        }
+        return jsonResponse(documentEntry("created.directory", "directory", {
+          name: body.name,
+          path: `notes/${body.name}`,
+          sizeBytes: 0,
+        }), 201);
+      }
+      return handshakeResponse(pathname);
+    };
+    const adapter = await createDesktopKernelDomainAdapter(connection(), { fetch });
+    const workspaceGeneration = WORKSPACE_GENERATION as KernelWorkspaceGeneration;
+    const parent = "notes" as KernelWorkspaceRelativePath;
+
+    await expect(adapter.port.documents.create({
+      contents: "created",
+      kind: "file",
+      name: "created.md",
+      parent,
+      workspaceGeneration,
+    })).resolves.toMatchObject({
+      contents: "created",
+      kind: "file",
+      locator: "created.file",
+      relativePath: "notes/created.md",
+      workspaceGeneration,
+    });
+    await expect(adapter.port.documents.create({
+      kind: "directory",
+      name: "archive",
+      parent,
+      workspaceGeneration,
+    })).resolves.toMatchObject({
+      kind: "directory",
+      locator: "created.directory",
+      relativePath: "notes/archive",
+      workspaceGeneration,
+    });
+    expect(requests).toEqual([
+      {
+        contents: "created",
+        kind: "file",
+        name: "created.md",
+        parent: "notes",
+        workspaceGeneration: WORKSPACE_GENERATION,
+      },
+      {
+        kind: "directory",
+        name: "archive",
+        parent: "notes",
+        workspaceGeneration: WORKSPACE_GENERATION,
+      },
+    ]);
+    expect(requests.every((request) => (
+      typeof request === "object" &&
+      request !== null &&
+      !("processGeneration" in request)
+    ))).toBe(true);
+  });
+
+  it("moves, deletes, lists history, and restores with explicit CAS request bodies", async () => {
+    const requests: Array<{ body: unknown; method: string; pathname: string; search: string }> = [];
+    const locator = "document.signature" as KernelDocumentLocator;
+    const snapshotId = "123e4567-e89b-42d3-a456-426614174050" as KernelHistorySnapshotId;
+    const fetch: FetchLike = async (url, init = {}) => {
+      const parsed = new URL(url);
+      if (parsed.pathname.includes("/api/v1/documents/document.signature")) {
+        const body = init.body === undefined ? undefined : JSON.parse(String(init.body));
+        requests.push({
+          body,
+          method: String(init.method),
+          pathname: parsed.pathname,
+          search: parsed.search,
+        });
+        if (parsed.pathname.endsWith("/move")) {
+          return jsonResponse(documentEntry("document.signature", "file", {
+            name: "renamed.md",
+            parent: "archive",
+            path: "archive/renamed.md",
+          }));
+        }
+        if (parsed.pathname.endsWith("/delete")) {
+          return new Response(null, {
+            headers: { "x-request-id": REQUEST_ID },
+            status: 204,
+          });
+        }
+        if (parsed.pathname.endsWith("/history")) {
+          return jsonResponse({
+            items: [{
+              createdAt: "2026-07-29T23:59:00Z",
+              documentId: "document.signature",
+              revision: "revision-1",
+              sizeBytes: 8,
+              snapshotId,
+            }],
+            nextCursor: "next.history",
+          });
+        }
+        if (parsed.pathname.endsWith(`/${snapshotId}/restore`)) {
+          return jsonResponse({
+            ...documentEntry("document.signature", "file"),
+            contents: "restored",
+          });
+        }
+      }
+      return handshakeResponse(parsed.pathname);
+    };
+    const adapter = await createDesktopKernelDomainAdapter(connection(), { fetch });
+    const workspaceGeneration = WORKSPACE_GENERATION as KernelWorkspaceGeneration;
+    const expectedRevision = "revision-1" as KernelRevision;
+
+    await expect(adapter.port.documents.move({
+      expectedRevision,
+      locator,
+      name: "renamed.md",
+      targetParent: "archive" as KernelWorkspaceRelativePath,
+      workspaceGeneration,
+    })).resolves.toMatchObject({
+      locator,
+      name: "renamed.md",
+      relativePath: "archive/renamed.md",
+    });
+    await expect(adapter.port.documents.delete({
+      deletionPolicy: "recoverable",
+      expectedRevision,
+      locator,
+      workspaceGeneration,
+    })).resolves.toBeUndefined();
+    await expect(adapter.port.documents.history.list({
+      cursor: "cursor.history" as KernelPageCursor,
+      limit: 5,
+      locator,
+      workspaceGeneration,
+    })).resolves.toEqual({
+      items: [{
+        createdAt: "2026-07-29T23:59:00Z",
+        documentLocator: locator,
+        revision: "revision-1",
+        sizeBytes: 8,
+        snapshotId,
+        workspaceGeneration,
+      }],
+      nextCursor: "next.history",
+      workspaceGeneration,
+    });
+    await expect(adapter.port.documents.history.restore({
+      expectedRevision,
+      locator,
+      snapshotId,
+      workspaceGeneration,
+    })).resolves.toMatchObject({
+      contents: "restored",
+      locator,
+      workspaceGeneration,
+    });
+
+    expect(requests).toEqual([
+      {
+        body: {
+          expectedRevision: "revision-1",
+          name: "renamed.md",
+          targetParent: "archive",
+          workspaceGeneration: WORKSPACE_GENERATION,
+        },
+        method: "POST",
+        pathname: "/api/v1/documents/document.signature/move",
+        search: "",
+      },
+      {
+        body: {
+          deletionPolicy: "recoverable",
+          expectedRevision: "revision-1",
+          workspaceGeneration: WORKSPACE_GENERATION,
+        },
+        method: "POST",
+        pathname: "/api/v1/documents/document.signature/delete",
+        search: "",
+      },
+      {
+        body: undefined,
+        method: "GET",
+        pathname: "/api/v1/documents/document.signature/history",
+        search: "?cursor=cursor.history&limit=5",
+      },
+      {
+        body: {
+          expectedRevision: "revision-1",
+          workspaceGeneration: WORKSPACE_GENERATION,
+        },
+        method: "POST",
+        pathname: `/api/v1/documents/document.signature/history/${snapshotId}/restore`,
+        search: "",
+      },
+    ]);
   });
 
   it("fails closed after a later protocol mismatch and never falls back to native workspace mutation", async () => {
@@ -317,6 +622,213 @@ describe("desktop Kernel domain adapter", () => {
       }),
     ).rejects.toMatchObject({ code: "workspace-generation-mismatch" });
     expect(documentRequests).toBe(0);
+  });
+
+  it("rejects stale generations across the complete document-tree slice before transport", async () => {
+    let documentRequests = 0;
+    const fetch: FetchLike = async (url) => {
+      const pathname = new URL(url).pathname;
+      if (pathname === "/api/v1/search" || pathname.startsWith("/api/v1/documents")) {
+        documentRequests += 1;
+      }
+      return handshakeResponse(pathname);
+    };
+    const adapter = await createDesktopKernelDomainAdapter(connection(), { fetch });
+    const staleGeneration = "123e4567-e89b-42d3-a456-426614174099" as KernelWorkspaceGeneration;
+    const locator = "document.signature" as KernelDocumentLocator;
+    const expectedRevision = "revision-1" as KernelRevision;
+    const parent = "notes" as KernelWorkspaceRelativePath;
+    const snapshotId = "123e4567-e89b-42d3-a456-426614174050" as KernelHistorySnapshotId;
+    const operations: Array<() => Promise<unknown>> = [
+      () => adapter.port.documents.list({ workspaceGeneration: staleGeneration }),
+      () => adapter.port.documents.search({ query: "needle", workspaceGeneration: staleGeneration }),
+      () => adapter.port.documents.create({
+        contents: "created",
+        kind: "file",
+        name: "created.md",
+        parent,
+        workspaceGeneration: staleGeneration,
+      }),
+      () => adapter.port.documents.move({
+        expectedRevision,
+        locator,
+        name: "renamed.md",
+        targetParent: parent,
+        workspaceGeneration: staleGeneration,
+      }),
+      () => adapter.port.documents.delete({
+        deletionPolicy: "permanent",
+        expectedRevision,
+        locator,
+        workspaceGeneration: staleGeneration,
+      }),
+      () => adapter.port.documents.history.list({
+        locator,
+        workspaceGeneration: staleGeneration,
+      }),
+      () => adapter.port.documents.history.restore({
+        expectedRevision,
+        locator,
+        snapshotId,
+        workspaceGeneration: staleGeneration,
+      }),
+    ];
+
+    for (const operation of operations) {
+      await expect(operation()).rejects.toMatchObject({
+        code: "workspace-generation-mismatch",
+      });
+    }
+    expect(documentRequests).toBe(0);
+  });
+
+  it("permanently fails closed when the workspace identity drifts after a page response", async () => {
+    let workspaceReads = 0;
+    const release = vi.fn(() => undefined);
+    const fetch: FetchLike = async (url) => {
+      const pathname = new URL(url).pathname;
+      if (pathname === "/api/v1/workspace") {
+        workspaceReads += 1;
+        return jsonResponse(workspaceReads <= 2 ? workspaceBody() : {
+          ...workspaceBody(),
+          id: "123e4567-e89b-42d3-a456-426614174099",
+        });
+      }
+      if (pathname === "/api/v1/documents") {
+        return jsonResponse({ items: [], nextCursor: null });
+      }
+      return handshakeResponse(pathname);
+    };
+    const adapter = await createDesktopKernelDomainAdapter(connection({ release }), { fetch });
+
+    await expect(adapter.port.documents.list({
+      workspaceGeneration: WORKSPACE_GENERATION as KernelWorkspaceGeneration,
+    })).rejects.toMatchObject({ code: "protocol-mismatch" });
+    await expect(adapter.port.runtime.read()).rejects.toMatchObject({ code: "released" });
+    expect(release).toHaveBeenCalledOnce();
+  });
+
+  it("permanently fails closed before issuing a mutation when workspace identity already drifted", async () => {
+    let workspaceReads = 0;
+    let documentRequests = 0;
+    const release = vi.fn(() => undefined);
+    const fetch: FetchLike = async (url) => {
+      const pathname = new URL(url).pathname;
+      if (pathname === "/api/v1/workspace") {
+        workspaceReads += 1;
+        return jsonResponse(workspaceReads === 1 ? workspaceBody() : {
+          ...workspaceBody(),
+          generation: "123e4567-e89b-42d3-a456-426614174099",
+        });
+      }
+      if (pathname === "/api/v1/documents") {
+        documentRequests += 1;
+        return jsonResponse({
+          ...documentEntry("created.file", "file", {
+            name: "created.md",
+            path: "notes/created.md",
+          }),
+          contents: "created",
+        }, 201);
+      }
+      return handshakeResponse(pathname);
+    };
+    const adapter = await createDesktopKernelDomainAdapter(connection({ release }), { fetch });
+
+    await expect(adapter.port.documents.create({
+      contents: "created",
+      kind: "file",
+      name: "created.md",
+      parent: "notes" as KernelWorkspaceRelativePath,
+      workspaceGeneration: WORKSPACE_GENERATION as KernelWorkspaceGeneration,
+    })).rejects.toMatchObject({ code: "protocol-mismatch" });
+    expect(documentRequests).toBe(0);
+    await expect(adapter.port.workspace.read()).rejects.toMatchObject({ code: "released" });
+    expect(release).toHaveBeenCalledOnce();
+  });
+
+  it("permanently fails closed when history responds with a different document identity", async () => {
+    const release = vi.fn(() => undefined);
+    const snapshotId = "123e4567-e89b-42d3-a456-426614174050";
+    const fetch: FetchLike = async (url) => {
+      const pathname = new URL(url).pathname;
+      if (pathname.endsWith("/history")) {
+        return jsonResponse({
+          items: [{
+            createdAt: "2026-07-29T23:59:00Z",
+            documentId: "different.signature",
+            revision: "revision-1",
+            sizeBytes: 8,
+            snapshotId,
+          }],
+          nextCursor: null,
+        });
+      }
+      return handshakeResponse(pathname);
+    };
+    const adapter = await createDesktopKernelDomainAdapter(connection({ release }), { fetch });
+
+    await expect(adapter.port.documents.history.list({
+      locator: "document.signature" as KernelDocumentLocator,
+      workspaceGeneration: WORKSPACE_GENERATION as KernelWorkspaceGeneration,
+    })).rejects.toMatchObject({ code: "protocol-mismatch" });
+    await expect(adapter.port.workspace.read()).rejects.toMatchObject({ code: "released" });
+    expect(release).toHaveBeenCalledOnce();
+  });
+
+  it("permanently fails closed when create response identity disagrees with the requested path", async () => {
+    const release = vi.fn(() => undefined);
+    const fetch: FetchLike = async (url) => {
+      const pathname = new URL(url).pathname;
+      if (pathname === "/api/v1/documents") {
+        return jsonResponse({
+          ...documentEntry("created.file", "file", {
+            name: "created.md",
+            parent: "notes",
+            path: "notes/different.md",
+          }),
+          contents: "created",
+        }, 201);
+      }
+      return handshakeResponse(pathname);
+    };
+    const adapter = await createDesktopKernelDomainAdapter(connection({ release }), { fetch });
+
+    await expect(adapter.port.documents.create({
+      contents: "created",
+      kind: "file",
+      name: "created.md",
+      parent: "notes" as KernelWorkspaceRelativePath,
+      workspaceGeneration: WORKSPACE_GENERATION as KernelWorkspaceGeneration,
+    })).rejects.toMatchObject({ code: "protocol-mismatch" });
+    await expect(adapter.port.workspace.read()).rejects.toMatchObject({ code: "released" });
+    expect(release).toHaveBeenCalledOnce();
+  });
+
+  it("permanently fails closed when move response identity disagrees with the requested path", async () => {
+    const release = vi.fn(() => undefined);
+    const fetch: FetchLike = async (url) => {
+      const pathname = new URL(url).pathname;
+      if (pathname.endsWith("/move")) {
+        return jsonResponse(documentEntry("document.signature", "file", {
+          name: "renamed.md",
+          parent: "archive",
+          path: "archive/different.md",
+        }));
+      }
+      return handshakeResponse(pathname);
+    };
+    const adapter = await createDesktopKernelDomainAdapter(connection({ release }), { fetch });
+
+    await expect(adapter.port.documents.move({
+      expectedRevision: "revision-1" as KernelRevision,
+      locator: "document.signature" as KernelDocumentLocator,
+      name: "renamed.md",
+      targetParent: "archive" as KernelWorkspaceRelativePath,
+      workspaceGeneration: WORKSPACE_GENERATION as KernelWorkspaceGeneration,
+    })).rejects.toMatchObject({ code: "protocol-mismatch" });
+    await expect(adapter.port.workspace.read()).rejects.toMatchObject({ code: "released" });
+    expect(release).toHaveBeenCalledOnce();
   });
 
   it("closes the adapter when a document response changes the opaque identity", async () => {
@@ -413,6 +925,44 @@ function workspaceBody() {
     id: WORKSPACE_ID,
     readiness: "ready" as const,
     revision: "workspace-revision-1",
+  };
+}
+
+function documentEntry(
+  id: string,
+  kind: "file" | "directory",
+  overrides: Record<string, unknown> = {},
+) {
+  return {
+    id,
+    kind,
+    modifiedAt: "2026-07-30T00:00:00Z",
+    name: kind === "file" ? "draft.md" : "folder",
+    parent: "notes",
+    path: kind === "file" ? "notes/draft.md" : "notes/folder",
+    revision: "revision-1",
+    sizeBytes: kind === "file" ? 8 : 0,
+    ...overrides,
+  };
+}
+
+function documentSnapshot(
+  locator: string,
+  kind: "file" | "directory",
+  workspaceGeneration: KernelWorkspaceGeneration,
+  overrides: Record<string, unknown> = {},
+) {
+  return {
+    kind,
+    locator,
+    modifiedAt: "2026-07-30T00:00:00Z",
+    name: kind === "file" ? "draft.md" : "folder",
+    parent: "notes",
+    relativePath: kind === "file" ? "notes/draft.md" : "notes/folder",
+    revision: "revision-1",
+    sizeBytes: kind === "file" ? 8 : 0,
+    workspaceGeneration,
+    ...overrides,
   };
 }
 
