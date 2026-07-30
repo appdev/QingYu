@@ -122,6 +122,37 @@ describe("native Kernel session owner", () => {
     owner.close();
   });
 
+  it("retains an edge that arrives during a rejected refresh and automatically refreshes truth again", async () => {
+    const listener = new ListenerHarness();
+    const rejectedRefresh = deferred<unknown>();
+    const responses = [
+      lifecycleBootstrap("starting", "1"),
+      rejectedRefresh.promise,
+      lifecycleBootstrap("retrying", "2")
+    ];
+    const invokeCommand = vi.fn(async () => responses.shift());
+    const owner = createNativeKernelSessionOwner({
+      addPagehideListener: listener.addPagehideListener,
+      invokeCommand,
+      listenBootstrapChanged: listener.listen
+    });
+    await owner.start();
+
+    const failingRefresh = listener.signal({ edge: "first" });
+    await vi.waitFor(() => expect(invokeCommand).toHaveBeenCalledTimes(2));
+    const dirtyRefresh = listener.signal({ edge: "later" });
+    rejectedRefresh.reject(new Error("transient refresh failure"));
+    await Promise.all([failingRefresh, dirtyRefresh]);
+
+    expect(invokeCommand).toHaveBeenCalledTimes(3);
+    expect(owner.getSnapshot()).toEqual({
+      domain: null,
+      generation: "2",
+      status: "retrying"
+    });
+    owner.close();
+  });
+
   it.each([
     ["dormant", dormantBootstrap(), { domain: null, status: "dormant" }],
     ["starting", lifecycleBootstrap("starting", "3"), {
@@ -191,6 +222,51 @@ describe("native Kernel session owner", () => {
     });
     owner.close();
   });
+
+  it.each(["before-callback", "after-callback"] as const)(
+    "fails closed and retires both leases when event connection adoption throws %s",
+    async (failurePoint) => {
+      const listener = new ListenerHarness();
+      const domains = new DomainHarness();
+      const invalidations: DesktopKernelDomainInvalidation[] = [];
+      let capturedEventsLease: NativeKernelBootstrap | undefined;
+      const closeEvents = vi.fn(() => {
+        if (failurePoint === "after-callback") capturedEventsLease?.release();
+        return undefined;
+      });
+      const owner = createNativeKernelSessionOwner({
+        addPagehideListener: listener.addPagehideListener,
+        createDomainAdapter: domains.create,
+        createEventsAdapter: (options) => ({
+          identity: null,
+          close: closeEvents,
+          replaceConnection: (bootstrap) => {
+            capturedEventsLease = bootstrap ?? undefined;
+            if (failurePoint === "after-callback") {
+              options.onInvalidation(snapshotInvalidation(INSTANCE_A, "6"));
+            }
+            throw new Error("event connection adoption failed");
+          }
+        }),
+        invokeCommand: async () => readyBootstrap("6", INSTANCE_A, CREDENTIAL_A),
+        listenBootstrapChanged: listener.listen,
+        onInvalidation: (invalidation) => invalidations.push(invalidation)
+      });
+
+      await expect(owner.start()).rejects.toThrow("event connection adoption failed");
+      try {
+        expect(owner.getSnapshot()).toBeNull();
+        expect(() => capturedEventsLease?.authentication.getCredential()).toThrow(
+          "native Kernel credential unavailable"
+        );
+        expect(invalidations).toEqual([]);
+        expect(closeEvents).toHaveBeenCalledTimes(1);
+        expect(domains.adapters[0]?.release).toHaveBeenCalledTimes(1);
+      } finally {
+        owner.close();
+      }
+    }
+  );
 
   it("retires the old domain and event socket before publishing changed and non-ready states", async () => {
     const log: string[] = [];
@@ -263,6 +339,42 @@ describe("native Kernel session owner", () => {
     events.records[0]?.options.onInvalidation(stale);
     events.records[1]?.options.onInvalidation(current);
 
+    expect(invalidations).toEqual([current]);
+    owner.close();
+  });
+
+  it("ignores queued callbacks from a retired adoption when the same identity is adopted again", async () => {
+    const listener = new ListenerHarness();
+    const domains = new DomainHarness();
+    const events = new EventsHarness();
+    const invalidations: DesktopKernelDomainInvalidation[] = [];
+    const responses = [
+      readyBootstrap("10", INSTANCE_A, CREDENTIAL_A),
+      new Error("native Kernel bootstrap refresh failed"),
+      readyBootstrap("10", INSTANCE_A, CREDENTIAL_A)
+    ];
+    const owner = createNativeKernelSessionOwner({
+      addPagehideListener: listener.addPagehideListener,
+      createDomainAdapter: domains.create,
+      createEventsAdapter: events.create,
+      invokeCommand: async () => {
+        const response = responses.shift();
+        if (response instanceof Error) throw response;
+        return response;
+      },
+      listenBootstrapChanged: listener.listen,
+      onInvalidation: (invalidation) => invalidations.push(invalidation)
+    });
+    await owner.start();
+    await listener.signal({ failed: true });
+    await listener.signal({ recovered: true });
+    const queuedStale = snapshotInvalidation(INSTANCE_A, "10");
+    const current = snapshotInvalidation(INSTANCE_A, "10");
+
+    events.records[0]?.options.onInvalidation(queuedStale);
+    events.records[1]?.options.onInvalidation(current);
+
+    expect(events.records).toHaveLength(2);
     expect(invalidations).toEqual([current]);
     owner.close();
   });
@@ -341,6 +453,31 @@ describe("native Kernel session owner", () => {
     expect(() => (
       events.records[0]?.connections[0]?.authentication.getCredential()
     )).toThrow("native Kernel credential unavailable");
+  });
+
+  it("stops a ready publication when an earlier subscriber closes the owner", async () => {
+    const listener = new ListenerHarness();
+    const domains = new DomainHarness();
+    const events = new EventsHarness();
+    const laterSnapshots: Array<NativeKernelSessionSnapshot | null> = [];
+    const owner = createNativeKernelSessionOwner({
+      addPagehideListener: listener.addPagehideListener,
+      createDomainAdapter: domains.create,
+      createEventsAdapter: events.create,
+      invokeCommand: async () => readyBootstrap("15", INSTANCE_A, CREDENTIAL_A),
+      listenBootstrapChanged: listener.listen
+    });
+    owner.subscribe((next) => {
+      if (next?.status === "ready") owner.close();
+    });
+    owner.subscribe((next) => laterSnapshots.push(next));
+
+    await owner.start();
+
+    expect(owner.getSnapshot()).toBeNull();
+    expect(laterSnapshots).toEqual([]);
+    expect(domains.adapters[0]?.release).toHaveBeenCalledTimes(1);
+    expect(events.records[0]?.close).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -478,14 +615,20 @@ function snapshotInvalidation(
 
 function deferred<T>() {
   let resolvePromise: ((value: T) => undefined) | undefined;
-  const promise = new Promise<T>((resolve) => {
+  let rejectPromise: ((cause?: unknown) => undefined) | undefined;
+  const promise = new Promise<T>((resolve, reject) => {
     resolvePromise = (value) => {
       resolve(value);
+      return undefined;
+    };
+    rejectPromise = (cause) => {
+      reject(cause);
       return undefined;
     };
   });
   return {
     promise,
+    reject: (cause?: unknown) => rejectPromise?.(cause),
     resolve: (value: T) => resolvePromise?.(value)
   };
 }

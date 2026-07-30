@@ -99,7 +99,8 @@ export function createNativeKernelSessionOwner(
   let snapshot: NativeKernelSessionSnapshot | null = null;
   let startPromise: Promise<undefined> | undefined;
   let refreshPromise: Promise<undefined> | undefined;
-  let refreshRequested = false;
+  let refreshRequestSequence = 0;
+  let refreshCompletedSequence = 0;
   let stopBootstrapListener: (() => unknown) | undefined;
   let stopPagehideListener: (() => unknown) | undefined;
   let activeDomain: DesktopKernelDomainAdapter | undefined;
@@ -108,10 +109,22 @@ export function createNativeKernelSessionOwner(
     | { readonly generation: string; readonly instanceId: string }
     | undefined;
   let adoptionEpoch = 0;
+  let publicationEpoch = 0;
 
   const publish = (next: NativeKernelSessionSnapshot | null) => {
+    if (closed) {
+      snapshot = null;
+      return undefined;
+    }
+    publicationEpoch += 1;
+    const publication = publicationEpoch;
     snapshot = next;
     for (const subscriber of [...subscribers]) {
+      if (
+        closed ||
+        publication !== publicationEpoch ||
+        snapshot !== next
+      ) break;
       notifyConsumer(subscriber, next);
     }
     return undefined;
@@ -119,6 +132,7 @@ export function createNativeKernelSessionOwner(
 
   const retireActive = () => {
     activeIdentity = undefined;
+    publicationEpoch += 1;
     snapshot = null;
     const domain = activeDomain;
     const events = activeEvents;
@@ -146,6 +160,17 @@ export function createNativeKernelSessionOwner(
       !closed &&
       activeIdentity?.generation === generation &&
       activeIdentity.instanceId === instanceId
+    );
+  };
+
+  const isCurrentAdoption = (
+    token: { readonly epoch: number; readonly committed: boolean },
+    identity: { readonly generation: string; readonly instanceId: string }
+  ) => {
+    return (
+      token.committed &&
+      token.epoch === adoptionEpoch &&
+      isCurrentIdentity(identity)
     );
   };
 
@@ -180,13 +205,15 @@ export function createNativeKernelSessionOwner(
     adoptionEpoch += 1;
     const adoption = adoptionEpoch;
     retireActive();
-    const domainLease = bootstrapOwner.acquireReady();
-    const eventsLease = bootstrapOwner.acquireReady();
-    if (domainLease === null || eventsLease === null) {
-      safelyRelease(domainLease);
-      safelyRelease(eventsLease);
+    const acquiredDomainLease = bootstrapOwner.acquireReady();
+    const acquiredEventsLease = bootstrapOwner.acquireReady();
+    if (acquiredDomainLease === null || acquiredEventsLease === null) {
+      safelyRelease(acquiredDomainLease);
+      safelyRelease(acquiredEventsLease);
       throw failClosed(new Error("native Kernel session publication unavailable"));
     }
+    const domainLease = onceOwnedBootstrap(acquiredDomainLease);
+    const eventsLease = onceOwnedBootstrap(acquiredEventsLease);
 
     let domain: DesktopKernelDomainAdapter;
     try {
@@ -203,18 +230,25 @@ export function createNativeKernelSessionOwner(
     }
 
     let events: DesktopKernelEventsAdapter;
+    const adoptionToken = { committed: false, epoch: adoption };
     try {
       events = createEventsAdapter({
         onError: (notice) => {
-          if (isCurrentIdentity(notice)) notifyConsumer(onEventsError, notice);
+          if (isCurrentAdoption(adoptionToken, notice)) {
+            notifyConsumer(onEventsError, notice);
+          }
           return undefined;
         },
         onInvalidation: (invalidation) => {
-          if (isCurrentIdentity(invalidation)) notifyConsumer(onInvalidation, invalidation);
+          if (isCurrentAdoption(adoptionToken, invalidation)) {
+            notifyConsumer(onInvalidation, invalidation);
+          }
           return undefined;
         },
         onStateChange: (notice) => {
-          if (isCurrentIdentity(notice)) notifyConsumer(onEventsStateChange, notice);
+          if (isCurrentAdoption(adoptionToken, notice)) {
+            notifyConsumer(onEventsStateChange, notice);
+          }
           return undefined;
         }
       });
@@ -230,21 +264,27 @@ export function createNativeKernelSessionOwner(
       return undefined;
     }
 
+    try {
+      events.replaceConnection(eventsLease);
+    } catch (cause: unknown) {
+      safelyCall(domain.release);
+      safelyCall(events.close);
+      safelyRelease(eventsLease);
+      throw failClosed(cause);
+    }
+    if (closed || adoption !== adoptionEpoch) {
+      safelyCall(domain.release);
+      safelyCall(events.close);
+      safelyRelease(eventsLease);
+      return undefined;
+    }
     activeDomain = domain;
     activeEvents = events;
     activeIdentity = Object.freeze({
       generation: lifecycle.generation,
       instanceId: lifecycle.instanceId
     });
-    try {
-      events.replaceConnection(eventsLease);
-    } catch (cause: unknown) {
-      throw failClosed(cause);
-    }
-    if (closed || adoption !== adoptionEpoch) {
-      retireActive();
-      return undefined;
-    }
+    adoptionToken.committed = true;
     publish(Object.freeze({
       domain: domain.port,
       generation: lifecycle.generation,
@@ -256,18 +296,20 @@ export function createNativeKernelSessionOwner(
 
   const requestRefresh = () => {
     if (closed) return Promise.reject(sessionClosed());
-    refreshRequested = true;
+    refreshRequestSequence += 1;
     if (refreshPromise !== undefined) return refreshPromise;
 
     const pending = (async () => {
-      try {
-        while (refreshRequested && !closed) {
-          refreshRequested = false;
+      while (refreshCompletedSequence < refreshRequestSequence && !closed) {
+        const request = refreshRequestSequence;
+        try {
           await reconcile();
+          refreshCompletedSequence = request;
+        } catch (cause: unknown) {
+          refreshCompletedSequence = request;
+          if (closed) return undefined;
+          if (refreshRequestSequence === request) throw cause;
         }
-      } catch (cause: unknown) {
-        refreshRequested = false;
-        throw cause;
       }
       return undefined;
     })();
@@ -293,7 +335,6 @@ export function createNativeKernelSessionOwner(
   const close = () => {
     if (closed) return undefined;
     closed = true;
-    refreshRequested = false;
     adoptionEpoch += 1;
     retireActive();
     bootstrapOwner.close();
@@ -335,7 +376,7 @@ export function createNativeKernelSessionOwner(
       if (closed) throw sessionClosed();
       subscribers.add(subscriber);
       if (snapshot !== null) notifyConsumer(subscriber, snapshot);
-      start().catch(reportRefreshFailure);
+      if (!closed) start().catch(reportRefreshFailure);
       let subscribed = true;
       return () => {
         if (!subscribed) return undefined;
@@ -404,6 +445,13 @@ function safelyCall(operation: (() => unknown) | undefined): undefined {
 function safelyRelease(bootstrap: NativeKernelBootstrap | null): undefined {
   safelyCall(bootstrap?.release);
   return undefined;
+}
+
+function onceOwnedBootstrap(bootstrap: NativeKernelBootstrap): NativeKernelBootstrap {
+  return Object.freeze({
+    ...bootstrap,
+    release: once(bootstrap.release)
+  });
 }
 
 function safeSessionError(cause: unknown): Error {
