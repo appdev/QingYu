@@ -2263,7 +2263,7 @@ mod tests {
             target: target.clone(),
             stage_name: transaction.stage_name(),
             transient_backup: Some(transaction.backup_name()),
-            previous_revision: Some(previous_revision),
+            previous_revision: Some(previous_revision.clone()),
             intended_revision,
         };
         store

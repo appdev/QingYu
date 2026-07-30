@@ -615,8 +615,7 @@ fn recovery_link_count(metadata: &cap_std::fs::Metadata) -> u64 {
 
 #[cfg(windows)]
 fn recovery_link_count(metadata: &cap_std::fs::Metadata) -> u64 {
-    use cap_std::fs::MetadataExt as _;
-    metadata.number_of_links().unwrap_or(0)
+    MetadataExt::nlink(metadata)
 }
 
 #[cfg(not(any(unix, windows)))]

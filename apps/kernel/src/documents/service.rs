@@ -1636,8 +1636,7 @@ fn link_count(metadata: &Metadata) -> u64 {
 }
 #[cfg(windows)]
 fn link_count(metadata: &Metadata) -> u64 {
-    use cap_std::fs::MetadataExt as _;
-    metadata.number_of_links().unwrap_or(0)
+    MetadataExt::nlink(metadata)
 }
 #[cfg(not(any(unix, windows)))]
 fn link_count(_metadata: &Metadata) -> u64 {
