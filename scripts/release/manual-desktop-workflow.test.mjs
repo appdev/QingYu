@@ -27,11 +27,18 @@ function topLevelSection(source, name) {
 }
 
 test("every GitHub workflow is manual-only", () => {
-  for (const fileName of ["ci.yml", "release.yml", "desktop.yml"]) {
+  for (const fileName of ["ci.yml", "release.yml", "finalize-release.yml", "desktop.yml"]) {
     const trigger = topLevelSection(readWorkflow(fileName), "on");
     assert.match(trigger, /^  workflow_dispatch:/m, `${fileName} should allow manual dispatch`);
     assert.doesNotMatch(trigger, /^  (?:push|pull_request|schedule):/m, `${fileName} should not run automatically`);
   }
+});
+
+test("Finalize Release requires an exact tag input", () => {
+  const trigger = topLevelSection(readWorkflow("finalize-release.yml"), "on");
+
+  assert.match(trigger, /^      tag:$/m);
+  assert.match(trigger, /^        required: true$/m);
 });
 
 test("release workflow derives its tag from the project version without manual version input", () => {
@@ -39,7 +46,7 @@ test("release workflow derives its tag from the project version without manual v
   const trigger = topLevelSection(workflow, "on");
 
   assert.doesNotMatch(trigger, /^      tag_name:/m);
-  assert.match(trigger, /^      draft:/m);
+  assert.doesNotMatch(trigger, /^      draft:/m);
   assert.match(workflow, /release_version: \$\{\{ steps\.release_version\.outputs\.release_version \}\}/);
   assert.match(workflow, /release_tag: \$\{\{ steps\.release_version\.outputs\.release_tag \}\}/);
   assert.match(workflow, /const releaseTag = `v\$\{rootPackage\.version\}`;/);

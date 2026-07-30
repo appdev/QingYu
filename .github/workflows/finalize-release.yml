@@ -1,0 +1,212 @@
+name: Finalize Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Exact Draft Release tag to publish
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: finalize-release-${{ inputs.tag }}
+  cancel-in-progress: false
+
+env:
+  APP_PRODUCT_NAME: QingYu
+  NODE_VERSION: 24
+  RELEASE_TAG: ${{ inputs.tag }}
+
+jobs:
+  finalize_release:
+    name: Validate and finalize GitHub Release
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    env:
+      HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Resolve exact tag target
+        id: tag_target
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if ! git show-ref --verify --quiet "refs/tags/${RELEASE_TAG}"; then
+            git fetch --force origin "refs/tags/${RELEASE_TAG}:refs/tags/${RELEASE_TAG}"
+          fi
+          target_sha="$(git rev-parse "refs/tags/${RELEASE_TAG}^{commit}")"
+          git show "${target_sha}:package.json" > target-package.json
+          echo "sha=${target_sha}" >> "${GITHUB_OUTPUT}"
+
+      - name: Fetch release state
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" > release.json
+
+      - name: Download release assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+          gh release download "${RELEASE_TAG}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --dir release-assets \
+            --clobber
+
+      - name: Validate release draft
+        id: validate
+        env:
+          ALLOW_PUBLISHED_RETRY: true
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          PACKAGE_JSON_PATH: target-package.json
+          RELEASE_ASSETS_ROOT: release-assets
+          RELEASE_JSON_PATH: release.json
+          RESOLVED_TARGET_SHA: ${{ steps.tag_target.outputs.sha }}
+        run: node scripts/release/validate-release-draft.mjs
+
+      - name: Publish validated draft
+        if: steps.validate.outputs.already_published != 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          if [[ "${{ steps.validate.outputs.prerelease }}" == "true" ]]; then
+            gh release edit "${RELEASE_TAG}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --draft=false
+          else
+            gh release edit "${RELEASE_TAG}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --draft=false \
+              --latest
+          fi
+
+      - name: Verify published release
+        env:
+          ALLOW_PUBLISHED_RETRY: true
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+          PACKAGE_JSON_PATH: target-package.json
+          RELEASE_ASSETS_ROOT: release-assets
+          RELEASE_JSON_PATH: published-release.json
+          REQUIRE_PUBLISHED: true
+          RESOLVED_TARGET_SHA: ${{ steps.tag_target.outputs.sha }}
+        run: |
+          set -euo pipefail
+          gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" > published-release.json
+          node scripts/release/validate-release-draft.mjs
+
+      - name: Verify latest stable release
+        if: steps.validate.outputs.prerelease != 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          latest_tag="$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq .tag_name)"
+          if [[ "${latest_tag}" != "${RELEASE_TAG}" ]]; then
+            echo "Latest Release is ${latest_tag}, expected ${RELEASE_TAG}." >&2
+            exit 1
+          fi
+
+      - name: Publish preview updater manifest
+        if: steps.validate.outputs.signed_release == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          if ! gh release view preview --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            gh release create preview \
+              --repo "${GITHUB_REPOSITORY}" \
+              --target "${{ steps.tag_target.outputs.sha }}" \
+              --title "${APP_PRODUCT_NAME} Preview Update Channel" \
+              --notes "Rolling updater manifest for QingYu preview and stable releases." \
+              --prerelease
+          fi
+
+          gh release upload preview release-assets/latest.json --clobber --repo "${GITHUB_REPOSITORY}"
+
+      - name: Generate Homebrew cask
+        if: steps.validate.outputs.signed_release == 'true' && env.HOMEBREW_TAP_TOKEN != '' && !contains(env.RELEASE_TAG, '-')
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          OUTPUT_PATH: generated/homebrew/Casks/markra.rb
+          RELEASE_ASSETS_ROOT: release-assets
+          RELEASE_VERSION: ${{ steps.validate.outputs.release_version }}
+        run: node scripts/release/generate-homebrew-cask.mjs
+
+      - name: Prepare Homebrew tap checkout
+        if: steps.validate.outputs.signed_release == 'true' && env.HOMEBREW_TAP_TOKEN != '' && !contains(env.RELEASE_TAG, '-')
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          tap_url="https://github.com/markrahq/homebrew-tap.git"
+          tap_branch=""
+
+          while read -r marker ref target; do
+            if [[ "${marker}" == "ref:" && "${target}" == "HEAD" ]]; then
+              tap_branch="${ref#refs/heads/}"
+              break
+            fi
+          done < <(git ls-remote --symref "${tap_url}" HEAD)
+
+          tap_branch="${tap_branch:-main}"
+          echo "HOMEBREW_TAP_BRANCH=${tap_branch}" >> "${GITHUB_ENV}"
+
+          if git ls-remote --exit-code --heads "${tap_url}" "${tap_branch}" >/dev/null 2>&1; then
+            git clone --depth 1 --branch "${tap_branch}" "${tap_url}" homebrew-tap
+          else
+            mkdir homebrew-tap
+            git -C homebrew-tap init -b "${tap_branch}"
+            git -C homebrew-tap remote add origin "${tap_url}"
+          fi
+
+      - name: Publish Homebrew cask to tap
+        if: steps.validate.outputs.signed_release == 'true' && env.HOMEBREW_TAP_TOKEN != '' && !contains(env.RELEASE_TAG, '-')
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          tap_branch="${HOMEBREW_TAP_BRANCH:-main}"
+          mkdir -p homebrew-tap/Casks
+          cp generated/homebrew/Casks/markra.rb homebrew-tap/Casks/markra.rb
+
+          if [[ -z "$(git -C homebrew-tap status --porcelain -- Casks/markra.rb)" ]]; then
+            echo "Homebrew cask is already up to date."
+            exit 0
+          fi
+
+          git -C homebrew-tap config user.name "github-actions[bot]"
+          git -C homebrew-tap config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git -C homebrew-tap add Casks/markra.rb
+          git -C homebrew-tap commit -m "Update QingYu cask to ${RELEASE_TAG}"
+          git -C homebrew-tap push -u "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/markrahq/homebrew-tap.git" "HEAD:${tap_branch}"
+
+      - name: Report skipped unsigned distribution
+        if: steps.validate.outputs.signed_release != 'true'
+        run: echo "Release is unsigned; updater preview and Homebrew publication were skipped."

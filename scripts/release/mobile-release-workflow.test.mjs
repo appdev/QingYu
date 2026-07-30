@@ -82,8 +82,13 @@ test("release publication waits for every platform and uploads deterministic not
   assert.match(job, /node scripts\/release\/generate-release-notes\.mjs/);
   assert.match(job, /RELEASE_TARGET: \$\{\{ github\.sha \}\}/);
   assert.match(job, /GITHUB_TOKEN: \$\{\{ github\.token \}\}/);
+  assert.match(job, /GITHUB_MODELS_MODEL: openai\/gpt-4\.1/);
+  assert.match(job, /RELEASE_FACTS_PATH: release-facts\.json/);
+  assert.match(job, /SIGNED_RELEASE: \$\{\{ needs\.validate_release\.outputs\.signed_release \}\}/);
+  assert.match(job, /name: Upload generated release notes/);
   assert.match(job, /pattern: \$\{\{ env\.APP_SLUG \}\}-\*-bundles/);
   assert.match(job, /target_commitish: \$\{\{ github\.sha \}\}/);
+  assert.match(job, /^          draft: true$/m);
   assert.doesNotMatch(job, /pnpm dlx changelogen@latest/);
 });
 

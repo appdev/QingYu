@@ -2,15 +2,9 @@ name: Release
 
 on:
   workflow_dispatch:
-    inputs:
-      draft:
-        description: Publish as draft release
-        required: false
-        default: false
-        type: boolean
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: release-${{ github.workflow }}-${{ github.ref }}
@@ -709,12 +703,14 @@ jobs:
           if-no-files-found: error
 
   publish_release:
-    name: Publish GitHub Release
+    name: Create GitHub Draft Release
     needs: [validate_release, build, build_android, build_ios]
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: write
+      models: read
     env:
-      HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
       RELEASE_TAG: ${{ needs.validate_release.outputs.release_tag }}
       RELEASE_VERSION: ${{ needs.validate_release.outputs.release_version }}
 
@@ -732,11 +728,23 @@ jobs:
 
       - name: Generate release notes
         env:
+          GITHUB_MODELS_MODEL: openai/gpt-4.1
           GITHUB_REPOSITORY: ${{ github.repository }}
           GITHUB_TOKEN: ${{ github.token }}
+          RELEASE_FACTS_PATH: release-facts.json
           RELEASE_NOTES_PATH: release-notes.md
           RELEASE_TARGET: ${{ github.sha }}
+          SIGNED_RELEASE: ${{ needs.validate_release.outputs.signed_release }}
         run: node scripts/release/generate-release-notes.mjs
+
+      - name: Upload generated release notes
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.APP_SLUG }}-release-notes
+          path: |
+            release-notes.md
+            release-facts.json
+          if-no-files-found: error
 
       - name: Download bundled artifacts
         uses: actions/download-artifact@v4
@@ -809,75 +817,8 @@ jobs:
           target_commitish: ${{ github.sha }}
           name: ${{ env.APP_PRODUCT_NAME }} ${{ env.RELEASE_TAG }}
           body_path: release-notes.md
-          draft: ${{ github.event_name == 'workflow_dispatch' && inputs.draft || false }}
+          draft: true
           prerelease: ${{ contains(env.RELEASE_TAG, '-') }}
           overwrite_files: true
           fail_on_unmatched_files: true
           files: ${{ steps.release_files.outputs.paths }}
-
-      - name: Publish preview updater manifest
-        if: ${{ needs.validate_release.outputs.signed_release == 'true' && (github.event_name != 'workflow_dispatch' || !inputs.draft) }}
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-
-          if ! gh release view preview --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
-            gh release create preview \
-              --repo "${GITHUB_REPOSITORY}" \
-              --target "${GITHUB_SHA}" \
-              --title "${APP_PRODUCT_NAME} Preview Update Channel" \
-              --notes "Rolling updater manifest for QingYu preview and stable releases." \
-              --prerelease
-          fi
-
-          gh release upload preview release-assets/latest.json --clobber --repo "${GITHUB_REPOSITORY}"
-
-      - name: Prepare Homebrew tap checkout
-        if: needs.validate_release.outputs.signed_release == 'true' && env.HOMEBREW_TAP_TOKEN != '' && !contains(env.RELEASE_TAG, '-')
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          tap_url="https://github.com/markrahq/homebrew-tap.git"
-          tap_branch=""
-
-          while read -r marker ref target; do
-            if [[ "${marker}" == "ref:" && "${target}" == "HEAD" ]]; then
-              tap_branch="${ref#refs/heads/}"
-              break
-            fi
-          done < <(git ls-remote --symref "${tap_url}" HEAD)
-
-          tap_branch="${tap_branch:-main}"
-          echo "HOMEBREW_TAP_BRANCH=${tap_branch}" >> "${GITHUB_ENV}"
-
-          if git ls-remote --exit-code --heads "${tap_url}" "${tap_branch}" >/dev/null 2>&1; then
-            git clone --depth 1 --branch "${tap_branch}" "${tap_url}" homebrew-tap
-          else
-            mkdir homebrew-tap
-            git -C homebrew-tap init -b "${tap_branch}"
-            git -C homebrew-tap remote add origin "${tap_url}"
-          fi
-
-      - name: Publish Homebrew cask to tap
-        if: needs.validate_release.outputs.signed_release == 'true' && env.HOMEBREW_TAP_TOKEN != '' && !contains(env.RELEASE_TAG, '-')
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          tap_branch="${HOMEBREW_TAP_BRANCH:-main}"
-          mkdir -p homebrew-tap/Casks
-          cp generated/homebrew/Casks/markra.rb homebrew-tap/Casks/markra.rb
-
-          if [[ -z "$(git -C homebrew-tap status --porcelain -- Casks/markra.rb)" ]]; then
-            echo "Homebrew cask is already up to date."
-            exit 0
-          fi
-
-          git -C homebrew-tap config user.name "github-actions[bot]"
-          git -C homebrew-tap config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git -C homebrew-tap add Casks/markra.rb
-          git -C homebrew-tap commit -m "Update QingYu cask to ${RELEASE_TAG}"
-          git -C homebrew-tap push -u "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/markrahq/homebrew-tap.git" "HEAD:${tap_branch}"

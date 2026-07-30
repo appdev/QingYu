@@ -15,14 +15,19 @@ test("release workflow resolves a stable or preview updater endpoint before bund
   assert.match(workflow, /TAURI_UPDATER_ENDPOINT: \$\{\{ steps\.updater_endpoint\.outputs\.endpoint \}\}/);
 });
 
-test("release workflow keeps a rolling preview manifest for non-draft releases", () => {
+test("release workflow always creates a draft with AI permission and inspectable note inputs", () => {
   const workflow = fs.readFileSync(workflowPath, "utf8");
 
-  assert.match(workflow, /name: Publish preview updater manifest/);
-  assert.match(workflow, /github\.event_name != 'workflow_dispatch' \|\| !inputs\.draft/);
-  assert.match(workflow, /gh release view preview/);
-  assert.match(workflow, /gh release create preview/);
-  assert.match(workflow, /gh release upload preview release-assets\/latest\.json --clobber/);
+  assert.match(workflow, /^  publish_release:[\s\S]*?permissions:\n      contents: write\n      models: read/m);
+  assert.match(workflow, /^          draft: true$/m);
+  assert.match(workflow, /GITHUB_MODELS_MODEL: openai\/gpt-4\.1/);
+  assert.match(workflow, /RELEASE_FACTS_PATH: release-facts\.json/);
+  assert.match(workflow, /name: Upload generated release notes/);
+  assert.match(workflow, /path: \|\n            release-notes\.md\n            release-facts\.json/);
+  assert.doesNotMatch(workflow, /inputs\.draft/);
+  assert.doesNotMatch(workflow, /Publish preview updater manifest/);
+  assert.doesNotMatch(workflow, /Prepare Homebrew tap checkout/);
+  assert.doesNotMatch(workflow, /Publish Homebrew cask to tap/);
 });
 
 test("release workflow excludes deb package internals from GitHub release assets", () => {

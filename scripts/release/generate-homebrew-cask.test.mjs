@@ -8,7 +8,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
-const releaseWorkflowPath = path.join(repoRoot, ".github", "workflows", "release.yml");
+const releaseWorkflowPath = path.join(repoRoot, ".github", "workflows", "finalize-release.yml");
 
 function makeTempDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "markra-homebrew-cask-"));
@@ -301,15 +301,14 @@ esac
   assert.match(fs.readFileSync(gitLogPath, "utf8"), /push -u https:\/\/x-access-token:synthetic-token@github\.com\/markrahq\/homebrew-tap\.git HEAD:main/);
 });
 
-test("release workflow generates and publishes the Homebrew cask separately from release assets", () => {
+test("Finalize Release generates and publishes the Homebrew cask after publication", () => {
   const workflow = fs.readFileSync(releaseWorkflowPath, "utf8");
   const prereleaseGuards = workflow.match(/!contains\(env\.RELEASE_TAG, '-'\)/gu) ?? [];
 
   assert.match(workflow, /Generate Homebrew cask/);
   assert.match(workflow, /generate-homebrew-cask\.mjs/);
   assert.match(workflow, /OUTPUT_PATH: generated\/homebrew\/Casks\/markra\.rb/);
-  assert.match(workflow, /Upload Homebrew cask artifact/);
-  assert.match(workflow, /name: \$\{\{ env\.APP_SLUG \}\}-homebrew-cask/);
+  assert.match(workflow, /Verify published release/);
   assert.match(workflow, /Prepare Homebrew tap checkout/);
   assert.match(workflow, /git ls-remote --symref "\$\{tap_url\}" HEAD/);
   assert.match(workflow, /tap_branch="\$\{ref#refs\/heads\/\}"/);
@@ -319,5 +318,5 @@ test("release workflow generates and publishes the Homebrew cask separately from
   assert.match(workflow, /tap_url="https:\/\/github\.com\/markrahq\/homebrew-tap\.git"/);
   assert.match(workflow, /git -C homebrew-tap push -u "https:\/\/x-access-token:\$\{HOMEBREW_TAP_TOKEN\}@github\.com\/markrahq\/homebrew-tap\.git" "HEAD:\$\{tap_branch\}"/);
   assert.match(workflow, /git -C homebrew-tap status --porcelain -- Casks\/markra\.rb/);
-  assert.equal(prereleaseGuards.length, 4);
+  assert.ok(prereleaseGuards.length >= 3);
 });
