@@ -4,12 +4,14 @@
 
 use std::{
     ffi::OsString,
+    io,
+    marker::PhantomData,
     path::{Path, PathBuf},
     sync::{Arc, Condvar, Mutex, MutexGuard},
 };
 
 use cap_fs_ext::DirExt as _;
-use cap_std::fs::Dir;
+use cap_std::fs::{Dir, File};
 
 struct WorkspaceRootCapability {
     canonical_path: PathBuf,
@@ -173,6 +175,82 @@ struct WriterAuthorityShared {
     legacy_drained: Condvar,
 }
 
+struct WorkspaceOperationFailClosedGuard<'a> {
+    shared: &'a WriterAuthorityShared,
+    armed: bool,
+}
+
+pub(crate) struct WorkspaceMutationRoot<'scope> {
+    directory: &'scope Dir,
+    // Invariance prevents a scoped capability from being widened to `'static`.
+    scope: PhantomData<&'scope mut &'scope ()>,
+}
+
+impl<'scope> WorkspaceMutationRoot<'scope> {
+    fn new(directory: &'scope Dir) -> Self {
+        Self {
+            directory,
+            scope: PhantomData,
+        }
+    }
+
+    pub(crate) fn create(
+        &self,
+        relative_path: impl AsRef<Path>,
+    ) -> io::Result<WorkspaceMutationFile<'scope>> {
+        self.directory
+            .create(relative_path.as_ref())
+            .map(WorkspaceMutationFile::new)
+    }
+}
+
+pub(crate) struct WorkspaceMutationFile<'scope> {
+    file: File,
+    // The owned OS handle remains branded with the enclosing operation scope.
+    scope: PhantomData<&'scope mut &'scope ()>,
+}
+
+impl WorkspaceMutationFile<'_> {
+    fn new(file: File) -> Self {
+        Self {
+            file,
+            scope: PhantomData,
+        }
+    }
+
+    pub(crate) fn sync_all(&self) -> io::Result<()> {
+        self.file.sync_all()
+    }
+
+    pub(crate) fn sync_data(&self) -> io::Result<()> {
+        self.file.sync_data()
+    }
+}
+
+impl io::Write for WorkspaceMutationFile<'_> {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        io::Write::write(&mut self.file, buffer)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        io::Write::flush(&mut self.file)
+    }
+}
+
+impl WorkspaceOperationFailClosedGuard<'_> {
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for WorkspaceOperationFailClosedGuard<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            self.shared.fail_closed();
+        }
+    }
+}
+
 impl WriterAuthorityShared {
     fn mark_failed_closed<'a>(
         &self,
@@ -211,11 +289,85 @@ impl WriterAuthorityShared {
         }
         self.legacy_drained.notify_all();
     }
+
+    fn with_retained_workspace_root<Output, OperationError>(
+        &self,
+        operation: impl for<'scope> FnOnce(
+            WorkspaceMutationRoot<'scope>,
+        ) -> Result<Output, OperationError>,
+    ) -> Result<Output, WorkspaceWriterOperationError<OperationError>> {
+        self.ensure_root_current()
+            .map_err(WorkspaceWriterOperationError::Authority)?;
+        let mut fail_closed = WorkspaceOperationFailClosedGuard {
+            shared: self,
+            armed: true,
+        };
+        let result = operation(WorkspaceMutationRoot::new(&self.root.0.directory));
+        self.ensure_root_current()
+            .map_err(WorkspaceWriterOperationError::Authority)?;
+        fail_closed.disarm();
+        result.map_err(WorkspaceWriterOperationError::Operation)
+    }
+
+    fn ensure_legacy_operation_authorized(&self) -> Result<(), WriterAuthorityError> {
+        let mut inner = self.lock_inner()?;
+        match inner.phase {
+            WriterAuthorityPhase::Legacy | WriterAuthorityPhase::Transitioning { .. }
+                if inner.active_legacy_writers != 0 =>
+            {
+                Ok(())
+            }
+            WriterAuthorityPhase::FailedClosed => Err(WriterAuthorityError::FailedClosed),
+            _ => {
+                inner.phase = WriterAuthorityPhase::FailedClosed;
+                self.legacy_drained.notify_all();
+                Err(WriterAuthorityError::InvalidTransition)
+            }
+        }
+    }
+
+    fn ensure_kernel_operation_authorized(
+        &self,
+        generation: KernelGeneration,
+    ) -> Result<(), WriterAuthorityError> {
+        let mut inner = self.lock_inner()?;
+        match inner.phase {
+            WriterAuthorityPhase::Kernel(current) if current == generation => Ok(()),
+            WriterAuthorityPhase::FailedClosed => Err(WriterAuthorityError::FailedClosed),
+            WriterAuthorityPhase::Kernel(_) => {
+                inner.phase = WriterAuthorityPhase::FailedClosed;
+                self.legacy_drained.notify_all();
+                Err(WriterAuthorityError::KernelGenerationMismatch)
+            }
+            _ => {
+                inner.phase = WriterAuthorityPhase::FailedClosed;
+                self.legacy_drained.notify_all();
+                Err(WriterAuthorityError::InvalidTransition)
+            }
+        }
+    }
 }
 
 #[derive(Clone)]
 pub(crate) struct WriterAuthority {
     shared: Arc<WriterAuthorityShared>,
+}
+
+#[derive(Debug)]
+pub(crate) enum WorkspaceWriterOperationError<OperationError> {
+    Authority(WriterAuthorityError),
+    Operation(OperationError),
+}
+
+fn finish_workspace_writer_operation<Output, OperationError>(
+    result: Result<Output, WorkspaceWriterOperationError<OperationError>>,
+    post_authorization: Result<(), WriterAuthorityError>,
+) -> Result<Output, WorkspaceWriterOperationError<OperationError>> {
+    if matches!(result, Err(WorkspaceWriterOperationError::Authority(_))) {
+        return result;
+    }
+    post_authorization.map_err(WorkspaceWriterOperationError::Authority)?;
+    result
 }
 
 pub(crate) struct LegacyWriterLease {
@@ -295,6 +447,22 @@ impl KernelWriterLease {
         self.generation
     }
 
+    pub(crate) fn with_workspace_root<Output, OperationError>(
+        &self,
+        operation: impl for<'scope> FnOnce(
+            WorkspaceMutationRoot<'scope>,
+        ) -> Result<Output, OperationError>,
+    ) -> Result<Output, WorkspaceWriterOperationError<OperationError>> {
+        self.shared
+            .ensure_kernel_operation_authorized(self.generation)
+            .map_err(WorkspaceWriterOperationError::Authority)?;
+        let result = self.shared.with_retained_workspace_root(operation);
+        let post_authorization = self
+            .shared
+            .ensure_kernel_operation_authorized(self.generation);
+        finish_workspace_writer_operation(result, post_authorization)
+    }
+
     pub(crate) fn begin_recovery(
         mut self,
         replacement: KernelGeneration,
@@ -343,6 +511,22 @@ impl Drop for KernelWriterLease {
 impl std::fmt::Debug for LegacyWriterLease {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str("LegacyWriterLease([OPAQUE])")
+    }
+}
+
+impl LegacyWriterLease {
+    pub(crate) fn with_workspace_root<Output, OperationError>(
+        &self,
+        operation: impl for<'scope> FnOnce(
+            WorkspaceMutationRoot<'scope>,
+        ) -> Result<Output, OperationError>,
+    ) -> Result<Output, WorkspaceWriterOperationError<OperationError>> {
+        self.shared
+            .ensure_legacy_operation_authorized()
+            .map_err(WorkspaceWriterOperationError::Authority)?;
+        let result = self.shared.with_retained_workspace_root(operation);
+        let post_authorization = self.shared.ensure_legacy_operation_authorized();
+        finish_workspace_writer_operation(result, post_authorization)
     }
 }
 
@@ -751,10 +935,44 @@ pub(crate) fn legacy_writer_surface_inventory() -> &'static [LegacyWriterSurface
 mod tests {
     use super::*;
     use std::{
-        sync::{mpsc, OnceLock},
+        cell::Cell,
+        io::Write as _,
+        sync::{mpsc, Barrier, OnceLock},
         thread,
         time::{Duration, Instant},
     };
+
+    macro_rules! assert_not_impl_any {
+        ($type:ty: $($trait:path),+ $(,)?) => {
+            const _: fn() = || {
+                trait AmbiguousIfImpl<Marker> {
+                    fn marker() {}
+                }
+                impl<Value: ?Sized> AmbiguousIfImpl<()> for Value {}
+                $({
+                    struct EscapeTrait;
+                    impl<Value: ?Sized + $trait> AmbiguousIfImpl<EscapeTrait> for Value {}
+                })+
+                let _ = <$type as AmbiguousIfImpl<_>>::marker;
+            };
+        };
+    }
+
+    assert_not_impl_any!(
+        WorkspaceMutationRoot<'static>:
+            Clone,
+            std::ops::Deref,
+            std::convert::AsRef<Dir>,
+            std::borrow::Borrow<Dir>
+    );
+    assert_not_impl_any!(
+        WorkspaceMutationFile<'static>:
+            Clone,
+            std::ops::Deref,
+            std::convert::AsRef<File>,
+            std::borrow::Borrow<File>,
+            std::convert::Into<File>
+    );
 
     fn root_identity() -> WorkspaceRootIdentity {
         let root = tempfile::tempdir().expect("workspace root should be created");
@@ -771,6 +989,60 @@ mod tests {
 
     fn generation(value: u64) -> KernelGeneration {
         KernelGeneration::new(value).expect("test generation should be non-zero")
+    }
+
+    #[test]
+    fn mutation_facade_static_api_has_no_raw_capability_escape_hatch() {
+        // A unit test cannot retain source that is intentionally rejected by the compiler. The
+        // TDD probes exercised both old escapes before this audit pinned the safe public surface.
+        let source = include_str!("writer_authority.rs");
+        let root_start = source
+            .find("impl<'scope> WorkspaceMutationRoot<'scope>")
+            .expect("root facade impl should remain explicit");
+        let file_start = source
+            .find("pub(crate) struct WorkspaceMutationFile<'scope>")
+            .expect("file facade should remain explicit");
+        let file_impl_start = source
+            .find("impl WorkspaceMutationFile<'_>")
+            .expect("file facade impl should remain explicit");
+        let write_impl_start = source
+            .find("impl io::Write for WorkspaceMutationFile<'_>")
+            .expect("file facade should expose only the narrow Write contract");
+        let root_impl = &source[root_start..file_start];
+        let file_impl = &source[file_impl_start..write_impl_start];
+        let root_public_methods = root_impl
+            .lines()
+            .map(str::trim)
+            .filter(|line| line.starts_with("pub(crate) fn "))
+            .collect::<Vec<_>>();
+        let file_public_methods = file_impl
+            .lines()
+            .map(str::trim)
+            .filter(|line| line.starts_with("pub(crate) fn "))
+            .collect::<Vec<_>>();
+
+        assert_eq!(root_public_methods, ["pub(crate) fn create("]);
+        assert_eq!(
+            file_public_methods,
+            [
+                "pub(crate) fn sync_all(&self) -> io::Result<()> {",
+                "pub(crate) fn sync_data(&self) -> io::Result<()> {",
+            ]
+        );
+        let higher_ranked_operation = ["operation: impl ", "for<'scope> FnOnce("].concat();
+        assert_eq!(
+            source.matches(&higher_ranked_operation).count(),
+            3,
+            "shared, Legacy, and Kernel operations must all preserve the HRTB brand"
+        );
+        let raw_directory_operation = ["operation: impl FnOnce(", "&Dir)"].concat();
+        assert!(!source.contains(&raw_directory_operation));
+        let invariant_scope = ["scope: PhantomData<", "&'scope mut &'scope ()>"].concat();
+        assert_eq!(
+            source.matches(&invariant_scope).count(),
+            2,
+            "root and file facades must remain invariant over the operation scope"
+        );
     }
 
     #[test]
@@ -800,6 +1072,84 @@ mod tests {
         assert_eq!(authority.snapshot().active_legacy_writers, 1);
         drop(second);
         assert_eq!(authority.snapshot().active_legacy_writers, 0);
+    }
+
+    #[test]
+    fn legacy_writer_operation_uses_the_retained_root_capability() {
+        let temporary = tempfile::tempdir().expect("workspace parent should be created");
+        let root_path = temporary.path().join("notes");
+        std::fs::create_dir(&root_path).expect("workspace root should be created");
+        let root =
+            WorkspaceRootIdentity::open(&root_path).expect("retained root identity should open");
+        let authority = WriterAuthority::new(root.clone());
+        let lease = authority
+            .acquire_legacy_writer(&root)
+            .expect("Legacy should admit the writer");
+
+        lease
+            .with_workspace_root(|retained_root| -> std::io::Result<()> {
+                let mut file = retained_root.create("legacy-relative.md")?;
+                file.write_all(b"retained legacy write")?;
+                file.sync_data()?;
+                file.sync_all()
+            })
+            .expect("the retained capability write should complete");
+
+        assert_eq!(
+            std::fs::read_to_string(root_path.join("legacy-relative.md"))
+                .expect("relative write should exist under the workspace"),
+            "retained legacy write"
+        );
+        assert_eq!(authority.snapshot().state, WriterAuthorityState::Legacy);
+    }
+
+    #[test]
+    fn failed_closed_authority_rejects_a_legacy_operation_before_it_runs() {
+        let root = root_identity();
+        let authority = WriterAuthority::new(root.clone());
+        let lease = authority
+            .acquire_legacy_writer(&root)
+            .expect("Legacy should admit the writer");
+        authority.fail_closed();
+        let operation_ran = Cell::new(false);
+
+        let result = lease.with_workspace_root(|_| {
+            operation_ran.set(true);
+            Ok::<_, std::convert::Infallible>(())
+        });
+
+        assert!(matches!(
+            result,
+            Err(WorkspaceWriterOperationError::Authority(
+                WriterAuthorityError::FailedClosed
+            ))
+        ));
+        assert!(!operation_ran.get());
+        assert_eq!(
+            authority.snapshot().state,
+            WriterAuthorityState::FailedClosed
+        );
+    }
+
+    #[test]
+    fn panicking_legacy_operation_permanently_fails_closed() {
+        let root = root_identity();
+        let authority = WriterAuthority::new(root.clone());
+        let lease = authority
+            .acquire_legacy_writer(&root)
+            .expect("Legacy should admit the writer");
+
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = lease.with_workspace_root(|_| -> Result<(), std::convert::Infallible> {
+                panic!("abort capability-relative operation");
+            });
+        }));
+
+        assert!(panic.is_err());
+        assert_eq!(
+            authority.snapshot().state,
+            WriterAuthorityState::FailedClosed
+        );
     }
 
     #[test]
@@ -1025,6 +1375,77 @@ mod tests {
         assert_eq!(
             authority.snapshot().state,
             WriterAuthorityState::Kernel(replacement)
+        );
+    }
+
+    #[test]
+    fn kernel_writer_operation_uses_the_retained_root_capability() {
+        let temporary = tempfile::tempdir().expect("workspace parent should be created");
+        let root_path = temporary.path().join("notes");
+        std::fs::create_dir(&root_path).expect("workspace root should be created");
+        let root =
+            WorkspaceRootIdentity::open(&root_path).expect("retained root identity should open");
+        let authority = WriterAuthority::new(root.clone());
+        let generation = generation(49);
+        authority
+            .begin_kernel_transition(&root, generation)
+            .expect("transition should begin");
+        let kernel = authority
+            .try_claim_kernel(generation)
+            .expect("generation should claim")
+            .publish()
+            .expect("generation should publish");
+
+        kernel
+            .with_workspace_root(|retained_root| -> std::io::Result<()> {
+                let mut file = retained_root.create("kernel-relative.md")?;
+                file.write_all(b"retained Kernel write")?;
+                file.sync_all()
+            })
+            .expect("the retained capability write should complete");
+
+        assert_eq!(
+            std::fs::read_to_string(root_path.join("kernel-relative.md"))
+                .expect("relative write should exist under the workspace"),
+            "retained Kernel write"
+        );
+        assert_eq!(
+            authority.snapshot().state,
+            WriterAuthorityState::Kernel(generation)
+        );
+    }
+
+    #[test]
+    fn failed_closed_authority_rejects_a_kernel_operation_before_it_runs() {
+        let root = root_identity();
+        let authority = WriterAuthority::new(root.clone());
+        let generation = generation(50);
+        authority
+            .begin_kernel_transition(&root, generation)
+            .expect("transition should begin");
+        let kernel = authority
+            .try_claim_kernel(generation)
+            .expect("generation should claim")
+            .publish()
+            .expect("generation should publish");
+        authority.fail_closed();
+        let operation_ran = Cell::new(false);
+
+        let result = kernel.with_workspace_root(|_| {
+            operation_ran.set(true);
+            Ok::<_, std::convert::Infallible>(())
+        });
+
+        assert!(matches!(
+            result,
+            Err(WorkspaceWriterOperationError::Authority(
+                WriterAuthorityError::FailedClosed
+            ))
+        ));
+        assert!(!operation_ran.get());
+        assert_eq!(
+            authority.snapshot().state,
+            WriterAuthorityState::FailedClosed
         );
     }
 
@@ -1298,6 +1719,59 @@ mod tests {
             WriterAuthorityError::WorkspaceRootUnavailable
         );
         assert!(!authority.matches_root(&root));
+        assert_eq!(
+            authority.snapshot().state,
+            WriterAuthorityState::FailedClosed
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn legacy_writer_operation_never_follows_a_replaced_addressed_root() {
+        let temporary = tempfile::tempdir().expect("workspace parent should be created");
+        let root_path = temporary.path().join("notes");
+        let retired_path = temporary.path().join("retired-notes");
+        std::fs::create_dir(&root_path).expect("workspace root should be created");
+        let root =
+            WorkspaceRootIdentity::open(&root_path).expect("retained root identity should open");
+        let authority = WriterAuthority::new(root.clone());
+        let lease = authority
+            .acquire_legacy_writer(&root)
+            .expect("Legacy should admit the writer");
+        let operation_entered = Arc::new(Barrier::new(2));
+        let replacement_published = Arc::new(Barrier::new(2));
+        let replacer_entered = Arc::clone(&operation_entered);
+        let replacer_published = Arc::clone(&replacement_published);
+        let replacement_root = root_path.clone();
+        let retired_root = retired_path.clone();
+        let replacer = thread::spawn(move || {
+            replacer_entered.wait();
+            std::fs::rename(&replacement_root, &retired_root)
+                .expect("old root should be displaced");
+            std::fs::create_dir(&replacement_root).expect("replacement root should be created");
+            replacer_published.wait();
+        });
+
+        let result = lease.with_workspace_root(|retained_root| -> std::io::Result<()> {
+            operation_entered.wait();
+            replacement_published.wait();
+            let mut file = retained_root.create("retained-only.md")?;
+            file.write_all(b"old retained root")
+        });
+        replacer.join().expect("root replacer should finish");
+
+        assert!(matches!(
+            result,
+            Err(WorkspaceWriterOperationError::Authority(
+                WriterAuthorityError::WorkspaceRootUnavailable
+            ))
+        ));
+        assert_eq!(
+            std::fs::read_to_string(retired_path.join("retained-only.md"))
+                .expect("the in-flight write may finish only on the retained root"),
+            "old retained root"
+        );
+        assert!(!root_path.join("retained-only.md").exists());
         assert_eq!(
             authority.snapshot().state,
             WriterAuthorityState::FailedClosed
