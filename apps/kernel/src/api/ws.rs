@@ -5,12 +5,12 @@ use axum::{
         ws::{
             rejection::WebSocketUpgradeRejection, CloseFrame, Message, WebSocket, WebSocketUpgrade,
         },
-        State,
+        Extension, State,
     },
     response::Response,
 };
 use serde::Deserialize;
-use tokio::time::timeout;
+use tokio::time::{timeout, Instant};
 use uuid::Uuid;
 
 use crate::{
@@ -22,7 +22,7 @@ use crate::{
     runtime::KernelRuntime,
 };
 
-use super::{api_error, runtime, ApiState};
+use super::{api_error, auth::AuthenticatedBrowserSession, runtime, ApiState, ServerApiHost};
 
 const AUTHENTICATION_TIMEOUT: Duration = Duration::from_secs(3);
 const MAX_AUTHENTICATION_FRAME_BYTES: usize = 64 * 1024;
@@ -31,22 +31,32 @@ const RELOAD_CLOSE_CODE: u16 = 4009;
 
 pub(crate) async fn upgrade(
     State(state): State<ApiState>,
+    browser_session: Option<Extension<AuthenticatedBrowserSession>>,
     upgrade: Result<WebSocketUpgrade, WebSocketUpgradeRejection>,
 ) -> Response {
     let Ok(upgrade) = upgrade else {
         return api_error(ErrorCode::InvalidRequest, None);
     };
     let runtime = runtime(&state).clone();
+    let server = state.server.clone();
+    let browser_session = browser_session.map(|Extension(session)| session);
     upgrade
         .max_message_size(MAX_AUTHENTICATION_FRAME_BYTES)
         .max_frame_size(MAX_AUTHENTICATION_FRAME_BYTES)
-        .on_upgrade(move |socket| serve_connection(socket, runtime))
+        .on_upgrade(move |socket| serve_connection(socket, runtime, server, browser_session))
 }
 
-async fn serve_connection(mut socket: WebSocket, runtime: Arc<KernelRuntime>) {
-    if let Err(code) = authenticate(&mut socket, &runtime).await {
-        send_authentication_error_and_close(&mut socket, code).await;
-        return;
+async fn serve_connection(
+    mut socket: WebSocket,
+    runtime: Arc<KernelRuntime>,
+    server: Option<ServerApiHost>,
+    mut browser_session: Option<AuthenticatedBrowserSession>,
+) {
+    if browser_session.is_none() {
+        if let Err(code) = authenticate(&mut socket, &runtime).await {
+            send_authentication_error_and_close(&mut socket, code).await;
+            return;
+        }
     }
 
     let mut subscription = runtime.event_broker().subscribe();
@@ -63,8 +73,43 @@ async fn serve_connection(mut socket: WebSocket, runtime: Arc<KernelRuntime>) {
     }
 
     let mut sequence = ConnectionSequence::new();
+    let initial_validation_delay = browser_session
+        .as_ref()
+        .zip(server.as_ref())
+        .map_or(Duration::from_secs(3600), |(session, host)| {
+            browser_validation_delay(session, host)
+        });
+    let browser_validation = tokio::time::sleep(initial_validation_delay);
+    tokio::pin!(browser_validation);
     loop {
         tokio::select! {
+            () = &mut browser_validation, if browser_session.is_some() => {
+                let (Some(host), Some(session)) = (server.as_ref(), browser_session.take()) else {
+                    return;
+                };
+                match host
+                    .authorize_browser_session(
+                        session.credential.clone(),
+                        None,
+                        crate::server::RequestIntent::ReadOnly,
+                    )
+                    .await
+                {
+                    Ok(updated) => {
+                        let delay = browser_validation_delay(&updated, host);
+                        browser_session = Some(updated);
+                        browser_validation.as_mut().reset(Instant::now() + delay);
+                    }
+                    Err(_error) => {
+                        send_authentication_error_and_close(
+                            &mut socket,
+                            FrameErrorCode::Unauthorized,
+                        )
+                        .await;
+                        return;
+                    }
+                }
+            }
             publication = subscription.recv() => {
                 match publication {
                     Ok(publication) => match sequence.next() {
@@ -129,6 +174,17 @@ async fn serve_connection(mut socket: WebSocket, runtime: Arc<KernelRuntime>) {
             }
         }
     }
+}
+
+fn browser_validation_delay(
+    session: &AuthenticatedBrowserSession,
+    host: &ServerApiHost,
+) -> Duration {
+    session
+        .expires_at
+        .saturating_sub(host.now())
+        .min(Duration::from_secs(1))
+        .max(Duration::from_millis(1))
 }
 
 async fn authenticate(

@@ -1,13 +1,19 @@
+mod auth;
 mod resource_body;
 mod routes;
 pub mod ws;
+
+pub use auth::{ServerApiActivationError, ServerApiHost, ServerApiProcess, ServerApiProcessError};
+
+#[cfg(test)]
+mod server_auth_tests;
 
 use std::{fmt, net::SocketAddr, sync::Arc};
 
 use axum::{
     body::Body,
     extract::{Request, State},
-    http::{header, HeaderMap, HeaderValue, Method, StatusCode},
+    http::{header, HeaderMap, HeaderValue, Method, StatusCode, Uri},
     middleware::{self, Next},
     response::{IntoResponse, Response},
     Json, Router,
@@ -59,6 +65,20 @@ impl TransportPolicy {
         let origin = HeaderValue::from_str(origin).map_err(|_| InvalidTransportPolicy)?;
         Ok(Self { host, origin })
     }
+
+    pub fn same_origin(host: &str, origin: &str) -> Result<Self, InvalidTransportPolicy> {
+        let host = HeaderValue::from_str(host).map_err(|_| InvalidTransportPolicy)?;
+        let uri = origin.parse::<Uri>().map_err(|_| InvalidTransportPolicy)?;
+        if !matches!(uri.scheme_str(), Some("http" | "https"))
+            || uri.authority().map(|authority| authority.as_str()) != host.to_str().ok()
+            || uri.path() != "/"
+            || uri.query().is_some()
+        {
+            return Err(InvalidTransportPolicy);
+        }
+        let origin = HeaderValue::from_str(origin).map_err(|_| InvalidTransportPolicy)?;
+        Ok(Self { host, origin })
+    }
 }
 
 impl fmt::Debug for TransportPolicy {
@@ -76,7 +96,7 @@ pub struct InvalidTransportPolicy;
 
 impl fmt::Display for InvalidTransportPolicy {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("transport policy must use an exact loopback host and origin")
+        formatter.write_str("transport policy must use an exact allowed host and origin")
     }
 }
 
@@ -86,11 +106,37 @@ impl std::error::Error for InvalidTransportPolicy {}
 pub(crate) struct ApiState {
     runtime: Arc<KernelRuntime>,
     policy: TransportPolicy,
+    server: Option<ServerApiHost>,
 }
 
 pub fn build_router(runtime: Arc<KernelRuntime>, policy: TransportPolicy) -> Router {
-    let state = ApiState { runtime, policy };
-    routes::router()
+    build_router_with_server(runtime, policy, None)
+}
+
+pub fn build_server_router(
+    runtime: Arc<KernelRuntime>,
+    policy: TransportPolicy,
+    server: ServerApiHost,
+) -> Router {
+    build_router_with_server(runtime, policy, Some(server))
+}
+
+fn build_router_with_server(
+    runtime: Arc<KernelRuntime>,
+    policy: TransportPolicy,
+    server: Option<ServerApiHost>,
+) -> Router {
+    let state = ApiState {
+        runtime,
+        policy,
+        server,
+    };
+    let router = if state.server.is_some() {
+        routes::router().merge(auth::router())
+    } else {
+        routes::router()
+    };
+    router
         .fallback(routes::not_found)
         .layer(middleware::from_fn_with_state(
             state.clone(),
@@ -101,7 +147,7 @@ pub fn build_router(runtime: Arc<KernelRuntime>, policy: TransportPolicy) -> Rou
 
 async fn enforce_transport(
     State(state): State<ApiState>,
-    request: Request,
+    mut request: Request,
     next: Next,
 ) -> Response {
     if !has_one_exact_header(request.headers(), header::HOST, &state.policy.host) {
@@ -123,19 +169,89 @@ async fn enforce_transport(
         return preflight_response(request, &state.policy);
     }
 
-    if request.uri().path() == EVENTS_PATH {
-        if !has_allowed_origin {
-            return api_error(ErrorCode::OriginNotAllowed, None);
-        }
-    } else if request.uri().path() != LIVE_PATH
-        && !has_valid_bearer(request.headers(), &state.runtime)
+    if request.uri().path().starts_with("/api/v1/auth/")
+        && !route_accepts_method(request.uri().path(), request.method())
     {
-        let mut response = api_error(ErrorCode::Unauthorized, None);
+        let mut response = api_error(ErrorCode::InvalidRequest, None);
         decorate_response(
             &mut response,
             has_allowed_origin.then_some(&state.policy.origin),
         );
         return response;
+    }
+
+    if request.uri().path() == EVENTS_PATH {
+        if !has_allowed_origin {
+            return api_error(ErrorCode::OriginNotAllowed, None);
+        }
+        if let Some(server) = state.server.as_ref() {
+            let request_headers = request.headers().clone();
+            match authenticate_browser_request(
+                server,
+                &request_headers,
+                crate::server::RequestIntent::ReadOnly,
+            )
+            .await
+            {
+                Ok(Some(session)) => {
+                    request.extensions_mut().insert(session);
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    let mut response = auth::operation_error_response(error);
+                    decorate_response(
+                        &mut response,
+                        has_allowed_origin.then_some(&state.policy.origin),
+                    );
+                    return response;
+                }
+            }
+        }
+    } else if request.uri().path() != LIVE_PATH
+        && !(state.server.is_some()
+            && auth::is_public_route(request.uri().path(), request.method()))
+    {
+        let native_authorized = has_valid_bearer(request.headers(), &state.runtime)
+            && !state
+                .server
+                .as_ref()
+                .is_some_and(|_| auth::is_browser_only_route(request.uri().path()));
+        if !native_authorized {
+            let Some(server) = state.server.as_ref() else {
+                let mut response = api_error(ErrorCode::Unauthorized, None);
+                decorate_response(
+                    &mut response,
+                    has_allowed_origin.then_some(&state.policy.origin),
+                );
+                return response;
+            };
+            let intent = auth::request_intent(request.method());
+            let request_headers = request.headers().clone();
+            match authenticate_browser_request(server, &request_headers, intent).await {
+                Ok(Some(session)) => {
+                    request.extensions_mut().insert(session);
+                }
+                Ok(None)
+                | Err(auth::ServerApiOperationError::Authentication(
+                    crate::server::ServerAuthenticationCoordinatorError::InvalidSession,
+                )) => {
+                    let mut response = api_error(ErrorCode::Unauthorized, None);
+                    decorate_response(
+                        &mut response,
+                        has_allowed_origin.then_some(&state.policy.origin),
+                    );
+                    return response;
+                }
+                Err(error) => {
+                    let mut response = auth::operation_error_response(error);
+                    decorate_response(
+                        &mut response,
+                        has_allowed_origin.then_some(&state.policy.origin),
+                    );
+                    return response;
+                }
+            }
+        }
     }
 
     if is_api_path(request.uri().path())
@@ -179,6 +295,30 @@ fn has_valid_bearer(headers: &HeaderMap, runtime: &KernelRuntime) -> bool {
         .is_some_and(|candidate| runtime.matches_native_launch_credential(candidate))
 }
 
+async fn authenticate_browser_request(
+    server: &ServerApiHost,
+    headers: &HeaderMap,
+    intent: crate::server::RequestIntent,
+) -> Result<Option<auth::AuthenticatedBrowserSession>, auth::ServerApiOperationError> {
+    let credentials = auth::browser_credentials(headers, intent).map_err(|error| {
+        auth::ServerApiOperationError::Authentication(match error {
+            auth::BrowserCredentialParseError::Session => {
+                crate::server::ServerAuthenticationCoordinatorError::InvalidSession
+            }
+            auth::BrowserCredentialParseError::Csrf => {
+                crate::server::ServerAuthenticationCoordinatorError::CsrfRejected
+            }
+        })
+    })?;
+    let Some((credential, csrf)) = credentials else {
+        return Ok(None);
+    };
+    server
+        .authorize_browser_session(credential, csrf, intent)
+        .await
+        .map(Some)
+}
+
 fn preflight_response(request: Request<Body>, policy: &TransportPolicy) -> Response {
     let requested_methods = request
         .headers()
@@ -209,7 +349,7 @@ fn preflight_response(request: Request<Body>, policy: &TransportPolicy) -> Respo
     );
     headers.insert(
         header::ACCESS_CONTROL_ALLOW_HEADERS,
-        HeaderValue::from_static("Authorization, Content-Type"),
+        HeaderValue::from_static("Authorization, Content-Type, X-CSRF-Token"),
     );
     headers.insert(header::VARY, HeaderValue::from_static("Origin"));
     decorate_response(&mut response, None);
@@ -226,7 +366,7 @@ fn requested_headers_are_allowed(headers: &HeaderMap) -> bool {
             value.split(',').all(|header| {
                 matches!(
                     header.trim().to_ascii_lowercase().as_str(),
-                    "authorization" | "content-type"
+                    "authorization" | "content-type" | "x-csrf-token"
                 )
             })
         })
@@ -236,6 +376,7 @@ fn requested_headers_are_allowed(headers: &HeaderMap) -> bool {
 fn route_accepts_method(path: &str, method: &Method) -> bool {
     let accepted: &[Method] = match path {
         "/api/v1/health/live"
+        | "/api/v1/auth/status"
         | "/api/v1/health/ready"
         | "/api/v1/system/version"
         | "/api/v1/runtime"
@@ -244,6 +385,9 @@ fn route_accepts_method(path: &str, method: &Method) -> bool {
         | "/api/v1/search"
         | "/api/v1/sync/status"
         | "/api/v1/events" => &[Method::GET],
+        "/api/v1/auth/initialize" | "/api/v1/auth/logout" => &[Method::POST],
+        "/api/v1/auth/session" => &[Method::GET, Method::POST],
+        "/api/v1/auth/password" => &[Method::PATCH],
         "/api/v1/documents" => &[Method::GET, Method::POST],
         "/api/v1/settings" | "/api/v1/sync/config" => &[Method::GET, Method::PATCH],
         "/api/v1/sync/connection-test" | "/api/v1/sync/runs" => &[Method::POST],
@@ -296,7 +440,7 @@ fn decorate_response(response: &mut Response, allowed_origin: Option<&HeaderValu
         headers.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, origin.clone());
         headers.insert(
             header::ACCESS_CONTROL_EXPOSE_HEADERS,
-            HeaderValue::from_static("X-Request-Id, X-Content-Type-Options"),
+            HeaderValue::from_static("Retry-After, X-Request-Id, X-Content-Type-Options"),
         );
         headers.insert(header::VARY, HeaderValue::from_static("Origin"));
     }

@@ -26,6 +26,7 @@ use crate::{
 use super::{api_error, is_api_path, resource_body, runtime, ws, ApiState};
 
 const STANDARD_JSON_BODY_LIMIT: usize = 1024 * 1024;
+const AUTH_JSON_BODY_LIMIT: usize = 16 * 1024;
 const DOCUMENT_JSON_BODY_LIMIT: usize = 100 * 1024 * 1024;
 
 #[derive(Clone, Copy)]
@@ -512,6 +513,20 @@ where
 {
     let bytes =
         read_json_body(request, STANDARD_JSON_BODY_LIMIT, ErrorCode::InvalidRequest).await?;
+    let mut bytes = match bytes.try_into_mut() {
+        Ok(bytes) => bytes,
+        Err(bytes) => bytes.into(),
+    };
+    let result = serde_json::from_slice(&bytes);
+    bytes.as_mut().zeroize();
+    result.map_err(|_| api_error(ErrorCode::InvalidRequest, None))
+}
+
+pub(crate) async fn parse_sensitive_auth_json<T>(request: Request<Body>) -> Result<T, Response>
+where
+    T: DeserializeOwned,
+{
+    let bytes = read_json_body(request, AUTH_JSON_BODY_LIMIT, ErrorCode::InvalidRequest).await?;
     let mut bytes = match bytes.try_into_mut() {
         Ok(bytes) => bytes,
         Err(bytes) => bytes.into(),
