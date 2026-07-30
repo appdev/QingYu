@@ -1,3 +1,14 @@
+## [2.3.0](https://github.com/markrahq/markra/compare/v2.2.0...v2.3.0) (2026-07-30)
+
+### Features
+
+* **settings:** add storage-backed settings backups ([#604](https://github.com/markrahq/markra/issues/604)) ([638962b](https://github.com/markrahq/markra/commit/638962bd0c80c6321529c1bb829542beffb8e067)), closes [#603](https://github.com/markrahq/markra/issues/603)
+
+### Bug Fixes
+
+* **ai:** extract inline thinking tags ([#607](https://github.com/markrahq/markra/issues/607)) ([1ab9747](https://github.com/markrahq/markra/commit/1ab974794118febc8c67ee66684a0638e18d11c1))
+* **editor:** keep emptied table cells blank ([#608](https://github.com/markrahq/markra/issues/608)) ([cc18d50](https://github.com/markrahq/markra/commit/cc18d50a10ad1730f0c812208c953a20359301a9))
+
 ## [2.2.0](https://github.com/markrahq/markra/compare/v2.1.0...v2.2.0) (2026-07-29)
 
 ### Features
