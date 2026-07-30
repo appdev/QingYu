@@ -929,6 +929,19 @@ fn builder_boundary_capabilities_are_platform_disjoint() {
 }
 
 #[test]
+fn builder_boundary_desktop_allows_guarded_frontend_app_exit() {
+    let desktop = json("capabilities/main.json");
+    let permissions = permission_identifiers(&desktop);
+
+    assert!(
+        permissions
+            .iter()
+            .any(|permission| *permission == "process:allow-exit"),
+        "desktop capability must allow the guarded frontend exit flow"
+    );
+}
+
+#[test]
 fn builder_boundary_sidecar_and_file_associations_are_desktop_config_only() {
     let base = json("tauri.conf.json");
     assert!(base.pointer("/bundle/externalBin").is_none());

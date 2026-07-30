@@ -53,6 +53,7 @@
       ]
     },
     "os:default",
+    "process:allow-exit",
     "process:allow-restart",
     "store:allow-delete",
     "store:allow-get",
