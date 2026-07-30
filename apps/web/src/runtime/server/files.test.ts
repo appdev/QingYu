@@ -11,6 +11,7 @@ import {
   serverWorkspaceRoot,
 } from "./files";
 import type { ServerKernelDomainPort } from "./kernel";
+import { ServerKernelDomainAdapterError } from "./kernel";
 
 const generation = "generation-1" as KernelWorkspaceGeneration;
 const revision = "revision-1" as KernelRevision;
@@ -226,6 +227,35 @@ describe("server file facade", () => {
       expectedRevision: revision,
       locator: "folder-new",
     }));
+  });
+
+  it("stops file polling after authentication is lost instead of swallowing it as a tree change", async () => {
+    const kernel = kernelPort();
+    let poll: (() => unknown) | undefined;
+    const clearInterval = vi.fn();
+    const files = createServerFileRuntime(kernel, {
+      clearInterval: clearInterval as never,
+      setInterval: ((handler: () => unknown) => {
+        poll = handler;
+        return 42;
+      }) as never,
+    });
+    const onChange = vi.fn();
+    const onTreeChange = vi.fn();
+    await files.watchMarkdownFile(
+      `${serverWorkspaceRoot}/note.md`,
+      onChange,
+      onTreeChange,
+    );
+    vi.mocked(kernel.documents.list).mockRejectedValue(
+      new ServerKernelDomainAdapterError("authentication-required"),
+    );
+
+    poll?.();
+
+    await vi.waitFor(() => expect(clearInterval).toHaveBeenCalledWith(42));
+    expect(onChange).not.toHaveBeenCalled();
+    expect(onTreeChange).not.toHaveBeenCalled();
   });
 });
 

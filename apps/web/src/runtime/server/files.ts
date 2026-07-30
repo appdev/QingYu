@@ -286,7 +286,8 @@ export function createServerFileRuntime(
           if (next.revision === currentRevision) return;
           currentRevision = next.revision;
           await onChange(path);
-        } catch {
+        } catch (error: unknown) {
+          if (isTerminalAdapterError(error)) throw error;
           await onTreeChange?.(path);
         }
       }, options);
@@ -479,10 +480,7 @@ function startPolling(
   let stopped = false;
   const interval = schedule(() => {
     poll().catch((error: unknown) => {
-      if (
-        error instanceof ServerKernelDomainAdapterError &&
-        (error.code === "authentication-required" || error.code === "released")
-      ) {
+      if (isTerminalAdapterError(error)) {
         stopped = true;
         cancel(interval);
       }
@@ -494,4 +492,9 @@ function startPolling(
     stopped = true;
     return undefined;
   };
+}
+
+function isTerminalAdapterError(error: unknown) {
+  return error instanceof ServerKernelDomainAdapterError &&
+    (error.code === "authentication-required" || error.code === "released");
 }
