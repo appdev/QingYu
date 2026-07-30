@@ -5,16 +5,56 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use cap_std::fs::Dir;
-use qingyu_dejavu::{Device, LocalCloud, NoopWorkingTreeCoordinator, RepositoryRuntimeState};
+use qingyu_dejavu::{
+    Device, LocalCloud, NoopWorkingTreeCoordinator, RepositoryRelativePath, RepositoryRuntimeState,
+    WorkingTreeAction, WorkingTreeChange, WorkingTreeCoordinator,
+};
+use qingyu_kernel::runtime::MutationCoordinator;
 use qingyu_kernel::storage::{directory_identity, DirectoryIdentity};
 use qingyu_kernel::sync::dejavu_runner::{
     DejavuConflictResolution, DejavuInstanceDataCapability, DejavuInstanceDataCapabilityError,
     DejavuRepositoryKey, DejavuRunError, DejavuRunnerInputs, DejavuS3Config, DejavuSecret,
     DejavuWorkspaceCapability, DejavuWorkspaceCapabilityError, KernelDejavuRunner,
+    MutationWorkingTreeCoordinator,
 };
 use tempfile::TempDir;
 
 const REPOSITORY_ID: &str = "323df833-764a-44b3-a534-492640c258f2";
+
+#[tokio::test]
+async fn mutation_coordinator_serializes_dejavu_and_kernel_writes() {
+    let mutation = Arc::new(MutationCoordinator::new());
+    let coordinator = Arc::new(MutationWorkingTreeCoordinator::new(Arc::clone(&mutation)));
+    let existing_kernel_write = mutation.lock().await;
+    let preparing = tokio::spawn({
+        let coordinator = Arc::clone(&coordinator);
+        async move {
+            coordinator
+                .prepare(&[WorkingTreeChange {
+                    path: RepositoryRelativePath::new("note.md").expect("relative path"),
+                    expected_revision: qingyu_dejavu::ExpectedRevision::Absent,
+                    action: WorkingTreeAction::Write,
+                }])
+                .await
+                .expect("working-tree permit")
+        }
+    });
+
+    tokio::task::yield_now().await;
+    assert!(!preparing.is_finished());
+    drop(existing_kernel_write);
+
+    let dejavu_permit = preparing.await.expect("prepare task");
+    let blocked_kernel_write =
+        tokio::time::timeout(Duration::from_millis(20), mutation.lock()).await;
+    assert!(blocked_kernel_write.is_err());
+
+    coordinator.release(dejavu_permit).await;
+    let released_kernel_write = tokio::time::timeout(Duration::from_secs(1), mutation.lock())
+        .await
+        .expect("released mutation gate");
+    drop(released_kernel_write);
+}
 
 struct TestWorkspaceCapability {
     canonical_path: PathBuf,

@@ -8,7 +8,7 @@ use std::{
 };
 
 use async_trait::async_trait;
-use tokio::sync::{Mutex, MutexGuard, Notify};
+use tokio::sync::{Mutex, MutexGuard, Notify, OwnedMutexGuard};
 use uuid::Uuid;
 
 use crate::{
@@ -2158,13 +2158,13 @@ impl EventSink for KernelRuntime {
 
 #[derive(Debug, Default)]
 pub struct MutationCoordinator {
-    gate: Mutex<()>,
+    gate: Arc<Mutex<()>>,
 }
 
 impl MutationCoordinator {
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         Self {
-            gate: Mutex::const_new(()),
+            gate: Arc::new(Mutex::new(())),
         }
     }
 
@@ -2182,6 +2182,12 @@ impl MutationCoordinator {
         })
     }
 
+    pub(crate) async fn lock_owned(self: &Arc<Self>) -> OwnedMutationPermit {
+        OwnedMutationPermit {
+            _guard: Arc::clone(&self.gate).lock_owned().await,
+        }
+    }
+
     fn recognizes(&self, permit: &MutationPermit<'_>) -> bool {
         std::ptr::eq(self, permit.coordinator)
     }
@@ -2191,6 +2197,11 @@ impl MutationCoordinator {
 pub struct MutationPermit<'a> {
     coordinator: &'a MutationCoordinator,
     _guard: MutexGuard<'a, ()>,
+}
+
+#[must_use = "the mutation gate is released when this permit is dropped"]
+pub(crate) struct OwnedMutationPermit {
+    _guard: OwnedMutexGuard<()>,
 }
 
 impl fmt::Debug for MutationPermit<'_> {

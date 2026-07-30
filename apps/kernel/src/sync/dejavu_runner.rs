@@ -25,6 +25,7 @@ use qingyu_dejavu::{
 use time::format_description::well_known::Rfc3339;
 use zeroize::Zeroizing;
 
+use crate::runtime::MutationCoordinator;
 use crate::storage::{
     create_private_file_options, directory_identity, nonfollowing_read_options,
     open_canonical_directory_nofollow, sync_directory, unique_regular_file_identity,
@@ -183,6 +184,35 @@ pub struct DejavuRunnerInputs {
     pub repository_key: DejavuRepositoryKey,
     pub runtime: RepositoryRuntimeState,
     pub coordinator: Arc<dyn WorkingTreeCoordinator>,
+}
+
+/// Adapts DejaVu's owned working-tree permit to the Kernel-wide mutation gate.
+///
+/// DejaVu remains responsible for revalidating every planned file revision
+/// after this permit is acquired and before its first filesystem mutation.
+#[derive(Clone)]
+pub struct MutationWorkingTreeCoordinator {
+    mutation: Arc<MutationCoordinator>,
+}
+
+impl MutationWorkingTreeCoordinator {
+    pub const fn new(mutation: Arc<MutationCoordinator>) -> Self {
+        Self { mutation }
+    }
+}
+
+#[async_trait::async_trait]
+impl WorkingTreeCoordinator for MutationWorkingTreeCoordinator {
+    async fn prepare(
+        &self,
+        _changes: &[WorkingTreeChange],
+    ) -> Result<WorkingTreePermit, RepoError> {
+        Ok(WorkingTreePermit::new(self.mutation.lock_owned().await))
+    }
+
+    async fn release(&self, permit: WorkingTreePermit) {
+        drop(permit);
+    }
 }
 
 pub struct KernelDejavuRunner {
