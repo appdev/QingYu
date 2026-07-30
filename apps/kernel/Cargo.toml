@@ -39,7 +39,7 @@ subtle = "2.6"
 time = { version = "0.3.44", features = ["formatting", "parsing", "serde", "serde-well-known"] }
 tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 tower = { version = "0.5.3", features = ["util"] }
-tower-http = { version = "0.6.8", features = ["limit"] }
+tower-http = { version = "0.6.8", features = ["fs", "limit"] }
 utoipa = { version = "5.5.0", features = ["time", "uuid"] }
 utoipa-axum = "0.2.0"
 uuid = { version = "1", features = ["serde", "v4"] }
