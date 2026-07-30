@@ -58,7 +58,9 @@ export interface DesktopKernelEventsAdapter {
 
 interface ActiveSession {
   readonly identity: DesktopKernelEventsIdentity;
+  bootstrap?: NativeKernelBootstrap;
   active: boolean;
+  ownershipReleased: boolean;
   connection?: KernelEventConnection;
 }
 
@@ -80,11 +82,42 @@ export function createDesktopKernelEventsAdapter(
   let current: ActiveSession | undefined;
 
   const isCurrent = (session: ActiveSession) => session.active && current === session;
-  const stop = (session: ActiveSession) => {
-    if (!session.active) return undefined;
+  const releaseOwnership = (session: ActiveSession) => {
+    if (session.ownershipReleased) return undefined;
+    session.ownershipReleased = true;
+    const bootstrap = session.bootstrap;
+    session.bootstrap = undefined;
+    try {
+      bootstrap?.release();
+    } catch {
+      // Native credential release is best-effort and must never expose provider errors.
+    }
+    return undefined;
+  };
+  const retire = (
+    session: ActiveSession,
+    { closeConnection, notifyClosed }: {
+      readonly closeConnection: boolean;
+      readonly notifyClosed: boolean;
+    }
+  ) => {
+    if (!session.active) {
+      releaseOwnership(session);
+      return undefined;
+    }
     session.active = false;
     if (current === session) current = undefined;
-    session.connection?.close();
+    if (closeConnection) {
+      try {
+        session.connection?.close();
+      } catch {
+        // Connection shutdown is best-effort; ownership release remains mandatory.
+      }
+    }
+    releaseOwnership(session);
+    if (notifyClosed) {
+      options.onStateChange?.({ ...session.identity, state: "closed" });
+    }
     return undefined;
   };
   const replaceConnection = (bootstrap: NativeKernelBootstrap | null) => {
@@ -94,17 +127,33 @@ export function createDesktopKernelEventsAdapter(
       current.identity.instanceId === bootstrap.instanceId &&
       current.identity.generation === bootstrap.generation
     ) {
+      if (current.bootstrap === bootstrap) return undefined;
+      try {
+        bootstrap.release();
+      } catch {
+        // A redundant bootstrap was not adopted; discard it without surfacing secrets.
+      }
       return undefined;
     }
 
-    if (current !== undefined) stop(current);
+    if (current !== undefined) {
+      retire(current, {
+        closeConnection: true,
+        notifyClosed: bootstrap === null
+      });
+    }
     if (bootstrap === null) return undefined;
 
     const identity = Object.freeze({
       instanceId: bootstrap.instanceId,
       generation: bootstrap.generation
     });
-    const session: ActiveSession = { identity, active: true };
+    const session: ActiveSession = {
+      identity,
+      bootstrap,
+      active: true,
+      ownershipReleased: false
+    };
     current = session;
 
     try {
@@ -117,16 +166,19 @@ export function createDesktopKernelEventsAdapter(
       });
       const connection = client.connect({
         onReady: (frame) => {
-          if (!isCurrent(session) || frame.instanceId === session.identity.instanceId) {
+          if (!isCurrent(session)) return undefined;
+          if (frame.instanceId === session.identity.instanceId) {
+            options.onStateChange?.({ ...session.identity, state: "open" });
             return undefined;
           }
-          stop(session);
+          retire(session, { closeConnection: true, notifyClosed: false });
           options.onInvalidation({
             kind: "snapshot-required",
             ...session.identity,
             reason: "instance-mismatch",
             scopes: [...ALL_DOMAIN_SCOPES]
           });
+          options.onStateChange?.({ ...session.identity, state: "closed" });
           return undefined;
         },
         onEvent: (frame) => {
@@ -151,9 +203,11 @@ export function createDesktopKernelEventsAdapter(
         },
         onStateChange: (state) => {
           if (!isCurrent(session)) return undefined;
+          if (state === "open") return undefined;
           if (state === "closed") {
             session.active = false;
             current = undefined;
+            releaseOwnership(session);
           }
           options.onStateChange?.({ ...session.identity, state });
           return undefined;
@@ -165,9 +219,15 @@ export function createDesktopKernelEventsAdapter(
         }
       });
       session.connection = connection;
-      if (!isCurrent(session)) connection.close();
+      if (!isCurrent(session)) {
+        try {
+          connection.close();
+        } catch {
+          // A re-entrant replacement already retired this session.
+        }
+      }
     } catch (error) {
-      stop(session);
+      retire(session, { closeConnection: true, notifyClosed: true });
       throw error;
     }
     return undefined;

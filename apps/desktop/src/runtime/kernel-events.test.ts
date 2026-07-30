@@ -144,7 +144,11 @@ describe("Desktop Kernel domain events adapter", () => {
     nextGeneration
   ) => {
     const harness = new AdapterHarness();
-    harness.adapter.replaceConnection(bootstrap(firstInstance, firstGeneration));
+    const firstRelease = vi.fn(() => undefined);
+    const nextRelease = vi.fn(() => undefined);
+    harness.adapter.replaceConnection(bootstrap(firstInstance, firstGeneration, {
+      release: firstRelease
+    }));
     const first = harness.sockets[0]!;
     first.open();
     first.message(readyFrame(CONNECTION_A, firstInstance));
@@ -154,13 +158,16 @@ describe("Desktop Kernel domain events adapter", () => {
     harness.invalidations.length = 0;
     harness.states.length = 0;
 
-    harness.adapter.replaceConnection(bootstrap(nextInstance, nextGeneration));
+    harness.adapter.replaceConnection(bootstrap(nextInstance, nextGeneration, {
+      release: nextRelease
+    }));
     const second = harness.sockets[1]!;
     deliverStale();
     second.open();
     second.message(readyFrame(CONNECTION_B, nextInstance));
 
     expect(first.closed).toEqual([{ code: 1000, reason: "client closed" }]);
+    expect(firstRelease).toHaveBeenCalledTimes(1);
     expect(harness.invalidations).toEqual([
       {
         kind: "snapshot-required",
@@ -173,22 +180,38 @@ describe("Desktop Kernel domain events adapter", () => {
     expect(harness.states.every((notice) => (
       notice.instanceId === nextInstance && notice.generation === nextGeneration
     ))).toBe(true);
+    harness.adapter.close();
+    expect(nextRelease).toHaveBeenCalledTimes(1);
   });
 
   it("keeps the live stream when bootstrap identity is unchanged", () => {
     const harness = new AdapterHarness();
-    harness.adapter.replaceConnection(bootstrap(INSTANCE_A, "11"));
+    const adoptedRelease = vi.fn(() => undefined);
+    const duplicateRelease = vi.fn(() => undefined);
+    const adopted = bootstrap(INSTANCE_A, "11", {
+      release: adoptedRelease
+    });
+    harness.adapter.replaceConnection(adopted);
     const first = harness.sockets[0]!;
 
-    harness.adapter.replaceConnection(bootstrap(INSTANCE_A, "11"));
+    harness.adapter.replaceConnection(adopted);
+    harness.adapter.replaceConnection(bootstrap(INSTANCE_A, "11", {
+      release: duplicateRelease
+    }));
 
     expect(harness.sockets).toHaveLength(1);
     expect(first.closed).toEqual([]);
+    expect(duplicateRelease).toHaveBeenCalledTimes(1);
+    expect(adoptedRelease).not.toHaveBeenCalled();
+    harness.adapter.close();
+    harness.adapter.close();
+    expect(adoptedRelease).toHaveBeenCalledTimes(1);
   });
 
   it("closes a ready stream whose Kernel instance disagrees with bootstrap", () => {
     const harness = new AdapterHarness();
-    harness.adapter.replaceConnection(bootstrap(INSTANCE_A, "12"));
+    const release = vi.fn(() => undefined);
+    harness.adapter.replaceConnection(bootstrap(INSTANCE_A, "12", { release }));
     const socket = harness.sockets[0]!;
     socket.open();
 
@@ -196,6 +219,11 @@ describe("Desktop Kernel domain events adapter", () => {
 
     expect(socket.closed).toEqual([{ code: 1000, reason: "client closed" }]);
     expect(harness.adapter.identity).toBeNull();
+    expect(harness.states).toEqual([
+      { instanceId: INSTANCE_A, generation: "12", state: "connecting" },
+      { instanceId: INSTANCE_A, generation: "12", state: "closed" }
+    ]);
+    expect(release).toHaveBeenCalledTimes(1);
     expect(harness.invalidations).toEqual([
       {
         kind: "snapshot-required",
@@ -209,24 +237,31 @@ describe("Desktop Kernel domain events adapter", () => {
 
   it("disconnects explicitly and cancels a pending reconnect", () => {
     const harness = new AdapterHarness();
-    harness.adapter.replaceConnection(bootstrap(INSTANCE_A, "13"));
+    const release = vi.fn(() => undefined);
+    harness.adapter.replaceConnection(bootstrap(INSTANCE_A, "13", { release }));
     harness.sockets[0]!.serverClose(1006);
     expect(harness.scheduler.pending()).toBe(1);
 
     harness.adapter.close();
+    harness.adapter.close();
 
     expect(harness.scheduler.pending()).toBe(0);
     expect(harness.adapter.identity).toBeNull();
+    expect(release).toHaveBeenCalledTimes(1);
   });
 
   it("allows a terminal state callback to install the successor identity", () => {
     const sockets: FakeWebSocket[] = [];
+    const firstRelease = vi.fn(() => undefined);
+    const nextRelease = vi.fn(() => undefined);
     let adapter: DesktopKernelEventsAdapter | undefined;
     adapter = createDesktopKernelEventsAdapter({
       onInvalidation: vi.fn(),
       onStateChange: (notice) => {
         if (notice.state === "closed") {
-          adapter?.replaceConnection(bootstrap(INSTANCE_B, "15"));
+          adapter?.replaceConnection(bootstrap(INSTANCE_B, "15", {
+            release: nextRelease
+          }));
         }
       },
       webSocket: () => {
@@ -235,12 +270,33 @@ describe("Desktop Kernel domain events adapter", () => {
         return socket;
       }
     });
-    adapter.replaceConnection(bootstrap(INSTANCE_A, "14"));
+    adapter.replaceConnection(bootstrap(INSTANCE_A, "14", {
+      release: firstRelease
+    }));
 
     sockets[0]!.serverClose(4001);
 
     expect(sockets).toHaveLength(2);
     expect(adapter.identity).toEqual({ instanceId: INSTANCE_B, generation: "15" });
+    expect(firstRelease).toHaveBeenCalledTimes(1);
+    adapter.close();
+    expect(nextRelease).toHaveBeenCalledTimes(1);
+  });
+
+  it("releases ownership when event client initialization rejects", () => {
+    const release = vi.fn(() => undefined);
+    const adapter = createDesktopKernelEventsAdapter({
+      onInvalidation: vi.fn(),
+      webSocket: () => new FakeWebSocket()
+    });
+
+    expect(() => adapter.replaceConnection(bootstrap(INSTANCE_A, "16", {
+      baseUrl: "not-a-kernel-url",
+      release
+    }))).toThrow();
+
+    expect(adapter.identity).toBeNull();
+    expect(release).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -337,16 +393,20 @@ class FakeWebSocket implements WebSocketLike {
   }
 }
 
-function bootstrap(instanceId: string, generation: string): NativeKernelBootstrap {
+function bootstrap(
+  instanceId: string,
+  generation: string,
+  overrides: Partial<Pick<NativeKernelBootstrap, "baseUrl" | "release">> = {}
+): NativeKernelBootstrap {
   return {
     authentication: {
       kind: "native-bearer",
       getCredential: vi.fn(() => SECRET)
     },
-    baseUrl: "http://127.0.0.1:6608/",
+    baseUrl: overrides.baseUrl ?? "http://127.0.0.1:6608/",
     generation,
     instanceId,
-    release: () => undefined
+    release: overrides.release ?? (() => undefined)
   };
 }
 
