@@ -1,13 +1,10 @@
-#[path = "../src/sync/dejavu_runner.rs"]
-mod dejavu_runner;
-
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use dejavu_runner::{
+use qingyu_kernel::sync::dejavu_runner::{
     DejavuConflictResolution, DejavuInstanceRoots, DejavuRepositoryKey, DejavuRunError,
     DejavuRunnerInputs, DejavuS3Config, DejavuSecret, DejavuWorkspaceCapability,
     DejavuWorkspaceCapabilityError, KernelDejavuRunner,

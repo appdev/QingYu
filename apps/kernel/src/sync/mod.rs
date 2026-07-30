@@ -3,6 +3,7 @@
 pub mod backend;
 pub mod config;
 pub mod credentials;
+pub mod dejavu_runner;
 pub mod diagnostics;
 pub mod editing;
 pub mod engine;
