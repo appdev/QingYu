@@ -426,7 +426,7 @@ describe("desktop Kernel domain adapter", () => {
           search: parsed.search,
         });
         if (parsed.pathname.endsWith("/move")) {
-          return jsonResponse(documentEntry("document.signature", "file", {
+          return jsonResponse(documentEntry("moved.signature", "file", {
             name: "renamed.md",
             parent: "archive",
             path: "archive/renamed.md",
@@ -470,7 +470,7 @@ describe("desktop Kernel domain adapter", () => {
       targetParent: "archive" as KernelWorkspaceRelativePath,
       workspaceGeneration,
     })).resolves.toMatchObject({
-      locator,
+      locator: "moved.signature",
       name: "renamed.md",
       relativePath: "archive/renamed.md",
     });

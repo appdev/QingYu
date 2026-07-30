@@ -272,7 +272,8 @@ export async function createDesktopKernelDomainAdapter(
             { signal: requests.signal },
           );
           assertActive();
-          assertDocumentIdentity(document.id, input.locator);
+          // Document locators are signed for their relative path. A successful
+          // move therefore returns a newly issued locator for the target path.
           if (
             document.name !== input.name ||
             document.parent !== input.targetParent ||
