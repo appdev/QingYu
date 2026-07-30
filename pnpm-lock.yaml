@@ -169,6 +169,9 @@ importers:
       '@markra/editor':
         specifier: workspace:*
         version: link:../../packages/editor
+      '@markra/kernel-client':
+        specifier: workspace:*
+        version: link:../../packages/kernel-client
       '@markra/shared':
         specifier: workspace:*
         version: link:../../packages/shared
