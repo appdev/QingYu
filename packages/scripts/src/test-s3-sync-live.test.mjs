@@ -161,9 +161,7 @@ describe("live S3 test wrapper", () => {
       [
         "test",
         "--manifest-path",
-        "apps/desktop/src-tauri/Cargo.toml",
-        "-p",
-        "qingyu-dejavu",
+        "apps/kernel/crates/qingyu-dejavu/Cargo.toml",
         "--test",
         "s3_minio",
         "--",
