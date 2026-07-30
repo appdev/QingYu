@@ -3,6 +3,7 @@ use std::future::Future;
 use std::io::{self, Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 use super::engine::{
     ordered_first_sync_actions, plan_file_sync, plan_incomplete_sync, FileSyncAction,
@@ -23,6 +24,53 @@ use super::scope::RemoteSyncScope;
 static SYNC_MUTATION_STAGING_SEQUENCE: AtomicUsize = AtomicUsize::new(0);
 pub const MAX_IMMEDIATE_RECHECK_PASSES: usize = 3;
 const STAGED_SYNC_REPLACEMENT_NAME: &str = "replacement";
+const SYNC_CANCELLED_MESSAGE: &str = "sync-run-cancelled: The sync run was cancelled.";
+
+#[derive(Clone, Default)]
+pub struct SyncExecutionCancellation {
+    is_cancelled: Option<Arc<dyn Fn() -> bool + Send + Sync + 'static>>,
+}
+
+impl SyncExecutionCancellation {
+    pub fn from_callback(is_cancelled: impl Fn() -> bool + Send + Sync + 'static) -> Self {
+        Self {
+            is_cancelled: Some(Arc::new(is_cancelled)),
+        }
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.is_cancelled
+            .as_ref()
+            .is_some_and(|is_cancelled| is_cancelled())
+    }
+
+    fn checkpoint(&self) -> Result<(), &'static str> {
+        if self.is_cancelled() {
+            Err(SYNC_CANCELLED_MESSAGE)
+        } else {
+            Ok(())
+        }
+    }
+}
+
+impl std::fmt::Debug for SyncExecutionCancellation {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("SyncExecutionCancellation([READ_ONLY])")
+    }
+}
+
+async fn await_remote_operation<OperationFuture, Output>(
+    cancellation: &SyncExecutionCancellation,
+    operation: OperationFuture,
+) -> Result<Output, RemoteSyncError>
+where
+    OperationFuture: Future<Output = Result<Output, RemoteSyncError>>,
+{
+    cancellation.checkpoint()?;
+    let result = operation.await;
+    cancellation.checkpoint()?;
+    result
+}
 
 #[derive(Default)]
 pub struct RemoteSyncExecutionCoordinator {
@@ -182,7 +230,8 @@ pub(crate) async fn execute_remote_sync<B: RemoteSyncBackend>(
     let coordinator = RemoteSyncExecutionCoordinator::default();
     with_remote_sync_execution_lock(&coordinator, || async {
         let hooks = RemoteSyncExecutionHooks::default();
-        execute_remote_sync_locked(scope, backend, &hooks).await
+        let cancellation = SyncExecutionCancellation::default();
+        execute_remote_sync_with_hooks_and_cancellation(scope, backend, &hooks, &cancellation).await
     })
     .await
 }
@@ -238,22 +287,55 @@ where
     Backend: RemoteSyncBackend,
     Reconcile: FnOnce(Option<&str>) -> Result<(), String>,
 {
-    let hooks = RemoteSyncExecutionHooks::default();
-    execute_portable_settings_sync_with_hooks(settings_scope, settings_backend, &hooks, reconcile)
-        .await
+    let cancellation = SyncExecutionCancellation::default();
+    execute_portable_settings_sync_locked_with_cancellation(
+        settings_scope,
+        settings_backend,
+        &cancellation,
+        reconcile,
+    )
+    .await
 }
 
-async fn execute_portable_settings_sync_with_hooks<Backend, Reconcile>(
+pub async fn execute_portable_settings_sync_locked_with_cancellation<Backend, Reconcile>(
     settings_scope: &RemoteSyncScope,
     settings_backend: &Backend,
-    hooks: &RemoteSyncExecutionHooks,
+    cancellation: &SyncExecutionCancellation,
     reconcile: Reconcile,
 ) -> Result<SettingsSyncOutcome, RemoteSyncError>
 where
     Backend: RemoteSyncBackend,
     Reconcile: FnOnce(Option<&str>) -> Result<(), String>,
 {
-    let summary = execute_remote_sync_locked(settings_scope, settings_backend, hooks).await?;
+    let hooks = RemoteSyncExecutionHooks::default();
+    execute_portable_settings_sync_with_hooks(
+        settings_scope,
+        settings_backend,
+        &hooks,
+        cancellation,
+        reconcile,
+    )
+    .await
+}
+
+async fn execute_portable_settings_sync_with_hooks<Backend, Reconcile>(
+    settings_scope: &RemoteSyncScope,
+    settings_backend: &Backend,
+    hooks: &RemoteSyncExecutionHooks,
+    cancellation: &SyncExecutionCancellation,
+    reconcile: Reconcile,
+) -> Result<SettingsSyncOutcome, RemoteSyncError>
+where
+    Backend: RemoteSyncBackend,
+    Reconcile: FnOnce(Option<&str>) -> Result<(), String>,
+{
+    let summary = execute_remote_sync_with_hooks_and_cancellation(
+        settings_scope,
+        settings_backend,
+        hooks,
+        cancellation,
+    )
+    .await?;
     let target_fingerprint = sha256_hex(settings_backend.target_fingerprint_source().as_bytes());
     let (manifest, _) = load_sync_manifest(settings_scope, &target_fingerprint)?;
     let outcome = SettingsSyncOutcome {
@@ -263,6 +345,7 @@ where
             .get("settings.json")
             .map(|entry| entry.local_hash.clone()),
     };
+    cancellation.checkpoint()?;
     reconcile(outcome.expected_local_hash.as_deref()).map_err(RemoteSyncError::from)?;
     Ok(outcome)
 }
@@ -282,12 +365,51 @@ where
     SettingsBackend: RemoteSyncBackend,
     Reconcile: FnOnce(Option<&str>) -> Result<(), String>,
 {
+    let cancellation = SyncExecutionCancellation::default();
+    execute_remote_sync_pair_locked_with_cancellation(
+        notes_scope,
+        notes_backend,
+        settings_scope,
+        settings_backend,
+        &cancellation,
+        reconcile,
+    )
+    .await
+}
+
+pub async fn execute_remote_sync_pair_locked_with_cancellation<
+    NotesBackend,
+    SettingsBackend,
+    Reconcile,
+>(
+    notes_scope: &RemoteSyncScope,
+    notes_backend: &NotesBackend,
+    settings_scope: &RemoteSyncScope,
+    settings_backend: &SettingsBackend,
+    cancellation: &SyncExecutionCancellation,
+    reconcile: Reconcile,
+) -> (
+    Result<RemoteSyncSummary, RemoteSyncError>,
+    Result<SettingsSyncOutcome, RemoteSyncError>,
+)
+where
+    NotesBackend: RemoteSyncBackend,
+    SettingsBackend: RemoteSyncBackend,
+    Reconcile: FnOnce(Option<&str>) -> Result<(), String>,
+{
     let hooks = RemoteSyncExecutionHooks::default();
-    let notes = execute_remote_sync_locked(notes_scope, notes_backend, &hooks).await;
+    let notes = execute_remote_sync_with_hooks_and_cancellation(
+        notes_scope,
+        notes_backend,
+        &hooks,
+        cancellation,
+    )
+    .await;
     let settings = execute_portable_settings_sync_with_hooks(
         settings_scope,
         settings_backend,
         &hooks,
+        cancellation,
         reconcile,
     )
     .await;
@@ -302,24 +424,49 @@ pub(crate) async fn execute_remote_sync_with_hooks<B: RemoteSyncBackend>(
 ) -> Result<RemoteSyncSummary, RemoteSyncError> {
     let coordinator = RemoteSyncExecutionCoordinator::default();
     with_remote_sync_execution_lock(&coordinator, || async {
-        execute_remote_sync_locked(scope, backend, &hooks).await
+        let cancellation = SyncExecutionCancellation::default();
+        execute_remote_sync_with_hooks_and_cancellation(scope, backend, &hooks, &cancellation).await
     })
     .await
 }
 
+pub async fn execute_remote_sync_locked_with_cancellation<B: RemoteSyncBackend>(
+    scope: &RemoteSyncScope,
+    backend: &B,
+    cancellation: &SyncExecutionCancellation,
+) -> Result<RemoteSyncSummary, RemoteSyncError> {
+    let hooks = RemoteSyncExecutionHooks::default();
+    execute_remote_sync_with_hooks_and_cancellation(scope, backend, &hooks, cancellation).await
+}
+
+#[cfg(test)]
 async fn execute_remote_sync_locked<B: RemoteSyncBackend>(
     scope: &RemoteSyncScope,
     backend: &B,
     hooks: &RemoteSyncExecutionHooks,
 ) -> Result<RemoteSyncSummary, RemoteSyncError> {
+    let cancellation = SyncExecutionCancellation::default();
+    execute_remote_sync_with_hooks_and_cancellation(scope, backend, hooks, &cancellation).await
+}
+
+async fn execute_remote_sync_with_hooks_and_cancellation<B: RemoteSyncBackend>(
+    scope: &RemoteSyncScope,
+    backend: &B,
+    hooks: &RemoteSyncExecutionHooks,
+    cancellation: &SyncExecutionCancellation,
+) -> Result<RemoteSyncSummary, RemoteSyncError> {
+    cancellation.checkpoint()?;
     let _state_root = scope.open_state_root()?;
+    cancellation.checkpoint()?;
     cleanup_stale_state_staging(scope)?;
     let target_fingerprint = sha256_hex(backend.target_fingerprint_source().as_bytes());
+    cancellation.checkpoint()?;
     let repository = SyncManifestRepository::open(scope)
         .map_err(|error| RemoteSyncError::from(error.to_string()))?;
     let (mut manifest, mut has_effective_baseline) = repository
         .load(&target_fingerprint)
         .map_err(|error| RemoteSyncError::from(error.to_string()))?;
+    cancellation.checkpoint()?;
     if prepare_remote_first_restore(scope, &repository, &mut manifest)? {
         has_effective_baseline = false;
     }
@@ -336,7 +483,7 @@ async fn execute_remote_sync_locked<B: RemoteSyncBackend>(
             Err(error) => return Err(error.into()),
         };
         let mut expected_local_hashes = local_hashes(&local_files);
-        let mut remote_files = backend.list_files().await?;
+        let mut remote_files = await_remote_operation(cancellation, backend.list_files()).await?;
         validate_remote_files(&remote_files)?;
         remote_files.retain(|path, _| scope.includes_relative_path(path, false));
         let timestamp = sync_timestamp();
@@ -420,14 +567,16 @@ async fn execute_remote_sync_locked<B: RemoteSyncBackend>(
                         Err(error) => return Err(error.into()),
                     };
                     scope.validate_upload(&bytes)?;
-                    let remote_identity = match backend
-                        .upload(
+                    let upload_result = await_remote_operation(
+                        cancellation,
+                        backend.upload(
                             &relative_path,
                             &bytes,
                             remote_file.map(|file| file.identity.as_str()),
-                        )
-                        .await
-                    {
+                        ),
+                    )
+                    .await;
+                    let remote_identity = match upload_result {
                         Ok(identity) => identity,
                         Err(error) if is_stale_remote_plan(&error) => {
                             recheck_required = true;
@@ -445,11 +594,17 @@ async fn execute_remote_sync_locked<B: RemoteSyncBackend>(
                             remote_identity,
                         },
                     );
+                    cancellation.checkpoint()?;
                     save_sync_manifest(&repository, &manifest)?;
                 }
                 FileSyncAction::Download => {
                     let remote = required_remote(remote_file, "download", &relative_path)?;
-                    let bytes = match backend.download(&relative_path, &remote.identity).await {
+                    let download_result = await_remote_operation(
+                        cancellation,
+                        backend.download(&relative_path, &remote.identity),
+                    )
+                    .await;
+                    let bytes = match download_result {
                         Ok(bytes) => bytes,
                         Err(error) if is_stale_remote_plan(&error) => {
                             recheck_required = true;
@@ -458,12 +613,14 @@ async fn execute_remote_sync_locked<B: RemoteSyncBackend>(
                         }
                         Err(error) => return Err(error),
                     };
+                    cancellation.checkpoint()?;
                     validate_remote_download_or_quarantine(
                         scope,
                         &relative_path,
                         &bytes,
                         &timestamp,
                     )?;
+                    cancellation.checkpoint()?;
                     let hash = match write_download_atomically(
                         scope,
                         &relative_path,
@@ -490,10 +647,12 @@ async fn execute_remote_sync_locked<B: RemoteSyncBackend>(
                             remote_identity: remote.identity.clone(),
                         },
                     );
+                    cancellation.checkpoint()?;
                     save_sync_manifest(&repository, &manifest)?;
                 }
                 FileSyncAction::DeleteLocal => {
                     let local = required_local(local_file, "delete", &relative_path)?;
+                    cancellation.checkpoint()?;
                     match delete_local_file(
                         scope,
                         &relative_path,
@@ -511,11 +670,17 @@ async fn execute_remote_sync_locked<B: RemoteSyncBackend>(
                     }
                     expected_local_hashes.remove(&relative_path);
                     manifest.entries.remove(&relative_path);
+                    cancellation.checkpoint()?;
                     save_sync_manifest(&repository, &manifest)?;
                 }
                 FileSyncAction::DeleteRemote => {
                     let remote = required_remote(remote_file, "delete", &relative_path)?;
-                    match backend.delete(&relative_path, &remote.identity).await {
+                    let delete_result = await_remote_operation(
+                        cancellation,
+                        backend.delete(&relative_path, &remote.identity),
+                    )
+                    .await;
+                    match delete_result {
                         Ok(()) => {}
                         Err(error) if is_stale_remote_plan(&error) => {
                             recheck_required = true;
@@ -525,6 +690,7 @@ async fn execute_remote_sync_locked<B: RemoteSyncBackend>(
                         Err(error) => return Err(error),
                     }
                     manifest.entries.remove(&relative_path);
+                    cancellation.checkpoint()?;
                     save_sync_manifest(&repository, &manifest)?;
                 }
                 FileSyncAction::Skip => {
@@ -537,13 +703,19 @@ async fn execute_remote_sync_locked<B: RemoteSyncBackend>(
                                 remote_identity: remote.identity.clone(),
                             },
                         );
+                        cancellation.checkpoint()?;
                         save_sync_manifest(&repository, &manifest)?;
                     }
                 }
                 FileSyncAction::Conflict => {
                     let local = required_local(local_file, "conflict", &relative_path)?;
                     let remote = required_remote(remote_file, "conflict", &relative_path)?;
-                    let bytes = match backend.download(&relative_path, &remote.identity).await {
+                    let download_result = await_remote_operation(
+                        cancellation,
+                        backend.download(&relative_path, &remote.identity),
+                    )
+                    .await;
+                    let bytes = match download_result {
                         Ok(bytes) => bytes,
                         Err(error) if is_stale_remote_plan(&error) => {
                             recheck_required = true;
@@ -552,6 +724,7 @@ async fn execute_remote_sync_locked<B: RemoteSyncBackend>(
                         }
                         Err(error) => return Err(error),
                     };
+                    cancellation.checkpoint()?;
                     validate_remote_download_or_quarantine(
                         scope,
                         &relative_path,
@@ -568,6 +741,7 @@ async fn execute_remote_sync_locked<B: RemoteSyncBackend>(
                                 remote_identity: remote.identity.clone(),
                             },
                         );
+                        cancellation.checkpoint()?;
                         save_sync_manifest(&repository, &manifest)?;
                         continue;
                     }
@@ -578,6 +752,7 @@ async fn execute_remote_sync_locked<B: RemoteSyncBackend>(
                         .ok_or_else(|| {
                             format!("Local sync file name is invalid: {relative_path}")
                         })?;
+                    cancellation.checkpoint()?;
                     let conflict_path = write_conflict_copy(
                         scope,
                         &relative_path,
@@ -614,6 +789,7 @@ async fn execute_remote_sync_locked<B: RemoteSyncBackend>(
                             remote_identity: remote.identity.clone(),
                         },
                     );
+                    cancellation.checkpoint()?;
                     save_sync_manifest(&repository, &manifest)?;
                 }
             }
@@ -655,6 +831,7 @@ async fn execute_remote_sync_locked<B: RemoteSyncBackend>(
             current_local_files.contains_key(path) || remote_files.contains_key(path)
         });
         manifest.full_scan_completed = true;
+        cancellation.checkpoint()?;
         save_sync_manifest(&repository, &manifest)?;
         break;
     }
@@ -2336,7 +2513,7 @@ mod tests {
     use std::future::Future;
     use std::io;
     use std::path::{Path, PathBuf};
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
@@ -3189,6 +3366,22 @@ mod tests {
         target: String,
     }
 
+    struct CancellingDownloadBackend {
+        cancelled: Arc<AtomicBool>,
+        download_calls: AtomicUsize,
+        list_calls: AtomicUsize,
+    }
+
+    impl CancellingDownloadBackend {
+        fn new(cancelled: Arc<AtomicBool>) -> Self {
+            Self {
+                cancelled,
+                download_calls: AtomicUsize::new(0),
+                list_calls: AtomicUsize::new(0),
+            }
+        }
+    }
+
     #[derive(Default)]
     struct ConcurrencyBackend {
         active: AtomicUsize,
@@ -3232,6 +3425,117 @@ mod tests {
         ) -> Result<(), RemoteSyncError> {
             unreachable!("empty concurrency backend never deletes")
         }
+    }
+
+    impl RemoteSyncBackend for CancellingDownloadBackend {
+        fn target_fingerprint_source(&self) -> String {
+            "cancelling-download-target".to_string()
+        }
+
+        async fn list_files(&self) -> Result<BTreeMap<String, RemoteSyncFile>, RemoteSyncError> {
+            self.list_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(BTreeMap::from([(
+                "remote.md".to_string(),
+                RemoteSyncFile {
+                    identity: FakeBackend::identity(b"remote bytes"),
+                    size: 12,
+                },
+            )]))
+        }
+
+        async fn download(
+            &self,
+            _path: &str,
+            _expected_identity: &str,
+        ) -> Result<Vec<u8>, RemoteSyncError> {
+            self.download_calls.fetch_add(1, Ordering::SeqCst);
+            self.cancelled.store(true, Ordering::Release);
+            Ok(b"remote bytes".to_vec())
+        }
+
+        async fn upload(
+            &self,
+            _path: &str,
+            _bytes: &[u8],
+            _expected_identity: Option<&str>,
+        ) -> Result<String, RemoteSyncError> {
+            unreachable!("a remote-only fixture never uploads")
+        }
+
+        async fn delete(
+            &self,
+            _path: &str,
+            _expected_identity: &str,
+        ) -> Result<(), RemoteSyncError> {
+            unreachable!("a remote-only fixture never deletes")
+        }
+    }
+
+    #[test]
+    fn cancellation_before_remote_await_prevents_the_remote_operation() {
+        test_block_on(async {
+            let source = temp_root("cancel-before-remote");
+            let state = test_state_root(&source);
+            let cancelled = Arc::new(AtomicBool::new(true));
+            let backend = CancellingDownloadBackend::new(Arc::clone(&cancelled));
+            let cancellation = super::SyncExecutionCancellation::from_callback({
+                let cancelled = Arc::clone(&cancelled);
+                move || cancelled.load(Ordering::Acquire)
+            });
+            let scope =
+                RemoteSyncScope::notes(&source, &state, "fake-manifest.json", None, None).unwrap();
+
+            let error = super::execute_remote_sync_locked_with_cancellation(
+                &scope,
+                &backend,
+                &cancellation,
+            )
+            .await
+            .expect_err("pre-cancelled sync must stop before listing remote files");
+
+            assert_eq!(error.safe_code(), "sync-run-cancelled");
+            assert_eq!(backend.list_calls.load(Ordering::SeqCst), 0);
+            assert_eq!(backend.download_calls.load(Ordering::SeqCst), 0);
+            assert!(!state.join("fake-manifest.json").exists());
+            fs::remove_dir_all(source).unwrap();
+            if state.exists() {
+                fs::remove_dir_all(state).unwrap();
+            }
+        });
+    }
+
+    #[test]
+    fn cancellation_after_remote_download_prevents_local_and_manifest_publication() {
+        test_block_on(async {
+            let source = temp_root("cancel-after-download");
+            let state = test_state_root(&source);
+            let cancelled = Arc::new(AtomicBool::new(false));
+            let backend = CancellingDownloadBackend::new(Arc::clone(&cancelled));
+            let cancellation = super::SyncExecutionCancellation::from_callback({
+                let cancelled = Arc::clone(&cancelled);
+                move || cancelled.load(Ordering::Acquire)
+            });
+            let scope =
+                RemoteSyncScope::notes(&source, &state, "fake-manifest.json", None, None).unwrap();
+
+            let error = super::execute_remote_sync_locked_with_cancellation(
+                &scope,
+                &backend,
+                &cancellation,
+            )
+            .await
+            .expect_err("download completion cancellation must stop local publication");
+
+            assert_eq!(error.safe_code(), "sync-run-cancelled");
+            assert_eq!(backend.list_calls.load(Ordering::SeqCst), 1);
+            assert_eq!(backend.download_calls.load(Ordering::SeqCst), 1);
+            assert!(!source.join("remote.md").exists());
+            assert!(!state.join("fake-manifest.json").exists());
+            fs::remove_dir_all(source).unwrap();
+            if state.exists() {
+                fs::remove_dir_all(state).unwrap();
+            }
+        });
     }
 
     impl FakeBackend {
