@@ -3506,6 +3506,7 @@ dependencies = [
  "url",
  "uuid",
  "windows-sys 0.61.2",
+ "zeroize",
  "zstd",
 ]
 
@@ -3523,6 +3524,7 @@ dependencies = [
  "hmac",
  "http-body-util",
  "ignore",
+ "qingyu-dejavu",
  "quick-xml 0.39.4",
  "reqwest 0.12.28",
  "rustix",

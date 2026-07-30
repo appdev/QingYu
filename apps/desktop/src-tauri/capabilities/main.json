@@ -54,11 +54,6 @@
     },
     "os:default",
     "process:allow-restart",
-    "store:allow-delete",
-    "store:allow-get",
-    "store:allow-load",
-    "store:allow-save",
-    "store:allow-set",
     "updater:default"
   ]
 }

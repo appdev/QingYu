@@ -657,6 +657,7 @@ export async function getStoredTheme(): Promise<AppTheme> {
 }
 
 export async function saveStoredTheme(theme: AppTheme) {
+  if (await writeSettingsGroup("appearance", createThemePreferencesFromLegacyTheme(theme))) return;
   const store = await loadSettingsStore();
 
   await store.set(themeKey, theme);

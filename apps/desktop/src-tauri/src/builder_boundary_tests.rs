@@ -98,6 +98,9 @@ const DESKTOP_COMMANDS: &[&str] = &[
     "replace_portable_app_settings",
     "read_exposed_app_settings",
     "patch_exposed_app_settings",
+    "load_desktop_runtime_store",
+    "get_desktop_runtime_store_value",
+    "commit_desktop_runtime_store_changes",
     "read_primary_workspace_state",
     "write_primary_workspace_state",
     "acknowledge_path_guard",
@@ -445,9 +448,9 @@ fn builder_boundary_native_kernel_bootstrap_is_desktop_only_and_dormant() {
 
     assert!(desktop_commands.contains("read_native_kernel_bootstrap"));
     assert!(!mobile_commands.contains("read_native_kernel_bootstrap"));
-    assert!(desktop.contains(
-        "app.manage(crate::kernel_bootstrap::NativeKernelBootstrapOwner::new())"
-    ));
+    assert!(
+        desktop.contains("app.manage(crate::kernel_bootstrap::NativeKernelBootstrapOwner::new())")
+    );
     assert!(!desktop.contains(".publish("));
     assert!(!desktop.contains("KernelHostSupervisor"));
     assert!(!desktop.contains(".manage(crate::kernel_host"));
@@ -922,6 +925,25 @@ fn builder_boundary_capabilities_are_platform_disjoint() {
         );
     }
 
+    assert!(
+        permission_identifiers(&desktop)
+            .iter()
+            .all(|permission| !permission.starts_with("store:")),
+        "desktop renderer must use fixed native runtime-store commands"
+    );
+    for permission in [
+        "store:allow-delete",
+        "store:allow-get",
+        "store:allow-load",
+        "store:allow-save",
+        "store:allow-set",
+    ] {
+        assert!(
+            permissions.contains(&permission),
+            "mobile must retain {permission}"
+        );
+    }
+
     for (name, capability) in [("desktop", &desktop), ("mobile", &mobile)] {
         let opener = capability
             .pointer("/permissions")
@@ -970,6 +992,35 @@ fn builder_boundary_capabilities_are_platform_disjoint() {
             .all(|permission| *permission != "opener:allow-open-path"),
         "mobile capability should not expose local path opening"
     );
+}
+
+#[test]
+fn builder_boundary_registers_fixed_desktop_runtime_store_commands() {
+    let runtime = source("src/desktop_runtime.rs");
+    let install = runtime
+        .find("crate::runtime_store::install_desktop_runtime_store")
+        .expect("desktop setup should install fixed runtime stores");
+    let settings = runtime
+        .find("crate::app_settings::KernelSettingsOwner::install")
+        .expect("desktop setup should install Kernel settings");
+    let mcp = runtime
+        .find("mcp::initialize")
+        .expect("desktop setup should initialize MCP");
+    assert!(install < settings && install < mcp);
+    let handler_source = &runtime[runtime
+        .find("tauri::generate_handler![")
+        .expect("Tauri invoke handler should be registered")..];
+
+    for command in [
+        "load_desktop_runtime_store",
+        "get_desktop_runtime_store_value",
+        "commit_desktop_runtime_store_changes",
+    ] {
+        assert!(
+            handler_source.contains(&format!("crate::runtime_store::{command},")),
+            "desktop invoke handler should register {command}"
+        );
+    }
 }
 
 #[test]

@@ -252,6 +252,10 @@ pub(crate) fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(move |app| {
             app.manage(crate::kernel_bootstrap::NativeKernelBootstrapOwner::new());
+            if launch_mode == DesktopLaunchMode::Normal {
+                crate::runtime_store::install_desktop_runtime_store(&app.handle())
+                    .map_err(std::io::Error::other)?;
+            }
             let startup_language =
                 crate::language::resolve_startup_language(&app.config().identifier);
             let settings_owner = crate::app_settings::KernelSettingsOwner::install(&app.handle())
@@ -331,6 +335,9 @@ pub(crate) fn run() {
             crate::app_settings::replace_portable_app_settings,
             crate::app_settings::read_exposed_app_settings,
             crate::app_settings::patch_exposed_app_settings,
+            crate::runtime_store::load_desktop_runtime_store,
+            crate::runtime_store::get_desktop_runtime_store_value,
+            crate::runtime_store::commit_desktop_runtime_store_changes,
             crate::primary_workspace::read_primary_workspace_state,
             crate::primary_workspace::write_primary_workspace_state,
             crate::dejavu_sync::path_guard::acknowledge_path_guard,
@@ -539,6 +546,22 @@ mod tests {
 
         assert!(clear < build);
         assert!(source.contains("DesktopLaunchMode::McpService"));
+    }
+
+    #[test]
+    fn mcp_service_runtime_does_not_depend_on_renderer_ui_state() {
+        let source = include_str!("desktop_runtime.rs");
+        let setup_start = source
+            .find(".setup(move |app| {")
+            .expect("desktop setup hook should exist");
+        let settings = source[setup_start..]
+            .find("crate::app_settings::KernelSettingsOwner::install")
+            .map(|offset| setup_start + offset)
+            .expect("Kernel settings owner should delimit runtime-store setup");
+        let setup_prefix = &source[setup_start..settings];
+
+        assert!(setup_prefix.contains("if launch_mode == DesktopLaunchMode::Normal"));
+        assert!(setup_prefix.contains("install_desktop_runtime_store"));
     }
 
     #[test]

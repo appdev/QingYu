@@ -36,6 +36,8 @@ mod opened_files;
 mod primary_workspace;
 mod protected_paths;
 mod remote_sync;
+#[cfg(desktop)]
+mod runtime_store;
 mod s3_http;
 #[cfg(desktop)]
 mod shell_command;
