@@ -1,5 +1,6 @@
 use std::{
     ffi::OsString,
+    future::IntoFuture,
     io::BufReader,
     net::SocketAddr,
     process::ExitCode,
@@ -7,6 +8,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
         Arc,
     },
+    time::Duration,
 };
 
 use qingyu_kernel::{
@@ -19,6 +21,7 @@ use qingyu_kernel::{
 };
 
 const SERVER_LISTEN_ADDRESS: &str = "0.0.0.0:3210";
+const SERVER_SHUTDOWN_DEADLINE: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Eq, PartialEq)]
 enum KernelCommand {
@@ -121,14 +124,19 @@ async fn run_fixed_server(public_origin: String, exact_host: String) -> Result<(
     let listener = tokio::net::TcpListener::bind(SERVER_LISTEN_ADDRESS)
         .await
         .map_err(|_| ())?;
-
-    axum::serve(
+    let (shutdown_started_sender, shutdown_started_receiver) = tokio::sync::oneshot::channel();
+    let serve = axum::serve(
         listener,
         router.into_make_service_with_connect_info::<SocketAddr>(),
     )
-    .with_graceful_shutdown(server_shutdown_signal())
-    .await
-    .map_err(|_| ())
+    .with_graceful_shutdown(async move {
+        server_shutdown_signal().await;
+        let _send_result = shutdown_started_sender.send(());
+    });
+
+    await_bounded_server_shutdown(serve, shutdown_started_receiver, SERVER_SHUTDOWN_DEADLINE)
+        .await
+        .map(|_outcome| ())
 }
 
 fn parse_command<Arguments, Argument>(args: Arguments) -> Result<KernelCommand, ()>
@@ -155,15 +163,25 @@ where
             if args.next().is_some() {
                 return Err(());
             }
-            let uri = public_origin.parse::<axum::http::Uri>().map_err(|_| ())?;
-            let authority = uri.authority().ok_or(())?;
-            let exact_host = authority.to_string();
-            if public_origin != format!("https://{exact_host}")
-                || exact_host != exact_host.to_ascii_lowercase()
-                || authority.port_u16() == Some(443)
+            let parsed = reqwest::Url::parse(&public_origin).map_err(|_| ())?;
+            if parsed.scheme() != "https"
+                || !parsed.username().is_empty()
+                || parsed.password().is_some()
+                || parsed.path() != "/"
+                || parsed.query().is_some()
+                || parsed.fragment().is_some()
             {
                 return Err(());
             }
+            let canonical_origin = parsed.origin().ascii_serialization();
+            if public_origin != canonical_origin {
+                return Err(());
+            }
+            let exact_host = canonical_origin
+                .strip_prefix("https://")
+                .filter(|authority| !authority.is_empty())
+                .ok_or(())?
+                .to_owned();
             TransportPolicy::same_origin(&exact_host, &public_origin).map_err(|_| ())?;
             Ok(KernelCommand::Server {
                 public_origin,
@@ -171,6 +189,38 @@ where
             })
         }
         _ => Err(()),
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ServerShutdownOutcome {
+    Drained,
+    DeadlineElapsed,
+}
+
+async fn await_bounded_server_shutdown<Serve>(
+    serve: Serve,
+    mut shutdown_started: tokio::sync::oneshot::Receiver<()>,
+    deadline: Duration,
+) -> Result<ServerShutdownOutcome, ()>
+where
+    Serve: IntoFuture<Output = std::io::Result<()>>,
+{
+    let serve = serve.into_future();
+    tokio::pin!(serve);
+    tokio::select! {
+        result = &mut serve => result.map(|()| ServerShutdownOutcome::Drained).map_err(|_| ()),
+        started = &mut shutdown_started => {
+            started.map_err(|_| ())?;
+            match tokio::time::timeout(deadline, &mut serve).await {
+                Ok(result) => result
+                    .map(|()| ServerShutdownOutcome::Drained)
+                    .map_err(|_| ()),
+                // Returning drops the Axum serve future. The process-level Tokio runtime then
+                // aborts any connection tasks that did not drain before the fixed deadline.
+                Err(_elapsed) => Ok(ServerShutdownOutcome::DeadlineElapsed),
+            }
+        }
     }
 }
 
@@ -193,22 +243,27 @@ async fn server_shutdown_signal() {
 mod tests {
     use super::*;
 
+    fn server_command(public_origin: &str) -> Result<KernelCommand, ()> {
+        parse_command(["qingyu-kernel", "server", "--public-origin", public_origin])
+    }
+
     #[test]
     fn server_command_requires_one_exact_https_public_origin() {
-        let parsed = parse_command([
-            "qingyu-kernel",
-            "server",
-            "--public-origin",
-            "https://notes.example.com:8443",
-        ])
-        .unwrap();
-        assert_eq!(
-            parsed,
-            KernelCommand::Server {
-                public_origin: "https://notes.example.com:8443".to_owned(),
-                exact_host: "notes.example.com:8443".to_owned(),
-            }
-        );
+        for (public_origin, exact_host) in [
+            ("https://notes.example.com", "notes.example.com"),
+            ("https://notes.example.com:8443", "notes.example.com:8443"),
+            ("https://192.0.2.1", "192.0.2.1"),
+            ("https://[2001:db8::1]", "[2001:db8::1]"),
+            ("https://xn--bcher-kva.example", "xn--bcher-kva.example"),
+        ] {
+            assert_eq!(
+                server_command(public_origin).unwrap(),
+                KernelCommand::Server {
+                    public_origin: public_origin.to_owned(),
+                    exact_host: exact_host.to_owned(),
+                }
+            );
+        }
 
         for invalid in [
             vec!["qingyu-kernel", "server"],
@@ -247,6 +302,78 @@ mod tests {
                 "qingyu-kernel",
                 "server",
                 "--public-origin",
+                "HTTPS://notes.example.com",
+            ],
+            vec![
+                "qingyu-kernel",
+                "server",
+                "--public-origin",
+                "https://user@notes.example.com",
+            ],
+            vec![
+                "qingyu-kernel",
+                "server",
+                "--public-origin",
+                "https://user:password@notes.example.com",
+            ],
+            vec![
+                "qingyu-kernel",
+                "server",
+                "--public-origin",
+                "https://notes.example.com:08443",
+            ],
+            vec![
+                "qingyu-kernel",
+                "server",
+                "--public-origin",
+                "https://notes.example.com:65536",
+            ],
+            vec![
+                "qingyu-kernel",
+                "server",
+                "--public-origin",
+                "https://127.1",
+            ],
+            vec![
+                "qingyu-kernel",
+                "server",
+                "--public-origin",
+                "https://127.000.000.001",
+            ],
+            vec![
+                "qingyu-kernel",
+                "server",
+                "--public-origin",
+                "https://[2001:0db8:0:0:0:0:0:1]",
+            ],
+            vec![
+                "qingyu-kernel",
+                "server",
+                "--public-origin",
+                "https://[0:0:0:0:0:0:0:1]",
+            ],
+            vec![
+                "qingyu-kernel",
+                "server",
+                "--public-origin",
+                "https://bücher.example",
+            ],
+            vec![
+                "qingyu-kernel",
+                "server",
+                "--public-origin",
+                "https://notes.example.com?mode=server",
+            ],
+            vec![
+                "qingyu-kernel",
+                "server",
+                "--public-origin",
+                "https://notes.example.com#server",
+            ],
+            vec![
+                "qingyu-kernel",
+                "server",
+                "--public-origin",
                 "https://notes.example.com",
                 "--public-origin",
                 "https://other.example.com",
@@ -258,6 +385,147 @@ mod tests {
                 "accepted {invalid:?}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn bounded_shutdown_stops_waiting_for_a_slow_axum_request_after_the_deadline() {
+        let (request_started, shutdown_started, release_request, server) =
+            slow_test_server(std::time::Duration::from_millis(40)).await;
+        let client = tokio::spawn(open_slow_request(server.address));
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            request_started.notified(),
+        )
+        .await
+        .expect("slow request should reach its handler");
+
+        let started_at = tokio::time::Instant::now();
+        server.shutdown.send(()).unwrap();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            shutdown_started.notified(),
+        )
+        .await
+        .expect("graceful shutdown should start");
+        assert_eq!(
+            tokio::time::timeout(std::time::Duration::from_secs(2), server.task)
+                .await
+                .expect("bounded shutdown should return")
+                .unwrap()
+                .unwrap(),
+            ServerShutdownOutcome::DeadlineElapsed
+        );
+        assert!(started_at.elapsed() < std::time::Duration::from_secs(1));
+
+        release_request.notify_waiters();
+        client.abort();
+    }
+
+    #[tokio::test]
+    async fn bounded_shutdown_returns_as_soon_as_active_requests_drain() {
+        let deadline = std::time::Duration::from_secs(5);
+        let (request_started, shutdown_started, release_request, server) =
+            slow_test_server(deadline).await;
+        let client = tokio::spawn(open_slow_request(server.address));
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            request_started.notified(),
+        )
+        .await
+        .expect("slow request should reach its handler");
+
+        let started_at = tokio::time::Instant::now();
+        server.shutdown.send(()).unwrap();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            shutdown_started.notified(),
+        )
+        .await
+        .expect("graceful shutdown should start");
+        release_request.notify_waiters();
+        assert_eq!(
+            tokio::time::timeout(std::time::Duration::from_secs(2), server.task)
+                .await
+                .expect("drained shutdown should return")
+                .unwrap()
+                .unwrap(),
+            ServerShutdownOutcome::Drained
+        );
+        assert!(started_at.elapsed() < deadline);
+
+        client.abort();
+    }
+
+    struct SlowTestServer {
+        address: SocketAddr,
+        shutdown: tokio::sync::oneshot::Sender<()>,
+        task: tokio::task::JoinHandle<Result<ServerShutdownOutcome, ()>>,
+    }
+
+    async fn slow_test_server(
+        deadline: std::time::Duration,
+    ) -> (
+        Arc<tokio::sync::Notify>,
+        Arc<tokio::sync::Notify>,
+        Arc<tokio::sync::Notify>,
+        SlowTestServer,
+    ) {
+        use axum::{routing::get, Router};
+
+        let request_started = Arc::new(tokio::sync::Notify::new());
+        let release_request = Arc::new(tokio::sync::Notify::new());
+        let request_started_in_handler = Arc::clone(&request_started);
+        let release_request_in_handler = Arc::clone(&release_request);
+        let router = Router::new().route(
+            "/slow",
+            get(move || {
+                let request_started = Arc::clone(&request_started_in_handler);
+                let release_request = Arc::clone(&release_request_in_handler);
+                async move {
+                    request_started.notify_one();
+                    release_request.notified().await;
+                    "done"
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (shutdown, shutdown_receiver) = tokio::sync::oneshot::channel();
+        let (shutdown_started_sender, shutdown_started_receiver) = tokio::sync::oneshot::channel();
+        let shutdown_started = Arc::new(tokio::sync::Notify::new());
+        let shutdown_started_in_server = Arc::clone(&shutdown_started);
+        let serve = axum::serve(listener, router).with_graceful_shutdown(async move {
+            shutdown_receiver.await.unwrap();
+            shutdown_started_in_server.notify_one();
+            shutdown_started_sender.send(()).unwrap();
+        });
+        let task = tokio::spawn(await_bounded_server_shutdown(
+            serve,
+            shutdown_started_receiver,
+            deadline,
+        ));
+        (
+            request_started,
+            shutdown_started,
+            release_request,
+            SlowTestServer {
+                address,
+                shutdown,
+                task,
+            },
+        )
+    }
+
+    async fn open_slow_request(address: SocketAddr) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let mut stream = tokio::net::TcpStream::connect(address).await.unwrap();
+        stream
+            .write_all(b"GET /slow HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .await
+            .unwrap();
+        let mut response = Vec::new();
+        stream.read_to_end(&mut response).await.unwrap();
     }
 
     #[test]
