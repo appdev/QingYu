@@ -1,5 +1,6 @@
 use std::{
     fs,
+    io::{Seek, SeekFrom, Write},
     path::PathBuf,
     sync::{
         atomic::{AtomicU8, Ordering},
@@ -1236,6 +1237,137 @@ fn directory_revision_length_prefixes_entries_and_file_contents() {
         qingyu_kernel::documents::service::directory_revision_for_capability(&two_files).unwrap();
 
     assert_ne!(one_revision, two_revision);
+}
+
+#[test]
+fn directory_revision_includes_binary_relative_paths() {
+    let fixture = tempfile::tempdir().unwrap();
+    let first = fixture.path().join("first");
+    let second = fixture.path().join("second");
+    fs::create_dir_all(first.join("assets")).unwrap();
+    fs::create_dir_all(second.join("assets")).unwrap();
+    fs::write(first.join("assets/first.bin"), b"same bytes").unwrap();
+    fs::write(second.join("assets/second.bin"), b"same bytes").unwrap();
+    let first = cap_std::fs::Dir::open_ambient_dir(&first, cap_std::ambient_authority()).unwrap();
+    let second = cap_std::fs::Dir::open_ambient_dir(&second, cap_std::ambient_authority()).unwrap();
+
+    let first_revision =
+        qingyu_kernel::documents::service::directory_revision_for_capability(&first).unwrap();
+    let second_revision =
+        qingyu_kernel::documents::service::directory_revision_for_capability(&second).unwrap();
+
+    assert_ne!(first_revision, second_revision);
+}
+
+#[test]
+fn directory_revision_includes_exact_binary_contents() {
+    let fixture = tempfile::tempdir().unwrap();
+    fs::write(fixture.path().join("asset.bin"), [0_u8, 1, 2, 3]).unwrap();
+    let directory =
+        cap_std::fs::Dir::open_ambient_dir(fixture.path(), cap_std::ambient_authority()).unwrap();
+    let before =
+        qingyu_kernel::documents::service::directory_revision_for_capability(&directory).unwrap();
+    fs::write(fixture.path().join("asset.bin"), [3_u8, 2, 1, 0]).unwrap();
+
+    let after =
+        qingyu_kernel::documents::service::directory_revision_for_capability(&directory).unwrap();
+
+    assert_ne!(before, after);
+}
+
+#[test]
+fn directory_revision_streams_binary_contents_beyond_the_document_limit() {
+    let fixture = tempfile::tempdir().unwrap();
+    let path = fixture.path().join("large.bin");
+    let mut file = fs::File::create(&path).unwrap();
+    file.set_len(16 * 1024 * 1024 + 1).unwrap();
+    file.seek(SeekFrom::End(-1)).unwrap();
+    file.write_all(&[1]).unwrap();
+    file.sync_all().unwrap();
+    let directory =
+        cap_std::fs::Dir::open_ambient_dir(fixture.path(), cap_std::ambient_authority()).unwrap();
+    let before =
+        qingyu_kernel::documents::service::directory_revision_for_capability(&directory).unwrap();
+    file.seek(SeekFrom::End(-1)).unwrap();
+    file.write_all(&[2]).unwrap();
+    file.sync_all().unwrap();
+
+    let after =
+        qingyu_kernel::documents::service::directory_revision_for_capability(&directory).unwrap();
+
+    assert_ne!(before, after);
+}
+
+#[cfg(unix)]
+#[test]
+fn directory_revision_rejects_symbolic_links() {
+    use std::os::unix::fs::symlink;
+
+    let fixture = tempfile::tempdir().unwrap();
+    fs::write(fixture.path().join("target.bin"), b"target").unwrap();
+    symlink("target.bin", fixture.path().join("linked.bin")).unwrap();
+    let directory =
+        cap_std::fs::Dir::open_ambient_dir(fixture.path(), cap_std::ambient_authority()).unwrap();
+
+    let error = qingyu_kernel::documents::service::directory_revision_for_capability(&directory)
+        .unwrap_err();
+
+    assert_eq!(error.kind(), DocumentServiceErrorKind::UnsafeTarget);
+}
+
+#[cfg(any(unix, windows))]
+#[test]
+fn directory_revision_rejects_hard_links() {
+    let fixture = tempfile::tempdir().unwrap();
+    let directory_path = fixture.path().join("workspace");
+    fs::create_dir(&directory_path).unwrap();
+    fs::write(fixture.path().join("outside.bin"), b"outside").unwrap();
+    fs::hard_link(
+        fixture.path().join("outside.bin"),
+        directory_path.join("linked.bin"),
+    )
+    .unwrap();
+    let directory =
+        cap_std::fs::Dir::open_ambient_dir(&directory_path, cap_std::ambient_authority()).unwrap();
+
+    let error = qingyu_kernel::documents::service::directory_revision_for_capability(&directory)
+        .unwrap_err();
+
+    assert_eq!(error.kind(), DocumentServiceErrorKind::UnsafeTarget);
+}
+
+#[cfg(unix)]
+#[test]
+fn directory_revision_rejects_non_regular_entries() {
+    let fixture = tempfile::tempdir().unwrap();
+    let _listener = std::os::unix::net::UnixListener::bind(fixture.path().join("socket")).unwrap();
+    let directory =
+        cap_std::fs::Dir::open_ambient_dir(fixture.path(), cap_std::ambient_authority()).unwrap();
+
+    let error = qingyu_kernel::documents::service::directory_revision_for_capability(&directory)
+        .unwrap_err();
+
+    assert_eq!(error.kind(), DocumentServiceErrorKind::UnsafeTarget);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn directory_revision_rejects_non_unicode_names() {
+    use std::{ffi::OsString, os::unix::ffi::OsStringExt};
+
+    let fixture = tempfile::tempdir().unwrap();
+    fs::write(
+        fixture.path().join(OsString::from_vec(vec![b'f', 0xff])),
+        b"unsafe name",
+    )
+    .unwrap();
+    let directory =
+        cap_std::fs::Dir::open_ambient_dir(fixture.path(), cap_std::ambient_authority()).unwrap();
+
+    let error = qingyu_kernel::documents::service::directory_revision_for_capability(&directory)
+        .unwrap_err();
+
+    assert_eq!(error.kind(), DocumentServiceErrorKind::UnsafeTarget);
 }
 
 #[tokio::test]

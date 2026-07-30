@@ -19,9 +19,9 @@ use qingyu_kernel::{
     config::KernelConfig,
     contract::{
         CreateDocumentRequest, DeleteDocumentRequest, DeletionPolicy, DocumentContents,
-        DocumentKind, DocumentName, DomainEvent, FileDocumentName, ListDocumentsQuery,
-        MoveDocumentRequest, Nullable, PageLimit, PageQuery, Revision, SearchQuery,
-        SearchWorkspaceQuery, UpdateDocumentRequest, WireIdentityKey, WorkspaceDto,
+        DocumentEntryDto, DocumentKind, DocumentName, DomainEvent, FileDocumentName,
+        ListDocumentsQuery, MoveDocumentRequest, Nullable, PageLimit, PageQuery, Revision,
+        SearchQuery, SearchWorkspaceQuery, UpdateDocumentRequest, WireIdentityKey, WorkspaceDto,
         WorkspaceGeneration, WorkspaceId, WorkspaceReadiness, WorkspaceRelativePath,
     },
     documents::{
@@ -290,6 +290,84 @@ impl Fixture {
             deletion,
         }
     }
+}
+
+async fn create_listed_directory_with_binary_resource(
+    fixture: &Fixture,
+    name: &str,
+) -> DocumentEntryDto {
+    fixture
+        .service
+        .create_document(CreateDocumentRequest::Directory {
+            workspace_generation: fixture.workspace.current().unwrap().generation,
+            parent: WorkspaceRelativePath::default(),
+            name: DocumentName::parse(name).unwrap(),
+        })
+        .await
+        .unwrap();
+    fs::write(fixture.root.join(name).join("resource.bin"), b"before").unwrap();
+    fixture
+        .service
+        .list_documents(ListDocumentsQuery {
+            cursor: None,
+            limit: None,
+            parent: WorkspaceRelativePath::default(),
+        })
+        .await
+        .unwrap()
+        .items
+        .into_iter()
+        .find(|entry| entry.path.as_str() == name)
+        .unwrap()
+}
+
+#[tokio::test]
+async fn directory_move_rejects_a_stale_revision_after_binary_resource_change() {
+    let fixture = Fixture::new().await;
+    let directory = create_listed_directory_with_binary_resource(&fixture, "folder").await;
+    fs::write(fixture.root.join("folder/resource.bin"), b"after!").unwrap();
+
+    let error = fixture
+        .service
+        .move_document(
+            directory.id,
+            MoveDocumentRequest {
+                workspace_generation: fixture.workspace.current().unwrap().generation,
+                expected_revision: directory.revision,
+                target_parent: WorkspaceRelativePath::default(),
+                name: DocumentName::parse("moved").unwrap(),
+            },
+        )
+        .await
+        .unwrap_err();
+
+    assert_eq!(error.kind(), DocumentServiceErrorKind::RevisionConflict);
+    assert!(fixture.root.join("folder/resource.bin").is_file());
+    assert!(!fixture.root.join("moved").exists());
+}
+
+#[tokio::test]
+async fn directory_delete_rejects_a_stale_revision_after_binary_resource_change() {
+    let fixture = Fixture::new().await;
+    let directory = create_listed_directory_with_binary_resource(&fixture, "folder").await;
+    fs::write(fixture.root.join("folder/resource.bin"), b"after!").unwrap();
+
+    let error = fixture
+        .service
+        .delete_document(
+            directory.id,
+            DeleteDocumentRequest {
+                workspace_generation: fixture.workspace.current().unwrap().generation,
+                expected_revision: directory.revision,
+                deletion_policy: DeletionPolicy::Recoverable,
+            },
+        )
+        .await
+        .unwrap_err();
+
+    assert_eq!(error.kind(), DocumentServiceErrorKind::RevisionConflict);
+    assert!(fixture.root.join("folder/resource.bin").is_file());
+    assert!(fixture.deletion.calls.lock().unwrap().is_empty());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

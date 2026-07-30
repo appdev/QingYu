@@ -1763,9 +1763,21 @@ fn directory_revision_at(
 pub fn directory_revision_for_capability(
     directory: &Dir,
 ) -> Result<Revision, DocumentServiceError> {
+    let before = directory
+        .dir_metadata()
+        .map_err(|_| DocumentServiceError::unavailable())?;
+    if !before.is_dir() || before.file_type().is_symlink() {
+        return Err(DocumentServiceError::unsafe_target());
+    }
     let mut digest = Sha256::new();
     digest.update(b"qingyu-directory-v2\0");
     hash_directory_contents(directory, &mut digest)?;
+    let after = directory
+        .dir_metadata()
+        .map_err(|_| DocumentServiceError::unavailable())?;
+    if !after.is_dir() || after.file_type().is_symlink() || !same_file(&before, &after) {
+        return Err(DocumentServiceError::unsafe_target());
+    }
     Revision::parse(format!("dir:{:x}", digest.finalize()))
         .map_err(|_| DocumentServiceError::unavailable())
 }
@@ -1781,70 +1793,156 @@ fn hash_directory_contents(
     directory: &Dir,
     digest: &mut Sha256,
 ) -> Result<(), DocumentServiceError> {
-    let mut names = Vec::new();
-    for entry in directory
-        .entries()
-        .map_err(|_| DocumentServiceError::unavailable())?
-    {
-        let entry = entry.map_err(|_| DocumentServiceError::unavailable())?;
-        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
-            continue;
-        };
-        if !protected_name(&name) {
-            names.push(name);
-        }
-    }
-    names.sort();
-    for name in names {
+    let names = directory_entry_names(directory)?;
+    for name in &names {
         let metadata = directory
-            .symlink_metadata(&name)
+            .symlink_metadata(name)
             .map_err(|_| DocumentServiceError::unsafe_target())?;
         if metadata.file_type().is_symlink() {
+            return Err(DocumentServiceError::unsafe_target());
+        }
+        if protected_name(name) {
+            if !metadata.is_dir() && !trusted_metadata(&metadata) {
+                return Err(DocumentServiceError::unsafe_target());
+            }
             continue;
         }
         if metadata.is_dir() {
-            digest.update(b"d");
-            digest_field(digest, name.as_bytes());
-            let child = directory
-                .open_dir_nofollow(&name)
-                .map_err(|_| DocumentServiceError::unsafe_target())?;
-            hash_directory_contents(&child, digest)?;
-            digest.update(b"e");
-        } else if metadata.is_file() && markdown_name(&name) && trusted_metadata(&metadata) {
-            if metadata.len() > DocumentContents::maximum_bytes() as u64 {
-                return Err(DocumentServiceError::too_large());
-            }
-            digest.update(b"f");
-            digest_field(digest, name.as_bytes());
-            let mut options = OpenOptions::new();
-            options.read(true).follow(FollowSymlinks::No);
-            let mut file = directory
-                .open_with(&name, &options)
-                .map_err(|_| DocumentServiceError::unsafe_target())?;
-            let retained = file
-                .metadata()
-                .map_err(|_| DocumentServiceError::unavailable())?;
-            if !trusted_metadata(&retained) || !same_file(&metadata, &retained) {
-                return Err(DocumentServiceError::unsafe_target());
-            }
-            let mut bytes = Vec::with_capacity(metadata.len() as usize);
-            read_to_end_bounded(&mut file, &mut bytes, DocumentContents::maximum_bytes())
-                .map_err(|_| DocumentServiceError::unavailable())?;
-            if bytes.len() > DocumentContents::maximum_bytes() {
-                return Err(DocumentServiceError::too_large());
-            }
-            let after = file
-                .metadata()
-                .map_err(|_| DocumentServiceError::unavailable())?;
-            if !trusted_metadata(&after)
-                || !same_file(&retained, &after)
-                || after.len() != bytes.len() as u64
-                || retained.modified().ok() != after.modified().ok()
-            {
-                return Err(DocumentServiceError::unsafe_target());
-            }
-            digest_field(digest, &bytes);
+            hash_directory_entry(directory, name, &metadata, digest)?;
+        } else if metadata.is_file() {
+            hash_regular_file_entry(directory, name, &metadata, digest)?;
+        } else {
+            return Err(DocumentServiceError::unsafe_target());
         }
+    }
+    if directory_entry_names(directory)? != names {
+        return Err(DocumentServiceError::unsafe_target());
+    }
+    Ok(())
+}
+
+fn directory_entry_names(directory: &Dir) -> Result<Vec<String>, DocumentServiceError> {
+    let mut names = directory
+        .entries()
+        .map_err(|_| DocumentServiceError::unavailable())?
+        .map(|entry| {
+            entry
+                .map_err(|_| DocumentServiceError::unavailable())?
+                .file_name()
+                .to_str()
+                .map(str::to_owned)
+                .ok_or_else(DocumentServiceError::unsafe_target)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    names.sort();
+    Ok(names)
+}
+
+fn hash_directory_entry(
+    parent: &Dir,
+    name: &str,
+    addressed: &Metadata,
+    digest: &mut Sha256,
+) -> Result<(), DocumentServiceError> {
+    let child = parent
+        .open_dir_nofollow(name)
+        .map_err(|_| DocumentServiceError::unsafe_target())?;
+    let retained = child
+        .dir_metadata()
+        .map_err(|_| DocumentServiceError::unavailable())?;
+    if !retained.is_dir() || retained.file_type().is_symlink() || !same_file(addressed, &retained) {
+        return Err(DocumentServiceError::unsafe_target());
+    }
+
+    digest.update(b"d");
+    digest_field(digest, name.as_bytes());
+    hash_directory_contents(&child, digest)?;
+    digest.update(b"e");
+
+    let after = child
+        .dir_metadata()
+        .map_err(|_| DocumentServiceError::unavailable())?;
+    let named = parent
+        .symlink_metadata(name)
+        .map_err(|_| DocumentServiceError::unsafe_target())?;
+    if !after.is_dir()
+        || after.file_type().is_symlink()
+        || !named.is_dir()
+        || named.file_type().is_symlink()
+        || !same_file(&retained, &after)
+        || !same_file(&retained, &named)
+    {
+        return Err(DocumentServiceError::unsafe_target());
+    }
+    Ok(())
+}
+
+fn hash_regular_file_entry(
+    directory: &Dir,
+    name: &str,
+    addressed: &Metadata,
+    digest: &mut Sha256,
+) -> Result<(), DocumentServiceError> {
+    if !trusted_metadata(addressed) {
+        return Err(DocumentServiceError::unsafe_target());
+    }
+    let mut file = directory
+        .open_with(name, &crate::storage::nonfollowing_read_options())
+        .map_err(|_| DocumentServiceError::unsafe_target())?;
+    let retained = file
+        .metadata()
+        .map_err(|_| DocumentServiceError::unavailable())?;
+    if !trusted_metadata(&retained) || !same_file(addressed, &retained) {
+        return Err(DocumentServiceError::unsafe_target());
+    }
+    let expected_modified = retained
+        .modified()
+        .map_err(|_| DocumentServiceError::unavailable())?;
+
+    digest.update(b"f");
+    digest_field(digest, name.as_bytes());
+    digest.update(retained.len().to_be_bytes());
+    let mut total = 0_u64;
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .map_err(|_| DocumentServiceError::unavailable())?;
+        if read == 0 {
+            break;
+        }
+        total = total
+            .checked_add(read as u64)
+            .ok_or_else(DocumentServiceError::unsafe_target)?;
+        if total > retained.len() {
+            return Err(DocumentServiceError::unsafe_target());
+        }
+        digest.update(&buffer[..read]);
+    }
+
+    let after = file
+        .metadata()
+        .map_err(|_| DocumentServiceError::unavailable())?;
+    let named = directory
+        .symlink_metadata(name)
+        .map_err(|_| DocumentServiceError::unsafe_target())?;
+    if !trusted_metadata(&after)
+        || !trusted_metadata(&named)
+        || !same_file(&retained, &after)
+        || !same_file(&retained, &named)
+        || total != retained.len()
+        || after.len() != retained.len()
+        || named.len() != retained.len()
+        || after
+            .modified()
+            .map_err(|_| DocumentServiceError::unavailable())?
+            != expected_modified
+        || named
+            .modified()
+            .map_err(|_| DocumentServiceError::unavailable())?
+            != expected_modified
+    {
+        return Err(DocumentServiceError::unsafe_target());
     }
     Ok(())
 }
