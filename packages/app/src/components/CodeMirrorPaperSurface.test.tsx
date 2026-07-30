@@ -794,6 +794,37 @@ describe("CodeMirrorPaperSurface", () => {
     expect(resolveImageSrc).toHaveBeenCalledWith("./mock.png");
   });
 
+  it("hot-reconfigures rendered images when the resolver generation changes", async () => {
+    const initialResolver = (source: string) => source;
+    const readyResolver = (source: string) =>
+      source === "./server.png" ? "/api/v1/resources/server-image?kind=image" : source;
+    const { container, rerender } = render(
+      <CodeMirrorPaperSurface
+        autoFocus={false}
+        initialContent={"![Server image](./server.png)\n\nEdit"}
+        onEditorReady={() => {}}
+        onMarkdownChange={() => {}}
+        resolveImageSrc={initialResolver}
+      />,
+    );
+
+    expect(container.querySelector('img[src="./server.png"]')).toBeInTheDocument();
+
+    rerender(
+      <CodeMirrorPaperSurface
+        autoFocus={false}
+        initialContent={"![Server image](./server.png)\n\nEdit"}
+        onEditorReady={() => {}}
+        onMarkdownChange={() => {}}
+        resolveImageSrc={readyResolver}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(container.querySelector('img[src="/api/v1/resources/server-image?kind=image"]')).toBeInTheDocument();
+    });
+  });
+
   it("hot-reconfigures the table width preference", () => {
     const onEditorReady = vi.fn();
     const doc = "| Name | Value |\n| --- | --- |\n| Alpha | 1 |\n\nEdit";

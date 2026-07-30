@@ -18,6 +18,7 @@ import {
   type ServerKernelDomainPort,
   type ServerKernelEventNotice,
   type ServerKernelEventSource,
+  type ServerKernelResourceSnapshot,
 } from "./kernel";
 
 export const serverWorkspaceRoot = "kernel-workspace://primary";
@@ -38,6 +39,18 @@ type WorkspaceIdentity = {
 
 type CachedEntry = KernelDocumentEntrySnapshot;
 
+type CachedImageResource = Pick<
+  ServerKernelResourceSnapshot,
+  "id" | "mediaType" | "name" | "relativePath" | "revision"
+>;
+
+const previewableImageMediaTypes = new Set([
+  "image/gif",
+  "image/jpeg",
+  "image/png",
+  "image/webp",
+]);
+
 export function createServerFileRuntime(
   kernel: KernelDomainPort,
   options: ServerFileRuntimeOptions = {},
@@ -45,7 +58,13 @@ export function createServerFileRuntime(
   const fallback = createDefaultAppRuntime().files;
   const entries = new Map<string, CachedEntry>();
   const serverEvents = serverEventSource(kernel);
+  const resources = serverResourceSource(kernel);
   let workspaceIdentity: Promise<WorkspaceIdentity> | undefined;
+  let imageResources = new Map<string, CachedImageResource>();
+  let imageResourceCacheGeneration: KernelWorkspaceGeneration | undefined;
+  let imageResourceCacheReady = false;
+  let imageResourceEpoch = 0;
+  let imageResourcePrewarm: Promise<void> | undefined;
 
   const workspace = async () => {
     workspaceIdentity ??= kernel.workspace.read().then((snapshot) => ({
@@ -89,6 +108,94 @@ export function createServerFileRuntime(
       });
     }
     return result;
+  };
+
+  const refreshImageResources = async (
+    relativeRoot: string,
+    treeEntries: readonly KernelDocumentEntrySnapshot[],
+    signal?: AbortSignal | null,
+    expectedEpoch = imageResourceEpoch,
+  ) => {
+    const identity = await workspace();
+    if (resources === undefined) {
+      if (expectedEpoch === imageResourceEpoch) {
+        imageResources = new Map();
+        imageResourceCacheGeneration = identity.generation;
+        imageResourceCacheReady = true;
+      }
+      return;
+    }
+    const directories = new Set<KernelWorkspaceRelativePath>([
+      relativeRoot as KernelWorkspaceRelativePath,
+      ...treeEntries
+        .filter((entry) => entry.kind === "directory")
+        .map((entry) => entry.relativePath),
+    ]);
+    const next = new Map<string, CachedImageResource>();
+    for (const parent of directories) {
+      assertNotAborted(signal);
+      const inventory = await resources.list({
+        parent,
+        workspaceGeneration: identity.generation,
+      });
+      if (inventory.workspaceGeneration !== identity.generation) {
+        throw new ServerKernelDomainAdapterError("workspace-generation-mismatch");
+      }
+      for (const entry of inventory.items) {
+        if (entry.entryType !== "resource") continue;
+        const resource = entry.resource;
+        if (
+          resource.workspaceGeneration !== identity.generation ||
+          resource.parent !== parent ||
+          resource.kind !== "image" ||
+          resource.previewable !== true ||
+          !previewableImageMediaTypes.has(resource.mediaType)
+        ) continue;
+        next.set(resource.relativePath, {
+          id: resource.id,
+          mediaType: resource.mediaType,
+          name: resource.name,
+          relativePath: resource.relativePath,
+          revision: resource.revision,
+        });
+      }
+    }
+    assertNotAborted(signal);
+    if (expectedEpoch !== imageResourceEpoch) return;
+    imageResources = next;
+    imageResourceCacheGeneration = identity.generation;
+    imageResourceCacheReady = true;
+  };
+
+  const loadTreeAndImages = async (
+    relativeRoot: string,
+    signal?: AbortSignal | null,
+  ) => {
+    const epoch = imageResourceEpoch;
+    const treeEntries = await listTree(relativeRoot, signal);
+    await refreshImageResources(relativeRoot, treeEntries, signal, epoch);
+    return treeEntries;
+  };
+
+  const ensureImageResources = async () => {
+    const identity = await workspace();
+    if (
+      imageResourceCacheReady &&
+      imageResourceCacheGeneration === identity.generation
+    ) return;
+    imageResourcePrewarm ??= (async () => {
+      await loadTreeAndImages("");
+    })().finally(() => {
+      imageResourcePrewarm = undefined;
+    });
+    await imageResourcePrewarm;
+  };
+
+  const invalidateImageResources = () => {
+    imageResourceEpoch += 1;
+    imageResources = new Map();
+    imageResourceCacheGeneration = undefined;
+    imageResourceCacheReady = false;
   };
 
   const resolveEntry = async (path: string) => {
@@ -178,11 +285,11 @@ export function createServerFileRuntime(
     },
     listMarkdownFilesForPath: async (path) => {
       const relativeRoot = relativePathFromServerPath(path);
-      return (await listTree(relativeRoot)).map(fileTreeEntry).sort(compareRelativePath);
+      return (await loadTreeAndImages(relativeRoot)).map(fileTreeEntry).sort(compareRelativePath);
     },
     loadMarkdownFilesForPath: async (path, loadOptions = {}) => {
       const relativeRoot = relativePathFromServerPath(path);
-      const listed = (await listTree(relativeRoot, loadOptions.signal))
+      const listed = (await loadTreeAndImages(relativeRoot, loadOptions.signal))
         .map(fileTreeEntry)
         .sort(compareRelativePath);
       assertNotAborted(loadOptions.signal);
@@ -198,7 +305,30 @@ export function createServerFileRuntime(
       const identity = await workspace();
       return { name: identity.displayName, path: serverWorkspaceRoot };
     },
+    readLocalImageFile: async (path) => {
+      const relativePath = relativePathFromServerPath(path);
+      let resource = imageResources.get(relativePath);
+      if (resource === undefined) {
+        await ensureImageResources();
+        resource = imageResources.get(relativePath);
+      }
+      if (resource === undefined || resources === undefined) {
+        throw new Error("The Kernel image resource is unavailable.");
+      }
+      const identity = await workspace();
+      const response = await resources.open({
+        id: resource.id,
+        kind: "image",
+        workspaceGeneration: identity.generation,
+      });
+      const mediaType = response.headers.get("content-type")?.split(";", 1)[0]?.trim();
+      if (mediaType !== resource.mediaType) {
+        throw new Error("The Kernel image resource media type changed.");
+      }
+      return new File([await response.blob()], resource.name, { type: resource.mediaType });
+    },
     readMarkdownFile: async (path) => {
+      await ensureImageResources();
       const identity = await workspace();
       const entry = await resolveEntry(path);
       if (entry.kind !== "file") throw new Error("The Kernel path is not a document.");
@@ -230,6 +360,13 @@ export function createServerFileRuntime(
       const document = await resolveEntry(path);
       const parent = parentServerPath(document.relativePath);
       return moveEntry(document, fileName, parent);
+    },
+    resolveMarkdownImageSrc: (documentPath, source) => {
+      const relativePath = resolveServerMarkdownImagePath(documentPath, source);
+      if (relativePath === null) return undefined;
+      const resource = imageResources.get(relativePath);
+      if (resource === undefined) return undefined;
+      return `/api/v1/resources/${encodeURIComponent(resource.id)}?kind=image`;
     },
     resolveMarkdownFolder: async (path) => {
       const identity = await workspace();
@@ -286,14 +423,22 @@ export function createServerFileRuntime(
     watchMarkdownFile: async (path, onChange, onTreeChange) => {
       const relativePath = relativePathFromServerPath(path);
       const eventSubscription = subscribeToServerEvents(serverEvents, async (notice) => {
+        if (noticeInvalidatesImageResources(notice)) invalidateImageResources();
         if (notice.kind === "snapshot-required") {
-          if (!requiresDocumentReload(notice)) return;
-          entries.delete(relativePath);
-          await onChange(path);
+          const reloadDocuments = requiresDocumentReload(notice);
+          if (!reloadDocuments && !noticeInvalidatesImageResources(notice)) return;
+          if (reloadDocuments) {
+            entries.delete(relativePath);
+            await onChange(path);
+          }
           await onTreeChange?.(path);
           return;
         }
         const event = notice.frame.event;
+        if (event.type === "workspace-changed" || syncSucceeded(event)) {
+          await onTreeChange?.(path);
+          return;
+        }
         switch (event.type) {
           case "document-changed":
             if (event.document.path !== relativePath) return;
@@ -334,14 +479,22 @@ export function createServerFileRuntime(
     watchMarkdownTree: async (path, onTreeChange) => {
       const relativePath = relativePathFromServerPath(path);
       const eventSubscription = subscribeToServerEvents(serverEvents, async (notice) => {
+        if (noticeInvalidatesImageResources(notice)) invalidateImageResources();
         if (notice.kind === "snapshot-required") {
-          if (!requiresDocumentReload(notice)) return;
-          removeCachedTree(relativePath);
+          const reloadDocuments = requiresDocumentReload(notice);
+          if (!reloadDocuments && !noticeInvalidatesImageResources(notice)) return;
+          if (reloadDocuments) removeCachedTree(relativePath);
           await onTreeChange(path);
           return;
         }
         const event = notice.frame.event;
+        if (event.type === "workspace-changed" || syncSucceeded(event)) {
+          if (event.type === "workspace-changed") removeCachedTree(relativePath);
+          await onTreeChange(path);
+          return;
+        }
         if (!documentEventTouchesTree(event, relativePath)) return;
+        invalidateImageResources();
         invalidateDocumentEvent(entries, event);
         await onTreeChange(path);
       });
@@ -414,6 +567,55 @@ function serverPathFromRelative(relativePath: string) {
   if (relativePath === "") return serverWorkspaceRoot;
   const encoded = relativePath.split("/").map((segment) => encodeURIComponent(segment)).join("/");
   return `${serverWorkspaceRoot}/${encoded}`;
+}
+
+function resolveServerMarkdownImagePath(documentPath: string, source: string) {
+  let documentRelativePath: string;
+  try {
+    documentRelativePath = relativePathFromServerPath(documentPath);
+  } catch {
+    return null;
+  }
+  if (documentRelativePath === "" || source === "") return null;
+
+  const sourceWithoutSuffix = source.split(/[?#]/u, 1)[0] ?? "";
+  if (sourceWithoutSuffix === "" || sourceWithoutSuffix.includes("\\")) return null;
+  let rawPath: string;
+  let resolved = documentRelativePath.split("/").slice(0, -1);
+  if (sourceWithoutSuffix === serverWorkspaceRoot) return null;
+  if (sourceWithoutSuffix.startsWith(`${serverWorkspaceRoot}/`)) {
+    rawPath = sourceWithoutSuffix.slice(serverWorkspaceRoot.length + 1);
+    resolved = [];
+  } else if (/^[a-zA-Z][a-zA-Z\d+.-]*:/u.test(sourceWithoutSuffix)) {
+    return null;
+  } else if (sourceWithoutSuffix.startsWith("//")) {
+    return null;
+  } else if (sourceWithoutSuffix.startsWith("/")) {
+    rawPath = sourceWithoutSuffix.slice(1);
+    resolved = [];
+  } else {
+    rawPath = sourceWithoutSuffix;
+  }
+
+  const segments = rawPath.split("/");
+  for (const encodedSegment of segments) {
+    let segment: string;
+    try {
+      segment = decodeURIComponent(encodedSegment);
+    } catch {
+      return null;
+    }
+    if (/[\u0000-\u001f\u007f-\u009f\\/]/u.test(segment)) return null;
+    if (segment === ".") continue;
+    if (segment === "..") {
+      if (resolved.length === 0) return null;
+      resolved.pop();
+      continue;
+    }
+    if (segment === "") return null;
+    resolved.push(segment);
+  }
+  return resolved.length === 0 ? null : resolved.join("/");
 }
 
 function parentServerPath(relativePath: string) {
@@ -556,6 +758,15 @@ function serverEventSource(kernel: KernelDomainPort) {
   return (kernel as Partial<ServerKernelDomainPort>).serverEvents;
 }
 
+function serverResourceSource(kernel: KernelDomainPort) {
+  const resources = (kernel as Partial<ServerKernelDomainPort>).resources;
+  return resources !== undefined &&
+    typeof resources.list === "function" &&
+    typeof resources.open === "function"
+    ? resources
+    : undefined;
+}
+
 function subscribeToServerEvents(
   source: ServerKernelEventSource | undefined,
   listener: (notice: ServerKernelEventNotice) => Promise<unknown>,
@@ -572,6 +783,27 @@ function requiresDocumentReload(
   return notice.reloadScopes.some((scope) =>
     scope === "documents" || scope === "workspace"
   );
+}
+
+function noticeInvalidatesImageResources(notice: ServerKernelEventNotice) {
+  if (notice.kind === "snapshot-required") {
+    return notice.reloadScopes.some((scope) =>
+      scope === "documents" || scope === "workspace" || scope === "sync-status"
+    );
+  }
+  const event = notice.frame.event;
+  return event.type === "workspace-changed" ||
+    event.type === "document-created" ||
+    event.type === "document-changed" ||
+    event.type === "document-moved" ||
+    event.type === "document-deleted" ||
+    syncSucceeded(event);
+}
+
+function syncSucceeded(
+  event: Extract<ServerKernelEventNotice, { kind: "event" }>["frame"]["event"],
+) {
+  return event.type === "sync-status-changed" && event.status.completionState === "succeeded";
 }
 
 type DocumentDomainEvent = Extract<

@@ -125,6 +125,167 @@ describe("server file facade", () => {
     }));
   });
 
+  it("prewarms nested image capabilities before returning Markdown and rejects unsafe or non-image sources", async () => {
+    const kernel = kernelPort();
+    const notesFolder = entry({
+      kind: "directory",
+      locator: "folder-notes",
+      name: "notes",
+      relativePath: "notes",
+    });
+    const assetsFolder = entry({
+      kind: "directory",
+      locator: "folder-assets",
+      name: "assets",
+      relativePath: "assets",
+    });
+    const nestedDocument = entry({
+      locator: "document-nested",
+      name: "today.md",
+      parent: "notes",
+      relativePath: "notes/today.md",
+    });
+    vi.mocked(kernel.documents.list).mockImplementation(async (input) => ({
+      items: input.parent === "notes"
+        ? [nestedDocument]
+        : input.parent === "assets" ? [] : [notesFolder, assetsFolder],
+      nextCursor: null,
+      workspaceGeneration: generation,
+    }));
+    vi.mocked(kernel.documents.read).mockResolvedValue({
+      ...nestedDocument,
+      contents: "![Cover](../assets/cover%20image.png)",
+      kind: "file",
+    });
+    vi.mocked(kernel.resources.list).mockImplementation(async (input) => ({
+      items: input.parent === "assets"
+        ? [
+            resource({
+              id: "image/payload.signature",
+              mediaType: "image/png",
+              name: "cover image.png",
+              relativePath: "assets/cover image.png",
+            }),
+            resource({
+              id: "attachment/payload.signature",
+              kind: "attachment",
+              mediaType: "application/octet-stream",
+              name: "manual.pdf",
+              previewable: false,
+              relativePath: "assets/manual.pdf",
+            }),
+            resource({
+              id: "image-svg/payload.signature",
+              mediaType: "image/svg+xml",
+              name: "untrusted.svg",
+              relativePath: "assets/untrusted.svg",
+            }),
+          ]
+        : [],
+      workspaceGeneration: generation,
+    }));
+    vi.mocked(kernel.resources.open).mockResolvedValue(new Response("image bytes", {
+      headers: { "content-type": "image/png" },
+    }));
+    const files = createServerFileRuntime(kernel);
+    const documentPath = `${serverWorkspaceRoot}/notes/today.md`;
+
+    expect(files.resolveMarkdownImageSrc?.(documentPath, "../assets/cover%20image.png"))
+      .toBeUndefined();
+    await files.readMarkdownFile(documentPath);
+
+    const imageUrl = `/api/v1/resources/${encodeURIComponent("image/payload.signature")}?kind=image`;
+    expect(files.resolveMarkdownImageSrc?.(documentPath, "../assets/cover%20image.png"))
+      .toBe(imageUrl);
+    expect(files.resolveMarkdownImageSrc?.(documentPath, "/assets/cover%20image.png"))
+      .toBe(imageUrl);
+    expect(files.resolveMarkdownImageSrc?.(
+      documentPath,
+      `${serverWorkspaceRoot}/assets/cover%20image.png`,
+    )).toBe(imageUrl);
+    const inventoryCallCount = vi.mocked(kernel.resources.list).mock.calls.length;
+    await files.readMarkdownFile(documentPath);
+    expect(kernel.resources.list).toHaveBeenCalledTimes(inventoryCallCount);
+    const preview = await files.readLocalImageFile(
+      `${serverWorkspaceRoot}/assets/cover%20image.png`,
+    );
+    expect(preview).toMatchObject({ name: "cover image.png", type: "image/png" });
+    expect(await preview.text()).toBe("image bytes");
+    expect(kernel.resources.open).toHaveBeenCalledWith({
+      id: "image/payload.signature",
+      kind: "image",
+      workspaceGeneration: generation,
+    });
+    for (const source of [
+      "../../outside.png",
+      "%2e%2e/%2e%2e/outside.png",
+      "../assets/manual.pdf",
+      "../assets/untrusted.svg",
+      "../assets/cover%2Fimage.png",
+      "../assets/%5Cevil.png",
+      "../assets/%00evil.png",
+      "../assets/bad%encoding.png",
+      "../assets//cover.png",
+      "https://example.test/cover.png",
+      "data:image/png;base64,abc",
+      "blob:https://example.test/id",
+      "file:///etc/passwd",
+      "//example.test/cover.png",
+    ]) {
+      expect(files.resolveMarkdownImageSrc?.(documentPath, source)).toBeUndefined();
+    }
+  });
+
+  it("replaces signed image capabilities after refresh and invalidates them on sync completion", async () => {
+    const listeners = new Set<(notice: ServerKernelEventNotice) => unknown>();
+    const kernel = Object.assign(kernelPort(), {
+      serverEvents: {
+        available: true,
+        subscribe: (listener: (notice: ServerKernelEventNotice) => unknown) => {
+          listeners.add(listener);
+          return () => {
+            listeners.delete(listener);
+            return undefined;
+          };
+        },
+      },
+    });
+    let imageId = "image-old.signature";
+    vi.mocked(kernel.resources.list).mockImplementation(async () => ({
+      items: [resource({ id: imageId, name: "cover.png", relativePath: "cover.png" })],
+      workspaceGeneration: generation,
+    }));
+    const files = createServerFileRuntime(kernel);
+    const documentPath = `${serverWorkspaceRoot}/note.md`;
+
+    await files.loadMarkdownFilesForPath?.(serverWorkspaceRoot);
+    expect(files.resolveMarkdownImageSrc?.(documentPath, "./cover.png"))
+      .toContain(encodeURIComponent("image-old.signature"));
+    imageId = "image-new.signature";
+    await files.loadMarkdownFilesForPath?.(serverWorkspaceRoot);
+    expect(files.resolveMarkdownImageSrc?.(documentPath, "./cover.png"))
+      .toContain(encodeURIComponent("image-new.signature"));
+
+    const onTreeChange = vi.fn();
+    await files.watchMarkdownTree(serverWorkspaceRoot, onTreeChange);
+    publish(listeners, syncSucceededNotice());
+
+    await vi.waitFor(() => expect(onTreeChange).toHaveBeenCalledOnce());
+    expect(files.resolveMarkdownImageSrc?.(documentPath, "./cover.png")).toBeUndefined();
+
+    await files.loadMarkdownFilesForPath?.(serverWorkspaceRoot);
+    expect(files.resolveMarkdownImageSrc?.(documentPath, "./cover.png"))
+      .toContain(encodeURIComponent("image-new.signature"));
+    publish(listeners, {
+      kind: "snapshot-required",
+      reason: "sequence-gap",
+      reloadScopes: ["documents", "workspace"],
+    });
+
+    await vi.waitFor(() => expect(onTreeChange).toHaveBeenCalledTimes(2));
+    expect(files.resolveMarkdownImageSrc?.(documentPath, "./cover.png")).toBeUndefined();
+  });
+
   it("routes history reads and search through exact Server Kernel capabilities", async () => {
     const kernel = kernelPort() as ServerKernelDomainPort;
     const historyPage = {
@@ -355,6 +516,37 @@ function documentChangedNotice(revisionValue: string): ServerKernelEventNotice {
   };
 }
 
+function syncSucceededNotice(): ServerKernelEventNotice {
+  return {
+    frame: {
+      connectionId: "223e4567-e89b-42d3-a456-426614174000",
+      event: {
+        status: {
+          activeRunId: null,
+          completionState: "succeeded",
+          configRevision: "sync-config-revision-1",
+          error: null,
+          lastAttemptAt: "2026-07-30T00:00:01Z",
+          lastSuccessfulSyncAt: "2026-07-30T00:00:01Z",
+          lastTrigger: "manual",
+          provider: "s3",
+          summary: null,
+        },
+        type: "sync-status-changed",
+      },
+      protocolVersion: 1,
+      resource: {
+        kind: "sync-status",
+        runId: "323e4567-e89b-42d3-a456-426614174000",
+      },
+      revision: "sync-config-revision-1",
+      sequence: 2,
+      type: "event",
+    },
+    kind: "event",
+  };
+}
+
 function entry(input: {
   kind?: "file" | "directory";
   locator: string;
@@ -375,7 +567,34 @@ function entry(input: {
   };
 }
 
-function kernelPort(): KernelDomainPort {
+function resource(input: {
+  id: string;
+  kind?: "attachment" | "image";
+  mediaType?: string;
+  name: string;
+  previewable?: boolean;
+  relativePath: string;
+}): Awaited<ReturnType<ServerKernelDomainPort["resources"]["list"]>>["items"][number] {
+  const separator = input.relativePath.lastIndexOf("/");
+  return {
+    entryType: "resource",
+    resource: {
+      id: input.id,
+      kind: input.kind ?? "image",
+      mediaType: input.mediaType ?? "image/png",
+      modifiedAt: "2026-07-30T00:00:00Z",
+      name: input.name,
+      parent: (separator < 0 ? "" : input.relativePath.slice(0, separator)) as never,
+      previewable: input.previewable ?? true,
+      relativePath: input.relativePath as never,
+      revision: "resource-revision-1" as KernelRevision,
+      sizeBytes: 7,
+      workspaceGeneration: generation,
+    },
+  };
+}
+
+function kernelPort(): ServerKernelDomainPort {
   const documentEntry = entry({
     locator: "document-1",
     name: "note.md",
@@ -389,7 +608,7 @@ function kernelPort(): KernelDomainPort {
     documents: {
       create: unavailable(),
       delete: unavailable(),
-      history: { list: unavailable(), restore: unavailable() },
+      history: { list: unavailable(), read: unavailable(), restore: unavailable() },
       list: vi.fn<KernelDomainPort["documents"]["list"]>(async () => ({
         items: [documentEntry],
         nextCursor: null,
@@ -411,6 +630,16 @@ function kernelPort(): KernelDomainPort {
       })),
     },
     runtime: { read: unavailable() },
+    resources: {
+      list: vi.fn(async () => ({ items: [], workspaceGeneration: generation })),
+      open: vi.fn(async () => new Response(new Uint8Array([1]), {
+        headers: { "content-type": "image/png" },
+      })),
+    },
+    serverEvents: {
+      available: false,
+      subscribe: () => () => undefined,
+    },
     settings: { patch: unavailable(), read: unavailable() },
     sync: {
       patchConfig: unavailable(),
@@ -428,5 +657,5 @@ function kernelPort(): KernelDomainPort {
         revision: "workspace-revision-1" as KernelRevision,
       })),
     },
-  } satisfies KernelDomainPort;
+  } satisfies ServerKernelDomainPort;
 }

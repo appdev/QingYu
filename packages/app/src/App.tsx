@@ -779,6 +779,7 @@ function WorkspaceApp() {
     openFolderPath,
     renameFile: renameMarkdownTreeFileUnchecked,
     refresh: refreshMarkdownFileTree,
+    refreshRevision: fileTreeRefreshRevision,
     resizing: fileTreeResizing,
     resize: resizeFileTree,
     endResize: endFileTreeResize,
@@ -795,6 +796,23 @@ function WorkspaceApp() {
     workspaceLayoutClassName,
     workspaceLayoutStyle
   } = fileTree;
+  const editorImageSrcResolverForPath = useMemo(() => {
+    const resolverByDocumentPath = new Map<string | null, (source: string) => string>();
+
+    return (documentPath: string | null) => {
+      const cachedResolver = resolverByDocumentPath.get(documentPath);
+      if (cachedResolver) return cachedResolver;
+
+      const fallbackResolver = createMarkdownImageSrcResolver(documentPath);
+      const resolver = (source: string) => (
+        documentPath
+          ? appFiles.resolveMarkdownImageSrc?.(documentPath, source)
+          : undefined
+      ) ?? fallbackResolver(source);
+      resolverByDocumentPath.set(documentPath, resolver);
+      return resolver;
+    };
+  }, [appFiles.resolveMarkdownImageSrc, fileTreeFiles, fileTreeRefreshRevision]);
   const activeDocumentPathRef = useRef<string | null>(null);
   const currentPrimaryRootRef = useRef(primaryIntegrationRoot);
   currentPrimaryRootRef.current = primaryIntegrationRoot;
@@ -3363,8 +3381,8 @@ function WorkspaceApp() {
   const handleSaveDocument = useCallback(() => saveDocument(false), [saveDocument]);
   const saveDocumentAs = useCallback(() => saveDocument(true), [saveDocument]);
   const resolveSideDocumentImageSrc = useMemo(
-    () => createMarkdownImageSrcResolver(sideDocumentTab?.path ?? null),
-    [sideDocumentTab?.path]
+    () => editorImageSrcResolverForPath(sideDocumentTab?.path ?? null),
+    [editorImageSrcResolverForPath, sideDocumentTab?.path]
   );
   const sideDocumentWordCount = useMemo(
     () => sideDocumentTab ? getWordCount(sideDocumentTab.content) : 0,
@@ -4530,7 +4548,7 @@ function WorkspaceApp() {
               openExternalUrl={handleOpenEditorLink}
               readOnly={editorReadOnlyForPath(readOnlyMode, tab.path, guardedPaths)}
               onTextSelectionChange={tabActive ? handleTextSelectionChange : undefined}
-              resolveImageSrc={createMarkdownImageSrcResolver(tab.path)}
+              resolveImageSrc={editorImageSrcResolverForPath(tab.path)}
               revision={tab.revision}
               onScroll={tabActive ? handleVisualPaneScroll : undefined}
               scrollRef={tabActive ? visualScrollRef : undefined}

@@ -886,12 +886,14 @@ describe("useMarkdownFileTree", () => {
     ));
 
     const callsBeforeTreeChange = mockedListNativeMarkdownFilesForPath.mock.calls.length;
-    await emitTreeChange("/vault/docs/added.md");
+    await act(async () => {
+      await emitTreeChange("/vault/docs/added.md");
+    });
 
     await waitFor(() => {
       expect(mockedListNativeMarkdownFilesForPath.mock.calls.length).toBeGreaterThan(callsBeforeTreeChange);
     });
-    expect(screen.getByText("docs/added.md")).toBeInTheDocument();
+    expect(await screen.findByText("docs/added.md")).toBeInTheDocument();
   });
 
   it("preserves the loaded file tree when a native watcher refresh rejects", async () => {

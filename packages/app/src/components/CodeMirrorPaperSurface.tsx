@@ -580,6 +580,7 @@ export function CodeMirrorPaperSurface({
     Boolean(openExternalUrl),
     Boolean(openLocalAttachment),
     plugins,
+    resolveImageSrc,
     hideHeadingMarkersOnFocus,
     tableColumnWidthMode,
   ]);

@@ -152,6 +152,7 @@ export function useMarkdownFileTree({
   workspacePersistencePolicy = "shared"
 }: UseMarkdownFileTreeOptions = {}) {
   const [files, setFiles] = useState<NativeMarkdownFolderFile[]>([]);
+  const [refreshRevision, setRefreshRevision] = useState(0);
   const [rootName, setRootName] = useState("No folder");
   const [projectRoot, setProjectRoot] = useState<string | null>(null);
   const [settingsProjectRoot, setSettingsProjectRoot] = useState<string | null>(null);
@@ -403,6 +404,7 @@ export function useMarkdownFileTree({
                 path: refreshState.path
               };
               replaceFileTreeFiles(nextFiles);
+              setRefreshRevision((currentRevision) => currentRevision + 1);
             } catch {
               if (fileTreeRefreshStateRef.current !== refreshState) return;
               if (openFolderRequestIdRef.current !== refreshState.requestId) return;
@@ -873,6 +875,7 @@ export function useMarkdownFileTree({
     moveFile,
     rootNameForDocument,
     refresh,
+    refreshRevision,
     setRootFromMarkdownFilePath,
     sourcePath,
     renameFile,

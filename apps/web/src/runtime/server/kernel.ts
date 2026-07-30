@@ -64,6 +64,35 @@ export type ServerKernelHistorySnapshot = {
   readonly workspaceGeneration: KernelWorkspaceGeneration;
 };
 
+export type ServerKernelResourceSnapshot = {
+  readonly id: string;
+  readonly kind: "attachment" | "image";
+  readonly mediaType: string;
+  readonly modifiedAt: string;
+  readonly name: string;
+  readonly parent: KernelWorkspaceRelativePath;
+  readonly previewable: boolean;
+  readonly relativePath: KernelWorkspaceRelativePath;
+  readonly revision: KernelRevision;
+  readonly sizeBytes: number;
+  readonly workspaceGeneration: KernelWorkspaceGeneration;
+};
+
+export type ServerKernelInventoryEntry =
+  | {
+      readonly document: KernelDocumentEntrySnapshot;
+      readonly entryType: "document";
+    }
+  | {
+      readonly entryType: "resource";
+      readonly resource: ServerKernelResourceSnapshot;
+    };
+
+export type ServerKernelInventorySnapshot = {
+  readonly items: readonly ServerKernelInventoryEntry[];
+  readonly workspaceGeneration: KernelWorkspaceGeneration;
+};
+
 export type ServerKernelDomainPort = Omit<KernelDomainPort, "documents"> & {
   readonly documents: Omit<KernelDomainPort["documents"], "history"> & {
     readonly history: KernelDomainPort["documents"]["history"] & {
@@ -73,6 +102,17 @@ export type ServerKernelDomainPort = Omit<KernelDomainPort, "documents"> & {
         readonly workspaceGeneration: KernelWorkspaceGeneration;
       }) => Promise<ServerKernelHistorySnapshot>;
     };
+  };
+  readonly resources: {
+    readonly list: (input: {
+      readonly parent?: KernelWorkspaceRelativePath;
+      readonly workspaceGeneration: KernelWorkspaceGeneration;
+    }) => Promise<ServerKernelInventorySnapshot>;
+    readonly open: (input: {
+      readonly id: string;
+      readonly kind: "attachment" | "image";
+      readonly workspaceGeneration: KernelWorkspaceGeneration;
+    }) => Promise<Response>;
   };
   readonly serverEvents: ServerKernelEventSource;
 };
@@ -373,6 +413,41 @@ export async function createServerKernelDomainAdapter(
         return mapRuntime(runtime);
       },
     },
+    resources: {
+      list: async (input) => {
+        await prepareDocumentOperation(input.workspaceGeneration);
+        const items: ServerKernelInventoryEntry[] = [];
+        const seenCursors = new Set<string>();
+        let cursor: string | undefined;
+        do {
+          const page = await request(() => client.resources.list({
+            cursor,
+            limit: 100,
+            parent: input.parent,
+          }, { signal: requests.signal }));
+          items.push(...page.items.map((entry) => mapInventoryEntry(
+            entry,
+            workspaceGeneration,
+          )));
+          const nextCursor = page.nextCursor ?? undefined;
+          if (nextCursor !== undefined && seenCursors.has(nextCursor)) protocolMismatch();
+          if (nextCursor !== undefined) seenCursors.add(nextCursor);
+          cursor = nextCursor;
+        } while (cursor !== undefined);
+        await confirmWorkspaceIdentity();
+        return { items, workspaceGeneration };
+      },
+      open: async (input) => {
+        await prepareDocumentOperation(input.workspaceGeneration);
+        const response = await request(() => client.resources.open(
+          input.id,
+          input.kind,
+          { signal: requests.signal },
+        ));
+        await confirmWorkspaceIdentity();
+        return response;
+      },
+    },
     serverEvents: {
       get available() {
         return active && eventAvailable;
@@ -485,6 +560,7 @@ export async function createServerKernelDomainAdapter(
 }
 
 type RuntimeSource = Awaited<ReturnType<KernelClient["system"]["runtime"]>>;
+type InventoryEntrySource = Awaited<ReturnType<KernelClient["resources"]["list"]>>["items"][number];
 type WorkspaceSource = Awaited<ReturnType<KernelClient["workspace"]["get"]>>;
 type DocumentSource = Awaited<ReturnType<KernelClient["documents"]["get"]>>;
 type CreatedDocumentSource = Awaited<ReturnType<KernelClient["documents"]["create"]>>;
@@ -553,6 +629,34 @@ function mapWorkspace(workspace: WorkspaceSource): KernelWorkspaceSnapshot {
     id: workspace.id,
     readiness: workspace.readiness,
     revision: workspace.revision as KernelRevision,
+  };
+}
+
+function mapInventoryEntry(
+  entry: InventoryEntrySource,
+  workspaceGeneration: KernelWorkspaceGeneration,
+): ServerKernelInventoryEntry {
+  if (entry.entryType === "document") {
+    return {
+      document: mapDocumentEntry(entry.document, workspaceGeneration),
+      entryType: entry.entryType,
+    };
+  }
+  return {
+    entryType: entry.entryType,
+    resource: {
+      id: entry.resource.id,
+      kind: entry.resource.kind,
+      mediaType: entry.resource.mediaType,
+      modifiedAt: entry.resource.modifiedAt,
+      name: entry.resource.name,
+      parent: entry.resource.parent as KernelWorkspaceRelativePath,
+      previewable: entry.resource.previewable,
+      relativePath: entry.resource.path as KernelWorkspaceRelativePath,
+      revision: entry.resource.revision as KernelRevision,
+      sizeBytes: entry.resource.sizeBytes,
+      workspaceGeneration,
+    },
   };
 }
 

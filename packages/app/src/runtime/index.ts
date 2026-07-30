@@ -291,6 +291,10 @@ export type AppFileRuntime = {
     path: string,
     fileName: string
   ) => Promise<NativeMarkdownFolderFile>;
+  resolveMarkdownImageSrc?: (
+    documentPath: string,
+    source: string
+  ) => string | undefined;
   resolveMarkdownFolder: (path: string) => Promise<NativeMarkdownFolder>;
   resolveMarkdownPath: (path: string) => Promise<NativeMarkdownDroppedTarget>;
   resolveWorkspaceResourceRoot: (sourcePath: string) => Promise<string>;

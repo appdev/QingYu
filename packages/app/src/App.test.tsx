@@ -10958,6 +10958,120 @@ describe("QingYu workspace", () => {
     expect(container.querySelector('.cm-editor img[src="assets/pasted-image.png"]')).toBeInTheDocument();
   });
 
+  it("rerenders a fallback Markdown image after the file runtime finishes prewarming", async () => {
+    const signedImageUrl = "/api/v1/resources/image-ready?kind=image";
+    let imageReady = false;
+    let emitTreeChange: (path: string) => unknown | Promise<unknown> = () => {};
+    const runtime = getAppRuntime();
+    const resolveMarkdownImageSrc = vi.fn((documentPath: string, source: string) =>
+      imageReady && documentPath === mockNativePath && source === "assets/server.png"
+        ? signedImageUrl
+        : undefined
+    );
+    configureAppRuntime({
+      ...runtime,
+      files: {
+        ...runtime.files,
+        resolveMarkdownImageSrc
+      }
+    });
+    mockPrimaryMarkdownFile({
+      content: "# Server\n\n![Server image](assets/server.png)\n\nContent",
+      name: "native.md",
+      path: mockNativePath
+    });
+    mockedListNativeMarkdownFilesForPath.mockResolvedValue([
+      { name: "native.md", path: mockNativePath, relativePath: "native.md" }
+    ]);
+    mockedWatchNativeMarkdownFile.mockImplementation(async (_path, _onChange, onTreeChange) => {
+      emitTreeChange = (path) => onTreeChange?.(path);
+      return () => {};
+    });
+
+    const { container } = renderApp();
+
+    await expectVisibleMarkdownText("Content");
+    expect(container.querySelector('.cm-editor img[src="assets/server.png"]')).toBeInTheDocument();
+    expect(container.querySelector(`.cm-editor img[src="${signedImageUrl}"]`)).not.toBeInTheDocument();
+
+    imageReady = true;
+    await act(async () => {
+      await emitTreeChange("/mock-files/assets/server.png");
+    });
+
+    await waitFor(() => {
+      expect(container.querySelector(`.cm-editor img[src="${signedImageUrl}"]`)).toBeInTheDocument();
+    });
+    expect(resolveMarkdownImageSrc).toHaveBeenCalledWith(mockNativePath, "assets/server.png");
+  });
+
+  it("uses the file runtime image resolver in both document panes", async () => {
+    const mainPath = "/mock-files/vault/main.md";
+    const sidePath = "/mock-files/vault/notes/side.md";
+    const runtime = getAppRuntime();
+    const resolveMarkdownImageSrc = vi.fn((documentPath: string, source: string) => {
+      if (documentPath === mainPath && source === "assets/main.png") {
+        return "/api/v1/resources/main-image?kind=image";
+      }
+      if (documentPath === sidePath && source === "../assets/side.png") {
+        return "/api/v1/resources/side-image?kind=image";
+      }
+      return undefined;
+    });
+    configureAppRuntime({
+      ...runtime,
+      files: {
+        ...runtime.files,
+        resolveMarkdownImageSrc
+      }
+    });
+    mockOpenMarkdownTarget({
+      kind: "folder",
+      folder: {
+        path: mockFolderPath,
+        name: "vault"
+      }
+    });
+    mockedListNativeMarkdownFilesForPath.mockResolvedValue([
+      { name: "main.md", path: mainPath, relativePath: "main.md" },
+      { name: "side.md", path: sidePath, relativePath: "notes/side.md" }
+    ]);
+    mockedReadNativeMarkdownFile.mockImplementation(async (path) => path === mainPath
+      ? {
+          content: "# Main\n\n![Main image](assets/main.png)\n\nPrimary text",
+          name: "main.md",
+          path: mainPath
+        }
+      : {
+          content: "# Side\n\n![Side image](../assets/side.png)\n\nSecondary text",
+          name: "side.md",
+          path: sidePath
+        });
+
+    const { container } = renderApp();
+
+    fireEvent.keyDown(window, { key: "o", metaKey: true });
+    expect(await screen.findByRole("heading", { name: "vault" })).toBeInTheDocument();
+    fireEvent.click(await screen.findByRole("button", { name: "main.md" }));
+    await expectVisibleCodeMirrorText(container, "Primary text");
+    fireEvent.click(await screen.findByRole("button", { name: "notes" }));
+    fireEvent.click(await screen.findByRole("button", { name: "notes/side.md" }));
+    await expectVisibleCodeMirrorText(container, "Secondary text");
+    fireEvent.click(screen.getByRole("tab", { name: /main\.md/ }));
+    await expectVisibleCodeMirrorText(container, "Primary text");
+    fireEvent.contextMenu(screen.getByRole("tab", { name: /side\.md/ }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Open to side" }));
+
+    const mainPane = container.querySelector(".editor-side-by-side-surface > div:first-child") as HTMLElement;
+    const sidePane = container.querySelector(".side-document-pane") as HTMLElement;
+    await waitFor(() => {
+      expect(mainPane.querySelector('img[src="/api/v1/resources/main-image?kind=image"]')).toBeInTheDocument();
+      expect(sidePane.querySelector('img[src="/api/v1/resources/side-image?kind=image"]')).toBeInTheDocument();
+    });
+    expect(resolveMarkdownImageSrc).toHaveBeenCalledWith(mainPath, "assets/main.png");
+    expect(resolveMarkdownImageSrc).toHaveBeenCalledWith(sidePath, "../assets/side.png");
+  });
+
   it("replaces the current source-mode document search match", async () => {
     renderApp();
 
@@ -11595,12 +11709,20 @@ describe("QingYu workspace", () => {
   });
 
   it("exports the current markdown document as standalone HTML from the native menu", async () => {
+    const runtime = getAppRuntime();
+    configureAppRuntime({
+      ...runtime,
+      files: {
+        ...runtime.files,
+        resolveMarkdownImageSrc: () => "/api/v1/resources/editor-only-image?kind=image"
+      }
+    });
     mockedGetStoredExportSettings.mockResolvedValue({
       ...defaultExportSettings,
       fontFamily: "Example Serif"
     });
     mockOpenMarkdownFile({
-      content: "# Exportable\n\nRendered from markdown.",
+      content: "# Exportable\n\n![Export image](assets/export-image.png)\n\nRendered from markdown.",
       name: "exportable.md",
       path: mockNativePath
     });
@@ -11633,6 +11755,8 @@ describe("QingYu workspace", () => {
     );
     const exportedHtml = mockedSaveNativeHtmlFile.mock.calls.at(-1)?.[0].contents ?? "";
     expect(exportedHtml).toContain("<p>Rendered from markdown.</p>");
+    expect(exportedHtml).toContain("export-image.png");
+    expect(exportedHtml).not.toContain("/api/v1/resources/editor-only-image");
     expect(exportedHtml).toContain("<title>exportable.md</title>");
     expect(exportedHtml).toContain('font-family: "Example Serif", ui-serif');
   });

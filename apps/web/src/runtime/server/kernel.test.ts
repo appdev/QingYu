@@ -9,6 +9,7 @@ import type {
   KernelHistorySnapshotId,
   KernelRevision,
   KernelWorkspaceGeneration,
+  KernelWorkspaceRelativePath,
 } from "@markra/app/runtime";
 
 import {
@@ -78,6 +79,123 @@ describe("Server Kernel domain adapter", () => {
       workspaceGeneration: "stale-generation" as KernelWorkspaceGeneration,
     })).rejects.toMatchObject({ code: "workspace-generation-mismatch" });
     expect(client.documents.list).not.toHaveBeenCalled();
+  });
+
+  it("exhausts the authenticated inventory and retains only the fixed workspace identity", async () => {
+    const client = kernelClient();
+    vi.mocked(client.resources.list).mockImplementation(async (query) => (
+      query?.cursor === undefined
+        ? {
+            items: [{
+              entryType: "resource" as const,
+              resource: {
+                id: "image/payload.signature",
+                kind: "image" as const,
+                mediaType: "image/png",
+                modifiedAt: "2026-07-30T00:00:00Z",
+                name: "cover image.png",
+                parent: "assets",
+                path: "assets/cover image.png",
+                previewable: true,
+                revision: "resource-revision-1",
+                sizeBytes: 7,
+              },
+            }],
+            nextCursor: "inventory-page-2",
+          }
+        : { items: [], nextCursor: null }
+    ));
+    const adapter = await createServerKernelDomainAdapter(client, options());
+
+    await expect(adapter.port.resources.list({
+      parent: "assets" as KernelWorkspaceRelativePath,
+      workspaceGeneration: GENERATION,
+    })).resolves.toEqual({
+      items: [{
+        entryType: "resource",
+        resource: {
+          id: "image/payload.signature",
+          kind: "image",
+          mediaType: "image/png",
+          modifiedAt: "2026-07-30T00:00:00Z",
+          name: "cover image.png",
+          parent: "assets",
+          previewable: true,
+          relativePath: "assets/cover image.png",
+          revision: "resource-revision-1",
+          sizeBytes: 7,
+          workspaceGeneration: GENERATION,
+        },
+      }],
+      workspaceGeneration: GENERATION,
+    });
+    expect(client.resources.list).toHaveBeenNthCalledWith(1, {
+      cursor: undefined,
+      limit: 100,
+      parent: "assets",
+    }, { signal: expect.any(AbortSignal) });
+    expect(client.resources.list).toHaveBeenNthCalledWith(2, {
+      cursor: "inventory-page-2",
+      limit: 100,
+      parent: "assets",
+    }, { signal: expect.any(AbortSignal) });
+  });
+
+  it("fails closed when inventory authentication expires", async () => {
+    const onAuthenticationRequired = vi.fn();
+    const client = kernelClient();
+    vi.mocked(client.resources.list).mockRejectedValue(new KernelApiError({
+      code: "unauthorized",
+      status: 401,
+      requestId: "223e4567-e89b-42d3-a456-426614174000",
+    }));
+    const adapter = await createServerKernelDomainAdapter(client, {
+      ...options(),
+      onAuthenticationRequired,
+    });
+
+    await expect(adapter.port.resources.list({
+      workspaceGeneration: GENERATION,
+    })).rejects.toMatchObject({ code: "authentication-required" });
+    expect(onAuthenticationRequired).toHaveBeenCalledOnce();
+    await expect(adapter.port.workspace.read()).rejects.toMatchObject({ code: "released" });
+  });
+
+  it("fails closed when an image resource request loses authentication", async () => {
+    const onAuthenticationRequired = vi.fn();
+    const client = kernelClient();
+    vi.mocked(client.resources.open).mockRejectedValue(new KernelApiError({
+      code: "unauthorized",
+      status: 401,
+      requestId: "223e4567-e89b-42d3-a456-426614174000",
+    }));
+    const adapter = await createServerKernelDomainAdapter(client, {
+      ...options(),
+      onAuthenticationRequired,
+    });
+
+    await expect(adapter.port.resources.open({
+      id: "image/payload.signature",
+      kind: "image",
+      workspaceGeneration: GENERATION,
+    })).rejects.toMatchObject({ code: "authentication-required" });
+    expect(onAuthenticationRequired).toHaveBeenCalledOnce();
+    await expect(adapter.port.workspace.read()).rejects.toMatchObject({ code: "released" });
+  });
+
+  it("rejects a repeated inventory cursor instead of reusing an unbounded page", async () => {
+    const client = kernelClient();
+    vi.mocked(client.resources.list)
+      .mockResolvedValueOnce({ items: [], nextCursor: "repeated-cursor" })
+      .mockResolvedValueOnce({ items: [], nextCursor: "repeated-cursor" })
+      .mockRejectedValueOnce(new Error("an unbounded third page must be unreachable"));
+    const adapter = await createServerKernelDomainAdapter(client, options());
+
+    await expect(adapter.port.resources.list({
+      workspaceGeneration: GENERATION,
+    })).rejects.toMatchObject({ code: "protocol-mismatch" });
+    expect(client.resources.list).toHaveBeenCalledTimes(2);
+    await expect(adapter.port.workspace.read()).rejects.toMatchObject({ code: "released" });
   });
 
   it("fails closed and requests login once when a later request is unauthorized", async () => {
@@ -263,6 +381,12 @@ function kernelClient(overrides: {
 
   return {
     auth: {},
+    resources: {
+      list: vi.fn(async () => ({ items: [], nextCursor: null })),
+      open: vi.fn(async () => new Response(new Uint8Array([1]), {
+        headers: { "content-type": "image/png" },
+      })),
+    },
     system: { runtime: runtimeRead },
     workspace: {
       get: vi.fn(async () => workspace),
