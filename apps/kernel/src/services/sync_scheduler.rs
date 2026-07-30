@@ -45,7 +45,7 @@ impl KernelSyncScheduler {
         service: Arc<SyncService>,
         close_hook: Option<Arc<KernelSyncSchedulerCloseTestHook>>,
     ) -> Result<Self, KernelSyncSchedulerStartError> {
-        let runtime = service.runtime().clone();
+        let runtime = service.runtime().ok_or(KernelSyncSchedulerStartError)?;
         let claim = match close_hook {
             Some(close_hook) => service
                 .claim_kernel_sync_scheduler_with_close_hook_for_test(close_hook)

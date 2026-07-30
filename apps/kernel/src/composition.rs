@@ -25,7 +25,10 @@ use crate::{
     settings::{service::SettingsService, storage::AtomicJsonSettingsStore},
     storage::DurableFileStore,
     sync::{config::SyncConfigStore, executor::ProductionSyncExecutor},
-    workspace::{managed::ManagedWorkspaceCollection, primary::FixedPrimaryWorkspaceStore},
+    workspace::{
+        managed::ManagedWorkspaceCollection,
+        primary::{FixedPrimaryWorkspaceStore, PrimaryWorkspaceStore},
+    },
 };
 
 /// Builds the complete service set currently implemented for a fixed native
@@ -45,35 +48,52 @@ pub async fn compose_fixed_native_kernel(
         .map_err(|_| NativeCompositionError)?;
     drop(workspace_directory);
     let workspace_state = workspace_state.into_primary_workspace();
-    let profile = paths.profile();
     let display_name = workspace_state.display_name().to_owned();
     let managed =
         ManagedWorkspaceCollection::from_paths(&paths).map_err(|_| NativeCompositionError)?;
     let runtime = KernelRuntime::activate(config, paths, system_kernel_ports())
         .map_err(|_| NativeCompositionError)?;
+    install_fixed_kernel_services(
+        &runtime,
+        Arc::new(
+            FixedPrimaryWorkspaceStore::new(workspace_state).map_err(|_| NativeCompositionError)?,
+        ),
+        managed,
+        display_name,
+    )
+    .await
+    .map_err(|_| NativeCompositionError)?;
+    Ok(runtime)
+}
+
+/// Installs the complete fixed-workspace service set after the caller has
+/// acquired the runtime's instance and workspace locks.
+pub(crate) async fn install_fixed_kernel_services(
+    runtime: &Arc<KernelRuntime>,
+    primary_workspace: Arc<dyn PrimaryWorkspaceStore>,
+    managed: ManagedWorkspaceCollection,
+    display_name: impl Into<String>,
+) -> Result<(), FixedKernelCompositionError> {
     let settings_store = Arc::new(
         AtomicJsonSettingsStore::new(
             DurableFileStore::at_instance_data(
                 runtime.instance_data_root(),
                 runtime.launch_epoch(),
             )
-            .map_err(|_| NativeCompositionError)?,
+            .map_err(|_| FixedKernelCompositionError)?,
         )
-        .map_err(|_| NativeCompositionError)?,
+        .map_err(|_| FixedKernelCompositionError)?,
     );
     let workspace_service = Arc::new(
         WorkspaceService::new(
-            &runtime,
-            Arc::new(
-                FixedPrimaryWorkspaceStore::new(workspace_state)
-                    .map_err(|_| NativeCompositionError)?,
-            ),
+            runtime,
+            primary_workspace,
             managed,
             runtime.event_broker().clone(),
             display_name,
         )
         .await
-        .map_err(|_| NativeCompositionError)?,
+        .map_err(|_| FixedKernelCompositionError)?,
     );
     let settings_service = Arc::new(SettingsService::new(
         settings_store,
@@ -81,16 +101,16 @@ pub async fn compose_fixed_native_kernel(
     ));
     settings_service
         .migrate_schema()
-        .map_err(|_| NativeCompositionError)?;
+        .map_err(|_| FixedKernelCompositionError)?;
     let sync_store = Arc::new(
         SyncConfigStore::new(
             DurableFileStore::at_instance_data(
                 runtime.instance_data_root(),
                 runtime.launch_epoch(),
             )
-            .map_err(|_| NativeCompositionError)?,
+            .map_err(|_| FixedKernelCompositionError)?,
         )
-        .map_err(|_| NativeCompositionError)?,
+        .map_err(|_| FixedKernelCompositionError)?,
     );
     let sync_executor = Arc::new(ProductionSyncExecutor::new(
         runtime.clone(),
@@ -99,70 +119,73 @@ pub async fn compose_fixed_native_kernel(
     let sync_service = Arc::new(SyncService::new(runtime.clone(), sync_store, sync_executor));
     runtime
         .install_workspace_api_service(workspace_service)
-        .map_err(|_| NativeCompositionError)?;
+        .map_err(|_| FixedKernelCompositionError)?;
     let workspace = runtime
         .active_workspace_snapshot()
-        .map_err(|_| NativeCompositionError)?;
+        .map_err(|_| FixedKernelCompositionError)?;
     let documents_root = open_or_create_child(
         &runtime
             .instance_data_root()
             .try_clone_dir()
-            .map_err(|_| NativeCompositionError)?,
+            .map_err(|_| FixedKernelCompositionError)?,
         "documents-v1",
     )
-    .map_err(|_| NativeCompositionError)?;
+    .map_err(|_| FixedKernelCompositionError)?;
     let workspace_documents_root = open_or_create_child(
         &documents_root,
         &workspace.workspace().id.as_uuid().to_string(),
     )
-    .map_err(|_| NativeCompositionError)?;
+    .map_err(|_| FixedKernelCompositionError)?;
     let history_directory = open_or_create_child(&workspace_documents_root, "history")
-        .map_err(|_| NativeCompositionError)?;
+        .map_err(|_| FixedKernelCompositionError)?;
     let recovery_directory = open_or_create_child(&workspace_documents_root, "recovery")
-        .map_err(|_| NativeCompositionError)?;
+        .map_err(|_| FixedKernelCompositionError)?;
     let deletion = Arc::new(
         WorkspaceRecycleDeletionPort::new(
             workspace
                 .authority()
                 .root()
                 .try_clone_dir()
-                .map_err(|_| NativeCompositionError)?,
+                .map_err(|_| FixedKernelCompositionError)?,
         )
-        .map_err(|_| NativeCompositionError)?,
+        .map_err(|_| FixedKernelCompositionError)?,
     );
     let ignore: Arc<dyn WorkspaceIgnorePort> =
         Arc::new(SettingsWorkspaceIgnorePort::new(settings_service.clone()));
     let documents_service = Arc::new(
         WorkspaceDocumentService::new_with_ports(
-            &runtime,
+            runtime,
             deletion.clone(),
             Arc::new(FileDocumentHistoryStore::new(history_directory)),
             Arc::new(FileDocumentRecoveryStore::new(recovery_directory)),
             Arc::new(CapabilityAtomicInstallPort),
             ignore.clone(),
         )
-        .map_err(|_| NativeCompositionError)?,
+        .map_err(|_| FixedKernelCompositionError)?,
     );
     runtime
         .install_documents_api_service(documents_service)
-        .map_err(|_| NativeCompositionError)?;
+        .map_err(|_| FixedKernelCompositionError)?;
     runtime
         .install_resources_api_service(Arc::new(WorkspaceResourceService::new(&runtime, ignore)))
-        .map_err(|_| NativeCompositionError)?;
+        .map_err(|_| FixedKernelCompositionError)?;
     runtime
         .install_settings_api_service(settings_service)
-        .map_err(|_| NativeCompositionError)?;
+        .map_err(|_| FixedKernelCompositionError)?;
     runtime
         .install_sync_api_service(sync_service)
-        .map_err(|_| NativeCompositionError)?;
+        .map_err(|_| FixedKernelCompositionError)?;
     runtime
-        .install_system_api_service(Arc::new(NativeSystemService {
+        .install_system_api_service(Arc::new(FixedSystemService {
             instance_id: runtime.instance_id(),
-            profile,
+            profile: runtime.host_profile(),
         }))
-        .map_err(|_| NativeCompositionError)?;
-    Ok(runtime)
+        .map_err(|_| FixedKernelCompositionError)?;
+    Ok(())
 }
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct FixedKernelCompositionError;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct NativeCompositionError;
@@ -175,13 +198,13 @@ impl std::fmt::Display for NativeCompositionError {
 
 impl std::error::Error for NativeCompositionError {}
 
-struct NativeSystemService {
+struct FixedSystemService {
     instance_id: InstanceId,
     profile: HostProfile,
 }
 
 #[async_trait]
-impl SystemApiService for NativeSystemService {
+impl SystemApiService for FixedSystemService {
     async fn ready(&self) -> Result<ReadyHealthResponse, ServiceFailure> {
         Ok(ReadyHealthResponse {
             status: ReadyStatus::Ready,

@@ -10,6 +10,7 @@ mod initialization;
 mod initialization_coordinator;
 mod launch_environment;
 mod rate_limit;
+mod runtime_composition;
 mod secret;
 mod security;
 mod session;
@@ -37,6 +38,9 @@ pub use launch_environment::{
 pub use rate_limit::{
     AuthenticationAttemptPermit, AuthenticationFlow, AuthenticationRateLimiter,
     InvalidAuthenticationAttempt, InvalidRateLimitPolicy, RateLimitDecision, RateLimitPolicy,
+};
+pub use runtime_composition::{
+    compose_fixed_server_kernel, ServerRuntimeComposition, ServerRuntimeCompositionError,
 };
 pub use secret::ServerAuthenticationSecret;
 pub use security::ServerAuthenticationSecurity;

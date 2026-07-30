@@ -312,7 +312,7 @@ impl fmt::Display for SyncExecutionError {
 impl std::error::Error for SyncExecutionError {}
 
 pub struct SyncService {
-    runtime: Arc<KernelRuntime>,
+    runtime: Weak<KernelRuntime>,
     store: Arc<SyncConfigStore>,
     executor: Arc<dyn SyncExecutor>,
     editing: Arc<SyncEditingRegistry>,
@@ -411,7 +411,7 @@ impl SyncService {
     ) -> Self {
         Self {
             status: runtime.sync_status(),
-            runtime,
+            runtime: Arc::downgrade(&runtime),
             store,
             executor,
             editing: Arc::new(SyncEditingRegistry::new()),
@@ -423,8 +423,8 @@ impl SyncService {
         self.editing.clone()
     }
 
-    pub(crate) fn runtime(&self) -> &Arc<KernelRuntime> {
-        &self.runtime
+    pub(crate) fn runtime(&self) -> Option<Arc<KernelRuntime>> {
+        self.runtime.upgrade()
     }
 
     pub async fn trigger_kernel_sync(&self, trigger: SyncTrigger) -> KernelSyncTriggerResult {
@@ -445,11 +445,11 @@ impl SyncService {
         trigger: SyncTrigger,
         expected_revision: Option<Revision>,
     ) -> KernelSyncTriggerResult {
-        if self.verify_instance(ErrorCode::SyncNotReady).is_err() {
+        let Ok(runtime) = self.verified_runtime(ErrorCode::SyncNotReady) else {
             return KernelSyncTriggerResult::rejected(KernelSyncTriggerRejection::Unavailable);
-        }
-        let mutation = self.runtime.mutation_coordinator().lock().await;
-        if self.verify_instance(ErrorCode::SyncNotReady).is_err() {
+        };
+        let mutation = runtime.mutation_coordinator().lock().await;
+        if runtime.verify_instance_lock().is_err() {
             return KernelSyncTriggerResult::rejected(KernelSyncTriggerRejection::Unavailable);
         }
         let closing = match self.kernel_trigger_gate.lock() {
@@ -462,7 +462,7 @@ impl SyncService {
             return KernelSyncTriggerResult::rejected(KernelSyncTriggerRejection::Closing);
         }
         drop(closing);
-        let registered = self.runtime.sync_run_registered(&mutation);
+        let registered = runtime.sync_run_registered(&mutation);
         let attempting = self.status.is_attempting();
         match (registered, attempting) {
             (Ok(true), _) | (_, Ok(true)) => {
@@ -473,7 +473,7 @@ impl SyncService {
                 return KernelSyncTriggerResult::rejected(KernelSyncTriggerRejection::Unavailable)
             }
         }
-        match self.start_sync_run(trigger, expected_revision, mutation) {
+        match self.start_sync_run(&runtime, trigger, expected_revision, mutation) {
             Ok(run) => KernelSyncTriggerResult::accepted(run),
             Err(error) => KernelSyncTriggerResult::rejected(kernel_trigger_rejection(error)),
         }
@@ -541,20 +541,20 @@ impl SyncService {
         }
     }
 
-    fn verify_instance(&self, code: ErrorCode) -> Result<(), ServiceFailure> {
-        self.runtime
-            .verify_instance_lock()
-            .map_err(|_| failure(code))
+    fn verified_runtime(&self, code: ErrorCode) -> Result<Arc<KernelRuntime>, ServiceFailure> {
+        let runtime = self.runtime.upgrade().ok_or_else(|| failure(code))?;
+        runtime.verify_instance_lock().map_err(|_| failure(code))?;
+        Ok(runtime)
     }
 
     fn start_sync_run(
         &self,
+        runtime: &Arc<KernelRuntime>,
         trigger: SyncTrigger,
         expected_revision: Option<Revision>,
         mutation: MutationPermit<'_>,
     ) -> Result<StartedSyncRun, SyncRunTriggerFailure> {
-        let admitted_workspace = self
-            .runtime
+        let admitted_workspace = runtime
             .active_workspace_snapshot()
             .map_err(|_| SyncRunTriggerFailure::NotReady)?;
         let (config, revision) = match self
@@ -585,15 +585,13 @@ impl SyncService {
             return Err(SyncRunTriggerFailure::ModeDisallowed);
         }
         let config = *config;
-        let accepted_at = self
-            .runtime
+        let accepted_at = runtime
             .ports()
             .clock()
             .now()
             .map_err(|_| SyncRunTriggerFailure::Unavailable)?;
         let run_id = RunId::new(uuid::Uuid::new_v4());
-        let queued = self
-            .runtime
+        let queued = runtime
             .queue_sync_run(
                 admitted_workspace,
                 &exposed,
@@ -604,14 +602,14 @@ impl SyncService {
             )
             .map_err(|_| SyncRunTriggerFailure::ActiveRun)?;
         publish_status(
-            self.runtime.as_ref(),
+            runtime.as_ref(),
             queued.attempting,
             revision.clone(),
             Nullable::value(run_id),
         );
 
         let (settlement_state, settlement) = SyncRunSettlement::channel();
-        let background_runtime = Arc::downgrade(&self.runtime);
+        let background_runtime = Arc::downgrade(runtime);
         let executor = self.executor.clone();
         let fallback_completed_at = accepted_at.clone();
         let drop_state = Arc::new(SyncBackgroundTaskDropState {
@@ -620,7 +618,7 @@ impl SyncService {
             settlement: settlement_state.clone(),
         });
         let drop_guard = SyncBackgroundTaskGuard {
-            runtime: Arc::downgrade(&self.runtime),
+            runtime: Arc::downgrade(runtime),
             run_id,
             state: drop_state.clone(),
         };
@@ -673,15 +671,13 @@ impl SyncService {
                 let _finished = runtime.finish_sync_terminal(run_id);
             }
         });
-        let spawn_result =
-            self.runtime
-                .spawn_sync_background(Box::pin(SyncBackgroundTaskEnvelope {
-                    inner: Some(inner),
-                    guard: Some(drop_guard),
-                }));
+        let spawn_result = runtime.spawn_sync_background(Box::pin(SyncBackgroundTaskEnvelope {
+            inner: Some(inner),
+            guard: Some(drop_guard),
+        }));
         drop_state.trigger_active.store(false, Ordering::Release);
         if spawn_result.is_err() || drop_state.dropped.load(Ordering::Acquire) {
-            let terminal = match self.runtime.fail_queued_sync_spawn(run_id, &mutation) {
+            let terminal = match runtime.fail_queued_sync_spawn(run_id, &mutation) {
                 Ok(terminal) => terminal,
                 Err(_) => {
                     settlement_state.settle();
@@ -689,8 +685,8 @@ impl SyncService {
                 }
             };
             drop(mutation);
-            self.runtime.publish_sync_terminal(&terminal);
-            let finished = self.runtime.finish_sync_terminal(run_id);
+            runtime.publish_sync_terminal(&terminal);
+            let finished = runtime.finish_sync_terminal(run_id);
             settlement_state.settle();
             finished.map_err(|_| SyncRunTriggerFailure::Unavailable)?;
             return Err(SyncRunTriggerFailure::Unavailable);
@@ -713,7 +709,7 @@ pub(crate) struct KernelSyncSchedulerClaimError;
 #[async_trait]
 impl SyncApiService for SyncService {
     async fn get_sync_config(&self) -> Result<SyncConfigViewDto, ServiceFailure> {
-        self.verify_instance(ErrorCode::SyncConfigInvalid)?;
+        let _runtime = self.verified_runtime(ErrorCode::SyncConfigInvalid)?;
         match self
             .store
             .load()
@@ -733,15 +729,16 @@ impl SyncApiService for SyncService {
         &self,
         request: PatchSyncConfigRequest,
     ) -> Result<SyncConfigViewDto, ServiceFailure> {
-        self.verify_instance(ErrorCode::SyncConfigInvalid)?;
+        let runtime = self.verified_runtime(ErrorCode::SyncConfigInvalid)?;
         request
             .changes
             .validate()
             .map_err(|_| failure(ErrorCode::InvalidRequest))?;
-        let mutation = self.runtime.mutation_coordinator().lock().await;
-        self.verify_instance(ErrorCode::SyncConfigInvalid)?;
-        if self
-            .runtime
+        let mutation = runtime.mutation_coordinator().lock().await;
+        runtime
+            .verify_instance_lock()
+            .map_err(|_| failure(ErrorCode::SyncConfigInvalid))?;
+        if runtime
             .sync_run_registered(&mutation)
             .map_err(|_| failure(ErrorCode::SyncNotReady))?
             || self
@@ -782,9 +779,9 @@ impl SyncApiService for SyncService {
                 config: exposed.clone(),
             },
         };
-        let _publication_result = self.runtime.publish(&publication);
+        let _publication_result = runtime.publish(&publication);
         publish_status(
-            self.runtime.as_ref(),
+            runtime.as_ref(),
             installed_status,
             exposed.revision.clone(),
             Nullable::null(),
@@ -796,10 +793,12 @@ impl SyncApiService for SyncService {
         &self,
         request: TestSyncConnectionRequest,
     ) -> Result<SyncConnectionTestDto, ServiceFailure> {
-        self.verify_instance(ErrorCode::SyncConfigInvalid)?;
+        let runtime = self.verified_runtime(ErrorCode::SyncConfigInvalid)?;
         let (config, revision) = {
-            let _mutation = self.runtime.mutation_coordinator().lock().await;
-            self.verify_instance(ErrorCode::SyncConfigInvalid)?;
+            let _mutation = runtime.mutation_coordinator().lock().await;
+            runtime
+                .verify_instance_lock()
+                .map_err(|_| failure(ErrorCode::SyncConfigInvalid))?;
             let (mut config, revision) = match self.store.load().map_err(store_failure)? {
                 SyncConfigLoad::Absent => return Err(failure(ErrorCode::SyncConfigAbsent)),
                 SyncConfigLoad::Loaded { config, revision } => (config, revision),
@@ -821,7 +820,9 @@ impl SyncApiService for SyncService {
             }
             (*config, request.expected_revision)
         };
-        self.verify_instance(ErrorCode::SyncConfigInvalid)?;
+        runtime
+            .verify_instance_lock()
+            .map_err(|_| failure(ErrorCode::SyncConfigInvalid))?;
         self.executor
             .test_connection(config.clone())
             .await
@@ -834,9 +835,11 @@ impl SyncApiService for SyncService {
     }
 
     async fn get_sync_status(&self) -> Result<SyncStatusDto, ServiceFailure> {
-        self.verify_instance(ErrorCode::SyncNotReady)?;
-        let _mutation = self.runtime.mutation_coordinator().lock().await;
-        self.verify_instance(ErrorCode::SyncNotReady)?;
+        let runtime = self.verified_runtime(ErrorCode::SyncNotReady)?;
+        let _mutation = runtime.mutation_coordinator().lock().await;
+        runtime
+            .verify_instance_lock()
+            .map_err(|_| failure(ErrorCode::SyncNotReady))?;
         let exposed = match self
             .store
             .load()
@@ -860,10 +863,13 @@ impl SyncApiService for SyncService {
         &self,
         request: TriggerSyncRunRequest,
     ) -> Result<SyncRunAcceptedDto, ServiceFailure> {
-        self.verify_instance(ErrorCode::SyncNotReady)?;
-        let mutation = self.runtime.mutation_coordinator().lock().await;
-        self.verify_instance(ErrorCode::SyncNotReady)?;
+        let runtime = self.verified_runtime(ErrorCode::SyncNotReady)?;
+        let mutation = runtime.mutation_coordinator().lock().await;
+        runtime
+            .verify_instance_lock()
+            .map_err(|_| failure(ErrorCode::SyncNotReady))?;
         self.start_sync_run(
+            &runtime,
             SyncTrigger::Manual,
             Some(request.expected_config_revision),
             mutation,

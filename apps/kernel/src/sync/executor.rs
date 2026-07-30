@@ -7,7 +7,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc,
+        Arc, Weak,
     },
     time::Duration,
 };
@@ -65,7 +65,7 @@ use crate::{
 
 /// Kernel-owned executor for the providers whose full run lifecycle is composed.
 pub(crate) struct ProductionSyncExecutor {
-    runtime: Arc<KernelRuntime>,
+    runtime: Weak<KernelRuntime>,
     settings: Arc<SettingsService>,
     dejavu_factory: Arc<dyn DejavuRunnerFactory>,
     dejavu_runtime: RepositoryRuntimeState,
@@ -74,7 +74,7 @@ pub(crate) struct ProductionSyncExecutor {
 impl ProductionSyncExecutor {
     pub(crate) fn new(runtime: Arc<KernelRuntime>, settings: Arc<SettingsService>) -> Self {
         Self {
-            runtime,
+            runtime: Arc::downgrade(&runtime),
             settings,
             dejavu_factory: Arc::new(ProductionDejavuRunnerFactory),
             dejavu_runtime: RepositoryRuntimeState::default(),
@@ -88,7 +88,7 @@ impl ProductionSyncExecutor {
         dejavu_factory: Arc<dyn DejavuRunnerFactory>,
     ) -> Self {
         Self {
-            runtime,
+            runtime: Arc::downgrade(&runtime),
             settings,
             dejavu_factory,
             dejavu_runtime: RepositoryRuntimeState::default(),
@@ -117,11 +117,14 @@ impl ProductionSyncExecutor {
             return Err(unavailable_error(provider, Some(run_id)));
         };
 
-        self.runtime
+        let runtime = self
+            .runtime
+            .upgrade()
+            .ok_or_else(|| local_error(provider, run_id))?;
+        runtime
             .verify_instance_lock()
             .map_err(|_| local_error(provider, run_id))?;
-        let active = self
-            .runtime
+        let active = runtime
             .active_workspace_snapshot()
             .map_err(|_| local_error(provider, run_id))?;
         if active.identity() != context.snapshot_identity() {
@@ -136,7 +139,7 @@ impl ProductionSyncExecutor {
             .root()
             .try_clone_dir()
             .map_err(|_| local_error(provider, run_id))?;
-        let instance_authority = self.runtime.active_instance_authority();
+        let instance_authority = runtime.active_instance_authority();
         instance_authority
             .verify_held_directory()
             .map_err(|_| local_error(provider, run_id))?;
@@ -349,11 +352,14 @@ impl ProductionSyncExecutor {
             return Err(unavailable_error(provider, Some(run_id)));
         };
 
-        self.runtime
+        let runtime = self
+            .runtime
+            .upgrade()
+            .ok_or_else(|| local_error(provider, run_id))?;
+        runtime
             .verify_instance_lock()
             .map_err(|_| local_error(provider, run_id))?;
-        let active = self
-            .runtime
+        let active = runtime
             .active_workspace_snapshot()
             .map_err(|_| local_error(provider, run_id))?;
         if active.identity() != context.snapshot_identity() {
@@ -363,7 +369,7 @@ impl ProductionSyncExecutor {
         authority
             .verify_held_directory()
             .map_err(|_| local_error(provider, run_id))?;
-        let instance_authority = self.runtime.active_instance_authority();
+        let instance_authority = runtime.active_instance_authority();
         instance_authority
             .verify_held_directory()
             .map_err(|_| local_error(provider, run_id))?;
@@ -375,15 +381,12 @@ impl ProductionSyncExecutor {
         let remote_root = ValidRemoteRoot::parse(&remote_root)
             .map_err(|_| configuration_error(provider, Some(run_id)))?;
 
-        let binding =
-            read_active_dejavu_binding(self.runtime.instance_data_root(), authority.root())
-                .map_err(|error| match error {
-                    DejavuLocalStateError::InvalidState => {
-                        configuration_error(provider, Some(run_id))
-                    }
-                    DejavuLocalStateError::Storage => local_error(provider, run_id),
-                })?
-                .ok_or_else(|| configuration_error(provider, Some(run_id)))?;
+        let binding = read_active_dejavu_binding(runtime.instance_data_root(), authority.root())
+            .map_err(|error| match error {
+                DejavuLocalStateError::InvalidState => configuration_error(provider, Some(run_id)),
+                DejavuLocalStateError::Storage => local_error(provider, run_id),
+            })?
+            .ok_or_else(|| configuration_error(provider, Some(run_id)))?;
         instance_authority
             .verify_held_directory()
             .map_err(|_| local_error(provider, run_id))?;
@@ -548,7 +551,7 @@ impl ProductionSyncExecutor {
             repository_key,
             runtime: self.dejavu_runtime.clone(),
             coordinator: Arc::new(MutationWorkingTreeCoordinator::new(
-                self.runtime.mutation_coordinator().clone(),
+                runtime.mutation_coordinator().clone(),
             )),
         };
         let config = DejavuS3Config {
@@ -589,7 +592,7 @@ impl ProductionSyncExecutor {
                 instance_authority,
                 &result.conflicts,
                 Arc::new(MutationWorkingTreeCoordinator::new(
-                    self.runtime.mutation_coordinator().clone(),
+                    runtime.mutation_coordinator().clone(),
                 )),
             )
             .await

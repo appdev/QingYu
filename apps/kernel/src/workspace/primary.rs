@@ -1,11 +1,22 @@
 //! Primary-workspace persistence boundary.
 
-use std::fmt;
-use std::sync::Arc;
+use std::{
+    fmt,
+    sync::{Arc, Mutex},
+};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::{Uuid, Variant, Version};
+
+use crate::{
+    config::KernelLaunchEpoch,
+    paths::InstanceDataRoot,
+    storage::{
+        CommitState, DurableFileFailureKind, DurableFileStore, ExpectedFile, FileRevision,
+        PreservePrevious, RecoveryOutcome, ReplaceRequest, StorageFileName,
+    },
+};
 
 const PRIMARY_WORKSPACE_SCHEMA_VERSION: u64 = 1;
 
@@ -156,6 +167,186 @@ impl fmt::Debug for FixedPrimaryWorkspaceStore {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str("FixedPrimaryWorkspaceStore(..)")
     }
+}
+
+const SERVER_PRIMARY_WORKSPACE_FILE: &str = "primary-workspace-v1.json";
+const MAXIMUM_SERVER_PRIMARY_WORKSPACE_BYTES: u64 = 16 * 1024;
+
+/// Kernel-owned primary-workspace state for the fixed `/data/workspace` Server host.
+///
+/// The durable-file boundary retains the state directory, rejects symlinks,
+/// recovers interrupted publications, and atomically replaces the one canonical
+/// record. A server workspace cannot be removed or switched in place.
+pub struct DurableServerPrimaryWorkspaceStore {
+    binding: PrimaryWorkspaceRepositoryBinding,
+    durable: DurableFileStore,
+    target: StorageFileName,
+    state: Mutex<DurableServerPrimaryWorkspaceState>,
+}
+
+struct DurableServerPrimaryWorkspaceState {
+    committed: Option<Value>,
+    revision: Option<FileRevision>,
+    staged: Option<Option<Value>>,
+    recovery_required: bool,
+}
+
+impl DurableServerPrimaryWorkspaceStore {
+    pub fn open(
+        root: &InstanceDataRoot,
+        launch_epoch: &KernelLaunchEpoch,
+    ) -> Result<Self, PrimaryWorkspaceStoreError> {
+        root.verify_held_directory()
+            .map_err(|_| PrimaryWorkspaceStoreError::unavailable())?;
+        let durable = DurableFileStore::at_instance_data(root, launch_epoch)
+            .map_err(|_| PrimaryWorkspaceStoreError::unavailable())?;
+        let recovery = durable
+            .recover()
+            .map_err(|_| PrimaryWorkspaceStoreError::unavailable())?;
+        if recovery
+            .iter()
+            .any(|outcome| matches!(outcome, RecoveryOutcome::ManualInterventionRequired { .. }))
+        {
+            return Err(PrimaryWorkspaceStoreError::unavailable());
+        }
+        let target = StorageFileName::parse(SERVER_PRIMARY_WORKSPACE_FILE)
+            .map_err(|_| PrimaryWorkspaceStoreError::unavailable())?;
+        let stored = durable
+            .read(&target, MAXIMUM_SERVER_PRIMARY_WORKSPACE_BYTES)
+            .map_err(|_| PrimaryWorkspaceStoreError::unavailable())?;
+        let (committed, revision) = match stored {
+            Some(stored) => {
+                let value = decode_server_primary_workspace(&stored.bytes)?;
+                (Some(value), Some(stored.revision.clone()))
+            }
+            None => (None, None),
+        };
+        Ok(Self {
+            binding: PrimaryWorkspaceRepositoryBinding::new(),
+            durable,
+            target,
+            state: Mutex::new(DurableServerPrimaryWorkspaceState {
+                committed,
+                revision,
+                staged: None,
+                recovery_required: false,
+            }),
+        })
+    }
+
+    fn persist(
+        &self,
+        state: &mut DurableServerPrimaryWorkspaceState,
+        value: &Value,
+    ) -> Result<(), PrimaryWorkspaceStoreError> {
+        let bytes =
+            serde_json::to_vec(value).map_err(|_| PrimaryWorkspaceStoreError::unavailable())?;
+        let expected = match state.revision.as_ref() {
+            Some(revision) => ExpectedFile::Revision(revision),
+            None => ExpectedFile::Absent,
+        };
+        match self.durable.replace(ReplaceRequest {
+            target: &self.target,
+            bytes: &bytes,
+            expected,
+            preserve_previous: PreservePrevious::None,
+        }) {
+            Ok(outcome) => {
+                state.committed = Some(value.clone());
+                state.revision = Some(outcome.installed_revision);
+                state.staged = None;
+                if outcome.commit_state == CommitState::PublishedDurabilityUncertain {
+                    state.recovery_required = true;
+                    Err(PrimaryWorkspaceStoreError::unavailable())
+                } else {
+                    Ok(())
+                }
+            }
+            Err(error) if error.kind() == DurableFileFailureKind::NotPublished => {
+                Err(PrimaryWorkspaceStoreError::unavailable())
+            }
+            Err(_error) => {
+                state.recovery_required = true;
+                state.staged = None;
+                Err(PrimaryWorkspaceStoreError::unavailable())
+            }
+        }
+    }
+}
+
+impl PrimaryWorkspaceStore for DurableServerPrimaryWorkspaceStore {
+    fn repository_binding(&self) -> PrimaryWorkspaceRepositoryBinding {
+        self.binding.clone()
+    }
+
+    fn load(&self) -> Result<Option<Value>, PrimaryWorkspaceStoreError> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| PrimaryWorkspaceStoreError::unavailable())?;
+        if state.recovery_required {
+            return Err(PrimaryWorkspaceStoreError::unavailable());
+        }
+        Ok(state
+            .staged
+            .as_ref()
+            .cloned()
+            .unwrap_or_else(|| state.committed.clone()))
+    }
+
+    fn replace(&self, value: Option<Value>) -> Result<(), PrimaryWorkspaceStoreError> {
+        let value = value.map(validate_server_primary_workspace).transpose()?;
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| PrimaryWorkspaceStoreError::unavailable())?;
+        if state.recovery_required || (value.is_none() && state.committed.is_some()) {
+            return Err(PrimaryWorkspaceStoreError::unavailable());
+        }
+        state.staged = Some(value);
+        Ok(())
+    }
+
+    fn save(&self) -> Result<(), PrimaryWorkspaceStoreError> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| PrimaryWorkspaceStoreError::unavailable())?;
+        if state.recovery_required {
+            return Err(PrimaryWorkspaceStoreError::unavailable());
+        }
+        let Some(staged) = state.staged.clone() else {
+            return Ok(());
+        };
+        match staged {
+            Some(value) => self.persist(&mut state, &value),
+            None if state.committed.is_none() => {
+                state.staged = None;
+                Ok(())
+            }
+            None => Err(PrimaryWorkspaceStoreError::unavailable()),
+        }
+    }
+}
+
+impl fmt::Debug for DurableServerPrimaryWorkspaceStore {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("DurableServerPrimaryWorkspaceStore(..)")
+    }
+}
+
+fn validate_server_primary_workspace(value: Value) -> Result<Value, PrimaryWorkspaceStoreError> {
+    let state = PrimaryWorkspaceState::from_value(value)
+        .map_err(|_| PrimaryWorkspaceStoreError::unavailable())?;
+    state
+        .to_value()
+        .map_err(|_| PrimaryWorkspaceStoreError::unavailable())
+}
+
+fn decode_server_primary_workspace(bytes: &[u8]) -> Result<Value, PrimaryWorkspaceStoreError> {
+    let value =
+        serde_json::from_slice(bytes).map_err(|_| PrimaryWorkspaceStoreError::unavailable())?;
+    validate_server_primary_workspace(value)
 }
 
 /// Process-local identity for one host-owned primary-workspace repository.
@@ -356,3 +547,130 @@ impl fmt::Display for PrimaryWorkspaceStoreError {
 }
 
 impl std::error::Error for PrimaryWorkspaceStoreError {}
+
+#[cfg(test)]
+mod durable_server_tests {
+    use std::fs;
+
+    use tempfile::tempdir;
+
+    use super::*;
+    use crate::{config::KernelConfig, paths::KernelPaths};
+
+    fn fixture() -> (tempfile::TempDir, KernelPaths, KernelConfig) {
+        let temporary = tempdir().unwrap();
+        let data = temporary.path().join("data");
+        let cache = temporary.path().join("cache");
+        fs::create_dir(&data).unwrap();
+        let paths = crate::paths::ServerPathLayout::for_test(&data, &cache)
+            .activate()
+            .unwrap();
+        (temporary, paths, KernelConfig::generate().unwrap())
+    }
+
+    #[test]
+    fn durable_server_store_persists_one_valid_workspace_state_across_restarts() {
+        let (_temporary, paths, config) = fixture();
+        let store = DurableServerPrimaryWorkspaceStore::open(
+            paths.instance_data_root(),
+            config.launch_epoch(),
+        )
+        .unwrap();
+        let expected = PrimaryWorkspaceState::new("Notes")
+            .unwrap()
+            .to_value()
+            .unwrap();
+
+        assert_eq!(store.load().unwrap(), None);
+        store.replace(Some(expected.clone())).unwrap();
+        assert_eq!(store.load().unwrap(), Some(expected.clone()));
+        store.save().unwrap();
+        drop(store);
+
+        let reopened = DurableServerPrimaryWorkspaceStore::open(
+            paths.instance_data_root(),
+            KernelConfig::generate().unwrap().launch_epoch(),
+        )
+        .unwrap();
+        assert_eq!(reopened.load().unwrap(), Some(expected));
+    }
+
+    #[test]
+    fn durable_server_store_rejects_invalid_or_removal_replacements() {
+        let (_temporary, paths, config) = fixture();
+        let store = DurableServerPrimaryWorkspaceStore::open(
+            paths.instance_data_root(),
+            config.launch_epoch(),
+        )
+        .unwrap();
+
+        assert!(store
+            .replace(Some(serde_json::json!({"unsafe": true})))
+            .is_err());
+        let expected = PrimaryWorkspaceState::new("Notes")
+            .unwrap()
+            .to_value()
+            .unwrap();
+        store.replace(Some(expected)).unwrap();
+        store.save().unwrap();
+        assert!(store.replace(None).is_err());
+    }
+
+    #[test]
+    fn durable_server_store_latches_closed_on_a_conflicting_external_record() {
+        let (temporary, paths, config) = fixture();
+        let store = DurableServerPrimaryWorkspaceStore::open(
+            paths.instance_data_root(),
+            config.launch_epoch(),
+        )
+        .unwrap();
+        let staged = PrimaryWorkspaceState::new("Notes")
+            .unwrap()
+            .to_value()
+            .unwrap();
+        let conflicting = PrimaryWorkspaceState::new("Conflicting")
+            .unwrap()
+            .to_value()
+            .unwrap();
+        store.replace(Some(staged)).unwrap();
+        fs::write(
+            temporary
+                .path()
+                .join("data/state")
+                .join(SERVER_PRIMARY_WORKSPACE_FILE),
+            serde_json::to_vec(&conflicting).unwrap(),
+        )
+        .unwrap();
+
+        assert!(store.save().is_err());
+        assert!(store.load().is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn durable_server_store_rejects_a_symlinked_primary_record_without_following_it() {
+        use std::os::unix::fs::symlink;
+
+        let (temporary, paths, config) = fixture();
+        let outside = temporary.path().join("outside.json");
+        fs::write(&outside, b"outside-must-not-be-read-or-replaced").unwrap();
+        symlink(
+            &outside,
+            temporary
+                .path()
+                .join("data/state")
+                .join(SERVER_PRIMARY_WORKSPACE_FILE),
+        )
+        .unwrap();
+
+        assert!(DurableServerPrimaryWorkspaceStore::open(
+            paths.instance_data_root(),
+            config.launch_epoch(),
+        )
+        .is_err());
+        assert_eq!(
+            fs::read(&outside).unwrap(),
+            b"outside-must-not-be-read-or-replaced"
+        );
+    }
+}
