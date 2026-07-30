@@ -23,6 +23,7 @@ export type PrimaryWorkspaceCreateDocumentInput =
     };
 
 export type PrimaryWorkspaceDocumentControllerErrorCode =
+  | "directory-required"
   | "document-not-indexed"
   | "invalid-dirty-overlay"
   | "operation-superseded"
@@ -31,6 +32,7 @@ export type PrimaryWorkspaceDocumentControllerErrorCode =
   | "workspace-generation-drift";
 
 const ERROR_MESSAGES: Record<PrimaryWorkspaceDocumentControllerErrorCode, string> = {
+  "directory-required": "The primary workspace operation requires an indexed directory.",
   "document-not-indexed": "The primary workspace document is not indexed.",
   "invalid-dirty-overlay": "The primary workspace dirty overlay contains duplicate document paths.",
   "operation-superseded": "The primary workspace document changed while the operation was in flight.",
@@ -139,6 +141,13 @@ export async function createPrimaryWorkspaceDocumentController({
       epoch: pathEpoch(relativePath),
       relativePath
     };
+  };
+  const captureDirectory = (relativePath: KernelWorkspaceRelativePath) => {
+    const captured = captureEntry(relativePath);
+    if (captured.entry.kind !== "directory") {
+      throw new PrimaryWorkspaceDocumentControllerError("directory-required");
+    }
+    return captured;
   };
   const capturedEntryIsCurrent = (captured: ReturnType<typeof captureEntry>) => {
     const latest = entriesByPath.get(captured.relativePath);
@@ -249,6 +258,7 @@ export async function createPrimaryWorkspaceDocumentController({
     create: async (input) => {
       assertActive();
       const targetPath = joinWorkspacePath(input.parent, input.name);
+      const capturedParent = input.parent === "" ? undefined : captureDirectory(input.parent);
       const capturedTarget = entriesByPath.get(targetPath);
       const capturedTargetEpoch = pathEpoch(targetPath);
       const created = await kernel.documents.create({
@@ -256,6 +266,7 @@ export async function createPrimaryWorkspaceDocumentController({
         workspaceGeneration: workspace.generation
       });
       assertGeneration(created.workspaceGeneration);
+      if (capturedParent !== undefined) assertMutationStillCurrent(capturedParent);
       const latestTarget = entriesByPath.get(targetPath);
       if (
         pathEpoch(targetPath) !== capturedTargetEpoch ||
@@ -299,6 +310,7 @@ export async function createPrimaryWorkspaceDocumentController({
     move: async ({ name, relativePath, targetParent }) => {
       const captured = captureEntry(relativePath);
       const targetPath = joinWorkspacePath(targetParent, name);
+      const capturedTargetParent = targetParent === "" ? undefined : captureDirectory(targetParent);
       const capturedTarget = entriesByPath.get(targetPath);
       const capturedTargetEpoch = pathEpoch(targetPath);
       const moved = await kernel.documents.move({
@@ -311,6 +323,9 @@ export async function createPrimaryWorkspaceDocumentController({
       const invalidatedCachedAncestor = hasCachedAncestor(relativePath) || hasCachedAncestor(targetPath);
       assertGeneration(moved.workspaceGeneration);
       assertMutationStillCurrent(captured);
+      if (capturedTargetParent !== undefined) {
+        assertMutationStillCurrent(capturedTargetParent);
+      }
       const latestTarget = entriesByPath.get(targetPath);
       if (
         pathEpoch(targetPath) !== capturedTargetEpoch ||

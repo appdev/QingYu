@@ -295,7 +295,7 @@ describe("primary workspace document controller", () => {
     const createCalls: unknown[] = [];
     const create: KernelDomainPort["documents"]["create"] = async (input) => {
       createCalls.push(input);
-      return document("notes/created.md", input.kind === "file" ? input.contents : "");
+      return document("created.md", input.kind === "file" ? input.contents : "");
     };
     const controller = await createPrimaryWorkspaceDocumentController({
       kernel: createKernelPort({
@@ -309,20 +309,57 @@ describe("primary workspace document controller", () => {
       contents: "created",
       kind: "file",
       name: "created.md",
-      parent: path("notes")
+      parent: path("")
     })).resolves.toMatchObject({
-      locator: "signed:notes/created.md",
-      relativePath: "notes/created.md"
+      locator: "signed:created.md",
+      relativePath: "created.md"
     });
 
     expect(createCalls).toEqual([{
       contents: "created",
       kind: "file",
       name: "created.md",
-      parent: "notes",
+      parent: "",
       workspaceGeneration: GENERATION
     }]);
-    expect(controller.entries().map((item) => item.relativePath)).toEqual(["notes/created.md"]);
+    expect(controller.entries().map((item) => item.relativePath)).toEqual(["created.md"]);
+  });
+
+  it("rejects a non-root create whose parent directory is not indexed before calling the Kernel", async () => {
+    const create = vi.fn<KernelDomainPort["documents"]["create"]>(async (input) =>
+      document("notes/created.md", input.kind === "file" ? input.contents : ""));
+    const controller = await createPrimaryWorkspaceDocumentController({
+      kernel: createKernelPort({
+        create,
+        list: async () => ({ items: [], nextCursor: null, workspaceGeneration: GENERATION })
+      }),
+      workspace: WORKSPACE
+    });
+
+    await expect(controller.create({
+      contents: "created",
+      kind: "file",
+      name: "created.md",
+      parent: path("notes")
+    })).rejects.toMatchObject({ code: "document-not-indexed" });
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it("rejects a non-root create whose indexed parent is not a directory", async () => {
+    const create = vi.fn<KernelDomainPort["documents"]["create"]>(async (input) =>
+      document("readme.md/created.md", input.kind === "file" ? input.contents : ""));
+    const controller = await createPrimaryWorkspaceDocumentController({
+      kernel: createKernelPort({ create, list: listRootReadmeDocument }),
+      workspace: WORKSPACE
+    });
+
+    await expect(controller.create({
+      contents: "created",
+      kind: "file",
+      name: "created.md",
+      parent: path("readme.md")
+    })).rejects.toMatchObject({ code: "directory-required" });
+    expect(create).not.toHaveBeenCalled();
   });
 
   it("rejects an initial page whose generation does not match the workspace snapshot", async () => {
@@ -421,7 +458,7 @@ describe("primary workspace document controller", () => {
   it("rejects a create response whose returned path differs from the requested path", async () => {
     const controller = await createPrimaryWorkspaceDocumentController({
       kernel: createKernelPort({
-        create: async () => document("notes/different.md", "created"),
+        create: async () => document("different.md", "created"),
         list: async () => ({ items: [], nextCursor: null, workspaceGeneration: GENERATION })
       }),
       workspace: WORKSPACE
@@ -431,7 +468,7 @@ describe("primary workspace document controller", () => {
       contents: "created",
       kind: "file",
       name: "created.md",
-      parent: path("notes")
+      parent: path("")
     })).rejects.toMatchObject({ code: "protocol-mismatch" });
     expect(() => controller.entries()).toThrow(expect.objectContaining({
       code: "protocol-mismatch"
@@ -604,6 +641,51 @@ describe("primary workspace document controller", () => {
     }]);
   });
 
+  it("rejects a move whose non-root target parent is not indexed before calling the Kernel", async () => {
+    const move = vi.fn<KernelDomainPort["documents"]["move"]>(async () =>
+      entry("archive/readme.md", "file", {
+        locator: "signed:archive/readme.md:v2" as KernelDocumentLocator
+      }));
+    const controller = await createPrimaryWorkspaceDocumentController({
+      kernel: createKernelPort({ list: listRootReadmeDocument, move }),
+      workspace: WORKSPACE
+    });
+
+    await expect(controller.move({
+      name: "readme.md",
+      relativePath: path("readme.md"),
+      targetParent: path("archive")
+    })).rejects.toMatchObject({ code: "document-not-indexed" });
+    expect(move).not.toHaveBeenCalled();
+  });
+
+  it("rejects a move whose indexed target parent is not a directory", async () => {
+    const move = vi.fn<KernelDomainPort["documents"]["move"]>(async () =>
+      entry("target.md/readme.md", "file", {
+        locator: "signed:target.md/readme.md:v2" as KernelDocumentLocator
+      }));
+    const controller = await createPrimaryWorkspaceDocumentController({
+      kernel: createKernelPort({
+        list: async (input) => ({
+          items: input.parent === undefined
+            ? [entry("readme.md", "file"), entry("target.md", "file")]
+            : [],
+          nextCursor: null,
+          workspaceGeneration: GENERATION
+        }),
+        move
+      }),
+      workspace: WORKSPACE
+    });
+
+    await expect(controller.move({
+      name: "readme.md",
+      relativePath: path("readme.md"),
+      targetParent: path("target.md")
+    })).rejects.toMatchObject({ code: "directory-required" });
+    expect(move).not.toHaveBeenCalled();
+  });
+
   it("never resurrects a deleted path from a delayed move response", async () => {
     const pendingMove = deferred<KernelDocumentEntrySnapshot>();
     const controller = await createPrimaryWorkspaceDocumentController({
@@ -665,6 +747,113 @@ describe("primary workspace document controller", () => {
     pendingMove.resolve(entry("target.md", "file", {
       locator: "signed:target.md:v2" as KernelDocumentLocator,
       revision: "revision:delayed-target-move" as KernelRevision
+    }));
+
+    await expect(staleMove).rejects.toMatchObject({ code: "rebuild-required" });
+    expect(() => controller.entries()).toThrow(expect.objectContaining({
+      code: "rebuild-required"
+    }));
+  });
+
+  it("rejects a delayed move after its captured target parent directory was deleted", async () => {
+    const pendingMove = deferred<KernelDocumentEntrySnapshot>();
+    const controller = await createPrimaryWorkspaceDocumentController({
+      kernel: createKernelPort({
+        delete: async () => undefined,
+        list: async (input) => ({
+          items: input.parent === undefined
+            ? [entry("archive", "directory"), entry("readme.md", "file")]
+            : [],
+          nextCursor: null,
+          workspaceGeneration: GENERATION
+        }),
+        move: async () => pendingMove.promise
+      }),
+      workspace: WORKSPACE
+    });
+
+    const staleMove = controller.move({
+      name: "readme.md",
+      relativePath: path("readme.md"),
+      targetParent: path("archive")
+    });
+    await controller.delete({
+      deletionPolicy: "recoverable",
+      relativePath: path("archive")
+    });
+    pendingMove.resolve(entry("archive/readme.md", "file", {
+      locator: "signed:archive/readme.md:v2" as KernelDocumentLocator,
+      revision: "revision:delayed-parent-move" as KernelRevision
+    }));
+
+    await expect(staleMove).rejects.toMatchObject({ code: "rebuild-required" });
+    expect(() => controller.entries()).toThrow(expect.objectContaining({
+      code: "rebuild-required"
+    }));
+  });
+
+  it("rejects a delayed move after its target parent was recreated with the same identity", async () => {
+    const pendingMove = deferred<KernelDocumentEntrySnapshot>();
+    const controller = await createPrimaryWorkspaceDocumentController({
+      kernel: createKernelPort({
+        create: async () => ({ ...entry("archive", "directory"), kind: "directory" as const }),
+        delete: async () => undefined,
+        list: async (input) => ({
+          items: input.parent === undefined
+            ? [entry("archive", "directory"), entry("readme.md", "file")]
+            : [],
+          nextCursor: null,
+          workspaceGeneration: GENERATION
+        }),
+        move: async () => pendingMove.promise
+      }),
+      workspace: WORKSPACE
+    });
+
+    const staleMove = controller.move({
+      name: "readme.md",
+      relativePath: path("readme.md"),
+      targetParent: path("archive")
+    });
+    await controller.delete({
+      deletionPolicy: "recoverable",
+      relativePath: path("archive")
+    });
+    await controller.create({ kind: "directory", name: "archive", parent: path("") });
+    pendingMove.resolve(entry("archive/readme.md", "file", {
+      locator: "signed:archive/readme.md:v2" as KernelDocumentLocator,
+      revision: "revision:delayed-aba-move" as KernelRevision
+    }));
+
+    await expect(staleMove).rejects.toMatchObject({ code: "rebuild-required" });
+    expect(() => controller.entries()).toThrow(expect.objectContaining({
+      code: "rebuild-required"
+    }));
+  });
+
+  it("fences a delayed move when deleting its source parent removes the captured source path", async () => {
+    const pendingMove = deferred<KernelDocumentEntrySnapshot>();
+    const controller = await createPrimaryWorkspaceDocumentController({
+      kernel: createKernelPort({
+        delete: async () => undefined,
+        list: listReadmeDocument,
+        move: async () => pendingMove.promise
+      }),
+      workspace: WORKSPACE
+    });
+
+    const staleMove = controller.move({
+      name: "renamed.md",
+      relativePath: path("notes/readme.md"),
+      targetParent: path("")
+    });
+    await controller.delete({
+      deletionPolicy: "recoverable",
+      relativePath: path("notes")
+    });
+    pendingMove.resolve(entry("renamed.md", "file", {
+      locator: "signed:renamed.md:v2" as KernelDocumentLocator,
+      revision: "revision:delayed-source-parent-move" as KernelRevision
     }));
 
     await expect(staleMove).rejects.toMatchObject({ code: "rebuild-required" });
@@ -842,6 +1031,75 @@ describe("primary workspace document controller", () => {
     firstResponse.resolve(document("created.md", "first", {
       revision: "revision:first-create" as KernelRevision
     }));
+
+    await expect(staleCreate).rejects.toMatchObject({ code: "rebuild-required" });
+    expect(() => controller.entries()).toThrow(expect.objectContaining({
+      code: "rebuild-required"
+    }));
+  });
+
+  it("rejects a delayed create after its captured parent directory was deleted", async () => {
+    const pendingCreate = deferred<KernelDocumentSnapshot>();
+    const controller = await createPrimaryWorkspaceDocumentController({
+      kernel: createKernelPort({
+        create: async () => pendingCreate.promise,
+        delete: async () => undefined,
+        list: async (input) => ({
+          items: input.parent === undefined ? [entry("notes", "directory")] : [],
+          nextCursor: null,
+          workspaceGeneration: GENERATION
+        })
+      }),
+      workspace: WORKSPACE
+    });
+
+    const staleCreate = controller.create({
+      contents: "created",
+      kind: "file",
+      name: "created.md",
+      parent: path("notes")
+    });
+    await controller.delete({
+      deletionPolicy: "recoverable",
+      relativePath: path("notes")
+    });
+    pendingCreate.resolve(document("notes/created.md", "created"));
+
+    await expect(staleCreate).rejects.toMatchObject({ code: "rebuild-required" });
+    expect(() => controller.entries()).toThrow(expect.objectContaining({
+      code: "rebuild-required"
+    }));
+  });
+
+  it("rejects a delayed create after its parent was recreated with the same identity", async () => {
+    const pendingChildCreate = deferred<KernelDocumentSnapshot>();
+    const controller = await createPrimaryWorkspaceDocumentController({
+      kernel: createKernelPort({
+        create: async (input) => input.parent === path("notes")
+          ? pendingChildCreate.promise
+          : { ...entry("notes", "directory"), kind: "directory" as const },
+        delete: async () => undefined,
+        list: async (input) => ({
+          items: input.parent === undefined ? [entry("notes", "directory")] : [],
+          nextCursor: null,
+          workspaceGeneration: GENERATION
+        })
+      }),
+      workspace: WORKSPACE
+    });
+
+    const staleCreate = controller.create({
+      contents: "created",
+      kind: "file",
+      name: "created.md",
+      parent: path("notes")
+    });
+    await controller.delete({
+      deletionPolicy: "recoverable",
+      relativePath: path("notes")
+    });
+    await controller.create({ kind: "directory", name: "notes", parent: path("") });
+    pendingChildCreate.resolve(document("notes/created.md", "created"));
 
     await expect(staleCreate).rejects.toMatchObject({ code: "rebuild-required" });
     expect(() => controller.entries()).toThrow(expect.objectContaining({
