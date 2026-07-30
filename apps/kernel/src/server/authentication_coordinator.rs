@@ -1,12 +1,13 @@
 use std::{
     fmt,
-    sync::{Arc, Mutex, MutexGuard},
+    sync::{Arc, MutexGuard},
     time::Duration,
 };
 
 use zeroize::Zeroizing;
 
 use super::secret::SecretDigest;
+use super::security::AuthenticationSecurityState;
 use super::{
     AuthenticationAttemptPermit, AuthenticationFlow, AuthenticationRateLimiter,
     InvalidAuthenticationAttempt, IssuedSession, OwnerPasswordUpdateError,
@@ -45,22 +46,29 @@ impl fmt::Debug for ServerLogin {
 
 pub struct ServerAuthenticationCoordinator {
     authentication: Arc<ServerAuthenticationStore>,
-    rate_limiter: Mutex<AuthenticationRateLimiter>,
-    sessions: Mutex<SessionStore>,
-    password_lifecycle: Mutex<()>,
+    security: Arc<AuthenticationSecurityState>,
 }
 
 impl ServerAuthenticationCoordinator {
-    pub fn new(
+    #[cfg(test)]
+    pub(crate) fn new(
         authentication: Arc<ServerAuthenticationStore>,
         rate_limiter: AuthenticationRateLimiter,
         sessions: SessionStore,
     ) -> Self {
+        Self::from_security(
+            authentication,
+            Arc::new(AuthenticationSecurityState::new(rate_limiter, sessions)),
+        )
+    }
+
+    pub(crate) fn from_security(
+        authentication: Arc<ServerAuthenticationStore>,
+        security: Arc<AuthenticationSecurityState>,
+    ) -> Self {
         Self {
             authentication,
-            rate_limiter: Mutex::new(rate_limiter),
-            sessions: Mutex::new(sessions),
-            password_lifecycle: Mutex::new(()),
+            security,
         }
     }
 
@@ -278,7 +286,8 @@ impl ServerAuthenticationCoordinator {
         &self,
     ) -> Result<MutexGuard<'_, AuthenticationRateLimiter>, ServerAuthenticationCoordinatorError>
     {
-        self.rate_limiter
+        self.security
+            .rate_limiter
             .lock()
             .map_err(|_poisoned| ServerAuthenticationCoordinatorError::StateUnavailable)
     }
@@ -286,7 +295,8 @@ impl ServerAuthenticationCoordinator {
     fn lock_sessions(
         &self,
     ) -> Result<MutexGuard<'_, SessionStore>, ServerAuthenticationCoordinatorError> {
-        self.sessions
+        self.security
+            .sessions
             .lock()
             .map_err(|_poisoned| ServerAuthenticationCoordinatorError::StateUnavailable)
     }
@@ -294,7 +304,8 @@ impl ServerAuthenticationCoordinator {
     fn lock_password_lifecycle(
         &self,
     ) -> Result<MutexGuard<'_, ()>, ServerAuthenticationCoordinatorError> {
-        self.password_lifecycle
+        self.security
+            .password_lifecycle
             .lock()
             .map_err(|_poisoned| ServerAuthenticationCoordinatorError::StateUnavailable)
     }
@@ -433,7 +444,7 @@ mod tests {
     fn poisoned_rate_limiter_fails_closed_before_password_verification() {
         let temporary = tempdir().unwrap();
         let coordinator = coordinator(temporary.path());
-        poison(&coordinator.rate_limiter);
+        poison(&coordinator.security.rate_limiter);
 
         assert_eq!(
             coordinator
@@ -447,7 +458,7 @@ mod tests {
     fn poisoned_session_store_fails_closed_for_every_session_operation() {
         let temporary = tempdir().unwrap();
         let coordinator = coordinator(temporary.path());
-        poison(&coordinator.sessions);
+        poison(&coordinator.security.sessions);
 
         assert_eq!(
             coordinator
@@ -478,7 +489,7 @@ mod tests {
     fn poisoned_password_lifecycle_fails_closed_and_settles_the_login_attempt() {
         let temporary = tempdir().unwrap();
         let coordinator = coordinator(temporary.path());
-        poison(&coordinator.password_lifecycle);
+        poison(&coordinator.security.password_lifecycle);
 
         assert_eq!(
             coordinator
@@ -555,6 +566,7 @@ mod tests {
         );
         assert_eq!(
             coordinator
+                .security
                 .rate_limiter
                 .lock()
                 .unwrap()
@@ -632,6 +644,7 @@ mod tests {
         );
         assert_eq!(
             coordinator
+                .security
                 .rate_limiter
                 .lock()
                 .unwrap()

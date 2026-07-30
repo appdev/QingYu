@@ -1,9 +1,9 @@
-use std::{env, ffi::OsString, fmt, sync::Arc};
+use std::{env, ffi::OsString, fmt};
 
 use crate::paths::{KernelPaths, ServerPathLayout};
 
 use super::{
-    InitializationToken, ServerAuthenticationStore, ServerInitializationCoordinator,
+    InitializationToken, ServerAuthenticationSecurity, ServerInitializationCoordinator,
     ServerInitializationCoordinatorError,
 };
 
@@ -50,9 +50,9 @@ impl ServerLaunchEnvironment {
 
     pub fn into_initialization_owner(
         self,
-        authentication: Arc<ServerAuthenticationStore>,
+        security: &ServerAuthenticationSecurity,
     ) -> Result<ServerInitializationCoordinator, ServerInitializationCoordinatorError> {
-        ServerInitializationCoordinator::open(authentication, self.initialization_token)
+        security.initialization_coordinator(self.initialization_token)
     }
 }
 
@@ -89,7 +89,7 @@ impl std::error::Error for ServerLaunchEnvironmentError {}
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashMap, ffi::OsString, fs, path::Path, sync::Arc};
+    use std::{collections::HashMap, ffi::OsString, fs, path::Path, sync::Arc, time::Duration};
 
     use tempfile::tempdir;
 
@@ -97,8 +97,10 @@ mod tests {
     use crate::{
         paths::KernelPaths,
         server::{
-            InitializationStatus, ServerAuthenticationStore, ServerInitializationCoordinatorError,
-            ServerOwnerInitializationError,
+            AuthenticationRateLimiter, InitializationStatus, RateLimitPolicy,
+            ServerAuthenticationSecurity, ServerAuthenticationStore,
+            ServerInitializationCoordinatorError, ServerOwnerInitializationError, SessionPolicy,
+            SessionStore,
         },
     };
 
@@ -125,17 +127,28 @@ mod tests {
         KernelPaths::desktop(&workspace, &config, &cache).unwrap()
     }
 
+    fn security(authentication: Arc<ServerAuthenticationStore>) -> ServerAuthenticationSecurity {
+        let policy =
+            RateLimitPolicy::new(5, Duration::from_secs(60), Duration::from_secs(30)).unwrap();
+        ServerAuthenticationSecurity::new(
+            authentication,
+            AuthenticationRateLimiter::new(policy, policy),
+            SessionStore::new(SessionPolicy::new(Duration::from_secs(300)).unwrap()),
+        )
+    }
+
     #[test]
     fn missing_initialization_token_fails_closed_for_an_uninitialized_owner() {
         let temporary = tempdir().unwrap();
         let paths = fixture_paths(temporary.path());
         let authentication =
             Arc::new(ServerAuthenticationStore::open(paths.config_root()).unwrap());
+        let security = security(authentication);
         let environment = environment_with([]).unwrap();
 
         assert_eq!(
             environment
-                .into_initialization_owner(authentication)
+                .into_initialization_owner(&security)
                 .unwrap_err(),
             ServerInitializationCoordinatorError::MissingInitializationToken
         );
@@ -150,11 +163,10 @@ mod tests {
         authentication
             .initialize_owner_password(OWNER_PASSWORD.to_owned())
             .unwrap();
+        let security = security(authentication);
         let environment = environment_with([]).unwrap();
 
-        let owner = environment
-            .into_initialization_owner(authentication)
-            .unwrap();
+        let owner = environment.into_initialization_owner(&security).unwrap();
 
         assert_eq!(owner.status(), InitializationStatus::Initialized);
     }
@@ -194,19 +206,28 @@ mod tests {
             OsString::from(INITIALIZATION_TOKEN),
         )])
         .unwrap();
+        let security = security(authentication);
 
-        let mut owner = environment
-            .into_initialization_owner(authentication)
-            .unwrap();
+        let mut owner = environment.into_initialization_owner(&security).unwrap();
 
         assert_eq!(owner.status(), InitializationStatus::Pending);
         owner
-            .initialize(INITIALIZATION_TOKEN, OWNER_PASSWORD.to_owned())
+            .initialize(
+                7,
+                Duration::from_secs(0),
+                INITIALIZATION_TOKEN,
+                OWNER_PASSWORD.to_owned(),
+            )
             .unwrap();
         assert_eq!(owner.status(), InitializationStatus::Initialized);
         assert_eq!(
             owner
-                .initialize(INITIALIZATION_TOKEN, OWNER_PASSWORD.to_owned())
+                .initialize(
+                    7,
+                    Duration::from_secs(1),
+                    INITIALIZATION_TOKEN,
+                    OWNER_PASSWORD.to_owned(),
+                )
                 .unwrap_err(),
             ServerOwnerInitializationError::AlreadyInitialized
         );

@@ -1,11 +1,12 @@
-use std::{fs, path::Path, sync::Arc};
+use std::{fs, path::Path, sync::Arc, time::Duration};
 
 use qingyu_kernel::{
     paths::KernelPaths,
     server::{
-        InitializationStatus, InitializationToken, OwnerPasswordVerification,
-        ServerAuthenticationStore, ServerInitializationCoordinator,
-        ServerInitializationCoordinatorError, ServerOwnerInitializationError,
+        AuthenticationRateLimiter, InitializationStatus, InitializationToken,
+        OwnerPasswordVerification, RateLimitPolicy, ServerAuthenticationSecurity,
+        ServerAuthenticationStore, ServerInitializationCoordinatorError,
+        ServerOwnerInitializationError, SessionPolicy, SessionStore,
     },
 };
 use tempfile::tempdir;
@@ -27,20 +28,33 @@ fn token(value: &str) -> InitializationToken {
     InitializationToken::from_secret(value.to_owned()).unwrap()
 }
 
+fn security_owner(authentication: Arc<ServerAuthenticationStore>) -> ServerAuthenticationSecurity {
+    let policy = RateLimitPolicy::new(5, Duration::from_secs(60), Duration::from_secs(30)).unwrap();
+    ServerAuthenticationSecurity::new(
+        authentication,
+        AuthenticationRateLimiter::new(policy, policy),
+        SessionStore::new(SessionPolicy::new(Duration::from_secs(300)).unwrap()),
+    )
+}
+
 #[test]
 fn initialization_persists_before_the_process_gate_commits_and_survives_restart() {
     let temporary = tempdir().unwrap();
     let paths = fixture_paths(temporary.path());
     let authentication = Arc::new(ServerAuthenticationStore::open(paths.config_root()).unwrap());
-    let mut coordinator = ServerInitializationCoordinator::open(
-        Arc::clone(&authentication),
-        Some(token(INITIALIZATION_TOKEN)),
-    )
-    .unwrap();
+    let security = security_owner(Arc::clone(&authentication));
+    let mut coordinator = security
+        .initialization_coordinator(Some(token(INITIALIZATION_TOKEN)))
+        .unwrap();
 
     assert_eq!(coordinator.status(), InitializationStatus::Pending);
     coordinator
-        .initialize(INITIALIZATION_TOKEN, OWNER_PASSWORD.to_owned())
+        .initialize(
+            7,
+            Duration::from_secs(0),
+            INITIALIZATION_TOKEN,
+            OWNER_PASSWORD.to_owned(),
+        )
         .unwrap();
     assert_eq!(coordinator.status(), InitializationStatus::Initialized);
     assert_eq!(
@@ -55,17 +69,18 @@ fn initialization_persists_before_the_process_gate_commits_and_survives_restart(
     drop(coordinator);
     drop(authentication);
     let reopened = Arc::new(ServerAuthenticationStore::open(paths.config_root()).unwrap());
-    let mut restarted = ServerInitializationCoordinator::open(
-        Arc::clone(&reopened),
-        Some(token(
+    let restarted_security = security_owner(Arc::clone(&reopened));
+    let mut restarted = restarted_security
+        .initialization_coordinator(Some(token(
             "different-injected-token-that-must-be-ignored-after-restart",
-        )),
-    )
-    .unwrap();
+        )))
+        .unwrap();
     assert_eq!(restarted.status(), InitializationStatus::Initialized);
     assert_eq!(
         restarted
             .initialize(
+                7,
+                Duration::from_secs(1),
                 "different-injected-token-that-must-be-ignored-after-restart",
                 "another sufficiently long password".to_owned(),
             )
@@ -86,14 +101,19 @@ fn uninitialized_state_requires_an_injected_token_but_initialized_state_does_not
     let paths = fixture_paths(temporary.path());
     let authentication = Arc::new(ServerAuthenticationStore::open(paths.config_root()).unwrap());
     assert_eq!(
-        ServerInitializationCoordinator::open(Arc::clone(&authentication), None).unwrap_err(),
+        security_owner(Arc::clone(&authentication))
+            .initialization_coordinator(None)
+            .unwrap_err(),
         ServerInitializationCoordinatorError::MissingInitializationToken
     );
 
     authentication
         .initialize_owner_password(OWNER_PASSWORD.to_owned())
         .unwrap();
-    let initialized = ServerInitializationCoordinator::open(authentication, None).unwrap();
+    let initialized_security = security_owner(authentication);
+    let initialized = initialized_security
+        .initialization_coordinator(None)
+        .unwrap();
     assert_eq!(initialized.status(), InitializationStatus::Initialized);
 }
 
@@ -102,21 +122,30 @@ fn invalid_token_or_password_never_spends_the_token_or_creates_partial_state() {
     let temporary = tempdir().unwrap();
     let paths = fixture_paths(temporary.path());
     let authentication = Arc::new(ServerAuthenticationStore::open(paths.config_root()).unwrap());
-    let mut coordinator = ServerInitializationCoordinator::open(
-        Arc::clone(&authentication),
-        Some(token(INITIALIZATION_TOKEN)),
-    )
-    .unwrap();
+    let security = security_owner(Arc::clone(&authentication));
+    let mut coordinator = security
+        .initialization_coordinator(Some(token(INITIALIZATION_TOKEN)))
+        .unwrap();
 
     assert_eq!(
         coordinator
-            .initialize("wrong-initialization-token", OWNER_PASSWORD.to_owned())
+            .initialize(
+                7,
+                Duration::from_secs(0),
+                "wrong-initialization-token",
+                OWNER_PASSWORD.to_owned(),
+            )
             .unwrap_err(),
         ServerOwnerInitializationError::InvalidToken
     );
     assert_eq!(
         coordinator
-            .initialize(INITIALIZATION_TOKEN, "short".to_owned())
+            .initialize(
+                7,
+                Duration::from_secs(1),
+                INITIALIZATION_TOKEN,
+                "short".to_owned(),
+            )
             .unwrap_err(),
         ServerOwnerInitializationError::InvalidPassword
     );
@@ -124,7 +153,12 @@ fn invalid_token_or_password_never_spends_the_token_or_creates_partial_state() {
     assert!(!temporary.path().join("config/owner-auth-v1.json").exists());
 
     coordinator
-        .initialize(INITIALIZATION_TOKEN, OWNER_PASSWORD.to_owned())
+        .initialize(
+            7,
+            Duration::from_secs(2),
+            INITIALIZATION_TOKEN,
+            OWNER_PASSWORD.to_owned(),
+        )
         .unwrap();
     assert_eq!(coordinator.status(), InitializationStatus::Initialized);
 }
@@ -134,12 +168,18 @@ fn initialization_debug_and_errors_do_not_expose_tokens_passwords_or_roots() {
     let temporary = tempdir().unwrap();
     let paths = fixture_paths(temporary.path());
     let authentication = Arc::new(ServerAuthenticationStore::open(paths.config_root()).unwrap());
-    let mut coordinator =
-        ServerInitializationCoordinator::open(authentication, Some(token(INITIALIZATION_TOKEN)))
-            .unwrap();
+    let security = security_owner(authentication);
+    let mut coordinator = security
+        .initialization_coordinator(Some(token(INITIALIZATION_TOKEN)))
+        .unwrap();
     let rejected_password = "rejected-owner-password-material";
     let error = coordinator
-        .initialize("wrong-initialization-token", rejected_password.to_owned())
+        .initialize(
+            7,
+            Duration::from_secs(0),
+            "wrong-initialization-token",
+            rejected_password.to_owned(),
+        )
         .unwrap_err();
     let rendered = format!("{coordinator:?} {error:?} {error}");
 

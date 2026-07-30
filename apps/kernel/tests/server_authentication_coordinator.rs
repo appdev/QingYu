@@ -9,7 +9,8 @@ use qingyu_kernel::{
     server::{
         AuthenticationFlow, AuthenticationRateLimiter, RateLimitPolicy, RequestIntent,
         ServerAuthenticationCoordinator, ServerAuthenticationCoordinatorError,
-        ServerAuthenticationStore, SessionAuthorization, SessionPolicy, SessionStore,
+        ServerAuthenticationSecurity, ServerAuthenticationStore, SessionAuthorization,
+        SessionPolicy, SessionStore,
     },
 };
 use tempfile::tempdir;
@@ -49,11 +50,12 @@ fn coordinator(
     maximum_failures: u32,
 ) -> ServerAuthenticationCoordinator {
     let rate_policy = policy(maximum_failures);
-    ServerAuthenticationCoordinator::new(
+    ServerAuthenticationSecurity::new(
         authentication,
         AuthenticationRateLimiter::new(rate_policy, rate_policy),
         SessionStore::new(SessionPolicy::new(Duration::from_secs(300)).unwrap()),
     )
+    .authentication_coordinator()
 }
 
 #[test]
@@ -192,11 +194,12 @@ fn successful_verification_is_settled_even_when_session_issue_later_fails() {
     let temporary = tempdir().unwrap();
     let paths = fixture_paths(temporary.path());
     let rate_policy = policy(2);
-    let coordinator = ServerAuthenticationCoordinator::new(
+    let coordinator = ServerAuthenticationSecurity::new(
         initialized_store(&paths),
         AuthenticationRateLimiter::new(rate_policy, rate_policy),
         SessionStore::new(SessionPolicy::new(Duration::MAX).unwrap()),
-    );
+    )
+    .authentication_coordinator();
     assert_eq!(
         coordinator
             .login(7, Duration::from_secs(0), INCORRECT_PASSWORD.to_owned())
@@ -229,11 +232,12 @@ fn global_in_flight_admission_happens_before_password_verification() {
     let held = limiter
         .begin_attempt(AuthenticationFlow::Login, 99, Duration::from_secs(0))
         .unwrap();
-    let coordinator = ServerAuthenticationCoordinator::new(
+    let coordinator = ServerAuthenticationSecurity::new(
         authentication,
         limiter,
         SessionStore::new(SessionPolicy::new(Duration::from_secs(300)).unwrap()),
-    );
+    )
+    .authentication_coordinator();
 
     assert_eq!(
         coordinator

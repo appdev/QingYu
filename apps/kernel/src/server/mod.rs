@@ -11,6 +11,7 @@ mod initialization_coordinator;
 mod launch_environment;
 mod rate_limit;
 mod secret;
+mod security;
 mod session;
 
 pub use auth_store::{
@@ -37,6 +38,7 @@ pub use rate_limit::{
     AuthenticationAttemptPermit, AuthenticationFlow, AuthenticationRateLimiter,
     InvalidAuthenticationAttempt, InvalidRateLimitPolicy, RateLimitDecision, RateLimitPolicy,
 };
+pub use security::ServerAuthenticationSecurity;
 pub use session::{
     InvalidSessionPolicy, IssuedSession, SessionAuthorization, SessionIssueError, SessionPolicy,
     SessionStore,
