@@ -1654,6 +1654,19 @@ mod tests {
 
     use super::*;
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_directory_sync_uses_an_fsync_capable_descriptor() {
+        let temporary = tempdir().expect("temporary root");
+        let directory = Dir::open_ambient_dir(temporary.path(), cap_std::ambient_authority())
+            .expect("open temporary root");
+
+        assert_eq!(
+            sync_directory(&directory).expect("sync retained Linux directory descriptor"),
+            ParentSyncState::Durable
+        );
+    }
+
     #[test]
     fn sensitive_byte_helper_overwrites_every_retained_byte() {
         let mut bytes = b"inline-credential-material".to_vec();
