@@ -6,6 +6,7 @@ pub mod credentials;
 pub mod diagnostics;
 pub mod editing;
 pub mod engine;
+pub mod execution;
 pub mod repository;
 pub mod scope;
 pub mod service;
