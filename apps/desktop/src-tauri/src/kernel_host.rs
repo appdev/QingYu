@@ -401,7 +401,7 @@ pub(crate) struct KernelHostSupervisor {
     stops: mpsc::UnboundedSender<oneshot::Sender<Result<(), KernelHostFailure>>>,
     enqueue_gate: Arc<AsyncMutex<()>>,
     snapshots: watch::Receiver<KernelHostSnapshot>,
-    bootstrap: crate::kernel_bootstrap::NativeKernelBootstrapOwner,
+    bootstrap_session: crate::kernel_bootstrap::NativeKernelBootstrapSession,
     ownership: Arc<KernelOwnership>,
     actor: JoinHandle<()>,
 }
@@ -428,12 +428,13 @@ impl KernelHostSupervisor {
         let (snapshot_sender, snapshots) = watch::channel(KernelHostSnapshot::dormant());
         let ownership = Arc::new(KernelOwnership::default());
         let enqueue_gate = Arc::new(AsyncMutex::new(()));
+        let bootstrap_session = bootstrap.open_supervisor_session();
         let actor = tokio::spawn(run_actor(
             start_receiver,
             stop_receiver,
             snapshot_sender,
             factory,
-            bootstrap.clone(),
+            bootstrap_session.clone(),
             Arc::clone(&ownership),
             Arc::clone(&enqueue_gate),
             timeouts,
@@ -443,7 +444,7 @@ impl KernelHostSupervisor {
             stops,
             enqueue_gate,
             snapshots,
-            bootstrap,
+            bootstrap_session,
             ownership,
             actor,
         }
@@ -484,7 +485,7 @@ impl KernelHostSupervisor {
 
 impl Drop for KernelHostSupervisor {
     fn drop(&mut self) {
-        let _clear_result = self.bootstrap.clear();
+        self.bootstrap_session.close();
         self.ownership.close_and_terminate();
         self.actor.abort();
     }
@@ -535,7 +536,7 @@ async fn run_actor(
     mut stops: mpsc::UnboundedReceiver<oneshot::Sender<Result<(), KernelHostFailure>>>,
     snapshots: watch::Sender<KernelHostSnapshot>,
     factory: Arc<dyn KernelProcessFactory>,
-    bootstrap: crate::kernel_bootstrap::NativeKernelBootstrapOwner,
+    bootstrap: crate::kernel_bootstrap::NativeKernelBootstrapSession,
     ownership: Arc<KernelOwnership>,
     enqueue_gate: Arc<AsyncMutex<()>>,
     timeouts: KernelHostTimeouts,
@@ -648,7 +649,7 @@ async fn start_transition(
     stops: &mut mpsc::UnboundedReceiver<oneshot::Sender<Result<(), KernelHostFailure>>>,
     snapshots: &watch::Sender<KernelHostSnapshot>,
     factory: &dyn KernelProcessFactory,
-    bootstrap: &crate::kernel_bootstrap::NativeKernelBootstrapOwner,
+    bootstrap: &crate::kernel_bootstrap::NativeKernelBootstrapSession,
     ownership: &KernelOwnership,
     enqueue_gate: &AsyncMutex<()>,
     timeouts: KernelHostTimeouts,
@@ -694,7 +695,7 @@ async fn spawn_transition(
     stops: &mut mpsc::UnboundedReceiver<oneshot::Sender<Result<(), KernelHostFailure>>>,
     snapshots: &watch::Sender<KernelHostSnapshot>,
     factory: &dyn KernelProcessFactory,
-    bootstrap: &crate::kernel_bootstrap::NativeKernelBootstrapOwner,
+    bootstrap: &crate::kernel_bootstrap::NativeKernelBootstrapSession,
     ownership: &KernelOwnership,
     enqueue_gate: &AsyncMutex<()>,
     timeouts: KernelHostTimeouts,
@@ -708,12 +709,6 @@ async fn spawn_transition(
         StartKind::Recovery => bootstrap.continue_start(generation),
     };
     if bootstrap_result.is_err() {
-        publish_failure(
-            snapshots,
-            bootstrap,
-            generation,
-            KernelHostFailure::Cancelled,
-        );
         return StartOutcome::Failed(KernelHostFailure::Cancelled);
     }
     snapshots.send_replace(KernelHostSnapshot {
@@ -860,7 +855,7 @@ async fn ready_transition(
     starts: &mut mpsc::Receiver<StartCommand>,
     stops: &mut mpsc::UnboundedReceiver<oneshot::Sender<Result<(), KernelHostFailure>>>,
     snapshots: &watch::Sender<KernelHostSnapshot>,
-    bootstrap: &crate::kernel_bootstrap::NativeKernelBootstrapOwner,
+    bootstrap: &crate::kernel_bootstrap::NativeKernelBootstrapSession,
     ownership: &KernelOwnership,
     enqueue_gate: &AsyncMutex<()>,
     timeouts: KernelHostTimeouts,
@@ -904,6 +899,12 @@ async fn ready_transition(
             }
         }
         ReadyWait::Exit(Err(error)) => {
+            publish_failure(
+                snapshots,
+                bootstrap,
+                ready.access.endpoint.generation,
+                error,
+            );
             match force_reap_running(
                 &mut *ready.process,
                 ownership,
@@ -972,7 +973,7 @@ async fn recover_transition(
     stops: &mut mpsc::UnboundedReceiver<oneshot::Sender<Result<(), KernelHostFailure>>>,
     snapshots: &watch::Sender<KernelHostSnapshot>,
     factory: &dyn KernelProcessFactory,
-    bootstrap: &crate::kernel_bootstrap::NativeKernelBootstrapOwner,
+    bootstrap: &crate::kernel_bootstrap::NativeKernelBootstrapSession,
     ownership: &KernelOwnership,
     enqueue_gate: &AsyncMutex<()>,
     timeouts: KernelHostTimeouts,
@@ -990,12 +991,6 @@ async fn recover_transition(
         *generation = generation.saturating_add(1);
         let attempt_generation = *generation;
         if bootstrap.begin_retry(attempt_generation).is_err() {
-            publish_failure(
-                snapshots,
-                bootstrap,
-                attempt_generation,
-                KernelHostFailure::Cancelled,
-            );
             return None;
         }
         snapshots.send_replace(KernelHostSnapshot {
@@ -1170,17 +1165,18 @@ async fn force_reap_running(
 
 fn publish_failure(
     snapshots: &watch::Sender<KernelHostSnapshot>,
-    bootstrap: &crate::kernel_bootstrap::NativeKernelBootstrapOwner,
+    bootstrap: &crate::kernel_bootstrap::NativeKernelBootstrapSession,
     generation: u64,
     failure: KernelHostFailure,
 ) {
-    let _failure_result = bootstrap.fail_generation(generation);
-    snapshots.send_replace(KernelHostSnapshot {
-        phase: KernelHostPhase::Failed,
-        generation,
-        endpoint: None,
-        failure: Some(failure),
-    });
+    if matches!(bootstrap.fail_generation(generation), Ok(true)) {
+        snapshots.send_replace(KernelHostSnapshot {
+            phase: KernelHostPhase::Failed,
+            generation,
+            endpoint: None,
+            failure: Some(failure),
+        });
+    }
 }
 
 #[cfg(test)]
@@ -1209,11 +1205,12 @@ mod tests {
         Fail,
     }
 
-    #[derive(Clone, Copy)]
+    #[derive(Clone)]
     struct RunningBehavior {
         exit: AsyncAction,
         graceful_stop: AsyncAction,
         force_reap: AsyncAction,
+        force_reap_gate: Option<Arc<Notify>>,
     }
 
     impl RunningBehavior {
@@ -1222,6 +1219,7 @@ mod tests {
                 exit: AsyncAction::Hang,
                 graceful_stop: AsyncAction::Complete,
                 force_reap: AsyncAction::Complete,
+                force_reap_gate: None,
             }
         }
 
@@ -1230,6 +1228,7 @@ mod tests {
                 exit: AsyncAction::Hang,
                 graceful_stop: AsyncAction::Hang,
                 force_reap: AsyncAction::Complete,
+                force_reap_gate: None,
             }
         }
     }
@@ -1270,7 +1269,7 @@ mod tests {
 
         fn running_behavior(&self) -> Option<RunningBehavior> {
             match self {
-                Self::Ready { running, .. } | Self::Gated { running, .. } => Some(*running),
+                Self::Ready { running, .. } | Self::Gated { running, .. } => Some(running.clone()),
                 Self::Fail(_) | Self::Never | Self::NeverWithCleanup { .. } => None,
             }
         }
@@ -1482,6 +1481,9 @@ mod tests {
         fn force_kill_and_reap(&mut self) -> HostFuture<'_, Result<(), KernelHostFailure>> {
             Box::pin(async move {
                 self.events.lock().unwrap().push("running-force");
+                if let Some(gate) = self.behavior.force_reap_gate.clone() {
+                    gate.notified().await;
+                }
                 match self.behavior.force_reap {
                     AsyncAction::Complete => {
                         self.active.store(false, Ordering::SeqCst);
@@ -1570,8 +1572,10 @@ mod tests {
             RunningBehavior::graceful(),
         )]));
         let bootstrap = crate::kernel_bootstrap::NativeKernelBootstrapOwner::new();
-        bootstrap.begin_start(7).unwrap();
-        bootstrap.fail_generation(7).unwrap();
+        let retired = bootstrap.open_supervisor_session();
+        retired.begin_start(7).unwrap();
+        retired.fail_generation(7).unwrap();
+        retired.close();
         let supervisor = KernelHostSupervisor::new_with_bootstrap(
             factory,
             KernelHostTimeouts::uniform(Duration::from_millis(100)),
@@ -1582,6 +1586,42 @@ mod tests {
 
         assert_eq!(access.endpoint.generation, 8);
         supervisor.stop().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn stale_supervisor_cannot_fail_or_revoke_the_active_generation() {
+        let instance = InstanceId::new(Uuid::new_v4());
+        let active_factory = Arc::new(ScriptedFactory::new([PendingScript::ready(
+            ReadyEvidence {
+                ready: NativeHostReady::new(43123, instance),
+                authenticated_instance: instance,
+            },
+            RunningBehavior::graceful(),
+        )]));
+        let stale_factory = Arc::new(ScriptedFactory::new(std::iter::empty()));
+        let bootstrap = crate::kernel_bootstrap::NativeKernelBootstrapOwner::new();
+        let active = KernelHostSupervisor::new_with_bootstrap(
+            active_factory,
+            KernelHostTimeouts::uniform(Duration::from_millis(100)),
+            bootstrap.clone(),
+        );
+        let stale = KernelHostSupervisor::new_with_bootstrap(
+            stale_factory,
+            KernelHostTimeouts::uniform(Duration::from_millis(100)),
+            bootstrap.clone(),
+        );
+        let access = active.start(startup()).await.unwrap();
+
+        assert_eq!(
+            stale.start(startup()).await.unwrap_err(),
+            KernelHostFailure::Cancelled
+        );
+
+        assert!(access.credential.is_available());
+        let publication = serde_json::to_value(bootstrap.read().unwrap()).unwrap();
+        assert_eq!(publication["status"], json!("ready"));
+        assert_eq!(publication["generation"], json!("1"));
+        active.stop().await.unwrap();
     }
 
     #[tokio::test]
@@ -1679,6 +1719,7 @@ mod tests {
                     exit: AsyncAction::Complete,
                     graceful_stop: AsyncAction::Complete,
                     force_reap: AsyncAction::Complete,
+                    force_reap_gate: None,
                 },
             ),
             PendingScript::ready(
@@ -1739,6 +1780,7 @@ mod tests {
                     exit: AsyncAction::Complete,
                     graceful_stop: AsyncAction::Complete,
                     force_reap: AsyncAction::Complete,
+                    force_reap_gate: None,
                 },
             ),
             PendingScript::Fail(KernelHostFailure::EarlyExit),
@@ -1804,6 +1846,7 @@ mod tests {
                 exit: AsyncAction::Complete,
                 graceful_stop: AsyncAction::Complete,
                 force_reap: AsyncAction::Complete,
+                force_reap_gate: None,
             },
         )]));
         let bootstrap = crate::kernel_bootstrap::NativeKernelBootstrapOwner::new();
@@ -1886,7 +1929,8 @@ mod tests {
         let (snapshots, snapshot) = watch::channel(KernelHostSnapshot::dormant());
         let (start_response, start_result) = oneshot::channel();
         let ownership = KernelOwnership::default();
-        let bootstrap = crate::kernel_bootstrap::NativeKernelBootstrapOwner::new();
+        let bootstrap_owner = crate::kernel_bootstrap::NativeKernelBootstrapOwner::new();
+        let bootstrap = bootstrap_owner.open_supervisor_session();
         let enqueue_gate = AsyncMutex::new(());
 
         let ready = start_transition(
@@ -1942,7 +1986,8 @@ mod tests {
         let (snapshots, snapshot) = watch::channel(KernelHostSnapshot::dormant());
         let (start_response, start_result) = oneshot::channel();
         let ownership = KernelOwnership::default();
-        let bootstrap = crate::kernel_bootstrap::NativeKernelBootstrapOwner::new();
+        let bootstrap_owner = crate::kernel_bootstrap::NativeKernelBootstrapOwner::new();
+        let bootstrap = bootstrap_owner.open_supervisor_session();
         let enqueue_gate = AsyncMutex::new(());
 
         let ready = start_transition(
@@ -2015,7 +2060,10 @@ mod tests {
             endpoint: Some(ready.access.endpoint),
             failure: None,
         });
-        let bootstrap = crate::kernel_bootstrap::NativeKernelBootstrapOwner::new();
+        let bootstrap_owner = crate::kernel_bootstrap::NativeKernelBootstrapOwner::new();
+        let bootstrap = bootstrap_owner.open_supervisor_session();
+        bootstrap.begin_start(1).unwrap();
+        bootstrap.publish(ready.access.clone()).unwrap();
         let enqueue_gate = AsyncMutex::new(());
 
         let next = ready_transition(
@@ -2115,6 +2163,7 @@ mod tests {
                     exit: AsyncAction::Fail,
                     graceful_stop: AsyncAction::Complete,
                     force_reap: AsyncAction::Complete,
+                    force_reap_gate: None,
                 },
             ),
             PendingScript::ready(
@@ -2139,20 +2188,63 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn wait_exit_failure_revokes_ready_before_force_reap_can_complete() {
+        let instance = InstanceId::new(Uuid::new_v4());
+        let force_reap_gate = Arc::new(Notify::new());
+        let factory = Arc::new(ScriptedFactory::new([PendingScript::ready(
+            ReadyEvidence {
+                ready: NativeHostReady::new(43123, instance),
+                authenticated_instance: instance,
+            },
+            RunningBehavior {
+                exit: AsyncAction::Fail,
+                graceful_stop: AsyncAction::Complete,
+                force_reap: AsyncAction::Complete,
+                force_reap_gate: Some(force_reap_gate.clone()),
+            },
+        )]));
+        let bootstrap = crate::kernel_bootstrap::NativeKernelBootstrapOwner::new();
+        let supervisor = KernelHostSupervisor::new_with_bootstrap(
+            factory.clone(),
+            KernelHostTimeouts::uniform(Duration::from_secs(5)),
+            bootstrap.clone(),
+        );
+        let access = supervisor.start(startup()).await.unwrap();
+        wait_for_event(&factory, "running-force").await;
+
+        assert!(!access.credential.is_available());
+        assert_eq!(supervisor.snapshot().phase, KernelHostPhase::Failed);
+        assert_eq!(supervisor.snapshot().generation, 1);
+        assert_eq!(supervisor.snapshot().endpoint, None);
+        assert_eq!(
+            serde_json::to_value(bootstrap.read().unwrap()).unwrap(),
+            json!({
+                "status": "failed",
+                "bootstrapVersion": 1,
+                "generation": "1",
+            })
+        );
+
+        force_reap_gate.notify_one();
+    }
+
+    #[tokio::test]
     async fn dropping_supervisor_while_starting_terminates_the_armed_child() {
         let gate = Arc::new(Notify::new());
         let instance = InstanceId::new(Uuid::new_v4());
         let factory = Arc::new(ScriptedFactory::new([PendingScript::gated(
-            gate,
+            gate.clone(),
             ReadyEvidence {
                 ready: NativeHostReady::new(43123, instance),
                 authenticated_instance: instance,
             },
             RunningBehavior::graceful(),
         )]));
-        let supervisor = Arc::new(KernelHostSupervisor::new(
+        let bootstrap = crate::kernel_bootstrap::NativeKernelBootstrapOwner::new();
+        let supervisor = Arc::new(KernelHostSupervisor::new_with_bootstrap(
             factory.clone(),
             KernelHostTimeouts::uniform(Duration::from_secs(1)),
+            bootstrap.clone(),
         ));
         let start_supervisor = supervisor.clone();
         let start = tokio::spawn(async move { start_supervisor.start(startup()).await });
@@ -2161,6 +2253,17 @@ mod tests {
         let _join_result = start.await;
 
         drop(supervisor);
+        gate.notify_waiters();
+        for _attempt in 0..10 {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(
+            serde_json::to_value(bootstrap.read().unwrap()).unwrap(),
+            json!({
+                "status": "dormant",
+                "bootstrapVersion": 1,
+            })
+        );
         assert_eq!(factory.events(), vec!["sync-terminate"]);
     }
 
@@ -2192,6 +2295,16 @@ mod tests {
             tokio::task::yield_now().await;
         }
         panic!("supervisor did not spawn the scripted child");
+    }
+
+    async fn wait_for_event(factory: &ScriptedFactory, expected: &'static str) {
+        for _attempt in 0..100 {
+            if factory.events().contains(&expected) {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+        panic!("supervisor did not publish event {expected}");
     }
 
     async fn wait_for_phase(supervisor: &KernelHostSupervisor, phase: KernelHostPhase) {
