@@ -100,6 +100,58 @@ describe("desktop native shell port", () => {
     expect(saveMarkdownFile).not.toHaveBeenCalled();
   });
 
+  it("serializes competing writes so one stale revision cannot overwrite the winner", async () => {
+    let contents = "initial";
+    const saveMarkdownFile = vi.fn(async (input: { contents: string; path: string | null }) => {
+      contents = input.contents;
+      return { name: "note.md", path: input.path! };
+    });
+    const port = createDesktopNativeShellPort({
+      newHandle: () => "standalone-queue",
+      openContainingFolder: vi.fn(),
+      openExternalUrl: vi.fn(),
+      openMarkdownFile: vi.fn(async () => ({
+        content: contents,
+        name: "note.md",
+        path: "/private/note.md",
+        sizeBytes: contents.length
+      })),
+      openMarkdownFolder: vi.fn(),
+      readMarkdownFile: vi.fn(async (path) => ({
+        content: contents,
+        name: "note.md",
+        path,
+        sizeBytes: contents.length
+      })),
+      resolveMarkdownFolder: vi.fn(),
+      resolveMarkdownPath: vi.fn(),
+      saveMarkdownFile
+    });
+    const selected = await port.pickers.pickStandaloneDocument();
+    const initial = await port.standalone.read(selected!.handle);
+
+    const outcomes = await Promise.allSettled([
+      port.standalone.write({
+        contents: "first winner",
+        expectedRevision: initial.revision,
+        handle: selected!.handle
+      }),
+      port.standalone.write({
+        contents: "stale loser",
+        expectedRevision: initial.revision,
+        handle: selected!.handle
+      })
+    ]);
+
+    expect(outcomes[0].status).toBe("fulfilled");
+    expect(outcomes[1]).toMatchObject({
+      reason: expect.any(NativeStandaloneConflictError),
+      status: "rejected"
+    });
+    expect(saveMarkdownFile).toHaveBeenCalledTimes(1);
+    expect(contents).toBe("first winner");
+  });
+
   it("classifies native paths without returning file paths to standalone callers", async () => {
     const port = createDesktopNativeShellPort({
       newHandle: () => "classified-file",
