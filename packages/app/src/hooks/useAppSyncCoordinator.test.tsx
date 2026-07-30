@@ -228,11 +228,13 @@ function installRuntime(membership = async (documentPath: string, rootPath: stri
 }
 
 function renderCoordinator({
+  dejavuSyncAvailable = true,
   document = configDocument(),
   onFilesChanged,
   primaryRoot = "/Notes",
   reload = vi.fn(async () => null)
 }: {
+  dejavuSyncAvailable?: boolean;
   document?: SyncConfigDocument | null;
   onFilesChanged?: (root: string) => Promise<unknown> | unknown;
   primaryRoot?: string | null;
@@ -241,6 +243,7 @@ function renderCoordinator({
   return renderHook(
     ({ currentDocument, currentRoot }) => useAppSyncCoordinator({
       configDocument: currentDocument,
+      dejavuSyncAvailable,
       onFilesChanged,
       primaryRoot: currentRoot,
       reloadConfig: reload,
@@ -313,6 +316,27 @@ describe("application sync coordinator", () => {
     await waitFor(() => expect(result.current.running).toBe(false));
     expect(onFilesChanged).toHaveBeenCalledOnce();
     expect(onFilesChanged).toHaveBeenCalledWith("/Notes");
+  });
+
+  it("returns an accepted basic S3 run without invoking Dejavu status recovery when unavailable", async () => {
+    const runtime = getAppRuntime();
+    const loadRepositoryStatus = vi.fn(runtime.syncConfig.loadRepositoryStatus);
+    runtime.syncConfig.loadRepositoryStatus = loadRepositoryStatus;
+    mockedRunApplicationSync.mockResolvedValueOnce(acceptedDispatch("/Notes"));
+    const { result } = renderCoordinator({
+      dejavuSyncAvailable: false,
+      document: configDocument("rev-1", {
+        mode: "fully-manual",
+        provider: "s3"
+      })
+    });
+
+    await act(async () => {
+      await expect(result.current.run("manual")).resolves.toEqual(acceptedDispatch("/Notes"));
+    });
+
+    expect(result.current.running).toBe(false);
+    expect(loadRepositoryStatus).not.toHaveBeenCalled();
   });
 
   it("reports a terminal Dejavu failure after S3 dispatch acceptance", async () => {
@@ -2040,6 +2064,7 @@ describe("application sync coordinator", () => {
     const wrapper = ({ children }: { children: ReactNode }) => <StrictMode>{children}</StrictMode>;
     const { unmount } = renderHook(() => useAppSyncCoordinator({
       configDocument: configDocument(),
+      dejavuSyncAvailable: true,
       primaryRoot: "/Notes",
       reloadConfig: async () => null,
       translate: (key) => key

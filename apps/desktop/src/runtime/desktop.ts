@@ -103,6 +103,7 @@ export function createDesktopRuntime({
   features: {
     applicationMenu: true,
     applicationShortcuts: true,
+    dejavuSync: true,
     export: true,
     fileDrop: true,
     imageImport: true,

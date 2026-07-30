@@ -67,6 +67,7 @@ describe("mobile runtime import boundary", () => {
     expect(mobileRuntime.mcp.localServiceAvailable).toBe(false);
     expect(mobileRuntime.mcp.getSettings).toBe(mcpPolicy.getNativeMcpPolicySettings);
     expect(mobileRuntime.mcp.updateSettings).toBe(mcpPolicy.updateNativeMcpPolicySettings);
+    expect(mobileRuntime.features.dejavuSync).toBe(true);
     expect(mobileRuntime.settings.readGroup).toBe(settings.readNativeAppSettingsGroup);
     expect(mobileRuntime.settings.replacePortable).toBe(settings.replaceNativePortableAppSettings);
     expect(mobileRuntime.settings.writeGroup).toBe(settings.writeNativeAppSettingsGroup);

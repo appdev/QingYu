@@ -41,6 +41,7 @@ export type AppSyncCoordinator = {
 
 export type AppSyncCoordinatorInput = {
   configDocument: SyncConfigDocument | null;
+  dejavuSyncAvailable: boolean;
   onFilesChanged?: (primaryRoot: string) => Promise<unknown> | unknown;
   primaryRoot: string | null;
   reloadConfig: () => Promise<SyncConfigLoadResult | null>;
@@ -272,6 +273,7 @@ function fallbackError(error: unknown, provider: SyncProvider): SyncSafeError {
 }
 
 export function useAppSyncCoordinator({
+  dejavuSyncAvailable,
   configDocument,
   onFilesChanged,
   primaryRoot,
@@ -799,7 +801,7 @@ export function useAppSyncCoordinator({
       }
 
       const dispatch = dispatchWithTrigger(outcome.result, trigger);
-      if (dispatch.status === "accepted") {
+      if (dispatch.status === "accepted" && dejavuSyncAvailable) {
         if (!acceptedSharedRunsRef.current.has(shared)) {
           acceptedSharedRunsRef.current.add(shared);
           if (
@@ -858,7 +860,7 @@ export function useAppSyncCoordinator({
       if (shared.completed && shared.callers.size === 0) inFlightRuns.delete(shared);
     }).catch(() => {});
     return caller;
-  }, [handleDejavuStatus, installReloaded, pollAcceptedStatus, recoverError, showSyncFailureToast]);
+  }, [dejavuSyncAvailable, handleDejavuStatus, installReloaded, pollAcceptedStatus, recoverError, showSyncFailureToast]);
   runDetailedRef.current = runDetailed;
 
   const run = useCallback(async (trigger: SyncTrigger, revision?: string) => (
@@ -1084,13 +1086,16 @@ export function useAppSyncCoordinator({
     };
     reclaimPendingApplyRef.current = reclaimPendingApply;
     const register = async () => {
-      const failures = await Promise.all([
+      const registrations = [
         listenSyncEditing(handleEditing),
         listenSyncApplyRequested(handleApply),
         listenSyncRunRequested(handleRequested),
         listenSyncStatusChanged(handleStatus),
-        listenDejavuSyncStatusChanged(handleDejavuStatus)
-      ].map(registerOne));
+        ...(dejavuSyncAvailable
+          ? [listenDejavuSyncStatusChanged(handleDejavuStatus)]
+          : [])
+      ];
+      const failures = await Promise.all(registrations.map(registerOne));
       if (!installed()) return;
       if (failures.some(Boolean)) throw new Error("sync-editing-listener-unavailable");
       const snapshot = await getAppRuntime().syncConfig.loadEditing();
@@ -1146,7 +1151,7 @@ export function useAppSyncCoordinator({
       }
       for (const cleanup of cleanups) cleanup();
     };
-  }, [handleDejavuStatus, installReloaded, primaryRoot, showSyncFailureToast]);
+  }, [dejavuSyncAvailable, handleDejavuStatus, installReloaded, primaryRoot, showSyncFailureToast]);
 
   useEffect(() => {
     if (

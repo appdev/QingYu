@@ -804,12 +804,14 @@ function WorkspaceApp() {
   }, [refreshMarkdownFileTree]);
   const appSync = useAppSyncCoordinator({
     configDocument: syncConfig.appliedDocument,
+    dejavuSyncAvailable: Boolean(appFeatures.dejavuSync),
     onFilesChanged: handlePrimaryFilesChanged,
     primaryRoot: primaryIntegrationRoot,
     reloadConfig: syncConfig.reload,
     translate
   });
   useSyncConflictHistory({
+    available: Boolean(appFeatures.dejavuSync),
     notesRoot: primaryIntegrationRoot,
     translate
   });
@@ -1091,6 +1093,7 @@ function WorkspaceApp() {
     ) return false;
 
     if (request.provider === "s3") {
+      if (!appFeatures.dejavuSync) return false;
       if (primaryWorkspace.status !== "ready" || primaryWorkspace.root !== request.notesRoot) {
         return false;
       }
@@ -1113,6 +1116,7 @@ function WorkspaceApp() {
     return restoredRoot !== null;
   }, [
     appSync.run,
+    appFeatures.dejavuSync,
     compactMode.trueMobile,
     currentDesktopNotebookName,
     notebookSwitch.restoreDesktopNotebook,
@@ -1192,7 +1196,9 @@ function WorkspaceApp() {
     try {
       const entries = await getAppRuntime().syncConfig.listNotebooks({ revision });
       if (remoteNotebookRequestGenerationRef.current !== requestGeneration) return;
-      setRemoteNotebookEntries(entries);
+      setRemoteNotebookEntries(entries.filter((entry) => (
+        entry.provider !== "s3" || appFeatures.dejavuSync
+      )));
       setRemoteNotebookCatalogLoaded(true);
     } catch {
       if (remoteNotebookRequestGenerationRef.current !== requestGeneration) return;
@@ -1203,7 +1209,7 @@ function WorkspaceApp() {
         setRemoteNotebookLoading(false);
       }
     }
-  }, [translate]);
+  }, [appFeatures.dejavuSync, translate]);
   const openDesktopRemoteNotebookDialog = useCallback(async ({
     requireEstablishedWorkspace = false
   }: {
@@ -1328,6 +1334,7 @@ function WorkspaceApp() {
   const restoreDesktopRemoteNotebook = useCallback(async (entry: RemoteNotebookCatalogEntry) => {
     requireCurrentRemoteNotebookCatalogRevision();
     if (entry.provider === "s3") {
+      if (!appFeatures.dejavuSync) throw new Error("S3 repository binding is unavailable.");
       if (primaryWorkspace.status !== "ready" || !primaryWorkspace.root) {
         throw new Error("Choose a local notebook directory before binding an S3 repository.");
       }
@@ -1346,6 +1353,7 @@ function WorkspaceApp() {
     if (!restoredRoot) throw new Error("Notebook restore did not complete.");
     closeRemoteNotebookDialog();
   }, [
+    appFeatures.dejavuSync,
     closeRemoteNotebookDialog,
     notebookSwitch.restoreDesktopNotebook,
     primaryWorkspace.root,
@@ -1456,7 +1464,9 @@ function WorkspaceApp() {
         revision: currentResult.revision
       });
       if (remoteNotebookRequestGenerationRef.current !== requestGeneration) return;
-      setRemoteNotebookEntries(entries);
+      setRemoteNotebookEntries(entries.filter((entry) => (
+        entry.provider !== "s3" || appFeatures.dejavuSync
+      )));
     } catch {
       if (remoteNotebookRequestGenerationRef.current !== requestGeneration) return;
       setRemoteNotebookError(translate("notebooks.remote.refreshError"));
@@ -1466,6 +1476,7 @@ function WorkspaceApp() {
       }
     }
   }, [
+    appFeatures.dejavuSync,
     canChooseLocalWorkspace,
     compactMode.trueMobile,
     syncConfig.loadResult,
@@ -1487,6 +1498,7 @@ function WorkspaceApp() {
       throw new Error("The cloud notebook catalog is stale.");
     }
     if (entry.provider === "s3") {
+      if (!appFeatures.dejavuSync) throw new Error("S3 repository binding is unavailable.");
       if (primaryWorkspace.status !== "ready" || !primaryWorkspace.root) {
         throw new Error("A local notebook directory is required.");
       }
@@ -1502,6 +1514,7 @@ function WorkspaceApp() {
     if (!restoredRoot) throw new Error("Notebook restore did not complete.");
     closeMobileNotebookDialog();
   }, [
+    appFeatures.dejavuSync,
     closeMobileNotebookDialog,
     notebookSwitch.restoreManagedNotebook,
     primaryWorkspace.root,

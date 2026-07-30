@@ -370,6 +370,7 @@ function configureSyncRuntimeWithConfigEvents(
       ...runtime.features,
       applicationMenu: true,
       applicationShortcuts: true,
+      dejavuSync: projectSyncFeature,
       projectSync: projectSyncFeature
     },
     platform: {
@@ -1316,6 +1317,7 @@ describe("QingYu workspace", () => {
     mockedLoadNativeMarkdownFilesForPath.mockResolvedValue([]);
     configureAppRuntime({
       ...runtime,
+      features: { ...runtime.features, dejavuSync: true },
       syncConfig: {
         ...runtime.syncConfig,
         bindRepository,

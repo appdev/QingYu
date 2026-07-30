@@ -95,6 +95,7 @@ describe("useSyncConflictHistory", () => {
 
   it("loads completed conflict history without replaying old notices and matches only the active file", async () => {
     const { result } = renderHook(() => useSyncConflictHistory({
+      available: true,
       notesRoot: "/notes",
       translate: (key) => key
     }));
@@ -116,6 +117,7 @@ describe("useSyncConflictHistory", () => {
     });
 
     const { result } = renderHook(() => useSyncConflictHistory({
+      available: true,
       notesRoot: "/notes",
       translate: (key) => key
     }));
@@ -127,6 +129,7 @@ describe("useSyncConflictHistory", () => {
 
   it("notifies once for newly completed history without asking for a resolution", async () => {
     const { result } = renderHook(() => useSyncConflictHistory({
+      available: true,
       notesRoot: "/notes",
       translate: (key) => key
     }));
@@ -164,6 +167,7 @@ describe("useSyncConflictHistory", () => {
     configureAppRuntime(runtime);
 
     const { result } = renderHook(() => useSyncConflictHistory({
+      available: true,
       notesRoot: "/notes",
       translate: (key) => key
     }));
@@ -199,6 +203,7 @@ describe("useSyncConflictHistory", () => {
     configureAppRuntime(runtime);
 
     const { result } = renderHook(() => useSyncConflictHistory({
+      available: true,
       notesRoot: "/notes",
       translate: (key) => key
     }));
@@ -235,6 +240,7 @@ describe("useSyncConflictHistory", () => {
     configureAppRuntime(runtime);
 
     const { result } = renderHook(() => useSyncConflictHistory({
+      available: true,
       notesRoot: "/notes",
       translate: (key) => key
     }));
@@ -258,5 +264,21 @@ describe("useSyncConflictHistory", () => {
     });
     await waitFor(() => expect(runtime.syncConfig.listDejavuConflictHistory).toHaveBeenCalledTimes(3));
     await waitFor(() => expect(result.current.entries).toEqual([initial, later]));
+  });
+
+  it("stays inert when the runtime does not declare Dejavu sync", async () => {
+    const runtime = getAppRuntime();
+    const { result } = renderHook(() => useSyncConflictHistory({
+      available: false,
+      notesRoot: "/notes",
+      translate: (key) => key
+    }));
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.entries).toEqual([]);
+    expect(result.current.repositoryId).toBeNull();
+    expect(runtime.events.listen).not.toHaveBeenCalled();
+    expect(runtime.syncConfig.loadRepositoryStatus).not.toHaveBeenCalled();
+    expect(runtime.syncConfig.listDejavuConflictHistory).not.toHaveBeenCalled();
   });
 });

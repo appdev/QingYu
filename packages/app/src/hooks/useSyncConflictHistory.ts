@@ -29,19 +29,27 @@ export type SyncConflictHistoryController = {
 };
 
 export function useSyncConflictHistory({
+  available,
   notesRoot,
   translate
 }: {
+  available: boolean;
   notesRoot: string | null;
   translate: (key: I18nKey) => string;
 }): SyncConflictHistoryController {
   const [entries, setEntries] = useState<SyncConflictRecord[]>([]);
-  const [loading, setLoading] = useState(Boolean(notesRoot));
+  const [loading, setLoading] = useState(Boolean(available && notesRoot));
   const [repositoryId, setRepositoryId] = useState<string | null>(null);
   const translateRef = useRef(translate);
   translateRef.current = translate;
 
   useEffect(() => {
+    if (!available) {
+      setEntries([]);
+      setRepositoryId(null);
+      setLoading(false);
+      return;
+    }
     let active = true;
     let cleanup: (() => unknown) | null = null;
     let baselineReady = false;
@@ -154,16 +162,18 @@ export function useSyncConflictHistory({
       bufferedStatuses.clear();
       cleanup?.();
     };
-  }, [notesRoot]);
+  }, [available, notesRoot]);
 
   const read = useCallback((conflict: SyncConflictRecord) => {
-    if (!notesRoot) return Promise.reject(new Error("sync-conflict-ownership-changed"));
+    if (!available || !notesRoot) {
+      return Promise.reject(new Error("sync-conflict-ownership-changed"));
+    }
     return getAppRuntime().syncConfig.readDejavuConflictHistory({
       conflictId: conflict.conflictId,
       notesRoot,
       repositoryId: conflict.repositoryId
     });
-  }, [notesRoot]);
+  }, [available, notesRoot]);
 
   return useMemo(() => ({
     entries,

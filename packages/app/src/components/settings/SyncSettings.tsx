@@ -29,6 +29,7 @@ import type { SettingsTranslate } from "./translate";
 
 export type SyncSettingsProps = {
   configDocument: SyncConfigDocument | null;
+  dejavuSyncAvailable: boolean;
   loadResult: SyncConfigLoadResult | null;
   primaryRoot: string | null;
   saving: boolean;
@@ -280,6 +281,7 @@ function PrimaryRootRow({
 
 export function SyncSettings({
   configDocument,
+  dejavuSyncAvailable,
   loadResult,
   onEnable,
   onOpenConflictHistory,
@@ -325,6 +327,10 @@ export function SyncSettings({
   const hasUncommittedDraft = overlayValues(visibleOverlays).length > 0;
 
   useEffect(() => {
+    if (!dejavuSyncAvailable) {
+      setDejavuKeyState(null);
+      return;
+    }
     let active = true;
     getAppRuntime().syncConfig.loadKeyState().then((state) => {
       if (active) setDejavuKeyState(state);
@@ -334,7 +340,7 @@ export function SyncSettings({
     return () => {
       active = false;
     };
-  }, []);
+  }, [dejavuSyncAvailable]);
 
   useEffect(() => {
     let active = true;
@@ -345,7 +351,7 @@ export function SyncSettings({
     let adoptedOwnershipEvent = 0;
     const pendingEvents = new Map<string, DejavuRepositoryStatus>();
     setDejavuRepositoryStatus(null);
-    if (!primaryRoot) {
+    if (!dejavuSyncAvailable || !primaryRoot) {
       return;
     }
     const runtime = getAppRuntime();
@@ -412,14 +418,16 @@ export function SyncSettings({
       pendingEvents.clear();
       cleanup?.();
     };
-  }, [primaryRoot]);
+  }, [dejavuSyncAvailable, primaryRoot]);
 
   useEffect(() => {
     onRepositoryIdentityChange?.({
       notesRoot: primaryRoot,
-      repositoryId: dejavuRepositoryStatus?.repositoryId ?? null
+      repositoryId: dejavuSyncAvailable
+        ? dejavuRepositoryStatus?.repositoryId ?? null
+        : null
     });
-  }, [dejavuRepositoryStatus?.repositoryId, onRepositoryIdentityChange, primaryRoot]);
+  }, [dejavuRepositoryStatus?.repositoryId, dejavuSyncAvailable, onRepositoryIdentityChange, primaryRoot]);
 
   useEffect(() => {
     setDraft((current) => {
@@ -562,7 +570,11 @@ export function SyncSettings({
     confirmation: string,
     run: () => Promise<unknown>
   ) => {
-    if (pendingRepositoryOperation === operation || !window.confirm(confirmation)) return;
+    if (
+      !dejavuSyncAvailable
+      || pendingRepositoryOperation === operation
+      || !window.confirm(confirmation)
+    ) return;
     setPendingRepositoryOperation(operation);
     setRepositoryFeedback(null);
     try {
@@ -576,7 +588,7 @@ export function SyncSettings({
   };
   const saveGlobalKey = async () => {
     const nextKey = keyInput.trim();
-    if (!nextKey || pendingRepositoryOperation === "key") return;
+    if (!dejavuSyncAvailable || !nextKey || pendingRepositoryOperation === "key") return;
     setPendingRepositoryOperation("key");
     setKeyFeedback(null);
     try {
@@ -595,7 +607,10 @@ export function SyncSettings({
     }
   };
   const exportGlobalKey = async () => {
-    if (!window.confirm(translate("settings.sync.key.exportConfirm"))) return;
+    if (
+      !dejavuSyncAvailable
+      || !window.confirm(translate("settings.sync.key.exportConfirm"))
+    ) return;
     setKeyFeedback(null);
     try {
       const key = await getAppRuntime().syncConfig.exportGlobalKey({ confirmed: true });
@@ -672,7 +687,7 @@ export function SyncSettings({
           <SettingsRow title={translate("settings.sync.s3SecretAccessKey")} description={translate("settings.sync.s3SecretAccessKeyDescription")} action={<SettingsTextInput label={translate("settings.sync.s3SecretAccessKey")} type="password" value={config.s3.secretAccessKey} onChange={(value) => queuePatch({ field: "s3.secretAccessKey", value })} />} />
         </SettingsSection>
       )}
-      {config.provider === "s3" ? (
+      {config.provider === "s3" && dejavuSyncAvailable ? (
         <>
         <SettingsSection label={translate("settings.sync.section.key")}>
           <SettingsRow
@@ -757,6 +772,9 @@ export function SyncSettings({
             </>
           )}
         </SettingsSection>
+        </>
+      ) : null}
+      {config.provider === "s3" ? (
         <SettingsSection label={translate("settings.sync.section.advanced")}>
           <SettingsRow title={translate("settings.sync.generateConflictDocument")} description={translate("settings.sync.generateConflictDocumentDescription")} action={<SettingsSwitch checked={config.generateConflictDocument} label={translate("settings.sync.generateConflictDocument")} onChange={() => queuePatch({ field: "generateConflictDocument", value: !config.generateConflictDocument })} />} />
           <SettingsRow title={translate("settings.sync.s3RequestTimeout")} description={translate("settings.sync.s3RequestTimeoutDescription")} action={<SettingsNumberInput label={translate("settings.sync.s3RequestTimeout")} min={5} max={600} unit={translate("settings.sync.seconds")} value={config.s3.requestTimeoutSeconds} onChange={(value) => queuePatch({ field: "s3.requestTimeoutSeconds", value })} />} />
@@ -773,7 +791,6 @@ export function SyncSettings({
             { label: translate("settings.sync.s3TlsVerification.skip"), value: "skip" }
           ]} value={config.s3.tlsVerification} onChange={(value) => queuePatch({ field: "s3.tlsVerification", value: value === "skip" ? "skip" : "verify" })} />} />
         </SettingsSection>
-        </>
       ) : null}
       <SettingsSection label={translate("settings.sync.section.connectionStatus")}>
         <div className="py-4">

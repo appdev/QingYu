@@ -159,6 +159,7 @@ describe("desktop runtime retained capabilities", () => {
     expect(desktopRuntime.features).toEqual({
       applicationMenu: true,
       applicationShortcuts: true,
+      dejavuSync: true,
       export: true,
       fileDrop: true,
       imageImport: true,

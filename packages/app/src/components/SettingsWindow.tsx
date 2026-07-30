@@ -337,6 +337,7 @@ export function SettingsWindow({
           {activeSettingsCategory === "sync" ? (
             <SyncSettings
               configDocument={syncView.configDocument}
+              dejavuSyncAvailable={Boolean(appFeatures.dejavuSync)}
               loadResult={syncView.loadResult}
               primaryRoot={syncView.primaryRoot}
               saving={syncView.saving}
@@ -442,7 +443,7 @@ export function SettingsWindow({
           onRestore={remoteNotebookDialog.restore}
         />
       ) : null}
-      {openSyncConflictHistory ? (
+      {appFeatures.dejavuSync && openSyncConflictHistory ? (
         <SyncConflictHistoryDialog
           key={`${openSyncConflictHistory.notesRoot}\u0000${openSyncConflictHistory.conflict.repositoryId}\u0000${openSyncConflictHistory.conflict.conflictId}`}
           conflict={openSyncConflictHistory.conflict}

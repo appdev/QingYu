@@ -29,6 +29,7 @@ export const mobileRuntime = {
   features: {
     applicationMenu: false,
     applicationShortcuts: false,
+    dejavuSync: true,
     export: false,
     fileDrop: false,
     imageImport: true,

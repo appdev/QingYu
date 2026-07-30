@@ -76,6 +76,7 @@ describe("default app runtime capabilities", () => {
     expect(runtime.features).toEqual({
       applicationMenu: false,
       applicationShortcuts: false,
+      dejavuSync: false,
       export: false,
       fileDrop: false,
       imageImport: false,

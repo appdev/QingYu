@@ -38,6 +38,11 @@ describe("SettingsWindow notes workspace", () => {
       status: "deferred",
       workspaceRoot: null
     };
+    const runtime = getAppRuntime();
+    configureAppRuntime({
+      ...runtime,
+      features: { ...runtime.features, dejavuSync: true }
+    });
   });
 
   it("shows the application workspace path read-only with an explicit notebook switch entry", async () => {

@@ -136,7 +136,9 @@ export function useSettingsRemoteNotebookDialog({
       });
       if (!mountedRef.current || transactionGenerationRef.current !== generation) return;
 
-      setEntries(nextEntries);
+      setEntries(nextEntries.filter((entry) => (
+        entry.provider !== "s3" || getAppRuntime().features.dejavuSync
+      )));
       setError(null);
     } catch {
       if (!mountedRef.current || transactionGenerationRef.current !== generation) return;
@@ -206,6 +208,9 @@ export function useSettingsRemoteNotebookDialog({
     const revision = revisionRef.current;
     if (!revision) throw new Error("Cloud notebook restore failed");
     const notesRoot = primaryRootRef.current;
+    if (entry.provider === "s3" && !getAppRuntime().features.dejavuSync) {
+      throw new Error("Cloud notebook restore failed");
+    }
     if (entry.provider === "s3" && !notesRoot) {
       throw new Error("Cloud notebook restore failed");
     }

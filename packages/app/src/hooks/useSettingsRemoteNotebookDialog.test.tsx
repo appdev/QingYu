@@ -85,6 +85,7 @@ function deferred<T>() {
 }
 
 function installRuntime(options: {
+  dejavuSync?: boolean;
   listNotebooks?: AppRuntime["syncConfig"]["listNotebooks"];
   load?: AppRuntime["syncConfig"]["load"];
 } = {}) {
@@ -94,6 +95,7 @@ function installRuntime(options: {
   const listNotebooks = vi.fn(options.listNotebooks ?? (async () => [entry("Archive")]));
   configureAppRuntime({
     ...runtime,
+    features: { ...runtime.features, dejavuSync: options.dejavuSync ?? false },
     syncConfig: { ...runtime.syncConfig, listNotebooks, load },
     window: { ...runtime.window, hideSettingsWindow }
   });
@@ -414,7 +416,7 @@ describe("useSettingsRemoteNotebookDialog", () => {
   });
 
   it("accepts an S3 repository binding for the selected local root and resumes immediately", async () => {
-    installRuntime({ listNotebooks: async () => [s3Entry("Archive")] });
+    installRuntime({ dejavuSync: true, listNotebooks: async () => [s3Entry("Archive")] });
     const { result, syncSession } = setup("/Workspace/Current");
     await act(async () => result.current.openDialog());
     mockedRequestPrimaryCloudNotebookRestore.mockResolvedValueOnce(true);
@@ -431,5 +433,20 @@ describe("useSettingsRemoteNotebookDialog", () => {
     }));
     expect(result.current.open).toBe(false);
     expect(syncSession.begin).toHaveBeenCalledTimes(1);
+  });
+
+  it("omits and rejects S3 repository entries when Dejavu sync is unavailable", async () => {
+    installRuntime({
+      listNotebooks: async () => [entry("WebDAV Notes"), s3Entry("S3 Archive")]
+    });
+    const { result } = setup("/Workspace/Current");
+
+    await act(async () => result.current.openDialog());
+
+    expect(result.current.entries).toEqual([entry("WebDAV Notes")]);
+    await expect(result.current.restore(s3Entry("S3 Archive"))).rejects.toThrow(
+      "Cloud notebook restore failed"
+    );
+    expect(mockedRequestPrimaryCloudNotebookRestore).not.toHaveBeenCalled();
   });
 });

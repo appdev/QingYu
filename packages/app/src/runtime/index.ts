@@ -385,6 +385,7 @@ export type AppWebResourceRuntime = {
 export type AppFeatureRuntime = {
   applicationMenu: boolean;
   applicationShortcuts: boolean;
+  dejavuSync?: boolean;
   export: boolean;
   fileDrop: boolean;
   imageImport: boolean;
@@ -658,6 +659,7 @@ export function createDefaultAppRuntime(): AppRuntime {
     features: {
       applicationMenu: false,
       applicationShortcuts: false,
+      dejavuSync: false,
       export: false,
       fileDrop: false,
       imageImport: false,

@@ -61,6 +61,7 @@ function createProps(overrides: Partial<SyncSettingsProps> = {}): SyncSettingsPr
   const configDocument = document();
   return {
     configDocument,
+    dejavuSyncAvailable: true,
     loadResult: { ...configDocument, status: "loaded" },
     primaryRoot: "/Notes",
     saving: false,
@@ -207,6 +208,39 @@ describe("SyncSettings application scope", () => {
       "WebDAV connection",
       "Connection and status"
     ]);
+  });
+
+  it("keeps basic S3 sync available without loading or exposing Dejavu controls", async () => {
+    const runtime = createDefaultAppRuntime();
+    const loadKeyState = vi.fn(runtime.syncConfig.loadKeyState);
+    const loadRepositoryStatus = vi.fn(runtime.syncConfig.loadRepositoryStatus);
+    runtime.syncConfig.loadKeyState = loadKeyState;
+    runtime.syncConfig.loadRepositoryStatus = loadRepositoryStatus;
+    configureAppRuntime(runtime);
+    const s3Document = document({ config: { ...config, provider: "s3" } });
+
+    render(<SyncSettings {...createProps({
+      configDocument: s3Document,
+      dejavuSyncAvailable: false,
+      loadResult: { ...s3Document, status: "loaded" }
+    })} />);
+
+    expect(screen.getAllByRole("heading").map((heading) => heading.textContent)).toEqual([
+      "Basic settings",
+      "Sync schedule",
+      "S3 connection",
+      "Advanced options",
+      "Connection and status"
+    ]);
+    expect(screen.getByRole("textbox", { name: "S3 endpoint URL" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Test connection" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Sync now" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Select Cloud Notebook" })).toBeEnabled();
+    expect(screen.queryByLabelText("Repository key or passphrase")).not.toBeInTheDocument();
+    await waitFor(() => {
+      expect(loadKeyState).not.toHaveBeenCalled();
+      expect(loadRepositoryStatus).not.toHaveBeenCalled();
+    });
   });
 
   it("shows the current notebook directory as a read-only target", () => {
