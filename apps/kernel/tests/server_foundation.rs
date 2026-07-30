@@ -434,6 +434,47 @@ fn login_and_initialization_failures_have_independent_lockout_policies() {
 }
 
 #[test]
+fn password_change_failures_have_a_dedicated_bucket_from_login_and_initialization() {
+    let policy = RateLimitPolicy::new(2, Duration::from_secs(60), Duration::from_secs(30)).unwrap();
+    let mut limiter = AuthenticationRateLimiter::new(policy, policy);
+
+    assert_eq!(
+        record_authentication_failure(
+            &mut limiter,
+            AuthenticationFlow::PasswordChange,
+            7,
+            Duration::from_secs(0),
+        ),
+        RateLimitDecision::Allowed
+    );
+    assert_eq!(
+        record_authentication_failure(
+            &mut limiter,
+            AuthenticationFlow::PasswordChange,
+            7,
+            Duration::from_secs(1),
+        ),
+        RateLimitDecision::Limited {
+            retry_after: Duration::from_secs(30),
+        }
+    );
+    drop(
+        limiter
+            .begin_attempt(AuthenticationFlow::Login, 7, Duration::from_secs(2))
+            .unwrap(),
+    );
+    drop(
+        limiter
+            .begin_attempt(
+                AuthenticationFlow::Initialization,
+                7,
+                Duration::from_secs(2),
+            )
+            .unwrap(),
+    );
+}
+
+#[test]
 fn authentication_failure_windows_reset_at_the_boundary_and_after_success() {
     let policy = RateLimitPolicy::new(2, Duration::from_secs(10), Duration::from_secs(30)).unwrap();
     let mut limiter = AuthenticationRateLimiter::new(policy, policy);

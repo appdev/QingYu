@@ -184,6 +184,23 @@ impl ServerAuthenticationStore {
         })
     }
 
+    /// Inspects the retained owner state after an initialization publication
+    /// became uncertain without clearing the process-local authentication
+    /// latch. This is intentionally narrower than [`Self::status`]: it only
+    /// lets the initialization coordinator keep persistent state authoritative
+    /// when deciding whether its one-time gate is spent.
+    pub(super) fn reconcile_uncertain_initialization(
+        &self,
+    ) -> Result<ServerAuthenticationStatus, ServerAuthenticationError> {
+        if !self.state_uncertain.load(Ordering::Acquire) {
+            return Err(ServerAuthenticationError);
+        }
+        Ok(match self.read_snapshot_unchecked()? {
+            None => ServerAuthenticationStatus::NeedsInitialization,
+            Some(_) => ServerAuthenticationStatus::Ready,
+        })
+    }
+
     pub fn initialize_owner_password(
         &self,
         password: String,

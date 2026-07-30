@@ -361,6 +361,105 @@ fn password_change_requires_csrf_and_current_password_without_revoking_on_reject
 }
 
 #[test]
+fn repeated_current_password_rejections_are_limited_without_spending_the_login_budget() {
+    let temporary = tempdir().unwrap();
+    let paths = fixture_paths(temporary.path());
+    let coordinator = coordinator(initialized_store(&paths), 2);
+    let login = coordinator
+        .login(7, Duration::from_secs(0), OWNER_PASSWORD.to_owned())
+        .unwrap();
+
+    assert_eq!(
+        coordinator
+            .change_password(
+                login.session().credential(),
+                Some(login.session().csrf_token()),
+                Duration::from_secs(1),
+                INCORRECT_PASSWORD.to_owned(),
+                "new owner password material".to_owned(),
+            )
+            .unwrap_err(),
+        ServerAuthenticationCoordinatorError::InvalidCredentials
+    );
+    assert_eq!(
+        coordinator
+            .change_password(
+                login.session().credential(),
+                Some(login.session().csrf_token()),
+                Duration::from_secs(2),
+                INCORRECT_PASSWORD.to_owned(),
+                "new owner password material".to_owned(),
+            )
+            .unwrap_err(),
+        ServerAuthenticationCoordinatorError::RateLimited {
+            retry_after: Duration::from_secs(30),
+        }
+    );
+    let second_session = coordinator
+        .login(7, Duration::from_secs(3), OWNER_PASSWORD.to_owned())
+        .unwrap();
+    assert_eq!(
+        coordinator
+            .change_password(
+                second_session.session().credential(),
+                Some(second_session.session().csrf_token()),
+                Duration::from_secs(4),
+                INCORRECT_PASSWORD.to_owned(),
+                "new owner password material".to_owned(),
+            )
+            .unwrap_err(),
+        ServerAuthenticationCoordinatorError::InvalidCredentials
+    );
+}
+
+#[test]
+fn an_authorized_current_password_resets_prior_password_change_failures() {
+    let temporary = tempdir().unwrap();
+    let paths = fixture_paths(temporary.path());
+    let coordinator = coordinator(initialized_store(&paths), 2);
+    let login = coordinator
+        .login(7, Duration::from_secs(0), OWNER_PASSWORD.to_owned())
+        .unwrap();
+
+    assert_eq!(
+        coordinator
+            .change_password(
+                login.session().credential(),
+                Some(login.session().csrf_token()),
+                Duration::from_secs(1),
+                INCORRECT_PASSWORD.to_owned(),
+                "new owner password material".to_owned(),
+            )
+            .unwrap_err(),
+        ServerAuthenticationCoordinatorError::InvalidCredentials
+    );
+    assert_eq!(
+        coordinator
+            .change_password(
+                login.session().credential(),
+                Some(login.session().csrf_token()),
+                Duration::from_secs(2),
+                OWNER_PASSWORD.to_owned(),
+                "short".to_owned(),
+            )
+            .unwrap_err(),
+        ServerAuthenticationCoordinatorError::InvalidPassword
+    );
+    assert_eq!(
+        coordinator
+            .change_password(
+                login.session().credential(),
+                Some(login.session().csrf_token()),
+                Duration::from_secs(3),
+                INCORRECT_PASSWORD.to_owned(),
+                "new owner password material".to_owned(),
+            )
+            .unwrap_err(),
+        ServerAuthenticationCoordinatorError::InvalidCredentials
+    );
+}
+
+#[test]
 fn successful_password_change_revokes_every_existing_session_and_only_new_password_logs_in() {
     let temporary = tempdir().unwrap();
     let paths = fixture_paths(temporary.path());

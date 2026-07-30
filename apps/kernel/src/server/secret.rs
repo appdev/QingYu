@@ -18,6 +18,17 @@ impl SecretDigest {
         candidate_digest.zeroize();
         matches
     }
+
+    pub(crate) fn rate_limit_client_id(candidate: &str) -> u64 {
+        let mut candidate_digest: [u8; 32] = Sha256::digest(candidate.as_bytes()).into();
+        let identifier = u64::from_le_bytes(
+            candidate_digest[..8]
+                .try_into()
+                .expect("a SHA-256 digest always contains eight bytes"),
+        );
+        candidate_digest.zeroize();
+        identifier
+    }
 }
 
 impl Drop for SecretDigest {

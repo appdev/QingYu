@@ -59,6 +59,7 @@ impl std::error::Error for InvalidRateLimitPolicy {}
 pub enum AuthenticationFlow {
     Login,
     Initialization,
+    PasswordChange,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -291,6 +292,7 @@ impl std::error::Error for InvalidAuthenticationAttempt {}
 pub struct AuthenticationRateLimiter {
     login: FlowLimiter,
     initialization: FlowLimiter,
+    password_change: FlowLimiter,
     in_flight: Arc<AtomicUsize>,
     maximum_in_flight: usize,
 }
@@ -318,6 +320,7 @@ impl AuthenticationRateLimiter {
         Ok(Self {
             login: FlowLimiter::new(login, maximum_clients_per_flow),
             initialization: FlowLimiter::new(initialization, maximum_clients_per_flow),
+            password_change: FlowLimiter::new(login, maximum_clients_per_flow),
             in_flight: Arc::new(AtomicUsize::new(0)),
             maximum_in_flight,
         })
@@ -391,6 +394,7 @@ impl AuthenticationRateLimiter {
         match flow {
             AuthenticationFlow::Login => &mut self.login,
             AuthenticationFlow::Initialization => &mut self.initialization,
+            AuthenticationFlow::PasswordChange => &mut self.password_change,
         }
     }
 }

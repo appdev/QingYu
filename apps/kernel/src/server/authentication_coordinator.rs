@@ -6,6 +6,7 @@ use std::{
 
 use zeroize::Zeroizing;
 
+use super::secret::SecretDigest;
 use super::{
     AuthenticationAttemptPermit, AuthenticationFlow, AuthenticationRateLimiter,
     InvalidAuthenticationAttempt, IssuedSession, OwnerPasswordUpdateError,
@@ -148,9 +149,11 @@ impl ServerAuthenticationCoordinator {
     /// Replaces the fixed owner's password and revokes every browser session.
     ///
     /// The caller must provide a currently authorized session and its CSRF
-    /// token. This complete synchronous method belongs in the host's bounded
-    /// blocking pool for the same reason as [`Self::login`]. The host must not
-    /// retry an unavailable or uncertain mutation automatically.
+    /// token. Current-password Argon2 verification is admitted through a
+    /// password-change bucket keyed by the high-entropy session identity. This
+    /// complete synchronous method belongs in the host's bounded blocking pool
+    /// for the same reason as [`Self::login`]. The host must not retry an
+    /// unavailable or uncertain mutation automatically.
     pub fn change_password(
         &self,
         credential: &str,
@@ -172,20 +175,42 @@ impl ServerAuthenticationCoordinator {
                 return Err(ServerAuthenticationCoordinatorError::CsrfRejected);
             }
         }
+        let permit = {
+            let mut limiter = self.lock_rate_limiter()?;
+            limiter
+                .begin_attempt(
+                    AuthenticationFlow::PasswordChange,
+                    SecretDigest::rate_limit_client_id(credential),
+                    now,
+                )
+                .map_err(map_rate_limit_decision)?
+        };
         let update = self.authentication.change_owner_password(
             current_password.as_str().to_owned(),
             new_password.as_str().to_owned(),
         );
         match update {
-            Ok(()) => Ok(sessions.revoke_all()),
+            Ok(()) => {
+                let revoked = sessions.revoke_all();
+                self.record_success(permit)?;
+                Ok(revoked)
+            }
+            Err(OwnerPasswordUpdateError::InvalidCurrentPassword) => {
+                self.record_failure(permit, now)?;
+                Err(ServerAuthenticationCoordinatorError::InvalidCredentials)
+            }
+            Err(OwnerPasswordUpdateError::InvalidNewPassword) => {
+                self.record_success(permit)?;
+                Err(ServerAuthenticationCoordinatorError::InvalidPassword)
+            }
             Err(
                 error @ (OwnerPasswordUpdateError::StateUnavailable
                 | OwnerPasswordUpdateError::StateUncertain),
             ) => {
                 sessions.revoke_all();
+                self.settle_unavailable_attempt(permit, now)?;
                 Err(map_password_update_error(error))
             }
-            Err(error) => Err(map_password_update_error(error)),
         }
     }
 
@@ -509,6 +534,19 @@ mod tests {
                     login.session().credential(),
                     Some(login.session().csrf_token()),
                     Duration::from_secs(1),
+                    "incorrect owner password material".to_owned(),
+                    "new owner password material".to_owned(),
+                )
+                .unwrap_err(),
+            ServerAuthenticationCoordinatorError::InvalidCredentials
+        );
+
+        assert_eq!(
+            coordinator
+                .change_password(
+                    login.session().credential(),
+                    Some(login.session().csrf_token()),
+                    Duration::from_secs(2),
                     OWNER_PASSWORD.to_owned(),
                     "new owner password material".to_owned(),
                 )
@@ -517,11 +555,26 @@ mod tests {
         );
         assert_eq!(
             coordinator
+                .rate_limiter
+                .lock()
+                .unwrap()
+                .begin_attempt(
+                    AuthenticationFlow::PasswordChange,
+                    SecretDigest::rate_limit_client_id(login.session().credential()),
+                    Duration::from_secs(3),
+                )
+                .unwrap_err(),
+            RateLimitDecision::Limited {
+                retry_after: Duration::from_secs(29),
+            }
+        );
+        assert_eq!(
+            coordinator
                 .authorize(
                     login.session().credential(),
                     None,
                     RequestIntent::ReadOnly,
-                    Duration::from_secs(2),
+                    Duration::from_secs(3),
                 )
                 .unwrap(),
             SessionAuthorization::InvalidSession
@@ -530,11 +583,78 @@ mod tests {
             coordinator
                 .login(
                     7,
-                    Duration::from_secs(3),
+                    Duration::from_secs(4),
                     "new owner password material".to_owned(),
                 )
                 .unwrap_err(),
             ServerAuthenticationCoordinatorError::StateUnavailable
+        );
+    }
+
+    #[test]
+    fn unavailable_password_change_revokes_sessions_and_settles_the_attempt_as_a_failure() {
+        let temporary = tempdir().unwrap();
+        let coordinator = coordinator(temporary.path());
+        let login = coordinator
+            .login(7, Duration::from_secs(0), OWNER_PASSWORD.to_owned())
+            .unwrap();
+
+        assert_eq!(
+            coordinator
+                .change_password(
+                    login.session().credential(),
+                    Some(login.session().csrf_token()),
+                    Duration::from_secs(1),
+                    "incorrect owner password material".to_owned(),
+                    "new owner password material".to_owned(),
+                )
+                .unwrap_err(),
+            ServerAuthenticationCoordinatorError::InvalidCredentials
+        );
+        fs::rename(
+            temporary.path().join("config"),
+            temporary.path().join("displaced-config"),
+        )
+        .unwrap();
+        fs::create_dir(temporary.path().join("config")).unwrap();
+
+        assert_eq!(
+            coordinator
+                .change_password(
+                    login.session().credential(),
+                    Some(login.session().csrf_token()),
+                    Duration::from_secs(2),
+                    OWNER_PASSWORD.to_owned(),
+                    "new owner password material".to_owned(),
+                )
+                .unwrap_err(),
+            ServerAuthenticationCoordinatorError::StateUnavailable
+        );
+        assert_eq!(
+            coordinator
+                .rate_limiter
+                .lock()
+                .unwrap()
+                .begin_attempt(
+                    AuthenticationFlow::PasswordChange,
+                    SecretDigest::rate_limit_client_id(login.session().credential()),
+                    Duration::from_secs(3),
+                )
+                .unwrap_err(),
+            RateLimitDecision::Limited {
+                retry_after: Duration::from_secs(29),
+            }
+        );
+        assert_eq!(
+            coordinator
+                .authorize(
+                    login.session().credential(),
+                    None,
+                    RequestIntent::ReadOnly,
+                    Duration::from_secs(3),
+                )
+                .unwrap(),
+            SessionAuthorization::InvalidSession
         );
     }
 
