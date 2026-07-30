@@ -488,6 +488,48 @@ impl KernelRuntime {
             .map_err(|_| WorkspaceRunLifecycleError)
     }
 
+    pub(crate) fn begin_sync_shutdown(
+        self: &Arc<Self>,
+        mutation: &MutationPermit<'_>,
+    ) -> Result<SyncRuntimeShutdown, WorkspaceRunLifecycleError> {
+        if !self.mutation_coordinator.recognizes(mutation) {
+            return Err(WorkspaceRunLifecycleError);
+        }
+        let mut lifecycle = self
+            .workspace_run_lifecycle
+            .state
+            .lock()
+            .map_err(|_| WorkspaceRunLifecycleError)?;
+        match lifecycle.admission {
+            SyncRunAdmission::Open => lifecycle.admission = SyncRunAdmission::ShutdownClosed,
+            SyncRunAdmission::ShutdownClosed => {
+                return Ok(SyncRuntimeShutdown {
+                    runtime: Arc::downgrade(self),
+                });
+            }
+            SyncRunAdmission::Uninitialized
+            | SyncRunAdmission::Transitioning { .. }
+            | SyncRunAdmission::RecoveryClosed => return Err(WorkspaceRunLifecycleError),
+        }
+        match std::mem::replace(&mut lifecycle.run, RegisteredSyncRun::Empty) {
+            RegisteredSyncRun::Queued(queued) => {
+                queued.cancellation.cancel();
+                lifecycle.run = RegisteredSyncRun::Queued(queued);
+            }
+            RegisteredSyncRun::Running(running) => {
+                running.cancellation.cancel();
+                lifecycle.run = RegisteredSyncRun::Running(running);
+            }
+            RegisteredSyncRun::Finalizing(finalizing) => {
+                lifecycle.run = RegisteredSyncRun::Finalizing(finalizing);
+            }
+            RegisteredSyncRun::Empty => {}
+        }
+        Ok(SyncRuntimeShutdown {
+            runtime: Arc::downgrade(self),
+        })
+    }
+
     pub(crate) fn claim_sync_run(
         &self,
         run_id: crate::contract::RunId,
@@ -532,18 +574,20 @@ impl KernelRuntime {
             lifecycle.run = RegisteredSyncRun::Running(queued);
             return Ok(SyncRunClaim::Ready(claimed));
         }
-        let status = self
-            .sync_status
-            .complete_run(
+        let status = if queued.cancellation.is_cancelled() {
+            self.sync_status.complete_cancelled(run_id)
+        } else {
+            self.sync_status.complete_run(
                 run_id,
                 queued.fallback_completed_at.clone(),
                 SyncRunCompletion::UnknownFailure,
             )
-            .map_err(|_| {
-                lifecycle.admission = SyncRunAdmission::RecoveryClosed;
-                lifecycle.run = RegisteredSyncRun::Queued(queued.clone());
-                WorkspaceRunLifecycleError
-            })?;
+        }
+        .map_err(|_| {
+            lifecycle.admission = SyncRunAdmission::RecoveryClosed;
+            lifecycle.run = RegisteredSyncRun::Queued(queued.clone());
+            WorkspaceRunLifecycleError
+        })?;
         let terminal = SyncTerminalPublication {
             run_id,
             revision: queued.config_revision.clone(),
@@ -1213,7 +1257,8 @@ impl KernelRuntime {
                 publication_pending: true,
                 ..
             }
-            | SyncRunAdmission::RecoveryClosed => Err(WorkspaceRunLifecycleError),
+            | SyncRunAdmission::RecoveryClosed
+            | SyncRunAdmission::ShutdownClosed => Err(WorkspaceRunLifecycleError),
         }
     }
 
@@ -1827,6 +1872,7 @@ enum SyncRunAdmission {
         task_drop_candidate: Option<Arc<ActiveWorkspaceAuthority>>,
     },
     RecoveryClosed,
+    ShutdownClosed,
 }
 
 enum RegisteredSyncRun {
@@ -1886,6 +1932,35 @@ pub struct SyncWorkspaceTransition {
     runtime: Weak<KernelRuntime>,
     token: SyncWorkspaceTransitionToken,
     drop_policy: SyncWorkspaceTransitionDropPolicy,
+}
+
+pub(crate) struct SyncRuntimeShutdown {
+    runtime: Weak<KernelRuntime>,
+}
+
+impl SyncRuntimeShutdown {
+    pub(crate) async fn wait_drained(&self) -> Result<(), WorkspaceRunLifecycleError> {
+        let runtime = self.runtime.upgrade().ok_or(WorkspaceRunLifecycleError)?;
+        loop {
+            let notified = runtime.workspace_run_lifecycle.drained.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            {
+                let state = runtime
+                    .workspace_run_lifecycle
+                    .state
+                    .lock()
+                    .map_err(|_| WorkspaceRunLifecycleError)?;
+                if !matches!(state.admission, SyncRunAdmission::ShutdownClosed) {
+                    return Err(WorkspaceRunLifecycleError);
+                }
+                if matches!(state.run, RegisteredSyncRun::Empty) {
+                    return Ok(());
+                }
+            }
+            notified.await;
+        }
+    }
 }
 
 enum SyncWorkspaceTransitionDropPolicy {

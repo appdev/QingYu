@@ -32,10 +32,9 @@ use crate::{
     server::{
         InitializationStatus, IssuedSession, RequestIntent, ServerAuthenticationCoordinator,
         ServerAuthenticationCoordinatorError, ServerAuthenticationSecurity,
-        ServerInitializationCoordinator, ServerLaunchEnvironment, ServerOwnerInitializationError,
-        SessionAuthorization,
+        ServerInitializationCoordinator, ServerKernelLifecycle, ServerLaunchEnvironment,
+        ServerOwnerInitializationError, SessionAuthorization,
     },
-    services::sync_scheduler::KernelSyncScheduler,
 };
 
 use super::{api_error, routes::parse_sensitive_auth_json, ApiState};
@@ -126,7 +125,7 @@ impl ServerApiProcess {
         Ok(ServerApiActivation {
             runtime: self.runtime,
             host,
-            sync_scheduler: None,
+            kernel_lifecycle: None,
         })
     }
 }
@@ -193,13 +192,17 @@ impl std::error::Error for ServerApiActivationError {}
 pub struct ServerApiActivation {
     runtime: Arc<KernelRuntime>,
     host: ServerApiHost,
-    sync_scheduler: Option<Arc<KernelSyncScheduler>>,
+    kernel_lifecycle: Option<ServerKernelLifecycle>,
 }
 
 impl ServerApiActivation {
-    pub(crate) fn with_sync_scheduler(mut self, scheduler: Arc<KernelSyncScheduler>) -> Self {
-        self.sync_scheduler = Some(scheduler);
+    pub(crate) fn with_kernel_lifecycle(mut self, lifecycle: ServerKernelLifecycle) -> Self {
+        self.kernel_lifecycle = Some(lifecycle);
         self
+    }
+
+    pub fn shutdown_handle(&self) -> Option<ServerKernelLifecycle> {
+        self.kernel_lifecycle.clone()
     }
 
     pub(super) fn into_parts(
@@ -207,9 +210,9 @@ impl ServerApiActivation {
     ) -> (
         Arc<KernelRuntime>,
         ServerApiHost,
-        Option<Arc<KernelSyncScheduler>>,
+        Option<ServerKernelLifecycle>,
     ) {
-        (self.runtime, self.host, self.sync_scheduler)
+        (self.runtime, self.host, self.kernel_lifecycle)
     }
 }
 

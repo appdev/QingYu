@@ -1380,7 +1380,7 @@ mod tests {
             KernelRuntime::activate(kernel_config, paths, KernelPorts::unavailable()).unwrap();
         let mut events = runtime.event_broker().subscribe();
         let service = SyncService::new(
-            runtime,
+            runtime.clone(),
             Arc::new(SyncConfigStore::new(durable).unwrap()),
             Arc::new(UnitExecutor),
         );

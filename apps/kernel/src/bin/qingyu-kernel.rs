@@ -72,6 +72,8 @@ enum ServerStartupStage {
     StaticRouter,
     Listener,
     Serve,
+    KernelDrain,
+    ShutdownDeadline,
 }
 
 impl ServerStartupStage {
@@ -86,6 +88,8 @@ impl ServerStartupStage {
             Self::StaticRouter => "QK-SRV-STATIC-ROUTER",
             Self::Listener => "QK-SRV-LISTENER",
             Self::Serve => "QK-SRV-SERVE",
+            Self::KernelDrain => "QK-SRV-KERNEL-DRAIN",
+            Self::ShutdownDeadline => "QK-SRV-SHUTDOWN-DEADLINE",
         }
     }
 }
@@ -199,25 +203,39 @@ async fn run_fixed_server(
     let activation = composition
         .activate_api(environment)
         .map_err(|_| ServerStartupStage::AuthenticationApi)?;
+    let kernel_lifecycle = activation
+        .shutdown_handle()
+        .ok_or(ServerStartupStage::KernelDrain)?;
     let router = build_server_web_router(activation, policy, SERVER_WEB_ROOT)
         .map_err(|_| ServerStartupStage::StaticRouter)?;
     let listener = tokio::net::TcpListener::bind(SERVER_LISTEN_ADDRESS)
         .await
         .map_err(|_| ServerStartupStage::Listener)?;
-    let (shutdown_started_sender, shutdown_started_receiver) = tokio::sync::oneshot::channel();
+    let (http_shutdown_sender, http_shutdown_receiver) = tokio::sync::oneshot::channel();
     let serve = axum::serve(
         listener,
         router.into_make_service_with_connect_info::<SocketAddr>(),
     )
     .with_graceful_shutdown(async move {
-        server_shutdown_signal().await;
-        let _send_result = shutdown_started_sender.send(());
+        let _shutdown = http_shutdown_receiver.await;
     });
 
-    await_bounded_server_shutdown(serve, shutdown_started_receiver, SERVER_SHUTDOWN_DEADLINE)
-        .await
-        .map(|_outcome| ())
-        .map_err(|()| ServerStartupStage::Serve)
+    let outcome = await_bounded_server_shutdown(
+        serve,
+        server_shutdown_signal(),
+        http_shutdown_sender,
+        async move { kernel_lifecycle.shutdown().await.map_err(|_error| ()) },
+        SERVER_SHUTDOWN_DEADLINE,
+    )
+    .await
+    .map_err(|error| match error {
+        ServerShutdownFailure::Serve => ServerStartupStage::Serve,
+        ServerShutdownFailure::KernelDrain => ServerStartupStage::KernelDrain,
+    })?;
+    match outcome {
+        ServerShutdownOutcome::Drained => Ok(()),
+        ServerShutdownOutcome::DeadlineElapsed => Err(ServerStartupStage::ShutdownDeadline),
+    }
 }
 
 fn parse_command<Arguments, Argument>(args: Arguments) -> Result<KernelCommand, KernelCommandError>
@@ -281,26 +299,43 @@ enum ServerShutdownOutcome {
     DeadlineElapsed,
 }
 
-async fn await_bounded_server_shutdown<Serve>(
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ServerShutdownFailure {
+    Serve,
+    KernelDrain,
+}
+
+async fn await_bounded_server_shutdown<Serve, ShutdownSignal, KernelShutdown>(
     serve: Serve,
-    mut shutdown_started: tokio::sync::oneshot::Receiver<()>,
+    shutdown_signal: ShutdownSignal,
+    http_shutdown: tokio::sync::oneshot::Sender<()>,
+    kernel_shutdown: KernelShutdown,
     deadline: Duration,
-) -> Result<ServerShutdownOutcome, ()>
+) -> Result<ServerShutdownOutcome, ServerShutdownFailure>
 where
     Serve: IntoFuture<Output = std::io::Result<()>>,
+    ShutdownSignal: std::future::Future<Output = ()>,
+    KernelShutdown: std::future::Future<Output = Result<(), ()>>,
 {
     let serve = serve.into_future();
     tokio::pin!(serve);
+    tokio::pin!(shutdown_signal);
     tokio::select! {
-        result = &mut serve => result.map(|()| ServerShutdownOutcome::Drained).map_err(|_| ()),
-        started = &mut shutdown_started => {
-            started.map_err(|_| ())?;
-            match tokio::time::timeout(deadline, &mut serve).await {
-                Ok(result) => result
-                    .map(|()| ServerShutdownOutcome::Drained)
-                    .map_err(|_| ()),
+        result = &mut serve => result
+            .map(|()| ServerShutdownOutcome::Drained)
+            .map_err(|_| ServerShutdownFailure::Serve),
+        () = &mut shutdown_signal => {
+            http_shutdown.send(()).map_err(|()| ServerShutdownFailure::Serve)?;
+            let drain = async {
+                let (serve_result, kernel_result) = tokio::join!(&mut serve, kernel_shutdown);
+                serve_result.map_err(|_| ServerShutdownFailure::Serve)?;
+                kernel_result.map_err(|()| ServerShutdownFailure::KernelDrain)?;
+                Ok(())
+            };
+            match tokio::time::timeout(deadline, drain).await {
+                Ok(result) => result.map(|()| ServerShutdownOutcome::Drained),
                 // Returning drops the Axum serve future. The process-level Tokio runtime then
-                // aborts any connection tasks that did not drain before the fixed deadline.
+                // aborts HTTP and Kernel tasks that did not drain before the shared deadline.
                 Err(_elapsed) => Ok(ServerShutdownOutcome::DeadlineElapsed),
             }
         }
@@ -480,7 +515,7 @@ mod tests {
 
     #[tokio::test]
     async fn bounded_shutdown_stops_waiting_for_a_slow_axum_request_after_the_deadline() {
-        let (request_started, shutdown_started, release_request, server) =
+        let (request_started, shutdown_started, release_request, release_kernel, server) =
             slow_test_server(std::time::Duration::from_millis(40)).await;
         let client = tokio::spawn(open_slow_request(server.address));
         tokio::time::timeout(
@@ -509,13 +544,14 @@ mod tests {
         assert!(started_at.elapsed() < std::time::Duration::from_secs(1));
 
         release_request.notify_waiters();
+        release_kernel.notify_waiters();
         client.abort();
     }
 
     #[tokio::test]
     async fn bounded_shutdown_returns_as_soon_as_active_requests_drain() {
         let deadline = std::time::Duration::from_secs(5);
-        let (request_started, shutdown_started, release_request, server) =
+        let (request_started, shutdown_started, release_request, release_kernel, server) =
             slow_test_server(deadline).await;
         let client = tokio::spawn(open_slow_request(server.address));
         tokio::time::timeout(
@@ -534,8 +570,16 @@ mod tests {
         .await
         .expect("graceful shutdown should start");
         release_request.notify_waiters();
+        let mut task = server.task;
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), &mut task)
+                .await
+                .is_err(),
+            "HTTP drain alone must not finish before the Kernel lifecycle drains"
+        );
+        release_kernel.notify_waiters();
         assert_eq!(
-            tokio::time::timeout(std::time::Duration::from_secs(2), server.task)
+            tokio::time::timeout(std::time::Duration::from_secs(2), task)
                 .await
                 .expect("drained shutdown should return")
                 .unwrap()
@@ -547,15 +591,50 @@ mod tests {
         client.abort();
     }
 
+    #[tokio::test]
+    async fn bounded_shutdown_applies_the_same_deadline_to_kernel_drain() {
+        let (signal_sender, signal_receiver) = tokio::sync::oneshot::channel();
+        let (http_shutdown_sender, http_shutdown_receiver) = tokio::sync::oneshot::channel();
+        let serve = async move {
+            http_shutdown_receiver.await.map_err(|_closed| {
+                std::io::Error::new(std::io::ErrorKind::BrokenPipe, "HTTP shutdown closed")
+            })?;
+            Ok(())
+        };
+        let task = tokio::spawn(await_bounded_server_shutdown(
+            serve,
+            async move {
+                signal_receiver.await.unwrap();
+            },
+            http_shutdown_sender,
+            async move {
+                std::future::pending::<()>().await;
+                Ok(())
+            },
+            Duration::from_millis(40),
+        ));
+
+        signal_sender.send(()).unwrap();
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), task)
+                .await
+                .expect("Kernel drain must be bounded")
+                .unwrap()
+                .unwrap(),
+            ServerShutdownOutcome::DeadlineElapsed
+        );
+    }
+
     struct SlowTestServer {
         address: SocketAddr,
         shutdown: tokio::sync::oneshot::Sender<()>,
-        task: tokio::task::JoinHandle<Result<ServerShutdownOutcome, ()>>,
+        task: tokio::task::JoinHandle<Result<ServerShutdownOutcome, ServerShutdownFailure>>,
     }
 
     async fn slow_test_server(
         deadline: std::time::Duration,
     ) -> (
+        Arc<tokio::sync::Notify>,
         Arc<tokio::sync::Notify>,
         Arc<tokio::sync::Notify>,
         Arc<tokio::sync::Notify>,
@@ -582,23 +661,32 @@ mod tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let (shutdown, shutdown_receiver) = tokio::sync::oneshot::channel();
-        let (shutdown_started_sender, shutdown_started_receiver) = tokio::sync::oneshot::channel();
+        let (http_shutdown_sender, http_shutdown_receiver) = tokio::sync::oneshot::channel();
         let shutdown_started = Arc::new(tokio::sync::Notify::new());
-        let shutdown_started_in_server = Arc::clone(&shutdown_started);
+        let shutdown_started_in_kernel = Arc::clone(&shutdown_started);
+        let release_kernel = Arc::new(tokio::sync::Notify::new());
+        let release_kernel_in_shutdown = Arc::clone(&release_kernel);
         let serve = axum::serve(listener, router).with_graceful_shutdown(async move {
-            shutdown_receiver.await.unwrap();
-            shutdown_started_in_server.notify_one();
-            shutdown_started_sender.send(()).unwrap();
+            http_shutdown_receiver.await.unwrap();
         });
         let task = tokio::spawn(await_bounded_server_shutdown(
             serve,
-            shutdown_started_receiver,
+            async move {
+                shutdown_receiver.await.unwrap();
+            },
+            http_shutdown_sender,
+            async move {
+                shutdown_started_in_kernel.notify_one();
+                release_kernel_in_shutdown.notified().await;
+                Ok(())
+            },
             deadline,
         ));
         (
             request_started,
             shutdown_started,
             release_request,
+            release_kernel,
             SlowTestServer {
                 address,
                 shutdown,

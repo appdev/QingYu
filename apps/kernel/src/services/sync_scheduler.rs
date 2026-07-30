@@ -105,7 +105,15 @@ impl KernelSyncScheduler {
     }
 
     pub async fn close(&self) {
+        self.begin_close();
+        self.wait_closed().await;
+    }
+
+    pub(crate) fn begin_close(&self) {
         self.control.close(&self.claim);
+    }
+
+    pub(crate) async fn wait_closed(&self) {
         self.control.wait_ended().await;
     }
 

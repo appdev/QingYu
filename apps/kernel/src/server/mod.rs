@@ -40,7 +40,8 @@ pub use rate_limit::{
     InvalidAuthenticationAttempt, InvalidRateLimitPolicy, RateLimitDecision, RateLimitPolicy,
 };
 pub use runtime_composition::{
-    compose_fixed_server_kernel, ServerRuntimeComposition, ServerRuntimeCompositionError,
+    compose_fixed_server_kernel, ServerKernelLifecycle, ServerKernelShutdownError,
+    ServerRuntimeComposition, ServerRuntimeCompositionError,
 };
 pub use secret::ServerAuthenticationSecret;
 pub use security::ServerAuthenticationSecurity;

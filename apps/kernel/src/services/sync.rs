@@ -30,7 +30,10 @@ use crate::{
     },
     events::{EventPublication, EventSink as _},
     ports::BoxTaskFuture,
-    runtime::{ClaimedSyncRun, KernelRuntime, MutationPermit, ServiceFailure, SyncRunClaim},
+    runtime::{
+        ClaimedSyncRun, KernelRuntime, MutationPermit, ServiceFailure, SyncRunClaim,
+        WorkspaceRunLifecycleError,
+    },
     sync::config::{
         SyncConfig, SyncConfigChangeError, SyncConfigLoad, SyncConfigStore,
         SyncConfigStoreErrorKind,
@@ -142,6 +145,7 @@ struct StartedSyncRun {
 
 enum SyncRunTriggerFailure {
     ActiveRun,
+    Closing,
     Disabled,
     Incomplete,
     ModeDisallowed,
@@ -374,6 +378,7 @@ impl KernelSyncSchedulerCloseTestHook {
 struct KernelTriggerGateState {
     closing: bool,
     scheduler_owner: Option<uuid::Uuid>,
+    shutdown: bool,
 }
 
 #[derive(Clone)]
@@ -488,6 +493,31 @@ impl SyncService {
         gate.scheduler_owner = None;
     }
 
+    fn close_all_sync_triggers(&self) {
+        let mut gate = self
+            .kernel_trigger_gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        gate.closing = true;
+        gate.scheduler_owner = None;
+        gate.shutdown = true;
+    }
+
+    pub async fn shutdown(&self) -> Result<(), WorkspaceRunLifecycleError> {
+        self.close_all_sync_triggers();
+        let runtime = self.runtime.upgrade().ok_or(WorkspaceRunLifecycleError)?;
+        runtime
+            .verify_instance_lock()
+            .map_err(|_| WorkspaceRunLifecycleError)?;
+        let mutation = runtime.mutation_coordinator().lock().await;
+        runtime
+            .verify_instance_lock()
+            .map_err(|_| WorkspaceRunLifecycleError)?;
+        let shutdown = runtime.begin_sync_shutdown(&mutation)?;
+        drop(mutation);
+        shutdown.wait_drained().await
+    }
+
     pub(crate) fn claim_kernel_sync_scheduler(
         self: &Arc<Self>,
     ) -> Result<KernelSyncSchedulerClaim, KernelSyncSchedulerClaimError> {
@@ -554,6 +584,14 @@ impl SyncService {
         expected_revision: Option<Revision>,
         mutation: MutationPermit<'_>,
     ) -> Result<StartedSyncRun, SyncRunTriggerFailure> {
+        let gate = self
+            .kernel_trigger_gate
+            .lock()
+            .map_err(|_| SyncRunTriggerFailure::Unavailable)?;
+        if gate.shutdown {
+            return Err(SyncRunTriggerFailure::Closing);
+        }
+        drop(gate);
         let admitted_workspace = runtime
             .active_workspace_snapshot()
             .map_err(|_| SyncRunTriggerFailure::NotReady)?;
@@ -893,6 +931,7 @@ const fn sync_mode_allows_trigger(mode: SyncMode, trigger: SyncTrigger) -> bool 
 fn kernel_trigger_rejection(error: SyncRunTriggerFailure) -> KernelSyncTriggerRejection {
     match error {
         SyncRunTriggerFailure::ActiveRun => KernelSyncTriggerRejection::ActiveRun,
+        SyncRunTriggerFailure::Closing => KernelSyncTriggerRejection::Closing,
         SyncRunTriggerFailure::Disabled => KernelSyncTriggerRejection::Disabled,
         SyncRunTriggerFailure::Incomplete => KernelSyncTriggerRejection::Incomplete,
         SyncRunTriggerFailure::ModeDisallowed => KernelSyncTriggerRejection::ModeDisallowed,
@@ -911,6 +950,7 @@ fn api_trigger_failure(error: SyncRunTriggerFailure) -> ServiceFailure {
         | SyncRunTriggerFailure::Incomplete
         | SyncRunTriggerFailure::NotReady => failure(ErrorCode::SyncNotReady),
         SyncRunTriggerFailure::ActiveRun
+        | SyncRunTriggerFailure::Closing
         | SyncRunTriggerFailure::ModeDisallowed
         | SyncRunTriggerFailure::Unavailable => failure(ErrorCode::SyncRunUnavailable),
     }

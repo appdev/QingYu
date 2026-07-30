@@ -46,7 +46,7 @@ use crate::{
     },
     error::{http_status_for_error_code, safe_error_envelope},
     runtime::KernelRuntime,
-    services::sync_scheduler::KernelSyncScheduler,
+    server::ServerKernelLifecycle,
 };
 
 const API_PREFIX: &str = "/api/v1/";
@@ -115,7 +115,7 @@ pub(crate) struct ApiState {
     policy: TransportPolicy,
     server: Option<ServerApiHost>,
     web: Option<web::ServerWebAssets>,
-    _sync_scheduler: Option<Arc<KernelSyncScheduler>>,
+    _kernel_lifecycle: Option<ServerKernelLifecycle>,
 }
 
 pub fn build_router(runtime: Arc<KernelRuntime>, policy: TransportPolicy) -> Router {
@@ -123,8 +123,8 @@ pub fn build_router(runtime: Arc<KernelRuntime>, policy: TransportPolicy) -> Rou
 }
 
 pub fn build_server_router(activation: ServerApiActivation, policy: TransportPolicy) -> Router {
-    let (runtime, server, scheduler) = activation.into_parts();
-    build_router_with_server(runtime, policy, Some(server), None, scheduler)
+    let (runtime, server, lifecycle) = activation.into_parts();
+    build_router_with_server(runtime, policy, Some(server), None, lifecycle)
 }
 
 pub fn build_server_web_router(
@@ -133,13 +133,13 @@ pub fn build_server_web_router(
     web_root: impl AsRef<Path>,
 ) -> Result<Router, InvalidServerWebAssets> {
     let web = web::ServerWebAssets::open(web_root.as_ref())?;
-    let (runtime, server, scheduler) = activation.into_parts();
+    let (runtime, server, lifecycle) = activation.into_parts();
     Ok(build_router_with_server(
         runtime,
         policy,
         Some(server),
         Some(web),
-        scheduler,
+        lifecycle,
     ))
 }
 
@@ -148,14 +148,14 @@ fn build_router_with_server(
     policy: TransportPolicy,
     server: Option<ServerApiHost>,
     web: Option<web::ServerWebAssets>,
-    sync_scheduler: Option<Arc<KernelSyncScheduler>>,
+    kernel_lifecycle: Option<ServerKernelLifecycle>,
 ) -> Router {
     let state = ApiState {
         runtime,
         policy,
         server,
         web,
-        _sync_scheduler: sync_scheduler,
+        _kernel_lifecycle: kernel_lifecycle,
     };
     let router = if state.server.is_some() {
         routes::router().merge(auth::router())

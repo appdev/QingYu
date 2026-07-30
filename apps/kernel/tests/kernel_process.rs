@@ -121,11 +121,13 @@ fn standalone_process_installs_durable_settings_and_sync_services_with_exact_cap
 
     let sync_config = authorized_get(port, "/api/v1/sync/config");
     assert!(
-        sync_config.starts_with("HTTP/1.1 404 Not Found\r\n"),
+        sync_config.starts_with("HTTP/1.1 200 OK\r\n"),
         "{sync_config}"
     );
-    let sync_error: Value = serde_json::from_str(response_body(&sync_config)).unwrap();
-    assert_eq!(sync_error["code"], "sync_config_absent");
+    let sync_body: Value = serde_json::from_str(response_body(&sync_config)).unwrap();
+    assert_eq!(sync_body["enabled"], false);
+    assert_eq!(sync_body["readiness"], "disabled");
+    assert!(app_data.join("sync-config.json").is_file());
     assert_eq!(process.child_mut().try_wait().unwrap(), None);
 }
 

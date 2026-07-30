@@ -166,7 +166,7 @@ pub(crate) async fn install_fixed_kernel_services(
         .install_documents_api_service(documents_service)
         .map_err(|_| FixedKernelCompositionError::ServiceInstall)?;
     runtime
-        .install_resources_api_service(Arc::new(WorkspaceResourceService::new(&runtime, ignore)))
+        .install_resources_api_service(Arc::new(WorkspaceResourceService::new(runtime, ignore)))
         .map_err(|_| FixedKernelCompositionError::ServiceInstall)?;
     runtime
         .install_settings_api_service(settings_service)

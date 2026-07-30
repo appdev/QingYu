@@ -1322,7 +1322,7 @@ async fn disabled_v3_config_with_unrepresentable_bounds_is_rejected_without_rewr
             .unwrap();
     let runtime = KernelRuntime::activate(config, paths, KernelPorts::unavailable()).unwrap();
     let service = SyncService::new(
-        runtime,
+        runtime.clone(),
         Arc::new(SyncConfigStore::new(durable).unwrap()),
         Arc::new(RecordingExecutor),
     );
@@ -1490,7 +1490,7 @@ async fn patch_applies_inline_credential_keep_replace_clear_without_secret_event
     let runtime = KernelRuntime::activate(config, paths, KernelPorts::unavailable()).unwrap();
     let mut events = runtime.event_broker().subscribe();
     let service = SyncService::new(
-        runtime,
+        runtime.clone(),
         Arc::new(SyncConfigStore::new(durable).unwrap()),
         Arc::new(RecordingExecutor),
     );
@@ -1558,7 +1558,7 @@ async fn unsafe_legacy_endpoint_is_fully_redacted_from_public_config() {
             .unwrap();
     let runtime = KernelRuntime::activate(config, paths, KernelPorts::unavailable()).unwrap();
     let service = SyncService::new(
-        runtime,
+        runtime.clone(),
         Arc::new(SyncConfigStore::new(durable).unwrap()),
         Arc::new(RecordingExecutor),
     );
@@ -1601,7 +1601,7 @@ async fn submitted_userinfo_query_and_fragment_endpoints_are_rejected_without_wr
                 .unwrap();
         let runtime = KernelRuntime::activate(config, paths, KernelPorts::unavailable()).unwrap();
         let service = SyncService::new(
-            runtime,
+            runtime.clone(),
             Arc::new(SyncConfigStore::new(durable).unwrap()),
             Arc::new(RecordingExecutor),
         );
@@ -1648,7 +1648,7 @@ async fn stale_patch_returns_current_revision_without_writing() {
             .unwrap();
     let runtime = KernelRuntime::activate(config, paths, KernelPorts::unavailable()).unwrap();
     let service = SyncService::new(
-        runtime,
+        runtime.clone(),
         Arc::new(SyncConfigStore::new(durable).unwrap()),
         Arc::new(RecordingExecutor),
     );
@@ -1720,7 +1720,7 @@ async fn patching_one_kernel_instance_does_not_change_another_instance() {
     let first_runtime =
         KernelRuntime::activate(first_config, first_paths, KernelPorts::unavailable()).unwrap();
     let first_service = SyncService::new(
-        first_runtime,
+        first_runtime.clone(),
         Arc::new(SyncConfigStore::new(first_durable).unwrap()),
         Arc::new(RecordingExecutor),
     );
@@ -1735,7 +1735,7 @@ async fn patching_one_kernel_instance_does_not_change_another_instance() {
     let second_runtime =
         KernelRuntime::activate(second_config, second_paths, KernelPorts::unavailable()).unwrap();
     let second_service = SyncService::new(
-        second_runtime,
+        second_runtime.clone(),
         Arc::new(SyncConfigStore::new(second_durable).unwrap()),
         Arc::new(RecordingExecutor),
     );
@@ -1787,7 +1787,7 @@ async fn corrupt_and_unsupported_configs_return_the_same_safe_api_error() {
                 .unwrap();
         let runtime = KernelRuntime::activate(config, paths, KernelPorts::unavailable()).unwrap();
         let service = SyncService::new(
-            runtime,
+            runtime.clone(),
             Arc::new(SyncConfigStore::new(durable).unwrap()),
             Arc::new(RecordingExecutor),
         );
@@ -1820,7 +1820,7 @@ async fn symlinked_sync_config_is_rejected_without_reading_its_target() {
             .unwrap();
     let runtime = KernelRuntime::activate(config, paths, KernelPorts::unavailable()).unwrap();
     let service = SyncService::new(
-        runtime,
+        runtime.clone(),
         Arc::new(SyncConfigStore::new(durable).unwrap()),
         Arc::new(RecordingExecutor),
     );
@@ -1858,7 +1858,7 @@ async fn connection_test_applies_ephemeral_changes_and_calls_executor_exactly_on
     let _workspace = install_active_workspace(&runtime, managed).await;
     let executor = Arc::new(CountingExecutor::default());
     let service = SyncService::new(
-        runtime,
+        runtime.clone(),
         Arc::new(SyncConfigStore::new(durable).unwrap()),
         executor.clone(),
     );
@@ -1939,7 +1939,7 @@ async fn initial_sync_status_is_revision_bound_and_contains_no_config_secrets() 
             .unwrap();
     let runtime = KernelRuntime::activate(config, paths, KernelPorts::unavailable()).unwrap();
     let service = SyncService::new(
-        runtime,
+        runtime.clone(),
         Arc::new(SyncConfigStore::new(durable).unwrap()),
         Arc::new(RecordingExecutor),
     );
@@ -1996,7 +1996,7 @@ async fn manual_run_is_spawned_once_and_completes_with_safe_status_events() {
     let mut events = runtime.event_broker().subscribe();
     let executor = Arc::new(ManualExecutor::default());
     let service = SyncService::new(
-        runtime,
+        runtime.clone(),
         Arc::new(SyncConfigStore::new(durable).unwrap()),
         executor.clone(),
     );
@@ -2107,7 +2107,7 @@ async fn executor_failure_preserves_partial_summary_and_classified_safe_error() 
     let (runtime, _workspace, durable) = active_sync_runtime(temporary.path(), test_ports()).await;
     let executor = Arc::new(ClassifiedFailureExecutor::default());
     let service = SyncService::new(
-        runtime,
+        runtime.clone(),
         Arc::new(SyncConfigStore::new(durable).unwrap()),
         executor.clone(),
     );
@@ -2173,7 +2173,7 @@ async fn completed_status_resets_to_idle_when_config_revision_or_provider_change
         let executor = Arc::new(ManualExecutor::default());
         executor.fail.store(failed, Ordering::Relaxed);
         let service = SyncService::new(
-            runtime,
+            runtime.clone(),
             Arc::new(SyncConfigStore::new(durable).unwrap()),
             executor.clone(),
         );
@@ -2295,7 +2295,7 @@ async fn active_manual_run_rejects_duplicate_without_spawning_a_second_executor(
     let _workspace = install_active_workspace(&runtime, managed).await;
     let executor = Arc::new(BlockingExecutor::default());
     let service = SyncService::new(
-        runtime,
+        runtime.clone(),
         Arc::new(SyncConfigStore::new(durable).unwrap()),
         executor.clone(),
     );
@@ -2347,7 +2347,7 @@ async fn second_sync_service_observes_attempting_and_cannot_patch_or_run() {
     let first_executor = Arc::new(BlockingExecutor::default());
     let second_executor = Arc::new(CountingExecutor::default());
     let first = SyncService::new(runtime.clone(), store.clone(), first_executor.clone());
-    let second = SyncService::new(runtime, store, second_executor.clone());
+    let second = SyncService::new(runtime.clone(), store, second_executor.clone());
     let config = SyncApiService::get_sync_config(&first).await.unwrap();
 
     SyncApiService::trigger_sync_run(
@@ -3046,7 +3046,7 @@ async fn direct_and_http_get_patch_have_identical_sync_dtos_and_revisions() {
         KernelRuntime::activate(direct_config, direct_paths, KernelPorts::unavailable()).unwrap();
     let mut direct_events = direct_runtime.event_broker().subscribe();
     let direct_service = SyncService::new(
-        direct_runtime,
+        direct_runtime.clone(),
         Arc::new(SyncConfigStore::new(direct_durable).unwrap()),
         Arc::new(RecordingExecutor),
     );
@@ -3628,7 +3628,7 @@ async fn spawn_failure_releases_runtime_registration_and_shared_status() {
     )
     .await;
     let service = SyncService::new(
-        runtime,
+        runtime.clone(),
         Arc::new(SyncConfigStore::new(durable).unwrap()),
         Arc::new(CountingExecutor::default()),
     );
@@ -3798,7 +3798,7 @@ async fn terminal_event_callback_runs_after_mutation_is_released() {
     sink.bind_runtime(&runtime);
     let executor = Arc::new(ManualExecutor::default());
     let service = SyncService::new(
-        runtime,
+        runtime.clone(),
         Arc::new(SyncConfigStore::new(durable).unwrap()),
         executor.clone(),
     );
@@ -3870,7 +3870,7 @@ async fn workspace_transition_rejects_during_terminal_publication_without_deadlo
     sink.bind_runtime(&runtime);
     let executor = Arc::new(ManualExecutor::default());
     let service = SyncService::new(
-        runtime,
+        runtime.clone(),
         Arc::new(SyncConfigStore::new(durable).unwrap()),
         executor.clone(),
     );
@@ -3959,7 +3959,7 @@ async fn executor_panic_does_not_strand_running_registration() {
     .await;
     let executor = Arc::new(PanicOnceExecutor::default());
     let service = SyncService::new(
-        runtime,
+        runtime.clone(),
         Arc::new(SyncConfigStore::new(durable).unwrap()),
         executor.clone(),
     );
@@ -4279,7 +4279,7 @@ async fn disabled_legacy_invalid_remote_roots_fail_closed_without_debug_or_event
             SyncConfigLoad::Loaded { config, .. } => format!("{config:?}"),
             other => panic!("expected loaded sync config, got {other:?}"),
         };
-        let service = SyncService::new(runtime, store, Arc::new(RecordingExecutor));
+        let service = SyncService::new(runtime.clone(), store, Arc::new(RecordingExecutor));
 
         let get_error = SyncApiService::get_sync_config(&service).await.unwrap_err();
         let status_error = SyncApiService::get_sync_status(&service).await.unwrap_err();
@@ -4351,7 +4351,7 @@ async fn submitted_absolute_or_noncanonical_remote_roots_are_rejected_without_no
         let runtime = KernelRuntime::activate(config, paths, KernelPorts::unavailable()).unwrap();
         let mut events = runtime.event_broker().subscribe();
         let service = SyncService::new(
-            runtime,
+            runtime.clone(),
             Arc::new(SyncConfigStore::new(durable).unwrap()),
             Arc::new(RecordingExecutor),
         );
@@ -4444,7 +4444,7 @@ async fn absent_config_is_reported_without_creating_a_file() {
             .unwrap();
     let runtime = KernelRuntime::activate(config, paths, KernelPorts::unavailable()).unwrap();
     let store = Arc::new(SyncConfigStore::new(durable).unwrap());
-    let service = SyncService::new(runtime, store, Arc::new(RecordingExecutor));
+    let service = SyncService::new(runtime.clone(), store, Arc::new(RecordingExecutor));
 
     let error = SyncApiService::get_sync_config(&service).await.unwrap_err();
 
@@ -4494,7 +4494,7 @@ async fn existing_v3_config_is_exposed_without_inline_credentials() {
             .unwrap();
     let runtime = KernelRuntime::activate(config, paths, KernelPorts::unavailable()).unwrap();
     let store = Arc::new(SyncConfigStore::new(durable).unwrap());
-    let service = SyncService::new(runtime, store, Arc::new(RecordingExecutor));
+    let service = SyncService::new(runtime.clone(), store, Arc::new(RecordingExecutor));
 
     let exposed = SyncApiService::get_sync_config(&service).await.unwrap();
 
@@ -4515,6 +4515,164 @@ async fn existing_v3_config_is_exposed_without_inline_credentials() {
     assert!(!serialized.contains("access-key-id"));
     assert!(!serialized.contains("secret-access-key"));
     assert!(!serialized.contains("webdav-password"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sync_shutdown_closes_admission_cancels_and_waits_for_running_settlement() {
+    let temporary = tempdir().unwrap();
+    let (runtime, _workspace, durable) = active_sync_runtime(temporary.path(), test_ports()).await;
+    let executor = Arc::new(GatedCancellationExecutor::default());
+    let service = Arc::new(SyncService::new(
+        runtime.clone(),
+        Arc::new(SyncConfigStore::new(durable).unwrap()),
+        executor.clone(),
+    ));
+    let config = SyncApiService::get_sync_config(service.as_ref())
+        .await
+        .unwrap();
+    let request = TriggerSyncRunRequest {
+        expected_config_revision: config.revision,
+    };
+    SyncApiService::trigger_sync_run(service.as_ref(), request.clone())
+        .await
+        .unwrap();
+    executor.started.notified().await;
+
+    let shutdown_service = service.clone();
+    let mut shutdown = tokio::spawn(async move { shutdown_service.shutdown().await });
+    tokio::time::timeout(
+        Duration::from_secs(1),
+        executor.cancellation_seen.notified(),
+    )
+    .await
+    .expect("shutdown must cooperatively cancel the running executor");
+
+    let rejected = SyncApiService::trigger_sync_run(service.as_ref(), request)
+        .await
+        .unwrap_err();
+    assert_eq!(rejected.code(), ErrorCode::SyncRunUnavailable);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), &mut shutdown)
+            .await
+            .is_err(),
+        "shutdown must wait for the cancelled executor to settle"
+    );
+
+    executor.release.notify_one();
+    tokio::time::timeout(Duration::from_secs(1), shutdown)
+        .await
+        .expect("shutdown must complete after the executor settles")
+        .unwrap()
+        .unwrap();
+    runtime.wait_for_empty_sync_run_for_test().await.unwrap();
+    let status = SyncApiService::get_sync_status(service.as_ref())
+        .await
+        .unwrap();
+    assert_eq!(status.completion_state, SyncCompletionState::Failed);
+    assert!(status
+        .error
+        .as_ref()
+        .is_some_and(|error| error.code() == "cancelled"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sync_shutdown_waits_for_a_queued_background_task_to_settle() {
+    let temporary = tempdir().unwrap();
+    let spawner = Arc::new(DeferredTaskSpawner::default());
+    let (runtime, service) = sync_service_with_policy(
+        &temporary.path().join("shutdown-queued-run"),
+        true,
+        true,
+        "automatic",
+        test_ports_with_task_spawner(spawner.clone()),
+        Arc::new(CountingExecutor::default()),
+    )
+    .await;
+    let config = SyncApiService::get_sync_config(service.as_ref())
+        .await
+        .unwrap();
+    let request = TriggerSyncRunRequest {
+        expected_config_revision: config.revision,
+    };
+    SyncApiService::trigger_sync_run(service.as_ref(), request.clone())
+        .await
+        .unwrap();
+
+    let shutdown_service = service.clone();
+    let mut shutdown = tokio::spawn(async move { shutdown_service.shutdown().await });
+    let rejected = SyncApiService::trigger_sync_run(service.as_ref(), request)
+        .await
+        .unwrap_err();
+    assert_eq!(rejected.code(), ErrorCode::SyncRunUnavailable);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), &mut shutdown)
+            .await
+            .is_err(),
+        "shutdown must retain a queued run until its background task settles"
+    );
+
+    let background = tokio::spawn(spawner.take_task());
+    tokio::time::timeout(Duration::from_secs(1), shutdown)
+        .await
+        .expect("queued run must drain after its task observes shutdown")
+        .unwrap()
+        .unwrap();
+    background.await.unwrap();
+    runtime.wait_for_empty_sync_run_for_test().await.unwrap();
+    let status = SyncApiService::get_sync_status(service.as_ref())
+        .await
+        .unwrap();
+    assert!(status
+        .error
+        .as_ref()
+        .is_some_and(|error| error.code() == "cancelled"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn concurrent_sync_shutdown_clones_share_one_idempotent_drain() {
+    let temporary = tempdir().unwrap();
+    let (runtime, _workspace, durable) = active_sync_runtime(temporary.path(), test_ports()).await;
+    let executor = Arc::new(GatedCancellationExecutor::default());
+    let service = Arc::new(SyncService::new(
+        runtime.clone(),
+        Arc::new(SyncConfigStore::new(durable).unwrap()),
+        executor.clone(),
+    ));
+    let config = SyncApiService::get_sync_config(service.as_ref())
+        .await
+        .unwrap();
+    SyncApiService::trigger_sync_run(
+        service.as_ref(),
+        TriggerSyncRunRequest {
+            expected_config_revision: config.revision,
+        },
+    )
+    .await
+    .unwrap();
+    executor.started.notified().await;
+
+    let first_service = service.clone();
+    let second_service = service.clone();
+    let mut first = tokio::spawn(async move { first_service.shutdown().await });
+    let mut second = tokio::spawn(async move { second_service.shutdown().await });
+    tokio::time::timeout(
+        Duration::from_secs(1),
+        executor.cancellation_seen.notified(),
+    )
+    .await
+    .expect("one shutdown clone must cancel the shared run");
+    assert!(tokio::time::timeout(Duration::from_millis(50), &mut first)
+        .await
+        .is_err());
+    assert!(tokio::time::timeout(Duration::from_millis(50), &mut second)
+        .await
+        .is_err());
+
+    executor.release.notify_one();
+    let (first, second) = tokio::join!(first, second);
+    first.unwrap().unwrap();
+    second.unwrap().unwrap();
+    service.shutdown().await.unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -4859,7 +5017,7 @@ async fn successful_switch_admits_only_one_concurrent_run_bound_to_new_workspace
     let workspace_b = workspace.service.current().unwrap();
     let executor = Arc::new(ContextBindingExecutor::default());
     let sync = Arc::new(SyncService::new(
-        runtime,
+        runtime.clone(),
         Arc::new(SyncConfigStore::new(durable).unwrap()),
         executor.clone(),
     ));
@@ -4949,7 +5107,7 @@ async fn atomic_no_commit_reopens_old_workspace_sync_admission() {
 
     let executor = Arc::new(ContextBindingExecutor::default());
     let sync = SyncService::new(
-        runtime,
+        runtime.clone(),
         Arc::new(SyncConfigStore::new(durable).unwrap()),
         executor.clone(),
     );
@@ -5503,7 +5661,10 @@ async fn http_sync_run_rejects_a_forged_trigger_and_still_runs_only_manual() {
         .unwrap()
         .revision;
     runtime.install_sync_api_service(service.clone()).unwrap();
-    let router = build_router(runtime, TransportPolicy::loopback(HOST, ORIGIN).unwrap());
+    let router = build_router(
+        runtime.clone(),
+        TransportPolicy::loopback(HOST, ORIGIN).unwrap(),
+    );
 
     let forged = router
         .clone()
@@ -5547,7 +5708,9 @@ async fn http_sync_run_rejects_a_forged_trigger_and_still_runs_only_manual() {
         .await
         .unwrap();
     assert_eq!(manual.status(), StatusCode::ACCEPTED);
-    executor.started.notified().await;
+    tokio::time::timeout(Duration::from_secs(1), executor.started.notified())
+        .await
+        .expect("accepted HTTP sync run must start its executor");
     assert_eq!(executor.observed.lock().unwrap()[0].3, SyncTrigger::Manual);
     executor.release.notify_one();
 }

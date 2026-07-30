@@ -9,7 +9,7 @@ use crate::{
     paths::KernelPaths,
     ports::system::system_kernel_ports,
     runtime::KernelRuntime,
-    services::sync_scheduler::KernelSyncScheduler,
+    services::{sync::SyncService, sync_scheduler::KernelSyncScheduler},
     workspace::{managed::ManagedWorkspaceCollection, primary::DurableServerPrimaryWorkspaceStore},
 };
 
@@ -29,12 +29,48 @@ const SERVER_AUTH_LOCKOUT: Duration = Duration::from_secs(15 * 60);
 const SERVER_SESSION_LIFETIME: Duration = Duration::from_secs(12 * 60 * 60);
 const SERVER_MAXIMUM_ACTIVE_SESSIONS: usize = 8;
 
+#[derive(Clone)]
+pub struct ServerKernelLifecycle {
+    scheduler: Arc<KernelSyncScheduler>,
+    sync: Arc<SyncService>,
+}
+
+impl ServerKernelLifecycle {
+    pub async fn shutdown(&self) -> Result<(), ServerKernelShutdownError> {
+        self.scheduler.begin_close();
+        let ((), sync) = tokio::join!(self.scheduler.wait_closed(), self.sync.shutdown());
+        sync.map_err(|_error| ServerKernelShutdownError)
+    }
+
+    #[cfg(test)]
+    fn scheduler(&self) -> &Arc<KernelSyncScheduler> {
+        &self.scheduler
+    }
+}
+
+impl fmt::Debug for ServerKernelLifecycle {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ServerKernelLifecycle(..)")
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ServerKernelShutdownError;
+
+impl fmt::Display for ServerKernelShutdownError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("Server Kernel lifecycle could not drain")
+    }
+}
+
+impl std::error::Error for ServerKernelShutdownError {}
+
 /// Fully assembled fixed Server runtime and its unique authentication owner.
 pub struct ServerRuntimeComposition {
     runtime: Arc<KernelRuntime>,
     _authentication: Arc<ServerAuthenticationStore>,
     security: ServerAuthenticationSecurity,
-    scheduler: Arc<KernelSyncScheduler>,
+    lifecycle: ServerKernelLifecycle,
 }
 
 impl ServerRuntimeComposition {
@@ -48,8 +84,12 @@ impl ServerRuntimeComposition {
             .map_err(|_| ServerRuntimeCompositionError::ApiActivation)?;
         process
             .activate(self.security, environment)
-            .map(|activation| activation.with_sync_scheduler(self.scheduler))
+            .map(|activation| activation.with_kernel_lifecycle(self.lifecycle))
             .map_err(|_| ServerRuntimeCompositionError::ApiActivation)
+    }
+
+    pub fn shutdown_handle(&self) -> ServerKernelLifecycle {
+        self.lifecycle.clone()
     }
 
     #[cfg(test)]
@@ -82,7 +122,7 @@ impl ServerRuntimeComposition {
 
     #[cfg(test)]
     fn scheduler(&self) -> &Arc<KernelSyncScheduler> {
-        &self.scheduler
+        self.lifecycle.scheduler()
     }
 }
 
@@ -122,8 +162,9 @@ pub async fn compose_fixed_server_kernel(
             .map_err(|_| ServerRuntimeCompositionError::AuthenticationStore)?,
     );
     let security = production_authentication_security(Arc::clone(&authentication))?;
+    let sync = services.sync;
     let scheduler = Arc::new(
-        KernelSyncScheduler::start(services.sync)
+        KernelSyncScheduler::start(sync.clone())
             .map_err(|_error| ServerRuntimeCompositionError::SyncScheduler)?,
     );
     let _app_launch = scheduler.app_launch().await;
@@ -131,7 +172,7 @@ pub async fn compose_fixed_server_kernel(
         runtime,
         _authentication: authentication,
         security,
-        scheduler,
+        lifecycle: ServerKernelLifecycle { scheduler, sync },
     })
 }
 
@@ -602,6 +643,36 @@ mod tests {
             .unwrap_err(),
             ServerRuntimeCompositionError::RuntimeActivation
         );
+    }
+
+    #[tokio::test]
+    async fn drained_server_lifecycle_releases_fixed_roots_for_restart() {
+        let temporary = tempdir().unwrap();
+        let first = compose_fixed_server_kernel(
+            KernelConfig::generate().unwrap(),
+            fixture_paths(temporary.path()),
+        )
+        .await
+        .unwrap();
+        let shutdown = first.shutdown_handle();
+        let concurrent_shutdown = shutdown.clone();
+
+        let (first_drain, second_drain) =
+            tokio::join!(shutdown.shutdown(), concurrent_shutdown.shutdown());
+        first_drain.unwrap();
+        second_drain.unwrap();
+        shutdown.shutdown().await.unwrap();
+        drop(concurrent_shutdown);
+        drop(shutdown);
+        drop(first);
+
+        let restarted = compose_fixed_server_kernel(
+            KernelConfig::generate().unwrap(),
+            fixture_paths(temporary.path()),
+        )
+        .await
+        .expect("a drained and dropped Server lifecycle must release its fixed roots");
+        restarted.shutdown_handle().shutdown().await.unwrap();
     }
 
     #[tokio::test]
