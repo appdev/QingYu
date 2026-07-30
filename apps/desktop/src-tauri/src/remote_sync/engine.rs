@@ -13,15 +13,15 @@ use qingyu_kernel::sync::engine::{
 use qingyu_kernel::sync::repository::{
     SyncManifest, SyncManifestEntry, SyncManifestRepository,
 };
+use qingyu_kernel::storage::{
+    rename_noreplace, sync_directory, unique_regular_file_identity, UniqueRegularFileIdentity,
+};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use time::OffsetDateTime;
 
 use super::backend::{RemoteSyncBackend, RemoteSyncError, RemoteSyncFile};
 use super::scope::RemoteSyncScope;
-use crate::storage_capability::{
-    sync_directory, unique_regular_file_identity, UniqueRegularFileIdentity,
-};
 static SYNC_MUTATION_STAGING_SEQUENCE: AtomicUsize = AtomicUsize::new(0);
 pub(super) const MAX_IMMEDIATE_RECHECK_PASSES: usize = 3;
 const STAGED_SYNC_REPLACEMENT_NAME: &str = "replacement";
@@ -1017,7 +1017,7 @@ fn rename_sync_target_noreplace(
     destination: &Dir,
     destination_name: &str,
 ) -> io::Result<()> {
-    crate::atomic_noreplace::rename_noreplace(
+    rename_noreplace(
         source,
         Path::new(source_name),
         destination,
