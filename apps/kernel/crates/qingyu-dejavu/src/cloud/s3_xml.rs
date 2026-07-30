@@ -281,6 +281,7 @@ pub(super) async fn parse_list_page(
                     && depth == 1
                     && current_field.is_none()
                     && !is_known_element(empty.local_name().as_ref()) => {}
+            Event::GeneralRef(_) if root_open && current_field.is_none() => {}
             Event::Empty(_) | Event::DocType(_) | Event::GeneralRef(_) => {
                 return Err(CloudError::backend("s3_list_invalid_xml"));
             }

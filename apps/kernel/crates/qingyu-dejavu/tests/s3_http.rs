@@ -1260,7 +1260,10 @@ async fn cloud_list_accepts_minio_namespace_and_validates_the_echoed_root_prefix
           <IsTruncated>false</IsTruncated>
           <Contents>
             <Key>qingyu/repositories/01234567-89ab-4def-8123-456789abcdef/repo/objects/ab/cdef</Key>
+            <LastModified>2026-07-30T17:42:15.890Z</LastModified>
+            <ETag>&#34;66eceec4e959a2c019d21248c67a4a40&#34;</ETag>
             <Size>4</Size>
+            <StorageClass>STANDARD</StorageClass>
           </Contents>
         </ListBucketResult>"#;
     let mismatched_xml = br#"<?xml version="1.0" encoding="UTF-8"?>
@@ -1306,6 +1309,7 @@ async fn cloud_list_rejects_malformed_truncated_cross_prefix_and_stalled_paginat
         br#"<ListBucketResult><Wrapper><IsTruncated>false</IsTruncated></Wrapper></ListBucketResult>"#,
         br#"<ListBucketResult><IsTruncated>false</IsTruncated><Contents/></ListBucketResult>"#,
         br#"<ListBucketResult><IsTruncated>false</IsTruncated><NextContinuationToken/></ListBucketResult>"#,
+        br#"<ListBucketResult><IsTruncated>false</IsTruncated><Contents><Key>qingyu/repositories/01234567-89ab-4def-8123-456789abcdef/repo/objects/ab&#47;cdef</Key><Size>1</Size></Contents></ListBucketResult>"#,
     ];
     for (index, xml) in cases.into_iter().enumerate() {
         let fixture = HttpFixture::start(vec![expected_request(
