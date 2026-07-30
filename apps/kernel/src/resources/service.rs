@@ -73,7 +73,9 @@ impl WorkspaceResourceService {
     }
 
     /// Opens a signed resource identity as a retained, synchronous reader.
-    /// Future transports must consume the returned reader through `Ok(0)`.
+    /// Future transports must consume the declared length and then call
+    /// [`RetainedResource::verify_complete`]; observing `Ok(0)` alone does not
+    /// authenticate the completed stream.
     pub fn open_resource(
         &self,
         id: &ResourceId,
