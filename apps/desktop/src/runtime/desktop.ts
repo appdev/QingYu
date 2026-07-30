@@ -2,7 +2,12 @@ import { emit } from "@tauri-apps/api/event";
 import { platform as tauriPlatform, version as tauriVersion, type Platform as TauriPlatform } from "@tauri-apps/plugin-os";
 import { load } from "@tauri-apps/plugin-store";
 import { hasTauriRuntime } from "@markra/shared";
-import type { AppFormFactor, AppRuntime } from "@markra/app/runtime";
+import {
+  createUnavailableKernelDomainPort,
+  createUnavailableNativeShellPort,
+  type AppFormFactor,
+  type AppRuntime
+} from "@markra/app/runtime";
 import * as dialog from "./tauri/dialog";
 import * as files from "./tauri/file/desktop";
 import * as fonts from "./tauri/fonts";
@@ -134,6 +139,7 @@ export const desktopRuntime = {
     watchMarkdownTree: files.watchNativeMarkdownTree,
     writeMarkdownTemplateFile: files.writeNativeMarkdownTemplateFile
   },
+  kernel: createUnavailableKernelDomainPort(),
   logs: {
     isAvailable: logs.isNativeLoggingAvailable,
     openLogFolder: logs.openNativeLogFolder,
@@ -161,6 +167,7 @@ export const desktopRuntime = {
   navigation: {
     subscribeToSystemBack: async (_handler) => () => undefined
   },
+  nativeShell: createUnavailableNativeShellPort(),
   platform: {
     resolveDesktopOsVersion,
     resolveDesktopPlatform,
