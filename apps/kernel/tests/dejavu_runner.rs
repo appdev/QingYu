@@ -4,13 +4,13 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use qingyu_dejavu::{
+    Device, LocalCloud, NoopWorkingTreeCoordinator, RepoOptions, RepositoryRuntimeState,
+};
 use qingyu_kernel::sync::dejavu_runner::{
     DejavuConflictResolution, DejavuInstanceRoots, DejavuRepositoryKey, DejavuRunError,
     DejavuRunnerInputs, DejavuS3Config, DejavuSecret, DejavuWorkspaceCapability,
     DejavuWorkspaceCapabilityError, KernelDejavuRunner,
-};
-use qingyu_dejavu::{
-    Device, LocalCloud, NoopWorkingTreeCoordinator, RepoOptions, RepositoryRuntimeState,
 };
 use tempfile::TempDir;
 
