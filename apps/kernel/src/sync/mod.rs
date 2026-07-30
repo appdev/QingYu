@@ -8,6 +8,7 @@ pub mod editing;
 pub mod engine;
 pub mod execution;
 pub mod repository;
+pub mod s3_http;
 pub mod scope;
 pub mod service;
 pub mod status;

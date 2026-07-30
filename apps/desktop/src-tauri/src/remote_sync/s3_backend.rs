@@ -135,7 +135,7 @@ impl S3Backend {
             &settings.bucket,
             &settings.access_key_id,
             &settings.secret_access_key,
-            transport.addressing_style,
+            kernel_addressing_style(transport.addressing_style),
         )?;
         let prefix = format!("{}/", prefix_segments.join("/"));
         let policy = s3_client_policy(transport);
@@ -612,10 +612,10 @@ impl RemoteSyncBackend for S3Backend {
     fn target_fingerprint_source(&self) -> String {
         format!(
             "s3|{}|{}|{}|{}|{}",
-            self.connection.endpoint_url,
-            self.connection.region,
-            self.connection.bucket,
-            self.connection.addressing_style.as_str(),
+            self.connection.endpoint_url(),
+            self.connection.region(),
+            self.connection.bucket(),
+            self.connection.addressing_style_name(),
             self.prefix
         )
     }
@@ -880,6 +880,16 @@ impl RemoteSyncBackend for S3Backend {
             started_at.elapsed(),
         )
         .await)
+    }
+}
+
+fn kernel_addressing_style(value: S3AddressingStyle) -> qingyu_kernel::contract::S3AddressingStyle {
+    match value {
+        S3AddressingStyle::Auto => qingyu_kernel::contract::S3AddressingStyle::Auto,
+        S3AddressingStyle::Path => qingyu_kernel::contract::S3AddressingStyle::Path,
+        S3AddressingStyle::VirtualHosted => {
+            qingyu_kernel::contract::S3AddressingStyle::VirtualHosted
+        }
     }
 }
 
