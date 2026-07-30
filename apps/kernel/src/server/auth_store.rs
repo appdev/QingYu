@@ -130,6 +130,10 @@ pub struct ServerAuthenticationStore {
     password_update_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     #[cfg(test)]
     password_commit_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    #[cfg(test)]
+    password_prepare_entry_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    #[cfg(test)]
+    password_verification_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
 impl ServerAuthenticationStore {
@@ -198,6 +202,10 @@ impl ServerAuthenticationStore {
             password_update_hook: Mutex::new(None),
             #[cfg(test)]
             password_commit_hook: Mutex::new(None),
+            #[cfg(test)]
+            password_prepare_entry_hook: Mutex::new(None),
+            #[cfg(test)]
+            password_verification_hook: Mutex::new(None),
         };
         let _state = this.read_snapshot()?;
         this.config_root
@@ -252,6 +260,16 @@ impl ServerAuthenticationStore {
     #[cfg(test)]
     pub(super) fn set_password_commit_test_hook(&self, hook: Arc<dyn Fn() + Send + Sync>) {
         *self.password_commit_hook.lock().unwrap() = Some(hook);
+    }
+
+    #[cfg(test)]
+    pub(super) fn set_password_prepare_entry_test_hook(&self, hook: Arc<dyn Fn() + Send + Sync>) {
+        *self.password_prepare_entry_hook.lock().unwrap() = Some(hook);
+    }
+
+    #[cfg(test)]
+    pub(super) fn set_password_verification_test_hook(&self, hook: Arc<dyn Fn() + Send + Sync>) {
+        *self.password_verification_hook.lock().unwrap() = Some(hook);
     }
 
     pub fn status(&self) -> Result<ServerAuthenticationStatus, ServerAuthenticationError> {
@@ -347,7 +365,12 @@ impl ServerAuthenticationStore {
         candidate: &str,
     ) -> Result<OwnerPasswordVerification, ServerAuthenticationError> {
         let snapshot = self.read_snapshot()?.ok_or(ServerAuthenticationError)?;
-        verify_password_against_state(candidate.as_bytes(), &snapshot.state)
+        let verification = verify_password_against_state(candidate.as_bytes(), &snapshot.state);
+        #[cfg(test)]
+        if let Some(hook) = self.password_verification_hook.lock().unwrap().clone() {
+            hook();
+        }
+        verification
     }
 
     /// Replaces an accepted legacy PHC with the current Argon2 policy.
@@ -396,6 +419,10 @@ impl ServerAuthenticationStore {
         current_password: String,
         new_password: String,
     ) -> Result<PreparedOwnerPasswordChange, OwnerPasswordUpdateError> {
+        #[cfg(test)]
+        if let Some(hook) = self.password_prepare_entry_hook.lock().unwrap().clone() {
+            hook();
+        }
         let current_password = Zeroizing::new(current_password);
         let new_password = Zeroizing::new(new_password);
         self.ensure_update_available()?;

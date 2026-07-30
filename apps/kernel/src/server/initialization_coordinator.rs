@@ -106,7 +106,7 @@ impl ServerInitializationCoordinator {
         let permit = match self.gate.begin(candidate_token) {
             Ok(permit) => permit,
             Err(InitializationError::InvalidToken) => {
-                self.record_failure(authentication_permit, now)?;
+                self.record_failure(authentication_permit)?;
                 return Err(ServerOwnerInitializationError::InvalidToken);
             }
             Err(
@@ -116,7 +116,7 @@ impl ServerInitializationCoordinator {
                 return Err(map_gate_error(error));
             }
             Err(InitializationError::InvalidPermit | InitializationError::StateUnavailable) => {
-                let settlement = self.settle_unavailable_attempt(authentication_permit, now);
+                let settlement = self.settle_unavailable_attempt(authentication_permit);
                 self.security.fail_closed();
                 settlement?;
                 return Err(ServerOwnerInitializationError::StateUnavailable);
@@ -125,7 +125,7 @@ impl ServerInitializationCoordinator {
         let security = Arc::clone(&self.security);
         if !security.is_available() {
             let abort = self.abort_or_fail(permit);
-            let settlement = self.settle_unavailable_attempt(authentication_permit, now);
+            let settlement = self.settle_unavailable_attempt(authentication_permit);
             abort?;
             settlement?;
             return Err(ServerOwnerInitializationError::StateUnavailable);
@@ -134,7 +134,7 @@ impl ServerInitializationCoordinator {
             Ok(lifecycle) => lifecycle,
             Err(_poisoned) => {
                 let abort = self.abort_or_fail(permit);
-                let settlement = self.settle_unavailable_attempt(authentication_permit, now);
+                let settlement = self.settle_unavailable_attempt(authentication_permit);
                 security.fail_closed();
                 abort?;
                 settlement?;
@@ -172,7 +172,7 @@ impl ServerInitializationCoordinator {
             }
             Err(OwnerPasswordInitializationError::StateUnavailable) => {
                 let abort = self.abort_or_fail(permit);
-                let settlement = self.settle_unavailable_attempt(authentication_permit, now);
+                let settlement = self.settle_unavailable_attempt(authentication_permit);
                 abort?;
                 settlement?;
                 Err(ServerOwnerInitializationError::StateUnavailable)
@@ -198,10 +198,10 @@ impl ServerInitializationCoordinator {
     fn record_failure(
         &self,
         permit: AuthenticationAttemptPermit,
-        now: Duration,
     ) -> Result<(), ServerOwnerInitializationError> {
-        match self
-            .lock_rate_limiter()?
+        let mut limiter = self.lock_rate_limiter()?;
+        let now = self.observe_fresh_time()?;
+        match limiter
             .record_failure(permit, now)
             .map_err(map_invalid_attempt)?
         {
@@ -225,9 +225,8 @@ impl ServerInitializationCoordinator {
     fn settle_unavailable_attempt(
         &self,
         permit: AuthenticationAttemptPermit,
-        now: Duration,
     ) -> Result<(), ServerOwnerInitializationError> {
-        match self.record_failure(permit, now) {
+        match self.record_failure(permit) {
             Ok(()) | Err(ServerOwnerInitializationError::RateLimited { .. }) => Ok(()),
             Err(error) => Err(error),
         }
@@ -273,6 +272,13 @@ impl ServerInitializationCoordinator {
         candidate: Duration,
     ) -> Result<Duration, ServerOwnerInitializationError> {
         self.security.observe_time(candidate).map_err(|()| {
+            self.security.fail_closed();
+            ServerOwnerInitializationError::StateUnavailable
+        })
+    }
+
+    fn observe_fresh_time(&self) -> Result<Duration, ServerOwnerInitializationError> {
+        self.security.fresh_time().map_err(|()| {
             self.security.fail_closed();
             ServerOwnerInitializationError::StateUnavailable
         })
@@ -363,7 +369,11 @@ fn map_invalid_attempt(_: InvalidAuthenticationAttempt) -> ServerOwnerInitializa
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, path::Path, sync::Arc};
+    use std::{
+        fs,
+        path::Path,
+        sync::{Arc, Mutex},
+    };
 
     use tempfile::tempdir;
 
@@ -376,6 +386,28 @@ mod tests {
 
     const INITIALIZATION_TOKEN: &str = "injected-random-initialization-token-at-least-32-bytes";
     const OWNER_PASSWORD: &str = "correct horse battery staple";
+
+    struct ScriptedAuthenticationTimeSource {
+        samples: Mutex<std::collections::VecDeque<Duration>>,
+    }
+
+    impl ScriptedAuthenticationTimeSource {
+        fn new(samples: impl IntoIterator<Item = Duration>) -> Self {
+            Self {
+                samples: Mutex::new(samples.into_iter().collect()),
+            }
+        }
+    }
+
+    impl super::super::security::AuthenticationTimeSource for ScriptedAuthenticationTimeSource {
+        fn elapsed(&self) -> Duration {
+            self.samples
+                .lock()
+                .unwrap()
+                .pop_front()
+                .expect("unexpected authentication time sample")
+        }
+    }
 
     fn fixture_paths(root: &Path) -> KernelPaths {
         let workspace = root.join("workspace");
@@ -409,6 +441,61 @@ mod tests {
         )
         .unwrap();
         (authentication, coordinator)
+    }
+
+    #[test]
+    fn initialization_failure_lockout_starts_when_attempt_processing_finishes() {
+        let temporary = tempdir().unwrap();
+        let paths = fixture_paths(temporary.path());
+        let authentication =
+            Arc::new(ServerAuthenticationStore::open(paths.config_root()).unwrap());
+        let policy =
+            RateLimitPolicy::new(1, Duration::from_secs(60), Duration::from_secs(30)).unwrap();
+        let source = Arc::new(ScriptedAuthenticationTimeSource::new([
+            Duration::ZERO,
+            Duration::ZERO,
+            Duration::from_secs(40),
+        ]));
+        let security = Arc::new(AuthenticationSecurityState::new_with_time_source(
+            AuthenticationRateLimiter::new(policy, policy),
+            SessionStore::new(SessionPolicy::new(Duration::from_secs(300)).unwrap()),
+            source,
+        ));
+        let mut coordinator = ServerInitializationCoordinator::open(
+            authentication,
+            Some(InitializationToken::from_secret(INITIALIZATION_TOKEN.to_owned()).unwrap()),
+            Arc::clone(&security),
+        )
+        .unwrap();
+
+        assert_eq!(
+            coordinator
+                .initialize(
+                    7,
+                    Duration::ZERO,
+                    "incorrect initialization token material",
+                    OWNER_PASSWORD.to_owned(),
+                )
+                .unwrap_err(),
+            ServerOwnerInitializationError::RateLimited {
+                retry_after: Duration::from_secs(30),
+            }
+        );
+        assert_eq!(
+            security
+                .rate_limiter
+                .lock()
+                .unwrap()
+                .begin_attempt(
+                    AuthenticationFlow::Initialization,
+                    7,
+                    Duration::from_secs(41),
+                )
+                .unwrap_err(),
+            RateLimitDecision::Limited {
+                retry_after: Duration::from_secs(29),
+            }
+        );
     }
 
     #[test]

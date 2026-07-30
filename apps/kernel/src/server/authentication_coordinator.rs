@@ -101,7 +101,7 @@ impl ServerAuthenticationCoordinator {
             Ok(lifecycle) => lifecycle,
             Err(_unavailable) => {
                 drop(password);
-                self.settle_unavailable_attempt(permit, now)?;
+                self.settle_unavailable_attempt(permit)?;
                 return Err(ServerAuthenticationCoordinatorError::StateUnavailable);
             }
         };
@@ -110,7 +110,7 @@ impl ServerAuthenticationCoordinator {
         match verification {
             Ok(OwnerPasswordVerification::Rejected) => {
                 drop(password);
-                self.record_failure(permit, now)?;
+                self.record_failure(permit)?;
                 Err(ServerAuthenticationCoordinatorError::InvalidCredentials)
             }
             Ok(OwnerPasswordVerification::Authorized { needs_rehash }) => {
@@ -122,7 +122,7 @@ impl ServerAuthenticationCoordinator {
                         drop(password);
                         return match error {
                             OwnerPasswordUpdateError::InvalidCurrentPassword => {
-                                self.record_failure(permit, now)?;
+                                self.record_failure(permit)?;
                                 Err(ServerAuthenticationCoordinatorError::InvalidCredentials)
                             }
                             OwnerPasswordUpdateError::StateUncertain => {
@@ -155,7 +155,7 @@ impl ServerAuthenticationCoordinator {
             Err(_unavailable) => {
                 drop(password);
                 let uncertain = self.authentication.is_state_uncertain();
-                let settlement = self.settle_unavailable_attempt(permit, now);
+                let settlement = self.settle_unavailable_attempt(permit);
                 if uncertain {
                     self.security.fail_closed();
                 }
@@ -200,13 +200,20 @@ impl ServerAuthenticationCoordinator {
                 )
                 .map_err(map_rate_limit_decision)?
         };
+        let _password_lifecycle = match self.lock_password_lifecycle() {
+            Ok(lifecycle) => lifecycle,
+            Err(_unavailable) => {
+                self.settle_unavailable_attempt(permit)?;
+                return Err(ServerAuthenticationCoordinatorError::StateUnavailable);
+            }
+        };
         let prepared = match self.authentication.prepare_owner_password_change(
             current_password.as_str().to_owned(),
             new_password.as_str().to_owned(),
         ) {
             Ok(prepared) => prepared,
             Err(OwnerPasswordUpdateError::InvalidCurrentPassword) => {
-                self.record_failure(permit, now)?;
+                self.record_failure(permit)?;
                 return Err(ServerAuthenticationCoordinatorError::InvalidCredentials);
             }
             Err(OwnerPasswordUpdateError::InvalidNewPassword) => {
@@ -222,7 +229,7 @@ impl ServerAuthenticationCoordinator {
                     self.lock_sessions()
                         .map(|mut sessions| sessions.revoke_all())
                 };
-                let settlement = self.settle_unavailable_attempt(permit, now);
+                let settlement = self.settle_unavailable_attempt(permit);
                 if error == OwnerPasswordUpdateError::StateUncertain {
                     self.security.fail_closed();
                 }
@@ -231,7 +238,6 @@ impl ServerAuthenticationCoordinator {
                 return Err(map_password_update_error(error));
             }
         };
-        let _password_lifecycle = self.lock_password_lifecycle()?;
         let _session_mutation = self.lock_session_mutation_lifecycle()?;
         let authorization_now = self.fresh_time()?;
         {
@@ -253,7 +259,7 @@ impl ServerAuthenticationCoordinator {
                 Ok(revoked)
             }
             Err(OwnerPasswordUpdateError::InvalidCurrentPassword) => {
-                self.record_failure(permit, now)?;
+                self.record_failure(permit)?;
                 Err(ServerAuthenticationCoordinatorError::InvalidCredentials)
             }
             Err(OwnerPasswordUpdateError::InvalidNewPassword) => {
@@ -267,7 +273,7 @@ impl ServerAuthenticationCoordinator {
                 let revocation = self
                     .lock_sessions()
                     .map(|mut sessions| sessions.revoke_all());
-                let settlement = self.settle_unavailable_attempt(permit, now);
+                let settlement = self.settle_unavailable_attempt(permit);
                 if error == OwnerPasswordUpdateError::StateUncertain {
                     self.security.fail_closed();
                 }
@@ -338,10 +344,10 @@ impl ServerAuthenticationCoordinator {
     fn record_failure(
         &self,
         permit: AuthenticationAttemptPermit,
-        now: Duration,
     ) -> Result<(), ServerAuthenticationCoordinatorError> {
-        let decision = self
-            .lock_rate_limiter()?
+        let mut limiter = self.lock_rate_limiter()?;
+        let now = self.fresh_time()?;
+        let decision = limiter
             .record_failure(permit, now)
             .map_err(map_invalid_attempt)?;
         match decision {
@@ -367,9 +373,8 @@ impl ServerAuthenticationCoordinator {
     fn settle_unavailable_attempt(
         &self,
         permit: AuthenticationAttemptPermit,
-        now: Duration,
     ) -> Result<(), ServerAuthenticationCoordinatorError> {
-        match self.record_failure(permit, now) {
+        match self.record_failure(permit) {
             Ok(()) | Err(ServerAuthenticationCoordinatorError::RateLimited { .. }) => Ok(()),
             Err(error) => Err(error),
         }
@@ -587,6 +592,28 @@ mod tests {
         }
     }
 
+    struct ScriptedAuthenticationTimeSource {
+        samples: Mutex<std::collections::VecDeque<Duration>>,
+    }
+
+    impl ScriptedAuthenticationTimeSource {
+        fn new(samples: impl IntoIterator<Item = Duration>) -> Self {
+            Self {
+                samples: Mutex::new(samples.into_iter().collect()),
+            }
+        }
+    }
+
+    impl crate::server::security::AuthenticationTimeSource for ScriptedAuthenticationTimeSource {
+        fn elapsed(&self) -> Duration {
+            self.samples
+                .lock()
+                .unwrap()
+                .pop_front()
+                .expect("unexpected authentication time sample")
+        }
+    }
+
     fn fixture_paths(root: &Path) -> KernelPaths {
         let workspace = root.join("workspace");
         let config = root.join("config");
@@ -638,6 +665,211 @@ mod tests {
             thread::yield_now();
         }
         panic!("authentication attempt never acquired the only admission permit");
+    }
+
+    #[test]
+    fn password_lifecycle_is_acquired_before_password_change_preparation_begins() {
+        let temporary = tempdir().unwrap();
+        let paths = fixture_paths(temporary.path());
+        let authentication =
+            Arc::new(ServerAuthenticationStore::open(paths.config_root()).unwrap());
+        authentication
+            .initialize_owner_password(OWNER_PASSWORD.to_owned())
+            .unwrap();
+        let policy =
+            RateLimitPolicy::new(3, Duration::from_secs(60), Duration::from_secs(30)).unwrap();
+        let security = Arc::new(AuthenticationSecurityState::new(
+            AuthenticationRateLimiter::new(policy, policy),
+            SessionStore::new(SessionPolicy::new(Duration::from_secs(300)).unwrap()),
+        ));
+        let coordinator = Arc::new(ServerAuthenticationCoordinator::from_security(
+            Arc::clone(&authentication),
+            Arc::clone(&security),
+        ));
+        let login = coordinator
+            .login(7, Duration::ZERO, OWNER_PASSWORD.to_owned())
+            .unwrap();
+        let credential = login.session().credential().to_owned();
+        let csrf = login.session().csrf_token().to_owned();
+        let (prepare_sender, prepare_receiver) = mpsc::sync_channel(1);
+        authentication.set_password_prepare_entry_test_hook(Arc::new(move || {
+            prepare_sender.send(()).unwrap();
+        }));
+
+        let lifecycle = security.password_lifecycle.lock().unwrap();
+        let worker_coordinator = Arc::clone(&coordinator);
+        let worker = thread::spawn(move || {
+            worker_coordinator.change_password(
+                &credential,
+                Some(&csrf),
+                Duration::from_secs(1),
+                OWNER_PASSWORD.to_owned(),
+                "new owner password material".to_owned(),
+            )
+        });
+
+        assert!(
+            prepare_receiver
+                .recv_timeout(Duration::from_millis(100))
+                .is_err(),
+            "password preparation crossed the password lifecycle boundary"
+        );
+        drop(lifecycle);
+        prepare_receiver
+            .recv_timeout(Duration::from_secs(1))
+            .expect("password preparation did not start after lifecycle release");
+        worker.join().unwrap().unwrap();
+    }
+
+    #[test]
+    fn login_failure_lockout_starts_when_blocking_verification_finishes() {
+        let temporary = tempdir().unwrap();
+        let paths = fixture_paths(temporary.path());
+        let authentication =
+            Arc::new(ServerAuthenticationStore::open(paths.config_root()).unwrap());
+        authentication
+            .initialize_owner_password(OWNER_PASSWORD.to_owned())
+            .unwrap();
+        let policy =
+            RateLimitPolicy::new(1, Duration::from_secs(60), Duration::from_secs(30)).unwrap();
+        let source = Arc::new(ScriptedAuthenticationTimeSource::new([
+            Duration::ZERO,
+            Duration::ZERO,
+            Duration::from_secs(40),
+        ]));
+        let security = Arc::new(AuthenticationSecurityState::new_with_time_source(
+            AuthenticationRateLimiter::new(policy, policy),
+            SessionStore::new(SessionPolicy::new(Duration::from_secs(300)).unwrap()),
+            source,
+        ));
+        let coordinator =
+            ServerAuthenticationCoordinator::from_security(authentication, Arc::clone(&security));
+
+        assert_eq!(
+            coordinator
+                .login(
+                    7,
+                    Duration::ZERO,
+                    "incorrect owner password material".to_owned(),
+                )
+                .unwrap_err(),
+            ServerAuthenticationCoordinatorError::RateLimited {
+                retry_after: Duration::from_secs(30),
+            }
+        );
+        assert_eq!(
+            security
+                .rate_limiter
+                .lock()
+                .unwrap()
+                .begin_attempt(AuthenticationFlow::Login, 7, Duration::from_secs(41),)
+                .unwrap_err(),
+            RateLimitDecision::Limited {
+                retry_after: Duration::from_secs(29),
+            }
+        );
+    }
+
+    #[test]
+    fn password_change_failure_lockout_starts_when_blocking_verification_finishes() {
+        let temporary = tempdir().unwrap();
+        let paths = fixture_paths(temporary.path());
+        let authentication =
+            Arc::new(ServerAuthenticationStore::open(paths.config_root()).unwrap());
+        authentication
+            .initialize_owner_password(OWNER_PASSWORD.to_owned())
+            .unwrap();
+        let policy =
+            RateLimitPolicy::new(1, Duration::from_secs(60), Duration::from_secs(30)).unwrap();
+        let source = Arc::new(ScriptedAuthenticationTimeSource::new([
+            Duration::ZERO,
+            Duration::ZERO,
+            Duration::ZERO,
+            Duration::ZERO,
+            Duration::from_secs(40),
+        ]));
+        let security = Arc::new(AuthenticationSecurityState::new_with_time_source(
+            AuthenticationRateLimiter::new(policy, policy),
+            SessionStore::new(SessionPolicy::new(Duration::from_secs(300)).unwrap()),
+            source,
+        ));
+        let coordinator =
+            ServerAuthenticationCoordinator::from_security(authentication, Arc::clone(&security));
+        let login = coordinator
+            .login(7, Duration::ZERO, OWNER_PASSWORD.to_owned())
+            .unwrap();
+        let client_id = SecretDigest::rate_limit_client_id(login.session().credential());
+
+        assert_eq!(
+            coordinator
+                .change_password(
+                    login.session().credential(),
+                    Some(login.session().csrf_token()),
+                    Duration::ZERO,
+                    "incorrect owner password material".to_owned(),
+                    "new owner password material".to_owned(),
+                )
+                .unwrap_err(),
+            ServerAuthenticationCoordinatorError::RateLimited {
+                retry_after: Duration::from_secs(30),
+            }
+        );
+        assert_eq!(
+            security
+                .rate_limiter
+                .lock()
+                .unwrap()
+                .begin_attempt(
+                    AuthenticationFlow::PasswordChange,
+                    client_id,
+                    Duration::from_secs(41),
+                )
+                .unwrap_err(),
+            RateLimitDecision::Limited {
+                retry_after: Duration::from_secs(29),
+            }
+        );
+    }
+
+    #[test]
+    fn failed_fresh_time_settlement_fails_closed_without_leaking_the_attempt_permit() {
+        let temporary = tempdir().unwrap();
+        let paths = fixture_paths(temporary.path());
+        let authentication =
+            Arc::new(ServerAuthenticationStore::open(paths.config_root()).unwrap());
+        authentication
+            .initialize_owner_password(OWNER_PASSWORD.to_owned())
+            .unwrap();
+        let policy =
+            RateLimitPolicy::new(1, Duration::from_secs(60), Duration::from_secs(30)).unwrap();
+        let security = Arc::new(AuthenticationSecurityState::new(
+            AuthenticationRateLimiter::with_capacity(policy, policy, 8, 1).unwrap(),
+            SessionStore::new(SessionPolicy::new(Duration::from_secs(300)).unwrap()),
+        ));
+        let hook_security = Arc::clone(&security);
+        authentication.set_password_verification_test_hook(Arc::new(move || {
+            hook_security.poison_timekeeper_for_test();
+        }));
+        let coordinator =
+            ServerAuthenticationCoordinator::from_security(authentication, Arc::clone(&security));
+
+        assert_eq!(
+            coordinator
+                .login(
+                    7,
+                    Duration::ZERO,
+                    "incorrect owner password material".to_owned(),
+                )
+                .unwrap_err(),
+            ServerAuthenticationCoordinatorError::StateUnavailable
+        );
+        let permit = security
+            .rate_limiter
+            .lock()
+            .unwrap()
+            .begin_attempt(AuthenticationFlow::Login, 8, Duration::ZERO)
+            .expect("failed fresh-time settlement leaked the only attempt permit");
+        drop(permit);
     }
 
     #[test]
@@ -1185,22 +1417,23 @@ mod tests {
                 .unwrap_err(),
             ServerAuthenticationCoordinatorError::StateUncertain
         );
-        assert_eq!(
-            coordinator
-                .security
-                .rate_limiter
-                .lock()
-                .unwrap()
-                .begin_attempt(
-                    AuthenticationFlow::PasswordChange,
-                    SecretDigest::rate_limit_client_id(login.session().credential()),
-                    Duration::from_secs(3),
-                )
-                .unwrap_err(),
-            RateLimitDecision::Limited {
-                retry_after: Duration::from_secs(29),
-            }
-        );
+        let inspection_now = coordinator.fresh_time().unwrap();
+        let decision = coordinator
+            .security
+            .rate_limiter
+            .lock()
+            .unwrap()
+            .begin_attempt(
+                AuthenticationFlow::PasswordChange,
+                SecretDigest::rate_limit_client_id(login.session().credential()),
+                inspection_now,
+            )
+            .unwrap_err();
+        let RateLimitDecision::Limited { retry_after } = decision else {
+            panic!("unexpected rate-limit decision: {decision:?}");
+        };
+        assert!(retry_after > Duration::from_secs(29));
+        assert!(retry_after <= Duration::from_secs(30));
         assert_eq!(
             coordinator
                 .authorize(
@@ -1263,22 +1496,23 @@ mod tests {
                 .unwrap_err(),
             ServerAuthenticationCoordinatorError::StateUnavailable
         );
-        assert_eq!(
-            coordinator
-                .security
-                .rate_limiter
-                .lock()
-                .unwrap()
-                .begin_attempt(
-                    AuthenticationFlow::PasswordChange,
-                    SecretDigest::rate_limit_client_id(login.session().credential()),
-                    Duration::from_secs(3),
-                )
-                .unwrap_err(),
-            RateLimitDecision::Limited {
-                retry_after: Duration::from_secs(29),
-            }
-        );
+        let inspection_now = coordinator.fresh_time().unwrap();
+        let decision = coordinator
+            .security
+            .rate_limiter
+            .lock()
+            .unwrap()
+            .begin_attempt(
+                AuthenticationFlow::PasswordChange,
+                SecretDigest::rate_limit_client_id(login.session().credential()),
+                inspection_now,
+            )
+            .unwrap_err();
+        let RateLimitDecision::Limited { retry_after } = decision else {
+            panic!("unexpected rate-limit decision: {decision:?}");
+        };
+        assert!(retry_after > Duration::from_secs(29));
+        assert!(retry_after <= Duration::from_secs(30));
         assert_eq!(
             coordinator
                 .authorize(

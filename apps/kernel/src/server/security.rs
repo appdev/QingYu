@@ -61,11 +61,15 @@ impl AuthenticationTimekeeper {
     fn observe(&self, candidate: Duration) -> Result<Duration, ()> {
         let source_now = self.source.elapsed();
         let mut state = self.state.lock().map_err(|_poisoned| ())?;
+        // An older sample can arrive after a concurrent observer has already
+        // committed a newer one. Never move the source anchor backwards or
+        // count that elapsed interval a second time.
+        let source_at = state.source_at.max(source_now);
         let projected = state
             .logical_now
-            .saturating_add(source_now.saturating_sub(state.source_at));
+            .saturating_add(source_at.saturating_sub(state.source_at));
         state.logical_now = projected.max(candidate);
-        state.source_at = source_now;
+        state.source_at = source_at;
         Ok(state.logical_now)
     }
 
@@ -169,6 +173,15 @@ impl AuthenticationSecurityState {
     pub(crate) fn fresh_time(&self) -> Result<Duration, ()> {
         self.timekeeper.fresh()
     }
+
+    #[cfg(test)]
+    pub(crate) fn poison_timekeeper_for_test(&self) {
+        let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = self.timekeeper.state.lock().unwrap();
+            panic!("poison authentication timekeeper for coordinator test");
+        }));
+        assert!(poisoned.is_err());
+    }
 }
 
 /// Process-lifetime owner for transport-neutral server authentication state.
@@ -232,7 +245,10 @@ mod tests {
         fs,
         panic::{catch_unwind, AssertUnwindSafe},
         path::Path,
-        sync::{mpsc, Arc, Mutex},
+        sync::{
+            atomic::{AtomicUsize, Ordering},
+            mpsc, Arc, Mutex,
+        },
         thread,
         time::{Duration, Instant},
     };
@@ -286,6 +302,50 @@ mod tests {
             panic!("poison shared authentication security state");
         }));
         assert!(poisoned.is_err());
+    }
+
+    struct DelayedOldAuthenticationTimeSource {
+        call: AtomicUsize,
+        old_sample_captured: mpsc::SyncSender<()>,
+        release_old_sample: Mutex<mpsc::Receiver<()>>,
+    }
+
+    impl AuthenticationTimeSource for DelayedOldAuthenticationTimeSource {
+        fn elapsed(&self) -> Duration {
+            match self.call.fetch_add(1, Ordering::AcqRel) {
+                0 => Duration::ZERO,
+                1 => {
+                    self.old_sample_captured.send(()).unwrap();
+                    self.release_old_sample.lock().unwrap().recv().unwrap();
+                    Duration::from_secs(10)
+                }
+                2 => Duration::from_secs(20),
+                3 => Duration::from_secs(21),
+                call => panic!("unexpected authentication time sample {call}"),
+            }
+        }
+    }
+
+    #[test]
+    fn delayed_concurrent_time_sample_cannot_regress_or_double_count_elapsed_time() {
+        let (captured_sender, captured_receiver) = mpsc::sync_channel(1);
+        let (release_sender, release_receiver) = mpsc::sync_channel(1);
+        let source = Arc::new(DelayedOldAuthenticationTimeSource {
+            call: AtomicUsize::new(0),
+            old_sample_captured: captured_sender,
+            release_old_sample: Mutex::new(release_receiver),
+        });
+        let timekeeper = Arc::new(AuthenticationTimekeeper::with_source(source));
+        let delayed_timekeeper = Arc::clone(&timekeeper);
+        let delayed = thread::spawn(move || delayed_timekeeper.fresh().unwrap());
+        captured_receiver
+            .recv_timeout(Duration::from_secs(1))
+            .expect("old time sample was not captured");
+
+        assert_eq!(timekeeper.fresh().unwrap(), Duration::from_secs(20));
+        release_sender.send(()).unwrap();
+        assert_eq!(delayed.join().unwrap(), Duration::from_secs(20));
+        assert_eq!(timekeeper.fresh().unwrap(), Duration::from_secs(21));
     }
 
     #[test]

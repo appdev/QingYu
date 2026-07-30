@@ -124,16 +124,16 @@ fn rejected_passwords_are_settled_as_failures_before_a_client_is_limited() {
             retry_after: Duration::from_secs(30),
         }
     );
-    assert_eq!(
-        coordinator
-            .login(7, Duration::from_secs(2), OWNER_PASSWORD.to_owned())
-            .unwrap_err(),
-        ServerAuthenticationCoordinatorError::RateLimited {
-            retry_after: Duration::from_secs(29),
-        }
-    );
+    let error = coordinator
+        .login(7, Duration::from_secs(2), OWNER_PASSWORD.to_owned())
+        .unwrap_err();
+    let ServerAuthenticationCoordinatorError::RateLimited { retry_after } = error else {
+        panic!("unexpected login error: {error:?}");
+    };
+    assert!(retry_after > Duration::from_secs(29));
+    assert!(retry_after <= Duration::from_secs(30));
     coordinator
-        .login(7, Duration::from_secs(31), OWNER_PASSWORD.to_owned())
+        .login(7, Duration::from_secs(32), OWNER_PASSWORD.to_owned())
         .unwrap();
 }
 
@@ -156,14 +156,14 @@ fn unavailable_password_state_still_settles_each_admitted_attempt_as_a_failure()
             .unwrap_err(),
         ServerAuthenticationCoordinatorError::StateUnavailable
     );
-    assert_eq!(
-        coordinator
-            .login(7, Duration::from_secs(2), OWNER_PASSWORD.to_owned())
-            .unwrap_err(),
-        ServerAuthenticationCoordinatorError::RateLimited {
-            retry_after: Duration::from_secs(29),
-        }
-    );
+    let error = coordinator
+        .login(7, Duration::from_secs(2), OWNER_PASSWORD.to_owned())
+        .unwrap_err();
+    let ServerAuthenticationCoordinatorError::RateLimited { retry_after } = error else {
+        panic!("unexpected login error: {error:?}");
+    };
+    assert!(retry_after > Duration::from_secs(29));
+    assert!(retry_after <= Duration::from_secs(30));
 }
 
 #[test]

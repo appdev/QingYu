@@ -390,25 +390,25 @@ fn initialization_rate_limit_counts_invalid_tokens_without_spending_the_token() 
             retry_after: Duration::from_secs(30),
         }
     );
-    assert_eq!(
-        initialization
-            .initialize(
-                7,
-                Duration::from_secs(2),
-                INITIALIZATION_TOKEN,
-                OWNER_PASSWORD.to_owned(),
-            )
-            .unwrap_err(),
-        ServerOwnerInitializationError::RateLimited {
-            retry_after: Duration::from_secs(29),
-        }
-    );
+    let error = initialization
+        .initialize(
+            7,
+            Duration::from_secs(2),
+            INITIALIZATION_TOKEN,
+            OWNER_PASSWORD.to_owned(),
+        )
+        .unwrap_err();
+    let ServerOwnerInitializationError::RateLimited { retry_after } = error else {
+        panic!("unexpected initialization error: {error:?}");
+    };
+    assert!(retry_after > Duration::from_secs(29));
+    assert!(retry_after <= Duration::from_secs(30));
     assert_eq!(initialization.status(), InitializationStatus::Pending);
 
     initialization
         .initialize(
             7,
-            Duration::from_secs(31),
+            Duration::from_secs(32),
             INITIALIZATION_TOKEN,
             OWNER_PASSWORD.to_owned(),
         )
