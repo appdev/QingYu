@@ -1,7 +1,10 @@
 use std::{
     fmt,
     io::{self, Read as _, Seek as _, SeekFrom},
-    sync::{Arc, Weak},
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc, Weak,
+    },
 };
 
 use async_trait::async_trait;
@@ -35,11 +38,13 @@ const MAX_IMMEDIATE_INVENTORY_CANDIDATES: usize = 50_000;
 const MAX_INVENTORY_SNAPSHOT_NODES: u64 = 100_000;
 const MAX_INVENTORY_FALLBACK_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_INVENTORY_TREE_DEPTH: usize = 128;
+const MAX_CONCURRENT_INVENTORY_SCANS: usize = 2;
 
 #[derive(Clone)]
 pub struct WorkspaceResourceService {
     runtime: Weak<KernelRuntime>,
     ignore: Arc<dyn WorkspaceIgnorePort>,
+    inventory_scans: Arc<InventoryScanGate>,
 }
 
 impl WorkspaceResourceService {
@@ -47,6 +52,7 @@ impl WorkspaceResourceService {
         Self {
             runtime: Arc::downgrade(runtime),
             ignore,
+            inventory_scans: Arc::new(InventoryScanGate::default()),
         }
     }
 
@@ -57,6 +63,7 @@ impl WorkspaceResourceService {
         &self,
         parent: &WorkspaceRelativePath,
     ) -> Result<Vec<WorkspaceInventoryEntry>, ResourceServiceError> {
+        let _permit = self.inventory_scans.try_acquire()?;
         let context = self.context()?;
         self.list_inventory_with_context(&context, parent)
     }
@@ -65,6 +72,7 @@ impl WorkspaceResourceService {
         &self,
         query: ListWorkspaceInventoryQuery,
     ) -> Result<WorkspaceInventoryPageDto, ResourceServiceError> {
+        let _permit = self.inventory_scans.try_acquire()?;
         let context = self.context()?;
         let ignore = self.capture_ignore(&context)?;
         let directory = open_directory(&context.root, &query.parent)?;
@@ -272,6 +280,33 @@ impl WorkspaceResourceService {
         self.ignore
             .capture(&context.root_path, &context.root)
             .map_err(|_| ResourceServiceError::unavailable())
+    }
+}
+
+#[derive(Default)]
+struct InventoryScanGate {
+    active: AtomicUsize,
+}
+
+impl InventoryScanGate {
+    fn try_acquire(self: &Arc<Self>) -> Result<InventoryScanPermit, ResourceServiceError> {
+        self.active
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |active| {
+                (active < MAX_CONCURRENT_INVENTORY_SCANS).then_some(active + 1)
+            })
+            .map_err(|_| ResourceServiceError::unavailable())?;
+        Ok(InventoryScanPermit { gate: self.clone() })
+    }
+}
+
+struct InventoryScanPermit {
+    gate: Arc<InventoryScanGate>,
+}
+
+impl Drop for InventoryScanPermit {
+    fn drop(&mut self) {
+        let previous = self.gate.active.fetch_sub(1, Ordering::Release);
+        debug_assert!(previous > 0, "inventory scan permit underflow");
     }
 }
 

@@ -5,8 +5,9 @@ use std::{
     path::PathBuf,
     sync::{
         atomic::{AtomicUsize, Ordering},
-        Arc, Mutex,
+        Arc, Condvar, Mutex,
     },
+    time::{Duration, Instant},
 };
 
 use axum::{
@@ -97,6 +98,65 @@ impl LiveIgnorePort {
 struct CapturedIgnorePort {
     root: PathBuf,
     rules: MarkdownIgnoreRules,
+}
+
+#[derive(Default)]
+struct BlockingIgnorePort {
+    condition: Condvar,
+    state: Mutex<BlockingIgnoreState>,
+}
+
+#[derive(Default)]
+struct BlockingIgnoreState {
+    entered: usize,
+    released: bool,
+}
+
+impl BlockingIgnorePort {
+    fn wait_until_entered(&self, expected: usize) {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut state = self.state.lock().unwrap();
+        while state.entered < expected {
+            let remaining = deadline
+                .checked_duration_since(Instant::now())
+                .expect("inventory captures should enter before timeout");
+            let (next, timeout) = self.condition.wait_timeout(state, remaining).unwrap();
+            state = next;
+            assert!(!timeout.timed_out(), "inventory captures should enter");
+        }
+    }
+
+    fn entered(&self) -> usize {
+        self.state.lock().unwrap().entered
+    }
+
+    fn release(&self) {
+        self.state.lock().unwrap().released = true;
+        self.condition.notify_all();
+    }
+}
+
+impl WorkspaceIgnorePort for BlockingIgnorePort {
+    fn capture(
+        &self,
+        root_path: &std::path::Path,
+        retained_root: &cap_std::fs::Dir,
+    ) -> Result<WorkspaceIgnoreSnapshot, WorkspaceIgnoreError> {
+        let mut state = self.state.lock().unwrap();
+        state.entered += 1;
+        self.condition.notify_all();
+        while !state.released {
+            state = self.condition.wait(state).unwrap();
+        }
+        drop(state);
+        let rules = MarkdownIgnoreRules::try_for_retained_root(root_path, retained_root, None)?;
+        Ok(WorkspaceIgnoreSnapshot::from_matcher(Arc::new(
+            CapturedIgnorePort {
+                root: root_path.to_path_buf(),
+                rules,
+            },
+        )))
+    }
 }
 
 impl DocumentIgnorePort for CapturedIgnorePort {
@@ -278,6 +338,52 @@ async fn each_inventory_operation_captures_ignore_rules_exactly_once() {
         .unwrap();
 
     assert_eq!(fixture.ignore.captures.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn inventory_scan_gate_rejects_a_third_concurrent_scan_without_queueing() {
+    use std::{sync::mpsc, thread};
+
+    let fixture = Fixture::new().await;
+    fs::write(fixture.root.join("visible.bin"), b"visible").unwrap();
+    let blocking = Arc::new(BlockingIgnorePort::default());
+    let service = WorkspaceResourceService::new(&fixture.runtime, blocking.clone());
+    let parent = WorkspaceRelativePath::default();
+    let first_service = service.clone();
+    let first_parent = parent.clone();
+    let first = thread::spawn(move || first_service.list_inventory(&first_parent));
+    let second_service = service.clone();
+    let second = thread::spawn(move || {
+        second_service.list_inventory_page(ListWorkspaceInventoryQuery {
+            cursor: None,
+            limit: Some(PageLimit::new(10).unwrap()),
+            parent,
+        })
+    });
+    blocking.wait_until_entered(2);
+
+    let (sender, receiver) = mpsc::channel();
+    let third = thread::spawn(move || {
+        sender
+            .send(service.list_inventory_page(ListWorkspaceInventoryQuery {
+                cursor: None,
+                limit: Some(PageLimit::new(10).unwrap()),
+                parent: WorkspaceRelativePath::default(),
+            }))
+            .unwrap();
+    });
+    let prompt_result = receiver.recv_timeout(Duration::from_millis(250));
+    let entered_before_release = blocking.entered();
+    blocking.release();
+    first.join().unwrap().unwrap();
+    second.join().unwrap().unwrap();
+    third.join().unwrap();
+
+    let error = prompt_result
+        .expect("the third inventory scan must fail immediately")
+        .unwrap_err();
+    assert_eq!(error.kind(), ResourceServiceErrorKind::Unavailable);
+    assert_eq!(entered_before_release, 2);
 }
 
 #[tokio::test]
