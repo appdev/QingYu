@@ -490,6 +490,7 @@ function mapCapabilities(
     documents: capabilities.documents,
     history: capabilities.history,
     portableSettings: capabilities.portableSettings,
+    resources: capabilities.resources,
     s3: capabilities.s3,
     search: capabilities.search,
     settings: capabilities.settings,

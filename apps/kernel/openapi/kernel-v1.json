@@ -748,6 +748,7 @@
           "workspace_unavailable",
           "workspace_locked",
           "document_not_found",
+          "resource_not_found",
           "document_already_exists",
           "document_too_large",
           "document_invalid_encoding",
@@ -1050,6 +1051,21 @@
         "type": "string"
       },
       "ListDocumentsQuery": {
+        "additionalProperties": false,
+        "properties": {
+          "cursor": {
+            "$ref": "#/components/schemas/PageCursor"
+          },
+          "limit": {
+            "$ref": "#/components/schemas/PageLimit"
+          },
+          "parent": {
+            "$ref": "#/components/schemas/WorkspaceRelativePath"
+          }
+        },
+        "type": "object"
+      },
+      "ListWorkspaceInventoryQuery": {
         "additionalProperties": false,
         "properties": {
           "cursor": {
@@ -1435,6 +1451,67 @@
         "minimum": 0,
         "type": "integer"
       },
+      "ResourceEntryDto": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/ResourceId"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/ResourceKind"
+          },
+          "mediaType": {
+            "type": "string"
+          },
+          "modifiedAt": {
+            "$ref": "#/components/schemas/Rfc3339Utc"
+          },
+          "name": {
+            "$ref": "#/components/schemas/ResourceName"
+          },
+          "parent": {
+            "$ref": "#/components/schemas/WorkspaceRelativePath"
+          },
+          "path": {
+            "$ref": "#/components/schemas/WorkspaceRelativePath"
+          },
+          "previewable": {
+            "type": "boolean"
+          },
+          "revision": {
+            "$ref": "#/components/schemas/Revision"
+          },
+          "sizeBytes": {
+            "$ref": "#/components/schemas/SafeUnsignedInteger"
+          }
+        },
+        "required": [
+          "id",
+          "path",
+          "parent",
+          "name",
+          "kind",
+          "sizeBytes",
+          "modifiedAt",
+          "revision",
+          "mediaType",
+          "previewable"
+        ],
+        "type": "object"
+      },
+      "ResourceId": {
+        "type": "string"
+      },
+      "ResourceKind": {
+        "enum": [
+          "image",
+          "attachment"
+        ],
+        "type": "string"
+      },
+      "ResourceName": {
+        "type": "string"
+      },
       "ResourceRefDto": {
         "oneOf": [
           {
@@ -1559,6 +1636,9 @@
           "portableSettings": {
             "type": "boolean"
           },
+          "resources": {
+            "type": "boolean"
+          },
           "s3": {
             "type": "boolean"
           },
@@ -1578,6 +1658,7 @@
         "required": [
           "documents",
           "history",
+          "resources",
           "search",
           "settings",
           "sync",
@@ -2709,6 +2790,65 @@
       "WorkspaceId": {
         "format": "uuid",
         "type": "string"
+      },
+      "WorkspaceInventoryEntryDto": {
+        "oneOf": [
+          {
+            "properties": {
+              "document": {
+                "$ref": "#/components/schemas/DocumentEntryDto"
+              },
+              "entryType": {
+                "enum": [
+                  "document"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "document",
+              "entryType"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "entryType": {
+                "enum": [
+                  "resource"
+                ],
+                "type": "string"
+              },
+              "resource": {
+                "$ref": "#/components/schemas/ResourceEntryDto"
+              }
+            },
+            "required": [
+              "resource",
+              "entryType"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "WorkspaceInventoryPageDto": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/WorkspaceInventoryEntryDto"
+            },
+            "type": "array"
+          },
+          "nextCursor": {
+            "$ref": "#/components/schemas/Nullable_PageCursor"
+          }
+        },
+        "required": [
+          "items",
+          "nextCursor"
+        ],
+        "type": "object"
       },
       "WorkspaceReadiness": {
         "enum": [
@@ -6095,6 +6235,580 @@
                         "code": {
                           "enum": [
                             "kernel_not_ready"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Error",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "nativeBearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/inventory": {
+      "get": {
+        "operationId": "listWorkspaceInventory",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/PageCursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/PageLimit"
+            }
+          },
+          {
+            "in": "query",
+            "name": "parent",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/WorkspaceRelativePath"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceInventoryPageDto"
+                }
+              }
+            },
+            "description": "Success",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "invalid_request",
+                            "invalid_workspace_path"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Error",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "unauthorized"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Error",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "host_not_allowed",
+                            "origin_not_allowed"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Error",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "423": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "workspace_locked"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Error",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "internal_error"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Error",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "kernel_not_ready",
+                            "workspace_unavailable"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Error",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "nativeBearer": []
+          }
+        ]
+      }
+    },
+    "/api/v1/resources/{resourceId}": {
+      "get": {
+        "operationId": "openWorkspaceResource",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "resourceId",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/ResourceId"
+            }
+          },
+          {
+            "in": "query",
+            "name": "kind",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/ResourceKind"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              },
+              "image/gif": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              },
+              "image/jpeg": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              },
+              "image/png": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              },
+              "image/webp": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Success",
+            "headers": {
+              "Content-Length": {
+                "description": "Exact resource size in bytes.",
+                "schema": {
+                  "format": "int64",
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "X-Content-Type-Options": {
+                "description": "Disables content sniffing for untrusted workspace resources.",
+                "schema": {
+                  "const": "nosniff",
+                  "type": "string"
+                }
+              },
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "invalid_request"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Error",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "unauthorized"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Error",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "host_not_allowed",
+                            "origin_not_allowed"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Error",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "423": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "workspace_locked"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Error",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "internal_error",
+                            "resource_not_found"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Error",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "kernel_not_ready",
+                            "workspace_unavailable"
                           ],
                           "type": "string"
                         }

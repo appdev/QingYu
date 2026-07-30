@@ -4,6 +4,7 @@ use std::{
     sync::{Arc, Weak},
 };
 
+use async_trait::async_trait;
 use cap_fs_ext::{DirExt, MetadataExt};
 use cap_std::fs::{Dir, File, Metadata};
 use sha2::{Digest as _, Sha256};
@@ -11,12 +12,13 @@ use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
 use crate::{
     contract::{
-        DocumentEntryDto, DocumentKind, DocumentName, ResourceEntryDto, ResourceId, ResourceKind,
-        ResourceName, Revision, Rfc3339Utc, SafeUnsignedInteger, WorkspaceDto, WorkspaceReadiness,
-        WorkspaceRelativePath,
+        DocumentEntryDto, DocumentKind, DocumentName, ErrorCode, ListWorkspaceInventoryQuery,
+        Nullable, PageCursorContext, ResourceEntryDto, ResourceId, ResourceKind, ResourceName,
+        Revision, Rfc3339Utc, SafeUnsignedInteger, WorkspaceDto, WorkspaceInventoryEntryDto,
+        WorkspaceInventoryPageDto, WorkspaceReadiness, WorkspaceRelativePath,
     },
     documents::{service::directory_revision_for_capability, DocumentIgnorePort},
-    runtime::{ActiveWorkspaceSnapshot, KernelRuntime},
+    runtime::{ActiveWorkspaceSnapshot, KernelRuntime, ResourcesApiService, ServiceFailure},
     storage::nonfollowing_read_options,
 };
 
@@ -25,6 +27,7 @@ use super::{policy::protected_resource_component, ResourceServiceError};
 const STREAM_BUFFER_BYTES: usize = 64 * 1024;
 const MAGIC_BYTES: usize = 12;
 
+#[derive(Clone)]
 pub struct WorkspaceResourceService {
     runtime: Weak<KernelRuntime>,
     ignore: Arc<dyn DocumentIgnorePort>,
@@ -46,13 +49,69 @@ impl WorkspaceResourceService {
         parent: &WorkspaceRelativePath,
     ) -> Result<Vec<WorkspaceInventoryEntry>, ResourceServiceError> {
         let context = self.context()?;
+        self.list_inventory_with_context(&context, parent)
+    }
+
+    pub fn list_inventory_page(
+        &self,
+        query: ListWorkspaceInventoryQuery,
+    ) -> Result<WorkspaceInventoryPageDto, ResourceServiceError> {
+        let context = self.context()?;
+        let entries = self
+            .list_inventory_with_context(&context, &query.parent)?
+            .into_iter()
+            .map(WorkspaceInventoryEntryDto::from)
+            .collect::<Vec<_>>();
+        let cursor_context = PageCursorContext::new(
+            "workspace-inventory",
+            query.parent.as_str(),
+            &context.workspace().generation,
+            &entries,
+        )
+        .map_err(|_| ResourceServiceError::invalid_cursor())?;
+        let start = match query.cursor.as_ref() {
+            Some(cursor) => {
+                let last = context
+                    .runtime
+                    .wire_identity_key()
+                    .verify_page_cursor(cursor, &cursor_context)
+                    .map_err(|_| ResourceServiceError::invalid_cursor())?;
+                entries.partition_point(|entry| entry.path().as_str() <= last.as_str())
+            }
+            None => 0,
+        };
+        let limit = query.limit.map_or(100, |limit| usize::from(limit.get()));
+        let end = start.saturating_add(limit).min(entries.len());
+        let items = entries[start..end].to_vec();
+        let next_cursor = if end < entries.len() {
+            let last = items
+                .last()
+                .ok_or_else(ResourceServiceError::invalid_cursor)?;
+            Nullable::value(
+                context
+                    .runtime
+                    .wire_identity_key()
+                    .issue_page_cursor(&cursor_context, last.path().as_str())
+                    .map_err(|_| ResourceServiceError::invalid_cursor())?,
+            )
+        } else {
+            Nullable::null()
+        };
+        Ok(WorkspaceInventoryPageDto { items, next_cursor })
+    }
+
+    fn list_inventory_with_context(
+        &self,
+        context: &ResourceContext,
+        parent: &WorkspaceRelativePath,
+    ) -> Result<Vec<WorkspaceInventoryEntry>, ResourceServiceError> {
         let directory = open_directory(&context.root, parent)?;
         let before = trusted_directory_metadata(&directory)?;
         let names = ordinary_entry_names(&directory)?;
         let mut entries = Vec::with_capacity(names.len());
         for name in &names {
             if let Some(entry) =
-                inspect_inventory_entry(&context, self.ignore.as_ref(), &directory, parent, name)?
+                inspect_inventory_entry(context, self.ignore.as_ref(), &directory, parent, name)?
             {
                 entries.push(entry);
             }
@@ -175,6 +234,50 @@ impl fmt::Debug for WorkspaceResourceService {
     }
 }
 
+fn service_failure(error: ResourceServiceError) -> ServiceFailure {
+    let code = match error.kind() {
+        super::ResourceServiceErrorKind::InvalidCursor
+        | super::ResourceServiceErrorKind::InvalidPath => ErrorCode::InvalidRequest,
+        super::ResourceServiceErrorKind::NotFound | super::ResourceServiceErrorKind::WrongKind => {
+            ErrorCode::ResourceNotFound
+        }
+        super::ResourceServiceErrorKind::UnsafeTarget
+        | super::ResourceServiceErrorKind::Unavailable => ErrorCode::WorkspaceUnavailable,
+    };
+    ServiceFailure::new(code, None).expect("resource errors use compatible details")
+}
+
+fn unavailable_service_failure() -> ServiceFailure {
+    ServiceFailure::new(ErrorCode::WorkspaceUnavailable, None)
+        .expect("workspace unavailable accepts no details")
+}
+
+#[async_trait]
+impl ResourcesApiService for WorkspaceResourceService {
+    async fn list_workspace_inventory(
+        &self,
+        query: ListWorkspaceInventoryQuery,
+    ) -> Result<WorkspaceInventoryPageDto, ServiceFailure> {
+        let service = self.clone();
+        tokio::task::spawn_blocking(move || service.list_inventory_page(query))
+            .await
+            .map_err(|_| unavailable_service_failure())?
+            .map_err(service_failure)
+    }
+
+    async fn open_workspace_resource(
+        &self,
+        resource_id: ResourceId,
+        expected_kind: ResourceKind,
+    ) -> Result<RetainedResource, ServiceFailure> {
+        let service = self.clone();
+        tokio::task::spawn_blocking(move || service.open_resource(&resource_id, expected_kind))
+            .await
+            .map_err(|_| unavailable_service_failure())?
+            .map_err(service_failure)
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum WorkspaceInventoryEntry {
     Document(DocumentEntryDto),
@@ -186,6 +289,15 @@ impl WorkspaceInventoryEntry {
         match self {
             Self::Document(entry) => &entry.path,
             Self::Resource(entry) => &entry.path,
+        }
+    }
+}
+
+impl From<WorkspaceInventoryEntry> for WorkspaceInventoryEntryDto {
+    fn from(entry: WorkspaceInventoryEntry) -> Self {
+        match entry {
+            WorkspaceInventoryEntry::Document(document) => Self::Document { document },
+            WorkspaceInventoryEntry::Resource(resource) => Self::Resource { resource },
         }
     }
 }

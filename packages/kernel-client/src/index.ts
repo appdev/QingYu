@@ -4,6 +4,7 @@ export {
   type KernelClient,
   type KernelDocumentsClient,
   type KernelRequestOptions,
+  type KernelResourcesClient,
   type KernelSettingsClient,
   type KernelSyncClient,
   type KernelSystemClient,
@@ -43,6 +44,7 @@ export {
 export {
   KernelHttpTransport,
   type FetchLike,
+  type HttpBinarySuccessContract,
   type HttpMethod,
   type HttpQuery,
   type HttpRequest,

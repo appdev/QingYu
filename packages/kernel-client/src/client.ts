@@ -10,6 +10,7 @@ import {
   isDocumentPage,
   isHistoryPage,
   isHistorySnapshot,
+  isInventoryPage,
   isLiveHealth,
   isReadyHealth,
   isRuntime,
@@ -90,6 +91,18 @@ export interface KernelDocumentsClient {
   ): Promise<Schemas["DocumentContentDto"]>;
 }
 
+export interface KernelResourcesClient {
+  list(
+    query?: Schemas["ListWorkspaceInventoryQuery"],
+    options?: KernelRequestOptions,
+  ): Promise<Schemas["WorkspaceInventoryPageDto"]>;
+  open(
+    resourceId: Schemas["ResourceId"],
+    kind: Schemas["ResourceKind"],
+    options?: KernelRequestOptions,
+  ): Promise<Response>;
+}
+
 export interface KernelSettingsClient {
   get(options?: KernelRequestOptions): Promise<Schemas["SettingsSnapshotDto"]>;
   patch(
@@ -118,6 +131,7 @@ export interface KernelSyncClient {
 export interface KernelClient {
   readonly system: KernelSystemClient;
   readonly workspace: KernelWorkspaceClient;
+  readonly resources: KernelResourcesClient;
   readonly documents: KernelDocumentsClient;
   readonly settings: KernelSettingsClient;
   readonly sync: KernelSyncClient;
@@ -129,6 +143,8 @@ export function createKernelClient(options: CreateKernelClientOptions): KernelCl
   const transport = new KernelHttpTransport(options);
   const documentPath = (documentId: Schemas["DocumentId"]) =>
     `/api/v1/documents/${encodeURIComponent(documentId)}`;
+  const resourcePath = (resourceId: Schemas["ResourceId"]) =>
+    `/api/v1/resources/${encodeURIComponent(resourceId)}`;
 
   return {
     system: {
@@ -172,6 +188,31 @@ export function createKernelClient(options: CreateKernelClientOptions): KernelCl
           query,
           signal: requestOptions?.signal,
         }, { status: 200, validate: isSearchPage }),
+    },
+    resources: {
+      list: (query, requestOptions) =>
+        transport.request({
+          method: "GET",
+          path: "/api/v1/inventory",
+          query,
+          signal: requestOptions?.signal,
+        }, { status: 200, validate: isInventoryPage }),
+      open: (resourceId, kind, requestOptions) =>
+        transport.requestBinary({
+          method: "GET",
+          path: resourcePath(resourceId),
+          query: { kind },
+          signal: requestOptions?.signal,
+        }, {
+          status: 200,
+          mediaTypes: [
+            "application/octet-stream",
+            "image/gif",
+            "image/jpeg",
+            "image/png",
+            "image/webp",
+          ],
+        }),
     },
     documents: {
       list: (query, requestOptions) =>

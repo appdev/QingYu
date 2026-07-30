@@ -250,6 +250,7 @@ impl SystemApiService for TestSystemService {
             capabilities: RuntimeCapabilitiesDto {
                 documents: false,
                 history: false,
+                resources: false,
                 search: false,
                 settings: false,
                 sync: false,
@@ -390,7 +391,7 @@ async fn live_probe_is_originless_and_bearerless_after_exact_host_validation() {
 }
 
 #[tokio::test]
-async fn cross_origin_http_responses_expose_required_request_ids() {
+async fn cross_origin_http_responses_expose_required_contract_headers() {
     let api = TestApi::new();
 
     let mut success = api.request("GET", "/api/v1/health/live");
@@ -401,7 +402,7 @@ async fn cross_origin_http_responses_expose_required_request_ids() {
     assert_eq!(success.status(), StatusCode::OK);
     assert_eq!(
         success.headers()[header::ACCESS_CONTROL_EXPOSE_HEADERS],
-        "X-Request-Id"
+        "X-Request-Id, X-Content-Type-Options"
     );
     uuid::Uuid::parse_str(success.headers()["x-request-id"].to_str().unwrap())
         .expect("successful browser response request ID must be a UUID");
@@ -414,7 +415,7 @@ async fn cross_origin_http_responses_expose_required_request_ids() {
     assert_eq!(error.status(), StatusCode::UNAUTHORIZED);
     assert_eq!(
         error.headers()[header::ACCESS_CONTROL_EXPOSE_HEADERS],
-        "X-Request-Id"
+        "X-Request-Id, X-Content-Type-Options"
     );
     let request_id = error.headers()["x-request-id"].clone();
     let envelope: ApiErrorEnvelope = serde_json::from_value(body_json(error).await).unwrap();

@@ -15,14 +15,15 @@ use zeroize::Zeroize;
 use crate::{
     contract::{
         ApiVersion, CreateDocumentRequest, DocumentContents, DocumentId, DocumentName, ErrorCode,
-        ErrorDetails, FileDocumentName, ListDocumentsQuery, LiveHealthResponse, LiveStatus,
-        MoveDocumentRequest, PageQuery, SearchWorkspaceQuery, SnapshotId, StartupState,
-        UpdateDocumentRequest, WorkspaceRelativePath,
+        ErrorDetails, FileDocumentName, ListDocumentsQuery, ListWorkspaceInventoryQuery,
+        LiveHealthResponse, LiveStatus, MoveDocumentRequest, PageQuery, ResourceId, ResourceKind,
+        SearchWorkspaceQuery, SnapshotId, StartupState, UpdateDocumentRequest,
+        WorkspaceRelativePath,
     },
     runtime::ServiceFailure,
 };
 
-use super::{api_error, is_api_path, runtime, ws, ApiState};
+use super::{api_error, is_api_path, resource_body, runtime, ws, ApiState};
 
 const STANDARD_JSON_BODY_LIMIT: usize = 1024 * 1024;
 const DOCUMENT_JSON_BODY_LIMIT: usize = 100 * 1024 * 1024;
@@ -32,6 +33,8 @@ enum ServiceOperation {
     Ready,
     System,
     Workspace,
+    ListWorkspaceInventory,
+    OpenWorkspaceResource,
     ListDocuments,
     CreateDocument,
     GetDocument,
@@ -58,6 +61,11 @@ pub(crate) fn router() -> Router<ApiState> {
         .route("/api/v1/system/version", get(system_version))
         .route("/api/v1/runtime", get(runtime_state))
         .route("/api/v1/workspace", get(workspace))
+        .route("/api/v1/inventory", get(list_workspace_inventory))
+        .route(
+            "/api/v1/resources/{resource_id}",
+            get(open_workspace_resource),
+        )
         .route(
             "/api/v1/documents",
             get(list_documents).post(create_document),
@@ -145,6 +153,56 @@ async fn workspace(State(state): State<ApiState>) -> Response {
         StatusCode::OK,
         ServiceOperation::Workspace,
     )
+}
+
+async fn list_workspace_inventory(
+    State(state): State<ApiState>,
+    parent_probe: Result<Query<ListDocumentsParentProbe>, axum::extract::rejection::QueryRejection>,
+    query: Result<Query<ListWorkspaceInventoryQuery>, axum::extract::rejection::QueryRejection>,
+) -> Response {
+    let Ok(Query(parent_probe)) = parent_probe else {
+        return api_error(ErrorCode::InvalidRequest, None);
+    };
+    if parent_probe
+        .parent
+        .as_deref()
+        .is_some_and(|parent| WorkspaceRelativePath::parse(parent).is_err())
+    {
+        return api_error(ErrorCode::InvalidWorkspacePath, None);
+    }
+    let Ok(Query(query)) = query else {
+        return api_error(ErrorCode::InvalidRequest, None);
+    };
+    let Some(service) = runtime(&state).resources_api_service() else {
+        return unavailable(ServiceOperation::ListWorkspaceInventory);
+    };
+    service_response(
+        service.list_workspace_inventory(query).await,
+        StatusCode::OK,
+        ServiceOperation::ListWorkspaceInventory,
+    )
+}
+
+async fn open_workspace_resource(
+    State(state): State<ApiState>,
+    resource_id: Result<Path<ResourceId>, PathRejection>,
+    query: Result<Query<OpenWorkspaceResourceQuery>, axum::extract::rejection::QueryRejection>,
+) -> Response {
+    let (Ok(Path(resource_id)), Ok(Query(query))) = (resource_id, query) else {
+        return api_error(ErrorCode::InvalidRequest, None);
+    };
+    let Some(service) = runtime(&state).resources_api_service() else {
+        return unavailable(ServiceOperation::OpenWorkspaceResource);
+    };
+    match service
+        .open_workspace_resource(resource_id, query.kind)
+        .await
+    {
+        Ok(resource) => resource_body::response(resource)
+            .await
+            .unwrap_or_else(|()| api_error(ErrorCode::WorkspaceUnavailable, None)),
+        Err(error) => service_failure_response(error, ServiceOperation::OpenWorkspaceResource),
+    }
 }
 
 async fn list_documents(
@@ -582,6 +640,12 @@ struct ListDocumentsParentProbe {
     parent: Option<String>,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OpenWorkspaceResourceQuery {
+    kind: ResourceKind,
+}
+
 async fn parse_json<T>(
     request: Request<Body>,
     limit: usize,
@@ -630,6 +694,20 @@ impl ServiceOperation {
                 E::KernelNotReady,
                 E::WorkspaceUnavailable,
                 E::WorkspaceLocked,
+            ],
+            Self::ListWorkspaceInventory => &[
+                E::KernelNotReady,
+                E::WorkspaceUnavailable,
+                E::WorkspaceLocked,
+                E::InvalidRequest,
+                E::InvalidWorkspacePath,
+            ],
+            Self::OpenWorkspaceResource => &[
+                E::KernelNotReady,
+                E::WorkspaceUnavailable,
+                E::WorkspaceLocked,
+                E::InvalidRequest,
+                E::ResourceNotFound,
             ],
             Self::ListDocuments => &[
                 E::KernelNotReady,
@@ -750,6 +828,8 @@ impl ServiceOperation {
             Self::Ready
             | Self::System
             | Self::Workspace
+            | Self::ListWorkspaceInventory
+            | Self::OpenWorkspaceResource
             | Self::ListDocuments
             | Self::CreateDocument
             | Self::GetDocument

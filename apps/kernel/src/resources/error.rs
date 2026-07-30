@@ -2,6 +2,7 @@ use std::fmt;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ResourceServiceErrorKind {
+    InvalidCursor,
     InvalidPath,
     NotFound,
     WrongKind,
@@ -15,6 +16,12 @@ pub struct ResourceServiceError {
 }
 
 impl ResourceServiceError {
+    pub(crate) const fn invalid_cursor() -> Self {
+        Self {
+            kind: ResourceServiceErrorKind::InvalidCursor,
+        }
+    }
+
     pub(crate) const fn invalid_path() -> Self {
         Self {
             kind: ResourceServiceErrorKind::InvalidPath,
@@ -62,6 +69,7 @@ impl fmt::Debug for ResourceServiceError {
 impl fmt::Display for ResourceServiceError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self.kind {
+            ResourceServiceErrorKind::InvalidCursor => "the resource cursor is invalid",
             ResourceServiceErrorKind::InvalidPath => "the resource path is invalid",
             ResourceServiceErrorKind::NotFound => "the resource was not found",
             ResourceServiceErrorKind::WrongKind => "the workspace entry is not a resource",

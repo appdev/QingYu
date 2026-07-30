@@ -6,9 +6,16 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+use axum::{
+    body::{to_bytes, Body},
+    http::{header, Request, StatusCode},
+};
 use qingyu_kernel::{
+    api::{build_router, TransportPolicy},
     config::KernelConfig,
-    contract::{DocumentKind, ResourceKind, WorkspaceRelativePath},
+    contract::{
+        DocumentKind, ListWorkspaceInventoryQuery, PageLimit, ResourceKind, WorkspaceRelativePath,
+    },
     documents::DocumentIgnorePort,
     ignore_rules::MarkdownIgnoreRules,
     paths::KernelPaths,
@@ -17,7 +24,7 @@ use qingyu_kernel::{
         resolve_markdown_href, ResourceServiceErrorKind, RetainedResource, WorkspaceInventoryEntry,
         WorkspaceResourceService,
     },
-    runtime::KernelRuntime,
+    runtime::{KernelRuntime, ResourcesApiService},
     services::workspace::WorkspaceService,
     workspace::{
         managed::ManagedWorkspaceCollection,
@@ -28,6 +35,7 @@ use qingyu_kernel::{
 };
 use serde_json::Value;
 use tempfile::tempdir;
+use tower::ServiceExt as _;
 
 static_assertions::assert_impl_all!(RetainedResource: Read, Send);
 static_assertions::assert_impl_all!(WorkspaceResourceService: Send, Sync);
@@ -58,7 +66,7 @@ impl PrimaryWorkspaceStore for MemoryWorkspaceStore {
 }
 
 struct Fixture {
-    _runtime: Arc<KernelRuntime>,
+    runtime: Arc<KernelRuntime>,
     _workspace: Arc<WorkspaceService>,
     service: WorkspaceResourceService,
     ignore: Arc<LiveIgnorePort>,
@@ -120,7 +128,7 @@ impl Fixture {
         });
         let service = WorkspaceResourceService::new(&runtime, ignore.clone());
         Self {
-            _runtime: runtime,
+            runtime,
             _workspace: workspace,
             service,
             ignore,
@@ -214,6 +222,186 @@ async fn inventory_applies_workspace_ignore_rules_to_documents_and_resources() {
             .collect::<Vec<_>>(),
         ["visible.bin"]
     );
+}
+
+#[tokio::test]
+async fn inventory_pages_continue_unchanged_and_reject_a_changed_collection() {
+    let fixture = Fixture::new().await;
+    fs::write(fixture.root.join("first.bin"), b"first").unwrap();
+    fs::write(fixture.root.join("second.bin"), b"second").unwrap();
+    let query = ListWorkspaceInventoryQuery {
+        cursor: None,
+        limit: Some(PageLimit::new(1).unwrap()),
+        parent: WorkspaceRelativePath::default(),
+    };
+
+    let first = fixture.service.list_inventory_page(query.clone()).unwrap();
+    let cursor = first.next_cursor.into_option().expect("next cursor");
+    let second = fixture
+        .service
+        .list_inventory_page(ListWorkspaceInventoryQuery {
+            cursor: Some(cursor),
+            ..query.clone()
+        })
+        .unwrap();
+    assert_eq!(
+        first
+            .items
+            .iter()
+            .chain(&second.items)
+            .map(|entry| entry.path().as_str())
+            .collect::<Vec<_>>(),
+        ["first.bin", "second.bin"]
+    );
+
+    let first = fixture.service.list_inventory_page(query.clone()).unwrap();
+    let cursor = first.next_cursor.into_option().expect("next cursor");
+    fs::write(fixture.root.join("third.bin"), b"third").unwrap();
+    let error = fixture
+        .service
+        .list_inventory_page(ListWorkspaceInventoryQuery {
+            cursor: Some(cursor),
+            ..query
+        })
+        .unwrap_err();
+
+    assert_eq!(error.kind(), ResourceServiceErrorKind::InvalidCursor);
+}
+
+#[tokio::test]
+async fn resource_http_adapter_matches_inventory_and_streams_verified_bytes() {
+    let fixture = Fixture::new().await;
+    let bytes = b"\x89PNG\r\n\x1a\nverified image bytes";
+    fs::write(fixture.root.join("image.png"), bytes).unwrap();
+    let query = ListWorkspaceInventoryQuery {
+        cursor: None,
+        limit: Some(PageLimit::new(10).unwrap()),
+        parent: WorkspaceRelativePath::default(),
+    };
+    let direct = ResourcesApiService::list_workspace_inventory(&fixture.service, query)
+        .await
+        .unwrap();
+    let resource = direct
+        .items
+        .iter()
+        .find_map(|entry| match entry {
+            qingyu_kernel::contract::WorkspaceInventoryEntryDto::Resource { resource } => {
+                Some(resource)
+            }
+            qingyu_kernel::contract::WorkspaceInventoryEntryDto::Document { .. } => None,
+        })
+        .unwrap();
+    fixture
+        .runtime
+        .install_resources_api_service(Arc::new(fixture.service.clone()))
+        .unwrap();
+    let credential = fixture.runtime.expose_native_launch_credential();
+    let router = build_router(
+        fixture.runtime.clone(),
+        TransportPolicy::loopback("127.0.0.1:43123", "http://127.0.0.1:43123").unwrap(),
+    );
+
+    let request = Request::builder()
+        .method("GET")
+        .uri("/api/v1/inventory?limit=10")
+        .header(header::HOST, "127.0.0.1:43123")
+        .header(header::AUTHORIZATION, format!("Bearer {credential}"))
+        .body(Body::empty())
+        .unwrap();
+    let response = router.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+    let http: qingyu_kernel::contract::WorkspaceInventoryPageDto =
+        serde_json::from_slice(&body).unwrap();
+    assert_eq!(http, direct);
+
+    let request = Request::builder()
+        .method("GET")
+        .uri(format!(
+            "/api/v1/resources/{}?kind=image",
+            resource.id.as_str()
+        ))
+        .header(header::HOST, "127.0.0.1:43123")
+        .header(header::AUTHORIZATION, format!("Bearer {credential}"))
+        .body(Body::empty())
+        .unwrap();
+    let response = router.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get(header::CONTENT_TYPE).unwrap(),
+        "image/png"
+    );
+    assert_eq!(
+        response.headers().get(header::CONTENT_LENGTH).unwrap(),
+        bytes.len().to_string().as_str()
+    );
+    assert_eq!(
+        response.headers().get("x-content-type-options").unwrap(),
+        "nosniff"
+    );
+    assert_eq!(
+        to_bytes(response.into_body(), 1024 * 1024).await.unwrap(),
+        bytes.as_slice()
+    );
+
+    let request = Request::builder()
+        .method("GET")
+        .uri(format!(
+            "/api/v1/resources/{}?kind=attachment",
+            resource.id.as_str()
+        ))
+        .header(header::HOST, "127.0.0.1:43123")
+        .header(header::AUTHORIZATION, format!("Bearer {credential}"))
+        .body(Body::empty())
+        .unwrap();
+    let response = router.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let envelope: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), 1024 * 1024).await.unwrap())
+            .unwrap();
+    assert_eq!(envelope["code"], "resource_not_found");
+}
+
+#[tokio::test]
+async fn resource_http_stream_fails_before_its_final_chunk_when_the_file_changes() {
+    let fixture = Fixture::new().await;
+    let path = fixture.root.join("changing.bin");
+    fs::write(&path, vec![b'a'; 128 * 1024]).unwrap();
+    let entry = fixture
+        .service
+        .list_inventory(&WorkspaceRelativePath::default())
+        .unwrap()
+        .into_iter()
+        .find_map(|entry| match entry {
+            WorkspaceInventoryEntry::Resource(entry) => Some(entry),
+            WorkspaceInventoryEntry::Document(_) => None,
+        })
+        .unwrap();
+    fixture
+        .runtime
+        .install_resources_api_service(Arc::new(fixture.service.clone()))
+        .unwrap();
+    let credential = fixture.runtime.expose_native_launch_credential();
+    let router = build_router(
+        fixture.runtime.clone(),
+        TransportPolicy::loopback("127.0.0.1:43123", "http://127.0.0.1:43123").unwrap(),
+    );
+    let request = Request::builder()
+        .method("GET")
+        .uri(format!(
+            "/api/v1/resources/{}?kind=attachment",
+            entry.id.as_str()
+        ))
+        .header(header::HOST, "127.0.0.1:43123")
+        .header(header::AUTHORIZATION, format!("Bearer {credential}"))
+        .body(Body::empty())
+        .unwrap();
+    let response = router.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    fs::write(path, vec![b'b'; 128 * 1024]).unwrap();
+
+    assert!(to_bytes(response.into_body(), 1024 * 1024).await.is_err());
 }
 
 #[tokio::test]

@@ -3,15 +3,16 @@ use qingyu_kernel::contract::{
     ApiErrorEnvelope, ApiVersion, AuthenticateFrame, CreateDocumentRequest, CredentialChange,
     DeletionPolicy, DocumentContentDto, DocumentContents, DocumentId, DocumentKind,
     DocumentPageDto, ErrorCode, ErrorDetails, EventSequence, FontFamilyValueDto, FrameErrorCode,
-    HostProfile, InstanceId, MoveDocumentRequest, Nullable, PageCursor, PageCursorContext,
-    PageQuery, PatchSettingsRequest, PositiveSafeInteger, ProtocolVersion, ReadySequence,
-    ResourceEntryDto, ResourceId, ResourceKind, ResourceName, Revision, Rfc3339Utc, SafeInteger,
-    SafeUnsignedInteger, SearchMatchDto, SearchWorkspaceQuery, ServerFrame, SettingEntryDto,
-    SettingKey, SettingValueDto, SnapshotRequired, StartupState, SyncConfigChangesDto, SyncMode,
-    SyncProvider, SyncSafeErrorCategory, SyncSafeErrorCode, SyncSafeErrorDto,
-    SyncSafeErrorOperation, SyncSafeHttpMethod, SyncSafeProviderErrorCode, ValidationField,
-    ValidationIssueCode, ValidationIssueDto, ValidationIssues, WireIdentityKey, WorkspaceDto,
-    WorkspaceGeneration, WorkspaceId, WorkspaceReadiness, WorkspaceRelativePath,
+    HostProfile, InstanceId, ListWorkspaceInventoryQuery, MoveDocumentRequest, Nullable,
+    PageCursor, PageCursorContext, PageQuery, PatchSettingsRequest, PositiveSafeInteger,
+    ProtocolVersion, ReadySequence, ResourceEntryDto, ResourceId, ResourceKind, ResourceName,
+    Revision, Rfc3339Utc, SafeInteger, SafeUnsignedInteger, SearchMatchDto, SearchWorkspaceQuery,
+    ServerFrame, SettingEntryDto, SettingKey, SettingValueDto, SnapshotRequired, StartupState,
+    SyncConfigChangesDto, SyncMode, SyncProvider, SyncSafeErrorCategory, SyncSafeErrorCode,
+    SyncSafeErrorDto, SyncSafeErrorOperation, SyncSafeHttpMethod, SyncSafeProviderErrorCode,
+    ValidationField, ValidationIssueCode, ValidationIssueDto, ValidationIssues, WireIdentityKey,
+    WorkspaceDto, WorkspaceGeneration, WorkspaceId, WorkspaceInventoryEntryDto,
+    WorkspaceInventoryPageDto, WorkspaceReadiness, WorkspaceRelativePath,
 };
 use qingyu_kernel::error::{http_status_for_error_code, safe_error_envelope};
 use serde_json::json;
@@ -512,6 +513,19 @@ fn omitted_inputs_and_explicit_nullable_outputs_are_not_interchangeable() {
     assert!(serde_json::from_value::<PageQuery>(json!({})).is_ok());
     assert!(serde_json::from_value::<PageQuery>(json!({ "cursor": null })).is_err());
     assert!(serde_json::from_value::<PageQuery>(json!({ "limit": null })).is_err());
+    assert!(serde_json::from_value::<ListWorkspaceInventoryQuery>(json!({})).is_ok());
+    assert!(
+        serde_json::from_value::<ListWorkspaceInventoryQuery>(json!({
+            "cursor": null
+        }))
+        .is_err()
+    );
+    assert!(
+        serde_json::from_value::<ListWorkspaceInventoryQuery>(json!({
+            "limit": null
+        }))
+        .is_err()
+    );
 
     assert!(serde_json::from_value::<DocumentPageDto>(json!({
         "items": [],
@@ -744,6 +758,22 @@ fn resource_entries_have_stable_wire_shape_and_redacted_signed_identity() {
     assert_eq!(entry.media_type, "image/png");
     assert_eq!(serde_json::to_value(&entry).unwrap(), value);
     assert!(!format!("{entry:?}").contains(entry.id.as_str()));
+
+    let inventory_value = json!({ "entryType": "resource", "resource": value });
+    let inventory: WorkspaceInventoryEntryDto =
+        serde_json::from_value(inventory_value.clone()).unwrap();
+    assert_eq!(serde_json::to_value(&inventory).unwrap(), inventory_value);
+    assert!(serde_json::from_value::<WorkspaceInventoryEntryDto>(json!({
+        "entryType": "resource",
+        "resource": inventory_value["resource"],
+        "absolutePath": "/private/assets/photo.png"
+    }))
+    .is_err());
+    assert!(serde_json::from_value::<WorkspaceInventoryPageDto>(json!({
+        "items": [inventory_value],
+        "nextCursor": null
+    }))
+    .is_ok());
 }
 
 #[test]
@@ -927,6 +957,7 @@ fn error_codes_have_a_complete_stable_http_mapping() {
         (ErrorCode::HostNotAllowed, 403),
         (ErrorCode::OriginNotAllowed, 403),
         (ErrorCode::DocumentNotFound, 404),
+        (ErrorCode::ResourceNotFound, 404),
         (ErrorCode::SyncConfigAbsent, 404),
         (ErrorCode::DocumentAlreadyExists, 409),
         (ErrorCode::RevisionConflict, 409),

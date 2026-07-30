@@ -29,6 +29,11 @@ export interface HttpSuccessContract<Result> {
   validate?: (value: unknown) => value is Result;
 }
 
+export interface HttpBinarySuccessContract {
+  status: number;
+  mediaTypes: readonly string[];
+}
+
 export interface KernelHttpTransportOptions {
   baseUrl: string | URL;
   fetch: FetchLike;
@@ -62,6 +67,68 @@ export class KernelHttpTransport {
     request: HttpRequest,
     success?: HttpSuccessContract<Result>,
   ): Promise<Result> {
+    const { response, requestId } = await this.#send(request);
+    if (success !== undefined && response.status !== success.status) {
+      throw new KernelProtocolError("invalid-http-response", {
+        status: response.status,
+        requestId,
+      });
+    }
+    if (response.status === 204) {
+      if (success !== undefined && success.status !== 204) {
+        throw new KernelProtocolError("invalid-http-response", {
+          status: response.status,
+          requestId,
+        });
+      }
+      return undefined as Result;
+    }
+
+    try {
+      const body: unknown = await response.json();
+      if (success?.validate !== undefined && !success.validate(body)) {
+        throw new KernelProtocolError("invalid-http-response", {
+          status: response.status,
+          requestId,
+        });
+      }
+      return body as Result;
+    } catch {
+      throw new KernelProtocolError("invalid-http-response", {
+        status: response.status,
+        requestId,
+      });
+    }
+  }
+
+  async requestBinary(
+    request: HttpRequest,
+    success: HttpBinarySuccessContract,
+  ): Promise<Response> {
+    const { response, requestId } = await this.#send(request);
+    const contentType = response.headers.get("content-type");
+    const contentLength = response.headers.get("content-length");
+    const length = contentLength !== null && /^(?:0|[1-9]\d*)$/u.test(contentLength)
+      ? Number(contentLength)
+      : Number.NaN;
+    if (
+      response.status !== success.status ||
+      contentType === null ||
+      !success.mediaTypes.includes(contentType) ||
+      !Number.isSafeInteger(length) ||
+      length < 0 ||
+      response.headers.get("x-content-type-options") !== "nosniff" ||
+      (length > 0 && response.body === null)
+    ) {
+      throw new KernelProtocolError("invalid-http-response", {
+        status: response.status,
+        requestId,
+      });
+    }
+    return response;
+  }
+
+  async #send(request: HttpRequest): Promise<{ response: Response; requestId: string }> {
     const url = this.#requestUrl(request.path, request.query);
     const headers = new Headers();
     if (request.authenticated !== false) {
@@ -111,37 +178,7 @@ export class KernelHttpTransport {
     if (!response.ok) {
       throw await apiError(response, requestId);
     }
-    if (success !== undefined && response.status !== success.status) {
-      throw new KernelProtocolError("invalid-http-response", {
-        status: response.status,
-        requestId,
-      });
-    }
-    if (response.status === 204) {
-      if (success !== undefined && success.status !== 204) {
-        throw new KernelProtocolError("invalid-http-response", {
-          status: response.status,
-          requestId,
-        });
-      }
-      return undefined as Result;
-    }
-
-    try {
-      const body: unknown = await response.json();
-      if (success?.validate !== undefined && !success.validate(body)) {
-        throw new KernelProtocolError("invalid-http-response", {
-          status: response.status,
-          requestId,
-        });
-      }
-      return body as Result;
-    } catch {
-      throw new KernelProtocolError("invalid-http-response", {
-        status: response.status,
-        requestId,
-      });
-    }
+    return { response, requestId };
   }
 
   #requestUrl(path: string, query: HttpQuery | undefined) {
@@ -252,6 +289,7 @@ const API_ERROR_CODES: ReadonlySet<KernelApiErrorCode> = new Set([
   "workspace_unavailable",
   "workspace_locked",
   "document_not_found",
+  "resource_not_found",
   "document_already_exists",
   "document_too_large",
   "document_invalid_encoding",
@@ -270,7 +308,7 @@ const API_ERROR_CODES: ReadonlySet<KernelApiErrorCode> = new Set([
 const ERROR_STATUS: Record<KernelApiErrorCode, number> = {
   invalid_request: 400, invalid_workspace_path: 400, invalid_document_name: 400,
   unauthorized: 401, host_not_allowed: 403, origin_not_allowed: 403,
-  document_not_found: 404, sync_config_absent: 404,
+  document_not_found: 404, resource_not_found: 404, sync_config_absent: 404,
   document_already_exists: 409, revision_conflict: 409, settings_revision_conflict: 409,
   sync_config_revision_conflict: 409, document_too_large: 413,
   document_invalid_encoding: 422, invalid_settings_field: 422, sync_config_invalid: 422,

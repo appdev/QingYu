@@ -724,6 +724,7 @@ pub struct SystemVersionResponse {
 pub struct RuntimeCapabilitiesDto {
     pub documents: bool,
     pub history: bool,
+    pub resources: bool,
     pub search: bool,
     pub settings: bool,
     pub sync: bool,
@@ -787,6 +788,25 @@ pub struct ListDocumentsQuery {
     pub parent: WorkspaceRelativePath,
 }
 
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ListWorkspaceInventoryQuery {
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_non_null",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub cursor: Option<PageCursor>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_non_null",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub limit: Option<PageLimit>,
+    #[serde(default)]
+    pub parent: WorkspaceRelativePath,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct DocumentEntryDto {
@@ -813,6 +833,35 @@ pub struct ResourceEntryDto {
     pub revision: Revision,
     pub media_type: String,
     pub previewable: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(
+    deny_unknown_fields,
+    rename_all = "kebab-case",
+    rename_all_fields = "camelCase",
+    tag = "entryType"
+)]
+pub enum WorkspaceInventoryEntryDto {
+    Document { document: DocumentEntryDto },
+    Resource { resource: ResourceEntryDto },
+}
+
+impl WorkspaceInventoryEntryDto {
+    pub const fn path(&self) -> &WorkspaceRelativePath {
+        match self {
+            Self::Document { document } => &document.path,
+            Self::Resource { resource } => &resource.path,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct WorkspaceInventoryPageDto {
+    pub items: Vec<WorkspaceInventoryEntryDto>,
+    #[serde(deserialize_with = "deserialize_required_nullable")]
+    pub next_cursor: Nullable<PageCursor>,
 }
 
 impl DocumentEntryDto {
@@ -2027,6 +2076,7 @@ pub enum ErrorCode {
     WorkspaceUnavailable,
     WorkspaceLocked,
     DocumentNotFound,
+    ResourceNotFound,
     DocumentAlreadyExists,
     DocumentTooLarge,
     DocumentInvalidEncoding,

@@ -14,10 +14,12 @@ use crate::{
         deletion::WorkspaceRecycleDeletionPort,
         history::{FileDocumentHistoryStore, FileDocumentRecoveryStore},
         service::WorkspaceDocumentService,
+        AllowAllDocumentIgnorePort,
     },
     host::native::NativeHostWorkspaceState,
     paths::{open_or_create_child, KernelPaths},
     ports::system::system_kernel_ports,
+    resources::WorkspaceResourceService,
     runtime::{KernelRuntime, ServiceFailure, SystemApiService},
     services::{sync::SyncService, workspace::WorkspaceService},
     settings::{service::SettingsService, storage::AtomicJsonSettingsStore},
@@ -131,7 +133,7 @@ pub async fn compose_fixed_native_kernel(
     let documents_service = Arc::new(
         WorkspaceDocumentService::new_with_recovery(
             &runtime,
-            deletion,
+            deletion.clone(),
             Arc::new(FileDocumentHistoryStore::new(history_directory)),
             Arc::new(FileDocumentRecoveryStore::new(recovery_directory)),
         )
@@ -139,6 +141,12 @@ pub async fn compose_fixed_native_kernel(
     );
     runtime
         .install_documents_api_service(documents_service)
+        .map_err(|_| NativeCompositionError)?;
+    runtime
+        .install_resources_api_service(Arc::new(WorkspaceResourceService::new(
+            &runtime,
+            Arc::new(AllowAllDocumentIgnorePort),
+        )))
         .map_err(|_| NativeCompositionError)?;
     runtime
         .install_settings_api_service(settings_service)
@@ -196,6 +204,7 @@ impl SystemApiService for NativeSystemService {
             capabilities: RuntimeCapabilitiesDto {
                 documents: true,
                 history: true,
+                resources: true,
                 search: true,
                 settings: true,
                 sync: true,

@@ -16,18 +16,19 @@ use crate::{
     contract::{
         CreateDocumentRequest, CreatedDocumentDto, DeleteDocumentRequest, DocumentContentDto,
         DocumentHistoryPageDto, DocumentHistorySnapshotDto, DocumentId, DocumentPageDto, ErrorCode,
-        ErrorDetails, HostProfile, InstanceId, ListDocumentsQuery, MoveDocumentRequest, PageQuery,
-        PatchSettingsRequest, PatchSyncConfigRequest, ReadyHealthResponse,
-        RestoreDocumentHistoryRequest, Revision, Rfc3339Utc, SearchPageDto, SearchWorkspaceQuery,
-        SettingsSnapshotDto, SnapshotId, SyncConfigViewDto, SyncConnectionTestDto,
-        SyncRunAcceptedDto, SyncStatusDto, SyncTrigger, SystemVersionResponse,
-        TestSyncConnectionRequest, TriggerSyncRunRequest, UpdateDocumentRequest, WireIdentityKey,
-        WorkspaceDto,
+        ErrorDetails, HostProfile, InstanceId, ListDocumentsQuery, ListWorkspaceInventoryQuery,
+        MoveDocumentRequest, PageQuery, PatchSettingsRequest, PatchSyncConfigRequest,
+        ReadyHealthResponse, ResourceId, ResourceKind, RestoreDocumentHistoryRequest, Revision,
+        Rfc3339Utc, SearchPageDto, SearchWorkspaceQuery, SettingsSnapshotDto, SnapshotId,
+        SyncConfigViewDto, SyncConnectionTestDto, SyncRunAcceptedDto, SyncStatusDto, SyncTrigger,
+        SystemVersionResponse, TestSyncConnectionRequest, TriggerSyncRunRequest,
+        UpdateDocumentRequest, WireIdentityKey, WorkspaceDto, WorkspaceInventoryPageDto,
     },
     error::{safe_error_envelope, safe_message_for_error_code},
     events::{EventBroker, EventPublication, EventSink, EventSinkError},
     paths::{InstanceDataRoot, KernelPaths, PathPolicyError, PathPolicyErrorKind, WorkspaceRoot},
     ports::{BoxTaskFuture, KernelPorts, PortError},
+    resources::RetainedResource,
     sync::status::{SyncRunCompletion, SyncStatusState},
     workspace::{
         lock::{InstanceLockLease, KernelLockError, KernelLockErrorKind, WorkspaceLockLease},
@@ -47,6 +48,7 @@ pub struct KernelRuntime {
     system_api: OnceLock<Arc<dyn SystemApiService>>,
     workspace_api: OnceLock<Arc<dyn WorkspaceApiService>>,
     documents_api: OnceLock<Arc<dyn DocumentsApiService>>,
+    resources_api: OnceLock<Arc<dyn ResourcesApiService>>,
     settings_api: OnceLock<Arc<dyn SettingsApiService>>,
     sync_api: OnceLock<Arc<dyn SyncApiService>>,
     instance_authority: Arc<ActiveInstanceAuthority>,
@@ -91,6 +93,7 @@ impl KernelRuntime {
             system_api: OnceLock::new(),
             workspace_api: OnceLock::new(),
             documents_api: OnceLock::new(),
+            resources_api: OnceLock::new(),
             settings_api: OnceLock::new(),
             sync_api: OnceLock::new(),
             instance_authority,
@@ -1233,6 +1236,15 @@ impl KernelRuntime {
             .map_err(|_| ApiServiceAlreadyInstalled)
     }
 
+    pub fn install_resources_api_service(
+        &self,
+        service: Arc<dyn ResourcesApiService>,
+    ) -> Result<(), ApiServiceAlreadyInstalled> {
+        self.resources_api
+            .set(service)
+            .map_err(|_| ApiServiceAlreadyInstalled)
+    }
+
     pub fn install_settings_api_service(
         &self,
         service: Arc<dyn SettingsApiService>,
@@ -1261,6 +1273,10 @@ impl KernelRuntime {
 
     pub(crate) fn documents_api_service(&self) -> Option<&Arc<dyn DocumentsApiService>> {
         self.documents_api.get()
+    }
+
+    pub(crate) fn resources_api_service(&self) -> Option<&Arc<dyn ResourcesApiService>> {
+        self.resources_api.get()
     }
 
     pub(crate) fn settings_api_service(&self) -> Option<&Arc<dyn SettingsApiService>> {
@@ -2456,6 +2472,19 @@ pub trait DocumentsApiService: Send + Sync {
         &self,
         query: SearchWorkspaceQuery,
     ) -> Result<SearchPageDto, ServiceFailure>;
+}
+
+#[async_trait]
+pub trait ResourcesApiService: Send + Sync {
+    async fn list_workspace_inventory(
+        &self,
+        query: ListWorkspaceInventoryQuery,
+    ) -> Result<WorkspaceInventoryPageDto, ServiceFailure>;
+    async fn open_workspace_resource(
+        &self,
+        resource_id: ResourceId,
+        expected_kind: ResourceKind,
+    ) -> Result<RetainedResource, ServiceFailure>;
 }
 
 #[async_trait]

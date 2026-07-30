@@ -33,6 +33,7 @@ export type KernelRuntimeCapabilities = {
   documents: boolean;
   history: boolean;
   portableSettings: boolean;
+  resources: boolean;
   s3: boolean;
   search: boolean;
   settings: boolean;

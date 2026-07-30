@@ -11,6 +11,7 @@ export type KernelCompatibilityCapabilities = {
   documents: boolean;
   history: boolean;
   portableSettings: boolean;
+  resources: boolean;
   s3: boolean;
   search: boolean;
   settings: boolean;
@@ -57,6 +58,7 @@ function mapCapabilities(
     documents: capabilities.documents,
     history: capabilities.history,
     portableSettings: capabilities.portableSettings,
+    resources: capabilities.resources,
     s3: capabilities.s3,
     search: capabilities.search,
     settings: capabilities.settings,

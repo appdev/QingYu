@@ -8,7 +8,7 @@ import {
 } from "./index.ts";
 
 describe("createKernelClient", () => {
-  it("maps the five API groups to all frozen HTTP operations", async () => {
+  it("maps the six API groups to all frozen HTTP operations", async () => {
     const calls: Array<{ url: URL; init: RequestInit }> = [];
     const fetch: FetchLike = async (url, init = {}) => {
       calls.push({ url: new URL(url), init });
@@ -30,6 +30,12 @@ describe("createKernelClient", () => {
       { query: "needle", cursor: "search-cursor", limit: 20 },
       { signal },
     );
+    await client.resources.list(
+      { parent: "notes", cursor: "resource-cursor", limit: 10 },
+      { signal },
+    );
+    const resourceResponse = await client.resources.open("resource/1", "image", { signal });
+    expect(await resourceResponse.text()).toBe("image bytes");
     await client.documents.list(
       { parent: "notes", cursor: "document-cursor", limit: 10 },
       { signal },
@@ -122,6 +128,8 @@ describe("createKernelClient", () => {
       "GET /api/v1/runtime",
       "GET /api/v1/workspace",
       "GET /api/v1/search?query=needle&cursor=search-cursor&limit=20",
+      "GET /api/v1/inventory?parent=notes&cursor=resource-cursor&limit=10",
+      "GET /api/v1/resources/resource%2F1?kind=image",
       "GET /api/v1/documents?parent=notes&cursor=document-cursor&limit=10",
       "POST /api/v1/documents",
       "GET /api/v1/documents/document%2F1",
@@ -146,13 +154,13 @@ describe("createKernelClient", () => {
       );
       expect(call.init.signal).toBe(signal);
     }
-    expect(JSON.parse(String(calls[9]?.init.body))).toMatchObject({
+    expect(JSON.parse(String(calls[11]?.init.body))).toMatchObject({
       expectedRevision: "revision-1",
     });
-    expect(JSON.parse(String(calls[16]?.init.body))).toMatchObject({
+    expect(JSON.parse(String(calls[18]?.init.body))).toMatchObject({
       expectedRevision: "settings-1",
     });
-    expect(JSON.parse(String(calls[21]?.init.body))).toMatchObject({
+    expect(JSON.parse(String(calls[23]?.init.body))).toMatchObject({
       expectedConfigRevision: "sync-3",
     });
   });
@@ -285,6 +293,45 @@ describe("createKernelClient", () => {
     }
   });
 
+  it("rejects inconsistent or unsafe resource inventory entries", async () => {
+    const resource = {
+      id: "payload.signature",
+      kind: "image",
+      mediaType: "image/png",
+      modifiedAt: "2026-07-29T12:30:45Z",
+      name: "photo.png",
+      parent: "assets",
+      path: "assets/photo.png",
+      previewable: true,
+      revision: "sha256:revision",
+      sizeBytes: 1024,
+    };
+    const invalidResources = [
+      { ...resource, mediaType: "text/html" },
+      { ...resource, previewable: false },
+      { ...resource, name: "../photo.png" },
+      { ...resource, path: "other/photo.png" },
+      {
+        ...resource,
+        kind: "attachment",
+        mediaType: "image/png",
+        previewable: true,
+      },
+    ];
+
+    for (const candidate of invalidResources) {
+      const client = createKernelClient({
+        baseUrl: "http://127.0.0.1:6608",
+        fetch: async () => jsonResponse({
+          items: [{ entryType: "resource", resource: candidate }],
+          nextCursor: null,
+        }),
+        auth: { kind: "native-bearer", getCredential: () => "credential-1" },
+      });
+      await expect(client.resources.list()).rejects.toBeInstanceOf(KernelProtocolError);
+    }
+  });
+
   it("rejects impossible calendar dates and 24:00 timestamps over HTTP", async () => {
     for (const modifiedAt of [
       "2026-02-31T00:00:00Z",
@@ -405,6 +452,8 @@ function operationCalls(client: KernelClient): Array<() => Promise<unknown>> {
     () => client.system.runtime(),
     () => client.workspace.get(),
     () => client.workspace.search({ query: "needle" }),
+    () => client.resources.list(),
+    () => client.resources.open("payload.signature", "attachment"),
     () => client.documents.list(),
     () =>
       client.documents.create({
@@ -504,9 +553,17 @@ function operationResponseWithoutRequestId(path: string, method: string) {
   if (path === "/api/v1/health/live") return Response.json({ apiVersion: "v1", status: "live" });
   if (path === "/api/v1/health/ready") return Response.json({ apiVersion: "v1", instanceId: UUID, status: "ready" });
   if (path === "/api/v1/system/version") return Response.json({ apiVersion: "v1", instanceId: UUID, kernelVersion: "1" });
-  if (path === "/api/v1/runtime") return Response.json({ capabilities: { documents: true, history: true, portableSettings: true, s3: true, search: true, settings: true, sync: true, webdav: true }, instanceId: UUID, profile: "desktop", startupState: "ready" });
+  if (path === "/api/v1/runtime") return Response.json({ capabilities: { documents: true, history: true, portableSettings: true, resources: true, s3: true, search: true, settings: true, sync: true, webdav: true }, instanceId: UUID, profile: "desktop", startupState: "ready" });
   if (path === "/api/v1/workspace") return Response.json({ id: UUID, generation: "generation-1", displayName: "Notes", readiness: "ready", revision: "revision-1" });
   if (path === "/api/v1/search") return Response.json({ items: [], nextCursor: null });
+  if (path === "/api/v1/inventory") return Response.json({ items: [], nextCursor: null });
+  if (path.includes("/resources/")) return new Response("image bytes", {
+    headers: {
+      "content-length": "11",
+      "content-type": "image/png",
+      "x-content-type-options": "nosniff",
+    },
+  });
   if (path === "/api/v1/documents" && method === "GET") return Response.json({ items: [], nextCursor: null });
   if (path === "/api/v1/documents" && method === "POST") return Response.json(CONTENT, { status: 201 });
   if (path.endsWith("/delete")) return new Response(null, { status: 204 });
