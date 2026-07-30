@@ -335,6 +335,15 @@ test("validateModelSummary rejects unknown commits and unsupported claims", () =
   assert.throws(() => validateModelSummary(placeholder, facts), /placeholder/u);
 });
 
+test("validateModelSummary accepts guarded Chinese terms backed by English source facts", () => {
+  const facts = modelFacts();
+  facts.commits[0].changedPaths.push("packages/app/src/themes/migration.ts");
+  const translatedClaim = validModelSummary();
+  translatedClaim.sections[0].items[0].text = "迁移旧主题设置时保留现有选择。";
+
+  assert.doesNotThrow(() => validateModelSummary(translatedClaim, facts));
+});
+
 test("generateReleaseNotes uses a valid injected model result", async () => {
   const calls = [];
   const result = await generateReleaseNotes({
@@ -350,6 +359,25 @@ test("generateReleaseNotes uses a valid injected model result", async () => {
   assert.equal(calls.length, 1);
   assert.equal(calls[0].model, "openai/gpt-4.1");
   assert.match(calls[0].systemPrompt, /简体中文/u);
+  assert.match(result.notes, /更可靠的同步/u);
+});
+
+test("generateReleaseNotes repairs one unsupported model summary before falling back", async () => {
+  const calls = [];
+  const unsupported = validModelSummary();
+  unsupported.sections[0].items[0].text = "自动完成安全迁移。";
+  const result = await generateReleaseNotes({
+    facts: modelFacts(),
+    modelClient: async (request) => {
+      calls.push(request);
+      return calls.length === 1 ? unsupported : validModelSummary();
+    },
+  });
+
+  assert.equal(result.usedModel, true);
+  assert.equal(calls.length, 2);
+  assert.match(calls[1].systemPrompt, /上一次输出未通过事实校验/u);
+  assert.match(calls[1].systemPrompt, /unsupported claim/u);
   assert.match(result.notes, /更可靠的同步/u);
 });
 

@@ -12,6 +12,7 @@ const MAX_MODEL_BODY_CHARS = 1_000;
 const MAX_MODEL_PATHS = 20;
 const MODEL_SYSTEM_PROMPT = `你是 QingYu 桌面笔记应用的发布说明编辑。根据提供的确定性提交事实，以简体中文总结用户可感知的变化。
 只陈述输入事实支持的内容；不要发明版本、平台、签名、安全、迁移或链接信息。把相关提交合并成主题，不要输出逐提交清单。
+除非输入事实原文包含相同词语或直接对应的英文事实（signing、updater、security、vulnerability、migrate、migration），否则 summary、标题、正文和提醒中禁止出现“Windows”“macOS”“Linux”“Android”“iOS”“签名”“自动更新”“安全”“漏洞”“迁移”或“CVE”；例如不要把 harden 自行解释为“安全”。
 只返回 JSON：summary 为简短总述；sections 为 2 到 5 个主题，每项包含 title 和 items；每个 item 包含 text 与支持它的 commitShas；notice 仅在事实明确支持升级或兼容提醒时使用，否则为 null；otherChanges 为较小的用户可见变化。`;
 
 function requireEnv(env, name) {
@@ -248,17 +249,17 @@ function assertClaimsSupported(text, facts, field) {
     .toLowerCase();
   const normalized = text.toLowerCase();
   const guardedClaims = [
-    "windows",
-    "macos",
-    "linux",
-    "android",
-    "ios",
-    "签名",
-    "自动更新",
-    "安全",
-    "漏洞",
-    "迁移",
-    "cve",
+    ["windows", ["windows"]],
+    ["macos", ["macos"]],
+    ["linux", ["linux"]],
+    ["android", ["android"]],
+    ["ios", ["ios"]],
+    ["签名", ["签名", "signed", "signing"]],
+    ["自动更新", ["自动更新", "auto update", "updater"]],
+    ["安全", ["安全", "security", "secure"]],
+    ["漏洞", ["漏洞", "vulnerability", "cve"]],
+    ["迁移", ["迁移", "migrate", "migration"]],
+    ["cve", ["cve"]],
   ];
 
   if (/https?:\/\//u.test(normalized)) {
@@ -272,8 +273,8 @@ function assertClaimsSupported(text, facts, field) {
     }
   }
 
-  for (const claim of guardedClaims) {
-    if (normalized.includes(claim) && !source.includes(claim)) {
+  for (const [claim, sourceTerms] of guardedClaims) {
+    if (normalized.includes(claim) && !sourceTerms.some((term) => source.includes(term))) {
       throw new Error(`Model field ${field} contains an unsupported claim (${claim}).`);
     }
   }
@@ -464,12 +465,26 @@ export async function generateReleaseNotes({
   }
 
   try {
+    const userPrompt = JSON.stringify(buildModelInput(facts));
     const modelValue = await modelClient({
       model,
       systemPrompt: MODEL_SYSTEM_PROMPT,
-      userPrompt: JSON.stringify(buildModelInput(facts)),
+      userPrompt,
     });
-    const summary = validateModelSummary(modelValue, facts);
+    let summary;
+    try {
+      summary = validateModelSummary(modelValue, facts);
+    } catch (validationError) {
+      const reason = normalizeText(
+        validationError instanceof Error ? validationError.message : String(validationError),
+      ).slice(0, 500);
+      const repairedValue = await modelClient({
+        model,
+        systemPrompt: `${MODEL_SYSTEM_PROMPT}\n上一次输出未通过事实校验：${reason}。请重新生成完整 JSON，删除不受事实支持的表述，并继续严格遵守所有禁用词和 SHA 约束。`,
+        userPrompt,
+      });
+      summary = validateModelSummary(repairedValue, facts);
+    }
     return { notes: renderModelReleaseNotes(summary, facts), usedModel: true };
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
