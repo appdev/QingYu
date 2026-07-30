@@ -1,7 +1,21 @@
 import { FakeIndexedDbFactory } from "../test/web-runtime-fakes";
-import { createWebRuntime } from "./index";
+import type { KernelDomainPort } from "@markra/app/runtime";
+import { createServerWebRuntime, createWebRuntime } from "./index";
 
 describe("web runtime", () => {
+  it("uses the authenticated server Kernel port without changing browser services", () => {
+    const kernel = {} as KernelDomainPort;
+
+    const runtime = createServerWebRuntime(kernel, {
+      eventTarget: new EventTarget(),
+      indexedDB: new FakeIndexedDbFactory().indexedDB,
+    });
+
+    expect(runtime.kernel).toBe(kernel);
+    expect(runtime.events.isAvailable()).toBe(true);
+    expect(runtime.features.nativeWindowChrome).toBe(false);
+  });
+
   it("creates a browser runtime with IndexedDB settings", async () => {
     const runtime = createWebRuntime({
       eventTarget: new EventTarget(),

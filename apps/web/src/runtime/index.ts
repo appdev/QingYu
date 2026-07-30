@@ -1,6 +1,7 @@
 import {
   createDefaultAppRuntime,
-  type AppRuntime
+  type AppRuntime,
+  type KernelDomainPort
 } from "@markra/app/runtime";
 import {
   createBrowserEventsRuntime,
@@ -51,5 +52,15 @@ export function createWebRuntime(options: WebRuntimeOptions = {}): AppRuntime {
     workspace: {
       resolveManagedRoot: async () => null
     }
+  };
+}
+
+export function createServerWebRuntime(
+  kernel: KernelDomainPort,
+  options: WebRuntimeOptions = {}
+): AppRuntime {
+  return {
+    ...createWebRuntime(options),
+    kernel
   };
 }
