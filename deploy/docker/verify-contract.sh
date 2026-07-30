@@ -42,26 +42,33 @@ grep -Ei '^FROM[[:space:]]scratch[[:space:]]AS[[:space:]]kernel-artifact[[:space
 require_fixed "$dockerfile" \
   'COPY --from=kernel-build /src/apps/kernel/target/release/qingyu-kernel /qingyu-kernel' \
   "Dockerfile must export the kernel binary from the artifact stage"
+require_fixed "$dockerfile" \
+  'COPY apps/kernel/crates/qingyu-dejavu apps/kernel/crates/qingyu-dejavu' \
+  "Dockerfile must include the Kernel workspace DejaVu crate in the build context"
 reject_extended "$dockerfile" '^[[:space:]]*(CMD|ENTRYPOINT|EXPOSE|HEALTHCHECK)[[:space:]]' \
   "artifact-only Dockerfile must not claim a runnable server contract"
-reject_extended "$dockerfile" 'QINGYU_INIT_TOKEN' \
+reject_extended "$dockerfile" 'QINGYU_SERVER_INITIALIZATION_TOKEN' \
   "the one-time initialization token must never enter the image build"
+reject_extended "$dockerfile" 'QINGYU_INIT_TOKEN' \
+  "the legacy initialization token name must not enter the image build"
 
 require_fixed "$compose_file" 'profiles: ["server-entrypoint-required"]' \
   "Compose service must remain behind the server-entrypoint phase gate"
-require_fixed "$compose_file" 'image: ${QINGYU_SERVER_IMAGE:?P2 server image required}' \
-  "Compose must require an explicit P2 server image"
+require_fixed "$compose_file" 'image: ${QINGYU_SERVER_IMAGE:?server runtime image required}' \
+  "Compose must require an explicit server runtime image"
 require_fixed "$compose_file" 'user: "10001:10001"' \
   "Compose must run the future server as a fixed non-root UID/GID"
 require_fixed "$compose_file" 'read_only: true' \
   "Compose root filesystem must be read-only"
-require_fixed "$compose_file" '- QINGYU_INIT_TOKEN' \
+require_fixed "$compose_file" '- QINGYU_SERVER_INITIALIZATION_TOKEN' \
   "Compose must pass the optional one-time token through from the environment"
-token_lines=$(grep -Ec '^[[:space:]]*-[[:space:]]+QINGYU_INIT_TOKEN[[:space:]]*$' "$compose_file" || true)
+token_lines=$(grep -Ec '^[[:space:]]*-[[:space:]]+QINGYU_SERVER_INITIALIZATION_TOKEN[[:space:]]*$' "$compose_file" || true)
 [ "$token_lines" -eq 1 ] \
-  || fail "Compose must contain exactly one value-free QINGYU_INIT_TOKEN pass-through"
-reject_extended "$compose_file" 'QINGYU_INIT_TOKEN[[:space:]]*[:=]' \
+  || fail "Compose must contain exactly one value-free QINGYU_SERVER_INITIALIZATION_TOKEN pass-through"
+reject_extended "$compose_file" 'QINGYU_SERVER_INITIALIZATION_TOKEN[[:space:]]*[:=]' \
   "Compose must not contain an initialization-token value or default"
+reject_extended "$compose_file" 'QINGYU_INIT_TOKEN' \
+  "Compose must reject the legacy initialization token name"
 require_fixed "$compose_file" '- "${QINGYU_SERVER_PORT:-3210}:3210"' \
   "Compose must publish only the fixed container server port 3210"
 published_ports=$(grep -Ec '^[[:space:]]*-[[:space:]]+"[^\"]*:[0-9]+"[[:space:]]*$' "$compose_file" || true)
@@ -87,12 +94,27 @@ require_fixed "$compose_file" 'dev.qingyu.contract.health-ready: /api/v1/health/
 reject_extended "$compose_file" '^[[:space:]]*(command|entrypoint|build):' \
   "Compose must not invent a command, entrypoint, or runnable image build"
 
+require_fixed "$contract_doc" '`QINGYU_SERVER_INITIALIZATION_TOKEN` must contain at least 32 bytes.' \
+  "Docker documentation must state the initialization token minimum length"
+require_fixed "$contract_doc" 'required only when initializing an empty `/data` volume' \
+  "Docker documentation must limit the token to first initialization"
+require_fixed "$contract_doc" 'An initialized volume must restart without the variable.' \
+  "Docker documentation must require token-free initialized restarts"
+reject_extended "$contract_doc" 'QINGYU_INIT_TOKEN' \
+  "Docker documentation must reject the legacy initialization token name"
+require_fixed "$runtime_gate" 'server HTTP entrypoint and composition' \
+  "runtime gate must identify the remaining server HTTP composition blocker"
+reject_extended "$runtime_gate" 'initialization-token handling is also not implemented' \
+  "runtime gate must not claim the implemented launch token loader is missing"
+reject_extended "$runtime_gate" 'QINGYU_INIT_TOKEN' \
+  "runtime gate must reject the legacy initialization token name"
+
 set +e
 runtime_output=$("$runtime_gate" --status 2>&1)
 runtime_status=$?
 set -e
 [ "$runtime_status" -eq 78 ] \
-  || fail "runtime phase gate must exit 78 while the P2 server entrypoint is unavailable"
+  || fail "runtime phase gate must exit 78 while the server HTTP entrypoint is unavailable"
 case "$runtime_output" in
   *server-entrypoint-required*) ;;
   *) fail "runtime phase gate must identify the server-entrypoint-required blocker" ;;

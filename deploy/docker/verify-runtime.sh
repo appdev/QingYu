@@ -9,5 +9,5 @@ if [ "${1-}" != "--status" ]; then
 fi
 
 printf '%s\n' \
-  'BLOCKED(server-entrypoint-required): qingyu-kernel serve is currently a native stdin/loopback child, not a Docker server entrypoint; initialization-token handling is also not implemented.' >&2
+  'BLOCKED(server-entrypoint-required): qingyu-kernel serve is currently a native stdin/loopback child; the server HTTP entrypoint and composition are not implemented.' >&2
 exit 78
