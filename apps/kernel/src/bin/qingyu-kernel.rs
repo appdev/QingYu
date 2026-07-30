@@ -12,7 +12,7 @@ use std::{
 };
 
 use qingyu_kernel::{
-    api::{build_router, build_server_router, TransportPolicy},
+    api::{build_router, build_server_web_router, TransportPolicy},
     composition::compose_fixed_native_kernel,
     config::KernelConfig,
     host::native::{NativeHostControl, NativeHostReady, NativeHostStart},
@@ -21,6 +21,7 @@ use qingyu_kernel::{
 };
 
 const SERVER_LISTEN_ADDRESS: &str = "0.0.0.0:3210";
+const SERVER_WEB_ROOT: &str = "/opt/qingyu/web";
 const SERVER_SHUTDOWN_DEADLINE: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Eq, PartialEq)]
@@ -120,7 +121,7 @@ async fn run_fixed_server(public_origin: String, exact_host: String) -> Result<(
         .await
         .map_err(|_| ())?;
     let activation = composition.activate_api(environment).map_err(|_| ())?;
-    let router = build_server_router(activation, policy);
+    let router = build_server_web_router(activation, policy, SERVER_WEB_ROOT).map_err(|_| ())?;
     let listener = tokio::net::TcpListener::bind(SERVER_LISTEN_ADDRESS)
         .await
         .map_err(|_| ())?;
@@ -379,6 +380,14 @@ mod tests {
                 "https://other.example.com",
             ],
             vec!["qingyu-kernel", "server", "--bind", "127.0.0.1:0"],
+            vec![
+                "qingyu-kernel",
+                "server",
+                "--public-origin",
+                "https://notes.example.com",
+                "--web-root",
+                "/tmp/web",
+            ],
         ] {
             assert!(
                 parse_command(invalid.clone()).is_err(),

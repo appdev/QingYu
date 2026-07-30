@@ -1,6 +1,7 @@
 mod auth;
 mod resource_body;
 mod routes;
+mod web;
 pub mod ws;
 
 pub(crate) use auth::ServerApiHost;
@@ -10,8 +11,10 @@ pub use auth::{
 
 #[cfg(test)]
 mod server_auth_tests;
+#[cfg(test)]
+mod web_tests;
 
-use std::{fmt, net::SocketAddr, sync::Arc};
+use std::{fmt, net::SocketAddr, path::Path, sync::Arc};
 
 use axum::{
     body::Body,
@@ -110,26 +113,44 @@ pub(crate) struct ApiState {
     runtime: Arc<KernelRuntime>,
     policy: TransportPolicy,
     server: Option<ServerApiHost>,
+    web: Option<web::ServerWebAssets>,
 }
 
 pub fn build_router(runtime: Arc<KernelRuntime>, policy: TransportPolicy) -> Router {
-    build_router_with_server(runtime, policy, None)
+    build_router_with_server(runtime, policy, None, None)
 }
 
 pub fn build_server_router(activation: ServerApiActivation, policy: TransportPolicy) -> Router {
     let (runtime, server) = activation.into_parts();
-    build_router_with_server(runtime, policy, Some(server))
+    build_router_with_server(runtime, policy, Some(server), None)
+}
+
+pub fn build_server_web_router(
+    activation: ServerApiActivation,
+    policy: TransportPolicy,
+    web_root: impl AsRef<Path>,
+) -> Result<Router, InvalidServerWebAssets> {
+    let web = web::ServerWebAssets::open(web_root.as_ref())?;
+    let (runtime, server) = activation.into_parts();
+    Ok(build_router_with_server(
+        runtime,
+        policy,
+        Some(server),
+        Some(web),
+    ))
 }
 
 fn build_router_with_server(
     runtime: Arc<KernelRuntime>,
     policy: TransportPolicy,
     server: Option<ServerApiHost>,
+    web: Option<web::ServerWebAssets>,
 ) -> Router {
     let state = ApiState {
         runtime,
         policy,
         server,
+        web,
     };
     let router = if state.server.is_some() {
         routes::router().merge(auth::router())
@@ -137,7 +158,7 @@ fn build_router_with_server(
         routes::router()
     };
     router
-        .fallback(routes::not_found)
+        .fallback(web::fallback)
         .layer(middleware::from_fn_with_state(
             state.clone(),
             enforce_transport,
@@ -212,7 +233,8 @@ async fn enforce_transport(
                 }
             }
         }
-    } else if request.uri().path() != LIVE_PATH
+    } else if (state.web.is_none() || is_api_namespace_path(request.uri().path()))
+        && request.uri().path() != LIVE_PATH
         && !(state.server.is_some()
             && auth::is_public_route(request.uri().path(), request.method()))
     {
@@ -500,6 +522,21 @@ pub(crate) fn runtime(state: &ApiState) -> &Arc<KernelRuntime> {
 pub(crate) fn is_api_path(path: &str) -> bool {
     path == API_ROOT || path.starts_with(API_PREFIX)
 }
+
+pub(crate) fn is_api_namespace_path(path: &str) -> bool {
+    path == "/api" || path.starts_with("/api/")
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct InvalidServerWebAssets;
+
+impl fmt::Display for InvalidServerWebAssets {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("server Web assets are unavailable")
+    }
+}
+
+impl std::error::Error for InvalidServerWebAssets {}
 
 pub struct ApiDoc;
 
