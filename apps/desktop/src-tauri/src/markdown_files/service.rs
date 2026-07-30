@@ -15,7 +15,7 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 #[cfg(windows)]
-use qingyu_kernel::documents::CapabilityAtomicInstallPort;
+use qingyu_kernel::documents::service::CapabilityAtomicInstallPort;
 #[cfg(not(windows))]
 use qingyu_kernel::documents::{AtomicInstallMode, PinnedInstallSource};
 use qingyu_kernel::{
@@ -2009,7 +2009,6 @@ fn kernel_revision_for_retained_file(
         .map_err(|_| kernel_atomic_install_error())
 }
 
-#[cfg(unix)]
 fn kernel_trusted_file_metadata(metadata: &cap_std::fs::Metadata) -> bool {
     metadata.is_file() && !metadata.file_type().is_symlink() && kernel_link_count(metadata) == 1
 }
@@ -2017,6 +2016,16 @@ fn kernel_trusted_file_metadata(metadata: &cap_std::fs::Metadata) -> bool {
 #[cfg(unix)]
 fn kernel_link_count(metadata: &cap_std::fs::Metadata) -> u64 {
     MetadataExt::nlink(metadata)
+}
+
+#[cfg(windows)]
+fn kernel_link_count(metadata: &cap_std::fs::Metadata) -> u64 {
+    MetadataExt::nlink(metadata)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn kernel_link_count(_metadata: &cap_std::fs::Metadata) -> u64 {
+    1
 }
 
 #[cfg(not(windows))]
