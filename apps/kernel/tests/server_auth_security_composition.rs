@@ -4,8 +4,9 @@ use qingyu_kernel::{
     paths::KernelPaths,
     server::{
         AuthenticationFlow, AuthenticationRateLimiter, InitializationStatus, InitializationToken,
-        RateLimitPolicy, RequestIntent, ServerAuthenticationSecurity, ServerAuthenticationStore,
-        ServerOwnerInitializationError, SessionAuthorization, SessionPolicy, SessionStore,
+        RateLimitPolicy, RequestIntent, ServerAuthenticationError, ServerAuthenticationSecurity,
+        ServerAuthenticationStore, ServerOwnerInitializationError, SessionAuthorization,
+        SessionPolicy, SessionStore,
     },
 };
 use static_assertions::assert_not_impl_any;
@@ -40,15 +41,68 @@ fn security(
     authentication: Arc<ServerAuthenticationStore>,
     limiter: AuthenticationRateLimiter,
 ) -> ServerAuthenticationSecurity {
-    ServerAuthenticationSecurity::new(
+    ServerAuthenticationSecurity::claim(
         authentication,
         limiter,
         SessionStore::new(SessionPolicy::new(Duration::from_secs(300)).unwrap()),
     )
+    .unwrap()
 }
 
 fn token() -> InitializationToken {
     InitializationToken::from_secret(INITIALIZATION_TOKEN.to_owned()).unwrap()
+}
+
+#[test]
+fn the_authentication_store_allows_only_one_process_security_owner_claim() {
+    let temporary = tempdir().unwrap();
+    let paths = fixture_paths(temporary.path());
+    let authentication = Arc::new(ServerAuthenticationStore::open(paths.config_root()).unwrap());
+    let policy = rate_policy(3);
+    let first = ServerAuthenticationSecurity::claim(
+        Arc::clone(&authentication),
+        AuthenticationRateLimiter::new(policy, policy),
+        SessionStore::new(SessionPolicy::new(Duration::from_secs(300)).unwrap()),
+    )
+    .unwrap();
+
+    let second = ServerAuthenticationSecurity::claim(
+        Arc::clone(&authentication),
+        AuthenticationRateLimiter::new(policy, policy),
+        SessionStore::new(SessionPolicy::new(Duration::from_secs(300)).unwrap()),
+    );
+    assert!(matches!(second, Err(ServerAuthenticationError)));
+
+    drop(first);
+    let after_drop = ServerAuthenticationSecurity::claim(
+        authentication,
+        AuthenticationRateLimiter::new(policy, policy),
+        SessionStore::new(SessionPolicy::new(Duration::from_secs(300)).unwrap()),
+    );
+    assert!(matches!(after_drop, Err(ServerAuthenticationError)));
+}
+
+#[test]
+fn reopening_the_same_authentication_root_cannot_create_a_second_security_owner() {
+    let temporary = tempdir().unwrap();
+    let paths = fixture_paths(temporary.path());
+    let first_store = Arc::new(ServerAuthenticationStore::open(paths.config_root()).unwrap());
+    let second_store = Arc::new(ServerAuthenticationStore::open(paths.config_root()).unwrap());
+    let policy = rate_policy(3);
+    let first = ServerAuthenticationSecurity::claim(
+        first_store,
+        AuthenticationRateLimiter::new(policy, policy),
+        SessionStore::new(SessionPolicy::new(Duration::from_secs(300)).unwrap()),
+    )
+    .unwrap();
+
+    let second = ServerAuthenticationSecurity::claim(
+        second_store,
+        AuthenticationRateLimiter::new(policy, policy),
+        SessionStore::new(SessionPolicy::new(Duration::from_secs(300)).unwrap()),
+    );
+    assert!(matches!(second, Err(ServerAuthenticationError)));
+    drop(first);
 }
 
 #[test]
@@ -81,7 +135,13 @@ fn coordinators_derived_from_one_process_owner_share_sessions_and_revocation() {
             .unwrap(),
         SessionAuthorization::Authorized { .. }
     ));
-    assert!(second.logout(login.session().credential()).unwrap());
+    assert!(second
+        .logout(
+            login.session().credential(),
+            Some(login.session().csrf_token()),
+            Duration::from_secs(1),
+        )
+        .unwrap());
     assert_eq!(
         first
             .authorize(

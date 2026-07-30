@@ -50,11 +50,12 @@ fn coordinator(
     maximum_failures: u32,
 ) -> ServerAuthenticationCoordinator {
     let rate_policy = policy(maximum_failures);
-    ServerAuthenticationSecurity::new(
+    ServerAuthenticationSecurity::claim(
         authentication,
         AuthenticationRateLimiter::new(rate_policy, rate_policy),
         SessionStore::new(SessionPolicy::new(Duration::from_secs(300)).unwrap()),
     )
+    .unwrap()
     .authentication_coordinator()
 }
 
@@ -179,7 +180,13 @@ fn a_successful_password_verification_settles_before_session_issue_and_resets_it
     let login = coordinator
         .login(7, Duration::from_secs(1), OWNER_PASSWORD.to_owned())
         .unwrap();
-    assert!(coordinator.logout(login.session().credential()).unwrap());
+    assert!(coordinator
+        .logout(
+            login.session().credential(),
+            Some(login.session().csrf_token()),
+            Duration::from_secs(1),
+        )
+        .unwrap());
 
     assert_eq!(
         coordinator
@@ -194,11 +201,12 @@ fn successful_verification_is_settled_even_when_session_issue_later_fails() {
     let temporary = tempdir().unwrap();
     let paths = fixture_paths(temporary.path());
     let rate_policy = policy(2);
-    let coordinator = ServerAuthenticationSecurity::new(
+    let coordinator = ServerAuthenticationSecurity::claim(
         initialized_store(&paths),
         AuthenticationRateLimiter::new(rate_policy, rate_policy),
         SessionStore::new(SessionPolicy::new(Duration::MAX).unwrap()),
     )
+    .unwrap()
     .authentication_coordinator();
     assert_eq!(
         coordinator
@@ -232,11 +240,12 @@ fn global_in_flight_admission_happens_before_password_verification() {
     let held = limiter
         .begin_attempt(AuthenticationFlow::Login, 99, Duration::from_secs(0))
         .unwrap();
-    let coordinator = ServerAuthenticationSecurity::new(
+    let coordinator = ServerAuthenticationSecurity::claim(
         authentication,
         limiter,
         SessionStore::new(SessionPolicy::new(Duration::from_secs(300)).unwrap()),
     )
+    .unwrap()
     .authentication_coordinator();
 
     assert_eq!(
@@ -246,10 +255,19 @@ fn global_in_flight_admission_happens_before_password_verification() {
         ServerAuthenticationCoordinatorError::AtCapacity
     );
     drop(held);
-    coordinator
+    let login = coordinator
         .login(7, Duration::from_secs(2), OWNER_PASSWORD.to_owned())
         .unwrap();
-    assert_eq!(coordinator.logout_all().unwrap(), 1);
+    assert_eq!(
+        coordinator
+            .logout_all(
+                login.session().credential(),
+                Some(login.session().csrf_token()),
+                Duration::from_secs(2),
+            )
+            .unwrap(),
+        1
+    );
 }
 
 #[test]
@@ -567,8 +585,33 @@ fn logout_revokes_one_session_and_logout_all_revokes_every_remaining_session() {
         .login(7, Duration::from_secs(1), OWNER_PASSWORD.to_owned())
         .unwrap();
 
-    assert!(coordinator.logout(first.session().credential()).unwrap());
-    assert!(!coordinator.logout(first.session().credential()).unwrap());
+    assert_eq!(
+        coordinator
+            .logout(
+                first.session().credential(),
+                Some(second.session().csrf_token()),
+                Duration::from_secs(2),
+            )
+            .unwrap_err(),
+        ServerAuthenticationCoordinatorError::CsrfRejected
+    );
+    assert!(coordinator
+        .logout(
+            first.session().credential(),
+            Some(first.session().csrf_token()),
+            Duration::from_secs(2),
+        )
+        .unwrap());
+    assert_eq!(
+        coordinator
+            .logout(
+                first.session().credential(),
+                Some(first.session().csrf_token()),
+                Duration::from_secs(2),
+            )
+            .unwrap_err(),
+        ServerAuthenticationCoordinatorError::InvalidSession
+    );
     assert_eq!(
         coordinator
             .authorize(
@@ -580,8 +623,26 @@ fn logout_revokes_one_session_and_logout_all_revokes_every_remaining_session() {
             .unwrap(),
         SessionAuthorization::InvalidSession
     );
-    assert_eq!(coordinator.logout_all().unwrap(), 1);
-    assert_eq!(coordinator.logout_all().unwrap(), 0);
+    assert_eq!(
+        coordinator
+            .logout_all(
+                second.session().credential(),
+                Some(second.session().csrf_token()),
+                Duration::from_secs(2),
+            )
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        coordinator
+            .logout_all(
+                second.session().credential(),
+                Some(second.session().csrf_token()),
+                Duration::from_secs(2),
+            )
+            .unwrap_err(),
+        ServerAuthenticationCoordinatorError::InvalidSession
+    );
     assert_eq!(
         coordinator
             .authorize(

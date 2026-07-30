@@ -1,6 +1,10 @@
 use std::{
     fmt,
-    sync::atomic::{AtomicBool, Ordering},
+    path::PathBuf,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex, OnceLock, Weak,
+    },
 };
 
 use argon2::{
@@ -29,6 +33,10 @@ const ARGON2_ITERATIONS: u32 = 2;
 const ARGON2_PARALLELISM: u32 = 1;
 const ARGON2_OUTPUT_BYTES: usize = 32;
 const ARGON2_VERSION_NUMBER: u32 = 19;
+
+type ClaimedSecurityOwnerRoots = Vec<(PathBuf, Weak<()>)>;
+
+static CLAIMED_SECURITY_OWNER_ROOTS: OnceLock<Mutex<ClaimedSecurityOwnerRoots>> = OnceLock::new();
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ServerAuthenticationStatus {
@@ -106,6 +114,9 @@ pub struct ServerAuthenticationStore {
     store: DurableFileStore,
     target: StorageFileName,
     state_uncertain: AtomicBool,
+    security_owner_claimed: AtomicBool,
+    #[cfg(test)]
+    password_update_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
 impl ServerAuthenticationStore {
@@ -169,12 +180,45 @@ impl ServerAuthenticationStore {
             target: StorageFileName::parse(AUTHENTICATION_FILE)
                 .map_err(|_| ServerAuthenticationError)?,
             state_uncertain: AtomicBool::new(false),
+            security_owner_claimed: AtomicBool::new(false),
+            #[cfg(test)]
+            password_update_hook: Mutex::new(None),
         };
         let _state = this.read_snapshot()?;
         this.config_root
             .verify_held_directory()
             .map_err(|_| ServerAuthenticationError)?;
         Ok(this)
+    }
+
+    pub(super) fn claim_security_owner(&self) -> Result<Arc<()>, ServerAuthenticationError> {
+        self.security_owner_claimed
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .map_err(|_already_claimed| ServerAuthenticationError)?;
+        let mut claimed_roots = CLAIMED_SECURITY_OWNER_ROOTS
+            .get_or_init(|| Mutex::new(Vec::new()))
+            .lock()
+            .map_err(|_poisoned| ServerAuthenticationError)?;
+        let root = self.config_root.canonical_path();
+        claimed_roots.retain(|(_claimed, owner)| owner.strong_count() != 0);
+        if claimed_roots
+            .iter()
+            .any(|(claimed, _owner)| claimed == root)
+        {
+            return Err(ServerAuthenticationError);
+        }
+        let owner = Arc::new(());
+        claimed_roots.push((root.to_path_buf(), Arc::downgrade(&owner)));
+        Ok(owner)
+    }
+
+    pub(super) fn is_state_uncertain(&self) -> bool {
+        self.state_uncertain.load(Ordering::Acquire)
+    }
+
+    #[cfg(test)]
+    pub(super) fn set_password_update_test_hook(&self, hook: Arc<dyn Fn() + Send + Sync>) {
+        *self.password_update_hook.lock().unwrap() = Some(hook);
     }
 
     pub fn status(&self) -> Result<ServerAuthenticationStatus, ServerAuthenticationError> {
@@ -327,6 +371,10 @@ impl ServerAuthenticationStore {
         }
         if !valid_owner_password(new_password.as_bytes()) {
             return Err(OwnerPasswordUpdateError::InvalidNewPassword);
+        }
+        #[cfg(test)]
+        if let Some(hook) = self.password_update_hook.lock().unwrap().clone() {
+            hook();
         }
         self.replace_password_hash(&snapshot.revision, new_password.as_bytes())
     }

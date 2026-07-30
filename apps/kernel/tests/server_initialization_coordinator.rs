@@ -30,11 +30,12 @@ fn token(value: &str) -> InitializationToken {
 
 fn security_owner(authentication: Arc<ServerAuthenticationStore>) -> ServerAuthenticationSecurity {
     let policy = RateLimitPolicy::new(5, Duration::from_secs(60), Duration::from_secs(30)).unwrap();
-    ServerAuthenticationSecurity::new(
+    ServerAuthenticationSecurity::claim(
         authentication,
         AuthenticationRateLimiter::new(policy, policy),
         SessionStore::new(SessionPolicy::new(Duration::from_secs(300)).unwrap()),
     )
+    .unwrap()
 }
 
 #[test]
@@ -68,6 +69,7 @@ fn initialization_persists_before_the_process_gate_commits_and_survives_restart(
 
     drop(coordinator);
     drop(authentication);
+    drop(security);
     let reopened = Arc::new(ServerAuthenticationStore::open(paths.config_root()).unwrap());
     let restarted_security = security_owner(Arc::clone(&reopened));
     let mut restarted = restarted_security
@@ -100,20 +102,16 @@ fn uninitialized_state_requires_an_injected_token_but_initialized_state_does_not
     let temporary = tempdir().unwrap();
     let paths = fixture_paths(temporary.path());
     let authentication = Arc::new(ServerAuthenticationStore::open(paths.config_root()).unwrap());
+    let security = security_owner(Arc::clone(&authentication));
     assert_eq!(
-        security_owner(Arc::clone(&authentication))
-            .initialization_coordinator(None)
-            .unwrap_err(),
+        security.initialization_coordinator(None).unwrap_err(),
         ServerInitializationCoordinatorError::MissingInitializationToken
     );
 
     authentication
         .initialize_owner_password(OWNER_PASSWORD.to_owned())
         .unwrap();
-    let initialized_security = security_owner(authentication);
-    let initialized = initialized_security
-        .initialization_coordinator(None)
-        .unwrap();
+    let initialized = security.initialization_coordinator(None).unwrap();
     assert_eq!(initialized.status(), InitializationStatus::Initialized);
 }
 

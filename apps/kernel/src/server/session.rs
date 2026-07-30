@@ -138,7 +138,7 @@ impl SessionStore {
         }
     }
 
-    pub fn revoke(&mut self, credential: &str) -> bool {
+    pub(super) fn revoke(&mut self, credential: &str) -> bool {
         let mut revoked = false;
         self.sessions.retain(|session| {
             let matches = session.credential.matches(credential);
@@ -148,7 +148,7 @@ impl SessionStore {
         revoked
     }
 
-    pub fn revoke_all(&mut self) -> usize {
+    pub(super) fn revoke_all(&mut self) -> usize {
         let revoked = self.sessions.len();
         self.sessions.clear();
         revoked

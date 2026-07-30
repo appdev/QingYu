@@ -26,6 +26,10 @@ impl ServerInitializationCoordinator {
         initialization_token: Option<InitializationToken>,
         security: Arc<AuthenticationSecurityState>,
     ) -> Result<Self, ServerInitializationCoordinatorError> {
+        if authentication.is_state_uncertain() || !security.is_available() {
+            security.fail_closed();
+            return Err(ServerInitializationCoordinatorError::StateUnavailable);
+        }
         let status = authentication
             .status()
             .map_err(|_| ServerInitializationCoordinatorError::StateUnavailable)?;
@@ -45,6 +49,9 @@ impl ServerInitializationCoordinator {
     }
 
     pub fn status(&self) -> InitializationStatus {
+        if self.authentication.is_state_uncertain() {
+            self.security.fail_closed();
+        }
         if self.state_unavailable || !self.security.is_available() {
             InitializationStatus::Unavailable
         } else {
@@ -64,16 +71,18 @@ impl ServerInitializationCoordinator {
         candidate_token: &str,
         owner_password: String,
     ) -> Result<(), ServerOwnerInitializationError> {
+        if self.authentication.is_state_uncertain() {
+            self.security.fail_closed();
+        }
+        if self.state_unavailable || !self.security.is_available() {
+            return Err(ServerOwnerInitializationError::StateUnavailable);
+        }
         let authentication_permit = {
             let mut limiter = self.lock_rate_limiter()?;
             limiter
                 .begin_attempt(AuthenticationFlow::Initialization, client_id, now)
                 .map_err(map_rate_limit_decision)?
         };
-        if self.state_unavailable || !self.security.is_available() {
-            self.settle_unavailable_attempt(authentication_permit, now)?;
-            return Err(ServerOwnerInitializationError::StateUnavailable);
-        }
         let permit = match self.gate.begin(candidate_token) {
             Ok(permit) => permit,
             Err(InitializationError::InvalidToken) => {
@@ -92,11 +101,19 @@ impl ServerInitializationCoordinator {
             }
         };
         let security = Arc::clone(&self.security);
+        if !security.is_available() {
+            let abort = self.abort_or_fail(permit);
+            let settlement = self.settle_unavailable_attempt(authentication_permit, now);
+            abort?;
+            settlement?;
+            return Err(ServerOwnerInitializationError::StateUnavailable);
+        }
         let _password_lifecycle = match security.password_lifecycle.lock() {
             Ok(lifecycle) => lifecycle,
             Err(_poisoned) => {
                 let abort = self.abort_or_fail(permit);
                 let settlement = self.settle_unavailable_attempt(authentication_permit, now);
+                security.fail_closed();
                 abort?;
                 settlement?;
                 return Err(ServerOwnerInitializationError::StateUnavailable);
@@ -147,7 +164,9 @@ impl ServerInitializationCoordinator {
                         self.state_unavailable = true;
                     }
                 }
-                self.record_success(authentication_permit)?;
+                let settlement = self.record_success(authentication_permit);
+                self.security.fail_closed();
+                settlement?;
                 Err(ServerOwnerInitializationError::StateUncertain)
             }
         }
@@ -194,10 +213,13 @@ impl ServerInitializationCoordinator {
     fn lock_rate_limiter(
         &self,
     ) -> Result<MutexGuard<'_, AuthenticationRateLimiter>, ServerOwnerInitializationError> {
-        self.security
-            .rate_limiter
-            .lock()
-            .map_err(|_poisoned| ServerOwnerInitializationError::StateUnavailable)
+        if !self.security.is_available() {
+            return Err(ServerOwnerInitializationError::StateUnavailable);
+        }
+        self.security.rate_limiter.lock().map_err(|_poisoned| {
+            self.security.fail_closed();
+            ServerOwnerInitializationError::StateUnavailable
+        })
     }
 
     fn abort_or_fail(
@@ -372,7 +394,7 @@ mod tests {
                 .unwrap_err(),
             ServerOwnerInitializationError::StateUncertain
         );
-        assert_eq!(coordinator.status(), InitializationStatus::Initialized);
+        assert_eq!(coordinator.status(), InitializationStatus::Unavailable);
         assert!(authentication.status().is_err());
         assert!(authentication
             .verify_owner_password(OWNER_PASSWORD)

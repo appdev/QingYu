@@ -130,11 +130,12 @@ mod tests {
     fn security(authentication: Arc<ServerAuthenticationStore>) -> ServerAuthenticationSecurity {
         let policy =
             RateLimitPolicy::new(5, Duration::from_secs(60), Duration::from_secs(30)).unwrap();
-        ServerAuthenticationSecurity::new(
+        ServerAuthenticationSecurity::claim(
             authentication,
             AuthenticationRateLimiter::new(policy, policy),
             SessionStore::new(SessionPolicy::new(Duration::from_secs(300)).unwrap()),
         )
+        .unwrap()
     }
 
     #[test]

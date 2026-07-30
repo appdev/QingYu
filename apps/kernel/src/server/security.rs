@@ -1,8 +1,11 @@
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, Mutex,
+};
 
 use super::{
     AuthenticationRateLimiter, InitializationToken, ServerAuthenticationCoordinator,
-    ServerAuthenticationStore, ServerInitializationCoordinator,
+    ServerAuthenticationError, ServerAuthenticationStore, ServerInitializationCoordinator,
     ServerInitializationCoordinatorError, SessionStore,
 };
 
@@ -10,6 +13,7 @@ pub(crate) struct AuthenticationSecurityState {
     pub(crate) rate_limiter: Mutex<AuthenticationRateLimiter>,
     pub(crate) sessions: Mutex<SessionStore>,
     pub(crate) password_lifecycle: Mutex<()>,
+    failed_closed: AtomicBool,
 }
 
 impl AuthenticationSecurityState {
@@ -18,13 +22,25 @@ impl AuthenticationSecurityState {
             rate_limiter: Mutex::new(rate_limiter),
             sessions: Mutex::new(sessions),
             password_lifecycle: Mutex::new(()),
+            failed_closed: AtomicBool::new(false),
         }
     }
 
     pub(crate) fn is_available(&self) -> bool {
-        !self.rate_limiter.is_poisoned()
+        if self.failed_closed.load(Ordering::Acquire) {
+            return false;
+        }
+        let available = !self.rate_limiter.is_poisoned()
             && !self.sessions.is_poisoned()
-            && !self.password_lifecycle.is_poisoned()
+            && !self.password_lifecycle.is_poisoned();
+        if !available {
+            self.fail_closed();
+        }
+        available
+    }
+
+    pub(crate) fn fail_closed(&self) {
+        self.failed_closed.store(true, Ordering::Release);
     }
 }
 
@@ -37,18 +53,21 @@ impl AuthenticationSecurityState {
 pub struct ServerAuthenticationSecurity {
     authentication: Arc<ServerAuthenticationStore>,
     state: Arc<AuthenticationSecurityState>,
+    _owner_claim: Arc<()>,
 }
 
 impl ServerAuthenticationSecurity {
-    pub fn new(
+    pub fn claim(
         authentication: Arc<ServerAuthenticationStore>,
         rate_limiter: AuthenticationRateLimiter,
         sessions: SessionStore,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, ServerAuthenticationError> {
+        let owner_claim = authentication.claim_security_owner()?;
+        Ok(Self {
             authentication,
             state: Arc::new(AuthenticationSecurityState::new(rate_limiter, sessions)),
-        }
+            _owner_claim: owner_claim,
+        })
     }
 
     pub fn authentication_coordinator(&self) -> ServerAuthenticationCoordinator {
@@ -96,7 +115,8 @@ mod tests {
         paths::KernelPaths,
         server::{
             AuthenticationFlow, InitializationStatus, RateLimitDecision, RateLimitPolicy,
-            ServerAuthenticationCoordinatorError, ServerOwnerInitializationError, SessionPolicy,
+            RequestIntent, ServerAuthenticationCoordinatorError, ServerOwnerInitializationError,
+            SessionPolicy,
         },
     };
 
@@ -119,11 +139,12 @@ mod tests {
             Arc::new(ServerAuthenticationStore::open(paths.config_root()).unwrap());
         let policy =
             RateLimitPolicy::new(3, Duration::from_secs(60), Duration::from_secs(30)).unwrap();
-        ServerAuthenticationSecurity::new(
+        ServerAuthenticationSecurity::claim(
             authentication,
             AuthenticationRateLimiter::with_capacity(policy, policy, 8, maximum_in_flight).unwrap(),
             SessionStore::new(SessionPolicy::new(Duration::from_secs(300)).unwrap()),
         )
+        .unwrap()
     }
 
     fn initialization_token() -> InitializationToken {
@@ -136,6 +157,91 @@ mod tests {
             panic!("poison shared authentication security state");
         }));
         assert!(poisoned.is_err());
+    }
+
+    #[test]
+    fn poisoning_any_process_security_mutex_latches_every_public_authentication_entry_closed() {
+        for poisoned_component in 0..3 {
+            let temporary = tempdir().unwrap();
+            let security = security(temporary.path(), 2);
+            let mut initialization = security
+                .initialization_coordinator(Some(initialization_token()))
+                .unwrap();
+            initialization
+                .initialize(
+                    7,
+                    Duration::from_secs(0),
+                    INITIALIZATION_TOKEN,
+                    OWNER_PASSWORD.to_owned(),
+                )
+                .unwrap();
+            let authentication = security.authentication_coordinator();
+            let login = authentication
+                .login(7, Duration::from_secs(1), OWNER_PASSWORD.to_owned())
+                .unwrap();
+            match poisoned_component {
+                0 => poison(&security.state.rate_limiter),
+                1 => poison(&security.state.sessions),
+                2 => poison(&security.state.password_lifecycle),
+                _ => unreachable!(),
+            }
+
+            assert_eq!(initialization.status(), InitializationStatus::Unavailable);
+            assert_eq!(
+                authentication.authorize(
+                    login.session().credential(),
+                    None,
+                    RequestIntent::ReadOnly,
+                    Duration::from_secs(2),
+                ),
+                Err(ServerAuthenticationCoordinatorError::StateUnavailable)
+            );
+            assert_eq!(
+                authentication.logout(
+                    login.session().credential(),
+                    Some(login.session().csrf_token()),
+                    Duration::from_secs(2),
+                ),
+                Err(ServerAuthenticationCoordinatorError::StateUnavailable)
+            );
+            assert_eq!(
+                authentication.logout_all(
+                    login.session().credential(),
+                    Some(login.session().csrf_token()),
+                    Duration::from_secs(2),
+                ),
+                Err(ServerAuthenticationCoordinatorError::StateUnavailable)
+            );
+            assert_eq!(
+                authentication
+                    .change_password(
+                        login.session().credential(),
+                        Some(login.session().csrf_token()),
+                        Duration::from_secs(2),
+                        OWNER_PASSWORD.to_owned(),
+                        "new owner password material".to_owned(),
+                    )
+                    .unwrap_err(),
+                ServerAuthenticationCoordinatorError::StateUnavailable
+            );
+            assert_eq!(
+                authentication
+                    .login(7, Duration::from_secs(2), OWNER_PASSWORD.to_owned())
+                    .unwrap_err(),
+                ServerAuthenticationCoordinatorError::StateUnavailable
+            );
+            assert_eq!(
+                initialization
+                    .initialize(
+                        7,
+                        Duration::from_secs(2),
+                        INITIALIZATION_TOKEN,
+                        OWNER_PASSWORD.to_owned(),
+                    )
+                    .unwrap_err(),
+                ServerOwnerInitializationError::StateUnavailable
+            );
+        }
     }
 
     #[test]

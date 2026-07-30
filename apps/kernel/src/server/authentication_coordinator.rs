@@ -88,6 +88,7 @@ impl ServerAuthenticationCoordinator {
         now: Duration,
         password: String,
     ) -> Result<ServerLogin, ServerAuthenticationCoordinatorError> {
+        self.ensure_security_available()?;
         let permit = {
             let mut limiter = self.lock_rate_limiter()?;
             limiter
@@ -124,7 +125,9 @@ impl ServerAuthenticationCoordinator {
                                 Err(ServerAuthenticationCoordinatorError::InvalidCredentials)
                             }
                             OwnerPasswordUpdateError::StateUncertain => {
-                                self.record_success(permit)?;
+                                let settlement = self.record_success(permit);
+                                self.security.fail_closed();
+                                settlement?;
                                 Err(ServerAuthenticationCoordinatorError::StateUncertain)
                             }
                             OwnerPasswordUpdateError::InvalidNewPassword
@@ -148,7 +151,12 @@ impl ServerAuthenticationCoordinator {
             }
             Err(_unavailable) => {
                 drop(password);
-                self.settle_unavailable_attempt(permit, now)?;
+                let uncertain = self.authentication.is_state_uncertain();
+                let settlement = self.settle_unavailable_attempt(permit, now);
+                if uncertain {
+                    self.security.fail_closed();
+                }
+                settlement?;
                 Err(ServerAuthenticationCoordinatorError::StateUnavailable)
             }
         }
@@ -170,18 +178,12 @@ impl ServerAuthenticationCoordinator {
         current_password: String,
         new_password: String,
     ) -> Result<usize, ServerAuthenticationCoordinatorError> {
+        self.ensure_security_available()?;
         let current_password = Zeroizing::new(current_password);
         let new_password = Zeroizing::new(new_password);
-        let _password_lifecycle = self.lock_password_lifecycle()?;
-        let mut sessions = self.lock_sessions()?;
-        match sessions.authorize(credential, csrf_token, RequestIntent::StateChanging, now) {
-            SessionAuthorization::Authorized { .. } => {}
-            SessionAuthorization::InvalidSession => {
-                return Err(ServerAuthenticationCoordinatorError::InvalidSession);
-            }
-            SessionAuthorization::CsrfRejected => {
-                return Err(ServerAuthenticationCoordinatorError::CsrfRejected);
-            }
+        {
+            let mut sessions = self.lock_sessions()?;
+            authorize_state_change(&mut sessions, credential, csrf_token, now)?;
         }
         let permit = {
             let mut limiter = self.lock_rate_limiter()?;
@@ -193,13 +195,21 @@ impl ServerAuthenticationCoordinator {
                 )
                 .map_err(map_rate_limit_decision)?
         };
+        let _password_lifecycle = self.lock_password_lifecycle()?;
+        {
+            let mut sessions = self.lock_sessions()?;
+            if let Err(error) = authorize_state_change(&mut sessions, credential, csrf_token, now) {
+                drop(permit);
+                return Err(error);
+            }
+        }
         let update = self.authentication.change_owner_password(
             current_password.as_str().to_owned(),
             new_password.as_str().to_owned(),
         );
         match update {
             Ok(()) => {
-                let revoked = sessions.revoke_all();
+                let revoked = self.lock_sessions()?.revoke_all();
                 self.record_success(permit)?;
                 Ok(revoked)
             }
@@ -215,8 +225,15 @@ impl ServerAuthenticationCoordinator {
                 error @ (OwnerPasswordUpdateError::StateUnavailable
                 | OwnerPasswordUpdateError::StateUncertain),
             ) => {
-                sessions.revoke_all();
-                self.settle_unavailable_attempt(permit, now)?;
+                let revocation = self
+                    .lock_sessions()
+                    .map(|mut sessions| sessions.revoke_all());
+                let settlement = self.settle_unavailable_attempt(permit, now);
+                if error == OwnerPasswordUpdateError::StateUncertain {
+                    self.security.fail_closed();
+                }
+                revocation?;
+                settlement?;
                 Err(map_password_update_error(error))
             }
         }
@@ -229,17 +246,45 @@ impl ServerAuthenticationCoordinator {
         intent: RequestIntent,
         now: Duration,
     ) -> Result<SessionAuthorization, ServerAuthenticationCoordinatorError> {
+        self.ensure_security_available()?;
         Ok(self
             .lock_sessions()?
             .authorize(credential, csrf_token, intent, now))
     }
 
-    pub fn logout(&self, credential: &str) -> Result<bool, ServerAuthenticationCoordinatorError> {
-        Ok(self.lock_sessions()?.revoke(credential))
+    pub fn logout(
+        &self,
+        credential: &str,
+        csrf_token: Option<&str>,
+        now: Duration,
+    ) -> Result<bool, ServerAuthenticationCoordinatorError> {
+        self.ensure_security_available()?;
+        let mut sessions = self.lock_sessions()?;
+        authorize_state_change(&mut sessions, credential, csrf_token, now)?;
+        Ok(sessions.revoke(credential))
     }
 
-    pub fn logout_all(&self) -> Result<usize, ServerAuthenticationCoordinatorError> {
-        Ok(self.lock_sessions()?.revoke_all())
+    pub fn logout_all(
+        &self,
+        credential: &str,
+        csrf_token: Option<&str>,
+        now: Duration,
+    ) -> Result<usize, ServerAuthenticationCoordinatorError> {
+        self.ensure_security_available()?;
+        let mut sessions = self.lock_sessions()?;
+        authorize_state_change(&mut sessions, credential, csrf_token, now)?;
+        Ok(sessions.revoke_all())
+    }
+
+    fn ensure_security_available(&self) -> Result<(), ServerAuthenticationCoordinatorError> {
+        if self.authentication.is_state_uncertain() {
+            self.security.fail_closed();
+        }
+        if self.security.is_available() {
+            Ok(())
+        } else {
+            Err(ServerAuthenticationCoordinatorError::StateUnavailable)
+        }
     }
 
     fn record_failure(
@@ -286,28 +331,57 @@ impl ServerAuthenticationCoordinator {
         &self,
     ) -> Result<MutexGuard<'_, AuthenticationRateLimiter>, ServerAuthenticationCoordinatorError>
     {
-        self.security
-            .rate_limiter
-            .lock()
-            .map_err(|_poisoned| ServerAuthenticationCoordinatorError::StateUnavailable)
+        if !self.security.is_available() {
+            return Err(ServerAuthenticationCoordinatorError::StateUnavailable);
+        }
+        self.security.rate_limiter.lock().map_err(|_poisoned| {
+            self.security.fail_closed();
+            ServerAuthenticationCoordinatorError::StateUnavailable
+        })
     }
 
     fn lock_sessions(
         &self,
     ) -> Result<MutexGuard<'_, SessionStore>, ServerAuthenticationCoordinatorError> {
-        self.security
-            .sessions
-            .lock()
-            .map_err(|_poisoned| ServerAuthenticationCoordinatorError::StateUnavailable)
+        if !self.security.is_available() {
+            return Err(ServerAuthenticationCoordinatorError::StateUnavailable);
+        }
+        self.security.sessions.lock().map_err(|_poisoned| {
+            self.security.fail_closed();
+            ServerAuthenticationCoordinatorError::StateUnavailable
+        })
     }
 
     fn lock_password_lifecycle(
         &self,
     ) -> Result<MutexGuard<'_, ()>, ServerAuthenticationCoordinatorError> {
+        if !self.security.is_available() {
+            return Err(ServerAuthenticationCoordinatorError::StateUnavailable);
+        }
         self.security
             .password_lifecycle
             .lock()
-            .map_err(|_poisoned| ServerAuthenticationCoordinatorError::StateUnavailable)
+            .map_err(|_poisoned| {
+                self.security.fail_closed();
+                ServerAuthenticationCoordinatorError::StateUnavailable
+            })
+    }
+}
+
+fn authorize_state_change(
+    sessions: &mut SessionStore,
+    credential: &str,
+    csrf_token: Option<&str>,
+    now: Duration,
+) -> Result<(), ServerAuthenticationCoordinatorError> {
+    match sessions.authorize(credential, csrf_token, RequestIntent::StateChanging, now) {
+        SessionAuthorization::Authorized { .. } => Ok(()),
+        SessionAuthorization::InvalidSession => {
+            Err(ServerAuthenticationCoordinatorError::InvalidSession)
+        }
+        SessionAuthorization::CsrfRejected => {
+            Err(ServerAuthenticationCoordinatorError::CsrfRejected)
+        }
     }
 }
 
@@ -391,8 +465,9 @@ mod tests {
         fs,
         panic::{catch_unwind, AssertUnwindSafe},
         path::Path,
-        sync::{Arc, Mutex},
-        time::Duration,
+        sync::{mpsc, Arc, Mutex},
+        thread,
+        time::{Duration, Instant},
     };
 
     use tempfile::tempdir;
@@ -440,6 +515,305 @@ mod tests {
         assert!(poisoned.is_err());
     }
 
+    fn wait_for_full_admission(coordinator: &ServerAuthenticationCoordinator) {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < deadline {
+            let decision = coordinator
+                .security
+                .rate_limiter
+                .lock()
+                .unwrap()
+                .begin_attempt(AuthenticationFlow::Login, 99, Duration::from_secs(1));
+            match decision {
+                Err(RateLimitDecision::AtCapacity) => return,
+                Ok(probe) => drop(probe),
+                Err(other) => panic!("unexpected admission decision: {other:?}"),
+            }
+            thread::yield_now();
+        }
+        panic!("authentication attempt never acquired the only admission permit");
+    }
+
+    #[test]
+    fn password_change_holds_the_shared_admission_permit_while_waiting_for_lifecycle() {
+        let temporary = tempdir().unwrap();
+        let paths = fixture_paths(temporary.path());
+        let authentication =
+            Arc::new(ServerAuthenticationStore::open(paths.config_root()).unwrap());
+        authentication
+            .initialize_owner_password(OWNER_PASSWORD.to_owned())
+            .unwrap();
+        let policy =
+            RateLimitPolicy::new(3, Duration::from_secs(60), Duration::from_secs(30)).unwrap();
+        let coordinator = Arc::new(ServerAuthenticationCoordinator::new(
+            authentication,
+            AuthenticationRateLimiter::with_capacity(policy, policy, 8, 1).unwrap(),
+            SessionStore::new(SessionPolicy::new(Duration::from_secs(300)).unwrap()),
+        ));
+        let login = coordinator
+            .login(7, Duration::from_secs(0), OWNER_PASSWORD.to_owned())
+            .unwrap();
+        let credential = login.session().credential().to_owned();
+        let csrf = login.session().csrf_token().to_owned();
+        let lifecycle = coordinator.security.password_lifecycle.lock().unwrap();
+        let worker_coordinator = Arc::clone(&coordinator);
+        let worker = thread::spawn(move || {
+            worker_coordinator.change_password(
+                &credential,
+                Some(&csrf),
+                Duration::from_secs(1),
+                OWNER_PASSWORD.to_owned(),
+                "new owner password material".to_owned(),
+            )
+        });
+
+        wait_for_full_admission(&coordinator);
+        drop(lifecycle);
+        let result = worker.join().unwrap();
+
+        assert_eq!(result.unwrap(), 1);
+    }
+
+    #[test]
+    fn secondary_session_rejection_settles_the_password_change_admission_permit() {
+        let temporary = tempdir().unwrap();
+        let paths = fixture_paths(temporary.path());
+        let authentication =
+            Arc::new(ServerAuthenticationStore::open(paths.config_root()).unwrap());
+        authentication
+            .initialize_owner_password(OWNER_PASSWORD.to_owned())
+            .unwrap();
+        let policy =
+            RateLimitPolicy::new(3, Duration::from_secs(60), Duration::from_secs(30)).unwrap();
+        let coordinator = Arc::new(ServerAuthenticationCoordinator::new(
+            authentication,
+            AuthenticationRateLimiter::with_capacity(policy, policy, 8, 1).unwrap(),
+            SessionStore::new(SessionPolicy::new(Duration::from_secs(300)).unwrap()),
+        ));
+        let login = coordinator
+            .login(7, Duration::from_secs(0), OWNER_PASSWORD.to_owned())
+            .unwrap();
+        let credential = login.session().credential().to_owned();
+        let csrf = login.session().csrf_token().to_owned();
+        let lifecycle = coordinator.security.password_lifecycle.lock().unwrap();
+        let worker_coordinator = Arc::clone(&coordinator);
+        let worker_credential = credential.clone();
+        let worker_csrf = csrf.clone();
+        let worker = thread::spawn(move || {
+            worker_coordinator.change_password(
+                &worker_credential,
+                Some(&worker_csrf),
+                Duration::from_secs(1),
+                OWNER_PASSWORD.to_owned(),
+                "new owner password material".to_owned(),
+            )
+        });
+        wait_for_full_admission(&coordinator);
+        coordinator
+            .logout(&credential, Some(&csrf), Duration::from_secs(2))
+            .unwrap();
+        drop(lifecycle);
+
+        assert_eq!(
+            worker.join().unwrap().unwrap_err(),
+            ServerAuthenticationCoordinatorError::InvalidSession
+        );
+        coordinator
+            .login(7, Duration::from_secs(3), OWNER_PASSWORD.to_owned())
+            .unwrap();
+    }
+
+    #[test]
+    fn poisoned_secondary_session_lock_settles_the_password_change_admission_permit() {
+        let temporary = tempdir().unwrap();
+        let paths = fixture_paths(temporary.path());
+        let authentication =
+            Arc::new(ServerAuthenticationStore::open(paths.config_root()).unwrap());
+        authentication
+            .initialize_owner_password(OWNER_PASSWORD.to_owned())
+            .unwrap();
+        let policy =
+            RateLimitPolicy::new(3, Duration::from_secs(60), Duration::from_secs(30)).unwrap();
+        let coordinator = Arc::new(ServerAuthenticationCoordinator::new(
+            authentication,
+            AuthenticationRateLimiter::with_capacity(policy, policy, 8, 1).unwrap(),
+            SessionStore::new(SessionPolicy::new(Duration::from_secs(300)).unwrap()),
+        ));
+        let login = coordinator
+            .login(7, Duration::from_secs(0), OWNER_PASSWORD.to_owned())
+            .unwrap();
+        let credential = login.session().credential().to_owned();
+        let csrf = login.session().csrf_token().to_owned();
+        let lifecycle = coordinator.security.password_lifecycle.lock().unwrap();
+        let worker_coordinator = Arc::clone(&coordinator);
+        let worker = thread::spawn(move || {
+            worker_coordinator.change_password(
+                &credential,
+                Some(&csrf),
+                Duration::from_secs(1),
+                OWNER_PASSWORD.to_owned(),
+                "new owner password material".to_owned(),
+            )
+        });
+        wait_for_full_admission(&coordinator);
+        poison(&coordinator.security.sessions);
+        drop(lifecycle);
+
+        assert_eq!(
+            worker.join().unwrap().unwrap_err(),
+            ServerAuthenticationCoordinatorError::StateUnavailable
+        );
+        let probe = coordinator
+            .security
+            .rate_limiter
+            .lock()
+            .unwrap()
+            .begin_attempt(AuthenticationFlow::Login, 100, Duration::from_secs(2))
+            .expect("failed secondary lock must release the admission permit");
+        drop(probe);
+    }
+
+    #[test]
+    fn poisoned_lifecycle_wait_settles_the_password_change_admission_permit() {
+        let temporary = tempdir().unwrap();
+        let paths = fixture_paths(temporary.path());
+        let authentication =
+            Arc::new(ServerAuthenticationStore::open(paths.config_root()).unwrap());
+        authentication
+            .initialize_owner_password(OWNER_PASSWORD.to_owned())
+            .unwrap();
+        let policy =
+            RateLimitPolicy::new(3, Duration::from_secs(60), Duration::from_secs(30)).unwrap();
+        let coordinator = Arc::new(ServerAuthenticationCoordinator::new(
+            authentication,
+            AuthenticationRateLimiter::with_capacity(policy, policy, 8, 1).unwrap(),
+            SessionStore::new(SessionPolicy::new(Duration::from_secs(300)).unwrap()),
+        ));
+        let login = coordinator
+            .login(7, Duration::from_secs(0), OWNER_PASSWORD.to_owned())
+            .unwrap();
+        let credential = login.session().credential().to_owned();
+        let csrf = login.session().csrf_token().to_owned();
+        let lifecycle = coordinator.security.password_lifecycle.lock().unwrap();
+        let worker_coordinator = Arc::clone(&coordinator);
+        let worker = thread::spawn(move || {
+            worker_coordinator.change_password(
+                &credential,
+                Some(&csrf),
+                Duration::from_secs(1),
+                OWNER_PASSWORD.to_owned(),
+                "new owner password material".to_owned(),
+            )
+        });
+        wait_for_full_admission(&coordinator);
+        let poisoned = catch_unwind(AssertUnwindSafe(move || {
+            let _lifecycle = lifecycle;
+            panic!("poison lifecycle while password change owns admission");
+        }));
+        assert!(poisoned.is_err());
+
+        assert_eq!(
+            worker.join().unwrap().unwrap_err(),
+            ServerAuthenticationCoordinatorError::StateUnavailable
+        );
+        let probe = coordinator
+            .security
+            .rate_limiter
+            .lock()
+            .unwrap()
+            .begin_attempt(AuthenticationFlow::Login, 100, Duration::from_secs(2))
+            .expect("failed lifecycle wait must release the admission permit");
+        drop(probe);
+    }
+
+    #[test]
+    fn password_hashing_does_not_hold_the_session_mutex_for_authorize_or_logout() {
+        let temporary = tempdir().unwrap();
+        let paths = fixture_paths(temporary.path());
+        let authentication =
+            Arc::new(ServerAuthenticationStore::open(paths.config_root()).unwrap());
+        authentication
+            .initialize_owner_password(OWNER_PASSWORD.to_owned())
+            .unwrap();
+        let (hash_entered_sender, hash_entered_receiver) = mpsc::sync_channel(1);
+        let (hash_release_sender, hash_release_receiver) = mpsc::sync_channel(1);
+        let hash_release_receiver = Mutex::new(hash_release_receiver);
+        authentication.set_password_update_test_hook(Arc::new(move || {
+            hash_entered_sender.send(()).unwrap();
+            hash_release_receiver.lock().unwrap().recv().unwrap();
+        }));
+        let policy =
+            RateLimitPolicy::new(3, Duration::from_secs(60), Duration::from_secs(30)).unwrap();
+        let coordinator = Arc::new(ServerAuthenticationCoordinator::new(
+            authentication,
+            AuthenticationRateLimiter::new(policy, policy),
+            SessionStore::new(SessionPolicy::new(Duration::from_secs(300)).unwrap()),
+        ));
+        let login = coordinator
+            .login(7, Duration::from_secs(0), OWNER_PASSWORD.to_owned())
+            .unwrap();
+        let credential = login.session().credential().to_owned();
+        let csrf = login.session().csrf_token().to_owned();
+
+        let change_coordinator = Arc::clone(&coordinator);
+        let change_credential = credential.clone();
+        let change_csrf = csrf.clone();
+        let change_worker = thread::spawn(move || {
+            change_coordinator.change_password(
+                &change_credential,
+                Some(&change_csrf),
+                Duration::from_secs(1),
+                OWNER_PASSWORD.to_owned(),
+                "new owner password material".to_owned(),
+            )
+        });
+        hash_entered_receiver
+            .recv_timeout(Duration::from_secs(5))
+            .expect("password update never reached the hashing boundary");
+
+        let (authorize_sender, authorize_receiver) = mpsc::sync_channel(1);
+        let authorize_coordinator = Arc::clone(&coordinator);
+        let authorize_credential = credential.clone();
+        let authorize_worker = thread::spawn(move || {
+            authorize_sender
+                .send(authorize_coordinator.authorize(
+                    &authorize_credential,
+                    None,
+                    RequestIntent::ReadOnly,
+                    Duration::from_secs(2),
+                ))
+                .unwrap();
+        });
+        let (logout_sender, logout_receiver) = mpsc::sync_channel(1);
+        let logout_coordinator = Arc::clone(&coordinator);
+        let logout_csrf = csrf;
+        let logout_worker = thread::spawn(move || {
+            logout_sender
+                .send(logout_coordinator.logout(
+                    &credential,
+                    Some(&logout_csrf),
+                    Duration::from_secs(2),
+                ))
+                .unwrap();
+        });
+
+        let authorize_early = authorize_receiver.recv_timeout(Duration::from_secs(1));
+        let logout_early = logout_receiver.recv_timeout(Duration::from_secs(1));
+        hash_release_sender.send(()).unwrap();
+        change_worker.join().unwrap().unwrap();
+        authorize_worker.join().unwrap();
+        logout_worker.join().unwrap();
+
+        assert!(
+            authorize_early.is_ok(),
+            "authorize waited on the hashing operation"
+        );
+        assert!(
+            logout_early.is_ok(),
+            "logout waited on the hashing operation"
+        );
+    }
+
     #[test]
     fn poisoned_rate_limiter_fails_closed_before_password_verification() {
         let temporary = tempdir().unwrap();
@@ -476,17 +850,25 @@ mod tests {
             Err(ServerAuthenticationCoordinatorError::StateUnavailable)
         );
         assert_eq!(
-            coordinator.logout("session-credential"),
+            coordinator.logout(
+                "session-credential",
+                Some("csrf-token"),
+                Duration::from_secs(1),
+            ),
             Err(ServerAuthenticationCoordinatorError::StateUnavailable)
         );
         assert_eq!(
-            coordinator.logout_all(),
+            coordinator.logout_all(
+                "session-credential",
+                Some("csrf-token"),
+                Duration::from_secs(1),
+            ),
             Err(ServerAuthenticationCoordinatorError::StateUnavailable)
         );
     }
 
     #[test]
-    fn poisoned_password_lifecycle_fails_closed_and_settles_the_login_attempt() {
+    fn poisoned_password_lifecycle_latches_every_later_login_closed() {
         let temporary = tempdir().unwrap();
         let coordinator = coordinator(temporary.path());
         poison(&coordinator.security.password_lifecycle);
@@ -507,9 +889,7 @@ mod tests {
             coordinator
                 .login(7, Duration::from_secs(2), OWNER_PASSWORD.to_owned())
                 .unwrap_err(),
-            ServerAuthenticationCoordinatorError::RateLimited {
-                retry_after: Duration::from_secs(29),
-            }
+            ServerAuthenticationCoordinatorError::StateUnavailable
         );
     }
 
@@ -588,8 +968,8 @@ mod tests {
                     RequestIntent::ReadOnly,
                     Duration::from_secs(3),
                 )
-                .unwrap(),
-            SessionAuthorization::InvalidSession
+                .unwrap_err(),
+            ServerAuthenticationCoordinatorError::StateUnavailable
         );
         assert_eq!(
             coordinator
@@ -729,7 +1109,16 @@ mod tests {
                 .unwrap_err(),
             ServerAuthenticationCoordinatorError::StateUncertain
         );
-        assert_eq!(coordinator.logout_all().unwrap(), 0);
+        assert_eq!(
+            coordinator
+                .logout_all(
+                    "session-credential",
+                    Some("csrf-token"),
+                    Duration::from_secs(2),
+                )
+                .unwrap_err(),
+            ServerAuthenticationCoordinatorError::StateUnavailable
+        );
         assert_eq!(
             coordinator
                 .login(

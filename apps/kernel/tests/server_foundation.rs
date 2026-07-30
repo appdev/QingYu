@@ -332,28 +332,6 @@ fn issuing_a_session_prunes_expired_entries_before_applying_capacity() {
 }
 
 #[test]
-fn sessions_can_be_revoked_individually_or_all_at_once() {
-    let policy = SessionPolicy::with_capacity(Duration::from_secs(30), 2).unwrap();
-    let mut sessions = SessionStore::new(policy);
-    let first = sessions.issue(Duration::from_secs(0)).unwrap();
-    let second = sessions.issue(Duration::from_secs(0)).unwrap();
-
-    assert!(sessions.revoke(first.credential()));
-    assert!(!sessions.revoke(first.credential()));
-    assert_eq!(sessions.revoke_all(), 1);
-    assert_eq!(sessions.revoke_all(), 0);
-    assert_eq!(
-        sessions.authorize(
-            second.credential(),
-            None,
-            RequestIntent::ReadOnly,
-            Duration::from_secs(1),
-        ),
-        SessionAuthorization::InvalidSession
-    );
-}
-
-#[test]
 fn zero_session_capacity_is_rejected() {
     assert!(SessionPolicy::with_capacity(Duration::from_secs(30), 0).is_err());
 }
