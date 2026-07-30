@@ -5,7 +5,10 @@
 //! publication remains unreachable until every legacy workspace writer is
 //! disabled in the same atomic cutover.
 
-use std::{fmt, sync::Mutex};
+use std::{
+    fmt,
+    sync::{Arc, Mutex},
+};
 
 use qingyu_kernel::contract::InstanceId;
 use serde::Serializer;
@@ -22,6 +25,7 @@ pub(crate) struct NativeKernelBootstrap(NativeKernelBootstrapRepresentation);
 #[serde(untagged)]
 enum NativeKernelBootstrapRepresentation {
     Dormant(NativeKernelDormantBootstrap),
+    Lifecycle(NativeKernelLifecycleBootstrap),
     #[cfg_attr(not(test), allow(dead_code))]
     Ready(NativeKernelReadyBootstrap),
 }
@@ -33,12 +37,23 @@ struct NativeKernelDormantBootstrap {
     bootstrap_version: u16,
 }
 
-#[derive(serde::Serialize)]
+#[derive(Clone, Copy, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 enum NativeKernelBootstrapStatus {
     Dormant,
+    Starting,
+    Retrying,
     #[cfg_attr(not(test), allow(dead_code))]
     Ready,
+    Failed,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NativeKernelLifecycleBootstrap {
+    status: NativeKernelBootstrapStatus,
+    bootstrap_version: u16,
+    generation: NativeKernelBootstrapGeneration,
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -106,117 +121,244 @@ impl NativeKernelBootstrap {
             },
         ))
     }
+
+    fn lifecycle(status: NativeKernelBootstrapStatus, generation: u64) -> Self {
+        Self(NativeKernelBootstrapRepresentation::Lifecycle(
+            NativeKernelLifecycleBootstrap {
+                status,
+                bootstrap_version: NATIVE_KERNEL_BOOTSTRAP_VERSION,
+                generation: NativeKernelBootstrapGeneration(generation),
+            },
+        ))
+    }
 }
 
+#[derive(Clone)]
 pub(crate) struct NativeKernelBootstrapOwner {
+    shared: Arc<NativeKernelBootstrapShared>,
+}
+
+struct NativeKernelBootstrapShared {
     state: Mutex<NativeKernelBootstrapState>,
 }
 
 struct NativeKernelBootstrapState {
-    access: Option<NativeKernelAccess>,
+    publication: NativeKernelBootstrapPublication,
     last_generation: u64,
 }
 
+enum NativeKernelBootstrapPublication {
+    Dormant,
+    Lifecycle {
+        status: NativeKernelBootstrapStatus,
+        generation: u64,
+    },
+    Ready(NativeKernelAccess),
+}
+
+impl NativeKernelBootstrapPublication {
+    fn generation(&self) -> Option<u64> {
+        match self {
+            Self::Dormant => None,
+            Self::Lifecycle { generation, .. } => Some(*generation),
+            Self::Ready(access) => Some(access.endpoint.generation),
+        }
+    }
+
+    fn revoke_access(&mut self) {
+        if let Self::Ready(access) = self {
+            access.credential.revoke();
+        }
+    }
+}
+
 impl NativeKernelBootstrapOwner {
-    pub(crate) const fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
-            state: Mutex::new(NativeKernelBootstrapState {
-                access: None,
-                last_generation: 0,
+            shared: Arc::new(NativeKernelBootstrapShared {
+                state: Mutex::new(NativeKernelBootstrapState {
+                    publication: NativeKernelBootstrapPublication::Dormant,
+                    last_generation: 0,
+                }),
             }),
         }
     }
 
     pub(crate) fn read(&self) -> Result<NativeKernelBootstrap, String> {
-        let access = self
+        let state = self
+            .shared
             .state
             .lock()
-            .map_err(|_| bootstrap_unavailable())?
-            .access
-            .clone();
-        Ok(access.map_or_else(NativeKernelBootstrap::dormant, NativeKernelBootstrap::ready))
+            .map_err(|_| bootstrap_unavailable())?;
+        Ok(match &state.publication {
+            NativeKernelBootstrapPublication::Dormant => NativeKernelBootstrap::dormant(),
+            NativeKernelBootstrapPublication::Lifecycle { status, generation } => {
+                NativeKernelBootstrap::lifecycle(*status, *generation)
+            }
+            NativeKernelBootstrapPublication::Ready(access) => {
+                NativeKernelBootstrap::ready(access.clone())
+            }
+        })
+    }
+
+    pub(crate) fn last_generation(&self) -> Result<u64, String> {
+        self.shared
+            .state
+            .lock()
+            .map(|state| state.last_generation)
+            .map_err(|_| bootstrap_unavailable())
     }
 
     #[allow(dead_code)] // Published only by the future atomic runtime-owner cutover.
     pub(crate) fn publish(&self, access: NativeKernelAccess) -> Result<(), String> {
-        let mut state = match self.state.lock() {
+        let mut state = match self.shared.state.lock() {
             Ok(state) => state,
             Err(poisoned) => {
                 access.credential.revoke();
-                if let Some(previous) = poisoned.into_inner().access.take() {
-                    previous.credential.revoke();
-                }
+                poisoned.into_inner().publication.revoke_access();
                 return Err(bootstrap_unavailable());
             }
         };
-        if state.last_generation >= access.endpoint.generation {
+        let generation = access.endpoint.generation;
+        let same_generation_transition = state.last_generation == generation
+            && matches!(
+                state.publication,
+                NativeKernelBootstrapPublication::Lifecycle {
+                    status: NativeKernelBootstrapStatus::Starting
+                        | NativeKernelBootstrapStatus::Retrying,
+                    generation: current,
+                } if current == generation
+            );
+        if state.last_generation > generation
+            || (state.last_generation == generation && !same_generation_transition)
+        {
             access.credential.revoke();
             return Err(bootstrap_unavailable());
         }
-        state.last_generation = access.endpoint.generation;
-        if let Some(previous) = state.access.replace(access) {
-            previous.credential.revoke();
-        }
+        state.last_generation = generation;
+        state.publication.revoke_access();
+        state.publication = NativeKernelBootstrapPublication::Ready(access);
         Ok(())
+    }
+
+    pub(crate) fn begin_start(&self, generation: u64) -> Result<(), String> {
+        self.begin_lifecycle(NativeKernelBootstrapStatus::Starting, generation)
+    }
+
+    pub(crate) fn begin_retry(&self, generation: u64) -> Result<(), String> {
+        self.begin_lifecycle(NativeKernelBootstrapStatus::Retrying, generation)
+    }
+
+    pub(crate) fn continue_start(&self, generation: u64) -> Result<(), String> {
+        let mut state = self
+            .shared
+            .state
+            .lock()
+            .map_err(|_| bootstrap_unavailable())?;
+        if !matches!(
+            state.publication,
+            NativeKernelBootstrapPublication::Lifecycle {
+                status: NativeKernelBootstrapStatus::Retrying,
+                generation: current,
+            } if current == generation
+        ) {
+            return Err(bootstrap_unavailable());
+        }
+        state.publication = NativeKernelBootstrapPublication::Lifecycle {
+            status: NativeKernelBootstrapStatus::Starting,
+            generation,
+        };
+        Ok(())
+    }
+
+    fn begin_lifecycle(
+        &self,
+        status: NativeKernelBootstrapStatus,
+        generation: u64,
+    ) -> Result<(), String> {
+        let mut state = self
+            .shared
+            .state
+            .lock()
+            .map_err(|_| bootstrap_unavailable())?;
+        if generation <= state.last_generation {
+            return Err(bootstrap_unavailable());
+        }
+        state.publication.revoke_access();
+        state.last_generation = generation;
+        state.publication = NativeKernelBootstrapPublication::Lifecycle { status, generation };
+        Ok(())
+    }
+
+    pub(crate) fn fail_generation(&self, generation: u64) -> Result<bool, String> {
+        self.finish_generation(NativeKernelBootstrapStatus::Failed, generation)
+    }
+
+    pub(crate) fn finish_stop(&self, generation: u64) -> Result<bool, String> {
+        self.finish_generation(NativeKernelBootstrapStatus::Dormant, generation)
+    }
+
+    fn finish_generation(
+        &self,
+        status: NativeKernelBootstrapStatus,
+        generation: u64,
+    ) -> Result<bool, String> {
+        let mut state = self
+            .shared
+            .state
+            .lock()
+            .map_err(|_| bootstrap_unavailable())?;
+        if state.publication.generation() != Some(generation) {
+            return Ok(false);
+        }
+        state.publication.revoke_access();
+        state.publication = NativeKernelBootstrapPublication::Lifecycle { status, generation };
+        Ok(true)
     }
 
     #[allow(dead_code)] // Cleared by the future supervisor shutdown boundary.
     pub(crate) fn clear(&self) -> Result<(), String> {
-        let previous = match self.state.lock() {
-            Ok(mut state) => state.access.take(),
+        match self.shared.state.lock() {
+            Ok(mut state) => {
+                state.publication.revoke_access();
+                state.publication = NativeKernelBootstrapPublication::Dormant;
+            }
             Err(poisoned) => {
-                let previous = poisoned.into_inner().access.take();
-                if let Some(previous) = previous {
-                    previous.credential.revoke();
-                }
+                poisoned.into_inner().publication.revoke_access();
                 return Err(bootstrap_unavailable());
             }
-        };
-        if let Some(previous) = previous {
-            previous.credential.revoke();
         }
         Ok(())
     }
 
     #[allow(dead_code)] // Used by the future supervisor generation monitor.
     pub(crate) fn clear_generation(&self, generation: u64) -> Result<bool, String> {
-        let previous = match self.state.lock() {
+        let cleared = match self.shared.state.lock() {
             Ok(mut state) => {
-                if state
-                    .access
-                    .as_ref()
-                    .is_some_and(|access| access.endpoint.generation == generation)
-                {
-                    state.access.take()
+                if state.publication.generation() == Some(generation) {
+                    state.publication.revoke_access();
+                    state.publication = NativeKernelBootstrapPublication::Dormant;
+                    true
                 } else {
-                    None
+                    false
                 }
             }
             Err(poisoned) => {
-                let previous = poisoned.into_inner().access.take();
-                if let Some(previous) = previous {
-                    previous.credential.revoke();
-                }
+                poisoned.into_inner().publication.revoke_access();
                 return Err(bootstrap_unavailable());
             }
         };
-        let cleared = previous.is_some();
-        if let Some(previous) = previous {
-            previous.credential.revoke();
-        }
         Ok(cleared)
     }
 }
 
-impl Drop for NativeKernelBootstrapOwner {
+impl Drop for NativeKernelBootstrapShared {
     fn drop(&mut self) {
         let state = match self.state.get_mut() {
             Ok(state) => state,
             Err(poisoned) => poisoned.into_inner(),
         };
-        if let Some(access) = state.access.take() {
-            access.credential.revoke();
-        }
+        state.publication.revoke_access();
     }
 }
 
@@ -413,6 +555,89 @@ mod tests {
             serde_json::to_value(owner.read().unwrap()).unwrap()["status"],
             json!("dormant")
         );
+    }
+
+    #[test]
+    fn lifecycle_statuses_publish_generation_without_a_credential() {
+        let owner = super::NativeKernelBootstrapOwner::new();
+
+        owner.begin_start(1).unwrap();
+        assert_eq!(
+            serde_json::to_value(owner.read().unwrap()).unwrap(),
+            json!({
+                "status": "starting",
+                "bootstrapVersion": 1,
+                "generation": "1",
+            })
+        );
+
+        owner.begin_retry(2).unwrap();
+        assert_eq!(
+            serde_json::to_value(owner.read().unwrap()).unwrap(),
+            json!({
+                "status": "retrying",
+                "bootstrapVersion": 1,
+                "generation": "2",
+            })
+        );
+
+        assert!(owner.fail_generation(2).unwrap());
+        assert_eq!(
+            serde_json::to_value(owner.read().unwrap()).unwrap(),
+            json!({
+                "status": "failed",
+                "bootstrapVersion": 1,
+                "generation": "2",
+            })
+        );
+
+        assert!(owner.finish_stop(2).unwrap());
+        assert_eq!(
+            serde_json::to_value(owner.read().unwrap()).unwrap(),
+            json!({
+                "status": "dormant",
+                "bootstrapVersion": 1,
+                "generation": "2",
+            })
+        );
+    }
+
+    #[test]
+    fn stale_lifecycle_update_cannot_revoke_or_replace_newer_ready() {
+        let owner = super::NativeKernelBootstrapOwner::new();
+        owner.begin_start(1).unwrap();
+        owner.begin_retry(2).unwrap();
+        let (current, _temporary) = ready_access(2);
+        let current_credential = current.credential.clone();
+        owner.publish(current).unwrap();
+
+        assert!(!owner.fail_generation(1).unwrap());
+        assert!(!owner.finish_stop(1).unwrap());
+
+        assert!(current_credential.is_available());
+        assert_eq!(
+            serde_json::to_value(owner.read().unwrap()).unwrap()["status"],
+            json!("ready")
+        );
+    }
+
+    #[test]
+    fn cloned_owner_shares_publication_without_revoking_on_partial_drop() {
+        let owner = super::NativeKernelBootstrapOwner::new();
+        let observer = owner.clone();
+        let (access, _temporary) = ready_access(1);
+        let credential = access.credential.clone();
+        owner.publish(access).unwrap();
+
+        drop(owner);
+
+        assert!(credential.is_available());
+        assert_eq!(
+            serde_json::to_value(observer.read().unwrap()).unwrap()["generation"],
+            json!("1")
+        );
+        observer.clear().unwrap();
+        assert!(!credential.is_available());
     }
 
     fn ready_owner(
