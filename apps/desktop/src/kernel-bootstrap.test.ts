@@ -25,6 +25,15 @@ describe("native Kernel bootstrap reader", () => {
     expect(invoke).toHaveBeenCalledWith("read_native_kernel_bootstrap");
   });
 
+  it.each([
+    ["starting", { status: "starting", bootstrapVersion: 1, generation: "1" }],
+    ["retrying", { status: "retrying", bootstrapVersion: 1, generation: "2" }],
+    ["failed", { status: "failed", bootstrapVersion: 1, generation: "3" }],
+    ["stopped dormant", { status: "dormant", bootstrapVersion: 1, generation: "4" }]
+  ])("maps the exact %s lifecycle response to an unavailable connection", async (_name, value) => {
+    await expect(readNativeKernelBootstrap(async () => value)).resolves.toBeNull();
+  });
+
   it("exposes a fixed loopback endpoint while keeping the credential only behind a closure", async () => {
     const invoke = vi.fn(async () => READY_BOOTSTRAP);
 
@@ -92,7 +101,19 @@ describe("native Kernel bootstrap reader", () => {
   it.each([
     ["null", null],
     ["array", []],
-    ["unknown status", { status: "starting", bootstrapVersion: 1 }],
+    ["unknown status", { status: "paused", bootstrapVersion: 1 }],
+    ["missing lifecycle generation", { status: "starting", bootstrapVersion: 1 }],
+    ["non-canonical lifecycle generation", {
+      status: "retrying",
+      bootstrapVersion: 1,
+      generation: "02"
+    }],
+    ["extra lifecycle field", {
+      status: "failed",
+      bootstrapVersion: 1,
+      generation: "2",
+      reason: "private"
+    }],
     ["wrong dormant version", { status: "dormant", bootstrapVersion: 2 }],
     ["extra dormant field", { status: "dormant", bootstrapVersion: 1, port: 49_152 }],
     ["missing ready field", { ...READY_BOOTSTRAP, instanceId: undefined }],
