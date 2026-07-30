@@ -8,6 +8,7 @@ mod authentication_coordinator;
 mod csrf;
 mod initialization;
 mod initialization_coordinator;
+mod launch_environment;
 mod rate_limit;
 mod secret;
 mod session;
@@ -28,6 +29,9 @@ pub use initialization::{
 pub use initialization_coordinator::{
     ServerInitializationCoordinator, ServerInitializationCoordinatorError,
     ServerOwnerInitializationError,
+};
+pub use launch_environment::{
+    ServerLaunchEnvironment, ServerLaunchEnvironmentError, SERVER_INITIALIZATION_TOKEN_ENV,
 };
 pub use rate_limit::{
     AuthenticationAttemptPermit, AuthenticationFlow, AuthenticationRateLimiter,
