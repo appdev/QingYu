@@ -5,7 +5,9 @@ import { hasTauriRuntime } from "@markra/shared";
 import {
   createUnavailableKernelDomainPort,
   type AppFormFactor,
-  type AppRuntime
+  type AppRuntime,
+  type KernelDomainPort,
+  type NativeShellPort
 } from "@markra/app/runtime";
 import { createDesktopNativeShellPort } from "./native-shell";
 import * as dialog from "./tauri/dialog";
@@ -64,7 +66,16 @@ function resolveFormFactor() {
   }
 }
 
-export const desktopRuntime = {
+export type DesktopRuntimeAdapters = {
+  kernel: KernelDomainPort;
+  nativeShell: NativeShellPort;
+};
+
+export function createDesktopRuntime({
+  kernel = createUnavailableKernelDomainPort(),
+  nativeShell = createDesktopNativeShellPort()
+}: Partial<DesktopRuntimeAdapters> = {}): AppRuntime {
+  return {
   dialog: {
     showAppAbout: dialog.showNativeAppAbout,
     showPandocSetup: dialog.showNativePandocSetup
@@ -139,7 +150,7 @@ export const desktopRuntime = {
     watchMarkdownTree: files.watchNativeMarkdownTree,
     writeMarkdownTemplateFile: files.writeNativeMarkdownTemplateFile
   },
-  kernel: createUnavailableKernelDomainPort(),
+  kernel,
   logs: {
     isAvailable: logs.isNativeLoggingAvailable,
     openLogFolder: logs.openNativeLogFolder,
@@ -167,7 +178,7 @@ export const desktopRuntime = {
   navigation: {
     subscribeToSystemBack: async (_handler) => () => undefined
   },
-  nativeShell: createDesktopNativeShellPort(),
+  nativeShell,
   platform: {
     resolveDesktopOsVersion,
     resolveDesktopPlatform,
@@ -273,4 +284,7 @@ export const desktopRuntime = {
     prepareDesktopNotebookTarget: managedWorkspace.prepareNativeDesktopNotebookTarget,
     resolveManagedRoot: managedWorkspace.resolveNativeManagedWorkspaceRoot
   }
-} satisfies AppRuntime;
+  };
+}
+
+export const desktopRuntime = createDesktopRuntime();
