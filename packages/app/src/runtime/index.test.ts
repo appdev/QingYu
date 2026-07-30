@@ -35,6 +35,8 @@ describe("app runtime logging", () => {
     const runtime = createDefaultAppRuntime();
 
     expect(runtime).toHaveProperty("files");
+    expect(runtime).toHaveProperty("kernel.availability", "unavailable");
+    expect(runtime).toHaveProperty("nativeShell.capabilities.standaloneDocuments", "unavailable");
     expect(runtime).toHaveProperty("settings");
     expect(runtime).toHaveProperty("webResource.downloadImage", expect.any(Function));
     expect(runtime).toHaveProperty("syncConfig");

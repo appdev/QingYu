@@ -1,3 +1,4 @@
+mod resource_body;
 mod routes;
 pub mod ws;
 
@@ -18,15 +19,16 @@ use crate::{
     contract::{
         ApiErrorEnvelope, ConnectionId, CreateDocumentRequest, CreatedDocumentDto,
         DeleteDocumentRequest, DocumentContentDto, DocumentContents, DocumentEntryDto,
-        DocumentHistoryPageDto, DocumentId, DocumentPageDto, DomainEvent, ErrorCode, ErrorDetails,
-        EventSequence, GapReason, InstanceId, ListDocumentsQuery, LiveHealthResponse,
-        MoveDocumentRequest, PageQuery, PatchSettingsRequest, PatchSyncConfigRequest,
-        ProtocolVersion, ReadyHealthResponse, ReadySequence, ReloadScope, RequestId,
+        DocumentHistoryPageDto, DocumentHistorySnapshotDto, DocumentId, DocumentPageDto,
+        DomainEvent, ErrorCode, ErrorDetails, EventSequence, GapReason, InstanceId,
+        ListDocumentsQuery, ListWorkspaceInventoryQuery, LiveHealthResponse, MoveDocumentRequest,
+        PageQuery, PatchSettingsRequest, PatchSyncConfigRequest, ProtocolVersion,
+        ReadyHealthResponse, ReadySequence, ReloadScope, RequestId, ResourceEntryDto, ResourceKind,
         ResourceRefDto, RestoreDocumentHistoryRequest, Revision, SearchPageDto,
         SearchWorkspaceQuery, ServerFrame, SettingsSnapshotDto, SnapshotRequired,
         SyncConfigViewDto, SyncConnectionTestDto, SyncRunAcceptedDto, SyncSafeErrorDto,
         SyncStatusDto, SystemVersionResponse, TestSyncConnectionRequest, TriggerSyncRunRequest,
-        UpdateDocumentRequest, WorkspaceDto,
+        UpdateDocumentRequest, WorkspaceDto, WorkspaceInventoryEntryDto, WorkspaceInventoryPageDto,
     },
     error::{http_status_for_error_code, safe_error_envelope},
     runtime::KernelRuntime,
@@ -236,6 +238,7 @@ fn route_accepts_method(path: &str, method: &Method) -> bool {
         | "/api/v1/system/version"
         | "/api/v1/runtime"
         | "/api/v1/workspace"
+        | "/api/v1/inventory"
         | "/api/v1/search"
         | "/api/v1/sync/status"
         | "/api/v1/events" => &[Method::GET],
@@ -243,6 +246,9 @@ fn route_accepts_method(path: &str, method: &Method) -> bool {
         "/api/v1/settings" | "/api/v1/sync/config" => &[Method::GET, Method::PATCH],
         "/api/v1/sync/connection-test" | "/api/v1/sync/runs" => &[Method::POST],
         _ => match path.split('/').collect::<Vec<_>>().as_slice() {
+            ["", "api", "v1", "resources", resource_id] if !resource_id.is_empty() => {
+                &[Method::GET]
+            }
             ["", "api", "v1", "documents", document_id] if !document_id.is_empty() => {
                 &[Method::GET, Method::PUT]
             }
@@ -252,6 +258,11 @@ fn route_accepts_method(path: &str, method: &Method) -> bool {
                 &[Method::POST]
             }
             ["", "api", "v1", "documents", document_id, "history"] if !document_id.is_empty() => {
+                &[Method::GET]
+            }
+            ["", "api", "v1", "documents", document_id, "history", snapshot_id]
+                if !document_id.is_empty() && !snapshot_id.is_empty() =>
+            {
                 &[Method::GET]
             }
             ["", "api", "v1", "documents", document_id, "history", snapshot_id, "restore"]
@@ -268,6 +279,10 @@ fn route_accepts_method(path: &str, method: &Method) -> bool {
 fn decorate_response(response: &mut Response, allowed_origin: Option<&HeaderValue>) {
     let headers = response.headers_mut();
     headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
     if !headers.contains_key("x-request-id") {
         headers.insert(
             "x-request-id",
@@ -279,7 +294,7 @@ fn decorate_response(response: &mut Response, allowed_origin: Option<&HeaderValu
         headers.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, origin.clone());
         headers.insert(
             header::ACCESS_CONTROL_EXPOSE_HEADERS,
-            HeaderValue::from_static("X-Request-Id"),
+            HeaderValue::from_static("X-Request-Id, X-Content-Type-Options"),
         );
         headers.insert(header::VARY, HeaderValue::from_static("Origin"));
     }
@@ -376,6 +391,11 @@ impl std::error::Error for OpenApiExportError {}
         SystemVersionResponse,
         crate::contract::RuntimeStateDto,
         WorkspaceDto,
+        ListWorkspaceInventoryQuery,
+        WorkspaceInventoryEntryDto,
+        WorkspaceInventoryPageDto,
+        ResourceEntryDto,
+        ResourceKind,
         PageQuery,
         ListDocumentsQuery,
         DocumentEntryDto,
@@ -387,6 +407,7 @@ impl std::error::Error for OpenApiExportError {}
         MoveDocumentRequest,
         DeleteDocumentRequest,
         DocumentHistoryPageDto,
+        DocumentHistorySnapshotDto,
         RestoreDocumentHistoryRequest,
         SearchWorkspaceQuery,
         SearchPageDto,
@@ -698,6 +719,22 @@ fn install_paths(document: &mut serde_json::Value) {
         ),
         (
             "get",
+            "/api/v1/inventory",
+            "listWorkspaceInventory",
+            "200",
+            "WorkspaceInventoryPageDto",
+            true,
+        ),
+        (
+            "get",
+            "/api/v1/resources/{resourceId}",
+            "openWorkspaceResource",
+            "200",
+            "",
+            true,
+        ),
+        (
+            "get",
             "/api/v1/documents",
             "listDocuments",
             "200",
@@ -750,6 +787,14 @@ fn install_paths(document: &mut serde_json::Value) {
             "listDocumentHistory",
             "200",
             "DocumentHistoryPageDto",
+            true,
+        ),
+        (
+            "get",
+            "/api/v1/documents/{documentId}/history/{snapshotId}",
+            "getDocumentHistory",
+            "200",
+            "DocumentHistorySnapshotDto",
             true,
         ),
         (
@@ -852,6 +897,25 @@ fn install_paths(document: &mut serde_json::Value) {
             .entry(path.to_owned())
             .or_insert_with(|| serde_json::json!({}))[method] = operation;
     }
+    paths["/api/v1/resources/{resourceId}"]["get"]["responses"]["200"]["content"] = serde_json::json!({
+        "application/octet-stream": { "schema": { "type": "string", "format": "binary" } },
+        "image/gif": { "schema": { "type": "string", "format": "binary" } },
+        "image/jpeg": { "schema": { "type": "string", "format": "binary" } },
+        "image/png": { "schema": { "type": "string", "format": "binary" } },
+        "image/webp": { "schema": { "type": "string", "format": "binary" } }
+    });
+    paths["/api/v1/resources/{resourceId}"]["get"]["responses"]["200"]["headers"]
+        ["Content-Length"] = serde_json::json!({
+        "description": "Exact resource size in bytes.",
+        "required": true,
+        "schema": { "type": "integer", "format": "int64", "minimum": 0 }
+    });
+    paths["/api/v1/resources/{resourceId}"]["get"]["responses"]["200"]["headers"]
+        ["X-Content-Type-Options"] = serde_json::json!({
+        "description": "Disables content sniffing for untrusted workspace resources.",
+        "required": true,
+        "schema": { "type": "string", "const": "nosniff" }
+    });
 }
 
 fn install_security_scheme(document: &mut serde_json::Value) {
@@ -862,6 +926,34 @@ fn install_security_scheme(document: &mut serde_json::Value) {
 }
 
 fn install_operation_inputs(document: &mut serde_json::Value) {
+    set_query_parameters(
+        document,
+        "/api/v1/inventory",
+        "get",
+        &[
+            ("cursor", "PageCursor", false),
+            ("limit", "PageLimit", false),
+            ("parent", "WorkspaceRelativePath", false),
+        ],
+    );
+    push_parameter(
+        document,
+        "/api/v1/resources/{resourceId}",
+        "get",
+        "resourceId",
+        "path",
+        "ResourceId",
+        true,
+    );
+    push_parameter(
+        document,
+        "/api/v1/resources/{resourceId}",
+        "get",
+        "kind",
+        "query",
+        "ResourceKind",
+        true,
+    );
     set_query_parameters(
         document,
         "/api/v1/documents",
@@ -885,6 +977,7 @@ fn install_operation_inputs(document: &mut serde_json::Value) {
         ("/api/v1/documents/{documentId}/move", "post"),
         ("/api/v1/documents/{documentId}/delete", "post"),
         ("/api/v1/documents/{documentId}/history", "get"),
+        ("/api/v1/documents/{documentId}/history/{snapshotId}", "get"),
         (
             "/api/v1/documents/{documentId}/history/{snapshotId}/restore",
             "post",
@@ -937,6 +1030,15 @@ fn install_operation_inputs(document: &mut serde_json::Value) {
             ("cursor", "PageCursor", false),
             ("limit", "PageLimit", false),
         ],
+    );
+    push_parameter(
+        document,
+        "/api/v1/documents/{documentId}/history/{snapshotId}",
+        "get",
+        "snapshotId",
+        "path",
+        "SnapshotId",
+        true,
     );
     push_parameter(
         document,
@@ -1073,6 +1175,32 @@ fn install_operation_errors(document: &mut serde_json::Value) {
         add_errors_with(document, path, method, TRANSPORT, &["kernel_not_ready"]);
     }
     add_errors_with(document, "/api/v1/workspace", "get", TRANSPORT, WORKSPACE);
+    add_errors_with(
+        document,
+        "/api/v1/inventory",
+        "get",
+        TRANSPORT,
+        &[
+            "kernel_not_ready",
+            "workspace_unavailable",
+            "workspace_locked",
+            "invalid_request",
+            "invalid_workspace_path",
+        ],
+    );
+    add_errors_with(
+        document,
+        "/api/v1/resources/{resourceId}",
+        "get",
+        TRANSPORT,
+        &[
+            "kernel_not_ready",
+            "workspace_unavailable",
+            "workspace_locked",
+            "invalid_request",
+            "resource_not_found",
+        ],
+    );
 
     let document_routes = [
         (
@@ -1134,6 +1262,16 @@ fn install_operation_errors(document: &mut serde_json::Value) {
             "/api/v1/documents/{documentId}/history",
             "get",
             &["invalid_request", "document_not_found"][..],
+        ),
+        (
+            "/api/v1/documents/{documentId}/history/{snapshotId}",
+            "get",
+            &[
+                "invalid_request",
+                "document_not_found",
+                "document_too_large",
+                "document_invalid_encoding",
+            ][..],
         ),
         (
             "/api/v1/documents/{documentId}/history/{snapshotId}/restore",
@@ -1293,7 +1431,7 @@ fn error_status(code: &str) -> u16 {
         "invalid_request" | "invalid_workspace_path" | "invalid_document_name" => 400,
         "unauthorized" => 401,
         "host_not_allowed" | "origin_not_allowed" => 403,
-        "document_not_found" | "sync_config_absent" => 404,
+        "document_not_found" | "resource_not_found" | "sync_config_absent" => 404,
         "document_already_exists"
         | "revision_conflict"
         | "settings_revision_conflict"

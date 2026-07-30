@@ -86,6 +86,7 @@ const MOBILE_COMMANDS: &[&str] = &[
 ];
 
 const DESKTOP_COMMANDS: &[&str] = &[
+    "read_native_kernel_bootstrap",
     "get_mcp_settings",
     "update_mcp_settings",
     "set_mcp_primary_workspace",
@@ -97,6 +98,9 @@ const DESKTOP_COMMANDS: &[&str] = &[
     "replace_portable_app_settings",
     "read_exposed_app_settings",
     "patch_exposed_app_settings",
+    "load_desktop_runtime_store",
+    "get_desktop_runtime_store_value",
+    "commit_desktop_runtime_store_changes",
     "read_primary_workspace_state",
     "write_primary_workspace_state",
     "acknowledge_path_guard",
@@ -134,6 +138,8 @@ const DESKTOP_COMMANDS: &[&str] = &[
     "resolve_workspace_resource_root",
     "trash_workspace_resources",
     "read_markdown_file",
+    "read_standalone_document",
+    "write_standalone_document_cas",
     "read_text_file",
     "list_markdown_file_history",
     "read_markdown_file_history",
@@ -434,6 +440,24 @@ fn builder_boundary_mobile_registers_only_approved_shared_commands() {
 }
 
 #[test]
+fn builder_boundary_native_kernel_bootstrap_is_desktop_only_and_dormant() {
+    let desktop = source("src/desktop_runtime.rs");
+    let mobile = source("src/mobile_runtime.rs");
+    let desktop_commands = handler_identifiers(&desktop);
+    let mobile_commands = handler_identifiers(&mobile);
+
+    assert!(desktop_commands.contains("read_native_kernel_bootstrap"));
+    assert!(!mobile_commands.contains("read_native_kernel_bootstrap"));
+    assert!(
+        desktop.contains("app.manage(crate::kernel_bootstrap::NativeKernelBootstrapOwner::new())")
+    );
+    assert!(!desktop.contains(".publish("));
+    assert!(!desktop.contains("KernelHostSupervisor"));
+    assert!(!desktop.contains(".manage(crate::kernel_host"));
+    assert!(!desktop.contains("crate::kernel_host::"));
+}
+
+#[test]
 fn builder_boundary_theme_activation_uses_window_identity_and_narrow_lifetimes() {
     let activation = source("src/themes/activation.rs");
     let themes = source("src/themes/mod.rs");
@@ -603,6 +627,7 @@ fn builder_boundary_dispatcher_cfg_gates_desktop_only_modules() {
         "app_logs",
         "clipboard",
         "fonts",
+        "kernel_bootstrap",
         "language",
         "menu",
         "menu_labels",
@@ -756,7 +781,29 @@ fn builder_boundary_sidecar_has_an_explicit_non_default_feature_gate() {
     assert!(manifest.contains("required-features = [\"desktop-sidecar\"]"));
 
     let preparation = source("../../../packages/scripts/src/prepare-qingyu-mcp-sidecar.mjs");
-    assert!(preparation.contains("\"--features\",\n  \"desktop-sidecar\""));
+    assert!(preparation.contains("\"--features\",\n    \"desktop-sidecar\""));
+
+    let kernel_preparation =
+        source("../../../packages/scripts/src/prepare-qingyu-kernel-sidecar.mjs");
+    assert!(kernel_preparation.contains("\"--bin\",\n    \"qingyu-kernel\""));
+    assert!(kernel_preparation.contains("\"--target\",\n    targetTriple"));
+    assert!(kernel_preparation.contains("validatePreparedKernelSidecar"));
+
+    let build_script = source("build.rs");
+    assert!(build_script.contains("ensure_mcp_sidecar_slot"));
+    let kernel_validation = build_script
+        .split("fn align_desktop_sidecar_manifest_check")
+        .nth(1)
+        .and_then(|source| {
+            source
+                .split("fn align_macos_private_api_manifest_check")
+                .next()
+        })
+        .expect("build script should isolate Kernel sidecar validation");
+    assert!(kernel_validation.contains("kernel_sidecar_is_ready"));
+    assert!(kernel_validation.contains("MARKRA_DESKTOP_TARGET"));
+    assert!(!kernel_validation.contains("OpenOptions"));
+    assert!(!kernel_validation.contains("create_new"));
 }
 
 #[test]
@@ -878,6 +925,25 @@ fn builder_boundary_capabilities_are_platform_disjoint() {
         );
     }
 
+    assert!(
+        permission_identifiers(&desktop)
+            .iter()
+            .all(|permission| !permission.starts_with("store:")),
+        "desktop renderer must use fixed native runtime-store commands"
+    );
+    for permission in [
+        "store:allow-delete",
+        "store:allow-get",
+        "store:allow-load",
+        "store:allow-save",
+        "store:allow-set",
+    ] {
+        assert!(
+            permissions.contains(&permission),
+            "mobile must retain {permission}"
+        );
+    }
+
     for (name, capability) in [("desktop", &desktop), ("mobile", &mobile)] {
         let opener = capability
             .pointer("/permissions")
@@ -942,6 +1008,35 @@ fn builder_boundary_desktop_allows_guarded_frontend_app_exit() {
 }
 
 #[test]
+fn builder_boundary_registers_fixed_desktop_runtime_store_commands() {
+    let runtime = source("src/desktop_runtime.rs");
+    let install = runtime
+        .find("crate::runtime_store::install_desktop_runtime_store")
+        .expect("desktop setup should install fixed runtime stores");
+    let settings = runtime
+        .find("crate::app_settings::KernelSettingsOwner::install")
+        .expect("desktop setup should install Kernel settings");
+    let mcp = runtime
+        .find("mcp::initialize")
+        .expect("desktop setup should initialize MCP");
+    assert!(install < settings && install < mcp);
+    let handler_source = &runtime[runtime
+        .find("tauri::generate_handler![")
+        .expect("Tauri invoke handler should be registered")..];
+
+    for command in [
+        "load_desktop_runtime_store",
+        "get_desktop_runtime_store_value",
+        "commit_desktop_runtime_store_changes",
+    ] {
+        assert!(
+            handler_source.contains(&format!("crate::runtime_store::{command},")),
+            "desktop invoke handler should register {command}"
+        );
+    }
+}
+
+#[test]
 fn builder_boundary_sidecar_and_file_associations_are_desktop_config_only() {
     let base = json("tauri.conf.json");
     assert!(base.pointer("/bundle/externalBin").is_none());
@@ -961,12 +1056,24 @@ fn builder_boundary_sidecar_and_file_associations_are_desktop_config_only() {
         package.pointer("/scripts/prepare:mobile-build"),
         Some(&serde_json::json!("pnpm --filter @markra/desktop build"))
     );
+    assert_eq!(
+        package.pointer("/scripts/prepare:desktop-build"),
+        Some(&serde_json::json!(
+            "pnpm --filter @markra/desktop build && pnpm prepare:qingyu-kernel-sidecar && pnpm prepare:qingyu-mcp-sidecar"
+        ))
+    );
+    assert_eq!(
+        package.pointer("/scripts/prepare:qingyu-kernel-sidecar"),
+        Some(&serde_json::json!(
+            "node packages/scripts/src/prepare-qingyu-kernel-sidecar.mjs"
+        ))
+    );
 
     for platform in ["macos", "windows", "linux"] {
         let config = json(&format!("tauri.{platform}.conf.json"));
         assert_eq!(
             string_array_at(&config, "/bundle/externalBin"),
-            vec!["binaries/qingyu-mcp"]
+            vec!["binaries/qingyu-mcp", "binaries/qingyu-kernel"]
         );
         assert!(config.pointer("/bundle/fileAssociations").is_some());
         assert_eq!(
@@ -980,6 +1087,9 @@ fn builder_boundary_sidecar_and_file_associations_are_desktop_config_only() {
         macos.pointer("/app/macOSPrivateApi"),
         Some(&serde_json::json!(true))
     );
+
+    let ignore = source("../../../.gitignore");
+    assert!(ignore.contains("apps/desktop/src-tauri/binaries/qingyu-kernel-*"));
 }
 
 #[test]

@@ -10,6 +10,7 @@ use cap_std::ambient_authority;
 use cap_std::fs::{Dir, OpenOptions};
 use serde::de::DeserializeOwned;
 use tokio::io::AsyncRead;
+use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 use crate::atomic_write::{stage_cap_file, CapStagedFile};
 use crate::cloud::{CloudError, CloudUploadSource};
@@ -47,6 +48,20 @@ pub struct Store {
     compressor: Mutex<zstd::bulk::Compressor<'static>>,
     decompressor: Mutex<zstd::zstd_safe::DCtx<'static>>,
 }
+
+impl Zeroize for Store {
+    fn zeroize(&mut self) {
+        self.key.zeroize();
+    }
+}
+
+impl Drop for Store {
+    fn drop(&mut self) {
+        self.zeroize();
+    }
+}
+
+impl ZeroizeOnDrop for Store {}
 
 pub(crate) struct StoreUploadSource {
     file: cap_std::fs::File,
@@ -88,7 +103,6 @@ impl Store {
     ) -> Result<Self, RepoError> {
         let root = absolute_lexical_root(root.into())?;
         let (anchor, relative_root) = store_anchor(&root)?;
-        let operation_guard = runtime.operation_guard();
         let mut repository_dir = anchor.try_clone()?;
         for component in relative_root.components() {
             let Component::Normal(name) = component else {
@@ -96,8 +110,22 @@ impl Store {
             };
             repository_dir = open_child_directory(&repository_dir, name, true)?;
         }
+        Self::new_with_directory_and_runtime(root, repository_dir, key, runtime)
+    }
+
+    pub(crate) fn new_with_directory_and_runtime(
+        root: impl Into<PathBuf>,
+        repository_dir: Dir,
+        key: [u8; 32],
+        runtime: &crate::RepositoryRuntimeState,
+    ) -> Result<Self, RepoError> {
+        let key = Zeroizing::new(key);
+        let root = absolute_lexical_root(root.into())?;
         validate_store_directory(&repository_dir)?;
         let repo_gate = crate::lifecycle::LifecycleGate::for_directory(&repository_dir, runtime)?;
+        let anchor = repository_dir.try_clone()?;
+        let relative_root = PathBuf::new();
+        let operation_guard = runtime.operation_guard();
         let mut compressor = zstd::bulk::Compressor::new(zstd::DEFAULT_COMPRESSION_LEVEL)
             .map_err(RepoError::Compression)?;
         compressor
@@ -119,7 +147,7 @@ impl Store {
             repository_dir: Mutex::new(Some(repository_dir)),
             operation_guard,
             repo_gate,
-            key,
+            key: *key,
             compressor: Mutex::new(compressor),
             decompressor: Mutex::new(decompressor),
         })
@@ -1198,7 +1226,7 @@ fn map_nofollow_error(parent: &Dir, name: &std::ffi::OsStr, error: std::io::Erro
     }
 }
 
-fn validate_store_directory(directory: &Dir) -> Result<(), RepoError> {
+pub(crate) fn validate_store_directory(directory: &Dir) -> Result<(), RepoError> {
     let metadata = directory.dir_metadata()?;
     if !metadata.file_type().is_dir() || cap_metadata_is_reparse(&metadata) {
         Err(RepoError::UnsafePath)
@@ -1339,6 +1367,21 @@ mod tests {
                 assert!(!entry.file_name().to_string_lossy().ends_with(".tmp"));
             }
         }
+    }
+
+    #[test]
+    fn store_key_is_explicitly_zeroizable_and_zeroizes_on_drop() {
+        use zeroize::{Zeroize, ZeroizeOnDrop};
+
+        fn assert_zeroizes_on_drop<T: ZeroizeOnDrop>(_value: &T) {}
+
+        let temporary = tempfile::tempdir().unwrap();
+        let mut store = Store::new(temporary.path(), fixture_key()).unwrap();
+
+        assert_zeroizes_on_drop(&store);
+        store.zeroize();
+
+        assert_eq!(store.key, [0_u8; 32]);
     }
 
     fn zstd_window_size(frame: &[u8]) -> Option<u64> {

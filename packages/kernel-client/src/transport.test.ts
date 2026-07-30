@@ -81,6 +81,71 @@ describe("KernelHttpTransport", () => {
     ).resolves.toBeUndefined();
   });
 
+  it("returns a validated binary response without consuming its body", async () => {
+    const response = new Response("image bytes", {
+      headers: {
+        "content-length": "11",
+        "content-type": "image/png",
+        "x-content-type-options": "nosniff",
+        "x-request-id": REQUEST_ID,
+      },
+    });
+    const transport = createTransport(async () => response);
+
+    const received = await transport.requestBinary(
+      { method: "GET", path: "/api/v1/resources/signed-resource" },
+      { status: 200, mediaTypes: ["image/png"] },
+    );
+
+    expect(received).toBe(response);
+    expect(received.bodyUsed).toBe(false);
+    await expect(received.text()).resolves.toBe("image bytes");
+  });
+
+  it("rejects malformed binary response metadata before exposing the body", async () => {
+    const invalidResponses = [
+      binaryResponse({ "content-type": "text/html" }),
+      binaryResponse({ "content-length": "11.0" }),
+      binaryResponse({ "x-content-type-options": "sniff" }),
+      binaryResponse({}, 201),
+    ];
+
+    for (const response of invalidResponses) {
+      const transport = createTransport(async () => response);
+      await expect(
+        transport.requestBinary(
+          { method: "GET", path: "/api/v1/resources/signed-resource" },
+          { status: 200, mediaTypes: ["image/png"] },
+        ),
+      ).rejects.toBeInstanceOf(KernelProtocolError);
+      expect(response.bodyUsed).toBe(false);
+    }
+  });
+
+  it("maps a missing binary resource to the frozen typed API error", async () => {
+    const transport = createTransport(async () =>
+      Response.json(
+        {
+          code: "resource_not_found",
+          message: "The resource was not found.",
+          requestId: REQUEST_ID,
+        },
+        { status: 404, headers: { "x-request-id": REQUEST_ID } },
+      ),
+    );
+
+    await expect(
+      transport.requestBinary(
+        { method: "GET", path: "/api/v1/resources/signed-resource" },
+        { status: 200, mediaTypes: ["image/png"] },
+      ),
+    ).rejects.toMatchObject({
+      code: "resource_not_found",
+      status: 404,
+      requestId: REQUEST_ID,
+    });
+  });
+
   it("exposes only the structured API error and matching server request ID", async () => {
     const requestId = "31af5e83-d3c3-4cc4-bac7-ac865252fb19";
     const transport = createTransport(async () =>
@@ -386,4 +451,15 @@ function emptyResponse() {
     status: 204,
     headers: { "x-request-id": REQUEST_ID },
   });
+}
+
+function binaryResponse(overrides: Record<string, string>, status = 200) {
+  const headers = new Headers({
+    "content-length": "11",
+    "content-type": "image/png",
+    "x-content-type-options": "nosniff",
+    "x-request-id": REQUEST_ID,
+  });
+  for (const [name, value] of Object.entries(overrides)) headers.set(name, value);
+  return new Response("image bytes", { status, headers });
 }

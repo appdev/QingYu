@@ -1,3 +1,8 @@
+[workspace]
+members = [".", "crates/qingyu-dejavu"]
+default-members = ["."]
+resolver = "2"
+
 [package]
 name = "qingyu-kernel"
 version = "2.1.0"
@@ -19,10 +24,12 @@ cap-fs-ext = "4.0.2"
 cap-std = "4.0.2"
 getrandom = "0.4"
 fs2 = "0.4.3"
+futures-util = "0.3"
 hmac = "0.12"
 http-body-util = "0.1"
 ignore = "0.4.28"
 quick-xml = "0.39.2"
+qingyu-dejavu = { path = "crates/qingyu-dejavu" }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -45,7 +52,6 @@ windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Stora
 
 [dev-dependencies]
 futures = "0.3.32"
-futures-util = "0.3"
 static_assertions = "1"
 tempfile = "3"
 tokio = { version = "1", features = ["test-util"] }

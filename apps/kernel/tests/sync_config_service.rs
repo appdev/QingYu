@@ -1,11 +1,13 @@
+use std::collections::VecDeque;
 use std::future::{poll_fn, Future as _};
 use std::panic::AssertUnwindSafe;
 use std::pin::Pin;
+use std::process::{Command, Stdio};
 use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
     mpsc, Arc, Condvar, Mutex, Weak,
 };
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use axum::{
@@ -18,9 +20,10 @@ use qingyu_kernel::{
     config::KernelConfig,
     contract::{
         ApiErrorEnvelope, CredentialChange, DomainEvent, ErrorCode, ErrorDetails,
-        PatchSyncConfigRequest, ResourceRefDto, Revision, Rfc3339Utc, RunId, SyncCompletionState,
-        SyncConfigChangesDto, SyncConfigReadiness, SyncProvider, SyncTrigger,
-        TriggerSyncRunRequest, WorkspaceDto,
+        PatchSyncConfigRequest, ResourceRefDto, Revision, Rfc3339Utc, RunId, SafeUnsignedInteger,
+        SyncCompletionState, SyncConfigChangesDto, SyncConfigReadiness, SyncIntervalSeconds,
+        SyncProvider, SyncSafeErrorCategory, SyncSafeErrorCode, SyncSafeErrorDto,
+        SyncSafeErrorOperation, SyncSummaryDto, SyncTrigger, TriggerSyncRunRequest, WorkspaceDto,
     },
     events::{EventPublication, EventSink, EventSinkError},
     paths::KernelPaths,
@@ -32,9 +35,11 @@ use qingyu_kernel::{
     runtime::{KernelRuntime, KernelStartupErrorKind, SyncApiService},
     services::{
         sync::{
-            SyncCancellation, SyncExecutionError, SyncExecutor, SyncRunContext, SyncService,
-            SyncWorkspaceSnapshotIdentity,
+            KernelSyncSchedulerCloseTestHook, KernelSyncTriggerDisposition,
+            KernelSyncTriggerRejection, SyncCancellation, SyncExecutionError, SyncExecutor,
+            SyncRunContext, SyncService, SyncWorkspaceSnapshotIdentity,
         },
+        sync_scheduler::KernelSyncScheduler,
         workspace::WorkspaceService,
     },
     storage::DurableFileStore,
@@ -55,7 +60,7 @@ use qingyu_kernel::{
 };
 use sha2::Digest as _;
 use tempfile::tempdir;
-use tokio::sync::{Barrier, Notify};
+use tokio::sync::{oneshot, Barrier, Notify};
 use tower::ServiceExt as _;
 
 const HOST: &str = "127.0.0.1:43125";
@@ -74,8 +79,8 @@ impl SyncExecutor for RecordingExecutor {
         &self,
         _config: SyncConfig,
         _context: SyncRunContext,
-    ) -> Result<(), SyncExecutionError> {
-        Ok(())
+    ) -> Result<SyncSummaryDto, SyncExecutionError> {
+        Ok(SyncSummaryDto::empty())
     }
 }
 
@@ -278,9 +283,9 @@ impl SyncExecutor for CountingExecutor {
         &self,
         _config: SyncConfig,
         _context: SyncRunContext,
-    ) -> Result<(), SyncExecutionError> {
+    ) -> Result<SyncSummaryDto, SyncExecutionError> {
         self.runs.fetch_add(1, Ordering::Relaxed);
-        Ok(())
+        Ok(SyncSummaryDto::empty())
     }
 }
 
@@ -316,8 +321,8 @@ impl SyncExecutor for BlockingConnectionExecutor {
         &self,
         _config: SyncConfig,
         _context: SyncRunContext,
-    ) -> Result<(), SyncExecutionError> {
-        Ok(())
+    ) -> Result<SyncSummaryDto, SyncExecutionError> {
+        Ok(SyncSummaryDto::empty())
     }
 }
 
@@ -331,11 +336,11 @@ impl SyncExecutor for BlockingExecutor {
         &self,
         _config: SyncConfig,
         _context: SyncRunContext,
-    ) -> Result<(), SyncExecutionError> {
+    ) -> Result<SyncSummaryDto, SyncExecutionError> {
         self.runs.fetch_add(1, Ordering::Relaxed);
         self.started.notify_one();
         self.release.notified().await;
-        Ok(())
+        Ok(SyncSummaryDto::empty())
     }
 }
 
@@ -347,16 +352,48 @@ impl SyncExecutor for ManualExecutor {
 
     async fn run(
         &self,
-        _config: SyncConfig,
+        config: SyncConfig,
         _context: SyncRunContext,
-    ) -> Result<(), SyncExecutionError> {
+    ) -> Result<SyncSummaryDto, SyncExecutionError> {
         self.runs.fetch_add(1, Ordering::Relaxed);
         self.completed.notify_one();
         if self.fail.load(Ordering::Relaxed) {
-            Err(SyncExecutionError)
+            Err(SyncExecutionError::unknown(config.provider()))
         } else {
-            Ok(())
+            Ok(SyncSummaryDto::empty())
         }
+    }
+}
+
+#[derive(Default)]
+struct ClassifiedFailureExecutor {
+    completed: Notify,
+}
+
+#[async_trait]
+impl SyncExecutor for ClassifiedFailureExecutor {
+    async fn test_connection(&self, _config: SyncConfig) -> Result<(), SyncExecutionError> {
+        Ok(())
+    }
+
+    async fn run(
+        &self,
+        config: SyncConfig,
+        _context: SyncRunContext,
+    ) -> Result<SyncSummaryDto, SyncExecutionError> {
+        self.completed.notify_one();
+        let mut partial = SyncSummaryDto::empty();
+        partial.scanned_files = SafeUnsignedInteger::new(2).unwrap();
+        partial.uploaded_files = SafeUnsignedInteger::new(1).unwrap();
+        Err(SyncExecutionError::new(
+            SyncSafeErrorDto::new(
+                config.provider(),
+                SyncSafeErrorOperation::UploadObject,
+                SyncSafeErrorCode::RemoteUnavailable,
+            )
+            .with_category(SyncSafeErrorCategory::Network),
+        )
+        .with_partial_summary(partial))
     }
 }
 
@@ -393,7 +430,7 @@ impl SyncExecutor for ContextBindingExecutor {
         &self,
         _config: SyncConfig,
         context: SyncRunContext,
-    ) -> Result<(), SyncExecutionError> {
+    ) -> Result<SyncSummaryDto, SyncExecutionError> {
         self.observed.lock().unwrap().push((
             context.workspace().clone(),
             context.snapshot_identity(),
@@ -402,7 +439,7 @@ impl SyncExecutor for ContextBindingExecutor {
         ));
         self.started.notify_one();
         self.release.notified().await;
-        Ok(())
+        Ok(SyncSummaryDto::empty())
     }
 }
 
@@ -421,10 +458,10 @@ impl SyncExecutor for CancellationAwareExecutor {
         &self,
         _config: SyncConfig,
         context: SyncRunContext,
-    ) -> Result<(), SyncExecutionError> {
+    ) -> Result<SyncSummaryDto, SyncExecutionError> {
         self.started.notify_one();
         context.cancellation().cancelled().await;
-        Ok(())
+        Ok(SyncSummaryDto::empty())
     }
 }
 
@@ -474,13 +511,13 @@ struct ReadyRunFuture<'a> {
 }
 
 impl std::future::Future for ReadyRunFuture<'_> {
-    type Output = Result<(), SyncExecutionError>;
+    type Output = Result<SyncSummaryDto, SyncExecutionError>;
 
     fn poll(
         self: Pin<&mut Self>,
         _context: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Self::Output> {
-        std::task::Poll::Ready(Ok(()))
+        std::task::Poll::Ready(Ok(SyncSummaryDto::empty()))
     }
 }
 
@@ -510,7 +547,11 @@ impl SyncExecutor for DropRetainingExecutor {
         _config: SyncConfig,
         context: SyncRunContext,
     ) -> Pin<
-        Box<dyn std::future::Future<Output = Result<(), SyncExecutionError>> + Send + 'async_trait>,
+        Box<
+            dyn std::future::Future<Output = Result<SyncSummaryDto, SyncExecutionError>>
+                + Send
+                + 'async_trait,
+        >,
     >
     where
         'life0: 'async_trait,
@@ -533,11 +574,11 @@ impl SyncExecutor for PanicOnceExecutor {
         &self,
         _config: SyncConfig,
         _context: SyncRunContext,
-    ) -> Result<(), SyncExecutionError> {
+    ) -> Result<SyncSummaryDto, SyncExecutionError> {
         if self.runs.fetch_add(1, Ordering::SeqCst) == 0 {
             panic!("deterministic executor panic");
         }
-        Ok(())
+        Ok(SyncSummaryDto::empty())
     }
 }
 
@@ -551,12 +592,12 @@ impl SyncExecutor for GatedCancellationExecutor {
         &self,
         _config: SyncConfig,
         context: SyncRunContext,
-    ) -> Result<(), SyncExecutionError> {
+    ) -> Result<SyncSummaryDto, SyncExecutionError> {
         self.started.notify_one();
         context.cancellation().cancelled().await;
         self.cancellation_seen.notify_one();
         self.release.notified().await;
-        Ok(())
+        Ok(SyncSummaryDto::empty())
     }
 }
 
@@ -583,7 +624,7 @@ impl SyncExecutor for CancellationContextExecutor {
         &self,
         _config: SyncConfig,
         context: SyncRunContext,
-    ) -> Result<(), SyncExecutionError> {
+    ) -> Result<SyncSummaryDto, SyncExecutionError> {
         self.sender
             .lock()
             .unwrap()
@@ -592,7 +633,7 @@ impl SyncExecutor for CancellationContextExecutor {
             .send(context.cancellation().clone())
             .unwrap();
         self.release.notified().await;
-        Ok(())
+        Ok(SyncSummaryDto::empty())
     }
 }
 
@@ -652,6 +693,113 @@ impl TaskSpawner for FailingTaskSpawner {
     fn spawn(&self, _task: BoxTaskFuture) -> Result<(), PortError> {
         self.attempts.fetch_add(1, Ordering::SeqCst);
         Err(PortError::unavailable())
+    }
+}
+
+#[derive(Default)]
+struct DroppingSuccessfulTaskSpawner;
+
+impl TaskSpawner for DroppingSuccessfulTaskSpawner {
+    fn spawn(&self, task: BoxTaskFuture) -> Result<(), PortError> {
+        drop(task);
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+struct ControlledSleeper {
+    completed: Notify,
+    registered: Notify,
+    requests: Mutex<VecDeque<ControlledSleepRequest>>,
+}
+
+struct ControlledSleepRequest {
+    duration: Duration,
+    release: Option<oneshot::Sender<()>>,
+}
+
+impl ControlledSleepRequest {
+    fn fire(mut self) -> bool {
+        self.release
+            .take()
+            .expect("controlled sleep can fire once")
+            .send(())
+            .is_ok()
+    }
+
+    async fn wait_cancelled(mut self) {
+        let release = self
+            .release
+            .as_mut()
+            .expect("controlled sleep retains its release handle");
+        release.closed().await;
+        assert!(
+            !self.fire(),
+            "a cancelled controlled sleep must reject a late wake"
+        );
+    }
+}
+
+impl ControlledSleeper {
+    async fn wait_for_completion(&self) {
+        self.completed.notified().await;
+    }
+
+    async fn next_request(&self) -> ControlledSleepRequest {
+        loop {
+            if let Some(request) = self.requests.lock().unwrap().pop_front() {
+                return request;
+            }
+            let registered = self.registered.notified();
+            tokio::pin!(registered);
+            registered.as_mut().enable();
+            if let Some(request) = self.requests.lock().unwrap().pop_front() {
+                return request;
+            }
+            registered.await;
+        }
+    }
+}
+
+impl Sleeper for ControlledSleeper {
+    fn sleep(&self, duration: Duration) -> BoxSleepFuture<'_> {
+        let (release, released) = oneshot::channel();
+        self.requests
+            .lock()
+            .unwrap()
+            .push_back(ControlledSleepRequest {
+                duration,
+                release: Some(release),
+            });
+        self.registered.notify_one();
+        Box::pin(async move {
+            released.await.map_err(|_| PortError::unavailable())?;
+            self.completed.notify_one();
+            Ok(())
+        })
+    }
+}
+
+#[derive(Default)]
+struct TriggerRecordingExecutor {
+    completed: Notify,
+    triggers: Mutex<Vec<SyncTrigger>>,
+}
+
+#[async_trait]
+impl SyncExecutor for TriggerRecordingExecutor {
+    async fn test_connection(&self, _config: SyncConfig) -> Result<(), SyncExecutionError> {
+        Ok(())
+    }
+
+    async fn run(
+        &self,
+        _config: SyncConfig,
+        context: SyncRunContext,
+    ) -> Result<SyncSummaryDto, SyncExecutionError> {
+        self.triggers.lock().unwrap().push(context.trigger());
+        self.completed.notify_one();
+        Ok(SyncSummaryDto::empty())
     }
 }
 
@@ -731,6 +879,38 @@ impl EventSink for CompletionPublicationGate {
 }
 
 #[derive(Default)]
+struct SyncConfigPublicationGate {
+    publication_entered: Notify,
+    released: (Mutex<bool>, Condvar),
+}
+
+impl SyncConfigPublicationGate {
+    async fn wait_for_sync_config_publication(&self) {
+        self.publication_entered.notified().await;
+    }
+
+    fn release_sync_config_publication(&self) {
+        let (released, condition) = &self.released;
+        *released.lock().unwrap() = true;
+        condition.notify_all();
+    }
+}
+
+impl EventSink for SyncConfigPublicationGate {
+    fn publish(&self, publication: &EventPublication) -> Result<(), EventSinkError> {
+        if matches!(publication.event, DomainEvent::SyncConfigChanged { .. }) {
+            self.publication_entered.notify_one();
+            let (released, condition) = &self.released;
+            let mut released = released.lock().unwrap();
+            while !*released {
+                released = condition.wait(released).unwrap();
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Default)]
 struct WorkspacePublicationGate {
     publication_entered: Notify,
     released: (Mutex<bool>, Condvar),
@@ -804,6 +984,38 @@ impl EventSink for TerminalReentrantSink {
             Ordering::SeqCst,
         );
         self.terminal_seen.notify_one();
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+struct AttemptingReentrantCloseSink {
+    close_returned: AtomicBool,
+    service: Mutex<Option<Weak<SyncService>>>,
+}
+
+impl AttemptingReentrantCloseSink {
+    fn bind_service(&self, service: &Arc<SyncService>) {
+        *self.service.lock().unwrap() = Some(Arc::downgrade(service));
+    }
+}
+
+impl EventSink for AttemptingReentrantCloseSink {
+    fn publish(&self, publication: &EventPublication) -> Result<(), EventSinkError> {
+        let DomainEvent::SyncStatusChanged { status } = &publication.event else {
+            return Ok(());
+        };
+        if status.completion_state != SyncCompletionState::Attempting {
+            return Ok(());
+        }
+        self.service
+            .lock()
+            .unwrap()
+            .as_ref()
+            .and_then(Weak::upgrade)
+            .expect("sync service must be bound before triggering")
+            .close_kernel_triggers();
+        self.close_returned.store(true, Ordering::Release);
         Ok(())
     }
 }
@@ -950,6 +1162,35 @@ fn test_ports_with_task_spawner(spawner: Arc<dyn TaskSpawner>) -> KernelPorts {
         host.clone(),
         host.clone(),
         spawner,
+        host.clone(),
+        host.clone(),
+        host,
+    )
+}
+
+fn test_ports_with_sleeper(sleeper: Arc<dyn Sleeper>) -> KernelPorts {
+    let host = Arc::new(TestHost);
+    KernelPorts::new(
+        host.clone(),
+        host.clone(),
+        sleeper,
+        host.clone(),
+        host.clone(),
+        host.clone(),
+        host,
+    )
+}
+
+fn test_ports_with_event_sink_and_sleeper(
+    event_sink: Arc<dyn EventSink>,
+    sleeper: Arc<dyn Sleeper>,
+) -> KernelPorts {
+    let host = Arc::new(TestHost);
+    KernelPorts::new(
+        event_sink,
+        host.clone(),
+        sleeper,
+        host.clone(),
         host.clone(),
         host.clone(),
         host,
@@ -1858,6 +2099,49 @@ async fn manual_run_is_spawned_once_and_completes_with_safe_status_events() {
             assert!(!serialized.contains(secret));
         }
     }
+}
+
+#[tokio::test]
+async fn executor_failure_preserves_partial_summary_and_classified_safe_error() {
+    let temporary = tempdir().unwrap();
+    let (runtime, _workspace, durable) = active_sync_runtime(temporary.path(), test_ports()).await;
+    let executor = Arc::new(ClassifiedFailureExecutor::default());
+    let service = SyncService::new(
+        runtime,
+        Arc::new(SyncConfigStore::new(durable).unwrap()),
+        executor.clone(),
+    );
+    let config = SyncApiService::get_sync_config(&service).await.unwrap();
+
+    let accepted = SyncApiService::trigger_sync_run(
+        &service,
+        TriggerSyncRunRequest {
+            expected_config_revision: config.revision,
+        },
+    )
+    .await
+    .unwrap();
+    executor.completed.notified().await;
+    let mut terminal = None;
+    for _attempt in 0..100 {
+        let status = SyncApiService::get_sync_status(&service).await.unwrap();
+        if status.completion_state == SyncCompletionState::Failed {
+            terminal = Some(status);
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    let terminal = terminal.expect("classified failure should reach terminal status");
+
+    let summary = terminal.summary.as_ref().expect("partial summary");
+    assert_eq!(summary.scanned_files.get(), 2);
+    assert_eq!(summary.uploaded_files.get(), 1);
+    let error = terminal.error.as_ref().expect("safe error");
+    assert_eq!(error.category(), Some("network"));
+    assert_eq!(error.code(), "remote_unavailable");
+    assert_eq!(error.operation(), "upload_object");
+    assert_eq!(error.provider(), SyncProvider::S3);
+    assert_eq!(error.run_id(), Some(accepted.run_id));
 }
 
 #[tokio::test]
@@ -4920,4 +5204,1021 @@ async fn aborting_sync_during_mismatch_recovery_retains_the_candidate_lease() {
     )
     .unwrap_err();
     assert_eq!(error.kind(), KernelStartupErrorKind::WorkspaceLocked);
+}
+
+async fn sync_service_with_policy(
+    root: &std::path::Path,
+    enabled: bool,
+    complete: bool,
+    mode: &str,
+    ports: KernelPorts,
+    executor: Arc<dyn SyncExecutor>,
+) -> (Arc<KernelRuntime>, Arc<SyncService>) {
+    std::fs::create_dir(root).unwrap();
+    let (runtime, _workspace, durable) = active_sync_runtime(root, ports).await;
+    let config_path = root.join("app-data/sync-config.json");
+    let mut config: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&config_path).unwrap()).unwrap();
+    config["enabled"] = serde_json::json!(enabled);
+    config["mode"] = serde_json::json!(mode);
+    if !complete {
+        config["s3"]["endpointUrl"] = serde_json::json!("");
+    }
+    std::fs::write(&config_path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
+    let service = Arc::new(SyncService::new(
+        runtime.clone(),
+        Arc::new(SyncConfigStore::new(durable).unwrap()),
+        executor,
+    ));
+    (runtime, service)
+}
+
+#[tokio::test]
+async fn kernel_trigger_flows_through_queue_status_events_and_executor_context_with_one_revision() {
+    let temporary = tempdir().unwrap();
+    let spawner = Arc::new(DeferredTaskSpawner::default());
+    let executor = Arc::new(ContextBindingExecutor::default());
+    let (runtime, service) = sync_service_with_policy(
+        &temporary.path().join("trigger-flow"),
+        true,
+        true,
+        "automatic",
+        test_ports_with_task_spawner(spawner.clone()),
+        executor.clone(),
+    )
+    .await;
+    let mut events = runtime.event_broker().subscribe();
+
+    let (disposition, settlement) = service
+        .trigger_kernel_sync(SyncTrigger::Save)
+        .await
+        .into_parts();
+    let accepted = match disposition {
+        KernelSyncTriggerDisposition::Accepted(accepted) => accepted,
+        other => panic!("expected accepted save trigger, got {other:?}"),
+    };
+    let attempting_event = events.recv().await.unwrap();
+    let attempting = match attempting_event.event {
+        DomainEvent::SyncStatusChanged { status } => status,
+        other => panic!("expected attempting sync event, got {other:?}"),
+    };
+    assert_eq!(attempting.last_trigger.as_ref(), Some(&SyncTrigger::Save));
+    assert_eq!(attempting.active_run_id.as_ref(), Some(&accepted.run_id));
+    assert_eq!(
+        attempting.config_revision.as_ref(),
+        Some(&accepted.config_revision)
+    );
+    assert_eq!(attempting_event.revision, accepted.config_revision);
+
+    let background = tokio::spawn(spawner.take_task());
+    executor.started.notified().await;
+    {
+        let observed = executor.observed.lock().unwrap();
+        assert_eq!(observed.len(), 1);
+        assert_eq!(observed[0].2, accepted.run_id);
+        assert_eq!(observed[0].3, SyncTrigger::Save);
+    }
+    let running = SyncApiService::get_sync_status(service.as_ref())
+        .await
+        .unwrap();
+    assert_eq!(running.last_trigger.as_ref(), Some(&SyncTrigger::Save));
+    assert_eq!(
+        running.config_revision.as_ref(),
+        Some(&attempting_event.revision)
+    );
+
+    executor.release.notify_one();
+    settlement.wait().await;
+    background.await.unwrap();
+    let terminal = events.recv().await.unwrap();
+    let terminal_status = match terminal.event {
+        DomainEvent::SyncStatusChanged { status } => status,
+        other => panic!("expected terminal sync event, got {other:?}"),
+    };
+    assert_eq!(terminal.revision, attempting_event.revision);
+    assert_eq!(
+        terminal_status.last_trigger.as_ref(),
+        Some(&SyncTrigger::Save)
+    );
+    assert_eq!(terminal_status.active_run_id.as_ref(), None);
+}
+
+#[tokio::test]
+async fn kernel_trigger_mode_matrix_is_exact_and_rejections_leave_status_idle() {
+    let cases = [
+        ("automatic", SyncTrigger::AppLaunch, true),
+        ("automatic", SyncTrigger::Interval, true),
+        ("automatic", SyncTrigger::Manual, true),
+        ("automatic", SyncTrigger::Save, true),
+        ("automatic", SyncTrigger::SettingsExit, true),
+        ("startup-exit", SyncTrigger::AppLaunch, true),
+        ("startup-exit", SyncTrigger::Interval, false),
+        ("startup-exit", SyncTrigger::Manual, true),
+        ("startup-exit", SyncTrigger::Save, false),
+        ("startup-exit", SyncTrigger::SettingsExit, true),
+        ("fully-manual", SyncTrigger::AppLaunch, false),
+        ("fully-manual", SyncTrigger::Interval, false),
+        ("fully-manual", SyncTrigger::Manual, true),
+        ("fully-manual", SyncTrigger::Save, false),
+        ("fully-manual", SyncTrigger::SettingsExit, false),
+    ];
+    let temporary = tempdir().unwrap();
+
+    for (index, (mode, trigger, allowed)) in cases.into_iter().enumerate() {
+        let executor = Arc::new(CountingExecutor::default());
+        let (_runtime, service) = sync_service_with_policy(
+            &temporary.path().join(format!("mode-{index}")),
+            true,
+            true,
+            mode,
+            test_ports(),
+            executor.clone(),
+        )
+        .await;
+        let (disposition, settlement) = service.trigger_kernel_sync(trigger).await.into_parts();
+        if allowed {
+            assert!(
+                matches!(disposition, KernelSyncTriggerDisposition::Accepted(_)),
+                "{mode} rejected {trigger:?}: {disposition:?}"
+            );
+            settlement.wait().await;
+            assert_eq!(
+                executor.runs.load(Ordering::SeqCst),
+                1,
+                "{mode} {trigger:?}"
+            );
+        } else {
+            assert_eq!(
+                disposition,
+                KernelSyncTriggerDisposition::Rejected(KernelSyncTriggerRejection::ModeDisallowed),
+                "{mode} {trigger:?}"
+            );
+            settlement.wait().await;
+            assert_eq!(
+                executor.runs.load(Ordering::SeqCst),
+                0,
+                "{mode} {trigger:?}"
+            );
+            let status = SyncApiService::get_sync_status(service.as_ref())
+                .await
+                .unwrap();
+            assert_eq!(status.completion_state, SyncCompletionState::Idle);
+            assert!(status.last_trigger.as_ref().is_none());
+        }
+    }
+}
+
+#[tokio::test]
+async fn disabled_incomplete_active_and_closing_kernel_triggers_reject_without_status_drift() {
+    let temporary = tempdir().unwrap();
+    for (name, enabled, complete, rejection) in [
+        (
+            "disabled",
+            false,
+            true,
+            KernelSyncTriggerRejection::Disabled,
+        ),
+        (
+            "incomplete",
+            true,
+            false,
+            KernelSyncTriggerRejection::Incomplete,
+        ),
+    ] {
+        let executor = Arc::new(CountingExecutor::default());
+        let (_runtime, service) = sync_service_with_policy(
+            &temporary.path().join(name),
+            enabled,
+            complete,
+            "automatic",
+            test_ports(),
+            executor.clone(),
+        )
+        .await;
+        let (disposition, settlement) = service
+            .trigger_kernel_sync(SyncTrigger::AppLaunch)
+            .await
+            .into_parts();
+        assert_eq!(
+            disposition,
+            KernelSyncTriggerDisposition::Rejected(rejection)
+        );
+        settlement.wait().await;
+        assert_eq!(executor.runs.load(Ordering::SeqCst), 0);
+        let status = SyncApiService::get_sync_status(service.as_ref())
+            .await
+            .unwrap();
+        assert_eq!(status.completion_state, SyncCompletionState::Idle);
+        assert!(status.last_trigger.as_ref().is_none());
+    }
+
+    let executor = Arc::new(BlockingExecutor::default());
+    let (_runtime, service) = sync_service_with_policy(
+        &temporary.path().join("active"),
+        true,
+        true,
+        "automatic",
+        test_ports(),
+        executor.clone(),
+    )
+    .await;
+    let revision = SyncApiService::get_sync_config(service.as_ref())
+        .await
+        .unwrap()
+        .revision;
+    SyncApiService::trigger_sync_run(
+        service.as_ref(),
+        TriggerSyncRunRequest {
+            expected_config_revision: revision,
+        },
+    )
+    .await
+    .unwrap();
+    executor.started.notified().await;
+    let (active_disposition, active_settlement) = service
+        .trigger_kernel_sync(SyncTrigger::Save)
+        .await
+        .into_parts();
+    assert_eq!(
+        active_disposition,
+        KernelSyncTriggerDisposition::Rejected(KernelSyncTriggerRejection::ActiveRun)
+    );
+    active_settlement.wait().await;
+    let active_status = SyncApiService::get_sync_status(service.as_ref())
+        .await
+        .unwrap();
+    assert_eq!(
+        active_status.last_trigger.as_ref(),
+        Some(&SyncTrigger::Manual)
+    );
+    assert_eq!(executor.runs.load(Ordering::SeqCst), 1);
+    executor.release.notify_one();
+    runtime_wait_for_idle(service.as_ref()).await;
+
+    service.close_kernel_triggers();
+    let (closing_disposition, closing_settlement) = service
+        .trigger_kernel_sync(SyncTrigger::SettingsExit)
+        .await
+        .into_parts();
+    assert_eq!(
+        closing_disposition,
+        KernelSyncTriggerDisposition::Rejected(KernelSyncTriggerRejection::Closing)
+    );
+    closing_settlement.wait().await;
+
+    let revision = SyncApiService::get_sync_config(service.as_ref())
+        .await
+        .unwrap()
+        .revision;
+    SyncApiService::trigger_sync_run(
+        service.as_ref(),
+        TriggerSyncRunRequest {
+            expected_config_revision: revision,
+        },
+    )
+    .await
+    .unwrap();
+    executor.started.notified().await;
+    executor.release.notify_one();
+    runtime_wait_for_idle(service.as_ref()).await;
+    assert_eq!(executor.runs.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn http_sync_run_rejects_a_forged_trigger_and_still_runs_only_manual() {
+    let temporary = tempdir().unwrap();
+    let executor = Arc::new(ContextBindingExecutor::default());
+    let (runtime, service) = sync_service_with_policy(
+        &temporary.path().join("http-trigger"),
+        true,
+        true,
+        "automatic",
+        test_ports(),
+        executor.clone(),
+    )
+    .await;
+    let credential = runtime.expose_native_launch_credential().to_owned();
+    let revision = SyncApiService::get_sync_config(service.as_ref())
+        .await
+        .unwrap()
+        .revision;
+    runtime.install_sync_api_service(service.clone()).unwrap();
+    let router = build_router(runtime, TransportPolicy::loopback(HOST, ORIGIN).unwrap());
+
+    let forged = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/sync/runs")
+                .header(header::HOST, HOST)
+                .header(header::AUTHORIZATION, format!("Bearer {credential}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&serde_json::json!({
+                        "expectedConfigRevision": revision,
+                        "trigger": "save"
+                    }))
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(forged.status(), StatusCode::BAD_REQUEST);
+    assert!(executor.observed.lock().unwrap().is_empty());
+
+    let manual = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/sync/runs")
+                .header(header::HOST, HOST)
+                .header(header::AUTHORIZATION, format!("Bearer {credential}"))
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&TriggerSyncRunRequest {
+                        expected_config_revision: revision,
+                    })
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(manual.status(), StatusCode::ACCEPTED);
+    executor.started.notified().await;
+    assert_eq!(executor.observed.lock().unwrap()[0].3, SyncTrigger::Manual);
+    executor.release.notify_one();
+}
+
+#[tokio::test]
+async fn kernel_trigger_settlement_covers_spawner_rejection_and_terminal_failure() {
+    let temporary = tempdir().unwrap();
+    let failing_spawner = Arc::new(FailingTaskSpawner::default());
+    let (_runtime, rejected_service) = sync_service_with_policy(
+        &temporary.path().join("spawn-rejected"),
+        true,
+        true,
+        "automatic",
+        test_ports_with_task_spawner(failing_spawner.clone()),
+        Arc::new(CountingExecutor::default()),
+    )
+    .await;
+
+    let (disposition, settlement) = rejected_service
+        .trigger_kernel_sync(SyncTrigger::SettingsExit)
+        .await
+        .into_parts();
+    assert_eq!(
+        disposition,
+        KernelSyncTriggerDisposition::Rejected(KernelSyncTriggerRejection::Unavailable)
+    );
+    tokio::time::timeout(Duration::from_secs(1), settlement.wait())
+        .await
+        .expect("spawner rejection must settle the barrier");
+    assert_eq!(failing_spawner.attempts.load(Ordering::SeqCst), 1);
+
+    let executor = Arc::new(ManualExecutor::default());
+    executor.fail.store(true, Ordering::SeqCst);
+    let (_runtime, failed_service) = sync_service_with_policy(
+        &temporary.path().join("executor-failed"),
+        true,
+        true,
+        "automatic",
+        test_ports(),
+        executor,
+    )
+    .await;
+    let (disposition, settlement) = failed_service
+        .trigger_kernel_sync(SyncTrigger::SettingsExit)
+        .await
+        .into_parts();
+    assert!(matches!(
+        disposition,
+        KernelSyncTriggerDisposition::Accepted(_)
+    ));
+    tokio::time::timeout(Duration::from_secs(1), settlement.wait())
+        .await
+        .expect("executor failure must settle after terminal status");
+    let status = SyncApiService::get_sync_status(failed_service.as_ref())
+        .await
+        .unwrap();
+    assert_eq!(status.completion_state, SyncCompletionState::Failed);
+    assert!(status.active_run_id.as_ref().is_none());
+}
+
+#[tokio::test]
+async fn kernel_trigger_settlement_covers_unpolled_and_running_task_drop() {
+    let temporary = tempdir().unwrap();
+    let queued_spawner = Arc::new(DeferredTaskSpawner::default());
+    let (queued_runtime, queued_service) = sync_service_with_policy(
+        &temporary.path().join("queued-drop"),
+        true,
+        true,
+        "automatic",
+        test_ports_with_task_spawner(queued_spawner.clone()),
+        Arc::new(CountingExecutor::default()),
+    )
+    .await;
+    let (disposition, settlement) = queued_service
+        .trigger_kernel_sync(SyncTrigger::SettingsExit)
+        .await
+        .into_parts();
+    assert!(matches!(
+        disposition,
+        KernelSyncTriggerDisposition::Accepted(_)
+    ));
+    drop(queued_spawner.take_task());
+    tokio::time::timeout(Duration::from_secs(1), settlement.wait())
+        .await
+        .expect("dropping a queued task must settle the barrier");
+    queued_runtime
+        .wait_for_empty_sync_run_for_test()
+        .await
+        .unwrap();
+
+    let running_spawner = Arc::new(DeferredTaskSpawner::default());
+    let executor = Arc::new(BlockingExecutor::default());
+    let (_runtime, running_service) = sync_service_with_policy(
+        &temporary.path().join("running-drop"),
+        true,
+        true,
+        "automatic",
+        test_ports_with_task_spawner(running_spawner.clone()),
+        executor.clone(),
+    )
+    .await;
+    let (disposition, settlement) = running_service
+        .trigger_kernel_sync(SyncTrigger::SettingsExit)
+        .await
+        .into_parts();
+    assert!(matches!(
+        disposition,
+        KernelSyncTriggerDisposition::Accepted(_)
+    ));
+    let task = tokio::spawn(running_spawner.take_task());
+    executor.started.notified().await;
+    task.abort();
+    assert!(task.await.unwrap_err().is_cancelled());
+    tokio::time::timeout(Duration::from_secs(1), settlement.wait())
+        .await
+        .expect("dropping a running task must settle the barrier");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn kernel_trigger_settlement_covers_workspace_cancellation_terminal() {
+    let temporary = tempdir().unwrap();
+    let executor = Arc::new(GatedCancellationExecutor::default());
+    let (runtime, service) = sync_service_with_policy(
+        &temporary.path().join("cancelled"),
+        true,
+        true,
+        "automatic",
+        test_ports(),
+        executor.clone(),
+    )
+    .await;
+    let (disposition, settlement) = service
+        .trigger_kernel_sync(SyncTrigger::SettingsExit)
+        .await
+        .into_parts();
+    assert!(matches!(
+        disposition,
+        KernelSyncTriggerDisposition::Accepted(_)
+    ));
+    executor.started.notified().await;
+
+    let transition_runtime = runtime.clone();
+    let transition = tokio::spawn(async move {
+        transition_runtime
+            .begin_sync_workspace_transition_for_test()
+            .await
+    });
+    executor.cancellation_seen.notified().await;
+    executor.release.notify_one();
+    tokio::time::timeout(Duration::from_secs(1), settlement.wait())
+        .await
+        .expect("workspace cancellation must settle after terminal status");
+    let transition = transition.await.unwrap().unwrap();
+    let status = SyncApiService::get_sync_status(service.as_ref())
+        .await
+        .unwrap();
+    assert_eq!(status.completion_state, SyncCompletionState::Failed);
+    assert_eq!(
+        status.error.as_ref().map(|error| error.code()),
+        Some("cancelled")
+    );
+    transition.reopen_for_test().await.unwrap();
+}
+
+#[test]
+fn attempting_status_callback_can_close_kernel_triggers_without_deadlock() {
+    let mut child = Command::new(std::env::current_exe().unwrap())
+        .arg("--ignored")
+        .arg("--exact")
+        .arg("attempting_status_reentrant_close_child")
+        .arg("--test-threads=1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            assert!(status.success(), "reentrant close child failed: {status}");
+            return;
+        }
+        if Instant::now() >= deadline {
+            child.kill().unwrap();
+            let _status = child.wait().unwrap();
+            panic!("Attempting event callback deadlocked while closing Kernel triggers");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[tokio::test]
+#[ignore = "child-process helper"]
+async fn attempting_status_reentrant_close_child() {
+    let temporary = tempdir().unwrap();
+    let sink = Arc::new(AttemptingReentrantCloseSink::default());
+    let (_runtime, service) = sync_service_with_policy(
+        &temporary.path().join("attempting-reentrant-close"),
+        true,
+        true,
+        "automatic",
+        test_ports_with_event_sink(sink.clone()),
+        Arc::new(CountingExecutor::default()),
+    )
+    .await;
+    sink.bind_service(&service);
+
+    wait_for_accepted_kernel_trigger(service.trigger_kernel_sync(SyncTrigger::AppLaunch).await)
+        .await;
+    assert!(sink.close_returned.load(Ordering::Acquire));
+    assert_kernel_trigger_is_closing(service.trigger_kernel_sync(SyncTrigger::Save).await).await;
+}
+
+#[tokio::test]
+async fn kernel_sync_scheduler_exposes_explicit_host_seams_and_closes_idempotently() {
+    let temporary = tempdir().unwrap();
+    let sleeper = Arc::new(ControlledSleeper::default());
+    let executor = Arc::new(TriggerRecordingExecutor::default());
+    let (_runtime, service) = sync_service_with_policy(
+        &temporary.path().join("scheduler-seams"),
+        true,
+        true,
+        "automatic",
+        test_ports_with_sleeper(sleeper.clone()),
+        executor.clone(),
+    )
+    .await;
+    let scheduler = KernelSyncScheduler::start(service).unwrap();
+    let pending_interval = sleeper.next_request().await;
+
+    wait_for_accepted_kernel_trigger(scheduler.app_launch().await).await;
+    wait_for_accepted_kernel_trigger(scheduler.save().await).await;
+    wait_for_accepted_kernel_trigger(scheduler.settings_exit().await).await;
+    assert_eq!(
+        executor.triggers.lock().unwrap().as_slice(),
+        [
+            SyncTrigger::AppLaunch,
+            SyncTrigger::Save,
+            SyncTrigger::SettingsExit
+        ]
+    );
+
+    scheduler.close().await;
+    assert!(
+        !pending_interval.fire(),
+        "closing must cancel the outstanding interval sleep"
+    );
+    tokio::time::timeout(Duration::from_secs(1), scheduler.close())
+        .await
+        .expect("closing an already closed scheduler must be waitable and idempotent");
+    let (disposition, settlement) = scheduler.save().await.into_parts();
+    assert_eq!(
+        disposition,
+        KernelSyncTriggerDisposition::Rejected(KernelSyncTriggerRejection::Closing)
+    );
+    settlement.wait().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn scheduler_close_is_not_observable_before_its_service_gate_is_closed() {
+    let temporary = tempdir().unwrap();
+    let sleeper = Arc::new(ControlledSleeper::default());
+    let close_hook = Arc::new(KernelSyncSchedulerCloseTestHook::default());
+    let (_runtime, service) = sync_service_with_policy(
+        &temporary.path().join("scheduler-close-linearization"),
+        true,
+        true,
+        "automatic",
+        test_ports_with_sleeper(sleeper.clone()),
+        Arc::new(CountingExecutor::default()),
+    )
+    .await;
+    let scheduler = Arc::new(
+        KernelSyncScheduler::start_with_close_hook_for_test(service.clone(), close_hook.clone())
+            .unwrap(),
+    );
+    let pending_interval = sleeper.next_request().await;
+
+    let first_scheduler = scheduler.clone();
+    let first_close = tokio::spawn(async move {
+        first_scheduler.close().await;
+    });
+    close_hook.wait_until_blocked().await;
+    assert!(
+        pending_interval.fire(),
+        "the blocked close must leave the scheduler task available to observe close state"
+    );
+
+    let second_scheduler = scheduler.clone();
+    let mut second_close = tokio::spawn(async move {
+        second_scheduler.close().await;
+    });
+    let early_second_close =
+        tokio::time::timeout(Duration::from_millis(100), &mut second_close).await;
+    let second_close_returned_before_gate = early_second_close.is_ok();
+
+    close_hook.release();
+    first_close.await.unwrap();
+    match early_second_close {
+        Ok(result) => result.unwrap(),
+        Err(_) => second_close.await.unwrap(),
+    }
+
+    assert!(
+        !second_close_returned_before_gate,
+        "a concurrent close must not observe scheduler end before the service gate closes"
+    );
+    assert_kernel_trigger_is_closing(scheduler.app_launch().await).await;
+    assert_kernel_trigger_is_closing(scheduler.save().await).await;
+    assert_kernel_trigger_is_closing(scheduler.settings_exit().await).await;
+    assert_kernel_trigger_is_closing(service.trigger_kernel_sync(SyncTrigger::Interval).await)
+        .await;
+}
+
+#[tokio::test]
+async fn kernel_sync_scheduler_rejects_a_task_spawner_that_drops_the_scheduler_task() {
+    let temporary = tempdir().unwrap();
+    let (_runtime, service) = sync_service_with_policy(
+        &temporary.path().join("scheduler-spawn-drop"),
+        true,
+        true,
+        "automatic",
+        test_ports_with_task_spawner(Arc::new(DroppingSuccessfulTaskSpawner)),
+        Arc::new(CountingExecutor::default()),
+    )
+    .await;
+
+    KernelSyncScheduler::start(service.clone()).unwrap_err();
+    let (disposition, settlement) = service
+        .trigger_kernel_sync(SyncTrigger::AppLaunch)
+        .await
+        .into_parts();
+    assert_eq!(
+        disposition,
+        KernelSyncTriggerDisposition::Rejected(KernelSyncTriggerRejection::Closing)
+    );
+    settlement.wait().await;
+}
+
+#[tokio::test]
+async fn kernel_sync_scheduler_task_drop_closes_every_internal_trigger_seam() {
+    let temporary = tempdir().unwrap();
+    let spawner = Arc::new(DeferredTaskSpawner::default());
+    let (_runtime, service) = sync_service_with_policy(
+        &temporary.path().join("scheduler-delayed-task-drop"),
+        true,
+        true,
+        "automatic",
+        test_ports_with_task_spawner(spawner.clone()),
+        Arc::new(CountingExecutor::default()),
+    )
+    .await;
+    let scheduler = KernelSyncScheduler::start(service.clone()).unwrap();
+
+    drop(spawner.take_task());
+
+    assert_kernel_trigger_is_closing(scheduler.app_launch().await).await;
+    assert_kernel_trigger_is_closing(scheduler.save().await).await;
+    assert_kernel_trigger_is_closing(scheduler.settings_exit().await).await;
+    assert_kernel_trigger_is_closing(service.trigger_kernel_sync(SyncTrigger::Interval).await)
+        .await;
+}
+
+#[tokio::test]
+async fn dropping_the_kernel_sync_scheduler_handle_closes_its_owned_service_gate() {
+    let temporary = tempdir().unwrap();
+    let sleeper = Arc::new(ControlledSleeper::default());
+    let (_runtime, service) = sync_service_with_policy(
+        &temporary.path().join("scheduler-handle-drop"),
+        true,
+        true,
+        "automatic",
+        test_ports_with_sleeper(sleeper.clone()),
+        Arc::new(CountingExecutor::default()),
+    )
+    .await;
+    let scheduler = KernelSyncScheduler::start(service.clone()).unwrap();
+    let pending = sleeper.next_request().await;
+
+    drop(scheduler);
+
+    tokio::time::timeout(Duration::from_secs(1), pending.wait_cancelled())
+        .await
+        .expect("dropping the owner handle must stop its scheduler task");
+    assert_kernel_trigger_is_closing(service.trigger_kernel_sync(SyncTrigger::Save).await).await;
+}
+
+#[tokio::test]
+async fn kernel_sync_scheduler_has_one_service_owner_and_rejected_starts_do_not_close_it() {
+    let temporary = tempdir().unwrap();
+    let sleeper = Arc::new(ControlledSleeper::default());
+    let executor = Arc::new(CountingExecutor::default());
+    let (_runtime, service) = sync_service_with_policy(
+        &temporary.path().join("scheduler-unique-owner"),
+        true,
+        true,
+        "automatic",
+        test_ports_with_sleeper(sleeper.clone()),
+        executor.clone(),
+    )
+    .await;
+    let owner = KernelSyncScheduler::start(service.clone()).unwrap();
+    let pending = sleeper.next_request().await;
+
+    KernelSyncScheduler::start(service.clone()).unwrap_err();
+    wait_for_accepted_kernel_trigger(owner.app_launch().await).await;
+    assert_eq!(executor.runs.load(Ordering::SeqCst), 1);
+
+    owner.close().await;
+    assert!(!pending.fire());
+    assert_kernel_trigger_is_closing(service.trigger_kernel_sync(SyncTrigger::Save).await).await;
+}
+
+#[tokio::test]
+async fn kernel_sync_scheduler_uses_only_its_sync_service_runtime() {
+    let temporary = tempdir().unwrap();
+    let service_sleeper = Arc::new(ControlledSleeper::default());
+    let (_service_runtime, service) = sync_service_with_policy(
+        &temporary.path().join("scheduler-service-runtime"),
+        true,
+        true,
+        "automatic",
+        test_ports_with_sleeper(service_sleeper.clone()),
+        Arc::new(CountingExecutor::default()),
+    )
+    .await;
+    let foreign_sleeper = Arc::new(ControlledSleeper::default());
+    let (_foreign_runtime, _foreign_service) = sync_service_with_policy(
+        &temporary.path().join("scheduler-foreign-runtime"),
+        true,
+        true,
+        "automatic",
+        test_ports_with_sleeper(foreign_sleeper.clone()),
+        Arc::new(CountingExecutor::default()),
+    )
+    .await;
+
+    let scheduler = KernelSyncScheduler::start(service).unwrap();
+    let pending = service_sleeper.next_request().await;
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), foreign_sleeper.next_request())
+            .await
+            .is_err(),
+        "a scheduler must not read ports from another Kernel runtime"
+    );
+    scheduler.close().await;
+    assert!(!pending.fire());
+}
+
+#[tokio::test]
+async fn kernel_sync_scheduler_reloads_revision_and_replaces_one_interval_timer_on_config_changes()
+{
+    let temporary = tempdir().unwrap();
+    let sleeper = Arc::new(ControlledSleeper::default());
+    let executor = Arc::new(TriggerRecordingExecutor::default());
+    let (runtime, service) = sync_service_with_policy(
+        &temporary.path().join("scheduler-refresh"),
+        true,
+        true,
+        "automatic",
+        test_ports_with_sleeper(sleeper.clone()),
+        executor.clone(),
+    )
+    .await;
+    let scheduler = KernelSyncScheduler::start(service.clone()).unwrap();
+
+    let first = sleeper.next_request().await;
+    assert_eq!(first.duration, Duration::from_secs(30));
+    let before = SyncApiService::get_sync_config(service.as_ref())
+        .await
+        .unwrap();
+    let sixty_seconds = SyncApiService::patch_sync_config(
+        service.as_ref(),
+        PatchSyncConfigRequest {
+            expected_revision: before.revision,
+            changes: SyncConfigChangesDto {
+                interval_seconds: Some(SyncIntervalSeconds::new(60).unwrap()),
+                ..SyncConfigChangesDto::default()
+            },
+        },
+    )
+    .await
+    .unwrap();
+    let second = sleeper.next_request().await;
+    assert_eq!(second.duration, Duration::from_secs(60));
+    assert!(!first.fire(), "the superseded interval must be cancelled");
+
+    let fully_manual = SyncApiService::patch_sync_config(
+        service.as_ref(),
+        PatchSyncConfigRequest {
+            expected_revision: sixty_seconds.revision,
+            changes: SyncConfigChangesDto {
+                mode: Some(qingyu_kernel::contract::SyncMode::FullyManual),
+                ..SyncConfigChangesDto::default()
+            },
+        },
+    )
+    .await
+    .unwrap();
+    tokio::time::timeout(Duration::from_secs(1), second.wait_cancelled())
+        .await
+        .expect("mode changes must cancel the old timer");
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), sleeper.next_request())
+            .await
+            .is_err(),
+        "fully-manual mode must not retain or create an interval timer"
+    );
+
+    let automatic = SyncApiService::patch_sync_config(
+        service.as_ref(),
+        PatchSyncConfigRequest {
+            expected_revision: fully_manual.revision,
+            changes: SyncConfigChangesDto {
+                mode: Some(qingyu_kernel::contract::SyncMode::Automatic),
+                ..SyncConfigChangesDto::default()
+            },
+        },
+    )
+    .await
+    .unwrap();
+    let current = sleeper.next_request().await;
+    assert_eq!(current.duration, Duration::from_secs(60));
+    let mut events = runtime.event_broker().subscribe();
+    assert!(current.fire());
+    executor.completed.notified().await;
+    let attempting = events.recv().await.unwrap();
+    let terminal = events.recv().await.unwrap();
+    assert_eq!(attempting.revision, automatic.revision);
+    assert_eq!(terminal.revision, automatic.revision);
+    assert!(matches!(
+        attempting.event,
+        DomainEvent::SyncStatusChanged { ref status }
+            if status.last_trigger.as_ref() == Some(&SyncTrigger::Interval)
+                && status.completion_state == SyncCompletionState::Attempting
+    ));
+    assert!(matches!(
+        terminal.event,
+        DomainEvent::SyncStatusChanged { ref status }
+            if status.last_trigger.as_ref() == Some(&SyncTrigger::Interval)
+                && status.completion_state == SyncCompletionState::Succeeded
+    ));
+    assert_eq!(
+        executor.triggers.lock().unwrap().as_slice(),
+        [SyncTrigger::Interval]
+    );
+
+    let next = sleeper.next_request().await;
+    scheduler.close().await;
+    assert!(!next.fire());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn kernel_sync_scheduler_rejects_an_expired_timer_before_config_change_publication() {
+    let temporary = tempdir().unwrap();
+    let publication_gate = Arc::new(SyncConfigPublicationGate::default());
+    let sleeper = Arc::new(ControlledSleeper::default());
+    let executor = Arc::new(TriggerRecordingExecutor::default());
+    let (_runtime, service) = sync_service_with_policy(
+        &temporary.path().join("scheduler-stale-timer"),
+        true,
+        true,
+        "automatic",
+        test_ports_with_event_sink_and_sleeper(publication_gate.clone(), sleeper.clone()),
+        executor.clone(),
+    )
+    .await;
+    let scheduler = KernelSyncScheduler::start(service.clone()).unwrap();
+    let expired = sleeper.next_request().await;
+    let before = SyncApiService::get_sync_config(service.as_ref())
+        .await
+        .unwrap();
+    let patch_service = service.clone();
+    let patch = tokio::spawn(async move {
+        SyncApiService::patch_sync_config(
+            patch_service.as_ref(),
+            PatchSyncConfigRequest {
+                expected_revision: before.revision,
+                changes: SyncConfigChangesDto {
+                    interval_seconds: Some(SyncIntervalSeconds::new(60).unwrap()),
+                    ..SyncConfigChangesDto::default()
+                },
+            },
+        )
+        .await
+    });
+    publication_gate.wait_for_sync_config_publication().await;
+    assert!(expired.fire());
+    sleeper.wait_for_completion().await;
+    publication_gate.release_sync_config_publication();
+    let patched = patch.await.unwrap().unwrap();
+    let replacement = tokio::time::timeout(Duration::from_secs(1), sleeper.next_request())
+        .await
+        .expect("the stale generation must settle and reload the installed config");
+    let runs_after_replacement = executor.triggers.lock().unwrap().clone();
+
+    assert!(
+        runs_after_replacement.is_empty(),
+        "an expired 30-second timer ran immediately against revision {}",
+        patched.revision.as_str()
+    );
+    assert_eq!(replacement.duration, Duration::from_secs(60));
+    scheduler.close().await;
+    assert!(!replacement.fire());
+}
+
+#[tokio::test]
+async fn kernel_sync_scheduler_waits_for_interval_settlement_before_arming_the_next_timer() {
+    let temporary = tempdir().unwrap();
+    let sleeper = Arc::new(ControlledSleeper::default());
+    let executor = Arc::new(BlockingExecutor::default());
+    let (_runtime, service) = sync_service_with_policy(
+        &temporary.path().join("scheduler-singleflight"),
+        true,
+        true,
+        "automatic",
+        test_ports_with_sleeper(sleeper.clone()),
+        executor.clone(),
+    )
+    .await;
+    let scheduler = KernelSyncScheduler::start(service).unwrap();
+
+    assert!(sleeper.next_request().await.fire());
+    executor.started.notified().await;
+    assert!(
+        tokio::time::timeout(Duration::from_millis(50), sleeper.next_request())
+            .await
+            .is_err(),
+        "a running interval sync must not overlap a second scheduler timer"
+    );
+    executor.release.notify_one();
+    let next = sleeper.next_request().await;
+    scheduler.close().await;
+    assert!(!next.fire());
+    assert_eq!(executor.runs.load(Ordering::SeqCst), 1);
+}
+
+async fn runtime_wait_for_idle(service: &SyncService) {
+    for _ in 0..100 {
+        if SyncApiService::get_sync_status(service)
+            .await
+            .unwrap()
+            .active_run_id
+            .as_ref()
+            .is_none()
+        {
+            return;
+        }
+        tokio::task::yield_now().await;
+    }
+    panic!("sync run did not settle");
+}
+
+async fn wait_for_accepted_kernel_trigger(
+    result: qingyu_kernel::services::sync::KernelSyncTriggerResult,
+) {
+    let (disposition, settlement) = result.into_parts();
+    assert!(
+        matches!(disposition, KernelSyncTriggerDisposition::Accepted(_)),
+        "explicit scheduler seam was rejected: {disposition:?}"
+    );
+    settlement.wait().await;
+}
+
+async fn assert_kernel_trigger_is_closing(
+    result: qingyu_kernel::services::sync::KernelSyncTriggerResult,
+) {
+    let (disposition, settlement) = result.into_parts();
+    assert_eq!(
+        disposition,
+        KernelSyncTriggerDisposition::Rejected(KernelSyncTriggerRejection::Closing)
+    );
+    settlement.wait().await;
 }

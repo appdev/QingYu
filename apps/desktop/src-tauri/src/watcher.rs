@@ -1,27 +1,211 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+use cap_std::fs::Dir;
 use notify::event::{CreateKind, RemoveKind};
 use notify::{Event, EventKind};
+use qingyu_kernel::ignore_rules::MARKRA_IGNORE_FILE_NAME;
 use tauri::{Emitter, Manager};
 
 use crate::dejavu_sync::commands::DejavuSchedulerOwner;
 use crate::markdown_files::MarkdownIgnoreRules;
 use crate::protected_paths::path_contains_qingyu_control_directory;
+use crate::storage_capability::{
+    directory_identity, open_canonical_directory_nofollow, DirectoryIdentity,
+};
 
 mod directory;
 
-use directory::DirectoryWatcher;
+use directory::{DirectoryWatcher, DirectoryWatcherNotice};
 
 const MARKDOWN_FILE_CHANGED_EVENT: &str = "markra://file-changed";
 const MARKDOWN_TREE_CHANGED_EVENT: &str = "markra://tree-changed";
 
 struct ActiveMarkdownWatcher {
-    ignore_rules: Arc<Mutex<MarkdownIgnoreRules>>,
+    health: Arc<MarkdownWatcherHealth>,
     subscriber_count: usize,
     watch_root: PathBuf,
     watcher: DirectoryWatcher,
+}
+
+#[derive(Default)]
+struct MarkdownWatcherHealth {
+    faulted: AtomicBool,
+}
+
+impl MarkdownWatcherHealth {
+    fn mark_faulted(&self) {
+        self.faulted.store(true, Ordering::Release);
+    }
+
+    fn mark_faulted_by(&self, _error: &notify::Error) {
+        self.mark_faulted();
+    }
+
+    fn mark_healthy(&self) {
+        self.faulted.store(false, Ordering::Release);
+    }
+
+    fn is_faulted(&self) -> bool {
+        self.faulted.load(Ordering::Acquire)
+    }
+}
+
+enum MarkdownWatcherCallback {
+    Event(Event),
+    Recovered,
+}
+
+fn watcher_notice_for_callback(
+    notice: DirectoryWatcherNotice,
+    health: &MarkdownWatcherHealth,
+) -> Option<MarkdownWatcherCallback> {
+    match notice {
+        DirectoryWatcherNotice::Event(event) => Some(MarkdownWatcherCallback::Event(event)),
+        DirectoryWatcherNotice::Recovered => {
+            health.mark_healthy();
+            Some(MarkdownWatcherCallback::Recovered)
+        }
+        DirectoryWatcherNotice::Error(error) => {
+            health.mark_faulted_by(&error);
+            None
+        }
+    }
+}
+
+struct MarkdownWatchIgnoreRules {
+    root: PathBuf,
+    retained_root: Dir,
+    root_identity: DirectoryIdentity,
+    global_rules: Option<String>,
+    current: Option<MarkdownIgnoreRules>,
+}
+
+impl MarkdownWatchIgnoreRules {
+    fn try_new(root: &Path, global_rules: Option<&str>) -> Result<Self, String> {
+        let root = root.to_path_buf();
+        let retained_root = open_canonical_directory_nofollow(&root)
+            .map_err(|_| "workspace root changed".to_string())?;
+        let root_identity =
+            directory_identity(&retained_root).map_err(|_| "workspace root changed".to_string())?;
+        let current =
+            MarkdownIgnoreRules::try_for_retained_root(&root, &retained_root, global_rules)
+                .map_err(|error| error.to_string())?;
+
+        let result = Self {
+            root,
+            retained_root,
+            root_identity,
+            global_rules: global_rules.map(str::to_string),
+            current: Some(current),
+        };
+        result.verify_root()?;
+        Ok(result)
+    }
+
+    fn current(&mut self) -> Result<&MarkdownIgnoreRules, String> {
+        if let Err(error) = self.verify_root() {
+            self.current = None;
+            return Err(error);
+        }
+        self.current
+            .as_ref()
+            .ok_or_else(|| "workspace ignore rules are unavailable".to_string())
+    }
+
+    fn is_control_file(&self, path: &Path) -> bool {
+        path.parent() == Some(self.root.as_path())
+            && path.file_name() == Some(std::ffi::OsStr::new(MARKRA_IGNORE_FILE_NAME))
+    }
+
+    #[cfg(test)]
+    fn reload_for_event(&mut self, event: &Event) -> Result<(), String> {
+        match self.stage_for_event(event)? {
+            Some(candidate) => self.finish_reconcile(candidate, Ok(())),
+            None => self.current().map(|_| ()),
+        }
+    }
+
+    fn stage_for_event(&mut self, event: &Event) -> Result<Option<Self>, String> {
+        if let Err(error) = self.verify_root() {
+            self.current = None;
+            return Err(error);
+        }
+        if !event.need_rescan()
+            && !event
+                .paths
+                .iter()
+                .any(|event_path| self.is_control_file(event_path))
+        {
+            return Ok(None);
+        }
+        let retained_root = match self.retained_root.try_clone() {
+            Ok(retained_root) => retained_root,
+            Err(_) => {
+                self.current = None;
+                return Err("workspace root changed".to_string());
+            }
+        };
+        let current = match MarkdownIgnoreRules::try_for_retained_root(
+            &self.root,
+            &retained_root,
+            self.global_rules.as_deref(),
+        ) {
+            Ok(current) => current,
+            Err(error) => {
+                self.current = None;
+                return Err(error.to_string());
+            }
+        };
+        if let Err(error) = self.verify_root() {
+            self.current = None;
+            return Err(error);
+        }
+        Ok(Some(Self {
+            root: self.root.clone(),
+            retained_root,
+            root_identity: self.root_identity,
+            global_rules: self.global_rules.clone(),
+            current: Some(current),
+        }))
+    }
+
+    fn finish_reconcile(
+        &mut self,
+        candidate: Self,
+        result: Result<(), String>,
+    ) -> Result<(), String> {
+        match result {
+            Ok(()) => {
+                if let Err(error) = candidate.verify_root() {
+                    self.current = None;
+                    return Err(error);
+                }
+                *self = candidate;
+                Ok(())
+            }
+            Err(error) => {
+                self.current = None;
+                Err(error)
+            }
+        }
+    }
+
+    fn verify_root(&self) -> Result<(), String> {
+        let current = open_canonical_directory_nofollow(&self.root)
+            .and_then(|directory| directory_identity(&directory))
+            .map_err(|_| "workspace root changed".to_string())?;
+        if current != self.root_identity {
+            return Err("workspace root changed".to_string());
+        }
+        Ok(())
+    }
+
+    fn invalidate(&mut self) {
+        self.current = None;
+    }
 }
 
 #[derive(Default)]
@@ -88,16 +272,6 @@ fn markdown_event_path_is_directory(event: &Event, path: &Path) -> bool {
     ) || path.is_dir()
 }
 
-fn reload_markdown_ignore_rules_for_event(event: &Event, ignore_rules: &mut MarkdownIgnoreRules) {
-    if event
-        .paths
-        .iter()
-        .any(|event_path| ignore_rules.is_control_file(event_path))
-    {
-        ignore_rules.reload();
-    }
-}
-
 fn markdown_tree_event_path<'a>(
     event: &'a Event,
     root: &Path,
@@ -153,16 +327,21 @@ fn has_active_watcher_subscription(
         .map_err(|_| "markdown watcher state lock is poisoned".to_string())?;
 
     if let Some(watcher) = active_watchers.get_mut(path) {
-        let mut ignore_rules = watcher
-            .ignore_rules
-            .lock()
-            .map_err(|_| "markdown ignore rules lock is poisoned".to_string())?;
+        if watcher.health.is_faulted() {
+            return Ok(false);
+        }
         // React may subscribe with new settings before the previous async unwatch
         // reaches Rust, so refresh a shared watcher's matcher during subscription.
-        *ignore_rules = MarkdownIgnoreRules::for_root(ignore_root, global_ignore_rules);
-        // Linux reconciliation reads this matcher on its coordinator thread.
-        drop(ignore_rules);
-        watcher.watcher.reconcile()?;
+        if let Err(error) = watcher
+            .watcher
+            .replace_rules(ignore_root, global_ignore_rules)
+        {
+            watcher.health.mark_faulted();
+            return Err(error);
+        }
+        if watcher.health.is_faulted() {
+            return Ok(false);
+        }
         watcher.subscriber_count += 1;
         return Ok(true);
     }
@@ -175,25 +354,42 @@ fn remember_active_watcher(
     path: PathBuf,
     watch_root: PathBuf,
     watcher: DirectoryWatcher,
-    ignore_rules: Arc<Mutex<MarkdownIgnoreRules>>,
+    ignore_rules: Arc<Mutex<MarkdownWatchIgnoreRules>>,
+    health: Arc<MarkdownWatcherHealth>,
 ) -> Result<(), String> {
     let mut active_watchers = watcher_state
         .lock()
         .map_err(|_| "markdown watcher state lock is poisoned".to_string())?;
 
     if let Some(existing_watcher) = active_watchers.get_mut(&path) {
-        let mut existing_ignore_rules = existing_watcher
-            .ignore_rules
+        if existing_watcher.health.is_faulted() {
+            let subscriber_count = existing_watcher.subscriber_count.saturating_add(1);
+            let displaced = std::mem::replace(
+                existing_watcher,
+                ActiveMarkdownWatcher {
+                    health,
+                    subscriber_count,
+                    watch_root,
+                    watcher,
+                },
+            );
+            drop(active_watchers);
+            drop(displaced);
+            return Ok(());
+        }
+        let next_ignore_rules = ignore_rules
             .lock()
             .map_err(|_| "markdown ignore rules lock is poisoned".to_string())?;
-        let mut next_ignore_rules = ignore_rules
-            .lock()
-            .map_err(|_| "markdown ignore rules lock is poisoned".to_string())?;
-        std::mem::swap(&mut *existing_ignore_rules, &mut *next_ignore_rules);
-        // Release both matcher locks before waiting for Linux reconciliation.
-        drop(existing_ignore_rules);
+        let next_root = next_ignore_rules.root.clone();
+        let next_global_rules = next_ignore_rules.global_rules.clone();
         drop(next_ignore_rules);
-        existing_watcher.watcher.reconcile()?;
+        if let Err(error) = existing_watcher
+            .watcher
+            .replace_rules(&next_root, next_global_rules.as_deref())
+        {
+            existing_watcher.health.mark_faulted();
+            return Err(error);
+        }
         existing_watcher.subscriber_count += 1;
         return Ok(());
     }
@@ -201,7 +397,7 @@ fn remember_active_watcher(
     active_watchers.insert(
         path.clone(),
         ActiveMarkdownWatcher {
-            ignore_rules,
+            health,
             subscriber_count: 1,
             watch_root,
             watcher,
@@ -261,47 +457,65 @@ pub(crate) fn watch_markdown_file(
     let emitted_root = watch_root.to_string_lossy().to_string();
     let callback_path = watched_path.clone();
     let callback_root = watch_root.clone();
-    let ignore_rules = Arc::new(Mutex::new(MarkdownIgnoreRules::for_root(
+    let ignore_rules = Arc::new(Mutex::new(MarkdownWatchIgnoreRules::try_new(
         &ignore_root,
         global_ignore_rules.as_deref(),
-    )));
+    )?));
     let callback_ignore_rules = Arc::clone(&ignore_rules);
+    let health = Arc::new(MarkdownWatcherHealth::default());
+    let callback_health = Arc::clone(&health);
 
     // Watch the parent tree so atomic saves and adjacent pasted assets are still visible.
-    let watcher = DirectoryWatcher::new(
-        &watch_root,
-        Arc::clone(&ignore_rules),
-        move |result: notify::Result<Event>| {
-            let Ok(event) = result else {
-                return;
-            };
+    let watcher = DirectoryWatcher::new(&watch_root, Arc::clone(&ignore_rules), move |notice| {
+        let Some(callback) = watcher_notice_for_callback(notice, &callback_health) else {
+            return;
+        };
 
-            if is_target_file_event(&event, &callback_path) {
-                let _ = app.emit(
-                    MARKDOWN_FILE_CHANGED_EVENT,
-                    MarkdownFileChanged {
-                        path: emitted_path.clone(),
-                    },
-                );
-            }
+        let MarkdownWatcherCallback::Event(event) = callback else {
+            let _ = app.emit(
+                MARKDOWN_FILE_CHANGED_EVENT,
+                MarkdownFileChanged {
+                    path: emitted_path.clone(),
+                },
+            );
+            let _ = app.emit(
+                MARKDOWN_TREE_CHANGED_EVENT,
+                MarkdownTreeChanged {
+                    path: emitted_root.clone(),
+                    root_path: emitted_root.clone(),
+                },
+            );
+            return;
+        };
 
-            let Ok(mut ignore_rules) = callback_ignore_rules.lock() else {
-                return;
-            };
-            reload_markdown_ignore_rules_for_event(&event, &mut ignore_rules);
-            if let Some(event_path) =
-                markdown_tree_event_path(&event, &callback_root, &ignore_rules)
-            {
-                let _ = app.emit(
-                    MARKDOWN_TREE_CHANGED_EVENT,
-                    MarkdownTreeChanged {
-                        path: event_path.to_string_lossy().to_string(),
-                        root_path: emitted_root.clone(),
-                    },
-                );
-            }
-        },
-    )?;
+        let Ok(mut ignore_rules) = callback_ignore_rules.lock() else {
+            return;
+        };
+        let Ok(current_ignore_rules) = ignore_rules.current() else {
+            return;
+        };
+
+        if is_target_file_event(&event, &callback_path) {
+            let _ = app.emit(
+                MARKDOWN_FILE_CHANGED_EVENT,
+                MarkdownFileChanged {
+                    path: emitted_path.clone(),
+                },
+            );
+        }
+
+        if let Some(event_path) =
+            markdown_tree_event_path(&event, &callback_root, current_ignore_rules)
+        {
+            let _ = app.emit(
+                MARKDOWN_TREE_CHANGED_EVENT,
+                MarkdownTreeChanged {
+                    path: event_path.to_string_lossy().to_string(),
+                    root_path: emitted_root.clone(),
+                },
+            );
+        }
+    })?;
 
     remember_active_watcher(
         &watcher_state.0,
@@ -309,6 +523,7 @@ pub(crate) fn watch_markdown_file(
         watch_root,
         watcher,
         ignore_rules,
+        health,
     )
 }
 
@@ -355,39 +570,50 @@ pub(crate) fn watch_markdown_tree(
     }
     let emitted_root = watch_root.to_string_lossy().to_string();
     let callback_root = watch_root.clone();
-    let ignore_rules = Arc::new(Mutex::new(MarkdownIgnoreRules::for_root(
+    let ignore_rules = Arc::new(Mutex::new(MarkdownWatchIgnoreRules::try_new(
         &callback_root,
         global_ignore_rules.as_deref(),
-    )));
+    )?));
     let callback_ignore_rules = Arc::clone(&ignore_rules);
+    let health = Arc::new(MarkdownWatcherHealth::default());
+    let callback_health = Arc::clone(&health);
 
     let callback_app = app.clone();
-    let watcher = DirectoryWatcher::new(
-        &watch_root,
-        Arc::clone(&ignore_rules),
-        move |result: notify::Result<Event>| {
-            let Ok(event) = result else {
-                return;
-            };
+    let watcher = DirectoryWatcher::new(&watch_root, Arc::clone(&ignore_rules), move |notice| {
+        let Some(callback) = watcher_notice_for_callback(notice, &callback_health) else {
+            return;
+        };
 
-            let Ok(mut ignore_rules) = callback_ignore_rules.lock() else {
-                return;
-            };
-            reload_markdown_ignore_rules_for_event(&event, &mut ignore_rules);
-            if let Some(event_path) =
-                markdown_tree_event_path(&event, &callback_root, &ignore_rules)
-            {
-                scheduler_owner_for(&callback_app).record_file_change(&callback_root, event_path);
-                let _ = callback_app.emit(
-                    MARKDOWN_TREE_CHANGED_EVENT,
-                    MarkdownTreeChanged {
-                        path: event_path.to_string_lossy().to_string(),
-                        root_path: emitted_root.clone(),
-                    },
-                );
-            }
-        },
-    )?;
+        let MarkdownWatcherCallback::Event(event) = callback else {
+            let _ = callback_app.emit(
+                MARKDOWN_TREE_CHANGED_EVENT,
+                MarkdownTreeChanged {
+                    path: emitted_root.clone(),
+                    root_path: emitted_root.clone(),
+                },
+            );
+            return;
+        };
+
+        let Ok(mut ignore_rules) = callback_ignore_rules.lock() else {
+            return;
+        };
+        let Ok(current_ignore_rules) = ignore_rules.current() else {
+            return;
+        };
+        if let Some(event_path) =
+            markdown_tree_event_path(&event, &callback_root, current_ignore_rules)
+        {
+            scheduler_owner_for(&callback_app).record_file_change(&callback_root, event_path);
+            let _ = callback_app.emit(
+                MARKDOWN_TREE_CHANGED_EVENT,
+                MarkdownTreeChanged {
+                    path: event_path.to_string_lossy().to_string(),
+                    root_path: emitted_root.clone(),
+                },
+            );
+        }
+    })?;
 
     remember_active_watcher(
         &watcher_state.0,
@@ -395,6 +621,7 @@ pub(crate) fn watch_markdown_tree(
         watch_root.clone(),
         watcher,
         ignore_rules,
+        health,
     )?;
     scheduler_owner.activate_root(&watch_root);
     Ok(())
@@ -422,13 +649,149 @@ fn scheduler_owner_for<R: tauri::Runtime>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use notify::event::Flag;
     use notify::event::{CreateKind, DataChange, ModifyKind, RemoveKind};
     use std::collections::HashMap;
 
     use crate::protected_paths::{LEGACY_SYNC_DIR, QINGYU_CONTROL_DIR};
 
+    fn test_root(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "markra-watcher-{name}-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock should be after epoch")
+                .as_nanos()
+        ))
+    }
+
+    fn test_active_directory_watcher(
+        root: &Path,
+    ) -> (DirectoryWatcher, Arc<Mutex<MarkdownWatchIgnoreRules>>) {
+        let rules = Arc::new(Mutex::new(
+            MarkdownWatchIgnoreRules::try_new(root, None).expect("test watcher rules should load"),
+        ));
+        let watcher = DirectoryWatcher::new(root, Arc::clone(&rules), |_| {})
+            .expect("test directory watcher should start");
+        (watcher, rules)
+    }
+
+    #[test]
+    fn callback_errors_mark_the_watcher_faulted() {
+        let health = MarkdownWatcherHealth::default();
+
+        let event = watcher_notice_for_callback(
+            DirectoryWatcherNotice::Error(notify::Error::generic("watch backend failed")),
+            &health,
+        );
+
+        assert!(event.is_none());
+        assert!(health.is_faulted());
+    }
+
+    #[test]
+    fn ordinary_events_do_not_clear_an_exhausted_recovery_fault() {
+        let health = MarkdownWatcherHealth::default();
+        let _ = watcher_notice_for_callback(
+            DirectoryWatcherNotice::Error(notify::Error::generic("watch backend failed")),
+            &health,
+        );
+
+        let callback = watcher_notice_for_callback(
+            DirectoryWatcherNotice::Event(Event::new(EventKind::Any)),
+            &health,
+        );
+
+        assert!(matches!(callback, Some(MarkdownWatcherCallback::Event(_))));
+        assert!(health.is_faulted());
+    }
+
+    #[test]
+    fn recovered_backends_request_a_rescan_without_faulting_the_subscription() {
+        let health = MarkdownWatcherHealth::default();
+        health.mark_faulted();
+
+        let callback = watcher_notice_for_callback(DirectoryWatcherNotice::Recovered, &health);
+
+        assert!(matches!(callback, Some(MarkdownWatcherCallback::Recovered)));
+        assert!(!health.is_faulted());
+    }
+
+    #[test]
+    fn faulted_active_watchers_are_not_reused_for_new_subscriptions() {
+        let root = test_root("faulted-reuse");
+        std::fs::create_dir_all(&root).expect("test root should be created");
+        let (watcher, _rules) = test_active_directory_watcher(&root);
+        let health = Arc::new(MarkdownWatcherHealth::default());
+        health.faulted.store(true, Ordering::Release);
+        let watchers = Mutex::new(HashMap::from([(
+            root.clone(),
+            ActiveMarkdownWatcher {
+                health,
+                subscriber_count: 2,
+                watch_root: root.clone(),
+                watcher,
+            },
+        )]));
+
+        let reused = has_active_watcher_subscription(&watchers, &root, &root, None)
+            .expect("faulted watcher lookup should complete");
+
+        assert!(!reused);
+        drop(watchers);
+        std::fs::remove_dir_all(root).expect("test root should be removed");
+    }
+
+    #[test]
+    fn remembering_a_new_watcher_atomically_replaces_a_fault_and_preserves_subscribers() {
+        let root = test_root("faulted-replacement");
+        std::fs::create_dir_all(&root).expect("test root should be created");
+        let (old_watcher, _old_rules) = test_active_directory_watcher(&root);
+        let old_health = Arc::new(MarkdownWatcherHealth::default());
+        old_health.faulted.store(true, Ordering::Release);
+        let watchers = Mutex::new(HashMap::from([(
+            root.clone(),
+            ActiveMarkdownWatcher {
+                health: old_health,
+                subscriber_count: 2,
+                watch_root: root.clone(),
+                watcher: old_watcher,
+            },
+        )]));
+        let (new_watcher, new_rules) = test_active_directory_watcher(&root);
+        let new_health = Arc::new(MarkdownWatcherHealth::default());
+
+        remember_active_watcher(
+            &watchers,
+            root.clone(),
+            root.clone(),
+            new_watcher,
+            new_rules,
+            Arc::clone(&new_health),
+        )
+        .expect("replacement watcher should be remembered");
+
+        let watchers_guard = watchers.lock().expect("watcher state should lock");
+        let active = watchers_guard
+            .get(&root)
+            .expect("replacement watcher should remain active");
+        assert_eq!(active.subscriber_count, 3);
+        assert!(Arc::ptr_eq(&active.health, &new_health));
+        assert!(!active.health.is_faulted());
+        drop(watchers_guard);
+        drop(watchers);
+        std::fs::remove_dir_all(root).expect("test root should be removed");
+    }
+
+    fn strict_test_rules(root: &Path, global_rules: Option<&str>) -> MarkdownIgnoreRules {
+        let retained_root = Dir::open_ambient_dir(root, cap_std::ambient_authority())
+            .expect("test root should open");
+        MarkdownIgnoreRules::try_for_retained_root(root, &retained_root, global_rules)
+            .expect("test ignore rules should be valid")
+    }
+
     fn test_markdown_tree_event_path<'a>(event: &'a Event, root: &Path) -> Option<&'a Path> {
-        let ignore_rules = MarkdownIgnoreRules::for_root(root, None);
+        let ignore_rules = strict_test_rules(root, None);
         markdown_tree_event_path(event, root, &ignore_rules)
     }
 
@@ -454,17 +817,18 @@ mod tests {
 
     #[test]
     fn parent_ignore_roots_still_protect_control_directory_file_watches() {
+        let root = test_root("protected-file-watch");
         for control_directory in [QINGYU_CONTROL_DIR, LEGACY_SYNC_DIR] {
-            let watched_path = PathBuf::from("/mock-workspace")
-                .join(control_directory)
-                .join("note.md");
+            let watched_path = root.join(control_directory).join("note.md");
             let ignore_root = markdown_ignore_root(&watched_path, None);
-            let rules = MarkdownIgnoreRules::for_root(&ignore_root, Some("!note.md\n"));
+            std::fs::create_dir_all(&ignore_root).expect("ignore root should be created");
+            let rules = strict_test_rules(&ignore_root, Some("!note.md\n"));
 
             assert_eq!(ignore_root, watched_path.parent().unwrap());
             assert!(should_suppress_markdown_watch(&watched_path));
             assert!(rules.ignores(&watched_path, false));
         }
+        std::fs::remove_dir_all(root).expect("test root should be removed");
     }
 
     #[test]
@@ -496,39 +860,46 @@ mod tests {
 
     #[test]
     fn matches_nested_markdown_tree_asset_creations() {
-        let root = PathBuf::from("/mock-files");
+        let root = test_root("nested-asset");
+        std::fs::create_dir_all(&root).expect("test root should be created");
         let event = Event::new(EventKind::Create(CreateKind::File))
-            .add_path(PathBuf::from("/mock-files/assets/pasted-image.png"));
+            .add_path(root.join("assets/pasted-image.png"));
 
         assert!(test_markdown_tree_event_path(&event, &root).is_some());
+        std::fs::remove_dir_all(root).expect("test root should be removed");
     }
 
     #[test]
     fn ignores_dependency_folder_tree_events() {
-        let root = PathBuf::from("/mock-files");
+        let root = test_root("dependency-event");
+        std::fs::create_dir_all(&root).expect("test root should be created");
         let event = Event::new(EventKind::Create(CreateKind::File))
-            .add_path(PathBuf::from("/mock-files/node_modules/pkg/readme.md"));
+            .add_path(root.join("node_modules/pkg/readme.md"));
 
         assert!(test_markdown_tree_event_path(&event, &root).is_none());
+        std::fs::remove_dir_all(root).expect("test root should be removed");
     }
 
     #[test]
     fn ignores_tool_metadata_folder_tree_events() {
-        let root = PathBuf::from("/mock-files");
+        let root = test_root("metadata-event");
+        std::fs::create_dir_all(&root).expect("test root should be created");
         for path in [
-            "/mock-files/.obsidian/plugins/mock-plugin/data.json",
-            "/mock-files/.qingyu/config.json",
-            "/mock-files/.qingyu/sync/status.json",
-            "/mock-files/.markra-sync/manifest.json",
+            root.join(".obsidian/plugins/mock-plugin/data.json"),
+            root.join(".qingyu/config.json"),
+            root.join(".qingyu/sync/status.json"),
+            root.join(".markra-sync/manifest.json"),
         ] {
             let event = Event::new(EventKind::Modify(ModifyKind::Data(DataChange::Content)))
-                .add_path(PathBuf::from(path));
+                .add_path(path.clone());
 
             assert!(
                 test_markdown_tree_event_path(&event, &root).is_none(),
-                "tool metadata event should remain hidden: {path}"
+                "tool metadata event should remain hidden: {}",
+                path.display()
             );
         }
+        std::fs::remove_dir_all(root).expect("test root should be removed");
     }
 
     #[test]
@@ -546,7 +917,7 @@ mod tests {
             "!.qingyu/\n!.qingyu/config.json\n!.markra-sync/\n",
         )
         .expect("workspace rules should be written");
-        let rules = MarkdownIgnoreRules::for_root(
+        let rules = strict_test_rules(
             &root,
             Some("!.qingyu/\n!.qingyu/sync/status.json\n!.markra-sync/\n"),
         );
@@ -565,7 +936,8 @@ mod tests {
 
     #[test]
     fn ignores_removed_root_control_directory_events_without_disk_metadata() {
-        let root = PathBuf::from("/mock-workspace");
+        let root = test_root("removed-control-event");
+        std::fs::create_dir_all(&root).expect("test root should be created");
 
         for control_directory in [QINGYU_CONTROL_DIR, LEGACY_SYNC_DIR] {
             for kind in [EventKind::Remove(RemoveKind::Folder), EventKind::Any] {
@@ -574,12 +946,14 @@ mod tests {
                 assert!(test_markdown_tree_event_path(&event, &root).is_none());
             }
         }
+        std::fs::remove_dir_all(root).expect("test root should be removed");
     }
 
     #[test]
     fn classifies_folder_events_without_relying_on_disk_metadata() {
-        let root = PathBuf::from("/mock-workspace");
-        let rules = MarkdownIgnoreRules::for_root(&root, Some("generated/\n"));
+        let root = test_root("folder-event");
+        std::fs::create_dir_all(&root).expect("test root should be created");
+        let rules = strict_test_rules(&root, Some("generated/\n"));
 
         for kind in [
             EventKind::Create(CreateKind::Folder),
@@ -589,6 +963,7 @@ mod tests {
 
             assert!(markdown_tree_event_path(&event, &root, &rules).is_none());
         }
+        std::fs::remove_dir_all(root).expect("test root should be removed");
     }
 
     #[test]
@@ -603,16 +978,26 @@ mod tests {
         let generated = root.join("generated");
 
         std::fs::create_dir_all(&generated).expect("generated folder should be created");
-        let mut ignore_rules = MarkdownIgnoreRules::for_root(&root, None);
+        let mut ignore_rules = MarkdownWatchIgnoreRules::try_new(&root, None)
+            .expect("initial watcher rules should load strictly");
         std::fs::write(root.join(".markraignore"), "generated/\n")
             .expect("ignore rules should be created");
         let control_event =
             Event::new(EventKind::Create(CreateKind::File)).add_path(root.join(".markraignore"));
-        reload_markdown_ignore_rules_for_event(&control_event, &mut ignore_rules);
+        ignore_rules
+            .reload_for_event(&control_event)
+            .expect("updated rules should load strictly");
         let event =
             Event::new(EventKind::Create(CreateKind::File)).add_path(generated.join("hidden.md"));
 
-        assert!(markdown_tree_event_path(&event, &root, &ignore_rules).is_none());
+        assert!(markdown_tree_event_path(
+            &event,
+            &root,
+            ignore_rules
+                .current()
+                .expect("rules should remain available")
+        )
+        .is_none());
 
         std::fs::remove_dir_all(root).expect("test tree should be removed");
     }
@@ -629,22 +1014,178 @@ mod tests {
         let generated = root.join("generated");
 
         std::fs::create_dir_all(&generated).expect("generated folder should be created");
-        let mut ignore_rules = MarkdownIgnoreRules::for_root(&root, Some("generated/\n"));
+        let mut ignore_rules = MarkdownWatchIgnoreRules::try_new(&root, Some("generated/\n"))
+            .expect("initial watcher rules should load strictly");
         std::fs::write(root.join(".markraignore"), "").expect("workspace rules should be created");
         let control_event = Event::new(EventKind::Modify(ModifyKind::Data(DataChange::Content)))
             .add_path(root.join(".markraignore"));
-        reload_markdown_ignore_rules_for_event(&control_event, &mut ignore_rules);
+        ignore_rules
+            .reload_for_event(&control_event)
+            .expect("updated rules should load strictly");
         let event =
             Event::new(EventKind::Create(CreateKind::File)).add_path(generated.join("hidden.md"));
 
-        assert!(markdown_tree_event_path(&event, &root, &ignore_rules).is_none());
+        assert!(markdown_tree_event_path(
+            &event,
+            &root,
+            ignore_rules
+                .current()
+                .expect("rules should remain available")
+        )
+        .is_none());
 
         std::fs::remove_dir_all(root).expect("test tree should be removed");
     }
 
     #[test]
+    fn invalid_root_markraignore_disables_event_matching_until_strict_reload_succeeds() {
+        let root = std::env::temp_dir().join(format!(
+            "markra-invalid-ignore-watcher-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock should be after epoch")
+                .as_nanos()
+        ));
+        let generated = root.join("generated");
+
+        std::fs::create_dir_all(&generated).expect("generated folder should be created");
+        std::fs::write(root.join(".markraignore"), "generated/\n")
+            .expect("initial ignore rules should be valid");
+        let mut ignore_rules = MarkdownWatchIgnoreRules::try_new(&root, None)
+            .expect("initial watcher rules should load strictly");
+        let control_event = Event::new(EventKind::Modify(ModifyKind::Data(DataChange::Content)))
+            .add_path(root.join(".markraignore"));
+        let generated_event =
+            Event::new(EventKind::Create(CreateKind::File)).add_path(generated.join("hidden.md"));
+
+        std::fs::write(root.join(".markraignore"), [0xff, 0xfe])
+            .expect("invalid UTF-8 fixture should be written");
+        assert_eq!(
+            ignore_rules.reload_for_event(&control_event),
+            Err("workspace ignore rules are unavailable".to_string())
+        );
+        assert!(ignore_rules.current().is_err());
+        assert!(ignore_rules.reload_for_event(&generated_event).is_err());
+
+        std::fs::write(root.join(".markraignore"), "generated/\n")
+            .expect("valid ignore rules should be restored");
+        ignore_rules
+            .reload_for_event(&control_event)
+            .expect("a later valid control event should restore matching");
+        assert!(ignore_rules
+            .current()
+            .expect("rules should be available after recovery")
+            .ignores(&generated.join("hidden.md"), false));
+
+        std::fs::remove_dir_all(root).expect("test tree should be removed");
+    }
+
+    #[test]
+    fn invalidates_cached_rules_when_the_watched_root_address_is_replaced() {
+        let root = test_root("replaced-root");
+        let displaced = root.with_extension("captured-root");
+        std::fs::create_dir_all(&root).expect("captured root should be created");
+        std::fs::write(root.join(".markraignore"), "captured-only/\n")
+            .expect("captured ignore rules should be written");
+        let mut ignore_rules = MarkdownWatchIgnoreRules::try_new(&root, None)
+            .expect("captured watcher rules should load");
+
+        std::fs::rename(&root, &displaced).expect("captured root should be displaced");
+        std::fs::create_dir_all(&root).expect("replacement root should be created");
+        std::fs::write(root.join(".markraignore"), "replacement-only/\n")
+            .expect("replacement ignore rules should be written");
+        let event =
+            Event::new(EventKind::Create(CreateKind::File)).add_path(root.join("replacement.md"));
+
+        assert_eq!(
+            ignore_rules.reload_for_event(&event),
+            Err("workspace root changed".to_string())
+        );
+        assert!(ignore_rules.current().is_err());
+
+        std::fs::remove_dir_all(root).expect("replacement root should be removed");
+        std::fs::remove_dir_all(displaced).expect("captured root should be removed");
+    }
+
+    #[test]
+    fn rescan_recaptures_rules_when_the_control_event_was_missed() {
+        let root = test_root("rescan-rules");
+        let generated = root.join("generated");
+        std::fs::create_dir_all(&generated).expect("generated folder should be created");
+        let mut ignore_rules = MarkdownWatchIgnoreRules::try_new(&root, None)
+            .expect("initial watcher rules should load");
+        std::fs::write(root.join(".markraignore"), "generated/\n")
+            .expect("changed ignore rules should be written");
+        let mut rescan = Event::new(EventKind::Any);
+        rescan.attrs.set_flag(Flag::Rescan);
+
+        ignore_rules
+            .reload_for_event(&rescan)
+            .expect("rescan should strictly recapture ignore rules");
+
+        assert!(ignore_rules
+            .current()
+            .expect("recaptured rules should remain available")
+            .ignores(&generated.join("hidden.md"), false));
+        std::fs::remove_dir_all(root).expect("test root should be removed");
+    }
+
+    #[test]
+    fn staged_rule_reload_commits_only_after_watch_reconcile_and_fails_closed_on_error() {
+        let root = test_root("transactional-rules");
+        let drafts = root.join("drafts");
+        let notes = root.join("notes");
+        std::fs::create_dir_all(&drafts).expect("drafts folder should be created");
+        std::fs::create_dir_all(&notes).expect("notes folder should be created");
+        std::fs::write(root.join(".markraignore"), "drafts/\n")
+            .expect("initial rules should be written");
+        let mut current = MarkdownWatchIgnoreRules::try_new(&root, None)
+            .expect("initial watcher rules should load");
+        std::fs::write(root.join(".markraignore"), "notes/\n")
+            .expect("candidate rules should be written");
+        let control_event = Event::new(EventKind::Modify(ModifyKind::Data(DataChange::Content)))
+            .add_path(root.join(".markraignore"));
+
+        let mut candidate = current
+            .stage_for_event(&control_event)
+            .expect("candidate capture should succeed")
+            .expect("control event should stage a candidate");
+
+        assert!(current
+            .current()
+            .expect("old matcher should remain active before reconcile")
+            .ignores(&drafts.join("hidden.md"), false));
+        assert!(!current
+            .current()
+            .expect("old matcher should remain active before reconcile")
+            .ignores(&notes.join("visible.md"), false));
+        assert!(candidate
+            .current()
+            .expect("candidate matcher should be available")
+            .ignores(&notes.join("hidden.md"), false));
+
+        assert_eq!(
+            current.finish_reconcile(candidate, Err("watch backend failed".to_string())),
+            Err("watch backend failed".to_string())
+        );
+        assert!(current.current().is_err());
+
+        let recovery = MarkdownWatchIgnoreRules::try_new(&root, None)
+            .expect("later valid recapture should succeed");
+        current
+            .finish_reconcile(recovery, Ok(()))
+            .expect("later successful reconcile should restore matching");
+        assert!(current
+            .current()
+            .expect("recovered matcher should be active")
+            .ignores(&notes.join("hidden.md"), false));
+        std::fs::remove_dir_all(root).expect("test root should be removed");
+    }
+
+    #[test]
     fn emits_root_markraignore_tree_events() {
-        let root = PathBuf::from("/mock-files");
+        let root = test_root("control-event");
+        std::fs::create_dir_all(&root).expect("test root should be created");
         let event = Event::new(EventKind::Modify(ModifyKind::Data(DataChange::Content)))
             .add_path(root.join(".markraignore"));
 
@@ -652,6 +1193,7 @@ mod tests {
             test_markdown_tree_event_path(&event, &root),
             Some(root.join(".markraignore").as_path())
         );
+        std::fs::remove_dir_all(root).expect("test root should be removed");
     }
 
     #[test]

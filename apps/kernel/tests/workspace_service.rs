@@ -538,13 +538,13 @@ impl SyncExecutor for GatedCancellationExecutor {
         &self,
         _config: SyncConfig,
         context: SyncRunContext,
-    ) -> Result<(), SyncExecutionError> {
+    ) -> Result<qingyu_kernel::contract::SyncSummaryDto, SyncExecutionError> {
         self.runs.fetch_add(1, Ordering::SeqCst);
         self.started.notify_one();
         context.cancellation().cancelled().await;
         self.cancellation_seen.notify_one();
         self.release.notified().await;
-        Ok(())
+        Ok(qingyu_kernel::contract::SyncSummaryDto::empty())
     }
 }
 
@@ -795,6 +795,61 @@ async fn rebuilding_the_service_in_one_runtime_preserves_current_id_generation_a
     .unwrap();
 
     assert_eq!(first.current().unwrap(), second.current().unwrap());
+}
+
+#[tokio::test]
+async fn rebuilding_the_same_committed_workspace_in_a_new_runtime_preserves_its_identity() {
+    let temporary = tempdir().unwrap();
+    let workspace = temporary.path().join("workspace");
+    let app_data = temporary.path().join("app-data");
+    let cache = temporary.path().join("cache");
+    for path in [&workspace, &app_data, &cache] {
+        fs::create_dir(path).unwrap();
+    }
+    let store = Arc::new(MemoryPrimaryWorkspaceStore::default());
+
+    let first_paths = KernelPaths::desktop(&workspace, &app_data, &cache).unwrap();
+    let first_managed = ManagedWorkspaceCollection::from_paths(&first_paths).unwrap();
+    let first_runtime = KernelRuntime::activate(
+        KernelConfig::generate().unwrap(),
+        first_paths,
+        KernelPorts::unavailable(),
+    )
+    .unwrap();
+    let first_instance = first_runtime.instance_id();
+    let first_service = WorkspaceService::new(
+        &first_runtime,
+        store.clone(),
+        first_managed,
+        Arc::new(RecordingEventSink::default()),
+        "Initial Workspace",
+    )
+    .await
+    .unwrap();
+    let first_workspace = first_service.current().unwrap();
+    drop(first_service);
+    drop(first_runtime);
+
+    let second_paths = KernelPaths::desktop(&workspace, &app_data, &cache).unwrap();
+    let second_managed = ManagedWorkspaceCollection::from_paths(&second_paths).unwrap();
+    let second_runtime = KernelRuntime::activate(
+        KernelConfig::generate().unwrap(),
+        second_paths,
+        KernelPorts::unavailable(),
+    )
+    .unwrap();
+    let second_service = WorkspaceService::new(
+        &second_runtime,
+        store,
+        second_managed,
+        Arc::new(RecordingEventSink::default()),
+        "Ignored Existing Display Name",
+    )
+    .await
+    .unwrap();
+
+    assert_ne!(first_instance, second_runtime.instance_id());
+    assert_eq!(first_workspace, second_service.current().unwrap());
 }
 
 #[tokio::test]

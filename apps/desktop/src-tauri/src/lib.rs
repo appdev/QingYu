@@ -12,6 +12,12 @@ mod desktop_runtime;
 #[cfg(desktop)]
 mod fonts;
 #[cfg(desktop)]
+mod kernel_bootstrap;
+#[cfg(desktop)]
+mod kernel_host;
+#[cfg(desktop)]
+mod kernel_process;
+#[cfg(desktop)]
 mod language;
 mod managed_workspace;
 mod markdown_files;
@@ -30,6 +36,8 @@ mod opened_files;
 mod primary_workspace;
 mod protected_paths;
 mod remote_sync;
+#[cfg(desktop)]
+mod runtime_store;
 mod s3_http;
 #[cfg(desktop)]
 mod shell_command;
@@ -46,6 +54,8 @@ mod window_state;
 #[cfg(desktop)]
 mod windows;
 mod workspace_membership;
+#[cfg(desktop)]
+mod writer_authority;
 
 #[cfg(test)]
 mod builder_boundary_tests;

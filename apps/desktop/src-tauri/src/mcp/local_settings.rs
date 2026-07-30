@@ -1,4 +1,6 @@
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::Arc;
+#[cfg(test)]
+use std::sync::Mutex;
 
 use serde_json::Value;
 use tauri::{Emitter, Manager, Runtime};
@@ -123,7 +125,7 @@ impl McpLocalSettingsService {
     }
 
     pub(crate) fn load_migrated(&self) -> Result<McpConfigDocument, McpConfigError> {
-        let _guard = transaction_lock()
+        let _guard = crate::primary_workspace::primary_workspace_transaction_gate()
             .lock()
             .map_err(|_| McpConfigError::read())?;
         self.load_migrated_unlocked()
@@ -134,7 +136,7 @@ impl McpLocalSettingsService {
         expected_revision: &str,
         config: McpConfig,
     ) -> Result<McpConfigDocument, McpConfigError> {
-        let _guard = transaction_lock()
+        let _guard = crate::primary_workspace::primary_workspace_transaction_gate()
             .lock()
             .map_err(|_| McpConfigError::read())?;
         let current = self.load_migrated_unlocked()?;
@@ -224,11 +226,6 @@ fn normalized_document(value: &Value) -> Option<McpConfigDocument> {
 fn default_document() -> McpConfigDocument {
     McpConfigDocument::from_config(McpConfig::default())
         .expect("the default MCP configuration must be valid")
-}
-
-fn transaction_lock() -> &'static Mutex<()> {
-    static TRANSACTION_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    TRANSACTION_LOCK.get_or_init(|| Mutex::new(()))
 }
 
 #[cfg(test)]
@@ -358,12 +355,110 @@ impl McpSettingsBackend for MemoryMcpSettingsBackend {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::{
+        sync::{mpsc, Arc},
+        time::Duration,
+    };
 
     use serde_json::json;
 
     use super::{McpLocalSettingsService, MemoryMcpSettingsBackend};
     use crate::mcp::config::McpConfig;
+
+    #[test]
+    fn mcp_store_creation_disables_auto_save_and_uses_the_primary_gate() {
+        let source = include_str!("local_settings.rs");
+        let production = source
+            .split("#[cfg(test)]\n#[derive(Default)]")
+            .next()
+            .expect("production source before test support");
+        let default_store = [".", "store(", "LOCAL_STATE_STORE_PATH"].concat();
+        let configured_store = [
+            ".store_builder(LOCAL_STATE_STORE_PATH)",
+            ".disable_auto_save()",
+            ".build()",
+        ]
+        .concat();
+        let independent_gate = ["fn transaction_", "lock()"].concat();
+        let shared_gate = ["primary_workspace", "_transaction_gate()"].concat();
+        let compact_production = production
+            .chars()
+            .filter(|character| !character.is_whitespace())
+            .collect::<String>();
+
+        assert!(!production.contains(&default_store));
+        assert_eq!(compact_production.matches(&configured_store).count(), 1);
+        assert!(!production.contains(&independent_gate));
+        assert_eq!(production.matches(&shared_gate).count(), 2);
+    }
+
+    #[test]
+    fn mcp_load_and_write_wait_for_the_primary_workspace_transaction_gate() {
+        let backend = Arc::new(MemoryMcpSettingsBackend::with_legacy(json!({
+            "version": 1,
+            "enabled": false
+        })));
+        let service = McpLocalSettingsService::new_for_test(backend, None);
+        let (load_started_sender, load_started_receiver) = mpsc::channel();
+        let (load_completed_sender, load_completed_receiver) = mpsc::channel();
+        let gate = crate::primary_workspace::primary_workspace_transaction_gate()
+            .lock()
+            .expect("primary workspace transaction gate");
+        let loader = {
+            let service = service.clone();
+            std::thread::spawn(move || {
+                load_started_sender.send(()).expect("load started");
+                load_completed_sender
+                    .send(service.load_migrated())
+                    .expect("load completed");
+            })
+        };
+        load_started_receiver.recv().expect("loader reached call");
+        assert!(load_completed_receiver
+            .recv_timeout(Duration::from_millis(100))
+            .is_err());
+        drop(gate);
+        let initial = load_completed_receiver
+            .recv()
+            .expect("load result")
+            .expect("load migrated policy");
+        loader.join().expect("join loader");
+
+        let (write_started_sender, write_started_receiver) = mpsc::channel();
+        let (write_completed_sender, write_completed_receiver) = mpsc::channel();
+        let gate = crate::primary_workspace::primary_workspace_transaction_gate()
+            .lock()
+            .expect("primary workspace transaction gate");
+        let writer = {
+            let service = service.clone();
+            std::thread::spawn(move || {
+                write_started_sender.send(()).expect("write started");
+                write_completed_sender
+                    .send(service.write(
+                        &initial.revision,
+                        McpConfig {
+                            enabled: true,
+                            ..initial.config
+                        },
+                    ))
+                    .expect("write completed");
+            })
+        };
+        write_started_receiver.recv().expect("writer reached call");
+        assert!(write_completed_receiver
+            .recv_timeout(Duration::from_millis(100))
+            .is_err());
+        drop(gate);
+        assert!(
+            write_completed_receiver
+                .recv()
+                .expect("write result")
+                .expect("write policy")
+                .config
+                .enabled
+        );
+        writer.join().expect("join writer");
+    }
 
     #[test]
     fn legacy_policy_is_normalized_saved_locally_then_deleted() {

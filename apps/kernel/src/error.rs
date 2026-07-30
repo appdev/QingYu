@@ -9,7 +9,9 @@ pub const fn http_status_for_error_code(code: ErrorCode) -> u16 {
         | ErrorCode::InvalidDocumentName => 400,
         ErrorCode::Unauthorized => 401,
         ErrorCode::HostNotAllowed | ErrorCode::OriginNotAllowed => 403,
-        ErrorCode::DocumentNotFound | ErrorCode::SyncConfigAbsent => 404,
+        ErrorCode::DocumentNotFound | ErrorCode::ResourceNotFound | ErrorCode::SyncConfigAbsent => {
+            404
+        }
         ErrorCode::DocumentAlreadyExists
         | ErrorCode::RevisionConflict
         | ErrorCode::SettingsRevisionConflict
@@ -60,6 +62,7 @@ pub const fn safe_message_for_error_code(code: ErrorCode) -> &'static str {
         ErrorCode::WorkspaceUnavailable => "The workspace is unavailable.",
         ErrorCode::WorkspaceLocked => "The workspace is locked.",
         ErrorCode::DocumentNotFound => "The document was not found.",
+        ErrorCode::ResourceNotFound => "The resource was not found.",
         ErrorCode::DocumentAlreadyExists => "The document already exists.",
         ErrorCode::DocumentTooLarge => "The document exceeds the supported size.",
         ErrorCode::DocumentInvalidEncoding => "The document encoding is invalid.",

@@ -137,6 +137,26 @@ describe("app settings", () => {
     expect(store.save).toHaveBeenCalledTimes(1);
   });
 
+  it("routes a legacy global theme write through the typed appearance group when available", async () => {
+    const writeGroup = vi.fn(async () => undefined);
+    configureAppRuntime({
+      ...createDefaultAppRuntime(),
+      settings: {
+        loadStore: mockedLoadStore,
+        writeGroup
+      }
+    });
+
+    await saveStoredTheme("solarized-dark");
+
+    expect(writeGroup).toHaveBeenCalledWith("appearance", {
+      appearanceMode: "dark",
+      darkTheme: "solarized-dark",
+      lightTheme: "light"
+    });
+    expect(mockedLoadStore).not.toHaveBeenCalled();
+  });
+
   it("migrates a legacy light theme into split appearance preferences", async () => {
     store.get.mockImplementation(async (key: string) => {
       if (key === "theme") return "sepia";

@@ -1,12 +1,22 @@
 use std::collections::HashMap;
+#[cfg(test)]
 use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::UNIX_EPOCH;
 
-use super::ignore_rules::MarkdownIgnoreRules;
-use super::path::{is_markdown_open_file, markdown_folder_file, markdown_tree_root_for_path};
+use cap_fs_ext::{DirExt, MetadataExt};
+use cap_std::fs::Dir;
+
+use super::ignore_rules::{
+    MarkdownIgnoreRules, RetainedMarkdownIgnoreSnapshot, RetainedMarkdownRoot,
+    RetainedNamedMarkdownDirectory,
+};
+use super::path::{
+    is_markdown_open_file, markdown_folder_file_from_retained_metadata, markdown_tree_root_for_path,
+};
 use super::types::{MarkdownFolderEntryKind, MarkdownFolderFile};
 
 const WORKSPACE_SEARCH_MAX_WORKERS: usize = 8;
@@ -46,6 +56,8 @@ pub(crate) struct MarkdownWorkspaceSearchResponse {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct WorkspaceSearchFileSignature {
+    device: u64,
+    inode: u64,
     modified_at: Option<u128>,
     size_bytes: u64,
 }
@@ -81,33 +93,103 @@ struct WorkspaceSearchIndex {
 
 #[derive(Default)]
 struct WorkspaceSearchIndexCache {
-    indexes: HashMap<PathBuf, WorkspaceSearchIndex>,
+    indexes: HashMap<WorkspaceSearchIndexKey, WorkspaceSearchIndex>,
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+struct WorkspaceSearchIndexKey {
+    root: PathBuf,
+    root_identity: String,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct WorkspaceSearchDirectoryIdentity {
+    device: u64,
+    inode: u64,
+    relative_path: PathBuf,
+}
+
+impl WorkspaceSearchDirectoryIdentity {
+    fn capture(relative_path: &Path, directory: &Dir) -> Result<Self, String> {
+        let metadata = directory
+            .dir_metadata()
+            .map_err(|_| "workspace directory changed".to_string())?;
+        Ok(Self {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+            relative_path: relative_path.to_path_buf(),
+        })
+    }
+
+    fn verify_current(&self, root: &RetainedMarkdownRoot) -> Result<(), String> {
+        let mut directory = root.try_clone_root()?;
+        for component in self.relative_path.components() {
+            let std::path::Component::Normal(name) = component else {
+                return Err("workspace directory changed".to_string());
+            };
+            directory = directory
+                .open_dir_nofollow(name)
+                .map_err(|_| "workspace directory changed".to_string())?;
+        }
+        let metadata = directory
+            .dir_metadata()
+            .map_err(|_| "workspace directory changed".to_string())?;
+        if metadata.dev() != self.device || metadata.ino() != self.inode {
+            return Err("workspace directory changed".to_string());
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct WorkspaceSearchDiscovery {
+    directories: Vec<WorkspaceSearchDirectoryIdentity>,
+    files: Vec<MarkdownFolderFile>,
 }
 
 fn collect_markdown_workspace_files(
-    root: &Path,
-    global_ignore_rules: Option<&str>,
-) -> Result<Vec<MarkdownFolderFile>, String> {
-    let mut files = Vec::new();
-    let ignore_rules = MarkdownIgnoreRules::for_root(root, global_ignore_rules);
+    snapshot: &RetainedMarkdownIgnoreSnapshot,
+) -> Result<WorkspaceSearchDiscovery, String> {
+    collect_markdown_workspace_files_with_hook(snapshot, &mut |_| {})
+}
 
-    collect_markdown_workspace_files_in(root, root, &ignore_rules, &mut files)?;
+fn collect_markdown_workspace_files_with_hook(
+    snapshot: &RetainedMarkdownIgnoreSnapshot,
+    after_directory_open: &mut impl FnMut(&Path),
+) -> Result<WorkspaceSearchDiscovery, String> {
+    let mut files = Vec::new();
+    let mut directories = Vec::new();
+    let retained_root = snapshot.root().try_clone_root()?;
+
+    collect_markdown_workspace_files_in(
+        snapshot.root(),
+        &retained_root,
+        Path::new(""),
+        snapshot.rules(),
+        &mut files,
+        &mut directories,
+        after_directory_open,
+    )?;
     files.sort_by(|a, b| {
         a.relative_path
             .to_lowercase()
             .cmp(&b.relative_path.to_lowercase())
     });
 
-    Ok(files)
+    Ok(WorkspaceSearchDiscovery { directories, files })
 }
 
 fn collect_markdown_workspace_files_in(
-    root: &Path,
-    directory: &Path,
+    root: &RetainedMarkdownRoot,
+    directory: &Dir,
+    relative_directory: &Path,
     ignore_rules: &MarkdownIgnoreRules,
     files: &mut Vec<MarkdownFolderFile>,
+    directories: &mut Vec<WorkspaceSearchDirectoryIdentity>,
+    after_directory_open: &mut impl FnMut(&Path),
 ) -> Result<(), String> {
-    let mut entries = fs::read_dir(directory)
+    let mut entries = directory
+        .entries()
         .map_err(|error| error.to_string())?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| error.to_string())?;
@@ -120,12 +202,29 @@ fn collect_markdown_workspace_files_in(
     });
 
     for entry in entries {
-        let path = entry.path();
+        let name = entry.file_name();
+        let relative_path = relative_directory.join(&name);
+        let path = root.root().join(&relative_path);
         let file_type = entry.file_type().map_err(|error| error.to_string())?;
 
         if file_type.is_dir() {
             if !ignore_rules.ignores(&path, true) {
-                collect_markdown_workspace_files_in(root, &path, ignore_rules, files)?;
+                let child = RetainedNamedMarkdownDirectory::open(directory, &name)?;
+                directories.push(WorkspaceSearchDirectoryIdentity::capture(
+                    &relative_path,
+                    child.directory(),
+                )?);
+                after_directory_open(&relative_path);
+                collect_markdown_workspace_files_in(
+                    root,
+                    child.directory(),
+                    &relative_path,
+                    ignore_rules,
+                    files,
+                    directories,
+                    after_directory_open,
+                )?;
+                child.verify_current()?;
             }
             continue;
         }
@@ -134,10 +233,12 @@ fn collect_markdown_workspace_files_in(
             && !ignore_rules.ignores(&path, false)
             && is_markdown_open_file(&path)
         {
-            files.push(markdown_folder_file(
-                root,
-                &path,
+            let metadata = retained_search_file_metadata(directory, &name)?;
+            files.push(markdown_folder_file_from_retained_metadata(
+                root.root(),
+                &relative_path,
                 MarkdownFolderEntryKind::File,
+                &metadata,
             )?);
         }
     }
@@ -145,24 +246,59 @@ fn collect_markdown_workspace_files_in(
     Ok(())
 }
 
-fn workspace_search_file_signature(
+fn workspace_search_file_signature_in_snapshot(
+    root: &RetainedMarkdownRoot,
     file: &MarkdownFolderFile,
 ) -> Result<WorkspaceSearchFileSignature, String> {
-    let metadata = fs::metadata(&file.path).map_err(|error| error.to_string())?;
+    let (_, _, metadata) = retained_search_file(root, file)?;
     let modified_at = metadata
         .modified()
         .ok()
-        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+        .and_then(|time| time.into_std().duration_since(UNIX_EPOCH).ok())
         .map(|duration| duration.as_nanos());
-
     Ok(WorkspaceSearchFileSignature {
+        device: metadata.dev(),
+        inode: metadata.ino(),
         modified_at,
         size_bytes: metadata.len(),
     })
 }
 
-fn read_workspace_search_file(file: &MarkdownFolderFile) -> Result<String, String> {
-    fs::read_to_string(&file.path).map_err(|error| error.to_string())
+fn read_workspace_search_file_in_snapshot(
+    root: &RetainedMarkdownRoot,
+    file: &MarkdownFolderFile,
+) -> Result<String, String> {
+    let (parent, name, before) = retained_search_file(root, file)?;
+    let mut retained = parent
+        .open_with(
+            &name,
+            &crate::storage_capability::nonfollowing_read_options(),
+        )
+        .map_err(|_| "workspace file changed".to_string())?;
+    let opened = retained
+        .metadata()
+        .map_err(|_| "workspace file changed".to_string())?;
+    if !same_search_file_identity(&before, &opened) {
+        return Err("workspace file changed".to_string());
+    }
+    let mut contents = String::new();
+    retained
+        .read_to_string(&mut contents)
+        .map_err(|error| error.to_string())?;
+    let after = retained
+        .metadata()
+        .map_err(|_| "workspace file changed".to_string())?;
+    let named = parent
+        .symlink_metadata(&name)
+        .map_err(|_| "workspace file changed".to_string())?;
+    if !same_search_file_identity(&opened, &after)
+        || !same_search_file_identity(&after, &named)
+        || after.len() != contents.len() as u64
+        || opened.modified().ok() != after.modified().ok()
+    {
+        return Err("workspace file changed".to_string());
+    }
+    Ok(contents)
 }
 
 fn refresh_workspace_search_index_files(
@@ -218,22 +354,93 @@ fn refresh_workspace_search_index_files(
 }
 
 fn indexed_workspace_files_for_search(
-    root: &Path,
+    root: &RetainedMarkdownRoot,
     files: Vec<MarkdownFolderFile>,
 ) -> Result<Vec<WorkspaceSearchIndexedFile>, String> {
     let cache = WORKSPACE_SEARCH_INDEX_CACHE
         .get_or_init(|| Mutex::new(WorkspaceSearchIndexCache::default()));
     let mut cache = cache.lock().map_err(|error| error.to_string())?;
-    let index = cache.indexes.entry(root.to_path_buf()).or_default();
+    let key = WorkspaceSearchIndexKey {
+        root: root.root().to_path_buf(),
+        root_identity: root.identity().stable_token(),
+    };
+    cache.indexes.retain(|candidate, _| {
+        candidate.root != key.root || candidate.root_identity == key.root_identity
+    });
+    let index = cache.indexes.entry(key).or_default();
 
     refresh_workspace_search_index_files(
         index,
         files,
-        workspace_search_file_signature,
-        read_workspace_search_file,
+        |file| workspace_search_file_signature_in_snapshot(root, file),
+        |file| read_workspace_search_file_in_snapshot(root, file),
     )?;
 
     Ok(index.files.clone())
+}
+
+fn retained_search_file_metadata(
+    parent: &Dir,
+    name: &std::ffi::OsStr,
+) -> Result<cap_std::fs::Metadata, String> {
+    let addressed = parent
+        .symlink_metadata(name)
+        .map_err(|_| "workspace file changed".to_string())?;
+    if addressed.file_type().is_symlink() || !addressed.is_file() {
+        return Err("workspace file changed".to_string());
+    }
+    let retained = parent
+        .open_with(
+            name,
+            &crate::storage_capability::nonfollowing_read_options(),
+        )
+        .map_err(|_| "workspace file changed".to_string())?;
+    let opened = retained
+        .metadata()
+        .map_err(|_| "workspace file changed".to_string())?;
+    let named = parent
+        .symlink_metadata(name)
+        .map_err(|_| "workspace file changed".to_string())?;
+    if !same_search_file_identity(&addressed, &opened)
+        || !same_search_file_identity(&opened, &named)
+    {
+        return Err("workspace file changed".to_string());
+    }
+    Ok(opened)
+}
+
+fn retained_search_file(
+    root: &RetainedMarkdownRoot,
+    file: &MarkdownFolderFile,
+) -> Result<(Dir, std::ffi::OsString, cap_std::fs::Metadata), String> {
+    let relative_path = Path::new(&file.relative_path);
+    let name = relative_path
+        .file_name()
+        .ok_or_else(|| "workspace file changed".to_string())?
+        .to_os_string();
+    let mut parent = root.try_clone_root()?;
+    for component in relative_path
+        .parent()
+        .unwrap_or_else(|| Path::new(""))
+        .components()
+    {
+        let std::path::Component::Normal(segment) = component else {
+            return Err("workspace file changed".to_string());
+        };
+        parent = parent
+            .open_dir_nofollow(segment)
+            .map_err(|_| "workspace file changed".to_string())?;
+    }
+    let metadata = retained_search_file_metadata(&parent, &name)?;
+    Ok((parent, name, metadata))
+}
+
+fn same_search_file_identity(left: &cap_std::fs::Metadata, right: &cap_std::fs::Metadata) -> bool {
+    left.is_file()
+        && right.is_file()
+        && left.dev() == right.dev()
+        && left.ino() == right.ino()
+        && left.len() == right.len()
 }
 
 pub(super) fn markdown_search_ranges(
@@ -595,13 +802,46 @@ fn search_markdown_files_for_path_blocking(
     max_matches_per_file: Option<usize>,
     global_ignore_rules: Option<String>,
 ) -> Result<MarkdownWorkspaceSearchResponse, String> {
+    search_markdown_files_for_path_blocking_inner(
+        path,
+        query,
+        case_sensitive,
+        current_document_path,
+        current_document_content,
+        max_matches,
+        max_matches_per_file,
+        global_ignore_rules,
+        |_| {},
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn search_markdown_files_for_path_blocking_inner(
+    path: String,
+    query: String,
+    case_sensitive: bool,
+    current_document_path: Option<String>,
+    current_document_content: Option<String>,
+    max_matches: Option<usize>,
+    max_matches_per_file: Option<usize>,
+    global_ignore_rules: Option<String>,
+    before_publish: impl FnOnce(&Path),
+) -> Result<MarkdownWorkspaceSearchResponse, String> {
     let normalized_query = query.trim();
     let source_path = PathBuf::from(path);
     let root = markdown_tree_root_for_path(&source_path)?
         .canonicalize()
         .map_err(|error| error.to_string())?;
-    let files = collect_markdown_workspace_files(&root, global_ignore_rules.as_deref())?;
+    let snapshot = RetainedMarkdownIgnoreSnapshot::capture(&root, global_ignore_rules.as_deref())?;
+    let discovery = collect_markdown_workspace_files(&snapshot)?;
+    let files = discovery.files;
+    let directories = discovery.directories;
     if normalized_query.is_empty() || max_matches == Some(0) || max_matches_per_file == Some(0) {
+        before_publish(snapshot.root().root());
+        snapshot.verify_current()?;
+        for directory in &directories {
+            directory.verify_current(snapshot.root())?;
+        }
         return Ok(MarkdownWorkspaceSearchResponse {
             results: Vec::new(),
             searched_file_count: files.len(),
@@ -611,7 +851,7 @@ fn search_markdown_files_for_path_blocking(
     }
 
     let searched_file_count = files.len();
-    let indexed_files = indexed_workspace_files_for_search(&root, files)?;
+    let indexed_files = indexed_workspace_files_for_search(snapshot.root(), files)?;
     let mut results = Vec::new();
     let mut unreadable_file_count = 0;
     let mut truncated = false;
@@ -650,12 +890,43 @@ fn search_markdown_files_for_path_blocking(
         }
     }
 
-    Ok(MarkdownWorkspaceSearchResponse {
+    let response = MarkdownWorkspaceSearchResponse {
         results,
         searched_file_count,
         truncated,
         unreadable_file_count,
-    })
+    };
+    before_publish(snapshot.root().root());
+    snapshot.verify_current()?;
+    for directory in &directories {
+        directory.verify_current(snapshot.root())?;
+    }
+    Ok(response)
+}
+
+#[cfg(test)]
+fn search_markdown_files_for_path_blocking_with_before_publish(
+    path: String,
+    query: String,
+    case_sensitive: bool,
+    current_document_path: Option<String>,
+    current_document_content: Option<String>,
+    max_matches: Option<usize>,
+    max_matches_per_file: Option<usize>,
+    global_ignore_rules: Option<String>,
+    before_publish: impl FnOnce(&Path),
+) -> Result<MarkdownWorkspaceSearchResponse, String> {
+    search_markdown_files_for_path_blocking_inner(
+        path,
+        query,
+        case_sensitive,
+        current_document_path,
+        current_document_content,
+        max_matches,
+        max_matches_per_file,
+        global_ignore_rules,
+        before_publish,
+    )
 }
 
 #[tauri::command]
@@ -688,6 +959,126 @@ pub(crate) async fn search_markdown_files_for_path(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_workspace_search_discovery_when_an_open_child_is_replaced_by_a_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let root = std::env::temp_dir().join(format!(
+            "markra-search-open-child-swap-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock should be after epoch")
+                .as_nanos()
+        ));
+        let outside = root.with_extension("outside");
+        let displaced = root.join("captured-directory");
+        fs::create_dir_all(root.join("nested")).expect("nested directory should be created");
+        fs::write(root.join("nested/captured.md"), "captured marker")
+            .expect("captured Markdown should be written");
+        fs::create_dir_all(&outside).expect("outside directory should be created");
+        fs::write(outside.join("outside.md"), "outside marker")
+            .expect("outside Markdown should be written");
+        let snapshot = RetainedMarkdownIgnoreSnapshot::capture(&root, None)
+            .expect("search root should be captured");
+        let mut swapped = false;
+
+        let result = collect_markdown_workspace_files_with_hook(&snapshot, &mut |relative_path| {
+            if !swapped && relative_path == Path::new("nested") {
+                fs::rename(root.join("nested"), &displaced)
+                    .expect("opened child should be displaced");
+                symlink(&outside, root.join("nested"))
+                    .expect("external directory symlink should be installed");
+                swapped = true;
+            }
+        });
+
+        fs::remove_file(root.join("nested")).expect("symlink should be removed");
+        fs::remove_dir_all(root).expect("captured root should be removed");
+        fs::remove_dir_all(outside).expect("outside root should be removed");
+        assert_eq!(result, Err("workspace directory changed".to_string()));
+    }
+
+    #[test]
+    fn rejects_search_results_when_the_captured_root_address_is_replaced_before_publish() {
+        let root = std::env::temp_dir().join(format!(
+            "markra-replaced-search-root-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock should be after epoch")
+                .as_nanos()
+        ));
+        let displaced = root.with_extension("captured-root");
+        fs::create_dir_all(&root).expect("captured root should be created");
+        fs::write(root.join("captured.md"), "captured marker")
+            .expect("captured Markdown should be written");
+
+        let result = search_markdown_files_for_path_blocking_with_before_publish(
+            root.to_string_lossy().to_string(),
+            "marker".to_string(),
+            false,
+            None,
+            None,
+            None,
+            None,
+            None,
+            |captured_root| {
+                fs::rename(captured_root, &displaced).expect("captured root should be displaced");
+                fs::create_dir_all(captured_root).expect("replacement root should be created");
+                fs::write(captured_root.join("replacement.md"), "replacement marker")
+                    .expect("replacement Markdown should be written");
+            },
+        );
+
+        assert_eq!(result.unwrap_err(), "workspace root changed");
+        fs::remove_dir_all(root).expect("replacement root should be removed");
+        fs::remove_dir_all(displaced).expect("captured root should be removed");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_search_results_when_a_discovered_child_is_replaced_before_publish() {
+        use std::os::unix::fs::symlink;
+
+        let root = std::env::temp_dir().join(format!(
+            "markra-replaced-search-child-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock should be after epoch")
+                .as_nanos()
+        ));
+        let outside = root.with_extension("outside");
+        let displaced = root.join("captured-directory");
+        fs::create_dir_all(root.join("nested")).expect("nested directory should be created");
+        fs::write(root.join("nested/note.md"), "captured marker")
+            .expect("captured Markdown should be written");
+        fs::create_dir_all(&outside).expect("outside directory should be created");
+        fs::write(outside.join("note.md"), "outside marker")
+            .expect("outside Markdown should be written");
+
+        let result = search_markdown_files_for_path_blocking_with_before_publish(
+            root.to_string_lossy().to_string(),
+            "marker".to_string(),
+            false,
+            None,
+            None,
+            None,
+            None,
+            None,
+            |_| {
+                fs::rename(root.join("nested"), &displaced)
+                    .expect("discovered child should be displaced");
+                symlink(&outside, root.join("nested"))
+                    .expect("external directory symlink should be installed");
+            },
+        );
+
+        fs::remove_file(root.join("nested")).expect("symlink should be removed");
+        fs::remove_dir_all(root).expect("captured root should be removed");
+        fs::remove_dir_all(outside).expect("outside root should be removed");
+        assert_eq!(result, Err("workspace directory changed".to_string()));
+    }
 
     #[test]
     fn searches_markdown_workspace_files_by_content() {
@@ -924,10 +1315,14 @@ mod tests {
         };
         let mut index = WorkspaceSearchIndex::default();
         let mut first_signature = WorkspaceSearchFileSignature {
+            device: 1,
+            inode: 10,
             modified_at: Some(1),
             size_bytes: 10,
         };
         let second_signature = WorkspaceSearchFileSignature {
+            device: 1,
+            inode: 20,
             modified_at: Some(1),
             size_bytes: 20,
         };
@@ -1125,6 +1520,144 @@ mod tests {
         assert_eq!(second_search.results[0].line_text, "beta from updated disk");
 
         fs::remove_dir_all(root).expect("test tree should be removed");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn refreshes_cached_search_when_an_inode_is_replaced_with_the_same_size_and_mtime() {
+        let root = std::env::temp_dir().join(format!(
+            "markra-workspace-search-inode-cache-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock should be after epoch")
+                .as_nanos()
+        ));
+        let note = root.join("note.md");
+        let replacement = root.join("replacement.md");
+
+        fs::create_dir_all(&root).expect("test folder should be created");
+        let cache_root = root
+            .canonicalize()
+            .expect("test folder should canonicalize");
+        fs::write(&note, "alpha from disk").expect("initial Markdown should be created");
+        let original_metadata = fs::metadata(&note).expect("initial metadata should exist");
+        let original_modified = original_metadata
+            .modified()
+            .expect("initial modified time should exist");
+        let first_search = search_markdown_files_for_path_blocking(
+            root.to_string_lossy().to_string(),
+            "alpha".to_string(),
+            false,
+            None,
+            None,
+            Some(10),
+            Some(5),
+            None,
+        )
+        .expect("initial workspace search should complete");
+        assert_eq!(first_search.results.len(), 1);
+
+        fs::write(&replacement, "bravo from disk").expect("replacement Markdown should be created");
+        fs::File::open(&replacement)
+            .expect("replacement Markdown should open")
+            .set_times(std::fs::FileTimes::new().set_modified(original_modified))
+            .expect("replacement modified time should be preserved");
+        fs::rename(&replacement, &note).expect("replacement should atomically replace the note");
+        let replacement_metadata = fs::metadata(&note).expect("replacement metadata should exist");
+        assert_eq!(replacement_metadata.len(), original_metadata.len());
+        assert_eq!(
+            replacement_metadata
+                .modified()
+                .expect("replacement modified time should exist"),
+            original_modified
+        );
+        assert_ne!(
+            cap_fs_ext::MetadataExt::ino(&replacement_metadata),
+            cap_fs_ext::MetadataExt::ino(&original_metadata)
+        );
+
+        let second_search = search_markdown_files_for_path_blocking(
+            root.to_string_lossy().to_string(),
+            "bravo".to_string(),
+            false,
+            None,
+            None,
+            Some(10),
+            Some(5),
+            None,
+        )
+        .expect("replacement workspace search should complete");
+
+        let cache = WORKSPACE_SEARCH_INDEX_CACHE
+            .get()
+            .expect("workspace search cache should exist");
+        cache
+            .lock()
+            .expect("workspace search cache should lock")
+            .indexes
+            .retain(|key, _| key.root != cache_root);
+        fs::remove_dir_all(root).expect("test tree should be removed");
+        assert_eq!(second_search.results.len(), 1);
+        assert_eq!(second_search.results[0].line_text, "bravo from disk");
+    }
+
+    #[test]
+    fn replacing_a_root_identity_evicts_the_old_search_index_for_the_same_path() {
+        let root = std::env::temp_dir().join(format!(
+            "markra-workspace-search-root-cache-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock should be after epoch")
+                .as_nanos()
+        ));
+        let displaced = root.with_extension("captured-root");
+        fs::create_dir_all(&root).expect("initial root should be created");
+        let cache_root = root
+            .canonicalize()
+            .expect("initial root should canonicalize");
+        fs::write(root.join("note.md"), "alpha root").expect("initial Markdown should be created");
+        search_markdown_files_for_path_blocking(
+            root.to_string_lossy().to_string(),
+            "alpha".to_string(),
+            false,
+            None,
+            None,
+            Some(10),
+            Some(5),
+            None,
+        )
+        .expect("initial workspace search should complete");
+
+        fs::rename(&root, &displaced).expect("initial root should be displaced");
+        fs::create_dir_all(&root).expect("replacement root should be created");
+        fs::write(root.join("note.md"), "bravo root")
+            .expect("replacement Markdown should be created");
+        search_markdown_files_for_path_blocking(
+            root.to_string_lossy().to_string(),
+            "bravo".to_string(),
+            false,
+            None,
+            None,
+            Some(10),
+            Some(5),
+            None,
+        )
+        .expect("replacement workspace search should complete");
+
+        let cache = WORKSPACE_SEARCH_INDEX_CACHE
+            .get()
+            .expect("workspace search cache should exist");
+        let mut cache = cache.lock().expect("workspace search cache should lock");
+        let matching_indexes = cache
+            .indexes
+            .keys()
+            .filter(|key| key.root == cache_root)
+            .count();
+        cache.indexes.retain(|key, _| key.root != cache_root);
+        drop(cache);
+        fs::remove_dir_all(root).expect("replacement root should be removed");
+        fs::remove_dir_all(displaced).expect("initial root should be removed");
+        assert_eq!(matching_indexes, 1);
     }
 
     #[test]

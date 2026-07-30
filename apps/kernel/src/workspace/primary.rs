@@ -3,7 +3,160 @@
 use std::fmt;
 use std::sync::Arc;
 
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use uuid::{Uuid, Variant, Version};
+
+const PRIMARY_WORKSPACE_SCHEMA_VERSION: u64 = 1;
+
+/// Host-committed, path-free identity for the one active workspace.
+///
+/// Native hosts persist this value inside their existing primary-workspace
+/// record and pass it to the Kernel during launch. It deliberately contains no
+/// absolute filesystem address, launch credential, or per-process identity.
+#[derive(Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct PrimaryWorkspaceState {
+    schema_version: u64,
+    revision_seed: String,
+    display_name: String,
+}
+
+impl PrimaryWorkspaceState {
+    pub(crate) fn new(display_name: impl Into<String>) -> Result<Self, PrimaryWorkspaceStateError> {
+        let state = Self {
+            schema_version: PRIMARY_WORKSPACE_SCHEMA_VERSION,
+            revision_seed: Uuid::new_v4().to_string(),
+            display_name: display_name.into(),
+        };
+        state.validate()?;
+        Ok(state)
+    }
+
+    pub fn from_value(value: Value) -> Result<Self, PrimaryWorkspaceStateError> {
+        let state: Self = serde_json::from_value(value).map_err(|_| PrimaryWorkspaceStateError)?;
+        state.validate()?;
+        Ok(state)
+    }
+
+    pub fn to_value(&self) -> Result<Value, PrimaryWorkspaceStateError> {
+        serde_json::to_value(self).map_err(|_| PrimaryWorkspaceStateError)
+    }
+
+    pub fn validate(&self) -> Result<(), PrimaryWorkspaceStateError> {
+        if self.schema_version != PRIMARY_WORKSPACE_SCHEMA_VERSION || self.revision_seed.is_empty()
+        {
+            return Err(PrimaryWorkspaceStateError);
+        }
+        validate_display_name(&self.display_name)
+    }
+
+    pub fn display_name(&self) -> &str {
+        self.display_name.as_str()
+    }
+
+    pub(crate) fn validate_display_name(value: &str) -> Result<(), PrimaryWorkspaceStateError> {
+        validate_display_name(value)
+    }
+
+    pub(crate) fn validate_native_host_identity(&self) -> Result<(), PrimaryWorkspaceStateError> {
+        self.validate()?;
+        let revision_seed =
+            Uuid::parse_str(&self.revision_seed).map_err(|_| PrimaryWorkspaceStateError)?;
+        if revision_seed.get_variant() != Variant::RFC4122
+            || revision_seed.get_version() != Some(Version::Random)
+            || revision_seed.hyphenated().to_string() != self.revision_seed
+        {
+            return Err(PrimaryWorkspaceStateError);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn has_same_revision_identity(&self, candidate: &Self) -> bool {
+        self.revision_seed == candidate.revision_seed
+    }
+}
+
+impl fmt::Debug for PrimaryWorkspaceState {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PrimaryWorkspaceState")
+            .field("schema_version", &self.schema_version)
+            .field("revision_seed", &"[REDACTED]")
+            .field("display_name", &self.display_name)
+            .finish()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PrimaryWorkspaceStateError;
+
+impl fmt::Display for PrimaryWorkspaceStateError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("the primary workspace state is invalid")
+    }
+}
+
+impl std::error::Error for PrimaryWorkspaceStateError {}
+
+fn validate_display_name(value: &str) -> Result<(), PrimaryWorkspaceStateError> {
+    if value.is_empty()
+        || value.chars().count() > 255
+        || value.chars().any(char::is_control)
+        || value.contains(['/', '\\'])
+    {
+        return Err(PrimaryWorkspaceStateError);
+    }
+    Ok(())
+}
+
+/// Read-only primary-workspace store for a fixed native launch.
+///
+/// The host has already committed the state before spawning the child. The
+/// child may observe that exact value, but cannot create a parallel authority
+/// record or switch the host-selected workspace in place.
+pub struct FixedPrimaryWorkspaceStore {
+    binding: PrimaryWorkspaceRepositoryBinding,
+    value: Value,
+}
+
+impl FixedPrimaryWorkspaceStore {
+    pub fn new(state: PrimaryWorkspaceState) -> Result<Self, PrimaryWorkspaceStateError> {
+        state.validate()?;
+        Ok(Self {
+            binding: PrimaryWorkspaceRepositoryBinding::new(),
+            value: state.to_value()?,
+        })
+    }
+}
+
+impl PrimaryWorkspaceStore for FixedPrimaryWorkspaceStore {
+    fn repository_binding(&self) -> PrimaryWorkspaceRepositoryBinding {
+        self.binding.clone()
+    }
+
+    fn load(&self) -> Result<Option<Value>, PrimaryWorkspaceStoreError> {
+        Ok(Some(self.value.clone()))
+    }
+
+    fn replace(&self, value: Option<Value>) -> Result<(), PrimaryWorkspaceStoreError> {
+        if value.as_ref() == Some(&self.value) {
+            Ok(())
+        } else {
+            Err(PrimaryWorkspaceStoreError::unavailable())
+        }
+    }
+
+    fn save(&self) -> Result<(), PrimaryWorkspaceStoreError> {
+        Ok(())
+    }
+}
+
+impl fmt::Debug for FixedPrimaryWorkspaceStore {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("FixedPrimaryWorkspaceStore(..)")
+    }
+}
 
 /// Process-local identity for one host-owned primary-workspace repository.
 ///

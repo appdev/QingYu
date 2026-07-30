@@ -4,8 +4,18 @@ use std::{fmt, sync::Mutex};
 
 use crate::contract::{
     Nullable, Rfc3339Utc, RunId, SyncCompletionState, SyncConfigViewDto, SyncSafeErrorCategory,
-    SyncSafeErrorCode, SyncSafeErrorDto, SyncSafeErrorOperation, SyncStatusDto, SyncTrigger,
+    SyncSafeErrorCode, SyncSafeErrorDto, SyncSafeErrorOperation, SyncStatusDto, SyncSummaryDto,
+    SyncTrigger,
 };
+
+pub(crate) enum SyncRunCompletion {
+    Succeeded(SyncSummaryDto),
+    Failed {
+        error: Box<SyncSafeErrorDto>,
+        partial_summary: Option<SyncSummaryDto>,
+    },
+    UnknownFailure,
+}
 
 pub struct SyncStatusState {
     current: Mutex<Option<SyncStatusDto>>,
@@ -84,11 +94,11 @@ impl SyncStatusState {
         Ok(status.clone())
     }
 
-    pub fn complete_run(
+    pub(crate) fn complete_run(
         &self,
         run_id: RunId,
         completed_at: Rfc3339Utc,
-        succeeded: bool,
+        completion: SyncRunCompletion,
     ) -> Result<SyncStatusDto, SyncStatusStateError> {
         let mut current = self.current.lock().map_err(|_| SyncStatusStateError)?;
         let status = current.as_mut().ok_or(SyncStatusStateError)?;
@@ -96,22 +106,37 @@ impl SyncStatusState {
             return Err(SyncStatusStateError);
         }
         status.active_run_id = Nullable::null();
-        status.summary = Nullable::null();
-        if succeeded {
-            status.completion_state = SyncCompletionState::Succeeded;
-            status.last_successful_sync_at = Nullable::value(completed_at);
-            status.error = Nullable::null();
-        } else {
-            status.completion_state = SyncCompletionState::Failed;
-            status.error = Nullable::value(
-                SyncSafeErrorDto::new(
-                    status.provider,
-                    SyncSafeErrorOperation::SyncRun,
-                    SyncSafeErrorCode::Unknown,
-                )
-                .with_category(SyncSafeErrorCategory::Provider)
-                .with_run_id(run_id),
-            );
+        match completion {
+            SyncRunCompletion::Succeeded(summary) => {
+                status.completion_state = SyncCompletionState::Succeeded;
+                status.last_successful_sync_at = Nullable::value(completed_at);
+                status.summary = Nullable::value(summary);
+                status.error = Nullable::null();
+            }
+            SyncRunCompletion::Failed {
+                error,
+                partial_summary,
+            } => {
+                status.completion_state = SyncCompletionState::Failed;
+                status.summary = match partial_summary {
+                    Some(summary) => Nullable::value(summary),
+                    None => Nullable::null(),
+                };
+                status.error = Nullable::value(*error);
+            }
+            SyncRunCompletion::UnknownFailure => {
+                status.completion_state = SyncCompletionState::Failed;
+                status.summary = Nullable::null();
+                status.error = Nullable::value(
+                    SyncSafeErrorDto::new(
+                        status.provider,
+                        SyncSafeErrorOperation::SyncRun,
+                        SyncSafeErrorCode::Unknown,
+                    )
+                    .with_category(SyncSafeErrorCategory::Provider)
+                    .with_run_id(run_id),
+                );
+            }
         }
         Ok(status.clone())
     }
@@ -185,7 +210,60 @@ fn idle_status(config: &SyncConfigViewDto) -> SyncStatusDto {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::contract::SyncProvider;
+    use crate::contract::{
+        SafeUnsignedInteger, SyncProvider, SyncSafeErrorCategory, SyncSafeErrorCode,
+        SyncSafeErrorOperation, SyncSummaryDto,
+    };
+
+    #[test]
+    fn terminal_status_preserves_success_summary_and_safe_failure_details() {
+        let state = SyncStatusState::new();
+        let config = config_view(SyncProvider::S3, "a");
+        let first_run = RunId::new(uuid::Uuid::new_v4());
+        let now = Rfc3339Utc::parse("2026-07-29T00:00:00Z").unwrap();
+        let expected_summary = summary(3);
+        state
+            .begin_run(&config, first_run, now.clone(), SyncTrigger::Manual)
+            .unwrap();
+
+        let succeeded = state
+            .complete_run(
+                first_run,
+                now.clone(),
+                SyncRunCompletion::Succeeded(expected_summary.clone()),
+            )
+            .unwrap();
+
+        assert_eq!(succeeded.summary.as_ref(), Some(&expected_summary));
+        assert!(succeeded.error.as_ref().is_none());
+
+        let second_run = RunId::new(uuid::Uuid::new_v4());
+        let partial = summary(1);
+        let error = SyncSafeErrorDto::new(
+            SyncProvider::S3,
+            SyncSafeErrorOperation::UploadObject,
+            SyncSafeErrorCode::RemoteUnavailable,
+        )
+        .with_category(SyncSafeErrorCategory::Network)
+        .with_run_id(second_run);
+        state
+            .begin_run(&config, second_run, now.clone(), SyncTrigger::Manual)
+            .unwrap();
+
+        let failed = state
+            .complete_run(
+                second_run,
+                now,
+                SyncRunCompletion::Failed {
+                    error: Box::new(error.clone()),
+                    partial_summary: Some(partial.clone()),
+                },
+            )
+            .unwrap();
+
+        assert_eq!(failed.summary.as_ref(), Some(&partial));
+        assert_eq!(failed.error.as_ref(), Some(&error));
+    }
 
     #[test]
     fn snapshot_rejects_stale_completed_identity_without_mutating_it() {
@@ -197,7 +275,9 @@ mod tests {
         state
             .begin_run(&first, run_id, now.clone(), SyncTrigger::Manual)
             .unwrap();
-        state.complete_run(run_id, now, true).unwrap();
+        state
+            .complete_run(run_id, now, SyncRunCompletion::Succeeded(summary(0)))
+            .unwrap();
 
         let error = state.snapshot_for(&second).unwrap_err();
         let original = state.snapshot_for(&first).unwrap();
@@ -237,5 +317,18 @@ mod tests {
             }
         }))
         .unwrap()
+    }
+
+    fn summary(value: u64) -> SyncSummaryDto {
+        let value = SafeUnsignedInteger::new(value).unwrap();
+        SyncSummaryDto {
+            bytes_downloaded: value,
+            bytes_uploaded: value,
+            conflict_files: value,
+            downloaded_files: value,
+            scanned_files: value,
+            skipped_files: value,
+            uploaded_files: value,
+        }
     }
 }

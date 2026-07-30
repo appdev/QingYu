@@ -63,16 +63,6 @@ impl Default for S3AddressingStyle {
     }
 }
 
-impl S3AddressingStyle {
-    pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            Self::Auto => "auto",
-            Self::Path => "path",
-            Self::VirtualHosted => "virtual-hosted",
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum S3TlsVerification {

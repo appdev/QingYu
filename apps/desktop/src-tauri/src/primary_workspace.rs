@@ -41,6 +41,71 @@ struct StorePrimaryWorkspaceBackend<R: tauri::Runtime> {
     store: Arc<tauri_plugin_store::Store<R>>,
 }
 
+fn primary_local_state_store<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Result<Arc<tauri_plugin_store::Store<R>>, String> {
+    app.store_builder(LOCAL_STATE_STORE_PATH)
+        .disable_auto_save()
+        .build()
+        .map_err(|_| persistence_error())
+}
+
+/// Host-private, path-free identities for child Kernel launches.
+///
+/// React-owned local-state supplies only the current path guard. The opaque
+/// registry is owned by a separate native durable store that is never encoded
+/// into the plugin-store record.
+struct NativeHostWorkspaceStatePersistence<'a, Backend: PrimaryWorkspaceBackend + ?Sized> {
+    backend: &'a Backend,
+    native_store: &'a qingyu_kernel::host::native::NativeHostWorkspaceStore,
+    transaction_lock: &'a Mutex<()>,
+}
+
+impl<'a, Backend: PrimaryWorkspaceBackend + ?Sized>
+    NativeHostWorkspaceStatePersistence<'a, Backend>
+{
+    fn new(
+        backend: &'a Backend,
+        native_store: &'a qingyu_kernel::host::native::NativeHostWorkspaceStore,
+        transaction_lock: &'a Mutex<()>,
+    ) -> Self {
+        Self {
+            backend,
+            native_store,
+            transaction_lock,
+        }
+    }
+
+    fn load_or_create(
+        &self,
+        requested_root: &Path,
+    ) -> Result<qingyu_kernel::host::native::NativeHostWorkspaceState, String> {
+        let _transaction = self
+            .transaction_lock
+            .lock()
+            .map_err(|_| persistence_error())?;
+        let authoritative = authoritative_primary_workspace_root(
+            self.backend.get(PRIMARY_WORKSPACE_KEY),
+            PrimaryWorkspaceKind::Desktop,
+            None,
+        )?;
+        let requested = requested_root
+            .to_str()
+            .ok_or_else(sync_primary_workspace_mismatch)
+            .and_then(crate::workspace_membership::canonical_workspace_root)
+            .map_err(|_| sync_primary_workspace_mismatch())?;
+        if requested != authoritative {
+            return Err(sync_primary_workspace_mismatch());
+        }
+
+        let display_name = crate::notebook_scope::notebook_name_from_root(&authoritative)
+            .map_err(|_| sync_primary_workspace_unavailable())?;
+        self.native_store
+            .load_or_create(&authoritative, display_name)
+            .map_err(|_| persistence_error())
+    }
+}
+
 /// Host-private preparation for the future desktop runtime-owner cut.
 ///
 /// Implementations retain the selected path and an atomic path-transition
@@ -295,7 +360,7 @@ impl<'a, Backend: PrimaryWorkspaceBackend + ?Sized> PrimaryWorkspaceService<'a, 
     }
 }
 
-fn transaction_lock() -> &'static Mutex<()> {
+pub(crate) fn primary_workspace_transaction_gate() -> &'static Mutex<()> {
     static TRANSACTION_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     TRANSACTION_LOCK.get_or_init(|| Mutex::new(()))
 }
@@ -437,11 +502,9 @@ impl ConsumedPreparedDesktopNotebookTarget {
         &self,
         app: &tauri::AppHandle<R>,
     ) -> Result<PrimaryWorkspaceWriteResult, String> {
-        let store = app
-            .store(LOCAL_STATE_STORE_PATH)
-            .map_err(|_| persistence_error())?;
+        let store = primary_local_state_store(app)?;
         let backend = StorePrimaryWorkspaceBackend { store };
-        self.commit_primary_workspace_with_backend(&backend, transaction_lock())
+        self.commit_primary_workspace_with_backend(&backend, primary_workspace_transaction_gate())
     }
 }
 
@@ -726,22 +789,37 @@ fn validate_primary_workspace_identity(
 fn read_primary_workspace_value<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> Result<Option<Value>, String> {
-    let store = app
-        .store(LOCAL_STATE_STORE_PATH)
-        .map_err(|_| persistence_error())?;
+    let store = primary_local_state_store(app)?;
     let backend = StorePrimaryWorkspaceBackend { store };
-    PrimaryWorkspaceService::new(&backend, transaction_lock()).read()
+    PrimaryWorkspaceService::new(&backend, primary_workspace_transaction_gate()).read()
+}
+
+/// Resolves the selected desktop workspace to its stable, host-owned child
+/// Kernel identity. Kept dormant until the desktop runtime-owner cutover.
+#[cfg(not(mobile))]
+#[allow(dead_code)]
+pub(crate) fn load_or_create_native_host_workspace_state<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    workspace_root: &Path,
+    native_store: &qingyu_kernel::host::native::NativeHostWorkspaceStore,
+) -> Result<qingyu_kernel::host::native::NativeHostWorkspaceState, String> {
+    let store = primary_local_state_store(app)?;
+    let backend = StorePrimaryWorkspaceBackend { store };
+    NativeHostWorkspaceStatePersistence::new(
+        &backend,
+        native_store,
+        primary_workspace_transaction_gate(),
+    )
+    .load_or_create(workspace_root)
 }
 
 pub(crate) fn with_primary_workspace_transaction<R: tauri::Runtime, T>(
     app: &tauri::AppHandle<R>,
     operation: impl FnOnce(Result<PathBuf, String>) -> Result<T, String>,
 ) -> Result<T, String> {
-    let store = app
-        .store(LOCAL_STATE_STORE_PATH)
-        .map_err(|_| persistence_error())?;
+    let store = primary_local_state_store(app)?;
     let backend = StorePrimaryWorkspaceBackend { store };
-    let service = PrimaryWorkspaceService::new(&backend, transaction_lock());
+    let service = PrimaryWorkspaceService::new(&backend, primary_workspace_transaction_gate());
 
     #[cfg(mobile)]
     let app_data_root = app
@@ -841,15 +919,14 @@ pub(crate) fn write_primary_workspace_state(
     input: PrimaryWorkspaceWriteInput,
 ) -> Result<PrimaryWorkspaceWriteResult, String> {
     let proposed_root = proposed_primary_workspace_root(&app, &input.state);
-    let store = app
-        .store(LOCAL_STATE_STORE_PATH)
-        .map_err(|_| persistence_error())?;
+    let store = primary_local_state_store(&app)?;
     let backend = StorePrimaryWorkspaceBackend { store };
-    PrimaryWorkspaceService::new(&backend, transaction_lock()).write_with_primary_root_guard(
-        input,
-        proposed_root.as_deref(),
-        crate::dejavu_sync::path_guard::native_working_tree_registry(),
-    )
+    PrimaryWorkspaceService::new(&backend, primary_workspace_transaction_gate())
+        .write_with_primary_root_guard(
+            input,
+            proposed_root.as_deref(),
+            crate::dejavu_sync::path_guard::native_working_tree_registry(),
+        )
 }
 
 #[tauri::command]
@@ -885,6 +962,25 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn primary_workspace_store_creation_never_uses_default_auto_save() {
+        let source = include_str!("primary_workspace.rs");
+        let default_store = [".", "store(", "LOCAL_STATE_STORE_PATH"].concat();
+        let configured_store = [
+            ".store_builder(LOCAL_STATE_STORE_PATH)",
+            ".disable_auto_save()",
+            ".build()",
+        ]
+        .concat();
+        let compact_source = source
+            .chars()
+            .filter(|character| !character.is_whitespace())
+            .collect::<String>();
+
+        assert!(!source.contains(&default_store));
+        assert_eq!(compact_source.matches(&configured_store).count(), 1);
+    }
 
     fn prepared_target_count() -> usize {
         super::prepared_desktop_notebook_targets()
@@ -1171,6 +1267,84 @@ mod tests {
             "onboardingCompleted": true,
             "version": 3
         })
+    }
+
+    fn native_host_workspace_store(
+        workspace: &Path,
+        app_data: &Path,
+        cache: &Path,
+    ) -> qingyu_kernel::host::native::NativeHostWorkspaceStore {
+        let paths = qingyu_kernel::paths::KernelPaths::desktop(workspace, app_data, cache)
+            .expect("native host state paths");
+        let config = qingyu_kernel::config::KernelConfig::generate()
+            .expect("native host state launch epoch");
+        qingyu_kernel::host::native::NativeHostWorkspaceStore::at_instance_data(
+            paths.instance_data_root(),
+            config.launch_epoch(),
+        )
+        .expect("native host state store")
+    }
+
+    #[test]
+    fn native_host_workspace_state_survives_restart_and_a_b_a_switches() {
+        let temporary = tempfile::tempdir().expect("native host workspace roots");
+        let parent = temporary.path().join("workspaces");
+        let workspace_a = parent.join("Workspace A");
+        let workspace_b = parent.join("Workspace B");
+        let app_data = temporary.path().join("app-data");
+        let cache = temporary.path().join("cache");
+        std::fs::create_dir_all(&workspace_a).expect("workspace A");
+        std::fs::create_dir(&workspace_b).expect("workspace B");
+        std::fs::create_dir(&app_data).expect("app data");
+        std::fs::create_dir(&cache).expect("cache");
+        let backend = MemoryBackend::with([
+            (
+                LOCAL_STATE_SCHEMA_VERSION_KEY,
+                Value::from(LOCAL_STATE_SCHEMA_VERSION),
+            ),
+            (PRIMARY_WORKSPACE_KEY, completed_state(workspace_a.to_str())),
+        ]);
+        let transaction_lock = Mutex::new(());
+        let native_store = native_host_workspace_store(&workspace_a, &app_data, &cache);
+
+        let first =
+            NativeHostWorkspaceStatePersistence::new(&backend, &native_store, &transaction_lock)
+                .load_or_create(&workspace_a)
+                .expect("persist workspace A");
+        let restarted =
+            NativeHostWorkspaceStatePersistence::new(&backend, &native_store, &transaction_lock)
+                .load_or_create(&workspace_a)
+                .expect("reuse workspace A after child restart");
+        assert_eq!(first, restarted);
+
+        PrimaryWorkspaceService::new(&backend, &transaction_lock)
+            .write(write_input(workspace_b.to_str().expect("workspace B path")))
+            .expect("switch to workspace B");
+        let second =
+            NativeHostWorkspaceStatePersistence::new(&backend, &native_store, &transaction_lock)
+                .load_or_create(&workspace_b)
+                .expect("persist workspace B");
+        assert_ne!(first, second);
+
+        let mut return_to_a = write_input(workspace_a.to_str().expect("workspace A path"));
+        return_to_a.state["nativeHostWorkspaceStates"] = json!({
+            "schemaVersion": 1,
+            "states": []
+        });
+        PrimaryWorkspaceService::new(&backend, &transaction_lock)
+            .write(return_to_a)
+            .expect("return to workspace A through React-owned state");
+        let returned =
+            NativeHostWorkspaceStatePersistence::new(&backend, &native_store, &transaction_lock)
+                .load_or_create(&workspace_a)
+                .expect("reuse workspace A after A-B-A switch");
+
+        assert_eq!(first, returned);
+        assert_eq!(
+            format!("{returned:?}"),
+            "NativeHostWorkspaceState([REDACTED])"
+        );
+        assert_eq!(backend.value("nativeHostWorkspaceStates"), None);
     }
 
     #[test]

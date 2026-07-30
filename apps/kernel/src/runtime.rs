@@ -8,26 +8,28 @@ use std::{
 };
 
 use async_trait::async_trait;
-use tokio::sync::{Mutex, MutexGuard, Notify};
+use tokio::sync::{Mutex, MutexGuard, Notify, OwnedMutexGuard};
 use uuid::Uuid;
 
 use crate::{
     config::{KernelConfig, KernelLaunchEpoch},
     contract::{
         CreateDocumentRequest, CreatedDocumentDto, DeleteDocumentRequest, DocumentContentDto,
-        DocumentHistoryPageDto, DocumentId, DocumentPageDto, ErrorCode, ErrorDetails, HostProfile,
-        InstanceId, ListDocumentsQuery, MoveDocumentRequest, PageQuery, PatchSettingsRequest,
-        PatchSyncConfigRequest, ReadyHealthResponse, RestoreDocumentHistoryRequest, Revision,
+        DocumentHistoryPageDto, DocumentHistorySnapshotDto, DocumentId, DocumentPageDto, ErrorCode,
+        ErrorDetails, HostProfile, InstanceId, ListDocumentsQuery, ListWorkspaceInventoryQuery,
+        MoveDocumentRequest, PageQuery, PatchSettingsRequest, PatchSyncConfigRequest,
+        ReadyHealthResponse, ResourceId, ResourceKind, RestoreDocumentHistoryRequest, Revision,
         Rfc3339Utc, SearchPageDto, SearchWorkspaceQuery, SettingsSnapshotDto, SnapshotId,
         SyncConfigViewDto, SyncConnectionTestDto, SyncRunAcceptedDto, SyncStatusDto, SyncTrigger,
         SystemVersionResponse, TestSyncConnectionRequest, TriggerSyncRunRequest,
-        UpdateDocumentRequest, WireIdentityKey, WorkspaceDto,
+        UpdateDocumentRequest, WireIdentityKey, WorkspaceDto, WorkspaceInventoryPageDto,
     },
     error::{safe_error_envelope, safe_message_for_error_code},
     events::{EventBroker, EventPublication, EventSink, EventSinkError},
-    paths::{KernelPaths, PathPolicyError, PathPolicyErrorKind, WorkspaceRoot},
+    paths::{InstanceDataRoot, KernelPaths, PathPolicyError, PathPolicyErrorKind, WorkspaceRoot},
     ports::{BoxTaskFuture, KernelPorts, PortError},
-    sync::status::SyncStatusState,
+    resources::RetainedResource,
+    sync::status::{SyncRunCompletion, SyncStatusState},
     workspace::{
         lock::{InstanceLockLease, KernelLockError, KernelLockErrorKind, WorkspaceLockLease},
         primary::{PreparedWorkspaceAuthorityBinding, PrimaryWorkspaceRepositoryBinding},
@@ -46,9 +48,10 @@ pub struct KernelRuntime {
     system_api: OnceLock<Arc<dyn SystemApiService>>,
     workspace_api: OnceLock<Arc<dyn WorkspaceApiService>>,
     documents_api: OnceLock<Arc<dyn DocumentsApiService>>,
+    resources_api: OnceLock<Arc<dyn ResourcesApiService>>,
     settings_api: OnceLock<Arc<dyn SettingsApiService>>,
     sync_api: OnceLock<Arc<dyn SyncApiService>>,
-    _instance_lease: Arc<InstanceLockLease>,
+    instance_authority: Arc<ActiveInstanceAuthority>,
 }
 
 impl KernelRuntime {
@@ -61,6 +64,10 @@ impl KernelRuntime {
             InstanceLockLease::acquire(paths.instance_data_root())
                 .map_err(KernelStartupError::from_lock)?,
         );
+        let instance_authority = Arc::new(ActiveInstanceAuthority::new(
+            paths.instance_data_root_authority(),
+            instance_lease.clone(),
+        ));
         let workspace_root = paths.workspace_root_authority();
         workspace_root
             .verify_held_directory()
@@ -86,9 +93,10 @@ impl KernelRuntime {
             system_api: OnceLock::new(),
             workspace_api: OnceLock::new(),
             documents_api: OnceLock::new(),
+            resources_api: OnceLock::new(),
             settings_api: OnceLock::new(),
             sync_api: OnceLock::new(),
-            _instance_lease: instance_lease,
+            instance_authority,
         }))
     }
 
@@ -102,6 +110,14 @@ impl KernelRuntime {
 
     pub const fn launch_epoch(&self) -> &KernelLaunchEpoch {
         self.config.launch_epoch()
+    }
+
+    pub(crate) fn instance_data_root(&self) -> &InstanceDataRoot {
+        self.paths.instance_data_root()
+    }
+
+    pub(crate) fn active_instance_authority(&self) -> Arc<ActiveInstanceAuthority> {
+        self.instance_authority.clone()
     }
 
     /// Deliberately exposes the per-launch bearer value only for the native
@@ -127,7 +143,7 @@ impl KernelRuntime {
     }
 
     pub fn verify_instance_lock(&self) -> Result<(), KernelLockError> {
-        self._instance_lease.verify_held_lock()
+        self.instance_authority.lease.verify_held_lock()
     }
 
     /// Transitional authority-only accessor for path-policy compatibility.
@@ -510,7 +526,11 @@ impl KernelRuntime {
         }
         let status = self
             .sync_status
-            .complete_run(run_id, queued.fallback_completed_at.clone(), false)
+            .complete_run(
+                run_id,
+                queued.fallback_completed_at.clone(),
+                SyncRunCompletion::UnknownFailure,
+            )
             .map_err(|_| {
                 lifecycle.admission = SyncRunAdmission::RecoveryClosed;
                 lifecycle.run = RegisteredSyncRun::Queued(queued.clone());
@@ -528,7 +548,7 @@ impl KernelRuntime {
     pub(crate) fn finalize_running_sync_run(
         &self,
         run_id: crate::contract::RunId,
-        succeeded: bool,
+        completion: SyncRunCompletion,
         completed_at: Rfc3339Utc,
         mutation: &MutationPermit<'_>,
     ) -> Result<Option<SyncTerminalPublication>, WorkspaceRunLifecycleError> {
@@ -569,8 +589,13 @@ impl KernelRuntime {
         let status = if transition_cancelled || running.cancellation.is_cancelled() {
             self.sync_status.complete_cancelled(run_id)
         } else {
+            let completion = if naturally_admissible {
+                completion
+            } else {
+                SyncRunCompletion::UnknownFailure
+            };
             self.sync_status
-                .complete_run(run_id, completed_at, succeeded && naturally_admissible)
+                .complete_run(run_id, completed_at, completion)
         }
         .map_err(|_| {
             lifecycle.admission = SyncRunAdmission::RecoveryClosed;
@@ -608,7 +633,11 @@ impl KernelRuntime {
         };
         let status = self
             .sync_status
-            .complete_run(run_id, queued.fallback_completed_at.clone(), false)
+            .complete_run(
+                run_id,
+                queued.fallback_completed_at.clone(),
+                SyncRunCompletion::UnknownFailure,
+            )
             .map_err(|_| {
                 lifecycle.admission = SyncRunAdmission::RecoveryClosed;
                 lifecycle.run = RegisteredSyncRun::Queued(queued.clone());
@@ -1207,6 +1236,15 @@ impl KernelRuntime {
             .map_err(|_| ApiServiceAlreadyInstalled)
     }
 
+    pub fn install_resources_api_service(
+        &self,
+        service: Arc<dyn ResourcesApiService>,
+    ) -> Result<(), ApiServiceAlreadyInstalled> {
+        self.resources_api
+            .set(service)
+            .map_err(|_| ApiServiceAlreadyInstalled)
+    }
+
     pub fn install_settings_api_service(
         &self,
         service: Arc<dyn SettingsApiService>,
@@ -1235,6 +1273,10 @@ impl KernelRuntime {
 
     pub(crate) fn documents_api_service(&self) -> Option<&Arc<dyn DocumentsApiService>> {
         self.documents_api.get()
+    }
+
+    pub(crate) fn resources_api_service(&self) -> Option<&Arc<dyn ResourcesApiService>> {
+        self.resources_api.get()
     }
 
     pub(crate) fn settings_api_service(&self) -> Option<&Arc<dyn SettingsApiService>> {
@@ -1985,6 +2027,39 @@ pub struct ActiveWorkspaceAuthority {
     lease: Arc<WorkspaceLockLease>,
 }
 
+pub(crate) struct ActiveInstanceAuthority {
+    root: Arc<InstanceDataRoot>,
+    lease: Arc<InstanceLockLease>,
+}
+
+impl ActiveInstanceAuthority {
+    fn new(root: Arc<InstanceDataRoot>, lease: Arc<InstanceLockLease>) -> Self {
+        Self { root, lease }
+    }
+
+    pub(crate) fn verify_held_directory(&self) -> Result<(), ActiveInstanceAuthorityError> {
+        self.root
+            .verify_held_directory()
+            .map_err(|_| ActiveInstanceAuthorityError)?;
+        self.lease
+            .verify_held_lock()
+            .map_err(|_| ActiveInstanceAuthorityError)
+    }
+
+    pub(crate) fn root(&self) -> &InstanceDataRoot {
+        self.root.as_ref()
+    }
+}
+
+impl fmt::Debug for ActiveInstanceAuthority {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ActiveInstanceAuthority { capability: held, lock: held }")
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ActiveInstanceAuthorityError;
+
 impl ActiveWorkspaceAuthority {
     fn new(root: Arc<WorkspaceRoot>, lease: Arc<WorkspaceLockLease>) -> Self {
         Self { root, lease }
@@ -2141,13 +2216,13 @@ impl EventSink for KernelRuntime {
 
 #[derive(Debug, Default)]
 pub struct MutationCoordinator {
-    gate: Mutex<()>,
+    gate: Arc<Mutex<()>>,
 }
 
 impl MutationCoordinator {
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         Self {
-            gate: Mutex::const_new(()),
+            gate: Arc::new(Mutex::new(())),
         }
     }
 
@@ -2165,6 +2240,12 @@ impl MutationCoordinator {
         })
     }
 
+    pub(crate) async fn lock_owned(self: &Arc<Self>) -> OwnedMutationPermit {
+        OwnedMutationPermit {
+            _guard: Arc::clone(&self.gate).lock_owned().await,
+        }
+    }
+
     fn recognizes(&self, permit: &MutationPermit<'_>) -> bool {
         std::ptr::eq(self, permit.coordinator)
     }
@@ -2174,6 +2255,11 @@ impl MutationCoordinator {
 pub struct MutationPermit<'a> {
     coordinator: &'a MutationCoordinator,
     _guard: MutexGuard<'a, ()>,
+}
+
+#[must_use = "the mutation gate is released when this permit is dropped"]
+pub(crate) struct OwnedMutationPermit {
+    _guard: OwnedMutexGuard<()>,
 }
 
 impl fmt::Debug for MutationPermit<'_> {
@@ -2371,6 +2457,11 @@ pub trait DocumentsApiService: Send + Sync {
         document_id: DocumentId,
         query: PageQuery,
     ) -> Result<DocumentHistoryPageDto, ServiceFailure>;
+    async fn get_document_history(
+        &self,
+        document_id: DocumentId,
+        snapshot_id: SnapshotId,
+    ) -> Result<DocumentHistorySnapshotDto, ServiceFailure>;
     async fn restore_document_history(
         &self,
         document_id: DocumentId,
@@ -2381,6 +2472,19 @@ pub trait DocumentsApiService: Send + Sync {
         &self,
         query: SearchWorkspaceQuery,
     ) -> Result<SearchPageDto, ServiceFailure>;
+}
+
+#[async_trait]
+pub trait ResourcesApiService: Send + Sync {
+    async fn list_workspace_inventory(
+        &self,
+        query: ListWorkspaceInventoryQuery,
+    ) -> Result<WorkspaceInventoryPageDto, ServiceFailure>;
+    async fn open_workspace_resource(
+        &self,
+        resource_id: ResourceId,
+        expected_kind: ResourceKind,
+    ) -> Result<RetainedResource, ServiceFailure>;
 }
 
 #[async_trait]

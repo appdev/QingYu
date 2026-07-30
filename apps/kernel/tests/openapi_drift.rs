@@ -5,6 +5,8 @@ use std::{
 };
 
 use qingyu_kernel::api::{check_openapi_artifact, export_openapi_to_string, ApiDoc};
+use qingyu_kernel::contract::ErrorCode;
+use qingyu_kernel::error::http_status_for_error_code;
 use serde_json::Value;
 use tempfile::tempdir;
 
@@ -14,6 +16,12 @@ const HTTP_OPERATIONS: &[(&str, &str, &str)] = &[
     ("get", "/api/v1/system/version", "getSystemVersion"),
     ("get", "/api/v1/runtime", "getRuntimeState"),
     ("get", "/api/v1/workspace", "getWorkspace"),
+    ("get", "/api/v1/inventory", "listWorkspaceInventory"),
+    (
+        "get",
+        "/api/v1/resources/{resourceId}",
+        "openWorkspaceResource",
+    ),
     ("get", "/api/v1/documents", "listDocuments"),
     ("post", "/api/v1/documents", "createDocument"),
     ("get", "/api/v1/documents/{documentId}", "getDocument"),
@@ -32,6 +40,11 @@ const HTTP_OPERATIONS: &[(&str, &str, &str)] = &[
         "get",
         "/api/v1/documents/{documentId}/history",
         "listDocumentHistory",
+    ),
+    (
+        "get",
+        "/api/v1/documents/{documentId}/history/{snapshotId}",
+        "getDocumentHistory",
     ),
     (
         "post",
@@ -59,6 +72,7 @@ const ERROR_CODES: &[&str] = &[
     "workspace_unavailable",
     "workspace_locked",
     "document_not_found",
+    "resource_not_found",
     "document_already_exists",
     "document_too_large",
     "document_invalid_encoding",
@@ -214,7 +228,7 @@ fn assert_optional_non_null(document: &Value, schema: &str, field: &str) {
 }
 
 #[test]
-fn openapi_has_exactly_the_frozen_twenty_one_http_operations() {
+fn openapi_has_exactly_the_frozen_twenty_four_http_operations() {
     let document = api_document();
     let paths = document["paths"].as_object().expect("OpenAPI paths");
     assert!(
@@ -226,7 +240,7 @@ fn openapi_has_exactly_the_frozen_twenty_one_http_operations() {
         .iter()
         .map(|(method, path, operation)| ((*method, *path), *operation))
         .collect();
-    assert_eq!(expected.len(), 21);
+    assert_eq!(expected.len(), 24);
 
     let mut actual = BTreeMap::new();
     for (path, path_item) in paths {
@@ -289,6 +303,36 @@ fn every_http_response_requires_the_request_id_header() {
             );
             assert_eq!(header["schema"]["type"], "string");
             assert_eq!(header["schema"]["format"], "uuid");
+        }
+    }
+}
+
+#[test]
+fn every_operation_error_status_matches_the_runtime_error_mapping() {
+    let document = api_document();
+
+    for (method, path, operation_id) in HTTP_OPERATIONS {
+        let responses = document["paths"][*path][*method]["responses"]
+            .as_object()
+            .unwrap_or_else(|| panic!("{operation_id} responses must be an object"));
+        for (status, response) in responses {
+            let Some(codes) = response
+                .pointer("/content/application~1json/schema/allOf/1/properties/code/enum")
+                .and_then(Value::as_array)
+            else {
+                continue;
+            };
+            for code in codes {
+                let code: ErrorCode =
+                    serde_json::from_value(code.clone()).expect("error code must deserialize");
+                assert_eq!(
+                    status
+                        .parse::<u16>()
+                        .expect("response status must be numeric"),
+                    http_status_for_error_code(code),
+                    "{operation_id} must publish the runtime status for {code:?}"
+                );
+            }
         }
     }
 }
@@ -416,7 +460,12 @@ fn assert_no_forbidden_properties(
 fn nullable_fields_are_required_while_optional_fields_are_omitted_not_null() {
     let document = api_document();
 
-    for page in ["DocumentPageDto", "DocumentHistoryPageDto", "SearchPageDto"] {
+    for page in [
+        "DocumentPageDto",
+        "DocumentHistoryPageDto",
+        "SearchPageDto",
+        "WorkspaceInventoryPageDto",
+    ] {
         assert_required_nullable(&document, page, "nextCursor");
     }
     assert_required_nullable(&document, "SafeEndpointViewDto", "value");
@@ -435,6 +484,9 @@ fn nullable_fields_are_required_while_optional_fields_are_omitted_not_null() {
     assert_optional_non_null(&document, "PageQuery", "cursor");
     assert_optional_non_null(&document, "PageQuery", "limit");
     assert_optional_non_null(&document, "ListDocumentsQuery", "parent");
+    assert_optional_non_null(&document, "ListWorkspaceInventoryQuery", "cursor");
+    assert_optional_non_null(&document, "ListWorkspaceInventoryQuery", "limit");
+    assert_optional_non_null(&document, "ListWorkspaceInventoryQuery", "parent");
     assert_optional_non_null(&document, "ApiErrorEnvelope", "details");
     for field in ["category", "httpStatus", "requestId", "runId"] {
         assert_optional_non_null(&document, "SyncSafeErrorDto", field);
@@ -504,6 +556,46 @@ fn operations_freeze_request_bodies_parameters_and_route_specific_errors() {
             && parameter["required"] == true
             && parameter["schema"]["$ref"] == "#/components/schemas/SearchQuery"
     }));
+    let resource_parameters = document["paths"]["/api/v1/resources/{resourceId}"]["get"]
+        ["parameters"]
+        .as_array()
+        .expect("resource parameters");
+    for (name, location, schema) in [
+        ("resourceId", "path", "ResourceId"),
+        ("kind", "query", "ResourceKind"),
+    ] {
+        assert!(resource_parameters.iter().any(|parameter| {
+            parameter["name"] == name
+                && parameter["in"] == location
+                && parameter["required"] == true
+                && parameter["schema"]["$ref"] == format!("#/components/schemas/{schema}")
+        }));
+    }
+    let binary =
+        &document["paths"]["/api/v1/resources/{resourceId}"]["get"]["responses"]["200"]["content"];
+    for media_type in [
+        "application/octet-stream",
+        "image/gif",
+        "image/jpeg",
+        "image/png",
+        "image/webp",
+    ] {
+        assert_eq!(binary[media_type]["schema"]["type"], "string");
+        assert_eq!(binary[media_type]["schema"]["format"], "binary");
+    }
+    let binary_headers =
+        &document["paths"]["/api/v1/resources/{resourceId}"]["get"]["responses"]["200"]["headers"];
+    assert_eq!(binary_headers["Content-Length"]["required"], true);
+    assert_eq!(
+        binary_headers["Content-Length"]["schema"]["type"],
+        "integer"
+    );
+    assert_eq!(binary_headers["Content-Length"]["schema"]["minimum"], 0);
+    assert_eq!(binary_headers["X-Content-Type-Options"]["required"], true);
+    assert_eq!(
+        binary_headers["X-Content-Type-Options"]["schema"]["const"],
+        "nosniff"
+    );
 
     let patch_settings_errors =
         operation_error_codes(&document["paths"]["/api/v1/settings"]["patch"]["responses"]);

@@ -58,6 +58,26 @@ fn desktop_activates_three_disjoint_host_validated_roots() {
     assert!(!rendered.contains(temporary.path().to_string_lossy().as_ref()));
 }
 
+#[cfg(unix)]
+#[test]
+fn desktop_instance_data_capability_rejects_an_address_replacement() {
+    let temporary = tempdir().unwrap();
+    let workspace = temporary.path().join("workspace");
+    let app_data = temporary.path().join("app-data");
+    let retained = temporary.path().join("retained-app-data");
+    let cache = temporary.path().join("cache");
+    fs::create_dir(&workspace).unwrap();
+    fs::create_dir(&app_data).unwrap();
+    fs::create_dir(&cache).unwrap();
+    let paths = KernelPaths::desktop(&workspace, &app_data, &cache).unwrap();
+
+    fs::rename(&app_data, &retained).unwrap();
+    fs::create_dir(&app_data).unwrap();
+
+    assert!(paths.instance_data_root().verify_held_directory().is_err());
+    assert_eq!(fs::read_dir(&app_data).unwrap().count(), 0);
+}
+
 #[test]
 fn desktop_rejects_equal_or_nested_roots_without_revealing_them() {
     let temporary = tempdir().unwrap();

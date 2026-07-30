@@ -19,9 +19,9 @@ use qingyu_kernel::{
     config::KernelConfig,
     contract::{
         CreateDocumentRequest, DeleteDocumentRequest, DeletionPolicy, DocumentContents,
-        DocumentKind, DocumentName, DomainEvent, FileDocumentName, ListDocumentsQuery,
-        MoveDocumentRequest, Nullable, PageLimit, PageQuery, Revision, SearchQuery,
-        SearchWorkspaceQuery, UpdateDocumentRequest, WireIdentityKey, WorkspaceDto,
+        DocumentEntryDto, DocumentKind, DocumentName, DomainEvent, FileDocumentName,
+        ListDocumentsQuery, MoveDocumentRequest, Nullable, PageLimit, PageQuery, Revision,
+        SearchQuery, SearchWorkspaceQuery, UpdateDocumentRequest, WireIdentityKey, WorkspaceDto,
         WorkspaceGeneration, WorkspaceId, WorkspaceReadiness, WorkspaceRelativePath,
     },
     documents::{
@@ -34,6 +34,7 @@ use qingyu_kernel::{
         DeletionPort, DeletionPortError, DocumentDeletionTarget, DocumentIgnorePort,
     },
     events::{EventPublication, EventSink, EventSinkError},
+    ignore_rules::StaticWorkspaceIgnorePort,
     paths::KernelPaths,
     ports::KernelPorts,
     runtime::{DocumentsApiService, KernelRuntime, KernelStartupErrorKind},
@@ -292,6 +293,84 @@ impl Fixture {
     }
 }
 
+async fn create_listed_directory_with_binary_resource(
+    fixture: &Fixture,
+    name: &str,
+) -> DocumentEntryDto {
+    fixture
+        .service
+        .create_document(CreateDocumentRequest::Directory {
+            workspace_generation: fixture.workspace.current().unwrap().generation,
+            parent: WorkspaceRelativePath::default(),
+            name: DocumentName::parse(name).unwrap(),
+        })
+        .await
+        .unwrap();
+    fs::write(fixture.root.join(name).join("resource.bin"), b"before").unwrap();
+    fixture
+        .service
+        .list_documents(ListDocumentsQuery {
+            cursor: None,
+            limit: None,
+            parent: WorkspaceRelativePath::default(),
+        })
+        .await
+        .unwrap()
+        .items
+        .into_iter()
+        .find(|entry| entry.path.as_str() == name)
+        .unwrap()
+}
+
+#[tokio::test]
+async fn directory_move_rejects_a_stale_revision_after_binary_resource_change() {
+    let fixture = Fixture::new().await;
+    let directory = create_listed_directory_with_binary_resource(&fixture, "folder").await;
+    fs::write(fixture.root.join("folder/resource.bin"), b"after!").unwrap();
+
+    let error = fixture
+        .service
+        .move_document(
+            directory.id,
+            MoveDocumentRequest {
+                workspace_generation: fixture.workspace.current().unwrap().generation,
+                expected_revision: directory.revision,
+                target_parent: WorkspaceRelativePath::default(),
+                name: DocumentName::parse("moved").unwrap(),
+            },
+        )
+        .await
+        .unwrap_err();
+
+    assert_eq!(error.kind(), DocumentServiceErrorKind::RevisionConflict);
+    assert!(fixture.root.join("folder/resource.bin").is_file());
+    assert!(!fixture.root.join("moved").exists());
+}
+
+#[tokio::test]
+async fn directory_delete_rejects_a_stale_revision_after_binary_resource_change() {
+    let fixture = Fixture::new().await;
+    let directory = create_listed_directory_with_binary_resource(&fixture, "folder").await;
+    fs::write(fixture.root.join("folder/resource.bin"), b"after!").unwrap();
+
+    let error = fixture
+        .service
+        .delete_document(
+            directory.id,
+            DeleteDocumentRequest {
+                workspace_generation: fixture.workspace.current().unwrap().generation,
+                expected_revision: directory.revision,
+                deletion_policy: DeletionPolicy::Recoverable,
+            },
+        )
+        .await
+        .unwrap_err();
+
+    assert_eq!(error.kind(), DocumentServiceErrorKind::RevisionConflict);
+    assert!(fixture.root.join("folder/resource.bin").is_file());
+    assert!(fixture.deletion.calls.lock().unwrap().is_empty());
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn document_mutation_is_rejected_until_workspace_changed_is_published() {
     let publication_gate = Arc::new(WorkspacePublicationGate::default());
@@ -440,10 +519,12 @@ async fn document_request_retains_old_snapshot_lease_until_request_finishes() {
             Arc::new(MemoryDocumentHistoryStore::default()),
             Arc::new(MemoryDocumentRecoveryStore::default()),
             Arc::new(CapabilityAtomicInstallPort),
-            Arc::new(BlockingIgnorePort {
-                started: Mutex::new(Some(started_sender)),
-                release: Mutex::new(release_receiver),
-            }),
+            Arc::new(StaticWorkspaceIgnorePort::new(Arc::new(
+                BlockingIgnorePort {
+                    started: Mutex::new(Some(started_sender)),
+                    release: Mutex::new(release_receiver),
+                },
+            ))),
         )
         .unwrap(),
     );
@@ -502,10 +583,12 @@ async fn document_request_never_crosses_authority_and_generation() {
             Arc::new(MemoryDocumentHistoryStore::default()),
             Arc::new(MemoryDocumentRecoveryStore::default()),
             Arc::new(CapabilityAtomicInstallPort),
-            Arc::new(BlockingIgnorePort {
-                started: Mutex::new(Some(started_sender)),
-                release: Mutex::new(release_receiver),
-            }),
+            Arc::new(StaticWorkspaceIgnorePort::new(Arc::new(
+                BlockingIgnorePort {
+                    started: Mutex::new(Some(started_sender)),
+                    release: Mutex::new(release_receiver),
+                },
+            ))),
         )
         .unwrap(),
     );
@@ -836,6 +919,17 @@ async fn moving_a_document_preserves_history_under_the_new_document_identity() {
         .await
         .unwrap();
     assert_eq!(history.items.len(), 1);
+    let preview = fixture
+        .service
+        .get_document_history(moved.id.clone(), history.items[0].snapshot_id)
+        .await
+        .unwrap();
+    assert_eq!(preview.snapshot_id, history.items[0].snapshot_id);
+    assert_eq!(preview.document_id, moved.id);
+    assert_eq!(preview.created_at, history.items[0].created_at);
+    assert_eq!(preview.size_bytes, history.items[0].size_bytes);
+    assert_eq!(preview.revision, history.items[0].revision);
+    assert_eq!(preview.contents.as_str(), "first");
     let restored = fixture
         .service
         .restore_document_history(
@@ -986,6 +1080,188 @@ async fn content_limits_invalid_utf8_and_generation_bound_cursors_are_enforced()
 }
 
 #[tokio::test]
+async fn document_page_cursor_is_rejected_when_the_collection_changes_between_pages() {
+    let fixture = Fixture::new().await;
+    let generation = fixture.workspace.current().unwrap().generation;
+    for name in ["first.md", "second.md"] {
+        fixture
+            .service
+            .create_document(CreateDocumentRequest::File {
+                workspace_generation: generation.clone(),
+                parent: WorkspaceRelativePath::default(),
+                name: FileDocumentName::parse(name).unwrap(),
+                contents: DocumentContents::parse(name).unwrap(),
+            })
+            .await
+            .unwrap();
+    }
+    let first_page = fixture
+        .service
+        .list_documents(ListDocumentsQuery {
+            cursor: None,
+            limit: Some(PageLimit::new(1).unwrap()),
+            parent: WorkspaceRelativePath::default(),
+        })
+        .await
+        .unwrap();
+    let cursor = first_page.next_cursor.into_option().expect("next cursor");
+
+    fixture
+        .service
+        .create_document(CreateDocumentRequest::File {
+            workspace_generation: generation,
+            parent: WorkspaceRelativePath::default(),
+            name: FileDocumentName::parse("third.md").unwrap(),
+            contents: DocumentContents::parse("third").unwrap(),
+        })
+        .await
+        .unwrap();
+
+    let error = fixture
+        .service
+        .list_documents(ListDocumentsQuery {
+            cursor: Some(cursor),
+            limit: Some(PageLimit::new(1).unwrap()),
+            parent: WorkspaceRelativePath::default(),
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(error.kind(), DocumentServiceErrorKind::InvalidCursor);
+}
+
+#[tokio::test]
+async fn history_page_cursor_is_rejected_when_a_snapshot_is_added_between_pages() {
+    let fixture = Fixture::new().await;
+    let generation = fixture.workspace.current().unwrap().generation;
+    let created = fixture
+        .service
+        .create_document(CreateDocumentRequest::File {
+            workspace_generation: generation.clone(),
+            parent: WorkspaceRelativePath::default(),
+            name: FileDocumentName::parse("history.md").unwrap(),
+            contents: DocumentContents::parse("first").unwrap(),
+        })
+        .await
+        .unwrap();
+    let (document_id, first_revision) = match created {
+        qingyu_kernel::contract::CreatedDocumentDto::File { id, revision, .. } => (id, revision),
+        _ => panic!("file expected"),
+    };
+    let second = fixture
+        .service
+        .update_document(
+            document_id.clone(),
+            UpdateDocumentRequest {
+                workspace_generation: generation.clone(),
+                expected_revision: first_revision,
+                contents: DocumentContents::parse("second").unwrap(),
+            },
+        )
+        .await
+        .unwrap();
+    let third = fixture
+        .service
+        .update_document(
+            document_id.clone(),
+            UpdateDocumentRequest {
+                workspace_generation: generation.clone(),
+                expected_revision: second.revision,
+                contents: DocumentContents::parse("third").unwrap(),
+            },
+        )
+        .await
+        .unwrap();
+    let first_page = fixture
+        .service
+        .list_document_history(
+            document_id.clone(),
+            PageQuery {
+                cursor: None,
+                limit: Some(PageLimit::new(1).unwrap()),
+            },
+        )
+        .await
+        .unwrap();
+    let cursor = first_page.next_cursor.into_option().expect("next cursor");
+
+    fixture
+        .service
+        .update_document(
+            document_id.clone(),
+            UpdateDocumentRequest {
+                workspace_generation: generation,
+                expected_revision: third.revision,
+                contents: DocumentContents::parse("fourth").unwrap(),
+            },
+        )
+        .await
+        .unwrap();
+
+    let error = fixture
+        .service
+        .list_document_history(
+            document_id,
+            PageQuery {
+                cursor: Some(cursor),
+                limit: Some(PageLimit::new(1).unwrap()),
+            },
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.kind(), DocumentServiceErrorKind::InvalidCursor);
+}
+
+#[tokio::test]
+async fn search_page_cursor_is_rejected_when_matches_change_between_pages() {
+    let fixture = Fixture::new().await;
+    let generation = fixture.workspace.current().unwrap().generation;
+    for name in ["first.md", "second.md"] {
+        fixture
+            .service
+            .create_document(CreateDocumentRequest::File {
+                workspace_generation: generation.clone(),
+                parent: WorkspaceRelativePath::default(),
+                name: FileDocumentName::parse(name).unwrap(),
+                contents: DocumentContents::parse("needle").unwrap(),
+            })
+            .await
+            .unwrap();
+    }
+    let first_page = fixture
+        .service
+        .search_workspace(SearchWorkspaceQuery {
+            cursor: None,
+            limit: Some(PageLimit::new(1).unwrap()),
+            query: SearchQuery::parse("needle").unwrap(),
+        })
+        .await
+        .unwrap();
+    let cursor = first_page.next_cursor.into_option().expect("next cursor");
+
+    fixture
+        .service
+        .create_document(CreateDocumentRequest::File {
+            workspace_generation: generation,
+            parent: WorkspaceRelativePath::default(),
+            name: FileDocumentName::parse("third.md").unwrap(),
+            contents: DocumentContents::parse("needle").unwrap(),
+        })
+        .await
+        .unwrap();
+
+    let error = fixture
+        .service
+        .search_workspace(SearchWorkspaceQuery {
+            cursor: Some(cursor),
+            limit: Some(PageLimit::new(1).unwrap()),
+            query: SearchQuery::parse("needle").unwrap(),
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(error.kind(), DocumentServiceErrorKind::InvalidCursor);
+}
+
+#[tokio::test]
 async fn read_dto_contents_size_and_revision_always_come_from_one_stable_retained_snapshot() {
     let fixture = Fixture::new().await;
     let created = fixture
@@ -1049,7 +1325,9 @@ async fn search_is_utf8_precise_bounded_cursor_bound_and_skips_unsafe_or_ignored
             Arc::new(MemoryDocumentHistoryStore::default()),
             Arc::new(MemoryDocumentRecoveryStore::default()),
             Arc::new(CapabilityAtomicInstallPort),
-            Arc::new(PathIgnorePort(ignored)),
+            Arc::new(StaticWorkspaceIgnorePort::new(Arc::new(PathIgnorePort(
+                ignored,
+            )))),
         )
         .unwrap(),
     );
@@ -1363,6 +1641,34 @@ async fn direct_and_http_adapters_return_the_same_dto_and_safe_error_code() {
     let http_history: qingyu_kernel::contract::DocumentHistoryPageDto =
         serde_json::from_slice(&bytes).unwrap();
     assert_eq!(http_history, direct_history);
+
+    let snapshot_id = http_history.items[0].snapshot_id;
+    let direct_preview = DocumentsApiService::get_document_history(
+        fixture.service.as_ref(),
+        document_id.clone(),
+        snapshot_id,
+    )
+    .await
+    .unwrap();
+    let request = Request::builder()
+        .method("GET")
+        .uri(format!(
+            "/api/v1/documents/{}/history/{}",
+            document_id.as_str(),
+            snapshot_id.as_uuid()
+        ))
+        .header(header::HOST, "127.0.0.1:43123")
+        .header(header::AUTHORIZATION, format!("Bearer {credential}"))
+        .body(Body::empty())
+        .unwrap();
+    let response = router.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = to_bytes(response.into_body(), 2 * 1024 * 1024)
+        .await
+        .unwrap();
+    let http_preview: qingyu_kernel::contract::DocumentHistorySnapshotDto =
+        serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(http_preview, direct_preview);
 
     let direct_write_error = DocumentsApiService::update_document(
         fixture.service.as_ref(),

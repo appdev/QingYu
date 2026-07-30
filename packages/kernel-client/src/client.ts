@@ -9,6 +9,8 @@ import {
   isDocumentEntry,
   isDocumentPage,
   isHistoryPage,
+  isHistorySnapshot,
+  isInventoryPage,
   isLiveHealth,
   isReadyHealth,
   isRuntime,
@@ -76,12 +78,29 @@ export interface KernelDocumentsClient {
     query?: Schemas["PageQuery"],
     options?: KernelRequestOptions,
   ): Promise<Schemas["DocumentHistoryPageDto"]>;
+  getHistory(
+    documentId: Schemas["DocumentId"],
+    snapshotId: Schemas["SnapshotId"],
+    options?: KernelRequestOptions,
+  ): Promise<Schemas["DocumentHistorySnapshotDto"]>;
   restoreHistory(
     documentId: Schemas["DocumentId"],
     snapshotId: Schemas["SnapshotId"],
     request: Schemas["RestoreDocumentHistoryRequest"],
     options?: KernelRequestOptions,
   ): Promise<Schemas["DocumentContentDto"]>;
+}
+
+export interface KernelResourcesClient {
+  list(
+    query?: Schemas["ListWorkspaceInventoryQuery"],
+    options?: KernelRequestOptions,
+  ): Promise<Schemas["WorkspaceInventoryPageDto"]>;
+  open(
+    resourceId: Schemas["ResourceId"],
+    kind: Schemas["ResourceKind"],
+    options?: KernelRequestOptions,
+  ): Promise<Response>;
 }
 
 export interface KernelSettingsClient {
@@ -112,6 +131,7 @@ export interface KernelSyncClient {
 export interface KernelClient {
   readonly system: KernelSystemClient;
   readonly workspace: KernelWorkspaceClient;
+  readonly resources: KernelResourcesClient;
   readonly documents: KernelDocumentsClient;
   readonly settings: KernelSettingsClient;
   readonly sync: KernelSyncClient;
@@ -123,6 +143,8 @@ export function createKernelClient(options: CreateKernelClientOptions): KernelCl
   const transport = new KernelHttpTransport(options);
   const documentPath = (documentId: Schemas["DocumentId"]) =>
     `/api/v1/documents/${encodeURIComponent(documentId)}`;
+  const resourcePath = (resourceId: Schemas["ResourceId"]) =>
+    `/api/v1/resources/${encodeURIComponent(resourceId)}`;
 
   return {
     system: {
@@ -166,6 +188,27 @@ export function createKernelClient(options: CreateKernelClientOptions): KernelCl
           query,
           signal: requestOptions?.signal,
         }, { status: 200, validate: isSearchPage }),
+    },
+    resources: {
+      list: (query, requestOptions) =>
+        transport.request({
+          method: "GET",
+          path: "/api/v1/inventory",
+          query,
+          signal: requestOptions?.signal,
+        }, { status: 200, validate: isInventoryPage }),
+      open: (resourceId, kind, requestOptions) =>
+        transport.requestBinary({
+          method: "GET",
+          path: resourcePath(resourceId),
+          query: { kind },
+          signal: requestOptions?.signal,
+        }, {
+          status: 200,
+          mediaTypes: kind === "image"
+            ? ["image/gif", "image/jpeg", "image/png", "image/webp"]
+            : ["application/octet-stream"],
+        }),
     },
     documents: {
       list: (query, requestOptions) =>
@@ -216,6 +259,12 @@ export function createKernelClient(options: CreateKernelClientOptions): KernelCl
           query,
           signal: requestOptions?.signal,
         }, { status: 200, validate: isHistoryPage }),
+      getHistory: (documentId, snapshotId, requestOptions) =>
+        transport.request({
+          method: "GET",
+          path: `${documentPath(documentId)}/history/${encodeURIComponent(snapshotId)}`,
+          signal: requestOptions?.signal,
+        }, { status: 200, validate: isHistorySnapshot }),
       restoreHistory: (documentId, snapshotId, request, requestOptions) =>
         transport.request({
           method: "POST",

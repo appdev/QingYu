@@ -1,4 +1,4 @@
-use std::{collections::HashSet, fmt};
+use std::{collections::HashSet, fmt, io};
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use hmac::{Hmac, Mac};
@@ -8,6 +8,13 @@ use time::{format_description::well_known::Rfc3339, OffsetDateTime, UtcOffset};
 use utoipa::ToSchema;
 use uuid::Uuid;
 use zeroize::Zeroize;
+
+#[cfg(test)]
+thread_local! {
+    static SIGNED_PAYLOAD_SERIALIZATIONS: std::cell::Cell<usize> = const {
+        std::cell::Cell::new(0)
+    };
+}
 
 pub const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 
@@ -107,6 +114,8 @@ pub struct InvalidWorkspaceGeneration;
 pub struct SafeUnsignedInteger(u64);
 
 impl SafeUnsignedInteger {
+    pub const ZERO: Self = Self(0);
+
     pub const fn new(value: u64) -> Result<Self, UnsafeWireInteger> {
         if value > MAX_SAFE_INTEGER {
             return Err(UnsafeWireInteger);
@@ -211,6 +220,13 @@ impl std::error::Error for UnsafeWireInteger {}
 pub enum DocumentKind {
     File,
     Directory,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize, ToSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum ResourceKind {
+    Image,
+    Attachment,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize, ToSchema)]
@@ -494,6 +510,45 @@ impl fmt::Display for InvalidDocumentName {
 
 impl std::error::Error for InvalidDocumentName {}
 
+#[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, ToSchema)]
+#[serde(transparent)]
+pub struct ResourceName(String);
+
+impl ResourceName {
+    pub fn parse(value: impl Into<String>) -> Result<Self, InvalidResourceName> {
+        let value = value.into();
+        if !document_name_is_valid(&value) {
+            return Err(InvalidResourceName);
+        }
+        Ok(Self(value))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl<'de> Deserialize<'de> for ResourceName {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Self::parse(value).map_err(|_| D::Error::custom("invalid portable resource name"))
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct InvalidResourceName;
+
+impl fmt::Display for InvalidResourceName {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("invalid portable resource name")
+    }
+}
+
+impl std::error::Error for InvalidResourceName {}
+
 fn document_name_is_valid(value: &str) -> bool {
     if value.is_empty()
         || value.len() > MAX_DOCUMENT_NAME_BYTES
@@ -676,6 +731,7 @@ pub struct SystemVersionResponse {
 pub struct RuntimeCapabilitiesDto {
     pub documents: bool,
     pub history: bool,
+    pub resources: bool,
     pub search: bool,
     pub settings: bool,
     pub sync: bool,
@@ -739,6 +795,25 @@ pub struct ListDocumentsQuery {
     pub parent: WorkspaceRelativePath,
 }
 
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ListWorkspaceInventoryQuery {
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_non_null",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub cursor: Option<PageCursor>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_non_null",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub limit: Option<PageLimit>,
+    #[serde(default)]
+    pub parent: WorkspaceRelativePath,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct DocumentEntryDto {
@@ -750,6 +825,50 @@ pub struct DocumentEntryDto {
     pub size_bytes: SafeUnsignedInteger,
     pub modified_at: Rfc3339Utc,
     pub revision: Revision,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ResourceEntryDto {
+    pub id: ResourceId,
+    pub path: WorkspaceRelativePath,
+    pub parent: WorkspaceRelativePath,
+    pub name: ResourceName,
+    pub kind: ResourceKind,
+    pub size_bytes: SafeUnsignedInteger,
+    pub modified_at: Rfc3339Utc,
+    pub revision: Revision,
+    pub media_type: String,
+    pub previewable: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(
+    deny_unknown_fields,
+    rename_all = "kebab-case",
+    rename_all_fields = "camelCase",
+    tag = "entryType"
+)]
+pub enum WorkspaceInventoryEntryDto {
+    Document { document: DocumentEntryDto },
+    Resource { resource: ResourceEntryDto },
+}
+
+impl WorkspaceInventoryEntryDto {
+    pub const fn path(&self) -> &WorkspaceRelativePath {
+        match self {
+            Self::Document { document } => &document.path,
+            Self::Resource { resource } => &resource.path,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct WorkspaceInventoryPageDto {
+    pub items: Vec<WorkspaceInventoryEntryDto>,
+    #[serde(deserialize_with = "deserialize_required_nullable")]
+    pub next_cursor: Nullable<PageCursor>,
 }
 
 impl DocumentEntryDto {
@@ -907,6 +1026,17 @@ pub struct DocumentHistoryPageDto {
     pub items: Vec<HistoryEntryDto>,
     #[serde(deserialize_with = "deserialize_required_nullable")]
     pub next_cursor: Nullable<PageCursor>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct DocumentHistorySnapshotDto {
+    pub snapshot_id: SnapshotId,
+    pub document_id: DocumentId,
+    pub created_at: Rfc3339Utc,
+    pub size_bytes: SafeUnsignedInteger,
+    pub revision: Revision,
+    pub contents: DocumentContents,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
@@ -1502,6 +1632,20 @@ pub struct SyncSummaryDto {
     pub uploaded_files: SafeUnsignedInteger,
 }
 
+impl SyncSummaryDto {
+    pub const fn empty() -> Self {
+        Self {
+            bytes_downloaded: SafeUnsignedInteger::ZERO,
+            bytes_uploaded: SafeUnsignedInteger::ZERO,
+            conflict_files: SafeUnsignedInteger::ZERO,
+            downloaded_files: SafeUnsignedInteger::ZERO,
+            scanned_files: SafeUnsignedInteger::ZERO,
+            skipped_files: SafeUnsignedInteger::ZERO,
+            uploaded_files: SafeUnsignedInteger::ZERO,
+        }
+    }
+}
+
 macro_rules! sync_safe_value_enum {
     ($name:ident { $($variant:ident => $wire:literal),+ $(,)? }) => {
         #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -1939,6 +2083,7 @@ pub enum ErrorCode {
     WorkspaceUnavailable,
     WorkspaceLocked,
     DocumentNotFound,
+    ResourceNotFound,
     DocumentAlreadyExists,
     DocumentTooLarge,
     DocumentInvalidEncoding,
@@ -2511,9 +2656,28 @@ impl fmt::Debug for ServerFrame {
 }
 
 const DOCUMENT_ID_DOMAIN: &[u8] = b"document-id-v1";
+const RESOURCE_ID_DOMAIN: &[u8] = b"resource-id-v1";
 const PAGE_CURSOR_DOMAIN: &[u8] = b"page-cursor-v1";
 const MAX_DOCUMENT_ID_LENGTH: usize = 8_192;
+const MAX_RESOURCE_ID_LENGTH: usize = 8_192;
 const MAX_PAGE_CURSOR_LENGTH: usize = 2_048;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct SignedIdentityAllocation {
+    json_bytes: usize,
+    token_bytes: usize,
+    transient_bytes: usize,
+}
+
+impl SignedIdentityAllocation {
+    pub(crate) const fn token_bytes(self) -> usize {
+        self.token_bytes
+    }
+
+    pub(crate) const fn transient_bytes(self) -> usize {
+        self.transient_bytes
+    }
+}
 
 macro_rules! signed_wire_token {
     ($name:ident, $maximum_length:expr) => {
@@ -2554,6 +2718,7 @@ macro_rules! signed_wire_token {
 }
 
 signed_wire_token!(DocumentId, MAX_DOCUMENT_ID_LENGTH);
+signed_wire_token!(ResourceId, MAX_RESOURCE_ID_LENGTH);
 signed_wire_token!(PageCursor, MAX_PAGE_CURSOR_LENGTH);
 
 pub struct WireIdentityKey([u8; 32]);
@@ -2572,6 +2737,8 @@ impl WireIdentityKey {
         kind: DocumentKind,
         relative_path: &WorkspaceRelativePath,
     ) -> Result<DocumentId, InvalidWireIdentity> {
+        let allocation =
+            self.document_id_allocation(workspace_id, workspace_generation, kind, relative_path)?;
         let payload = DocumentIdPayload {
             version: 1,
             workspace_id,
@@ -2579,7 +2746,32 @@ impl WireIdentityKey {
             kind,
             relative_path: relative_path.clone(),
         };
-        DocumentId::parse(self.issue_signed(DOCUMENT_ID_DOMAIN, &payload)?)
+        DocumentId::parse(self.issue_signed_with_allocation(
+            DOCUMENT_ID_DOMAIN,
+            &payload,
+            allocation,
+        )?)
+    }
+
+    pub(crate) fn document_id_allocation(
+        &self,
+        workspace_id: WorkspaceId,
+        workspace_generation: &WorkspaceGeneration,
+        kind: DocumentKind,
+        relative_path: &WorkspaceRelativePath,
+    ) -> Result<SignedIdentityAllocation, InvalidWireIdentity> {
+        signed_identity_allocation(
+            &BorrowedDocumentIdPayload {
+                version: 1,
+                workspace_id,
+                workspace_generation,
+                kind,
+                relative_path,
+            },
+            workspace_generation,
+            relative_path,
+            MAX_DOCUMENT_ID_LENGTH,
+        )
     }
 
     pub fn verify_document_id(
@@ -2591,6 +2783,69 @@ impl WireIdentityKey {
     ) -> Result<WorkspaceRelativePath, InvalidWireIdentity> {
         let payload: DocumentIdPayload =
             self.verify_signed(DOCUMENT_ID_DOMAIN, document_id.as_str())?;
+        if payload.version != 1
+            || payload.workspace_id != expected_workspace_id
+            || payload.workspace_generation != *expected_workspace_generation
+            || payload.kind != expected_kind
+        {
+            return Err(InvalidWireIdentity);
+        }
+        Ok(payload.relative_path)
+    }
+
+    pub fn issue_resource_id(
+        &self,
+        workspace_id: WorkspaceId,
+        workspace_generation: &WorkspaceGeneration,
+        kind: ResourceKind,
+        relative_path: &WorkspaceRelativePath,
+    ) -> Result<ResourceId, InvalidWireIdentity> {
+        let allocation =
+            self.resource_id_allocation(workspace_id, workspace_generation, kind, relative_path)?;
+        let payload = ResourceIdPayload {
+            version: 1,
+            workspace_id,
+            workspace_generation: workspace_generation.clone(),
+            kind,
+            relative_path: relative_path.clone(),
+        };
+        ResourceId::parse(self.issue_signed_with_allocation(
+            RESOURCE_ID_DOMAIN,
+            &payload,
+            allocation,
+        )?)
+    }
+
+    pub(crate) fn resource_id_allocation(
+        &self,
+        workspace_id: WorkspaceId,
+        workspace_generation: &WorkspaceGeneration,
+        kind: ResourceKind,
+        relative_path: &WorkspaceRelativePath,
+    ) -> Result<SignedIdentityAllocation, InvalidWireIdentity> {
+        signed_identity_allocation(
+            &BorrowedResourceIdPayload {
+                version: 1,
+                workspace_id,
+                workspace_generation,
+                kind,
+                relative_path,
+            },
+            workspace_generation,
+            relative_path,
+            MAX_RESOURCE_ID_LENGTH,
+        )
+    }
+
+    pub fn verify_resource_id(
+        &self,
+        resource_id: &ResourceId,
+        expected_workspace_id: WorkspaceId,
+        expected_workspace_generation: &WorkspaceGeneration,
+        expected_kind: ResourceKind,
+    ) -> Result<WorkspaceRelativePath, InvalidWireIdentity> {
+        let payload: ResourceIdPayload =
+            self.verify_signed(RESOURCE_ID_DOMAIN, resource_id.as_str())?;
         if payload.version != 1
             || payload.workspace_id != expected_workspace_id
             || payload.workspace_generation != *expected_workspace_generation
@@ -2642,6 +2897,8 @@ impl WireIdentityKey {
         domain: &[u8],
         payload: &T,
     ) -> Result<String, InvalidWireIdentity> {
+        #[cfg(test)]
+        SIGNED_PAYLOAD_SERIALIZATIONS.set(SIGNED_PAYLOAD_SERIALIZATIONS.get().saturating_add(1));
         let payload = serde_json::to_vec(payload).map_err(|_| InvalidWireIdentity)?;
         let signature = self.sign(domain, &payload)?;
         Ok(format!(
@@ -2649,6 +2906,30 @@ impl WireIdentityKey {
             URL_SAFE_NO_PAD.encode(payload),
             URL_SAFE_NO_PAD.encode(signature)
         ))
+    }
+
+    fn issue_signed_with_allocation<T: Serialize>(
+        &self,
+        domain: &[u8],
+        payload: &T,
+        allocation: SignedIdentityAllocation,
+    ) -> Result<String, InvalidWireIdentity> {
+        #[cfg(test)]
+        SIGNED_PAYLOAD_SERIALIZATIONS.set(SIGNED_PAYLOAD_SERIALIZATIONS.get().saturating_add(1));
+        let mut payload_bytes = Vec::with_capacity(allocation.json_bytes);
+        serde_json::to_writer(&mut payload_bytes, payload).map_err(|_| InvalidWireIdentity)?;
+        if payload_bytes.len() != allocation.json_bytes {
+            return Err(InvalidWireIdentity);
+        }
+        let signature = self.sign(domain, &payload_bytes)?;
+        let mut token = String::with_capacity(allocation.token_bytes);
+        URL_SAFE_NO_PAD.encode_string(payload_bytes, &mut token);
+        token.push('.');
+        URL_SAFE_NO_PAD.encode_string(signature, &mut token);
+        if token.len() != allocation.token_bytes {
+            return Err(InvalidWireIdentity);
+        }
+        Ok(token)
     }
 
     fn verify_signed<T: for<'de> Deserialize<'de>>(
@@ -2701,18 +2982,28 @@ pub struct PageCursorContext {
 }
 
 impl PageCursorContext {
-    pub fn new(
+    pub fn new<Snapshot: Serialize + ?Sized>(
         operation: impl Into<String>,
         normalized_query: impl AsRef<str>,
         workspace_generation: &WorkspaceGeneration,
+        collection_snapshot: &Snapshot,
     ) -> Result<Self, InvalidWireIdentity> {
         let operation = operation.into();
         if operation.is_empty() || operation.chars().any(char::is_control) {
             return Err(InvalidWireIdentity);
         }
+        let normalized_query = normalized_query.as_ref().as_bytes();
+        let query_length =
+            u64::try_from(normalized_query.len()).map_err(|_| InvalidWireIdentity)?;
+        let mut context_digest = Sha256::new();
+        context_digest.update(b"qingyu-page-cursor-context-v2\0");
+        context_digest.update(query_length.to_be_bytes());
+        context_digest.update(normalized_query);
+        serde_json::to_writer(DigestWriter(&mut context_digest), collection_snapshot)
+            .map_err(|_| InvalidWireIdentity)?;
         Ok(Self {
             operation,
-            query_digest: Sha256::digest(normalized_query.as_ref().as_bytes()).into(),
+            query_digest: context_digest.finalize().into(),
             workspace_generation: workspace_generation.clone(),
         })
     }
@@ -2728,6 +3019,36 @@ struct DocumentIdPayload {
     relative_path: WorkspaceRelativePath,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BorrowedDocumentIdPayload<'a> {
+    version: u8,
+    workspace_id: WorkspaceId,
+    workspace_generation: &'a WorkspaceGeneration,
+    kind: DocumentKind,
+    relative_path: &'a WorkspaceRelativePath,
+}
+
+#[derive(Deserialize, Serialize, ToSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct ResourceIdPayload {
+    version: u8,
+    workspace_id: WorkspaceId,
+    workspace_generation: WorkspaceGeneration,
+    kind: ResourceKind,
+    relative_path: WorkspaceRelativePath,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BorrowedResourceIdPayload<'a> {
+    version: u8,
+    workspace_id: WorkspaceId,
+    workspace_generation: &'a WorkspaceGeneration,
+    kind: ResourceKind,
+    relative_path: &'a WorkspaceRelativePath,
+}
+
 #[derive(Deserialize, Serialize, ToSchema)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct PageCursorPayload {
@@ -2736,6 +3057,82 @@ struct PageCursorPayload {
     query_digest: [u8; 32],
     workspace_generation: WorkspaceGeneration,
     last_logical_identity: String,
+}
+
+struct DigestWriter<'a>(&'a mut Sha256);
+
+#[derive(Default)]
+struct SerializedLengthWriter {
+    length: usize,
+}
+
+impl io::Write for SerializedLengthWriter {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.length = self.length.checked_add(bytes.len()).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "serialized value is too large")
+        })?;
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+fn signed_identity_allocation(
+    payload: &impl Serialize,
+    workspace_generation: &WorkspaceGeneration,
+    relative_path: &WorkspaceRelativePath,
+    maximum_token_bytes: usize,
+) -> Result<SignedIdentityAllocation, InvalidWireIdentity> {
+    let mut writer = SerializedLengthWriter::default();
+    serde_json::to_writer(&mut writer, payload).map_err(|_| InvalidWireIdentity)?;
+    let payload_token_bytes = base64_unpadded_length(writer.length)?;
+    let signature_token_bytes = base64_unpadded_length(32)?;
+    let token_bytes = payload_token_bytes
+        .checked_add(1)
+        .and_then(|bytes| bytes.checked_add(signature_token_bytes))
+        .ok_or(InvalidWireIdentity)?;
+    if token_bytes > maximum_token_bytes {
+        return Err(InvalidWireIdentity);
+    }
+    let transient_bytes = workspace_generation
+        .as_str()
+        .len()
+        .checked_add(relative_path.as_str().len())
+        .and_then(|bytes| bytes.checked_add(writer.length))
+        .ok_or(InvalidWireIdentity)?;
+    Ok(SignedIdentityAllocation {
+        json_bytes: writer.length,
+        token_bytes,
+        transient_bytes,
+    })
+}
+
+fn base64_unpadded_length(bytes: usize) -> Result<usize, InvalidWireIdentity> {
+    let complete = bytes.checked_div(3).ok_or(InvalidWireIdentity)?;
+    let remainder = bytes % 3;
+    complete
+        .checked_mul(4)
+        .and_then(|encoded| {
+            encoded.checked_add(match remainder {
+                0 => 0,
+                1 => 2,
+                _ => 3,
+            })
+        })
+        .ok_or(InvalidWireIdentity)
+}
+
+impl io::Write for DigestWriter<'_> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.0.update(bytes);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2836,4 +3233,75 @@ fn workspace_relative_path_is_valid(value: &str) -> bool {
     value
         .split('/')
         .all(|segment| !segment.is_empty() && segment != "." && segment != "..")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        DocumentKind, ResourceKind, WireIdentityKey, WorkspaceGeneration, WorkspaceId,
+        WorkspaceRelativePath, SIGNED_PAYLOAD_SERIALIZATIONS,
+    };
+    use uuid::Uuid;
+
+    #[test]
+    fn oversized_document_and_resource_ids_are_rejected_before_payload_serialization() {
+        let key = WireIdentityKey([7; 32]);
+        let workspace_id = WorkspaceId::new(Uuid::nil());
+        let generation = WorkspaceGeneration::parse("generation-1").unwrap();
+        let path = WorkspaceRelativePath::parse("x".repeat(16 * 1024)).unwrap();
+
+        SIGNED_PAYLOAD_SERIALIZATIONS.set(0);
+        assert!(key
+            .issue_document_id(workspace_id, &generation, DocumentKind::File, &path)
+            .is_err());
+        assert_eq!(SIGNED_PAYLOAD_SERIALIZATIONS.get(), 0);
+
+        SIGNED_PAYLOAD_SERIALIZATIONS.set(0);
+        assert!(key
+            .issue_resource_id(workspace_id, &generation, ResourceKind::Attachment, &path)
+            .is_err());
+        assert_eq!(SIGNED_PAYLOAD_SERIALIZATIONS.get(), 0);
+    }
+
+    #[test]
+    fn preflighted_document_and_resource_ids_keep_the_legacy_signed_bytes() {
+        let key = WireIdentityKey([11; 32]);
+        let workspace_id = WorkspaceId::new(Uuid::nil());
+        let generation = WorkspaceGeneration::parse("generation-\n-\\").unwrap();
+        let path = WorkspaceRelativePath::parse("folder/图\"片.md").unwrap();
+
+        let legacy_document = key
+            .issue_signed(
+                super::DOCUMENT_ID_DOMAIN,
+                &super::DocumentIdPayload {
+                    version: 1,
+                    workspace_id,
+                    workspace_generation: generation.clone(),
+                    kind: DocumentKind::File,
+                    relative_path: path.clone(),
+                },
+            )
+            .unwrap();
+        let document = key
+            .issue_document_id(workspace_id, &generation, DocumentKind::File, &path)
+            .unwrap();
+        assert_eq!(document.as_str(), legacy_document);
+
+        let legacy_resource = key
+            .issue_signed(
+                super::RESOURCE_ID_DOMAIN,
+                &super::ResourceIdPayload {
+                    version: 1,
+                    workspace_id,
+                    workspace_generation: generation.clone(),
+                    kind: ResourceKind::Attachment,
+                    relative_path: path.clone(),
+                },
+            )
+            .unwrap();
+        let resource = key
+            .issue_resource_id(workspace_id, &generation, ResourceKind::Attachment, &path)
+            .unwrap();
+        assert_eq!(resource.as_str(), legacy_resource);
+    }
 }

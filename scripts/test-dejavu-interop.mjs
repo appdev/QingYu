@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 const WORKSPACE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const RUST_MANIFEST = path.join(
   WORKSPACE_ROOT,
-  "apps/desktop/src-tauri/crates/qingyu-dejavu/Cargo.toml",
+  "apps/kernel/crates/qingyu-dejavu/Cargo.toml",
 );
 const GO_MODULE = path.join(WORKSPACE_ROOT, "scripts/dejavu-interop-go");
 const REQUEST_TIMEOUT_MS = 120_000;

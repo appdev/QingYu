@@ -7,6 +7,7 @@ use reqwest::Method;
 use sha2::{Digest, Sha256};
 use time::OffsetDateTime;
 use url::Url;
+use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 use super::CloudError;
 
@@ -47,7 +48,7 @@ impl fmt::Debug for S3Connection {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("S3Connection")
-            .field("endpoint_url", &self.endpoint_url)
+            .field("endpoint_url", &"[REDACTED]")
             .field("region", &self.region)
             .field("bucket", &self.bucket)
             .field("access_key_id", &"[REDACTED]")
@@ -56,6 +57,21 @@ impl fmt::Debug for S3Connection {
             .finish()
     }
 }
+
+impl Zeroize for S3Connection {
+    fn zeroize(&mut self) {
+        self.access_key_id.zeroize();
+        self.secret_access_key.zeroize();
+    }
+}
+
+impl Drop for S3Connection {
+    fn drop(&mut self) {
+        self.zeroize();
+    }
+}
+
+impl ZeroizeOnDrop for S3Connection {}
 
 impl S3Connection {
     pub fn new(
@@ -265,10 +281,10 @@ impl S3RequestSigner {
             &self.connection.region,
         )?;
         let signature = hex_lower(&hmac_sha256(&signing_key, string_to_sign.as_bytes())?);
-        let authorization = format!(
+        let authorization = Zeroizing::new(format!(
             "AWS4-HMAC-SHA256 Credential={}/{credential_scope}, SignedHeaders={signed_headers}, Signature={signature}",
             self.connection.access_key_id
-        );
+        ));
 
         let mut headers = HeaderMap::new();
         headers.insert(HOST, header_value(&host)?);
@@ -391,8 +407,11 @@ fn s3_host(url: &Url) -> Result<String, CloudError> {
     })
 }
 
-fn signing_key(secret: &str, date: &str, region: &str) -> Result<Vec<u8>, CloudError> {
-    let date_key = hmac_sha256(format!("AWS4{secret}").as_bytes(), date.as_bytes())?;
+fn signing_key(secret: &str, date: &str, region: &str) -> Result<Zeroizing<Vec<u8>>, CloudError> {
+    let mut prefixed_secret = Zeroizing::new(Vec::with_capacity(4 + secret.len()));
+    prefixed_secret.extend_from_slice(b"AWS4");
+    prefixed_secret.extend_from_slice(secret.as_bytes());
+    let date_key = hmac_sha256(&prefixed_secret, date.as_bytes())?;
     let region_key = hmac_sha256(&date_key, region.as_bytes())?;
     let service_key = hmac_sha256(&region_key, b"s3")?;
     hmac_sha256(&service_key, b"aws4_request")
@@ -402,11 +421,11 @@ fn sha256_hex(bytes: &[u8]) -> String {
     hex_lower(&Sha256::digest(bytes))
 }
 
-fn hmac_sha256(key: &[u8], bytes: &[u8]) -> Result<Vec<u8>, CloudError> {
+fn hmac_sha256(key: &[u8], bytes: &[u8]) -> Result<Zeroizing<Vec<u8>>, CloudError> {
     let mut mac =
         HmacSha256::new_from_slice(key).map_err(|_| CloudError::backend("s3_signing_failed"))?;
     mac.update(bytes);
-    Ok(mac.finalize().into_bytes().to_vec())
+    Ok(Zeroizing::new(mac.finalize().into_bytes().to_vec()))
 }
 
 fn hex_lower(bytes: &[u8]) -> String {
@@ -421,4 +440,50 @@ fn hex_lower(bytes: &[u8]) -> String {
 
 fn header_value(value: &str) -> Result<HeaderValue, CloudError> {
     HeaderValue::from_str(value).map_err(|_| CloudError::backend("s3_invalid_header"))
+}
+
+#[cfg(test)]
+mod credential_lifecycle_tests {
+    use zeroize::{Zeroize, ZeroizeOnDrop};
+
+    use super::{signing_key, S3AddressingStyle, S3Connection};
+
+    fn assert_zeroizes_on_drop<T: ZeroizeOnDrop>(_value: &T) {}
+
+    #[test]
+    fn owned_s3_credentials_are_explicitly_zeroizable_and_zeroize_on_drop() {
+        let mut connection = S3Connection::new(
+            "https://s3.example.test/private-tenant-token",
+            "us-east-1",
+            "notes",
+            "private-access-key",
+            "private-secret-key",
+            S3AddressingStyle::Path,
+        )
+        .expect("S3 connection");
+
+        assert_zeroizes_on_drop(&connection);
+        let debug = format!("{connection:?}");
+        assert!(!debug.contains("private-access-key"));
+        assert!(!debug.contains("private-secret-key"));
+        assert!(!debug.contains("private-tenant-token"));
+
+        connection.zeroize();
+
+        assert!(connection.access_key_id.is_empty());
+        assert!(connection.secret_access_key.is_empty());
+    }
+
+    #[test]
+    fn every_owned_sigv4_derived_key_zeroizes_on_scope_exit() {
+        let mut derived =
+            signing_key("private-secret-key", "20260730", "us-east-1").expect("signing key");
+
+        assert_zeroizes_on_drop(&derived);
+        assert!(!derived.is_empty());
+
+        derived.zeroize();
+
+        assert!(derived.is_empty());
+    }
 }

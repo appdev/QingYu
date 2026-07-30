@@ -3,13 +3,12 @@
 use std::sync::{Arc, Weak};
 
 use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::{
     contract::{
-        DomainEvent, ErrorCode, ErrorDetails, InstanceId, ResourceRefDto, Revision, WorkspaceDto,
+        DomainEvent, ErrorCode, ErrorDetails, ResourceRefDto, Revision, WorkspaceDto,
         WorkspaceGeneration, WorkspaceId, WorkspaceReadiness,
     },
     events::{EventPublication, EventSink},
@@ -22,12 +21,10 @@ use crate::{
         managed::{ManagedWorkspaceCollection, ManagedWorkspaceError, ManagedWorkspaceErrorKind},
         primary::{
             AtomicHostWorkspaceCommitErrorKind, AtomicHostWorkspaceTransaction,
-            PrimaryWorkspaceStore, PrimaryWorkspaceStoreError,
+            PrimaryWorkspaceState, PrimaryWorkspaceStore, PrimaryWorkspaceStoreError,
         },
     },
 };
-
-const PRIMARY_WORKSPACE_SCHEMA_VERSION: u64 = 1;
 
 pub struct WorkspaceService {
     runtime: Weak<KernelRuntime>,
@@ -93,9 +90,9 @@ impl WorkspaceService {
         if let Some(active) = active {
             let observed = previous
                 .clone()
-                .and_then(|value| serde_json::from_value::<PersistedPrimaryWorkspace>(value).ok())
+                .and_then(|value| serde_json::from_value::<PrimaryWorkspaceState>(value).ok())
                 .filter(|persisted| validate_persisted_workspace(persisted).is_ok())
-                .and_then(|persisted| workspace_dto(runtime.instance_id(), &persisted).ok());
+                .and_then(|persisted| workspace_dto(&persisted).ok());
             if observed.as_ref() == Some(active.workspace()) {
                 runtime
                     .initialize_workspace_snapshot(
@@ -142,7 +139,7 @@ impl WorkspaceService {
             return Err(WorkspaceServiceError::persistence_unavailable());
         }
         let (persisted, wrote_primary) = match previous.clone() {
-            Some(value) => match serde_json::from_value::<PersistedPrimaryWorkspace>(value) {
+            Some(value) => match serde_json::from_value::<PrimaryWorkspaceState>(value) {
                 Ok(persisted) => (persisted, false),
                 Err(_) => {
                     let _recovery =
@@ -151,11 +148,8 @@ impl WorkspaceService {
                 }
             },
             None => {
-                let persisted = PersistedPrimaryWorkspace {
-                    schema_version: PRIMARY_WORKSPACE_SCHEMA_VERSION,
-                    revision_seed: Uuid::new_v4().to_string(),
-                    display_name: initial_display_name.into(),
-                };
+                let persisted = PrimaryWorkspaceState::new(initial_display_name.into())
+                    .map_err(|_| WorkspaceServiceError::unavailable())?;
                 validate_persisted_workspace(&persisted)?;
                 store.replace(Some(
                     serde_json::to_value(&persisted)
@@ -180,7 +174,7 @@ impl WorkspaceService {
                 runtime.enter_workspace_initialization_recovery(&initialization, &mutation);
             return Err(WorkspaceServiceError::unavailable());
         }
-        let current = match workspace_dto(runtime.instance_id(), &persisted) {
+        let current = match workspace_dto(&persisted) {
             Ok(current) => current,
             Err(error) => {
                 let _recovery =
@@ -244,11 +238,7 @@ impl WorkspaceService {
         }
 
         let previous_store_value = self.store.load()?;
-        if !store_matches_workspace(
-            runtime.instance_id(),
-            previous_store_value.as_ref(),
-            current.workspace(),
-        ) {
+        if !store_matches_workspace(previous_store_value.as_ref(), current.workspace()) {
             let (mut transition, terminal) = runtime
                 .begin_sync_workspace_transition(current, &mutation)
                 .map_err(|_| WorkspaceServiceError::unavailable())?;
@@ -320,11 +310,8 @@ impl WorkspaceService {
                 .map_err(|_| WorkspaceServiceError::unavailable())?;
             return Err(WorkspaceServiceError::persistence_unavailable());
         }
-        let persisted = PersistedPrimaryWorkspace {
-            schema_version: PRIMARY_WORKSPACE_SCHEMA_VERSION,
-            revision_seed: Uuid::new_v4().to_string(),
-            display_name: safe_display_name,
-        };
+        let persisted = PrimaryWorkspaceState::new(safe_display_name)
+            .map_err(|_| WorkspaceServiceError::unavailable())?;
         let next_store_value =
             serde_json::to_value(&persisted).map_err(|_| WorkspaceServiceError::unavailable())?;
         if let Err(error) = self.store.replace(Some(next_store_value)) {
@@ -355,7 +342,7 @@ impl WorkspaceService {
             return Err(error.into());
         }
 
-        let committed = workspace_dto(runtime.instance_id(), &persisted)?;
+        let committed = workspace_dto(&persisted)?;
         if let Err(error) = runtime.commit_sync_workspace_transition(
             &mut transition,
             &prepared,
@@ -433,11 +420,7 @@ impl WorkspaceService {
         }
 
         let previous_store_value = self.store.load()?;
-        if !store_matches_workspace(
-            runtime.instance_id(),
-            previous_store_value.as_ref(),
-            current.workspace(),
-        ) {
+        if !store_matches_workspace(previous_store_value.as_ref(), current.workspace()) {
             let (mut transition, terminal) = runtime
                 .begin_sync_workspace_transition(current, &mutation)
                 .map_err(|_| WorkspaceServiceError::unavailable())?;
@@ -513,14 +496,11 @@ impl WorkspaceService {
                 .map_err(|_| WorkspaceServiceError::unavailable())?;
             return Err(WorkspaceServiceError::persistence_unavailable());
         }
-        let persisted = PersistedPrimaryWorkspace {
-            schema_version: PRIMARY_WORKSPACE_SCHEMA_VERSION,
-            revision_seed: Uuid::new_v4().to_string(),
-            display_name: safe_display_name,
-        };
+        let persisted = PrimaryWorkspaceState::new(safe_display_name)
+            .map_err(|_| WorkspaceServiceError::unavailable())?;
         let next_store_value =
             serde_json::to_value(&persisted).map_err(|_| WorkspaceServiceError::unavailable())?;
-        let committed = workspace_dto(runtime.instance_id(), &persisted)?;
+        let committed = workspace_dto(&persisted)?;
         if let Err(error) = host_transaction
             .compare_and_commit(previous_store_value.as_ref(), next_store_value.clone())
         {
@@ -637,16 +617,12 @@ fn verify_runtime(runtime: &KernelRuntime) -> Result<(), WorkspaceServiceError> 
         .map_err(WorkspaceServiceError::from)
 }
 
-fn store_matches_workspace(
-    instance_id: InstanceId,
-    persisted: Option<&serde_json::Value>,
-    current: &WorkspaceDto,
-) -> bool {
+fn store_matches_workspace(persisted: Option<&serde_json::Value>, current: &WorkspaceDto) -> bool {
     persisted
         .cloned()
-        .and_then(|value| serde_json::from_value::<PersistedPrimaryWorkspace>(value).ok())
+        .and_then(|value| serde_json::from_value::<PrimaryWorkspaceState>(value).ok())
         .filter(|value| validate_persisted_workspace(value).is_ok())
-        .and_then(|value| workspace_dto(instance_id, &value).ok())
+        .and_then(|value| workspace_dto(&value).ok())
         .as_ref()
         .is_some_and(|observed| observed == current)
 }
@@ -669,41 +645,28 @@ impl WorkspaceApiService for WorkspaceService {
     }
 }
 
-#[derive(Deserialize, Serialize)]
-#[serde(deny_unknown_fields, rename_all = "camelCase")]
-struct PersistedPrimaryWorkspace {
-    schema_version: u64,
-    revision_seed: String,
-    display_name: String,
-}
-
-fn workspace_dto(
-    instance_id: InstanceId,
-    persisted: &PersistedPrimaryWorkspace,
-) -> Result<WorkspaceDto, WorkspaceServiceError> {
+fn workspace_dto(persisted: &PrimaryWorkspaceState) -> Result<WorkspaceDto, WorkspaceServiceError> {
     let persisted_bytes =
         serde_json::to_vec(persisted).map_err(|_| WorkspaceServiceError::unavailable())?;
     let revision = Revision::parse(format!("{:x}", Sha256::digest(persisted_bytes)))
         .map_err(|_| WorkspaceServiceError::unavailable())?;
     Ok(WorkspaceDto {
-        id: WorkspaceId::new(logical_uuid(instance_id, b"workspace-id", persisted)?),
+        id: WorkspaceId::new(logical_uuid(b"workspace-id", persisted)?),
         generation: WorkspaceGeneration::parse(
-            logical_uuid(instance_id, b"workspace-generation", persisted)?.to_string(),
+            logical_uuid(b"workspace-generation", persisted)?.to_string(),
         )
         .map_err(|_| WorkspaceServiceError::unavailable())?,
-        display_name: persisted.display_name.clone(),
+        display_name: persisted.display_name().to_owned(),
         readiness: WorkspaceReadiness::Ready,
         revision,
     })
 }
 
 fn logical_uuid(
-    instance_id: InstanceId,
     purpose: &[u8],
-    persisted: &PersistedPrimaryWorkspace,
+    persisted: &PrimaryWorkspaceState,
 ) -> Result<Uuid, WorkspaceServiceError> {
     let mut hasher = Sha256::new();
-    hasher.update(instance_id.as_uuid().as_bytes());
     hasher.update(purpose);
     hasher.update(serde_json::to_vec(persisted).map_err(|_| WorkspaceServiceError::unavailable())?);
     let digest = hasher.finalize();
@@ -715,25 +678,16 @@ fn logical_uuid(
 }
 
 fn validate_persisted_workspace(
-    persisted: &PersistedPrimaryWorkspace,
+    persisted: &PrimaryWorkspaceState,
 ) -> Result<(), WorkspaceServiceError> {
-    if persisted.schema_version != PRIMARY_WORKSPACE_SCHEMA_VERSION
-        || persisted.revision_seed.is_empty()
-    {
-        return Err(WorkspaceServiceError::unavailable());
-    }
-    validate_display_name(&persisted.display_name).map_err(|_| WorkspaceServiceError::unavailable())
+    persisted
+        .validate()
+        .map_err(|_| WorkspaceServiceError::unavailable())
 }
 
 fn validate_display_name(value: &str) -> Result<(), WorkspaceServiceError> {
-    if value.is_empty()
-        || value.chars().count() > 255
-        || value.chars().any(char::is_control)
-        || value.contains(['/', '\\'])
-    {
-        return Err(WorkspaceServiceError::invalid_workspace());
-    }
-    Ok(())
+    PrimaryWorkspaceState::validate_display_name(value)
+        .map_err(|_| WorkspaceServiceError::invalid_workspace())
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

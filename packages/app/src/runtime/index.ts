@@ -75,11 +75,21 @@ import type {
   ThemeRuntimeCapabilities
 } from "../lib/themes/theme-catalog";
 import { defaultDarkThemeId, defaultLightThemeId } from "../lib/themes/default-theme-ids";
+import {
+  createUnavailableKernelDomainPort,
+  type KernelDomainPort
+} from "./kernel-domain";
+import {
+  createUnavailableNativeShellPort,
+  type NativeShellPort
+} from "./native-shell";
 
 export type { WorkspaceSearchRequest, WorkspaceSearchResponse } from "../lib/workspace-search";
 export type { AppLogArea, AppLogEvent, AppLogLevel, AppLogWriter } from "../lib/app-logger";
 export { appLogger } from "../lib/app-logger";
 export * from "./kernel-compat";
+export * from "./kernel-domain";
+export * from "./native-shell";
 
 export type RuntimeCleanup = () => unknown;
 
@@ -428,10 +438,12 @@ export type AppRuntime = {
   events: AppEventsRuntime;
   features: AppFeatureRuntime;
   files: AppFileRuntime;
+  kernel: KernelDomainPort;
   logs: AppLogsRuntime;
   menu: AppMenuRuntime;
   mcp: AppMcpRuntime;
   navigation: AppNavigationRuntime;
+  nativeShell: NativeShellPort;
   platform: AppPlatformRuntime;
   syncConfig: AppSyncConfigRuntime;
   syncPathGuard: AppSyncPathGuardRuntime;
@@ -647,6 +659,7 @@ export function createDefaultAppRuntime(): AppRuntime {
       updater: false
     },
     files: createDefaultFileRuntime(),
+    kernel: createUnavailableKernelDomainPort(),
     logs: {
       isAvailable: () => false,
       openLogFolder: () => unsupportedFeature("openLogFolder"),
@@ -674,6 +687,7 @@ export function createDefaultAppRuntime(): AppRuntime {
     navigation: {
       subscribeToSystemBack: async () => () => undefined
     },
+    nativeShell: createUnavailableNativeShellPort(),
     platform: {
       resolveDesktopOsVersion: () => null,
       resolveDesktopPlatform: () => null,

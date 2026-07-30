@@ -3,14 +3,16 @@ use qingyu_kernel::contract::{
     ApiErrorEnvelope, ApiVersion, AuthenticateFrame, CreateDocumentRequest, CredentialChange,
     DeletionPolicy, DocumentContentDto, DocumentContents, DocumentId, DocumentKind,
     DocumentPageDto, ErrorCode, ErrorDetails, EventSequence, FontFamilyValueDto, FrameErrorCode,
-    HostProfile, InstanceId, MoveDocumentRequest, Nullable, PageCursor, PageCursorContext,
-    PageQuery, PatchSettingsRequest, PositiveSafeInteger, ProtocolVersion, ReadySequence, Revision,
-    Rfc3339Utc, SafeInteger, SafeUnsignedInteger, SearchMatchDto, SearchWorkspaceQuery,
+    HostProfile, InstanceId, ListWorkspaceInventoryQuery, MoveDocumentRequest, Nullable,
+    PageCursor, PageCursorContext, PageQuery, PatchSettingsRequest, PositiveSafeInteger,
+    ProtocolVersion, ReadySequence, ResourceEntryDto, ResourceId, ResourceKind, ResourceName,
+    Revision, Rfc3339Utc, SafeInteger, SafeUnsignedInteger, SearchMatchDto, SearchWorkspaceQuery,
     ServerFrame, SettingEntryDto, SettingKey, SettingValueDto, SnapshotRequired, StartupState,
     SyncConfigChangesDto, SyncMode, SyncProvider, SyncSafeErrorCategory, SyncSafeErrorCode,
     SyncSafeErrorDto, SyncSafeErrorOperation, SyncSafeHttpMethod, SyncSafeProviderErrorCode,
     ValidationField, ValidationIssueCode, ValidationIssueDto, ValidationIssues, WireIdentityKey,
-    WorkspaceDto, WorkspaceGeneration, WorkspaceId, WorkspaceReadiness, WorkspaceRelativePath,
+    WorkspaceDto, WorkspaceGeneration, WorkspaceId, WorkspaceInventoryEntryDto,
+    WorkspaceInventoryPageDto, WorkspaceReadiness, WorkspaceRelativePath,
 };
 use qingyu_kernel::error::{http_status_for_error_code, safe_error_envelope};
 use serde_json::json;
@@ -257,12 +259,82 @@ fn document_ids_reject_tampering_and_context_reuse() {
 }
 
 #[test]
+fn resource_ids_reject_tampering_context_reuse_and_document_token_substitution() {
+    let key = WireIdentityKey::generate().unwrap();
+    let restarted_key = WireIdentityKey::generate().unwrap();
+    let workspace = WorkspaceId::new(Uuid::new_v4());
+    let other_workspace = WorkspaceId::new(Uuid::new_v4());
+    let generation = WorkspaceGeneration::parse("generation-7").unwrap();
+    let other_generation = WorkspaceGeneration::parse("generation-8").unwrap();
+    let path = WorkspaceRelativePath::parse("assets/photo.png").unwrap();
+    let resource_id = key
+        .issue_resource_id(workspace, &generation, ResourceKind::Image, &path)
+        .unwrap();
+
+    assert_eq!(
+        key.verify_resource_id(&resource_id, workspace, &generation, ResourceKind::Image)
+            .unwrap(),
+        path
+    );
+    assert!(key
+        .verify_resource_id(
+            &tampered_resource_id(&resource_id),
+            workspace,
+            &generation,
+            ResourceKind::Image,
+        )
+        .is_err());
+    assert!(key
+        .verify_resource_id(
+            &resource_id,
+            other_workspace,
+            &generation,
+            ResourceKind::Image,
+        )
+        .is_err());
+    assert!(key
+        .verify_resource_id(
+            &resource_id,
+            workspace,
+            &other_generation,
+            ResourceKind::Image,
+        )
+        .is_err());
+    assert!(key
+        .verify_resource_id(
+            &resource_id,
+            workspace,
+            &generation,
+            ResourceKind::Attachment,
+        )
+        .is_err());
+    assert!(restarted_key
+        .verify_resource_id(&resource_id, workspace, &generation, ResourceKind::Image)
+        .is_err());
+
+    let document_id = key
+        .issue_document_id(workspace, &generation, DocumentKind::File, &path)
+        .unwrap();
+    let document_token_as_resource = ResourceId::parse(document_id.as_str()).unwrap();
+    assert!(key
+        .verify_resource_id(
+            &document_token_as_resource,
+            workspace,
+            &generation,
+            ResourceKind::Image,
+        )
+        .is_err());
+}
+
+#[test]
 fn page_cursors_are_bound_to_operation_query_generation_and_launch_key() {
     let key = WireIdentityKey::generate().unwrap();
     let restarted_key = WireIdentityKey::generate().unwrap();
     let generation = WorkspaceGeneration::parse("generation-7").unwrap();
     let other_generation = WorkspaceGeneration::parse("generation-8").unwrap();
-    let context = PageCursorContext::new("searchWorkspace", "query=kernel", &generation).unwrap();
+    let snapshot = vec!["notes/daily.md", "notes/kernel.md"];
+    let context =
+        PageCursorContext::new("searchWorkspace", "query=kernel", &generation, &snapshot).unwrap();
     let cursor = key.issue_page_cursor(&context, "notes/daily.md").unwrap();
 
     assert_eq!(
@@ -272,19 +344,39 @@ fn page_cursors_are_bound_to_operation_query_generation_and_launch_key() {
     assert!(key
         .verify_page_cursor(
             &cursor,
-            &PageCursorContext::new("listDocuments", "query=kernel", &generation).unwrap(),
+            &PageCursorContext::new("listDocuments", "query=kernel", &generation, &snapshot)
+                .unwrap(),
         )
         .is_err());
     assert!(key
         .verify_page_cursor(
             &cursor,
-            &PageCursorContext::new("searchWorkspace", "query=other", &generation).unwrap(),
+            &PageCursorContext::new("searchWorkspace", "query=other", &generation, &snapshot)
+                .unwrap(),
         )
         .is_err());
     assert!(key
         .verify_page_cursor(
             &cursor,
-            &PageCursorContext::new("searchWorkspace", "query=kernel", &other_generation).unwrap(),
+            &PageCursorContext::new(
+                "searchWorkspace",
+                "query=kernel",
+                &other_generation,
+                &snapshot,
+            )
+            .unwrap(),
+        )
+        .is_err());
+    assert!(key
+        .verify_page_cursor(
+            &cursor,
+            &PageCursorContext::new(
+                "searchWorkspace",
+                "query=kernel",
+                &generation,
+                &vec!["notes/daily.md", "notes/changed.md"],
+            )
+            .unwrap(),
         )
         .is_err());
     assert!(restarted_key.verify_page_cursor(&cursor, &context).is_err());
@@ -314,6 +406,19 @@ fn page_cursors_are_bound_to_operation_query_generation_and_launch_key() {
         .is_err());
 }
 
+#[test]
+fn page_cursor_snapshot_binding_does_not_reduce_the_existing_identity_budget() {
+    let key = WireIdentityKey::generate().unwrap();
+    let generation = WorkspaceGeneration::parse("generation-1").unwrap();
+    let context =
+        PageCursorContext::new("documents-list", "", &generation, &Vec::<String>::new()).unwrap();
+    let identity = "a".repeat(1_200);
+
+    let cursor = key.issue_page_cursor(&context, identity.clone()).unwrap();
+
+    assert_eq!(key.verify_page_cursor(&cursor, &context).unwrap(), identity);
+}
+
 fn tampered_document_id(document_id: &DocumentId) -> DocumentId {
     let mut encoded = document_id.as_str().as_bytes().to_vec();
     let signature_start = encoded.iter().position(|byte| *byte == b'.').unwrap() + 1;
@@ -323,6 +428,17 @@ fn tampered_document_id(document_id: &DocumentId) -> DocumentId {
         b'A'
     };
     DocumentId::parse(String::from_utf8(encoded).unwrap()).unwrap()
+}
+
+fn tampered_resource_id(resource_id: &ResourceId) -> ResourceId {
+    let mut encoded = resource_id.as_str().as_bytes().to_vec();
+    let signature_start = encoded.iter().position(|byte| *byte == b'.').unwrap() + 1;
+    encoded[signature_start] = if encoded[signature_start] == b'A' {
+        b'B'
+    } else {
+        b'A'
+    };
+    ResourceId::parse(String::from_utf8(encoded).unwrap()).unwrap()
 }
 
 #[test]
@@ -397,6 +513,19 @@ fn omitted_inputs_and_explicit_nullable_outputs_are_not_interchangeable() {
     assert!(serde_json::from_value::<PageQuery>(json!({})).is_ok());
     assert!(serde_json::from_value::<PageQuery>(json!({ "cursor": null })).is_err());
     assert!(serde_json::from_value::<PageQuery>(json!({ "limit": null })).is_err());
+    assert!(serde_json::from_value::<ListWorkspaceInventoryQuery>(json!({})).is_ok());
+    assert!(
+        serde_json::from_value::<ListWorkspaceInventoryQuery>(json!({
+            "cursor": null
+        }))
+        .is_err()
+    );
+    assert!(
+        serde_json::from_value::<ListWorkspaceInventoryQuery>(json!({
+            "limit": null
+        }))
+        .is_err()
+    );
 
     assert!(serde_json::from_value::<DocumentPageDto>(json!({
         "items": [],
@@ -566,6 +695,85 @@ fn document_names_enforce_portable_segment_and_kind_rules_at_deserialization() {
         "revision": "revision-1"
     });
     assert!(serde_json::from_value::<qingyu_kernel::contract::DocumentEntryDto>(entry).is_err());
+}
+
+#[test]
+fn resource_names_use_portable_segments_without_markdown_extension_rules() {
+    for valid in ["photo.png", "archive", "资料.pdf", "cover.MARKDOWN"] {
+        assert_eq!(ResourceName::parse(valid).unwrap().as_str(), valid);
+        assert!(serde_json::from_value::<ResourceName>(json!(valid)).is_ok());
+    }
+
+    for invalid in [
+        "",
+        ".",
+        "..",
+        "CON.png",
+        "lpt9.bin",
+        ".QINGYU",
+        ".qingyu-ui-update-secret.png",
+        ".QINGYU-MCP-UPDATE-secret.png",
+        ".markra-sync-stage-secret.png",
+        "bad/name.png",
+        r"bad\name.png",
+        "bad:name.png",
+        "trailing.png.",
+        "trailing.png ",
+    ] {
+        assert!(
+            ResourceName::parse(invalid).is_err(),
+            "accepted {invalid:?}"
+        );
+        assert!(serde_json::from_value::<ResourceName>(json!(invalid)).is_err());
+    }
+
+    assert!(ResourceName::parse("界".repeat(86)).is_err());
+}
+
+#[test]
+fn resource_entries_have_stable_wire_shape_and_redacted_signed_identity() {
+    let key = WireIdentityKey::generate().unwrap();
+    let workspace = WorkspaceId::new(Uuid::new_v4());
+    let generation = WorkspaceGeneration::parse("generation-1").unwrap();
+    let path = WorkspaceRelativePath::parse("assets/photo.png").unwrap();
+    let resource_id = key
+        .issue_resource_id(workspace, &generation, ResourceKind::Image, &path)
+        .unwrap();
+    let value = json!({
+        "id": resource_id,
+        "path": "assets/photo.png",
+        "parent": "assets",
+        "name": "photo.png",
+        "kind": "image",
+        "sizeBytes": 1024,
+        "modifiedAt": "2026-07-29T12:30:45Z",
+        "revision": "revision-1",
+        "mediaType": "image/png",
+        "previewable": true
+    });
+
+    let entry: ResourceEntryDto = serde_json::from_value(value.clone()).unwrap();
+    assert_eq!(entry.kind, ResourceKind::Image);
+    assert_eq!(entry.name.as_str(), "photo.png");
+    assert_eq!(entry.media_type, "image/png");
+    assert_eq!(serde_json::to_value(&entry).unwrap(), value);
+    assert!(!format!("{entry:?}").contains(entry.id.as_str()));
+
+    let inventory_value = json!({ "entryType": "resource", "resource": value });
+    let inventory: WorkspaceInventoryEntryDto =
+        serde_json::from_value(inventory_value.clone()).unwrap();
+    assert_eq!(serde_json::to_value(&inventory).unwrap(), inventory_value);
+    assert!(serde_json::from_value::<WorkspaceInventoryEntryDto>(json!({
+        "entryType": "resource",
+        "resource": inventory_value["resource"],
+        "absolutePath": "/private/assets/photo.png"
+    }))
+    .is_err());
+    assert!(serde_json::from_value::<WorkspaceInventoryPageDto>(json!({
+        "items": [inventory_value],
+        "nextCursor": null
+    }))
+    .is_ok());
 }
 
 #[test]
@@ -749,6 +957,7 @@ fn error_codes_have_a_complete_stable_http_mapping() {
         (ErrorCode::HostNotAllowed, 403),
         (ErrorCode::OriginNotAllowed, 403),
         (ErrorCode::DocumentNotFound, 404),
+        (ErrorCode::ResourceNotFound, 404),
         (ErrorCode::SyncConfigAbsent, 404),
         (ErrorCode::DocumentAlreadyExists, 409),
         (ErrorCode::RevisionConflict, 409),

@@ -20,6 +20,8 @@ pub(crate) mod search;
 #[allow(dead_code)]
 mod service;
 #[cfg(desktop)]
+pub(crate) mod standalone;
+#[cfg(desktop)]
 pub(crate) mod template;
 pub(crate) mod tree;
 mod trusted_file;

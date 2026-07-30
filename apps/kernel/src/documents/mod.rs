@@ -4,6 +4,7 @@ use cap_std::fs::Dir;
 
 use crate::contract::{DeletionPolicy, DocumentKind, Revision, WorkspaceRelativePath};
 
+pub mod deletion;
 pub mod history;
 pub mod identity;
 pub mod search;

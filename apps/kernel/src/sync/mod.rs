@@ -3,10 +3,19 @@
 pub mod backend;
 pub mod config;
 pub mod credentials;
+pub mod dejavu_runner;
 pub mod diagnostics;
 pub mod editing;
 pub mod engine;
+pub mod execution;
+pub(crate) mod executor;
+pub(crate) mod local_state;
 pub mod repository;
+#[allow(dead_code)] // Staged until the Kernel-owned production executor is composed.
+pub(crate) mod s3_backend;
+pub mod s3_http;
 pub mod scope;
 pub mod service;
+pub mod settings_scope;
 pub mod status;
+pub mod webdav_backend;

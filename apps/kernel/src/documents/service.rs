@@ -20,10 +20,10 @@ use uuid::Uuid;
 use crate::{
     contract::{
         CreateDocumentRequest, CreatedDocumentDto, DeleteDocumentRequest, DocumentContentDto,
-        DocumentContents, DocumentEntryDto, DocumentHistoryPageDto, DocumentId, DocumentKind,
-        ErrorCode, ErrorDetails, FileDocumentKind, FileDocumentName, HistoryEntryDto,
-        ListDocumentsQuery, MoveDocumentRequest, Nullable, PageCursorContext, PageQuery,
-        PositiveSafeInteger, ResourceRefDto, Revision, Rfc3339Utc, SafeUnsignedInteger,
+        DocumentContents, DocumentEntryDto, DocumentHistoryPageDto, DocumentHistorySnapshotDto,
+        DocumentId, DocumentKind, ErrorCode, ErrorDetails, FileDocumentKind, FileDocumentName,
+        HistoryEntryDto, ListDocumentsQuery, MoveDocumentRequest, Nullable, PageCursorContext,
+        PageQuery, PositiveSafeInteger, ResourceRefDto, Revision, Rfc3339Utc, SafeUnsignedInteger,
         SearchMatchDto, SearchPageDto, SearchWorkspaceQuery, SnapshotId, UpdateDocumentRequest,
         WorkspaceDto, WorkspaceReadiness, WorkspaceRelativePath,
     },
@@ -33,12 +33,13 @@ use crate::{
             DocumentRecoveryStore, MemoryDocumentRecoveryStore,
         },
         identity::DocumentIdentityCodec,
-        AllowAllDocumentIgnorePort, AtomicInstallMode, AtomicInstallPort, AtomicInstallPortError,
-        AtomicInstallRequest, CapabilityMoveInstallPort, DeletionPort, DocumentDeletionTarget,
-        DocumentIgnorePort, MoveInstallPort, MoveInstallPortError, MoveInstallRequest,
-        PinnedInstallSource, PinnedMoveSource,
+        AtomicInstallMode, AtomicInstallPort, AtomicInstallPortError, AtomicInstallRequest,
+        CapabilityMoveInstallPort, DeletionPort, DocumentDeletionTarget, MoveInstallPort,
+        MoveInstallPortError, MoveInstallRequest, PinnedInstallSource, PinnedMoveSource,
     },
     events::{EventPublication, EventSink as _},
+    ignore_rules::{AllowAllWorkspaceIgnorePort, WorkspaceIgnorePort, WorkspaceIgnoreSnapshot},
+    inventory_snapshot::{FileVersionStamp, InventorySnapshotBudget},
     runtime::{ActiveWorkspaceSnapshot, DocumentsApiService, KernelRuntime, ServiceFailure},
 };
 
@@ -51,7 +52,7 @@ pub struct WorkspaceDocumentService {
     recovery: Arc<dyn DocumentRecoveryStore>,
     atomic_install: Arc<dyn AtomicInstallPort>,
     move_install: Arc<dyn MoveInstallPort>,
-    ignore: Arc<dyn DocumentIgnorePort>,
+    ignore: Arc<dyn WorkspaceIgnorePort>,
 }
 
 #[derive(Default)]
@@ -82,7 +83,7 @@ impl WorkspaceDocumentService {
             recovery: Arc::new(MemoryDocumentRecoveryStore::default()),
             atomic_install: Arc::new(CapabilityAtomicInstallPort),
             move_install: Arc::new(CapabilityMoveInstallPort),
-            ignore: Arc::new(AllowAllDocumentIgnorePort),
+            ignore: Arc::new(AllowAllWorkspaceIgnorePort),
         }
     }
 
@@ -99,7 +100,7 @@ impl WorkspaceDocumentService {
             recovery,
             atomic_install: Arc::new(CapabilityAtomicInstallPort),
             move_install: Arc::new(CapabilityMoveInstallPort),
-            ignore: Arc::new(AllowAllDocumentIgnorePort),
+            ignore: Arc::new(AllowAllWorkspaceIgnorePort),
         };
         service.recover()?;
         Ok(service)
@@ -112,7 +113,7 @@ impl WorkspaceDocumentService {
         history: Arc<dyn DocumentHistoryStore>,
         recovery: Arc<dyn DocumentRecoveryStore>,
         atomic_install: Arc<dyn AtomicInstallPort>,
-        ignore: Arc<dyn DocumentIgnorePort>,
+        ignore: Arc<dyn WorkspaceIgnorePort>,
     ) -> Result<Self, DocumentServiceError> {
         let service = Self {
             runtime: Arc::downgrade(runtime),
@@ -135,7 +136,7 @@ impl WorkspaceDocumentService {
         recovery: Arc<dyn DocumentRecoveryStore>,
         atomic_install: Arc<dyn AtomicInstallPort>,
         move_install: Arc<dyn MoveInstallPort>,
-        ignore: Arc<dyn DocumentIgnorePort>,
+        ignore: Arc<dyn WorkspaceIgnorePort>,
     ) -> Result<Self, DocumentServiceError> {
         let service = Self {
             runtime: Arc::downgrade(runtime),
@@ -168,6 +169,7 @@ impl WorkspaceDocumentService {
         query: ListDocumentsQuery,
     ) -> Result<crate::contract::DocumentPageDto, DocumentServiceError> {
         let context = self.context()?;
+        let ignore = self.capture_ignore(&context)?;
         let directory = open_directory(&context.root, &query.parent)?;
         let mut entries = Vec::new();
         for entry in directory
@@ -197,7 +199,7 @@ impl WorkspaceDocumentService {
                 continue;
             };
             let path = join_relative(&query.parent, &name)?;
-            if self.ignore.is_ignored(&path, kind) {
+            if ignore.is_ignored(&path, kind) {
                 continue;
             }
             if let Ok(entry) = self.entry(&context, path, kind, metadata) {
@@ -211,6 +213,7 @@ impl WorkspaceDocumentService {
             "documents-list",
             normalized,
             &context.workspace().generation,
+            &entries,
         )
         .map_err(|_| DocumentServiceError::invalid_cursor())?;
         let start = match query.cursor.as_ref() {
@@ -491,27 +494,7 @@ impl WorkspaceDocumentService {
             .list(&path)
             .map_err(|_| DocumentServiceError::history_unavailable())?;
         snapshots.sort_by_key(history_identity);
-        let cursor_context = PageCursorContext::new(
-            "document-history",
-            path.as_str(),
-            &context.workspace().generation,
-        )
-        .map_err(|_| DocumentServiceError::invalid_cursor())?;
-        let start = match query.cursor.as_ref() {
-            Some(cursor) => {
-                let last = context
-                    .runtime
-                    .wire_identity_key()
-                    .verify_page_cursor(cursor, &cursor_context)
-                    .map_err(|_| DocumentServiceError::invalid_cursor())?;
-                snapshots.partition_point(|entry| history_identity(entry) <= last)
-            }
-            None => 0,
-        };
-        let limit = query.limit.map_or(100, |limit| usize::from(limit.get()));
-        let end = start.saturating_add(limit).min(snapshots.len());
-        let selected = &snapshots[start..end];
-        let items = selected
+        let entries = snapshots
             .iter()
             .map(|snapshot| {
                 Ok(HistoryEntryDto {
@@ -524,15 +507,36 @@ impl WorkspaceDocumentService {
                 })
             })
             .collect::<Result<Vec<_>, DocumentServiceError>>()?;
-        let next_cursor = if end < snapshots.len() {
+        let cursor_context = PageCursorContext::new(
+            "document-history",
+            path.as_str(),
+            &context.workspace().generation,
+            &entries,
+        )
+        .map_err(|_| DocumentServiceError::invalid_cursor())?;
+        let start = match query.cursor.as_ref() {
+            Some(cursor) => {
+                let last = context
+                    .runtime
+                    .wire_identity_key()
+                    .verify_page_cursor(cursor, &cursor_context)
+                    .map_err(|_| DocumentServiceError::invalid_cursor())?;
+                entries.partition_point(|entry| history_entry_identity(entry) <= last)
+            }
+            None => 0,
+        };
+        let limit = query.limit.map_or(100, |limit| usize::from(limit.get()));
+        let end = start.saturating_add(limit).min(entries.len());
+        let items = entries[start..end].to_vec();
+        let next_cursor = if end < entries.len() {
             Nullable::value(
                 context
                     .runtime
                     .wire_identity_key()
                     .issue_page_cursor(
                         &cursor_context,
-                        history_identity(
-                            selected
+                        history_entry_identity(
+                            items
                                 .last()
                                 .ok_or_else(DocumentServiceError::invalid_cursor)?,
                         ),
@@ -543,6 +547,35 @@ impl WorkspaceDocumentService {
             Nullable::null()
         };
         Ok(DocumentHistoryPageDto { items, next_cursor })
+    }
+
+    pub async fn get_document_history(
+        &self,
+        document_id: DocumentId,
+        snapshot_id: SnapshotId,
+    ) -> Result<DocumentHistorySnapshotDto, DocumentServiceError> {
+        let context = self.context()?;
+        let path = self.verify_id(&context, &document_id, DocumentKind::File)?;
+        let snapshot = self
+            .history
+            .get(&path, snapshot_id)
+            .map_err(|_| DocumentServiceError::history_unavailable())?
+            .ok_or_else(DocumentServiceError::not_found)?;
+        let size_bytes = SafeUnsignedInteger::new(snapshot.contents.len() as u64)
+            .map_err(|_| DocumentServiceError::too_large())?;
+        let contents = DocumentContents::parse(
+            String::from_utf8(snapshot.contents)
+                .map_err(|_| DocumentServiceError::invalid_encoding())?,
+        )
+        .map_err(|_| DocumentServiceError::too_large())?;
+        Ok(DocumentHistorySnapshotDto {
+            snapshot_id: snapshot.snapshot_id,
+            document_id,
+            created_at: snapshot.created_at,
+            size_bytes,
+            revision: snapshot.revision,
+            contents,
+        })
     }
 
     pub async fn restore_document_history(
@@ -583,6 +616,7 @@ impl WorkspaceDocumentService {
         query: SearchWorkspaceQuery,
     ) -> Result<SearchPageDto, DocumentServiceError> {
         let context = self.context()?;
+        let ignore = self.capture_ignore(&context)?;
         let mut matches = Vec::new();
         collect_search(
             &context.root,
@@ -590,6 +624,7 @@ impl WorkspaceDocumentService {
             query.query.as_str(),
             &context,
             self,
+            &ignore,
             &mut matches,
         )?;
         matches.sort_by(|left, right| {
@@ -604,6 +639,7 @@ impl WorkspaceDocumentService {
             "workspace-search",
             query.query.as_str(),
             &context.workspace().generation,
+            &matches,
         )
         .map_err(|_| DocumentServiceError::invalid_cursor())?;
         let start = match query.cursor.as_ref() {
@@ -1021,11 +1057,22 @@ impl WorkspaceDocumentService {
             .root()
             .try_clone_dir()
             .map_err(|_| DocumentServiceError::unavailable())?;
+        let root_path = snapshot.authority().root().canonical_path().to_path_buf();
         Ok(DocumentContext {
             runtime,
             snapshot,
             root,
+            root_path,
         })
+    }
+
+    fn capture_ignore(
+        &self,
+        context: &DocumentContext,
+    ) -> Result<WorkspaceIgnoreSnapshot, DocumentServiceError> {
+        self.ignore
+            .capture(&context.root_path, &context.root)
+            .map_err(|_| DocumentServiceError::unavailable())
     }
 
     fn verify_generation(
@@ -1304,6 +1351,7 @@ struct DocumentContext {
     runtime: Arc<KernelRuntime>,
     snapshot: Arc<ActiveWorkspaceSnapshot>,
     root: Dir,
+    root_path: std::path::PathBuf,
 }
 
 impl DocumentContext {
@@ -1535,6 +1583,15 @@ impl DocumentsApiService for WorkspaceDocumentService {
             .await
             .map_err(service_failure)
     }
+    async fn get_document_history(
+        &self,
+        document_id: DocumentId,
+        snapshot_id: SnapshotId,
+    ) -> Result<DocumentHistorySnapshotDto, ServiceFailure> {
+        WorkspaceDocumentService::get_document_history(self, document_id, snapshot_id)
+            .await
+            .map_err(service_failure)
+    }
     async fn restore_document_history(
         &self,
         document_id: DocumentId,
@@ -1762,9 +1819,47 @@ fn directory_revision_at(
 pub fn directory_revision_for_capability(
     directory: &Dir,
 ) -> Result<Revision, DocumentServiceError> {
+    directory_revision_for_capability_inner(directory, None)
+}
+
+pub(crate) fn directory_revision_for_capability_with_inventory_budget(
+    directory: &Dir,
+    budget: &mut InventorySnapshotBudget,
+) -> Result<Revision, DocumentServiceError> {
+    directory_revision_for_capability_inner(directory, Some(budget))
+}
+
+fn directory_revision_for_capability_inner(
+    directory: &Dir,
+    mut budget: Option<&mut InventorySnapshotBudget>,
+) -> Result<Revision, DocumentServiceError> {
+    let before = directory
+        .dir_metadata()
+        .map_err(|_| DocumentServiceError::unavailable())?;
+    if !before.is_dir() || before.file_type().is_symlink() {
+        return Err(DocumentServiceError::unsafe_target());
+    }
+    let before_stamp = FileVersionStamp::capture_metadata(&before);
+    let before_modified = before
+        .modified()
+        .map_err(|_| DocumentServiceError::unavailable())?;
     let mut digest = Sha256::new();
     digest.update(b"qingyu-directory-v2\0");
-    hash_directory_contents(directory, &mut digest)?;
+    hash_directory_contents(directory, &mut digest, &mut budget, 0)?;
+    let after = directory
+        .dir_metadata()
+        .map_err(|_| DocumentServiceError::unavailable())?;
+    if !after.is_dir()
+        || after.file_type().is_symlink()
+        || !same_file(&before, &after)
+        || after
+            .modified()
+            .map_err(|_| DocumentServiceError::unavailable())?
+            != before_modified
+        || FileVersionStamp::capture_metadata(&after) != before_stamp
+    {
+        return Err(DocumentServiceError::unsafe_target());
+    }
     Revision::parse(format!("dir:{:x}", digest.finalize()))
         .map_err(|_| DocumentServiceError::unavailable())
 }
@@ -1779,71 +1874,212 @@ fn empty_directory_revision() -> Result<Revision, DocumentServiceError> {
 fn hash_directory_contents(
     directory: &Dir,
     digest: &mut Sha256,
+    budget: &mut Option<&mut InventorySnapshotBudget>,
+    depth: usize,
 ) -> Result<(), DocumentServiceError> {
+    if let Some(budget) = budget.as_deref() {
+        budget
+            .require_depth(depth)
+            .map_err(|_| DocumentServiceError::unavailable())?;
+    }
+    let names = directory_entry_names(directory, budget)?;
+    for name in &names {
+        let metadata = directory
+            .symlink_metadata(name)
+            .map_err(|_| DocumentServiceError::unsafe_target())?;
+        if metadata.file_type().is_symlink() {
+            return Err(DocumentServiceError::unsafe_target());
+        }
+        if protected_name(name) {
+            if !metadata.is_dir() && !trusted_metadata(&metadata) {
+                return Err(DocumentServiceError::unsafe_target());
+            }
+            continue;
+        }
+        if metadata.is_dir() {
+            hash_directory_entry(directory, name, &metadata, digest, budget, depth)?;
+        } else if metadata.is_file() {
+            hash_regular_file_entry(directory, name, &metadata, digest, budget)?;
+        } else {
+            return Err(DocumentServiceError::unsafe_target());
+        }
+    }
+    if directory_entry_names(directory, budget)? != names {
+        return Err(DocumentServiceError::unsafe_target());
+    }
+    Ok(())
+}
+
+fn directory_entry_names(
+    directory: &Dir,
+    budget: &mut Option<&mut InventorySnapshotBudget>,
+) -> Result<Vec<String>, DocumentServiceError> {
     let mut names = Vec::new();
     for entry in directory
         .entries()
         .map_err(|_| DocumentServiceError::unavailable())?
     {
         let entry = entry.map_err(|_| DocumentServiceError::unavailable())?;
-        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
-            continue;
-        };
-        if !protected_name(&name) {
-            names.push(name);
+        if let Some(budget) = budget.as_deref_mut() {
+            budget
+                .charge_node()
+                .map_err(|_| DocumentServiceError::unavailable())?;
         }
+        names.push(
+            entry
+                .file_name()
+                .to_str()
+                .map(str::to_owned)
+                .ok_or_else(DocumentServiceError::unsafe_target)?,
+        );
     }
     names.sort();
-    for name in names {
-        let metadata = directory
-            .symlink_metadata(&name)
-            .map_err(|_| DocumentServiceError::unsafe_target())?;
-        if metadata.file_type().is_symlink() {
-            continue;
+    Ok(names)
+}
+
+fn hash_directory_entry(
+    parent: &Dir,
+    name: &str,
+    addressed: &Metadata,
+    digest: &mut Sha256,
+    budget: &mut Option<&mut InventorySnapshotBudget>,
+    depth: usize,
+) -> Result<(), DocumentServiceError> {
+    let child = parent
+        .open_dir_nofollow(name)
+        .map_err(|_| DocumentServiceError::unsafe_target())?;
+    let retained = child
+        .dir_metadata()
+        .map_err(|_| DocumentServiceError::unavailable())?;
+    if !retained.is_dir() || retained.file_type().is_symlink() || !same_file(addressed, &retained) {
+        return Err(DocumentServiceError::unsafe_target());
+    }
+    let retained_stamp = FileVersionStamp::capture_metadata(&retained);
+    let retained_modified = retained
+        .modified()
+        .map_err(|_| DocumentServiceError::unavailable())?;
+
+    digest.update(b"d");
+    digest_field(digest, name.as_bytes());
+    let child_depth = depth
+        .checked_add(1)
+        .ok_or_else(DocumentServiceError::unavailable)?;
+    hash_directory_contents(&child, digest, budget, child_depth)?;
+    digest.update(b"e");
+
+    let after = child
+        .dir_metadata()
+        .map_err(|_| DocumentServiceError::unavailable())?;
+    let named = parent
+        .symlink_metadata(name)
+        .map_err(|_| DocumentServiceError::unsafe_target())?;
+    if !after.is_dir()
+        || after.file_type().is_symlink()
+        || !named.is_dir()
+        || named.file_type().is_symlink()
+        || !same_file(&retained, &after)
+        || !same_file(&retained, &named)
+        || after
+            .modified()
+            .map_err(|_| DocumentServiceError::unavailable())?
+            != retained_modified
+        || named
+            .modified()
+            .map_err(|_| DocumentServiceError::unavailable())?
+            != retained_modified
+        || FileVersionStamp::capture_metadata(&after) != retained_stamp
+        || FileVersionStamp::capture_metadata(&named) != retained_stamp
+    {
+        return Err(DocumentServiceError::unsafe_target());
+    }
+    Ok(())
+}
+
+fn hash_regular_file_entry(
+    directory: &Dir,
+    name: &str,
+    addressed: &Metadata,
+    digest: &mut Sha256,
+    budget: &mut Option<&mut InventorySnapshotBudget>,
+) -> Result<(), DocumentServiceError> {
+    if !trusted_metadata(addressed) {
+        return Err(DocumentServiceError::unsafe_target());
+    }
+    let mut file = directory
+        .open_with(name, &crate::storage::nonfollowing_read_options())
+        .map_err(|_| DocumentServiceError::unsafe_target())?;
+    let retained = file
+        .metadata()
+        .map_err(|_| DocumentServiceError::unavailable())?;
+    if !trusted_metadata(&retained) || !same_file(addressed, &retained) {
+        return Err(DocumentServiceError::unsafe_target());
+    }
+    if let Some(budget) = budget.as_deref_mut() {
+        budget
+            .charge_content_bytes(retained.len())
+            .map_err(|_| DocumentServiceError::unavailable())?;
+    }
+    let addressed_modified = addressed
+        .modified()
+        .map_err(|_| DocumentServiceError::unavailable())?;
+    let expected_modified = retained
+        .modified()
+        .map_err(|_| DocumentServiceError::unavailable())?;
+    let retained_stamp = FileVersionStamp::capture_metadata(&retained);
+    if addressed.len() != retained.len()
+        || addressed_modified != expected_modified
+        || FileVersionStamp::capture_metadata(addressed) != retained_stamp
+    {
+        return Err(DocumentServiceError::unsafe_target());
+    }
+
+    digest.update(b"f");
+    digest_field(digest, name.as_bytes());
+    digest.update(retained.len().to_be_bytes());
+    let mut total = 0_u64;
+    let mut buffer = [0_u8; 64 * 1024];
+    while total < retained.len() {
+        let remaining = retained.len() - total;
+        let limit = usize::try_from(remaining)
+            .unwrap_or(buffer.len())
+            .min(buffer.len());
+        let read = file
+            .read(&mut buffer[..limit])
+            .map_err(|_| DocumentServiceError::unavailable())?;
+        if read == 0 {
+            return Err(DocumentServiceError::unsafe_target());
         }
-        if metadata.is_dir() {
-            digest.update(b"d");
-            digest_field(digest, name.as_bytes());
-            let child = directory
-                .open_dir_nofollow(&name)
-                .map_err(|_| DocumentServiceError::unsafe_target())?;
-            hash_directory_contents(&child, digest)?;
-            digest.update(b"e");
-        } else if metadata.is_file() && markdown_name(&name) && trusted_metadata(&metadata) {
-            if metadata.len() > DocumentContents::maximum_bytes() as u64 {
-                return Err(DocumentServiceError::too_large());
-            }
-            digest.update(b"f");
-            digest_field(digest, name.as_bytes());
-            let mut options = OpenOptions::new();
-            options.read(true).follow(FollowSymlinks::No);
-            let mut file = directory
-                .open_with(&name, &options)
-                .map_err(|_| DocumentServiceError::unsafe_target())?;
-            let retained = file
-                .metadata()
-                .map_err(|_| DocumentServiceError::unavailable())?;
-            if !trusted_metadata(&retained) || !same_file(&metadata, &retained) {
-                return Err(DocumentServiceError::unsafe_target());
-            }
-            let mut bytes = Vec::with_capacity(metadata.len() as usize);
-            read_to_end_bounded(&mut file, &mut bytes, DocumentContents::maximum_bytes())
-                .map_err(|_| DocumentServiceError::unavailable())?;
-            if bytes.len() > DocumentContents::maximum_bytes() {
-                return Err(DocumentServiceError::too_large());
-            }
-            let after = file
-                .metadata()
-                .map_err(|_| DocumentServiceError::unavailable())?;
-            if !trusted_metadata(&after)
-                || !same_file(&retained, &after)
-                || after.len() != bytes.len() as u64
-                || retained.modified().ok() != after.modified().ok()
-            {
-                return Err(DocumentServiceError::unsafe_target());
-            }
-            digest_field(digest, &bytes);
-        }
+        total = total
+            .checked_add(read as u64)
+            .ok_or_else(DocumentServiceError::unsafe_target)?;
+        digest.update(&buffer[..read]);
+    }
+
+    let after = file
+        .metadata()
+        .map_err(|_| DocumentServiceError::unavailable())?;
+    let named = directory
+        .symlink_metadata(name)
+        .map_err(|_| DocumentServiceError::unsafe_target())?;
+    if !trusted_metadata(&after)
+        || !trusted_metadata(&named)
+        || !same_file(&retained, &after)
+        || !same_file(&retained, &named)
+        || total != retained.len()
+        || after.len() != retained.len()
+        || named.len() != retained.len()
+        || after
+            .modified()
+            .map_err(|_| DocumentServiceError::unavailable())?
+            != expected_modified
+        || FileVersionStamp::capture_metadata(&after) != retained_stamp
+        || FileVersionStamp::capture_metadata(&named) != retained_stamp
+        || named
+            .modified()
+            .map_err(|_| DocumentServiceError::unavailable())?
+            != expected_modified
+    {
+        return Err(DocumentServiceError::unsafe_target());
     }
     Ok(())
 }
@@ -2673,6 +2909,7 @@ fn collect_search(
     needle: &str,
     context: &DocumentContext,
     service: &WorkspaceDocumentService,
+    ignore: &WorkspaceIgnoreSnapshot,
     matches: &mut Vec<SearchMatchDto>,
 ) -> Result<(), DocumentServiceError> {
     if matches.len() >= MAX_SEARCH_MATCHES {
@@ -2701,12 +2938,13 @@ fn collect_search(
         }
         let path = join_relative(directory_path, &name)?;
         if metadata.is_dir() {
-            if service.ignore.is_ignored(&path, DocumentKind::Directory) {
+            if ignore.is_ignored(&path, DocumentKind::Directory) {
                 continue;
             }
-            let _search_result = collect_search(root, &path, needle, context, service, matches);
+            let _search_result =
+                collect_search(root, &path, needle, context, service, ignore, matches);
         } else if metadata.is_file() && markdown_name(&name) && trusted_metadata(&metadata) {
-            if service.ignore.is_ignored(&path, DocumentKind::File) {
+            if ignore.is_ignored(&path, DocumentKind::File) {
                 continue;
             }
             let Ok(read) = read_file(root, &path) else {
@@ -2786,6 +3024,13 @@ fn history_identity(snapshot: &crate::documents::types::HistorySnapshot) -> Stri
         "{}\0{}",
         snapshot.created_at.as_str(),
         snapshot.snapshot_id.as_uuid()
+    )
+}
+fn history_entry_identity(entry: &HistoryEntryDto) -> String {
+    format!(
+        "{}\0{}",
+        entry.created_at.as_str(),
+        entry.snapshot_id.as_uuid()
     )
 }
 

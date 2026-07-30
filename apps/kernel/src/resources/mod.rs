@@ -1,0 +1,14 @@
+//! Kernel-owned binary workspace resource domain.
+//!
+//! Resource storage, identity, streaming, and cleanup remain separate from the
+//! UTF-8 Markdown document API. Production capability reporting stays disabled
+//! until the service and transport adapters are fully composed.
+
+mod error;
+mod href;
+mod policy;
+mod service;
+
+pub use error::{ResourceServiceError, ResourceServiceErrorKind};
+pub use href::resolve_markdown_href;
+pub use service::{RetainedResource, WorkspaceInventoryEntry, WorkspaceResourceService};

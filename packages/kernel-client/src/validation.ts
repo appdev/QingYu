@@ -25,7 +25,7 @@ export function isVersion(value: unknown): value is Schemas["SystemVersionRespon
 export function isRuntime(value: unknown): value is Schemas["RuntimeStateDto"] {
   if (!isRecord(value) || !isRecord(value.capabilities)) return false;
   const capabilities = value.capabilities;
-  const capabilityKeys = ["documents", "history", "portableSettings", "s3", "search", "settings", "sync", "webdav"];
+  const capabilityKeys = ["documents", "history", "portableSettings", "resources", "s3", "search", "settings", "sync", "webdav"];
   return capabilityKeys.every((key) => typeof capabilities[key] === "boolean") && exact(capabilities, capabilityKeys) && isUuid(value.instanceId) && ["desktop", "server", "mobile"].includes(String(value.profile)) && ["starting", "needs-owner", "needs-workspace-initialization", "needs-cloud-binding", "ready", "recoverable-error", "fatal-error"].includes(String(value.startupState)) && exact(value, ["capabilities", "instanceId", "profile", "startupState"]);
 }
 
@@ -33,6 +33,16 @@ export { isWorkspace, isDocumentEntry, isSettingsSnapshot, isSyncConfig, isSyncS
 
 export function isDocumentPage(value: unknown): value is Schemas["DocumentPageDto"] {
   return page(value, isDocumentEntry);
+}
+
+export function isInventoryPage(value: unknown): value is Schemas["WorkspaceInventoryPageDto"] {
+  return page(value, (item) => {
+    if (!isRecord(item)) return false;
+    if (item.entryType === "document") {
+      return isDocumentEntry(item.document) && exact(item, ["document", "entryType"]);
+    }
+    return item.entryType === "resource" && isResourceEntry(item.resource) && exact(item, ["entryType", "resource"]);
+  });
 }
 
 export function isSearchPage(value: unknown): value is Schemas["SearchPageDto"] {
@@ -52,6 +62,17 @@ export function isDocumentContent(value: unknown): value is Schemas["DocumentCon
 
 export function isHistoryPage(value: unknown): value is Schemas["DocumentHistoryPageDto"] {
   return page(value, (item) => isRecord(item) && isRfc3339Utc(item.createdAt) && isDocumentId(item.documentId) && isRevision(item.revision) && nonNegative(item.sizeBytes) && isUuid(item.snapshotId) && exact(item, ["createdAt", "documentId", "revision", "sizeBytes", "snapshotId"]));
+}
+
+export function isHistorySnapshot(value: unknown): value is Schemas["DocumentHistorySnapshotDto"] {
+  return isRecord(value) &&
+    isContents(value.contents) &&
+    isRfc3339Utc(value.createdAt) &&
+    isDocumentId(value.documentId) &&
+    isRevision(value.revision) &&
+    nonNegative(value.sizeBytes) &&
+    isUuid(value.snapshotId) &&
+    exact(value, ["contents", "createdAt", "documentId", "revision", "sizeBytes", "snapshotId"]);
 }
 
 export function isSyncConnection(value: unknown): value is Schemas["SyncConnectionTestDto"] {
@@ -88,6 +109,80 @@ function isUuid(value: unknown): value is string {
 }
 
 function isDocumentId(value: unknown): value is string {
+  return typeof value === "string" && value.length <= 8_192 && /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/u.test(value);
+}
+
+function isResourceEntry(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  const expectedPath = isResourceName(value.name) && isWorkspaceRelativePath(value.parent)
+    ? `${value.parent === "" ? "" : `${value.parent}/`}${value.name}`
+    : null;
+  const mediaMatchesKind = typeof value.mediaType === "string" && (value.kind === "image"
+    ? value.previewable === true && RESOURCE_IMAGE_MEDIA_TYPES.has(value.mediaType) && imageExtensionMatchesMediaType(value.name, value.mediaType)
+    : value.kind === "attachment" && value.previewable === false && value.mediaType === "application/octet-stream");
+  return isResourceId(value.id) &&
+    mediaMatchesKind &&
+    isRfc3339Utc(value.modifiedAt) &&
+    expectedPath !== null &&
+    value.path === expectedPath &&
+    isRevision(value.revision) &&
+    nonNegative(value.sizeBytes) &&
+    exact(value, ["id", "kind", "mediaType", "modifiedAt", "name", "parent", "path", "previewable", "revision", "sizeBytes"]);
+}
+
+const RESOURCE_IMAGE_MEDIA_TYPES = new Set(["image/gif", "image/jpeg", "image/png", "image/webp"]);
+
+function imageExtensionMatchesMediaType(name: unknown, mediaType: string) {
+  if (typeof name !== "string") return false;
+  const lower = name.toLocaleLowerCase("en-US");
+  if (mediaType === "image/jpeg") return lower.endsWith(".jpg") || lower.endsWith(".jpeg");
+  if (mediaType === "image/png") return lower.endsWith(".png");
+  if (mediaType === "image/gif") return lower.endsWith(".gif");
+  return mediaType === "image/webp" && lower.endsWith(".webp");
+}
+
+function isResourceName(value: unknown): value is string {
+  if (
+    typeof value !== "string" ||
+    value === "" ||
+    new TextEncoder().encode(value).length > 255 ||
+    value === "." ||
+    value === ".." ||
+    value.endsWith(".") ||
+    value.endsWith(" ") ||
+    /[\u0000-\u001f\u007f-\u009f/\\<>:"|?*]/u.test(value)
+  ) {
+    return false;
+  }
+  const lower = value.toLocaleLowerCase("en-US");
+  if (
+    lower === ".qingyu" ||
+    lower.startsWith(".qingyu-ui-update-") ||
+    lower.startsWith(".qingyu-mcp-update-") ||
+    lower.startsWith(".markra-sync-stage-")
+  ) {
+    return false;
+  }
+  const stem = value.split(".")[0]?.toLocaleUpperCase("en-US") ?? "";
+  return !/^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$/u.test(stem);
+}
+
+function isWorkspaceRelativePath(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  if (value === "") return true;
+  if (
+    value.startsWith("/") ||
+    value.startsWith("\\") ||
+    value.includes("\\") ||
+    /[\u0000-\u001f\u007f-\u009f]/u.test(value) ||
+    /^[A-Za-z]:/u.test(value)
+  ) {
+    return false;
+  }
+  return value.split("/").every((segment) => segment !== "" && segment !== "." && segment !== "..");
+}
+
+function isResourceId(value: unknown): value is string {
   return typeof value === "string" && value.length <= 8_192 && /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/u.test(value);
 }
 
