@@ -29,6 +29,7 @@ describe("web runtime", () => {
     expect(runtime.events.isAvailable()).toBe(true);
     expect(runtime.features.nativeWindowChrome).toBe(false);
     expect(runtime.features.fileDrop).toBe(false);
+    expect(runtime.features.projectSync).toBe(true);
     expect(runtime.workspace.rootPolicy).toMatchObject({
       canChooseLocalRoot: false,
       kind: "fixed"

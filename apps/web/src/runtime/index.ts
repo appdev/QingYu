@@ -14,6 +14,7 @@ import {
   type WebRuntimeOptions
 } from "./web";
 import { createServerFileRuntime, serverWorkspaceRoot } from "./server/files";
+import { createServerSyncConfigRuntime } from "./server/sync-config";
 
 export * from "./web";
 
@@ -74,7 +75,7 @@ export function createServerWebRuntime(
       nativeWindowChrome: false,
       openLocalAttachments: false,
       pandoc: false,
-      projectSync: false,
+      projectSync: true,
       resources: false,
       settingsWindow: false,
       systemFonts: false,
@@ -88,6 +89,7 @@ export function createServerWebRuntime(
       resolveDesktopPlatform: () => null,
       resolveFormFactor: () => "desktop"
     },
+    syncConfig: createServerSyncConfigRuntime(kernel),
     webResource: createWebResourceRuntime(options),
     window: createWebWindowRuntime(defaultRuntime.window, options),
     workspace: {
