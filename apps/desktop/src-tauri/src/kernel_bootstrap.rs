@@ -177,6 +177,35 @@ impl NativeKernelBootstrapOwner {
         }
         Ok(())
     }
+
+    #[allow(dead_code)] // Used by the future supervisor generation monitor.
+    pub(crate) fn clear_generation(&self, generation: u64) -> Result<bool, String> {
+        let previous = match self.state.lock() {
+            Ok(mut state) => {
+                if state
+                    .access
+                    .as_ref()
+                    .is_some_and(|access| access.endpoint.generation == generation)
+                {
+                    state.access.take()
+                } else {
+                    None
+                }
+            }
+            Err(poisoned) => {
+                let previous = poisoned.into_inner().access.take();
+                if let Some(previous) = previous {
+                    previous.credential.revoke();
+                }
+                return Err(bootstrap_unavailable());
+            }
+        };
+        let cleared = previous.is_some();
+        if let Some(previous) = previous {
+            previous.credential.revoke();
+        }
+        Ok(cleared)
+    }
 }
 
 impl Drop for NativeKernelBootstrapOwner {
@@ -360,6 +389,29 @@ mod tests {
         assert_eq!(
             serde_json::to_value(owner.read().unwrap()).unwrap()["generation"],
             json!("3")
+        );
+    }
+
+    #[test]
+    fn generation_scoped_clear_never_revokes_a_newer_publication() {
+        let owner = super::NativeKernelBootstrapOwner::new();
+        let (current, _current_temporary) = ready_access(2);
+        let credential = current.credential.clone();
+        let secret = credential.with_secret(str::to_owned).unwrap();
+        owner.publish(current).unwrap();
+
+        assert!(!owner.clear_generation(1).unwrap());
+        assert_eq!(credential.with_secret(str::to_owned).unwrap(), secret);
+        assert_eq!(
+            serde_json::to_value(owner.read().unwrap()).unwrap()["generation"],
+            json!("2")
+        );
+
+        assert!(owner.clear_generation(2).unwrap());
+        assert!(credential.with_secret(str::to_owned).is_err());
+        assert_eq!(
+            serde_json::to_value(owner.read().unwrap()).unwrap()["status"],
+            json!("dormant")
         );
     }
 
