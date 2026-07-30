@@ -15,13 +15,19 @@ The Kernel currently exposes its authenticated JSON/WebSocket API and health rou
 
 `compose.contract.yaml` therefore keeps the service behind the `static-web-serving-required` profile, and `verify-runtime.sh --status` exits 78 with that blocker. The profile is an integration fixture, not a production deployment recommendation.
 
-Run the dependency-light packaging check with:
+Run the packaging check with Ruby/Psych (the YAML parser bundled with Ruby):
 
 ```sh
 deploy/docker/verify-contract.sh
 ```
 
-A successful contract check means the image and Compose files match this documented packaging boundary. It does not mean the browser server is complete. Docker availability and image construction are separate evidence.
+The verifier parses Compose as YAML, parses Dockerfile stage boundaries, and verifies the build context denylist. Run its adversarial mutation suite with:
+
+```sh
+deploy/docker/test-verify-contract-mutations.sh
+```
+
+If a usable Docker daemon is present, `verify-contract.sh` additionally builds the final stage and inspects its configured user, entrypoint, Kernel/Web artifacts, and absence of Node toolchain executables. Without a usable daemon it reports that image evidence as unavailable and keeps the `static-web-serving-required` profile gate explicit. Neither result means the browser server is complete.
 
 ## Fixed runtime contract
 
