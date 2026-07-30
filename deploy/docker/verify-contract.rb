@@ -342,7 +342,8 @@ def verify_dockerfile(path)
       [
         "LABEL",
         'dev.qingyu.image.kind="kernel-api-with-served-web-assets" ' \
-          'dev.qingyu.image.phase-gate="web-kernel-runtime-required" ' \
+          'dev.qingyu.image.runtime-status="ready" ' \
+          'dev.qingyu.image.live-linux-acceptance="pending" ' \
           'dev.qingyu.image.web-assets="/opt/qingyu/web" ' \
           'dev.qingyu.image.web-assets-served="true"'
       ],
@@ -382,14 +383,14 @@ def verify_compose(path)
     service,
     %w[
       profiles build image user init read_only cap_drop security_opt environment ports volumes
-      tmpfs restart healthcheck labels
+      tmpfs stop_grace_period restart healthcheck labels
     ],
     "Compose qingyu service contains unexpected or missing keys"
   )
 
   assert_contract(
-    service["profiles"] == ["web-kernel-runtime-required"],
-    "Compose must remain behind only the web-kernel-runtime-required profile gate"
+    service["profiles"] == ["local-source-build"],
+    "Compose source-build fixture must remain behind only the local-source-build profile"
   )
   assert_contract(
     service["build"] == {
@@ -432,6 +433,10 @@ def verify_compose(path)
     ],
     "Compose must provide only the hardened /tmp/qingyu tmpfs"
   )
+  assert_contract(
+    service["stop_grace_period"] == "30s",
+    "Compose stop_grace_period must be exactly 30s"
+  )
   assert_contract(service["restart"] == "unless-stopped", "Compose restart policy must be unless-stopped")
   assert_contract(
     service["healthcheck"] == { "disable" => true },
@@ -439,14 +444,15 @@ def verify_compose(path)
   )
   assert_contract(
     service["labels"] == {
-      "dev.qingyu.contract.runtime-gate" => "web-kernel-runtime-required",
+      "dev.qingyu.contract.runtime-status" => "ready",
+      "dev.qingyu.contract.live-linux-acceptance" => "pending",
       "dev.qingyu.contract.data-root" => "/data",
       "dev.qingyu.contract.web-assets" => "/opt/qingyu/web",
       "dev.qingyu.contract.web-assets-served" => "true",
       "dev.qingyu.contract.health-live" => "/api/v1/health/live",
       "dev.qingyu.contract.health-ready" => "/api/v1/health/ready"
     },
-    "Compose labels must describe the exact gated runtime contract"
+    "Compose labels must describe the ready runtime and pending live Linux acceptance"
   )
 
   assert_exact_keys(compose["volumes"], ["qingyu-data"], "Compose must declare only qingyu-data")
@@ -454,6 +460,99 @@ def verify_compose(path)
   assert_contract(
     volume_definition.nil? || volume_definition == {},
     "qingyu-data must not contain an external or host-path override"
+  )
+end
+
+def verify_runtime_compose(path)
+  compose = parse_compose(path)
+  assert_exact_keys(
+    compose,
+    %w[name services volumes],
+    "Runtime Compose top-level contract contains unexpected keys"
+  )
+  assert_contract(compose["name"] == "qingyu-server", "Runtime Compose project name must be fixed")
+
+  services = compose["services"]
+  assert_exact_keys(services, ["qingyu"], "Runtime Compose must contain only the qingyu service")
+  service = services["qingyu"]
+  assert_contract(
+    service.is_a?(Hash) && !service.key?("build"),
+    "Runtime Compose must not contain build or source configuration"
+  )
+  assert_exact_keys(
+    service,
+    %w[
+      image user init read_only cap_drop security_opt environment ports volumes tmpfs
+      stop_grace_period restart healthcheck labels
+    ],
+    "Runtime Compose qingyu service contains unexpected or missing keys"
+  )
+  assert_contract(
+    service["image"] == "${QINGYU_SERVER_IMAGE:?QINGYU_SERVER_IMAGE is required}",
+    "Runtime Compose image must require an explicit prebuilt image reference"
+  )
+  assert_contract(service["user"] == "10001:10001", "Runtime Compose user must be exactly 10001:10001")
+  assert_contract(service["init"] == true, "Runtime Compose init must be the YAML boolean true")
+  assert_contract(
+    service["read_only"] == true,
+    "Runtime Compose read_only must be the YAML boolean true"
+  )
+  assert_contract(
+    service["cap_drop"] == ["ALL"],
+    "Runtime Compose cap_drop must contain only ALL"
+  )
+  assert_contract(
+    service["security_opt"] == ["no-new-privileges:true"],
+    "Runtime Compose security_opt must contain only no-new-privileges:true"
+  )
+  assert_contract(
+    service["environment"] == ["QINGYU_PUBLIC_ORIGIN", "QINGYU_SERVER_INITIALIZATION_TOKEN"],
+    "Runtime Compose environment must contain only value-free runtime inputs"
+  )
+  assert_contract(
+    service["ports"] == ["127.0.0.1:3210:3210"],
+    "Runtime Compose must publish only Kernel port 3210 on loopback"
+  )
+  assert_contract(
+    service["volumes"] == ["qingyu-data:/data"],
+    "Runtime Compose must mount only qingyu-data at fixed /data"
+  )
+  assert_contract(
+    service["tmpfs"] == [
+      "/tmp/qingyu:rw,noexec,nosuid,nodev,size=64m,uid=10001,gid=10001,mode=0700"
+    ],
+    "Runtime Compose must provide only the hardened /tmp/qingyu tmpfs"
+  )
+  assert_contract(
+    service["stop_grace_period"] == "30s",
+    "Runtime Compose stop_grace_period must be exactly 30s"
+  )
+  assert_contract(
+    service["restart"] == "unless-stopped",
+    "Runtime Compose restart policy must be unless-stopped"
+  )
+  assert_contract(
+    service["healthcheck"] == { "disable" => true },
+    "Runtime Compose healthcheck disable must be the YAML boolean true"
+  )
+  assert_contract(
+    service["labels"] == {
+      "dev.qingyu.contract.runtime-status" => "ready",
+      "dev.qingyu.contract.live-linux-acceptance" => "pending",
+      "dev.qingyu.contract.data-root" => "/data",
+      "dev.qingyu.contract.web-assets" => "/opt/qingyu/web",
+      "dev.qingyu.contract.web-assets-served" => "true",
+      "dev.qingyu.contract.health-live" => "/api/v1/health/live",
+      "dev.qingyu.contract.health-ready" => "/api/v1/health/ready"
+    },
+    "Runtime Compose labels must describe the ready runtime and pending live Linux acceptance"
+  )
+
+  assert_exact_keys(compose["volumes"], ["qingyu-data"], "Runtime Compose must declare only qingyu-data")
+  volume_definition = compose["volumes"]["qingyu-data"]
+  assert_contract(
+    volume_definition.nil? || volume_definition == {},
+    "Runtime qingyu-data must not contain an external or host-path override"
   )
 end
 
@@ -618,16 +717,26 @@ compose_file = ENV.fetch(
   "QINGYU_VERIFY_COMPOSE_FILE",
   File.join(repo_root, "deploy/docker/compose.contract.yaml")
 )
+runtime_compose_file = ENV.fetch(
+  "QINGYU_VERIFY_RUNTIME_COMPOSE_FILE",
+  File.join(repo_root, "deploy/docker/runtime-bundle.compose.yaml")
+)
 dockerignore = ENV.fetch("QINGYU_VERIFY_DOCKERIGNORE", File.join(repo_root, ".dockerignore"))
 tracked_inputs_manifest = ENV.fetch(
   "QINGYU_VERIFY_TRACKED_INPUTS_MANIFEST",
   File.join(repo_root, "deploy/docker/tracked-build-inputs.txt")
 )
 
-[[dockerfile, "root Dockerfile"], [compose_file, "Compose contract"], [dockerignore, ".dockerignore"]].each do |path, description|
+[
+  [dockerfile, "root Dockerfile"],
+  [compose_file, "Compose contract"],
+  [runtime_compose_file, "runtime-only Compose contract"],
+  [dockerignore, ".dockerignore"]
+].each do |path, description|
   assert_contract(File.file?(path), "missing #{description}: #{path}")
 end
 
 stages = verify_dockerfile(dockerfile)
 verify_compose(compose_file)
+verify_runtime_compose(runtime_compose_file)
 verify_dockerignore(dockerignore, repo_root, stages, tracked_inputs_manifest)

@@ -181,11 +181,13 @@ esac
 
 script_directory=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
 dockerfile_template="$script_directory/runtime-bundle.Dockerfile"
+compose_template="$script_directory/runtime-bundle.compose.yaml"
 entrypoint_template="$script_directory/entrypoint.sh"
 web_verifier_template="$script_directory/verify-final-web-assets.sh"
 bundle_verifier_template="$script_directory/verify-runtime-bundle.sh"
 for template in \
   "$dockerfile_template" \
+  "$compose_template" \
   "$entrypoint_template" \
   "$web_verifier_template" \
   "$bundle_verifier_template"; do
@@ -211,8 +213,9 @@ trap cleanup EXIT HUP INT TERM
 bundle_root="$temporary_directory/root"
 mkdir -p "$bundle_root/bin" "$bundle_root/scripts" "$bundle_root/web"
 install -m 0444 "$dockerfile_template" "$bundle_root/Dockerfile"
+install -m 0444 "$compose_template" "$bundle_root/compose.yaml"
 cat >"$bundle_root/BUNDLE-METADATA" <<EOF
-format=qingyu-runtime-bundle-v1
+format=qingyu-runtime-bundle-v2
 os=linux
 architecture=$architecture
 EOF
@@ -248,7 +251,7 @@ find "$bundle_root" -type d -exec chmod 0555 {} +
 (
   CDPATH= cd -- "$bundle_root"
   COPYFILE_DISABLE=1 tar -czf "$temporary_archive" \
-    Dockerfile BUNDLE-METADATA SHA256SUMS bin scripts web
+    Dockerfile compose.yaml BUNDLE-METADATA SHA256SUMS bin scripts web
 )
 
 "$bundle_verifier_template" \

@@ -43,15 +43,11 @@ case "$missing_origin_output" in
   *) fail "entrypoint must explain that QINGYU_PUBLIC_ORIGIN is required" ;;
 esac
 
-set +e
-runtime_output=$("$runtime_gate" --status 2>&1)
-runtime_status=$?
-set -e
-[ "$runtime_status" -eq 78 ] \
-  || fail "runtime phase gate must exit 78 while the Web KernelClient runtime is unavailable"
+runtime_output=$("$runtime_gate" --status 2>&1) \
+  || fail "runtime phase status must pass after the Web KernelClient cutover"
 case "$runtime_output" in
-  *web-kernel-runtime-required*) ;;
-  *) fail "runtime phase gate must identify web-kernel-runtime-required" ;;
+  *READY\(runtime-ready\)*PENDING\(final-live-linux-acceptance\)*) ;;
+  *) fail "runtime phase status must report ready while preserving pending live Linux acceptance" ;;
 esac
 
 inspect_built_image() {
@@ -90,7 +86,7 @@ inspect_built_image() {
 if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
   if docker compose version >/dev/null 2>&1; then
     docker compose \
-      --profile web-kernel-runtime-required \
+      --profile local-source-build \
       -f "$compose_file" \
       config >/dev/null \
       || fail "Docker Compose rejected the semantic contract"
@@ -105,4 +101,4 @@ else
 fi
 
 printf '%s\n' \
-  "PASS: ${docker_evidence}static Web serving is packaged; BLOCKED(web-kernel-runtime-required) remains."
+  "PASS: ${docker_evidence}runtime packaging is ready; final live Linux acceptance remains pending."

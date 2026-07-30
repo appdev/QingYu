@@ -9,5 +9,5 @@ if [ "${1-}" != "--status" ]; then
 fi
 
 printf '%s\n' \
-  'BLOCKED(web-kernel-runtime-required): qingyu-kernel serves /opt/qingyu/web on the API origin, but the Web entrypoint is not yet wired exclusively to KernelClient.' >&2
-exit 78
+  'READY(runtime-ready): the precompiled Kernel and server-backed Web application are packaged for the fixed /data runtime.' \
+  'PENDING(final-live-linux-acceptance): Docker/Linux startup, persistence, reverse-proxy, WebSocket, and graceful-drain evidence must still be captured on the target host.'

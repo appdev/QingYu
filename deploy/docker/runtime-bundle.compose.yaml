@@ -1,13 +1,8 @@
-name: qingyu-server-contract
+name: qingyu-server
 
 services:
   qingyu:
-    profiles: ["local-source-build"]
-    build:
-      context: ../..
-      dockerfile: Dockerfile
-      target: qingyu-runtime
-    image: ${QINGYU_SERVER_IMAGE:-qingyu-server:local}
+    image: ${QINGYU_SERVER_IMAGE:?QINGYU_SERVER_IMAGE is required}
     user: "10001:10001"
     init: true
     read_only: true

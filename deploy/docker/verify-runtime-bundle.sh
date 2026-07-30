@@ -8,7 +8,8 @@ maximum_web_depth=32
 maximum_web_file_bytes=16777216
 maximum_web_total_bytes=134217728
 maximum_web_path_bytes=16777216
-expected_dockerfile_sha256=7adf67fe6c7580ffd98e83b093574a556b2c75e8bd87f747b8d967b84f711ee5
+expected_dockerfile_sha256=4105ed08371190746e77440d4ea0c20744c7f562e0d34c99ae5a7ec33dbfde8d
+expected_compose_sha256=7ba2adcb689c5aa3a072f3f1e74132a705e58de90880e146a609fa45fecd2d5e
 expected_entrypoint_sha256=514fe144a1655f5444f5a35a243bd79dc72ed1df2c0e34e9b896ca8e85d07dfd
 expected_final_web_verifier_sha256=1ba59add40f50071037a10d7c2ce596fc860a5d56ee3a7c0ebadca20e327d002
 
@@ -107,6 +108,8 @@ verify_frozen_control_files() {
   control_root=$1
   [ "$(hash_file "$control_root/Dockerfile")" = "$expected_dockerfile_sha256" ] \
     || fail 'frozen runtime control file checksum mismatch: Dockerfile'
+  [ "$(hash_file "$control_root/compose.yaml")" = "$expected_compose_sha256" ] \
+    || fail 'frozen runtime control file checksum mismatch: compose.yaml'
   [ "$(hash_file "$control_root/scripts/entrypoint.sh")" = "$expected_entrypoint_sha256" ] \
     || fail 'frozen runtime control file checksum mismatch: scripts/entrypoint.sh'
   [ "$(hash_file "$control_root/scripts/verify-final-web-assets.sh")" = "$expected_final_web_verifier_sha256" ] \
@@ -336,6 +339,7 @@ verify_tree() {
 
   for required_path in \
     Dockerfile \
+    compose.yaml \
     BUNDLE-METADATA \
     SHA256SUMS \
     bin/qingyu-kernel \
@@ -347,14 +351,14 @@ verify_tree() {
       || fail "bundle is missing required retained file: $required_path"
   done
 
-  expected_metadata=$(printf 'format=qingyu-runtime-bundle-v1\nos=linux\narchitecture=%s' "$architecture")
+  expected_metadata=$(printf 'format=qingyu-runtime-bundle-v2\nos=linux\narchitecture=%s' "$architecture")
   actual_metadata=$(cat "$root/BUNDLE-METADATA")
   [ "$actual_metadata" = "$expected_metadata" ] \
     || fail 'bundle metadata does not match the requested Linux architecture'
 
   verify_manifest "$root"
   verify_frozen_control_files "$root"
-  for read_only_path in Dockerfile BUNDLE-METADATA SHA256SUMS; do
+  for read_only_path in Dockerfile compose.yaml BUNDLE-METADATA SHA256SUMS; do
     require_mode "$root/$read_only_path" 444 "$read_only_path"
   done
   for executable_path in \
@@ -471,7 +475,7 @@ while IFS= read -r member; do
     || fail "archive contains an unsafe member path: $member"
   normalized=${normalized%/}
   case "$normalized" in
-    Dockerfile | BUNDLE-METADATA | SHA256SUMS | \
+    Dockerfile | compose.yaml | BUNDLE-METADATA | SHA256SUMS | \
     bin | bin/qingyu-kernel | \
     scripts | scripts/entrypoint.sh | scripts/verify-final-web-assets.sh | \
     scripts/verify-runtime-bundle.sh | web | web/*) ;;

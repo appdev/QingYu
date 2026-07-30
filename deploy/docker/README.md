@@ -1,10 +1,10 @@
 # QingYu single-user Docker packaging
 
-This directory contains the first runnable Kernel image for the confirmed deployment model: one Docker deployment owns one user and one persistent `/data` volume. Static same-origin Web delivery is implemented, but the browser bundle is not yet wired exclusively to `KernelClient`.
+This directory contains the runnable Kernel image and precompiled runtime-bundle contract for the confirmed deployment model: one Docker deployment owns one user and one persistent `/data` volume. The browser application now uses the server `KernelClient`; final live Linux acceptance remains pending until the target-host matrix is captured.
 
 ## Current boundary
 
-The image now has a real server process boundary:
+The local/CI source-build image has a real server process boundary:
 
 - a Node + pnpm build stage produces `apps/web/dist`;
 - a Rust build stage produces the locked release `qingyu-kernel` binary;
@@ -13,7 +13,9 @@ The image now has a real server process boundary:
 
 The Kernel exposes its authenticated JSON/WebSocket API and health routes on `0.0.0.0:3210`. The same process serves `/opt/qingyu/web`, including real assets and the SPA fallback, so no Node or Vite server is present in the runtime image. Unknown `/api` routes stay JSON and never fall through to the Web entrypoint.
 
-`compose.contract.yaml` keeps the service behind the next `web-kernel-runtime-required` profile, and `verify-runtime.sh --status` exits 78 with that blocker. The served bundle still contains the legacy browser-local runtime until the Web entrypoint is switched to the server `KernelClient`; the profile remains an integration fixture rather than a production deployment recommendation.
+`compose.contract.yaml` is the local/CI source-build fixture behind the `local-source-build` profile. It intentionally retains `build:` and the root Dockerfile. It is not the test-server deployment path. `verify-runtime.sh --status` now reports `READY(runtime-ready)` together with `PENDING(final-live-linux-acceptance)`; readiness describes the packaging contract, not a completed Docker/Linux run.
+
+`runtime-bundle.compose.yaml` is the release template. `package-runtime-bundle.sh` packages it as `compose.yaml` beside the precompiled Kernel, passive Web distribution, runtime-only Dockerfile, scripts, metadata, and `SHA256SUMS`. The packaged Compose file has no `build:` section, source path, toolchain, default image, public-origin literal, or initialization-token literal. The recipient must supply an explicit prebuilt image reference through `QINGYU_SERVER_IMAGE`.
 
 Run the packaging check with Ruby/Psych (the YAML parser bundled with Ruby):
 
@@ -29,7 +31,7 @@ The runtime stage executes the independent `verify-final-web-assets.sh` scanner 
 deploy/docker/test-verify-contract-mutations.sh
 ```
 
-If a usable Docker daemon is present, `verify-contract.sh` additionally builds the final stage and inspects its configured user, entrypoint, complete Web asset tree, Kernel artifact, and absence of Node toolchain executables. Without a usable daemon it reports final-image evidence as pending. Neither result proves the remaining Web `KernelClient` migration.
+If a usable Docker daemon is present, `verify-contract.sh` additionally builds the local/CI final stage and inspects its configured user, entrypoint, complete Web asset tree, Kernel artifact, and absence of Node toolchain executables. Without a usable daemon it reports final-image evidence as pending. This check does not replace final live Linux acceptance.
 
 ## Fixed runtime contract
 
@@ -41,13 +43,28 @@ If a usable Docker daemon is present, `verify-contract.sh` additionally builds t
 - `QINGYU_SERVER_INITIALIZATION_TOKEN` is optional after initialization and is passed only through the container environment. It never enters a build argument, image environment value, Compose literal, or Compose default.
 - Both runtime inputs use Compose's value-free environment pass-through. The entrypoint fails closed if `QINGYU_PUBLIC_ORIGIN` is absent or empty; the Kernel validates its exact HTTPS form.
 
-The final image can be built independently when Docker is available:
+The source-build image can be built independently for local/CI verification when Docker is available:
 
 ```sh
 docker build --target qingyu-runtime -t qingyu-server:local .
 ```
 
-That command proves image construction only. Until a reviewed static-Web owner is integrated, do not publish or describe the image as a browser-ready QingYu server.
+That command proves image construction only. Do not run it on a runtime-only test server and do not treat it as target-host acceptance.
+
+For a runtime-only release, first build the matching Linux Kernel binary and Web distribution on the trusted build host, then package them:
+
+```sh
+deploy/docker/package-runtime-bundle.sh \
+  --architecture amd64 \
+  --kernel /path/to/prebuilt/qingyu-kernel \
+  --web-dist /path/to/apps-web-dist \
+  --output /path/to/qingyu-runtime-linux-amd64.tar.gz
+deploy/docker/verify-runtime-bundle.sh \
+  --archive /path/to/qingyu-runtime-linux-amd64.tar.gz \
+  --architecture amd64
+```
+
+Record and verify the generated archive sidecar before upload. Upload only the exact archive and checksum; do not upload repository source, Git credentials, or build toolchains. After extraction, build or load the runtime image from the bundle Dockerfile on a trusted image builder, publish or transfer that prebuilt image, set `QINGYU_SERVER_IMAGE` to its explicit reference, and run the bundled `compose.yaml` on the runtime host.
 
 ## TLS reverse proxy and public origin
 
@@ -87,7 +104,7 @@ Never place the token in the Dockerfile, image labels, Compose YAML, shell histo
 | Kernel live/readiness routes | Implemented by Kernel; image healthcheck intentionally disabled | Real container probes cover starting, uninitialized, ready, and failure states. |
 | Web static assets in final image | Implemented | Asset inventory matches the `apps/web` build. |
 | Web assets served to the browser | Implemented | Same-origin GET/HEAD, real assets, SPA fallback, API exclusion, exact Host/Origin, CSP, and no-follow checks pass. |
-| Web application uses KernelClient only | **Blocked: `web-kernel-runtime-required`** | The browser entrypoint must use the server bootstrap/runtime and must not expose a local-directory picker or IndexedDB workspace owner. |
+| Web application uses KernelClient only | Runtime contract ready | Browser/runtime tests cover the server bootstrap and ensure Docker mode has no local-directory workspace owner. |
 | TLS ingress | Not included | Reverse-proxy tests prove HTTPS origin, headers, cookies, CSRF, and WebSocket upgrades. |
 
-The runtime verifier remains blocked until the Web `KernelClient` cutover and complete browser/container matrix are executable. Docker being unavailable is an environmental limitation, not a passing runtime result.
+The runtime packaging gate is ready. Final live Linux acceptance is still pending until the prebuilt-image/container matrix proves fixed `/data`, initialization, restart persistence, HTTPS/WSS proxying, SIGTERM with a 30-second drain budget, and Linux runtime behavior. Docker being unavailable is an environmental limitation, not passing evidence.

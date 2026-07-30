@@ -5,9 +5,10 @@ set -eu
 repo_root=$(CDPATH= cd -- "$(dirname "$0")/../.." && pwd)
 verifier="$repo_root/deploy/docker/verify-contract.sh"
 compose_file="$repo_root/deploy/docker/compose.contract.yaml"
+runtime_compose_file="$repo_root/deploy/docker/runtime-bundle.compose.yaml"
 dockerfile="$repo_root/Dockerfile"
-tracked_inputs_manifest="$repo_root/deploy/docker/tracked-build-inputs.txt"
 web_dist_tests="$repo_root/deploy/docker/verify-web-dist.test.mjs"
+runtime_gate="$repo_root/deploy/docker/verify-runtime.sh"
 
 fail() {
   printf 'FAIL: %s\n' "$1" >&2
@@ -17,7 +18,31 @@ fail() {
 temporary_directory=$(mktemp -d "${TMPDIR:-/tmp}/qingyu-docker-contract-mutations.XXXXXX")
 trap 'rm -rf "$temporary_directory"' EXIT HUP INT TERM
 
+tracked_inputs_manifest="$temporary_directory/tracked-build-inputs.current.txt"
+git -C "$repo_root" ls-files -z -- \
+  .dockerignore Dockerfile package.json pnpm-lock.yaml pnpm-workspace.yaml \
+  apps/web/package.json packages/app/package.json packages/editor/package.json \
+  packages/editor-react/package.json packages/kernel-client/package.json \
+  packages/markdown/package.json packages/scripts/package.json packages/shared/package.json \
+  packages/ui/package.json deploy/docker/verify-web-dist.mjs apps/web packages \
+  apps/kernel/Cargo.toml apps/kernel/Cargo.lock \
+  apps/kernel/crates/qingyu-dejavu/Cargo.toml apps/kernel/crates/qingyu-dejavu/src \
+  apps/kernel/src deploy/docker/entrypoint.sh deploy/docker/verify-final-web-assets.sh \
+  | tr '\0' '\n' | LC_ALL=C sort >"$tracked_inputs_manifest"
+[ -s "$tracked_inputs_manifest" ] \
+  || fail "could not derive current tracked Docker build inputs for mutation isolation"
+export QINGYU_VERIFY_TRACKED_INPUTS_MANIFEST="$tracked_inputs_manifest"
+
 node --test "$web_dist_tests"
+
+runtime_output_file="$temporary_directory/runtime-status.output"
+if ! "$runtime_gate" --status >"$runtime_output_file" 2>&1; then
+  fail "runtime phase status must pass after the Web KernelClient cutover"
+fi
+grep -F 'READY(runtime-ready)' "$runtime_output_file" >/dev/null \
+  || fail "runtime phase status must report runtime-ready"
+grep -F 'PENDING(final-live-linux-acceptance)' "$runtime_output_file" >/dev/null \
+  || fail "runtime phase status must preserve the final live Linux acceptance boundary"
 
 expect_rejection() {
   mutation_name=$1
@@ -103,6 +128,78 @@ expect_rejection \
   compose-read-only-comment-spoof \
   'Compose read_only must be the YAML boolean true' \
   env QINGYU_VERIFY_COMPOSE_FILE="$mutated_compose" "$verifier"
+
+expect_runtime_compose_rejection() {
+  mutation_name=$1
+  expected_message=$2
+  mutation=$3
+  mutated_runtime_compose="$temporary_directory/runtime-compose.$mutation_name.yaml"
+  ruby -ryaml -e '
+    compose = YAML.safe_load(File.read(ARGV.fetch(0)), aliases: false)
+    service = compose.fetch("services").fetch("qingyu")
+    case ARGV.fetch(2)
+    when "build"
+      service["build"] = { "context" => "." }
+    when "image-default"
+      service["image"] = "${QINGYU_SERVER_IMAGE:-qingyu-server:local}"
+    when "literal-token"
+      service["environment"] = [
+        "QINGYU_PUBLIC_ORIGIN=https://notes.example.com",
+        "QINGYU_SERVER_INITIALIZATION_TOKEN=secret"
+      ]
+    when "writable-root"
+      service["read_only"] = false
+    when "wrong-user"
+      service["user"] = "0:0"
+    when "capability"
+      service["cap_drop"] = []
+    when "privilege"
+      service["security_opt"] = []
+    when "public-port"
+      service["ports"] = ["3210:3210"]
+    when "host-data"
+      service["volumes"] = ["./data:/data"]
+    when "weak-tmpfs"
+      service["tmpfs"] = ["/tmp/qingyu"]
+    when "short-stop"
+      service["stop_grace_period"] = "5s"
+    when "no-restart"
+      service["restart"] = "no"
+    else
+      abort "unknown runtime Compose mutation"
+    end
+    File.write(ARGV.fetch(1), YAML.dump(compose))
+  ' "$runtime_compose_file" "$mutated_runtime_compose" "$mutation"
+  expect_rejection \
+    "runtime-compose-$mutation_name" \
+    "$expected_message" \
+    env QINGYU_VERIFY_RUNTIME_COMPOSE_FILE="$mutated_runtime_compose" "$verifier"
+}
+
+expect_runtime_compose_rejection source-build \
+  'Runtime Compose must not contain build or source configuration' build
+expect_runtime_compose_rejection optional-image \
+  'Runtime Compose image must require an explicit prebuilt image reference' image-default
+expect_runtime_compose_rejection literal-runtime-inputs \
+  'Runtime Compose environment must contain only value-free runtime inputs' literal-token
+expect_runtime_compose_rejection writable-root \
+  'Runtime Compose read_only must be the YAML boolean true' writable-root
+expect_runtime_compose_rejection wrong-user \
+  'Runtime Compose user must be exactly 10001:10001' wrong-user
+expect_runtime_compose_rejection retained-capability \
+  'Runtime Compose cap_drop must contain only ALL' capability
+expect_runtime_compose_rejection privilege-escalation \
+  'Runtime Compose security_opt must contain only no-new-privileges:true' privilege
+expect_runtime_compose_rejection public-port \
+  'Runtime Compose must publish only Kernel port 3210 on loopback' public-port
+expect_runtime_compose_rejection host-data \
+  'Runtime Compose must mount only qingyu-data at fixed /data' host-data
+expect_runtime_compose_rejection weak-tmpfs \
+  'Runtime Compose must provide only the hardened /tmp/qingyu tmpfs' weak-tmpfs
+expect_runtime_compose_rejection short-stop \
+  'Runtime Compose stop_grace_period must be exactly 30s' short-stop
+expect_runtime_compose_rejection no-restart \
+  'Runtime Compose restart policy must be unless-stopped' no-restart
 
 weakened_dockerignore="$temporary_directory/dockerignore.missing-nested-env"
 awk '$0 != "**/.env.*" { print }' "$repo_root/.dockerignore" >"$weakened_dockerignore"

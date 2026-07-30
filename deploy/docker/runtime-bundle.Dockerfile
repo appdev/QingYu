@@ -19,7 +19,8 @@ COPY --chmod=0555 scripts/verify-final-web-assets.sh /usr/local/bin/qingyu-verif
 RUN /usr/local/bin/qingyu-verify-final-web-assets /opt/qingyu/web
 
 LABEL dev.qingyu.image.kind="kernel-api-with-served-web-assets" \
-      dev.qingyu.image.phase-gate="web-kernel-runtime-required" \
+      dev.qingyu.image.runtime-status="ready" \
+      dev.qingyu.image.live-linux-acceptance="pending" \
       dev.qingyu.image.web-assets="/opt/qingyu/web" \
       dev.qingyu.image.web-assets-served="true"
 

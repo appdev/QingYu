@@ -109,6 +109,7 @@ make_elf "$kernel" amd64
 
 for required_path in \
   Dockerfile \
+  compose.yaml \
   BUNDLE-METADATA \
   SHA256SUMS \
   bin/qingyu-kernel \
@@ -122,8 +123,12 @@ done
 
 grep -F 'architecture=amd64' "$extracted/BUNDLE-METADATA" >/dev/null \
   || fail "bundle metadata does not freeze the target architecture"
+grep -F 'format=qingyu-runtime-bundle-v2' "$extracted/BUNDLE-METADATA" >/dev/null \
+  || fail "bundle metadata does not identify the Compose-ready release format"
 grep -F '  Dockerfile' "$extracted/SHA256SUMS" >/dev/null \
   || fail "internal manifest does not include the runtime-only Dockerfile"
+grep -F '  compose.yaml' "$extracted/SHA256SUMS" >/dev/null \
+  || fail "internal manifest does not include the runtime-only Compose file"
 grep -F '  scripts/entrypoint.sh' "$extracted/SHA256SUMS" >/dev/null \
   || fail "internal manifest does not include the entrypoint"
 grep -F '  scripts/verify-final-web-assets.sh' "$extracted/SHA256SUMS" >/dev/null \
@@ -141,6 +146,23 @@ grep -F 'EXPOSE 3210' "$extracted/Dockerfile" >/dev/null \
   || fail "runtime-only Dockerfile lost the Kernel port"
 grep -F 'STOPSIGNAL SIGTERM' "$extracted/Dockerfile" >/dev/null \
   || fail "runtime-only Dockerfile lost the graceful stop signal"
+
+ruby -ryaml -e '
+  compose = YAML.safe_load(File.read(ARGV.fetch(0)), aliases: false)
+  abort "runtime Compose top-level contract changed" unless compose.keys.sort == %w[name services volumes]
+  service = compose.fetch("services").fetch("qingyu")
+  abort "runtime Compose contains a source build" if service.key?("build")
+  abort "runtime Compose image is not a required prebuilt input" unless service.fetch("image") == "${QINGYU_SERVER_IMAGE:?QINGYU_SERVER_IMAGE is required}"
+  abort "runtime Compose user changed" unless service.fetch("user") == "10001:10001"
+  abort "runtime Compose root is writable" unless service.fetch("read_only") == true
+  abort "runtime Compose capabilities changed" unless service.fetch("cap_drop") == ["ALL"]
+  abort "runtime Compose privileges changed" unless service.fetch("security_opt") == ["no-new-privileges:true"]
+  abort "runtime Compose runtime inputs are not value-free" unless service.fetch("environment") == ["QINGYU_PUBLIC_ORIGIN", "QINGYU_SERVER_INITIALIZATION_TOKEN"]
+  abort "runtime Compose port is not loopback-only" unless service.fetch("ports") == ["127.0.0.1:3210:3210"]
+  abort "runtime Compose data root changed" unless service.fetch("volumes") == ["qingyu-data:/data"]
+  abort "runtime Compose stop grace changed" unless service.fetch("stop_grace_period") == "30s"
+  abort "runtime Compose restart policy changed" unless service.fetch("restart") == "unless-stopped"
+' "$extracted/compose.yaml"
 
 symlink_kernel="$temporary_directory/symlink-kernel"
 ln -s "$kernel" "$symlink_kernel"
@@ -227,6 +249,96 @@ expect_rejection \
   extra-bundle-content \
   'bundle archive contains unexpected member: EXTRA.txt' \
   "$verifier" --archive "$extra_archive" --architecture amd64
+
+tampered_compose_tree="$temporary_directory/tampered-compose-tree"
+tampered_compose_archive="$temporary_directory/tampered-compose.tar.gz"
+cp -R "$extracted" "$tampered_compose_tree"
+chmod 0644 "$tampered_compose_tree/compose.yaml"
+printf '%s\n' '# unmanifested mutation' >>"$tampered_compose_tree/compose.yaml"
+chmod 0444 "$tampered_compose_tree/compose.yaml"
+archive_tree "$tampered_compose_tree" "$tampered_compose_archive"
+expect_rejection \
+  tampered-compose-content \
+  'SHA-256 manifest mismatch: compose.yaml' \
+  "$verifier" --archive "$tampered_compose_archive" --architecture amd64
+
+expect_compose_rejection() {
+  mutation_name=$1
+  expected_message=$2
+  mutation=$3
+  mutation_tree="$temporary_directory/compose-$mutation_name-tree"
+  mutation_archive="$temporary_directory/compose-$mutation_name.tar.gz"
+  cp -R "$extracted" "$mutation_tree"
+  chmod 0644 "$mutation_tree/compose.yaml"
+  ruby -ryaml -e '
+    compose = YAML.safe_load(File.read(ARGV.fetch(0)), aliases: false)
+    service = compose.fetch("services").fetch("qingyu")
+    case ARGV.fetch(1)
+    when "build"
+      service["build"] = { "context" => "." }
+    when "image-default"
+      service["image"] = "${QINGYU_SERVER_IMAGE:-qingyu-server:local}"
+    when "literal-token"
+      service["environment"] = [
+        "QINGYU_PUBLIC_ORIGIN=https://notes.example.com",
+        "QINGYU_SERVER_INITIALIZATION_TOKEN=secret"
+      ]
+    when "writable-root"
+      service["read_only"] = false
+    when "wrong-user"
+      service["user"] = "0:0"
+    when "capability"
+      service["cap_drop"] = []
+    when "privilege"
+      service["security_opt"] = []
+    when "public-port"
+      service["ports"] = ["3210:3210"]
+    when "host-data"
+      service["volumes"] = ["./data:/data"]
+    when "weak-tmpfs"
+      service["tmpfs"] = ["/tmp/qingyu"]
+    when "short-stop"
+      service["stop_grace_period"] = "5s"
+    when "no-restart"
+      service["restart"] = "no"
+    else
+      abort "unknown Compose mutation"
+    end
+    File.write(ARGV.fetch(0), YAML.dump(compose))
+  ' "$mutation_tree/compose.yaml" "$mutation"
+  chmod 0444 "$mutation_tree/compose.yaml"
+  rewrite_manifest "$mutation_tree"
+  archive_tree "$mutation_tree" "$mutation_archive"
+  expect_rejection \
+    "compose-$mutation_name" \
+    "$expected_message" \
+    "$verifier" --archive "$mutation_archive" --architecture amd64
+}
+
+expect_compose_rejection source-build \
+  'frozen runtime control file checksum mismatch: compose.yaml' build
+expect_compose_rejection optional-image \
+  'frozen runtime control file checksum mismatch: compose.yaml' image-default
+expect_compose_rejection literal-runtime-inputs \
+  'frozen runtime control file checksum mismatch: compose.yaml' literal-token
+expect_compose_rejection writable-root \
+  'frozen runtime control file checksum mismatch: compose.yaml' writable-root
+expect_compose_rejection wrong-user \
+  'frozen runtime control file checksum mismatch: compose.yaml' wrong-user
+expect_compose_rejection retained-capability \
+  'frozen runtime control file checksum mismatch: compose.yaml' capability
+expect_compose_rejection privilege-escalation \
+  'frozen runtime control file checksum mismatch: compose.yaml' privilege
+expect_compose_rejection public-port \
+  'frozen runtime control file checksum mismatch: compose.yaml' public-port
+expect_compose_rejection host-data \
+  'frozen runtime control file checksum mismatch: compose.yaml' host-data
+expect_compose_rejection weak-tmpfs \
+  'frozen runtime control file checksum mismatch: compose.yaml' weak-tmpfs
+expect_compose_rejection short-stop \
+  'frozen runtime control file checksum mismatch: compose.yaml' short-stop
+expect_compose_rejection no-restart \
+  'frozen runtime control file checksum mismatch: compose.yaml' no-restart
 
 invalid_web_tree="$temporary_directory/invalid-web-tree"
 invalid_web_archive="$temporary_directory/invalid-web.tar.gz"
