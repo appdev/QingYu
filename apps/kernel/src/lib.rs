@@ -12,6 +12,7 @@ pub mod ignore_rules;
 pub mod paths;
 pub mod ports;
 pub mod protected_paths;
+pub mod resources;
 pub mod runtime;
 pub mod services;
 pub mod settings;
