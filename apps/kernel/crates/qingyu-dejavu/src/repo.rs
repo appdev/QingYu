@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use cap_std::fs::{Dir, File as CapFile};
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
+use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 use crate::atomic_write::{create_cap_staged_file, is_owned_stage_name, CapStagedFile};
 use crate::cloud::{Cloud, CloudError};
@@ -55,6 +56,21 @@ pub struct Repo {
     pub(crate) index_hook: Arc<dyn IndexHook>,
 }
 
+impl Zeroize for Repo {
+    fn zeroize(&mut self) {
+        self.key.zeroize();
+        self.store.zeroize();
+    }
+}
+
+impl Drop for Repo {
+    fn drop(&mut self) {
+        self.zeroize();
+    }
+}
+
+impl ZeroizeOnDrop for Repo {}
+
 impl Repo {
     pub fn open(
         paths: RepoPaths,
@@ -103,6 +119,7 @@ impl Repo {
         runtime: &crate::RepositoryRuntimeState,
         index_hook: Arc<dyn IndexHook>,
     ) -> Result<Self, RepoError> {
+        let key = Zeroizing::new(key);
         let paths = RepoPaths {
             data: normalize_root(&paths.data)?,
             repo: normalize_root(&paths.repo)?,
@@ -134,7 +151,7 @@ impl Repo {
             return Err(RepoError::UnsafePath);
         }
         let data_gate = crate::lifecycle::LifecycleGate::for_directory(&data_dir, runtime)?;
-        let store = Store::new_with_runtime(&paths.repo, key, runtime)?;
+        let store = Store::new_with_runtime(&paths.repo, *key, runtime)?;
         let history = History::new(&paths.history)?;
         let temp_dir = open_or_create_absolute_dir_nofollow(&paths.temp)?;
         let temp_gate = crate::lifecycle::LifecycleGate::for_directory(&temp_dir, runtime)?;
@@ -148,7 +165,7 @@ impl Repo {
             data_dir,
             data_gate,
             device,
-            key,
+            key: *key,
             protected_include_paths,
             ignore_matcher,
             store,
@@ -640,6 +657,20 @@ mod tests {
     fn repo_fixture() -> (TempDir, Repo) {
         let (temp, _runtime, repo) = repo_fixture_with_runtime();
         (temp, repo)
+    }
+
+    #[test]
+    fn repository_key_is_explicitly_zeroizable_and_zeroizes_on_drop() {
+        use zeroize::{Zeroize, ZeroizeOnDrop};
+
+        fn assert_zeroizes_on_drop<T: ZeroizeOnDrop>(_value: &T) {}
+
+        let (_temp, mut repo) = repo_fixture();
+
+        assert_zeroizes_on_drop(&repo);
+        repo.zeroize();
+
+        assert_eq!(repo.key, [0_u8; 32]);
     }
 
     #[tokio::test]

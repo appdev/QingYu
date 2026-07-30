@@ -10,6 +10,7 @@ use cap_std::ambient_authority;
 use cap_std::fs::{Dir, OpenOptions};
 use serde::de::DeserializeOwned;
 use tokio::io::AsyncRead;
+use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 use crate::atomic_write::{stage_cap_file, CapStagedFile};
 use crate::cloud::{CloudError, CloudUploadSource};
@@ -47,6 +48,20 @@ pub struct Store {
     compressor: Mutex<zstd::bulk::Compressor<'static>>,
     decompressor: Mutex<zstd::zstd_safe::DCtx<'static>>,
 }
+
+impl Zeroize for Store {
+    fn zeroize(&mut self) {
+        self.key.zeroize();
+    }
+}
+
+impl Drop for Store {
+    fn drop(&mut self) {
+        self.zeroize();
+    }
+}
+
+impl ZeroizeOnDrop for Store {}
 
 pub(crate) struct StoreUploadSource {
     file: cap_std::fs::File,
@@ -86,6 +101,7 @@ impl Store {
         key: [u8; 32],
         runtime: &crate::RepositoryRuntimeState,
     ) -> Result<Self, RepoError> {
+        let key = Zeroizing::new(key);
         let root = absolute_lexical_root(root.into())?;
         let (anchor, relative_root) = store_anchor(&root)?;
         let operation_guard = runtime.operation_guard();
@@ -119,7 +135,7 @@ impl Store {
             repository_dir: Mutex::new(Some(repository_dir)),
             operation_guard,
             repo_gate,
-            key,
+            key: *key,
             compressor: Mutex::new(compressor),
             decompressor: Mutex::new(decompressor),
         })
@@ -1339,6 +1355,21 @@ mod tests {
                 assert!(!entry.file_name().to_string_lossy().ends_with(".tmp"));
             }
         }
+    }
+
+    #[test]
+    fn store_key_is_explicitly_zeroizable_and_zeroizes_on_drop() {
+        use zeroize::{Zeroize, ZeroizeOnDrop};
+
+        fn assert_zeroizes_on_drop<T: ZeroizeOnDrop>(_value: &T) {}
+
+        let temporary = tempfile::tempdir().unwrap();
+        let mut store = Store::new(temporary.path(), fixture_key()).unwrap();
+
+        assert_zeroizes_on_drop(&store);
+        store.zeroize();
+
+        assert_eq!(store.key, [0_u8; 32]);
     }
 
     fn zstd_window_size(frame: &[u8]) -> Option<u64> {

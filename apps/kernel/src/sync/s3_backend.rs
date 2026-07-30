@@ -10,6 +10,7 @@ use reqwest::header::{
 use reqwest::redirect::Policy;
 use reqwest::{Client, ClientBuilder, Method, Response, StatusCode, Url};
 use time::OffsetDateTime;
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use super::backend::{RemoteSyncBackend, RemoteSyncError, RemoteSyncFile, SyncProviderOperation};
 use super::diagnostics::{
@@ -35,6 +36,21 @@ pub(crate) struct S3SyncSettings {
     pub(crate) remote_path: String,
     pub(crate) secret_access_key: String,
 }
+
+impl Zeroize for S3SyncSettings {
+    fn zeroize(&mut self) {
+        self.access_key_id.zeroize();
+        self.secret_access_key.zeroize();
+    }
+}
+
+impl Drop for S3SyncSettings {
+    fn drop(&mut self) {
+        self.zeroize();
+    }
+}
+
+impl ZeroizeOnDrop for S3SyncSettings {}
 
 #[derive(Clone, Copy)]
 pub(crate) struct S3TransportOptions {
@@ -1078,6 +1094,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::thread;
     use std::time::{Duration, Instant};
+    use zeroize::{Zeroize, ZeroizeOnDrop};
 
     use super::super::backend::RemoteSyncBackend;
     use super::super::diagnostics::SyncDiagnosticContext;
@@ -1090,6 +1107,26 @@ mod tests {
     enum S3FixtureStep {
         Disconnect,
         Respond(String),
+    }
+
+    fn assert_zeroizes_on_drop<T: ZeroizeOnDrop>(_value: &T) {}
+
+    #[test]
+    fn transient_s3_settings_are_explicitly_zeroizable_and_zeroize_on_drop() {
+        let mut settings = S3SyncSettings {
+            access_key_id: "private-access-key".to_string(),
+            bucket: "notes".to_string(),
+            endpoint_url: "https://s3.example.test".to_string(),
+            region: "us-east-1".to_string(),
+            remote_path: "sync".to_string(),
+            secret_access_key: "private-secret-key".to_string(),
+        };
+
+        assert_zeroizes_on_drop(&settings);
+        settings.zeroize();
+
+        assert!(settings.access_key_id.is_empty());
+        assert!(settings.secret_access_key.is_empty());
     }
 
     fn test_block_on<F: std::future::Future>(future: F) -> F::Output {

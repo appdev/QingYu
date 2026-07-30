@@ -5,6 +5,7 @@ use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_LENGTH, CON
 use reqwest::{Method, Url};
 use sha2::{Digest, Sha256};
 use time::OffsetDateTime;
+use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 use crate::contract::S3AddressingStyle;
 
@@ -36,6 +37,21 @@ impl fmt::Debug for S3Connection {
             .finish()
     }
 }
+
+impl Zeroize for S3Connection {
+    fn zeroize(&mut self) {
+        self.access_key_id.zeroize();
+        self.secret_access_key.zeroize();
+    }
+}
+
+impl Drop for S3Connection {
+    fn drop(&mut self) {
+        self.zeroize();
+    }
+}
+
+impl ZeroizeOnDrop for S3Connection {}
 
 impl S3Connection {
     #[cfg(test)]
@@ -251,10 +267,10 @@ pub fn signed_s3_headers(
     );
     let signing_key = s3_signing_key(&connection.secret_access_key, &date, &connection.region);
     let signature = hex_lower(&hmac_sha256(&signing_key, string_to_sign.as_bytes())?);
-    let authorization = format!(
+    let authorization = Zeroizing::new(format!(
         "AWS4-HMAC-SHA256 Credential={}/{credential_scope}, SignedHeaders={signed_headers}, Signature={signature}",
         connection.access_key_id
-    );
+    ));
 
     let mut headers = HeaderMap::new();
     headers.insert(HOST, header_value(&host)?);
@@ -357,11 +373,11 @@ fn s3_host(url: &Url) -> Result<String, String> {
     })
 }
 
-fn s3_signing_key(secret_access_key: &str, date: &str, region: &str) -> Vec<u8> {
-    let date_key = hmac_sha256_unchecked(
-        format!("AWS4{secret_access_key}").as_bytes(),
-        date.as_bytes(),
-    );
+fn s3_signing_key(secret_access_key: &str, date: &str, region: &str) -> Zeroizing<Vec<u8>> {
+    let mut prefixed_secret = Zeroizing::new(Vec::with_capacity(4 + secret_access_key.len()));
+    prefixed_secret.extend_from_slice(b"AWS4");
+    prefixed_secret.extend_from_slice(secret_access_key.as_bytes());
+    let date_key = hmac_sha256_unchecked(&prefixed_secret, date.as_bytes());
     let region_key = hmac_sha256_unchecked(&date_key, region.as_bytes());
     let service_key = hmac_sha256_unchecked(&region_key, b"s3");
     hmac_sha256_unchecked(&service_key, b"aws4_request")
@@ -371,14 +387,14 @@ fn sha256_hex(bytes: &[u8]) -> String {
     hex_lower(&Sha256::digest(bytes))
 }
 
-fn hmac_sha256(key: &[u8], bytes: &[u8]) -> Result<Vec<u8>, String> {
+fn hmac_sha256(key: &[u8], bytes: &[u8]) -> Result<Zeroizing<Vec<u8>>, String> {
     let mut mac = HmacSha256::new_from_slice(key).map_err(|error| error.to_string())?;
     mac.update(bytes);
-    Ok(mac.finalize().into_bytes().to_vec())
+    Ok(Zeroizing::new(mac.finalize().into_bytes().to_vec()))
 }
 
-fn hmac_sha256_unchecked(key: &[u8], bytes: &[u8]) -> Vec<u8> {
-    hmac_sha256(key, bytes).unwrap_or_default()
+fn hmac_sha256_unchecked(key: &[u8], bytes: &[u8]) -> Zeroizing<Vec<u8>> {
+    hmac_sha256(key, bytes).unwrap_or_else(|_| Zeroizing::new(Vec::new()))
 }
 
 fn hex_lower(bytes: &[u8]) -> String {
@@ -399,12 +415,16 @@ fn header_value(value: &str) -> Result<HeaderValue, String> {
 mod tests {
     use reqwest::{Method, Url};
     use time::OffsetDateTime;
+    use zeroize::{Zeroize, ZeroizeOnDrop};
 
     use crate::contract::S3AddressingStyle;
 
     use super::{
-        canonical_query, s3_bucket_url, s3_object_url, signed_s3_headers, S3Connection, S3Payload,
+        canonical_query, s3_bucket_url, s3_object_url, s3_signing_key, signed_s3_headers,
+        S3Connection, S3Payload,
     };
+
+    fn assert_zeroizes_on_drop<T: ZeroizeOnDrop>(_value: &T) {}
 
     fn connection() -> S3Connection {
         S3Connection::new(
@@ -433,6 +453,36 @@ mod tests {
         assert!(!output.contains("private-access-key"));
         assert!(!output.contains("private-secret-key"));
         assert!(output.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn owned_s3_credentials_are_explicitly_zeroizable_and_zeroize_on_drop() {
+        let mut connection = S3Connection::new(
+            "https://s3.example.test",
+            "us-east-1",
+            "notes",
+            "private-access-key",
+            "private-secret-key",
+        )
+        .expect("S3 connection");
+
+        assert_zeroizes_on_drop(&connection);
+        connection.zeroize();
+
+        assert!(connection.access_key_id.is_empty());
+        assert!(connection.secret_access_key.is_empty());
+    }
+
+    #[test]
+    fn every_owned_sigv4_derived_key_zeroizes_on_scope_exit() {
+        let mut derived = s3_signing_key("private-secret-key", "20260730", "us-east-1");
+
+        assert_zeroizes_on_drop(&derived);
+        assert!(!derived.is_empty());
+
+        derived.zeroize();
+
+        assert!(derived.is_empty());
     }
 
     #[test]
