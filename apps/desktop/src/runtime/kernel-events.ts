@@ -52,6 +52,14 @@ export interface DesktopKernelEventsAdapterOptions {
 
 export interface DesktopKernelEventsAdapter {
   readonly identity: DesktopKernelEventsIdentity | null;
+  /**
+   * A non-null bootstrap is synchronously consumed and its ownership transfers
+   * to this adapter. After handoff, the caller must not release or reuse it in
+   * parallel. Initialization failures are released by the adapter. Repassing
+   * the exact adopted object keeps the active session, while a different object
+   * with the same instance and generation is released immediately. Passing null
+   * or calling close releases the adopted ownership.
+   */
   replaceConnection(bootstrap: NativeKernelBootstrap | null): undefined;
   close(): undefined;
 }
@@ -116,7 +124,10 @@ export function createDesktopKernelEventsAdapter(
     }
     releaseOwnership(session);
     if (notifyClosed) {
-      options.onStateChange?.({ ...session.identity, state: "closed" });
+      notifyConsumer(options.onStateChange, {
+        ...session.identity,
+        state: "closed"
+      });
     }
     return undefined;
   };
@@ -168,22 +179,28 @@ export function createDesktopKernelEventsAdapter(
         onReady: (frame) => {
           if (!isCurrent(session)) return undefined;
           if (frame.instanceId === session.identity.instanceId) {
-            options.onStateChange?.({ ...session.identity, state: "open" });
+            notifyConsumer(options.onStateChange, {
+              ...session.identity,
+              state: "open"
+            });
             return undefined;
           }
           retire(session, { closeConnection: true, notifyClosed: false });
-          options.onInvalidation({
+          notifyConsumer(options.onInvalidation, {
             kind: "snapshot-required",
             ...session.identity,
             reason: "instance-mismatch",
             scopes: [...ALL_DOMAIN_SCOPES]
           });
-          options.onStateChange?.({ ...session.identity, state: "closed" });
+          notifyConsumer(options.onStateChange, {
+            ...session.identity,
+            state: "closed"
+          });
           return undefined;
         },
         onEvent: (frame) => {
           if (!isCurrent(session)) return undefined;
-          options.onInvalidation({
+          notifyConsumer(options.onInvalidation, {
             kind: "event",
             ...session.identity,
             scope: domainScopeFor(frame),
@@ -193,7 +210,7 @@ export function createDesktopKernelEventsAdapter(
         },
         onSnapshotRequired: (notice) => {
           if (!isCurrent(session)) return undefined;
-          options.onInvalidation({
+          notifyConsumer(options.onInvalidation, {
             kind: "snapshot-required",
             ...session.identity,
             reason: notice.reason,
@@ -209,12 +226,12 @@ export function createDesktopKernelEventsAdapter(
             current = undefined;
             releaseOwnership(session);
           }
-          options.onStateChange?.({ ...session.identity, state });
+          notifyConsumer(options.onStateChange, { ...session.identity, state });
           return undefined;
         },
         onError: (error) => {
           if (!isCurrent(session)) return undefined;
-          options.onError?.({ ...session.identity, error });
+          notifyConsumer(options.onError, { ...session.identity, error });
           return undefined;
         }
       });
@@ -240,6 +257,18 @@ export function createDesktopKernelEventsAdapter(
     replaceConnection,
     close: () => replaceConnection(null)
   };
+}
+
+function notifyConsumer<T>(
+  consumer: ((notice: T) => unknown) | undefined,
+  notice: T
+) {
+  try {
+    consumer?.(notice);
+  } catch {
+    // Consumer failures are isolated without retaining or exposing their content.
+  }
+  return undefined;
 }
 
 function domainScopeFor(frame: KernelEventFrame): DesktopKernelDomainScope {

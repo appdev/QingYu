@@ -235,6 +235,119 @@ describe("Desktop Kernel domain events adapter", () => {
     ]);
   });
 
+  it("finishes mismatch cleanup when the invalidation consumer throws", () => {
+    const states: DesktopKernelEventsStateNotice[] = [];
+    const sockets: FakeWebSocket[] = [];
+    const release = vi.fn(() => undefined);
+    const onInvalidation = vi.fn(() => {
+      throw new Error(SECRET);
+    });
+    const adapter = createDesktopKernelEventsAdapter({
+      onInvalidation,
+      onStateChange: (notice) => states.push(notice),
+      webSocket: () => {
+        const socket = new FakeWebSocket();
+        sockets.push(socket);
+        return socket;
+      }
+    });
+    adapter.replaceConnection(bootstrap(INSTANCE_A, "12", { release }));
+    const socket = sockets[0]!;
+    socket.open();
+
+    expect(() => socket.message(readyFrame(CONNECTION_A, INSTANCE_B))).not.toThrow();
+
+    expect(onInvalidation).toHaveBeenCalledTimes(1);
+    expect(socket.closed).toEqual([{ code: 1000, reason: "client closed" }]);
+    expect(adapter.identity).toBeNull();
+    expect(release).toHaveBeenCalledTimes(1);
+    expect(states).toEqual([
+      { instanceId: INSTANCE_A, generation: "12", state: "connecting" },
+      { instanceId: INSTANCE_A, generation: "12", state: "closed" }
+    ]);
+  });
+
+  it.each([
+    ["malformed", `{ "credential": "${SECRET}"`, 4002],
+    ["authentication", JSON.stringify({
+      type: "error",
+      protocolVersion: 1,
+      code: "unauthorized",
+      message: "Authentication is required."
+    }), 4001]
+  ])("finishes %s terminal cleanup when the error consumer throws", (
+    _case,
+    frame,
+    closeCode
+  ) => {
+    const states: DesktopKernelEventsStateNotice[] = [];
+    const sockets: FakeWebSocket[] = [];
+    const release = vi.fn(() => undefined);
+    const onError = vi.fn(() => {
+      throw new Error(SECRET);
+    });
+    const adapter = createDesktopKernelEventsAdapter({
+      onInvalidation: vi.fn(),
+      onError,
+      onStateChange: (notice) => states.push(notice),
+      webSocket: () => {
+        const socket = new FakeWebSocket();
+        sockets.push(socket);
+        return socket;
+      }
+    });
+    adapter.replaceConnection(bootstrap(INSTANCE_A, "13", { release }));
+    const socket = sockets[0]!;
+    socket.open();
+
+    expect(() => socket.messageRaw(frame)).not.toThrow();
+    expect(socket.closed).toEqual([{ code: closeCode, reason: "event protocol failed" }]);
+    socket.serverClose(closeCode);
+
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(adapter.identity).toBeNull();
+    expect(release).toHaveBeenCalledTimes(1);
+    expect(states).toEqual([
+      { instanceId: INSTANCE_A, generation: "13", state: "connecting" },
+      { instanceId: INSTANCE_A, generation: "13", state: "closed" }
+    ]);
+    adapter.close();
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it("isolates state consumer failures from connect, ready, and close cleanup", () => {
+    const sockets: FakeWebSocket[] = [];
+    const invalidations: DesktopKernelDomainInvalidation[] = [];
+    const release = vi.fn(() => undefined);
+    const onStateChange = vi.fn(() => {
+      throw new Error(SECRET);
+    });
+    const adapter = createDesktopKernelEventsAdapter({
+      onInvalidation: (invalidation) => invalidations.push(invalidation),
+      onStateChange,
+      webSocket: () => {
+        const socket = new FakeWebSocket();
+        sockets.push(socket);
+        return socket;
+      }
+    });
+
+    expect(() => adapter.replaceConnection(bootstrap(INSTANCE_A, "14", {
+      release
+    }))).not.toThrow();
+    const socket = sockets[0]!;
+    socket.open();
+    expect(() => socket.message(readyFrame(CONNECTION_A, INSTANCE_A))).not.toThrow();
+
+    expect(adapter.identity).toEqual({ instanceId: INSTANCE_A, generation: "14" });
+    expect(invalidations).toHaveLength(1);
+    expect(() => adapter.close()).not.toThrow();
+    expect(socket.closed).toEqual([{ code: 1000, reason: "client closed" }]);
+    expect(adapter.identity).toBeNull();
+    expect(release).toHaveBeenCalledTimes(1);
+    expect(onStateChange).toHaveBeenCalledTimes(3);
+  });
+
   it("disconnects explicitly and cancels a pending reconnect", () => {
     const harness = new AdapterHarness();
     const release = vi.fn(() => undefined);
@@ -373,7 +486,11 @@ class FakeWebSocket implements WebSocketLike {
   }
 
   message(value: unknown) {
-    this.#emit("message", { data: JSON.stringify(value) });
+    this.messageRaw(JSON.stringify(value));
+  }
+
+  messageRaw(data: string) {
+    this.#emit("message", { data });
   }
 
   queueMessage(value: unknown) {
