@@ -3,14 +3,149 @@
 use std::ffi::OsStr;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use cap_fs_ext::{FollowSymlinks, OpenOptionsFollowExt};
 use cap_std::fs::{Dir, OpenOptions};
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 
 use crate::protected_paths::path_contains_qingyu_control_directory;
+use crate::{
+    contract::{DocumentKind, WorkspaceRelativePath},
+    documents::{AllowAllDocumentIgnorePort, DocumentIgnorePort},
+    settings::service::{SettingsGroup, SettingsService},
+};
 
 pub const MARKRA_IGNORE_FILE_NAME: &str = ".markraignore";
+
+pub trait WorkspaceIgnorePort: Send + Sync {
+    fn capture(
+        &self,
+        root_path: &Path,
+        retained_root: &Dir,
+    ) -> Result<WorkspaceIgnoreSnapshot, WorkspaceIgnoreError>;
+}
+
+#[derive(Clone)]
+pub struct WorkspaceIgnoreSnapshot {
+    matcher: Arc<dyn DocumentIgnorePort>,
+}
+
+impl WorkspaceIgnoreSnapshot {
+    pub fn from_matcher(matcher: Arc<dyn DocumentIgnorePort>) -> Self {
+        Self { matcher }
+    }
+
+    pub fn is_ignored(&self, path: &WorkspaceRelativePath, kind: DocumentKind) -> bool {
+        self.matcher.is_ignored(path, kind)
+    }
+}
+
+pub struct StaticWorkspaceIgnorePort {
+    snapshot: WorkspaceIgnoreSnapshot,
+}
+
+impl StaticWorkspaceIgnorePort {
+    pub fn new(matcher: Arc<dyn DocumentIgnorePort>) -> Self {
+        Self {
+            snapshot: WorkspaceIgnoreSnapshot::from_matcher(matcher),
+        }
+    }
+}
+
+impl WorkspaceIgnorePort for StaticWorkspaceIgnorePort {
+    fn capture(
+        &self,
+        _root_path: &Path,
+        _retained_root: &Dir,
+    ) -> Result<WorkspaceIgnoreSnapshot, WorkspaceIgnoreError> {
+        Ok(self.snapshot.clone())
+    }
+}
+
+#[derive(Default)]
+pub struct AllowAllWorkspaceIgnorePort;
+
+impl WorkspaceIgnorePort for AllowAllWorkspaceIgnorePort {
+    fn capture(
+        &self,
+        _root_path: &Path,
+        _retained_root: &Dir,
+    ) -> Result<WorkspaceIgnoreSnapshot, WorkspaceIgnoreError> {
+        Ok(WorkspaceIgnoreSnapshot::from_matcher(Arc::new(
+            AllowAllDocumentIgnorePort,
+        )))
+    }
+}
+
+pub struct SettingsWorkspaceIgnorePort {
+    settings: Arc<SettingsService>,
+}
+
+impl SettingsWorkspaceIgnorePort {
+    pub fn new(settings: Arc<SettingsService>) -> Self {
+        Self { settings }
+    }
+}
+
+impl WorkspaceIgnorePort for SettingsWorkspaceIgnorePort {
+    fn capture(
+        &self,
+        root_path: &Path,
+        retained_root: &Dir,
+    ) -> Result<WorkspaceIgnoreSnapshot, WorkspaceIgnoreError> {
+        let global_rules = self
+            .settings
+            .read_group(SettingsGroup::FileIgnoreSettings)
+            .map_err(|_| WorkspaceIgnoreError)?
+            .map(|value| {
+                let object = value.as_object().ok_or(WorkspaceIgnoreError)?;
+                if object.len() != 1 || !object.contains_key("rules") {
+                    return Err(WorkspaceIgnoreError);
+                }
+                object["rules"]
+                    .as_str()
+                    .map(str::to_owned)
+                    .ok_or(WorkspaceIgnoreError)
+            })
+            .transpose()?;
+        Ok(WorkspaceIgnoreSnapshot::from_matcher(Arc::new(
+            CapturedMarkdownIgnore {
+                root: root_path.to_path_buf(),
+                rules: MarkdownIgnoreRules::for_retained_root(
+                    root_path,
+                    retained_root,
+                    global_rules.as_deref(),
+                ),
+            },
+        )))
+    }
+}
+
+struct CapturedMarkdownIgnore {
+    root: PathBuf,
+    rules: MarkdownIgnoreRules,
+}
+
+impl DocumentIgnorePort for CapturedMarkdownIgnore {
+    fn is_ignored(&self, path: &WorkspaceRelativePath, kind: DocumentKind) -> bool {
+        self.rules.ignores(
+            &self.root.join(path.as_str()),
+            kind == DocumentKind::Directory,
+        )
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct WorkspaceIgnoreError;
+
+impl std::fmt::Display for WorkspaceIgnoreError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("workspace ignore rules are unavailable")
+    }
+}
+
+impl std::error::Error for WorkspaceIgnoreError {}
 
 fn is_builtin_ignored_directory_name(name: &OsStr) -> bool {
     name.to_str().is_some_and(|name| {
@@ -141,9 +276,53 @@ impl MarkdownIgnoreRules {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
+    use std::{collections::BTreeMap, fs, sync::Mutex};
 
     use crate::protected_paths::{LEGACY_SYNC_DIR, QINGYU_CONTROL_DIR};
+    use crate::{
+        ports::system::NoopEventSink,
+        settings::storage::{SettingsStore, SettingsStoreError},
+    };
+    use serde_json::{json, Map, Value};
+
+    #[derive(Default)]
+    struct MemorySettingsStore {
+        values: Mutex<BTreeMap<String, Value>>,
+    }
+
+    impl MemorySettingsStore {
+        fn put(&self, key: &str, value: Value) {
+            self.values.lock().unwrap().insert(key.to_string(), value);
+        }
+    }
+
+    impl SettingsStore for MemorySettingsStore {
+        fn get(&self, key: &str) -> Result<Option<Value>, SettingsStoreError> {
+            Ok(self.values.lock().unwrap().get(key).cloned())
+        }
+
+        fn set(&self, key: &str, value: Value) -> Result<(), SettingsStoreError> {
+            self.put(key, value);
+            Ok(())
+        }
+
+        fn delete(&self, key: &str) -> Result<(), SettingsStoreError> {
+            self.values.lock().unwrap().remove(key);
+            Ok(())
+        }
+
+        fn save(&self) -> Result<(), SettingsStoreError> {
+            Ok(())
+        }
+
+        fn replace_portable_atomically(
+            &self,
+            desired: &Map<String, Value>,
+        ) -> Result<(), SettingsStoreError> {
+            *self.values.lock().unwrap() = desired.clone().into_iter().collect();
+            Ok(())
+        }
+    }
 
     fn test_root(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
@@ -153,6 +332,61 @@ mod tests {
                 .expect("system clock should be after epoch")
                 .as_nanos()
         ))
+    }
+
+    #[test]
+    fn settings_provider_captures_one_immutable_global_and_workspace_rule_set() {
+        let root = test_root("captured-provider");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join(MARKRA_IGNORE_FILE_NAME), "workspace-old.bin\n").unwrap();
+        let retained = Dir::open_ambient_dir(&root, cap_std::ambient_authority()).unwrap();
+        let store = Arc::new(MemorySettingsStore::default());
+        store.put("fileIgnoreSettings", json!({ "rules": "global-old.bin\n" }));
+        let settings = Arc::new(SettingsService::new(store.clone(), Arc::new(NoopEventSink)));
+        let provider = SettingsWorkspaceIgnorePort::new(settings);
+
+        let captured = provider.capture(&root, &retained).unwrap();
+        store.put("fileIgnoreSettings", json!({ "rules": "global-new.bin\n" }));
+        fs::write(root.join(MARKRA_IGNORE_FILE_NAME), "workspace-new.bin\n").unwrap();
+
+        for path in ["global-old.bin", "workspace-old.bin"] {
+            assert!(captured.is_ignored(
+                &WorkspaceRelativePath::parse(path).unwrap(),
+                DocumentKind::File
+            ));
+        }
+        for path in ["global-new.bin", "workspace-new.bin"] {
+            assert!(!captured.is_ignored(
+                &WorkspaceRelativePath::parse(path).unwrap(),
+                DocumentKind::File
+            ));
+        }
+
+        let next = provider.capture(&root, &retained).unwrap();
+        for path in ["global-new.bin", "workspace-new.bin"] {
+            assert!(next.is_ignored(
+                &WorkspaceRelativePath::parse(path).unwrap(),
+                DocumentKind::File
+            ));
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn settings_provider_rejects_malformed_file_ignore_settings() {
+        let root = test_root("malformed-provider");
+        fs::create_dir_all(&root).unwrap();
+        let retained = Dir::open_ambient_dir(&root, cap_std::ambient_authority()).unwrap();
+        let store = Arc::new(MemorySettingsStore::default());
+        store.put("fileIgnoreSettings", json!({ "rules": 42 }));
+        let settings = Arc::new(SettingsService::new(store, Arc::new(NoopEventSink)));
+        let provider = SettingsWorkspaceIgnorePort::new(settings);
+
+        assert!(matches!(
+            provider.capture(&root, &retained),
+            Err(WorkspaceIgnoreError)
+        ));
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

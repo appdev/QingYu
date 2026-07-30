@@ -13,10 +13,10 @@ use crate::{
     documents::{
         deletion::WorkspaceRecycleDeletionPort,
         history::{FileDocumentHistoryStore, FileDocumentRecoveryStore},
-        service::WorkspaceDocumentService,
-        AllowAllDocumentIgnorePort,
+        service::{CapabilityAtomicInstallPort, WorkspaceDocumentService},
     },
     host::native::NativeHostWorkspaceState,
+    ignore_rules::{SettingsWorkspaceIgnorePort, WorkspaceIgnorePort},
     paths::{open_or_create_child, KernelPaths},
     ports::system::system_kernel_ports,
     resources::WorkspaceResourceService,
@@ -130,12 +130,16 @@ pub async fn compose_fixed_native_kernel(
         )
         .map_err(|_| NativeCompositionError)?,
     );
+    let ignore: Arc<dyn WorkspaceIgnorePort> =
+        Arc::new(SettingsWorkspaceIgnorePort::new(settings_service.clone()));
     let documents_service = Arc::new(
-        WorkspaceDocumentService::new_with_recovery(
+        WorkspaceDocumentService::new_with_ports(
             &runtime,
             deletion.clone(),
             Arc::new(FileDocumentHistoryStore::new(history_directory)),
             Arc::new(FileDocumentRecoveryStore::new(recovery_directory)),
+            Arc::new(CapabilityAtomicInstallPort),
+            ignore.clone(),
         )
         .map_err(|_| NativeCompositionError)?,
     );
@@ -143,10 +147,7 @@ pub async fn compose_fixed_native_kernel(
         .install_documents_api_service(documents_service)
         .map_err(|_| NativeCompositionError)?;
     runtime
-        .install_resources_api_service(Arc::new(WorkspaceResourceService::new(
-            &runtime,
-            Arc::new(AllowAllDocumentIgnorePort),
-        )))
+        .install_resources_api_service(Arc::new(WorkspaceResourceService::new(&runtime, ignore)))
         .map_err(|_| NativeCompositionError)?;
     runtime
         .install_settings_api_service(settings_service)
@@ -214,5 +215,134 @@ impl SystemApiService for NativeSystemService {
             },
             instance_id: self.instance_id,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use tempfile::tempdir;
+
+    use super::*;
+    use crate::{
+        contract::{
+            ErrorCode, ListDocumentsQuery, ListWorkspaceInventoryQuery, PatchSettingsRequest,
+            ResourceKind, SettingEntryDto, SettingKey, SettingValueDto, WorkspaceInventoryEntryDto,
+            WorkspaceRelativePath,
+        },
+        host::native::NativeHostWorkspaceState,
+    };
+
+    #[tokio::test]
+    async fn production_documents_and_resources_share_live_settings_and_workspace_ignore_rules() {
+        let temporary = tempdir().unwrap();
+        let workspace = temporary.path().join("workspace");
+        let app_data = temporary.path().join("app-data");
+        let cache = temporary.path().join("cache");
+        for path in [&workspace, &app_data, &cache] {
+            fs::create_dir(path).unwrap();
+        }
+        fs::write(workspace.join("workspace-hidden.md"), "hidden").unwrap();
+        fs::write(workspace.join("workspace-hidden.bin"), "hidden").unwrap();
+        fs::write(workspace.join("global-hidden.md"), "hidden").unwrap();
+        fs::write(workspace.join("global-hidden.bin"), "hidden").unwrap();
+        fs::write(
+            workspace.join(crate::ignore_rules::MARKRA_IGNORE_FILE_NAME),
+            "workspace-hidden.md\nworkspace-hidden.bin\n",
+        )
+        .unwrap();
+        let state = NativeHostWorkspaceState::for_workspace(&workspace, "Composition").unwrap();
+        let paths = KernelPaths::desktop(&workspace, &app_data, &cache).unwrap();
+        let runtime = compose_fixed_native_kernel(KernelConfig::generate().unwrap(), paths, state)
+            .await
+            .unwrap();
+        let resources = runtime.resources_api_service().unwrap().clone();
+        let documents = runtime.documents_api_service().unwrap().clone();
+        let settings = runtime.settings_api_service().unwrap().clone();
+        let inventory_query = ListWorkspaceInventoryQuery {
+            cursor: None,
+            limit: None,
+            parent: WorkspaceRelativePath::default(),
+        };
+
+        let first_inventory = resources
+            .list_workspace_inventory(inventory_query.clone())
+            .await
+            .unwrap();
+        let global_resource = first_inventory
+            .items
+            .iter()
+            .find_map(|entry| match entry {
+                WorkspaceInventoryEntryDto::Resource { resource }
+                    if resource.path.as_str() == "global-hidden.bin" =>
+                {
+                    Some(resource.clone())
+                }
+                _ => None,
+            })
+            .unwrap();
+        assert!(first_inventory
+            .items
+            .iter()
+            .all(|entry| entry.path().as_str() != "workspace-hidden.bin"));
+        let first_documents = documents
+            .list_documents(ListDocumentsQuery {
+                cursor: None,
+                limit: None,
+                parent: WorkspaceRelativePath::default(),
+            })
+            .await
+            .unwrap();
+        assert!(first_documents
+            .items
+            .iter()
+            .all(|entry| entry.path.as_str() != "workspace-hidden.md"));
+        assert!(first_documents
+            .items
+            .iter()
+            .any(|entry| entry.path.as_str() == "global-hidden.md"));
+
+        let current = settings.get_settings().await.unwrap();
+        settings
+            .patch_settings(PatchSettingsRequest {
+                expected_revision: current.revision,
+                values: vec![SettingEntryDto {
+                    key: SettingKey::FilesIgnoreRules,
+                    value: SettingValueDto::String {
+                        value: "global-hidden.md\nglobal-hidden.bin\n".to_string(),
+                    },
+                }],
+            })
+            .await
+            .unwrap();
+
+        let next_inventory = resources
+            .list_workspace_inventory(inventory_query)
+            .await
+            .unwrap();
+        assert!(next_inventory
+            .items
+            .iter()
+            .all(|entry| entry.path().as_str() != "global-hidden.bin"));
+        let next_documents = documents
+            .list_documents(ListDocumentsQuery {
+                cursor: None,
+                limit: None,
+                parent: WorkspaceRelativePath::default(),
+            })
+            .await
+            .unwrap();
+        assert!(next_documents
+            .items
+            .iter()
+            .all(|entry| entry.path.as_str() != "global-hidden.md"));
+        let error = resources
+            .open_workspace_resource(global_resource.id, ResourceKind::Attachment)
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), ErrorCode::ResourceNotFound);
+
+        drop(runtime);
     }
 }

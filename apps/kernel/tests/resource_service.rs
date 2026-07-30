@@ -3,7 +3,10 @@ use std::{
     fs,
     io::{self, Read, Seek, SeekFrom, Write},
     path::PathBuf,
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc, Mutex,
+    },
 };
 
 use axum::{
@@ -17,7 +20,9 @@ use qingyu_kernel::{
         DocumentKind, ListWorkspaceInventoryQuery, PageLimit, ResourceKind, WorkspaceRelativePath,
     },
     documents::DocumentIgnorePort,
-    ignore_rules::MarkdownIgnoreRules,
+    ignore_rules::{
+        MarkdownIgnoreRules, WorkspaceIgnoreError, WorkspaceIgnorePort, WorkspaceIgnoreSnapshot,
+    },
     paths::KernelPaths,
     ports::KernelPorts,
     resources::{
@@ -74,6 +79,7 @@ struct Fixture {
 }
 
 struct LiveIgnorePort {
+    captures: AtomicUsize,
     root: PathBuf,
     global_rules: Mutex<String>,
 }
@@ -91,6 +97,41 @@ impl DocumentIgnorePort for LiveIgnorePort {
             &self.root.join(path.as_str()),
             kind == DocumentKind::Directory,
         )
+    }
+}
+
+struct CapturedIgnorePort {
+    root: PathBuf,
+    rules: MarkdownIgnoreRules,
+}
+
+impl DocumentIgnorePort for CapturedIgnorePort {
+    fn is_ignored(&self, path: &WorkspaceRelativePath, kind: DocumentKind) -> bool {
+        self.rules.ignores(
+            &self.root.join(path.as_str()),
+            kind == DocumentKind::Directory,
+        )
+    }
+}
+
+impl WorkspaceIgnorePort for LiveIgnorePort {
+    fn capture(
+        &self,
+        root_path: &std::path::Path,
+        retained_root: &cap_std::fs::Dir,
+    ) -> Result<WorkspaceIgnoreSnapshot, WorkspaceIgnoreError> {
+        self.captures.fetch_add(1, Ordering::SeqCst);
+        let global_rules = self.global_rules.lock().unwrap().clone();
+        Ok(WorkspaceIgnoreSnapshot::from_matcher(Arc::new(
+            CapturedIgnorePort {
+                root: root_path.to_path_buf(),
+                rules: MarkdownIgnoreRules::for_retained_root(
+                    root_path,
+                    retained_root,
+                    Some(&global_rules),
+                ),
+            },
+        )))
     }
 }
 
@@ -123,6 +164,7 @@ impl Fixture {
             .unwrap(),
         );
         let ignore = Arc::new(LiveIgnorePort {
+            captures: AtomicUsize::new(0),
             root: root.clone(),
             global_rules: Mutex::new(String::new()),
         });
@@ -222,6 +264,21 @@ async fn inventory_applies_workspace_ignore_rules_to_documents_and_resources() {
             .collect::<Vec<_>>(),
         ["visible.bin"]
     );
+}
+
+#[tokio::test]
+async fn each_inventory_operation_captures_ignore_rules_exactly_once() {
+    let fixture = Fixture::new().await;
+    for name in ["first.bin", "second.bin", "third.bin"] {
+        fs::write(fixture.root.join(name), name).unwrap();
+    }
+
+    fixture
+        .service
+        .list_inventory(&WorkspaceRelativePath::default())
+        .unwrap();
+
+    assert_eq!(fixture.ignore.captures.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]

@@ -33,12 +33,12 @@ use crate::{
             DocumentRecoveryStore, MemoryDocumentRecoveryStore,
         },
         identity::DocumentIdentityCodec,
-        AllowAllDocumentIgnorePort, AtomicInstallMode, AtomicInstallPort, AtomicInstallPortError,
-        AtomicInstallRequest, CapabilityMoveInstallPort, DeletionPort, DocumentDeletionTarget,
-        DocumentIgnorePort, MoveInstallPort, MoveInstallPortError, MoveInstallRequest,
-        PinnedInstallSource, PinnedMoveSource,
+        AtomicInstallMode, AtomicInstallPort, AtomicInstallPortError, AtomicInstallRequest,
+        CapabilityMoveInstallPort, DeletionPort, DocumentDeletionTarget, MoveInstallPort,
+        MoveInstallPortError, MoveInstallRequest, PinnedInstallSource, PinnedMoveSource,
     },
     events::{EventPublication, EventSink as _},
+    ignore_rules::{AllowAllWorkspaceIgnorePort, WorkspaceIgnorePort, WorkspaceIgnoreSnapshot},
     runtime::{ActiveWorkspaceSnapshot, DocumentsApiService, KernelRuntime, ServiceFailure},
 };
 
@@ -51,7 +51,7 @@ pub struct WorkspaceDocumentService {
     recovery: Arc<dyn DocumentRecoveryStore>,
     atomic_install: Arc<dyn AtomicInstallPort>,
     move_install: Arc<dyn MoveInstallPort>,
-    ignore: Arc<dyn DocumentIgnorePort>,
+    ignore: Arc<dyn WorkspaceIgnorePort>,
 }
 
 #[derive(Default)]
@@ -82,7 +82,7 @@ impl WorkspaceDocumentService {
             recovery: Arc::new(MemoryDocumentRecoveryStore::default()),
             atomic_install: Arc::new(CapabilityAtomicInstallPort),
             move_install: Arc::new(CapabilityMoveInstallPort),
-            ignore: Arc::new(AllowAllDocumentIgnorePort),
+            ignore: Arc::new(AllowAllWorkspaceIgnorePort),
         }
     }
 
@@ -99,7 +99,7 @@ impl WorkspaceDocumentService {
             recovery,
             atomic_install: Arc::new(CapabilityAtomicInstallPort),
             move_install: Arc::new(CapabilityMoveInstallPort),
-            ignore: Arc::new(AllowAllDocumentIgnorePort),
+            ignore: Arc::new(AllowAllWorkspaceIgnorePort),
         };
         service.recover()?;
         Ok(service)
@@ -112,7 +112,7 @@ impl WorkspaceDocumentService {
         history: Arc<dyn DocumentHistoryStore>,
         recovery: Arc<dyn DocumentRecoveryStore>,
         atomic_install: Arc<dyn AtomicInstallPort>,
-        ignore: Arc<dyn DocumentIgnorePort>,
+        ignore: Arc<dyn WorkspaceIgnorePort>,
     ) -> Result<Self, DocumentServiceError> {
         let service = Self {
             runtime: Arc::downgrade(runtime),
@@ -135,7 +135,7 @@ impl WorkspaceDocumentService {
         recovery: Arc<dyn DocumentRecoveryStore>,
         atomic_install: Arc<dyn AtomicInstallPort>,
         move_install: Arc<dyn MoveInstallPort>,
-        ignore: Arc<dyn DocumentIgnorePort>,
+        ignore: Arc<dyn WorkspaceIgnorePort>,
     ) -> Result<Self, DocumentServiceError> {
         let service = Self {
             runtime: Arc::downgrade(runtime),
@@ -168,6 +168,7 @@ impl WorkspaceDocumentService {
         query: ListDocumentsQuery,
     ) -> Result<crate::contract::DocumentPageDto, DocumentServiceError> {
         let context = self.context()?;
+        let ignore = self.capture_ignore(&context)?;
         let directory = open_directory(&context.root, &query.parent)?;
         let mut entries = Vec::new();
         for entry in directory
@@ -197,7 +198,7 @@ impl WorkspaceDocumentService {
                 continue;
             };
             let path = join_relative(&query.parent, &name)?;
-            if self.ignore.is_ignored(&path, kind) {
+            if ignore.is_ignored(&path, kind) {
                 continue;
             }
             if let Ok(entry) = self.entry(&context, path, kind, metadata) {
@@ -614,6 +615,7 @@ impl WorkspaceDocumentService {
         query: SearchWorkspaceQuery,
     ) -> Result<SearchPageDto, DocumentServiceError> {
         let context = self.context()?;
+        let ignore = self.capture_ignore(&context)?;
         let mut matches = Vec::new();
         collect_search(
             &context.root,
@@ -621,6 +623,7 @@ impl WorkspaceDocumentService {
             query.query.as_str(),
             &context,
             self,
+            &ignore,
             &mut matches,
         )?;
         matches.sort_by(|left, right| {
@@ -1053,11 +1056,22 @@ impl WorkspaceDocumentService {
             .root()
             .try_clone_dir()
             .map_err(|_| DocumentServiceError::unavailable())?;
+        let root_path = snapshot.authority().root().canonical_path().to_path_buf();
         Ok(DocumentContext {
             runtime,
             snapshot,
             root,
+            root_path,
         })
+    }
+
+    fn capture_ignore(
+        &self,
+        context: &DocumentContext,
+    ) -> Result<WorkspaceIgnoreSnapshot, DocumentServiceError> {
+        self.ignore
+            .capture(&context.root_path, &context.root)
+            .map_err(|_| DocumentServiceError::unavailable())
     }
 
     fn verify_generation(
@@ -1336,6 +1350,7 @@ struct DocumentContext {
     runtime: Arc<KernelRuntime>,
     snapshot: Arc<ActiveWorkspaceSnapshot>,
     root: Dir,
+    root_path: std::path::PathBuf,
 }
 
 impl DocumentContext {
@@ -2808,6 +2823,7 @@ fn collect_search(
     needle: &str,
     context: &DocumentContext,
     service: &WorkspaceDocumentService,
+    ignore: &WorkspaceIgnoreSnapshot,
     matches: &mut Vec<SearchMatchDto>,
 ) -> Result<(), DocumentServiceError> {
     if matches.len() >= MAX_SEARCH_MATCHES {
@@ -2836,12 +2852,13 @@ fn collect_search(
         }
         let path = join_relative(directory_path, &name)?;
         if metadata.is_dir() {
-            if service.ignore.is_ignored(&path, DocumentKind::Directory) {
+            if ignore.is_ignored(&path, DocumentKind::Directory) {
                 continue;
             }
-            let _search_result = collect_search(root, &path, needle, context, service, matches);
+            let _search_result =
+                collect_search(root, &path, needle, context, service, ignore, matches);
         } else if metadata.is_file() && markdown_name(&name) && trusted_metadata(&metadata) {
-            if service.ignore.is_ignored(&path, DocumentKind::File) {
+            if ignore.is_ignored(&path, DocumentKind::File) {
                 continue;
             }
             let Ok(read) = read_file(root, &path) else {

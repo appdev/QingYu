@@ -27,11 +27,11 @@ use qingyu_kernel::{
             CapabilityAtomicInstallPort, DocumentServiceErrorKind, WorkspaceDocumentService,
         },
         types::HistorySnapshot,
-        AllowAllDocumentIgnorePort, AtomicInstallMode, AtomicInstallPort, AtomicInstallPortError,
-        AtomicInstallRequest, CapabilityMoveInstallPort, DeletionPort, DeletionPortError,
-        DocumentDeletionTarget, MoveInstallPort, MoveInstallPortError, MoveInstallRequest,
-        PinnedInstallSource,
+        AtomicInstallMode, AtomicInstallPort, AtomicInstallPortError, AtomicInstallRequest,
+        CapabilityMoveInstallPort, DeletionPort, DeletionPortError, DocumentDeletionTarget,
+        MoveInstallPort, MoveInstallPortError, MoveInstallRequest, PinnedInstallSource,
     },
+    ignore_rules::AllowAllWorkspaceIgnorePort,
     paths::KernelPaths,
     ports::KernelPorts,
     runtime::{KernelRuntime, KernelStartupErrorKind},
@@ -843,7 +843,7 @@ async fn stage_tampering_during_atomic_install_keeps_recovery_intent_and_publish
                 Arc::new(MemoryDocumentHistoryStore::default()),
                 recovery.clone(),
                 atomic.clone(),
-                Arc::new(AllowAllDocumentIgnorePort),
+                Arc::new(AllowAllWorkspaceIgnorePort),
             )
             .unwrap(),
         );
@@ -884,7 +884,7 @@ async fn directory_content_change_during_install_fails_closed_after_publication(
         Arc::new(MemoryDocumentHistoryStore::default()),
         recovery.clone(),
         atomic.clone(),
-        Arc::new(AllowAllDocumentIgnorePort),
+        Arc::new(AllowAllWorkspaceIgnorePort),
     )
     .unwrap();
     let mut events = fixture.runtime.event_broker().subscribe();
@@ -924,7 +924,7 @@ async fn update_does_not_overwrite_a_target_replaced_during_the_final_atomic_ins
             Arc::new(MemoryDocumentHistoryStore::default()),
             recovery.clone(),
             atomic.clone(),
-            Arc::new(AllowAllDocumentIgnorePort),
+            Arc::new(AllowAllWorkspaceIgnorePort),
         )
         .unwrap(),
     );
@@ -964,7 +964,7 @@ async fn move_rolls_back_when_the_source_is_replaced_during_the_final_rename() {
             recovery.clone(),
             Arc::new(CapabilityAtomicInstallPort),
             move_install.clone(),
-            Arc::new(AllowAllDocumentIgnorePort),
+            Arc::new(AllowAllWorkspaceIgnorePort),
         )
         .unwrap(),
     );

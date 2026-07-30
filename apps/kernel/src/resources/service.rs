@@ -17,7 +17,8 @@ use crate::{
         Revision, Rfc3339Utc, SafeUnsignedInteger, WorkspaceDto, WorkspaceInventoryEntryDto,
         WorkspaceInventoryPageDto, WorkspaceReadiness, WorkspaceRelativePath,
     },
-    documents::{service::directory_revision_for_capability, DocumentIgnorePort},
+    documents::service::directory_revision_for_capability,
+    ignore_rules::{WorkspaceIgnorePort, WorkspaceIgnoreSnapshot},
     runtime::{ActiveWorkspaceSnapshot, KernelRuntime, ResourcesApiService, ServiceFailure},
     storage::nonfollowing_read_options,
 };
@@ -30,11 +31,11 @@ const MAGIC_BYTES: usize = 12;
 #[derive(Clone)]
 pub struct WorkspaceResourceService {
     runtime: Weak<KernelRuntime>,
-    ignore: Arc<dyn DocumentIgnorePort>,
+    ignore: Arc<dyn WorkspaceIgnorePort>,
 }
 
 impl WorkspaceResourceService {
-    pub fn new(runtime: &Arc<KernelRuntime>, ignore: Arc<dyn DocumentIgnorePort>) -> Self {
+    pub fn new(runtime: &Arc<KernelRuntime>, ignore: Arc<dyn WorkspaceIgnorePort>) -> Self {
         Self {
             runtime: Arc::downgrade(runtime),
             ignore,
@@ -105,13 +106,14 @@ impl WorkspaceResourceService {
         context: &ResourceContext,
         parent: &WorkspaceRelativePath,
     ) -> Result<Vec<WorkspaceInventoryEntry>, ResourceServiceError> {
+        let ignore = self.capture_ignore(context)?;
         let directory = open_directory(&context.root, parent)?;
         let before = trusted_directory_metadata(&directory)?;
         let names = ordinary_entry_names(&directory)?;
         let mut entries = Vec::with_capacity(names.len());
         for name in &names {
             if let Some(entry) =
-                inspect_inventory_entry(context, self.ignore.as_ref(), &directory, parent, name)?
+                inspect_inventory_entry(context, &ignore, &directory, parent, name)?
             {
                 entries.push(entry);
             }
@@ -141,6 +143,7 @@ impl WorkspaceResourceService {
         expected_kind: ResourceKind,
     ) -> Result<RetainedResource, ResourceServiceError> {
         let context = self.context()?;
+        let ignore = self.capture_ignore(&context)?;
         let path = context
             .runtime
             .wire_identity_key()
@@ -155,7 +158,7 @@ impl WorkspaceResourceService {
         if protected_resource_component(&name) {
             return Err(ResourceServiceError::invalid_path());
         }
-        if self.ignore.is_ignored(&path, DocumentKind::File) {
+        if ignore.is_ignored(&path, DocumentKind::File) {
             return Err(ResourceServiceError::not_found());
         }
         let resource_name =
@@ -220,11 +223,22 @@ impl WorkspaceResourceService {
             .root()
             .try_clone_dir()
             .map_err(|_| ResourceServiceError::unavailable())?;
+        let root_path = snapshot.authority().root().canonical_path().to_path_buf();
         Ok(ResourceContext {
             runtime,
             snapshot,
             root,
+            root_path,
         })
+    }
+
+    fn capture_ignore(
+        &self,
+        context: &ResourceContext,
+    ) -> Result<WorkspaceIgnoreSnapshot, ResourceServiceError> {
+        self.ignore
+            .capture(&context.root_path, &context.root)
+            .map_err(|_| ResourceServiceError::unavailable())
     }
 }
 
@@ -306,6 +320,7 @@ struct ResourceContext {
     runtime: Arc<KernelRuntime>,
     snapshot: Arc<ActiveWorkspaceSnapshot>,
     root: Dir,
+    root_path: std::path::PathBuf,
 }
 
 impl ResourceContext {
@@ -316,7 +331,7 @@ impl ResourceContext {
 
 fn inspect_inventory_entry(
     context: &ResourceContext,
-    ignore: &dyn DocumentIgnorePort,
+    ignore: &WorkspaceIgnoreSnapshot,
     directory: &Dir,
     parent: &WorkspaceRelativePath,
     name: &str,

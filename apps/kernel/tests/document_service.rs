@@ -34,6 +34,7 @@ use qingyu_kernel::{
         DeletionPort, DeletionPortError, DocumentDeletionTarget, DocumentIgnorePort,
     },
     events::{EventPublication, EventSink, EventSinkError},
+    ignore_rules::StaticWorkspaceIgnorePort,
     paths::KernelPaths,
     ports::KernelPorts,
     runtime::{DocumentsApiService, KernelRuntime, KernelStartupErrorKind},
@@ -518,10 +519,12 @@ async fn document_request_retains_old_snapshot_lease_until_request_finishes() {
             Arc::new(MemoryDocumentHistoryStore::default()),
             Arc::new(MemoryDocumentRecoveryStore::default()),
             Arc::new(CapabilityAtomicInstallPort),
-            Arc::new(BlockingIgnorePort {
-                started: Mutex::new(Some(started_sender)),
-                release: Mutex::new(release_receiver),
-            }),
+            Arc::new(StaticWorkspaceIgnorePort::new(Arc::new(
+                BlockingIgnorePort {
+                    started: Mutex::new(Some(started_sender)),
+                    release: Mutex::new(release_receiver),
+                },
+            ))),
         )
         .unwrap(),
     );
@@ -580,10 +583,12 @@ async fn document_request_never_crosses_authority_and_generation() {
             Arc::new(MemoryDocumentHistoryStore::default()),
             Arc::new(MemoryDocumentRecoveryStore::default()),
             Arc::new(CapabilityAtomicInstallPort),
-            Arc::new(BlockingIgnorePort {
-                started: Mutex::new(Some(started_sender)),
-                release: Mutex::new(release_receiver),
-            }),
+            Arc::new(StaticWorkspaceIgnorePort::new(Arc::new(
+                BlockingIgnorePort {
+                    started: Mutex::new(Some(started_sender)),
+                    release: Mutex::new(release_receiver),
+                },
+            ))),
         )
         .unwrap(),
     );
@@ -1320,7 +1325,9 @@ async fn search_is_utf8_precise_bounded_cursor_bound_and_skips_unsafe_or_ignored
             Arc::new(MemoryDocumentHistoryStore::default()),
             Arc::new(MemoryDocumentRecoveryStore::default()),
             Arc::new(CapabilityAtomicInstallPort),
-            Arc::new(PathIgnorePort(ignored)),
+            Arc::new(StaticWorkspaceIgnorePort::new(Arc::new(PathIgnorePort(
+                ignored,
+            )))),
         )
         .unwrap(),
     );

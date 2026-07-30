@@ -2470,6 +2470,7 @@ mod kernel_deletion_adapter_tests {
             AtomicInstallMode, AtomicInstallPort, AtomicInstallRequest, DeletionPort,
             DocumentDeletionTarget, DocumentIgnorePort, PinnedInstallSource,
         },
+        ignore_rules::StaticWorkspaceIgnorePort,
         paths::KernelPaths,
         ports::KernelPorts,
         runtime::{DocumentsApiService, KernelRuntime},
@@ -3122,10 +3123,14 @@ mod kernel_deletion_adapter_tests {
                 Arc::new(KernelDocumentHistoryAdapter::new(&app_data.join("history")).unwrap()),
                 Arc::new(MemoryDocumentRecoveryStore::default()),
                 Arc::new(KernelDocumentAtomicInstallAdapter::new(&root).unwrap()),
-                Arc::new(
-                    KernelDocumentIgnoreAdapter::new(&root, &retained, Some("global-hidden.md\n"))
-                        .unwrap(),
-                ),
+                Arc::new(StaticWorkspaceIgnorePort::new(Arc::new(
+                    KernelDocumentIgnoreAdapter::new(
+                        &root,
+                        &retained,
+                        Some("global-hidden.md\n"),
+                    )
+                    .unwrap(),
+                ))),
             )
             .unwrap(),
         );
