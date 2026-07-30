@@ -14,6 +14,8 @@ use notify::event::{CreateKind, ModifyKind, RemoveKind};
 use notify::EventKind;
 use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
 
+use super::MarkdownWatchIgnoreRules;
+#[cfg(any(target_os = "linux", test))]
 use crate::markdown_files::MarkdownIgnoreRules;
 #[cfg(any(target_os = "linux", test))]
 use crate::protected_paths::path_contains_qingyu_control_directory;
@@ -90,7 +92,7 @@ fn directory_watch_diff(
 }
 
 #[cfg(any(target_os = "linux", test))]
-fn event_requires_reconciliation(event: &Event, ignore_rules: &MarkdownIgnoreRules) -> bool {
+fn event_requires_reconciliation(event: &Event, ignore_rules: &MarkdownWatchIgnoreRules) -> bool {
     event.need_rescan()
         || matches!(
             event.kind,
@@ -115,7 +117,7 @@ pub(super) struct DirectoryWatcher {
 impl DirectoryWatcher {
     pub(super) fn new<F>(
         root: &Path,
-        ignore_rules: Arc<Mutex<MarkdownIgnoreRules>>,
+        ignore_rules: Arc<Mutex<MarkdownWatchIgnoreRules>>,
         handler: F,
     ) -> Result<Self, String>
     where
@@ -175,7 +177,7 @@ enum CoordinatorMessage {
 impl LinuxDirectoryWatcher {
     fn new<F>(
         root: &Path,
-        ignore_rules: Arc<Mutex<MarkdownIgnoreRules>>,
+        ignore_rules: Arc<Mutex<MarkdownWatchIgnoreRules>>,
         handler: F,
     ) -> Result<Self, String>
     where
@@ -191,7 +193,7 @@ impl LinuxDirectoryWatcher {
             let rules = ignore_rules
                 .lock()
                 .map_err(|_| "markdown ignore rules lock is poisoned".to_string())?;
-            visible_watch_directories(root, &rules)?
+            visible_watch_directories(root, rules.current()?)?
         };
         let mut initial_directories = watched_directories.iter().collect::<Vec<_>>();
         initial_directories.sort();
@@ -249,7 +251,7 @@ fn run_linux_coordinator<F>(
     mut watcher: RecommendedWatcher,
     watched_directories: &mut HashSet<PathBuf>,
     root: &Path,
-    ignore_rules: &Arc<Mutex<MarkdownIgnoreRules>>,
+    ignore_rules: &Arc<Mutex<MarkdownWatchIgnoreRules>>,
     mut handler: F,
     receiver: std::sync::mpsc::Receiver<CoordinatorMessage>,
 ) where
@@ -293,13 +295,13 @@ fn reconcile_linux_directories(
     watcher: &mut RecommendedWatcher,
     watched_directories: &mut HashSet<PathBuf>,
     root: &Path,
-    ignore_rules: &Arc<Mutex<MarkdownIgnoreRules>>,
+    ignore_rules: &Arc<Mutex<MarkdownWatchIgnoreRules>>,
 ) -> Result<(), String> {
     let desired_directories = {
         let rules = ignore_rules
             .lock()
             .map_err(|_| "markdown ignore rules lock is poisoned".to_string())?;
-        visible_watch_directories(root, &rules)?
+        visible_watch_directories(root, rules.current()?)?
     };
     let diff = directory_watch_diff(watched_directories, &desired_directories);
     let mut additions = diff.add.into_iter().collect::<Vec<_>>();
@@ -373,6 +375,13 @@ mod tests {
         ))
     }
 
+    fn strict_test_rules(root: &Path, global_rules: Option<&str>) -> MarkdownIgnoreRules {
+        let retained_root = cap_std::fs::Dir::open_ambient_dir(root, cap_std::ambient_authority())
+            .expect("test root should open");
+        MarkdownIgnoreRules::try_for_retained_root(root, &retained_root, global_rules)
+            .expect("test ignore rules should be valid")
+    }
+
     #[test]
     fn collects_only_visible_directories() {
         let root = test_root("visible");
@@ -386,10 +395,7 @@ mod tests {
             .expect("legacy sync directory should be created");
         fs::write(root.join(".markraignore"), "!.qingyu/\n!.markra-sync/\n")
             .expect("workspace rules should be written");
-        let rules = MarkdownIgnoreRules::for_root(
-            &root,
-            Some("docs/generated/\n!.qingyu/\n!.markra-sync/\n"),
-        );
+        let rules = strict_test_rules(&root, Some("docs/generated/\n!.qingyu/\n!.markra-sync/\n"));
 
         let directories = visible_watch_directories(&root, &rules)
             .expect("visible directories should be collected");
@@ -413,7 +419,7 @@ mod tests {
             let root = parent.join(control_directory);
             fs::create_dir_all(root.join("nested"))
                 .expect("protected watch root should be created");
-            let rules = MarkdownIgnoreRules::for_root(&root, None);
+            let rules = strict_test_rules(&root, None);
 
             let directories = visible_watch_directories(&root, &rules)
                 .expect("visible directories should be collected");
@@ -441,8 +447,8 @@ mod tests {
         let root = test_root("rule-change");
         fs::create_dir_all(root.join("drafts")).expect("drafts directory should be created");
         fs::create_dir_all(root.join("notes")).expect("notes directory should be created");
-        let initial_rules = MarkdownIgnoreRules::for_root(&root, Some("drafts/\n"));
-        let next_rules = MarkdownIgnoreRules::for_root(&root, Some("notes/\n"));
+        let initial_rules = strict_test_rules(&root, Some("drafts/\n"));
+        let next_rules = strict_test_rules(&root, Some("notes/\n"));
         let current = visible_watch_directories(&root, &initial_rules)
             .expect("initial directories should be collected");
         let desired = visible_watch_directories(&root, &next_rules)
@@ -473,8 +479,10 @@ mod tests {
 
     #[test]
     fn reconciles_for_directory_and_control_file_events_only() {
-        let root = PathBuf::from("/mock-workspace");
-        let rules = MarkdownIgnoreRules::for_root(&root, None);
+        let root = test_root("reconciliation-event");
+        fs::create_dir_all(&root).expect("test root should be created");
+        let rules = MarkdownWatchIgnoreRules::try_new(&root, None)
+            .expect("watcher rules should load strictly");
         let directory_event =
             Event::new(EventKind::Create(CreateKind::Folder)).add_path(root.join("notes"));
         let control_event = Event::new(EventKind::Modify(ModifyKind::Data(DataChange::Content)))
@@ -485,5 +493,7 @@ mod tests {
         assert!(event_requires_reconciliation(&directory_event, &rules));
         assert!(event_requires_reconciliation(&control_event, &rules));
         assert!(!event_requires_reconciliation(&file_event, &rules));
+
+        fs::remove_dir_all(root).expect("test root should be removed");
     }
 }

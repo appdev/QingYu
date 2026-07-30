@@ -35,7 +35,7 @@ use crate::mcp::{
 
 use super::{
     history::snapshot_markdown_file_history_contents,
-    ignore_rules::MarkdownIgnoreRules,
+    ignore_rules::{try_markdown_ignore_rules_for_root, MarkdownIgnoreRules},
     path::is_markdown_tree_file,
     search::{markdown_search_line, markdown_search_ranges, markdown_search_snippet},
     types::MarkdownFile,
@@ -292,11 +292,12 @@ impl KernelDocumentIgnoreAdapter {
             .canonicalize()
             .map_err(|error| error.to_string())?;
         Ok(Self {
-            rules: MarkdownIgnoreRules::for_retained_root(
+            rules: MarkdownIgnoreRules::try_for_retained_root(
                 &workspace_root,
                 retained_root,
                 global_rules,
-            ),
+            )
+            .map_err(|error| error.to_string())?,
             workspace_root,
         })
     }
@@ -593,17 +594,17 @@ impl DocumentScope {
             Self::Authorized {
                 workspace,
                 global_ignore_rules,
-            } => Ok(MarkdownIgnoreRules::for_root(
+            } => MarkdownIgnoreRules::try_for_retained_root(
                 &workspace.canonical_path,
+                workspace.root.as_ref(),
                 global_ignore_rules.as_deref(),
-            )),
+            )
+            .map_err(|_| DocumentServiceError::workspace_unavailable()),
             Self::TrustedUi {
                 root,
                 global_ignore_rules,
-            } => Ok(MarkdownIgnoreRules::for_root(
-                root,
-                global_ignore_rules.as_deref(),
-            )),
+            } => try_markdown_ignore_rules_for_root(root, global_ignore_rules.as_deref())
+                .map_err(|_| DocumentServiceError::workspace_unavailable()),
         }
     }
 }
@@ -3124,12 +3125,8 @@ mod kernel_deletion_adapter_tests {
                 Arc::new(MemoryDocumentRecoveryStore::default()),
                 Arc::new(KernelDocumentAtomicInstallAdapter::new(&root).unwrap()),
                 Arc::new(StaticWorkspaceIgnorePort::new(Arc::new(
-                    KernelDocumentIgnoreAdapter::new(
-                        &root,
-                        &retained,
-                        Some("global-hidden.md\n"),
-                    )
-                    .unwrap(),
+                    KernelDocumentIgnoreAdapter::new(&root, &retained, Some("global-hidden.md\n"))
+                        .unwrap(),
                 ))),
             )
             .unwrap(),

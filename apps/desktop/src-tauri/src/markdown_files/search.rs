@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::UNIX_EPOCH;
 
-use super::ignore_rules::MarkdownIgnoreRules;
+use super::ignore_rules::{try_markdown_ignore_rules_for_root, MarkdownIgnoreRules};
 use super::path::{is_markdown_open_file, markdown_folder_file, markdown_tree_root_for_path};
 use super::types::{MarkdownFolderEntryKind, MarkdownFolderFile};
 
@@ -89,7 +89,7 @@ fn collect_markdown_workspace_files(
     global_ignore_rules: Option<&str>,
 ) -> Result<Vec<MarkdownFolderFile>, String> {
     let mut files = Vec::new();
-    let ignore_rules = MarkdownIgnoreRules::for_root(root, global_ignore_rules);
+    let ignore_rules = try_markdown_ignore_rules_for_root(root, global_ignore_rules)?;
 
     collect_markdown_workspace_files_in(root, root, &ignore_rules, &mut files)?;
     files.sort_by(|a, b| {
