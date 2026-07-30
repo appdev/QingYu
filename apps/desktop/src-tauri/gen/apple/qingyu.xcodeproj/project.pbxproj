@@ -10,7 +10,6 @@
 		0FD00EB979ECEFFEB9ACE83A /* WebKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 17B74BC7AF30D3428B2F5C47 /* WebKit.framework */; };
 		24288D41E8780599EFACCDBE /* main.mm in Sources */ = {isa = PBXBuildFile; fileRef = C0F1BCF4AD20B67461210A39 /* main.mm */; };
 		4A5D4BB1A7431DA5B24D36CC /* UIKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 62BD985785960353EE2A75D5 /* UIKit.framework */; };
-		75DF9FC0F20826FBE2A9A0D9 /* libapp.a in Resources */ = {isa = PBXBuildFile; fileRef = 20557B67454F361F71800938 /* libapp.a */; };
 		7D8D3EA3D5E139D30EE84076 /* Security.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 0575E254633B56C614AEC785 /* Security.framework */; };
 		7DB4CAC29B6CEA1B60F68C6D /* assets in Resources */ = {isa = PBXBuildFile; fileRef = CD9BFE2B7E98F2A32761EF4E /* assets */; };
 		9DADDA96375A3ACDBAC663F3 /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = E84E77E4DDC9E6EFC9F35C26 /* LaunchScreen.storyboard */; };
@@ -39,7 +38,6 @@
 		19401AEA30681EA6F58562E5 /* s3_http.rs */ = {isa = PBXFileReference; path = s3_http.rs; sourceTree = "<group>"; };
 		1C4DDAED3715DFECB7409FEE /* maintenance.rs */ = {isa = PBXFileReference; path = maintenance.rs; sourceTree = "<group>"; };
 		1CE38948764A5ECC76C93962 /* image.rs */ = {isa = PBXFileReference; path = image.rs; sourceTree = "<group>"; };
-		20557B67454F361F71800938 /* libapp.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; path = libapp.a; sourceTree = "<group>"; };
 		2A2844B41C8BD7FAF6B49651 /* css_security.rs */ = {isa = PBXFileReference; path = css_security.rs; sourceTree = "<group>"; };
 		307B4FFB78A373CFA44CD033 /* asset_cleanup.rs */ = {isa = PBXFileReference; path = asset_cleanup.rs; sourceTree = "<group>"; };
 		31BDAB43E69B93A84164F8D4 /* sync.rs */ = {isa = PBXFileReference; path = sync.rs; sourceTree = "<group>"; };
@@ -198,14 +196,6 @@
 			path = remote_sync;
 			sourceTree = "<group>";
 		};
-		0BFBF5FFD2EE5D56EFB7151D /* Externals */ = {
-			isa = PBXGroup;
-			children = (
-				C38BF6862160998E57A5AD31 /* arm64 */,
-			);
-			path = Externals;
-			sourceTree = "<group>";
-		};
 		0C63C5A9768399BD78E8F7C5 /* bindings */ = {
 			isa = PBXGroup;
 			children = (
@@ -313,7 +303,6 @@
 				CD9BFE2B7E98F2A32761EF4E /* assets */,
 				C50EA96EE600711D7C54FA57 /* Assets.xcassets */,
 				E84E77E4DDC9E6EFC9F35C26 /* LaunchScreen.storyboard */,
-				0BFBF5FFD2EE5D56EFB7151D /* Externals */,
 				ECC24B31EF33A65964FD5D7D /* qingyu_iOS */,
 				4858D9E54BD17C24A1F63936 /* Sources */,
 				B20C9E1457A457473BA248F9 /* src */,
@@ -440,22 +429,6 @@
 			path = ../../src;
 			sourceTree = "<group>";
 		};
-		C38BF6862160998E57A5AD31 /* arm64 */ = {
-			isa = PBXGroup;
-			children = (
-				CB991D90D6707DB4BD1AB620 /* debug */,
-			);
-			path = arm64;
-			sourceTree = "<group>";
-		};
-		CB991D90D6707DB4BD1AB620 /* debug */ = {
-			isa = PBXGroup;
-			children = (
-				20557B67454F361F71800938 /* libapp.a */,
-			);
-			path = debug;
-			sourceTree = "<group>";
-		};
 		CF4F12C43961202F97F30D2B /* qingyu */ = {
 			isa = PBXGroup;
 			children = (
@@ -491,13 +464,6 @@
 				31D7ECE997BD3B8BEA80BD54 /* zh_tw.rs */,
 			);
 			path = menu_labels;
-			sourceTree = "<group>";
-		};
-		"TEMP_94C1E4EF-4FFC-4B04-991C-3F7A18E1BCFD" /* x86_64 */ = {
-			isa = PBXGroup;
-			children = (
-			);
-			path = x86_64;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -561,7 +527,6 @@
 				F2B145CC634237878276A969 /* Assets.xcassets in Resources */,
 				9DADDA96375A3ACDBAC663F3 /* LaunchScreen.storyboard in Resources */,
 				7DB4CAC29B6CEA1B60F68C6D /* assets in Resources */,
-				75DF9FC0F20826FBE2A9A0D9 /* libapp.a in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

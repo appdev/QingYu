@@ -226,6 +226,21 @@ fn mobile_platform_config_apple_allows_only_local_networking_exception() {
 }
 
 #[test]
+fn mobile_platform_config_apple_does_not_bundle_generated_rust_archive_as_resource() {
+    let project = source("gen/apple/project.yml");
+    let generated_project = source("gen/apple/qingyu.xcodeproj/project.pbxproj");
+
+    assert!(
+        !project.contains("- path: Externals"),
+        "generated Rust archives must not be scanned as Xcode sources"
+    );
+    assert!(
+        !generated_project.contains("libapp.a in Resources"),
+        "the Rust static library must be linked, not copied as an app resource"
+    );
+}
+
+#[test]
 fn mobile_platform_config_overlays_are_schema_only_and_desktop_free() {
     for platform in ["android", "ios"] {
         let config = json(&format!("tauri.{platform}.conf.json"));
