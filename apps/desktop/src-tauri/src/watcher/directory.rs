@@ -1,24 +1,61 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 #[cfg(any(target_os = "linux", test))]
-use std::collections::HashSet;
-#[cfg(any(target_os = "linux", test))]
-use std::fs;
-#[cfg(any(target_os = "linux", test))]
-use std::path::PathBuf;
-
+use cap_fs_ext::DirExt;
 #[cfg(any(target_os = "linux", test))]
 use notify::event::{CreateKind, ModifyKind, RemoveKind};
 #[cfg(any(target_os = "linux", test))]
 use notify::EventKind;
 use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
+#[cfg(any(target_os = "linux", test))]
+use std::collections::HashSet;
 
 use super::MarkdownWatchIgnoreRules;
 #[cfg(any(target_os = "linux", test))]
 use crate::markdown_files::MarkdownIgnoreRules;
 #[cfg(any(target_os = "linux", test))]
 use crate::protected_paths::path_contains_qingyu_control_directory;
+use crate::storage_capability::{
+    directory_identity, open_canonical_directory_nofollow, DirectoryIdentity,
+};
+
+struct DirectoryWatchRoot {
+    path: PathBuf,
+    retained: cap_std::fs::Dir,
+    identity: DirectoryIdentity,
+}
+
+impl DirectoryWatchRoot {
+    fn capture(path: &Path) -> Result<Self, String> {
+        let retained = open_canonical_directory_nofollow(path)
+            .map_err(|_| "workspace root changed".to_string())?;
+        let identity =
+            directory_identity(&retained).map_err(|_| "workspace root changed".to_string())?;
+        let root = Self {
+            path: path.to_path_buf(),
+            retained,
+            identity,
+        };
+        root.verify_current()?;
+        Ok(root)
+    }
+
+    fn verify_current(&self) -> Result<(), String> {
+        if directory_identity(&self.retained).map_err(|_| "workspace root changed".to_string())?
+            != self.identity
+        {
+            return Err("workspace root changed".to_string());
+        }
+        let current = open_canonical_directory_nofollow(&self.path)
+            .and_then(|directory| directory_identity(&directory))
+            .map_err(|_| "workspace root changed".to_string())?;
+        if current != self.identity {
+            return Err("workspace root changed".to_string());
+        }
+        Ok(())
+    }
+}
 
 #[derive(Debug, PartialEq, Eq)]
 enum DirectoryWatchStrategy {
@@ -47,36 +84,66 @@ struct DirectoryWatchDiff {
 
 #[cfg(any(target_os = "linux", test))]
 fn visible_watch_directories(
-    root: &Path,
-    ignore_rules: &MarkdownIgnoreRules,
+    watch_root: &DirectoryWatchRoot,
+    watch_rules: &mut MarkdownWatchIgnoreRules,
 ) -> Result<HashSet<PathBuf>, String> {
     fn collect(
-        directory: &Path,
+        root: &Path,
+        directory: &cap_std::fs::Dir,
+        relative_directory: &Path,
+        ambient_directory: &Path,
         ignore_rules: &MarkdownIgnoreRules,
         directories: &mut HashSet<PathBuf>,
     ) -> Result<(), String> {
-        if path_contains_qingyu_control_directory(directory) {
+        if path_contains_qingyu_control_directory(ambient_directory) {
             return Ok(());
         }
 
-        directories.insert(directory.to_path_buf());
-        for entry in fs::read_dir(directory).map_err(|error| error.to_string())? {
+        directories.insert(ambient_directory.to_path_buf());
+        for entry in directory.entries().map_err(|error| error.to_string())? {
             let entry = entry.map_err(|error| error.to_string())?;
-            let path = entry.path();
+            let name = entry.file_name();
+            let relative_path = relative_directory.join(&name);
+            let path = root.join(&relative_path);
             if entry
                 .file_type()
                 .map_err(|error| error.to_string())?
                 .is_dir()
                 && !ignore_rules.ignores(&path, true)
             {
-                collect(&path, ignore_rules, directories)?;
+                let child = directory
+                    .open_dir_nofollow(&name)
+                    .map_err(|_| "workspace directory changed".to_string())?;
+                collect(
+                    root,
+                    &child,
+                    &relative_path,
+                    &path,
+                    ignore_rules,
+                    directories,
+                )?;
             }
         }
         Ok(())
     }
 
+    watch_root.verify_current()?;
+    watch_rules.verify_root()?;
+    let retained_root = watch_root
+        .retained
+        .try_clone()
+        .map_err(|_| "workspace root changed".to_string())?;
     let mut directories = HashSet::new();
-    collect(root, ignore_rules, &mut directories)?;
+    collect(
+        &watch_root.path,
+        &retained_root,
+        Path::new(""),
+        &watch_root.path,
+        watch_rules.current()?,
+        &mut directories,
+    )?;
+    watch_rules.verify_root()?;
+    watch_root.verify_current()?;
     Ok(directories)
 }
 
@@ -112,6 +179,8 @@ pub(super) struct DirectoryWatcher {
     coordinator: LinuxDirectoryWatcher,
     #[cfg(not(target_os = "linux"))]
     _watcher: RecommendedWatcher,
+    ignore_rules: Arc<Mutex<MarkdownWatchIgnoreRules>>,
+    watch_root: Arc<DirectoryWatchRoot>,
 }
 
 impl DirectoryWatcher {
@@ -123,14 +192,23 @@ impl DirectoryWatcher {
     where
         F: FnMut(notify::Result<Event>) + Send + 'static,
     {
+        let watch_root = Arc::new(DirectoryWatchRoot::capture(root)?);
         #[cfg(target_os = "linux")]
         {
             debug_assert_eq!(
                 directory_watch_strategy(),
                 DirectoryWatchStrategy::VisibleDirectories
             );
-            return LinuxDirectoryWatcher::new(root, ignore_rules, handler)
-                .map(|coordinator| Self { coordinator });
+            return LinuxDirectoryWatcher::new(
+                Arc::clone(&watch_root),
+                Arc::clone(&ignore_rules),
+                handler,
+            )
+            .map(|coordinator| Self {
+                coordinator,
+                ignore_rules,
+                watch_root,
+            });
         }
 
         #[cfg(not(target_os = "linux"))]
@@ -139,24 +217,79 @@ impl DirectoryWatcher {
                 directory_watch_strategy(),
                 DirectoryWatchStrategy::RecursiveRoot
             );
-            let _ignore_rules = ignore_rules;
-            let mut watcher =
-                notify::recommended_watcher(handler).map_err(|error| error.to_string())?;
+            let callback_rules = Arc::clone(&ignore_rules);
+            let callback_root = Arc::clone(&watch_root);
+            let mut handler = handler;
+            let mut watcher = notify::recommended_watcher(move |result| match result {
+                Err(error) => {
+                    if let Ok(mut rules) = callback_rules.lock() {
+                        rules.invalidate();
+                    }
+                    handler(Err(error));
+                }
+                Ok(event) => {
+                    let preparation = callback_root.verify_current().and_then(|()| {
+                        callback_rules
+                            .lock()
+                            .map_err(|_| "markdown ignore rules lock is poisoned".to_string())
+                            .and_then(|mut rules| {
+                                if let Some(candidate) = rules.stage_for_event(&event)? {
+                                    rules.finish_reconcile(candidate, Ok(()))?;
+                                }
+                                rules.current().map(|_| ())
+                            })
+                    });
+                    match preparation {
+                        Ok(()) => handler(Ok(event)),
+                        Err(error) => {
+                            if let Ok(mut rules) = callback_rules.lock() {
+                                rules.invalidate();
+                            }
+                            handler(Err(notify::Error::generic(&error)));
+                        }
+                    }
+                }
+            })
+            .map_err(|error| error.to_string())?;
             watcher
                 .watch(root, RecursiveMode::Recursive)
                 .map_err(|error| error.to_string())?;
-            Ok(Self { _watcher: watcher })
+            Ok(Self {
+                _watcher: watcher,
+                ignore_rules,
+                watch_root,
+            })
         }
     }
 
-    pub(super) fn reconcile(&self) -> Result<(), String> {
+    pub(super) fn replace_rules(
+        &self,
+        root: &Path,
+        global_rules: Option<&str>,
+    ) -> Result<(), String> {
+        let candidate = match MarkdownWatchIgnoreRules::try_new(root, global_rules) {
+            Ok(candidate) => candidate,
+            Err(error) => {
+                if let Ok(mut rules) = self.ignore_rules.lock() {
+                    rules.invalidate();
+                }
+                return Err(error);
+            }
+        };
         #[cfg(target_os = "linux")]
         {
-            return self.coordinator.reconcile();
+            return self.coordinator.replace_rules(candidate);
         }
 
         #[cfg(not(target_os = "linux"))]
-        Ok(())
+        {
+            let mut rules = self
+                .ignore_rules
+                .lock()
+                .map_err(|_| "markdown ignore rules lock is poisoned".to_string())?;
+            let result = self.watch_root.verify_current();
+            rules.finish_reconcile(candidate, result)
+        }
     }
 }
 
@@ -169,14 +302,17 @@ struct LinuxDirectoryWatcher {
 #[cfg(target_os = "linux")]
 enum CoordinatorMessage {
     BackendEvent(notify::Result<Event>),
-    Reconcile(std::sync::mpsc::SyncSender<Result<(), String>>),
+    ReplaceRules(
+        MarkdownWatchIgnoreRules,
+        std::sync::mpsc::SyncSender<Result<(), String>>,
+    ),
     Shutdown,
 }
 
 #[cfg(target_os = "linux")]
 impl LinuxDirectoryWatcher {
     fn new<F>(
-        root: &Path,
+        watch_root: Arc<DirectoryWatchRoot>,
         ignore_rules: Arc<Mutex<MarkdownWatchIgnoreRules>>,
         handler: F,
     ) -> Result<Self, String>
@@ -190,10 +326,10 @@ impl LinuxDirectoryWatcher {
         })
         .map_err(|error| error.to_string())?;
         let mut watched_directories = {
-            let rules = ignore_rules
+            let mut rules = ignore_rules
                 .lock()
                 .map_err(|_| "markdown ignore rules lock is poisoned".to_string())?;
-            visible_watch_directories(root, rules.current()?)?
+            visible_watch_directories(&watch_root, &mut rules)?
         };
         let mut initial_directories = watched_directories.iter().collect::<Vec<_>>();
         initial_directories.sort();
@@ -203,8 +339,8 @@ impl LinuxDirectoryWatcher {
                 .map_err(|error| error.to_string())?;
         }
 
-        let coordinator_root = root.to_path_buf();
         let coordinator_rules = Arc::clone(&ignore_rules);
+        let coordinator_root = Arc::clone(&watch_root);
         let coordinator = std::thread::Builder::new()
             .name("markra-directory-watcher".to_string())
             .spawn(move || {
@@ -225,10 +361,10 @@ impl LinuxDirectoryWatcher {
         })
     }
 
-    fn reconcile(&self) -> Result<(), String> {
+    fn replace_rules(&self, candidate: MarkdownWatchIgnoreRules) -> Result<(), String> {
         let (result_sender, result_receiver) = std::sync::mpsc::sync_channel(1);
         self.sender
-            .send(CoordinatorMessage::Reconcile(result_sender))
+            .send(CoordinatorMessage::ReplaceRules(candidate, result_sender))
             .map_err(|_| "markdown directory watcher has stopped".to_string())?;
         result_receiver
             .recv()
@@ -250,7 +386,7 @@ impl Drop for LinuxDirectoryWatcher {
 fn run_linux_coordinator<F>(
     mut watcher: RecommendedWatcher,
     watched_directories: &mut HashSet<PathBuf>,
-    root: &Path,
+    watch_root: &DirectoryWatchRoot,
     ignore_rules: &Arc<Mutex<MarkdownWatchIgnoreRules>>,
     mut handler: F,
     receiver: std::sync::mpsc::Receiver<CoordinatorMessage>,
@@ -260,29 +396,75 @@ fn run_linux_coordinator<F>(
     while let Ok(message) = receiver.recv() {
         match message {
             CoordinatorMessage::BackendEvent(result) => {
-                let should_reconcile = result.as_ref().ok().is_some_and(|event| {
-                    ignore_rules
+                let event = match result {
+                    Ok(event) => event,
+                    Err(error) => {
+                        if let Ok(mut rules) = ignore_rules.lock() {
+                            rules.invalidate();
+                        }
+                        handler(Err(error));
+                        continue;
+                    }
+                };
+                let preparation = (|| -> Result<(), String> {
+                    watch_root.verify_current()?;
+                    let should_reconcile = ignore_rules
                         .lock()
-                        .map(|rules| event_requires_reconciliation(event, &rules))
-                        .unwrap_or(true)
-                });
-                handler(result);
-                if should_reconcile {
-                    let _ = reconcile_linux_directories(
-                        &mut watcher,
-                        watched_directories,
-                        root,
-                        ignore_rules,
-                    );
+                        .map(|rules| event_requires_reconciliation(&event, &rules))
+                        .unwrap_or(true);
+                    let candidate = ignore_rules
+                        .lock()
+                        .map_err(|_| "markdown ignore rules lock is poisoned".to_string())?
+                        .stage_for_event(&event)?;
+                    if let Some(mut candidate) = candidate {
+                        let result = reconcile_linux_directories(
+                            &mut watcher,
+                            watched_directories,
+                            watch_root,
+                            &mut candidate,
+                        );
+                        return ignore_rules
+                            .lock()
+                            .map_err(|_| "markdown ignore rules lock is poisoned".to_string())?
+                            .finish_reconcile(candidate, result);
+                    }
+                    let mut rules = ignore_rules
+                        .lock()
+                        .map_err(|_| "markdown ignore rules lock is poisoned".to_string())?;
+                    if should_reconcile {
+                        if let Err(error) = reconcile_linux_directories(
+                            &mut watcher,
+                            watched_directories,
+                            watch_root,
+                            &mut rules,
+                        ) {
+                            rules.invalidate();
+                            return Err(error);
+                        }
+                    }
+                    rules.current().map(|_| ())
+                })();
+                match preparation {
+                    Ok(()) => handler(Ok(event)),
+                    Err(error) => {
+                        if let Ok(mut rules) = ignore_rules.lock() {
+                            rules.invalidate();
+                        }
+                        handler(Err(notify::Error::generic(&error)));
+                    }
                 }
             }
-            CoordinatorMessage::Reconcile(result_sender) => {
+            CoordinatorMessage::ReplaceRules(mut candidate, result_sender) => {
                 let result = reconcile_linux_directories(
                     &mut watcher,
                     watched_directories,
-                    root,
-                    ignore_rules,
+                    watch_root,
+                    &mut candidate,
                 );
+                let result = ignore_rules
+                    .lock()
+                    .map_err(|_| "markdown ignore rules lock is poisoned".to_string())
+                    .and_then(|mut rules| rules.finish_reconcile(candidate, result));
                 let _ = result_sender.send(result);
             }
             CoordinatorMessage::Shutdown => break,
@@ -294,15 +476,10 @@ fn run_linux_coordinator<F>(
 fn reconcile_linux_directories(
     watcher: &mut RecommendedWatcher,
     watched_directories: &mut HashSet<PathBuf>,
-    root: &Path,
-    ignore_rules: &Arc<Mutex<MarkdownWatchIgnoreRules>>,
+    watch_root: &DirectoryWatchRoot,
+    ignore_rules: &mut MarkdownWatchIgnoreRules,
 ) -> Result<(), String> {
-    let desired_directories = {
-        let rules = ignore_rules
-            .lock()
-            .map_err(|_| "markdown ignore rules lock is poisoned".to_string())?;
-        visible_watch_directories(root, rules.current()?)?
-    };
+    let desired_directories = visible_watch_directories(watch_root, ignore_rules)?;
     let diff = directory_watch_diff(watched_directories, &desired_directories);
     let mut additions = diff.add.into_iter().collect::<Vec<_>>();
     additions.sort();
@@ -362,7 +539,6 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
 
-    use crate::markdown_files::MarkdownIgnoreRules;
     use crate::protected_paths::{LEGACY_SYNC_DIR, QINGYU_CONTROL_DIR};
 
     fn test_root(name: &str) -> PathBuf {
@@ -373,13 +549,6 @@ mod tests {
                 .expect("system clock should be after epoch")
                 .as_nanos()
         ))
-    }
-
-    fn strict_test_rules(root: &Path, global_rules: Option<&str>) -> MarkdownIgnoreRules {
-        let retained_root = cap_std::fs::Dir::open_ambient_dir(root, cap_std::ambient_authority())
-            .expect("test root should open");
-        MarkdownIgnoreRules::try_for_retained_root(root, &retained_root, global_rules)
-            .expect("test ignore rules should be valid")
     }
 
     #[test]
@@ -395,9 +564,14 @@ mod tests {
             .expect("legacy sync directory should be created");
         fs::write(root.join(".markraignore"), "!.qingyu/\n!.markra-sync/\n")
             .expect("workspace rules should be written");
-        let rules = strict_test_rules(&root, Some("docs/generated/\n!.qingyu/\n!.markra-sync/\n"));
+        let mut rules = MarkdownWatchIgnoreRules::try_new(
+            &root,
+            Some("docs/generated/\n!.qingyu/\n!.markra-sync/\n"),
+        )
+        .expect("watcher rules should load");
 
-        let directories = visible_watch_directories(&root, &rules)
+        let watch_root = DirectoryWatchRoot::capture(&root).expect("watch root should capture");
+        let directories = visible_watch_directories(&watch_root, &mut rules)
             .expect("visible directories should be collected");
 
         assert!(directories.contains(&root));
@@ -419,9 +593,11 @@ mod tests {
             let root = parent.join(control_directory);
             fs::create_dir_all(root.join("nested"))
                 .expect("protected watch root should be created");
-            let rules = strict_test_rules(&root, None);
+            let mut rules =
+                MarkdownWatchIgnoreRules::try_new(&root, None).expect("watcher rules should load");
 
-            let directories = visible_watch_directories(&root, &rules)
+            let watch_root = DirectoryWatchRoot::capture(&root).expect("watch root should capture");
+            let directories = visible_watch_directories(&watch_root, &mut rules)
                 .expect("visible directories should be collected");
 
             assert!(directories.is_empty());
@@ -447,11 +623,14 @@ mod tests {
         let root = test_root("rule-change");
         fs::create_dir_all(root.join("drafts")).expect("drafts directory should be created");
         fs::create_dir_all(root.join("notes")).expect("notes directory should be created");
-        let initial_rules = strict_test_rules(&root, Some("drafts/\n"));
-        let next_rules = strict_test_rules(&root, Some("notes/\n"));
-        let current = visible_watch_directories(&root, &initial_rules)
+        let mut initial_rules = MarkdownWatchIgnoreRules::try_new(&root, Some("drafts/\n"))
+            .expect("initial watcher rules should load");
+        let mut next_rules = MarkdownWatchIgnoreRules::try_new(&root, Some("notes/\n"))
+            .expect("next watcher rules should load");
+        let watch_root = DirectoryWatchRoot::capture(&root).expect("watch root should capture");
+        let current = visible_watch_directories(&watch_root, &mut initial_rules)
             .expect("initial directories should be collected");
-        let desired = visible_watch_directories(&root, &next_rules)
+        let desired = visible_watch_directories(&watch_root, &mut next_rules)
             .expect("next directories should be collected");
 
         let diff = directory_watch_diff(&current, &desired);

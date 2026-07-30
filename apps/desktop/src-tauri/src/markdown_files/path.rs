@@ -189,6 +189,37 @@ pub(super) fn markdown_folder_file(
     })
 }
 
+pub(super) fn markdown_folder_file_from_retained_metadata(
+    root: &Path,
+    relative_path: &Path,
+    kind: MarkdownFolderEntryKind,
+    metadata: &cap_std::fs::Metadata,
+) -> Result<MarkdownFolderFile, String> {
+    let path = root.join(relative_path);
+    let modified_at = metadata
+        .modified()
+        .ok()
+        .and_then(|time| system_time_millis(time.into_std()));
+    let created_at = metadata
+        .created()
+        .ok()
+        .and_then(|time| system_time_millis(time.into_std()))
+        .or(modified_at);
+
+    Ok(MarkdownFolderFile {
+        created_at,
+        kind,
+        modified_at,
+        path: path_to_string(&path),
+        relative_path: markdown_tree_relative_path(root, &path)?,
+        size_bytes: if metadata.is_file() {
+            Some(metadata.len())
+        } else {
+            None
+        },
+    })
+}
+
 pub(super) fn markdown_tree_root_for_path(path: &Path) -> Result<PathBuf, String> {
     if path.is_dir() {
         return Ok(path.to_path_buf());

@@ -11,6 +11,9 @@ use tauri::{Emitter, Manager};
 use crate::dejavu_sync::commands::DejavuSchedulerOwner;
 use crate::markdown_files::MarkdownIgnoreRules;
 use crate::protected_paths::path_contains_qingyu_control_directory;
+use crate::storage_capability::{
+    directory_identity, open_canonical_directory_nofollow, DirectoryIdentity,
+};
 
 mod directory;
 
@@ -20,7 +23,6 @@ const MARKDOWN_FILE_CHANGED_EVENT: &str = "markra://file-changed";
 const MARKDOWN_TREE_CHANGED_EVENT: &str = "markra://tree-changed";
 
 struct ActiveMarkdownWatcher {
-    ignore_rules: Arc<Mutex<MarkdownWatchIgnoreRules>>,
     subscriber_count: usize,
     watch_root: PathBuf,
     watcher: DirectoryWatcher,
@@ -29,27 +31,38 @@ struct ActiveMarkdownWatcher {
 struct MarkdownWatchIgnoreRules {
     root: PathBuf,
     retained_root: Dir,
+    root_identity: DirectoryIdentity,
     global_rules: Option<String>,
     current: Option<MarkdownIgnoreRules>,
 }
 
 impl MarkdownWatchIgnoreRules {
     fn try_new(root: &Path, global_rules: Option<&str>) -> Result<Self, String> {
-        let retained_root = Dir::open_ambient_dir(root, cap_std::ambient_authority())
-            .map_err(|_| "workspace ignore rules are unavailable".to_string())?;
+        let root = root.to_path_buf();
+        let retained_root = open_canonical_directory_nofollow(&root)
+            .map_err(|_| "workspace root changed".to_string())?;
+        let root_identity =
+            directory_identity(&retained_root).map_err(|_| "workspace root changed".to_string())?;
         let current =
-            MarkdownIgnoreRules::try_for_retained_root(root, &retained_root, global_rules)
+            MarkdownIgnoreRules::try_for_retained_root(&root, &retained_root, global_rules)
                 .map_err(|error| error.to_string())?;
 
-        Ok(Self {
-            root: root.to_path_buf(),
+        let result = Self {
+            root,
             retained_root,
+            root_identity,
             global_rules: global_rules.map(str::to_string),
             current: Some(current),
-        })
+        };
+        result.verify_root()?;
+        Ok(result)
     }
 
-    fn current(&self) -> Result<&MarkdownIgnoreRules, String> {
+    fn current(&mut self) -> Result<&MarkdownIgnoreRules, String> {
+        if let Err(error) = self.verify_root() {
+            self.current = None;
+            return Err(error);
+        }
         self.current
             .as_ref()
             .ok_or_else(|| "workspace ignore rules are unavailable".to_string())
@@ -60,35 +73,70 @@ impl MarkdownWatchIgnoreRules {
             && path.file_name() == Some(std::ffi::OsStr::new(MARKRA_IGNORE_FILE_NAME))
     }
 
+    #[cfg(test)]
     fn reload_for_event(&mut self, event: &Event) -> Result<(), String> {
-        if !event
-            .paths
-            .iter()
-            .any(|event_path| self.is_control_file(event_path))
-        {
-            return self.current().map(|_| ());
-        }
-
-        match MarkdownIgnoreRules::try_for_retained_root(
-            &self.root,
-            &self.retained_root,
-            self.global_rules.as_deref(),
-        ) {
-            Ok(next) => {
-                self.current = Some(next);
-                Ok(())
-            }
-            Err(error) => {
-                self.current = None;
-                Err(error.to_string())
-            }
+        match self.stage_for_event(event)? {
+            Some(candidate) => self.finish_reconcile(candidate, Ok(())),
+            None => self.current().map(|_| ()),
         }
     }
 
-    fn replace(&mut self, root: &Path, global_rules: Option<&str>) -> Result<(), String> {
-        match Self::try_new(root, global_rules) {
-            Ok(next) => {
-                *self = next;
+    fn stage_for_event(&mut self, event: &Event) -> Result<Option<Self>, String> {
+        if let Err(error) = self.verify_root() {
+            self.current = None;
+            return Err(error);
+        }
+        if !event.need_rescan()
+            && !event
+                .paths
+                .iter()
+                .any(|event_path| self.is_control_file(event_path))
+        {
+            return Ok(None);
+        }
+        let retained_root = match self.retained_root.try_clone() {
+            Ok(retained_root) => retained_root,
+            Err(_) => {
+                self.current = None;
+                return Err("workspace root changed".to_string());
+            }
+        };
+        let current = match MarkdownIgnoreRules::try_for_retained_root(
+            &self.root,
+            &retained_root,
+            self.global_rules.as_deref(),
+        ) {
+            Ok(current) => current,
+            Err(error) => {
+                self.current = None;
+                return Err(error.to_string());
+            }
+        };
+        if let Err(error) = self.verify_root() {
+            self.current = None;
+            return Err(error);
+        }
+        Ok(Some(Self {
+            root: self.root.clone(),
+            retained_root,
+            root_identity: self.root_identity,
+            global_rules: self.global_rules.clone(),
+            current: Some(current),
+        }))
+    }
+
+    fn finish_reconcile(
+        &mut self,
+        candidate: Self,
+        result: Result<(), String>,
+    ) -> Result<(), String> {
+        match result {
+            Ok(()) => {
+                if let Err(error) = candidate.verify_root() {
+                    self.current = None;
+                    return Err(error);
+                }
+                *self = candidate;
                 Ok(())
             }
             Err(error) => {
@@ -96,6 +144,20 @@ impl MarkdownWatchIgnoreRules {
                 Err(error)
             }
         }
+    }
+
+    fn verify_root(&self) -> Result<(), String> {
+        let current = open_canonical_directory_nofollow(&self.root)
+            .and_then(|directory| directory_identity(&directory))
+            .map_err(|_| "workspace root changed".to_string())?;
+        if current != self.root_identity {
+            return Err("workspace root changed".to_string());
+        }
+        Ok(())
+    }
+
+    fn invalidate(&mut self) {
+        self.current = None;
     }
 }
 
@@ -218,16 +280,11 @@ fn has_active_watcher_subscription(
         .map_err(|_| "markdown watcher state lock is poisoned".to_string())?;
 
     if let Some(watcher) = active_watchers.get_mut(path) {
-        let mut ignore_rules = watcher
-            .ignore_rules
-            .lock()
-            .map_err(|_| "markdown ignore rules lock is poisoned".to_string())?;
         // React may subscribe with new settings before the previous async unwatch
         // reaches Rust, so refresh a shared watcher's matcher during subscription.
-        ignore_rules.replace(ignore_root, global_ignore_rules)?;
-        // Linux reconciliation reads this matcher on its coordinator thread.
-        drop(ignore_rules);
-        watcher.watcher.reconcile()?;
+        watcher
+            .watcher
+            .replace_rules(ignore_root, global_ignore_rules)?;
         watcher.subscriber_count += 1;
         return Ok(true);
     }
@@ -247,18 +304,15 @@ fn remember_active_watcher(
         .map_err(|_| "markdown watcher state lock is poisoned".to_string())?;
 
     if let Some(existing_watcher) = active_watchers.get_mut(&path) {
-        let mut existing_ignore_rules = existing_watcher
-            .ignore_rules
+        let next_ignore_rules = ignore_rules
             .lock()
             .map_err(|_| "markdown ignore rules lock is poisoned".to_string())?;
-        let mut next_ignore_rules = ignore_rules
-            .lock()
-            .map_err(|_| "markdown ignore rules lock is poisoned".to_string())?;
-        std::mem::swap(&mut *existing_ignore_rules, &mut *next_ignore_rules);
-        // Release both matcher locks before waiting for Linux reconciliation.
-        drop(existing_ignore_rules);
+        let next_root = next_ignore_rules.root.clone();
+        let next_global_rules = next_ignore_rules.global_rules.clone();
         drop(next_ignore_rules);
-        existing_watcher.watcher.reconcile()?;
+        existing_watcher
+            .watcher
+            .replace_rules(&next_root, next_global_rules.as_deref())?;
         existing_watcher.subscriber_count += 1;
         return Ok(());
     }
@@ -266,7 +320,6 @@ fn remember_active_watcher(
     active_watchers.insert(
         path.clone(),
         ActiveMarkdownWatcher {
-            ignore_rules,
             subscriber_count: 1,
             watch_root,
             watcher,
@@ -344,9 +397,6 @@ pub(crate) fn watch_markdown_file(
             let Ok(mut ignore_rules) = callback_ignore_rules.lock() else {
                 return;
             };
-            if ignore_rules.reload_for_event(&event).is_err() {
-                return;
-            }
             let Ok(current_ignore_rules) = ignore_rules.current() else {
                 return;
             };
@@ -444,9 +494,6 @@ pub(crate) fn watch_markdown_tree(
             let Ok(mut ignore_rules) = callback_ignore_rules.lock() else {
                 return;
             };
-            if ignore_rules.reload_for_event(&event).is_err() {
-                return;
-            }
             let Ok(current_ignore_rules) = ignore_rules.current() else {
                 return;
             };
@@ -498,6 +545,7 @@ fn scheduler_owner_for<R: tauri::Runtime>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use notify::event::Flag;
     use notify::event::{CreateKind, DataChange, ModifyKind, RemoveKind};
     use std::collections::HashMap;
 
@@ -808,6 +856,108 @@ mod tests {
             .ignores(&generated.join("hidden.md"), false));
 
         std::fs::remove_dir_all(root).expect("test tree should be removed");
+    }
+
+    #[test]
+    fn invalidates_cached_rules_when_the_watched_root_address_is_replaced() {
+        let root = test_root("replaced-root");
+        let displaced = root.with_extension("captured-root");
+        std::fs::create_dir_all(&root).expect("captured root should be created");
+        std::fs::write(root.join(".markraignore"), "captured-only/\n")
+            .expect("captured ignore rules should be written");
+        let mut ignore_rules = MarkdownWatchIgnoreRules::try_new(&root, None)
+            .expect("captured watcher rules should load");
+
+        std::fs::rename(&root, &displaced).expect("captured root should be displaced");
+        std::fs::create_dir_all(&root).expect("replacement root should be created");
+        std::fs::write(root.join(".markraignore"), "replacement-only/\n")
+            .expect("replacement ignore rules should be written");
+        let event =
+            Event::new(EventKind::Create(CreateKind::File)).add_path(root.join("replacement.md"));
+
+        assert_eq!(
+            ignore_rules.reload_for_event(&event),
+            Err("workspace root changed".to_string())
+        );
+        assert!(ignore_rules.current().is_err());
+
+        std::fs::remove_dir_all(root).expect("replacement root should be removed");
+        std::fs::remove_dir_all(displaced).expect("captured root should be removed");
+    }
+
+    #[test]
+    fn rescan_recaptures_rules_when_the_control_event_was_missed() {
+        let root = test_root("rescan-rules");
+        let generated = root.join("generated");
+        std::fs::create_dir_all(&generated).expect("generated folder should be created");
+        let mut ignore_rules = MarkdownWatchIgnoreRules::try_new(&root, None)
+            .expect("initial watcher rules should load");
+        std::fs::write(root.join(".markraignore"), "generated/\n")
+            .expect("changed ignore rules should be written");
+        let mut rescan = Event::new(EventKind::Any);
+        rescan.attrs.set_flag(Flag::Rescan);
+
+        ignore_rules
+            .reload_for_event(&rescan)
+            .expect("rescan should strictly recapture ignore rules");
+
+        assert!(ignore_rules
+            .current()
+            .expect("recaptured rules should remain available")
+            .ignores(&generated.join("hidden.md"), false));
+        std::fs::remove_dir_all(root).expect("test root should be removed");
+    }
+
+    #[test]
+    fn staged_rule_reload_commits_only_after_watch_reconcile_and_fails_closed_on_error() {
+        let root = test_root("transactional-rules");
+        let drafts = root.join("drafts");
+        let notes = root.join("notes");
+        std::fs::create_dir_all(&drafts).expect("drafts folder should be created");
+        std::fs::create_dir_all(&notes).expect("notes folder should be created");
+        std::fs::write(root.join(".markraignore"), "drafts/\n")
+            .expect("initial rules should be written");
+        let mut current = MarkdownWatchIgnoreRules::try_new(&root, None)
+            .expect("initial watcher rules should load");
+        std::fs::write(root.join(".markraignore"), "notes/\n")
+            .expect("candidate rules should be written");
+        let control_event = Event::new(EventKind::Modify(ModifyKind::Data(DataChange::Content)))
+            .add_path(root.join(".markraignore"));
+
+        let mut candidate = current
+            .stage_for_event(&control_event)
+            .expect("candidate capture should succeed")
+            .expect("control event should stage a candidate");
+
+        assert!(current
+            .current()
+            .expect("old matcher should remain active before reconcile")
+            .ignores(&drafts.join("hidden.md"), false));
+        assert!(!current
+            .current()
+            .expect("old matcher should remain active before reconcile")
+            .ignores(&notes.join("visible.md"), false));
+        assert!(candidate
+            .current()
+            .expect("candidate matcher should be available")
+            .ignores(&notes.join("hidden.md"), false));
+
+        assert_eq!(
+            current.finish_reconcile(candidate, Err("watch backend failed".to_string())),
+            Err("watch backend failed".to_string())
+        );
+        assert!(current.current().is_err());
+
+        let recovery = MarkdownWatchIgnoreRules::try_new(&root, None)
+            .expect("later valid recapture should succeed");
+        current
+            .finish_reconcile(recovery, Ok(()))
+            .expect("later successful reconcile should restore matching");
+        assert!(current
+            .current()
+            .expect("recovered matcher should be active")
+            .ignores(&notes.join("hidden.md"), false));
+        std::fs::remove_dir_all(root).expect("test root should be removed");
     }
 
     #[test]
