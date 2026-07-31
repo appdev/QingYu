@@ -59,15 +59,20 @@ const mockedSaveStoredWorkspaceState = vi.mocked(saveStoredWorkspaceState);
 type ListedMarkdownFiles = Awaited<ReturnType<typeof listNativeMarkdownFilesForPath>>;
 
 function createDeferredMarkdownFileList() {
+  let reject!: (error: unknown) => undefined;
   let resolve!: (files: ListedMarkdownFiles) => undefined;
-  const promise = new Promise<ListedMarkdownFiles>((resolvePromise) => {
+  const promise = new Promise<ListedMarkdownFiles>((resolvePromise, rejectPromise) => {
+    reject = (error) => {
+      rejectPromise(error);
+      return undefined;
+    };
     resolve = (files) => {
       resolvePromise(files);
       return undefined;
     };
   });
 
-  return { promise, resolve };
+  return { promise, reject, resolve };
 }
 
 function mockWorkspaceState(
@@ -819,6 +824,41 @@ describe("useMarkdownFileTree", () => {
     }));
     expect(await screen.findByText("media/files/spec.pdf")).toBeInTheDocument();
     expect(screen.queryByText("assets/reference.docx")).not.toBeInTheDocument();
+  });
+
+  it("keeps an admitted managed root when settings hydration supersedes its first tree load", async () => {
+    const initialLoad = createDeferredMarkdownFileList();
+    const hydratedLoad = createDeferredMarkdownFileList();
+    mockedLoadNativeMarkdownFilesForPath
+      .mockReturnValueOnce(initialLoad.promise)
+      .mockReturnValueOnce(hydratedLoad.promise)
+      .mockResolvedValueOnce([
+        { path: "/vault/current.md", name: "current.md", relativePath: "current.md" }
+      ]);
+
+    const { rerender } = render(<FileTreeProbe managedAttachmentFolder="assets" />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Restore collapsed folder" }));
+    await waitFor(() => expect(mockedLoadNativeMarkdownFilesForPath).toHaveBeenCalledTimes(1));
+
+    rerender(<FileTreeProbe managedAttachmentFolder="media" />);
+    await waitFor(() => expect(mockedLoadNativeMarkdownFilesForPath).toHaveBeenCalledTimes(2));
+
+    await act(async () => {
+      initialLoad.reject(new DOMException("The operation was aborted.", "AbortError"));
+      await initialLoad.promise.catch(() => undefined);
+    });
+    await waitFor(() => expect(mockedLoadNativeMarkdownFilesForPath).toHaveBeenCalledTimes(3));
+
+    await act(async () => {
+      hydratedLoad.reject(new DOMException("The operation was aborted.", "AbortError"));
+      await hydratedLoad.promise.catch(() => undefined);
+    });
+
+    expect(await screen.findByText("current.md")).toBeInTheDocument();
+    expect(screen.getByTestId("root-name")).toHaveTextContent("vault");
+    expect(screen.getByTestId("source-path")).toHaveTextContent("/vault");
+    expect(screen.getByTestId("project-root")).toHaveTextContent("/vault");
   });
 
   it("reloads the tree and watcher when global ignore rules change", async () => {

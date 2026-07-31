@@ -101,6 +101,18 @@ type PendingFileTreeBatchFlush = {
   requestId: number;
   timeoutId: number;
 };
+type FileTreeLoadConfiguration = {
+  globalIgnoreRules: string;
+  managedAttachmentFolder: string;
+};
+
+function sameFileTreeLoadConfiguration(
+  left: FileTreeLoadConfiguration,
+  right: FileTreeLoadConfiguration
+) {
+  return left.globalIgnoreRules === right.globalIgnoreRules &&
+    left.managedAttachmentFolder === right.managedAttachmentFolder;
+}
 
 function filterManagedAttachmentFiles(
   files: readonly NativeMarkdownFolderFile[],
@@ -168,6 +180,7 @@ export function useMarkdownFileTree({
   const pendingOpenFolderLoadRef = useRef<PendingOpenFolderLoad | null>(null);
   const fileTreeRefreshStateRef = useRef<FileTreeRefreshState | null>(null);
   const fileTreeLoadAbortControllerRef = useRef<AbortController | null>(null);
+  const fileTreeLoadGenerationRef = useRef(0);
   const fileTreeFilesRef = useRef<NativeMarkdownFolderFile[]>([]);
   const fileTreeFilePathSetRef = useRef<Set<string>>(new Set());
   const pendingFileTreeBatchRef = useRef<NativeMarkdownFolderFile[]>([]);
@@ -179,6 +192,14 @@ export function useMarkdownFileTree({
     [managedAttachmentFolder]
   );
   const normalizedGlobalIgnoreRules = globalIgnoreRules ?? "";
+  const fileTreeLoadConfigurationRef = useRef<FileTreeLoadConfiguration>({
+    globalIgnoreRules: normalizedGlobalIgnoreRules,
+    managedAttachmentFolder: normalizedManagedAttachmentFolder
+  });
+  fileTreeLoadConfigurationRef.current = {
+    globalIgnoreRules: normalizedGlobalIgnoreRules,
+    managedAttachmentFolder: normalizedManagedAttachmentFolder
+  };
   const fileTreeWorkspacePath = fileTreeSortWorkspacePathFromSourcePath(sourcePath);
   const fileTreeSort = useMemo(
     () => fileTreeWorkspacePath
@@ -218,8 +239,13 @@ export function useMarkdownFileTree({
     setResizing(false);
   }, []);
 
-  const fileTreeLoadIsCurrent = useCallback((requestId: number, path: string) => (
+  const fileTreeLoadIsCurrent = useCallback((
+    requestId: number,
+    path: string,
+    loadGeneration?: number
+  ) => (
     openFolderRequestIdRef.current === requestId &&
+    (loadGeneration === undefined || fileTreeLoadGenerationRef.current === loadGeneration) &&
     (!openingFolderPathRef.current || openingFolderPathRef.current === path)
   ), []);
 
@@ -242,10 +268,12 @@ export function useMarkdownFileTree({
   ) => {
     abortCurrentFileTreeLoad();
 
+    const generation = fileTreeLoadGenerationRef.current + 1;
+    fileTreeLoadGenerationRef.current = generation;
     const controller = new AbortController();
     fileTreeLoadAbortControllerRef.current = controller;
 
-    return loadNativeMarkdownFilesForPath(path, {
+    const promise = loadNativeMarkdownFilesForPath(path, {
       ...options,
       signal: controller.signal
     }).finally(() => {
@@ -253,6 +281,7 @@ export function useMarkdownFileTree({
         fileTreeLoadAbortControllerRef.current = null;
       }
     });
+    return { controller, generation, promise };
   }, [abortCurrentFileTreeLoad]);
 
   const replaceFileTreeFiles = useCallback((
@@ -333,9 +362,13 @@ export function useMarkdownFileTree({
     batchFiles: readonly NativeMarkdownFolderFile[],
     requestId: number,
     path: string,
-    immediate: boolean
+    immediate: boolean,
+    loadGeneration?: number
   ) => {
-    if (batchFiles.length === 0 || !fileTreeLoadIsCurrent(requestId, path)) return;
+    if (
+      batchFiles.length === 0 ||
+      !fileTreeLoadIsCurrent(requestId, path, loadGeneration)
+    ) return;
 
     if (immediate) {
       appendFileTreeBatchFiles(batchFiles);
@@ -381,21 +414,34 @@ export function useMarkdownFileTree({
           while (true) {
             refreshState.pending = false;
             const filesBeforeRefresh = fileTreeFilesRef.current;
+            let activeLoadGeneration: number | null = null;
             try {
               cancelPendingFileTreeBatchFlush();
               let firstBatch = true;
-              const nextFiles = await loadFileTreeFilesForPath(refreshState.path, {
+              const loadGeneration = fileTreeLoadGenerationRef.current + 1;
+              const load = loadFileTreeFilesForPath(refreshState.path, {
                 globalIgnoreRules: refreshState.globalIgnoreRules,
                 managedAttachmentFolder: refreshState.managedAttachmentFolder,
                 onBatch: (batchFiles) => {
                   const immediate = firstBatch;
                   firstBatch = false;
-                  applyLoadedFileTreeBatch(batchFiles, refreshState.requestId, refreshState.path, immediate);
+                  applyLoadedFileTreeBatch(
+                    batchFiles,
+                    refreshState.requestId,
+                    refreshState.path,
+                    immediate,
+                    loadGeneration
+                  );
                 }
               });
+              activeLoadGeneration = load.generation;
+              const nextFiles = await load.promise;
               if (fileTreeRefreshStateRef.current !== refreshState) return;
-              if (openFolderRequestIdRef.current !== refreshState.requestId) return;
-              if (openingFolderPathRef.current && openingFolderPathRef.current !== refreshState.path) return;
+              if (!fileTreeLoadIsCurrent(
+                refreshState.requestId,
+                refreshState.path,
+                load.generation
+              )) return;
 
               cancelPendingFileTreeBatchFlush();
               loadedFileTreeRequestRef.current = {
@@ -407,8 +453,11 @@ export function useMarkdownFileTree({
               setRefreshRevision((currentRevision) => currentRevision + 1);
             } catch {
               if (fileTreeRefreshStateRef.current !== refreshState) return;
-              if (openFolderRequestIdRef.current !== refreshState.requestId) return;
-              if (openingFolderPathRef.current && openingFolderPathRef.current !== refreshState.path) return;
+              if (!fileTreeLoadIsCurrent(
+                refreshState.requestId,
+                refreshState.path,
+                activeLoadGeneration ?? undefined
+              )) return;
 
               cancelPendingFileTreeBatchFlush();
               // A failed refresh cannot prove the folder is empty, so keep the last trusted tree.
@@ -501,7 +550,7 @@ export function useMarkdownFileTree({
   ) => {
     const folderName = name || pathNameFromPath(path);
     const requestId = openFolderRequestIdRef.current + 1;
-    let nextFiles: NativeMarkdownFolderFile[];
+    let nextFiles: NativeMarkdownFolderFile[] | null = null;
 
     openFolderRequestIdRef.current = requestId;
     openingFolderPathRef.current = path;
@@ -523,11 +572,6 @@ export function useMarkdownFileTree({
       pendingOpenFolderLoadRef.current = null;
     }
 
-    loadedFileTreeRequestRef.current = {
-      globalIgnoreRules: normalizedGlobalIgnoreRules,
-      managedAttachmentFolder: normalizedManagedAttachmentFolder,
-      path
-    };
     cancelPendingFileTreeBatchFlush();
     replaceFileTreeFiles([], { transition: false });
     setSourcePath(path);
@@ -535,46 +579,77 @@ export function useMarkdownFileTree({
     openChangedBeforeWorkspaceRestoreRef.current = true;
     setOpen(openTree);
 
-    try {
+    while (mountedRef.current && openFolderRequestIdRef.current === requestId) {
+      const loadConfiguration = fileTreeLoadConfigurationRef.current;
+      loadedFileTreeRequestRef.current = {
+        ...loadConfiguration,
+        path
+      };
+      cancelPendingFileTreeBatchFlush();
       let firstBatch = true;
-      nextFiles = await loadFileTreeFilesForPath(path, {
-        globalIgnoreRules: normalizedGlobalIgnoreRules,
-        managedAttachmentFolder: normalizedManagedAttachmentFolder,
+      const loadGeneration = fileTreeLoadGenerationRef.current + 1;
+      const load = loadFileTreeFilesForPath(path, {
+        ...loadConfiguration,
         onBatch: (batchFiles) => {
           const immediate = firstBatch;
           firstBatch = false;
-          applyLoadedFileTreeBatch(batchFiles, requestId, path, immediate);
+          applyLoadedFileTreeBatch(batchFiles, requestId, path, immediate, loadGeneration);
         }
       });
-    } catch {
-      if (openFolderRequestIdRef.current !== requestId) return null;
+      try {
+        nextFiles = await load.promise;
+        if (!mountedRef.current || openFolderRequestIdRef.current !== requestId) return null;
+        if (!fileTreeLoadIsCurrent(requestId, path, load.generation)) continue;
+        if (!sameFileTreeLoadConfiguration(
+          fileTreeLoadConfigurationRef.current,
+          loadConfiguration
+        )) continue;
+        break;
+      } catch {
+        if (!mountedRef.current || openFolderRequestIdRef.current !== requestId) return null;
 
-      cancelPendingFileTreeBatchFlush();
-      openingFolderPathRef.current = null;
-      setSettingsProjectRoot(null);
+        const latestLoadConfiguration = fileTreeLoadConfigurationRef.current;
+        const loadConfigurationChanged = !sameFileTreeLoadConfiguration(
+          latestLoadConfiguration,
+          loadConfiguration
+        );
+        if (
+          loadConfigurationChanged ||
+          fileTreeLoadGenerationRef.current !== load.generation
+        ) {
+          continue;
+        }
 
-      if (!sourcePath || sourcePath === path) {
-        replaceFileTreeFiles([], { transition: false });
-        setSourcePath(null);
-        setRootName("No folder");
-        loadedFileTreeRequestRef.current = null;
-        openChangedBeforeWorkspaceRestoreRef.current = true;
-        setOpen(false);
-      } else {
-        setRootName(rootName);
-        setOpen(open);
+        cancelPendingFileTreeBatchFlush();
+        openingFolderPathRef.current = null;
+        setSettingsProjectRoot(null);
+
+        if (!sourcePath || sourcePath === path) {
+          replaceFileTreeFiles([], { transition: false });
+          setSourcePath(null);
+          setRootName("No folder");
+          loadedFileTreeRequestRef.current = null;
+          openChangedBeforeWorkspaceRestoreRef.current = true;
+          setOpen(false);
+        } else {
+          setRootName(rootName);
+          setOpen(open);
+        }
+
+        return null;
       }
-
-      return null;
     }
 
-    if (!mountedRef.current || openFolderRequestIdRef.current !== requestId) return null;
+    if (
+      !mountedRef.current ||
+      openFolderRequestIdRef.current !== requestId ||
+      !nextFiles
+    ) return null;
 
     openingFolderPathRef.current = null;
     cancelPendingFileTreeBatchFlush();
     loadedFileTreeRequestRef.current = {
-      globalIgnoreRules: normalizedGlobalIgnoreRules,
-      managedAttachmentFolder: normalizedManagedAttachmentFolder,
+      ...fileTreeLoadConfigurationRef.current,
       path
     };
     replaceFileTreeFiles(nextFiles);
@@ -603,8 +678,6 @@ export function useMarkdownFileTree({
     cancelPendingFileTreeBatchFlush,
     fileTreeLoadIsCurrent,
     loadFileTreeFilesForPath,
-    normalizedGlobalIgnoreRules,
-    normalizedManagedAttachmentFolder,
     open,
     persistWorkspaceState,
     replaceFileTreeFiles,
@@ -786,7 +859,8 @@ export function useMarkdownFileTree({
     cancelPendingFileTreeBatchFlush();
     const requestId = openFolderRequestIdRef.current;
     let firstBatch = true;
-    const loadPromise = loadFileTreeFilesForPath(sourcePath, {
+    const loadGeneration = fileTreeLoadGenerationRef.current + 1;
+    const load = loadFileTreeFilesForPath(sourcePath, {
       globalIgnoreRules: normalizedGlobalIgnoreRules,
       managedAttachmentFolder: normalizedManagedAttachmentFolder,
       onBatch: (batchFiles) => {
@@ -794,18 +868,17 @@ export function useMarkdownFileTree({
 
         const immediate = firstBatch;
         firstBatch = false;
-        applyLoadedFileTreeBatch(batchFiles, requestId, sourcePath, immediate);
+        applyLoadedFileTreeBatch(batchFiles, requestId, sourcePath, immediate, loadGeneration);
       }
     });
-    const loadController = fileTreeLoadAbortControllerRef.current;
 
-    loadPromise.then((nextFiles) => {
-      if (active) {
+    load.promise.then((nextFiles) => {
+      if (active && fileTreeLoadIsCurrent(requestId, sourcePath, load.generation)) {
         cancelPendingFileTreeBatchFlush();
         replaceFileTreeFiles(nextFiles);
       }
     }).catch(() => {
-      if (active) {
+      if (active && fileTreeLoadIsCurrent(requestId, sourcePath, load.generation)) {
         cancelPendingFileTreeBatchFlush();
         loadedFileTreeRequestRef.current = null;
         replaceFileTreeFiles([], { transition: false });
@@ -814,7 +887,7 @@ export function useMarkdownFileTree({
 
     return () => {
       active = false;
-      abortFileTreeLoad(loadController);
+      abortFileTreeLoad(load.controller);
       cancelPendingFileTreeBatchFlush();
     };
   }, [
@@ -822,6 +895,7 @@ export function useMarkdownFileTree({
     abortFileTreeLoad,
     abortCurrentFileTreeLoad,
     cancelPendingFileTreeBatchFlush,
+    fileTreeLoadIsCurrent,
     loadFileTreeFilesForPath,
     normalizedGlobalIgnoreRules,
     normalizedManagedAttachmentFolder,
