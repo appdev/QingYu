@@ -318,17 +318,16 @@ async fn resolve_and_start_desktop_kernel(
     }
 }
 
-fn activate_normal_ui<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+fn activate_normal_ui<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<(), String> {
     #[cfg(target_os = "macos")]
-    if let Err(error) = app.set_activation_policy(tauri::ActivationPolicy::Regular) {
-        eprintln!("QingYu activation policy update failed: {error}");
-    }
+    app.set_activation_policy(tauri::ActivationPolicy::Regular)
+        .map_err(|error| format!("QingYu activation policy update failed: {error}"))?;
     #[cfg(target_os = "macos")]
-    if let Err(error) = app.set_dock_visibility(true) {
-        eprintln!("QingYu Dock visibility update failed: {error}");
-    }
+    app.set_dock_visibility(true)
+        .map_err(|error| format!("QingYu Dock visibility update failed: {error}"))?;
     #[cfg(not(target_os = "macos"))]
     let _app = app;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -501,9 +500,19 @@ fn promote_normal_ui<R: tauri::Runtime>(
     paths: Vec<String>,
     reveal_when_empty: bool,
 ) {
-    activate_normal_ui(app);
+    if let Err(error) = activate_normal_ui(app) {
+        eprintln!("{error}");
+    }
+    let _ = submit_normal_ui_promotion(app, paths, reveal_when_empty);
+}
+
+fn submit_normal_ui_promotion<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    paths: Vec<String>,
+    reveal_when_empty: bool,
+) -> Result<(), String> {
     let Some(state) = app.try_state::<DesktopUiPromotionState>() else {
-        return;
+        return Err("QingYu UI promotion state is unavailable".to_string());
     };
     let request = DesktopUiPromotionRequest {
         paths,
@@ -512,6 +521,14 @@ fn promote_normal_ui<R: tauri::Runtime>(
     if let Some(request) = state.submit(request) {
         reveal_or_open_markdown_paths(app, request.paths, request.reveal_when_empty);
     }
+    Ok(())
+}
+
+pub(crate) fn promote_normal_ui_for_confirmation<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Result<(), String> {
+    activate_normal_ui(app)?;
+    submit_normal_ui_promotion(app, Vec::new(), true)
 }
 
 fn mark_ui_promotion_setup_ready<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
