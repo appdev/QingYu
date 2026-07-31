@@ -15,6 +15,9 @@ pub(crate) mod error;
 pub(crate) mod handles;
 #[cfg(any(desktop, feature = "desktop-sidecar"))]
 pub(crate) mod ipc;
+#[allow(dead_code)]
+#[cfg(any(desktop, feature = "desktop-sidecar"))]
+pub(crate) mod kernel_adapter;
 pub(crate) mod local_settings;
 #[allow(dead_code)]
 #[cfg(any(desktop, feature = "desktop-sidecar"))]
