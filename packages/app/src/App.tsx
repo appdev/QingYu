@@ -3575,6 +3575,7 @@ function WorkspaceApp() {
       });
       return;
     }
+    if (images.length === 0) return;
 
     let savedImages: Array<{ alt: string; src: string }>;
     if (compactMode.trueMobile) {
