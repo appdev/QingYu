@@ -611,6 +611,22 @@ impl KernelHostSupervisor {
         )
     }
 
+    pub(crate) fn new_with_bootstrap_on_handle(
+        factory: Arc<dyn KernelProcessFactory>,
+        timeouts: KernelHostTimeouts,
+        bootstrap: crate::kernel_bootstrap::NativeKernelBootstrapOwner,
+        writer_gate: KernelWriterPublicationGate,
+        runtime_handle: &tokio::runtime::Handle,
+    ) -> Self {
+        Self::new_with_writer_gate_on_handle(
+            factory,
+            timeouts,
+            bootstrap,
+            SupervisorWriterGate::Required(writer_gate),
+            Some(runtime_handle),
+        )
+    }
+
     #[cfg(test)]
     fn new_without_writer_gate_for_test(
         factory: Arc<dyn KernelProcessFactory>,
@@ -637,11 +653,37 @@ impl KernelHostSupervisor {
         )
     }
 
+    #[cfg(test)]
+    fn new_with_bootstrap_without_writer_gate_for_test_on_handle(
+        factory: Arc<dyn KernelProcessFactory>,
+        timeouts: KernelHostTimeouts,
+        bootstrap: crate::kernel_bootstrap::NativeKernelBootstrapOwner,
+        runtime_handle: &tokio::runtime::Handle,
+    ) -> Self {
+        Self::new_with_writer_gate_on_handle(
+            factory,
+            timeouts,
+            bootstrap,
+            SupervisorWriterGate::DisabledForTest,
+            Some(runtime_handle),
+        )
+    }
+
     fn new_with_writer_gate(
         factory: Arc<dyn KernelProcessFactory>,
         timeouts: KernelHostTimeouts,
         bootstrap: crate::kernel_bootstrap::NativeKernelBootstrapOwner,
         writer_gate: SupervisorWriterGate,
+    ) -> Self {
+        Self::new_with_writer_gate_on_handle(factory, timeouts, bootstrap, writer_gate, None)
+    }
+
+    fn new_with_writer_gate_on_handle(
+        factory: Arc<dyn KernelProcessFactory>,
+        timeouts: KernelHostTimeouts,
+        bootstrap: crate::kernel_bootstrap::NativeKernelBootstrapOwner,
+        writer_gate: SupervisorWriterGate,
+        runtime_handle: Option<&tokio::runtime::Handle>,
     ) -> Self {
         let (starts, start_receiver) = mpsc::channel(8);
         let (stops, stop_receiver) = mpsc::unbounded_channel();
@@ -649,7 +691,7 @@ impl KernelHostSupervisor {
         let ownership = Arc::new(KernelOwnership::default());
         let enqueue_gate = Arc::new(AsyncMutex::new(()));
         let bootstrap_session = bootstrap.open_supervisor_session();
-        let actor = tokio::spawn(run_actor(
+        let actor_future = run_actor(
             start_receiver,
             stop_receiver,
             snapshot_sender,
@@ -659,7 +701,11 @@ impl KernelHostSupervisor {
             Arc::clone(&ownership),
             Arc::clone(&enqueue_gate),
             timeouts,
-        ));
+        );
+        let actor = match runtime_handle {
+            Some(handle) => handle.spawn(actor_future),
+            None => tokio::spawn(actor_future),
+        };
         Self {
             starts,
             stops,
@@ -3464,11 +3510,31 @@ mod tests {
     }
 
     #[test]
-    fn supervisor_is_not_registered_with_the_production_desktop_runtime() {
+    fn supervisor_is_registered_with_the_production_desktop_runtime() {
         let production_runtime = include_str!("desktop_runtime.rs");
+        let production_owner = include_str!("desktop_kernel_runtime.rs");
 
-        assert!(!production_runtime.contains("KernelHostSupervisor"));
-        assert!(!production_runtime.contains("kernel_host"));
+        assert!(production_runtime.contains("resolve_desktop_primary_workspace"));
+        assert!(production_owner.contains("KernelHostSupervisor::new_with_bootstrap"));
+        assert!(production_owner.contains("NativeKernelProcessFactory::for_current_application"));
+        assert!(production_owner.contains("DesktopKernelOwner::new"));
+    }
+
+    #[test]
+    fn explicit_runtime_handle_constructs_supervisor_without_entering_a_reactor() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let handle = runtime.handle().clone();
+        let factory = Arc::new(ScriptedFactory::new([]));
+        let bootstrap = crate::kernel_bootstrap::NativeKernelBootstrapOwner::new();
+        let supervisor =
+            KernelHostSupervisor::new_with_bootstrap_without_writer_gate_for_test_on_handle(
+                factory,
+                KernelHostTimeouts::uniform(Duration::from_millis(100)),
+                bootstrap,
+                &handle,
+            );
+
+        runtime.block_on(supervisor.stop()).unwrap();
     }
 
     fn startup() -> NativeKernelLaunch {

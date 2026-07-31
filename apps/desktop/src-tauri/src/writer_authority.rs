@@ -988,20 +988,16 @@ const LEGACY_WRITER_SURFACES: &[LegacyWriterSurface] = &[
         ],
     },
     LegacyWriterSurface {
-        name: "desktop-settings-and-sync-control",
+        name: "desktop-settings-and-sync-domain-writers",
         disposition: WriterSurfaceDisposition::RequiresWorkspaceFence,
         integration: WriterSurfaceIntegration::Unwired,
         entry_points: &[
-            "cancel_sync_config_apply",
-            "commit_desktop_runtime_store_changes",
             "enable_sync_config",
             "patch_exposed_app_settings",
             "patch_sync_config",
             "recover_sync_config",
             "replace_portable_app_settings",
-            "request_sync_config_apply",
             "reset_sync_config",
-            "set_sync_config_editing",
             "write_app_settings_group",
         ],
     },
@@ -1056,6 +1052,20 @@ const LEGACY_WRITER_SURFACES: &[LegacyWriterSurface] = &[
         ],
     },
     LegacyWriterSurface {
+        name: "desktop-host-ui-coordination",
+        disposition: WriterSurfaceDisposition::HostOnly,
+        integration: WriterSurfaceIntegration::Independent,
+        entry_points: &[
+            "cancel_sync_config_apply",
+            "commit_desktop_runtime_store_changes",
+            "initialize_desktop_kernel_workspace",
+            "request_sync_config_apply",
+            "retry_desktop_kernel_workspace",
+            "set_sync_config_editing",
+            "settle_kernel_sync_config_apply",
+        ],
+    },
+    LegacyWriterSurface {
         name: "desktop-host-only-writers",
         disposition: WriterSurfaceDisposition::HostOnly,
         integration: WriterSurfaceIntegration::Independent,
@@ -1077,6 +1087,13 @@ const LEGACY_WRITER_SURFACES: &[LegacyWriterSurface] = &[
 
 pub(crate) fn legacy_writer_surface_inventory() -> &'static [LegacyWriterSurface] {
     LEGACY_WRITER_SURFACES
+}
+
+pub(crate) fn normal_desktop_command_is_allowed(command: &str) -> bool {
+    !LEGACY_WRITER_SURFACES.iter().any(|surface| {
+        surface.disposition == WriterSurfaceDisposition::RequiresWorkspaceFence
+            && surface.entry_points.contains(&command)
+    })
 }
 
 #[cfg(test)]
@@ -2005,7 +2022,7 @@ mod tests {
         let expected_groups = [
             "desktop-workspace-authority",
             "desktop-document-resource-writers",
-            "desktop-settings-and-sync-control",
+            "desktop-settings-and-sync-domain-writers",
             "desktop-dejavu-execution",
             "mcp-direct-writers",
             "background-writer-triggers",
@@ -2048,5 +2065,24 @@ mod tests {
             }),
             "host-only writes must stay separate from workspace ownership claims"
         );
+    }
+
+    #[test]
+    fn normal_desktop_rejects_every_workspace_fenced_legacy_entry_point() {
+        for surface in legacy_writer_surface_inventory() {
+            for entry_point in surface.entry_points {
+                assert_eq!(
+                    normal_desktop_command_is_allowed(entry_point),
+                    surface.disposition == WriterSurfaceDisposition::HostOnly,
+                    "normal desktop classification drifted for {entry_point}"
+                );
+            }
+        }
+        assert!(normal_desktop_command_is_allowed(
+            "read_native_kernel_bootstrap"
+        ));
+        assert!(normal_desktop_command_is_allowed(
+            "read_markdown_template_file"
+        ));
     }
 }

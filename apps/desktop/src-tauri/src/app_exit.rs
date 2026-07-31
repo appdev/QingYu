@@ -36,6 +36,7 @@ pub(crate) fn handle_app_exit_requested<R: Runtime>(
     app: &tauri::AppHandle<R>,
     code: Option<i32>,
     api: tauri::ExitRequestApi,
+    run_legacy_sync_exit: bool,
 ) {
     let windows = app.webview_windows();
     let window_infos = windows
@@ -51,7 +52,9 @@ pub(crate) fn handle_app_exit_requested<R: Runtime>(
         .filter(|window| is_app_exit_user_window(window))
         .count();
     if !should_intercept_app_exit(code, user_window_count) {
-        handle_native_sync_exit(app, code, api);
+        if run_legacy_sync_exit {
+            handle_native_sync_exit(app, code, api);
+        }
         return;
     }
 

@@ -60,6 +60,34 @@ impl DesktopKernelOwner {
         }
     }
 
+    pub(crate) fn new_on_handle<Driver, Emitter>(
+        driver: Arc<Driver>,
+        endpoints: KernelEndpointRecordReader,
+        emitter: Arc<Emitter>,
+        runtime_handle: &tokio::runtime::Handle,
+    ) -> Self
+    where
+        Driver: DesktopKernelDriver,
+        Emitter: DesktopKernelEdgeEmitter,
+    {
+        let mut publications = driver.subscribe();
+        let subscription = runtime_handle.spawn(async move {
+            let mut last_sequence = 0;
+            while let Some(publication) = publications.recv().await {
+                if publication.sequence == 0 || publication.sequence <= last_sequence {
+                    continue;
+                }
+                last_sequence = publication.sequence;
+                emitter.emit_kernel_state_changed();
+            }
+        });
+        Self {
+            driver,
+            endpoints,
+            subscription,
+        }
+    }
+
     pub(crate) async fn start(
         &self,
         launch: NativeKernelLaunch,
@@ -254,6 +282,31 @@ mod tests {
 
         driver.stop_gate.notify_one();
         stopping.await.unwrap().unwrap();
+        drop(owner);
+        assert_eq!(driver.fail_safe_closes.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn explicit_runtime_handle_constructs_owner_without_entering_a_reactor() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let handle = runtime.handle().clone();
+        let bootstrap = NativeKernelBootstrapOwner::new();
+        let (publications, _snapshots, _reader) = KernelHostPublicationSender::new();
+        let driver = Arc::new(TestDriver {
+            publications,
+            access: Mutex::new(Some(test_access(1))),
+            starts: AtomicUsize::new(0),
+            stops: AtomicUsize::new(0),
+            fail_safe_closes: AtomicUsize::new(0),
+            stop_gate: Notify::new(),
+        });
+        let owner = DesktopKernelOwner::new_on_handle(
+            driver.clone(),
+            bootstrap.endpoint_reader(),
+            Arc::new(CountingEmitter(AtomicUsize::new(0))),
+            &handle,
+        );
+
         drop(owner);
         assert_eq!(driver.fail_safe_closes.load(Ordering::SeqCst), 1);
     }

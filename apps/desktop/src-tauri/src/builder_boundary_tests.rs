@@ -87,6 +87,9 @@ const MOBILE_COMMANDS: &[&str] = &[
 
 const DESKTOP_COMMANDS: &[&str] = &[
     "read_native_kernel_bootstrap",
+    "read_desktop_kernel_startup_state",
+    "initialize_desktop_kernel_workspace",
+    "retry_desktop_kernel_workspace",
     "get_mcp_settings",
     "update_mcp_settings",
     "set_mcp_primary_workspace",
@@ -190,6 +193,7 @@ const DESKTOP_COMMANDS: &[&str] = &[
     "set_sync_config_editing",
     "request_sync_config_apply",
     "cancel_sync_config_apply",
+    "settle_kernel_sync_config_apply",
     "load_sync_status",
     "list_remote_notebooks",
     "bind_dejavu_repository",
@@ -440,21 +444,44 @@ fn builder_boundary_mobile_registers_only_approved_shared_commands() {
 }
 
 #[test]
-fn builder_boundary_native_kernel_bootstrap_is_desktop_only_and_dormant() {
+fn builder_boundary_native_kernel_bootstrap_is_desktop_only_and_production_owned() {
     let desktop = source("src/desktop_runtime.rs");
+    let host = source("src/desktop_kernel_runtime.rs");
     let mobile = source("src/mobile_runtime.rs");
     let desktop_commands = handler_identifiers(&desktop);
     let mobile_commands = handler_identifiers(&mobile);
 
     assert!(desktop_commands.contains("read_native_kernel_bootstrap"));
     assert!(!mobile_commands.contains("read_native_kernel_bootstrap"));
-    assert!(
-        desktop.contains("app.manage(crate::kernel_bootstrap::NativeKernelBootstrapOwner::new())")
-    );
-    assert!(!desktop.contains(".publish("));
-    assert!(!desktop.contains("KernelHostSupervisor"));
-    assert!(!desktop.contains(".manage(crate::kernel_host"));
-    assert!(!desktop.contains("crate::kernel_host::"));
+    assert!(desktop.contains("NativeKernelBootstrapOwner::new()"));
+    assert!(host.contains("KernelHostSupervisor::new_with_bootstrap"));
+    assert!(host.contains("DesktopKernelOwner::new"));
+    assert!(host.contains("NativeKernelProcessFactory::for_current_application"));
+    assert!(desktop.contains("resolve_desktop_primary_workspace"));
+    assert!(desktop.contains("DesktopPrimaryWorkspaceResolution::Unselected"));
+    assert!(desktop.contains("DesktopPrimaryWorkspaceResolution::Selected"));
+    assert!(desktop.contains("app.manage(bootstrap.clone())"));
+    assert!(desktop.contains("app.manage(runtime.clone())"));
+    assert!(host.contains("owner: Option<Arc<DesktopKernelOwner>>"));
+    assert!(desktop.contains("owner.stop().await"));
+    assert!(host.contains("qingyu://kernel-bootstrap-changed"));
+    assert!(!mobile.contains("KernelHostSupervisor"));
+}
+
+#[test]
+fn builder_boundary_theme_migration_writes_finish_before_kernel_publication() {
+    let desktop = source("src/desktop_runtime.rs");
+    let migration = source("src/themes/migration.rs");
+    let migration_call = desktop
+        .find("initialize_catalog_before_kernel")
+        .expect("desktop startup should finish legacy theme migration");
+    let kernel_install = desktop
+        .find("DesktopKernelRuntimeState::new")
+        .expect("desktop startup should install the Kernel runtime");
+
+    assert!(migration_call < kernel_install);
+    assert!(migration.contains("DesktopKernelRuntimeState"));
+    assert!(migration.contains("initialize_catalog_files(&catalog, 0)"));
 }
 
 #[test]
@@ -1127,22 +1154,29 @@ fn builder_boundary_theme_quarantine_cleanup_has_platform_safe_root_deletion() {
 }
 
 #[test]
-fn builder_boundary_installs_the_path_guard_graph_before_startup_on_both_platforms() {
-    for runtime_path in ["src/desktop_runtime.rs", "src/mobile_runtime.rs"] {
-        let runtime = source(runtime_path);
-        let install = runtime
-            .find("install_production_graph")
-            .unwrap_or_else(|| panic!("{runtime_path} should install the Dejavu graph"));
-        let startup = runtime
-            .find("trigger_startup")
-            .unwrap_or_else(|| panic!("{runtime_path} should retain the startup trigger"));
-        assert!(
-            install < startup,
-            "{runtime_path} consumed startup before graph installation"
-        );
-        assert!(runtime.contains("PathGuardCoordinatorOwner::default()"));
-        assert!(runtime.contains("acknowledge_path_guard"));
-    }
+fn builder_boundary_installs_the_path_guard_graph_only_for_legacy_runtime_owners() {
+    let mobile = source("src/mobile_runtime.rs");
+    let mobile_install = mobile
+        .find("install_production_graph")
+        .expect("mobile should install the Dejavu graph");
+    let mobile_startup = mobile
+        .find("trigger_startup")
+        .expect("mobile should retain the startup trigger");
+    assert!(mobile_install < mobile_startup);
+    assert!(mobile.contains("PathGuardCoordinatorOwner::default()"));
+    assert!(mobile.contains("acknowledge_path_guard"));
+
+    let desktop = source("src/desktop_runtime.rs");
+    let mcp_branch = desktop
+        .find("launch_mode == DesktopLaunchMode::McpService")
+        .expect("desktop should isolate MCP service mode");
+    let desktop_install = desktop
+        .find("install_production_graph")
+        .expect("MCP service mode should retain the legacy Dejavu graph");
+    assert!(mcp_branch < desktop_install);
+    assert!(!desktop.contains("trigger_startup()"));
+    assert!(desktop.contains("PathGuardCoordinatorOwner::default()"));
+    assert!(desktop.contains("acknowledge_path_guard"));
 
     let graph = source("src/dejavu_sync.rs");
     let startup_cleanup = graph

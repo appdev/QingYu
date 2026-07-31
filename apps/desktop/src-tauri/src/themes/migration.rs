@@ -23,6 +23,14 @@ pub(crate) fn initialize_catalog<R: Runtime>(
         .map_err(|error| ThemeError::new(ThemeErrorCode::Io, error.to_string()))?
         .join("themes");
     let catalog = ThemeCatalog::at(root);
+    #[cfg(desktop)]
+    if app
+        .try_state::<std::sync::Arc<crate::desktop_kernel_runtime::DesktopKernelRuntimeState>>()
+        .is_some()
+    {
+        let seed_diagnostics = initialize_catalog_files(&catalog, 0)?;
+        return scan_with_diagnostics(&catalog, seed_diagnostics);
+    }
     let settings_owner = app.state::<KernelSettingsOwner>();
     let settings = settings_owner
         .read_theme_catalog_settings()

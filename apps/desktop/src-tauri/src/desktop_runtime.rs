@@ -1,4 +1,4 @@
-use std::{ffi::OsStr, path::Path, time::Duration};
+use std::{ffi::OsStr, path::Path, sync::Arc, time::Duration};
 
 use crate::app_exit::handle_app_exit_requested;
 use crate::dejavu_sync::commands::{DejavuSchedulerOwner, DejavuSyncServiceOwner};
@@ -61,6 +61,89 @@ where
 
 fn should_reveal_single_instance(mode: DesktopLaunchMode) -> bool {
     mode == DesktopLaunchMode::Normal
+}
+
+fn guarded_desktop_invoke_handler<R, Handler>(
+    launch_mode: DesktopLaunchMode,
+    handler: Handler,
+) -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Send + Sync + 'static
+where
+    R: tauri::Runtime,
+    Handler: Fn(tauri::ipc::Invoke<R>) -> bool + Send + Sync + 'static,
+{
+    move |invoke| {
+        if launch_mode == DesktopLaunchMode::Normal
+            && !crate::writer_authority::normal_desktop_command_is_allowed(invoke.message.command())
+        {
+            invoke.resolver.reject("native-command-unavailable");
+            true
+        } else {
+            handler(invoke)
+        }
+    }
+}
+
+fn desktop_renderer_origin(url: &tauri::Url) -> Result<String, String> {
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err("desktop renderer origin is unavailable".to_owned());
+    }
+    if !matches!(url.scheme(), "http" | "https" | "tauri") {
+        return Err("desktop renderer origin is unavailable".to_owned());
+    }
+    let host = url
+        .host_str()
+        .filter(|host| !host.is_empty())
+        .ok_or_else(|| "desktop renderer origin is unavailable".to_owned())?;
+    let authority_host = if host.contains(':') {
+        format!("[{host}]")
+    } else {
+        host.to_owned()
+    };
+    let authority = match url.port() {
+        Some(port) => format!("{authority_host}:{port}"),
+        None => authority_host,
+    };
+    Ok(format!("{}://{authority}", url.scheme()))
+}
+
+fn main_renderer_origin(app: &tauri::AppHandle) -> Result<String, String> {
+    let window = app
+        .get_webview_window("main")
+        .ok_or_else(|| "desktop renderer origin is unavailable".to_owned())?;
+    let url = window
+        .url()
+        .map_err(|_| "desktop renderer origin is unavailable".to_owned())?;
+    desktop_renderer_origin(&url)
+}
+
+#[tauri::command]
+fn read_desktop_kernel_startup_state(
+    runtime: tauri::State<'_, Arc<crate::desktop_kernel_runtime::DesktopKernelRuntimeState>>,
+) -> Result<crate::desktop_kernel_runtime::DesktopKernelStartupSnapshot, String> {
+    runtime.snapshot()
+}
+
+#[tauri::command]
+fn initialize_desktop_kernel_workspace(
+    app: tauri::AppHandle,
+    runtime: tauri::State<'_, Arc<crate::desktop_kernel_runtime::DesktopKernelRuntimeState>>,
+    path: String,
+) -> Result<(), String> {
+    let origin = main_renderer_origin(&app)?;
+    let workspace_root = if runtime.is_invalid()? {
+        crate::primary_workspace::recover_invalid_desktop_primary_workspace(&app, Path::new(&path))?
+    } else {
+        crate::primary_workspace::initialize_desktop_primary_workspace(&app, Path::new(&path))?
+    };
+    Arc::clone(runtime.inner()).start_selected(&app, workspace_root, origin)
+}
+
+#[tauri::command]
+fn retry_desktop_kernel_workspace(
+    app: tauri::AppHandle,
+    runtime: tauri::State<'_, Arc<crate::desktop_kernel_runtime::DesktopKernelRuntimeState>>,
+) -> Result<(), String> {
+    Arc::clone(runtime.inner()).retry_selected(&app)
 }
 
 fn activate_normal_ui<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
@@ -251,7 +334,8 @@ pub(crate) fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(move |app| {
-            app.manage(crate::kernel_bootstrap::NativeKernelBootstrapOwner::new());
+            let bootstrap = crate::kernel_bootstrap::NativeKernelBootstrapOwner::new();
+            app.manage(bootstrap.clone());
             if launch_mode == DesktopLaunchMode::Normal {
                 crate::runtime_store::install_desktop_runtime_store(&app.handle())
                     .map_err(std::io::Error::other)?;
@@ -264,13 +348,63 @@ pub(crate) fn run() {
                 .initialize_startup_language(startup_language.as_code())
                 .map_err(|error| std::io::Error::other(error.to_string()))?;
             app.manage(settings_owner);
-            if let Err(error) = crate::dejavu_sync::install_production_graph(&app.handle()) {
-                eprintln!("QingYu Dejavu sync initialization failed: {error}");
+            if let Err(error) = crate::themes::initialize_catalog_before_kernel(&app.handle()) {
+                eprintln!("QingYu theme catalog initialization failed: {error}");
             }
             if launch_mode == DesktopLaunchMode::McpService {
+                if let Err(error) = crate::dejavu_sync::install_production_graph(&app.handle()) {
+                    eprintln!("QingYu Dejavu sync initialization failed: {error}");
+                }
                 #[cfg(target_os = "macos")]
                 app.set_activation_policy(tauri::ActivationPolicy::Prohibited);
+                match mcp::initialize(&app.handle()) {
+                    Ok(state) => {
+                        app.manage(state);
+                    }
+                    Err(error) => {
+                        eprintln!("QingYu MCP initialization failed: {error}");
+                    }
+                }
             } else {
+                let resolution =
+                    crate::primary_workspace::resolve_desktop_primary_workspace(&app.handle());
+                let (startup_status, selected) = match resolution {
+                    Ok(crate::primary_workspace::DesktopPrimaryWorkspaceResolution::Unselected) => (
+                        crate::desktop_kernel_runtime::DesktopKernelStartupStatus::Unselected,
+                        None,
+                    ),
+                    Ok(crate::primary_workspace::DesktopPrimaryWorkspaceResolution::Selected(
+                        workspace_root,
+                    )) => (
+                        crate::desktop_kernel_runtime::DesktopKernelStartupStatus::Unavailable,
+                        Some(workspace_root),
+                    ),
+                    Err(crate::primary_workspace::DesktopPrimaryWorkspaceResolutionError::Invalid) => (
+                        crate::desktop_kernel_runtime::DesktopKernelStartupStatus::Invalid,
+                        None,
+                    ),
+                    Err(
+                        crate::primary_workspace::DesktopPrimaryWorkspaceResolutionError::Unavailable,
+                    ) => (
+                        crate::desktop_kernel_runtime::DesktopKernelStartupStatus::Unavailable,
+                        None,
+                    ),
+                };
+                let runtime = Arc::new(
+                    crate::desktop_kernel_runtime::DesktopKernelRuntimeState::new(
+                        bootstrap,
+                        startup_status,
+                    ),
+                );
+                app.manage(runtime.clone());
+                if let Some(workspace_root) = selected {
+                    let start_result = main_renderer_origin(&app.handle()).and_then(|origin| {
+                        runtime.start_selected(&app.handle(), workspace_root, origin)
+                    });
+                    if let Err(error) = start_result {
+                        eprintln!("QingYu Kernel host initialization failed: {error}");
+                    }
+                }
                 apply_main_window_chrome(app);
                 spawn_startup_window_reveal_fallback(&app.handle());
                 if let Some(window) = app.get_webview_window("main") {
@@ -278,15 +412,6 @@ pub(crate) fn run() {
                 }
                 let paths = opened_markdown_paths_from_args(std::env::args());
                 reveal_or_open_markdown_paths(&app.handle(), paths, false);
-                app.state::<DejavuSchedulerOwner>().trigger_startup();
-            }
-            match mcp::initialize(&app.handle()) {
-                Ok(state) => {
-                    app.manage(state);
-                }
-                Err(error) => {
-                    eprintln!("QingYu MCP initialization failed: {error}");
-                }
             }
             Ok(())
         })
@@ -322,8 +447,13 @@ pub(crate) fn run() {
 
             emit_native_menu_command_payload(app, payload);
         })
-        .invoke_handler(tauri::generate_handler![
+        .invoke_handler(guarded_desktop_invoke_handler::<tauri::Wry, _>(
+            launch_mode,
+            tauri::generate_handler![
             crate::kernel_bootstrap::read_native_kernel_bootstrap,
+            read_desktop_kernel_startup_state,
+            initialize_desktop_kernel_workspace,
+            retry_desktop_kernel_workspace,
             crate::mcp::get_mcp_settings,
             crate::mcp::update_mcp_settings,
             crate::mcp::set_mcp_primary_workspace,
@@ -448,14 +578,31 @@ pub(crate) fn run() {
             crate::managed_workspace::resolve_managed_workspace_root,
             crate::managed_workspace::list_managed_workspace_names,
             crate::app_logs::open_log_folder,
-        ])
+            ],
+        ))
         .build(context)
         .expect("error while building QingYu")
-        .run(|app, event| match event {
+        .run(move |app, event| match event {
             tauri::RunEvent::ExitRequested { code, api, .. } => {
-                handle_app_exit_requested(app, code, api);
+                handle_app_exit_requested(
+                    app,
+                    code,
+                    api,
+                    launch_mode == DesktopLaunchMode::McpService,
+                );
             }
             tauri::RunEvent::Exit => {
+                if let Some(runtime) = app.try_state::<
+                    Arc<crate::desktop_kernel_runtime::DesktopKernelRuntimeState>,
+                >() {
+                    if let Some(owner) = runtime.take_owner_for_shutdown() {
+                        tauri::async_runtime::block_on(async move {
+                            if let Err(error) = owner.stop().await {
+                                eprintln!("QingYu Kernel graceful shutdown failed: {error:?}");
+                            }
+                        });
+                    }
+                }
                 if let Some(state) = app.try_state::<std::sync::Arc<mcp::McpState>>() {
                     let controller = state.controller.clone();
                     tauri::async_runtime::block_on(async move {
@@ -502,6 +649,43 @@ mod tests {
             super::test_desktop_launch_mode(&["qingyu", "mcp", "serve", "unexpected"]),
             "normal"
         );
+    }
+
+    #[test]
+    fn renderer_origin_keeps_exact_scheme_and_authority_only() {
+        assert_eq!(
+            super::desktop_renderer_origin(
+                &tauri::Url::parse("http://127.0.0.1:1420/editor?draft=1#selection").unwrap()
+            )
+            .unwrap(),
+            "http://127.0.0.1:1420"
+        );
+        assert_eq!(
+            super::desktop_renderer_origin(
+                &tauri::Url::parse("tauri://localhost/settings").unwrap()
+            )
+            .unwrap(),
+            "tauri://localhost"
+        );
+        assert_eq!(
+            super::desktop_renderer_origin(
+                &tauri::Url::parse("http://tauri.localhost/index.html").unwrap()
+            )
+            .unwrap(),
+            "http://tauri.localhost"
+        );
+    }
+
+    #[test]
+    fn renderer_origin_rejects_opaque_hostless_and_credentialed_urls() {
+        assert!(
+            super::desktop_renderer_origin(&tauri::Url::parse("file:///index.html").unwrap())
+                .is_err()
+        );
+        assert!(super::desktop_renderer_origin(
+            &tauri::Url::parse("http://user@127.0.0.1:1420/").unwrap()
+        )
+        .is_err());
     }
 
     #[test]
@@ -728,7 +912,7 @@ mod tests {
     fn macos_open_events_use_the_restore_capable_reveal_route() {
         let lib_source = include_str!("desktop_runtime.rs");
         let run_event_start = lib_source
-            .find(".run(|app, event| match event")
+            .find(".run(move |app, event| match event")
             .expect("desktop run-event handler should exist");
         let run_event_source = &lib_source[run_event_start..];
         let macos_open_arm = run_event_source
@@ -866,7 +1050,7 @@ mod tests {
             .expect("Tauri invoke handler should be registered");
         let handler_source = &lib_source[handler_start
             ..lib_source[handler_start..]
-                .find("])\n")
+                .find("],\n        ))")
                 .map(|offset| handler_start + offset)
                 .expect("Tauri invoke handler should be closed")];
 

@@ -249,6 +249,7 @@ impl DejavuSchedulerOwner {
             .is_some_and(|scheduler| scheduler.record_file_change(root, path).unwrap_or(false))
     }
 
+    #[allow(dead_code)]
     pub(crate) fn trigger_startup(&self) {
         self.roots.lock().unwrap().startup_pending = true;
         self.consume_pending_startup();
