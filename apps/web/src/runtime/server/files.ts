@@ -71,12 +71,6 @@ function createServerKernelImageSource(
       active.add(source);
       return source;
     },
-    materializeCreated: async (_resource, body) => {
-      assertImageSourceActive(undefined, lifecycle.signal);
-      const source = objectUrls.createObjectURL(body.body);
-      active.add(source);
-      return source;
-    },
     release: (source: string) => {
       if (!active.delete(source)) return undefined;
       objectUrls.revokeObjectURL(source);

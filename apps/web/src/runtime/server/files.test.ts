@@ -200,95 +200,270 @@ describe("server file facade", () => {
     expect(kernel.resources.open).toHaveBeenCalledTimes(2);
   });
 
-  it.each(["first open", "full reload"])(
-    "materializes seven authenticated image resources after a transient auth bootstrap failure on %s",
-    async () => {
+  it("rematerializes seven resources through a real runtime teardown and reload", async () => {
+    vi.useFakeTimers();
+    try {
+      const kernel = kernelPort();
+      const imageEntries = sevenImageEntries();
+      vi.mocked(kernel.documents.list).mockImplementation(async (input) => ({
+        items: input.parent === ""
+          ? [
+              entry({
+                kind: "directory",
+                locator: "assets-folder",
+                name: "assets",
+                relativePath: "assets",
+              }),
+              entry({ locator: "document-1", name: "note.md", relativePath: "note.md" }),
+            ]
+          : [],
+        nextCursor: null,
+        workspaceGeneration: generation,
+      }));
+      vi.mocked(kernel.resources.list).mockImplementation(async (input) => ({
+        items: input.parent === "assets" ? imageEntries : [],
+        workspaceGeneration: generation,
+      }));
+      let activeOpens = 0;
+      let maximumConcurrentOpens = 0;
+      let rejectNextOpen = true;
+      vi.mocked(kernel.resources.open).mockImplementation(async ({ id }) => {
+        activeOpens += 1;
+        maximumConcurrentOpens = Math.max(maximumConcurrentOpens, activeOpens);
+        try {
+          if (rejectNextOpen) {
+            rejectNextOpen = false;
+            throw authUnavailable();
+          }
+          return imageBody(imageEntries, id);
+        } finally {
+          activeOpens -= 1;
+        }
+      });
+      const createObjectURL = vi.fn((blob: Blob) => `blob:server-image-${blob.type}`);
+      const revokeObjectURL = vi.fn();
+
+      for (const cycle of ["first open", "full reload"]) {
+        const owner = createServerFileRuntimeOwner(kernel, {
+          objectUrls: { createObjectURL, revokeObjectURL },
+        });
+        const callsBefore = vi.mocked(kernel.resources.open).mock.calls.length;
+        const createdBefore = createObjectURL.mock.calls.length;
+        const revokedBefore = revokeObjectURL.mock.calls.length;
+        const loading = owner.files.loadMarkdownFilesForPath?.(serverWorkspaceRoot);
+        await vi.runAllTimersAsync();
+        await expect(loading, cycle).resolves.toHaveLength(2);
+
+        expect(kernel.resources.open, cycle).toHaveBeenCalledTimes(callsBefore + 8);
+        expect(createObjectURL, cycle).toHaveBeenCalledTimes(createdBefore + 7);
+        for (const imageEntry of imageEntries) {
+          if (imageEntry.entryType !== "resource") continue;
+          expect(owner.files.resolveMarkdownImageSrc?.(
+            `${serverWorkspaceRoot}/note.md`,
+            imageEntry.resource.relativePath,
+          ), cycle).toBe(`blob:server-image-${imageEntry.resource.mediaType}`);
+        }
+
+        owner.release();
+        expect(revokeObjectURL, cycle).toHaveBeenCalledTimes(revokedBefore + 7);
+        rejectNextOpen = true;
+      }
+      expect(maximumConcurrentOpens).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("retries the canonical reopen of a newly created image before publishing its URL", async () => {
+    vi.useFakeTimers();
+    try {
+      const kernel = kernelPort();
+      const createdEntry = resource({
+        id: "image-created.signature",
+        name: "created.png",
+        relativePath: "created.png",
+      });
+      if (createdEntry.entryType !== "resource") throw new Error("resource fixture expected");
+      vi.mocked(kernel.resources.create).mockResolvedValue(createdEntry.resource);
+      vi.mocked(kernel.resources.open)
+        .mockRejectedValueOnce(authUnavailable())
+        .mockResolvedValueOnce({
+          body: new Blob(["canonical"], { type: "image/png" }),
+          mediaType: "image/png",
+        });
+      const createObjectURL = vi.fn(() => "blob:created-after-auth-ready");
+      const owner = createServerFileRuntimeOwner(kernel, {
+        objectUrls: { createObjectURL, revokeObjectURL: vi.fn() },
+      });
+
+      const saving = owner.files.saveClipboardImage({
+        documentPath: `${serverWorkspaceRoot}/note.md`,
+        fileName: "created.png",
+        folder: "",
+        image: new File(["created"], "created.png", { type: "image/png" }),
+      });
+      await vi.runAllTimersAsync();
+      await expect(saving).resolves.toEqual({ alt: "created", src: "created.png" });
+
+      expect(kernel.resources.open).toHaveBeenCalledTimes(2);
+      expect(createObjectURL).toHaveBeenCalledOnce();
+      expect(owner.files.resolveMarkdownImageSrc?.(
+        `${serverWorkspaceRoot}/note.md`,
+        "created.png",
+      )).toBe("blob:created-after-auth-ready");
+      owner.release();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("retries a seven-image batch sequentially and publishes every canonical URL", async () => {
+    vi.useFakeTimers();
+    try {
+      const kernel = kernelPort();
+      const imageEntries = sevenImageEntries();
+      const created = imageEntries.map((entry) => {
+        if (entry.entryType !== "resource") throw new Error("resource fixture expected");
+        return entry.resource;
+      });
+      vi.mocked(kernel.resources.createBatch).mockResolvedValue(created);
+      let activeOpens = 0;
+      let maximumConcurrentOpens = 0;
+      let rejectNextOpen = true;
+      vi.mocked(kernel.resources.open).mockImplementation(async ({ id }) => {
+        activeOpens += 1;
+        maximumConcurrentOpens = Math.max(maximumConcurrentOpens, activeOpens);
+        try {
+          if (rejectNextOpen) {
+            rejectNextOpen = false;
+            throw authUnavailable();
+          }
+          return imageBody(imageEntries, id);
+        } finally {
+          activeOpens -= 1;
+        }
+      });
+      const createObjectURL = vi.fn((blob: Blob) => `blob:created-${blob.type}`);
+      const owner = createServerFileRuntimeOwner(kernel, {
+        objectUrls: { createObjectURL, revokeObjectURL: vi.fn() },
+      });
+
+      const saving = owner.files.saveClipboardImages(created.map((image) => ({
+        copyToStorage: true,
+        documentPath: `${serverWorkspaceRoot}/note.md`,
+        fileName: image.name,
+        folder: "assets",
+        image: new File([image.id], image.name, { type: image.mediaType }),
+      })));
+      await vi.runAllTimersAsync();
+      await expect(saving).resolves.toHaveLength(7);
+
+      expect(kernel.resources.open).toHaveBeenCalledTimes(8);
+      expect(maximumConcurrentOpens).toBe(1);
+      expect(createObjectURL).toHaveBeenCalledTimes(7);
+      for (const image of created) {
+        expect(owner.files.resolveMarkdownImageSrc?.(
+          `${serverWorkspaceRoot}/note.md`,
+          image.relativePath,
+        )).toBe(`blob:created-${image.mediaType}`);
+      }
+      owner.release();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each([
+    ["resource_not_found", 404],
+    ["kernel_not_ready", 503],
+  ] as const)("does not retry a newly created image after %s", async (code, status) => {
+    const kernel = kernelPort();
+    const createdEntry = resource({
+      id: "image-failed.signature",
+      name: "failed.png",
+      relativePath: "failed.png",
+    });
+    if (createdEntry.entryType !== "resource") throw new Error("resource fixture expected");
+    vi.mocked(kernel.resources.create).mockResolvedValue(createdEntry.resource);
+    vi.mocked(kernel.resources.open).mockRejectedValue(new KernelApiError({
+      code,
+      requestId: "123e4567-e89b-42d3-a456-426614174003",
+      status,
+    }));
+    const createObjectURL = vi.fn(() => "blob:must-not-exist");
+    const owner = createServerFileRuntimeOwner(kernel, {
+      objectUrls: { createObjectURL, revokeObjectURL: vi.fn() },
+    });
+
+    await expect(owner.files.saveClipboardImage({
+      documentPath: `${serverWorkspaceRoot}/note.md`,
+      fileName: "failed.png",
+      folder: "",
+      image: new File(["failed"], "failed.png", { type: "image/png" }),
+    })).rejects.toMatchObject({ code, status });
+    expect(kernel.resources.open).toHaveBeenCalledOnce();
+    expect(createObjectURL).not.toHaveBeenCalled();
+    owner.release();
+  });
+
+  it.each(["single image", "image batch"] as const)(
+    "cancels a newly created %s retry when its runtime owner unmounts",
+    async (kind) => {
       vi.useFakeTimers();
       try {
         const kernel = kernelPort();
-        const imageEntries = [
-          ["avif", "image/avif"],
-          ["bmp", "image/bmp"],
-          ["gif", "image/gif"],
-          ["jpg", "image/jpeg"],
-          ["png", "image/png"],
-          ["svg", "image/svg+xml"],
-          ["webp", "image/webp"],
-        ].map(([extension, mediaType], index) => resource({
-          id: `image-${index + 1}.signature`,
-          mediaType,
-          name: `asset.${extension}`,
-          relativePath: `assets/asset.${extension}`,
-        }));
-        vi.mocked(kernel.documents.list).mockImplementation(async (input) => ({
-          items: input.parent === ""
-            ? [
-                entry({
-                  kind: "directory",
-                  locator: "assets-folder",
-                  name: "assets",
-                  relativePath: "assets",
-                }),
-                entry({ locator: "document-1", name: "note.md", relativePath: "note.md" }),
-              ]
-            : [],
-          nextCursor: null,
-          workspaceGeneration: generation,
-        }));
-        vi.mocked(kernel.resources.list).mockImplementation(async (input) => ({
-          items: input.parent === "assets" ? imageEntries : [],
-          workspaceGeneration: generation,
-        }));
-        let activeOpens = 0;
-        let maximumConcurrentOpens = 0;
-        let openAttempt = 0;
-        vi.mocked(kernel.resources.open).mockImplementation(async ({ id }) => {
-          activeOpens += 1;
-          maximumConcurrentOpens = Math.max(maximumConcurrentOpens, activeOpens);
-          openAttempt += 1;
-          try {
-            if (openAttempt === 1) {
-              throw new KernelApiError({
-                code: "authentication_unavailable",
-                requestId: "123e4567-e89b-42d3-a456-426614174001",
-                status: 503,
-              });
-            }
-            const image = imageEntries.find((entry) =>
-              entry.entryType === "resource" && entry.resource.id === id
-            );
-            if (image?.entryType !== "resource") throw new Error("missing image fixture");
-            return {
-              body: new Blob([id], { type: image.resource.mediaType }),
-              mediaType: image.resource.mediaType,
-            };
-          } finally {
-            activeOpens -= 1;
-          }
+        const imageEntries = sevenImageEntries();
+        const created = imageEntries.map((entry) => {
+          if (entry.entryType !== "resource") throw new Error("resource fixture expected");
+          return entry.resource;
         });
-        const createObjectURL = vi.fn((blob: Blob) => `blob:server-image-${blob.type}`);
+        vi.mocked(kernel.resources.create).mockResolvedValue(created[0]!);
+        vi.mocked(kernel.resources.createBatch).mockResolvedValue(created);
+        let markOpenStarted: (() => unknown) | undefined;
+        const openStarted = new Promise<undefined>((resolve) => {
+          markOpenStarted = () => resolve(undefined);
+        });
+        vi.mocked(kernel.resources.open).mockImplementation(async () => {
+          markOpenStarted?.();
+          throw authUnavailable();
+        });
+        const createObjectURL = vi.fn(() => "blob:must-not-exist");
         const revokeObjectURL = vi.fn();
         const owner = createServerFileRuntimeOwner(kernel, {
           objectUrls: { createObjectURL, revokeObjectURL },
         });
-
-        const loading = owner.files.loadMarkdownFilesForPath?.(serverWorkspaceRoot);
-        await vi.runAllTimersAsync();
-        await expect(loading).resolves.toHaveLength(2);
-
-        expect(kernel.resources.open).toHaveBeenCalledTimes(8);
-        expect(maximumConcurrentOpens).toBe(1);
-        expect(createObjectURL).toHaveBeenCalledTimes(7);
-        for (const entry of imageEntries) {
-          if (entry.entryType !== "resource") continue;
-          expect(owner.files.resolveMarkdownImageSrc?.(
-            `${serverWorkspaceRoot}/note.md`,
-            entry.resource.relativePath,
-          )).toBe(`blob:server-image-${entry.resource.mediaType}`);
-        }
-
+        const saving = kind === "single image"
+          ? owner.files.saveClipboardImage({
+              documentPath: `${serverWorkspaceRoot}/note.md`,
+              fileName: created[0]!.name,
+              folder: "assets",
+              image: new File([created[0]!.id], created[0]!.name, { type: created[0]!.mediaType }),
+            })
+          : owner.files.saveClipboardImages(created.map((image) => ({
+              copyToStorage: true,
+              documentPath: `${serverWorkspaceRoot}/note.md`,
+              fileName: image.name,
+              folder: "assets",
+              image: new File([image.id], image.name, { type: image.mediaType }),
+            })));
+        const outcome = saving.then(
+          (value) => ({ error: null, value }),
+          (error: unknown) => ({ error, value: null }),
+        );
+        await openStarted;
         owner.release();
-        expect(revokeObjectURL).toHaveBeenCalledTimes(7);
+        const result = await outcome;
+        await vi.runAllTimersAsync();
+
+        if (kind === "single image") {
+          expect(result.error).toEqual(expect.objectContaining({ name: "AbortError" }));
+        } else {
+          expect(result.error).toBeNull();
+          expect(result.value).toHaveLength(7);
+        }
+        expect(kernel.resources.open).toHaveBeenCalledOnce();
+        expect(createObjectURL).not.toHaveBeenCalled();
+        expect(revokeObjectURL).not.toHaveBeenCalled();
       } finally {
         vi.useRealTimers();
       }
@@ -1015,4 +1190,35 @@ function authUnavailable() {
     requestId: "123e4567-e89b-42d3-a456-426614174001",
     status: 503,
   });
+}
+
+function sevenImageEntries() {
+  return [
+    ["avif", "image/avif"],
+    ["bmp", "image/bmp"],
+    ["gif", "image/gif"],
+    ["jpg", "image/jpeg"],
+    ["png", "image/png"],
+    ["svg", "image/svg+xml"],
+    ["webp", "image/webp"],
+  ].map(([extension, mediaType], index) => resource({
+    id: `image-${index + 1}.signature`,
+    mediaType,
+    name: `asset.${extension}`,
+    relativePath: `assets/asset.${extension}`,
+  }));
+}
+
+function imageBody(
+  entries: ReturnType<typeof sevenImageEntries>,
+  id: string,
+) {
+  const image = entries.find((entry) =>
+    entry.entryType === "resource" && entry.resource.id === id
+  );
+  if (image?.entryType !== "resource") throw new Error("missing image fixture");
+  return {
+    body: new Blob([id], { type: image.resource.mediaType }),
+    mediaType: image.resource.mediaType,
+  };
 }

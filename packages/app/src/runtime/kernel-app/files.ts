@@ -52,10 +52,6 @@ export interface KernelImageSource {
     open: () => Promise<KernelResourceBody>,
     signal?: AbortSignal | null,
   ) => Promise<string | undefined>;
-  readonly materializeCreated?: (
-    resource: KernelResourceSnapshot,
-    body: KernelResourceBody,
-  ) => Promise<string | undefined>;
   readonly release: (source: string) => unknown;
   readonly close?: () => unknown;
 }
@@ -369,17 +365,17 @@ export function createKernelFileRuntimeOwner(
       imageResources.set(created.relativePath, created);
       if (options.imageSource !== undefined) {
         const epoch = imageResourceEpoch;
-        const opened = await resources.open({
-          id: created.id,
-          kind: "image",
-          workspaceGeneration: identity.generation,
+        const source = await options.imageSource.materialize(created, async () => {
+          const opened = await resources.open({
+            id: created.id,
+            kind: "image",
+            workspaceGeneration: identity.generation,
+          });
+          if (opened.mediaType !== created.mediaType) {
+            throw new Error("The Kernel resource media type changed.");
+          }
+          return opened;
         });
-        if (opened.mediaType !== created.mediaType) {
-          throw new Error("The Kernel resource media type changed.");
-        }
-        const source = options.imageSource.materializeCreated === undefined
-          ? await options.imageSource.materialize(created, async () => opened)
-          : await options.imageSource.materializeCreated(created, opened);
         if (source !== undefined) {
           if (released || epoch !== imageResourceEpoch) {
             releaseImageSource(source);
@@ -673,17 +669,17 @@ export function createKernelFileRuntimeOwner(
         try {
           for (const resource of created) {
             if (released || epoch !== imageResourceEpoch) throw new Error("The image source lease changed.");
-            const opened = await resources.open({
-              id: resource.id,
-              kind: "image",
-              workspaceGeneration: identity.generation,
+            const source = await options.imageSource.materialize(resource, async () => {
+              const opened = await resources.open({
+                id: resource.id,
+                kind: "image",
+                workspaceGeneration: identity.generation,
+              });
+              if (opened.mediaType !== resource.mediaType) {
+                throw new Error("The Kernel resource media type changed.");
+              }
+              return opened;
             });
-            if (opened.mediaType !== resource.mediaType) {
-              throw new Error("The Kernel resource media type changed.");
-            }
-            const source = options.imageSource.materializeCreated === undefined
-              ? await options.imageSource.materialize(resource, async () => opened)
-              : await options.imageSource.materializeCreated(resource, opened);
             if (source !== undefined) {
               if (released || epoch !== imageResourceEpoch) {
                 releaseImageSource(source);
