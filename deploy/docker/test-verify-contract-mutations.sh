@@ -155,8 +155,8 @@ expect_runtime_compose_rejection() {
       service["cap_drop"] = []
     when "privilege"
       service["security_opt"] = []
-    when "public-port"
-      service["ports"] = ["3210:3210"]
+    when "wrong-port"
+      service["ports"] = ["${QINGYU_PUBLISHED_ADDRESS:-127.0.0.1}:3210:9999"]
     when "host-data"
       service["volumes"] = ["./data:/data"]
     when "weak-tmpfs"
@@ -190,8 +190,8 @@ expect_runtime_compose_rejection retained-capability \
   'Runtime Compose cap_drop must contain only ALL' capability
 expect_runtime_compose_rejection privilege-escalation \
   'Runtime Compose security_opt must contain only no-new-privileges:true' privilege
-expect_runtime_compose_rejection public-port \
-  'Runtime Compose must publish only Kernel port 3210 on loopback' public-port
+expect_runtime_compose_rejection wrong-port \
+  'Runtime Compose must publish only Kernel port 3210 on the explicit/default bind address' wrong-port
 expect_runtime_compose_rejection host-data \
   'Runtime Compose must mount only qingyu-data at fixed /data' host-data
 expect_runtime_compose_rejection weak-tmpfs \

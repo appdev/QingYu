@@ -311,7 +311,7 @@ where
             }
             let parsed = reqwest::Url::parse(&public_origin)
                 .map_err(|_| KernelCommandError::TransportPolicy)?;
-            if parsed.scheme() != "https"
+            if !matches!(parsed.scheme(), "http" | "https")
                 || !parsed.username().is_empty()
                 || parsed.password().is_some()
                 || parsed.path() != "/"
@@ -325,7 +325,8 @@ where
                 return Err(KernelCommandError::TransportPolicy);
             }
             let exact_host = canonical_origin
-                .strip_prefix("https://")
+                .split_once("://")
+                .map(|(_scheme, authority)| authority)
                 .filter(|authority| !authority.is_empty())
                 .ok_or(KernelCommandError::TransportPolicy)?
                 .to_owned();
@@ -547,8 +548,12 @@ mod tests {
     }
 
     #[test]
-    fn server_command_requires_one_exact_https_public_origin() {
+    fn server_command_requires_one_exact_http_or_https_public_origin() {
         for (public_origin, exact_host) in [
+            ("http://notes.example.com", "notes.example.com"),
+            ("http://notes.example.com:3210", "notes.example.com:3210"),
+            ("http://192.0.2.1", "192.0.2.1"),
+            ("http://[2001:db8::1]", "[2001:db8::1]"),
             ("https://notes.example.com", "notes.example.com"),
             ("https://notes.example.com:8443", "notes.example.com:8443"),
             ("https://192.0.2.1", "192.0.2.1"),
@@ -571,12 +576,6 @@ mod tests {
                 "qingyu-kernel",
                 "server",
                 "--public-origin",
-                "http://notes.example.com",
-            ],
-            vec![
-                "qingyu-kernel",
-                "server",
-                "--public-origin",
                 "https://notes.example.com/path",
             ],
             vec![
@@ -589,7 +588,19 @@ mod tests {
                 "qingyu-kernel",
                 "server",
                 "--public-origin",
+                "http://notes.example.com/",
+            ],
+            vec![
+                "qingyu-kernel",
+                "server",
+                "--public-origin",
                 "https://notes.example.com:443",
+            ],
+            vec![
+                "qingyu-kernel",
+                "server",
+                "--public-origin",
+                "http://notes.example.com:80",
             ],
             vec![
                 "qingyu-kernel",

@@ -2976,12 +2976,23 @@
       }
     },
     "securitySchemes": {
-      "browserSession": {
+      "browserSessionHttp": {
+        "in": "cookie",
+        "name": "qingyu_session",
+        "type": "apiKey"
+      },
+      "browserSessionHttps": {
         "in": "cookie",
         "name": "__Host-qingyu_session",
         "type": "apiKey"
       },
-      "csrfToken": {
+      "csrfTokenHttp": {
+        "in": "header",
+        "name": "X-CSRF-Token",
+        "type": "apiKey",
+        "x-csrf-cookie-name": "qingyu_csrf"
+      },
+      "csrfTokenHttps": {
         "in": "header",
         "name": "X-CSRF-Token",
         "type": "apiKey",
@@ -3483,8 +3494,12 @@
         },
         "security": [
           {
-            "browserSession": [],
-            "csrfToken": []
+            "browserSessionHttps": [],
+            "csrfTokenHttps": []
+          },
+          {
+            "browserSessionHttp": [],
+            "csrfTokenHttp": []
           }
         ]
       }
@@ -3762,8 +3777,12 @@
         },
         "security": [
           {
-            "browserSession": [],
-            "csrfToken": []
+            "browserSessionHttps": [],
+            "csrfTokenHttps": []
+          },
+          {
+            "browserSessionHttp": [],
+            "csrfTokenHttp": []
           }
         ],
         "x-body-limit-bytes": 16384
@@ -3937,7 +3956,10 @@
         },
         "security": [
           {
-            "browserSession": []
+            "browserSessionHttps": []
+          },
+          {
+            "browserSessionHttp": []
           }
         ]
       },
@@ -4657,7 +4679,10 @@
             "nativeBearer": []
           },
           {
-            "browserSession": []
+            "browserSessionHttps": []
+          },
+          {
+            "browserSessionHttp": []
           }
         ]
       },
@@ -5022,8 +5047,12 @@
             "nativeBearer": []
           },
           {
-            "browserSession": [],
-            "csrfToken": []
+            "browserSessionHttps": [],
+            "csrfTokenHttps": []
+          },
+          {
+            "browserSessionHttp": [],
+            "csrfTokenHttp": []
           }
         ],
         "x-body-limit-bytes": 104857600
@@ -5352,7 +5381,10 @@
             "nativeBearer": []
           },
           {
-            "browserSession": []
+            "browserSessionHttps": []
+          },
+          {
+            "browserSessionHttp": []
           }
         ]
       },
@@ -5759,8 +5791,12 @@
             "nativeBearer": []
           },
           {
-            "browserSession": [],
-            "csrfToken": []
+            "browserSessionHttps": [],
+            "csrfTokenHttps": []
+          },
+          {
+            "browserSessionHttp": [],
+            "csrfTokenHttp": []
           }
         ],
         "x-body-limit-bytes": 104857600
@@ -6093,8 +6129,12 @@
             "nativeBearer": []
           },
           {
-            "browserSession": [],
-            "csrfToken": []
+            "browserSessionHttps": [],
+            "csrfTokenHttps": []
+          },
+          {
+            "browserSessionHttp": [],
+            "csrfTokenHttp": []
           }
         ],
         "x-body-limit-bytes": 1048576
@@ -6404,7 +6444,10 @@
             "nativeBearer": []
           },
           {
-            "browserSession": []
+            "browserSessionHttps": []
+          },
+          {
+            "browserSessionHttp": []
           }
         ]
       }
@@ -6775,7 +6818,10 @@
             "nativeBearer": []
           },
           {
-            "browserSession": []
+            "browserSessionHttps": []
+          },
+          {
+            "browserSessionHttp": []
           }
         ]
       }
@@ -7192,8 +7238,12 @@
             "nativeBearer": []
           },
           {
-            "browserSession": [],
-            "csrfToken": []
+            "browserSessionHttps": [],
+            "csrfTokenHttps": []
+          },
+          {
+            "browserSessionHttp": [],
+            "csrfTokenHttp": []
           }
         ],
         "x-body-limit-bytes": 1048576
@@ -7536,8 +7586,12 @@
             "nativeBearer": []
           },
           {
-            "browserSession": [],
-            "csrfToken": []
+            "browserSessionHttps": [],
+            "csrfTokenHttps": []
+          },
+          {
+            "browserSessionHttp": [],
+            "csrfTokenHttp": []
           }
         ],
         "x-body-limit-bytes": 1048576
@@ -7813,7 +7867,10 @@
             "nativeBearer": []
           },
           {
-            "browserSession": []
+            "browserSessionHttps": []
+          },
+          {
+            "browserSessionHttp": []
           }
         ]
       }
@@ -8088,7 +8145,10 @@
             "nativeBearer": []
           },
           {
-            "browserSession": []
+            "browserSessionHttps": []
+          },
+          {
+            "browserSessionHttp": []
           }
         ]
       }
@@ -8431,7 +8491,10 @@
             "nativeBearer": []
           },
           {
-            "browserSession": []
+            "browserSessionHttps": []
+          },
+          {
+            "browserSessionHttp": []
           }
         ]
       }
@@ -8608,7 +8671,10 @@
             "nativeBearer": []
           },
           {
-            "browserSession": []
+            "browserSessionHttps": []
+          },
+          {
+            "browserSessionHttp": []
           }
         ]
       }
@@ -8917,7 +8983,10 @@
             "nativeBearer": []
           },
           {
-            "browserSession": []
+            "browserSessionHttps": []
+          },
+          {
+            "browserSessionHttp": []
           }
         ]
       }
@@ -9094,7 +9163,10 @@
             "nativeBearer": []
           },
           {
-            "browserSession": []
+            "browserSessionHttps": []
+          },
+          {
+            "browserSessionHttp": []
           }
         ]
       },
@@ -9385,8 +9457,12 @@
             "nativeBearer": []
           },
           {
-            "browserSession": [],
-            "csrfToken": []
+            "browserSessionHttps": [],
+            "csrfTokenHttps": []
+          },
+          {
+            "browserSessionHttp": [],
+            "csrfTokenHttp": []
           }
         ],
         "x-body-limit-bytes": 1048576
@@ -9633,7 +9709,10 @@
             "nativeBearer": []
           },
           {
-            "browserSession": []
+            "browserSessionHttps": []
+          },
+          {
+            "browserSessionHttp": []
           }
         ]
       },
@@ -9959,8 +10038,12 @@
             "nativeBearer": []
           },
           {
-            "browserSession": [],
-            "csrfToken": []
+            "browserSessionHttps": [],
+            "csrfTokenHttps": []
+          },
+          {
+            "browserSessionHttp": [],
+            "csrfTokenHttp": []
           }
         ],
         "x-body-limit-bytes": 1048576
@@ -10289,8 +10372,12 @@
             "nativeBearer": []
           },
           {
-            "browserSession": [],
-            "csrfToken": []
+            "browserSessionHttps": [],
+            "csrfTokenHttps": []
+          },
+          {
+            "browserSessionHttp": [],
+            "csrfTokenHttp": []
           }
         ],
         "x-body-limit-bytes": 1048576
@@ -10550,8 +10637,12 @@
             "nativeBearer": []
           },
           {
-            "browserSession": [],
-            "csrfToken": []
+            "browserSessionHttps": [],
+            "csrfTokenHttps": []
+          },
+          {
+            "browserSessionHttp": [],
+            "csrfTokenHttp": []
           }
         ],
         "x-body-limit-bytes": 1048576
@@ -10729,7 +10820,10 @@
             "nativeBearer": []
           },
           {
-            "browserSession": []
+            "browserSessionHttps": []
+          },
+          {
+            "browserSessionHttp": []
           }
         ]
       }
@@ -10906,7 +11000,10 @@
             "nativeBearer": []
           },
           {
-            "browserSession": []
+            "browserSessionHttps": []
+          },
+          {
+            "browserSessionHttp": []
           }
         ]
       }
@@ -11119,7 +11216,10 @@
             "nativeBearer": []
           },
           {
-            "browserSession": []
+            "browserSessionHttps": []
+          },
+          {
+            "browserSessionHttp": []
           }
         ]
       }

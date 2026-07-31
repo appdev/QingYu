@@ -16,10 +16,10 @@ export interface ServerKernelTransportOptions {
 }
 
 export function createServerKernelTransports(options: ServerKernelTransportOptions) {
-  const browserOrigin = new URL("/", options.browserOrigin);
+  const browserOrigin = new URL(options.browserOrigin);
   const authentication = {
     browserOrigin,
-    getCsrfToken: () => readServerCsrfCookie(options.readCookie()),
+    getCsrfToken: () => readServerCsrfCookie(options.readCookie(), browserOrigin),
     kind: "browser-session",
   } satisfies KernelAuthentication;
 

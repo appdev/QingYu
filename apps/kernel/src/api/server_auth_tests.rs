@@ -41,6 +41,7 @@ const NEW_OWNER_PASSWORD: &str = "new correct horse battery staple";
 struct ServerApiFixture {
     router: Router,
     native_credential: String,
+    origin: String,
     _root: tempfile::TempDir,
     _runtime: Arc<KernelRuntime>,
 }
@@ -51,6 +52,10 @@ impl ServerApiFixture {
     }
 
     fn with_session_lifetime(session_lifetime: Duration) -> Self {
+        Self::with_origin_and_session_lifetime(ORIGIN, session_lifetime)
+    }
+
+    fn with_origin_and_session_lifetime(origin: &str, session_lifetime: Duration) -> Self {
         let root = tempdir().unwrap();
         let data = root.path().join("data");
         let cache = root.path().join("cache");
@@ -68,11 +73,12 @@ impl ServerApiFixture {
         let activation = process.activate(security, environment).unwrap();
         let router = build_server_router(
             activation,
-            TransportPolicy::same_origin(HOST, ORIGIN).unwrap(),
+            TransportPolicy::same_origin(HOST, origin).unwrap(),
         );
         Self {
             router,
             native_credential,
+            origin: origin.to_owned(),
             _root: root,
             _runtime: runtime,
         }
@@ -83,7 +89,7 @@ impl ServerApiFixture {
             .method(method)
             .uri(path)
             .header(header::HOST, HOST)
-            .header(header::ORIGIN, ORIGIN)
+            .header(header::ORIGIN, &self.origin)
             .body(Body::empty())
             .unwrap();
         request.extensions_mut().insert(ConnectInfo(
@@ -102,6 +108,16 @@ impl ServerApiFixture {
     }
 
     async fn initialize(&self) -> (String, String) {
+        let response = self.initialize_response().await;
+        let cookies = session_cookie_pair(&response);
+        assert_eq!(
+            response_json(response).await,
+            json!({ "state": "authenticated" })
+        );
+        cookies
+    }
+
+    async fn initialize_response(&self) -> Response {
         let response = self
             .router
             .clone()
@@ -116,12 +132,7 @@ impl ServerApiFixture {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::CREATED);
-        let cookies = session_cookie_pair(&response);
-        assert_eq!(
-            response_json(response).await,
-            json!({ "state": "authenticated" })
-        );
-        cookies
+        response
     }
 
     async fn login(&self, password: &str) -> Response {
@@ -245,6 +256,205 @@ async fn server_status_initialize_and_session_routes_use_only_host_cookies() {
     assert_eq!(
         response_json(get_session).await,
         json!({ "state": "authenticated" })
+    );
+}
+
+#[tokio::test]
+async fn http_server_uses_non_host_cookies_without_secure_and_rejects_https_cookie_names() {
+    let api = ServerApiFixture::with_origin_and_session_lifetime(
+        "http://127.0.0.1:43123",
+        Duration::from_secs(300),
+    );
+    let response = api.initialize_response().await;
+    let cookies = response
+        .headers()
+        .get_all(header::SET_COOKIE)
+        .iter()
+        .map(|value| value.to_str().unwrap().to_owned())
+        .collect::<Vec<_>>();
+
+    assert_eq!(cookies.len(), 2);
+    let session = cookies
+        .iter()
+        .find(|value| value.starts_with("qingyu_session="))
+        .expect("HTTP session cookie");
+    let csrf = cookies
+        .iter()
+        .find(|value| value.starts_with("qingyu_csrf="))
+        .expect("HTTP CSRF cookie");
+    assert!(session.contains("; Path=/"));
+    assert!(session.contains("; HttpOnly"));
+    assert!(session.contains("; SameSite=Strict"));
+    assert!(!session.contains("; Secure"));
+    assert!(!session.contains("Domain="));
+    assert!(csrf.contains("; Path=/"));
+    assert!(csrf.contains("; SameSite=Strict"));
+    assert!(!csrf.contains("; HttpOnly"));
+    assert!(!csrf.contains("; Secure"));
+    assert!(!csrf.contains("Domain="));
+    assert!(cookies.iter().all(|value| !value.starts_with("__Host-")));
+
+    let session_pair = session.split(';').next().unwrap().to_owned();
+    let csrf_pair = csrf.split(';').next().unwrap().to_owned();
+    let mut accepted = api.request("GET", "/api/v1/auth/session");
+    accepted.headers_mut().insert(
+        header::COOKIE,
+        cookie_header(&session_pair, &csrf_pair).parse().unwrap(),
+    );
+    assert_eq!(
+        api.router.clone().oneshot(accepted).await.unwrap().status(),
+        StatusCode::OK
+    );
+
+    let mut mismatched = api.request("GET", "/api/v1/auth/session");
+    let session_value = session_pair.split_once('=').unwrap().1;
+    let csrf_token = csrf_value(&csrf_pair);
+    mismatched.headers_mut().insert(
+        header::COOKIE,
+        format!("__Host-qingyu_session={session_value}; __Host-qingyu_csrf={csrf_token}")
+            .parse()
+            .unwrap(),
+    );
+    assert_eq!(
+        api.router
+            .clone()
+            .oneshot(mismatched)
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+
+    let mut coexisting = api.request("GET", "/api/v1/auth/session");
+    coexisting.headers_mut().insert(
+        header::COOKIE,
+        format!(
+            "{}; __Host-qingyu_session={session_value}",
+            cookie_header(&session_pair, &csrf_pair)
+        )
+        .parse()
+        .unwrap(),
+    );
+    assert_eq!(
+        api.router
+            .clone()
+            .oneshot(coexisting)
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::OK
+    );
+
+    let mut wrong_host = api.request("GET", "/api/v1/auth/status");
+    wrong_host
+        .headers_mut()
+        .insert(header::HOST, "attacker.invalid".parse().unwrap());
+    assert_eq!(
+        api.router
+            .clone()
+            .oneshot(wrong_host)
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+
+    let mut wrong_origin = api.request("GET", "/api/v1/auth/status");
+    wrong_origin
+        .headers_mut()
+        .insert(header::ORIGIN, "https://127.0.0.1:43123".parse().unwrap());
+    assert_eq!(
+        api.router
+            .clone()
+            .oneshot(wrong_origin)
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+
+    let mut wrong_csrf = api.request("POST", "/api/v1/auth/logout");
+    wrong_csrf.headers_mut().insert(
+        header::COOKIE,
+        cookie_header(&session_pair, &csrf_pair).parse().unwrap(),
+    );
+    wrong_csrf
+        .headers_mut()
+        .insert("x-csrf-token", "wrong-proof".parse().unwrap());
+    assert_eq!(
+        api.router
+            .clone()
+            .oneshot(wrong_csrf)
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+
+    let mut logout = api.request("POST", "/api/v1/auth/logout");
+    logout.headers_mut().insert(
+        header::COOKIE,
+        cookie_header(&session_pair, &csrf_pair).parse().unwrap(),
+    );
+    logout
+        .headers_mut()
+        .insert("x-csrf-token", csrf_value(&csrf_pair).parse().unwrap());
+    let logout = api.router.clone().oneshot(logout).await.unwrap();
+    assert_eq!(logout.status(), StatusCode::NO_CONTENT);
+    let cleared = logout
+        .headers()
+        .get_all(header::SET_COOKIE)
+        .iter()
+        .map(|value| value.to_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(cleared.len(), 2);
+    assert!(cleared
+        .iter()
+        .any(|value| value.starts_with("qingyu_session=")));
+    assert!(cleared
+        .iter()
+        .any(|value| value.starts_with("qingyu_csrf=")));
+    assert!(cleared.iter().all(|value| value.contains("Max-Age=0")));
+    assert!(cleared.iter().all(|value| !value.contains("; Secure")));
+}
+
+#[tokio::test]
+async fn https_server_rejects_http_cookie_names() {
+    let api = ServerApiFixture::new();
+    let (session, csrf) = api.initialize().await;
+    let session_value = session.split_once('=').unwrap().1;
+    let csrf_token = csrf_value(&csrf);
+    let mut request = api.request("GET", "/api/v1/auth/session");
+    request.headers_mut().insert(
+        header::COOKIE,
+        format!("qingyu_session={session_value}; qingyu_csrf={csrf_token}")
+            .parse()
+            .unwrap(),
+    );
+
+    assert_eq!(
+        api.router.clone().oneshot(request).await.unwrap().status(),
+        StatusCode::UNAUTHORIZED
+    );
+
+    let mut coexisting = api.request("GET", "/api/v1/auth/session");
+    coexisting.headers_mut().insert(
+        header::COOKIE,
+        format!(
+            "{}; qingyu_session={session_value}",
+            cookie_header(&session, &csrf)
+        )
+        .parse()
+        .unwrap(),
+    );
+    assert_eq!(
+        api.router
+            .clone()
+            .oneshot(coexisting)
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::OK
     );
 }
 
@@ -772,10 +982,15 @@ fn server_process_claim_survives_an_unactivated_owner_drop() {
 #[test]
 fn server_transport_policy_requires_one_exact_same_origin_authority() {
     assert!(TransportPolicy::same_origin(HOST, ORIGIN).is_ok());
-    assert!(TransportPolicy::same_origin(HOST, "http://127.0.0.1:43123").is_err());
+    assert!(TransportPolicy::same_origin(HOST, "http://127.0.0.1:43123").is_ok());
     assert!(TransportPolicy::same_origin(HOST, "*").is_err());
     assert!(TransportPolicy::same_origin(HOST, "https://attacker.invalid").is_err());
     assert!(TransportPolicy::same_origin(HOST, "https://127.0.0.1:43123/path").is_err());
+    assert!(TransportPolicy::same_origin(HOST, "http://127.0.0.1:43123/path").is_err());
+    assert!(TransportPolicy::same_origin(HOST, "https://127.0.0.1:43123/").is_err());
+    assert!(TransportPolicy::same_origin(HOST, "http://127.0.0.1:43123/").is_err());
+    assert!(TransportPolicy::same_origin(HOST, "HTTPS://127.0.0.1:43123").is_err());
+    assert!(TransportPolicy::same_origin(HOST, "HTTP://127.0.0.1:43123").is_err());
 }
 
 #[derive(Debug, Eq, PartialEq)]

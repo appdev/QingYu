@@ -420,8 +420,8 @@ def verify_compose(path)
     "Compose environment must contain only value-free runtime inputs"
   )
   assert_contract(
-    service["ports"] == ["127.0.0.1:3210:3210"],
-    "Compose must publish only Kernel port 3210 on loopback"
+    service["ports"] == ["${QINGYU_PUBLISHED_ADDRESS:-127.0.0.1}:3210:3210"],
+    "Compose must publish only Kernel port 3210 on the explicit/default bind address"
   )
   assert_contract(
     service["volumes"] == ["qingyu-data:/data"],
@@ -510,8 +510,8 @@ def verify_runtime_compose(path)
     "Runtime Compose environment must contain only value-free runtime inputs"
   )
   assert_contract(
-    service["ports"] == ["127.0.0.1:3210:3210"],
-    "Runtime Compose must publish only Kernel port 3210 on loopback"
+    service["ports"] == ["${QINGYU_PUBLISHED_ADDRESS:-127.0.0.1}:3210:3210"],
+    "Runtime Compose must publish only Kernel port 3210 on the explicit/default bind address"
   )
   assert_contract(
     service["volumes"] == ["qingyu-data:/data"],
