@@ -320,14 +320,26 @@ async fn resolve_and_start_desktop_kernel(
 
 fn activate_normal_ui<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<(), String> {
     #[cfg(target_os = "macos")]
-    app.set_activation_policy(tauri::ActivationPolicy::Regular)
-        .map_err(|error| format!("QingYu activation policy update failed: {error}"))?;
-    #[cfg(target_os = "macos")]
-    app.set_dock_visibility(true)
-        .map_err(|error| format!("QingYu Dock visibility update failed: {error}"))?;
+    {
+        let activation_error = app
+            .set_activation_policy(tauri::ActivationPolicy::Regular)
+            .err()
+            .map(|error| format!("QingYu activation policy update failed: {error}"));
+        let dock_error = app
+            .set_dock_visibility(true)
+            .err()
+            .map(|error| format!("QingYu Dock visibility update failed: {error}"));
+        match (activation_error, dock_error) {
+            (None, None) => Ok(()),
+            (Some(error), None) | (None, Some(error)) => Err(error),
+            (Some(activation), Some(dock)) => Err(format!("{activation}; {dock}")),
+        }
+    }
     #[cfg(not(target_os = "macos"))]
-    let _app = app;
-    Ok(())
+    {
+        let _app = app;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -1103,10 +1115,10 @@ mod tests {
             .expect("normal UI activation helper should have a boundary");
         let activation_source = &source[activation_start..activation_end];
         let regular_policy = activation_source
-            .find("app.set_activation_policy(tauri::ActivationPolicy::Regular)")
+            .find(".set_activation_policy(tauri::ActivationPolicy::Regular)")
             .expect("normal UI activation should restore the regular policy");
         let dock_visibility = activation_source
-            .find("app.set_dock_visibility(true)")
+            .find(".set_dock_visibility(true)")
             .expect("normal UI activation should restore Dock visibility");
 
         assert!(regular_policy < dock_visibility);
