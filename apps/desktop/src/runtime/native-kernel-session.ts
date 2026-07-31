@@ -336,6 +336,9 @@ export function createNativeKernelSessionOwner(
         notifyConsumer(onEventsError, notification.value);
       } else if (notification.kind === "invalidation") {
         invalidations.publish(notification.value);
+        if (!matchesAdoptionIdentity(adoptionToken, notification.value)) {
+          return undefined;
+        }
         notifyConsumer(onInvalidation, notification.value);
       } else {
         notifyConsumer(onEventsStateChange, notification.value);

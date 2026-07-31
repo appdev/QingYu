@@ -223,12 +223,12 @@ export function createKernelFileRuntimeOwner(
             createdSources.add(source);
           }
         }
+        assertNotAborted(signal);
       } catch (error: unknown) {
         createdSources.forEach(releaseImageSource);
         throw error;
       }
     }
-    assertNotAborted(signal);
     if (released || expectedEpoch !== imageResourceEpoch) {
       createdSources.forEach(releaseImageSource);
       return;

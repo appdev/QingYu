@@ -304,6 +304,72 @@ describe("Kernel AppRuntime adapter", () => {
     )).toBeUndefined();
   });
 
+  it("revokes the last image source when owner release aborts after materialization", async () => {
+    const unavailable = createUnavailableKernelDomainPort();
+    let resolveMaterialized: ((source: string) => unknown) | undefined;
+    const releaseSource = vi.fn();
+    const kernel: KernelDomainPort = {
+      ...unavailable,
+      availability: "available",
+      documents: {
+        ...unavailable.documents,
+        list: vi.fn(async () => ({
+          items: [], nextCursor: null, workspaceGeneration: generation,
+        })),
+      },
+      resources: {
+        list: vi.fn(async () => ({
+          items: [{
+            entryType: "resource" as const,
+            resource: {
+              id: "resource-aborted",
+              kind: "image" as const,
+              mediaType: "image/png",
+              modifiedAt: "2026-07-31T00:00:00Z",
+              name: "aborted.png",
+              parent: "" as never,
+              previewable: true,
+              relativePath: "aborted.png" as never,
+              revision,
+              sizeBytes: 5,
+              workspaceGeneration: generation,
+            },
+          }],
+          workspaceGeneration: generation,
+        })),
+        open: vi.fn(async () => ({
+          body: new Blob(["aborted"], { type: "image/png" }),
+          mediaType: "image/png",
+        })),
+      },
+      workspace: {
+        read: vi.fn(async () => ({
+          displayName: "Notes",
+          generation,
+          id: "workspace-1",
+          readiness: "ready" as const,
+          revision,
+        })),
+      },
+    };
+    const owner = createKernelFileRuntimeOwner(kernel, {
+      imageSource: {
+        materialize: async () => new Promise<string>((resolve) => {
+          resolveMaterialized = resolve;
+        }),
+        release: releaseSource,
+      },
+    });
+
+    const loading = owner.files.loadMarkdownFilesForPath?.(kernelWorkspaceRoot);
+    await vi.waitFor(() => expect(resolveMaterialized).toBeTypeOf("function"));
+    owner.release();
+    resolveMaterialized?.("blob:aborted-image");
+
+    await loading;
+    expect(releaseSource).toHaveBeenCalledWith("blob:aborted-image");
+  });
+
   it("releases materialized image sources when a later prewarm fails", async () => {
     const unavailable = createUnavailableKernelDomainPort();
     const resources = ["first.png", "second.png"].map((name, index) => ({

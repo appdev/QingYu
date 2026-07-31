@@ -69,6 +69,27 @@ describe("desktop runtime composition", () => {
       .rejects.toThrow("unavailable for a Kernel workspace");
     await expect(runtime.files.trashWorkspaceResources("kernel-workspace://primary", []))
       .rejects.toThrow("unavailable for a Kernel workspace");
+    expect(runtime.settings.readPrimaryWorkspaceState).toBeUndefined();
+    expect(runtime.settings.writePrimaryWorkspaceState).toBeUndefined();
+
+    await runtime.syncConfig.setEditing({
+      active: true,
+      revision: "revision-1",
+      sessionId: "session-1"
+    });
+    const pending = await runtime.syncConfig.requestApply({
+      exitReason: "window-close",
+      revision: "revision-1",
+      sessionId: "session-1",
+      source: "settings-exit",
+      token: "apply-1"
+    });
+    expect((await runtime.syncConfig.loadEditing()).pendingApply).toEqual(pending.event);
+    await runtime.syncConfig.cancelApply({
+      revision: "revision-1",
+      sessionId: "session-1",
+      token: "apply-1"
+    });
 
     owner.release();
     owner.release();

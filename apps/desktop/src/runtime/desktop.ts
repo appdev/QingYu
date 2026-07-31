@@ -355,16 +355,16 @@ export function createDesktopKernelRuntimeOwner(
     settings: createKernelSettingsRuntime(kernel, {
       local: {
         loadStore: shell.settings.loadStore,
-        readPrimaryWorkspaceState: shell.settings.readPrimaryWorkspaceState,
-        writePrimaryWorkspaceState: shell.settings.writePrimaryWorkspaceState,
+        readPrimaryWorkspaceState: undefined,
+        writePrimaryWorkspaceState: undefined,
       },
     }),
     syncConfig: createKernelSyncConfigRuntime(kernel, {
       local: {
-        cancelApply: shell.syncConfig.cancelApply,
-        loadEditing: shell.syncConfig.loadEditing,
-        requestApply: shell.syncConfig.requestApply,
-        setEditing: shell.syncConfig.setEditing,
+        cancelApply: unavailable.syncConfig.cancelApply,
+        loadEditing: unavailable.syncConfig.loadEditing,
+        requestApply: unavailable.syncConfig.requestApply,
+        setEditing: unavailable.syncConfig.setEditing,
       },
     }),
     syncPathGuard: unavailable.syncPathGuard,

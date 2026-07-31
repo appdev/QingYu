@@ -504,6 +504,29 @@ describe("native Kernel session owner", () => {
     owner.close();
   });
 
+  it("does not notify the session consumer after a domain invalidation closes the adoption", async () => {
+    const listener = new ListenerHarness();
+    const domains = new DomainHarness();
+    const events = new EventsHarness();
+    const onInvalidation = vi.fn();
+    const owner = createNativeKernelSessionOwner({
+      addPagehideListener: listener.addPagehideListener,
+      createDomainAdapter: domains.create,
+      createEventsAdapter: events.create,
+      invokeCommand: async () => readyBootstrap("10", INSTANCE_A, CREDENTIAL_A),
+      listenBootstrapChanged: listener.listen,
+      onInvalidation
+    });
+    await owner.start();
+    const ready = owner.getSnapshot();
+    if (ready?.status !== "ready") throw new Error("ready session unavailable");
+    ready.domain.invalidations.subscribe(() => owner.close());
+
+    events.records[0]?.options.onInvalidation(snapshotInvalidation(INSTANCE_A, "10"));
+
+    expect(onInvalidation).not.toHaveBeenCalled();
+  });
+
   it("ignores queued callbacks from a retired adoption when the same identity is adopted again", async () => {
     const listener = new ListenerHarness();
     const domains = new DomainHarness();
