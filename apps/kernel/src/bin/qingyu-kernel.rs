@@ -1,20 +1,11 @@
 use std::{
-    ffi::OsString,
-    fmt,
-    future::IntoFuture,
-    io::BufReader,
-    net::SocketAddr,
-    process::ExitCode,
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc,
-    },
+    ffi::OsString, fmt, future::IntoFuture, io::BufReader, net::SocketAddr, process::ExitCode,
     time::Duration,
 };
 
 use qingyu_kernel::{
     api::{build_router, build_server_web_router, TransportPolicy},
-    composition::compose_fixed_native_kernel,
+    composition::compose_fixed_native_kernel_runtime,
     config::KernelConfig,
     host::native::{NativeHostControl, NativeHostReady, NativeHostStart},
     paths::KernelPaths,
@@ -134,9 +125,10 @@ async fn run_native_server() -> Result<(), ()> {
         KernelPaths::desktop(&workspace_root, &app_data_root, &cache_root).map_err(|_| ())?;
     let config =
         KernelConfig::generate_with_native_launch_credential(credential).map_err(|_| ())?;
-    let runtime = compose_fixed_native_kernel(config, paths, workspace_state)
+    let composition = compose_fixed_native_kernel_runtime(config, paths, workspace_state)
         .await
         .map_err(|_| ())?;
+    let runtime = composition.runtime().clone();
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -159,28 +151,76 @@ async fn run_native_server() -> Result<(), ()> {
     readiness.write_json_line(&mut stdout).map_err(|_| ())?;
     drop(stdout);
 
-    let protocol_failed = Arc::new(AtomicBool::new(false));
-    let protocol_failed_on_shutdown = Arc::clone(&protocol_failed);
-    axum::serve(listener, router)
-        .with_graceful_shutdown(async move {
-            tokio::select! {
-                control = control_receiver => {
-                    if !matches!(
-                        control,
-                        Ok(Ok(NativeHostControl::Shutdown | NativeHostControl::EndOfStream))
-                    ) {
-                        protocol_failed_on_shutdown.store(true, Ordering::Release);
-                    }
-                }
-                _signal = tokio::signal::ctrl_c() => {}
-            }
-        })
-        .await
-        .map_err(|_| ())?;
-    if protocol_failed.load(Ordering::Acquire) {
-        Err(())
-    } else {
-        Ok(())
+    let (http_shutdown_sender, http_shutdown_receiver) = tokio::sync::oneshot::channel();
+    let serve = axum::serve(listener, router).with_graceful_shutdown(async move {
+        let _shutdown = http_shutdown_receiver.await;
+    });
+    await_native_shutdown(
+        serve,
+        native_shutdown_signal(control_receiver),
+        http_shutdown_sender,
+        async move {
+            composition
+                .shutdown()
+                .await
+                .map_err(|_error| NativeShutdownFailure::KernelDrain)
+        },
+    )
+    .await
+    .map_err(|_error| ())
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum NativeShutdownFailure {
+    Serve,
+    Signal,
+    KernelDrain,
+}
+
+async fn native_shutdown_signal(
+    control: tokio::sync::oneshot::Receiver<
+        Result<NativeHostControl, qingyu_kernel::host::native::NativeHostProtocolError>,
+    >,
+) -> Result<(), NativeShutdownFailure> {
+    tokio::select! {
+        control = control => match control {
+            Ok(Ok(NativeHostControl::Shutdown | NativeHostControl::EndOfStream)) => Ok(()),
+            Ok(Err(_)) | Err(_) => Err(NativeShutdownFailure::Signal),
+        },
+        () = server_shutdown_signal() => Ok(()),
+    }
+}
+
+async fn await_native_shutdown<Serve, ShutdownSignal, KernelShutdown>(
+    serve: Serve,
+    shutdown_signal: ShutdownSignal,
+    http_shutdown: tokio::sync::oneshot::Sender<()>,
+    kernel_shutdown: KernelShutdown,
+) -> Result<(), NativeShutdownFailure>
+where
+    Serve: IntoFuture<Output = std::io::Result<()>>,
+    ShutdownSignal: std::future::Future<Output = Result<(), NativeShutdownFailure>>,
+    KernelShutdown: std::future::Future<Output = Result<(), NativeShutdownFailure>>,
+{
+    let serve = serve.into_future();
+    tokio::pin!(serve);
+    tokio::pin!(shutdown_signal);
+    tokio::select! {
+        serve_result = &mut serve => {
+            let kernel_result = kernel_shutdown.await;
+            serve_result.map_err(|_error| NativeShutdownFailure::Serve)?;
+            kernel_result
+        }
+        signal_result = &mut shutdown_signal => {
+            let http_result = http_shutdown
+                .send(())
+                .map_err(|()| NativeShutdownFailure::Serve);
+            let (serve_result, kernel_result) = tokio::join!(&mut serve, kernel_shutdown);
+            signal_result?;
+            http_result?;
+            serve_result.map_err(|_error| NativeShutdownFailure::Serve)?;
+            kernel_result
+        }
     }
 }
 
@@ -359,7 +399,76 @@ async fn server_shutdown_signal() {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    };
+
     use super::*;
+
+    #[tokio::test]
+    async fn native_control_and_eof_shutdown_drain_http_and_kernel_lifecycle() {
+        for control in [NativeHostControl::Shutdown, NativeHostControl::EndOfStream] {
+            let (control_sender, control_receiver) = tokio::sync::oneshot::channel();
+            control_sender.send(Ok(control)).unwrap();
+            let (http_shutdown_sender, http_shutdown_receiver) = tokio::sync::oneshot::channel();
+            let http_drained = Arc::new(AtomicBool::new(false));
+            let kernel_drained = Arc::new(AtomicBool::new(false));
+            let http_drained_by_server = Arc::clone(&http_drained);
+            let kernel_drained_by_lifecycle = Arc::clone(&kernel_drained);
+
+            let result = await_native_shutdown(
+                async move {
+                    http_shutdown_receiver.await.map_err(|_closed| {
+                        std::io::Error::new(std::io::ErrorKind::BrokenPipe, "shutdown closed")
+                    })?;
+                    http_drained_by_server.store(true, Ordering::Release);
+                    Ok(())
+                },
+                native_shutdown_signal(control_receiver),
+                http_shutdown_sender,
+                async move {
+                    kernel_drained_by_lifecycle.store(true, Ordering::Release);
+                    Ok(())
+                },
+            )
+            .await;
+
+            assert_eq!(result, Ok(()));
+            assert!(http_drained.load(Ordering::Acquire));
+            assert!(kernel_drained.load(Ordering::Acquire));
+        }
+    }
+
+    #[tokio::test]
+    async fn native_process_signal_drains_http_and_kernel_lifecycle() {
+        let (http_shutdown_sender, http_shutdown_receiver) = tokio::sync::oneshot::channel();
+        let http_drained = Arc::new(AtomicBool::new(false));
+        let kernel_drained = Arc::new(AtomicBool::new(false));
+        let http_drained_by_server = Arc::clone(&http_drained);
+        let kernel_drained_by_lifecycle = Arc::clone(&kernel_drained);
+
+        let result = await_native_shutdown(
+            async move {
+                http_shutdown_receiver.await.map_err(|_closed| {
+                    std::io::Error::new(std::io::ErrorKind::BrokenPipe, "shutdown closed")
+                })?;
+                http_drained_by_server.store(true, Ordering::Release);
+                Ok(())
+            },
+            async { Ok(()) },
+            http_shutdown_sender,
+            async move {
+                kernel_drained_by_lifecycle.store(true, Ordering::Release);
+                Ok(())
+            },
+        )
+        .await;
+
+        assert_eq!(result, Ok(()));
+        assert!(http_drained.load(Ordering::Acquire));
+        assert!(kernel_drained.load(Ordering::Acquire));
+    }
 
     fn server_command(public_origin: &str) -> Result<KernelCommand, KernelCommandError> {
         parse_command(["qingyu-kernel", "server", "--public-origin", public_origin])

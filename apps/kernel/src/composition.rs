@@ -1,6 +1,6 @@
 //! Platform-neutral Kernel service composition.
 
-use std::sync::Arc;
+use std::{fmt, sync::Arc};
 
 use async_trait::async_trait;
 
@@ -21,7 +21,11 @@ use crate::{
     ports::system::system_kernel_ports,
     resources::WorkspaceResourceService,
     runtime::{KernelRuntime, ServiceFailure, SystemApiService},
-    services::{sync::SyncService, workspace::WorkspaceService},
+    services::{
+        sync::{SyncRunSettlement, SyncService},
+        sync_scheduler::KernelSyncScheduler,
+        workspace::WorkspaceService,
+    },
     settings::{service::SettingsService, storage::AtomicJsonSettingsStore},
     storage::DurableFileStore,
     sync::{config::SyncConfigStore, executor::ProductionSyncExecutor},
@@ -39,6 +43,118 @@ pub async fn compose_fixed_native_kernel(
     paths: KernelPaths,
     workspace_state: NativeHostWorkspaceState,
 ) -> Result<Arc<KernelRuntime>, NativeCompositionError> {
+    let (runtime, _services) =
+        compose_fixed_native_kernel_services(config, paths, workspace_state).await?;
+    Ok(runtime)
+}
+
+/// Fully assembled fixed native runtime and the lifecycle services that must
+/// remain owned for the duration of a child process.
+pub struct NativeRuntimeComposition {
+    runtime: Arc<KernelRuntime>,
+    lifecycle: NativeKernelLifecycle,
+}
+
+impl NativeRuntimeComposition {
+    pub fn runtime(&self) -> &Arc<KernelRuntime> {
+        &self.runtime
+    }
+
+    pub fn shutdown_handle(&self) -> NativeKernelLifecycle {
+        self.lifecycle.clone()
+    }
+
+    pub async fn shutdown(&self) -> Result<(), NativeKernelShutdownError> {
+        self.lifecycle.shutdown().await
+    }
+}
+
+impl fmt::Debug for NativeRuntimeComposition {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("NativeRuntimeComposition(..)")
+    }
+}
+
+#[derive(Clone)]
+pub struct NativeKernelLifecycle {
+    scheduler: Arc<KernelSyncScheduler>,
+    state: Arc<tokio::sync::Mutex<NativeKernelLifecycleState>>,
+    sync: Arc<SyncService>,
+}
+
+impl NativeKernelLifecycle {
+    pub async fn shutdown(&self) -> Result<(), NativeKernelShutdownError> {
+        let mut state = self.state.lock().await;
+        if state.drained {
+            return Ok(());
+        }
+        if let Some(settlement) = state.app_launch_settlement.take() {
+            settlement.wait().await;
+        }
+        let (_disposition, settlement) = self.scheduler.settings_exit().await.into_parts();
+        settlement.wait().await;
+        self.scheduler.begin_close();
+        let ((), sync) = tokio::join!(self.scheduler.wait_closed(), self.sync.shutdown());
+        sync.map_err(|_error| NativeKernelShutdownError)?;
+        state.drained = true;
+        Ok(())
+    }
+}
+
+struct NativeKernelLifecycleState {
+    app_launch_settlement: Option<SyncRunSettlement>,
+    drained: bool,
+}
+
+impl fmt::Debug for NativeKernelLifecycle {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("NativeKernelLifecycle(..)")
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NativeKernelShutdownError;
+
+impl fmt::Display for NativeKernelShutdownError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("native Kernel lifecycle could not drain")
+    }
+}
+
+impl std::error::Error for NativeKernelShutdownError {}
+
+/// Builds a fixed native runtime together with its process-owned services.
+pub async fn compose_fixed_native_kernel_runtime(
+    config: KernelConfig,
+    paths: KernelPaths,
+    workspace_state: NativeHostWorkspaceState,
+) -> Result<NativeRuntimeComposition, NativeCompositionError> {
+    let (runtime, services) =
+        compose_fixed_native_kernel_services(config, paths, workspace_state).await?;
+    let sync = services.sync;
+    let scheduler = Arc::new(
+        KernelSyncScheduler::start(sync.clone()).map_err(|_error| NativeCompositionError)?,
+    );
+    let (_app_launch_disposition, app_launch_settlement) =
+        scheduler.app_launch().await.into_parts();
+    Ok(NativeRuntimeComposition {
+        runtime,
+        lifecycle: NativeKernelLifecycle {
+            scheduler,
+            state: Arc::new(tokio::sync::Mutex::new(NativeKernelLifecycleState {
+                app_launch_settlement: Some(app_launch_settlement),
+                drained: false,
+            })),
+            sync,
+        },
+    })
+}
+
+async fn compose_fixed_native_kernel_services(
+    config: KernelConfig,
+    paths: KernelPaths,
+    workspace_state: NativeHostWorkspaceState,
+) -> Result<(Arc<KernelRuntime>, InstalledFixedKernelServices), NativeCompositionError> {
     let workspace_directory = paths
         .workspace_root()
         .try_clone_dir()
@@ -53,7 +169,7 @@ pub async fn compose_fixed_native_kernel(
         ManagedWorkspaceCollection::from_paths(&paths).map_err(|_| NativeCompositionError)?;
     let runtime = KernelRuntime::activate(config, paths, system_kernel_ports())
         .map_err(|_| NativeCompositionError)?;
-    let _services = install_fixed_kernel_services(
+    let services = install_fixed_kernel_services(
         &runtime,
         Arc::new(
             FixedPrimaryWorkspaceStore::new(workspace_state).map_err(|_| NativeCompositionError)?,
@@ -63,7 +179,7 @@ pub async fn compose_fixed_native_kernel(
     )
     .await
     .map_err(|_| NativeCompositionError)?;
-    Ok(runtime)
+    Ok((runtime, services))
 }
 
 /// Installs the complete fixed-workspace service set after the caller has
@@ -265,10 +381,123 @@ mod tests {
         contract::{
             ErrorCode, ListDocumentsQuery, ListWorkspaceInventoryQuery, PatchSettingsRequest,
             ResourceKind, SearchQuery, SearchWorkspaceQuery, SettingEntryDto, SettingKey,
-            SettingValueDto, WorkspaceInventoryEntryDto, WorkspaceRelativePath,
+            SettingValueDto, SyncCompletionState, SyncTrigger, WorkspaceInventoryEntryDto,
+            WorkspaceRelativePath,
         },
         host::native::NativeHostWorkspaceState,
     };
+
+    fn native_fixture(
+        root: &std::path::Path,
+    ) -> (KernelPaths, NativeHostWorkspaceState, std::path::PathBuf) {
+        let workspace = root.join("workspace");
+        let app_data = root.join("app-data");
+        let cache = root.join("cache");
+        for path in [&workspace, &app_data, &cache] {
+            fs::create_dir(path).unwrap();
+        }
+        let state = NativeHostWorkspaceState::for_workspace(&workspace, "Native").unwrap();
+        let paths = KernelPaths::desktop(&workspace, &app_data, &cache).unwrap();
+        (paths, state, app_data)
+    }
+
+    fn write_startup_exit_config(app_data: &std::path::Path) {
+        fs::write(
+            app_data.join("sync-config.json"),
+            br#"{
+  "version": 3,
+  "enabled": true,
+  "provider": "webdav",
+  "remoteRoot": "native-notes",
+  "mode": "startup-exit",
+  "intervalSeconds": 30,
+  "generateConflictDocument": false,
+  "webdav": {
+    "serverUrl": "http://127.0.0.1:9",
+    "username": "native-user",
+    "password": "native-password"
+  },
+  "s3": {
+    "endpointUrl": "",
+    "region": "",
+    "bucket": "",
+    "accessKeyId": "",
+    "secretAccessKey": "",
+    "requestTimeoutSeconds": 60,
+    "addressingStyle": "auto",
+    "tlsVerification": "verify"
+  }
+}
+"#,
+        )
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn configured_native_composition_runs_app_launch_sync_before_returning() {
+        let temporary = tempdir().unwrap();
+        let (paths, state, app_data) = native_fixture(temporary.path());
+        write_startup_exit_config(&app_data);
+
+        let composition =
+            compose_fixed_native_kernel_runtime(KernelConfig::generate().unwrap(), paths, state)
+                .await
+                .unwrap();
+        let status = composition
+            .runtime()
+            .sync_api_service()
+            .unwrap()
+            .get_sync_status()
+            .await
+            .unwrap();
+
+        assert_eq!(status.last_trigger.as_ref(), Some(&SyncTrigger::AppLaunch));
+        composition.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn native_composition_retains_the_only_scheduler_for_its_sync_service() {
+        let temporary = tempdir().unwrap();
+        let (paths, state, _app_data) = native_fixture(temporary.path());
+        let composition =
+            compose_fixed_native_kernel_runtime(KernelConfig::generate().unwrap(), paths, state)
+                .await
+                .unwrap();
+
+        let second = KernelSyncScheduler::start(composition.lifecycle.sync.clone());
+
+        assert_eq!(
+            second.unwrap_err(),
+            crate::services::sync_scheduler::KernelSyncSchedulerStartError
+        );
+        composition.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn native_shutdown_runs_settings_exit_and_waits_for_sync_settlement() {
+        let temporary = tempdir().unwrap();
+        let (paths, state, app_data) = native_fixture(temporary.path());
+        write_startup_exit_config(&app_data);
+        let composition =
+            compose_fixed_native_kernel_runtime(KernelConfig::generate().unwrap(), paths, state)
+                .await
+                .unwrap();
+        let runtime = composition.runtime().clone();
+
+        composition.shutdown().await.unwrap();
+
+        let status = runtime
+            .sync_api_service()
+            .unwrap()
+            .get_sync_status()
+            .await
+            .unwrap();
+        assert_eq!(
+            status.last_trigger.as_ref(),
+            Some(&SyncTrigger::SettingsExit)
+        );
+        assert_ne!(status.completion_state, SyncCompletionState::Attempting);
+    }
 
     #[tokio::test]
     async fn production_documents_and_resources_share_live_settings_and_workspace_ignore_rules() {
