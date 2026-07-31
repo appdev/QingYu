@@ -95,4 +95,41 @@ describe("detectCodePaste", () => {
       text: "First paragraph with mockValue.\nSecond paragraph.",
     })).toBeNull();
   });
+
+  it("keeps a Markdown document copied from a preformatted viewer as Markdown", () => {
+    const text = [
+      "# 文档编辑会话迁移 Implementation Plan",
+      "",
+      "> **For agentic workers:** Follow the implementation plan.",
+      "",
+      "**Goal:** Preserve the Markdown document structure.",
+      "",
+      "```ts",
+      "export interface DocumentSessionState {",
+      "  dirty: boolean;",
+      "}",
+      "```",
+      "",
+      "## Global Constraints",
+      "",
+      "- Keep headings, quotes, lists, and fenced code intact.",
+    ].join("\n");
+
+    expect(detectCodePaste({
+      html: '<pre style="font-family: Menlo; white-space: pre-wrap">Markdown source</pre>',
+      text,
+    })).toBeNull();
+  });
+
+  it("keeps explicit code metadata authoritative for Markdown-like code", () => {
+    const text = [
+      "const mockLabel = `inline code`;",
+      "console.log(mockLabel);",
+    ].join("\n");
+
+    expect(detectCodePaste({
+      editorData: JSON.stringify({ mode: "javascript", version: 1 }),
+      text,
+    })).toEqual({ code: text, language: "javascript" });
+  });
 });

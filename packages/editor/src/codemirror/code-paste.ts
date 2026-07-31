@@ -12,8 +12,8 @@ export interface DetectedCodePaste {
 }
 
 const codeFontPattern = /(?:monospace|menlo|monaco|consolas|courier|sfmono|fira code|jetbrains mono|cascadia code|source code pro)/iu;
+const markdownLanguagePattern = /^(?:markdown|md|mdx)$/u;
 const preformattedWhitespacePattern = /white-space\s*:\s*(?:pre|pre-wrap|break-spaces)/iu;
-const fencedMarkdownPattern = /^\s*(?:```|~~~)/u;
 
 const languageAliases: Readonly<Record<string, string>> = {
   "c#": "csharp",
@@ -156,7 +156,12 @@ export function detectCodePaste(source: CodePasteSource): DetectedCodePaste | nu
 
   const editor = editorCodeDetails(source.editorData);
   const html = htmlCodeDetails(source.html);
-  const language = editor.language || html.language || scoredLanguage(code);
+  const explicitLanguage = editor.language || html.language;
+  if (
+    looksLikeMarkdownSource(code) &&
+    (!explicitLanguage || markdownLanguagePattern.test(explicitLanguage))
+  ) return null;
+  const language = explicitLanguage || scoredLanguage(code);
   const score = genericCodeScore(code);
   // Rich articles often contain one inline monospace span; styled HTML alone
   // is not strong enough evidence to turn the whole paste into a code block.
@@ -166,7 +171,6 @@ export function detectCodePaste(source: CodePasteSource): DetectedCodePaste | nu
 
   if (!explicit) {
     if (!code.includes("\n") || lines < 2) return null;
-    if (fencedMarkdownPattern.test(code) || looksLikeMarkdownSource(code)) return null;
   } else if (lines < 1) {
     return null;
   }
