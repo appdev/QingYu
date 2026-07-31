@@ -164,6 +164,7 @@ import {
 import {
   createEditorResourceRequest,
   markdownShortcutToKeyboardEventInit,
+  normalizeEditorImageFile,
   normalizeMarkdownShortcuts,
   type EditorTextSelection,
   type RemoteClipboardImage,
@@ -2456,26 +2457,97 @@ function WorkspaceApp() {
     request: Parameters<SaveEditorResources>[0],
     targetDocumentPath: string | null = document.path
   ) => {
-    const savedResources: Awaited<ReturnType<SaveEditorResources>> = [];
+    const savedResources: Array<Awaited<ReturnType<SaveEditorResources>>[number] | undefined> = [];
     const context = resolveAssetContextForDocument(targetDocumentPath);
     if (request.origin === "remote") {
+      const remoteResources: Awaited<ReturnType<SaveEditorResources>> = [];
       for (const src of request.urls) {
         const saved = await handleSaveRemoteClipboardImage(
           { alt: "", src, title: "" },
           targetDocumentPath
         );
-        if (saved) savedResources.push({ ...saved, kind: "image" });
+        if (saved) remoteResources.push({ ...saved, kind: "image" });
       }
-      return savedResources;
+      return remoteResources;
+    }
+
+    const normalizedImages = request.files.map((file) => (
+      request.origin === "import" &&
+      file.type === "application/octet-stream" &&
+      nativePathFromEditorFile(file)
+        ? null
+        : normalizeEditorImageFile(file)
+    ));
+    const imageIndexes = normalizedImages.flatMap((image, index) => image === null ? [] : [index]);
+    const imageAction = resolveEditorAssetAction({ mode: context.mode, origin: request.origin });
+    if (imageIndexes.length > 0 && imageAction === "reference") {
+      for (const index of imageIndexes) {
+        const image = normalizedImages[index];
+        if (!image) continue;
+        const saved = await handleSaveClipboardImage(image, request.origin, targetDocumentPath);
+        if (saved) savedResources[index] = { ...saved, kind: "image" };
+      }
+    } else if (imageIndexes.length > 0) {
+      if (!targetDocumentPath) {
+        showAppToast({
+          message: translate("app.clipboardImageRequiresSavedDocument"),
+          status: "error"
+        });
+        return [];
+      }
+      const inputs = await Promise.all(imageIndexes.map(async (index) => {
+        const image = normalizedImages[index];
+        if (!image) throw new Error("The image batch changed while preparing it.");
+        return {
+          copyToStorage: true,
+          documentPath: targetDocumentPath,
+          fileName: await createImageUploadFileName(
+            image,
+            editorPreferences.preferences.imageUpload.fileNamePattern
+          ),
+          folder: context.mode === "primary-workspace"
+            ? "assets"
+            : editorPreferences.preferences.clipboardImageFolder,
+          image,
+          ...(context.mode === "primary-workspace"
+            ? { projectRootPath: context.primaryRootPath }
+            : {})
+        };
+      })).catch(() => null);
+      if (inputs === null) {
+        showAppToast({
+          message: translate("app.clipboardImageSaveFailed"),
+          status: "error"
+        });
+        return [];
+      }
+      const saved = await appFiles.saveClipboardImages(inputs).catch((error) => {
+        const description = clipboardImageSaveFailureDescription(error);
+        showAppToast({
+          ...(description ? { description } : {}),
+          message: translate("app.clipboardImageSaveFailed"),
+          status: "error"
+        });
+        return null;
+      });
+      if (saved === null) return [];
+      if (saved.length !== imageIndexes.length) {
+        showAppToast({
+          message: translate("app.clipboardImageSaveFailed"),
+          status: "error"
+        });
+        return [];
+      }
+      for (const [savedIndex, image] of saved.entries()) {
+        const requestIndex = imageIndexes[savedIndex];
+        if (requestIndex !== undefined) savedResources[requestIndex] = { ...image, kind: "image" };
+      }
+      await refreshMarkdownFileTree(targetDocumentPath).catch(() => {});
     }
 
     let refreshImportedAttachmentTreeAfterSave = false;
-    for (const file of request.files) {
-      if (file.type.startsWith("image/")) {
-        const saved = await handleSaveClipboardImage(file, request.origin, targetDocumentPath);
-        if (saved) savedResources.push({ ...saved, kind: "image" });
-        continue;
-      }
+    for (const [index, file] of request.files.entries()) {
+      if (normalizedImages[index] !== null) continue;
 
       const importedPath = request.origin === "import" ? nativePathFromEditorFile(file) : null;
       if (importedPath) {
@@ -2493,7 +2565,7 @@ function WorkspaceApp() {
             : {})
         }).catch(() => null);
         if (saved) {
-          savedResources.push({ ...saved, kind: "attachment" });
+          savedResources[index] = { ...saved, kind: "attachment" };
           refreshImportedAttachmentTreeAfterSave = refreshImportedAttachmentTreeAfterSave || copyToStorage;
         } else {
           showAppToast({
@@ -2505,15 +2577,18 @@ function WorkspaceApp() {
       }
 
       const saved = await handleSaveClipboardAttachment(file, targetDocumentPath, request.origin);
-      if (saved) savedResources.push({ ...saved, kind: "attachment" });
+      if (saved) savedResources[index] = { ...saved, kind: "attachment" };
     }
 
     if (refreshImportedAttachmentTreeAfterSave && targetDocumentPath) {
       await refreshImportedAttachmentTree(() => refreshMarkdownFileTree(targetDocumentPath));
     }
-    return savedResources;
+    return savedResources.filter((resource): resource is Awaited<ReturnType<SaveEditorResources>>[number] => resource !== undefined);
   }, [
+    appFiles,
     document.path,
+    editorPreferences.preferences.clipboardImageFolder,
+    editorPreferences.preferences.imageUpload.fileNamePattern,
     handleSaveClipboardAttachment,
     handleSaveClipboardImage,
     handleSaveRemoteClipboardImage,

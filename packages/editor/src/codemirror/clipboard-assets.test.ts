@@ -3,6 +3,7 @@ import { EditorView } from "@codemirror/view";
 import { markdownImageDragMime } from "@markra/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { codeMirrorClipboardAssetsPlugin } from "./clipboard-assets.ts";
+import type { SaveEditorResources } from "../clipboard-asset-types.ts";
 import { liveMarkdown } from "./index.ts";
 import "./dom.test-support.ts";
 
@@ -42,6 +43,15 @@ function fileList(files: readonly File[]) {
   return Object.assign([...files], {
     item: (index: number) => files[index] ?? null,
   });
+}
+
+function bytesFromBase64(value: string) {
+  return Uint8Array.from(atob(value), (character) => character.charCodeAt(0));
+}
+
+async function sha256Hex(file: File) {
+  const digest = await crypto.subtle.digest("SHA-256", await file.arrayBuffer());
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 function paste(
@@ -96,6 +106,71 @@ afterEach(() => {
 });
 
 describe("codeMirrorClipboardAssetsPlugin", () => {
+  it("normalizes native seven-format files and saves one byte-exact image batch", async () => {
+    const avif = new File([bytesFromBase64("AAAAIGZ0eXBhdmlmAAAAAGF2aWZtaWYxbWlhZk1BMUIAAAD5bWV0YQAAAAAAAAAvaGRscgAAAAAAAAAAcGljdAAAAAAAAAAAAAAAAFBpY3R1cmVIYW5kbGVyAAAAAA5waXRtAAAAAAABAAAAHmlsb2MAAAAARAAAAQABAAAAAQAAASEAAADxAAAAKGlpbmYAAAAAAAEAAAAaaW5mZQIAAAAAAQAAYXYwMUNvbG9yAAAAAGppcHJwAAAAS2lwY28AAAAUaXNwZQAAAAAAAAAQAAAADAAAABBwaXhpAAAAAAMICAgAAAAMYXYxQ4EADAAAAAATY29scm5jbHgAAgACAAIAAAAAF2lwbWEAAAAAAAAAAQABBAECgwQAAAD5bWRhdAoKAgAABQz+xK+QBDLiARAAloAQQIKB94DAXp2W8xbG+qGYQZDfijM9kuWB+kLCAK0jeG84US9KCgPrGaIlb6RX2S+/CTm9h9eO/0yZfAVy1st6Kph10tEPbSTiSfV8a5tcoiCXpmFwOXQbmQC6zsUbgLky/8U3zfOMCtoKw+dVyhmdhx2OrSfxIiKp6rp6aBkwN1nFpwS7i8XPXaq8hK0F05roGuiwTlitOUb8xmkMGs/WxLdHiBxYt24BeFZqTpUoODjjym8ViX/b1dXd9b2SjQaR6vhB+Ymz0A+xMrMuEc/qJK6p2O5/JiNxb7byCDA=")], "fixture.avif", { type: "" });
+    const bmp = new File([bytesFromBase64("Qk02AwAAAAAAADYAAAAoAAAAEAAAAAwAAAABACAAAAAAAAADAAAAAAAAAAAAAAAAAAAAAAAAAAD+/wAA/v8AAD//AAA//wB///8Af///AC9v/y6Pz/9piMf/AAA2/wB///8Af///AH///wB///8AKkn/VJW0/wAA/v8AAP7/AAA//wAAP/8Af///AH///wAvb/8uj8//aYjH/wAANv8Af///AH///wB///8Af///ACpJ/1SVtP8AAP7/AAD+/wAAP/8AAD//AH///wB///8APz7/AD8+/z8AAP8/AAD/AH///wB///8Af///AH///z4/AP8+PwD/AAD+/wAA/v8AAD//AAA//wB///8Af///AD8+/wA/Pv8/AAD/PwAA/wB///8Af///AH///wB///8+PwD/Pj8A/wAA/v8AAP7/AAA//wAAP/8AMiP/VqSV/xiH5/8AJ4f/AABT/zSD5P+di6z/DQAb/w8AUP+Nfc3/Kora/wAfb/8AAP7/AAD+/wAAP/8AAD//ADIj/wAyI/8Yh+f/GIfn/zSD5P80g+T/DQAb/w0AG/8PAFD/DwBQ/yqK2v8qitr/AAD+/wAA/v8AAD//AAA//wE/AP8BPwD/AD8+/wA/Pv8/AAD/PwAA/z8AAP8/AAD/PgA+/z4APv8+PwD/Pj8A/wAA/v8AAP7/AAA//wAAP/8BPwD/AT8A/wA/Pv8APz7/PwAA/z8AAP8/AAD/PwAA/z4APv8+AD7/Pj8A/z4/AP8AAP7/AAD+/wAAP/8AAD//AT8A/wE/AP8APz7/AD8+/z8AAP8/AAD/PwAA/z8AAP8+AD7/PgA+/z4/AP8+PwD/AAD+/wAA/v8AAD//AAA//wE/AP8BPwD/AD8+/wA/Pv8/AAD/PwAA/z8AAP8/AAD/PgA+/z4APv8+PwD/Pj8A/wAA/v8AAP7/AAD+/wAA/v8B/wD/Af8A/wD+/v8A/v7//wAA//8AAP//AAD//wAA//4A///+AP////8A////AP8AAP7/AAD+/wAA/v8AAP7/Af8A/wH/AP8A/v7/AP7+//8AAP//AAD//wAA//8AAP/+AP///gD/////AP///wD/")], "fixture.bmp", { type: "image/x-ms-bmp" });
+    const svg = new File([bytesFromBase64("PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxNiAxMiIgd2lkdGg9IjE2IiBoZWlnaHQ9IjEyIiByb2xlPSJpbWciIGFyaWEtbGFiZWw9Ik1hcmtyYSBmaXh0dXJlIj48dGl0bGU+TWFya3JhIHNldmVuLWZvcm1hdCBmaXh0dXJlPC90aXRsZT48cmVjdCB4PSIwIiB5PSIwIiB3aWR0aD0iMTYiIGhlaWdodD0iMTIiIGZpbGw9IiMyODY0ZGMiLz48Y2lyY2xlIGN4PSI4IiBjeT0iNiIgcj0iMyIgZmlsbD0iI2Y1YzI0MiIvPjwvc3ZnPgo=")], "fixture.svg", { type: "application/svg+xml" });
+    const files = [
+      avif,
+      bmp,
+      new File([new Uint8Array([0x47, 0x49, 0x46])], "fixture.gif", { type: "image/gif" }),
+      new File([new Uint8Array([0xff, 0xd8, 0xff])], "fixture.jpg", { type: "image/pjpeg" }),
+      new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], "fixture.png", { type: "image/png" }),
+      svg,
+      new File([new Uint8Array([0x52, 0x49, 0x46, 0x46])], "fixture.webp", { type: "image/webp" }),
+    ];
+    const saveResources: SaveEditorResources = vi.fn(async (request: Parameters<SaveEditorResources>[0]) => "files" in request
+      ? request.files.map((file) => ({
+          alt: file.name,
+          kind: "image" as const,
+          src: `assets/${file.name}`,
+        }))
+      : []);
+    const view = createView("", { saveResources });
+
+    expect(paste(view, { files }).defaultPrevented).toBe(true);
+    await vi.waitFor(() => expect(saveResources).toHaveBeenCalledOnce());
+    const request = vi.mocked(saveResources).mock.calls[0]?.[0];
+    const savedFiles = request && "files" in request ? request.files : [];
+    expect(savedFiles.map((file) => file.type)).toEqual([
+      "image/avif", "image/bmp", "image/gif", "image/jpeg", "image/png", "image/svg+xml", "image/webp",
+    ]);
+    expect(await Promise.all(savedFiles.slice(0, 2).map(sha256Hex))).toEqual([
+      "a51d8055a9e709e4e970e05ecddf834da5efeb47694f29aa25c5b79784b63e6a",
+      "bbc548ae9c4d95a61029f39b6fa1a32fc5e63950ae166010ce7d797d17a64091",
+    ]);
+    expect(await sha256Hex(savedFiles[5] ?? new File([], "missing"))).toBe(
+      "31c458a9110ddf17e4eba65c247279fc522cbcfcc502b136c6f87b69566972e5",
+    );
+    await vi.waitFor(() => expect(view.state.doc.toString().match(/!\[/gu)).toHaveLength(7));
+  });
+
+  it("removes a failed mixed-image batch and retries it without partial Markdown", async () => {
+    const files = [
+      new File([new Uint8Array([1])], "first.png", { type: "image/png" }),
+      new File([new Uint8Array([2])], "second.avif", { type: "image/avif" }),
+    ];
+    const saveResources = vi.fn()
+      .mockRejectedValueOnce(new Error("invalid request details must stay private"))
+      .mockResolvedValueOnce([
+        { alt: "first", kind: "image", src: "assets/first.png" },
+        { alt: "second", kind: "image", src: "assets/second.avif" },
+      ]);
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const view = createView("", { saveResources });
+
+    paste(view, { files });
+    await vi.waitFor(() => expect(view.dom.querySelector(".markra-image-upload-placeholder")).toBeNull());
+    expect(view.state.doc.toString()).toBe("");
+
+    paste(view, { files });
+    await vi.waitFor(() => expect(view.state.doc.toString()).toBe(
+      "![first](assets/first.png)![second](assets/second.avif)",
+    ));
+    expect(saveResources).toHaveBeenCalledTimes(2);
+    error.mockRestore();
+  });
+
   it("shows a placeholder and inserts a saved pasted image", async () => {
     const pending = createDeferred<{ alt: string; src: string } | null>();
     const saveImage = vi.fn(() => pending.promise);

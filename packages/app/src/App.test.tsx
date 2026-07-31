@@ -3437,6 +3437,60 @@ describe("QingYu workspace", () => {
     });
   });
 
+  it("imports a native seven-format selection through one Kernel image batch", async () => {
+    const notePath = `${mockFolderPath}/notes/seven-formats.md`;
+    const images = [
+      new File([new Uint8Array([1])], "fixture.avif", { type: "" }),
+      new File([new Uint8Array([2])], "fixture.bmp", { type: "image/x-ms-bmp" }),
+      new File([new Uint8Array([3])], "fixture.gif", { type: "image/gif" }),
+      new File([new Uint8Array([4])], "fixture.jpg", { type: "image/jpeg" }),
+      new File([new Uint8Array([5])], "fixture.png", { type: "image/png" }),
+      new File([new Uint8Array([6])], "fixture.svg", { type: "application/svg+xml" }),
+      new File([new Uint8Array([7])], "fixture.webp", { type: "image/webp" }),
+    ];
+    const saveClipboardImages = vi.fn(async (inputs: readonly { image: File }[]) => inputs.map(({ image }) => ({
+      alt: image.name.replace(/\.[^.]+$/u, ""),
+      src: `../assets/${image.name}`
+    })));
+    const runtime = getAppRuntime();
+    configureAppRuntime({
+      ...runtime,
+      files: { ...runtime.files, saveClipboardImages }
+    });
+    mockDesktopPrimaryWorkspace({ root: mockFolderPath, status: "ready" });
+    window.history.replaceState({}, "", `/?path=${encodeURIComponent(notePath)}`);
+    mockedReadNativeMarkdownFile.mockResolvedValue({
+      content: "# Seven formats",
+      name: "seven-formats.md",
+      path: notePath
+    });
+    mockedOpenNativeLocalImages.mockResolvedValue(images);
+
+    const { container } = renderApp();
+    await expectVisibleCodeMirrorText(container, "Seven formats");
+    await waitFor(() => expect(mockedInstallNativeApplicationMenu).toHaveBeenCalled());
+    const menuHandlers = mockedInstallNativeApplicationMenu.mock.calls.at(-1)?.[0] as NativeMenuHandlers;
+
+    await act(async () => {
+      await menuHandlers.importLocalImages?.();
+    });
+
+    expect(saveClipboardImages).toHaveBeenCalledOnce();
+    const inputs = saveClipboardImages.mock.calls[0]?.[0] ?? [];
+    expect(inputs.map(({ image }) => image.type)).toEqual([
+      "image/avif", "image/bmp", "image/gif", "image/jpeg", "image/png", "image/svg+xml", "image/webp"
+    ]);
+    expect(inputs).toEqual(expect.arrayContaining(images.map((image) => expect.objectContaining({
+      copyToStorage: true,
+      documentPath: notePath,
+      fileName: expect.stringMatching(new RegExp(`\\.${image.name.split(".").at(-1)}$`, "u")),
+      folder: "assets",
+      projectRootPath: mockFolderPath
+    }))));
+    expect(mockedSaveNativeClipboardImage).not.toHaveBeenCalled();
+    await waitFor(() => expect(getVisibleCodeMirrorView(container).state.doc.toString().match(/!\[/gu)).toHaveLength(7));
+  });
+
   it("does not open local import pickers while source mode is active", async () => {
     renderApp();
 

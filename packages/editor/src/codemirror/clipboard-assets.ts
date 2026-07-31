@@ -26,6 +26,7 @@ import type {
   SavedClipboardImage,
   SaveRemoteClipboardImage,
 } from "../clipboard-asset-types.ts";
+import { normalizeEditorImageFile } from "../clipboard-asset-types.ts";
 import { looksLikeMarkdownSource } from "../markdown-source-detection.ts";
 import {
   codeMirrorSelectionIsInsideFencedCode,
@@ -213,11 +214,14 @@ function transferFiles(dataTransfer: DataTransfer | null | undefined) {
 }
 
 function imageFiles(dataTransfer: DataTransfer | null | undefined) {
-  return transferFiles(dataTransfer).filter((file) => file.type.startsWith("image/"));
+  return transferFiles(dataTransfer).flatMap((file) => {
+    const image = normalizeEditorImageFile(file);
+    return image === null ? [] : [image];
+  });
 }
 
 function attachmentFiles(dataTransfer: DataTransfer | null | undefined) {
-  return transferFiles(dataTransfer).filter((file) => !file.type.startsWith("image/"));
+  return transferFiles(dataTransfer).filter((file) => normalizeEditorImageFile(file) === null);
 }
 
 function structuredTableClipboard(event: ClipboardEvent) {
@@ -291,30 +295,25 @@ async function saveAndInsertImages(
   view: CodeMirrorView,
   field: StateField<ClipboardAssetsState>,
   files: readonly File[],
-  saveImage: SaveClipboardImage,
+  saveImages: (files: readonly File[]) => Promise<readonly SavedClipboardImage[] | null>,
   selection: SelectionRange,
 ) {
   const placeholders = addUploadPlaceholders(view, files.length, selection);
-  for (let index = 0; index < files.length; index += 1) {
-    const file = files[index];
+  let saved: readonly SavedClipboardImage[] | null;
+  try {
+    saved = await saveImages(files);
+  } catch {
+    removePlaceholders(view, placeholders.map((candidate) => candidate.id));
+    console.error("[markra-codemirror-clipboard] failed to save image batch");
+    return;
+  }
+  if (saved === null || saved.length !== placeholders.length) {
+    removePlaceholders(view, placeholders.map((candidate) => candidate.id));
+    return;
+  }
+  for (const [index, image] of saved.entries()) {
     const placeholder = placeholders[index];
-    if (!file || !placeholder) continue;
-    let saved: SavedClipboardImage | null;
-    try {
-      saved = await saveImage(file);
-    } catch (error) {
-      removePlaceholders(
-        view,
-        placeholders.slice(index).map((candidate) => candidate.id),
-      );
-      console.error("[markra-codemirror-clipboard] failed to save image", error);
-      return;
-    }
-    if (saved) {
-      replacePlaceholder(view, field, placeholder.id, saved);
-    } else {
-      removePlaceholders(view, [placeholder.id]);
-    }
+    if (placeholder) replacePlaceholder(view, field, placeholder.id, image);
   }
 }
 
@@ -570,15 +569,26 @@ const clipboardTheme = EditorView.baseTheme({
 function imageSaver(
   options: CodeMirrorClipboardAssetsPluginOptions,
   origin: "clipboard" | "drop",
-): SaveClipboardImage | undefined {
+): ((files: readonly File[]) => Promise<readonly SavedClipboardImage[] | null>) | undefined {
   if (options.saveResources) {
-    return async (image) => {
-      const resources = await options.saveResources?.({ files: [image], origin }) ?? [];
-      const saved = resources.find((resource) => resource.kind === "image");
-      return saved ? { alt: saved.alt, src: saved.src } : null;
+    return async (files) => {
+      const resources = await options.saveResources?.({ files: [...files], origin }) ?? [];
+      const saved = resources.flatMap((resource) => resource.kind === "image"
+        ? [{ alt: resource.alt, src: resource.src }]
+        : []);
+      return saved.length === files.length ? saved : null;
     };
   }
-  return options.saveImage;
+  if (!options.saveImage) return undefined;
+  return async (files) => {
+    const saved: SavedClipboardImage[] = [];
+    for (const file of files) {
+      const image = await options.saveImage?.(file) ?? null;
+      if (image === null) return null;
+      saved.push(image);
+    }
+    return saved;
+  };
 }
 
 function attachmentSaver(

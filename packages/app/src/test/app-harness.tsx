@@ -1026,7 +1026,7 @@ export function installAppTestHarness() {
       ...runtime,
       files: {
         ...runtime.files,
-        saveClipboardImages: (inputs) => Promise.all(inputs.map(saveNativeClipboardImage)),
+        saveClipboardImages: (inputs) => Promise.all(inputs.map((input) => saveNativeClipboardImage(input))),
       },
       features: {
         ...runtime.features,
