@@ -1,3 +1,4 @@
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { AppRuntime, KernelDomainPort } from "@markra/app/runtime";
 
@@ -9,8 +10,11 @@ import type {
   ServerWebBootstrapOwner,
   ServerWebBootstrapSnapshot,
 } from "./server-bootstrap";
+import { resolveServerStartupLanguage } from "./server-startup-language";
 
 describe("server Web application gate", () => {
+  afterEach(() => cleanup());
+
   it("never configures or renders App before the authenticated runtime is ready", async () => {
     const snapshots: ServerWebBootstrapSnapshot[] = [{ phase: "checking" }];
     const subscribers = new Set<(snapshot: ServerWebBootstrapSnapshot) => unknown>();
@@ -89,7 +93,7 @@ describe("server Web application gate", () => {
         snapshot={{ phase: "initialize", error: null }}
       />,
     );
-    expect(initialization).toContain("Initialize QingYu Server");
+    expect(initialization).toContain("Set up this server");
     expect(initialization).toContain("type=\"password\"");
     expect(initialization).not.toContain("value=");
 
@@ -103,6 +107,120 @@ describe("server Web application gate", () => {
       />,
     );
     expect(limited).toContain("31 seconds");
+  });
+
+  it("renders the approved Chinese login copy without the removed subtitles", () => {
+    const markup = renderToStaticMarkup(
+      <ServerStartupShell
+        language="zh-CN"
+        owner={inertOwner()}
+        serverAddress="192.168.0.172:3210"
+        snapshot={{ phase: "login", error: null }}
+        transport="HTTP"
+      />,
+    );
+
+    expect(markup).toContain("明窗净几，");
+    expect(markup).toContain("字字轻语。");
+    expect(markup).toContain("欢迎回来");
+    expect(markup).toContain("服务器密码");
+    expect(markup).toContain("192.168.0.172:3210");
+    expect(markup).toContain("/favicon.png");
+    expect(markup).not.toContain("输入服务器密码，继续写作");
+    expect(markup).not.toContain("笔记始终是普通的 Markdown 文件");
+    expect(markup).not.toContain("密码只会发送到当前服务器");
+  });
+
+  it("reveals and conceals a password without retaining it in component state", () => {
+    render(
+      <ServerStartupShell
+        language="zh-CN"
+        owner={inertOwner()}
+        snapshot={{ phase: "login", error: null }}
+      />,
+    );
+    const input = screen.getByLabelText("服务器密码") as HTMLInputElement;
+    const reveal = screen.getByRole("button", { name: "显示密码" });
+
+    expect(input.type).toBe("password");
+    fireEvent.click(reveal);
+    expect(input.type).toBe("text");
+    expect(
+      screen.getByRole("button", { name: "隐藏密码" }).getAttribute("aria-pressed"),
+    ).toBe("true");
+    fireEvent.click(screen.getByRole("button", { name: "隐藏密码" }));
+    expect(input.type).toBe("password");
+  });
+
+  it("distinguishes pointer focus from keyboard focus for the input treatment", () => {
+    render(
+      <ServerStartupShell
+        owner={inertOwner()}
+        snapshot={{ phase: "login", error: null }}
+      />,
+    );
+
+    fireEvent.pointerDown(document);
+    expect(document.body.dataset.serverFocusOrigin).toBe("pointer");
+    fireEvent.keyDown(document, { key: "Tab" });
+    expect(document.body.dataset.serverFocusOrigin).toBe("keyboard");
+  });
+
+  it("submits login secrets to the owner and clears the field", () => {
+    const owner = inertOwner();
+    owner.login = vi.fn(async () => undefined);
+    render(
+      <ServerStartupShell
+        owner={owner}
+        snapshot={{ phase: "login", error: null }}
+      />,
+    );
+    const input = screen.getByLabelText("Server password") as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "owner-secret" } });
+    fireEvent.submit(input.form!);
+
+    expect(owner.login).toHaveBeenCalledWith({ password: "owner-secret" });
+    expect(input.value).toBe("");
+  });
+
+  it("blocks mismatched initialization passwords and submits only matching secrets", () => {
+    const owner = inertOwner();
+    owner.initialize = vi.fn(async () => undefined);
+    render(
+      <ServerStartupShell
+        language="zh-CN"
+        owner={owner}
+        snapshot={{ phase: "initialize", error: null }}
+      />,
+    );
+    const token = screen.getByLabelText("一次性初始化令牌") as HTMLInputElement;
+    const password = screen.getByLabelText("所有者密码") as HTMLInputElement;
+    const confirmation = screen.getByLabelText("确认密码") as HTMLInputElement;
+    fireEvent.change(token, { target: { value: "one-time-token" } });
+    fireEvent.change(password, { target: { value: "twelve-chars-1" } });
+    fireEvent.change(confirmation, { target: { value: "twelve-chars-2" } });
+    fireEvent.submit(token.form!);
+
+    expect(owner.initialize).not.toHaveBeenCalled();
+    expect(screen.getByText("两次密码不一致。请再次输入相同的密码。")).not.toBeNull();
+    expect(confirmation.getAttribute("aria-invalid")).toBe("true");
+
+    fireEvent.change(confirmation, { target: { value: "twelve-chars-1" } });
+    fireEvent.submit(token.form!);
+    expect(owner.initialize).toHaveBeenCalledWith({
+      initializationToken: "one-time-token",
+      password: "twelve-chars-1",
+    });
+    expect(token.value).toBe("");
+    expect(password.value).toBe("");
+    expect(confirmation.value).toBe("");
+  });
+
+  it("resolves Chinese from an explicit startup language or browser preference", () => {
+    expect(resolveServerStartupLanguage("?startupLanguage=zh-CN", ["en-US"])).toBe("zh-CN");
+    expect(resolveServerStartupLanguage("", ["zh-Hans-CN", "en-US"])).toBe("zh-CN");
+    expect(resolveServerStartupLanguage("?startupLanguage=en", ["zh-CN"])).toBe("en");
+    expect(resolveServerStartupLanguage("", ["fr-FR"])).toBe("en");
   });
 });
 
