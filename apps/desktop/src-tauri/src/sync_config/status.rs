@@ -166,7 +166,7 @@ impl SyncStatus {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SyncRunResult {
     pub(crate) notebook_name: String,

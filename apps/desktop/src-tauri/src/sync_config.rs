@@ -61,6 +61,21 @@ pub(crate) struct SyncApplicationRequest {
     trigger: SyncTrigger,
 }
 
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub(crate) struct KernelSyncApplySettlementRequest {
+    outcome: KernelSyncApplySettlementOutcome,
+    revision: String,
+    token: String,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "lowercase", tag = "status")]
+enum KernelSyncApplySettlementOutcome {
+    Completed { result: SyncRunResult },
+    Failed,
+}
+
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "lowercase", tag = "status")]
 pub(crate) enum SyncDispatchResult {
@@ -1028,6 +1043,22 @@ pub(crate) fn cancel_sync_config_apply(
     request: CancelSyncConfigApplyRequest,
 ) -> Result<SyncPendingApply, String> {
     cancel_sync_apply_in_registry(request)
+}
+
+#[tauri::command]
+pub(crate) fn settle_kernel_sync_config_apply(
+    request: KernelSyncApplySettlementRequest,
+) -> Result<(), String> {
+    let outcome = match request.outcome {
+        KernelSyncApplySettlementOutcome::Completed { result } => {
+            Ok(SyncDispatchResult::Completed { result })
+        }
+        KernelSyncApplySettlementOutcome::Failed => Err(
+            "kernel-sync-apply-failed: The Kernel sync settings apply did not complete."
+                .to_string(),
+        ),
+    };
+    complete_sync_apply(&request.revision, &request.token, outcome)
 }
 
 #[tauri::command]

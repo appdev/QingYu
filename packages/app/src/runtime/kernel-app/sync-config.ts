@@ -7,6 +7,7 @@ import type {
   QingYuSyncConfig,
   SyncConfigDocument,
   SyncConfigPatch,
+  SyncDispatchResult,
   SyncStatus,
 } from "../index";
 
@@ -62,32 +63,54 @@ export function createKernelSyncConfigRuntime(
     setEditing: options.local.setEditing,
     stopRepositorySync: () => unavailableSyncCapability("stopRepositorySync"),
     sync: async (input) => {
-      const run = await kernel.sync.trigger(input.revision as KernelRevision);
-      if (run.configRevision !== input.revision) {
-        throw new KernelSyncRunError("protocol-mismatch");
+      const apply = "applyToken" in input && input.applyToken ? {
+        revision: input.revision,
+        token: input.applyToken,
+      } : null;
+      let dispatch: Extract<SyncDispatchResult, { status: "completed" }>;
+      try {
+        const run = await kernel.sync.trigger(input.revision as KernelRevision);
+        if (run.configRevision !== input.revision) {
+          throw new KernelSyncRunError("protocol-mismatch");
+        }
+        const status = await waitForTerminalRun(kernel, run, options);
+        if (status.completionState !== "succeeded" || status.summary === null) {
+          throw new KernelSyncRunError(
+            "run-failed",
+            status.error?.code ?? "sync-run-failed",
+          );
+        }
+        const notesRoot = "notesRoot" in input ? input.notesRoot : kernelWorkspaceRoot;
+        const notebookName = "notebookName" in input
+          ? input.notebookName
+          : (await kernel.workspace.read()).displayName;
+        dispatch = {
+          result: {
+            notebookName,
+            notesRoot,
+            provider: status.provider,
+            revision: run.configRevision,
+            summary: { ...status.summary },
+            trigger: input.trigger,
+          },
+          status: "completed",
+        };
+      } catch (error) {
+        if (apply) {
+          await options.local.settleApply({
+            ...apply,
+            outcome: { status: "failed" },
+          });
+        }
+        throw error;
       }
-      const status = await waitForTerminalRun(kernel, run, options);
-      if (status.completionState !== "succeeded" || status.summary === null) {
-        throw new KernelSyncRunError(
-          "run-failed",
-          status.error?.code ?? "sync-run-failed",
-        );
+      if (apply) {
+        await options.local.settleApply({
+          ...apply,
+          outcome: dispatch,
+        });
       }
-      const notesRoot = "notesRoot" in input ? input.notesRoot : kernelWorkspaceRoot;
-      const notebookName = "notebookName" in input
-        ? input.notebookName
-        : (await kernel.workspace.read()).displayName;
-      return {
-        result: {
-          notebookName,
-          notesRoot,
-          provider: status.provider,
-          revision: run.configRevision,
-          summary: { ...status.summary },
-          trigger: input.trigger,
-        },
-        status: "completed",
-      };
+      return dispatch;
     },
     testConnection: async ({ revision }) => {
       const result = await kernel.sync.testConnection({
@@ -106,11 +129,19 @@ export interface KernelSyncConfigRuntimeOptions {
   readonly local: Pick<
     AppSyncConfigRuntime,
     "cancelApply" | "loadEditing" | "requestApply" | "setEditing"
-  >;
+  > & {
+    readonly settleApply: (input: KernelSyncApplySettlementInput) => Promise<unknown>;
+  };
   readonly delay?: (milliseconds: number) => Promise<unknown>;
   readonly maxStatusReads?: number;
   readonly statusPollMilliseconds?: number;
 }
+
+export type KernelSyncApplySettlementInput = {
+  readonly outcome: Extract<SyncDispatchResult, { status: "completed" }> | { readonly status: "failed" };
+  readonly revision: string;
+  readonly token: string;
+};
 
 function unavailableSyncCapability(name: string): Promise<never> {
   return Promise.reject(new Error(`${name} is unavailable for a Kernel runtime.`));

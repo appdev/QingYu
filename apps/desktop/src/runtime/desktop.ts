@@ -365,6 +365,7 @@ export function createDesktopKernelRuntimeOwner(
         loadEditing: shell.syncConfig.loadEditing,
         requestApply: shell.syncConfig.requestApply,
         setEditing: shell.syncConfig.setEditing,
+        settleApply: syncConfig.settleNativeKernelSyncConfigApply,
       },
     }),
     syncPathGuard: unavailable.syncPathGuard,

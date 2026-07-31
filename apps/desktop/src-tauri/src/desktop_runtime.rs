@@ -443,6 +443,7 @@ pub(crate) fn run() {
             crate::sync_config::set_sync_config_editing,
             crate::sync_config::request_sync_config_apply,
             crate::sync_config::cancel_sync_config_apply,
+            crate::sync_config::settle_kernel_sync_config_apply,
             crate::sync_config::load_sync_status,
             crate::managed_workspace::resolve_managed_workspace_root,
             crate::managed_workspace::list_managed_workspace_names,
