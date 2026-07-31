@@ -22,6 +22,7 @@ import {
   type MarkraCodeLanguageOption,
 } from "../code-support.ts";
 import {
+  ensureMermaidContrast,
   isMermaidLanguage,
   mermaidThemeFromElement,
   renderMermaidToSvg,
@@ -814,6 +815,7 @@ class MermaidPreviewWidget extends WidgetType {
           if (token !== this.renderToken) return;
           this.closeZoom();
           preview.innerHTML = svg;
+          ensureMermaidContrast(preview);
           this.appendZoomButton(view, preview, wrapper);
           preview.setAttribute("aria-busy", "false");
         })

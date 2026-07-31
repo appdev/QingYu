@@ -4,7 +4,7 @@ vi.mock("mermaid", () => ({
   default: {
     initialize: vi.fn(),
     render: vi.fn(async (id: string) => ({
-      svg: `<svg id="${id}" data-testid="mock-mermaid"><g></g></svg>`
+      svg: `<svg id="${id}" data-testid="mock-mermaid"><g class="node"><rect style="fill:#e8f4fd"></rect><g class="label"><foreignObject><div xmlns="http://www.w3.org/1999/xhtml"><span class="nodeLabel" style="color:#e0dfdf">A</span></div></foreignObject></g></g></svg>`
     }))
   }
 }));
@@ -12,6 +12,10 @@ vi.mock("mermaid", () => ({
 import { MarkdownExportDocument } from "./MarkdownExportDocument";
 
 describe("MarkdownExportDocument", () => {
+  afterEach(() => {
+    document.documentElement.removeAttribute("data-theme-appearance");
+  });
+
   it("renders ordinary Markdown line breaks without explicit br tags", async () => {
     const onRendered = vi.fn();
 
@@ -152,6 +156,7 @@ describe("MarkdownExportDocument", () => {
 
   it("renders Mermaid code blocks before exporting HTML", async () => {
     const onRendered = vi.fn();
+    document.documentElement.setAttribute("data-theme-appearance", "dark");
 
     render(
       <MarkdownExportDocument
@@ -159,7 +164,14 @@ describe("MarkdownExportDocument", () => {
         snapshot={{
           id: 1,
           kind: "html",
-          markdown: ["```mermaid", "flowchart TD", "  A --> B", "```"].join("\n"),
+          markdown: [
+            "```mermaid",
+            "flowchart TD",
+            "  A[Light custom node]",
+            "  classDef firmware fill:#E8F4FD,stroke:#1F77B4,stroke-width:2px",
+            "  class A firmware",
+            "```"
+          ].join("\n"),
           title: "diagram.md"
         }}
       />
@@ -170,6 +182,7 @@ describe("MarkdownExportDocument", () => {
     const bodyHtml = onRendered.mock.calls[0]?.[0].bodyHtml as string;
     expect(bodyHtml).toContain("markra-mermaid-render");
     expect(bodyHtml).toContain("<svg");
+    expect(bodyHtml).toContain("color: rgb(0, 0, 0) !important");
     expect(bodyHtml).not.toContain("language-mermaid");
   });
 

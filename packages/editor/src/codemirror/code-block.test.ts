@@ -353,7 +353,7 @@ describe("codeBlockPreviewPlugin", () => {
   it("renders Mermaid as a preview and reveals its unchanged source on activation", async () => {
     const source = "```mermaid\nflowchart TD\n  A --> B\n```\n\nEdit";
     const renderMermaid = vi.fn().mockResolvedValue(
-      '<svg aria-label="Synthetic diagram"></svg>',
+      '<svg aria-label="Synthetic diagram"><g class="node"><rect style="fill:#e8f4fd"></rect><g class="label"><foreignObject><div xmlns="http://www.w3.org/1999/xhtml"><span class="nodeLabel" style="color:#e0dfdf">A</span></div></foreignObject></g></g></svg>',
     );
     const view = createView(
       source,
@@ -363,6 +363,10 @@ describe("codeBlockPreviewPlugin", () => {
     await vi.waitFor(() => {
       expect(view.dom.querySelector(".markra-mermaid-render svg")).not.toBeNull();
     });
+    expect(
+      view.dom.querySelector<HTMLElement>(".markra-mermaid-render .nodeLabel")
+        ?.style.getPropertyValue("color"),
+    ).toBe("rgb(0, 0, 0)");
     expect(renderMermaid).toHaveBeenCalledWith(
       expect.objectContaining({
         source: "flowchart TD\n  A --> B",
