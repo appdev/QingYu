@@ -56,6 +56,9 @@ pub(crate) struct PrimaryWorkspaceWriteResult {
 trait PrimaryWorkspaceBackend: Sync {
     fn delete(&self, key: &str);
     fn get(&self, key: &str) -> Option<Value>;
+    fn reload(&self) -> Result<(), String> {
+        Ok(())
+    }
     fn save(&self) -> Result<(), String>;
     fn save_publication(&self) -> PrimaryWorkspacePersistence {
         match self.save() {
@@ -114,6 +117,7 @@ impl<'a, Backend: PrimaryWorkspaceBackend + ?Sized>
             .transaction_lock
             .lock()
             .map_err(|_| persistence_error())?;
+        self.backend.reload()?;
         let authoritative = authoritative_primary_workspace_root(
             self.backend.get(PRIMARY_WORKSPACE_KEY),
             PrimaryWorkspaceKind::Desktop,
@@ -183,64 +187,89 @@ impl DesktopDiskPrimaryWorkspaceBackend {
     fn open<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<Self, String> {
         let app_data_root = app.path().app_data_dir().map_err(|_| persistence_error())?;
         std::fs::create_dir_all(&app_data_root).map_err(|_| persistence_error())?;
-        Self::open_at(app_data_root)
+        Ok(Self::empty_at(app_data_root))
     }
 
+    fn empty_at(app_data_root: PathBuf) -> Self {
+        Self {
+            app_data_root,
+            expected_target: Mutex::new(None),
+            values: Mutex::new(BTreeMap::new()),
+        }
+    }
+
+    #[cfg(test)]
     fn open_at(app_data_root: PathBuf) -> Result<Self, String> {
+        let backend = Self::empty_at(app_data_root);
+        backend.reload()?;
+        Ok(backend)
+    }
+
+    fn reload_from_disk(&self) -> Result<(), String> {
         let existing =
-            read_workspace_store_file(&app_data_root, DESKTOP_PRIMARY_WORKSPACE_STORE_PATH)?;
+            read_workspace_store_file(&self.app_data_root, DESKTOP_PRIMARY_WORKSPACE_STORE_PATH)?;
         let legacy = if existing.is_none() {
-            read_workspace_store_file(&app_data_root, LOCAL_STATE_STORE_PATH)?
+            read_workspace_store_file(&self.app_data_root, LOCAL_STATE_STORE_PATH)?
         } else {
             None
         };
-        let values = existing
-            .as_ref()
-            .map(|state| state.values.clone())
-            .or_else(|| legacy.map(|state| primary_workspace_values(&state.values)))
-            .unwrap_or_default();
-        Ok(Self {
-            app_data_root,
-            expected_target: Mutex::new(existing.as_ref().map(|state| state.identity)),
-            values: Mutex::new(values),
-        })
+        let loaded = match (existing, legacy) {
+            (Some(existing), _) => Some(existing),
+            (None, Some(legacy)) => {
+                let values = primary_workspace_values(&legacy.values);
+                if legacy_primary_workspace_is_valid(&values) {
+                    let bytes = serde_json::to_vec(&values).map_err(|_| persistence_error())?;
+                    let publication = replace_primary_workspace_file_atomically_with_hooks(
+                        &self.app_data_root,
+                        &bytes,
+                        Some(None),
+                        || Ok(()),
+                        || Ok(()),
+                        sync_directory,
+                    );
+                    let published = read_workspace_store_file(
+                        &self.app_data_root,
+                        DESKTOP_PRIMARY_WORKSPACE_STORE_PATH,
+                    )?;
+                    match (publication, published) {
+                        (PrimaryWorkspacePersistence::NotPublished, None) => {
+                            return Err(persistence_error())
+                        }
+                        (_, Some(published)) => Some(published),
+                        (_, None) => return Err(persistence_error()),
+                    }
+                } else {
+                    Some(ExistingPrimaryWorkspaceFile {
+                        identity: legacy.identity,
+                        values,
+                    })
+                }
+            }
+            (None, None) => None,
+        };
+        let expected_target = loaded.as_ref().and_then(|state| {
+            read_workspace_store_file(&self.app_data_root, DESKTOP_PRIMARY_WORKSPACE_STORE_PATH)
+                .ok()
+                .flatten()
+                .filter(|published| published.identity == state.identity)
+                .map(|published| published.identity)
+        });
+        let values = loaded.map(|state| state.values).unwrap_or_default();
+        *self
+            .expected_target
+            .lock()
+            .map_err(|_| persistence_error())? = expected_target;
+        *self.values.lock().map_err(|_| persistence_error())? = values;
+        Ok(())
     }
-}
 
-#[cfg(not(mobile))]
-fn primary_workspace_values(values: &BTreeMap<String, Value>) -> BTreeMap<String, Value> {
-    [LOCAL_STATE_SCHEMA_VERSION_KEY, PRIMARY_WORKSPACE_KEY]
-        .into_iter()
-        .filter_map(|key| {
-            values
-                .get(key)
-                .cloned()
-                .map(|value| (key.to_owned(), value))
-        })
-        .collect()
-}
-
-#[cfg(not(mobile))]
-impl PrimaryWorkspaceBackend for DesktopDiskPrimaryWorkspaceBackend {
-    fn delete(&self, key: &str) {
-        if let Ok(mut values) = self.values.lock() {
-            values.remove(key);
-        }
-    }
-
-    fn get(&self, key: &str) -> Option<Value> {
-        self.values.lock().ok()?.get(key).cloned()
-    }
-
-    fn save(&self) -> Result<(), String> {
-        match self.save_publication() {
-            PrimaryWorkspacePersistence::Durable => Ok(()),
-            PrimaryWorkspacePersistence::PublishedWithoutDirectoryDurability
-            | PrimaryWorkspacePersistence::NotPublished => Err(persistence_error()),
-        }
-    }
-
-    fn save_publication(&self) -> PrimaryWorkspacePersistence {
+    fn save_publication_with_sync<SyncDirectory>(
+        &self,
+        sync_after_rename: SyncDirectory,
+    ) -> PrimaryWorkspacePersistence
+    where
+        SyncDirectory: FnOnce(&cap_std::fs::Dir) -> io::Result<()>,
+    {
         let values = match self.values.lock() {
             Ok(values) => values.clone(),
             Err(_) => return PrimaryWorkspacePersistence::NotPublished,
@@ -259,7 +288,7 @@ impl PrimaryWorkspaceBackend for DesktopDiskPrimaryWorkspaceBackend {
             Some(expected),
             || Ok(()),
             || Ok(()),
-            sync_directory,
+            sync_after_rename,
         );
         if publication != PrimaryWorkspacePersistence::NotPublished {
             let identity = read_workspace_store_file(
@@ -274,6 +303,58 @@ impl PrimaryWorkspaceBackend for DesktopDiskPrimaryWorkspaceBackend {
             }
         }
         publication
+    }
+}
+
+#[cfg(not(mobile))]
+fn primary_workspace_values(values: &BTreeMap<String, Value>) -> BTreeMap<String, Value> {
+    [LOCAL_STATE_SCHEMA_VERSION_KEY, PRIMARY_WORKSPACE_KEY]
+        .into_iter()
+        .filter_map(|key| {
+            values
+                .get(key)
+                .cloned()
+                .map(|value| (key.to_owned(), value))
+        })
+        .collect()
+}
+
+#[cfg(not(mobile))]
+fn legacy_primary_workspace_is_valid(values: &BTreeMap<String, Value>) -> bool {
+    values.contains_key(PRIMARY_WORKSPACE_KEY)
+        && resolve_desktop_primary_workspace_read(Ok((
+            values.get(LOCAL_STATE_SCHEMA_VERSION_KEY).cloned(),
+            values.get(PRIMARY_WORKSPACE_KEY).cloned(),
+        )))
+        .is_ok()
+}
+
+#[cfg(not(mobile))]
+impl PrimaryWorkspaceBackend for DesktopDiskPrimaryWorkspaceBackend {
+    fn delete(&self, key: &str) {
+        if let Ok(mut values) = self.values.lock() {
+            values.remove(key);
+        }
+    }
+
+    fn get(&self, key: &str) -> Option<Value> {
+        self.values.lock().ok()?.get(key).cloned()
+    }
+
+    fn reload(&self) -> Result<(), String> {
+        self.reload_from_disk()
+    }
+
+    fn save(&self) -> Result<(), String> {
+        match self.save_publication() {
+            PrimaryWorkspacePersistence::Durable => Ok(()),
+            PrimaryWorkspacePersistence::PublishedWithoutDirectoryDurability
+            | PrimaryWorkspacePersistence::NotPublished => Err(persistence_error()),
+        }
+    }
+
+    fn save_publication(&self) -> PrimaryWorkspacePersistence {
+        self.save_publication_with_sync(sync_directory)
     }
 
     fn set(&self, key: &str, value: Value) {
@@ -594,11 +675,19 @@ impl<'a, Backend: PrimaryWorkspaceBackend + ?Sized> PrimaryWorkspaceService<'a, 
         &self,
         operation: impl FnOnce(Option<Value>) -> Result<T, String>,
     ) -> Result<T, String> {
+        self.with_transaction(|service| operation(service.backend.get(PRIMARY_WORKSPACE_KEY)))
+    }
+
+    fn with_transaction<T>(
+        &self,
+        operation: impl FnOnce(&Self) -> Result<T, String>,
+    ) -> Result<T, String> {
         let _transaction = self
             .transaction_lock
             .lock()
             .map_err(|_| persistence_error())?;
-        operation(self.backend.get(PRIMARY_WORKSPACE_KEY))
+        self.backend.reload()?;
+        operation(self)
     }
 
     fn restore_value(&self, key: &str, value: Option<Value>) {
@@ -631,10 +720,14 @@ impl<'a, Backend: PrimaryWorkspaceBackend + ?Sized> PrimaryWorkspaceService<'a, 
         input: PrimaryWorkspaceWriteInput,
         mut validate: impl FnMut() -> Result<(), String>,
     ) -> Result<PrimaryWorkspaceWriteResult, String> {
-        let _transaction = self
-            .transaction_lock
-            .lock()
-            .map_err(|_| persistence_error())?;
+        self.with_transaction(|service| service.write_validated_locked(input, &mut validate))
+    }
+
+    fn write_validated_locked(
+        &self,
+        input: PrimaryWorkspaceWriteInput,
+        validate: &mut impl FnMut() -> Result<(), String>,
+    ) -> Result<PrimaryWorkspaceWriteResult, String> {
         let previous_schema_version = self.backend.get(LOCAL_STATE_SCHEMA_VERSION_KEY);
         let previous_primary_workspace = self.backend.get(PRIMARY_WORKSPACE_KEY);
         if !local_state_schema_is_supported(previous_schema_version.as_ref()) {
@@ -1274,25 +1367,6 @@ fn select_desktop_primary_workspace_with_backend<Backend: PrimaryWorkspaceBacken
         .to_str()
         .ok_or_else(desktop_primary_workspace_initialization_error)?
         .to_owned();
-    let current = backend.get(PRIMARY_WORKSPACE_KEY);
-    let current_resolution = resolve_desktop_primary_workspace_value(current.clone());
-    let selection_is_allowed = match mode {
-        DesktopPrimaryWorkspaceSelectionMode::Initialize => {
-            current_resolution == Ok(DesktopPrimaryWorkspaceResolution::Unselected)
-        }
-        DesktopPrimaryWorkspaceSelectionMode::RecoverInvalid => {
-            current_resolution == Err(DesktopPrimaryWorkspaceResolutionError::Invalid)
-        }
-        DesktopPrimaryWorkspaceSelectionMode::Switch { expected_root } => {
-            current_resolution
-                == Ok(DesktopPrimaryWorkspaceResolution::Selected(
-                    expected_root.to_path_buf(),
-                ))
-        }
-    };
-    if !selection_is_allowed {
-        return Err(desktop_primary_workspace_initialization_error());
-    }
     let state = serde_json::json!({
         "desktopWorkspaceRoot": parent_string,
         "desktopPath": canonical_string,
@@ -1300,25 +1374,47 @@ fn select_desktop_primary_workspace_with_backend<Backend: PrimaryWorkspaceBacken
         "onboardingCompleted": true,
         "version": 3
     });
-    let result = PrimaryWorkspaceService::new(backend, transaction_lock).write_validated(
-        PrimaryWorkspaceWriteInput {
-            expected_state: Some(current.unwrap_or(Value::Null)),
-            state,
-        },
-        || {
-            let validated = validate_selected_desktop_workspace_with_hook(
-                &parent_string,
-                &canonical_string,
-                || {},
-            )
-            .map_err(|_| desktop_primary_workspace_initialization_error())?;
-            if validated != canonical {
-                return Err(desktop_primary_workspace_initialization_error());
+    let service = PrimaryWorkspaceService::new(backend, transaction_lock);
+    let result = service.with_transaction(|service| {
+        let current = service.backend.get(PRIMARY_WORKSPACE_KEY);
+        let current_resolution = resolve_desktop_primary_workspace_value(current.clone());
+        let selection_is_allowed = match mode {
+            DesktopPrimaryWorkspaceSelectionMode::Initialize => {
+                current_resolution == Ok(DesktopPrimaryWorkspaceResolution::Unselected)
             }
-            crate::dejavu_sync::path_guard::native_working_tree_registry()
-                .validate_primary_root(Some(&validated))
-        },
-    )?;
+            DesktopPrimaryWorkspaceSelectionMode::RecoverInvalid => {
+                current_resolution == Err(DesktopPrimaryWorkspaceResolutionError::Invalid)
+            }
+            DesktopPrimaryWorkspaceSelectionMode::Switch { expected_root } => {
+                current_resolution
+                    == Ok(DesktopPrimaryWorkspaceResolution::Selected(
+                        expected_root.to_path_buf(),
+                    ))
+            }
+        };
+        if !selection_is_allowed {
+            return Err(desktop_primary_workspace_initialization_error());
+        }
+        service.write_validated_locked(
+            PrimaryWorkspaceWriteInput {
+                expected_state: Some(current.unwrap_or(Value::Null)),
+                state,
+            },
+            &mut || {
+                let validated = validate_selected_desktop_workspace_with_hook(
+                    &parent_string,
+                    &canonical_string,
+                    || {},
+                )
+                .map_err(|_| desktop_primary_workspace_initialization_error())?;
+                if validated != canonical {
+                    return Err(desktop_primary_workspace_initialization_error());
+                }
+                crate::dejavu_sync::path_guard::native_working_tree_registry()
+                    .validate_primary_root(Some(&validated))
+            },
+        )
+    })?;
     if !result.applied {
         return Err(desktop_primary_workspace_initialization_error());
     }
@@ -1596,6 +1692,9 @@ pub(crate) fn resolve_desktop_primary_workspace<R: tauri::Runtime>(
     let _transaction = primary_workspace_transaction_gate()
         .lock()
         .map_err(|_| DesktopPrimaryWorkspaceResolutionError::Unavailable)?;
+    backend
+        .reload()
+        .map_err(|_| DesktopPrimaryWorkspaceResolutionError::Unavailable)?;
     resolve_desktop_primary_workspace_read(Ok((
         backend.get(LOCAL_STATE_SCHEMA_VERSION_KEY),
         backend.get(PRIMARY_WORKSPACE_KEY),
@@ -1779,7 +1878,7 @@ mod tests {
         collections::BTreeMap,
         sync::{
             atomic::{AtomicBool, AtomicUsize, Ordering},
-            mpsc, Mutex,
+            mpsc, Arc, Mutex,
         },
         time::Duration,
     };
@@ -1787,6 +1886,38 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    struct PublishedUnknownDiskBackend {
+        inner: DesktopDiskPrimaryWorkspaceBackend,
+    }
+
+    impl PrimaryWorkspaceBackend for PublishedUnknownDiskBackend {
+        fn delete(&self, key: &str) {
+            self.inner.delete(key);
+        }
+
+        fn get(&self, key: &str) -> Option<Value> {
+            self.inner.get(key)
+        }
+
+        fn reload(&self) -> Result<(), String> {
+            self.inner.reload()
+        }
+
+        fn save(&self) -> Result<(), String> {
+            Err(persistence_error())
+        }
+
+        fn save_publication(&self) -> PrimaryWorkspacePersistence {
+            self.inner.save_publication_with_sync(|_| {
+                Err(io::Error::other("injected directory fsync failure"))
+            })
+        }
+
+        fn set(&self, key: &str, value: Value) {
+            self.inner.set(key, value);
+        }
+    }
 
     #[test]
     fn desktop_primary_workspace_atomic_write_preserves_old_file_on_prewrite_failure() {
@@ -1896,13 +2027,69 @@ mod tests {
     }
 
     #[test]
+    fn desktop_switch_commit_unknown_publishes_b_for_independent_settlement() {
+        let app_data = tempfile::tempdir().expect("temporary app data");
+        let root = app_data.path().canonicalize().expect("canonical app data");
+        let workspace = root.join("workspaces");
+        let first = workspace.join("A");
+        let second = workspace.join("B");
+        std::fs::create_dir_all(&first).expect("workspace A");
+        std::fs::create_dir_all(&second).expect("workspace B");
+        let first = first.canonicalize().expect("canonical A");
+        let second = second.canonicalize().expect("canonical B");
+        let transaction = Mutex::new(());
+        let initial = DesktopDiskPrimaryWorkspaceBackend::open_at(root.clone())
+            .expect("open initial authority");
+        assert_eq!(
+            initialize_desktop_primary_workspace_with_backend(&initial, &transaction, &first)
+                .expect("initialize A"),
+            first,
+        );
+        let faulting = PublishedUnknownDiskBackend {
+            inner: DesktopDiskPrimaryWorkspaceBackend::open_at(root.clone())
+                .expect("open A for switch"),
+        };
+
+        assert!(select_desktop_primary_workspace_with_backend(
+            &faulting,
+            &transaction,
+            &second,
+            DesktopPrimaryWorkspaceSelectionMode::Switch {
+                expected_root: &first,
+            },
+        )
+        .is_err());
+        let independent = DesktopDiskPrimaryWorkspaceBackend::open_at(root)
+            .expect("independent post-error disk snapshot");
+        assert_eq!(
+            resolve_desktop_primary_workspace_read(Ok((
+                independent.get(LOCAL_STATE_SCHEMA_VERSION_KEY),
+                independent.get(PRIMARY_WORKSPACE_KEY),
+            ))),
+            Ok(DesktopPrimaryWorkspaceResolution::Selected(second)),
+            "the rename published B even though directory durability was commit-unknown"
+        );
+    }
+
+    #[test]
     fn desktop_primary_workspace_migrates_to_an_independent_authority_file() {
         let app_data = tempfile::tempdir().expect("temporary app data");
         let root = app_data.path().canonicalize().expect("canonical app data");
+        let workspace = root.join("workspaces");
+        let first = workspace.join("A");
+        let second = workspace.join("B");
+        std::fs::create_dir_all(&first).expect("workspace A");
+        std::fs::create_dir_all(&second).expect("workspace B");
+        let first = first.canonicalize().expect("canonical A");
+        let second = second.canonicalize().expect("canonical B");
+        let first_state =
+            completed_v3_desktop_state(first.parent().expect("workspace parent"), &first);
+        let second_state =
+            completed_v3_desktop_state(second.parent().expect("workspace parent"), &second);
         let legacy_path = root.join(LOCAL_STATE_STORE_PATH);
         let legacy = serde_json::json!({
             "schemaVersion": LOCAL_STATE_SCHEMA_VERSION,
-            "primaryWorkspace": "workspace-a",
+            "primaryWorkspace": first_state.clone(),
             "mcp": { "enabled": true }
         });
         std::fs::write(
@@ -1911,16 +2098,43 @@ mod tests {
         )
         .expect("seed legacy local state");
 
-        let backend = DesktopDiskPrimaryWorkspaceBackend::open_at(root.clone())
-            .expect("open migrated Desktop authority");
+        let backend = DesktopDiskPrimaryWorkspaceBackend::empty_at(root.clone());
+        let transaction = Mutex::new(());
+        let migrated_value = PrimaryWorkspaceService::new(&backend, &transaction)
+            .read()
+            .expect("first gated legacy read");
+        assert_eq!(migrated_value, Some(first_state.clone()));
+        let migrated = read_workspace_store_file(&root, DESKTOP_PRIMARY_WORKSPACE_STORE_PATH)
+            .expect("read migrated Desktop authority")
+            .expect("legacy authority must be materialized during the first gated read");
         assert_eq!(
-            backend.get(PRIMARY_WORKSPACE_KEY),
-            Some(json!("workspace-a"))
+            migrated.values.get(PRIMARY_WORKSPACE_KEY),
+            Some(&first_state)
         );
-        backend.set(PRIMARY_WORKSPACE_KEY, json!("workspace-b"));
+        assert_eq!(migrated.values.get("mcp"), None);
+
+        let legacy_after_migration = serde_json::json!({
+            "schemaVersion": LOCAL_STATE_SCHEMA_VERSION,
+            "primaryWorkspace": second_state.clone(),
+            "mcp": { "enabled": false }
+        });
+        std::fs::write(
+            &legacy_path,
+            serde_json::to_vec(&legacy_after_migration).expect("post-migration MCP JSON"),
+        )
+        .expect("simulate MCP save after migration");
+        let restarted = DesktopDiskPrimaryWorkspaceBackend::open_at(root.clone())
+            .expect("restart after one-time migration");
+        assert_eq!(
+            restarted.get(PRIMARY_WORKSPACE_KEY),
+            Some(first_state.clone()),
+            "local-state writes must not regain Desktop workspace authority after restart"
+        );
+
+        backend.set(PRIMARY_WORKSPACE_KEY, second_state.clone());
         let concurrent_mcp_save = serde_json::json!({
             "schemaVersion": LOCAL_STATE_SCHEMA_VERSION,
-            "primaryWorkspace": "workspace-a",
+            "primaryWorkspace": first_state.clone(),
             "mcp": { "enabled": false }
         });
         std::fs::write(
@@ -1935,7 +2149,7 @@ mod tests {
 
         let stale_mcp_save = serde_json::json!({
             "schemaVersion": LOCAL_STATE_SCHEMA_VERSION,
-            "primaryWorkspace": "workspace-a",
+            "primaryWorkspace": first_state.clone(),
             "mcp": { "enabled": true }
         });
         std::fs::write(
@@ -1946,10 +2160,7 @@ mod tests {
         let reopened = DesktopDiskPrimaryWorkspaceBackend::open_at(root.clone())
             .expect("reopen Desktop authority");
 
-        assert_eq!(
-            reopened.get(PRIMARY_WORKSPACE_KEY),
-            Some(json!("workspace-b"))
-        );
+        assert_eq!(reopened.get(PRIMARY_WORKSPACE_KEY), Some(second_state));
         assert_eq!(
             read_workspace_store_file(&root, LOCAL_STATE_STORE_PATH)
                 .expect("read legacy local state")
@@ -1965,6 +2176,80 @@ mod tests {
                 .values
                 .get("mcp"),
             None,
+        );
+    }
+
+    #[test]
+    fn desktop_disk_reader_reloads_authority_after_waiting_for_the_transaction_gate() {
+        let app_data = tempfile::tempdir().expect("temporary app data");
+        let root = app_data.path().canonicalize().expect("canonical app data");
+        let workspace = root.join("workspaces");
+        let first = workspace.join("A");
+        let second = workspace.join("B");
+        std::fs::create_dir_all(&first).expect("workspace A");
+        std::fs::create_dir_all(&second).expect("workspace B");
+        let first = first.canonicalize().expect("canonical A");
+        let second = second.canonicalize().expect("canonical B");
+        let values = |selected: &Path| {
+            BTreeMap::from([
+                (
+                    LOCAL_STATE_SCHEMA_VERSION_KEY.to_owned(),
+                    Value::from(LOCAL_STATE_SCHEMA_VERSION),
+                ),
+                (
+                    PRIMARY_WORKSPACE_KEY.to_owned(),
+                    completed_v3_desktop_state(
+                        selected.parent().expect("workspace parent"),
+                        selected,
+                    ),
+                ),
+            ])
+        };
+        let publish = |selected: &Path, expected| {
+            replace_primary_workspace_file_atomically_with_hooks(
+                &root,
+                &serde_json::to_vec(&values(selected)).expect("workspace authority JSON"),
+                expected,
+                || Ok(()),
+                || Ok(()),
+                sync_directory,
+            )
+        };
+        assert_eq!(publish(&first, None), PrimaryWorkspacePersistence::Durable);
+
+        let transaction = Arc::new(Mutex::new(()));
+        let held = transaction.lock().expect("hold transaction gate");
+        let (opened_sender, opened_receiver) = mpsc::channel();
+        let root_for_reader = root.clone();
+        let transaction_for_reader = Arc::clone(&transaction);
+
+        let read = std::thread::spawn(move || {
+            let backend = DesktopDiskPrimaryWorkspaceBackend::open_at(root_for_reader)
+                .expect("open disk backend before gate acquisition");
+            opened_sender.send(()).expect("backend opened");
+            PrimaryWorkspaceService::new(&backend, transaction_for_reader.as_ref()).read()
+        });
+        opened_receiver
+            .recv()
+            .expect("reader captured its pre-gate state");
+
+        let existing = read_workspace_store_file(&root, DESKTOP_PRIMARY_WORKSPACE_STORE_PATH)
+            .expect("read A authority")
+            .expect("A authority");
+        assert_eq!(
+            publish(&second, Some(Some(existing.identity))),
+            PrimaryWorkspacePersistence::Durable,
+        );
+        drop(held);
+
+        let state = read
+            .join()
+            .expect("join disk reader")
+            .expect("read latest gated authority");
+        assert_eq!(
+            resolve_desktop_primary_workspace_value(state),
+            Ok(DesktopPrimaryWorkspaceResolution::Selected(second)),
+            "the reader must reload B after it acquires the gate instead of returning cached A"
         );
     }
 

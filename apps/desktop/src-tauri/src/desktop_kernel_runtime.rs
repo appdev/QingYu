@@ -1280,6 +1280,78 @@ mod tests {
         assert!(replaced_owner.is_none());
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn published_unknown_switch_keeps_revocation_and_can_publish_the_authoritative_target() {
+        let roots = tempfile::tempdir().expect("workspace roots");
+        let first_root = roots.path().join("A");
+        let second_root = roots.path().join("B");
+        std::fs::create_dir(&first_root).expect("workspace A");
+        std::fs::create_dir(&second_root).expect("workspace B");
+        let first_root = first_root.canonicalize().expect("canonical A");
+        let second_root = second_root.canonicalize().expect("canonical B");
+        let runtime = DesktopKernelRuntimeState::new(
+            NativeKernelBootstrapOwner::new(),
+            DesktopKernelStartupStatus::Unselected,
+        );
+        let first_selection = DesktopKernelSelection {
+            workspace_root: first_root.clone(),
+            renderer_origin: "tauri://localhost".to_owned(),
+        };
+        let first = runtime
+            .reserve_initial_start(first_selection, false)
+            .expect("reserve A");
+        let first_driver = test_driver();
+        assert!(runtime
+            .install_owner_for_attempt(first.token, test_owner(first_driver.clone()))
+            .is_ok());
+        let ready_a = runtime
+            .replace_status_for_owner_publication(first.token, 1, KernelHostPhase::Ready)
+            .expect("publish A ready");
+        let second_selection = DesktopKernelSelection {
+            workspace_root: second_root.clone(),
+            renderer_origin: "tauri://localhost".to_owned(),
+        };
+        let (switch, replaced_owner, _previous, required_ready_owner, revoked_epoch) = runtime
+            .reserve_switch(second_selection)
+            .expect("reserve B switch");
+
+        assert!(required_ready_owner);
+        assert!(!runtime.mcp_authority_epoch_is_current(ready_a.mcp_authority_epoch));
+        assert!(runtime.mcp_authority_epoch_is_current(revoked_epoch));
+        replaced_owner
+            .expect("A owner detached")
+            .stop()
+            .await
+            .expect("stop A owner");
+        assert_eq!(first_driver.stops.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            crate::desktop_runtime::recover_published_desktop_workspace_target(
+                &second_root,
+                Ok(
+                    crate::primary_workspace::DesktopPrimaryWorkspaceResolution::Selected(
+                        second_root.clone(),
+                    ),
+                ),
+            )
+            .expect("independent disk authority is B"),
+            second_root,
+        );
+
+        let second_driver = test_driver();
+        assert!(runtime
+            .install_owner_for_attempt(switch.token, test_owner(second_driver))
+            .is_ok());
+        let ready_b = runtime
+            .replace_status_for_owner_publication(switch.token, 1, KernelHostPhase::Ready)
+            .expect("publish B ready");
+        assert_eq!(
+            runtime.snapshot().expect("runtime snapshot").status,
+            DesktopKernelStartupStatus::Ready,
+        );
+        assert_eq!(ready_b.workspace_root, Some(second_root));
+        assert!(runtime.mcp_authority_epoch_is_current(ready_b.mcp_authority_epoch));
+    }
+
     #[test]
     fn failed_child_start_can_reserve_one_distinct_workspace_reselection() {
         let runtime = DesktopKernelRuntimeState::new(

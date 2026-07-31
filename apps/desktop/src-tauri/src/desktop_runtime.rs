@@ -231,7 +231,7 @@ fn read_desktop_kernel_startup_state(
     runtime.snapshot()
 }
 
-fn recover_published_desktop_workspace_initialization(
+pub(crate) fn recover_published_desktop_workspace_target(
     requested_path: &Path,
     resolution: Result<
         crate::primary_workspace::DesktopPrimaryWorkspaceResolution,
@@ -290,7 +290,7 @@ async fn initialize_desktop_kernel_workspace(
             })
             .await
             .map_err(|_| "desktop primary workspace initialization failed".to_owned())?;
-            recover_published_desktop_workspace_initialization(&requested_path, resolution)?
+            recover_published_desktop_workspace_target(&requested_path, resolution)?
         }
     };
     runtime.start_selected(&app, workspace_root, origin)
@@ -340,13 +340,17 @@ async fn switch_desktop_kernel_workspace(
     }
 
     let resolution_app = app.clone();
-    let authoritative_root = tauri::async_runtime::spawn_blocking(move || {
+    let resolution = tauri::async_runtime::spawn_blocking(move || {
         crate::primary_workspace::resolve_desktop_primary_workspace(&resolution_app)
     })
     .await
-    .ok()
-    .and_then(Result::ok)
-    .and_then(|resolution| match resolution {
+    .unwrap_or(Err(
+        crate::primary_workspace::DesktopPrimaryWorkspaceResolutionError::Unavailable,
+    ));
+    if recover_published_desktop_workspace_target(&target_root, resolution.clone()).is_ok() {
+        return runtime.complete_workspace_switch(&app, attempt);
+    }
+    let authoritative_root = resolution.ok().and_then(|resolution| match resolution {
         crate::primary_workspace::DesktopPrimaryWorkspaceResolution::Selected(root) => Some(root),
         crate::primary_workspace::DesktopPrimaryWorkspaceResolution::Unselected => None,
     });
@@ -1021,7 +1025,7 @@ mod tests {
         let other = other.canonicalize().expect("canonical other root");
 
         assert_eq!(
-            super::recover_published_desktop_workspace_initialization(
+            super::recover_published_desktop_workspace_target(
                 &requested,
                 Ok(DesktopPrimaryWorkspaceResolution::Selected(
                     requested.clone()
@@ -1030,21 +1034,49 @@ mod tests {
             .expect("matching published target"),
             requested,
         );
-        assert!(super::recover_published_desktop_workspace_initialization(
+        assert!(super::recover_published_desktop_workspace_target(
             &requested,
             Ok(DesktopPrimaryWorkspaceResolution::Selected(other)),
         )
         .is_err());
-        assert!(super::recover_published_desktop_workspace_initialization(
+        assert!(super::recover_published_desktop_workspace_target(
             &requested,
             Ok(DesktopPrimaryWorkspaceResolution::Unselected),
         )
         .is_err());
-        assert!(super::recover_published_desktop_workspace_initialization(
+        assert!(super::recover_published_desktop_workspace_target(
             &requested,
             Err(DesktopPrimaryWorkspaceResolutionError::Unavailable),
         )
         .is_err());
+    }
+
+    #[test]
+    fn workspace_switch_reuses_the_independent_authority_reread_before_failing() {
+        let source = include_str!("desktop_runtime.rs");
+        let switch_start = source
+            .find("async fn switch_desktop_kernel_workspace")
+            .expect("workspace switch command");
+        let retry_start = source[switch_start..]
+            .find("async fn retry_desktop_kernel_workspace")
+            .map(|offset| switch_start + offset)
+            .expect("workspace retry command");
+        let switch = &source[switch_start..retry_start];
+
+        assert!(
+            switch.contains("recover_published_desktop_workspace_target"),
+            "a published-but-not-durable B authority must continue the already-revoked switch"
+        );
+        let recovery = switch
+            .find("recover_published_desktop_workspace_target")
+            .expect("commit-unknown recovery");
+        let failed = switch
+            .find("reconcile_failed_workspace_switch")
+            .expect("fail-closed reconciliation");
+        assert!(
+            recovery < failed,
+            "the independent authority reread must settle before failure reconciliation"
+        );
     }
 
     #[test]
