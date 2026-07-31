@@ -110,4 +110,31 @@ describe("application bootstrap", () => {
     expect(log).toEqual(["start", "close", "render-error"]);
     expect(reload).toHaveBeenCalledTimes(1);
   });
+
+  it("renders one reload error when a started mount reports a later failure", async () => {
+    const log: string[] = [];
+    const reload = vi.fn();
+    let reportFailure: (() => unknown) | undefined;
+    const stop = await bootstrapApplicationMount({
+      mountOwner: {
+        start: async (onFailure?: () => unknown) => {
+          log.push("start");
+          reportFailure = onFailure;
+          return undefined;
+        },
+        close: () => {
+          log.push("close");
+          return undefined;
+        }
+      },
+      reload,
+      renderError: () => log.push("render-error")
+    });
+
+    reportFailure?.();
+    reportFailure?.();
+    stop();
+
+    expect(log).toEqual(["start", "close", "render-error"]);
+  });
 });

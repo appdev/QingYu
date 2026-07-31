@@ -136,9 +136,16 @@ export function createNativeKernelSessionOwner(
   let activeIdentity:
     | { readonly generation: string; readonly instanceId: string }
     | undefined;
+  let activePublication:
+    | {
+        readonly delivered: Set<(
+          snapshot: NativeKernelSessionSnapshot | null
+        ) => unknown>;
+        readonly next: NativeKernelSessionSnapshot | null;
+      }
+    | undefined;
   let adoptionEpoch = 0;
   let publicationEpoch = 0;
-  let publicationDepth = 0;
 
   const publish = (next: NativeKernelSessionSnapshot | null) => {
     if (closed) {
@@ -148,7 +155,11 @@ export function createNativeKernelSessionOwner(
     publicationEpoch += 1;
     const publication = publicationEpoch;
     snapshot = next;
-    publicationDepth += 1;
+    const delivery = {
+      delivered: new Set<(snapshot: NativeKernelSessionSnapshot | null) => unknown>(),
+      next
+    };
+    activePublication = delivery;
     try {
       for (const subscriber of [...subscribers]) {
         if (
@@ -156,15 +167,16 @@ export function createNativeKernelSessionOwner(
           publication !== publicationEpoch ||
           snapshot !== next
         ) break;
+        delivery.delivered.add(subscriber);
         notifyConsumer(subscriber, next);
       }
     } finally {
-      publicationDepth -= 1;
+      if (activePublication === delivery) activePublication = undefined;
     }
     return undefined;
   };
 
-  const retireActive = () => {
+  const detachActive = () => {
     activeIdentity = undefined;
     publicationEpoch += 1;
     snapshot = null;
@@ -172,6 +184,12 @@ export function createNativeKernelSessionOwner(
     const events = activeEvents;
     activeDomain = undefined;
     activeEvents = undefined;
+    return { domain, events };
+  };
+
+  const releaseDetached = (
+    { domain, events }: ReturnType<typeof detachActive>
+  ) => {
     safelyCall(domain?.release);
     safelyCall(events?.close);
     return undefined;
@@ -179,8 +197,9 @@ export function createNativeKernelSessionOwner(
 
   const failClosed = (cause: unknown) => {
     adoptionEpoch += 1;
-    retireActive();
+    const detached = detachActive();
     publish(null);
+    releaseDetached(detached);
     return cause;
   };
 
@@ -239,8 +258,9 @@ export function createNativeKernelSessionOwner(
     if (lifecycle.status !== "ready") {
       if (update.changed || snapshot?.status === "ready") {
         adoptionEpoch += 1;
-        retireActive();
+        const detached = detachActive();
         publish(nonReadySnapshot(lifecycle));
+        releaseDetached(detached);
       }
       return undefined;
     }
@@ -256,7 +276,12 @@ export function createNativeKernelSessionOwner(
 
     adoptionEpoch += 1;
     const adoption = adoptionEpoch;
-    retireActive();
+    const detached = detachActive();
+    if (detached.domain !== undefined || detached.events !== undefined) {
+      publish(null);
+    }
+    releaseDetached(detached);
+    if (closed || adoption !== adoptionEpoch) return undefined;
     const acquiredDomainLease = bootstrapOwner.acquireReady();
     const acquiredEventsLease = bootstrapOwner.acquireReady();
     if (acquiredDomainLease === null || acquiredEventsLease === null) {
@@ -452,21 +477,30 @@ export function createNativeKernelSessionOwner(
 
   const close = () => {
     if (closed) return undefined;
-    const notifyUnavailable = publicationDepth === 0 && snapshot !== null;
+    const unavailablePublication = activePublication?.next === null
+      ? activePublication
+      : undefined;
+    const notifyUnavailable = snapshot !== null || unavailablePublication !== undefined;
+    const unavailableSubscribers = unavailablePublication === undefined
+      ? [...subscribers]
+      : [...subscribers].filter(
+        (subscriber) => !unavailablePublication.delivered.has(subscriber)
+      );
     closed = true;
     adoptionEpoch += 1;
-    retireActive();
+    const detached = detachActive();
+    if (notifyUnavailable) {
+      for (const subscriber of unavailableSubscribers) {
+        notifyConsumer(subscriber, null);
+      }
+    }
+    subscribers.clear();
+    releaseDetached(detached);
     bootstrapOwner.close();
     safelyCall(stopBootstrapListener);
     safelyCall(stopPagehideListener);
     stopBootstrapListener = undefined;
     stopPagehideListener = undefined;
-    if (notifyUnavailable) {
-      for (const subscriber of [...subscribers]) {
-        notifyConsumer(subscriber, null);
-      }
-    }
-    subscribers.clear();
     return undefined;
   };
 
@@ -474,6 +508,7 @@ export function createNativeKernelSessionOwner(
     if (closed) return Promise.reject(sessionClosed());
     if (startPromise !== undefined) return startPromise;
 
+    stopPagehideListener = once(addPagehideListener(close));
     const pending = (async () => {
       const stop = await listenBootstrapChanged(
         NATIVE_KERNEL_BOOTSTRAP_CHANGED_EVENT,
@@ -484,7 +519,6 @@ export function createNativeKernelSessionOwner(
         return undefined;
       }
       stopBootstrapListener = once(stop);
-      stopPagehideListener = once(addPagehideListener(close));
       await requestRefresh();
       return undefined;
     })();

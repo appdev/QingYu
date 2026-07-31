@@ -7,7 +7,7 @@ export type ApplicationBootstrapOptions<Runtime> = {
 };
 
 export interface ApplicationMountOwner {
-  start(): Promise<unknown>;
+  start(onFailure?: () => unknown): Promise<unknown>;
   close(): unknown;
 }
 
@@ -43,11 +43,18 @@ export async function bootstrapApplicationMount(
     options.mountOwner.close();
     return undefined;
   };
-  try {
-    await options.mountOwner.start();
-  } catch {
+  let failed = false;
+  const fail = () => {
+    if (!active || failed) return undefined;
+    failed = true;
     stop();
     options.renderError(options.reload);
+    return undefined;
+  };
+  try {
+    await options.mountOwner.start(fail);
+  } catch {
+    fail();
   }
   return stop;
 }

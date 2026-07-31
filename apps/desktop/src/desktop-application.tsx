@@ -22,7 +22,7 @@ export interface DesktopApplicationDomainMount<Runtime> {
 }
 
 export interface DesktopApplicationMountOwner {
-  start(): Promise<undefined>;
+  start(onFailure?: () => unknown): Promise<undefined>;
   close(): undefined;
 }
 
@@ -47,6 +47,8 @@ export function createDesktopApplicationMountOwner<Runtime>(
 ): DesktopApplicationMountOwner {
   let closed = false;
   let mountedIdentity: string | undefined;
+  let mountFailure: Error | undefined;
+  let reportFailure: (() => unknown) | undefined;
   let unmountDomain: (() => unknown) | undefined;
   let startPromise: Promise<undefined> | undefined;
   let unsubscribe: (() => unknown) | undefined;
@@ -65,30 +67,58 @@ export function createDesktopApplicationMountOwner<Runtime>(
 
   const handleSession = (session: NativeKernelSessionSnapshot | null) => {
     if (closed) return undefined;
-    if (session?.status === "ready") {
-      const mountKey = `${session.instanceId}:${session.generation}`;
-      if (mountedIdentity === mountKey) return undefined;
+    try {
+      if (session?.status === "ready") {
+        const mountKey = `${session.instanceId}:${session.generation}`;
+        if (mountedIdentity === mountKey) return undefined;
+        unmountActiveDomain();
+        const runtime = createRuntime(session.domain);
+        configureRuntime(runtime);
+        unmountDomain = renderDomain({ mountKey, runtime, session });
+        mountedIdentity = mountKey;
+        return undefined;
+      }
       unmountActiveDomain();
-      const runtime = createRuntime(session.domain);
-      configureRuntime(runtime);
-      unmountDomain = renderDomain({ mountKey, runtime, session });
-      mountedIdentity = mountKey;
+      renderStartup(session);
+      return undefined;
+    } catch {
+      mountFailure = new Error("desktop application mount failed");
+      close();
+      try {
+        reportFailure?.();
+      } catch {
+        // Failure UI errors cannot interrupt native session retirement.
+      }
       return undefined;
     }
-    unmountActiveDomain();
-    renderStartup(session);
-    return undefined;
   };
 
-  const start = () => {
+  const start = (onFailure?: () => unknown) => {
     if (closed) {
-      return Promise.reject(new Error("desktop application mount owner closed"));
+      return Promise.reject(mountFailure ?? new Error("desktop application mount owner closed"));
     }
+    reportFailure ??= onFailure;
     if (startPromise !== undefined) return startPromise;
 
-    unsubscribe = owner.subscribe(handleSession);
+    const stopSubscription = owner.subscribe(handleSession);
+    if (closed) {
+      stopSubscription();
+      return Promise.reject(
+        mountFailure ?? new Error("desktop application mount owner closed")
+      );
+    }
+    unsubscribe = stopSubscription;
     if (owner.getSnapshot() === null) handleSession(null);
-    startPromise = owner.start();
+    startPromise = owner.start().then(
+      () => {
+        if (mountFailure !== undefined) throw mountFailure;
+        return undefined;
+      },
+      (cause: unknown) => {
+        if (mountFailure !== undefined) throw mountFailure;
+        throw cause;
+      }
+    );
     return startPromise;
   };
 

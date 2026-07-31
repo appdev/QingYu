@@ -1,6 +1,7 @@
 import type { KernelDomainPort } from "@markra/app/runtime";
 import { KernelEventError } from "@markra/kernel-client";
 
+import { createDesktopApplicationMountOwner } from "../desktop-application";
 import type { NativeKernelBootstrap } from "../kernel-bootstrap";
 import type { DesktopKernelDomainAdapter } from "./kernel";
 import type {
@@ -77,6 +78,34 @@ describe("native Kernel session owner", () => {
 
     expect(owner.getSnapshot()).toEqual({ domain: null, status: "dormant" });
     owner.close();
+  });
+
+  it("registers pagehide before awaiting the asynchronous bootstrap listener", async () => {
+    const listening = deferred<() => unknown>();
+    const invokeCommand = vi.fn(async () => dormantBootstrap());
+    const unlisten = vi.fn(() => undefined);
+    const removePagehide = vi.fn(() => undefined);
+    let pagehide: (() => unknown) | undefined;
+    const addPagehideListener = vi.fn((handler: () => unknown) => {
+      pagehide = handler;
+      return removePagehide;
+    });
+    const owner = createNativeKernelSessionOwner({
+      addPagehideListener,
+      invokeCommand,
+      listenBootstrapChanged: vi.fn(async () => listening.promise)
+    });
+
+    const started = owner.start();
+    const registeredBeforeAwait = addPagehideListener.mock.calls.length;
+    pagehide?.();
+    listening.resolve(unlisten);
+    await started;
+
+    expect(registeredBeforeAwait).toBe(1);
+    expect(invokeCommand).not.toHaveBeenCalled();
+    expect(removePagehide).toHaveBeenCalledTimes(1);
+    expect(unlisten).toHaveBeenCalledTimes(1);
   });
 
   it("coalesces concurrent edge signals into one follow-up truth refresh and ignores payload data", async () => {
@@ -344,7 +373,7 @@ describe("native Kernel session owner", () => {
     }
   );
 
-  it("retires the old domain and event socket before publishing changed and non-ready states", async () => {
+  it("publishes unavailable so the application unmounts before retiring old adapters", async () => {
     const log: string[] = [];
     const listener = new ListenerHarness();
     const domains = new DomainHarness(log);
@@ -361,33 +390,43 @@ describe("native Kernel session owner", () => {
       invokeCommand: async () => responses.shift(),
       listenBootstrapChanged: listener.listen
     });
-    owner.subscribe((snapshot) => {
-      log.push(
-        `publish-${snapshot?.status ?? "unavailable"}-${snapshot?.generation ?? "none"}`
-      );
+    const mount = createDesktopApplicationMountOwner({
+      configureRuntime: () => undefined,
+      createRuntime: (domain) => domain,
+      owner,
+      renderDomain: ({ session }) => {
+        log.push(`mount-${session.generation}`);
+        return () => log.push(`unmount-${session.generation}`);
+      },
+      renderStartup: (session) => {
+        log.push(`startup-${session?.status ?? "unavailable"}`);
+      }
     });
-    await owner.start();
+    await mount.start();
     log.length = 0;
 
     await listener.signal({ untrusted: true });
 
     expect(log).toEqual([
+      "unmount-7",
+      "startup-unavailable",
       "domain-1-close",
       "events-1-close",
       "domain-2-open",
       "events-2-open",
-      "publish-ready-8"
+      "mount-8"
     ]);
     log.length = 0;
 
     await listener.signal({ untrusted: true });
 
     expect(log).toEqual([
+      "unmount-8",
+      "startup-retrying",
       "domain-2-close",
-      "events-2-close",
-      "publish-retrying-9"
+      "events-2-close"
     ]);
-    owner.close();
+    mount.close();
   });
 
   it("ignores callbacks from a retired generation after a replacement is active", async () => {
@@ -501,7 +540,7 @@ describe("native Kernel session owner", () => {
     owner.close();
   });
 
-  it("retires a ready session before pagehide publishes unavailable exactly once", async () => {
+  it("publishes unavailable before pagehide retires a ready session exactly once", async () => {
     const log: string[] = [];
     const listener = new ListenerHarness();
     const domains = new DomainHarness(log);
@@ -524,9 +563,9 @@ describe("native Kernel session owner", () => {
     owner.close();
 
     expect(log).toEqual([
+      "publish-unavailable",
       "domain-1-close",
-      "events-1-close",
-      "publish-unavailable"
+      "events-1-close"
     ]);
   });
 
@@ -560,10 +599,11 @@ describe("native Kernel session owner", () => {
     )).toThrow("native Kernel credential unavailable");
   });
 
-  it("stops a ready publication when an earlier subscriber closes the owner", async () => {
+  it("turns a reentrant close into unavailable for every remaining subscriber", async () => {
     const listener = new ListenerHarness();
     const domains = new DomainHarness();
     const events = new EventsHarness();
+    const alreadyPublishedSnapshots: Array<NativeKernelSessionSnapshot | null> = [];
     const laterSnapshots: Array<NativeKernelSessionSnapshot | null> = [];
     const owner = createNativeKernelSessionOwner({
       addPagehideListener: listener.addPagehideListener,
@@ -572,6 +612,7 @@ describe("native Kernel session owner", () => {
       invokeCommand: async () => readyBootstrap("15", INSTANCE_A, CREDENTIAL_A),
       listenBootstrapChanged: listener.listen
     });
+    owner.subscribe((next) => alreadyPublishedSnapshots.push(next));
     owner.subscribe((next) => {
       if (next?.status === "ready") owner.close();
     });
@@ -580,7 +621,44 @@ describe("native Kernel session owner", () => {
     await owner.start();
 
     expect(owner.getSnapshot()).toBeNull();
-    expect(laterSnapshots).toEqual([]);
+    expect(alreadyPublishedSnapshots.map((snapshot) => snapshot?.status ?? null)).toEqual([
+      "ready",
+      null
+    ]);
+    expect(laterSnapshots).toEqual([null]);
+    expect(domains.adapters[0]?.release).toHaveBeenCalledTimes(1);
+    expect(events.records[0]?.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("finishes an unavailable publication when its first subscriber closes reentrantly", async () => {
+    const listener = new ListenerHarness();
+    const domains = new DomainHarness();
+    const events = new EventsHarness();
+    const laterSnapshots: Array<NativeKernelSessionSnapshot | null> = [];
+    const responses = [
+      readyBootstrap("16", INSTANCE_A, CREDENTIAL_A),
+      readyBootstrap("17", INSTANCE_B, CREDENTIAL_B)
+    ];
+    const owner = createNativeKernelSessionOwner({
+      addPagehideListener: listener.addPagehideListener,
+      createDomainAdapter: domains.create,
+      createEventsAdapter: events.create,
+      invokeCommand: async () => responses.shift(),
+      listenBootstrapChanged: listener.listen
+    });
+    owner.subscribe((next) => {
+      if (next === null) owner.close();
+    });
+    owner.subscribe((next) => laterSnapshots.push(next));
+    await owner.start();
+    laterSnapshots.length = 0;
+
+    await listener.signal({});
+
+    expect(laterSnapshots).toEqual([null]);
+    expect(owner.getSnapshot()).toBeNull();
+    expect(domains.adapters).toHaveLength(1);
+    expect(events.records).toHaveLength(1);
     expect(domains.adapters[0]?.release).toHaveBeenCalledTimes(1);
     expect(events.records[0]?.close).toHaveBeenCalledTimes(1);
   });

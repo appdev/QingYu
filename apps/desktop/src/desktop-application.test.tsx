@@ -112,6 +112,59 @@ describe("desktop authenticated application mount owner", () => {
       "desktop application mount owner closed"
     );
   });
+
+  it.each(["create", "configure", "render"] as const)(
+    "fails closed and reports a safe startup failure when %s throws",
+    async (failureStage) => {
+      const session = new SessionHarness();
+      session.publish(readySession("30", INSTANCE_A, kernelDomain("first")));
+      const reportFailure = vi.fn();
+      const mount = createDesktopApplicationMountOwner({
+        configureRuntime: () => {
+          if (failureStage === "configure") throw new Error("sensitive configure failure");
+        },
+        createRuntime: (domain) => {
+          if (failureStage === "create") throw new Error("sensitive create failure");
+          return domain;
+        },
+        owner: session,
+        renderDomain: () => {
+          if (failureStage === "render") throw new Error("sensitive render failure");
+          return undefined;
+        },
+        renderStartup: () => undefined
+      });
+
+      await expect(mount.start(reportFailure)).rejects.toThrow(
+        "desktop application mount failed"
+      );
+
+      expect(reportFailure).toHaveBeenCalledTimes(1);
+      expect(session.close).toHaveBeenCalledTimes(1);
+    }
+  );
+
+  it("keeps a startup-shell failure generic when closing the session rejects start", async () => {
+    const session: NativeKernelSessionOwner = {
+      close: vi.fn(() => undefined),
+      getSnapshot: () => null,
+      start: vi.fn(async () => {
+        throw new Error("sensitive native close failure");
+      }),
+      subscribe: () => () => undefined
+    };
+    const mount = createDesktopApplicationMountOwner({
+      configureRuntime: () => undefined,
+      createRuntime: (domain) => domain,
+      owner: session,
+      renderDomain: () => undefined,
+      renderStartup: () => {
+        throw new Error("sensitive startup render failure");
+      }
+    });
+
+    await expect(mount.start()).rejects.toThrow("desktop application mount failed");
+  });
 });
 
 const INSTANCE_A = "123e4567-e89b-42d3-a456-426614174000";
