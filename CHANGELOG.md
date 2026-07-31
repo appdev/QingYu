@@ -1,3 +1,10 @@
+## [2.4.0](https://github.com/markrahq/markra/compare/v2.3.3...v2.4.0) (2026-07-31)
+
+### Features
+
+* **ai:** add workspace AGENTS and skills ([#617](https://github.com/markrahq/markra/issues/617)) ([e2d2348](https://github.com/markrahq/markra/commit/e2d234889c5cefc5f6fcbe63159eee14cb578157))
+* **editor:** add zoomable image viewer ([#618](https://github.com/markrahq/markra/issues/618)) ([4a57b28](https://github.com/markrahq/markra/commit/4a57b281b31c6188d3a9a2303ea1c3aa2ff7ea62)), closes [#610](https://github.com/markrahq/markra/issues/610)
+
 ## [2.3.3](https://github.com/markrahq/markra/compare/v2.3.2...v2.3.3) (2026-07-31)
 
 ### Bug Fixes
