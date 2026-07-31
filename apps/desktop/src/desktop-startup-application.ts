@@ -14,7 +14,7 @@ export interface DesktopStartupApplicationOptions {
 
 export interface DesktopStartupApplicationOwner {
   readonly close: () => undefined;
-  readonly start: () => Promise<undefined>;
+  readonly start: (onFailure?: () => unknown) => Promise<undefined>;
 }
 
 export function createDesktopStartupApplicationOwner(
@@ -29,6 +29,7 @@ export function createDesktopStartupApplicationOwner(
   let domainRevision = 0;
   let lastWorkspaceStatus: DesktopKernelStartupSnapshot["status"] | undefined;
   let latestSnapshot: DesktopKernelStartupSnapshot | null = null;
+  let reportFailure: (() => unknown) | undefined;
   let snapshotRevision = 0;
   let startPromise: Promise<undefined> | undefined;
   let unsubscribe: (() => unknown) | undefined;
@@ -69,14 +70,13 @@ export function createDesktopStartupApplicationOwner(
     ) {
       return undefined;
     }
-    domainOwner = undefined;
-    domainRevision += 1;
+    const report = reportFailure;
+    close();
     try {
-      owner?.close();
+      report?.();
     } catch {
-      // A failed domain owner cannot prevent the workspace shell fallback.
+      // The application is already closed even if global failure rendering fails.
     }
-    renderWorkspaceSnapshot({ status: "failed" });
     return undefined;
   };
 
@@ -117,7 +117,7 @@ export function createDesktopStartupApplicationOwner(
     if (closed) return undefined;
     latestSnapshot = snapshot;
     snapshotRevision += 1;
-    if (snapshot.status === "starting" || snapshot.status === "ready") {
+    if (snapshot.status === "ready") {
       lastWorkspaceStatus = undefined;
       if (domainOwner === undefined) createDomainOwner();
       return undefined;
@@ -139,10 +139,11 @@ export function createDesktopStartupApplicationOwner(
     return undefined;
   };
 
-  const start = () => {
+  const start = (onFailure?: () => unknown) => {
     if (closed) {
       return Promise.reject(new Error("desktop startup application owner closed"));
     }
+    reportFailure ??= onFailure;
     if (startPromise !== undefined) return startPromise;
 
     try {

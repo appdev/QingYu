@@ -18,6 +18,7 @@ describe("desktop startup application orchestrator", () => {
     "invalid",
     "unsupported-version",
     "unavailable",
+    "starting",
     "failed"
   ] as const)("keeps the domain application absent while startup is %s", async (status) => {
     const harness = createHarness();
@@ -41,10 +42,12 @@ describe("desktop startup application orchestrator", () => {
     harness.startup.publish("ready");
 
     expect(log).toEqual([
+      "workspace:starting",
       "create-domain:1",
       "start-domain:1",
       "close-domain:1",
       "workspace:failed",
+      "workspace:starting",
       "create-domain:2",
       "start-domain:2"
     ]);
@@ -61,6 +64,7 @@ describe("desktop startup application orchestrator", () => {
 
     await harness.owner.start();
     harness.startup.publish("starting");
+    harness.startup.publish("ready");
     harness.startup.publish("failed");
     harness.startup.publish("starting");
     harness.startup.publish("ready");
@@ -68,10 +72,12 @@ describe("desktop startup application orchestrator", () => {
     await settlePromises();
 
     expect(log).toEqual([
+      "workspace:starting",
       "create-domain:1",
       "start-domain:1",
       "close-domain:1",
       "workspace:failed",
+      "workspace:starting",
       "create-domain:2",
       "start-domain:2"
     ]);
@@ -79,28 +85,33 @@ describe("desktop startup application orchestrator", () => {
     expect(JSON.stringify(log)).not.toContain("sensitive stale failure");
   });
 
-  it("fails a current domain start closed and permits a later authoritative retry", async () => {
+  it("reports a current domain start failure to the global reload boundary", async () => {
     const firstStart = deferred<undefined>();
     const log: string[] = [];
+    const reportFailure = vi.fn(() => log.push("report-failure"));
     const harness = createHarness({
       log,
       mountStartResults: [firstStart.promise, Promise.resolve(undefined)]
     });
 
-    await harness.owner.start();
+    await harness.owner.start(reportFailure);
     harness.startup.publish("starting");
+    harness.startup.publish("ready");
     firstStart.reject(new Error("sensitive current failure"));
     await settlePromises();
     harness.startup.publish("starting");
+    harness.startup.publish("ready");
 
     expect(log).toEqual([
+      "workspace:starting",
       "create-domain:1",
       "start-domain:1",
       "close-domain:1",
-      "workspace:failed",
-      "create-domain:2",
-      "start-domain:2"
+      "report-failure"
     ]);
+    expect(reportFailure).toHaveBeenCalledTimes(1);
+    expect(harness.startup.close).toHaveBeenCalledTimes(1);
+    expect(harness.createApplicationMountOwner).toHaveBeenCalledTimes(1);
     expect(JSON.stringify(log)).not.toContain("sensitive current failure");
   });
 
@@ -123,6 +134,7 @@ describe("desktop startup application orchestrator", () => {
     const harness = createHarness({ mountStartResults: [domainStart.promise] });
     await harness.owner.start();
     harness.startup.publish("starting");
+    harness.startup.publish("ready");
 
     harness.owner.close();
     harness.owner.close();
@@ -133,7 +145,7 @@ describe("desktop startup application orchestrator", () => {
     expect(harness.startup.unsubscribe).toHaveBeenCalledTimes(1);
     expect(harness.startup.close).toHaveBeenCalledTimes(1);
     expect(harness.mounts[0]?.close).toHaveBeenCalledTimes(1);
-    expect(harness.workspaceStatuses).toEqual([]);
+    expect(harness.workspaceStatuses).toEqual(["starting"]);
     await expect(harness.owner.start()).rejects.toThrow(
       "desktop startup application owner closed"
     );
@@ -150,7 +162,7 @@ describe("desktop startup application orchestrator", () => {
     harness.startup.publish("ready");
     harness.startup.publish("ready");
 
-    expect(harness.workspaceStatuses).toEqual(["unselected"]);
+    expect(harness.workspaceStatuses).toEqual(["unselected", "starting"]);
     expect(harness.createApplicationMountOwner).toHaveBeenCalledTimes(1);
     expect(harness.mounts[0]?.start).toHaveBeenCalledTimes(1);
   });
