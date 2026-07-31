@@ -441,13 +441,18 @@ export interface StartServerWebApplicationOptions {
   readonly configureRuntime: (runtime: AppRuntime) => unknown;
   readonly createRuntime: (
     kernel: Extract<ServerWebBootstrapSnapshot, { phase: "ready" }>["result"]["kernel"],
-  ) => AppRuntime;
+  ) => ServerApplicationRuntimeOwner;
   readonly owner: ServerWebBootstrapOwner;
   readonly renderApp: () => unknown;
   readonly renderStartup: (
     snapshot: ServerWebBootstrapSnapshot,
     owner: ServerWebBootstrapOwner,
   ) => unknown;
+}
+
+export interface ServerApplicationRuntimeOwner {
+  readonly runtime: AppRuntime;
+  readonly release: () => unknown;
 }
 
 export function startServerWebApplication({
@@ -459,19 +464,39 @@ export function startServerWebApplication({
 }: StartServerWebApplicationOptions) {
   let stopped = false;
   let mountedKernel: object | undefined;
+  let mountedRuntimeOwner: ServerApplicationRuntimeOwner | undefined;
+
+  const releaseMountedRuntime = () => {
+    const runtimeOwner = mountedRuntimeOwner;
+    mountedRuntimeOwner = undefined;
+    mountedKernel = undefined;
+    try {
+      runtimeOwner?.release();
+    } catch {
+      // Releasing temporary browser resources is best-effort and idempotent.
+    }
+    return undefined;
+  };
 
   const unsubscribe = owner.subscribe((snapshot) => {
     if (stopped) return undefined;
     if (snapshot.phase !== "ready") {
-      mountedKernel = undefined;
+      releaseMountedRuntime();
       renderStartup(snapshot, owner);
       return undefined;
     }
     if (mountedKernel === snapshot.result.kernel) return undefined;
+    releaseMountedRuntime();
+    const runtimeOwner = createRuntime(snapshot.result.kernel);
+    mountedRuntimeOwner = runtimeOwner;
     mountedKernel = snapshot.result.kernel;
-    const runtime = createRuntime(snapshot.result.kernel);
-    configureRuntime(runtime);
-    renderApp();
+    try {
+      configureRuntime(runtimeOwner.runtime);
+      renderApp();
+    } catch (error: unknown) {
+      releaseMountedRuntime();
+      throw error;
+    }
     return undefined;
   });
 
@@ -481,6 +506,7 @@ export function startServerWebApplication({
     if (stopped) return undefined;
     stopped = true;
     unsubscribe();
+    releaseMountedRuntime();
     owner.close();
     return undefined;
   };

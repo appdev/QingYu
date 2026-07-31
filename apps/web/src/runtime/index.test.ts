@@ -19,11 +19,12 @@ describe("web runtime", () => {
       },
     } as unknown as KernelDomainPort;
 
-    const runtime = createServerWebRuntime(kernel, {
+    const owner = createServerWebRuntime(kernel, {
       eventTarget: new EventTarget(),
       indexedDB: { open: indexedDbOpen } as unknown as IDBFactory,
       showDirectoryPicker,
     });
+    const { runtime } = owner;
 
     expect(runtime.kernel).toBe(kernel);
     expect(runtime.events.isAvailable()).toBe(true);
@@ -47,6 +48,8 @@ describe("web runtime", () => {
     await store.save();
     expect(showDirectoryPicker).not.toHaveBeenCalled();
     expect(indexedDbOpen).not.toHaveBeenCalled();
+    owner.release();
+    owner.release();
   });
 
   it("creates a browser runtime with IndexedDB settings", async () => {

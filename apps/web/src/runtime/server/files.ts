@@ -2,6 +2,7 @@ import {
   createKernelFileRuntimeOwner,
   kernelWorkspaceRoot,
   type KernelDomainPort,
+  type KernelFileRuntimeOwner,
   type KernelImageSource,
 } from "@markra/app/runtime";
 
@@ -30,6 +31,13 @@ export function createServerFileRuntime(
   kernel: KernelDomainPort,
   options: ServerFileRuntimeOptions = {},
 ) {
+  return createServerFileRuntimeOwner(kernel, options).files;
+}
+
+export function createServerFileRuntimeOwner(
+  kernel: KernelDomainPort,
+  options: ServerFileRuntimeOptions = {},
+): KernelFileRuntimeOwner {
   return createKernelFileRuntimeOwner(kernel, {
     clearInterval: options.clearInterval,
     imageSource: createServerKernelImageSource(options.objectUrls),
@@ -45,7 +53,7 @@ export function createServerFileRuntime(
     resolveImageSrc: (resource) =>
       `/api/v1/resources/${encodeURIComponent(resource.id)}?kind=image`,
     setInterval: options.setInterval,
-  }).files;
+  });
 }
 
 function createServerKernelImageSource(

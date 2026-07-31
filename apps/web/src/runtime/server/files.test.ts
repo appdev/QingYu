@@ -9,6 +9,7 @@ import type {
 
 import {
   createServerFileRuntime,
+  createServerFileRuntimeOwner,
   serverWorkspaceRoot,
 } from "./files";
 import type {
@@ -187,6 +188,44 @@ describe("server file facade", () => {
       `/api/v1/resources/${encodeURIComponent("image-new.signature")}?kind=image`,
     );
     expect(kernel.resources.open).not.toHaveBeenCalled();
+  });
+
+  it("revokes newly uploaded image URLs when the Server runtime owner is released", async () => {
+    const kernel = kernelPort();
+    const createdEntry = resource({
+      id: "image-owner.signature",
+      name: "owner.png",
+      relativePath: "owner.png",
+    });
+    if (createdEntry.entryType !== "resource") throw new Error("resource fixture expected");
+    vi.mocked(kernel.resources.create).mockResolvedValue(createdEntry.resource);
+    const createObjectURL = vi.fn(() => "blob:server-owner-image");
+    const revokeObjectURL = vi.fn();
+    const owner = createServerFileRuntimeOwner(kernel, {
+      objectUrls: { createObjectURL, revokeObjectURL },
+    });
+    const image = new File(
+      [new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10])],
+      "owner.png",
+      { type: "image/png" },
+    );
+    const documentPath = `${serverWorkspaceRoot}/note.md`;
+
+    const saved = await owner.files.saveClipboardImage({
+      documentPath,
+      fileName: "owner.png",
+      folder: "",
+      image,
+    });
+    expect(owner.files.resolveMarkdownImageSrc?.(documentPath, saved.src))
+      .toBe("blob:server-owner-image");
+
+    owner.release();
+    owner.release();
+
+    expect(revokeObjectURL).toHaveBeenCalledOnce();
+    expect(revokeObjectURL).toHaveBeenCalledWith("blob:server-owner-image");
+    expect(owner.files.resolveMarkdownImageSrc?.(documentPath, saved.src)).toBeUndefined();
   });
 
   it("prewarms nested image capabilities before returning Markdown and rejects unsafe or non-image sources", async () => {

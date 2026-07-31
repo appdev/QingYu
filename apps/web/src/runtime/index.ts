@@ -13,7 +13,7 @@ import {
   createWebWindowRuntime,
   type WebRuntimeOptions
 } from "./web";
-import { createServerFileRuntime, serverWorkspaceRoot } from "./server/files";
+import { createServerFileRuntimeOwner, serverWorkspaceRoot } from "./server/files";
 import { createServerSyncConfigRuntime } from "./server/sync-config";
 import { createServerSettingsRuntime } from "./server/settings";
 
@@ -58,12 +58,18 @@ export function createWebRuntime(options: WebRuntimeOptions = {}): AppRuntime {
   };
 }
 
+export interface ServerWebRuntimeOwner {
+  readonly runtime: AppRuntime;
+  readonly release: () => undefined;
+}
+
 export function createServerWebRuntime(
   kernel: KernelDomainPort,
   options: WebRuntimeOptions = {}
-): AppRuntime {
+): ServerWebRuntimeOwner {
   const defaultRuntime = createDefaultAppRuntime();
-  return {
+  const fileOwner = createServerFileRuntimeOwner(kernel, options);
+  const runtime: AppRuntime = {
     ...defaultRuntime,
     dialog: createWebDialogRuntime(options),
     events: createBrowserEventsRuntime(options.eventTarget),
@@ -82,7 +88,7 @@ export function createServerWebRuntime(
       systemFonts: false,
       updater: false
     },
-    files: createServerFileRuntime(kernel, options),
+    files: fileOwner.files,
     kernel,
     menu: createWebMenuRuntime(defaultRuntime.menu, options),
     platform: {
@@ -108,4 +114,8 @@ export function createServerWebRuntime(
       }
     }
   };
+  return Object.freeze({
+    runtime,
+    release: fileOwner.release,
+  });
 }

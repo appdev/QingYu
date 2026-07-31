@@ -39,10 +39,11 @@ describe("server Web application gate", () => {
     const renderStartup = vi.fn();
     const kernel = {} as KernelDomainPort;
     const runtime = { kernel } as AppRuntime;
+    const releaseRuntime = vi.fn(() => undefined);
 
     const stop = startServerWebApplication({
       configureRuntime,
-      createRuntime: vi.fn(() => runtime),
+      createRuntime: vi.fn(() => ({ runtime, release: releaseRuntime })),
       owner,
       renderApp,
       renderStartup,
@@ -82,6 +83,69 @@ describe("server Web application gate", () => {
     expect(configureRuntime).toHaveBeenCalledWith(runtime);
     expect(renderApp).toHaveBeenCalledOnce();
     stop();
+    expect(releaseRuntime).toHaveBeenCalledOnce();
+    expect(owner.close).toHaveBeenCalledOnce();
+  });
+
+  it("releases browser runtime owners on authentication loss, Kernel replacement, and stop", () => {
+    let subscriber: ((snapshot: ServerWebBootstrapSnapshot) => unknown) | undefined;
+    const owner = {
+      ...inertOwner(),
+      close: vi.fn(() => undefined),
+      subscribe: vi.fn((next: (snapshot: ServerWebBootstrapSnapshot) => unknown) => {
+        subscriber = next;
+        next({ phase: "checking" });
+        return () => {
+          subscriber = undefined;
+          return undefined;
+        };
+      }),
+    } satisfies ServerWebBootstrapOwner;
+    const kernelA = {} as KernelDomainPort;
+    const kernelB = {} as KernelDomainPort;
+    const releaseA1 = vi.fn(() => undefined);
+    const releaseA2 = vi.fn(() => undefined);
+    const releaseB = vi.fn(() => undefined);
+    const runtimeA1 = { kernel: kernelA } as AppRuntime;
+    const runtimeA2 = { kernel: kernelA } as AppRuntime;
+    const runtimeB = { kernel: kernelB } as AppRuntime;
+    const runtimeOwners = [
+      { runtime: runtimeA1, release: releaseA1 },
+      { runtime: runtimeA2, release: releaseA2 },
+      { runtime: runtimeB, release: releaseB },
+    ];
+    const createRuntime = vi.fn(() => {
+      const runtimeOwner = runtimeOwners.shift();
+      if (runtimeOwner === undefined) throw new Error("Unexpected runtime replacement.");
+      return runtimeOwner;
+    });
+    const configureRuntime = vi.fn();
+    const stop = startServerWebApplication({
+      configureRuntime,
+      createRuntime,
+      owner,
+      renderApp: vi.fn(),
+      renderStartup: vi.fn(),
+    });
+
+    subscriber?.(readySnapshot(kernelA));
+    subscriber?.(readySnapshot(kernelA));
+    expect(createRuntime).toHaveBeenCalledOnce();
+
+    subscriber?.({ phase: "login", error: null });
+    expect(releaseA1).toHaveBeenCalledOnce();
+
+    subscriber?.(readySnapshot(kernelA));
+    subscriber?.(readySnapshot(kernelB));
+    expect(releaseA2).toHaveBeenCalledOnce();
+    expect(releaseA2.mock.invocationCallOrder[0])
+      .toBeLessThan(configureRuntime.mock.invocationCallOrder[2]!);
+
+    stop();
+    stop();
+    expect(releaseB).toHaveBeenCalledOnce();
+    expect(releaseB.mock.invocationCallOrder[0])
+      .toBeLessThan(owner.close.mock.invocationCallOrder[0]!);
     expect(owner.close).toHaveBeenCalledOnce();
   });
 
@@ -233,5 +297,31 @@ function inertOwner(): ServerWebBootstrapOwner {
     retry: async () => undefined,
     start: async () => undefined,
     subscribe: () => () => undefined,
+  };
+}
+
+function readySnapshot(kernel: KernelDomainPort): ServerWebBootstrapSnapshot {
+  return {
+    phase: "ready",
+    result: {
+      kernel,
+      runtime: {
+        capabilities: {
+          documents: true, history: true, portableSettings: true,
+          resources: true, s3: true, search: true, settings: true,
+          sync: true, webdav: true,
+        },
+        instanceId: "123e4567-e89b-42d3-a456-426614174000",
+        profile: "server",
+        startupState: "ready",
+      },
+      workspace: {
+        displayName: "Notes",
+        generation: "generation-1" as never,
+        id: "workspace-1",
+        readiness: "ready",
+        revision: "revision-1" as never,
+      },
+    },
   };
 }
