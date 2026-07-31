@@ -955,6 +955,7 @@ pub struct CreateWorkspaceResourceBatchItem {
     pub name: ResourceName,
     pub kind: ResourceKind,
     pub media_type: String,
+    #[schema(max_length = 89478488)]
     pub body_base64: String,
 }
 
@@ -964,6 +965,7 @@ pub struct CreateWorkspaceResourceBatchRequest {
     pub batch_id: ResourceBatchId,
     pub workspace_generation: WorkspaceGeneration,
     pub folder: WorkspaceRelativePath,
+    #[schema(min_items = 1, max_items = 32)]
     pub items: Vec<CreateWorkspaceResourceBatchItem>,
 }
 

@@ -386,6 +386,18 @@ fn every_http_response_requires_the_request_id_header() {
 }
 
 #[test]
+fn resource_batch_schema_freezes_item_count_and_encoded_body_bounds() {
+    let document = api_document();
+    let request = &document["components"]["schemas"]["CreateWorkspaceResourceBatchRequest"];
+    let items = &request["properties"]["items"];
+    assert_eq!(items["minItems"], 1);
+    assert_eq!(items["maxItems"], 32);
+
+    let item = &document["components"]["schemas"]["CreateWorkspaceResourceBatchItem"];
+    assert_eq!(item["properties"]["bodyBase64"]["maxLength"], 89_478_488);
+}
+
+#[test]
 fn every_operation_error_status_matches_the_runtime_error_mapping() {
     let document = api_document();
 

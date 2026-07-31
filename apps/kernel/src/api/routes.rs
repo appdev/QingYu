@@ -767,6 +767,23 @@ async fn read_json_body(
     if !request_has_json_content_type(&request) {
         return Err(api_error(ErrorCode::InvalidRequest, None));
     }
+    let declared_length = request
+        .headers()
+        .get(header::CONTENT_LENGTH)
+        .map(|value| {
+            value
+                .to_str()
+                .ok()
+                .filter(|value| {
+                    !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit())
+                })
+                .and_then(|value| value.parse::<usize>().ok())
+                .ok_or_else(|| api_error(ErrorCode::InvalidRequest, None))
+        })
+        .transpose()?;
+    if declared_length.is_some_and(|length| length > limit) {
+        return Err(api_error(oversized_code, None));
+    }
     to_bytes(request.into_body(), limit).await.map_err(|error| {
         let code = if error.into_inner().is::<LengthLimitError>() {
             oversized_code

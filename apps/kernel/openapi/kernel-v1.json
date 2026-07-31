@@ -155,6 +155,7 @@
         "additionalProperties": false,
         "properties": {
           "bodyBase64": {
+            "maxLength": 89478488,
             "type": "string"
           },
           "kind": {
@@ -188,6 +189,8 @@
             "items": {
               "$ref": "#/components/schemas/CreateWorkspaceResourceBatchItem"
             },
+            "maxItems": 32,
+            "minItems": 1,
             "type": "array"
           },
           "workspaceGeneration": {
