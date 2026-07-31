@@ -17,7 +17,7 @@ use crate::{
         ApiVersion, CreateDocumentRequest, DocumentContents, DocumentId, DocumentName, ErrorCode,
         ErrorDetails, FileDocumentName, ListDocumentsQuery, ListWorkspaceInventoryQuery,
         LiveHealthResponse, LiveStatus, MoveDocumentRequest, PageQuery, ResourceId, ResourceKind,
-        SearchWorkspaceQuery, SnapshotId, StartupState, UpdateDocumentRequest,
+        RunId, SearchWorkspaceQuery, SnapshotId, StartupState, UpdateDocumentRequest,
         WorkspaceRelativePath,
     },
     runtime::ServiceFailure,
@@ -52,6 +52,7 @@ enum ServiceOperation {
     PatchSyncConfig,
     TestSyncConnection,
     GetSyncStatus,
+    GetSyncRun,
     TriggerSyncRun,
 }
 
@@ -101,6 +102,7 @@ pub(crate) fn router() -> Router<ApiState> {
         .route("/api/v1/sync/connection-test", post(test_sync_connection))
         .route("/api/v1/sync/status", get(get_sync_status))
         .route("/api/v1/sync/runs", post(trigger_sync_run))
+        .route("/api/v1/sync/runs/{run_id}", get(get_sync_run))
         .route("/api/v1/events", get(ws::upgrade))
         .method_not_allowed_fallback(method_not_allowed)
 }
@@ -500,6 +502,23 @@ async fn trigger_sync_run(State(state): State<ApiState>, request: Request<Body>)
     )
 }
 
+async fn get_sync_run(
+    State(state): State<ApiState>,
+    run_id: Result<Path<RunId>, PathRejection>,
+) -> Response {
+    let Ok(Path(run_id)) = run_id else {
+        return api_error(ErrorCode::InvalidRequest, None);
+    };
+    let Some(service) = runtime(&state).sync_api_service() else {
+        return unavailable(ServiceOperation::GetSyncRun);
+    };
+    service_response(
+        service.get_sync_run(run_id).await,
+        StatusCode::OK,
+        ServiceOperation::GetSyncRun,
+    )
+}
+
 async fn parse_standard_json<T>(request: Request<Body>) -> Result<T, Response>
 where
     T: DeserializeOwned,
@@ -829,6 +848,7 @@ impl ServiceOperation {
                 E::SyncNotReady,
             ],
             Self::GetSyncStatus => &[E::SyncNotReady],
+            Self::GetSyncRun => &[E::InvalidRequest, E::SyncNotReady, E::ResourceNotFound],
             Self::TriggerSyncRun => &[
                 E::InvalidRequest,
                 E::SyncNotReady,
@@ -860,6 +880,7 @@ impl ServiceOperation {
             Self::PatchSyncConfig
             | Self::TestSyncConnection
             | Self::GetSyncStatus
+            | Self::GetSyncRun
             | Self::TriggerSyncRun => ErrorCode::SyncNotReady,
         }
     }

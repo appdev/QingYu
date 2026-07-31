@@ -89,6 +89,7 @@ export type { AppLogArea, AppLogEvent, AppLogLevel, AppLogWriter } from "../lib/
 export { appLogger } from "../lib/app-logger";
 export * from "./kernel-compat";
 export * from "./kernel-domain";
+export * from "./kernel-app";
 export * from "./native-shell";
 
 export type RuntimeCleanup = () => unknown;
@@ -156,7 +157,6 @@ export type AppThemeRuntime = {
 export type AppMcpRuntime = {
   policyAvailable: boolean;
   localServiceAvailable: boolean;
-  setPrimaryWorkspace: (input: { primaryRoot: string | null }) => Promise<McpSettingsSnapshot>;
   getSettings: () => Promise<McpSettingsSnapshot>;
   updateSettings: (input: { expectedRevision: string; config: McpConfig }) => Promise<McpSettingsSnapshot>;
   getHealth: () => Promise<McpServerHealth>;
@@ -695,7 +695,6 @@ export function createDefaultAppRuntime(): AppRuntime {
     mcp: {
       policyAvailable: false,
       localServiceAvailable: false,
-      setPrimaryWorkspace: () => unsupportedFeature("setMcpPrimaryWorkspace"),
       getSettings: () => unsupportedFeature("getMcpSettings"),
       updateSettings: () => unsupportedFeature("updateMcpSettings"),
       getHealth: () => unsupportedFeature("getMcpHealth"),
@@ -805,6 +804,25 @@ export function createDefaultAppRuntime(): AppRuntime {
             ? { ...syncEditingState, active: true, counter: syncEditingCounter }
             : { ...input, active: false, counter: syncEditingCounter }
         };
+      },
+      settleApply: async (input) => {
+        if (!syncPendingApply) {
+          throw new Error("sync-apply-unavailable: The sync settings apply is unavailable.");
+        }
+        if (
+          syncPendingApply.revision !== input.revision ||
+          syncPendingApply.token !== input.token
+        ) {
+          throw new Error("sync-apply-mismatch: The sync settings apply identity changed.");
+        }
+        if (syncPendingApply.state !== "completed") {
+          syncEditingCounter += 1;
+          syncPendingApply = {
+            ...syncPendingApply,
+            counter: syncEditingCounter,
+            state: "completed"
+          };
+        }
       },
       stopRepositorySync: () => unsupportedFeature("stopDejavuRepositorySync"),
       sync: () => unsupportedFeature("syncApplication"),
@@ -937,6 +955,7 @@ export {
   type RemoteNotebookCatalogEntry,
   type QingYuSyncConfig,
   type SyncApplyUpdate,
+  type SyncApplySettlementInput,
   type SyncApplyWriteResult,
   type SyncConfigDocument,
   type SyncConfigIssue,

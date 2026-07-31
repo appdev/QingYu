@@ -2,6 +2,7 @@ import type {
   KernelDocumentEntrySnapshot,
   KernelPageCursor,
   KernelDomainPort,
+  KernelInvalidationNotice,
   KernelRevision,
   KernelWorkspaceGeneration,
 } from "@markra/app/runtime";
@@ -12,7 +13,6 @@ import {
 } from "./files";
 import type {
   ServerKernelDomainPort,
-  ServerKernelEventNotice,
 } from "./kernel";
 import { ServerKernelDomainAdapterError } from "./kernel";
 
@@ -184,9 +184,10 @@ describe("server file facade", () => {
         : [],
       workspaceGeneration: generation,
     }));
-    vi.mocked(kernel.resources.open).mockResolvedValue(new Response("image bytes", {
-      headers: { "content-type": "image/png" },
-    }));
+    vi.mocked(kernel.resources.open).mockResolvedValue({
+      body: new Blob(["image bytes"]),
+      mediaType: "image/png",
+    });
     const files = createServerFileRuntime(kernel);
     const documentPath = `${serverWorkspaceRoot}/notes/today.md`;
 
@@ -203,6 +204,7 @@ describe("server file facade", () => {
       documentPath,
       `${serverWorkspaceRoot}/assets/cover%20image.png`,
     )).toBe(imageUrl);
+    expect(kernel.resources.open).not.toHaveBeenCalled();
     const inventoryCallCount = vi.mocked(kernel.resources.list).mock.calls.length;
     await files.readMarkdownFile(documentPath);
     expect(kernel.resources.list).toHaveBeenCalledTimes(inventoryCallCount);
@@ -237,11 +239,11 @@ describe("server file facade", () => {
   });
 
   it("replaces signed image capabilities after refresh and invalidates them on sync completion", async () => {
-    const listeners = new Set<(notice: ServerKernelEventNotice) => unknown>();
+    const listeners = new Set<(notice: KernelInvalidationNotice) => unknown>();
     const kernel = Object.assign(kernelPort(), {
-      serverEvents: {
+      invalidations: {
         available: true,
-        subscribe: (listener: (notice: ServerKernelEventNotice) => unknown) => {
+        subscribe: (listener: (notice: KernelInvalidationNotice) => unknown) => {
           listeners.add(listener);
           return () => {
             listeners.delete(listener);
@@ -277,9 +279,8 @@ describe("server file facade", () => {
     expect(files.resolveMarkdownImageSrc?.(documentPath, "./cover.png"))
       .toContain(encodeURIComponent("image-new.signature"));
     publish(listeners, {
-      kind: "snapshot-required",
-      reason: "sequence-gap",
-      reloadScopes: ["documents", "workspace"],
+      documentChange: "snapshot",
+      scopes: ["documents", "workspace", "resources"],
     });
 
     await vi.waitFor(() => expect(onTreeChange).toHaveBeenCalledTimes(2));
@@ -423,10 +424,10 @@ describe("server file facade", () => {
   });
 
   it("prefers Kernel events and reloads document snapshots after reconnect or gaps", async () => {
-    const listeners = new Set<(notice: ServerKernelEventNotice) => unknown>();
-    const serverEvents = {
+    const listeners = new Set<(notice: KernelInvalidationNotice) => unknown>();
+    const invalidations = {
       available: true,
-      subscribe: vi.fn((listener: (notice: ServerKernelEventNotice) => unknown) => {
+      subscribe: vi.fn((listener: (notice: KernelInvalidationNotice) => unknown) => {
         listeners.add(listener);
         return () => {
           listeners.delete(listener);
@@ -434,7 +435,7 @@ describe("server file facade", () => {
         };
       }),
     };
-    const kernel = Object.assign(kernelPort(), { serverEvents });
+    const kernel = Object.assign(kernelPort(), { invalidations });
     const schedule = vi.fn(() => {
       throw new Error("polling must be unreachable while Kernel events are available");
     });
@@ -455,9 +456,8 @@ describe("server file facade", () => {
     expect(onFileTreeChange).not.toHaveBeenCalled();
 
     publish(listeners, {
-      kind: "snapshot-required",
-      reason: "sequence-gap",
-      reloadScopes: ["documents", "workspace"],
+      documentChange: "snapshot",
+      scopes: ["documents", "workspace", "resources"],
     });
     await vi.waitFor(() => expect(onFileChange).toHaveBeenCalledTimes(2));
     await vi.waitFor(() => expect(onFileTreeChange).toHaveBeenCalledOnce());
@@ -465,9 +465,8 @@ describe("server file facade", () => {
     expect(schedule).not.toHaveBeenCalled();
 
     publish(listeners, {
-      kind: "snapshot-required",
-      reason: "reconnect",
-      reloadScopes: ["documents"],
+      documentChange: "snapshot",
+      scopes: ["documents", "resources"],
     });
     await vi.waitFor(() => expect(onFileChange).toHaveBeenCalledTimes(3));
     await vi.waitFor(() => expect(onFileTreeChange).toHaveBeenCalledTimes(2));
@@ -483,67 +482,24 @@ describe("server file facade", () => {
 });
 
 function publish(
-  listeners: ReadonlySet<(notice: ServerKernelEventNotice) => unknown>,
-  notice: ServerKernelEventNotice,
+  listeners: ReadonlySet<(notice: KernelInvalidationNotice) => unknown>,
+  notice: KernelInvalidationNotice,
 ) {
   [...listeners].forEach((listener) => listener(notice));
 }
 
-function documentChangedNotice(revisionValue: string): ServerKernelEventNotice {
+function documentChangedNotice(_revisionValue: string): KernelInvalidationNotice {
   return {
-    frame: {
-      connectionId: "223e4567-e89b-42d3-a456-426614174000",
-      event: {
-        document: {
-          id: "document-1",
-          kind: "file",
-          modifiedAt: "2026-07-30T00:00:01Z",
-          name: "note.md",
-          parent: "",
-          path: "note.md",
-          revision: revisionValue,
-          sizeBytes: 6,
-        },
-        type: "document-changed",
-      },
-      protocolVersion: 1,
-      resource: { id: "document-1", kind: "document" },
-      revision: revisionValue,
-      sequence: 1,
-      type: "event",
-    },
-    kind: "event",
+    documentChange: "content",
+    paths: ["note.md" as never],
+    scopes: ["documents", "resources"],
   };
 }
 
-function syncSucceededNotice(): ServerKernelEventNotice {
+function syncSucceededNotice(): KernelInvalidationNotice {
   return {
-    frame: {
-      connectionId: "223e4567-e89b-42d3-a456-426614174000",
-      event: {
-        status: {
-          activeRunId: null,
-          completionState: "succeeded",
-          configRevision: "sync-config-revision-1",
-          error: null,
-          lastAttemptAt: "2026-07-30T00:00:01Z",
-          lastSuccessfulSyncAt: "2026-07-30T00:00:01Z",
-          lastTrigger: "manual",
-          provider: "s3",
-          summary: null,
-        },
-        type: "sync-status-changed",
-      },
-      protocolVersion: 1,
-      resource: {
-        kind: "sync-status",
-        runId: "323e4567-e89b-42d3-a456-426614174000",
-      },
-      revision: "sync-config-revision-1",
-      sequence: 2,
-      type: "event",
-    },
-    kind: "event",
+    documentChange: "tree",
+    scopes: ["sync-status", "documents", "resources"],
   };
 }
 
@@ -629,11 +585,16 @@ function kernelPort(): ServerKernelDomainPort {
         sizeBytes: 6,
       })),
     },
+    invalidations: {
+      available: false,
+      subscribe: () => () => undefined,
+    },
     runtime: { read: unavailable() },
     resources: {
       list: vi.fn(async () => ({ items: [], workspaceGeneration: generation })),
-      open: vi.fn(async () => new Response(new Uint8Array([1]), {
-        headers: { "content-type": "image/png" },
+      open: vi.fn(async () => ({
+        body: new Blob([new Uint8Array([1])]),
+        mediaType: "image/png",
       })),
     },
     serverEvents: {

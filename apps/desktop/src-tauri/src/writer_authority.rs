@@ -988,20 +988,16 @@ const LEGACY_WRITER_SURFACES: &[LegacyWriterSurface] = &[
         ],
     },
     LegacyWriterSurface {
-        name: "desktop-settings-and-sync-control",
+        name: "desktop-settings-and-sync-domain-writers",
         disposition: WriterSurfaceDisposition::RequiresWorkspaceFence,
         integration: WriterSurfaceIntegration::Unwired,
         entry_points: &[
-            "cancel_sync_config_apply",
-            "commit_desktop_runtime_store_changes",
             "enable_sync_config",
             "patch_exposed_app_settings",
             "patch_sync_config",
             "recover_sync_config",
             "replace_portable_app_settings",
-            "request_sync_config_apply",
             "reset_sync_config",
-            "set_sync_config_editing",
             "write_app_settings_group",
         ],
     },
@@ -1021,22 +1017,19 @@ const LEGACY_WRITER_SURFACES: &[LegacyWriterSurface] = &[
         ],
     },
     LegacyWriterSurface {
-        name: "mcp-direct-writers",
+        name: "mcp-kernel-adapter-writers",
         disposition: WriterSurfaceDisposition::RequiresWorkspaceFence,
-        integration: WriterSurfaceIntegration::Unwired,
+        integration: WriterSurfaceIntegration::Guarded,
         entry_points: &[
-            "clear_mcp_audit_entries",
-            "mcp::initialize",
             "mcp_document_create",
             "mcp_document_delete",
             "mcp_document_move",
             "mcp_document_update",
             "mcp_settings_update",
+            "mcp_sync_after_write",
             "mcp_sync_run",
             "mcp_sync_update_config",
             "mcp_sync_update_credentials",
-            "set_mcp_primary_workspace",
-            "update_mcp_settings",
         ],
     },
     LegacyWriterSurface {
@@ -1048,11 +1041,24 @@ const LEGACY_WRITER_SURFACES: &[LegacyWriterSurface] = &[
             "DejavuSchedulerOwner::trigger_startup",
             "handle_native_sync_exit",
             "install_production_graph",
-            "mcp_sync_after_write",
             "unwatch_markdown_file",
             "unwatch_markdown_tree",
             "watch_markdown_file",
             "watch_markdown_tree",
+        ],
+    },
+    LegacyWriterSurface {
+        name: "desktop-host-ui-coordination",
+        disposition: WriterSurfaceDisposition::HostOnly,
+        integration: WriterSurfaceIntegration::Independent,
+        entry_points: &[
+            "cancel_sync_config_apply",
+            "commit_desktop_runtime_store_changes",
+            "initialize_desktop_kernel_workspace",
+            "request_sync_config_apply",
+            "retry_desktop_kernel_workspace",
+            "set_sync_config_editing",
+            "settle_kernel_sync_config_apply",
         ],
     },
     LegacyWriterSurface {
@@ -1061,15 +1067,18 @@ const LEGACY_WRITER_SURFACES: &[LegacyWriterSurface] = &[
         integration: WriterSurfaceIntegration::Independent,
         entry_points: &[
             "cancel_theme_activation",
+            "clear_mcp_audit_entries",
             "commit_theme_activation",
             "delete_theme",
             "import_theme_file",
             "install_shell_command",
+            "mcp::initialize",
             "prepare_theme_activation",
             "release_theme_activation",
             "release_theme_activation_for_window",
             "replace_theme_file",
             "set_editor_window_restore_state",
+            "update_mcp_settings",
             "uninstall_shell_command",
         ],
     },
@@ -1077,6 +1086,58 @@ const LEGACY_WRITER_SURFACES: &[LegacyWriterSurface] = &[
 
 pub(crate) fn legacy_writer_surface_inventory() -> &'static [LegacyWriterSurface] {
     LEGACY_WRITER_SURFACES
+}
+
+const NORMAL_DESKTOP_HOST_READS_AND_ACTIONS: &[&str] = &[
+    "canonical_local_file_path",
+    "check_pandoc_available",
+    "detect_pandoc_path",
+    "destroy_current_editor_window",
+    "download_web_image",
+    "get_desktop_runtime_store_value",
+    "get_mcp_health",
+    "get_mcp_settings",
+    "get_shell_command_status",
+    "hide_settings_window",
+    "initialize_desktop_kernel_workspace",
+    "install_application_menu",
+    "list_editor_window_restore_states",
+    "list_mcp_audit_entries",
+    "list_system_font_families",
+    "list_themes",
+    "load_desktop_runtime_store",
+    "load_sync_config_editing",
+    "mark_settings_window_ready",
+    "minimize_current_window",
+    "open_blank_editor_window",
+    "open_containing_folder",
+    "open_log_folder",
+    "open_markdown_attachment",
+    "open_markdown_file_in_new_window",
+    "open_markdown_folder_in_new_window",
+    "open_settings_window",
+    "read_clipboard_text",
+    "read_desktop_kernel_startup_state",
+    "read_local_image_file",
+    "read_native_kernel_bootstrap",
+    "read_primary_workspace_state",
+    "read_standalone_document",
+    "read_text_file",
+    "read_theme_css",
+    "retry_desktop_kernel_workspace",
+    "show_native_app_about",
+    "take_opened_markdown_paths",
+    "theme_directory_path",
+];
+
+pub(crate) fn normal_desktop_command_is_allowed(command: &str) -> bool {
+    if let Some(surface) = LEGACY_WRITER_SURFACES
+        .iter()
+        .find(|surface| surface.entry_points.contains(&command))
+    {
+        return surface.disposition == WriterSurfaceDisposition::HostOnly;
+    }
+    NORMAL_DESKTOP_HOST_READS_AND_ACTIONS.contains(&command)
 }
 
 #[cfg(test)]
@@ -2001,13 +2062,13 @@ mod tests {
     }
 
     #[test]
-    fn phase_one_inventory_keeps_every_overlapping_writer_explicitly_unwired() {
+    fn phase_two_inventory_marks_only_kernel_backed_mcp_writers_guarded() {
         let expected_groups = [
             "desktop-workspace-authority",
             "desktop-document-resource-writers",
-            "desktop-settings-and-sync-control",
+            "desktop-settings-and-sync-domain-writers",
             "desktop-dejavu-execution",
-            "mcp-direct-writers",
+            "mcp-kernel-adapter-writers",
             "background-writer-triggers",
         ];
         let inventory = legacy_writer_surface_inventory();
@@ -2022,9 +2083,12 @@ mod tests {
             .iter()
             .filter(|entry| entry.disposition == WriterSurfaceDisposition::RequiresWorkspaceFence)
         {
-            assert_eq!(entry.integration, WriterSurfaceIntegration::Unwired);
             assert!(!entry.entry_points.is_empty());
-            assert_ne!(entry.integration, WriterSurfaceIntegration::Guarded);
+            if entry.name == "mcp-kernel-adapter-writers" {
+                assert_eq!(entry.integration, WriterSurfaceIntegration::Guarded);
+            } else {
+                assert_eq!(entry.integration, WriterSurfaceIntegration::Unwired);
+            }
         }
     }
 
@@ -2048,5 +2112,27 @@ mod tests {
             }),
             "host-only writes must stay separate from workspace ownership claims"
         );
+    }
+
+    #[test]
+    fn normal_desktop_rejects_every_workspace_fenced_legacy_entry_point() {
+        for surface in legacy_writer_surface_inventory() {
+            for entry_point in surface.entry_points {
+                assert_eq!(
+                    normal_desktop_command_is_allowed(entry_point),
+                    surface.disposition == WriterSurfaceDisposition::HostOnly,
+                    "normal desktop classification drifted for {entry_point}"
+                );
+            }
+        }
+        assert!(normal_desktop_command_is_allowed(
+            "read_native_kernel_bootstrap"
+        ));
+        assert!(!normal_desktop_command_is_allowed(
+            "read_markdown_template_file"
+        ));
+        assert!(!normal_desktop_command_is_allowed(
+            "future_unclassified_workspace_writer"
+        ));
     }
 }

@@ -173,6 +173,7 @@ impl std::error::Error for WorkspaceError {}
 
 pub(crate) struct WorkspaceRegistry {
     authority_gate: RwLock<()>,
+    authority_epoch: AtomicU64,
     protected_roots: Vec<PathBuf>,
     stale_workspace_ids: RwLock<HashSet<Uuid>>,
     workspaces: RwLock<HashMap<Uuid, WorkspaceEntry>>,
@@ -185,6 +186,7 @@ impl WorkspaceRegistry {
     pub(crate) fn new(protected_roots: Vec<PathBuf>) -> Self {
         Self {
             authority_gate: RwLock::new(()),
+            authority_epoch: AtomicU64::new(0),
             protected_roots: protected_roots
                 .into_iter()
                 .map(|path| path.canonicalize().unwrap_or(path))
@@ -201,6 +203,7 @@ impl WorkspaceRegistry {
         let canonical = |path: &Path| path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
         Self {
             authority_gate: RwLock::new(()),
+            authority_epoch: AtomicU64::new(0),
             protected_roots: vec![canonical(app_config_root), canonical(app_data_root)],
             stale_workspace_ids: RwLock::new(HashSet::new()),
             workspaces: RwLock::new(HashMap::new()),
@@ -256,6 +259,50 @@ impl WorkspaceRegistry {
             .authority_gate
             .write()
             .map_err(|_| WorkspaceError::state())?;
+        self.activate_current_locked(path)
+    }
+
+    pub(crate) fn publish_authority_epoch(&self, epoch: u64) -> Result<u64, WorkspaceError> {
+        let _authority = self
+            .authority_gate
+            .write()
+            .map_err(|_| WorkspaceError::state())?;
+        let previous_generation = self.generation();
+        if epoch > self.authority_epoch.load(Ordering::Acquire) {
+            self.authority_epoch.store(epoch, Ordering::Release);
+            self.clear_current_locked()?;
+        }
+        Ok(previous_generation)
+    }
+
+    pub(crate) fn commit_published_current(
+        &self,
+        epoch: u64,
+        path: Option<&Path>,
+    ) -> Result<bool, WorkspaceError> {
+        let _authority = self
+            .authority_gate
+            .write()
+            .map_err(|_| WorkspaceError::state())?;
+        if self.authority_epoch.load(Ordering::Acquire) != epoch {
+            return Ok(false);
+        }
+        match path {
+            Some(path) => {
+                if let Err(error) = self.activate_current_locked(path) {
+                    self.clear_current_locked()?;
+                    return Err(error);
+                }
+            }
+            None => self.clear_current_locked()?,
+        }
+        Ok(true)
+    }
+
+    fn activate_current_locked(
+        &self,
+        path: &Path,
+    ) -> Result<AuthorizedWorkspaceConfig, WorkspaceError> {
         let canonical_path = canonical_authorizable_root(path)?;
         if self.is_protected_root(&canonical_path) {
             return Err(WorkspaceError::protected());
@@ -310,6 +357,10 @@ impl WorkspaceRegistry {
             .authority_gate
             .write()
             .map_err(|_| WorkspaceError::state())?;
+        self.clear_current_locked()
+    }
+
+    fn clear_current_locked(&self) -> Result<(), WorkspaceError> {
         let mut workspaces = self
             .workspaces
             .write()

@@ -473,7 +473,11 @@ mod tests {
 
         assert!(document.config.enabled);
         assert!(document.config.permissions.documents_read);
-        assert_eq!(document.config.recycle_bin_retention_days, 30);
+        assert_eq!(document.config.recycle_bin_retention_days, 0);
+        assert_eq!(
+            document.config.deletion,
+            crate::mcp::config::DeletionPolicy::QingYuRecycleBin
+        );
         assert_eq!(backend.local("schemaVersion"), Some(json!(2)));
         assert!(backend.local("mcp").is_some());
         assert_eq!(backend.legacy("mcp"), None);

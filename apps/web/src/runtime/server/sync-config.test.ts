@@ -129,6 +129,48 @@ describe("server sync config facade", () => {
     })).resolves.toMatchObject({ status: "completed" });
     expect(reads).toBe(122);
   });
+
+  it("settles a settings apply in the Web host before accepting a new token", async () => {
+    const syncConfig = createServerSyncConfigRuntime(kernelPort());
+    await syncConfig.setEditing({
+      active: true,
+      revision,
+      sessionId: "session-1",
+    });
+    await syncConfig.requestApply({
+      exitReason: "window-close",
+      revision,
+      sessionId: "session-1",
+      source: "settings-exit",
+      token: "apply-1",
+    });
+
+    await syncConfig.sync({
+      applyToken: "apply-1",
+      notebookName: "Notes",
+      notesRoot: "kernel-workspace://primary",
+      revision,
+      trigger: "settings-exit",
+    });
+
+    await expect(syncConfig.loadEditing()).resolves.toMatchObject({
+      pendingApply: { state: "completed", token: "apply-1" },
+    });
+    await syncConfig.setEditing({
+      active: true,
+      revision,
+      sessionId: "session-2",
+    });
+    await expect(syncConfig.requestApply({
+      exitReason: "category-leave",
+      revision,
+      sessionId: "session-2",
+      source: "settings-exit",
+      token: "apply-2",
+    })).resolves.toMatchObject({
+      event: { state: "pending", token: "apply-2" },
+    });
+  });
 });
 
 function config(enabled = true): KernelSyncConfigSnapshot {

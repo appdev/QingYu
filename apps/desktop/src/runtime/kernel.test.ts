@@ -550,6 +550,170 @@ describe("desktop Kernel domain adapter", () => {
     ]);
   });
 
+  it("reads history and resource bodies through the authenticated Kernel", async () => {
+    const snapshotId = "123e4567-e89b-42d3-a456-426614174050" as KernelHistorySnapshotId;
+    const requests: Array<{ authorization: string | null; pathname: string; search: string }> = [];
+    const fetch: FetchLike = async (url, init = {}) => {
+      const parsed = new URL(url);
+      if (
+        parsed.pathname.includes("/history/") ||
+        parsed.pathname === "/api/v1/inventory" ||
+        parsed.pathname.startsWith("/api/v1/resources/")
+      ) {
+        requests.push({
+          authorization: new Headers(init.headers).get("authorization"),
+          pathname: parsed.pathname,
+          search: parsed.search,
+        });
+      }
+      if (parsed.pathname.endsWith(`/history/${snapshotId}`)) {
+        return jsonResponse({
+          contents: "previous note",
+          createdAt: "2026-07-30T00:00:00Z",
+          documentId: "document.signature",
+          revision: "revision-0",
+          sizeBytes: 13,
+          snapshotId,
+        });
+      }
+      if (parsed.pathname === "/api/v1/inventory") {
+        return jsonResponse({
+          items: [{
+            entryType: "resource",
+            resource: {
+              id: "resource.signature",
+              kind: "image",
+              mediaType: "image/png",
+              modifiedAt: "2026-07-30T00:00:00Z",
+              name: "cover.png",
+              parent: "assets",
+              path: "assets/cover.png",
+              previewable: true,
+              revision: "revision-resource-1",
+              sizeBytes: 11,
+            },
+          }],
+          nextCursor: null,
+        });
+      }
+      if (parsed.pathname === "/api/v1/resources/resource.signature") {
+        return new Response("image bytes", {
+          headers: {
+            "content-length": "11",
+            "content-type": "image/png",
+            "x-content-type-options": "nosniff",
+            "x-request-id": REQUEST_ID,
+          },
+        });
+      }
+      return handshakeResponse(parsed.pathname);
+    };
+    const adapter = await createDesktopKernelDomainAdapter(connection(), { fetch });
+    const workspaceGeneration = WORKSPACE_GENERATION as KernelWorkspaceGeneration;
+
+    await expect(adapter.port.documents.history.read({
+      locator: "document.signature" as KernelDocumentLocator,
+      snapshotId,
+      workspaceGeneration,
+    })).resolves.toEqual({
+      contents: "previous note",
+      documentLocator: "document.signature",
+      revision: "revision-0",
+      snapshotId,
+      workspaceGeneration,
+    });
+    await expect(adapter.port.resources.list({
+      parent: "assets" as KernelWorkspaceRelativePath,
+      workspaceGeneration,
+    })).resolves.toEqual({
+      items: [{
+        entryType: "resource",
+        resource: {
+          id: "resource.signature",
+          kind: "image",
+          mediaType: "image/png",
+          modifiedAt: "2026-07-30T00:00:00Z",
+          name: "cover.png",
+          parent: "assets",
+          previewable: true,
+          relativePath: "assets/cover.png",
+          revision: "revision-resource-1",
+          sizeBytes: 11,
+          workspaceGeneration,
+        },
+      }],
+      workspaceGeneration,
+    });
+    const body = await adapter.port.resources.open({
+      id: "resource.signature",
+      kind: "image",
+      workspaceGeneration,
+    });
+    expect(body.mediaType).toBe("image/png");
+    expect(await body.body.text()).toBe("image bytes");
+    expect(requests).toEqual([
+      {
+        authorization: `Bearer ${CREDENTIAL}`,
+        pathname: `/api/v1/documents/document.signature/history/${snapshotId}`,
+        search: "",
+      },
+      {
+        authorization: `Bearer ${CREDENTIAL}`,
+        pathname: "/api/v1/inventory",
+        search: "?limit=100&parent=assets",
+      },
+      {
+        authorization: `Bearer ${CREDENTIAL}`,
+        pathname: "/api/v1/resources/resource.signature",
+        search: "?kind=image",
+      },
+    ]);
+  });
+
+  it("fails closed when the adapter retires while a resource body is being consumed", async () => {
+    let resolveBody: ((body: Blob) => unknown) | undefined;
+    let delayedResponse: Response | undefined;
+    const bodyStarted = new Promise<undefined>((resolve) => {
+      const response = new Response("pending", {
+        headers: {
+          "content-length": "7",
+          "content-type": "image/png",
+          "x-content-type-options": "nosniff",
+          "x-request-id": REQUEST_ID,
+        },
+      });
+      Object.defineProperty(response, "blob", {
+        value: () => {
+          resolve(undefined);
+          return new Promise<Blob>((resolveBlob) => {
+            resolveBody = resolveBlob;
+          });
+        },
+      });
+      delayedResponse = response;
+    });
+    const fetch: FetchLike = async (url) => {
+      const pathname = new URL(url).pathname;
+      if (pathname.startsWith("/api/v1/resources/")) {
+        if (delayedResponse === undefined) throw new Error("resource response unavailable");
+        return delayedResponse;
+      }
+      return handshakeResponse(pathname);
+    };
+    const adapter = await createDesktopKernelDomainAdapter(connection(), { fetch });
+    const opening = adapter.port.resources.open({
+      id: "resource.signature",
+      kind: "image",
+      workspaceGeneration: WORKSPACE_GENERATION as KernelWorkspaceGeneration,
+    });
+
+    await bodyStarted;
+    adapter.release();
+    resolveBody?.(new Blob(["retired"], { type: "image/png" }));
+
+    await expect(opening).rejects.toMatchObject({ code: "released" });
+  });
+
   it("fails closed after a later protocol mismatch and never falls back to native workspace mutation", async () => {
     let runtimeReads = 0;
     let documentRequests = 0;

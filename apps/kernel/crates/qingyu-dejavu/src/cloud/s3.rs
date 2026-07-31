@@ -17,8 +17,8 @@ use tokio_util::io::ReaderStream;
 
 use super::s3_xml::parse_list_page;
 use super::{
-    Cloud, CloudError, CloudObject, CloudUploadSource, S3Connection, S3RequestSigner,
-    S3TlsVerification,
+    Cloud, CloudError, CloudObject, CloudTargetIdentity, CloudUploadSource, S3Connection,
+    S3RequestSigner, S3TlsVerification,
 };
 
 const CONTENT_TYPE_BINARY: &str = "application/octet-stream";
@@ -55,6 +55,7 @@ pub struct S3Cloud {
     client: reqwest::Client,
     options: S3TransportOptions,
     repository_prefix: String,
+    target_identity: CloudTargetIdentity,
     now: Arc<dyn Fn() -> OffsetDateTime + Send + Sync>,
 }
 
@@ -145,6 +146,7 @@ impl S3Cloud {
         if options.request_timeout.is_zero() || !(1..=3).contains(&options.max_attempts) {
             return Err(CloudError::backend("s3_invalid_transport_options"));
         }
+        let target_identity = s3_target_identity(&connection, repository_prefix)?;
         let client = reqwest::Client::builder()
             .timeout(options.request_timeout)
             .redirect(reqwest::redirect::Policy::none())
@@ -162,6 +164,7 @@ impl S3Cloud {
             client,
             options,
             repository_prefix: repository_prefix.to_string(),
+            target_identity,
             now,
         })
     }
@@ -501,6 +504,10 @@ impl Error for DnsResolutionError {
 
 #[async_trait::async_trait]
 impl Cloud for S3Cloud {
+    fn target_identity(&self) -> Option<CloudTargetIdentity> {
+        Some(self.target_identity)
+    }
+
     async fn get_bounded(&self, key: &str, max_bytes: u64) -> Result<Vec<u8>, CloudError> {
         let url = self.object_get_url(key)?;
         for attempt in 0..self.options.max_attempts {
@@ -703,6 +710,30 @@ impl Cloud for S3Cloud {
     async fn available_size(&self) -> Result<u64, CloudError> {
         Ok(u64::MAX)
     }
+}
+
+fn s3_target_identity(
+    connection: &S3Connection,
+    repository_prefix: &str,
+) -> Result<CloudTargetIdentity, CloudError> {
+    let host = connection
+        .endpoint_url
+        .host_str()
+        .ok_or_else(|| CloudError::backend("s3_invalid_endpoint"))?;
+    let port = connection
+        .endpoint_url
+        .port_or_known_default()
+        .ok_or_else(|| CloudError::backend("s3_invalid_endpoint"))?
+        .to_string();
+    Ok(CloudTargetIdentity::from_stable_parts(&[
+        b"s3",
+        connection.endpoint_url.scheme().as_bytes(),
+        host.as_bytes(),
+        port.as_bytes(),
+        connection.endpoint_url.path().as_bytes(),
+        connection.bucket.as_bytes(),
+        repository_prefix.as_bytes(),
+    ]))
 }
 
 async fn hash_source(source: &dyn CloudUploadSource) -> Result<String, CloudError> {
@@ -1076,6 +1107,84 @@ mod tests {
             tls_verification: S3TlsVerification::Verify,
             max_attempts: 3,
         }
+    }
+
+    #[test]
+    fn target_identity_uses_normalized_endpoint_bucket_and_repository_prefix_only() {
+        let prefix = "qingyu/repositories/01234567-89ab-4def-8123-456789abcdef/repo";
+        let identity = |endpoint: &str,
+                        region: &str,
+                        bucket: &str,
+                        access_key: &str,
+                        secret_key: &str,
+                        repository_prefix: &str| {
+            let connection = S3Connection::new(
+                endpoint,
+                region,
+                bucket,
+                access_key,
+                secret_key,
+                S3AddressingStyle::Path,
+            )
+            .unwrap();
+            S3Cloud::new(connection, options(), repository_prefix)
+                .unwrap()
+                .target_identity()
+        };
+
+        let canonical = identity(
+            "https://s3.example.test/storage",
+            "us-east-1",
+            "notes-a",
+            "first-access",
+            "first-secret",
+            prefix,
+        );
+        assert!(canonical.is_some());
+        assert_eq!(
+            canonical,
+            identity(
+                "  https://S3.EXAMPLE.TEST:443/storage/  ",
+                "different-region",
+                "notes-a",
+                "rotated-access",
+                "rotated-secret",
+                prefix,
+            )
+        );
+        assert_ne!(
+            canonical,
+            identity(
+                "https://s3.example.test/storage",
+                "us-east-1",
+                "notes-b",
+                "first-access",
+                "first-secret",
+                prefix,
+            )
+        );
+        assert_ne!(
+            canonical,
+            identity(
+                "https://other.example.test/storage",
+                "us-east-1",
+                "notes-a",
+                "first-access",
+                "first-secret",
+                prefix,
+            )
+        );
+        assert_ne!(
+            canonical,
+            identity(
+                "https://s3.example.test/storage",
+                "us-east-1",
+                "notes-a",
+                "first-access",
+                "first-secret",
+                "qingyu/repositories/11111111-1111-4111-8111-111111111111/repo",
+            )
+        );
     }
 
     #[derive(Debug)]

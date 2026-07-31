@@ -158,7 +158,14 @@ ruby -ryaml -e '
   abort "runtime Compose capabilities changed" unless service.fetch("cap_drop") == ["ALL"]
   abort "runtime Compose privileges changed" unless service.fetch("security_opt") == ["no-new-privileges:true"]
   abort "runtime Compose runtime inputs are not value-free" unless service.fetch("environment") == ["QINGYU_PUBLIC_ORIGIN", "QINGYU_SERVER_INITIALIZATION_TOKEN"]
-  abort "runtime Compose port is not loopback-only" unless service.fetch("ports") == ["127.0.0.1:3210:3210"]
+  published_port = service.fetch("ports")
+  expected_port = "${QINGYU_PUBLISHED_ADDRESS:-127.0.0.1}:3210:3210"
+  abort "runtime Compose port lost its explicit/default bind address" unless published_port == [expected_port]
+  expand = lambda do |address|
+    expected_port.sub("${QINGYU_PUBLISHED_ADDRESS:-127.0.0.1}", address)
+  end
+  abort "runtime Compose default bind is not loopback-only" unless expand.call("127.0.0.1") == "127.0.0.1:3210:3210"
+  abort "runtime Compose explicit HTTP bind is unavailable" unless expand.call("0.0.0.0") == "0.0.0.0:3210:3210"
   abort "runtime Compose data root changed" unless service.fetch("volumes") == ["qingyu-data:/data"]
   abort "runtime Compose stop grace changed" unless service.fetch("stop_grace_period") == "35s"
   abort "runtime Compose restart policy changed" unless service.fetch("restart") == "unless-stopped"

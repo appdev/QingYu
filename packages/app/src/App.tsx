@@ -759,12 +759,6 @@ function WorkspaceApp() {
     return () => window.removeEventListener("resize", handleViewportResize);
   }, []);
   const blankWorkspace = editorWindowContext.kind === "external-blank";
-  useEffect(() => {
-    if (!primaryWindowOwner) return;
-    if (!mcpRuntime.localServiceAvailable) return;
-
-    mcpRuntime.setPrimaryWorkspace({ primaryRoot }).catch(() => {});
-  }, [mcpRuntime, primaryRoot, primaryWindowOwner]);
   const syncConfig = useSyncConfig();
   const {
     files: fileTreeFiles,

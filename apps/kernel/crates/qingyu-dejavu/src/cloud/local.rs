@@ -13,7 +13,9 @@ use crate::path_security::{
 use crate::store::{absolute_lexical_root, open_absolute_dir_nofollow, open_child_directory};
 use crate::RepoError;
 
-use super::{Cloud, CloudError, CloudObject, CloudOperation, CloudUploadSource};
+use super::{
+    Cloud, CloudError, CloudObject, CloudOperation, CloudTargetIdentity, CloudUploadSource,
+};
 
 const OBJECT_MODE: u32 = 0o644;
 const INTERNAL_NAMESPACE: &str = ".__qingyu_local_cloud";
@@ -21,6 +23,7 @@ const INTERNAL_NAMESPACE: &str = ".__qingyu_local_cloud";
 pub struct LocalCloud {
     root: Dir,
     stage: Dir,
+    target_identity: CloudTargetIdentity,
     failures: Mutex<[usize; 4]>,
 }
 
@@ -34,6 +37,10 @@ impl LocalCloud {
         before_final_open: impl FnOnce(),
     ) -> Result<Self, CloudError> {
         let path = absolute_lexical_root(root.as_ref().to_path_buf()).map_err(map_repo_error)?;
+        let target_identity = CloudTargetIdentity::from_stable_parts(&[
+            b"local-filesystem",
+            path.as_os_str().as_encoded_bytes(),
+        ]);
         let root = match (path.parent(), path.file_name()) {
             (Some(parent), Some(final_component)) => {
                 validate_windows_directory_components_before_canonicalize(parent)
@@ -64,6 +71,7 @@ impl LocalCloud {
         Ok(Self {
             root,
             stage,
+            target_identity,
             failures: Mutex::new([0; 4]),
         })
     }
@@ -129,6 +137,10 @@ impl LocalCloud {
 
 #[async_trait::async_trait]
 impl Cloud for LocalCloud {
+    fn target_identity(&self) -> Option<CloudTargetIdentity> {
+        Some(self.target_identity)
+    }
+
     async fn get_bounded(&self, key: &str, max_bytes: u64) -> Result<Vec<u8>, CloudError> {
         let components = validate_key(key)?;
         self.take_failure(CloudOperation::Get)?;

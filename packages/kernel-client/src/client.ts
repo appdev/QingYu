@@ -21,6 +21,7 @@ import {
   isSyncConfig,
   isSyncConnection,
   isSyncRun,
+  isSyncRunStatus,
   isSyncStatus,
   isVersion,
   isWorkspace,
@@ -142,6 +143,10 @@ export interface KernelSyncClient {
     options?: KernelRequestOptions,
   ): Promise<Schemas["SyncConnectionTestDto"]>;
   getStatus(options?: KernelRequestOptions): Promise<Schemas["SyncStatusDto"]>;
+  getRun(
+    runId: Schemas["RunId"],
+    options?: KernelRequestOptions,
+  ): Promise<Schemas["SyncRunStatusDto"]>;
   trigger(
     request: Schemas["TriggerSyncRunRequest"],
     options?: KernelRequestOptions,
@@ -380,6 +385,12 @@ export function createKernelClient(options: CreateKernelClientOptions): KernelCl
           path: "/api/v1/sync/status",
           signal: requestOptions?.signal,
         }, { status: 200, validate: isSyncStatus }),
+      getRun: (runId, requestOptions) =>
+        transport.request({
+          method: "GET",
+          path: `/api/v1/sync/runs/${encodeURIComponent(runId)}`,
+          signal: requestOptions?.signal,
+        }, { status: 200, validate: isSyncRunStatus }),
       trigger: (request, requestOptions) =>
         transport.request({
           method: "POST",

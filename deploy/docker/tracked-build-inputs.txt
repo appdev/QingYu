@@ -521,6 +521,12 @@ packages/app/src/runtime/context-menu-items.test.ts
 packages/app/src/runtime/context-menu-items.ts
 packages/app/src/runtime/index.test.ts
 packages/app/src/runtime/index.ts
+packages/app/src/runtime/kernel-app/files.ts
+packages/app/src/runtime/kernel-app/index.ts
+packages/app/src/runtime/kernel-app/kernel-app.test.ts
+packages/app/src/runtime/kernel-app/settings.ts
+packages/app/src/runtime/kernel-app/sync-config.test.ts
+packages/app/src/runtime/kernel-app/sync-config.ts
 packages/app/src/runtime/kernel-compat.test.ts
 packages/app/src/runtime/kernel-compat.ts
 packages/app/src/runtime/kernel-domain.test.ts

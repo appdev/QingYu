@@ -281,7 +281,7 @@ export const siteContent = {
         },
         {
           title: "A bounded doorway for MCP",
-          body: "Desktop uses one application-level MCP policy and binds document tools to the current notebook directory. The app also controls settings and sync permissions, and the door is closed by default."
+          body: "Desktop uses one device-local MCP policy and binds Kernel tools to the current notebook directory. The app also controls settings and sync permissions, and the door is closed by default."
         },
         {
           title: "Assets stay ordinary; words travel freely",

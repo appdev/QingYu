@@ -3,6 +3,7 @@ import {
   notebookNameFromRoot,
   normalizeSyncConfigLoadResult,
   type AppSyncConfigRuntime,
+  type SyncApplySettlementInput,
   type SyncConfigDocument,
   type SyncConfigLoadResult,
   type SyncConnectionTestResult,
@@ -171,6 +172,12 @@ export async function requestNativeSyncConfigApply(
     Awaited<ReturnType<AppSyncConfigRuntime["requestApply"]>>["event"]
   >("request_sync_config_apply", { request: input });
   return { broadcasted: true, event };
+}
+
+export function settleNativeKernelSyncConfigApply(
+  input: SyncApplySettlementInput
+): Promise<unknown> {
+  return invokeNative("settle_kernel_sync_config_apply", { request: input });
 }
 
 export async function syncApplication(

@@ -46,7 +46,6 @@ function mcpRuntime(): AppMcpRuntime {
     listAuditEntries: vi.fn(async () => []),
     localServiceAvailable: false,
     policyAvailable: true,
-    setPrimaryWorkspace: vi.fn(async () => mcpSnapshot()),
     updateSettings: vi.fn(async ({ config }) => ({ ...mcpSnapshot(), config }))
   };
 }

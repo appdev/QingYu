@@ -19,10 +19,11 @@ use crate::{
         ErrorDetails, HostProfile, InstanceId, ListDocumentsQuery, ListWorkspaceInventoryQuery,
         MoveDocumentRequest, PageQuery, PatchSettingsRequest, PatchSyncConfigRequest,
         ReadyHealthResponse, ResourceId, ResourceKind, RestoreDocumentHistoryRequest, Revision,
-        Rfc3339Utc, SearchPageDto, SearchWorkspaceQuery, SettingsSnapshotDto, SnapshotId,
-        SyncConfigViewDto, SyncConnectionTestDto, SyncRunAcceptedDto, SyncStatusDto, SyncTrigger,
-        SystemVersionResponse, TestSyncConnectionRequest, TriggerSyncRunRequest,
-        UpdateDocumentRequest, WireIdentityKey, WorkspaceDto, WorkspaceInventoryPageDto,
+        Rfc3339Utc, RunId, SearchPageDto, SearchWorkspaceQuery, SettingsSnapshotDto, SnapshotId,
+        SyncConfigViewDto, SyncConnectionTestDto, SyncRunAcceptedDto, SyncRunStatusDto,
+        SyncStatusDto, SyncTrigger, SystemVersionResponse, TestSyncConnectionRequest,
+        TriggerSyncRunRequest, UpdateDocumentRequest, WireIdentityKey, WorkspaceDto,
+        WorkspaceInventoryPageDto,
     },
     error::{safe_error_envelope, safe_message_for_error_code},
     events::{EventBroker, EventPublication, EventSink, EventSinkError},
@@ -575,7 +576,8 @@ impl KernelRuntime {
             return Ok(SyncRunClaim::Ready(claimed));
         }
         let status = if queued.cancellation.is_cancelled() {
-            self.sync_status.complete_cancelled(run_id)
+            self.sync_status
+                .complete_cancelled(run_id, queued.fallback_completed_at.clone())
         } else {
             self.sync_status.complete_run(
                 run_id,
@@ -639,7 +641,8 @@ impl KernelRuntime {
         let naturally_admissible = matches!(lifecycle.admission, SyncRunAdmission::Open)
             && Arc::ptr_eq(&current, &running.snapshot);
         let status = if transition_cancelled || running.cancellation.is_cancelled() {
-            self.sync_status.complete_cancelled(run_id)
+            self.sync_status
+                .complete_cancelled(run_id, completed_at.clone())
         } else {
             let completion = if naturally_admissible {
                 completion
@@ -832,7 +835,7 @@ impl KernelRuntime {
                 queued.cancellation.cancel();
                 let status = self
                     .sync_status
-                    .complete_cancelled(queued.run_id)
+                    .complete_cancelled(queued.run_id, queued.fallback_completed_at.clone())
                     .map_err(|_| {
                         lifecycle.admission = SyncRunAdmission::RecoveryClosed;
                         lifecycle.run = RegisteredSyncRun::Queued(queued.clone());
@@ -918,8 +921,7 @@ impl KernelRuntime {
         self.mutation_coordinator.try_lock().is_ok()
     }
 
-    #[doc(hidden)]
-    pub async fn wait_for_empty_sync_run_for_test(&self) -> Result<(), WorkspaceRunLifecycleError> {
+    pub(crate) async fn wait_for_empty_sync_run(&self) -> Result<(), WorkspaceRunLifecycleError> {
         loop {
             let notified = self.workspace_run_lifecycle.drained.notified();
             tokio::pin!(notified);
@@ -936,6 +938,11 @@ impl KernelRuntime {
             }
             notified.await;
         }
+    }
+
+    #[doc(hidden)]
+    pub async fn wait_for_empty_sync_run_for_test(&self) -> Result<(), WorkspaceRunLifecycleError> {
+        self.wait_for_empty_sync_run().await
     }
 
     #[doc(hidden)]
@@ -2591,6 +2598,7 @@ pub trait SyncApiService: Send + Sync {
         request: TestSyncConnectionRequest,
     ) -> Result<SyncConnectionTestDto, ServiceFailure>;
     async fn get_sync_status(&self) -> Result<SyncStatusDto, ServiceFailure>;
+    async fn get_sync_run(&self, run_id: RunId) -> Result<SyncRunStatusDto, ServiceFailure>;
     async fn trigger_sync_run(
         &self,
         request: TriggerSyncRunRequest,

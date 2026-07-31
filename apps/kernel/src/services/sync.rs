@@ -24,8 +24,8 @@ use crate::{
     contract::{
         DomainEvent, ErrorCode, ErrorDetails, Nullable, PatchSyncConfigRequest, ResourceRefDto,
         Revision, RunId, SyncConfigReadiness, SyncConfigViewDto, SyncConnectionTestDto, SyncMode,
-        SyncRunAcceptedDto, SyncSafeErrorCategory, SyncSafeErrorCode, SyncSafeErrorDto,
-        SyncSafeErrorOperation, SyncStatusDto, SyncSummaryDto, SyncTrigger,
+        SyncRunAcceptedDto, SyncRunStatusDto, SyncSafeErrorCategory, SyncSafeErrorCode,
+        SyncSafeErrorDto, SyncSafeErrorOperation, SyncStatusDto, SyncSummaryDto, SyncTrigger,
         TestSyncConnectionRequest, TriggerSyncRunRequest,
     },
     events::{EventPublication, EventSink as _},
@@ -378,6 +378,7 @@ impl KernelSyncSchedulerCloseTestHook {
 struct KernelTriggerGateState {
     closing: bool,
     scheduler_owner: Option<uuid::Uuid>,
+    settings_exit_only: bool,
     shutdown: bool,
 }
 
@@ -463,7 +464,7 @@ impl SyncService {
                 return KernelSyncTriggerResult::rejected(KernelSyncTriggerRejection::Unavailable)
             }
         };
-        if closing.closing {
+        if closing.closing || (closing.settings_exit_only && trigger != SyncTrigger::SettingsExit) {
             return KernelSyncTriggerResult::rejected(KernelSyncTriggerRejection::Closing);
         }
         drop(closing);
@@ -491,6 +492,28 @@ impl SyncService {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         gate.closing = true;
         gate.scheduler_owner = None;
+    }
+
+    pub(crate) fn begin_settings_exit_quiescence(&self) -> Result<(), WorkspaceRunLifecycleError> {
+        let mut gate = self
+            .kernel_trigger_gate
+            .lock()
+            .map_err(|_| WorkspaceRunLifecycleError)?;
+        if gate.closing || gate.shutdown {
+            return Err(WorkspaceRunLifecycleError);
+        }
+        gate.settings_exit_only = true;
+        Ok(())
+    }
+
+    pub(crate) async fn wait_for_active_run_quiescence(
+        &self,
+    ) -> Result<(), WorkspaceRunLifecycleError> {
+        let runtime = self.runtime.upgrade().ok_or(WorkspaceRunLifecycleError)?;
+        runtime
+            .verify_instance_lock()
+            .map_err(|_| WorkspaceRunLifecycleError)?;
+        runtime.wait_for_empty_sync_run().await
     }
 
     fn close_all_sync_triggers(&self) {
@@ -539,7 +562,7 @@ impl SyncService {
             .kernel_trigger_gate
             .lock()
             .map_err(|_| KernelSyncSchedulerClaimError)?;
-        if gate.closing || gate.scheduler_owner.is_some() {
+        if gate.closing || gate.settings_exit_only || gate.scheduler_owner.is_some() {
             return Err(KernelSyncSchedulerClaimError);
         }
         let owner = uuid::Uuid::new_v4();
@@ -588,7 +611,7 @@ impl SyncService {
             .kernel_trigger_gate
             .lock()
             .map_err(|_| SyncRunTriggerFailure::Unavailable)?;
-        if gate.shutdown {
+        if gate.shutdown || (gate.settings_exit_only && trigger != SyncTrigger::SettingsExit) {
             return Err(SyncRunTriggerFailure::Closing);
         }
         drop(gate);
@@ -895,6 +918,14 @@ impl SyncApiService for SyncService {
         self.status
             .snapshot_for(&exposed)
             .map_err(|_| failure(ErrorCode::SyncNotReady))
+    }
+
+    async fn get_sync_run(&self, run_id: RunId) -> Result<SyncRunStatusDto, ServiceFailure> {
+        let _runtime = self.verified_runtime(ErrorCode::SyncNotReady)?;
+        self.status
+            .snapshot_run(run_id)
+            .map_err(|_| failure(ErrorCode::SyncNotReady))?
+            .ok_or_else(|| failure(ErrorCode::ResourceNotFound))
     }
 
     async fn trigger_sync_run(

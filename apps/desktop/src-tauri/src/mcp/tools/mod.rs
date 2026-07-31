@@ -22,76 +22,28 @@ use rmcp::{
 };
 use serde::{de::DeserializeOwned, Serialize};
 use serde_json::Value;
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
-
-use crate::{
-    app_settings::{ExposedAppSettings, ExposedSettingsPatch, KernelSettingsOwner},
-    markdown_files::{DocumentService, MutationOptions},
-    remote_sync::mcp_service::SyncService,
-};
 
 use super::{
     audit::{AuditEvent, AuditOutcome, AuditSink},
     config::{McpConfig, McpConfigDocument, McpConfigManager, ToolCapability},
     confirmation::ConfirmationPresenter,
     error::McpToolFailure,
+    handles::HandleSigner,
+    kernel_adapter::{McpKernelFailure, McpKernelPort},
     policy::{OperationDescriptor, OperationRisk, PolicyEngine},
     workspaces::WorkspaceRegistry,
 };
 
 pub(super) type ToolResult = Result<Value, McpToolFailure>;
 
-pub(crate) trait McpSettingsPort: Send + Sync {
-    fn exposed_field_names(&self) -> &'static [&'static str];
-    fn read_exposed(&self) -> Result<ExposedAppSettings, crate::app_settings::AppSettingsError>;
-    fn patch_exposed(
-        &self,
-        patch: ExposedSettingsPatch,
-    ) -> Result<ExposedAppSettings, crate::app_settings::AppSettingsError>;
-}
-
-impl McpSettingsPort for KernelSettingsOwner {
-    fn exposed_field_names(&self) -> &'static [&'static str] {
-        Self::exposed_field_names(self)
-    }
-
-    fn read_exposed(&self) -> Result<ExposedAppSettings, crate::app_settings::AppSettingsError> {
-        Self::read_exposed(self)
-    }
-
-    fn patch_exposed(
-        &self,
-        patch: ExposedSettingsPatch,
-    ) -> Result<ExposedAppSettings, crate::app_settings::AppSettingsError> {
-        Self::patch_exposed(self, patch)
-    }
-}
-
-#[cfg(test)]
-impl McpSettingsPort for crate::app_settings::AppSettingsService {
-    fn exposed_field_names(&self) -> &'static [&'static str] {
-        Self::exposed_field_names()
-    }
-
-    fn read_exposed(&self) -> Result<ExposedAppSettings, crate::app_settings::AppSettingsError> {
-        Self::read_exposed(self)
-    }
-
-    fn patch_exposed(
-        &self,
-        patch: ExposedSettingsPatch,
-    ) -> Result<ExposedAppSettings, crate::app_settings::AppSettingsError> {
-        Self::patch_exposed(self, patch)
-    }
-}
-
 #[derive(Clone)]
 pub(crate) struct McpServices {
     pub(crate) config: Arc<McpConfigManager>,
     pub(crate) workspaces: Arc<WorkspaceRegistry>,
-    pub(crate) documents: Arc<DocumentService>,
-    pub(crate) settings: Arc<dyn McpSettingsPort>,
-    pub(crate) sync: Arc<SyncService>,
+    pub(crate) handles: Arc<HandleSigner>,
+    pub(crate) kernel: Arc<dyn McpKernelPort>,
     pub(crate) policy: Arc<PolicyEngine>,
     pub(crate) audit: Arc<AuditSink>,
 }
@@ -106,10 +58,12 @@ struct HandlerRuntime {
 
 #[derive(Clone)]
 struct CallGate {
+    drained: Arc<tokio::sync::Notify>,
     state: Arc<Mutex<CallGateState>>,
 }
 
 struct CallGateState {
+    accepting: bool,
     active: usize,
     burst_requests: u32,
     concurrent_calls: usize,
@@ -118,12 +72,17 @@ struct CallGateState {
     updated_at: Instant,
 }
 
-struct CallPermit(Arc<Mutex<CallGateState>>);
+struct CallPermit {
+    drained: Arc<tokio::sync::Notify>,
+    state: Arc<Mutex<CallGateState>>,
+}
 
 impl CallGate {
     fn new() -> Self {
         Self {
+            drained: Arc::new(tokio::sync::Notify::new()),
             state: Arc::new(Mutex::new(CallGateState {
+                accepting: true,
                 active: 0,
                 burst_requests: 0,
                 concurrent_calls: 0,
@@ -136,6 +95,9 @@ impl CallGate {
 
     fn enter(&self, config: &McpConfig) -> Option<CallPermit> {
         let mut state = self.state.lock().ok()?;
+        if !state.accepting {
+            return None;
+        }
         if state.requests_per_minute != config.requests_per_minute
             || state.burst_requests != config.burst_requests
             || state.concurrent_calls != config.concurrent_calls
@@ -158,14 +120,44 @@ impl CallGate {
         }
         state.active += 1;
         state.tokens -= 1.0;
-        Some(CallPermit(Arc::clone(&self.state)))
+        Some(CallPermit {
+            drained: Arc::clone(&self.drained),
+            state: Arc::clone(&self.state),
+        })
+    }
+
+    fn begin_shutdown(&self) {
+        if let Ok(mut state) = self.state.lock() {
+            state.accepting = false;
+            if state.active == 0 {
+                self.drained.notify_waiters();
+            }
+        }
+    }
+
+    async fn wait_for_drain(&self) {
+        loop {
+            let notified = self.drained.notified();
+            if self
+                .state
+                .lock()
+                .map(|state| state.active == 0)
+                .unwrap_or(true)
+            {
+                return;
+            }
+            notified.await;
+        }
     }
 }
 
 impl Drop for CallPermit {
     fn drop(&mut self) {
-        if let Ok(mut state) = self.0.lock() {
+        if let Ok(mut state) = self.state.lock() {
             state.active = state.active.saturating_sub(1);
+            if !state.accepting && state.active == 0 {
+                self.drained.notify_waiters();
+            }
         }
     }
 }
@@ -219,6 +211,18 @@ impl QingYuMcpHandler {
         }
     }
 
+    pub(crate) fn begin_shutdown(&self) {
+        if let Some(runtime) = &self.runtime {
+            runtime.call_gate.begin_shutdown();
+        }
+    }
+
+    pub(crate) async fn wait_for_drain(&self) {
+        if let Some(runtime) = &self.runtime {
+            runtime.call_gate.wait_for_drain().await;
+        }
+    }
+
     pub(crate) async fn notify_tools_changed(&self) {
         let Some(runtime) = &self.runtime else {
             return;
@@ -244,6 +248,16 @@ impl QingYuMcpHandler {
         name: &str,
         arguments: Value,
     ) -> Result<CallToolResult, ErrorData> {
+        self.call_tool_current_with_cancellation(name, arguments, CancellationToken::new())
+            .await
+    }
+
+    pub(crate) async fn call_tool_current_with_cancellation(
+        &self,
+        name: &str,
+        arguments: Value,
+        cancellation: CancellationToken,
+    ) -> Result<CallToolResult, ErrorData> {
         let Some(spec) = tool_spec(name) else {
             return Err(ErrorData::method_not_found::<CallToolRequestMethod>());
         };
@@ -259,7 +273,8 @@ impl QingYuMcpHandler {
             .get("dryRun")
             .and_then(Value::as_bool)
             .unwrap_or(false);
-        let snapshot = match runtime.services.config.snapshot() {
+        let (snapshot, policy_generation) = match runtime.services.config.snapshot_with_generation()
+        {
             Ok(snapshot) => snapshot,
             Err(_) => {
                 return Ok(structured_failure(
@@ -282,7 +297,8 @@ impl QingYuMcpHandler {
         } else if !spec.read_only && runtime.services.audit.preflight().is_err() {
             Err(failure_from_code("audit_write_failed", None))
         } else {
-            self.dispatch(name, arguments, &snapshot).await
+            self.dispatch(name, arguments, &snapshot, policy_generation, &cancellation)
+                .await
         };
         let audit_outcome = match &result {
             Ok(value) if value.get("previewToken").is_some() => AuditOutcome::Previewed,
@@ -340,26 +356,40 @@ impl QingYuMcpHandler {
         name: &str,
         arguments: Value,
         snapshot: &McpConfigDocument,
+        policy_generation: u64,
+        cancellation: &CancellationToken,
     ) -> ToolResult {
         let runtime = self.runtime()?;
         match name {
             "workspace_list" => {
                 parse::<workspace::WorkspaceListInput>(arguments)?;
-                workspace::list(&runtime.services)
+                workspace::list(&runtime.services, cancellation).await
             }
-            "document_list" => document::list(
-                &runtime.services,
-                parse::<document::DocumentListInput>(arguments)?,
-            ),
-            "document_search" => document::search(
-                &runtime.services,
-                parse::<document::DocumentSearchInput>(arguments)?,
-            ),
-            "document_read" => document::read(
-                &runtime.services,
-                parse::<document::DocumentReadInput>(arguments)?,
-                snapshot.config.document_limit_bytes,
-            ),
+            "document_list" => {
+                document::list(
+                    &runtime.services,
+                    parse::<document::DocumentListInput>(arguments)?,
+                    cancellation,
+                )
+                .await
+            }
+            "document_search" => {
+                document::search(
+                    &runtime.services,
+                    parse::<document::DocumentSearchInput>(arguments)?,
+                    cancellation,
+                )
+                .await
+            }
+            "document_read" => {
+                document::read(
+                    &runtime.services,
+                    parse::<document::DocumentReadInput>(arguments)?,
+                    snapshot.config.document_limit_bytes,
+                    cancellation,
+                )
+                .await
+            }
             "document_create" => {
                 let input = parse::<document::DocumentCreateInput>(arguments)?;
                 let workspace_id = input.workspace_id;
@@ -375,12 +405,15 @@ impl QingYuMcpHandler {
                     OperationRisk::Write,
                     ToolCapability::DocumentsWrite,
                     snapshot,
+                    policy_generation,
                     || async {
                         document::create(
                             &runtime.services,
                             &input,
-                            mutation_options(&runtime.services.sync, &snapshot.config),
+                            snapshot.config.sync_after_write,
+                            cancellation,
                         )
+                        .await
                     },
                 )
                 .await
@@ -399,12 +432,15 @@ impl QingYuMcpHandler {
                     OperationRisk::Write,
                     ToolCapability::DocumentsWrite,
                     snapshot,
+                    policy_generation,
                     || async {
                         document::update(
                             &runtime.services,
                             &input,
-                            mutation_options(&runtime.services.sync, &snapshot.config),
+                            snapshot.config.sync_after_write,
+                            cancellation,
                         )
+                        .await
                     },
                 )
                 .await
@@ -423,12 +459,15 @@ impl QingYuMcpHandler {
                     OperationRisk::Write,
                     ToolCapability::DocumentsMove,
                     snapshot,
+                    policy_generation,
                     || async {
                         document::move_document(
                             &runtime.services,
                             &input,
-                            mutation_options(&runtime.services.sync, &snapshot.config),
+                            snapshot.config.sync_after_write,
+                            cancellation,
                         )
+                        .await
                     },
                 )
                 .await
@@ -447,20 +486,23 @@ impl QingYuMcpHandler {
                     OperationRisk::Destructive,
                     ToolCapability::DocumentsDelete,
                     snapshot,
+                    policy_generation,
                     || async {
                         document::delete(
                             &runtime.services,
                             &input,
-                            mutation_options(&runtime.services.sync, &snapshot.config),
                             snapshot.config.deletion,
+                            snapshot.config.sync_after_write,
+                            cancellation,
                         )
+                        .await
                     },
                 )
                 .await
             }
             "settings_get" => {
                 parse::<settings::SettingsGetInput>(arguments)?;
-                settings::get(&runtime.services)
+                settings::get(&runtime.services, cancellation).await
             }
             "settings_update" => {
                 let input = parse::<settings::SettingsUpdateInput>(arguments)?;
@@ -475,14 +517,19 @@ impl QingYuMcpHandler {
                     OperationRisk::Write,
                     ToolCapability::SettingsWrite,
                     snapshot,
-                    || async { settings::update(&runtime.services, &input) },
+                    policy_generation,
+                    || async { settings::update(&runtime.services, &input, cancellation).await },
                 )
                 .await
             }
-            "sync_config_get" => sync::get_config(
-                &runtime.services,
-                parse::<sync::SyncConfigGetInput>(arguments)?,
-            ),
+            "sync_config_get" => {
+                sync::get_config(
+                    &runtime.services,
+                    parse::<sync::SyncConfigGetInput>(arguments)?,
+                    cancellation,
+                )
+                .await
+            }
             "sync_config_update" => {
                 let input = parse::<sync::SyncConfigUpdateInput>(arguments)?;
                 let risk = if input.changes_remote_target() {
@@ -501,7 +548,8 @@ impl QingYuMcpHandler {
                     risk,
                     ToolCapability::SyncWrite,
                     snapshot,
-                    || async { sync::update_config(&runtime.services, &input) },
+                    policy_generation,
+                    || async { sync::update_config(&runtime.services, &input, cancellation).await },
                 )
                 .await
             }
@@ -518,12 +566,20 @@ impl QingYuMcpHandler {
                     OperationRisk::HighRisk,
                     ToolCapability::SyncCredentialsWrite,
                     snapshot,
-                    || async { sync::update_credentials(&runtime.services, &input) },
+                    policy_generation,
+                    || async {
+                        sync::update_credentials(&runtime.services, &input, cancellation).await
+                    },
                 )
                 .await
             }
             "sync_test" => {
-                sync::test(&runtime.services, parse::<sync::SyncTestInput>(arguments)?).await
+                sync::test(
+                    &runtime.services,
+                    parse::<sync::SyncTestInput>(arguments)?,
+                    cancellation,
+                )
+                .await
             }
             "sync_run" => {
                 let input = parse::<sync::SyncRunInput>(arguments)?;
@@ -538,22 +594,28 @@ impl QingYuMcpHandler {
                     OperationRisk::Destructive,
                     ToolCapability::SyncRun,
                     snapshot,
+                    policy_generation,
                     || async {
                         sync::run(
                             &runtime.services,
                             &input,
                             snapshot.config.sync_execution,
                             Duration::from_secs(snapshot.config.tool_timeout_secs),
+                            cancellation,
                         )
                         .await
                     },
                 )
                 .await
             }
-            "sync_status" => sync::status(
-                &runtime.services,
-                parse::<sync::SyncStatusInput>(arguments)?,
-            ),
+            "sync_status" => {
+                sync::status(
+                    &runtime.services,
+                    parse::<sync::SyncStatusInput>(arguments)?,
+                    cancellation,
+                )
+                .await
+            }
             _ => Err(failure_from_code("invalid_arguments", None)),
         }
     }
@@ -571,6 +633,7 @@ impl QingYuMcpHandler {
         risk: OperationRisk,
         capability: ToolCapability,
         snapshot: &McpConfigDocument,
+        policy_generation: u64,
         action: F,
     ) -> ToolResult
     where
@@ -609,7 +672,7 @@ impl QingYuMcpHandler {
                 .policy
                 .preview(
                     &descriptor,
-                    runtime.services.config.generation(),
+                    policy_generation,
                     runtime.services.workspaces.generation(),
                 )
                 .map_err(|error| failure_from_code(error.code, None))?;
@@ -628,7 +691,7 @@ impl QingYuMcpHandler {
                 .consume_preview(
                     preview_token,
                     &descriptor,
-                    runtime.services.config.generation(),
+                    policy_generation,
                     runtime.services.workspaces.generation(),
                 )
                 .map_err(|error| failure_from_code(error.code, None))?;
@@ -643,11 +706,14 @@ impl QingYuMcpHandler {
             )
             .await
             .map_err(|error| failure_from_code(error.code, None))?;
-        let current = runtime
+        let (current, current_generation) = runtime
             .services
             .config
-            .snapshot()
+            .snapshot_with_generation()
             .map_err(|_| failure_from_code("mcp_disabled", None))?;
+        if current_generation != policy_generation || current.revision != snapshot.revision {
+            return Err(failure_from_code("policy_changed", None));
+        }
         if !current.config.enabled {
             return Err(failure_from_code("mcp_disabled", None));
         }
@@ -687,11 +753,12 @@ impl ServerHandler for QingYuMcpHandler {
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
-        _context: RequestContext<RoleServer>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.call_tool_current(
+        self.call_tool_current_with_cancellation(
             request.name.as_ref(),
             Value::Object(request.arguments.unwrap_or_default()),
+            context.ct,
         )
         .await
     }
@@ -930,7 +997,7 @@ fn document_workspace_id(
         .workspaces
         .with_authority(|| {
             services
-                .documents
+                .handles
                 .verify_document(document_id, &services.workspaces)
                 .map(|document| document.workspace_id())
                 .map_err(|error| failure_from_code(error.code, None))
@@ -938,10 +1005,13 @@ fn document_workspace_id(
         .map_err(|error| failure_from_code(error.code, None))?
 }
 
-fn mutation_options(sync: &SyncService, config: &McpConfig) -> MutationOptions {
-    MutationOptions {
-        sync_after_write: config.sync_after_write,
-        workspace_sync_enabled: sync.sync_enabled_for_authoritative_primary(),
+pub(super) fn failure_from_kernel(error: McpKernelFailure) -> McpToolFailure {
+    match &error {
+        McpKernelFailure::EndpointUnavailable => failure_from_code("initialization_required", None),
+        McpKernelFailure::ApiRevisionConflict {
+            current_revision, ..
+        } => failure_from_code(error.code(), Some(current_revision)),
+        other => failure_from_code(other.code(), None),
     }
 }
 
@@ -999,7 +1069,9 @@ pub(super) fn failure_from_code(code: &str, current_revision: Option<&str>) -> M
     let normalized = match code {
         "document_already_exists" => "target_already_exists",
         "invalid_settings_field" => "settings_field_not_exposed",
-        "settings_revision_conflict" | "sync_revision_conflict" => "revision_conflict",
+        "settings_revision_conflict"
+        | "sync_config_revision_conflict"
+        | "sync_revision_conflict" => "revision_conflict",
         "sync_config_unavailable" | "sync_run_unavailable" => "sync_not_configured",
         "invalid_sync_config_patch" | "invalid_sync_credentials" => "invalid_arguments",
         other => other,
@@ -1028,6 +1100,12 @@ fn failure_details(code: &str) -> (&'static str, &'static str, bool, &'static st
             false,
             "Enable the required permission for the current QingYu project.",
         ),
+        "policy_changed" => (
+            "policy_changed",
+            "The QingYu MCP policy changed before the operation could commit.",
+            true,
+            "Review the current MCP policy and submit the operation again.",
+        ),
         "credential_write_denied" => (
             "credential_write_denied",
             "Writing sync credentials is not allowed.",
@@ -1051,6 +1129,24 @@ fn failure_details(code: &str) -> (&'static str, &'static str, bool, &'static st
             "QingYu MCP document tools require a valid primary notes workspace.",
             false,
             "Choose or restore the primary notes workspace in QingYu settings.",
+        ),
+        "initialization_required" => (
+            "initialization_required",
+            "The QingYu workspace Kernel is not initialized.",
+            true,
+            "Choose the primary notes workspace in QingYu and retry.",
+        ),
+        "kernel_endpoint_stale" | "kernel_transport_unavailable" | "kernel_invalid_response" => (
+            "kernel_unavailable",
+            "The QingYu workspace Kernel changed or became unavailable.",
+            true,
+            "Wait for QingYu to finish starting the workspace and retry.",
+        ),
+        "request_cancelled" => (
+            "request_cancelled",
+            "The MCP request was cancelled.",
+            true,
+            "Retry the request if the operation is still needed.",
         ),
         "mcp-handle-stale" => (
             "mcp-handle-stale",
@@ -1189,35 +1285,9 @@ fn arguments_revision(result: &ToolResult, after: bool) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use std::{future::Future, path::PathBuf, pin::Pin, sync::Arc};
-
     use rmcp::ServerHandler;
 
-    use crate::{
-        mcp::{
-            config::{McpConfig, SyncAfterWritePolicy},
-            workspaces::WorkspaceRegistry,
-        },
-        remote_sync::mcp_service::{SyncRunner, SyncService},
-        sync_config::{
-            model::SyncConfigPatch,
-            storage::{enable_at_app_data, patch_at_app_data},
-            SyncDispatchResult,
-        },
-    };
-
-    struct UnusedSyncRunner;
-
-    impl SyncRunner for UnusedSyncRunner {
-        fn run(
-            &self,
-            _notes_root: PathBuf,
-            _revision: String,
-        ) -> Pin<Box<dyn Future<Output = Result<SyncDispatchResult, String>> + Send + 'static>>
-        {
-            Box::pin(async { panic!("mutation option preparation must not start synchronization") })
-        }
-    }
+    use crate::mcp::kernel_adapter::McpKernelFailure;
 
     #[test]
     fn server_identity_uses_qingyu_without_resources_or_prompts() {
@@ -1232,46 +1302,22 @@ mod tests {
     }
 
     #[test]
-    fn mutation_options_ignore_stale_workspace_after_primary_switch() {
-        let app_data = tempfile::tempdir().expect("app data");
-        let created =
-            enable_at_app_data(app_data.path(), None).expect("create application sync config");
-        patch_at_app_data(
-            app_data.path(),
-            &created.document.revision,
-            SyncConfigPatch::Enabled(true),
-        )
-        .expect("enable application sync");
-        let sync = SyncService::new_for_test_with_app_data(
-            Arc::new(UnusedSyncRunner),
-            app_data.path().to_path_buf(),
-            None,
-        );
-        let config = McpConfig {
-            sync_after_write: SyncAfterWritePolicy::FollowWorkspace,
-            ..McpConfig::default()
-        };
-        let previous_root = tempfile::tempdir().expect("previous primary workspace");
-        let current_root = tempfile::tempdir().expect("current primary workspace");
-        let workspaces = WorkspaceRegistry::new(Vec::new());
-        let previous = workspaces
-            .activate_current(previous_root.path())
-            .expect("activate previous primary workspace");
-        workspaces
-            .activate_current(current_root.path())
-            .expect("switch primary workspace");
-        let stale = match workspaces.resolve(previous.workspace_id) {
-            Ok(_) => panic!("previous workspace must be stale"),
-            Err(error) => error,
-        };
-        assert_eq!(stale.code, "mcp-handle-stale");
+    fn missing_kernel_endpoint_is_an_explicit_initialization_failure() {
+        let failure = super::failure_from_kernel(McpKernelFailure::EndpointUnavailable);
 
-        let options = super::mutation_options(&sync, &config);
+        assert_eq!(failure.code, "initialization_required");
+        assert!(!failure.message.contains("127.0.0.1"));
+        assert!(!failure.message.contains("Bearer"));
+    }
 
-        assert_eq!(
-            options.sync_after_write,
-            SyncAfterWritePolicy::FollowWorkspace
-        );
-        assert!(options.workspace_sync_enabled);
+    #[test]
+    fn kernel_revision_conflicts_preserve_the_safe_current_revision() {
+        let failure = super::failure_from_kernel(McpKernelFailure::ApiRevisionConflict {
+            code: qingyu_kernel::contract::ErrorCode::SyncConfigRevisionConflict,
+            current_revision: "sync-2".to_string(),
+        });
+
+        assert_eq!(failure.code, "revision_conflict");
+        assert_eq!(failure.current_revision.as_deref(), Some("sync-2"));
     }
 }

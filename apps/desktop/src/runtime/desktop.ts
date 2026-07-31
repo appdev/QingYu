@@ -2,7 +2,13 @@ import { emit } from "@tauri-apps/api/event";
 import { platform as tauriPlatform, version as tauriVersion, type Platform as TauriPlatform } from "@tauri-apps/plugin-os";
 import { hasTauriRuntime } from "@markra/shared";
 import {
+  createDefaultAppRuntime,
+  createKernelFileRuntimeOwner,
+  createKernelSettingsRuntime,
+  createKernelSyncConfigRuntime,
   createUnavailableKernelDomainPort,
+  createUnavailableNativeShellPort,
+  kernelWorkspaceRoot,
   type AppFormFactor,
   type AppRuntime,
   type KernelDomainPort,
@@ -14,9 +20,11 @@ import {
 } from "../kernel-bootstrap";
 import {
   createDesktopKernelDomainAdapter,
+  DesktopKernelDomainAdapterError,
   type DesktopKernelDomainAdapter
 } from "./kernel";
 import { createDesktopNativeShellPort } from "./native-shell";
+import { createDesktopKernelImageSource } from "./kernel-image-source";
 import * as dialog from "./tauri/dialog";
 import * as files from "./tauri/file/desktop";
 import * as fonts from "./tauri/fonts";
@@ -184,7 +192,6 @@ export function createDesktopRuntime({
   mcp: {
     policyAvailable: true,
     localServiceAvailable: true,
-    setPrimaryWorkspace: mcp.setNativeMcpPrimaryWorkspace,
     clearAuditEntries: mcp.clearNativeMcpAuditEntries,
     getHealth: mcp.getNativeMcpHealth,
     getSettings: mcp.getNativeMcpSettings,
@@ -231,6 +238,7 @@ export function createDesktopRuntime({
     rebuildLocalRepository: syncConfig.rebuildNativeDejavuLocalRepository,
     reset: syncConfig.resetNativeSyncConfig,
     setEditing: syncConfig.setNativeSyncConfigEditing,
+    settleApply: syncConfig.settleNativeKernelSyncConfigApply,
     stopRepositorySync: syncConfig.stopNativeDejavuRepositorySync,
     sync: syncConfig.syncApplication,
     testConnection: syncConfig.testSyncConnection
@@ -301,6 +309,93 @@ export function createDesktopRuntime({
     resolveManagedRoot: managedWorkspace.resolveNativeManagedWorkspaceRoot
   }
   };
+}
+
+export interface DesktopKernelRuntimeOwner {
+  readonly runtime: AppRuntime;
+  readonly release: () => undefined;
+}
+
+export function createDesktopKernelRuntimeOwner(
+  kernel: KernelDomainPort,
+): DesktopKernelRuntimeOwner {
+  const shell = createDesktopRuntime({ kernel });
+  const unavailable = createDefaultAppRuntime();
+  const fileOwner = createKernelFileRuntimeOwner(kernel, {
+    imageSource: createDesktopKernelImageSource(),
+    invalidations: kernel.invalidations,
+    isTerminalError: (error) => error instanceof DesktopKernelDomainAdapterError,
+    nativeShell: {
+      confirmMarkdownFileDelete: shell.files.confirmMarkdownFileDelete,
+      confirmUnsavedMarkdownDocumentDiscard: shell.files.confirmUnsavedMarkdownDocumentDiscard,
+      detectPandocPath: shell.files.detectPandocPath,
+      listenOpenedMarkdownPaths: shell.files.listenOpenedMarkdownPaths,
+      openSettingsFile: shell.files.openSettingsFile,
+      readMarkdownTemplateFile: shell.files.readMarkdownTemplateFile,
+      saveHtmlFile: shell.files.saveHtmlFile,
+      savePandocFile: shell.files.savePandocFile,
+      savePdfFile: shell.files.savePdfFile,
+      saveSettingsFile: shell.files.saveSettingsFile,
+      takeOpenedMarkdownPaths: shell.files.takeOpenedMarkdownPaths,
+    },
+  });
+  const runtime: AppRuntime = {
+    ...shell,
+    features: {
+      ...shell.features,
+      dejavuSync: false,
+      fileDrop: false,
+      imageImport: false,
+      openLocalAttachments: false,
+      projectSync: true,
+      resources: false,
+    },
+    files: fileOwner.files,
+    kernel,
+    mcp: shell.mcp,
+    nativeShell: createUnavailableNativeShellPort(),
+    settings: createKernelSettingsRuntime(kernel, {
+      local: {
+        loadStore: shell.settings.loadStore,
+        readPrimaryWorkspaceState: undefined,
+        writePrimaryWorkspaceState: undefined,
+      },
+    }),
+    syncConfig: createKernelSyncConfigRuntime(kernel, {
+      local: {
+        cancelApply: shell.syncConfig.cancelApply,
+        loadEditing: shell.syncConfig.loadEditing,
+        requestApply: shell.syncConfig.requestApply,
+        setEditing: shell.syncConfig.setEditing,
+        settleApply: shell.syncConfig.settleApply,
+      },
+    }),
+    syncPathGuard: unavailable.syncPathGuard,
+    workspace: {
+      isDocumentInRoot: async (documentPath, rootPath) => (
+        rootPath === kernelWorkspaceRoot && (
+          documentPath === rootPath || documentPath.startsWith(`${rootPath}/`)
+        )
+      ),
+      listManagedNotebookNames: async () => [],
+      resolveManagedRoot: async () => null,
+      rootPolicy: {
+        canChooseLocalRoot: false,
+        kind: "fixed",
+        resolveRoot: async () => kernelWorkspaceRoot,
+      },
+    },
+  };
+  let active = true;
+  return Object.freeze({
+    runtime,
+    release: () => {
+      if (!active) return undefined;
+      active = false;
+      fileOwner.release();
+      return undefined;
+    },
+  });
 }
 
 export async function loadDesktopRuntime({

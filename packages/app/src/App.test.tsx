@@ -5041,47 +5041,6 @@ describe("QingYu workspace", () => {
     expect(mockedConsumeWelcomeDocumentState).not.toHaveBeenCalled();
   });
 
-  it("binds MCP only to primary-workspace changes and ignores editor focus", async () => {
-    const runtime = createDefaultAppRuntime();
-    const setPrimaryWorkspace = vi.fn(async () => undefined as never);
-    const firstRoot = "/Notes-A";
-    const secondRoot = "/Notes-B";
-    mockDesktopPrimaryWorkspace({ root: firstRoot, status: "ready" });
-    configureAppRuntime({
-      ...runtime,
-      mcp: {
-        ...runtime.mcp,
-        setPrimaryWorkspace,
-        localServiceAvailable: true,
-        policyAvailable: true
-      }
-    });
-    mockedGetStoredWorkspaceState.mockResolvedValue({
-      filePath: null,
-      fileTreeOpen: true,
-      folderName: "vault",
-      folderPath: firstRoot,
-      openFilePaths: []
-    });
-    mockedListNativeMarkdownFilesForPath.mockResolvedValue([]);
-
-    const app = renderApp();
-
-    await waitFor(() =>
-      expect(setPrimaryWorkspace).toHaveBeenLastCalledWith({ primaryRoot: firstRoot })
-    );
-    const callsBeforeFocus = setPrimaryWorkspace.mock.calls.length;
-    window.dispatchEvent(new Event("focus"));
-    await new Promise((resolve) => window.setTimeout(resolve, 0));
-    expect(setPrimaryWorkspace).toHaveBeenCalledTimes(callsBeforeFocus);
-
-    mockDesktopPrimaryWorkspace({ root: secondRoot, status: "ready" });
-    rerenderApp(app);
-    await waitFor(() =>
-      expect(setPrimaryWorkspace).toHaveBeenLastCalledWith({ primaryRoot: secondRoot })
-    );
-  });
-
   it("keeps the primary project active when Cmd+O hands a standalone file to a new window", async () => {
     const runtime = createDefaultAppRuntime();
     configureAppRuntime({

@@ -128,7 +128,6 @@ const primaryWorkspaceHarnessState = vi.hoisted(() => ({
 
 function createApplicationMcpRuntime(): AppMcpRuntime {
   let revision = 1;
-  let workspaceGeneration = 0;
   let snapshot: McpSettingsSnapshot = {
     clientCommand: "/Applications/QingYu.app/Contents/MacOS/qingyu-mcp",
     config: defaultMcpConfig(),
@@ -158,23 +157,6 @@ function createApplicationMcpRuntime(): AppMcpRuntime {
     listAuditEntries: vi.fn(async () => []),
     localServiceAvailable: true,
     policyAvailable: true,
-    setPrimaryWorkspace: vi.fn(async ({ primaryRoot }) => {
-      workspaceGeneration += 1;
-      const leafName = primaryRoot?.split("/").filter(Boolean).at(-1) ?? "";
-      snapshot = {
-        ...snapshot,
-        workspace: primaryRoot
-          ? {
-              available: true,
-              displayName: leafName,
-              leafName,
-              workspaceGeneration,
-              workspaceId: `primary-workspace-${workspaceGeneration}`
-            }
-          : null
-      };
-      return snapshot;
-    }),
     updateSettings: vi.fn(async ({ config, expectedRevision }) => {
       if (expectedRevision !== snapshot.revision) {
         throw new Error("revision-conflict: application MCP policy changed");

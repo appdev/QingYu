@@ -1,4 +1,7 @@
-import { createUnavailableKernelDomainPort } from "./kernel-domain";
+import {
+  createUnavailableKernelDomainPort,
+  hasRequiredKernelDomainCapabilities,
+} from "./kernel-domain";
 import type {
   KernelCreateDocumentInput,
   KernelDeleteDocumentInput,
@@ -8,7 +11,9 @@ import type {
   KernelDocumentSnapshot,
   KernelDomainPort,
   KernelHistoryPageSnapshot,
+  KernelHistorySnapshot,
   KernelHistorySnapshotId,
+  KernelInventorySnapshot,
   KernelListDocumentsInput,
   KernelMoveDocumentInput,
   KernelPageCursor,
@@ -44,6 +49,10 @@ describe("KernelDomainPort", () => {
     expectTypeOf<Extract<keyof KernelSearchPageSnapshot, ForbiddenHostKey>>()
       .toEqualTypeOf<never>();
     expectTypeOf<Extract<keyof KernelHistoryPageSnapshot, ForbiddenHostKey>>()
+      .toEqualTypeOf<never>();
+    expectTypeOf<Extract<keyof KernelHistorySnapshot, ForbiddenHostKey>>()
+      .toEqualTypeOf<never>();
+    expectTypeOf<Extract<keyof KernelInventorySnapshot, ForbiddenHostKey>>()
       .toEqualTypeOf<never>();
     expectTypeOf<Extract<keyof KernelSyncSafeErrorSnapshot, "objectId">>()
       .toEqualTypeOf<never>();
@@ -115,6 +124,42 @@ describe("KernelDomainPort", () => {
     }>();
   });
 
+  it("requires history reads, resource bodies, and invalidations on every adapter", () => {
+    expectTypeOf<KernelDomainPort["documents"]["history"]["read"]>()
+      .toBeFunction();
+    expectTypeOf<KernelDomainPort["resources"]>().toBeObject();
+    expectTypeOf<KernelDomainPort["invalidations"]>().toBeObject();
+  });
+
+  it("freezes the required runtime capability set while leaving providers optional", () => {
+    const complete = {
+      documents: true,
+      history: true,
+      portableSettings: true,
+      resources: true,
+      s3: false,
+      search: true,
+      settings: true,
+      sync: true,
+      webdav: false,
+    };
+    expect(hasRequiredKernelDomainCapabilities(complete)).toBe(true);
+    for (const capability of [
+      "documents",
+      "history",
+      "portableSettings",
+      "resources",
+      "search",
+      "settings",
+      "sync",
+    ] as const) {
+      expect(hasRequiredKernelDomainCapabilities({
+        ...complete,
+        [capability]: false,
+      })).toBe(false);
+    }
+  });
+
   it("fails closed when no Kernel adapter is installed", async () => {
     const port = createUnavailableKernelDomainPort();
 
@@ -160,5 +205,25 @@ describe("KernelDomainPort", () => {
         workspaceGeneration: "generation" as KernelWorkspaceGeneration,
       }),
     ).rejects.toMatchObject({ name: "KernelDomainUnavailableError" });
+    await expect(
+      port.documents.history.read({
+        locator: "document" as KernelDocumentLocator,
+        snapshotId: "snapshot" as KernelHistorySnapshotId,
+        workspaceGeneration: "generation" as KernelWorkspaceGeneration,
+      }),
+    ).rejects.toMatchObject({ name: "KernelDomainUnavailableError" });
+    await expect(
+      port.resources.list({
+        workspaceGeneration: "generation" as KernelWorkspaceGeneration,
+      }),
+    ).rejects.toMatchObject({ name: "KernelDomainUnavailableError" });
+    await expect(
+      port.resources.open({
+        id: "resource",
+        kind: "image",
+        workspaceGeneration: "generation" as KernelWorkspaceGeneration,
+      }),
+    ).rejects.toMatchObject({ name: "KernelDomainUnavailableError" });
+    expect(port.invalidations.available).toBe(false);
   });
 });

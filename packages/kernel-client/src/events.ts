@@ -951,6 +951,35 @@ export function isSyncStatus(value: unknown): value is Schemas["SyncStatusDto"] 
   );
 }
 
+export function isSyncRunStatus(value: unknown): value is Schemas["SyncRunStatusDto"] {
+  if (!isRecord(value)) return false;
+  const terminal = value.completionState === "failed" || value.completionState === "succeeded";
+  return (
+    isUuid(value.runId) &&
+    (value.provider === "s3" || value.provider === "webdav") &&
+    isRevision(value.configRevision) &&
+    (value.completionState === "attempting" || terminal) &&
+    isRfc3339Utc(value.acceptedAt) &&
+    (value.finishedAt === null || isRfc3339Utc(value.finishedAt)) &&
+    (value.summary === null || isSyncSummary(value.summary)) &&
+    (value.error === null || isSyncSafeError(value.error)) &&
+    (value.completionState === "attempting"
+      ? value.finishedAt === null && value.summary === null && value.error === null
+      : value.finishedAt !== null &&
+        (value.completionState === "failed" ? value.error !== null : value.error === null)) &&
+    hasExactKeys(value, [
+      "acceptedAt",
+      "completionState",
+      "configRevision",
+      "error",
+      "finishedAt",
+      "provider",
+      "runId",
+      "summary",
+    ])
+  );
+}
+
 function isSyncStatusPhaseConsistent(value: Record<string, unknown>) {
   switch (value.completionState) {
     case "attempting":

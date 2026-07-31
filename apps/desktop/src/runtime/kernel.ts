@@ -6,7 +6,10 @@ import type {
   KernelDocumentSnapshot,
   KernelDomainPort,
   KernelHistoryPageSnapshot,
+  KernelHistorySnapshot,
   KernelHistorySnapshotId,
+  KernelInventoryEntry,
+  KernelInvalidationSource,
   KernelPageCursor,
   KernelRevision,
   KernelRuntimeCapabilities,
@@ -22,6 +25,7 @@ import type {
   KernelWorkspaceRelativePath,
   KernelWorkspaceSnapshot,
 } from "@markra/app/runtime";
+import { hasRequiredKernelDomainCapabilities } from "@markra/app/runtime";
 import type {
   FetchLike,
   KernelClient,
@@ -54,6 +58,7 @@ export interface DesktopKernelDomainAdapter {
 
 export interface DesktopKernelDomainAdapterOptions {
   readonly fetch?: FetchLike;
+  readonly invalidations?: KernelInvalidationSource;
 }
 
 export type DesktopKernelDomainAdapterErrorCode =
@@ -68,6 +73,11 @@ const ERROR_MESSAGES: Record<DesktopKernelDomainAdapterErrorCode, string> = {
   released: "The desktop Kernel adapter has been released.",
   "workspace-generation-mismatch": "The document belongs to a different workspace generation.",
 };
+
+const unavailableInvalidations: KernelInvalidationSource = Object.freeze({
+  available: false,
+  subscribe: () => () => undefined,
+});
 
 export class DesktopKernelDomainAdapterError extends Error {
   readonly code: DesktopKernelDomainAdapterErrorCode;
@@ -84,6 +94,7 @@ export async function createDesktopKernelDomainAdapter(
   options: DesktopKernelDomainAdapterOptions = {},
 ): Promise<DesktopKernelDomainAdapter> {
   const { baseUrl, instanceId, release } = connection;
+  const invalidations = options.invalidations ?? unavailableInvalidations;
   const processGeneration = connection.processGeneration ?? connection.generation;
   let authentication: NativeBearerAuthentication | undefined = connection.authentication;
   let lifecycle: "initializing" | "active" | "closed" = "initializing";
@@ -180,6 +191,7 @@ export async function createDesktopKernelDomainAdapter(
     };
     const port: KernelDomainPort = {
       availability: "available",
+      invalidations,
       documents: {
         create: async (input) => {
           await prepareDocumentOperation(input.workspaceGeneration);
@@ -241,6 +253,25 @@ export async function createDesktopKernelDomainAdapter(
             }
             await confirmWorkspaceIdentity();
             return mapHistoryPage(page, input.workspaceGeneration);
+          },
+          read: async (input) => {
+            await prepareDocumentOperation(input.workspaceGeneration);
+            const history = await client.documents.getHistory(
+              input.locator,
+              input.snapshotId,
+              { signal: requests.signal },
+            );
+            assertActive();
+            assertDocumentIdentity(history.documentId, input.locator);
+            if (history.snapshotId !== input.snapshotId) protocolMismatch();
+            await confirmWorkspaceIdentity();
+            return {
+              contents: history.contents,
+              documentLocator: history.documentId as KernelDocumentLocator,
+              revision: history.revision as KernelRevision,
+              snapshotId: history.snapshotId as KernelHistorySnapshotId,
+              workspaceGeneration: input.workspaceGeneration,
+            } satisfies KernelHistorySnapshot;
           },
           restore: async (input) => {
             await prepareDocumentOperation(input.workspaceGeneration);
@@ -333,6 +364,48 @@ export async function createDesktopKernelDomainAdapter(
           assertDocumentIdentity(document.id, input.locator);
           await confirmWorkspaceIdentity();
           return mapDocument(document, input.workspaceGeneration);
+        },
+      },
+      resources: {
+        list: async (input) => {
+          await prepareDocumentOperation(input.workspaceGeneration);
+          const items: KernelInventoryEntry[] = [];
+          const seenCursors = new Set<string>();
+          let cursor: string | undefined;
+          do {
+            const page = await client.resources.list({
+              cursor,
+              limit: 100,
+              parent: input.parent,
+            }, { signal: requests.signal });
+            assertActive();
+            items.push(...page.items.map((entry) => mapInventoryEntry(
+              entry,
+              input.workspaceGeneration,
+            )));
+            const nextCursor = page.nextCursor ?? undefined;
+            if (nextCursor !== undefined && seenCursors.has(nextCursor)) protocolMismatch();
+            if (nextCursor !== undefined) seenCursors.add(nextCursor);
+            cursor = nextCursor;
+          } while (cursor !== undefined);
+          await confirmWorkspaceIdentity();
+          return { items, workspaceGeneration: input.workspaceGeneration };
+        },
+        open: async (input) => {
+          await prepareDocumentOperation(input.workspaceGeneration);
+          const response = await client.resources.open(
+            input.id,
+            input.kind,
+            { signal: requests.signal },
+          );
+          assertActive();
+          const body = await response.blob();
+          assertActive();
+          await confirmWorkspaceIdentity();
+          return {
+            body,
+            mediaType: response.headers.get("content-type")?.split(";", 1)[0]?.trim() ?? "",
+          };
         },
       },
       runtime: {
@@ -432,6 +505,7 @@ export async function createDesktopKernelDomainAdapter(
 }
 
 type RuntimeSource = Awaited<ReturnType<KernelClient["system"]["runtime"]>>;
+type InventoryEntrySource = Awaited<ReturnType<KernelClient["resources"]["list"]>>["items"][number];
 type WorkspaceSource = Awaited<ReturnType<KernelClient["workspace"]["get"]>>;
 type DocumentSource = Awaited<ReturnType<KernelClient["documents"]["get"]>>;
 type CreatedDocumentSource = Awaited<ReturnType<KernelClient["documents"]["create"]>>;
@@ -458,7 +532,7 @@ function matchesDesktopRuntime(runtime: RuntimeSource, instanceId: string) {
     runtime.instanceId === instanceId &&
     runtime.profile === "desktop" &&
     runtime.startupState === "ready" &&
-    runtime.capabilities.documents === true
+    hasRequiredKernelDomainCapabilities(runtime.capabilities)
   );
 }
 
@@ -515,6 +589,34 @@ function mapWorkspace(workspace: WorkspaceSource): KernelWorkspaceSnapshot {
     id: workspace.id,
     readiness: workspace.readiness,
     revision: workspace.revision as KernelRevision,
+  };
+}
+
+function mapInventoryEntry(
+  entry: InventoryEntrySource,
+  workspaceGeneration: KernelWorkspaceGeneration,
+): KernelInventoryEntry {
+  if (entry.entryType === "document") {
+    return {
+      document: mapDocumentEntry(entry.document, workspaceGeneration),
+      entryType: entry.entryType,
+    };
+  }
+  return {
+    entryType: entry.entryType,
+    resource: {
+      id: entry.resource.id,
+      kind: entry.resource.kind,
+      mediaType: entry.resource.mediaType,
+      modifiedAt: entry.resource.modifiedAt,
+      name: entry.resource.name,
+      parent: entry.resource.parent as KernelWorkspaceRelativePath,
+      previewable: entry.resource.previewable,
+      relativePath: entry.resource.path as KernelWorkspaceRelativePath,
+      revision: entry.resource.revision as KernelRevision,
+      sizeBytes: entry.resource.sizeBytes,
+      workspaceGeneration,
+    },
   };
 }
 

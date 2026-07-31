@@ -2578,6 +2578,54 @@
         ],
         "type": "object"
       },
+      "SyncRunCompletionState": {
+        "enum": [
+          "attempting",
+          "failed",
+          "succeeded"
+        ],
+        "type": "string"
+      },
+      "SyncRunStatusDto": {
+        "additionalProperties": false,
+        "properties": {
+          "acceptedAt": {
+            "$ref": "#/components/schemas/Rfc3339Utc"
+          },
+          "completionState": {
+            "$ref": "#/components/schemas/SyncRunCompletionState"
+          },
+          "configRevision": {
+            "$ref": "#/components/schemas/Revision"
+          },
+          "error": {
+            "$ref": "#/components/schemas/Nullable_SyncSafeErrorDto"
+          },
+          "finishedAt": {
+            "$ref": "#/components/schemas/Nullable_Rfc3339Utc"
+          },
+          "provider": {
+            "$ref": "#/components/schemas/SyncProvider"
+          },
+          "runId": {
+            "$ref": "#/components/schemas/RunId"
+          },
+          "summary": {
+            "$ref": "#/components/schemas/Nullable_SyncSummaryDto"
+          }
+        },
+        "required": [
+          "runId",
+          "provider",
+          "configRevision",
+          "completionState",
+          "acceptedAt",
+          "finishedAt",
+          "summary",
+          "error"
+        ],
+        "type": "object"
+      },
       "SyncSafeErrorDto": {
         "additionalProperties": false,
         "properties": {
@@ -2976,12 +3024,23 @@
       }
     },
     "securitySchemes": {
-      "browserSession": {
+      "browserSessionHttp": {
+        "in": "cookie",
+        "name": "qingyu_session",
+        "type": "apiKey"
+      },
+      "browserSessionHttps": {
         "in": "cookie",
         "name": "__Host-qingyu_session",
         "type": "apiKey"
       },
-      "csrfToken": {
+      "csrfTokenHttp": {
+        "in": "header",
+        "name": "X-CSRF-Token",
+        "type": "apiKey",
+        "x-csrf-cookie-name": "qingyu_csrf"
+      },
+      "csrfTokenHttps": {
         "in": "header",
         "name": "X-CSRF-Token",
         "type": "apiKey",
@@ -3483,8 +3542,12 @@
         },
         "security": [
           {
-            "browserSession": [],
-            "csrfToken": []
+            "browserSessionHttps": [],
+            "csrfTokenHttps": []
+          },
+          {
+            "browserSessionHttp": [],
+            "csrfTokenHttp": []
           }
         ]
       }
@@ -3762,8 +3825,12 @@
         },
         "security": [
           {
-            "browserSession": [],
-            "csrfToken": []
+            "browserSessionHttps": [],
+            "csrfTokenHttps": []
+          },
+          {
+            "browserSessionHttp": [],
+            "csrfTokenHttp": []
           }
         ],
         "x-body-limit-bytes": 16384
@@ -3937,7 +4004,10 @@
         },
         "security": [
           {
-            "browserSession": []
+            "browserSessionHttps": []
+          },
+          {
+            "browserSessionHttp": []
           }
         ]
       },
@@ -4657,7 +4727,10 @@
             "nativeBearer": []
           },
           {
-            "browserSession": []
+            "browserSessionHttps": []
+          },
+          {
+            "browserSessionHttp": []
           }
         ]
       },
@@ -5022,8 +5095,12 @@
             "nativeBearer": []
           },
           {
-            "browserSession": [],
-            "csrfToken": []
+            "browserSessionHttps": [],
+            "csrfTokenHttps": []
+          },
+          {
+            "browserSessionHttp": [],
+            "csrfTokenHttp": []
           }
         ],
         "x-body-limit-bytes": 104857600
@@ -5352,7 +5429,10 @@
             "nativeBearer": []
           },
           {
-            "browserSession": []
+            "browserSessionHttps": []
+          },
+          {
+            "browserSessionHttp": []
           }
         ]
       },
@@ -5759,8 +5839,12 @@
             "nativeBearer": []
           },
           {
-            "browserSession": [],
-            "csrfToken": []
+            "browserSessionHttps": [],
+            "csrfTokenHttps": []
+          },
+          {
+            "browserSessionHttp": [],
+            "csrfTokenHttp": []
           }
         ],
         "x-body-limit-bytes": 104857600
@@ -6093,8 +6177,12 @@
             "nativeBearer": []
           },
           {
-            "browserSession": [],
-            "csrfToken": []
+            "browserSessionHttps": [],
+            "csrfTokenHttps": []
+          },
+          {
+            "browserSessionHttp": [],
+            "csrfTokenHttp": []
           }
         ],
         "x-body-limit-bytes": 1048576
@@ -6404,7 +6492,10 @@
             "nativeBearer": []
           },
           {
-            "browserSession": []
+            "browserSessionHttps": []
+          },
+          {
+            "browserSessionHttp": []
           }
         ]
       }
@@ -6775,7 +6866,10 @@
             "nativeBearer": []
           },
           {
-            "browserSession": []
+            "browserSessionHttps": []
+          },
+          {
+            "browserSessionHttp": []
           }
         ]
       }
@@ -7192,8 +7286,12 @@
             "nativeBearer": []
           },
           {
-            "browserSession": [],
-            "csrfToken": []
+            "browserSessionHttps": [],
+            "csrfTokenHttps": []
+          },
+          {
+            "browserSessionHttp": [],
+            "csrfTokenHttp": []
           }
         ],
         "x-body-limit-bytes": 1048576
@@ -7536,8 +7634,12 @@
             "nativeBearer": []
           },
           {
-            "browserSession": [],
-            "csrfToken": []
+            "browserSessionHttps": [],
+            "csrfTokenHttps": []
+          },
+          {
+            "browserSessionHttp": [],
+            "csrfTokenHttp": []
           }
         ],
         "x-body-limit-bytes": 1048576
@@ -7813,7 +7915,10 @@
             "nativeBearer": []
           },
           {
-            "browserSession": []
+            "browserSessionHttps": []
+          },
+          {
+            "browserSessionHttp": []
           }
         ]
       }
@@ -8088,7 +8193,10 @@
             "nativeBearer": []
           },
           {
-            "browserSession": []
+            "browserSessionHttps": []
+          },
+          {
+            "browserSessionHttp": []
           }
         ]
       }
@@ -8431,7 +8539,10 @@
             "nativeBearer": []
           },
           {
-            "browserSession": []
+            "browserSessionHttps": []
+          },
+          {
+            "browserSessionHttp": []
           }
         ]
       }
@@ -8608,7 +8719,10 @@
             "nativeBearer": []
           },
           {
-            "browserSession": []
+            "browserSessionHttps": []
+          },
+          {
+            "browserSessionHttp": []
           }
         ]
       }
@@ -8917,7 +9031,10 @@
             "nativeBearer": []
           },
           {
-            "browserSession": []
+            "browserSessionHttps": []
+          },
+          {
+            "browserSessionHttp": []
           }
         ]
       }
@@ -9094,7 +9211,10 @@
             "nativeBearer": []
           },
           {
-            "browserSession": []
+            "browserSessionHttps": []
+          },
+          {
+            "browserSessionHttp": []
           }
         ]
       },
@@ -9385,8 +9505,12 @@
             "nativeBearer": []
           },
           {
-            "browserSession": [],
-            "csrfToken": []
+            "browserSessionHttps": [],
+            "csrfTokenHttps": []
+          },
+          {
+            "browserSessionHttp": [],
+            "csrfTokenHttp": []
           }
         ],
         "x-body-limit-bytes": 1048576
@@ -9633,7 +9757,10 @@
             "nativeBearer": []
           },
           {
-            "browserSession": []
+            "browserSessionHttps": []
+          },
+          {
+            "browserSessionHttp": []
           }
         ]
       },
@@ -9959,8 +10086,12 @@
             "nativeBearer": []
           },
           {
-            "browserSession": [],
-            "csrfToken": []
+            "browserSessionHttps": [],
+            "csrfTokenHttps": []
+          },
+          {
+            "browserSessionHttp": [],
+            "csrfTokenHttp": []
           }
         ],
         "x-body-limit-bytes": 1048576
@@ -10289,8 +10420,12 @@
             "nativeBearer": []
           },
           {
-            "browserSession": [],
-            "csrfToken": []
+            "browserSessionHttps": [],
+            "csrfTokenHttps": []
+          },
+          {
+            "browserSessionHttp": [],
+            "csrfTokenHttp": []
           }
         ],
         "x-body-limit-bytes": 1048576
@@ -10550,11 +10685,275 @@
             "nativeBearer": []
           },
           {
-            "browserSession": [],
-            "csrfToken": []
+            "browserSessionHttps": [],
+            "csrfTokenHttps": []
+          },
+          {
+            "browserSessionHttp": [],
+            "csrfTokenHttp": []
           }
         ],
         "x-body-limit-bytes": 1048576
+      }
+    },
+    "/api/v1/sync/runs/{runId}": {
+      "get": {
+        "operationId": "getSyncRun",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "runId",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/RunId"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SyncRunStatusDto"
+                }
+              }
+            },
+            "description": "Success",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "invalid_request"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Error",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "unauthorized"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Error",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "host_not_allowed",
+                            "origin_not_allowed"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Error",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "resource_not_found"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Error",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "internal_error"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Error",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiErrorEnvelope"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "authentication_unavailable",
+                            "sync_not_ready"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Error",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "nativeBearer": []
+          },
+          {
+            "browserSessionHttps": []
+          },
+          {
+            "browserSessionHttp": []
+          }
+        ]
       }
     },
     "/api/v1/sync/status": {
@@ -10729,7 +11128,10 @@
             "nativeBearer": []
           },
           {
-            "browserSession": []
+            "browserSessionHttps": []
+          },
+          {
+            "browserSessionHttp": []
           }
         ]
       }
@@ -10906,7 +11308,10 @@
             "nativeBearer": []
           },
           {
-            "browserSession": []
+            "browserSessionHttps": []
+          },
+          {
+            "browserSessionHttp": []
           }
         ]
       }
@@ -11119,7 +11524,10 @@
             "nativeBearer": []
           },
           {
-            "browserSession": []
+            "browserSessionHttps": []
+          },
+          {
+            "browserSessionHttp": []
           }
         ]
       }

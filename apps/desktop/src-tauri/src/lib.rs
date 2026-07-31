@@ -8,6 +8,8 @@ mod atomic_noreplace;
 mod clipboard;
 mod dejavu_sync;
 #[cfg(desktop)]
+mod desktop_kernel_runtime;
+#[cfg(desktop)]
 mod desktop_runtime;
 #[cfg(desktop)]
 mod fonts;

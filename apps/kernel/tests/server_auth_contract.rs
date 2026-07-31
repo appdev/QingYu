@@ -189,7 +189,10 @@ fn openapi_freezes_server_auth_routes_and_browser_security_composition() {
     }
     assert_eq!(
         document["paths"]["/api/v1/auth/session"]["get"]["security"],
-        json!([{ "browserSession": [] }])
+        json!([
+            { "browserSessionHttps": [] },
+            { "browserSessionHttp": [] }
+        ])
     );
     for (method, path) in [
         ("post", "/api/v1/auth/logout"),
@@ -197,21 +200,37 @@ fn openapi_freezes_server_auth_routes_and_browser_security_composition() {
     ] {
         assert_eq!(
             document["paths"][path][method]["security"],
-            json!([{ "browserSession": [], "csrfToken": [] }])
+            json!([
+                { "browserSessionHttps": [], "csrfTokenHttps": [] },
+                { "browserSessionHttp": [], "csrfTokenHttp": [] }
+            ])
         );
     }
 
     assert_eq!(
-        document["components"]["securitySchemes"]["browserSession"],
+        document["components"]["securitySchemes"]["browserSessionHttps"],
         json!({ "type": "apiKey", "in": "cookie", "name": "__Host-qingyu_session" })
     );
     assert_eq!(
-        document["components"]["securitySchemes"]["csrfToken"],
+        document["components"]["securitySchemes"]["browserSessionHttp"],
+        json!({ "type": "apiKey", "in": "cookie", "name": "qingyu_session" })
+    );
+    assert_eq!(
+        document["components"]["securitySchemes"]["csrfTokenHttps"],
         json!({
             "type": "apiKey",
             "in": "header",
             "name": "X-CSRF-Token",
             "x-csrf-cookie-name": "__Host-qingyu_csrf",
+        })
+    );
+    assert_eq!(
+        document["components"]["securitySchemes"]["csrfTokenHttp"],
+        json!({
+            "type": "apiKey",
+            "in": "header",
+            "name": "X-CSRF-Token",
+            "x-csrf-cookie-name": "qingyu_csrf",
         })
     );
 

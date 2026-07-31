@@ -1,6 +1,6 @@
 //! Platform-neutral Kernel service composition.
 
-use std::sync::Arc;
+use std::{fmt, sync::Arc};
 
 use async_trait::async_trait;
 
@@ -21,7 +21,14 @@ use crate::{
     ports::system::system_kernel_ports,
     resources::WorkspaceResourceService,
     runtime::{KernelRuntime, ServiceFailure, SystemApiService},
-    services::{sync::SyncService, workspace::WorkspaceService},
+    services::{
+        sync::{
+            KernelSyncTriggerDisposition, KernelSyncTriggerRejection, SyncRunSettlement,
+            SyncService,
+        },
+        sync_scheduler::KernelSyncScheduler,
+        workspace::WorkspaceService,
+    },
     settings::{service::SettingsService, storage::AtomicJsonSettingsStore},
     storage::DurableFileStore,
     sync::{config::SyncConfigStore, executor::ProductionSyncExecutor},
@@ -39,6 +46,203 @@ pub async fn compose_fixed_native_kernel(
     paths: KernelPaths,
     workspace_state: NativeHostWorkspaceState,
 ) -> Result<Arc<KernelRuntime>, NativeCompositionError> {
+    let (runtime, _services) =
+        compose_fixed_native_kernel_services(config, paths, workspace_state).await?;
+    Ok(runtime)
+}
+
+/// Fully assembled fixed native runtime and the lifecycle services that must
+/// remain owned for the duration of a child process.
+pub struct NativeRuntimeComposition {
+    runtime: Arc<KernelRuntime>,
+    lifecycle: NativeKernelLifecycle,
+}
+
+impl NativeRuntimeComposition {
+    pub fn runtime(&self) -> &Arc<KernelRuntime> {
+        &self.runtime
+    }
+
+    pub fn shutdown_handle(&self) -> NativeKernelLifecycle {
+        self.lifecycle.clone()
+    }
+
+    pub async fn shutdown(&self) -> Result<(), NativeKernelShutdownError> {
+        self.lifecycle.shutdown().await
+    }
+}
+
+impl fmt::Debug for NativeRuntimeComposition {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("NativeRuntimeComposition(..)")
+    }
+}
+
+#[derive(Clone)]
+pub struct NativeKernelLifecycle {
+    completion: Arc<tokio::sync::Notify>,
+    scheduler: Arc<KernelSyncScheduler>,
+    state: Arc<tokio::sync::Mutex<NativeKernelLifecycleState>>,
+    sync: Arc<SyncService>,
+}
+
+impl NativeKernelLifecycle {
+    fn new(
+        scheduler: Arc<KernelSyncScheduler>,
+        sync: Arc<SyncService>,
+        app_launch_settlement: Option<SyncRunSettlement>,
+    ) -> Self {
+        Self {
+            completion: Arc::new(tokio::sync::Notify::new()),
+            scheduler,
+            state: Arc::new(tokio::sync::Mutex::new(NativeKernelLifecycleState {
+                phase: NativeKernelLifecyclePhase::Idle {
+                    app_launch_settlement,
+                },
+            })),
+            sync,
+        }
+    }
+
+    pub async fn shutdown(&self) -> Result<(), NativeKernelShutdownError> {
+        let app_launch_settlement = {
+            let mut state = self.state.lock().await;
+            match &mut state.phase {
+                NativeKernelLifecyclePhase::Idle {
+                    app_launch_settlement,
+                } => {
+                    let settlement = app_launch_settlement.take();
+                    state.phase = NativeKernelLifecyclePhase::Draining;
+                    Some(settlement)
+                }
+                NativeKernelLifecyclePhase::Draining => None,
+                NativeKernelLifecyclePhase::Drained(result) => return *result,
+            }
+        };
+        if let Some(app_launch_settlement) = app_launch_settlement {
+            let completion = self.completion.clone();
+            let scheduler = self.scheduler.clone();
+            let state = self.state.clone();
+            let sync = self.sync.clone();
+            tokio::spawn(async move {
+                let result =
+                    drain_native_kernel(scheduler.as_ref(), sync.as_ref(), app_launch_settlement)
+                        .await;
+                let mut state = state.lock().await;
+                state.phase = NativeKernelLifecyclePhase::Drained(result);
+                drop(state);
+                completion.notify_waiters();
+            });
+        }
+
+        loop {
+            let completed = self.completion.notified();
+            tokio::pin!(completed);
+            completed.as_mut().enable();
+            {
+                let state = self.state.lock().await;
+                if let NativeKernelLifecyclePhase::Drained(result) = &state.phase {
+                    return *result;
+                }
+            }
+            completed.await;
+        }
+    }
+}
+
+struct NativeKernelLifecycleState {
+    phase: NativeKernelLifecyclePhase,
+}
+
+enum NativeKernelLifecyclePhase {
+    Idle {
+        app_launch_settlement: Option<SyncRunSettlement>,
+    },
+    Draining,
+    Drained(Result<(), NativeKernelShutdownError>),
+}
+
+async fn drain_native_kernel(
+    scheduler: &KernelSyncScheduler,
+    sync: &SyncService,
+    app_launch_settlement: Option<SyncRunSettlement>,
+) -> Result<(), NativeKernelShutdownError> {
+    sync.begin_settings_exit_quiescence()
+        .map_err(|_error| NativeKernelShutdownError)?;
+    scheduler.begin_quiesce();
+    if let Some(settlement) = app_launch_settlement {
+        settlement.wait().await;
+    }
+    scheduler.wait_closed().await;
+    sync.wait_for_active_run_quiescence()
+        .await
+        .map_err(|_error| NativeKernelShutdownError)?;
+
+    let (disposition, settlement) = scheduler.settings_exit().await.into_parts();
+    match disposition {
+        KernelSyncTriggerDisposition::Accepted(_) => {}
+        KernelSyncTriggerDisposition::Rejected(
+            KernelSyncTriggerRejection::Disabled
+            | KernelSyncTriggerRejection::Incomplete
+            | KernelSyncTriggerRejection::ModeDisallowed,
+        ) => {}
+        KernelSyncTriggerDisposition::Rejected(
+            KernelSyncTriggerRejection::ActiveRun
+            | KernelSyncTriggerRejection::Closing
+            | KernelSyncTriggerRejection::Unavailable,
+        ) => return Err(NativeKernelShutdownError),
+    }
+    settlement.wait().await;
+
+    scheduler.begin_close();
+    scheduler.wait_closed().await;
+    sync.shutdown()
+        .await
+        .map_err(|_error| NativeKernelShutdownError)
+}
+
+impl fmt::Debug for NativeKernelLifecycle {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("NativeKernelLifecycle(..)")
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NativeKernelShutdownError;
+
+impl fmt::Display for NativeKernelShutdownError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("native Kernel lifecycle could not drain")
+    }
+}
+
+impl std::error::Error for NativeKernelShutdownError {}
+
+/// Builds a fixed native runtime together with its process-owned services.
+pub async fn compose_fixed_native_kernel_runtime(
+    config: KernelConfig,
+    paths: KernelPaths,
+    workspace_state: NativeHostWorkspaceState,
+) -> Result<NativeRuntimeComposition, NativeCompositionError> {
+    let (runtime, services) =
+        compose_fixed_native_kernel_services(config, paths, workspace_state).await?;
+    let sync = services.sync;
+    let scheduler = Arc::new(
+        KernelSyncScheduler::start(sync.clone()).map_err(|_error| NativeCompositionError)?,
+    );
+    let (_app_launch_disposition, app_launch_settlement) =
+        scheduler.app_launch().await.into_parts();
+    Ok(NativeRuntimeComposition {
+        runtime,
+        lifecycle: NativeKernelLifecycle::new(scheduler, sync, Some(app_launch_settlement)),
+    })
+}
+
+async fn compose_fixed_native_kernel_services(
+    config: KernelConfig,
+    paths: KernelPaths,
+    workspace_state: NativeHostWorkspaceState,
+) -> Result<(Arc<KernelRuntime>, InstalledFixedKernelServices), NativeCompositionError> {
     let workspace_directory = paths
         .workspace_root()
         .try_clone_dir()
@@ -53,7 +257,7 @@ pub async fn compose_fixed_native_kernel(
         ManagedWorkspaceCollection::from_paths(&paths).map_err(|_| NativeCompositionError)?;
     let runtime = KernelRuntime::activate(config, paths, system_kernel_ports())
         .map_err(|_| NativeCompositionError)?;
-    let _services = install_fixed_kernel_services(
+    let services = install_fixed_kernel_services(
         &runtime,
         Arc::new(
             FixedPrimaryWorkspaceStore::new(workspace_state).map_err(|_| NativeCompositionError)?,
@@ -63,7 +267,7 @@ pub async fn compose_fixed_native_kernel(
     )
     .await
     .map_err(|_| NativeCompositionError)?;
-    Ok(runtime)
+    Ok((runtime, services))
 }
 
 /// Installs the complete fixed-workspace service set after the caller has
@@ -256,19 +460,323 @@ impl SystemApiService for FixedSystemService {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
+    use std::{fs, sync::Mutex, time::Duration};
 
+    use async_trait::async_trait;
     use tempfile::tempdir;
+    use tokio::sync::Notify;
 
     use super::*;
     use crate::{
         contract::{
             ErrorCode, ListDocumentsQuery, ListWorkspaceInventoryQuery, PatchSettingsRequest,
             ResourceKind, SearchQuery, SearchWorkspaceQuery, SettingEntryDto, SettingKey,
-            SettingValueDto, WorkspaceInventoryEntryDto, WorkspaceRelativePath,
+            SettingValueDto, SyncCompletionState, SyncTrigger, WorkspaceInventoryEntryDto,
+            WorkspaceRelativePath,
         },
         host::native::NativeHostWorkspaceState,
+        runtime::SyncApiService as _,
+        services::sync::{
+            KernelSyncTriggerDisposition, KernelSyncTriggerRejection, SyncExecutionError,
+            SyncExecutor, SyncRunContext,
+        },
+        sync::config::SyncConfig,
     };
+
+    #[derive(Default)]
+    struct LifecycleBlockingExecutor {
+        release: Notify,
+        started: Notify,
+        triggers: Mutex<Vec<SyncTrigger>>,
+    }
+
+    #[async_trait]
+    impl SyncExecutor for LifecycleBlockingExecutor {
+        async fn test_connection(&self, _config: SyncConfig) -> Result<(), SyncExecutionError> {
+            Ok(())
+        }
+
+        async fn run(
+            &self,
+            _config: SyncConfig,
+            context: SyncRunContext,
+        ) -> Result<crate::contract::SyncSummaryDto, SyncExecutionError> {
+            self.triggers.lock().unwrap().push(context.trigger());
+            self.started.notify_one();
+            self.release.notified().await;
+            Ok(crate::contract::SyncSummaryDto::empty())
+        }
+    }
+
+    fn native_fixture(
+        root: &std::path::Path,
+    ) -> (KernelPaths, NativeHostWorkspaceState, std::path::PathBuf) {
+        let workspace = root.join("workspace");
+        let app_data = root.join("app-data");
+        let cache = root.join("cache");
+        for path in [&workspace, &app_data, &cache] {
+            fs::create_dir(path).unwrap();
+        }
+        let state = NativeHostWorkspaceState::for_workspace(&workspace, "Native").unwrap();
+        let paths = KernelPaths::desktop(&workspace, &app_data, &cache).unwrap();
+        (paths, state, app_data)
+    }
+
+    fn write_startup_exit_config(app_data: &std::path::Path) {
+        fs::write(
+            app_data.join("sync-config.json"),
+            br#"{
+  "version": 3,
+  "enabled": true,
+  "provider": "webdav",
+  "remoteRoot": "native-notes",
+  "mode": "startup-exit",
+  "intervalSeconds": 30,
+  "generateConflictDocument": false,
+  "webdav": {
+    "serverUrl": "http://127.0.0.1:9",
+    "username": "native-user",
+    "password": "native-password"
+  },
+  "s3": {
+    "endpointUrl": "",
+    "region": "",
+    "bucket": "",
+    "accessKeyId": "",
+    "secretAccessKey": "",
+    "requestTimeoutSeconds": 60,
+    "addressingStyle": "auto",
+    "tlsVerification": "verify"
+  }
+}
+"#,
+        )
+        .unwrap();
+    }
+
+    fn write_automatic_config(app_data: &std::path::Path) {
+        write_startup_exit_config(app_data);
+        let path = app_data.join("sync-config.json");
+        let mut config: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        config["mode"] = serde_json::json!("automatic");
+        fs::write(path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
+    }
+
+    async fn controlled_native_lifecycle(
+        root: &std::path::Path,
+    ) -> (
+        Arc<KernelRuntime>,
+        Arc<SyncService>,
+        NativeKernelLifecycle,
+        Arc<LifecycleBlockingExecutor>,
+    ) {
+        let (paths, workspace_state, app_data) = native_fixture(root);
+        write_automatic_config(&app_data);
+        let config = KernelConfig::generate().unwrap();
+        let durable =
+            DurableFileStore::at_instance_data(paths.instance_data_root(), config.launch_epoch())
+                .unwrap();
+        let (runtime, _installed) =
+            compose_fixed_native_kernel_services(config, paths, workspace_state)
+                .await
+                .unwrap();
+        let executor = Arc::new(LifecycleBlockingExecutor::default());
+        let sync = Arc::new(SyncService::new(
+            runtime.clone(),
+            Arc::new(SyncConfigStore::new(durable).unwrap()),
+            executor.clone(),
+        ));
+        let scheduler = Arc::new(KernelSyncScheduler::start(sync.clone()).unwrap());
+        let lifecycle = NativeKernelLifecycle::new(scheduler, sync.clone(), None);
+        (runtime, sync, lifecycle, executor)
+    }
+
+    async fn start_active_lifecycle_run(service: &SyncService, trigger: SyncTrigger) {
+        if trigger == SyncTrigger::Manual {
+            let revision = service.get_sync_config().await.unwrap().revision;
+            service
+                .trigger_sync_run(crate::contract::TriggerSyncRunRequest {
+                    expected_config_revision: revision,
+                })
+                .await
+                .unwrap();
+            return;
+        }
+        let (disposition, _settlement) = service.trigger_kernel_sync(trigger).await.into_parts();
+        assert!(
+            matches!(disposition, KernelSyncTriggerDisposition::Accepted(_)),
+            "active lifecycle trigger was rejected: {disposition:?}"
+        );
+    }
+
+    async fn wait_for_lifecycle_trigger_rejection(
+        service: &SyncService,
+        expected: KernelSyncTriggerRejection,
+    ) {
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let (disposition, settlement) = service
+                    .trigger_kernel_sync(SyncTrigger::Save)
+                    .await
+                    .into_parts();
+                settlement.wait().await;
+                match disposition {
+                    KernelSyncTriggerDisposition::Rejected(rejection) if rejection == expected => {
+                        return
+                    }
+                    KernelSyncTriggerDisposition::Rejected(
+                        KernelSyncTriggerRejection::ActiveRun,
+                    ) => {
+                        tokio::task::yield_now().await;
+                    }
+                    other => panic!("unexpected shutdown gate disposition: {other:?}"),
+                }
+            }
+        })
+        .await
+        .expect("native lifecycle did not close new sync admission");
+    }
+
+    #[tokio::test]
+    async fn configured_native_composition_runs_app_launch_sync_before_returning() {
+        let temporary = tempdir().unwrap();
+        let (paths, state, app_data) = native_fixture(temporary.path());
+        write_startup_exit_config(&app_data);
+
+        let composition =
+            compose_fixed_native_kernel_runtime(KernelConfig::generate().unwrap(), paths, state)
+                .await
+                .unwrap();
+        let status = composition
+            .runtime()
+            .sync_api_service()
+            .unwrap()
+            .get_sync_status()
+            .await
+            .unwrap();
+
+        assert_eq!(status.last_trigger.as_ref(), Some(&SyncTrigger::AppLaunch));
+        composition.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn native_composition_retains_the_only_scheduler_for_its_sync_service() {
+        let temporary = tempdir().unwrap();
+        let (paths, state, _app_data) = native_fixture(temporary.path());
+        let composition =
+            compose_fixed_native_kernel_runtime(KernelConfig::generate().unwrap(), paths, state)
+                .await
+                .unwrap();
+
+        let second = KernelSyncScheduler::start(composition.lifecycle.sync.clone());
+
+        assert_eq!(
+            second.unwrap_err(),
+            crate::services::sync_scheduler::KernelSyncSchedulerStartError
+        );
+        composition.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn native_shutdown_runs_settings_exit_and_waits_for_sync_settlement() {
+        let temporary = tempdir().unwrap();
+        let (paths, state, app_data) = native_fixture(temporary.path());
+        write_startup_exit_config(&app_data);
+        let composition =
+            compose_fixed_native_kernel_runtime(KernelConfig::generate().unwrap(), paths, state)
+                .await
+                .unwrap();
+        let runtime = composition.runtime().clone();
+
+        composition.shutdown().await.unwrap();
+
+        let status = runtime
+            .sync_api_service()
+            .unwrap()
+            .get_sync_status()
+            .await
+            .unwrap();
+        assert_eq!(
+            status.last_trigger.as_ref(),
+            Some(&SyncTrigger::SettingsExit)
+        );
+        assert_ne!(status.completion_state, SyncCompletionState::Attempting);
+    }
+
+    #[tokio::test]
+    async fn native_shutdown_waits_for_active_manual_save_and_interval_before_settings_exit() {
+        for trigger in [
+            SyncTrigger::Manual,
+            SyncTrigger::Save,
+            SyncTrigger::Interval,
+        ] {
+            let temporary = tempdir().unwrap();
+            let (_runtime, sync, lifecycle, executor) =
+                controlled_native_lifecycle(temporary.path()).await;
+            start_active_lifecycle_run(sync.as_ref(), trigger).await;
+            tokio::time::timeout(Duration::from_secs(1), executor.started.notified())
+                .await
+                .expect("active lifecycle run did not reach its executor");
+
+            let shutdown_lifecycle = lifecycle.clone();
+            let shutdown = tokio::spawn(async move { shutdown_lifecycle.shutdown().await });
+            tokio::task::yield_now().await;
+            assert_eq!(executor.triggers.lock().unwrap().as_slice(), [trigger]);
+
+            executor.release.notify_one();
+            tokio::time::timeout(Duration::from_secs(1), executor.started.notified())
+                .await
+                .expect("SettingsExit must run after the active lifecycle run settles");
+            executor.release.notify_one();
+            tokio::time::timeout(Duration::from_secs(1), shutdown)
+                .await
+                .expect("native lifecycle shutdown did not settle")
+                .unwrap()
+                .unwrap();
+
+            assert_eq!(
+                executor.triggers.lock().unwrap().as_slice(),
+                [trigger, SyncTrigger::SettingsExit]
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn cancelling_first_shutdown_caller_does_not_cancel_the_shared_native_drain() {
+        let temporary = tempdir().unwrap();
+        let (_runtime, sync, lifecycle, executor) =
+            controlled_native_lifecycle(temporary.path()).await;
+        start_active_lifecycle_run(sync.as_ref(), SyncTrigger::Manual).await;
+        tokio::time::timeout(Duration::from_secs(1), executor.started.notified())
+            .await
+            .expect("manual run did not reach its executor");
+
+        let first_lifecycle = lifecycle.clone();
+        let first = tokio::spawn(async move { first_lifecycle.shutdown().await });
+        wait_for_lifecycle_trigger_rejection(sync.as_ref(), KernelSyncTriggerRejection::Closing)
+            .await;
+        first.abort();
+        assert!(first.await.unwrap_err().is_cancelled());
+
+        let second_lifecycle = lifecycle.clone();
+        let second = tokio::spawn(async move { second_lifecycle.shutdown().await });
+        executor.release.notify_one();
+        tokio::time::timeout(Duration::from_secs(1), executor.started.notified())
+            .await
+            .expect("the shared drain lost SettingsExit after its first caller was cancelled");
+        executor.release.notify_one();
+        tokio::time::timeout(Duration::from_secs(1), second)
+            .await
+            .expect("the replacement shutdown caller did not observe shared completion")
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(
+            executor.triggers.lock().unwrap().as_slice(),
+            [SyncTrigger::Manual, SyncTrigger::SettingsExit]
+        );
+    }
 
     #[tokio::test]
     async fn production_documents_and_resources_share_live_settings_and_workspace_ignore_rules() {

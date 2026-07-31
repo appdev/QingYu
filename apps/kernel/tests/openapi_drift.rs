@@ -69,6 +69,7 @@ const HTTP_OPERATIONS: &[(&str, &str, &str)] = &[
     ("post", "/api/v1/sync/connection-test", "testSyncConnection"),
     ("get", "/api/v1/sync/status", "getSyncStatus"),
     ("post", "/api/v1/sync/runs", "triggerSyncRun"),
+    ("get", "/api/v1/sync/runs/{runId}", "getSyncRun"),
 ];
 
 const ERROR_CODES: &[&str] = &[
@@ -244,7 +245,7 @@ fn assert_optional_non_null(document: &Value, schema: &str, field: &str) {
 }
 
 #[test]
-fn openapi_has_exactly_the_frozen_thirty_http_operations() {
+fn openapi_has_exactly_the_frozen_thirty_one_http_operations() {
     let document = api_document();
     let paths = document["paths"].as_object().expect("OpenAPI paths");
     assert!(
@@ -256,7 +257,7 @@ fn openapi_has_exactly_the_frozen_thirty_http_operations() {
         .iter()
         .map(|(method, path, operation)| ((*method, *path), *operation))
         .collect();
-    assert_eq!(expected.len(), 30);
+    assert_eq!(expected.len(), 31);
 
     let mut actual = BTreeMap::new();
     for (path, path_item) in paths {
@@ -294,19 +295,26 @@ fn public_auth_bootstrap_and_dual_host_security_are_explicit_per_operation() {
             ),
             "getServerSession" => assert_eq!(
                 operation.get("security"),
-                Some(&serde_json::json!([{ "browserSession": [] }])),
+                Some(&serde_json::json!([
+                    { "browserSessionHttps": [] },
+                    { "browserSessionHttp": [] }
+                ])),
                 "getServerSession must require the browser session"
             ),
             "logoutServerSession" | "changeServerOwnerPassword" => assert_eq!(
                 operation.get("security"),
-                Some(&serde_json::json!([{ "browserSession": [], "csrfToken": [] }])),
+                Some(&serde_json::json!([
+                    { "browserSessionHttps": [], "csrfTokenHttps": [] },
+                    { "browserSessionHttp": [], "csrfTokenHttp": [] }
+                ])),
                 "{operation_id} must require browser session and CSRF"
             ),
             _ if *method == "get" => assert_eq!(
                 operation.get("security"),
                 Some(&serde_json::json!([
                     { "nativeBearer": [] },
-                    { "browserSession": [] }
+                    { "browserSessionHttps": [] },
+                    { "browserSessionHttp": [] }
                 ])),
                 "{operation_id} must accept native bearer or browser session"
             ),
@@ -314,7 +322,8 @@ fn public_auth_bootstrap_and_dual_host_security_are_explicit_per_operation() {
                 operation.get("security"),
                 Some(&serde_json::json!([
                     { "nativeBearer": [] },
-                    { "browserSession": [], "csrfToken": [] }
+                    { "browserSessionHttps": [], "csrfTokenHttps": [] },
+                    { "browserSessionHttp": [], "csrfTokenHttp": [] }
                 ])),
                 "{operation_id} browser mutations must require CSRF"
             ),
@@ -324,15 +333,25 @@ fn public_auth_bootstrap_and_dual_host_security_are_explicit_per_operation() {
     let native_bearer = &document["components"]["securitySchemes"]["nativeBearer"];
     assert_eq!(native_bearer["type"], "http");
     assert_eq!(native_bearer["scheme"], "bearer");
-    let browser_session = &document["components"]["securitySchemes"]["browserSession"];
-    assert_eq!(browser_session["type"], "apiKey");
-    assert_eq!(browser_session["in"], "cookie");
-    assert_eq!(browser_session["name"], "__Host-qingyu_session");
-    let csrf = &document["components"]["securitySchemes"]["csrfToken"];
-    assert_eq!(csrf["type"], "apiKey");
-    assert_eq!(csrf["in"], "header");
-    assert_eq!(csrf["name"], "X-CSRF-Token");
-    assert_eq!(csrf["x-csrf-cookie-name"], "__Host-qingyu_csrf");
+    for (scheme, cookie_name) in [
+        ("browserSessionHttps", "__Host-qingyu_session"),
+        ("browserSessionHttp", "qingyu_session"),
+    ] {
+        let browser_session = &document["components"]["securitySchemes"][scheme];
+        assert_eq!(browser_session["type"], "apiKey");
+        assert_eq!(browser_session["in"], "cookie");
+        assert_eq!(browser_session["name"], cookie_name);
+    }
+    for (scheme, cookie_name) in [
+        ("csrfTokenHttps", "__Host-qingyu_csrf"),
+        ("csrfTokenHttp", "qingyu_csrf"),
+    ] {
+        let csrf = &document["components"]["securitySchemes"][scheme];
+        assert_eq!(csrf["type"], "apiKey");
+        assert_eq!(csrf["in"], "header");
+        assert_eq!(csrf["name"], "X-CSRF-Token");
+        assert_eq!(csrf["x-csrf-cookie-name"], cookie_name);
+    }
 }
 
 #[test]
@@ -557,6 +576,19 @@ fn snapshot_required_is_the_literal_true_constant() {
         property(&document, "ReadyFrame", "snapshotRequired"),
     );
     assert_eq!(property.get("const"), Some(&Value::Bool(true)));
+}
+
+#[test]
+fn per_run_sync_completion_excludes_the_global_idle_state() {
+    let document = api_document();
+    assert_eq!(
+        component(&document, "SyncRunCompletionState")["enum"],
+        serde_json::json!(["attempting", "failed", "succeeded"])
+    );
+    assert_eq!(
+        component(&document, "SyncRunStatusDto")["properties"]["completionState"]["$ref"],
+        "#/components/schemas/SyncRunCompletionState"
+    );
 }
 
 #[test]

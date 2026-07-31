@@ -40,9 +40,9 @@ use crate::{
         RestoreDocumentHistoryRequest, Revision, SearchPageDto, SearchWorkspaceQuery,
         ServerAuthenticationStatusDto, ServerFrame, ServerSessionDto, SettingsSnapshotDto,
         SnapshotRequired, SyncConfigViewDto, SyncConnectionTestDto, SyncRunAcceptedDto,
-        SyncSafeErrorDto, SyncStatusDto, SystemVersionResponse, TestSyncConnectionRequest,
-        TriggerSyncRunRequest, UpdateDocumentRequest, WorkspaceDto, WorkspaceInventoryEntryDto,
-        WorkspaceInventoryPageDto,
+        SyncRunStatusDto, SyncSafeErrorDto, SyncStatusDto, SystemVersionResponse,
+        TestSyncConnectionRequest, TriggerSyncRunRequest, UpdateDocumentRequest, WorkspaceDto,
+        WorkspaceInventoryEntryDto, WorkspaceInventoryPageDto,
     },
     error::{http_status_for_error_code, safe_error_envelope},
     runtime::KernelRuntime,
@@ -58,6 +58,7 @@ const EVENTS_PATH: &str = "/api/v1/events";
 pub struct TransportPolicy {
     host: HeaderValue,
     origin: HeaderValue,
+    secure_cookies: bool,
 }
 
 impl TransportPolicy {
@@ -70,21 +71,33 @@ impl TransportPolicy {
         }
         let host = HeaderValue::from_str(host).map_err(|_| InvalidTransportPolicy)?;
         let origin = HeaderValue::from_str(origin).map_err(|_| InvalidTransportPolicy)?;
-        Ok(Self { host, origin })
+        Ok(Self {
+            host,
+            origin,
+            secure_cookies: false,
+        })
     }
 
     pub fn same_origin(host: &str, origin: &str) -> Result<Self, InvalidTransportPolicy> {
         let host = HeaderValue::from_str(host).map_err(|_| InvalidTransportPolicy)?;
+        let exact_host = host.to_str().map_err(|_| InvalidTransportPolicy)?;
         let uri = origin.parse::<Uri>().map_err(|_| InvalidTransportPolicy)?;
-        if uri.scheme_str() != Some("https")
-            || uri.authority().map(|authority| authority.as_str()) != host.to_str().ok()
+        let scheme = uri.scheme_str().ok_or(InvalidTransportPolicy)?;
+        if !matches!(scheme, "http" | "https")
+            || uri.authority().map(|authority| authority.as_str()) != Some(exact_host)
             || uri.path() != "/"
             || uri.query().is_some()
+            || origin != format!("{scheme}://{exact_host}")
         {
             return Err(InvalidTransportPolicy);
         }
+        let secure_cookies = scheme == "https";
         let origin = HeaderValue::from_str(origin).map_err(|_| InvalidTransportPolicy)?;
-        Ok(Self { host, origin })
+        Ok(Self {
+            host,
+            origin,
+            secure_cookies,
+        })
     }
 }
 
@@ -94,6 +107,7 @@ impl fmt::Debug for TransportPolicy {
             .debug_struct("TransportPolicy")
             .field("host", &self.host)
             .field("origin", &self.origin)
+            .field("secure_cookies", &self.secure_cookies)
             .finish()
     }
 }
@@ -212,7 +226,11 @@ async fn enforce_transport(
         }
         if let Some(server) = state.server.as_ref() {
             let intent = crate::server::RequestIntent::ReadOnly;
-            let credentials = match parse_browser_credentials(request.headers(), intent) {
+            let credentials = match parse_browser_credentials(
+                request.headers(),
+                intent,
+                state.policy.secure_cookies,
+            ) {
                 Ok(credentials) => credentials,
                 Err(error) => {
                     let mut response = auth::operation_error_response(error);
@@ -258,7 +276,11 @@ async fn enforce_transport(
                 return response;
             };
             let intent = auth::request_intent(request.method());
-            let credentials = match parse_browser_credentials(request.headers(), intent) {
+            let credentials = match parse_browser_credentials(
+                request.headers(),
+                intent,
+                state.policy.secure_cookies,
+            ) {
                 Ok(credentials) => credentials,
                 Err(error) => {
                     let mut response = auth::operation_error_response(error);
@@ -357,6 +379,7 @@ async fn authenticate_browser_request(
 fn parse_browser_credentials(
     headers: &HeaderMap,
     intent: crate::server::RequestIntent,
+    secure_cookies: bool,
 ) -> Result<
     Option<(
         auth::BrowserSessionCredential,
@@ -364,7 +387,7 @@ fn parse_browser_credentials(
     )>,
     auth::ServerApiOperationError,
 > {
-    auth::browser_credentials(headers, intent).map_err(|error| {
+    auth::browser_credentials(headers, intent, secure_cookies).map_err(|error| {
         auth::ServerApiOperationError::Authentication(match error {
             auth::BrowserCredentialParseError::Session => {
                 crate::server::ServerAuthenticationCoordinatorError::InvalidSession
@@ -452,6 +475,7 @@ fn route_accepts_method(path: &str, method: &Method) -> bool {
             ["", "api", "v1", "resources", resource_id] if !resource_id.is_empty() => {
                 &[Method::GET]
             }
+            ["", "api", "v1", "sync", "runs", run_id] if !run_id.is_empty() => &[Method::GET],
             ["", "api", "v1", "documents", document_id] if !document_id.is_empty() => {
                 &[Method::GET, Method::PUT]
             }
@@ -646,6 +670,7 @@ impl std::error::Error for OpenApiExportError {}
         SyncStatusDto,
         TriggerSyncRunRequest,
         SyncRunAcceptedDto,
+        SyncRunStatusDto,
         AuthenticateFrameSchema,
         ReadyFrame,
         EventFrame,
@@ -1142,6 +1167,14 @@ fn install_paths(document: &mut serde_json::Value) {
             "SyncRunAcceptedDto",
             true,
         ),
+        (
+            "get",
+            "/api/v1/sync/runs/{runId}",
+            "getSyncRun",
+            "200",
+            "SyncRunStatusDto",
+            true,
+        ),
     ];
     for (method, path, operation_id, status, schema, protected) in operations {
         let mut success = if schema.is_empty() {
@@ -1189,26 +1222,43 @@ fn install_paths(document: &mut serde_json::Value) {
         "required": true,
         "schema": { "type": "string", "const": "nosniff" }
     });
-    operation_mut(document, "/api/v1/auth/session", "get")["security"] =
-        serde_json::json!([{ "browserSession": [] }]);
+    operation_mut(document, "/api/v1/auth/session", "get")["security"] = browser_session_security();
     for (path, method) in [
         ("/api/v1/auth/logout", "post"),
         ("/api/v1/auth/password", "patch"),
     ] {
-        operation_mut(document, path, method)["security"] =
-            serde_json::json!([{ "browserSession": [], "csrfToken": [] }]);
+        operation_mut(document, path, method)["security"] = browser_mutation_security();
     }
 }
 
 fn protected_operation_security(method: &str) -> serde_json::Value {
     if method == "get" {
-        serde_json::json!([{ "nativeBearer": [] }, { "browserSession": [] }])
+        serde_json::json!([
+            { "nativeBearer": [] },
+            { "browserSessionHttps": [] },
+            { "browserSessionHttp": [] }
+        ])
     } else {
         serde_json::json!([
             { "nativeBearer": [] },
-            { "browserSession": [], "csrfToken": [] }
+            { "browserSessionHttps": [], "csrfTokenHttps": [] },
+            { "browserSessionHttp": [], "csrfTokenHttp": [] }
         ])
     }
+}
+
+fn browser_session_security() -> serde_json::Value {
+    serde_json::json!([
+        { "browserSessionHttps": [] },
+        { "browserSessionHttp": [] }
+    ])
+}
+
+fn browser_mutation_security() -> serde_json::Value {
+    serde_json::json!([
+        { "browserSessionHttps": [], "csrfTokenHttps": [] },
+        { "browserSessionHttp": [], "csrfTokenHttp": [] }
+    ])
 }
 
 fn install_security_scheme(document: &mut serde_json::Value) {
@@ -1216,16 +1266,27 @@ fn install_security_scheme(document: &mut serde_json::Value) {
         "type": "http",
         "scheme": "bearer"
     });
-    document["components"]["securitySchemes"]["browserSession"] = serde_json::json!({
+    document["components"]["securitySchemes"]["browserSessionHttps"] = serde_json::json!({
         "type": "apiKey",
         "in": "cookie",
         "name": "__Host-qingyu_session"
     });
-    document["components"]["securitySchemes"]["csrfToken"] = serde_json::json!({
+    document["components"]["securitySchemes"]["browserSessionHttp"] = serde_json::json!({
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "qingyu_session"
+    });
+    document["components"]["securitySchemes"]["csrfTokenHttps"] = serde_json::json!({
         "type": "apiKey",
         "in": "header",
         "name": "X-CSRF-Token",
         "x-csrf-cookie-name": "__Host-qingyu_csrf"
+    });
+    document["components"]["securitySchemes"]["csrfTokenHttp"] = serde_json::json!({
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-CSRF-Token",
+        "x-csrf-cookie-name": "qingyu_csrf"
     });
 }
 
@@ -1254,6 +1315,15 @@ fn install_operation_inputs(document: &mut serde_json::Value) {
             ("limit", "PageLimit", false),
             ("parent", "WorkspaceRelativePath", false),
         ],
+    );
+    push_parameter(
+        document,
+        "/api/v1/sync/runs/{runId}",
+        "get",
+        "runId",
+        "path",
+        "RunId",
+        true,
     );
     push_parameter(
         document,
@@ -1737,6 +1807,13 @@ fn install_operation_errors(document: &mut serde_json::Value) {
     );
     add_errors_with(
         document,
+        "/api/v1/sync/runs/{runId}",
+        "get",
+        TRANSPORT,
+        &["invalid_request", "sync_not_ready", "resource_not_found"],
+    );
+    add_errors_with(
+        document,
         "/api/v1/sync/runs",
         "post",
         TRANSPORT,
@@ -1774,9 +1851,10 @@ fn add_operation_errors(
     let csrf_required = operation_mut(document, path, method)["security"]
         .as_array()
         .is_some_and(|requirements| {
-            requirements
-                .iter()
-                .any(|requirement| requirement.get("csrfToken").is_some())
+            requirements.iter().any(|requirement| {
+                requirement.get("csrfTokenHttps").is_some()
+                    || requirement.get("csrfTokenHttp").is_some()
+            })
         });
     if csrf_required {
         grouped.entry(403).or_default().push("csrf_rejected");

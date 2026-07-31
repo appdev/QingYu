@@ -39,8 +39,10 @@ use crate::{
 
 use super::{api_error, routes::parse_sensitive_auth_json, ApiState};
 
-pub(crate) const SESSION_COOKIE_NAME: &str = "__Host-qingyu_session";
-pub(crate) const CSRF_COOKIE_NAME: &str = "__Host-qingyu_csrf";
+pub(crate) const HTTPS_SESSION_COOKIE_NAME: &str = "__Host-qingyu_session";
+pub(crate) const HTTPS_CSRF_COOKIE_NAME: &str = "__Host-qingyu_csrf";
+pub(crate) const HTTP_SESSION_COOKIE_NAME: &str = "qingyu_session";
+pub(crate) const HTTP_CSRF_COOKIE_NAME: &str = "qingyu_csrf";
 pub(crate) const CSRF_HEADER_NAME: &str = "x-csrf-token";
 
 const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
@@ -526,10 +528,11 @@ pub(crate) fn request_intent(method: &axum::http::Method) -> RequestIntent {
 pub(crate) fn browser_credentials(
     headers: &HeaderMap,
     intent: RequestIntent,
+    secure_cookies: bool,
 ) -> Result<Option<(BrowserSessionCredential, Option<BrowserCsrfProof>)>, BrowserCredentialParseError>
 {
-    let Some(credential) =
-        one_session_cookie(headers).map_err(|()| BrowserCredentialParseError::Session)?
+    let Some(credential) = one_session_cookie(headers, secure_cookies)
+        .map_err(|()| BrowserCredentialParseError::Session)?
     else {
         return Ok(None);
     };
@@ -549,7 +552,15 @@ pub(crate) enum BrowserCredentialParseError {
     Csrf,
 }
 
-fn one_session_cookie(headers: &HeaderMap) -> Result<Option<BrowserSessionCredential>, ()> {
+fn one_session_cookie(
+    headers: &HeaderMap,
+    secure_cookies: bool,
+) -> Result<Option<BrowserSessionCredential>, ()> {
+    let session_cookie_name = if secure_cookies {
+        HTTPS_SESSION_COOKIE_NAME
+    } else {
+        HTTP_SESSION_COOKIE_NAME
+    };
     let values = headers.get_all(header::COOKIE);
     if values.iter().count() > 1 {
         return Err(());
@@ -563,7 +574,7 @@ fn one_session_cookie(headers: &HeaderMap) -> Result<Option<BrowserSessionCreden
         let Some((cookie_name, cookie_value)) = cookie.trim().split_once('=') else {
             return Err(());
         };
-        if cookie_name == SESSION_COOKIE_NAME {
+        if cookie_name == session_cookie_name {
             if found.is_some() || cookie_value.is_empty() {
                 return Err(());
             }
@@ -620,7 +631,7 @@ async fn initialize(State(state): State<ApiState>, request: Request<Body>) -> Re
     };
     let (token, password) = request.into_parts();
     match host.initialize(client_id, token, password).await {
-        Ok(session) => session_response(session),
+        Ok(session) => session_response(session, state.policy.secure_cookies),
         Err(error) => operation_error_response(error),
     }
 }
@@ -638,7 +649,7 @@ async fn login(State(state): State<ApiState>, request: Request<Body>) -> Respons
         Err(response) => return response,
     };
     match host.login(client_id, request.into_password()).await {
-        Ok(session) => session_response(session),
+        Ok(session) => session_response(session, state.policy.secure_cookies),
         Err(error) => operation_error_response(error),
     }
 }
@@ -658,7 +669,7 @@ async fn logout(State(state): State<ApiState>, mut request: Request<Body>) -> Re
         return api_error(ErrorCode::Unauthorized, None);
     };
     match host.logout(session).await {
-        Ok(()) => cleared_session_response(),
+        Ok(()) => cleared_session_response(state.policy.secure_cookies),
         Err(error) => operation_error_response(error),
     }
 }
@@ -682,7 +693,7 @@ async fn change_password(State(state): State<ApiState>, mut request: Request<Bod
         .change_password(session, current_password, new_password)
         .await
     {
-        Ok(()) => cleared_session_response(),
+        Ok(()) => cleared_session_response(state.policy.secure_cookies),
         Err(error) => operation_error_response(error),
     }
 }
@@ -701,16 +712,28 @@ fn authenticated_session_dto() -> ServerSessionDto {
     }
 }
 
-fn session_response(session: IssuedSession) -> Response {
+fn session_response(session: IssuedSession, secure_cookies: bool) -> Response {
     let mut response = (StatusCode::CREATED, Json(authenticated_session_dto())).into_response();
-    append_session_cookies(&mut response, session.credential(), session.csrf_token());
+    append_session_cookies(
+        &mut response,
+        session.credential(),
+        session.csrf_token(),
+        secure_cookies,
+    );
     response
 }
 
-fn append_session_cookies(response: &mut Response, credential: &str, csrf: &str) {
-    let session =
-        format!("{SESSION_COOKIE_NAME}={credential}; Path=/; Secure; HttpOnly; SameSite=Strict");
-    let csrf = format!("{CSRF_COOKIE_NAME}={csrf}; Path=/; Secure; SameSite=Strict");
+fn append_session_cookies(
+    response: &mut Response,
+    credential: &str,
+    csrf: &str,
+    secure_cookies: bool,
+) {
+    let (session_cookie_name, csrf_cookie_name, secure_attribute) = cookie_profile(secure_cookies);
+    let session = format!(
+        "{session_cookie_name}={credential}; Path=/{secure_attribute}; HttpOnly; SameSite=Strict"
+    );
+    let csrf = format!("{csrf_cookie_name}={csrf}; Path=/{secure_attribute}; SameSite=Strict");
     response.headers_mut().append(
         header::SET_COOKIE,
         HeaderValue::from_str(&session).expect("generated session cookies are valid headers"),
@@ -721,11 +744,14 @@ fn append_session_cookies(response: &mut Response, credential: &str, csrf: &str)
     );
 }
 
-fn cleared_session_response() -> Response {
+fn cleared_session_response(secure_cookies: bool) -> Response {
     let mut response = StatusCode::NO_CONTENT.into_response();
+    let (session_cookie_name, csrf_cookie_name, secure_attribute) = cookie_profile(secure_cookies);
     for cookie in [
-        format!("{SESSION_COOKIE_NAME}=; Path=/; Max-Age=0; Secure; HttpOnly; SameSite=Strict"),
-        format!("{CSRF_COOKIE_NAME}=; Path=/; Max-Age=0; Secure; SameSite=Strict"),
+        format!(
+            "{session_cookie_name}=; Path=/; Max-Age=0{secure_attribute}; HttpOnly; SameSite=Strict"
+        ),
+        format!("{csrf_cookie_name}=; Path=/; Max-Age=0{secure_attribute}; SameSite=Strict"),
     ] {
         response.headers_mut().append(
             header::SET_COOKIE,
@@ -733,6 +759,18 @@ fn cleared_session_response() -> Response {
         );
     }
     response
+}
+
+fn cookie_profile(secure_cookies: bool) -> (&'static str, &'static str, &'static str) {
+    if secure_cookies {
+        (
+            HTTPS_SESSION_COOKIE_NAME,
+            HTTPS_CSRF_COOKIE_NAME,
+            "; Secure",
+        )
+    } else {
+        (HTTP_SESSION_COOKIE_NAME, HTTP_CSRF_COOKIE_NAME, "")
+    }
 }
 
 pub(crate) fn operation_error_response(error: ServerApiOperationError) -> Response {

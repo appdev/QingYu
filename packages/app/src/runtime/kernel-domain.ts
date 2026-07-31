@@ -41,6 +41,20 @@ export type KernelRuntimeCapabilities = {
   webdav: boolean;
 };
 
+export function hasRequiredKernelDomainCapabilities(
+  capabilities: KernelRuntimeCapabilities,
+): boolean {
+  return (
+    capabilities.documents === true &&
+    capabilities.history === true &&
+    capabilities.portableSettings === true &&
+    capabilities.resources === true &&
+    capabilities.search === true &&
+    capabilities.settings === true &&
+    capabilities.sync === true
+  );
+}
+
 export type KernelRuntimeSnapshot = {
   capabilities: KernelRuntimeCapabilities;
   instanceId: string;
@@ -116,6 +130,82 @@ export type KernelHistoryPageSnapshot = {
   items: KernelHistoryEntrySnapshot[];
   nextCursor: KernelPageCursor | null;
   workspaceGeneration: KernelWorkspaceGeneration;
+};
+
+export type KernelReadDocumentHistoryInput = {
+  locator: KernelDocumentLocator;
+  snapshotId: KernelHistorySnapshotId;
+  workspaceGeneration: KernelWorkspaceGeneration;
+};
+
+export type KernelHistorySnapshot = {
+  contents: string;
+  documentLocator: KernelDocumentLocator;
+  revision: KernelRevision;
+  snapshotId: KernelHistorySnapshotId;
+  workspaceGeneration: KernelWorkspaceGeneration;
+};
+
+export type KernelResourceKind = "attachment" | "image";
+
+export type KernelResourceSnapshot = {
+  id: string;
+  kind: KernelResourceKind;
+  mediaType: string;
+  modifiedAt: string;
+  name: string;
+  parent: KernelWorkspaceRelativePath;
+  previewable: boolean;
+  relativePath: KernelWorkspaceRelativePath;
+  revision: KernelRevision;
+  sizeBytes: number;
+  workspaceGeneration: KernelWorkspaceGeneration;
+};
+
+export type KernelInventoryEntry =
+  | { document: KernelDocumentEntrySnapshot; entryType: "document" }
+  | { entryType: "resource"; resource: KernelResourceSnapshot };
+
+export type KernelInventorySnapshot = {
+  items: readonly KernelInventoryEntry[];
+  workspaceGeneration: KernelWorkspaceGeneration;
+};
+
+export type KernelListResourcesInput = {
+  parent?: KernelWorkspaceRelativePath;
+  workspaceGeneration: KernelWorkspaceGeneration;
+};
+
+export type KernelOpenResourceInput = {
+  id: string;
+  kind: KernelResourceKind;
+  workspaceGeneration: KernelWorkspaceGeneration;
+};
+
+export type KernelResourceBody = {
+  body: Blob;
+  mediaType: string;
+};
+
+export type KernelInvalidationScope =
+  | "workspace"
+  | "documents"
+  | "resources"
+  | "settings"
+  | "sync-config"
+  | "sync-status";
+
+export type KernelInvalidationNotice = {
+  documentChange?: "content" | "snapshot" | "tree";
+  paths?: readonly KernelWorkspaceRelativePath[];
+  scopes: readonly KernelInvalidationScope[];
+};
+
+export type KernelInvalidationSource = {
+  readonly available: boolean;
+  readonly subscribe: (
+    listener: (notice: KernelInvalidationNotice) => unknown,
+  ) => () => unknown;
 };
 
 export type KernelPageInput = {
@@ -355,6 +445,7 @@ export type KernelDomainPort = {
     delete: (input: KernelDeleteDocumentInput) => Promise<undefined>;
     history: {
       list: (input: KernelListDocumentHistoryInput) => Promise<KernelHistoryPageSnapshot>;
+      read: (input: KernelReadDocumentHistoryInput) => Promise<KernelHistorySnapshot>;
       restore: (input: KernelRestoreDocumentHistoryInput) => Promise<KernelDocumentSnapshot>;
     };
     list: (input: KernelListDocumentsInput) => Promise<KernelDocumentPageSnapshot>;
@@ -362,6 +453,11 @@ export type KernelDomainPort = {
     read: (input: KernelReadDocumentInput) => Promise<KernelDocumentSnapshot>;
     search: (input: KernelSearchDocumentsInput) => Promise<KernelSearchPageSnapshot>;
     update: (input: KernelUpdateDocumentInput) => Promise<KernelDocumentSnapshot>;
+  };
+  invalidations: KernelInvalidationSource;
+  resources: {
+    list: (input: KernelListResourcesInput) => Promise<KernelInventorySnapshot>;
+    open: (input: KernelOpenResourceInput) => Promise<KernelResourceBody>;
   };
   runtime: {
     read: () => Promise<KernelRuntimeSnapshot>;
@@ -403,6 +499,7 @@ export function createUnavailableKernelDomainPort(): KernelDomainPort {
       delete: rejectUnavailable,
       history: {
         list: rejectUnavailable,
+        read: rejectUnavailable,
         restore: rejectUnavailable,
       },
       list: rejectUnavailable,
@@ -410,6 +507,14 @@ export function createUnavailableKernelDomainPort(): KernelDomainPort {
       read: rejectUnavailable,
       search: rejectUnavailable,
       update: rejectUnavailable,
+    },
+    invalidations: {
+      available: false,
+      subscribe: () => () => undefined,
+    },
+    resources: {
+      list: rejectUnavailable,
+      open: rejectUnavailable,
     },
     runtime: {
       read: rejectUnavailable,

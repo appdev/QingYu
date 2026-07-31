@@ -7,7 +7,6 @@ mod build_support;
 const MCP_COMMANDS: &[&str] = &[
     "get_mcp_settings",
     "update_mcp_settings",
-    "set_mcp_primary_workspace",
     "get_mcp_health",
     "list_mcp_audit_entries",
     "clear_mcp_audit_entries",
@@ -87,9 +86,11 @@ const MOBILE_COMMANDS: &[&str] = &[
 
 const DESKTOP_COMMANDS: &[&str] = &[
     "read_native_kernel_bootstrap",
+    "read_desktop_kernel_startup_state",
+    "initialize_desktop_kernel_workspace",
+    "retry_desktop_kernel_workspace",
     "get_mcp_settings",
     "update_mcp_settings",
-    "set_mcp_primary_workspace",
     "get_mcp_health",
     "list_mcp_audit_entries",
     "clear_mcp_audit_entries",
@@ -103,7 +104,6 @@ const DESKTOP_COMMANDS: &[&str] = &[
     "commit_desktop_runtime_store_changes",
     "read_primary_workspace_state",
     "write_primary_workspace_state",
-    "acknowledge_path_guard",
     "prepare_desktop_notebook_target",
     "discard_prepared_desktop_notebook_target",
     "list_themes",
@@ -181,31 +181,11 @@ const DESKTOP_COMMANDS: &[&str] = &[
     "set_editor_window_restore_state",
     "list_editor_window_restore_states",
     "list_system_font_families",
-    "load_sync_config",
-    "enable_sync_config",
-    "patch_sync_config",
-    "recover_sync_config",
-    "reset_sync_config",
     "load_sync_config_editing",
     "set_sync_config_editing",
     "request_sync_config_apply",
     "cancel_sync_config_apply",
-    "load_sync_status",
-    "list_remote_notebooks",
-    "bind_dejavu_repository",
-    "load_dejavu_key_state",
-    "initialize_dejavu_global_key",
-    "export_dejavu_global_key",
-    "change_global_key",
-    "load_dejavu_repository_status",
-    "list_dejavu_conflict_history",
-    "read_dejavu_conflict_history",
-    "rebuild_local_repository",
-    "stop_repository_sync",
-    "purge_remote_repository",
-    "delete_remote_repository",
-    "sync_application",
-    "test_sync_connection",
+    "settle_kernel_sync_config_apply",
     "is_document_in_workspace",
     "list_managed_workspace_names",
     "resolve_managed_workspace_root",
@@ -382,7 +362,8 @@ fn builder_boundary_production_sources_and_current_guidance_are_application_scop
             "obsolete project-scoped MCP production contract remains: {forbidden}"
         );
     }
-    assert!(production.contains("set_mcp_primary_workspace"));
+    let removed_renderer_authority = ["set_mcp_primary", "_workspace"].concat();
+    assert!(!production.contains(&removed_renderer_authority));
 
     let guidance = [
         source("../../../docs/qingyu-mcp.md"),
@@ -416,7 +397,6 @@ fn builder_boundary_app_harness_uses_the_final_application_mcp_contract() {
         "createApplicationMcpRuntime",
         "localServiceAvailable: true",
         "policyAvailable: true",
-        "setPrimaryWorkspace: vi.fn",
         "getSettings: vi.fn",
         "updateSettings: vi.fn",
     ] {
@@ -426,6 +406,7 @@ fn builder_boundary_app_harness_uses_the_final_application_mcp_contract() {
         );
     }
     assert!(!harness.contains("activateProject"));
+    assert!(!harness.contains("setPrimaryWorkspace"));
 }
 
 #[test]
@@ -440,21 +421,119 @@ fn builder_boundary_mobile_registers_only_approved_shared_commands() {
 }
 
 #[test]
-fn builder_boundary_native_kernel_bootstrap_is_desktop_only_and_dormant() {
+fn builder_boundary_native_kernel_bootstrap_is_desktop_only_and_production_owned() {
     let desktop = source("src/desktop_runtime.rs");
+    let host = source("src/desktop_kernel_runtime.rs");
     let mobile = source("src/mobile_runtime.rs");
     let desktop_commands = handler_identifiers(&desktop);
     let mobile_commands = handler_identifiers(&mobile);
 
     assert!(desktop_commands.contains("read_native_kernel_bootstrap"));
     assert!(!mobile_commands.contains("read_native_kernel_bootstrap"));
-    assert!(
-        desktop.contains("app.manage(crate::kernel_bootstrap::NativeKernelBootstrapOwner::new())")
-    );
-    assert!(!desktop.contains(".publish("));
-    assert!(!desktop.contains("KernelHostSupervisor"));
-    assert!(!desktop.contains(".manage(crate::kernel_host"));
-    assert!(!desktop.contains("crate::kernel_host::"));
+    assert!(desktop.contains("NativeKernelBootstrapOwner::new()"));
+    assert!(host.contains("KernelHostSupervisor::new_with_bootstrap"));
+    assert!(host.contains("DesktopKernelOwner::new"));
+    assert!(host.contains("NativeKernelProcessFactory::for_current_application"));
+    assert!(desktop.contains("resolve_desktop_primary_workspace"));
+    assert!(desktop.contains("DesktopPrimaryWorkspaceResolution::Unselected"));
+    assert!(desktop.contains("DesktopPrimaryWorkspaceResolution::Selected"));
+    assert!(desktop.contains("app.manage(bootstrap.clone())"));
+    assert!(desktop.contains("app.manage(runtime.clone())"));
+    assert!(host.contains("owner: Option<Arc<DesktopKernelOwner>>"));
+    assert!(desktop.contains("owner.stop().await"));
+    assert!(host.contains("qingyu://kernel-bootstrap-changed"));
+    assert!(!mobile.contains("KernelHostSupervisor"));
+}
+
+#[test]
+fn builder_boundary_workspace_initialization_keeps_persistence_off_the_ipc_runtime_thread() {
+    let desktop = source("src/desktop_runtime.rs");
+    let start = desktop
+        .find("async fn initialize_desktop_kernel_workspace")
+        .expect("desktop workspace initialization must be asynchronous");
+    let end = desktop[start..]
+        .find("fn retry_desktop_kernel_workspace")
+        .map(|offset| start + offset)
+        .expect("desktop workspace retry command boundary");
+    let initialization = &desktop[start..end];
+
+    assert!(initialization.contains("tauri::async_runtime::spawn_blocking"));
+    assert!(initialization.contains("initialize_desktop_primary_workspace"));
+    assert!(initialization.contains("recover_invalid_desktop_primary_workspace"));
+}
+
+#[test]
+fn builder_boundary_workspace_retry_authenticates_the_main_caller_before_state_changes() {
+    let desktop = source("src/desktop_runtime.rs");
+    let start = desktop
+        .find("async fn retry_desktop_kernel_workspace")
+        .expect("desktop workspace retry command");
+    let end = desktop[start..]
+        .find("async fn resolve_and_start_desktop_kernel")
+        .map(|offset| start + offset)
+        .expect("desktop workspace retry boundary");
+    let retry = &desktop[start..end];
+
+    let authenticate = retry
+        .find("main_renderer_origin(&window)?")
+        .expect("retry must authenticate the configured main renderer");
+    let reserve = retry
+        .find("reserve_resolution_retry")
+        .expect("retry resolution reservation");
+    let restart = retry.find("retry_selected").expect("selected retry");
+    assert!(authenticate < reserve);
+    assert!(authenticate < restart);
+}
+
+#[test]
+fn builder_boundary_startup_resolution_keeps_store_io_off_tauri_setup() {
+    let desktop = source("src/desktop_runtime.rs");
+    let resolver_start = desktop
+        .find("async fn resolve_and_start_desktop_kernel")
+        .expect("desktop startup resolver");
+    let resolver_end = desktop[resolver_start..]
+        .find("fn activate_normal_ui")
+        .map(|offset| resolver_start + offset)
+        .expect("desktop startup resolver boundary");
+    let resolver = &desktop[resolver_start..resolver_end];
+
+    assert!(resolver.contains("tauri::async_runtime::spawn_blocking"));
+    assert!(resolver.contains("resolve_desktop_primary_workspace"));
+    assert!(desktop.contains("DesktopKernelStartupStatus::Resolving"));
+    assert!(desktop
+        .contains("resolve_and_start_desktop_kernel(startup_app, renderer_origin, runtime).await"));
+}
+
+#[test]
+fn builder_boundary_default_denies_native_commands_in_every_launch_mode() {
+    let desktop = source("src/desktop_runtime.rs");
+    let guard_start = desktop
+        .find("fn guarded_desktop_invoke_handler")
+        .expect("desktop invoke guard");
+    let guard_end = desktop[guard_start..]
+        .find("fn desktop_renderer_origin")
+        .map(|offset| guard_start + offset)
+        .expect("desktop invoke guard boundary");
+    let guard = &desktop[guard_start..guard_end];
+
+    assert!(guard.contains("!crate::writer_authority::normal_desktop_command_is_allowed"));
+    assert!(!guard.contains("launch_mode == DesktopLaunchMode::Normal"));
+}
+
+#[test]
+fn builder_boundary_theme_migration_writes_finish_before_kernel_publication() {
+    let desktop = source("src/desktop_runtime.rs");
+    let migration = source("src/themes/migration.rs");
+    let migration_call = desktop
+        .find("initialize_catalog_before_kernel")
+        .expect("desktop startup should finish legacy theme migration");
+    let kernel_install = desktop
+        .find("DesktopKernelRuntimeState::new")
+        .expect("desktop startup should install the Kernel runtime");
+
+    assert!(migration_call < kernel_install);
+    assert!(migration.contains("DesktopKernelRuntimeState"));
+    assert!(migration.contains("initialize_catalog_files(&catalog, 0)"));
 }
 
 #[test]
@@ -527,11 +606,29 @@ fn builder_boundary_mobile_back_intercepts_only_uncoded_exit_requests() {
     assert!(runtime.contains("commands::handle_native_sync_exit(app, Some(code), api)"));
 
     let desktop_exit = source("src/app_exit.rs");
-    assert!(desktop_exit.contains("handle_native_sync_exit(app, code, api)"));
+    assert!(!desktop_exit.contains("handle_native_sync_exit"));
 
     let mobile_back = source("src/mobile_back.rs");
     assert!(mobile_back.contains("pub(crate) fn complete_mobile_back"));
     assert!(mobile_back.contains("app.exit(0)"));
+}
+
+#[test]
+fn desktop_exit_terminally_shuts_down_mcp_before_the_child_kernel() {
+    let runtime = source("src/desktop_runtime.rs");
+    let exit = runtime
+        .find("tauri::RunEvent::Exit =>")
+        .map(|start| &runtime[start..])
+        .expect("desktop exit handler");
+    let mcp_shutdown = exit
+        .find("state.shutdown().await")
+        .expect("terminal MCP shutdown");
+    let kernel_shutdown = exit
+        .find("owner.stop().await")
+        .expect("child Kernel shutdown");
+
+    assert!(mcp_shutdown < kernel_shutdown);
+    assert!(!exit[..kernel_shutdown].contains("controller.stop().await"));
 }
 
 #[test]
@@ -708,7 +805,7 @@ fn builder_boundary_local_path_and_arbitrary_attachment_commands_are_desktop_onl
 fn builder_boundary_has_no_project_owned_sync_commands_or_modules() {
     let desktop = source("src/desktop_runtime.rs");
     let desktop = desktop
-        .split("#[cfg(test)]")
+        .split("\n#[cfg(test)]\nmod tests")
         .next()
         .expect("desktop runtime production source");
     let mobile = source("src/mobile_runtime.rs");
@@ -1127,22 +1224,26 @@ fn builder_boundary_theme_quarantine_cleanup_has_platform_safe_root_deletion() {
 }
 
 #[test]
-fn builder_boundary_installs_the_path_guard_graph_before_startup_on_both_platforms() {
-    for runtime_path in ["src/desktop_runtime.rs", "src/mobile_runtime.rs"] {
-        let runtime = source(runtime_path);
-        let install = runtime
-            .find("install_production_graph")
-            .unwrap_or_else(|| panic!("{runtime_path} should install the Dejavu graph"));
-        let startup = runtime
-            .find("trigger_startup")
-            .unwrap_or_else(|| panic!("{runtime_path} should retain the startup trigger"));
-        assert!(
-            install < startup,
-            "{runtime_path} consumed startup before graph installation"
-        );
-        assert!(runtime.contains("PathGuardCoordinatorOwner::default()"));
-        assert!(runtime.contains("acknowledge_path_guard"));
-    }
+fn builder_boundary_keeps_the_legacy_path_guard_graph_out_of_desktop() {
+    let mobile = source("src/mobile_runtime.rs");
+    let mobile_install = mobile
+        .find("install_production_graph")
+        .expect("mobile should install the Dejavu graph");
+    let mobile_startup = mobile
+        .find("trigger_startup")
+        .expect("mobile should retain the startup trigger");
+    assert!(mobile_install < mobile_startup);
+    assert!(mobile.contains("PathGuardCoordinatorOwner::default()"));
+    assert!(mobile.contains("acknowledge_path_guard"));
+
+    let desktop = source("src/desktop_runtime.rs");
+    let desktop = desktop
+        .split("#[cfg(test)]")
+        .next()
+        .expect("desktop runtime production source");
+    assert!(!desktop.contains("install_production_graph"));
+    assert!(!desktop.contains("trigger_startup()"));
+    assert!(!desktop.contains("PathGuardCoordinatorOwner::default()"));
 
     let graph = source("src/dejavu_sync.rs");
     let startup_cleanup = graph
@@ -1178,30 +1279,28 @@ fn builder_boundary_installs_the_path_guard_graph_before_startup_on_both_platfor
     let maintenance = source("src/dejavu_sync/maintenance.rs");
     assert!(maintenance.contains("spawn_on_tauri_runtime"));
     assert!(maintenance.contains("tauri::async_runtime::spawn(future)"));
-    for runtime_path in ["src/desktop_runtime.rs", "src/mobile_runtime.rs"] {
-        let runtime = source(runtime_path);
+    let mobile_runtime = source("src/mobile_runtime.rs");
+    assert!(
+        mobile_runtime.contains("if let Err(error) = crate::dejavu_sync::install_production_graph")
+    );
+    assert!(mobile_runtime.contains("Dejavu sync initialization failed"));
+    for command in [
+        "rebuild_local_repository",
+        "stop_repository_sync",
+        "change_global_key",
+        "load_dejavu_key_state",
+        "initialize_dejavu_global_key",
+        "export_dejavu_global_key",
+        "purge_remote_repository",
+        "delete_remote_repository",
+        "list_dejavu_conflict_history",
+        "load_dejavu_repository_status",
+        "read_dejavu_conflict_history",
+    ] {
         assert!(
-            runtime.contains("if let Err(error) = crate::dejavu_sync::install_production_graph")
+            mobile_runtime.contains(&format!("crate::dejavu_sync::commands::{command},")),
+            "mobile runtime should register {command}"
         );
-        assert!(runtime.contains("Dejavu sync initialization failed"));
-        for command in [
-            "rebuild_local_repository",
-            "stop_repository_sync",
-            "change_global_key",
-            "load_dejavu_key_state",
-            "initialize_dejavu_global_key",
-            "export_dejavu_global_key",
-            "purge_remote_repository",
-            "delete_remote_repository",
-            "list_dejavu_conflict_history",
-            "load_dejavu_repository_status",
-            "read_dejavu_conflict_history",
-        ] {
-            assert!(
-                runtime.contains(&format!("crate::dejavu_sync::commands::{command},")),
-                "{runtime_path} should register {command}"
-            );
-        }
     }
 
     let sync_config = source("src/sync_config.rs");

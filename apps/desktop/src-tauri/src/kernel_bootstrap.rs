@@ -15,8 +15,14 @@ use std::{
 
 use qingyu_kernel::contract::InstanceId;
 use serde::Serializer;
+use tokio::sync::mpsc;
 
-use crate::kernel_host::{NativeKernelAccess, NativeKernelCredentialLease};
+use crate::kernel_host::{
+    kernel_endpoint_record::{
+        KernelEndpointRecord, KernelEndpointRecordReader, KernelEndpointRecordWriter,
+    },
+    NativeKernelAccess, NativeKernelCredentialLease,
+};
 
 const NATIVE_KERNEL_BOOTSTRAP_VERSION: u16 = 1;
 
@@ -143,6 +149,7 @@ pub(crate) struct NativeKernelBootstrapOwner {
 
 struct NativeKernelBootstrapShared {
     state: Mutex<NativeKernelBootstrapState>,
+    endpoint_writer: KernelEndpointRecordWriter,
 }
 
 struct NativeKernelBootstrapState {
@@ -150,6 +157,7 @@ struct NativeKernelBootstrapState {
     last_generation: u64,
     next_supervisor_epoch: u64,
     active_supervisor_epoch: Option<u64>,
+    subscribers: Vec<mpsc::UnboundedSender<NativeKernelBootstrapSnapshot>>,
 }
 
 #[derive(Clone)]
@@ -163,6 +171,7 @@ struct NativeKernelBootstrapSessionInner {
     closed: AtomicBool,
 }
 
+#[derive(Clone)]
 enum NativeKernelBootstrapPublication {
     Dormant,
     Lifecycle {
@@ -170,6 +179,41 @@ enum NativeKernelBootstrapPublication {
         generation: u64,
     },
     Ready(NativeKernelAccess),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) enum NativeKernelBootstrapPhase {
+    Dormant,
+    Starting,
+    Retrying,
+    Ready,
+    Failed,
+}
+
+#[derive(Clone, Debug)]
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) struct NativeKernelBootstrapSnapshot {
+    pub(crate) phase: NativeKernelBootstrapPhase,
+    pub(crate) generation: Option<u64>,
+    pub(crate) access: Option<NativeKernelAccess>,
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) struct NativeKernelBootstrapSubscription {
+    receiver: mpsc::UnboundedReceiver<NativeKernelBootstrapSnapshot>,
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+impl NativeKernelBootstrapSubscription {
+    pub(crate) async fn recv(&mut self) -> Option<NativeKernelBootstrapSnapshot> {
+        self.receiver.recv().await
+    }
+
+    #[cfg(test)]
+    fn try_recv(&mut self) -> Result<NativeKernelBootstrapSnapshot, mpsc::error::TryRecvError> {
+        self.receiver.try_recv()
+    }
 }
 
 impl NativeKernelBootstrapPublication {
@@ -186,10 +230,37 @@ impl NativeKernelBootstrapPublication {
             access.credential.revoke();
         }
     }
+
+    fn snapshot(&self) -> NativeKernelBootstrapSnapshot {
+        match self {
+            Self::Dormant => NativeKernelBootstrapSnapshot {
+                phase: NativeKernelBootstrapPhase::Dormant,
+                generation: None,
+                access: None,
+            },
+            Self::Lifecycle { status, generation } => NativeKernelBootstrapSnapshot {
+                phase: match status {
+                    NativeKernelBootstrapStatus::Dormant => NativeKernelBootstrapPhase::Dormant,
+                    NativeKernelBootstrapStatus::Starting => NativeKernelBootstrapPhase::Starting,
+                    NativeKernelBootstrapStatus::Retrying => NativeKernelBootstrapPhase::Retrying,
+                    NativeKernelBootstrapStatus::Ready => NativeKernelBootstrapPhase::Ready,
+                    NativeKernelBootstrapStatus::Failed => NativeKernelBootstrapPhase::Failed,
+                },
+                generation: Some(*generation),
+                access: None,
+            },
+            Self::Ready(access) => NativeKernelBootstrapSnapshot {
+                phase: NativeKernelBootstrapPhase::Ready,
+                generation: Some(access.endpoint.generation),
+                access: Some(access.clone()),
+            },
+        }
+    }
 }
 
 impl NativeKernelBootstrapOwner {
     pub(crate) fn new() -> Self {
+        let (endpoint_writer, _endpoint_reader) = KernelEndpointRecord::create();
         Self {
             shared: Arc::new(NativeKernelBootstrapShared {
                 state: Mutex::new(NativeKernelBootstrapState {
@@ -197,9 +268,31 @@ impl NativeKernelBootstrapOwner {
                     last_generation: 0,
                     next_supervisor_epoch: 0,
                     active_supervisor_epoch: None,
+                    subscribers: Vec::new(),
                 }),
+                endpoint_writer,
             }),
         }
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn endpoint_reader(&self) -> KernelEndpointRecordReader {
+        self.shared.endpoint_writer.reader()
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn subscribe(&self) -> Result<NativeKernelBootstrapSubscription, String> {
+        let (sender, receiver) = mpsc::unbounded_channel();
+        let mut state = self
+            .shared
+            .state
+            .lock()
+            .map_err(|_| bootstrap_unavailable())?;
+        sender
+            .send(state.publication.snapshot())
+            .map_err(|_| bootstrap_unavailable())?;
+        state.subscribers.push(sender);
+        Ok(NativeKernelBootstrapSubscription { receiver })
     }
 
     pub(crate) fn read(&self) -> Result<NativeKernelBootstrap, String> {
@@ -280,6 +373,7 @@ impl NativeKernelBootstrapSession {
                 if self.owns_transition(&state) {
                     state.publication.revoke_access();
                 }
+                self.inner.shared.endpoint_writer.close();
                 return Err(bootstrap_unavailable());
             }
         };
@@ -303,9 +397,22 @@ impl NativeKernelBootstrapSession {
             access.credential.revoke();
             return Err(bootstrap_unavailable());
         }
+        let mut endpoints = match self.inner.shared.endpoint_writer.transaction() {
+            Ok(endpoints) => endpoints,
+            Err(_) => {
+                access.credential.revoke();
+                return Err(bootstrap_unavailable());
+            }
+        };
+        endpoints
+            .replace(access.clone())
+            .map_err(|_| bootstrap_unavailable())?;
         state.last_generation = generation;
         state.publication.revoke_access();
         state.publication = NativeKernelBootstrapPublication::Ready(access);
+        notify_committed(&mut state);
+        drop(state);
+        drop(endpoints);
         Ok(())
     }
 
@@ -322,10 +429,20 @@ impl NativeKernelBootstrapSession {
         if self.is_closed() || generation <= state.last_generation {
             return Err(bootstrap_unavailable());
         }
-        match state.active_supervisor_epoch {
-            None => state.active_supervisor_epoch = self.inner.epoch,
-            Some(epoch) if Some(epoch) == self.inner.epoch => {}
+        let claims_supervisor = match state.active_supervisor_epoch {
+            None => true,
+            Some(epoch) if Some(epoch) == self.inner.epoch => false,
             Some(_) => return Err(bootstrap_unavailable()),
+        };
+        let mut endpoints = self
+            .inner
+            .shared
+            .endpoint_writer
+            .transaction()
+            .map_err(|_| bootstrap_unavailable())?;
+        endpoints.clear_through(generation);
+        if claims_supervisor {
+            state.active_supervisor_epoch = self.inner.epoch;
         }
         state.publication.revoke_access();
         state.last_generation = generation;
@@ -333,11 +450,18 @@ impl NativeKernelBootstrapSession {
             status: NativeKernelBootstrapStatus::Starting,
             generation,
         };
+        notify_committed(&mut state);
+        drop(state);
+        drop(endpoints);
         Ok(())
     }
 
     pub(crate) fn begin_retry(&self, generation: u64) -> Result<(), String> {
         self.begin_owned_lifecycle(NativeKernelBootstrapStatus::Retrying, generation)
+    }
+
+    pub(crate) fn retain_retrying_generation(&self, generation: u64) -> Result<bool, String> {
+        self.finish_generation(NativeKernelBootstrapStatus::Retrying, generation)
     }
 
     pub(crate) fn continue_start(&self, generation: u64) -> Result<(), String> {
@@ -359,10 +483,20 @@ impl NativeKernelBootstrapSession {
         {
             return Err(bootstrap_unavailable());
         }
+        let mut endpoints = self
+            .inner
+            .shared
+            .endpoint_writer
+            .transaction()
+            .map_err(|_| bootstrap_unavailable())?;
+        endpoints.clear_through(generation);
         state.publication = NativeKernelBootstrapPublication::Lifecycle {
             status: NativeKernelBootstrapStatus::Starting,
             generation,
         };
+        notify_committed(&mut state);
+        drop(state);
+        drop(endpoints);
         Ok(())
     }
 
@@ -384,9 +518,19 @@ impl NativeKernelBootstrapSession {
         {
             return Err(bootstrap_unavailable());
         }
+        let mut endpoints = self
+            .inner
+            .shared
+            .endpoint_writer
+            .transaction()
+            .map_err(|_| bootstrap_unavailable())?;
+        endpoints.clear_through(generation);
         state.publication.revoke_access();
         state.last_generation = generation;
         state.publication = NativeKernelBootstrapPublication::Lifecycle { status, generation };
+        notify_committed(&mut state);
+        drop(state);
+        drop(endpoints);
         Ok(())
     }
 
@@ -413,6 +557,7 @@ impl NativeKernelBootstrapSession {
                 if self.owns_transition(&state) {
                     state.publication.revoke_access();
                 }
+                self.inner.shared.endpoint_writer.close();
                 return Err(bootstrap_unavailable());
             }
         };
@@ -422,8 +567,18 @@ impl NativeKernelBootstrapSession {
         {
             return Ok(false);
         }
+        let mut endpoints = self
+            .inner
+            .shared
+            .endpoint_writer
+            .transaction()
+            .map_err(|_| bootstrap_unavailable())?;
+        endpoints.clear_through(generation);
         state.publication.revoke_access();
         state.publication = NativeKernelBootstrapPublication::Lifecycle { status, generation };
+        notify_committed(&mut state);
+        drop(state);
+        drop(endpoints);
         Ok(true)
     }
 
@@ -431,28 +586,36 @@ impl NativeKernelBootstrapSession {
         if self.is_closed() {
             return Ok(false);
         }
-        let cleared = match self.inner.shared.state.lock() {
-            Ok(mut state) => {
-                if !self.is_closed()
-                    && self.owns_transition(&state)
-                    && state.publication.generation() == Some(generation)
-                {
-                    state.publication.revoke_access();
-                    state.publication = NativeKernelBootstrapPublication::Dormant;
-                    true
-                } else {
-                    false
-                }
-            }
+        let mut state = match self.inner.shared.state.lock() {
+            Ok(state) => state,
             Err(poisoned) => {
                 let mut state = poisoned.into_inner();
                 if self.owns_transition(&state) {
                     state.publication.revoke_access();
                 }
+                self.inner.shared.endpoint_writer.close();
                 return Err(bootstrap_unavailable());
             }
         };
-        Ok(cleared)
+        if self.is_closed()
+            || !self.owns_transition(&state)
+            || state.publication.generation() != Some(generation)
+        {
+            return Ok(false);
+        }
+        let mut endpoints = self
+            .inner
+            .shared
+            .endpoint_writer
+            .transaction()
+            .map_err(|_| bootstrap_unavailable())?;
+        endpoints.clear_through(generation);
+        state.publication.revoke_access();
+        state.publication = NativeKernelBootstrapPublication::Dormant;
+        notify_committed(&mut state);
+        drop(state);
+        drop(endpoints);
+        Ok(true)
     }
 
     pub(crate) fn close(&self) {
@@ -478,9 +641,28 @@ impl NativeKernelBootstrapSessionInner {
             Err(poisoned) => poisoned.into_inner(),
         };
         if self.epoch.is_some() && state.active_supervisor_epoch == self.epoch {
-            state.publication.revoke_access();
-            state.publication = NativeKernelBootstrapPublication::Dormant;
-            state.active_supervisor_epoch = None;
+            let generation = state
+                .publication
+                .generation()
+                .unwrap_or(state.last_generation);
+            match self.shared.endpoint_writer.transaction() {
+                Ok(mut endpoints) => {
+                    endpoints.clear_through(generation);
+                    state.publication.revoke_access();
+                    state.publication = NativeKernelBootstrapPublication::Dormant;
+                    state.active_supervisor_epoch = None;
+                    notify_committed(&mut state);
+                    drop(state);
+                    drop(endpoints);
+                }
+                Err(_) => {
+                    self.shared.endpoint_writer.close();
+                    state.publication.revoke_access();
+                    state.publication = NativeKernelBootstrapPublication::Dormant;
+                    state.active_supervisor_epoch = None;
+                    notify_committed(&mut state);
+                }
+            }
         }
     }
 }
@@ -499,6 +681,13 @@ impl Drop for NativeKernelBootstrapShared {
         };
         state.publication.revoke_access();
     }
+}
+
+fn notify_committed(state: &mut NativeKernelBootstrapState) {
+    let snapshot = state.publication.snapshot();
+    state
+        .subscribers
+        .retain(|subscriber| subscriber.send(snapshot.clone()).is_ok());
 }
 
 fn bootstrap_unavailable() -> String {
@@ -535,6 +724,109 @@ mod tests {
                 "status": "dormant",
                 "bootstrapVersion": 1,
             })
+        );
+    }
+
+    #[tokio::test]
+    async fn ready_and_recovery_publications_commit_endpoint_access_before_notification() {
+        let owner = super::NativeKernelBootstrapOwner::new();
+        let reader = owner.endpoint_reader();
+        let mut publications = owner.subscribe().unwrap();
+        assert!(matches!(
+            publications.recv().await.unwrap().phase,
+            super::NativeKernelBootstrapPhase::Dormant
+        ));
+        let session = owner.open_supervisor_session();
+
+        session.begin_start(1).unwrap();
+        assert!(matches!(
+            publications.recv().await.unwrap().phase,
+            super::NativeKernelBootstrapPhase::Starting
+        ));
+        let (first, _first_temporary) = ready_access(1);
+        let first_credential = first.credential.clone();
+        session.publish(first).unwrap();
+        let ready = publications.recv().await.unwrap();
+        assert!(matches!(
+            ready.phase,
+            super::NativeKernelBootstrapPhase::Ready
+        ));
+        assert_eq!(
+            reader.read().unwrap().unwrap().endpoint.generation,
+            ready.access.unwrap().endpoint.generation
+        );
+
+        session.begin_retry(2).unwrap();
+        let retrying = publications.recv().await.unwrap();
+        assert!(matches!(
+            retrying.phase,
+            super::NativeKernelBootstrapPhase::Retrying
+        ));
+        assert!(reader.read().unwrap().is_none());
+        assert!(!first_credential.is_available());
+        session.continue_start(2).unwrap();
+        assert!(matches!(
+            publications.recv().await.unwrap().phase,
+            super::NativeKernelBootstrapPhase::Starting
+        ));
+        let (second, _second_temporary) = ready_access(2);
+        session.publish(second).unwrap();
+        let recovered = publications.recv().await.unwrap();
+        assert_eq!(recovered.generation, Some(2));
+        assert_eq!(reader.read().unwrap().unwrap().endpoint.generation, 2);
+    }
+
+    #[test]
+    fn failed_stop_clear_and_close_retire_endpoint_before_notifying() {
+        for transition in 0..4 {
+            let owner = super::NativeKernelBootstrapOwner::new();
+            let reader = owner.endpoint_reader();
+            let mut publications = owner.subscribe().unwrap();
+            let _initial = publications.try_recv().unwrap();
+            let session = owner.open_supervisor_session();
+            session.begin_start(1).unwrap();
+            let _starting = publications.try_recv().unwrap();
+            let (access, _temporary) = ready_access(1);
+            let credential = access.credential.clone();
+            session.publish(access).unwrap();
+            let _ready = publications.try_recv().unwrap();
+
+            match transition {
+                0 => assert!(session.fail_generation(1).unwrap()),
+                1 => assert!(session.finish_stop(1).unwrap()),
+                2 => assert!(session.clear_generation(1).unwrap()),
+                3 => session.close(),
+                _ => unreachable!(),
+            }
+
+            let _retired = publications.try_recv().unwrap();
+            assert!(reader.read().unwrap().is_none());
+            assert!(!credential.is_available());
+        }
+    }
+
+    #[test]
+    fn failed_endpoint_record_commit_never_publishes_ready() {
+        let owner = super::NativeKernelBootstrapOwner::new();
+        let mut publications = owner.subscribe().unwrap();
+        let _initial = publications.try_recv().unwrap();
+        let session = owner.open_supervisor_session();
+        session.begin_start(1).unwrap();
+        let _starting = publications.try_recv().unwrap();
+        owner.shared.endpoint_writer.close();
+        let (candidate, _temporary) = ready_access(1);
+        let credential = candidate.credential.clone();
+
+        assert!(session.publish(candidate).is_err());
+
+        assert!(!credential.is_available());
+        assert!(matches!(
+            publications.try_recv(),
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+        ));
+        assert_eq!(
+            serde_json::to_value(owner.read().unwrap()).unwrap()["status"],
+            json!("starting")
         );
     }
 

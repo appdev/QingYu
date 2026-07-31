@@ -69,6 +69,13 @@ describe("native runtime selection", () => {
     }
   );
 
+  it("reads the production runtime kind and fails safe to desktop", () => {
+    expect(nativeRuntime.readNativeRuntimeKind(() => "ios")).toBe("mobile");
+    expect(nativeRuntime.readNativeRuntimeKind(() => {
+      throw new Error("OS plugin unavailable");
+    })).toBe("desktop");
+  });
+
   it.each(["android", "ios"])("loads only the mobile runtime on %s", async (platform) => {
     const loaders = createInjectedLoaders();
 
@@ -279,9 +286,18 @@ describe("desktop runtime retained capabilities", () => {
     mockedInvoke.mockClear();
     mockedInvoke.mockResolvedValue(undefined);
 
+    expect(Object.keys(desktopRuntime.mcp).sort()).toEqual([
+      "clearAuditEntries",
+      "getHealth",
+      "getSettings",
+      "listAuditEntries",
+      "localServiceAvailable",
+      "policyAvailable",
+      "updateSettings"
+    ]);
+
     await desktopRuntime.mcp.getSettings();
     await desktopRuntime.mcp.updateSettings({ expectedRevision: "r1", config: {} as never });
-    await desktopRuntime.mcp.setPrimaryWorkspace({ primaryRoot: "/notes" });
     await desktopRuntime.mcp.getHealth();
     await desktopRuntime.mcp.listAuditEntries(0, 100);
     await desktopRuntime.mcp.clearAuditEntries();
@@ -289,7 +305,6 @@ describe("desktop runtime retained capabilities", () => {
     expect(mockedInvoke.mock.calls.map(([command]) => command)).toEqual([
       "get_mcp_settings",
       "update_mcp_settings",
-      "set_mcp_primary_workspace",
       "get_mcp_health",
       "list_mcp_audit_entries",
       "clear_mcp_audit_entries"

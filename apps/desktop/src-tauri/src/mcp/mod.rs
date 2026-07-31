@@ -15,6 +15,9 @@ pub(crate) mod error;
 pub(crate) mod handles;
 #[cfg(any(desktop, feature = "desktop-sidecar"))]
 pub(crate) mod ipc;
+#[allow(dead_code)]
+#[cfg(any(desktop, feature = "desktop-sidecar"))]
+pub(crate) mod kernel_adapter;
 pub(crate) mod local_settings;
 #[allow(dead_code)]
 #[cfg(any(desktop, feature = "desktop-sidecar"))]
@@ -29,8 +32,6 @@ pub(crate) mod workspaces;
 #[allow(dead_code)]
 #[cfg(any(desktop, feature = "desktop-sidecar"))]
 pub(crate) mod policy;
-#[cfg(any(desktop, feature = "desktop-sidecar"))]
-mod recycle;
 #[cfg(all(test, any(desktop, feature = "desktop-sidecar")))]
 mod tests;
 
@@ -38,17 +39,10 @@ mod tests;
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
-    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 #[cfg(any(desktop, feature = "desktop-sidecar"))]
 use tauri::{Emitter, Manager};
-
-#[cfg(any(desktop, feature = "desktop-sidecar"))]
-use crate::{
-    app_settings::KernelSettingsOwner, markdown_files::DocumentService,
-    remote_sync::mcp_service::SyncService,
-};
 
 #[cfg(any(desktop, feature = "desktop-sidecar"))]
 use self::{
@@ -57,9 +51,9 @@ use self::{
     confirmation::TauriConfirmationPresenter,
     handles::HandleSigner,
     ipc::LocalIpcEndpoint,
+    kernel_adapter::McpKernelClient,
     local_settings::McpLocalSettingsService,
     policy::PolicyEngine,
-    recycle::clean_expired_entries,
     server::{McpServerController, McpServerOptions, McpServerState},
     tools::{McpServices, QingYuMcpHandler},
     workspaces::{SafeWorkspace, WorkspaceRegistry},
@@ -67,9 +61,6 @@ use self::{
 
 #[cfg(any(desktop, feature = "desktop-sidecar"))]
 pub(crate) const MCP_RUNTIME_CHANGED_EVENT: &str = "qingyu://mcp-runtime-changed";
-
-#[cfg(any(desktop, feature = "desktop-sidecar"))]
-const RECYCLE_CLEANUP_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 
 #[cfg(any(desktop, feature = "desktop-sidecar"))]
 fn sidecar_command_for_executable(executable: &Path, executable_suffix: &str) -> Option<PathBuf> {
@@ -113,8 +104,18 @@ pub(crate) struct McpState {
     pub(crate) config: Arc<McpConfigManager>,
     pub(crate) controller: Arc<McpServerController>,
     pub(crate) policy: Arc<PolicyEngine>,
-    recycle_root: PathBuf,
     pub(crate) workspaces: Arc<WorkspaceRegistry>,
+}
+
+#[cfg(any(desktop, feature = "desktop-sidecar"))]
+impl McpState {
+    pub(crate) async fn shutdown(&self) -> Result<(), String> {
+        let _activation_guard = self.activation.lock().await;
+        self.controller
+            .shutdown()
+            .await
+            .map_err(|error| error.to_string())
+    }
 }
 
 #[cfg(any(desktop, feature = "desktop-sidecar"))]
@@ -129,7 +130,6 @@ pub(crate) fn initialize(app: &tauri::AppHandle) -> Result<Arc<McpState>, String
         .map_err(|error| error.to_string())?;
     let runtime_root = app_data_dir.join("mcp-runtime");
     std::fs::create_dir_all(&runtime_root).map_err(|error| error.to_string())?;
-    let settings = Arc::new(app.state::<KernelSettingsOwner>().inner().clone());
     let mcp_settings = McpLocalSettingsService::from_app(app).map_err(|error| error.to_string())?;
     let config = Arc::new(McpConfigManager::load(mcp_settings).map_err(|error| error.to_string())?);
     let snapshot = config.snapshot().map_err(|error| error.to_string())?;
@@ -137,21 +137,17 @@ pub(crate) fn initialize(app: &tauri::AppHandle) -> Result<Arc<McpState>, String
         &app_config_dir,
         &app_data_dir,
     ));
-    let workspace_activation =
-        crate::primary_workspace::with_primary_workspace_transaction(app, |authoritative| {
-            apply_authoritative_primary_workspace(&workspaces, authoritative)
-        });
-    if workspace_activation.is_err() {
-        eprintln!("QingYu MCP primary workspace is unavailable.");
-    }
     let signing_key = new_process_key()?;
     let signer = HandleSigner::new(signing_key);
-    let recycle_root = runtime_root.join("recycle");
-    let documents = Arc::new(
-        DocumentService::new(signer.clone())
-            .with_mutation_storage(runtime_root.join("history"), recycle_root.clone()),
+    let handles = Arc::new(signer.clone());
+    let kernel_runtime = app
+        .try_state::<Arc<crate::desktop_kernel_runtime::DesktopKernelRuntimeState>>()
+        .ok_or_else(|| "Desktop Kernel runtime is unavailable.".to_string())?;
+    let kernel = Arc::new(
+        McpKernelClient::new(kernel_runtime.endpoint_reader())
+            .map_err(|error| error.to_string())?
+            .with_configured_request_timeout(Arc::clone(&config)),
     );
-    let sync = Arc::new(SyncService::new(app.clone()));
     let policy = Arc::new(PolicyEngine::new(
         signer.derive_key(b"QingYu MCP operation previews v1"),
     ));
@@ -159,9 +155,8 @@ pub(crate) fn initialize(app: &tauri::AppHandle) -> Result<Arc<McpState>, String
     let services = McpServices {
         config: config.clone(),
         workspaces: workspaces.clone(),
-        documents,
-        settings,
-        sync,
+        handles,
+        kernel,
         policy: policy.clone(),
         audit: audit.clone(),
     };
@@ -178,17 +173,46 @@ pub(crate) fn initialize(app: &tauri::AppHandle) -> Result<Arc<McpState>, String
         config,
         controller,
         policy,
-        recycle_root,
         workspaces,
     });
-    spawn_recycle_cleanup(Arc::clone(&state));
     if snapshot.config.enabled {
         let startup = Arc::clone(&state);
         tauri::async_runtime::spawn(async move {
+            let _activation_guard = startup.activation.lock().await;
             let _startup_result = apply_server_config(&startup).await;
         });
     }
     Ok(state)
+}
+
+/// Installs only a workspace root already committed by the authoritative
+/// Desktop Kernel owner. This seam never selects or persists a workspace and
+/// therefore cannot become a second writer.
+#[cfg(any(desktop, feature = "desktop-sidecar"))]
+pub(crate) async fn refresh_kernel_workspace(
+    app: &tauri::AppHandle,
+    state: &Arc<McpState>,
+    authoritative_root: Option<&Path>,
+    authority_epoch: u64,
+    previous_generation: u64,
+) -> Result<bool, String> {
+    let _activation_guard = state.activation.lock().await;
+    let accepted = state
+        .workspaces
+        .commit_published_current(authority_epoch, authoritative_root)
+        .map_err(|error| error.to_string())?;
+    if !accepted {
+        return Ok(false);
+    }
+    let runtime_change =
+        mcp_runtime_change_event(previous_generation, state.workspaces.generation());
+    let changed = runtime_change.is_some();
+    if let Some(runtime_change) = runtime_change {
+        state.policy.invalidate_previews();
+        state.controller.notify_tools_changed().await;
+        let _event_result = app.emit(MCP_RUNTIME_CHANGED_EVENT, runtime_change);
+    }
+    Ok(changed)
 }
 
 #[cfg(any(desktop, feature = "desktop-sidecar"))]
@@ -247,59 +271,6 @@ fn server_needs_apply(state: &McpState, previous: &McpConfig, current: &McpConfi
 }
 
 #[cfg(any(desktop, feature = "desktop-sidecar"))]
-fn recycle_retention_for_cleanup(config: &McpConfig) -> Option<u16> {
-    (config.enabled && config.recycle_bin_retention_days > 0)
-        .then_some(config.recycle_bin_retention_days)
-}
-
-#[cfg(any(desktop, feature = "desktop-sidecar"))]
-fn current_time_millis() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as u64)
-        .unwrap_or(0)
-}
-
-#[cfg(any(desktop, feature = "desktop-sidecar"))]
-async fn run_recycle_cleanup(state: Arc<McpState>) {
-    let retention_days = state
-        .config
-        .snapshot()
-        .ok()
-        .and_then(|document| recycle_retention_for_cleanup(&document.config));
-    let Some(retention_days) = retention_days else {
-        return;
-    };
-    let recycle_root = state.recycle_root.clone();
-    let cleanup = tauri::async_runtime::spawn_blocking(move || {
-        clean_expired_entries(&recycle_root, retention_days, current_time_millis())
-    })
-    .await;
-    match cleanup {
-        Ok(report) if report.failed > 0 => {
-            eprintln!(
-                "QingYu recycle-bin cleanup skipped {} failed entries.",
-                report.failed
-            );
-        }
-        Err(_) => eprintln!("QingYu recycle-bin cleanup worker was unavailable."),
-        _ => {}
-    }
-}
-
-#[cfg(any(desktop, feature = "desktop-sidecar"))]
-fn spawn_recycle_cleanup(state: Arc<McpState>) {
-    tauri::async_runtime::spawn(async move {
-        let mut interval = tokio::time::interval(RECYCLE_CLEANUP_INTERVAL);
-        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        loop {
-            interval.tick().await;
-            run_recycle_cleanup(Arc::clone(&state)).await;
-        }
-    });
-}
-
-#[cfg(any(desktop, feature = "desktop-sidecar"))]
 #[tauri::command]
 pub(crate) fn get_mcp_settings(
     state: tauri::State<'_, Arc<McpState>>,
@@ -328,46 +299,6 @@ pub(crate) async fn update_mcp_settings(
     if server_needs_apply(&state, &previous.config, &updated.config) {
         apply_server_config(&state).await?;
     }
-    if updated.config.enabled
-        && (!previous.config.enabled
-            || previous.config.recycle_bin_retention_days
-                != updated.config.recycle_bin_retention_days)
-    {
-        let cleanup_state = Arc::clone(state.inner());
-        tauri::async_runtime::spawn(async move {
-            run_recycle_cleanup(cleanup_state).await;
-        });
-    }
-    settings_snapshot(&state)
-}
-
-#[cfg(any(desktop, feature = "desktop-sidecar"))]
-#[tauri::command]
-pub(crate) async fn set_mcp_primary_workspace(
-    app: tauri::AppHandle,
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, Arc<McpState>>,
-    primary_root: Option<String>,
-) -> Result<McpSettingsSnapshot, String> {
-    require_mcp_primary_window(window.label())?;
-    let _activation_guard = state.activation.lock().await;
-    let previous_generation = state.workspaces.generation();
-    let result =
-        crate::primary_workspace::with_primary_workspace_transaction(&app, |authoritative| {
-            apply_primary_workspace_transaction(
-                &state.workspaces,
-                primary_root.as_deref(),
-                authoritative,
-            )
-        });
-    let runtime_change =
-        mcp_runtime_change_event(previous_generation, state.workspaces.generation());
-    if let Some(runtime_change) = runtime_change {
-        state.policy.invalidate_previews();
-        state.controller.notify_tools_changed().await;
-        let _event_result = app.emit(MCP_RUNTIME_CHANGED_EVENT, runtime_change);
-    }
-    result?;
     settings_snapshot(&state)
 }
 
@@ -382,7 +313,7 @@ fn set_primary_workspace_from_window(
     apply_primary_workspace_transaction(workspaces, requested_root, authoritative)
 }
 
-#[cfg(any(desktop, feature = "desktop-sidecar"))]
+#[cfg(all(test, any(desktop, feature = "desktop-sidecar")))]
 fn require_mcp_primary_window(window_label: &str) -> Result<(), String> {
     if window_label == "main" {
         Ok(())
@@ -394,7 +325,7 @@ fn require_mcp_primary_window(window_label: &str) -> Result<(), String> {
     }
 }
 
-#[cfg(any(desktop, feature = "desktop-sidecar"))]
+#[cfg(all(test, any(desktop, feature = "desktop-sidecar")))]
 fn apply_primary_workspace_transaction(
     workspaces: &WorkspaceRegistry,
     requested_root: Option<&str>,
@@ -448,7 +379,7 @@ fn apply_primary_workspace_transaction(
     Ok(workspaces.generation() != previous_generation)
 }
 
-#[cfg(any(desktop, feature = "desktop-sidecar"))]
+#[cfg(all(test, any(desktop, feature = "desktop-sidecar")))]
 fn apply_authoritative_primary_workspace(
     workspaces: &WorkspaceRegistry,
     authoritative: Result<std::path::PathBuf, String>,

@@ -19,6 +19,14 @@ function readSecurityConfig() {
   return config.app.security;
 }
 
+function readDesktopSecurityConfig(platform: "linux" | "macos" | "windows") {
+  const config = JSON.parse(
+    readFileSync(resolve(process.cwd(), `src-tauri/tauri.${platform}.conf.json`), "utf8")
+  ) as Partial<TauriSecurityConfig>;
+
+  return config.app?.security;
+}
+
 function parseCsp(csp: string) {
   return new Map(
     csp
@@ -82,7 +90,7 @@ describe("desktop production CSP", () => {
     expect(security.dangerousDisableAssetCspModification).toEqual(["style-src"]);
   });
 
-  it("does not expose the dormant Kernel host over browser loopback", () => {
+  it("keeps the shared mobile-capable base free of browser loopback", () => {
     const csp = readSecurityConfig().csp;
     const connectSources = parseCsp(csp as string).get("connect-src") ?? [];
 
@@ -91,4 +99,22 @@ describe("desktop production CSP", () => {
     expect(connectSources.every((source) => !source.includes("127.0.0.1"))).toBe(true);
     expect(connectSources.every((source) => !source.includes("localhost:*"))).toBe(true);
   });
+
+  it.each(["macos", "windows", "linux"] as const)(
+    "allows only exact loopback Kernel transports in the %s desktop overlay",
+    (platform) => {
+      const security = readDesktopSecurityConfig(platform);
+      expect(security?.csp).toBeTypeOf("string");
+      const connectSources = parseCsp(security?.csp as string).get("connect-src") ?? [];
+
+      expect(connectSources).toContain("http://127.0.0.1:*");
+      expect(connectSources).toContain("ws://127.0.0.1:*");
+      expect(connectSources).not.toContain("http:");
+      expect(connectSources).not.toContain("ws:");
+      expect(connectSources).not.toContain("http://localhost:*");
+      expect(connectSources).not.toContain("ws://localhost:*");
+      expect(connectSources.every((source) => !/192\.168\.|10\.|172\.(?:1[6-9]|2\d|3[01])\./u.test(source)))
+        .toBe(true);
+    }
+  );
 });

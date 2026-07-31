@@ -323,6 +323,9 @@ impl<'a, Backend: PrimaryWorkspaceBackend + ?Sized> PrimaryWorkspaceService<'a, 
             .map_err(|_| persistence_error())?;
         let previous_schema_version = self.backend.get(LOCAL_STATE_SCHEMA_VERSION_KEY);
         let previous_primary_workspace = self.backend.get(PRIMARY_WORKSPACE_KEY);
+        if !local_state_schema_is_supported(previous_schema_version.as_ref()) {
+            return Err(persistence_error());
+        }
         let current = previous_primary_workspace.clone().unwrap_or(Value::Null);
         if input
             .expected_state
@@ -357,6 +360,20 @@ impl<'a, Backend: PrimaryWorkspaceBackend + ?Sized> PrimaryWorkspaceService<'a, 
             applied: true,
             state: input.state,
         })
+    }
+}
+
+fn local_state_schema_is_supported(value: Option<&Value>) -> bool {
+    match value {
+        None => true,
+        Some(value)
+            if value
+                .as_u64()
+                .is_some_and(|version| version <= LOCAL_STATE_SCHEMA_VERSION) =>
+        {
+            true
+        }
+        Some(_) => false,
     }
 }
 
@@ -701,6 +718,324 @@ struct StoredPrimaryWorkspaceState {
     version: u64,
 }
 
+/// Desktop host decision at process startup.
+///
+/// `Unselected` is a valid state and must keep the child Kernel dormant until
+/// the user selects a workspace. Persisted corruption and storage failures are
+/// returned separately so they cannot be mistaken for first-run onboarding.
+#[cfg(not(mobile))]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum DesktopPrimaryWorkspaceResolution {
+    Unselected,
+    Selected(PathBuf),
+}
+
+#[cfg(not(mobile))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum DesktopPrimaryWorkspaceResolutionError {
+    Invalid,
+    UnsupportedVersion,
+    Unavailable,
+}
+
+#[cfg(not(mobile))]
+impl std::fmt::Display for DesktopPrimaryWorkspaceResolutionError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Invalid => formatter.write_str("desktop primary workspace is invalid"),
+            Self::UnsupportedVersion => {
+                formatter.write_str("desktop primary workspace version is unsupported")
+            }
+            Self::Unavailable => formatter.write_str("desktop primary workspace is unavailable"),
+        }
+    }
+}
+
+#[cfg(not(mobile))]
+impl std::error::Error for DesktopPrimaryWorkspaceResolutionError {}
+
+#[cfg(not(mobile))]
+fn validate_selected_desktop_workspace_with_hook<BeforeValidation>(
+    workspace_root: &str,
+    desktop_path: &str,
+    before_validation: BeforeValidation,
+) -> Result<PathBuf, DesktopPrimaryWorkspaceResolutionError>
+where
+    BeforeValidation: FnOnce(),
+{
+    let invalid = || DesktopPrimaryWorkspaceResolutionError::Invalid;
+    let canonical_workspace = crate::workspace_membership::canonical_workspace_root(workspace_root)
+        .map_err(|_| invalid())?;
+    let canonical_desktop = crate::workspace_membership::canonical_workspace_root(desktop_path)
+        .map_err(|_| invalid())?;
+    if canonical_desktop.parent() != Some(canonical_workspace.as_path()) {
+        return Err(invalid());
+    }
+
+    let target_name = canonical_desktop.file_name().ok_or_else(invalid)?;
+    let retained_parent =
+        crate::storage_capability::open_canonical_directory_nofollow(&canonical_workspace)
+            .map_err(|_| invalid())?;
+    let parent_identity =
+        crate::storage_capability::directory_identity(&retained_parent).map_err(|_| invalid())?;
+    let addressed = retained_parent
+        .symlink_metadata(target_name)
+        .map_err(|_| invalid())?;
+    if addressed.file_type().is_symlink() || !addressed.is_dir() {
+        return Err(invalid());
+    }
+    let retained_desktop = retained_parent
+        .open_dir_nofollow(target_name)
+        .map_err(|_| invalid())?;
+    let retained_metadata = retained_desktop.dir_metadata().map_err(|_| invalid())?;
+    if addressed.dev() != retained_metadata.dev() || addressed.ino() != retained_metadata.ino() {
+        return Err(invalid());
+    }
+    let desktop_identity =
+        crate::storage_capability::directory_identity(&retained_desktop).map_err(|_| invalid())?;
+
+    before_validation();
+
+    let current_parent =
+        crate::storage_capability::open_canonical_directory_nofollow(&canonical_workspace)
+            .map_err(|_| invalid())?;
+    if crate::storage_capability::directory_identity(&current_parent).map_err(|_| invalid())?
+        != parent_identity
+        || crate::storage_capability::directory_identity(&retained_parent).map_err(|_| invalid())?
+            != parent_identity
+    {
+        return Err(invalid());
+    }
+    let current_metadata = current_parent
+        .symlink_metadata(target_name)
+        .map_err(|_| invalid())?;
+    if current_metadata.file_type().is_symlink() || !current_metadata.is_dir() {
+        return Err(invalid());
+    }
+    let current_desktop = current_parent
+        .open_dir_nofollow(target_name)
+        .map_err(|_| invalid())?;
+    if crate::storage_capability::directory_identity(&current_desktop).map_err(|_| invalid())?
+        != desktop_identity
+        || crate::storage_capability::directory_identity(&retained_desktop)
+            .map_err(|_| invalid())?
+            != desktop_identity
+    {
+        return Err(invalid());
+    }
+
+    let current_workspace = crate::workspace_membership::canonical_workspace_root(workspace_root)
+        .map_err(|_| invalid())?;
+    let current_desktop = crate::workspace_membership::canonical_workspace_root(desktop_path)
+        .map_err(|_| invalid())?;
+    if current_workspace != canonical_workspace || current_desktop != canonical_desktop {
+        return Err(invalid());
+    }
+    Ok(canonical_desktop)
+}
+
+#[cfg(not(mobile))]
+fn resolve_desktop_primary_workspace_value_with_validation_hook<BeforeValidation>(
+    value: Option<Value>,
+    before_validation: BeforeValidation,
+) -> Result<DesktopPrimaryWorkspaceResolution, DesktopPrimaryWorkspaceResolutionError>
+where
+    BeforeValidation: FnOnce(),
+{
+    let Some(value) = value else {
+        return Ok(DesktopPrimaryWorkspaceResolution::Unselected);
+    };
+    let object = value
+        .as_object()
+        .ok_or(DesktopPrimaryWorkspaceResolutionError::Invalid)?;
+    let version = object
+        .get("version")
+        .and_then(Value::as_u64)
+        .ok_or(DesktopPrimaryWorkspaceResolutionError::Invalid)?;
+    if version != 3 {
+        return Err(DesktopPrimaryWorkspaceResolutionError::UnsupportedVersion);
+    }
+    let has_nullable_string = |key: &str| {
+        object
+            .get(key)
+            .is_some_and(|value| value.is_null() || value.is_string())
+    };
+    if !has_nullable_string("desktopWorkspaceRoot")
+        || !has_nullable_string("desktopPath")
+        || !has_nullable_string("managedName")
+        || object
+            .get("onboardingCompleted")
+            .and_then(Value::as_bool)
+            .is_none()
+        || object
+            .get("onboardingRequestedForNextLaunch")
+            .is_some_and(|value| !value.is_boolean())
+    {
+        return Err(DesktopPrimaryWorkspaceResolutionError::Invalid);
+    }
+    let state = serde_json::from_value::<StoredPrimaryWorkspaceState>(value)
+        .map_err(|_| DesktopPrimaryWorkspaceResolutionError::Invalid)?;
+    debug_assert_eq!(state.version, 3);
+
+    match (
+        state.desktop_workspace_root.as_deref(),
+        state.desktop_path.as_deref(),
+        state.managed_name.as_deref(),
+    ) {
+        (None, None, None) => Ok(DesktopPrimaryWorkspaceResolution::Unselected),
+        (Some(workspace_root), Some(desktop_path), None)
+            if !workspace_root.is_empty() && !desktop_path.is_empty() =>
+        {
+            let selected = validate_selected_desktop_workspace_with_hook(
+                workspace_root,
+                desktop_path,
+                before_validation,
+            )?;
+            if !state.onboarding_completed || state.onboarding_requested_for_next_launch {
+                return Ok(DesktopPrimaryWorkspaceResolution::Unselected);
+            }
+            Ok(DesktopPrimaryWorkspaceResolution::Selected(selected))
+        }
+        _ => Err(DesktopPrimaryWorkspaceResolutionError::Invalid),
+    }
+}
+
+#[cfg(not(mobile))]
+fn resolve_desktop_primary_workspace_value(
+    value: Option<Value>,
+) -> Result<DesktopPrimaryWorkspaceResolution, DesktopPrimaryWorkspaceResolutionError> {
+    resolve_desktop_primary_workspace_value_with_validation_hook(value, || {})
+}
+
+#[cfg(not(mobile))]
+fn resolve_desktop_primary_workspace_read(
+    read: Result<(Option<Value>, Option<Value>), String>,
+) -> Result<DesktopPrimaryWorkspaceResolution, DesktopPrimaryWorkspaceResolutionError> {
+    let (schema_version, value) =
+        read.map_err(|_| DesktopPrimaryWorkspaceResolutionError::Unavailable)?;
+    if !local_state_schema_is_supported(schema_version.as_ref()) {
+        return Err(DesktopPrimaryWorkspaceResolutionError::UnsupportedVersion);
+    }
+    resolve_desktop_primary_workspace_value(value)
+}
+
+#[cfg(not(mobile))]
+fn select_desktop_primary_workspace_with_backend<Backend: PrimaryWorkspaceBackend + ?Sized>(
+    backend: &Backend,
+    transaction_lock: &Mutex<()>,
+    requested_root: &Path,
+    recover_invalid: bool,
+) -> Result<PathBuf, String> {
+    let requested_root = requested_root
+        .to_str()
+        .ok_or_else(desktop_primary_workspace_initialization_error)?;
+    let canonical = crate::workspace_membership::canonical_workspace_root(requested_root)
+        .map_err(|_| desktop_primary_workspace_initialization_error())?;
+    let parent = canonical
+        .parent()
+        .ok_or_else(desktop_primary_workspace_initialization_error)?
+        .to_path_buf();
+    let parent_string = parent
+        .to_str()
+        .ok_or_else(desktop_primary_workspace_initialization_error)?
+        .to_owned();
+    let canonical_string = canonical
+        .to_str()
+        .ok_or_else(desktop_primary_workspace_initialization_error)?
+        .to_owned();
+    let current = backend.get(PRIMARY_WORKSPACE_KEY);
+    let current_resolution = resolve_desktop_primary_workspace_value(current.clone());
+    let selection_is_allowed = current_resolution
+        == Ok(DesktopPrimaryWorkspaceResolution::Unselected)
+        || (recover_invalid
+            && current_resolution == Err(DesktopPrimaryWorkspaceResolutionError::Invalid));
+    if !selection_is_allowed {
+        return Err(desktop_primary_workspace_initialization_error());
+    }
+    let state = serde_json::json!({
+        "desktopWorkspaceRoot": parent_string,
+        "desktopPath": canonical_string,
+        "managedName": null,
+        "onboardingCompleted": true,
+        "version": 3
+    });
+    let result = PrimaryWorkspaceService::new(backend, transaction_lock).write_validated(
+        PrimaryWorkspaceWriteInput {
+            expected_state: Some(current.unwrap_or(Value::Null)),
+            state,
+        },
+        || {
+            let validated = validate_selected_desktop_workspace_with_hook(
+                &parent_string,
+                &canonical_string,
+                || {},
+            )
+            .map_err(|_| desktop_primary_workspace_initialization_error())?;
+            if validated != canonical {
+                return Err(desktop_primary_workspace_initialization_error());
+            }
+            crate::dejavu_sync::path_guard::native_working_tree_registry()
+                .validate_primary_root(Some(&validated))
+        },
+    )?;
+    if !result.applied {
+        return Err(desktop_primary_workspace_initialization_error());
+    }
+    Ok(canonical)
+}
+
+#[cfg(not(mobile))]
+fn initialize_desktop_primary_workspace_with_backend<Backend: PrimaryWorkspaceBackend + ?Sized>(
+    backend: &Backend,
+    transaction_lock: &Mutex<()>,
+    requested_root: &Path,
+) -> Result<PathBuf, String> {
+    select_desktop_primary_workspace_with_backend(backend, transaction_lock, requested_root, false)
+}
+
+#[cfg(not(mobile))]
+fn recover_invalid_desktop_primary_workspace_with_backend<
+    Backend: PrimaryWorkspaceBackend + ?Sized,
+>(
+    backend: &Backend,
+    transaction_lock: &Mutex<()>,
+    requested_root: &Path,
+) -> Result<PathBuf, String> {
+    select_desktop_primary_workspace_with_backend(backend, transaction_lock, requested_root, true)
+}
+
+#[cfg(not(mobile))]
+pub(crate) fn initialize_desktop_primary_workspace<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    requested_root: &Path,
+) -> Result<PathBuf, String> {
+    let store = primary_local_state_store(app)?;
+    let backend = StorePrimaryWorkspaceBackend { store };
+    initialize_desktop_primary_workspace_with_backend(
+        &backend,
+        primary_workspace_transaction_gate(),
+        requested_root,
+    )
+}
+
+#[cfg(not(mobile))]
+pub(crate) fn recover_invalid_desktop_primary_workspace<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    requested_root: &Path,
+) -> Result<PathBuf, String> {
+    let store = primary_local_state_store(app)?;
+    let backend = StorePrimaryWorkspaceBackend { store };
+    recover_invalid_desktop_primary_workspace_with_backend(
+        &backend,
+        primary_workspace_transaction_gate(),
+        requested_root,
+    )
+}
+
+fn desktop_primary_workspace_initialization_error() -> String {
+    "desktop primary workspace initialization is unavailable".to_owned()
+}
+
 fn completed_primary_workspace_state(
     value: Option<Value>,
 ) -> Result<StoredPrimaryWorkspaceState, String> {
@@ -792,6 +1127,43 @@ fn read_primary_workspace_value<R: tauri::Runtime>(
     let store = primary_local_state_store(app)?;
     let backend = StorePrimaryWorkspaceBackend { store };
     PrimaryWorkspaceService::new(&backend, primary_workspace_transaction_gate()).read()
+}
+
+/// Resolves the desktop startup state while holding the same transaction gate
+/// used by renderer-owned primary-workspace writes.
+#[cfg(not(mobile))]
+#[allow(dead_code)]
+pub(crate) fn resolve_desktop_primary_workspace<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Result<DesktopPrimaryWorkspaceResolution, DesktopPrimaryWorkspaceResolutionError> {
+    let store = primary_local_state_store(app)
+        .map_err(|_| DesktopPrimaryWorkspaceResolutionError::Unavailable)?;
+    let backend = StorePrimaryWorkspaceBackend { store };
+    let _transaction = primary_workspace_transaction_gate()
+        .lock()
+        .map_err(|_| DesktopPrimaryWorkspaceResolutionError::Unavailable)?;
+    resolve_desktop_primary_workspace_read(Ok((
+        backend.get(LOCAL_STATE_SCHEMA_VERSION_KEY),
+        backend.get(PRIMARY_WORKSPACE_KEY),
+    )))
+}
+
+/// Opens the host-private durable workspace-identity registry using the exact
+/// instance-data path and a host-private durable-operation epoch.
+#[cfg(not(mobile))]
+#[allow(dead_code)]
+pub(crate) fn open_native_host_workspace_store(
+    paths: &qingyu_kernel::paths::KernelPaths,
+    config: &qingyu_kernel::config::KernelConfig,
+) -> Result<
+    qingyu_kernel::host::native::NativeHostWorkspaceStore,
+    DesktopPrimaryWorkspaceResolutionError,
+> {
+    qingyu_kernel::host::native::NativeHostWorkspaceStore::at_instance_data(
+        paths.instance_data_root(),
+        config.launch_epoch(),
+    )
+    .map_err(|_| DesktopPrimaryWorkspaceResolutionError::Unavailable)
 }
 
 /// Resolves the selected desktop workspace to its stable, host-owned child
@@ -1269,6 +1641,288 @@ mod tests {
         })
     }
 
+    #[test]
+    fn desktop_host_resolution_distinguishes_unselected_from_selected() {
+        let temporary = tempfile::tempdir().expect("desktop host workspace roots");
+        let workspace_root = temporary.path().join("Workspace");
+        let notebook = workspace_root.join("Notes");
+        std::fs::create_dir_all(&notebook).expect("selected notebook");
+
+        assert_eq!(
+            resolve_desktop_primary_workspace_value(None),
+            Ok(DesktopPrimaryWorkspaceResolution::Unselected)
+        );
+        assert_eq!(
+            resolve_desktop_primary_workspace_value(Some(json!({
+                "desktopWorkspaceRoot": null,
+                "desktopPath": null,
+                "managedName": null,
+                "onboardingCompleted": false,
+                "version": 3
+            }))),
+            Ok(DesktopPrimaryWorkspaceResolution::Unselected)
+        );
+        assert_eq!(
+            resolve_desktop_primary_workspace_value(Some(completed_v3_desktop_state(
+                &workspace_root,
+                &notebook,
+            ))),
+            Ok(DesktopPrimaryWorkspaceResolution::Selected(
+                notebook.canonicalize().expect("canonical notebook")
+            ))
+        );
+    }
+
+    #[test]
+    fn desktop_host_resolution_rejects_malformed_current_version_records() {
+        let invalid_records = [
+            Value::String("not-a-workspace-record".to_string()),
+            json!({
+                "version": 3
+            }),
+            json!({
+                "desktopWorkspaceRoot": "/tmp/Workspace",
+                "desktopPath": null,
+                "managedName": null,
+                "onboardingCompleted": true,
+                "version": 3
+            }),
+        ];
+
+        for record in invalid_records {
+            assert_eq!(
+                resolve_desktop_primary_workspace_value(Some(record)),
+                Err(DesktopPrimaryWorkspaceResolutionError::Invalid)
+            );
+        }
+    }
+
+    #[test]
+    fn desktop_host_resolution_preserves_unsupported_workspace_versions() {
+        for version in [1, 2, 4, u64::MAX] {
+            let record = json!({
+                "desktopWorkspaceRoot": null,
+                "desktopPath": null,
+                "managedName": null,
+                "onboardingCompleted": false,
+                "version": version
+            });
+            assert_eq!(
+                resolve_desktop_primary_workspace_value(Some(record)),
+                Err(DesktopPrimaryWorkspaceResolutionError::UnsupportedVersion)
+            );
+        }
+    }
+
+    #[test]
+    fn invalid_recovery_never_overwrites_an_unsupported_workspace_version() {
+        let temporary = tempfile::tempdir().unwrap();
+        let selected = temporary.path().join("Workspace").join("Recovered");
+        std::fs::create_dir_all(&selected).unwrap();
+        let future_record = json!({
+            "desktopWorkspaceRoot": "/future/workspace",
+            "desktopPath": "/future/workspace/Notes",
+            "managedName": null,
+            "onboardingCompleted": true,
+            "futureField": { "mustRemain": true },
+            "version": 4
+        });
+        let backend = MemoryBackend::with([(PRIMARY_WORKSPACE_KEY, future_record.clone())]);
+        let lock = Mutex::new(());
+
+        assert!(
+            recover_invalid_desktop_primary_workspace_with_backend(&backend, &lock, &selected)
+                .is_err()
+        );
+        assert_eq!(backend.value(PRIMARY_WORKSPACE_KEY), Some(future_record));
+    }
+
+    #[test]
+    fn desktop_host_resolution_rejects_a_future_outer_local_state_schema() {
+        assert_eq!(
+            resolve_desktop_primary_workspace_read(Ok((
+                Some(Value::from(LOCAL_STATE_SCHEMA_VERSION + 1)),
+                None,
+            ))),
+            Err(DesktopPrimaryWorkspaceResolutionError::UnsupportedVersion)
+        );
+        assert_eq!(
+            resolve_desktop_primary_workspace_read(Ok((
+                Some(Value::String("future".to_owned())),
+                None,
+            ))),
+            Err(DesktopPrimaryWorkspaceResolutionError::UnsupportedVersion)
+        );
+    }
+
+    #[test]
+    fn desktop_initialization_never_downgrades_a_future_outer_local_state_schema() {
+        let temporary = tempfile::tempdir().unwrap();
+        let selected = temporary.path().join("Workspace").join("Recovered");
+        std::fs::create_dir_all(&selected).unwrap();
+        let future_schema = Value::from(LOCAL_STATE_SCHEMA_VERSION + 1);
+        let future_record = json!({
+            "futureField": { "mustRemain": true },
+            "version": 4
+        });
+        let backend = MemoryBackend::with([
+            (LOCAL_STATE_SCHEMA_VERSION_KEY, future_schema.clone()),
+            (PRIMARY_WORKSPACE_KEY, future_record.clone()),
+        ]);
+        let lock = Mutex::new(());
+
+        assert!(
+            initialize_desktop_primary_workspace_with_backend(&backend, &lock, &selected).is_err()
+        );
+        assert_eq!(
+            backend.value(LOCAL_STATE_SCHEMA_VERSION_KEY),
+            Some(future_schema)
+        );
+        assert_eq!(backend.value(PRIMARY_WORKSPACE_KEY), Some(future_record));
+    }
+
+    #[test]
+    fn primary_workspace_writes_fail_closed_on_a_future_outer_schema() {
+        let future_schema = Value::from(LOCAL_STATE_SCHEMA_VERSION + 1);
+        let current = json!({
+            "desktopWorkspaceRoot": null,
+            "desktopPath": null,
+            "managedName": null,
+            "onboardingCompleted": false,
+            "version": 3
+        });
+        let backend = MemoryBackend::with([
+            (LOCAL_STATE_SCHEMA_VERSION_KEY, future_schema.clone()),
+            (PRIMARY_WORKSPACE_KEY, current.clone()),
+        ]);
+        let lock = Mutex::new(());
+
+        assert!(PrimaryWorkspaceService::new(&backend, &lock)
+            .write(PrimaryWorkspaceWriteInput {
+                expected_state: Some(current.clone()),
+                state: json!({
+                    "desktopWorkspaceRoot": "/replacement",
+                    "desktopPath": "/replacement/Notes",
+                    "managedName": null,
+                    "onboardingCompleted": true,
+                    "version": 3
+                }),
+            })
+            .is_err());
+        assert_eq!(
+            backend.value(LOCAL_STATE_SCHEMA_VERSION_KEY),
+            Some(future_schema)
+        );
+        assert_eq!(backend.value(PRIMARY_WORKSPACE_KEY), Some(current));
+    }
+
+    #[test]
+    fn desktop_host_resolution_rejects_a_missing_selected_path() {
+        let temporary = tempfile::tempdir().expect("desktop host workspace roots");
+        let workspace_root = temporary.path().join("Workspace");
+        let notebook = workspace_root.join("Notes");
+        std::fs::create_dir_all(&workspace_root).expect("workspace root");
+        let selected = completed_v3_desktop_state(&workspace_root, &notebook);
+        let mut reset_for_next_launch = selected.clone();
+        reset_for_next_launch["onboardingRequestedForNextLaunch"] = Value::Bool(true);
+
+        for state in [selected, reset_for_next_launch] {
+            assert_eq!(
+                resolve_desktop_primary_workspace_value(Some(state)),
+                Err(DesktopPrimaryWorkspaceResolutionError::Invalid)
+            );
+        }
+    }
+
+    #[test]
+    fn desktop_host_resolution_rejects_same_address_rebinding() {
+        let temporary = tempfile::tempdir().expect("desktop host workspace roots");
+        let workspace_root = temporary.path().join("Workspace");
+        let notebook = workspace_root.join("Notes");
+        let displaced = workspace_root.join("Notes displaced");
+        std::fs::create_dir_all(&notebook).expect("selected notebook");
+        let state = completed_v3_desktop_state(&workspace_root, &notebook);
+
+        let result =
+            resolve_desktop_primary_workspace_value_with_validation_hook(Some(state), || {
+                std::fs::rename(&notebook, &displaced).expect("displace selected notebook");
+                std::fs::create_dir(&notebook).expect("replace selected notebook");
+            });
+
+        assert_eq!(result, Err(DesktopPrimaryWorkspaceResolutionError::Invalid));
+    }
+
+    #[test]
+    fn desktop_host_resolution_reports_store_reads_as_unavailable() {
+        assert_eq!(
+            resolve_desktop_primary_workspace_read(Err(persistence_error())),
+            Err(DesktopPrimaryWorkspaceResolutionError::Unavailable)
+        );
+    }
+
+    #[test]
+    fn desktop_startup_initialization_is_one_time_and_cannot_switch_roots() {
+        let temporary = tempfile::tempdir().unwrap();
+        let workspace = temporary.path().join("Workspace");
+        let first = workspace.join("First");
+        let second = workspace.join("Second");
+        std::fs::create_dir_all(&first).unwrap();
+        std::fs::create_dir_all(&second).unwrap();
+        let backend = MemoryBackend::default();
+        let lock = Mutex::new(());
+
+        let selected =
+            initialize_desktop_primary_workspace_with_backend(&backend, &lock, &first).unwrap();
+        assert_eq!(selected, first.canonicalize().unwrap());
+        assert_eq!(
+            resolve_desktop_primary_workspace_value(backend.value(PRIMARY_WORKSPACE_KEY)),
+            Ok(DesktopPrimaryWorkspaceResolution::Selected(selected))
+        );
+
+        assert!(
+            initialize_desktop_primary_workspace_with_backend(&backend, &lock, &second).is_err()
+        );
+        assert_eq!(
+            resolve_desktop_primary_workspace_value(backend.value(PRIMARY_WORKSPACE_KEY)),
+            Ok(DesktopPrimaryWorkspaceResolution::Selected(
+                first.canonicalize().unwrap()
+            ))
+        );
+    }
+
+    #[test]
+    fn desktop_startup_recovery_replaces_only_an_explicitly_invalid_record() {
+        let temporary = tempfile::tempdir().unwrap();
+        let workspace = temporary.path().join("Workspace");
+        let selected = workspace.join("Recovered");
+        std::fs::create_dir_all(&selected).unwrap();
+        let backend = MemoryBackend::with([(
+            PRIMARY_WORKSPACE_KEY,
+            serde_json::json!({
+                "desktopWorkspaceRoot": workspace,
+                "desktopPath": 42,
+                "managedName": null,
+                "onboardingCompleted": true,
+                "version": 3
+            }),
+        )]);
+        let lock = Mutex::new(());
+
+        let recovered =
+            recover_invalid_desktop_primary_workspace_with_backend(&backend, &lock, &selected)
+                .unwrap();
+        assert_eq!(recovered, selected.canonicalize().unwrap());
+        assert_eq!(
+            resolve_desktop_primary_workspace_value(backend.value(PRIMARY_WORKSPACE_KEY)),
+            Ok(DesktopPrimaryWorkspaceResolution::Selected(recovered))
+        );
+
+        assert!(
+            recover_invalid_desktop_primary_workspace_with_backend(&backend, &lock, &selected,)
+                .is_err()
+        );
+    }
+
     fn native_host_workspace_store(
         workspace: &Path,
         app_data: &Path,
@@ -1278,11 +1932,7 @@ mod tests {
             .expect("native host state paths");
         let config = qingyu_kernel::config::KernelConfig::generate()
             .expect("native host state launch epoch");
-        qingyu_kernel::host::native::NativeHostWorkspaceStore::at_instance_data(
-            paths.instance_data_root(),
-            config.launch_epoch(),
-        )
-        .expect("native host state store")
+        open_native_host_workspace_store(&paths, &config).expect("native host state store")
     }
 
     #[test]

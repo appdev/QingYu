@@ -16,12 +16,12 @@ use qingyu_kernel::{
         DeleteDocumentRequest, DocumentContentDto, DocumentEntryDto, DocumentHistoryPageDto,
         DocumentHistorySnapshotDto, DocumentId, DocumentKind, DocumentPageDto, ErrorCode,
         ErrorDetails, ListDocumentsQuery, MoveDocumentRequest, PageQuery, PatchSettingsRequest,
-        ReadyHealthResponse, ReadyStatus, RestoreDocumentHistoryRequest, Revision,
+        ReadyHealthResponse, ReadyStatus, RestoreDocumentHistoryRequest, Revision, RunId,
         RuntimeCapabilitiesDto, RuntimeStateDto, SearchPageDto, SearchWorkspaceQuery,
         SettingsSnapshotDto, SnapshotId, StartupState, SyncConfigViewDto, SyncConnectionTestDto,
-        SyncRunAcceptedDto, SyncStatusDto, SystemVersionResponse, TestSyncConnectionRequest,
-        TriggerSyncRunRequest, UpdateDocumentRequest, WorkspaceDto, WorkspaceGeneration,
-        WorkspaceId, WorkspaceReadiness, WorkspaceRelativePath,
+        SyncRunAcceptedDto, SyncRunStatusDto, SyncStatusDto, SystemVersionResponse,
+        TestSyncConnectionRequest, TriggerSyncRunRequest, UpdateDocumentRequest, WorkspaceDto,
+        WorkspaceGeneration, WorkspaceId, WorkspaceReadiness, WorkspaceRelativePath,
     },
     paths::KernelPaths,
     ports::KernelPorts,
@@ -213,6 +213,10 @@ impl SyncApiService for TestSyncService {
             }),
         )
         .unwrap())
+    }
+
+    async fn get_sync_run(&self, _run_id: RunId) -> Result<SyncRunStatusDto, ServiceFailure> {
+        Err(ServiceFailure::new(ErrorCode::ResourceNotFound, None).unwrap())
     }
 
     async fn trigger_sync_run(
@@ -753,6 +757,34 @@ async fn sync_mutation_routes_delegate_exactly_once_without_transport_retries() 
 
     assert_eq!(api.sync_connection_test_calls.load(Ordering::SeqCst), 1);
     assert_eq!(api.sync_run_calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn sync_run_status_route_parses_the_run_id_and_preserves_resource_not_found() {
+    let api = TestApi::new();
+    let response = api
+        .router
+        .clone()
+        .oneshot(api.authorized_request(
+            "GET",
+            "/api/v1/sync/runs/123e4567-e89b-42d3-a456-426614174000",
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let envelope: ApiErrorEnvelope = serde_json::from_value(body_json(response).await).unwrap();
+    assert_eq!(envelope.code(), ErrorCode::ResourceNotFound);
+
+    let malformed = api
+        .router
+        .clone()
+        .oneshot(api.authorized_request("GET", "/api/v1/sync/runs/not-a-uuid"))
+        .await
+        .unwrap();
+    assert_eq!(malformed.status(), StatusCode::BAD_REQUEST);
+    let envelope: ApiErrorEnvelope = serde_json::from_value(body_json(malformed).await).unwrap();
+    assert_eq!(envelope.code(), ErrorCode::InvalidRequest);
 }
 
 #[tokio::test]

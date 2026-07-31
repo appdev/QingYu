@@ -716,6 +716,38 @@ mod tests {
     }
 
     #[test]
+    fn completing_an_exact_kernel_apply_allows_a_new_session() {
+        let mut registry = SyncEditingTestRegistry::default();
+        registry
+            .set(true, "old-session", Some("old-revision"))
+            .unwrap();
+        registry
+            .request_apply("old-session", "old-revision", "old-token")
+            .unwrap();
+
+        registry
+            .complete_apply(
+                "old-revision",
+                "old-token",
+                Err("kernel-sync-apply-failed".into()),
+            )
+            .unwrap();
+        assert_eq!(
+            registry.load().pending_apply.unwrap().state,
+            SyncApplyState::Completed
+        );
+
+        registry
+            .set(true, "new-session", Some("new-revision"))
+            .unwrap();
+        let next = registry
+            .request_apply("new-session", "new-revision", "new-token")
+            .unwrap();
+        assert_eq!(next.state, SyncApplyState::Pending);
+        assert_eq!(next.token, "new-token");
+    }
+
+    #[test]
     fn cancelling_a_mismatched_identity_never_mutates_the_current_apply() {
         let mut registry = SyncEditingTestRegistry::default();
         registry

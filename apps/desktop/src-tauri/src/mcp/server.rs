@@ -4,6 +4,7 @@ use std::{
         atomic::{AtomicUsize, Ordering},
         Arc, RwLock,
     },
+    time::Duration,
 };
 
 use rmcp::{RoleServer, ServiceExt};
@@ -18,6 +19,10 @@ use super::{
 };
 
 pub(crate) const MAX_ACTIVE_SESSIONS: usize = 8;
+#[cfg(not(test))]
+const MCP_SHUTDOWN_DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
+#[cfg(test)]
+const MCP_SHUTDOWN_DRAIN_TIMEOUT: Duration = Duration::from_millis(100);
 
 #[derive(Clone, Debug)]
 pub(crate) struct McpServerOptions {
@@ -90,6 +95,13 @@ impl McpServerError {
             message: "QingYu MCP server state is unavailable.",
         }
     }
+
+    fn shutdown() -> Self {
+        Self {
+            code: "mcp_server_shutdown",
+            message: "QingYu MCP has entered terminal application shutdown.",
+        }
+    }
 }
 
 impl fmt::Display for McpServerError {
@@ -101,8 +113,15 @@ impl fmt::Display for McpServerError {
 impl std::error::Error for McpServerError {}
 
 struct RunningServer {
-    cancellation: CancellationToken,
+    graceful_shutdown: CancellationToken,
+    immediate_stop: CancellationToken,
     join: JoinHandle<()>,
+}
+
+#[derive(Default)]
+struct ServerLifecycle {
+    running: Option<RunningServer>,
+    shutdown: bool,
 }
 
 struct ActiveSessionGuard(Arc<AtomicUsize>);
@@ -118,7 +137,7 @@ pub(crate) struct McpServerController {
     endpoint: LocalIpcEndpoint,
     handler: QingYuMcpHandler,
     health: Arc<RwLock<McpServerHealth>>,
-    running: tokio::sync::Mutex<Option<RunningServer>>,
+    lifecycle: tokio::sync::Mutex<ServerLifecycle>,
 }
 
 impl McpServerController {
@@ -128,7 +147,7 @@ impl McpServerController {
             endpoint,
             handler,
             health: Arc::new(RwLock::new(McpServerHealth::default())),
-            running: tokio::sync::Mutex::new(None),
+            lifecycle: tokio::sync::Mutex::new(ServerLifecycle::default()),
         }
     }
 
@@ -136,7 +155,12 @@ impl McpServerController {
         &self,
         options: McpServerOptions,
     ) -> Result<McpServerHealth, McpServerError> {
-        self.stop().await?;
+        let mut lifecycle = self.lifecycle.lock().await;
+        if lifecycle.shutdown {
+            return Err(McpServerError::shutdown());
+        }
+        Self::stop_running(&mut lifecycle, false).await;
+        self.handler.invalidate_previews();
         if !options.enabled {
             return self.set_health(McpServerHealth {
                 state: McpServerState::Disabled,
@@ -160,8 +184,10 @@ impl McpServerController {
                 return Err(error);
             }
         };
-        let cancellation = CancellationToken::new();
-        let task_cancellation = cancellation.clone();
+        let graceful_shutdown = CancellationToken::new();
+        let task_graceful_shutdown = graceful_shutdown.clone();
+        let immediate_stop = CancellationToken::new();
+        let task_immediate_stop = immediate_stop.clone();
         let handler = self.handler.clone();
         let active_sessions = Arc::clone(&self.active_sessions);
         let health_store = Arc::clone(&self.health);
@@ -169,9 +195,10 @@ impl McpServerController {
         let session_permits = Arc::new(tokio::sync::Semaphore::new(MAX_ACTIVE_SESSIONS));
         let join = tokio::spawn(async move {
             let mut connections = JoinSet::new();
-            loop {
+            let graceful = loop {
                 tokio::select! {
-                    _ = task_cancellation.cancelled() => break,
+                    _ = task_immediate_stop.cancelled() => break false,
+                    _ = task_graceful_shutdown.cancelled() => break true,
                     accepted = listener.accept() => match accepted {
                         Ok(stream) => {
                             let Ok(permit) = Arc::clone(&session_permits).try_acquire_owned() else {
@@ -199,18 +226,27 @@ impl McpServerController {
                                 health.state = McpServerState::Error;
                                 health.error_code = Some("mcp_server_failed".to_string());
                             }
-                            break;
+                            break false;
                         }
                     },
                     completed = connections.join_next(), if !connections.is_empty() => {
                         let _connection_result = completed;
                     }
                 }
+            };
+            if graceful {
+                let _drain_result =
+                    tokio::time::timeout(MCP_SHUTDOWN_DRAIN_TIMEOUT, handler.wait_for_drain())
+                        .await;
             }
             connections.abort_all();
             while connections.join_next().await.is_some() {}
         });
-        *self.running.lock().await = Some(RunningServer { cancellation, join });
+        lifecycle.running = Some(RunningServer {
+            graceful_shutdown,
+            immediate_stop,
+            join,
+        });
         self.set_health(McpServerHealth {
             state: McpServerState::Running,
             endpoint: Some(self.endpoint.health_label().to_string()),
@@ -219,10 +255,28 @@ impl McpServerController {
     }
 
     pub(crate) async fn stop(&self) -> Result<(), McpServerError> {
-        let running = self.running.lock().await.take();
-        if let Some(running) = running {
-            running.cancellation.cancel();
-            let _join_result = running.join.await;
+        let mut lifecycle = self.lifecycle.lock().await;
+        Self::stop_running(&mut lifecycle, false).await;
+        self.handler.invalidate_previews();
+        self.set_health(McpServerHealth {
+            state: McpServerState::Stopped,
+            ..McpServerHealth::default()
+        })?;
+        Ok(())
+    }
+
+    pub(crate) async fn shutdown(&self) -> Result<(), McpServerError> {
+        let mut lifecycle = self.lifecycle.lock().await;
+        if !lifecycle.shutdown {
+            lifecycle.shutdown = true;
+            self.handler.begin_shutdown();
+        }
+        if lifecycle.running.is_some() {
+            Self::stop_running(&mut lifecycle, true).await;
+        } else {
+            let _drain_result =
+                tokio::time::timeout(MCP_SHUTDOWN_DRAIN_TIMEOUT, self.handler.wait_for_drain())
+                    .await;
         }
         self.handler.invalidate_previews();
         self.set_health(McpServerHealth {
@@ -262,5 +316,17 @@ impl McpServerController {
     fn set_health(&self, health: McpServerHealth) -> Result<McpServerHealth, McpServerError> {
         *self.health.write().map_err(|_| McpServerError::state())? = health.clone();
         Ok(health)
+    }
+
+    async fn stop_running(lifecycle: &mut ServerLifecycle, graceful: bool) {
+        let Some(running) = lifecycle.running.take() else {
+            return;
+        };
+        if graceful {
+            running.graceful_shutdown.cancel();
+        } else {
+            running.immediate_stop.cancel();
+        }
+        let _join_result = running.join.await;
     }
 }

@@ -46,10 +46,31 @@ describe("Kernel events", () => {
     expect(onReady).toHaveBeenCalledWith(readyFrame(CONNECTION_1, INSTANCE_1));
   });
 
-  it("rejects insecure or cross-origin browser session event endpoints", () => {
+  it("uses WS for an exact same-origin HTTP browser session", () => {
+    const urls: string[] = [];
+    const client = createKernelEventsClient({
+      baseUrl: "http://notes.example:3210",
+      auth: {
+        kind: "browser-session",
+        browserOrigin: "http://notes.example:3210",
+        getCsrfToken: () => "unused",
+      },
+      webSocket: (url) => {
+        urls.push(url);
+        return new FakeWebSocket();
+      },
+    });
+
+    client.connect({});
+
+    expect(urls).toEqual(["ws://notes.example:3210/api/v1/events"]);
+  });
+
+  it("rejects cross-scheme or cross-origin browser session event endpoints", () => {
     for (const [baseUrl, browserOrigin] of [
-      ["http://notes.example", "http://notes.example"],
       ["https://api.example", "https://notes.example"],
+      ["http://api.example", "http://notes.example"],
+      ["http://notes.example", "https://notes.example"],
     ]) {
       expect(() => createKernelEventsClient({
         baseUrl,

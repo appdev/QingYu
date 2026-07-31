@@ -19,7 +19,7 @@ services:
       - QINGYU_PUBLIC_ORIGIN
       - QINGYU_SERVER_INITIALIZATION_TOKEN
     ports:
-      - "127.0.0.1:3210:3210"
+      - "${QINGYU_PUBLISHED_ADDRESS:-127.0.0.1}:3210:3210"
     volumes:
       - qingyu-data:/data
     tmpfs:

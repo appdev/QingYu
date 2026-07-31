@@ -6,6 +6,7 @@ repo_root=$(CDPATH= cd -- "$(dirname "$0")/../.." && pwd)
 verifier="$repo_root/deploy/docker/verify-contract.sh"
 compose_file="$repo_root/deploy/docker/compose.contract.yaml"
 runtime_compose_file="$repo_root/deploy/docker/runtime-bundle.compose.yaml"
+runtime_bundle_verifier="$repo_root/deploy/docker/verify-runtime-bundle.sh"
 dockerfile="$repo_root/Dockerfile"
 web_dist_tests="$repo_root/deploy/docker/verify-web-dist.test.mjs"
 runtime_gate="$repo_root/deploy/docker/verify-runtime.sh"
@@ -155,8 +156,8 @@ expect_runtime_compose_rejection() {
       service["cap_drop"] = []
     when "privilege"
       service["security_opt"] = []
-    when "public-port"
-      service["ports"] = ["3210:3210"]
+    when "wrong-port"
+      service["ports"] = ["${QINGYU_PUBLISHED_ADDRESS:-127.0.0.1}:3210:9999"]
     when "host-data"
       service["volumes"] = ["./data:/data"]
     when "weak-tmpfs"
@@ -190,8 +191,8 @@ expect_runtime_compose_rejection retained-capability \
   'Runtime Compose cap_drop must contain only ALL' capability
 expect_runtime_compose_rejection privilege-escalation \
   'Runtime Compose security_opt must contain only no-new-privileges:true' privilege
-expect_runtime_compose_rejection public-port \
-  'Runtime Compose must publish only Kernel port 3210 on loopback' public-port
+expect_runtime_compose_rejection wrong-port \
+  'Runtime Compose must publish only Kernel port 3210 on the explicit/default bind address' wrong-port
 expect_runtime_compose_rejection host-data \
   'Runtime Compose must mount only qingyu-data at fixed /data' host-data
 expect_runtime_compose_rejection weak-tmpfs \
@@ -200,6 +201,29 @@ expect_runtime_compose_rejection short-stop \
   'Runtime Compose stop_grace_period must be exactly 35s' short-stop
 expect_runtime_compose_rejection no-restart \
   'Runtime Compose restart policy must be unless-stopped' no-restart
+
+semantically_equivalent_runtime_compose="$temporary_directory/runtime-compose.frozen-drift.yaml"
+ruby -e '
+  source = File.read(ARGV.fetch(0))
+  File.write(ARGV.fetch(1), "# semantically equivalent frozen-control drift\n#{source}")
+' "$runtime_compose_file" "$semantically_equivalent_runtime_compose"
+expect_rejection \
+  runtime-compose-frozen-control-drift \
+  'Runtime Compose frozen control checksum changed' \
+  env QINGYU_VERIFY_RUNTIME_COMPOSE_FILE="$semantically_equivalent_runtime_compose" "$verifier"
+
+stale_runtime_bundle_verifier="$temporary_directory/verify-runtime-bundle.stale-compose-sha.sh"
+ruby -e '
+  source = File.read(ARGV.fetch(0))
+  pattern = /^expected_compose_sha256=[0-9a-f]{64}$/
+  abort "runtime bundle Compose checksum not found" unless source.match?(pattern)
+  File.write(ARGV.fetch(1), source.sub(pattern, "expected_compose_sha256=#{"0" * 64}"))
+' "$runtime_bundle_verifier" "$stale_runtime_bundle_verifier"
+chmod 0555 "$stale_runtime_bundle_verifier"
+expect_rejection \
+  runtime-bundle-verifier-stale-compose-sha \
+  'Runtime bundle verifier Compose checksum drifted from the main packaging gate' \
+  env QINGYU_VERIFY_RUNTIME_BUNDLE_VERIFIER="$stale_runtime_bundle_verifier" "$verifier"
 
 weakened_dockerignore="$temporary_directory/dockerignore.missing-nested-env"
 awk '$0 != "**/.env.*" { print }' "$repo_root/.dockerignore" >"$weakened_dockerignore"

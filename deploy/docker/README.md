@@ -8,7 +8,7 @@ The local/CI source-build image has a real server process boundary:
 
 - a Node + pnpm build stage produces `apps/web/dist`;
 - a Rust build stage produces the locked release `qingyu-kernel` binary;
-- the final image runs `qingyu-kernel server --public-origin <exact HTTPS origin>` as UID/GID `10001:10001`;
+- the final image runs `qingyu-kernel server --public-origin <exact HTTP or HTTPS origin>` as UID/GID `10001:10001`;
 - the final image carries the Web build at `/opt/qingyu/web`.
 
 The Kernel exposes its authenticated JSON/WebSocket API and health routes on `0.0.0.0:3210`. The same process serves `/opt/qingyu/web`, including real assets and the SPA fallback, so no Node or Vite server is present in the runtime image. Unknown `/api` routes stay JSON and never fall through to the Web entrypoint.
@@ -38,10 +38,10 @@ If a usable Docker daemon is present, `verify-contract.sh` additionally builds t
 - `/data` is the only persistent mount. The Kernel owns `/data/workspace`, `/data/config`, `/data/state`, and `/data/logs`; no command or environment variable can relocate them.
 - `/tmp/qingyu` is the only disposable cache path. Compose supplies it as a UID/GID `10001:10001` tmpfs.
 - The final image and Compose service run as numeric UID/GID `10001:10001`, drop all capabilities, enable `no-new-privileges`, and use a read-only root filesystem. Compose allows 35 seconds before forced termination so the Kernel's 30-second drain deadline can finish and report its outcome.
-- Only container port 3210 is exposed. Compose binds it to `127.0.0.1:3210`, so a same-host TLS reverse proxy is the intended external ingress.
-- `QINGYU_PUBLIC_ORIGIN` is required at process launch. It is not secret, but it must be the exact canonical HTTPS origin accepted by the Kernel, for example `https://notes.example.com` or `https://notes.example.com:8443`. Do not include a trailing slash, path, query, user information, or an explicit default `:443` port.
+- Only container port 3210 is exposed. Compose binds it to `127.0.0.1:3210` by default for a same-host TLS reverse proxy. Set `QINGYU_PUBLISHED_ADDRESS` explicitly when direct HTTP must listen on another host interface; this value controls Compose port publishing and is not passed into the container.
+- `QINGYU_PUBLIC_ORIGIN` is required at process launch. It is not secret, but it must be the exact canonical browser-visible HTTP or HTTPS origin accepted by the Kernel, for example `http://192.168.0.172:3210`, `https://notes.example.com`, or `https://notes.example.com:8443`. Do not include a trailing slash, path, query, user information, or an explicit default `:80`/`:443` port.
 - `QINGYU_SERVER_INITIALIZATION_TOKEN` is optional after initialization and is passed only through the container environment. It never enters a build argument, image environment value, Compose literal, or Compose default.
-- Both runtime inputs use Compose's value-free environment pass-through. The entrypoint fails closed if `QINGYU_PUBLIC_ORIGIN` is absent or empty; the Kernel validates its exact HTTPS form.
+- Both container runtime inputs use Compose's value-free environment pass-through. The entrypoint fails closed if `QINGYU_PUBLIC_ORIGIN` is absent or empty; the Kernel validates its canonical HTTP/HTTPS form and exact authority.
 
 The source-build image can be built independently for local/CI verification when Docker is available:
 
@@ -66,9 +66,22 @@ deploy/docker/verify-runtime-bundle.sh \
 
 Record and verify the generated archive sidecar before upload. Upload only the exact archive and checksum; do not upload repository source, Git credentials, or build toolchains. After extraction, build or load the runtime image from the bundle Dockerfile on a trusted image builder, publish or transfer that prebuilt image, set `QINGYU_SERVER_IMAGE` to its explicit reference, and run the bundled `compose.yaml` on the runtime host.
 
-## TLS reverse proxy and public origin
+## HTTP direct access and HTTPS reverse proxy
 
-The public origin is the browser-visible HTTPS authority, not the container's internal HTTP address. A supported deployment must terminate TLS at a reverse proxy, route the Web application and Kernel API under that same origin, and proxy traffic to `127.0.0.1:3210` without rewriting the browser-visible authority.
+Two ingress modes are supported. In both modes the browser, Web application, HTTP API, CSRF checks, and WebSocket endpoint use one exact origin. The Kernel rejects mismatched `Host` or `Origin` headers instead of trusting forwarded-host metadata.
+
+For direct HTTP on a trusted network, publish port 3210 on the intended interface and make the public origin match the address typed into the browser:
+
+```sh
+export QINGYU_PUBLISHED_ADDRESS=0.0.0.0
+export QINGYU_PUBLIC_ORIGIN=http://192.168.0.172:3210
+```
+
+HTTP is not encrypted. The owner password, one-time initialization token, document contents, session cookies, and S3/WebDAV credentials are transmitted in plaintext and can be read or modified by an on-path observer. Same-origin, CSRF, `HttpOnly`, and `SameSite=Strict` protections do not provide transport confidentiality. Use direct HTTP only on a network whose interception risk you explicitly accept; prefer HTTPS for remote or untrusted networks.
+
+HTTP uses `qingyu_session` and `qingyu_csrf` cookies without `Secure`, because browsers cannot send `Secure` cookies over HTTP. HTTPS uses separate `__Host-qingyu_session` and `__Host-qingyu_csrf` cookies with `Secure`. The server and Web client select only the names for the configured scheme, so credentials are not reused across HTTP and HTTPS profiles.
+
+In HTTPS mode, the public origin is the browser-visible HTTPS authority, not the container's internal HTTP address. The reverse proxy must terminate TLS, route the Web application and Kernel API under that same origin, and proxy traffic to `127.0.0.1:3210` without rewriting the browser-visible authority.
 
 For example, a site reached as `https://notes.example.com` must launch the Kernel with exactly:
 
@@ -76,7 +89,7 @@ For example, a site reached as `https://notes.example.com` must launch the Kerne
 QINGYU_PUBLIC_ORIGIN=https://notes.example.com
 ```
 
-TLS certificates and reverse-proxy configuration are intentionally outside this image. The current Compose contract does not provision TLS; it serves the Web assets and Kernel API together on internal port 3210 for a same-origin reverse proxy.
+TLS certificates and reverse-proxy configuration are intentionally outside this image. The Compose contract does not provision TLS; its default loopback bind serves the Web assets and Kernel API together on port 3210 for a same-origin reverse proxy.
 
 ## One-time initialization token
 
@@ -99,12 +112,13 @@ Never place the token in the Dockerfile, image labels, Compose YAML, shell histo
 | Locked Kernel release build | Implemented in the image build stage | `docker build --target qingyu-runtime ...` exits 0. |
 | Web production build | Implemented in the image build stage | `/opt/qingyu/web/index.html` exists in the final image. |
 | Fixed paths and non-root process | Implemented in image/Compose contract | UID/GID, read-only root, `/data`, and `/tmp/qingyu` probes pass. |
-| Kernel server CLI and public origin | Implemented | Exact HTTPS origin starts; missing/non-canonical origin fails closed. |
+| Kernel server CLI and public origin | Implemented | Exact canonical HTTP/HTTPS origin starts; missing/non-canonical origin fails closed. |
 | First initialization and token-free restart | Kernel capability implemented; container matrix not yet executed here | Empty-volume init, restart, persistence, and secret-leak checks pass in a real container. |
 | Kernel live/readiness routes | Implemented by Kernel; image healthcheck intentionally disabled | Real container probes cover starting, uninitialized, ready, and failure states. |
 | Web static assets in final image | Implemented | Asset inventory matches the `apps/web` build. |
 | Web assets served to the browser | Implemented | Same-origin GET/HEAD, real assets, SPA fallback, API exclusion, exact Host/Origin, CSP, and no-follow checks pass. |
 | Web application uses KernelClient only | Runtime contract ready | Browser/runtime tests cover the server bootstrap and ensure Docker mode has no local-directory workspace owner. |
-| TLS ingress | Not included | Reverse-proxy tests prove HTTPS origin, headers, cookies, CSRF, and WebSocket upgrades. |
+| HTTP direct ingress | Implemented contract | Browser tests prove exact HTTP origin, scheme-specific cookies, CSRF, and WS; live Linux acceptance remains required. |
+| TLS ingress | Not included | Reverse-proxy tests prove HTTPS origin, headers, cookies, CSRF, WSS upgrades, and isolation from HTTP cookies. |
 
-The runtime packaging gate is ready. Final live Linux acceptance is still pending until the prebuilt-image/container matrix proves fixed `/data`, initialization, restart persistence, HTTPS/WSS proxying, SIGTERM with a 30-second drain budget, and Linux runtime behavior. Docker being unavailable is an environmental limitation, not passing evidence.
+The runtime packaging gate is ready. Final live Linux acceptance is still pending until the prebuilt-image/container matrix proves fixed `/data`, initialization, restart persistence, direct HTTP/WS, HTTPS/WSS proxying, HTTP/HTTPS cookie isolation, SIGTERM with a 30-second drain budget, and Linux runtime behavior. Docker being unavailable is an environmental limitation, not passing evidence.

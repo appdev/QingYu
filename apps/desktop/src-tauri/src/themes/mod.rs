@@ -141,6 +141,10 @@ fn catalog_for_app(app: &tauri::AppHandle) -> Result<ThemeCatalog, ThemeError> {
     migration::theme_directory(app).map(ThemeCatalog::at)
 }
 
+pub(crate) fn initialize_catalog_before_kernel(app: &tauri::AppHandle) -> Result<(), ThemeError> {
+    migration::initialize_catalog(app).map(|_snapshot| ())
+}
+
 fn prepared_catalog(app: &tauri::AppHandle) -> Result<ThemeCatalog, ThemeError> {
     migration::initialize_catalog(app)?;
     catalog_for_app(app)

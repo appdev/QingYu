@@ -28,8 +28,8 @@ pub use catalog::{
 };
 pub use chunker::{ChunkBoundary, RabinChunker};
 pub use cloud::{
-    Cloud, CloudError, CloudObject, CloudOperation, CloudUploadSource, LocalCloud,
-    S3AddressingStyle, S3Cloud, S3Connection, S3RequestSigner, S3TlsVerification,
+    Cloud, CloudError, CloudObject, CloudOperation, CloudTargetIdentity, CloudUploadSource,
+    LocalCloud, S3AddressingStyle, S3Cloud, S3Connection, S3RequestSigner, S3TlsVerification,
     S3TransportOptions,
 };
 pub use crypto::{decrypt, derive_key, encrypt};

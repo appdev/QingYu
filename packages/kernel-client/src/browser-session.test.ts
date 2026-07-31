@@ -120,15 +120,32 @@ describe("browser session transport", () => {
     }
   });
 
-  it("rejects insecure, cross-origin, and non-root browser endpoints", () => {
+  it("accepts an exact same-origin HTTP browser endpoint", async () => {
+    const fetch = vi.fn<FetchLike>(async (url, init) => {
+      expect(url).toBe("http://notes.example:3210/api/v1/workspace");
+      expect(init?.credentials).toBe("same-origin");
+      return jsonResponse({});
+    });
+    const transport = browserTransport(fetch, () => CSRF_SECRET, {
+      baseUrl: "http://notes.example:3210",
+      browserOrigin: "http://notes.example:3210",
+    });
+
+    await transport.request({ method: "GET", path: "/api/v1/workspace" });
+
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects cross-scheme, cross-origin, and non-root browser endpoints", () => {
     const invalidPairs = [
-      ["http://notes.example", "http://notes.example"],
       ["https://api.example", "https://notes.example"],
+      ["http://api.example", "http://notes.example"],
       ["https://notes.example/nested", "https://notes.example"],
       ["https://notes.example?secret=x", "https://notes.example"],
       ["https://notes.example#secret", "https://notes.example"],
       ["https://user:pass@notes.example", "https://notes.example"],
       ["https://notes.example", "http://notes.example"],
+      ["http://notes.example", "https://notes.example"],
       ["https://notes.example", "https://notes.example/nested"],
     ] as const;
 

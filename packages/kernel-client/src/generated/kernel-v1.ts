@@ -351,6 +351,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/sync/runs/{runId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["getSyncRun"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/sync/status": {
         parameters: {
             query?: never;
@@ -1029,6 +1045,18 @@ export interface components {
             acceptedAt: components["schemas"]["Rfc3339Utc"];
             configRevision: components["schemas"]["Revision"];
             runId: components["schemas"]["RunId"];
+        };
+        /** @enum {string} */
+        SyncRunCompletionState: "attempting" | "failed" | "succeeded";
+        SyncRunStatusDto: {
+            acceptedAt: components["schemas"]["Rfc3339Utc"];
+            completionState: components["schemas"]["SyncRunCompletionState"];
+            configRevision: components["schemas"]["Revision"];
+            error: components["schemas"]["Nullable_SyncSafeErrorDto"];
+            finishedAt: components["schemas"]["Nullable_Rfc3339Utc"];
+            provider: components["schemas"]["SyncProvider"];
+            runId: components["schemas"]["RunId"];
+            summary: components["schemas"]["Nullable_SyncSummaryDto"];
         };
         SyncSafeErrorDto: {
             category?: string;
@@ -4278,6 +4306,114 @@ export interface operations {
                     "application/json": components["schemas"]["ApiErrorEnvelope"] & {
                         /** @enum {string} */
                         code?: "authentication_unavailable" | "sync_not_ready" | "sync_run_unavailable";
+                    };
+                };
+            };
+        };
+    };
+    getSyncRun: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                runId: components["schemas"]["RunId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Success */
+            200: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SyncRunStatusDto"];
+                };
+            };
+            /** @description Error */
+            400: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "invalid_request";
+                    };
+                };
+            };
+            /** @description Error */
+            401: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "unauthorized";
+                    };
+                };
+            };
+            /** @description Error */
+            403: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "host_not_allowed" | "origin_not_allowed";
+                    };
+                };
+            };
+            /** @description Error */
+            404: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "resource_not_found";
+                    };
+                };
+            };
+            /** @description Error */
+            500: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "internal_error";
+                    };
+                };
+            };
+            /** @description Error */
+            503: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "authentication_unavailable" | "sync_not_ready";
                     };
                 };
             };

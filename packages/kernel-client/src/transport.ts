@@ -241,7 +241,7 @@ export function parseKernelBaseUrl(
     url.hash !== "" ||
     url.pathname !== "/";
   const validEndpoint = authentication?.kind === "browser-session"
-    ? isExactSecureBrowserOrigin(url, authentication.browserOrigin)
+    ? isExactBrowserOrigin(url, authentication.browserOrigin)
     : isExplicitLoopback(raw, url);
   if (invalidCommon || !validEndpoint) {
     throw new KernelTransportError("invalid-base-url");
@@ -281,7 +281,7 @@ export function snapshotKernelAuthentication(value: unknown): KernelAuthenticati
   };
 }
 
-function isExactSecureBrowserOrigin(baseUrl: URL, browserOriginValue: string | URL) {
+function isExactBrowserOrigin(baseUrl: URL, browserOriginValue: string | URL) {
   let browserOrigin: URL;
   try {
     browserOrigin = new URL(browserOriginValue);
@@ -289,8 +289,8 @@ function isExactSecureBrowserOrigin(baseUrl: URL, browserOriginValue: string | U
     return false;
   }
   return (
-    baseUrl.protocol === "https:" &&
-    browserOrigin.protocol === "https:" &&
+    (baseUrl.protocol === "http:" || baseUrl.protocol === "https:") &&
+    baseUrl.protocol === browserOrigin.protocol &&
     browserOrigin.username === "" &&
     browserOrigin.password === "" &&
     browserOrigin.pathname === "/" &&

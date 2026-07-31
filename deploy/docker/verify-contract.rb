@@ -11,6 +11,8 @@ Stage = Struct.new(:base, :alias_name, :instructions, keyword_init: true)
 
 CANONICAL_DOCKERIGNORE_SHA256 =
   "5b8e84a7e25a385040213570ca7847548e61bba617c0ccbf13c337fd95e04644"
+CANONICAL_RUNTIME_COMPOSE_SHA256 =
+  "7ba9e9757bd5331aec9ebc98e5024ccf53087252172113b081c8c3b5ce1c0d0a"
 CANONICAL_DOCKERFILE_SYNTAX = "# syntax=docker/dockerfile:1.7"
 DOCKERFILE_PARSER_DIRECTIVE = /\A\s*#\s*(?:syntax|escape|check)\s*=/i
 
@@ -420,8 +422,8 @@ def verify_compose(path)
     "Compose environment must contain only value-free runtime inputs"
   )
   assert_contract(
-    service["ports"] == ["127.0.0.1:3210:3210"],
-    "Compose must publish only Kernel port 3210 on loopback"
+    service["ports"] == ["${QINGYU_PUBLISHED_ADDRESS:-127.0.0.1}:3210:3210"],
+    "Compose must publish only Kernel port 3210 on the explicit/default bind address"
   )
   assert_contract(
     service["volumes"] == ["qingyu-data:/data"],
@@ -510,8 +512,8 @@ def verify_runtime_compose(path)
     "Runtime Compose environment must contain only value-free runtime inputs"
   )
   assert_contract(
-    service["ports"] == ["127.0.0.1:3210:3210"],
-    "Runtime Compose must publish only Kernel port 3210 on loopback"
+    service["ports"] == ["${QINGYU_PUBLISHED_ADDRESS:-127.0.0.1}:3210:3210"],
+    "Runtime Compose must publish only Kernel port 3210 on the explicit/default bind address"
   )
   assert_contract(
     service["volumes"] == ["qingyu-data:/data"],
@@ -553,6 +555,14 @@ def verify_runtime_compose(path)
   assert_contract(
     volume_definition.nil? || volume_definition == {},
     "Runtime qingyu-data must not contain an external or host-path override"
+  )
+end
+
+def verify_runtime_bundle_verifier(path, expected_compose_sha256)
+  assignments = File.read(path).scan(/^expected_compose_sha256=([0-9a-f]{64})$/).flatten
+  assert_contract(
+    assignments == [expected_compose_sha256],
+    "Runtime bundle verifier Compose checksum drifted from the main packaging gate"
   )
 end
 
@@ -721,6 +731,10 @@ runtime_compose_file = ENV.fetch(
   "QINGYU_VERIFY_RUNTIME_COMPOSE_FILE",
   File.join(repo_root, "deploy/docker/runtime-bundle.compose.yaml")
 )
+runtime_bundle_verifier = ENV.fetch(
+  "QINGYU_VERIFY_RUNTIME_BUNDLE_VERIFIER",
+  File.join(repo_root, "deploy/docker/verify-runtime-bundle.sh")
+)
 dockerignore = ENV.fetch("QINGYU_VERIFY_DOCKERIGNORE", File.join(repo_root, ".dockerignore"))
 tracked_inputs_manifest = ENV.fetch(
   "QINGYU_VERIFY_TRACKED_INPUTS_MANIFEST",
@@ -731,6 +745,7 @@ tracked_inputs_manifest = ENV.fetch(
   [dockerfile, "root Dockerfile"],
   [compose_file, "Compose contract"],
   [runtime_compose_file, "runtime-only Compose contract"],
+  [runtime_bundle_verifier, "runtime bundle verifier"],
   [dockerignore, ".dockerignore"]
 ].each do |path, description|
   assert_contract(File.file?(path), "missing #{description}: #{path}")
@@ -739,4 +754,9 @@ end
 stages = verify_dockerfile(dockerfile)
 verify_compose(compose_file)
 verify_runtime_compose(runtime_compose_file)
+assert_contract(
+  Digest::SHA256.file(runtime_compose_file).hexdigest == CANONICAL_RUNTIME_COMPOSE_SHA256,
+  "Runtime Compose frozen control checksum changed"
+)
+verify_runtime_bundle_verifier(runtime_bundle_verifier, CANONICAL_RUNTIME_COMPOSE_SHA256)
 verify_dockerignore(dockerignore, repo_root, stages, tracked_inputs_manifest)

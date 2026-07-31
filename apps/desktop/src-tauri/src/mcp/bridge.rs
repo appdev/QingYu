@@ -23,7 +23,8 @@ const MAXIMUM_BRIDGE_FRAME_BYTES: usize = 64 * 1024 * 1024;
 #[derive(Clone, Debug)]
 pub(crate) struct BridgeConfig {
     pub(crate) endpoint: LocalIpcEndpoint,
-    settings_path: PathBuf,
+    local_state_path: PathBuf,
+    legacy_settings_path: PathBuf,
     pub(crate) startup_timeout: Duration,
     pub(crate) initial_backoff: Duration,
     pub(crate) maximum_backoff: Duration,
@@ -32,12 +33,11 @@ pub(crate) struct BridgeConfig {
 impl BridgeConfig {
     pub(crate) fn for_app() -> Result<Self, BridgeError> {
         let endpoint = LocalIpcEndpoint::for_app().map_err(|_| BridgeError::InvalidEndpoint)?;
-        let settings_path = application_data_dir()
-            .map_err(|_| BridgeError::InvalidEndpoint)?
-            .join("settings.json");
+        let app_data = application_data_dir().map_err(|_| BridgeError::InvalidEndpoint)?;
         Ok(Self {
             endpoint,
-            settings_path,
+            local_state_path: app_data.join("local-state.json"),
+            legacy_settings_path: app_data.join("settings.json"),
             startup_timeout: Duration::from_secs(15),
             initial_backoff: Duration::from_millis(100),
             maximum_backoff: Duration::from_secs(1),
@@ -48,8 +48,12 @@ impl BridgeConfig {
     pub(crate) fn for_test(endpoint: LocalIpcEndpoint) -> Self {
         Self {
             endpoint,
-            settings_path: std::env::temp_dir().join(format!(
-                "qingyu-mcp-test-settings-missing-{}",
+            local_state_path: std::env::temp_dir().join(format!(
+                "qingyu-mcp-test-local-state-missing-{}",
+                std::process::id()
+            )),
+            legacy_settings_path: std::env::temp_dir().join(format!(
+                "qingyu-mcp-test-legacy-settings-missing-{}",
                 std::process::id()
             )),
             startup_timeout: Duration::from_millis(50),
@@ -61,10 +65,15 @@ impl BridgeConfig {
     #[cfg(test)]
     pub(crate) fn for_test_with_settings(
         endpoint: LocalIpcEndpoint,
-        settings_path: PathBuf,
+        local_state_path: PathBuf,
     ) -> Self {
+        let legacy_settings_path = local_state_path
+            .parent()
+            .map(|parent| parent.join("settings.json"))
+            .unwrap_or_else(|| PathBuf::from("settings.json"));
         Self {
-            settings_path,
+            local_state_path,
+            legacy_settings_path,
             ..Self::for_test(endpoint)
         }
     }
@@ -108,7 +117,23 @@ enum McpStartupPermission {
     Disabled,
 }
 
-fn read_mcp_startup_permission(path: &Path) -> Result<McpStartupPermission, BridgeError> {
+fn read_mcp_startup_permission(
+    local_state_path: &Path,
+    legacy_settings_path: &Path,
+) -> Result<McpStartupPermission, BridgeError> {
+    match fs::read(local_state_path) {
+        Ok(bytes) => match parse_mcp_startup_permission(&bytes)? {
+            Some(permission) => Ok(permission),
+            None => read_legacy_mcp_startup_permission(legacy_settings_path),
+        },
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            read_legacy_mcp_startup_permission(legacy_settings_path)
+        }
+        Err(_) => Err(BridgeError::McpConfigUnavailable),
+    }
+}
+
+fn read_legacy_mcp_startup_permission(path: &Path) -> Result<McpStartupPermission, BridgeError> {
     let bytes = match fs::read(path) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -116,24 +141,28 @@ fn read_mcp_startup_permission(path: &Path) -> Result<McpStartupPermission, Brid
         }
         Err(_) => return Err(BridgeError::McpConfigUnavailable),
     };
+    Ok(parse_mcp_startup_permission(&bytes)?.unwrap_or(McpStartupPermission::Disabled))
+}
+
+fn parse_mcp_startup_permission(bytes: &[u8]) -> Result<Option<McpStartupPermission>, BridgeError> {
     let settings: serde_json::Value =
-        serde_json::from_slice(&bytes).map_err(|_| BridgeError::McpConfigUnavailable)?;
+        serde_json::from_slice(bytes).map_err(|_| BridgeError::McpConfigUnavailable)?;
     let root = settings
         .as_object()
         .ok_or(BridgeError::McpConfigUnavailable)?;
     let Some(mcp) = root.get("mcp") else {
-        return Ok(McpStartupPermission::Disabled);
+        return Ok(None);
     };
     let enabled = mcp
         .as_object()
         .and_then(|object| object.get("enabled"))
         .and_then(serde_json::Value::as_bool)
         .ok_or(BridgeError::McpConfigUnavailable)?;
-    Ok(if enabled {
+    Ok(Some(if enabled {
         McpStartupPermission::Enabled
     } else {
         McpStartupPermission::Disabled
-    })
+    }))
 }
 
 pub(crate) trait AppLauncher: Send + Sync {
@@ -349,8 +378,10 @@ async fn connect_with_launch<L: AppLauncher>(
             }
             Err(_) => {
                 if !launched {
-                    if read_mcp_startup_permission(&config.settings_path)?
-                        == McpStartupPermission::Disabled
+                    if read_mcp_startup_permission(
+                        &config.local_state_path,
+                        &config.legacy_settings_path,
+                    )? == McpStartupPermission::Disabled
                     {
                         return Err(BridgeError::McpDisabled);
                     }

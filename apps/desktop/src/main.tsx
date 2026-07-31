@@ -1,9 +1,22 @@
-import { StrictMode } from "react";
-import { createRoot } from "react-dom/client";
+import { StrictMode, type ReactNode } from "react";
+import { flushSync } from "react-dom";
+import { createRoot, type Root } from "react-dom/client";
 import App, { AppErrorBoundary, configureAppRuntime } from "@markra/app";
 import "@markra/app/styles.css";
-import { bootstrapApplication } from "./bootstrap";
-import { loadNativeRuntime } from "./runtime";
+import { bootstrapApplication, bootstrapApplicationMount } from "./bootstrap";
+import { createDesktopStartupApplicationOwner } from "./desktop-startup-application";
+import {
+  createDesktopKernelStartupOwner,
+  initializeDesktopKernelWorkspace,
+  retryDesktopKernelWorkspace,
+  type DesktopKernelStartupSnapshot,
+} from "./desktop-kernel-startup";
+import { DesktopStartupWorkspace } from "./desktop-startup-workspace";
+import { selectDesktopWorkspaceDirectory } from "./desktop-workspace-selector";
+import {
+  loadNativeRuntime,
+  readNativeRuntimeKind,
+} from "./runtime";
 
 function StartupError({ onRetry }: { onRetry: () => unknown }) {
   return (
@@ -25,28 +38,96 @@ function StartupError({ onRetry }: { onRetry: () => unknown }) {
   );
 }
 
-function startApplication() {
-  const root = createRoot(document.getElementById("root")!);
-
-  bootstrapApplication({
-    configureRuntime: configureAppRuntime,
-    loadRuntime: loadNativeRuntime,
-    reload: () => window.location.reload(),
-    renderApp: () => root.render(
-      <StrictMode>
-        <AppErrorBoundary>
-          <App />
-        </AppErrorBoundary>
-      </StrictMode>
-    ),
-    renderError: (onRetry) => root.render(
-      <StrictMode>
-        <AppErrorBoundary>
-          <StartupError onRetry={onRetry} />
-        </AppErrorBoundary>
-      </StrictMode>
-    )
-  });
+function renderRoot(root: Root, node: ReactNode) {
+  flushSync(() => root.render(node));
 }
 
-startApplication();
+function renderError(root: Root, onRetry: () => unknown) {
+  renderRoot(root,
+    <StrictMode>
+      <AppErrorBoundary>
+        <StartupError onRetry={onRetry} />
+      </AppErrorBoundary>
+    </StrictMode>
+  );
+}
+
+function renderDesktopStartupWorkspace(
+  root: Root,
+  snapshot: DesktopKernelStartupSnapshot,
+) {
+  renderRoot(root,
+    <StrictMode>
+      <AppErrorBoundary>
+        <DesktopStartupWorkspace
+          retryWorkspace={retryDesktopKernelWorkspace}
+          selectWorkspace={selectDesktopWorkspaceDirectory}
+          startWorkspace={initializeDesktopKernelWorkspace}
+          startupStatus={snapshot.status}
+        />
+      </AppErrorBoundary>
+    </StrictMode>
+  );
+}
+
+async function startApplication() {
+  const root = createRoot(document.getElementById("root")!);
+  const reload = () => window.location.reload();
+
+  if (readNativeRuntimeKind() === "mobile") {
+    await bootstrapApplication({
+      configureRuntime: configureAppRuntime,
+      loadRuntime: loadNativeRuntime,
+      reload,
+      renderApp: () => renderRoot(root,
+        <StrictMode>
+          <AppErrorBoundary>
+            <App />
+          </AppErrorBoundary>
+        </StrictMode>
+      ),
+      renderError: (onRetry) => renderError(root, onRetry)
+    });
+    return;
+  }
+
+  try {
+    const { createProductionDesktopApplicationMountOwner } = await import(
+      "./desktop-application-runtime"
+    );
+    const startupOwner = createDesktopKernelStartupOwner();
+    const renderWorkspace = (snapshot: DesktopKernelStartupSnapshot) =>
+      renderDesktopStartupWorkspace(root, snapshot);
+    const mountOwner = createDesktopStartupApplicationOwner({
+      createApplicationMountOwner: () =>
+        createProductionDesktopApplicationMountOwner({
+          configureRuntime: configureAppRuntime,
+          renderDomain: () => {
+            renderRoot(root,
+              <StrictMode>
+                <AppErrorBoundary>
+                  <App />
+                </AppErrorBoundary>
+              </StrictMode>
+            );
+            return () => renderRoot(root, null);
+          },
+          renderStartup: () => renderWorkspace(
+            startupOwner.getSnapshot() ?? { status: "unavailable" },
+          ),
+        }),
+      renderWorkspace,
+      startupOwner,
+    });
+    const stop = await bootstrapApplicationMount({
+      mountOwner,
+      reload,
+      renderError: (onRetry) => renderError(root, onRetry)
+    });
+    window.addEventListener("pagehide", stop, { once: true });
+  } catch {
+    renderError(root, reload);
+  }
+}
+
+startApplication().catch(() => undefined);

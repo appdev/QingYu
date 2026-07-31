@@ -105,7 +105,8 @@ impl Repo {
         let _local_latest = resolve_local_ref_unlocked(&self.store, "latest")?;
         let mut traffic = TrafficStat::default();
         let cloud_download = download_cloud_latest(self, cloud, &mut traffic).await?;
-        let latest_sync = resolve_local_ref_unlocked(&self.store, "latest-sync")?;
+        let latest_sync_ref = cloud_sync_ref_name(cloud);
+        let latest_sync = resolve_local_ref_unlocked(&self.store, &latest_sync_ref)?;
 
         let current_files = files_for_index(&self.store, &current)?;
         let latest_sync_files = latest_sync
@@ -124,9 +125,14 @@ impl Repo {
             if mode == SyncMode::Bidirectional {
                 let final_index =
                     publish_remote_index(&self.store, cloud, guard, current, &mut traffic).await?;
-                update_local_refs(&self.store, &final_index, Some(&final_index))?;
+                update_local_refs(
+                    &self.store,
+                    &final_index,
+                    Some(&final_index),
+                    &latest_sync_ref,
+                )?;
             } else {
-                update_local_refs(&self.store, &current, None)?;
+                update_local_refs(&self.store, &current, None, &latest_sync_ref)?;
             }
             return Ok((result, traffic));
         };
@@ -174,7 +180,12 @@ impl Repo {
         } else {
             &cloud_latest
         };
-        update_local_refs(&self.store, &final_index, Some(cloud_baseline))?;
+        update_local_refs(
+            &self.store,
+            &final_index,
+            Some(cloud_baseline),
+            &latest_sync_ref,
+        )?;
         Ok((plan.result, traffic))
     }
 
@@ -565,10 +576,29 @@ fn resolve_local_ref_unlocked(store: &Store, name: &str) -> Result<Option<Index>
     RefStore::new(store).resolve_unlocked(name)
 }
 
-fn update_local_refs(store: &Store, local: &Index, cloud: Option<&Index>) -> Result<(), RepoError> {
+fn cloud_sync_ref_name(cloud: &Arc<dyn Cloud>) -> String {
+    cloud.target_identity().map_or_else(
+        || "latest-sync".to_owned(),
+        |identity| format!("latest-sync-{}", identity.ref_component()),
+    )
+}
+
+fn update_local_refs(
+    store: &Store,
+    local: &Index,
+    cloud: Option<&Index>,
+    cloud_sync_ref: &str,
+) -> Result<(), RepoError> {
     let _operation = store.lock_operation()?;
     let refs = RefStore::new(store);
     refs.update_unlocked("latest", local)?;
+    match cloud {
+        Some(cloud) => refs.update_unlocked(cloud_sync_ref, cloud)?,
+        None => refs.clear_unlocked(cloud_sync_ref)?,
+    }
+    if cloud_sync_ref == "latest-sync" {
+        return Ok(());
+    }
     match cloud {
         Some(cloud) => refs.update_unlocked("latest-sync", cloud),
         None => refs.clear_unlocked("latest-sync"),
@@ -1155,8 +1185,8 @@ mod tests {
     use crate::ref_store::MAX_REMOTE_REF_BYTES;
 
     use crate::{
-        Cloud, CloudError, CloudObject, CloudUploadSource, Device, File, LocalCloud,
-        NoopWorkingTreeCoordinator, Repo, RepoError, RepoOptions, RepoPaths,
+        Cloud, CloudError, CloudObject, CloudTargetIdentity, CloudUploadSource, Device, File,
+        LocalCloud, NoopWorkingTreeCoordinator, Repo, RepoError, RepoOptions, RepoPaths,
         RepositoryRuntimeState, Store, WorkingTreeChange, WorkingTreeCoordinator,
         WorkingTreePermit,
     };
@@ -1325,6 +1355,10 @@ mod tests {
 
     #[async_trait::async_trait]
     impl Cloud for InspectCloud {
+        fn target_identity(&self) -> Option<CloudTargetIdentity> {
+            self.inner.target_identity()
+        }
+
         async fn get_bounded(&self, key: &str, max_bytes: u64) -> Result<Vec<u8>, CloudError> {
             self.events.lock().unwrap().push(format!("get:{key}"));
             if Self::should_fail(&self.fail_get, key) {
@@ -1575,6 +1609,272 @@ mod tests {
             downloader.repo.latest().unwrap().unwrap().id,
             downloader.repo.latest_sync().unwrap().unwrap().id
         );
+    }
+
+    #[tokio::test]
+    async fn first_switch_to_a_prepopulated_target_preserves_both_snapshots() {
+        let (_source_root, source) = cloud_fixture();
+        let (_target_root, target) = cloud_fixture();
+        let mover = repo_fixture("target-switch-mover", RepoOptions::default());
+        let target_writer = repo_fixture("target-switch-writer", RepoOptions::default());
+
+        write_file(&mover.data, "source.md", b"source value", 1_700_000_000_000);
+        sync(&mover.repo, source).await;
+        write_file(
+            &target_writer.data,
+            "target.md",
+            b"target value",
+            1_700_000_010_000,
+        );
+        sync(&target_writer.repo, target.clone()).await;
+
+        let switched = sync(&mover.repo, target.clone()).await;
+
+        assert!(switched.conflicts.is_empty());
+        assert_eq!(
+            fs::read(mover.data.join("source.md")).unwrap(),
+            b"source value"
+        );
+        assert_eq!(
+            fs::read(mover.data.join("target.md")).unwrap(),
+            b"target value"
+        );
+        let observer = repo_fixture("target-switch-observer", RepoOptions::default());
+        sync(&observer.repo, target).await;
+        assert_eq!(
+            fs::read(observer.data.join("source.md")).unwrap(),
+            b"source value"
+        );
+        assert_eq!(
+            fs::read(observer.data.join("target.md")).unwrap(),
+            b"target value"
+        );
+    }
+
+    #[tokio::test]
+    async fn round_trip_target_switch_merges_independent_files_without_remote_deletes() {
+        let (_source_root, source) = cloud_fixture();
+        let (_target_root, target) = cloud_fixture();
+        let mover = repo_fixture("round-trip-mover", RepoOptions::default());
+        let source_writer = repo_fixture("round-trip-source", RepoOptions::default());
+
+        write_file(&mover.data, "base.md", b"base", 1_700_000_000_000);
+        sync(&mover.repo, source.clone()).await;
+        sync(&source_writer.repo, source.clone()).await;
+
+        // Switching to an empty target must safely seed the current local snapshot.
+        sync(&mover.repo, target.clone()).await;
+        let target_observer = repo_fixture("round-trip-target", RepoOptions::default());
+        sync(&target_observer.repo, target.clone()).await;
+        assert_eq!(
+            fs::read(target_observer.data.join("base.md")).unwrap(),
+            b"base"
+        );
+
+        write_file(
+            &source_writer.data,
+            "source-only.md",
+            b"source branch",
+            1_700_000_010_000,
+        );
+        sync(&source_writer.repo, source.clone()).await;
+        write_file(
+            &mover.data,
+            "target-only.md",
+            b"target branch",
+            1_700_000_020_000,
+        );
+        sync(&mover.repo, target.clone()).await;
+
+        let switched_back = sync(&mover.repo, source.clone()).await;
+
+        assert!(switched_back.conflicts.is_empty());
+        assert_eq!(fs::read(mover.data.join("base.md")).unwrap(), b"base");
+        assert_eq!(
+            fs::read(mover.data.join("source-only.md")).unwrap(),
+            b"source branch"
+        );
+        assert_eq!(
+            fs::read(mover.data.join("target-only.md")).unwrap(),
+            b"target branch"
+        );
+
+        sync(&mover.repo, target.clone()).await;
+        sync(&target_observer.repo, target).await;
+        sync(&source_writer.repo, source).await;
+        for fixture in [&target_observer, &source_writer] {
+            assert_eq!(
+                fs::read(fixture.data.join("source-only.md")).unwrap(),
+                b"source branch"
+            );
+            assert_eq!(
+                fs::read(fixture.data.join("target-only.md")).unwrap(),
+                b"target branch"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn round_trip_target_switch_reports_same_file_divergence_as_a_conflict() {
+        let (_source_root, source) = cloud_fixture();
+        let (_target_root, target) = cloud_fixture();
+        let mover = repo_fixture("conflict-mover", RepoOptions::default());
+        let source_writer = repo_fixture("conflict-source", RepoOptions::default());
+
+        write_file(&mover.data, "same.md", b"common", 1_700_000_000_000);
+        sync(&mover.repo, source.clone()).await;
+        sync(&mover.repo, target.clone()).await;
+        sync(&source_writer.repo, source.clone()).await;
+
+        write_file(
+            &source_writer.data,
+            "same.md",
+            b"source value",
+            1_700_000_010_000,
+        );
+        sync(&source_writer.repo, source.clone()).await;
+        write_file(&mover.data, "same.md", b"target value", 1_700_000_020_000);
+        sync(&mover.repo, target).await;
+
+        let result = sync(&mover.repo, source).await;
+
+        assert_eq!(
+            result
+                .conflicts
+                .iter()
+                .map(|file| file.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["/same.md"]
+        );
+        assert_eq!(
+            fs::read(mover.data.join("same.md")).unwrap(),
+            b"target value"
+        );
+        let history_kept_source = fs::read_dir(&mover.history).unwrap().any(|entry| {
+            entry
+                .ok()
+                .and_then(|entry| fs::read(entry.path().join("same.md")).ok())
+                .is_some_and(|bytes| bytes == b"source value")
+        });
+        assert!(history_kept_source);
+    }
+
+    #[tokio::test]
+    async fn failed_target_publication_does_not_advance_any_target_baseline() {
+        let (_source_root, source_inner) = cloud_fixture();
+        let source = Arc::new(InspectCloud::new(source_inner));
+        let (_target_root, target) = cloud_fixture();
+        let mover = repo_fixture("failure-mover", RepoOptions::default());
+        let source_writer = repo_fixture("failure-source", RepoOptions::default());
+
+        write_file(&mover.data, "base.md", b"base", 1_700_000_000_000);
+        sync(&mover.repo, source.clone()).await;
+        sync(&source_writer.repo, source.clone()).await;
+        sync(&mover.repo, target.clone()).await;
+
+        write_file(
+            &source_writer.data,
+            "source-only.md",
+            b"source branch",
+            1_700_000_010_000,
+        );
+        sync(&source_writer.repo, source.clone()).await;
+        write_file(
+            &mover.data,
+            "target-only.md",
+            b"target branch",
+            1_700_000_020_000,
+        );
+        sync(&mover.repo, target).await;
+
+        let target_refs = || {
+            let refs = mover._root.path().join("repo/refs");
+            let mut snapshot = fs::read_dir(refs)
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter_map(|entry| {
+                    let name = entry.file_name().to_string_lossy().into_owned();
+                    name.starts_with("latest-sync-")
+                        .then(|| (name, fs::read(entry.path()).unwrap()))
+                })
+                .collect::<Vec<_>>();
+            snapshot.sort_by(|left, right| left.0.cmp(&right.0));
+            snapshot
+        };
+        let before_failure = target_refs();
+        assert_eq!(before_failure.len(), 2);
+        source.fail_put("refs/latest", 1);
+
+        let error = mover
+            .repo
+            .sync(source.clone(), coordinator())
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, RepoError::Cloud(_)));
+        assert_eq!(target_refs(), before_failure);
+
+        sync(&mover.repo, source.clone()).await;
+        let observer = repo_fixture("failure-observer", RepoOptions::default());
+        sync(&observer.repo, source).await;
+        assert_eq!(
+            fs::read(observer.data.join("source-only.md")).unwrap(),
+            b"source branch"
+        );
+        assert_eq!(
+            fs::read(observer.data.join("target-only.md")).unwrap(),
+            b"target branch"
+        );
+    }
+
+    #[tokio::test]
+    async fn target_specific_baselines_survive_repository_restart() {
+        let (_source_root, source) = cloud_fixture();
+        let (_target_root, target) = cloud_fixture();
+        let root = TempDir::new().unwrap();
+        let data = root.path().join("data");
+        let history = root.path().join("history");
+        let paths = RepoPaths {
+            data: data.clone(),
+            repo: root.path().join("repo"),
+            history,
+            temp: root.path().join("temp"),
+        };
+        fs::create_dir_all(&data).unwrap();
+        let open = |name: &str| {
+            Repo::open(
+                paths.clone(),
+                Device {
+                    id: format!("device-{name}"),
+                    name: name.to_owned(),
+                    os: "test".to_owned(),
+                },
+                [7; 32],
+                RepoOptions::default(),
+            )
+            .unwrap()
+        };
+        let mover = open("before-restart");
+        let target_writer = repo_fixture("restart-target-writer", RepoOptions::default());
+
+        write_file(&data, "source.md", b"source", 1_700_000_000_000);
+        sync(&mover, source.clone()).await;
+        write_file(
+            &target_writer.data,
+            "target.md",
+            b"target",
+            1_700_000_010_000,
+        );
+        sync(&target_writer.repo, target.clone()).await;
+        sync(&mover, target).await;
+        drop(mover);
+
+        let restarted = open("after-restart");
+        let switched_back = sync(&restarted, source).await;
+
+        assert!(switched_back.conflicts.is_empty());
+        assert_eq!(fs::read(data.join("source.md")).unwrap(), b"source");
+        assert_eq!(fs::read(data.join("target.md")).unwrap(), b"target");
     }
 
     #[tokio::test]
@@ -2370,6 +2670,13 @@ mod tests {
 
         assert!(local.repo.latest().unwrap().is_some());
         assert!(local.repo.latest_sync().unwrap().is_none());
+        assert_eq!(
+            crate::RefStore::new(&local.repo.store)
+                .all_index_ids()
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     #[tokio::test]
