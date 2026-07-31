@@ -35,18 +35,20 @@ use uuid::Uuid;
 use crate::{
     contract::{
         ApiErrorEnvelope, ChangeServerOwnerPasswordRequest, ConnectionId, CreateDocumentRequest,
-        CreateServerSessionRequest, CreateWorkspaceResourceQuery, CreatedDocumentDto,
-        DeleteDocumentRequest, DocumentContentDto, DocumentContents, DocumentEntryDto,
-        DocumentHistoryPageDto, DocumentHistorySnapshotDto, DocumentId, DocumentPageDto,
-        DomainEvent, ErrorCode, ErrorDetails, EventSequence, GapReason,
-        InitializeServerOwnerRequest, InstanceId, ListDocumentsQuery, ListWorkspaceInventoryQuery,
-        LiveHealthResponse, MoveDocumentRequest, PageQuery, PatchSettingsRequest,
-        PatchSyncConfigRequest, ProtocolVersion, ReadyHealthResponse, ReadySequence, ReloadScope,
-        RequestId, ResourceEntryDto, ResourceKind, ResourceRefDto, RestoreDocumentHistoryRequest,
-        Revision, SearchPageDto, SearchWorkspaceQuery, ServerAuthenticationStatusDto, ServerFrame,
-        ServerSessionDto, SettingsSnapshotDto, SnapshotRequired, SyncConfigViewDto,
-        SyncConnectionTestDto, SyncRunAcceptedDto, SyncRunStatusDto, SyncSafeErrorDto,
-        SyncStatusDto, SystemVersionResponse, TestSyncConnectionRequest, TriggerSyncRunRequest,
+        CreateServerSessionRequest, CreateWorkspaceResourceBatchItem,
+        CreateWorkspaceResourceBatchRequest, CreateWorkspaceResourceBatchResponse,
+        CreateWorkspaceResourceQuery, CreatedDocumentDto, DeleteDocumentRequest,
+        DocumentContentDto, DocumentContents, DocumentEntryDto, DocumentHistoryPageDto,
+        DocumentHistorySnapshotDto, DocumentId, DocumentPageDto, DomainEvent, ErrorCode,
+        ErrorDetails, EventSequence, GapReason, InitializeServerOwnerRequest, InstanceId,
+        ListDocumentsQuery, ListWorkspaceInventoryQuery, LiveHealthResponse, MoveDocumentRequest,
+        PageQuery, PatchSettingsRequest, PatchSyncConfigRequest, ProtocolVersion,
+        ReadyHealthResponse, ReadySequence, ReloadScope, RequestId, ResourceEntryDto, ResourceKind,
+        ResourceRefDto, RestoreDocumentHistoryRequest, Revision, SearchPageDto,
+        SearchWorkspaceQuery, ServerAuthenticationStatusDto, ServerFrame, ServerSessionDto,
+        SettingsSnapshotDto, SnapshotRequired, SyncConfigViewDto, SyncConnectionTestDto,
+        SyncRunAcceptedDto, SyncRunStatusDto, SyncSafeErrorDto, SyncStatusDto,
+        SystemVersionResponse, TestSyncConnectionRequest, TriggerSyncRunRequest,
         UpdateDocumentRequest, WorkspaceDto, WorkspaceInventoryEntryDto, WorkspaceInventoryPageDto,
     },
     error::{http_status_for_error_code, safe_error_envelope},
@@ -615,6 +617,11 @@ fn route_accepts_method(path: &str, method: &Method) -> bool {
             ["", "api", "v1", "documents", document_id, "resources"] if !document_id.is_empty() => {
                 &[Method::POST]
             }
+            ["", "api", "v1", "documents", document_id, "resource-batches"]
+                if !document_id.is_empty() =>
+            {
+                &[Method::POST]
+            }
             ["", "api", "v1", "documents", document_id, "history"] if !document_id.is_empty() => {
                 &[Method::GET]
             }
@@ -773,6 +780,9 @@ impl std::error::Error for OpenApiExportError {}
         WorkspaceDto,
         ListWorkspaceInventoryQuery,
         CreateWorkspaceResourceQuery,
+        CreateWorkspaceResourceBatchItem,
+        CreateWorkspaceResourceBatchRequest,
+        CreateWorkspaceResourceBatchResponse,
         WorkspaceInventoryEntryDto,
         WorkspaceInventoryPageDto,
         ResourceEntryDto,
@@ -1172,6 +1182,14 @@ fn install_paths(document: &mut serde_json::Value) {
             true,
         ),
         (
+            "post",
+            "/api/v1/documents/{documentId}/resource-batches",
+            "createWorkspaceResourceBatch",
+            "201",
+            "CreateWorkspaceResourceBatchResponse",
+            true,
+        ),
+        (
             "get",
             "/api/v1/documents",
             "listDocuments",
@@ -1499,6 +1517,22 @@ fn install_operation_inputs(document: &mut serde_json::Value) {
         "/api/v1/documents/{documentId}/resources",
         "post",
         64 * 1024 * 1024,
+    );
+    push_parameter(
+        document,
+        "/api/v1/documents/{documentId}/resource-batches",
+        "post",
+        "documentId",
+        "path",
+        "DocumentId",
+        true,
+    );
+    set_request_body(
+        document,
+        "/api/v1/documents/{documentId}/resource-batches",
+        "post",
+        "CreateWorkspaceResourceBatchRequest",
+        100 * 1024 * 1024,
     );
     push_parameter(
         document,

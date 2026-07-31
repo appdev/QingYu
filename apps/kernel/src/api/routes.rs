@@ -14,11 +14,12 @@ use zeroize::Zeroize;
 
 use crate::{
     contract::{
-        ApiVersion, CreateDocumentRequest, CreateWorkspaceResourceQuery, DocumentContents,
-        DocumentId, DocumentName, ErrorCode, ErrorDetails, FileDocumentName, ListDocumentsQuery,
-        ListWorkspaceInventoryQuery, LiveHealthResponse, LiveStatus, MoveDocumentRequest,
-        PageQuery, ResourceId, ResourceKind, RunId, SearchWorkspaceQuery, SnapshotId, StartupState,
-        UpdateDocumentRequest, WorkspaceRelativePath,
+        ApiVersion, CreateDocumentRequest, CreateWorkspaceResourceBatchRequest,
+        CreateWorkspaceResourceQuery, DocumentContents, DocumentId, DocumentName, ErrorCode,
+        ErrorDetails, FileDocumentName, ListDocumentsQuery, ListWorkspaceInventoryQuery,
+        LiveHealthResponse, LiveStatus, MoveDocumentRequest, PageQuery, ResourceId, ResourceKind,
+        RunId, SearchWorkspaceQuery, SnapshotId, StartupState, UpdateDocumentRequest,
+        WorkspaceRelativePath,
     },
     runtime::ServiceFailure,
 };
@@ -38,6 +39,7 @@ enum ServiceOperation {
     ListWorkspaceInventory,
     OpenWorkspaceResource,
     CreateWorkspaceResource,
+    CreateWorkspaceResourceBatch,
     ListDocuments,
     CreateDocument,
     GetDocument,
@@ -73,6 +75,10 @@ pub(crate) fn router() -> Router<ApiState> {
         .route(
             "/api/v1/documents/{document_id}/resources",
             post(create_workspace_resource),
+        )
+        .route(
+            "/api/v1/documents/{document_id}/resource-batches",
+            post(create_workspace_resource_batch),
         )
         .route(
             "/api/v1/documents",
@@ -236,6 +242,36 @@ async fn create_workspace_resource(
             .await,
         StatusCode::CREATED,
         ServiceOperation::CreateWorkspaceResource,
+    )
+}
+
+async fn create_workspace_resource_batch(
+    State(state): State<ApiState>,
+    document_id: Result<Path<DocumentId>, PathRejection>,
+    request: Request<Body>,
+) -> Response {
+    let Ok(Path(document_id)) = document_id else {
+        return api_error(ErrorCode::InvalidRequest, None);
+    };
+    let request = match parse_json::<CreateWorkspaceResourceBatchRequest>(
+        request,
+        DOCUMENT_JSON_BODY_LIMIT,
+        ErrorCode::ResourceTooLarge,
+    )
+    .await
+    {
+        Ok(request) => request,
+        Err(response) => return response,
+    };
+    let Some(service) = runtime(&state).resources_api_service() else {
+        return unavailable(ServiceOperation::CreateWorkspaceResourceBatch);
+    };
+    service_response(
+        service
+            .create_workspace_resource_batch(document_id, request)
+            .await,
+        StatusCode::CREATED,
+        ServiceOperation::CreateWorkspaceResourceBatch,
     )
 }
 
@@ -833,6 +869,15 @@ impl ServiceOperation {
                 E::ResourceTooLarge,
                 E::RevisionConflict,
             ],
+            Self::CreateWorkspaceResourceBatch => &[
+                E::KernelNotReady,
+                E::WorkspaceUnavailable,
+                E::WorkspaceLocked,
+                E::InvalidRequest,
+                E::DocumentNotFound,
+                E::ResourceTooLarge,
+                E::RevisionConflict,
+            ],
             Self::ListDocuments => &[
                 E::KernelNotReady,
                 E::WorkspaceUnavailable,
@@ -956,6 +1001,7 @@ impl ServiceOperation {
             | Self::ListWorkspaceInventory
             | Self::OpenWorkspaceResource
             | Self::CreateWorkspaceResource
+            | Self::CreateWorkspaceResourceBatch
             | Self::ListDocuments
             | Self::CreateDocument
             | Self::GetDocument

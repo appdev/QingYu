@@ -15,6 +15,7 @@ import {
   isReadyHealth,
   isRuntime,
   isResourceEntry,
+  isResourceBatchResponse,
   isSearchPage,
   isServerAuthenticationStatus,
   isServerSession,
@@ -128,6 +129,11 @@ export interface KernelResourcesClient {
     request: KernelCreateResourceRequest,
     options?: KernelRequestOptions,
   ): Promise<Schemas["ResourceEntryDto"]>;
+  createBatch(
+    documentId: Schemas["DocumentId"],
+    request: KernelCreateResourceBatchRequest,
+    options?: KernelRequestOptions,
+  ): Promise<Schemas["CreateWorkspaceResourceBatchResponse"]>;
 }
 
 type KernelCreateResourceMetadata = Schemas["CreateWorkspaceResourceQuery"];
@@ -137,13 +143,34 @@ export type KernelCreateResourceRequest = Omit<KernelCreateResourceMetadata, "ki
 } & (
   | {
     kind: "image";
-    mediaType: "image/gif" | "image/jpeg" | "image/png" | "image/webp";
+    mediaType: KernelImageMediaType;
   }
   | {
     kind: "attachment";
     mediaType: "application/octet-stream";
   }
 );
+
+export type KernelImageMediaType =
+  | "image/avif"
+  | "image/bmp"
+  | "image/gif"
+  | "image/jpeg"
+  | "image/png"
+  | "image/svg+xml"
+  | "image/webp";
+
+export type KernelCreateResourceBatchRequest = Omit<
+  Schemas["CreateWorkspaceResourceBatchRequest"],
+  "items"
+> & {
+  items: Array<{
+    body: Blob;
+    kind: "image";
+    mediaType: KernelImageMediaType;
+    name: Schemas["ResourceName"];
+  }>;
+};
 
 export interface KernelSettingsClient {
   get(options?: KernelRequestOptions): Promise<Schemas["SettingsSnapshotDto"]>;
@@ -297,7 +324,7 @@ export function createKernelClient(options: CreateKernelClientOptions): KernelCl
         }, {
           status: 200,
           mediaTypes: kind === "image"
-            ? ["image/gif", "image/jpeg", "image/png", "image/webp"]
+            ? ["image/avif", "image/bmp", "image/gif", "image/jpeg", "image/png", "image/svg+xml", "image/webp"]
             : ["application/octet-stream"],
         }),
       create: (documentId, request, requestOptions) =>
@@ -314,6 +341,25 @@ export function createKernelClient(options: CreateKernelClientOptions): KernelCl
           mediaType: request.mediaType,
           signal: requestOptions?.signal,
         }, { status: 201, validate: isResourceEntry }),
+      createBatch: async (documentId, request, requestOptions) => {
+        const items = await Promise.all(request.items.map(async (item) => ({
+          bodyBase64: bytesToBase64(new Uint8Array(await item.body.arrayBuffer())),
+          kind: item.kind,
+          mediaType: item.mediaType,
+          name: item.name,
+        })));
+        return transport.request({
+          method: "POST",
+          path: `${documentPath(documentId)}/resource-batches`,
+          body: {
+            batchId: request.batchId,
+            folder: request.folder,
+            items,
+            workspaceGeneration: request.workspaceGeneration,
+          },
+          signal: requestOptions?.signal,
+        }, { status: 201, validate: isResourceBatchResponse });
+      },
     },
     documents: {
       list: (query, requestOptions) =>
@@ -435,4 +481,13 @@ export function createKernelClient(options: CreateKernelClientOptions): KernelCl
         }, { status: 202, validate: isSyncRun }),
     },
   };
+}
+
+function bytesToBase64(bytes: Uint8Array) {
+  const chunks: string[] = [];
+  const chunkSize = 32 * 1024;
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    chunks.push(String.fromCharCode(...bytes.subarray(offset, offset + chunkSize)));
+  }
+  return btoa(chunks.join(""));
 }

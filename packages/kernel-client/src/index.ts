@@ -4,6 +4,8 @@ export {
   type KernelAuthenticationClient,
   type KernelClient,
   type KernelCreateResourceRequest,
+  type KernelCreateResourceBatchRequest,
+  type KernelImageMediaType,
   type KernelDocumentsClient,
   type KernelRequestOptions,
   type KernelResourcesClient,

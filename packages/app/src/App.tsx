@@ -106,7 +106,7 @@ import {
   generateDiagnosticsIssueUrl
 } from "./lib/diagnostics/diagnostics-report";
 import { resolveMarkdownDocumentLinkFile, resolveMarkdownDocumentLinkPath } from "./lib/document-links";
-import { saveLocalEditorImage } from "./lib/image-upload";
+import { createImageUploadFileName, saveLocalEditorImage } from "./lib/image-upload";
 import {
   persistRemoteEditorImage,
   resolveEditorAssetAction,
@@ -3576,20 +3576,52 @@ function WorkspaceApp() {
       return;
     }
 
-    const savedImages = (await handleSaveEditorResources(createEditorResourceRequest("import", images)))
-      .flatMap((resource) => resource.kind === "image"
-        ? [{ alt: resource.alt, src: resource.src }]
-        : []);
+    let savedImages: Array<{ alt: string; src: string }>;
+    if (compactMode.trueMobile) {
+      const batch = await (async () => {
+        const inputs = await Promise.all(images.map(async (image) => ({
+          documentPath: document.path,
+          fileName: await createImageUploadFileName(
+            image,
+            editorPreferences.preferences.imageUpload.fileNamePattern,
+          ),
+          folder: "assets",
+          image,
+        })));
+        return appFiles.saveClipboardImages(inputs);
+      })().catch((error) => {
+        const description = clipboardImageSaveFailureDescription(error);
+        showAppToast({
+          ...(description ? { description } : {}),
+          message: translate("app.clipboardImageSaveFailed"),
+          status: "error",
+        });
+        return null;
+      });
+      if (batch === null) return;
+      savedImages = batch;
+      if (document.path) await refreshMarkdownFileTree(document.path).catch(() => {});
+    } else {
+      savedImages = (await handleSaveEditorResources(createEditorResourceRequest("import", images)))
+        .flatMap((resource) => resource.kind === "image"
+          ? [{ alt: resource.alt, src: resource.src }]
+          : []);
+    }
     if (savedImages.length === 0 || savedImages.length !== images.length) return;
 
     insertEditorMarkdownImages(savedImages);
     syncVisualMarkdownAfterEditorCommand();
   }, [
     activeImageFile,
+    appFiles,
+    compactMode.trueMobile,
+    document.path,
+    editorPreferences.preferences.imageUpload.fileNamePattern,
     hasOpenDocument,
     handleSaveEditorResources,
     insertEditorMarkdownImages,
     mainEditorReadOnly,
+    refreshMarkdownFileTree,
     sourceMode,
     syncVisualMarkdownAfterEditorCommand,
     translate

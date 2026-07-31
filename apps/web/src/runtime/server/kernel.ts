@@ -401,6 +401,30 @@ export async function createServerKernelDomainAdapter(
       },
     },
     resources: {
+      createBatch: async (input) => {
+        await prepareDocumentOperation(input.workspaceGeneration);
+        const response = await request(() => client.resources.createBatch(
+          input.documentLocator,
+          {
+            batchId: input.batchId,
+            folder: input.folder,
+            items: input.items.map((item) => ({ ...item })),
+            workspaceGeneration: input.workspaceGeneration,
+          },
+          { signal: requests.signal },
+        ));
+        if (response.batchId !== input.batchId || response.resources.length !== input.items.length) {
+          protocolMismatch();
+        }
+        response.resources.forEach((resource, index) => {
+          const requested = input.items[index];
+          if (!requested || resource.kind !== requested.kind || resource.mediaType !== requested.mediaType) {
+            protocolMismatch();
+          }
+        });
+        await confirmWorkspaceIdentity();
+        return response.resources.map((resource) => mapResourceEntry(resource, workspaceGeneration));
+      },
       create: async (input) => {
         await prepareDocumentOperation(input.workspaceGeneration);
         const resourceRequest = input.kind === "image"

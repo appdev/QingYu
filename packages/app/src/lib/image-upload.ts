@@ -148,7 +148,7 @@ function sanitizeFileNamePart(value: string) {
 }
 
 function stripKnownImageExtension(value: string) {
-  return value.replace(/\.(?:avif|bmp|gif|jpe?g|png|webp)$/iu, "");
+  return value.replace(/\.(?:avif|bmp|gif|jpe?g|png|svg|webp)$/iu, "");
 }
 
 async function fileMd5Hex(file: File) {

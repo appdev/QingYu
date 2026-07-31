@@ -77,11 +77,24 @@ type CachedEntry = KernelDocumentEntrySnapshot;
 type CachedImageResource = KernelResourceSnapshot;
 
 const previewableImageMediaTypes = new Set([
+  "image/avif",
+  "image/bmp",
   "image/gif",
   "image/jpeg",
   "image/png",
+  "image/svg+xml",
   "image/webp",
 ]);
+
+function createBatchId() {
+  if (typeof globalThis.crypto?.randomUUID === "function") return globalThis.crypto.randomUUID();
+  const bytes = new Uint8Array(16);
+  globalThis.crypto.getRandomValues(bytes);
+  bytes[6] = (bytes[6] ?? 0) & 0x0f | 0x40;
+  bytes[8] = (bytes[8] ?? 0) & 0x3f | 0x80;
+  const hex = [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
 
 export function createKernelFileRuntime(
   kernel: KernelDomainPort,
@@ -324,7 +337,7 @@ export function createKernelFileRuntimeOwner(
       }
     | {
         kind: "image";
-        mediaType: "image/gif" | "image/jpeg" | "image/png" | "image/webp";
+        mediaType: import("../kernel-domain").KernelImageMediaType;
       }
   )) => {
     if (input.documentPath === null) {
@@ -354,13 +367,17 @@ export function createKernelFileRuntimeOwner(
       imageResources.set(created.relativePath, created);
       if (options.imageSource !== undefined) {
         const epoch = imageResourceEpoch;
-        const body: KernelResourceBody = {
-          body: input.body,
-          mediaType: created.mediaType,
-        };
+        const opened = await resources.open({
+          id: created.id,
+          kind: "image",
+          workspaceGeneration: identity.generation,
+        });
+        if (opened.mediaType !== created.mediaType) {
+          throw new Error("The Kernel resource media type changed.");
+        }
         const source = options.imageSource.materializeCreated === undefined
-          ? await options.imageSource.materialize(created, async () => body)
-          : await options.imageSource.materializeCreated(created, body);
+          ? await options.imageSource.materialize(created, async () => opened)
+          : await options.imageSource.materializeCreated(created, opened);
         if (source !== undefined) {
           if (released || epoch !== imageResourceEpoch) {
             releaseImageSource(source);
@@ -590,13 +607,111 @@ export function createKernelFileRuntimeOwner(
           ? input.folder
           : "assets",
         kind: "image",
-        mediaType: input.image.type as "image/gif" | "image/jpeg" | "image/png" | "image/webp",
+        mediaType: input.image.type as import("../kernel-domain").KernelImageMediaType,
         name: input.fileName,
       });
       return {
         alt: imageAltFromFileName(input.image.name),
         src: saved.src,
       };
+    },
+    saveClipboardImages: async (inputs) => {
+      if (kernel.availability !== "available") {
+        return unavailableFileCapability("saveClipboardImages");
+      }
+      if (inputs.length === 0) return [];
+      if (inputs.some((input) => input.copyToStorage === false)) {
+        throw new Error("Batch image import requires copied workspace resources.");
+      }
+      const documentPath = inputs[0]?.documentPath ?? null;
+      if (!documentPath || inputs.some((input) => input.documentPath !== documentPath)) {
+        throw new Error("Batch image import requires one saved Markdown document.");
+      }
+      for (const input of inputs) {
+        if (!previewableImageMediaTypes.has(input.image.type)) {
+          throw new Error("The clipboard image media type is unsupported.");
+        }
+      }
+      const identity = await workspace();
+      const document = await resolveEntry(documentPath);
+      if (document.kind !== "file") throw new Error("The Kernel path is not a document.");
+      const folder = normalizeResourceFolder(
+        inputs[0]?.projectRootPath ? "assets" : inputs[0]?.folder ?? "assets",
+      ) as KernelWorkspaceRelativePath;
+      const created = await resources.createBatch({
+        batchId: createBatchId(),
+        documentLocator: document.locator,
+        folder,
+        items: inputs.map((input) => ({
+          body: input.image,
+          kind: "image" as const,
+          mediaType: input.image.type as import("../kernel-domain").KernelImageMediaType,
+          name: input.fileName,
+        })),
+        workspaceGeneration: identity.generation,
+      });
+      if (created.length !== inputs.length) {
+        throw new Error("The Kernel resource batch was incomplete.");
+      }
+      for (const [index, resource] of created.entries()) {
+        const input = inputs[index];
+        if (
+          !input ||
+          resource.kind !== "image" ||
+          resource.mediaType !== input.image.type ||
+          resource.workspaceGeneration !== identity.generation
+        ) {
+          throw new Error("The Kernel resource batch metadata changed.");
+        }
+      }
+      created.forEach((resource) => imageResources.set(resource.relativePath, resource));
+      if (options.imageSource !== undefined) {
+        const epoch = imageResourceEpoch;
+        const pendingSources: Array<[KernelResourceSnapshot, string]> = [];
+        try {
+          for (const resource of created) {
+            if (released || epoch !== imageResourceEpoch) throw new Error("The image source lease changed.");
+            const opened = await resources.open({
+              id: resource.id,
+              kind: "image",
+              workspaceGeneration: identity.generation,
+            });
+            if (opened.mediaType !== resource.mediaType) {
+              throw new Error("The Kernel resource media type changed.");
+            }
+            const source = options.imageSource.materializeCreated === undefined
+              ? await options.imageSource.materialize(resource, async () => opened)
+              : await options.imageSource.materializeCreated(resource, opened);
+            if (source !== undefined) {
+              if (released || epoch !== imageResourceEpoch) {
+                releaseImageSource(source);
+                throw new Error("The image source lease changed.");
+              }
+              pendingSources.push([resource, source]);
+            }
+          }
+        } catch {
+          pendingSources.forEach(([, source]) => releaseImageSource(source));
+          pendingSources.length = 0;
+        }
+        for (const [resource, source] of pendingSources) {
+          if (released || epoch !== imageResourceEpoch) {
+            releaseImageSource(source);
+            continue;
+          }
+          const previous = imageSources.get(resource.relativePath);
+          if (previous !== undefined && previous !== source) releaseImageSource(previous);
+          imageSources.set(resource.relativePath, source);
+        }
+      }
+      return created.map((resource, index) => {
+        const input = inputs[index];
+        if (!input) throw new Error("The Kernel resource batch metadata changed.");
+        return {
+          alt: imageAltFromFileName(input.image.name),
+          src: markdownResourcePath(document.parent, resource.relativePath),
+        };
+      });
     },
     saveMarkdownFile: async (input) => {
       const identity = await workspace();
@@ -1041,6 +1156,7 @@ function createKernelFileFallback(
     resolveWorkspaceResourceRoot: () => unavailableFileCapability("resolveWorkspaceResourceRoot"),
     saveClipboardAttachment: () => unavailableFileCapability("saveClipboardAttachment"),
     saveClipboardImage: () => unavailableFileCapability("saveClipboardImage"),
+    saveClipboardImages: () => unavailableFileCapability("saveClipboardImages"),
     saveHtmlFile: native.saveHtmlFile ?? (async () => null),
     saveMarkdownFile: async () => null,
     savePandocFile: native.savePandocFile ?? (async () => null),

@@ -23,7 +23,7 @@ function isAvif(bytes: Uint8Array) {
   const boxEnd = declaredSize >= 16 && declaredSize <= bytes.length ? declaredSize : bytes.length;
   for (let offset = 8; offset + 4 <= boxEnd; offset += 4) {
     if (offset === 12) continue;
-    if (asciiAt(bytes, offset, "avif") || asciiAt(bytes, offset, "avis")) return true;
+    if (asciiAt(bytes, offset, "avif")) return true;
   }
   return false;
 }

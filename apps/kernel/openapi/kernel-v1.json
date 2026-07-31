@@ -151,6 +151,76 @@
         ],
         "type": "object"
       },
+      "CreateWorkspaceResourceBatchItem": {
+        "additionalProperties": false,
+        "properties": {
+          "bodyBase64": {
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/ResourceKind"
+          },
+          "mediaType": {
+            "type": "string"
+          },
+          "name": {
+            "$ref": "#/components/schemas/ResourceName"
+          }
+        },
+        "required": [
+          "name",
+          "kind",
+          "mediaType",
+          "bodyBase64"
+        ],
+        "type": "object"
+      },
+      "CreateWorkspaceResourceBatchRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "batchId": {
+            "$ref": "#/components/schemas/ResourceBatchId"
+          },
+          "folder": {
+            "$ref": "#/components/schemas/WorkspaceRelativePath"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/CreateWorkspaceResourceBatchItem"
+            },
+            "type": "array"
+          },
+          "workspaceGeneration": {
+            "$ref": "#/components/schemas/WorkspaceGeneration"
+          }
+        },
+        "required": [
+          "batchId",
+          "workspaceGeneration",
+          "folder",
+          "items"
+        ],
+        "type": "object"
+      },
+      "CreateWorkspaceResourceBatchResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "batchId": {
+            "$ref": "#/components/schemas/ResourceBatchId"
+          },
+          "resources": {
+            "items": {
+              "$ref": "#/components/schemas/ResourceEntryDto"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "batchId",
+          "resources"
+        ],
+        "type": "object"
+      },
       "CreateWorkspaceResourceQuery": {
         "additionalProperties": false,
         "properties": {
@@ -1549,6 +1619,10 @@
         "format": "int32",
         "minimum": 0,
         "type": "integer"
+      },
+      "ResourceBatchId": {
+        "format": "uuid",
+        "type": "string"
       },
       "ResourceEntryDto": {
         "additionalProperties": false,
@@ -7668,6 +7742,67 @@
           }
         ],
         "x-body-limit-bytes": 1048576
+      }
+    },
+    "/api/v1/documents/{documentId}/resource-batches": {
+      "post": {
+        "operationId": "createWorkspaceResourceBatch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "documentId",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/DocumentId"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateWorkspaceResourceBatchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreateWorkspaceResourceBatchResponse"
+                }
+              }
+            },
+            "description": "Success",
+            "headers": {
+              "X-Request-Id": {
+                "description": "Correlation ID for this response.",
+                "required": true,
+                "schema": {
+                  "format": "uuid",
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "nativeBearer": []
+          },
+          {
+            "browserSessionHttps": [],
+            "csrfTokenHttps": []
+          },
+          {
+            "browserSessionHttp": [],
+            "csrfTokenHttp": []
+          }
+        ],
+        "x-body-limit-bytes": 104857600
       }
     },
     "/api/v1/documents/{documentId}/resources": {

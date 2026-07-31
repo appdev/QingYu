@@ -306,6 +306,9 @@ export type AppFileRuntime = {
   resolveMarkdownPath: (path: string) => Promise<NativeMarkdownDroppedTarget>;
   resolveWorkspaceResourceRoot: (sourcePath: string) => Promise<string>;
   saveClipboardImage: (input: SaveNativeClipboardImageInput) => Promise<SavedNativeClipboardImage>;
+  saveClipboardImages: (
+    inputs: readonly SaveNativeClipboardImageInput[]
+  ) => Promise<SavedNativeClipboardImage[]>;
   saveClipboardAttachment: (input: SaveNativeClipboardAttachmentInput) => Promise<SavedNativeClipboardAttachment>;
   saveHtmlFile: (input: SaveNativeHtmlFileInput) => Promise<SavedNativeHtmlFile | null>;
   saveMarkdownFile: (input: SaveNativeMarkdownFileInput) => Promise<SavedNativeMarkdownFile | null>;
@@ -639,6 +642,7 @@ function createDefaultFileRuntime(): AppFileRuntime {
     resolveWorkspaceResourceRoot: () => unsupportedFeature("resolveWorkspaceResourceRoot"),
     saveClipboardAttachment: () => unsupportedFeature("saveClipboardAttachment"),
     saveClipboardImage: () => unsupportedFeature("saveClipboardImage"),
+    saveClipboardImages: () => unsupportedFeature("saveClipboardImages"),
     saveHtmlFile: async () => null,
     saveMarkdownFile: async () => null,
     savePandocFile: async () => null,

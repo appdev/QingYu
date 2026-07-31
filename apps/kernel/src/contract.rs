@@ -47,6 +47,7 @@ uuid_identifier!(
     ConnectionId,
     RunId,
     SnapshotId,
+    ResourceBatchId,
 );
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, ToSchema)]
@@ -946,6 +947,31 @@ pub struct CreateWorkspaceResourceQuery {
     pub folder: WorkspaceRelativePath,
     pub name: ResourceName,
     pub kind: ResourceKind,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct CreateWorkspaceResourceBatchItem {
+    pub name: ResourceName,
+    pub kind: ResourceKind,
+    pub media_type: String,
+    pub body_base64: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct CreateWorkspaceResourceBatchRequest {
+    pub batch_id: ResourceBatchId,
+    pub workspace_generation: WorkspaceGeneration,
+    pub folder: WorkspaceRelativePath,
+    pub items: Vec<CreateWorkspaceResourceBatchItem>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct CreateWorkspaceResourceBatchResponse {
+    pub batch_id: ResourceBatchId,
+    pub resources: Vec<ResourceEntryDto>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, ToSchema)]

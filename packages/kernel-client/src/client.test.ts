@@ -8,6 +8,50 @@ import {
 } from "./index.ts";
 
 describe("createKernelClient", () => {
+  it("uploads an image selection through one validated batch request", async () => {
+    const fetch = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => Response.json({
+      batchId: "11111111-1111-4111-8111-111111111111",
+      resources: [{
+        id: "payload.signature",
+        kind: "image",
+        mediaType: "image/svg+xml",
+        modifiedAt: "2030-01-01T00:00:00Z",
+        name: "safe.svg",
+        parent: "assets",
+        path: "assets/safe.svg",
+        previewable: true,
+        revision: "sha256:canonical",
+        sizeBytes: 6,
+      }],
+    }, { status: 201, headers: { "content-type": "application/json", "x-request-id": "22222222-2222-4222-8222-222222222222" } }));
+    const client = createKernelClient({
+      auth: { kind: "native-bearer", getCredential: () => "secret" },
+      baseUrl: "http://127.0.0.1:43123",
+      fetch,
+    });
+
+    const result = await client.resources.createBatch("payload.signature", {
+      batchId: "11111111-1111-4111-8111-111111111111",
+      folder: "assets",
+      items: [{
+        body: new Blob(["<svg/>"] , { type: "image/svg+xml" }),
+        kind: "image",
+        mediaType: "image/svg+xml",
+        name: "safe.svg",
+      }],
+      workspaceGeneration: "generation-1",
+    });
+
+    expect(result.resources).toHaveLength(1);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    const [url, init] = fetch.mock.calls[0] ?? [];
+    expect(String(url)).toContain("/api/v1/documents/payload.signature/resource-batches");
+    expect(JSON.parse(String(init?.body))).toMatchObject({
+      batchId: "11111111-1111-4111-8111-111111111111",
+      items: [{ bodyBase64: "PHN2Zy8+", mediaType: "image/svg+xml", name: "safe.svg" }],
+    });
+  });
+
   it("maps the six API groups to all frozen HTTP operations", async () => {
     const calls: Array<{ url: URL; init: RequestInit }> = [];
     const fetch: FetchLike = async (url, init = {}) => {

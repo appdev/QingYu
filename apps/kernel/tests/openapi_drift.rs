@@ -37,6 +37,11 @@ const HTTP_OPERATIONS: &[(&str, &str, &str)] = &[
         "/api/v1/documents/{documentId}/resources",
         "createWorkspaceResource",
     ),
+    (
+        "post",
+        "/api/v1/documents/{documentId}/resource-batches",
+        "createWorkspaceResourceBatch",
+    ),
     ("get", "/api/v1/documents", "listDocuments"),
     ("post", "/api/v1/documents", "createDocument"),
     ("get", "/api/v1/documents/{documentId}", "getDocument"),
@@ -251,7 +256,7 @@ fn assert_optional_non_null(document: &Value, schema: &str, field: &str) {
 }
 
 #[test]
-fn openapi_has_exactly_the_frozen_thirty_two_http_operations() {
+fn openapi_has_exactly_the_frozen_thirty_three_http_operations() {
     let document = api_document();
     let paths = document["paths"].as_object().expect("OpenAPI paths");
     assert!(
@@ -263,7 +268,7 @@ fn openapi_has_exactly_the_frozen_thirty_two_http_operations() {
         .iter()
         .map(|(method, path, operation)| ((*method, *path), *operation))
         .collect();
-    assert_eq!(expected.len(), 32);
+    assert_eq!(expected.len(), 33);
 
     let mut actual = BTreeMap::new();
     for (path, path_item) in paths {

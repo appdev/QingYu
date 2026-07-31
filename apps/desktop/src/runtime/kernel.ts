@@ -369,6 +369,31 @@ export async function createDesktopKernelDomainAdapter(
         },
       },
       resources: {
+        createBatch: async (input) => {
+          await prepareDocumentOperation(input.workspaceGeneration);
+          const response = await client.resources.createBatch(
+            input.documentLocator,
+            {
+              batchId: input.batchId,
+              folder: input.folder,
+              items: input.items.map((item) => ({ ...item })),
+              workspaceGeneration: input.workspaceGeneration,
+            },
+            { signal: requests.signal },
+          );
+          assertActive();
+          if (response.batchId !== input.batchId || response.resources.length !== input.items.length) {
+            protocolMismatch();
+          }
+          response.resources.forEach((resource, index) => {
+            const requested = input.items[index];
+            if (!requested || resource.kind !== requested.kind || resource.mediaType !== requested.mediaType) {
+              protocolMismatch();
+            }
+          });
+          await confirmWorkspaceIdentity();
+          return response.resources.map((resource) => mapResourceEntry(resource, input.workspaceGeneration));
+        },
         create: async (input) => {
           await prepareDocumentOperation(input.workspaceGeneration);
           const request = input.kind === "image"

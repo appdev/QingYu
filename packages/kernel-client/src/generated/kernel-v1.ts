@@ -191,6 +191,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/documents/{documentId}/resource-batches": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["createWorkspaceResourceBatch"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/documents/{documentId}/resources": {
         parameters: {
             query?: never;
@@ -472,6 +488,22 @@ export interface components {
         };
         CreateServerSessionRequest: {
             password: string;
+        };
+        CreateWorkspaceResourceBatchItem: {
+            bodyBase64: string;
+            kind: components["schemas"]["ResourceKind"];
+            mediaType: string;
+            name: components["schemas"]["ResourceName"];
+        };
+        CreateWorkspaceResourceBatchRequest: {
+            batchId: components["schemas"]["ResourceBatchId"];
+            folder: components["schemas"]["WorkspaceRelativePath"];
+            items: components["schemas"]["CreateWorkspaceResourceBatchItem"][];
+            workspaceGeneration: components["schemas"]["WorkspaceGeneration"];
+        };
+        CreateWorkspaceResourceBatchResponse: {
+            batchId: components["schemas"]["ResourceBatchId"];
+            resources: components["schemas"]["ResourceEntryDto"][];
         };
         CreateWorkspaceResourceQuery: {
             folder: components["schemas"]["WorkspaceRelativePath"];
@@ -809,6 +841,8 @@ export interface components {
         RequestId: string;
         /** Format: int32 */
         RequestTimeoutSeconds: number;
+        /** Format: uuid */
+        ResourceBatchId: string;
         ResourceEntryDto: {
             id: components["schemas"]["ResourceId"];
             kind: components["schemas"]["ResourceKind"];
@@ -3063,6 +3097,34 @@ export interface operations {
                         /** @enum {string} */
                         code?: "authentication_unavailable" | "kernel_not_ready" | "workspace_unavailable";
                     };
+                };
+            };
+        };
+    };
+    createWorkspaceResourceBatch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                documentId: components["schemas"]["DocumentId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateWorkspaceResourceBatchRequest"];
+            };
+        };
+        responses: {
+            /** @description Success */
+            201: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CreateWorkspaceResourceBatchResponse"];
                 };
             };
         };

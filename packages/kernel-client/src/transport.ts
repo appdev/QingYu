@@ -29,7 +29,7 @@ export interface HttpRawRequest {
   path: string;
   query?: HttpQuery;
   rawBody: Blob;
-  mediaType: "application/octet-stream" | "image/gif" | "image/jpeg" | "image/png" | "image/webp";
+  mediaType: "application/octet-stream" | "image/avif" | "image/bmp" | "image/gif" | "image/jpeg" | "image/png" | "image/svg+xml" | "image/webp";
   signal?: AbortSignal;
   authenticated?: boolean;
 }

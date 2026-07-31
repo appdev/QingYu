@@ -14,7 +14,8 @@ use uuid::Uuid;
 use crate::{
     config::{KernelConfig, KernelLaunchEpoch},
     contract::{
-        CreateDocumentRequest, CreateWorkspaceResourceQuery, CreatedDocumentDto,
+        CreateDocumentRequest, CreateWorkspaceResourceBatchRequest,
+        CreateWorkspaceResourceBatchResponse, CreateWorkspaceResourceQuery, CreatedDocumentDto,
         DeleteDocumentRequest, DocumentContentDto, DocumentHistoryPageDto,
         DocumentHistorySnapshotDto, DocumentId, DocumentPageDto, ErrorCode, ErrorDetails,
         HostProfile, InstanceId, ListDocumentsQuery, ListWorkspaceInventoryQuery,
@@ -2583,6 +2584,11 @@ pub trait ResourcesApiService: Send + Sync {
         media_type: String,
         body: Vec<u8>,
     ) -> Result<crate::contract::ResourceEntryDto, ServiceFailure>;
+    async fn create_workspace_resource_batch(
+        &self,
+        document_id: DocumentId,
+        request: CreateWorkspaceResourceBatchRequest,
+    ) -> Result<CreateWorkspaceResourceBatchResponse, ServiceFailure>;
 }
 
 #[async_trait]

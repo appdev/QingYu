@@ -56,6 +56,29 @@ pub(crate) async fn response(mut resource: RetainedResource) -> Result<Response,
         header::CONTENT_LENGTH,
         HeaderValue::from_str(&size.to_string()).map_err(|_| ())?,
     );
+    if entry.media_type == "image/svg+xml" {
+        response.headers_mut().insert(
+            header::CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static(
+                "sandbox; default-src 'none'; script-src 'none'; style-src 'none'; img-src 'none'; font-src 'none'; connect-src 'none'; media-src 'none'; object-src 'none'; frame-src 'none'; worker-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+            ),
+        );
+        response.headers_mut().insert(
+            header::REFERRER_POLICY,
+            HeaderValue::from_static("no-referrer"),
+        );
+        response.headers_mut().insert(
+            header::CONTENT_DISPOSITION,
+            HeaderValue::from_static("inline"),
+        );
+        response.headers_mut().insert(
+            header::HeaderName::from_static("cross-origin-resource-policy"),
+            HeaderValue::from_static("same-origin"),
+        );
+        response
+            .headers_mut()
+            .insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
+    }
     Ok(response)
 }
 

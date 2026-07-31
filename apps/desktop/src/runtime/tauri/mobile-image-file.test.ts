@@ -81,6 +81,15 @@ describe("mobile image files", () => {
     expect(() => mobileImageFileFromBytes({ bytes, uri: "content://media/file.bin" }))
       .toThrow(/supported image/i);
   });
+
+  it("rejects AVIF image sequences outside the still-image contract", () => {
+    const sequence = new Uint8Array(signatures.avif);
+    sequence.set(new TextEncoder().encode("avis"), 8);
+    sequence.set(new TextEncoder().encode("avis"), 16);
+
+    expect(() => mobileImageFileFromBytes({ bytes: sequence, uri: "content://media/sequence.avif" }))
+      .toThrow(/supported image/i);
+  });
 });
 
 describe("mobile image picker", () => {

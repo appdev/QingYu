@@ -2689,10 +2689,11 @@ describe("QingYu workspace", () => {
     const localImage = new File([
       new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
     ], "Camera.png", { type: "image/png" });
-    let finishSave: ((value: { alt: string; src: string }) => unknown) | null = null;
-    const pendingSave = new Promise<{ alt: string; src: string }>((resolve) => {
+    let finishSave: ((value: { alt: string; src: string }[]) => unknown) | null = null;
+    const pendingSave = new Promise<{ alt: string; src: string }[]>((resolve) => {
       finishSave = resolve;
     });
+    const saveClipboardImages = vi.fn(() => pendingSave);
     const pendingConfig = new Promise<never>(() => {});
     mockCompactViewport(false);
     configureAppRuntime({
@@ -2701,6 +2702,10 @@ describe("QingYu workspace", () => {
         ...runtime.features,
         imageImport: true,
         projectSync: true
+      },
+      files: {
+        ...runtime.files,
+        saveClipboardImages,
       },
       platform: {
         ...runtime.platform,
@@ -2730,24 +2735,22 @@ describe("QingYu workspace", () => {
       path: notePath
     });
     mockedOpenNativeLocalImages.mockResolvedValue([localImage]);
-    mockedSaveNativeClipboardImage.mockReturnValue(pendingSave);
 
     const { container } = renderApp();
 
     expect(await screen.findByText("Mobile image import")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Image" }));
-    await waitFor(() => expect(mockedSaveNativeClipboardImage).toHaveBeenCalledWith({
+    await waitFor(() => expect(saveClipboardImages).toHaveBeenCalledWith([{
       documentPath: notePath,
       fileName: expect.stringMatching(/^pasted-image-\d+\.png$/u),
       folder: "assets",
       image: localImage,
-      projectRootPath: managedRoot
-    }));
+    }]));
     expect(container.querySelector(".markra-image-node")).not.toBeInTheDocument();
     expect(screen.getByText("Original text.")).toBeInTheDocument();
 
     await act(async () => {
-      finishSave?.({ alt: "Camera", src: "assets/camera.png" });
+      finishSave?.([{ alt: "Camera", src: "assets/camera.png" }]);
       await pendingSave;
     });
 
@@ -2764,10 +2767,12 @@ describe("QingYu workspace", () => {
     const secondImage = new File([
       new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
     ], "Second.png", { type: "image/png" });
+    const saveClipboardImages = vi.fn(async () => Promise.reject(new Error("disk full")));
     mockCompactViewport(false);
     configureAppRuntime({
       ...runtime,
       features: { ...runtime.features, imageImport: true },
+      files: { ...runtime.files, saveClipboardImages },
       platform: { ...runtime.platform, resolveFormFactor: () => "mobile" },
       syncConfig: {
         ...runtime.syncConfig,
@@ -2791,15 +2796,12 @@ describe("QingYu workspace", () => {
       path: notePath
     });
     mockedOpenNativeLocalImages.mockResolvedValue([firstImage, secondImage]);
-    mockedSaveNativeClipboardImage
-      .mockResolvedValueOnce({ alt: "First", src: "assets/first.png" })
-      .mockRejectedValueOnce(new Error("disk full"));
 
     const { container } = renderApp();
     expect(await screen.findByText("Mobile partial image failure")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Image" }));
-    await waitFor(() => expect(mockedSaveNativeClipboardImage).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(saveClipboardImages).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(document.querySelector(".app-toast")).toBeInTheDocument());
 
     expect(container.querySelector(".markra-image-node")).not.toBeInTheDocument();
@@ -2815,10 +2817,14 @@ describe("QingYu workspace", () => {
       const localImage = new File([
         new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
       ], "Camera.png", { type: "image/png" });
+      const saveClipboardImages = vi.fn(async () => {
+        throw new Error("disk full");
+      });
       mockCompactViewport(false);
       configureAppRuntime({
         ...runtime,
         features: { ...runtime.features, imageImport: true },
+        files: { ...runtime.files, saveClipboardImages },
         platform: { ...runtime.platform, resolveFormFactor: () => "mobile" },
         syncConfig: {
           ...runtime.syncConfig,
@@ -2847,7 +2853,6 @@ describe("QingYu workspace", () => {
       }
       if (failure === "save-error") {
         mockedOpenNativeLocalImages.mockResolvedValue([localImage]);
-        mockedSaveNativeClipboardImage.mockRejectedValue(new Error("disk full"));
       }
 
       const { container } = renderApp();
@@ -2863,7 +2868,8 @@ describe("QingYu workspace", () => {
 
       expect(container.querySelector(".markra-image-node")).not.toBeInTheDocument();
       expect(screen.getByText("Original text.")).toBeInTheDocument();
-      if (failure !== "save-error") expect(mockedSaveNativeClipboardImage).not.toHaveBeenCalled();
+      if (failure === "save-error") expect(saveClipboardImages).toHaveBeenCalledTimes(1);
+      else expect(saveClipboardImages).not.toHaveBeenCalled();
     }
   );
 

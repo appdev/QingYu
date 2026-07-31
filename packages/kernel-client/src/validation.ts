@@ -152,7 +152,9 @@ export function isResourceEntry(value: unknown): value is components["schemas"][
     exact(value, ["id", "kind", "mediaType", "modifiedAt", "name", "parent", "path", "previewable", "revision", "sizeBytes"]);
 }
 
-const RESOURCE_IMAGE_MEDIA_TYPES = new Set(["image/gif", "image/jpeg", "image/png", "image/webp"]);
+const RESOURCE_IMAGE_MEDIA_TYPES = new Set([
+  "image/avif", "image/bmp", "image/gif", "image/jpeg", "image/png", "image/svg+xml", "image/webp",
+]);
 
 function imageExtensionMatchesMediaType(name: unknown, mediaType: string) {
   if (typeof name !== "string") return false;
@@ -160,7 +162,21 @@ function imageExtensionMatchesMediaType(name: unknown, mediaType: string) {
   if (mediaType === "image/jpeg") return lower.endsWith(".jpg") || lower.endsWith(".jpeg");
   if (mediaType === "image/png") return lower.endsWith(".png");
   if (mediaType === "image/gif") return lower.endsWith(".gif");
-  return mediaType === "image/webp" && lower.endsWith(".webp");
+  if (mediaType === "image/webp") return lower.endsWith(".webp");
+  if (mediaType === "image/avif") return lower.endsWith(".avif");
+  if (mediaType === "image/bmp") return lower.endsWith(".bmp");
+  return mediaType === "image/svg+xml" && lower.endsWith(".svg");
+}
+
+export function isResourceBatchResponse(
+  value: unknown,
+): value is components["schemas"]["CreateWorkspaceResourceBatchResponse"] {
+  return isRecord(value) &&
+    isUuid(value.batchId) &&
+    Array.isArray(value.resources) &&
+    value.resources.length > 0 &&
+    value.resources.every(isResourceEntry) &&
+    exact(value, ["batchId", "resources"]);
 }
 
 function isResourceName(value: unknown): value is string {

@@ -147,6 +147,11 @@ describe("server file facade", () => {
     });
     if (createdEntry.entryType !== "resource") throw new Error("resource fixture expected");
     vi.mocked(kernel.resources.create).mockResolvedValue(createdEntry.resource);
+    const canonicalBody = new Blob(["canonical image"], { type: "image/png" });
+    vi.mocked(kernel.resources.open).mockResolvedValue({
+      body: canonicalBody,
+      mediaType: "image/png",
+    });
     vi.mocked(kernel.resources.list).mockResolvedValue({
       items: [createdEntry],
       workspaceGeneration: generation,
@@ -171,8 +176,12 @@ describe("server file facade", () => {
     });
 
     expect(saved).toEqual({ alt: "pasted", src: "pasted-2.png" });
-    expect(createObjectURL).toHaveBeenCalledWith(image);
-    expect(kernel.resources.open).not.toHaveBeenCalled();
+    expect(createObjectURL).toHaveBeenCalledWith(canonicalBody);
+    expect(kernel.resources.open).toHaveBeenCalledWith({
+      id: "image-new.signature",
+      kind: "image",
+      workspaceGeneration: generation,
+    });
     expect(files.resolveMarkdownImageSrc?.(documentPath, saved.src))
       .toBe("blob:server-new-image");
 
@@ -187,7 +196,7 @@ describe("server file facade", () => {
     expect(files.resolveMarkdownImageSrc?.(documentPath, saved.src)).toBe(
       `/api/v1/resources/${encodeURIComponent("image-new.signature")}?kind=image`,
     );
-    expect(kernel.resources.open).not.toHaveBeenCalled();
+    expect(kernel.resources.open).toHaveBeenCalledOnce();
   });
 
   it("revokes newly uploaded image URLs when the Server runtime owner is released", async () => {
@@ -199,6 +208,11 @@ describe("server file facade", () => {
     });
     if (createdEntry.entryType !== "resource") throw new Error("resource fixture expected");
     vi.mocked(kernel.resources.create).mockResolvedValue(createdEntry.resource);
+    const canonicalBody = new Blob(["canonical owner image"], { type: "image/png" });
+    vi.mocked(kernel.resources.open).mockResolvedValue({
+      body: canonicalBody,
+      mediaType: "image/png",
+    });
     const createObjectURL = vi.fn(() => "blob:server-owner-image");
     const revokeObjectURL = vi.fn();
     const owner = createServerFileRuntimeOwner(kernel, {
@@ -219,6 +233,7 @@ describe("server file facade", () => {
     });
     expect(owner.files.resolveMarkdownImageSrc?.(documentPath, saved.src))
       .toBe("blob:server-owner-image");
+    expect(createObjectURL).toHaveBeenCalledWith(canonicalBody);
 
     owner.release();
     owner.release();
@@ -299,6 +314,7 @@ describe("server file facade", () => {
     await files.readMarkdownFile(documentPath);
 
     const imageUrl = `/api/v1/resources/${encodeURIComponent("image/payload.signature")}?kind=image`;
+    const svgUrl = `/api/v1/resources/${encodeURIComponent("image-svg/payload.signature")}?kind=image`;
     expect(files.resolveMarkdownImageSrc?.(documentPath, "../assets/cover%20image.png"))
       .toBe(imageUrl);
     expect(files.resolveMarkdownImageSrc?.(documentPath, "/assets/cover%20image.png"))
@@ -307,6 +323,8 @@ describe("server file facade", () => {
       documentPath,
       `${serverWorkspaceRoot}/assets/cover%20image.png`,
     )).toBe(imageUrl);
+    expect(files.resolveMarkdownImageSrc?.(documentPath, "../assets/untrusted.svg"))
+      .toBe(svgUrl);
     expect(kernel.resources.open).not.toHaveBeenCalled();
     const inventoryCallCount = vi.mocked(kernel.resources.list).mock.calls.length;
     await files.readMarkdownFile(documentPath);
@@ -325,7 +343,6 @@ describe("server file facade", () => {
       "../../outside.png",
       "%2e%2e/%2e%2e/outside.png",
       "../assets/manual.pdf",
-      "../assets/untrusted.svg",
       "../assets/cover%2Fimage.png",
       "../assets/%5Cevil.png",
       "../assets/%00evil.png",
@@ -697,6 +714,7 @@ function kernelPort(): ServerKernelDomainPort {
     runtime: { read: unavailable() },
     resources: {
       create: unavailable(),
+      createBatch: unavailable(),
       list: vi.fn(async () => ({ items: [], workspaceGeneration: generation })),
       open: vi.fn(async () => ({
         body: new Blob([new Uint8Array([1])]),

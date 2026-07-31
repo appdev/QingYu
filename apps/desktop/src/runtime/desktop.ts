@@ -163,6 +163,7 @@ export function createDesktopRuntime({
     requestPrimaryNotebookSwitch: files.requestNativePrimaryNotebookSwitch,
     saveClipboardAttachment: files.saveNativeClipboardAttachment,
     saveClipboardImage: files.saveNativeClipboardImage,
+    saveClipboardImages: (inputs) => Promise.all(inputs.map(files.saveNativeClipboardImage)),
     saveHtmlFile: files.saveNativeHtmlFile,
     saveMarkdownFile: files.saveNativeMarkdownFile,
     savePandocFile: files.saveNativePandocFile,

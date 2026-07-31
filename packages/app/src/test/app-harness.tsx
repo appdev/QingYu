@@ -1024,6 +1024,10 @@ export function installAppTestHarness() {
     runtime.themes.releaseActivation = vi.fn(async () => undefined);
     configureAppRuntime({
       ...runtime,
+      files: {
+        ...runtime.files,
+        saveClipboardImages: (inputs) => Promise.all(inputs.map(saveNativeClipboardImage)),
+      },
       features: {
         ...runtime.features,
         applicationMenu: true,
