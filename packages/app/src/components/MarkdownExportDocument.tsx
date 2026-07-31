@@ -5,6 +5,7 @@ import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import {
   createMarkraMathMacros,
+  ensureMermaidContrast,
   isMarkraMathMacroDefinitionSource,
   isMermaidLanguage,
   mermaidThemeFromElement,
@@ -129,6 +130,7 @@ async function renderMermaidExportBlocks(root: HTMLElement) {
     }
 
     pre.replaceWith(render);
+    ensureMermaidContrast(render);
   }));
 }
 
