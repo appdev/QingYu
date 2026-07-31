@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { Suspense, startTransition, useEffect, useState } from "react";
 import { act, fireEvent, render, renderHook, screen, waitFor, within } from "@testing-library/react";
 import {
   createNativeMarkdownTreeFile,
@@ -215,6 +215,38 @@ function FileTreeProbe({
         ))}
       </ol>
     </section>
+  );
+}
+
+const abandonedConfigurationRender = new Promise<never>(() => {});
+
+function AbandonedConfigurationRender({ onRender }: { onRender: () => unknown }): never {
+  onRender();
+  throw abandonedConfigurationRender;
+}
+
+function ConcurrentConfigurationProbe({ onAbandonedRender }: { onAbandonedRender: () => unknown }) {
+  const [managedAttachmentFolder, setManagedAttachmentFolder] = useState("assets");
+  const [suspendConfiguration, setSuspendConfiguration] = useState(false);
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => {
+          startTransition(() => {
+            setManagedAttachmentFolder("media");
+            setSuspendConfiguration(true);
+          });
+        }}
+      >
+        Render abandoned configuration
+      </button>
+      <Suspense fallback={<p>Pending configuration</p>}>
+        <FileTreeProbe managedAttachmentFolder={managedAttachmentFolder} />
+        {suspendConfiguration ? <AbandonedConfigurationRender onRender={onAbandonedRender} /> : null}
+      </Suspense>
+    </>
   );
 }
 
@@ -859,6 +891,34 @@ describe("useMarkdownFileTree", () => {
     expect(screen.getByTestId("root-name")).toHaveTextContent("vault");
     expect(screen.getByTestId("source-path")).toHaveTextContent("/vault");
     expect(screen.getByTestId("project-root")).toHaveTextContent("/vault");
+  });
+
+  it("does not leak file tree configuration from an abandoned concurrent render", async () => {
+    const initialLoad = createDeferredMarkdownFileList();
+    const onAbandonedRender = vi.fn();
+    mockedLoadNativeMarkdownFilesForPath
+      .mockReturnValueOnce(initialLoad.promise)
+      .mockResolvedValueOnce([
+        { path: "/vault/leaked.md", name: "leaked.md", relativePath: "leaked.md" }
+      ]);
+
+    render(<ConcurrentConfigurationProbe onAbandonedRender={onAbandonedRender} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Restore collapsed folder" }));
+    await waitFor(() => expect(mockedLoadNativeMarkdownFilesForPath).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(screen.getByRole("button", { name: "Render abandoned configuration" }));
+    await waitFor(() => expect(onAbandonedRender).toHaveBeenCalled());
+    expect(screen.queryByText("Pending configuration")).not.toBeInTheDocument();
+
+    await act(async () => {
+      initialLoad.reject(new Error("initial tree load failed"));
+      await initialLoad.promise.catch(() => undefined);
+      await Promise.resolve();
+    });
+
+    expect(mockedLoadNativeMarkdownFilesForPath).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText("leaked.md")).not.toBeInTheDocument();
   });
 
   it("reloads the tree and watcher when global ignore rules change", async () => {

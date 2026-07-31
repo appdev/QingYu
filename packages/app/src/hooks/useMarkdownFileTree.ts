@@ -1,4 +1,13 @@
-import { startTransition, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import {
+  startTransition,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties
+} from "react";
 import {
   defaultStoredFileTreeSort,
   getStoredFileTreeSortByWorkspace,
@@ -196,10 +205,12 @@ export function useMarkdownFileTree({
     globalIgnoreRules: normalizedGlobalIgnoreRules,
     managedAttachmentFolder: normalizedManagedAttachmentFolder
   });
-  fileTreeLoadConfigurationRef.current = {
-    globalIgnoreRules: normalizedGlobalIgnoreRules,
-    managedAttachmentFolder: normalizedManagedAttachmentFolder
-  };
+  useLayoutEffect(() => {
+    fileTreeLoadConfigurationRef.current = {
+      globalIgnoreRules: normalizedGlobalIgnoreRules,
+      managedAttachmentFolder: normalizedManagedAttachmentFolder
+    };
+  }, [normalizedGlobalIgnoreRules, normalizedManagedAttachmentFolder]);
   const fileTreeWorkspacePath = fileTreeSortWorkspacePathFromSourcePath(sourcePath);
   const fileTreeSort = useMemo(
     () => fileTreeWorkspacePath
