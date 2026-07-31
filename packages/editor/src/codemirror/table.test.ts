@@ -2,7 +2,10 @@ import { EditorSelection, EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { liveMarkdown } from "./index.ts";
-import { tablePreviewPlugin } from "./table.ts";
+import {
+  focusVisualTableCell,
+  tablePreviewPlugin,
+} from "./table.ts";
 import "./dom.test-support.ts";
 
 const views: EditorView[] = [];
@@ -89,6 +92,37 @@ describe("tablePreviewPlugin", () => {
     expect(table?.getAttribute("contenteditable")).toBe("true");
     expect(cells).not.toHaveLength(0);
     expect(cells.every((cell) => !cell.hasAttribute("contenteditable"))).toBe(true);
+  });
+
+  it("places the native caret inside an empty visual table cell", async () => {
+    const doc = ["|  |  |", "| --- | --- |", "|  |  |"].join("\n");
+    const view = createView(doc);
+    const cell = view.dom.querySelector<HTMLTableCellElement>(
+      ".cm-markra-table thead th:first-child",
+    );
+    const outside = document.createTextNode("Outside");
+    document.body.append(outside);
+    const nativeFocus = cell?.focus.bind(cell);
+
+    if (cell && nativeFocus) {
+      vi.spyOn(cell, "focus").mockImplementation(() => {
+        nativeFocus();
+        const selection = document.getSelection();
+        const range = document.createRange();
+        range.setStart(outside, 0);
+        range.collapse(true);
+        selection?.removeAllRanges();
+        selection?.addRange(range);
+      });
+    }
+
+    focusVisualTableCell(view, 0, -1, 0, true, 0);
+    await Promise.resolve();
+
+    expect(document.activeElement).toBe(cell);
+    expect(document.getSelection()?.anchorNode?.nodeType).toBe(Node.TEXT_NODE);
+    expect(document.getSelection()?.anchorNode?.parentNode).toBe(cell);
+    expect(document.getSelection()?.anchorOffset).toBe(0);
   });
 
   it("renders inline Markdown inside visual table cells", () => {
@@ -730,6 +764,244 @@ describe("tablePreviewPlugin", () => {
         ".cm-markra-table tbody td",
       )?.textContent,
     ).toBe("");
+  });
+
+  it("recovers when WebKit moves an emptied cell selection to the table host", async () => {
+    const doc = [
+      "| Name | Value |",
+      "| --- | --- |",
+      "| A | 1 |",
+      "",
+      "Edit",
+    ].join("\n");
+    const view = createView(doc);
+    const table = view.dom.querySelector<HTMLTableElement>(".cm-markra-table");
+    const cell = table?.querySelector<HTMLTableCellElement>("tbody td");
+    const row = cell?.parentElement;
+
+    cell?.focus();
+    cell?.replaceChildren(document.createElement("br"));
+    table?.focus();
+    if (row) {
+      const selection = document.getSelection();
+      const range = document.createRange();
+      range.setStart(row, 0);
+      range.collapse(true);
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+    }
+    table?.dispatchEvent(new InputEvent("input", {
+      bubbles: true,
+      inputType: "deleteContentBackward",
+    }));
+    await Promise.resolve();
+
+    expect(view.state.doc.toString()).toContain("|  | 1 |");
+    const updatedCell = view.dom.querySelector<HTMLTableCellElement>(
+      ".cm-markra-table tbody td",
+    );
+    expect(document.activeElement).toBe(updatedCell);
+    if (updatedCell) updatedCell.textContent = "Again";
+    updatedCell?.dispatchEvent(new InputEvent("input", { bubbles: true }));
+    await Promise.resolve();
+
+    expect(view.state.doc.toString()).toContain("| Again | 1 |");
+    expect(view.dom.querySelector(".cm-markra-table")).not.toBeNull();
+  });
+
+  it.each([
+    "deleteContentBackward",
+    "deleteContentForward",
+  ])("reanchors an empty cell after a no-op %s", async (inputType) => {
+    const doc = [
+      "| Name | Value |",
+      "| --- | --- |",
+      "|  | 1 |",
+      "",
+      "Edit",
+    ].join("\n");
+    const view = createView(doc);
+    const table = view.dom.querySelector<HTMLTableElement>(".cm-markra-table");
+    const cell = table?.querySelector<HTMLTableCellElement>("tbody td");
+    const row = cell?.parentElement;
+
+    cell?.focus();
+    cell?.replaceChildren(document.createElement("br"));
+    table?.focus();
+    if (row) {
+      const selection = document.getSelection();
+      const range = document.createRange();
+      range.setStart(row, 0);
+      range.collapse(true);
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+    }
+    table?.dispatchEvent(new InputEvent("input", {
+      bubbles: true,
+      inputType,
+    }));
+    await Promise.resolve();
+
+    expect(view.state.doc.toString()).toBe(doc);
+    expect(document.activeElement).toBe(cell);
+    expect(cell?.contains(document.getSelection()?.anchorNode ?? null)).toBe(true);
+    expect(cell?.querySelector("br")).toBeNull();
+  });
+
+  it("repairs an escaped selection before insertion mutates the table DOM", () => {
+    const doc = [
+      "| Name | Value |",
+      "| --- | --- |",
+      "|  | 1 |",
+      "",
+      "Edit",
+    ].join("\n");
+    const view = createView(doc);
+    const table = view.dom.querySelector<HTMLTableElement>(".cm-markra-table");
+    const cell = table?.querySelector<HTMLTableCellElement>("tbody td");
+    const row = cell?.parentElement;
+
+    cell?.focus();
+    cell?.replaceChildren(document.createElement("br"));
+    table?.focus();
+    if (row) {
+      const selection = document.getSelection();
+      const range = document.createRange();
+      range.setStart(row, 0);
+      range.collapse(true);
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+    }
+    const event = new InputEvent("beforeinput", {
+      bubbles: true,
+      cancelable: true,
+      data: "Again",
+      inputType: "insertText",
+    });
+    table?.dispatchEvent(event);
+
+    expect(event.defaultPrevented).toBe(false);
+    expect(document.activeElement).toBe(cell);
+    expect(cell?.contains(document.getSelection()?.anchorNode ?? null)).toBe(true);
+    expect(cell?.querySelector("br")).toBeNull();
+  });
+
+  it.each([
+    {
+      expectedRow: "| Alpha | Forward |",
+      name: "Tab",
+      sourceSelector: "tbody td:first-child",
+      targetSelector: "tbody td:nth-child(2)",
+      targetValue: "Forward",
+      shiftKey: false,
+    },
+    {
+      expectedRow: "| Backward | 1 |",
+      name: "Shift+Tab",
+      sourceSelector: "tbody td:nth-child(2)",
+      targetSelector: "tbody td:first-child",
+      targetValue: "Backward",
+      shiftKey: true,
+    },
+  ])("moves the caret before typing in the cell reached by $name", async ({
+    expectedRow,
+    sourceSelector,
+    targetSelector,
+    targetValue,
+    shiftKey,
+  }) => {
+    const doc = [
+      "| Name | Value |",
+      "| --- | --- |",
+      "| Alpha | 1 |",
+      "",
+      "Edit",
+    ].join("\n");
+    const view = createView(doc);
+    const table = view.dom.querySelector<HTMLTableElement>(".cm-markra-table");
+    const sourceCell =
+      table?.querySelector<HTMLTableCellElement>(sourceSelector);
+    const targetCell =
+      table?.querySelector<HTMLTableCellElement>(targetSelector);
+    const sourceText = sourceCell?.firstChild;
+
+    sourceCell?.focus();
+    if (sourceText) {
+      const selection = document.getSelection();
+      const range = document.createRange();
+      range.setStart(sourceText, sourceText.textContent?.length ?? 0);
+      range.collapse(true);
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+    }
+    const event = new KeyboardEvent("keydown", {
+      bubbles: true,
+      cancelable: true,
+      key: "Tab",
+      shiftKey,
+    });
+    sourceCell?.dispatchEvent(event);
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(targetCell);
+    expect(
+      targetCell?.contains(document.getSelection()?.anchorNode ?? null),
+    ).toBe(true);
+    if (targetCell) targetCell.textContent = targetValue;
+    targetCell?.dispatchEvent(new InputEvent("input", {
+      bubbles: true,
+      data: targetValue,
+      inputType: "insertText",
+    }));
+    await Promise.resolve();
+
+    expect(view.state.doc.toString()).toContain(expectedRow);
+    expect(view.dom.querySelector(".cm-markra-table")).not.toBeNull();
+  });
+
+  it("repairs an escaped selection before IME composition", async () => {
+    const doc = [
+      "| Name | Value |",
+      "| --- | --- |",
+      "|  | 1 |",
+      "",
+      "Edit",
+    ].join("\n");
+    const view = createView(doc);
+    const table = view.dom.querySelector<HTMLTableElement>(".cm-markra-table");
+    const cell = table?.querySelector<HTMLTableCellElement>("tbody td");
+    const row = cell?.parentElement;
+
+    cell?.focus();
+    table?.focus();
+    if (row) {
+      const selection = document.getSelection();
+      const range = document.createRange();
+      range.setStart(row, 0);
+      range.collapse(true);
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+    }
+    table?.dispatchEvent(new CompositionEvent("compositionstart", {
+      bubbles: true,
+    }));
+
+    expect(document.activeElement).toBe(cell);
+    expect(cell?.contains(document.getSelection()?.anchorNode ?? null)).toBe(true);
+    if (cell) cell.textContent = "再次";
+    table?.dispatchEvent(new InputEvent("input", {
+      bubbles: true,
+      isComposing: true,
+    }));
+    expect(view.state.doc.toString()).toBe(doc);
+
+    table?.dispatchEvent(new CompositionEvent("compositionend", {
+      bubbles: true,
+    }));
+    await Promise.resolve();
+
+    expect(view.state.doc.toString()).toContain("| 再次 | 1 |");
+    expect(view.dom.querySelector(".cm-markra-table")).not.toBeNull();
   });
 
   it("commits a visual table cell after IME composition finishes", async () => {
