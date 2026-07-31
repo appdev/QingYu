@@ -128,6 +128,7 @@ export const mobileRuntime = {
     rebuildLocalRepository: syncConfig.rebuildNativeDejavuLocalRepository,
     reset: syncConfig.resetNativeSyncConfig,
     setEditing: syncConfig.setNativeSyncConfigEditing,
+    settleApply: syncConfig.settleNativeKernelSyncConfigApply,
     stopRepositorySync: syncConfig.stopNativeDejavuRepositorySync,
     sync: syncConfig.syncApplication,
     testConnection: syncConfig.testSyncConnection

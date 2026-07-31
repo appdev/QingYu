@@ -277,6 +277,12 @@ export type RemoteNotebookCatalogEntry =
       repositoryId: null;
     };
 
+export type SyncApplySettlementInput = {
+  outcome: Extract<SyncDispatchResult, { status: "completed" }> | { status: "failed" };
+  revision: string;
+  token: string;
+};
+
 export type AcceptedSyncJob = {
   jobId: string;
   notesRoot: string;
@@ -395,6 +401,7 @@ export type AppSyncConfigRuntime = {
     expectedRevision: string | null;
   }): Promise<SyncConfigDocument>;
   setEditing(input: SyncEditingUpdate): Promise<SyncEditingWriteResult>;
+  settleApply(input: SyncApplySettlementInput): Promise<unknown>;
   stopRepositorySync(input: {
     confirmed: true;
     repositoryId: string;

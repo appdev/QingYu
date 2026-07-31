@@ -807,6 +807,25 @@ export function createDefaultAppRuntime(): AppRuntime {
             : { ...input, active: false, counter: syncEditingCounter }
         };
       },
+      settleApply: async (input) => {
+        if (!syncPendingApply) {
+          throw new Error("sync-apply-unavailable: The sync settings apply is unavailable.");
+        }
+        if (
+          syncPendingApply.revision !== input.revision ||
+          syncPendingApply.token !== input.token
+        ) {
+          throw new Error("sync-apply-mismatch: The sync settings apply identity changed.");
+        }
+        if (syncPendingApply.state !== "completed") {
+          syncEditingCounter += 1;
+          syncPendingApply = {
+            ...syncPendingApply,
+            counter: syncEditingCounter,
+            state: "completed"
+          };
+        }
+      },
       stopRepositorySync: () => unsupportedFeature("stopDejavuRepositorySync"),
       sync: () => unsupportedFeature("syncApplication"),
       testConnection: () => unsupportedFeature("testSyncConnection")
@@ -938,6 +957,7 @@ export {
   type RemoteNotebookCatalogEntry,
   type QingYuSyncConfig,
   type SyncApplyUpdate,
+  type SyncApplySettlementInput,
   type SyncApplyWriteResult,
   type SyncConfigDocument,
   type SyncConfigIssue,

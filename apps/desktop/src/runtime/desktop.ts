@@ -239,6 +239,7 @@ export function createDesktopRuntime({
     rebuildLocalRepository: syncConfig.rebuildNativeDejavuLocalRepository,
     reset: syncConfig.resetNativeSyncConfig,
     setEditing: syncConfig.setNativeSyncConfigEditing,
+    settleApply: syncConfig.settleNativeKernelSyncConfigApply,
     stopRepositorySync: syncConfig.stopNativeDejavuRepositorySync,
     sync: syncConfig.syncApplication,
     testConnection: syncConfig.testSyncConnection
@@ -365,7 +366,7 @@ export function createDesktopKernelRuntimeOwner(
         loadEditing: shell.syncConfig.loadEditing,
         requestApply: shell.syncConfig.requestApply,
         setEditing: shell.syncConfig.setEditing,
-        settleApply: syncConfig.settleNativeKernelSyncConfigApply,
+        settleApply: shell.syncConfig.settleApply,
       },
     }),
     syncPathGuard: unavailable.syncPathGuard,

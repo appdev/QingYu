@@ -25,6 +25,7 @@ export function createServerSyncConfigRuntime(
       loadEditing: local.loadEditing,
       requestApply: local.requestApply,
       setEditing: local.setEditing,
+      settleApply: local.settleApply,
     },
   });
 }

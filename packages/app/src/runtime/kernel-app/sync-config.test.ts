@@ -50,9 +50,11 @@ function createKernel(completionState: "failed" | "succeeded"): KernelDomainPort
   };
 }
 
-function createRuntime(completionState: "failed" | "succeeded") {
+function createRuntime(
+  completionState: "failed" | "succeeded",
+  settleApply = vi.fn(async () => undefined),
+) {
   const shared = createDefaultAppRuntime().syncConfig;
-  const settleApply = vi.fn(async () => undefined);
   return {
     runtime: createKernelSyncConfigRuntime(createKernel(completionState), {
       local: {
@@ -98,6 +100,38 @@ describe("Kernel sync apply settlement", () => {
       outcome: { status: "failed" },
       revision,
       token: "apply-1",
+    });
+  });
+
+  it("reports a distinct settlement failure after Kernel success", async () => {
+    const settlementError = new Error("native settlement unavailable");
+    const { runtime } = createRuntime(
+      "succeeded",
+      vi.fn(async () => Promise.reject(settlementError)),
+    );
+
+    const error = await runtime.sync(request).catch((caught: unknown) => caught);
+
+    expect(error).toMatchObject({
+      code: "apply-settlement-failed",
+      runError: null,
+      settlementError,
+    });
+  });
+
+  it("preserves the Kernel failure when settlement also fails", async () => {
+    const settlementError = new Error("native settlement unavailable");
+    const { runtime } = createRuntime(
+      "failed",
+      vi.fn(async () => Promise.reject(settlementError)),
+    );
+
+    const error = await runtime.sync(request).catch((caught: unknown) => caught);
+
+    expect(error).toMatchObject({
+      code: "apply-settlement-failed",
+      runError: expect.objectContaining({ code: "run-failed" }),
+      settlementError,
     });
   });
 });

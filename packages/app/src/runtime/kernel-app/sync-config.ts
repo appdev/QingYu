@@ -5,6 +5,7 @@ import type {
   KernelSyncConfigChangesInput,
   KernelSyncConfigSnapshot,
   QingYuSyncConfig,
+  SyncApplySettlementInput,
   SyncConfigDocument,
   SyncConfigPatch,
   SyncDispatchResult,
@@ -61,6 +62,7 @@ export function createKernelSyncConfigRuntime(
     rebuildLocalRepository: () => unavailableSyncCapability("rebuildLocalRepository"),
     reset: () => unavailableSyncCapability("reset"),
     setEditing: options.local.setEditing,
+    settleApply: options.local.settleApply,
     stopRepositorySync: () => unavailableSyncCapability("stopRepositorySync"),
     sync: async (input) => {
       const apply = "applyToken" in input && input.applyToken ? {
@@ -97,15 +99,16 @@ export function createKernelSyncConfigRuntime(
         };
       } catch (error) {
         if (apply) {
-          await options.local.settleApply({
-            ...apply,
-            outcome: { status: "failed" },
-          });
+          await settleKernelSyncApply(
+            options,
+            { ...apply, outcome: { status: "failed" } },
+            error,
+          );
         }
         throw error;
       }
       if (apply) {
-        await options.local.settleApply({
+        await settleKernelSyncApply(options, {
           ...apply,
           outcome: dispatch,
         });
@@ -128,36 +131,56 @@ export function createKernelSyncConfigRuntime(
 export interface KernelSyncConfigRuntimeOptions {
   readonly local: Pick<
     AppSyncConfigRuntime,
-    "cancelApply" | "loadEditing" | "requestApply" | "setEditing"
-  > & {
-    readonly settleApply: (input: KernelSyncApplySettlementInput) => Promise<unknown>;
-  };
+    "cancelApply" | "loadEditing" | "requestApply" | "setEditing" | "settleApply"
+  >;
   readonly delay?: (milliseconds: number) => Promise<unknown>;
   readonly maxStatusReads?: number;
   readonly statusPollMilliseconds?: number;
 }
 
-export type KernelSyncApplySettlementInput = {
-  readonly outcome: Extract<SyncDispatchResult, { status: "completed" }> | { readonly status: "failed" };
-  readonly revision: string;
-  readonly token: string;
-};
-
 function unavailableSyncCapability(name: string): Promise<never> {
   return Promise.reject(new Error(`${name} is unavailable for a Kernel runtime.`));
 }
 
-export type KernelSyncRunErrorCode = "protocol-mismatch" | "run-failed" | "timeout";
+export type KernelSyncRunErrorCode =
+  | "apply-settlement-failed"
+  | "protocol-mismatch"
+  | "run-failed"
+  | "timeout";
 
 export class KernelSyncRunError extends Error {
   readonly code: KernelSyncRunErrorCode;
+  readonly runError: unknown;
   readonly safeReason: string;
+  readonly settlementError: unknown;
 
-  constructor(code: KernelSyncRunErrorCode, safeReason: string = code) {
+  constructor(
+    code: KernelSyncRunErrorCode,
+    safeReason: string = code,
+    details: { readonly runError?: unknown; readonly settlementError?: unknown } = {},
+  ) {
     super(`The Kernel sync run did not complete (${safeReason}).`);
     this.name = "KernelSyncRunError";
     this.code = code;
+    this.runError = details.runError ?? null;
     this.safeReason = safeReason;
+    this.settlementError = details.settlementError ?? null;
+  }
+}
+
+async function settleKernelSyncApply(
+  options: KernelSyncConfigRuntimeOptions,
+  input: SyncApplySettlementInput,
+  runError: unknown = null,
+) {
+  try {
+    await options.local.settleApply(input);
+  } catch (settlementError) {
+    throw new KernelSyncRunError(
+      "apply-settlement-failed",
+      "sync-apply-settlement-failed",
+      { runError, settlementError },
+    );
   }
 }
 

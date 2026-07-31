@@ -24,7 +24,8 @@ use model::{
 };
 use status::{
     emit_sync_status_changed, load_sync_status_at_app_data, sync_status_timestamp,
-    write_sync_status_at_app_data, SyncRunResult, SyncSafeError, SyncStatus, SyncTrigger,
+    write_sync_status_at_app_data, SyncRunResult, SyncSafeError, SyncStatus, SyncSummary,
+    SyncTrigger,
 };
 use storage::{
     enable_at_app_data, load_from_app_data, patch_at_app_data, recover_at_app_data,
@@ -70,10 +71,56 @@ pub(crate) struct KernelSyncApplySettlementRequest {
 }
 
 #[derive(Clone, Deserialize)]
-#[serde(rename_all = "lowercase", tag = "status")]
+#[serde(deny_unknown_fields, rename_all = "lowercase", tag = "status")]
 enum KernelSyncApplySettlementOutcome {
-    Completed { result: SyncRunResult },
+    Completed {
+        result: KernelSyncApplySettlementRunResult,
+    },
     Failed,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct KernelSyncApplySettlementRunResult {
+    notebook_name: String,
+    notes_root: String,
+    provider: model::SyncProvider,
+    revision: String,
+    summary: KernelSyncApplySettlementSummary,
+    trigger: SyncTrigger,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct KernelSyncApplySettlementSummary {
+    bytes_downloaded: u64,
+    bytes_uploaded: u64,
+    conflict_files: u64,
+    downloaded_files: u64,
+    scanned_files: u64,
+    skipped_files: u64,
+    uploaded_files: u64,
+}
+
+impl From<KernelSyncApplySettlementRunResult> for SyncRunResult {
+    fn from(result: KernelSyncApplySettlementRunResult) -> Self {
+        Self {
+            notebook_name: result.notebook_name,
+            notes_root: result.notes_root,
+            provider: result.provider,
+            revision: result.revision,
+            summary: SyncSummary {
+                bytes_downloaded: result.summary.bytes_downloaded,
+                bytes_uploaded: result.summary.bytes_uploaded,
+                conflict_files: result.summary.conflict_files,
+                downloaded_files: result.summary.downloaded_files,
+                scanned_files: result.summary.scanned_files,
+                skipped_files: result.summary.skipped_files,
+                uploaded_files: result.summary.uploaded_files,
+            },
+            trigger: result.trigger,
+        }
+    }
 }
 
 #[derive(Clone, Serialize)]
@@ -1049,16 +1096,30 @@ pub(crate) fn cancel_sync_config_apply(
 pub(crate) fn settle_kernel_sync_config_apply(
     request: KernelSyncApplySettlementRequest,
 ) -> Result<(), String> {
+    let (revision, token, outcome) = validated_kernel_sync_apply_settlement(request)?;
+    complete_sync_apply(&revision, &token, outcome)
+}
+
+fn validated_kernel_sync_apply_settlement(
+    request: KernelSyncApplySettlementRequest,
+) -> Result<(String, String, Result<SyncDispatchResult, String>), String> {
     let outcome = match request.outcome {
         KernelSyncApplySettlementOutcome::Completed { result } => {
-            Ok(SyncDispatchResult::Completed { result })
+            if result.revision != request.revision || result.trigger != SyncTrigger::SettingsExit {
+                return Err(
+                    "sync-apply-mismatch: The sync settings apply identity changed.".to_string(),
+                );
+            }
+            Ok(SyncDispatchResult::Completed {
+                result: result.into(),
+            })
         }
         KernelSyncApplySettlementOutcome::Failed => Err(
             "kernel-sync-apply-failed: The Kernel sync settings apply did not complete."
                 .to_string(),
         ),
     };
-    complete_sync_apply(&request.revision, &request.token, outcome)
+    Ok((request.revision, request.token, outcome))
 }
 
 #[tauri::command]
@@ -1087,6 +1148,62 @@ mod tests {
         TestRemoteSyncFile as RemoteSyncFile,
     };
 
+    fn kernel_sync_apply_settlement_json() -> Value {
+        json!({
+            "outcome": {
+                "status": "completed",
+                "result": {
+                    "notebookName": "Notes",
+                    "notesRoot": "kernel-workspace://primary",
+                    "provider": "s3",
+                    "revision": "revision-1",
+                    "summary": {
+                        "bytesDownloaded": 1,
+                        "bytesUploaded": 2,
+                        "conflictFiles": 0,
+                        "downloadedFiles": 1,
+                        "scannedFiles": 3,
+                        "skippedFiles": 0,
+                        "uploadedFiles": 2
+                    },
+                    "trigger": "settings-exit"
+                }
+            },
+            "revision": "revision-1",
+            "token": "apply-1"
+        })
+    }
+
+    #[test]
+    fn kernel_sync_apply_settlement_dto_rejects_unknown_fields_at_every_level() {
+        for pointer in ["", "/outcome", "/outcome/result", "/outcome/result/summary"] {
+            let mut value = kernel_sync_apply_settlement_json();
+            value
+                .pointer_mut(pointer)
+                .and_then(Value::as_object_mut)
+                .expect("settlement fixture level should be an object")
+                .insert("unexpected".into(), Value::Bool(true));
+            assert!(serde_json::from_value::<KernelSyncApplySettlementRequest>(value).is_err());
+        }
+    }
+
+    #[test]
+    fn kernel_sync_apply_settlement_requires_matching_revision_and_settings_exit() {
+        let mut mismatched_revision = kernel_sync_apply_settlement_json();
+        mismatched_revision["outcome"]["result"]["revision"] = json!("revision-2");
+        let request = serde_json::from_value(mismatched_revision).unwrap();
+        assert!(validated_kernel_sync_apply_settlement(request)
+            .unwrap_err()
+            .starts_with("sync-apply-mismatch:"));
+
+        let mut wrong_trigger = kernel_sync_apply_settlement_json();
+        wrong_trigger["outcome"]["result"]["trigger"] = json!("manual");
+        let request = serde_json::from_value(wrong_trigger).unwrap();
+        assert!(validated_kernel_sync_apply_settlement(request)
+            .unwrap_err()
+            .starts_with("sync-apply-mismatch:"));
+    }
+
     use super::editing::{SyncApplyDisposition, SyncEditingTestRegistry};
     use super::model::{SyncConfig, SyncConfigLoadResponse, SyncConfigPatch, SyncProvider};
     use super::status::{
@@ -1103,8 +1220,9 @@ mod tests {
         failed_bootstrap_commit_status, parse_patch_request, parse_recover_request,
         validate_sync_application_dispatch, validate_sync_application_mode,
         validate_sync_application_notebook, validate_sync_application_result,
-        validated_application_sync_apply_token, ApplicationSyncDispatchOperations,
-        DejavuEnqueueOperation, SyncApplicationRequest, SyncApplyCompletionGuard,
+        validated_application_sync_apply_token, validated_kernel_sync_apply_settlement,
+        ApplicationSyncDispatchOperations, DejavuEnqueueOperation,
+        KernelSyncApplySettlementRequest, SyncApplicationRequest, SyncApplyCompletionGuard,
         SyncDispatchResult,
     };
 

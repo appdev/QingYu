@@ -3,6 +3,7 @@ import {
   notebookNameFromRoot,
   normalizeSyncConfigLoadResult,
   type AppSyncConfigRuntime,
+  type SyncApplySettlementInput,
   type SyncConfigDocument,
   type SyncConfigLoadResult,
   type SyncConnectionTestResult,
@@ -13,7 +14,6 @@ import {
   type DejavuKeyState,
   type SyncConflictRecord,
   type SyncDispatchResult,
-  type KernelSyncApplySettlementInput,
   type SyncRunResult
 } from "@markra/app/runtime";
 import { invokeNative } from "../invoke";
@@ -175,7 +175,7 @@ export async function requestNativeSyncConfigApply(
 }
 
 export function settleNativeKernelSyncConfigApply(
-  input: KernelSyncApplySettlementInput
+  input: SyncApplySettlementInput
 ): Promise<unknown> {
   return invokeNative("settle_kernel_sync_config_apply", { request: input });
 }
