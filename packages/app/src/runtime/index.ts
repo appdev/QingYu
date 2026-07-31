@@ -191,6 +191,13 @@ export type AppWorkspaceRootPolicy =
       kind: "selectable";
     }
   | {
+      canChooseLocalRoot: true;
+      commitRoot: (path: string) => Promise<string | null>;
+      kind: "host-selectable";
+      resolveRoot: () => Promise<string>;
+      selectRoot: () => Promise<string | null>;
+    }
+  | {
       canChooseLocalRoot: false;
       kind: "fixed";
       resolveRoot: () => Promise<string>;

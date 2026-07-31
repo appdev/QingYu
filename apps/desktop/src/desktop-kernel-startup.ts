@@ -133,6 +133,12 @@ export function initializeDesktopKernelWorkspace(workspacePath: string) {
   });
 }
 
+export function switchDesktopKernelWorkspace(workspacePath: string) {
+  return invokeNative<unknown>("switch_desktop_kernel_workspace", {
+    path: workspacePath,
+  });
+}
+
 export function retryDesktopKernelWorkspace() {
   return invokeNative<unknown>("retry_desktop_kernel_workspace");
 }

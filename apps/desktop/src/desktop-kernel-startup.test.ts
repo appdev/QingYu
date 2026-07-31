@@ -2,11 +2,25 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   createDesktopKernelStartupOwner,
+  switchDesktopKernelWorkspace,
   type DesktopKernelStartupSnapshot,
   type DesktopKernelStartupSource,
 } from "./desktop-kernel-startup";
+import { invokeNative } from "./runtime/tauri/invoke";
+
+vi.mock("./runtime/tauri/invoke", () => ({
+  invokeNative: vi.fn(async () => undefined),
+}));
 
 describe("desktop Kernel startup owner", () => {
+  it("routes a ready Desktop workspace switch through the native Kernel owner", async () => {
+    await switchDesktopKernelWorkspace("/Workspace/B");
+
+    expect(invokeNative).toHaveBeenCalledWith("switch_desktop_kernel_workspace", {
+      path: "/Workspace/B",
+    });
+  });
+
   it("subscribes before reading and ignores a stale initial snapshot", async () => {
     const initial = deferred<DesktopKernelStartupSnapshot>();
     const refreshed = deferred<DesktopKernelStartupSnapshot>();

@@ -141,6 +141,44 @@ describe("primary workspace controller", () => {
     expect(mockResolveMarkdownFolder).not.toHaveBeenCalled();
   });
 
+  it("delegates Desktop root changes to a host-selectable owner without local persistence", async () => {
+    const runtime = getAppRuntime();
+    const commitRoot = vi.fn(async () => "kernel-workspace://primary");
+    const resolveRoot = vi.fn(async () => "kernel-workspace://primary");
+    configureAppRuntime({
+      ...runtime,
+      workspace: {
+        ...runtime.workspace,
+        rootPolicy: {
+          canChooseLocalRoot: true,
+          commitRoot,
+          kind: "host-selectable",
+          resolveRoot,
+          selectRoot: vi.fn(async () => "/Workspace/B")
+        }
+      }
+    });
+
+    const { result } = renderHook(() => usePrimaryWorkspace({ trueMobile: false }));
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+
+    let selected: string | null = null;
+    await act(async () => {
+      selected = await result.current.commitDesktopRoot("/Workspace/B");
+    });
+
+    expect(selected).toBe("kernel-workspace://primary");
+    expect(result.current).toMatchObject({
+      canChooseDesktopRoot: true,
+      root: "kernel-workspace://primary",
+      status: "ready",
+      workspaceRoot: null
+    });
+    expect(commitRoot).toHaveBeenCalledWith("/Workspace/B");
+    expect(mockLoadStore).not.toHaveBeenCalled();
+    expect(mockResolveMarkdownFolder).not.toHaveBeenCalled();
+  });
+
   it("keeps a runtime-fixed workspace unchanged when local onboarding actions are invoked", async () => {
     const runtime = getAppRuntime();
     const resolveRoot = vi.fn(async () => "kernel-workspace://primary");

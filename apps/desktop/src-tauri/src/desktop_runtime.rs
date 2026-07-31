@@ -262,6 +262,64 @@ async fn initialize_desktop_kernel_workspace(
 }
 
 #[tauri::command]
+async fn switch_desktop_kernel_workspace(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    runtime: tauri::State<'_, Arc<crate::desktop_kernel_runtime::DesktopKernelRuntimeState>>,
+    path: String,
+) -> Result<(), String> {
+    let origin = main_renderer_origin(&window)?;
+    let runtime = Arc::clone(runtime.inner());
+    let persistence_app = app.clone();
+    let requested_path = PathBuf::from(path);
+    let prepared = tauri::async_runtime::spawn_blocking(move || {
+        crate::primary_workspace::prepare_desktop_primary_workspace_switch(
+            &persistence_app,
+            &requested_path,
+        )
+    })
+    .await
+    .map_err(|_| "desktop primary workspace switch failed".to_owned())??;
+    let Some(attempt) = runtime
+        .begin_workspace_switch(
+            &app,
+            &prepared.current_root,
+            prepared.target_root.clone(),
+            origin,
+        )
+        .await?
+    else {
+        return Ok(());
+    };
+
+    let target_root = prepared.target_root.clone();
+    let commit_app = app.clone();
+    let committed = tauri::async_runtime::spawn_blocking(move || {
+        crate::primary_workspace::commit_desktop_primary_workspace_switch(&commit_app, &prepared)
+    })
+    .await
+    .map_err(|_| "desktop primary workspace switch failed".to_owned())
+    .and_then(|result| result);
+    if committed.as_ref() == Ok(&target_root) {
+        return runtime.complete_workspace_switch(&app, attempt);
+    }
+
+    let resolution_app = app.clone();
+    let authoritative_root = tauri::async_runtime::spawn_blocking(move || {
+        crate::primary_workspace::resolve_desktop_primary_workspace(&resolution_app)
+    })
+    .await
+    .ok()
+    .and_then(Result::ok)
+    .and_then(|resolution| match resolution {
+        crate::primary_workspace::DesktopPrimaryWorkspaceResolution::Selected(root) => Some(root),
+        crate::primary_workspace::DesktopPrimaryWorkspaceResolution::Unselected => None,
+    });
+    runtime.reconcile_failed_workspace_switch(&app, attempt, authoritative_root);
+    Err("desktop primary workspace switch failed".to_owned())
+}
+
+#[tauri::command]
 async fn retry_desktop_kernel_workspace(
     app: tauri::AppHandle,
     window: tauri::WebviewWindow,
@@ -745,6 +803,7 @@ pub(crate) fn run() {
                 crate::kernel_bootstrap::read_native_kernel_bootstrap,
                 read_desktop_kernel_startup_state,
                 initialize_desktop_kernel_workspace,
+                switch_desktop_kernel_workspace,
                 retry_desktop_kernel_workspace,
                 crate::mcp::get_mcp_settings,
                 crate::mcp::update_mcp_settings,

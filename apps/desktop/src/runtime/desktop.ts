@@ -18,6 +18,7 @@ import {
   readNativeKernelBootstrap,
   type NativeKernelBootstrap
 } from "../kernel-bootstrap";
+import { switchDesktopKernelWorkspace } from "../desktop-kernel-startup";
 import {
   createDesktopKernelDomainAdapter,
   DesktopKernelDomainAdapterError,
@@ -316,8 +317,17 @@ export interface DesktopKernelRuntimeOwner {
   readonly release: () => undefined;
 }
 
+export interface DesktopKernelRuntimeOwnerOptions {
+  readonly commitRoot?: (path: string) => Promise<unknown>;
+  readonly selectRoot?: () => Promise<string | null>;
+}
+
 export function createDesktopKernelRuntimeOwner(
   kernel: KernelDomainPort,
+  {
+    commitRoot = switchDesktopKernelWorkspace,
+    selectRoot = async () => (await files.openNativeMarkdownFolder())?.path ?? null,
+  }: DesktopKernelRuntimeOwnerOptions = {},
 ): DesktopKernelRuntimeOwner {
   const shell = createDesktopRuntime({ kernel });
   const unavailable = createDefaultAppRuntime();
@@ -350,7 +360,10 @@ export function createDesktopKernelRuntimeOwner(
       projectSync: true,
       resources: false,
     },
-    files: fileOwner.files,
+    files: {
+      ...fileOwner.files,
+      requestPrimaryNotebookSwitch: undefined,
+    },
     kernel,
     mcp: shell.mcp,
     nativeShell: createUnavailableNativeShellPort(),
@@ -380,9 +393,14 @@ export function createDesktopKernelRuntimeOwner(
       listManagedNotebookNames: async () => [],
       resolveManagedRoot: async () => null,
       rootPolicy: {
-        canChooseLocalRoot: false,
-        kind: "fixed",
+        canChooseLocalRoot: true,
+        commitRoot: async (path) => {
+          await commitRoot(path);
+          return kernelWorkspaceRoot;
+        },
+        kind: "host-selectable",
         resolveRoot: async () => kernelWorkspaceRoot,
+        selectRoot,
       },
     },
   };

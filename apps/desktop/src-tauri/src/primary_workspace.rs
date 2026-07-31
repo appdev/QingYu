@@ -920,11 +920,19 @@ fn resolve_desktop_primary_workspace_read(
 }
 
 #[cfg(not(mobile))]
+#[derive(Clone, Copy)]
+enum DesktopPrimaryWorkspaceSelectionMode<'a> {
+    Initialize,
+    RecoverInvalid,
+    Switch { expected_root: &'a Path },
+}
+
+#[cfg(not(mobile))]
 fn select_desktop_primary_workspace_with_backend<Backend: PrimaryWorkspaceBackend + ?Sized>(
     backend: &Backend,
     transaction_lock: &Mutex<()>,
     requested_root: &Path,
-    recover_invalid: bool,
+    mode: DesktopPrimaryWorkspaceSelectionMode<'_>,
 ) -> Result<PathBuf, String> {
     let requested_root = requested_root
         .to_str()
@@ -945,10 +953,20 @@ fn select_desktop_primary_workspace_with_backend<Backend: PrimaryWorkspaceBacken
         .to_owned();
     let current = backend.get(PRIMARY_WORKSPACE_KEY);
     let current_resolution = resolve_desktop_primary_workspace_value(current.clone());
-    let selection_is_allowed = current_resolution
-        == Ok(DesktopPrimaryWorkspaceResolution::Unselected)
-        || (recover_invalid
-            && current_resolution == Err(DesktopPrimaryWorkspaceResolutionError::Invalid));
+    let selection_is_allowed = match mode {
+        DesktopPrimaryWorkspaceSelectionMode::Initialize => {
+            current_resolution == Ok(DesktopPrimaryWorkspaceResolution::Unselected)
+        }
+        DesktopPrimaryWorkspaceSelectionMode::RecoverInvalid => {
+            current_resolution == Err(DesktopPrimaryWorkspaceResolutionError::Invalid)
+        }
+        DesktopPrimaryWorkspaceSelectionMode::Switch { expected_root } => {
+            current_resolution
+                == Ok(DesktopPrimaryWorkspaceResolution::Selected(
+                    expected_root.to_path_buf(),
+                ))
+        }
+    };
     if !selection_is_allowed {
         return Err(desktop_primary_workspace_initialization_error());
     }
@@ -990,7 +1008,12 @@ fn initialize_desktop_primary_workspace_with_backend<Backend: PrimaryWorkspaceBa
     transaction_lock: &Mutex<()>,
     requested_root: &Path,
 ) -> Result<PathBuf, String> {
-    select_desktop_primary_workspace_with_backend(backend, transaction_lock, requested_root, false)
+    select_desktop_primary_workspace_with_backend(
+        backend,
+        transaction_lock,
+        requested_root,
+        DesktopPrimaryWorkspaceSelectionMode::Initialize,
+    )
 }
 
 #[cfg(not(mobile))]
@@ -1001,7 +1024,83 @@ fn recover_invalid_desktop_primary_workspace_with_backend<
     transaction_lock: &Mutex<()>,
     requested_root: &Path,
 ) -> Result<PathBuf, String> {
-    select_desktop_primary_workspace_with_backend(backend, transaction_lock, requested_root, true)
+    select_desktop_primary_workspace_with_backend(
+        backend,
+        transaction_lock,
+        requested_root,
+        DesktopPrimaryWorkspaceSelectionMode::RecoverInvalid,
+    )
+}
+
+#[cfg(test)]
+fn switch_desktop_primary_workspace_with_backend<Backend: PrimaryWorkspaceBackend + ?Sized>(
+    backend: &Backend,
+    transaction_lock: &Mutex<()>,
+    requested_root: &Path,
+) -> Result<PathBuf, String> {
+    let current = resolve_desktop_primary_workspace_value(backend.get(PRIMARY_WORKSPACE_KEY))
+        .map_err(|_| desktop_primary_workspace_initialization_error())?;
+    let DesktopPrimaryWorkspaceResolution::Selected(expected_root) = current else {
+        return Err(desktop_primary_workspace_initialization_error());
+    };
+    select_desktop_primary_workspace_with_backend(
+        backend,
+        transaction_lock,
+        requested_root,
+        DesktopPrimaryWorkspaceSelectionMode::Switch {
+            expected_root: &expected_root,
+        },
+    )
+}
+
+#[cfg(not(mobile))]
+pub(crate) struct PreparedDesktopPrimaryWorkspaceSwitch {
+    pub(crate) current_root: PathBuf,
+    pub(crate) target_root: PathBuf,
+}
+
+#[cfg(not(mobile))]
+pub(crate) fn prepare_desktop_primary_workspace_switch<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    requested_root: &Path,
+) -> Result<PreparedDesktopPrimaryWorkspaceSwitch, String> {
+    let current_root = match resolve_desktop_primary_workspace(app)
+        .map_err(|_| desktop_primary_workspace_initialization_error())?
+    {
+        DesktopPrimaryWorkspaceResolution::Selected(root) => root,
+        DesktopPrimaryWorkspaceResolution::Unselected => {
+            return Err(desktop_primary_workspace_initialization_error())
+        }
+    };
+    let requested_root = requested_root
+        .to_str()
+        .ok_or_else(desktop_primary_workspace_initialization_error)?;
+    let target_root = crate::workspace_membership::canonical_workspace_root(requested_root)
+        .map_err(|_| desktop_primary_workspace_initialization_error())?;
+    if target_root.parent().is_none() {
+        return Err(desktop_primary_workspace_initialization_error());
+    }
+    Ok(PreparedDesktopPrimaryWorkspaceSwitch {
+        current_root,
+        target_root,
+    })
+}
+
+#[cfg(not(mobile))]
+pub(crate) fn commit_desktop_primary_workspace_switch<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    prepared: &PreparedDesktopPrimaryWorkspaceSwitch,
+) -> Result<PathBuf, String> {
+    let store = primary_local_state_store(app)?;
+    let backend = StorePrimaryWorkspaceBackend { store };
+    select_desktop_primary_workspace_with_backend(
+        &backend,
+        primary_workspace_transaction_gate(),
+        &prepared.target_root,
+        DesktopPrimaryWorkspaceSelectionMode::Switch {
+            expected_root: &prepared.current_root,
+        },
+    )
 }
 
 #[cfg(not(mobile))]
@@ -1886,6 +1985,75 @@ mod tests {
             resolve_desktop_primary_workspace_value(backend.value(PRIMARY_WORKSPACE_KEY)),
             Ok(DesktopPrimaryWorkspaceResolution::Selected(
                 first.canonicalize().unwrap()
+            ))
+        );
+    }
+
+    #[test]
+    fn desktop_runtime_switches_a_b_a_through_atomic_host_persistence() {
+        let temporary = tempfile::tempdir().unwrap();
+        let workspace = temporary.path().join("Workspace");
+        let first = workspace.join("First");
+        let second = workspace.join("Second");
+        std::fs::create_dir_all(&first).unwrap();
+        std::fs::create_dir_all(&second).unwrap();
+        let backend = MemoryBackend::default();
+        let lock = Mutex::new(());
+
+        initialize_desktop_primary_workspace_with_backend(&backend, &lock, &first).unwrap();
+        let selected_second =
+            switch_desktop_primary_workspace_with_backend(&backend, &lock, &second).unwrap();
+        let selected_first =
+            switch_desktop_primary_workspace_with_backend(&backend, &lock, &first).unwrap();
+
+        assert_eq!(selected_second, second.canonicalize().unwrap());
+        assert_eq!(selected_first, first.canonicalize().unwrap());
+        assert_eq!(
+            resolve_desktop_primary_workspace_value(backend.value(PRIMARY_WORKSPACE_KEY)),
+            Ok(DesktopPrimaryWorkspaceResolution::Selected(selected_first))
+        );
+    }
+
+    #[test]
+    fn desktop_runtime_switch_rollback_and_compare_and_swap_preserve_the_authoritative_root() {
+        let temporary = tempfile::tempdir().unwrap();
+        let workspace = temporary.path().join("Workspace");
+        let first = workspace.join("First");
+        let second = workspace.join("Second");
+        let third = workspace.join("Third");
+        std::fs::create_dir_all(&first).unwrap();
+        std::fs::create_dir_all(&second).unwrap();
+        std::fs::create_dir_all(&third).unwrap();
+        let backend = MemoryBackend::default();
+        let lock = Mutex::new(());
+
+        let canonical_first =
+            initialize_desktop_primary_workspace_with_backend(&backend, &lock, &first).unwrap();
+        backend.fail_save.store(true, Ordering::Relaxed);
+        assert!(switch_desktop_primary_workspace_with_backend(&backend, &lock, &second).is_err());
+        assert_eq!(
+            resolve_desktop_primary_workspace_value(backend.value(PRIMARY_WORKSPACE_KEY)),
+            Ok(DesktopPrimaryWorkspaceResolution::Selected(
+                canonical_first.clone()
+            ))
+        );
+
+        backend.fail_save.store(false, Ordering::Relaxed);
+        let canonical_second =
+            switch_desktop_primary_workspace_with_backend(&backend, &lock, &second).unwrap();
+        assert!(select_desktop_primary_workspace_with_backend(
+            &backend,
+            &lock,
+            &third,
+            DesktopPrimaryWorkspaceSelectionMode::Switch {
+                expected_root: &canonical_first,
+            },
+        )
+        .is_err());
+        assert_eq!(
+            resolve_desktop_primary_workspace_value(backend.value(PRIMARY_WORKSPACE_KEY)),
+            Ok(DesktopPrimaryWorkspaceResolution::Selected(
+                canonical_second
             ))
         );
     }

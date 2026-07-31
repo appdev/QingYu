@@ -35,6 +35,7 @@ const DESKTOP_COMMANDS: &[&str] = &[
     "read_native_kernel_bootstrap",
     "read_desktop_kernel_startup_state",
     "initialize_desktop_kernel_workspace",
+    "switch_desktop_kernel_workspace",
     "retry_desktop_kernel_workspace",
     "get_mcp_settings",
     "update_mcp_settings",
@@ -417,14 +418,47 @@ fn builder_boundary_workspace_initialization_keeps_persistence_off_the_ipc_runti
         .find("async fn initialize_desktop_kernel_workspace")
         .expect("desktop workspace initialization must be asynchronous");
     let end = desktop[start..]
-        .find("fn retry_desktop_kernel_workspace")
+        .find("fn switch_desktop_kernel_workspace")
         .map(|offset| start + offset)
-        .expect("desktop workspace retry command boundary");
+        .expect("desktop workspace switch command boundary");
     let initialization = &desktop[start..end];
 
     assert!(initialization.contains("tauri::async_runtime::spawn_blocking"));
     assert!(initialization.contains("initialize_desktop_primary_workspace"));
     assert!(initialization.contains("recover_invalid_desktop_primary_workspace"));
+}
+
+#[test]
+fn builder_boundary_workspace_switch_authenticates_then_drains_before_host_commit() {
+    let desktop = source("src/desktop_runtime.rs");
+    let start = desktop
+        .find("async fn switch_desktop_kernel_workspace")
+        .expect("desktop workspace switch command");
+    let end = desktop[start..]
+        .find("async fn retry_desktop_kernel_workspace")
+        .map(|offset| start + offset)
+        .expect("desktop workspace retry boundary");
+    let workspace_switch = &desktop[start..end];
+
+    let authenticate = workspace_switch
+        .find("main_renderer_origin(&window)?")
+        .expect("switch must authenticate the configured main renderer");
+    let prepare = workspace_switch
+        .find("prepare_desktop_primary_workspace_switch")
+        .expect("switch must prepare the host-authoritative target");
+    let drain = workspace_switch
+        .find("begin_workspace_switch")
+        .expect("switch must reserve and drain the old Kernel owner");
+    let commit = workspace_switch
+        .find("commit_desktop_primary_workspace_switch")
+        .expect("switch must commit host persistence");
+    let launch = workspace_switch
+        .find("complete_workspace_switch")
+        .expect("switch must launch the replacement Kernel owner");
+    assert!(authenticate < prepare);
+    assert!(prepare < drain);
+    assert!(drain < commit);
+    assert!(commit < launch);
 }
 
 #[test]
