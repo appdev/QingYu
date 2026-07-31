@@ -1580,6 +1580,9 @@ function WorkspaceApp() {
   const primaryTreeGenerationRef = useRef(0);
   const primaryWorkspaceReadyRef = useRef(primaryWorkspace.status === "ready");
   const primaryWorkspaceDeferredCleanupPendingRef = useRef(false);
+  const openPrimaryFolderPathRef = useRef(openFolderPath);
+  openPrimaryFolderPathRef.current = openFolderPath;
+  const openPrimaryFolderPathEffectDependency = fixedWorkspaceRoot ? null : openFolderPath;
   useEffect(() => {
     if (!primaryWindowOwner) return;
 
@@ -1616,7 +1619,7 @@ function WorkspaceApp() {
       }
       if (generation !== primaryTreeGenerationRef.current) return;
 
-      const openedRoot = await openFolderPath(
+      const openedRoot = await openPrimaryFolderPathRef.current(
         root,
         pathNameFromPath(root),
         false,
@@ -1650,7 +1653,7 @@ function WorkspaceApp() {
     clearOpenDocument,
     clearProjectRoot,
     compactMode.trueMobile,
-    openFolderPath,
+    openPrimaryFolderPathEffectDependency,
     openManagedTreeMarkdownFile,
     persistManagedDocumentPath,
     primaryWindowOwner,
@@ -4858,7 +4861,7 @@ function WorkspaceApp() {
           menuHandlers={nativeMenuHandlers}
           syncNowShortcut={editorPreferences.preferences.markdownShortcuts.syncNow}
           nativeWindowChrome={nativeWindowChromeEnabled}
-          openMarkdownButtonVisible={viewModeChrome.openButton}
+          openMarkdownButtonVisible={viewModeChrome.openButton && canChooseLocalWorkspace}
           quickCreateMarkdownFileVisible={viewModeChrome.quickCreateButton && !visibleFileTreeOpen}
           historyDisabled={!documentHistoryAvailable}
           saveDisabled={!hasOpenDocument || Boolean(activeImageFile)}
