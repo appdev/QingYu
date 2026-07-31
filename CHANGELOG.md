@@ -1,3 +1,10 @@
+## [2.3.2](https://github.com/markrahq/markra/compare/v2.3.1...v2.3.2) (2026-07-31)
+
+### Bug Fixes
+
+* **editor:** handle shifted-digit menu shortcuts ([#614](https://github.com/markrahq/markra/issues/614)) ([528077f](https://github.com/markrahq/markra/commit/528077f44aa408d3dc069b5c82bce09704a2be42)), closes [#611](https://github.com/markrahq/markra/issues/611)
+* **web:** keep sidebar toggle available when collapsed ([#615](https://github.com/markrahq/markra/issues/615)) ([ae43cef](https://github.com/markrahq/markra/commit/ae43cef5fdd522552e14cd0f6cc0cb76c9d69aef))
+
 ## [2.3.1](https://github.com/markrahq/markra/compare/v2.3.0...v2.3.1) (2026-07-31)
 
 ### Bug Fixes
