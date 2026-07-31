@@ -138,6 +138,7 @@ export function createNativeKernelSessionOwner(
     | undefined;
   let adoptionEpoch = 0;
   let publicationEpoch = 0;
+  let publicationDepth = 0;
 
   const publish = (next: NativeKernelSessionSnapshot | null) => {
     if (closed) {
@@ -147,13 +148,18 @@ export function createNativeKernelSessionOwner(
     publicationEpoch += 1;
     const publication = publicationEpoch;
     snapshot = next;
-    for (const subscriber of [...subscribers]) {
-      if (
-        closed ||
-        publication !== publicationEpoch ||
-        snapshot !== next
-      ) break;
-      notifyConsumer(subscriber, next);
+    publicationDepth += 1;
+    try {
+      for (const subscriber of [...subscribers]) {
+        if (
+          closed ||
+          publication !== publicationEpoch ||
+          snapshot !== next
+        ) break;
+        notifyConsumer(subscriber, next);
+      }
+    } finally {
+      publicationDepth -= 1;
     }
     return undefined;
   };
@@ -446,6 +452,7 @@ export function createNativeKernelSessionOwner(
 
   const close = () => {
     if (closed) return undefined;
+    const notifyUnavailable = publicationDepth === 0 && snapshot !== null;
     closed = true;
     adoptionEpoch += 1;
     retireActive();
@@ -454,6 +461,11 @@ export function createNativeKernelSessionOwner(
     safelyCall(stopPagehideListener);
     stopBootstrapListener = undefined;
     stopPagehideListener = undefined;
+    if (notifyUnavailable) {
+      for (const subscriber of [...subscribers]) {
+        notifyConsumer(subscriber, null);
+      }
+    }
     subscribers.clear();
     return undefined;
   };

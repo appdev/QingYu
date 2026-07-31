@@ -501,6 +501,35 @@ describe("native Kernel session owner", () => {
     owner.close();
   });
 
+  it("retires a ready session before pagehide publishes unavailable exactly once", async () => {
+    const log: string[] = [];
+    const listener = new ListenerHarness();
+    const domains = new DomainHarness(log);
+    const events = new EventsHarness(log);
+    const owner = createNativeKernelSessionOwner({
+      addPagehideListener: listener.addPagehideListener,
+      createDomainAdapter: domains.create,
+      createEventsAdapter: events.create,
+      invokeCommand: async () => readyBootstrap("14", INSTANCE_A, CREDENTIAL_A),
+      listenBootstrapChanged: listener.listen
+    });
+    owner.subscribe((snapshot) => {
+      log.push(`publish-${snapshot?.status ?? "unavailable"}`);
+    });
+    await owner.start();
+    log.length = 0;
+
+    listener.pagehide?.();
+    listener.pagehide?.();
+    owner.close();
+
+    expect(log).toEqual([
+      "domain-1-close",
+      "events-1-close",
+      "publish-unavailable"
+    ]);
+  });
+
   it("closes pagehide, listener, domain, socket, and leases exactly once", async () => {
     const listener = new ListenerHarness();
     const domains = new DomainHarness();

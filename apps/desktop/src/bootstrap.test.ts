@@ -1,4 +1,7 @@
-import { bootstrapApplication } from "./bootstrap";
+import {
+  bootstrapApplication,
+  bootstrapApplicationMount
+} from "./bootstrap";
 
 describe("application bootstrap", () => {
   it("loads and configures the runtime before rendering the app", async () => {
@@ -53,6 +56,58 @@ describe("application bootstrap", () => {
     expect(retry).toEqual(expect.any(Function));
 
     retry?.();
+    expect(reload).toHaveBeenCalledTimes(1);
+  });
+
+  it("starts an injected application mount owner and returns one idempotent stop", async () => {
+    const log: string[] = [];
+    const stop = await bootstrapApplicationMount({
+      mountOwner: {
+        start: async () => {
+          log.push("start");
+          return undefined;
+        },
+        close: () => {
+          log.push("close");
+          return undefined;
+        }
+      },
+      reload: vi.fn(),
+      renderError: vi.fn()
+    });
+
+    expect(log).toEqual(["start"]);
+    stop();
+    stop();
+    expect(log).toEqual(["start", "close"]);
+  });
+
+  it("closes a failed mount before rendering the reload error", async () => {
+    const log: string[] = [];
+    const reload = vi.fn();
+    let retry: (() => unknown) | undefined;
+    const stop = await bootstrapApplicationMount({
+      mountOwner: {
+        start: async () => {
+          log.push("start");
+          throw new Error("authenticated mount failed");
+        },
+        close: () => {
+          log.push("close");
+          return undefined;
+        }
+      },
+      reload,
+      renderError: (onRetry) => {
+        log.push("render-error");
+        retry = onRetry;
+      }
+    });
+
+    expect(log).toEqual(["start", "close", "render-error"]);
+    stop();
+    retry?.();
+    expect(log).toEqual(["start", "close", "render-error"]);
     expect(reload).toHaveBeenCalledTimes(1);
   });
 });
