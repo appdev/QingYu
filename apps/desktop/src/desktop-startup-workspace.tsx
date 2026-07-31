@@ -1,34 +1,62 @@
-import { useMemo, useSyncExternalStore } from "react";
+import { useEffect, useRef, useSyncExternalStore } from "react";
 
 export interface DesktopStartupWorkspaceProps {
+  readonly retryWorkspace: () => Promise<unknown>;
   readonly selectWorkspace: () => Promise<string | null>;
   readonly startWorkspace: (workspacePath: string) => Promise<unknown>;
+  readonly startupStatus: DesktopStartupWorkspaceAuthoritativeStatus;
 }
+
+export type DesktopStartupWorkspaceAuthoritativeStatus =
+  | "unselected"
+  | "invalid"
+  | "unavailable"
+  | "starting"
+  | "ready"
+  | "failed";
 
 export type DesktopStartupWorkspaceState =
   | { readonly status: "unselected" }
   | { readonly status: "selecting" }
   | {
-      readonly status: "starting" | "retrying" | "failed";
+      readonly status: "starting" | "retrying";
+      readonly workspacePath: string | null;
+    }
+  | {
+      readonly failure: "selection" | "startup";
+      readonly status: "failed";
       readonly workspacePath: string | null;
     };
 
 export interface DesktopStartupWorkspaceController {
+  readonly cancelPending: () => undefined;
   readonly getSnapshot: () => DesktopStartupWorkspaceState;
   readonly retry: () => Promise<undefined>;
   readonly select: () => Promise<undefined>;
   readonly subscribe: (
     listener: () => unknown
   ) => () => undefined;
+  readonly updateOptions: (options: DesktopStartupWorkspaceProps) => undefined;
+  readonly updateStartupStatus: (
+    status: DesktopStartupWorkspaceAuthoritativeStatus
+  ) => undefined;
 }
 
 export function createDesktopStartupWorkspaceController(
   options: DesktopStartupWorkspaceProps
 ): DesktopStartupWorkspaceController {
   const listeners = new Set<() => unknown>();
-  let state: DesktopStartupWorkspaceState = { status: "unselected" };
+  let callbacks = options;
+  let state = stateFromAuthoritativeStatus(options.startupStatus);
   let pending: Promise<undefined> | undefined;
   let requestRevision = 0;
+  let startupStatus = options.startupStatus;
+
+  const cancelPending = () => {
+    requestRevision += 1;
+    pending = undefined;
+    return undefined;
+  };
 
   const publish = (nextState: DesktopStartupWorkspaceState) => {
     state = nextState;
@@ -38,7 +66,10 @@ export function createDesktopStartupWorkspaceController(
 
   const select = () => {
     if (pending !== undefined) return pending;
-    if (state.status !== "unselected" && state.status !== "failed") {
+    if (
+      state.status !== "unselected" &&
+      (state.status !== "failed" || state.failure !== "selection")
+    ) {
       return Promise.resolve(undefined);
     }
     const revision = ++requestRevision;
@@ -46,10 +77,10 @@ export function createDesktopStartupWorkspaceController(
 
     let selection: Promise<string | null>;
     try {
-      selection = options.selectWorkspace();
+      selection = callbacks.selectWorkspace();
     } catch {
       if (requestRevision === revision) {
-        publish({ status: "failed", workspacePath: null });
+        publish({ failure: "selection", status: "failed", workspacePath: null });
       }
       return Promise.resolve(undefined);
     }
@@ -64,17 +95,17 @@ export function createDesktopStartupWorkspaceController(
         }
         publish({ status: "starting", workspacePath });
         try {
-          await options.startWorkspace(workspacePath);
+          await callbacks.startWorkspace(workspacePath);
         } catch {
           if (requestRevision === revision) {
-            publish({ status: "failed", workspacePath });
+            publish({ failure: "startup", status: "failed", workspacePath });
           }
         }
         return undefined;
       },
       () => {
         if (requestRevision === revision) {
-          publish({ status: "failed", workspacePath: null });
+          publish({ failure: "selection", status: "failed", workspacePath: null });
         }
         return undefined;
       }
@@ -88,7 +119,7 @@ export function createDesktopStartupWorkspaceController(
 
   const retry = () => {
     if (pending !== undefined) return pending;
-    if (state.status !== "failed" || state.workspacePath === null) {
+    if (state.status !== "failed" || state.failure !== "startup") {
       return Promise.resolve(undefined);
     }
     const workspacePath = state.workspacePath;
@@ -97,10 +128,10 @@ export function createDesktopStartupWorkspaceController(
 
     let startup: Promise<unknown>;
     try {
-      startup = options.startWorkspace(workspacePath);
+      startup = callbacks.retryWorkspace();
     } catch {
       if (requestRevision === revision) {
-        publish({ status: "failed", workspacePath });
+        publish({ failure: "startup", status: "failed", workspacePath });
       }
       return Promise.resolve(undefined);
     }
@@ -109,7 +140,7 @@ export function createDesktopStartupWorkspaceController(
     operation = startup.then(
       () => undefined,
       () => requestRevision === revision
-        ? publish({ status: "failed", workspacePath })
+        ? publish({ failure: "startup", status: "failed", workspacePath })
         : undefined
     ).then(() => {
       if (pending === operation) pending = undefined;
@@ -119,7 +150,23 @@ export function createDesktopStartupWorkspaceController(
     return operation;
   };
 
+  const updateStartupStatus = (
+    nextStatus: DesktopStartupWorkspaceAuthoritativeStatus
+  ) => {
+    if (startupStatus === nextStatus) return undefined;
+    startupStatus = nextStatus;
+    cancelPending();
+    publish(stateFromAuthoritativeStatus(nextStatus));
+    return undefined;
+  };
+
+  const updateOptions = (nextOptions: DesktopStartupWorkspaceProps) => {
+    callbacks = nextOptions;
+    return undefined;
+  };
+
   return Object.freeze({
+    cancelPending,
     getSnapshot: () => state,
     retry,
     select,
@@ -127,34 +174,50 @@ export function createDesktopStartupWorkspaceController(
       listeners.add(listener);
       return () => {
         listeners.delete(listener);
-        if (listeners.size === 0) {
-          requestRevision += 1;
-          pending = undefined;
-        }
         return undefined;
       };
-    }
+    },
+    updateOptions,
+    updateStartupStatus
   });
+}
+
+function stateFromAuthoritativeStatus(
+  status: DesktopStartupWorkspaceAuthoritativeStatus
+): DesktopStartupWorkspaceState {
+  if (status === "unselected" || status === "invalid") {
+    return { status: "unselected" };
+  }
+  if (status === "failed" || status === "unavailable") {
+    return { failure: "startup", status: "failed", workspacePath: null };
+  }
+  return { status: "starting", workspacePath: null };
 }
 
 export function DesktopStartupWorkspace(
   props: DesktopStartupWorkspaceProps
 ) {
-  const controller = useMemo(
-    () => createDesktopStartupWorkspaceController(props),
-    [props.selectWorkspace, props.startWorkspace]
-  );
+  const controllerRef = useRef<DesktopStartupWorkspaceController | null>(null);
+  if (controllerRef.current === null) {
+    controllerRef.current = createDesktopStartupWorkspaceController(props);
+  }
+  const controller = controllerRef.current;
+  controller.updateOptions(props);
   const state = useSyncExternalStore(
     controller.subscribe,
     controller.getSnapshot,
     controller.getSnapshot
   );
+  useEffect(() => {
+    controller.updateStartupStatus(props.startupStatus);
+  }, [controller, props.startupStatus]);
+  useEffect(() => () => controller.cancelPending(), [controller]);
   const selecting = state.status === "selecting";
   const starting = state.status === "starting";
   const retrying = state.status === "retrying";
   const busy = starting || retrying;
   const failed = state.status === "failed";
-  const retryable = failed && state.workspacePath !== null;
+  const retryable = failed && state.failure === "startup";
   const selectionFailed = failed && !retryable;
 
   return (
@@ -190,7 +253,7 @@ export function DesktopStartupWorkspace(
                 : failed
                   ? selectionFailed
                     ? "The directory selector could not open. Try choosing the directory again."
-                    : "The native Kernel could not start for this workspace. Retry or choose another directory."
+                    : "The native Kernel could not start for this workspace. Retry when you are ready."
                   : "Select the local notebook directory QingYu should open."}
             </p>
           </div>
@@ -217,15 +280,15 @@ export function DesktopStartupWorkspace(
                   Retry
                 </button>
               ) : null}
-              <button
-                className={retryable
-                  ? "welcome-screen__action inline-flex cursor-pointer items-center justify-center rounded-md border border-(--border-strong) bg-(--bg-primary) px-4 text-[13px] font-[650] text-(--text-primary)"
-                  : "welcome-screen__action inline-flex cursor-pointer items-center justify-center rounded-md border border-(--accent) bg-(--accent) px-4 text-[13px] font-[700] text-white"}
-                type="button"
-                onClick={controller.select}
-              >
-                {retryable ? "Choose another directory" : "Choose directory"}
-              </button>
+              {selectionFailed ? (
+                <button
+                  className="welcome-screen__action inline-flex cursor-pointer items-center justify-center rounded-md border border-(--accent) bg-(--accent) px-4 text-[13px] font-[700] text-white"
+                  type="button"
+                  onClick={controller.select}
+                >
+                  Choose directory
+                </button>
+              ) : null}
             </div>
           ) : (
             <div className="welcome-screen__primary-actions">
