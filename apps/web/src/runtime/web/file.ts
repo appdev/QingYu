@@ -894,7 +894,7 @@ export function createWebFileRuntime(
     return droppedTargetFromUploadFiles(dropFiles(dataTransfer));
   }
 
-  return {
+  const runtime: AppFileRuntime = {
     confirmMarkdownFileDelete: async (_fileName, labels) => confirm(labels.message),
     confirmWorkspaceResourceTrash: async () => false,
     confirmUnsavedMarkdownDocumentDiscard: async (_fileName, labels) => confirm(labels.message),
@@ -1213,6 +1213,9 @@ export function createWebFileRuntime(
         src: encodeMarkdownRelativePath(joinRelativePath(folder, fileName))
       };
     },
+    async saveClipboardImages(inputs) {
+      return Promise.all(inputs.map((input) => runtime.saveClipboardImage(input)));
+    },
     async saveClipboardAttachment(input: SaveNativeClipboardAttachmentInput): Promise<SavedNativeClipboardAttachment> {
       if (input.copyToStorage === false) {
         return {
@@ -1330,4 +1333,5 @@ export function createWebFileRuntime(
       await store.save();
     }
   };
+  return runtime;
 }

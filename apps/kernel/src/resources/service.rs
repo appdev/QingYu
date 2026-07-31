@@ -1,28 +1,43 @@
 use std::{
     fmt,
-    io::{self, Read as _, Seek as _, SeekFrom},
+    io::{self, Read as _, Seek as _, SeekFrom, Write as _},
     mem,
     sync::{
         atomic::{AtomicUsize, Ordering},
-        Arc, Weak,
+        Arc, RwLock, Weak,
     },
 };
 
 use async_trait::async_trait;
-use cap_fs_ext::{DirExt, MetadataExt};
+use base64::{engine::general_purpose::STANDARD, Engine as _};
+#[cfg(any(unix, windows))]
+use cap_fs_ext::OpenOptionsExt;
+use cap_fs_ext::{DirExt, FollowSymlinks, MetadataExt, OpenOptionsFollowExt};
+use cap_std::fs::OpenOptions;
 use cap_std::fs::{Dir, File, Metadata};
+use quick_xml::{
+    events::{BytesEnd, BytesStart, BytesText, Event},
+    Reader, Writer,
+};
 use serde::{ser::SerializeSeq as _, Serialize, Serializer};
 use sha2::{Digest as _, Sha256};
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
 use crate::{
     contract::{
-        DocumentEntryDto, DocumentKind, DocumentName, ErrorCode, ListWorkspaceInventoryQuery,
-        Nullable, PageCursorContext, ResourceEntryDto, ResourceId, ResourceKind, ResourceName,
-        Revision, Rfc3339Utc, SafeUnsignedInteger, WorkspaceDto, WorkspaceInventoryEntryDto,
-        WorkspaceInventoryPageDto, WorkspaceReadiness, WorkspaceRelativePath,
+        CreateWorkspaceResourceBatchRequest, CreateWorkspaceResourceBatchResponse,
+        CreateWorkspaceResourceQuery, DocumentEntryDto, DocumentKind, DocumentName, ErrorCode,
+        ListWorkspaceInventoryQuery, Nullable, PageCursorContext, ResourceEntryDto, ResourceId,
+        ResourceKind, ResourceName, Revision, Rfc3339Utc, SafeUnsignedInteger, WorkspaceDto,
+        WorkspaceInventoryEntryDto, WorkspaceInventoryPageDto, WorkspaceReadiness,
+        WorkspaceRelativePath,
     },
     documents::service::directory_revision_for_capability_with_inventory_budget,
+    documents::service::CapabilityAtomicInstallPort,
+    documents::{
+        identity::DocumentIdentityCodec, AtomicInstallMode, AtomicInstallPort,
+        AtomicInstallRequest, PinnedInstallSource,
+    },
     ignore_rules::{WorkspaceIgnorePort, WorkspaceIgnoreSnapshot},
     inventory_snapshot::{
         ContentDigest, FileVersionStamp, InventoryCandidateSnapshot, InventoryCandidateType,
@@ -35,7 +50,8 @@ use crate::{
 use super::{policy::protected_resource_component, ResourceServiceError};
 
 const STREAM_BUFFER_BYTES: usize = 64 * 1024;
-const MAGIC_BYTES: usize = 12;
+const MAX_IMAGE_HEADER_BYTES: usize = 64 * 1024;
+const MAX_SVG_BYTES: usize = 4 * 1024 * 1024;
 const MAX_IMMEDIATE_INVENTORY_CANDIDATES: usize = 50_000;
 const MAX_INVENTORY_PAGE_DIRECTORY_SCANS: u64 = 4;
 const MAX_INVENTORY_SNAPSHOT_NODES: u64 =
@@ -47,6 +63,28 @@ const MAX_CONCURRENT_INVENTORY_SCANS: usize = 2;
 const MAX_INVENTORY_REVISION_BYTES: usize = 71;
 const MAX_INVENTORY_TIMESTAMP_BYTES: usize = 64;
 const MAX_INVENTORY_MEDIA_TYPE_BYTES: usize = "application/octet-stream".len();
+pub const MAX_RESOURCE_BODY_BYTES: usize = 64 * 1024 * 1024;
+pub const MAX_RESOURCE_BATCH_ITEMS: usize = 32;
+
+#[derive(Clone, Debug)]
+pub struct CreateResourceBatchItem {
+    pub name: ResourceName,
+    pub kind: ResourceKind,
+    pub media_type: String,
+    pub body: Vec<u8>,
+}
+
+impl CreateResourceBatchItem {
+    pub fn image(name: ResourceName, media_type: impl Into<String>, body: Vec<u8>) -> Self {
+        Self {
+            name,
+            kind: ResourceKind::Image,
+            media_type: media_type.into(),
+            body,
+        }
+    }
+}
+const MAX_UNIQUE_RESOURCE_NAMES: usize = 10_000;
 
 #[cfg(test)]
 thread_local! {
@@ -66,6 +104,8 @@ pub struct WorkspaceResourceService {
     runtime: Weak<KernelRuntime>,
     ignore: Arc<dyn WorkspaceIgnorePort>,
     inventory_scans: Arc<InventoryScanGate>,
+    atomic_install: Arc<dyn AtomicInstallPort>,
+    publication_gate: Arc<RwLock<()>>,
 }
 
 impl WorkspaceResourceService {
@@ -74,7 +114,308 @@ impl WorkspaceResourceService {
             runtime: Arc::downgrade(runtime),
             ignore,
             inventory_scans: Arc::new(InventoryScanGate::default()),
+            atomic_install: Arc::new(CapabilityAtomicInstallPort),
+            publication_gate: Arc::new(RwLock::new(())),
         }
+    }
+
+    pub fn new_with_atomic_install(
+        runtime: &Arc<KernelRuntime>,
+        ignore: Arc<dyn WorkspaceIgnorePort>,
+        atomic_install: Arc<dyn AtomicInstallPort>,
+    ) -> Self {
+        Self {
+            runtime: Arc::downgrade(runtime),
+            ignore,
+            inventory_scans: Arc::new(InventoryScanGate::default()),
+            atomic_install,
+            publication_gate: Arc::new(RwLock::new(())),
+        }
+    }
+
+    pub async fn create_resource(
+        &self,
+        document_id: &crate::contract::DocumentId,
+        query: CreateWorkspaceResourceQuery,
+        media_type: &str,
+        body: &[u8],
+    ) -> Result<ResourceEntryDto, ResourceServiceError> {
+        if body.len() > MAX_RESOURCE_BODY_BYTES {
+            return Err(ResourceServiceError::too_large());
+        }
+        let body = validate_resource_payload(query.kind, query.name.as_str(), media_type, body)?;
+        let runtime = self
+            .runtime
+            .upgrade()
+            .ok_or_else(ResourceServiceError::unavailable)?;
+        let mutation = runtime.mutation_coordinator().lock().await;
+        runtime
+            .verify_document_mutation_admission(&mutation)
+            .map_err(|_| ResourceServiceError::unavailable())?;
+        let context = self.context_with_runtime(runtime.clone())?;
+        if context.workspace().generation != query.workspace_generation {
+            return Err(ResourceServiceError::stale_workspace());
+        }
+        let document_path = DocumentIdentityCodec::new(context.runtime.wire_identity_key())
+            .verify(document_id, context.workspace(), DocumentKind::File)
+            .map_err(|_| ResourceServiceError::not_found())?;
+        self.verify_document_target(&context, &document_path)?;
+        let ignore = self.capture_ignore(&context)?;
+        if ignore.is_ignored(&document_path, DocumentKind::File) {
+            return Err(ResourceServiceError::not_found());
+        }
+        let document_parent = parent_and_name(&document_path)?.0;
+        let target_parent = join_paths(&document_parent, &query.folder)?;
+        validate_resource_parent(&target_parent, &ignore)?;
+        let (directory, created_directories) =
+            create_resource_parent(&context.root, &target_parent)?;
+        let result = self.install_unique_resource(
+            &context,
+            &directory,
+            &target_parent,
+            &query.name,
+            query.kind,
+            &body,
+            &ignore,
+        );
+        if result.is_err() {
+            rollback_created_directories(&context.root, &created_directories);
+        }
+        result
+    }
+
+    pub async fn create_resource_batch(
+        &self,
+        document_id: &crate::contract::DocumentId,
+        workspace_generation: crate::contract::WorkspaceGeneration,
+        folder: WorkspaceRelativePath,
+        items: Vec<CreateResourceBatchItem>,
+    ) -> Result<Vec<ResourceEntryDto>, ResourceServiceError> {
+        if items.is_empty() || items.len() > MAX_RESOURCE_BATCH_ITEMS {
+            return Err(ResourceServiceError::invalid_path());
+        }
+        let total_bytes = items.iter().try_fold(0_usize, |total, item| {
+            if item.body.len() > MAX_RESOURCE_BODY_BYTES {
+                return Err(ResourceServiceError::too_large());
+            }
+            total
+                .checked_add(item.body.len())
+                .filter(|total| *total <= MAX_RESOURCE_BODY_BYTES)
+                .ok_or_else(ResourceServiceError::too_large)
+        })?;
+        debug_assert!(total_bytes <= MAX_RESOURCE_BODY_BYTES);
+        let mut normalized = Vec::with_capacity(items.len());
+        for item in items {
+            let body = validate_resource_payload(
+                item.kind,
+                item.name.as_str(),
+                &item.media_type,
+                &item.body,
+            )?;
+            normalized.push(CreateResourceBatchItem { body, ..item });
+        }
+
+        let runtime = self
+            .runtime
+            .upgrade()
+            .ok_or_else(ResourceServiceError::unavailable)?;
+        let mutation = runtime.mutation_coordinator().lock().await;
+        runtime
+            .verify_document_mutation_admission(&mutation)
+            .map_err(|_| ResourceServiceError::unavailable())?;
+        let context = self.context_with_runtime(runtime.clone())?;
+        if context.workspace().generation != workspace_generation {
+            return Err(ResourceServiceError::stale_workspace());
+        }
+        let document_path = DocumentIdentityCodec::new(context.runtime.wire_identity_key())
+            .verify(document_id, context.workspace(), DocumentKind::File)
+            .map_err(|_| ResourceServiceError::not_found())?;
+        self.verify_document_target(&context, &document_path)?;
+        let ignore = self.capture_ignore(&context)?;
+        if ignore.is_ignored(&document_path, DocumentKind::File) {
+            return Err(ResourceServiceError::not_found());
+        }
+        let document_parent = parent_and_name(&document_path)?.0;
+        let target_parent = join_paths(&document_parent, &folder)?;
+        validate_resource_parent(&target_parent, &ignore)?;
+        let (directory, created_directories) =
+            create_resource_parent(&context.root, &target_parent)?;
+
+        let _publication = self
+            .publication_gate
+            .write()
+            .map_err(|_| ResourceServiceError::unavailable())?;
+        let result =
+            self.install_resource_batch(&context, &directory, &target_parent, normalized, &ignore);
+        if result.is_err() {
+            rollback_created_directories(&context.root, &created_directories);
+        }
+        result
+    }
+
+    fn install_resource_batch(
+        &self,
+        context: &ResourceContext,
+        directory: &Dir,
+        parent: &WorkspaceRelativePath,
+        items: Vec<CreateResourceBatchItem>,
+        ignore: &WorkspaceIgnoreSnapshot,
+    ) -> Result<Vec<ResourceEntryDto>, ResourceServiceError> {
+        struct StagedBatchItem {
+            file: File,
+            metadata: Metadata,
+            stage_name: String,
+            target_name: ResourceName,
+            path: WorkspaceRelativePath,
+            kind: ResourceKind,
+        }
+
+        let mut reserved = std::collections::HashSet::new();
+        let mut staged: Vec<StagedBatchItem> = Vec::with_capacity(items.len());
+        for item in items {
+            let mut selected = None;
+            for attempt in 0..MAX_UNIQUE_RESOURCE_NAMES {
+                let candidate = unique_resource_name(item.name.as_str(), attempt)?;
+                let reservation = candidate.as_str().to_lowercase();
+                if reserved.contains(&reservation) {
+                    continue;
+                }
+                match directory.symlink_metadata(candidate.as_str()) {
+                    Ok(_) => continue,
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                    Err(_) => return Err(ResourceServiceError::unavailable()),
+                }
+                let path = join_relative(parent, candidate.as_str())?;
+                if ignore.is_ignored(&path, DocumentKind::File) {
+                    return Err(ResourceServiceError::invalid_path());
+                }
+                reserved.insert(reservation);
+                selected = Some((candidate, path));
+                break;
+            }
+            let Some((target_name, path)) = selected else {
+                return Err(ResourceServiceError::unavailable());
+            };
+            let stage_name = random_resource_stage_name()?;
+            let file = match stage_resource(directory, &stage_name, &item.body) {
+                Ok(file) => file,
+                Err(error) => {
+                    for item in &staged {
+                        cleanup_staged_resource(directory, &item.stage_name);
+                    }
+                    return Err(error);
+                }
+            };
+            let metadata = file
+                .metadata()
+                .map_err(|_| ResourceServiceError::unavailable())?;
+            staged.push(StagedBatchItem {
+                file,
+                metadata,
+                stage_name,
+                target_name,
+                path,
+                kind: item.kind,
+            });
+        }
+        crate::storage::sync_directory(directory)
+            .map_err(|_| ResourceServiceError::unavailable())?;
+
+        let mut installed = 0_usize;
+        for index in 0..staged.len() {
+            let item = &staged[index];
+            let install = self.atomic_install.install(AtomicInstallRequest {
+                directory,
+                target: &item.path,
+                stage_name: &item.stage_name,
+                target_name: item.target_name.as_str(),
+                mode: AtomicInstallMode::CreateNoReplace,
+                expected_stage: PinnedInstallSource::File(&item.file),
+                expected_target: None,
+                expected_revision: None,
+            });
+            if install.is_err() {
+                let stage_exists = directory.symlink_metadata(&item.stage_name).is_ok();
+                let target = directory.symlink_metadata(item.target_name.as_str()).ok();
+                let settled = !stage_exists
+                    && target
+                        .as_ref()
+                        .is_some_and(|metadata| same_file(&item.metadata, metadata));
+                if !settled {
+                    for published in &staged[..installed] {
+                        cleanup_installed_resource(
+                            directory,
+                            published.target_name.as_str(),
+                            &published.metadata,
+                        );
+                    }
+                    for pending in &staged[index..] {
+                        cleanup_staged_resource(directory, &pending.stage_name);
+                    }
+                    return Err(ResourceServiceError::unavailable());
+                }
+            }
+            installed += 1;
+        }
+        if crate::storage::sync_directory(directory).is_err() {
+            for item in &staged {
+                cleanup_installed_resource(directory, item.target_name.as_str(), &item.metadata);
+                cleanup_staged_resource(directory, &item.stage_name);
+            }
+            return Err(ResourceServiceError::unavailable());
+        }
+
+        let result = staged
+            .iter()
+            .map(|item| {
+                let addressed = directory
+                    .symlink_metadata(item.target_name.as_str())
+                    .map_err(|_| ResourceServiceError::unavailable())?;
+                let inspected =
+                    inspect_regular_file(directory, item.target_name.as_str(), &addressed)?;
+                if !same_file(&item.metadata, &inspected.metadata) {
+                    return Err(ResourceServiceError::unsafe_target());
+                }
+                let classification = classify_resource(
+                    item.target_name.as_str(),
+                    &inspected.header,
+                    inspected.metadata.len(),
+                    inspected.validation_body.as_deref(),
+                );
+                if classification.kind != item.kind {
+                    return Err(ResourceServiceError::unsafe_target());
+                }
+                let id = context
+                    .runtime
+                    .wire_identity_key()
+                    .issue_resource_id(
+                        context.workspace().id,
+                        &context.workspace().generation,
+                        item.kind,
+                        &item.path,
+                    )
+                    .map_err(|_| ResourceServiceError::unavailable())?;
+                Ok(ResourceEntryDto {
+                    id,
+                    path: item.path.clone(),
+                    parent: parent.clone(),
+                    name: item.target_name.clone(),
+                    kind: item.kind,
+                    size_bytes: safe_size(inspected.metadata.len())?,
+                    modified_at: modified_utc(&inspected.metadata)?,
+                    revision: inspected.revision,
+                    media_type: classification.media_type.to_string(),
+                    previewable: classification.previewable,
+                })
+            })
+            .collect::<Result<Vec<_>, _>>();
+        if result.is_err() {
+            for item in &staged {
+                cleanup_installed_resource(directory, item.target_name.as_str(), &item.metadata);
+            }
+            let _sync_result = crate::storage::sync_directory(directory);
+        }
+        result
     }
 
     /// Lists one directory level from the retained active workspace capability.
@@ -84,6 +425,10 @@ impl WorkspaceResourceService {
         &self,
         parent: &WorkspaceRelativePath,
     ) -> Result<Vec<WorkspaceInventoryEntry>, ResourceServiceError> {
+        let _publication = self
+            .publication_gate
+            .read()
+            .map_err(|_| ResourceServiceError::unavailable())?;
         let _permit = self.inventory_scans.try_acquire()?;
         let context = self.context()?;
         let mut budget = inventory_snapshot_budget();
@@ -94,6 +439,10 @@ impl WorkspaceResourceService {
         &self,
         query: ListWorkspaceInventoryQuery,
     ) -> Result<WorkspaceInventoryPageDto, ResourceServiceError> {
+        let _publication = self
+            .publication_gate
+            .read()
+            .map_err(|_| ResourceServiceError::unavailable())?;
         let _permit = self.inventory_scans.try_acquire()?;
         let context = self.context()?;
         let ignore = self.capture_ignore(&context)?;
@@ -237,6 +586,10 @@ impl WorkspaceResourceService {
         id: &ResourceId,
         expected_kind: ResourceKind,
     ) -> Result<RetainedResource, ResourceServiceError> {
+        let _publication = self
+            .publication_gate
+            .read()
+            .map_err(|_| ResourceServiceError::unavailable())?;
         let context = self.context()?;
         let ignore = self.capture_ignore(&context)?;
         let path = context
@@ -270,7 +623,12 @@ impl WorkspaceResourceService {
         if markdown_name(&name) {
             return Err(ResourceServiceError::wrong_kind());
         }
-        let classification = classify_resource(&name, &inspected.magic);
+        let classification = classify_resource(
+            &name,
+            &inspected.header,
+            inspected.metadata.len(),
+            inspected.validation_body.as_deref(),
+        );
         if classification.kind != expected_kind {
             return Err(ResourceServiceError::wrong_kind());
         }
@@ -304,6 +662,13 @@ impl WorkspaceResourceService {
             .runtime
             .upgrade()
             .ok_or_else(ResourceServiceError::unavailable)?;
+        self.context_with_runtime(runtime)
+    }
+
+    fn context_with_runtime(
+        &self,
+        runtime: Arc<KernelRuntime>,
+    ) -> Result<ResourceContext, ResourceServiceError> {
         runtime
             .verify_instance_lock()
             .map_err(|_| ResourceServiceError::unavailable())?;
@@ -327,6 +692,158 @@ impl WorkspaceResourceService {
         })
     }
 
+    fn verify_document_target(
+        &self,
+        context: &ResourceContext,
+        path: &WorkspaceRelativePath,
+    ) -> Result<(), ResourceServiceError> {
+        let (parent_path, name) = parent_and_name(path)?;
+        if !markdown_name(&name) {
+            return Err(ResourceServiceError::not_found());
+        }
+        let parent = open_directory(&context.root, &parent_path)?;
+        let addressed = parent.symlink_metadata(&name).map_err(|error| {
+            if error.kind() == io::ErrorKind::NotFound {
+                ResourceServiceError::not_found()
+            } else {
+                ResourceServiceError::unavailable()
+            }
+        })?;
+        let _inspected = inspect_regular_file(&parent, &name, &addressed)?;
+        Ok(())
+    }
+
+    fn install_unique_resource(
+        &self,
+        context: &ResourceContext,
+        directory: &Dir,
+        parent: &WorkspaceRelativePath,
+        requested_name: &ResourceName,
+        kind: ResourceKind,
+        body: &[u8],
+        ignore: &WorkspaceIgnoreSnapshot,
+    ) -> Result<ResourceEntryDto, ResourceServiceError> {
+        let stage_name = random_resource_stage_name()?;
+        let staged = stage_resource(directory, &stage_name, body)?;
+        let staged_metadata = match staged.metadata() {
+            Ok(metadata) => metadata,
+            Err(_) => {
+                cleanup_staged_resource(directory, &stage_name);
+                return Err(ResourceServiceError::unavailable());
+            }
+        };
+        for attempt in 0..MAX_UNIQUE_RESOURCE_NAMES {
+            let name = match unique_resource_name(requested_name.as_str(), attempt) {
+                Ok(name) => name,
+                Err(error) => {
+                    cleanup_staged_resource(directory, &stage_name);
+                    return Err(error);
+                }
+            };
+            if protected_resource_component(name.as_str()) || markdown_name(name.as_str()) {
+                cleanup_staged_resource(directory, &stage_name);
+                return Err(ResourceServiceError::invalid_path());
+            }
+            match directory.symlink_metadata(name.as_str()) {
+                Ok(_) => continue,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(_) => {
+                    cleanup_staged_resource(directory, &stage_name);
+                    return Err(ResourceServiceError::unavailable());
+                }
+            }
+            let path = match join_relative(parent, name.as_str()) {
+                Ok(path) => path,
+                Err(error) => {
+                    cleanup_staged_resource(directory, &stage_name);
+                    return Err(error);
+                }
+            };
+            if ignore.is_ignored(&path, DocumentKind::File) {
+                cleanup_staged_resource(directory, &stage_name);
+                return Err(ResourceServiceError::invalid_path());
+            }
+            let install = self.atomic_install.install(AtomicInstallRequest {
+                directory,
+                target: &path,
+                stage_name: &stage_name,
+                target_name: name.as_str(),
+                mode: AtomicInstallMode::CreateNoReplace,
+                expected_stage: PinnedInstallSource::File(&staged),
+                expected_target: None,
+                expected_revision: None,
+            });
+            if install.is_err() {
+                let stage_still_exists = directory.symlink_metadata(&stage_name).is_ok();
+                let installed = directory.symlink_metadata(name.as_str()).ok();
+                if stage_still_exists && installed.is_some() {
+                    continue;
+                }
+                let settled = !stage_still_exists
+                    && installed
+                        .as_ref()
+                        .is_some_and(|metadata| same_file(&staged_metadata, metadata));
+                if !settled {
+                    cleanup_staged_resource(directory, &stage_name);
+                    return Err(ResourceServiceError::unavailable());
+                }
+            }
+            let result = (|| {
+                crate::storage::sync_directory(directory)
+                    .map_err(|_| ResourceServiceError::unavailable())?;
+                let addressed = directory
+                    .symlink_metadata(name.as_str())
+                    .map_err(|_| ResourceServiceError::unavailable())?;
+                let inspected = inspect_regular_file(directory, name.as_str(), &addressed)?;
+                if !same_file(&staged_metadata, &inspected.metadata) {
+                    return Err(ResourceServiceError::unsafe_target());
+                }
+                let classification = classify_resource(
+                    name.as_str(),
+                    &inspected.header,
+                    inspected.metadata.len(),
+                    inspected.validation_body.as_deref(),
+                );
+                if classification.kind != kind {
+                    return Err(ResourceServiceError::unsafe_target());
+                }
+                context
+                    .snapshot
+                    .authority()
+                    .verify_held_directory()
+                    .map_err(|_| ResourceServiceError::unavailable())?;
+                let id = context
+                    .runtime
+                    .wire_identity_key()
+                    .issue_resource_id(
+                        context.workspace().id,
+                        &context.workspace().generation,
+                        kind,
+                        &path,
+                    )
+                    .map_err(|_| ResourceServiceError::unavailable())?;
+                Ok(ResourceEntryDto {
+                    id,
+                    path,
+                    parent: parent.clone(),
+                    name: name.clone(),
+                    kind,
+                    size_bytes: safe_size(inspected.metadata.len())?,
+                    modified_at: modified_utc(&inspected.metadata)?,
+                    revision: inspected.revision,
+                    media_type: classification.media_type.to_string(),
+                    previewable: classification.previewable,
+                })
+            })();
+            if result.is_err() {
+                cleanup_installed_resource(directory, name.as_str(), &staged_metadata);
+            }
+            return result;
+        }
+        cleanup_staged_resource(directory, &stage_name);
+        Err(ResourceServiceError::unavailable())
+    }
+
     fn capture_ignore(
         &self,
         context: &ResourceContext,
@@ -334,6 +851,255 @@ impl WorkspaceResourceService {
         self.ignore
             .capture(&context.root_path, &context.root)
             .map_err(|_| ResourceServiceError::unavailable())
+    }
+}
+
+fn validate_resource_payload(
+    kind: ResourceKind,
+    name: &str,
+    media_type: &str,
+    body: &[u8],
+) -> Result<Vec<u8>, ResourceServiceError> {
+    if protected_resource_component(name) || markdown_name(name) {
+        return Err(ResourceServiceError::invalid_path());
+    }
+    let normalized = if name.to_ascii_lowercase().ends_with(".svg") {
+        normalize_static_svg(body)?
+    } else {
+        body.to_vec()
+    };
+    let classification = classify_resource(
+        name,
+        &normalized,
+        normalized.len() as u64,
+        full_validation_limit(name).map(|_| normalized.as_slice()),
+    );
+    let valid = match kind {
+        ResourceKind::Image => {
+            classification.kind == ResourceKind::Image && media_type == classification.media_type
+        }
+        ResourceKind::Attachment => {
+            classification.kind == ResourceKind::Attachment
+                && media_type == "application/octet-stream"
+        }
+    };
+    if !valid {
+        return Err(ResourceServiceError::invalid_media_type());
+    }
+    Ok(normalized)
+}
+
+fn join_paths(
+    parent: &WorkspaceRelativePath,
+    child: &WorkspaceRelativePath,
+) -> Result<WorkspaceRelativePath, ResourceServiceError> {
+    if child.as_str().is_empty() {
+        return Ok(parent.clone());
+    }
+    WorkspaceRelativePath::parse(if parent.as_str().is_empty() {
+        child.as_str().to_string()
+    } else {
+        format!("{}/{}", parent.as_str(), child.as_str())
+    })
+    .map_err(|_| ResourceServiceError::invalid_path())
+}
+
+fn validate_resource_parent(
+    parent: &WorkspaceRelativePath,
+    ignore: &WorkspaceIgnoreSnapshot,
+) -> Result<(), ResourceServiceError> {
+    let mut current = WorkspaceRelativePath::default();
+    for component in parent
+        .as_str()
+        .split('/')
+        .filter(|component| !component.is_empty())
+    {
+        if protected_resource_component(component) {
+            return Err(ResourceServiceError::invalid_path());
+        }
+        ResourceName::parse(component).map_err(|_| ResourceServiceError::invalid_path())?;
+        current = join_relative(&current, component)?;
+        if ignore.is_ignored(&current, DocumentKind::Directory) {
+            return Err(ResourceServiceError::invalid_path());
+        }
+    }
+    Ok(())
+}
+
+fn create_resource_parent(
+    root: &Dir,
+    parent: &WorkspaceRelativePath,
+) -> Result<(Dir, Vec<WorkspaceRelativePath>), ResourceServiceError> {
+    let mut directory = root
+        .try_clone()
+        .map_err(|_| ResourceServiceError::unavailable())?;
+    let mut current = WorkspaceRelativePath::default();
+    let mut created = Vec::new();
+    for component in parent
+        .as_str()
+        .split('/')
+        .filter(|component| !component.is_empty())
+    {
+        current = join_relative(&current, component)?;
+        let addressed = match directory.symlink_metadata(component) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                if let Err(error) = directory.create_dir(component) {
+                    rollback_created_directories(root, &created);
+                    return Err(if error.kind() == io::ErrorKind::AlreadyExists {
+                        ResourceServiceError::unsafe_target()
+                    } else {
+                        ResourceServiceError::unavailable()
+                    });
+                }
+                if crate::storage::sync_directory(&directory).is_err() {
+                    rollback_created_directories(root, &created);
+                    return Err(ResourceServiceError::unavailable());
+                }
+                created.push(current.clone());
+                match directory.symlink_metadata(component) {
+                    Ok(metadata) => metadata,
+                    Err(_) => {
+                        rollback_created_directories(root, &created);
+                        return Err(ResourceServiceError::unavailable());
+                    }
+                }
+            }
+            Err(_) => {
+                rollback_created_directories(root, &created);
+                return Err(ResourceServiceError::unavailable());
+            }
+        };
+        if !addressed.is_dir() || addressed.file_type().is_symlink() {
+            rollback_created_directories(root, &created);
+            return Err(ResourceServiceError::unsafe_target());
+        }
+        let child = match directory.open_dir_nofollow(component) {
+            Ok(child) => child,
+            Err(_) => {
+                rollback_created_directories(root, &created);
+                return Err(ResourceServiceError::unsafe_target());
+            }
+        };
+        let retained = match trusted_directory_metadata(&child) {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                rollback_created_directories(root, &created);
+                return Err(error);
+            }
+        };
+        if !same_file(&addressed, &retained) {
+            rollback_created_directories(root, &created);
+            return Err(ResourceServiceError::unsafe_target());
+        }
+        directory = child;
+    }
+    Ok((directory, created))
+}
+
+fn rollback_created_directories(root: &Dir, created: &[WorkspaceRelativePath]) {
+    for path in created.iter().rev() {
+        let Ok((parent, name)) = parent_and_name(path) else {
+            continue;
+        };
+        let Ok(directory) = open_directory(root, &parent) else {
+            continue;
+        };
+        if directory.remove_dir(&name).is_ok() {
+            let _sync_result = crate::storage::sync_directory(&directory);
+        }
+    }
+}
+
+fn random_resource_stage_name() -> Result<String, ResourceServiceError> {
+    let mut entropy = [0_u8; 16];
+    getrandom::fill(&mut entropy).map_err(|_| ResourceServiceError::unavailable())?;
+    Ok(format!(
+        ".qingyu-resource-stage-{}.tmp",
+        entropy
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    ))
+}
+
+fn stage_resource(directory: &Dir, name: &str, body: &[u8]) -> Result<File, ResourceServiceError> {
+    let mut options = OpenOptions::new();
+    options
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .follow(FollowSymlinks::No);
+    #[cfg(windows)]
+    options
+        .access_mode(
+            windows_sys::Win32::Foundation::GENERIC_READ
+                | windows_sys::Win32::Foundation::GENERIC_WRITE
+                | windows_sys::Win32::Storage::FileSystem::DELETE,
+        )
+        .share_mode(windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ);
+    #[cfg(unix)]
+    options.mode(0o600);
+    let mut file = directory
+        .open_with(name, &options)
+        .map_err(|_| ResourceServiceError::unavailable())?;
+    if file.write_all(body).and_then(|()| file.sync_all()).is_err() {
+        drop(file);
+        cleanup_staged_resource(directory, name);
+        return Err(ResourceServiceError::unavailable());
+    }
+    let metadata = match file.metadata() {
+        Ok(metadata) => metadata,
+        Err(_) => {
+            drop(file);
+            cleanup_staged_resource(directory, name);
+            return Err(ResourceServiceError::unavailable());
+        }
+    };
+    if !trusted_regular_file(&metadata) || metadata.len() != body.len() as u64 {
+        drop(file);
+        cleanup_staged_resource(directory, name);
+        return Err(ResourceServiceError::unsafe_target());
+    }
+    Ok(file)
+}
+
+fn cleanup_staged_resource(directory: &Dir, name: &str) {
+    let _remove_result = directory.remove_file(name);
+    let _sync_result = crate::storage::sync_directory(directory);
+}
+
+fn cleanup_installed_resource(directory: &Dir, name: &str, expected: &Metadata) {
+    let Ok(addressed) = directory.symlink_metadata(name) else {
+        return;
+    };
+    if !same_file(&addressed, expected) {
+        return;
+    }
+    let _remove_result = directory.remove_file(name);
+    let _sync_result = crate::storage::sync_directory(directory);
+}
+
+fn unique_resource_name(
+    requested: &str,
+    attempt: usize,
+) -> Result<ResourceName, ResourceServiceError> {
+    if attempt == 0 {
+        return ResourceName::parse(requested).map_err(|_| ResourceServiceError::invalid_path());
+    }
+    let suffix = format!("-{}", attempt + 1);
+    let extension_index = requested.rfind('.').filter(|index| *index > 0);
+    let (mut stem, extension) = extension_index.map_or((requested.to_string(), ""), |index| {
+        (requested[..index].to_string(), &requested[index..])
+    });
+    loop {
+        let candidate = format!("{stem}{suffix}{extension}");
+        if let Ok(name) = ResourceName::parse(candidate) {
+            return Ok(name);
+        }
+        if stem.pop().is_none() {
+            return Err(ResourceServiceError::invalid_path());
+        }
     }
 }
 
@@ -373,7 +1139,10 @@ impl fmt::Debug for WorkspaceResourceService {
 fn service_failure(error: ResourceServiceError) -> ServiceFailure {
     let code = match error.kind() {
         super::ResourceServiceErrorKind::InvalidCursor
+        | super::ResourceServiceErrorKind::InvalidMediaType
         | super::ResourceServiceErrorKind::InvalidPath => ErrorCode::InvalidRequest,
+        super::ResourceServiceErrorKind::StaleWorkspace => ErrorCode::RevisionConflict,
+        super::ResourceServiceErrorKind::TooLarge => ErrorCode::ResourceTooLarge,
         super::ResourceServiceErrorKind::NotFound | super::ResourceServiceErrorKind::WrongKind => {
             ErrorCode::ResourceNotFound
         }
@@ -381,6 +1150,22 @@ fn service_failure(error: ResourceServiceError) -> ServiceFailure {
         | super::ResourceServiceErrorKind::Unavailable => ErrorCode::WorkspaceUnavailable,
     };
     ServiceFailure::new(code, None).expect("resource errors use compatible details")
+}
+
+fn create_service_failure(error: ResourceServiceError) -> ServiceFailure {
+    let code = match error.kind() {
+        super::ResourceServiceErrorKind::NotFound | super::ResourceServiceErrorKind::WrongKind => {
+            ErrorCode::DocumentNotFound
+        }
+        super::ResourceServiceErrorKind::InvalidCursor
+        | super::ResourceServiceErrorKind::InvalidMediaType
+        | super::ResourceServiceErrorKind::InvalidPath => ErrorCode::InvalidRequest,
+        super::ResourceServiceErrorKind::StaleWorkspace => ErrorCode::RevisionConflict,
+        super::ResourceServiceErrorKind::TooLarge => ErrorCode::ResourceTooLarge,
+        super::ResourceServiceErrorKind::UnsafeTarget
+        | super::ResourceServiceErrorKind::Unavailable => ErrorCode::WorkspaceUnavailable,
+    };
+    ServiceFailure::new(code, None).expect("resource create errors use compatible details")
 }
 
 fn unavailable_service_failure() -> ServiceFailure {
@@ -411,6 +1196,50 @@ impl ResourcesApiService for WorkspaceResourceService {
             .await
             .map_err(|_| unavailable_service_failure())?
             .map_err(service_failure)
+    }
+
+    async fn create_workspace_resource(
+        &self,
+        document_id: crate::contract::DocumentId,
+        query: CreateWorkspaceResourceQuery,
+        media_type: String,
+        body: Vec<u8>,
+    ) -> Result<ResourceEntryDto, ServiceFailure> {
+        self.create_resource(&document_id, query, &media_type, &body)
+            .await
+            .map_err(create_service_failure)
+    }
+
+    async fn create_workspace_resource_batch(
+        &self,
+        document_id: crate::contract::DocumentId,
+        request: CreateWorkspaceResourceBatchRequest,
+    ) -> Result<CreateWorkspaceResourceBatchResponse, ServiceFailure> {
+        let mut items = Vec::with_capacity(request.items.len());
+        for item in request.items {
+            let body = STANDARD
+                .decode(item.body_base64)
+                .map_err(|_| create_service_failure(ResourceServiceError::invalid_media_type()))?;
+            items.push(CreateResourceBatchItem {
+                name: item.name,
+                kind: item.kind,
+                media_type: item.media_type,
+                body,
+            });
+        }
+        let resources = self
+            .create_resource_batch(
+                &document_id,
+                request.workspace_generation,
+                request.folder,
+                items,
+            )
+            .await
+            .map_err(create_service_failure)?;
+        Ok(CreateWorkspaceResourceBatchResponse {
+            batch_id: request.batch_id,
+            resources,
+        })
     }
 }
 
@@ -1240,7 +2069,12 @@ fn inspect_inventory_entry(
         )?;
         Ok(Some(WorkspaceInventoryEntry::Document(entry)))
     } else {
-        let classification = classify_resource(name, &inspected.magic);
+        let classification = classify_resource(
+            name,
+            &inspected.header,
+            inspected.metadata.len(),
+            inspected.validation_body.as_deref(),
+        );
         let resource_name =
             ResourceName::parse(name).map_err(|_| ResourceServiceError::invalid_path())?;
         let id = context
@@ -1334,7 +2168,8 @@ struct InspectedFile {
     file: File,
     metadata: Metadata,
     revision: Revision,
-    magic: [u8; MAGIC_BYTES],
+    header: Vec<u8>,
+    validation_body: Option<Vec<u8>>,
 }
 
 fn inspect_regular_file(
@@ -1396,8 +2231,14 @@ fn inspect_regular_file_inner(
     }
     let mut digest = Sha256::new();
     let mut total = 0_u64;
-    let mut magic = [0_u8; MAGIC_BYTES];
-    let mut magic_len = 0;
+    let mut header = Vec::with_capacity(
+        usize::try_from(retained.len())
+            .unwrap_or(MAX_IMAGE_HEADER_BYTES)
+            .min(MAX_IMAGE_HEADER_BYTES),
+    );
+    let validation_limit = full_validation_limit(name);
+    let mut validation_body = validation_limit
+        .map(|limit| Vec::with_capacity(usize::try_from(retained.len()).unwrap_or(0).min(limit)));
     let mut buffer = [0_u8; STREAM_BUFFER_BYTES];
     while total < retained.len() {
         let remaining = retained.len() - total;
@@ -1413,10 +2254,17 @@ fn inspect_regular_file_inner(
         total = total
             .checked_add(read as u64)
             .ok_or_else(ResourceServiceError::unsafe_target)?;
-        let copy = (MAGIC_BYTES - magic_len).min(read);
-        magic[magic_len..magic_len + copy].copy_from_slice(&buffer[..copy]);
-        magic_len += copy;
+        let header_copy = (MAX_IMAGE_HEADER_BYTES - header.len()).min(read);
+        header.extend_from_slice(&buffer[..header_copy]);
         digest.update(&buffer[..read]);
+        if validation_body
+            .as_ref()
+            .is_some_and(|body| body.len().saturating_add(read) > validation_limit.unwrap_or(0))
+        {
+            validation_body = None;
+        } else if let Some(body) = validation_body.as_mut() {
+            body.extend_from_slice(&buffer[..read]);
+        }
     }
     let after = file
         .metadata()
@@ -1454,7 +2302,8 @@ fn inspect_regular_file_inner(
         file,
         metadata: after,
         revision,
-        magic,
+        header,
+        validation_body: validation_body.filter(|bytes| !bytes.is_empty() || retained.len() == 0),
     })
 }
 
@@ -1774,6 +2623,20 @@ fn markdown_name(name: &str) -> bool {
     lower.ends_with(".md") || lower.ends_with(".markdown")
 }
 
+fn full_validation_limit(name: &str) -> Option<usize> {
+    let lower = name.to_ascii_lowercase();
+    if lower.ends_with(".svg") {
+        Some(MAX_SVG_BYTES)
+    } else if [".avif", ".bmp", ".gif", ".jpeg", ".jpg", ".png", ".webp"]
+        .iter()
+        .any(|extension| lower.ends_with(extension))
+    {
+        Some(MAX_RESOURCE_BODY_BYTES)
+    } else {
+        None
+    }
+}
+
 #[derive(Clone, Copy)]
 struct ResourceClassification {
     kind: ResourceKind,
@@ -1781,20 +2644,31 @@ struct ResourceClassification {
     previewable: bool,
 }
 
-fn classify_resource(name: &str, magic: &[u8; MAGIC_BYTES]) -> ResourceClassification {
+fn classify_resource(
+    name: &str,
+    _header: &[u8],
+    total_len: u64,
+    full_body: Option<&[u8]>,
+) -> ResourceClassification {
     let lower = name.to_ascii_lowercase();
-    let media_type = if lower.ends_with(".png") && magic.starts_with(b"\x89PNG\r\n\x1a\n") {
+    let media_type = if lower.ends_with(".png") && full_body.is_some_and(valid_png) {
         Some("image/png")
     } else if (lower.ends_with(".jpg") || lower.ends_with(".jpeg"))
-        && magic.starts_with(b"\xff\xd8\xff")
+        && full_body.is_some_and(valid_jpeg)
     {
         Some("image/jpeg")
-    } else if lower.ends_with(".gif")
-        && (magic.starts_with(b"GIF87a") || magic.starts_with(b"GIF89a"))
-    {
+    } else if lower.ends_with(".gif") && full_body.is_some_and(valid_gif) {
         Some("image/gif")
-    } else if lower.ends_with(".webp") && magic.starts_with(b"RIFF") && &magic[8..12] == b"WEBP" {
+    } else if lower.ends_with(".webp") && full_body.is_some_and(valid_webp) {
         Some("image/webp")
+    } else if lower.ends_with(".bmp") && full_body.is_some_and(|body| valid_bmp(body, total_len)) {
+        Some("image/bmp")
+    } else if lower.ends_with(".avif") && full_body.is_some_and(valid_avif) {
+        Some("image/avif")
+    } else if lower.ends_with(".svg")
+        && full_body.is_some_and(|body| normalize_static_svg(body).is_ok())
+    {
+        Some("image/svg+xml")
     } else {
         None
     };
@@ -1810,6 +2684,751 @@ fn classify_resource(name: &str, magic: &[u8; MAGIC_BYTES]) -> ResourceClassific
             previewable: true,
         },
     )
+}
+
+fn crc32(bytes: &[u8]) -> u32 {
+    let mut crc = u32::MAX;
+    for byte in bytes {
+        crc ^= u32::from(*byte);
+        for _ in 0..8 {
+            crc = (crc >> 1) ^ (0xedb8_8320 & 0_u32.wrapping_sub(crc & 1));
+        }
+    }
+    !crc
+}
+
+fn valid_png(bytes: &[u8]) -> bool {
+    if bytes.get(..8) != Some(b"\x89PNG\r\n\x1a\n") {
+        return false;
+    }
+    let mut offset = 8_usize;
+    let mut first = true;
+    let mut saw_data = false;
+    while offset.checked_add(12).is_some_and(|end| end <= bytes.len()) {
+        let Some(length) = read_be_u32(bytes, offset).map(|value| value as usize) else {
+            return false;
+        };
+        let Some(end) = offset
+            .checked_add(12)
+            .and_then(|base| base.checked_add(length))
+        else {
+            return false;
+        };
+        if end > bytes.len() {
+            return false;
+        }
+        let kind = &bytes[offset + 4..offset + 8];
+        let data_end = offset + 8 + length;
+        let Some(expected_crc) = read_be_u32(bytes, data_end) else {
+            return false;
+        };
+        if crc32(&bytes[offset + 4..data_end]) != expected_crc {
+            return false;
+        }
+        if first {
+            if kind != b"IHDR" || length != 13 {
+                return false;
+            }
+            let width = read_be_u32(bytes, offset + 8).unwrap_or(0);
+            let height = read_be_u32(bytes, offset + 12).unwrap_or(0);
+            if !valid_image_dimensions(width, height) {
+                return false;
+            }
+            first = false;
+        } else if kind == b"IDAT" {
+            saw_data = true;
+        } else if kind == b"IEND" {
+            return length == 0 && saw_data && end == bytes.len();
+        }
+        offset = end;
+    }
+    false
+}
+
+fn valid_jpeg(bytes: &[u8]) -> bool {
+    if bytes.get(..2) != Some(b"\xff\xd8") || bytes.len() < 12 {
+        return false;
+    }
+    let mut offset = 2_usize;
+    let mut saw_frame = false;
+    let mut saw_scan = false;
+    while offset < bytes.len() {
+        if bytes.get(offset) != Some(&0xff) {
+            return false;
+        }
+        while bytes.get(offset) == Some(&0xff) {
+            offset += 1;
+        }
+        let Some(marker) = bytes.get(offset).copied() else {
+            return false;
+        };
+        offset += 1;
+        if marker == 0xd9 {
+            return saw_frame && saw_scan && offset == bytes.len();
+        }
+        if marker == 0x01 || (0xd0..=0xd7).contains(&marker) {
+            continue;
+        }
+        let Some(length) = bytes
+            .get(offset..offset + 2)
+            .map(|value| u16::from_be_bytes([value[0], value[1]]) as usize)
+        else {
+            return false;
+        };
+        if length < 2
+            || offset
+                .checked_add(length)
+                .is_none_or(|end| end > bytes.len())
+        {
+            return false;
+        }
+        if matches!(marker, 0xc0..=0xc3 | 0xc5..=0xc7 | 0xc9..=0xcb | 0xcd..=0xcf) {
+            let height = bytes
+                .get(offset + 3..offset + 5)
+                .map(|value| u16::from_be_bytes([value[0], value[1]]))
+                .unwrap_or(0);
+            let width = bytes
+                .get(offset + 5..offset + 7)
+                .map(|value| u16::from_be_bytes([value[0], value[1]]))
+                .unwrap_or(0);
+            if length < 8 || !valid_image_dimensions(u32::from(width), u32::from(height)) {
+                return false;
+            }
+            saw_frame = true;
+        }
+        offset += length;
+        if marker == 0xda {
+            saw_scan = true;
+            loop {
+                let Some(byte) = bytes.get(offset).copied() else {
+                    return false;
+                };
+                offset += 1;
+                if byte != 0xff {
+                    continue;
+                }
+                let Some(next) = bytes.get(offset).copied() else {
+                    return false;
+                };
+                if next == 0x00 || (0xd0..=0xd7).contains(&next) {
+                    offset += 1;
+                    continue;
+                }
+                offset -= 1;
+                break;
+            }
+        }
+    }
+    false
+}
+
+fn skip_gif_sub_blocks(bytes: &[u8], mut offset: usize) -> Option<usize> {
+    loop {
+        let length = usize::from(*bytes.get(offset)?);
+        offset += 1;
+        if length == 0 {
+            return Some(offset);
+        }
+        offset = offset.checked_add(length)?;
+        if offset > bytes.len() {
+            return None;
+        }
+    }
+}
+
+fn valid_gif(bytes: &[u8]) -> bool {
+    if bytes.len() < 14
+        || !(bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a"))
+        || !valid_image_dimensions(
+            u32::from(u16::from_le_bytes([bytes[6], bytes[7]])),
+            u32::from(u16::from_le_bytes([bytes[8], bytes[9]])),
+        )
+    {
+        return false;
+    }
+    let packed = bytes[10];
+    let mut offset = 13_usize;
+    if packed & 0x80 != 0 {
+        offset = match offset.checked_add(3_usize << (usize::from(packed & 0x07) + 1)) {
+            Some(value) if value <= bytes.len() => value,
+            _ => return false,
+        };
+    }
+    let mut saw_image = false;
+    while let Some(kind) = bytes.get(offset).copied() {
+        offset += 1;
+        match kind {
+            0x3b => return saw_image && offset == bytes.len(),
+            0x21 => {
+                if bytes.get(offset).is_none() {
+                    return false;
+                }
+                offset += 1;
+                let Some(next) = skip_gif_sub_blocks(bytes, offset) else {
+                    return false;
+                };
+                offset = next;
+            }
+            0x2c => {
+                let Some(descriptor) = bytes.get(offset..offset + 9) else {
+                    return false;
+                };
+                if !valid_image_dimensions(
+                    u32::from(u16::from_le_bytes([descriptor[4], descriptor[5]])),
+                    u32::from(u16::from_le_bytes([descriptor[6], descriptor[7]])),
+                ) {
+                    return false;
+                }
+                offset += 9;
+                if descriptor[8] & 0x80 != 0 {
+                    offset = match offset
+                        .checked_add(3_usize << (usize::from(descriptor[8] & 0x07) + 1))
+                    {
+                        Some(value) if value <= bytes.len() => value,
+                        _ => return false,
+                    };
+                }
+                if bytes.get(offset).is_none() {
+                    return false;
+                }
+                offset += 1;
+                let Some(next) = skip_gif_sub_blocks(bytes, offset) else {
+                    return false;
+                };
+                offset = next;
+                saw_image = true;
+            }
+            _ => return false,
+        }
+    }
+    false
+}
+
+fn valid_webp(bytes: &[u8]) -> bool {
+    if bytes.len() < 20
+        || bytes.get(..4) != Some(b"RIFF")
+        || bytes.get(8..12) != Some(b"WEBP")
+        || read_le_u32(bytes, 4).map(|size| u64::from(size) + 8) != Some(bytes.len() as u64)
+    {
+        return false;
+    }
+    let mut offset = 12_usize;
+    let mut saw_image = false;
+    while offset < bytes.len() {
+        let Some(kind) = bytes.get(offset..offset + 4) else {
+            return false;
+        };
+        let Some(length) = read_le_u32(bytes, offset + 4).map(|value| value as usize) else {
+            return false;
+        };
+        let Some(end) = offset
+            .checked_add(8)
+            .and_then(|value| value.checked_add(length))
+        else {
+            return false;
+        };
+        if end > bytes.len() {
+            return false;
+        }
+        let payload = &bytes[offset + 8..end];
+        saw_image |= match kind {
+            b"VP8 " if payload.len() >= 10 && payload.get(3..6) == Some(b"\x9d\x01\x2a") => {
+                let width = u32::from(u16::from_le_bytes([payload[6], payload[7]]) & 0x3fff);
+                let height = u32::from(u16::from_le_bytes([payload[8], payload[9]]) & 0x3fff);
+                valid_image_dimensions(width, height)
+            }
+            b"VP8L" if payload.len() >= 5 && payload[0] == 0x2f => {
+                let packed = u32::from_le_bytes([payload[1], payload[2], payload[3], payload[4]]);
+                let width = (packed & 0x3fff) + 1;
+                let height = ((packed >> 14) & 0x3fff) + 1;
+                valid_image_dimensions(width, height)
+            }
+            _ => false,
+        };
+        offset = end + (length & 1);
+    }
+    saw_image && offset == bytes.len()
+}
+
+fn valid_image_dimensions(width: u32, height: u32) -> bool {
+    (1..=16_384).contains(&width)
+        && (1..=16_384).contains(&height)
+        && width
+            .checked_mul(height)
+            .is_some_and(|pixels| pixels <= 67_108_864)
+}
+
+fn read_be_u32(bytes: &[u8], offset: usize) -> Option<u32> {
+    Some(u32::from_be_bytes(
+        bytes.get(offset..offset + 4)?.try_into().ok()?,
+    ))
+}
+
+fn read_le_u32(bytes: &[u8], offset: usize) -> Option<u32> {
+    Some(u32::from_le_bytes(
+        bytes.get(offset..offset + 4)?.try_into().ok()?,
+    ))
+}
+
+fn valid_avif(bytes: &[u8]) -> bool {
+    let mut offset = 0_usize;
+    let mut static_brand = false;
+    let mut metadata = false;
+    let mut media_data = false;
+    while offset < bytes.len() {
+        let Some((kind, payload, next)) = iso_box(bytes, offset, bytes.len()) else {
+            return false;
+        };
+        match kind {
+            b"ftyp" if offset == 0 && payload.len() >= 8 => {
+                let brands = payload.chunks_exact(4).collect::<Vec<_>>();
+                static_brand = brands.iter().any(|brand| *brand == b"avif")
+                    && !brands.iter().any(|brand| *brand == b"avis");
+            }
+            b"meta" => metadata = valid_avif_meta(payload),
+            b"mdat" => media_data = !payload.is_empty(),
+            _ => {}
+        }
+        offset = next;
+    }
+    offset == bytes.len() && static_brand && metadata && media_data
+}
+
+fn iso_box(bytes: &[u8], offset: usize, end: usize) -> Option<(&[u8], &[u8], usize)> {
+    let size = read_be_u32(bytes, offset)? as usize;
+    if size < 8 || size == 1 {
+        return None;
+    }
+    let next = offset.checked_add(size)?;
+    if next > end {
+        return None;
+    }
+    Some((
+        bytes.get(offset + 4..offset + 8)?,
+        bytes.get(offset + 8..next)?,
+        next,
+    ))
+}
+
+fn valid_avif_meta(payload: &[u8]) -> bool {
+    if payload.len() < 4 {
+        return false;
+    }
+    let mut offset = 4_usize;
+    let mut primary = false;
+    let mut locations = false;
+    let mut information = false;
+    let mut dimensions = false;
+    while offset < payload.len() {
+        let Some((kind, child, next)) = iso_box(payload, offset, payload.len()) else {
+            return false;
+        };
+        match kind {
+            b"pitm" => primary = child.len() >= 6,
+            b"iloc" => locations = child.len() >= 8,
+            b"iinf" => information = child.len() >= 6,
+            b"iprp" => dimensions = avif_property_dimensions(child),
+            _ => {}
+        }
+        offset = next;
+    }
+    offset == payload.len() && primary && locations && information && dimensions
+}
+
+fn avif_property_dimensions(payload: &[u8]) -> bool {
+    let mut offset = 0_usize;
+    while offset < payload.len() {
+        let Some((kind, child, next)) = iso_box(payload, offset, payload.len()) else {
+            return false;
+        };
+        if kind == b"ipco" {
+            let mut property_offset = 0_usize;
+            while property_offset < child.len() {
+                let Some((property, value, property_next)) =
+                    iso_box(child, property_offset, child.len())
+                else {
+                    return false;
+                };
+                if property == b"ispe" && value.len() == 12 {
+                    let width = read_be_u32(value, 4).unwrap_or(0);
+                    let height = read_be_u32(value, 8).unwrap_or(0);
+                    if valid_image_dimensions(width, height) {
+                        return true;
+                    }
+                }
+                property_offset = property_next;
+            }
+        }
+        offset = next;
+    }
+    false
+}
+
+fn valid_bmp(bytes: &[u8], total_len: u64) -> bool {
+    if bytes.len() < 54 || bytes.get(..2) != Some(b"BM") {
+        return false;
+    }
+    let Some(declared_size) = read_le_u32(bytes, 2).map(|value| value as usize) else {
+        return false;
+    };
+    let Some(pixel_offset) = read_le_u32(bytes, 10).map(|value| value as usize) else {
+        return false;
+    };
+    let Some(dib_size) = read_le_u32(bytes, 14).map(|value| value as usize) else {
+        return false;
+    };
+    let width = read_le_u32(bytes, 18)
+        .map(|value| value as i32)
+        .unwrap_or(0);
+    let signed_height = read_le_u32(bytes, 22)
+        .map(|value| value as i32)
+        .unwrap_or(0);
+    let Some(height) = signed_height.checked_abs().map(|value| value as u32) else {
+        return false;
+    };
+    let planes = bytes
+        .get(26..28)
+        .map(|value| u16::from_le_bytes([value[0], value[1]]))
+        .unwrap_or(0);
+    let bits_per_pixel = bytes
+        .get(28..30)
+        .map(|value| u16::from_le_bytes([value[0], value[1]]))
+        .unwrap_or(0);
+    let compression = read_le_u32(bytes, 30).unwrap_or(u32::MAX);
+    let required_pixel_bytes = u32::try_from(width)
+        .ok()
+        .and_then(|width| width.checked_mul(u32::from(bits_per_pixel)))
+        .and_then(|row_bits| row_bits.checked_add(31))
+        .map(|row_bits| (row_bits / 32) * 4)
+        .and_then(|stride| stride.checked_mul(height))
+        .and_then(|bytes| pixel_offset.checked_add(bytes as usize));
+    declared_size as u64 == total_len
+        && pixel_offset >= 14 + dib_size
+        && pixel_offset < bytes.len()
+        && matches!(dib_size, 40 | 52 | 56 | 64 | 108 | 124)
+        && u32::try_from(width)
+            .ok()
+            .is_some_and(|width| valid_image_dimensions(width, height))
+        && planes == 1
+        && matches!(bits_per_pixel, 1 | 4 | 8 | 16 | 24 | 32)
+        && compression == 0
+        && required_pixel_bytes.is_some_and(|end| end <= bytes.len())
+}
+
+fn safe_svg_fragment(value: &str) -> bool {
+    let Some(id) = value.strip_prefix('#') else {
+        return false;
+    };
+    !id.is_empty()
+        && id.len() <= 256
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':'))
+}
+
+fn safe_svg_paint(value: &str) -> bool {
+    let value = value.trim();
+    if let Some(fragment) = value
+        .strip_prefix("url(")
+        .and_then(|rest| rest.strip_suffix(')'))
+    {
+        return safe_svg_fragment(fragment.trim());
+    }
+    !value.is_empty()
+        && value.len() <= 128
+        && !value.contains('\\')
+        && !value.chars().any(char::is_control)
+        && value.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric()
+                || matches!(
+                    byte,
+                    b'#' | b'(' | b')' | b',' | b'.' | b'%' | b' ' | b'-' | b'+'
+                )
+        })
+}
+
+fn safe_svg_numbers(value: &str, maximum: f64, expected: Option<usize>) -> bool {
+    let normalized = value.replace(',', " ");
+    let values = normalized
+        .split_ascii_whitespace()
+        .map(str::parse::<f64>)
+        .collect::<Result<Vec<_>, _>>();
+    values.is_ok_and(|values| {
+        expected.is_none_or(|expected| values.len() == expected)
+            && !values.is_empty()
+            && values
+                .iter()
+                .all(|value| value.is_finite() && value.abs() <= maximum)
+    })
+}
+
+fn safe_svg_path(value: &str) -> bool {
+    if value.len() > 64 * 1024
+        || value
+            .bytes()
+            .filter(|byte| byte.is_ascii_alphabetic())
+            .count()
+            > 4096
+        || value
+            .bytes()
+            .any(|byte| byte.is_ascii_alphabetic() && !b"MmZzLlHhVvCcSsQqTtAa".contains(&byte))
+    {
+        return false;
+    }
+    let numeric = value
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphabetic() || character == ',' {
+                ' '
+            } else {
+                character
+            }
+        })
+        .collect::<String>();
+    safe_svg_numbers(&numeric, 1_000_000.0, None)
+}
+
+fn normalize_static_svg(body: &[u8]) -> Result<Vec<u8>, ResourceServiceError> {
+    const ELEMENTS: &[&str] = &[
+        "svg",
+        "g",
+        "defs",
+        "path",
+        "rect",
+        "circle",
+        "ellipse",
+        "line",
+        "polyline",
+        "polygon",
+        "linearGradient",
+        "radialGradient",
+        "stop",
+        "title",
+        "desc",
+        "text",
+        "tspan",
+    ];
+    const ATTRIBUTES: &[&str] = &[
+        "xmlns",
+        "xmlns:xlink",
+        "viewBox",
+        "width",
+        "height",
+        "x",
+        "y",
+        "x1",
+        "y1",
+        "x2",
+        "y2",
+        "cx",
+        "cy",
+        "r",
+        "rx",
+        "ry",
+        "d",
+        "points",
+        "fill",
+        "fill-opacity",
+        "fill-rule",
+        "stroke",
+        "stroke-width",
+        "stroke-linecap",
+        "stroke-linejoin",
+        "stroke-miterlimit",
+        "stroke-opacity",
+        "opacity",
+        "id",
+        "preserveAspectRatio",
+        "version",
+        "role",
+        "aria-label",
+        "aria-hidden",
+        "dx",
+        "dy",
+        "font-family",
+        "font-size",
+        "font-weight",
+        "text-anchor",
+        "dominant-baseline",
+        "offset",
+        "stop-color",
+        "stop-opacity",
+        "gradientUnits",
+        "spreadMethod",
+    ];
+    if body.len() > MAX_SVG_BYTES || std::str::from_utf8(body).is_err() {
+        return Err(ResourceServiceError::invalid_media_type());
+    }
+    let mut reader = Reader::from_reader(body.strip_prefix(b"\xef\xbb\xbf").unwrap_or(body));
+    reader.config_mut().trim_text(false);
+    let mut writer = Writer::new(Vec::with_capacity(body.len()));
+    let mut stack: Vec<String> = Vec::new();
+    let mut ids = std::collections::HashSet::new();
+    let mut references = Vec::new();
+    let mut root_seen = false;
+    let mut nodes = 0_usize;
+    let mut text_bytes = 0_usize;
+
+    loop {
+        let event = reader
+            .read_event()
+            .map_err(|_| ResourceServiceError::invalid_media_type())?;
+        let empty_element = matches!(&event, Event::Empty(_));
+        match event {
+            Event::Decl(_) | Event::Comment(_) => {}
+            Event::DocType(_) | Event::PI(_) | Event::CData(_) | Event::GeneralRef(_) => {
+                return Err(ResourceServiceError::invalid_media_type());
+            }
+            Event::Start(start) | Event::Empty(start) => {
+                let empty = empty_element;
+                nodes = nodes.saturating_add(1);
+                if nodes > 10_000 || stack.len() >= 64 {
+                    return Err(ResourceServiceError::invalid_media_type());
+                }
+                let name = std::str::from_utf8(start.name().as_ref())
+                    .map_err(|_| ResourceServiceError::invalid_media_type())?
+                    .to_string();
+                if name.contains(':') || !ELEMENTS.contains(&name.as_str()) {
+                    return Err(ResourceServiceError::invalid_media_type());
+                }
+                if stack.is_empty() {
+                    if root_seen || name != "svg" {
+                        return Err(ResourceServiceError::invalid_media_type());
+                    }
+                    root_seen = true;
+                }
+                let mut attributes = std::collections::BTreeMap::new();
+                for attribute in start.attributes().with_checks(true) {
+                    let attribute =
+                        attribute.map_err(|_| ResourceServiceError::invalid_media_type())?;
+                    let key = std::str::from_utf8(attribute.key.as_ref())
+                        .map_err(|_| ResourceServiceError::invalid_media_type())?
+                        .to_string();
+                    if attributes.len() >= 64
+                        || key.to_ascii_lowercase().starts_with("on")
+                        || !ATTRIBUTES.contains(&key.as_str())
+                    {
+                        return Err(ResourceServiceError::invalid_media_type());
+                    }
+                    let value = attribute
+                        .decode_and_unescape_value(reader.decoder())
+                        .map_err(|_| ResourceServiceError::invalid_media_type())?
+                        .into_owned();
+                    if value.len()
+                        > if key == "d" || key == "points" {
+                            1024 * 1024
+                        } else {
+                            4096
+                        }
+                        || value.chars().any(char::is_control)
+                    {
+                        return Err(ResourceServiceError::invalid_media_type());
+                    }
+                    match key.as_str() {
+                        "xmlns" if name == "svg" && value == "http://www.w3.org/2000/svg" => {}
+                        "xmlns:xlink"
+                            if name == "svg" && value == "http://www.w3.org/1999/xlink" => {}
+                        "fill" | "stroke" | "stop-color" if safe_svg_paint(&value) => {
+                            if let Some(fragment) = value
+                                .trim()
+                                .strip_prefix("url(")
+                                .and_then(|rest| rest.strip_suffix(')'))
+                            {
+                                references.push(fragment.trim()[1..].to_string());
+                            }
+                        }
+                        "viewBox" if safe_svg_numbers(&value, 1_000_000.0, Some(4)) => {}
+                        "width" | "height" if safe_svg_numbers(&value, 16_384.0, Some(1)) => {}
+                        "x" | "y" | "x1" | "y1" | "x2" | "y2" | "cx" | "cy" | "r" | "rx" | "ry"
+                        | "dx" | "dy" | "stroke-width" | "stroke-miterlimit" | "font-size"
+                        | "offset"
+                            if safe_svg_numbers(&value, 1_000_000.0, None) => {}
+                        "d" if safe_svg_path(&value) => {}
+                        "points"
+                            if value.len() <= 64 * 1024
+                                && safe_svg_numbers(&value, 1_000_000.0, None) => {}
+                        "viewBox" | "width" | "height" | "x" | "y" | "x1" | "y1" | "x2" | "y2"
+                        | "cx" | "cy" | "r" | "rx" | "ry" | "dx" | "dy" | "stroke-width"
+                        | "stroke-miterlimit" | "font-size" | "offset" | "d" | "points" => {
+                            return Err(ResourceServiceError::invalid_media_type())
+                        }
+                        "xmlns" | "xmlns:xlink" => {
+                            return Err(ResourceServiceError::invalid_media_type());
+                        }
+                        _ if value.to_ascii_lowercase().contains("url(")
+                            || value.to_ascii_lowercase().contains("javascript:")
+                            || value.to_ascii_lowercase().contains("data:") =>
+                        {
+                            return Err(ResourceServiceError::invalid_media_type());
+                        }
+                        _ => {}
+                    }
+                    if key == "id"
+                        && (!safe_svg_fragment(&format!("#{value}")) || !ids.insert(value.clone()))
+                    {
+                        return Err(ResourceServiceError::invalid_media_type());
+                    }
+                    attributes.insert(key, value);
+                }
+                if name == "svg"
+                    && attributes.get("xmlns").map(String::as_str)
+                        != Some("http://www.w3.org/2000/svg")
+                {
+                    return Err(ResourceServiceError::invalid_media_type());
+                }
+                let mut output = BytesStart::new(name.as_str());
+                for (key, value) in &attributes {
+                    output.push_attribute((key.as_str(), value.as_str()));
+                }
+                writer
+                    .write_event(if empty {
+                        Event::Empty(output)
+                    } else {
+                        Event::Start(output)
+                    })
+                    .map_err(|_| ResourceServiceError::invalid_media_type())?;
+                if !empty {
+                    stack.push(name);
+                }
+            }
+            Event::End(end) => {
+                let name = std::str::from_utf8(end.name().as_ref())
+                    .map_err(|_| ResourceServiceError::invalid_media_type())?
+                    .to_string();
+                if stack.pop().as_deref() != Some(name.as_str()) {
+                    return Err(ResourceServiceError::invalid_media_type());
+                }
+                writer
+                    .write_event(Event::End(BytesEnd::new(name.as_str())))
+                    .map_err(|_| ResourceServiceError::invalid_media_type())?;
+            }
+            Event::Text(text) => {
+                let value = text
+                    .decode()
+                    .map_err(|_| ResourceServiceError::invalid_media_type())?;
+                text_bytes = text_bytes.saturating_add(value.len());
+                if text_bytes > 1024 * 1024
+                    || (!value.trim().is_empty()
+                        && !stack.last().is_some_and(|name| {
+                            matches!(name.as_str(), "title" | "desc" | "text" | "tspan")
+                        }))
+                {
+                    return Err(ResourceServiceError::invalid_media_type());
+                }
+                writer
+                    .write_event(Event::Text(BytesText::new(&value)))
+                    .map_err(|_| ResourceServiceError::invalid_media_type())?;
+            }
+            Event::Eof => break,
+        }
+    }
+    if !root_seen
+        || !stack.is_empty()
+        || references.iter().any(|reference| !ids.contains(reference))
+    {
+        return Err(ResourceServiceError::invalid_media_type());
+    }
+    Ok(writer.into_inner())
 }
 
 /// Retained resource capability for a later transport adapter.

@@ -14,7 +14,12 @@ mod server_auth_tests;
 #[cfg(test)]
 mod web_tests;
 
-use std::{fmt, net::SocketAddr, path::Path, sync::Arc};
+use std::{
+    fmt,
+    net::SocketAddr,
+    path::Path,
+    sync::{Arc, Mutex as StdMutex, MutexGuard as StdMutexGuard},
+};
 
 use axum::{
     body::Body,
@@ -30,19 +35,21 @@ use uuid::Uuid;
 use crate::{
     contract::{
         ApiErrorEnvelope, ChangeServerOwnerPasswordRequest, ConnectionId, CreateDocumentRequest,
-        CreateServerSessionRequest, CreatedDocumentDto, DeleteDocumentRequest, DocumentContentDto,
-        DocumentContents, DocumentEntryDto, DocumentHistoryPageDto, DocumentHistorySnapshotDto,
-        DocumentId, DocumentPageDto, DomainEvent, ErrorCode, ErrorDetails, EventSequence,
-        GapReason, InitializeServerOwnerRequest, InstanceId, ListDocumentsQuery,
-        ListWorkspaceInventoryQuery, LiveHealthResponse, MoveDocumentRequest, PageQuery,
-        PatchSettingsRequest, PatchSyncConfigRequest, ProtocolVersion, ReadyHealthResponse,
-        ReadySequence, ReloadScope, RequestId, ResourceEntryDto, ResourceKind, ResourceRefDto,
-        RestoreDocumentHistoryRequest, Revision, SearchPageDto, SearchWorkspaceQuery,
-        ServerAuthenticationStatusDto, ServerFrame, ServerSessionDto, SettingsSnapshotDto,
-        SnapshotRequired, SyncConfigViewDto, SyncConnectionTestDto, SyncRunAcceptedDto,
-        SyncRunStatusDto, SyncSafeErrorDto, SyncStatusDto, SystemVersionResponse,
-        TestSyncConnectionRequest, TriggerSyncRunRequest, UpdateDocumentRequest, WorkspaceDto,
-        WorkspaceInventoryEntryDto, WorkspaceInventoryPageDto,
+        CreateServerSessionRequest, CreateWorkspaceResourceBatchItem,
+        CreateWorkspaceResourceBatchRequest, CreateWorkspaceResourceBatchResponse,
+        CreateWorkspaceResourceQuery, CreatedDocumentDto, DeleteDocumentRequest,
+        DocumentContentDto, DocumentContents, DocumentEntryDto, DocumentHistoryPageDto,
+        DocumentHistorySnapshotDto, DocumentId, DocumentPageDto, DomainEvent, ErrorCode,
+        ErrorDetails, EventSequence, GapReason, InitializeServerOwnerRequest, InstanceId,
+        ListDocumentsQuery, ListWorkspaceInventoryQuery, LiveHealthResponse, MoveDocumentRequest,
+        PageQuery, PatchSettingsRequest, PatchSyncConfigRequest, ProtocolVersion,
+        ReadyHealthResponse, ReadySequence, ReloadScope, RequestId, ResourceEntryDto, ResourceKind,
+        ResourceRefDto, RestoreDocumentHistoryRequest, Revision, SearchPageDto,
+        SearchWorkspaceQuery, ServerAuthenticationStatusDto, ServerFrame, ServerSessionDto,
+        SettingsSnapshotDto, SnapshotRequired, SyncConfigViewDto, SyncConnectionTestDto,
+        SyncRunAcceptedDto, SyncRunStatusDto, SyncSafeErrorDto, SyncStatusDto,
+        SystemVersionResponse, TestSyncConnectionRequest, TriggerSyncRunRequest,
+        UpdateDocumentRequest, WorkspaceDto, WorkspaceInventoryEntryDto, WorkspaceInventoryPageDto,
     },
     error::{http_status_for_error_code, safe_error_envelope},
     runtime::KernelRuntime,
@@ -130,15 +137,31 @@ pub(crate) struct ApiState {
     server: Option<ServerApiHost>,
     web: Option<web::ServerWebAssets>,
     _kernel_lifecycle: Option<ServerKernelLifecycle>,
+    connection_lifecycle: Option<ApiConnectionLifecycle>,
 }
 
 pub fn build_router(runtime: Arc<KernelRuntime>, policy: TransportPolicy) -> Router {
-    build_router_with_server(runtime, policy, None, None, None)
+    build_router_with_server(runtime, policy, None, None, None, None)
+}
+
+pub(crate) fn build_router_with_connection_lifecycle(
+    runtime: Arc<KernelRuntime>,
+    policy: TransportPolicy,
+    connection_lifecycle: ApiConnectionLifecycle,
+) -> Router {
+    build_router_with_server(
+        runtime,
+        policy,
+        None,
+        None,
+        None,
+        Some(connection_lifecycle),
+    )
 }
 
 pub fn build_server_router(activation: ServerApiActivation, policy: TransportPolicy) -> Router {
     let (runtime, server, lifecycle) = activation.into_parts();
-    build_router_with_server(runtime, policy, Some(server), None, lifecycle)
+    build_router_with_server(runtime, policy, Some(server), None, lifecycle, None)
 }
 
 pub fn build_server_web_router(
@@ -154,6 +177,7 @@ pub fn build_server_web_router(
         Some(server),
         Some(web),
         lifecycle,
+        None,
     ))
 }
 
@@ -163,6 +187,7 @@ fn build_router_with_server(
     server: Option<ServerApiHost>,
     web: Option<web::ServerWebAssets>,
     kernel_lifecycle: Option<ServerKernelLifecycle>,
+    connection_lifecycle: Option<ApiConnectionLifecycle>,
 ) -> Router {
     let state = ApiState {
         runtime,
@@ -170,6 +195,7 @@ fn build_router_with_server(
         server,
         web,
         _kernel_lifecycle: kernel_lifecycle,
+        connection_lifecycle,
     };
     let router = if state.server.is_some() {
         routes::router().merge(auth::router())
@@ -183,6 +209,110 @@ fn build_router_with_server(
             enforce_transport,
         ))
         .with_state(state)
+}
+
+#[derive(Clone)]
+pub(crate) struct ApiConnectionLifecycle {
+    inner: Arc<ApiConnectionLifecycleInner>,
+}
+
+impl ApiConnectionLifecycle {
+    pub(crate) fn new() -> Self {
+        Self {
+            inner: Arc::new(ApiConnectionLifecycleInner {
+                state: StdMutex::new(ApiConnectionLifecycleState {
+                    active: 0,
+                    closing: false,
+                }),
+                changed: tokio::sync::Notify::new(),
+            }),
+        }
+    }
+
+    pub(crate) fn register(&self) -> Option<ApiConnectionGuard> {
+        let mut state = lock_connection_state(&self.inner.state);
+        if state.closing {
+            return None;
+        }
+        let Some(active) = state.active.checked_add(1) else {
+            state.closing = true;
+            drop(state);
+            self.inner.changed.notify_waiters();
+            return None;
+        };
+        state.active = active;
+        Some(ApiConnectionGuard {
+            lifecycle: self.clone(),
+        })
+    }
+
+    pub(crate) fn begin_shutdown(&self) {
+        lock_connection_state(&self.inner.state).closing = true;
+        self.inner.changed.notify_waiters();
+    }
+
+    pub(crate) async fn wait_drained(&self) {
+        loop {
+            let changed = self.inner.changed.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            if lock_connection_state(&self.inner.state).active == 0 {
+                return;
+            }
+            changed.await;
+        }
+    }
+
+    fn release(&self) {
+        let drained = {
+            let mut state = lock_connection_state(&self.inner.state);
+            debug_assert!(state.active > 0);
+            state.active = state.active.saturating_sub(1);
+            state.active == 0
+        };
+        if drained {
+            self.inner.changed.notify_waiters();
+        }
+    }
+}
+
+struct ApiConnectionLifecycleInner {
+    state: StdMutex<ApiConnectionLifecycleState>,
+    changed: tokio::sync::Notify,
+}
+
+struct ApiConnectionLifecycleState {
+    active: usize,
+    closing: bool,
+}
+
+pub(crate) struct ApiConnectionGuard {
+    lifecycle: ApiConnectionLifecycle,
+}
+
+impl ApiConnectionGuard {
+    pub(crate) async fn cancelled(&self) {
+        loop {
+            let changed = self.lifecycle.inner.changed.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            if lock_connection_state(&self.lifecycle.inner.state).closing {
+                return;
+            }
+            changed.await;
+        }
+    }
+}
+
+impl Drop for ApiConnectionGuard {
+    fn drop(&mut self) {
+        self.lifecycle.release();
+    }
+}
+
+fn lock_connection_state<T>(lock: &StdMutex<T>) -> StdMutexGuard<'_, T> {
+    lock.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 async fn enforce_transport(
@@ -484,6 +614,14 @@ fn route_accepts_method(path: &str, method: &Method) -> bool {
             {
                 &[Method::POST]
             }
+            ["", "api", "v1", "documents", document_id, "resources"] if !document_id.is_empty() => {
+                &[Method::POST]
+            }
+            ["", "api", "v1", "documents", document_id, "resource-batches"]
+                if !document_id.is_empty() =>
+            {
+                &[Method::POST]
+            }
             ["", "api", "v1", "documents", document_id, "history"] if !document_id.is_empty() => {
                 &[Method::GET]
             }
@@ -641,6 +779,10 @@ impl std::error::Error for OpenApiExportError {}
         crate::contract::RuntimeStateDto,
         WorkspaceDto,
         ListWorkspaceInventoryQuery,
+        CreateWorkspaceResourceQuery,
+        CreateWorkspaceResourceBatchItem,
+        CreateWorkspaceResourceBatchRequest,
+        CreateWorkspaceResourceBatchResponse,
         WorkspaceInventoryEntryDto,
         WorkspaceInventoryPageDto,
         ResourceEntryDto,
@@ -1032,6 +1174,22 @@ fn install_paths(document: &mut serde_json::Value) {
             true,
         ),
         (
+            "post",
+            "/api/v1/documents/{documentId}/resources",
+            "createWorkspaceResource",
+            "201",
+            "ResourceEntryDto",
+            true,
+        ),
+        (
+            "post",
+            "/api/v1/documents/{documentId}/resource-batches",
+            "createWorkspaceResourceBatch",
+            "201",
+            "CreateWorkspaceResourceBatchResponse",
+            true,
+        ),
+        (
             "get",
             "/api/v1/documents",
             "listDocuments",
@@ -1336,6 +1494,48 @@ fn install_operation_inputs(document: &mut serde_json::Value) {
     );
     push_parameter(
         document,
+        "/api/v1/documents/{documentId}/resources",
+        "post",
+        "documentId",
+        "path",
+        "DocumentId",
+        true,
+    );
+    set_query_parameters(
+        document,
+        "/api/v1/documents/{documentId}/resources",
+        "post",
+        &[
+            ("workspaceGeneration", "WorkspaceGeneration", true),
+            ("folder", "WorkspaceRelativePath", true),
+            ("name", "ResourceName", true),
+            ("kind", "ResourceKind", true),
+        ],
+    );
+    set_binary_request_body(
+        document,
+        "/api/v1/documents/{documentId}/resources",
+        "post",
+        64 * 1024 * 1024,
+    );
+    push_parameter(
+        document,
+        "/api/v1/documents/{documentId}/resource-batches",
+        "post",
+        "documentId",
+        "path",
+        "DocumentId",
+        true,
+    );
+    set_request_body(
+        document,
+        "/api/v1/documents/{documentId}/resource-batches",
+        "post",
+        "CreateWorkspaceResourceBatchRequest",
+        100 * 1024 * 1024,
+    );
+    push_parameter(
+        document,
         "/api/v1/resources/{resourceId}",
         "get",
         "kind",
@@ -1493,6 +1693,30 @@ fn set_request_body(
         }
     });
     operation["x-body-limit-bytes"] = serde_json::json!(body_limit);
+}
+
+fn set_binary_request_body(
+    document: &mut serde_json::Value,
+    path: &str,
+    method: &str,
+    body_limit: usize,
+) {
+    let schema = serde_json::json!({
+        "type": "string",
+        "format": "binary",
+        "maxLength": body_limit,
+    });
+    operation_mut(document, path, method)["requestBody"] = serde_json::json!({
+        "required": true,
+        "content": {
+            "application/octet-stream": { "schema": schema.clone() },
+            "image/gif": { "schema": schema.clone() },
+            "image/jpeg": { "schema": schema.clone() },
+            "image/png": { "schema": schema.clone() },
+            "image/webp": { "schema": schema },
+        }
+    });
+    operation_mut(document, path, method)["x-body-limit-bytes"] = serde_json::json!(body_limit);
 }
 
 fn set_query_parameters(
@@ -1656,6 +1880,21 @@ fn install_operation_errors(document: &mut serde_json::Value) {
             "workspace_locked",
             "invalid_request",
             "resource_not_found",
+        ],
+    );
+    add_errors_with(
+        document,
+        "/api/v1/documents/{documentId}/resources",
+        "post",
+        TRANSPORT,
+        &[
+            "kernel_not_ready",
+            "workspace_unavailable",
+            "workspace_locked",
+            "invalid_request",
+            "document_not_found",
+            "resource_too_large",
+            "revision_conflict",
         ],
     );
 
@@ -1940,7 +2179,7 @@ fn error_status(code: &str) -> u16 {
         | "revision_conflict"
         | "settings_revision_conflict"
         | "sync_config_revision_conflict" => 409,
-        "document_too_large" => 413,
+        "document_too_large" | "resource_too_large" => 413,
         "document_invalid_encoding" | "invalid_settings_field" | "sync_config_invalid" => 422,
         "workspace_locked" => 423,
         "authentication_rate_limited" => 429,

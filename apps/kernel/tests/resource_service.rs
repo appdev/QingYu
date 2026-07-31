@@ -14,16 +14,20 @@ use axum::{
     body::{to_bytes, Body},
     http::{header, Request, StatusCode},
 };
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use qingyu_kernel::{
     api::{build_router, TransportPolicy},
     config::KernelConfig,
     contract::{
-        DocumentContents, DocumentKind, ListWorkspaceInventoryQuery, PageLimit, ResourceKind,
-        UpdateDocumentRequest, WorkspaceRelativePath,
+        CreateWorkspaceResourceQuery, DocumentContents, DocumentId, DocumentKind,
+        ListWorkspaceInventoryQuery, PageLimit, ResourceKind, ResourceName, UpdateDocumentRequest,
+        WorkspaceGeneration, WorkspaceRelativePath,
     },
     documents::{
-        history::MemoryDocumentHistoryStore, service::WorkspaceDocumentService, DeletionPort,
-        DeletionPortError, DocumentDeletionTarget, DocumentIgnorePort,
+        history::MemoryDocumentHistoryStore, service::CapabilityAtomicInstallPort,
+        service::WorkspaceDocumentService, AtomicInstallPort, AtomicInstallPortError,
+        AtomicInstallRequest, DeletionPort, DeletionPortError, DocumentDeletionTarget,
+        DocumentIgnorePort,
     },
     ignore_rules::{
         MarkdownIgnoreRules, WorkspaceIgnoreError, WorkspaceIgnorePort, WorkspaceIgnoreSnapshot,
@@ -31,8 +35,8 @@ use qingyu_kernel::{
     paths::KernelPaths,
     ports::KernelPorts,
     resources::{
-        resolve_markdown_href, ResourceServiceErrorKind, RetainedResource, WorkspaceInventoryEntry,
-        WorkspaceResourceService,
+        resolve_markdown_href, CreateResourceBatchItem, ResourceServiceErrorKind, RetainedResource,
+        WorkspaceInventoryEntry, WorkspaceResourceService, MAX_RESOURCE_BODY_BYTES,
     },
     runtime::{KernelRuntime, ResourcesApiService, WorkspaceApiService},
     services::workspace::WorkspaceService,
@@ -49,6 +53,19 @@ use tower::ServiceExt as _;
 
 static_assertions::assert_impl_all!(RetainedResource: Read, Send);
 static_assertions::assert_impl_all!(WorkspaceResourceService: Send, Sync);
+
+fn image_fixture(extension: &str) -> Vec<u8> {
+    let encoded = match extension {
+        "png" => "iVBORw0KGgoAAAANSUhEUgAAABAAAAAMCAIAAADkharWAAAACXBIWXMAAAABAAAAAQBPJcTWAAAAtUlEQVR4nGP8x4AATP8ZgeS///9BbKb/cPH/DCA2I1iWhYFEANXgCKEc4AQSzcBgD7YBIkCuDfTSoPwZ5NaVoRJA8q/LVyBpXnsTSAoxMAHJW97SWGwoKgpjeHxowYIXZ26+mNhsMrF7Qn5pAVC8traOgWHu1KnXUDTc8WVguL3K/gADgwTDoZv2a2sZ/tcnB9dDJIsZt9oxKNhRw9OGHxgSEvR+eGrlV0xHFvd8fSg7O4RkGwDyqTc3JJObhAAAAABJRU5ErkJggg==",
+        "jpg" => "/9j/4AAQSkZJRgABAgAAAQABAAD//gAQTGF2YzYyLjI4LjEwMgD/2wBDAAgEBAQEBAUFBQUFBQYGBgYGBgYGBgYGBgYHBwcICAgHBwcGBgcHCAgICAkJCQgICAgJCQoKCgwMCwsODg4RERT/xAB4AAEBAQAAAAAAAAAAAAAAAAAGBAUBAQEBAQAAAAAAAAAAAAAAAAYHAwUQAAICAgICAQUBAQAAAAAAAAEDAgQREgYTBQAVUUEzIiQhFhEAAQMCBAQFBQEAAAAAAAAAAQIDBAURADIGEjETIaFRYSNBB4FxFFIzIv/AABEIAAwAEAMBEgACEgADEgD/2gAMAwEAAhEDEQA/ABPGuTcz8Tyi4rj1rokpcXTJTRktSoVpGbGsuKktcB2SBkyQGZAZzj2riCFWncsrujup1ziimRyY7Qna1kMxIkMgkZBB+npafTKJJp8R6oNlRQ6haSFEG6FgiwHU/bGFadWyqgrQbELc8xx9xwOE/wAuxZdZ13Sxs5ppodMQ5Usl5Fl7jw/0PHHa1ey3Iq9ebcFwUx/JQ6ex4j6YwOI/93x3zskUv5rJqQv9o+PdVNMpaRbFpnZTNfWZj3BvXudM7/567o+Lor4T8VFOKcfPvpRTuw4rjlU1Be5n2fj/AF223++c+0qqfJjsyjMKcqQVHQ2hIRyrOCwAyZ+2Jc/Upitcfllz1NqelvTyW/nl7YBTNPz5Wna5QVMXZnqZVIb3hKXC2rckh3gLHwOFUqBGXoxcUpPLJ8Tvzfvm74//2Q==",
+        "gif" => "R0lGODlhEAAMAPcfMQAAAAAAVQAAqgAA/wAkAAAkVQAkqgAk/wBIAABIVQBIqgBI/wBsAABsVQBsqgBs/wCQAACQVQCQqgCQ/wC0AAC0VQC0qgC0/wDYAADYVQDYqgDY/wD8AAD8VQD8qgD8/yQAACQAVSQAqiQA/yQkACQkVSQkqiQk/yRIACRIVSRIqiRI/yRsACRsVSRsqiRs/ySQACSQVSSQqiSQ/yS0ACS0VSS0qiS0/yTYACTYVSTYqiTY/yT8ACT8VST8qiT8/0gAAEgAVUgAqkgA/0gkAEgkVUgkqkgk/0hIAEhIVUhIqkhI/0hsAEhsVUhsqkhs/0iQAEiQVUiQqkiQ/0i0AEi0VUi0qki0/0jYAEjYVUjYqkjY/0j8AEj8VUj8qkj8/2wAAGwAVWwAqmwA/2wkAGwkVWwkqmwk/2xIAGxIVWxIqmxI/2xsAGxsVWxsqmxs/2yQAGyQVWyQqmyQ/2y0AGy0VWy0qmy0/2zYAGzYVWzYqmzY/2z8AGz8VWz8qmz8/5AAAJAAVZAAqpAA/5AkAJAkVZAkqpAk/5BIAJBIVZBIqpBI/5BsAJBsVZBsqpBs/5CQAJCQVZCQqpCQ/5C0AJC0VZC0qpC0/5DYAJDYVZDYqpDY/5D8AJD8VZD8qpD8/7QAALQAVbQAqrQA/7QkALQkVbQkqrQk/7RIALRIVbRIqrRI/7RsALRsVbRsqrRs/7SQALSQVbSQqrSQ/7S0ALS0VbS0qrS0/7TYALTYVbTYqrTY/7T8ALT8VbT8qrT8/9gAANgAVdgAqtgA/9gkANgkVdgkqtgk/9hIANhIVdhIqthI/9hsANhsVdhsqths/9iQANiQVdiQqtiQ/9i0ANi0Vdi0qti0/9jYANjYVdjYqtjY/9j8ANj8Vdj8qtj8//wAAPwAVfwAqvwA//wkAPwkVfwkqvwk//xIAPxIVfxIqvxI//xsAPxsVfxsqvxs//yQAPyQVfyQqvyQ//y0APy0Vfy0qvy0//zYAPzYVfzYqvzY//z8APz8Vfz8qvz8/yH/C05FVFNDQVBFMi4wAwEAAAAh+QQEZAAfACwAAAAAEAAMAAAIlgDBCQTHgQM/fgIGKBw37sOHgQQN8lO4sOFDcECAIECABAWAAB+BBEGQABg4EEAIICCBJIDLACGCFEggMCMCAkiQfAwZgqRAlCpZvoQJZGZNIChIQIu2FATKIEt/pqzEDBGQeJJQSotG6Cg8djk/whvLzudJIOzgCQWQNq1RjEC+kokWDcTXr0RimUSZlgy0VmjvEqkVEAA7",
+        "webp" => "UklGRq4AAABXRUJQVlA4TKEAAAAvD8ACAAZXtW2rym7yPv1hBU4y3P2LBuR0hwJ7KYltK3o9vqQD8qNxWxBikIAWSDqgGDx6a8FXE8lOdRGQSRsN/CrqYILBA2KQgFXof+gDnCGcPgjftuT5jM8nMhAQgrEwAHE4EPyno2D+nPHuFqnlzKuVeDiWNX+eZhQZ776uV6Ry1h1ntVKSuPcFgrEw6AtAIPi0mdjPtuhbmnthObT5HgA=",
+        "avif" => "AAAAIGZ0eXBhdmlmAAAAAGF2aWZtaWYxbWlhZk1BMUIAAAD5bWV0YQAAAAAAAAAvaGRscgAAAAAAAAAAcGljdAAAAAAAAAAAAAAAAFBpY3R1cmVIYW5kbGVyAAAAAA5waXRtAAAAAAABAAAAHmlsb2MAAAAARAAAAQABAAAAAQAAASEAAADxAAAAKGlpbmYAAAAAAAEAAAAaaW5mZQIAAAAAAQAAYXYwMUNvbG9yAAAAAGppcHJwAAAAS2lwY28AAAAUaXNwZQAAAAAAAAAQAAAADAAAABBwaXhpAAAAAAMICAgAAAAMYXYxQ4EADAAAAAATY29scm5jbHgAAgACAAIAAAAAF2lwbWEAAAAAAAAAAQABBAECgwQAAAD5bWRhdAoKAgAABQz+xK+QBDLiARAAloAQQIKB94DAXp2W8xbG+qGYQZDfijM9kuWB+kLCAK0jeG84US9KCgPrGaIlb6RX2S+/CTm9h9eO/0yZfAVy1st6Kph10tEPbSTiSfV8a5tcoiCXpmFwOXQbmQC6zsUbgLky/8U3zfOMCtoKw+dVyhmdhx2OrSfxIiKp6rp6aBkwN1nFpwS7i8XPXaq8hK0F05roGuiwTlitOUb8xmkMGs/WxLdHiBxYt24BeFZqTpUoODjjym8ViX/b1dXd9b2SjQaR6vhB+Ymz0A+xMrMuEc/qJK6p2O5/JiNxb7byCDA=",
+        "bmp" => "Qk02AwAAAAAAADYAAAAoAAAAEAAAAAwAAAABACAAAAAAAAADAAAAAAAAAAAAAAAAAAAAAAAAAAD+/wAA/v8AAD//AAA//wB///8Af///AC9v/y6Pz/9piMf/AAA2/wB///8Af///AH///wB///8AKkn/VJW0/wAA/v8AAP7/AAA//wAAP/8Af///AH///wAvb/8uj8//aYjH/wAANv8Af///AH///wB///8Af///ACpJ/1SVtP8AAP7/AAD+/wAAP/8AAD//AH///wB///8APz7/AD8+/z8AAP8/AAD/AH///wB///8Af///AH///z4/AP8+PwD/AAD+/wAA/v8AAD//AAA//wB///8Af///AD8+/wA/Pv8/AAD/PwAA/wB///8Af///AH///wB///8+PwD/Pj8A/wAA/v8AAP7/AAA//wAAP/8AMiP/VqSV/xiH5/8AJ4f/AABT/zSD5P+di6z/DQAb/w8AUP+Nfc3/Kora/wAfb/8AAP7/AAD+/wAAP/8AAD//ADIj/wAyI/8Yh+f/GIfn/zSD5P80g+T/DQAb/w0AG/8PAFD/DwBQ/yqK2v8qitr/AAD+/wAA/v8AAD//AAA//wE/AP8BPwD/AD8+/wA/Pv8/AAD/PwAA/z8AAP8/AAD/PgA+/z4APv8+PwD/Pj8A/wAA/v8AAP7/AAA//wAAP/8BPwD/AT8A/wA/Pv8APz7/PwAA/z8AAP8/AAD/PwAA/z4APv8+AD7/Pj8A/z4/AP8AAP7/AAD+/wAAP/8AAD//AT8A/wE/AP8APz7/AD8+/z8AAP8/AAD/PwAA/z8AAP8+AD7/PgA+/z4/AP8+PwD/AAD+/wAA/v8AAD//AAA//wE/AP8BPwD/AD8+/wA/Pv8/AAD/PwAA/z8AAP8/AAD/PgA+/z4APv8+PwD/Pj8A/wAA/v8AAP7/AAD+/wAA/v8B/wD/Af8A/wD+/v8A/v7//wAA//8AAP//AAD//wAA//4A///+AP////8A////AP8AAP7/AAD+/wAA/v8AAP7/Af8A/wH/AP8A/v7/AP7+//8AAP//AAD//wAA//8AAP/+AP///gD/////AP///wD/",
+        _ => panic!("unknown fixture"),
+    };
+    STANDARD.decode(encoded).unwrap()
+}
 
 #[derive(Default)]
 struct MemoryWorkspaceStore {
@@ -105,6 +122,23 @@ struct CapturedIgnorePort {
 }
 
 struct UnusedDeletionPort;
+
+struct RejectingAtomicInstallPort;
+
+impl AtomicInstallPort for RejectingAtomicInstallPort {
+    fn install(&self, _request: AtomicInstallRequest<'_>) -> Result<(), AtomicInstallPortError> {
+        Err(AtomicInstallPortError)
+    }
+}
+
+struct InstallThenReportFailurePort;
+
+impl AtomicInstallPort for InstallThenReportFailurePort {
+    fn install(&self, request: AtomicInstallRequest<'_>) -> Result<(), AtomicInstallPortError> {
+        CapabilityAtomicInstallPort.install(request)?;
+        Err(AtomicInstallPortError)
+    }
+}
 
 impl DeletionPort for UnusedDeletionPort {
     fn delete(
@@ -613,8 +647,8 @@ async fn inventory_cursor_rejects_a_descendant_rewrite_in_a_listed_directory() {
 #[tokio::test]
 async fn resource_http_adapter_matches_inventory_and_streams_verified_bytes() {
     let fixture = Fixture::new().await;
-    let bytes = b"\x89PNG\r\n\x1a\nverified image bytes";
-    fs::write(fixture.root.join("image.png"), bytes).unwrap();
+    let bytes = image_fixture("png");
+    fs::write(fixture.root.join("image.png"), &bytes).unwrap();
     let query = ListWorkspaceInventoryQuery {
         cursor: None,
         limit: Some(PageLimit::new(10).unwrap()),
@@ -702,6 +736,154 @@ async fn resource_http_adapter_matches_inventory_and_streams_verified_bytes() {
         serde_json::from_slice(&to_bytes(response.into_body(), 1024 * 1024).await.unwrap())
             .unwrap();
     assert_eq!(envelope["code"], "resource_not_found");
+}
+
+#[tokio::test]
+async fn resource_http_writer_accepts_a_bounded_raw_body_and_returns_an_openable_resource() {
+    let fixture = Fixture::new().await;
+    fs::write(fixture.root.join("note.md"), b"# Note").unwrap();
+    let workspace = fixture._workspace.get_workspace().await.unwrap();
+    let document_id = fixture
+        .service
+        .list_inventory(&WorkspaceRelativePath::default())
+        .unwrap()
+        .into_iter()
+        .find_map(|entry| match entry {
+            WorkspaceInventoryEntry::Document(entry) if entry.path.as_str() == "note.md" => {
+                Some(entry.id)
+            }
+            _ => None,
+        })
+        .unwrap();
+    fixture
+        .runtime
+        .install_resources_api_service(Arc::new(fixture.service.clone()))
+        .unwrap();
+    let credential = fixture.runtime.expose_native_launch_credential();
+    let router = build_router(
+        fixture.runtime.clone(),
+        TransportPolicy::loopback("127.0.0.1:43123", "http://127.0.0.1:43123").unwrap(),
+    );
+    let bytes = image_fixture("png");
+
+    let request = Request::builder()
+        .method("POST")
+        .uri(format!(
+            "/api/v1/documents/{}/resources?workspaceGeneration={}&folder=assets&name=pasted.png&kind=image",
+            document_id.as_str(),
+            workspace.generation.as_str(),
+        ))
+        .header(header::HOST, "127.0.0.1:43123")
+        .header(header::AUTHORIZATION, format!("Bearer {credential}"))
+        .header(header::CONTENT_TYPE, "image/png")
+        .header(header::CONTENT_LENGTH, bytes.len())
+        .body(Body::from(bytes.clone()))
+        .unwrap();
+    let response = router.clone().oneshot(request).await.unwrap();
+    let status = response.status();
+    let response_body = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "{}",
+        String::from_utf8_lossy(&response_body)
+    );
+    let created: qingyu_kernel::contract::ResourceEntryDto =
+        serde_json::from_slice(&response_body).unwrap();
+    assert_eq!(created.path.as_str(), "assets/pasted.png");
+    assert_eq!(
+        created.revision.as_str().split_once(':').unwrap().0,
+        "sha256"
+    );
+
+    let request = Request::builder()
+        .method("GET")
+        .uri(format!(
+            "/api/v1/resources/{}?kind=image",
+            created.id.as_str()
+        ))
+        .header(header::HOST, "127.0.0.1:43123")
+        .header(header::AUTHORIZATION, format!("Bearer {credential}"))
+        .body(Body::empty())
+        .unwrap();
+    let response = router.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        to_bytes(response.into_body(), 1024 * 1024).await.unwrap(),
+        bytes.as_slice()
+    );
+}
+
+#[tokio::test]
+async fn resource_http_writer_rejects_oversize_unauthenticated_and_wrong_host_requests() {
+    let fixture = Fixture::new().await;
+    fs::write(fixture.root.join("note.md"), b"# Note").unwrap();
+    let workspace = fixture._workspace.get_workspace().await.unwrap();
+    let document_id = fixture
+        .service
+        .list_inventory(&WorkspaceRelativePath::default())
+        .unwrap()
+        .into_iter()
+        .find_map(|entry| match entry {
+            WorkspaceInventoryEntry::Document(entry) if entry.kind == DocumentKind::File => {
+                Some(entry.id)
+            }
+            WorkspaceInventoryEntry::Resource(_) => None,
+            WorkspaceInventoryEntry::Document(_) => None,
+        })
+        .unwrap();
+    fixture
+        .runtime
+        .install_resources_api_service(Arc::new(fixture.service.clone()))
+        .unwrap();
+    let credential = fixture.runtime.expose_native_launch_credential();
+    let router = build_router(
+        fixture.runtime.clone(),
+        TransportPolicy::loopback("127.0.0.1:43123", "http://127.0.0.1:43123").unwrap(),
+    );
+    let uri = format!(
+        "/api/v1/documents/{}/resources?workspaceGeneration={}&folder=assets&name=asset.bin&kind=attachment",
+        document_id.as_str(),
+        workspace.generation.as_str(),
+    );
+
+    let request = Request::builder()
+        .method("POST")
+        .uri(&uri)
+        .header(header::HOST, "127.0.0.1:43123")
+        .header(header::AUTHORIZATION, format!("Bearer {credential}"))
+        .header(header::CONTENT_TYPE, "application/octet-stream")
+        .header(header::CONTENT_LENGTH, MAX_RESOURCE_BODY_BYTES + 1)
+        .body(Body::empty())
+        .unwrap();
+    let response = router.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    let envelope: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), 1024 * 1024).await.unwrap())
+            .unwrap();
+    assert_eq!(envelope["code"], "resource_too_large");
+
+    let request = Request::builder()
+        .method("POST")
+        .uri(&uri)
+        .header(header::HOST, "127.0.0.1:43123")
+        .header(header::CONTENT_TYPE, "application/octet-stream")
+        .body(Body::from("asset"))
+        .unwrap();
+    let response = router.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+    let request = Request::builder()
+        .method("POST")
+        .uri(&uri)
+        .header(header::HOST, "attacker.example")
+        .header(header::AUTHORIZATION, format!("Bearer {credential}"))
+        .header(header::CONTENT_TYPE, "application/octet-stream")
+        .body(Body::from("asset"))
+        .unwrap();
+    let response = router.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert!(!fixture.root.join("assets").exists());
 }
 
 #[tokio::test]
@@ -814,11 +996,7 @@ async fn inventory_lists_every_immediate_kind_and_classifies_images_from_magic_a
     fs::create_dir(fixture.root.join("folder")).unwrap();
     fs::write(fixture.root.join("folder/nested.bin"), b"nested").unwrap();
     fs::write(fixture.root.join("note.md"), b"# Note").unwrap();
-    fs::write(
-        fixture.root.join("image.png"),
-        b"\x89PNG\r\n\x1a\nimage bytes",
-    )
-    .unwrap();
+    fs::write(fixture.root.join("image.png"), image_fixture("png")).unwrap();
     fs::write(fixture.root.join("fake.png"), b"not a png").unwrap();
     fs::write(fixture.root.join("vector.svg"), b"<svg></svg>").unwrap();
     fs::write(fixture.root.join("archive.bin"), b"attachment").unwrap();
@@ -913,6 +1091,747 @@ async fn inventory_document_revision_is_accepted_by_the_document_mutation_contra
 }
 
 #[tokio::test]
+async fn resource_writer_creates_a_document_relative_image_and_returns_an_openable_snapshot() {
+    let fixture = Fixture::new().await;
+    fs::write(fixture.root.join("note.md"), b"# Note").unwrap();
+    let workspace = fixture._workspace.get_workspace().await.unwrap();
+    let document_id = fixture
+        .service
+        .list_inventory(&WorkspaceRelativePath::default())
+        .unwrap()
+        .into_iter()
+        .find_map(|entry| match entry {
+            WorkspaceInventoryEntry::Document(entry) if entry.path.as_str() == "note.md" => {
+                Some(entry.id)
+            }
+            _ => None,
+        })
+        .unwrap();
+
+    let png = image_fixture("png");
+    let created = fixture
+        .service
+        .create_resource(
+            &document_id,
+            CreateWorkspaceResourceQuery {
+                workspace_generation: workspace.generation,
+                folder: WorkspaceRelativePath::parse("assets").unwrap(),
+                name: ResourceName::parse("pasted.png").unwrap(),
+                kind: ResourceKind::Image,
+            },
+            "image/png",
+            &png,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(created.path.as_str(), "assets/pasted.png");
+    assert_eq!(created.parent.as_str(), "assets");
+    assert_eq!(created.name.as_str(), "pasted.png");
+    assert_eq!(created.kind, ResourceKind::Image);
+    assert_eq!(created.media_type, "image/png");
+    assert!(created.previewable);
+    assert!(created.revision.as_str().starts_with("sha256:"));
+    assert_eq!(
+        fs::read(fixture.root.join("assets/pasted.png")).unwrap(),
+        png
+    );
+
+    let mut opened = fixture
+        .service
+        .open_resource(&created.id, ResourceKind::Image)
+        .unwrap();
+    let mut bytes = Vec::new();
+    opened.read_to_end(&mut bytes).unwrap();
+    opened.verify_complete().unwrap();
+    assert_eq!(bytes, image_fixture("png"));
+}
+
+#[tokio::test]
+async fn resource_writer_uses_atomic_unique_names_without_overwriting_existing_files() {
+    let fixture = Fixture::new().await;
+    fs::write(fixture.root.join("note.md"), b"# Note").unwrap();
+    fs::create_dir(fixture.root.join("assets")).unwrap();
+    fs::write(fixture.root.join("assets/pasted.png"), b"keep existing").unwrap();
+    let workspace = fixture._workspace.get_workspace().await.unwrap();
+    let document_id = fixture
+        .service
+        .list_inventory(&WorkspaceRelativePath::default())
+        .unwrap()
+        .into_iter()
+        .find_map(|entry| match entry {
+            WorkspaceInventoryEntry::Document(entry) if entry.path.as_str() == "note.md" => {
+                Some(entry.id)
+            }
+            _ => None,
+        })
+        .unwrap();
+
+    let png = image_fixture("png");
+    let created = fixture
+        .service
+        .create_resource(
+            &document_id,
+            CreateWorkspaceResourceQuery {
+                workspace_generation: workspace.generation,
+                folder: WorkspaceRelativePath::parse("assets").unwrap(),
+                name: ResourceName::parse("pasted.png").unwrap(),
+                kind: ResourceKind::Image,
+            },
+            "image/png",
+            &png,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(created.path.as_str(), "assets/pasted-2.png");
+    assert_eq!(
+        fs::read(fixture.root.join("assets/pasted.png")).unwrap(),
+        b"keep existing"
+    );
+    assert_eq!(
+        fs::read(fixture.root.join("assets/pasted-2.png")).unwrap(),
+        png
+    );
+}
+
+#[tokio::test]
+async fn resource_writer_rejects_image_mime_or_magic_mismatches_without_a_partial_file() {
+    let fixture = Fixture::new().await;
+    fs::write(fixture.root.join("note.md"), b"# Note").unwrap();
+    let workspace = fixture._workspace.get_workspace().await.unwrap();
+    let document_id = fixture
+        .service
+        .list_inventory(&WorkspaceRelativePath::default())
+        .unwrap()
+        .into_iter()
+        .find_map(|entry| match entry {
+            WorkspaceInventoryEntry::Document(entry) if entry.path.as_str() == "note.md" => {
+                Some(entry.id)
+            }
+            _ => None,
+        })
+        .unwrap();
+
+    let png = image_fixture("png");
+    for (kind, media_type, body) in [
+        (
+            ResourceKind::Image,
+            "application/octet-stream",
+            png.as_slice(),
+        ),
+        (ResourceKind::Image, "image/png", b"not a png".as_slice()),
+        (
+            ResourceKind::Attachment,
+            "application/octet-stream",
+            png.as_slice(),
+        ),
+    ] {
+        let error = fixture
+            .service
+            .create_resource(
+                &document_id,
+                CreateWorkspaceResourceQuery {
+                    workspace_generation: workspace.generation.clone(),
+                    folder: WorkspaceRelativePath::parse("assets").unwrap(),
+                    name: ResourceName::parse("pasted.png").unwrap(),
+                    kind,
+                },
+                media_type,
+                body,
+            )
+            .await
+            .unwrap_err();
+
+        assert_eq!(error.kind(), ResourceServiceErrorKind::InvalidMediaType);
+        assert!(!fixture.root.join("assets/pasted.png").exists());
+    }
+}
+
+#[tokio::test]
+async fn resource_writer_creates_document_relative_attachments_in_nested_workspaces() {
+    let fixture = Fixture::new().await;
+    fs::create_dir(fixture.root.join("notes")).unwrap();
+    fs::write(fixture.root.join("notes/note.md"), b"# Note").unwrap();
+    let workspace = fixture._workspace.get_workspace().await.unwrap();
+    let document_id = fixture
+        .service
+        .list_inventory(&WorkspaceRelativePath::parse("notes").unwrap())
+        .unwrap()
+        .into_iter()
+        .find_map(|entry| match entry {
+            WorkspaceInventoryEntry::Document(entry) => Some(entry.id),
+            WorkspaceInventoryEntry::Resource(_) => None,
+        })
+        .unwrap();
+
+    let created = fixture
+        .service
+        .create_resource(
+            &document_id,
+            CreateWorkspaceResourceQuery {
+                workspace_generation: workspace.generation,
+                folder: WorkspaceRelativePath::parse("files/reports").unwrap(),
+                name: ResourceName::parse("report.pdf").unwrap(),
+                kind: ResourceKind::Attachment,
+            },
+            "application/octet-stream",
+            b"%PDF-1.7 attachment",
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(created.path.as_str(), "notes/files/reports/report.pdf");
+    assert_eq!(created.kind, ResourceKind::Attachment);
+    assert!(!created.previewable);
+    assert_eq!(
+        fs::read(fixture.root.join("notes/files/reports/report.pdf")).unwrap(),
+        b"%PDF-1.7 attachment"
+    );
+}
+
+#[tokio::test]
+async fn resource_writer_rejects_stale_generations_protected_and_ignored_paths() {
+    let fixture = Fixture::new().await;
+    fs::write(fixture.root.join("note.md"), b"# Note").unwrap();
+    fs::write(fixture.root.join("foreign.bin"), b"foreign").unwrap();
+    let inventory = fixture
+        .service
+        .list_inventory(&WorkspaceRelativePath::default())
+        .unwrap();
+    let document_id = inventory
+        .iter()
+        .find_map(|entry| match entry {
+            WorkspaceInventoryEntry::Document(entry) => Some(entry.id.clone()),
+            WorkspaceInventoryEntry::Resource(_) => None,
+        })
+        .unwrap();
+    let foreign_id = inventory
+        .iter()
+        .find_map(|entry| match entry {
+            WorkspaceInventoryEntry::Resource(entry) => {
+                Some(DocumentId::parse(entry.id.as_str()).unwrap())
+            }
+            WorkspaceInventoryEntry::Document(_) => None,
+        })
+        .unwrap();
+    let workspace = fixture._workspace.get_workspace().await.unwrap();
+    let stale = fixture
+        .service
+        .create_resource(
+            &document_id,
+            CreateWorkspaceResourceQuery {
+                workspace_generation: WorkspaceGeneration::parse("stale-generation").unwrap(),
+                folder: WorkspaceRelativePath::parse("assets").unwrap(),
+                name: ResourceName::parse("asset.bin").unwrap(),
+                kind: ResourceKind::Attachment,
+            },
+            "application/octet-stream",
+            b"asset",
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(stale.kind(), ResourceServiceErrorKind::StaleWorkspace);
+
+    let foreign = fixture
+        .service
+        .create_resource(
+            &foreign_id,
+            CreateWorkspaceResourceQuery {
+                workspace_generation: workspace.generation.clone(),
+                folder: WorkspaceRelativePath::parse("assets").unwrap(),
+                name: ResourceName::parse("asset.bin").unwrap(),
+                kind: ResourceKind::Attachment,
+            },
+            "application/octet-stream",
+            b"asset",
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(foreign.kind(), ResourceServiceErrorKind::NotFound);
+
+    let protected = fixture
+        .service
+        .create_resource(
+            &document_id,
+            CreateWorkspaceResourceQuery {
+                workspace_generation: workspace.generation.clone(),
+                folder: WorkspaceRelativePath::parse(".git/assets").unwrap(),
+                name: ResourceName::parse("asset.bin").unwrap(),
+                kind: ResourceKind::Attachment,
+            },
+            "application/octet-stream",
+            b"asset",
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(protected.kind(), ResourceServiceErrorKind::InvalidPath);
+
+    fixture.ignore.set_global_rules("assets/\n");
+    let ignored = fixture
+        .service
+        .create_resource(
+            &document_id,
+            CreateWorkspaceResourceQuery {
+                workspace_generation: workspace.generation,
+                folder: WorkspaceRelativePath::parse("assets").unwrap(),
+                name: ResourceName::parse("asset.bin").unwrap(),
+                kind: ResourceKind::Attachment,
+            },
+            "application/octet-stream",
+            b"asset",
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(ignored.kind(), ResourceServiceErrorKind::InvalidPath);
+    assert!(!fixture.root.join("assets").exists());
+}
+
+#[tokio::test]
+async fn resource_writer_rejects_a_replaced_workspace_root_without_stranding_the_upload() {
+    let fixture = Fixture::new().await;
+    fs::write(fixture.root.join("note.md"), b"# Note").unwrap();
+    let workspace = fixture._workspace.get_workspace().await.unwrap();
+    let document_id = fixture
+        .service
+        .list_inventory(&WorkspaceRelativePath::default())
+        .unwrap()
+        .into_iter()
+        .find_map(|entry| match entry {
+            WorkspaceInventoryEntry::Document(entry) => Some(entry.id),
+            WorkspaceInventoryEntry::Resource(_) => None,
+        })
+        .unwrap();
+    let retired = fixture.root.with_extension("retired");
+    fixture
+        .ignore
+        .replace_root_after_capture(fixture.root.clone(), retired.clone());
+
+    let error = fixture
+        .service
+        .create_resource(
+            &document_id,
+            CreateWorkspaceResourceQuery {
+                workspace_generation: workspace.generation,
+                folder: WorkspaceRelativePath::parse("assets").unwrap(),
+                name: ResourceName::parse("asset.bin").unwrap(),
+                kind: ResourceKind::Attachment,
+            },
+            "application/octet-stream",
+            b"asset",
+        )
+        .await
+        .unwrap_err();
+
+    assert_eq!(error.kind(), ResourceServiceErrorKind::Unavailable);
+    assert!(!fixture.root.join("assets").exists());
+    assert!(!retired.join("assets").exists());
+}
+
+#[tokio::test]
+async fn resource_writer_rolls_back_staging_and_new_directories_when_publication_fails() {
+    let fixture = Fixture::new().await;
+    fs::write(fixture.root.join("note.md"), b"# Note").unwrap();
+    let workspace = fixture._workspace.get_workspace().await.unwrap();
+    let document_id = fixture
+        .service
+        .list_inventory(&WorkspaceRelativePath::default())
+        .unwrap()
+        .into_iter()
+        .find_map(|entry| match entry {
+            WorkspaceInventoryEntry::Document(entry) => Some(entry.id),
+            WorkspaceInventoryEntry::Resource(_) => None,
+        })
+        .unwrap();
+    let service = WorkspaceResourceService::new_with_atomic_install(
+        &fixture.runtime,
+        fixture.ignore.clone(),
+        Arc::new(RejectingAtomicInstallPort),
+    );
+    let mut before = fs::read_dir(&fixture.root)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect::<Vec<_>>();
+    before.sort();
+
+    let error = service
+        .create_resource(
+            &document_id,
+            CreateWorkspaceResourceQuery {
+                workspace_generation: workspace.generation,
+                folder: WorkspaceRelativePath::parse("assets/nested").unwrap(),
+                name: ResourceName::parse("asset.bin").unwrap(),
+                kind: ResourceKind::Attachment,
+            },
+            "application/octet-stream",
+            b"asset",
+        )
+        .await
+        .unwrap_err();
+
+    assert_eq!(error.kind(), ResourceServiceErrorKind::Unavailable);
+    assert!(!fixture.root.join("assets").exists());
+    let mut after = fs::read_dir(&fixture.root)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect::<Vec<_>>();
+    after.sort();
+    assert_eq!(after, before);
+}
+
+#[tokio::test]
+async fn resource_writer_settles_a_commit_unknown_publication_by_pinned_identity() {
+    let fixture = Fixture::new().await;
+    fs::write(fixture.root.join("note.md"), b"# Note").unwrap();
+    let workspace = fixture._workspace.get_workspace().await.unwrap();
+    let document_id = fixture
+        .service
+        .list_inventory(&WorkspaceRelativePath::default())
+        .unwrap()
+        .into_iter()
+        .find_map(|entry| match entry {
+            WorkspaceInventoryEntry::Document(entry) => Some(entry.id),
+            WorkspaceInventoryEntry::Resource(_) => None,
+        })
+        .unwrap();
+    let service = WorkspaceResourceService::new_with_atomic_install(
+        &fixture.runtime,
+        fixture.ignore.clone(),
+        Arc::new(InstallThenReportFailurePort),
+    );
+
+    let created = service
+        .create_resource(
+            &document_id,
+            CreateWorkspaceResourceQuery {
+                workspace_generation: workspace.generation,
+                folder: WorkspaceRelativePath::parse("assets").unwrap(),
+                name: ResourceName::parse("asset.bin").unwrap(),
+                kind: ResourceKind::Attachment,
+            },
+            "application/octet-stream",
+            b"asset",
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(created.path.as_str(), "assets/asset.bin");
+    assert_eq!(
+        fs::read(fixture.root.join("assets/asset.bin")).unwrap(),
+        b"asset"
+    );
+}
+
+#[tokio::test]
+async fn resource_batch_rolls_back_every_publication_when_a_later_install_fails() {
+    struct FailSecondInstall {
+        calls: AtomicUsize,
+    }
+    impl AtomicInstallPort for FailSecondInstall {
+        fn install(&self, request: AtomicInstallRequest<'_>) -> Result<(), AtomicInstallPortError> {
+            if self.calls.fetch_add(1, Ordering::SeqCst) == 1 {
+                return Err(AtomicInstallPortError);
+            }
+            CapabilityAtomicInstallPort.install(request)
+        }
+    }
+
+    let fixture = Fixture::new().await;
+    fs::write(fixture.root.join("note.md"), b"# Note").unwrap();
+    let workspace = fixture._workspace.get_workspace().await.unwrap();
+    let document_id = fixture
+        .service
+        .list_inventory(&WorkspaceRelativePath::default())
+        .unwrap()
+        .into_iter()
+        .find_map(|entry| match entry {
+            WorkspaceInventoryEntry::Document(entry) => Some(entry.id),
+            WorkspaceInventoryEntry::Resource(_) => None,
+        })
+        .unwrap();
+    let service = WorkspaceResourceService::new_with_atomic_install(
+        &fixture.runtime,
+        fixture.ignore.clone(),
+        Arc::new(FailSecondInstall {
+            calls: AtomicUsize::new(0),
+        }),
+    );
+
+    let error = service
+        .create_resource_batch(
+            &document_id,
+            workspace.generation,
+            WorkspaceRelativePath::parse("assets").unwrap(),
+            vec![
+                CreateResourceBatchItem::image(
+                    ResourceName::parse("one.png").unwrap(),
+                    "image/png",
+                    image_fixture("png"),
+                ),
+                CreateResourceBatchItem::image(
+                    ResourceName::parse("two.png").unwrap(),
+                    "image/png",
+                    image_fixture("png"),
+                ),
+            ],
+        )
+        .await
+        .unwrap_err();
+
+    assert_eq!(error.kind(), ResourceServiceErrorKind::Unavailable);
+    assert!(!fixture.root.join("assets/one.png").exists());
+    assert!(!fixture.root.join("assets/two.png").exists());
+    assert!(!fixture.root.join("assets").exists());
+}
+
+#[tokio::test]
+async fn resource_batch_preserves_request_order_and_reserves_collision_names() {
+    let fixture = Fixture::new().await;
+    fs::write(fixture.root.join("note.md"), b"# Note").unwrap();
+    fs::create_dir(fixture.root.join("assets")).unwrap();
+    fs::write(fixture.root.join("assets/picture.png"), b"existing").unwrap();
+    let workspace = fixture._workspace.get_workspace().await.unwrap();
+    let document_id = fixture
+        .service
+        .list_inventory(&WorkspaceRelativePath::default())
+        .unwrap()
+        .into_iter()
+        .find_map(|entry| match entry {
+            WorkspaceInventoryEntry::Document(entry) if entry.kind == DocumentKind::File => {
+                Some(entry.id)
+            }
+            _ => None,
+        })
+        .unwrap();
+
+    let created = fixture
+        .service
+        .create_resource_batch(
+            &document_id,
+            workspace.generation,
+            WorkspaceRelativePath::parse("assets").unwrap(),
+            vec![
+                CreateResourceBatchItem::image(
+                    ResourceName::parse("picture.png").unwrap(),
+                    "image/png",
+                    image_fixture("png"),
+                ),
+                CreateResourceBatchItem::image(
+                    ResourceName::parse("picture.png").unwrap(),
+                    "image/png",
+                    image_fixture("png"),
+                ),
+            ],
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        created
+            .iter()
+            .map(|resource| resource.path.as_str())
+            .collect::<Vec<_>>(),
+        ["assets/picture-2.png", "assets/picture-3.png"]
+    );
+}
+
+#[tokio::test]
+async fn resource_batch_settles_each_commit_unknown_install() {
+    let fixture = Fixture::new().await;
+    fs::write(fixture.root.join("note.md"), b"# Note").unwrap();
+    let workspace = fixture._workspace.get_workspace().await.unwrap();
+    let document_id = fixture
+        .service
+        .list_inventory(&WorkspaceRelativePath::default())
+        .unwrap()
+        .into_iter()
+        .find_map(|entry| match entry {
+            WorkspaceInventoryEntry::Document(entry) => Some(entry.id),
+            WorkspaceInventoryEntry::Resource(_) => None,
+        })
+        .unwrap();
+    let service = WorkspaceResourceService::new_with_atomic_install(
+        &fixture.runtime,
+        fixture.ignore.clone(),
+        Arc::new(InstallThenReportFailurePort),
+    );
+
+    let created = service
+        .create_resource_batch(
+            &document_id,
+            workspace.generation,
+            WorkspaceRelativePath::parse("assets").unwrap(),
+            vec![
+                CreateResourceBatchItem::image(
+                    ResourceName::parse("one.png").unwrap(),
+                    "image/png",
+                    image_fixture("png"),
+                ),
+                CreateResourceBatchItem::image(
+                    ResourceName::parse("two.png").unwrap(),
+                    "image/png",
+                    image_fixture("png"),
+                ),
+            ],
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(created.len(), 2);
+    assert!(fixture.root.join("assets/one.png").exists());
+    assert!(fixture.root.join("assets/two.png").exists());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn resource_batch_hides_intermediate_publication_from_inventory_readers() {
+    use std::{sync::mpsc, thread};
+
+    struct PauseSecondInstall {
+        condition: Condvar,
+        state: Mutex<(usize, bool)>,
+    }
+    impl AtomicInstallPort for PauseSecondInstall {
+        fn install(&self, request: AtomicInstallRequest<'_>) -> Result<(), AtomicInstallPortError> {
+            let call = {
+                let mut state = self.state.lock().unwrap();
+                let call = state.0;
+                state.0 += 1;
+                if call == 1 {
+                    self.condition.notify_all();
+                    while !state.1 {
+                        state = self.condition.wait(state).unwrap();
+                    }
+                }
+                call
+            };
+            assert!(call < 2);
+            CapabilityAtomicInstallPort.install(request)
+        }
+    }
+
+    let fixture = Fixture::new().await;
+    fs::write(fixture.root.join("note.md"), b"# Note").unwrap();
+    let workspace = fixture._workspace.get_workspace().await.unwrap();
+    let document_id = fixture
+        .service
+        .list_inventory(&WorkspaceRelativePath::default())
+        .unwrap()
+        .into_iter()
+        .find_map(|entry| match entry {
+            WorkspaceInventoryEntry::Document(entry) => Some(entry.id),
+            WorkspaceInventoryEntry::Resource(_) => None,
+        })
+        .unwrap();
+    let pause = Arc::new(PauseSecondInstall {
+        condition: Condvar::new(),
+        state: Mutex::new((0, false)),
+    });
+    let service = WorkspaceResourceService::new_with_atomic_install(
+        &fixture.runtime,
+        fixture.ignore.clone(),
+        pause.clone(),
+    );
+    let writer_service = service.clone();
+    let writing = tokio::spawn(async move {
+        writer_service
+            .create_resource_batch(
+                &document_id,
+                workspace.generation,
+                WorkspaceRelativePath::parse("assets").unwrap(),
+                vec![
+                    CreateResourceBatchItem::image(
+                        ResourceName::parse("one.png").unwrap(),
+                        "image/png",
+                        image_fixture("png"),
+                    ),
+                    CreateResourceBatchItem::image(
+                        ResourceName::parse("two.png").unwrap(),
+                        "image/png",
+                        image_fixture("png"),
+                    ),
+                ],
+            )
+            .await
+    });
+    let wait_port = pause.clone();
+    tokio::task::spawn_blocking(move || {
+        let mut state = wait_port.state.lock().unwrap();
+        while state.0 < 2 {
+            state = wait_port.condition.wait(state).unwrap();
+        }
+    })
+    .await
+    .unwrap();
+
+    let (sender, receiver) = mpsc::channel();
+    let reader_service = service.clone();
+    let reader = thread::spawn(move || {
+        sender
+            .send(reader_service.list_inventory(&WorkspaceRelativePath::parse("assets").unwrap()))
+            .unwrap();
+    });
+    assert!(receiver.recv_timeout(Duration::from_millis(200)).is_err());
+    {
+        let mut state = pause.state.lock().unwrap();
+        state.1 = true;
+        pause.condition.notify_all();
+    }
+    writing.await.unwrap().unwrap();
+    let inventory = receiver
+        .recv_timeout(Duration::from_secs(2))
+        .unwrap()
+        .unwrap();
+    reader.join().unwrap();
+    assert_eq!(inventory.len(), 2);
+}
+
+#[tokio::test]
+async fn concurrent_resource_writes_preserve_both_bodies_under_unique_names() {
+    let fixture = Fixture::new().await;
+    fs::write(fixture.root.join("note.md"), b"# Note").unwrap();
+    let workspace = fixture._workspace.get_workspace().await.unwrap();
+    let document_id = fixture
+        .service
+        .list_inventory(&WorkspaceRelativePath::default())
+        .unwrap()
+        .into_iter()
+        .find_map(|entry| match entry {
+            WorkspaceInventoryEntry::Document(entry) => Some(entry.id),
+            WorkspaceInventoryEntry::Resource(_) => None,
+        })
+        .unwrap();
+    let query = CreateWorkspaceResourceQuery {
+        workspace_generation: workspace.generation,
+        folder: WorkspaceRelativePath::parse("assets").unwrap(),
+        name: ResourceName::parse("asset.bin").unwrap(),
+        kind: ResourceKind::Attachment,
+    };
+
+    let (first, second) = tokio::join!(
+        fixture.service.create_resource(
+            &document_id,
+            query.clone(),
+            "application/octet-stream",
+            b"first",
+        ),
+        fixture
+            .service
+            .create_resource(&document_id, query, "application/octet-stream", b"second",),
+    );
+    let mut paths =
+        [first.unwrap().path, second.unwrap().path].map(|path| path.as_str().to_string());
+    paths.sort();
+
+    assert_eq!(paths, ["assets/asset-2.bin", "assets/asset.bin"]);
+    let mut bodies = [
+        fs::read(fixture.root.join("assets/asset.bin")).unwrap(),
+        fs::read(fixture.root.join("assets/asset-2.bin")).unwrap(),
+    ];
+    bodies.sort();
+    assert_eq!(bodies, [b"first".to_vec(), b"second".to_vec()]);
+}
+
+#[tokio::test]
 async fn inventory_scopes_paths_and_suggested_names_to_the_requested_parent() {
     let fixture = Fixture::new().await;
     fs::create_dir_all(fixture.root.join("notes/assets/nested")).unwrap();
@@ -942,18 +1861,10 @@ async fn inventory_scopes_paths_and_suggested_names_to_the_requested_parent() {
 #[tokio::test]
 async fn image_preview_requires_a_matching_allowed_extension_and_magic_signature() {
     let fixture = Fixture::new().await;
-    fs::write(fixture.root.join("photo.JPEG"), b"\xff\xd8\xff\xe0jpeg").unwrap();
-    fs::write(fixture.root.join("animation.gif"), b"GIF89agif").unwrap();
-    fs::write(
-        fixture.root.join("picture.webp"),
-        b"RIFF\x04\x00\x00\x00WEBPpayload",
-    )
-    .unwrap();
-    fs::write(
-        fixture.root.join("disguised.bin"),
-        b"\x89PNG\r\n\x1a\nimage bytes",
-    )
-    .unwrap();
+    fs::write(fixture.root.join("photo.JPEG"), image_fixture("jpg")).unwrap();
+    fs::write(fixture.root.join("animation.gif"), image_fixture("gif")).unwrap();
+    fs::write(fixture.root.join("picture.webp"), image_fixture("webp")).unwrap();
+    fs::write(fixture.root.join("disguised.bin"), image_fixture("png")).unwrap();
 
     let inventory = fixture
         .service
@@ -984,6 +1895,160 @@ async fn image_preview_requires_a_matching_allowed_extension_and_magic_signature
                 && entry.media_type == "application/octet-stream"
                 && !entry.previewable
     ));
+}
+
+#[tokio::test]
+async fn resource_writer_accepts_the_mobile_image_contract_after_authoritative_content_validation()
+{
+    let fixture = Fixture::new().await;
+    fs::write(fixture.root.join("note.md"), b"# Note").unwrap();
+    let workspace = fixture._workspace.get_workspace().await.unwrap();
+    let document_id = fixture
+        .service
+        .list_inventory(&WorkspaceRelativePath::default())
+        .unwrap()
+        .into_iter()
+        .find_map(|entry| match entry {
+            WorkspaceInventoryEntry::Document(entry) => Some(entry.id),
+            WorkspaceInventoryEntry::Resource(_) => None,
+        })
+        .unwrap();
+    let cases = vec![
+        ("picture.avif", "image/avif", image_fixture("avif")),
+        ("picture.bmp", "image/bmp", image_fixture("bmp")),
+        ("picture.gif", "image/gif", image_fixture("gif")),
+        ("picture.jpg", "image/jpeg", image_fixture("jpg")),
+        ("picture.png", "image/png", image_fixture("png")),
+        ("picture.webp", "image/webp", image_fixture("webp")),
+        (
+            "picture.svg",
+            "image/svg+xml",
+            br##"<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><rect width="10" height="10" fill="#123456"/></svg>"##.to_vec(),
+        ),
+    ];
+
+    for (name, media_type, body) in cases {
+        let created = fixture
+            .service
+            .create_resource(
+                &document_id,
+                CreateWorkspaceResourceQuery {
+                    workspace_generation: workspace.generation.clone(),
+                    folder: WorkspaceRelativePath::parse("assets").unwrap(),
+                    name: ResourceName::parse(name).unwrap(),
+                    kind: ResourceKind::Image,
+                },
+                media_type,
+                &body,
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{name}: {error:?}"));
+
+        assert_eq!(created.media_type, media_type, "{name}");
+        assert!(created.previewable, "{name}");
+        let stored = fs::read(fixture.root.join(created.path.as_str())).unwrap();
+        if media_type == "image/svg+xml" {
+            assert_eq!(
+                stored,
+                br##"<svg viewBox="0 0 10 10" xmlns="http://www.w3.org/2000/svg"><rect fill="#123456" height="10" width="10"/></svg>"##
+            );
+        } else {
+            assert_eq!(stored, body);
+        }
+    }
+
+    for (name, media_type, body) in [
+        (
+            "sequence.avif",
+            "image/avif",
+            b"\x00\x00\x00\x18ftypavis\x00\x00\x00\x00avismif1".as_slice(),
+        ),
+        (
+            "truncated.bmp",
+            "image/bmp",
+            b"BM\x1a\x00\x00\x00".as_slice(),
+        ),
+        (
+            "truncated.png",
+            "image/png",
+            b"\x89PNG\r\n\x1a\n".as_slice(),
+        ),
+        ("truncated.jpg", "image/jpeg", b"\xff\xd8\xff".as_slice()),
+        ("truncated.gif", "image/gif", b"GIF89a".as_slice()),
+        (
+            "truncated.webp",
+            "image/webp",
+            b"RIFF\x04\0\0\0WEBP".as_slice(),
+        ),
+    ] {
+        let error = fixture
+            .service
+            .create_resource(
+                &document_id,
+                CreateWorkspaceResourceQuery {
+                    workspace_generation: workspace.generation.clone(),
+                    folder: WorkspaceRelativePath::parse("assets").unwrap(),
+                    name: ResourceName::parse(name).unwrap(),
+                    kind: ResourceKind::Image,
+                },
+                media_type,
+                body,
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.kind(),
+            ResourceServiceErrorKind::InvalidMediaType,
+            "{name}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn resource_writer_rejects_active_or_external_svg_without_leaving_a_file() {
+    let fixture = Fixture::new().await;
+    fs::write(fixture.root.join("note.md"), b"# Note").unwrap();
+    let workspace = fixture._workspace.get_workspace().await.unwrap();
+    let document_id = fixture
+        .service
+        .list_inventory(&WorkspaceRelativePath::default())
+        .unwrap()
+        .into_iter()
+        .find_map(|entry| match entry {
+            WorkspaceInventoryEntry::Document(entry) => Some(entry.id),
+            WorkspaceInventoryEntry::Resource(_) => None,
+        })
+        .unwrap();
+    let rejected = [
+        br#"<svg xmlns="http://www.w3.org/2000/svg" onload="alert(1)"/>"#.as_slice(),
+        br#"<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>"#.as_slice(),
+        br#"<svg xmlns="http://www.w3.org/2000/svg"><foreignObject><iframe src="https://example.test"/></foreignObject></svg>"#.as_slice(),
+        br#"<svg xmlns="http://www.w3.org/2000/svg"><image href="https://example.test/leak.png"/></svg>"#.as_slice(),
+        br#"<svg xmlns="http://www.w3.org/2000/svg"><style>@import url(https://example.test/x.css)</style></svg>"#.as_slice(),
+        br#"<!DOCTYPE svg [<!ENTITY xxe SYSTEM "file:///etc/passwd">]><svg xmlns="http://www.w3.org/2000/svg">&xxe;</svg>"#.as_slice(),
+        br#"<?target data?><svg xmlns="http://www.w3.org/2000/svg"/>"#.as_slice(),
+    ];
+
+    for body in rejected {
+        let error = fixture
+            .service
+            .create_resource(
+                &document_id,
+                CreateWorkspaceResourceQuery {
+                    workspace_generation: workspace.generation.clone(),
+                    folder: WorkspaceRelativePath::parse("assets").unwrap(),
+                    name: ResourceName::parse("unsafe.svg").unwrap(),
+                    kind: ResourceKind::Image,
+                },
+                "image/svg+xml",
+                body,
+            )
+            .await
+            .unwrap_err();
+
+        assert_eq!(error.kind(), ResourceServiceErrorKind::InvalidMediaType);
+        assert!(!fixture.root.join("assets/unsafe.svg").exists());
+    }
 }
 
 #[tokio::test]

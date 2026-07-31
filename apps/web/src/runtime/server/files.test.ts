@@ -9,6 +9,7 @@ import type {
 
 import {
   createServerFileRuntime,
+  createServerFileRuntimeOwner,
   serverWorkspaceRoot,
 } from "./files";
 import type {
@@ -125,6 +126,123 @@ describe("server file facade", () => {
     }));
   });
 
+  it("reuses a newly uploaded image Blob and returns to signed URLs after invalidation", async () => {
+    const listeners = new Set<(notice: KernelInvalidationNotice) => unknown>();
+    const kernel = Object.assign(kernelPort(), {
+      invalidations: {
+        available: true,
+        subscribe: (listener: (notice: KernelInvalidationNotice) => unknown) => {
+          listeners.add(listener);
+          return () => {
+            listeners.delete(listener);
+            return undefined;
+          };
+        },
+      },
+    });
+    const createdEntry = resource({
+      id: "image-new.signature",
+      name: "pasted-2.png",
+      relativePath: "pasted-2.png",
+    });
+    if (createdEntry.entryType !== "resource") throw new Error("resource fixture expected");
+    vi.mocked(kernel.resources.create).mockResolvedValue(createdEntry.resource);
+    const canonicalBody = new Blob(["canonical image"], { type: "image/png" });
+    vi.mocked(kernel.resources.open).mockResolvedValue({
+      body: canonicalBody,
+      mediaType: "image/png",
+    });
+    vi.mocked(kernel.resources.list).mockResolvedValue({
+      items: [createdEntry],
+      workspaceGeneration: generation,
+    });
+    const createObjectURL = vi.fn(() => "blob:server-new-image");
+    const revokeObjectURL = vi.fn();
+    const files = createServerFileRuntime(kernel, {
+      objectUrls: { createObjectURL, revokeObjectURL },
+    });
+    const image = new File(
+      [new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10])],
+      "pasted.png",
+      { type: "image/png" },
+    );
+    const documentPath = `${serverWorkspaceRoot}/note.md`;
+
+    const saved = await files.saveClipboardImage({
+      documentPath,
+      fileName: "pasted.png",
+      folder: "",
+      image,
+    });
+
+    expect(saved).toEqual({ alt: "pasted", src: "pasted-2.png" });
+    expect(createObjectURL).toHaveBeenCalledWith(canonicalBody);
+    expect(kernel.resources.open).toHaveBeenCalledWith({
+      id: "image-new.signature",
+      kind: "image",
+      workspaceGeneration: generation,
+    });
+    expect(files.resolveMarkdownImageSrc?.(documentPath, saved.src))
+      .toBe("blob:server-new-image");
+
+    publish(listeners, {
+      documentChange: "snapshot",
+      scopes: ["resources"],
+    });
+    await vi.waitFor(() => expect(revokeObjectURL).toHaveBeenCalledWith("blob:server-new-image"));
+    expect(files.resolveMarkdownImageSrc?.(documentPath, saved.src)).toBeUndefined();
+
+    await files.loadMarkdownFilesForPath?.(serverWorkspaceRoot);
+    expect(files.resolveMarkdownImageSrc?.(documentPath, saved.src)).toBe(
+      `/api/v1/resources/${encodeURIComponent("image-new.signature")}?kind=image`,
+    );
+    expect(kernel.resources.open).toHaveBeenCalledOnce();
+  });
+
+  it("revokes newly uploaded image URLs when the Server runtime owner is released", async () => {
+    const kernel = kernelPort();
+    const createdEntry = resource({
+      id: "image-owner.signature",
+      name: "owner.png",
+      relativePath: "owner.png",
+    });
+    if (createdEntry.entryType !== "resource") throw new Error("resource fixture expected");
+    vi.mocked(kernel.resources.create).mockResolvedValue(createdEntry.resource);
+    const canonicalBody = new Blob(["canonical owner image"], { type: "image/png" });
+    vi.mocked(kernel.resources.open).mockResolvedValue({
+      body: canonicalBody,
+      mediaType: "image/png",
+    });
+    const createObjectURL = vi.fn(() => "blob:server-owner-image");
+    const revokeObjectURL = vi.fn();
+    const owner = createServerFileRuntimeOwner(kernel, {
+      objectUrls: { createObjectURL, revokeObjectURL },
+    });
+    const image = new File(
+      [new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10])],
+      "owner.png",
+      { type: "image/png" },
+    );
+    const documentPath = `${serverWorkspaceRoot}/note.md`;
+
+    const saved = await owner.files.saveClipboardImage({
+      documentPath,
+      fileName: "owner.png",
+      folder: "",
+      image,
+    });
+    expect(owner.files.resolveMarkdownImageSrc?.(documentPath, saved.src))
+      .toBe("blob:server-owner-image");
+    expect(createObjectURL).toHaveBeenCalledWith(canonicalBody);
+
+    owner.release();
+    owner.release();
+
+    expect(revokeObjectURL).toHaveBeenCalledOnce();
+    expect(revokeObjectURL).toHaveBeenCalledWith("blob:server-owner-image");
+    expect(owner.files.resolveMarkdownImageSrc?.(documentPath, saved.src)).toBeUndefined();
+  });
+
   it("prewarms nested image capabilities before returning Markdown and rejects unsafe or non-image sources", async () => {
     const kernel = kernelPort();
     const notesFolder = entry({
@@ -196,6 +314,7 @@ describe("server file facade", () => {
     await files.readMarkdownFile(documentPath);
 
     const imageUrl = `/api/v1/resources/${encodeURIComponent("image/payload.signature")}?kind=image`;
+    const svgUrl = `/api/v1/resources/${encodeURIComponent("image-svg/payload.signature")}?kind=image`;
     expect(files.resolveMarkdownImageSrc?.(documentPath, "../assets/cover%20image.png"))
       .toBe(imageUrl);
     expect(files.resolveMarkdownImageSrc?.(documentPath, "/assets/cover%20image.png"))
@@ -204,6 +323,8 @@ describe("server file facade", () => {
       documentPath,
       `${serverWorkspaceRoot}/assets/cover%20image.png`,
     )).toBe(imageUrl);
+    expect(files.resolveMarkdownImageSrc?.(documentPath, "../assets/untrusted.svg"))
+      .toBe(svgUrl);
     expect(kernel.resources.open).not.toHaveBeenCalled();
     const inventoryCallCount = vi.mocked(kernel.resources.list).mock.calls.length;
     await files.readMarkdownFile(documentPath);
@@ -222,7 +343,6 @@ describe("server file facade", () => {
       "../../outside.png",
       "%2e%2e/%2e%2e/outside.png",
       "../assets/manual.pdf",
-      "../assets/untrusted.svg",
       "../assets/cover%2Fimage.png",
       "../assets/%5Cevil.png",
       "../assets/%00evil.png",
@@ -474,7 +594,9 @@ describe("server file facade", () => {
 
     stopFile();
     stopTree();
-    expect(listeners).toHaveLength(0);
+    // The runtime-lifetime image source listener remains so temporary object
+    // URLs are revoked when resource or workspace capabilities change.
+    expect(listeners).toHaveLength(1);
     publish(listeners, documentChangedNotice("revision-3"));
     expect(onFileChange).toHaveBeenCalledTimes(3);
     expect(onTreeChange).toHaveBeenCalledTimes(3);
@@ -591,6 +713,8 @@ function kernelPort(): ServerKernelDomainPort {
     },
     runtime: { read: unavailable() },
     resources: {
+      create: unavailable(),
+      createBatch: unavailable(),
       list: vi.fn(async () => ({ items: [], workspaceGeneration: generation })),
       open: vi.fn(async () => ({
         body: new Blob([new Uint8Array([1])]),

@@ -21,6 +21,7 @@ type AuthoritativeStartupStatus =
 
 type WorkspaceProps = {
   platform?: "linux" | "macos" | "windows" | null;
+  replaceWorkspace: (workspacePath: string) => Promise<unknown>;
   retryWorkspace: () => Promise<unknown>;
   selectWorkspace: () => Promise<string | null>;
   startWorkspace: (workspacePath: string) => Promise<unknown>;
@@ -28,7 +29,7 @@ type WorkspaceProps = {
 };
 
 type WorkspaceInput = Pick<WorkspaceProps, "selectWorkspace" | "startWorkspace"> &
-  Partial<Pick<WorkspaceProps, "platform" | "retryWorkspace" | "startupStatus">>;
+  Partial<Pick<WorkspaceProps, "platform" | "replaceWorkspace" | "retryWorkspace" | "startupStatus">>;
 
 describe("desktop startup workspace", () => {
   const mountedRoots: Array<{ container: HTMLDivElement; root: Root }> = [];
@@ -141,7 +142,7 @@ describe("desktop startup workspace", () => {
     );
     expect(container).not.toHaveTextContent("sensitive retry detail");
     expect(buttonNamed(container, "Retry")).toBeEnabled();
-    expect(container.querySelectorAll("button")).toHaveLength(1);
+    expect(container.querySelectorAll("button")).toHaveLength(2);
   });
 
   it("follows an authoritative starting to failed transition after child startup", async () => {
@@ -178,9 +179,34 @@ describe("desktop startup workspace", () => {
       "failed"
     );
     expect(buttonNamed(mounted.container, "Retry")).toBeEnabled();
-    expect(mounted.container.querySelectorAll("button")).toHaveLength(1);
+    expect(mounted.container.querySelectorAll("button")).toHaveLength(2);
     expect(selectWorkspace).toHaveBeenCalledTimes(1);
     expect(startWorkspace).toHaveBeenCalledWith("/Users/example/Notes");
+  });
+
+  it("allows a failed persisted workspace to be replaced without reusing initialization", async () => {
+    const replaceWorkspace = vi.fn(async () => undefined);
+    const selectWorkspace = vi.fn(async () => "/Users/example/Replacement");
+    const startWorkspace = vi.fn(async () => undefined);
+    const retryWorkspace = vi.fn(async () => undefined);
+    const container = renderWorkspace({
+      replaceWorkspace,
+      retryWorkspace,
+      selectWorkspace,
+      startWorkspace,
+      startupStatus: "failed",
+    });
+
+    await act(async () => buttonNamed(container, "Choose another directory").click());
+
+    expect(selectWorkspace).toHaveBeenCalledTimes(1);
+    expect(replaceWorkspace).toHaveBeenCalledWith("/Users/example/Replacement");
+    expect(startWorkspace).not.toHaveBeenCalled();
+    expect(retryWorkspace).not.toHaveBeenCalled();
+    expect(container.querySelector("main")).toHaveAttribute(
+      "data-desktop-startup-workspace",
+      "starting",
+    );
   });
 
   it("allows workspace selection for an authoritative invalid startup", () => {
@@ -260,9 +286,10 @@ describe("desktop startup workspace", () => {
     expect(startWorkspace).not.toHaveBeenCalled();
   });
 
-  it("rejects direct selection while an authoritative failure requires retry", async () => {
+  it("routes direct selection after an authoritative failure through replacement", async () => {
     const selectWorkspace = vi.fn(async () => null);
     const controller = createDesktopStartupWorkspaceController({
+      replaceWorkspace: vi.fn(async () => undefined),
       retryWorkspace: vi.fn(async () => undefined),
       selectWorkspace,
       startWorkspace: vi.fn(async () => undefined),
@@ -271,11 +298,11 @@ describe("desktop startup workspace", () => {
 
     await controller.select();
 
-    expect(selectWorkspace).not.toHaveBeenCalled();
+    expect(selectWorkspace).toHaveBeenCalledTimes(1);
     expect(controller.getSnapshot()).toEqual({
       failure: "startup",
       status: "failed",
-      workspacePath: null
+      workspacePath: null,
     });
   });
 
@@ -451,6 +478,7 @@ describe("desktop startup workspace", () => {
     act(() => root.render(
       <Suspense fallback={<p>Waiting</p>}>
         <DesktopStartupWorkspace
+          replaceWorkspace={vi.fn(async () => undefined)}
           retryWorkspace={vi.fn(async () => undefined)}
           selectWorkspace={vi.fn(() => selection.promise)}
           startWorkspace={committedStartup}
@@ -463,6 +491,7 @@ describe("desktop startup workspace", () => {
       startTransition(() => root.render(
         <Suspense fallback={<p>Waiting</p>}>
           <DesktopStartupWorkspace
+            replaceWorkspace={vi.fn(async () => undefined)}
             retryWorkspace={vi.fn(async () => undefined)}
             selectWorkspace={vi.fn(async () => null)}
             startWorkspace={abandonedStartup}
@@ -570,6 +599,7 @@ describe("desktop startup workspace", () => {
     const selectWorkspace = vi.fn(async () => "/Users/example/Notes");
     const startWorkspace = vi.fn(async () => undefined);
     const controller = createDesktopStartupWorkspaceController({
+      replaceWorkspace: vi.fn(async () => undefined),
       retryWorkspace: vi.fn(async () => undefined),
       selectWorkspace,
       startWorkspace,
@@ -591,6 +621,7 @@ describe("desktop startup workspace", () => {
     const selection = deferred<string | null>();
     const startWorkspace = vi.fn(async () => undefined);
     const controller = createDesktopStartupWorkspaceController({
+      replaceWorkspace: vi.fn(async () => undefined),
       retryWorkspace: vi.fn(async () => undefined),
       selectWorkspace: vi.fn(() => selection.promise),
       startWorkspace,
@@ -618,6 +649,7 @@ describe("desktop startup workspace", () => {
 
   function mountWorkspace(input: WorkspaceInput) {
     const defaults = {
+      replaceWorkspace: vi.fn(async () => undefined),
       retryWorkspace: vi.fn(async () => undefined),
       startupStatus: "unselected" as const
     };

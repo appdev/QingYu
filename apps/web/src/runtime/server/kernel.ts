@@ -401,6 +401,57 @@ export async function createServerKernelDomainAdapter(
       },
     },
     resources: {
+      createBatch: async (input) => {
+        await prepareDocumentOperation(input.workspaceGeneration);
+        const response = await request(() => client.resources.createBatch(
+          input.documentLocator,
+          {
+            batchId: input.batchId,
+            folder: input.folder,
+            items: input.items.map((item) => ({ ...item })),
+            workspaceGeneration: input.workspaceGeneration,
+          },
+          { signal: requests.signal },
+        ));
+        if (response.batchId !== input.batchId || response.resources.length !== input.items.length) {
+          protocolMismatch();
+        }
+        response.resources.forEach((resource, index) => {
+          const requested = input.items[index];
+          if (!requested || resource.kind !== requested.kind || resource.mediaType !== requested.mediaType) {
+            protocolMismatch();
+          }
+        });
+        await confirmWorkspaceIdentity();
+        return response.resources.map((resource) => mapResourceEntry(resource, workspaceGeneration));
+      },
+      create: async (input) => {
+        await prepareDocumentOperation(input.workspaceGeneration);
+        const resourceRequest = input.kind === "image"
+          ? {
+              body: input.body,
+              folder: input.folder,
+              kind: input.kind,
+              mediaType: input.mediaType,
+              name: input.name,
+              workspaceGeneration: input.workspaceGeneration,
+            }
+          : {
+              body: input.body,
+              folder: input.folder,
+              kind: input.kind,
+              mediaType: input.mediaType,
+              name: input.name,
+              workspaceGeneration: input.workspaceGeneration,
+            };
+        const resource = await request(() => client.resources.create(
+          input.documentLocator,
+          resourceRequest,
+          { signal: requests.signal },
+        ));
+        await confirmWorkspaceIdentity();
+        return mapResourceEntry(resource, workspaceGeneration);
+      },
       list: async (input) => {
         await prepareDocumentOperation(input.workspaceGeneration);
         const items: ServerKernelInventoryEntry[] = [];
@@ -553,6 +604,7 @@ export async function createServerKernelDomainAdapter(
 
 type RuntimeSource = Awaited<ReturnType<KernelClient["system"]["runtime"]>>;
 type InventoryEntrySource = Awaited<ReturnType<KernelClient["resources"]["list"]>>["items"][number];
+type ResourceEntrySource = Extract<InventoryEntrySource, { entryType: "resource" }>["resource"];
 type WorkspaceSource = Awaited<ReturnType<KernelClient["workspace"]["get"]>>;
 type DocumentSource = Awaited<ReturnType<KernelClient["documents"]["get"]>>;
 type CreatedDocumentSource = Awaited<ReturnType<KernelClient["documents"]["create"]>>;
@@ -636,19 +688,26 @@ function mapInventoryEntry(
   }
   return {
     entryType: entry.entryType,
-    resource: {
-      id: entry.resource.id,
-      kind: entry.resource.kind,
-      mediaType: entry.resource.mediaType,
-      modifiedAt: entry.resource.modifiedAt,
-      name: entry.resource.name,
-      parent: entry.resource.parent as KernelWorkspaceRelativePath,
-      previewable: entry.resource.previewable,
-      relativePath: entry.resource.path as KernelWorkspaceRelativePath,
-      revision: entry.resource.revision as KernelRevision,
-      sizeBytes: entry.resource.sizeBytes,
-      workspaceGeneration,
-    },
+    resource: mapResourceEntry(entry.resource, workspaceGeneration),
+  };
+}
+
+function mapResourceEntry(
+  resource: ResourceEntrySource,
+  workspaceGeneration: KernelWorkspaceGeneration,
+) {
+  return {
+    id: resource.id,
+    kind: resource.kind,
+    mediaType: resource.mediaType,
+    modifiedAt: resource.modifiedAt,
+    name: resource.name,
+    parent: resource.parent as KernelWorkspaceRelativePath,
+    previewable: resource.previewable,
+    relativePath: resource.path as KernelWorkspaceRelativePath,
+    revision: resource.revision as KernelRevision,
+    sizeBytes: resource.sizeBytes,
+    workspaceGeneration,
   };
 }
 

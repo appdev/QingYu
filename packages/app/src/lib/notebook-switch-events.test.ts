@@ -61,4 +61,39 @@ describe("notebook switch requests", () => {
     expect(requestPrimaryNotebookSwitchRuntime).toHaveBeenCalledWith("/Notes/Name ");
     expect(emit).not.toHaveBeenCalled();
   });
+
+  it("uses a host-owned Desktop selector and emits the exact path without a legacy file request", async () => {
+    const runtime = createDefaultAppRuntime();
+    const emit = vi.fn(async () => undefined);
+    const selectRoot = vi.fn(async () => "/Workspace/B");
+    const openMarkdownFolder = vi.fn(async () => null);
+    configureAppRuntime({
+      ...runtime,
+      events: { ...runtime.events, emit },
+      files: {
+        ...runtime.files,
+        openMarkdownFolder,
+        requestPrimaryNotebookSwitch: undefined
+      },
+      workspace: {
+        ...runtime.workspace,
+        rootPolicy: {
+          canChooseLocalRoot: true,
+          commitRoot: async () => "kernel-workspace://primary",
+          kind: "host-selectable",
+          resolveRoot: async () => "kernel-workspace://primary",
+          selectRoot
+        }
+      }
+    });
+
+    await expect(requestPrimaryNotebookSwitch({ source: "settings" })).resolves.toBe(true);
+
+    expect(selectRoot).toHaveBeenCalledOnce();
+    expect(openMarkdownFolder).not.toHaveBeenCalled();
+    expect(emit).toHaveBeenCalledWith("qingyu://notebook-switch-requested", {
+      path: "/Workspace/B",
+      source: "settings"
+    });
+  });
 });

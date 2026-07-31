@@ -3,20 +3,21 @@ import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import App, { AppErrorBoundary, configureAppRuntime } from "@markra/app";
 import "@markra/app/styles.css";
-import { bootstrapApplication, bootstrapApplicationMount } from "./bootstrap";
+import { bootstrapApplicationMount } from "./bootstrap";
 import { createDesktopStartupApplicationOwner } from "./desktop-startup-application";
 import {
   createDesktopKernelStartupOwner,
   initializeDesktopKernelWorkspace,
   retryDesktopKernelWorkspace,
+  switchDesktopKernelWorkspace,
   type DesktopKernelStartupSnapshot,
 } from "./desktop-kernel-startup";
 import { DesktopStartupWorkspace } from "./desktop-startup-workspace";
 import { selectDesktopWorkspaceDirectory } from "./desktop-workspace-selector";
 import {
-  loadNativeRuntime,
   readNativeRuntimeKind,
 } from "./runtime";
+import { retryMobileKernelRuntime } from "./runtime/mobile-kernel-session";
 
 function StartupError({ onRetry }: { onRetry: () => unknown }) {
   return (
@@ -60,6 +61,7 @@ function renderDesktopStartupWorkspace(
     <StrictMode>
       <AppErrorBoundary>
         <DesktopStartupWorkspace
+          replaceWorkspace={switchDesktopKernelWorkspace}
           retryWorkspace={retryDesktopKernelWorkspace}
           selectWorkspace={selectDesktopWorkspaceDirectory}
           startWorkspace={initializeDesktopKernelWorkspace}
@@ -70,24 +72,61 @@ function renderDesktopStartupWorkspace(
   );
 }
 
+function renderMobileKernelStartup(root: Root, status: string | null, onRetry: () => unknown) {
+  if (status === "failed") {
+    renderError(root, onRetry);
+    return;
+  }
+  renderRoot(root,
+    <StrictMode>
+      <AppErrorBoundary>
+        <main className="flex min-h-screen items-center justify-center bg-(--bg-primary) px-6 py-8 text-(--text-primary)">
+          <section className="w-full max-w-md rounded-md border border-(--border-default) bg-(--bg-primary) p-6">
+            <h1 className="m-0 text-[20px] leading-7 font-bold text-(--text-heading)">
+              Starting QingYu
+            </h1>
+            <p className="m-0 mt-2 text-[13px] leading-5 text-(--text-secondary)">
+              Preparing your private mobile workspace.
+            </p>
+          </section>
+        </main>
+      </AppErrorBoundary>
+    </StrictMode>
+  );
+}
+
 async function startApplication() {
   const root = createRoot(document.getElementById("root")!);
   const reload = () => window.location.reload();
 
   if (readNativeRuntimeKind() === "mobile") {
-    await bootstrapApplication({
+    const { createProductionMobileApplicationMountOwner } = await import(
+      "./mobile-application-runtime"
+    );
+    const mountOwner = createProductionMobileApplicationMountOwner({
       configureRuntime: configureAppRuntime,
-      loadRuntime: loadNativeRuntime,
-      reload,
-      renderApp: () => renderRoot(root,
-        <StrictMode>
-          <AppErrorBoundary>
-            <App />
-          </AppErrorBoundary>
-        </StrictMode>
+      renderDomain: () => {
+        renderRoot(root,
+          <StrictMode>
+            <AppErrorBoundary>
+              <App />
+            </AppErrorBoundary>
+          </StrictMode>
+        );
+        return () => renderRoot(root, null);
+      },
+      renderStartup: (session) => renderMobileKernelStartup(
+        root,
+        session?.status ?? null,
+        () => retryMobileKernelRuntime(),
       ),
-      renderError: (onRetry) => renderError(root, onRetry)
     });
+    const stop = await bootstrapApplicationMount({
+      mountOwner,
+      reload,
+      renderError: (onRetry) => renderError(root, onRetry),
+    });
+    window.addEventListener("pagehide", stop, { once: true });
     return;
   }
 

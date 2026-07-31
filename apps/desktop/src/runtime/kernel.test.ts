@@ -55,6 +55,24 @@ describe("desktop Kernel domain adapter", () => {
     ]);
   });
 
+  it("requires the explicitly selected mobile profile for an in-process mobile host", async () => {
+    const fetch: FetchLike = async (url) => {
+      const pathname = new URL(url).pathname;
+      if (pathname === "/api/v1/runtime") {
+        return jsonResponse({ ...runtimeBody(), profile: "mobile" });
+      }
+      return handshakeResponse(pathname);
+    };
+
+    const adapter = await createDesktopKernelDomainAdapter(connection(), {
+      fetch,
+      profile: "mobile",
+    });
+
+    await expect(adapter.port.runtime.read()).resolves.toMatchObject({ profile: "mobile" });
+    adapter.release();
+  });
+
   it("binds the default browser fetch to the global receiver", async () => {
     const receivers: unknown[] = [];
     const receiverSensitiveFetch: FetchLike = async function (
@@ -690,6 +708,80 @@ describe("desktop Kernel domain adapter", () => {
         search: "?kind=image",
       },
     ]);
+  });
+
+  it("writes raw resource blobs through the authenticated Kernel and maps the frozen generation", async () => {
+    const requests: Array<{
+      authorization: string | null;
+      body: BodyInit | null | undefined;
+      contentType: string | null;
+      pathname: string;
+      query: Record<string, string>;
+    }> = [];
+    const fetch: FetchLike = async (url, init = {}) => {
+      const parsed = new URL(url);
+      if (parsed.pathname === "/api/v1/documents/document.signature/resources") {
+        requests.push({
+          authorization: new Headers(init.headers).get("authorization"),
+          body: init.body,
+          contentType: new Headers(init.headers).get("content-type"),
+          pathname: parsed.pathname,
+          query: Object.fromEntries(parsed.searchParams),
+        });
+        return jsonResponse({
+          id: "resource.signature",
+          kind: "image",
+          mediaType: "image/png",
+          modifiedAt: "2026-07-31T00:00:00Z",
+          name: "pasted.png",
+          parent: "assets",
+          path: "assets/pasted.png",
+          previewable: true,
+          revision: "sha256:resource-revision",
+          sizeBytes: 8,
+        }, 201);
+      }
+      return handshakeResponse(parsed.pathname);
+    };
+    const adapter = await createDesktopKernelDomainAdapter(connection(), { fetch });
+    const body = new Blob([new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10])], {
+      type: "image/png",
+    });
+    const workspaceGeneration = WORKSPACE_GENERATION as KernelWorkspaceGeneration;
+
+    await expect(adapter.port.resources.create({
+      body,
+      documentLocator: "document.signature" as KernelDocumentLocator,
+      folder: "assets" as KernelWorkspaceRelativePath,
+      kind: "image",
+      mediaType: "image/png",
+      name: "pasted.png",
+      workspaceGeneration,
+    })).resolves.toEqual({
+      id: "resource.signature",
+      kind: "image",
+      mediaType: "image/png",
+      modifiedAt: "2026-07-31T00:00:00Z",
+      name: "pasted.png",
+      parent: "assets",
+      previewable: true,
+      relativePath: "assets/pasted.png",
+      revision: "sha256:resource-revision",
+      sizeBytes: 8,
+      workspaceGeneration,
+    });
+    expect(requests).toEqual([{
+      authorization: `Bearer ${CREDENTIAL}`,
+      body,
+      contentType: "image/png",
+      pathname: "/api/v1/documents/document.signature/resources",
+      query: {
+        folder: "assets",
+        kind: "image",
+        name: "pasted.png",
+        workspaceGeneration: WORKSPACE_GENERATION,
+      },
+    }]);
   });
 
   it("fails closed when the adapter retires while a resource body is being consumed", async () => {

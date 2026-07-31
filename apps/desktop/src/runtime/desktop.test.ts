@@ -3,11 +3,21 @@ import {
   createUnavailableNativeShellPort
 } from "@markra/app/runtime";
 import type { NativeKernelBootstrap } from "../kernel-bootstrap";
+import { switchDesktopKernelWorkspace } from "../desktop-kernel-startup";
+import { selectDesktopWorkspaceDirectory } from "../desktop-workspace-selector";
 import {
   createDesktopKernelRuntimeOwner,
   createDesktopRuntime,
   loadDesktopRuntime
 } from "./desktop";
+
+vi.mock("../desktop-workspace-selector", () => ({
+  selectDesktopWorkspaceDirectory: vi.fn(async () => "/Workspace/Raw"),
+}));
+
+vi.mock("../desktop-kernel-startup", () => ({
+  switchDesktopKernelWorkspace: vi.fn(async () => undefined),
+}));
 
 function createReadyBootstrap(): NativeKernelBootstrap {
   return {
@@ -33,9 +43,11 @@ describe("desktop runtime composition", () => {
     expect(runtime.nativeShell).toBe(nativeShell);
   });
 
-  it("composes a fixed Kernel workspace without legacy document writers", async () => {
+  it("composes a host-selectable Kernel workspace without legacy document writers", async () => {
     const kernel = createUnavailableKernelDomainPort();
-    const owner = createDesktopKernelRuntimeOwner(kernel);
+    const selectRoot = vi.fn(async () => "/Workspace/B");
+    const commitRoot = vi.fn(async () => undefined);
+    const owner = createDesktopKernelRuntimeOwner(kernel, { commitRoot, selectRoot });
     const { runtime } = owner;
 
     expect(runtime.kernel).toBe(kernel);
@@ -55,14 +67,18 @@ describe("desktop runtime composition", () => {
     });
     expect(runtime.mcp.localServiceAvailable).toBe(true);
     expect(runtime.workspace.rootPolicy).toMatchObject({
-      canChooseLocalRoot: false,
-      kind: "fixed"
+      canChooseLocalRoot: true,
+      kind: "host-selectable"
     });
-    if (runtime.workspace.rootPolicy?.kind !== "fixed") {
-      throw new Error("fixed Kernel workspace policy unavailable");
+    if (runtime.workspace.rootPolicy?.kind !== "host-selectable") {
+      throw new Error("host-selectable Kernel workspace policy unavailable");
     }
     await expect(runtime.workspace.rootPolicy.resolveRoot())
       .resolves.toBe("kernel-workspace://primary");
+    await expect(runtime.workspace.rootPolicy.selectRoot()).resolves.toBe("/Workspace/B");
+    await expect(runtime.workspace.rootPolicy.commitRoot("/Workspace/B"))
+      .resolves.toBe("kernel-workspace://primary");
+    expect(commitRoot).toHaveBeenCalledWith("/Workspace/B");
     await expect(runtime.files.importLocalFile({} as never))
       .rejects.toThrow("unavailable for a Kernel workspace");
     await expect(runtime.files.saveClipboardImage({} as never))
@@ -85,6 +101,23 @@ describe("desktop runtime composition", () => {
 
     secondOwner.release();
     owner.release();
+    owner.release();
+  });
+
+  it("uses the raw host directory selector and dedicated Kernel switch by default", async () => {
+    const owner = createDesktopKernelRuntimeOwner(createUnavailableKernelDomainPort());
+    const policy = owner.runtime.workspace.rootPolicy;
+    if (policy?.kind !== "host-selectable") {
+      throw new Error("host-selectable Kernel workspace policy unavailable");
+    }
+
+    await expect(policy.selectRoot()).resolves.toBe("/Workspace/Raw");
+    await expect(policy.commitRoot("/Workspace/Raw"))
+      .resolves.toBe("kernel-workspace://primary");
+
+    expect(selectDesktopWorkspaceDirectory).toHaveBeenCalledTimes(1);
+    expect(switchDesktopKernelWorkspace).toHaveBeenCalledTimes(1);
+    expect(switchDesktopKernelWorkspace).toHaveBeenCalledWith("/Workspace/Raw");
     owner.release();
   });
 

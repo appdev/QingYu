@@ -144,14 +144,21 @@ export function useNotebookSwitchCoordinator({
 
   const performDesktopNotebookSwitch = useCallback(async (path?: string) => {
     if (!primaryWindowOwner || trueMobile) return null;
-    let targetPath = path;
-    if (targetPath === undefined) {
-      const selected = await getAppRuntime().files.openMarkdownFolder();
-      if (!selected) return null;
-      targetPath = selected.path;
-    }
 
     return runTransaction(async () => {
+      let targetPath = path;
+      const rootPolicy = getAppRuntime().workspace.rootPolicy;
+      const hostOwnedSwitch = rootPolicy?.kind === "host-selectable";
+      if (targetPath === undefined) {
+        if (hostOwnedSwitch) {
+          targetPath = await rootPolicy.selectRoot() ?? undefined;
+        } else {
+          const selected = await getAppRuntime().files.openMarkdownFolder();
+          targetPath = selected?.path;
+        }
+        if (targetPath === undefined) return null;
+      }
+
       let barrierEntered = false;
       let barrierReleased = false;
       const releaseBarrier = async () => {
@@ -165,6 +172,7 @@ export function useNotebookSwitchCoordinator({
         await appSync.beginNotebookSwitch();
         const root = await primaryWorkspace.commitDesktopRoot(targetPath);
         if (!root) return null;
+        if (hostOwnedSwitch) return root;
         return await finishCommittedRoot(root, releaseBarrier);
       } catch {
         return null;

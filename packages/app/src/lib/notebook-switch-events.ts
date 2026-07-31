@@ -42,9 +42,12 @@ export async function requestPrimaryNotebookSwitch(request: NotebookSwitchReques
   const runtime = getAppRuntime();
   let path = normalized.path;
   if (path === undefined) {
-    const selected = await runtime.files.openMarkdownFolder();
-    if (!selected) return false;
-    path = selected.path;
+    if (runtime.workspace.rootPolicy?.kind === "host-selectable") {
+      path = await runtime.workspace.rootPolicy.selectRoot() ?? undefined;
+    } else {
+      path = (await runtime.files.openMarkdownFolder())?.path;
+    }
+    if (path === undefined) return false;
   }
   if (runtime.files.requestPrimaryNotebookSwitch) {
     await runtime.files.requestPrimaryNotebookSwitch(path);

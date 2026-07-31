@@ -1,6 +1,9 @@
 //! Platform-neutral Kernel service composition.
 
-use std::{fmt, sync::Arc};
+use std::{
+    fmt,
+    sync::{Arc, Mutex},
+};
 
 use async_trait::async_trait;
 
@@ -15,7 +18,10 @@ use crate::{
         history::{FileDocumentHistoryStore, FileDocumentRecoveryStore},
         service::{CapabilityAtomicInstallPort, WorkspaceDocumentService},
     },
-    host::native::NativeHostWorkspaceState,
+    host::{
+        mobile::{MobileKernelDrainError, MobileKernelLaunch, MobileKernelLifecycle},
+        native::{NativeHostWorkspaceState, NativeHostWorkspaceStore},
+    },
     ignore_rules::{SettingsWorkspaceIgnorePort, WorkspaceIgnorePort},
     paths::{open_or_create_child, KernelPaths},
     ports::system::system_kernel_ports,
@@ -236,6 +242,56 @@ pub async fn compose_fixed_native_kernel_runtime(
         runtime,
         lifecycle: NativeKernelLifecycle::new(scheduler, sync, Some(app_launch_settlement)),
     })
+}
+
+/// Builds the fixed managed-workspace runtime used by an in-process mobile
+/// host. Mobile workspace identity is retained in private instance data while
+/// the launch credential remains memory-only.
+pub async fn compose_fixed_mobile_kernel(
+    config: KernelConfig,
+    paths: KernelPaths,
+    display_name: impl Into<String>,
+) -> Result<MobileKernelLaunch, NativeCompositionError> {
+    if paths.profile() != HostProfile::Mobile {
+        return Err(NativeCompositionError);
+    }
+    let workspace_state = NativeHostWorkspaceStore::at_instance_data(
+        paths.instance_data_root(),
+        config.launch_epoch(),
+    )
+    .and_then(|store| {
+        store.load_or_create(paths.workspace_root().canonical_path(), display_name.into())
+    })
+    .map_err(|_| NativeCompositionError)?;
+    let composition = compose_fixed_native_kernel_runtime(config, paths, workspace_state).await?;
+    let runtime = composition.runtime;
+    Ok(MobileKernelLaunch::from_composition_parts(
+        runtime.clone(),
+        Arc::new(MobileNativeKernelLifecycle {
+            lifecycle: composition.lifecycle,
+            runtime: Mutex::new(Some(runtime)),
+        }),
+    ))
+}
+
+struct MobileNativeKernelLifecycle {
+    lifecycle: NativeKernelLifecycle,
+    runtime: Mutex<Option<Arc<KernelRuntime>>>,
+}
+
+#[async_trait]
+impl MobileKernelLifecycle for MobileNativeKernelLifecycle {
+    async fn drain(&self) -> Result<(), MobileKernelDrainError> {
+        self.lifecycle
+            .shutdown()
+            .await
+            .map_err(|_| MobileKernelDrainError)?;
+        self.runtime
+            .lock()
+            .map_err(|_| MobileKernelDrainError)?
+            .take();
+        Ok(())
+    }
 }
 
 async fn compose_fixed_native_kernel_services(

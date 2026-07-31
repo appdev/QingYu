@@ -18,7 +18,7 @@ pub const fn http_status_for_error_code(code: ErrorCode) -> u16 {
         | ErrorCode::RevisionConflict
         | ErrorCode::SettingsRevisionConflict
         | ErrorCode::SyncConfigRevisionConflict => 409,
-        ErrorCode::DocumentTooLarge => 413,
+        ErrorCode::DocumentTooLarge | ErrorCode::ResourceTooLarge => 413,
         ErrorCode::DocumentInvalidEncoding
         | ErrorCode::InvalidSettingsField
         | ErrorCode::SyncConfigInvalid => 422,
@@ -80,6 +80,7 @@ pub const fn safe_message_for_error_code(code: ErrorCode) -> &'static str {
         ErrorCode::ResourceNotFound => "The resource was not found.",
         ErrorCode::DocumentAlreadyExists => "The document already exists.",
         ErrorCode::DocumentTooLarge => "The document exceeds the supported size.",
+        ErrorCode::ResourceTooLarge => "The resource exceeds the supported size.",
         ErrorCode::DocumentInvalidEncoding => "The document encoding is invalid.",
         ErrorCode::RevisionConflict => "The document changed since it was loaded.",
         ErrorCode::SettingsRevisionConflict => "The settings changed since they were loaded.",
@@ -110,6 +111,7 @@ const fn error_details_are_allowed(code: ErrorCode, details: &ErrorDetails) -> b
                 | ErrorCode::InvalidWorkspacePath
                 | ErrorCode::InvalidDocumentName
                 | ErrorCode::DocumentTooLarge
+                | ErrorCode::ResourceTooLarge
                 | ErrorCode::DocumentInvalidEncoding
                 | ErrorCode::InvalidSettingsField
                 | ErrorCode::SyncConfigInvalid

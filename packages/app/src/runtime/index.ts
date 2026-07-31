@@ -191,6 +191,13 @@ export type AppWorkspaceRootPolicy =
       kind: "selectable";
     }
   | {
+      canChooseLocalRoot: true;
+      commitRoot: (path: string) => Promise<string | null>;
+      kind: "host-selectable";
+      resolveRoot: () => Promise<string>;
+      selectRoot: () => Promise<string | null>;
+    }
+  | {
       canChooseLocalRoot: false;
       kind: "fixed";
       resolveRoot: () => Promise<string>;
@@ -299,6 +306,9 @@ export type AppFileRuntime = {
   resolveMarkdownPath: (path: string) => Promise<NativeMarkdownDroppedTarget>;
   resolveWorkspaceResourceRoot: (sourcePath: string) => Promise<string>;
   saveClipboardImage: (input: SaveNativeClipboardImageInput) => Promise<SavedNativeClipboardImage>;
+  saveClipboardImages: (
+    inputs: readonly SaveNativeClipboardImageInput[]
+  ) => Promise<SavedNativeClipboardImage[]>;
   saveClipboardAttachment: (input: SaveNativeClipboardAttachmentInput) => Promise<SavedNativeClipboardAttachment>;
   saveHtmlFile: (input: SaveNativeHtmlFileInput) => Promise<SavedNativeHtmlFile | null>;
   saveMarkdownFile: (input: SaveNativeMarkdownFileInput) => Promise<SavedNativeMarkdownFile | null>;
@@ -632,6 +642,7 @@ function createDefaultFileRuntime(): AppFileRuntime {
     resolveWorkspaceResourceRoot: () => unsupportedFeature("resolveWorkspaceResourceRoot"),
     saveClipboardAttachment: () => unsupportedFeature("saveClipboardAttachment"),
     saveClipboardImage: () => unsupportedFeature("saveClipboardImage"),
+    saveClipboardImages: () => unsupportedFeature("saveClipboardImages"),
     saveHtmlFile: async () => null,
     saveMarkdownFile: async () => null,
     savePandocFile: async () => null,

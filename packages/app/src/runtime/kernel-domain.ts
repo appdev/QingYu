@@ -147,6 +147,14 @@ export type KernelHistorySnapshot = {
 };
 
 export type KernelResourceKind = "attachment" | "image";
+export type KernelImageMediaType =
+  | "image/avif"
+  | "image/bmp"
+  | "image/gif"
+  | "image/jpeg"
+  | "image/png"
+  | "image/svg+xml"
+  | "image/webp";
 
 export type KernelResourceSnapshot = {
   id: string;
@@ -179,6 +187,36 @@ export type KernelListResourcesInput = {
 export type KernelOpenResourceInput = {
   id: string;
   kind: KernelResourceKind;
+  workspaceGeneration: KernelWorkspaceGeneration;
+};
+
+export type KernelCreateResourceInput = {
+  body: Blob;
+  documentLocator: KernelDocumentLocator;
+  folder: KernelWorkspaceRelativePath;
+  name: string;
+  workspaceGeneration: KernelWorkspaceGeneration;
+} & (
+  | {
+    kind: "image";
+    mediaType: KernelImageMediaType;
+  }
+  | {
+    kind: "attachment";
+    mediaType: "application/octet-stream";
+  }
+);
+
+export type KernelCreateResourceBatchInput = {
+  batchId: string;
+  documentLocator: KernelDocumentLocator;
+  folder: KernelWorkspaceRelativePath;
+  items: readonly {
+    body: Blob;
+    kind: "image";
+    mediaType: KernelImageMediaType;
+    name: string;
+  }[];
   workspaceGeneration: KernelWorkspaceGeneration;
 };
 
@@ -456,6 +494,8 @@ export type KernelDomainPort = {
   };
   invalidations: KernelInvalidationSource;
   resources: {
+    create: (input: KernelCreateResourceInput) => Promise<KernelResourceSnapshot>;
+    createBatch: (input: KernelCreateResourceBatchInput) => Promise<readonly KernelResourceSnapshot[]>;
     list: (input: KernelListResourcesInput) => Promise<KernelInventorySnapshot>;
     open: (input: KernelOpenResourceInput) => Promise<KernelResourceBody>;
   };
@@ -513,6 +553,8 @@ export function createUnavailableKernelDomainPort(): KernelDomainPort {
       subscribe: () => () => undefined,
     },
     resources: {
+      create: rejectUnavailable,
+      createBatch: rejectUnavailable,
       list: rejectUnavailable,
       open: rejectUnavailable,
     },

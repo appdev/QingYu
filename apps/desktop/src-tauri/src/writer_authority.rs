@@ -1,4 +1,4 @@
-//! Desktop-local writer ownership fence for the future atomic Kernel cutover.
+//! Desktop-local writer ownership fence for the active child-Kernel runtime.
 
 #![cfg_attr(not(test), allow(dead_code))]
 
@@ -1057,6 +1057,7 @@ const LEGACY_WRITER_SURFACES: &[LegacyWriterSurface] = &[
             "initialize_desktop_kernel_workspace",
             "request_sync_config_apply",
             "retry_desktop_kernel_workspace",
+            "switch_desktop_kernel_workspace",
             "set_sync_config_editing",
             "settle_kernel_sync_config_apply",
         ],
@@ -1126,6 +1127,7 @@ const NORMAL_DESKTOP_HOST_READS_AND_ACTIONS: &[&str] = &[
     "read_theme_css",
     "request_primary_notebook_switch",
     "retry_desktop_kernel_workspace",
+    "switch_desktop_kernel_workspace",
     "show_native_app_about",
     "take_opened_markdown_paths",
     "theme_directory_path",

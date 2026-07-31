@@ -18,6 +18,8 @@ import {
   readNativeKernelBootstrap,
   type NativeKernelBootstrap
 } from "../kernel-bootstrap";
+import { switchDesktopKernelWorkspace } from "../desktop-kernel-startup";
+import { selectDesktopWorkspaceDirectory } from "../desktop-workspace-selector";
 import {
   createDesktopKernelDomainAdapter,
   DesktopKernelDomainAdapterError,
@@ -161,6 +163,7 @@ export function createDesktopRuntime({
     requestPrimaryNotebookSwitch: files.requestNativePrimaryNotebookSwitch,
     saveClipboardAttachment: files.saveNativeClipboardAttachment,
     saveClipboardImage: files.saveNativeClipboardImage,
+    saveClipboardImages: (inputs) => Promise.all(inputs.map(files.saveNativeClipboardImage)),
     saveHtmlFile: files.saveNativeHtmlFile,
     saveMarkdownFile: files.saveNativeMarkdownFile,
     savePandocFile: files.saveNativePandocFile,
@@ -316,8 +319,17 @@ export interface DesktopKernelRuntimeOwner {
   readonly release: () => undefined;
 }
 
+export interface DesktopKernelRuntimeOwnerOptions {
+  readonly commitRoot?: (path: string) => Promise<unknown>;
+  readonly selectRoot?: () => Promise<string | null>;
+}
+
 export function createDesktopKernelRuntimeOwner(
   kernel: KernelDomainPort,
+  {
+    commitRoot = switchDesktopKernelWorkspace,
+    selectRoot = selectDesktopWorkspaceDirectory,
+  }: DesktopKernelRuntimeOwnerOptions = {},
 ): DesktopKernelRuntimeOwner {
   const shell = createDesktopRuntime({ kernel });
   const unavailable = createDefaultAppRuntime();
@@ -350,7 +362,10 @@ export function createDesktopKernelRuntimeOwner(
       projectSync: true,
       resources: false,
     },
-    files: fileOwner.files,
+    files: {
+      ...fileOwner.files,
+      requestPrimaryNotebookSwitch: undefined,
+    },
     kernel,
     mcp: shell.mcp,
     nativeShell: createUnavailableNativeShellPort(),
@@ -380,9 +395,14 @@ export function createDesktopKernelRuntimeOwner(
       listManagedNotebookNames: async () => [],
       resolveManagedRoot: async () => null,
       rootPolicy: {
-        canChooseLocalRoot: false,
-        kind: "fixed",
+        canChooseLocalRoot: true,
+        commitRoot: async (path) => {
+          await commitRoot(path);
+          return kernelWorkspaceRoot;
+        },
+        kind: "host-selectable",
         resolveRoot: async () => kernelWorkspaceRoot,
+        selectRoot,
       },
     },
   };

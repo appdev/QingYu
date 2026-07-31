@@ -102,6 +102,62 @@ describe("KernelHttpTransport", () => {
     await expect(received.text()).resolves.toBe("image bytes");
   });
 
+  it("sends a raw Blob body with its exact media type and browser CSRF proof", async () => {
+    const body = new Blob([new Uint8Array([137, 80, 78, 71])], { type: "image/png" });
+    const fetch = vi.fn<FetchLike>(async (_url, init) => {
+      expect(init?.body).toBe(body);
+      expect(new Headers(init?.headers).get("content-type")).toBe("image/png");
+      expect(new Headers(init?.headers).get("x-csrf-token")).toBe("csrf-proof");
+      expect(init?.credentials).toBe("same-origin");
+      return jsonResponse({ created: true }, { status: 201 });
+    });
+    const transport = new KernelHttpTransport({
+      baseUrl: "https://notes.example.test",
+      fetch,
+      auth: {
+        kind: "browser-session",
+        browserOrigin: "https://notes.example.test",
+        getCsrfToken: () => "csrf-proof",
+      },
+    });
+
+    await expect(transport.requestRaw(
+      {
+        method: "POST",
+        path: "/api/v1/documents/document-1/resources",
+        rawBody: body,
+        mediaType: "image/png",
+      },
+      { status: 201 },
+    )).resolves.toEqual({ created: true });
+
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("maps the frozen resource size limit error without exposing the body", async () => {
+    const transport = createTransport(async () =>
+      Response.json({
+        code: "resource_too_large",
+        message: "The resource exceeds the supported size.",
+        requestId: REQUEST_ID,
+      }, {
+        headers: { "x-request-id": REQUEST_ID },
+        status: 413,
+      })
+    );
+
+    await expect(transport.requestRaw({
+      method: "POST",
+      path: "/api/v1/documents/document-1/resources",
+      rawBody: new Blob(["small"]),
+      mediaType: "application/octet-stream",
+    })).rejects.toMatchObject({
+      code: "resource_too_large",
+      message: "The resource exceeds the supported size.",
+      status: 413,
+    });
+  });
+
   it("rejects malformed binary response metadata before exposing the body", async () => {
     const invalidResponses = [
       binaryResponse({ "content-type": "text/html" }),

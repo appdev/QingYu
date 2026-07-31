@@ -1,19 +1,12 @@
-use crate::dejavu_sync::commands::{DejavuSchedulerOwner, DejavuSyncServiceOwner};
-use crate::dejavu_sync::path_guard::PathGuardCoordinatorOwner;
-use crate::markdown_files::MarkdownTreeLoadState;
-use crate::mobile_back::MobileBackState;
-use crate::watcher::{MarkdownFileWatcherState, MarkdownTreeWatcherState};
+use std::sync::Arc;
+
+use tauri::Manager as _;
+
+use crate::{mobile_back::MobileBackState, mobile_kernel_runtime::MobileKernelRuntimeState};
 
 pub(crate) fn run() {
     tauri::Builder::default()
-        .manage(MarkdownFileWatcherState::default())
-        .manage(MarkdownTreeWatcherState::default())
-        .manage(MarkdownTreeLoadState::default())
         .manage(MobileBackState::default())
-        .manage(DejavuSyncServiceOwner::default())
-        .manage(DejavuSchedulerOwner::default())
-        .manage(PathGuardCoordinatorOwner::default())
-        .manage(crate::remote_sync::RemoteSyncExecutionCoordinator::default())
         .manage(crate::themes::ThemeActivationState::default())
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
@@ -21,26 +14,10 @@ pub(crate) fn run() {
         .plugin(tauri_plugin_log::Builder::new().build())
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_opener::init())
-        .setup(|app| {
-            use tauri::Manager;
-            let settings_owner = crate::app_settings::KernelSettingsOwner::install(&app.handle())
-                .map_err(|error| std::io::Error::other(error.to_string()))?;
-            app.manage(settings_owner);
-            if let Err(error) = crate::dejavu_sync::install_production_graph(&app.handle()) {
-                eprintln!("QingYu Dejavu sync initialization failed: {error}");
-            }
-            app.state::<DejavuSchedulerOwner>().trigger_startup();
-            Ok(())
-        })
+        .setup(crate::mobile_kernel_runtime::install_mobile_kernel_runtime)
         .invoke_handler(tauri::generate_handler![
-            crate::app_settings::get_mcp_policy,
-            crate::app_settings::update_mcp_policy,
-            crate::app_settings::read_app_settings_group,
-            crate::app_settings::write_app_settings_group,
-            crate::app_settings::replace_portable_app_settings,
-            crate::primary_workspace::read_primary_workspace_state,
-            crate::primary_workspace::write_primary_workspace_state,
-            crate::dejavu_sync::path_guard::acknowledge_path_guard,
+            crate::mobile_kernel_runtime::read_mobile_kernel_bootstrap,
+            crate::mobile_kernel_runtime::retry_mobile_kernel_runtime,
             crate::themes::list_themes,
             crate::themes::read_theme_css,
             crate::themes::activation::prepare_theme_activation,
@@ -48,53 +25,6 @@ pub(crate) fn run() {
             crate::themes::activation::cancel_theme_activation,
             crate::themes::activation::release_theme_activation,
             crate::themes::delete_theme,
-            crate::markdown_files::tree::list_markdown_files_for_path,
-            crate::markdown_files::tree::load_markdown_files_for_path,
-            crate::markdown_files::tree::cancel_markdown_files_load,
-            crate::markdown_files::search::search_markdown_files_for_path,
-            crate::markdown_files::tree::create_markdown_tree_file,
-            crate::markdown_files::tree::create_markdown_tree_folder,
-            crate::markdown_files::tree::rename_markdown_tree_file,
-            crate::markdown_files::tree::move_markdown_tree_file,
-            crate::markdown_files::tree::delete_markdown_tree_file,
-            crate::markdown_files::document::read_markdown_file,
-            crate::markdown_files::history::list_markdown_file_history,
-            crate::markdown_files::history::read_markdown_file_history,
-            crate::markdown_files::document::write_markdown_file,
-            crate::watcher::watch_markdown_file,
-            crate::watcher::unwatch_markdown_file,
-            crate::watcher::watch_markdown_tree,
-            crate::watcher::unwatch_markdown_tree,
-            crate::sync_config::load_sync_config,
-            crate::sync_config::enable_sync_config,
-            crate::sync_config::patch_sync_config,
-            crate::sync_config::recover_sync_config,
-            crate::sync_config::reset_sync_config,
-            crate::sync_config::load_sync_config_editing,
-            crate::sync_config::set_sync_config_editing,
-            crate::sync_config::request_sync_config_apply,
-            crate::sync_config::cancel_sync_config_apply,
-            crate::sync_config::load_sync_status,
-            crate::sync_config::list_remote_notebooks,
-            crate::dejavu_sync::commands::bind_dejavu_repository,
-            crate::dejavu_sync::commands::rebuild_local_repository,
-            crate::dejavu_sync::commands::stop_repository_sync,
-            crate::dejavu_sync::commands::change_global_key,
-            crate::dejavu_sync::commands::load_dejavu_key_state,
-            crate::dejavu_sync::commands::initialize_dejavu_global_key,
-            crate::dejavu_sync::commands::export_dejavu_global_key,
-            crate::dejavu_sync::commands::purge_remote_repository,
-            crate::dejavu_sync::commands::delete_remote_repository,
-            crate::dejavu_sync::commands::list_dejavu_conflict_history,
-            crate::dejavu_sync::commands::read_dejavu_conflict_history,
-            crate::dejavu_sync::commands::load_dejavu_repository_status,
-            crate::sync_config::sync_application,
-            crate::sync_config::test_sync_connection,
-            crate::workspace_membership::is_document_in_workspace,
-            crate::managed_workspace::resolve_managed_workspace_root,
-            crate::managed_workspace::list_managed_workspace_names,
-            crate::markdown_files::image::save_clipboard_image,
-            crate::web_http::download_web_image,
             crate::mobile_back::complete_mobile_back,
         ])
         .build(tauri::generate_context!())
@@ -110,7 +40,37 @@ pub(crate) fn run() {
                 code: Some(code),
                 api,
                 ..
-            } => crate::dejavu_sync::commands::handle_native_sync_exit(app, Some(code), api),
+            } => request_mobile_kernel_exit(app, code, &api),
             _ => {}
         });
+}
+
+fn request_mobile_kernel_exit<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    code: i32,
+    api: &tauri::ExitRequestApi,
+) {
+    let Some(runtime) = app.try_state::<Arc<MobileKernelRuntimeState>>() else {
+        return;
+    };
+    if runtime.terminal_exit_is_ready() {
+        return;
+    }
+    api.prevent_exit();
+    if !runtime.begin_terminal_exit() {
+        return;
+    }
+    let runtime = runtime.inner().clone();
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let stop_result = runtime.stop().await;
+        let stop_failed = stop_result.is_err();
+        let exit_code = crate::mobile_kernel_runtime::terminal_exit_code(code, stop_result);
+        if stop_failed {
+            runtime.mark_terminal_exit_failed();
+        } else {
+            runtime.mark_terminal_exit_succeeded();
+        }
+        app.exit(exit_code);
+    });
 }

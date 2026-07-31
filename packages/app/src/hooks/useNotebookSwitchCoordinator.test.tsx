@@ -243,6 +243,69 @@ describe("notebook switch coordinator", () => {
     );
   });
 
+  it("selects through a host-owned Desktop capability and never launches sync on the retiring child", async () => {
+    const order: string[] = [];
+    const runtime = getAppRuntime();
+    const selectRoot = vi.fn(async () => {
+      order.push("select");
+      return "/Workspace/B";
+    });
+    configureAppRuntime({
+      ...runtime,
+      workspace: {
+        ...runtime.workspace,
+        rootPolicy: {
+          canChooseLocalRoot: true,
+          commitRoot: async () => "kernel-workspace://primary",
+          kind: "host-selectable",
+          resolveRoot: async () => "kernel-workspace://primary",
+          selectRoot
+        }
+      }
+    });
+    const appSync = createAppSync({
+      beginNotebookSwitch: vi.fn(async () => {
+        order.push("drain");
+      }),
+      finishNotebookSwitch: vi.fn(async () => {
+        order.push("release");
+      }),
+      run: vi.fn(async () => {
+        order.push("stale-sync");
+        return null;
+      })
+    });
+    const primaryWorkspace = createPrimaryWorkspace({
+      commitDesktopRoot: vi.fn(async (path: string) => {
+        order.push(`commit:${path}`);
+        return "kernel-workspace://primary";
+      }),
+      root: "kernel-workspace://primary",
+      workspaceRoot: null
+    });
+    const flushActiveDocument = vi.fn(async () => {
+      order.push("flush");
+    });
+    const { result } = renderCoordinator({
+      appSync,
+      flushActiveDocument,
+      primaryRoot: "kernel-workspace://primary",
+      primaryWorkspace
+    });
+
+    await expect(result.current.switchDesktopNotebook()).resolves
+      .toBe("kernel-workspace://primary");
+
+    expect(order).toEqual([
+      "select",
+      "flush",
+      "drain",
+      "commit:/Workspace/B",
+      "release"
+    ]);
+    expect(appSync.run).not.toHaveBeenCalled();
+  });
+
   it("leaves the old root active when the desktop picker is cancelled", async () => {
     const appSync = createAppSync();
     const flushActiveDocument = vi.fn(async () => undefined);

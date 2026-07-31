@@ -101,7 +101,7 @@ fn plist_string_array_after_key(document: &str, key: &str) -> BTreeSet<String> {
 }
 
 #[test]
-fn mobile_platform_config_android_keeps_internet_and_limits_cleartext_to_debug() {
+fn mobile_platform_config_android_keeps_internet_and_limits_cleartext_to_loopback() {
     let main = xml_elements("gen/android/app/src/main/AndroidManifest.xml");
     let permissions = main
         .iter()
@@ -120,6 +120,50 @@ fn mobile_platform_config_android_keeps_internet_and_limits_cleartext_to_debug()
         Some("false"),
         "the release/main manifest must explicitly keep cleartext disabled"
     );
+    assert_eq!(
+        application_attribute(&main, "android:networkSecurityConfig"),
+        Some("@xml/network_security_config"),
+        "the release manifest must install the narrow loopback policy"
+    );
+
+    let network_config_path = "gen/android/app/src/main/res/xml/network_security_config.xml";
+    let network_config = source(network_config_path);
+    let network_elements = xml_elements(network_config_path);
+    assert_eq!(
+        network_elements
+            .iter()
+            .filter(|element| element.name == "base-config")
+            .filter_map(|element| element.attributes.get("cleartextTrafficPermitted"))
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        vec!["false"]
+    );
+    assert_eq!(
+        network_elements
+            .iter()
+            .filter(|element| element.name == "domain-config")
+            .filter_map(|element| element.attributes.get("cleartextTrafficPermitted"))
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        vec!["true"]
+    );
+    assert_eq!(
+        network_elements
+            .iter()
+            .filter(|element| element.name == "domain")
+            .filter_map(|element| element.attributes.get("includeSubdomains"))
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        vec!["false"]
+    );
+    assert!(network_config.contains(">127.0.0.1</domain>"));
+    assert_eq!(network_config.matches("<domain ").count(), 1);
+    for forbidden in ["*", "0.0.0.0", "localhost", "192.168.", "10.", "172."] {
+        assert!(
+            !network_config.contains(forbidden),
+            "the release network policy contains non-loopback destination {forbidden}"
+        );
+    }
 
     let debug = xml_elements("gen/android/app/src/debug/AndroidManifest.xml");
     assert_eq!(
@@ -241,7 +285,7 @@ fn mobile_platform_config_apple_does_not_bundle_generated_rust_archive_as_resour
 }
 
 #[test]
-fn mobile_platform_config_overlays_are_schema_only_and_desktop_free() {
+fn mobile_platform_config_overlays_only_add_the_in_process_kernel_csp() {
     for platform in ["android", "ios"] {
         let config = json(&format!("tauri.{platform}.conf.json"));
         let object = config
@@ -249,13 +293,41 @@ fn mobile_platform_config_overlays_are_schema_only_and_desktop_free() {
             .unwrap_or_else(|| panic!("tauri.{platform}.conf.json should be an object"));
         assert_eq!(
             object.keys().collect::<Vec<_>>(),
-            vec!["$schema"],
-            "the {platform} overlay should stay schema-only"
+            vec!["$schema", "app"],
+            "the {platform} overlay should contain only its schema and security override"
         );
         assert_eq!(
             config.pointer("/$schema"),
             Some(&serde_json::json!("https://schema.tauri.app/config/2"))
         );
+        let app = config
+            .pointer("/app")
+            .and_then(serde_json::Value::as_object)
+            .unwrap_or_else(|| panic!("the {platform} overlay should contain app security"));
+        assert_eq!(app.keys().collect::<Vec<_>>(), vec!["security"]);
+        let security = config
+            .pointer("/app/security")
+            .and_then(serde_json::Value::as_object)
+            .unwrap_or_else(|| panic!("the {platform} overlay should contain security"));
+        assert_eq!(security.keys().collect::<Vec<_>>(), vec!["csp"]);
+        let csp = config
+            .pointer("/app/security/csp")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_else(|| panic!("the {platform} overlay should contain a string CSP"));
+        assert!(csp.contains("http://127.0.0.1:*"));
+        assert!(csp.contains("ws://127.0.0.1:*"));
+        for forbidden in [
+            "connect-src http:",
+            "connect-src ws:",
+            "http://localhost:*",
+            "ws://localhost:*",
+            "192.168.",
+        ] {
+            assert!(
+                !csp.contains(forbidden),
+                "the {platform} CSP contains broad or non-loopback transport {forbidden}"
+            );
+        }
         for pointer in [
             "/bundle/externalBin",
             "/bundle/fileAssociations",
@@ -271,7 +343,7 @@ fn mobile_platform_config_overlays_are_schema_only_and_desktop_free() {
 }
 
 #[test]
-fn mobile_platform_config_commits_no_endpoint_credentials_or_signing_material() {
+fn mobile_platform_config_commits_no_external_endpoint_credentials_or_signing_material() {
     let metadata = [
         source("tauri.android.conf.json"),
         source("tauri.ios.conf.json"),
@@ -290,8 +362,8 @@ fn mobile_platform_config_commits_no_endpoint_credentials_or_signing_material() 
         "secret_access",
         "authorization",
         "192.168.",
-        "127.0.0.1",
-        "localhost",
+        "http://localhost:",
+        "ws://localhost:",
         "minio",
         ".amazonaws.com",
         "signingconfig",
@@ -358,11 +430,11 @@ fn mobile_platform_config_has_no_reset_or_workspace_switch_command() {
 }
 
 #[test]
-fn mobile_platform_config_exposes_only_application_mcp_policy() {
+fn mobile_platform_config_exposes_no_legacy_mcp_policy_writer() {
     let native_runtime = source("src/mobile_runtime.rs");
-    assert!(native_runtime.contains("crate::app_settings::get_mcp_policy"));
-    assert!(native_runtime.contains("crate::app_settings::update_mcp_policy"));
     for forbidden in [
+        "crate::app_settings::get_mcp_policy",
+        "crate::app_settings::update_mcp_policy",
         "get_mcp_settings",
         "update_mcp_settings",
         "set_mcp_primary_workspace",
@@ -378,11 +450,10 @@ fn mobile_platform_config_exposes_only_application_mcp_policy() {
     }
 
     let frontend_runtime = source("../src/runtime/mobile.ts");
-    assert!(frontend_runtime.contains("policyAvailable: true"));
+    assert!(frontend_runtime.contains("policyAvailable: false"));
     assert!(frontend_runtime.contains("localServiceAvailable: false"));
-    assert!(frontend_runtime.contains("getSettings: mcpPolicy.getNativeMcpPolicySettings"));
-    assert!(frontend_runtime.contains("updateSettings: mcpPolicy.updateNativeMcpPolicySettings"));
     for forbidden in [
+        "./tauri/mcp-policy",
         "./tauri/mcp\"",
         "setPrimaryWorkspace:",
         "getHealth:",

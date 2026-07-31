@@ -74,6 +74,8 @@ export function usePrimaryWorkspace({
   const trueMobileRef = useRef(trueMobile);
   const rootPolicy = getAppRuntime().workspace.rootPolicy;
   const fixedRootPolicy = rootPolicy?.kind === "fixed" ? rootPolicy : null;
+  const hostSelectableRootPolicy = rootPolicy?.kind === "host-selectable" ? rootPolicy : null;
+  const hostOwnedRootPolicy = fixedRootPolicy ?? hostSelectableRootPolicy;
   stateRef.current = state;
   trueMobileRef.current = trueMobile;
 
@@ -97,12 +99,12 @@ export function usePrimaryWorkspace({
     return generation;
   }, [transition]);
 
-  const resolveFixedState = useCallback(async (generation: number) => {
-    if (!fixedRootPolicy) return null;
+  const resolveHostOwnedState = useCallback(async (generation: number) => {
+    if (!hostOwnedRootPolicy) return null;
 
     try {
-      const root = await fixedRootPolicy.resolveRoot();
-      if (!root.trim()) throw new Error("Fixed workspace is unavailable.");
+      const root = await hostOwnedRootPolicy.resolveRoot();
+      if (!root.trim()) throw new Error("Host workspace is unavailable.");
       transitionIfCurrent(generation, {
         error: null,
         root,
@@ -119,7 +121,7 @@ export function usePrimaryWorkspace({
       });
       return null;
     }
-  }, [fixedRootPolicy, transitionIfCurrent]);
+  }, [hostOwnedRootPolicy, transitionIfCurrent]);
 
   const publishChange = useCallback(async () => {
     const generation = eventGenerationRef.current + 1;
@@ -281,8 +283,8 @@ export function usePrimaryWorkspace({
 
     const resolveInitialState = async () => {
       try {
-        if (fixedRootPolicy) {
-          await resolveFixedState(generation);
+        if (hostOwnedRootPolicy) {
+          await resolveHostOwnedState(generation);
           return;
         }
 
@@ -319,9 +321,9 @@ export function usePrimaryWorkspace({
       if (generationRef.current === generation) generationRef.current += 1;
     };
   }, [
-    fixedRootPolicy,
+    hostOwnedRootPolicy,
     resolveDesktopState,
-    resolveFixedState,
+    resolveHostOwnedState,
     resolveMobileState,
     transition,
     transitionIfCurrent,
@@ -352,7 +354,7 @@ export function usePrimaryWorkspace({
   }, [beginOperation, resolveDesktopState, resolveMobileState, transitionIfCurrent]);
 
   useEffect(() => {
-    if (fixedRootPolicy) return undefined;
+    if (hostOwnedRootPolicy) return undefined;
 
     let cancelled = false;
     let cleanup: (() => unknown) | null = null;
@@ -372,11 +374,37 @@ export function usePrimaryWorkspace({
       cancelled = true;
       cleanup?.();
     };
-  }, [fixedRootPolicy, reloadFromApplicationEvent]);
+  }, [hostOwnedRootPolicy, reloadFromApplicationEvent]);
 
   const commitDesktopRoot = useCallback(async (path: string) => {
     if (fixedRootPolicy) return stateRef.current.root;
     if (trueMobileRef.current) return null;
+
+    if (hostSelectableRootPolicy) {
+      const previousState = stateRef.current;
+      const generation = beginOperation();
+      try {
+        const root = await hostSelectableRootPolicy.commitRoot(path);
+        if (!root || !mountedRef.current || generation !== generationRef.current) return null;
+        transitionIfCurrent(generation, {
+          error: null,
+          root,
+          status: "ready",
+          workspaceRoot: null
+        });
+        return root;
+      } catch {
+        transitionIfCurrent(generation, previousState.status === "ready"
+          ? previousState
+          : {
+              error: "Host workspace switch failed.",
+              root: null,
+              status: "error",
+              workspaceRoot: null
+            });
+        return null;
+      }
+    }
 
     const previousState = stateRef.current;
     const generation = beginOperation();
@@ -421,7 +449,13 @@ export function usePrimaryWorkspace({
           });
       return null;
     }
-  }, [beginOperation, fixedRootPolicy, publishChange, transitionIfCurrent]);
+  }, [
+    beginOperation,
+    fixedRootPolicy,
+    hostSelectableRootPolicy,
+    publishChange,
+    transitionIfCurrent
+  ]);
 
   const commitManagedRoot = useCallback(async (name: string) => {
     if (fixedRootPolicy) return stateRef.current.root;
@@ -465,7 +499,7 @@ export function usePrimaryWorkspace({
   }, [beginOperation, fixedRootPolicy, publishChange, transitionIfCurrent]);
 
   const deferDesktopSetup = useCallback(async () => {
-    if (fixedRootPolicy) return stateRef.current.root;
+    if (hostOwnedRootPolicy) return stateRef.current.root;
     if (trueMobileRef.current) return null;
 
     const generation = beginOperation();
@@ -496,10 +530,10 @@ export function usePrimaryWorkspace({
       });
       return null;
     }
-  }, [beginOperation, fixedRootPolicy, publishChange, transitionIfCurrent]);
+  }, [beginOperation, hostOwnedRootPolicy, publishChange, transitionIfCurrent]);
 
   const resetOnboarding = useCallback(async () => {
-    if (fixedRootPolicy) return stateRef.current.root;
+    if (hostOwnedRootPolicy) return stateRef.current.root;
 
     try {
       const currentState = persistedStateRef.current ?? await loadPrimaryWorkspaceState();
@@ -512,12 +546,12 @@ export function usePrimaryWorkspace({
     } catch {
       return null;
     }
-  }, [fixedRootPolicy]);
+  }, [hostOwnedRootPolicy]);
 
   const retry = useCallback(async () => {
-    if (fixedRootPolicy) {
+    if (hostOwnedRootPolicy) {
       const generation = beginOperation();
-      return resolveFixedState(generation);
+      return resolveHostOwnedState(generation);
     }
 
     const persistedState = persistedStateRef.current;
@@ -545,9 +579,9 @@ export function usePrimaryWorkspace({
     return resolveDesktopState(persistedState, generation);
   }, [
     beginOperation,
-    fixedRootPolicy,
+    hostOwnedRootPolicy,
     resolveDesktopState,
-    resolveFixedState,
+    resolveHostOwnedState,
     resolveMobileState,
     transitionIfCurrent
   ]);
@@ -558,7 +592,7 @@ export function usePrimaryWorkspace({
     commitDesktopRoot,
     commitManagedRoot,
     deferDesktopSetup,
-    managedName: fixedRootPolicy ? null : persistedStateRef.current?.managedName ?? null,
+    managedName: hostOwnedRootPolicy ? null : persistedStateRef.current?.managedName ?? null,
     resetOnboarding,
     retry
   };

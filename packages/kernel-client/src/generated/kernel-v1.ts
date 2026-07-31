@@ -191,6 +191,38 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/documents/{documentId}/resource-batches": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["createWorkspaceResourceBatch"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/documents/{documentId}/resources": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["createWorkspaceResource"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/health/live": {
         parameters: {
             query?: never;
@@ -457,6 +489,28 @@ export interface components {
         CreateServerSessionRequest: {
             password: string;
         };
+        CreateWorkspaceResourceBatchItem: {
+            bodyBase64: string;
+            kind: components["schemas"]["ResourceKind"];
+            mediaType: string;
+            name: components["schemas"]["ResourceName"];
+        };
+        CreateWorkspaceResourceBatchRequest: {
+            batchId: components["schemas"]["ResourceBatchId"];
+            folder: components["schemas"]["WorkspaceRelativePath"];
+            items: components["schemas"]["CreateWorkspaceResourceBatchItem"][];
+            workspaceGeneration: components["schemas"]["WorkspaceGeneration"];
+        };
+        CreateWorkspaceResourceBatchResponse: {
+            batchId: components["schemas"]["ResourceBatchId"];
+            resources: components["schemas"]["ResourceEntryDto"][];
+        };
+        CreateWorkspaceResourceQuery: {
+            folder: components["schemas"]["WorkspaceRelativePath"];
+            kind: components["schemas"]["ResourceKind"];
+            name: components["schemas"]["ResourceName"];
+            workspaceGeneration: components["schemas"]["WorkspaceGeneration"];
+        };
         CreatedDocumentDto: {
             contents: components["schemas"]["DocumentContents"];
             id: components["schemas"]["DocumentId"];
@@ -608,7 +662,7 @@ export interface components {
             type: "sync-status-changed";
         };
         /** @enum {string} */
-        ErrorCode: "invalid_request" | "invalid_workspace_path" | "invalid_document_name" | "unauthorized" | "initialization_required" | "already_initialized" | "invalid_credentials" | "csrf_rejected" | "authentication_rate_limited" | "authentication_unavailable" | "host_not_allowed" | "origin_not_allowed" | "kernel_not_ready" | "workspace_unavailable" | "workspace_locked" | "document_not_found" | "resource_not_found" | "document_already_exists" | "document_too_large" | "document_invalid_encoding" | "revision_conflict" | "settings_revision_conflict" | "sync_config_revision_conflict" | "invalid_settings_field" | "settings_unavailable" | "sync_config_absent" | "sync_config_invalid" | "sync_not_ready" | "sync_run_unavailable" | "internal_error";
+        ErrorCode: "invalid_request" | "invalid_workspace_path" | "invalid_document_name" | "unauthorized" | "initialization_required" | "already_initialized" | "invalid_credentials" | "csrf_rejected" | "authentication_rate_limited" | "authentication_unavailable" | "host_not_allowed" | "origin_not_allowed" | "kernel_not_ready" | "workspace_unavailable" | "workspace_locked" | "document_not_found" | "resource_not_found" | "document_already_exists" | "document_too_large" | "resource_too_large" | "document_invalid_encoding" | "revision_conflict" | "settings_revision_conflict" | "sync_config_revision_conflict" | "invalid_settings_field" | "settings_unavailable" | "sync_config_absent" | "sync_config_invalid" | "sync_not_ready" | "sync_run_unavailable" | "internal_error";
         ErrorDetails: {
             currentRevision?: components["schemas"]["Revision"];
             /** @enum {string} */
@@ -787,6 +841,8 @@ export interface components {
         RequestId: string;
         /** Format: int32 */
         RequestTimeoutSeconds: number;
+        /** Format: uuid */
+        ResourceBatchId: string;
         ResourceEntryDto: {
             id: components["schemas"]["ResourceId"];
             kind: components["schemas"]["ResourceKind"];
@@ -2998,6 +3054,197 @@ export interface operations {
                     "application/json": components["schemas"]["ApiErrorEnvelope"] & {
                         /** @enum {string} */
                         code?: "document_already_exists" | "revision_conflict";
+                    };
+                };
+            };
+            /** @description Error */
+            423: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "workspace_locked";
+                    };
+                };
+            };
+            /** @description Error */
+            500: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "internal_error";
+                    };
+                };
+            };
+            /** @description Error */
+            503: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "authentication_unavailable" | "kernel_not_ready" | "workspace_unavailable";
+                    };
+                };
+            };
+        };
+    };
+    createWorkspaceResourceBatch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                documentId: components["schemas"]["DocumentId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateWorkspaceResourceBatchRequest"];
+            };
+        };
+        responses: {
+            /** @description Success */
+            201: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CreateWorkspaceResourceBatchResponse"];
+                };
+            };
+        };
+    };
+    createWorkspaceResource: {
+        parameters: {
+            query: {
+                workspaceGeneration: components["schemas"]["WorkspaceGeneration"];
+                folder: components["schemas"]["WorkspaceRelativePath"];
+                name: components["schemas"]["ResourceName"];
+                kind: components["schemas"]["ResourceKind"];
+            };
+            header?: never;
+            path: {
+                documentId: components["schemas"]["DocumentId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/octet-stream": string;
+                "image/gif": string;
+                "image/jpeg": string;
+                "image/png": string;
+                "image/webp": string;
+            };
+        };
+        responses: {
+            /** @description Success */
+            201: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResourceEntryDto"];
+                };
+            };
+            /** @description Error */
+            400: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "invalid_request";
+                    };
+                };
+            };
+            /** @description Error */
+            401: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "unauthorized";
+                    };
+                };
+            };
+            /** @description Error */
+            403: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "csrf_rejected" | "host_not_allowed" | "origin_not_allowed";
+                    };
+                };
+            };
+            /** @description Error */
+            404: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "document_not_found";
+                    };
+                };
+            };
+            /** @description Error */
+            409: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "revision_conflict";
+                    };
+                };
+            };
+            /** @description Error */
+            413: {
+                headers: {
+                    /** @description Correlation ID for this response. */
+                    "X-Request-Id": string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiErrorEnvelope"] & {
+                        /** @enum {string} */
+                        code?: "resource_too_large";
                     };
                 };
             };

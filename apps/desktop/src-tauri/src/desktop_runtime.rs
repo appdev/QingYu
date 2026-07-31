@@ -231,6 +231,28 @@ fn read_desktop_kernel_startup_state(
     runtime.snapshot()
 }
 
+pub(crate) fn recover_published_desktop_workspace_target(
+    requested_path: &Path,
+    resolution: Result<
+        crate::primary_workspace::DesktopPrimaryWorkspaceResolution,
+        crate::primary_workspace::DesktopPrimaryWorkspaceResolutionError,
+    >,
+) -> Result<PathBuf, String> {
+    let requested = requested_path
+        .to_str()
+        .ok_or_else(|| "desktop primary workspace initialization failed".to_owned())?;
+    let requested = crate::workspace_membership::canonical_workspace_root(requested)
+        .map_err(|_| "desktop primary workspace initialization failed".to_owned())?;
+    match resolution {
+        Ok(crate::primary_workspace::DesktopPrimaryWorkspaceResolution::Selected(root))
+            if root == requested =>
+        {
+            Ok(root)
+        }
+        _ => Err("desktop primary workspace initialization failed".to_owned()),
+    }
+}
+
 #[tauri::command]
 async fn initialize_desktop_kernel_workspace(
     app: tauri::AppHandle,
@@ -243,22 +265,97 @@ async fn initialize_desktop_kernel_workspace(
     let recover_invalid = runtime.is_invalid()?;
     let persistence_app = app.clone();
     let requested_path = PathBuf::from(path);
-    let workspace_root = tauri::async_runtime::spawn_blocking(move || {
+    let persisted_request = requested_path.clone();
+    let persisted = tauri::async_runtime::spawn_blocking(move || {
         if recover_invalid {
             crate::primary_workspace::recover_invalid_desktop_primary_workspace(
                 &persistence_app,
-                &requested_path,
+                &persisted_request,
             )
         } else {
             crate::primary_workspace::initialize_desktop_primary_workspace(
                 &persistence_app,
-                &requested_path,
+                &persisted_request,
             )
         }
     })
     .await
-    .map_err(|_| "desktop primary workspace initialization failed".to_owned())??;
+    .map_err(|_| "desktop primary workspace initialization failed".to_owned())?;
+    let workspace_root = match persisted {
+        Ok(root) => root,
+        Err(_) => {
+            let resolution_app = app.clone();
+            let resolution = tauri::async_runtime::spawn_blocking(move || {
+                crate::primary_workspace::resolve_desktop_primary_workspace(&resolution_app)
+            })
+            .await
+            .map_err(|_| "desktop primary workspace initialization failed".to_owned())?;
+            recover_published_desktop_workspace_target(&requested_path, resolution)?
+        }
+    };
     runtime.start_selected(&app, workspace_root, origin)
+}
+
+#[tauri::command]
+async fn switch_desktop_kernel_workspace(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    runtime: tauri::State<'_, Arc<crate::desktop_kernel_runtime::DesktopKernelRuntimeState>>,
+    path: String,
+) -> Result<(), String> {
+    let origin = main_renderer_origin(&window)?;
+    let runtime = Arc::clone(runtime.inner());
+    let persistence_app = app.clone();
+    let requested_path = PathBuf::from(path);
+    let prepared = tauri::async_runtime::spawn_blocking(move || {
+        crate::primary_workspace::prepare_desktop_primary_workspace_switch(
+            &persistence_app,
+            &requested_path,
+        )
+    })
+    .await
+    .map_err(|_| "desktop primary workspace switch failed".to_owned())??;
+    let Some(attempt) = runtime
+        .begin_workspace_switch(
+            &app,
+            &prepared.current_root,
+            prepared.target_root.clone(),
+            origin,
+        )
+        .await?
+    else {
+        return Ok(());
+    };
+
+    let target_root = prepared.target_root.clone();
+    let commit_app = app.clone();
+    let committed = tauri::async_runtime::spawn_blocking(move || {
+        crate::primary_workspace::commit_desktop_primary_workspace_switch(&commit_app, &prepared)
+    })
+    .await
+    .map_err(|_| "desktop primary workspace switch failed".to_owned())
+    .and_then(|result| result);
+    if committed.as_ref() == Ok(&target_root) {
+        return runtime.complete_workspace_switch(&app, attempt);
+    }
+
+    let resolution_app = app.clone();
+    let resolution = tauri::async_runtime::spawn_blocking(move || {
+        crate::primary_workspace::resolve_desktop_primary_workspace(&resolution_app)
+    })
+    .await
+    .unwrap_or(Err(
+        crate::primary_workspace::DesktopPrimaryWorkspaceResolutionError::Unavailable,
+    ));
+    if recover_published_desktop_workspace_target(&target_root, resolution.clone()).is_ok() {
+        return runtime.complete_workspace_switch(&app, attempt);
+    }
+    let authoritative_root = resolution.ok().and_then(|resolution| match resolution {
+        crate::primary_workspace::DesktopPrimaryWorkspaceResolution::Selected(root) => Some(root),
+        crate::primary_workspace::DesktopPrimaryWorkspaceResolution::Unselected => None,
+    });
+    runtime.reconcile_failed_workspace_switch(&app, attempt, authoritative_root);
+    Err("desktop primary workspace switch failed".to_owned())
 }
 
 #[tauri::command]
@@ -745,6 +842,7 @@ pub(crate) fn run() {
                 crate::kernel_bootstrap::read_native_kernel_bootstrap,
                 read_desktop_kernel_startup_state,
                 initialize_desktop_kernel_workspace,
+                switch_desktop_kernel_workspace,
                 retry_desktop_kernel_workspace,
                 crate::mcp::get_mcp_settings,
                 crate::mcp::update_mcp_settings,
@@ -895,6 +993,10 @@ pub(crate) fn run() {
 
 #[cfg(test)]
 mod tests {
+    use crate::primary_workspace::{
+        DesktopPrimaryWorkspaceResolution, DesktopPrimaryWorkspaceResolutionError,
+    };
+
     #[test]
     fn mcp_serve_selects_headless_service_mode() {
         assert_eq!(
@@ -909,6 +1011,71 @@ mod tests {
         assert_eq!(
             super::test_desktop_launch_mode(&["qingyu", "mcp", "serve", "unexpected"]),
             "normal"
+        );
+    }
+
+    #[test]
+    fn published_unknown_initialization_accepts_only_the_requested_authoritative_root() {
+        let roots = tempfile::tempdir().expect("temporary workspace roots");
+        let requested = roots.path().join("requested");
+        let other = roots.path().join("other");
+        std::fs::create_dir(&requested).expect("requested workspace");
+        std::fs::create_dir(&other).expect("other workspace");
+        let requested = requested.canonicalize().expect("canonical requested root");
+        let other = other.canonicalize().expect("canonical other root");
+
+        assert_eq!(
+            super::recover_published_desktop_workspace_target(
+                &requested,
+                Ok(DesktopPrimaryWorkspaceResolution::Selected(
+                    requested.clone()
+                )),
+            )
+            .expect("matching published target"),
+            requested,
+        );
+        assert!(super::recover_published_desktop_workspace_target(
+            &requested,
+            Ok(DesktopPrimaryWorkspaceResolution::Selected(other)),
+        )
+        .is_err());
+        assert!(super::recover_published_desktop_workspace_target(
+            &requested,
+            Ok(DesktopPrimaryWorkspaceResolution::Unselected),
+        )
+        .is_err());
+        assert!(super::recover_published_desktop_workspace_target(
+            &requested,
+            Err(DesktopPrimaryWorkspaceResolutionError::Unavailable),
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn workspace_switch_reuses_the_independent_authority_reread_before_failing() {
+        let source = include_str!("desktop_runtime.rs");
+        let switch_start = source
+            .find("async fn switch_desktop_kernel_workspace")
+            .expect("workspace switch command");
+        let retry_start = source[switch_start..]
+            .find("async fn retry_desktop_kernel_workspace")
+            .map(|offset| switch_start + offset)
+            .expect("workspace retry command");
+        let switch = &source[switch_start..retry_start];
+
+        assert!(
+            switch.contains("recover_published_desktop_workspace_target"),
+            "a published-but-not-durable B authority must continue the already-revoked switch"
+        );
+        let recovery = switch
+            .find("recover_published_desktop_workspace_target")
+            .expect("commit-unknown recovery");
+        let failed = switch
+            .find("reconcile_failed_workspace_switch")
+            .expect("fail-closed reconciliation");
+        assert!(
+            recovery < failed,
+            "the independent authority reread must settle before failure reconciliation"
         );
     }
 

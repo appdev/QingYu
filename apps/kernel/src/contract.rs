@@ -47,6 +47,7 @@ uuid_identifier!(
     ConnectionId,
     RunId,
     SnapshotId,
+    ResourceBatchId,
 );
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq, Serialize, ToSchema)]
@@ -937,6 +938,42 @@ pub struct ListWorkspaceInventoryQuery {
     pub limit: Option<PageLimit>,
     #[serde(default)]
     pub parent: WorkspaceRelativePath,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct CreateWorkspaceResourceQuery {
+    pub workspace_generation: WorkspaceGeneration,
+    pub folder: WorkspaceRelativePath,
+    pub name: ResourceName,
+    pub kind: ResourceKind,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct CreateWorkspaceResourceBatchItem {
+    pub name: ResourceName,
+    pub kind: ResourceKind,
+    pub media_type: String,
+    #[schema(max_length = 89478488)]
+    pub body_base64: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct CreateWorkspaceResourceBatchRequest {
+    pub batch_id: ResourceBatchId,
+    pub workspace_generation: WorkspaceGeneration,
+    pub folder: WorkspaceRelativePath,
+    #[schema(min_items = 1, max_items = 32)]
+    pub items: Vec<CreateWorkspaceResourceBatchItem>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct CreateWorkspaceResourceBatchResponse {
+    pub batch_id: ResourceBatchId,
+    pub resources: Vec<ResourceEntryDto>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, ToSchema)]
@@ -2233,6 +2270,7 @@ pub enum ErrorCode {
     ResourceNotFound,
     DocumentAlreadyExists,
     DocumentTooLarge,
+    ResourceTooLarge,
     DocumentInvalidEncoding,
     RevisionConflict,
     SettingsRevisionConflict,

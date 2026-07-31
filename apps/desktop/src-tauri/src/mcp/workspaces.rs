@@ -269,8 +269,8 @@ impl WorkspaceRegistry {
             .map_err(|_| WorkspaceError::state())?;
         let previous_generation = self.generation();
         if epoch > self.authority_epoch.load(Ordering::Acquire) {
-            self.authority_epoch.store(epoch, Ordering::Release);
             self.clear_current_locked()?;
+            self.authority_epoch.store(epoch, Ordering::Release);
         }
         Ok(previous_generation)
     }
@@ -660,5 +660,46 @@ fn same_resolved_identity(left: &WorkspaceEntry, right: &WorkspaceEntry) -> bool
     match (&left.resolved, &right.resolved) {
         (Some(left), Some(right)) => left.identity == right.identity,
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod authority_publication_tests {
+    use super::*;
+
+    #[test]
+    fn failed_registry_cleanup_does_not_publish_a_new_authority_epoch() {
+        let registry = Arc::new(WorkspaceRegistry::new(Vec::new()));
+        let poison = Arc::clone(&registry);
+        let _poisoned = std::thread::spawn(move || {
+            let _workspaces = poison.workspaces.write().expect("workspace registry");
+            panic!("inject workspace registry cleanup failure");
+        })
+        .join();
+
+        assert!(registry.publish_authority_epoch(7).is_err());
+        assert_eq!(registry.authority_epoch.load(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn authority_publication_synchronously_revokes_old_workspace_generation() {
+        let workspace = tempfile::tempdir().expect("temporary workspace");
+        let registry = WorkspaceRegistry::new(Vec::new());
+        let authorized = registry
+            .authorize(workspace.path(), "Workspace A")
+            .expect("authorize workspace");
+        let old = registry
+            .resolve(authorized.workspace_id)
+            .expect("resolve old generation");
+        let old_generation = old.workspace_generation;
+
+        let previous_generation = registry
+            .publish_authority_epoch(1)
+            .expect("publish authority epoch");
+
+        assert_eq!(previous_generation, old_generation);
+        assert!(registry.require_primary_workspace().is_err());
+        assert!(old.revalidate_authority().is_err());
+        assert!(registry.generation() > old_generation);
     }
 }
