@@ -1,10 +1,79 @@
 import { useLayoutEffect, useRef, useSyncExternalStore } from "react";
+import { platform as readTauriPlatform } from "@tauri-apps/plugin-os";
+import { MacWindowControls, WindowsWindowControls } from "@markra/app";
+import {
+  closeNativeWindow,
+  minimizeNativeWindow,
+  toggleNativeWindowFullscreen,
+  toggleNativeWindowMaximized,
+} from "./runtime/tauri/window";
+
+type DesktopStartupPlatform = "linux" | "macos" | "windows";
 
 export interface DesktopStartupWorkspaceProps {
+  readonly platform?: DesktopStartupPlatform | null;
   readonly retryWorkspace: () => Promise<unknown>;
   readonly selectWorkspace: () => Promise<string | null>;
   readonly startWorkspace: (workspacePath: string) => Promise<unknown>;
   readonly startupStatus: DesktopStartupWorkspaceAuthoritativeStatus;
+}
+
+function resolveDesktopStartupPlatform(): DesktopStartupPlatform | null {
+  try {
+    const platform = readTauriPlatform();
+    return platform === "linux" || platform === "macos" || platform === "windows"
+      ? platform
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function DesktopStartupWindowChrome({
+  platform,
+}: {
+  readonly platform: DesktopStartupPlatform | null;
+}) {
+  if (platform === "macos") {
+    return (
+      <header
+        aria-label="Window drag region"
+        className="welcome-screen__window-chrome fixed inset-x-0 top-0 z-20 h-10 select-none [-webkit-user-select:none]"
+        data-tauri-drag-region
+      >
+        <MacWindowControls
+          className="absolute top-0 left-0 z-10"
+          onClose={closeNativeWindow}
+          onFullscreen={toggleNativeWindowFullscreen}
+          onMinimize={minimizeNativeWindow}
+        />
+      </header>
+    );
+  }
+
+  if (platform === "windows") {
+    return (
+      <header
+        aria-label="Window drag region"
+        className="welcome-screen__window-chrome fixed inset-x-0 top-0 z-20 grid h-10 grid-cols-[minmax(0,1fr)_auto] select-none items-center bg-(--bg-chrome) [-webkit-user-select:none]"
+        data-tauri-drag-region
+      >
+        <span
+          className="px-3 text-[12px] leading-none font-[620] text-(--text-heading)"
+          data-tauri-drag-region
+        >
+          QingYu
+        </span>
+        <WindowsWindowControls
+          onClose={closeNativeWindow}
+          onMaximize={toggleNativeWindowMaximized}
+          onMinimize={minimizeNativeWindow}
+        />
+      </header>
+    );
+  }
+
+  return null;
 }
 
 export type DesktopStartupWorkspaceAuthoritativeStatus =
@@ -242,12 +311,16 @@ export function DesktopStartupWorkspace(
   const upgradeRequired = state.status === "upgrade-required";
   const retryable = failed && state.failure === "startup";
   const selectionFailed = failed && !retryable;
+  const platform = props.platform === undefined
+    ? resolveDesktopStartupPlatform()
+    : props.platform;
 
   return (
     <main
       className="welcome-screen welcome-screen--desktop"
       data-desktop-startup-workspace={state.status}
     >
+      <DesktopStartupWindowChrome platform={platform} />
       <aside className="welcome-screen__identity" aria-label="QingYu">
         <p className="welcome-screen__wordmark">QingYu</p>
         <p className="welcome-screen__slogan">Write clearly. Keep it yours.</p>

@@ -20,6 +20,7 @@ type AuthoritativeStartupStatus =
   | "failed";
 
 type WorkspaceProps = {
+  platform?: "linux" | "macos" | "windows" | null;
   retryWorkspace: () => Promise<unknown>;
   selectWorkspace: () => Promise<string | null>;
   startWorkspace: (workspacePath: string) => Promise<unknown>;
@@ -27,7 +28,7 @@ type WorkspaceProps = {
 };
 
 type WorkspaceInput = Pick<WorkspaceProps, "selectWorkspace" | "startWorkspace"> &
-  Partial<Pick<WorkspaceProps, "retryWorkspace" | "startupStatus">>;
+  Partial<Pick<WorkspaceProps, "platform" | "retryWorkspace" | "startupStatus">>;
 
 describe("desktop startup workspace", () => {
   const mountedRoots: Array<{ container: HTMLDivElement; root: Root }> = [];
@@ -53,6 +54,45 @@ describe("desktop startup workspace", () => {
     expect(buttonNamed(container, "Choose directory")).toBeEnabled();
     expect(selectWorkspace).not.toHaveBeenCalled();
     expect(startWorkspace).not.toHaveBeenCalled();
+  });
+
+  it("provides macOS window controls and a draggable title bar before workspace selection", () => {
+    const container = renderWorkspace({
+      platform: "macos",
+      selectWorkspace: vi.fn(async () => null),
+      startWorkspace: vi.fn(async () => undefined),
+    });
+
+    const chrome = container.querySelector(".welcome-screen__window-chrome");
+    expect(chrome).toHaveAttribute("data-tauri-drag-region");
+    expect(container.querySelector('[aria-label="Close window"]')).toBeEnabled();
+    expect(container.querySelector('[aria-label="Minimize window"]')).toBeEnabled();
+    expect(container.querySelector('[aria-label="Toggle full screen"]')).toBeEnabled();
+  });
+
+  it("provides Windows window controls and a draggable title bar before workspace selection", () => {
+    const container = renderWorkspace({
+      platform: "windows",
+      selectWorkspace: vi.fn(async () => null),
+      startWorkspace: vi.fn(async () => undefined),
+    });
+
+    const chrome = container.querySelector(".welcome-screen__window-chrome");
+    expect(chrome).toHaveAttribute("data-tauri-drag-region");
+    expect(container.querySelector('[aria-label="Close window"]')).toBeEnabled();
+    expect(container.querySelector('[aria-label="Minimize window"]')).toBeEnabled();
+    expect(container.querySelector('[aria-label="Maximize or restore window"]')).toBeEnabled();
+  });
+
+  it("keeps native Linux window decorations without duplicate controls", () => {
+    const container = renderWorkspace({
+      platform: "linux",
+      selectWorkspace: vi.fn(async () => null),
+      startWorkspace: vi.fn(async () => undefined),
+    });
+
+    expect(container.querySelector(".welcome-screen__window-chrome")).toBeNull();
+    expect(container.querySelector('[aria-label="Close window"]')).toBeNull();
   });
 
   it("uses only the dedicated retry callback for an authoritative failed startup", () => {

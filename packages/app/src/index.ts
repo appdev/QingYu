@@ -1,5 +1,7 @@
 export { default, default as App } from "./App";
 export { AppErrorBoundary } from "./components/AppErrorBoundary";
+export { MacWindowControls } from "./components/MacWindowControls";
+export { WindowsWindowControls } from "./components/WindowsWindowControls";
 export {
   RemoteNotebookDialog,
   type RemoteNotebookDialogProps
