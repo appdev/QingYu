@@ -556,7 +556,7 @@ describe("EditorSettings", () => {
     expect(widthInput).toHaveAttribute("spellcheck", "false");
     expect(widthInput).toHaveAttribute("min", "0");
     expect(widthInput).toHaveAttribute("max", "100");
-    expect(widthInput).toHaveValue("53");
+    expect(widthInput).toHaveValue("27");
     expect(screen.getByText("%")).toBeInTheDocument();
     expect(resetButton.querySelector(".lucide-rotate-ccw")).toBeInTheDocument();
 
@@ -566,7 +566,7 @@ describe("EditorSettings", () => {
     expect(onUpdatePreferences).toHaveBeenCalledWith({
       ...defaultEditorPreferences,
       contentWidth: "default",
-      contentWidthPx: 1280
+      contentWidthPx: 1920
     });
 
     fireEvent.change(widthInput, { target: { value: "80" } });
@@ -574,7 +574,7 @@ describe("EditorSettings", () => {
     expect(onUpdatePreferences).toHaveBeenCalledWith({
       ...defaultEditorPreferences,
       contentWidth: "default",
-      contentWidthPx: 1152
+      contentWidthPx: 1664
     });
 
     fireEvent.change(widthInput, { target: { value: "0" } });
@@ -590,7 +590,7 @@ describe("EditorSettings", () => {
     expect(onUpdatePreferences).toHaveBeenCalledWith({
       ...defaultEditorPreferences,
       contentWidth: "default",
-      contentWidthPx: 1280
+      contentWidthPx: 1920
     });
 
     fireEvent.click(resetButton);

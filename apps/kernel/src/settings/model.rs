@@ -128,7 +128,7 @@ fn validate_setting_value(key: SettingKey, value: &Value) -> Result<(), ModelErr
         ),
         SettingKey::EditorBodyFontSize => integer_in(value, &[14, 15, 16, 17, 18, 20]),
         SettingKey::EditorContentWidth => string_in(value, &["narrow", "default", "wide"]),
-        SettingKey::EditorContentWidthPx => value.is_null() || integer_between(value, 640, 1_280),
+        SettingKey::EditorContentWidthPx => value.is_null() || integer_between(value, 640, 1_920),
         SettingKey::EditorFontFamily => valid_font_family(value),
         SettingKey::EditorLineHeight => value
             .as_f64()
@@ -408,7 +408,7 @@ fn valid_portable_editor_preferences(value: &Value) -> bool {
         "bodyFontSize" => integer_in(value, &[14, 15, 16, 17, 18, 20]),
         "clipboardImageFolder" => valid_portable_relative_folder(value),
         "contentWidth" => string_in(value, &["narrow", "default", "wide"]),
-        "contentWidthPx" => value.is_null() || integer_between(value, 640, 1_280),
+        "contentWidthPx" => value.is_null() || integer_between(value, 640, 1_920),
         "editorFontFamily" => valid_font_family(value),
         "extendedSyntax" => valid_boolean_object(value, &["githubAlerts", "highlight"]),
         "imageUpload" => valid_image_upload_settings(value),

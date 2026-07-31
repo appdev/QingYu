@@ -345,7 +345,7 @@ describe("editor preferences", () => {
   it("normalizes custom editor content width pixels", () => {
     expect(normalizeEditorPreferences({ contentWidthPx: 1120 }).contentWidthPx).toBe(1120);
     expect(normalizeEditorPreferences({ contentWidthPx: 320 }).contentWidthPx).toBe(640);
-    expect(normalizeEditorPreferences({ contentWidthPx: 2000 }).contentWidthPx).toBe(1280);
+    expect(normalizeEditorPreferences({ contentWidthPx: 2000 }).contentWidthPx).toBe(1920);
     expect(normalizeEditorPreferences({ contentWidthPx: "wide" }).contentWidthPx).toBeNull();
   });
 

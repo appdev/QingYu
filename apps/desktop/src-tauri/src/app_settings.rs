@@ -1715,7 +1715,7 @@ fn validate_field(field: &str, value: &Value) -> Result<(), AppSettingsError> {
         "language" => string_in(value, LANGUAGES),
         "editor.bodyFontSize" => integer_in(value, &[14, 15, 16, 17, 18, 20]),
         "editor.contentWidth" => string_in(value, &["narrow", "default", "wide"]),
-        "editor.contentWidthPx" => value.is_null() || integer_between(value, 640, 1280),
+        "editor.contentWidthPx" => value.is_null() || integer_between(value, 640, 1920),
         "editor.fontFamily" => valid_font_family(value),
         "editor.lineHeight" => value
             .as_f64()
@@ -2079,7 +2079,7 @@ fn valid_portable_editor_preferences(value: &Value) -> bool {
         "bodyFontSize" => integer_in(value, &[14, 15, 16, 17, 18, 20]),
         "clipboardImageFolder" => valid_portable_relative_folder(value),
         "contentWidth" => string_in(value, &["narrow", "default", "wide"]),
-        "contentWidthPx" => value.is_null() || integer_between(value, 640, 1280),
+        "contentWidthPx" => value.is_null() || integer_between(value, 640, 1920),
         "editorFontFamily" => valid_strict_font_family(value),
         "extendedSyntax" => valid_boolean_object(value, &["githubAlerts", "highlight"]),
         "imageUpload" => valid_image_upload_settings(value),

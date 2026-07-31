@@ -14,7 +14,7 @@
       "bodyFontSize": 16,
       "clipboardImageFolder": "assets",
       "contentWidth": "default",
-      "contentWidthPx": null,
+      "contentWidthPx": 1920,
       "documentLinksOpen": true,
       "documentLinksVisible": false,
       "editorFontFamily": { "family": null, "source": "theme" },

@@ -11,7 +11,7 @@ export const editorContentWidthPixels = {
 } satisfies Record<EditorContentWidth, number>;
 
 export const editorCustomContentWidthMin = 640;
-export const editorCustomContentWidthMax = 1280;
+export const editorCustomContentWidthMax = 1920;
 
 export function normalizeEditorContentWidthPx(value: unknown) {
   const width = clampNumber(value, editorCustomContentWidthMin, editorCustomContentWidthMax);
