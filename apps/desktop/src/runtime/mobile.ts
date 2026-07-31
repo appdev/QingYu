@@ -133,6 +133,7 @@ export function createMobileKernelRuntimeOwner(
     ...mobileRuntime,
     features: {
       ...mobileRuntime.features,
+      imageImport: true,
       projectSync: true,
       resources: true,
     },

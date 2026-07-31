@@ -97,6 +97,19 @@ describe("mobile Kernel runtime boundary", () => {
     owner.release();
   });
 
+  it("enables image import only for the ready Kernel runtime", () => {
+    const kernel = {
+      ...createUnavailableKernelDomainPort(),
+      availability: "available",
+    } as KernelDomainPort;
+    const owner = createMobileKernelRuntimeOwner(kernel);
+
+    expect(mobileRuntime.features.imageImport).toBe(false);
+    expect(owner.runtime.features.imageImport).toBe(true);
+
+    owner.release();
+  });
+
   it("keeps native confirmation, image picker, system back, external links, and themes", async () => {
     mockedConfirm.mockResolvedValue(true);
 
