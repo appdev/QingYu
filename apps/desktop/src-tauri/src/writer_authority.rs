@@ -1124,6 +1124,7 @@ const NORMAL_DESKTOP_HOST_READS_AND_ACTIONS: &[&str] = &[
     "read_standalone_document",
     "read_text_file",
     "read_theme_css",
+    "request_primary_notebook_switch",
     "retry_desktop_kernel_workspace",
     "show_native_app_about",
     "take_opened_markdown_paths",
@@ -2127,6 +2128,9 @@ mod tests {
         }
         assert!(normal_desktop_command_is_allowed(
             "read_native_kernel_bootstrap"
+        ));
+        assert!(normal_desktop_command_is_allowed(
+            "request_primary_notebook_switch"
         ));
         assert!(!normal_desktop_command_is_allowed(
             "read_markdown_template_file"

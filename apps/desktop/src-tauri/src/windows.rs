@@ -42,7 +42,6 @@ use settings_ownership::{
 const BLANK_EDITOR_WINDOW_LABEL_PREFIX: &str = "markra-editor-";
 const BLANK_EDITOR_WINDOW_URL: &str = "index.html?blank=1";
 const MAIN_WINDOW_LABEL: &str = "main";
-const RESTORABLE_EDITOR_WINDOW_URL: &str = "index.html";
 #[cfg(test)]
 pub(crate) const MINIMIZE_CURRENT_WINDOW_COMMAND: &str = "minimize_current_window";
 #[cfg(test)]
@@ -620,19 +619,6 @@ where
     let label = next_blank_editor_window_label();
     debug_assert!(is_blank_editor_window_label(&label));
     spawn_editor_window_with_label(app, label, url);
-}
-
-pub(crate) fn spawn_restorable_editor_window<R>(app: tauri::AppHandle<R>)
-where
-    R: tauri::Runtime,
-{
-    // ?blank=1 deliberately opts out of workspace restore. App/Dock reopens need index.html
-    // so the frontend can replay the saved tabs instead of starting an empty document.
-    spawn_editor_window_with_label(
-        app,
-        MAIN_WINDOW_LABEL.to_string(),
-        RESTORABLE_EDITOR_WINDOW_URL.to_string(),
-    );
 }
 
 fn editor_window_transparent() -> bool {
