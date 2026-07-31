@@ -19,6 +19,7 @@ import {
   type NativeKernelBootstrap
 } from "../kernel-bootstrap";
 import { switchDesktopKernelWorkspace } from "../desktop-kernel-startup";
+import { selectDesktopWorkspaceDirectory } from "../desktop-workspace-selector";
 import {
   createDesktopKernelDomainAdapter,
   DesktopKernelDomainAdapterError,
@@ -326,7 +327,7 @@ export function createDesktopKernelRuntimeOwner(
   kernel: KernelDomainPort,
   {
     commitRoot = switchDesktopKernelWorkspace,
-    selectRoot = async () => (await files.openNativeMarkdownFolder())?.path ?? null,
+    selectRoot = selectDesktopWorkspaceDirectory,
   }: DesktopKernelRuntimeOwnerOptions = {},
 ): DesktopKernelRuntimeOwner {
   const shell = createDesktopRuntime({ kernel });

@@ -221,25 +221,36 @@ impl DesktopKernelRuntimeState {
             workspace_root,
             renderer_origin,
         };
-        let (start, replaced_owner, previous_selection) = self.reserve_switch(selection)?;
+        let (start, replaced_owner, previous_selection, required_ready_owner, epoch) =
+            self.reserve_switch(selection)?;
         if previous_selection.workspace_root != expected_root {
             self.fail_workspace_switch(app, start.token, Some(previous_selection));
             return Err(runtime_unavailable());
         }
-        if let Some(epoch) = self.advance_mcp_authority_epoch() {
-            schedule_mcp_workspace_refresh(app, epoch, None);
-        }
         emit_startup_changed(app);
+        if publish_and_schedule_mcp_workspace_refresh(app, epoch, None).is_err() {
+            if let Some(owner) = replaced_owner {
+                let _stop_result = owner.stop().await;
+                drop_replaced_owner_off_runtime_thread(Some(owner)).await;
+            }
+            self.fail_workspace_switch(app, start.token, Some(previous_selection));
+            return Err(runtime_unavailable());
+        }
 
-        let Some(owner) = replaced_owner else {
-            self.fail_workspace_switch(app, start.token, Some(previous_selection));
-            return Err(runtime_unavailable());
-        };
-        let stopped = owner.stop().await.is_ok();
-        drop_replaced_owner_off_runtime_thread(Some(owner)).await;
-        if !stopped {
-            self.fail_workspace_switch(app, start.token, Some(previous_selection));
-            return Err(runtime_unavailable());
+        match replaced_owner {
+            Some(owner) => {
+                let stopped = owner.stop().await.is_ok();
+                drop_replaced_owner_off_runtime_thread(Some(owner)).await;
+                if !stopped {
+                    self.fail_workspace_switch(app, start.token, Some(previous_selection));
+                    return Err(runtime_unavailable());
+                }
+            }
+            None if required_ready_owner => {
+                self.fail_workspace_switch(app, start.token, Some(previous_selection));
+                return Err(runtime_unavailable());
+            }
+            None => {}
         }
         Ok(Some(DesktopKernelSwitchAttempt { start }))
     }
@@ -405,13 +416,17 @@ impl DesktopKernelRuntimeState {
             DesktopKernelStartAttempt,
             Option<Arc<DesktopKernelOwner>>,
             DesktopKernelSelection,
+            bool,
+            u64,
         ),
         String,
     > {
         let mut inner = self.inner.lock().map_err(|_| runtime_unavailable())?;
+        let required_ready_owner = inner.status == DesktopKernelStartupStatus::Ready;
+        let failed_reselection = inner.status == DesktopKernelStartupStatus::Failed;
         if inner.closed
-            || inner.status != DesktopKernelStartupStatus::Ready
-            || inner.owner.is_none()
+            || (!required_ready_owner && !failed_reselection)
+            || (required_ready_owner && inner.owner.is_none())
             || inner.active_attempt_token.is_some()
         {
             return Err(runtime_unavailable());
@@ -424,10 +439,14 @@ impl DesktopKernelRuntimeState {
         inner.selection = Some(selection.clone());
         inner.status = DesktopKernelStartupStatus::Starting;
         inner.active_attempt_token = Some(token);
+        inner.mcp_authority_epoch = inner.mcp_authority_epoch.saturating_add(1);
+        let mcp_authority_epoch = inner.mcp_authority_epoch;
         Ok((
             DesktopKernelStartAttempt { token, selection },
             replaced_owner,
             previous_selection,
+            required_ready_owner,
+            mcp_authority_epoch,
         ))
     }
 
@@ -671,36 +690,68 @@ impl DesktopKernelEdgeEmitter for TauriDesktopKernelEdgeEmitter {
     }
 }
 
-fn schedule_mcp_workspace_refresh(
+struct PublishedMcpWorkspaceRefresh {
+    previous_generation: u64,
+    state: Arc<crate::mcp::McpState>,
+}
+
+fn publish_mcp_workspace_authority(
     app: &tauri::AppHandle,
+    epoch: u64,
+) -> Result<PublishedMcpWorkspaceRefresh, String> {
+    let state = app
+        .try_state::<Arc<crate::mcp::McpState>>()
+        .ok_or_else(runtime_unavailable)?;
+    let previous_generation = state
+        .workspaces
+        .publish_authority_epoch(epoch)
+        .map_err(|_| runtime_unavailable())?;
+    Ok(PublishedMcpWorkspaceRefresh {
+        previous_generation,
+        state: Arc::clone(state.inner()),
+    })
+}
+
+fn schedule_published_mcp_workspace_refresh(
+    app: &tauri::AppHandle,
+    published: PublishedMcpWorkspaceRefresh,
     epoch: u64,
     workspace_root: Option<PathBuf>,
 ) {
     let app = app.clone();
-    let Some(state) = app.try_state::<Arc<crate::mcp::McpState>>() else {
-        return;
-    };
-    let previous_generation = match state.workspaces.publish_authority_epoch(epoch) {
-        Ok(generation) => generation,
-        Err(error) => {
-            eprintln!("QingYu MCP authority publication failed: {error}");
-            return;
-        }
-    };
-    let state = Arc::clone(state.inner());
     tauri::async_runtime::spawn(async move {
         if let Err(error) = crate::mcp::refresh_kernel_workspace(
             &app,
-            &state,
+            &published.state,
             workspace_root.as_deref(),
             epoch,
-            previous_generation,
+            published.previous_generation,
         )
         .await
         {
             eprintln!("QingYu MCP workspace refresh failed: {error}");
         }
     });
+}
+
+fn publish_and_schedule_mcp_workspace_refresh(
+    app: &tauri::AppHandle,
+    epoch: u64,
+    workspace_root: Option<PathBuf>,
+) -> Result<(), String> {
+    let published = publish_mcp_workspace_authority(app, epoch)?;
+    schedule_published_mcp_workspace_refresh(app, published, epoch, workspace_root);
+    Ok(())
+}
+
+fn schedule_mcp_workspace_refresh(
+    app: &tauri::AppHandle,
+    epoch: u64,
+    workspace_root: Option<PathBuf>,
+) {
+    if let Err(error) = publish_and_schedule_mcp_workspace_refresh(app, epoch, workspace_root) {
+        eprintln!("QingYu MCP authority publication failed: {error}");
+    }
 }
 
 fn compose_owner_blocking(
@@ -1165,7 +1216,7 @@ mod tests {
             workspace_root: PathBuf::from("/tmp/qingyu-workspace-b"),
             renderer_origin: "tauri://localhost".to_owned(),
         };
-        let (switch, replaced_owner, previous_selection) =
+        let (switch, replaced_owner, previous_selection, required_ready_owner, epoch) =
             runtime.reserve_switch(second_selection.clone()).unwrap();
 
         assert_eq!(switch.selection, second_selection);
@@ -1173,6 +1224,8 @@ mod tests {
             previous_selection.workspace_root,
             PathBuf::from("/tmp/qingyu-workspace-a")
         );
+        assert!(required_ready_owner);
+        assert!(runtime.mcp_authority_epoch_is_current(epoch));
         assert_eq!(
             runtime.snapshot().unwrap().status,
             DesktopKernelStartupStatus::Starting
@@ -1210,8 +1263,10 @@ mod tests {
             workspace_root: PathBuf::from("/tmp/qingyu-workspace-b"),
             renderer_origin: "tauri://localhost".to_owned(),
         };
-        let (switch, _owner, previous_selection) =
+        let (switch, _owner, previous_selection, required_ready_owner, epoch) =
             runtime.reserve_switch(second_selection).unwrap();
+        assert!(required_ready_owner);
+        assert!(runtime.mcp_authority_epoch_is_current(epoch));
 
         assert!(
             runtime.replace_failed_workspace_switch(switch.token, Some(previous_selection.clone()))
@@ -1223,6 +1278,38 @@ mod tests {
         let (retry, replaced_owner) = runtime.reserve_retry().unwrap();
         assert_eq!(retry.selection, previous_selection);
         assert!(replaced_owner.is_none());
+    }
+
+    #[test]
+    fn failed_child_start_can_reserve_one_distinct_workspace_reselection() {
+        let runtime = DesktopKernelRuntimeState::new(
+            NativeKernelBootstrapOwner::new(),
+            DesktopKernelStartupStatus::Unselected,
+        );
+        let first_selection = DesktopKernelSelection {
+            workspace_root: PathBuf::from("/tmp/qingyu-workspace-a"),
+            renderer_origin: "tauri://localhost".to_owned(),
+        };
+        let first = runtime
+            .reserve_initial_start(first_selection.clone(), false)
+            .unwrap();
+        assert!(
+            runtime.replace_status_for_attempt(first.token, DesktopKernelStartupStatus::Failed,)
+        );
+        let replacement = DesktopKernelSelection {
+            workspace_root: PathBuf::from("/tmp/qingyu-workspace-b"),
+            renderer_origin: "tauri://localhost".to_owned(),
+        };
+
+        let (attempt, owner, previous, required_ready_owner, epoch) =
+            runtime.reserve_switch(replacement.clone()).unwrap();
+
+        assert_eq!(attempt.selection, replacement);
+        assert_eq!(previous, first_selection);
+        assert!(owner.is_none());
+        assert!(!required_ready_owner);
+        assert!(runtime.mcp_authority_epoch_is_current(epoch));
+        assert!(runtime.reserve_switch(replacement).is_err());
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

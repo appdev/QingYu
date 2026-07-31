@@ -1,4 +1,4 @@
-//! Desktop-local writer ownership fence for the future atomic Kernel cutover.
+//! Desktop-local writer ownership fence for the active child-Kernel runtime.
 
 #![cfg_attr(not(test), allow(dead_code))]
 

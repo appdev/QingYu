@@ -9,6 +9,7 @@ import {
   createDesktopKernelStartupOwner,
   initializeDesktopKernelWorkspace,
   retryDesktopKernelWorkspace,
+  switchDesktopKernelWorkspace,
   type DesktopKernelStartupSnapshot,
 } from "./desktop-kernel-startup";
 import { DesktopStartupWorkspace } from "./desktop-startup-workspace";
@@ -60,6 +61,7 @@ function renderDesktopStartupWorkspace(
     <StrictMode>
       <AppErrorBoundary>
         <DesktopStartupWorkspace
+          replaceWorkspace={switchDesktopKernelWorkspace}
           retryWorkspace={retryDesktopKernelWorkspace}
           selectWorkspace={selectDesktopWorkspaceDirectory}
           startWorkspace={initializeDesktopKernelWorkspace}

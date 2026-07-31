@@ -231,6 +231,28 @@ fn read_desktop_kernel_startup_state(
     runtime.snapshot()
 }
 
+fn recover_published_desktop_workspace_initialization(
+    requested_path: &Path,
+    resolution: Result<
+        crate::primary_workspace::DesktopPrimaryWorkspaceResolution,
+        crate::primary_workspace::DesktopPrimaryWorkspaceResolutionError,
+    >,
+) -> Result<PathBuf, String> {
+    let requested = requested_path
+        .to_str()
+        .ok_or_else(|| "desktop primary workspace initialization failed".to_owned())?;
+    let requested = crate::workspace_membership::canonical_workspace_root(requested)
+        .map_err(|_| "desktop primary workspace initialization failed".to_owned())?;
+    match resolution {
+        Ok(crate::primary_workspace::DesktopPrimaryWorkspaceResolution::Selected(root))
+            if root == requested =>
+        {
+            Ok(root)
+        }
+        _ => Err("desktop primary workspace initialization failed".to_owned()),
+    }
+}
+
 #[tauri::command]
 async fn initialize_desktop_kernel_workspace(
     app: tauri::AppHandle,
@@ -243,21 +265,34 @@ async fn initialize_desktop_kernel_workspace(
     let recover_invalid = runtime.is_invalid()?;
     let persistence_app = app.clone();
     let requested_path = PathBuf::from(path);
-    let workspace_root = tauri::async_runtime::spawn_blocking(move || {
+    let persisted_request = requested_path.clone();
+    let persisted = tauri::async_runtime::spawn_blocking(move || {
         if recover_invalid {
             crate::primary_workspace::recover_invalid_desktop_primary_workspace(
                 &persistence_app,
-                &requested_path,
+                &persisted_request,
             )
         } else {
             crate::primary_workspace::initialize_desktop_primary_workspace(
                 &persistence_app,
-                &requested_path,
+                &persisted_request,
             )
         }
     })
     .await
-    .map_err(|_| "desktop primary workspace initialization failed".to_owned())??;
+    .map_err(|_| "desktop primary workspace initialization failed".to_owned())?;
+    let workspace_root = match persisted {
+        Ok(root) => root,
+        Err(_) => {
+            let resolution_app = app.clone();
+            let resolution = tauri::async_runtime::spawn_blocking(move || {
+                crate::primary_workspace::resolve_desktop_primary_workspace(&resolution_app)
+            })
+            .await
+            .map_err(|_| "desktop primary workspace initialization failed".to_owned())?;
+            recover_published_desktop_workspace_initialization(&requested_path, resolution)?
+        }
+    };
     runtime.start_selected(&app, workspace_root, origin)
 }
 
@@ -954,6 +989,10 @@ pub(crate) fn run() {
 
 #[cfg(test)]
 mod tests {
+    use crate::primary_workspace::{
+        DesktopPrimaryWorkspaceResolution, DesktopPrimaryWorkspaceResolutionError,
+    };
+
     #[test]
     fn mcp_serve_selects_headless_service_mode() {
         assert_eq!(
@@ -969,6 +1008,43 @@ mod tests {
             super::test_desktop_launch_mode(&["qingyu", "mcp", "serve", "unexpected"]),
             "normal"
         );
+    }
+
+    #[test]
+    fn published_unknown_initialization_accepts_only_the_requested_authoritative_root() {
+        let roots = tempfile::tempdir().expect("temporary workspace roots");
+        let requested = roots.path().join("requested");
+        let other = roots.path().join("other");
+        std::fs::create_dir(&requested).expect("requested workspace");
+        std::fs::create_dir(&other).expect("other workspace");
+        let requested = requested.canonicalize().expect("canonical requested root");
+        let other = other.canonicalize().expect("canonical other root");
+
+        assert_eq!(
+            super::recover_published_desktop_workspace_initialization(
+                &requested,
+                Ok(DesktopPrimaryWorkspaceResolution::Selected(
+                    requested.clone()
+                )),
+            )
+            .expect("matching published target"),
+            requested,
+        );
+        assert!(super::recover_published_desktop_workspace_initialization(
+            &requested,
+            Ok(DesktopPrimaryWorkspaceResolution::Selected(other)),
+        )
+        .is_err());
+        assert!(super::recover_published_desktop_workspace_initialization(
+            &requested,
+            Ok(DesktopPrimaryWorkspaceResolution::Unselected),
+        )
+        .is_err());
+        assert!(super::recover_published_desktop_workspace_initialization(
+            &requested,
+            Err(DesktopPrimaryWorkspaceResolutionError::Unavailable),
+        )
+        .is_err());
     }
 
     #[test]

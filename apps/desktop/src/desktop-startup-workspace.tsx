@@ -12,6 +12,7 @@ type DesktopStartupPlatform = "linux" | "macos" | "windows";
 
 export interface DesktopStartupWorkspaceProps {
   readonly platform?: DesktopStartupPlatform | null;
+  readonly replaceWorkspace: (workspacePath: string) => Promise<unknown>;
   readonly retryWorkspace: () => Promise<unknown>;
   readonly selectWorkspace: () => Promise<string | null>;
   readonly startWorkspace: (workspacePath: string) => Promise<unknown>;
@@ -139,10 +140,13 @@ export function createDesktopStartupWorkspaceController(
 
   const select = () => {
     if (pending !== undefined) return pending;
-    if (
-      state.status !== "unselected" &&
-      (state.status !== "failed" || state.failure !== "selection")
-    ) {
+    const replacingPersistedWorkspace = state.status === "failed"
+      && state.failure === "startup"
+      && startupStatus === "failed";
+    if (state.status !== "unselected"
+      && (state.status !== "failed" || (
+        state.failure !== "selection" && !replacingPersistedWorkspace
+      ))) {
       return Promise.resolve(undefined);
     }
     const revision = ++requestRevision;
@@ -163,12 +167,18 @@ export function createDesktopStartupWorkspaceController(
       async (workspacePath) => {
         if (requestRevision !== revision) return undefined;
         if (workspacePath === null) {
-          publish({ status: "unselected" });
+          publish(replacingPersistedWorkspace
+            ? stateFromAuthoritativeStatus(startupStatus)
+            : { status: "unselected" });
           return undefined;
         }
         publish({ status: "starting", workspacePath });
         try {
-          await callbacks.startWorkspace(workspacePath);
+          if (replacingPersistedWorkspace) {
+            await callbacks.replaceWorkspace(workspacePath);
+          } else {
+            await callbacks.startWorkspace(workspacePath);
+          }
         } catch {
           if (requestRevision === revision) {
             publish(stateAfterStartupRequestFailure(startupStatus));
@@ -297,6 +307,7 @@ export function DesktopStartupWorkspace(
   }, [
     controller,
     props.retryWorkspace,
+    props.replaceWorkspace,
     props.selectWorkspace,
     props.startWorkspace,
     props.startupStatus
@@ -310,6 +321,7 @@ export function DesktopStartupWorkspace(
   const failed = state.status === "failed";
   const upgradeRequired = state.status === "upgrade-required";
   const retryable = failed && state.failure === "startup";
+  const replaceable = retryable && props.startupStatus === "failed";
   const selectionFailed = failed && !retryable;
   const platform = props.platform === undefined
     ? resolveDesktopStartupPlatform()
@@ -382,6 +394,15 @@ export function DesktopStartupWorkspace(
                   onClick={controller.retry}
                 >
                   Retry
+                </button>
+              ) : null}
+              {replaceable ? (
+                <button
+                  className="welcome-screen__action inline-flex cursor-pointer items-center justify-center rounded-md border border-(--border-strong) bg-(--bg-primary) px-4 text-[13px] font-[700] text-(--text-primary)"
+                  type="button"
+                  onClick={controller.select}
+                >
+                  Choose another directory
                 </button>
               ) : null}
               {selectionFailed ? (

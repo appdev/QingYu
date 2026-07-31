@@ -3,11 +3,21 @@ import {
   createUnavailableNativeShellPort
 } from "@markra/app/runtime";
 import type { NativeKernelBootstrap } from "../kernel-bootstrap";
+import { switchDesktopKernelWorkspace } from "../desktop-kernel-startup";
+import { selectDesktopWorkspaceDirectory } from "../desktop-workspace-selector";
 import {
   createDesktopKernelRuntimeOwner,
   createDesktopRuntime,
   loadDesktopRuntime
 } from "./desktop";
+
+vi.mock("../desktop-workspace-selector", () => ({
+  selectDesktopWorkspaceDirectory: vi.fn(async () => "/Workspace/Raw"),
+}));
+
+vi.mock("../desktop-kernel-startup", () => ({
+  switchDesktopKernelWorkspace: vi.fn(async () => undefined),
+}));
 
 function createReadyBootstrap(): NativeKernelBootstrap {
   return {
@@ -91,6 +101,23 @@ describe("desktop runtime composition", () => {
 
     secondOwner.release();
     owner.release();
+    owner.release();
+  });
+
+  it("uses the raw host directory selector and dedicated Kernel switch by default", async () => {
+    const owner = createDesktopKernelRuntimeOwner(createUnavailableKernelDomainPort());
+    const policy = owner.runtime.workspace.rootPolicy;
+    if (policy?.kind !== "host-selectable") {
+      throw new Error("host-selectable Kernel workspace policy unavailable");
+    }
+
+    await expect(policy.selectRoot()).resolves.toBe("/Workspace/Raw");
+    await expect(policy.commitRoot("/Workspace/Raw"))
+      .resolves.toBe("kernel-workspace://primary");
+
+    expect(selectDesktopWorkspaceDirectory).toHaveBeenCalledTimes(1);
+    expect(switchDesktopKernelWorkspace).toHaveBeenCalledTimes(1);
+    expect(switchDesktopKernelWorkspace).toHaveBeenCalledWith("/Workspace/Raw");
     owner.release();
   });
 

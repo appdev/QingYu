@@ -1,19 +1,42 @@
+#[cfg(not(mobile))]
+use std::collections::BTreeMap;
 use std::collections::HashMap;
+#[cfg(not(mobile))]
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
+#[cfg(not(mobile))]
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use cap_fs_ext::{DirExt, MetadataExt};
 use cap_std::fs::Dir;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-#[cfg(mobile)]
 use tauri::Manager;
+#[cfg(mobile)]
 use tauri_plugin_store::StoreExt;
 
+#[cfg(not(mobile))]
+use crate::storage_capability::{
+    create_private_replaceable_file_options, nonfollowing_read_options,
+    open_canonical_directory_nofollow, rename_retained_file_in_directory, sync_directory,
+    unique_regular_file_identity, UniqueRegularFileIdentity,
+};
+
 const LOCAL_STATE_STORE_PATH: &str = "local-state.json";
+#[cfg(not(mobile))]
+const DESKTOP_PRIMARY_WORKSPACE_STORE_PATH: &str = "primary-workspace.json";
 const LOCAL_STATE_SCHEMA_VERSION_KEY: &str = "schemaVersion";
 const LOCAL_STATE_SCHEMA_VERSION: u64 = 2;
 const PRIMARY_WORKSPACE_KEY: &str = "primaryWorkspace";
+const MAX_PRIMARY_WORKSPACE_STORE_BYTES: usize = 16 * 1024 * 1024;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PrimaryWorkspacePersistence {
+    Durable,
+    PublishedWithoutDirectoryDurability,
+    NotPublished,
+}
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -34,13 +57,21 @@ trait PrimaryWorkspaceBackend: Sync {
     fn delete(&self, key: &str);
     fn get(&self, key: &str) -> Option<Value>;
     fn save(&self) -> Result<(), String>;
+    fn save_publication(&self) -> PrimaryWorkspacePersistence {
+        match self.save() {
+            Ok(()) => PrimaryWorkspacePersistence::Durable,
+            Err(_) => PrimaryWorkspacePersistence::NotPublished,
+        }
+    }
     fn set(&self, key: &str, value: Value);
 }
 
+#[cfg(mobile)]
 struct StorePrimaryWorkspaceBackend<R: tauri::Runtime> {
     store: Arc<tauri_plugin_store::Store<R>>,
 }
 
+#[cfg(mobile)]
 fn primary_local_state_store<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> Result<Arc<tauri_plugin_store::Store<R>>, String> {
@@ -52,9 +83,8 @@ fn primary_local_state_store<R: tauri::Runtime>(
 
 /// Host-private, path-free identities for child Kernel launches.
 ///
-/// React-owned local-state supplies only the current path guard. The opaque
-/// registry is owned by a separate native durable store that is never encoded
-/// into the plugin-store record.
+/// The Desktop host-owned primary-workspace record supplies the current path
+/// guard. Opaque child identities remain in a separate native durable store.
 struct NativeHostWorkspaceStatePersistence<'a, Backend: PrimaryWorkspaceBackend + ?Sized> {
     backend: &'a Backend,
     native_store: &'a qingyu_kernel::host::native::NativeHostWorkspaceStore,
@@ -106,7 +136,7 @@ impl<'a, Backend: PrimaryWorkspaceBackend + ?Sized>
     }
 }
 
-/// Host-private preparation for the future desktop runtime-owner cut.
+/// Host-private preparation for transactional Desktop runtime ownership.
 ///
 /// Implementations retain the selected path and an atomic path-transition
 /// reservation internally. The returned Kernel transaction exposes only the
@@ -122,6 +152,7 @@ pub(crate) trait TrustedDesktopWorkspacePersistence: Send + Sync {
     >;
 }
 
+#[cfg(mobile)]
 impl<R: tauri::Runtime> PrimaryWorkspaceBackend for StorePrimaryWorkspaceBackend<R> {
     fn delete(&self, key: &str) {
         self.store.delete(key);
@@ -140,7 +171,290 @@ impl<R: tauri::Runtime> PrimaryWorkspaceBackend for StorePrimaryWorkspaceBackend
     }
 }
 
-// Deliberately uncomposed until the Task 9 primary-workspace cutover.
+#[cfg(not(mobile))]
+struct DesktopDiskPrimaryWorkspaceBackend {
+    app_data_root: PathBuf,
+    expected_target: Mutex<Option<UniqueRegularFileIdentity>>,
+    values: Mutex<BTreeMap<String, Value>>,
+}
+
+#[cfg(not(mobile))]
+impl DesktopDiskPrimaryWorkspaceBackend {
+    fn open<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<Self, String> {
+        let app_data_root = app.path().app_data_dir().map_err(|_| persistence_error())?;
+        std::fs::create_dir_all(&app_data_root).map_err(|_| persistence_error())?;
+        Self::open_at(app_data_root)
+    }
+
+    fn open_at(app_data_root: PathBuf) -> Result<Self, String> {
+        let existing =
+            read_workspace_store_file(&app_data_root, DESKTOP_PRIMARY_WORKSPACE_STORE_PATH)?;
+        let legacy = if existing.is_none() {
+            read_workspace_store_file(&app_data_root, LOCAL_STATE_STORE_PATH)?
+        } else {
+            None
+        };
+        let values = existing
+            .as_ref()
+            .map(|state| state.values.clone())
+            .or_else(|| legacy.map(|state| primary_workspace_values(&state.values)))
+            .unwrap_or_default();
+        Ok(Self {
+            app_data_root,
+            expected_target: Mutex::new(existing.as_ref().map(|state| state.identity)),
+            values: Mutex::new(values),
+        })
+    }
+}
+
+#[cfg(not(mobile))]
+fn primary_workspace_values(values: &BTreeMap<String, Value>) -> BTreeMap<String, Value> {
+    [LOCAL_STATE_SCHEMA_VERSION_KEY, PRIMARY_WORKSPACE_KEY]
+        .into_iter()
+        .filter_map(|key| {
+            values
+                .get(key)
+                .cloned()
+                .map(|value| (key.to_owned(), value))
+        })
+        .collect()
+}
+
+#[cfg(not(mobile))]
+impl PrimaryWorkspaceBackend for DesktopDiskPrimaryWorkspaceBackend {
+    fn delete(&self, key: &str) {
+        if let Ok(mut values) = self.values.lock() {
+            values.remove(key);
+        }
+    }
+
+    fn get(&self, key: &str) -> Option<Value> {
+        self.values.lock().ok()?.get(key).cloned()
+    }
+
+    fn save(&self) -> Result<(), String> {
+        match self.save_publication() {
+            PrimaryWorkspacePersistence::Durable => Ok(()),
+            PrimaryWorkspacePersistence::PublishedWithoutDirectoryDurability
+            | PrimaryWorkspacePersistence::NotPublished => Err(persistence_error()),
+        }
+    }
+
+    fn save_publication(&self) -> PrimaryWorkspacePersistence {
+        let values = match self.values.lock() {
+            Ok(values) => values.clone(),
+            Err(_) => return PrimaryWorkspacePersistence::NotPublished,
+        };
+        let bytes = match serde_json::to_vec(&values) {
+            Ok(bytes) if bytes.len() <= MAX_PRIMARY_WORKSPACE_STORE_BYTES => bytes,
+            _ => return PrimaryWorkspacePersistence::NotPublished,
+        };
+        let expected = match self.expected_target.lock() {
+            Ok(expected) => *expected,
+            Err(_) => return PrimaryWorkspacePersistence::NotPublished,
+        };
+        let publication = replace_primary_workspace_file_atomically_with_hooks(
+            &self.app_data_root,
+            &bytes,
+            Some(expected),
+            || Ok(()),
+            || Ok(()),
+            sync_directory,
+        );
+        if publication != PrimaryWorkspacePersistence::NotPublished {
+            let identity = read_workspace_store_file(
+                &self.app_data_root,
+                DESKTOP_PRIMARY_WORKSPACE_STORE_PATH,
+            )
+            .ok()
+            .flatten()
+            .map(|state| state.identity);
+            if let Ok(mut expected_target) = self.expected_target.lock() {
+                *expected_target = identity;
+            }
+        }
+        publication
+    }
+
+    fn set(&self, key: &str, value: Value) {
+        if let Ok(mut values) = self.values.lock() {
+            values.insert(key.to_string(), value);
+        }
+    }
+}
+
+#[cfg(not(mobile))]
+struct ExistingPrimaryWorkspaceFile {
+    identity: UniqueRegularFileIdentity,
+    values: BTreeMap<String, Value>,
+}
+
+#[cfg(not(mobile))]
+fn read_workspace_store_file(
+    app_data_root: &Path,
+    file_name: &str,
+) -> Result<Option<ExistingPrimaryWorkspaceFile>, String> {
+    let directory =
+        open_canonical_directory_nofollow(app_data_root).map_err(|_| persistence_error())?;
+    let addressed = match directory.symlink_metadata(file_name) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err(persistence_error()),
+    };
+    if addressed.len() > MAX_PRIMARY_WORKSPACE_STORE_BYTES as u64 {
+        return Err(persistence_error());
+    }
+    let identity = unique_regular_file_identity(&addressed).ok_or_else(persistence_error)?;
+    let mut retained = directory
+        .open_with(file_name, &nonfollowing_read_options())
+        .map_err(|_| persistence_error())?;
+    let retained_identity = retained
+        .metadata()
+        .ok()
+        .and_then(|metadata| unique_regular_file_identity(&metadata))
+        .ok_or_else(persistence_error)?;
+    if retained_identity != identity {
+        return Err(persistence_error());
+    }
+    let mut bytes = Vec::new();
+    Read::by_ref(&mut retained)
+        .take(MAX_PRIMARY_WORKSPACE_STORE_BYTES as u64 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| persistence_error())?;
+    if bytes.len() > MAX_PRIMARY_WORKSPACE_STORE_BYTES {
+        return Err(persistence_error());
+    }
+    let rechecked = directory
+        .symlink_metadata(file_name)
+        .ok()
+        .and_then(|metadata| unique_regular_file_identity(&metadata));
+    if rechecked != Some(identity) {
+        return Err(persistence_error());
+    }
+    let values = serde_json::from_slice::<BTreeMap<String, Value>>(&bytes)
+        .map_err(|_| persistence_error())?;
+    Ok(Some(ExistingPrimaryWorkspaceFile { identity, values }))
+}
+
+#[cfg(not(mobile))]
+fn replace_primary_workspace_file_atomically_with_hooks<BeforeStage, AfterStage, SyncDirectory>(
+    app_data_root: &Path,
+    bytes: &[u8],
+    expected_target: Option<Option<UniqueRegularFileIdentity>>,
+    before_stage: BeforeStage,
+    after_stage: AfterStage,
+    sync_after_rename: SyncDirectory,
+) -> PrimaryWorkspacePersistence
+where
+    BeforeStage: FnOnce() -> io::Result<()>,
+    AfterStage: FnOnce() -> io::Result<()>,
+    SyncDirectory: FnOnce(&cap_std::fs::Dir) -> io::Result<()>,
+{
+    static SEQUENCE: AtomicUsize = AtomicUsize::new(0);
+    let Ok(directory) = open_canonical_directory_nofollow(app_data_root) else {
+        return PrimaryWorkspacePersistence::NotPublished;
+    };
+    let existing = match directory.symlink_metadata(DESKTOP_PRIMARY_WORKSPACE_STORE_PATH) {
+        Ok(metadata) => match unique_regular_file_identity(&metadata) {
+            Some(identity) => Some(identity),
+            None => return PrimaryWorkspacePersistence::NotPublished,
+        },
+        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+        Err(_) => return PrimaryWorkspacePersistence::NotPublished,
+    };
+    if expected_target.is_some_and(|expected| expected != existing) {
+        return PrimaryWorkspacePersistence::NotPublished;
+    }
+    if before_stage().is_err() {
+        return PrimaryWorkspacePersistence::NotPublished;
+    }
+    let staged = (0..1000).find_map(|_| {
+        let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let name = format!(".primary-workspace-{}-{sequence}.tmp", std::process::id());
+        match directory.open_with(&name, &create_private_replaceable_file_options()) {
+            Ok(file) => Some(Ok((name, file))),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => None,
+            Err(_) => Some(Err(())),
+        }
+    });
+    let Some(Ok((staged_name, mut staged))) = staged else {
+        return PrimaryWorkspacePersistence::NotPublished;
+    };
+    if staged
+        .write_all(bytes)
+        .and_then(|()| staged.sync_all())
+        .and_then(|()| after_stage())
+        .is_err()
+    {
+        drop(staged);
+        let _cleanup = directory.remove_file(&staged_name);
+        return PrimaryWorkspacePersistence::NotPublished;
+    }
+    let Some(staged_identity) = staged
+        .metadata()
+        .ok()
+        .and_then(|metadata| unique_regular_file_identity(&metadata))
+    else {
+        drop(staged);
+        let _cleanup = directory.remove_file(&staged_name);
+        return PrimaryWorkspacePersistence::NotPublished;
+    };
+    let retained = match directory.symlink_metadata(DESKTOP_PRIMARY_WORKSPACE_STORE_PATH) {
+        Ok(metadata) => match unique_regular_file_identity(&metadata) {
+            Some(identity) => Some(identity),
+            None => {
+                drop(staged);
+                let _cleanup = directory.remove_file(&staged_name);
+                return PrimaryWorkspacePersistence::NotPublished;
+            }
+        },
+        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+        Err(_) => {
+            drop(staged);
+            let _cleanup = directory.remove_file(&staged_name);
+            return PrimaryWorkspacePersistence::NotPublished;
+        }
+    };
+    if retained != existing
+        || rename_retained_file_in_directory(
+            &directory,
+            &staged,
+            &staged_name,
+            staged_identity,
+            DESKTOP_PRIMARY_WORKSPACE_STORE_PATH,
+            existing.is_some(),
+        )
+        .is_err()
+    {
+        drop(staged);
+        let _cleanup = directory.remove_file(&staged_name);
+        return PrimaryWorkspacePersistence::NotPublished;
+    }
+    drop(staged);
+    match sync_after_rename(&directory) {
+        Ok(()) => PrimaryWorkspacePersistence::Durable,
+        Err(_) => PrimaryWorkspacePersistence::PublishedWithoutDirectoryDurability,
+    }
+}
+
+fn with_primary_workspace_backend<R: tauri::Runtime, T>(
+    app: &tauri::AppHandle<R>,
+    operation: impl FnOnce(&dyn PrimaryWorkspaceBackend) -> Result<T, String>,
+) -> Result<T, String> {
+    #[cfg(not(mobile))]
+    {
+        let backend = DesktopDiskPrimaryWorkspaceBackend::open(app)?;
+        operation(&backend)
+    }
+    #[cfg(mobile)]
+    {
+        let store = primary_local_state_store(app)?;
+        operation(&StorePrimaryWorkspaceBackend { store })
+    }
+}
+
+// Retained for host-transaction tests and non-renderer workspace operations;
+// the production Desktop child owner composes its authority directly.
 #[allow(dead_code)]
 struct TrustedPreparedWorkspace {
     authority: qingyu_kernel::runtime::PreparedWorkspaceAuthority,
@@ -344,10 +658,16 @@ impl<'a, Backend: PrimaryWorkspaceBackend + ?Sized> PrimaryWorkspaceService<'a, 
             Value::from(LOCAL_STATE_SCHEMA_VERSION),
         );
         self.backend.set(PRIMARY_WORKSPACE_KEY, input.state.clone());
-        if let Err(error) = self.backend.save() {
-            self.restore_value(PRIMARY_WORKSPACE_KEY, previous_primary_workspace);
-            self.restore_value(LOCAL_STATE_SCHEMA_VERSION_KEY, previous_schema_version);
-            return Err(error);
+        match self.backend.save_publication() {
+            PrimaryWorkspacePersistence::Durable => {}
+            PrimaryWorkspacePersistence::PublishedWithoutDirectoryDurability => {
+                return Err(persistence_error());
+            }
+            PrimaryWorkspacePersistence::NotPublished => {
+                self.restore_value(PRIMARY_WORKSPACE_KEY, previous_primary_workspace);
+                self.restore_value(LOCAL_STATE_SCHEMA_VERSION_KEY, previous_schema_version);
+                return Err(persistence_error());
+            }
         }
         if let Err(error) = validate() {
             self.restore_value(PRIMARY_WORKSPACE_KEY, previous_primary_workspace);
@@ -519,9 +839,12 @@ impl ConsumedPreparedDesktopNotebookTarget {
         &self,
         app: &tauri::AppHandle<R>,
     ) -> Result<PrimaryWorkspaceWriteResult, String> {
-        let store = primary_local_state_store(app)?;
-        let backend = StorePrimaryWorkspaceBackend { store };
-        self.commit_primary_workspace_with_backend(&backend, primary_workspace_transaction_gate())
+        with_primary_workspace_backend(app, |backend| {
+            self.commit_primary_workspace_with_backend(
+                backend,
+                primary_workspace_transaction_gate(),
+            )
+        })
     }
 }
 
@@ -1060,6 +1383,22 @@ pub(crate) struct PreparedDesktopPrimaryWorkspaceSwitch {
 }
 
 #[cfg(not(mobile))]
+fn preflight_desktop_workspace_switch_root(
+    workspace_root: &Path,
+    app_data_root: &Path,
+    cache_root: &Path,
+    home_root: Option<&Path>,
+) -> Result<(), String> {
+    let canonical_home = home_root.and_then(|root| root.canonicalize().ok());
+    if canonical_home.as_deref() == Some(workspace_root) {
+        return Err(desktop_primary_workspace_initialization_error());
+    }
+    qingyu_kernel::paths::KernelPaths::desktop(workspace_root, app_data_root, cache_root)
+        .map(|_| ())
+        .map_err(|_| desktop_primary_workspace_initialization_error())
+}
+
+#[cfg(not(mobile))]
 pub(crate) fn prepare_desktop_primary_workspace_switch<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     requested_root: &Path,
@@ -1080,6 +1419,23 @@ pub(crate) fn prepare_desktop_primary_workspace_switch<R: tauri::Runtime>(
     if target_root.parent().is_none() {
         return Err(desktop_primary_workspace_initialization_error());
     }
+    let app_data_root = app
+        .path()
+        .app_data_dir()
+        .map_err(|_| desktop_primary_workspace_initialization_error())?;
+    let cache_root = app
+        .path()
+        .app_cache_dir()
+        .map_err(|_| desktop_primary_workspace_initialization_error())?;
+    std::fs::create_dir_all(&app_data_root)
+        .and_then(|()| std::fs::create_dir_all(&cache_root))
+        .map_err(|_| desktop_primary_workspace_initialization_error())?;
+    preflight_desktop_workspace_switch_root(
+        &target_root,
+        &app_data_root,
+        &cache_root,
+        dirs::home_dir().as_deref(),
+    )?;
     Ok(PreparedDesktopPrimaryWorkspaceSwitch {
         current_root,
         target_root,
@@ -1091,16 +1447,16 @@ pub(crate) fn commit_desktop_primary_workspace_switch<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     prepared: &PreparedDesktopPrimaryWorkspaceSwitch,
 ) -> Result<PathBuf, String> {
-    let store = primary_local_state_store(app)?;
-    let backend = StorePrimaryWorkspaceBackend { store };
-    select_desktop_primary_workspace_with_backend(
-        &backend,
-        primary_workspace_transaction_gate(),
-        &prepared.target_root,
-        DesktopPrimaryWorkspaceSelectionMode::Switch {
-            expected_root: &prepared.current_root,
-        },
-    )
+    with_primary_workspace_backend(app, |backend| {
+        select_desktop_primary_workspace_with_backend(
+            backend,
+            primary_workspace_transaction_gate(),
+            &prepared.target_root,
+            DesktopPrimaryWorkspaceSelectionMode::Switch {
+                expected_root: &prepared.current_root,
+            },
+        )
+    })
 }
 
 #[cfg(not(mobile))]
@@ -1108,13 +1464,13 @@ pub(crate) fn initialize_desktop_primary_workspace<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     requested_root: &Path,
 ) -> Result<PathBuf, String> {
-    let store = primary_local_state_store(app)?;
-    let backend = StorePrimaryWorkspaceBackend { store };
-    initialize_desktop_primary_workspace_with_backend(
-        &backend,
-        primary_workspace_transaction_gate(),
-        requested_root,
-    )
+    with_primary_workspace_backend(app, |backend| {
+        initialize_desktop_primary_workspace_with_backend(
+            backend,
+            primary_workspace_transaction_gate(),
+            requested_root,
+        )
+    })
 }
 
 #[cfg(not(mobile))]
@@ -1122,13 +1478,13 @@ pub(crate) fn recover_invalid_desktop_primary_workspace<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     requested_root: &Path,
 ) -> Result<PathBuf, String> {
-    let store = primary_local_state_store(app)?;
-    let backend = StorePrimaryWorkspaceBackend { store };
-    recover_invalid_desktop_primary_workspace_with_backend(
-        &backend,
-        primary_workspace_transaction_gate(),
-        requested_root,
-    )
+    with_primary_workspace_backend(app, |backend| {
+        recover_invalid_desktop_primary_workspace_with_backend(
+            backend,
+            primary_workspace_transaction_gate(),
+            requested_root,
+        )
+    })
 }
 
 fn desktop_primary_workspace_initialization_error() -> String {
@@ -1223,21 +1579,20 @@ fn validate_primary_workspace_identity(
 fn read_primary_workspace_value<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> Result<Option<Value>, String> {
-    let store = primary_local_state_store(app)?;
-    let backend = StorePrimaryWorkspaceBackend { store };
-    PrimaryWorkspaceService::new(&backend, primary_workspace_transaction_gate()).read()
+    with_primary_workspace_backend(app, |backend| {
+        PrimaryWorkspaceService::new(backend, primary_workspace_transaction_gate()).read()
+    })
 }
 
-/// Resolves the desktop startup state while holding the same transaction gate
-/// used by renderer-owned primary-workspace writes.
+/// Resolves the desktop startup state from an independent host-owned disk
+/// snapshot while holding the native primary-workspace transaction gate.
 #[cfg(not(mobile))]
 #[allow(dead_code)]
 pub(crate) fn resolve_desktop_primary_workspace<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> Result<DesktopPrimaryWorkspaceResolution, DesktopPrimaryWorkspaceResolutionError> {
-    let store = primary_local_state_store(app)
+    let backend = DesktopDiskPrimaryWorkspaceBackend::open(app)
         .map_err(|_| DesktopPrimaryWorkspaceResolutionError::Unavailable)?;
-    let backend = StorePrimaryWorkspaceBackend { store };
     let _transaction = primary_workspace_transaction_gate()
         .lock()
         .map_err(|_| DesktopPrimaryWorkspaceResolutionError::Unavailable)?;
@@ -1265,8 +1620,8 @@ pub(crate) fn open_native_host_workspace_store(
     .map_err(|_| DesktopPrimaryWorkspaceResolutionError::Unavailable)
 }
 
-/// Resolves the selected desktop workspace to its stable, host-owned child
-/// Kernel identity. Kept dormant until the desktop runtime-owner cutover.
+/// Resolves the selected desktop workspace to its stable host-owned child
+/// Kernel identity for the active Desktop runtime owner.
 #[cfg(not(mobile))]
 #[allow(dead_code)]
 pub(crate) fn load_or_create_native_host_workspace_state<R: tauri::Runtime>(
@@ -1274,8 +1629,7 @@ pub(crate) fn load_or_create_native_host_workspace_state<R: tauri::Runtime>(
     workspace_root: &Path,
     native_store: &qingyu_kernel::host::native::NativeHostWorkspaceStore,
 ) -> Result<qingyu_kernel::host::native::NativeHostWorkspaceState, String> {
-    let store = primary_local_state_store(app)?;
-    let backend = StorePrimaryWorkspaceBackend { store };
+    let backend = DesktopDiskPrimaryWorkspaceBackend::open(app)?;
     NativeHostWorkspaceStatePersistence::new(
         &backend,
         native_store,
@@ -1288,27 +1642,27 @@ pub(crate) fn with_primary_workspace_transaction<R: tauri::Runtime, T>(
     app: &tauri::AppHandle<R>,
     operation: impl FnOnce(Result<PathBuf, String>) -> Result<T, String>,
 ) -> Result<T, String> {
-    let store = primary_local_state_store(app)?;
-    let backend = StorePrimaryWorkspaceBackend { store };
-    let service = PrimaryWorkspaceService::new(&backend, primary_workspace_transaction_gate());
+    with_primary_workspace_backend(app, |backend| {
+        let service = PrimaryWorkspaceService::new(backend, primary_workspace_transaction_gate());
 
-    #[cfg(mobile)]
-    let app_data_root = app
-        .path()
-        .app_data_dir()
-        .map_err(|_| sync_primary_workspace_unavailable())?;
-
-    service.with_current(|value| {
         #[cfg(mobile)]
-        let authoritative = authoritative_primary_workspace_root(
-            value,
-            PrimaryWorkspaceKind::Mobile,
-            Some(&app_data_root),
-        );
-        #[cfg(not(mobile))]
-        let authoritative =
-            authoritative_primary_workspace_root(value, PrimaryWorkspaceKind::Desktop, None);
-        operation(authoritative)
+        let app_data_root = app
+            .path()
+            .app_data_dir()
+            .map_err(|_| sync_primary_workspace_unavailable())?;
+
+        service.with_current(|value| {
+            #[cfg(mobile)]
+            let authoritative = authoritative_primary_workspace_root(
+                value,
+                PrimaryWorkspaceKind::Mobile,
+                Some(&app_data_root),
+            );
+            #[cfg(not(mobile))]
+            let authoritative =
+                authoritative_primary_workspace_root(value, PrimaryWorkspaceKind::Desktop, None);
+            operation(authoritative)
+        })
     })
 }
 
@@ -1390,14 +1744,14 @@ pub(crate) fn write_primary_workspace_state(
     input: PrimaryWorkspaceWriteInput,
 ) -> Result<PrimaryWorkspaceWriteResult, String> {
     let proposed_root = proposed_primary_workspace_root(&app, &input.state);
-    let store = primary_local_state_store(&app)?;
-    let backend = StorePrimaryWorkspaceBackend { store };
-    PrimaryWorkspaceService::new(&backend, primary_workspace_transaction_gate())
-        .write_with_primary_root_guard(
-            input,
-            proposed_root.as_deref(),
-            crate::dejavu_sync::path_guard::native_working_tree_registry(),
-        )
+    with_primary_workspace_backend(&app, |backend| {
+        PrimaryWorkspaceService::new(backend, primary_workspace_transaction_gate())
+            .write_with_primary_root_guard(
+                input,
+                proposed_root.as_deref(),
+                crate::dejavu_sync::path_guard::native_working_tree_registry(),
+            )
+    })
 }
 
 #[tauri::command]
@@ -1433,6 +1787,224 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn desktop_primary_workspace_atomic_write_preserves_old_file_on_prewrite_failure() {
+        let app_data = tempfile::tempdir().expect("temporary app data");
+        let root = app_data.path().canonicalize().expect("canonical app data");
+        let target = root.join(DESKTOP_PRIMARY_WORKSPACE_STORE_PATH);
+        std::fs::write(&target, br#"{"primaryWorkspace":"old"}"#).expect("seed state");
+
+        let publication = replace_primary_workspace_file_atomically_with_hooks(
+            &root,
+            br#"{"primaryWorkspace":"new"}"#,
+            None,
+            || Err(io::Error::other("injected prewrite failure")),
+            || Ok(()),
+            sync_directory,
+        );
+
+        assert_eq!(publication, PrimaryWorkspacePersistence::NotPublished);
+        assert_eq!(
+            std::fs::read(target).expect("old state remains"),
+            br#"{"primaryWorkspace":"old"}"#,
+        );
+    }
+
+    #[test]
+    fn desktop_primary_workspace_atomic_write_preserves_old_file_on_postwrite_failure() {
+        let app_data = tempfile::tempdir().expect("temporary app data");
+        let root = app_data.path().canonicalize().expect("canonical app data");
+        let target = root.join(DESKTOP_PRIMARY_WORKSPACE_STORE_PATH);
+        std::fs::write(&target, br#"{"primaryWorkspace":"old"}"#).expect("seed state");
+
+        let publication = replace_primary_workspace_file_atomically_with_hooks(
+            &root,
+            br#"{"primaryWorkspace":"new"}"#,
+            None,
+            || Ok(()),
+            || Err(io::Error::other("injected postwrite failure")),
+            sync_directory,
+        );
+
+        assert_eq!(publication, PrimaryWorkspacePersistence::NotPublished);
+        assert_eq!(
+            std::fs::read(target).expect("old state remains"),
+            br#"{"primaryWorkspace":"old"}"#,
+        );
+    }
+
+    #[test]
+    fn desktop_primary_workspace_atomic_write_rejects_target_swap_before_publish() {
+        let app_data = tempfile::tempdir().expect("temporary app data");
+        let root = app_data.path().canonicalize().expect("canonical app data");
+        let target = root.join(DESKTOP_PRIMARY_WORKSPACE_STORE_PATH);
+        std::fs::write(&target, br#"{"primaryWorkspace":"old"}"#).expect("seed state");
+
+        let publication = replace_primary_workspace_file_atomically_with_hooks(
+            &root,
+            br#"{"primaryWorkspace":"new"}"#,
+            None,
+            || Ok(()),
+            || {
+                std::fs::rename(&target, root.join("captured-local-state"))?;
+                std::fs::write(&target, br#"{"primaryWorkspace":"replacement"}"#)
+            },
+            sync_directory,
+        );
+
+        assert_eq!(publication, PrimaryWorkspacePersistence::NotPublished);
+        assert_eq!(
+            std::fs::read(target).expect("replacement remains"),
+            br#"{"primaryWorkspace":"replacement"}"#,
+        );
+        assert!(std::fs::read_dir(&root)
+            .expect("read app data")
+            .all(|entry| !entry
+                .expect("directory entry")
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".primary-workspace-")));
+    }
+
+    #[test]
+    fn desktop_primary_workspace_disk_reread_resolves_published_unknown_commit() {
+        let app_data = tempfile::tempdir().expect("temporary app data");
+        let root = app_data.path().canonicalize().expect("canonical app data");
+        let desired = br#"{"primaryWorkspace":{"version":3}}"#;
+
+        let publication = replace_primary_workspace_file_atomically_with_hooks(
+            &root,
+            desired,
+            None,
+            || Ok(()),
+            || Ok(()),
+            |_| Err(io::Error::other("injected directory fsync failure")),
+        );
+        let reread = read_workspace_store_file(&root, DESKTOP_PRIMARY_WORKSPACE_STORE_PATH)
+            .expect("independent disk reread")
+            .expect("published state");
+
+        assert_eq!(
+            publication,
+            PrimaryWorkspacePersistence::PublishedWithoutDirectoryDurability,
+        );
+        assert_eq!(
+            reread.values.get(PRIMARY_WORKSPACE_KEY),
+            Some(&serde_json::json!({ "version": 3 })),
+        );
+    }
+
+    #[test]
+    fn desktop_primary_workspace_migrates_to_an_independent_authority_file() {
+        let app_data = tempfile::tempdir().expect("temporary app data");
+        let root = app_data.path().canonicalize().expect("canonical app data");
+        let legacy_path = root.join(LOCAL_STATE_STORE_PATH);
+        let legacy = serde_json::json!({
+            "schemaVersion": LOCAL_STATE_SCHEMA_VERSION,
+            "primaryWorkspace": "workspace-a",
+            "mcp": { "enabled": true }
+        });
+        std::fs::write(
+            &legacy_path,
+            serde_json::to_vec(&legacy).expect("legacy JSON"),
+        )
+        .expect("seed legacy local state");
+
+        let backend = DesktopDiskPrimaryWorkspaceBackend::open_at(root.clone())
+            .expect("open migrated Desktop authority");
+        assert_eq!(
+            backend.get(PRIMARY_WORKSPACE_KEY),
+            Some(json!("workspace-a"))
+        );
+        backend.set(PRIMARY_WORKSPACE_KEY, json!("workspace-b"));
+        let concurrent_mcp_save = serde_json::json!({
+            "schemaVersion": LOCAL_STATE_SCHEMA_VERSION,
+            "primaryWorkspace": "workspace-a",
+            "mcp": { "enabled": false }
+        });
+        std::fs::write(
+            &legacy_path,
+            serde_json::to_vec(&concurrent_mcp_save).expect("concurrent MCP JSON"),
+        )
+        .expect("simulate MCP save before Desktop publication");
+        assert_eq!(
+            backend.save_publication(),
+            PrimaryWorkspacePersistence::Durable,
+        );
+
+        let stale_mcp_save = serde_json::json!({
+            "schemaVersion": LOCAL_STATE_SCHEMA_VERSION,
+            "primaryWorkspace": "workspace-a",
+            "mcp": { "enabled": true }
+        });
+        std::fs::write(
+            &legacy_path,
+            serde_json::to_vec(&stale_mcp_save).expect("stale MCP JSON"),
+        )
+        .expect("simulate cached MCP save");
+        let reopened = DesktopDiskPrimaryWorkspaceBackend::open_at(root.clone())
+            .expect("reopen Desktop authority");
+
+        assert_eq!(
+            reopened.get(PRIMARY_WORKSPACE_KEY),
+            Some(json!("workspace-b"))
+        );
+        assert_eq!(
+            read_workspace_store_file(&root, LOCAL_STATE_STORE_PATH)
+                .expect("read legacy local state")
+                .expect("legacy state")
+                .values
+                .get("mcp"),
+            Some(&json!({ "enabled": true })),
+        );
+        assert_eq!(
+            read_workspace_store_file(&root, DESKTOP_PRIMARY_WORKSPACE_STORE_PATH)
+                .expect("read Desktop authority")
+                .expect("Desktop authority")
+                .values
+                .get("mcp"),
+            None,
+        );
+    }
+
+    #[test]
+    fn desktop_workspace_switch_preflight_rejects_home_and_runtime_root_overlap() {
+        let roots = tempfile::tempdir().expect("temporary roots");
+        let home = roots.path().join("home");
+        let workspace = roots.path().join("workspace");
+        let app_data = roots.path().join("app-data");
+        let cache = roots.path().join("cache");
+        for root in [&home, &workspace, &app_data, &cache] {
+            std::fs::create_dir(root).expect("create root");
+        }
+        let home = home.canonicalize().expect("canonical home");
+        let workspace = workspace.canonicalize().expect("canonical workspace");
+        let app_data = app_data.canonicalize().expect("canonical app data");
+        let cache = cache.canonicalize().expect("canonical cache");
+
+        assert!(preflight_desktop_workspace_switch_root(
+            &workspace,
+            &app_data,
+            &cache,
+            Some(&home),
+        )
+        .is_ok());
+        assert!(
+            preflight_desktop_workspace_switch_root(&home, &app_data, &cache, Some(&home),)
+                .is_err()
+        );
+
+        let overlapping_app_data = workspace.join("app-data");
+        std::fs::create_dir(&overlapping_app_data).expect("overlapping app data");
+        assert!(preflight_desktop_workspace_switch_root(
+            &workspace,
+            &overlapping_app_data,
+            &cache,
+            Some(&home),
+        )
+        .is_err());
+    }
 
     #[test]
     fn primary_workspace_store_creation_never_uses_default_auto_save() {
@@ -2151,7 +2723,7 @@ mod tests {
         });
         PrimaryWorkspaceService::new(&backend, &transaction_lock)
             .write(return_to_a)
-            .expect("return to workspace A through React-owned state");
+            .expect("return to workspace A through host-owned state");
         let returned =
             NativeHostWorkspaceStatePersistence::new(&backend, &native_store, &transaction_lock)
                 .load_or_create(&workspace_a)
