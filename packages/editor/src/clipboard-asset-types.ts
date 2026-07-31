@@ -78,26 +78,25 @@ const canonicalImageMediaTypesByExtension = new Map<string, string>([
   ["webp", "image/webp"],
 ]);
 
-function fileNameImageMediaType(name: string) {
-  const extension = name.match(/\.([^.]+)$/u)?.[1]?.toLocaleLowerCase("en-US") ?? "";
-  return canonicalImageMediaTypesByExtension.get(extension) ?? null;
+const rejectedImageExtensions = new Set([
+  "avis",
+  "heic",
+  "heif",
+  "tif",
+  "tiff",
+]);
+
+function fileNameExtension(name: string) {
+  return name.match(/\.([^.]+)$/u)?.[1]?.toLocaleLowerCase("en-US") ?? "";
 }
 
-/**
- * Normalizes the MIME aliases emitted by native file providers without
- * weakening byte validation, which remains owned by the Kernel.
- */
-export function normalizeEditorImageFile(file: File): File | null {
-  const declared = file.type.split(";", 1)[0]?.trim().toLocaleLowerCase("en-US") ?? "";
-  const declaredMediaType = canonicalImageMediaTypesByAlias.get(declared) ?? null;
-  const namedMediaType = fileNameImageMediaType(file.name);
-  const undeclared = declared === "" || declared === "application/octet-stream";
-  const mediaType = declaredMediaType ?? (undeclared ? namedMediaType : null);
-  if (mediaType === null || (declaredMediaType !== null && namedMediaType !== null && declaredMediaType !== namedMediaType)) {
-    return null;
-  }
-  if (file.type === mediaType) return file;
+export type EditorResourceFileClassification =
+  | { file: File; kind: "attachment" }
+  | { file: File; kind: "image" }
+  | { file: File; kind: "rejected-image" };
 
+function normalizedImageFile(file: File, mediaType: string) {
+  if (file.type === mediaType) return file;
   const normalized = new File([file], file.name, {
     lastModified: file.lastModified,
     type: mediaType,
@@ -111,6 +110,34 @@ export function normalizeEditorImageFile(file: File): File | null {
     });
   }
   return normalized;
+}
+
+/**
+ * Classifies native file-provider output before any import side effect.
+ * Byte validation remains owned by the Kernel after MIME normalization.
+ */
+export function classifyEditorResourceFile(file: File): EditorResourceFileClassification {
+  const declared = file.type.split(";", 1)[0]?.trim().toLocaleLowerCase("en-US") ?? "";
+  const declaredMediaType = canonicalImageMediaTypesByAlias.get(declared) ?? null;
+  const extension = fileNameExtension(file.name);
+  const namedMediaType = canonicalImageMediaTypesByExtension.get(extension) ?? null;
+  const undeclared = declared === "" || declared === "application/octet-stream";
+  const rejectedExtension = rejectedImageExtensions.has(extension);
+  const imageDeclaration = declared.startsWith("image/") || declaredMediaType !== null;
+  if (
+    rejectedExtension ||
+    (imageDeclaration && declaredMediaType === null) ||
+    (namedMediaType !== null && !undeclared && declaredMediaType === null) ||
+    (declaredMediaType !== null && namedMediaType !== null && declaredMediaType !== namedMediaType) ||
+    (declaredMediaType !== null && extension !== "" && namedMediaType === null)
+  ) {
+    return { file, kind: "rejected-image" };
+  }
+  const mediaType = declaredMediaType ?? (undeclared ? namedMediaType : null);
+  if (mediaType !== null) {
+    return { file: normalizedImageFile(file, mediaType), kind: "image" };
+  }
+  return { file, kind: "attachment" };
 }
 
 export function createEditorResourceRequest(

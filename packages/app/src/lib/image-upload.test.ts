@@ -105,6 +105,7 @@ describe("save editor image", () => {
   it("references standalone dropped images without copying", async () => {
     const image = new File([new Uint8Array([1, 2, 3])], "Local Diagram.png", { type: "image/png" });
     const saveLocalImage = vi.fn().mockResolvedValue({ alt: "Local Diagram", src: "file:///mock/Local%20Diagram.png" });
+    const saveCopiedImage = vi.fn();
 
     await expect(saveLocalEditorImage({
       context: { mode: "standalone" },
@@ -112,6 +113,7 @@ describe("save editor image", () => {
       image,
       origin: "drop",
       preferences: defaultEditorPreferences,
+      saveCopiedImage,
       saveLocalImage
     })).resolves.toEqual({
       image: { alt: "Local Diagram", src: "file:///mock/Local%20Diagram.png" },
@@ -126,6 +128,32 @@ describe("save editor image", () => {
       folder: "assets",
       image
     });
+    expect(saveCopiedImage).not.toHaveBeenCalled();
+  });
+
+  it("routes copied images through the dedicated copy writer", async () => {
+    const image = new File([new Uint8Array([1, 2, 3])], "Copied.png", { type: "image/png" });
+    const saveCopiedImage = vi.fn().mockResolvedValue({ alt: "Copied", src: "assets/copied.png" });
+    const saveLocalImage = vi.fn();
+
+    await expect(saveLocalEditorImage({
+      context: { mode: "primary-workspace", primaryRootPath: "/mock-vault" },
+      documentPath: "/mock-vault/notes/day.md",
+      image,
+      origin: "drop",
+      preferences: defaultEditorPreferences,
+      saveCopiedImage,
+      saveLocalImage
+    })).resolves.toMatchObject({ refreshTree: true, status: "saved" });
+
+    expect(saveCopiedImage).toHaveBeenCalledWith({
+      documentPath: "/mock-vault/notes/day.md",
+      fileName: expect.stringMatching(/^pasted-image-\d+\.png$/u),
+      folder: "assets",
+      image,
+      projectRootPath: "/mock-vault"
+    });
+    expect(saveLocalImage).not.toHaveBeenCalled();
   });
 
   it("references an existing standalone imported image without copying", async () => {

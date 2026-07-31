@@ -31,6 +31,7 @@ export type SaveLocalEditorImageInput = {
   origin?: EditorResourceOrigin;
   preferences: EditorPreferences;
   copyToStorage?: boolean;
+  saveCopiedImage?: SaveLocalImage;
   saveLocalImage?: SaveLocalImage;
 };
 
@@ -77,6 +78,7 @@ export async function saveLocalEditorImage({
   image,
   origin,
   preferences,
+  saveCopiedImage,
   saveLocalImage = saveNativeClipboardImage
 }: SaveLocalEditorImageInput): Promise<SaveEditorImageResult> {
   const action = context && origin
@@ -111,7 +113,7 @@ export async function saveLocalEditorImage({
   }
 
   return {
-    image: await saveLocalImage({
+    image: await (saveCopiedImage ?? saveLocalImage)({
       documentPath,
       fileName: await createImageUploadFileName(image, preferences.imageUpload.fileNamePattern),
       folder: context ? "assets" : preferences.clipboardImageFolder,

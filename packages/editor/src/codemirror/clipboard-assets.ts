@@ -26,7 +26,10 @@ import type {
   SavedClipboardImage,
   SaveRemoteClipboardImage,
 } from "../clipboard-asset-types.ts";
-import { normalizeEditorImageFile } from "../clipboard-asset-types.ts";
+import {
+  classifyEditorResourceFile,
+  type EditorResourceFileClassification,
+} from "../clipboard-asset-types.ts";
 import { looksLikeMarkdownSource } from "../markdown-source-detection.ts";
 import {
   codeMirrorSelectionIsInsideFencedCode,
@@ -213,15 +216,17 @@ function transferFiles(dataTransfer: DataTransfer | null | undefined) {
   return result;
 }
 
-function imageFiles(dataTransfer: DataTransfer | null | undefined) {
-  return transferFiles(dataTransfer).flatMap((file) => {
-    const image = normalizeEditorImageFile(file);
-    return image === null ? [] : [image];
-  });
+function classifiedTransferFiles(dataTransfer: DataTransfer | null | undefined) {
+  return transferFiles(dataTransfer).map(classifyEditorResourceFile);
 }
 
-function attachmentFiles(dataTransfer: DataTransfer | null | undefined) {
-  return transferFiles(dataTransfer).filter((file) => normalizeEditorImageFile(file) === null);
+function classifiedFiles(
+  classifications: readonly EditorResourceFileClassification[],
+  kind: "attachment" | "image",
+) {
+  return classifications.flatMap((classification) => classification.kind === kind
+    ? [classification.file]
+    : []);
 }
 
 function structuredTableClipboard(event: ClipboardEvent) {
@@ -634,7 +639,12 @@ export function codeMirrorClipboardAssetsPlugin(
           const saveImage = imageSaver(options, "clipboard");
           const saveAttachment = attachmentSaver(options, "clipboard");
           const saveRemoteImage = remoteImageSaver(options);
-          const images = imageFiles(event.clipboardData);
+          const classifications = classifiedTransferFiles(event.clipboardData);
+          if (classifications.some(({ kind }) => kind === "rejected-image")) {
+            event.preventDefault();
+            return true;
+          }
+          const images = classifiedFiles(classifications, "image");
           if (
             images.length > 0 &&
             saveImage &&
@@ -651,7 +661,7 @@ export function codeMirrorClipboardAssetsPlugin(
             return true;
           }
 
-          const attachments = attachmentFiles(event.clipboardData);
+          const attachments = classifiedFiles(classifications, "attachment");
           if (attachments.length > 0 && saveAttachment) {
             event.preventDefault();
             saveAndInsertAttachments(
@@ -670,6 +680,11 @@ export function codeMirrorClipboardAssetsPlugin(
           const saveImage = imageSaver(options, "drop");
           const saveAttachment = attachmentSaver(options, "drop");
           const selection = dropSelection(view, event);
+          const classifications = classifiedTransferFiles(event.dataTransfer);
+          if (classifications.some(({ kind }) => kind === "rejected-image")) {
+            event.preventDefault();
+            return true;
+          }
           const existingImage = droppedMarkdownImage(
             event,
             options.documentPath?.(),
@@ -690,13 +705,13 @@ export function codeMirrorClipboardAssetsPlugin(
             return true;
           }
 
-          const images = imageFiles(event.dataTransfer);
+          const images = classifiedFiles(classifications, "image");
           if (images.length > 0 && saveImage) {
             event.preventDefault();
             saveAndInsertImages(view, field, images, saveImage, selection);
             return true;
           }
-          const attachments = attachmentFiles(event.dataTransfer);
+          const attachments = classifiedFiles(classifications, "attachment");
           if (attachments.length === 0 || !saveAttachment) return false;
           event.preventDefault();
           saveAndInsertAttachments(

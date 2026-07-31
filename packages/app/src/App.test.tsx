@@ -3448,6 +3448,9 @@ describe("QingYu workspace", () => {
       new File([new Uint8Array([6])], "fixture.svg", { type: "application/svg+xml" }),
       new File([new Uint8Array([7])], "fixture.webp", { type: "image/webp" }),
     ];
+    for (const image of images) {
+      Object.defineProperty(image, "path", { value: `/native/${image.name}` });
+    }
     const saveClipboardImages = vi.fn(async (inputs: readonly { image: File }[]) => inputs.map(({ image }) => ({
       alt: image.name.replace(/\.[^.]+$/u, ""),
       src: `../assets/${image.name}`
@@ -3480,6 +3483,7 @@ describe("QingYu workspace", () => {
     expect(inputs.map(({ image }) => image.type)).toEqual([
       "image/avif", "image/bmp", "image/gif", "image/jpeg", "image/png", "image/svg+xml", "image/webp"
     ]);
+    expect(inputs.map(({ image }) => image.name)).toEqual(images.map(({ name }) => name));
     expect(inputs).toEqual(expect.arrayContaining(images.map((image) => expect.objectContaining({
       copyToStorage: true,
       documentPath: notePath,
@@ -3489,6 +3493,69 @@ describe("QingYu workspace", () => {
     }))));
     expect(mockedSaveNativeClipboardImage).not.toHaveBeenCalled();
     await waitFor(() => expect(getVisibleCodeMirrorView(container).state.doc.toString().match(/!\[/gu)).toHaveLength(7));
+  });
+
+  it.each([
+    {
+      files: () => [new File([new Uint8Array([1])], "unknown.tiff", { type: "image/tiff" })],
+      label: "unknown image MIME",
+    },
+    {
+      files: () => [new File([new Uint8Array([2])], "sequence.avis", { type: "application/octet-stream" })],
+      label: "AVIF sequence extension",
+    },
+    {
+      files: () => [new File([new Uint8Array([3])], "conflict.svg", { type: "image/png" })],
+      label: "MIME and extension conflict",
+    },
+    {
+      files: () => [
+        new File([new Uint8Array([4])], "valid.png", { type: "image/png" }),
+        new File([new Uint8Array([1])], "unknown.tiff", { type: "image/tiff" }),
+        new File([new Uint8Array([2])], "sequence.avis", { type: "application/octet-stream" }),
+        new File([new Uint8Array([3])], "conflict.svg", { type: "image/png" }),
+      ],
+      label: "mixed valid and rejected images",
+    },
+  ])("rejects $label from the native image picker before any writer runs", async ({ files, label }) => {
+    const notePath = `${mockFolderPath}/notes/rejected-image.md`;
+    const saveClipboardImages = vi.fn(async () => []);
+    const runtime = getAppRuntime();
+    configureAppRuntime({
+      ...runtime,
+      files: { ...runtime.files, saveClipboardImages }
+    });
+    mockDesktopPrimaryWorkspace({ root: mockFolderPath, status: "ready" });
+    window.history.replaceState({}, "", `/?path=${encodeURIComponent(notePath)}`);
+    mockedReadNativeMarkdownFile.mockResolvedValue({
+      content: "# Rejected image remains unchanged",
+      name: "rejected-image.md",
+      path: notePath
+    });
+    const selectedFiles = files();
+    for (const file of selectedFiles) {
+      Object.defineProperty(file, "path", { value: `/native/${file.name}` });
+    }
+    mockedOpenNativeLocalImages.mockResolvedValue(selectedFiles);
+
+    const { container } = renderApp();
+    await expectVisibleCodeMirrorText(container, "Rejected image remains unchanged");
+    const before = getVisibleCodeMirrorView(container).state.doc.toString();
+    await waitFor(() => expect(mockedInstallNativeApplicationMenu).toHaveBeenCalled());
+    const menuHandlers = mockedInstallNativeApplicationMenu.mock.calls.at(-1)?.[0] as NativeMenuHandlers;
+
+    await act(async () => {
+      await menuHandlers.importLocalImages?.();
+    });
+
+    expect(saveClipboardImages, label).not.toHaveBeenCalled();
+    expect(mockedSaveNativeClipboardImage).not.toHaveBeenCalled();
+    expect(mockedSaveNativeClipboardAttachment).not.toHaveBeenCalled();
+    expect(mockedImportNativeLocalFile).not.toHaveBeenCalled();
+    expect(getVisibleCodeMirrorView(container).state.doc.toString()).toBe(before);
+    expect(container.querySelector(".markra-image-upload-placeholder")).toBeNull();
+    await waitFor(() => expect(document.querySelector(".app-toast"))
+      .toHaveTextContent("Could not save the pasted image."));
   });
 
   it("does not open local import pickers while source mode is active", async () => {

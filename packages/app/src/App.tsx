@@ -163,8 +163,8 @@ import {
 } from "./lib/tauri";
 import {
   createEditorResourceRequest,
+  classifyEditorResourceFile,
   markdownShortcutToKeyboardEventInit,
-  normalizeEditorImageFile,
   normalizeMarkdownShortcuts,
   type EditorTextSelection,
   type RemoteClipboardImage,
@@ -2336,7 +2336,13 @@ function WorkspaceApp() {
         documentPath: targetDocumentPath,
         image,
         origin,
-        preferences: editorPreferences.preferences
+        preferences: editorPreferences.preferences,
+        saveCopiedImage: async (input) => {
+          const saved = await appFiles.saveClipboardImages([input]);
+          const image = saved[0];
+          if (!image || saved.length !== 1) throw new Error("The Kernel resource batch was incomplete.");
+          return image;
+        }
       });
     } catch (error) {
       const description = clipboardImageSaveFailureDescription(error);
@@ -2370,6 +2376,7 @@ function WorkspaceApp() {
 
     return result.image;
   }, [
+    appFiles,
     document.path,
     editorPreferences.preferences,
     mainEditorReadOnly,
@@ -2471,19 +2478,34 @@ function WorkspaceApp() {
       return remoteResources;
     }
 
-    const normalizedImages = request.files.map((file) => (
-      request.origin === "import" &&
-      file.type === "application/octet-stream" &&
-      nativePathFromEditorFile(file)
-        ? null
-        : normalizeEditorImageFile(file)
+    const classifications = request.files.map((file) => {
+      const classification = classifyEditorResourceFile(file);
+      if (
+        classification.kind !== "rejected-image" &&
+        request.origin === "import" &&
+        file.type === "application/octet-stream" &&
+        nativePathFromEditorFile(file)
+      ) {
+        return { file, kind: "attachment" as const };
+      }
+      return classification;
+    });
+    if (classifications.some(({ kind }) => kind === "rejected-image")) {
+      showAppToast({
+        message: translate("app.clipboardImageSaveFailed"),
+        status: "error"
+      });
+      return [];
+    }
+    const imageIndexes = classifications.flatMap((classification, index) => (
+      classification.kind === "image" ? [index] : []
     ));
-    const imageIndexes = normalizedImages.flatMap((image, index) => image === null ? [] : [index]);
     const imageAction = resolveEditorAssetAction({ mode: context.mode, origin: request.origin });
     if (imageIndexes.length > 0 && imageAction === "reference") {
       for (const index of imageIndexes) {
-        const image = normalizedImages[index];
-        if (!image) continue;
+        const classification = classifications[index];
+        if (classification?.kind !== "image") continue;
+        const image = classification.file;
         const saved = await handleSaveClipboardImage(image, request.origin, targetDocumentPath);
         if (saved) savedResources[index] = { ...saved, kind: "image" };
       }
@@ -2496,8 +2518,9 @@ function WorkspaceApp() {
         return [];
       }
       const inputs = await Promise.all(imageIndexes.map(async (index) => {
-        const image = normalizedImages[index];
-        if (!image) throw new Error("The image batch changed while preparing it.");
+        const classification = classifications[index];
+        if (classification?.kind !== "image") throw new Error("The image batch changed while preparing it.");
+        const image = classification.file;
         return {
           copyToStorage: true,
           documentPath: targetDocumentPath,
@@ -2547,7 +2570,7 @@ function WorkspaceApp() {
 
     let refreshImportedAttachmentTreeAfterSave = false;
     for (const [index, file] of request.files.entries()) {
-      if (normalizedImages[index] !== null) continue;
+      if (classifications[index]?.kind !== "attachment") continue;
 
       const importedPath = request.origin === "import" ? nativePathFromEditorFile(file) : null;
       if (importedPath) {
@@ -3640,17 +3663,26 @@ function WorkspaceApp() {
   const handleImportLocalImages = useCallback(async () => {
     if (mainEditorReadOnly || !hasOpenDocument || activeImageFile || sourceMode) return;
 
-    const images = await openNativeLocalImages({
+    const selectedImages = await openNativeLocalImages({
       title: translate("menu.importLocalImages")
     }).catch(() => null);
-    if (!images) {
+    if (!selectedImages) {
       showAppToast({
         message: translate("app.clipboardImageSaveFailed"),
         status: "error"
       });
       return;
     }
-    if (images.length === 0) return;
+    if (selectedImages.length === 0) return;
+    const classifications = selectedImages.map(classifyEditorResourceFile);
+    if (classifications.some(({ kind }) => kind !== "image")) {
+      showAppToast({
+        message: translate("app.clipboardImageSaveFailed"),
+        status: "error"
+      });
+      return;
+    }
+    const images = classifications.map(({ file }) => file);
 
     let savedImages: Array<{ alt: string; src: string }>;
     if (compactMode.trueMobile) {

@@ -1,7 +1,12 @@
 import {
   createUnavailableKernelDomainPort,
-  createUnavailableNativeShellPort
+  createUnavailableNativeShellPort,
+  kernelWorkspaceRoot,
+  type KernelDomainPort,
+  type KernelRevision,
+  type KernelWorkspaceGeneration
 } from "@markra/app/runtime";
+import * as desktopFiles from "./tauri/file/desktop";
 import type { NativeKernelBootstrap } from "../kernel-bootstrap";
 import { switchDesktopKernelWorkspace } from "../desktop-kernel-startup";
 import { selectDesktopWorkspaceDirectory } from "../desktop-workspace-selector";
@@ -54,7 +59,7 @@ describe("desktop runtime composition", () => {
     expect(runtime.features).toMatchObject({
       dejavuSync: false,
       fileDrop: false,
-      imageImport: false,
+      imageImport: true,
       openLocalAttachments: false,
       projectSync: true,
       resources: false
@@ -82,7 +87,7 @@ describe("desktop runtime composition", () => {
     await expect(runtime.files.importLocalFile({} as never))
       .rejects.toThrow("unavailable for a Kernel workspace");
     await expect(runtime.files.saveClipboardImage({} as never))
-      .rejects.toThrow("unavailable for a Kernel workspace");
+      .rejects.toThrow("unavailable without a configured app runtime");
     await expect(runtime.files.trashWorkspaceResources("kernel-workspace://primary", []))
       .rejects.toThrow("unavailable for a Kernel workspace");
     expect(runtime.settings.readPrimaryWorkspaceState).toBeUndefined();
@@ -92,6 +97,7 @@ describe("desktop runtime composition", () => {
       .toBe(nativeShell.files.listenOpenedMarkdownPaths);
     expect(runtime.files.takeOpenedMarkdownPaths)
       .toBe(nativeShell.files.takeOpenedMarkdownPaths);
+    expect(runtime.files.openLocalImages).toBe(desktopFiles.openNativeLocalImages);
 
     const secondOwner = createDesktopKernelRuntimeOwner(kernel);
     expect(runtime.syncConfig.cancelApply).toBe(secondOwner.runtime.syncConfig.cancelApply);
@@ -101,6 +107,83 @@ describe("desktop runtime composition", () => {
 
     secondOwner.release();
     owner.release();
+    owner.release();
+  });
+
+  it("keeps the native image picker while routing image writes to one Kernel batch", async () => {
+    const unavailable = createUnavailableKernelDomainPort();
+    const generation = "workspace-generation" as KernelWorkspaceGeneration;
+    const revision = "document-revision" as KernelRevision;
+    const createBatch = vi.fn(async (request: Parameters<KernelDomainPort["resources"]["createBatch"]>[0]) => request.items.map((item, index) => ({
+      id: `resource-${index}`,
+      kind: "image" as const,
+      mediaType: item.mediaType,
+      modifiedAt: "2026-08-01T00:00:00Z",
+      name: item.name,
+      parent: "notes/assets" as never,
+      previewable: true,
+      relativePath: `notes/assets/${item.name}` as never,
+      revision: `resource-revision-${index}` as KernelRevision,
+      sizeBytes: item.body.size,
+      workspaceGeneration: generation,
+    })));
+    const kernel = {
+      ...unavailable,
+      availability: "available",
+      documents: {
+        ...unavailable.documents,
+        list: vi.fn(async () => ({
+          items: [{
+            kind: "file" as const,
+            locator: "document-locator" as never,
+            modifiedAt: "2026-08-01T00:00:00Z",
+            name: "note.md",
+            parent: "notes" as never,
+            relativePath: "notes/note.md" as never,
+            revision,
+            sizeBytes: 4,
+            workspaceGeneration: generation,
+          }],
+          nextCursor: null,
+          workspaceGeneration: generation,
+        })),
+      },
+      resources: {
+        ...unavailable.resources,
+        createBatch,
+        list: vi.fn(async () => ({ items: [], workspaceGeneration: generation })),
+      },
+      workspace: {
+        read: vi.fn(async () => ({
+          displayName: "Notes",
+          generation,
+          id: "workspace-id",
+          readiness: "ready" as const,
+          revision,
+        })),
+      },
+    } as KernelDomainPort;
+    const owner = createDesktopKernelRuntimeOwner(kernel);
+    const image = new File([new Uint8Array([1, 2, 3])], "fixture.avif", { type: "image/avif" });
+
+    expect(owner.runtime.features.imageImport).toBe(true);
+    expect(owner.runtime.files.openLocalImages).toBe(desktopFiles.openNativeLocalImages);
+    await expect(owner.runtime.files.importLocalFile({} as never))
+      .rejects.toThrow("unavailable for a Kernel workspace");
+    await expect(owner.runtime.files.saveClipboardImage({} as never))
+      .rejects.toThrow("unavailable without a configured app runtime");
+    await expect(owner.runtime.files.saveClipboardImages([{
+      documentPath: `${kernelWorkspaceRoot}/notes/note.md`,
+      fileName: "fixture.avif",
+      folder: "assets",
+      image,
+    }])).resolves.toEqual([{ alt: "fixture", src: "assets/fixture.avif" }]);
+    expect(createBatch).toHaveBeenCalledOnce();
+    expect(createBatch).toHaveBeenCalledWith(expect.objectContaining({
+      items: [{ body: image, kind: "image", mediaType: "image/avif", name: "fixture.avif" }],
+    }));
+    expect(owner.runtime.nativeShell.capabilities.pickers).toBe("unavailable");
+
     owner.release();
   });
 

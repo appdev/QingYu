@@ -142,7 +142,9 @@ describe("codeMirrorClipboardAssetsPlugin", () => {
     expect(await sha256Hex(savedFiles[5] ?? new File([], "missing"))).toBe(
       "31c458a9110ddf17e4eba65c247279fc522cbcfcc502b136c6f87b69566972e5",
     );
-    await vi.waitFor(() => expect(view.state.doc.toString().match(/!\[/gu)).toHaveLength(7));
+    await vi.waitFor(() => expect(view.state.doc.toString()).toBe(files
+      .map((file) => `![${file.name}](assets/${file.name})`)
+      .join("")));
   });
 
   it("removes a failed mixed-image batch and retries it without partial Markdown", async () => {
@@ -170,6 +172,35 @@ describe("codeMirrorClipboardAssetsPlugin", () => {
     expect(saveResources).toHaveBeenCalledTimes(2);
     error.mockRestore();
   });
+
+  it.each(["paste", "drop"] as const)(
+    "rejects unsupported or conflicting %s images before every save side effect",
+    async (origin) => {
+      const rejected = [
+        new File([new Uint8Array([1])], "unknown.tiff", { type: "image/tiff" }),
+        new File([new Uint8Array([2])], "sequence.avis", { type: "application/octet-stream" }),
+        new File([new Uint8Array([3])], "conflict.svg", { type: "image/png" }),
+      ];
+      const png = new File([new Uint8Array([4])], "valid.png", { type: "image/png" });
+
+      for (const candidate of rejected) {
+        for (const files of [[candidate], [png, candidate]]) {
+          const saveResources = vi.fn(async () => []);
+          const saveAttachment = vi.fn(async () => null);
+          const saveImage = vi.fn(async () => null);
+          const view = createView("", { saveAttachment, saveImage, saveResources });
+          const event = origin === "paste" ? paste(view, { files }) : drop(view, { files });
+
+          expect(event.defaultPrevented, `${candidate.name} ${files.length}`).toBe(true);
+          expect(saveResources).not.toHaveBeenCalled();
+          expect(saveAttachment).not.toHaveBeenCalled();
+          expect(saveImage).not.toHaveBeenCalled();
+          expect(view.dom.querySelector(".markra-image-upload-placeholder")).toBeNull();
+          expect(view.state.doc.toString()).toBe("");
+        }
+      }
+    },
+  );
 
   it("shows a placeholder and inserts a saved pasted image", async () => {
     const pending = createDeferred<{ alt: string; src: string } | null>();
