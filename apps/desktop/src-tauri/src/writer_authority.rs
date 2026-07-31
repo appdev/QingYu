@@ -1089,11 +1089,56 @@ pub(crate) fn legacy_writer_surface_inventory() -> &'static [LegacyWriterSurface
     LEGACY_WRITER_SURFACES
 }
 
+const NORMAL_DESKTOP_HOST_READS_AND_ACTIONS: &[&str] = &[
+    "canonical_local_file_path",
+    "check_pandoc_available",
+    "detect_pandoc_path",
+    "destroy_current_editor_window",
+    "download_web_image",
+    "get_desktop_runtime_store_value",
+    "get_mcp_health",
+    "get_mcp_settings",
+    "get_shell_command_status",
+    "hide_settings_window",
+    "initialize_desktop_kernel_workspace",
+    "install_application_menu",
+    "list_editor_window_restore_states",
+    "list_mcp_audit_entries",
+    "list_system_font_families",
+    "list_themes",
+    "load_desktop_runtime_store",
+    "load_sync_config_editing",
+    "mark_settings_window_ready",
+    "minimize_current_window",
+    "open_blank_editor_window",
+    "open_containing_folder",
+    "open_log_folder",
+    "open_markdown_attachment",
+    "open_markdown_file_in_new_window",
+    "open_markdown_folder_in_new_window",
+    "open_settings_window",
+    "read_clipboard_text",
+    "read_desktop_kernel_startup_state",
+    "read_local_image_file",
+    "read_native_kernel_bootstrap",
+    "read_primary_workspace_state",
+    "read_standalone_document",
+    "read_text_file",
+    "read_theme_css",
+    "retry_desktop_kernel_workspace",
+    "show_native_app_about",
+    "take_opened_markdown_paths",
+    "theme_directory_path",
+];
+
 pub(crate) fn normal_desktop_command_is_allowed(command: &str) -> bool {
-    !LEGACY_WRITER_SURFACES.iter().any(|surface| {
-        surface.disposition == WriterSurfaceDisposition::RequiresWorkspaceFence
-            && surface.entry_points.contains(&command)
-    })
+    if let Some(surface) = LEGACY_WRITER_SURFACES
+        .iter()
+        .find(|surface| surface.entry_points.contains(&command))
+    {
+        return surface.disposition == WriterSurfaceDisposition::HostOnly;
+    }
+    NORMAL_DESKTOP_HOST_READS_AND_ACTIONS.contains(&command)
 }
 
 #[cfg(test)]
@@ -2081,8 +2126,11 @@ mod tests {
         assert!(normal_desktop_command_is_allowed(
             "read_native_kernel_bootstrap"
         ));
-        assert!(normal_desktop_command_is_allowed(
+        assert!(!normal_desktop_command_is_allowed(
             "read_markdown_template_file"
+        ));
+        assert!(!normal_desktop_command_is_allowed(
+            "future_unclassified_workspace_writer"
         ));
     }
 }
