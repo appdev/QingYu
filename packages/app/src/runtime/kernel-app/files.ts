@@ -50,12 +50,14 @@ export interface KernelImageSource {
   readonly materialize: (
     resource: KernelResourceSnapshot,
     open: () => Promise<KernelResourceBody>,
+    signal?: AbortSignal | null,
   ) => Promise<string | undefined>;
   readonly materializeCreated?: (
     resource: KernelResourceSnapshot,
     body: KernelResourceBody,
   ) => Promise<string | undefined>;
   readonly release: (source: string) => unknown;
+  readonly close?: () => unknown;
 }
 
 export interface KernelFileRuntimeOwnerOptions extends KernelFileRuntimeOptions {
@@ -234,7 +236,7 @@ export function createKernelFileRuntimeOwner(
               throw new Error("The Kernel image resource media type changed.");
             }
             return body;
-          });
+          }, signal);
           if (source !== undefined) {
             nextSources.set(relativePath, source);
             createdSources.add(source);
@@ -829,6 +831,12 @@ export function createKernelFileRuntimeOwner(
     release: () => {
       if (released) return undefined;
       released = true;
+      try {
+        options.imageSource?.close?.();
+      } catch {
+        // Closing pending image materialization is best-effort; cached URLs
+        // are still released below under the file-runtime ownership boundary.
+      }
       stopImageInvalidations?.();
       invalidateImageResources();
       entries.clear();

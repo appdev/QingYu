@@ -6,6 +6,7 @@ import type {
   KernelRevision,
   KernelWorkspaceGeneration,
 } from "@markra/app/runtime";
+import { KernelApiError } from "@markra/kernel-client";
 
 import {
   createServerFileRuntime,
@@ -126,7 +127,7 @@ describe("server file facade", () => {
     }));
   });
 
-  it("reuses a newly uploaded image Blob and returns to signed URLs after invalidation", async () => {
+  it("reuses a newly uploaded image Blob and rematerializes it after invalidation", async () => {
     const listeners = new Set<(notice: KernelInvalidationNotice) => unknown>();
     const kernel = Object.assign(kernelPort(), {
       invalidations: {
@@ -194,9 +195,248 @@ describe("server file facade", () => {
 
     await files.loadMarkdownFilesForPath?.(serverWorkspaceRoot);
     expect(files.resolveMarkdownImageSrc?.(documentPath, saved.src)).toBe(
-      `/api/v1/resources/${encodeURIComponent("image-new.signature")}?kind=image`,
+      "blob:server-new-image",
     );
+    expect(kernel.resources.open).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(["first open", "full reload"])(
+    "materializes seven authenticated image resources after a transient auth bootstrap failure on %s",
+    async () => {
+      vi.useFakeTimers();
+      try {
+        const kernel = kernelPort();
+        const imageEntries = [
+          ["avif", "image/avif"],
+          ["bmp", "image/bmp"],
+          ["gif", "image/gif"],
+          ["jpg", "image/jpeg"],
+          ["png", "image/png"],
+          ["svg", "image/svg+xml"],
+          ["webp", "image/webp"],
+        ].map(([extension, mediaType], index) => resource({
+          id: `image-${index + 1}.signature`,
+          mediaType,
+          name: `asset.${extension}`,
+          relativePath: `assets/asset.${extension}`,
+        }));
+        vi.mocked(kernel.documents.list).mockImplementation(async (input) => ({
+          items: input.parent === ""
+            ? [
+                entry({
+                  kind: "directory",
+                  locator: "assets-folder",
+                  name: "assets",
+                  relativePath: "assets",
+                }),
+                entry({ locator: "document-1", name: "note.md", relativePath: "note.md" }),
+              ]
+            : [],
+          nextCursor: null,
+          workspaceGeneration: generation,
+        }));
+        vi.mocked(kernel.resources.list).mockImplementation(async (input) => ({
+          items: input.parent === "assets" ? imageEntries : [],
+          workspaceGeneration: generation,
+        }));
+        let activeOpens = 0;
+        let maximumConcurrentOpens = 0;
+        let openAttempt = 0;
+        vi.mocked(kernel.resources.open).mockImplementation(async ({ id }) => {
+          activeOpens += 1;
+          maximumConcurrentOpens = Math.max(maximumConcurrentOpens, activeOpens);
+          openAttempt += 1;
+          try {
+            if (openAttempt === 1) {
+              throw new KernelApiError({
+                code: "authentication_unavailable",
+                requestId: "123e4567-e89b-42d3-a456-426614174001",
+                status: 503,
+              });
+            }
+            const image = imageEntries.find((entry) =>
+              entry.entryType === "resource" && entry.resource.id === id
+            );
+            if (image?.entryType !== "resource") throw new Error("missing image fixture");
+            return {
+              body: new Blob([id], { type: image.resource.mediaType }),
+              mediaType: image.resource.mediaType,
+            };
+          } finally {
+            activeOpens -= 1;
+          }
+        });
+        const createObjectURL = vi.fn((blob: Blob) => `blob:server-image-${blob.type}`);
+        const revokeObjectURL = vi.fn();
+        const owner = createServerFileRuntimeOwner(kernel, {
+          objectUrls: { createObjectURL, revokeObjectURL },
+        });
+
+        const loading = owner.files.loadMarkdownFilesForPath?.(serverWorkspaceRoot);
+        await vi.runAllTimersAsync();
+        await expect(loading).resolves.toHaveLength(2);
+
+        expect(kernel.resources.open).toHaveBeenCalledTimes(8);
+        expect(maximumConcurrentOpens).toBe(1);
+        expect(createObjectURL).toHaveBeenCalledTimes(7);
+        for (const entry of imageEntries) {
+          if (entry.entryType !== "resource") continue;
+          expect(owner.files.resolveMarkdownImageSrc?.(
+            `${serverWorkspaceRoot}/note.md`,
+            entry.resource.relativePath,
+          )).toBe(`blob:server-image-${entry.resource.mediaType}`);
+        }
+
+        owner.release();
+        expect(revokeObjectURL).toHaveBeenCalledTimes(7);
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it("bounds authentication retry with backoff and returns a redacted terminal error", async () => {
+    vi.useFakeTimers();
+    const schedule = vi.spyOn(globalThis, "setTimeout");
+    try {
+      const kernel = kernelWithRootImage();
+      vi.mocked(kernel.resources.open).mockRejectedValue(authUnavailable());
+      const createObjectURL = vi.fn(() => "blob:must-not-exist");
+      const files = createServerFileRuntime(kernel, {
+        objectUrls: { createObjectURL, revokeObjectURL: vi.fn() },
+      });
+
+      const loading = files.loadMarkdownFilesForPath?.(serverWorkspaceRoot);
+      const outcome = loading?.then(
+        () => ({ error: null }),
+        (error: unknown) => ({ error }),
+      );
+      await vi.runAllTimersAsync();
+
+      const result = await outcome;
+      expect(result?.error).toEqual(expect.objectContaining({
+        message: "The Server image preview is temporarily unavailable.",
+      }));
+      expect(kernel.resources.open).toHaveBeenCalledTimes(4);
+      expect(schedule.mock.calls.map(([, delay]) => delay)).toEqual([25, 75, 225]);
+      expect(createObjectURL).not.toHaveBeenCalled();
+      expect(String(result?.error)).not.toContain("123e4567");
+      expect(String(result?.error)).not.toContain("root.png");
+    } finally {
+      schedule.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not retry a non-transient resource failure", async () => {
+    const kernel = kernelWithRootImage();
+    vi.mocked(kernel.resources.open).mockRejectedValue(new KernelApiError({
+      code: "resource_not_found",
+      requestId: "123e4567-e89b-42d3-a456-426614174002",
+      status: 404,
+    }));
+    const createObjectURL = vi.fn(() => "blob:must-not-exist");
+    const files = createServerFileRuntime(kernel, {
+      objectUrls: { createObjectURL, revokeObjectURL: vi.fn() },
+    });
+
+    await expect(files.loadMarkdownFilesForPath?.(serverWorkspaceRoot))
+      .rejects.toMatchObject({ code: "resource_not_found", status: 404 });
     expect(kernel.resources.open).toHaveBeenCalledOnce();
+    expect(createObjectURL).not.toHaveBeenCalled();
+  });
+
+  it.each(["request abort", "owner release"] as const)(
+    "cancels pending image authentication retry on %s",
+    async (interruption) => {
+      vi.useFakeTimers();
+      try {
+        const kernel = kernelWithRootImage();
+        let markOpenStarted: (() => unknown) | undefined;
+        const openStarted = new Promise<undefined>((resolve) => {
+          markOpenStarted = () => resolve(undefined);
+        });
+        vi.mocked(kernel.resources.open).mockImplementation(async () => {
+          markOpenStarted?.();
+          throw authUnavailable();
+        });
+        const createObjectURL = vi.fn(() => "blob:must-not-exist");
+        const owner = createServerFileRuntimeOwner(kernel, {
+          objectUrls: { createObjectURL, revokeObjectURL: vi.fn() },
+        });
+        const abort = new AbortController();
+        const loading = owner.files.loadMarkdownFilesForPath?.(serverWorkspaceRoot, {
+          signal: abort.signal,
+        });
+        const outcome = loading?.then(
+          () => ({ error: null }),
+          (error: unknown) => ({ error }),
+        );
+        await openStarted;
+        expect(kernel.resources.open).toHaveBeenCalledOnce();
+
+        if (interruption === "request abort") abort.abort();
+        else owner.release();
+
+        await expect(outcome).resolves.toEqual({
+          error: expect.objectContaining({ name: "AbortError" }),
+        });
+        await vi.runAllTimersAsync();
+        expect(kernel.resources.open).toHaveBeenCalledOnce();
+        expect(createObjectURL).not.toHaveBeenCalled();
+        if (interruption === "request abort") owner.release();
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it("releases a materialized URL when invalidation makes its retry lease stale", async () => {
+    vi.useFakeTimers();
+    try {
+      const listeners = new Set<(notice: KernelInvalidationNotice) => unknown>();
+      const kernel = Object.assign(kernelWithRootImage(), {
+        invalidations: {
+          available: true,
+          subscribe: (listener: (notice: KernelInvalidationNotice) => unknown) => {
+            listeners.add(listener);
+            return () => {
+              listeners.delete(listener);
+              return undefined;
+            };
+          },
+        },
+      });
+      vi.mocked(kernel.resources.open)
+        .mockRejectedValueOnce(authUnavailable())
+        .mockResolvedValueOnce({
+          body: new Blob(["root"], { type: "image/png" }),
+          mediaType: "image/png",
+        });
+      const revokeObjectURL = vi.fn();
+      const owner = createServerFileRuntimeOwner(kernel, {
+        objectUrls: {
+          createObjectURL: vi.fn(() => "blob:stale-auth-retry"),
+          revokeObjectURL,
+        },
+      });
+      const loading = owner.files.loadMarkdownFilesForPath?.(serverWorkspaceRoot);
+      await vi.waitFor(() => expect(kernel.resources.open).toHaveBeenCalledOnce());
+
+      publish(listeners, { documentChange: "snapshot", scopes: ["resources"] });
+      await vi.runAllTimersAsync();
+      await expect(loading).resolves.toBeDefined();
+
+      expect(kernel.resources.open).toHaveBeenCalledTimes(2);
+      expect(revokeObjectURL).toHaveBeenCalledWith("blob:stale-auth-retry");
+      expect(owner.files.resolveMarkdownImageSrc?.(
+        `${serverWorkspaceRoot}/note.md`,
+        "root.png",
+      )).toBeUndefined();
+      owner.release();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("revokes newly uploaded image URLs when the Server runtime owner is released", async () => {
@@ -302,19 +542,22 @@ describe("server file facade", () => {
         : [],
       workspaceGeneration: generation,
     }));
-    vi.mocked(kernel.resources.open).mockResolvedValue({
-      body: new Blob(["image bytes"]),
-      mediaType: "image/png",
+    vi.mocked(kernel.resources.open).mockImplementation(async ({ id }) => {
+      const mediaType = id === "image-svg/payload.signature" ? "image/svg+xml" : "image/png";
+      return { body: new Blob(["image bytes"], { type: mediaType }), mediaType };
     });
-    const files = createServerFileRuntime(kernel);
+    const createObjectURL = vi.fn((blob: Blob) => `blob:server-${blob.type}`);
+    const files = createServerFileRuntime(kernel, {
+      objectUrls: { createObjectURL, revokeObjectURL: vi.fn() },
+    });
     const documentPath = `${serverWorkspaceRoot}/notes/today.md`;
 
     expect(files.resolveMarkdownImageSrc?.(documentPath, "../assets/cover%20image.png"))
       .toBeUndefined();
     await files.readMarkdownFile(documentPath);
 
-    const imageUrl = `/api/v1/resources/${encodeURIComponent("image/payload.signature")}?kind=image`;
-    const svgUrl = `/api/v1/resources/${encodeURIComponent("image-svg/payload.signature")}?kind=image`;
+    const imageUrl = "blob:server-image/png";
+    const svgUrl = "blob:server-image/svg+xml";
     expect(files.resolveMarkdownImageSrc?.(documentPath, "../assets/cover%20image.png"))
       .toBe(imageUrl);
     expect(files.resolveMarkdownImageSrc?.(documentPath, "/assets/cover%20image.png"))
@@ -325,7 +568,7 @@ describe("server file facade", () => {
     )).toBe(imageUrl);
     expect(files.resolveMarkdownImageSrc?.(documentPath, "../assets/untrusted.svg"))
       .toBe(svgUrl);
-    expect(kernel.resources.open).not.toHaveBeenCalled();
+    expect(kernel.resources.open).toHaveBeenCalledTimes(2);
     const inventoryCallCount = vi.mocked(kernel.resources.list).mock.calls.length;
     await files.readMarkdownFile(documentPath);
     expect(kernel.resources.list).toHaveBeenCalledTimes(inventoryCallCount);
@@ -358,7 +601,7 @@ describe("server file facade", () => {
     }
   });
 
-  it("replaces signed image capabilities after refresh and invalidates them on sync completion", async () => {
+  it("replaces materialized image capabilities after refresh and invalidates them on sync completion", async () => {
     const listeners = new Set<(notice: KernelInvalidationNotice) => unknown>();
     const kernel = Object.assign(kernelPort(), {
       invalidations: {
@@ -377,16 +620,24 @@ describe("server file facade", () => {
       items: [resource({ id: imageId, name: "cover.png", relativePath: "cover.png" })],
       workspaceGeneration: generation,
     }));
-    const files = createServerFileRuntime(kernel);
+    let sourceSequence = 0;
+    const revokeObjectURL = vi.fn();
+    const files = createServerFileRuntime(kernel, {
+      objectUrls: {
+        createObjectURL: vi.fn(() => `blob:server-version-${++sourceSequence}`),
+        revokeObjectURL,
+      },
+    });
     const documentPath = `${serverWorkspaceRoot}/note.md`;
 
     await files.loadMarkdownFilesForPath?.(serverWorkspaceRoot);
     expect(files.resolveMarkdownImageSrc?.(documentPath, "./cover.png"))
-      .toContain(encodeURIComponent("image-old.signature"));
+      .toBe("blob:server-version-1");
     imageId = "image-new.signature";
     await files.loadMarkdownFilesForPath?.(serverWorkspaceRoot);
     expect(files.resolveMarkdownImageSrc?.(documentPath, "./cover.png"))
-      .toContain(encodeURIComponent("image-new.signature"));
+      .toBe("blob:server-version-2");
+    expect(revokeObjectURL).toHaveBeenCalledWith("blob:server-version-1");
 
     const onTreeChange = vi.fn();
     await files.watchMarkdownTree(serverWorkspaceRoot, onTreeChange);
@@ -397,7 +648,7 @@ describe("server file facade", () => {
 
     await files.loadMarkdownFilesForPath?.(serverWorkspaceRoot);
     expect(files.resolveMarkdownImageSrc?.(documentPath, "./cover.png"))
-      .toContain(encodeURIComponent("image-new.signature"));
+      .toBe("blob:server-version-3");
     publish(listeners, {
       documentChange: "snapshot",
       scopes: ["documents", "workspace", "resources"],
@@ -743,4 +994,25 @@ function kernelPort(): ServerKernelDomainPort {
       })),
     },
   } satisfies ServerKernelDomainPort;
+}
+
+function kernelWithRootImage() {
+  const kernel = kernelPort();
+  vi.mocked(kernel.resources.list).mockResolvedValue({
+    items: [resource({
+      id: "image-root.signature",
+      name: "root.png",
+      relativePath: "root.png",
+    })],
+    workspaceGeneration: generation,
+  });
+  return kernel;
+}
+
+function authUnavailable() {
+  return new KernelApiError({
+    code: "authentication_unavailable",
+    requestId: "123e4567-e89b-42d3-a456-426614174001",
+    status: 503,
+  });
 }

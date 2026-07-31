@@ -256,6 +256,43 @@ describe("Server Kernel domain adapter", () => {
     await expect(adapter.port.workspace.read()).rejects.toMatchObject({ code: "released" });
   });
 
+  it("preserves a transient authentication-unavailable image error without retiring the session lease", async () => {
+    const onAuthenticationRequired = vi.fn();
+    const client = kernelClient();
+    vi.mocked(client.resources.open)
+      .mockRejectedValueOnce(new KernelApiError({
+        code: "authentication_unavailable",
+        status: 503,
+        requestId: "223e4567-e89b-42d3-a456-426614174000",
+      }))
+      .mockResolvedValueOnce(new Response(new Uint8Array([1]), {
+        headers: {
+          "content-length": "1",
+          "content-type": "image/png",
+          "x-content-type-options": "nosniff",
+        },
+      }));
+    const adapter = await createServerKernelDomainAdapter(client, {
+      ...options(),
+      onAuthenticationRequired,
+    });
+    const input = {
+      id: "image/payload.signature",
+      kind: "image" as const,
+      workspaceGeneration: GENERATION,
+    };
+
+    await expect(adapter.port.resources.open(input)).rejects.toMatchObject({
+      code: "authentication_unavailable",
+      status: 503,
+    });
+    await expect(adapter.port.resources.open(input)).resolves.toMatchObject({
+      mediaType: "image/png",
+    });
+    expect(onAuthenticationRequired).not.toHaveBeenCalled();
+    await expect(adapter.port.workspace.read()).resolves.toMatchObject({ id: "workspace-1" });
+  });
+
   it("rejects a repeated inventory cursor instead of reusing an unbounded page", async () => {
     const client = kernelClient();
     vi.mocked(client.resources.list)
