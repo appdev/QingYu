@@ -295,6 +295,11 @@ wire_enum!(SyncCompletionState {
     Failed,
     Succeeded,
 });
+wire_enum!(SyncRunCompletionState {
+    Attempting,
+    Failed,
+    Succeeded,
+});
 wire_enum!(SyncTrigger {
     AppLaunch,
     Interval,
@@ -2188,6 +2193,22 @@ pub struct SyncRunAcceptedDto {
     pub run_id: RunId,
     pub accepted_at: Rfc3339Utc,
     pub config_revision: Revision,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct SyncRunStatusDto {
+    pub run_id: RunId,
+    pub provider: SyncProvider,
+    pub config_revision: Revision,
+    pub completion_state: SyncRunCompletionState,
+    pub accepted_at: Rfc3339Utc,
+    #[serde(deserialize_with = "deserialize_required_nullable")]
+    pub finished_at: Nullable<Rfc3339Utc>,
+    #[serde(deserialize_with = "deserialize_required_nullable")]
+    pub summary: Nullable<SyncSummaryDto>,
+    #[serde(deserialize_with = "deserialize_required_nullable")]
+    pub error: Nullable<SyncSafeErrorDto>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize, ToSchema)]

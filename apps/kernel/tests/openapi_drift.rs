@@ -69,6 +69,7 @@ const HTTP_OPERATIONS: &[(&str, &str, &str)] = &[
     ("post", "/api/v1/sync/connection-test", "testSyncConnection"),
     ("get", "/api/v1/sync/status", "getSyncStatus"),
     ("post", "/api/v1/sync/runs", "triggerSyncRun"),
+    ("get", "/api/v1/sync/runs/{runId}", "getSyncRun"),
 ];
 
 const ERROR_CODES: &[&str] = &[
@@ -244,7 +245,7 @@ fn assert_optional_non_null(document: &Value, schema: &str, field: &str) {
 }
 
 #[test]
-fn openapi_has_exactly_the_frozen_thirty_http_operations() {
+fn openapi_has_exactly_the_frozen_thirty_one_http_operations() {
     let document = api_document();
     let paths = document["paths"].as_object().expect("OpenAPI paths");
     assert!(
@@ -256,7 +257,7 @@ fn openapi_has_exactly_the_frozen_thirty_http_operations() {
         .iter()
         .map(|(method, path, operation)| ((*method, *path), *operation))
         .collect();
-    assert_eq!(expected.len(), 30);
+    assert_eq!(expected.len(), 31);
 
     let mut actual = BTreeMap::new();
     for (path, path_item) in paths {
@@ -575,6 +576,19 @@ fn snapshot_required_is_the_literal_true_constant() {
         property(&document, "ReadyFrame", "snapshotRequired"),
     );
     assert_eq!(property.get("const"), Some(&Value::Bool(true)));
+}
+
+#[test]
+fn per_run_sync_completion_excludes_the_global_idle_state() {
+    let document = api_document();
+    assert_eq!(
+        component(&document, "SyncRunCompletionState")["enum"],
+        serde_json::json!(["attempting", "failed", "succeeded"])
+    );
+    assert_eq!(
+        component(&document, "SyncRunStatusDto")["properties"]["completionState"]["$ref"],
+        "#/components/schemas/SyncRunCompletionState"
+    );
 }
 
 #[test]

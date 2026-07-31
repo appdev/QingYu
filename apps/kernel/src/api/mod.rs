@@ -40,9 +40,9 @@ use crate::{
         RestoreDocumentHistoryRequest, Revision, SearchPageDto, SearchWorkspaceQuery,
         ServerAuthenticationStatusDto, ServerFrame, ServerSessionDto, SettingsSnapshotDto,
         SnapshotRequired, SyncConfigViewDto, SyncConnectionTestDto, SyncRunAcceptedDto,
-        SyncSafeErrorDto, SyncStatusDto, SystemVersionResponse, TestSyncConnectionRequest,
-        TriggerSyncRunRequest, UpdateDocumentRequest, WorkspaceDto, WorkspaceInventoryEntryDto,
-        WorkspaceInventoryPageDto,
+        SyncRunStatusDto, SyncSafeErrorDto, SyncStatusDto, SystemVersionResponse,
+        TestSyncConnectionRequest, TriggerSyncRunRequest, UpdateDocumentRequest, WorkspaceDto,
+        WorkspaceInventoryEntryDto, WorkspaceInventoryPageDto,
     },
     error::{http_status_for_error_code, safe_error_envelope},
     runtime::KernelRuntime,
@@ -475,6 +475,7 @@ fn route_accepts_method(path: &str, method: &Method) -> bool {
             ["", "api", "v1", "resources", resource_id] if !resource_id.is_empty() => {
                 &[Method::GET]
             }
+            ["", "api", "v1", "sync", "runs", run_id] if !run_id.is_empty() => &[Method::GET],
             ["", "api", "v1", "documents", document_id] if !document_id.is_empty() => {
                 &[Method::GET, Method::PUT]
             }
@@ -669,6 +670,7 @@ impl std::error::Error for OpenApiExportError {}
         SyncStatusDto,
         TriggerSyncRunRequest,
         SyncRunAcceptedDto,
+        SyncRunStatusDto,
         AuthenticateFrameSchema,
         ReadyFrame,
         EventFrame,
@@ -1165,6 +1167,14 @@ fn install_paths(document: &mut serde_json::Value) {
             "SyncRunAcceptedDto",
             true,
         ),
+        (
+            "get",
+            "/api/v1/sync/runs/{runId}",
+            "getSyncRun",
+            "200",
+            "SyncRunStatusDto",
+            true,
+        ),
     ];
     for (method, path, operation_id, status, schema, protected) in operations {
         let mut success = if schema.is_empty() {
@@ -1305,6 +1315,15 @@ fn install_operation_inputs(document: &mut serde_json::Value) {
             ("limit", "PageLimit", false),
             ("parent", "WorkspaceRelativePath", false),
         ],
+    );
+    push_parameter(
+        document,
+        "/api/v1/sync/runs/{runId}",
+        "get",
+        "runId",
+        "path",
+        "RunId",
+        true,
     );
     push_parameter(
         document,
@@ -1785,6 +1804,13 @@ fn install_operation_errors(document: &mut serde_json::Value) {
         "get",
         TRANSPORT,
         &["sync_not_ready"],
+    );
+    add_errors_with(
+        document,
+        "/api/v1/sync/runs/{runId}",
+        "get",
+        TRANSPORT,
+        &["invalid_request", "sync_not_ready", "resource_not_found"],
     );
     add_errors_with(
         document,

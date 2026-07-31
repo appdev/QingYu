@@ -4,6 +4,7 @@ import {
   isDocumentEntry,
   isSettingsSnapshot,
   isSyncConfig,
+  isSyncRunStatus,
   isSyncStatus,
   isWorkspace,
 } from "./events.ts";
@@ -43,7 +44,14 @@ export function isRuntime(value: unknown): value is Schemas["RuntimeStateDto"] {
   return capabilityKeys.every((key) => typeof capabilities[key] === "boolean") && exact(capabilities, capabilityKeys) && isUuid(value.instanceId) && ["desktop", "server", "mobile"].includes(String(value.profile)) && ["starting", "needs-owner", "needs-workspace-initialization", "needs-cloud-binding", "ready", "recoverable-error", "fatal-error"].includes(String(value.startupState)) && exact(value, ["capabilities", "instanceId", "profile", "startupState"]);
 }
 
-export { isWorkspace, isDocumentEntry, isSettingsSnapshot, isSyncConfig, isSyncStatus };
+export {
+  isWorkspace,
+  isDocumentEntry,
+  isSettingsSnapshot,
+  isSyncConfig,
+  isSyncRunStatus,
+  isSyncStatus,
+};
 
 export function isDocumentPage(value: unknown): value is Schemas["DocumentPageDto"] {
   return page(value, isDocumentEntry);

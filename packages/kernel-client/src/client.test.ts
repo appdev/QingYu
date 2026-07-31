@@ -116,6 +116,7 @@ describe("createKernelClient", () => {
       { signal },
     );
     await client.sync.getStatus({ signal });
+    await client.sync.getRun(UUID, { signal });
     await client.sync.trigger(
       { expectedConfigRevision: "sync-3" },
       { signal },
@@ -145,6 +146,7 @@ describe("createKernelClient", () => {
       "PATCH /api/v1/sync/config",
       "POST /api/v1/sync/connection-test",
       "GET /api/v1/sync/status",
+      `GET /api/v1/sync/runs/${UUID}`,
       "POST /api/v1/sync/runs",
     ]);
     expect(new Headers(calls[0]?.init.headers).has("authorization")).toBe(false);
@@ -160,7 +162,7 @@ describe("createKernelClient", () => {
     expect(JSON.parse(String(calls[18]?.init.body))).toMatchObject({
       expectedRevision: "settings-1",
     });
-    expect(JSON.parse(String(calls[23]?.init.body))).toMatchObject({
+    expect(JSON.parse(String(calls[24]?.init.body))).toMatchObject({
       expectedConfigRevision: "sync-3",
     });
   });
@@ -459,6 +461,34 @@ describe("createKernelClient", () => {
       KernelProtocolError,
     );
   });
+
+  it("rejects impossible per-run sync status phases", async () => {
+    const base = {
+      acceptedAt: "2026-01-01T00:00:00Z",
+      configRevision: "sync-1",
+      provider: "s3",
+      runId: UUID,
+      summary: null,
+    };
+    for (const response of [
+      { ...base, completionState: "idle", error: null, finishedAt: null },
+      { ...base, completionState: "attempting", error: null, finishedAt: "2026-01-01T00:00:01Z" },
+      { ...base, completionState: "failed", error: null, finishedAt: "2026-01-01T00:00:01Z" },
+      {
+        ...base,
+        completionState: "succeeded",
+        error: { code: "unknown", operation: "sync_run", provider: "s3" },
+        finishedAt: "2026-01-01T00:00:01Z",
+      },
+    ]) {
+      const client = createKernelClient({
+        baseUrl: "http://127.0.0.1:6608",
+        fetch: async () => jsonResponse(response),
+        auth: { kind: "native-bearer", getCredential: () => "credential-1" },
+      });
+      await expect(client.sync.getRun(UUID)).rejects.toBeInstanceOf(KernelProtocolError);
+    }
+  });
 });
 
 function operationCalls(client: KernelClient): Array<() => Promise<unknown>> {
@@ -512,6 +542,7 @@ function operationCalls(client: KernelClient): Array<() => Promise<unknown>> {
     () =>
       client.sync.testConnection({ expectedRevision: "sync-1", changes: { enabled: true } }),
     () => client.sync.getStatus(),
+    () => client.sync.getRun(UUID),
     () => client.sync.trigger({ expectedConfigRevision: "sync-1" }),
   ];
 }
@@ -598,6 +629,7 @@ function operationResponseWithoutRequestId(path: string, method: string) {
   if (path === "/api/v1/sync/config") return Response.json(SYNC_CONFIG);
   if (path === "/api/v1/sync/connection-test") return Response.json({ checkedTarget: "s3", configRevision: "sync-1", provider: "s3" });
   if (path === "/api/v1/sync/status") return Response.json({ activeRunId: null, completionState: "idle", configRevision: "sync-1", error: null, lastAttemptAt: null, lastSuccessfulSyncAt: null, lastTrigger: null, provider: "s3", summary: null });
+  if (path.startsWith("/api/v1/sync/runs/") && method === "GET") return Response.json({ acceptedAt: "2026-01-01T00:00:00Z", completionState: "succeeded", configRevision: "sync-1", error: null, finishedAt: "2026-01-01T00:00:01Z", provider: "s3", runId: UUID, summary: null });
   return Response.json({ acceptedAt: "2026-01-01T00:00:00Z", configRevision: "sync-1", runId: UUID }, { status: 202 });
 }
 

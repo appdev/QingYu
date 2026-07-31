@@ -24,8 +24,8 @@ use crate::{
     contract::{
         DomainEvent, ErrorCode, ErrorDetails, Nullable, PatchSyncConfigRequest, ResourceRefDto,
         Revision, RunId, SyncConfigReadiness, SyncConfigViewDto, SyncConnectionTestDto, SyncMode,
-        SyncRunAcceptedDto, SyncSafeErrorCategory, SyncSafeErrorCode, SyncSafeErrorDto,
-        SyncSafeErrorOperation, SyncStatusDto, SyncSummaryDto, SyncTrigger,
+        SyncRunAcceptedDto, SyncRunStatusDto, SyncSafeErrorCategory, SyncSafeErrorCode,
+        SyncSafeErrorDto, SyncSafeErrorOperation, SyncStatusDto, SyncSummaryDto, SyncTrigger,
         TestSyncConnectionRequest, TriggerSyncRunRequest,
     },
     events::{EventPublication, EventSink as _},
@@ -918,6 +918,14 @@ impl SyncApiService for SyncService {
         self.status
             .snapshot_for(&exposed)
             .map_err(|_| failure(ErrorCode::SyncNotReady))
+    }
+
+    async fn get_sync_run(&self, run_id: RunId) -> Result<SyncRunStatusDto, ServiceFailure> {
+        let _runtime = self.verified_runtime(ErrorCode::SyncNotReady)?;
+        self.status
+            .snapshot_run(run_id)
+            .map_err(|_| failure(ErrorCode::SyncNotReady))?
+            .ok_or_else(|| failure(ErrorCode::ResourceNotFound))
     }
 
     async fn trigger_sync_run(
