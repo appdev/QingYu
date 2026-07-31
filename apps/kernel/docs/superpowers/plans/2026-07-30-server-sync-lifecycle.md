@@ -1,5 +1,11 @@
 # Server Sync Lifecycle Implementation Plan
 
+> **Implementation status:** Completed on 2026-07-31. Tasks 1–3 landed as
+> `325b562e`, `1db25ca7`, and `6ff3b8ae`; the bounded Kernel verification/review
+> gate also completed. These checkboxes cover this Server lifecycle plan only.
+> The current cross-platform migration and final-candidate gates are tracked in
+> [`docs/kernel-runtime-migration-status.md`](../../../../../docs/kernel-runtime-migration-status.md).
+
 > **Execution:** Use `superpowers:executing-plans`. Execute proven-safe waves
 > through `superpowers:dispatching-parallel-agents` by default; execute dependent
 > or unsafe work sequentially. For L3, retain every
@@ -62,11 +68,11 @@
 
 **Integration check:** `cargo test --manifest-path apps/kernel/Cargo.toml --locked sync_config` and focused Server composition tests.
 
-- [ ] Add store tests for absent, existing, corrupt, and unsupported states; run and observe missing-method failures.
-- [ ] Add a fresh Server composition test whose real sync service returns a disabled config; run and observe `SyncConfigAbsent`.
-- [ ] Implement atomic absent initialization with `ExpectedFile::Absent` and durable verification.
-- [ ] Initialize in fixed composition before service installation; rerun focused tests.
-- [ ] Commit the storage/composition layer.
+- [x] Add store tests for absent, existing, corrupt, and unsupported states; run and observe missing-method failures.
+- [x] Add a fresh Server composition test whose real sync service returns a disabled config; run and observe `SyncConfigAbsent`.
+- [x] Implement atomic absent initialization with `ExpectedFile::Absent` and durable verification.
+- [x] Initialize in fixed composition before service installation; rerun focused tests.
+- [x] Commit the storage/composition layer.
 
 ### Task 2: Own one Server scheduler and trigger app launch
 
@@ -97,11 +103,11 @@
 
 **Integration check:** Focused scheduler tests plus Server composition tests.
 
-- [ ] Add a Server composition test proving a second scheduler cannot claim the service; run and observe that the first claim currently succeeds.
-- [ ] Add an app-launch observation using a real SyncService with only the external executor replaced; run and observe no trigger.
-- [ ] Return concrete handles, start the scheduler once, retain its owner, and issue app-launch.
-- [ ] Re-run existing scheduler config-change/interval tests and Server restart tests.
-- [ ] Commit the scheduler ownership layer.
+- [x] Add a Server composition test proving a second scheduler cannot claim the service; run and observe that the first claim currently succeeds.
+- [x] Add an app-launch observation using a real SyncService with only the external executor replaced; run and observe no trigger.
+- [x] Return concrete handles, start the scheduler once, retain its owner, and issue app-launch.
+- [x] Re-run existing scheduler config-change/interval tests and Server restart tests.
+- [x] Commit the scheduler ownership layer.
 
 ### Task 3: Drain Kernel sync during Server shutdown
 
@@ -137,12 +143,12 @@
 
 **Integration check:** Focused blocking-executor shutdown tests, binary shutdown tests, then all Kernel tests.
 
-- [ ] Add a blocking-executor test proving shutdown rejects new triggers, signals cancellation, and waits for settlement; run and observe the missing shutdown API.
-- [ ] Add a restart-after-drain test proving instance/workspace locks release.
-- [ ] Add binary orchestration tests proving HTTP and Kernel futures both drain and one deadline bounds them.
-- [ ] Implement close/cancel/wait state transitions and explicit Server lifecycle ownership.
-- [ ] Re-run scheduler, sync lifecycle, Server composition, and binary tests.
-- [ ] Commit the shutdown layer.
+- [x] Add a blocking-executor test proving shutdown rejects new triggers, signals cancellation, and waits for settlement; run and observe the missing shutdown API.
+- [x] Add a restart-after-drain test proving instance/workspace locks release.
+- [x] Add binary orchestration tests proving HTTP and Kernel futures both drain and one deadline bounds them.
+- [x] Implement close/cancel/wait state transitions and explicit Server lifecycle ownership.
+- [x] Re-run scheduler, sync lifecycle, Server composition, and binary tests.
+- [x] Commit the shutdown layer.
 
 ### Task 4: Combined verification and review
 
@@ -167,8 +173,8 @@
 
 **Integration check:** `cargo test --manifest-path apps/kernel/Cargo.toml --locked --all-targets --all-features --no-fail-fast`, clippy with warnings denied, and fmt check.
 
-- [ ] Run `cargo fmt --manifest-path apps/kernel/Cargo.toml -- --check`.
-- [ ] Run all Kernel tests with all targets/features.
-- [ ] Run Kernel clippy with `-D warnings`.
-- [ ] Review `git diff --check`, changed paths, credential handling, and shutdown ordering.
-- [ ] Report layer SHAs and exact verification output.
+- [x] Run `cargo fmt --manifest-path apps/kernel/Cargo.toml -- --check`.
+- [x] Run all Kernel tests with all targets/features.
+- [x] Run Kernel clippy with `-D warnings`.
+- [x] Review `git diff --check`, changed paths, credential handling, and shutdown ordering.
+- [x] Report layer SHAs and exact verification output.

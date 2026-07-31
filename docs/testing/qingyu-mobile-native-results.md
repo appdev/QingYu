@@ -1,5 +1,11 @@
 # QingYu Mobile Native Acceptance Results
 
+> **Historical candidate report:** This document records the 2026-07-20
+> `a1fdd6f9` candidate. It must not be interpreted as acceptance of the current
+> Kernel migration candidate. See
+> [`docs/kernel-runtime-migration-status.md`](../kernel-runtime-migration-status.md)
+> for current phase status and the remaining final-SHA gates.
+
 ## Run Metadata
 
 - Date: 2026-07-20 (Asia/Shanghai)

@@ -1,5 +1,11 @@
 # QingYu single-user Docker packaging
 
+> **Progress tracking:** See
+> [`docs/kernel-runtime-migration-status.md`](../../docs/kernel-runtime-migration-status.md)
+> for the current migration SHA, release blockers, and final-candidate gates. The
+> acceptance statements in this file describe the Docker contract; an older live
+> run is baseline evidence and does not replace acceptance of the final frozen SHA.
+
 This directory contains the runnable Kernel image and precompiled runtime-bundle contract for the confirmed deployment model: one Docker deployment owns one user and one persistent `/data` volume. The browser application now uses the server `KernelClient`; final live Linux acceptance remains pending until the target-host matrix is captured.
 
 ## Current boundary
