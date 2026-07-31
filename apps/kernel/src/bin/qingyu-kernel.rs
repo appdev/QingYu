@@ -14,6 +14,7 @@ use qingyu_kernel::{
 
 const SERVER_LISTEN_ADDRESS: &str = "0.0.0.0:3210";
 const SERVER_WEB_ROOT: &str = "/opt/qingyu/web";
+const NATIVE_SHUTDOWN_DEADLINE: Duration = Duration::from_secs(30);
 const SERVER_SHUTDOWN_DEADLINE: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Eq, PartialEq)]
@@ -165,6 +166,7 @@ async fn run_native_server() -> Result<(), ()> {
                 .await
                 .map_err(|_error| NativeShutdownFailure::KernelDrain)
         },
+        NATIVE_SHUTDOWN_DEADLINE,
     )
     .await
     .map_err(|_error| ())
@@ -175,6 +177,7 @@ enum NativeShutdownFailure {
     Serve,
     Signal,
     KernelDrain,
+    Deadline,
 }
 
 async fn native_shutdown_signal(
@@ -196,6 +199,7 @@ async fn await_native_shutdown<Serve, ShutdownSignal, KernelShutdown>(
     shutdown_signal: ShutdownSignal,
     http_shutdown: tokio::sync::oneshot::Sender<()>,
     kernel_shutdown: KernelShutdown,
+    deadline: Duration,
 ) -> Result<(), NativeShutdownFailure>
 where
     Serve: IntoFuture<Output = std::io::Result<()>>,
@@ -207,17 +211,20 @@ where
     tokio::pin!(shutdown_signal);
     tokio::select! {
         serve_result = &mut serve => {
-            let kernel_result = kernel_shutdown.await;
+            let kernel_result = tokio::time::timeout(deadline, kernel_shutdown)
+                .await
+                .map_err(|_elapsed| NativeShutdownFailure::Deadline)?;
             serve_result.map_err(|_error| NativeShutdownFailure::Serve)?;
             kernel_result
         }
         signal_result = &mut shutdown_signal => {
-            let http_result = http_shutdown
-                .send(())
-                .map_err(|()| NativeShutdownFailure::Serve);
-            let (serve_result, kernel_result) = tokio::join!(&mut serve, kernel_shutdown);
+            let _http_shutdown_result = http_shutdown.send(());
+            let (serve_result, kernel_result) = tokio::time::timeout(deadline, async {
+                tokio::join!(&mut serve, kernel_shutdown)
+            })
+            .await
+            .map_err(|_elapsed| NativeShutdownFailure::Deadline)?;
             signal_result?;
-            http_result?;
             serve_result.map_err(|_error| NativeShutdownFailure::Serve)?;
             kernel_result
         }
@@ -431,6 +438,7 @@ mod tests {
                     kernel_drained_by_lifecycle.store(true, Ordering::Release);
                     Ok(())
                 },
+                Duration::from_secs(1),
             )
             .await;
 
@@ -462,12 +470,76 @@ mod tests {
                 kernel_drained_by_lifecycle.store(true, Ordering::Release);
                 Ok(())
             },
+            Duration::from_secs(1),
         )
         .await;
 
         assert_eq!(result, Ok(()));
         assert!(http_drained.load(Ordering::Acquire));
         assert!(kernel_drained.load(Ordering::Acquire));
+    }
+
+    #[tokio::test]
+    async fn native_shutdown_deadline_bounds_pending_http_and_kernel_drain() {
+        let (http_shutdown_sender, http_shutdown_receiver) = tokio::sync::oneshot::channel();
+        let result = tokio::time::timeout(
+            Duration::from_millis(100),
+            await_native_shutdown(
+                async move {
+                    http_shutdown_receiver.await.map_err(|_closed| {
+                        std::io::Error::new(std::io::ErrorKind::BrokenPipe, "shutdown closed")
+                    })?;
+                    std::future::pending::<std::io::Result<()>>().await
+                },
+                async { Ok(()) },
+                http_shutdown_sender,
+                std::future::pending::<Result<(), NativeShutdownFailure>>(),
+                Duration::from_millis(10),
+            ),
+        )
+        .await
+        .expect("the native drain must observe its own deadline");
+
+        assert_eq!(result, Err(NativeShutdownFailure::Deadline));
+    }
+
+    #[tokio::test]
+    async fn native_serve_exit_still_bounds_pending_kernel_drain() {
+        let (http_shutdown_sender, _http_shutdown_receiver) = tokio::sync::oneshot::channel();
+        let result = tokio::time::timeout(
+            Duration::from_millis(100),
+            await_native_shutdown(
+                async { Ok(()) },
+                std::future::pending::<Result<(), NativeShutdownFailure>>(),
+                http_shutdown_sender,
+                std::future::pending::<Result<(), NativeShutdownFailure>>(),
+                Duration::from_millis(10),
+            ),
+        )
+        .await
+        .expect("serve-first native drain must observe its own deadline");
+
+        assert_eq!(result, Err(NativeShutdownFailure::Deadline));
+    }
+
+    #[tokio::test]
+    async fn native_signal_tolerates_an_already_closed_http_shutdown_receiver() {
+        let (http_shutdown_sender, http_shutdown_receiver) = tokio::sync::oneshot::channel();
+        drop(http_shutdown_receiver);
+
+        let result = await_native_shutdown(
+            async {
+                tokio::task::yield_now().await;
+                Ok(())
+            },
+            async { Ok(()) },
+            http_shutdown_sender,
+            async { Ok(()) },
+            Duration::from_secs(1),
+        )
+        .await;
+
+        assert_eq!(result, Ok(()));
     }
 
     fn server_command(public_origin: &str) -> Result<KernelCommand, KernelCommandError> {

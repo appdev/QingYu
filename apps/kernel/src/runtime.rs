@@ -918,8 +918,7 @@ impl KernelRuntime {
         self.mutation_coordinator.try_lock().is_ok()
     }
 
-    #[doc(hidden)]
-    pub async fn wait_for_empty_sync_run_for_test(&self) -> Result<(), WorkspaceRunLifecycleError> {
+    pub(crate) async fn wait_for_empty_sync_run(&self) -> Result<(), WorkspaceRunLifecycleError> {
         loop {
             let notified = self.workspace_run_lifecycle.drained.notified();
             tokio::pin!(notified);
@@ -936,6 +935,11 @@ impl KernelRuntime {
             }
             notified.await;
         }
+    }
+
+    #[doc(hidden)]
+    pub async fn wait_for_empty_sync_run_for_test(&self) -> Result<(), WorkspaceRunLifecycleError> {
+        self.wait_for_empty_sync_run().await
     }
 
     #[doc(hidden)]

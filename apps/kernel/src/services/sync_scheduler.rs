@@ -113,6 +113,10 @@ impl KernelSyncScheduler {
         self.control.close(&self.claim);
     }
 
+    pub(crate) fn begin_quiesce(&self) {
+        self.control.quiesce_retaining_claim();
+    }
+
     pub(crate) async fn wait_closed(&self) {
         self.control.wait_ended().await;
     }
@@ -151,12 +155,22 @@ struct SchedulerControl {
     closed: AtomicBool,
     ended: AtomicBool,
     ended_notification: Notify,
+    retain_claim_on_end: AtomicBool,
     wake: Notify,
 }
 
 impl SchedulerControl {
     fn close(&self, claim: &KernelSyncSchedulerClaim) {
         claim.close();
+        self.quiesce();
+    }
+
+    fn quiesce_retaining_claim(&self) {
+        self.retain_claim_on_end.store(true, Ordering::Release);
+        self.quiesce();
+    }
+
+    fn quiesce(&self) {
         if !self.closed.swap(true, Ordering::AcqRel) {
             self.wake.notify_waiters();
         }
@@ -222,7 +236,16 @@ impl std::future::Future for SchedulerTask {
 
 impl Drop for SchedulerTask {
     fn drop(&mut self) {
-        self.state.control.close(&self.state.claim);
+        if self
+            .state
+            .control
+            .retain_claim_on_end
+            .load(Ordering::Acquire)
+        {
+            self.state.control.quiesce();
+        } else {
+            self.state.control.close(&self.state.claim);
+        }
         self.state.dropped.store(true, Ordering::Release);
         self.state.control.finish();
     }
