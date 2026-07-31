@@ -138,22 +138,19 @@ pub(crate) fn initialize_catalog<R: Runtime>(
 fn initialize_catalog_without_legacy_settings(
     catalog: &ThemeCatalog,
 ) -> Result<ThemeCatalogSnapshot, ThemeError> {
+    let (catalog, fresh) = catalog.anchored_for_initialization()?;
+    if fresh {
+        catalog.persist_owned_catalog_version(0)?;
+    }
     let owned_version = catalog.owned_catalog_version()?;
     let seed_diagnostics = match owned_version {
-        Some(version) => initialize_catalog_files(catalog, version)?,
-        None => {
-            let existing = catalog.scan()?;
-            if existing.themes.is_empty() && existing.invalid_files.is_empty() {
-                initialize_catalog_files(catalog, 0)?
-            } else {
-                catalog.drake_seed_diagnostics()?
-            }
-        }
+        Some(version) => initialize_catalog_files(&catalog, version)?,
+        None => catalog.drake_seed_diagnostics()?,
     };
     if owned_version.is_none_or(|version| version < CATALOG_VERSION) {
         catalog.persist_owned_catalog_version(CATALOG_VERSION)?;
     }
-    scan_with_diagnostics(catalog, seed_diagnostics)
+    scan_with_diagnostics(&catalog, seed_diagnostics)
 }
 
 fn theme_settings_unavailable(_error: crate::app_settings::AppSettingsError) -> ThemeError {
@@ -421,6 +418,66 @@ mod tests {
     }
 
     #[test]
+    fn catalog_owned_initialization_adopts_a_legacy_empty_directory_without_reseeding() {
+        let temp = tempdir().unwrap();
+        let root = temp.path().join("themes");
+        fs::create_dir_all(&root).unwrap();
+        let catalog = ThemeCatalog::at(root.clone());
+
+        let snapshot = initialize_catalog_without_legacy_settings(&catalog).unwrap();
+
+        assert!(snapshot.themes.is_empty());
+        assert!(snapshot.invalid_files.is_empty());
+        assert_eq!(
+            fs::read_to_string(root.join(CATALOG_VERSION_MARKER_NAME)).unwrap(),
+            format!("{CATALOG_VERSION}\n")
+        );
+    }
+
+    #[test]
+    fn catalog_owned_initialization_retries_an_interrupted_version_zero_seed() {
+        let temp = tempdir().unwrap();
+        let root = temp.path().join("themes");
+        let catalog = ThemeCatalog::at(root.clone());
+        let (anchored, fresh) = catalog.anchored_for_initialization().unwrap();
+        assert!(fresh);
+        anchored.persist_owned_catalog_version(0).unwrap();
+        anchored.seed_missing().unwrap();
+        let nord = anchored.find_descriptor("nord").unwrap();
+        anchored.delete("nord", &nord.fingerprint).unwrap();
+
+        let snapshot = initialize_catalog_without_legacy_settings(&catalog).unwrap();
+
+        assert_eq!(snapshot.themes.len(), 20);
+        assert!(snapshot.themes.iter().any(|theme| theme.id == "nord"));
+        assert!(snapshot
+            .themes
+            .iter()
+            .any(|theme| theme.id == "drake-light"));
+        assert_eq!(
+            fs::read_to_string(root.join(CATALOG_VERSION_MARKER_NAME)).unwrap(),
+            format!("{CATALOG_VERSION}\n")
+        );
+    }
+
+    #[test]
+    fn future_catalog_owned_version_is_preserved_without_reseeding() {
+        let temp = tempdir().unwrap();
+        let root = temp.path().join("themes");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join(CATALOG_VERSION_MARKER_NAME), b"99\n").unwrap();
+        let catalog = ThemeCatalog::at(root.clone());
+
+        let snapshot = initialize_catalog_without_legacy_settings(&catalog).unwrap();
+
+        assert!(snapshot.themes.is_empty());
+        assert_eq!(
+            fs::read_to_string(root.join(CATALOG_VERSION_MARKER_NAME)).unwrap(),
+            "99\n"
+        );
+    }
+
+    #[test]
     fn malformed_catalog_owned_version_fails_closed_without_seeding() {
         let temp = tempdir().unwrap();
         let root = temp.path().join("themes");
@@ -445,6 +502,23 @@ mod tests {
         let outside = temp.path().join("outside-version");
         fs::write(&outside, format!("{CATALOG_VERSION}\n")).unwrap();
         symlink(&outside, root.join(CATALOG_VERSION_MARKER_NAME)).unwrap();
+        let catalog = ThemeCatalog::at(root.clone());
+
+        let error = initialize_catalog_without_legacy_settings(&catalog).unwrap_err();
+
+        assert_eq!(error.code, ThemeErrorCode::UnsafePath);
+        assert!(!root.join("nord.css").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn hardlinked_catalog_owned_version_fails_closed_without_seeding() {
+        let temp = tempdir().unwrap();
+        let root = temp.path().join("themes");
+        fs::create_dir_all(&root).unwrap();
+        let outside = temp.path().join("outside-version");
+        fs::write(&outside, format!("{CATALOG_VERSION}\n")).unwrap();
+        fs::hard_link(&outside, root.join(CATALOG_VERSION_MARKER_NAME)).unwrap();
         let catalog = ThemeCatalog::at(root.clone());
 
         let error = initialize_catalog_without_legacy_settings(&catalog).unwrap_err();

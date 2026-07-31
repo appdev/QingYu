@@ -1,10 +1,13 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     ffi::OsStr,
-    fs::{self, OpenOptions},
+    fs,
     io::{self, Read, Write},
     path::{Path, PathBuf},
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
 };
 
 use cap_fs_ext::{DirExt, FollowSymlinks, MetadataExt, OpenOptionsFollowExt};
@@ -19,7 +22,7 @@ use crate::storage_capability::{
 use super::{
     archive::{prepare_external_theme, PreparedThemeImport},
     manifest::is_reserved_theme_id,
-    parser::parse_theme_file,
+    parser::{parse_theme_file, MAX_THEME_BYTES},
     resources::{
         validate_theme_directory, validate_theme_directory_from_retained, ValidatedThemeDirectory,
     },
@@ -223,6 +226,8 @@ const DRAKE_THEME_PACKAGES: &[EmbeddedThemePackage] = &[
 ];
 
 pub(crate) struct ThemeCatalog {
+    expected_identity: Option<CatalogFileIdentity>,
+    retained_root: Option<Arc<CatalogDirectory>>,
     root: PathBuf,
 }
 
@@ -339,14 +344,44 @@ impl InstalledTheme {
 
 impl ThemeCatalog {
     pub(crate) fn at(root: PathBuf) -> Self {
-        Self { root }
+        Self {
+            expected_identity: None,
+            retained_root: None,
+            root,
+        }
+    }
+
+    pub(crate) fn anchored_for_initialization(&self) -> Result<(Self, bool), ThemeError> {
+        let fresh = match fs::symlink_metadata(&self.root) {
+            Ok(_) => false,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                if let Some(parent) = self.root.parent() {
+                    fs::create_dir_all(parent).map_err(io_error)?;
+                }
+                match fs::create_dir(&self.root) {
+                    Ok(()) => true,
+                    Err(error) if error.kind() == io::ErrorKind::AlreadyExists => false,
+                    Err(error) => return Err(io_error(error)),
+                }
+            }
+            Err(error) => return Err(io_error(error)),
+        };
+        let directory = Arc::new(self.catalog_directory()?);
+        Ok((
+            Self {
+                expected_identity: Some(directory.identity),
+                retained_root: Some(directory),
+                root: self.root.clone(),
+            },
+            fresh,
+        ))
     }
 
     pub(crate) fn scan(&self) -> Result<ThemeCatalogSnapshot, ThemeError> {
-        self.ensure_root()?;
+        let directory = self.catalog_directory()?;
         let mut parsed = Vec::new();
         let mut invalid_files = Vec::new();
-        let entries = fs::read_dir(&self.root).map_err(io_error)?;
+        let entries = directory.entries().map_err(io_error)?;
 
         for entry in entries {
             let entry = match entry {
@@ -363,7 +398,7 @@ impl ThemeCatalog {
             if is_owned_catalog_entry(&file_name) || file_name == ACTIVATION_LEASE_PARENT_NAME {
                 continue;
             }
-            let metadata = match fs::symlink_metadata(entry.path()) {
+            let metadata = match directory.symlink_metadata(&file_name) {
                 Ok(metadata) => metadata,
                 Err(error) => {
                     invalid_files.push(InvalidThemeFile {
@@ -383,7 +418,7 @@ impl ThemeCatalog {
             let parsed_theme = if metadata.file_type().is_file()
                 && Path::new(&file_name).extension().and_then(OsStr::to_str) == Some("css")
             {
-                match prepare_external_theme(&entry.path(), &self.root) {
+                match prepare_external_theme(&self.root.join(&file_name), &self.root) {
                     Ok(PreparedThemeImport::LegacyCss(theme)) => Ok(theme.descriptor),
                     Ok(PreparedThemeImport::ResourcePackage(_)) => Err(ThemeError::new(
                         ThemeErrorCode::UnsafePath,
@@ -392,7 +427,8 @@ impl ThemeCatalog {
                     Err(error) => Err(error),
                 }
             } else if metadata.file_type().is_dir() {
-                validate_theme_directory(&entry.path(), &file_name).map(|theme| theme.descriptor)
+                validate_theme_directory(&self.root.join(&file_name), &file_name)
+                    .map(|theme| theme.descriptor)
             } else {
                 Err(ThemeError::new(
                     ThemeErrorCode::UnsafePath,
@@ -434,6 +470,7 @@ impl ThemeCatalog {
         });
         invalid_files.sort_by(|left, right| left.file_name.cmp(&right.file_name));
 
+        revalidate_catalog_directory(&directory)?;
         Ok(ThemeCatalogSnapshot {
             invalid_files,
             themes,
@@ -441,12 +478,10 @@ impl ThemeCatalog {
     }
 
     pub(crate) fn seed_missing(&self) -> Result<(), ThemeError> {
-        self.ensure_root()?;
         for (file_name, bytes) in SEED_THEMES {
             let parsed = parse_theme_file(bytes, file_name)?;
             let target = self.safe_theme_path(file_name)?;
-            if target.exists() {
-                let current = fs::read(&target).map_err(io_error)?;
+            if let Some(current) = self.read_seed_target(file_name)? {
                 let current = parse_theme_file(&current, file_name)?;
                 if current.descriptor.id != parsed.descriptor.id {
                     return Err(ThemeError::new(
@@ -469,8 +504,62 @@ impl ThemeCatalog {
         Ok(())
     }
 
+    fn read_seed_target(&self, file_name: &str) -> Result<Option<Vec<u8>>, ThemeError> {
+        let directory = self.catalog_directory()?;
+        let addressed = match directory.symlink_metadata(file_name) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(io_error(error)),
+        };
+        let identity = unique_regular_file_identity(&addressed)
+            .ok_or_else(|| unsafe_seed_target(file_name))?;
+        if addressed.len() > MAX_THEME_BYTES as u64 {
+            return Err(ThemeError::new(
+                ThemeErrorCode::ThemeTooLarge,
+                format!("The seed target {file_name} is too large."),
+            ));
+        }
+        let mut file = directory
+            .open_with(file_name, &nonfollowing_read_options())
+            .map_err(|_| unsafe_seed_target(file_name))?;
+        if unique_regular_file_identity(&file.metadata().map_err(io_error)?) != Some(identity) {
+            return Err(unsafe_seed_target(file_name));
+        }
+        let mut bytes = Vec::with_capacity(addressed.len() as usize);
+        Read::by_ref(&mut file)
+            .take(MAX_THEME_BYTES as u64 + 1)
+            .read_to_end(&mut bytes)
+            .map_err(io_error)?;
+        if bytes.len() > MAX_THEME_BYTES {
+            return Err(ThemeError::new(
+                ThemeErrorCode::ThemeTooLarge,
+                format!("The seed target {file_name} is too large."),
+            ));
+        }
+        if unique_regular_file_identity(&file.metadata().map_err(io_error)?) != Some(identity)
+            || unique_regular_file_identity(
+                &directory
+                    .symlink_metadata(file_name)
+                    .map_err(|_| unsafe_seed_target(file_name))?,
+            ) != Some(identity)
+        {
+            return Err(unsafe_seed_target(file_name));
+        }
+        revalidate_catalog_directory(&directory)?;
+        Ok(Some(bytes))
+    }
+
     pub(crate) fn owned_catalog_version(&self) -> Result<Option<i64>, ThemeError> {
         self.owned_catalog_version_with_identity()
+            .map(|state| state.map(|(version, _identity)| version))
+    }
+
+    #[cfg(test)]
+    fn owned_catalog_version_with_hook(
+        &self,
+        hook: &mut dyn FnMut(),
+    ) -> Result<Option<i64>, ThemeError> {
+        self.owned_catalog_version_with_identity_and_hook(hook)
             .map(|state| state.map(|(version, _identity)| version))
     }
 
@@ -564,6 +653,13 @@ impl ThemeCatalog {
     fn owned_catalog_version_with_identity(
         &self,
     ) -> Result<Option<(i64, UniqueRegularFileIdentity)>, ThemeError> {
+        self.owned_catalog_version_with_identity_and_hook(&mut || {})
+    }
+
+    fn owned_catalog_version_with_identity_and_hook(
+        &self,
+        hook: &mut dyn FnMut(),
+    ) -> Result<Option<(i64, UniqueRegularFileIdentity)>, ThemeError> {
         self.ensure_root()?;
         let directory = self.catalog_directory()?;
         let addressed = match directory.symlink_metadata(CATALOG_VERSION_MARKER_NAME) {
@@ -592,6 +688,13 @@ impl ThemeCatalog {
             return Err(invalid_catalog_version_marker());
         }
         if unique_regular_file_identity(&file.metadata().map_err(io_error)?) != Some(identity) {
+            return Err(unsafe_catalog_version_marker());
+        }
+        hook();
+        let addressed_after_read = directory
+            .symlink_metadata(CATALOG_VERSION_MARKER_NAME)
+            .map_err(|_| unsafe_catalog_version_marker())?;
+        if unique_regular_file_identity(&addressed_after_read) != Some(identity) {
             return Err(unsafe_catalog_version_marker());
         }
         revalidate_catalog_directory(&directory)?;
@@ -1382,6 +1485,16 @@ impl ThemeCatalog {
     }
 
     fn catalog_directory(&self) -> Result<CatalogDirectory, ThemeError> {
+        if let Some(retained) = &self.retained_root {
+            revalidate_catalog_directory(retained)?;
+            let directory = CatalogDirectory {
+                directory: retained.directory.try_clone().map_err(io_error)?,
+                root: retained.root.clone(),
+                identity: retained.identity,
+            };
+            revalidate_catalog_directory(&directory)?;
+            return Ok(directory);
+        }
         self.ensure_root()?;
         let addressed =
             crate::storage_capability::ambient_symlink_metadata(&self.root).map_err(io_error)?;
@@ -1389,7 +1502,12 @@ impl ThemeCatalog {
             Dir::open_ambient_dir(&self.root, cap_std::ambient_authority()).map_err(io_error)?;
         let retained = directory.dir_metadata().map_err(io_error)?;
         let identity = catalog_file_identity(&addressed);
-        if !retained.is_dir() || identity != catalog_file_identity(&retained) {
+        if !retained.is_dir()
+            || identity != catalog_file_identity(&retained)
+            || self
+                .expected_identity
+                .is_some_and(|expected| expected != identity)
+        {
             return Err(ThemeError::new(
                 ThemeErrorCode::UnsafePath,
                 "The theme catalog root changed while it was being opened.",
@@ -1431,8 +1549,23 @@ impl ThemeCatalog {
                         "The theme directory must be a regular directory and cannot be a symbolic link.",
                     ));
                 }
+                if self
+                    .expected_identity
+                    .is_some_and(|expected| expected != catalog_file_identity(&metadata))
+                {
+                    return Err(ThemeError::new(
+                        ThemeErrorCode::UnsafePath,
+                        "The theme catalog root changed during initialization.",
+                    ));
+                }
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                if self.expected_identity.is_some() {
+                    return Err(ThemeError::new(
+                        ThemeErrorCode::UnsafePath,
+                        "The theme catalog root changed during initialization.",
+                    ));
+                }
                 fs::create_dir_all(&self.root).map_err(io_error)?;
                 let metadata = fs::symlink_metadata(&self.root).map_err(io_error)?;
                 if metadata.file_type().is_symlink() || !metadata.file_type().is_dir() {
@@ -1460,26 +1593,71 @@ impl ThemeCatalog {
     }
 
     fn atomic_write(&self, target: &Path, bytes: &[u8]) -> Result<(), ThemeError> {
-        let sequence = TEMP_FILE_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let temp = self.root.join(format!(
-            ".qingyu-theme-{}-{sequence}.tmp",
-            std::process::id()
-        ));
-        let mut file = OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(&temp)
-            .map_err(io_error)?;
-        let result = (|| {
-            file.write_all(bytes).map_err(io_error)?;
-            file.sync_all().map_err(io_error)?;
-            drop(file);
-            fs::rename(&temp, target).map_err(io_error)
-        })();
-        if result.is_err() {
-            let _cleanup = fs::remove_file(&temp);
+        if target.parent() != Some(self.root.as_path()) {
+            return Err(ThemeError::new(
+                ThemeErrorCode::UnsafePath,
+                "Theme seed storage escaped the catalog root.",
+            ));
         }
-        result
+        let target_name = target.file_name().and_then(OsStr::to_str).ok_or_else(|| {
+            ThemeError::new(ThemeErrorCode::UnsafePath, "Invalid theme seed name.")
+        })?;
+        let directory = self.catalog_directory()?;
+        let (staged_name, mut staged) = (0..1024)
+            .find_map(|_| {
+                let name = unique_owned_name("tmp");
+                match directory.open_with(&name, &create_private_replaceable_file_options()) {
+                    Ok(file) => Some(Ok((name, file))),
+                    Err(error) if error.kind() == io::ErrorKind::AlreadyExists => None,
+                    Err(error) => Some(Err(io_error(error))),
+                }
+            })
+            .unwrap_or_else(|| {
+                Err(ThemeError::new(
+                    ThemeErrorCode::Io,
+                    "Could not reserve theme seed staging storage.",
+                ))
+            })?;
+        let staged_identity = (|| {
+            staged.write_all(bytes).map_err(io_error)?;
+            staged.sync_all().map_err(io_error)?;
+            staged.metadata().map_err(io_error).and_then(|metadata| {
+                unique_regular_file_identity(&metadata).ok_or_else(|| {
+                    ThemeError::new(
+                        ThemeErrorCode::UnsafePath,
+                        "Theme seed staging must remain a private regular file.",
+                    )
+                })
+            })
+        })();
+        let staged_identity = match staged_identity {
+            Ok(identity) => identity,
+            Err(error) => {
+                drop(staged);
+                let _cleanup = directory.remove_file(&staged_name);
+                return Err(error);
+            }
+        };
+        if let Err(error) = revalidate_catalog_directory(&directory) {
+            drop(staged);
+            let _cleanup = directory.remove_file(&staged_name);
+            return Err(error);
+        }
+        if let Err(error) = rename_retained_file_in_directory(
+            &directory,
+            &staged,
+            &staged_name,
+            staged_identity,
+            target_name,
+            false,
+        ) {
+            drop(staged);
+            let _cleanup = directory.remove_file(&staged_name);
+            return Err(io_error(error));
+        }
+        drop(staged);
+        sync_directory(&directory).map_err(io_error)?;
+        revalidate_catalog_directory(&directory)
     }
 }
 
@@ -2232,6 +2410,13 @@ fn unsafe_catalog_version_marker() -> ThemeError {
     )
 }
 
+fn unsafe_seed_target(file_name: &str) -> ThemeError {
+    ThemeError::new(
+        ThemeErrorCode::UnsafePath,
+        format!("The seed target {file_name} must remain a private regular file."),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use std::{fs, io::Write, path::Path};
@@ -2243,7 +2428,7 @@ mod tests {
         materialize_embedded_theme, materialize_embedded_theme_with_hook,
         rename_catalog_noreplace_with_hook, CatalogPublicationHookPoint, CatalogRenameHookPoint,
         DeleteHookPoint, EmbeddedSeedHookPoint, ThemeCatalog, ACTIVATION_LEASE_PARENT_NAME,
-        DRAKE_THEME_PACKAGES,
+        CATALOG_VERSION_MARKER_NAME, DRAKE_THEME_PACKAGES,
     };
     use crate::themes::{
         archive::prepare_external_theme, manifest::parse_theme_manifest, parser::MAX_THEME_BYTES,
@@ -2257,6 +2442,42 @@ mod tests {
             "/*\n@qingyu-theme\nid: {id}\nname: {name}\nappearance: {appearance}\npreview-background: #ffffff\npreview-panel: #f6f8fa\npreview-text: #1f2328\npreview-accent: #0969da\n*/\n:root {{ --suffix: {suffix}; }}\n"
         )
         .into_bytes()
+    }
+
+    #[test]
+    fn anchored_catalog_rejects_root_replacement_before_version_read() {
+        let temp = tempdir().unwrap();
+        let root = temp.path().join("themes");
+        let catalog = ThemeCatalog::at(root.clone());
+        let (anchored, fresh) = catalog.anchored_for_initialization().unwrap();
+        assert!(fresh);
+        anchored.persist_owned_catalog_version(2).unwrap();
+        fs::rename(&root, temp.path().join("old-themes")).unwrap();
+        fs::create_dir(&root).unwrap();
+        fs::write(root.join(CATALOG_VERSION_MARKER_NAME), b"2\n").unwrap();
+
+        let error = anchored.owned_catalog_version().unwrap_err();
+
+        assert_eq!(error.code, ThemeErrorCode::UnsafePath);
+    }
+
+    #[test]
+    fn version_read_rejects_marker_replacement_after_retained_read() {
+        let temp = tempdir().unwrap();
+        let root = temp.path().join("themes");
+        let catalog = ThemeCatalog::at(root.clone());
+        let (anchored, fresh) = catalog.anchored_for_initialization().unwrap();
+        assert!(fresh);
+        anchored.persist_owned_catalog_version(2).unwrap();
+
+        let error = anchored
+            .owned_catalog_version_with_hook(&mut || {
+                fs::remove_file(root.join(CATALOG_VERSION_MARKER_NAME)).unwrap();
+                fs::write(root.join(CATALOG_VERSION_MARKER_NAME), b"2\n").unwrap();
+            })
+            .unwrap_err();
+
+        assert_eq!(error.code, ThemeErrorCode::UnsafePath);
     }
 
     fn write_package(root: &Path, id: &str, name: &str, appearance: &str, suffix: &str) {
