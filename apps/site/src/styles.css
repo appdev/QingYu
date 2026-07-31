@@ -284,6 +284,15 @@ main {
   display: grid;
   gap: var(--space-md);
   max-width: 58rem;
+  container-type: inline-size;
+}
+
+html:lang(zh-CN) #hero-title {
+  max-width: none;
+  overflow-wrap: normal;
+  font-size: min(var(--text-display), 10cqi);
+  text-wrap: nowrap;
+  white-space: nowrap;
 }
 
 .hero-brandline {
