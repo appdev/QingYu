@@ -6,11 +6,17 @@ import type {
   KernelDocumentSnapshot,
   KernelDomainPort,
   KernelHistoryPageSnapshot,
+  KernelHistorySnapshot,
   KernelHistorySnapshotId,
+  KernelInventoryEntry,
+  KernelInventorySnapshot,
+  KernelInvalidationNotice,
+  KernelInvalidationScope,
   KernelPageCursor,
   KernelRevision,
   KernelRuntimeCapabilities,
   KernelRuntimeSnapshot,
+  KernelResourceSnapshot,
   KernelSearchPageSnapshot,
   KernelSettingValue,
   KernelSettingsSnapshot,
@@ -56,64 +62,19 @@ export type ServerKernelEventSource = {
   ) => () => undefined;
 };
 
-export type ServerKernelHistorySnapshot = {
-  readonly contents: string;
-  readonly documentLocator: KernelDocumentLocator;
-  readonly revision: KernelRevision;
-  readonly snapshotId: KernelHistorySnapshotId;
-  readonly workspaceGeneration: KernelWorkspaceGeneration;
-};
+export type ServerKernelHistorySnapshot = KernelHistorySnapshot;
+export type ServerKernelResourceSnapshot = KernelResourceSnapshot;
+export type ServerKernelInventoryEntry = KernelInventoryEntry;
+export type ServerKernelInventorySnapshot = KernelInventorySnapshot;
 
-export type ServerKernelResourceSnapshot = {
-  readonly id: string;
-  readonly kind: "attachment" | "image";
-  readonly mediaType: string;
-  readonly modifiedAt: string;
-  readonly name: string;
-  readonly parent: KernelWorkspaceRelativePath;
-  readonly previewable: boolean;
-  readonly relativePath: KernelWorkspaceRelativePath;
-  readonly revision: KernelRevision;
-  readonly sizeBytes: number;
-  readonly workspaceGeneration: KernelWorkspaceGeneration;
-};
-
-export type ServerKernelInventoryEntry =
-  | {
-      readonly document: KernelDocumentEntrySnapshot;
-      readonly entryType: "document";
-    }
-  | {
-      readonly entryType: "resource";
-      readonly resource: ServerKernelResourceSnapshot;
-    };
-
-export type ServerKernelInventorySnapshot = {
-  readonly items: readonly ServerKernelInventoryEntry[];
-  readonly workspaceGeneration: KernelWorkspaceGeneration;
-};
-
-export type ServerKernelDomainPort = Omit<KernelDomainPort, "documents"> & {
+export type ServerKernelDomainPort = Omit<KernelDomainPort, "documents" | "resources"> & {
   readonly documents: Omit<KernelDomainPort["documents"], "history"> & {
     readonly history: KernelDomainPort["documents"]["history"] & {
-      readonly read: (input: {
-        readonly locator: KernelDocumentLocator;
-        readonly snapshotId: KernelHistorySnapshotId;
-        readonly workspaceGeneration: KernelWorkspaceGeneration;
-      }) => Promise<ServerKernelHistorySnapshot>;
+      readonly read: NonNullable<KernelDomainPort["documents"]["history"]["read"]>;
     };
   };
-  readonly resources: {
-    readonly list: (input: {
-      readonly parent?: KernelWorkspaceRelativePath;
-      readonly workspaceGeneration: KernelWorkspaceGeneration;
-    }) => Promise<ServerKernelInventorySnapshot>;
-    readonly open: (input: {
-      readonly id: string;
-      readonly kind: "attachment" | "image";
-      readonly workspaceGeneration: KernelWorkspaceGeneration;
-    }) => Promise<Response>;
-  };
+  readonly invalidations: NonNullable<KernelDomainPort["invalidations"]>;
+  readonly resources: NonNullable<KernelDomainPort["resources"]>;
   readonly serverEvents: ServerKernelEventSource;
 };
 
@@ -152,6 +113,7 @@ export async function createServerKernelDomainAdapter(
   const workspaceGeneration = options.workspaceGeneration as KernelWorkspaceGeneration;
   const requests = new AbortController();
   const eventListeners = new Set<(notice: ServerKernelEventNotice) => unknown>();
+  const invalidationListeners = new Set<(notice: KernelInvalidationNotice) => unknown>();
   let eventConnection: KernelEventConnection | undefined;
   let eventAvailable = false;
   let active = true;
@@ -169,6 +131,7 @@ export async function createServerKernelDomainAdapter(
     }
     eventConnection = undefined;
     eventListeners.clear();
+    invalidationListeners.clear();
     return undefined;
   };
   const assertActive = () => {
@@ -201,6 +164,16 @@ export async function createServerKernelDomainAdapter(
         listener(notice);
       } catch {
         // A consumer cannot corrupt the connection owner.
+      }
+    }
+    const invalidation = mapInvalidation(notice);
+    if (invalidation !== undefined) {
+      for (const listener of [...invalidationListeners]) {
+        try {
+          listener(invalidation);
+        } catch {
+          // A consumer cannot corrupt the connection owner.
+        }
       }
     }
     return undefined;
@@ -406,6 +379,19 @@ export async function createServerKernelDomainAdapter(
         return mapDocument(document, workspaceGeneration);
       },
     },
+    invalidations: {
+      get available() {
+        return active && eventAvailable;
+      },
+      subscribe: (listener) => {
+        assertActive();
+        invalidationListeners.add(listener);
+        return () => {
+          invalidationListeners.delete(listener);
+          return undefined;
+        };
+      },
+    },
     runtime: {
       read: async () => {
         const runtime = await request(() => client.system.runtime({ signal: requests.signal }));
@@ -445,7 +431,10 @@ export async function createServerKernelDomainAdapter(
           { signal: requests.signal },
         ));
         await confirmWorkspaceIdentity();
-        return response;
+        return {
+          body: await response.blob(),
+          mediaType: response.headers.get("content-type")?.split(";", 1)[0]?.trim() ?? "",
+        };
       },
     },
     serverEvents: {
@@ -904,6 +893,81 @@ function mapHistoryPage(
     nextCursor: page.nextCursor as KernelPageCursor | null,
     workspaceGeneration,
   };
+}
+
+function mapInvalidation(notice: ServerKernelEventNotice): KernelInvalidationNotice | undefined {
+  if (notice.kind === "snapshot-required") {
+    return {
+      documentChange: notice.reloadScopes.some((scope) =>
+        scope === "documents" || scope === "workspace"
+      ) ? "snapshot" : undefined,
+      scopes: expandReloadScopes(notice.reloadScopes),
+    };
+  }
+  const event = notice.frame.event;
+  switch (event.type) {
+    case "workspace-changed":
+      return {
+        documentChange: "tree",
+        scopes: ["workspace", "documents", "resources"],
+      };
+    case "document-created":
+      return {
+        documentChange: "tree",
+        paths: [event.document.path as KernelWorkspaceRelativePath],
+        scopes: ["documents", "resources"],
+      };
+    case "document-changed":
+      return {
+        documentChange: "content",
+        paths: [event.document.path as KernelWorkspaceRelativePath],
+        scopes: ["documents", "resources"],
+      };
+    case "document-moved":
+      return {
+        documentChange: "tree",
+        paths: [event.previousPath, event.document.path] as KernelWorkspaceRelativePath[],
+        scopes: ["documents", "resources"],
+      };
+    case "document-deleted":
+      return {
+        documentChange: "tree",
+        paths: [event.previousPath as KernelWorkspaceRelativePath],
+        scopes: ["documents", "resources"],
+      };
+    case "settings-changed":
+      return { scopes: ["settings"] };
+    case "sync-config-changed":
+      return { scopes: ["sync-config"] };
+    case "sync-status-changed":
+      return event.status.completionState === "succeeded"
+        ? {
+            documentChange: "tree",
+            scopes: ["sync-status", "documents", "resources"],
+          }
+        : { scopes: ["sync-status"] };
+  }
+}
+
+function expandReloadScopes(scopes: readonly KernelReloadScope[]) {
+  const expanded = new Set<KernelInvalidationScope>();
+  for (const scope of scopes) {
+    if (scope === "workspace") {
+      expanded.add("workspace");
+      expanded.add("documents");
+      expanded.add("resources");
+    } else if (scope === "documents") {
+      expanded.add("documents");
+      expanded.add("resources");
+    } else {
+      expanded.add(scope);
+      if (scope === "sync-status") {
+        expanded.add("documents");
+        expanded.add("resources");
+      }
+    }
+  }
+  return [...expanded];
 }
 
 function joinWorkspacePath(parent: string, name: string) {

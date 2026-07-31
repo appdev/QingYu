@@ -240,7 +240,9 @@ describe("Server Kernel domain adapter", () => {
       events,
     });
     const listener = vi.fn();
+    const invalidationListener = vi.fn();
     const unsubscribe = adapter.port.serverEvents.subscribe(listener);
+    const unsubscribeInvalidations = adapter.port.invalidations.subscribe(invalidationListener);
     const frame = {
       connectionId: "223e4567-e89b-42d3-a456-426614174000",
       event: {
@@ -265,6 +267,11 @@ describe("Server Kernel domain adapter", () => {
 
     handlers?.onEvent?.(frame);
     expect(listener).toHaveBeenCalledWith({ frame, kind: "event" });
+    expect(invalidationListener).toHaveBeenCalledWith({
+      documentChange: "content",
+      paths: ["note.md"],
+      scopes: ["documents", "resources"],
+    });
     handlers?.onSnapshotRequired?.({
       reason: "sequence-gap",
       reloadScopes: ["documents", "workspace"],
@@ -274,7 +281,12 @@ describe("Server Kernel domain adapter", () => {
       reason: "sequence-gap",
       reloadScopes: ["documents", "workspace"],
     });
+    expect(invalidationListener).toHaveBeenLastCalledWith({
+      documentChange: "snapshot",
+      scopes: ["documents", "resources", "workspace"],
+    });
     unsubscribe();
+    unsubscribeInvalidations();
     adapter.release();
     expect(close).toHaveBeenCalledOnce();
   });

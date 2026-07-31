@@ -89,6 +89,7 @@ export type { AppLogArea, AppLogEvent, AppLogLevel, AppLogWriter } from "../lib/
 export { appLogger } from "../lib/app-logger";
 export * from "./kernel-compat";
 export * from "./kernel-domain";
+export * from "./kernel-app";
 export * from "./native-shell";
 
 export type RuntimeCleanup = () => unknown;
