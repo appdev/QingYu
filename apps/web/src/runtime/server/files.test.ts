@@ -591,6 +591,7 @@ function kernelPort(): ServerKernelDomainPort {
     },
     runtime: { read: unavailable() },
     resources: {
+      create: unavailable(),
       list: vi.fn(async () => ({ items: [], workspaceGeneration: generation })),
       open: vi.fn(async () => ({
         body: new Blob([new Uint8Array([1])]),

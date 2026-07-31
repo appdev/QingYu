@@ -35,19 +35,19 @@ use uuid::Uuid;
 use crate::{
     contract::{
         ApiErrorEnvelope, ChangeServerOwnerPasswordRequest, ConnectionId, CreateDocumentRequest,
-        CreateServerSessionRequest, CreatedDocumentDto, DeleteDocumentRequest, DocumentContentDto,
-        DocumentContents, DocumentEntryDto, DocumentHistoryPageDto, DocumentHistorySnapshotDto,
-        DocumentId, DocumentPageDto, DomainEvent, ErrorCode, ErrorDetails, EventSequence,
-        GapReason, InitializeServerOwnerRequest, InstanceId, ListDocumentsQuery,
-        ListWorkspaceInventoryQuery, LiveHealthResponse, MoveDocumentRequest, PageQuery,
-        PatchSettingsRequest, PatchSyncConfigRequest, ProtocolVersion, ReadyHealthResponse,
-        ReadySequence, ReloadScope, RequestId, ResourceEntryDto, ResourceKind, ResourceRefDto,
-        RestoreDocumentHistoryRequest, Revision, SearchPageDto, SearchWorkspaceQuery,
-        ServerAuthenticationStatusDto, ServerFrame, ServerSessionDto, SettingsSnapshotDto,
-        SnapshotRequired, SyncConfigViewDto, SyncConnectionTestDto, SyncRunAcceptedDto,
-        SyncRunStatusDto, SyncSafeErrorDto, SyncStatusDto, SystemVersionResponse,
-        TestSyncConnectionRequest, TriggerSyncRunRequest, UpdateDocumentRequest, WorkspaceDto,
-        WorkspaceInventoryEntryDto, WorkspaceInventoryPageDto,
+        CreateServerSessionRequest, CreateWorkspaceResourceQuery, CreatedDocumentDto,
+        DeleteDocumentRequest, DocumentContentDto, DocumentContents, DocumentEntryDto,
+        DocumentHistoryPageDto, DocumentHistorySnapshotDto, DocumentId, DocumentPageDto,
+        DomainEvent, ErrorCode, ErrorDetails, EventSequence, GapReason,
+        InitializeServerOwnerRequest, InstanceId, ListDocumentsQuery, ListWorkspaceInventoryQuery,
+        LiveHealthResponse, MoveDocumentRequest, PageQuery, PatchSettingsRequest,
+        PatchSyncConfigRequest, ProtocolVersion, ReadyHealthResponse, ReadySequence, ReloadScope,
+        RequestId, ResourceEntryDto, ResourceKind, ResourceRefDto, RestoreDocumentHistoryRequest,
+        Revision, SearchPageDto, SearchWorkspaceQuery, ServerAuthenticationStatusDto, ServerFrame,
+        ServerSessionDto, SettingsSnapshotDto, SnapshotRequired, SyncConfigViewDto,
+        SyncConnectionTestDto, SyncRunAcceptedDto, SyncRunStatusDto, SyncSafeErrorDto,
+        SyncStatusDto, SystemVersionResponse, TestSyncConnectionRequest, TriggerSyncRunRequest,
+        UpdateDocumentRequest, WorkspaceDto, WorkspaceInventoryEntryDto, WorkspaceInventoryPageDto,
     },
     error::{http_status_for_error_code, safe_error_envelope},
     runtime::KernelRuntime,
@@ -612,6 +612,9 @@ fn route_accepts_method(path: &str, method: &Method) -> bool {
             {
                 &[Method::POST]
             }
+            ["", "api", "v1", "documents", document_id, "resources"] if !document_id.is_empty() => {
+                &[Method::POST]
+            }
             ["", "api", "v1", "documents", document_id, "history"] if !document_id.is_empty() => {
                 &[Method::GET]
             }
@@ -769,6 +772,7 @@ impl std::error::Error for OpenApiExportError {}
         crate::contract::RuntimeStateDto,
         WorkspaceDto,
         ListWorkspaceInventoryQuery,
+        CreateWorkspaceResourceQuery,
         WorkspaceInventoryEntryDto,
         WorkspaceInventoryPageDto,
         ResourceEntryDto,
@@ -1160,6 +1164,14 @@ fn install_paths(document: &mut serde_json::Value) {
             true,
         ),
         (
+            "post",
+            "/api/v1/documents/{documentId}/resources",
+            "createWorkspaceResource",
+            "201",
+            "ResourceEntryDto",
+            true,
+        ),
+        (
             "get",
             "/api/v1/documents",
             "listDocuments",
@@ -1464,6 +1476,32 @@ fn install_operation_inputs(document: &mut serde_json::Value) {
     );
     push_parameter(
         document,
+        "/api/v1/documents/{documentId}/resources",
+        "post",
+        "documentId",
+        "path",
+        "DocumentId",
+        true,
+    );
+    set_query_parameters(
+        document,
+        "/api/v1/documents/{documentId}/resources",
+        "post",
+        &[
+            ("workspaceGeneration", "WorkspaceGeneration", true),
+            ("folder", "WorkspaceRelativePath", true),
+            ("name", "ResourceName", true),
+            ("kind", "ResourceKind", true),
+        ],
+    );
+    set_binary_request_body(
+        document,
+        "/api/v1/documents/{documentId}/resources",
+        "post",
+        64 * 1024 * 1024,
+    );
+    push_parameter(
+        document,
         "/api/v1/resources/{resourceId}",
         "get",
         "kind",
@@ -1621,6 +1659,30 @@ fn set_request_body(
         }
     });
     operation["x-body-limit-bytes"] = serde_json::json!(body_limit);
+}
+
+fn set_binary_request_body(
+    document: &mut serde_json::Value,
+    path: &str,
+    method: &str,
+    body_limit: usize,
+) {
+    let schema = serde_json::json!({
+        "type": "string",
+        "format": "binary",
+        "maxLength": body_limit,
+    });
+    operation_mut(document, path, method)["requestBody"] = serde_json::json!({
+        "required": true,
+        "content": {
+            "application/octet-stream": { "schema": schema.clone() },
+            "image/gif": { "schema": schema.clone() },
+            "image/jpeg": { "schema": schema.clone() },
+            "image/png": { "schema": schema.clone() },
+            "image/webp": { "schema": schema },
+        }
+    });
+    operation_mut(document, path, method)["x-body-limit-bytes"] = serde_json::json!(body_limit);
 }
 
 fn set_query_parameters(
@@ -1784,6 +1846,21 @@ fn install_operation_errors(document: &mut serde_json::Value) {
             "workspace_locked",
             "invalid_request",
             "resource_not_found",
+        ],
+    );
+    add_errors_with(
+        document,
+        "/api/v1/documents/{documentId}/resources",
+        "post",
+        TRANSPORT,
+        &[
+            "kernel_not_ready",
+            "workspace_unavailable",
+            "workspace_locked",
+            "invalid_request",
+            "document_not_found",
+            "resource_too_large",
+            "revision_conflict",
         ],
     );
 
@@ -2068,7 +2145,7 @@ fn error_status(code: &str) -> u16 {
         | "revision_conflict"
         | "settings_revision_conflict"
         | "sync_config_revision_conflict" => 409,
-        "document_too_large" => 413,
+        "document_too_large" | "resource_too_large" => 413,
         "document_invalid_encoding" | "invalid_settings_field" | "sync_config_invalid" => 422,
         "workspace_locked" => 423,
         "authentication_rate_limited" => 429,

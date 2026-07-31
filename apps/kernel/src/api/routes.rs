@@ -14,11 +14,11 @@ use zeroize::Zeroize;
 
 use crate::{
     contract::{
-        ApiVersion, CreateDocumentRequest, DocumentContents, DocumentId, DocumentName, ErrorCode,
-        ErrorDetails, FileDocumentName, ListDocumentsQuery, ListWorkspaceInventoryQuery,
-        LiveHealthResponse, LiveStatus, MoveDocumentRequest, PageQuery, ResourceId, ResourceKind,
-        RunId, SearchWorkspaceQuery, SnapshotId, StartupState, UpdateDocumentRequest,
-        WorkspaceRelativePath,
+        ApiVersion, CreateDocumentRequest, CreateWorkspaceResourceQuery, DocumentContents,
+        DocumentId, DocumentName, ErrorCode, ErrorDetails, FileDocumentName, ListDocumentsQuery,
+        ListWorkspaceInventoryQuery, LiveHealthResponse, LiveStatus, MoveDocumentRequest,
+        PageQuery, ResourceId, ResourceKind, RunId, SearchWorkspaceQuery, SnapshotId, StartupState,
+        UpdateDocumentRequest, WorkspaceRelativePath,
     },
     runtime::ServiceFailure,
 };
@@ -28,6 +28,7 @@ use super::{api_error, is_api_path, resource_body, runtime, ws, ApiState};
 const STANDARD_JSON_BODY_LIMIT: usize = 1024 * 1024;
 const AUTH_JSON_BODY_LIMIT: usize = 16 * 1024;
 const DOCUMENT_JSON_BODY_LIMIT: usize = 100 * 1024 * 1024;
+const RESOURCE_BODY_LIMIT: usize = crate::resources::MAX_RESOURCE_BODY_BYTES;
 
 #[derive(Clone, Copy)]
 enum ServiceOperation {
@@ -36,6 +37,7 @@ enum ServiceOperation {
     Workspace,
     ListWorkspaceInventory,
     OpenWorkspaceResource,
+    CreateWorkspaceResource,
     ListDocuments,
     CreateDocument,
     GetDocument,
@@ -67,6 +69,10 @@ pub(crate) fn router() -> Router<ApiState> {
         .route(
             "/api/v1/resources/{resource_id}",
             get(open_workspace_resource),
+        )
+        .route(
+            "/api/v1/documents/{document_id}/resources",
+            post(create_workspace_resource),
         )
         .route(
             "/api/v1/documents",
@@ -206,6 +212,31 @@ async fn open_workspace_resource(
             .unwrap_or_else(|()| api_error(ErrorCode::WorkspaceUnavailable, None)),
         Err(error) => service_failure_response(error, ServiceOperation::OpenWorkspaceResource),
     }
+}
+
+async fn create_workspace_resource(
+    State(state): State<ApiState>,
+    document_id: Result<Path<DocumentId>, PathRejection>,
+    query: Result<Query<CreateWorkspaceResourceQuery>, axum::extract::rejection::QueryRejection>,
+    request: Request<Body>,
+) -> Response {
+    let (Ok(Path(document_id)), Ok(Query(query))) = (document_id, query) else {
+        return api_error(ErrorCode::InvalidRequest, None);
+    };
+    let (media_type, body) = match read_resource_body(request).await {
+        Ok(body) => body,
+        Err(response) => return response,
+    };
+    let Some(service) = runtime(&state).resources_api_service() else {
+        return unavailable(ServiceOperation::CreateWorkspaceResource);
+    };
+    service_response(
+        service
+            .create_workspace_resource(document_id, query, media_type, body.to_vec())
+            .await,
+        StatusCode::CREATED,
+        ServiceOperation::CreateWorkspaceResource,
+    )
 }
 
 async fn list_documents(
@@ -719,6 +750,56 @@ fn request_has_json_content_type(request: &Request<Body>) -> bool {
         .is_some_and(|value| value.trim().eq_ignore_ascii_case("application/json"))
 }
 
+async fn read_resource_body(request: Request<Body>) -> Result<(String, Bytes), Response> {
+    let media_type = request
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| {
+            matches!(
+                value.to_ascii_lowercase().as_str(),
+                "application/octet-stream"
+                    | "image/gif"
+                    | "image/jpeg"
+                    | "image/png"
+                    | "image/webp"
+            )
+        })
+        .ok_or_else(|| api_error(ErrorCode::InvalidRequest, None))?
+        .to_ascii_lowercase();
+    let declared_length = request
+        .headers()
+        .get(header::CONTENT_LENGTH)
+        .map(|value| {
+            value
+                .to_str()
+                .ok()
+                .filter(|value| {
+                    !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit())
+                })
+                .and_then(|value| value.parse::<usize>().ok())
+                .ok_or_else(|| api_error(ErrorCode::InvalidRequest, None))
+        })
+        .transpose()?;
+    if declared_length.is_some_and(|length| length > RESOURCE_BODY_LIMIT) {
+        return Err(api_error(ErrorCode::ResourceTooLarge, None));
+    }
+    let body = to_bytes(request.into_body(), RESOURCE_BODY_LIMIT)
+        .await
+        .map_err(|error| {
+            let code = if error.into_inner().is::<LengthLimitError>() {
+                ErrorCode::ResourceTooLarge
+            } else {
+                ErrorCode::InvalidRequest
+            };
+            api_error(code, None)
+        })?;
+    if declared_length.is_some_and(|length| length != body.len()) {
+        return Err(api_error(ErrorCode::InvalidRequest, None));
+    }
+    Ok((media_type, body))
+}
+
 impl ServiceOperation {
     fn allowed_errors(self) -> &'static [ErrorCode] {
         use ErrorCode as E;
@@ -742,6 +823,15 @@ impl ServiceOperation {
                 E::WorkspaceLocked,
                 E::InvalidRequest,
                 E::ResourceNotFound,
+            ],
+            Self::CreateWorkspaceResource => &[
+                E::KernelNotReady,
+                E::WorkspaceUnavailable,
+                E::WorkspaceLocked,
+                E::InvalidRequest,
+                E::DocumentNotFound,
+                E::ResourceTooLarge,
+                E::RevisionConflict,
             ],
             Self::ListDocuments => &[
                 E::KernelNotReady,
@@ -865,6 +955,7 @@ impl ServiceOperation {
             | Self::Workspace
             | Self::ListWorkspaceInventory
             | Self::OpenWorkspaceResource
+            | Self::CreateWorkspaceResource
             | Self::ListDocuments
             | Self::CreateDocument
             | Self::GetDocument

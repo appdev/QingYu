@@ -1,6 +1,6 @@
 use std::{
     fmt,
-    io::{self, Read as _, Seek as _, SeekFrom},
+    io::{self, Read as _, Seek as _, SeekFrom, Write as _},
     mem,
     sync::{
         atomic::{AtomicUsize, Ordering},
@@ -9,7 +9,10 @@ use std::{
 };
 
 use async_trait::async_trait;
-use cap_fs_ext::{DirExt, MetadataExt};
+#[cfg(any(unix, windows))]
+use cap_fs_ext::OpenOptionsExt;
+use cap_fs_ext::{DirExt, FollowSymlinks, MetadataExt, OpenOptionsFollowExt};
+use cap_std::fs::OpenOptions;
 use cap_std::fs::{Dir, File, Metadata};
 use serde::{ser::SerializeSeq as _, Serialize, Serializer};
 use sha2::{Digest as _, Sha256};
@@ -17,12 +20,18 @@ use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
 use crate::{
     contract::{
-        DocumentEntryDto, DocumentKind, DocumentName, ErrorCode, ListWorkspaceInventoryQuery,
-        Nullable, PageCursorContext, ResourceEntryDto, ResourceId, ResourceKind, ResourceName,
-        Revision, Rfc3339Utc, SafeUnsignedInteger, WorkspaceDto, WorkspaceInventoryEntryDto,
-        WorkspaceInventoryPageDto, WorkspaceReadiness, WorkspaceRelativePath,
+        CreateWorkspaceResourceQuery, DocumentEntryDto, DocumentKind, DocumentName, ErrorCode,
+        ListWorkspaceInventoryQuery, Nullable, PageCursorContext, ResourceEntryDto, ResourceId,
+        ResourceKind, ResourceName, Revision, Rfc3339Utc, SafeUnsignedInteger, WorkspaceDto,
+        WorkspaceInventoryEntryDto, WorkspaceInventoryPageDto, WorkspaceReadiness,
+        WorkspaceRelativePath,
     },
     documents::service::directory_revision_for_capability_with_inventory_budget,
+    documents::service::CapabilityAtomicInstallPort,
+    documents::{
+        identity::DocumentIdentityCodec, AtomicInstallMode, AtomicInstallPort,
+        AtomicInstallRequest, PinnedInstallSource,
+    },
     ignore_rules::{WorkspaceIgnorePort, WorkspaceIgnoreSnapshot},
     inventory_snapshot::{
         ContentDigest, FileVersionStamp, InventoryCandidateSnapshot, InventoryCandidateType,
@@ -47,6 +56,8 @@ const MAX_CONCURRENT_INVENTORY_SCANS: usize = 2;
 const MAX_INVENTORY_REVISION_BYTES: usize = 71;
 const MAX_INVENTORY_TIMESTAMP_BYTES: usize = 64;
 const MAX_INVENTORY_MEDIA_TYPE_BYTES: usize = "application/octet-stream".len();
+pub const MAX_RESOURCE_BODY_BYTES: usize = 64 * 1024 * 1024;
+const MAX_UNIQUE_RESOURCE_NAMES: usize = 10_000;
 
 #[cfg(test)]
 thread_local! {
@@ -66,6 +77,7 @@ pub struct WorkspaceResourceService {
     runtime: Weak<KernelRuntime>,
     ignore: Arc<dyn WorkspaceIgnorePort>,
     inventory_scans: Arc<InventoryScanGate>,
+    atomic_install: Arc<dyn AtomicInstallPort>,
 }
 
 impl WorkspaceResourceService {
@@ -74,7 +86,72 @@ impl WorkspaceResourceService {
             runtime: Arc::downgrade(runtime),
             ignore,
             inventory_scans: Arc::new(InventoryScanGate::default()),
+            atomic_install: Arc::new(CapabilityAtomicInstallPort),
         }
+    }
+
+    pub fn new_with_atomic_install(
+        runtime: &Arc<KernelRuntime>,
+        ignore: Arc<dyn WorkspaceIgnorePort>,
+        atomic_install: Arc<dyn AtomicInstallPort>,
+    ) -> Self {
+        Self {
+            runtime: Arc::downgrade(runtime),
+            ignore,
+            inventory_scans: Arc::new(InventoryScanGate::default()),
+            atomic_install,
+        }
+    }
+
+    pub async fn create_resource(
+        &self,
+        document_id: &crate::contract::DocumentId,
+        query: CreateWorkspaceResourceQuery,
+        media_type: &str,
+        body: &[u8],
+    ) -> Result<ResourceEntryDto, ResourceServiceError> {
+        if body.len() > MAX_RESOURCE_BODY_BYTES {
+            return Err(ResourceServiceError::too_large());
+        }
+        validate_resource_payload(query.kind, query.name.as_str(), media_type, body)?;
+        let runtime = self
+            .runtime
+            .upgrade()
+            .ok_or_else(ResourceServiceError::unavailable)?;
+        let mutation = runtime.mutation_coordinator().lock().await;
+        runtime
+            .verify_document_mutation_admission(&mutation)
+            .map_err(|_| ResourceServiceError::unavailable())?;
+        let context = self.context_with_runtime(runtime.clone())?;
+        if context.workspace().generation != query.workspace_generation {
+            return Err(ResourceServiceError::stale_workspace());
+        }
+        let document_path = DocumentIdentityCodec::new(context.runtime.wire_identity_key())
+            .verify(document_id, context.workspace(), DocumentKind::File)
+            .map_err(|_| ResourceServiceError::not_found())?;
+        self.verify_document_target(&context, &document_path)?;
+        let ignore = self.capture_ignore(&context)?;
+        if ignore.is_ignored(&document_path, DocumentKind::File) {
+            return Err(ResourceServiceError::not_found());
+        }
+        let document_parent = parent_and_name(&document_path)?.0;
+        let target_parent = join_paths(&document_parent, &query.folder)?;
+        validate_resource_parent(&target_parent, &ignore)?;
+        let (directory, created_directories) =
+            create_resource_parent(&context.root, &target_parent)?;
+        let result = self.install_unique_resource(
+            &context,
+            &directory,
+            &target_parent,
+            &query.name,
+            query.kind,
+            body,
+            &ignore,
+        );
+        if result.is_err() {
+            rollback_created_directories(&context.root, &created_directories);
+        }
+        result
     }
 
     /// Lists one directory level from the retained active workspace capability.
@@ -304,6 +381,13 @@ impl WorkspaceResourceService {
             .runtime
             .upgrade()
             .ok_or_else(ResourceServiceError::unavailable)?;
+        self.context_with_runtime(runtime)
+    }
+
+    fn context_with_runtime(
+        &self,
+        runtime: Arc<KernelRuntime>,
+    ) -> Result<ResourceContext, ResourceServiceError> {
         runtime
             .verify_instance_lock()
             .map_err(|_| ResourceServiceError::unavailable())?;
@@ -327,6 +411,148 @@ impl WorkspaceResourceService {
         })
     }
 
+    fn verify_document_target(
+        &self,
+        context: &ResourceContext,
+        path: &WorkspaceRelativePath,
+    ) -> Result<(), ResourceServiceError> {
+        let (parent_path, name) = parent_and_name(path)?;
+        if !markdown_name(&name) {
+            return Err(ResourceServiceError::not_found());
+        }
+        let parent = open_directory(&context.root, &parent_path)?;
+        let addressed = parent.symlink_metadata(&name).map_err(|error| {
+            if error.kind() == io::ErrorKind::NotFound {
+                ResourceServiceError::not_found()
+            } else {
+                ResourceServiceError::unavailable()
+            }
+        })?;
+        let _inspected = inspect_regular_file(&parent, &name, &addressed)?;
+        Ok(())
+    }
+
+    fn install_unique_resource(
+        &self,
+        context: &ResourceContext,
+        directory: &Dir,
+        parent: &WorkspaceRelativePath,
+        requested_name: &ResourceName,
+        kind: ResourceKind,
+        body: &[u8],
+        ignore: &WorkspaceIgnoreSnapshot,
+    ) -> Result<ResourceEntryDto, ResourceServiceError> {
+        let stage_name = random_resource_stage_name()?;
+        let staged = stage_resource(directory, &stage_name, body)?;
+        let staged_metadata = match staged.metadata() {
+            Ok(metadata) => metadata,
+            Err(_) => {
+                cleanup_staged_resource(directory, &stage_name);
+                return Err(ResourceServiceError::unavailable());
+            }
+        };
+        for attempt in 0..MAX_UNIQUE_RESOURCE_NAMES {
+            let name = match unique_resource_name(requested_name.as_str(), attempt) {
+                Ok(name) => name,
+                Err(error) => {
+                    cleanup_staged_resource(directory, &stage_name);
+                    return Err(error);
+                }
+            };
+            if protected_resource_component(name.as_str()) || markdown_name(name.as_str()) {
+                cleanup_staged_resource(directory, &stage_name);
+                return Err(ResourceServiceError::invalid_path());
+            }
+            match directory.symlink_metadata(name.as_str()) {
+                Ok(_) => continue,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(_) => {
+                    cleanup_staged_resource(directory, &stage_name);
+                    return Err(ResourceServiceError::unavailable());
+                }
+            }
+            let path = match join_relative(parent, name.as_str()) {
+                Ok(path) => path,
+                Err(error) => {
+                    cleanup_staged_resource(directory, &stage_name);
+                    return Err(error);
+                }
+            };
+            if ignore.is_ignored(&path, DocumentKind::File) {
+                cleanup_staged_resource(directory, &stage_name);
+                return Err(ResourceServiceError::invalid_path());
+            }
+            let install = self.atomic_install.install(AtomicInstallRequest {
+                directory,
+                target: &path,
+                stage_name: &stage_name,
+                target_name: name.as_str(),
+                mode: AtomicInstallMode::CreateNoReplace,
+                expected_stage: PinnedInstallSource::File(&staged),
+                expected_target: None,
+                expected_revision: None,
+            });
+            if install.is_err() {
+                let stage_still_exists = directory.symlink_metadata(&stage_name).is_ok();
+                let installed = directory.symlink_metadata(name.as_str()).ok();
+                if stage_still_exists && installed.is_some() {
+                    continue;
+                }
+                let settled = !stage_still_exists
+                    && installed
+                        .as_ref()
+                        .is_some_and(|metadata| same_file(&staged_metadata, metadata));
+                if !settled {
+                    cleanup_staged_resource(directory, &stage_name);
+                    return Err(ResourceServiceError::unavailable());
+                }
+            }
+            let result = (|| {
+                crate::storage::sync_directory(directory)
+                    .map_err(|_| ResourceServiceError::unavailable())?;
+                let addressed = directory
+                    .symlink_metadata(name.as_str())
+                    .map_err(|_| ResourceServiceError::unavailable())?;
+                let inspected = inspect_regular_file(directory, name.as_str(), &addressed)?;
+                if !same_file(&staged_metadata, &inspected.metadata) {
+                    return Err(ResourceServiceError::unsafe_target());
+                }
+                let classification = classify_resource(name.as_str(), &inspected.magic);
+                if classification.kind != kind {
+                    return Err(ResourceServiceError::unsafe_target());
+                }
+                let id = context
+                    .runtime
+                    .wire_identity_key()
+                    .issue_resource_id(
+                        context.workspace().id,
+                        &context.workspace().generation,
+                        kind,
+                        &path,
+                    )
+                    .map_err(|_| ResourceServiceError::unavailable())?;
+                Ok(ResourceEntryDto {
+                    id,
+                    path,
+                    parent: parent.clone(),
+                    name: name.clone(),
+                    kind,
+                    size_bytes: safe_size(inspected.metadata.len())?,
+                    modified_at: modified_utc(&inspected.metadata)?,
+                    revision: inspected.revision,
+                    media_type: classification.media_type.to_string(),
+                    previewable: classification.previewable,
+                })
+            })();
+            if result.is_err() {
+                cleanup_installed_resource(directory, name.as_str(), &staged_metadata);
+            }
+            return result;
+        }
+        cleanup_staged_resource(directory, &stage_name);
+        Err(ResourceServiceError::unavailable())
+    }
+
     fn capture_ignore(
         &self,
         context: &ResourceContext,
@@ -334,6 +560,248 @@ impl WorkspaceResourceService {
         self.ignore
             .capture(&context.root_path, &context.root)
             .map_err(|_| ResourceServiceError::unavailable())
+    }
+}
+
+fn validate_resource_payload(
+    kind: ResourceKind,
+    name: &str,
+    media_type: &str,
+    body: &[u8],
+) -> Result<(), ResourceServiceError> {
+    if protected_resource_component(name) || markdown_name(name) {
+        return Err(ResourceServiceError::invalid_path());
+    }
+    let mut magic = [0_u8; MAGIC_BYTES];
+    let copied = body.len().min(MAGIC_BYTES);
+    magic[..copied].copy_from_slice(&body[..copied]);
+    let classification = classify_resource(name, &magic);
+    let valid = match kind {
+        ResourceKind::Image => {
+            classification.kind == ResourceKind::Image && media_type == classification.media_type
+        }
+        ResourceKind::Attachment => {
+            classification.kind == ResourceKind::Attachment
+                && media_type == "application/octet-stream"
+        }
+    };
+    if !valid {
+        return Err(ResourceServiceError::invalid_media_type());
+    }
+    Ok(())
+}
+
+fn join_paths(
+    parent: &WorkspaceRelativePath,
+    child: &WorkspaceRelativePath,
+) -> Result<WorkspaceRelativePath, ResourceServiceError> {
+    if child.as_str().is_empty() {
+        return Ok(parent.clone());
+    }
+    WorkspaceRelativePath::parse(if parent.as_str().is_empty() {
+        child.as_str().to_string()
+    } else {
+        format!("{}/{}", parent.as_str(), child.as_str())
+    })
+    .map_err(|_| ResourceServiceError::invalid_path())
+}
+
+fn validate_resource_parent(
+    parent: &WorkspaceRelativePath,
+    ignore: &WorkspaceIgnoreSnapshot,
+) -> Result<(), ResourceServiceError> {
+    let mut current = WorkspaceRelativePath::default();
+    for component in parent
+        .as_str()
+        .split('/')
+        .filter(|component| !component.is_empty())
+    {
+        if protected_resource_component(component) {
+            return Err(ResourceServiceError::invalid_path());
+        }
+        ResourceName::parse(component).map_err(|_| ResourceServiceError::invalid_path())?;
+        current = join_relative(&current, component)?;
+        if ignore.is_ignored(&current, DocumentKind::Directory) {
+            return Err(ResourceServiceError::invalid_path());
+        }
+    }
+    Ok(())
+}
+
+fn create_resource_parent(
+    root: &Dir,
+    parent: &WorkspaceRelativePath,
+) -> Result<(Dir, Vec<WorkspaceRelativePath>), ResourceServiceError> {
+    let mut directory = root
+        .try_clone()
+        .map_err(|_| ResourceServiceError::unavailable())?;
+    let mut current = WorkspaceRelativePath::default();
+    let mut created = Vec::new();
+    for component in parent
+        .as_str()
+        .split('/')
+        .filter(|component| !component.is_empty())
+    {
+        current = join_relative(&current, component)?;
+        let addressed = match directory.symlink_metadata(component) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                if let Err(error) = directory.create_dir(component) {
+                    rollback_created_directories(root, &created);
+                    return Err(if error.kind() == io::ErrorKind::AlreadyExists {
+                        ResourceServiceError::unsafe_target()
+                    } else {
+                        ResourceServiceError::unavailable()
+                    });
+                }
+                if crate::storage::sync_directory(&directory).is_err() {
+                    rollback_created_directories(root, &created);
+                    return Err(ResourceServiceError::unavailable());
+                }
+                created.push(current.clone());
+                match directory.symlink_metadata(component) {
+                    Ok(metadata) => metadata,
+                    Err(_) => {
+                        rollback_created_directories(root, &created);
+                        return Err(ResourceServiceError::unavailable());
+                    }
+                }
+            }
+            Err(_) => {
+                rollback_created_directories(root, &created);
+                return Err(ResourceServiceError::unavailable());
+            }
+        };
+        if !addressed.is_dir() || addressed.file_type().is_symlink() {
+            rollback_created_directories(root, &created);
+            return Err(ResourceServiceError::unsafe_target());
+        }
+        let child = match directory.open_dir_nofollow(component) {
+            Ok(child) => child,
+            Err(_) => {
+                rollback_created_directories(root, &created);
+                return Err(ResourceServiceError::unsafe_target());
+            }
+        };
+        let retained = match trusted_directory_metadata(&child) {
+            Ok(metadata) => metadata,
+            Err(error) => {
+                rollback_created_directories(root, &created);
+                return Err(error);
+            }
+        };
+        if !same_file(&addressed, &retained) {
+            rollback_created_directories(root, &created);
+            return Err(ResourceServiceError::unsafe_target());
+        }
+        directory = child;
+    }
+    Ok((directory, created))
+}
+
+fn rollback_created_directories(root: &Dir, created: &[WorkspaceRelativePath]) {
+    for path in created.iter().rev() {
+        let Ok((parent, name)) = parent_and_name(path) else {
+            continue;
+        };
+        let Ok(directory) = open_directory(root, &parent) else {
+            continue;
+        };
+        if directory.remove_dir(&name).is_ok() {
+            let _sync_result = crate::storage::sync_directory(&directory);
+        }
+    }
+}
+
+fn random_resource_stage_name() -> Result<String, ResourceServiceError> {
+    let mut entropy = [0_u8; 16];
+    getrandom::fill(&mut entropy).map_err(|_| ResourceServiceError::unavailable())?;
+    Ok(format!(
+        ".qingyu-resource-stage-{}.tmp",
+        entropy
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    ))
+}
+
+fn stage_resource(directory: &Dir, name: &str, body: &[u8]) -> Result<File, ResourceServiceError> {
+    let mut options = OpenOptions::new();
+    options
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .follow(FollowSymlinks::No);
+    #[cfg(windows)]
+    options
+        .access_mode(
+            windows_sys::Win32::Foundation::GENERIC_READ
+                | windows_sys::Win32::Foundation::GENERIC_WRITE
+                | windows_sys::Win32::Storage::FileSystem::DELETE,
+        )
+        .share_mode(windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ);
+    #[cfg(unix)]
+    options.mode(0o600);
+    let mut file = directory
+        .open_with(name, &options)
+        .map_err(|_| ResourceServiceError::unavailable())?;
+    if file.write_all(body).and_then(|()| file.sync_all()).is_err() {
+        drop(file);
+        cleanup_staged_resource(directory, name);
+        return Err(ResourceServiceError::unavailable());
+    }
+    let metadata = match file.metadata() {
+        Ok(metadata) => metadata,
+        Err(_) => {
+            drop(file);
+            cleanup_staged_resource(directory, name);
+            return Err(ResourceServiceError::unavailable());
+        }
+    };
+    if !trusted_regular_file(&metadata) || metadata.len() != body.len() as u64 {
+        drop(file);
+        cleanup_staged_resource(directory, name);
+        return Err(ResourceServiceError::unsafe_target());
+    }
+    Ok(file)
+}
+
+fn cleanup_staged_resource(directory: &Dir, name: &str) {
+    let _remove_result = directory.remove_file(name);
+    let _sync_result = crate::storage::sync_directory(directory);
+}
+
+fn cleanup_installed_resource(directory: &Dir, name: &str, expected: &Metadata) {
+    let Ok(addressed) = directory.symlink_metadata(name) else {
+        return;
+    };
+    if !same_file(&addressed, expected) {
+        return;
+    }
+    let _remove_result = directory.remove_file(name);
+    let _sync_result = crate::storage::sync_directory(directory);
+}
+
+fn unique_resource_name(
+    requested: &str,
+    attempt: usize,
+) -> Result<ResourceName, ResourceServiceError> {
+    if attempt == 0 {
+        return ResourceName::parse(requested).map_err(|_| ResourceServiceError::invalid_path());
+    }
+    let suffix = format!("-{}", attempt + 1);
+    let extension_index = requested.rfind('.').filter(|index| *index > 0);
+    let (mut stem, extension) = extension_index.map_or((requested.to_string(), ""), |index| {
+        (requested[..index].to_string(), &requested[index..])
+    });
+    loop {
+        let candidate = format!("{stem}{suffix}{extension}");
+        if let Ok(name) = ResourceName::parse(candidate) {
+            return Ok(name);
+        }
+        if stem.pop().is_none() {
+            return Err(ResourceServiceError::invalid_path());
+        }
     }
 }
 
@@ -373,7 +841,10 @@ impl fmt::Debug for WorkspaceResourceService {
 fn service_failure(error: ResourceServiceError) -> ServiceFailure {
     let code = match error.kind() {
         super::ResourceServiceErrorKind::InvalidCursor
+        | super::ResourceServiceErrorKind::InvalidMediaType
         | super::ResourceServiceErrorKind::InvalidPath => ErrorCode::InvalidRequest,
+        super::ResourceServiceErrorKind::StaleWorkspace => ErrorCode::RevisionConflict,
+        super::ResourceServiceErrorKind::TooLarge => ErrorCode::ResourceTooLarge,
         super::ResourceServiceErrorKind::NotFound | super::ResourceServiceErrorKind::WrongKind => {
             ErrorCode::ResourceNotFound
         }
@@ -381,6 +852,22 @@ fn service_failure(error: ResourceServiceError) -> ServiceFailure {
         | super::ResourceServiceErrorKind::Unavailable => ErrorCode::WorkspaceUnavailable,
     };
     ServiceFailure::new(code, None).expect("resource errors use compatible details")
+}
+
+fn create_service_failure(error: ResourceServiceError) -> ServiceFailure {
+    let code = match error.kind() {
+        super::ResourceServiceErrorKind::NotFound | super::ResourceServiceErrorKind::WrongKind => {
+            ErrorCode::DocumentNotFound
+        }
+        super::ResourceServiceErrorKind::InvalidCursor
+        | super::ResourceServiceErrorKind::InvalidMediaType
+        | super::ResourceServiceErrorKind::InvalidPath => ErrorCode::InvalidRequest,
+        super::ResourceServiceErrorKind::StaleWorkspace => ErrorCode::RevisionConflict,
+        super::ResourceServiceErrorKind::TooLarge => ErrorCode::ResourceTooLarge,
+        super::ResourceServiceErrorKind::UnsafeTarget
+        | super::ResourceServiceErrorKind::Unavailable => ErrorCode::WorkspaceUnavailable,
+    };
+    ServiceFailure::new(code, None).expect("resource create errors use compatible details")
 }
 
 fn unavailable_service_failure() -> ServiceFailure {
@@ -411,6 +898,18 @@ impl ResourcesApiService for WorkspaceResourceService {
             .await
             .map_err(|_| unavailable_service_failure())?
             .map_err(service_failure)
+    }
+
+    async fn create_workspace_resource(
+        &self,
+        document_id: crate::contract::DocumentId,
+        query: CreateWorkspaceResourceQuery,
+        media_type: String,
+        body: Vec<u8>,
+    ) -> Result<ResourceEntryDto, ServiceFailure> {
+        self.create_resource(&document_id, query, &media_type, &body)
+            .await
+            .map_err(create_service_failure)
     }
 }
 

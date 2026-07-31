@@ -24,6 +24,16 @@ export interface HttpRequest {
   authenticated?: boolean;
 }
 
+export interface HttpRawRequest {
+  method: "POST";
+  path: string;
+  query?: HttpQuery;
+  rawBody: Blob;
+  mediaType: "application/octet-stream" | "image/gif" | "image/jpeg" | "image/png" | "image/webp";
+  signal?: AbortSignal;
+  authenticated?: boolean;
+}
+
 export interface HttpSuccessContract<Result> {
   status: number;
   validate?: (value: unknown) => value is Result;
@@ -134,7 +144,35 @@ export class KernelHttpTransport {
     return response;
   }
 
-  async #send(request: HttpRequest): Promise<{ response: Response; requestId: string }> {
+  async requestRaw<Result = unknown>(
+    request: HttpRawRequest,
+    success?: HttpSuccessContract<Result>,
+  ): Promise<Result> {
+    const { response, requestId } = await this.#send(request);
+    if (success !== undefined && response.status !== success.status) {
+      throw new KernelProtocolError("invalid-http-response", {
+        status: response.status,
+        requestId,
+      });
+    }
+    try {
+      const body: unknown = await response.json();
+      if (success?.validate !== undefined && !success.validate(body)) {
+        throw new KernelProtocolError("invalid-http-response", {
+          status: response.status,
+          requestId,
+        });
+      }
+      return body as Result;
+    } catch {
+      throw new KernelProtocolError("invalid-http-response", {
+        status: response.status,
+        requestId,
+      });
+    }
+  }
+
+  async #send(request: HttpRequest | HttpRawRequest): Promise<{ response: Response; requestId: string }> {
     if ("credentials" in request) {
       throw new KernelTransportError("invalid-request");
     }
@@ -170,8 +208,14 @@ export class KernelHttpTransport {
       headers.set("x-csrf-token", csrfToken);
     }
 
-    let body: string | undefined;
-    if (request.body !== undefined) {
+    let body: BodyInit | undefined;
+    if ("rawBody" in request) {
+      if (!(request.rawBody instanceof Blob) || request.rawBody.size > 64 * 1024 * 1024) {
+        throw new KernelTransportError("invalid-request");
+      }
+      headers.set("content-type", request.mediaType);
+      body = request.rawBody;
+    } else if (request.body !== undefined) {
       headers.set("content-type", "application/json");
       try {
         body = JSON.stringify(request.body);
@@ -393,6 +437,7 @@ const API_ERROR_CODES: ReadonlySet<KernelApiErrorCode> = new Set([
   "resource_not_found",
   "document_already_exists",
   "document_too_large",
+  "resource_too_large",
   "document_invalid_encoding",
   "revision_conflict",
   "settings_revision_conflict",
@@ -413,7 +458,7 @@ const ERROR_STATUS: Record<KernelApiErrorCode, number> = {
   document_not_found: 404, resource_not_found: 404, sync_config_absent: 404,
   document_already_exists: 409, initialization_required: 409, already_initialized: 409,
   revision_conflict: 409, settings_revision_conflict: 409,
-  sync_config_revision_conflict: 409, document_too_large: 413,
+  sync_config_revision_conflict: 409, document_too_large: 413, resource_too_large: 413,
   document_invalid_encoding: 422, invalid_settings_field: 422, sync_config_invalid: 422,
   workspace_locked: 423, authentication_rate_limited: 429,
   kernel_not_ready: 503, authentication_unavailable: 503, workspace_unavailable: 503,
@@ -488,7 +533,7 @@ function isErrorDetails(value: unknown, code: KernelApiErrorCode) {
       );
     case "validation":
       return (
-        ["invalid_request", "invalid_workspace_path", "invalid_document_name", "document_too_large", "document_invalid_encoding", "invalid_settings_field", "sync_config_invalid"].includes(code) &&
+        ["invalid_request", "invalid_workspace_path", "invalid_document_name", "document_too_large", "resource_too_large", "document_invalid_encoding", "invalid_settings_field", "sync_config_invalid"].includes(code) &&
         Array.isArray(details.issues) &&
         details.issues.length > 0 &&
         details.issues.every(isValidationIssue) &&

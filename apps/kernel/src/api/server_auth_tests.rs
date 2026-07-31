@@ -566,6 +566,103 @@ async fn protected_routes_accept_native_or_browser_and_require_csrf_for_browser_
 }
 
 #[tokio::test]
+async fn resource_upload_route_enforces_origin_session_csrf_and_native_bearer() {
+    let api = ServerApiFixture::new();
+    let (session, csrf) = api.initialize().await;
+    let path = "/api/v1/documents/document-1/resources?workspaceGeneration=generation-1&folder=assets&name=asset.bin&kind=attachment";
+
+    let mut missing_csrf = api.request("POST", path);
+    missing_csrf.headers_mut().insert(
+        header::COOKIE,
+        cookie_header(&session, &csrf).parse().unwrap(),
+    );
+    missing_csrf.headers_mut().insert(
+        header::CONTENT_TYPE,
+        "application/octet-stream".parse().unwrap(),
+    );
+    *missing_csrf.body_mut() = Body::from("asset");
+    let rejected = api.router.clone().oneshot(missing_csrf).await.unwrap();
+    assert_eq!(rejected.status(), StatusCode::FORBIDDEN);
+    assert_eq!(
+        serde_json::from_value::<ApiErrorEnvelope>(response_json(rejected).await)
+            .unwrap()
+            .code(),
+        ErrorCode::CsrfRejected
+    );
+
+    let mut browser = api.request("POST", path);
+    browser.headers_mut().insert(
+        header::COOKIE,
+        cookie_header(&session, &csrf).parse().unwrap(),
+    );
+    browser
+        .headers_mut()
+        .insert("x-csrf-token", csrf_value(&csrf).parse().unwrap());
+    browser.headers_mut().insert(
+        header::CONTENT_TYPE,
+        "application/octet-stream".parse().unwrap(),
+    );
+    *browser.body_mut() = Body::from("asset");
+    assert_eq!(
+        api.router.clone().oneshot(browser).await.unwrap().status(),
+        StatusCode::BAD_REQUEST
+    );
+
+    let mut wrong_origin = api.request("POST", path);
+    wrong_origin
+        .headers_mut()
+        .insert(header::ORIGIN, "https://attacker.invalid".parse().unwrap());
+    wrong_origin.headers_mut().insert(
+        header::AUTHORIZATION,
+        format!("Bearer {}", api.native_credential).parse().unwrap(),
+    );
+    wrong_origin.headers_mut().insert(
+        header::CONTENT_TYPE,
+        "application/octet-stream".parse().unwrap(),
+    );
+    *wrong_origin.body_mut() = Body::from("asset");
+    let rejected = api.router.clone().oneshot(wrong_origin).await.unwrap();
+    assert_eq!(rejected.status(), StatusCode::FORBIDDEN);
+    assert_eq!(
+        serde_json::from_value::<ApiErrorEnvelope>(response_json(rejected).await)
+            .unwrap()
+            .code(),
+        ErrorCode::OriginNotAllowed
+    );
+
+    let mut unauthenticated = api.request("POST", path);
+    unauthenticated.headers_mut().insert(
+        header::CONTENT_TYPE,
+        "application/octet-stream".parse().unwrap(),
+    );
+    *unauthenticated.body_mut() = Body::from("asset");
+    assert_eq!(
+        api.router
+            .clone()
+            .oneshot(unauthenticated)
+            .await
+            .unwrap()
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+
+    let mut native = api.request("POST", path);
+    native.headers_mut().insert(
+        header::AUTHORIZATION,
+        format!("Bearer {}", api.native_credential).parse().unwrap(),
+    );
+    native.headers_mut().insert(
+        header::CONTENT_TYPE,
+        "application/octet-stream".parse().unwrap(),
+    );
+    *native.body_mut() = Body::from("asset");
+    assert_eq!(
+        api.router.oneshot(native).await.unwrap().status(),
+        StatusCode::BAD_REQUEST
+    );
+}
+
+#[tokio::test]
 async fn logout_requires_csrf_clears_both_cookies_and_revokes_the_session() {
     let api = ServerApiFixture::new();
     let (session, csrf) = api.initialize().await;

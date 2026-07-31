@@ -1060,6 +1060,7 @@ const fn error_code(code: ErrorCode) -> &'static str {
         ErrorCode::ResourceNotFound => "resource_not_found",
         ErrorCode::DocumentAlreadyExists => "document_already_exists",
         ErrorCode::DocumentTooLarge => "document_too_large",
+        ErrorCode::ResourceTooLarge => "resource_too_large",
         ErrorCode::DocumentInvalidEncoding => "document_invalid_encoding",
         ErrorCode::RevisionConflict => "revision_conflict",
         ErrorCode::SettingsRevisionConflict => "settings_revision_conflict",
@@ -1697,6 +1698,10 @@ mod tests {
         );
         let request_id = RequestId::new(Uuid::parse_str(REQUEST_ID).expect("request UUID"));
         assert_eq!(request_id.as_uuid().to_string(), REQUEST_ID);
+        assert_eq!(
+            McpKernelFailure::Api(ErrorCode::ResourceTooLarge).code(),
+            "resource_too_large"
+        );
     }
 
     #[test]

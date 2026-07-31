@@ -308,6 +308,70 @@ export function createKernelFileRuntimeOwner(
     }
   };
 
+  const saveResource = async (input: {
+    body: Blob;
+    documentPath: string | null;
+    folder: string;
+    name: string;
+  } & (
+    | {
+        kind: "attachment";
+        mediaType: "application/octet-stream";
+      }
+    | {
+        kind: "image";
+        mediaType: "image/gif" | "image/jpeg" | "image/png" | "image/webp";
+      }
+  )) => {
+    if (input.documentPath === null) {
+      throw new Error("Current document must be a saved Markdown file.");
+    }
+    const identity = await workspace();
+    const document = await resolveEntry(input.documentPath);
+    if (document.kind !== "file") throw new Error("The Kernel path is not a document.");
+    const folder = normalizeResourceFolder(input.folder) as KernelWorkspaceRelativePath;
+    const resourceInput = {
+      body: input.body,
+      documentLocator: document.locator,
+      folder,
+      name: input.name,
+      workspaceGeneration: identity.generation,
+    };
+    const created = await resources.create(input.kind === "image"
+      ? { ...resourceInput, kind: input.kind, mediaType: input.mediaType }
+      : { ...resourceInput, kind: input.kind, mediaType: input.mediaType });
+    if (created.workspaceGeneration !== identity.generation) {
+      throw new Error("The Kernel workspace generation changed.");
+    }
+    if (created.kind !== input.kind || created.mediaType !== input.mediaType) {
+      throw new Error("The Kernel resource metadata changed.");
+    }
+    if (created.kind === "image") {
+      imageResources.set(created.relativePath, created);
+      if (options.imageSource !== undefined) {
+        const epoch = imageResourceEpoch;
+        const source = await options.imageSource.materialize(created, async () => ({
+          body: input.body,
+          mediaType: created.mediaType,
+        }));
+        if (source !== undefined) {
+          if (released || epoch !== imageResourceEpoch) {
+            releaseImageSource(source);
+          } else {
+            const previous = imageSources.get(created.relativePath);
+            if (previous !== undefined && previous !== source) releaseImageSource(previous);
+            imageSources.set(created.relativePath, source);
+          }
+        }
+      }
+    }
+    return {
+      document,
+      resource: created,
+      src: markdownResourcePath(document.parent, created.relativePath),
+    };
+  };
+
   const files: AppFileRuntime = {
     ...fallback,
     ...pickNativeShellFallback(options.nativeShell),
@@ -472,6 +536,59 @@ export function createKernelFileRuntimeOwner(
         kind: entry.kind === "directory" ? "folder" : "file",
         name: entry.name,
         path: serverPathFromRelative(entry.relativePath),
+      };
+    },
+    saveClipboardAttachment: async (input) => {
+      if (kernel.availability !== "available") {
+        return unavailableFileCapability("saveClipboardAttachment");
+      }
+      if (input.copyToStorage === false) {
+        return {
+          label: input.attachment.name.trim() || "attachment",
+          src: URL.createObjectURL(input.attachment),
+        };
+      }
+      const saved = await saveResource({
+        body: input.attachment,
+        documentPath: input.documentPath,
+        folder: input.projectRootPath === null || input.projectRootPath === undefined
+          ? input.folder
+          : "assets",
+        kind: "attachment",
+        mediaType: "application/octet-stream",
+        name: input.attachment.name.trim() || "attachment",
+      });
+      return {
+        label: input.attachment.name.trim() || saved.resource.name,
+        src: saved.src,
+      };
+    },
+    saveClipboardImage: async (input) => {
+      if (kernel.availability !== "available") {
+        return unavailableFileCapability("saveClipboardImage");
+      }
+      if (input.copyToStorage === false) {
+        return {
+          alt: imageAltFromFileName(input.image.name),
+          src: URL.createObjectURL(input.image),
+        };
+      }
+      if (!previewableImageMediaTypes.has(input.image.type)) {
+        throw new Error("The clipboard image media type is unsupported.");
+      }
+      const saved = await saveResource({
+        body: input.image,
+        documentPath: input.documentPath,
+        folder: input.projectRootPath === null || input.projectRootPath === undefined
+          ? input.folder
+          : "assets",
+        kind: "image",
+        mediaType: input.image.type as "image/gif" | "image/jpeg" | "image/png" | "image/webp",
+        name: input.fileName,
+      });
+      return {
+        alt: imageAltFromFileName(input.image.name),
+        src: saved.src,
       };
     },
     saveMarkdownFile: async (input) => {
@@ -933,6 +1050,42 @@ function createKernelFileFallback(
 
 function unavailableFileCapability(name: string): Promise<never> {
   return Promise.reject(new Error(`${name} is unavailable for a Kernel workspace.`));
+}
+
+function normalizeResourceFolder(folder: string) {
+  const segments = folder
+    .split(/[\\/]+/u)
+    .map((segment) => segment.trim())
+    .filter((segment) => segment !== "");
+  if (segments.some((segment) => segment === "." || segment === "..")) {
+    throw new Error("The resource folder is invalid.");
+  }
+  return segments.join("/");
+}
+
+function markdownResourcePath(documentParent: string, resourcePath: string) {
+  const prefix = documentParent === "" ? "" : `${documentParent}/`;
+  if (!resourcePath.startsWith(prefix) || resourcePath.length <= prefix.length) {
+    throw new Error("The Kernel resource path is outside the document folder.");
+  }
+  return resourcePath
+    .slice(prefix.length)
+    .split("/")
+    .map(encodeMarkdownUrlSegment)
+    .join("/");
+}
+
+function encodeMarkdownUrlSegment(segment: string) {
+  return encodeURIComponent(segment).replace(/[!'()*]/gu, (character) =>
+    `%${character.charCodeAt(0).toString(16).toUpperCase()}`
+  );
+}
+
+function imageAltFromFileName(fileName: string) {
+  const trimmed = fileName.trim();
+  if (trimmed === "") return "image";
+  const withoutExtension = trimmed.replace(/\.[^.]*$/u, "").trim();
+  return withoutExtension || "image";
 }
 
 function sameResourceVersion(

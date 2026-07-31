@@ -14,6 +14,7 @@ import {
   isLiveHealth,
   isReadyHealth,
   isRuntime,
+  isResourceEntry,
   isSearchPage,
   isServerAuthenticationStatus,
   isServerSession,
@@ -122,7 +123,27 @@ export interface KernelResourcesClient {
     kind: Schemas["ResourceKind"],
     options?: KernelRequestOptions,
   ): Promise<Response>;
+  create(
+    documentId: Schemas["DocumentId"],
+    request: KernelCreateResourceRequest,
+    options?: KernelRequestOptions,
+  ): Promise<Schemas["ResourceEntryDto"]>;
 }
+
+type KernelCreateResourceMetadata = Schemas["CreateWorkspaceResourceQuery"];
+
+export type KernelCreateResourceRequest = Omit<KernelCreateResourceMetadata, "kind"> & {
+  body: Blob;
+} & (
+  | {
+    kind: "image";
+    mediaType: "image/gif" | "image/jpeg" | "image/png" | "image/webp";
+  }
+  | {
+    kind: "attachment";
+    mediaType: "application/octet-stream";
+  }
+);
 
 export interface KernelSettingsClient {
   get(options?: KernelRequestOptions): Promise<Schemas["SettingsSnapshotDto"]>;
@@ -279,6 +300,20 @@ export function createKernelClient(options: CreateKernelClientOptions): KernelCl
             ? ["image/gif", "image/jpeg", "image/png", "image/webp"]
             : ["application/octet-stream"],
         }),
+      create: (documentId, request, requestOptions) =>
+        transport.requestRaw({
+          method: "POST",
+          path: `${documentPath(documentId)}/resources`,
+          query: {
+            folder: request.folder,
+            kind: request.kind,
+            name: request.name,
+            workspaceGeneration: request.workspaceGeneration,
+          },
+          rawBody: request.body,
+          mediaType: request.mediaType,
+          signal: requestOptions?.signal,
+        }, { status: 201, validate: isResourceEntry }),
     },
     documents: {
       list: (query, requestOptions) =>

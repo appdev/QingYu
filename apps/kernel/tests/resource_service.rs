@@ -18,12 +18,15 @@ use qingyu_kernel::{
     api::{build_router, TransportPolicy},
     config::KernelConfig,
     contract::{
-        DocumentContents, DocumentKind, ListWorkspaceInventoryQuery, PageLimit, ResourceKind,
-        UpdateDocumentRequest, WorkspaceRelativePath,
+        CreateWorkspaceResourceQuery, DocumentContents, DocumentId, DocumentKind,
+        ListWorkspaceInventoryQuery, PageLimit, ResourceKind, ResourceName, UpdateDocumentRequest,
+        WorkspaceGeneration, WorkspaceRelativePath,
     },
     documents::{
-        history::MemoryDocumentHistoryStore, service::WorkspaceDocumentService, DeletionPort,
-        DeletionPortError, DocumentDeletionTarget, DocumentIgnorePort,
+        history::MemoryDocumentHistoryStore, service::CapabilityAtomicInstallPort,
+        service::WorkspaceDocumentService, AtomicInstallPort, AtomicInstallPortError,
+        AtomicInstallRequest, DeletionPort, DeletionPortError, DocumentDeletionTarget,
+        DocumentIgnorePort,
     },
     ignore_rules::{
         MarkdownIgnoreRules, WorkspaceIgnoreError, WorkspaceIgnorePort, WorkspaceIgnoreSnapshot,
@@ -32,7 +35,7 @@ use qingyu_kernel::{
     ports::KernelPorts,
     resources::{
         resolve_markdown_href, ResourceServiceErrorKind, RetainedResource, WorkspaceInventoryEntry,
-        WorkspaceResourceService,
+        WorkspaceResourceService, MAX_RESOURCE_BODY_BYTES,
     },
     runtime::{KernelRuntime, ResourcesApiService, WorkspaceApiService},
     services::workspace::WorkspaceService,
@@ -105,6 +108,23 @@ struct CapturedIgnorePort {
 }
 
 struct UnusedDeletionPort;
+
+struct RejectingAtomicInstallPort;
+
+impl AtomicInstallPort for RejectingAtomicInstallPort {
+    fn install(&self, _request: AtomicInstallRequest<'_>) -> Result<(), AtomicInstallPortError> {
+        Err(AtomicInstallPortError)
+    }
+}
+
+struct InstallThenReportFailurePort;
+
+impl AtomicInstallPort for InstallThenReportFailurePort {
+    fn install(&self, request: AtomicInstallRequest<'_>) -> Result<(), AtomicInstallPortError> {
+        CapabilityAtomicInstallPort.install(request)?;
+        Err(AtomicInstallPortError)
+    }
+}
 
 impl DeletionPort for UnusedDeletionPort {
     fn delete(
@@ -705,6 +725,151 @@ async fn resource_http_adapter_matches_inventory_and_streams_verified_bytes() {
 }
 
 #[tokio::test]
+async fn resource_http_writer_accepts_a_bounded_raw_body_and_returns_an_openable_resource() {
+    let fixture = Fixture::new().await;
+    fs::write(fixture.root.join("note.md"), b"# Note").unwrap();
+    let workspace = fixture._workspace.get_workspace().await.unwrap();
+    let document_id = fixture
+        .service
+        .list_inventory(&WorkspaceRelativePath::default())
+        .unwrap()
+        .into_iter()
+        .find_map(|entry| match entry {
+            WorkspaceInventoryEntry::Document(entry) if entry.path.as_str() == "note.md" => {
+                Some(entry.id)
+            }
+            _ => None,
+        })
+        .unwrap();
+    fixture
+        .runtime
+        .install_resources_api_service(Arc::new(fixture.service.clone()))
+        .unwrap();
+    let credential = fixture.runtime.expose_native_launch_credential();
+    let router = build_router(
+        fixture.runtime.clone(),
+        TransportPolicy::loopback("127.0.0.1:43123", "http://127.0.0.1:43123").unwrap(),
+    );
+    let bytes = b"\x89PNG\r\n\x1a\nraw image bytes";
+
+    let request = Request::builder()
+        .method("POST")
+        .uri(format!(
+            "/api/v1/documents/{}/resources?workspaceGeneration={}&folder=assets&name=pasted.png&kind=image",
+            document_id.as_str(),
+            workspace.generation.as_str(),
+        ))
+        .header(header::HOST, "127.0.0.1:43123")
+        .header(header::AUTHORIZATION, format!("Bearer {credential}"))
+        .header(header::CONTENT_TYPE, "image/png")
+        .header(header::CONTENT_LENGTH, bytes.len())
+        .body(Body::from(bytes.as_slice()))
+        .unwrap();
+    let response = router.clone().oneshot(request).await.unwrap();
+    let status = response.status();
+    let response_body = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "{}",
+        String::from_utf8_lossy(&response_body)
+    );
+    let created: qingyu_kernel::contract::ResourceEntryDto =
+        serde_json::from_slice(&response_body).unwrap();
+    assert_eq!(created.path.as_str(), "assets/pasted.png");
+    assert_eq!(
+        created.revision.as_str().split_once(':').unwrap().0,
+        "sha256"
+    );
+
+    let request = Request::builder()
+        .method("GET")
+        .uri(format!(
+            "/api/v1/resources/{}?kind=image",
+            created.id.as_str()
+        ))
+        .header(header::HOST, "127.0.0.1:43123")
+        .header(header::AUTHORIZATION, format!("Bearer {credential}"))
+        .body(Body::empty())
+        .unwrap();
+    let response = router.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        to_bytes(response.into_body(), 1024 * 1024).await.unwrap(),
+        bytes.as_slice()
+    );
+}
+
+#[tokio::test]
+async fn resource_http_writer_rejects_oversize_unauthenticated_and_wrong_host_requests() {
+    let fixture = Fixture::new().await;
+    fs::write(fixture.root.join("note.md"), b"# Note").unwrap();
+    let workspace = fixture._workspace.get_workspace().await.unwrap();
+    let document_id = fixture
+        .service
+        .list_inventory(&WorkspaceRelativePath::default())
+        .unwrap()
+        .into_iter()
+        .find_map(|entry| match entry {
+            WorkspaceInventoryEntry::Document(entry) => Some(entry.id),
+            WorkspaceInventoryEntry::Resource(_) => None,
+        })
+        .unwrap();
+    fixture
+        .runtime
+        .install_resources_api_service(Arc::new(fixture.service.clone()))
+        .unwrap();
+    let credential = fixture.runtime.expose_native_launch_credential();
+    let router = build_router(
+        fixture.runtime.clone(),
+        TransportPolicy::loopback("127.0.0.1:43123", "http://127.0.0.1:43123").unwrap(),
+    );
+    let uri = format!(
+        "/api/v1/documents/{}/resources?workspaceGeneration={}&folder=assets&name=asset.bin&kind=attachment",
+        document_id.as_str(),
+        workspace.generation.as_str(),
+    );
+
+    let request = Request::builder()
+        .method("POST")
+        .uri(&uri)
+        .header(header::HOST, "127.0.0.1:43123")
+        .header(header::AUTHORIZATION, format!("Bearer {credential}"))
+        .header(header::CONTENT_TYPE, "application/octet-stream")
+        .header(header::CONTENT_LENGTH, MAX_RESOURCE_BODY_BYTES + 1)
+        .body(Body::empty())
+        .unwrap();
+    let response = router.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    let envelope: Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), 1024 * 1024).await.unwrap())
+            .unwrap();
+    assert_eq!(envelope["code"], "resource_too_large");
+
+    let request = Request::builder()
+        .method("POST")
+        .uri(&uri)
+        .header(header::HOST, "127.0.0.1:43123")
+        .header(header::CONTENT_TYPE, "application/octet-stream")
+        .body(Body::from("asset"))
+        .unwrap();
+    let response = router.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+    let request = Request::builder()
+        .method("POST")
+        .uri(&uri)
+        .header(header::HOST, "attacker.example")
+        .header(header::AUTHORIZATION, format!("Bearer {credential}"))
+        .header(header::CONTENT_TYPE, "application/octet-stream")
+        .body(Body::from("asset"))
+        .unwrap();
+    let response = router.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert!(!fixture.root.join("assets").exists());
+}
+
+#[tokio::test]
 async fn resource_http_stream_fails_before_its_final_chunk_when_the_file_changes() {
     let fixture = Fixture::new().await;
     let path = fixture.root.join("changing.bin");
@@ -910,6 +1075,440 @@ async fn inventory_document_revision_is_accepted_by_the_document_mutation_contra
         fs::read_to_string(fixture.root.join("note.md")).unwrap(),
         "second"
     );
+}
+
+#[tokio::test]
+async fn resource_writer_creates_a_document_relative_image_and_returns_an_openable_snapshot() {
+    let fixture = Fixture::new().await;
+    fs::write(fixture.root.join("note.md"), b"# Note").unwrap();
+    let workspace = fixture._workspace.get_workspace().await.unwrap();
+    let document_id = fixture
+        .service
+        .list_inventory(&WorkspaceRelativePath::default())
+        .unwrap()
+        .into_iter()
+        .find_map(|entry| match entry {
+            WorkspaceInventoryEntry::Document(entry) if entry.path.as_str() == "note.md" => {
+                Some(entry.id)
+            }
+            _ => None,
+        })
+        .unwrap();
+
+    let created = fixture
+        .service
+        .create_resource(
+            &document_id,
+            CreateWorkspaceResourceQuery {
+                workspace_generation: workspace.generation,
+                folder: WorkspaceRelativePath::parse("assets").unwrap(),
+                name: ResourceName::parse("pasted.png").unwrap(),
+                kind: ResourceKind::Image,
+            },
+            "image/png",
+            b"\x89PNG\r\n\x1a\nimage bytes",
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(created.path.as_str(), "assets/pasted.png");
+    assert_eq!(created.parent.as_str(), "assets");
+    assert_eq!(created.name.as_str(), "pasted.png");
+    assert_eq!(created.kind, ResourceKind::Image);
+    assert_eq!(created.media_type, "image/png");
+    assert!(created.previewable);
+    assert!(created.revision.as_str().starts_with("sha256:"));
+    assert_eq!(
+        fs::read(fixture.root.join("assets/pasted.png")).unwrap(),
+        b"\x89PNG\r\n\x1a\nimage bytes"
+    );
+
+    let mut opened = fixture
+        .service
+        .open_resource(&created.id, ResourceKind::Image)
+        .unwrap();
+    let mut bytes = Vec::new();
+    opened.read_to_end(&mut bytes).unwrap();
+    opened.verify_complete().unwrap();
+    assert_eq!(bytes, b"\x89PNG\r\n\x1a\nimage bytes");
+}
+
+#[tokio::test]
+async fn resource_writer_uses_atomic_unique_names_without_overwriting_existing_files() {
+    let fixture = Fixture::new().await;
+    fs::write(fixture.root.join("note.md"), b"# Note").unwrap();
+    fs::create_dir(fixture.root.join("assets")).unwrap();
+    fs::write(fixture.root.join("assets/pasted.png"), b"keep existing").unwrap();
+    let workspace = fixture._workspace.get_workspace().await.unwrap();
+    let document_id = fixture
+        .service
+        .list_inventory(&WorkspaceRelativePath::default())
+        .unwrap()
+        .into_iter()
+        .find_map(|entry| match entry {
+            WorkspaceInventoryEntry::Document(entry) if entry.path.as_str() == "note.md" => {
+                Some(entry.id)
+            }
+            _ => None,
+        })
+        .unwrap();
+
+    let created = fixture
+        .service
+        .create_resource(
+            &document_id,
+            CreateWorkspaceResourceQuery {
+                workspace_generation: workspace.generation,
+                folder: WorkspaceRelativePath::parse("assets").unwrap(),
+                name: ResourceName::parse("pasted.png").unwrap(),
+                kind: ResourceKind::Image,
+            },
+            "image/png",
+            b"\x89PNG\r\n\x1a\nnew image",
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(created.path.as_str(), "assets/pasted-2.png");
+    assert_eq!(
+        fs::read(fixture.root.join("assets/pasted.png")).unwrap(),
+        b"keep existing"
+    );
+    assert_eq!(
+        fs::read(fixture.root.join("assets/pasted-2.png")).unwrap(),
+        b"\x89PNG\r\n\x1a\nnew image"
+    );
+}
+
+#[tokio::test]
+async fn resource_writer_rejects_image_mime_or_magic_mismatches_without_a_partial_file() {
+    let fixture = Fixture::new().await;
+    fs::write(fixture.root.join("note.md"), b"# Note").unwrap();
+    let workspace = fixture._workspace.get_workspace().await.unwrap();
+    let document_id = fixture
+        .service
+        .list_inventory(&WorkspaceRelativePath::default())
+        .unwrap()
+        .into_iter()
+        .find_map(|entry| match entry {
+            WorkspaceInventoryEntry::Document(entry) if entry.path.as_str() == "note.md" => {
+                Some(entry.id)
+            }
+            _ => None,
+        })
+        .unwrap();
+
+    for (kind, media_type, body) in [
+        (
+            ResourceKind::Image,
+            "application/octet-stream",
+            b"\x89PNG\r\n\x1a\nimage".as_slice(),
+        ),
+        (ResourceKind::Image, "image/png", b"not a png".as_slice()),
+        (
+            ResourceKind::Attachment,
+            "application/octet-stream",
+            b"\x89PNG\r\n\x1a\nimage".as_slice(),
+        ),
+    ] {
+        let error = fixture
+            .service
+            .create_resource(
+                &document_id,
+                CreateWorkspaceResourceQuery {
+                    workspace_generation: workspace.generation.clone(),
+                    folder: WorkspaceRelativePath::parse("assets").unwrap(),
+                    name: ResourceName::parse("pasted.png").unwrap(),
+                    kind,
+                },
+                media_type,
+                body,
+            )
+            .await
+            .unwrap_err();
+
+        assert_eq!(error.kind(), ResourceServiceErrorKind::InvalidMediaType);
+        assert!(!fixture.root.join("assets/pasted.png").exists());
+    }
+}
+
+#[tokio::test]
+async fn resource_writer_creates_document_relative_attachments_in_nested_workspaces() {
+    let fixture = Fixture::new().await;
+    fs::create_dir(fixture.root.join("notes")).unwrap();
+    fs::write(fixture.root.join("notes/note.md"), b"# Note").unwrap();
+    let workspace = fixture._workspace.get_workspace().await.unwrap();
+    let document_id = fixture
+        .service
+        .list_inventory(&WorkspaceRelativePath::parse("notes").unwrap())
+        .unwrap()
+        .into_iter()
+        .find_map(|entry| match entry {
+            WorkspaceInventoryEntry::Document(entry) => Some(entry.id),
+            WorkspaceInventoryEntry::Resource(_) => None,
+        })
+        .unwrap();
+
+    let created = fixture
+        .service
+        .create_resource(
+            &document_id,
+            CreateWorkspaceResourceQuery {
+                workspace_generation: workspace.generation,
+                folder: WorkspaceRelativePath::parse("files/reports").unwrap(),
+                name: ResourceName::parse("report.pdf").unwrap(),
+                kind: ResourceKind::Attachment,
+            },
+            "application/octet-stream",
+            b"%PDF-1.7 attachment",
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(created.path.as_str(), "notes/files/reports/report.pdf");
+    assert_eq!(created.kind, ResourceKind::Attachment);
+    assert!(!created.previewable);
+    assert_eq!(
+        fs::read(fixture.root.join("notes/files/reports/report.pdf")).unwrap(),
+        b"%PDF-1.7 attachment"
+    );
+}
+
+#[tokio::test]
+async fn resource_writer_rejects_stale_generations_protected_and_ignored_paths() {
+    let fixture = Fixture::new().await;
+    fs::write(fixture.root.join("note.md"), b"# Note").unwrap();
+    fs::write(fixture.root.join("foreign.bin"), b"foreign").unwrap();
+    let inventory = fixture
+        .service
+        .list_inventory(&WorkspaceRelativePath::default())
+        .unwrap();
+    let document_id = inventory
+        .iter()
+        .find_map(|entry| match entry {
+            WorkspaceInventoryEntry::Document(entry) => Some(entry.id.clone()),
+            WorkspaceInventoryEntry::Resource(_) => None,
+        })
+        .unwrap();
+    let foreign_id = inventory
+        .iter()
+        .find_map(|entry| match entry {
+            WorkspaceInventoryEntry::Resource(entry) => {
+                Some(DocumentId::parse(entry.id.as_str()).unwrap())
+            }
+            WorkspaceInventoryEntry::Document(_) => None,
+        })
+        .unwrap();
+    let workspace = fixture._workspace.get_workspace().await.unwrap();
+    let stale = fixture
+        .service
+        .create_resource(
+            &document_id,
+            CreateWorkspaceResourceQuery {
+                workspace_generation: WorkspaceGeneration::parse("stale-generation").unwrap(),
+                folder: WorkspaceRelativePath::parse("assets").unwrap(),
+                name: ResourceName::parse("asset.bin").unwrap(),
+                kind: ResourceKind::Attachment,
+            },
+            "application/octet-stream",
+            b"asset",
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(stale.kind(), ResourceServiceErrorKind::StaleWorkspace);
+
+    let foreign = fixture
+        .service
+        .create_resource(
+            &foreign_id,
+            CreateWorkspaceResourceQuery {
+                workspace_generation: workspace.generation.clone(),
+                folder: WorkspaceRelativePath::parse("assets").unwrap(),
+                name: ResourceName::parse("asset.bin").unwrap(),
+                kind: ResourceKind::Attachment,
+            },
+            "application/octet-stream",
+            b"asset",
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(foreign.kind(), ResourceServiceErrorKind::NotFound);
+
+    let protected = fixture
+        .service
+        .create_resource(
+            &document_id,
+            CreateWorkspaceResourceQuery {
+                workspace_generation: workspace.generation.clone(),
+                folder: WorkspaceRelativePath::parse(".git/assets").unwrap(),
+                name: ResourceName::parse("asset.bin").unwrap(),
+                kind: ResourceKind::Attachment,
+            },
+            "application/octet-stream",
+            b"asset",
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(protected.kind(), ResourceServiceErrorKind::InvalidPath);
+
+    fixture.ignore.set_global_rules("assets/\n");
+    let ignored = fixture
+        .service
+        .create_resource(
+            &document_id,
+            CreateWorkspaceResourceQuery {
+                workspace_generation: workspace.generation,
+                folder: WorkspaceRelativePath::parse("assets").unwrap(),
+                name: ResourceName::parse("asset.bin").unwrap(),
+                kind: ResourceKind::Attachment,
+            },
+            "application/octet-stream",
+            b"asset",
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(ignored.kind(), ResourceServiceErrorKind::InvalidPath);
+    assert!(!fixture.root.join("assets").exists());
+}
+
+#[tokio::test]
+async fn resource_writer_rolls_back_staging_and_new_directories_when_publication_fails() {
+    let fixture = Fixture::new().await;
+    fs::write(fixture.root.join("note.md"), b"# Note").unwrap();
+    let workspace = fixture._workspace.get_workspace().await.unwrap();
+    let document_id = fixture
+        .service
+        .list_inventory(&WorkspaceRelativePath::default())
+        .unwrap()
+        .into_iter()
+        .find_map(|entry| match entry {
+            WorkspaceInventoryEntry::Document(entry) => Some(entry.id),
+            WorkspaceInventoryEntry::Resource(_) => None,
+        })
+        .unwrap();
+    let service = WorkspaceResourceService::new_with_atomic_install(
+        &fixture.runtime,
+        fixture.ignore.clone(),
+        Arc::new(RejectingAtomicInstallPort),
+    );
+    let mut before = fs::read_dir(&fixture.root)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect::<Vec<_>>();
+    before.sort();
+
+    let error = service
+        .create_resource(
+            &document_id,
+            CreateWorkspaceResourceQuery {
+                workspace_generation: workspace.generation,
+                folder: WorkspaceRelativePath::parse("assets/nested").unwrap(),
+                name: ResourceName::parse("asset.bin").unwrap(),
+                kind: ResourceKind::Attachment,
+            },
+            "application/octet-stream",
+            b"asset",
+        )
+        .await
+        .unwrap_err();
+
+    assert_eq!(error.kind(), ResourceServiceErrorKind::Unavailable);
+    assert!(!fixture.root.join("assets").exists());
+    let mut after = fs::read_dir(&fixture.root)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect::<Vec<_>>();
+    after.sort();
+    assert_eq!(after, before);
+}
+
+#[tokio::test]
+async fn resource_writer_settles_a_commit_unknown_publication_by_pinned_identity() {
+    let fixture = Fixture::new().await;
+    fs::write(fixture.root.join("note.md"), b"# Note").unwrap();
+    let workspace = fixture._workspace.get_workspace().await.unwrap();
+    let document_id = fixture
+        .service
+        .list_inventory(&WorkspaceRelativePath::default())
+        .unwrap()
+        .into_iter()
+        .find_map(|entry| match entry {
+            WorkspaceInventoryEntry::Document(entry) => Some(entry.id),
+            WorkspaceInventoryEntry::Resource(_) => None,
+        })
+        .unwrap();
+    let service = WorkspaceResourceService::new_with_atomic_install(
+        &fixture.runtime,
+        fixture.ignore.clone(),
+        Arc::new(InstallThenReportFailurePort),
+    );
+
+    let created = service
+        .create_resource(
+            &document_id,
+            CreateWorkspaceResourceQuery {
+                workspace_generation: workspace.generation,
+                folder: WorkspaceRelativePath::parse("assets").unwrap(),
+                name: ResourceName::parse("asset.bin").unwrap(),
+                kind: ResourceKind::Attachment,
+            },
+            "application/octet-stream",
+            b"asset",
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(created.path.as_str(), "assets/asset.bin");
+    assert_eq!(
+        fs::read(fixture.root.join("assets/asset.bin")).unwrap(),
+        b"asset"
+    );
+}
+
+#[tokio::test]
+async fn concurrent_resource_writes_preserve_both_bodies_under_unique_names() {
+    let fixture = Fixture::new().await;
+    fs::write(fixture.root.join("note.md"), b"# Note").unwrap();
+    let workspace = fixture._workspace.get_workspace().await.unwrap();
+    let document_id = fixture
+        .service
+        .list_inventory(&WorkspaceRelativePath::default())
+        .unwrap()
+        .into_iter()
+        .find_map(|entry| match entry {
+            WorkspaceInventoryEntry::Document(entry) => Some(entry.id),
+            WorkspaceInventoryEntry::Resource(_) => None,
+        })
+        .unwrap();
+    let query = CreateWorkspaceResourceQuery {
+        workspace_generation: workspace.generation,
+        folder: WorkspaceRelativePath::parse("assets").unwrap(),
+        name: ResourceName::parse("asset.bin").unwrap(),
+        kind: ResourceKind::Attachment,
+    };
+
+    let (first, second) = tokio::join!(
+        fixture.service.create_resource(
+            &document_id,
+            query.clone(),
+            "application/octet-stream",
+            b"first",
+        ),
+        fixture
+            .service
+            .create_resource(&document_id, query, "application/octet-stream", b"second",),
+    );
+    let mut paths =
+        [first.unwrap().path, second.unwrap().path].map(|path| path.as_str().to_string());
+    paths.sort();
+
+    assert_eq!(paths, ["assets/asset-2.bin", "assets/asset.bin"]);
+    let mut bodies = [
+        fs::read(fixture.root.join("assets/asset.bin")).unwrap(),
+        fs::read(fixture.root.join("assets/asset-2.bin")).unwrap(),
+    ];
+    bodies.sort();
+    assert_eq!(bodies, [b"first".to_vec(), b"second".to_vec()]);
 }
 
 #[tokio::test]

@@ -939,6 +939,15 @@ pub struct ListWorkspaceInventoryQuery {
     pub parent: WorkspaceRelativePath,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct CreateWorkspaceResourceQuery {
+    pub workspace_generation: WorkspaceGeneration,
+    pub folder: WorkspaceRelativePath,
+    pub name: ResourceName,
+    pub kind: ResourceKind,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct DocumentEntryDto {
@@ -2233,6 +2242,7 @@ pub enum ErrorCode {
     ResourceNotFound,
     DocumentAlreadyExists,
     DocumentTooLarge,
+    ResourceTooLarge,
     DocumentInvalidEncoding,
     RevisionConflict,
     SettingsRevisionConflict,

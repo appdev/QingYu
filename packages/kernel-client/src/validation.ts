@@ -134,7 +134,7 @@ function isDocumentId(value: unknown): value is string {
   return typeof value === "string" && value.length <= 8_192 && /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/u.test(value);
 }
 
-function isResourceEntry(value: unknown): boolean {
+export function isResourceEntry(value: unknown): value is components["schemas"]["ResourceEntryDto"] {
   if (!isRecord(value)) return false;
   const expectedPath = isResourceName(value.name) && isWorkspaceRelativePath(value.parent)
     ? `${value.parent === "" ? "" : `${value.parent}/`}${value.name}`

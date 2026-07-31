@@ -9,7 +9,7 @@ export const KERNEL_API_ERROR_MESSAGES: Record<KernelApiErrorCode, string> = {
   invalid_credentials: "The credentials are invalid.", csrf_rejected: "The CSRF proof is invalid.", authentication_rate_limited: "Authentication is temporarily limited.",
   authentication_unavailable: "Authentication is unavailable.", host_not_allowed: "The request host is not allowed.", origin_not_allowed: "The request origin is not allowed.",
   kernel_not_ready: "The Kernel is not ready.", workspace_unavailable: "The workspace is unavailable.", workspace_locked: "The workspace is locked.",
-  document_not_found: "The document was not found.", resource_not_found: "The resource was not found.", document_already_exists: "The document already exists.", document_too_large: "The document exceeds the supported size.",
+  document_not_found: "The document was not found.", resource_not_found: "The resource was not found.", document_already_exists: "The document already exists.", document_too_large: "The document exceeds the supported size.", resource_too_large: "The resource exceeds the supported size.",
   document_invalid_encoding: "The document encoding is invalid.", revision_conflict: "The document changed since it was loaded.", settings_revision_conflict: "The settings changed since they were loaded.",
   sync_config_revision_conflict: "The sync configuration changed since it was loaded.", invalid_settings_field: "A settings field is invalid.", settings_unavailable: "Settings are unavailable.",
   sync_config_absent: "Sync is not configured.", sync_config_invalid: "The sync configuration is invalid.", sync_not_ready: "Sync is not ready.",

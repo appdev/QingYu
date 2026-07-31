@@ -182,6 +182,23 @@ export type KernelOpenResourceInput = {
   workspaceGeneration: KernelWorkspaceGeneration;
 };
 
+export type KernelCreateResourceInput = {
+  body: Blob;
+  documentLocator: KernelDocumentLocator;
+  folder: KernelWorkspaceRelativePath;
+  name: string;
+  workspaceGeneration: KernelWorkspaceGeneration;
+} & (
+  | {
+    kind: "image";
+    mediaType: "image/gif" | "image/jpeg" | "image/png" | "image/webp";
+  }
+  | {
+    kind: "attachment";
+    mediaType: "application/octet-stream";
+  }
+);
+
 export type KernelResourceBody = {
   body: Blob;
   mediaType: string;
@@ -456,6 +473,7 @@ export type KernelDomainPort = {
   };
   invalidations: KernelInvalidationSource;
   resources: {
+    create: (input: KernelCreateResourceInput) => Promise<KernelResourceSnapshot>;
     list: (input: KernelListResourcesInput) => Promise<KernelInventorySnapshot>;
     open: (input: KernelOpenResourceInput) => Promise<KernelResourceBody>;
   };
@@ -513,6 +531,7 @@ export function createUnavailableKernelDomainPort(): KernelDomainPort {
       subscribe: () => () => undefined,
     },
     resources: {
+      create: rejectUnavailable,
       list: rejectUnavailable,
       open: rejectUnavailable,
     },

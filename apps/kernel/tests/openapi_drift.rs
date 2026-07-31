@@ -32,6 +32,11 @@ const HTTP_OPERATIONS: &[(&str, &str, &str)] = &[
         "/api/v1/resources/{resourceId}",
         "openWorkspaceResource",
     ),
+    (
+        "post",
+        "/api/v1/documents/{documentId}/resources",
+        "createWorkspaceResource",
+    ),
     ("get", "/api/v1/documents", "listDocuments"),
     ("post", "/api/v1/documents", "createDocument"),
     ("get", "/api/v1/documents/{documentId}", "getDocument"),
@@ -92,6 +97,7 @@ const ERROR_CODES: &[&str] = &[
     "resource_not_found",
     "document_already_exists",
     "document_too_large",
+    "resource_too_large",
     "document_invalid_encoding",
     "revision_conflict",
     "settings_revision_conflict",
@@ -245,7 +251,7 @@ fn assert_optional_non_null(document: &Value, schema: &str, field: &str) {
 }
 
 #[test]
-fn openapi_has_exactly_the_frozen_thirty_one_http_operations() {
+fn openapi_has_exactly_the_frozen_thirty_two_http_operations() {
     let document = api_document();
     let paths = document["paths"].as_object().expect("OpenAPI paths");
     assert!(
@@ -257,7 +263,7 @@ fn openapi_has_exactly_the_frozen_thirty_one_http_operations() {
         .iter()
         .map(|(method, path, operation)| ((*method, *path), *operation))
         .collect();
-    assert_eq!(expected.len(), 31);
+    assert_eq!(expected.len(), 32);
 
     let mut actual = BTreeMap::new();
     for (path, path_item) in paths {
@@ -675,6 +681,49 @@ fn operations_freeze_request_bodies_parameters_and_route_specific_errors() {
     assert_eq!(
         binary_headers["X-Content-Type-Options"]["schema"]["const"],
         "nosniff"
+    );
+
+    let upload = &document["paths"]["/api/v1/documents/{documentId}/resources"]["post"];
+    let upload_parameters = upload["parameters"].as_array().expect("upload parameters");
+    for (name, location, schema) in [
+        ("documentId", "path", "DocumentId"),
+        ("workspaceGeneration", "query", "WorkspaceGeneration"),
+        ("folder", "query", "WorkspaceRelativePath"),
+        ("name", "query", "ResourceName"),
+        ("kind", "query", "ResourceKind"),
+    ] {
+        assert!(upload_parameters.iter().any(|parameter| {
+            parameter["name"] == name
+                && parameter["in"] == location
+                && parameter["required"] == true
+                && parameter["schema"]["$ref"] == format!("#/components/schemas/{schema}")
+        }));
+    }
+    let upload_body = &upload["requestBody"];
+    assert_eq!(upload_body["required"], true);
+    for media_type in [
+        "application/octet-stream",
+        "image/gif",
+        "image/jpeg",
+        "image/png",
+        "image/webp",
+    ] {
+        assert_eq!(
+            upload_body["content"][media_type]["schema"]["type"],
+            "string"
+        );
+        assert_eq!(
+            upload_body["content"][media_type]["schema"]["format"],
+            "binary"
+        );
+        assert_eq!(
+            upload_body["content"][media_type]["schema"]["maxLength"],
+            64 * 1024 * 1024
+        );
+    }
+    assert_eq!(
+        upload["responses"]["201"]["content"]["application/json"]["schema"]["$ref"],
+        "#/components/schemas/ResourceEntryDto"
     );
 
     let patch_settings_errors =

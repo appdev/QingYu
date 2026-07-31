@@ -36,6 +36,19 @@ describe("createKernelClient", () => {
     );
     const resourceResponse = await client.resources.open("resource/1", "image", { signal });
     expect(await resourceResponse.text()).toBe("image bytes");
+    const upload = new Blob([new Uint8Array([137, 80, 78, 71])], { type: "image/png" });
+    await client.resources.create(
+      "document/1",
+      {
+        body: upload,
+        folder: "assets",
+        kind: "image",
+        mediaType: "image/png",
+        name: "pasted.png",
+        workspaceGeneration: "generation-1",
+      },
+      { signal },
+    );
     await client.documents.list(
       { parent: "notes", cursor: "document-cursor", limit: 10 },
       { signal },
@@ -131,6 +144,7 @@ describe("createKernelClient", () => {
       "GET /api/v1/search?query=needle&cursor=search-cursor&limit=20",
       "GET /api/v1/inventory?parent=notes&cursor=resource-cursor&limit=10",
       "GET /api/v1/resources/resource%2F1?kind=image",
+      "POST /api/v1/documents/document%2F1/resources?folder=assets&kind=image&name=pasted.png&workspaceGeneration=generation-1",
       "GET /api/v1/documents?parent=notes&cursor=document-cursor&limit=10",
       "POST /api/v1/documents",
       "GET /api/v1/documents/document%2F1",
@@ -156,13 +170,15 @@ describe("createKernelClient", () => {
       );
       expect(call.init.signal).toBe(signal);
     }
-    expect(JSON.parse(String(calls[11]?.init.body))).toMatchObject({
+    expect(calls[8]?.init.body).toBe(upload);
+    expect(new Headers(calls[8]?.init.headers).get("content-type")).toBe("image/png");
+    expect(JSON.parse(String(calls[12]?.init.body))).toMatchObject({
       expectedRevision: "revision-1",
     });
-    expect(JSON.parse(String(calls[18]?.init.body))).toMatchObject({
+    expect(JSON.parse(String(calls[19]?.init.body))).toMatchObject({
       expectedRevision: "settings-1",
     });
-    expect(JSON.parse(String(calls[24]?.init.body))).toMatchObject({
+    expect(JSON.parse(String(calls[25]?.init.body))).toMatchObject({
       expectedConfigRevision: "sync-3",
     });
   });
@@ -506,6 +522,14 @@ function operationCalls(client: KernelClient): Array<() => Promise<unknown>> {
     () => client.workspace.search({ query: "needle" }),
     () => client.resources.list(),
     () => client.resources.open("payload.signature", "attachment"),
+    () => client.resources.create("payload.signature", {
+      body: new Blob(["attachment"]),
+      folder: "assets",
+      kind: "attachment",
+      mediaType: "application/octet-stream",
+      name: "attachment.bin",
+      workspaceGeneration: "generation-1",
+    }),
     () => client.documents.list(),
     () =>
       client.documents.create({
@@ -559,6 +583,18 @@ const ENTRY = {
   sizeBytes: 4,
 };
 const CONTENT = { ...ENTRY, contents: "note" };
+const RESOURCE = {
+  id: "payload.signature",
+  kind: "image",
+  mediaType: "image/png",
+  modifiedAt: "2026-01-01T00:00:00Z",
+  name: "pasted.png",
+  parent: "assets",
+  path: "assets/pasted.png",
+  previewable: true,
+  revision: "sha256:revision-1",
+  sizeBytes: 4,
+};
 const HISTORY_SNAPSHOT = {
   contents: "previous note",
   createdAt: "2026-01-01T00:00:00Z",
@@ -617,6 +653,9 @@ function operationResponseWithoutRequestId(path: string, method: string) {
       "x-content-type-options": "nosniff",
     },
   });
+  if (path.endsWith("/resources") && method === "POST") {
+    return Response.json(RESOURCE, { status: 201 });
+  }
   if (path === "/api/v1/documents" && method === "GET") return Response.json({ items: [], nextCursor: null });
   if (path === "/api/v1/documents" && method === "POST") return Response.json(CONTENT, { status: 201 });
   if (path.endsWith("/delete")) return new Response(null, { status: 204 });

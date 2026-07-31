@@ -141,6 +141,48 @@ describe("Server Kernel domain adapter", () => {
     }, { signal: expect.any(AbortSignal) });
   });
 
+  it("writes raw resource blobs through the browser-session Kernel client", async () => {
+    const client = kernelClient();
+    vi.mocked(client.resources.create).mockResolvedValue({
+      id: "resource.signature",
+      kind: "attachment",
+      mediaType: "application/octet-stream",
+      modifiedAt: "2026-07-31T00:00:00Z",
+      name: "report.pdf",
+      parent: "files",
+      path: "files/report.pdf",
+      previewable: false,
+      revision: "sha256:resource-revision",
+      sizeBytes: 7,
+    });
+    const adapter = await createServerKernelDomainAdapter(client, options());
+    const body = new Blob(["report"], { type: "application/pdf" });
+
+    await expect(adapter.port.resources.create({
+      body,
+      documentLocator: "signed-document-1" as KernelDocumentLocator,
+      folder: "files" as KernelWorkspaceRelativePath,
+      kind: "attachment",
+      mediaType: "application/octet-stream",
+      name: "report.pdf",
+      workspaceGeneration: GENERATION,
+    })).resolves.toMatchObject({
+      id: "resource.signature",
+      kind: "attachment",
+      relativePath: "files/report.pdf",
+      revision: "sha256:resource-revision",
+      workspaceGeneration: GENERATION,
+    });
+    expect(client.resources.create).toHaveBeenCalledWith("signed-document-1", {
+      body,
+      folder: "files",
+      kind: "attachment",
+      mediaType: "application/octet-stream",
+      name: "report.pdf",
+      workspaceGeneration: GENERATION,
+    }, { signal: expect.any(AbortSignal) });
+  });
+
   it("fails closed when release races resource body consumption", async () => {
     const client = kernelClient();
     let resolveBody: ((body: Blob) => unknown) | undefined;
@@ -510,6 +552,7 @@ function kernelClient(overrides: {
   return {
     auth: {},
     resources: {
+      create: vi.fn(),
       list: vi.fn(async () => ({ items: [], nextCursor: null })),
       open: vi.fn(async () => new Response(new Uint8Array([1]), {
         headers: { "content-type": "image/png" },

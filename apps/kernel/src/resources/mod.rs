@@ -11,4 +11,6 @@ mod service;
 
 pub use error::{ResourceServiceError, ResourceServiceErrorKind};
 pub use href::resolve_markdown_href;
-pub use service::{RetainedResource, WorkspaceInventoryEntry, WorkspaceResourceService};
+pub use service::{
+    RetainedResource, WorkspaceInventoryEntry, WorkspaceResourceService, MAX_RESOURCE_BODY_BYTES,
+};
