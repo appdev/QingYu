@@ -1,21 +1,31 @@
 import { emit } from "@tauri-apps/api/event";
 import { load } from "@tauri-apps/plugin-store";
-import { createDefaultAppRuntime, type AppRuntime } from "@markra/app/runtime";
+import {
+  createDefaultAppRuntime,
+  createKernelFileRuntimeOwner,
+  createKernelSettingsRuntime,
+  createKernelSyncConfigRuntime,
+  kernelWorkspaceRoot,
+  type AppRuntime,
+  type KernelDomainPort,
+} from "@markra/app/runtime";
 import { hasTauriRuntime } from "@markra/shared";
+
+import { createKernelObjectUrlImageSource } from "./kernel-object-url-image-source";
+import type { NativeKernelBootstrap } from "../kernel-bootstrap";
+import {
+  createDesktopKernelDomainAdapter,
+  type DesktopKernelDomainAdapter,
+  type DesktopKernelDomainAdapterOptions,
+} from "./kernel";
 import { listenNativeEvent } from "./tauri/events";
 import * as fileConfirm from "./tauri/file/confirm";
 import * as mobileFiles from "./tauri/file/mobile";
-import * as files from "./tauri/file/shared";
 import * as logs from "./tauri/logs/shared";
-import * as managedWorkspace from "./tauri/managed-workspace";
 import * as mobileBack from "./tauri/mobile-back";
 import * as mcpPolicy from "./tauri/mcp-policy";
 import * as opener from "./tauri/opener";
-import * as settings from "./tauri/settings";
 import * as themes from "./tauri/themes/shared";
-import * as syncConfig from "./tauri/sync-config/shared";
-import * as syncPathGuard from "./tauri/sync-path-guard";
-import * as webResource from "./tauri/web-resource";
 
 const defaultRuntime = createDefaultAppRuntime();
 
@@ -24,72 +34,54 @@ export const mobileRuntime = {
   events: {
     emit,
     isAvailable: hasTauriRuntime,
-    listen: listenNativeEvent
+    listen: listenNativeEvent,
   },
   features: {
     applicationMenu: false,
     applicationShortcuts: false,
-    dejavuSync: true,
+    dejavuSync: false,
     export: false,
     fileDrop: false,
-    imageImport: true,
+    imageImport: false,
     nativeWindowChrome: false,
     openLocalAttachments: false,
     pandoc: false,
-    projectSync: true,
+    projectSync: false,
     resources: false,
     settingsWindow: false,
     systemFonts: false,
-    updater: false
+    updater: false,
   },
   files: {
     ...defaultRuntime.files,
     confirmMarkdownFileDelete: fileConfirm.confirmNativeMarkdownFileDelete,
-    confirmUnsavedMarkdownDocumentDiscard: fileConfirm.confirmNativeUnsavedMarkdownDocumentDiscard,
-    createMarkdownTreeFile: files.createNativeMarkdownTreeFile,
-    createMarkdownTreeFolder: files.createNativeMarkdownTreeFolder,
-    deleteMarkdownTreeFile: files.deleteNativeMarkdownTreeFile,
-    listMarkdownFileHistory: files.listNativeMarkdownFileHistory,
-    listMarkdownFilesForPath: files.listNativeMarkdownFilesForPath,
-    loadMarkdownFilesForPath: files.loadNativeMarkdownFilesForPath,
-    moveMarkdownTreeFile: files.moveNativeMarkdownTreeFile,
+    confirmUnsavedMarkdownDocumentDiscard:
+      fileConfirm.confirmNativeUnsavedMarkdownDocumentDiscard,
     openLocalImages: mobileFiles.openMobileLocalImages,
-    readMarkdownFile: files.readNativeMarkdownFile,
-    readMarkdownFileHistory: files.readNativeMarkdownFileHistory,
-    renameMarkdownTreeFile: files.renameNativeMarkdownTreeFile,
-    saveClipboardImage: mobileFiles.saveMobileClipboardImage,
-    saveMarkdownFile: files.saveNativeMarkdownFileInPlace,
-    searchMarkdownFiles: files.searchNativeMarkdownFilesForPath,
-    watchMarkdownFile: files.watchNativeMarkdownFile,
-    watchMarkdownTree: files.watchNativeMarkdownTree
   },
   logs: {
     ...defaultRuntime.logs,
     isAvailable: logs.isNativeLoggingAvailable,
-    writeLog: logs.writeNativeLog
+    writeLog: logs.writeNativeLog,
   },
   mcp: {
     ...defaultRuntime.mcp,
     policyAvailable: true,
     localServiceAvailable: false,
     getSettings: mcpPolicy.getNativeMcpPolicySettings,
-    updateSettings: mcpPolicy.updateNativeMcpPolicySettings
+    updateSettings: mcpPolicy.updateNativeMcpPolicySettings,
   },
   navigation: {
-    subscribeToSystemBack: mobileBack.subscribeToMobileSystemBack
+    subscribeToSystemBack: mobileBack.subscribeToMobileSystemBack,
   },
   platform: {
     resolveDesktopOsVersion: () => null,
     resolveDesktopPlatform: () => null,
-    resolveFormFactor: () => "mobile"
+    resolveFormFactor: () => "mobile",
   },
   settings: {
+    ...defaultRuntime.settings,
     loadStore: load,
-    readPrimaryWorkspaceState: settings.readNativePrimaryWorkspaceState,
-    readGroup: settings.readNativeAppSettingsGroup,
-    replacePortable: settings.replaceNativePortableAppSettings,
-    writePrimaryWorkspaceState: settings.writeNativePrimaryWorkspaceState,
-    writeGroup: settings.writeNativeAppSettingsGroup
   },
   themes: {
     ...defaultRuntime.themes,
@@ -97,55 +89,97 @@ export const mobileRuntime = {
     capabilities: {
       canDelete: true,
       canImport: false,
-      canOpenDirectory: false
+      canOpenDirectory: false,
     },
     commitActivation: themes.commitNativeThemeActivation,
     delete: themes.deleteNativeTheme,
     list: themes.listNativeThemes,
     prepareActivation: themes.prepareNativeThemeActivation,
-    releaseActivation: themes.releaseNativeThemeActivation
-  },
-  syncConfig: {
-    bindRepository: syncConfig.bindNativeDejavuRepository,
-    cancelApply: syncConfig.cancelNativeSyncConfigApply,
-    changeGlobalKey: syncConfig.changeNativeDejavuGlobalKey,
-    deleteRemoteRepository: syncConfig.deleteNativeDejavuRemoteRepository,
-    enable: syncConfig.enableNativeSyncConfig,
-    exportGlobalKey: syncConfig.exportNativeDejavuGlobalKey,
-    initializeGlobalKey: syncConfig.initializeNativeDejavuGlobalKey,
-    load: syncConfig.loadNativeSyncConfig,
-    loadKeyState: syncConfig.loadNativeDejavuKeyState,
-    listNotebooks: syncConfig.listNativeNotebooks,
-    listDejavuConflictHistory: syncConfig.listNativeDejavuConflictHistory,
-    loadEditing: syncConfig.loadNativeSyncConfigEditing,
-    loadRepositoryStatus: syncConfig.loadNativeDejavuRepositoryStatus,
-    loadStatus: syncConfig.loadNativeSyncStatus,
-    patch: syncConfig.patchNativeSyncConfig,
-    purgeRemoteRepository: syncConfig.purgeNativeDejavuRemoteRepository,
-    recover: syncConfig.recoverNativeSyncConfig,
-    requestApply: syncConfig.requestNativeSyncConfigApply,
-    readDejavuConflictHistory: syncConfig.readNativeDejavuConflictHistory,
-    rebuildLocalRepository: syncConfig.rebuildNativeDejavuLocalRepository,
-    reset: syncConfig.resetNativeSyncConfig,
-    setEditing: syncConfig.setNativeSyncConfigEditing,
-    settleApply: syncConfig.settleNativeKernelSyncConfigApply,
-    stopRepositorySync: syncConfig.stopNativeDejavuRepositorySync,
-    sync: syncConfig.syncApplication,
-    testConnection: syncConfig.testSyncConnection
-  },
-  syncPathGuard: {
-    acknowledge: syncPathGuard.acknowledgeNativePathGuard
+    releaseActivation: themes.releaseNativeThemeActivation,
   },
   window: {
     ...defaultRuntime.window,
-    openExternalUrl: opener.openNativeExternalUrl
+    openExternalUrl: opener.openNativeExternalUrl,
   },
-  webResource: {
-    downloadImage: webResource.downloadNativeWebImage
-  },
-  workspace: {
-    isDocumentInRoot: managedWorkspace.isNativeDocumentInWorkspace,
-    listManagedNotebookNames: managedWorkspace.listNativeManagedWorkspaceNames,
-    resolveManagedRoot: managedWorkspace.resolveNativeManagedWorkspaceRoot
-  }
 } satisfies AppRuntime;
+
+export interface MobileKernelRuntimeOwner {
+  readonly runtime: AppRuntime;
+  readonly release: () => undefined;
+}
+
+export function createMobileKernelDomainAdapter(
+  bootstrap: NativeKernelBootstrap,
+  options: DesktopKernelDomainAdapterOptions = {},
+): Promise<DesktopKernelDomainAdapter> {
+  return createDesktopKernelDomainAdapter(bootstrap, {
+    ...options,
+    profile: "mobile",
+  });
+}
+
+export function createMobileKernelRuntimeOwner(
+  kernel: KernelDomainPort,
+): MobileKernelRuntimeOwner {
+  const transient = createDefaultAppRuntime();
+  const fileOwner = createKernelFileRuntimeOwner(kernel, {
+    imageSource: createKernelObjectUrlImageSource(),
+    invalidations: kernel.invalidations,
+    nativeShell: {
+      confirmMarkdownFileDelete: mobileRuntime.files.confirmMarkdownFileDelete,
+      confirmUnsavedMarkdownDocumentDiscard:
+        mobileRuntime.files.confirmUnsavedMarkdownDocumentDiscard,
+      openLocalImages: mobileRuntime.files.openLocalImages,
+    },
+  });
+  const runtime: AppRuntime = {
+    ...mobileRuntime,
+    features: {
+      ...mobileRuntime.features,
+      projectSync: true,
+      resources: true,
+    },
+    files: fileOwner.files,
+    kernel,
+    settings: createKernelSettingsRuntime(kernel, {
+      local: {
+        loadStore: mobileRuntime.settings.loadStore,
+        readPrimaryWorkspaceState: undefined,
+        writePrimaryWorkspaceState: undefined,
+      },
+    }),
+    syncConfig: createKernelSyncConfigRuntime(kernel, {
+      local: {
+        cancelApply: transient.syncConfig.cancelApply,
+        loadEditing: transient.syncConfig.loadEditing,
+        requestApply: transient.syncConfig.requestApply,
+        setEditing: transient.syncConfig.setEditing,
+        settleApply: transient.syncConfig.settleApply,
+      },
+    }),
+    syncPathGuard: transient.syncPathGuard,
+    workspace: {
+      isDocumentInRoot: async (documentPath, rootPath) => (
+        rootPath === kernelWorkspaceRoot &&
+        (documentPath === rootPath || documentPath.startsWith(`${rootPath}/`))
+      ),
+      listManagedNotebookNames: async () => [],
+      resolveManagedRoot: async () => null,
+      rootPolicy: {
+        canChooseLocalRoot: false,
+        kind: "fixed",
+        resolveRoot: async () => kernelWorkspaceRoot,
+      },
+    },
+  };
+  let active = true;
+  return Object.freeze({
+    runtime,
+    release: () => {
+      if (!active) return undefined;
+      active = false;
+      fileOwner.release();
+      return undefined;
+    },
+  });
+}

@@ -19,14 +19,9 @@ const TYPED_SETTINGS_COMMANDS: &[&str] = &[
 ];
 
 const MOBILE_COMMANDS: &[&str] = &[
+    "read_mobile_kernel_bootstrap",
     "get_mcp_policy",
     "update_mcp_policy",
-    "read_app_settings_group",
-    "write_app_settings_group",
-    "replace_portable_app_settings",
-    "read_primary_workspace_state",
-    "write_primary_workspace_state",
-    "acknowledge_path_guard",
     "list_themes",
     "read_theme_css",
     "prepare_theme_activation",
@@ -34,53 +29,6 @@ const MOBILE_COMMANDS: &[&str] = &[
     "cancel_theme_activation",
     "release_theme_activation",
     "delete_theme",
-    "list_markdown_files_for_path",
-    "load_markdown_files_for_path",
-    "cancel_markdown_files_load",
-    "search_markdown_files_for_path",
-    "create_markdown_tree_file",
-    "create_markdown_tree_folder",
-    "rename_markdown_tree_file",
-    "move_markdown_tree_file",
-    "delete_markdown_tree_file",
-    "read_markdown_file",
-    "list_markdown_file_history",
-    "read_markdown_file_history",
-    "write_markdown_file",
-    "watch_markdown_file",
-    "unwatch_markdown_file",
-    "watch_markdown_tree",
-    "unwatch_markdown_tree",
-    "load_sync_config",
-    "enable_sync_config",
-    "patch_sync_config",
-    "recover_sync_config",
-    "reset_sync_config",
-    "load_sync_config_editing",
-    "set_sync_config_editing",
-    "request_sync_config_apply",
-    "cancel_sync_config_apply",
-    "load_sync_status",
-    "list_remote_notebooks",
-    "bind_dejavu_repository",
-    "load_dejavu_key_state",
-    "initialize_dejavu_global_key",
-    "export_dejavu_global_key",
-    "change_global_key",
-    "load_dejavu_repository_status",
-    "list_dejavu_conflict_history",
-    "read_dejavu_conflict_history",
-    "rebuild_local_repository",
-    "stop_repository_sync",
-    "purge_remote_repository",
-    "delete_remote_repository",
-    "sync_application",
-    "test_sync_connection",
-    "is_document_in_workspace",
-    "list_managed_workspace_names",
-    "resolve_managed_workspace_root",
-    "save_clipboard_image",
-    "download_web_image",
     "complete_mobile_back",
 ];
 
@@ -418,6 +366,21 @@ fn builder_boundary_mobile_registers_only_approved_shared_commands() {
         .collect::<BTreeSet<_>>();
 
     assert_eq!(commands, expected, "mobile command registrations changed");
+    for legacy_writer in [
+        "read_markdown_file",
+        "write_markdown_file",
+        "read_app_settings_group",
+        "write_app_settings_group",
+        "load_sync_config",
+        "patch_sync_config",
+        "sync_application",
+        "save_clipboard_image",
+    ] {
+        assert!(
+            !commands.contains(legacy_writer),
+            "mobile retained legacy writer command {legacy_writer}"
+        );
+    }
 }
 
 #[test]
@@ -430,6 +393,7 @@ fn builder_boundary_native_kernel_bootstrap_is_desktop_only_and_production_owned
 
     assert!(desktop_commands.contains("read_native_kernel_bootstrap"));
     assert!(!mobile_commands.contains("read_native_kernel_bootstrap"));
+    assert!(mobile_commands.contains("read_mobile_kernel_bootstrap"));
     assert!(desktop.contains("NativeKernelBootstrapOwner::new()"));
     assert!(host.contains("KernelHostSupervisor::new_with_bootstrap"));
     assert!(host.contains("DesktopKernelOwner::new"));
@@ -443,6 +407,7 @@ fn builder_boundary_native_kernel_bootstrap_is_desktop_only_and_production_owned
     assert!(desktop.contains("owner.stop().await"));
     assert!(host.contains("qingyu://kernel-bootstrap-changed"));
     assert!(!mobile.contains("KernelHostSupervisor"));
+    assert!(mobile.contains("install_mobile_kernel_runtime"));
 }
 
 #[test]
@@ -603,7 +568,9 @@ fn builder_boundary_mobile_back_intercepts_only_uncoded_exit_requests() {
     assert!(runtime.contains("code: None"));
     assert!(runtime.contains("api.prevent_exit()"));
     assert!(runtime.contains("emit_mobile_back_requested"));
-    assert!(runtime.contains("commands::handle_native_sync_exit(app, Some(code), api)"));
+    assert!(runtime.contains("request_mobile_kernel_exit(app, code, &api)"));
+    assert!(runtime.contains("runtime.stop().await"));
+    assert!(runtime.contains("mark_terminal_exit_ready"));
 
     let desktop_exit = source("src/app_exit.rs");
     assert!(!desktop_exit.contains("handle_native_sync_exit"));
@@ -669,13 +636,53 @@ fn builder_boundary_mobile_excludes_desktop_modules_state_plugins_and_initializa
         assert!(runtime.contains(plugin), "mobile runtime omitted {plugin}");
     }
 
-    for state in [
+    for state in ["MobileBackState", "MobileKernelRuntimeState"] {
+        assert!(runtime.contains(state), "mobile runtime omitted {state}");
+    }
+    for legacy_state in [
         "MarkdownFileWatcherState",
         "MarkdownTreeWatcherState",
         "MarkdownTreeLoadState",
-        "MobileBackState",
+        "DejavuSyncServiceOwner",
+        "DejavuSchedulerOwner",
+        "PathGuardCoordinatorOwner",
     ] {
-        assert!(runtime.contains(state), "mobile runtime omitted {state}");
+        assert!(
+            !runtime.contains(legacy_state),
+            "mobile retained legacy writer state {legacy_state}"
+        );
+    }
+}
+
+#[test]
+fn builder_boundary_mobile_kernel_is_in_process_memory_only_and_origin_bound() {
+    let runtime = source("src/mobile_kernel_runtime.rs");
+    for required in [
+        "compose_fixed_mobile_kernel",
+        "MobileKernelHostOwner",
+        "validated_mobile_renderer_origin",
+        "read_mobile_kernel_bootstrap",
+        "self.owner.stop().await",
+    ] {
+        assert!(
+            runtime.contains(required),
+            "mobile Kernel runtime omitted {required}"
+        );
+    }
+    for forbidden in [
+        "std::process",
+        "tokio::process",
+        "NativeHostStart",
+        "KernelHostSupervisor",
+        "NativeKernelProcessFactory",
+        "tauri_plugin_store",
+        "credential=",
+        "?credential",
+    ] {
+        assert!(
+            !runtime.contains(forbidden),
+            "mobile Kernel runtime crossed a forbidden boundary with {forbidden}"
+        );
     }
 }
 
@@ -1224,17 +1231,12 @@ fn builder_boundary_theme_quarantine_cleanup_has_platform_safe_root_deletion() {
 }
 
 #[test]
-fn builder_boundary_keeps_the_legacy_path_guard_graph_out_of_desktop() {
+fn builder_boundary_keeps_the_legacy_path_guard_graph_out_of_native_runtime_owners() {
     let mobile = source("src/mobile_runtime.rs");
-    let mobile_install = mobile
-        .find("install_production_graph")
-        .expect("mobile should install the Dejavu graph");
-    let mobile_startup = mobile
-        .find("trigger_startup")
-        .expect("mobile should retain the startup trigger");
-    assert!(mobile_install < mobile_startup);
-    assert!(mobile.contains("PathGuardCoordinatorOwner::default()"));
-    assert!(mobile.contains("acknowledge_path_guard"));
+    assert!(!mobile.contains("install_production_graph"));
+    assert!(!mobile.contains("trigger_startup()"));
+    assert!(!mobile.contains("PathGuardCoordinatorOwner::default()"));
+    assert!(!mobile.contains("acknowledge_path_guard"));
 
     let desktop = source("src/desktop_runtime.rs");
     let desktop = desktop
@@ -1280,10 +1282,7 @@ fn builder_boundary_keeps_the_legacy_path_guard_graph_out_of_desktop() {
     assert!(maintenance.contains("spawn_on_tauri_runtime"));
     assert!(maintenance.contains("tauri::async_runtime::spawn(future)"));
     let mobile_runtime = source("src/mobile_runtime.rs");
-    assert!(
-        mobile_runtime.contains("if let Err(error) = crate::dejavu_sync::install_production_graph")
-    );
-    assert!(mobile_runtime.contains("Dejavu sync initialization failed"));
+    assert!(!mobile_runtime.contains("Dejavu sync initialization failed"));
     for command in [
         "rebuild_local_repository",
         "stop_repository_sync",
@@ -1298,8 +1297,8 @@ fn builder_boundary_keeps_the_legacy_path_guard_graph_out_of_desktop() {
         "read_dejavu_conflict_history",
     ] {
         assert!(
-            mobile_runtime.contains(&format!("crate::dejavu_sync::commands::{command},")),
-            "mobile runtime should register {command}"
+            !mobile_runtime.contains(&format!("crate::dejavu_sync::commands::{command},")),
+            "mobile runtime retained legacy writer command {command}"
         );
     }
 

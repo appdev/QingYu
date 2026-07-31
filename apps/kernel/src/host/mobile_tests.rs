@@ -28,8 +28,8 @@ use super::mobile::{
 use crate::api::ApiConnectionLifecycle;
 use crate::contract::ServerFrame;
 use crate::{
-    config::KernelConfig, contract::HostProfile, paths::KernelPaths, ports::KernelPorts,
-    runtime::KernelRuntime,
+    composition::compose_fixed_mobile_kernel, config::KernelConfig, contract::HostProfile,
+    paths::KernelPaths, ports::KernelPorts, runtime::KernelRuntime,
 };
 
 const WEBVIEW_ORIGIN: &str = "qingyu://localhost";
@@ -146,6 +146,22 @@ fn owner(timeout: Duration) -> MobileKernelHostOwner {
     MobileKernelHostOwner::new(timeout).unwrap()
 }
 
+async fn authenticated_json(endpoint: &MobileKernelEndpoint, path: &str) -> serde_json::Value {
+    let response = reqwest::Client::new()
+        .get(format!("{}{}", endpoint.base_url(), path))
+        .header(
+            header::AUTHORIZATION,
+            format!("Bearer {}", endpoint.bearer().unwrap()),
+        )
+        .header(header::ORIGIN, WEBVIEW_ORIGIN)
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap();
+    serde_json::from_slice(&response.bytes().await.unwrap()).unwrap()
+}
+
 async fn authenticated_status(
     endpoint: &MobileKernelEndpoint,
     bearer: &str,
@@ -173,6 +189,54 @@ fn mobile_paths_activate_only_the_managed_mobile_profile() {
         .root()
         .verify_held_directory()
         .is_ok());
+}
+
+#[tokio::test]
+async fn production_mobile_composition_reuses_one_managed_workspace_identity_across_launches() {
+    let _test_gate = MOBILE_OWNER_TEST_GATE.lock().await;
+    let root = tempdir().unwrap();
+    let app_data = root.path().join("app-data");
+    let cache = root.path().join("cache");
+    fs::create_dir(&app_data).unwrap();
+    fs::create_dir(&cache).unwrap();
+
+    let first_launch = compose_fixed_mobile_kernel(
+        KernelConfig::generate().unwrap(),
+        KernelPaths::mobile(&app_data, &cache, "primary").unwrap(),
+        "QingYu",
+    )
+    .await
+    .unwrap();
+    let first_owner = owner(Duration::from_secs(2));
+    let first_endpoint = first_owner
+        .start(first_launch, WEBVIEW_ORIGIN)
+        .await
+        .unwrap();
+    let first_runtime = authenticated_json(&first_endpoint, "/api/v1/runtime").await;
+    let first_workspace = authenticated_json(&first_endpoint, "/api/v1/workspace").await;
+    assert_eq!(first_runtime["profile"], "mobile");
+    assert_eq!(first_workspace["readiness"], "ready");
+    first_owner.stop().await.unwrap();
+    drop(first_endpoint);
+    drop(first_owner);
+
+    let second_launch = compose_fixed_mobile_kernel(
+        KernelConfig::generate().unwrap(),
+        KernelPaths::mobile(&app_data, &cache, "primary").unwrap(),
+        "QingYu",
+    )
+    .await
+    .unwrap();
+    let second_owner = owner(Duration::from_secs(2));
+    let second_endpoint = second_owner
+        .start(second_launch, WEBVIEW_ORIGIN)
+        .await
+        .unwrap();
+    let second_workspace = authenticated_json(&second_endpoint, "/api/v1/workspace").await;
+
+    assert_eq!(second_workspace["id"], first_workspace["id"]);
+    assert_eq!(second_workspace["displayName"], "QingYu");
+    second_owner.stop().await.unwrap();
 }
 
 #[test]

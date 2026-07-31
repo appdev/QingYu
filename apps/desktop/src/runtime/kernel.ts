@@ -59,6 +59,7 @@ export interface DesktopKernelDomainAdapter {
 export interface DesktopKernelDomainAdapterOptions {
   readonly fetch?: FetchLike;
   readonly invalidations?: KernelInvalidationSource;
+  readonly profile?: "desktop" | "mobile";
 }
 
 export type DesktopKernelDomainAdapterErrorCode =
@@ -95,6 +96,7 @@ export async function createDesktopKernelDomainAdapter(
 ): Promise<DesktopKernelDomainAdapter> {
   const { baseUrl, instanceId, release } = connection;
   const invalidations = options.invalidations ?? unavailableInvalidations;
+  const profile = options.profile ?? "desktop";
   const processGeneration = connection.processGeneration ?? connection.generation;
   let authentication: NativeBearerAuthentication | undefined = connection.authentication;
   let lifecycle: "initializing" | "active" | "closed" = "initializing";
@@ -151,7 +153,7 @@ export async function createDesktopKernelDomainAdapter(
       throw new DesktopKernelDomainAdapterError("initialization-failed");
     }
     const runtime = await client.system.runtime({ signal: requests.signal });
-    if (!matchesDesktopRuntime(runtime, instanceId)) {
+    if (!matchesKernelRuntime(runtime, instanceId, profile)) {
       throw new DesktopKernelDomainAdapterError("initialization-failed");
     }
     const workspace = await client.workspace.get({ signal: requests.signal });
@@ -413,7 +415,7 @@ export async function createDesktopKernelDomainAdapter(
           assertActive();
           const current = await client.system.runtime({ signal: requests.signal });
           assertActive();
-          if (!matchesDesktopRuntime(current, instanceId)) {
+          if (!matchesKernelRuntime(current, instanceId, profile)) {
             return protocolMismatch();
           }
           return mapRuntime(current);
@@ -527,10 +529,14 @@ type SyncTestRequest = Parameters<KernelClient["sync"]["testConnection"]>[0];
 type SyncChangesInput = SyncPatchInput["changes"];
 type SyncChangesRequest = SyncPatchRequest["changes"];
 
-function matchesDesktopRuntime(runtime: RuntimeSource, instanceId: string) {
+function matchesKernelRuntime(
+  runtime: RuntimeSource,
+  instanceId: string,
+  profile: "desktop" | "mobile",
+) {
   return (
     runtime.instanceId === instanceId &&
-    runtime.profile === "desktop" &&
+    runtime.profile === profile &&
     runtime.startupState === "ready" &&
     hasRequiredKernelDomainCapabilities(runtime.capabilities)
   );

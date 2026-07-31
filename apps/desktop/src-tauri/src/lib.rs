@@ -30,6 +30,8 @@ mod menu;
 mod menu_labels;
 #[cfg(any(mobile, test))]
 mod mobile_back;
+#[cfg(any(mobile, test))]
+mod mobile_kernel_runtime;
 #[cfg(mobile)]
 mod mobile_runtime;
 mod notebook_scope;
@@ -61,6 +63,8 @@ mod writer_authority;
 
 #[cfg(test)]
 mod builder_boundary_tests;
+#[cfg(test)]
+mod mobile_kernel_runtime_tests;
 #[cfg(test)]
 mod mobile_platform_config_tests;
 

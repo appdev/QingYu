@@ -55,6 +55,24 @@ describe("desktop Kernel domain adapter", () => {
     ]);
   });
 
+  it("requires the explicitly selected mobile profile for an in-process mobile host", async () => {
+    const fetch: FetchLike = async (url) => {
+      const pathname = new URL(url).pathname;
+      if (pathname === "/api/v1/runtime") {
+        return jsonResponse({ ...runtimeBody(), profile: "mobile" });
+      }
+      return handshakeResponse(pathname);
+    };
+
+    const adapter = await createDesktopKernelDomainAdapter(connection(), {
+      fetch,
+      profile: "mobile",
+    });
+
+    await expect(adapter.port.runtime.read()).resolves.toMatchObject({ profile: "mobile" });
+    adapter.release();
+  });
+
   it("binds the default browser fetch to the global receiver", async () => {
     const receivers: unknown[] = [];
     const receiverSensitiveFetch: FetchLike = async function (

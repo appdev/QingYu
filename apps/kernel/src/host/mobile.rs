@@ -55,7 +55,6 @@ pub struct MobileKernelLaunch {
 }
 
 impl MobileKernelLaunch {
-    #[cfg(test)]
     pub(crate) fn from_composition_parts(
         runtime: Arc<KernelRuntime>,
         lifecycle: Arc<dyn MobileKernelLifecycle>,
@@ -113,6 +112,7 @@ impl MobileKernelHostOwner {
             ));
         }
         let epoch = *launch.runtime.launch_epoch();
+        let instance_id = launch.runtime.instance_id();
 
         let generation = self
             .inner
@@ -232,6 +232,7 @@ impl MobileKernelHostOwner {
             completion,
             epoch,
             generation,
+            instance_id,
             owner: Arc::downgrade(&self.inner),
         })
     }
@@ -356,6 +357,7 @@ pub struct MobileKernelEndpoint {
     completion: Arc<MobileKernelCompletion>,
     epoch: KernelLaunchEpoch,
     generation: u64,
+    instance_id: crate::contract::InstanceId,
     owner: Weak<MobileKernelHostInner>,
 }
 
@@ -370,6 +372,14 @@ impl MobileKernelEndpoint {
 
     pub fn events_url(&self) -> String {
         format!("ws://{}/api/v1/events", self.address)
+    }
+
+    pub const fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    pub const fn instance_id(&self) -> crate::contract::InstanceId {
+        self.instance_id
     }
 
     /// Exposes the bearer only while this exact owner incarnation is current.
