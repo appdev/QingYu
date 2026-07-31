@@ -96,4 +96,31 @@ describe("desktop Kernel invalidation bridge", () => {
     expect(bridge.source.available).toBe(false);
     expect(listener).not.toHaveBeenCalled();
   });
+
+  it("stops a publication when a listener closes or removes a later subscription", () => {
+    const invalidation = {
+      ...identity,
+      kind: "snapshot-required" as const,
+      reason: "reconnect" as const,
+      scopes: ["workspace" as const],
+    };
+    const closingBridge = createDesktopKernelInvalidationBridge();
+    const afterClose = vi.fn();
+    closingBridge.source.subscribe(() => closingBridge.close());
+    closingBridge.source.subscribe(afterClose);
+
+    closingBridge.publish(invalidation);
+
+    expect(afterClose).not.toHaveBeenCalled();
+
+    const unsubscribingBridge = createDesktopKernelInvalidationBridge();
+    const afterUnsubscribe = vi.fn();
+    let unsubscribeLater: () => unknown = () => undefined;
+    unsubscribingBridge.source.subscribe(() => unsubscribeLater());
+    unsubscribeLater = unsubscribingBridge.source.subscribe(afterUnsubscribe);
+
+    unsubscribingBridge.publish(invalidation);
+
+    expect(afterUnsubscribe).not.toHaveBeenCalled();
+  });
 });

@@ -41,6 +41,8 @@ export function createDesktopKernelInvalidationBridge(): DesktopKernelInvalidati
       if (!active) return undefined;
       const notice = mapDesktopKernelInvalidation(invalidation);
       for (const listener of [...listeners]) {
+        if (!active) break;
+        if (!listeners.has(listener)) continue;
         try {
           listener(notice);
         } catch {
