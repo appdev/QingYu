@@ -1,7 +1,8 @@
 import {
-  createKernelFileRuntime,
+  createKernelFileRuntimeOwner,
   kernelWorkspaceRoot,
   type KernelDomainPort,
+  type KernelImageSource,
 } from "@markra/app/runtime";
 
 import {
@@ -17,14 +18,21 @@ export interface ServerFileRuntimeOptions {
   readonly pollIntervalMs?: number;
   readonly setInterval?: typeof globalThis.setInterval;
   readonly clearInterval?: typeof globalThis.clearInterval;
+  readonly objectUrls?: ServerObjectUrlApi;
+}
+
+export interface ServerObjectUrlApi {
+  readonly createObjectURL: (blob: Blob) => string;
+  readonly revokeObjectURL: (url: string) => unknown;
 }
 
 export function createServerFileRuntime(
   kernel: KernelDomainPort,
   options: ServerFileRuntimeOptions = {},
 ) {
-  return createKernelFileRuntime(kernel, {
+  return createKernelFileRuntimeOwner(kernel, {
     clearInterval: options.clearInterval,
+    imageSource: createServerKernelImageSource(options.objectUrls),
     invalidations: kernel.invalidations,
     isTerminalError: (error) => error instanceof ServerKernelDomainAdapterError &&
       (error.code === "authentication-required" || error.code === "released"),
@@ -37,7 +45,29 @@ export function createServerFileRuntime(
     resolveImageSrc: (resource) =>
       `/api/v1/resources/${encodeURIComponent(resource.id)}?kind=image`,
     setInterval: options.setInterval,
-  });
+  }).files;
+}
+
+function createServerKernelImageSource(
+  objectUrls: ServerObjectUrlApi = URL,
+): KernelImageSource {
+  const active = new Set<string>();
+  return Object.freeze({
+    // Existing resources remain signed same-origin URLs. Only a newly uploaded
+    // Blob needs a temporary object URL to avoid immediately downloading the
+    // bytes that the browser already owns.
+    materialize: async () => undefined,
+    materializeCreated: async (_resource, body) => {
+      const source = objectUrls.createObjectURL(body.body);
+      active.add(source);
+      return source;
+    },
+    release: (source: string) => {
+      if (!active.delete(source)) return undefined;
+      objectUrls.revokeObjectURL(source);
+      return undefined;
+    },
+  } satisfies KernelImageSource);
 }
 
 function confirmInBrowser(message: string) {

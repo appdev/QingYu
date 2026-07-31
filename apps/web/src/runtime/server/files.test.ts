@@ -125,6 +125,70 @@ describe("server file facade", () => {
     }));
   });
 
+  it("reuses a newly uploaded image Blob and returns to signed URLs after invalidation", async () => {
+    const listeners = new Set<(notice: KernelInvalidationNotice) => unknown>();
+    const kernel = Object.assign(kernelPort(), {
+      invalidations: {
+        available: true,
+        subscribe: (listener: (notice: KernelInvalidationNotice) => unknown) => {
+          listeners.add(listener);
+          return () => {
+            listeners.delete(listener);
+            return undefined;
+          };
+        },
+      },
+    });
+    const createdEntry = resource({
+      id: "image-new.signature",
+      name: "pasted-2.png",
+      relativePath: "pasted-2.png",
+    });
+    if (createdEntry.entryType !== "resource") throw new Error("resource fixture expected");
+    vi.mocked(kernel.resources.create).mockResolvedValue(createdEntry.resource);
+    vi.mocked(kernel.resources.list).mockResolvedValue({
+      items: [createdEntry],
+      workspaceGeneration: generation,
+    });
+    const createObjectURL = vi.fn(() => "blob:server-new-image");
+    const revokeObjectURL = vi.fn();
+    const files = createServerFileRuntime(kernel, {
+      objectUrls: { createObjectURL, revokeObjectURL },
+    });
+    const image = new File(
+      [new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10])],
+      "pasted.png",
+      { type: "image/png" },
+    );
+    const documentPath = `${serverWorkspaceRoot}/note.md`;
+
+    const saved = await files.saveClipboardImage({
+      documentPath,
+      fileName: "pasted.png",
+      folder: "",
+      image,
+    });
+
+    expect(saved).toEqual({ alt: "pasted", src: "pasted-2.png" });
+    expect(createObjectURL).toHaveBeenCalledWith(image);
+    expect(kernel.resources.open).not.toHaveBeenCalled();
+    expect(files.resolveMarkdownImageSrc?.(documentPath, saved.src))
+      .toBe("blob:server-new-image");
+
+    publish(listeners, {
+      documentChange: "snapshot",
+      scopes: ["resources"],
+    });
+    await vi.waitFor(() => expect(revokeObjectURL).toHaveBeenCalledWith("blob:server-new-image"));
+    expect(files.resolveMarkdownImageSrc?.(documentPath, saved.src)).toBeUndefined();
+
+    await files.loadMarkdownFilesForPath?.(serverWorkspaceRoot);
+    expect(files.resolveMarkdownImageSrc?.(documentPath, saved.src)).toBe(
+      `/api/v1/resources/${encodeURIComponent("image-new.signature")}?kind=image`,
+    );
+    expect(kernel.resources.open).not.toHaveBeenCalled();
+  });
+
   it("prewarms nested image capabilities before returning Markdown and rejects unsafe or non-image sources", async () => {
     const kernel = kernelPort();
     const notesFolder = entry({
@@ -474,7 +538,9 @@ describe("server file facade", () => {
 
     stopFile();
     stopTree();
-    expect(listeners).toHaveLength(0);
+    // The runtime-lifetime image source listener remains so temporary object
+    // URLs are revoked when resource or workspace capabilities change.
+    expect(listeners).toHaveLength(1);
     publish(listeners, documentChangedNotice("revision-3"));
     expect(onFileChange).toHaveBeenCalledTimes(3);
     expect(onTreeChange).toHaveBeenCalledTimes(3);

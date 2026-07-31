@@ -1372,6 +1372,47 @@ async fn resource_writer_rejects_stale_generations_protected_and_ignored_paths()
 }
 
 #[tokio::test]
+async fn resource_writer_rejects_a_replaced_workspace_root_without_stranding_the_upload() {
+    let fixture = Fixture::new().await;
+    fs::write(fixture.root.join("note.md"), b"# Note").unwrap();
+    let workspace = fixture._workspace.get_workspace().await.unwrap();
+    let document_id = fixture
+        .service
+        .list_inventory(&WorkspaceRelativePath::default())
+        .unwrap()
+        .into_iter()
+        .find_map(|entry| match entry {
+            WorkspaceInventoryEntry::Document(entry) => Some(entry.id),
+            WorkspaceInventoryEntry::Resource(_) => None,
+        })
+        .unwrap();
+    let retired = fixture.root.with_extension("retired");
+    fixture
+        .ignore
+        .replace_root_after_capture(fixture.root.clone(), retired.clone());
+
+    let error = fixture
+        .service
+        .create_resource(
+            &document_id,
+            CreateWorkspaceResourceQuery {
+                workspace_generation: workspace.generation,
+                folder: WorkspaceRelativePath::parse("assets").unwrap(),
+                name: ResourceName::parse("asset.bin").unwrap(),
+                kind: ResourceKind::Attachment,
+            },
+            "application/octet-stream",
+            b"asset",
+        )
+        .await
+        .unwrap_err();
+
+    assert_eq!(error.kind(), ResourceServiceErrorKind::Unavailable);
+    assert!(!fixture.root.join("assets").exists());
+    assert!(!retired.join("assets").exists());
+}
+
+#[tokio::test]
 async fn resource_writer_rolls_back_staging_and_new_directories_when_publication_fails() {
     let fixture = Fixture::new().await;
     fs::write(fixture.root.join("note.md"), b"# Note").unwrap();

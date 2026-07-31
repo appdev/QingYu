@@ -51,6 +51,10 @@ export interface KernelImageSource {
     resource: KernelResourceSnapshot,
     open: () => Promise<KernelResourceBody>,
   ) => Promise<string | undefined>;
+  readonly materializeCreated?: (
+    resource: KernelResourceSnapshot,
+    body: KernelResourceBody,
+  ) => Promise<string | undefined>;
   readonly release: (source: string) => unknown;
 }
 
@@ -350,10 +354,13 @@ export function createKernelFileRuntimeOwner(
       imageResources.set(created.relativePath, created);
       if (options.imageSource !== undefined) {
         const epoch = imageResourceEpoch;
-        const source = await options.imageSource.materialize(created, async () => ({
+        const body: KernelResourceBody = {
           body: input.body,
           mediaType: created.mediaType,
-        }));
+        };
+        const source = options.imageSource.materializeCreated === undefined
+          ? await options.imageSource.materialize(created, async () => body)
+          : await options.imageSource.materializeCreated(created, body);
         if (source !== undefined) {
           if (released || epoch !== imageResourceEpoch) {
             releaseImageSource(source);

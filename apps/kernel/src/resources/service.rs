@@ -521,6 +521,11 @@ impl WorkspaceResourceService {
                 if classification.kind != kind {
                     return Err(ResourceServiceError::unsafe_target());
                 }
+                context
+                    .snapshot
+                    .authority()
+                    .verify_held_directory()
+                    .map_err(|_| ResourceServiceError::unavailable())?;
                 let id = context
                     .runtime
                     .wire_identity_key()
