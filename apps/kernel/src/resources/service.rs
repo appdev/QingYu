@@ -1228,6 +1228,7 @@ fn inspect_inventory_entry(
     }
     let inspected = inspect_regular_file_with_budget(directory, name, &addressed, budget)?;
     if markdown_name(name) {
+        let document_revision = document_revision_from_digest(inspected.content_digest)?;
         let entry = document_entry(
             context,
             parent,
@@ -1235,7 +1236,7 @@ fn inspect_inventory_entry(
             name,
             DocumentKind::File,
             &inspected.metadata,
-            inspected.revision,
+            document_revision,
         )?;
         Ok(Some(WorkspaceInventoryEntry::Document(entry)))
     } else {
@@ -1446,15 +1447,8 @@ fn inspect_regular_file_inner(
     file.seek(SeekFrom::Start(0))
         .map_err(|_| ResourceServiceError::unavailable())?;
     let content_digest = ContentDigest::new(digest.finalize().into());
-    let revision = Revision::parse(format!(
-        "sha256:{}",
-        content_digest
-            .into_bytes()
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect::<String>()
-    ))
-    .map_err(|_| ResourceServiceError::unavailable())?;
+    let revision = Revision::parse(format!("sha256:{}", encoded_content_digest(content_digest)))
+        .map_err(|_| ResourceServiceError::unavailable())?;
     Ok(InspectedFile {
         content_digest,
         file,
@@ -1462,6 +1456,23 @@ fn inspect_regular_file_inner(
         revision,
         magic,
     })
+}
+
+fn document_revision_from_digest(
+    content_digest: ContentDigest,
+) -> Result<Revision, ResourceServiceError> {
+    Revision::parse(encoded_content_digest(content_digest))
+        .map_err(|_| ResourceServiceError::unavailable())
+}
+
+fn encoded_content_digest(content_digest: ContentDigest) -> String {
+    use fmt::Write as _;
+
+    let mut encoded = String::with_capacity(64);
+    for byte in content_digest.into_bytes() {
+        write!(&mut encoded, "{byte:02x}").expect("writing to a String cannot fail");
+    }
+    encoded
 }
 
 struct OrdinaryEntryNames {

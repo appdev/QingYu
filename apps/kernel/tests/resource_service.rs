@@ -18,9 +18,13 @@ use qingyu_kernel::{
     api::{build_router, TransportPolicy},
     config::KernelConfig,
     contract::{
-        DocumentKind, ListWorkspaceInventoryQuery, PageLimit, ResourceKind, WorkspaceRelativePath,
+        DocumentContents, DocumentKind, ListWorkspaceInventoryQuery, PageLimit, ResourceKind,
+        UpdateDocumentRequest, WorkspaceRelativePath,
     },
-    documents::DocumentIgnorePort,
+    documents::{
+        history::MemoryDocumentHistoryStore, service::WorkspaceDocumentService, DeletionPort,
+        DeletionPortError, DocumentDeletionTarget, DocumentIgnorePort,
+    },
     ignore_rules::{
         MarkdownIgnoreRules, WorkspaceIgnoreError, WorkspaceIgnorePort, WorkspaceIgnoreSnapshot,
     },
@@ -30,7 +34,7 @@ use qingyu_kernel::{
         resolve_markdown_href, ResourceServiceErrorKind, RetainedResource, WorkspaceInventoryEntry,
         WorkspaceResourceService,
     },
-    runtime::{KernelRuntime, ResourcesApiService},
+    runtime::{KernelRuntime, ResourcesApiService, WorkspaceApiService},
     services::workspace::WorkspaceService,
     workspace::{
         managed::ManagedWorkspaceCollection,
@@ -98,6 +102,18 @@ impl LiveIgnorePort {
 struct CapturedIgnorePort {
     root: PathBuf,
     rules: MarkdownIgnoreRules,
+}
+
+struct UnusedDeletionPort;
+
+impl DeletionPort for UnusedDeletionPort {
+    fn delete(
+        &self,
+        _target: &DocumentDeletionTarget,
+        _policy: qingyu_kernel::contract::DeletionPolicy,
+    ) -> Result<(), DeletionPortError> {
+        Err(DeletionPortError)
+    }
 }
 
 #[derive(Default)]
@@ -852,6 +868,48 @@ async fn inventory_lists_every_immediate_kind_and_classifies_images_from_magic_a
                     && !entry.previewable
         ));
     }
+}
+
+#[tokio::test]
+async fn inventory_document_revision_is_accepted_by_the_document_mutation_contract() {
+    let fixture = Fixture::new().await;
+    fs::write(fixture.root.join("note.md"), b"first").unwrap();
+    let document = fixture
+        .service
+        .list_inventory(&WorkspaceRelativePath::default())
+        .unwrap()
+        .into_iter()
+        .find_map(|entry| match entry {
+            WorkspaceInventoryEntry::Document(entry) if entry.path.as_str() == "note.md" => {
+                Some(entry)
+            }
+            _ => None,
+        })
+        .unwrap();
+    let workspace = fixture._workspace.get_workspace().await.unwrap();
+    let documents = WorkspaceDocumentService::new(
+        &fixture.runtime,
+        Arc::new(UnusedDeletionPort),
+        Arc::new(MemoryDocumentHistoryStore::default()),
+    );
+
+    let updated = documents
+        .update_document(
+            document.id,
+            UpdateDocumentRequest {
+                workspace_generation: workspace.generation,
+                expected_revision: document.revision,
+                contents: DocumentContents::parse("second").unwrap(),
+            },
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(updated.contents.as_str(), "second");
+    assert_eq!(
+        fs::read_to_string(fixture.root.join("note.md")).unwrap(),
+        "second"
+    );
 }
 
 #[tokio::test]
