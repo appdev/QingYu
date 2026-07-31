@@ -55,7 +55,7 @@ impl<R: tauri::Runtime> ConfirmationPresenter for TauriConfirmationPresenter<R> 
         let app = self.app.clone();
         let presentation_lock = Arc::clone(&self.presentation_lock);
         Box::pin(async move {
-            await_detached_confirmation(async move {
+            await_confirmation_request(async move {
                 let deadline = tokio::time::Instant::now() + CONFIRMATION_TIMEOUT;
                 let Ok(presentation_guard) =
                     tokio::time::timeout_at(deadline, presentation_lock.lock_owned()).await
@@ -95,16 +95,11 @@ impl<R: tauri::Runtime> ConfirmationPresenter for TauriConfirmationPresenter<R> 
     }
 }
 
-async fn await_detached_confirmation<Presentation>(
-    presentation: Presentation,
-) -> ConfirmationOutcome
+async fn await_confirmation_request<Presentation>(presentation: Presentation) -> ConfirmationOutcome
 where
-    Presentation: Future<Output = ConfirmationOutcome> + Send + 'static,
+    Presentation: Future<Output = ConfirmationOutcome>,
 {
-    match tauri::async_runtime::spawn(presentation).await {
-        Ok(outcome) => outcome,
-        Err(_) => ConfirmationOutcome::TimedOut,
-    }
+    presentation.await
 }
 
 async fn present_with_parent<P, Lease, Acquire, AcquireFuture, Show>(
@@ -255,7 +250,7 @@ async fn acquire_confirmation_parent<R: tauri::Runtime>(
 #[cfg(test)]
 mod tests {
     use super::{
-        await_detached_confirmation, confirmation_parent_window_label,
+        await_confirmation_request, confirmation_parent_window_label,
         confirmation_parent_window_labels, present_with_parent, ConfirmationOutcome,
     };
     use std::sync::{
@@ -386,28 +381,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cancelled_waiter_does_not_release_the_native_presentation_gate() {
+    async fn cancelled_queued_waiter_never_presents_after_the_active_dialog_settles() {
         let gate = Arc::new(tokio::sync::Mutex::new(()));
-        let started = Arc::new(tokio::sync::Notify::new());
-        let release = Arc::new(tokio::sync::Notify::new());
+        let active_lease = Arc::clone(&gate).lock_owned().await;
+        let launched = Arc::new(AtomicBool::new(false));
         let inner_gate = Arc::clone(&gate);
-        let inner_started = Arc::clone(&started);
-        let inner_release = Arc::clone(&release);
-        let waiter = tokio::spawn(await_detached_confirmation(async move {
+        let captured_launch = Arc::clone(&launched);
+        let waiter = tokio::spawn(await_confirmation_request(async move {
             let _guard = inner_gate.lock_owned().await;
-            inner_started.notify_one();
-            inner_release.notified().await;
+            captured_launch.store(true, Ordering::SeqCst);
             ConfirmationOutcome::Rejected
         }));
 
-        started.notified().await;
+        tokio::task::yield_now().await;
         waiter.abort();
         assert!(waiter.await.is_err());
-        assert!(gate.try_lock().is_err());
-
-        release.notify_one();
+        drop(active_lease);
         let _released = tokio::time::timeout(Duration::from_secs(1), gate.lock())
             .await
-            .expect("detached presentation should release its gate after settlement");
+            .expect("cancelled queued waiter must not retain or reacquire the gate");
+        assert!(!launched.load(Ordering::SeqCst));
     }
 }
