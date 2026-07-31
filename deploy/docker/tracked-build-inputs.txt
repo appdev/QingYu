@@ -50,6 +50,8 @@ apps/kernel/src/documents/service.rs
 apps/kernel/src/documents/types.rs
 apps/kernel/src/error.rs
 apps/kernel/src/events.rs
+apps/kernel/src/host/mobile.rs
+apps/kernel/src/host/mobile_tests.rs
 apps/kernel/src/host/mod.rs
 apps/kernel/src/host/native.rs
 apps/kernel/src/host/server.rs
@@ -65,6 +67,7 @@ apps/kernel/src/resources/href.rs
 apps/kernel/src/resources/mod.rs
 apps/kernel/src/resources/policy.rs
 apps/kernel/src/resources/service.rs
+apps/kernel/src/resources/transaction.rs
 apps/kernel/src/runtime.rs
 apps/kernel/src/server/auth_store.rs
 apps/kernel/src/server/authentication_coordinator.rs
@@ -154,10 +157,15 @@ apps/web/src/runtime/web/web-resource.test.ts
 apps/web/src/runtime/web/web-resource.ts
 apps/web/src/runtime/web/window.test.ts
 apps/web/src/runtime/web/window.ts
+apps/web/src/server-application.css
 apps/web/src/server-application.test.tsx
 apps/web/src/server-application.tsx
 apps/web/src/server-bootstrap.test.ts
 apps/web/src/server-bootstrap.ts
+apps/web/src/server-startup-appearance.test.ts
+apps/web/src/server-startup-appearance.ts
+apps/web/src/server-startup-language.ts
+apps/web/src/server-workspace-reload.test.tsx
 apps/web/src/test/web-runtime-fakes.ts
 apps/web/src/vite-env.d.ts
 apps/web/tsconfig.app.json
