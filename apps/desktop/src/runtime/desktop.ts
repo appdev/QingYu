@@ -361,10 +361,10 @@ export function createDesktopKernelRuntimeOwner(
     }),
     syncConfig: createKernelSyncConfigRuntime(kernel, {
       local: {
-        cancelApply: unavailable.syncConfig.cancelApply,
-        loadEditing: unavailable.syncConfig.loadEditing,
-        requestApply: unavailable.syncConfig.requestApply,
-        setEditing: unavailable.syncConfig.setEditing,
+        cancelApply: shell.syncConfig.cancelApply,
+        loadEditing: shell.syncConfig.loadEditing,
+        requestApply: shell.syncConfig.requestApply,
+        setEditing: shell.syncConfig.setEditing,
       },
     }),
     syncPathGuard: unavailable.syncPathGuard,

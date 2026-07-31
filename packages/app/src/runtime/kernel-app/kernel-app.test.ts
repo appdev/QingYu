@@ -361,13 +361,17 @@ describe("Kernel AppRuntime adapter", () => {
       },
     });
 
-    const loading = owner.files.loadMarkdownFilesForPath?.(kernelWorkspaceRoot);
+    const abort = new AbortController();
+    const loading = owner.files.loadMarkdownFilesForPath?.(kernelWorkspaceRoot, {
+      signal: abort.signal,
+    });
     await vi.waitFor(() => expect(resolveMaterialized).toBeTypeOf("function"));
-    owner.release();
+    abort.abort();
     resolveMaterialized?.("blob:aborted-image");
 
-    await loading;
+    await expect(loading).rejects.toThrow();
     expect(releaseSource).toHaveBeenCalledWith("blob:aborted-image");
+    owner.release();
   });
 
   it("releases materialized image sources when a later prewarm fails", async () => {
