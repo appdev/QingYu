@@ -1,25 +1,26 @@
-import {
-  createDefaultAppRuntime,
-  type AppSyncConfigRuntime,
-  type KernelDomainPort,
-  type KernelRevision,
-  type KernelSyncConfigChangesInput,
-  type KernelSyncConfigSnapshot,
-  type QingYuSyncConfig,
-  type SyncConfigDocument,
-  type SyncConfigPatch,
-  type SyncStatus,
+import type {
+  AppSyncConfigRuntime,
+  KernelDomainPort,
+  KernelRevision,
+  KernelSyncConfigChangesInput,
+  KernelSyncConfigSnapshot,
+  QingYuSyncConfig,
+  SyncConfigDocument,
+  SyncConfigPatch,
+  SyncStatus,
 } from "../index";
 
 import { kernelWorkspaceRoot } from "./files";
 
 export function createKernelSyncConfigRuntime(
   kernel: KernelDomainPort,
-  options: KernelSyncConfigRuntimeOptions = {},
+  options: KernelSyncConfigRuntimeOptions,
 ): AppSyncConfigRuntime {
-  const fallback = createDefaultAppRuntime().syncConfig;
   return {
-    ...fallback,
+    bindRepository: () => unavailableSyncCapability("bindRepository"),
+    cancelApply: options.local.cancelApply,
+    changeGlobalKey: () => unavailableSyncCapability("changeGlobalKey"),
+    deleteRemoteRepository: () => unavailableSyncCapability("deleteRemoteRepository"),
     enable: async ({ expectedRevision }) => {
       const revision = expectedRevision === null
         ? (await kernel.sync.readConfig()).revision
@@ -33,6 +34,13 @@ export function createKernelSyncConfigRuntime(
       ...mapConfig(await kernel.sync.readConfig()),
       status: "loaded",
     }),
+    exportGlobalKey: () => unavailableSyncCapability("exportGlobalKey"),
+    initializeGlobalKey: () => unavailableSyncCapability("initializeGlobalKey"),
+    loadEditing: options.local.loadEditing,
+    loadKeyState: async () => ({ configured: false }),
+    listDejavuConflictHistory: async () => [],
+    listNotebooks: () => unavailableSyncCapability("listNotebooks"),
+    loadRepositoryStatus: async () => null,
     loadStatus: async () => mapStatus(await kernel.sync.readStatus()),
     patch: async ({ expectedRevision, patch }) => mapConfig(
       await kernel.sync.patchConfig({
@@ -40,12 +48,19 @@ export function createKernelSyncConfigRuntime(
         expectedRevision: expectedRevision as KernelRevision,
       }),
     ),
+    purgeRemoteRepository: () => unavailableSyncCapability("purgeRemoteRepository"),
     recover: async ({ config, expectedRevision }) => mapConfig(
       await kernel.sync.patchConfig({
         changes: mapRecoveredConfig(config),
         expectedRevision: expectedRevision as KernelRevision,
       }),
     ),
+    requestApply: options.local.requestApply,
+    readDejavuConflictHistory: () => unavailableSyncCapability("readDejavuConflictHistory"),
+    rebuildLocalRepository: () => unavailableSyncCapability("rebuildLocalRepository"),
+    reset: () => unavailableSyncCapability("reset"),
+    setEditing: options.local.setEditing,
+    stopRepositorySync: () => unavailableSyncCapability("stopRepositorySync"),
     sync: async (input) => {
       const run = await kernel.sync.trigger(input.revision as KernelRevision);
       if (run.configRevision !== input.revision) {
@@ -88,9 +103,17 @@ export function createKernelSyncConfigRuntime(
 }
 
 export interface KernelSyncConfigRuntimeOptions {
+  readonly local: Pick<
+    AppSyncConfigRuntime,
+    "cancelApply" | "loadEditing" | "requestApply" | "setEditing"
+  >;
   readonly delay?: (milliseconds: number) => Promise<unknown>;
   readonly maxStatusReads?: number;
   readonly statusPollMilliseconds?: number;
+}
+
+function unavailableSyncCapability(name: string): Promise<never> {
+  return Promise.reject(new Error(`${name} is unavailable for a Kernel runtime.`));
 }
 
 export type KernelSyncRunErrorCode = "protocol-mismatch" | "run-failed" | "timeout";

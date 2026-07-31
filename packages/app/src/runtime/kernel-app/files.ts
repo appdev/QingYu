@@ -1,19 +1,19 @@
-import {
-  createDefaultAppRuntime,
-  type AppFileRuntime,
-  type KernelDocumentEntrySnapshot,
-  type KernelDocumentLocator,
-  type KernelDomainPort,
-  type KernelHistorySnapshotId,
-  type KernelInvalidationNotice,
-  type KernelInvalidationSource,
-  type KernelPageCursor,
-  type KernelResourceSnapshot,
-  type KernelRevision,
-  type KernelWorkspaceGeneration,
-  type KernelWorkspaceRelativePath,
-  type NativeMarkdownFolderFile,
-  type WorkspaceSearchResponse,
+import type {
+  AppFileRuntime,
+  KernelDocumentEntrySnapshot,
+  KernelDocumentLocator,
+  KernelDomainPort,
+  KernelHistorySnapshotId,
+  KernelInvalidationNotice,
+  KernelInvalidationSource,
+  KernelPageCursor,
+  KernelResourceBody,
+  KernelResourceSnapshot,
+  KernelRevision,
+  KernelWorkspaceGeneration,
+  KernelWorkspaceRelativePath,
+  NativeMarkdownFolderFile,
+  WorkspaceSearchResponse,
 } from "../index";
 
 export const kernelWorkspaceRoot = "kernel-workspace://primary";
@@ -46,6 +46,23 @@ export interface KernelFileRuntimeOptions {
   readonly clearInterval?: typeof globalThis.clearInterval;
 }
 
+export interface KernelImageSource {
+  readonly materialize: (
+    resource: KernelResourceSnapshot,
+    open: () => Promise<KernelResourceBody>,
+  ) => Promise<string | undefined>;
+  readonly release: (source: string) => unknown;
+}
+
+export interface KernelFileRuntimeOwnerOptions extends KernelFileRuntimeOptions {
+  readonly imageSource?: KernelImageSource;
+}
+
+export interface KernelFileRuntimeOwner {
+  readonly files: AppFileRuntime;
+  readonly release: () => undefined;
+}
+
 type WorkspaceIdentity = {
   readonly displayName: string;
   readonly generation: KernelWorkspaceGeneration;
@@ -66,16 +83,25 @@ export function createKernelFileRuntime(
   kernel: KernelDomainPort,
   options: KernelFileRuntimeOptions = {},
 ): AppFileRuntime {
-  const fallback = createDefaultAppRuntime().files;
+  return createKernelFileRuntimeOwner(kernel, options).files;
+}
+
+export function createKernelFileRuntimeOwner(
+  kernel: KernelDomainPort,
+  options: KernelFileRuntimeOwnerOptions = {},
+): KernelFileRuntimeOwner {
+  const fallback = createKernelFileFallback(options.nativeShell);
   const entries = new Map<string, CachedEntry>();
   const invalidations = options.invalidations ?? kernel.invalidations;
   const resources = kernel.resources;
   let workspaceIdentity: Promise<WorkspaceIdentity> | undefined;
   let imageResources = new Map<string, CachedImageResource>();
+  let imageSources = new Map<string, string>();
   let imageResourceCacheGeneration: KernelWorkspaceGeneration | undefined;
   let imageResourceCacheReady = false;
   let imageResourceEpoch = 0;
   let imageResourcePrewarm: Promise<void> | undefined;
+  let released = false;
 
   const workspace = async () => {
     workspaceIdentity ??= kernel.workspace.read().then((snapshot) => ({
@@ -165,9 +191,48 @@ export function createKernelFileRuntime(
         next.set(resource.relativePath, resource);
       }
     }
+    const nextSources = new Map<string, string>();
+    const createdSources = new Set<string>();
+    if (options.imageSource !== undefined) {
+      for (const [relativePath, resource] of next) {
+        assertNotAborted(signal);
+        const previous = imageResources.get(relativePath);
+        const previousSource = imageSources.get(relativePath);
+        if (
+          previousSource !== undefined &&
+          previous !== undefined &&
+          sameResourceVersion(previous, resource)
+        ) {
+          nextSources.set(relativePath, previousSource);
+          continue;
+        }
+        const source = await options.imageSource.materialize(resource, async () => {
+          const body = await resources.open({
+            id: resource.id,
+            kind: resource.kind,
+            workspaceGeneration: identity.generation,
+          });
+          if (body.mediaType !== resource.mediaType) {
+            throw new Error("The Kernel image resource media type changed.");
+          }
+          return body;
+        });
+        if (source !== undefined) {
+          nextSources.set(relativePath, source);
+          createdSources.add(source);
+        }
+      }
+    }
     assertNotAborted(signal);
-    if (expectedEpoch !== imageResourceEpoch) return;
+    if (released || expectedEpoch !== imageResourceEpoch) {
+      createdSources.forEach(releaseImageSource);
+      return;
+    }
+    for (const [relativePath, source] of imageSources) {
+      if (nextSources.get(relativePath) !== source) releaseImageSource(source);
+    }
     imageResources = next;
+    imageSources = nextSources;
     imageResourceCacheGeneration = identity.generation;
     imageResourceCacheReady = true;
   };
@@ -198,10 +263,20 @@ export function createKernelFileRuntime(
 
   const invalidateImageResources = () => {
     imageResourceEpoch += 1;
+    imageSources.forEach(releaseImageSource);
+    imageSources = new Map();
     imageResources = new Map();
     imageResourceCacheGeneration = undefined;
     imageResourceCacheReady = false;
   };
+
+  const stopImageInvalidations = options.imageSource === undefined
+    ? undefined
+    : subscribeToInvalidations(invalidations, async (notice) => {
+        if (notice.scopes.includes("resources") || notice.scopes.includes("workspace")) {
+          invalidateImageResources();
+        }
+      });
 
   const resolveEntry = async (path: string) => {
     const relativePath = relativePathFromServerPath(path);
@@ -371,7 +446,7 @@ export function createKernelFileRuntime(
       if (relativePath === null) return undefined;
       const resource = imageResources.get(relativePath);
       if (resource === undefined) return undefined;
-      return options.resolveImageSrc?.(resource);
+      return imageSources.get(relativePath) ?? options.resolveImageSrc?.(resource);
     },
     resolveMarkdownFolder: async (path) => {
       const identity = await workspace();
@@ -505,7 +580,26 @@ export function createKernelFileRuntime(
     return fileTreeEntry(moved);
   }
 
-  return files;
+  return Object.freeze({
+    files,
+    release: () => {
+      if (released) return undefined;
+      released = true;
+      stopImageInvalidations?.();
+      invalidateImageResources();
+      entries.clear();
+      workspaceIdentity = undefined;
+      return undefined;
+    },
+  });
+
+  function releaseImageSource(source: string) {
+    try {
+      options.imageSource?.release(source);
+    } catch {
+      // Resource URL cleanup is best-effort and cannot retain a stale cache entry.
+    }
+  }
 }
 
 function assertServerRoot(path: string) {
@@ -641,11 +735,7 @@ async function listAllHistory(
 }
 
 function kernelHistoryReader(kernel: KernelDomainPort) {
-  const history = kernel.documents.history;
-  if (typeof history.read !== "function") {
-    throw new Error("The Kernel history reader is unavailable.");
-  }
-  return history.read;
+  return kernel.documents.history.read;
 }
 
 async function searchServerFiles(
@@ -777,4 +867,79 @@ function pickNativeShellFallback(
       takeOpenedMarkdownPaths: shell.takeOpenedMarkdownPaths,
     }),
   };
+}
+
+function createKernelFileFallback(
+  shell: KernelFileNativeShellFallback | undefined,
+): AppFileRuntime {
+  const native = pickNativeShellFallback(shell);
+  return {
+    confirmMarkdownFileDelete: native.confirmMarkdownFileDelete ?? (async () => false),
+    confirmWorkspaceResourceTrash: async () => false,
+    confirmUnsavedMarkdownDocumentDiscard:
+      native.confirmUnsavedMarkdownDocumentDiscard ?? (async () => false),
+    createMarkdownTreeFile: () => unavailableFileCapability("createMarkdownTreeFile"),
+    createMarkdownTreeFolder: () => unavailableFileCapability("createMarkdownTreeFolder"),
+    deleteMarkdownTemplateFile: () => unavailableFileCapability("deleteMarkdownTemplateFile"),
+    deleteMarkdownTreeFile: () => unavailableFileCapability("deleteMarkdownTreeFile"),
+    detectPandocPath: native.detectPandocPath ?? (async () => null),
+    importLocalFile: () => unavailableFileCapability("importLocalFile"),
+    installMarkdownFileDrop: native.installMarkdownFileDrop ?? (async () => () => undefined),
+    listenOpenedMarkdownPaths:
+      native.listenOpenedMarkdownPaths ?? (async () => () => undefined),
+    listMarkdownFileHistory: async () => [],
+    listMarkdownFilesForPath: async () => [],
+    listMarkdownReferenceFilesForPath: async () => [],
+    moveMarkdownTreeFile: () => unavailableFileCapability("moveMarkdownTreeFile"),
+    openContainingFolder: () => unavailableFileCapability("openContainingFolder"),
+    openLocalImages: native.openLocalImages ?? (async () => []),
+    openLocalFiles: native.openLocalFiles ?? (async () => []),
+    openMarkdownAttachment: () => unavailableFileCapability("openMarkdownAttachment"),
+    openMarkdownFile: native.openMarkdownFile ?? (async () => null),
+    openMarkdownFileInNewWindow: () => unavailableFileCapability("openMarkdownFileInNewWindow"),
+    openMarkdownFolder: async () => null,
+    openMarkdownFolderInNewWindow: () => unavailableFileCapability("openMarkdownFolderInNewWindow"),
+    openSettingsFile: native.openSettingsFile ?? (async () => null),
+    readLocalImageFile: () => unavailableFileCapability("readLocalImageFile"),
+    readMarkdownFile: () => unavailableFileCapability("readMarkdownFile"),
+    readMarkdownFileHistory: () => unavailableFileCapability("readMarkdownFileHistory"),
+    readMarkdownTemplateFile:
+      native.readMarkdownTemplateFile ?? (() => unavailableFileCapability("readMarkdownTemplateFile")),
+    renameMarkdownTreeFile: () => unavailableFileCapability("renameMarkdownTreeFile"),
+    requestPrimaryNotebookSwitch: () => unavailableFileCapability("requestPrimaryNotebookSwitch"),
+    resolveMarkdownFolder: () => unavailableFileCapability("resolveMarkdownFolder"),
+    resolveMarkdownPath: () => unavailableFileCapability("resolveMarkdownPath"),
+    resolveWorkspaceResourceRoot: () => unavailableFileCapability("resolveWorkspaceResourceRoot"),
+    saveClipboardAttachment: () => unavailableFileCapability("saveClipboardAttachment"),
+    saveClipboardImage: () => unavailableFileCapability("saveClipboardImage"),
+    saveHtmlFile: native.saveHtmlFile ?? (async () => null),
+    saveMarkdownFile: async () => null,
+    savePandocFile: native.savePandocFile ?? (async () => null),
+    savePdfFile: native.savePdfFile ?? (async () => null),
+    saveSettingsFile: native.saveSettingsFile ?? (async () => null),
+    takeOpenedMarkdownPaths: native.takeOpenedMarkdownPaths ?? (async () => []),
+    trashMarkdownAssets: () => unavailableFileCapability("trashMarkdownAssets"),
+    trashWorkspaceResources: () => unavailableFileCapability("trashWorkspaceResources"),
+    watchMarkdownFile: async () => () => undefined,
+    watchMarkdownTree: async () => () => undefined,
+    writeMarkdownTemplateFile: () => unavailableFileCapability("writeMarkdownTemplateFile"),
+  };
+}
+
+function unavailableFileCapability(name: string): Promise<never> {
+  return Promise.reject(new Error(`${name} is unavailable for a Kernel workspace.`));
+}
+
+function sameResourceVersion(
+  left: KernelResourceSnapshot,
+  right: KernelResourceSnapshot,
+) {
+  return (
+    left.id === right.id &&
+    left.kind === right.kind &&
+    left.mediaType === right.mediaType &&
+    left.relativePath === right.relativePath &&
+    left.revision === right.revision &&
+    left.workspaceGeneration === right.workspaceGeneration
+  );
 }

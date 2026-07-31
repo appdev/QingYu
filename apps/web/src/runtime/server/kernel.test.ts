@@ -291,6 +291,91 @@ describe("Server Kernel domain adapter", () => {
     expect(close).toHaveBeenCalledOnce();
   });
 
+  it("maps every Kernel event family to the frozen invalidation scopes", async () => {
+    let handlers: KernelEventHandlers | undefined;
+    const events = {
+      connect: vi.fn((nextHandlers: KernelEventHandlers) => {
+        handlers = nextHandlers;
+        return { close: vi.fn(), state: "open" as const };
+      }),
+    } satisfies KernelEventsClient;
+    const adapter = await createServerKernelDomainAdapter(kernelClient(), {
+      ...options(),
+      events,
+    });
+    const invalidationListener = vi.fn();
+    adapter.port.invalidations.subscribe(invalidationListener);
+    const document = {
+      id: "signed-document-1",
+      kind: "file" as const,
+      modifiedAt: "2026-07-30T00:00:01Z",
+      name: "note.md",
+      parent: "",
+      path: "note.md",
+      revision: "revision-2",
+      sizeBytes: 6,
+    };
+    const cases = [
+      [
+        { type: "workspace-changed", workspace: { id: "workspace-1" } },
+        { documentChange: "tree", scopes: ["workspace", "documents", "resources"] },
+      ],
+      [
+        { document, type: "document-created" },
+        { documentChange: "tree", paths: ["note.md"], scopes: ["documents", "resources"] },
+      ],
+      [
+        { document, type: "document-changed" },
+        { documentChange: "content", paths: ["note.md"], scopes: ["documents", "resources"] },
+      ],
+      [
+        { document: { ...document, path: "archive/note.md" }, previousPath: "note.md", type: "document-moved" },
+        {
+          documentChange: "tree",
+          paths: ["note.md", "archive/note.md"],
+          scopes: ["documents", "resources"],
+        },
+      ],
+      [
+        { previousPath: "note.md", type: "document-deleted" },
+        { documentChange: "tree", paths: ["note.md"], scopes: ["documents", "resources"] },
+      ],
+      [{ settings: {}, type: "settings-changed" }, { scopes: ["settings"] }],
+      [{ config: {}, type: "sync-config-changed" }, { scopes: ["sync-config"] }],
+      [
+        { status: { completionState: "attempting" }, type: "sync-status-changed" },
+        { scopes: ["sync-status"] },
+      ],
+      [
+        { status: { completionState: "succeeded" }, type: "sync-status-changed" },
+        {
+          documentChange: "tree",
+          scopes: ["sync-status", "documents", "resources"],
+        },
+      ],
+    ] as const;
+
+    cases.forEach(([event], index) => handlers?.onEvent?.({
+      connectionId: "223e4567-e89b-42d3-a456-426614174000",
+      event,
+      protocolVersion: 1,
+      resource: { kind: "workspace" },
+      revision: `revision-${index + 1}`,
+      sequence: index + 1,
+      type: "event",
+    } as never));
+
+    expect(invalidationListener.mock.calls.map(([notice]) => notice))
+      .toEqual(cases.map(([, expected]) => expected));
+    handlers?.onSnapshotRequired?.({
+      reason: "reconnect",
+      reloadScopes: ["sync-status"],
+    });
+    expect(invalidationListener).toHaveBeenLastCalledWith({
+      scopes: ["sync-status", "documents", "resources"],
+    });
+  });
+
   it("returns to authentication when the event stream rejects the browser session", async () => {
     let handlers: KernelEventHandlers | undefined;
     const close = vi.fn();

@@ -431,7 +431,7 @@ export type KernelDomainPort = {
     delete: (input: KernelDeleteDocumentInput) => Promise<undefined>;
     history: {
       list: (input: KernelListDocumentHistoryInput) => Promise<KernelHistoryPageSnapshot>;
-      read?: (input: KernelReadDocumentHistoryInput) => Promise<KernelHistorySnapshot>;
+      read: (input: KernelReadDocumentHistoryInput) => Promise<KernelHistorySnapshot>;
       restore: (input: KernelRestoreDocumentHistoryInput) => Promise<KernelDocumentSnapshot>;
     };
     list: (input: KernelListDocumentsInput) => Promise<KernelDocumentPageSnapshot>;
@@ -440,8 +440,8 @@ export type KernelDomainPort = {
     search: (input: KernelSearchDocumentsInput) => Promise<KernelSearchPageSnapshot>;
     update: (input: KernelUpdateDocumentInput) => Promise<KernelDocumentSnapshot>;
   };
-  invalidations?: KernelInvalidationSource;
-  resources?: {
+  invalidations: KernelInvalidationSource;
+  resources: {
     list: (input: KernelListResourcesInput) => Promise<KernelInventorySnapshot>;
     open: (input: KernelOpenResourceInput) => Promise<KernelResourceBody>;
   };

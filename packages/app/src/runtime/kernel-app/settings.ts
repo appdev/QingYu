@@ -1,18 +1,26 @@
-import {
-  createDefaultAppRuntime,
-  type AppSettingsGroup,
-  type AppSettingsRuntime,
-  type KernelDomainPort,
-  type KernelSettingEntrySnapshot,
-  type KernelSettingKey,
-  type KernelSettingValue,
-  type KernelSettingsSnapshot,
+import type {
+  AppSettingsGroup,
+  AppSettingsRuntime,
+  KernelDomainPort,
+  KernelSettingEntrySnapshot,
+  KernelSettingKey,
+  KernelSettingValue,
+  KernelSettingsSnapshot,
 } from "../index";
+
+export type KernelSettingsLocalSupport = Pick<
+  AppSettingsRuntime,
+  "loadStore" | "readPrimaryWorkspaceState" | "writePrimaryWorkspaceState"
+>;
+
+export interface KernelSettingsRuntimeOptions {
+  readonly local: KernelSettingsLocalSupport;
+}
 
 export function createKernelSettingsRuntime(
   kernel: KernelDomainPort,
+  { local }: KernelSettingsRuntimeOptions,
 ): AppSettingsRuntime {
-  const local = createDefaultAppRuntime().settings;
   const localGroupValues = new Map<AppSettingsGroup, unknown>();
 
   const readGroup = async <TValue>(group: AppSettingsGroup) => {
@@ -33,7 +41,10 @@ export function createKernelSettingsRuntime(
   };
 
   return {
-    ...local,
+    loadStore: local.loadStore,
+    ...(local.readPrimaryWorkspaceState === undefined ? {} : {
+      readPrimaryWorkspaceState: local.readPrimaryWorkspaceState,
+    }),
     readGroup,
     replacePortable: async (settings) => {
       const current = await kernel.settings.read();
@@ -55,6 +66,9 @@ export function createKernelSettingsRuntime(
       groups.forEach(([group, value]) => localGroupValues.set(group, cloneSetting(value)));
       return undefined;
     },
+    ...(local.writePrimaryWorkspaceState === undefined ? {} : {
+      writePrimaryWorkspaceState: local.writePrimaryWorkspaceState,
+    }),
     writeGroup,
   };
 }

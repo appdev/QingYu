@@ -121,6 +121,13 @@ describe("KernelDomainPort", () => {
     }>();
   });
 
+  it("requires history reads, resource bodies, and invalidations on every adapter", () => {
+    expectTypeOf<KernelDomainPort["documents"]["history"]["read"]>()
+      .toBeFunction();
+    expectTypeOf<KernelDomainPort["resources"]>().toBeObject();
+    expectTypeOf<KernelDomainPort["invalidations"]>().toBeObject();
+  });
+
   it("fails closed when no Kernel adapter is installed", async () => {
     const port = createUnavailableKernelDomainPort();
 
@@ -167,24 +174,24 @@ describe("KernelDomainPort", () => {
       }),
     ).rejects.toMatchObject({ name: "KernelDomainUnavailableError" });
     await expect(
-      port.documents.history.read?.({
+      port.documents.history.read({
         locator: "document" as KernelDocumentLocator,
         snapshotId: "snapshot" as KernelHistorySnapshotId,
         workspaceGeneration: "generation" as KernelWorkspaceGeneration,
       }),
     ).rejects.toMatchObject({ name: "KernelDomainUnavailableError" });
     await expect(
-      port.resources?.list({
+      port.resources.list({
         workspaceGeneration: "generation" as KernelWorkspaceGeneration,
       }),
     ).rejects.toMatchObject({ name: "KernelDomainUnavailableError" });
     await expect(
-      port.resources?.open({
+      port.resources.open({
         id: "resource",
         kind: "image",
         workspaceGeneration: "generation" as KernelWorkspaceGeneration,
       }),
     ).rejects.toMatchObject({ name: "KernelDomainUnavailableError" });
-    expect(port.invalidations?.available).toBe(false);
+    expect(port.invalidations.available).toBe(false);
   });
 });
