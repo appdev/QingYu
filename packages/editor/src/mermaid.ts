@@ -197,6 +197,25 @@ function renderedLabelColor(
   return null;
 }
 
+function renderedLabelTextElements(labels: readonly (HTMLElement | SVGElement)[]) {
+  const textElements = new Set<HTMLElement | SVGElement>();
+
+  for (const label of labels) {
+    const candidates = [
+      label,
+      ...label.querySelectorAll<HTMLElement | SVGElement>("*")
+    ];
+    for (const candidate of candidates) {
+      const hasDirectText = Array.from(candidate.childNodes).some((child) =>
+        child.nodeType === 3 && Boolean(child.textContent?.trim())
+      );
+      if (hasDirectText) textElements.add(candidate);
+    }
+  }
+
+  return textElements.size > 0 ? Array.from(textElements) : Array.from(labels);
+}
+
 function renderedSequenceForegroundColors(
   root: Element,
   getStyle: (element: Element) => CSSStyleDeclaration
@@ -287,18 +306,25 @@ export function ensureMermaidContrast(root: Element) {
     const labels = Array.from(node.querySelectorAll<HTMLElement | SVGElement>(
       ".nodeLabel, .label text, .label tspan"
     ));
-    const currentLabel = labels[0] && renderedLabelColor(labels[0], getStyle);
-    if (!background || !currentLabel || contrastRatio(background, currentLabel) >= minimumForegroundContrast) {
+    const textElements = renderedLabelTextElements(labels);
+    const currentColors = textElements
+      .map((element) => renderedLabelColor(element, getStyle))
+      .filter((color): color is RgbColor => color !== null);
+    if (
+      !background ||
+      currentColors.length === 0 ||
+      currentColors.every((color) => contrastRatio(background, color) >= minimumForegroundContrast)
+    ) {
       continue;
     }
 
     const replacement = contrastRatio(background, darkLabel) >= contrastRatio(background, lightLabel)
       ? darkNodeLabelColor
       : lightNodeLabelColor;
-    for (const label of labels) {
-      label.style.setProperty("color", replacement, "important");
-      if (label.namespaceURI === svgNamespace) {
-        label.style.setProperty("fill", replacement, "important");
+    for (const element of new Set([...labels, ...textElements])) {
+      element.style.setProperty("color", replacement, "important");
+      if (element.namespaceURI === svgNamespace) {
+        element.style.setProperty("fill", replacement, "important");
       }
     }
     correctedNodeCount += 1;

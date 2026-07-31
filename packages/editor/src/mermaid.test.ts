@@ -12,10 +12,18 @@ vi.mock("mermaid", () => ({
 import mermaid from "mermaid";
 import { ensureMermaidContrast, renderMermaidToSvg } from "./mermaid";
 
-function mountMermaidNode(fill: string, color: string, labelElement = "span") {
+function mountMermaidNode(
+  fill: string,
+  color: string,
+  labelElement = "span",
+  paragraphColor?: string
+) {
   const root = document.createElement("div");
+  const labelContent = paragraphColor
+    ? `<p style="color: ${paragraphColor}">Label</p>`
+    : "Label";
   const label = labelElement === "span"
-    ? `<foreignObject><div xmlns="http://www.w3.org/1999/xhtml"><span class="nodeLabel" style="color: ${color}">Label</span></div></foreignObject>`
+    ? `<foreignObject><div xmlns="http://www.w3.org/1999/xhtml"><span class="nodeLabel" style="color: ${color}">${labelContent}</span></div></foreignObject>`
     : `<${labelElement} class="nodeLabel" style="color: ${color}; fill: ${color}">Label</${labelElement}>`;
   root.innerHTML = [
     "<svg>",
@@ -70,6 +78,24 @@ describe("renderMermaidToSvg", () => {
     expect(ensureMermaidContrast(root)).toBe(1);
     expect(label?.style.getPropertyValue("color")).toBe("rgb(0, 0, 0)");
     expect(label?.style.getPropertyPriority("color")).toBe("important");
+  });
+
+  it("overrides a low-contrast paragraph color inside an HTML node label", () => {
+    const root = mountMermaidNode("#e8f4fd", "#e0dfdf", "span", "#e7e9ea");
+    const paragraph = root.querySelector<HTMLParagraphElement>(".nodeLabel p");
+
+    expect(ensureMermaidContrast(root)).toBe(1);
+    expect(paragraph?.style.getPropertyValue("color")).toBe("rgb(0, 0, 0)");
+    expect(paragraph?.style.getPropertyPriority("color")).toBe("important");
+  });
+
+  it("preserves a readable paragraph color inside an HTML node label", () => {
+    const root = mountMermaidNode("#e8f5e9", "#e0dfdf", "span", "#2e7d32");
+    const paragraph = root.querySelector<HTMLParagraphElement>(".nodeLabel p");
+
+    expect(ensureMermaidContrast(root)).toBe(0);
+    expect(paragraph?.style.getPropertyValue("color")).toBe("rgb(46, 125, 50)");
+    expect(paragraph?.style.getPropertyPriority("color")).toBe("");
   });
 
   it("uses light fill for an unreadable SVG text label on a dark node", () => {
