@@ -16,7 +16,7 @@ export interface ServerKernelTransportOptions {
 }
 
 export function createServerKernelTransports(options: ServerKernelTransportOptions) {
-  const browserOrigin = new URL(options.browserOrigin);
+  const browserOrigin = parseBrowserOrigin(options.browserOrigin);
   const authentication = {
     browserOrigin,
     getCsrfToken: () => readServerCsrfCookie(options.readCookie(), browserOrigin),
@@ -35,4 +35,12 @@ export function createServerKernelTransports(options: ServerKernelTransportOptio
       webSocket: options.webSocket,
     }),
   };
+}
+
+function parseBrowserOrigin(value: string | URL): URL {
+  try {
+    return new URL(value);
+  } catch {
+    throw new Error("invalid-base-url");
+  }
 }

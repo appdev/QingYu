@@ -11,6 +11,8 @@ Stage = Struct.new(:base, :alias_name, :instructions, keyword_init: true)
 
 CANONICAL_DOCKERIGNORE_SHA256 =
   "5b8e84a7e25a385040213570ca7847548e61bba617c0ccbf13c337fd95e04644"
+CANONICAL_RUNTIME_COMPOSE_SHA256 =
+  "7ba9e9757bd5331aec9ebc98e5024ccf53087252172113b081c8c3b5ce1c0d0a"
 CANONICAL_DOCKERFILE_SYNTAX = "# syntax=docker/dockerfile:1.7"
 DOCKERFILE_PARSER_DIRECTIVE = /\A\s*#\s*(?:syntax|escape|check)\s*=/i
 
@@ -739,4 +741,8 @@ end
 stages = verify_dockerfile(dockerfile)
 verify_compose(compose_file)
 verify_runtime_compose(runtime_compose_file)
+assert_contract(
+  Digest::SHA256.file(runtime_compose_file).hexdigest == CANONICAL_RUNTIME_COMPOSE_SHA256,
+  "Runtime Compose frozen control checksum changed"
+)
 verify_dockerignore(dockerignore, repo_root, stages, tracked_inputs_manifest)

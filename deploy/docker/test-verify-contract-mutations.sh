@@ -201,6 +201,16 @@ expect_runtime_compose_rejection short-stop \
 expect_runtime_compose_rejection no-restart \
   'Runtime Compose restart policy must be unless-stopped' no-restart
 
+semantically_equivalent_runtime_compose="$temporary_directory/runtime-compose.frozen-drift.yaml"
+ruby -e '
+  source = File.read(ARGV.fetch(0))
+  File.write(ARGV.fetch(1), "# semantically equivalent frozen-control drift\n#{source}")
+' "$runtime_compose_file" "$semantically_equivalent_runtime_compose"
+expect_rejection \
+  runtime-compose-frozen-control-drift \
+  'Runtime Compose frozen control checksum changed' \
+  env QINGYU_VERIFY_RUNTIME_COMPOSE_FILE="$semantically_equivalent_runtime_compose" "$verifier"
+
 weakened_dockerignore="$temporary_directory/dockerignore.missing-nested-env"
 awk '$0 != "**/.env.*" { print }' "$repo_root/.dockerignore" >"$weakened_dockerignore"
 
