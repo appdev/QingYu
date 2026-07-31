@@ -69,6 +69,13 @@ describe("native runtime selection", () => {
     }
   );
 
+  it("reads the production runtime kind and fails safe to desktop", () => {
+    expect(nativeRuntime.readNativeRuntimeKind(() => "ios")).toBe("mobile");
+    expect(nativeRuntime.readNativeRuntimeKind(() => {
+      throw new Error("OS plugin unavailable");
+    })).toBe("desktop");
+  });
+
   it.each(["android", "ios"])("loads only the mobile runtime on %s", async (platform) => {
     const loaders = createInjectedLoaders();
 

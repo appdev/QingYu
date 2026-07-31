@@ -57,6 +57,7 @@ describe("desktop authenticated application mount owner", () => {
       "configure",
       `domain:${INSTANCE_A}:7`,
       `unmount:${INSTANCE_A}:7`,
+      "release-runtime",
       "startup:retrying:8",
       "configure",
       `domain:${INSTANCE_B}:8`
@@ -78,6 +79,7 @@ describe("desktop authenticated application mount owner", () => {
       "configure",
       `domain:${INSTANCE_A}:20`,
       `unmount:${INSTANCE_A}:20`,
+      "release-runtime",
       "configure",
       `domain:${INSTANCE_B}:21`
     ]);
@@ -103,7 +105,8 @@ describe("desktop authenticated application mount owner", () => {
     expect(log).toEqual([
       "configure",
       `domain:${INSTANCE_A}:9`,
-      `unmount:${INSTANCE_A}:9`
+      `unmount:${INSTANCE_A}:9`,
+      "release-runtime"
     ]);
     expect(session.start).toHaveBeenCalledTimes(1);
     expect(session.unsubscribe).toHaveBeenCalledTimes(1);
@@ -125,7 +128,7 @@ describe("desktop authenticated application mount owner", () => {
         },
         createRuntime: (domain) => {
           if (failureStage === "create") throw new Error("sensitive create failure");
-          return domain;
+          return { release: () => undefined, runtime: domain };
         },
         owner: session,
         renderDomain: () => {
@@ -155,7 +158,7 @@ describe("desktop authenticated application mount owner", () => {
     };
     const mount = createDesktopApplicationMountOwner({
       configureRuntime: () => undefined,
-      createRuntime: (domain) => domain,
+      createRuntime: (domain) => ({ release: () => undefined, runtime: domain }),
       owner: session,
       renderDomain: () => undefined,
       renderStartup: () => {
@@ -212,7 +215,10 @@ function createMount(
 ): DesktopApplicationMountOwner {
   return createDesktopApplicationMountOwner({
     configureRuntime: () => log.push("configure"),
-    createRuntime: (_domain: KernelDomainPort) => ({ kind: "kernel-runtime" }),
+    createRuntime: (_domain: KernelDomainPort) => ({
+      release: () => log.push("release-runtime"),
+      runtime: { kind: "kernel-runtime" }
+    }),
     owner: session,
     renderDomain: ({ mountKey }) => {
       log.push(`domain:${mountKey}`);

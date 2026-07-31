@@ -204,6 +204,7 @@ describe("server file facade", () => {
       documentPath,
       `${serverWorkspaceRoot}/assets/cover%20image.png`,
     )).toBe(imageUrl);
+    expect(kernel.resources.open).not.toHaveBeenCalled();
     const inventoryCallCount = vi.mocked(kernel.resources.list).mock.calls.length;
     await files.readMarkdownFile(documentPath);
     expect(kernel.resources.list).toHaveBeenCalledTimes(inventoryCallCount);

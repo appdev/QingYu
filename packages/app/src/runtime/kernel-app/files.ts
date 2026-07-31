@@ -194,33 +194,38 @@ export function createKernelFileRuntimeOwner(
     const nextSources = new Map<string, string>();
     const createdSources = new Set<string>();
     if (options.imageSource !== undefined) {
-      for (const [relativePath, resource] of next) {
-        assertNotAborted(signal);
-        const previous = imageResources.get(relativePath);
-        const previousSource = imageSources.get(relativePath);
-        if (
-          previousSource !== undefined &&
-          previous !== undefined &&
-          sameResourceVersion(previous, resource)
-        ) {
-          nextSources.set(relativePath, previousSource);
-          continue;
-        }
-        const source = await options.imageSource.materialize(resource, async () => {
-          const body = await resources.open({
-            id: resource.id,
-            kind: resource.kind,
-            workspaceGeneration: identity.generation,
-          });
-          if (body.mediaType !== resource.mediaType) {
-            throw new Error("The Kernel image resource media type changed.");
+      try {
+        for (const [relativePath, resource] of next) {
+          assertNotAborted(signal);
+          const previous = imageResources.get(relativePath);
+          const previousSource = imageSources.get(relativePath);
+          if (
+            previousSource !== undefined &&
+            previous !== undefined &&
+            sameResourceVersion(previous, resource)
+          ) {
+            nextSources.set(relativePath, previousSource);
+            continue;
           }
-          return body;
-        });
-        if (source !== undefined) {
-          nextSources.set(relativePath, source);
-          createdSources.add(source);
+          const source = await options.imageSource.materialize(resource, async () => {
+            const body = await resources.open({
+              id: resource.id,
+              kind: resource.kind,
+              workspaceGeneration: identity.generation,
+            });
+            if (body.mediaType !== resource.mediaType) {
+              throw new Error("The Kernel image resource media type changed.");
+            }
+            return body;
+          });
+          if (source !== undefined) {
+            nextSources.set(relativePath, source);
+            createdSources.add(source);
+          }
         }
+      } catch (error: unknown) {
+        createdSources.forEach(releaseImageSource);
+        throw error;
       }
     }
     assertNotAborted(signal);

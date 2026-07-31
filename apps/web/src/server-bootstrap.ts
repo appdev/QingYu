@@ -3,6 +3,7 @@ import type {
   KernelRuntimeSnapshot,
   KernelWorkspaceSnapshot,
 } from "@markra/app/runtime";
+import { hasRequiredKernelDomainCapabilities } from "@markra/app/runtime";
 import {
   KernelApiError,
   type KernelApiErrorDetails,
@@ -290,7 +291,7 @@ function isReadyServerRuntime(runtime: RuntimeSource) {
   return runtime.profile === "server" &&
     runtime.startupState === "ready" &&
     runtime.instanceId.length > 0 &&
-    runtime.capabilities.documents === true;
+    hasRequiredKernelDomainCapabilities(runtime.capabilities);
 }
 
 function isReadyWorkspace(workspace: WorkspaceSource) {

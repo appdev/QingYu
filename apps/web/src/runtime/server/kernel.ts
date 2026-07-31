@@ -28,6 +28,7 @@ import type {
   KernelWorkspaceRelativePath,
   KernelWorkspaceSnapshot,
 } from "@markra/app/runtime";
+import { hasRequiredKernelDomainCapabilities } from "@markra/app/runtime";
 import {
   KernelApiError,
   KernelEventError,
@@ -430,9 +431,11 @@ export async function createServerKernelDomainAdapter(
           input.kind,
           { signal: requests.signal },
         ));
+        const body = await response.blob();
+        assertActive();
         await confirmWorkspaceIdentity();
         return {
-          body: await response.blob(),
+          body,
           mediaType: response.headers.get("content-type")?.split(";", 1)[0]?.trim() ?? "",
         };
       },
@@ -575,7 +578,7 @@ function matchesServerRuntime(runtime: RuntimeSource, instanceId: string) {
   return runtime.instanceId === instanceId &&
     runtime.profile === "server" &&
     runtime.startupState === "ready" &&
-    runtime.capabilities.documents === true;
+    hasRequiredKernelDomainCapabilities(runtime.capabilities);
 }
 
 function matchesServerWorkspace(

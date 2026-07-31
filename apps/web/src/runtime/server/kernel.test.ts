@@ -141,6 +141,37 @@ describe("Server Kernel domain adapter", () => {
     }, { signal: expect.any(AbortSignal) });
   });
 
+  it("fails closed when release races resource body consumption", async () => {
+    const client = kernelClient();
+    let resolveBody: ((body: Blob) => unknown) | undefined;
+    let bodyStarted: (() => unknown) | undefined;
+    const started = new Promise<undefined>((resolve) => {
+      bodyStarted = () => resolve(undefined);
+    });
+    const response = new Response("pending", { headers: { "content-type": "image/png" } });
+    Object.defineProperty(response, "blob", {
+      value: () => {
+        bodyStarted?.();
+        return new Promise<Blob>((resolve) => {
+          resolveBody = resolve;
+        });
+      },
+    });
+    vi.mocked(client.resources.open).mockResolvedValue(response);
+    const adapter = await createServerKernelDomainAdapter(client, options());
+    const opening = adapter.port.resources.open({
+      id: "resource.signature",
+      kind: "image",
+      workspaceGeneration: GENERATION,
+    });
+
+    await started;
+    adapter.release();
+    resolveBody?.(new Blob(["retired"], { type: "image/png" }));
+
+    await expect(opening).rejects.toMatchObject({ code: "released" });
+  });
+
   it("fails closed when inventory authentication expires", async () => {
     const onAuthenticationRequired = vi.fn();
     const client = kernelClient();

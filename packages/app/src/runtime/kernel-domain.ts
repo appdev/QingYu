@@ -41,6 +41,20 @@ export type KernelRuntimeCapabilities = {
   webdav: boolean;
 };
 
+export function hasRequiredKernelDomainCapabilities(
+  capabilities: KernelRuntimeCapabilities,
+): boolean {
+  return (
+    capabilities.documents === true &&
+    capabilities.history === true &&
+    capabilities.portableSettings === true &&
+    capabilities.resources === true &&
+    capabilities.search === true &&
+    capabilities.settings === true &&
+    capabilities.sync === true
+  );
+}
+
 export type KernelRuntimeSnapshot = {
   capabilities: KernelRuntimeCapabilities;
   instanceId: string;

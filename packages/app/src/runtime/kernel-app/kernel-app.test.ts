@@ -304,6 +304,68 @@ describe("Kernel AppRuntime adapter", () => {
     )).toBeUndefined();
   });
 
+  it("releases materialized image sources when a later prewarm fails", async () => {
+    const unavailable = createUnavailableKernelDomainPort();
+    const resources = ["first.png", "second.png"].map((name, index) => ({
+      entryType: "resource" as const,
+      resource: {
+        id: `resource-${index + 1}`,
+        kind: "image" as const,
+        mediaType: "image/png",
+        modifiedAt: "2026-07-31T00:00:00Z",
+        name,
+        parent: "" as never,
+        previewable: true,
+        relativePath: name as never,
+        revision,
+        sizeBytes: 5,
+        workspaceGeneration: generation,
+      },
+    }));
+    const kernel: KernelDomainPort = {
+      ...unavailable,
+      availability: "available",
+      documents: {
+        ...unavailable.documents,
+        list: vi.fn(async () => ({
+          items: [], nextCursor: null, workspaceGeneration: generation,
+        })),
+      },
+      resources: {
+        list: vi.fn(async () => ({ items: resources, workspaceGeneration: generation })),
+        open: vi.fn(async () => ({
+          body: new Blob(["image"], { type: "image/png" }),
+          mediaType: "image/png",
+        })),
+      },
+      workspace: {
+        read: vi.fn(async () => ({
+          displayName: "Notes",
+          generation,
+          id: "workspace-1",
+          readiness: "ready" as const,
+          revision,
+        })),
+      },
+    };
+    const releaseSource = vi.fn();
+    let materialized = 0;
+    const owner = createKernelFileRuntimeOwner(kernel, {
+      imageSource: {
+        materialize: async () => {
+          materialized += 1;
+          if (materialized === 2) throw new Error("second image failed");
+          return "blob:first-image";
+        },
+        release: releaseSource,
+      },
+    });
+
+    await expect(owner.files.loadMarkdownFilesForPath?.(kernelWorkspaceRoot))
+      .rejects.toThrow("second image failed");
+    expect(releaseSource).toHaveBeenCalledWith("blob:first-image");
+  });
+
   it("uses a synthetic workspace root with no host absolute path", () => {
     expect(kernelWorkspaceRoot).toBe("kernel-workspace://primary");
     expect(kernelWorkspaceRoot).not.toMatch(/^\/(?:Users|Volumes|home|data)\//u);

@@ -4,6 +4,7 @@ import {
 } from "@markra/app/runtime";
 import type { NativeKernelBootstrap } from "../kernel-bootstrap";
 import {
+  createDesktopKernelRuntimeOwner,
   createDesktopRuntime,
   loadDesktopRuntime
 } from "./desktop";
@@ -30,6 +31,47 @@ describe("desktop runtime composition", () => {
 
     expect(runtime.kernel).toBe(kernel);
     expect(runtime.nativeShell).toBe(nativeShell);
+  });
+
+  it("composes a fixed Kernel workspace without legacy document writers", async () => {
+    const kernel = createUnavailableKernelDomainPort();
+    const owner = createDesktopKernelRuntimeOwner(kernel);
+    const { runtime } = owner;
+
+    expect(runtime.kernel).toBe(kernel);
+    expect(runtime.features).toMatchObject({
+      dejavuSync: false,
+      fileDrop: false,
+      imageImport: false,
+      openLocalAttachments: false,
+      projectSync: true,
+      resources: false
+    });
+    expect(runtime.nativeShell.capabilities).toEqual({
+      absolutePathClassification: "unavailable",
+      operatingSystemShell: "unavailable",
+      pickers: "unavailable",
+      standaloneDocuments: "unavailable"
+    });
+    expect(runtime.mcp.localServiceAvailable).toBe(false);
+    expect(runtime.workspace.rootPolicy).toMatchObject({
+      canChooseLocalRoot: false,
+      kind: "fixed"
+    });
+    if (runtime.workspace.rootPolicy?.kind !== "fixed") {
+      throw new Error("fixed Kernel workspace policy unavailable");
+    }
+    await expect(runtime.workspace.rootPolicy.resolveRoot())
+      .resolves.toBe("kernel-workspace://primary");
+    await expect(runtime.files.importLocalFile({} as never))
+      .rejects.toThrow("unavailable for a Kernel workspace");
+    await expect(runtime.files.saveClipboardImage({} as never))
+      .rejects.toThrow("unavailable for a Kernel workspace");
+    await expect(runtime.files.trashWorkspaceResources("kernel-workspace://primary", []))
+      .rejects.toThrow("unavailable for a Kernel workspace");
+
+    owner.release();
+    owner.release();
   });
 
   it("keeps the Kernel port unavailable while the native bootstrap is dormant", async () => {

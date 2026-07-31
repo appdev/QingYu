@@ -17,19 +17,21 @@ export function nativeRuntimeKind(platform: string | null | undefined): NativeRu
   return platform === "android" || platform === "ios" ? "mobile" : "desktop";
 }
 
+export function readNativeRuntimeKind(
+  readPlatform: () => string = readTauriPlatform,
+): NativeRuntimeKind {
+  try {
+    return nativeRuntimeKind(readPlatform());
+  } catch {
+    return "desktop";
+  }
+}
+
 export async function loadNativeRuntime(
   readPlatform: () => string = readTauriPlatform,
   loaders: NativeRuntimeLoaders = nativeRuntimeLoaders
 ): Promise<AppRuntime> {
-  let platform: string;
-
-  try {
-    platform = readPlatform();
-  } catch {
-    return (await loaders.desktop()).loadDesktopRuntime();
-  }
-
-  if (nativeRuntimeKind(platform) === "mobile") {
+  if (readNativeRuntimeKind(readPlatform) === "mobile") {
     return (await loaders.mobile()).mobileRuntime;
   }
 

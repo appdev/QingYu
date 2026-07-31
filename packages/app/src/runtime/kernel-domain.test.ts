@@ -1,4 +1,7 @@
-import { createUnavailableKernelDomainPort } from "./kernel-domain";
+import {
+  createUnavailableKernelDomainPort,
+  hasRequiredKernelDomainCapabilities,
+} from "./kernel-domain";
 import type {
   KernelCreateDocumentInput,
   KernelDeleteDocumentInput,
@@ -126,6 +129,35 @@ describe("KernelDomainPort", () => {
       .toBeFunction();
     expectTypeOf<KernelDomainPort["resources"]>().toBeObject();
     expectTypeOf<KernelDomainPort["invalidations"]>().toBeObject();
+  });
+
+  it("freezes the required runtime capability set while leaving providers optional", () => {
+    const complete = {
+      documents: true,
+      history: true,
+      portableSettings: true,
+      resources: true,
+      s3: false,
+      search: true,
+      settings: true,
+      sync: true,
+      webdav: false,
+    };
+    expect(hasRequiredKernelDomainCapabilities(complete)).toBe(true);
+    for (const capability of [
+      "documents",
+      "history",
+      "portableSettings",
+      "resources",
+      "search",
+      "settings",
+      "sync",
+    ] as const) {
+      expect(hasRequiredKernelDomainCapabilities({
+        ...complete,
+        [capability]: false,
+      })).toBe(false);
+    }
   });
 
   it("fails closed when no Kernel adapter is installed", async () => {

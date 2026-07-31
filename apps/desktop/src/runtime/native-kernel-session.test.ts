@@ -1,9 +1,15 @@
-import type { KernelDomainPort } from "@markra/app/runtime";
+import {
+  createUnavailableKernelDomainPort,
+  type KernelDomainPort
+} from "@markra/app/runtime";
 import { KernelEventError } from "@markra/kernel-client";
 
 import { createDesktopApplicationMountOwner } from "../desktop-application";
 import type { NativeKernelBootstrap } from "../kernel-bootstrap";
-import type { DesktopKernelDomainAdapter } from "./kernel";
+import type {
+  DesktopKernelDomainAdapter,
+  DesktopKernelDomainAdapterOptions
+} from "./kernel";
 import type {
   DesktopKernelDomainInvalidation,
   DesktopKernelEventsAdapter,
@@ -392,7 +398,10 @@ describe("native Kernel session owner", () => {
     });
     const mount = createDesktopApplicationMountOwner({
       configureRuntime: () => undefined,
-      createRuntime: (domain) => domain,
+      createRuntime: (domain) => ({
+        release: () => log.push("runtime-close"),
+        runtime: domain
+      }),
       owner,
       renderDomain: ({ session }) => {
         log.push(`mount-${session.generation}`);
@@ -409,6 +418,7 @@ describe("native Kernel session owner", () => {
 
     expect(log).toEqual([
       "unmount-7",
+      "runtime-close",
       "startup-unavailable",
       "domain-1-close",
       "events-1-close",
@@ -422,6 +432,7 @@ describe("native Kernel session owner", () => {
 
     expect(log).toEqual([
       "unmount-8",
+      "runtime-close",
       "startup-retrying",
       "domain-2-close",
       "events-2-close"
@@ -455,6 +466,41 @@ describe("native Kernel session owner", () => {
     events.records[1]?.options.onInvalidation(current);
 
     expect(invalidations).toEqual([current]);
+    owner.close();
+  });
+
+  it("publishes identity-bound invalidations through the ready domain and closes the source", async () => {
+    const listener = new ListenerHarness();
+    const domains = new DomainHarness();
+    const events = new EventsHarness();
+    const responses = [
+      readyBootstrap("10", INSTANCE_A, CREDENTIAL_A),
+      lifecycleBootstrap("retrying", "11")
+    ];
+    const owner = createNativeKernelSessionOwner({
+      addPagehideListener: listener.addPagehideListener,
+      createDomainAdapter: domains.create,
+      createEventsAdapter: events.create,
+      invokeCommand: async () => responses.shift(),
+      listenBootstrapChanged: listener.listen
+    });
+    await owner.start();
+    const ready = owner.getSnapshot();
+    if (ready?.status !== "ready") throw new Error("ready session unavailable");
+    const invalidationListener = vi.fn();
+    ready.domain.invalidations.subscribe(invalidationListener);
+
+    events.records[0]?.options.onInvalidation(snapshotInvalidation(INSTANCE_A, "10"));
+
+    expect(invalidationListener).toHaveBeenCalledWith({
+      documentChange: "snapshot",
+      scopes: ["documents", "resources"]
+    });
+    await listener.signal({});
+    events.records[0]?.options.onInvalidation(snapshotInvalidation(INSTANCE_A, "10"));
+
+    expect(ready.domain.invalidations.available).toBe(false);
+    expect(invalidationListener).toHaveBeenCalledTimes(1);
     owner.close();
   });
 
@@ -688,7 +734,10 @@ class ListenerHarness {
 class DomainHarness {
   readonly adapters: DesktopKernelDomainAdapter[] = [];
   readonly leases: NativeKernelBootstrap[] = [];
-  readonly create = vi.fn(async (lease: NativeKernelBootstrap) => {
+  readonly create = vi.fn(async (
+    lease: NativeKernelBootstrap,
+    options: DesktopKernelDomainAdapterOptions = {}
+  ) => {
     this.leases.push(lease);
     const number = this.adapters.length + 1;
     this.log?.push(`domain-${number}-open`);
@@ -700,8 +749,13 @@ class DomainHarness {
       lease.release();
       return undefined;
     });
+    const unavailable = createUnavailableKernelDomainPort();
     const adapter = {
-      port: Object.freeze({ availability: "available" }) as KernelDomainPort,
+      port: Object.freeze({
+        ...unavailable,
+        availability: "available" as const,
+        invalidations: options.invalidations ?? unavailable.invalidations
+      }),
       release
     } satisfies DesktopKernelDomainAdapter;
     this.adapters.push(adapter);

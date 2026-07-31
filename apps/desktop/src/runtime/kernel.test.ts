@@ -670,6 +670,50 @@ describe("desktop Kernel domain adapter", () => {
     ]);
   });
 
+  it("fails closed when the adapter retires while a resource body is being consumed", async () => {
+    let resolveBody: ((body: Blob) => unknown) | undefined;
+    let delayedResponse: Response | undefined;
+    const bodyStarted = new Promise<undefined>((resolve) => {
+      const response = new Response("pending", {
+        headers: {
+          "content-length": "7",
+          "content-type": "image/png",
+          "x-content-type-options": "nosniff",
+          "x-request-id": REQUEST_ID,
+        },
+      });
+      Object.defineProperty(response, "blob", {
+        value: () => {
+          resolve(undefined);
+          return new Promise<Blob>((resolveBlob) => {
+            resolveBody = resolveBlob;
+          });
+        },
+      });
+      delayedResponse = response;
+    });
+    const fetch: FetchLike = async (url) => {
+      const pathname = new URL(url).pathname;
+      if (pathname.startsWith("/api/v1/resources/")) {
+        if (delayedResponse === undefined) throw new Error("resource response unavailable");
+        return delayedResponse;
+      }
+      return handshakeResponse(pathname);
+    };
+    const adapter = await createDesktopKernelDomainAdapter(connection(), { fetch });
+    const opening = adapter.port.resources.open({
+      id: "resource.signature",
+      kind: "image",
+      workspaceGeneration: WORKSPACE_GENERATION as KernelWorkspaceGeneration,
+    });
+
+    await bodyStarted;
+    adapter.release();
+    resolveBody?.(new Blob(["retired"], { type: "image/png" }));
+
+    await expect(opening).rejects.toMatchObject({ code: "released" });
+  });
+
   it("fails closed after a later protocol mismatch and never falls back to native workspace mutation", async () => {
     let runtimeReads = 0;
     let documentRequests = 0;

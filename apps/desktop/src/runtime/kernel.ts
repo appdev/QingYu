@@ -25,6 +25,7 @@ import type {
   KernelWorkspaceRelativePath,
   KernelWorkspaceSnapshot,
 } from "@markra/app/runtime";
+import { hasRequiredKernelDomainCapabilities } from "@markra/app/runtime";
 import type {
   FetchLike,
   KernelClient,
@@ -398,9 +399,11 @@ export async function createDesktopKernelDomainAdapter(
             { signal: requests.signal },
           );
           assertActive();
+          const body = await response.blob();
+          assertActive();
           await confirmWorkspaceIdentity();
           return {
-            body: await response.blob(),
+            body,
             mediaType: response.headers.get("content-type")?.split(";", 1)[0]?.trim() ?? "",
           };
         },
@@ -529,7 +532,7 @@ function matchesDesktopRuntime(runtime: RuntimeSource, instanceId: string) {
     runtime.instanceId === instanceId &&
     runtime.profile === "desktop" &&
     runtime.startupState === "ready" &&
-    runtime.capabilities.documents === true
+    hasRequiredKernelDomainCapabilities(runtime.capabilities)
   );
 }
 

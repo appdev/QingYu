@@ -20,6 +20,10 @@ import {
   type DesktopKernelEventsErrorNotice,
   type DesktopKernelEventsStateNotice
 } from "./kernel-events";
+import {
+  createDesktopKernelInvalidationBridge,
+  type DesktopKernelInvalidationBridge
+} from "./kernel-invalidations";
 
 export const NATIVE_KERNEL_BOOTSTRAP_CHANGED_EVENT = "qingyu://kernel-bootstrap-changed";
 
@@ -133,6 +137,7 @@ export function createNativeKernelSessionOwner(
   let stopPagehideListener: (() => unknown) | undefined;
   let activeDomain: DesktopKernelDomainAdapter | undefined;
   let activeEvents: DesktopKernelEventsAdapter | undefined;
+  let activeInvalidations: DesktopKernelInvalidationBridge | undefined;
   let activeIdentity:
     | { readonly generation: string; readonly instanceId: string }
     | undefined;
@@ -182,14 +187,17 @@ export function createNativeKernelSessionOwner(
     snapshot = null;
     const domain = activeDomain;
     const events = activeEvents;
+    const invalidations = activeInvalidations;
     activeDomain = undefined;
     activeEvents = undefined;
-    return { domain, events };
+    activeInvalidations = undefined;
+    return { domain, events, invalidations };
   };
 
   const releaseDetached = (
-    { domain, events }: ReturnType<typeof detachActive>
+    { domain, events, invalidations }: ReturnType<typeof detachActive>
   ) => {
+    safelyCall(invalidations?.close);
     safelyCall(domain?.release);
     safelyCall(events?.close);
     return undefined;
@@ -268,6 +276,7 @@ export function createNativeKernelSessionOwner(
     const sameActivePublication =
       !update.changed &&
       activeDomain !== undefined &&
+      activeInvalidations?.source.available === true &&
       activeEvents?.identity?.generation === lifecycle.generation &&
       activeEvents.identity.instanceId === lifecycle.instanceId &&
       activeIdentity?.generation === lifecycle.generation &&
@@ -291,16 +300,21 @@ export function createNativeKernelSessionOwner(
     }
     const domainLease = onceOwnedBootstrap(acquiredDomainLease);
     const eventsLease = onceOwnedBootstrap(acquiredEventsLease);
+    const invalidations = createDesktopKernelInvalidationBridge();
 
     let domain: DesktopKernelDomainAdapter;
     try {
-      domain = await createDomainAdapter(domainLease);
+      domain = await createDomainAdapter(domainLease, {
+        invalidations: invalidations.source
+      });
     } catch (cause: unknown) {
+      invalidations.close();
       safelyRelease(domainLease);
       safelyRelease(eventsLease);
       throw failClosed(cause);
     }
     if (closed || adoption !== adoptionEpoch) {
+      invalidations.close();
       safelyCall(domain.release);
       safelyRelease(eventsLease);
       return undefined;
@@ -321,6 +335,7 @@ export function createNativeKernelSessionOwner(
       if (notification.kind === "error") {
         notifyConsumer(onEventsError, notification.value);
       } else if (notification.kind === "invalidation") {
+        invalidations.publish(notification.value);
         notifyConsumer(onInvalidation, notification.value);
       } else {
         notifyConsumer(onEventsStateChange, notification.value);
@@ -363,12 +378,14 @@ export function createNativeKernelSessionOwner(
       });
     } catch (cause: unknown) {
       retireAdoption(adoptionToken);
+      invalidations.close();
       safelyCall(domain.release);
       safelyRelease(eventsLease);
       throw failClosed(cause);
     }
     if (closed || adoption !== adoptionEpoch) {
       retireAdoption(adoptionToken);
+      invalidations.close();
       safelyCall(domain.release);
       safelyCall(events.close);
       safelyRelease(eventsLease);
@@ -379,6 +396,7 @@ export function createNativeKernelSessionOwner(
       events.replaceConnection(eventsLease);
     } catch (cause: unknown) {
       retireAdoption(adoptionToken);
+      invalidations.close();
       safelyCall(domain.release);
       safelyCall(events.close);
       safelyRelease(eventsLease);
@@ -386,6 +404,7 @@ export function createNativeKernelSessionOwner(
     }
     if (closed || adoption !== adoptionEpoch) {
       retireAdoption(adoptionToken);
+      invalidations.close();
       safelyCall(domain.release);
       safelyCall(events.close);
       safelyRelease(eventsLease);
@@ -393,6 +412,7 @@ export function createNativeKernelSessionOwner(
     }
     activeDomain = domain;
     activeEvents = events;
+    activeInvalidations = invalidations;
     activeIdentity = Object.freeze({
       generation: lifecycle.generation,
       instanceId: lifecycle.instanceId

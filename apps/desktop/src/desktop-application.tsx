@@ -21,6 +21,11 @@ export interface DesktopApplicationDomainMount<Runtime> {
   readonly session: DesktopReadyKernelSession;
 }
 
+export interface DesktopApplicationRuntimeOwner<Runtime> {
+  readonly runtime: Runtime;
+  readonly release: () => unknown;
+}
+
 export interface DesktopApplicationMountOwner {
   start(onFailure?: () => unknown): Promise<undefined>;
   close(): undefined;
@@ -28,7 +33,9 @@ export interface DesktopApplicationMountOwner {
 
 export interface DesktopApplicationMountOptions<Runtime> {
   readonly configureRuntime: (runtime: Runtime) => unknown;
-  readonly createRuntime: (domain: KernelDomainPort) => Runtime;
+  readonly createRuntime: (
+    domain: KernelDomainPort
+  ) => DesktopApplicationRuntimeOwner<Runtime>;
   readonly owner: NativeKernelSessionOwner;
   readonly renderDomain: (
     mount: DesktopApplicationDomainMount<Runtime>
@@ -49,6 +56,7 @@ export function createDesktopApplicationMountOwner<Runtime>(
   let mountedIdentity: string | undefined;
   let mountFailure: Error | undefined;
   let reportFailure: (() => unknown) | undefined;
+  let releaseRuntime: (() => unknown) | undefined;
   let unmountDomain: (() => unknown) | undefined;
   let startPromise: Promise<undefined> | undefined;
   let unsubscribe: (() => unknown) | undefined;
@@ -62,6 +70,13 @@ export function createDesktopApplicationMountOwner<Runtime>(
     } catch {
       // Renderer cleanup must not interrupt credential and session retirement.
     }
+    const release = releaseRuntime;
+    releaseRuntime = undefined;
+    try {
+      release?.();
+    } catch {
+      // Runtime-local resources retire before the native session releases credentials.
+    }
     return undefined;
   };
 
@@ -72,9 +87,14 @@ export function createDesktopApplicationMountOwner<Runtime>(
         const mountKey = `${session.instanceId}:${session.generation}`;
         if (mountedIdentity === mountKey) return undefined;
         unmountActiveDomain();
-        const runtime = createRuntime(session.domain);
-        configureRuntime(runtime);
-        unmountDomain = renderDomain({ mountKey, runtime, session });
+        const runtimeOwner = createRuntime(session.domain);
+        releaseRuntime = once(runtimeOwner.release);
+        configureRuntime(runtimeOwner.runtime);
+        unmountDomain = renderDomain({
+          mountKey,
+          runtime: runtimeOwner.runtime,
+          session
+        });
         mountedIdentity = mountKey;
         return undefined;
       }
@@ -136,4 +156,14 @@ export function createDesktopApplicationMountOwner<Runtime>(
     start,
     close
   });
+}
+
+function once(operation: () => unknown): () => undefined {
+  let active = true;
+  return () => {
+    if (!active) return undefined;
+    active = false;
+    operation();
+    return undefined;
+  };
 }
