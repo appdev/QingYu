@@ -558,6 +558,14 @@ def verify_runtime_compose(path)
   )
 end
 
+def verify_runtime_bundle_verifier(path, expected_compose_sha256)
+  assignments = File.read(path).scan(/^expected_compose_sha256=([0-9a-f]{64})$/).flatten
+  assert_contract(
+    assignments == [expected_compose_sha256],
+    "Runtime bundle verifier Compose checksum drifted from the main packaging gate"
+  )
+end
+
 def dockerignore_patterns(path)
   File.readlines(path, chomp: true).filter_map do |line|
     stripped = line.strip
@@ -723,6 +731,10 @@ runtime_compose_file = ENV.fetch(
   "QINGYU_VERIFY_RUNTIME_COMPOSE_FILE",
   File.join(repo_root, "deploy/docker/runtime-bundle.compose.yaml")
 )
+runtime_bundle_verifier = ENV.fetch(
+  "QINGYU_VERIFY_RUNTIME_BUNDLE_VERIFIER",
+  File.join(repo_root, "deploy/docker/verify-runtime-bundle.sh")
+)
 dockerignore = ENV.fetch("QINGYU_VERIFY_DOCKERIGNORE", File.join(repo_root, ".dockerignore"))
 tracked_inputs_manifest = ENV.fetch(
   "QINGYU_VERIFY_TRACKED_INPUTS_MANIFEST",
@@ -733,6 +745,7 @@ tracked_inputs_manifest = ENV.fetch(
   [dockerfile, "root Dockerfile"],
   [compose_file, "Compose contract"],
   [runtime_compose_file, "runtime-only Compose contract"],
+  [runtime_bundle_verifier, "runtime bundle verifier"],
   [dockerignore, ".dockerignore"]
 ].each do |path, description|
   assert_contract(File.file?(path), "missing #{description}: #{path}")
@@ -745,4 +758,5 @@ assert_contract(
   Digest::SHA256.file(runtime_compose_file).hexdigest == CANONICAL_RUNTIME_COMPOSE_SHA256,
   "Runtime Compose frozen control checksum changed"
 )
+verify_runtime_bundle_verifier(runtime_bundle_verifier, CANONICAL_RUNTIME_COMPOSE_SHA256)
 verify_dockerignore(dockerignore, repo_root, stages, tracked_inputs_manifest)

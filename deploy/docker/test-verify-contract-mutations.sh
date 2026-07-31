@@ -6,6 +6,7 @@ repo_root=$(CDPATH= cd -- "$(dirname "$0")/../.." && pwd)
 verifier="$repo_root/deploy/docker/verify-contract.sh"
 compose_file="$repo_root/deploy/docker/compose.contract.yaml"
 runtime_compose_file="$repo_root/deploy/docker/runtime-bundle.compose.yaml"
+runtime_bundle_verifier="$repo_root/deploy/docker/verify-runtime-bundle.sh"
 dockerfile="$repo_root/Dockerfile"
 web_dist_tests="$repo_root/deploy/docker/verify-web-dist.test.mjs"
 runtime_gate="$repo_root/deploy/docker/verify-runtime.sh"
@@ -210,6 +211,19 @@ expect_rejection \
   runtime-compose-frozen-control-drift \
   'Runtime Compose frozen control checksum changed' \
   env QINGYU_VERIFY_RUNTIME_COMPOSE_FILE="$semantically_equivalent_runtime_compose" "$verifier"
+
+stale_runtime_bundle_verifier="$temporary_directory/verify-runtime-bundle.stale-compose-sha.sh"
+ruby -e '
+  source = File.read(ARGV.fetch(0))
+  pattern = /^expected_compose_sha256=[0-9a-f]{64}$/
+  abort "runtime bundle Compose checksum not found" unless source.match?(pattern)
+  File.write(ARGV.fetch(1), source.sub(pattern, "expected_compose_sha256=#{"0" * 64}"))
+' "$runtime_bundle_verifier" "$stale_runtime_bundle_verifier"
+chmod 0555 "$stale_runtime_bundle_verifier"
+expect_rejection \
+  runtime-bundle-verifier-stale-compose-sha \
+  'Runtime bundle verifier Compose checksum drifted from the main packaging gate' \
+  env QINGYU_VERIFY_RUNTIME_BUNDLE_VERIFIER="$stale_runtime_bundle_verifier" "$verifier"
 
 weakened_dockerignore="$temporary_directory/dockerignore.missing-nested-env"
 awk '$0 != "**/.env.*" { print }' "$repo_root/.dockerignore" >"$weakened_dockerignore"

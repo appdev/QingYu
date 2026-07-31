@@ -7,6 +7,7 @@ semantic_verifier="$repo_root/deploy/docker/verify-contract.rb"
 entrypoint="$repo_root/deploy/docker/entrypoint.sh"
 final_web_verifier="$repo_root/deploy/docker/verify-final-web-assets.sh"
 runtime_gate="$repo_root/deploy/docker/verify-runtime.sh"
+runtime_bundle_verifier=${QINGYU_VERIFY_RUNTIME_BUNDLE_VERIFIER:-"$repo_root/deploy/docker/verify-runtime-bundle.sh"}
 compose_file=${QINGYU_VERIFY_COMPOSE_FILE:-"$repo_root/deploy/docker/compose.contract.yaml"}
 
 fail() {
@@ -22,6 +23,7 @@ require_file "$semantic_verifier" "semantic contract verifier"
 require_file "$entrypoint" "container entrypoint"
 require_file "$final_web_verifier" "final Web asset verifier"
 require_file "$runtime_gate" "runtime phase gate"
+require_file "$runtime_bundle_verifier" "runtime bundle verifier"
 
 ruby "$semantic_verifier"
 
