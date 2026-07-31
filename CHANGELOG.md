@@ -1,3 +1,9 @@
+## [2.3.3](https://github.com/markrahq/markra/compare/v2.3.2...v2.3.3) (2026-07-31)
+
+### Bug Fixes
+
+* **editor:** anchor input in empty table cells ([#616](https://github.com/markrahq/markra/issues/616)) ([18eecbd](https://github.com/markrahq/markra/commit/18eecbdadb94825aa0a2dccc34de60c88f7ab079))
+
 ## [2.3.2](https://github.com/markrahq/markra/compare/v2.3.1...v2.3.2) (2026-07-31)
 
 ### Bug Fixes
