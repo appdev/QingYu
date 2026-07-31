@@ -105,7 +105,13 @@ import App, {
   shouldTriggerDevMockRuntimeError
 } from "./App";
 import type { NativeMenuHandlers } from "./test/app-harness";
-import { configureAppRuntime, createDefaultAppRuntime, getAppRuntime, resetAppRuntimeForTests } from "./runtime";
+import {
+  configureAppRuntime,
+  createDefaultAppRuntime,
+  getAppRuntime,
+  kernelWorkspaceRoot,
+  resetAppRuntimeForTests
+} from "./runtime";
 import { showAppToast } from "./lib/app-toast";
 import { unsavedMarkdownFileNameFromTreeInput } from "./app/workspace-model";
 import { createShardedTest } from "./test/shard";
@@ -3438,7 +3444,7 @@ describe("QingYu workspace", () => {
   });
 
   it("imports a native seven-format selection through one Kernel image batch", async () => {
-    const notePath = `${mockFolderPath}/notes/seven-formats.md`;
+    const notePath = `${kernelWorkspaceRoot}/notes/seven-formats.md`;
     const images = [
       new File([new Uint8Array([1])], "fixture.avif", { type: "" }),
       new File([new Uint8Array([2])], "fixture.bmp", { type: "image/x-ms-bmp" }),
@@ -3458,7 +3464,18 @@ describe("QingYu workspace", () => {
     const runtime = getAppRuntime();
     configureAppRuntime({
       ...runtime,
-      files: { ...runtime.files, saveClipboardImages }
+      files: { ...runtime.files, saveClipboardImages },
+      kernel: { ...runtime.kernel, availability: "available" },
+      workspace: {
+        ...runtime.workspace,
+        rootPolicy: {
+          canChooseLocalRoot: true,
+          commitRoot: async () => kernelWorkspaceRoot,
+          kind: "host-selectable",
+          resolveRoot: async () => kernelWorkspaceRoot,
+          selectRoot: async () => null
+        }
+      }
     });
     mockDesktopPrimaryWorkspace({ root: mockFolderPath, status: "ready" });
     window.history.replaceState({}, "", `/?path=${encodeURIComponent(notePath)}`);
@@ -3489,7 +3506,7 @@ describe("QingYu workspace", () => {
       documentPath: notePath,
       fileName: expect.stringMatching(new RegExp(`\\.${image.name.split(".").at(-1)}$`, "u")),
       folder: "assets",
-      projectRootPath: mockFolderPath
+      projectRootPath: kernelWorkspaceRoot
     }))));
     expect(mockedSaveNativeClipboardImage).not.toHaveBeenCalled();
     await waitFor(() => expect(getVisibleCodeMirrorView(container).state.doc.toString().match(/!\[/gu)).toHaveLength(7));
@@ -3518,12 +3535,23 @@ describe("QingYu workspace", () => {
       label: "mixed valid and rejected images",
     },
   ])("rejects $label from the native image picker before any writer runs", async ({ files, label }) => {
-    const notePath = `${mockFolderPath}/notes/rejected-image.md`;
+    const notePath = `${kernelWorkspaceRoot}/notes/rejected-image.md`;
     const saveClipboardImages = vi.fn(async () => []);
     const runtime = getAppRuntime();
     configureAppRuntime({
       ...runtime,
-      files: { ...runtime.files, saveClipboardImages }
+      files: { ...runtime.files, saveClipboardImages },
+      kernel: { ...runtime.kernel, availability: "available" },
+      workspace: {
+        ...runtime.workspace,
+        rootPolicy: {
+          canChooseLocalRoot: true,
+          commitRoot: async () => kernelWorkspaceRoot,
+          kind: "host-selectable",
+          resolveRoot: async () => kernelWorkspaceRoot,
+          selectRoot: async () => null
+        }
+      }
     });
     mockDesktopPrimaryWorkspace({ root: mockFolderPath, status: "ready" });
     window.history.replaceState({}, "", `/?path=${encodeURIComponent(notePath)}`);

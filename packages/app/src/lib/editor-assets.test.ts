@@ -36,6 +36,36 @@ describe("editor asset policy", () => {
   });
 
   it.each([
+    "kernel-workspace://primary/notes/day.md",
+    "kernel-workspace://primary/notes/%E6%97%A5%E8%AE%B0.md"
+  ])("uses an explicit managed URI root for %s", (documentPath) => {
+    expect(resolveEditorAssetContext({
+      documentPath,
+      managedWorkspaceRoot: "kernel-workspace://primary",
+      primaryWorkspaceRoot: "/private/tmp/QingYu/Workspace/Notes"
+    })).toEqual({
+      mode: "primary-workspace",
+      primaryRootPath: "kernel-workspace://primary"
+    });
+  });
+
+  it.each([
+    "kernel-workspace://primary-archive/notes/day.md",
+    "kernel-workspace://primary/%2e%2e/outside.md",
+    "kernel-workspace://primary/notes%2Foutside.md",
+    "kernel-workspace://primary/notes%5Coutside.md",
+    "kernel-workspace://primary/notes/%ZZ.md",
+    "kernel-workspace://primary/notes/image.png",
+    "/private/tmp/QingYu/Workspace/Notes/day.md"
+  ])("does not escape or fall back from an explicit managed URI root for %s", (documentPath) => {
+    expect(resolveEditorAssetContext({
+      documentPath,
+      managedWorkspaceRoot: "kernel-workspace://primary",
+      primaryWorkspaceRoot: "/private/tmp/QingYu/Workspace/Notes"
+    })).toEqual({ mode: "standalone" });
+  });
+
+  it.each([
     [null, "/Notes"],
     ["/Notes/day.md", null],
     ["/External/day.md", "/Notes"],

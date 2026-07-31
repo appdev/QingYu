@@ -164,7 +164,15 @@ describe("desktop runtime composition", () => {
       },
     } as KernelDomainPort;
     const owner = createDesktopKernelRuntimeOwner(kernel);
-    const image = new File([new Uint8Array([1, 2, 3])], "fixture.avif", { type: "image/avif" });
+    const images = [
+      new File([new Uint8Array([1])], "fixture.avif", { type: "image/avif" }),
+      new File([new Uint8Array([2])], "fixture.bmp", { type: "image/bmp" }),
+      new File([new Uint8Array([3])], "fixture.gif", { type: "image/gif" }),
+      new File([new Uint8Array([4])], "fixture.jpg", { type: "image/jpeg" }),
+      new File([new Uint8Array([5])], "fixture.png", { type: "image/png" }),
+      new File([new Uint8Array([6])], "fixture.svg", { type: "image/svg+xml" }),
+      new File([new Uint8Array([7])], "fixture.webp", { type: "image/webp" }),
+    ];
 
     expect(owner.runtime.features.imageImport).toBe(true);
     expect(owner.runtime.files.openLocalImages).toBe(desktopFiles.openNativeLocalImages);
@@ -172,15 +180,23 @@ describe("desktop runtime composition", () => {
       .rejects.toThrow("unavailable for a Kernel workspace");
     await expect(owner.runtime.files.saveClipboardImage({} as never))
       .rejects.toThrow("unavailable without a configured app runtime");
-    await expect(owner.runtime.files.saveClipboardImages([{
+    await expect(owner.runtime.files.saveClipboardImages(images.map((image) => ({
       documentPath: `${kernelWorkspaceRoot}/notes/note.md`,
-      fileName: "fixture.avif",
+      fileName: image.name,
       folder: "assets",
       image,
-    }])).resolves.toEqual([{ alt: "fixture", src: "assets/fixture.avif" }]);
+    })))).resolves.toEqual(images.map((image) => ({
+      alt: "fixture",
+      src: `assets/${image.name}`,
+    })));
     expect(createBatch).toHaveBeenCalledOnce();
     expect(createBatch).toHaveBeenCalledWith(expect.objectContaining({
-      items: [{ body: image, kind: "image", mediaType: "image/avif", name: "fixture.avif" }],
+      items: images.map((image) => ({
+        body: image,
+        kind: "image",
+        mediaType: image.type,
+        name: image.name,
+      })),
     }));
     expect(owner.runtime.nativeShell.capabilities.pickers).toBe("unavailable");
 

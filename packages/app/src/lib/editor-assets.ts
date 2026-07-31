@@ -8,6 +8,39 @@ export type EditorAssetContext =
 
 export type EditorAssetAction = "copy-document" | "copy-workspace" | "reference";
 
+function managedUriDocumentRelativePath(rootPath: string, filePath: string): string | null {
+  if (!/^[a-z][a-z\d+.-]*:\/\/[^/?#]+$/iu.test(rootPath)) return null;
+
+  const prefix = `${rootPath}/`;
+  if (!filePath.startsWith(prefix)) return null;
+  const encodedRelativePath = filePath.slice(prefix.length);
+  if (!encodedRelativePath || encodedRelativePath.endsWith("/")) return null;
+
+  let segments: string[];
+  try {
+    segments = encodedRelativePath.split("/").map(decodeURIComponent);
+  } catch {
+    return null;
+  }
+  if (segments.some((segment) => (
+    !segment ||
+    segment === "." ||
+    segment === ".." ||
+    /[\u0000-\u001f\u007f-\u009f\\/]/u.test(segment)
+  ))) return null;
+
+  return /\.(?:md|markdown)$/iu.test(segments.at(-1) ?? "")
+    ? encodedRelativePath
+    : null;
+}
+
+function editorDocumentRelativePath(rootPath: string, filePath: string): string | null {
+  if (/^[a-z][a-z\d+.-]*:\/\//iu.test(rootPath)) {
+    return managedUriDocumentRelativePath(rootPath, filePath);
+  }
+  return managedDocumentRelativePath(rootPath, filePath);
+}
+
 export function resolveEditorAssetAction({
   mode,
   origin
@@ -21,17 +54,20 @@ export function resolveEditorAssetAction({
 
 export function resolveEditorAssetContext({
   documentPath,
+  managedWorkspaceRoot,
   primaryWorkspaceRoot
 }: {
   documentPath: string | null;
+  managedWorkspaceRoot?: string;
   primaryWorkspaceRoot: string | null;
 }): EditorAssetContext {
+  const authoritativeRoot = managedWorkspaceRoot ?? primaryWorkspaceRoot;
   if (
     documentPath &&
-    primaryWorkspaceRoot &&
-    managedDocumentRelativePath(primaryWorkspaceRoot, documentPath) !== null
+    authoritativeRoot &&
+    editorDocumentRelativePath(authoritativeRoot, documentPath) !== null
   ) {
-    return { mode: "primary-workspace", primaryRootPath: primaryWorkspaceRoot };
+    return { mode: "primary-workspace", primaryRootPath: authoritativeRoot };
   }
 
   return { mode: "standalone" };

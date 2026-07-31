@@ -187,6 +187,7 @@ import {
 } from "./lib/settings/settings-events";
 import {
   getAppRuntime,
+  kernelWorkspaceRoot,
   type NativeSettingsWindowContext,
   type NativeSettingsWindowTarget
 } from "./runtime";
@@ -458,7 +459,8 @@ function WorkspaceApp() {
   const primaryWindowOwner = compactMode.trueMobile || !externalEditorWindow;
   const workspacePersistencePolicy = primaryWindowOwner ? "shared" : "isolated";
   const primaryWorkspace = usePrimaryWorkspace({ trueMobile: compactMode.trueMobile });
-  const fixedWorkspaceRoot = getAppRuntime().workspace.rootPolicy?.kind === "fixed";
+  const workspaceRootPolicy = getAppRuntime().workspace.rootPolicy;
+  const fixedWorkspaceRoot = workspaceRootPolicy?.kind === "fixed";
   const canChooseLocalWorkspace = !fixedWorkspaceRoot && (
     compactMode.trueMobile || primaryWorkspace.canChooseDesktopRoot
   );
@@ -476,6 +478,11 @@ function WorkspaceApp() {
   const nativeRuntimeAvailable = getAppRuntime().events.isAvailable();
   const appFeatures = getAppRuntime().features;
   const appFiles = getAppRuntime().files;
+  const managedWorkspaceRoot =
+    getAppRuntime().kernel.availability === "available" &&
+    (fixedWorkspaceRoot || workspaceRootPolicy?.kind === "host-selectable")
+    ? kernelWorkspaceRoot
+    : undefined;
   const assetCleanupAvailable = Boolean(
     appFiles.listMarkdownReferenceFilesForPath && appFiles.trashMarkdownAssets
   );
@@ -1692,9 +1699,10 @@ function WorkspaceApp() {
   const resolveAssetContextForDocument = useCallback((targetDocumentPath: string | null) => (
     resolveEditorAssetContext({
       documentPath: targetDocumentPath,
+      managedWorkspaceRoot,
       primaryWorkspaceRoot: primaryWorkspace.root
     })
-  ), [primaryWorkspace.root]);
+  ), [managedWorkspaceRoot, primaryWorkspace.root]);
   documentRevisionRef.current = document.revision;
   const activeDocumentOutlineIndex =
     !sourceSurfaceActive &&
