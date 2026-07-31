@@ -20,8 +20,6 @@ const TYPED_SETTINGS_COMMANDS: &[&str] = &[
 
 const MOBILE_COMMANDS: &[&str] = &[
     "read_mobile_kernel_bootstrap",
-    "get_mcp_policy",
-    "update_mcp_policy",
     "list_themes",
     "read_theme_css",
     "prepare_theme_activation",
@@ -684,6 +682,19 @@ fn builder_boundary_mobile_kernel_is_in_process_memory_only_and_origin_bound() {
             "mobile Kernel runtime crossed a forbidden boundary with {forbidden}"
         );
     }
+}
+
+#[test]
+fn builder_boundary_mobile_theme_catalog_skips_the_legacy_settings_owner() {
+    let migration = source("src/themes/migration.rs");
+    let mobile = migration
+        .find("#[cfg(mobile)]")
+        .expect("mobile theme initialization must have an explicit branch");
+    let legacy = migration
+        .find("app.state::<KernelSettingsOwner>()")
+        .expect("desktop legacy theme migration should remain available");
+    assert!(mobile < legacy);
+    assert!(migration[mobile..legacy].contains("initialize_catalog_without_legacy_settings"));
 }
 
 #[test]

@@ -15,7 +15,6 @@ import {
 import * as fileConfirm from "./tauri/file/confirm";
 import * as mobileFiles from "./tauri/file/mobile";
 import * as mobileBack from "./tauri/mobile-back";
-import * as mcpPolicy from "./tauri/mcp-policy";
 import * as themes from "./tauri/themes/shared";
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -61,7 +60,8 @@ describe("mobile Kernel runtime boundary", () => {
     expect(source).not.toContain('from "./tauri/managed-workspace"');
     expect(source).not.toContain('from "./tauri/web-resource"');
     expect(mobileRuntime.kernel.availability).toBe("unavailable");
-    expect(mobileRuntime.mcp.policyAvailable).toBe(true);
+    expect(source).not.toContain('from "./tauri/mcp-policy"');
+    expect(mobileRuntime.mcp.policyAvailable).toBe(false);
     expect(mobileRuntime.mcp.localServiceAvailable).toBe(false);
   });
 
@@ -120,28 +120,11 @@ describe("mobile Kernel runtime boundary", () => {
     });
   });
 
-  it("keeps mobile MCP policy native without enabling the desktop local service", async () => {
-    const config = { enabled: false } as Parameters<
-      typeof mobileRuntime.mcp.updateSettings
-    >[0]["config"];
-    mockedInvoke
-      .mockResolvedValueOnce({ config, revision: "revision-1" })
-      .mockResolvedValueOnce({ config: { ...config, enabled: true }, revision: "revision-2" });
-
-    await mobileRuntime.mcp.getSettings();
-    await mobileRuntime.mcp.updateSettings({
-      config: { ...config, enabled: true },
-      expectedRevision: "revision-1",
+  it("keeps MCP unavailable until its policy moves behind the mobile Kernel", () => {
+    expect(mobileRuntime.mcp).toMatchObject({
+      localServiceAvailable: false,
+      policyAvailable: false,
     });
-
-    expect(mockedInvoke.mock.calls).toEqual([
-      ["get_mcp_policy"],
-      ["update_mcp_policy", {
-        input: {
-          config: { ...config, enabled: true },
-          expectedRevision: "revision-1",
-        },
-      }],
-    ]);
+    expect(mockedInvoke).not.toHaveBeenCalled();
   });
 });

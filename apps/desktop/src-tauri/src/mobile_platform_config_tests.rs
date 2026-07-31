@@ -430,11 +430,11 @@ fn mobile_platform_config_has_no_reset_or_workspace_switch_command() {
 }
 
 #[test]
-fn mobile_platform_config_exposes_only_application_mcp_policy() {
+fn mobile_platform_config_exposes_no_legacy_mcp_policy_writer() {
     let native_runtime = source("src/mobile_runtime.rs");
-    assert!(native_runtime.contains("crate::app_settings::get_mcp_policy"));
-    assert!(native_runtime.contains("crate::app_settings::update_mcp_policy"));
     for forbidden in [
+        "crate::app_settings::get_mcp_policy",
+        "crate::app_settings::update_mcp_policy",
         "get_mcp_settings",
         "update_mcp_settings",
         "set_mcp_primary_workspace",
@@ -450,11 +450,10 @@ fn mobile_platform_config_exposes_only_application_mcp_policy() {
     }
 
     let frontend_runtime = source("../src/runtime/mobile.ts");
-    assert!(frontend_runtime.contains("policyAvailable: true"));
+    assert!(frontend_runtime.contains("policyAvailable: false"));
     assert!(frontend_runtime.contains("localServiceAvailable: false"));
-    assert!(frontend_runtime.contains("getSettings: mcpPolicy.getNativeMcpPolicySettings"));
-    assert!(frontend_runtime.contains("updateSettings: mcpPolicy.updateNativeMcpPolicySettings"));
     for forbidden in [
+        "./tauri/mcp-policy",
         "./tauri/mcp\"",
         "setPrimaryWorkspace:",
         "getHealth:",

@@ -23,7 +23,6 @@ import * as fileConfirm from "./tauri/file/confirm";
 import * as mobileFiles from "./tauri/file/mobile";
 import * as logs from "./tauri/logs/shared";
 import * as mobileBack from "./tauri/mobile-back";
-import * as mcpPolicy from "./tauri/mcp-policy";
 import * as opener from "./tauri/opener";
 import * as themes from "./tauri/themes/shared";
 
@@ -66,10 +65,8 @@ export const mobileRuntime = {
   },
   mcp: {
     ...defaultRuntime.mcp,
-    policyAvailable: true,
+    policyAvailable: false,
     localServiceAvailable: false,
-    getSettings: mcpPolicy.getNativeMcpPolicySettings,
-    updateSettings: mcpPolicy.updateNativeMcpPolicySettings,
   },
   navigation: {
     subscribeToSystemBack: mobileBack.subscribeToMobileSystemBack,

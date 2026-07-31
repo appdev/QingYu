@@ -23,109 +23,123 @@ pub(crate) fn initialize_catalog<R: Runtime>(
         .map_err(|error| ThemeError::new(ThemeErrorCode::Io, error.to_string()))?
         .join("themes");
     let catalog = ThemeCatalog::at(root);
-    #[cfg(desktop)]
-    if app
-        .try_state::<std::sync::Arc<crate::desktop_kernel_runtime::DesktopKernelRuntimeState>>()
-        .is_some()
+    #[cfg(mobile)]
     {
-        let seed_diagnostics = initialize_catalog_files(&catalog, 0)?;
-        return scan_with_diagnostics(&catalog, seed_diagnostics);
+        return initialize_catalog_without_legacy_settings(&catalog);
     }
-    let settings_owner = app.state::<KernelSettingsOwner>();
-    let settings = settings_owner
-        .read_theme_catalog_settings()
-        .map_err(theme_settings_unavailable)?;
-    let stored_catalog_version = settings
-        .get(CATALOG_VERSION_KEY)
-        .and_then(|value| value.as_i64())
-        .unwrap_or(0)
-        .max(0);
-    if stored_catalog_version >= CATALOG_VERSION {
+    #[cfg(not(mobile))]
+    {
+        #[cfg(desktop)]
+        if app
+            .try_state::<std::sync::Arc<crate::desktop_kernel_runtime::DesktopKernelRuntimeState>>()
+            .is_some()
+        {
+            let seed_diagnostics = initialize_catalog_files(&catalog, 0)?;
+            return scan_with_diagnostics(&catalog, seed_diagnostics);
+        }
+        let settings_owner = app.state::<KernelSettingsOwner>();
+        let settings = settings_owner
+            .read_theme_catalog_settings()
+            .map_err(theme_settings_unavailable)?;
+        let stored_catalog_version = settings
+            .get(CATALOG_VERSION_KEY)
+            .and_then(|value| value.as_i64())
+            .unwrap_or(0)
+            .max(0);
+        if stored_catalog_version >= CATALOG_VERSION {
+            let snapshot = catalog.scan()?;
+            let seed_diagnostics = catalog.drake_seed_diagnostics()?;
+            return Ok(merge_diagnostics(snapshot, seed_diagnostics));
+        }
+        let seed_diagnostics = initialize_catalog_files(&catalog, stored_catalog_version)?;
+        if !should_migrate_legacy_preferences(stored_catalog_version) {
+            let committed = settings_owner
+                .commit_theme_catalog_settings(stored_catalog_version, CATALOG_VERSION, None)
+                .map_err(theme_settings_save_failed)?;
+            if !committed {
+                return initialize_catalog(app);
+            }
+            return scan_with_diagnostics(&catalog, seed_diagnostics);
+        }
+
+        let legacy_theme = settings.get("theme").cloned().and_then(json_string);
+        let mut appearance_mode = settings
+            .get("appearanceMode")
+            .cloned()
+            .and_then(json_string)
+            .filter(|value| matches!(value.as_str(), "system" | "light" | "dark"))
+            .unwrap_or_else(|| appearance_from_legacy(legacy_theme.as_deref()).to_string());
+        let mut light_theme_id = settings
+            .get("lightTheme")
+            .cloned()
+            .and_then(json_string)
+            .unwrap_or_else(|| legacy_light_theme(legacy_theme.as_deref()));
+        let mut dark_theme_id = settings
+            .get("darkTheme")
+            .cloned()
+            .and_then(json_string)
+            .unwrap_or_else(|| legacy_dark_theme(legacy_theme.as_deref()));
+
+        if light_theme_id == "custom" {
+            let css = settings
+                .get("lightCustomThemeCss")
+                .or_else(|| settings.get("customThemeCss"))
+                .cloned()
+                .and_then(json_string)
+                .unwrap_or_default();
+            light_theme_id = migrate_custom_theme(&catalog, ThemeAppearance::Light, &css)?.id;
+        }
+        if dark_theme_id == "custom" {
+            let css = settings
+                .get("darkCustomThemeCss")
+                .or_else(|| settings.get("customThemeCss"))
+                .cloned()
+                .and_then(json_string)
+                .unwrap_or_default();
+            dark_theme_id = migrate_custom_theme(&catalog, ThemeAppearance::Dark, &css)?.id;
+        }
+
         let snapshot = catalog.scan()?;
-        let seed_diagnostics = catalog.drake_seed_diagnostics()?;
-        return Ok(merge_diagnostics(snapshot, seed_diagnostics));
-    }
-    let seed_diagnostics = initialize_catalog_files(&catalog, stored_catalog_version)?;
-    if !should_migrate_legacy_preferences(stored_catalog_version) {
+        if !snapshot
+            .themes
+            .iter()
+            .any(|theme| theme.id == light_theme_id)
+            && light_theme_id != "light"
+        {
+            light_theme_id = "light".to_string();
+        }
+        if !snapshot
+            .themes
+            .iter()
+            .any(|theme| theme.id == dark_theme_id)
+            && dark_theme_id != "dark"
+        {
+            dark_theme_id = "dark".to_string();
+        }
+        if !matches!(appearance_mode.as_str(), "system" | "light" | "dark") {
+            appearance_mode = "system".to_string();
+        }
+
         let committed = settings_owner
-            .commit_theme_catalog_settings(stored_catalog_version, CATALOG_VERSION, None)
+            .commit_theme_catalog_settings(
+                stored_catalog_version,
+                CATALOG_VERSION,
+                Some((&appearance_mode, &light_theme_id, &dark_theme_id)),
+            )
             .map_err(theme_settings_save_failed)?;
         if !committed {
             return initialize_catalog(app);
         }
-        return scan_with_diagnostics(&catalog, seed_diagnostics);
-    }
 
-    let legacy_theme = settings.get("theme").cloned().and_then(json_string);
-    let mut appearance_mode = settings
-        .get("appearanceMode")
-        .cloned()
-        .and_then(json_string)
-        .filter(|value| matches!(value.as_str(), "system" | "light" | "dark"))
-        .unwrap_or_else(|| appearance_from_legacy(legacy_theme.as_deref()).to_string());
-    let mut light_theme_id = settings
-        .get("lightTheme")
-        .cloned()
-        .and_then(json_string)
-        .unwrap_or_else(|| legacy_light_theme(legacy_theme.as_deref()));
-    let mut dark_theme_id = settings
-        .get("darkTheme")
-        .cloned()
-        .and_then(json_string)
-        .unwrap_or_else(|| legacy_dark_theme(legacy_theme.as_deref()));
+        scan_with_diagnostics(&catalog, seed_diagnostics)
+    }
+}
 
-    if light_theme_id == "custom" {
-        let css = settings
-            .get("lightCustomThemeCss")
-            .or_else(|| settings.get("customThemeCss"))
-            .cloned()
-            .and_then(json_string)
-            .unwrap_or_default();
-        light_theme_id = migrate_custom_theme(&catalog, ThemeAppearance::Light, &css)?.id;
-    }
-    if dark_theme_id == "custom" {
-        let css = settings
-            .get("darkCustomThemeCss")
-            .or_else(|| settings.get("customThemeCss"))
-            .cloned()
-            .and_then(json_string)
-            .unwrap_or_default();
-        dark_theme_id = migrate_custom_theme(&catalog, ThemeAppearance::Dark, &css)?.id;
-    }
-
-    let snapshot = catalog.scan()?;
-    if !snapshot
-        .themes
-        .iter()
-        .any(|theme| theme.id == light_theme_id)
-        && light_theme_id != "light"
-    {
-        light_theme_id = "light".to_string();
-    }
-    if !snapshot
-        .themes
-        .iter()
-        .any(|theme| theme.id == dark_theme_id)
-        && dark_theme_id != "dark"
-    {
-        dark_theme_id = "dark".to_string();
-    }
-    if !matches!(appearance_mode.as_str(), "system" | "light" | "dark") {
-        appearance_mode = "system".to_string();
-    }
-
-    let committed = settings_owner
-        .commit_theme_catalog_settings(
-            stored_catalog_version,
-            CATALOG_VERSION,
-            Some((&appearance_mode, &light_theme_id, &dark_theme_id)),
-        )
-        .map_err(theme_settings_save_failed)?;
-    if !committed {
-        return initialize_catalog(app);
-    }
-
-    scan_with_diagnostics(&catalog, seed_diagnostics)
+fn initialize_catalog_without_legacy_settings(
+    catalog: &ThemeCatalog,
+) -> Result<ThemeCatalogSnapshot, ThemeError> {
+    let seed_diagnostics = initialize_catalog_files(catalog, 0)?;
+    scan_with_diagnostics(catalog, seed_diagnostics)
 }
 
 fn theme_settings_unavailable(_error: crate::app_settings::AppSettingsError) -> ThemeError {
@@ -305,8 +319,8 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        initialize_catalog_files, rewrite_legacy_custom_selectors,
-        should_migrate_legacy_preferences, CATALOG_VERSION,
+        initialize_catalog_files, initialize_catalog_without_legacy_settings,
+        rewrite_legacy_custom_selectors, should_migrate_legacy_preferences, CATALOG_VERSION,
     };
     use crate::themes::catalog::ThemeCatalog;
 
@@ -330,6 +344,22 @@ mod tests {
         for id in ["light", "dark", "classic-light", "classic-dark"] {
             assert!(!temp.path().join("themes").join(id).exists(), "id {id}");
         }
+    }
+
+    #[test]
+    fn mobile_catalog_initialization_seeds_and_scans_without_a_settings_owner() {
+        let temp = tempdir().unwrap();
+        let catalog = ThemeCatalog::at(temp.path().join("themes"));
+
+        let snapshot = initialize_catalog_without_legacy_settings(&catalog).unwrap();
+
+        assert_eq!(snapshot.themes.len(), 20);
+        assert!(snapshot.themes.iter().any(|theme| theme.id == "nord"));
+        assert!(snapshot
+            .themes
+            .iter()
+            .any(|theme| theme.id == "drake-light"));
+        assert!(snapshot.invalid_files.is_empty());
     }
 
     #[test]

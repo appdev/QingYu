@@ -17,8 +17,6 @@ pub(crate) fn run() {
         .setup(crate::mobile_kernel_runtime::install_mobile_kernel_runtime)
         .invoke_handler(tauri::generate_handler![
             crate::mobile_kernel_runtime::read_mobile_kernel_bootstrap,
-            crate::app_settings::get_mcp_policy,
-            crate::app_settings::update_mcp_policy,
             crate::themes::list_themes,
             crate::themes::read_theme_css,
             crate::themes::activation::prepare_theme_activation,
