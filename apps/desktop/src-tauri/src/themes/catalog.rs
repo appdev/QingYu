@@ -725,6 +725,22 @@ impl ThemeCatalog {
         self.seed_missing_embedded_with_hook(DRAKE_THEME_PACKAGES, hook)
     }
 
+    #[cfg(test)]
+    fn seed_missing_drake_with_sync(
+        &self,
+        sync_staging: &mut dyn FnMut(&Dir) -> Result<(), ThemeError>,
+    ) -> Result<Vec<InvalidThemeFile>, ThemeError> {
+        self.ensure_root()?;
+        let snapshot = self.scan()?;
+        self.seed_missing_embedded_from_snapshot_with_sync(
+            DRAKE_THEME_PACKAGES,
+            &snapshot,
+            &mut |_, _, _| Ok(()),
+            sync_staging,
+        )
+        .map(|(diagnostics, _)| diagnostics)
+    }
+
     fn seed_missing_embedded_with_hook(
         &self,
         packages: &'static [EmbeddedThemePackage],
@@ -750,6 +766,26 @@ impl ThemeCatalog {
             &Path,
         ) -> Result<(), ThemeError>,
     ) -> Result<(Vec<InvalidThemeFile>, bool), ThemeError> {
+        self.seed_missing_embedded_from_snapshot_with_sync(
+            packages,
+            snapshot,
+            hook,
+            &mut sync_embedded_directory_tree,
+        )
+    }
+
+    fn seed_missing_embedded_from_snapshot_with_sync(
+        &self,
+        packages: &'static [EmbeddedThemePackage],
+        snapshot: &ThemeCatalogSnapshot,
+        hook: &mut dyn FnMut(
+            EmbeddedSeedHookPoint,
+            &EmbeddedThemePackage,
+            &Path,
+        ) -> Result<(), ThemeError>,
+        sync_staging: &mut dyn FnMut(&Dir) -> Result<(), ThemeError>,
+    ) -> Result<(Vec<InvalidThemeFile>, bool), ThemeError> {
+        let directory = self.catalog_directory()?;
         let mut diagnostics = Vec::new();
         let mut changed = false;
         for package in packages {
@@ -759,7 +795,7 @@ impl ThemeCatalog {
 
             let target =
                 self.safe_storage_path(package.storage_name, ThemeStorageKind::ResourceDirectory)?;
-            match fs::symlink_metadata(&target) {
+            match directory.symlink_metadata(package.storage_name) {
                 Ok(_) => {
                     diagnostics.push(occupied_embedded_target(package));
                     continue;
@@ -772,7 +808,14 @@ impl ThemeCatalog {
             for _attempt in 0..1024 {
                 let staging_name = unique_owned_name("dir");
                 let staging = self.root.join(&staging_name);
-                if let Some(candidate) = try_materialize_embedded_theme(&staging, package, hook)? {
+                if let Some(candidate) = try_materialize_embedded_theme(
+                    &directory,
+                    OsStr::new(&staging_name),
+                    &staging,
+                    package,
+                    hook,
+                    sync_staging,
+                )? {
                     materialized = Some((staging_name, candidate));
                     break;
                 }
@@ -793,7 +836,7 @@ impl ThemeCatalog {
                 if self.existing_descriptor(package.id)?.is_some() {
                     return Ok(false);
                 }
-                match fs::symlink_metadata(&target) {
+                match directory.symlink_metadata(package.storage_name) {
                     Ok(_) => {
                         diagnostics.push(occupied_embedded_target(package));
                         return Ok(false);
@@ -803,16 +846,28 @@ impl ThemeCatalog {
                 }
 
                 hook(EmbeddedSeedHookPoint::BeforePublication, package, &target)?;
-                let directory = self.catalog_directory()?;
+                revalidate_catalog_directory(&directory)?;
                 if !rename_embedded_seed_noreplace(&directory, &staging_name, package.storage_name)?
                 {
                     diagnostics.push(occupied_embedded_target(package));
                     return Ok(false);
                 }
-                sync_catalog_directory(&directory);
+                sync_catalog_directory(&directory)?;
 
-                let installed =
-                    validate_exact_embedded_theme(&target, package.storage_name, package);
+                let installed = (|| {
+                    let installed_root = directory
+                        .open_dir_nofollow(package.storage_name)
+                        .map_err(|_| fingerprint_mismatch())?;
+                    let installed = validate_theme_directory_from_retained(
+                        &target,
+                        package.storage_name,
+                        &installed_root,
+                    )?;
+                    validate_exact_embedded_graph(&installed_root, package)?;
+                    validate_exact_embedded_files(&installed, package)?;
+                    revalidate_catalog_directory(&directory)?;
+                    Ok(installed)
+                })();
                 match installed {
                     Ok(installed)
                         if same_content_descriptor(
@@ -1125,7 +1180,7 @@ impl ThemeCatalog {
             &original_path,
             &quarantine_path,
         )?;
-        sync_catalog_directory(&directory);
+        sync_catalog_directory(&directory)?;
 
         if let Err(error) = self.load_storage_at(&descriptor, &quarantine_path) {
             return restore_unpublished_backup(
@@ -1142,7 +1197,7 @@ impl ThemeCatalog {
             );
         }
         remove_catalog_entry(&directory, &quarantine_name, descriptor.storage_kind)?;
-        sync_catalog_directory(&directory);
+        sync_catalog_directory(&directory)?;
         Ok(())
     }
 
@@ -1253,7 +1308,7 @@ impl ThemeCatalog {
                 let _cleanup = directory.remove_file(&name);
                 return Err(error);
             }
-            sync_catalog_directory(&directory);
+            sync_catalog_directory(&directory)?;
             return Ok((name, path));
         }
         Err(ThemeError::new(
@@ -1301,14 +1356,14 @@ impl ThemeCatalog {
             self.validate_staged(candidate, staging_path)?;
         }
         publisher(&directory, &target_name, &target_path)?;
-        sync_catalog_directory(&directory);
+        sync_catalog_directory(&directory)?;
 
         match self.fresh_published_descriptor(candidate) {
             Ok(descriptor) => Ok(descriptor),
             Err(error) => {
                 let _cleanup =
                     remove_catalog_entry(&directory, &target_name, candidate.storage_kind);
-                sync_catalog_directory(&directory);
+                sync_catalog_directory(&directory)?;
                 Err(error)
             }
         }
@@ -1341,7 +1396,7 @@ impl ThemeCatalog {
         let backup_name = reserve_backup_name(&directory, existing.storage_kind)?;
         let backup_path = self.root.join(&backup_name);
         rename_catalog_noreplace(&directory, old_name, &backup_name, &old_path, &backup_path)?;
-        sync_catalog_directory(&directory);
+        sync_catalog_directory(&directory)?;
 
         if let Err(error) = self.load_storage_at(existing, &backup_path) {
             return restore_unpublished_backup(
@@ -1408,7 +1463,7 @@ impl ThemeCatalog {
                 error,
             );
         }
-        sync_catalog_directory(&directory);
+        sync_catalog_directory(&directory)?;
 
         if let Err(error) = hook(CatalogPublicationHookPoint::AfterPublication) {
             return restore_published_backup(
@@ -1441,7 +1496,7 @@ impl ThemeCatalog {
             }
         };
         let _cleanup = remove_catalog_entry(&directory, &backup_name, existing.storage_kind);
-        sync_catalog_directory(&directory);
+        sync_catalog_directory(&directory)?;
         Ok(installed)
     }
 
@@ -1679,7 +1734,29 @@ fn materialize_embedded_theme_with_hook(
         &Path,
     ) -> Result<(), ThemeError>,
 ) -> Result<ValidatedThemeDirectory, ThemeError> {
-    let Some(mut materialized) = try_materialize_embedded_theme(root, package, hook)? else {
+    let parent_path = root.parent().ok_or_else(|| {
+        ThemeError::new(
+            ThemeErrorCode::UnsafePath,
+            "Embedded themes require a parent directory.",
+        )
+    })?;
+    let root_name = root.file_name().ok_or_else(|| {
+        ThemeError::new(
+            ThemeErrorCode::UnsafePath,
+            "Embedded themes require a package directory name.",
+        )
+    })?;
+    let catalog = ThemeCatalog::at(parent_path.to_path_buf());
+    let parent = catalog.catalog_directory()?;
+    let Some(mut materialized) = try_materialize_embedded_theme(
+        &parent,
+        root_name,
+        root,
+        package,
+        hook,
+        &mut sync_embedded_directory_tree,
+    )?
+    else {
         return Err(ThemeError::new(
             ThemeErrorCode::Io,
             "Embedded theme staging path is already occupied.",
@@ -1695,6 +1772,8 @@ fn materialize_embedded_theme_with_hook(
 }
 
 fn try_materialize_embedded_theme(
+    parent: &CatalogDirectory,
+    root_name: &OsStr,
     root: &Path,
     package: &EmbeddedThemePackage,
     hook: &mut dyn FnMut(
@@ -1702,40 +1781,12 @@ fn try_materialize_embedded_theme(
         &EmbeddedThemePackage,
         &Path,
     ) -> Result<(), ThemeError>,
+    sync_staging: &mut dyn FnMut(&Dir) -> Result<(), ThemeError>,
 ) -> Result<Option<MaterializedEmbeddedTheme>, ThemeError> {
-    let parent_path = root.parent().ok_or_else(|| {
-        ThemeError::new(
-            ThemeErrorCode::UnsafePath,
-            "Embedded themes require a parent directory.",
-        )
-    })?;
-    let root_name = root.file_name().ok_or_else(|| {
-        ThemeError::new(
-            ThemeErrorCode::UnsafePath,
-            "Embedded themes require a package directory name.",
-        )
-    })?;
-    let addressed_parent =
-        crate::storage_capability::ambient_symlink_metadata(parent_path).map_err(io_error)?;
-    if addressed_parent.file_type().is_symlink() || !addressed_parent.is_dir() {
-        return Err(ThemeError::new(
-            ThemeErrorCode::UnsafePath,
-            "Embedded theme parent must be a regular directory.",
-        ));
-    }
-    let parent =
-        Dir::open_ambient_dir(parent_path, cap_std::ambient_authority()).map_err(io_error)?;
-    let retained_parent = parent.dir_metadata().map_err(io_error)?;
-    if !retained_parent.is_dir()
-        || catalog_file_identity(&addressed_parent) != catalog_file_identity(&retained_parent)
-    {
-        return Err(ThemeError::new(
-            ThemeErrorCode::UnsafePath,
-            "Embedded theme parent changed while it was opened.",
-        ));
-    }
+    revalidate_catalog_directory(parent)?;
     hook(EmbeddedSeedHookPoint::BeforeStagingCreate, package, root)?;
-    let cleanup_parent = parent.try_clone().map_err(io_error)?;
+    revalidate_catalog_directory(parent)?;
+    let cleanup_parent = parent.directory.try_clone().map_err(io_error)?;
     match parent.create_dir(root_name) {
         Ok(()) => {}
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => return Ok(None),
@@ -1793,6 +1844,10 @@ fn try_materialize_embedded_theme(
         hook(EmbeddedSeedHookPoint::AfterStagingWrite, package, root)?;
         revalidate_embedded_staging(&parent, root_name, &root_directory)?;
         validate_exact_embedded_graph(&root_directory, package)?;
+        sync_staging(&root_directory)?;
+        revalidate_catalog_directory(parent)?;
+        revalidate_embedded_staging(parent, root_name, &root_directory)?;
+        validate_exact_embedded_graph(&root_directory, package)?;
         let validated =
             validate_theme_directory_from_retained(root, package.storage_name, &root_directory)?;
         validate_exact_embedded_files(&validated, package)?;
@@ -1848,16 +1903,6 @@ fn revalidate_embedded_staging(
         ));
     }
     Ok(())
-}
-
-fn validate_exact_embedded_theme(
-    root: &Path,
-    storage_name: &str,
-    package: &EmbeddedThemePackage,
-) -> Result<ValidatedThemeDirectory, ThemeError> {
-    let validated = validate_theme_directory(root, storage_name)?;
-    validate_exact_embedded_files(&validated, package)?;
-    Ok(validated)
 }
 
 fn validate_exact_embedded_files(
@@ -2060,6 +2105,48 @@ fn open_or_create_embedded_directory(root: &Dir, relative: &Path) -> Result<Dir,
     Ok(current)
 }
 
+fn sync_embedded_directory_tree(root: &Dir) -> Result<(), ThemeError> {
+    let mut pending = vec![root.try_clone().map_err(io_error)?];
+    let mut directories = Vec::new();
+    while let Some(directory) = pending.pop() {
+        for entry in directory.entries().map_err(io_error)? {
+            let entry = entry.map_err(io_error)?;
+            let name = entry.file_name();
+            let metadata = directory.symlink_metadata(&name).map_err(io_error)?;
+            if metadata.file_type().is_symlink() {
+                return Err(ThemeError::new(
+                    ThemeErrorCode::UnsafePath,
+                    "Embedded theme staging cannot contain symbolic links.",
+                ));
+            }
+            if !metadata.is_dir() {
+                continue;
+            }
+            let child = directory.open_dir_nofollow(&name).map_err(|_| {
+                ThemeError::new(
+                    ThemeErrorCode::UnsafePath,
+                    "Embedded theme staging directory changed before synchronization.",
+                )
+            })?;
+            let retained = child.dir_metadata().map_err(io_error)?;
+            if !retained.is_dir()
+                || catalog_file_identity(&metadata) != catalog_file_identity(&retained)
+            {
+                return Err(ThemeError::new(
+                    ThemeErrorCode::UnsafePath,
+                    "Embedded theme staging directory changed during synchronization.",
+                ));
+            }
+            pending.push(child);
+        }
+        directories.push(directory);
+    }
+    for directory in directories.iter().rev() {
+        sync_directory(directory).map_err(io_error)?;
+    }
+    Ok(())
+}
+
 fn occupied_embedded_target(package: &EmbeddedThemePackage) -> InvalidThemeFile {
     InvalidThemeFile {
         file_name: package.storage_name.to_string(),
@@ -2195,7 +2282,7 @@ fn restore_unpublished_backup<T>(
 ) -> Result<T, ThemeError> {
     let restoration =
         rename_catalog_noreplace(directory, backup_name, old_name, backup_path, old_path);
-    sync_catalog_directory(directory);
+    sync_catalog_directory(directory)?;
     match restoration {
         Ok(()) => Err(publication_error),
         Err(restoration_error) => Err(ThemeError::new(
@@ -2246,7 +2333,7 @@ fn restore_published_backup<T>(
         ));
     }
     let _cleanup = remove_catalog_entry(directory, &rejected_name, target_kind);
-    sync_catalog_directory(directory);
+    sync_catalog_directory(directory)?;
     Err(publication_error)
 }
 
@@ -2375,11 +2462,8 @@ fn rename_catalog_noreplace_platform(
     crate::atomic_noreplace::rename_noreplace(directory, source_name, directory, target_name)
 }
 
-fn sync_catalog_directory(directory: &Dir) {
-    #[cfg(unix)]
-    let _sync = rustix::fs::fsync(directory);
-    #[cfg(not(unix))]
-    let _ = directory;
+fn sync_catalog_directory(directory: &Dir) -> Result<(), ThemeError> {
+    sync_directory(directory).map_err(io_error)
 }
 
 fn io_error(error: std::io::Error) -> ThemeError {
@@ -2837,6 +2921,63 @@ mod tests {
 
         assert_eq!(error.code, ThemeErrorCode::Io);
         assert!(owned_artifacts(temp.path()).is_empty());
+    }
+
+    #[test]
+    fn anchored_drake_seed_never_writes_to_a_replacement_catalog_root() {
+        let temp = tempdir().unwrap();
+        let root = temp.path().join("themes");
+        let displaced = temp.path().join("displaced-themes");
+        let catalog = ThemeCatalog::at(root.clone());
+        let (anchored, fresh) = catalog.anchored_for_initialization().unwrap();
+        assert!(fresh);
+        anchored.persist_owned_catalog_version(0).unwrap();
+
+        let error = anchored
+            .seed_missing_drake_with_hook(&mut |point, package, _| {
+                if point == EmbeddedSeedHookPoint::BeforeStagingCreate
+                    && package.id == "drake-light"
+                {
+                    fs::rename(&root, &displaced).unwrap();
+                    fs::create_dir(&root).unwrap();
+                }
+                Ok(())
+            })
+            .unwrap_err();
+
+        assert_eq!(error.code, ThemeErrorCode::UnsafePath);
+        assert!(fs::read_dir(&root).unwrap().next().is_none());
+        assert_eq!(
+            fs::read_to_string(displaced.join(CATALOG_VERSION_MARKER_NAME)).unwrap(),
+            "0\n"
+        );
+    }
+
+    #[test]
+    fn embedded_directory_sync_failure_keeps_version_zero_and_cleans_staging() {
+        let temp = tempdir().unwrap();
+        let root = temp.path().join("themes");
+        let catalog = ThemeCatalog::at(root.clone());
+        let (anchored, fresh) = catalog.anchored_for_initialization().unwrap();
+        assert!(fresh);
+        anchored.persist_owned_catalog_version(0).unwrap();
+
+        let error = anchored
+            .seed_missing_drake_with_sync(&mut |_| {
+                Err(ThemeError::new(
+                    ThemeErrorCode::Io,
+                    "injected staging directory sync failure",
+                ))
+            })
+            .unwrap_err();
+
+        assert_eq!(error.code, ThemeErrorCode::Io);
+        assert_eq!(
+            fs::read_to_string(root.join(CATALOG_VERSION_MARKER_NAME)).unwrap(),
+            "0\n"
+        );
+        assert!(!root.join("drake-light").exists());
+        assert_eq!(owned_artifacts(&root), vec![CATALOG_VERSION_MARKER_NAME]);
     }
 
     fn directory_bytes(root: &Path) -> Vec<(String, Vec<u8>)> {

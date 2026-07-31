@@ -16,6 +16,7 @@ import { selectDesktopWorkspaceDirectory } from "./desktop-workspace-selector";
 import {
   readNativeRuntimeKind,
 } from "./runtime";
+import { retryMobileKernelRuntime } from "./runtime/mobile-kernel-session";
 
 function StartupError({ onRetry }: { onRetry: () => unknown }) {
   return (
@@ -69,9 +70,9 @@ function renderDesktopStartupWorkspace(
   );
 }
 
-function renderMobileKernelStartup(root: Root, status: string | null, reload: () => unknown) {
+function renderMobileKernelStartup(root: Root, status: string | null, onRetry: () => unknown) {
   if (status === "failed") {
-    renderError(root, reload);
+    renderError(root, onRetry);
     return;
   }
   renderRoot(root,
@@ -115,7 +116,7 @@ async function startApplication() {
       renderStartup: (session) => renderMobileKernelStartup(
         root,
         session?.status ?? null,
-        reload,
+        () => retryMobileKernelRuntime(),
       ),
     });
     const stop = await bootstrapApplicationMount({

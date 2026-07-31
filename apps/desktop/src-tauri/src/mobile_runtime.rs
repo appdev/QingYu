@@ -17,6 +17,7 @@ pub(crate) fn run() {
         .setup(crate::mobile_kernel_runtime::install_mobile_kernel_runtime)
         .invoke_handler(tauri::generate_handler![
             crate::mobile_kernel_runtime::read_mobile_kernel_bootstrap,
+            crate::mobile_kernel_runtime::retry_mobile_kernel_runtime,
             crate::themes::list_themes,
             crate::themes::read_theme_css,
             crate::themes::activation::prepare_theme_activation,
@@ -62,8 +63,14 @@ fn request_mobile_kernel_exit<R: tauri::Runtime>(
     let runtime = runtime.inner().clone();
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        let _settled = runtime.stop().await;
-        runtime.mark_terminal_exit_ready();
-        app.exit(code);
+        let stop_result = runtime.stop().await;
+        let stop_failed = stop_result.is_err();
+        let exit_code = crate::mobile_kernel_runtime::terminal_exit_code(code, stop_result);
+        if stop_failed {
+            runtime.mark_terminal_exit_failed();
+        } else {
+            runtime.mark_terminal_exit_succeeded();
+        }
+        app.exit(exit_code);
     });
 }

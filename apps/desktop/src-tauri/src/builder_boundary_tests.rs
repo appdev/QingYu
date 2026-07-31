@@ -20,6 +20,7 @@ const TYPED_SETTINGS_COMMANDS: &[&str] = &[
 
 const MOBILE_COMMANDS: &[&str] = &[
     "read_mobile_kernel_bootstrap",
+    "retry_mobile_kernel_runtime",
     "list_themes",
     "read_theme_css",
     "prepare_theme_activation",
@@ -392,6 +393,7 @@ fn builder_boundary_native_kernel_bootstrap_is_desktop_only_and_production_owned
     assert!(desktop_commands.contains("read_native_kernel_bootstrap"));
     assert!(!mobile_commands.contains("read_native_kernel_bootstrap"));
     assert!(mobile_commands.contains("read_mobile_kernel_bootstrap"));
+    assert!(mobile_commands.contains("retry_mobile_kernel_runtime"));
     assert!(desktop.contains("NativeKernelBootstrapOwner::new()"));
     assert!(host.contains("KernelHostSupervisor::new_with_bootstrap"));
     assert!(host.contains("DesktopKernelOwner::new"));
@@ -568,7 +570,9 @@ fn builder_boundary_mobile_back_intercepts_only_uncoded_exit_requests() {
     assert!(runtime.contains("emit_mobile_back_requested"));
     assert!(runtime.contains("request_mobile_kernel_exit(app, code, &api)"));
     assert!(runtime.contains("runtime.stop().await"));
-    assert!(runtime.contains("mark_terminal_exit_ready"));
+    assert!(runtime.contains("mark_terminal_exit_succeeded"));
+    assert!(runtime.contains("mark_terminal_exit_failed"));
+    assert!(runtime.contains("terminal_exit_code"));
 
     let desktop_exit = source("src/app_exit.rs");
     assert!(!desktop_exit.contains("handle_native_sync_exit"));
@@ -660,6 +664,8 @@ fn builder_boundary_mobile_kernel_is_in_process_memory_only_and_origin_bound() {
         "MobileKernelHostOwner",
         "validated_mobile_renderer_origin",
         "read_mobile_kernel_bootstrap",
+        "retry_mobile_kernel_runtime",
+        "compose_and_start",
         "self.owner.stop().await",
     ] {
         assert!(

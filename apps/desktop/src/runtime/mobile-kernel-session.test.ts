@@ -1,4 +1,7 @@
-import { invokeMobileKernelBootstrap } from "./mobile-kernel-session";
+import {
+  invokeMobileKernelBootstrap,
+  retryMobileKernelRuntime,
+} from "./mobile-kernel-session";
 
 describe("mobile Kernel session bootstrap boundary", () => {
   it("maps only the shared lifecycle reader to the mobile memory-bootstrap command", async () => {
@@ -16,5 +19,14 @@ describe("mobile Kernel session bootstrap boundary", () => {
       .rejects.toThrow("mobile Kernel bootstrap unavailable");
     expect(invoke).toHaveBeenCalledOnce();
     expect(invoke).toHaveBeenCalledWith("read_mobile_kernel_bootstrap");
+  });
+
+  it("uses the dedicated native retry command instead of reloading the WebView", async () => {
+    const invoke = vi.fn(async () => undefined);
+
+    await expect(retryMobileKernelRuntime(invoke)).resolves.toBeUndefined();
+
+    expect(invoke).toHaveBeenCalledOnce();
+    expect(invoke).toHaveBeenCalledWith("retry_mobile_kernel_runtime");
   });
 });

@@ -16,7 +16,8 @@ use tauri::{Emitter as _, Manager as _};
 const MOBILE_KERNEL_BOOTSTRAP_VERSION: u16 = 1;
 const TERMINAL_EXIT_IDLE: u8 = 0;
 const TERMINAL_EXIT_STOPPING: u8 = 1;
-const TERMINAL_EXIT_READY: u8 = 2;
+const TERMINAL_EXIT_SUCCEEDED: u8 = 2;
+const TERMINAL_EXIT_FAILED: u8 = 3;
 pub(crate) const MOBILE_KERNEL_BOOTSTRAP_CHANGED_EVENT: &str = "qingyu://kernel-bootstrap-changed";
 
 pub(crate) struct MobileKernelRuntimeState {
@@ -110,16 +111,36 @@ impl MobileKernelRuntimeState {
         }))
     }
 
+    #[cfg(test)]
     pub(crate) async fn start(
         &self,
         launch: MobileKernelLaunch,
         origin: &str,
     ) -> Result<(), MobileKernelRuntimeError> {
+        self.compose_and_start(origin, async move { Ok(launch) })
+            .await
+    }
+
+    pub(crate) async fn compose_and_start(
+        &self,
+        origin: &str,
+        compose: impl std::future::Future<Output = Result<MobileKernelLaunch, MobileKernelRuntimeError>>,
+    ) -> Result<(), MobileKernelRuntimeError> {
         self.verify_origin(origin)?;
         let _operation = self.operation.lock().await;
+        if self.terminal_exit.load(Ordering::SeqCst) != TERMINAL_EXIT_IDLE {
+            return Err(MobileKernelRuntimeError);
+        }
         let generation = match &*self.lock_phase()? {
             MobileKernelRuntimePhase::Starting { generation } => *generation,
             _ => return Err(MobileKernelRuntimeError),
+        };
+        let launch = match compose.await {
+            Ok(launch) => launch,
+            Err(error) => {
+                *self.lock_phase()? = MobileKernelRuntimePhase::Failed { generation };
+                return Err(error);
+            }
         };
         let endpoint = match self.owner.start(launch, &self.origin).await {
             Ok(endpoint) if endpoint.generation() == generation => endpoint,
@@ -198,7 +219,8 @@ impl MobileKernelRuntimeState {
         }
     }
 
-    fn fail_start(&self) -> Result<(), MobileKernelRuntimeError> {
+    #[cfg(test)]
+    pub(crate) fn fail_start(&self) -> Result<(), MobileKernelRuntimeError> {
         let mut phase = self.lock_phase()?;
         let generation = match &*phase {
             MobileKernelRuntimePhase::Starting { generation } => *generation,
@@ -206,6 +228,22 @@ impl MobileKernelRuntimeState {
         };
         *phase = MobileKernelRuntimePhase::Failed { generation };
         Ok(())
+    }
+
+    pub(crate) fn reserve_retry(&self, origin: &str) -> Result<u64, MobileKernelRuntimeError> {
+        self.verify_origin(origin)?;
+        if self.terminal_exit.load(Ordering::SeqCst) != TERMINAL_EXIT_IDLE {
+            return Err(MobileKernelRuntimeError);
+        }
+        let mut phase = self.lock_phase()?;
+        let generation = match &*phase {
+            MobileKernelRuntimePhase::Failed { generation } => {
+                generation.checked_add(1).ok_or(MobileKernelRuntimeError)?
+            }
+            _ => return Err(MobileKernelRuntimeError),
+        };
+        *phase = MobileKernelRuntimePhase::Starting { generation };
+        Ok(generation)
     }
 
     fn configured_origin(&self) -> &str {
@@ -223,13 +261,26 @@ impl MobileKernelRuntimeState {
             .is_ok()
     }
 
-    pub(crate) fn mark_terminal_exit_ready(&self) {
+    pub(crate) fn mark_terminal_exit_succeeded(&self) {
         self.terminal_exit
-            .store(TERMINAL_EXIT_READY, Ordering::SeqCst);
+            .store(TERMINAL_EXIT_SUCCEEDED, Ordering::SeqCst);
+    }
+
+    pub(crate) fn mark_terminal_exit_failed(&self) {
+        self.terminal_exit
+            .store(TERMINAL_EXIT_FAILED, Ordering::SeqCst);
     }
 
     pub(crate) fn terminal_exit_is_ready(&self) -> bool {
-        self.terminal_exit.load(Ordering::SeqCst) == TERMINAL_EXIT_READY
+        matches!(
+            self.terminal_exit.load(Ordering::SeqCst),
+            TERMINAL_EXIT_SUCCEEDED | TERMINAL_EXIT_FAILED
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn terminal_exit_failed(&self) -> bool {
+        self.terminal_exit.load(Ordering::SeqCst) == TERMINAL_EXIT_FAILED
     }
 
     fn verify_origin(&self, origin: &str) -> Result<(), MobileKernelRuntimeError> {
@@ -244,6 +295,17 @@ impl MobileKernelRuntimeState {
         &self,
     ) -> Result<MutexGuard<'_, MobileKernelRuntimePhase>, MobileKernelRuntimeError> {
         self.phase.lock().map_err(|_| MobileKernelRuntimeError)
+    }
+}
+
+pub(crate) fn terminal_exit_code(
+    requested_code: i32,
+    stop_result: Result<(), MobileKernelRuntimeError>,
+) -> i32 {
+    if stop_result.is_ok() {
+        requested_code
+    } else {
+        1
     }
 }
 
@@ -343,6 +405,27 @@ pub(crate) fn read_mobile_kernel_bootstrap(
         .map_err(|error| error.to_string())
 }
 
+#[tauri::command]
+pub(crate) fn retry_mobile_kernel_runtime(
+    window: tauri::WebviewWindow,
+    runtime: tauri::State<'_, Arc<MobileKernelRuntimeState>>,
+) -> Result<(), String> {
+    let url = window
+        .url()
+        .map_err(|_| MobileKernelRuntimeError.to_string())?;
+    let origin =
+        validated_mobile_renderer_origin(window.label(), runtime.configured_origin(), &url)
+            .map_err(|error| error.to_string())?;
+    runtime
+        .reserve_retry(&origin)
+        .map_err(|error| error.to_string())?;
+    let app_handle = window.app_handle().clone();
+    let runtime = runtime.inner().clone();
+    let _emitted = app_handle.emit(MOBILE_KERNEL_BOOTSTRAP_CHANGED_EVENT, ());
+    spawn_mobile_kernel_start(app_handle, runtime, origin);
+    Ok(())
+}
+
 pub(crate) fn install_mobile_kernel_runtime(
     app: &mut tauri::App,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -350,22 +433,21 @@ pub(crate) fn install_mobile_kernel_runtime(
     let runtime = MobileKernelRuntimeState::new(Duration::from_secs(30), origin.clone())?;
     app.manage(runtime.clone());
 
-    let app_handle = app.handle().clone();
+    spawn_mobile_kernel_start(app.handle().clone(), runtime, origin);
+    Ok(())
+}
+
+fn spawn_mobile_kernel_start(
+    app_handle: tauri::AppHandle,
+    runtime: Arc<MobileKernelRuntimeState>,
+    origin: String,
+) {
     tauri::async_runtime::spawn(async move {
-        let launch = compose_mobile_launch(&app_handle).await;
-        let result = match launch {
-            Ok(launch) => runtime.start(launch, &origin).await,
-            Err(error) => {
-                let _failed = runtime.fail_start();
-                Err(error)
-            }
-        };
-        if result.is_err() {
-            let _failed = runtime.fail_start();
-        }
+        let _result = runtime
+            .compose_and_start(&origin, compose_mobile_launch(&app_handle))
+            .await;
         let _emitted = app_handle.emit(MOBILE_KERNEL_BOOTSTRAP_CHANGED_EVENT, ());
     });
-    Ok(())
 }
 
 async fn compose_mobile_launch(
