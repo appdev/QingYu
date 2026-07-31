@@ -1,3 +1,10 @@
+## [2.3.1](https://github.com/markrahq/markra/compare/v2.3.0...v2.3.1) (2026-07-31)
+
+### Bug Fixes
+
+* **editor:** keep slash menu selection visible ([#612](https://github.com/markrahq/markra/issues/612)) ([1f1f6f3](https://github.com/markrahq/markra/commit/1f1f6f3b01894578fa1f8d7fe051ac7d6ac69b46))
+* **editor:** open inserted tables in visual mode ([#613](https://github.com/markrahq/markra/issues/613)) ([6f7c767](https://github.com/markrahq/markra/commit/6f7c767334b3f71946025737c1f0f507ea7b149b))
+
 ## [2.3.0](https://github.com/markrahq/markra/compare/v2.2.0...v2.3.0) (2026-07-30)
 
 ### Features
