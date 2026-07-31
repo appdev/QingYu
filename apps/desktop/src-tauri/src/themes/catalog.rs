@@ -264,6 +264,7 @@ enum EmbeddedSeedHookPoint {
     AfterStagingCreate,
     AfterStagingWrite,
     BeforePublication,
+    AfterPublication,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -853,6 +854,15 @@ impl ThemeCatalog {
                     return Ok(false);
                 }
                 sync_catalog_directory(&directory)?;
+                if let Err(error) = hook(EmbeddedSeedHookPoint::AfterPublication, package, &target)
+                {
+                    return reject_published_embedded_seed(
+                        &directory,
+                        package.storage_name,
+                        &target,
+                        error,
+                    );
+                }
 
                 let installed = (|| {
                     let installed_root = directory
@@ -877,22 +887,18 @@ impl ThemeCatalog {
                     {
                         Ok(true)
                     }
-                    Ok(_) => {
-                        let _cleanup = remove_catalog_entry(
-                            &directory,
-                            package.storage_name,
-                            ThemeStorageKind::ResourceDirectory,
-                        );
-                        Err(fingerprint_mismatch())
-                    }
-                    Err(error) => {
-                        let _cleanup = remove_catalog_entry(
-                            &directory,
-                            package.storage_name,
-                            ThemeStorageKind::ResourceDirectory,
-                        );
-                        Err(error)
-                    }
+                    Ok(_) => reject_published_embedded_seed(
+                        &directory,
+                        package.storage_name,
+                        &target,
+                        fingerprint_mismatch(),
+                    ),
+                    Err(error) => reject_published_embedded_seed(
+                        &directory,
+                        package.storage_name,
+                        &target,
+                        error,
+                    ),
                 }
             })();
             drop(materialized);
@@ -2272,6 +2278,101 @@ fn remove_catalog_entry(
     }
 }
 
+fn reject_published_embedded_seed<T>(
+    directory: &CatalogDirectory,
+    target_name: &str,
+    target_path: &Path,
+    publication_error: ThemeError,
+) -> Result<T, ThemeError> {
+    reject_published_embedded_seed_with_ops(
+        directory,
+        target_name,
+        target_path,
+        publication_error,
+        &mut |directory, name| {
+            remove_catalog_entry(directory, name, ThemeStorageKind::ResourceDirectory)
+        },
+        &mut sync_catalog_directory,
+    )
+}
+
+fn reject_published_embedded_seed_with_ops<T>(
+    directory: &CatalogDirectory,
+    target_name: &str,
+    target_path: &Path,
+    publication_error: ThemeError,
+    remove_rejected: &mut dyn FnMut(&Dir, &str) -> Result<(), ThemeError>,
+    sync_catalog: &mut dyn FnMut(&Dir) -> Result<(), ThemeError>,
+) -> Result<T, ThemeError> {
+    let rejected_name = match reserve_backup_name(
+        &directory.directory,
+        ThemeStorageKind::ResourceDirectory,
+    ) {
+        Ok(name) => name,
+        Err(error) => {
+            return Err(ThemeError::new(
+                ThemeErrorCode::Io,
+                format!(
+                    "Embedded theme publication failed ({publication_error}) and an isolation name could not be reserved ({error})."
+                ),
+            ));
+        }
+    };
+    let rejected_path = target_path.with_file_name(&rejected_name);
+    if let Err(error) = rename_catalog_noreplace(
+        directory,
+        target_name,
+        &rejected_name,
+        target_path,
+        &rejected_path,
+    ) {
+        return Err(ThemeError::new(
+            ThemeErrorCode::Io,
+            format!(
+                "Embedded theme publication failed ({publication_error}) and the rejected seed could not be isolated ({error})."
+            ),
+        ));
+    }
+    if let Err(error) = sync_catalog(&directory.directory) {
+        return Err(ThemeError::new(
+            ThemeErrorCode::Io,
+            format!(
+                "Embedded theme publication failed ({publication_error}) and its isolation could not be synchronized ({error})."
+            ),
+        ));
+    }
+    let removal = remove_rejected(&directory.directory, &rejected_name);
+    let cleanup_sync = sync_catalog(&directory.directory);
+    match (removal, cleanup_sync) {
+        (Ok(()), Ok(())) => {}
+        (Err(removal_error), Ok(())) => {
+            return Err(ThemeError::new(
+                ThemeErrorCode::Io,
+                format!(
+                    "Embedded theme publication failed ({publication_error}) and its isolated seed could not be removed ({removal_error})."
+                ),
+            ));
+        }
+        (Ok(()), Err(sync_error)) => {
+            return Err(ThemeError::new(
+                ThemeErrorCode::Io,
+                format!(
+                    "Embedded theme publication failed ({publication_error}) and its cleanup could not be synchronized ({sync_error})."
+                ),
+            ));
+        }
+        (Err(removal_error), Err(sync_error)) => {
+            return Err(ThemeError::new(
+                ThemeErrorCode::Io,
+                format!(
+                    "Embedded theme publication failed ({publication_error}); its isolated seed could not be removed ({removal_error}) and the cleanup could not be synchronized ({sync_error})."
+                ),
+            ));
+        }
+    }
+    Err(publication_error)
+}
+
 fn restore_unpublished_backup<T>(
     directory: &CatalogDirectory,
     backup_name: &str,
@@ -2510,7 +2611,8 @@ mod tests {
 
     use super::{
         materialize_embedded_theme, materialize_embedded_theme_with_hook,
-        rename_catalog_noreplace_with_hook, CatalogPublicationHookPoint, CatalogRenameHookPoint,
+        reject_published_embedded_seed_with_ops, rename_catalog_noreplace_with_hook,
+        sync_catalog_directory, CatalogPublicationHookPoint, CatalogRenameHookPoint,
         DeleteHookPoint, EmbeddedSeedHookPoint, ThemeCatalog, ACTIVATION_LEASE_PARENT_NAME,
         CATALOG_VERSION_MARKER_NAME, DRAKE_THEME_PACKAGES,
     };
@@ -2978,6 +3080,128 @@ mod tests {
         );
         assert!(!root.join("drake-light").exists());
         assert_eq!(owned_artifacts(&root), vec![CATALOG_VERSION_MARKER_NAME]);
+    }
+
+    #[test]
+    fn post_publication_validation_failure_removes_the_canonical_seed_and_can_retry() {
+        let temp = tempdir().unwrap();
+        let root = temp.path().join("themes");
+        let catalog = ThemeCatalog::at(root.clone());
+        let (anchored, fresh) = catalog.anchored_for_initialization().unwrap();
+        assert!(fresh);
+        anchored.persist_owned_catalog_version(0).unwrap();
+
+        let error = anchored
+            .seed_missing_drake_with_hook(&mut |point, package, target| {
+                if point == EmbeddedSeedHookPoint::AfterPublication && package.id == "drake-light" {
+                    fs::write(target.join("theme.css"), b"changed after publication").unwrap();
+                }
+                Ok(())
+            })
+            .unwrap_err();
+
+        assert!(matches!(
+            error.code,
+            ThemeErrorCode::FingerprintMismatch | ThemeErrorCode::InvalidCss
+        ));
+        assert_eq!(
+            fs::read_to_string(root.join(CATALOG_VERSION_MARKER_NAME)).unwrap(),
+            "0\n"
+        );
+        assert!(!root.join("drake-light").exists());
+        assert_eq!(owned_artifacts(&root), vec![CATALOG_VERSION_MARKER_NAME]);
+
+        assert!(anchored.seed_missing_drake().unwrap().is_empty());
+        assert!(root.join("drake-light").is_dir());
+        assert!(root.join("drake-ayu").is_dir());
+    }
+
+    #[test]
+    fn rejected_seed_cleanup_failure_leaves_only_owned_quarantine_and_can_retry() {
+        let temp = tempdir().unwrap();
+        let root = temp.path().join("themes");
+        let catalog = ThemeCatalog::at(root.clone());
+        catalog.ensure_root().unwrap();
+        let package = &DRAKE_THEME_PACKAGES[0];
+        materialize_embedded_theme(&root.join(package.storage_name), package).unwrap();
+        let directory = catalog.catalog_directory().unwrap();
+
+        let error = reject_published_embedded_seed_with_ops::<()>(
+            &directory,
+            package.storage_name,
+            &root.join(package.storage_name),
+            ThemeError::new(
+                ThemeErrorCode::FingerprintMismatch,
+                "injected publication mismatch",
+            ),
+            &mut |_, _| {
+                Err(ThemeError::new(
+                    ThemeErrorCode::Io,
+                    "injected quarantine cleanup failure",
+                ))
+            },
+            &mut sync_catalog_directory,
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code, ThemeErrorCode::Io);
+        assert!(error.to_string().contains("could not be removed"));
+        assert!(!root.join(package.storage_name).exists());
+        let quarantines = owned_artifacts(&root);
+        assert_eq!(quarantines.len(), 1);
+        assert!(quarantines[0].ends_with(".bak"));
+        assert!(catalog.scan().unwrap().themes.is_empty());
+
+        assert!(catalog.seed_missing_drake().unwrap().is_empty());
+        assert!(root.join(package.storage_name).is_dir());
+        assert!(root.join("drake-ayu").is_dir());
+        assert_eq!(owned_artifacts(&root), quarantines);
+    }
+
+    #[test]
+    fn rejected_seed_cleanup_sync_failure_keeps_canonical_absent_and_can_retry() {
+        let temp = tempdir().unwrap();
+        let root = temp.path().join("themes");
+        let catalog = ThemeCatalog::at(root.clone());
+        catalog.ensure_root().unwrap();
+        let package = &DRAKE_THEME_PACKAGES[0];
+        materialize_embedded_theme(&root.join(package.storage_name), package).unwrap();
+        let directory = catalog.catalog_directory().unwrap();
+        let mut sync_calls = 0;
+
+        let error = reject_published_embedded_seed_with_ops::<()>(
+            &directory,
+            package.storage_name,
+            &root.join(package.storage_name),
+            ThemeError::new(
+                ThemeErrorCode::FingerprintMismatch,
+                "injected publication mismatch",
+            ),
+            &mut |directory, name| {
+                super::remove_catalog_entry(directory, name, ThemeStorageKind::ResourceDirectory)
+            },
+            &mut |directory| {
+                sync_calls += 1;
+                if sync_calls == 2 {
+                    return Err(ThemeError::new(
+                        ThemeErrorCode::Io,
+                        "injected cleanup directory sync failure",
+                    ));
+                }
+                sync_catalog_directory(directory)
+            },
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code, ThemeErrorCode::Io);
+        assert!(error.to_string().contains("could not be synchronized"));
+        assert_eq!(sync_calls, 2);
+        assert!(!root.join(package.storage_name).exists());
+        assert!(owned_artifacts(&root).is_empty());
+
+        assert!(catalog.seed_missing_drake().unwrap().is_empty());
+        assert!(root.join(package.storage_name).is_dir());
+        assert!(root.join("drake-ayu").is_dir());
     }
 
     fn directory_bytes(root: &Path) -> Vec<(String, Vec<u8>)> {

@@ -181,14 +181,45 @@ fn retry_reserves_one_fresh_generation_only_from_failed_state() {
     let runtime = MobileKernelRuntimeState::new(Duration::from_secs(2), WEBVIEW_ORIGIN).unwrap();
     runtime.fail_start().unwrap();
 
-    assert_eq!(runtime.reserve_retry(WEBVIEW_ORIGIN).unwrap(), 2);
+    assert_eq!(runtime.reserve_retry(WEBVIEW_ORIGIN).unwrap(), 1);
     assert!(runtime.reserve_retry(WEBVIEW_ORIGIN).is_err());
     assert_eq!(
         serde_json::to_value(runtime.read_bootstrap(WEBVIEW_ORIGIN).unwrap()).unwrap(),
         json!({
             "bootstrapVersion": 1,
-            "generation": "2",
+            "generation": "1",
             "status": "starting"
         })
     );
+}
+
+#[tokio::test]
+async fn composition_failure_then_retry_reaches_the_host_generation_without_regression() {
+    let _guard = runtime_test_guard();
+    let runtime = MobileKernelRuntimeState::new(Duration::from_secs(2), WEBVIEW_ORIGIN).unwrap();
+
+    assert!(runtime
+        .compose_and_start(WEBVIEW_ORIGIN, async { Err(MobileKernelRuntimeError) })
+        .await
+        .is_err());
+    assert_eq!(runtime.reserve_retry(WEBVIEW_ORIGIN).unwrap(), 1);
+
+    let temporary = tempdir().unwrap();
+    let app_data = temporary.path().join("app-data");
+    let cache = temporary.path().join("cache");
+    fs::create_dir(&app_data).unwrap();
+    fs::create_dir(&cache).unwrap();
+    let launch = compose_fixed_mobile_kernel(
+        KernelConfig::generate().unwrap(),
+        KernelPaths::mobile(&app_data, &cache, "primary").unwrap(),
+        "QingYu",
+    )
+    .await
+    .unwrap();
+
+    runtime.start(launch, WEBVIEW_ORIGIN).await.unwrap();
+    let ready = serde_json::to_value(runtime.read_bootstrap(WEBVIEW_ORIGIN).unwrap()).unwrap();
+    assert_eq!(ready["generation"], "1");
+    assert_eq!(ready["status"], "ready");
+    runtime.stop().await.unwrap();
 }

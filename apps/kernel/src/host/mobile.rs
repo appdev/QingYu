@@ -96,6 +96,21 @@ impl MobileKernelHostOwner {
         })
     }
 
+    /// Returns the generation that the next successful start will reserve.
+    ///
+    /// Composition can fail before [`Self::start`] is called. Platform shells
+    /// use this value to keep their non-ready lifecycle publication aligned
+    /// with the host generation instead of advancing an independent counter.
+    pub fn next_launch_generation(&self) -> Result<u64, MobileKernelHostError> {
+        let generation = self.inner.next_generation.load(Ordering::SeqCst);
+        generation
+            .checked_add(1)
+            .map(|_| generation)
+            .ok_or_else(|| {
+                MobileKernelHostError::new(MobileKernelHostErrorKind::GenerationExhausted)
+            })
+    }
+
     /// Starts one mobile runtime on `127.0.0.1:0`.
     ///
     /// `webview_origin` is treated as untrusted input and must be one exact

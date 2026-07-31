@@ -102,11 +102,12 @@ impl MobileKernelRuntimeState {
             return Err(MobileKernelRuntimeError);
         }
         let owner = MobileKernelHostOwner::new(drain_timeout).map_err(safe_host_error)?;
+        let generation = owner.next_launch_generation().map_err(safe_host_error)?;
         Ok(Arc::new(Self {
             operation: tokio::sync::Mutex::new(()),
             origin,
             owner: Arc::new(owner),
-            phase: Mutex::new(MobileKernelRuntimePhase::Starting { generation: 1 }),
+            phase: Mutex::new(MobileKernelRuntimePhase::Starting { generation }),
             terminal_exit: AtomicU8::new(TERMINAL_EXIT_IDLE),
         }))
     }
@@ -150,7 +151,14 @@ impl MobileKernelRuntimeState {
                 return Err(MobileKernelRuntimeError);
             }
             Err(error) => {
-                *self.lock_phase()? = MobileKernelRuntimePhase::Failed { generation };
+                let failed_generation = self
+                    .owner
+                    .next_launch_generation()
+                    .unwrap_or(generation)
+                    .max(generation);
+                *self.lock_phase()? = MobileKernelRuntimePhase::Failed {
+                    generation: failed_generation,
+                };
                 return Err(safe_host_error(error));
             }
         };
@@ -238,7 +246,14 @@ impl MobileKernelRuntimeState {
         let mut phase = self.lock_phase()?;
         let generation = match &*phase {
             MobileKernelRuntimePhase::Failed { generation } => {
-                generation.checked_add(1).ok_or(MobileKernelRuntimeError)?
+                let next_generation = self
+                    .owner
+                    .next_launch_generation()
+                    .map_err(safe_host_error)?;
+                if next_generation < *generation {
+                    return Err(MobileKernelRuntimeError);
+                }
+                next_generation
             }
             _ => return Err(MobileKernelRuntimeError),
         };

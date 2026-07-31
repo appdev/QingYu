@@ -146,6 +146,26 @@ fn owner(timeout: Duration) -> MobileKernelHostOwner {
     MobileKernelHostOwner::new(timeout).unwrap()
 }
 
+#[tokio::test]
+async fn observing_the_next_generation_does_not_consume_it() {
+    let _test_gate = MOBILE_OWNER_TEST_GATE.lock().await;
+    let fixture = MobileRuntimeFixture::new();
+    let owner = owner(Duration::from_secs(2));
+
+    assert_eq!(owner.next_launch_generation().unwrap(), 1);
+    assert_eq!(owner.next_launch_generation().unwrap(), 1);
+    let endpoint = owner
+        .start(
+            fixture.launch(Arc::new(ImmediateLifecycle::default())),
+            WEBVIEW_ORIGIN,
+        )
+        .await
+        .unwrap();
+    assert_eq!(endpoint.generation(), 1);
+    assert_eq!(owner.next_launch_generation().unwrap(), 2);
+    owner.stop().await.unwrap();
+}
+
 async fn authenticated_json(endpoint: &MobileKernelEndpoint, path: &str) -> serde_json::Value {
     let response = reqwest::Client::new()
         .get(format!("{}{}", endpoint.base_url(), path))
