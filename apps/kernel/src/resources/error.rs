@@ -5,6 +5,7 @@ pub enum ResourceServiceErrorKind {
     InvalidCursor,
     InvalidMediaType,
     InvalidPath,
+    Conflict,
     NotFound,
     StaleWorkspace,
     TooLarge,
@@ -34,6 +35,12 @@ impl ResourceServiceError {
     pub(crate) const fn invalid_media_type() -> Self {
         Self {
             kind: ResourceServiceErrorKind::InvalidMediaType,
+        }
+    }
+
+    pub(crate) const fn conflict() -> Self {
+        Self {
+            kind: ResourceServiceErrorKind::Conflict,
         }
     }
 
@@ -93,6 +100,7 @@ impl fmt::Display for ResourceServiceError {
             ResourceServiceErrorKind::InvalidCursor => "the resource cursor is invalid",
             ResourceServiceErrorKind::InvalidMediaType => "the resource media type is invalid",
             ResourceServiceErrorKind::InvalidPath => "the resource path is invalid",
+            ResourceServiceErrorKind::Conflict => "the resource batch id conflicts",
             ResourceServiceErrorKind::NotFound => "the resource was not found",
             ResourceServiceErrorKind::StaleWorkspace => "the workspace generation is stale",
             ResourceServiceErrorKind::TooLarge => "the resource exceeds the supported size",

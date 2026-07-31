@@ -3,8 +3,8 @@ use std::{
     io::{self, Read as _, Seek as _, SeekFrom, Write as _},
     mem,
     sync::{
-        atomic::{AtomicUsize, Ordering},
-        Arc, RwLock, Weak,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+        Arc, Mutex, Weak,
     },
 };
 
@@ -27,10 +27,10 @@ use crate::{
     contract::{
         CreateWorkspaceResourceBatchRequest, CreateWorkspaceResourceBatchResponse,
         CreateWorkspaceResourceQuery, DocumentEntryDto, DocumentKind, DocumentName, ErrorCode,
-        ListWorkspaceInventoryQuery, Nullable, PageCursorContext, ResourceEntryDto, ResourceId,
-        ResourceKind, ResourceName, Revision, Rfc3339Utc, SafeUnsignedInteger, WorkspaceDto,
-        WorkspaceInventoryEntryDto, WorkspaceInventoryPageDto, WorkspaceReadiness,
-        WorkspaceRelativePath,
+        ListWorkspaceInventoryQuery, Nullable, PageCursorContext, ResourceBatchId,
+        ResourceEntryDto, ResourceId, ResourceKind, ResourceName, Revision, Rfc3339Utc,
+        SafeUnsignedInteger, WorkspaceDto, WorkspaceInventoryEntryDto, WorkspaceInventoryPageDto,
+        WorkspaceReadiness, WorkspaceRelativePath,
     },
     documents::service::directory_revision_for_capability_with_inventory_budget,
     documents::service::CapabilityAtomicInstallPort,
@@ -43,11 +43,20 @@ use crate::{
         ContentDigest, FileVersionStamp, InventoryCandidateSnapshot, InventoryCandidateType,
         InventoryModifiedTime, InventorySnapshotBudget, InventorySnapshotLimits,
     },
-    runtime::{ActiveWorkspaceSnapshot, KernelRuntime, ResourcesApiService, ServiceFailure},
+    runtime::{
+        ActiveWorkspaceSnapshot, KernelRuntime, MutationPermit, ResourcesApiService, ServiceFailure,
+    },
     storage::nonfollowing_read_options,
 };
 
-use super::{policy::protected_resource_component, ResourceServiceError};
+use super::{
+    policy::protected_resource_component,
+    transaction::{
+        content_digest, request_digest, stage_name, unique_resource_name, BatchPhase, BatchRecord,
+        BatchRecordItem, CreateBatchRecordError, ResourceBatchStore, StoredBatchRecord,
+    },
+    ResourceServiceError,
+};
 
 const STREAM_BUFFER_BYTES: usize = 64 * 1024;
 const MAX_IMAGE_HEADER_BYTES: usize = 64 * 1024;
@@ -84,6 +93,52 @@ impl CreateResourceBatchItem {
         }
     }
 }
+
+struct StagedBatchItem {
+    file: File,
+    record: BatchRecordItem,
+}
+
+enum BatchStageError {
+    Operation(ResourceServiceError),
+    CleanupUncertain,
+}
+
+struct ResourceRecoveryGuard<'runtime, 'mutation> {
+    runtime: &'runtime KernelRuntime,
+    snapshot: &'runtime Arc<ActiveWorkspaceSnapshot>,
+    mutation: &'runtime MutationPermit<'mutation>,
+    armed: bool,
+}
+
+impl<'runtime, 'mutation> ResourceRecoveryGuard<'runtime, 'mutation> {
+    fn arm(
+        context: &'runtime ResourceContext,
+        mutation: &'runtime MutationPermit<'mutation>,
+    ) -> Self {
+        Self {
+            runtime: context.runtime.as_ref(),
+            snapshot: &context.snapshot,
+            mutation,
+            armed: true,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for ResourceRecoveryGuard<'_, '_> {
+    fn drop(&mut self) {
+        if self.armed {
+            let _closed = self
+                .runtime
+                .enter_resource_recovery(self.snapshot, self.mutation);
+        }
+    }
+}
+
 const MAX_UNIQUE_RESOURCE_NAMES: usize = 10_000;
 
 #[cfg(test)]
@@ -105,18 +160,27 @@ pub struct WorkspaceResourceService {
     ignore: Arc<dyn WorkspaceIgnorePort>,
     inventory_scans: Arc<InventoryScanGate>,
     atomic_install: Arc<dyn AtomicInstallPort>,
-    publication_gate: Arc<RwLock<()>>,
+    batch_store: Arc<Mutex<ResourceBatchStore>>,
+    recovery_complete: Arc<AtomicBool>,
 }
 
 impl WorkspaceResourceService {
     pub fn new(runtime: &Arc<KernelRuntime>, ignore: Arc<dyn WorkspaceIgnorePort>) -> Self {
-        Self {
+        Self::open(runtime, ignore).expect("resource batch store opens for an admitted runtime")
+    }
+
+    pub(crate) fn open(
+        runtime: &Arc<KernelRuntime>,
+        ignore: Arc<dyn WorkspaceIgnorePort>,
+    ) -> Result<Self, ResourceServiceError> {
+        Ok(Self {
             runtime: Arc::downgrade(runtime),
             ignore,
             inventory_scans: Arc::new(InventoryScanGate::default()),
             atomic_install: Arc::new(CapabilityAtomicInstallPort),
-            publication_gate: Arc::new(RwLock::new(())),
-        }
+            batch_store: Arc::new(Mutex::new(ResourceBatchStore::open(runtime)?)),
+            recovery_complete: Arc::new(AtomicBool::new(false)),
+        })
     }
 
     pub fn new_with_atomic_install(
@@ -129,8 +193,28 @@ impl WorkspaceResourceService {
             ignore,
             inventory_scans: Arc::new(InventoryScanGate::default()),
             atomic_install,
-            publication_gate: Arc::new(RwLock::new(())),
+            batch_store: Arc::new(Mutex::new(
+                ResourceBatchStore::open_isolated(runtime)
+                    .expect("isolated resource batch store opens"),
+            )),
+            recovery_complete: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    #[doc(hidden)]
+    pub fn open_with_atomic_install(
+        runtime: &Arc<KernelRuntime>,
+        ignore: Arc<dyn WorkspaceIgnorePort>,
+        atomic_install: Arc<dyn AtomicInstallPort>,
+    ) -> Result<Self, ResourceServiceError> {
+        Ok(Self {
+            runtime: Arc::downgrade(runtime),
+            ignore,
+            inventory_scans: Arc::new(InventoryScanGate::default()),
+            atomic_install,
+            batch_store: Arc::new(Mutex::new(ResourceBatchStore::open(runtime)?)),
+            recovery_complete: Arc::new(AtomicBool::new(false)),
+        })
     }
 
     pub async fn create_resource(
@@ -186,6 +270,7 @@ impl WorkspaceResourceService {
 
     pub async fn create_resource_batch(
         &self,
+        batch_id: ResourceBatchId,
         document_id: &crate::contract::DocumentId,
         workspace_generation: crate::contract::WorkspaceGeneration,
         folder: WorkspaceRelativePath,
@@ -221,7 +306,7 @@ impl WorkspaceResourceService {
             .ok_or_else(ResourceServiceError::unavailable)?;
         let mutation = runtime.mutation_coordinator().lock().await;
         runtime
-            .verify_document_mutation_admission(&mutation)
+            .verify_resource_batch_mutation_admission(&mutation)
             .map_err(|_| ResourceServiceError::unavailable())?;
         let context = self.context_with_runtime(runtime.clone())?;
         if context.workspace().generation != workspace_generation {
@@ -238,41 +323,95 @@ impl WorkspaceResourceService {
         let document_parent = parent_and_name(&document_path)?.0;
         let target_parent = join_paths(&document_parent, &folder)?;
         validate_resource_parent(&target_parent, &ignore)?;
-        let (directory, created_directories) =
-            create_resource_parent(&context.root, &target_parent)?;
-
-        let _publication = self
-            .publication_gate
+        let _publication = context
+            .runtime
+            .workspace_publication_gate()
             .write()
             .map_err(|_| ResourceServiceError::unavailable())?;
-        let result =
-            self.install_resource_batch(&context, &directory, &target_parent, normalized, &ignore);
-        if result.is_err() {
-            rollback_created_directories(&context.root, &created_directories);
+        let mut store = self
+            .batch_store
+            .lock()
+            .map_err(|_| ResourceServiceError::unavailable())?;
+        self.recover_pending_locked(&context, &mut store, &mutation)?;
+        let digest = request_digest(
+            context.workspace().id,
+            &context.workspace().generation,
+            &document_path,
+            &folder,
+            &normalized,
+        );
+        let existing = match store.load(batch_id) {
+            Ok(existing) => existing,
+            Err(_) => {
+                let _closed = context
+                    .runtime
+                    .enter_resource_recovery(&context.snapshot, &mutation);
+                return Err(ResourceServiceError::unavailable());
+            }
+        };
+        if let Some(stored) = existing {
+            if stored.record.request_digest != digest {
+                return Err(ResourceServiceError::conflict());
+            }
+            match stored.record.phase {
+                BatchPhase::Committed => {
+                    return self.resources_from_record_or_close(&context, &stored.record, &mutation)
+                }
+                BatchPhase::Preparing | BatchPhase::Prepared => {
+                    self.recover_record(&context, &mut store, stored, &mutation)?;
+                    let committed = match store.load(batch_id) {
+                        Ok(Some(committed)) => committed,
+                        _ => {
+                            let _closed = context
+                                .runtime
+                                .enter_resource_recovery(&context.snapshot, &mutation);
+                            return Err(ResourceServiceError::unavailable());
+                        }
+                    };
+                    if committed.record.phase == BatchPhase::Committed {
+                        return self.resources_from_record_or_close(
+                            &context,
+                            &committed.record,
+                            &mutation,
+                        );
+                    }
+                }
+                BatchPhase::Aborted => {}
+            }
         }
-        result
+        self.install_resource_batch(
+            &context,
+            &mut store,
+            &mutation,
+            batch_id,
+            digest,
+            document_path,
+            folder,
+            &target_parent,
+            normalized,
+            &ignore,
+        )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn install_resource_batch(
         &self,
         context: &ResourceContext,
-        directory: &Dir,
+        store: &mut ResourceBatchStore,
+        mutation: &MutationPermit<'_>,
+        batch_id: ResourceBatchId,
+        digest: String,
+        document_path: WorkspaceRelativePath,
+        folder: WorkspaceRelativePath,
         parent: &WorkspaceRelativePath,
         items: Vec<CreateResourceBatchItem>,
         ignore: &WorkspaceIgnoreSnapshot,
     ) -> Result<Vec<ResourceEntryDto>, ResourceServiceError> {
-        struct StagedBatchItem {
-            file: File,
-            metadata: Metadata,
-            stage_name: String,
-            target_name: ResourceName,
-            path: WorkspaceRelativePath,
-            kind: ResourceKind,
-        }
-
+        let attempt_id = uuid::Uuid::new_v4();
+        let existing_directory = open_record_directory(&context.root, parent)?;
         let mut reserved = std::collections::HashSet::new();
-        let mut staged: Vec<StagedBatchItem> = Vec::with_capacity(items.len());
-        for item in items {
+        let mut planned = Vec::with_capacity(items.len());
+        for (index, item) in items.iter().enumerate() {
             let mut selected = None;
             for attempt in 0..MAX_UNIQUE_RESOURCE_NAMES {
                 let candidate = unique_resource_name(item.name.as_str(), attempt)?;
@@ -280,101 +419,445 @@ impl WorkspaceResourceService {
                 if reserved.contains(&reservation) {
                     continue;
                 }
-                match directory.symlink_metadata(candidate.as_str()) {
-                    Ok(_) => continue,
-                    Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-                    Err(_) => return Err(ResourceServiceError::unavailable()),
+                if let Some(directory) = existing_directory.as_ref() {
+                    match directory.symlink_metadata(candidate.as_str()) {
+                        Ok(_) => continue,
+                        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                        Err(_) => return Err(ResourceServiceError::unavailable()),
+                    }
                 }
                 let path = join_relative(parent, candidate.as_str())?;
                 if ignore.is_ignored(&path, DocumentKind::File) {
                     return Err(ResourceServiceError::invalid_path());
                 }
                 reserved.insert(reservation);
-                selected = Some((candidate, path));
+                selected = Some((attempt, candidate, path));
                 break;
             }
-            let Some((target_name, path)) = selected else {
+            let Some((attempt, target_name, path)) = selected else {
                 return Err(ResourceServiceError::unavailable());
             };
-            let stage_name = random_resource_stage_name()?;
-            let file = match stage_resource(directory, &stage_name, &item.body) {
+            planned.push(BatchRecordItem {
+                ordinal: u8::try_from(index).map_err(|_| ResourceServiceError::unavailable())?,
+                name_attempt: u32::try_from(attempt)
+                    .map_err(|_| ResourceServiceError::unavailable())?,
+                requested_name: item.name.clone(),
+                target_name,
+                target_path: path,
+                kind: item.kind,
+                media_type: item.media_type.clone(),
+                size_bytes: item.body.len() as u64,
+                content_sha256: content_digest(&item.body),
+                stage_name: stage_name(attempt_id, index),
+            });
+        }
+        let mut record = BatchRecord::preparing(
+            batch_id,
+            digest,
+            context.workspace().id,
+            context.workspace().generation.clone(),
+            document_path,
+            folder,
+            parent.clone(),
+            attempt_id,
+            planned,
+        );
+        store.preflight_record(&record)?;
+        let mut stored = match store.load(batch_id) {
+            Err(_) => {
+                let _closed = context
+                    .runtime
+                    .enter_resource_recovery(&context.snapshot, mutation);
+                return Err(ResourceServiceError::unavailable());
+            }
+            Ok(Some(previous)) if previous.record.phase == BatchPhase::Aborted => {
+                match store.replace(&record, &previous.revision) {
+                    Ok(stored) => stored,
+                    Err(_) => {
+                        let _closed = context
+                            .runtime
+                            .enter_resource_recovery(&context.snapshot, mutation);
+                        return Err(ResourceServiceError::unavailable());
+                    }
+                }
+            }
+            Ok(Some(_)) => return Err(ResourceServiceError::conflict()),
+            Ok(None) if !store.has_capacity_for_new_batch()? => {
+                return Err(ResourceServiceError::unavailable())
+            }
+            Ok(None) => match store.create(&record) {
+                Ok(stored) => stored,
+                Err(CreateBatchRecordError::RecoveryRequired(error)) => {
+                    let _closed = context
+                        .runtime
+                        .enter_resource_recovery(&context.snapshot, mutation);
+                    return Err(error);
+                }
+                Err(CreateBatchRecordError::NotPublished(error)) => return Err(error),
+            },
+        };
+        let mut recovery = ResourceRecoveryGuard::arm(context, mutation);
+        let (directory, created_directories) = match create_resource_parent(&context.root, parent) {
+            Ok(created) => created,
+            Err(error) => return Err(error),
+        };
+        for item in &record.items {
+            match directory.symlink_metadata(item.target_name.as_str()) {
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Ok(_) => {
+                    drop(directory);
+                    rollback_created_directories(&context.root, &created_directories);
+                    record.phase = BatchPhase::Aborted;
+                    match store.replace(&record, &stored.revision) {
+                        Ok(aborted) => {
+                            store.finalize_commit(batch_id, &aborted.revision)?;
+                            recovery.disarm();
+                        }
+                        Err(_) => return Err(ResourceServiceError::unavailable()),
+                    }
+                    return Err(ResourceServiceError::conflict());
+                }
+                Err(_) => return Err(ResourceServiceError::unavailable()),
+            }
+        }
+
+        let mut staged: Vec<StagedBatchItem> = Vec::with_capacity(items.len());
+        for (item, planned) in items.into_iter().zip(record.items.iter().cloned()) {
+            let file = match stage_batch_resource(&directory, &planned.stage_name, &item.body) {
                 Ok(file) => file,
-                Err(error) => {
-                    for item in &staged {
-                        cleanup_staged_resource(directory, &item.stage_name);
+                Err(BatchStageError::CleanupUncertain) => {
+                    let _closed = context
+                        .runtime
+                        .enter_resource_recovery(&context.snapshot, mutation);
+                    return Err(ResourceServiceError::unavailable());
+                }
+                Err(BatchStageError::Operation(error)) => {
+                    if self.cleanup_staged_batch(&directory, &staged).is_err() {
+                        let _closed = context
+                            .runtime
+                            .enter_resource_recovery(&context.snapshot, mutation);
+                        return Err(ResourceServiceError::unavailable());
+                    }
+                    drop(staged);
+                    drop(directory);
+                    rollback_created_directories(&context.root, &created_directories);
+                    record.phase = BatchPhase::Aborted;
+                    match store.replace(&record, &stored.revision) {
+                        Ok(aborted) => {
+                            store.finalize_commit(batch_id, &aborted.revision)?;
+                            recovery.disarm();
+                        }
+                        Err(_) => return Err(ResourceServiceError::unavailable()),
                     }
                     return Err(error);
                 }
             };
-            let metadata = file
-                .metadata()
-                .map_err(|_| ResourceServiceError::unavailable())?;
             staged.push(StagedBatchItem {
                 file,
-                metadata,
-                stage_name,
-                target_name,
-                path,
-                kind: item.kind,
+                record: planned,
             });
         }
-        crate::storage::sync_directory(directory)
-            .map_err(|_| ResourceServiceError::unavailable())?;
+        if crate::storage::sync_directory(&directory).is_err() {
+            if self.cleanup_staged_batch(&directory, &staged).is_err() {
+                let _closed = context
+                    .runtime
+                    .enter_resource_recovery(&context.snapshot, mutation);
+                return Err(ResourceServiceError::unavailable());
+            }
+            drop(staged);
+            drop(directory);
+            rollback_created_directories(&context.root, &created_directories);
+            record.phase = BatchPhase::Aborted;
+            match store.replace(&record, &stored.revision) {
+                Ok(aborted) => {
+                    store.finalize_commit(batch_id, &aborted.revision)?;
+                    recovery.disarm();
+                }
+                Err(_) => return Err(ResourceServiceError::unavailable()),
+            }
+            return Err(ResourceServiceError::unavailable());
+        }
+        record.phase = BatchPhase::Prepared;
+        stored = store.replace(&record, &stored.revision)?;
 
-        let mut installed = 0_usize;
-        for index in 0..staged.len() {
-            let item = &staged[index];
+        for item in &staged {
             let install = self.atomic_install.install(AtomicInstallRequest {
-                directory,
-                target: &item.path,
-                stage_name: &item.stage_name,
-                target_name: item.target_name.as_str(),
+                directory: &directory,
+                target: &item.record.target_path,
+                stage_name: &item.record.stage_name,
+                target_name: item.record.target_name.as_str(),
                 mode: AtomicInstallMode::CreateNoReplace,
                 expected_stage: PinnedInstallSource::File(&item.file),
                 expected_target: None,
                 expected_revision: None,
             });
             if install.is_err() {
-                let stage_exists = directory.symlink_metadata(&item.stage_name).is_ok();
-                let target = directory.symlink_metadata(item.target_name.as_str()).ok();
-                let settled = !stage_exists
-                    && target
-                        .as_ref()
-                        .is_some_and(|metadata| same_file(&item.metadata, metadata));
-                if !settled {
-                    for published in &staged[..installed] {
-                        cleanup_installed_resource(
-                            directory,
-                            published.target_name.as_str(),
-                            &published.metadata,
-                        );
-                    }
-                    for pending in &staged[index..] {
-                        cleanup_staged_resource(directory, &pending.stage_name);
-                    }
+                if !self.record_item_is_published(&directory, &item.record)? {
+                    let _closed = context
+                        .runtime
+                        .enter_resource_recovery(&context.snapshot, mutation);
                     return Err(ResourceServiceError::unavailable());
                 }
             }
-            installed += 1;
         }
-        if crate::storage::sync_directory(directory).is_err() {
-            for item in &staged {
-                cleanup_installed_resource(directory, item.target_name.as_str(), &item.metadata);
-                cleanup_staged_resource(directory, &item.stage_name);
-            }
+        if crate::storage::sync_directory(&directory).is_err() {
+            let _closed = context
+                .runtime
+                .enter_resource_recovery(&context.snapshot, mutation);
             return Err(ResourceServiceError::unavailable());
         }
+        record.phase = BatchPhase::Committed;
+        stored = store.replace(&record, &stored.revision)?;
+        let resources = self.resources_from_record(context, &record)?;
+        store.finalize_commit(batch_id, &stored.revision)?;
+        recovery.disarm();
+        Ok(resources)
+    }
 
-        let result = staged
+    #[doc(hidden)]
+    pub async fn recover_pending(&self) -> Result<(), ResourceServiceError> {
+        let runtime = self
+            .runtime
+            .upgrade()
+            .ok_or_else(ResourceServiceError::unavailable)?;
+        let mutation = runtime.mutation_coordinator().lock().await;
+        runtime
+            .verify_resource_batch_mutation_admission(&mutation)
+            .map_err(|_| ResourceServiceError::unavailable())?;
+        let context = self.context_with_runtime(runtime.clone())?;
+        let _publication = context
+            .runtime
+            .workspace_publication_gate()
+            .write()
+            .map_err(|_| ResourceServiceError::unavailable())?;
+        let mut store = self
+            .batch_store
+            .lock()
+            .map_err(|_| ResourceServiceError::unavailable())?;
+        self.recover_pending_locked(&context, &mut store, &mutation)
+    }
+
+    fn recover_pending_locked(
+        &self,
+        context: &ResourceContext,
+        store: &mut ResourceBatchStore,
+        mutation: &MutationPermit<'_>,
+    ) -> Result<(), ResourceServiceError> {
+        if self.recovery_complete.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        let records = match store.pending_records() {
+            Ok(records) => records,
+            Err(error) => {
+                let _closed = context
+                    .runtime
+                    .enter_resource_recovery(&context.snapshot, mutation);
+                return Err(error);
+            }
+        };
+        for record in records {
+            if let Err(error) = self.recover_record(context, store, record, mutation) {
+                let _closed = context
+                    .runtime
+                    .enter_resource_recovery(&context.snapshot, mutation);
+                return Err(error);
+            }
+        }
+        self.recovery_complete.store(true, Ordering::Release);
+        Ok(())
+    }
+
+    fn recover_record(
+        &self,
+        context: &ResourceContext,
+        store: &mut ResourceBatchStore,
+        mut stored: StoredBatchRecord,
+        mutation: &MutationPermit<'_>,
+    ) -> Result<(), ResourceServiceError> {
+        let mut recovery = ResourceRecoveryGuard::arm(context, mutation);
+        let result = (|| {
+            if stored.record.workspace_id != context.workspace().id
+                || stored.record.workspace_generation != context.workspace().generation
+            {
+                return Err(ResourceServiceError::unavailable());
+            }
+            let directory = open_record_directory(&context.root, &stored.record.target_parent)?;
+            match stored.record.phase {
+                BatchPhase::Preparing => {
+                    if let Some(directory) = directory.as_ref() {
+                        for item in &stored.record.items {
+                            match directory.symlink_metadata(item.target_name.as_str()) {
+                                Ok(_) => return Err(ResourceServiceError::unsafe_target()),
+                                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                                Err(_) => return Err(ResourceServiceError::unavailable()),
+                            }
+                            self.remove_record_stage_if_present(directory, item)?;
+                        }
+                        crate::storage::sync_directory(directory)
+                            .map_err(|_| ResourceServiceError::unavailable())?;
+                    }
+                    stored.record.phase = BatchPhase::Aborted;
+                    stored = store.replace(&stored.record, &stored.revision)?;
+                    store.finalize_commit(stored.record.batch_id, &stored.revision)?;
+                    Ok(())
+                }
+                BatchPhase::Prepared => {
+                    let directory = directory.ok_or_else(ResourceServiceError::unavailable)?;
+                    for item in &stored.record.items {
+                        let stage = self.record_file(&directory, &item.stage_name, item)?;
+                        let target =
+                            self.record_file(&directory, item.target_name.as_str(), item)?;
+                        match (stage, target) {
+                            (Some(stage), None) => {
+                                let install = self.atomic_install.install(AtomicInstallRequest {
+                                    directory: &directory,
+                                    target: &item.target_path,
+                                    stage_name: &item.stage_name,
+                                    target_name: item.target_name.as_str(),
+                                    mode: AtomicInstallMode::CreateNoReplace,
+                                    expected_stage: PinnedInstallSource::File(&stage.file),
+                                    expected_target: None,
+                                    expected_revision: None,
+                                });
+                                if install.is_err()
+                                    && !self.record_item_is_published(&directory, item)?
+                                {
+                                    return Err(ResourceServiceError::unavailable());
+                                }
+                            }
+                            (None, Some(_target)) => {}
+                            (None, None) | (Some(_), Some(_)) => {
+                                return Err(ResourceServiceError::unsafe_target());
+                            }
+                        }
+                    }
+                    crate::storage::sync_directory(&directory)
+                        .map_err(|_| ResourceServiceError::unavailable())?;
+                    stored.record.phase = BatchPhase::Committed;
+                    stored = store.replace(&stored.record, &stored.revision)?;
+                    self.resources_from_record(context, &stored.record)?;
+                    store.finalize_commit(stored.record.batch_id, &stored.revision)?;
+                    Ok(())
+                }
+                BatchPhase::Committed => {
+                    self.resources_from_record(context, &stored.record)?;
+                    store.finalize_commit(stored.record.batch_id, &stored.revision)
+                }
+                BatchPhase::Aborted => {
+                    if let Some(directory) = directory.as_ref() {
+                        for item in &stored.record.items {
+                            if self
+                                .record_file(directory, &item.stage_name, item)?
+                                .is_some()
+                            {
+                                return Err(ResourceServiceError::unsafe_target());
+                            }
+                        }
+                    }
+                    store.finalize_commit(stored.record.batch_id, &stored.revision)
+                }
+            }
+        })();
+        if result.is_ok() {
+            recovery.disarm();
+        }
+        result
+    }
+
+    fn cleanup_staged_batch(
+        &self,
+        directory: &Dir,
+        staged: &[StagedBatchItem],
+    ) -> Result<(), ResourceServiceError> {
+        for item in staged {
+            let addressed = directory
+                .symlink_metadata(&item.record.stage_name)
+                .map_err(|_| ResourceServiceError::unavailable())?;
+            let retained = item
+                .file
+                .metadata()
+                .map_err(|_| ResourceServiceError::unavailable())?;
+            if !trusted_regular_file(&addressed)
+                || !trusted_regular_file(&retained)
+                || !same_file(&addressed, &retained)
+            {
+                return Err(ResourceServiceError::unsafe_target());
+            }
+            directory
+                .remove_file(&item.record.stage_name)
+                .map_err(|_| ResourceServiceError::unavailable())?;
+        }
+        crate::storage::sync_directory(directory)
+            .map_err(|_| ResourceServiceError::unavailable())?;
+        Ok(())
+    }
+
+    fn remove_record_stage_if_present(
+        &self,
+        directory: &Dir,
+        item: &BatchRecordItem,
+    ) -> Result<(), ResourceServiceError> {
+        match self.record_file(directory, &item.stage_name, item)? {
+            Some(_) => directory
+                .remove_file(&item.stage_name)
+                .map_err(|_| ResourceServiceError::unavailable()),
+            None => Ok(()),
+        }
+    }
+
+    fn record_item_is_published(
+        &self,
+        directory: &Dir,
+        item: &BatchRecordItem,
+    ) -> Result<bool, ResourceServiceError> {
+        let stage = self.record_file(directory, &item.stage_name, item)?;
+        let target = self.record_file(directory, item.target_name.as_str(), item)?;
+        Ok(stage.is_none() && target.is_some())
+    }
+
+    fn record_file(
+        &self,
+        directory: &Dir,
+        name: &str,
+        item: &BatchRecordItem,
+    ) -> Result<Option<InspectedFile>, ResourceServiceError> {
+        let addressed = match directory.symlink_metadata(name) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(_) => return Err(ResourceServiceError::unavailable()),
+        };
+        let inspected = inspect_regular_file(directory, name, &addressed)?;
+        if inspected.metadata.len() != item.size_bytes
+            || encoded_content_digest(inspected.content_digest) != item.content_sha256
+        {
+            return Err(ResourceServiceError::unsafe_target());
+        }
+        Ok(Some(inspected))
+    }
+
+    fn resources_from_record(
+        &self,
+        context: &ResourceContext,
+        record: &BatchRecord,
+    ) -> Result<Vec<ResourceEntryDto>, ResourceServiceError> {
+        if record.phase != BatchPhase::Committed
+            || record.workspace_id != context.workspace().id
+            || record.workspace_generation != context.workspace().generation
+        {
+            return Err(ResourceServiceError::unavailable());
+        }
+        let directory = open_directory(&context.root, &record.target_parent)?;
+        record
+            .items
             .iter()
             .map(|item| {
-                let addressed = directory
-                    .symlink_metadata(item.target_name.as_str())
-                    .map_err(|_| ResourceServiceError::unavailable())?;
-                let inspected =
-                    inspect_regular_file(directory, item.target_name.as_str(), &addressed)?;
-                if !same_file(&item.metadata, &inspected.metadata) {
-                    return Err(ResourceServiceError::unsafe_target());
+                let inspected = self
+                    .record_file(&directory, item.target_name.as_str(), item)?
+                    .ok_or_else(ResourceServiceError::unavailable)?;
+                match directory.symlink_metadata(&item.stage_name) {
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                    Ok(_) => return Err(ResourceServiceError::unsafe_target()),
+                    Err(_) => return Err(ResourceServiceError::unavailable()),
                 }
                 let classification = classify_resource(
                     item.target_name.as_str(),
@@ -382,7 +865,8 @@ impl WorkspaceResourceService {
                     inspected.metadata.len(),
                     inspected.validation_body.as_deref(),
                 );
-                if classification.kind != item.kind {
+                if classification.kind != item.kind || classification.media_type != item.media_type
+                {
                     return Err(ResourceServiceError::unsafe_target());
                 }
                 let id = context
@@ -392,13 +876,13 @@ impl WorkspaceResourceService {
                         context.workspace().id,
                         &context.workspace().generation,
                         item.kind,
-                        &item.path,
+                        &item.target_path,
                     )
                     .map_err(|_| ResourceServiceError::unavailable())?;
                 Ok(ResourceEntryDto {
                     id,
-                    path: item.path.clone(),
-                    parent: parent.clone(),
+                    path: item.target_path.clone(),
+                    parent: record.target_parent.clone(),
                     name: item.target_name.clone(),
                     kind: item.kind,
                     size_bytes: safe_size(inspected.metadata.len())?,
@@ -408,14 +892,22 @@ impl WorkspaceResourceService {
                     previewable: classification.previewable,
                 })
             })
-            .collect::<Result<Vec<_>, _>>();
-        if result.is_err() {
-            for item in &staged {
-                cleanup_installed_resource(directory, item.target_name.as_str(), &item.metadata);
-            }
-            let _sync_result = crate::storage::sync_directory(directory);
-        }
-        result
+            .collect()
+    }
+
+    fn resources_from_record_or_close(
+        &self,
+        context: &ResourceContext,
+        record: &BatchRecord,
+        mutation: &MutationPermit<'_>,
+    ) -> Result<Vec<ResourceEntryDto>, ResourceServiceError> {
+        self.resources_from_record(context, record)
+            .map_err(|error| {
+                let _closed = context
+                    .runtime
+                    .enter_resource_recovery(&context.snapshot, mutation);
+                error
+            })
     }
 
     /// Lists one directory level from the retained active workspace capability.
@@ -425,12 +917,16 @@ impl WorkspaceResourceService {
         &self,
         parent: &WorkspaceRelativePath,
     ) -> Result<Vec<WorkspaceInventoryEntry>, ResourceServiceError> {
-        let _publication = self
-            .publication_gate
+        let runtime = self
+            .runtime
+            .upgrade()
+            .ok_or_else(ResourceServiceError::unavailable)?;
+        let _publication = runtime
+            .workspace_publication_gate()
             .read()
             .map_err(|_| ResourceServiceError::unavailable())?;
         let _permit = self.inventory_scans.try_acquire()?;
-        let context = self.context()?;
+        let context = self.context_with_runtime(runtime.clone())?;
         let mut budget = inventory_snapshot_budget();
         self.list_inventory_with_context(&context, parent, &mut budget)
     }
@@ -439,12 +935,16 @@ impl WorkspaceResourceService {
         &self,
         query: ListWorkspaceInventoryQuery,
     ) -> Result<WorkspaceInventoryPageDto, ResourceServiceError> {
-        let _publication = self
-            .publication_gate
+        let runtime = self
+            .runtime
+            .upgrade()
+            .ok_or_else(ResourceServiceError::unavailable)?;
+        let _publication = runtime
+            .workspace_publication_gate()
             .read()
             .map_err(|_| ResourceServiceError::unavailable())?;
         let _permit = self.inventory_scans.try_acquire()?;
-        let context = self.context()?;
+        let context = self.context_with_runtime(runtime.clone())?;
         let ignore = self.capture_ignore(&context)?;
         let directory = open_directory(&context.root, &query.parent)?;
         let mut budget = inventory_snapshot_budget();
@@ -586,11 +1086,15 @@ impl WorkspaceResourceService {
         id: &ResourceId,
         expected_kind: ResourceKind,
     ) -> Result<RetainedResource, ResourceServiceError> {
-        let _publication = self
-            .publication_gate
+        let runtime = self
+            .runtime
+            .upgrade()
+            .ok_or_else(ResourceServiceError::unavailable)?;
+        let _publication = runtime
+            .workspace_publication_gate()
             .read()
             .map_err(|_| ResourceServiceError::unavailable())?;
-        let context = self.context()?;
+        let context = self.context_with_runtime(runtime.clone())?;
         let ignore = self.capture_ignore(&context)?;
         let path = context
             .runtime
@@ -657,6 +1161,7 @@ impl WorkspaceResourceService {
         })
     }
 
+    #[cfg(test)]
     fn context(&self) -> Result<ResourceContext, ResourceServiceError> {
         let runtime = self
             .runtime
@@ -1024,6 +1529,17 @@ fn random_resource_stage_name() -> Result<String, ResourceServiceError> {
 }
 
 fn stage_resource(directory: &Dir, name: &str, body: &[u8]) -> Result<File, ResourceServiceError> {
+    stage_resource_file(directory, name, body).map_err(|error| match error {
+        BatchStageError::Operation(error) => error,
+        BatchStageError::CleanupUncertain => ResourceServiceError::unavailable(),
+    })
+}
+
+fn stage_batch_resource(directory: &Dir, name: &str, body: &[u8]) -> Result<File, BatchStageError> {
+    stage_resource_file(directory, name, body)
+}
+
+fn stage_resource_file(directory: &Dir, name: &str, body: &[u8]) -> Result<File, BatchStageError> {
     let mut options = OpenOptions::new();
     options
         .read(true)
@@ -1040,28 +1556,58 @@ fn stage_resource(directory: &Dir, name: &str, body: &[u8]) -> Result<File, Reso
         .share_mode(windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ);
     #[cfg(unix)]
     options.mode(0o600);
-    let mut file = directory
-        .open_with(name, &options)
-        .map_err(|_| ResourceServiceError::unavailable())?;
+    let mut file = directory.open_with(name, &options).map_err(|error| {
+        if error.kind() == io::ErrorKind::AlreadyExists {
+            BatchStageError::CleanupUncertain
+        } else {
+            BatchStageError::Operation(ResourceServiceError::unavailable())
+        }
+    })?;
     if file.write_all(body).and_then(|()| file.sync_all()).is_err() {
-        drop(file);
-        cleanup_staged_resource(directory, name);
-        return Err(ResourceServiceError::unavailable());
+        cleanup_staged_file_strict(directory, name, &file)?;
+        return Err(BatchStageError::Operation(
+            ResourceServiceError::unavailable(),
+        ));
     }
     let metadata = match file.metadata() {
         Ok(metadata) => metadata,
         Err(_) => {
-            drop(file);
-            cleanup_staged_resource(directory, name);
-            return Err(ResourceServiceError::unavailable());
+            cleanup_staged_file_strict(directory, name, &file)?;
+            return Err(BatchStageError::Operation(
+                ResourceServiceError::unavailable(),
+            ));
         }
     };
     if !trusted_regular_file(&metadata) || metadata.len() != body.len() as u64 {
-        drop(file);
-        cleanup_staged_resource(directory, name);
-        return Err(ResourceServiceError::unsafe_target());
+        cleanup_staged_file_strict(directory, name, &file)?;
+        return Err(BatchStageError::Operation(
+            ResourceServiceError::unsafe_target(),
+        ));
     }
     Ok(file)
+}
+
+fn cleanup_staged_file_strict(
+    directory: &Dir,
+    name: &str,
+    retained: &File,
+) -> Result<(), BatchStageError> {
+    let addressed = directory
+        .symlink_metadata(name)
+        .map_err(|_| BatchStageError::CleanupUncertain)?;
+    let retained = retained
+        .metadata()
+        .map_err(|_| BatchStageError::CleanupUncertain)?;
+    if !trusted_regular_file(&addressed)
+        || !trusted_regular_file(&retained)
+        || !same_file(&addressed, &retained)
+    {
+        return Err(BatchStageError::CleanupUncertain);
+    }
+    directory
+        .remove_file(name)
+        .map_err(|_| BatchStageError::CleanupUncertain)?;
+    crate::storage::sync_directory(directory).map_err(|_| BatchStageError::CleanupUncertain)
 }
 
 fn cleanup_staged_resource(directory: &Dir, name: &str) {
@@ -1078,29 +1624,6 @@ fn cleanup_installed_resource(directory: &Dir, name: &str, expected: &Metadata) 
     }
     let _remove_result = directory.remove_file(name);
     let _sync_result = crate::storage::sync_directory(directory);
-}
-
-fn unique_resource_name(
-    requested: &str,
-    attempt: usize,
-) -> Result<ResourceName, ResourceServiceError> {
-    if attempt == 0 {
-        return ResourceName::parse(requested).map_err(|_| ResourceServiceError::invalid_path());
-    }
-    let suffix = format!("-{}", attempt + 1);
-    let extension_index = requested.rfind('.').filter(|index| *index > 0);
-    let (mut stem, extension) = extension_index.map_or((requested.to_string(), ""), |index| {
-        (requested[..index].to_string(), &requested[index..])
-    });
-    loop {
-        let candidate = format!("{stem}{suffix}{extension}");
-        if let Ok(name) = ResourceName::parse(candidate) {
-            return Ok(name);
-        }
-        if stem.pop().is_none() {
-            return Err(ResourceServiceError::invalid_path());
-        }
-    }
 }
 
 #[derive(Default)]
@@ -1141,6 +1664,7 @@ fn service_failure(error: ResourceServiceError) -> ServiceFailure {
         super::ResourceServiceErrorKind::InvalidCursor
         | super::ResourceServiceErrorKind::InvalidMediaType
         | super::ResourceServiceErrorKind::InvalidPath => ErrorCode::InvalidRequest,
+        super::ResourceServiceErrorKind::Conflict => ErrorCode::RevisionConflict,
         super::ResourceServiceErrorKind::StaleWorkspace => ErrorCode::RevisionConflict,
         super::ResourceServiceErrorKind::TooLarge => ErrorCode::ResourceTooLarge,
         super::ResourceServiceErrorKind::NotFound | super::ResourceServiceErrorKind::WrongKind => {
@@ -1160,6 +1684,7 @@ fn create_service_failure(error: ResourceServiceError) -> ServiceFailure {
         super::ResourceServiceErrorKind::InvalidCursor
         | super::ResourceServiceErrorKind::InvalidMediaType
         | super::ResourceServiceErrorKind::InvalidPath => ErrorCode::InvalidRequest,
+        super::ResourceServiceErrorKind::Conflict => ErrorCode::RevisionConflict,
         super::ResourceServiceErrorKind::StaleWorkspace => ErrorCode::RevisionConflict,
         super::ResourceServiceErrorKind::TooLarge => ErrorCode::ResourceTooLarge,
         super::ResourceServiceErrorKind::UnsafeTarget
@@ -1229,6 +1754,7 @@ impl ResourcesApiService for WorkspaceResourceService {
         }
         let resources = self
             .create_resource_batch(
+                request.batch_id,
                 &document_id,
                 request.workspace_generation,
                 request.folder,
@@ -2515,6 +3041,45 @@ fn open_directory(root: &Dir, path: &WorkspaceRelativePath) -> Result<Dir, Resou
             .map_err(|_| ResourceServiceError::unsafe_target())?;
     }
     Ok(directory)
+}
+
+/// Re-opens a transaction-recorded parent while distinguishing a genuinely
+/// absent component from every other lookup failure. Recovery may treat the
+/// former as an unpublished `Preparing` transaction, but must never turn a
+/// permission error, symlink substitution, or I/O fault into a safe absence.
+fn open_record_directory(
+    root: &Dir,
+    path: &WorkspaceRelativePath,
+) -> Result<Option<Dir>, ResourceServiceError> {
+    let mut directory = root
+        .try_clone()
+        .map_err(|_| ResourceServiceError::unavailable())?;
+    for component in path
+        .as_str()
+        .split('/')
+        .filter(|component| !component.is_empty())
+    {
+        if protected_resource_component(component) {
+            return Err(ResourceServiceError::invalid_path());
+        }
+        let addressed = match directory.symlink_metadata(component) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(_) => return Err(ResourceServiceError::unavailable()),
+        };
+        if !addressed.is_dir() || addressed.file_type().is_symlink() {
+            return Err(ResourceServiceError::unsafe_target());
+        }
+        let child = directory
+            .open_dir_nofollow(component)
+            .map_err(|_| ResourceServiceError::unsafe_target())?;
+        let retained = trusted_directory_metadata(&child)?;
+        if !same_file(&addressed, &retained) {
+            return Err(ResourceServiceError::unsafe_target());
+        }
+        directory = child;
+    }
+    Ok(Some(directory))
 }
 
 fn join_relative(

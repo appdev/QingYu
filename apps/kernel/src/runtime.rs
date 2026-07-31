@@ -44,6 +44,7 @@ pub struct KernelRuntime {
     paths: KernelPaths,
     ports: KernelPorts,
     mutation_coordinator: Arc<MutationCoordinator>,
+    workspace_publication_gate: RwLock<()>,
     owner: KernelRuntimeOwner,
     sync_status: Arc<SyncStatusState>,
     workspace_run_lifecycle: WorkspaceRunLifecycle,
@@ -89,6 +90,7 @@ impl KernelRuntime {
             paths,
             ports,
             mutation_coordinator: Arc::new(MutationCoordinator::new()),
+            workspace_publication_gate: RwLock::new(()),
             owner: KernelRuntimeOwner::new(active_workspace),
             sync_status: Arc::new(SyncStatusState::new()),
             workspace_run_lifecycle: WorkspaceRunLifecycle::new(),
@@ -147,6 +149,10 @@ impl KernelRuntime {
 
     pub const fn mutation_coordinator(&self) -> &Arc<MutationCoordinator> {
         &self.mutation_coordinator
+    }
+
+    pub(crate) const fn workspace_publication_gate(&self) -> &RwLock<()> {
+        &self.workspace_publication_gate
     }
 
     pub(crate) fn sync_status(&self) -> Arc<SyncStatusState> {
@@ -1268,6 +1274,69 @@ impl KernelRuntime {
             }
             | SyncRunAdmission::RecoveryClosed
             | SyncRunAdmission::ShutdownClosed => Err(WorkspaceRunLifecycleError),
+        }
+    }
+
+    pub(crate) fn verify_resource_batch_mutation_admission(
+        &self,
+        mutation: &MutationPermit<'_>,
+    ) -> Result<(), WorkspaceRunLifecycleError> {
+        self.verify_document_mutation_admission(mutation)?;
+        let lifecycle = self
+            .workspace_run_lifecycle
+            .state
+            .lock()
+            .map_err(|_| WorkspaceRunLifecycleError)?;
+        if matches!(lifecycle.run, RegisteredSyncRun::Empty) {
+            Ok(())
+        } else {
+            Err(WorkspaceRunLifecycleError)
+        }
+    }
+
+    pub(crate) fn enter_resource_recovery(
+        &self,
+        expected: &Arc<ActiveWorkspaceSnapshot>,
+        mutation: &MutationPermit<'_>,
+    ) -> Result<(), WorkspaceRunLifecycleError> {
+        if !self.mutation_coordinator.recognizes(mutation) {
+            return Err(WorkspaceRunLifecycleError);
+        }
+        let mut owner = self
+            .owner
+            .workspace
+            .write()
+            .map_err(|_| WorkspaceRunLifecycleError)?;
+        let mut lifecycle = self
+            .workspace_run_lifecycle
+            .state
+            .lock()
+            .map_err(|_| WorkspaceRunLifecycleError)?;
+        match &*owner {
+            WorkspaceOwnerState::Active(current) if Arc::ptr_eq(current, expected) => {
+                match &lifecycle.run {
+                    RegisteredSyncRun::Empty => {}
+                    RegisteredSyncRun::Queued(run)
+                    | RegisteredSyncRun::Running(run)
+                    | RegisteredSyncRun::Finalizing(run) => run.cancellation.cancel(),
+                }
+                *owner = WorkspaceOwnerState::RecoveryRequired {
+                    _hold: WorkspaceRecoveryHold {
+                        _last_known: Some(expected.clone()),
+                        _retained_candidate: Some(expected.authority.clone()),
+                    },
+                };
+                lifecycle.admission = SyncRunAdmission::RecoveryClosed;
+                Ok(())
+            }
+            WorkspaceOwnerState::RecoveryRequired { .. } => {
+                lifecycle.admission = SyncRunAdmission::RecoveryClosed;
+                Ok(())
+            }
+            WorkspaceOwnerState::AuthorityOnly(_) | WorkspaceOwnerState::Active(_) => {
+                lifecycle.admission = SyncRunAdmission::RecoveryClosed;
+                Err(WorkspaceRunLifecycleError)
+            }
         }
     }
 
@@ -2621,12 +2690,108 @@ pub trait SyncApiService: Send + Sync {
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, sync::Arc, thread};
+    use std::{
+        fs,
+        sync::{Arc, Mutex},
+        thread,
+    };
 
+    use serde_json::Value;
     use tempfile::tempdir;
+    use uuid::Uuid;
 
-    use super::{KernelRuntime, WorkspaceAuthorityErrorKind};
-    use crate::{config::KernelConfig, paths::ServerPathLayout, ports::KernelPorts};
+    use super::{
+        KernelRuntime, RegisteredSyncRun, SyncCancellation, SyncRunRegistration,
+        WorkspaceAuthorityErrorKind,
+    };
+    use crate::{
+        config::KernelConfig,
+        contract::{Revision, Rfc3339Utc, RunId, SyncTrigger},
+        paths::{KernelPaths, ServerPathLayout},
+        ports::KernelPorts,
+        services::workspace::WorkspaceService,
+        workspace::{
+            managed::ManagedWorkspaceCollection,
+            primary::{
+                PrimaryWorkspaceRepositoryBinding, PrimaryWorkspaceStore,
+                PrimaryWorkspaceStoreError,
+            },
+        },
+    };
+
+    #[derive(Default)]
+    struct MemoryWorkspaceStore {
+        binding: PrimaryWorkspaceRepositoryBinding,
+        value: Mutex<Option<Value>>,
+    }
+
+    impl PrimaryWorkspaceStore for MemoryWorkspaceStore {
+        fn repository_binding(&self) -> PrimaryWorkspaceRepositoryBinding {
+            self.binding.clone()
+        }
+
+        fn load(&self) -> Result<Option<Value>, PrimaryWorkspaceStoreError> {
+            Ok(self.value.lock().unwrap().clone())
+        }
+
+        fn replace(&self, value: Option<Value>) -> Result<(), PrimaryWorkspaceStoreError> {
+            *self.value.lock().unwrap() = value;
+            Ok(())
+        }
+
+        fn save(&self) -> Result<(), PrimaryWorkspaceStoreError> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn resource_batch_admission_rejects_a_queued_sync_run() {
+        let temporary = tempdir().unwrap();
+        let workspace_root = temporary.path().join("workspace");
+        let app_data = temporary.path().join("app-data");
+        let cache = temporary.path().join("cache");
+        for path in [&workspace_root, &app_data, &cache] {
+            fs::create_dir(path).unwrap();
+        }
+        let paths = KernelPaths::desktop(&workspace_root, &app_data, &cache).unwrap();
+        let managed = ManagedWorkspaceCollection::from_paths(&paths).unwrap();
+        let runtime = KernelRuntime::activate(
+            KernelConfig::generate().unwrap(),
+            paths,
+            KernelPorts::unavailable(),
+        )
+        .unwrap();
+        let _workspace = WorkspaceService::new(
+            &runtime,
+            Arc::new(MemoryWorkspaceStore::default()),
+            managed,
+            runtime.event_broker().clone(),
+            "resource batch admission",
+        )
+        .await
+        .unwrap();
+        let snapshot = runtime.active_workspace_snapshot().unwrap();
+        let mutation = runtime.mutation_coordinator().lock().await;
+        runtime
+            .verify_resource_batch_mutation_admission(&mutation)
+            .unwrap();
+        runtime.workspace_run_lifecycle.state.lock().unwrap().run =
+            RegisteredSyncRun::Queued(SyncRunRegistration {
+                run_id: RunId::new(Uuid::from_u128(0x71)),
+                trigger: SyncTrigger::Manual,
+                config_revision: Revision::parse("sync-revision").unwrap(),
+                fallback_completed_at: Rfc3339Utc::parse("2026-08-01T00:00:00Z").unwrap(),
+                snapshot,
+                cancellation: SyncCancellation::new(),
+            });
+
+        assert!(runtime
+            .verify_resource_batch_mutation_admission(&mutation)
+            .is_err());
+        assert!(runtime
+            .verify_document_mutation_admission(&mutation)
+            .is_ok());
+    }
 
     #[test]
     fn server_runtime_rejects_host_workspace_prepare() {

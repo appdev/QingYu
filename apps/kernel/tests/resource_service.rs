@@ -19,9 +19,10 @@ use qingyu_kernel::{
     api::{build_router, TransportPolicy},
     config::KernelConfig,
     contract::{
+        CreateWorkspaceResourceBatchItem, CreateWorkspaceResourceBatchRequest,
         CreateWorkspaceResourceQuery, DocumentContents, DocumentId, DocumentKind,
-        ListWorkspaceInventoryQuery, PageLimit, ResourceKind, ResourceName, UpdateDocumentRequest,
-        WorkspaceGeneration, WorkspaceRelativePath,
+        ListDocumentsQuery, ListWorkspaceInventoryQuery, PageLimit, ResourceBatchId, ResourceKind,
+        ResourceName, UpdateDocumentRequest, WorkspaceGeneration, WorkspaceRelativePath,
     },
     documents::{
         history::MemoryDocumentHistoryStore, service::CapabilityAtomicInstallPort,
@@ -50,6 +51,7 @@ use qingyu_kernel::{
 use serde_json::Value;
 use tempfile::tempdir;
 use tower::ServiceExt as _;
+use uuid::Uuid;
 
 static_assertions::assert_impl_all!(RetainedResource: Read, Send);
 static_assertions::assert_impl_all!(WorkspaceResourceService: Send, Sync);
@@ -287,6 +289,94 @@ impl Fixture {
             root,
         }
     }
+}
+
+async fn activate_resources_at(
+    root: &std::path::Path,
+    app_data: &std::path::Path,
+    cache: &std::path::Path,
+    workspace_store: Arc<MemoryWorkspaceStore>,
+) -> (
+    Arc<KernelRuntime>,
+    Arc<WorkspaceService>,
+    Arc<LiveIgnorePort>,
+) {
+    let paths = KernelPaths::desktop(root, app_data, cache).unwrap();
+    let managed = ManagedWorkspaceCollection::from_paths(&paths).unwrap();
+    let runtime = KernelRuntime::activate(
+        KernelConfig::generate().unwrap(),
+        paths,
+        KernelPorts::unavailable(),
+    )
+    .unwrap();
+    let workspace = Arc::new(
+        WorkspaceService::new(
+            &runtime,
+            workspace_store,
+            managed,
+            runtime.event_broker().clone(),
+            "Resources",
+        )
+        .await
+        .unwrap(),
+    );
+    let ignore = Arc::new(LiveIgnorePort {
+        captures: AtomicUsize::new(0),
+        global_rules: Mutex::new(String::new()),
+        replacement_after_capture: Mutex::new(None),
+    });
+    (runtime, workspace, ignore)
+}
+
+fn batch_state_directory(
+    app_data: &std::path::Path,
+    workspace: &qingyu_kernel::contract::WorkspaceDto,
+) -> PathBuf {
+    app_data
+        .join("resource-batches-v1")
+        .join(workspace.id.as_uuid().to_string())
+}
+
+fn batch_record_path(state: &std::path::Path, prefix: &str) -> PathBuf {
+    let mut matches = fs::read_dir(state)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with(prefix) && name.ends_with(".json"))
+        })
+        .collect::<Vec<_>>();
+    matches.sort();
+    assert_eq!(matches.len(), 1, "expected exactly one {prefix} record");
+    matches.pop().unwrap()
+}
+
+fn first_document_id(service: &WorkspaceResourceService) -> DocumentId {
+    service
+        .list_inventory(&WorkspaceRelativePath::default())
+        .unwrap()
+        .into_iter()
+        .find_map(|entry| match entry {
+            WorkspaceInventoryEntry::Document(entry) if entry.kind == DocumentKind::File => {
+                Some(entry.id)
+            }
+            _ => None,
+        })
+        .unwrap()
+}
+
+fn png_batch_items(names: &[&str]) -> Vec<CreateResourceBatchItem> {
+    names
+        .iter()
+        .map(|name| {
+            CreateResourceBatchItem::image(
+                ResourceName::parse(*name).unwrap(),
+                "image/png",
+                image_fixture("png"),
+            )
+        })
+        .collect()
 }
 
 #[test]
@@ -1523,7 +1613,7 @@ async fn resource_writer_settles_a_commit_unknown_publication_by_pinned_identity
 }
 
 #[tokio::test]
-async fn resource_batch_rolls_back_every_publication_when_a_later_install_fails() {
+async fn resource_batch_closes_the_runtime_when_a_prepared_publication_fails() {
     struct FailSecondInstall {
         calls: AtomicUsize,
     }
@@ -1559,8 +1649,9 @@ async fn resource_batch_rolls_back_every_publication_when_a_later_install_fails(
 
     let error = service
         .create_resource_batch(
+            ResourceBatchId::new(Uuid::new_v4()),
             &document_id,
-            workspace.generation,
+            workspace.generation.clone(),
             WorkspaceRelativePath::parse("assets").unwrap(),
             vec![
                 CreateResourceBatchItem::image(
@@ -1579,9 +1670,9 @@ async fn resource_batch_rolls_back_every_publication_when_a_later_install_fails(
         .unwrap_err();
 
     assert_eq!(error.kind(), ResourceServiceErrorKind::Unavailable);
-    assert!(!fixture.root.join("assets/one.png").exists());
+    assert!(fixture.root.join("assets/one.png").exists());
     assert!(!fixture.root.join("assets/two.png").exists());
-    assert!(!fixture.root.join("assets").exists());
+    assert!(fixture.runtime.active_workspace_snapshot().is_err());
 }
 
 #[tokio::test]
@@ -1607,6 +1698,7 @@ async fn resource_batch_preserves_request_order_and_reserves_collision_names() {
     let created = fixture
         .service
         .create_resource_batch(
+            ResourceBatchId::new(Uuid::new_v4()),
             &document_id,
             workspace.generation,
             WorkspaceRelativePath::parse("assets").unwrap(),
@@ -1636,6 +1728,879 @@ async fn resource_batch_preserves_request_order_and_reserves_collision_names() {
 }
 
 #[tokio::test]
+async fn resource_batch_replays_the_committed_outcome_for_the_same_batch_id() {
+    let fixture = Fixture::new().await;
+    fs::write(fixture.root.join("note.md"), b"# Note").unwrap();
+    let workspace = fixture._workspace.get_workspace().await.unwrap();
+    let document_id = fixture
+        .service
+        .list_inventory(&WorkspaceRelativePath::default())
+        .unwrap()
+        .into_iter()
+        .find_map(|entry| match entry {
+            WorkspaceInventoryEntry::Document(entry) if entry.kind == DocumentKind::File => {
+                Some(entry.id)
+            }
+            _ => None,
+        })
+        .unwrap();
+    let request = CreateWorkspaceResourceBatchRequest {
+        batch_id: ResourceBatchId::new(Uuid::from_u128(0x42)),
+        workspace_generation: workspace.generation,
+        folder: WorkspaceRelativePath::parse("assets").unwrap(),
+        items: vec![CreateWorkspaceResourceBatchItem {
+            name: ResourceName::parse("picture.png").unwrap(),
+            kind: ResourceKind::Image,
+            media_type: "image/png".to_string(),
+            body_base64: STANDARD.encode(image_fixture("png")),
+        }],
+    };
+
+    let first = fixture
+        .service
+        .create_workspace_resource_batch(document_id.clone(), request.clone())
+        .await
+        .unwrap();
+    let replay = fixture
+        .service
+        .create_workspace_resource_batch(document_id, request)
+        .await
+        .unwrap();
+
+    assert_eq!(replay.resources, first.resources);
+    assert_eq!(
+        fs::read_dir(fixture.root.join("assets")).unwrap().count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn resource_batch_rejects_reusing_a_batch_id_for_a_different_request() {
+    let fixture = Fixture::new().await;
+    fs::write(fixture.root.join("note.md"), b"# Note").unwrap();
+    let workspace = fixture._workspace.get_workspace().await.unwrap();
+    let document_id = first_document_id(&fixture.service);
+    let batch_id = ResourceBatchId::new(Uuid::from_u128(0x43));
+
+    fixture
+        .service
+        .create_resource_batch(
+            batch_id,
+            &document_id,
+            workspace.generation.clone(),
+            WorkspaceRelativePath::parse("assets").unwrap(),
+            png_batch_items(&["first.png"]),
+        )
+        .await
+        .unwrap();
+    let error = fixture
+        .service
+        .create_resource_batch(
+            batch_id,
+            &document_id,
+            workspace.generation,
+            WorkspaceRelativePath::parse("assets").unwrap(),
+            png_batch_items(&["different.png"]),
+        )
+        .await
+        .unwrap_err();
+
+    assert_eq!(error.kind(), ResourceServiceErrorKind::Conflict);
+    assert!(fixture.runtime.active_workspace_snapshot().is_ok());
+    assert_eq!(
+        fs::read_dir(fixture.root.join("assets")).unwrap().count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn resource_batch_oversized_journal_is_rejected_before_workspace_side_effects() {
+    let fixture = Fixture::new().await;
+    fs::write(fixture.root.join("note.md"), b"# Note").unwrap();
+    let workspace = fixture._workspace.get_workspace().await.unwrap();
+    let folder = WorkspaceRelativePath::parse(format!("new/{}end", "x/".repeat(8_000)))
+        .expect("contract permits a long relative path");
+    let items = (0..32)
+        .map(|index| {
+            CreateResourceBatchItem::image(
+                ResourceName::parse(format!("picture-{index}.png")).unwrap(),
+                "image/png",
+                image_fixture("png"),
+            )
+        })
+        .collect();
+
+    let error = fixture
+        .service
+        .create_resource_batch(
+            ResourceBatchId::new(Uuid::from_u128(0x432)),
+            &first_document_id(&fixture.service),
+            workspace.generation.clone(),
+            folder,
+            items,
+        )
+        .await
+        .unwrap_err();
+
+    assert_eq!(error.kind(), ResourceServiceErrorKind::TooLarge);
+    assert!(fixture.runtime.active_workspace_snapshot().is_ok());
+    assert!(!fixture.root.join("new").exists());
+    let app_data = fixture.root.parent().unwrap().join("app-data");
+    let state = batch_state_directory(&app_data, &workspace);
+    assert_eq!(fs::read_dir(state).unwrap().count(), 0);
+}
+
+#[tokio::test]
+async fn resource_batch_replay_rejects_a_malformed_standalone_receipt() {
+    let fixture = Fixture::new().await;
+    fs::write(fixture.root.join("note.md"), b"# Note").unwrap();
+    let workspace = fixture._workspace.get_workspace().await.unwrap();
+    let document_id = first_document_id(&fixture.service);
+    let batch_id = ResourceBatchId::new(Uuid::from_u128(0x431));
+    fixture
+        .service
+        .create_resource_batch(
+            batch_id,
+            &document_id,
+            workspace.generation.clone(),
+            WorkspaceRelativePath::parse("assets").unwrap(),
+            png_batch_items(&["picture.png"]),
+        )
+        .await
+        .unwrap();
+    let app_data = fixture.root.parent().unwrap().join("app-data");
+    let state = batch_state_directory(&app_data, &workspace);
+    let receipt = batch_record_path(&state, "resource-batch-receipt-v1-");
+    let mut value: Value = serde_json::from_slice(&fs::read(&receipt).unwrap()).unwrap();
+    value["unexpected"] = Value::Bool(true);
+    fs::write(receipt, serde_json::to_vec(&value).unwrap()).unwrap();
+
+    let error = fixture
+        .service
+        .create_resource_batch(
+            batch_id,
+            &document_id,
+            workspace.generation,
+            WorkspaceRelativePath::parse("assets").unwrap(),
+            png_batch_items(&["picture.png"]),
+        )
+        .await
+        .unwrap_err();
+
+    assert_eq!(error.kind(), ResourceServiceErrorKind::Unavailable);
+    assert!(fixture.runtime.active_workspace_snapshot().is_err());
+    assert!(fixture.root.join("assets/picture.png").exists());
+}
+
+#[tokio::test]
+async fn resource_batch_replays_a_durable_receipt_after_a_real_new_launch() {
+    let temporary = tempdir().unwrap();
+    let root = temporary.path().join("workspace");
+    let app_data = temporary.path().join("app-data");
+    let cache = temporary.path().join("cache");
+    for path in [&root, &app_data, &cache] {
+        fs::create_dir(path).unwrap();
+    }
+    fs::write(root.join("note.md"), b"# Note").unwrap();
+    let batch_id = ResourceBatchId::new(Uuid::from_u128(0x44));
+    let workspace_store = Arc::new(MemoryWorkspaceStore::default());
+
+    let (first_runtime, first_workspace, first_ignore) =
+        activate_resources_at(&root, &app_data, &cache, Arc::clone(&workspace_store)).await;
+    let first_service = WorkspaceResourceService::new(&first_runtime, first_ignore);
+    let first_snapshot = first_workspace.get_workspace().await.unwrap();
+    let first = first_service
+        .create_resource_batch(
+            batch_id,
+            &first_document_id(&first_service),
+            first_snapshot.generation.clone(),
+            WorkspaceRelativePath::parse("assets").unwrap(),
+            png_batch_items(&["picture.png"]),
+        )
+        .await
+        .unwrap();
+    let first_id = first[0].id.clone();
+    let first_path = first[0].path.clone();
+    drop(first_service);
+    drop(first_workspace);
+    drop(first_runtime);
+
+    let (second_runtime, second_workspace, second_ignore) =
+        activate_resources_at(&root, &app_data, &cache, workspace_store).await;
+    let second_service = WorkspaceResourceService::new(&second_runtime, second_ignore);
+    second_service.recover_pending().await.unwrap();
+    let second_snapshot = second_workspace.get_workspace().await.unwrap();
+    let replay = second_service
+        .create_resource_batch(
+            batch_id,
+            &first_document_id(&second_service),
+            second_snapshot.generation,
+            WorkspaceRelativePath::parse("assets").unwrap(),
+            png_batch_items(&["picture.png"]),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(replay[0].path, first_path);
+    assert_ne!(replay[0].id, first_id, "new launch must re-sign identities");
+    assert!(second_service
+        .open_resource(&first_id, ResourceKind::Image)
+        .is_err());
+    assert_eq!(fs::read_dir(root.join("assets")).unwrap().count(), 1);
+}
+
+#[tokio::test]
+async fn resource_batch_replay_closes_the_runtime_when_a_committed_target_is_altered() {
+    let fixture = Fixture::new().await;
+    fs::write(fixture.root.join("note.md"), b"# Note").unwrap();
+    let workspace = fixture._workspace.get_workspace().await.unwrap();
+    let document_id = first_document_id(&fixture.service);
+    let batch_id = ResourceBatchId::new(Uuid::from_u128(0x45));
+    fixture
+        .service
+        .create_resource_batch(
+            batch_id,
+            &document_id,
+            workspace.generation.clone(),
+            WorkspaceRelativePath::parse("assets").unwrap(),
+            png_batch_items(&["picture.png"]),
+        )
+        .await
+        .unwrap();
+    fs::write(fixture.root.join("assets/picture.png"), b"tampered").unwrap();
+
+    let error = fixture
+        .service
+        .create_resource_batch(
+            batch_id,
+            &document_id,
+            workspace.generation,
+            WorkspaceRelativePath::parse("assets").unwrap(),
+            png_batch_items(&["picture.png"]),
+        )
+        .await
+        .unwrap_err();
+
+    assert_eq!(error.kind(), ResourceServiceErrorKind::UnsafeTarget);
+    assert!(fixture.runtime.active_workspace_snapshot().is_err());
+    assert_eq!(
+        fs::read(fixture.root.join("assets/picture.png")).unwrap(),
+        b"tampered"
+    );
+}
+
+#[tokio::test]
+async fn resource_batch_replay_closes_the_runtime_when_a_committed_target_is_missing() {
+    let fixture = Fixture::new().await;
+    fs::write(fixture.root.join("note.md"), b"# Note").unwrap();
+    let workspace = fixture._workspace.get_workspace().await.unwrap();
+    let document_id = first_document_id(&fixture.service);
+    let batch_id = ResourceBatchId::new(Uuid::from_u128(0x46));
+    fixture
+        .service
+        .create_resource_batch(
+            batch_id,
+            &document_id,
+            workspace.generation.clone(),
+            WorkspaceRelativePath::parse("assets").unwrap(),
+            png_batch_items(&["picture.png"]),
+        )
+        .await
+        .unwrap();
+    fs::remove_file(fixture.root.join("assets/picture.png")).unwrap();
+
+    let error = fixture
+        .service
+        .create_resource_batch(
+            batch_id,
+            &document_id,
+            workspace.generation,
+            WorkspaceRelativePath::parse("assets").unwrap(),
+            png_batch_items(&["picture.png"]),
+        )
+        .await
+        .unwrap_err();
+
+    assert_eq!(error.kind(), ResourceServiceErrorKind::Unavailable);
+    assert!(fixture.runtime.active_workspace_snapshot().is_err());
+    assert!(!fixture.root.join("assets/picture.png").exists());
+}
+
+#[tokio::test]
+async fn resource_batch_restart_rolls_forward_a_prepared_partial_publication() {
+    struct FailSecondInstall {
+        calls: AtomicUsize,
+    }
+    impl AtomicInstallPort for FailSecondInstall {
+        fn install(&self, request: AtomicInstallRequest<'_>) -> Result<(), AtomicInstallPortError> {
+            if self.calls.fetch_add(1, Ordering::SeqCst) == 1 {
+                return Err(AtomicInstallPortError);
+            }
+            CapabilityAtomicInstallPort.install(request)
+        }
+    }
+
+    let temporary = tempdir().unwrap();
+    let root = temporary.path().join("workspace");
+    let app_data = temporary.path().join("app-data");
+    let cache = temporary.path().join("cache");
+    for path in [&root, &app_data, &cache] {
+        fs::create_dir(path).unwrap();
+    }
+    fs::write(root.join("note.md"), b"# Note").unwrap();
+    let batch_id = ResourceBatchId::new(Uuid::from_u128(0xfeed));
+    let workspace_store = Arc::new(MemoryWorkspaceStore::default());
+
+    let (first_runtime, first_workspace, first_ignore) =
+        activate_resources_at(&root, &app_data, &cache, Arc::clone(&workspace_store)).await;
+    let first_service = WorkspaceResourceService::open_with_atomic_install(
+        &first_runtime,
+        first_ignore,
+        Arc::new(FailSecondInstall {
+            calls: AtomicUsize::new(0),
+        }),
+    )
+    .unwrap();
+    let first_snapshot = first_workspace.get_workspace().await.unwrap();
+    let first_document = first_service
+        .list_inventory(&WorkspaceRelativePath::default())
+        .unwrap()
+        .into_iter()
+        .find_map(|entry| match entry {
+            WorkspaceInventoryEntry::Document(entry) if entry.kind == DocumentKind::File => {
+                Some(entry.id)
+            }
+            _ => None,
+        })
+        .unwrap();
+    let error = first_service
+        .create_resource_batch(
+            batch_id,
+            &first_document,
+            first_snapshot.generation,
+            WorkspaceRelativePath::parse("assets").unwrap(),
+            vec![
+                CreateResourceBatchItem::image(
+                    ResourceName::parse("one.png").unwrap(),
+                    "image/png",
+                    image_fixture("png"),
+                ),
+                CreateResourceBatchItem::image(
+                    ResourceName::parse("two.png").unwrap(),
+                    "image/png",
+                    image_fixture("png"),
+                ),
+            ],
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.kind(), ResourceServiceErrorKind::Unavailable);
+    assert!(root.join("assets/one.png").exists());
+    assert!(!root.join("assets/two.png").exists());
+    drop(first_service);
+    drop(first_workspace);
+    drop(first_runtime);
+
+    let (second_runtime, second_workspace, second_ignore) =
+        activate_resources_at(&root, &app_data, &cache, workspace_store).await;
+    let second_service = WorkspaceResourceService::new(&second_runtime, second_ignore);
+    second_service.recover_pending().await.unwrap();
+    assert_eq!(
+        fs::read(root.join("assets/one.png")).unwrap(),
+        image_fixture("png")
+    );
+    assert_eq!(
+        fs::read(root.join("assets/two.png")).unwrap(),
+        image_fixture("png")
+    );
+    let second_snapshot = second_workspace.get_workspace().await.unwrap();
+    let second_document = second_service
+        .list_inventory(&WorkspaceRelativePath::default())
+        .unwrap()
+        .into_iter()
+        .find_map(|entry| match entry {
+            WorkspaceInventoryEntry::Document(entry) if entry.kind == DocumentKind::File => {
+                Some(entry.id)
+            }
+            _ => None,
+        })
+        .unwrap();
+    let replay = second_service
+        .create_resource_batch(
+            batch_id,
+            &second_document,
+            second_snapshot.generation,
+            WorkspaceRelativePath::parse("assets").unwrap(),
+            vec![
+                CreateResourceBatchItem::image(
+                    ResourceName::parse("one.png").unwrap(),
+                    "image/png",
+                    image_fixture("png"),
+                ),
+                CreateResourceBatchItem::image(
+                    ResourceName::parse("two.png").unwrap(),
+                    "image/png",
+                    image_fixture("png"),
+                ),
+            ],
+        )
+        .await
+        .unwrap();
+    assert_eq!(replay.len(), 2);
+    assert_eq!(fs::read_dir(root.join("assets")).unwrap().count(), 2);
+}
+
+#[tokio::test]
+async fn resource_batch_restart_rolls_forward_from_each_rename_boundary() {
+    struct FailAtInstall {
+        fail_at: usize,
+        calls: AtomicUsize,
+    }
+    impl AtomicInstallPort for FailAtInstall {
+        fn install(&self, request: AtomicInstallRequest<'_>) -> Result<(), AtomicInstallPortError> {
+            if self.calls.fetch_add(1, Ordering::SeqCst) == self.fail_at {
+                return Err(AtomicInstallPortError);
+            }
+            CapabilityAtomicInstallPort.install(request)
+        }
+    }
+
+    for fail_at in 0..3 {
+        let temporary = tempdir().unwrap();
+        let root = temporary.path().join("workspace");
+        let app_data = temporary.path().join("app-data");
+        let cache = temporary.path().join("cache");
+        for path in [&root, &app_data, &cache] {
+            fs::create_dir(path).unwrap();
+        }
+        fs::write(root.join("note.md"), b"# Note").unwrap();
+        let workspace_store = Arc::new(MemoryWorkspaceStore::default());
+        let (runtime, workspace, ignore) =
+            activate_resources_at(&root, &app_data, &cache, Arc::clone(&workspace_store)).await;
+        let service = WorkspaceResourceService::open_with_atomic_install(
+            &runtime,
+            ignore,
+            Arc::new(FailAtInstall {
+                fail_at,
+                calls: AtomicUsize::new(0),
+            }),
+        )
+        .unwrap();
+        let snapshot = workspace.get_workspace().await.unwrap();
+        let error = service
+            .create_resource_batch(
+                ResourceBatchId::new(Uuid::from_u128(0xfeed_100 + fail_at as u128)),
+                &first_document_id(&service),
+                snapshot.generation,
+                WorkspaceRelativePath::parse("assets").unwrap(),
+                png_batch_items(&["one.png", "two.png", "three.png"]),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind(), ResourceServiceErrorKind::Unavailable);
+        drop(service);
+        drop(workspace);
+        drop(runtime);
+
+        let (runtime, _workspace, ignore) =
+            activate_resources_at(&root, &app_data, &cache, workspace_store).await;
+        let service = WorkspaceResourceService::new(&runtime, ignore);
+        service.recover_pending().await.unwrap();
+
+        for name in ["one.png", "two.png", "three.png"] {
+            assert_eq!(
+                fs::read(root.join("assets").join(name)).unwrap(),
+                image_fixture("png"),
+                "fail_at={fail_at}, name={name}"
+            );
+        }
+        assert!(fs::read_dir(root.join("assets")).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".qingyu-resource-batch-")
+        }));
+        assert!(runtime.active_workspace_snapshot().is_ok());
+    }
+}
+
+#[tokio::test]
+async fn resource_batch_restart_aborts_preparing_and_removes_its_exact_stage() {
+    let temporary = tempdir().unwrap();
+    let root = temporary.path().join("workspace");
+    let app_data = temporary.path().join("app-data");
+    let cache = temporary.path().join("cache");
+    for path in [&root, &app_data, &cache] {
+        fs::create_dir(path).unwrap();
+    }
+    fs::write(root.join("note.md"), b"# Note").unwrap();
+    let workspace_store = Arc::new(MemoryWorkspaceStore::default());
+    let (runtime, workspace, ignore) =
+        activate_resources_at(&root, &app_data, &cache, Arc::clone(&workspace_store)).await;
+    let service = WorkspaceResourceService::new(&runtime, ignore);
+    let snapshot = workspace.get_workspace().await.unwrap();
+    service
+        .create_resource_batch(
+            ResourceBatchId::new(Uuid::from_u128(0x47)),
+            &first_document_id(&service),
+            snapshot.generation.clone(),
+            WorkspaceRelativePath::parse("assets").unwrap(),
+            png_batch_items(&["picture.png"]),
+        )
+        .await
+        .unwrap();
+    let state = batch_state_directory(&app_data, &snapshot);
+    let receipt = batch_record_path(&state, "resource-batch-receipt-v1-");
+    let mut record: Value = serde_json::from_slice(&fs::read(&receipt).unwrap()).unwrap();
+    record["phase"] = Value::String("preparing".to_string());
+    let stage_name = record["items"][0]["stageName"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let pending = receipt.with_file_name(
+        receipt
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .replace("resource-batch-receipt-v1-", "resource-batch-pending-v1-"),
+    );
+    fs::rename(&receipt, &pending).unwrap();
+    fs::write(&pending, serde_json::to_vec(&record).unwrap()).unwrap();
+    fs::rename(
+        root.join("assets/picture.png"),
+        root.join("assets").join(&stage_name),
+    )
+    .unwrap();
+    drop(service);
+    drop(workspace);
+    drop(runtime);
+
+    let (runtime, _workspace, ignore) =
+        activate_resources_at(&root, &app_data, &cache, workspace_store).await;
+    let service = WorkspaceResourceService::new(&runtime, ignore);
+    service.recover_pending().await.unwrap();
+
+    assert!(!root.join("assets").join(stage_name).exists());
+    assert!(!root.join("assets/picture.png").exists());
+    assert!(
+        !pending.exists(),
+        "durable Aborted marker must be garbage-collected"
+    );
+    assert!(runtime.active_workspace_snapshot().is_ok());
+}
+
+#[tokio::test]
+async fn resource_batch_restart_finalizes_aborted_without_touching_a_conflicting_target() {
+    let temporary = tempdir().unwrap();
+    let root = temporary.path().join("workspace");
+    let app_data = temporary.path().join("app-data");
+    let cache = temporary.path().join("cache");
+    for path in [&root, &app_data, &cache] {
+        fs::create_dir(path).unwrap();
+    }
+    fs::write(root.join("note.md"), b"# Note").unwrap();
+    let workspace_store = Arc::new(MemoryWorkspaceStore::default());
+    let (runtime, workspace, ignore) =
+        activate_resources_at(&root, &app_data, &cache, Arc::clone(&workspace_store)).await;
+    let service = WorkspaceResourceService::new(&runtime, ignore);
+    let snapshot = workspace.get_workspace().await.unwrap();
+    service
+        .create_resource_batch(
+            ResourceBatchId::new(Uuid::from_u128(0x471)),
+            &first_document_id(&service),
+            snapshot.generation.clone(),
+            WorkspaceRelativePath::parse("assets").unwrap(),
+            png_batch_items(&["picture.png"]),
+        )
+        .await
+        .unwrap();
+    let state = batch_state_directory(&app_data, &snapshot);
+    let receipt = batch_record_path(&state, "resource-batch-receipt-v1-");
+    let mut record: Value = serde_json::from_slice(&fs::read(&receipt).unwrap()).unwrap();
+    record["phase"] = Value::String("aborted".to_string());
+    let pending = receipt.with_file_name(
+        receipt
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .replace("resource-batch-receipt-v1-", "resource-batch-pending-v1-"),
+    );
+    fs::remove_file(receipt).unwrap();
+    fs::write(&pending, serde_json::to_vec(&record).unwrap()).unwrap();
+    fs::write(root.join("assets/picture.png"), b"external-target").unwrap();
+    drop(service);
+    drop(workspace);
+    drop(runtime);
+
+    let (runtime, _workspace, ignore) =
+        activate_resources_at(&root, &app_data, &cache, workspace_store).await;
+    let service = WorkspaceResourceService::new(&runtime, ignore);
+    service.recover_pending().await.unwrap();
+
+    assert_eq!(
+        fs::read(root.join("assets/picture.png")).unwrap(),
+        b"external-target"
+    );
+    assert!(!pending.exists());
+    assert!(runtime.active_workspace_snapshot().is_ok());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn resource_batch_preparing_cleanup_failure_closes_the_new_launch() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let temporary = tempdir().unwrap();
+    let root = temporary.path().join("workspace");
+    let app_data = temporary.path().join("app-data");
+    let cache = temporary.path().join("cache");
+    for path in [&root, &app_data, &cache] {
+        fs::create_dir(path).unwrap();
+    }
+    fs::write(root.join("note.md"), b"# Note").unwrap();
+    let workspace_store = Arc::new(MemoryWorkspaceStore::default());
+    let (runtime, workspace, ignore) =
+        activate_resources_at(&root, &app_data, &cache, Arc::clone(&workspace_store)).await;
+    let service = WorkspaceResourceService::new(&runtime, ignore);
+    let snapshot = workspace.get_workspace().await.unwrap();
+    service
+        .create_resource_batch(
+            ResourceBatchId::new(Uuid::from_u128(0x48)),
+            &first_document_id(&service),
+            snapshot.generation.clone(),
+            WorkspaceRelativePath::parse("assets").unwrap(),
+            png_batch_items(&["picture.png"]),
+        )
+        .await
+        .unwrap();
+    let state = batch_state_directory(&app_data, &snapshot);
+    let receipt = batch_record_path(&state, "resource-batch-receipt-v1-");
+    let mut record: Value = serde_json::from_slice(&fs::read(&receipt).unwrap()).unwrap();
+    record["phase"] = Value::String("preparing".to_string());
+    let stage_name = record["items"][0]["stageName"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let pending = receipt.with_file_name(
+        receipt
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .replace("resource-batch-receipt-v1-", "resource-batch-pending-v1-"),
+    );
+    fs::rename(&receipt, &pending).unwrap();
+    fs::write(&pending, serde_json::to_vec(&record).unwrap()).unwrap();
+    fs::rename(
+        root.join("assets/picture.png"),
+        root.join("assets").join(&stage_name),
+    )
+    .unwrap();
+    let mut read_only = fs::metadata(root.join("assets")).unwrap().permissions();
+    read_only.set_mode(0o500);
+    fs::set_permissions(root.join("assets"), read_only).unwrap();
+    drop(service);
+    drop(workspace);
+    drop(runtime);
+
+    let (runtime, _workspace, ignore) =
+        activate_resources_at(&root, &app_data, &cache, workspace_store).await;
+    let service = WorkspaceResourceService::new(&runtime, ignore);
+    let result = service.recover_pending().await;
+    let mut restored = fs::metadata(root.join("assets")).unwrap().permissions();
+    restored.set_mode(0o700);
+    fs::set_permissions(root.join("assets"), restored).unwrap();
+
+    assert_eq!(
+        result.unwrap_err().kind(),
+        ResourceServiceErrorKind::Unavailable
+    );
+    assert!(root.join("assets").join(stage_name).exists());
+    assert!(runtime.active_workspace_snapshot().is_err());
+}
+
+#[tokio::test]
+async fn resource_batch_startup_rejects_malformed_or_misaddressed_records() {
+    for scenario in [
+        "unknown-field",
+        "oversized",
+        "filename-id",
+        "generation",
+        "multiple",
+    ] {
+        let temporary = tempdir().unwrap();
+        let root = temporary.path().join("workspace");
+        let app_data = temporary.path().join("app-data");
+        let cache = temporary.path().join("cache");
+        for path in [&root, &app_data, &cache] {
+            fs::create_dir(path).unwrap();
+        }
+        fs::write(root.join("note.md"), b"# Note").unwrap();
+        let workspace_store = Arc::new(MemoryWorkspaceStore::default());
+        let (runtime, workspace, ignore) =
+            activate_resources_at(&root, &app_data, &cache, Arc::clone(&workspace_store)).await;
+        let service = WorkspaceResourceService::new(&runtime, ignore);
+        let snapshot = workspace.get_workspace().await.unwrap();
+        service
+            .create_resource_batch(
+                ResourceBatchId::new(Uuid::from_u128(0x50)),
+                &first_document_id(&service),
+                snapshot.generation.clone(),
+                WorkspaceRelativePath::parse("assets").unwrap(),
+                png_batch_items(&["picture.png"]),
+            )
+            .await
+            .unwrap();
+        let state = batch_state_directory(&app_data, &snapshot);
+        let receipt = batch_record_path(&state, "resource-batch-receipt-v1-");
+        let pending = receipt.with_file_name(
+            receipt
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .replace("resource-batch-receipt-v1-", "resource-batch-pending-v1-"),
+        );
+        let mut value: Value = serde_json::from_slice(&fs::read(&receipt).unwrap()).unwrap();
+        value["phase"] = Value::String("prepared".to_string());
+        fs::remove_file(&receipt).unwrap();
+        fs::write(&pending, serde_json::to_vec(&value).unwrap()).unwrap();
+        match scenario {
+            "unknown-field" => {
+                value["unexpected"] = Value::Bool(true);
+                fs::write(&pending, serde_json::to_vec(&value).unwrap()).unwrap();
+            }
+            "oversized" => fs::write(&pending, vec![b'x'; 128 * 1024 + 1]).unwrap(),
+            "filename-id" => {
+                fs::rename(
+                    &pending,
+                    state.join(format!(
+                        "resource-batch-pending-v1-{}.json",
+                        Uuid::from_u128(0x51)
+                    )),
+                )
+                .unwrap();
+            }
+            "generation" => {
+                value["workspaceGeneration"] = Value::String("tampered-generation".to_string());
+                fs::write(&pending, serde_json::to_vec(&value).unwrap()).unwrap();
+            }
+            "multiple" => {
+                let second_id = Uuid::from_u128(0x53);
+                value["batchId"] = Value::String(second_id.to_string());
+                fs::write(
+                    state.join(format!("resource-batch-pending-v1-{second_id}.json")),
+                    serde_json::to_vec(&value).unwrap(),
+                )
+                .unwrap();
+            }
+            _ => unreachable!(),
+        }
+        drop(service);
+        drop(workspace);
+        drop(runtime);
+
+        let (runtime, _workspace, ignore) =
+            activate_resources_at(&root, &app_data, &cache, workspace_store).await;
+        let service = WorkspaceResourceService::new(&runtime, ignore);
+        let error = service.recover_pending().await.unwrap_err();
+
+        assert_eq!(
+            error.kind(),
+            ResourceServiceErrorKind::Unavailable,
+            "{scenario}"
+        );
+        assert!(runtime.active_workspace_snapshot().is_err(), "{scenario}");
+    }
+}
+
+#[tokio::test]
+async fn resource_batch_startup_rejects_a_tampered_or_nonregular_prepared_stage() {
+    struct FailSecondInstall {
+        calls: AtomicUsize,
+    }
+    impl AtomicInstallPort for FailSecondInstall {
+        fn install(&self, request: AtomicInstallRequest<'_>) -> Result<(), AtomicInstallPortError> {
+            if self.calls.fetch_add(1, Ordering::SeqCst) == 1 {
+                return Err(AtomicInstallPortError);
+            }
+            CapabilityAtomicInstallPort.install(request)
+        }
+    }
+
+    for scenario in ["hash", "nonregular"] {
+        let temporary = tempdir().unwrap();
+        let root = temporary.path().join("workspace");
+        let app_data = temporary.path().join("app-data");
+        let cache = temporary.path().join("cache");
+        for path in [&root, &app_data, &cache] {
+            fs::create_dir(path).unwrap();
+        }
+        fs::write(root.join("note.md"), b"# Note").unwrap();
+        let workspace_store = Arc::new(MemoryWorkspaceStore::default());
+        let (runtime, workspace, ignore) =
+            activate_resources_at(&root, &app_data, &cache, Arc::clone(&workspace_store)).await;
+        let service = WorkspaceResourceService::open_with_atomic_install(
+            &runtime,
+            ignore,
+            Arc::new(FailSecondInstall {
+                calls: AtomicUsize::new(0),
+            }),
+        )
+        .unwrap();
+        let snapshot = workspace.get_workspace().await.unwrap();
+        let error = service
+            .create_resource_batch(
+                ResourceBatchId::new(Uuid::from_u128(0x52)),
+                &first_document_id(&service),
+                snapshot.generation,
+                WorkspaceRelativePath::parse("assets").unwrap(),
+                png_batch_items(&["one.png", "two.png"]),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind(), ResourceServiceErrorKind::Unavailable);
+        let stage = fs::read_dir(root.join("assets"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| {
+                        name.starts_with(".qingyu-resource-batch-") && name.ends_with(".tmp")
+                    })
+            })
+            .unwrap();
+        match scenario {
+            "hash" => fs::write(&stage, b"tampered").unwrap(),
+            "nonregular" => {
+                fs::remove_file(&stage).unwrap();
+                fs::create_dir(&stage).unwrap();
+            }
+            _ => unreachable!(),
+        }
+        drop(service);
+        drop(workspace);
+        drop(runtime);
+
+        let (runtime, _workspace, ignore) =
+            activate_resources_at(&root, &app_data, &cache, workspace_store).await;
+        let service = WorkspaceResourceService::new(&runtime, ignore);
+        let error = service.recover_pending().await.unwrap_err();
+
+        assert!(matches!(
+            error.kind(),
+            ResourceServiceErrorKind::UnsafeTarget | ResourceServiceErrorKind::Unavailable
+        ));
+        assert!(stage.exists(), "{scenario}");
+        assert!(runtime.active_workspace_snapshot().is_err(), "{scenario}");
+    }
+}
+
+#[tokio::test]
 async fn resource_batch_settles_each_commit_unknown_install() {
     let fixture = Fixture::new().await;
     fs::write(fixture.root.join("note.md"), b"# Note").unwrap();
@@ -1658,6 +2623,7 @@ async fn resource_batch_settles_each_commit_unknown_install() {
 
     let created = service
         .create_resource_batch(
+            ResourceBatchId::new(Uuid::new_v4()),
             &document_id,
             workspace.generation,
             WorkspaceRelativePath::parse("assets").unwrap(),
@@ -1731,10 +2697,16 @@ async fn resource_batch_hides_intermediate_publication_from_inventory_readers() 
         fixture.ignore.clone(),
         pause.clone(),
     );
+    let documents = Arc::new(WorkspaceDocumentService::new(
+        &fixture.runtime,
+        Arc::new(UnusedDeletionPort),
+        Arc::new(MemoryDocumentHistoryStore::default()),
+    ));
     let writer_service = service.clone();
     let writing = tokio::spawn(async move {
         writer_service
             .create_resource_batch(
+                ResourceBatchId::new(Uuid::new_v4()),
                 &document_id,
                 workspace.generation,
                 WorkspaceRelativePath::parse("assets").unwrap(),
@@ -1771,6 +2743,25 @@ async fn resource_batch_hides_intermediate_publication_from_inventory_readers() 
             .unwrap();
     });
     assert!(receiver.recv_timeout(Duration::from_millis(200)).is_err());
+    let (document_sender, document_receiver) = mpsc::channel();
+    let document_reader = thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        document_sender
+            .send(
+                runtime.block_on(documents.list_documents(ListDocumentsQuery {
+                    cursor: None,
+                    limit: None,
+                    parent: WorkspaceRelativePath::default(),
+                })),
+            )
+            .unwrap();
+    });
+    assert!(document_receiver
+        .recv_timeout(Duration::from_millis(200))
+        .is_err());
     {
         let mut state = pause.state.lock().unwrap();
         state.1 = true;
@@ -1782,7 +2773,13 @@ async fn resource_batch_hides_intermediate_publication_from_inventory_readers() 
         .unwrap()
         .unwrap();
     reader.join().unwrap();
+    let documents = document_receiver
+        .recv_timeout(Duration::from_secs(2))
+        .unwrap()
+        .unwrap();
+    document_reader.join().unwrap();
     assert_eq!(inventory.len(), 2);
+    assert_eq!(documents.items.len(), 2);
 }
 
 #[tokio::test]

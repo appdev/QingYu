@@ -231,6 +231,7 @@ pub enum ServerRuntimeCompositionError {
     FixedWorkspaceSnapshot,
     FixedDocumentStorage,
     FixedDocumentService,
+    FixedResourceRecovery,
     FixedServiceInstall,
     AuthenticationStore,
     AuthenticationSecurity,
@@ -249,6 +250,7 @@ impl ServerRuntimeCompositionError {
             FixedKernelCompositionError::WorkspaceSnapshot => Self::FixedWorkspaceSnapshot,
             FixedKernelCompositionError::DocumentStorage => Self::FixedDocumentStorage,
             FixedKernelCompositionError::DocumentService => Self::FixedDocumentService,
+            FixedKernelCompositionError::ResourceRecovery => Self::FixedResourceRecovery,
             FixedKernelCompositionError::ServiceInstall => Self::FixedServiceInstall,
         }
     }
@@ -267,6 +269,7 @@ impl ServerRuntimeCompositionError {
             Self::FixedWorkspaceSnapshot => "QK-SRV-COMPOSE-FIXED-WORKSPACE-SNAPSHOT",
             Self::FixedDocumentStorage => "QK-SRV-COMPOSE-FIXED-DOCUMENT-STORAGE",
             Self::FixedDocumentService => "QK-SRV-COMPOSE-FIXED-DOCUMENT-SERVICE",
+            Self::FixedResourceRecovery => "QK-SRV-COMPOSE-FIXED-RESOURCE-RECOVERY",
             Self::FixedServiceInstall => "QK-SRV-COMPOSE-FIXED-SERVICE-INSTALL",
             Self::AuthenticationStore => "QK-SRV-COMPOSE-AUTH-STORE",
             Self::AuthenticationSecurity => "QK-SRV-COMPOSE-AUTH-SECURITY",

@@ -8,6 +8,7 @@ mod error;
 mod href;
 mod policy;
 mod service;
+mod transaction;
 
 pub use error::{ResourceServiceError, ResourceServiceErrorKind};
 pub use href::resolve_markdown_href;

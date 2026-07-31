@@ -168,7 +168,12 @@ impl WorkspaceDocumentService {
         &self,
         query: ListDocumentsQuery,
     ) -> Result<crate::contract::DocumentPageDto, DocumentServiceError> {
-        let context = self.context()?;
+        let runtime = self.runtime()?;
+        let _publication = runtime
+            .workspace_publication_gate()
+            .read()
+            .map_err(|_| DocumentServiceError::unavailable())?;
+        let context = self.context_with_runtime(runtime.clone())?;
         let ignore = self.capture_ignore(&context)?;
         let directory = open_directory(&context.root, &query.parent)?;
         let mut entries = Vec::new();
