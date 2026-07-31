@@ -1,4 +1,4 @@
-import { act } from "react";
+import { act, startTransition, Suspense } from "react";
 import { createRoot, type Root } from "react-dom/client";
 
 import {
@@ -13,6 +13,8 @@ type AuthoritativeStartupStatus =
   | "unselected"
   | "invalid"
   | "unavailable"
+  | "resolving"
+  | "unsupported-version"
   | "starting"
   | "ready"
   | "failed";
@@ -171,6 +173,53 @@ describe("desktop startup workspace", () => {
     expect(container.querySelectorAll("button")).toHaveLength(1);
   });
 
+  it("keeps an authoritative resolving startup busy without actions", () => {
+    const retryWorkspace = vi.fn(async () => undefined);
+    const selectWorkspace = vi.fn(async () => null);
+    const startWorkspace = vi.fn(async () => undefined);
+    const container = renderWorkspace({
+      retryWorkspace,
+      selectWorkspace,
+      startWorkspace,
+      startupStatus: "resolving"
+    });
+
+    expect(container.querySelector("main")).toHaveAttribute(
+      "data-desktop-startup-workspace",
+      "resolving"
+    );
+    expect(container.querySelector("[role='status']")).toHaveTextContent(
+      "Resolving your workspace…"
+    );
+    expect(container.querySelector("button")).toBeNull();
+    expect(retryWorkspace).not.toHaveBeenCalled();
+    expect(selectWorkspace).not.toHaveBeenCalled();
+    expect(startWorkspace).not.toHaveBeenCalled();
+  });
+
+  it("maps an unsupported Kernel version to an actionless upgrade requirement", () => {
+    const retryWorkspace = vi.fn(async () => undefined);
+    const selectWorkspace = vi.fn(async () => null);
+    const startWorkspace = vi.fn(async () => undefined);
+    const container = renderWorkspace({
+      retryWorkspace,
+      selectWorkspace,
+      startWorkspace,
+      startupStatus: "unsupported-version"
+    });
+
+    expect(container.querySelector("main")).toHaveAttribute(
+      "data-desktop-startup-workspace",
+      "upgrade-required"
+    );
+    expect(container.querySelector("h1")).toHaveTextContent("Update QingYu to continue");
+    expect(container.querySelector("button")).toBeNull();
+    expect(container.querySelector("[role='status']")).toBeNull();
+    expect(retryWorkspace).not.toHaveBeenCalled();
+    expect(selectWorkspace).not.toHaveBeenCalled();
+    expect(startWorkspace).not.toHaveBeenCalled();
+  });
+
   it("rejects direct selection while an authoritative failure requires retry", async () => {
     const selectWorkspace = vi.fn(async () => null);
     const controller = createDesktopStartupWorkspaceController({
@@ -274,27 +323,31 @@ describe("desktop startup workspace", () => {
     expect(container.querySelector("button")).toBeNull();
   });
 
-  it("shows a safe failed shell when the host rejects workspace startup", async () => {
-    const container = renderWorkspace({
-      selectWorkspace: vi.fn(async () => "/Users/example/Notes"),
-      startWorkspace: vi.fn(async () => {
-        throw new Error("sensitive native startup detail");
-      })
-    });
+  it.each(["unselected", "invalid"] as const)(
+    "allows selection again when startup rejects before %s is persisted",
+    async (startupStatus) => {
+      const container = renderWorkspace({
+        selectWorkspace: vi.fn(async () => "/Users/example/Notes"),
+        startWorkspace: vi.fn(async () => {
+          throw new Error("sensitive native startup detail");
+        }),
+        startupStatus
+      });
 
-    await act(async () => buttonNamed(container, "Choose directory").click());
+      await act(async () => buttonNamed(container, "Choose directory").click());
 
-    expect(container.querySelector("main")).toHaveAttribute(
-      "data-desktop-startup-workspace",
-      "failed"
-    );
-    expect(container.querySelector("[role='alert']")).toHaveTextContent(
-      "The native Kernel could not start for this workspace."
-    );
-    expect(container).not.toHaveTextContent("sensitive native startup detail");
-    expect(buttonNamed(container, "Retry")).toBeEnabled();
-    expect(container.querySelectorAll("button")).toHaveLength(1);
-  });
+      expect(container.querySelector("main")).toHaveAttribute(
+        "data-desktop-startup-workspace",
+        "failed"
+      );
+      expect(container.querySelector("[role='alert']")).toHaveTextContent(
+        "The directory selector could not open."
+      );
+      expect(container).not.toHaveTextContent("sensitive native startup detail");
+      expect(buttonNamed(container, "Choose directory")).toBeEnabled();
+      expect(container.querySelectorAll("button")).toHaveLength(1);
+    }
+  );
 
   it("offers selection again without a dead retry after the selector rejects", async () => {
     const container = renderWorkspace({
@@ -315,7 +368,7 @@ describe("desktop startup workspace", () => {
     expect(buttonNamed(container, "Choose directory")).toBeEnabled();
   });
 
-  it("keeps selection state and uses current callbacks after a callback-only rerender", async () => {
+  it("keeps selection state and uses current callbacks after a committed callback-only rerender", async () => {
     const selection = deferred<string | null>();
     const initialStartup = vi.fn(async () => undefined);
     const currentSelection = vi.fn(async () => null);
@@ -344,6 +397,89 @@ describe("desktop startup workspace", () => {
       "starting"
     );
   });
+
+  it("does not leak callbacks from an abandoned concurrent render", async () => {
+    const selection = deferred<string | null>();
+    const committedStartup = vi.fn(async () => undefined);
+    const abandonedStartup = vi.fn(async () => undefined);
+    const neverCommitted = new Promise<never>(() => undefined);
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    mountedRoots.push({ container, root });
+
+    act(() => root.render(
+      <Suspense fallback={<p>Waiting</p>}>
+        <DesktopStartupWorkspace
+          retryWorkspace={vi.fn(async () => undefined)}
+          selectWorkspace={vi.fn(() => selection.promise)}
+          startWorkspace={committedStartup}
+          startupStatus="unselected"
+        />
+      </Suspense>
+    ));
+    act(() => buttonNamed(container, "Choose directory").click());
+    act(() => {
+      startTransition(() => root.render(
+        <Suspense fallback={<p>Waiting</p>}>
+          <DesktopStartupWorkspace
+            retryWorkspace={vi.fn(async () => undefined)}
+            selectWorkspace={vi.fn(async () => null)}
+            startWorkspace={abandonedStartup}
+            startupStatus="unselected"
+          />
+          <SuspendForever pending={neverCommitted} />
+        </Suspense>
+      ));
+    });
+
+    await act(async () => selection.resolve("/Users/example/Notes"));
+
+    expect(committedStartup).toHaveBeenCalledWith("/Users/example/Notes");
+    expect(abandonedStartup).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { shellStatus: "resolving", startupStatus: "resolving" },
+    { shellStatus: "starting", startupStatus: "starting" },
+    { shellStatus: "starting", startupStatus: "ready" },
+    { shellStatus: "upgrade-required", startupStatus: "unsupported-version" }
+  ] as const)(
+    "fails closed when a committed startup becomes $startupStatus",
+    async ({ shellStatus, startupStatus }) => {
+      const startup = deferred<unknown>();
+      const retryWorkspace = vi.fn(async () => undefined);
+      const selectWorkspace = vi.fn(async () => "/Users/example/Notes");
+      const startWorkspace = vi.fn(() => startup.promise);
+      const mounted = mountWorkspace({
+        retryWorkspace,
+        selectWorkspace,
+        startWorkspace,
+        startupStatus: "unselected"
+      });
+
+      await act(async () => buttonNamed(mounted.container, "Choose directory").click());
+      expect(startWorkspace).toHaveBeenCalledWith("/Users/example/Notes");
+      mounted.render({
+        retryWorkspace,
+        selectWorkspace,
+        startWorkspace,
+        startupStatus
+      });
+      await act(async () => {
+        startup.reject(new Error("sensitive stale detail"));
+        await Promise.resolve();
+      });
+
+      expect(mounted.container.querySelector("main")).toHaveAttribute(
+        "data-desktop-startup-workspace",
+        shellStatus
+      );
+      expect(mounted.container.querySelector("button")).toBeNull();
+      expect(mounted.container).not.toHaveTextContent("sensitive stale detail");
+      expect(retryWorkspace).not.toHaveBeenCalled();
+    }
+  );
 
   it("ignores a selection result superseded by an authoritative status", async () => {
     const selection = deferred<string | null>();
@@ -472,9 +608,15 @@ function buttonNamed(container: HTMLElement, name: string) {
 }
 
 function deferred<T>() {
+  let reject!: (reason?: unknown) => unknown;
   let resolve!: (value: T) => unknown;
-  const promise = new Promise<T>((promiseResolve) => {
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    reject = promiseReject;
     resolve = promiseResolve;
   });
-  return { promise, resolve };
+  return { promise, reject, resolve };
+}
+
+function SuspendForever({ pending }: { pending: Promise<never> }): never {
+  throw pending;
 }

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useSyncExternalStore } from "react";
+import { useLayoutEffect, useRef, useSyncExternalStore } from "react";
 
 export interface DesktopStartupWorkspaceProps {
   readonly retryWorkspace: () => Promise<unknown>;
@@ -11,6 +11,8 @@ export type DesktopStartupWorkspaceAuthoritativeStatus =
   | "unselected"
   | "invalid"
   | "unavailable"
+  | "resolving"
+  | "unsupported-version"
   | "starting"
   | "ready"
   | "failed";
@@ -18,6 +20,8 @@ export type DesktopStartupWorkspaceAuthoritativeStatus =
 export type DesktopStartupWorkspaceState =
   | { readonly status: "unselected" }
   | { readonly status: "selecting" }
+  | { readonly status: "resolving" }
+  | { readonly status: "upgrade-required" }
   | {
       readonly status: "starting" | "retrying";
       readonly workspacePath: string | null;
@@ -98,7 +102,7 @@ export function createDesktopStartupWorkspaceController(
           await callbacks.startWorkspace(workspacePath);
         } catch {
           if (requestRevision === revision) {
-            publish({ failure: "startup", status: "failed", workspacePath });
+            publish(stateAfterStartupRequestFailure(startupStatus));
           }
         }
         return undefined;
@@ -191,7 +195,18 @@ function stateFromAuthoritativeStatus(
   if (status === "failed" || status === "unavailable") {
     return { failure: "startup", status: "failed", workspacePath: null };
   }
+  if (status === "resolving") return { status: "resolving" };
+  if (status === "unsupported-version") return { status: "upgrade-required" };
   return { status: "starting", workspacePath: null };
+}
+
+function stateAfterStartupRequestFailure(
+  status: DesktopStartupWorkspaceAuthoritativeStatus
+): DesktopStartupWorkspaceState {
+  if (status === "unselected" || status === "invalid") {
+    return { failure: "selection", status: "failed", workspacePath: null };
+  }
+  return stateFromAuthoritativeStatus(status);
 }
 
 export function DesktopStartupWorkspace(
@@ -202,21 +217,29 @@ export function DesktopStartupWorkspace(
     controllerRef.current = createDesktopStartupWorkspaceController(props);
   }
   const controller = controllerRef.current;
-  controller.updateOptions(props);
   const state = useSyncExternalStore(
     controller.subscribe,
     controller.getSnapshot,
     controller.getSnapshot
   );
-  useEffect(() => {
+  useLayoutEffect(() => {
+    controller.updateOptions(props);
     controller.updateStartupStatus(props.startupStatus);
-  }, [controller, props.startupStatus]);
-  useEffect(() => () => controller.cancelPending(), [controller]);
+  }, [
+    controller,
+    props.retryWorkspace,
+    props.selectWorkspace,
+    props.startWorkspace,
+    props.startupStatus
+  ]);
+  useLayoutEffect(() => () => controller.cancelPending(), [controller]);
   const selecting = state.status === "selecting";
+  const resolving = state.status === "resolving";
   const starting = state.status === "starting";
   const retrying = state.status === "retrying";
-  const busy = starting || retrying;
+  const busy = resolving || starting || retrying;
   const failed = state.status === "failed";
+  const upgradeRequired = state.status === "upgrade-required";
   const retryable = failed && state.failure === "startup";
   const selectionFailed = failed && !retryable;
 
@@ -237,36 +260,44 @@ export function DesktopStartupWorkspace(
         <div className="welcome-screen__desktop-content">
           <div className="welcome-screen__task-copy">
             <h1 id="desktop-startup-title">
-              {busy
-                ? "Preparing QingYu"
-                : failed
-                  ? selectionFailed
-                    ? "QingYu could not choose a workspace"
-                    : "QingYu could not open this workspace"
-                  : "Choose your workspace"}
+              {upgradeRequired
+                ? "Update QingYu to continue"
+                : busy
+                  ? "Preparing QingYu"
+                  : failed
+                    ? selectionFailed
+                      ? "QingYu could not choose a workspace"
+                      : "QingYu could not open this workspace"
+                    : "Choose your workspace"}
             </h1>
-            <p role={failed ? "alert" : undefined}>
-              {busy
-                ? retrying
-                  ? "QingYu is retrying the native Kernel without changing your workspace."
-                  : "The native Kernel is opening your workspace."
-                : failed
-                  ? selectionFailed
-                    ? "The directory selector could not open. Try choosing the directory again."
-                    : "The native Kernel could not start for this workspace. Retry when you are ready."
-                  : "Select the local notebook directory QingYu should open."}
+            <p role={failed || upgradeRequired ? "alert" : undefined}>
+              {upgradeRequired
+                ? "This native Kernel version is not supported. Update QingYu before opening the workspace."
+                : busy
+                  ? resolving
+                    ? "QingYu is resolving the workspace saved by the native host."
+                    : retrying
+                      ? "QingYu is retrying the native Kernel without changing your workspace."
+                      : "The native Kernel is opening your workspace."
+                  : failed
+                    ? selectionFailed
+                      ? "The directory selector could not open. Try choosing the directory again."
+                      : "The native Kernel could not start for this workspace. Retry when you are ready."
+                    : "Select the local notebook directory QingYu should open."}
             </p>
           </div>
-          {busy ? (
+          {upgradeRequired ? null : busy ? (
             <div className="welcome-screen__status" role="status">
               <span
                 aria-hidden="true"
                 className="welcome-screen__spinner h-4 w-4 rounded-full border-2 border-(--border-strong) border-t-(--accent)"
               />
               <span>
-                {retrying
-                  ? "Retrying native Kernel startup…"
-                  : "Starting the native Kernel for your workspace…"}
+                {resolving
+                  ? "Resolving your workspace…"
+                  : retrying
+                    ? "Retrying native Kernel startup…"
+                    : "Starting the native Kernel for your workspace…"}
               </span>
             </div>
           ) : failed ? (
