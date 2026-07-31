@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use serde_json::Value;
 use tauri::{Manager, Runtime};
 
+#[cfg(not(mobile))]
 use crate::app_settings::KernelSettingsOwner;
 
 use super::{
@@ -34,8 +35,7 @@ pub(crate) fn initialize_catalog<R: Runtime>(
             .try_state::<std::sync::Arc<crate::desktop_kernel_runtime::DesktopKernelRuntimeState>>()
             .is_some()
         {
-            let seed_diagnostics = initialize_catalog_files(&catalog, 0)?;
-            return scan_with_diagnostics(&catalog, seed_diagnostics);
+            return initialize_catalog_without_legacy_settings(&catalog);
         }
         let settings_owner = app.state::<KernelSettingsOwner>();
         let settings = settings_owner
@@ -138,7 +138,21 @@ pub(crate) fn initialize_catalog<R: Runtime>(
 fn initialize_catalog_without_legacy_settings(
     catalog: &ThemeCatalog,
 ) -> Result<ThemeCatalogSnapshot, ThemeError> {
-    let seed_diagnostics = initialize_catalog_files(catalog, 0)?;
+    let owned_version = catalog.owned_catalog_version()?;
+    let seed_diagnostics = match owned_version {
+        Some(version) => initialize_catalog_files(catalog, version)?,
+        None => {
+            let existing = catalog.scan()?;
+            if existing.themes.is_empty() && existing.invalid_files.is_empty() {
+                initialize_catalog_files(catalog, 0)?
+            } else {
+                catalog.drake_seed_diagnostics()?
+            }
+        }
+    };
+    if owned_version.is_none_or(|version| version < CATALOG_VERSION) {
+        catalog.persist_owned_catalog_version(CATALOG_VERSION)?;
+    }
     scan_with_diagnostics(catalog, seed_diagnostics)
 }
 
@@ -322,7 +336,10 @@ mod tests {
         initialize_catalog_files, initialize_catalog_without_legacy_settings,
         rewrite_legacy_custom_selectors, should_migrate_legacy_preferences, CATALOG_VERSION,
     };
-    use crate::themes::catalog::ThemeCatalog;
+    use crate::themes::{
+        catalog::{ThemeCatalog, CATALOG_VERSION_MARKER_NAME},
+        ThemeErrorCode,
+    };
 
     #[test]
     fn fresh_catalog_installs_original_css_and_drake_without_frontend_builtins() {
@@ -360,6 +377,80 @@ mod tests {
             .iter()
             .any(|theme| theme.id == "drake-light"));
         assert!(snapshot.invalid_files.is_empty());
+    }
+
+    #[test]
+    fn catalog_owned_initialization_does_not_restore_a_deleted_seed_theme() {
+        let temp = tempdir().unwrap();
+        let catalog = ThemeCatalog::at(temp.path().join("themes"));
+        let initial = initialize_catalog_without_legacy_settings(&catalog).unwrap();
+        let nord = initial
+            .themes
+            .into_iter()
+            .find(|theme| theme.id == "nord")
+            .unwrap();
+        catalog.delete("nord", &nord.fingerprint).unwrap();
+
+        let restarted = initialize_catalog_without_legacy_settings(&catalog).unwrap();
+
+        assert!(!restarted.themes.iter().any(|theme| theme.id == "nord"));
+        assert_eq!(restarted.themes.len(), 19);
+    }
+
+    #[test]
+    fn catalog_owned_initialization_adopts_an_existing_catalog_without_reseeding() {
+        let temp = tempdir().unwrap();
+        let root = temp.path().join("themes");
+        let catalog = ThemeCatalog::at(root.clone());
+        catalog
+            .import_bytes(
+                b"/*\n@qingyu-theme\nid: user-light\nname: User Light\nappearance: light\npreview-background: #fff\npreview-panel: #eee\npreview-text: #222\npreview-accent: #f45\n*/\n:root { --user-owned: true; }\n",
+                "user-light.css",
+            )
+            .unwrap();
+
+        let snapshot = initialize_catalog_without_legacy_settings(&catalog).unwrap();
+
+        assert_eq!(snapshot.themes.len(), 1);
+        assert_eq!(snapshot.themes[0].id, "user-light");
+        assert!(snapshot.invalid_files.is_empty());
+        assert_eq!(
+            fs::read_to_string(root.join(CATALOG_VERSION_MARKER_NAME)).unwrap(),
+            format!("{CATALOG_VERSION}\n")
+        );
+    }
+
+    #[test]
+    fn malformed_catalog_owned_version_fails_closed_without_seeding() {
+        let temp = tempdir().unwrap();
+        let root = temp.path().join("themes");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join(CATALOG_VERSION_MARKER_NAME), b"not-a-version\n").unwrap();
+        let catalog = ThemeCatalog::at(root.clone());
+
+        let error = initialize_catalog_without_legacy_settings(&catalog).unwrap_err();
+
+        assert_eq!(error.code, ThemeErrorCode::InvalidMetadata);
+        assert!(!root.join("nord.css").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn linked_catalog_owned_version_fails_closed_without_seeding() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempdir().unwrap();
+        let root = temp.path().join("themes");
+        fs::create_dir_all(&root).unwrap();
+        let outside = temp.path().join("outside-version");
+        fs::write(&outside, format!("{CATALOG_VERSION}\n")).unwrap();
+        symlink(&outside, root.join(CATALOG_VERSION_MARKER_NAME)).unwrap();
+        let catalog = ThemeCatalog::at(root.clone());
+
+        let error = initialize_catalog_without_legacy_settings(&catalog).unwrap_err();
+
+        assert_eq!(error.code, ThemeErrorCode::UnsafePath);
+        assert!(!root.join("nord.css").exists());
     }
 
     #[test]

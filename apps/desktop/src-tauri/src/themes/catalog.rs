@@ -10,6 +10,12 @@ use std::{
 use cap_fs_ext::{DirExt, FollowSymlinks, MetadataExt, OpenOptionsFollowExt};
 use cap_std::fs::{Dir, OpenOptions as CapOpenOptions};
 
+use crate::storage_capability::{
+    create_private_replaceable_file_options, nonfollowing_read_options,
+    rename_retained_file_in_directory, sync_directory, unique_regular_file_identity,
+    UniqueRegularFileIdentity,
+};
+
 use super::{
     archive::{prepare_external_theme, PreparedThemeImport},
     manifest::is_reserved_theme_id,
@@ -24,6 +30,8 @@ use super::{
 static TEMP_FILE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 pub(crate) const ACTIVATION_LEASE_PARENT_NAME: &str = ".qingyu-theme-activation-leases";
+pub(crate) const CATALOG_VERSION_MARKER_NAME: &str = ".qingyu-theme-catalog-version";
+const MAX_CATALOG_VERSION_MARKER_BYTES: usize = 32;
 
 fn protected_theme_error() -> ThemeError {
     ThemeError::new(
@@ -459,6 +467,144 @@ impl ThemeCatalog {
             self.atomic_write(&target, bytes)?;
         }
         Ok(())
+    }
+
+    pub(crate) fn owned_catalog_version(&self) -> Result<Option<i64>, ThemeError> {
+        self.owned_catalog_version_with_identity()
+            .map(|state| state.map(|(version, _identity)| version))
+    }
+
+    pub(crate) fn persist_owned_catalog_version(&self, version: i64) -> Result<(), ThemeError> {
+        if version < 0 {
+            return Err(invalid_catalog_version_marker());
+        }
+        let existing = self.owned_catalog_version_with_identity()?;
+        if existing.is_some_and(|(current, _identity)| current == version) {
+            return Ok(());
+        }
+
+        let directory = self.catalog_directory()?;
+        let bytes = format!("{version}\n");
+        let (staged_name, mut staged) = (0..1024)
+            .find_map(|_| {
+                let name = unique_owned_name("tmp");
+                match directory.open_with(&name, &create_private_replaceable_file_options()) {
+                    Ok(file) => Some(Ok((name, file))),
+                    Err(error) if error.kind() == io::ErrorKind::AlreadyExists => None,
+                    Err(error) => Some(Err(io_error(error))),
+                }
+            })
+            .unwrap_or_else(|| {
+                Err(ThemeError::new(
+                    ThemeErrorCode::Io,
+                    "Could not reserve theme catalog state storage.",
+                ))
+            })?;
+        let staged_identity = (|| {
+            staged.write_all(bytes.as_bytes()).map_err(io_error)?;
+            staged.sync_all().map_err(io_error)?;
+            staged.metadata().map_err(io_error).and_then(|metadata| {
+                unique_regular_file_identity(&metadata).ok_or_else(unsafe_catalog_version_marker)
+            })
+        })();
+        let staged_identity = match staged_identity {
+            Ok(identity) => identity,
+            Err(error) => {
+                drop(staged);
+                let _cleanup = directory.remove_file(&staged_name);
+                return Err(error);
+            }
+        };
+
+        if let Err(error) = revalidate_catalog_directory(&directory) {
+            drop(staged);
+            let _cleanup = directory.remove_file(&staged_name);
+            return Err(error);
+        }
+        let retained = match directory.symlink_metadata(CATALOG_VERSION_MARKER_NAME) {
+            Ok(metadata) => unique_regular_file_identity(&metadata)
+                .ok_or_else(unsafe_catalog_version_marker)
+                .map(Some),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(io_error(error)),
+        };
+        let retained = match retained {
+            Ok(identity) => identity,
+            Err(error) => {
+                drop(staged);
+                let _cleanup = directory.remove_file(&staged_name);
+                return Err(error);
+            }
+        };
+        if retained != existing.map(|(_version, identity)| identity) {
+            drop(staged);
+            let _cleanup = directory.remove_file(&staged_name);
+            return Err(ThemeError::new(
+                ThemeErrorCode::Io,
+                "Theme catalog state changed during initialization.",
+            ));
+        }
+        if let Err(error) = rename_retained_file_in_directory(
+            &directory,
+            &staged,
+            &staged_name,
+            staged_identity,
+            CATALOG_VERSION_MARKER_NAME,
+            retained.is_some(),
+        ) {
+            drop(staged);
+            let _cleanup = directory.remove_file(&staged_name);
+            return Err(io_error(error));
+        }
+        drop(staged);
+        sync_directory(&directory).map_err(io_error)?;
+        revalidate_catalog_directory(&directory)
+    }
+
+    fn owned_catalog_version_with_identity(
+        &self,
+    ) -> Result<Option<(i64, UniqueRegularFileIdentity)>, ThemeError> {
+        self.ensure_root()?;
+        let directory = self.catalog_directory()?;
+        let addressed = match directory.symlink_metadata(CATALOG_VERSION_MARKER_NAME) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(io_error(error)),
+        };
+        let identity =
+            unique_regular_file_identity(&addressed).ok_or_else(unsafe_catalog_version_marker)?;
+        if addressed.len() > MAX_CATALOG_VERSION_MARKER_BYTES as u64 {
+            return Err(invalid_catalog_version_marker());
+        }
+        let mut file = directory
+            .open_with(CATALOG_VERSION_MARKER_NAME, &nonfollowing_read_options())
+            .map_err(|_| unsafe_catalog_version_marker())?;
+        let retained = file.metadata().map_err(io_error)?;
+        if unique_regular_file_identity(&retained) != Some(identity) {
+            return Err(unsafe_catalog_version_marker());
+        }
+        let mut bytes = Vec::with_capacity(retained.len() as usize);
+        Read::by_ref(&mut file)
+            .take(MAX_CATALOG_VERSION_MARKER_BYTES as u64 + 1)
+            .read_to_end(&mut bytes)
+            .map_err(io_error)?;
+        if bytes.len() > MAX_CATALOG_VERSION_MARKER_BYTES {
+            return Err(invalid_catalog_version_marker());
+        }
+        if unique_regular_file_identity(&file.metadata().map_err(io_error)?) != Some(identity) {
+            return Err(unsafe_catalog_version_marker());
+        }
+        revalidate_catalog_directory(&directory)?;
+
+        let text = std::str::from_utf8(&bytes).map_err(|_| invalid_catalog_version_marker())?;
+        let digits = text.strip_suffix('\n').unwrap_or(text);
+        if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+            return Err(invalid_catalog_version_marker());
+        }
+        let version = digits
+            .parse::<i64>()
+            .map_err(|_| invalid_catalog_version_marker())?;
+        Ok(Some((version, identity)))
     }
 
     pub(crate) fn seed_missing_drake(&self) -> Result<Vec<InvalidThemeFile>, ThemeError> {
@@ -1764,7 +1910,7 @@ fn is_owned_staging_directory(name: &str) -> bool {
 }
 
 fn is_owned_catalog_entry(name: &str) -> bool {
-    owned_catalog_parts(name).is_some()
+    name == CATALOG_VERSION_MARKER_NAME || owned_catalog_parts(name).is_some()
 }
 
 fn owned_catalog_parts(name: &str) -> Option<(&str, &str, &str)> {
@@ -2069,6 +2215,20 @@ fn fingerprint_mismatch() -> ThemeError {
     ThemeError::new(
         ThemeErrorCode::FingerprintMismatch,
         "The theme file changed. Refresh the theme catalog and retry.",
+    )
+}
+
+fn invalid_catalog_version_marker() -> ThemeError {
+    ThemeError::new(
+        ThemeErrorCode::InvalidMetadata,
+        "The theme catalog state is invalid.",
+    )
+}
+
+fn unsafe_catalog_version_marker() -> ThemeError {
+    ThemeError::new(
+        ThemeErrorCode::UnsafePath,
+        "The theme catalog state must be a private regular file.",
     )
 }
 
