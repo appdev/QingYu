@@ -216,7 +216,7 @@ describe("NativeTitleBar", () => {
     expect(screen.getByRole("tab", { name: "Draft.md" }).closest("[data-tauri-drag-region]")).toBeNull();
   });
 
-  it("places browser window chrome over the editor area when the file tree is open", () => {
+  it("keeps browser sidebar controls over the sidebar when the file tree is open", () => {
     const { container } = render(
       <NativeTitleBar
         dirty={false}
@@ -242,9 +242,12 @@ describe("NativeTitleBar", () => {
 
     expect(titlebar).not.toHaveAttribute("data-tauri-drag-region");
     expect(titlebar).toHaveStyle({
-      gridTemplateColumns: "auto minmax(0, 1fr) auto",
-      left: "289px"
+      gridTemplateColumns: "288px minmax(0,1fr) auto"
     });
+    expect((titlebar as HTMLElement).style.left).toBe("");
+    expect(container.querySelector(".native-titlebar-sidebar-surface")).toHaveStyle({ width: "288px" });
+    expect(screen.getByRole("button", { name: "Toggle file list" }).closest(".titlebar-spacer"))
+      .toBeInTheDocument();
     expect(container.querySelector(".native-titlebar-sidebar-drag-fill")).not.toBeInTheDocument();
     expect(container.querySelector(".titlebar-spacer")).not.toHaveAttribute("data-tauri-drag-region");
     expect(titleSlot?.getAttribute("style") ?? "").not.toContain("margin-left");

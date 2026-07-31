@@ -4146,13 +4146,14 @@ describe("QingYu workspace", () => {
     expect(screen.queryByLabelText("Pandoc path")).not.toBeInTheDocument();
   });
 
-  it("places browser titlebar tabs over the editor area when runtime disables native window chrome", async () => {
+  it("keeps fixed browser workspace controls aligned with the sidebar and interactive", async () => {
     const browserPath = `${mockFolderPath}/browser.md`;
-    mockedResolveDesktopPlatform.mockReturnValue("windows");
+    mockedResolveDesktopPlatform.mockReturnValue("linux");
+    const runtime = createDefaultAppRuntime();
     configureAppRuntime({
-      ...createDefaultAppRuntime(),
+      ...runtime,
       features: {
-        ...createDefaultAppRuntime().features,
+        ...runtime.features,
         export: true,
         nativeWindowChrome: false,
         pandoc: true,
@@ -4162,8 +4163,16 @@ describe("QingYu workspace", () => {
       },
       platform: {
         resolveDesktopOsVersion: () => null,
-        resolveDesktopPlatform: () => "windows",
+        resolveDesktopPlatform: () => "linux",
         resolveFormFactor: () => "desktop"
+      },
+      workspace: {
+        ...runtime.workspace,
+        rootPolicy: {
+          canChooseLocalRoot: false,
+          kind: "fixed",
+          resolveRoot: async () => mockFolderPath
+        }
       }
     });
     mockedGetStoredWorkspaceState.mockResolvedValue({
@@ -4188,17 +4197,35 @@ describe("QingYu workspace", () => {
     expect(screen.getByRole("complementary", { name: "Markdown file tree" })).toHaveAttribute("aria-hidden", "false");
     expect(screen.getByRole("tab", { name: /browser\.md/ })).toBeInTheDocument();
     expect(container.querySelector(".native-titlebar")).toHaveStyle({
-      gridTemplateColumns: "auto minmax(0,1fr) 196px",
-      left: "289px"
+      gridTemplateColumns: "288px minmax(0,1fr) auto"
     });
+    expect((container.querySelector(".native-titlebar") as HTMLElement).style.left).toBe("");
+    expect(container.querySelector(".native-titlebar-sidebar-surface")).toHaveStyle({ width: "288px" });
     expect(container.querySelector(".windows-app-chrome")).not.toBeInTheDocument();
     expect(container.querySelector(".native-titlebar")).toHaveClass("top-0");
     expect(container.querySelector(".markdown-file-tree-slot")?.parentElement).not.toHaveClass("pt-10");
-    expect(container.querySelector(".windows-titlebar-actions")).toBeInTheDocument();
+    expect(container.querySelector(".windows-titlebar-actions")).not.toBeInTheDocument();
     expect(container.querySelector(".windows-window-controls")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Toggle file list" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.queryByRole("button", { name: "Open Markdown or Folder" })).not.toBeInTheDocument();
     expect(container.querySelector(".document-tabs-drag-spacer")).not.toBeInTheDocument();
     expect(container.querySelector(".native-title-slot")?.getAttribute("style") ?? "").not.toContain("margin-left");
+
+    fireEvent.click(screen.getByRole("button", { name: "Toggle file list" }));
+
+    await waitFor(() => expect(
+      screen.queryByRole("complementary", { name: "Markdown file tree" })
+    ).not.toBeInTheDocument());
+    expect(screen.getByRole("button", { name: "Toggle file list" })).toHaveAttribute("aria-pressed", "false");
+    expect(container.querySelector(".native-titlebar")).toHaveStyle({
+      gridTemplateColumns: "auto minmax(0, 1fr) auto"
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Toggle file list" }));
+
+    await waitFor(() => expect(
+      screen.getByRole("complementary", { name: "Markdown file tree" })
+    ).toHaveAttribute("aria-hidden", "false"));
   });
 
   it("uses an overlay file tree instead of squeezing the editor on narrow web screens", async () => {
