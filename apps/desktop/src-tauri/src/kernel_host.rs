@@ -27,7 +27,7 @@ use qingyu_kernel::{
 use tokio::{
     sync::{mpsc, oneshot, watch, Mutex as AsyncMutex},
     task::JoinHandle,
-    time::{sleep, sleep_until, timeout, Instant},
+    time::{sleep, sleep_until, timeout, timeout_at, Instant},
 };
 
 use crate::writer_authority::{KernelWriterPublicationGate, WriterAuthorityError};
@@ -498,6 +498,7 @@ impl KernelHostPublicationSubscription {
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct KernelHostTimeouts {
     startup: Duration,
+    shutdown_total: Duration,
     graceful_stop: Duration,
     force_reap: Duration,
     recovery_initial_backoff: Duration,
@@ -507,12 +508,22 @@ pub(crate) struct KernelHostTimeouts {
 
 impl KernelHostTimeouts {
     pub(crate) const fn uniform(duration: Duration) -> Self {
+        Self::production(duration, duration, duration, duration)
+    }
+
+    pub(crate) const fn production(
+        startup: Duration,
+        shutdown_total: Duration,
+        graceful_stop: Duration,
+        force_reap: Duration,
+    ) -> Self {
         Self {
-            startup: duration,
-            graceful_stop: duration,
-            force_reap: duration,
-            recovery_initial_backoff: duration,
-            recovery_max_backoff: duration.saturating_mul(4),
+            startup,
+            shutdown_total,
+            graceful_stop,
+            force_reap,
+            recovery_initial_backoff: startup,
+            recovery_max_backoff: startup.saturating_mul(4),
             max_recovery_attempts: 3,
         }
     }
@@ -1574,11 +1585,16 @@ async fn cleanup_pending(
     generation: u64,
     timeouts: KernelHostTimeouts,
 ) -> Result<(), KernelHostFailure> {
-    let result = match timeout(timeouts.graceful_stop, pending.cancel_and_reap()).await {
+    let shutdown_deadline = Instant::now() + timeouts.shutdown_total;
+    let graceful_deadline = (Instant::now() + timeouts.graceful_stop).min(shutdown_deadline);
+    let result = match timeout_at(graceful_deadline, pending.cancel_and_reap()).await {
         Ok(Ok(())) => Ok(()),
-        Ok(Err(_)) | Err(_) => timeout(timeouts.force_reap, pending.force_kill_and_reap())
-            .await
-            .map_err(|_| KernelHostFailure::StopFailed)?,
+        Ok(Err(_)) | Err(_) => {
+            let force_deadline = (Instant::now() + timeouts.force_reap).min(shutdown_deadline);
+            timeout_at(force_deadline, pending.force_kill_and_reap())
+                .await
+                .map_err(|_| KernelHostFailure::StopFailed)?
+        }
     };
     if result.is_ok() {
         ownership.clear_reaped(generation);
@@ -1592,11 +1608,16 @@ async fn stop_running(
     generation: u64,
     timeouts: KernelHostTimeouts,
 ) -> Result<(), KernelHostFailure> {
-    let result = match timeout(timeouts.graceful_stop, running.shutdown_and_reap()).await {
+    let shutdown_deadline = Instant::now() + timeouts.shutdown_total;
+    let graceful_deadline = (Instant::now() + timeouts.graceful_stop).min(shutdown_deadline);
+    let result = match timeout_at(graceful_deadline, running.shutdown_and_reap()).await {
         Ok(Ok(())) => Ok(()),
-        Ok(Err(_)) | Err(_) => timeout(timeouts.force_reap, running.force_kill_and_reap())
-            .await
-            .map_err(|_| KernelHostFailure::StopFailed)?,
+        Ok(Err(_)) | Err(_) => {
+            let force_deadline = (Instant::now() + timeouts.force_reap).min(shutdown_deadline);
+            timeout_at(force_deadline, running.force_kill_and_reap())
+                .await
+                .map_err(|_| KernelHostFailure::StopFailed)?
+        }
     };
     if result.is_ok() {
         ownership.clear_reaped(generation);
@@ -2813,6 +2834,108 @@ mod tests {
 
         assert_eq!(factory.events(), vec!["running-shutdown", "running-force"]);
         assert_eq!(supervisor.snapshot().phase, KernelHostPhase::Dormant);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn running_graceful_and_force_cleanup_share_one_total_deadline() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let active = Arc::new(AtomicBool::new(true));
+        let mut running = ScriptedRunning {
+            behavior: RunningBehavior {
+                exit: AsyncAction::Hang,
+                exit_gate: None,
+                graceful_stop: AsyncAction::Hang,
+                force_reap: AsyncAction::Hang,
+                force_reap_gate: None,
+            },
+            events: Arc::clone(&events),
+            active: Arc::clone(&active),
+            armed: true,
+            credential: startup().into_parts().1,
+        };
+        let ownership = KernelOwnership::default();
+        let mut timeouts = KernelHostTimeouts::uniform(Duration::from_millis(10));
+        timeouts.graceful_stop = Duration::from_millis(6);
+        timeouts.force_reap = Duration::from_millis(10);
+        let started = Instant::now();
+
+        let result = stop_running(&mut running, &ownership, 1, timeouts).await;
+
+        assert_eq!(result, Err(KernelHostFailure::StopFailed));
+        assert_eq!(Instant::now() - started, Duration::from_millis(10));
+        assert_eq!(
+            *events.lock().unwrap(),
+            vec!["running-shutdown", "running-force"]
+        );
+        running.armed = false;
+        active.store(false, Ordering::SeqCst);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn pending_cancel_and_force_cleanup_share_one_total_deadline() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let active = Arc::new(AtomicBool::new(true));
+        let mut pending = ScriptedPending {
+            script: PendingScript::NeverWithCleanup {
+                cancel: AsyncAction::Hang,
+                force_reap: AsyncAction::Hang,
+            },
+            events: Arc::clone(&events),
+            active: Arc::clone(&active),
+            armed: true,
+            credential: startup().into_parts().1,
+        };
+        let ownership = KernelOwnership::default();
+        let mut timeouts = KernelHostTimeouts::uniform(Duration::from_millis(10));
+        timeouts.graceful_stop = Duration::from_millis(6);
+        timeouts.force_reap = Duration::from_millis(10);
+        let started = Instant::now();
+
+        let result = cleanup_pending(&mut pending, &ownership, 1, timeouts).await;
+
+        assert_eq!(result, Err(KernelHostFailure::StopFailed));
+        assert_eq!(Instant::now() - started, Duration::from_millis(10));
+        assert_eq!(
+            *events.lock().unwrap(),
+            vec!["pending-cancel", "pending-force"]
+        );
+        pending.armed = false;
+        active.store(false, Ordering::SeqCst);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn immediate_graceful_failure_preserves_the_remaining_force_budget() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let active = Arc::new(AtomicBool::new(true));
+        let mut running = ScriptedRunning {
+            behavior: RunningBehavior {
+                exit: AsyncAction::Hang,
+                exit_gate: None,
+                graceful_stop: AsyncAction::Fail,
+                force_reap: AsyncAction::Hang,
+                force_reap_gate: None,
+            },
+            events: Arc::clone(&events),
+            active: Arc::clone(&active),
+            armed: true,
+            credential: startup().into_parts().1,
+        };
+        let ownership = KernelOwnership::default();
+        let mut timeouts = KernelHostTimeouts::uniform(Duration::from_millis(10));
+        timeouts.graceful_stop = Duration::from_millis(6);
+        timeouts.force_reap = Duration::from_millis(20);
+        let started = Instant::now();
+
+        let result = stop_running(&mut running, &ownership, 1, timeouts).await;
+
+        assert_eq!(result, Err(KernelHostFailure::StopFailed));
+        assert_eq!(Instant::now() - started, Duration::from_millis(10));
+        assert_eq!(
+            *events.lock().unwrap(),
+            vec!["running-shutdown", "running-force"]
+        );
+        running.armed = false;
+        active.store(false, Ordering::SeqCst);
     }
 
     #[tokio::test(start_paused = true)]

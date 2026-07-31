@@ -199,11 +199,10 @@ impl PendingKernel for NativePendingKernel {
     fn force_kill_and_reap(
         &mut self,
     ) -> Pin<Box<dyn Future<Output = Result<(), KernelHostFailure>> + Send + '_>> {
-        Box::pin(async move {
-            self.process.force_kill_and_reap()?;
-            self.disarm();
-            Ok(())
-        })
+        let process = Arc::clone(&self.process);
+        let reap = process.spawn_force_kill_and_reap();
+        self.disarm();
+        Box::pin(async move { reap.await.map_err(|_| KernelHostFailure::StopFailed)? })
     }
 
     fn into_running(mut self: Box<Self>) -> Result<Box<dyn RunningKernel>, KernelHostFailure> {
@@ -268,11 +267,10 @@ impl RunningKernel for NativeRunningKernel {
     fn force_kill_and_reap(
         &mut self,
     ) -> Pin<Box<dyn Future<Output = Result<(), KernelHostFailure>> + Send + '_>> {
-        Box::pin(async move {
-            self.process.force_kill_and_reap()?;
-            self.disarm();
-            Ok(())
-        })
+        let process = Arc::clone(&self.process);
+        let reap = process.spawn_force_kill_and_reap();
+        self.disarm();
+        Box::pin(async move { reap.await.map_err(|_| KernelHostFailure::StopFailed)? })
     }
 }
 
@@ -344,7 +342,13 @@ impl ProcessGuard {
         }
     }
 
-    fn force_kill_and_reap(&self) -> Result<(), KernelHostFailure> {
+    fn spawn_force_kill_and_reap(
+        self: Arc<Self>,
+    ) -> tokio::task::JoinHandle<Result<(), KernelHostFailure>> {
+        tokio::task::spawn_blocking(move || self.force_kill_and_reap_blocking())
+    }
+
+    fn force_kill_and_reap_blocking(&self) -> Result<(), KernelHostFailure> {
         let mut state = self
             .state
             .lock()
@@ -377,7 +381,7 @@ impl ProcessGuard {
 
 impl SynchronousKernelGuard for ProcessGuard {
     fn terminate_and_reap_or_abort(&self) {
-        if self.force_kill_and_reap().is_err() {
+        if self.force_kill_and_reap_blocking().is_err() {
             std::process::abort();
         }
     }
@@ -430,15 +434,177 @@ fn sidecar_path_for_executable(executable: &Path, executable_suffix: &str) -> Op
 
 #[cfg(test)]
 mod tests {
-    use std::{path::Path, sync::Arc, time::Duration};
+    use std::{
+        collections::VecDeque,
+        path::Path,
+        process::{Command, Stdio},
+        sync::{mpsc, Arc, Mutex},
+        thread,
+        time::{Duration, Instant},
+    };
 
     use qingyu_kernel::host::native::NativeHostWorkspaceState;
 
-    use super::{sidecar_path_for_executable, NativeKernelProcessFactory};
+    use super::{
+        sidecar_path_for_executable, NativeKernelProcessFactory, NativeRunningKernel, ProcessGuard,
+        ProcessState,
+    };
     use crate::{
-        kernel_host::{KernelHostSupervisor, KernelHostTimeouts, NativeKernelLaunch},
+        kernel_host::{
+            KernelHostSupervisor, KernelHostTimeouts, NativeKernelLaunch, RunningKernel,
+        },
         writer_authority::{KernelWriterPublicationGate, WorkspaceRootIdentity, WriterAuthority},
     };
+
+    #[test]
+    #[ignore = "test-only child process for force-reap timing tests"]
+    fn blocking_child_process_for_reap_test() {
+        thread::sleep(Duration::from_secs(60));
+    }
+
+    fn test_running_kernel() -> (NativeRunningKernel, Arc<ProcessGuard>) {
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .arg("--ignored")
+            .arg("--exact")
+            .arg("kernel_process::tests::blocking_child_process_for_reap_test")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        thread::sleep(Duration::from_millis(20));
+        assert_eq!(child.try_wait().unwrap(), None);
+
+        let process = Arc::new(ProcessGuard {
+            state: Mutex::new(ProcessState {
+                child,
+                stdin: None,
+                reaped: false,
+            }),
+        });
+        let temporary = tempfile::tempdir().unwrap();
+        let workspace = temporary.path().join("workspace");
+        let app_data = temporary.path().join("app-data");
+        let cache = temporary.path().join("cache");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::create_dir_all(&app_data).unwrap();
+        std::fs::create_dir_all(&cache).unwrap();
+        let (_, credential) = NativeKernelLaunch::desktop(
+            workspace.clone(),
+            app_data,
+            cache,
+            NativeHostWorkspaceState::for_workspace(&workspace, "Workspace").unwrap(),
+            "tauri://localhost".to_owned(),
+        )
+        .unwrap()
+        .into_parts();
+        let running = NativeRunningKernel {
+            process: Arc::clone(&process),
+            credential,
+            _stderr_tail: Arc::new(Mutex::new(VecDeque::new())),
+            armed: true,
+        };
+        (running, process)
+    }
+
+    fn hold_process_state(
+        process: &Arc<ProcessGuard>,
+        duration: Duration,
+    ) -> thread::JoinHandle<()> {
+        let process = Arc::clone(process);
+        let (acquired_sender, acquired_receiver) = mpsc::sync_channel(0);
+        let holder = thread::spawn(move || {
+            let _state = process.state.lock().unwrap();
+            acquired_sender.send(()).unwrap();
+            thread::sleep(duration);
+        });
+        acquired_receiver
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap();
+        holder
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn force_reap_keeps_the_async_runtime_responsive_while_process_wait_is_blocked() {
+        let (mut running, process) = test_running_kernel();
+        let holder = hold_process_state(&process, Duration::from_millis(400));
+        let started = Instant::now();
+
+        let heartbeat = async {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            started.elapsed()
+        };
+        let force_reap = running.force_kill_and_reap();
+        let (force_result, heartbeat_elapsed) = tokio::join!(force_reap, heartbeat);
+
+        assert_eq!(force_result, Ok(()));
+        assert!(
+            heartbeat_elapsed < Duration::from_millis(200),
+            "force reap blocked the async runtime for {heartbeat_elapsed:?}"
+        );
+        holder.join().unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn timed_out_force_reap_does_not_run_a_second_blocking_reap_from_drop() {
+        let (mut running, process) = test_running_kernel();
+        let holder = hold_process_state(&process, Duration::from_millis(400));
+        let started = Instant::now();
+
+        let result =
+            tokio::time::timeout(Duration::from_millis(40), running.force_kill_and_reap()).await;
+        assert!(result.is_err());
+        drop(running);
+        assert!(
+            started.elapsed() < Duration::from_millis(200),
+            "dropping a timed-out force reap blocked for {:?}",
+            started.elapsed()
+        );
+
+        holder.join().unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if process.state.lock().unwrap().reaped {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn unpolled_force_reap_future_still_owns_and_reaps_the_child() {
+        let (mut running, process) = test_running_kernel();
+        let holder = hold_process_state(&process, Duration::from_millis(400));
+        let started = Instant::now();
+
+        let force_reap = running.force_kill_and_reap();
+        drop(force_reap);
+        drop(running);
+        assert!(
+            started.elapsed() < Duration::from_millis(200),
+            "dropping an unpolled force reap blocked for {:?}",
+            started.elapsed()
+        );
+
+        holder.join().unwrap();
+        let reaped = tokio::time::timeout(Duration::from_millis(200), async {
+            loop {
+                if process.state.lock().unwrap().reaped {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .is_ok();
+        if !reaped {
+            process.force_kill_and_reap_blocking().unwrap();
+        }
+        assert!(reaped, "an unpolled force-reap future abandoned the child");
+    }
 
     #[test]
     fn sidecar_is_resolved_beside_the_application_executable() {

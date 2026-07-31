@@ -1,4 +1,9 @@
-use std::{ffi::OsStr, path::Path, sync::Arc, time::Duration};
+use std::{
+    ffi::OsStr,
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Duration,
+};
 
 use crate::app_exit::handle_app_exit_requested;
 use crate::dejavu_sync::commands::{DejavuSchedulerOwner, DejavuSyncServiceOwner};
@@ -64,7 +69,7 @@ fn should_reveal_single_instance(mode: DesktopLaunchMode) -> bool {
 }
 
 fn guarded_desktop_invoke_handler<R, Handler>(
-    launch_mode: DesktopLaunchMode,
+    _launch_mode: DesktopLaunchMode,
     handler: Handler,
 ) -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Send + Sync + 'static
 where
@@ -72,9 +77,7 @@ where
     Handler: Fn(tauri::ipc::Invoke<R>) -> bool + Send + Sync + 'static,
 {
     move |invoke| {
-        if launch_mode == DesktopLaunchMode::Normal
-            && !crate::writer_authority::normal_desktop_command_is_allowed(invoke.message.command())
-        {
+        if !crate::writer_authority::normal_desktop_command_is_allowed(invoke.message.command()) {
             invoke.resolver.reject("native-command-unavailable");
             true
         } else {
@@ -87,33 +90,78 @@ fn desktop_renderer_origin(url: &tauri::Url) -> Result<String, String> {
     if !url.username().is_empty() || url.password().is_some() {
         return Err("desktop renderer origin is unavailable".to_owned());
     }
-    if !matches!(url.scheme(), "http" | "https" | "tauri") {
-        return Err("desktop renderer origin is unavailable".to_owned());
+    match url.scheme() {
+        "http" | "https" => {
+            let origin = url.origin().ascii_serialization();
+            (origin != "null")
+                .then_some(origin)
+                .ok_or_else(|| "desktop renderer origin is unavailable".to_owned())
+        }
+        "tauri" if !url.authority().is_empty() => Ok(format!("tauri://{}", url.authority())),
+        _ => Err("desktop renderer origin is unavailable".to_owned()),
     }
-    let host = url
-        .host_str()
-        .filter(|host| !host.is_empty())
-        .ok_or_else(|| "desktop renderer origin is unavailable".to_owned())?;
-    let authority_host = if host.contains(':') {
-        format!("[{host}]")
-    } else {
-        host.to_owned()
-    };
-    let authority = match url.port() {
-        Some(port) => format!("{authority_host}:{port}"),
-        None => authority_host,
-    };
-    Ok(format!("{}://{authority}", url.scheme()))
 }
 
-fn main_renderer_origin(app: &tauri::AppHandle) -> Result<String, String> {
-    let window = app
-        .get_webview_window("main")
+fn configured_desktop_renderer_origin(
+    development: bool,
+    dev_url: Option<&tauri::Url>,
+    frontend_dist_url: Option<&tauri::Url>,
+    windows: bool,
+    use_https_scheme: bool,
+) -> Result<String, String> {
+    if development {
+        return dev_url
+            .ok_or_else(|| "desktop renderer origin is unavailable".to_owned())
+            .and_then(desktop_renderer_origin);
+    }
+    if let Some(frontend_dist_url) = frontend_dist_url {
+        return desktop_renderer_origin(frontend_dist_url);
+    }
+    if windows {
+        let scheme = if use_https_scheme { "https" } else { "http" };
+        return Ok(format!("{scheme}://tauri.localhost"));
+    }
+    Ok("tauri://localhost".to_owned())
+}
+
+fn configured_main_renderer_origin(app: &tauri::AppHandle) -> Result<String, String> {
+    let main = app
+        .config()
+        .app
+        .windows
+        .iter()
+        .find(|window| window.label == "main")
         .ok_or_else(|| "desktop renderer origin is unavailable".to_owned())?;
+    let frontend_dist_url = match app.config().build.frontend_dist.as_ref() {
+        Some(tauri::utils::config::FrontendDist::Url(url)) => Some(url),
+        _ => None,
+    };
+    configured_desktop_renderer_origin(
+        cfg!(dev),
+        app.config().build.dev_url.as_ref(),
+        frontend_dist_url,
+        cfg!(windows),
+        main.use_https_scheme,
+    )
+}
+
+fn validated_desktop_renderer_origin(
+    caller_label: &str,
+    configured_origin: &str,
+    caller_url: &tauri::Url,
+) -> Result<String, String> {
+    if caller_label != "main" || desktop_renderer_origin(caller_url)? != configured_origin {
+        return Err("desktop renderer origin is unavailable".to_owned());
+    }
+    Ok(configured_origin.to_owned())
+}
+
+fn main_renderer_origin(window: &tauri::WebviewWindow) -> Result<String, String> {
+    let configured = configured_main_renderer_origin(&window.app_handle())?;
     let url = window
         .url()
         .map_err(|_| "desktop renderer origin is unavailable".to_owned())?;
-    desktop_renderer_origin(&url)
+    validated_desktop_renderer_origin(window.label(), &configured, &url)
 }
 
 #[tauri::command]
@@ -124,26 +172,99 @@ fn read_desktop_kernel_startup_state(
 }
 
 #[tauri::command]
-fn initialize_desktop_kernel_workspace(
+async fn initialize_desktop_kernel_workspace(
     app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
     runtime: tauri::State<'_, Arc<crate::desktop_kernel_runtime::DesktopKernelRuntimeState>>,
     path: String,
 ) -> Result<(), String> {
-    let origin = main_renderer_origin(&app)?;
-    let workspace_root = if runtime.is_invalid()? {
-        crate::primary_workspace::recover_invalid_desktop_primary_workspace(&app, Path::new(&path))?
-    } else {
-        crate::primary_workspace::initialize_desktop_primary_workspace(&app, Path::new(&path))?
-    };
-    Arc::clone(runtime.inner()).start_selected(&app, workspace_root, origin)
+    let origin = main_renderer_origin(&window)?;
+    let runtime = Arc::clone(runtime.inner());
+    let recover_invalid = runtime.is_invalid()?;
+    let persistence_app = app.clone();
+    let requested_path = PathBuf::from(path);
+    let workspace_root = tauri::async_runtime::spawn_blocking(move || {
+        if recover_invalid {
+            crate::primary_workspace::recover_invalid_desktop_primary_workspace(
+                &persistence_app,
+                &requested_path,
+            )
+        } else {
+            crate::primary_workspace::initialize_desktop_primary_workspace(
+                &persistence_app,
+                &requested_path,
+            )
+        }
+    })
+    .await
+    .map_err(|_| "desktop primary workspace initialization failed".to_owned())??;
+    runtime.start_selected(&app, workspace_root, origin)
 }
 
 #[tauri::command]
-fn retry_desktop_kernel_workspace(
+async fn retry_desktop_kernel_workspace(
     app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
     runtime: tauri::State<'_, Arc<crate::desktop_kernel_runtime::DesktopKernelRuntimeState>>,
 ) -> Result<(), String> {
-    Arc::clone(runtime.inner()).retry_selected(&app)
+    let _caller_origin = main_renderer_origin(&window)?;
+    let runtime = Arc::clone(runtime.inner());
+    if runtime.reserve_resolution_retry(&app)? {
+        resolve_and_start_desktop_kernel(app, window, runtime).await
+    } else {
+        runtime.retry_selected(&app)
+    }
+}
+
+async fn resolve_and_start_desktop_kernel(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    runtime: Arc<crate::desktop_kernel_runtime::DesktopKernelRuntimeState>,
+) -> Result<(), String> {
+    let persistence_app = app.clone();
+    let resolution = tauri::async_runtime::spawn_blocking(move || {
+        crate::primary_workspace::resolve_desktop_primary_workspace(&persistence_app)
+    })
+    .await
+    .unwrap_or(Err(
+        crate::primary_workspace::DesktopPrimaryWorkspaceResolutionError::Unavailable,
+    ));
+    match resolution {
+        Ok(crate::primary_workspace::DesktopPrimaryWorkspaceResolution::Unselected) => runtime
+            .complete_initial_resolution(
+                &app,
+                crate::desktop_kernel_runtime::DesktopKernelStartupStatus::Unselected,
+            ),
+        Ok(crate::primary_workspace::DesktopPrimaryWorkspaceResolution::Selected(
+            workspace_root,
+        )) => match main_renderer_origin(&window) {
+            Ok(origin) => runtime.start_resolved(&app, workspace_root, origin),
+            Err(error) => {
+                runtime.complete_initial_resolution(
+                    &app,
+                    crate::desktop_kernel_runtime::DesktopKernelStartupStatus::Unavailable,
+                )?;
+                Err(error)
+            }
+        },
+        Err(crate::primary_workspace::DesktopPrimaryWorkspaceResolutionError::Invalid) => runtime
+            .complete_initial_resolution(
+                &app,
+                crate::desktop_kernel_runtime::DesktopKernelStartupStatus::Invalid,
+            ),
+        Err(
+            crate::primary_workspace::DesktopPrimaryWorkspaceResolutionError::UnsupportedVersion,
+        ) => runtime.complete_initial_resolution(
+            &app,
+            crate::desktop_kernel_runtime::DesktopKernelStartupStatus::UnsupportedVersion,
+        ),
+        Err(crate::primary_workspace::DesktopPrimaryWorkspaceResolutionError::Unavailable) => {
+            runtime.complete_initial_resolution(
+                &app,
+                crate::desktop_kernel_runtime::DesktopKernelStartupStatus::Unavailable,
+            )
+        }
+    }
 }
 
 fn activate_normal_ui<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
@@ -366,42 +487,27 @@ pub(crate) fn run() {
                     }
                 }
             } else {
-                let resolution =
-                    crate::primary_workspace::resolve_desktop_primary_workspace(&app.handle());
-                let (startup_status, selected) = match resolution {
-                    Ok(crate::primary_workspace::DesktopPrimaryWorkspaceResolution::Unselected) => (
-                        crate::desktop_kernel_runtime::DesktopKernelStartupStatus::Unselected,
-                        None,
-                    ),
-                    Ok(crate::primary_workspace::DesktopPrimaryWorkspaceResolution::Selected(
-                        workspace_root,
-                    )) => (
-                        crate::desktop_kernel_runtime::DesktopKernelStartupStatus::Unavailable,
-                        Some(workspace_root),
-                    ),
-                    Err(crate::primary_workspace::DesktopPrimaryWorkspaceResolutionError::Invalid) => (
-                        crate::desktop_kernel_runtime::DesktopKernelStartupStatus::Invalid,
-                        None,
-                    ),
-                    Err(
-                        crate::primary_workspace::DesktopPrimaryWorkspaceResolutionError::Unavailable,
-                    ) => (
-                        crate::desktop_kernel_runtime::DesktopKernelStartupStatus::Unavailable,
-                        None,
-                    ),
-                };
                 let runtime = Arc::new(
                     crate::desktop_kernel_runtime::DesktopKernelRuntimeState::new(
                         bootstrap,
-                        startup_status,
+                        crate::desktop_kernel_runtime::DesktopKernelStartupStatus::Resolving,
                     ),
                 );
                 app.manage(runtime.clone());
-                if let Some(workspace_root) = selected {
-                    let start_result = main_renderer_origin(&app.handle()).and_then(|origin| {
-                        runtime.start_selected(&app.handle(), workspace_root, origin)
+                if let Some(window) = app.get_webview_window("main") {
+                    let startup_app = app.handle().clone();
+                    tauri::async_runtime::spawn(async move {
+                        if let Err(error) =
+                            resolve_and_start_desktop_kernel(startup_app, window, runtime).await
+                        {
+                            eprintln!("QingYu Kernel host initialization failed: {error}");
+                        }
                     });
-                    if let Err(error) = start_result {
+                } else {
+                    if let Err(error) = runtime.complete_initial_resolution(
+                        &app.handle(),
+                        crate::desktop_kernel_runtime::DesktopKernelStartupStatus::Unavailable,
+                    ) {
                         eprintln!("QingYu Kernel host initialization failed: {error}");
                     }
                 }
@@ -450,134 +556,134 @@ pub(crate) fn run() {
         .invoke_handler(guarded_desktop_invoke_handler::<tauri::Wry, _>(
             launch_mode,
             tauri::generate_handler![
-            crate::kernel_bootstrap::read_native_kernel_bootstrap,
-            read_desktop_kernel_startup_state,
-            initialize_desktop_kernel_workspace,
-            retry_desktop_kernel_workspace,
-            crate::mcp::get_mcp_settings,
-            crate::mcp::update_mcp_settings,
-            crate::mcp::set_mcp_primary_workspace,
-            crate::mcp::get_mcp_health,
-            crate::mcp::list_mcp_audit_entries,
-            crate::mcp::clear_mcp_audit_entries,
-            crate::app_settings::read_app_settings_group,
-            crate::app_settings::write_app_settings_group,
-            crate::app_settings::replace_portable_app_settings,
-            crate::app_settings::read_exposed_app_settings,
-            crate::app_settings::patch_exposed_app_settings,
-            crate::runtime_store::load_desktop_runtime_store,
-            crate::runtime_store::get_desktop_runtime_store_value,
-            crate::runtime_store::commit_desktop_runtime_store_changes,
-            crate::primary_workspace::read_primary_workspace_state,
-            crate::primary_workspace::write_primary_workspace_state,
-            crate::dejavu_sync::path_guard::acknowledge_path_guard,
-            crate::primary_workspace::prepare_desktop_notebook_target,
-            crate::primary_workspace::discard_prepared_desktop_notebook_target,
-            crate::themes::list_themes,
-            crate::themes::read_theme_css,
-            crate::themes::activation::prepare_theme_activation,
-            crate::themes::activation::commit_theme_activation,
-            crate::themes::activation::cancel_theme_activation,
-            crate::themes::activation::release_theme_activation,
-            crate::themes::import_theme_file,
-            crate::themes::replace_theme_file,
-            crate::themes::delete_theme,
-            crate::themes::theme_directory_path,
-            crate::markdown_files::tree::list_markdown_files_for_path,
-            crate::markdown_files::tree::list_markdown_reference_files_for_path,
-            crate::markdown_files::tree::load_markdown_files_for_path,
-            crate::markdown_files::tree::cancel_markdown_files_load,
-            crate::markdown_files::search::search_markdown_files_for_path,
-            crate::markdown_files::tree::create_markdown_tree_file,
-            crate::markdown_files::tree::create_markdown_tree_folder,
-            crate::menu::install_application_menu,
-            crate::menu::show_native_app_about,
-            crate::markdown_files::tree::rename_markdown_tree_file,
-            crate::markdown_files::tree::move_markdown_tree_file,
-            crate::markdown_files::tree::delete_markdown_tree_file,
-            crate::markdown_files::asset_cleanup::trash_markdown_assets,
-            crate::markdown_files::open::open_markdown_file_in_new_window,
-            crate::markdown_files::open::open_markdown_folder_in_new_window,
-            crate::markdown_files::open::open_containing_folder,
-            crate::markdown_files::open::open_markdown_attachment,
-            crate::markdown_files::open::resolve_markdown_path,
-            crate::markdown_files::open::resolve_markdown_folder,
-            crate::markdown_files::resource::resolve_workspace_resource_root,
-            crate::markdown_files::resource::trash_workspace_resources,
-            crate::markdown_files::document::read_markdown_file,
-            crate::markdown_files::standalone::read_standalone_document,
-            crate::markdown_files::standalone::write_standalone_document_cas,
-            crate::text_file::read_text_file,
-            crate::markdown_files::history::list_markdown_file_history,
-            crate::markdown_files::history::read_markdown_file_history,
-            crate::markdown_files::attachment::import_local_file,
-            crate::markdown_files::image::read_local_image_file,
-            crate::markdown_files::template::read_markdown_template_file,
-            crate::markdown_files::template::write_markdown_template_file,
-            crate::markdown_files::template::delete_markdown_template_file,
-            crate::markdown_files::attachment::save_clipboard_attachment,
-            crate::markdown_files::image::save_clipboard_image,
-            crate::markdown_files::path::canonical_local_file_path,
-            crate::clipboard::read_clipboard_text,
-            crate::windows::minimize_current_window,
-            crate::windows::open_blank_editor_window,
-            crate::windows::open_settings_window,
-            crate::windows::mark_settings_window_ready,
-            crate::windows::hide_settings_window,
-            crate::windows::acknowledge_settings_window_hide,
-            crate::windows::cancel_settings_window_hide,
-            crate::windows::complete_settings_window_hide,
-            crate::windows::destroy_current_editor_window,
-            crate::sync_config::sync_application,
-            crate::sync_config::test_sync_connection,
-            crate::sync_config::list_remote_notebooks,
-            crate::dejavu_sync::commands::bind_dejavu_repository,
-            crate::dejavu_sync::commands::rebuild_local_repository,
-            crate::dejavu_sync::commands::stop_repository_sync,
-            crate::dejavu_sync::commands::change_global_key,
-            crate::dejavu_sync::commands::load_dejavu_key_state,
-            crate::dejavu_sync::commands::initialize_dejavu_global_key,
-            crate::dejavu_sync::commands::export_dejavu_global_key,
-            crate::dejavu_sync::commands::purge_remote_repository,
-            crate::dejavu_sync::commands::delete_remote_repository,
-            crate::dejavu_sync::commands::list_dejavu_conflict_history,
-            crate::dejavu_sync::commands::read_dejavu_conflict_history,
-            crate::dejavu_sync::commands::load_dejavu_repository_status,
-            crate::workspace_membership::is_document_in_workspace,
-            crate::web_http::download_web_image,
-            crate::markdown_files::document::write_markdown_file,
-            crate::markdown_files::document::write_markdown_export_file,
-            crate::text_file::write_text_file,
-            crate::markdown_files::export::export_pdf_file,
-            crate::markdown_files::export::check_pandoc_available,
-            crate::markdown_files::export::detect_pandoc_path,
-            crate::markdown_files::export::export_pandoc_file,
-            crate::watcher::watch_markdown_file,
-            crate::watcher::unwatch_markdown_file,
-            crate::watcher::watch_markdown_tree,
-            crate::watcher::unwatch_markdown_tree,
-            request_primary_notebook_switch,
-            crate::opened_files::take_opened_markdown_paths,
-            crate::shell_command::get_shell_command_status,
-            crate::shell_command::install_shell_command,
-            crate::shell_command::uninstall_shell_command,
-            crate::window_state::set_editor_window_restore_state,
-            crate::window_state::list_editor_window_restore_states,
-            crate::fonts::list_system_font_families,
-            crate::sync_config::load_sync_config,
-            crate::sync_config::enable_sync_config,
-            crate::sync_config::patch_sync_config,
-            crate::sync_config::recover_sync_config,
-            crate::sync_config::reset_sync_config,
-            crate::sync_config::load_sync_config_editing,
-            crate::sync_config::set_sync_config_editing,
-            crate::sync_config::request_sync_config_apply,
-            crate::sync_config::cancel_sync_config_apply,
-            crate::sync_config::settle_kernel_sync_config_apply,
-            crate::sync_config::load_sync_status,
-            crate::managed_workspace::resolve_managed_workspace_root,
-            crate::managed_workspace::list_managed_workspace_names,
-            crate::app_logs::open_log_folder,
+                crate::kernel_bootstrap::read_native_kernel_bootstrap,
+                read_desktop_kernel_startup_state,
+                initialize_desktop_kernel_workspace,
+                retry_desktop_kernel_workspace,
+                crate::mcp::get_mcp_settings,
+                crate::mcp::update_mcp_settings,
+                crate::mcp::set_mcp_primary_workspace,
+                crate::mcp::get_mcp_health,
+                crate::mcp::list_mcp_audit_entries,
+                crate::mcp::clear_mcp_audit_entries,
+                crate::app_settings::read_app_settings_group,
+                crate::app_settings::write_app_settings_group,
+                crate::app_settings::replace_portable_app_settings,
+                crate::app_settings::read_exposed_app_settings,
+                crate::app_settings::patch_exposed_app_settings,
+                crate::runtime_store::load_desktop_runtime_store,
+                crate::runtime_store::get_desktop_runtime_store_value,
+                crate::runtime_store::commit_desktop_runtime_store_changes,
+                crate::primary_workspace::read_primary_workspace_state,
+                crate::primary_workspace::write_primary_workspace_state,
+                crate::dejavu_sync::path_guard::acknowledge_path_guard,
+                crate::primary_workspace::prepare_desktop_notebook_target,
+                crate::primary_workspace::discard_prepared_desktop_notebook_target,
+                crate::themes::list_themes,
+                crate::themes::read_theme_css,
+                crate::themes::activation::prepare_theme_activation,
+                crate::themes::activation::commit_theme_activation,
+                crate::themes::activation::cancel_theme_activation,
+                crate::themes::activation::release_theme_activation,
+                crate::themes::import_theme_file,
+                crate::themes::replace_theme_file,
+                crate::themes::delete_theme,
+                crate::themes::theme_directory_path,
+                crate::markdown_files::tree::list_markdown_files_for_path,
+                crate::markdown_files::tree::list_markdown_reference_files_for_path,
+                crate::markdown_files::tree::load_markdown_files_for_path,
+                crate::markdown_files::tree::cancel_markdown_files_load,
+                crate::markdown_files::search::search_markdown_files_for_path,
+                crate::markdown_files::tree::create_markdown_tree_file,
+                crate::markdown_files::tree::create_markdown_tree_folder,
+                crate::menu::install_application_menu,
+                crate::menu::show_native_app_about,
+                crate::markdown_files::tree::rename_markdown_tree_file,
+                crate::markdown_files::tree::move_markdown_tree_file,
+                crate::markdown_files::tree::delete_markdown_tree_file,
+                crate::markdown_files::asset_cleanup::trash_markdown_assets,
+                crate::markdown_files::open::open_markdown_file_in_new_window,
+                crate::markdown_files::open::open_markdown_folder_in_new_window,
+                crate::markdown_files::open::open_containing_folder,
+                crate::markdown_files::open::open_markdown_attachment,
+                crate::markdown_files::open::resolve_markdown_path,
+                crate::markdown_files::open::resolve_markdown_folder,
+                crate::markdown_files::resource::resolve_workspace_resource_root,
+                crate::markdown_files::resource::trash_workspace_resources,
+                crate::markdown_files::document::read_markdown_file,
+                crate::markdown_files::standalone::read_standalone_document,
+                crate::markdown_files::standalone::write_standalone_document_cas,
+                crate::text_file::read_text_file,
+                crate::markdown_files::history::list_markdown_file_history,
+                crate::markdown_files::history::read_markdown_file_history,
+                crate::markdown_files::attachment::import_local_file,
+                crate::markdown_files::image::read_local_image_file,
+                crate::markdown_files::template::read_markdown_template_file,
+                crate::markdown_files::template::write_markdown_template_file,
+                crate::markdown_files::template::delete_markdown_template_file,
+                crate::markdown_files::attachment::save_clipboard_attachment,
+                crate::markdown_files::image::save_clipboard_image,
+                crate::markdown_files::path::canonical_local_file_path,
+                crate::clipboard::read_clipboard_text,
+                crate::windows::minimize_current_window,
+                crate::windows::open_blank_editor_window,
+                crate::windows::open_settings_window,
+                crate::windows::mark_settings_window_ready,
+                crate::windows::hide_settings_window,
+                crate::windows::acknowledge_settings_window_hide,
+                crate::windows::cancel_settings_window_hide,
+                crate::windows::complete_settings_window_hide,
+                crate::windows::destroy_current_editor_window,
+                crate::sync_config::sync_application,
+                crate::sync_config::test_sync_connection,
+                crate::sync_config::list_remote_notebooks,
+                crate::dejavu_sync::commands::bind_dejavu_repository,
+                crate::dejavu_sync::commands::rebuild_local_repository,
+                crate::dejavu_sync::commands::stop_repository_sync,
+                crate::dejavu_sync::commands::change_global_key,
+                crate::dejavu_sync::commands::load_dejavu_key_state,
+                crate::dejavu_sync::commands::initialize_dejavu_global_key,
+                crate::dejavu_sync::commands::export_dejavu_global_key,
+                crate::dejavu_sync::commands::purge_remote_repository,
+                crate::dejavu_sync::commands::delete_remote_repository,
+                crate::dejavu_sync::commands::list_dejavu_conflict_history,
+                crate::dejavu_sync::commands::read_dejavu_conflict_history,
+                crate::dejavu_sync::commands::load_dejavu_repository_status,
+                crate::workspace_membership::is_document_in_workspace,
+                crate::web_http::download_web_image,
+                crate::markdown_files::document::write_markdown_file,
+                crate::markdown_files::document::write_markdown_export_file,
+                crate::text_file::write_text_file,
+                crate::markdown_files::export::export_pdf_file,
+                crate::markdown_files::export::check_pandoc_available,
+                crate::markdown_files::export::detect_pandoc_path,
+                crate::markdown_files::export::export_pandoc_file,
+                crate::watcher::watch_markdown_file,
+                crate::watcher::unwatch_markdown_file,
+                crate::watcher::watch_markdown_tree,
+                crate::watcher::unwatch_markdown_tree,
+                request_primary_notebook_switch,
+                crate::opened_files::take_opened_markdown_paths,
+                crate::shell_command::get_shell_command_status,
+                crate::shell_command::install_shell_command,
+                crate::shell_command::uninstall_shell_command,
+                crate::window_state::set_editor_window_restore_state,
+                crate::window_state::list_editor_window_restore_states,
+                crate::fonts::list_system_font_families,
+                crate::sync_config::load_sync_config,
+                crate::sync_config::enable_sync_config,
+                crate::sync_config::patch_sync_config,
+                crate::sync_config::recover_sync_config,
+                crate::sync_config::reset_sync_config,
+                crate::sync_config::load_sync_config_editing,
+                crate::sync_config::set_sync_config_editing,
+                crate::sync_config::request_sync_config_apply,
+                crate::sync_config::cancel_sync_config_apply,
+                crate::sync_config::settle_kernel_sync_config_apply,
+                crate::sync_config::load_sync_status,
+                crate::managed_workspace::resolve_managed_workspace_root,
+                crate::managed_workspace::list_managed_workspace_names,
+                crate::app_logs::open_log_folder,
             ],
         ))
         .build(context)
@@ -592,9 +698,9 @@ pub(crate) fn run() {
                 );
             }
             tauri::RunEvent::Exit => {
-                if let Some(runtime) = app.try_state::<
-                    Arc<crate::desktop_kernel_runtime::DesktopKernelRuntimeState>,
-                >() {
+                if let Some(runtime) =
+                    app.try_state::<Arc<crate::desktop_kernel_runtime::DesktopKernelRuntimeState>>()
+                {
                     if let Some(owner) = runtime.take_owner_for_shutdown() {
                         tauri::async_runtime::block_on(async move {
                             if let Err(error) = owner.stop().await {
@@ -673,6 +779,65 @@ mod tests {
             )
             .unwrap(),
             "http://tauri.localhost"
+        );
+        assert_eq!(
+            super::desktop_renderer_origin(&tauri::Url::parse("http://[::1]:1420/editor").unwrap())
+                .unwrap(),
+            "http://[::1]:1420"
+        );
+    }
+
+    #[test]
+    fn renderer_origin_requires_the_main_caller_at_the_configured_origin() {
+        let configured = "http://127.0.0.1:1420";
+        assert_eq!(
+            super::validated_desktop_renderer_origin(
+                "main",
+                configured,
+                &tauri::Url::parse("http://127.0.0.1:1420/editor?draft=1").unwrap(),
+            )
+            .unwrap(),
+            configured
+        );
+        assert!(super::validated_desktop_renderer_origin(
+            "settings",
+            configured,
+            &tauri::Url::parse("http://127.0.0.1:1420/settings").unwrap(),
+        )
+        .is_err());
+        assert!(super::validated_desktop_renderer_origin(
+            "main",
+            configured,
+            &tauri::Url::parse("https://attacker.example/").unwrap(),
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn configured_renderer_origin_is_platform_and_build_mode_exact() {
+        let dev = tauri::Url::parse("http://127.0.0.1:1420/app").unwrap();
+        let external = tauri::Url::parse("https://desktop.example/app").unwrap();
+        assert_eq!(
+            super::configured_desktop_renderer_origin(true, Some(&dev), None, false, false)
+                .unwrap(),
+            "http://127.0.0.1:1420"
+        );
+        assert_eq!(
+            super::configured_desktop_renderer_origin(false, None, Some(&external), false, false,)
+                .unwrap(),
+            "https://desktop.example"
+        );
+        assert_eq!(
+            super::configured_desktop_renderer_origin(false, None, None, false, false).unwrap(),
+            "tauri://localhost"
+        );
+        assert_eq!(
+            super::configured_desktop_renderer_origin(false, None, None, true, false).unwrap(),
+            "http://tauri.localhost"
+        );
+        assert_eq!(
+            super::configured_desktop_renderer_origin(false, None, None, true, true).unwrap(),
+            "https://tauri.localhost"
         );
     }
 

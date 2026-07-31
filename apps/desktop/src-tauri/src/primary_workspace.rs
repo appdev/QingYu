@@ -323,6 +323,9 @@ impl<'a, Backend: PrimaryWorkspaceBackend + ?Sized> PrimaryWorkspaceService<'a, 
             .map_err(|_| persistence_error())?;
         let previous_schema_version = self.backend.get(LOCAL_STATE_SCHEMA_VERSION_KEY);
         let previous_primary_workspace = self.backend.get(PRIMARY_WORKSPACE_KEY);
+        if !local_state_schema_is_supported(previous_schema_version.as_ref()) {
+            return Err(persistence_error());
+        }
         let current = previous_primary_workspace.clone().unwrap_or(Value::Null);
         if input
             .expected_state
@@ -357,6 +360,20 @@ impl<'a, Backend: PrimaryWorkspaceBackend + ?Sized> PrimaryWorkspaceService<'a, 
             applied: true,
             state: input.state,
         })
+    }
+}
+
+fn local_state_schema_is_supported(value: Option<&Value>) -> bool {
+    match value {
+        None => true,
+        Some(value)
+            if value
+                .as_u64()
+                .is_some_and(|version| version <= LOCAL_STATE_SCHEMA_VERSION) =>
+        {
+            true
+        }
+        Some(_) => false,
     }
 }
 
@@ -717,6 +734,7 @@ pub(crate) enum DesktopPrimaryWorkspaceResolution {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum DesktopPrimaryWorkspaceResolutionError {
     Invalid,
+    UnsupportedVersion,
     Unavailable,
 }
 
@@ -725,6 +743,9 @@ impl std::fmt::Display for DesktopPrimaryWorkspaceResolutionError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Invalid => formatter.write_str("desktop primary workspace is invalid"),
+            Self::UnsupportedVersion => {
+                formatter.write_str("desktop primary workspace version is unsupported")
+            }
             Self::Unavailable => formatter.write_str("desktop primary workspace is unavailable"),
         }
     }
@@ -827,6 +848,13 @@ where
     let object = value
         .as_object()
         .ok_or(DesktopPrimaryWorkspaceResolutionError::Invalid)?;
+    let version = object
+        .get("version")
+        .and_then(Value::as_u64)
+        .ok_or(DesktopPrimaryWorkspaceResolutionError::Invalid)?;
+    if version != 3 {
+        return Err(DesktopPrimaryWorkspaceResolutionError::UnsupportedVersion);
+    }
     let has_nullable_string = |key: &str| {
         object
             .get(key)
@@ -842,15 +870,12 @@ where
         || object
             .get("onboardingRequestedForNextLaunch")
             .is_some_and(|value| !value.is_boolean())
-        || object.get("version").and_then(Value::as_u64).is_none()
     {
         return Err(DesktopPrimaryWorkspaceResolutionError::Invalid);
     }
     let state = serde_json::from_value::<StoredPrimaryWorkspaceState>(value)
         .map_err(|_| DesktopPrimaryWorkspaceResolutionError::Invalid)?;
-    if state.version != 3 {
-        return Err(DesktopPrimaryWorkspaceResolutionError::Invalid);
-    }
+    debug_assert_eq!(state.version, 3);
 
     match (
         state.desktop_workspace_root.as_deref(),
@@ -884,9 +909,13 @@ fn resolve_desktop_primary_workspace_value(
 
 #[cfg(not(mobile))]
 fn resolve_desktop_primary_workspace_read(
-    read: Result<Option<Value>, String>,
+    read: Result<(Option<Value>, Option<Value>), String>,
 ) -> Result<DesktopPrimaryWorkspaceResolution, DesktopPrimaryWorkspaceResolutionError> {
-    let value = read.map_err(|_| DesktopPrimaryWorkspaceResolutionError::Unavailable)?;
+    let (schema_version, value) =
+        read.map_err(|_| DesktopPrimaryWorkspaceResolutionError::Unavailable)?;
+    if !local_state_schema_is_supported(schema_version.as_ref()) {
+        return Err(DesktopPrimaryWorkspaceResolutionError::UnsupportedVersion);
+    }
     resolve_desktop_primary_workspace_value(value)
 }
 
@@ -1113,7 +1142,10 @@ pub(crate) fn resolve_desktop_primary_workspace<R: tauri::Runtime>(
     let _transaction = primary_workspace_transaction_gate()
         .lock()
         .map_err(|_| DesktopPrimaryWorkspaceResolutionError::Unavailable)?;
-    resolve_desktop_primary_workspace_read(Ok(backend.get(PRIMARY_WORKSPACE_KEY)))
+    resolve_desktop_primary_workspace_read(Ok((
+        backend.get(LOCAL_STATE_SCHEMA_VERSION_KEY),
+        backend.get(PRIMARY_WORKSPACE_KEY),
+    )))
 }
 
 /// Opens the host-private durable workspace-identity registry using the exact
@@ -1642,18 +1674,11 @@ mod tests {
     }
 
     #[test]
-    fn desktop_host_resolution_rejects_malformed_and_wrong_version_records() {
+    fn desktop_host_resolution_rejects_malformed_current_version_records() {
         let invalid_records = [
             Value::String("not-a-workspace-record".to_string()),
             json!({
                 "version": 3
-            }),
-            json!({
-                "desktopWorkspaceRoot": null,
-                "desktopPath": null,
-                "managedName": null,
-                "onboardingCompleted": false,
-                "version": 2
             }),
             json!({
                 "desktopWorkspaceRoot": "/tmp/Workspace",
@@ -1670,6 +1695,125 @@ mod tests {
                 Err(DesktopPrimaryWorkspaceResolutionError::Invalid)
             );
         }
+    }
+
+    #[test]
+    fn desktop_host_resolution_preserves_unsupported_workspace_versions() {
+        for version in [1, 2, 4, u64::MAX] {
+            let record = json!({
+                "desktopWorkspaceRoot": null,
+                "desktopPath": null,
+                "managedName": null,
+                "onboardingCompleted": false,
+                "version": version
+            });
+            assert_eq!(
+                resolve_desktop_primary_workspace_value(Some(record)),
+                Err(DesktopPrimaryWorkspaceResolutionError::UnsupportedVersion)
+            );
+        }
+    }
+
+    #[test]
+    fn invalid_recovery_never_overwrites_an_unsupported_workspace_version() {
+        let temporary = tempfile::tempdir().unwrap();
+        let selected = temporary.path().join("Workspace").join("Recovered");
+        std::fs::create_dir_all(&selected).unwrap();
+        let future_record = json!({
+            "desktopWorkspaceRoot": "/future/workspace",
+            "desktopPath": "/future/workspace/Notes",
+            "managedName": null,
+            "onboardingCompleted": true,
+            "futureField": { "mustRemain": true },
+            "version": 4
+        });
+        let backend = MemoryBackend::with([(PRIMARY_WORKSPACE_KEY, future_record.clone())]);
+        let lock = Mutex::new(());
+
+        assert!(
+            recover_invalid_desktop_primary_workspace_with_backend(&backend, &lock, &selected)
+                .is_err()
+        );
+        assert_eq!(backend.value(PRIMARY_WORKSPACE_KEY), Some(future_record));
+    }
+
+    #[test]
+    fn desktop_host_resolution_rejects_a_future_outer_local_state_schema() {
+        assert_eq!(
+            resolve_desktop_primary_workspace_read(Ok((
+                Some(Value::from(LOCAL_STATE_SCHEMA_VERSION + 1)),
+                None,
+            ))),
+            Err(DesktopPrimaryWorkspaceResolutionError::UnsupportedVersion)
+        );
+        assert_eq!(
+            resolve_desktop_primary_workspace_read(Ok((
+                Some(Value::String("future".to_owned())),
+                None,
+            ))),
+            Err(DesktopPrimaryWorkspaceResolutionError::UnsupportedVersion)
+        );
+    }
+
+    #[test]
+    fn desktop_initialization_never_downgrades_a_future_outer_local_state_schema() {
+        let temporary = tempfile::tempdir().unwrap();
+        let selected = temporary.path().join("Workspace").join("Recovered");
+        std::fs::create_dir_all(&selected).unwrap();
+        let future_schema = Value::from(LOCAL_STATE_SCHEMA_VERSION + 1);
+        let future_record = json!({
+            "futureField": { "mustRemain": true },
+            "version": 4
+        });
+        let backend = MemoryBackend::with([
+            (LOCAL_STATE_SCHEMA_VERSION_KEY, future_schema.clone()),
+            (PRIMARY_WORKSPACE_KEY, future_record.clone()),
+        ]);
+        let lock = Mutex::new(());
+
+        assert!(
+            initialize_desktop_primary_workspace_with_backend(&backend, &lock, &selected).is_err()
+        );
+        assert_eq!(
+            backend.value(LOCAL_STATE_SCHEMA_VERSION_KEY),
+            Some(future_schema)
+        );
+        assert_eq!(backend.value(PRIMARY_WORKSPACE_KEY), Some(future_record));
+    }
+
+    #[test]
+    fn primary_workspace_writes_fail_closed_on_a_future_outer_schema() {
+        let future_schema = Value::from(LOCAL_STATE_SCHEMA_VERSION + 1);
+        let current = json!({
+            "desktopWorkspaceRoot": null,
+            "desktopPath": null,
+            "managedName": null,
+            "onboardingCompleted": false,
+            "version": 3
+        });
+        let backend = MemoryBackend::with([
+            (LOCAL_STATE_SCHEMA_VERSION_KEY, future_schema.clone()),
+            (PRIMARY_WORKSPACE_KEY, current.clone()),
+        ]);
+        let lock = Mutex::new(());
+
+        assert!(PrimaryWorkspaceService::new(&backend, &lock)
+            .write(PrimaryWorkspaceWriteInput {
+                expected_state: Some(current.clone()),
+                state: json!({
+                    "desktopWorkspaceRoot": "/replacement",
+                    "desktopPath": "/replacement/Notes",
+                    "managedName": null,
+                    "onboardingCompleted": true,
+                    "version": 3
+                }),
+            })
+            .is_err());
+        assert_eq!(
+            backend.value(LOCAL_STATE_SCHEMA_VERSION_KEY),
+            Some(future_schema)
+        );
+        assert_eq!(backend.value(PRIMARY_WORKSPACE_KEY), Some(current));
     }
 
     #[test]

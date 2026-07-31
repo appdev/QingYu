@@ -469,6 +469,82 @@ fn builder_boundary_native_kernel_bootstrap_is_desktop_only_and_production_owned
 }
 
 #[test]
+fn builder_boundary_workspace_initialization_keeps_persistence_off_the_ipc_runtime_thread() {
+    let desktop = source("src/desktop_runtime.rs");
+    let start = desktop
+        .find("async fn initialize_desktop_kernel_workspace")
+        .expect("desktop workspace initialization must be asynchronous");
+    let end = desktop[start..]
+        .find("fn retry_desktop_kernel_workspace")
+        .map(|offset| start + offset)
+        .expect("desktop workspace retry command boundary");
+    let initialization = &desktop[start..end];
+
+    assert!(initialization.contains("tauri::async_runtime::spawn_blocking"));
+    assert!(initialization.contains("initialize_desktop_primary_workspace"));
+    assert!(initialization.contains("recover_invalid_desktop_primary_workspace"));
+}
+
+#[test]
+fn builder_boundary_workspace_retry_authenticates_the_main_caller_before_state_changes() {
+    let desktop = source("src/desktop_runtime.rs");
+    let start = desktop
+        .find("async fn retry_desktop_kernel_workspace")
+        .expect("desktop workspace retry command");
+    let end = desktop[start..]
+        .find("async fn resolve_and_start_desktop_kernel")
+        .map(|offset| start + offset)
+        .expect("desktop workspace retry boundary");
+    let retry = &desktop[start..end];
+
+    let authenticate = retry
+        .find("main_renderer_origin(&window)?")
+        .expect("retry must authenticate the configured main renderer");
+    let reserve = retry
+        .find("reserve_resolution_retry")
+        .expect("retry resolution reservation");
+    let restart = retry.find("retry_selected").expect("selected retry");
+    assert!(authenticate < reserve);
+    assert!(authenticate < restart);
+}
+
+#[test]
+fn builder_boundary_startup_resolution_keeps_store_io_off_tauri_setup() {
+    let desktop = source("src/desktop_runtime.rs");
+    let resolver_start = desktop
+        .find("async fn resolve_and_start_desktop_kernel")
+        .expect("desktop startup resolver");
+    let resolver_end = desktop[resolver_start..]
+        .find("fn activate_normal_ui")
+        .map(|offset| resolver_start + offset)
+        .expect("desktop startup resolver boundary");
+    let resolver = &desktop[resolver_start..resolver_end];
+
+    assert!(resolver.contains("tauri::async_runtime::spawn_blocking"));
+    assert!(resolver.contains("resolve_desktop_primary_workspace"));
+    assert!(desktop.contains("DesktopKernelStartupStatus::Resolving"));
+    assert!(
+        desktop.contains("resolve_and_start_desktop_kernel(startup_app, window, runtime).await")
+    );
+}
+
+#[test]
+fn builder_boundary_default_denies_native_commands_in_every_launch_mode() {
+    let desktop = source("src/desktop_runtime.rs");
+    let guard_start = desktop
+        .find("fn guarded_desktop_invoke_handler")
+        .expect("desktop invoke guard");
+    let guard_end = desktop[guard_start..]
+        .find("fn desktop_renderer_origin")
+        .map(|offset| guard_start + offset)
+        .expect("desktop invoke guard boundary");
+    let guard = &desktop[guard_start..guard_end];
+
+    assert!(guard.contains("!crate::writer_authority::normal_desktop_command_is_allowed"));
+    assert!(!guard.contains("launch_mode == DesktopLaunchMode::Normal"));
+}
+
+#[test]
 fn builder_boundary_theme_migration_writes_finish_before_kernel_publication() {
     let desktop = source("src/desktop_runtime.rs");
     let migration = source("src/themes/migration.rs");
