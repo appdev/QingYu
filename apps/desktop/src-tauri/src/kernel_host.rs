@@ -441,8 +441,20 @@ impl KernelHostPublicationSender {
         )
     }
 
+    fn latest_sequence(&self) -> u64 {
+        match self.shared.lock() {
+            Ok(state) => state.latest.sequence,
+            Err(poisoned) => poisoned.into_inner().latest.sequence,
+        }
+    }
+
     fn send_replace(&self, snapshot: KernelHostSnapshot) {
         self.publish(snapshot, None);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn publish_snapshot_for_test(&self, snapshot: KernelHostSnapshot) {
+        self.send_replace(snapshot);
     }
 
     fn send_ready(&self, snapshot: KernelHostSnapshot, access: NativeKernelAccess) {
@@ -477,6 +489,13 @@ impl KernelHostPublicationSender {
 }
 
 impl KernelHostPublicationReader {
+    pub(crate) fn latest_sequence(&self) -> u64 {
+        match self.shared.lock() {
+            Ok(state) => state.latest.sequence,
+            Err(poisoned) => poisoned.into_inner().latest.sequence,
+        }
+    }
+
     pub(crate) fn subscribe(&self) -> KernelHostPublicationSubscription {
         let (sender, receiver) = mpsc::unbounded_channel();
         let mut state = match self.shared.lock() {
@@ -766,6 +785,10 @@ impl KernelHostSupervisor {
         self.publications.subscribe()
     }
 
+    pub(crate) fn latest_publication_sequence(&self) -> u64 {
+        self.publications.latest_sequence()
+    }
+
     pub(crate) fn close_fail_safe(&self) {
         self.bootstrap_session.close();
         self.writer_gate.fail_closed();
@@ -1051,7 +1074,8 @@ async fn spawn_transition(
         WriterPublicationWait::Published => {}
         WriterPublicationWait::Timeout => {
             writer_gate.fail_closed();
-            publish_failure(
+            publish_start_failure(
+                kind,
                 snapshots,
                 bootstrap,
                 generation,
@@ -1073,7 +1097,8 @@ async fn spawn_transition(
         }
         WriterPublicationWait::Failed => {
             writer_gate.fail_closed();
-            publish_failure(
+            publish_start_failure(
+                kind,
                 snapshots,
                 bootstrap,
                 generation,
@@ -1088,7 +1113,8 @@ async fn spawn_transition(
     }
     if Instant::now() >= startup_deadline {
         writer_gate.fail_closed();
-        publish_failure(
+        publish_start_failure(
+            kind,
             snapshots,
             bootstrap,
             generation,
@@ -1101,12 +1127,18 @@ async fn spawn_transition(
     let mut pending = match factory.spawn(launch, spawn_permit, ownership) {
         Ok(pending) => pending,
         Err(error) => {
-            publish_failure(snapshots, bootstrap, generation, error);
+            publish_start_failure(kind, snapshots, bootstrap, generation, error);
             return StartOutcome::Failed(error);
         }
     };
     if !ownership.owns(generation) {
-        publish_failure(snapshots, bootstrap, generation, KernelHostFailure::Spawn);
+        publish_start_failure(
+            kind,
+            snapshots,
+            bootstrap,
+            generation,
+            KernelHostFailure::Spawn,
+        );
         return StartOutcome::Failed(KernelHostFailure::Spawn);
     }
     if Instant::now() >= startup_deadline {
@@ -1114,7 +1146,7 @@ async fn spawn_transition(
             .await
             .err()
             .unwrap_or(KernelHostFailure::StartupTimeout);
-        publish_failure(snapshots, bootstrap, generation, reported);
+        publish_start_failure(kind, snapshots, bootstrap, generation, reported);
         return StartOutcome::Failed(reported);
     }
 
@@ -1156,7 +1188,7 @@ async fn spawn_transition(
                 .await
                 .err()
                 .unwrap_or(error);
-            publish_failure(snapshots, bootstrap, generation, reported);
+            publish_start_failure(kind, snapshots, bootstrap, generation, reported);
             return StartOutcome::Failed(reported);
         }
         StartWait::Timeout => {
@@ -1164,7 +1196,7 @@ async fn spawn_transition(
                 .await
                 .err()
                 .unwrap_or(KernelHostFailure::StartupTimeout);
-            publish_failure(snapshots, bootstrap, generation, reported);
+            publish_start_failure(kind, snapshots, bootstrap, generation, reported);
             return StartOutcome::Failed(reported);
         }
         StartWait::Stop(stop_response) => {
@@ -1198,7 +1230,7 @@ async fn spawn_transition(
             .await
             .err()
             .unwrap_or(KernelHostFailure::IdentityMismatch);
-        publish_failure(snapshots, bootstrap, generation, reported);
+        publish_start_failure(kind, snapshots, bootstrap, generation, reported);
         return StartOutcome::Failed(reported);
     }
     let endpoint = KernelEndpoint {
@@ -1215,7 +1247,7 @@ async fn spawn_transition(
         Err(error) => {
             writer_gate.fail_closed();
             ownership.terminate_active();
-            publish_failure(snapshots, bootstrap, generation, error);
+            publish_start_failure(kind, snapshots, bootstrap, generation, error);
             return StartOutcome::Failed(error);
         }
     };
@@ -1225,7 +1257,7 @@ async fn spawn_transition(
             .await
             .err()
             .unwrap_or(KernelHostFailure::Cancelled);
-        publish_failure(snapshots, bootstrap, generation, reported);
+        publish_start_failure(kind, snapshots, bootstrap, generation, reported);
         return StartOutcome::Failed(reported);
     }
     snapshots.send_ready(
@@ -1339,6 +1371,15 @@ async fn ready_transition(
         ReadyWait::Exit(Ok(())) => {
             ready.access.credential.revoke();
             ownership.clear_reaped(ready.access.endpoint.generation);
+            if !publish_recovering_failure(
+                snapshots,
+                bootstrap,
+                ready.access.endpoint.generation,
+                KernelHostFailure::UnexpectedExit,
+            ) {
+                writer_gate.fail_closed();
+                return ReadyOutcome::Idle;
+            }
             ReadyOutcome::Recover {
                 plan: ready.plan,
                 attempts: ready.recovery_attempts,
@@ -1346,7 +1387,7 @@ async fn ready_transition(
             }
         }
         ReadyWait::Exit(Err(error)) => {
-            publish_failure(
+            let can_recover = publish_recovering_failure(
                 snapshots,
                 bootstrap,
                 ready.access.endpoint.generation,
@@ -1360,11 +1401,15 @@ async fn ready_transition(
             )
             .await
             {
-                Ok(()) => ReadyOutcome::Recover {
+                Ok(()) if can_recover => ReadyOutcome::Recover {
                     plan: ready.plan,
                     attempts: ready.recovery_attempts,
                     failure: error,
                 },
+                Ok(()) => {
+                    writer_gate.fail_closed();
+                    ReadyOutcome::Idle
+                }
                 Err(reported) => {
                     writer_gate.fail_closed();
                     publish_failure(
@@ -1513,7 +1558,10 @@ async fn recover_transition(
             Ok(launch) => launch,
             Err(error) => {
                 last_failure = error;
-                publish_failure(snapshots, bootstrap, attempt_generation, error);
+                if !publish_recovering_failure(snapshots, bootstrap, attempt_generation, error) {
+                    writer_gate.fail_closed();
+                    return None;
+                }
                 continue;
             }
         };
@@ -1538,7 +1586,12 @@ async fn recover_transition(
             StartOutcome::Failed(error) if can_retry_recovery_failure(error) => {
                 last_failure = error;
             }
-            StartOutcome::Failed(_) | StartOutcome::Stopped | StartOutcome::Closed => {
+            StartOutcome::Failed(error) => {
+                writer_gate.fail_closed();
+                publish_failure(snapshots, bootstrap, attempt_generation, error);
+                return None;
+            }
+            StartOutcome::Stopped | StartOutcome::Closed => {
                 writer_gate.fail_closed();
                 return None;
             }
@@ -1655,6 +1708,51 @@ fn publish_failure(
         endpoint: None,
         failure: Some(failure),
     });
+}
+
+fn publish_recovering_failure(
+    snapshots: &KernelHostPublicationSender,
+    bootstrap: &crate::kernel_bootstrap::NativeKernelBootstrapSession,
+    generation: u64,
+    failure: KernelHostFailure,
+) -> bool {
+    match bootstrap.retain_retrying_generation(generation) {
+        Ok(true) => {
+            snapshots.send_replace(KernelHostSnapshot {
+                phase: KernelHostPhase::Retrying,
+                generation,
+                endpoint: None,
+                failure: Some(failure),
+            });
+            true
+        }
+        Ok(false) => false,
+        Err(_) => {
+            snapshots.send_replace(KernelHostSnapshot {
+                phase: KernelHostPhase::Failed,
+                generation,
+                endpoint: None,
+                failure: Some(failure),
+            });
+            false
+        }
+    }
+}
+
+fn publish_start_failure(
+    kind: StartKind,
+    snapshots: &KernelHostPublicationSender,
+    bootstrap: &crate::kernel_bootstrap::NativeKernelBootstrapSession,
+    generation: u64,
+    failure: KernelHostFailure,
+) {
+    match kind {
+        StartKind::Manual => publish_failure(snapshots, bootstrap, generation, failure),
+        StartKind::Recovery => {
+            let _can_recover =
+                publish_recovering_failure(snapshots, bootstrap, generation, failure);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -3001,6 +3099,55 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn retryable_recovery_failure_never_publishes_manual_retry_terminal_state() {
+        let first_instance = InstanceId::new(Uuid::new_v4());
+        let recovered_instance = InstanceId::new(Uuid::new_v4());
+        let factory = Arc::new(ScriptedFactory::new([
+            PendingScript::ready(
+                ReadyEvidence {
+                    ready: NativeHostReady::new(43123, first_instance),
+                    authenticated_instance: first_instance,
+                },
+                RunningBehavior {
+                    exit: AsyncAction::Complete,
+                    exit_gate: None,
+                    graceful_stop: AsyncAction::Complete,
+                    force_reap: AsyncAction::Complete,
+                    force_reap_gate: None,
+                },
+            ),
+            PendingScript::Fail(KernelHostFailure::EarlyExit),
+            PendingScript::ready(
+                ReadyEvidence {
+                    ready: NativeHostReady::new(43124, recovered_instance),
+                    authenticated_instance: recovered_instance,
+                },
+                RunningBehavior::graceful(),
+            ),
+        ]));
+        let supervisor = KernelHostSupervisor::new_with_bootstrap_without_writer_gate_for_test(
+            factory,
+            recovery_timeouts(3),
+            crate::kernel_bootstrap::NativeKernelBootstrapOwner::new(),
+        );
+        let mut publications = supervisor.subscribe_publications();
+        supervisor.start(startup()).await.unwrap();
+        wait_for_phase(&supervisor, KernelHostPhase::Retrying).await;
+
+        tokio::time::advance(Duration::from_secs(1)).await;
+        wait_for_generation(&supervisor, 3).await;
+        let mut phases = Vec::new();
+        while let Ok(publication) = publications.receiver.try_recv() {
+            phases.push(publication.snapshot.phase);
+        }
+        assert!(!phases.contains(&KernelHostPhase::Failed));
+
+        tokio::time::advance(Duration::from_secs(2)).await;
+        wait_for_phase(&supervisor, KernelHostPhase::Ready).await;
+        supervisor.stop().await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
     async fn recovery_uses_bounded_exponential_backoff_then_allows_manual_retry() {
         let first_instance = InstanceId::new(Uuid::new_v4());
         let recovered_instance = InstanceId::new(Uuid::new_v4());
@@ -3464,13 +3611,13 @@ mod tests {
         wait_for_event(&factory, "running-force").await;
 
         assert!(!access.credential.is_available());
-        assert_eq!(supervisor.snapshot().phase, KernelHostPhase::Failed);
+        assert_eq!(supervisor.snapshot().phase, KernelHostPhase::Retrying);
         assert_eq!(supervisor.snapshot().generation, 1);
         assert_eq!(supervisor.snapshot().endpoint, None);
         assert_eq!(
             serde_json::to_value(bootstrap.read().unwrap()).unwrap(),
             json!({
-                "status": "failed",
+                "status": "retrying",
                 "bootstrapVersion": 1,
                 "generation": "1",
             })

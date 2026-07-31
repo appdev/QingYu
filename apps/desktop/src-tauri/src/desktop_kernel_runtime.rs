@@ -11,7 +11,8 @@ use crate::{
     kernel_host::{
         desktop_kernel_owner::{DesktopKernelEdgeEmitter, DesktopKernelOwner},
         kernel_endpoint_record::KernelEndpointRecordReader,
-        KernelHostSupervisor, KernelHostTimeouts, NativeKernelLaunch,
+        KernelHostPhase, KernelHostSnapshot, KernelHostSupervisor, KernelHostTimeouts,
+        NativeKernelLaunch,
     },
     kernel_process::NativeKernelProcessFactory,
     writer_authority::{KernelWriterPublicationGate, WorkspaceRootIdentity, WriterAuthority},
@@ -43,6 +44,8 @@ pub(crate) struct DesktopKernelStartupSnapshot {
 struct DesktopKernelRuntimeInner {
     closed: bool,
     owner: Option<Arc<DesktopKernelOwner>>,
+    owner_token: Option<u64>,
+    owner_publication_sequence: u64,
     selection: Option<DesktopKernelSelection>,
     status: DesktopKernelStartupStatus,
     next_attempt_token: u64,
@@ -76,6 +79,8 @@ impl DesktopKernelRuntimeState {
             inner: Mutex::new(DesktopKernelRuntimeInner {
                 closed: false,
                 owner: None,
+                owner_token: None,
+                owner_publication_sequence: 0,
                 selection: None,
                 status,
                 next_attempt_token: 0,
@@ -204,12 +209,16 @@ impl DesktopKernelRuntimeState {
             let compose_app = app.clone();
             let selection = attempt.selection;
             let bootstrap = runtime.bootstrap.clone();
+            let runtime_for_edges = Arc::downgrade(&runtime);
+            let owner_token = attempt.token;
             let composed = run_off_runtime_thread(move || {
                 compose_owner_blocking(
                     &compose_app,
                     selection.workspace_root,
                     selection.renderer_origin,
                     bootstrap,
+                    runtime_for_edges,
+                    owner_token,
                 )
             })
             .await;
@@ -280,6 +289,8 @@ impl DesktopKernelRuntimeState {
         let selection = inner.selection.clone().ok_or_else(runtime_unavailable)?;
         let token = reserve_attempt_token(&mut inner)?;
         let replaced_owner = inner.owner.take();
+        inner.owner_token = None;
+        inner.owner_publication_sequence = 0;
         inner.status = DesktopKernelStartupStatus::Starting;
         inner.active_attempt_token = Some(token);
         Ok((
@@ -315,6 +326,8 @@ impl DesktopKernelRuntimeState {
             return Err(owner);
         }
         inner.owner = Some(owner.clone());
+        inner.owner_token = Some(token);
+        inner.owner_publication_sequence = 0;
         Ok(owner)
     }
 
@@ -331,11 +344,13 @@ impl DesktopKernelRuntimeState {
                 return None;
             }
         };
-        let next = match owner.start(launch).await {
-            Ok(_access) => DesktopKernelStartupStatus::Ready,
-            Err(_error) => DesktopKernelStartupStatus::Failed,
-        };
-        self.replace_status_for_attempt(token, next).then_some(next)
+        let observed_sequence = owner.latest_publication_sequence();
+        let _start_result = owner.start(launch).await;
+        if owner.latest_publication_sequence() > observed_sequence {
+            return None;
+        }
+        self.replace_status_for_attempt(token, DesktopKernelStartupStatus::Failed)
+            .then_some(DesktopKernelStartupStatus::Failed)
     }
 
     pub(crate) fn take_owner_for_shutdown(&self) -> Option<Arc<DesktopKernelOwner>> {
@@ -345,7 +360,47 @@ impl DesktopKernelRuntimeState {
         };
         inner.closed = true;
         inner.active_attempt_token = None;
+        inner.owner_token = None;
+        inner.owner_publication_sequence = 0;
         inner.owner.take()
+    }
+
+    fn replace_status_for_owner_publication(
+        &self,
+        owner_token: u64,
+        sequence: u64,
+        phase: KernelHostPhase,
+    ) -> bool {
+        let next_status = match phase {
+            KernelHostPhase::Starting | KernelHostPhase::Retrying => {
+                DesktopKernelStartupStatus::Starting
+            }
+            KernelHostPhase::Ready => DesktopKernelStartupStatus::Ready,
+            KernelHostPhase::Dormant | KernelHostPhase::Stopping | KernelHostPhase::Failed => {
+                DesktopKernelStartupStatus::Failed
+            }
+        };
+        let mut inner = match self.inner.lock() {
+            Ok(inner) => inner,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if inner.closed
+            || inner.owner.is_none()
+            || inner.owner_token != Some(owner_token)
+            || sequence == 0
+            || sequence <= inner.owner_publication_sequence
+        {
+            return false;
+        }
+        inner.owner_publication_sequence = sequence;
+        if inner.status == next_status {
+            return false;
+        }
+        inner.status = next_status;
+        if matches!(phase, KernelHostPhase::Ready | KernelHostPhase::Failed) {
+            inner.active_attempt_token = None;
+        }
+        true
     }
 
     fn replace_status_for_attempt(&self, token: u64, status: DesktopKernelStartupStatus) -> bool {
@@ -392,10 +447,17 @@ where
 
 struct TauriDesktopKernelEdgeEmitter {
     app: tauri::AppHandle,
+    owner_token: u64,
+    runtime: std::sync::Weak<DesktopKernelRuntimeState>,
 }
 
 impl DesktopKernelEdgeEmitter for TauriDesktopKernelEdgeEmitter {
-    fn emit_kernel_state_changed(&self) {
+    fn emit_kernel_state_changed(&self, sequence: u64, snapshot: KernelHostSnapshot) {
+        if self.runtime.upgrade().is_some_and(|runtime| {
+            runtime.replace_status_for_owner_publication(self.owner_token, sequence, snapshot.phase)
+        }) {
+            emit_startup_changed(&self.app);
+        }
         let _emit_result = self.app.emit(NATIVE_KERNEL_BOOTSTRAP_CHANGED_EVENT, ());
     }
 }
@@ -405,6 +467,8 @@ fn compose_owner_blocking(
     workspace_root: PathBuf,
     renderer_origin: String,
     bootstrap: NativeKernelBootstrapOwner,
+    runtime: std::sync::Weak<DesktopKernelRuntimeState>,
+    owner_token: u64,
 ) -> Result<(Arc<DesktopKernelOwner>, NativeKernelLaunch), String> {
     let app_data_root = app
         .path()
@@ -458,7 +522,11 @@ fn compose_owner_blocking(
     let owner = Arc::new(DesktopKernelOwner::new_on_handle(
         supervisor,
         endpoint_reader,
-        Arc::new(TauriDesktopKernelEdgeEmitter { app: app.clone() }),
+        Arc::new(TauriDesktopKernelEdgeEmitter {
+            app: app.clone(),
+            owner_token,
+            runtime,
+        }),
         &runtime_handle,
     ));
     let launch = NativeKernelLaunch::desktop(
@@ -493,8 +561,8 @@ mod tests {
 
     use crate::kernel_host::{
         desktop_kernel_owner::{DesktopKernelDriver, DesktopKernelEdgeEmitter},
-        KernelHostFailure, KernelHostPublicationReader, KernelHostPublicationSender,
-        KernelHostPublicationSubscription, NativeKernelAccess,
+        KernelHostFailure, KernelHostPhase, KernelHostPublicationReader,
+        KernelHostPublicationSender, KernelHostPublicationSubscription, NativeKernelAccess,
     };
 
     use super::*;
@@ -505,9 +573,18 @@ mod tests {
         closes: AtomicUsize,
     }
 
+    struct QueuedFailureDriver {
+        publications: KernelHostPublicationSender,
+        reader: KernelHostPublicationReader,
+    }
+
     impl DesktopKernelDriver for CountingStartDriver {
         fn subscribe(&self) -> KernelHostPublicationSubscription {
             self.publications.subscribe()
+        }
+
+        fn latest_publication_sequence(&self) -> u64 {
+            self.publications.latest_sequence()
         }
 
         fn start(
@@ -530,10 +607,43 @@ mod tests {
         }
     }
 
+    impl DesktopKernelDriver for QueuedFailureDriver {
+        fn subscribe(&self) -> KernelHostPublicationSubscription {
+            self.reader.subscribe()
+        }
+
+        fn latest_publication_sequence(&self) -> u64 {
+            self.reader.latest_sequence()
+        }
+
+        fn start(
+            &self,
+            _launch: NativeKernelLaunch,
+        ) -> Pin<Box<dyn Future<Output = Result<NativeKernelAccess, KernelHostFailure>> + Send + '_>>
+        {
+            Box::pin(async move {
+                self.publications
+                    .publish_snapshot_for_test(KernelHostSnapshot {
+                        phase: KernelHostPhase::Retrying,
+                        generation: 1,
+                        endpoint: None,
+                        failure: Some(KernelHostFailure::Spawn),
+                    });
+                Err(KernelHostFailure::Spawn)
+            })
+        }
+
+        fn stop(&self) -> Pin<Box<dyn Future<Output = Result<(), KernelHostFailure>> + Send + '_>> {
+            Box::pin(async { Ok(()) })
+        }
+
+        fn close_fail_safe(&self) {}
+    }
+
     struct NoopEmitter;
 
     impl DesktopKernelEdgeEmitter for NoopEmitter {
-        fn emit_kernel_state_changed(&self) {}
+        fn emit_kernel_state_changed(&self, _sequence: u64, _snapshot: KernelHostSnapshot) {}
     }
 
     #[test]
@@ -717,6 +827,105 @@ mod tests {
         let retained_owner = runtime.take_owner_for_shutdown();
         drop_replaced_owner_off_runtime_thread(retained_owner).await;
         assert_eq!(active_driver.closes.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn installed_owner_publications_drive_authoritative_recovery_status() {
+        let runtime = Arc::new(DesktopKernelRuntimeState::new(
+            NativeKernelBootstrapOwner::new(),
+            DesktopKernelStartupStatus::Unselected,
+        ));
+        let attempt = runtime
+            .reserve_initial_start(
+                DesktopKernelSelection {
+                    workspace_root: std::env::temp_dir(),
+                    renderer_origin: "tauri://localhost".to_owned(),
+                },
+                false,
+            )
+            .unwrap();
+        let owner = test_owner(test_driver());
+        assert!(runtime
+            .install_owner_for_attempt(attempt.token, owner)
+            .is_ok());
+
+        assert!(runtime.replace_status_for_owner_publication(
+            attempt.token,
+            1,
+            KernelHostPhase::Ready,
+        ));
+        assert_eq!(
+            runtime.snapshot().unwrap().status,
+            DesktopKernelStartupStatus::Ready,
+        );
+        assert!(runtime.replace_status_for_owner_publication(
+            attempt.token,
+            2,
+            KernelHostPhase::Retrying,
+        ));
+        assert_eq!(
+            runtime.snapshot().unwrap().status,
+            DesktopKernelStartupStatus::Starting,
+        );
+        assert!(runtime.replace_status_for_owner_publication(
+            attempt.token,
+            3,
+            KernelHostPhase::Failed,
+        ));
+        assert_eq!(
+            runtime.snapshot().unwrap().status,
+            DesktopKernelStartupStatus::Failed,
+        );
+
+        let (retry, replaced_owner) = runtime.reserve_retry().unwrap();
+        assert!(replaced_owner.is_some());
+        assert!(!runtime.replace_status_for_owner_publication(
+            attempt.token,
+            4,
+            KernelHostPhase::Ready,
+        ));
+        assert_eq!(
+            runtime.snapshot().unwrap().status,
+            DesktopKernelStartupStatus::Starting,
+        );
+        assert!(runtime.attempt_is_active(retry.token));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn queued_owner_publication_wins_over_start_completion() {
+        let runtime = Arc::new(DesktopKernelRuntimeState::new(
+            NativeKernelBootstrapOwner::new(),
+            DesktopKernelStartupStatus::Unselected,
+        ));
+        let attempt = runtime
+            .reserve_initial_start(
+                DesktopKernelSelection {
+                    workspace_root: std::env::temp_dir(),
+                    renderer_origin: "tauri://localhost".to_owned(),
+                },
+                false,
+            )
+            .unwrap();
+        let (publications, _snapshots, reader) = KernelHostPublicationSender::new();
+        let owner = Arc::new(DesktopKernelOwner::new_on_handle(
+            Arc::new(QueuedFailureDriver {
+                publications,
+                reader,
+            }),
+            runtime.endpoint_reader(),
+            Arc::new(NoopEmitter),
+            &tokio::runtime::Handle::current(),
+        ));
+
+        let completion = runtime
+            .start_composed_owner_for_attempt(attempt.token, owner, test_launch())
+            .await;
+
+        assert_eq!(completion, None);
+        assert_eq!(
+            runtime.snapshot().unwrap().status,
+            DesktopKernelStartupStatus::Starting,
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

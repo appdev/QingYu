@@ -4,14 +4,18 @@ use tokio::task::JoinHandle;
 
 use crate::kernel_host::{
     kernel_endpoint_record::KernelEndpointRecordReader, KernelHostFailure,
-    KernelHostPublicationSubscription, KernelHostSupervisor, NativeKernelAccess,
-    NativeKernelLaunch,
+    KernelHostPublicationSubscription, KernelHostSnapshot, KernelHostSupervisor,
+    NativeKernelAccess, NativeKernelLaunch,
 };
 
 type DesktopKernelFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 pub(crate) trait DesktopKernelDriver: Send + Sync + 'static {
     fn subscribe(&self) -> KernelHostPublicationSubscription;
+    /// Returns the latest sequence published by the same stream returned from
+    /// `subscribe`. A completed start must publish its authoritative outcome
+    /// before resolving its response.
+    fn latest_publication_sequence(&self) -> u64;
     fn start(
         &self,
         launch: NativeKernelLaunch,
@@ -23,7 +27,7 @@ pub(crate) trait DesktopKernelDriver: Send + Sync + 'static {
 /// Emits a payload-free invalidation edge. The renderer must re-read the
 /// bootstrap/endpoint snapshot instead of receiving credentials in an event.
 pub(crate) trait DesktopKernelEdgeEmitter: Send + Sync + 'static {
-    fn emit_kernel_state_changed(&self);
+    fn emit_kernel_state_changed(&self, sequence: u64, snapshot: KernelHostSnapshot);
 }
 
 pub(crate) struct DesktopKernelOwner {
@@ -50,7 +54,7 @@ impl DesktopKernelOwner {
                     continue;
                 }
                 last_sequence = publication.sequence;
-                emitter.emit_kernel_state_changed();
+                emitter.emit_kernel_state_changed(publication.sequence, publication.snapshot);
             }
         });
         Self {
@@ -78,7 +82,7 @@ impl DesktopKernelOwner {
                     continue;
                 }
                 last_sequence = publication.sequence;
-                emitter.emit_kernel_state_changed();
+                emitter.emit_kernel_state_changed(publication.sequence, publication.snapshot);
             }
         });
         Self {
@@ -93,6 +97,10 @@ impl DesktopKernelOwner {
         launch: NativeKernelLaunch,
     ) -> Result<NativeKernelAccess, KernelHostFailure> {
         self.driver.start(launch).await
+    }
+
+    pub(crate) fn latest_publication_sequence(&self) -> u64 {
+        self.driver.latest_publication_sequence()
     }
 
     /// Explicit shutdown preserves the supervisor's graceful drain contract.
@@ -115,6 +123,10 @@ impl Drop for DesktopKernelOwner {
 impl DesktopKernelDriver for KernelHostSupervisor {
     fn subscribe(&self) -> KernelHostPublicationSubscription {
         self.subscribe_publications()
+    }
+
+    fn latest_publication_sequence(&self) -> u64 {
+        KernelHostSupervisor::latest_publication_sequence(self)
     }
 
     fn start(
@@ -171,6 +183,10 @@ mod tests {
             self.publications.subscribe()
         }
 
+        fn latest_publication_sequence(&self) -> u64 {
+            self.publications.latest_sequence()
+        }
+
         fn start(
             &self,
             _launch: NativeKernelLaunch,
@@ -202,7 +218,7 @@ mod tests {
     struct CountingEmitter(AtomicUsize);
 
     impl DesktopKernelEdgeEmitter for CountingEmitter {
-        fn emit_kernel_state_changed(&self) {
+        fn emit_kernel_state_changed(&self, _sequence: u64, _snapshot: KernelHostSnapshot) {
             self.0.fetch_add(1, Ordering::SeqCst);
         }
     }

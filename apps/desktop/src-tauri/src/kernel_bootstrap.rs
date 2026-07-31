@@ -460,6 +460,10 @@ impl NativeKernelBootstrapSession {
         self.begin_owned_lifecycle(NativeKernelBootstrapStatus::Retrying, generation)
     }
 
+    pub(crate) fn retain_retrying_generation(&self, generation: u64) -> Result<bool, String> {
+        self.finish_generation(NativeKernelBootstrapStatus::Retrying, generation)
+    }
+
     pub(crate) fn continue_start(&self, generation: u64) -> Result<(), String> {
         let mut state = self
             .inner
