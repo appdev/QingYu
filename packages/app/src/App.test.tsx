@@ -4188,7 +4188,7 @@ describe("QingYu workspace", () => {
     expect(screen.getByRole("complementary", { name: "Markdown file tree" })).toHaveAttribute("aria-hidden", "false");
     expect(screen.getByRole("tab", { name: /browser\.md/ })).toBeInTheDocument();
     expect(container.querySelector(".native-titlebar")).toHaveStyle({
-      gridTemplateColumns: "minmax(0,1fr) 196px",
+      gridTemplateColumns: "auto minmax(0,1fr) 196px",
       left: "289px"
     });
     expect(container.querySelector(".windows-app-chrome")).not.toBeInTheDocument();
@@ -4196,7 +4196,7 @@ describe("QingYu workspace", () => {
     expect(container.querySelector(".markdown-file-tree-slot")?.parentElement).not.toHaveClass("pt-10");
     expect(container.querySelector(".windows-titlebar-actions")).toBeInTheDocument();
     expect(container.querySelector(".windows-window-controls")).not.toBeInTheDocument();
-    expect(container.querySelector(".titlebar-spacer")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Toggle file list" })).toHaveAttribute("aria-pressed", "true");
     expect(container.querySelector(".document-tabs-drag-spacer")).not.toBeInTheDocument();
     expect(container.querySelector(".native-title-slot")?.getAttribute("style") ?? "").not.toContain("margin-left");
   });

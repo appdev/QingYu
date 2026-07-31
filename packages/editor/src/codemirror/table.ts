@@ -1,3 +1,4 @@
+import type { EditorState } from "@codemirror/state";
 import {
   Decoration,
   EditorView,
@@ -17,7 +18,7 @@ import {
   type LinksPluginOptions,
 } from "./links.ts";
 import { defineMarkraPlugin } from "./plugin.ts";
-import { markraRenderer } from "./renderers.ts";
+import { getMarkraRenderers, markraRenderer } from "./renderers.ts";
 
 export type CodeMirrorTableAlignment = "center" | "left" | "right" | null;
 export type CodeMirrorTableWidthMode = "auto" | "even";
@@ -93,8 +94,15 @@ const defaultLabels: TablePreviewLabels = {
 const tableSizePickerColumns = 8;
 const tableSizePickerRows = 10;
 const tableSizePopoverFallbackSize = { height: 248, width: 184 };
+const tablePreviewRendererId = "markra.table-preview";
 const tableWidthModeStoragePrefix = "markra:table-width-mode";
 const tableEditingSessions = new WeakMap<CodeMirrorView, TableEditingSession>();
+
+export function tablePreviewEnabled(state: EditorState) {
+  return getMarkraRenderers(state, "Table").some(
+    (renderer) => renderer.id === tablePreviewRendererId,
+  );
+}
 
 function tableWidthModeStorageKey(documentKey: string | null | undefined) {
   const normalizedKey = documentKey?.trim() || "untitled";
@@ -576,15 +584,17 @@ function applyWidthModeToTableControls(
   }
 }
 
+function visualTableCellHasPlaceholderBreak(cell: HTMLTableCellElement) {
+  return (
+    cell.childNodes.length === 1 &&
+    cell.firstElementChild?.tagName === "BR"
+  );
+}
+
 function visualTableCellSource(cell: HTMLTableCellElement) {
   // Browsers keep a lone <br> as the caret placeholder after the last
   // character is deleted; visual table cells do not allow real line breaks.
-  if (
-    cell.childNodes.length === 1 &&
-    cell.firstElementChild?.tagName === "BR"
-  ) {
-    return "";
-  }
+  if (visualTableCellHasPlaceholderBreak(cell)) return "";
   return serializeInlineMarkdown(cell);
 }
 
@@ -633,21 +643,113 @@ function tableCellCaretOffset(cell: HTMLTableCellElement) {
   return range.toString().length;
 }
 
-function activeVisualTableCell(table: HTMLTableElement) {
+function activeVisualTableCell(
+  view: CodeMirrorView,
+  table: HTMLTableElement,
+) {
+  const activeElement = table.ownerDocument.activeElement;
+  if (
+    activeElement instanceof HTMLTableCellElement &&
+    table.contains(activeElement)
+  ) {
+    // Safari can leave its native range in the prior cell after Tab moves
+    // focus, so the focused cell is the authoritative input destination.
+    return activeElement;
+  }
+
   const selectionNode = table.ownerDocument.getSelection()?.anchorNode;
   const selectionElement =
     selectionNode instanceof Element ? selectionNode : selectionNode?.parentElement;
   const selectedCell = selectionElement?.closest<HTMLTableCellElement>("th, td");
   if (selectedCell && table.contains(selectedCell)) return selectedCell;
 
-  const activeElement = table.ownerDocument.activeElement;
-  return activeElement instanceof HTMLTableCellElement &&
-    table.contains(activeElement)
-    ? activeElement
-    : null;
+  // WebKit can lift the selection to the row/table after deleting the final
+  // character. The editing session still identifies the cell that must sync.
+  const session = tableEditingSessions.get(view);
+  const wrapper = table.closest<HTMLElement>(".cm-markra-table-wrap");
+  if (
+    !session ||
+    wrapper?.dataset.tableFrom !== String(session.tableFrom)
+  ) {
+    return null;
+  }
+  return table.querySelector<HTMLTableCellElement>(
+    `[data-table-row="${session.row}"]` +
+      `[data-table-column="${session.column}"]` +
+      `[data-table-header="${String(session.header)}"]`,
+  );
 }
 
-function focusVisualTableCell(
+function placeVisualTableCellCaret(
+  cell: HTMLTableCellElement,
+  caretOffset: number,
+) {
+  cell.focus();
+  const walker = cell.ownerDocument.createTreeWalker(
+    cell,
+    NodeFilter.SHOW_TEXT,
+  );
+  let textNode = walker.nextNode();
+  let remaining = caretOffset;
+  while (
+    textNode &&
+    remaining > (textNode.textContent?.length ?? 0)
+  ) {
+    remaining -= textNode.textContent?.length ?? 0;
+    textNode = walker.nextNode();
+  }
+  // WebKit may place input outside an empty table cell when the range is
+  // anchored on the <th>/<td> itself, so always provide a text caret host.
+  if (!textNode) {
+    textNode = cell.ownerDocument.createTextNode("");
+    if (visualTableCellHasPlaceholderBreak(cell)) {
+      cell.replaceChildren(textNode);
+    } else {
+      cell.append(textNode);
+    }
+  }
+  const selection = cell.ownerDocument.getSelection();
+  if (!selection) return;
+  const range = cell.ownerDocument.createRange();
+  range.setStart(
+    textNode,
+    Math.min(remaining, textNode.textContent?.length ?? 0),
+  );
+  range.collapse(true);
+  selection.removeAllRanges();
+  selection.addRange(range);
+}
+
+function repairVisualTableCellSelection(
+  view: CodeMirrorView,
+  table: HTMLTableElement,
+) {
+  const cell = activeVisualTableCell(view, table);
+  const selectionNode = table.ownerDocument.getSelection()?.anchorNode;
+  if (cell && (!selectionNode || !cell.contains(selectionNode))) {
+    placeVisualTableCellCaret(cell, tableCellCaretOffset(cell));
+  }
+}
+
+function moveVisualTableCellFocus(
+  view: CodeMirrorView,
+  table: HTMLTableElement,
+  backward: boolean,
+) {
+  const cell = activeVisualTableCell(view, table);
+  if (!cell) return false;
+
+  const cells = Array.from(
+    table.querySelectorAll<HTMLTableCellElement>("th, td"),
+  );
+  const target = cells[cells.indexOf(cell) + (backward ? -1 : 1)];
+  if (!target) return false;
+
+  placeVisualTableCellCaret(target, tableCellCaretOffset(target));
+  return true;
+}
+
+export function focusVisualTableCell(
   view: CodeMirrorView,
   tableFrom: number,
   rowIndex: number,
@@ -664,31 +766,7 @@ function focusVisualTableCell(
     );
     if (!cell) return;
 
-    cell.focus();
-    const walker = cell.ownerDocument.createTreeWalker(
-      cell,
-      NodeFilter.SHOW_TEXT,
-    );
-    let textNode = walker.nextNode();
-    let remaining = caretOffset;
-    while (
-      textNode &&
-      remaining > (textNode.textContent?.length ?? 0)
-    ) {
-      remaining -= textNode.textContent?.length ?? 0;
-      textNode = walker.nextNode();
-    }
-    if (!textNode) return;
-    const selection = cell.ownerDocument.getSelection();
-    if (!selection) return;
-    const range = cell.ownerDocument.createRange();
-    range.setStart(
-      textNode,
-      Math.min(remaining, textNode.textContent?.length ?? 0),
-    );
-    range.collapse(true);
-    selection.removeAllRanges();
-    selection.addRange(range);
+    placeVisualTableCellCaret(cell, caretOffset);
   });
 }
 
@@ -713,7 +791,8 @@ function syncVisualTableCell(
     header,
     visualTableCellSource(cell),
   );
-  if (changed) {
+  const selectionNode = cell.ownerDocument.getSelection()?.anchorNode;
+  if (changed || !selectionNode || !cell.contains(selectionNode)) {
     focusVisualTableCell(
       view,
       preview.from,
@@ -1169,23 +1248,43 @@ class TableWidget extends WidgetType {
     table.dataset.tableAlignment = tableAlignment;
     table.dataset.widthMode = widthMode;
     table.classList.toggle("markra-table-width-auto", widthMode === "auto");
+    table.addEventListener("keydown", (event) => {
+      if (
+        event.key !== "Tab" ||
+        event.altKey ||
+        event.ctrlKey ||
+        event.metaKey ||
+        !moveVisualTableCellFocus(view, table, event.shiftKey)
+      ) {
+        return;
+      }
+      // WebKit preserves the old editing position during native Tab focus
+      // navigation, so move the caret before its next insertion begins.
+      event.preventDefault();
+      event.stopPropagation();
+    });
     // Browsers target editing events at the shared contenteditable table host,
     // so cell-level listeners miss real input even though the cell DOM changes.
+    table.addEventListener("beforeinput", (event) => {
+      if (event instanceof InputEvent && event.isComposing) return;
+      repairVisualTableCellSelection(view, table);
+    });
     table.addEventListener("compositionstart", (event) => {
       event.stopPropagation();
+      repairVisualTableCellSelection(view, table);
       composing = true;
     });
     table.addEventListener("compositionend", (event) => {
       event.stopPropagation();
       composing = false;
-      const cell = activeVisualTableCell(table);
+      const cell = activeVisualTableCell(view, table);
       if (cell) syncVisualTableCell(view, this.preview, cell);
     });
     table.addEventListener("input", (event) => {
       event.stopPropagation();
       // Replacing the widget mid-composition cancels native CJK input, so commit only after compositionend.
       if (composing || (event instanceof InputEvent && event.isComposing)) return;
-      const cell = activeVisualTableCell(table);
+      const cell = activeVisualTableCell(view, table);
       if (cell) syncVisualTableCell(view, this.preview, cell);
     });
 
@@ -1531,10 +1630,10 @@ export function tablePreviewPlugin(
   const getDocumentKey = options.getDocumentKey ?? (() => undefined);
 
   return defineMarkraPlugin({
-    id: "markra.table-preview",
+    id: tablePreviewRendererId,
     extension: [
       markraRenderer({
-        id: "markra.table-preview",
+        id: tablePreviewRendererId,
         nodeNames: ["Table"],
         render(context) {
           if (context.revealed("node")) return true;

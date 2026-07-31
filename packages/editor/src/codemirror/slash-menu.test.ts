@@ -9,6 +9,7 @@ import {
   openMarkraSlashMenu,
   runMarkraSlashMenuAction,
   searchMarkraUi,
+  tablePreviewPlugin,
 } from "./index.ts";
 
 import "./dom.test-support.ts";
@@ -121,6 +122,53 @@ describe("QingYu slash menu", () => {
     expect(execution.state.doc.toString()).toBe("## ");
     expect(execution.state.selection.main.head).toBe(3);
     expect(getMarkraSlashMenuState(execution).open).toBe(false);
+  });
+
+  it("keeps an inserted table visual while editing its first cell", async () => {
+    const parent = document.createElement("div");
+    document.body.append(parent);
+    const view = new EditorView({
+      parent,
+      state: EditorState.create({
+        doc: "/table",
+        extensions: [
+          liveMarkdown({
+            plugins: [blocksPlugin(), tablePreviewPlugin()],
+            slashMenu: true,
+          }),
+        ],
+        selection: EditorSelection.cursor("/table".length),
+      }),
+    });
+    views.push(view);
+    view.focus();
+
+    expect(runMarkraSlashMenuAction(view, "block.table")).toBe(true);
+    await Promise.resolve();
+
+    expect(view.state.doc.toString()).toBe(
+      ["|  |  |", "| --- | --- |", "|  |  |"].join("\n"),
+    );
+    expect(view.dom.querySelector(".cm-markra-table")).not.toBeNull();
+    const firstCell = view.dom.querySelector<HTMLTableCellElement>(
+      ".cm-markra-table thead th:first-child",
+    );
+    expect(document.activeElement).toBe(firstCell);
+    expect(
+      firstCell?.contains(document.getSelection()?.anchorNode ?? null),
+    ).toBe(true);
+
+    if (firstCell) firstCell.textContent = "Name";
+    firstCell?.dispatchEvent(new InputEvent("input", { bubbles: true }));
+    await Promise.resolve();
+
+    expect(view.state.doc.toString()).toBe(
+      ["| Name |  |", "| --- | --- |", "|  |  |"].join("\n"),
+    );
+    expect(view.dom.querySelector(".cm-markra-table")).not.toBeNull();
+    expect(document.activeElement).toBe(
+      view.dom.querySelector(".cm-markra-table thead th:first-child"),
+    );
   });
 
   it.each([
