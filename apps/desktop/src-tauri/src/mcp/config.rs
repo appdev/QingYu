@@ -13,15 +13,8 @@ use super::local_settings::McpLocalSettingsService;
 
 pub(crate) const MCP_CONFIG_VERSION: u32 = 1;
 const DEFAULT_LIMIT_BYTES: u64 = 8 * 1024 * 1024;
-const DEFAULT_RECYCLE_BIN_RETENTION_DAYS: u16 = 30;
+const DEFAULT_RECYCLE_BIN_RETENTION_DAYS: u16 = 0;
 const MAX_LIMIT_BYTES: u64 = 64 * 1024 * 1024;
-
-fn normalize_recycle_bin_retention_days(value: u16) -> u16 {
-    match value {
-        0 | 7 | 30 | 90 => value,
-        _ => DEFAULT_RECYCLE_BIN_RETENTION_DAYS,
-    }
-}
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -61,7 +54,7 @@ pub(crate) enum DeletionPolicy {
 
 impl Default for DeletionPolicy {
     fn default() -> Self {
-        Self::SystemTrash
+        Self::QingYuRecycleBin
     }
 }
 
@@ -194,8 +187,10 @@ impl McpConfig {
         self.burst_requests = self.burst_requests.clamp(1, 100);
         self.concurrent_calls = self.concurrent_calls.clamp(1, 32);
         self.tool_timeout_secs = self.tool_timeout_secs.clamp(5, 600);
-        self.recycle_bin_retention_days =
-            normalize_recycle_bin_retention_days(self.recycle_bin_retention_days);
+        if self.deletion == DeletionPolicy::SystemTrash {
+            self.deletion = DeletionPolicy::QingYuRecycleBin;
+        }
+        self.recycle_bin_retention_days = 0;
         self.audit.normalize();
     }
 
@@ -342,6 +337,20 @@ impl McpConfigManager {
         self.state
             .lock()
             .map(|state| state.document.clone())
+            .map_err(|_| McpConfigError::read())
+    }
+
+    pub(crate) fn snapshot_with_generation(
+        &self,
+    ) -> Result<(McpConfigDocument, u64), McpConfigError> {
+        self.state
+            .lock()
+            .map(|state| {
+                (
+                    state.document.clone(),
+                    self.generation.load(Ordering::Acquire),
+                )
+            })
             .map_err(|_| McpConfigError::read())
     }
 

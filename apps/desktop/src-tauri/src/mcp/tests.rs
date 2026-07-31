@@ -11,6 +11,7 @@ use super::{
     confirmation::{ConfirmationOutcome, ConfirmationPresenter, ConfirmationRequest},
     handles::HandleSigner,
     ipc::LocalIpcEndpoint,
+    kernel_adapter::{McpKernelFailure, McpKernelFuture, McpKernelPort},
     local_settings::McpLocalSettingsService,
     policy::{OperationDescriptor, OperationRisk, PolicyEngine},
     server::{McpServerController, McpServerOptions, McpServerState, MAX_ACTIVE_SESSIONS},
@@ -84,7 +85,6 @@ fn background_app_launch_does_not_inherit_mcp_stdio() {
     assert!(implementation.contains(".stdout(Stdio::null())"));
     assert!(implementation.contains(".stderr(Stdio::null())"));
 }
-use crate::app_settings::AppSettingsService;
 use crate::markdown_files::{
     CreateDocument, DeleteDocument, DocumentScope, DocumentService, MoveDocument, MutationOptions,
     SyncRequest, UpdateDocument,
@@ -98,7 +98,20 @@ use crate::sync_config::{
     storage::{enable_at_app_data, load_from_app_data, patch_batch_at_app_data},
     SyncDispatchResult,
 };
+use qingyu_kernel::contract::{
+    CreateDocumentRequest as KernelCreateDocumentRequest, CreatedDocumentDto,
+    DeleteDocumentRequest as KernelDeleteDocumentRequest, DocumentContentDto, DocumentEntryDto,
+    DocumentId as KernelDocumentId, DocumentKind as KernelDocumentKind, DocumentPageDto,
+    ErrorCode as KernelErrorCode, ListDocumentsQuery,
+    MoveDocumentRequest as KernelMoveDocumentRequest, PatchSettingsRequest, PatchSyncConfigRequest,
+    RunId, SearchPageDto, SearchWorkspaceQuery, SettingsSnapshotDto, SyncConfigViewDto,
+    SyncConnectionTestDto, SyncRunAcceptedDto, SyncRunStatusDto, SyncStatusDto,
+    TestSyncConnectionRequest, TriggerSyncRunRequest,
+    UpdateDocumentRequest as KernelUpdateDocumentRequest, WireIdentityKey, WorkspaceDto,
+    WorkspaceGeneration, WorkspaceId as KernelWorkspaceId, WorkspaceRelativePath,
+};
 use rmcp::{ClientHandler, ServiceExt};
+use tokio_util::sync::CancellationToken;
 
 struct FakeConfirmationPresenter {
     outcome: ConfirmationOutcome,
@@ -113,6 +126,25 @@ impl ConfirmationPresenter for FakeConfirmationPresenter {
     }
 }
 
+#[derive(Default)]
+struct BlockingConfirmationPresenter {
+    release: tokio::sync::Notify,
+    started: tokio::sync::Notify,
+}
+
+impl ConfirmationPresenter for BlockingConfirmationPresenter {
+    fn present<'a>(
+        &'a self,
+        _request: ConfirmationRequest,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ConfirmationOutcome> + Send + 'a>> {
+        Box::pin(async move {
+            self.started.notify_one();
+            self.release.notified().await;
+            ConfirmationOutcome::Allowed
+        })
+    }
+}
+
 #[test]
 fn config_defaults_are_disabled_and_use_the_approved_policy() {
     let config = McpConfig::default();
@@ -120,8 +152,8 @@ fn config_defaults_are_disabled_and_use_the_approved_policy() {
     assert!(!config.enabled);
     assert_eq!(config.confirmation, ConfirmationPolicy::DestructiveOnly);
     assert_eq!(config.dry_run, DryRunPolicy::HighRisk);
-    assert_eq!(config.deletion, DeletionPolicy::SystemTrash);
-    assert_eq!(config.recycle_bin_retention_days, 30);
+    assert_eq!(config.deletion, DeletionPolicy::QingYuRecycleBin);
+    assert_eq!(config.recycle_bin_retention_days, 0);
     assert_eq!(
         config.sync_after_write,
         SyncAfterWritePolicy::FollowWorkspace
@@ -170,47 +202,20 @@ fn config_limits_are_clamped_before_revisioning() {
     assert_eq!(config.burst_requests, 100);
     assert_eq!(config.concurrent_calls, 32);
     assert_eq!(config.tool_timeout_secs, 5);
-    assert_eq!(config.recycle_bin_retention_days, 30);
+    assert_eq!(config.recycle_bin_retention_days, 0);
 }
 
 #[test]
-fn config_preserves_supported_recycle_bin_retention_presets() {
-    for recycle_bin_retention_days in [0, 7, 30, 90] {
-        let mut config = McpConfig {
-            recycle_bin_retention_days,
-            ..McpConfig::default()
-        };
-
-        config.normalize();
-
-        assert_eq!(
-            config.recycle_bin_retention_days,
-            recycle_bin_retention_days
-        );
-    }
-}
-
-#[test]
-fn recycle_cleanup_policy_requires_enabled_mcp_and_a_nonzero_retention() {
-    let disabled = McpConfig {
+fn config_migrates_platform_trash_and_unimplemented_retention_to_kernel_recovery() {
+    let mut config = McpConfig {
+        deletion: DeletionPolicy::SystemTrash,
         recycle_bin_retention_days: 7,
         ..McpConfig::default()
     };
-    assert_eq!(super::recycle_retention_for_cleanup(&disabled), None);
+    config.normalize();
 
-    let never = McpConfig {
-        enabled: true,
-        recycle_bin_retention_days: 0,
-        ..McpConfig::default()
-    };
-    assert_eq!(super::recycle_retention_for_cleanup(&never), None);
-
-    let enabled = McpConfig {
-        enabled: true,
-        recycle_bin_retention_days: 7,
-        ..McpConfig::default()
-    };
-    assert_eq!(super::recycle_retention_for_cleanup(&enabled), Some(7));
+    assert_eq!(config.deletion, DeletionPolicy::QingYuRecycleBin);
+    assert_eq!(config.recycle_bin_retention_days, 0);
 }
 
 #[test]
@@ -472,6 +477,44 @@ fn workspace_boundary_signed_handles_reject_tamper_type_and_cross_workspace_use(
     *final_byte = if *final_byte == b'A' { b'B' } else { b'A' };
     let tampered = String::from_utf8(tampered).expect("ASCII handle");
     assert!(signer.verify_document(&tampered, &registry).is_err());
+}
+
+#[test]
+fn mcp_document_handles_bind_the_verified_path_to_the_kernel_document_id() {
+    let directory = tempfile::tempdir().expect("temporary workspace");
+    std::fs::write(directory.path().join("note.md"), "hello").expect("workspace note");
+    let registry = workspace_registry();
+    let workspace = registry
+        .authorize(directory.path(), "Notes")
+        .expect("authorize workspace");
+    let kernel_generation =
+        WorkspaceGeneration::parse("kernel-generation-1").expect("Kernel generation");
+    let relative = WorkspaceRelativePath::parse("note.md").expect("relative path");
+    let kernel_id = WireIdentityKey::generate()
+        .expect("Kernel identity key")
+        .issue_document_id(
+            KernelWorkspaceId::new(workspace.workspace_id),
+            &kernel_generation,
+            KernelDocumentKind::File,
+            &relative,
+        )
+        .expect("Kernel document ID");
+    let signer = HandleSigner::new([10_u8; 32]);
+    let handle = signer
+        .issue_kernel_document(
+            workspace.workspace_id,
+            registry.generation(),
+            "note.md",
+            &kernel_id,
+        )
+        .expect("MCP Kernel document handle");
+
+    let verified = signer
+        .verify_document(&handle, &registry)
+        .expect("verify bound handle");
+
+    assert_eq!(verified.relative_path(), std::path::Path::new("note.md"));
+    assert_eq!(verified.kernel_document_id(), Some(&kernel_id));
 }
 
 #[test]
@@ -1036,7 +1079,35 @@ fn missing_authoritative_workspace_clears_existing_authority() {
 }
 
 #[test]
-fn mcp_initialization_installs_workspace_before_starting_listener() {
+fn published_authority_epoch_rejects_an_out_of_order_workspace_commit() {
+    let parent = tempfile::tempdir().expect("authority epoch fixture");
+    let first = parent.path().join("first");
+    let second = parent.path().join("second");
+    std::fs::create_dir(&first).expect("first workspace");
+    std::fs::create_dir(&second).expect("second workspace");
+    let registry = WorkspaceRegistry::new(Vec::new());
+
+    registry
+        .publish_authority_epoch(1)
+        .expect("publish first epoch");
+    registry
+        .publish_authority_epoch(2)
+        .expect("publish second epoch");
+    assert!(!registry
+        .commit_published_current(1, Some(&first))
+        .expect("reject stale commit"));
+    assert!(registry.list_safe().is_empty());
+
+    assert!(registry
+        .commit_published_current(2, Some(&second))
+        .expect("commit current epoch"));
+    let active = registry.list_safe();
+    assert_eq!(active.len(), 1);
+    assert_eq!(active[0].leaf_name, "second");
+}
+
+#[test]
+fn mcp_initialization_uses_the_managed_kernel_owner_without_a_legacy_data_plane() {
     let source = include_str!("mod.rs");
     let initialize_start = source
         .find("pub(crate) fn initialize")
@@ -1046,15 +1117,33 @@ fn mcp_initialization_installs_workspace_before_starting_listener() {
         .map(|offset| initialize_start + offset)
         .expect("MCP initialize boundary");
     let initialize = &source[initialize_start..initialize_end];
-    let activation = initialize
-        .find("apply_authoritative_primary_workspace")
-        .expect("backend-only workspace activation");
-    let startup = initialize
-        .find("apply_server_config")
-        .expect("MCP listener startup");
-
-    assert!(activation < startup);
+    assert!(initialize
+        .contains("try_state::<Arc<crate::desktop_kernel_runtime::DesktopKernelRuntimeState>>()"));
+    assert!(!initialize
+        .contains("app.state::<Arc<crate::desktop_kernel_runtime::DesktopKernelRuntimeState>>()"));
+    assert!(initialize.contains("McpKernelClient::new"));
+    assert!(initialize.contains("refresh_kernel_workspace"));
+    assert!(!initialize.contains("with_primary_workspace_transaction"));
+    assert!(!initialize.contains("DocumentService::new"));
+    assert!(!initialize.contains("SyncService::new"));
+    assert!(!initialize.contains("KernelSettingsOwner"));
     assert!(!initialize.contains("WebviewWindow"));
+}
+
+#[test]
+fn kernel_workspace_refresh_emits_the_runtime_generation_change() {
+    let source = include_str!("mod.rs");
+    let refresh_start = source
+        .find("pub(crate) async fn refresh_kernel_workspace")
+        .expect("Kernel workspace refresh function");
+    let refresh_end = source[refresh_start..]
+        .find("pub(crate) struct UpdateMcpSettingsInput")
+        .map(|offset| refresh_start + offset)
+        .expect("Kernel workspace refresh boundary");
+    let refresh = &source[refresh_start..refresh_end];
+
+    assert!(refresh.contains("mcp_runtime_change_event"));
+    assert!(refresh.contains("app.emit(MCP_RUNTIME_CHANGED_EVENT"));
 }
 
 #[test]
@@ -2115,10 +2204,744 @@ fn sync_after_write_is_enabled_only_for_the_authoritative_primary_workspace() {
     assert!(!fixture.service.sync_enabled_for_workspace(&external));
 }
 
+struct FakeKernelPort {
+    documents: std::sync::Arc<DocumentService>,
+    handles: std::sync::Arc<HandleSigner>,
+    workspaces: std::sync::Arc<WorkspaceRegistry>,
+    identities: WireIdentityKey,
+    paths: std::sync::Mutex<std::collections::HashMap<String, String>>,
+    settings: std::sync::Mutex<SettingsSnapshotDto>,
+    sync_config: std::sync::Mutex<SyncConfigViewDto>,
+    block_settings: std::sync::atomic::AtomicBool,
+    cancel_after_document_mutation: std::sync::atomic::AtomicBool,
+    settings_started: tokio::sync::Notify,
+    settings_release: tokio::sync::Notify,
+    sync_run_requests: std::sync::atomic::AtomicUsize,
+    reject_sync_runs: std::sync::atomic::AtomicBool,
+    sync_run_queries: std::sync::atomic::AtomicUsize,
+}
+
+impl FakeKernelPort {
+    fn new(
+        documents: std::sync::Arc<DocumentService>,
+        handles: std::sync::Arc<HandleSigner>,
+        workspaces: std::sync::Arc<WorkspaceRegistry>,
+    ) -> Self {
+        Self {
+            documents,
+            handles,
+            workspaces,
+            identities: WireIdentityKey::generate().expect("fake Kernel identity key"),
+            paths: std::sync::Mutex::new(std::collections::HashMap::new()),
+            settings: std::sync::Mutex::new(
+                serde_json::from_value(serde_json::json!({
+                    "revision": "settings-1",
+                    "values": [{
+                        "key": "language",
+                        "value": { "type": "string", "value": "en-US" }
+                    }]
+                }))
+                .expect("fake Kernel settings"),
+            ),
+            sync_config: std::sync::Mutex::new(fake_kernel_sync_config("sync-1")),
+            block_settings: std::sync::atomic::AtomicBool::new(false),
+            cancel_after_document_mutation: std::sync::atomic::AtomicBool::new(false),
+            settings_started: tokio::sync::Notify::new(),
+            settings_release: tokio::sync::Notify::new(),
+            sync_run_requests: std::sync::atomic::AtomicUsize::new(0),
+            reject_sync_runs: std::sync::atomic::AtomicBool::new(false),
+            sync_run_queries: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+
+    fn block_settings(&self) {
+        self.block_settings
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    async fn wait_for_settings(&self) {
+        self.settings_started.notified().await;
+    }
+
+    fn release_settings(&self) {
+        self.settings_release.notify_waiters();
+    }
+
+    fn cancellation(cancellation: &CancellationToken) -> Result<(), McpKernelFailure> {
+        if cancellation.is_cancelled() {
+            Err(McpKernelFailure::RequestCancelled)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn workspace(&self) -> Result<super::workspaces::ResolvedWorkspace, McpKernelFailure> {
+        self.workspaces
+            .require_primary_workspace()
+            .map_err(|_| McpKernelFailure::Api(KernelErrorCode::InitializationRequired))
+    }
+
+    fn kernel_generation() -> WorkspaceGeneration {
+        WorkspaceGeneration::parse("fake-kernel-generation-1").expect("fake generation")
+    }
+
+    fn kernel_id(
+        &self,
+        workspace: &super::workspaces::ResolvedWorkspace,
+        kind: KernelDocumentKind,
+        path: &str,
+    ) -> Result<KernelDocumentId, McpKernelFailure> {
+        let relative =
+            WorkspaceRelativePath::parse(path).map_err(|_| McpKernelFailure::InvalidResponse)?;
+        let id = self
+            .identities
+            .issue_document_id(
+                KernelWorkspaceId::new(workspace.workspace_id),
+                &Self::kernel_generation(),
+                kind,
+                &relative,
+            )
+            .map_err(|_| McpKernelFailure::InvalidResponse)?;
+        self.paths
+            .lock()
+            .map_err(|_| McpKernelFailure::InvalidResponse)?
+            .insert(id.as_str().to_owned(), path.to_owned());
+        Ok(id)
+    }
+
+    fn path_for(&self, id: &KernelDocumentId) -> Result<String, McpKernelFailure> {
+        self.paths
+            .lock()
+            .map_err(|_| McpKernelFailure::InvalidResponse)?
+            .get(id.as_str())
+            .cloned()
+            .ok_or(McpKernelFailure::Api(KernelErrorCode::DocumentNotFound))
+    }
+
+    fn document_handle(
+        &self,
+        workspace: &super::workspaces::ResolvedWorkspace,
+        path: &str,
+    ) -> Result<super::handles::VerifiedDocumentHandle, McpKernelFailure> {
+        let handle = self
+            .handles
+            .issue_document(workspace.workspace_id, workspace.workspace_generation, path)
+            .map_err(|_| McpKernelFailure::InvalidRequest)?;
+        self.handles
+            .verify_document(&handle, &self.workspaces)
+            .map_err(map_fake_handle_error)
+    }
+
+    fn folder_handle(
+        &self,
+        workspace: &super::workspaces::ResolvedWorkspace,
+        path: &str,
+    ) -> Result<super::handles::VerifiedFolderHandle, McpKernelFailure> {
+        let handle = self
+            .handles
+            .issue_folder(workspace.workspace_id, workspace.workspace_generation, path)
+            .map_err(|_| McpKernelFailure::InvalidRequest)?;
+        self.handles
+            .verify_folder(&handle, &self.workspaces)
+            .map_err(map_fake_handle_error)
+    }
+
+    fn entry(
+        &self,
+        workspace: &super::workspaces::ResolvedWorkspace,
+        path: &str,
+        name: &str,
+        kind: KernelDocumentKind,
+        size_bytes: u64,
+        revision: &str,
+    ) -> Result<DocumentEntryDto, McpKernelFailure> {
+        let id = self.kernel_id(workspace, kind, path)?;
+        serde_json::from_value(serde_json::json!({
+            "id": id,
+            "path": path,
+            "parent": std::path::Path::new(path)
+                .parent()
+                .unwrap_or_else(|| std::path::Path::new(""))
+                .to_string_lossy()
+                .replace('\\', "/"),
+            "name": name,
+            "kind": kind,
+            "sizeBytes": size_bytes,
+            "modifiedAt": "2026-07-31T00:00:00Z",
+            "revision": revision,
+        }))
+        .map_err(|_| McpKernelFailure::InvalidResponse)
+    }
+
+    fn mutation_options() -> MutationOptions {
+        MutationOptions {
+            sync_after_write: SyncAfterWritePolicy::Never,
+            workspace_sync_enabled: false,
+        }
+    }
+}
+
+impl McpKernelPort for FakeKernelPort {
+    fn get_workspace<'a>(
+        &'a self,
+        cancellation: &'a CancellationToken,
+    ) -> McpKernelFuture<'a, WorkspaceDto> {
+        Box::pin(async move {
+            Self::cancellation(cancellation)?;
+            let workspace = self.workspace()?;
+            serde_json::from_value(serde_json::json!({
+                "id": workspace.workspace_id,
+                "generation": Self::kernel_generation(),
+                "displayName": workspace.display_name,
+                "readiness": "ready",
+                "revision": "workspace-1",
+            }))
+            .map_err(|_| McpKernelFailure::InvalidResponse)
+        })
+    }
+
+    fn list_documents<'a>(
+        &'a self,
+        query: &'a ListDocumentsQuery,
+        cancellation: &'a CancellationToken,
+    ) -> McpKernelFuture<'a, DocumentPageDto> {
+        Box::pin(async move {
+            Self::cancellation(cancellation)?;
+            let workspace = self.workspace()?;
+            let scope = DocumentScope::authorized(workspace.clone());
+            let parent = self.folder_handle(&workspace, query.parent.as_str())?;
+            let page = self
+                .documents
+                .list(
+                    &scope,
+                    Some(&parent),
+                    None,
+                    query
+                        .limit
+                        .map(|limit| usize::from(limit.get()))
+                        .unwrap_or(100),
+                )
+                .map_err(|error| map_fake_document_error_code(error.code))?;
+            let items = page
+                .entries
+                .iter()
+                .map(|entry| {
+                    self.entry(
+                        &workspace,
+                        &entry.relative_path,
+                        &entry.name,
+                        if serde_json::to_value(&entry.kind)
+                            .ok()
+                            .as_ref()
+                            .and_then(serde_json::Value::as_str)
+                            == Some("document")
+                        {
+                            KernelDocumentKind::File
+                        } else {
+                            KernelDocumentKind::Directory
+                        },
+                        entry.size_bytes.unwrap_or(0),
+                        "listed-revision",
+                    )
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            serde_json::from_value(serde_json::json!({ "items": items, "nextCursor": null }))
+                .map_err(|_| McpKernelFailure::InvalidResponse)
+        })
+    }
+
+    fn search_documents<'a>(
+        &'a self,
+        query: &'a SearchWorkspaceQuery,
+        cancellation: &'a CancellationToken,
+    ) -> McpKernelFuture<'a, SearchPageDto> {
+        Box::pin(async move {
+            Self::cancellation(cancellation)?;
+            let workspace = self.workspace()?;
+            let page = self
+                .documents
+                .search(
+                    &DocumentScope::authorized(workspace.clone()),
+                    query.query.as_str(),
+                    None,
+                    query
+                        .limit
+                        .map(|limit| usize::from(limit.get()))
+                        .unwrap_or(100),
+                )
+                .map_err(|error| map_fake_document_error_code(error.code))?;
+            let items = page
+                .results
+                .iter()
+                .map(|hit| {
+                    Ok(serde_json::json!({
+                        "document": self.entry(
+                            &workspace,
+                            &hit.relative_path,
+                            std::path::Path::new(&hit.relative_path)
+                                .file_name()
+                                .and_then(|name| name.to_str())
+                                .ok_or(McpKernelFailure::InvalidResponse)?,
+                            KernelDocumentKind::File,
+                            0,
+                            "search-revision",
+                        )?,
+                        "line": u64::try_from(hit.line_number).unwrap_or(1).max(1),
+                        "column": u64::try_from(hit.column_number).unwrap_or(1).max(1),
+                        "preview": hit.snippet,
+                    }))
+                })
+                .collect::<Result<Vec<_>, McpKernelFailure>>()?;
+            serde_json::from_value(serde_json::json!({ "items": items, "nextCursor": null }))
+                .map_err(|_| McpKernelFailure::InvalidResponse)
+        })
+    }
+
+    fn create_document<'a>(
+        &'a self,
+        request: &'a KernelCreateDocumentRequest,
+        cancellation: &'a CancellationToken,
+    ) -> McpKernelFuture<'a, CreatedDocumentDto> {
+        Box::pin(async move {
+            Self::cancellation(cancellation)?;
+            let KernelCreateDocumentRequest::File {
+                parent,
+                name,
+                contents,
+                ..
+            } = request
+            else {
+                return Err(McpKernelFailure::InvalidRequest);
+            };
+            let workspace = self.workspace()?;
+            let parent = self.folder_handle(&workspace, parent.as_str())?;
+            let mutation = self
+                .documents
+                .create(
+                    &DocumentScope::authorized(workspace.clone()),
+                    CreateDocument {
+                        parent: &parent,
+                        name: name.as_str(),
+                        contents: contents.as_str(),
+                    },
+                    Self::mutation_options(),
+                )
+                .map_err(|error| map_fake_document_error_code(error.code))?;
+            let id = self.kernel_id(
+                &workspace,
+                KernelDocumentKind::File,
+                &mutation.relative_path,
+            )?;
+            if self
+                .cancel_after_document_mutation
+                .load(std::sync::atomic::Ordering::Acquire)
+            {
+                cancellation.cancel();
+            }
+            serde_json::from_value(serde_json::json!({
+                "kind": "file",
+                "id": id,
+                "path": mutation.relative_path,
+                "parent": std::path::Path::new(&mutation.relative_path)
+                    .parent().unwrap_or_else(|| std::path::Path::new("")),
+                "name": name.as_str(),
+                "sizeBytes": contents.as_str().len(),
+                "modifiedAt": "2026-07-31T00:00:00Z",
+                "revision": mutation.revision.0,
+                "contents": contents.as_str(),
+            }))
+            .map_err(|_| McpKernelFailure::InvalidResponse)
+        })
+    }
+
+    fn get_document<'a>(
+        &'a self,
+        document_id: &'a KernelDocumentId,
+        cancellation: &'a CancellationToken,
+    ) -> McpKernelFuture<'a, DocumentContentDto> {
+        Box::pin(async move {
+            Self::cancellation(cancellation)?;
+            let workspace = self.workspace()?;
+            let path = self.path_for(document_id)?;
+            let document = self.document_handle(&workspace, &path)?;
+            let snapshot = self
+                .documents
+                .read(
+                    &DocumentScope::authorized(workspace),
+                    &document,
+                    64 * 1024 * 1024,
+                )
+                .map_err(|error| map_fake_document_error_code(error.code))?;
+            serde_json::from_value(serde_json::json!({
+                "id": document_id,
+                "path": snapshot.relative_path,
+                "parent": std::path::Path::new(&snapshot.relative_path)
+                    .parent().unwrap_or_else(|| std::path::Path::new("")),
+                "name": std::path::Path::new(&snapshot.relative_path)
+                    .file_name().and_then(|name| name.to_str()).unwrap_or("note.md"),
+                "kind": "file",
+                "sizeBytes": snapshot.size_bytes,
+                "modifiedAt": "2026-07-31T00:00:00Z",
+                "revision": snapshot.revision.0,
+                "contents": snapshot.contents,
+            }))
+            .map_err(|_| McpKernelFailure::InvalidResponse)
+        })
+    }
+
+    fn update_document<'a>(
+        &'a self,
+        document_id: &'a KernelDocumentId,
+        request: &'a KernelUpdateDocumentRequest,
+        cancellation: &'a CancellationToken,
+    ) -> McpKernelFuture<'a, DocumentContentDto> {
+        Box::pin(async move {
+            Self::cancellation(cancellation)?;
+            let workspace = self.workspace()?;
+            let path = self.path_for(document_id)?;
+            let document = self.document_handle(&workspace, &path)?;
+            let mutation = self
+                .documents
+                .update(
+                    &DocumentScope::authorized(workspace),
+                    UpdateDocument {
+                        document: &document,
+                        contents: request.contents.as_str(),
+                        expected_revision: request.expected_revision.as_str(),
+                    },
+                    Self::mutation_options(),
+                )
+                .map_err(|error| map_fake_document_error_code(error.code))?;
+            serde_json::from_value(serde_json::json!({
+                "id": document_id,
+                "path": mutation.relative_path,
+                "parent": std::path::Path::new(&mutation.relative_path)
+                    .parent().unwrap_or_else(|| std::path::Path::new("")),
+                "name": std::path::Path::new(&mutation.relative_path)
+                    .file_name().and_then(|name| name.to_str()).unwrap_or("note.md"),
+                "kind": "file",
+                "sizeBytes": request.contents.as_str().len(),
+                "modifiedAt": "2026-07-31T00:00:00Z",
+                "revision": mutation.revision.0,
+                "contents": request.contents.as_str(),
+            }))
+            .map_err(|_| McpKernelFailure::InvalidResponse)
+        })
+    }
+
+    fn move_document<'a>(
+        &'a self,
+        document_id: &'a KernelDocumentId,
+        request: &'a KernelMoveDocumentRequest,
+        cancellation: &'a CancellationToken,
+    ) -> McpKernelFuture<'a, DocumentEntryDto> {
+        Box::pin(async move {
+            Self::cancellation(cancellation)?;
+            let workspace = self.workspace()?;
+            let path = self.path_for(document_id)?;
+            let document = self.document_handle(&workspace, &path)?;
+            let target = self.folder_handle(&workspace, request.target_parent.as_str())?;
+            let mutation = self
+                .documents
+                .move_document(
+                    &DocumentScope::authorized(workspace.clone()),
+                    MoveDocument {
+                        document: &document,
+                        target_parent: &target,
+                        new_name: request.name.as_str(),
+                        expected_revision: request.expected_revision.as_str(),
+                    },
+                    Self::mutation_options(),
+                )
+                .map_err(|error| map_fake_document_error_code(error.code))?;
+            self.entry(
+                &workspace,
+                &mutation.relative_path,
+                request.name.as_str(),
+                KernelDocumentKind::File,
+                std::fs::metadata(workspace.canonical_path.join(&mutation.relative_path))
+                    .map(|metadata| metadata.len())
+                    .unwrap_or(0),
+                &mutation.revision.0,
+            )
+        })
+    }
+
+    fn delete_document<'a>(
+        &'a self,
+        document_id: &'a KernelDocumentId,
+        request: &'a KernelDeleteDocumentRequest,
+        cancellation: &'a CancellationToken,
+    ) -> McpKernelFuture<'a, ()> {
+        Box::pin(async move {
+            Self::cancellation(cancellation)?;
+            let workspace = self.workspace()?;
+            let path = self.path_for(document_id)?;
+            let document = self.document_handle(&workspace, &path)?;
+            self.documents
+                .delete(
+                    &DocumentScope::authorized(workspace),
+                    DeleteDocument {
+                        document: &document,
+                        expected_revision: request.expected_revision.as_str(),
+                        deletion: match request.deletion_policy {
+                            qingyu_kernel::contract::DeletionPolicy::Permanent => {
+                                DeletionPolicy::Permanent
+                            }
+                            qingyu_kernel::contract::DeletionPolicy::Recoverable => {
+                                DeletionPolicy::QingYuRecycleBin
+                            }
+                        },
+                    },
+                    Self::mutation_options(),
+                )
+                .map(|_| ())
+                .map_err(|error| map_fake_document_error_code(error.code))
+        })
+    }
+
+    fn get_settings<'a>(
+        &'a self,
+        cancellation: &'a CancellationToken,
+    ) -> McpKernelFuture<'a, SettingsSnapshotDto> {
+        Box::pin(async move {
+            Self::cancellation(cancellation)?;
+            if self
+                .block_settings
+                .load(std::sync::atomic::Ordering::Acquire)
+            {
+                self.settings_started.notify_one();
+                tokio::select! {
+                    _ = cancellation.cancelled() => {
+                        return Err(McpKernelFailure::RequestCancelled);
+                    }
+                    _ = self.settings_release.notified() => {}
+                }
+            }
+            self.settings
+                .lock()
+                .map(|settings| settings.clone())
+                .map_err(|_| McpKernelFailure::InvalidResponse)
+        })
+    }
+
+    fn patch_settings<'a>(
+        &'a self,
+        request: &'a PatchSettingsRequest,
+        cancellation: &'a CancellationToken,
+    ) -> McpKernelFuture<'a, SettingsSnapshotDto> {
+        Box::pin(async move {
+            Self::cancellation(cancellation)?;
+            let mut settings = self
+                .settings
+                .lock()
+                .map_err(|_| McpKernelFailure::InvalidResponse)?;
+            if settings.revision != request.expected_revision {
+                return Err(McpKernelFailure::Api(
+                    KernelErrorCode::SettingsRevisionConflict,
+                ));
+            }
+            settings.revision = qingyu_kernel::contract::Revision::parse("settings-2")
+                .expect("fake settings revision");
+            for replacement in &request.values {
+                settings.values.retain(|entry| entry.key != replacement.key);
+                settings.values.push(replacement.clone());
+            }
+            Ok(settings.clone())
+        })
+    }
+
+    fn get_sync_config<'a>(
+        &'a self,
+        cancellation: &'a CancellationToken,
+    ) -> McpKernelFuture<'a, SyncConfigViewDto> {
+        Box::pin(async move {
+            Self::cancellation(cancellation)?;
+            self.sync_config
+                .lock()
+                .map(|config| config.clone())
+                .map_err(|_| McpKernelFailure::InvalidResponse)
+        })
+    }
+
+    fn patch_sync_config<'a>(
+        &'a self,
+        request: &'a PatchSyncConfigRequest,
+        cancellation: &'a CancellationToken,
+    ) -> McpKernelFuture<'a, SyncConfigViewDto> {
+        Box::pin(async move {
+            Self::cancellation(cancellation)?;
+            let mut config = self
+                .sync_config
+                .lock()
+                .map_err(|_| McpKernelFailure::InvalidResponse)?;
+            if config.revision != request.expected_revision {
+                return Err(McpKernelFailure::Api(
+                    KernelErrorCode::SyncConfigRevisionConflict,
+                ));
+            }
+            let mut value =
+                serde_json::to_value(&*config).map_err(|_| McpKernelFailure::InvalidResponse)?;
+            value["revision"] = serde_json::Value::String("sync-2".into());
+            if let Some(enabled) = request.changes.enabled {
+                value["enabled"] = serde_json::Value::Bool(enabled);
+            }
+            if let Some(remote_root) = &request.changes.remote_root {
+                value["remoteRoot"] = serde_json::Value::String(remote_root.clone());
+            }
+            *config =
+                serde_json::from_value(value).map_err(|_| McpKernelFailure::InvalidResponse)?;
+            Ok(config.clone())
+        })
+    }
+
+    fn test_sync_connection<'a>(
+        &'a self,
+        request: &'a TestSyncConnectionRequest,
+        cancellation: &'a CancellationToken,
+    ) -> McpKernelFuture<'a, SyncConnectionTestDto> {
+        Box::pin(async move {
+            Self::cancellation(cancellation)?;
+            serde_json::from_value(serde_json::json!({
+                "provider": "webdav",
+                "checkedTarget": "notes",
+                "configRevision": request.expected_revision,
+            }))
+            .map_err(|_| McpKernelFailure::InvalidResponse)
+        })
+    }
+
+    fn get_sync_status<'a>(
+        &'a self,
+        cancellation: &'a CancellationToken,
+    ) -> McpKernelFuture<'a, SyncStatusDto> {
+        Box::pin(async move {
+            Self::cancellation(cancellation)?;
+            serde_json::from_value(serde_json::json!({
+                "completionState": "idle",
+                "provider": "webdav",
+                "configRevision": null,
+                "activeRunId": null,
+                "lastAttemptAt": null,
+                "lastSuccessfulSyncAt": null,
+                "lastTrigger": null,
+                "summary": null,
+                "error": null,
+            }))
+            .map_err(|_| McpKernelFailure::InvalidResponse)
+        })
+    }
+
+    fn trigger_sync_run<'a>(
+        &'a self,
+        request: &'a TriggerSyncRunRequest,
+        cancellation: &'a CancellationToken,
+    ) -> McpKernelFuture<'a, SyncRunAcceptedDto> {
+        Box::pin(async move {
+            Self::cancellation(cancellation)?;
+            self.sync_run_requests
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if self
+                .reject_sync_runs
+                .load(std::sync::atomic::Ordering::Acquire)
+            {
+                return Err(McpKernelFailure::Api(KernelErrorCode::SyncNotReady));
+            }
+            serde_json::from_value(serde_json::json!({
+                "runId": uuid::Uuid::from_u128(1),
+                "acceptedAt": "2026-07-31T00:00:00Z",
+                "configRevision": request.expected_config_revision,
+            }))
+            .map_err(|_| McpKernelFailure::InvalidResponse)
+        })
+    }
+
+    fn get_sync_run<'a>(
+        &'a self,
+        run_id: RunId,
+        cancellation: &'a CancellationToken,
+    ) -> McpKernelFuture<'a, SyncRunStatusDto> {
+        Box::pin(async move {
+            Self::cancellation(cancellation)?;
+            self.sync_run_queries
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            serde_json::from_value(serde_json::json!({
+                "runId": run_id,
+                "provider": "webdav",
+                "configRevision": "sync-1",
+                "completionState": "succeeded",
+                "acceptedAt": "2026-07-31T00:00:00Z",
+                "finishedAt": "2026-07-31T00:00:01Z",
+                "summary": {
+                    "bytesDownloaded": 0, "bytesUploaded": 0, "conflictFiles": 0,
+                    "downloadedFiles": 0, "scannedFiles": 0, "skippedFiles": 0,
+                    "uploadedFiles": 0
+                },
+                "error": null,
+            }))
+            .map_err(|_| McpKernelFailure::InvalidResponse)
+        })
+    }
+}
+
+fn map_fake_handle_error(error: super::handles::HandleError) -> McpKernelFailure {
+    match error.code {
+        "document_not_found" => McpKernelFailure::Api(KernelErrorCode::DocumentNotFound),
+        "workspace_unavailable" => McpKernelFailure::Api(KernelErrorCode::WorkspaceUnavailable),
+        _ => McpKernelFailure::InvalidRequest,
+    }
+}
+
+fn map_fake_document_error_code(error_code: &str) -> McpKernelFailure {
+    let code = match error_code {
+        "document_not_found" => KernelErrorCode::DocumentNotFound,
+        "revision_conflict" => KernelErrorCode::RevisionConflict,
+        "document_already_exists" => KernelErrorCode::DocumentAlreadyExists,
+        "document_too_large" => KernelErrorCode::DocumentTooLarge,
+        "workspace_unavailable" | "workspace_not_authorized" => {
+            KernelErrorCode::WorkspaceUnavailable
+        }
+        _ => return McpKernelFailure::InvalidRequest,
+    };
+    McpKernelFailure::Api(code)
+}
+
+fn fake_kernel_sync_config(revision: &str) -> SyncConfigViewDto {
+    serde_json::from_value(serde_json::json!({
+        "revision": revision,
+        "enabled": true,
+        "provider": "webdav",
+        "remoteRoot": "notes",
+        "mode": "automatic",
+        "intervalSeconds": 300,
+        "generateConflictDocument": false,
+        "configured": true,
+        "readiness": "ready",
+        "issues": [],
+        "webdav": {
+            "serverUrl": { "value": "https://dav.example.test", "redacted": false },
+            "username": "user",
+            "password": { "present": true }
+        },
+        "s3": {
+            "endpointUrl": { "value": null, "redacted": false },
+            "region": "",
+            "bucket": "",
+            "accessKeyId": { "present": false },
+            "secretAccessKey": { "present": false },
+            "requestTimeoutSeconds": 60,
+            "addressingStyle": "auto",
+            "tlsVerification": "verify"
+        }
+    }))
+    .expect("fake Kernel sync config")
+}
+
 struct ToolRouterFixture {
     _base: tempfile::TempDir,
     config: std::sync::Arc<McpConfigManager>,
     handler: QingYuMcpHandler,
+    kernel: std::sync::Arc<FakeKernelPort>,
     mcp_settings: McpLocalSettingsService,
     workspace: AuthorizedWorkspaceConfig,
     workspaces: std::sync::Arc<WorkspaceRegistry>,
@@ -2159,6 +2982,20 @@ fn tool_router_fixture_with_services(
     configure_documents: impl FnOnce(DocumentService) -> DocumentService,
     configure_sync: impl FnOnce(SyncService) -> SyncService,
 ) -> ToolRouterFixture {
+    tool_router_fixture_with_services_and_confirmation(
+        configure_documents,
+        configure_sync,
+        std::sync::Arc::new(FakeConfirmationPresenter {
+            outcome: ConfirmationOutcome::Allowed,
+        }),
+    )
+}
+
+fn tool_router_fixture_with_services_and_confirmation(
+    configure_documents: impl FnOnce(DocumentService) -> DocumentService,
+    configure_sync: impl FnOnce(SyncService) -> SyncService,
+    confirmation: std::sync::Arc<dyn ConfirmationPresenter>,
+) -> ToolRouterFixture {
     let base = tempfile::tempdir().expect("temporary tool router fixture");
     let workspace_root = base.path().join("workspace");
     let audit_root = base.path().join("audit");
@@ -2169,7 +3006,6 @@ fn tool_router_fixture_with_services(
     let workspace = workspaces
         .authorize(&workspace_root, "Notes")
         .expect("authorize tool workspace");
-    let settings_service = AppSettingsService::memory_for_test();
     let mcp_settings = McpLocalSettingsService::memory_for_test();
     let config = std::sync::Arc::new(
         McpConfigManager::load(mcp_settings.clone()).expect("tool config manager"),
@@ -2188,8 +3024,8 @@ fn tool_router_fixture_with_services(
         .expect("enable tool config");
 
     let signer = HandleSigner::new([47_u8; 32]);
+    let handles = std::sync::Arc::new(signer.clone());
     let documents = std::sync::Arc::new(configure_documents(DocumentService::new(signer)));
-    let settings = std::sync::Arc::new(settings_service.clone());
     let runner = std::sync::Arc::new(FakeSyncRunner::default());
     let app_data = base.path().join("app-data");
     std::fs::create_dir(&app_data).expect("tool app data root");
@@ -2206,33 +3042,33 @@ fn tool_router_fixture_with_services(
         ],
     )
     .expect("ready tool sync config");
-    let sync = std::sync::Arc::new(configure_sync(SyncService::new_for_test_with_app_data(
+    let _sync = std::sync::Arc::new(configure_sync(SyncService::new_for_test_with_app_data(
         runner,
         app_data,
         Some(workspace.canonical_path.clone()),
     )));
+    let kernel = std::sync::Arc::new(FakeKernelPort::new(
+        documents.clone(),
+        handles.clone(),
+        workspaces.clone(),
+    ));
     let services = McpServices {
         config: config.clone(),
         workspaces: workspaces.clone(),
-        documents,
-        settings,
-        sync,
+        handles,
+        kernel: kernel.clone(),
         policy: std::sync::Arc::new(PolicyEngine::new([53_u8; 32])),
         audit: std::sync::Arc::new(AuditSink::new(
             &audit_root,
             super::config::AuditPolicy::default(),
         )),
     };
-    let handler = QingYuMcpHandler::new_for_test(
-        services,
-        std::sync::Arc::new(FakeConfirmationPresenter {
-            outcome: ConfirmationOutcome::Allowed,
-        }),
-    );
+    let handler = QingYuMcpHandler::new_for_test(services, confirmation);
     ToolRouterFixture {
         _base: base,
         config,
         handler,
+        kernel,
         mcp_settings,
         workspace,
         workspaces,
@@ -2347,7 +3183,7 @@ async fn workspace_list_and_primary_switch_do_not_reverse_transaction_and_author
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn primary_switch_waits_for_an_inflight_document_mutation_lease() {
+async fn primary_switch_invalidates_an_inflight_kernel_document_result() {
     use std::{sync::mpsc, time::Duration};
 
     let (mutation_ready_sender, mutation_ready_receiver) = mpsc::channel();
@@ -2452,36 +3288,12 @@ async fn primary_switch_waits_for_an_inflight_document_mutation_lease() {
     switch.join().expect("join workspace switch");
 
     assert!(
-        !switch_returned_early,
-        "workspace switch returned while an old-root mutation could still execute"
+        switch_returned_early,
+        "workspace registry writes must not wait on Kernel I/O"
     );
     switch_result.expect("switch to next workspace");
-    assert_eq!(update_result.is_error, Some(false));
-    assert_eq!(
-        std::fs::read_to_string(fixture.workspace.canonical_path.join("note.md"))
-            .expect("old-root note"),
-        "updated before the switch returns"
-    );
-
-    let stale = fixture
-        .handler
-        .call_tool_current(
-            "document_update",
-            serde_json::json!({
-                "documentId": document_id,
-                "contents": "must never reach the old root",
-                "expectedRevision": structured(&update_result)["revision"]
-            }),
-        )
-        .await
-        .expect("stale update dispatch");
-    assert_eq!(stale.is_error, Some(true));
-    assert_eq!(structured(&stale)["code"], "mcp-handle-stale");
-    assert_eq!(
-        std::fs::read_to_string(fixture.workspace.canonical_path.join("note.md"))
-            .expect("old-root note after stale update"),
-        "updated before the switch returns"
-    );
+    assert_eq!(update_result.is_error, Some(true));
+    assert_eq!(structured(&update_result)["code"], "mcp-handle-stale");
 }
 
 #[tokio::test]
@@ -2510,7 +3322,6 @@ async fn local_policy_reload_updates_manager_server_and_audit_policy() {
         config: fixture.config.clone(),
         controller: controller.clone(),
         policy: std::sync::Arc::new(PolicyEngine::new([91_u8; 32])),
-        recycle_root: fixture._base.path().join("recycle"),
         workspaces: fixture.workspaces.clone(),
     };
 
@@ -2701,6 +3512,195 @@ async fn tool_router_enforces_application_configured_call_rate_without_http_midd
 }
 
 #[tokio::test]
+async fn request_context_cancellation_reaches_the_kernel_port() {
+    let fixture = tool_router_fixture();
+    fixture.kernel.block_settings();
+    let cancellation = CancellationToken::new();
+    let handler = fixture.handler.clone();
+    let request_cancellation = cancellation.clone();
+    let call = tokio::spawn(async move {
+        handler
+            .call_tool_current_with_cancellation(
+                "settings_get",
+                serde_json::json!({}),
+                request_cancellation,
+            )
+            .await
+    });
+    fixture.kernel.wait_for_settings().await;
+    cancellation.cancel();
+
+    let result = call
+        .await
+        .expect("join cancelled tool")
+        .expect("cancelled tool result");
+
+    assert_eq!(result.is_error, Some(true));
+    assert_eq!(structured(&result)["code"], "request_cancelled");
+}
+
+async fn create_document_through_router(
+    fixture: &ToolRouterFixture,
+    name: &str,
+) -> rmcp::model::CallToolResult {
+    let listed = fixture
+        .handler
+        .call_tool_current("workspace_list", serde_json::json!({}))
+        .await
+        .expect("workspace list");
+    let root_folder_id = structured(&listed)["workspaces"][0]["rootFolderId"]
+        .as_str()
+        .expect("root folder ID");
+    fixture
+        .handler
+        .call_tool_current(
+            "document_create",
+            serde_json::json!({
+                "workspaceId": fixture.workspace.workspace_id,
+                "parentFolderId": root_folder_id,
+                "name": name,
+                "contents": "sync-after-write"
+            }),
+        )
+        .await
+        .expect("document create")
+}
+
+fn set_sync_after_write(fixture: &ToolRouterFixture, policy: SyncAfterWritePolicy) {
+    let current = fixture.config.snapshot().expect("current MCP config");
+    let mut config = current.config;
+    config.sync_after_write = policy;
+    fixture
+        .config
+        .update(config, &current.revision)
+        .expect("update sync-after-write policy");
+}
+
+#[tokio::test]
+async fn kernel_document_mutations_apply_sync_after_write_without_reclassifying_commits() {
+    let fixture = tool_router_fixture();
+
+    let followed = create_document_through_router(&fixture, "followed.md").await;
+    assert_eq!(followed.is_error, Some(false));
+    assert_eq!(structured(&followed)["syncRequest"], "requested");
+    assert_eq!(structured(&followed)["syncRequestState"], "accepted");
+    assert!(structured(&followed)["runId"].is_string());
+    assert_eq!(
+        fixture
+            .kernel
+            .sync_run_requests
+            .load(std::sync::atomic::Ordering::Relaxed),
+        1
+    );
+
+    set_sync_after_write(&fixture, SyncAfterWritePolicy::Never);
+    let skipped = create_document_through_router(&fixture, "skipped.md").await;
+    assert_eq!(skipped.is_error, Some(false));
+    assert_eq!(structured(&skipped)["syncRequest"], "not_requested");
+    assert_eq!(structured(&skipped)["syncRequestState"], "not_requested");
+    assert_eq!(
+        fixture
+            .kernel
+            .sync_run_requests
+            .load(std::sync::atomic::Ordering::Relaxed),
+        1
+    );
+
+    set_sync_after_write(&fixture, SyncAfterWritePolicy::Always);
+    fixture
+        .kernel
+        .sync_config
+        .lock()
+        .expect("sync config")
+        .enabled = false;
+    fixture
+        .kernel
+        .reject_sync_runs
+        .store(true, std::sync::atomic::Ordering::Release);
+    let rejected = create_document_through_router(&fixture, "rejected.md").await;
+    assert_eq!(rejected.is_error, Some(false));
+    assert_eq!(structured(&rejected)["syncRequest"], "requested");
+    assert_eq!(structured(&rejected)["syncRequestState"], "failed");
+    assert!(structured(&rejected).get("runId").is_none());
+    assert_eq!(
+        fixture
+            .kernel
+            .sync_run_requests
+            .load(std::sync::atomic::Ordering::Relaxed),
+        2
+    );
+
+    fixture
+        .kernel
+        .reject_sync_runs
+        .store(false, std::sync::atomic::Ordering::Release);
+    set_sync_after_write(&fixture, SyncAfterWritePolicy::FollowWorkspace);
+    let disabled = create_document_through_router(&fixture, "disabled.md").await;
+    assert_eq!(disabled.is_error, Some(false));
+    assert_eq!(structured(&disabled)["syncRequest"], "not_requested");
+    assert_eq!(structured(&disabled)["syncRequestState"], "not_requested");
+    assert_eq!(
+        fixture
+            .kernel
+            .sync_run_requests
+            .load(std::sync::atomic::Ordering::Relaxed),
+        2
+    );
+
+    fixture
+        .kernel
+        .sync_config
+        .lock()
+        .expect("sync config")
+        .enabled = true;
+    fixture
+        .kernel
+        .cancel_after_document_mutation
+        .store(true, std::sync::atomic::Ordering::Release);
+    let cancelled = create_document_through_router(&fixture, "cancelled-after-commit.md").await;
+    assert_eq!(cancelled.is_error, Some(false));
+    assert_eq!(structured(&cancelled)["syncRequestState"], "accepted");
+    assert_eq!(
+        fixture
+            .kernel
+            .sync_run_requests
+            .load(std::sync::atomic::Ordering::Relaxed),
+        3
+    );
+}
+
+#[tokio::test]
+async fn sync_wait_queries_the_accepted_run_id_instead_of_global_status() {
+    let fixture = tool_router_fixture();
+    let current = fixture.config.snapshot().expect("current MCP config");
+    let mut waiting = current.config;
+    waiting.sync_execution = SyncExecutionPolicy::Wait;
+    fixture
+        .config
+        .update(waiting, &current.revision)
+        .expect("enable sync wait");
+
+    let result = fixture
+        .handler
+        .call_tool_current(
+            "sync_run",
+            serde_json::json!({ "expectedRevision": "sync-1" }),
+        )
+        .await
+        .expect("sync wait result");
+
+    assert_eq!(result.is_error, Some(false));
+    assert_eq!(structured(&result)["completionState"], "succeeded");
+    assert_eq!(
+        fixture
+            .kernel
+            .sync_run_queries
+            .load(std::sync::atomic::Ordering::Relaxed),
+        1
+    );
+}
+
+#[tokio::test]
 async fn tool_router_rechecks_permissions_and_rejects_unknown_fields_as_structured_errors() {
     let fixture = tool_router_fixture();
     let current = fixture.config.snapshot().expect("current config");
@@ -2798,6 +3798,77 @@ async fn tool_router_fails_writes_closed_when_audit_storage_is_unavailable() {
         .workspace
         .canonical_path
         .join("must-not-exist.md")
+        .exists());
+}
+
+#[tokio::test]
+async fn a_policy_change_during_confirmation_invalidates_the_pending_write() {
+    let confirmation = std::sync::Arc::new(BlockingConfirmationPresenter::default());
+    let fixture = tool_router_fixture_with_services_and_confirmation(
+        |documents| documents,
+        |sync| sync,
+        confirmation.clone(),
+    );
+    let current = fixture.config.snapshot().expect("current MCP config");
+    let mut requiring_confirmation = current.config;
+    requiring_confirmation.confirmation = ConfirmationPolicy::AllWrites;
+    fixture
+        .config
+        .update(requiring_confirmation, &current.revision)
+        .expect("require write confirmation");
+
+    let listed = fixture
+        .handler
+        .call_tool_current("workspace_list", serde_json::json!({}))
+        .await
+        .expect("workspace list");
+    let root_folder_id = structured(&listed)["workspaces"][0]["rootFolderId"]
+        .as_str()
+        .expect("root folder ID")
+        .to_string();
+    let handler = fixture.handler.clone();
+    let workspace_id = fixture.workspace.workspace_id;
+    let create = tokio::spawn(async move {
+        handler
+            .call_tool_current(
+                "document_create",
+                serde_json::json!({
+                    "workspaceId": workspace_id,
+                    "parentFolderId": root_folder_id,
+                    "name": "policy-race.md",
+                    "contents": "must not commit"
+                }),
+            )
+            .await
+    });
+    confirmation.started.notified().await;
+
+    let original = fixture.config.snapshot().expect("confirming MCP config");
+    let original_generation = fixture.config.generation();
+    let mut changed = original.config.clone();
+    changed.deletion = DeletionPolicy::QingYuRecycleBin;
+    let intermediate = fixture
+        .config
+        .update(changed, &original.revision)
+        .expect("change policy during confirmation");
+    fixture
+        .config
+        .update(original.config, &intermediate.revision)
+        .expect("restore policy contents during confirmation");
+    assert!(fixture.config.generation() >= original_generation + 2);
+    assert!(!create.is_finished());
+    confirmation.release.notify_waiters();
+
+    let result = create
+        .await
+        .expect("join confirmed write")
+        .expect("confirmed write result");
+    assert_eq!(result.is_error, Some(true));
+    assert_eq!(structured(&result)["code"], "policy_changed");
+    assert!(!fixture
+        .workspace
+        .canonical_path
+        .join("policy-race.md")
         .exists());
 }
 
@@ -2934,6 +4005,68 @@ async fn start_test_local_server(
     (fixture, controller, endpoint)
 }
 
+#[tokio::test]
+async fn restarting_the_local_server_invalidates_existing_preview_tokens() {
+    let (fixture, controller, _endpoint) =
+        start_test_local_server(McpServerOptions::for_test()).await;
+    let listed = fixture
+        .handler
+        .call_tool_current("workspace_list", serde_json::json!({}))
+        .await
+        .expect("workspace list");
+    let root_folder_id = structured(&listed)["workspaces"][0]["rootFolderId"]
+        .as_str()
+        .expect("root folder ID")
+        .to_string();
+    let preview = fixture
+        .handler
+        .call_tool_current(
+            "document_create",
+            serde_json::json!({
+                "workspaceId": fixture.workspace.workspace_id,
+                "parentFolderId": root_folder_id,
+                "name": "restart-preview.md",
+                "contents": "must not commit after restart",
+                "dryRun": true
+            }),
+        )
+        .await
+        .expect("document preview");
+    let preview_token = structured(&preview)["previewToken"]
+        .as_str()
+        .expect("preview token")
+        .to_string();
+
+    controller
+        .restart(McpServerOptions::for_test())
+        .await
+        .expect("restart MCP local IPC server");
+
+    let commit = fixture
+        .handler
+        .call_tool_current(
+            "document_create",
+            serde_json::json!({
+                "workspaceId": fixture.workspace.workspace_id,
+                "parentFolderId": root_folder_id,
+                "name": "restart-preview.md",
+                "contents": "must not commit after restart",
+                "previewToken": preview_token
+            }),
+        )
+        .await
+        .expect("stale preview must return a structured policy error");
+    assert_eq!(commit.is_error, Some(true));
+    assert_eq!(structured(&commit)["code"], "preview_required");
+    assert!(!fixture
+        .workspace
+        .canonical_path
+        .join("restart-preview.md")
+        .exists());
+
+    controller.stop().await.expect("stop restarted MCP server");
+}
+
 #[derive(Clone, Default)]
 struct CountingLauncher {
     launches: std::sync::Arc<std::sync::atomic::AtomicUsize>,
@@ -3019,14 +4152,71 @@ async fn bridge_forwards_tools_calls_and_tool_list_notifications_over_stdio() {
 #[tokio::test]
 async fn bridge_launches_qingyu_once_then_uses_bounded_reconnect() {
     let directory = tempfile::tempdir().expect("bridge temp directory");
-    let settings_path = directory.path().join("settings.json");
-    std::fs::write(&settings_path, br#"{"mcp":{"enabled":true}}"#).expect("write enabled settings");
+    let local_state_path = directory.path().join("local-state.json");
+    std::fs::write(&local_state_path, br#"{"mcp":{"enabled":true}}"#)
+        .expect("write enabled local state");
     let launcher = CountingLauncher::default();
     let unavailable = directory.path().join("unavailable.sock");
     let error = test_connect_with_launch(
         &BridgeConfig::for_test_with_settings(
             LocalIpcEndpoint::for_test(unavailable),
-            settings_path,
+            local_state_path,
+        ),
+        &launcher,
+    )
+    .await
+    .expect_err("unavailable upstream must remain bounded");
+
+    assert_eq!(error, BridgeError::UpstreamUnavailable);
+    assert_eq!(
+        launcher.launches.load(std::sync::atomic::Ordering::Relaxed),
+        1
+    );
+}
+
+#[tokio::test]
+async fn bridge_uses_legacy_settings_only_when_local_state_is_missing() {
+    let directory = tempfile::tempdir().expect("bridge temp directory");
+    let legacy_settings_path = directory.path().join("settings.json");
+    std::fs::write(&legacy_settings_path, br#"{"mcp":{"enabled":true}}"#)
+        .expect("write enabled legacy settings");
+    let launcher = CountingLauncher::default();
+    let unavailable = directory.path().join("unavailable.sock");
+    let error = test_connect_with_launch(
+        &BridgeConfig::for_test_with_settings(
+            LocalIpcEndpoint::for_test(unavailable),
+            directory.path().join("local-state.json"),
+        ),
+        &launcher,
+    )
+    .await
+    .expect_err("unavailable upstream must remain bounded");
+
+    assert_eq!(error, BridgeError::UpstreamUnavailable);
+    assert_eq!(
+        launcher.launches.load(std::sync::atomic::Ordering::Relaxed),
+        1
+    );
+}
+
+#[tokio::test]
+async fn bridge_uses_legacy_settings_when_valid_local_state_has_no_mcp_value() {
+    let directory = tempfile::tempdir().expect("bridge temp directory");
+    std::fs::write(
+        directory.path().join("local-state.json"),
+        br#"{"schemaVersion":2,"primaryWorkspacePath":"/notes"}"#,
+    )
+    .expect("write valid local state without MCP");
+    std::fs::write(
+        directory.path().join("settings.json"),
+        br#"{"mcp":{"enabled":true}}"#,
+    )
+    .expect("write enabled legacy settings");
+    let launcher = CountingLauncher::default();
+    let error = test_connect_with_launch(
+        &BridgeConfig::for_test_with_settings(
+            LocalIpcEndpoint::for_test(directory.path().join("unavailable.sock")),
+            directory.path().join("local-state.json"),
         ),
         &launcher,
     )
@@ -3046,7 +4236,7 @@ async fn bridge_reports_disabled_without_launch_when_settings_are_missing() {
     let launcher = CountingLauncher::default();
     let config = BridgeConfig::for_test_with_settings(
         LocalIpcEndpoint::for_test(directory.path().join("unavailable.sock")),
-        directory.path().join("settings.json"),
+        directory.path().join("local-state.json"),
     );
 
     let error = test_connect_with_launch(&config, &launcher)
@@ -3064,13 +4254,13 @@ async fn bridge_reports_disabled_without_launch_when_settings_are_missing() {
 #[tokio::test]
 async fn bridge_reports_disabled_without_launch_when_mcp_is_false() {
     let directory = tempfile::tempdir().expect("bridge temp directory");
-    let settings_path = directory.path().join("settings.json");
-    std::fs::write(&settings_path, br#"{"mcp":{"enabled":false}}"#)
-        .expect("write disabled settings");
+    let local_state_path = directory.path().join("local-state.json");
+    std::fs::write(&local_state_path, br#"{"mcp":{"enabled":false}}"#)
+        .expect("write disabled local state");
     let launcher = CountingLauncher::default();
     let config = BridgeConfig::for_test_with_settings(
         LocalIpcEndpoint::for_test(directory.path().join("unavailable.sock")),
-        settings_path,
+        local_state_path,
     );
 
     let error = test_connect_with_launch(&config, &launcher)
@@ -3085,21 +4275,57 @@ async fn bridge_reports_disabled_without_launch_when_mcp_is_false() {
 }
 
 #[tokio::test]
-async fn bridge_reports_config_unavailable_without_launch_for_malformed_settings() {
+async fn bridge_reports_config_unavailable_without_legacy_fallback_for_malformed_local_state() {
     let directory = tempfile::tempdir().expect("bridge temp directory");
-    let settings_path = directory.path().join("settings.json");
-    std::fs::write(&settings_path, b"not-json").expect("write malformed settings");
+    let local_state_path = directory.path().join("local-state.json");
+    std::fs::write(&local_state_path, b"not-json").expect("write malformed local state");
+    std::fs::write(
+        directory.path().join("settings.json"),
+        br#"{"mcp":{"enabled":true}}"#,
+    )
+    .expect("write enabled legacy settings");
     let launcher = CountingLauncher::default();
     let config = BridgeConfig::for_test_with_settings(
         LocalIpcEndpoint::for_test(directory.path().join("unavailable.sock")),
-        settings_path,
+        local_state_path,
     );
 
     let error = test_connect_with_launch(&config, &launcher)
         .await
-        .expect_err("malformed MCP settings must fail closed");
+        .expect_err("malformed MCP local state must fail closed without legacy fallback");
 
     assert!(error.to_string().contains("mcp_config_unavailable"));
+    assert_eq!(
+        launcher.launches.load(std::sync::atomic::Ordering::Relaxed),
+        0
+    );
+}
+
+#[tokio::test]
+async fn bridge_reports_config_unavailable_when_local_mcp_enabled_is_not_boolean() {
+    let directory = tempfile::tempdir().expect("bridge temp directory");
+    let local_state_path = directory.path().join("local-state.json");
+    std::fs::write(
+        &local_state_path,
+        br#"{"schemaVersion":2,"mcp":{"enabled":"true"}}"#,
+    )
+    .expect("write invalid local MCP state");
+    std::fs::write(
+        directory.path().join("settings.json"),
+        br#"{"mcp":{"enabled":true}}"#,
+    )
+    .expect("write enabled legacy settings");
+    let launcher = CountingLauncher::default();
+    let config = BridgeConfig::for_test_with_settings(
+        LocalIpcEndpoint::for_test(directory.path().join("unavailable.sock")),
+        local_state_path,
+    );
+
+    let error = test_connect_with_launch(&config, &launcher)
+        .await
+        .expect_err("invalid local MCP value must fail closed without legacy fallback");
+
+    assert_eq!(error, BridgeError::McpConfigUnavailable);
     assert_eq!(
         launcher.launches.load(std::sync::atomic::Ordering::Relaxed),
         0
@@ -3463,6 +4689,83 @@ async fn local_ipc_server_needs_no_secret_and_stops_cleanly() {
     controller.stop().await.expect("stop local IPC server");
     assert_eq!(controller.health().state, McpServerState::Stopped);
     assert!(endpoint.connect().await.is_err());
+}
+
+#[tokio::test]
+async fn terminal_mcp_shutdown_drains_an_accepted_call_and_cannot_restart() {
+    let fixture = tool_router_fixture();
+    fixture.kernel.block_settings();
+    let controller = std::sync::Arc::new(McpServerController::new(
+        fixture.handler.clone(),
+        LocalIpcEndpoint::for_test(fixture._base.path().join("terminal.sock")),
+    ));
+    controller
+        .start(McpServerOptions::for_test())
+        .await
+        .expect("start terminal-shutdown fixture");
+
+    let client = connect_test_local_client(&LocalIpcEndpoint::for_test(
+        fixture._base.path().join("terminal.sock"),
+    ))
+    .await;
+    let call = tokio::spawn(async move {
+        call_client_tool(client.peer(), "settings_get", serde_json::json!({})).await
+    });
+    fixture.kernel.wait_for_settings().await;
+
+    let shutdown_controller = std::sync::Arc::clone(&controller);
+    let shutdown = tokio::spawn(async move { shutdown_controller.shutdown().await });
+    tokio::task::yield_now().await;
+    assert!(
+        !shutdown.is_finished(),
+        "shutdown must drain the accepted call"
+    );
+
+    fixture.kernel.release_settings();
+    let result = call.await.expect("join accepted IPC call");
+    assert_eq!(result.is_error, Some(false));
+    shutdown
+        .await
+        .expect("join terminal shutdown")
+        .expect("terminal shutdown");
+
+    let error = controller
+        .start(McpServerOptions::for_test())
+        .await
+        .expect_err("terminal shutdown must reject a restart");
+    assert_eq!(error.code, "mcp_server_shutdown");
+}
+
+#[tokio::test]
+async fn terminal_mcp_shutdown_aborts_an_ipc_call_after_the_bounded_drain() {
+    let fixture = tool_router_fixture();
+    fixture.kernel.block_settings();
+    let endpoint = LocalIpcEndpoint::for_test(fixture._base.path().join("terminal-timeout.sock"));
+    let controller = std::sync::Arc::new(McpServerController::new(
+        fixture.handler.clone(),
+        endpoint.clone(),
+    ));
+    controller
+        .start(McpServerOptions::for_test())
+        .await
+        .expect("start bounded-drain fixture");
+    let client = connect_test_local_client(&endpoint).await;
+    let call = tokio::spawn(async move {
+        client
+            .peer()
+            .call_tool(rmcp::model::CallToolRequestParams::new("settings_get"))
+            .await
+    });
+    fixture.kernel.wait_for_settings().await;
+
+    tokio::time::timeout(std::time::Duration::from_secs(2), controller.shutdown())
+        .await
+        .expect("terminal shutdown must be bounded")
+        .expect("terminal shutdown");
+    if let Ok(result) = call.await.expect("join aborted IPC call") {
+        assert_eq!(result.is_error, Some(true));
+    }
+    assert_eq!(controller.active_session_count(), 0);
 }
 
 #[tokio::test]

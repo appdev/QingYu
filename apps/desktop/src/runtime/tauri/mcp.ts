@@ -7,9 +7,6 @@ export const getNativeMcpSettings: AppMcpRuntime["getSettings"] = () =>
 export const updateNativeMcpSettings: AppMcpRuntime["updateSettings"] = (input) =>
   invoke("update_mcp_settings", { input });
 
-export const setNativeMcpPrimaryWorkspace: AppMcpRuntime["setPrimaryWorkspace"] = (input) =>
-  invoke("set_mcp_primary_workspace", input);
-
 export const getNativeMcpHealth: AppMcpRuntime["getHealth"] = () =>
   invoke("get_mcp_health");
 

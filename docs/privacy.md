@@ -22,7 +22,7 @@ QingYu may store these items locally:
 - the device-local current-notebook path or managed notebook name in `local-state.json`
 - WebDAV or S3-compatible synchronization settings and credentials in `sync-config.json`
 - synchronization manifests, status, staging, and quarantined conflicts below `sync-state/`
-- application-level MCP policy stored with the portable application settings in `settings.json`
+- device-local MCP policy stored in `local-state.json`
 - desktop MCP IPC, audit, and other runtime-only state stored below the app-data `mcp-runtime/` directory
 
 These files live in QingYu's application-data directory, not in the notes workspace. WebDAV and S3-compatible credentials are intentionally stored as plaintext in `sync-config.json`, together with the endpoint, account, remote path, storage choice, and trigger policy. Anyone or any tool that can read the application's private data may read those credentials. `local-state.json`, `sync-config.json`, `sync-state/`, and `mcp-runtime/` are never included in QingYu synchronization.
@@ -45,19 +45,19 @@ Choosing another directory switches the current notebook while keeping the same 
 
 QingYu excludes `.qingyu/` and the legacy `.markra-sync/` directory from its own synchronization, file tree, workspace search, and watcher so stale configuration or secrets cannot be uploaded. Neither directory is read, migrated, rewritten, or deleted. These exclusions do not control Git, cloud-drive clients, backup tools, or other third-party software.
 
-Portable settings can include the selected theme, custom theme CSS, layout, keyboard shortcuts, export preferences, and the MCP policy. They are validated before application and can synchronize independently from note content. Device-specific paths, recent/local window state, credentials, manifests, runtime endpoints, audit data, installed theme packages, and extension directories remain local in this version.
+Portable settings can include the selected theme, custom theme CSS, layout, keyboard shortcuts, and export preferences. They are validated before application and can synchronize independently from note content. The MCP policy, device-specific paths, recent/local window state, credentials, manifests, runtime endpoints, audit data, installed theme packages, and extension directories remain local in this version.
 
 ## Desktop MCP
 
-Desktop MCP is optional and disabled by default. One application-level policy controls permissions, confirmation and dry-run behavior, operation limits, and auditing for every MCP client. Document tools are limited to the current notebook directory; a standalone file does not retarget that authority. Without an available current notebook, document tools fail closed while application settings and sync policy remain editable.
+Desktop MCP is optional and disabled by default. One device-local policy controls permissions, confirmation and dry-run behavior, operation limits, and auditing for every MCP client on that device. Document tools are limited to the current notebook directory; a standalone file does not retarget that authority. Without an available current notebook and ready child Kernel, document, application-settings, and sync tools fail closed while the device-local MCP policy remains editable in QingYu settings.
 
-MCP clients connect to the bundled stdio bridge, which forwards requests over private local IPC to the QingYu process. QingYu does not open an MCP HTTP/TCP listener and does not use the operating-system credential store for MCP transport. Document operations are executed by QingYu's application services; MCP clients receive opaque, process-scoped identifiers instead of direct filesystem access or absolute paths.
+MCP clients connect to the bundled stdio bridge, which forwards requests over private local IPC to the QingYu desktop host. QingYu does not open an MCP HTTP/TCP listener for external clients and does not use the operating-system credential store for that transport. The desktop host keeps policy, confirmation, and audit enforcement, then calls its child Kernel over authenticated loopback HTTP with a short-lived Bearer credential. MCP clients receive opaque, process-scoped identifiers instead of that credential, direct filesystem access, or absolute paths.
 
-The portable MCP policy can synchronize with other application settings. Local IPC endpoints, audit entries, process keys, and workspace handles remain device-local runtime state and are not included in settings synchronization.
+The MCP policy, local IPC endpoints, audit entries, process keys, and workspace handles remain device-local and are not included in application-settings export or synchronization. Legacy MCP values in `settings.json` are migrated to `local-state.json` on first load.
 
 ## Desktop And Web Differences
 
-The desktop app can access native file paths, switch the current notebook directory, open standalone Markdown files, run the local MCP service, and synchronize the current notebook through WebDAV or S3-compatible storage. Mobile can keep multiple named managed notebooks below `workspaces/` while selecting only one current notebook for editing and synchronization. It can edit the portable MCP policy but does not include the local MCP server, IPC transport, tool registry, audit log, or MCP notebook filesystem authority. The web editor runs inside browser permission and CORS limits, so it uses browser file handles, downloads, print-to-PDF, and IndexedDB settings; it does not run current-notebook synchronization or the local MCP service.
+The desktop app can access native file paths, switch the current notebook directory, open standalone Markdown files, run the local MCP service, and synchronize the current notebook through WebDAV or S3-compatible storage. Mobile can keep multiple named managed notebooks below `workspaces/` while selecting only one current notebook for editing and synchronization. It can edit its device-local MCP policy but does not include the local MCP server, IPC transport, tool registry, audit log, or MCP notebook filesystem authority. The web editor runs inside browser permission and CORS limits, so it uses browser file handles, downloads, print-to-PDF, and IndexedDB settings; it does not run current-notebook synchronization or the local MCP service.
 
 ## Other Network Access
 

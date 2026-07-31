@@ -38,7 +38,6 @@ function runtime(overrides: Partial<AppMcpRuntime> = {}): AppMcpRuntime {
     listAuditEntries: vi.fn(async () => []),
     localServiceAvailable: true,
     policyAvailable: true,
-    setPrimaryWorkspace: vi.fn(async () => snapshot()),
     updateSettings: vi.fn(async ({ config }) => ({ ...snapshot(), config })),
     ...overrides
   };
@@ -146,32 +145,17 @@ describe("McpSettings", () => {
     await waitFor(() => expect(mcp.updateSettings).toHaveBeenCalled());
   });
 
-  it("offers preset cleanup periods only for the QingYu recycle bin", async () => {
+  it("offers only Kernel-owned recoverable or permanent deletion", async () => {
     const mcp = runtime();
     render(<McpSettings runtime={mcp} />);
 
     expect(await screen.findByRole("button", { name: "Enable MCP" })).toBeEnabled();
-    expect(screen.queryByRole("combobox", { name: "Recycle bin cleanup" })).not.toBeInTheDocument();
-
-    fireEvent.change(screen.getByRole("combobox", { name: "Deletion policy" }), {
-      target: { value: "qing-yu-recycle-bin" }
-    });
-
-    const cleanup = await screen.findByRole("combobox", { name: "Recycle bin cleanup" });
-    expect(cleanup).toHaveValue("30");
-    expect(Array.from((cleanup as HTMLSelectElement).options).map((option) => option.textContent)).toEqual([
-      "Never automatically clean up",
-      "After 7 days",
-      "After 30 days",
-      "After 90 days"
+    const deletion = screen.getByRole("combobox", { name: "Deletion policy" });
+    expect(Array.from((deletion as HTMLSelectElement).options).map((option) => option.value)).toEqual([
+      "qing-yu-recycle-bin",
+      "permanent"
     ]);
-
-    fireEvent.change(cleanup, { target: { value: "0" } });
-
-    await waitFor(() => expect(mcp.updateSettings).toHaveBeenLastCalledWith(expect.objectContaining({
-      config: expect.objectContaining({ recycleBinRetentionDays: 0 }),
-      expectedRevision: "revision-1"
-    })));
+    expect(screen.queryByRole("combobox", { name: "Recycle bin cleanup" })).not.toBeInTheDocument();
   });
 
   it("shows quick client configuration only after desktop MCP is enabled", async () => {
@@ -329,7 +313,7 @@ describe("McpSettings", () => {
 
     const enable = await screen.findByRole("button", { name: "Enable MCP" });
     expect(enable).toHaveClass("min-h-11", "min-w-11");
-    expect(screen.getByText(/does not run a local MCP service/u)).toBeInTheDocument();
+    expect(screen.getByText(/does not synchronize it or run a local MCP service/u)).toBeInTheDocument();
     expect(screen.queryByText("local-ipc")).not.toBeInTheDocument();
     expect(screen.queryByText("Health")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Clear audit log" })).not.toBeInTheDocument();

@@ -2377,7 +2377,7 @@ mod tests {
             .expect("matching authority and root should form a publication gate");
         let instance = InstanceId::new(Uuid::new_v4());
         let factory = Arc::new(BlockingSpawnFactory::ready(
-            Duration::from_millis(20),
+            Duration::from_millis(200),
             ReadyEvidence {
                 ready: NativeHostReady::new(43123, instance),
                 authenticated_instance: instance,
@@ -2386,7 +2386,7 @@ mod tests {
         let bootstrap = crate::kernel_bootstrap::NativeKernelBootstrapOwner::new();
         let supervisor = KernelHostSupervisor::new_with_bootstrap(
             factory.clone(),
-            KernelHostTimeouts::uniform(Duration::from_millis(1)),
+            KernelHostTimeouts::uniform(Duration::from_millis(100)),
             bootstrap.clone(),
             writer_gate,
         );

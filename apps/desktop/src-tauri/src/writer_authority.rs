@@ -1017,22 +1017,19 @@ const LEGACY_WRITER_SURFACES: &[LegacyWriterSurface] = &[
         ],
     },
     LegacyWriterSurface {
-        name: "mcp-direct-writers",
+        name: "mcp-kernel-adapter-writers",
         disposition: WriterSurfaceDisposition::RequiresWorkspaceFence,
-        integration: WriterSurfaceIntegration::Unwired,
+        integration: WriterSurfaceIntegration::Guarded,
         entry_points: &[
-            "clear_mcp_audit_entries",
-            "mcp::initialize",
             "mcp_document_create",
             "mcp_document_delete",
             "mcp_document_move",
             "mcp_document_update",
             "mcp_settings_update",
+            "mcp_sync_after_write",
             "mcp_sync_run",
             "mcp_sync_update_config",
             "mcp_sync_update_credentials",
-            "set_mcp_primary_workspace",
-            "update_mcp_settings",
         ],
     },
     LegacyWriterSurface {
@@ -1044,7 +1041,6 @@ const LEGACY_WRITER_SURFACES: &[LegacyWriterSurface] = &[
             "DejavuSchedulerOwner::trigger_startup",
             "handle_native_sync_exit",
             "install_production_graph",
-            "mcp_sync_after_write",
             "unwatch_markdown_file",
             "unwatch_markdown_tree",
             "watch_markdown_file",
@@ -1071,15 +1067,18 @@ const LEGACY_WRITER_SURFACES: &[LegacyWriterSurface] = &[
         integration: WriterSurfaceIntegration::Independent,
         entry_points: &[
             "cancel_theme_activation",
+            "clear_mcp_audit_entries",
             "commit_theme_activation",
             "delete_theme",
             "import_theme_file",
             "install_shell_command",
+            "mcp::initialize",
             "prepare_theme_activation",
             "release_theme_activation",
             "release_theme_activation_for_window",
             "replace_theme_file",
             "set_editor_window_restore_state",
+            "update_mcp_settings",
             "uninstall_shell_command",
         ],
     },
@@ -2063,13 +2062,13 @@ mod tests {
     }
 
     #[test]
-    fn phase_one_inventory_keeps_every_overlapping_writer_explicitly_unwired() {
+    fn phase_two_inventory_marks_only_kernel_backed_mcp_writers_guarded() {
         let expected_groups = [
             "desktop-workspace-authority",
             "desktop-document-resource-writers",
             "desktop-settings-and-sync-domain-writers",
             "desktop-dejavu-execution",
-            "mcp-direct-writers",
+            "mcp-kernel-adapter-writers",
             "background-writer-triggers",
         ];
         let inventory = legacy_writer_surface_inventory();
@@ -2084,9 +2083,12 @@ mod tests {
             .iter()
             .filter(|entry| entry.disposition == WriterSurfaceDisposition::RequiresWorkspaceFence)
         {
-            assert_eq!(entry.integration, WriterSurfaceIntegration::Unwired);
             assert!(!entry.entry_points.is_empty());
-            assert_ne!(entry.integration, WriterSurfaceIntegration::Guarded);
+            if entry.name == "mcp-kernel-adapter-writers" {
+                assert_eq!(entry.integration, WriterSurfaceIntegration::Guarded);
+            } else {
+                assert_eq!(entry.integration, WriterSurfaceIntegration::Unwired);
+            }
         }
     }
 

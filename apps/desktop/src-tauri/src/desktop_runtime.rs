@@ -1,13 +1,11 @@
 use std::{
     ffi::OsStr,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::Duration,
 };
 
 use crate::app_exit::handle_app_exit_requested;
-use crate::dejavu_sync::commands::{DejavuSchedulerOwner, DejavuSyncServiceOwner};
-use crate::dejavu_sync::path_guard::PathGuardCoordinatorOwner;
 use crate::markdown_files::MarkdownTreeLoadState;
 use crate::mcp;
 use crate::menu::{
@@ -25,7 +23,7 @@ use crate::window_state::{remove_editor_window_restore_state, EditorWindowRestor
 use crate::windows::{
     apply_main_window_chrome, apply_settings_window_lifecycle, apply_webview_window_chrome,
     apply_window_event_chrome, editor_window_url_for_path, is_editor_window_label,
-    spawn_blank_editor_window, spawn_editor_window, spawn_restorable_editor_window,
+    spawn_blank_editor_window, spawn_editor_window,
 };
 use tauri::Manager;
 use tauri_plugin_window_state::StateFlags;
@@ -40,6 +38,69 @@ const DESKTOP_LOG_ARCHIVED_FILE_COUNT: usize = DESKTOP_LOG_MAX_FILE_COUNT - 1;
 enum DesktopLaunchMode {
     Normal,
     McpService,
+}
+
+#[derive(Clone)]
+struct DesktopUiPromotionRequest {
+    paths: Vec<String>,
+    reveal_when_empty: bool,
+}
+
+#[derive(Default)]
+struct DesktopUiPromotionInner {
+    creation_in_flight: bool,
+    pending: Vec<DesktopUiPromotionRequest>,
+    setup_ready: bool,
+}
+
+#[derive(Default)]
+struct DesktopUiPromotionState {
+    inner: Mutex<DesktopUiPromotionInner>,
+}
+
+impl DesktopUiPromotionState {
+    fn submit(&self, request: DesktopUiPromotionRequest) -> Option<DesktopUiPromotionRequest> {
+        let mut inner = match self.inner.lock() {
+            Ok(inner) => inner,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if !inner.setup_ready {
+            inner.pending.push(request);
+            return None;
+        }
+        Some(request)
+    }
+
+    fn mark_setup_ready(&self) -> Vec<DesktopUiPromotionRequest> {
+        let mut inner = match self.inner.lock() {
+            Ok(inner) => inner,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        inner.setup_ready = true;
+        std::mem::take(&mut inner.pending)
+    }
+
+    fn begin_creation(&self, request: DesktopUiPromotionRequest) -> bool {
+        let mut inner = match self.inner.lock() {
+            Ok(inner) => inner,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if inner.creation_in_flight {
+            inner.pending.push(request);
+            return false;
+        }
+        inner.creation_in_flight = true;
+        true
+    }
+
+    fn finish_creation(&self) -> Vec<DesktopUiPromotionRequest> {
+        let mut inner = match self.inner.lock() {
+            Ok(inner) => inner,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        inner.creation_in_flight = false;
+        std::mem::take(&mut inner.pending)
+    }
 }
 
 fn desktop_launch_mode<I, S>(args: I) -> DesktopLaunchMode
@@ -69,7 +130,6 @@ fn should_reveal_single_instance(mode: DesktopLaunchMode) -> bool {
 }
 
 fn guarded_desktop_invoke_handler<R, Handler>(
-    _launch_mode: DesktopLaunchMode,
     handler: Handler,
 ) -> impl Fn(tauri::ipc::Invoke<R>) -> bool + Send + Sync + 'static
 where
@@ -207,10 +267,10 @@ async fn retry_desktop_kernel_workspace(
     window: tauri::WebviewWindow,
     runtime: tauri::State<'_, Arc<crate::desktop_kernel_runtime::DesktopKernelRuntimeState>>,
 ) -> Result<(), String> {
-    let _caller_origin = main_renderer_origin(&window)?;
+    let caller_origin = main_renderer_origin(&window)?;
     let runtime = Arc::clone(runtime.inner());
     if runtime.reserve_resolution_retry(&app)? {
-        resolve_and_start_desktop_kernel(app, window, runtime).await
+        resolve_and_start_desktop_kernel(app, caller_origin, runtime).await
     } else {
         runtime.retry_selected(&app)
     }
@@ -218,7 +278,7 @@ async fn retry_desktop_kernel_workspace(
 
 async fn resolve_and_start_desktop_kernel(
     app: tauri::AppHandle,
-    window: tauri::WebviewWindow,
+    renderer_origin: String,
     runtime: Arc<crate::desktop_kernel_runtime::DesktopKernelRuntimeState>,
 ) -> Result<(), String> {
     let persistence_app = app.clone();
@@ -237,16 +297,7 @@ async fn resolve_and_start_desktop_kernel(
             ),
         Ok(crate::primary_workspace::DesktopPrimaryWorkspaceResolution::Selected(
             workspace_root,
-        )) => match main_renderer_origin(&window) {
-            Ok(origin) => runtime.start_resolved(&app, workspace_root, origin),
-            Err(error) => {
-                runtime.complete_initial_resolution(
-                    &app,
-                    crate::desktop_kernel_runtime::DesktopKernelStartupStatus::Unavailable,
-                )?;
-                Err(error)
-            }
-        },
+        )) => runtime.start_resolved(&app, workspace_root, renderer_origin),
         Err(crate::primary_workspace::DesktopPrimaryWorkspaceResolutionError::Invalid) => runtime
             .complete_initial_resolution(
                 &app,
@@ -308,6 +359,81 @@ fn focus_main_window<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     }
 }
 
+fn configured_main_window<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Result<tauri::utils::config::WindowConfig, String> {
+    let mut windows = app
+        .config()
+        .app
+        .windows
+        .iter()
+        .filter(|window| window.label == "main");
+    let main = windows
+        .next()
+        .cloned()
+        .ok_or_else(|| "configured main window is unavailable".to_owned())?;
+    if windows.next().is_some() {
+        return Err("configured main window is unavailable".to_owned());
+    }
+    Ok(main)
+}
+
+fn spawn_configured_main_window<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    request: DesktopUiPromotionRequest,
+) {
+    let Some(state) = app.try_state::<DesktopUiPromotionState>() else {
+        return;
+    };
+    if !state.begin_creation(request.clone()) {
+        return;
+    }
+    if !request.paths.is_empty() {
+        queue_opened_markdown_paths(&app, request.paths);
+    }
+    let config = match configured_main_window(&app) {
+        Ok(config) => config,
+        Err(error) => {
+            eprintln!("QingYu main window configuration failed: {error}");
+            for request in state.finish_creation() {
+                if !request.paths.is_empty() {
+                    queue_opened_markdown_paths(&app, request.paths);
+                }
+            }
+            return;
+        }
+    };
+    std::thread::spawn(move || {
+        let built = tauri::WebviewWindowBuilder::from_config(&app, &config)
+            .and_then(tauri::WebviewWindowBuilder::build);
+        let pending = app
+            .try_state::<DesktopUiPromotionState>()
+            .map(|state| state.finish_creation())
+            .unwrap_or_default();
+        match built {
+            Ok(window) => {
+                remember_native_menu_webview_window(&window);
+                apply_webview_window_chrome(window.as_ref());
+                for request in pending {
+                    if !request.paths.is_empty() {
+                        queue_opened_markdown_paths(&app, request.paths);
+                    }
+                }
+                let _show_result = window.show();
+                let _focus_result = window.set_focus();
+            }
+            Err(error) => {
+                for request in pending {
+                    if !request.paths.is_empty() {
+                        queue_opened_markdown_paths(&app, request.paths);
+                    }
+                }
+                eprintln!("QingYu main window creation failed: {error}");
+            }
+        }
+    });
+}
+
 fn editor_window_urls_for_opened_markdown_paths(paths: &[String]) -> Vec<String> {
     paths
         .iter()
@@ -343,19 +469,57 @@ fn reveal_or_open_markdown_paths<R: tauri::Runtime>(
 
     if opened_paths_require_primary_notebook_switch(&paths) {
         queue_opened_markdown_paths(app, paths);
-        spawn_restorable_editor_window(app.clone());
-        focus_main_window(app);
+        spawn_configured_main_window(
+            app.clone(),
+            DesktopUiPromotionRequest {
+                paths: Vec::new(),
+                reveal_when_empty: true,
+            },
+        );
         return;
     }
 
     let urls = editor_window_urls_for_opened_markdown_paths(&paths);
     if urls.is_empty() {
-        spawn_restorable_editor_window(app.clone());
+        spawn_configured_main_window(
+            app.clone(),
+            DesktopUiPromotionRequest {
+                paths: Vec::new(),
+                reveal_when_empty: true,
+            },
+        );
         return;
     }
 
     for url in urls {
         spawn_editor_window(app.clone(), url);
+    }
+}
+
+fn promote_normal_ui<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    paths: Vec<String>,
+    reveal_when_empty: bool,
+) {
+    activate_normal_ui(app);
+    let Some(state) = app.try_state::<DesktopUiPromotionState>() else {
+        return;
+    };
+    let request = DesktopUiPromotionRequest {
+        paths,
+        reveal_when_empty,
+    };
+    if let Some(request) = state.submit(request) {
+        reveal_or_open_markdown_paths(app, request.paths, request.reveal_when_empty);
+    }
+}
+
+fn mark_ui_promotion_setup_ready<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    let Some(state) = app.try_state::<DesktopUiPromotionState>() else {
+        return;
+    };
+    for request in state.mark_setup_ready() {
+        promote_normal_ui(app, request.paths, request.reveal_when_empty);
     }
 }
 
@@ -365,7 +529,7 @@ pub(crate) fn request_primary_notebook_switch(
     path: String,
 ) -> Result<(), String> {
     let folder = crate::markdown_files::open::resolve_markdown_folder(path)?;
-    reveal_or_open_markdown_paths(&app, vec![folder], false);
+    promote_normal_ui(&app, vec![folder], false);
     Ok(())
 }
 
@@ -401,7 +565,20 @@ pub(crate) fn run() {
     let launch_mode = desktop_launch_mode(std::env::args_os());
     let mut context = tauri::generate_context!();
     if launch_mode == DesktopLaunchMode::McpService {
-        context.config_mut().app.windows.clear();
+        let mut main_windows = context
+            .config_mut()
+            .app
+            .windows
+            .iter_mut()
+            .filter(|window| window.label == "main");
+        let main = main_windows
+            .next()
+            .expect("MCP service requires one configured main window");
+        assert!(
+            main_windows.next().is_none(),
+            "MCP service requires one configured main window"
+        );
+        main.create = false;
     }
 
     let builder = tauri::Builder::default()
@@ -412,10 +589,7 @@ pub(crate) fn run() {
         .manage(NativeApplicationMenuState::default())
         .manage(NativeMenuTargetState::default())
         .manage(EditorWindowRestoreState::default())
-        .manage(DejavuSyncServiceOwner::default())
-        .manage(DejavuSchedulerOwner::default())
-        .manage(PathGuardCoordinatorOwner::default())
-        .manage(crate::remote_sync::RemoteSyncExecutionCoordinator::default())
+        .manage(DesktopUiPromotionState::default())
         .manage(crate::themes::ThemeActivationState::default());
 
     #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
@@ -424,8 +598,7 @@ pub(crate) fn run() {
         if !should_reveal_single_instance(launch_mode) {
             return;
         }
-        activate_normal_ui(app);
-        reveal_or_open_markdown_paths(
+        promote_normal_ui(
             app,
             opened_markdown_paths_from_args_with_cwd(args, std::path::PathBuf::from(cwd)),
             true,
@@ -457,10 +630,8 @@ pub(crate) fn run() {
         .setup(move |app| {
             let bootstrap = crate::kernel_bootstrap::NativeKernelBootstrapOwner::new();
             app.manage(bootstrap.clone());
-            if launch_mode == DesktopLaunchMode::Normal {
-                crate::runtime_store::install_desktop_runtime_store(&app.handle())
-                    .map_err(std::io::Error::other)?;
-            }
+            crate::runtime_store::install_desktop_runtime_store(&app.handle())
+                .map_err(std::io::Error::other)?;
             let startup_language =
                 crate::language::resolve_startup_language(&app.config().identifier);
             let settings_owner = crate::app_settings::KernelSettingsOwner::install(&app.handle())
@@ -472,52 +643,39 @@ pub(crate) fn run() {
             if let Err(error) = crate::themes::initialize_catalog_before_kernel(&app.handle()) {
                 eprintln!("QingYu theme catalog initialization failed: {error}");
             }
-            if launch_mode == DesktopLaunchMode::McpService {
-                if let Err(error) = crate::dejavu_sync::install_production_graph(&app.handle()) {
-                    eprintln!("QingYu Dejavu sync initialization failed: {error}");
+            let runtime = Arc::new(
+                crate::desktop_kernel_runtime::DesktopKernelRuntimeState::new(
+                    bootstrap,
+                    crate::desktop_kernel_runtime::DesktopKernelStartupStatus::Resolving,
+                ),
+            );
+            app.manage(runtime.clone());
+            let mcp_state = mcp::initialize(&app.handle()).map_err(std::io::Error::other)?;
+            app.manage(mcp_state);
+            let renderer_origin =
+                configured_main_renderer_origin(&app.handle()).map_err(std::io::Error::other)?;
+            let startup_app = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(error) =
+                    resolve_and_start_desktop_kernel(startup_app, renderer_origin, runtime).await
+                {
+                    eprintln!("QingYu Kernel host initialization failed: {error}");
                 }
+            });
+            if launch_mode == DesktopLaunchMode::McpService {
                 #[cfg(target_os = "macos")]
                 app.set_activation_policy(tauri::ActivationPolicy::Prohibited);
-                match mcp::initialize(&app.handle()) {
-                    Ok(state) => {
-                        app.manage(state);
-                    }
-                    Err(error) => {
-                        eprintln!("QingYu MCP initialization failed: {error}");
-                    }
-                }
             } else {
-                let runtime = Arc::new(
-                    crate::desktop_kernel_runtime::DesktopKernelRuntimeState::new(
-                        bootstrap,
-                        crate::desktop_kernel_runtime::DesktopKernelStartupStatus::Resolving,
-                    ),
-                );
-                app.manage(runtime.clone());
-                if let Some(window) = app.get_webview_window("main") {
-                    let startup_app = app.handle().clone();
-                    tauri::async_runtime::spawn(async move {
-                        if let Err(error) =
-                            resolve_and_start_desktop_kernel(startup_app, window, runtime).await
-                        {
-                            eprintln!("QingYu Kernel host initialization failed: {error}");
-                        }
-                    });
-                } else {
-                    if let Err(error) = runtime.complete_initial_resolution(
-                        &app.handle(),
-                        crate::desktop_kernel_runtime::DesktopKernelStartupStatus::Unavailable,
-                    ) {
-                        eprintln!("QingYu Kernel host initialization failed: {error}");
-                    }
-                }
                 apply_main_window_chrome(app);
                 spawn_startup_window_reveal_fallback(&app.handle());
                 if let Some(window) = app.get_webview_window("main") {
                     remember_native_menu_webview_window(&window);
                 }
+            }
+            mark_ui_promotion_setup_ready(&app.handle());
+            if launch_mode == DesktopLaunchMode::Normal {
                 let paths = opened_markdown_paths_from_args(std::env::args());
-                reveal_or_open_markdown_paths(&app.handle(), paths, false);
+                promote_normal_ui(&app.handle(), paths, false);
             }
             Ok(())
         })
@@ -554,7 +712,6 @@ pub(crate) fn run() {
             emit_native_menu_command_payload(app, payload);
         })
         .invoke_handler(guarded_desktop_invoke_handler::<tauri::Wry, _>(
-            launch_mode,
             tauri::generate_handler![
                 crate::kernel_bootstrap::read_native_kernel_bootstrap,
                 read_desktop_kernel_startup_state,
@@ -562,7 +719,6 @@ pub(crate) fn run() {
                 retry_desktop_kernel_workspace,
                 crate::mcp::get_mcp_settings,
                 crate::mcp::update_mcp_settings,
-                crate::mcp::set_mcp_primary_workspace,
                 crate::mcp::get_mcp_health,
                 crate::mcp::list_mcp_audit_entries,
                 crate::mcp::clear_mcp_audit_entries,
@@ -576,7 +732,6 @@ pub(crate) fn run() {
                 crate::runtime_store::commit_desktop_runtime_store_changes,
                 crate::primary_workspace::read_primary_workspace_state,
                 crate::primary_workspace::write_primary_workspace_state,
-                crate::dejavu_sync::path_guard::acknowledge_path_guard,
                 crate::primary_workspace::prepare_desktop_notebook_target,
                 crate::primary_workspace::discard_prepared_desktop_notebook_target,
                 crate::themes::list_themes,
@@ -634,21 +789,6 @@ pub(crate) fn run() {
                 crate::windows::cancel_settings_window_hide,
                 crate::windows::complete_settings_window_hide,
                 crate::windows::destroy_current_editor_window,
-                crate::sync_config::sync_application,
-                crate::sync_config::test_sync_connection,
-                crate::sync_config::list_remote_notebooks,
-                crate::dejavu_sync::commands::bind_dejavu_repository,
-                crate::dejavu_sync::commands::rebuild_local_repository,
-                crate::dejavu_sync::commands::stop_repository_sync,
-                crate::dejavu_sync::commands::change_global_key,
-                crate::dejavu_sync::commands::load_dejavu_key_state,
-                crate::dejavu_sync::commands::initialize_dejavu_global_key,
-                crate::dejavu_sync::commands::export_dejavu_global_key,
-                crate::dejavu_sync::commands::purge_remote_repository,
-                crate::dejavu_sync::commands::delete_remote_repository,
-                crate::dejavu_sync::commands::list_dejavu_conflict_history,
-                crate::dejavu_sync::commands::read_dejavu_conflict_history,
-                crate::dejavu_sync::commands::load_dejavu_repository_status,
                 crate::workspace_membership::is_document_in_workspace,
                 crate::web_http::download_web_image,
                 crate::markdown_files::document::write_markdown_file,
@@ -670,17 +810,11 @@ pub(crate) fn run() {
                 crate::window_state::set_editor_window_restore_state,
                 crate::window_state::list_editor_window_restore_states,
                 crate::fonts::list_system_font_families,
-                crate::sync_config::load_sync_config,
-                crate::sync_config::enable_sync_config,
-                crate::sync_config::patch_sync_config,
-                crate::sync_config::recover_sync_config,
-                crate::sync_config::reset_sync_config,
                 crate::sync_config::load_sync_config_editing,
                 crate::sync_config::set_sync_config_editing,
                 crate::sync_config::request_sync_config_apply,
                 crate::sync_config::cancel_sync_config_apply,
                 crate::sync_config::settle_kernel_sync_config_apply,
-                crate::sync_config::load_sync_status,
                 crate::managed_workspace::resolve_managed_workspace_root,
                 crate::managed_workspace::list_managed_workspace_names,
                 crate::app_logs::open_log_folder,
@@ -690,14 +824,14 @@ pub(crate) fn run() {
         .expect("error while building QingYu")
         .run(move |app, event| match event {
             tauri::RunEvent::ExitRequested { code, api, .. } => {
-                handle_app_exit_requested(
-                    app,
-                    code,
-                    api,
-                    launch_mode == DesktopLaunchMode::McpService,
-                );
+                handle_app_exit_requested(app, code, api);
             }
             tauri::RunEvent::Exit => {
+                if let Some(state) = app.try_state::<std::sync::Arc<mcp::McpState>>() {
+                    tauri::async_runtime::block_on(async move {
+                        let _shutdown_result = state.shutdown().await;
+                    });
+                }
                 if let Some(runtime) =
                     app.try_state::<Arc<crate::desktop_kernel_runtime::DesktopKernelRuntimeState>>()
                 {
@@ -709,17 +843,10 @@ pub(crate) fn run() {
                         });
                     }
                 }
-                if let Some(state) = app.try_state::<std::sync::Arc<mcp::McpState>>() {
-                    let controller = state.controller.clone();
-                    tauri::async_runtime::block_on(async move {
-                        let _stop_result = controller.stop().await;
-                    });
-                }
             }
             #[cfg(target_os = "macos")]
             tauri::RunEvent::Opened { urls } => {
-                activate_normal_ui(app);
-                reveal_or_open_markdown_paths(app, opened_markdown_paths_from_urls(&urls), false);
+                promote_normal_ui(app, opened_markdown_paths_from_urls(&urls), false);
             }
             #[cfg(any(target_os = "ios", target_os = "android"))]
             tauri::RunEvent::Opened { urls } => {
@@ -727,11 +854,10 @@ pub(crate) fn run() {
             }
             #[cfg(target_os = "macos")]
             tauri::RunEvent::Reopen { .. } => {
-                activate_normal_ui(app);
                 // Settings may stay visible after prewarm. Treating that as an editor would skip
                 // workspace restore when the user reopens QingYu from the Dock.
                 if !has_visible_editor_window(app) {
-                    reveal_or_open_markdown_paths(app, Vec::new(), true);
+                    promote_normal_ui(app, Vec::new(), true);
                 }
             }
             _ => {}
@@ -864,6 +990,91 @@ mod tests {
     }
 
     #[test]
+    fn normal_ui_requests_queue_until_setup_and_deduplicate_window_creation() {
+        let state = super::DesktopUiPromotionState::default();
+        let first = super::DesktopUiPromotionRequest {
+            paths: vec!["first.md".to_owned()],
+            reveal_when_empty: true,
+        };
+        assert!(state.submit(first.clone()).is_none());
+        assert_eq!(state.mark_setup_ready().len(), 1);
+
+        assert!(state.begin_creation(first));
+        assert!(!state.begin_creation(super::DesktopUiPromotionRequest {
+            paths: vec!["second.md".to_owned()],
+            reveal_when_empty: true,
+        }));
+        let pending = state.finish_creation();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].paths, ["second.md"]);
+    }
+
+    #[test]
+    fn poisoned_ui_promotion_state_does_not_drop_a_ready_request() {
+        let state = std::sync::Arc::new(super::DesktopUiPromotionState::default());
+        assert!(state.mark_setup_ready().is_empty());
+        let poison = std::sync::Arc::clone(&state);
+        let _ = std::thread::spawn(move || {
+            let _guard = poison.inner.lock().expect("promotion state lock");
+            panic!("poison promotion state for recovery coverage");
+        })
+        .join();
+
+        let request = super::DesktopUiPromotionRequest {
+            paths: vec!["retained.md".to_owned()],
+            reveal_when_empty: false,
+        };
+        let submitted = state
+            .submit(request)
+            .expect("a poisoned state must recover instead of dropping the request");
+
+        assert_eq!(submitted.paths, ["retained.md"]);
+    }
+
+    #[test]
+    fn main_window_configuration_failure_preserves_concurrent_pending_paths() {
+        let source = include_str!("desktop_runtime.rs");
+        let start = source
+            .find(
+                "Err(error) => {\n            eprintln!(\"QingYu main window configuration failed",
+            )
+            .expect("configuration failure branch");
+        let end = source[start..]
+            .find("\n            return;")
+            .map(|offset| start + offset)
+            .expect("configuration failure branch end");
+        let branch = &source[start..end];
+
+        assert!(branch.contains("for request in state.finish_creation()"));
+        assert!(branch.contains("queue_opened_markdown_paths(&app, request.paths)"));
+    }
+
+    #[test]
+    fn dynamic_main_uses_the_preserved_config_and_focuses_only_after_build() {
+        let source = include_str!("desktop_runtime.rs");
+        let start = source
+            .find("fn spawn_configured_main_window")
+            .expect("configured main creation helper");
+        let end = source[start..]
+            .find("fn editor_window_urls_for_opened_markdown_paths")
+            .map(|offset| start + offset)
+            .expect("configured main helper boundary");
+        let helper = &source[start..end];
+        let from_config = helper
+            .find("WebviewWindowBuilder::from_config")
+            .expect("dynamic main should use its preserved WindowConfig");
+        let build = helper
+            .find("WebviewWindowBuilder::build")
+            .expect("window build");
+        let show = helper.find("window.show()").expect("window show");
+        let focus = helper.find("window.set_focus()").expect("window focus");
+
+        assert!(from_config < build);
+        assert!(build < show);
+        assert!(show < focus);
+    }
+
+    #[test]
     fn normal_ui_promotion_restores_dock_visibility() {
         let source = include_str!("desktop_runtime.rs");
         let activation_start = source
@@ -885,16 +1096,18 @@ mod tests {
     }
 
     #[test]
-    fn mcp_service_runtime_clears_startup_windows_before_build() {
+    fn mcp_service_runtime_preserves_main_config_but_disables_initial_creation() {
         let source = include_str!("desktop_runtime.rs");
         let build = source
             .find(".build(context)")
             .expect("desktop runtime should build with a mutable context");
-        let clear = source
-            .find("context.config_mut().app.windows.clear();")
-            .expect("MCP service mode should remove configured startup windows");
+        let disable = source
+            .find("main.create = false;")
+            .expect("MCP service mode should retain main config without creating it");
+        let destructive_clear = ["context.config_mut().app.windows", ".clear();"].concat();
 
-        assert!(clear < build);
+        assert!(disable < build);
+        assert!(!source.contains(&destructive_clear));
         assert!(source.contains("DesktopLaunchMode::McpService"));
     }
 
@@ -910,8 +1123,30 @@ mod tests {
             .expect("Kernel settings owner should delimit runtime-store setup");
         let setup_prefix = &source[setup_start..settings];
 
-        assert!(setup_prefix.contains("if launch_mode == DesktopLaunchMode::Normal"));
+        assert!(!setup_prefix.contains("if launch_mode == DesktopLaunchMode::Normal"));
         assert!(setup_prefix.contains("install_desktop_runtime_store"));
+    }
+
+    #[test]
+    fn every_desktop_launch_installs_one_kernel_runtime_before_mcp() {
+        let source = include_str!("desktop_runtime.rs");
+        let setup_start = source
+            .find(".setup(move |app| {")
+            .expect("desktop setup hook should exist");
+        let setup_end = source[setup_start..]
+            .find(".on_page_load")
+            .map(|offset| setup_start + offset)
+            .expect("desktop setup hook should have a boundary");
+        let setup = &source[setup_start..setup_end];
+        let kernel = setup
+            .find("app.manage(runtime.clone());")
+            .expect("Desktop Kernel runtime must be managed for every launch mode");
+        let mcp = setup
+            .find("mcp::initialize(&app.handle())")
+            .expect("MCP must attach to the managed child Kernel runtime");
+
+        assert!(kernel < mcp);
+        assert!(!setup.contains("install_production_graph"));
     }
 
     #[test]
@@ -930,6 +1165,13 @@ mod tests {
             .contains("app.set_activation_policy(tauri::ActivationPolicy::Prohibited);"));
         assert!(!setup_source
             .contains("app.set_activation_policy(tauri::ActivationPolicy::Accessory);"));
+        let prohibited = setup_source
+            .find("app.set_activation_policy(tauri::ActivationPolicy::Prohibited);")
+            .expect("headless activation policy");
+        let ready = setup_source
+            .find("mark_ui_promotion_setup_ready")
+            .expect("UI promotion inbox ready edge");
+        assert!(prohibited < ready);
     }
 
     #[test]
@@ -1068,7 +1310,7 @@ mod tests {
         let lib_source = include_str!("desktop_runtime.rs");
 
         assert!(
-            lib_source.contains("reveal_or_open_markdown_paths(&app.handle(), paths, false);"),
+            lib_source.contains("promote_normal_ui(&app.handle(), paths, false);"),
             "initial CLI-opened paths should trigger a native window reveal instead of only being queued"
         );
     }
@@ -1088,7 +1330,7 @@ mod tests {
             .expect("mobile opened-URL arm should exist");
         let opened_source = &run_event_source[macos_open_arm..mobile_open_arm];
 
-        assert!(opened_source.contains("reveal_or_open_markdown_paths("));
+        assert!(opened_source.contains("promote_normal_ui("));
         assert!(opened_source.contains("opened_markdown_paths_from_urls(&urls)"));
         assert!(!opened_source.contains("queue_opened_markdown_paths("));
     }
@@ -1106,9 +1348,7 @@ mod tests {
         let command_source = &lib_source[start..end];
 
         assert!(command_source.contains("resolve_markdown_folder(path)?"));
-        assert!(
-            command_source.contains("reveal_or_open_markdown_paths(&app, vec![folder], false);")
-        );
+        assert!(command_source.contains("promote_normal_ui(&app, vec![folder], false);"));
     }
 
     #[test]
@@ -1126,7 +1366,7 @@ mod tests {
             .find("queue_opened_markdown_paths(app, paths);")
             .expect("directory switch should be durably queued");
         let spawn = branch_source
-            .find("spawn_restorable_editor_window(app.clone());")
+            .find("spawn_configured_main_window(")
             .expect("directory switch should reveal a primary window");
 
         assert!(
@@ -1142,13 +1382,13 @@ mod tests {
             .find("fn reveal_or_open_markdown_paths")
             .expect("reveal_or_open_markdown_paths should exist");
         let end = lib_source[start..]
-            .find("fn show_main_window_if_hidden")
+            .find("fn promote_normal_ui")
             .map(|offset| start + offset)
-            .expect("reveal_or_open_markdown_paths should end before show_main_window_if_hidden");
+            .expect("reveal_or_open_markdown_paths should have a promotion boundary");
         let reveal_source = &lib_source[start..end];
 
         assert!(
-            reveal_source.contains("spawn_restorable_editor_window(app.clone());"),
+            reveal_source.contains("spawn_configured_main_window("),
             "reopening QingYu without a live main window should create a restore-capable editor window"
         );
         assert!(
@@ -1161,7 +1401,7 @@ mod tests {
     fn desktop_handles_macos_reopen_without_visible_windows() {
         let lib_source = include_str!("desktop_runtime.rs");
         let reopen_event = ["tauri::RunEvent::", "Reopen {"].concat();
-        let empty_reveal = ["reveal_or_open_markdown_paths(app, Vec::new(), ", "true);"].concat();
+        let empty_reveal = ["promote_normal_ui(app, Vec::new(), ", "true);"].concat();
 
         assert!(
             lib_source.contains(&reopen_event),
@@ -1208,7 +1448,7 @@ mod tests {
     }
 
     #[test]
-    fn desktop_registers_application_sync_commands_only() {
+    fn desktop_registers_only_kernel_sync_host_coordination_commands() {
         let lib_source = include_str!("desktop_runtime.rs");
         let handler_start = lib_source
             .find("tauri::generate_handler![")
@@ -1219,13 +1459,24 @@ mod tests {
                 .map(|offset| handler_start + offset)
                 .expect("Tauri invoke handler should be closed")];
 
-        for command in ["sync_application", "test_sync_connection"] {
+        for command in [
+            "load_sync_config_editing",
+            "set_sync_config_editing",
+            "request_sync_config_apply",
+            "cancel_sync_config_apply",
+            "settle_kernel_sync_config_apply",
+        ] {
             assert!(
                 handler_source.contains(&format!("{command},")),
                 "desktop invoke handler should register {command}"
             );
         }
-        for forbidden in ["project_config", "sync_project_folder"] {
+        for forbidden in [
+            "sync_application",
+            "test_sync_connection",
+            "bind_dejavu_repository",
+            "acknowledge_path_guard",
+        ] {
             assert!(!handler_source.contains(forbidden));
         }
     }

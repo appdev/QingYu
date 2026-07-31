@@ -1,15 +1,20 @@
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+use qingyu_kernel::contract::{
+    CredentialChange, PatchSyncConfigRequest, Revision, RunId, SyncConfigChangesDto,
+    SyncConfigViewDto, SyncIntervalSeconds, SyncRunCompletionState, TestSyncConnectionRequest,
+    TriggerSyncRunRequest,
+};
 use rmcp::schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use tokio_util::sync::CancellationToken;
 
 use crate::{
     mcp::config::SyncExecutionPolicy,
-    remote_sync::mcp_service::{SyncConfigPatchInput, SyncCredentialPatchInput},
     sync_config::model::{SyncMode, SyncProvider},
 };
 
-use super::{failure_from_code, McpServices, ToolResult};
+use super::{failure_from_code, failure_from_kernel, McpServices, ToolResult};
 
 #[derive(Clone, Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -79,65 +84,124 @@ pub(super) struct SyncStatusInput {
     pub(super) run_id: Option<uuid::Uuid>,
 }
 
-pub(super) fn get_config(services: &McpServices, _input: SyncConfigGetInput) -> ToolResult {
+pub(super) async fn get_config(
+    services: &McpServices,
+    _input: SyncConfigGetInput,
+    cancellation: &CancellationToken,
+) -> ToolResult {
     let config = services
-        .sync
-        .get_config()
-        .map_err(|error| failure_from_code(error.code, None))?;
-    let persisted_status = services
-        .sync
-        .persisted_status()
-        .map_err(|error| failure_from_code(error.code, None))?;
-    Ok(serde_json::json!({
-        "config": config,
-        "status": persisted_status,
-    }))
+        .kernel
+        .get_sync_config(cancellation)
+        .await
+        .map_err(failure_from_kernel)?;
+    let status = services
+        .kernel
+        .get_sync_status(cancellation)
+        .await
+        .map_err(failure_from_kernel)?;
+    Ok(serde_json::json!({ "config": config, "status": status }))
 }
 
-pub(super) fn update_config(services: &McpServices, input: &SyncConfigUpdateInput) -> ToolResult {
-    services
-        .sync
-        .update_config(SyncConfigPatchInput {
-            expected_revision: input.expected_revision.clone(),
-            enabled: input.enabled,
-            provider: input.provider,
-            remote_root: input.remote_root.clone(),
-            mode: input.mode,
-            interval_seconds: input.interval_seconds,
-            webdav_server_url: input.webdav_server_url.clone(),
-            s3_endpoint_url: input.s3_endpoint_url.clone(),
-            s3_region: input.s3_region.clone(),
-            s3_bucket: input.s3_bucket.clone(),
-        })
-        .and_then(|config| serde_json::to_value(config).map_err(|_| unreachable!()))
-        .map_err(|error| failure_from_code(error.code, None))
+pub(super) async fn update_config(
+    services: &McpServices,
+    input: &SyncConfigUpdateInput,
+    cancellation: &CancellationToken,
+) -> ToolResult {
+    let changes = SyncConfigChangesDto {
+        enabled: input.enabled,
+        provider: input.provider.map(convert_enum).transpose()?,
+        remote_root: input.remote_root.clone(),
+        mode: input.mode.map(convert_enum).transpose()?,
+        interval_seconds: input
+            .interval_seconds
+            .map(|value| {
+                SyncIntervalSeconds::new(value)
+                    .map_err(|_| failure_from_code("invalid_arguments", None))
+            })
+            .transpose()?,
+        webdav_server_url: input.webdav_server_url.clone(),
+        s3_endpoint_url: input.s3_endpoint_url.clone(),
+        s3_region: input.s3_region.clone(),
+        s3_bucket: input.s3_bucket.clone(),
+        ..SyncConfigChangesDto::default()
+    };
+    patch(services, &input.expected_revision, changes, cancellation).await
 }
 
-pub(super) fn update_credentials(
+pub(super) async fn update_credentials(
     services: &McpServices,
     input: &SyncCredentialsUpdateInput,
+    cancellation: &CancellationToken,
 ) -> ToolResult {
-    services
-        .sync
-        .update_credentials(SyncCredentialPatchInput {
-            expected_revision: input.expected_revision.clone(),
-            webdav_username: input.webdav_username.clone(),
-            webdav_password: input.webdav_password.clone(),
-            s3_access_key_id: input.s3_access_key_id.clone(),
-            s3_secret_access_key: input.s3_secret_access_key.clone(),
-            clear_credentials: input.clear_credentials,
-        })
-        .and_then(|config| serde_json::to_value(config).map_err(|_| unreachable!()))
-        .map_err(|error| failure_from_code(error.code, None))
+    let changes = credential_changes(input)?;
+    patch(services, &input.expected_revision, changes, cancellation).await
 }
 
-pub(super) async fn test(services: &McpServices, input: SyncTestInput) -> ToolResult {
-    services
-        .sync
-        .test(&input.expected_revision)
+fn credential_changes(
+    input: &SyncCredentialsUpdateInput,
+) -> Result<SyncConfigChangesDto, crate::mcp::error::McpToolFailure> {
+    let clear = input.clear_credentials.unwrap_or(false);
+    let provided = [
+        input.webdav_username.as_ref(),
+        input.webdav_password.as_ref(),
+        input.s3_access_key_id.as_ref(),
+        input.s3_secret_access_key.as_ref(),
+    ];
+    if clear && provided.iter().any(|value| value.is_some()) {
+        return Err(failure_from_code("invalid_arguments", None));
+    }
+    if provided.iter().flatten().any(|value| value.is_empty()) {
+        return Err(failure_from_code("invalid_arguments", None));
+    }
+    if !clear && provided.iter().all(|value| value.is_none()) {
+        return Err(failure_from_code("invalid_arguments", None));
+    }
+    if clear {
+        return Ok(SyncConfigChangesDto {
+            webdav_username: Some(String::new()),
+            webdav_password: Some(CredentialChange::Clear {}),
+            s3_access_key_id: Some(CredentialChange::Clear {}),
+            s3_secret_access_key: Some(CredentialChange::Clear {}),
+            ..SyncConfigChangesDto::default()
+        });
+    }
+    let replacement = |value: &Option<String>| {
+        value.as_ref().map(|value| CredentialChange::Replace {
+            value: value.clone(),
+        })
+    };
+    Ok(SyncConfigChangesDto {
+        webdav_username: input.webdav_username.clone(),
+        webdav_password: replacement(&input.webdav_password),
+        s3_access_key_id: replacement(&input.s3_access_key_id),
+        s3_secret_access_key: replacement(&input.s3_secret_access_key),
+        ..SyncConfigChangesDto::default()
+    })
+}
+
+pub(super) async fn test(
+    services: &McpServices,
+    input: SyncTestInput,
+    cancellation: &CancellationToken,
+) -> ToolResult {
+    let config = services
+        .kernel
+        .get_sync_config(cancellation)
         .await
-        .and_then(|result| serde_json::to_value(result).map_err(|_| unreachable!()))
-        .map_err(|error| failure_from_code(error.code, None))
+        .map_err(failure_from_kernel)?;
+    let request = TestSyncConnectionRequest {
+        expected_revision: parse_revision(&input.expected_revision)?,
+        changes: current_target_changes(&config),
+    };
+    services
+        .kernel
+        .test_sync_connection(&request, cancellation)
+        .await
+        .and_then(|result| {
+            serde_json::to_value(result)
+                .map_err(|_| crate::mcp::kernel_adapter::McpKernelFailure::InvalidResponse)
+        })
+        .map_err(failure_from_kernel)
 }
 
 pub(super) async fn run(
@@ -145,26 +209,200 @@ pub(super) async fn run(
     input: &SyncRunInput,
     execution: SyncExecutionPolicy,
     timeout: Duration,
+    cancellation: &CancellationToken,
 ) -> ToolResult {
-    services
-        .sync
-        .run(&input.expected_revision, execution, timeout)
+    let accepted = services
+        .kernel
+        .trigger_sync_run(
+            &TriggerSyncRunRequest {
+                expected_config_revision: parse_revision(&input.expected_revision)?,
+            },
+            cancellation,
+        )
         .await
-        .and_then(|status| serde_json::to_value(status).map_err(|_| unreachable!()))
-        .map_err(|error| failure_from_code(error.code, None))
+        .map_err(failure_from_kernel)?;
+    if execution == SyncExecutionPolicy::Background {
+        return serde_json::to_value(accepted)
+            .map_err(|_| failure_from_code("operation_failed", None));
+    }
+    let deadline = Instant::now() + timeout;
+    loop {
+        let status = services
+            .kernel
+            .get_sync_run(accepted.run_id, cancellation)
+            .await
+            .map_err(failure_from_kernel)?;
+        if status.completion_state != SyncRunCompletionState::Attempting {
+            return serde_json::to_value(status)
+                .map_err(|_| failure_from_code("operation_failed", None));
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(failure_from_code("sync_wait_timeout", None));
+        }
+        tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => {
+                return Err(failure_from_code("request_cancelled", None));
+            }
+            _ = tokio::time::sleep(remaining.min(Duration::from_millis(100))) => {}
+        }
+    }
 }
 
-pub(super) fn status(services: &McpServices, input: SyncStatusInput) -> ToolResult {
+pub(super) async fn status(
+    services: &McpServices,
+    input: SyncStatusInput,
+    cancellation: &CancellationToken,
+) -> ToolResult {
     match input.run_id {
         Some(run_id) => services
-            .sync
-            .status(run_id)
-            .and_then(|status| serde_json::to_value(status).map_err(|_| unreachable!()))
-            .map_err(|error| failure_from_code(error.code, None)),
+            .kernel
+            .get_sync_run(RunId::new(run_id), cancellation)
+            .await
+            .and_then(|status| {
+                serde_json::to_value(status)
+                    .map_err(|_| crate::mcp::kernel_adapter::McpKernelFailure::InvalidResponse)
+            })
+            .map_err(failure_from_kernel),
         None => services
-            .sync
-            .persisted_status()
+            .kernel
+            .get_sync_status(cancellation)
+            .await
+            .and_then(|status| {
+                serde_json::to_value(status)
+                    .map_err(|_| crate::mcp::kernel_adapter::McpKernelFailure::InvalidResponse)
+            })
             .map(|status| serde_json::json!({ "status": status }))
-            .map_err(|error| failure_from_code(error.code, None)),
+            .map_err(failure_from_kernel),
+    }
+}
+
+async fn patch(
+    services: &McpServices,
+    expected_revision: &str,
+    changes: SyncConfigChangesDto,
+    cancellation: &CancellationToken,
+) -> ToolResult {
+    changes
+        .validate()
+        .map_err(|_| failure_from_code("invalid_arguments", None))?;
+    let request = PatchSyncConfigRequest {
+        expected_revision: parse_revision(expected_revision)?,
+        changes,
+    };
+    services
+        .kernel
+        .patch_sync_config(&request, cancellation)
+        .await
+        .and_then(|config| {
+            serde_json::to_value(config)
+                .map_err(|_| crate::mcp::kernel_adapter::McpKernelFailure::InvalidResponse)
+        })
+        .map_err(failure_from_kernel)
+}
+
+fn parse_revision(value: &str) -> Result<Revision, crate::mcp::error::McpToolFailure> {
+    Revision::parse(value.to_owned()).map_err(|_| failure_from_code("invalid_arguments", None))
+}
+
+fn convert_enum<T: Serialize, U: serde::de::DeserializeOwned>(
+    value: T,
+) -> Result<U, crate::mcp::error::McpToolFailure> {
+    serde_json::from_value(
+        serde_json::to_value(value).map_err(|_| failure_from_code("invalid_arguments", None))?,
+    )
+    .map_err(|_| failure_from_code("invalid_arguments", None))
+}
+
+fn current_target_changes(config: &SyncConfigViewDto) -> SyncConfigChangesDto {
+    SyncConfigChangesDto {
+        provider: Some(config.provider),
+        remote_root: Some(config.remote_root.clone()),
+        ..SyncConfigChangesDto::default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use qingyu_kernel::contract::CredentialChange;
+
+    use super::{credential_changes, SyncCredentialsUpdateInput};
+
+    fn input() -> SyncCredentialsUpdateInput {
+        SyncCredentialsUpdateInput {
+            expected_revision: "sync-1".to_string(),
+            webdav_username: None,
+            webdav_password: None,
+            s3_access_key_id: None,
+            s3_secret_access_key: None,
+            clear_credentials: None,
+            dry_run: None,
+            preview_token: None,
+        }
+    }
+
+    #[test]
+    fn credential_patch_rejects_empty_noop_and_mixed_clear_inputs() {
+        let error = credential_changes(&input()).expect_err("empty credential patch");
+        assert_eq!(error.code, "invalid_arguments");
+
+        let mut empty_replacement = input();
+        empty_replacement.webdav_password = Some(String::new());
+        let error = credential_changes(&empty_replacement).expect_err("empty replacement");
+        assert_eq!(error.code, "invalid_arguments");
+
+        let mut mixed_clear = input();
+        mixed_clear.clear_credentials = Some(true);
+        mixed_clear.s3_access_key_id = Some("access-key".to_string());
+        let error = credential_changes(&mixed_clear).expect_err("mixed clear and replacement");
+        assert_eq!(error.code, "invalid_arguments");
+    }
+
+    #[test]
+    fn credential_clear_covers_username_and_every_secret() {
+        let mut clear = input();
+        clear.clear_credentials = Some(true);
+
+        let changes = credential_changes(&clear).expect("clear credential changes");
+
+        assert_eq!(changes.webdav_username.as_deref(), Some(""));
+        assert_eq!(changes.webdav_password, Some(CredentialChange::Clear {}));
+        assert_eq!(changes.s3_access_key_id, Some(CredentialChange::Clear {}));
+        assert_eq!(
+            changes.s3_secret_access_key,
+            Some(CredentialChange::Clear {})
+        );
+    }
+
+    #[test]
+    fn credential_replacements_preserve_each_non_empty_field() {
+        let mut replace = input();
+        replace.webdav_username = Some("user".to_string());
+        replace.webdav_password = Some("password".to_string());
+        replace.s3_access_key_id = Some("access-key".to_string());
+        replace.s3_secret_access_key = Some("secret-key".to_string());
+
+        let changes = credential_changes(&replace).expect("replacement credential changes");
+
+        assert_eq!(changes.webdav_username.as_deref(), Some("user"));
+        assert_eq!(
+            changes.webdav_password,
+            Some(CredentialChange::Replace {
+                value: "password".to_string()
+            })
+        );
+        assert_eq!(
+            changes.s3_access_key_id,
+            Some(CredentialChange::Replace {
+                value: "access-key".to_string()
+            })
+        );
+        assert_eq!(
+            changes.s3_secret_access_key,
+            Some(CredentialChange::Replace {
+                value: "secret-key".to_string()
+            })
+        );
     }
 }

@@ -46,6 +46,7 @@ struct DesktopKernelRuntimeInner {
     owner: Option<Arc<DesktopKernelOwner>>,
     owner_token: Option<u64>,
     owner_publication_sequence: u64,
+    mcp_authority_epoch: u64,
     selection: Option<DesktopKernelSelection>,
     status: DesktopKernelStartupStatus,
     next_attempt_token: u64,
@@ -62,6 +63,12 @@ struct DesktopKernelSelection {
 struct DesktopKernelStartAttempt {
     token: u64,
     selection: DesktopKernelSelection,
+}
+
+struct AcceptedKernelPublication {
+    mcp_authority_epoch: u64,
+    status_changed: bool,
+    workspace_root: Option<PathBuf>,
 }
 
 pub(crate) struct DesktopKernelRuntimeState {
@@ -81,6 +88,7 @@ impl DesktopKernelRuntimeState {
                 owner: None,
                 owner_token: None,
                 owner_publication_sequence: 0,
+                mcp_authority_epoch: 0,
                 selection: None,
                 status,
                 next_attempt_token: 0,
@@ -229,6 +237,9 @@ impl DesktopKernelRuntimeState {
                         attempt.token,
                         DesktopKernelStartupStatus::Failed,
                     ) {
+                        if let Some(epoch) = runtime.advance_mcp_authority_epoch() {
+                            schedule_mcp_workspace_refresh(&app, epoch, None);
+                        }
                         emit_startup_changed(&app);
                     }
                     return;
@@ -238,6 +249,9 @@ impl DesktopKernelRuntimeState {
                         attempt.token,
                         DesktopKernelStartupStatus::Failed,
                     ) {
+                        if let Some(epoch) = runtime.advance_mcp_authority_epoch() {
+                            schedule_mcp_workspace_refresh(&app, epoch, None);
+                        }
                         emit_startup_changed(&app);
                     }
                     return;
@@ -249,6 +263,9 @@ impl DesktopKernelRuntimeState {
                 .await
                 .is_some()
             {
+                if let Some(epoch) = runtime.advance_mcp_authority_epoch() {
+                    schedule_mcp_workspace_refresh(&app, epoch, None);
+                }
                 emit_startup_changed(&app);
             }
         });
@@ -370,7 +387,7 @@ impl DesktopKernelRuntimeState {
         owner_token: u64,
         sequence: u64,
         phase: KernelHostPhase,
-    ) -> bool {
+    ) -> Option<AcceptedKernelPublication> {
         let next_status = match phase {
             KernelHostPhase::Starting | KernelHostPhase::Retrying => {
                 DesktopKernelStartupStatus::Starting
@@ -390,17 +407,46 @@ impl DesktopKernelRuntimeState {
             || sequence == 0
             || sequence <= inner.owner_publication_sequence
         {
-            return false;
+            return None;
         }
         inner.owner_publication_sequence = sequence;
-        if inner.status == next_status {
-            return false;
+        inner.mcp_authority_epoch = inner.mcp_authority_epoch.saturating_add(1);
+        let status_changed = inner.status != next_status;
+        if status_changed {
+            inner.status = next_status;
+            if matches!(phase, KernelHostPhase::Ready | KernelHostPhase::Failed) {
+                inner.active_attempt_token = None;
+            }
         }
-        inner.status = next_status;
-        if matches!(phase, KernelHostPhase::Ready | KernelHostPhase::Failed) {
-            inner.active_attempt_token = None;
+        let workspace_root = matches!(phase, KernelHostPhase::Ready)
+            .then(|| {
+                inner
+                    .selection
+                    .as_ref()
+                    .map(|selection| selection.workspace_root.clone())
+            })
+            .flatten();
+        Some(AcceptedKernelPublication {
+            mcp_authority_epoch: inner.mcp_authority_epoch,
+            status_changed,
+            workspace_root,
+        })
+    }
+
+    fn advance_mcp_authority_epoch(&self) -> Option<u64> {
+        let mut inner = self.inner.lock().ok()?;
+        if inner.closed {
+            return None;
         }
-        true
+        inner.mcp_authority_epoch = inner.mcp_authority_epoch.saturating_add(1);
+        Some(inner.mcp_authority_epoch)
+    }
+
+    #[cfg(test)]
+    fn mcp_authority_epoch_is_current(&self, epoch: u64) -> bool {
+        self.inner
+            .lock()
+            .is_ok_and(|inner| !inner.closed && inner.mcp_authority_epoch == epoch)
     }
 
     fn replace_status_for_attempt(&self, token: u64, status: DesktopKernelStartupStatus) -> bool {
@@ -453,13 +499,52 @@ struct TauriDesktopKernelEdgeEmitter {
 
 impl DesktopKernelEdgeEmitter for TauriDesktopKernelEdgeEmitter {
     fn emit_kernel_state_changed(&self, sequence: u64, snapshot: KernelHostSnapshot) {
-        if self.runtime.upgrade().is_some_and(|runtime| {
+        if let Some(accepted) = self.runtime.upgrade().and_then(|runtime| {
             runtime.replace_status_for_owner_publication(self.owner_token, sequence, snapshot.phase)
         }) {
-            emit_startup_changed(&self.app);
+            schedule_mcp_workspace_refresh(
+                &self.app,
+                accepted.mcp_authority_epoch,
+                accepted.workspace_root,
+            );
+            if accepted.status_changed {
+                emit_startup_changed(&self.app);
+            }
         }
         let _emit_result = self.app.emit(NATIVE_KERNEL_BOOTSTRAP_CHANGED_EVENT, ());
     }
+}
+
+fn schedule_mcp_workspace_refresh(
+    app: &tauri::AppHandle,
+    epoch: u64,
+    workspace_root: Option<PathBuf>,
+) {
+    let app = app.clone();
+    let Some(state) = app.try_state::<Arc<crate::mcp::McpState>>() else {
+        return;
+    };
+    let previous_generation = match state.workspaces.publish_authority_epoch(epoch) {
+        Ok(generation) => generation,
+        Err(error) => {
+            eprintln!("QingYu MCP authority publication failed: {error}");
+            return;
+        }
+    };
+    let state = Arc::clone(state.inner());
+    tauri::async_runtime::spawn(async move {
+        if let Err(error) = crate::mcp::refresh_kernel_workspace(
+            &app,
+            &state,
+            workspace_root.as_deref(),
+            epoch,
+            previous_generation,
+        )
+        .await
+        {
+            eprintln!("QingYu MCP workspace refresh failed: {error}");
+        }
+    });
 }
 
 fn compose_owner_blocking(
@@ -849,29 +934,34 @@ mod tests {
             .install_owner_for_attempt(attempt.token, owner)
             .is_ok());
 
-        assert!(runtime.replace_status_for_owner_publication(
-            attempt.token,
-            1,
-            KernelHostPhase::Ready,
-        ));
+        let ready = runtime
+            .replace_status_for_owner_publication(attempt.token, 1, KernelHostPhase::Ready)
+            .unwrap();
+        assert!(ready.status_changed);
+        assert_eq!(ready.workspace_root, Some(std::env::temp_dir()));
+        assert!(runtime.mcp_authority_epoch_is_current(ready.mcp_authority_epoch));
         assert_eq!(
             runtime.snapshot().unwrap().status,
             DesktopKernelStartupStatus::Ready,
         );
-        assert!(runtime.replace_status_for_owner_publication(
-            attempt.token,
-            2,
-            KernelHostPhase::Retrying,
-        ));
+        let retrying = runtime
+            .replace_status_for_owner_publication(attempt.token, 2, KernelHostPhase::Retrying)
+            .unwrap();
+        assert!(retrying.status_changed);
+        assert_eq!(retrying.workspace_root, None);
+        assert!(!runtime.mcp_authority_epoch_is_current(ready.mcp_authority_epoch));
+        assert!(runtime.mcp_authority_epoch_is_current(retrying.mcp_authority_epoch));
         assert_eq!(
             runtime.snapshot().unwrap().status,
             DesktopKernelStartupStatus::Starting,
         );
-        assert!(runtime.replace_status_for_owner_publication(
-            attempt.token,
-            3,
-            KernelHostPhase::Failed,
-        ));
+        let failed = runtime
+            .replace_status_for_owner_publication(attempt.token, 3, KernelHostPhase::Failed)
+            .unwrap();
+        assert!(failed.status_changed);
+        assert_eq!(failed.workspace_root, None);
+        assert!(!runtime.mcp_authority_epoch_is_current(retrying.mcp_authority_epoch));
+        assert!(runtime.mcp_authority_epoch_is_current(failed.mcp_authority_epoch));
         assert_eq!(
             runtime.snapshot().unwrap().status,
             DesktopKernelStartupStatus::Failed,
@@ -879,11 +969,9 @@ mod tests {
 
         let (retry, replaced_owner) = runtime.reserve_retry().unwrap();
         assert!(replaced_owner.is_some());
-        assert!(!runtime.replace_status_for_owner_publication(
-            attempt.token,
-            4,
-            KernelHostPhase::Ready,
-        ));
+        assert!(runtime
+            .replace_status_for_owner_publication(attempt.token, 4, KernelHostPhase::Ready)
+            .is_none());
         assert_eq!(
             runtime.snapshot().unwrap().status,
             DesktopKernelStartupStatus::Starting,

@@ -1,6 +1,6 @@
 //! Authenticated MCP-to-Kernel adapter staged for coordinator-owned runtime wiring.
 
-use std::{fmt, future::Future, pin::Pin, sync::Arc};
+use std::{fmt, future::Future, pin::Pin, sync::Arc, time::Duration};
 
 use qingyu_kernel::{
     contract::{
@@ -9,8 +9,8 @@ use qingyu_kernel::{
         InstanceId, ListDocumentsQuery, MoveDocumentRequest, PatchSettingsRequest,
         PatchSyncConfigRequest, PositiveSafeInteger, RequestId, SearchPageDto,
         SearchWorkspaceQuery, SettingsSnapshotDto, SyncConfigViewDto, SyncConnectionTestDto,
-        SyncRunAcceptedDto, SyncStatusDto, TestSyncConnectionRequest, TriggerSyncRunRequest,
-        UpdateDocumentRequest,
+        SyncRunAcceptedDto, SyncRunStatusDto, SyncStatusDto, TestSyncConnectionRequest,
+        TriggerSyncRunRequest, UpdateDocumentRequest, WorkspaceDto,
     },
     error::{http_status_for_error_code, safe_error_envelope},
 };
@@ -19,12 +19,40 @@ use serde::{de::DeserializeOwned, Serialize};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+use super::config::McpConfigManager;
 use crate::{
     kernel_host::kernel_endpoint_record::KernelEndpointRecordReader,
     kernel_host::{NativeKernelAccess, NativeKernelCredentialLease},
 };
 
 const MAXIMUM_KERNEL_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
+const DEFAULT_KERNEL_REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
+
+trait KernelRequestTimeoutSource: Send + Sync + 'static {
+    fn current_timeout(&self) -> Result<Duration, KernelHttpFailure>;
+}
+
+struct FixedKernelRequestTimeout(Duration);
+
+impl KernelRequestTimeoutSource for FixedKernelRequestTimeout {
+    fn current_timeout(&self) -> Result<Duration, KernelHttpFailure> {
+        Ok(self.0)
+    }
+}
+
+impl KernelRequestTimeoutSource for McpConfigManager {
+    fn current_timeout(&self) -> Result<Duration, KernelHttpFailure> {
+        let seconds = self
+            .snapshot()
+            .map_err(|_| KernelHttpFailure)?
+            .config
+            .tool_timeout_secs;
+        if !(5..=600).contains(&seconds) {
+            return Err(KernelHttpFailure);
+        }
+        Ok(Duration::from_secs(seconds))
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct EndpointReadFailure;
@@ -236,6 +264,94 @@ struct KernelHttpFailure;
 type KernelHttpFuture<'a> =
     Pin<Box<dyn Future<Output = Result<KernelHttpResponse, KernelHttpFailure>> + Send + 'a>>;
 
+pub(crate) type McpKernelFuture<'a, T> =
+    Pin<Box<dyn Future<Output = Result<T, McpKernelFailure>> + Send + 'a>>;
+
+/// The only production data-plane seam used by MCP tools. Implementations must
+/// preserve cancellation and fail closed when the child Kernel endpoint is not
+/// current. Tests use an in-memory fake rather than a legacy fallback.
+pub(crate) trait McpKernelPort: Send + Sync + 'static {
+    fn get_workspace<'a>(
+        &'a self,
+        cancellation: &'a CancellationToken,
+    ) -> McpKernelFuture<'a, WorkspaceDto>;
+    fn list_documents<'a>(
+        &'a self,
+        query: &'a ListDocumentsQuery,
+        cancellation: &'a CancellationToken,
+    ) -> McpKernelFuture<'a, DocumentPageDto>;
+    fn search_documents<'a>(
+        &'a self,
+        query: &'a SearchWorkspaceQuery,
+        cancellation: &'a CancellationToken,
+    ) -> McpKernelFuture<'a, SearchPageDto>;
+    fn create_document<'a>(
+        &'a self,
+        request: &'a CreateDocumentRequest,
+        cancellation: &'a CancellationToken,
+    ) -> McpKernelFuture<'a, CreatedDocumentDto>;
+    fn get_document<'a>(
+        &'a self,
+        document_id: &'a DocumentId,
+        cancellation: &'a CancellationToken,
+    ) -> McpKernelFuture<'a, DocumentContentDto>;
+    fn update_document<'a>(
+        &'a self,
+        document_id: &'a DocumentId,
+        request: &'a UpdateDocumentRequest,
+        cancellation: &'a CancellationToken,
+    ) -> McpKernelFuture<'a, DocumentContentDto>;
+    fn move_document<'a>(
+        &'a self,
+        document_id: &'a DocumentId,
+        request: &'a MoveDocumentRequest,
+        cancellation: &'a CancellationToken,
+    ) -> McpKernelFuture<'a, DocumentEntryDto>;
+    fn delete_document<'a>(
+        &'a self,
+        document_id: &'a DocumentId,
+        request: &'a DeleteDocumentRequest,
+        cancellation: &'a CancellationToken,
+    ) -> McpKernelFuture<'a, ()>;
+    fn get_settings<'a>(
+        &'a self,
+        cancellation: &'a CancellationToken,
+    ) -> McpKernelFuture<'a, SettingsSnapshotDto>;
+    fn patch_settings<'a>(
+        &'a self,
+        request: &'a PatchSettingsRequest,
+        cancellation: &'a CancellationToken,
+    ) -> McpKernelFuture<'a, SettingsSnapshotDto>;
+    fn get_sync_config<'a>(
+        &'a self,
+        cancellation: &'a CancellationToken,
+    ) -> McpKernelFuture<'a, SyncConfigViewDto>;
+    fn patch_sync_config<'a>(
+        &'a self,
+        request: &'a PatchSyncConfigRequest,
+        cancellation: &'a CancellationToken,
+    ) -> McpKernelFuture<'a, SyncConfigViewDto>;
+    fn test_sync_connection<'a>(
+        &'a self,
+        request: &'a TestSyncConnectionRequest,
+        cancellation: &'a CancellationToken,
+    ) -> McpKernelFuture<'a, SyncConnectionTestDto>;
+    fn get_sync_status<'a>(
+        &'a self,
+        cancellation: &'a CancellationToken,
+    ) -> McpKernelFuture<'a, SyncStatusDto>;
+    fn trigger_sync_run<'a>(
+        &'a self,
+        request: &'a TriggerSyncRunRequest,
+        cancellation: &'a CancellationToken,
+    ) -> McpKernelFuture<'a, SyncRunAcceptedDto>;
+    fn get_sync_run<'a>(
+        &'a self,
+        run_id: qingyu_kernel::contract::RunId,
+        cancellation: &'a CancellationToken,
+    ) -> McpKernelFuture<'a, SyncRunStatusDto>;
+}
+
 trait KernelHttpTransport: Send + Sync + 'static {
     fn send<'a>(
         &'a self,
@@ -348,6 +464,7 @@ fn retry_after_seconds(headers: &header::HeaderMap) -> Option<u64> {
 pub(crate) struct McpKernelClient {
     endpoints: Arc<dyn KernelEndpointSource>,
     transport: Arc<dyn KernelHttpTransport>,
+    request_timeout: Arc<dyn KernelRequestTimeoutSource>,
 }
 
 impl McpKernelClient {
@@ -355,7 +472,13 @@ impl McpKernelClient {
         Ok(Self {
             endpoints: Arc::new(EndpointRecordSource(endpoints)),
             transport: Arc::new(ReqwestKernelHttpTransport::new()?),
+            request_timeout: Arc::new(FixedKernelRequestTimeout(DEFAULT_KERNEL_REQUEST_TIMEOUT)),
         })
+    }
+
+    pub(crate) fn with_configured_request_timeout(mut self, config: Arc<McpConfigManager>) -> Self {
+        self.request_timeout = config;
+        self
     }
 
     #[cfg(test)]
@@ -366,6 +489,7 @@ impl McpKernelClient {
         Self {
             endpoints: Arc::new(endpoints),
             transport: Arc::new(transport),
+            request_timeout: Arc::new(FixedKernelRequestTimeout(DEFAULT_KERNEL_REQUEST_TIMEOUT)),
         }
     }
 
@@ -386,6 +510,17 @@ impl McpKernelClient {
         }
         self.request_json(
             KernelHttpRequest::get("/api/v1/documents", parameters),
+            cancellation,
+        )
+        .await
+    }
+
+    pub(crate) async fn get_workspace(
+        &self,
+        cancellation: &CancellationToken,
+    ) -> Result<WorkspaceDto, McpKernelFailure> {
+        self.request_json(
+            KernelHttpRequest::get("/api/v1/workspace", Vec::new()),
             cancellation,
         )
         .await
@@ -594,6 +729,21 @@ impl McpKernelClient {
         .await
     }
 
+    pub(crate) async fn get_sync_run(
+        &self,
+        run_id: qingyu_kernel::contract::RunId,
+        cancellation: &CancellationToken,
+    ) -> Result<SyncRunStatusDto, McpKernelFailure> {
+        self.request_json(
+            KernelHttpRequest::get(
+                &format!("/api/v1/sync/runs/{}", run_id.as_uuid()),
+                Vec::new(),
+            ),
+            cancellation,
+        )
+        .await
+    }
+
     async fn request_json<Response: DeserializeOwned>(
         &self,
         request: KernelHttpRequest,
@@ -624,6 +774,10 @@ impl McpKernelClient {
         if cancellation.is_cancelled() {
             return Err(McpKernelFailure::RequestCancelled);
         }
+        let request_timeout = self
+            .request_timeout
+            .current_timeout()
+            .map_err(|_| McpKernelFailure::TransportUnavailable)?;
         let endpoint = self.read_endpoint(McpKernelFailure::EndpointUnavailable)?;
         endpoint
             .with_secret(|_| ())
@@ -632,6 +786,9 @@ impl McpKernelClient {
         let response = tokio::select! {
             biased;
             _ = cancellation.cancelled() => return Err(McpKernelFailure::RequestCancelled),
+            _ = tokio::time::sleep(request_timeout) => {
+                return Err(McpKernelFailure::TransportUnavailable);
+            }
             response = self.transport.send(&endpoint, request) => {
                 response.map_err(|_| McpKernelFailure::TransportUnavailable)?
             }
@@ -652,9 +809,152 @@ impl McpKernelClient {
     ) -> Result<KernelEndpointAccess, McpKernelFailure> {
         self.endpoints
             .read()
-            .map_err(|_| unavailable)?
+            .map_err(|_| unavailable.clone())?
             .filter(|endpoint| endpoint.port != 0)
             .ok_or(unavailable)
+    }
+}
+
+impl McpKernelPort for McpKernelClient {
+    fn get_workspace<'a>(
+        &'a self,
+        cancellation: &'a CancellationToken,
+    ) -> McpKernelFuture<'a, WorkspaceDto> {
+        Box::pin(async move { McpKernelClient::get_workspace(self, cancellation).await })
+    }
+
+    fn list_documents<'a>(
+        &'a self,
+        query: &'a ListDocumentsQuery,
+        cancellation: &'a CancellationToken,
+    ) -> McpKernelFuture<'a, DocumentPageDto> {
+        Box::pin(async move { McpKernelClient::list_documents(self, query, cancellation).await })
+    }
+
+    fn search_documents<'a>(
+        &'a self,
+        query: &'a SearchWorkspaceQuery,
+        cancellation: &'a CancellationToken,
+    ) -> McpKernelFuture<'a, SearchPageDto> {
+        Box::pin(async move { McpKernelClient::search_documents(self, query, cancellation).await })
+    }
+
+    fn create_document<'a>(
+        &'a self,
+        request: &'a CreateDocumentRequest,
+        cancellation: &'a CancellationToken,
+    ) -> McpKernelFuture<'a, CreatedDocumentDto> {
+        Box::pin(async move { McpKernelClient::create_document(self, request, cancellation).await })
+    }
+
+    fn get_document<'a>(
+        &'a self,
+        document_id: &'a DocumentId,
+        cancellation: &'a CancellationToken,
+    ) -> McpKernelFuture<'a, DocumentContentDto> {
+        Box::pin(
+            async move { McpKernelClient::get_document(self, document_id, cancellation).await },
+        )
+    }
+
+    fn update_document<'a>(
+        &'a self,
+        document_id: &'a DocumentId,
+        request: &'a UpdateDocumentRequest,
+        cancellation: &'a CancellationToken,
+    ) -> McpKernelFuture<'a, DocumentContentDto> {
+        Box::pin(async move {
+            McpKernelClient::update_document(self, document_id, request, cancellation).await
+        })
+    }
+
+    fn move_document<'a>(
+        &'a self,
+        document_id: &'a DocumentId,
+        request: &'a MoveDocumentRequest,
+        cancellation: &'a CancellationToken,
+    ) -> McpKernelFuture<'a, DocumentEntryDto> {
+        Box::pin(async move {
+            McpKernelClient::move_document(self, document_id, request, cancellation).await
+        })
+    }
+
+    fn delete_document<'a>(
+        &'a self,
+        document_id: &'a DocumentId,
+        request: &'a DeleteDocumentRequest,
+        cancellation: &'a CancellationToken,
+    ) -> McpKernelFuture<'a, ()> {
+        Box::pin(async move {
+            McpKernelClient::delete_document(self, document_id, request, cancellation).await
+        })
+    }
+
+    fn get_settings<'a>(
+        &'a self,
+        cancellation: &'a CancellationToken,
+    ) -> McpKernelFuture<'a, SettingsSnapshotDto> {
+        Box::pin(async move { McpKernelClient::get_settings(self, cancellation).await })
+    }
+
+    fn patch_settings<'a>(
+        &'a self,
+        request: &'a PatchSettingsRequest,
+        cancellation: &'a CancellationToken,
+    ) -> McpKernelFuture<'a, SettingsSnapshotDto> {
+        Box::pin(async move { McpKernelClient::patch_settings(self, request, cancellation).await })
+    }
+
+    fn get_sync_config<'a>(
+        &'a self,
+        cancellation: &'a CancellationToken,
+    ) -> McpKernelFuture<'a, SyncConfigViewDto> {
+        Box::pin(async move { McpKernelClient::get_sync_config(self, cancellation).await })
+    }
+
+    fn patch_sync_config<'a>(
+        &'a self,
+        request: &'a PatchSyncConfigRequest,
+        cancellation: &'a CancellationToken,
+    ) -> McpKernelFuture<'a, SyncConfigViewDto> {
+        Box::pin(
+            async move { McpKernelClient::patch_sync_config(self, request, cancellation).await },
+        )
+    }
+
+    fn test_sync_connection<'a>(
+        &'a self,
+        request: &'a TestSyncConnectionRequest,
+        cancellation: &'a CancellationToken,
+    ) -> McpKernelFuture<'a, SyncConnectionTestDto> {
+        Box::pin(
+            async move { McpKernelClient::test_sync_connection(self, request, cancellation).await },
+        )
+    }
+
+    fn get_sync_status<'a>(
+        &'a self,
+        cancellation: &'a CancellationToken,
+    ) -> McpKernelFuture<'a, SyncStatusDto> {
+        Box::pin(async move { McpKernelClient::get_sync_status(self, cancellation).await })
+    }
+
+    fn trigger_sync_run<'a>(
+        &'a self,
+        request: &'a TriggerSyncRunRequest,
+        cancellation: &'a CancellationToken,
+    ) -> McpKernelFuture<'a, SyncRunAcceptedDto> {
+        Box::pin(
+            async move { McpKernelClient::trigger_sync_run(self, request, cancellation).await },
+        )
+    }
+
+    fn get_sync_run<'a>(
+        &'a self,
+        run_id: qingyu_kernel::contract::RunId,
+        cancellation: &'a CancellationToken,
+    ) -> McpKernelFuture<'a, SyncRunStatusDto> {
+        Box::pin(async move { McpKernelClient::get_sync_run(self, run_id, cancellation).await })
     }
 }
 
@@ -693,10 +993,16 @@ fn api_failure(response: KernelHttpResponse) -> McpKernelFailure {
     {
         return McpKernelFailure::InvalidResponse;
     }
-    McpKernelFailure::Api(code)
+    match envelope.details().and_then(ErrorDetails::current_revision) {
+        Some(current_revision) => McpKernelFailure::ApiRevisionConflict {
+            code,
+            current_revision: current_revision.as_str().to_owned(),
+        },
+        None => McpKernelFailure::Api(code),
+    }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum McpKernelFailure {
     EndpointUnavailable,
     EndpointStale,
@@ -705,10 +1011,14 @@ pub(crate) enum McpKernelFailure {
     InvalidRequest,
     InvalidResponse,
     Api(ErrorCode),
+    ApiRevisionConflict {
+        code: ErrorCode,
+        current_revision: String,
+    },
 }
 
 impl McpKernelFailure {
-    pub(crate) const fn code(self) -> &'static str {
+    pub(crate) const fn code(&self) -> &'static str {
         match self {
             Self::EndpointUnavailable => "kernel_endpoint_unavailable",
             Self::EndpointStale => "kernel_endpoint_stale",
@@ -716,7 +1026,7 @@ impl McpKernelFailure {
             Self::TransportUnavailable => "kernel_transport_unavailable",
             Self::InvalidRequest => "invalid_arguments",
             Self::InvalidResponse => "kernel_invalid_response",
-            Self::Api(code) => error_code(code),
+            Self::Api(code) | Self::ApiRevisionConflict { code, .. } => error_code(*code),
         }
     }
 }
@@ -772,6 +1082,7 @@ mod tests {
             atomic::{AtomicBool, AtomicUsize, Ordering},
             Arc, Mutex,
         },
+        time::Duration,
     };
 
     use qingyu_kernel::contract::{
@@ -789,13 +1100,15 @@ mod tests {
     use tokio_util::sync::CancellationToken;
     use uuid::Uuid;
 
-    use crate::kernel_host::kernel_endpoint_record::KernelEndpointRecord;
+    use crate::{
+        kernel_host::kernel_endpoint_record::KernelEndpointRecord, mcp::config::McpConfigManager,
+    };
 
     use super::{
-        secure_kernel_http_client, EndpointReadFailure, EndpointRecordSource, KernelEndpointAccess,
-        KernelEndpointSource, KernelHttpFailure, KernelHttpFuture, KernelHttpMethod,
-        KernelHttpRequest, KernelHttpResponse, KernelHttpTransport, McpKernelClient,
-        McpKernelFailure, ReqwestKernelHttpTransport,
+        api_failure, secure_kernel_http_client, EndpointReadFailure, EndpointRecordSource,
+        KernelEndpointAccess, KernelEndpointSource, KernelHttpFailure, KernelHttpFuture,
+        KernelHttpMethod, KernelHttpRequest, KernelHttpResponse, KernelHttpTransport,
+        McpKernelClient, McpKernelFailure, ReqwestKernelHttpTransport,
     };
 
     const REQUEST_ID: &str = "10000000-0000-4000-8000-000000000001";
@@ -955,6 +1268,69 @@ mod tests {
         assert_eq!(requests[1].path(), "/api/v1/settings");
         assert_eq!(requests[2].method(), KernelHttpMethod::Get);
         assert_eq!(requests[2].path(), "/api/v1/sync/status");
+    }
+
+    #[tokio::test]
+    async fn routes_workspace_and_exact_sync_run_reads_without_using_global_status() {
+        let run_id = Uuid::parse_str("30000000-0000-4000-8000-000000000003").expect("run UUID");
+        let transport = RecordingTransport::with_json_responses([
+            (
+                200,
+                serde_json::json!({
+                    "id": "40000000-0000-4000-8000-000000000004",
+                    "generation": "workspace-13",
+                    "displayName": "Notes",
+                    "readiness": "ready",
+                    "revision": "workspace-revision-13"
+                }),
+            ),
+            (
+                200,
+                serde_json::json!({
+                    "runId": run_id,
+                    "provider": "s3",
+                    "configRevision": "sync-13",
+                    "completionState": "succeeded",
+                    "acceptedAt": "2026-07-31T00:00:00Z",
+                    "finishedAt": "2026-07-31T00:00:01Z",
+                    "summary": {
+                        "bytesDownloaded": 0,
+                        "bytesUploaded": 0,
+                        "conflictFiles": 0,
+                        "downloadedFiles": 0,
+                        "scannedFiles": 0,
+                        "skippedFiles": 0,
+                        "uploadedFiles": 0
+                    },
+                    "error": null
+                }),
+            ),
+        ]);
+        let client = McpKernelClient::with_transport_for_test(
+            MutableEndpointSource::ready(13, 41013, "route-secret"),
+            transport.clone(),
+        );
+        let cancellation = CancellationToken::new();
+
+        let workspace = client
+            .get_workspace(&cancellation)
+            .await
+            .expect("workspace read");
+        let status = client
+            .get_sync_run(qingyu_kernel::contract::RunId::new(run_id), &cancellation)
+            .await
+            .expect("exact sync run read");
+
+        assert_eq!(workspace.generation.as_str(), "workspace-13");
+        assert_eq!(status.run_id.as_uuid(), &run_id);
+        let requests = transport.requests();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].path(), "/api/v1/workspace");
+        assert_eq!(
+            requests[1].path(),
+            "/api/v1/sync/runs/30000000-0000-4000-8000-000000000003"
+        );
+        assert_ne!(requests[1].path(), "/api/v1/sync/status");
     }
 
     #[tokio::test]
@@ -1240,6 +1616,49 @@ mod tests {
         assert!(transport.dropped.load(Ordering::SeqCst));
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn uncancelled_request_times_out_without_exposing_endpoint_or_credential() {
+        let secret = "timeout-secret-must-stay-redacted";
+        let port = 41_016;
+        let transport = PendingTransport {
+            started: Arc::new(Notify::new()),
+            dropped: Arc::new(AtomicBool::new(false)),
+            calls: Arc::new(AtomicUsize::new(0)),
+        };
+        let timeout_config = Arc::new(
+            McpConfigManager::memory_for_test().expect("in-memory MCP timeout configuration"),
+        );
+        let client = McpKernelClient::with_transport_for_test(
+            MutableEndpointSource::ready(16, port, secret),
+            transport.clone(),
+        )
+        .with_configured_request_timeout(Arc::clone(&timeout_config));
+        let current = timeout_config.snapshot().expect("current timeout config");
+        let mut updated = current.config;
+        updated.tool_timeout_secs = 5;
+        timeout_config
+            .update(updated, &current.revision)
+            .expect("update live timeout config after client construction");
+        let request =
+            tokio::spawn(async move { client.get_settings(&CancellationToken::new()).await });
+        transport.started.notified().await;
+
+        tokio::time::advance(Duration::from_secs(6)).await;
+        let error = tokio::time::timeout(Duration::from_secs(1), request)
+            .await
+            .expect("adapter must enforce its own request timeout")
+            .expect("request task")
+            .expect_err("hanging transport must fail closed");
+        let rendered = format!("{error:?} {error}");
+
+        assert_eq!(error, McpKernelFailure::TransportUnavailable);
+        assert_eq!(transport.calls.load(Ordering::SeqCst), 1);
+        assert!(transport.dropped.load(Ordering::SeqCst));
+        assert!(!rendered.contains(secret));
+        assert!(!rendered.contains(&port.to_string()));
+        assert!(!rendered.contains("http://"));
+    }
+
     #[tokio::test]
     async fn untrusted_error_payload_and_endpoint_debug_are_redacted() {
         let secret = "never-surface-this-credential";
@@ -1278,6 +1697,30 @@ mod tests {
         );
         let request_id = RequestId::new(Uuid::parse_str(REQUEST_ID).expect("request UUID"));
         assert_eq!(request_id.as_uuid().to_string(), REQUEST_ID);
+    }
+
+    #[test]
+    fn api_revision_conflicts_preserve_only_the_safe_current_revision() {
+        let body = serde_json::to_vec(&serde_json::json!({
+            "code": "sync_config_revision_conflict",
+            "message": "The sync configuration changed since it was loaded.",
+            "requestId": REQUEST_ID,
+            "details": {
+                "type": "revision-conflict",
+                "currentRevision": "sync-2"
+            }
+        }))
+        .expect("revision conflict envelope");
+
+        let failure = api_failure(KernelHttpResponse::for_test(409, REQUEST_ID, Some(body)));
+
+        assert_eq!(
+            failure,
+            McpKernelFailure::ApiRevisionConflict {
+                code: ErrorCode::SyncConfigRevisionConflict,
+                current_revision: "sync-2".to_string(),
+            }
+        );
     }
 
     #[tokio::test]

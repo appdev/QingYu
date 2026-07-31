@@ -192,7 +192,6 @@ export function createDesktopRuntime({
   mcp: {
     policyAvailable: true,
     localServiceAvailable: true,
-    setPrimaryWorkspace: mcp.setNativeMcpPrimaryWorkspace,
     clearAuditEntries: mcp.clearNativeMcpAuditEntries,
     getHealth: mcp.getNativeMcpHealth,
     getSettings: mcp.getNativeMcpSettings,
@@ -330,12 +329,14 @@ export function createDesktopKernelRuntimeOwner(
       confirmMarkdownFileDelete: shell.files.confirmMarkdownFileDelete,
       confirmUnsavedMarkdownDocumentDiscard: shell.files.confirmUnsavedMarkdownDocumentDiscard,
       detectPandocPath: shell.files.detectPandocPath,
+      listenOpenedMarkdownPaths: shell.files.listenOpenedMarkdownPaths,
       openSettingsFile: shell.files.openSettingsFile,
       readMarkdownTemplateFile: shell.files.readMarkdownTemplateFile,
       saveHtmlFile: shell.files.saveHtmlFile,
       savePandocFile: shell.files.savePandocFile,
       savePdfFile: shell.files.savePdfFile,
       saveSettingsFile: shell.files.saveSettingsFile,
+      takeOpenedMarkdownPaths: shell.files.takeOpenedMarkdownPaths,
     },
   });
   const runtime: AppRuntime = {
@@ -351,7 +352,7 @@ export function createDesktopKernelRuntimeOwner(
     },
     files: fileOwner.files,
     kernel,
-    mcp: unavailable.mcp,
+    mcp: shell.mcp,
     nativeShell: createUnavailableNativeShellPort(),
     settings: createKernelSettingsRuntime(kernel, {
       local: {

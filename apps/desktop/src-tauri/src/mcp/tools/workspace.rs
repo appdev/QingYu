@@ -1,7 +1,11 @@
+use qingyu_kernel::contract::ErrorCode;
 use rmcp::schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use tokio_util::sync::CancellationToken;
 
-use super::{failure_from_code, McpServices, ToolResult};
+use crate::mcp::kernel_adapter::McpKernelFailure;
+
+use super::{failure_from_code, failure_from_kernel, McpServices, ToolResult};
 
 #[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -20,8 +24,8 @@ struct WorkspaceListEntry {
     sync_configured: bool,
 }
 
-pub(super) fn list(services: &McpServices) -> ToolResult {
-    services
+pub(super) async fn list(services: &McpServices, cancellation: &CancellationToken) -> ToolResult {
+    let (workspace, root_folder_id) = services
         .workspaces
         .with_authority(|| {
             let primary = services
@@ -35,21 +39,30 @@ pub(super) fn list(services: &McpServices) -> ToolResult {
                 .find(|workspace| workspace.workspace_id == primary.workspace_id)
                 .ok_or_else(|| failure_from_code("mcp-workspace-unavailable", None))?;
             let root_folder_id = services
-                .documents
-                .root_folder_id(&primary)
+                .handles
+                .issue_folder(primary.workspace_id, primary.workspace_generation, "")
                 .map_err(|error| failure_from_code(error.code, None))?;
-            let sync_configured = services.sync.sync_enabled_for_authoritative_primary();
-            let workspaces = vec![WorkspaceListEntry {
-                workspace_id: workspace.workspace_id,
-                workspace_generation: workspace.workspace_generation,
-                display_name: workspace.display_name,
-                leaf_name: workspace.leaf_name,
-                available: workspace.available,
-                root_folder_id: Some(root_folder_id),
-                sync_configured,
-            }];
-            serde_json::to_value(serde_json::json!({ "workspaces": workspaces }))
-                .map_err(|_| failure_from_code("response_too_large", None))
+            Ok((workspace, root_folder_id))
         })
-        .map_err(|error| failure_from_code(error.code, None))?
+        .map_err(|error| failure_from_code(error.code, None))??;
+    let sync_configured = match services.kernel.get_sync_config(cancellation).await {
+        Ok(config) => config.configured && config.enabled,
+        Err(McpKernelFailure::Api(ErrorCode::SyncConfigAbsent)) => false,
+        Err(error) => return Err(failure_from_kernel(error)),
+    };
+    services
+        .workspaces
+        .resolve_at_generation(workspace.workspace_id, workspace.workspace_generation)
+        .map_err(|error| failure_from_code(error.code, None))?;
+    let workspaces = vec![WorkspaceListEntry {
+        workspace_id: workspace.workspace_id,
+        workspace_generation: workspace.workspace_generation,
+        display_name: workspace.display_name,
+        leaf_name: workspace.leaf_name,
+        available: workspace.available,
+        root_folder_id: Some(root_folder_id),
+        sync_configured,
+    }];
+    serde_json::to_value(serde_json::json!({ "workspaces": workspaces }))
+        .map_err(|_| failure_from_code("response_too_large", None))
 }

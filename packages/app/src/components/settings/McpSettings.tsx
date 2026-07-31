@@ -7,7 +7,6 @@ import {
   type McpAuditEntry,
   type McpConfig,
   type McpPermissions,
-  type McpRecycleBinRetentionDays,
   type McpServerHealth
 } from "../../lib/mcp";
 import { useMcpSettings } from "../../hooks/useMcpSettings";
@@ -206,38 +205,12 @@ export function McpSettings({
           compact={compact}
           value={snapshot.config.deletion}
           options={[
-            ["system-trash", "settings.mcp.policy.deletion.systemTrash"],
             ["qing-yu-recycle-bin", "settings.mcp.policy.deletion.qingYuRecycleBin"],
             ["permanent", "settings.mcp.policy.deletion.permanent"]
           ]}
           translate={translate}
           onChange={(value) => update((config) => ({ ...config, deletion: value as McpConfig["deletion"] }))}
         />
-        {snapshot.config.deletion === "qing-yu-recycle-bin" ? (
-          <SettingsRow
-            title={translate("settings.mcp.policy.recycleBinCleanup")}
-            action={(
-              <SettingsSelect
-                compact={compact}
-                label={translate("settings.mcp.policy.recycleBinCleanup")}
-                value={String(snapshot.config.recycleBinRetentionDays)}
-                options={([
-                  [0, "settings.mcp.policy.recycleBinCleanup.never"],
-                  [7, "settings.mcp.policy.recycleBinCleanup.days7"],
-                  [30, "settings.mcp.policy.recycleBinCleanup.days30"],
-                  [90, "settings.mcp.policy.recycleBinCleanup.days90"]
-                ] satisfies Array<[McpRecycleBinRetentionDays, I18nKey]>).map(([value, labelKey]) => ({
-                  label: translate(labelKey),
-                  value: String(value)
-                }))}
-                onChange={(value) => update((config) => ({
-                  ...config,
-                  recycleBinRetentionDays: Number(value) as McpRecycleBinRetentionDays
-                }))}
-              />
-            )}
-          />
-        ) : null}
         <PolicySelect
           label={translate("settings.mcp.policy.syncAfterWrite")}
           compact={compact}

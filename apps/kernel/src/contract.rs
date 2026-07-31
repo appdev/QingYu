@@ -2449,6 +2449,15 @@ pub enum ErrorDetails {
     },
 }
 
+impl ErrorDetails {
+    pub fn current_revision(&self) -> Option<&Revision> {
+        match self {
+            Self::RevisionConflict { current_revision } => current_revision.as_ref(),
+            Self::Validation { .. } | Self::Startup { .. } | Self::RateLimit { .. } => None,
+        }
+    }
+}
+
 #[derive(Clone, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct ApiErrorEnvelope {

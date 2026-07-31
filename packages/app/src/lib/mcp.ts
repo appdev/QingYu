@@ -1,7 +1,7 @@
 export type McpConfirmationPolicy = "never" | "destructive-only" | "all-writes";
 export type McpDryRunPolicy = "never" | "high-risk" | "all-writes";
-export type McpDeletionPolicy = "system-trash" | "qing-yu-recycle-bin" | "permanent";
-export type McpRecycleBinRetentionDays = 0 | 7 | 30 | 90;
+export type McpDeletionPolicy = "qing-yu-recycle-bin" | "permanent";
+export type McpRecycleBinRetentionDays = 0;
 export type McpSyncAfterWritePolicy = "follow-workspace" | "always" | "never";
 export type McpSyncExecutionPolicy = "background" | "wait";
 
@@ -107,8 +107,8 @@ export function defaultMcpConfig(): McpConfig {
     },
     confirmation: "destructive-only",
     dryRun: "high-risk",
-    deletion: "system-trash",
-    recycleBinRetentionDays: 30,
+    deletion: "qing-yu-recycle-bin",
+    recycleBinRetentionDays: 0,
     syncAfterWrite: "follow-workspace",
     syncExecution: "background",
     documentLimitBytes: 8 * 1024 * 1024,
@@ -139,10 +139,6 @@ function enumOr<T extends string>(value: unknown, allowed: readonly T[], fallbac
   return typeof value === "string" && allowed.includes(value as T) ? value as T : fallback;
 }
 
-function recycleBinRetentionDaysOr(value: unknown): McpRecycleBinRetentionDays {
-  return value === 0 || value === 7 || value === 30 || value === 90 ? value : 30;
-}
-
 export function normalizeMcpConfig(value: unknown): McpConfig {
   const defaults = defaultMcpConfig();
   if (!isRecord(value)) return defaults;
@@ -171,12 +167,8 @@ export function normalizeMcpConfig(value: unknown): McpConfig {
       defaults.confirmation
     ),
     dryRun: enumOr(value.dryRun, ["never", "high-risk", "all-writes"], defaults.dryRun),
-    deletion: enumOr(
-      value.deletion,
-      ["system-trash", "qing-yu-recycle-bin", "permanent"],
-      defaults.deletion
-    ),
-    recycleBinRetentionDays: recycleBinRetentionDaysOr(value.recycleBinRetentionDays),
+    deletion: value.deletion === "permanent" ? "permanent" : "qing-yu-recycle-bin",
+    recycleBinRetentionDays: 0,
     syncAfterWrite: enumOr(
       value.syncAfterWrite,
       ["follow-workspace", "always", "never"],

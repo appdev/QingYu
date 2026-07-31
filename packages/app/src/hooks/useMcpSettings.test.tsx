@@ -39,7 +39,6 @@ function runtime(overrides: Partial<AppMcpRuntime> = {}): AppMcpRuntime {
     listAuditEntries: vi.fn(async () => []),
     localServiceAvailable: true,
     policyAvailable: true,
-    setPrimaryWorkspace: vi.fn(async () => snapshot()),
     updateSettings: vi.fn(async ({ config }) => ({ ...snapshot("revision-2"), config })),
     ...overrides
   };

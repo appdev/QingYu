@@ -53,7 +53,7 @@ describe("desktop runtime composition", () => {
       pickers: "unavailable",
       standaloneDocuments: "unavailable"
     });
-    expect(runtime.mcp.localServiceAvailable).toBe(false);
+    expect(runtime.mcp.localServiceAvailable).toBe(true);
     expect(runtime.workspace.rootPolicy).toMatchObject({
       canChooseLocalRoot: false,
       kind: "fixed"
@@ -71,6 +71,11 @@ describe("desktop runtime composition", () => {
       .rejects.toThrow("unavailable for a Kernel workspace");
     expect(runtime.settings.readPrimaryWorkspaceState).toBeUndefined();
     expect(runtime.settings.writePrimaryWorkspaceState).toBeUndefined();
+    const nativeShell = createDesktopRuntime();
+    expect(runtime.files.listenOpenedMarkdownPaths)
+      .toBe(nativeShell.files.listenOpenedMarkdownPaths);
+    expect(runtime.files.takeOpenedMarkdownPaths)
+      .toBe(nativeShell.files.takeOpenedMarkdownPaths);
 
     const secondOwner = createDesktopKernelRuntimeOwner(kernel);
     expect(runtime.syncConfig.cancelApply).toBe(secondOwner.runtime.syncConfig.cancelApply);

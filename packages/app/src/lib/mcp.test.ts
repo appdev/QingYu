@@ -1,17 +1,17 @@
 import { defaultMcpConfig, normalizeMcpConfig } from "./mcp";
 
 describe("MCP configuration", () => {
-  it("defaults QingYu recycle-bin cleanup to thirty days", () => {
-    expect(defaultMcpConfig().recycleBinRetentionDays).toBe(30);
+  it("defaults to the Kernel-owned recoverable recycle bin without fake retention", () => {
+    expect(defaultMcpConfig().deletion).toBe("qing-yu-recycle-bin");
+    expect(defaultMcpConfig().recycleBinRetentionDays).toBe(0);
   });
 
-  it("accepts only the supported recycle-bin retention presets", () => {
-    for (const recycleBinRetentionDays of [0, 7, 30, 90] as const) {
-      expect(normalizeMcpConfig({ recycleBinRetentionDays }).recycleBinRetentionDays)
-        .toBe(recycleBinRetentionDays);
-    }
-
-    expect(normalizeMcpConfig({ recycleBinRetentionDays: 180 }).recycleBinRetentionDays).toBe(30);
-    expect(normalizeMcpConfig({}).recycleBinRetentionDays).toBe(30);
+  it("migrates legacy system trash and retention to the portable Kernel contract", () => {
+    const migrated = normalizeMcpConfig({
+      deletion: "system-trash",
+      recycleBinRetentionDays: 30
+    });
+    expect(migrated.deletion).toBe("qing-yu-recycle-bin");
+    expect(migrated.recycleBinRetentionDays).toBe(0);
   });
 });

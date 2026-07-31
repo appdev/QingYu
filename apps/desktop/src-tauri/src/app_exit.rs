@@ -1,4 +1,3 @@
-use crate::dejavu_sync::commands::handle_native_sync_exit;
 use crate::windows::is_settings_window_label;
 use tauri::{Emitter, Manager, Runtime};
 
@@ -36,7 +35,6 @@ pub(crate) fn handle_app_exit_requested<R: Runtime>(
     app: &tauri::AppHandle<R>,
     code: Option<i32>,
     api: tauri::ExitRequestApi,
-    run_legacy_sync_exit: bool,
 ) {
     let windows = app.webview_windows();
     let window_infos = windows
@@ -52,9 +50,6 @@ pub(crate) fn handle_app_exit_requested<R: Runtime>(
         .filter(|window| is_app_exit_user_window(window))
         .count();
     if !should_intercept_app_exit(code, user_window_count) {
-        if run_legacy_sync_exit {
-            handle_native_sync_exit(app, code, api);
-        }
         return;
     }
 
@@ -81,7 +76,7 @@ mod tests {
     }
 
     #[test]
-    fn only_an_actual_non_intercepted_exit_reaches_native_scheduler_triggering() {
+    fn only_user_window_exit_requests_are_intercepted() {
         assert!(!should_intercept_app_exit(Some(0), 1));
         assert!(!should_intercept_app_exit(None, 0));
         assert!(should_intercept_app_exit(None, 1));

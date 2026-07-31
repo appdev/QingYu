@@ -157,7 +157,6 @@ export type AppThemeRuntime = {
 export type AppMcpRuntime = {
   policyAvailable: boolean;
   localServiceAvailable: boolean;
-  setPrimaryWorkspace: (input: { primaryRoot: string | null }) => Promise<McpSettingsSnapshot>;
   getSettings: () => Promise<McpSettingsSnapshot>;
   updateSettings: (input: { expectedRevision: string; config: McpConfig }) => Promise<McpSettingsSnapshot>;
   getHealth: () => Promise<McpServerHealth>;
@@ -696,7 +695,6 @@ export function createDefaultAppRuntime(): AppRuntime {
     mcp: {
       policyAvailable: false,
       localServiceAvailable: false,
-      setPrimaryWorkspace: () => unsupportedFeature("setMcpPrimaryWorkspace"),
       getSettings: () => unsupportedFeature("getMcpSettings"),
       updateSettings: () => unsupportedFeature("updateMcpSettings"),
       getHealth: () => unsupportedFeature("getMcpHealth"),

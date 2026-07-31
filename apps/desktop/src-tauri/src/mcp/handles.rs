@@ -30,12 +30,15 @@ struct HandlePayload {
     workspace_id: Uuid,
     workspace_generation: u64,
     relative_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    kernel_document_id: Option<String>,
 }
 
 #[derive(Clone)]
 pub(crate) struct VerifiedDocumentHandle {
     workspace: ResolvedWorkspace,
     relative_path: PathBuf,
+    kernel_document_id: Option<qingyu_kernel::contract::DocumentId>,
 }
 
 impl VerifiedDocumentHandle {
@@ -49,6 +52,10 @@ impl VerifiedDocumentHandle {
 
     pub(crate) fn workspace(&self) -> &ResolvedWorkspace {
         &self.workspace
+    }
+
+    pub(crate) fn kernel_document_id(&self) -> Option<&qingyu_kernel::contract::DocumentId> {
+        self.kernel_document_id.as_ref()
     }
 
     pub(crate) fn open_file(&self) -> Result<File, HandleError> {
@@ -224,6 +231,27 @@ impl HandleSigner {
             workspace_id,
             workspace_generation,
             relative_path,
+            None,
+        )
+    }
+
+    pub(crate) fn issue_kernel_document(
+        &self,
+        workspace_id: Uuid,
+        workspace_generation: u64,
+        relative_path: &str,
+        kernel_document_id: &qingyu_kernel::contract::DocumentId,
+    ) -> Result<String, HandleError> {
+        let path = validate_relative_path(relative_path, false)?;
+        if !is_markdown_path(&path) {
+            return Err(HandleError::invalid());
+        }
+        self.issue(
+            HandleKind::Document,
+            workspace_id,
+            workspace_generation,
+            relative_path,
+            Some(kernel_document_id.as_str().to_owned()),
         )
     }
 
@@ -239,6 +267,7 @@ impl HandleSigner {
             workspace_id,
             workspace_generation,
             relative_path,
+            None,
         )
     }
 
@@ -248,6 +277,7 @@ impl HandleSigner {
         workspace_id: Uuid,
         workspace_generation: u64,
         relative_path: &str,
+        kernel_document_id: Option<String>,
     ) -> Result<String, HandleError> {
         let payload = HandlePayload {
             version: HANDLE_VERSION,
@@ -255,6 +285,7 @@ impl HandleSigner {
             workspace_id,
             workspace_generation,
             relative_path: relative_path.to_string(),
+            kernel_document_id,
         };
         let bytes = serde_json::to_vec(&payload).map_err(|_| HandleError::invalid())?;
         let signature = self.sign(&bytes)?;
@@ -282,9 +313,19 @@ impl HandleSigner {
             .revalidate_authority()
             .map_err(HandleError::from_workspace)?;
         verify_document_path(&workspace.root, &relative_path)?;
+        let kernel_document_id = payload
+            .kernel_document_id
+            .map(|value| {
+                serde_json::from_value::<qingyu_kernel::contract::DocumentId>(
+                    serde_json::Value::String(value),
+                )
+                .map_err(|_| HandleError::invalid())
+            })
+            .transpose()?;
         Ok(VerifiedDocumentHandle {
             workspace,
             relative_path,
+            kernel_document_id,
         })
     }
 
