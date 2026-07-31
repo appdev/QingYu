@@ -143,7 +143,7 @@ export async function createDesktopKernelDomainAdapter(
         },
       },
       baseUrl,
-      fetch: options.fetch ?? globalThis.fetch,
+      fetch: options.fetch ?? globalThis.fetch.bind(globalThis),
     });
 
     const ready = await client.system.ready({ signal: requests.signal });

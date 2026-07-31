@@ -55,6 +55,28 @@ describe("desktop Kernel domain adapter", () => {
     ]);
   });
 
+  it("binds the default browser fetch to the global receiver", async () => {
+    const receivers: unknown[] = [];
+    const receiverSensitiveFetch: FetchLike = async function (
+      this: unknown,
+      url,
+    ) {
+      receivers.push(this);
+      if (this !== globalThis) throw new TypeError("invalid fetch receiver");
+      return handshakeResponse(new URL(url).pathname);
+    };
+    vi.stubGlobal("fetch", receiverSensitiveFetch);
+
+    try {
+      const adapter = await createDesktopKernelDomainAdapter(connection());
+
+      expect(adapter.port.availability).toBe("available");
+      expect(receivers).toEqual([globalThis, globalThis, globalThis]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("releases ownership and returns a redacted error when initialization disagrees with bootstrap identity", async () => {
     const release = vi.fn(() => undefined);
     const fetch: FetchLike = async (url) => {
