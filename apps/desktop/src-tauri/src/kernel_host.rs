@@ -7,6 +7,11 @@
 
 #![cfg_attr(not(test), allow(dead_code))]
 
+#[path = "desktop_kernel_owner.rs"]
+pub(crate) mod desktop_kernel_owner;
+#[path = "kernel_endpoint_record.rs"]
+pub(crate) mod kernel_endpoint_record;
+
 use std::{
     future::Future,
     pin::Pin,
@@ -381,6 +386,115 @@ impl KernelHostSnapshot {
     }
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct KernelHostPublication {
+    pub(crate) sequence: u64,
+    pub(crate) snapshot: KernelHostSnapshot,
+    pub(crate) access: Option<NativeKernelAccess>,
+}
+
+struct KernelHostPublicationState {
+    next_sequence: u64,
+    latest: KernelHostPublication,
+    subscribers: Vec<mpsc::UnboundedSender<KernelHostPublication>>,
+}
+
+#[derive(Clone)]
+pub(crate) struct KernelHostPublicationSender {
+    snapshots: watch::Sender<KernelHostSnapshot>,
+    shared: Arc<Mutex<KernelHostPublicationState>>,
+}
+
+#[derive(Clone)]
+pub(crate) struct KernelHostPublicationReader {
+    shared: Arc<Mutex<KernelHostPublicationState>>,
+}
+
+pub(crate) struct KernelHostPublicationSubscription {
+    receiver: mpsc::UnboundedReceiver<KernelHostPublication>,
+}
+
+impl KernelHostPublicationSender {
+    pub(crate) fn new() -> (
+        Self,
+        watch::Receiver<KernelHostSnapshot>,
+        KernelHostPublicationReader,
+    ) {
+        let initial_snapshot = KernelHostSnapshot::dormant();
+        let (snapshots, snapshot_receiver) = watch::channel(initial_snapshot);
+        let shared = Arc::new(Mutex::new(KernelHostPublicationState {
+            next_sequence: 0,
+            latest: KernelHostPublication {
+                sequence: 0,
+                snapshot: initial_snapshot,
+                access: None,
+            },
+            subscribers: Vec::new(),
+        }));
+        (
+            Self {
+                snapshots,
+                shared: Arc::clone(&shared),
+            },
+            snapshot_receiver,
+            KernelHostPublicationReader { shared },
+        )
+    }
+
+    fn send_replace(&self, snapshot: KernelHostSnapshot) {
+        self.publish(snapshot, None);
+    }
+
+    fn send_ready(&self, snapshot: KernelHostSnapshot, access: NativeKernelAccess) {
+        self.publish(snapshot, Some(access));
+    }
+
+    fn publish(&self, snapshot: KernelHostSnapshot, access: Option<NativeKernelAccess>) {
+        let mut state = match self.shared.lock() {
+            Ok(state) => state,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        self.snapshots.send_replace(snapshot);
+        state.next_sequence = state.next_sequence.saturating_add(1);
+        state.latest = KernelHostPublication {
+            sequence: state.next_sequence,
+            snapshot,
+            access,
+        };
+        let publication = state.latest.clone();
+        state
+            .subscribers
+            .retain(|subscriber| subscriber.send(publication.clone()).is_ok());
+    }
+
+    #[cfg(test)]
+    fn subscribe(&self) -> KernelHostPublicationSubscription {
+        KernelHostPublicationReader {
+            shared: Arc::clone(&self.shared),
+        }
+        .subscribe()
+    }
+}
+
+impl KernelHostPublicationReader {
+    pub(crate) fn subscribe(&self) -> KernelHostPublicationSubscription {
+        let (sender, receiver) = mpsc::unbounded_channel();
+        let mut state = match self.shared.lock() {
+            Ok(state) => state,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        let _send_result = sender.send(state.latest.clone());
+        state.subscribers.push(sender);
+        KernelHostPublicationSubscription { receiver }
+    }
+}
+
+impl KernelHostPublicationSubscription {
+    pub(crate) async fn recv(&mut self) -> Option<KernelHostPublication> {
+        self.receiver.recv().await
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct KernelHostTimeouts {
     startup: Duration,
@@ -421,6 +535,7 @@ pub(crate) struct KernelHostSupervisor {
     stops: mpsc::UnboundedSender<oneshot::Sender<Result<(), KernelHostFailure>>>,
     enqueue_gate: Arc<AsyncMutex<()>>,
     snapshots: watch::Receiver<KernelHostSnapshot>,
+    publications: KernelHostPublicationReader,
     bootstrap_session: crate::kernel_bootstrap::NativeKernelBootstrapSession,
     writer_gate: SupervisorWriterGate,
     ownership: Arc<KernelOwnership>,
@@ -530,7 +645,7 @@ impl KernelHostSupervisor {
     ) -> Self {
         let (starts, start_receiver) = mpsc::channel(8);
         let (stops, stop_receiver) = mpsc::unbounded_channel();
-        let (snapshot_sender, snapshots) = watch::channel(KernelHostSnapshot::dormant());
+        let (snapshot_sender, snapshots, publications) = KernelHostPublicationSender::new();
         let ownership = Arc::new(KernelOwnership::default());
         let enqueue_gate = Arc::new(AsyncMutex::new(()));
         let bootstrap_session = bootstrap.open_supervisor_session();
@@ -550,6 +665,7 @@ impl KernelHostSupervisor {
             stops,
             enqueue_gate,
             snapshots,
+            publications,
             bootstrap_session,
             writer_gate,
             ownership,
@@ -588,14 +704,22 @@ impl KernelHostSupervisor {
     pub(crate) fn snapshot(&self) -> KernelHostSnapshot {
         *self.snapshots.borrow()
     }
-}
 
-impl Drop for KernelHostSupervisor {
-    fn drop(&mut self) {
+    pub(crate) fn subscribe_publications(&self) -> KernelHostPublicationSubscription {
+        self.publications.subscribe()
+    }
+
+    pub(crate) fn close_fail_safe(&self) {
         self.bootstrap_session.close();
         self.writer_gate.fail_closed();
         self.ownership.close_and_terminate();
         self.actor.abort();
+    }
+}
+
+impl Drop for KernelHostSupervisor {
+    fn drop(&mut self) {
+        self.close_fail_safe();
     }
 }
 
@@ -651,7 +775,7 @@ enum ReadyOutcome {
 async fn run_actor(
     mut starts: mpsc::Receiver<StartCommand>,
     mut stops: mpsc::UnboundedReceiver<oneshot::Sender<Result<(), KernelHostFailure>>>,
-    snapshots: watch::Sender<KernelHostSnapshot>,
+    snapshots: KernelHostPublicationSender,
     factory: Arc<dyn KernelProcessFactory>,
     bootstrap: crate::kernel_bootstrap::NativeKernelBootstrapSession,
     writer_gate: SupervisorWriterGate,
@@ -709,13 +833,13 @@ async fn run_actor(
                     IdleCommand::Stop(response) => {
                         writer_gate.fail_closed();
                         ownership.terminate_active();
+                        let _finish_result = bootstrap.finish_stop(generation);
                         snapshots.send_replace(KernelHostSnapshot {
                             phase: KernelHostPhase::Dormant,
                             generation,
                             endpoint: None,
                             failure: None,
                         });
-                        let _finish_result = bootstrap.finish_stop(generation);
                         finish_stop_barrier(&mut starts, enqueue_gate.as_ref(), response, Ok(()))
                             .await;
                         ActorMode::Idle
@@ -770,7 +894,7 @@ async fn run_actor(
 async fn start_transition(
     starts: &mut mpsc::Receiver<StartCommand>,
     stops: &mut mpsc::UnboundedReceiver<oneshot::Sender<Result<(), KernelHostFailure>>>,
-    snapshots: &watch::Sender<KernelHostSnapshot>,
+    snapshots: &KernelHostPublicationSender,
     factory: &dyn KernelProcessFactory,
     bootstrap: &crate::kernel_bootstrap::NativeKernelBootstrapSession,
     writer_gate: &SupervisorWriterGate,
@@ -823,7 +947,7 @@ async fn start_transition(
 async fn spawn_transition(
     starts: &mut mpsc::Receiver<StartCommand>,
     stops: &mut mpsc::UnboundedReceiver<oneshot::Sender<Result<(), KernelHostFailure>>>,
-    snapshots: &watch::Sender<KernelHostSnapshot>,
+    snapshots: &KernelHostPublicationSender,
     factory: &dyn KernelProcessFactory,
     bootstrap: &crate::kernel_bootstrap::NativeKernelBootstrapSession,
     writer_gate: &SupervisorWriterGate,
@@ -880,13 +1004,13 @@ async fn spawn_transition(
         }
         WriterPublicationWait::Stop(stop_response) => {
             writer_gate.fail_closed();
+            let _finish_result = bootstrap.finish_stop(generation);
             snapshots.send_replace(KernelHostSnapshot {
                 phase: KernelHostPhase::Dormant,
                 generation,
                 endpoint: None,
                 failure: None,
             });
-            let _finish_result = bootstrap.finish_stop(generation);
             finish_stop_barrier(starts, enqueue_gate, stop_response, Ok(())).await;
             return StartOutcome::Stopped;
         }
@@ -991,13 +1115,13 @@ async fn spawn_transition(
             let stopped = cleanup_pending(&mut *pending, ownership, generation, timeouts).await;
             match stopped {
                 Ok(()) => {
+                    let _finish_result = bootstrap.finish_stop(generation);
                     snapshots.send_replace(KernelHostSnapshot {
                         phase: KernelHostPhase::Dormant,
                         generation,
                         endpoint: None,
                         failure: None,
                     });
-                    let _finish_result = bootstrap.finish_stop(generation);
                 }
                 Err(error) => publish_failure(snapshots, bootstrap, generation, error),
             }
@@ -1047,12 +1171,15 @@ async fn spawn_transition(
         publish_failure(snapshots, bootstrap, generation, reported);
         return StartOutcome::Failed(reported);
     }
-    snapshots.send_replace(KernelHostSnapshot {
-        phase: KernelHostPhase::Ready,
-        generation,
-        endpoint: Some(endpoint),
-        failure: None,
-    });
+    snapshots.send_ready(
+        KernelHostSnapshot {
+            phase: KernelHostPhase::Ready,
+            generation,
+            endpoint: Some(endpoint),
+            failure: None,
+        },
+        access.clone(),
+    );
     StartOutcome::Ready(Box::new(ReadyKernel {
         access,
         process,
@@ -1116,7 +1243,7 @@ async fn wait_for_writer_publication_before_spawn(
 async fn ready_transition(
     starts: &mut mpsc::Receiver<StartCommand>,
     stops: &mut mpsc::UnboundedReceiver<oneshot::Sender<Result<(), KernelHostFailure>>>,
-    snapshots: &watch::Sender<KernelHostSnapshot>,
+    snapshots: &KernelHostPublicationSender,
     bootstrap: &crate::kernel_bootstrap::NativeKernelBootstrapSession,
     writer_gate: &SupervisorWriterGate,
     ownership: &KernelOwnership,
@@ -1196,13 +1323,13 @@ async fn ready_transition(
         ReadyWait::Stop(response) => {
             let generation = ready.access.endpoint.generation;
             writer_gate.fail_closed();
+            let _finish_result = bootstrap.finish_stop(generation);
             snapshots.send_replace(KernelHostSnapshot {
                 phase: KernelHostPhase::Stopping,
                 generation,
                 endpoint: None,
                 failure: None,
             });
-            let _finish_result = bootstrap.finish_stop(generation);
             let result = stop_running(&mut *ready.process, ownership, generation, timeouts).await;
             match result {
                 Ok(()) => {
@@ -1237,7 +1364,7 @@ async fn ready_transition(
 async fn recover_transition(
     starts: &mut mpsc::Receiver<StartCommand>,
     stops: &mut mpsc::UnboundedReceiver<oneshot::Sender<Result<(), KernelHostFailure>>>,
-    snapshots: &watch::Sender<KernelHostSnapshot>,
+    snapshots: &KernelHostPublicationSender,
     factory: &dyn KernelProcessFactory,
     bootstrap: &crate::kernel_bootstrap::NativeKernelBootstrapSession,
     writer_gate: &SupervisorWriterGate,
@@ -1308,13 +1435,13 @@ async fn recover_transition(
             RecoveryWait::Retry => {}
             RecoveryWait::Stop(response) => {
                 writer_gate.fail_closed();
+                let _finish_result = bootstrap.finish_stop(attempt_generation);
                 snapshots.send_replace(KernelHostSnapshot {
                     phase: KernelHostPhase::Dormant,
                     generation: attempt_generation,
                     endpoint: None,
                     failure: None,
                 });
-                let _finish_result = bootstrap.finish_stop(attempt_generation);
                 finish_stop_barrier(starts, enqueue_gate, response, Ok(())).await;
                 return None;
             }
@@ -1447,7 +1574,7 @@ async fn force_reap_running(
 }
 
 fn publish_failure(
-    snapshots: &watch::Sender<KernelHostSnapshot>,
+    snapshots: &KernelHostPublicationSender,
     bootstrap: &crate::kernel_bootstrap::NativeKernelBootstrapSession,
     generation: u64,
     failure: KernelHostFailure,
@@ -1504,6 +1631,61 @@ mod tests {
     }
 
     assert_not_impl_any!(KernelSpawnPermit: Clone, Copy);
+
+    #[tokio::test]
+    async fn publication_subscription_preserves_every_edge_and_recovery_access() {
+        let (publications, _snapshot, reader) = KernelHostPublicationSender::new();
+        let mut subscription = reader.subscribe();
+        assert_eq!(subscription.recv().await.unwrap().sequence, 0);
+        let first = test_access(1);
+        let second = test_access(2);
+
+        publications.send_ready(
+            KernelHostSnapshot {
+                phase: KernelHostPhase::Ready,
+                generation: 1,
+                endpoint: Some(first.endpoint),
+                failure: None,
+            },
+            first,
+        );
+        publications.send_replace(KernelHostSnapshot {
+            phase: KernelHostPhase::Retrying,
+            generation: 2,
+            endpoint: None,
+            failure: Some(KernelHostFailure::UnexpectedExit),
+        });
+        publications.send_ready(
+            KernelHostSnapshot {
+                phase: KernelHostPhase::Ready,
+                generation: 2,
+                endpoint: Some(second.endpoint),
+                failure: None,
+            },
+            second,
+        );
+
+        let ready = subscription.recv().await.unwrap();
+        let retrying = subscription.recv().await.unwrap();
+        let recovered = subscription.recv().await.unwrap();
+        assert_eq!(
+            (ready.sequence, ready.snapshot.phase),
+            (1, KernelHostPhase::Ready)
+        );
+        assert_eq!(
+            (retrying.sequence, retrying.snapshot.phase),
+            (2, KernelHostPhase::Retrying)
+        );
+        assert!(retrying.access.is_none());
+        assert_eq!(
+            (
+                recovered.sequence,
+                recovered.snapshot.phase,
+                recovered.access.unwrap().endpoint.generation,
+            ),
+            (3, KernelHostPhase::Ready, 2)
+        );
+    }
 
     #[test]
     fn production_mints_spawn_permit_only_at_the_supervisor_spawn_boundary() {
@@ -2811,7 +2993,7 @@ mod tests {
             .unwrap();
         let (stop_response, stop_result) = oneshot::channel();
         stops.send(stop_response).unwrap();
-        let (snapshots, snapshot) = watch::channel(KernelHostSnapshot::dormant());
+        let (snapshots, snapshot, _publications) = KernelHostPublicationSender::new();
         let (start_response, start_result) = oneshot::channel();
         let ownership = KernelOwnership::default();
         let bootstrap_owner = crate::kernel_bootstrap::NativeKernelBootstrapOwner::new();
@@ -2870,7 +3052,7 @@ mod tests {
             })
             .await
             .unwrap();
-        let (snapshots, snapshot) = watch::channel(KernelHostSnapshot::dormant());
+        let (snapshots, snapshot, _publications) = KernelHostPublicationSender::new();
         let (start_response, start_result) = oneshot::channel();
         let ownership = KernelOwnership::default();
         let bootstrap_owner = crate::kernel_bootstrap::NativeKernelBootstrapOwner::new();
@@ -2944,12 +3126,16 @@ mod tests {
             .unwrap();
         let (stop_response, stop_result) = oneshot::channel();
         stops.send(stop_response).unwrap();
-        let (snapshots, snapshot) = watch::channel(KernelHostSnapshot {
-            phase: KernelHostPhase::Ready,
-            generation: 1,
-            endpoint: Some(ready.access.endpoint),
-            failure: None,
-        });
+        let (snapshots, snapshot, _publications) = KernelHostPublicationSender::new();
+        snapshots.send_ready(
+            KernelHostSnapshot {
+                phase: KernelHostPhase::Ready,
+                generation: 1,
+                endpoint: Some(ready.access.endpoint),
+                failure: None,
+            },
+            ready.access.clone(),
+        );
         let bootstrap_owner = crate::kernel_bootstrap::NativeKernelBootstrapOwner::new();
         let bootstrap = bootstrap_owner.open_supervisor_session();
         bootstrap.begin_start(1).unwrap();
@@ -3299,5 +3485,17 @@ mod tests {
             "tauri://localhost".to_owned(),
         )
         .unwrap()
+    }
+
+    fn test_access(generation: u64) -> NativeKernelAccess {
+        let (_startup, credential) = startup().into_parts();
+        NativeKernelAccess {
+            endpoint: KernelEndpoint {
+                generation,
+                port: 49_152,
+                instance_id: InstanceId::new(Uuid::new_v4()),
+            },
+            credential,
+        }
     }
 }
