@@ -145,8 +145,10 @@ fn collect_ref_ids(
                 .map_err(|error| map_nofollow_error(directory, &name, error))?;
             collect_ref_ids(&child, false, ids, is_cancelled)?;
         } else if metadata.file_type().is_file() {
-            let empty_is_none =
-                root_refs_directory && matches!(name.to_str(), Some("latest" | "latest-sync"));
+            let empty_is_none = root_refs_directory
+                && name.to_str().is_some_and(|name| {
+                    matches!(name, "latest" | "latest-sync") || name.starts_with("latest-sync-")
+                });
             if let Some(id) = read_ref_file(directory, &name, empty_is_none)? {
                 ids.insert(id);
             }

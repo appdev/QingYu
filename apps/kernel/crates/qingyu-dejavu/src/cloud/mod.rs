@@ -1,8 +1,46 @@
+use sha2::{Digest, Sha256};
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CloudObject {
     /// Full repository object key. [`Cloud::list`] filters with a string prefix.
     pub key: String,
     pub size: u64,
+}
+
+/// Opaque, credential-free identity for one logical cloud repository target.
+///
+/// Callers must derive the identity only from stable storage coordinates, such as a normalized
+/// endpoint, bucket and repository prefix. Credentials and other rotating connection settings
+/// must not be included.
+#[derive(Clone, Copy, Eq, Hash, PartialEq)]
+pub struct CloudTargetIdentity([u8; 32]);
+
+impl CloudTargetIdentity {
+    pub fn from_stable_parts(parts: &[&[u8]]) -> Self {
+        let mut hasher = Sha256::new();
+        hasher.update(b"qingyu-cloud-target-v1\0");
+        for part in parts {
+            hasher.update((part.len() as u64).to_be_bytes());
+            hasher.update(part);
+        }
+        Self(hasher.finalize().into())
+    }
+
+    pub(crate) fn ref_component(self) -> String {
+        const HEX: &[u8; 16] = b"0123456789abcdef";
+        let mut encoded = String::with_capacity(self.0.len() * 2);
+        for byte in self.0 {
+            encoded.push(HEX[(byte >> 4) as usize] as char);
+            encoded.push(HEX[(byte & 0x0f) as usize] as char);
+        }
+        encoded
+    }
+}
+
+impl std::fmt::Debug for CloudTargetIdentity {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("CloudTargetIdentity([REDACTED])")
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -146,6 +184,11 @@ impl CloudError {
 
 #[async_trait::async_trait]
 pub trait Cloud: Send + Sync {
+    /// Returns a credential-free identity when the backend can distinguish logical targets.
+    fn target_identity(&self) -> Option<CloudTargetIdentity> {
+        None
+    }
+
     /// Reads a protocol-small object, stopping before retaining bytes beyond `max_bytes`.
     async fn get_bounded(&self, key: &str, max_bytes: u64) -> Result<Vec<u8>, CloudError>;
     /// Streams an object into caller-owned staging and returns the exact bytes written.

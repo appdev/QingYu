@@ -13,9 +13,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use filetime::FileTime;
 use futures_util::FutureExt;
 use qingyu_dejavu::{
-    Cloud, CloudError, CloudObject, CloudOperation, CloudUploadSource, Device, MergeResult,
-    NoopWorkingTreeCoordinator, Repo, RepoError, RepoOptions, RepoPaths, S3AddressingStyle,
-    S3Cloud, S3Connection, S3RepositoryCatalog, S3TlsVerification, S3TransportOptions,
+    Cloud, CloudError, CloudObject, CloudOperation, CloudTargetIdentity, CloudUploadSource, Device,
+    MergeResult, NoopWorkingTreeCoordinator, Repo, RepoError, RepoOptions, RepoPaths,
+    S3AddressingStyle, S3Cloud, S3Connection, S3RepositoryCatalog, S3TlsVerification,
+    S3TransportOptions,
 };
 use tempfile::TempDir;
 use uuid::Uuid;
@@ -51,6 +52,10 @@ impl FailBeforeLatestCloud {
 
 #[async_trait::async_trait]
 impl Cloud for FailBeforeLatestCloud {
+    fn target_identity(&self) -> Option<CloudTargetIdentity> {
+        self.inner.target_identity()
+    }
+
     async fn get_bounded(&self, key: &str, max_bytes: u64) -> Result<Vec<u8>, CloudError> {
         self.inner.get_bounded(key, max_bytes).await
     }

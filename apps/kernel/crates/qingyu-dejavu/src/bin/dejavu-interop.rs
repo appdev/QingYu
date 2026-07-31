@@ -6,8 +6,8 @@ use std::sync::Arc;
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use qingyu_dejavu::{
-    Cloud, CloudError, CloudObject, CloudOperation, CloudUploadSource, Device, LocalCloud,
-    NoopWorkingTreeCoordinator, Repo, RepoError, RepoOptions, RepoPaths,
+    Cloud, CloudError, CloudObject, CloudOperation, CloudTargetIdentity, CloudUploadSource, Device,
+    LocalCloud, NoopWorkingTreeCoordinator, Repo, RepoError, RepoOptions, RepoPaths,
 };
 use serde::{Deserialize, Serialize};
 
@@ -77,6 +77,10 @@ impl FailBeforeLatestCloud {
 
 #[async_trait::async_trait]
 impl Cloud for FailBeforeLatestCloud {
+    fn target_identity(&self) -> Option<CloudTargetIdentity> {
+        self.inner.target_identity()
+    }
+
     async fn get_bounded(&self, key: &str, max_bytes: u64) -> Result<Vec<u8>, CloudError> {
         self.inner.get_bounded(key, max_bytes).await
     }
