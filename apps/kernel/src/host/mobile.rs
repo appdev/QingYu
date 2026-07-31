@@ -10,8 +10,8 @@ use std::{
     fmt,
     net::{IpAddr, Ipv4Addr, SocketAddr},
     sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
-        Arc, Mutex as StdMutex, MutexGuard as StdMutexGuard, Weak,
+        atomic::{AtomicU64, Ordering},
+        Arc, Mutex as StdMutex, MutexGuard as StdMutexGuard, OnceLock, Weak,
     },
     time::Duration,
 };
@@ -21,7 +21,7 @@ use tokio::{net::TcpListener, sync::oneshot};
 use zeroize::Zeroizing;
 
 use crate::{
-    api::{build_router, TransportPolicy},
+    api::{build_router_with_connection_lifecycle, ApiConnectionLifecycle, TransportPolicy},
     config::KernelLaunchEpoch,
     contract::HostProfile,
     runtime::KernelRuntime,
@@ -55,7 +55,11 @@ pub struct MobileKernelLaunch {
 }
 
 impl MobileKernelLaunch {
-    pub fn new(runtime: Arc<KernelRuntime>, lifecycle: Arc<dyn MobileKernelLifecycle>) -> Self {
+    #[cfg(test)]
+    pub(crate) fn from_composition_parts(
+        runtime: Arc<KernelRuntime>,
+        lifecycle: Arc<dyn MobileKernelLifecycle>,
+    ) -> Self {
         Self { runtime, lifecycle }
     }
 }
@@ -71,7 +75,9 @@ pub struct MobileKernelHostOwner {
     inner: Arc<MobileKernelHostInner>,
 }
 
-static MOBILE_KERNEL_HOST_PROCESS_CLAIMED: AtomicBool = AtomicBool::new(false);
+const MAX_RETIRED_MOBILE_LAUNCHES: usize = 4_096;
+static MOBILE_KERNEL_HOST_PROCESS: OnceLock<StdMutex<MobileKernelHostProcessState>> =
+    OnceLock::new();
 
 impl MobileKernelHostOwner {
     pub fn new(drain_timeout: Duration) -> Result<Self, MobileKernelHostError> {
@@ -86,10 +92,7 @@ impl MobileKernelHostOwner {
                 drain_timeout,
                 next_generation: AtomicU64::new(1),
                 process_claim,
-                slot: StdMutex::new(MobileKernelHostSlot {
-                    phase: MobileKernelHostState::Idle,
-                    retired_epochs: HashSet::new(),
-                }),
+                slot: StdMutex::new(MobileKernelHostState::Idle),
             }),
         })
     }
@@ -123,14 +126,10 @@ impl MobileKernelHostOwner {
         {
             let mut slot = lock_unpoisoned(&self.inner.slot);
             settle_completed_for_restart(&mut slot);
-            if slot.retired_epochs.contains(&epoch) {
-                return Err(MobileKernelHostError::new(
-                    MobileKernelHostErrorKind::RetiredLaunch,
-                ));
-            }
-            match &slot.phase {
+            ensure_mobile_process_launch_available(epoch)?;
+            match &*slot {
                 MobileKernelHostState::Idle => {
-                    slot.phase = MobileKernelHostState::Starting { generation };
+                    *slot = MobileKernelHostState::Starting { generation };
                 }
                 MobileKernelHostState::Starting { .. } | MobileKernelHostState::Running { .. } => {
                     return Err(MobileKernelHostError::new(
@@ -140,6 +139,11 @@ impl MobileKernelHostOwner {
                 MobileKernelHostState::Stopping { .. } => {
                     return Err(MobileKernelHostError::new(
                         MobileKernelHostErrorKind::Stopping,
+                    ));
+                }
+                MobileKernelHostState::Poisoned => {
+                    return Err(MobileKernelHostError::new(
+                        MobileKernelHostErrorKind::ProcessPoisoned,
                     ));
                 }
             }
@@ -167,11 +171,17 @@ impl MobileKernelHostOwner {
 
         let bearer = Zeroizing::new(launch.runtime.expose_native_launch_credential().to_owned());
         let completion = Arc::new(MobileKernelCompletion::new());
+        let connection_lifecycle = ApiConnectionLifecycle::new();
         let (shutdown_sender, shutdown_receiver) = oneshot::channel();
-        let router = build_router(launch.runtime, policy);
+        let router = build_router_with_connection_lifecycle(
+            launch.runtime,
+            policy,
+            connection_lifecycle.clone(),
+        );
         let lifecycle = launch.lifecycle;
         let task_completion = completion.clone();
         let task_process_claim = self.inner.process_claim.clone();
+        let task_connection_lifecycle = connection_lifecycle.clone();
         tokio::spawn(async move {
             let serve_result = axum::serve(listener, router)
                 .with_graceful_shutdown(async move {
@@ -179,18 +189,24 @@ impl MobileKernelHostOwner {
                 })
                 .await
                 .map_err(|_| MobileKernelHostErrorKind::ServerFailed);
+            task_connection_lifecycle.begin_shutdown();
+            task_connection_lifecycle.wait_drained().await;
             let drain_result = lifecycle
                 .drain()
                 .await
                 .map_err(|_| MobileKernelHostErrorKind::DrainFailed);
-            task_completion.finish(serve_result.and(drain_result));
+            let result = combine_mobile_host_settlement(serve_result, drain_result);
+            if result.is_err() {
+                poison_mobile_process();
+            }
+            task_completion.finish(result);
             drop(task_process_claim);
         });
 
         {
             let mut slot = lock_unpoisoned(&self.inner.slot);
             if !matches!(
-                &slot.phase,
+                &*slot,
                 MobileKernelHostState::Starting {
                     generation: current,
                 } if *current == generation
@@ -200,10 +216,11 @@ impl MobileKernelHostOwner {
                     MobileKernelHostErrorKind::LaunchSuperseded,
                 ));
             }
-            slot.phase = MobileKernelHostState::Running {
+            *slot = MobileKernelHostState::Running {
                 completion: completion.clone(),
                 epoch,
                 generation,
+                connection_lifecycle,
                 shutdown: Some(shutdown_sender),
             };
         }
@@ -225,13 +242,13 @@ impl MobileKernelHostOwner {
     pub async fn stop(&self) -> Result<MobileKernelStopDisposition, MobileKernelHostError> {
         let (completion, generation) = {
             let mut slot = lock_unpoisoned(&self.inner.slot);
-            let phase = std::mem::replace(&mut slot.phase, MobileKernelHostState::Idle);
+            let phase = std::mem::replace(&mut *slot, MobileKernelHostState::Idle);
             match phase {
                 MobileKernelHostState::Idle => {
                     return Ok(MobileKernelStopDisposition::AlreadyStopped);
                 }
                 MobileKernelHostState::Starting { generation } => {
-                    slot.phase = MobileKernelHostState::Starting { generation };
+                    *slot = MobileKernelHostState::Starting { generation };
                     return Err(MobileKernelHostError::new(
                         MobileKernelHostErrorKind::AlreadyActive,
                     ));
@@ -240,11 +257,13 @@ impl MobileKernelHostOwner {
                     completion,
                     epoch,
                     generation,
+                    connection_lifecycle,
                     mut shutdown,
                 } => {
                     let shutdown = shutdown.take();
-                    slot.retired_epochs.insert(epoch);
-                    slot.phase = MobileKernelHostState::Stopping {
+                    retire_mobile_process_launch(epoch);
+                    connection_lifecycle.begin_shutdown();
+                    *slot = MobileKernelHostState::Stopping {
                         completion: completion.clone(),
                         generation,
                     };
@@ -257,11 +276,17 @@ impl MobileKernelHostOwner {
                     completion,
                     generation,
                 } => {
-                    slot.phase = MobileKernelHostState::Stopping {
+                    *slot = MobileKernelHostState::Stopping {
                         completion: completion.clone(),
                         generation,
                     };
                     (completion, generation)
+                }
+                MobileKernelHostState::Poisoned => {
+                    *slot = MobileKernelHostState::Poisoned;
+                    return Err(MobileKernelHostError::new(
+                        MobileKernelHostErrorKind::ProcessPoisoned,
+                    ));
                 }
             }
         };
@@ -272,34 +297,40 @@ impl MobileKernelHostOwner {
         {
             let mut slot = lock_unpoisoned(&self.inner.slot);
             if matches!(
-                &slot.phase,
+                &*slot,
                 MobileKernelHostState::Stopping {
                     generation: current,
                     ..
                 } if *current == generation
             ) {
-                slot.phase = MobileKernelHostState::Idle;
+                *slot = if result.is_ok() && mobile_process_is_healthy() {
+                    MobileKernelHostState::Idle
+                } else {
+                    MobileKernelHostState::Poisoned
+                };
             }
         }
-        result
-            .map(|()| MobileKernelStopDisposition::Stopped)
-            .map_err(MobileKernelHostError::new)
+        result.map_err(MobileKernelHostError::new)?;
+        ensure_mobile_process_healthy()?;
+        Ok(MobileKernelStopDisposition::Stopped)
     }
 }
 
 impl Drop for MobileKernelHostOwner {
     fn drop(&mut self) {
         let mut slot = lock_unpoisoned(&self.inner.slot);
-        let phase = std::mem::replace(&mut slot.phase, MobileKernelHostState::Idle);
+        let phase = std::mem::replace(&mut *slot, MobileKernelHostState::Idle);
         match phase {
             MobileKernelHostState::Running {
                 completion,
                 epoch,
                 generation,
+                connection_lifecycle,
                 mut shutdown,
             } => {
-                slot.retired_epochs.insert(epoch);
-                slot.phase = MobileKernelHostState::Stopping {
+                retire_mobile_process_launch(epoch);
+                connection_lifecycle.begin_shutdown();
+                *slot = MobileKernelHostState::Stopping {
                     completion,
                     generation,
                 };
@@ -307,7 +338,7 @@ impl Drop for MobileKernelHostOwner {
                     let _sent = shutdown.send(());
                 }
             }
-            phase => slot.phase = phase,
+            phase => *slot = phase,
         }
     }
 }
@@ -358,7 +389,7 @@ impl MobileKernelEndpoint {
             return false;
         }
         let current = matches!(
-            &lock_unpoisoned(&owner.slot).phase,
+            &*lock_unpoisoned(&owner.slot),
             MobileKernelHostState::Running {
                 completion,
                 epoch,
@@ -401,6 +432,7 @@ pub enum MobileKernelHostErrorKind {
     ProcessOwnerClaimed,
     UnsupportedProfile,
     RetiredLaunch,
+    ProcessPoisoned,
     AlreadyActive,
     Stopping,
     GenerationExhausted,
@@ -450,6 +482,9 @@ impl fmt::Display for MobileKernelHostError {
                 "mobile Kernel host requires a mobile runtime"
             }
             MobileKernelHostErrorKind::RetiredLaunch => "mobile Kernel launch identity is retired",
+            MobileKernelHostErrorKind::ProcessPoisoned => {
+                "mobile Kernel host process is unavailable"
+            }
             MobileKernelHostErrorKind::AlreadyActive => "mobile Kernel host is already active",
             MobileKernelHostErrorKind::Stopping => "mobile Kernel host is stopping",
             MobileKernelHostErrorKind::GenerationExhausted => {
@@ -474,11 +509,12 @@ struct MobileKernelHostInner {
     drain_timeout: Duration,
     next_generation: AtomicU64,
     process_claim: Arc<MobileKernelHostProcessClaim>,
-    slot: StdMutex<MobileKernelHostSlot>,
+    slot: StdMutex<MobileKernelHostState>,
 }
 
-struct MobileKernelHostSlot {
-    phase: MobileKernelHostState,
+struct MobileKernelHostProcessState {
+    owner_claimed: bool,
+    poisoned: bool,
     retired_epochs: HashSet<KernelLaunchEpoch>,
 }
 
@@ -486,19 +522,27 @@ struct MobileKernelHostProcessClaim;
 
 impl MobileKernelHostProcessClaim {
     fn acquire() -> Result<Self, MobileKernelHostError> {
-        MOBILE_KERNEL_HOST_PROCESS_CLAIMED
-            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-            .map_err(|_| {
-                MobileKernelHostError::new(MobileKernelHostErrorKind::ProcessOwnerClaimed)
-            })?;
+        let mut process = lock_unpoisoned(mobile_kernel_host_process());
+        if process.poisoned {
+            return Err(MobileKernelHostError::new(
+                MobileKernelHostErrorKind::ProcessPoisoned,
+            ));
+        }
+        if process.owner_claimed {
+            return Err(MobileKernelHostError::new(
+                MobileKernelHostErrorKind::ProcessOwnerClaimed,
+            ));
+        }
+        process.owner_claimed = true;
         Ok(Self)
     }
 }
 
 impl Drop for MobileKernelHostProcessClaim {
     fn drop(&mut self) {
-        let was_claimed = MOBILE_KERNEL_HOST_PROCESS_CLAIMED.swap(false, Ordering::SeqCst);
-        debug_assert!(was_claimed);
+        let mut process = lock_unpoisoned(mobile_kernel_host_process());
+        debug_assert!(process.owner_claimed);
+        process.owner_claimed = false;
     }
 }
 
@@ -511,12 +555,14 @@ enum MobileKernelHostState {
         completion: Arc<MobileKernelCompletion>,
         epoch: KernelLaunchEpoch,
         generation: u64,
+        connection_lifecycle: ApiConnectionLifecycle,
         shutdown: Option<oneshot::Sender<()>>,
     },
     Stopping {
         completion: Arc<MobileKernelCompletion>,
         generation: u64,
     },
+    Poisoned,
 }
 
 struct MobileKernelStartReservation {
@@ -535,10 +581,10 @@ impl Drop for MobileKernelStartReservation {
         };
         let mut slot = lock_unpoisoned(&inner.slot);
         if matches!(
-            &slot.phase,
+            &*slot,
             MobileKernelHostState::Starting { generation } if *generation == self.generation
         ) {
-            slot.phase = MobileKernelHostState::Idle;
+            *slot = MobileKernelHostState::Idle;
         }
     }
 }
@@ -582,24 +628,114 @@ impl MobileKernelCompletion {
     }
 }
 
-fn settle_completed_for_restart(slot: &mut MobileKernelHostSlot) {
-    let completed_epoch = match &slot.phase {
+fn settle_completed_for_restart(slot: &mut MobileKernelHostState) {
+    let completed = match &*slot {
         MobileKernelHostState::Running {
             completion, epoch, ..
-        } if completion.result().is_some() => Some(*epoch),
-        MobileKernelHostState::Stopping { completion, .. } if completion.result().is_some() => None,
+        } => completion.result().map(|result| (result, Some(*epoch))),
+        MobileKernelHostState::Stopping { completion, .. } => {
+            completion.result().map(|result| (result, None))
+        }
         MobileKernelHostState::Idle
         | MobileKernelHostState::Starting { .. }
-        | MobileKernelHostState::Running { .. }
-        | MobileKernelHostState::Stopping { .. } => return,
+        | MobileKernelHostState::Poisoned => None,
     };
-    if let Some(epoch) = completed_epoch {
-        slot.retired_epochs.insert(epoch);
+    let Some((result, epoch)) = completed else {
+        return;
+    };
+    if let Some(epoch) = epoch {
+        retire_mobile_process_launch(epoch);
     }
-    slot.phase = MobileKernelHostState::Idle;
+    *slot = if result.is_ok() && mobile_process_is_healthy() {
+        MobileKernelHostState::Idle
+    } else {
+        poison_mobile_process();
+        MobileKernelHostState::Poisoned
+    };
+}
+
+fn mobile_kernel_host_process() -> &'static StdMutex<MobileKernelHostProcessState> {
+    MOBILE_KERNEL_HOST_PROCESS.get_or_init(|| {
+        StdMutex::new(MobileKernelHostProcessState {
+            owner_claimed: false,
+            poisoned: false,
+            retired_epochs: HashSet::new(),
+        })
+    })
+}
+
+fn ensure_mobile_process_launch_available(
+    epoch: KernelLaunchEpoch,
+) -> Result<(), MobileKernelHostError> {
+    let process = lock_unpoisoned(mobile_kernel_host_process());
+    if process.poisoned {
+        return Err(MobileKernelHostError::new(
+            MobileKernelHostErrorKind::ProcessPoisoned,
+        ));
+    }
+    if process.retired_epochs.contains(&epoch) {
+        return Err(MobileKernelHostError::new(
+            MobileKernelHostErrorKind::RetiredLaunch,
+        ));
+    }
+    Ok(())
+}
+
+fn retire_mobile_process_launch(epoch: KernelLaunchEpoch) {
+    let mut process = lock_unpoisoned(mobile_kernel_host_process());
+    if process.retired_epochs.contains(&epoch) {
+        return;
+    }
+    if process.retired_epochs.len() >= MAX_RETIRED_MOBILE_LAUNCHES {
+        process.poisoned = true;
+        return;
+    }
+    process.retired_epochs.insert(epoch);
+}
+
+fn poison_mobile_process() {
+    lock_unpoisoned(mobile_kernel_host_process()).poisoned = true;
+}
+
+fn mobile_process_is_healthy() -> bool {
+    !lock_unpoisoned(mobile_kernel_host_process()).poisoned
+}
+
+fn ensure_mobile_process_healthy() -> Result<(), MobileKernelHostError> {
+    if mobile_process_is_healthy() {
+        Ok(())
+    } else {
+        Err(MobileKernelHostError::new(
+            MobileKernelHostErrorKind::ProcessPoisoned,
+        ))
+    }
+}
+
+fn combine_mobile_host_settlement(
+    serve_result: Result<(), MobileKernelHostErrorKind>,
+    drain_result: Result<(), MobileKernelHostErrorKind>,
+) -> Result<(), MobileKernelHostErrorKind> {
+    serve_result.and(drain_result)
 }
 
 fn lock_unpoisoned<T>(lock: &StdMutex<T>) -> StdMutexGuard<'_, T> {
     lock.lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+#[cfg(test)]
+mod settlement_tests {
+    use super::{combine_mobile_host_settlement, MobileKernelHostErrorKind};
+
+    #[test]
+    fn server_failure_remains_authoritative_after_a_successful_lifecycle_drain() {
+        assert_eq!(
+            combine_mobile_host_settlement(Err(MobileKernelHostErrorKind::ServerFailed), Ok(())),
+            Err(MobileKernelHostErrorKind::ServerFailed)
+        );
+        assert_eq!(
+            combine_mobile_host_settlement(Ok(()), Err(MobileKernelHostErrorKind::DrainFailed)),
+            Err(MobileKernelHostErrorKind::DrainFailed)
+        );
+    }
 }

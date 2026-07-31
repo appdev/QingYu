@@ -1,4 +1,4 @@
-use std::{sync::Arc, time::Duration};
+use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
 
 use axum::{
     extract::{
@@ -22,12 +22,17 @@ use crate::{
     runtime::KernelRuntime,
 };
 
-use super::{api_error, auth::AuthenticatedBrowserSession, runtime, ApiState, ServerApiHost};
+use super::{
+    api_error, auth::AuthenticatedBrowserSession, runtime, ApiConnectionGuard, ApiState,
+    ServerApiHost,
+};
 
 const AUTHENTICATION_TIMEOUT: Duration = Duration::from_secs(3);
 const MAX_AUTHENTICATION_FRAME_BYTES: usize = 64 * 1024;
 const AUTHENTICATION_CLOSE_CODE: u16 = 4001;
 const RELOAD_CLOSE_CODE: u16 = 4009;
+const HOST_SHUTDOWN_CLOSE_CODE: u16 = 1001;
+const HOST_SHUTDOWN_CLOSE_TIMEOUT: Duration = Duration::from_millis(250);
 
 pub(crate) async fn upgrade(
     State(state): State<ApiState>,
@@ -40,10 +45,19 @@ pub(crate) async fn upgrade(
     let runtime = runtime(&state).clone();
     let server = state.server.clone();
     let browser_session = browser_session.map(|Extension(session)| session);
+    let connection = match state.connection_lifecycle.as_ref() {
+        Some(lifecycle) => match lifecycle.register() {
+            Some(connection) => Some(connection),
+            None => return api_error(ErrorCode::KernelNotReady, None),
+        },
+        None => None,
+    };
     upgrade
         .max_message_size(MAX_AUTHENTICATION_FRAME_BYTES)
         .max_frame_size(MAX_AUTHENTICATION_FRAME_BYTES)
-        .on_upgrade(move |socket| serve_connection(socket, runtime, server, browser_session))
+        .on_upgrade(move |socket| {
+            serve_connection(socket, runtime, server, browser_session, connection)
+        })
 }
 
 async fn serve_connection(
@@ -51,29 +65,69 @@ async fn serve_connection(
     runtime: Arc<KernelRuntime>,
     server: Option<ServerApiHost>,
     mut browser_session: Option<AuthenticatedBrowserSession>,
+    connection: Option<ApiConnectionGuard>,
 ) {
+    let shutdown = wait_for_connection_shutdown(connection.as_ref());
+    tokio::pin!(shutdown);
     if browser_session.is_none() {
-        if let Err(code) = authenticate(&mut socket, &runtime).await {
-            send_authentication_error_and_close(&mut socket, code).await;
+        let authentication = tokio::select! {
+            biased;
+            () = &mut shutdown => None,
+            result = authenticate(&mut socket, &runtime) => Some(result),
+        };
+        let Some(authentication) = authentication else {
+            close_for_host_shutdown(&mut socket).await;
+            return;
+        };
+        if let Err(code) = authentication {
+            let finished = until_shutdown(
+                shutdown.as_mut(),
+                send_authentication_error_and_close(&mut socket, code),
+            )
+            .await;
+            if finished.is_none() {
+                close_for_host_shutdown(&mut socket).await;
+            }
             return;
         }
     } else {
         let (Some(host), Some(session)) = (server.as_ref(), browser_session.take()) else {
-            send_authentication_error_and_close(&mut socket, FrameErrorCode::Unauthorized).await;
+            let finished = until_shutdown(
+                shutdown.as_mut(),
+                send_authentication_error_and_close(&mut socket, FrameErrorCode::Unauthorized),
+            )
+            .await;
+            if finished.is_none() {
+                close_for_host_shutdown(&mut socket).await;
+            }
             return;
         };
-        match host
-            .authorize_browser_session(
-                session.credential.clone(),
-                None,
-                crate::server::RequestIntent::ReadOnly,
-            )
-            .await
-        {
+        let authorization = host.authorize_browser_session(
+            session.credential.clone(),
+            None,
+            crate::server::RequestIntent::ReadOnly,
+        );
+        tokio::pin!(authorization);
+        let authorized = tokio::select! {
+            biased;
+            () = &mut shutdown => None,
+            result = &mut authorization => Some(result),
+        };
+        let Some(authorized) = authorized else {
+            close_for_host_shutdown(&mut socket).await;
+            return;
+        };
+        match authorized {
             Ok(updated) => browser_session = Some(updated),
             Err(_error) => {
-                send_authentication_error_and_close(&mut socket, FrameErrorCode::Unauthorized)
-                    .await;
+                let finished = until_shutdown(
+                    shutdown.as_mut(),
+                    send_authentication_error_and_close(&mut socket, FrameErrorCode::Unauthorized),
+                )
+                .await;
+                if finished.is_none() {
+                    close_for_host_shutdown(&mut socket).await;
+                }
                 return;
             }
         }
@@ -88,7 +142,16 @@ async fn serve_connection(
         sequence: ReadySequence::new(0).expect("ready starts at zero"),
         snapshot_required: SnapshotRequired::required(),
     };
-    if !send_frame(&mut socket, &ready).await {
+    let ready_sent = tokio::select! {
+        biased;
+        () = &mut shutdown => None,
+        sent = send_frame(&mut socket, &ready) => Some(sent),
+    };
+    let Some(ready_sent) = ready_sent else {
+        close_for_host_shutdown(&mut socket).await;
+        return;
+    };
+    if !ready_sent {
         return;
     }
 
@@ -104,29 +167,45 @@ async fn serve_connection(
     loop {
         tokio::select! {
             biased;
+            () = &mut shutdown => {
+                close_for_host_shutdown(&mut socket).await;
+                return;
+            }
             () = &mut browser_validation, if browser_session.is_some() => {
                 let (Some(host), Some(session)) = (server.as_ref(), browser_session.take()) else {
                     return;
                 };
-                match host
-                    .authorize_browser_session(
+                let authorization = until_shutdown(
+                    shutdown.as_mut(),
+                    host.authorize_browser_session(
                         session.credential.clone(),
                         None,
                         crate::server::RequestIntent::ReadOnly,
-                    )
-                    .await
-                {
+                    ),
+                )
+                .await;
+                let Some(authorization) = authorization else {
+                    close_for_host_shutdown(&mut socket).await;
+                    return;
+                };
+                match authorization {
                     Ok(updated) => {
                         let delay = browser_validation_delay(&updated, host);
                         browser_session = Some(updated);
                         browser_validation.as_mut().reset(Instant::now() + delay);
                     }
                     Err(_error) => {
-                        send_authentication_error_and_close(
-                            &mut socket,
-                            FrameErrorCode::Unauthorized,
+                        let finished = until_shutdown(
+                            shutdown.as_mut(),
+                            send_authentication_error_and_close(
+                                &mut socket,
+                                FrameErrorCode::Unauthorized,
+                            ),
                         )
                         .await;
+                        if finished.is_none() {
+                            close_for_host_shutdown(&mut socket).await;
+                        }
                         return;
                     }
                 }
@@ -143,31 +222,52 @@ async fn serve_connection(
                                 revision: publication.revision,
                                 event: Box::new(publication.event),
                             };
-                            if !send_frame(&mut socket, &frame).await {
+                            let sent = until_shutdown(
+                                shutdown.as_mut(),
+                                send_frame(&mut socket, &frame),
+                            )
+                            .await;
+                            let Some(sent) = sent else {
+                                close_for_host_shutdown(&mut socket).await;
+                                return;
+                            };
+                            if !sent {
                                 return;
                             }
                         }
                         Some(ConnectionSequenceStep::ExhaustedGap(gap_sequence)) => {
-                            send_gap_and_close(
-                                &mut socket,
-                                connection_id,
-                                gap_sequence,
-                                GapReason::SequenceExhausted,
+                            let finished = until_shutdown(
+                                shutdown.as_mut(),
+                                send_gap_and_close(
+                                    &mut socket,
+                                    connection_id,
+                                    gap_sequence,
+                                    GapReason::SequenceExhausted,
+                                ),
                             )
                             .await;
+                            if finished.is_none() {
+                                close_for_host_shutdown(&mut socket).await;
+                            }
                             return;
                         }
                         None => return,
                     },
                     Err(EventReceiveError::Lagged) => {
                         if let Some(gap_sequence) = sequence.terminal_gap() {
-                            send_gap_and_close(
-                                &mut socket,
-                                connection_id,
-                                gap_sequence,
-                                GapReason::BufferOverflow,
+                            let finished = until_shutdown(
+                                shutdown.as_mut(),
+                                send_gap_and_close(
+                                    &mut socket,
+                                    connection_id,
+                                    gap_sequence,
+                                    GapReason::BufferOverflow,
+                                ),
                             )
                             .await;
+                            if finished.is_none() {
+                                close_for_host_shutdown(&mut socket).await;
+                            }
                         }
                         return;
                     }
@@ -178,22 +278,56 @@ async fn serve_connection(
                 match message {
                     Some(Ok(Message::Close(_))) | None | Some(Err(_)) => return,
                     Some(Ok(Message::Ping(payload))) => {
-                        if socket.send(Message::Pong(payload)).await.is_err() {
+                        let sent = until_shutdown(
+                            shutdown.as_mut(),
+                            socket.send(Message::Pong(payload)),
+                        )
+                        .await;
+                        let Some(sent) = sent else {
+                            close_for_host_shutdown(&mut socket).await;
+                            return;
+                        };
+                        if sent.is_err() {
                             return;
                         }
                     }
                     Some(Ok(Message::Pong(_))) => {}
                     Some(Ok(Message::Text(_) | Message::Binary(_))) => {
-                        send_authentication_error_and_close(
-                            &mut socket,
-                            FrameErrorCode::InvalidFrame,
+                        let finished = until_shutdown(
+                            shutdown.as_mut(),
+                            send_authentication_error_and_close(
+                                &mut socket,
+                                FrameErrorCode::InvalidFrame,
+                            ),
                         )
                         .await;
+                        if finished.is_none() {
+                            close_for_host_shutdown(&mut socket).await;
+                        }
                         return;
                     }
                 }
             }
         }
+    }
+}
+
+async fn until_shutdown<S, F>(mut shutdown: Pin<&mut S>, future: F) -> Option<F::Output>
+where
+    S: Future<Output = ()> + ?Sized,
+    F: Future,
+{
+    tokio::select! {
+        biased;
+        () = &mut shutdown => None,
+        result = future => Some(result),
+    }
+}
+
+async fn wait_for_connection_shutdown(connection: Option<&ApiConnectionGuard>) {
+    match connection {
+        Some(connection) => connection.cancelled().await,
+        None => std::future::pending::<()>().await,
     }
 }
 
@@ -300,4 +434,12 @@ async fn close(socket: &mut WebSocket, code: u16, reason: &'static str) {
             reason: reason.into(),
         })))
         .await;
+}
+
+async fn close_for_host_shutdown(socket: &mut WebSocket) {
+    let _closed = timeout(
+        HOST_SHUTDOWN_CLOSE_TIMEOUT,
+        close(socket, HOST_SHUTDOWN_CLOSE_CODE, "host shutdown"),
+    )
+    .await;
 }

@@ -14,7 +14,12 @@ mod server_auth_tests;
 #[cfg(test)]
 mod web_tests;
 
-use std::{fmt, net::SocketAddr, path::Path, sync::Arc};
+use std::{
+    fmt,
+    net::SocketAddr,
+    path::Path,
+    sync::{Arc, Mutex as StdMutex, MutexGuard as StdMutexGuard},
+};
 
 use axum::{
     body::Body,
@@ -130,15 +135,31 @@ pub(crate) struct ApiState {
     server: Option<ServerApiHost>,
     web: Option<web::ServerWebAssets>,
     _kernel_lifecycle: Option<ServerKernelLifecycle>,
+    connection_lifecycle: Option<ApiConnectionLifecycle>,
 }
 
 pub fn build_router(runtime: Arc<KernelRuntime>, policy: TransportPolicy) -> Router {
-    build_router_with_server(runtime, policy, None, None, None)
+    build_router_with_server(runtime, policy, None, None, None, None)
+}
+
+pub(crate) fn build_router_with_connection_lifecycle(
+    runtime: Arc<KernelRuntime>,
+    policy: TransportPolicy,
+    connection_lifecycle: ApiConnectionLifecycle,
+) -> Router {
+    build_router_with_server(
+        runtime,
+        policy,
+        None,
+        None,
+        None,
+        Some(connection_lifecycle),
+    )
 }
 
 pub fn build_server_router(activation: ServerApiActivation, policy: TransportPolicy) -> Router {
     let (runtime, server, lifecycle) = activation.into_parts();
-    build_router_with_server(runtime, policy, Some(server), None, lifecycle)
+    build_router_with_server(runtime, policy, Some(server), None, lifecycle, None)
 }
 
 pub fn build_server_web_router(
@@ -154,6 +175,7 @@ pub fn build_server_web_router(
         Some(server),
         Some(web),
         lifecycle,
+        None,
     ))
 }
 
@@ -163,6 +185,7 @@ fn build_router_with_server(
     server: Option<ServerApiHost>,
     web: Option<web::ServerWebAssets>,
     kernel_lifecycle: Option<ServerKernelLifecycle>,
+    connection_lifecycle: Option<ApiConnectionLifecycle>,
 ) -> Router {
     let state = ApiState {
         runtime,
@@ -170,6 +193,7 @@ fn build_router_with_server(
         server,
         web,
         _kernel_lifecycle: kernel_lifecycle,
+        connection_lifecycle,
     };
     let router = if state.server.is_some() {
         routes::router().merge(auth::router())
@@ -183,6 +207,110 @@ fn build_router_with_server(
             enforce_transport,
         ))
         .with_state(state)
+}
+
+#[derive(Clone)]
+pub(crate) struct ApiConnectionLifecycle {
+    inner: Arc<ApiConnectionLifecycleInner>,
+}
+
+impl ApiConnectionLifecycle {
+    pub(crate) fn new() -> Self {
+        Self {
+            inner: Arc::new(ApiConnectionLifecycleInner {
+                state: StdMutex::new(ApiConnectionLifecycleState {
+                    active: 0,
+                    closing: false,
+                }),
+                changed: tokio::sync::Notify::new(),
+            }),
+        }
+    }
+
+    pub(crate) fn register(&self) -> Option<ApiConnectionGuard> {
+        let mut state = lock_connection_state(&self.inner.state);
+        if state.closing {
+            return None;
+        }
+        let Some(active) = state.active.checked_add(1) else {
+            state.closing = true;
+            drop(state);
+            self.inner.changed.notify_waiters();
+            return None;
+        };
+        state.active = active;
+        Some(ApiConnectionGuard {
+            lifecycle: self.clone(),
+        })
+    }
+
+    pub(crate) fn begin_shutdown(&self) {
+        lock_connection_state(&self.inner.state).closing = true;
+        self.inner.changed.notify_waiters();
+    }
+
+    pub(crate) async fn wait_drained(&self) {
+        loop {
+            let changed = self.inner.changed.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            if lock_connection_state(&self.inner.state).active == 0 {
+                return;
+            }
+            changed.await;
+        }
+    }
+
+    fn release(&self) {
+        let drained = {
+            let mut state = lock_connection_state(&self.inner.state);
+            debug_assert!(state.active > 0);
+            state.active = state.active.saturating_sub(1);
+            state.active == 0
+        };
+        if drained {
+            self.inner.changed.notify_waiters();
+        }
+    }
+}
+
+struct ApiConnectionLifecycleInner {
+    state: StdMutex<ApiConnectionLifecycleState>,
+    changed: tokio::sync::Notify,
+}
+
+struct ApiConnectionLifecycleState {
+    active: usize,
+    closing: bool,
+}
+
+pub(crate) struct ApiConnectionGuard {
+    lifecycle: ApiConnectionLifecycle,
+}
+
+impl ApiConnectionGuard {
+    pub(crate) async fn cancelled(&self) {
+        loop {
+            let changed = self.lifecycle.inner.changed.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            if lock_connection_state(&self.lifecycle.inner.state).closing {
+                return;
+            }
+            changed.await;
+        }
+    }
+}
+
+impl Drop for ApiConnectionGuard {
+    fn drop(&mut self) {
+        self.lifecycle.release();
+    }
+}
+
+fn lock_connection_state<T>(lock: &StdMutex<T>) -> StdMutexGuard<'_, T> {
+    lock.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 async fn enforce_transport(
