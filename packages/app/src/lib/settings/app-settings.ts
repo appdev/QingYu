@@ -34,7 +34,7 @@ import {
   normalizeFileIgnoreSettings,
   type FileIgnoreSettings
 } from "./file-ignore-settings";
-import { loadLocalPandocPath, saveLocalPandocPath } from "./local-state";
+import { loadLocalPandocPath, saveLocalPandocPath } from "./app-config-state";
 
 export {
   defaultExportSettings,
@@ -43,17 +43,21 @@ export {
 } from "./export-settings";
 export {
   clearStoredRecentMarkdownFiles,
-  consumeWelcomeDocumentState,
   getStoredFileTreeSortByWorkspace,
   getStoredRecentMarkdownFiles,
   getStoredWorkspaceState,
+  flushAppConfigStatePersistence,
   removeStoredRecentMarkdownFile,
-  resetWelcomeDocumentState,
+  retireAppConfigStatePersistence,
   saveStoredFileTreeSortForWorkspace,
   saveStoredRecentMarkdownFile,
   saveStoredWorkspaceState
+} from "./app-config-state";
+export {
+  consumeWelcomeDocumentState,
+  resetWelcomeDocumentState
 } from "./local-state";
-export type { PrimaryWorkspaceState } from "./local-state";
+export type { PrimaryWorkspaceState } from "./primary-workspace-state";
 export {
   defaultFileIgnoreSettings,
   fileIgnoreRulesMaxLength,

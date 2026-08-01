@@ -201,19 +201,8 @@ type OpenTreeMarkdownFileOptions = {
   managed?: boolean;
 };
 
-let pendingWorkspaceStateSave: Promise<unknown> | null = null;
-
 function persistDesktopWorkspaceState(patch: Parameters<typeof saveStoredWorkspaceState>[0]) {
-  // Workspace writes are read-modify-write operations; keep draft snapshots ordered.
-  const save = () => saveStoredWorkspaceState(patch).catch(() => {});
-  const savePromise = pendingWorkspaceStateSave
-    ? pendingWorkspaceStateSave.then(save, save)
-    : save();
-  const queuedPromise = savePromise.finally(() => {
-    if (pendingWorkspaceStateSave === queuedPromise) pendingWorkspaceStateSave = null;
-  });
-  pendingWorkspaceStateSave = queuedPromise;
-  return queuedPromise;
+  return saveStoredWorkspaceState(patch).catch(() => {});
 }
 
 function normalizedManagedStoredDocumentPath(path: string) {

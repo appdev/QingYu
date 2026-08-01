@@ -7,7 +7,7 @@ import {
 } from "../lib/notebook-switch-events";
 import {
   isValidManagedNotebookName
-} from "../lib/settings/local-state";
+} from "../lib/settings/primary-workspace-state";
 import { getAppRuntime } from "../runtime";
 import type { AppSyncCoordinator } from "./useAppSyncCoordinator";
 import type { PrimaryWorkspaceController } from "./usePrimaryWorkspace";

@@ -115,7 +115,7 @@ import {
 import { showAppToast } from "./lib/app-toast";
 import { unsavedMarkdownFileNameFromTreeInput } from "./app/workspace-model";
 import { createShardedTest } from "./test/shard";
-import type { PrimaryWorkspaceState } from "./lib/settings/local-state";
+import type { PrimaryWorkspaceState } from "./lib/settings/primary-workspace-state";
 import type { AppSyncConfigRuntime } from "./lib/sync-config";
 import { notebookNameFromRoot } from "./lib/sync-config";
 import type { AppFormFactor, AppWorkspaceRuntime, RemoteNotebookCatalogEntry } from "./runtime";

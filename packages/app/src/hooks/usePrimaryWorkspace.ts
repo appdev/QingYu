@@ -5,7 +5,7 @@ import {
   saveCanonicalPrimaryWorkspaceState,
   savePrimaryWorkspaceState,
   type PrimaryWorkspaceState
-} from "../lib/settings/local-state";
+} from "../lib/settings/primary-workspace-state";
 import {
   listenPrimaryWorkspaceChanged,
   notifyPrimaryWorkspaceChanged,

@@ -174,28 +174,11 @@ describe("default app runtime capabilities", () => {
     }));
   });
 
-  it("compares primary workspace expected state structurally", async () => {
+  it("does not expose primary workspace metadata through the default memory settings runtime", () => {
     const settings = createDefaultAppRuntime().settings;
-    const storedState = {
-      version: 1,
-      onboardingCompleted: true,
-      desktopPath: "/alias/Notes"
-    };
-    await settings.writePrimaryWorkspaceState?.({ state: storedState });
 
-    const canonicalState = {
-      desktopPath: "/canonical/Notes",
-      onboardingCompleted: true,
-      version: 1
-    };
-    await expect(settings.writePrimaryWorkspaceState?.({
-      expectedState: {
-        desktopPath: "/alias/Notes",
-        onboardingCompleted: true,
-        version: 1
-      },
-      state: canonicalState
-    })).resolves.toEqual({ applied: true, state: canonicalState });
+    expect(settings.readPrimaryWorkspaceState).toBeUndefined();
+    expect(settings.writePrimaryWorkspaceState).toBeUndefined();
   });
 
   it("fails safely for unsupported theme activation without exposing a resource URL", async () => {

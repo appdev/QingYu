@@ -110,13 +110,25 @@ function installRuntime(primaryRoot: string | null, patchOverride?: AppRuntime["
       resolveMarkdownFolder: vi.fn(async (path) => ({ name: "Notes", path }))
     },
     settings: {
-      async loadStore() {
+      async loadStore(path) {
+        if (path === "local-state.json") throw new Error("unexpected local-state access");
         return {
           async delete(key: string) { values.delete(key); },
           async get<T>(key: string) { return values.get(key) as T | undefined; },
           async save() { return undefined; },
           async set(key: string, value: unknown) { values.set(key, value); }
         };
+      },
+      async readPrimaryWorkspaceState() {
+        return values.get("primaryWorkspace");
+      },
+      async writePrimaryWorkspaceState({ expectedState, state }) {
+        const current = values.get("primaryWorkspace");
+        if (expectedState !== undefined && JSON.stringify(expectedState) !== JSON.stringify(current)) {
+          return { applied: false, state: current };
+        }
+        values.set("primaryWorkspace", state);
+        return { applied: true, state };
       }
     },
     syncConfig: {

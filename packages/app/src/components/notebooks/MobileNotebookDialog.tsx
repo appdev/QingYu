@@ -8,7 +8,7 @@ import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 
 import { Cloud, Folder, LoaderCircle, Plus, RefreshCw } from "lucide-react";
 import { t, type AppLanguage } from "@markra/shared";
 import type { RemoteNotebookCatalogEntry } from "../../runtime";
-import { isValidManagedNotebookName } from "../../lib/settings/local-state";
+import { isValidManagedNotebookName } from "../../lib/settings/primary-workspace-state";
 import { containDialogTabFocus } from "./dialog-focus";
 import { remoteNotebookDisabledReasonKey } from "./remote-notebook-disabled-reason";
 

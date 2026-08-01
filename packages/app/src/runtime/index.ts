@@ -489,26 +489,6 @@ export type AppRuntime = {
   workspace: AppWorkspaceRuntime;
 };
 
-function jsonValuesEqual(left: unknown, right: unknown): boolean {
-  if (Object.is(left, right)) return true;
-  if (typeof left !== "object" || left === null || typeof right !== "object" || right === null) {
-    return false;
-  }
-  if (Array.isArray(left) || Array.isArray(right)) {
-    return Array.isArray(left) && Array.isArray(right) &&
-      left.length === right.length &&
-      left.every((value, index) => jsonValuesEqual(value, right[index]));
-  }
-
-  const leftRecord = left as Record<string, unknown>;
-  const rightRecord = right as Record<string, unknown>;
-  const leftKeys = Object.keys(leftRecord);
-  const rightKeys = Object.keys(rightRecord);
-  return leftKeys.length === rightKeys.length && leftKeys.every((key) =>
-    Object.hasOwn(rightRecord, key) && jsonValuesEqual(leftRecord[key], rightRecord[key])
-  );
-}
-
 function createMemorySettingsRuntime(): AppSettingsRuntime {
   const stores = new Map<string, Map<string, unknown>>();
 
@@ -562,9 +542,6 @@ function createMemorySettingsRuntime(): AppSettingsRuntime {
 
       return store.get(key) as TValue | undefined;
     },
-    async readPrimaryWorkspaceState() {
-      return stores.get("local-state.json")?.get("primaryWorkspace");
-    },
     async writeGroup(group, value) {
       const store = settingsStore();
       if (group === "appearance") {
@@ -578,21 +555,6 @@ function createMemorySettingsRuntime(): AppSettingsRuntime {
       store.set(key, value);
       return undefined;
     },
-    async writePrimaryWorkspaceState(input) {
-      if (!stores.has("local-state.json")) stores.set("local-state.json", new Map());
-      const store = stores.get("local-state.json")!;
-      const current = store.get("primaryWorkspace");
-      if (
-        input.expectedState !== undefined &&
-        !jsonValuesEqual(current, input.expectedState)
-      ) {
-        return { applied: false, state: current };
-      }
-
-      store.set("schemaVersion", 2);
-      store.set("primaryWorkspace", input.state);
-      return { applied: true, state: input.state };
-    }
   };
 }
 

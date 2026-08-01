@@ -45,6 +45,7 @@ import {
 
 const settingsStore = createSettingsStoreHarness();
 const { loadStore: mockedLoadStore, store } = settingsStore;
+const appConfig = settingsStore.appConfig;
 
 describe("app settings", () => {
   beforeEach(() => {
@@ -75,6 +76,7 @@ describe("app settings", () => {
   });
 
   it("consumes and persists the first welcome document state in the Tauri app data store", async () => {
+    mockedLoadStore.mockResolvedValueOnce(store as never);
     store.get.mockResolvedValue(undefined);
 
     await expect(consumeWelcomeDocumentState()).resolves.toBe(true);
@@ -86,6 +88,7 @@ describe("app settings", () => {
   });
 
   it("does not rewrite settings after the welcome document was already seen", async () => {
+    mockedLoadStore.mockResolvedValueOnce(store as never);
     store.get.mockResolvedValue(true);
 
     await expect(consumeWelcomeDocumentState()).resolves.toBe(false);
@@ -141,6 +144,7 @@ describe("app settings", () => {
     const writeGroup = vi.fn(async () => undefined);
     configureAppRuntime({
       ...createDefaultAppRuntime(),
+      appConfig,
       settings: {
         loadStore: mockedLoadStore,
         writeGroup
@@ -289,6 +293,7 @@ describe("app settings", () => {
     };
     configureAppRuntime({
       ...createDefaultAppRuntime(),
+      appConfig,
       settings: {
         loadStore: mockedLoadStore,
         readGroup,
@@ -322,15 +327,11 @@ describe("app settings", () => {
       "fileIgnoreSettings",
       "exportSettings"
     ]);
-    expect(mockedLoadStore).toHaveBeenCalledTimes(2);
-    expect(mockedLoadStore).toHaveBeenNthCalledWith(1, "local-state.json", {
-      autoSave: false,
-      defaults: {}
-    });
-    expect(mockedLoadStore).toHaveBeenNthCalledWith(2, "local-state.json", {
-      autoSave: false,
-      defaults: {}
-    });
+    expect(mockedLoadStore).not.toHaveBeenCalledWith("local-state.json", expect.anything());
+    expect(appConfig.patchState).toHaveBeenCalledWith([{
+      path: null,
+      type: "set-pandoc-path"
+    }]);
   });
 
   it("routes custom theme CSS through the native settings writer", async () => {
@@ -388,20 +389,18 @@ describe("app settings", () => {
   });
 
   it("resets the welcome document state for the next launch", async () => {
+    mockedLoadStore.mockResolvedValueOnce(store as never);
     await resetWelcomeDocumentState();
 
     expect(store.delete).toHaveBeenCalledWith("welcomeDocumentSeen");
     expect(store.save).toHaveBeenCalledTimes(1);
   });
 
-  it("loads workspace state only from the device-local store", async () => {
-    store.get.mockResolvedValue(undefined);
-
+  it("loads workspace state only from AppConfig", async () => {
     await getStoredWorkspaceState({ windowLabel: "main" });
 
-    expect(mockedLoadStore).toHaveBeenCalledWith("local-state.json", { autoSave: false, defaults: {} });
-    expect(mockedLoadStore).not.toHaveBeenCalledWith("settings.json", expect.anything());
-    expect(store.get).toHaveBeenCalledWith("workspace");
+    expect(appConfig.readWorkspaceState).toHaveBeenCalledWith("main");
+    expect(mockedLoadStore).not.toHaveBeenCalledWith("local-state.json", expect.anything());
   });
 
   it("exports portable app settings without workspace-local state", async () => {
@@ -561,6 +560,7 @@ describe("app settings", () => {
     const replacePortable = vi.fn(async () => undefined);
     configureAppRuntime({
       ...runtime,
+      appConfig,
       settings: { ...runtime.settings, replacePortable }
     });
 
@@ -595,6 +595,7 @@ describe("app settings", () => {
     const updateSettings = vi.fn(runtime.mcp.updateSettings);
     configureAppRuntime({
       ...runtime,
+      appConfig,
       mcp: {
         ...runtime.mcp,
         policyAvailable: true,

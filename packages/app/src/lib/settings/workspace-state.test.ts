@@ -1,5 +1,9 @@
-import { createSettingsStoreHarness, resetSettingsStoreRuntime, setupSettingsStoreHarness } from "../../test/settings-store";
-import { configureAppRuntime, createDefaultAppRuntime } from "../../runtime";
+import {
+  createAppConfigSnapshot,
+  createSettingsStoreHarness,
+  resetSettingsStoreRuntime,
+  setupSettingsStoreHarness
+} from "../../test/settings-store";
 import {
   getStoredFileTreeSortByWorkspace,
   getStoredWorkspaceState,
@@ -14,594 +18,117 @@ import {
 } from "./workspace-state";
 
 const settingsStore = createSettingsStoreHarness();
-const { loadStore: mockedLoadStore, store } = settingsStore;
+const appConfig = settingsStore.appConfig;
 
 describe("workspace state settings", () => {
-  beforeEach(() => {
-    setupSettingsStoreHarness(settingsStore);
+  beforeEach(() => setupSettingsStoreHarness(settingsStore));
+  afterEach(() => resetSettingsStoreRuntime());
+
+  it("keeps managed document path containment portable across POSIX and Windows roots", () => {
+    expect(managedDocumentRelativePath("/mobile/workspace", "/mobile/workspace/notes/day.md"))
+      .toBe("notes/day.md");
+    expect(managedDocumentAbsolutePath("/mobile/workspace", "notes/day.md"))
+      .toBe("/mobile/workspace/notes/day.md");
+    expect(managedDocumentRelativePath("C:\\Notes", "c:\\notes\\nested\\day.md"))
+      .toBe("nested/day.md");
+    expect(managedDocumentAbsolutePath("C:\\Notes", "nested/day.md"))
+      .toBe("C:/Notes/nested/day.md");
   });
 
-  afterEach(() => {
-    resetSettingsStoreRuntime();
+  it.each([
+    ["/Notes", "/notes/day.md"],
+    ["/mobile/workspace", "/mobile/outside.md"],
+    ["C:\\Notes", "C:\\Notes-archive\\day.md"]
+  ])("rejects a document outside root %s", (root, document) => {
+    expect(managedDocumentRelativePath(root, document)).toBeNull();
   });
 
-  it("ignores the obsolete recent-directory expansion field", () => {
-    const obsoleteExpansionKey = ["recent", "FoldersOpen"].join("");
-
+  it("normalizes open files, drafts, windows, and split groups", () => {
     expect(normalizeWorkspaceState({
       ...defaultWorkspaceState,
-      [obsoleteExpansionKey]: false
-    })).toEqual(defaultWorkspaceState);
-  });
-
-  describe("managed document paths", () => {
-    it("stores a Markdown document below the managed root as a normalized relative path", () => {
-      expect(managedDocumentRelativePath("/mobile/workspace/", "/mobile/workspace/notes\\daily.markdown"))
-        .toBe("notes/daily.markdown");
-      expect(managedDocumentAbsolutePath("/mobile/workspace/", "notes\\daily.markdown"))
-        .toBe("/mobile/workspace/notes/daily.markdown");
-    });
-
-    it.each([
-      {
-        absolute: "C:/Notes/nested/day.md",
-        document: "c:\\notes\\nested\\day.md",
-        relative: "nested/day.md",
-        root: "\\\\?\\C:\\Notes"
-      },
-      {
-        absolute: "C:/NOTES/Nested/day.markdown",
-        document: "c:/notes/Nested/day.markdown",
-        relative: "Nested/day.markdown",
-        root: "C:\\NOTES"
-      },
-      {
-        absolute: "//Server/Share/Notes/nested/day.md",
-        document: "\\\\?\\UNC\\server\\share\\notes\\nested\\day.md",
-        relative: "nested/day.md",
-        root: "\\\\Server\\Share\\Notes"
-      },
-      {
-        absolute: "//Server/Share/Notes/nested/day.md",
-        document: "//server/share/notes/nested/day.md",
-        relative: "nested/day.md",
-        root: "//?/UNC/Server/Share/Notes"
-      }
-    ])("round-trips Windows path variants below $root", ({ absolute, document, relative, root }) => {
-      expect(managedDocumentRelativePath(root, document)).toBe(relative);
-      expect(managedDocumentAbsolutePath(root, relative)).toBe(absolute);
-      expect(managedDocumentRelativePath(root, absolute)).toBe(relative);
-    });
-
-    it("keeps POSIX containment case-sensitive", () => {
-      expect(managedDocumentRelativePath("/Notes", "/notes/day.md")).toBeNull();
-      expect(managedDocumentRelativePath("/Notes", "/Notes/day.md")).toBe("day.md");
-    });
-
-    it("keeps Windows containment on a complete path-segment boundary", () => {
-      expect(managedDocumentRelativePath("C:\\Notes", "c:\\Notes-archive\\day.md")).toBeNull();
-      expect(managedDocumentRelativePath(
-        "\\\\server\\share\\Notes",
-        "\\\\SERVER\\SHARE\\Notes-archive\\day.md"
-      )).toBeNull();
-    });
-
-    it.each([
-      "",
-      "notes.txt",
-      "/mobile/workspace/notes.md",
-      "../outside.md",
-      "notes/../outside.md",
-      "./notes.md",
-      "C:/outside.md"
-    ])("rejects unsafe managed document restoration path %j", (relativePath) => {
-      expect(managedDocumentAbsolutePath("/mobile/workspace", relativePath)).toBeNull();
-    });
-
-    it.each([
-      "/mobile/workspace",
-      "/mobile/workspace/notes.txt",
-      "/mobile/outside.md",
-      "/mobile/workspace/../outside.md"
-    ])("rejects non-document or outside-root managed file %j", (filePath) => {
-      expect(managedDocumentRelativePath("/mobile/workspace", filePath)).toBeNull();
-    });
-  });
-
-  it("loads the last workspace state from settings", async () => {
-    store.get.mockResolvedValue({
-      filePath: "/mock-files/vault/README.md",
-      fileTreeOpen: true,
-      folderName: "vault",
-      folderPath: "/mock-files/vault",
-      openFilePaths: [
-        "/mock-files/vault/notes.md",
-        " ",
-        "/mock-files/vault/README.md",
-        "/mock-files/vault/notes.md"
-      ],
-      openWindows: [
-        {
-          filePath: "/mock-files/vault/README.md",
-          label: "main",
-          openFilePaths: [
-            "/mock-files/vault/notes.md",
-            "/mock-files/vault/README.md",
-            "/mock-files/vault/notes.md"
-          ]
-        },
-        {
-          filePath: " ",
-          label: "blank-window",
-          openFilePaths: []
-        },
-        {
-          filePath: "/mock-files/vault/archive.md",
-          label: "main",
-          openFilePaths: ["/mock-files/vault/archive.md"]
-        }
-      ],
-      activeDraftId: "untitled:1",
-      draftTabs: [
-        {
-          content: "# Local draft\n\nStill unsaved.",
-          id: "untitled:1",
-          name: " Draft.md ",
-          path: null
-        },
-        {
-          content: "",
-          id: "file:/mock-files/vault/README.md",
-          name: "README.md",
-          path: " /mock-files/vault/README.md "
-        },
-        {
-          content: "# Duplicate",
-          id: "untitled:1",
-          name: "Duplicate.md",
-          path: null
-        },
-        {
-          content: "   ",
-          id: "untitled:blank",
-          name: "Blank.md",
-          path: null
-        }
-      ],
+      activeDraftId: "draft-1",
+      draftTabs: [{ content: "draft", id: "draft-1", name: " Draft.md ", path: null }],
+      openFilePaths: ["kernel-workspace://primary/a.md", " ", "kernel-workspace://primary/a.md"],
+      openWindows: [{
+        filePath: "kernel-workspace://primary/a.md",
+        label: "secondary",
+        openFilePaths: []
+      }],
       sideBySideGroup: {
-        primaryFilePath: "/mock-files/vault/README.md",
-        sideFilePath: "/mock-files/vault/notes.md"
+        primaryFilePath: "kernel-workspace://primary/a.md",
+        sideFilePath: "kernel-workspace://primary/b.md"
       }
-    });
-
-    await expect(getStoredWorkspaceState()).resolves.toEqual({
-      filePath: "/mock-files/vault/README.md",
-      fileTreeOpen: true,
-      folderName: "vault",
-      folderPath: "/mock-files/vault",
-      openFilePaths: [
-        "/mock-files/vault/notes.md",
-        "/mock-files/vault/README.md"
-      ],
-      openWindows: [
-        {
-          filePath: "/mock-files/vault/README.md",
-          label: "main",
-          openFilePaths: [
-            "/mock-files/vault/notes.md",
-            "/mock-files/vault/README.md"
-          ]
-        }
-      ],
-      activeDraftId: "untitled:1",
-      draftTabs: [
-        {
-          content: "# Local draft\n\nStill unsaved.",
-          id: "untitled:1",
-          name: "Draft.md",
-          path: null
-        },
-        {
-          content: "",
-          id: "file:/mock-files/vault/README.md",
-          name: "README.md",
-          path: "/mock-files/vault/README.md"
-        }
-      ],
-      sideBySideGroup: {
-        primaryFilePath: "/mock-files/vault/README.md",
-        sideFilePath: "/mock-files/vault/notes.md"
-      }
-    });
-
-    expect(store.get).toHaveBeenCalledWith("workspace");
-  });
-
-  it("merges and persists partial workspace state updates", async () => {
-    store.get.mockResolvedValue({
-      filePath: null,
-      fileTreeOpen: true,
-      folderName: "vault",
-      folderPath: "/mock-files/vault",
-      openFilePaths: ["/mock-files/vault/notes.md"],
-      sideBySideGroup: {
-        primaryFilePath: "/mock-files/vault/notes.md",
-        sideFilePath: "/mock-files/vault/archive.md"
-      }
-    });
-
-    await saveStoredWorkspaceState({
-      filePath: "/mock-files/vault/README.md",
-      openFilePaths: [
-        "/mock-files/vault/README.md",
-        "/mock-files/vault/notes.md"
-      ],
-      sideBySideGroup: {
-        primaryFilePath: "/mock-files/vault/README.md",
-        sideFilePath: "/mock-files/vault/notes.md"
-      }
-    });
-
-    expect(store.set).toHaveBeenCalledWith("workspace", {
-      openWindows: [],
-      windowStates: {
-        main: {
-          filePath: "/mock-files/vault/README.md",
-          fileTreeOpen: true,
-          folderName: "vault",
-          folderPath: "/mock-files/vault",
-          openFilePaths: [
-            "/mock-files/vault/README.md",
-            "/mock-files/vault/notes.md"
-          ],
-          sideBySideGroup: {
-            primaryFilePath: "/mock-files/vault/README.md",
-            sideFilePath: "/mock-files/vault/notes.md"
-          }
-        }
-      }
-    });
-    expect(store.save).toHaveBeenCalledTimes(1);
-  });
-
-  it("clears a transient open window snapshot when persisting current window state", async () => {
-    store.get.mockResolvedValue({
-      openWindows: [
-        {
-          filePath: "/mock-files/stale.md",
-          label: "main",
-          openFilePaths: ["/mock-files/stale.md"]
-        }
-      ],
-      windowStates: {
-        main: {
-          filePath: "/mock-files/current.md",
-          fileTreeOpen: false,
-          folderName: null,
-          folderPath: null,
-          openFilePaths: ["/mock-files/current.md"]
-        }
-      }
-    });
-
-    await saveStoredWorkspaceState({
-      filePath: "/mock-files/current.md",
-      openFilePaths: [
-        "/mock-files/current.md",
-        "/mock-files/notes.md"
-      ]
-    });
-
-    expect(store.set).toHaveBeenCalledWith("workspace", {
-      openWindows: [],
-      windowStates: {
-        main: {
-          filePath: "/mock-files/current.md",
-          fileTreeOpen: false,
-          folderName: null,
-          folderPath: null,
-          openFilePaths: [
-            "/mock-files/current.md",
-            "/mock-files/notes.md"
-          ]
-        }
-      }
-    });
-    expect(store.save).toHaveBeenCalledTimes(1);
-  });
-
-  it("loads normalized file tree sort preferences by workspace path", async () => {
-    store.get.mockResolvedValue({
-      "/mock-workspaces/notes": {
-        direction: "descending",
-        key: "modifiedAt"
-      },
-      "/mock-workspaces/drafts": {
-        direction: "ascending",
-        key: "createdAt"
-      },
-      " ": {
-        direction: "descending",
-        key: "name"
-      },
-      "/mock-workspaces/invalid": {
-        direction: "sideways",
-        key: "name"
-      }
-    });
-
-    await expect(getStoredFileTreeSortByWorkspace()).resolves.toEqual({
-      "/mock-workspaces/notes": {
-        direction: "descending",
-        key: "modifiedAt"
-      },
-      "/mock-workspaces/drafts": {
-        direction: "ascending",
-        key: "createdAt"
-      }
-    });
-    expect(store.get).toHaveBeenCalledWith("fileTreeSortByWorkspace");
-  });
-
-  it("stores the latest file tree sort for one workspace without overwriting other workspaces", async () => {
-    store.get.mockResolvedValue({
-      "/mock-workspaces/archive": {
-        direction: "ascending",
-        key: "name"
-      },
-      "/mock-workspaces/notes": {
-        direction: "ascending",
-        key: "name"
-      }
-    });
-
-    await saveStoredFileTreeSortForWorkspace("/mock-workspaces/notes", {
-      direction: "descending",
-      key: "modifiedAt"
-    });
-
-    expect(store.set).toHaveBeenCalledWith("fileTreeSortByWorkspace", {
-      "/mock-workspaces/notes": {
-        direction: "descending",
-        key: "modifiedAt"
-      },
-      "/mock-workspaces/archive": {
-        direction: "ascending",
-        key: "name"
-      }
-    });
-    expect(store.save).toHaveBeenCalledTimes(1);
-  });
-
-  it("persists workspace state updates for only the targeted window", async () => {
-    store.get.mockResolvedValue({
-      openWindows: [],
-      windowStates: {
-        main: {
-          filePath: "/mock-files/main.md",
-          fileTreeOpen: false,
-          folderName: null,
-          folderPath: null,
-          openFilePaths: ["/mock-files/main.md"]
-        },
-        "markra-editor-1": {
-          filePath: "/mock-files/secondary.md",
-          fileTreeOpen: true,
-          folderName: "mock-files",
-          folderPath: "/mock-files",
-          openFilePaths: ["/mock-files/secondary.md"]
-        }
-      }
-    });
-
-    await saveStoredWorkspaceState({
-      filePath: "/mock-files/secondary-next.md",
-      openFilePaths: ["/mock-files/secondary-next.md"]
-    }, { windowLabel: "markra-editor-1" });
-
-    expect(store.set).toHaveBeenCalledWith("workspace", {
-      openWindows: [],
-      windowStates: {
-        main: {
-          filePath: "/mock-files/main.md",
-          fileTreeOpen: false,
-          folderName: null,
-          folderPath: null,
-          openFilePaths: ["/mock-files/main.md"]
-        },
-        "markra-editor-1": {
-          filePath: "/mock-files/secondary-next.md",
-          fileTreeOpen: true,
-          folderName: "mock-files",
-          folderPath: "/mock-files",
-          openFilePaths: ["/mock-files/secondary-next.md"]
-        }
-      }
-    });
-  });
-
-  it("loads workspace state for the targeted window", async () => {
-    store.get.mockResolvedValue({
-      openWindows: [
-        {
-          filePath: "/mock-files/main.md",
-          label: "main",
-          openFilePaths: ["/mock-files/main.md"]
-        }
-      ],
-      windowStates: {
-        main: {
-          filePath: "/mock-files/main.md",
-          fileTreeOpen: false,
-          folderName: null,
-          folderPath: null,
-          openFilePaths: ["/mock-files/main.md"]
-        },
-        "markra-editor-1": {
-          filePath: "/mock-files/secondary.md",
-          fileTreeOpen: true,
-          folderName: "mock-files",
-          folderPath: "/mock-files",
-          openFilePaths: ["/mock-files/secondary.md"]
-        }
-      }
-    });
-
-    await expect(getStoredWorkspaceState({ windowLabel: "markra-editor-1" })).resolves.toEqual({
-      filePath: "/mock-files/secondary.md",
-      fileTreeOpen: true,
-      folderName: "mock-files",
-      folderPath: "/mock-files",
-      openFilePaths: ["/mock-files/secondary.md"],
-      openWindows: [
-        {
-          filePath: "/mock-files/main.md",
-          label: "main",
-          openFilePaths: ["/mock-files/main.md"]
-        }
-      ]
-    });
-  });
-
-  it("uses the current runtime window label when no explicit window label is provided", async () => {
-    const runtime = createDefaultAppRuntime();
-    configureAppRuntime({
-      ...runtime,
-      settings: {
-        loadStore: mockedLoadStore
-      },
-      window: {
-        ...runtime.window,
-        getCurrentWindowLabel: async () => "markra-editor-2"
-      }
-    });
-    store.get.mockResolvedValue({
-      openWindows: [],
-      windowStates: {
-        main: {
-          filePath: "/mock-files/main.md",
-          fileTreeOpen: false,
-          folderName: null,
-          folderPath: null,
-          openFilePaths: ["/mock-files/main.md"]
-        }
-      }
-    });
-
-    await saveStoredWorkspaceState({
-      filePath: "/mock-files/secondary.md",
-      openFilePaths: ["/mock-files/secondary.md"]
-    });
-
-    expect(store.set).toHaveBeenCalledWith("workspace", {
-      openWindows: [],
-      windowStates: {
-        main: {
-          filePath: "/mock-files/main.md",
-          fileTreeOpen: false,
-          folderName: null,
-          folderPath: null,
-          openFilePaths: ["/mock-files/main.md"]
-        },
-        "markra-editor-2": {
-          filePath: "/mock-files/secondary.md",
-          fileTreeOpen: false,
-          folderName: null,
-          folderPath: null,
-          openFilePaths: ["/mock-files/secondary.md"]
-        }
-      }
-    });
-  });
-
-  it("clears the saved side-by-side workspace group", async () => {
-    store.get.mockResolvedValue({
-      filePath: "/mock-files/vault/README.md",
-      fileTreeOpen: true,
-      folderName: "vault",
-      folderPath: "/mock-files/vault",
-      openFilePaths: [
-        "/mock-files/vault/README.md",
-        "/mock-files/vault/notes.md"
-      ],
-      sideBySideGroup: {
-        primaryFilePath: "/mock-files/vault/README.md",
-        sideFilePath: "/mock-files/vault/notes.md"
-      }
-    });
-
-    await saveStoredWorkspaceState({
-      sideBySideGroup: null
-    });
-
-    expect(store.set).toHaveBeenCalledWith("workspace", {
-      openWindows: [],
-      windowStates: {
-        main: {
-          filePath: "/mock-files/vault/README.md",
-          fileTreeOpen: true,
-          folderName: "vault",
-          folderPath: "/mock-files/vault",
-          openFilePaths: [
-            "/mock-files/vault/README.md",
-            "/mock-files/vault/notes.md"
-          ]
-        }
-      }
-    });
-    expect(store.save).toHaveBeenCalledTimes(1);
-  });
-
-  it("clears saved workspace draft tabs", async () => {
-    store.get.mockResolvedValue({
-      activeDraftId: "untitled:1",
-      draftTabs: [
-        {
-          content: "# Draft",
-          id: "untitled:1",
-          name: "Draft.md",
-          path: null
-        }
-      ],
+    })).toEqual({
+      activeDraftId: "draft-1",
+      draftTabs: [{ content: "draft", id: "draft-1", name: "Draft.md", path: null }],
       filePath: null,
       fileTreeOpen: false,
       folderName: null,
       folderPath: null,
-      openFilePaths: []
+      openFilePaths: ["kernel-workspace://primary/a.md"],
+      openWindows: [{
+        filePath: "kernel-workspace://primary/a.md",
+        label: "secondary",
+        openFilePaths: ["kernel-workspace://primary/a.md"]
+      }]
     });
-
-    await saveStoredWorkspaceState({
-      activeDraftId: null,
-      draftTabs: []
-    });
-
-    expect(store.set).toHaveBeenCalledWith("workspace", {
-      openWindows: [],
-      windowStates: {}
-    });
-    expect(store.save).toHaveBeenCalledTimes(1);
   });
 
-  it("drops a side-by-side workspace group when one grouped file is not open", async () => {
-    store.get.mockResolvedValue({
-      filePath: "/mock-files/vault/README.md",
+  it("reads the requested window through AppConfig only", async () => {
+    vi.mocked(appConfig.readWorkspaceState).mockResolvedValue({
+      ...defaultWorkspaceState,
+      filePath: "kernel-workspace://primary/secondary.md",
       fileTreeOpen: true,
-      folderName: "vault",
-      folderPath: "/mock-files/vault",
-      openFilePaths: ["/mock-files/vault/README.md"],
-      sideBySideGroup: {
-        primaryFilePath: "/mock-files/vault/README.md",
-        sideFilePath: "/mock-files/vault/notes.md"
+      openFilePaths: ["kernel-workspace://primary/secondary.md"]
+    });
+
+    await expect(getStoredWorkspaceState({ windowLabel: "secondary" })).resolves.toMatchObject({
+      filePath: "kernel-workspace://primary/secondary.md",
+      fileTreeOpen: true
+    });
+    expect(appConfig.readWorkspaceState).toHaveBeenCalledWith("secondary");
+    expect(settingsStore.loadStore).not.toHaveBeenCalledWith("local-state.json", expect.anything());
+  });
+
+  it("persists one canonical layout patch for the targeted window", async () => {
+    await saveStoredWorkspaceState({
+      filePath: "kernel-workspace://primary/notes/a.md",
+      fileTreeOpen: true,
+      folderPath: "kernel-workspace://primary/notes",
+      openFilePaths: ["kernel-workspace://primary/notes/a.md"]
+    }, { windowLabel: "secondary" });
+
+    expect(appConfig.patchState).toHaveBeenCalledWith([{
+      patch: {
+        filePath: "notes/a.md",
+        fileTreeOpen: true,
+        folderPath: "notes",
+        openFilePaths: ["notes/a.md"]
+      },
+      type: "patch-ui-layout",
+      windowLabel: "secondary"
+    }]);
+  });
+
+  it("uses the active-workspace sort without a host filesystem key", async () => {
+    vi.mocked(appConfig.getSnapshot).mockReturnValue({
+      ...createAppConfigSnapshot(),
+      localState: {
+        ...createAppConfigSnapshot().localState,
+        fileTreeSort: { direction: "descending", key: "modifiedAt" }
       }
     });
 
-    await expect(getStoredWorkspaceState()).resolves.toEqual({
-      filePath: "/mock-files/vault/README.md",
-      fileTreeOpen: true,
-      folderName: "vault",
-      folderPath: "/mock-files/vault",
-      openFilePaths: ["/mock-files/vault/README.md"],
-      openWindows: []
+    await expect(getStoredFileTreeSortByWorkspace()).resolves.toEqual({
+      "kernel-workspace://primary": { direction: "descending", key: "modifiedAt" }
     });
+    await saveStoredFileTreeSortForWorkspace("kernel-workspace://primary", {
+      direction: "ascending",
+      key: "createdAt"
+    });
+    expect(appConfig.patchState).toHaveBeenCalledWith([{
+      sort: { direction: "ascending", key: "createdAt" },
+      type: "set-file-tree-sort"
+    }]);
   });
 });

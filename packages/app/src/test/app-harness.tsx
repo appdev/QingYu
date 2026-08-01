@@ -109,7 +109,7 @@ import {
 import {
   loadPrimaryWorkspaceState,
   savePrimaryWorkspaceState
-} from "../lib/settings/local-state";
+} from "../lib/settings/primary-workspace-state";
 import { resolveDesktopOsVersion, resolveDesktopPlatform } from "../lib/platform";
 import { defaultMcpConfig, type McpSettingsSnapshot } from "../lib/mcp";
 import {
@@ -236,7 +236,7 @@ vi.mock("../lib/tauri/updater", () => ({
   checkNativeAppUpdate: vi.fn()
 }));
 
-vi.mock("../lib/settings/local-state", () => ({
+vi.mock("../lib/settings/primary-workspace-state", () => ({
   isValidManagedNotebookName: vi.fn(() => true),
   loadPrimaryWorkspaceState: vi.fn(),
   savePrimaryWorkspaceState: vi.fn()

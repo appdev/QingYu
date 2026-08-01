@@ -23,6 +23,7 @@ import {
   type EditorPreferences
 } from "./app-settings";
 import { defaultMcpConfig } from "../mcp";
+import { createAppConfigSnapshot } from "../../test/settings-store";
 
 const mockedEmit = vi.fn();
 const mockedListen = vi.fn();
@@ -32,9 +33,31 @@ function configureSyncedExportSettingsRuntime(
   pandocPath = "/opt/homebrew/bin/pandoc"
 ) {
   const runtime = createDefaultAppRuntime();
+  const initialSnapshot = createAppConfigSnapshot();
+  const appConfigSnapshot = {
+    ...initialSnapshot,
+    localState: {
+      ...initialSnapshot.localState,
+      pandocPath
+    }
+  };
 
   configureAppRuntime({
     ...runtime,
+    appConfig: {
+      bootstrap: appConfigSnapshot,
+      getSnapshot: () => appConfigSnapshot,
+      patchState: async () => appConfigSnapshot,
+      readWorkspaceState: async () => ({
+        filePath: null,
+        fileTreeOpen: false,
+        folderName: null,
+        folderPath: null,
+        openFilePaths: [],
+        openWindows: []
+      }),
+      reload: async () => appConfigSnapshot
+    },
     events: {
       emit: mockedEmit,
       isAvailable: () => true,
@@ -46,7 +69,7 @@ function configureSyncedExportSettingsRuntime(
         return {
           async delete() {},
           async get<TValue>(key: string) {
-            if (path === "local-state.json" && key === "pandocPath") return pandocPath as TValue;
+            if (path === "local-state.json") throw new Error("unexpected local-state access");
             if (path === "settings.json" && key === "exportSettings") return exportSettings as TValue;
             return undefined;
           },

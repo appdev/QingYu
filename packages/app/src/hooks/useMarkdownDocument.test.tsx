@@ -2029,12 +2029,17 @@ describe("useMarkdownDocument", () => {
       closeRequestHandler = handler;
       return () => {};
     });
-    mockedSaveStoredWorkspaceState.mockImplementation(async (patch) => {
-      if (patch.filePath === filePath && patch.openFilePaths?.includes(filePath)) {
-        return workspaceSavePromise;
-      }
-
-      return undefined;
+    let persistenceTail: Promise<unknown> = Promise.resolve();
+    mockedSaveStoredWorkspaceState.mockImplementation((patch) => {
+      const operation = async () => {
+        if (patch.filePath === filePath && patch.openFilePaths?.includes(filePath)) {
+          return workspaceSavePromise;
+        }
+        return undefined;
+      };
+      const pending = persistenceTail.then(operation, operation);
+      persistenceTail = pending.then(() => undefined, () => undefined);
+      return pending;
     });
     mockedReadNativeMarkdownFile.mockResolvedValue({
       content: "# Guide",
@@ -4727,12 +4732,17 @@ describe("useMarkdownDocument", () => {
         return undefined;
       };
     });
-    mockedSaveStoredWorkspaceState.mockImplementation(async (patch) => {
-      const draftContent = patch.draftTabs?.[0]?.content;
-      if (draftContent) savedDraftContents.push(draftContent);
-      if (draftContent === firstMarkdown) return firstWorkspaceSavePromise;
-
-      return undefined;
+    let persistenceTail: Promise<unknown> = Promise.resolve();
+    mockedSaveStoredWorkspaceState.mockImplementation((patch) => {
+      const operation = async () => {
+        const draftContent = patch.draftTabs?.[0]?.content;
+        if (draftContent) savedDraftContents.push(draftContent);
+        if (draftContent === firstMarkdown) return firstWorkspaceSavePromise;
+        return undefined;
+      };
+      const pending = persistenceTail.then(operation, operation);
+      persistenceTail = pending.then(() => undefined, () => undefined);
+      return pending;
     });
     const { result } = renderHook(() =>
       useMarkdownDocument({

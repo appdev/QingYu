@@ -1,9 +1,14 @@
-import { createSettingsStoreHarness, resetSettingsStoreRuntime, setupSettingsStoreHarness } from "../../test/settings-store";
+import {
+  createSettingsStoreHarness,
+  resetSettingsStoreRuntime,
+  setupSettingsStoreHarness
+} from "../../test/settings-store";
 import { getStoredExportSettings, saveStoredExportSettings } from "./app-settings";
 import { normalizeExportSettings } from "./export-settings";
 
 const settingsStore = createSettingsStoreHarness();
 const { loadStore: mockedLoadStore, store } = settingsStore;
+const appConfig = settingsStore.appConfig;
 
 describe("export settings", () => {
   beforeEach(() => {
@@ -34,7 +39,7 @@ describe("export settings", () => {
 
     expect(store.get).toHaveBeenCalledWith("exportSettings");
     expect(mockedLoadStore).toHaveBeenCalledWith("settings.json", { autoSave: false, defaults: {} });
-    expect(mockedLoadStore).toHaveBeenCalledWith("local-state.json", { autoSave: false, defaults: {} });
+    expect(mockedLoadStore).not.toHaveBeenCalledWith("local-state.json", expect.anything());
   });
 
   it("normalizes persisted export settings", () => {
@@ -133,9 +138,12 @@ describe("export settings", () => {
       pdfPageSize: "letter",
       pdfWidthMm: 216
     });
-    expect(store.set).toHaveBeenCalledWith("pandocPath", "/usr/local/bin/pandoc");
+    expect(appConfig.patchState).toHaveBeenCalledWith([{
+      path: "/usr/local/bin/pandoc",
+      type: "set-pandoc-path"
+    }]);
     expect(mockedLoadStore).toHaveBeenCalledWith("settings.json", { autoSave: false, defaults: {} });
-    expect(mockedLoadStore).toHaveBeenCalledWith("local-state.json", { autoSave: false, defaults: {} });
-    expect(store.save).toHaveBeenCalledTimes(2);
+    expect(mockedLoadStore).not.toHaveBeenCalledWith("local-state.json", expect.anything());
+    expect(store.save).toHaveBeenCalledTimes(1);
   });
 });
