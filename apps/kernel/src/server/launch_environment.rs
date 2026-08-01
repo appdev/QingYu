@@ -105,7 +105,7 @@ mod tests {
     };
 
     const INITIALIZATION_TOKEN: &str = "injected-random-initialization-token-at-least-32-bytes";
-    const OWNER_PASSWORD: &str = "correct horse battery staple";
+    const OWNER_PASSWORD: &str = "Correct-Horse-Battery-Staple!7";
 
     fn environment_with(
         entries: impl IntoIterator<Item = (&'static str, OsString)>,

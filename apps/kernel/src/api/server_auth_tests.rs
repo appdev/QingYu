@@ -35,8 +35,8 @@ use crate::{
 const HOST: &str = "127.0.0.1:43123";
 const ORIGIN: &str = "https://127.0.0.1:43123";
 const INITIALIZATION_TOKEN: &str = "injected-random-initialization-token-at-least-32-bytes";
-const OWNER_PASSWORD: &str = "correct horse battery staple";
-const NEW_OWNER_PASSWORD: &str = "new correct horse battery staple";
+const OWNER_PASSWORD: &str = "Correct-Horse-Battery-Staple!7";
+const NEW_OWNER_PASSWORD: &str = "New-Correct-Horse-Battery-Staple!8";
 
 struct ServerApiFixture {
     router: Router,
@@ -784,6 +784,83 @@ async fn logout_requires_csrf_clears_both_cookies_and_revokes_the_session() {
     let stale = api.router.clone().oneshot(stale).await.unwrap();
     assert_eq!(stale.status(), StatusCode::UNAUTHORIZED);
     assert!(stale.headers().get(header::SET_COOKIE).is_none());
+}
+
+#[tokio::test]
+async fn password_rule_is_enforced_across_authentication_routes() {
+    let api = ServerApiFixture::new();
+
+    let rejected_initialization = api
+        .router
+        .clone()
+        .oneshot(api.json_request(
+            "POST",
+            "/api/v1/auth/initialize",
+            json!({
+                "initializationToken": INITIALIZATION_TOKEN,
+                "password": "contains space"
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(rejected_initialization.status(), StatusCode::BAD_REQUEST);
+    assert!(rejected_initialization.headers().get(header::SET_COOKIE).is_none());
+    assert_eq!(
+        response_json(rejected_initialization).await["code"],
+        "invalid_request"
+    );
+
+    let (session, csrf) = api.initialize().await;
+
+    let rejected_login = api.login("中文").await;
+    assert_eq!(rejected_login.status(), StatusCode::UNAUTHORIZED);
+    assert!(rejected_login.headers().get(header::SET_COOKIE).is_none());
+    assert_eq!(response_json(rejected_login).await["code"], "invalid_credentials");
+
+    let mut rejected_change = api.json_request(
+        "PATCH",
+        "/api/v1/auth/password",
+        json!({
+            "currentPassword": OWNER_PASSWORD,
+            "newPassword": "emoji😀"
+        }),
+    );
+    rejected_change.headers_mut().insert(
+        header::COOKIE,
+        cookie_header(&session, &csrf).parse().unwrap(),
+    );
+    rejected_change
+        .headers_mut()
+        .insert("x-csrf-token", csrf_value(&csrf).parse().unwrap());
+    let rejected_change = api.router.clone().oneshot(rejected_change).await.unwrap();
+    assert_eq!(rejected_change.status(), StatusCode::BAD_REQUEST);
+    assert!(rejected_change.headers().get(header::SET_COOKIE).is_none());
+    assert_eq!(
+        response_json(rejected_change).await["code"],
+        "invalid_request"
+    );
+
+    let mut change = api.json_request(
+        "PATCH",
+        "/api/v1/auth/password",
+        json!({
+            "currentPassword": OWNER_PASSWORD,
+            "newPassword": NEW_OWNER_PASSWORD
+        }),
+    );
+    change.headers_mut().insert(
+        header::COOKIE,
+        cookie_header(&session, &csrf).parse().unwrap(),
+    );
+    change
+        .headers_mut()
+        .insert("x-csrf-token", csrf_value(&csrf).parse().unwrap());
+    let changed = api.router.clone().oneshot(change).await.unwrap();
+    assert_eq!(changed.status(), StatusCode::NO_CONTENT);
+
+    let new_password = api.login(NEW_OWNER_PASSWORD).await;
+    assert_eq!(new_password.status(), StatusCode::CREATED);
+    let _cookies = session_cookie_pair(&new_password);
 }
 
 #[tokio::test]

@@ -270,7 +270,7 @@ mod tests {
     };
 
     const INITIALIZATION_TOKEN: &str = "injected-random-initialization-token-at-least-32-bytes";
-    const OWNER_PASSWORD: &str = "correct horse battery staple";
+    const OWNER_PASSWORD: &str = "Correct-Horse-Battery-Staple!7";
 
     fn fixture_paths(root: &Path) -> KernelPaths {
         let workspace = root.join("workspace");
@@ -414,7 +414,7 @@ mod tests {
                         Some(login.session().csrf_token()),
                         Duration::from_secs(2),
                         OWNER_PASSWORD.to_owned(),
-                        "new owner password material".to_owned(),
+                        "New-Owner-Password-Material!8".to_owned(),
                     )
                     .unwrap_err(),
                 ServerAuthenticationCoordinatorError::StateUnavailable

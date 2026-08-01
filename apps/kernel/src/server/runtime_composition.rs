@@ -308,7 +308,7 @@ mod tests {
     use super::*;
 
     const INITIALIZATION_TOKEN: &str = "server-runtime-initialization-token-at-least-32-bytes";
-    const OWNER_PASSWORD: &str = "correct horse battery staple";
+    const OWNER_PASSWORD: &str = "Correct-Horse-Battery-Staple!7";
 
     fn fixture_paths(root: &std::path::Path) -> KernelPaths {
         let data = root.join("data");

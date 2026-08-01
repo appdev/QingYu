@@ -387,7 +387,7 @@ mod tests {
     };
 
     const INITIALIZATION_TOKEN: &str = "injected-random-initialization-token-at-least-32-bytes";
-    const OWNER_PASSWORD: &str = "correct horse battery staple";
+    const OWNER_PASSWORD: &str = "Correct-Horse-Battery-Staple!7";
 
     struct ScriptedAuthenticationTimeSource {
         samples: Mutex<std::collections::VecDeque<Duration>>,

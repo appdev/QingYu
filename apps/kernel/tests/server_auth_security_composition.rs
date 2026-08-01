@@ -19,8 +19,8 @@ use static_assertions::assert_not_impl_any;
 use tempfile::tempdir;
 
 const INITIALIZATION_TOKEN: &str = "injected-random-initialization-token-at-least-32-bytes";
-const OWNER_PASSWORD: &str = "correct horse battery staple";
-const NEW_OWNER_PASSWORD: &str = "new owner password material";
+const OWNER_PASSWORD: &str = "Correct-Horse-Battery-Staple!7";
+const NEW_OWNER_PASSWORD: &str = "New-Owner-Password-Material!8";
 
 assert_not_impl_any!(ServerAuthenticationSecurity: Clone, Copy);
 
@@ -445,7 +445,7 @@ fn authorized_token_with_invalid_password_resets_failures_and_remains_retryable(
                 7,
                 Duration::from_secs(1),
                 INITIALIZATION_TOKEN,
-                "short".to_owned(),
+                "contains space".to_owned(),
             )
             .unwrap_err(),
         ServerOwnerInitializationError::InvalidPassword

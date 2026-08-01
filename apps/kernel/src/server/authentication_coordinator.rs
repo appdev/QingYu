@@ -567,7 +567,7 @@ mod tests {
         storage::DurableFileTestFault,
     };
 
-    const OWNER_PASSWORD: &str = "correct horse battery staple";
+    const OWNER_PASSWORD: &str = "Correct-Horse-Battery-Staple!7";
 
     struct ManualAuthenticationTimeSource {
         milliseconds: AtomicU64,
@@ -704,7 +704,7 @@ mod tests {
                 Some(&csrf),
                 Duration::from_secs(1),
                 OWNER_PASSWORD.to_owned(),
-                "new owner password material".to_owned(),
+                "New-Owner-Password-Material!8".to_owned(),
             )
         });
 
@@ -807,7 +807,7 @@ mod tests {
                     Some(login.session().csrf_token()),
                     Duration::ZERO,
                     "incorrect owner password material".to_owned(),
-                    "new owner password material".to_owned(),
+                    "New-Owner-Password-Material!8".to_owned(),
                 )
                 .unwrap_err(),
             ServerAuthenticationCoordinatorError::RateLimited {
@@ -901,7 +901,7 @@ mod tests {
                 Some(&csrf),
                 Duration::from_secs(1),
                 OWNER_PASSWORD.to_owned(),
-                "new owner password material".to_owned(),
+                "New-Owner-Password-Material!8".to_owned(),
             )
         });
 
@@ -943,7 +943,7 @@ mod tests {
                 Some(&worker_csrf),
                 Duration::from_secs(1),
                 OWNER_PASSWORD.to_owned(),
-                "new owner password material".to_owned(),
+                "New-Owner-Password-Material!8".to_owned(),
             )
         });
         wait_for_full_admission(&coordinator);
@@ -990,7 +990,7 @@ mod tests {
                 Some(&csrf),
                 Duration::from_secs(1),
                 OWNER_PASSWORD.to_owned(),
-                "new owner password material".to_owned(),
+                "New-Owner-Password-Material!8".to_owned(),
             )
         });
         wait_for_full_admission(&coordinator);
@@ -1040,7 +1040,7 @@ mod tests {
                 Some(&csrf),
                 Duration::from_secs(1),
                 OWNER_PASSWORD.to_owned(),
-                "new owner password material".to_owned(),
+                "New-Owner-Password-Material!8".to_owned(),
             )
         });
         wait_for_full_admission(&coordinator);
@@ -1102,7 +1102,7 @@ mod tests {
                 Some(&change_csrf),
                 Duration::from_secs(1),
                 OWNER_PASSWORD.to_owned(),
-                "new owner password material".to_owned(),
+                "New-Owner-Password-Material!8".to_owned(),
             )
         });
         hash_entered_receiver
@@ -1195,7 +1195,7 @@ mod tests {
                 Some(&change_csrf),
                 Duration::from_secs(1),
                 OWNER_PASSWORD.to_owned(),
-                "new owner password material".to_owned(),
+                "New-Owner-Password-Material!8".to_owned(),
             )
         });
         commit_entered_receiver
@@ -1268,7 +1268,7 @@ mod tests {
                 Some(&csrf),
                 Duration::from_secs(0),
                 OWNER_PASSWORD.to_owned(),
-                "new owner password material".to_owned(),
+                "New-Owner-Password-Material!8".to_owned(),
             )
         });
 
@@ -1399,7 +1399,7 @@ mod tests {
                     Some(login.session().csrf_token()),
                     Duration::from_secs(1),
                     "incorrect owner password material".to_owned(),
-                    "new owner password material".to_owned(),
+                    "New-Owner-Password-Material!8".to_owned(),
                 )
                 .unwrap_err(),
             ServerAuthenticationCoordinatorError::InvalidCredentials
@@ -1412,7 +1412,7 @@ mod tests {
                     Some(login.session().csrf_token()),
                     Duration::from_secs(2),
                     OWNER_PASSWORD.to_owned(),
-                    "new owner password material".to_owned(),
+                    "New-Owner-Password-Material!8".to_owned(),
                 )
                 .unwrap_err(),
             ServerAuthenticationCoordinatorError::StateUncertain
@@ -1450,7 +1450,7 @@ mod tests {
                 .login(
                     7,
                     Duration::from_secs(4),
-                    "new owner password material".to_owned(),
+                    "New-Owner-Password-Material!8".to_owned(),
                 )
                 .unwrap_err(),
             ServerAuthenticationCoordinatorError::StateUnavailable
@@ -1472,7 +1472,7 @@ mod tests {
                     Some(login.session().csrf_token()),
                     Duration::from_secs(1),
                     "incorrect owner password material".to_owned(),
-                    "new owner password material".to_owned(),
+                    "New-Owner-Password-Material!8".to_owned(),
                 )
                 .unwrap_err(),
             ServerAuthenticationCoordinatorError::InvalidCredentials
@@ -1491,7 +1491,7 @@ mod tests {
                     Some(login.session().csrf_token()),
                     Duration::from_secs(2),
                     OWNER_PASSWORD.to_owned(),
-                    "new owner password material".to_owned(),
+                    "New-Owner-Password-Material!8".to_owned(),
                 )
                 .unwrap_err(),
             ServerAuthenticationCoordinatorError::StateUnavailable
