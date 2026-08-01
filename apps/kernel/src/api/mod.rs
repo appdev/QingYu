@@ -2315,6 +2315,21 @@ fn patch_literal_and_nullable_schemas(document: &mut serde_json::Value) {
         .and_then(serde_json::Value::as_object_mut)
         .expect("AppConfig event schema is an object")
         .insert("additionalProperties".to_owned(), serde_json::json!(false));
+    let domain_app_config_variant = schemas
+        .get_mut("DomainEvent")
+        .and_then(|schema| schema.get_mut("oneOf"))
+        .and_then(serde_json::Value::as_array_mut)
+        .and_then(|variants| {
+            variants.iter_mut().find(|variant| {
+                variant["properties"]["type"]["enum"]
+                    == serde_json::json!(["app-config-state-changed"])
+            })
+        })
+        .expect("DomainEvent AppConfig variant is registered");
+    domain_app_config_variant
+        .as_object_mut()
+        .expect("DomainEvent AppConfig variant is an object")
+        .insert("additionalProperties".to_owned(), serde_json::json!(false));
     let operation_variants = schemas
         .get_mut("AppConfigStateOperationDto")
         .and_then(|schema| schema.get_mut("oneOf"))

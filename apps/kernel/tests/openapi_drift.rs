@@ -805,6 +805,25 @@ fn app_config_schemas_freeze_strict_wire_constraints() {
         component(&document, "AppConfigStateChangedEvent")["additionalProperties"],
         false
     );
+    let server_event_variant = component(&document, "ServerFrame")["oneOf"]
+        .as_array()
+        .expect("ServerFrame variants")
+        .iter()
+        .find(|variant| variant["properties"]["type"]["enum"] == serde_json::json!(["event"]))
+        .expect("ServerFrame event variant");
+    assert_eq!(
+        server_event_variant["properties"]["event"]["$ref"],
+        "#/components/schemas/DomainEvent"
+    );
+    let domain_app_config_variant = component(&document, "DomainEvent")["oneOf"]
+        .as_array()
+        .expect("DomainEvent variants")
+        .iter()
+        .find(|variant| {
+            variant["properties"]["type"]["enum"] == serde_json::json!(["app-config-state-changed"])
+        })
+        .expect("DomainEvent AppConfig variant");
+    assert_eq!(domain_app_config_variant["additionalProperties"], false);
     let operation_variants = component(&document, "AppConfigStateOperationDto")["oneOf"]
         .as_array()
         .expect("AppConfigStateOperationDto variants");
