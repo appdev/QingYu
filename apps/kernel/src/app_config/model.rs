@@ -8,7 +8,7 @@ use crate::contract::{
     AppConfigLocalStateDto, DocumentContents, FileTreeSortDirection, FileTreeSortKey, Nullable,
     RecentMarkdownFileDto, Revision, StoredFileTreeSortDto, StoredWorkspaceDraftDto,
     StoredWorkspaceLayoutDto, StoredWorkspaceSplitGroupDto, StoredWorkspaceWindowDto,
-    StoredWorkspaceWindowStateDto, WindowLabel, WorkspaceRelativePath,
+    StoredWorkspaceWindowStateDto, WindowLabel, WorkspaceLayoutPatchDto, WorkspaceRelativePath,
 };
 
 pub(crate) const APP_CONFIG_VERSION: u8 = 1;
@@ -100,6 +100,9 @@ pub(crate) fn normalize_pandoc_path(path: Nullable<String>) -> Result<Nullable<S
     match path.into_option() {
         None => Ok(Nullable::null()),
         Some(path) => {
+            if path.chars().any(char::is_control) {
+                return Err(());
+            }
             let path = path.trim().to_string();
             if path.is_empty() {
                 return Ok(Nullable::null());
@@ -125,6 +128,43 @@ pub(crate) fn normalize_layout(layout: &mut StoredWorkspaceLayoutDto) -> Result<
     }
     normalize_windows(&mut layout.open_windows)?;
     validate_aggregate_drafts(layout)
+}
+
+pub(crate) fn validate_layout_patch(patch: &WorkspaceLayoutPatchDto) -> Result<(), ()> {
+    let mut state = default_window_state();
+    if let Some(value) = &patch.active_draft_id {
+        state.active_draft_id = value.clone();
+    }
+    if let Some(value) = &patch.draft_tabs {
+        state.draft_tabs = value.clone();
+    }
+    if let Some(value) = patch.file_tree_assets_visible {
+        state.file_tree_assets_visible = value;
+    }
+    if let Some(value) = &patch.file_path {
+        state.file_path = value.clone();
+    }
+    if let Some(value) = patch.file_tree_open {
+        state.file_tree_open = value;
+    }
+    if let Some(value) = &patch.folder_name {
+        state.folder_name = value.clone();
+    }
+    if let Some(value) = &patch.folder_path {
+        state.folder_path = value.clone();
+    }
+    if let Some(value) = &patch.open_file_paths {
+        state.open_file_paths = value.clone();
+    }
+    if let Some(value) = &patch.side_by_side_group {
+        state.side_by_side_group = value.clone();
+    }
+    let mut layout = default_layout();
+    layout.window_states.insert("preflight".to_string(), state);
+    if let Some(value) = &patch.open_windows {
+        layout.open_windows = value.clone();
+    }
+    normalize_layout(&mut layout)
 }
 
 pub(crate) fn normalize_window_state(state: &mut StoredWorkspaceWindowStateDto) -> Result<(), ()> {
@@ -165,6 +205,9 @@ fn normalize_nullable_string(
     match value.into_option() {
         None => Ok(Nullable::null()),
         Some(value) => {
+            if value.chars().any(char::is_control) {
+                return Err(());
+            }
             let value = value.trim().to_string();
             if value.is_empty() {
                 return Ok(Nullable::null());
@@ -180,6 +223,9 @@ fn normalize_nullable_string(
 fn normalize_drafts(drafts: &mut Vec<StoredWorkspaceDraftDto>) -> Result<(), ()> {
     let mut ids = HashSet::new();
     for draft in drafts {
+        if draft.id.chars().any(char::is_control) || draft.name.chars().any(char::is_control) {
+            return Err(());
+        }
         draft.id = draft.id.trim().to_string();
         draft.name = draft.name.trim().to_string();
         if !valid_bounded_string(&draft.id, 128)

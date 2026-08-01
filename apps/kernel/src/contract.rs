@@ -721,7 +721,7 @@ impl fmt::Display for InvalidSearchQuery {
 
 impl std::error::Error for InvalidSearchQuery {}
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, ToSchema)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct LiveHealthResponse {
     pub status: LiveStatus,
@@ -1447,8 +1447,12 @@ pub struct WindowLabel(String);
 
 impl WindowLabel {
     pub fn parse(value: impl AsRef<str>) -> Result<Self, InvalidWindowLabel> {
-        let value = value.as_ref().trim();
-        if value.is_empty() || value.len() > 128 || value.chars().any(char::is_control) {
+        let value = value.as_ref();
+        if value.chars().any(char::is_control) {
+            return Err(InvalidWindowLabel);
+        }
+        let value = value.trim();
+        if value.is_empty() || value.len() > 128 {
             return Err(InvalidWindowLabel);
         }
         Ok(Self(value.to_string()))
@@ -1530,7 +1534,7 @@ pub struct StoredWorkspaceWindowDto {
     pub open_file_paths: Vec<WorkspaceRelativePath>,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
+#[derive(Clone, Deserialize, Eq, PartialEq, Serialize, ToSchema)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct StoredWorkspaceWindowStateDto {
     #[serde(deserialize_with = "deserialize_required_nullable")]
@@ -1547,6 +1551,12 @@ pub struct StoredWorkspaceWindowStateDto {
     pub open_file_paths: Vec<WorkspaceRelativePath>,
     #[serde(deserialize_with = "deserialize_required_nullable")]
     pub side_by_side_group: Nullable<StoredWorkspaceSplitGroupDto>,
+}
+
+impl fmt::Debug for StoredWorkspaceWindowStateDto {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("StoredWorkspaceWindowStateDto([REDACTED])")
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize, ToSchema)]

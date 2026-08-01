@@ -119,6 +119,14 @@ impl AtomicJsonSettingsStore {
             Err(error) => Err(map_durable_failure(error)),
         }
     }
+
+    fn serialize_document(values: &BTreeMap<String, Value>) -> Result<Vec<u8>, SettingsStoreError> {
+        let bytes = serde_json::to_vec(values).map_err(|_| SettingsStoreError::unavailable())?;
+        if bytes.len() > APP_CONFIG_MAX_BYTES {
+            return Err(SettingsStoreError::unavailable());
+        }
+        Ok(bytes)
+    }
 }
 
 impl SettingsStore for AtomicJsonSettingsStore {
@@ -166,8 +174,7 @@ impl SettingsStore for AtomicJsonSettingsStore {
             APP_CONFIG_VERSION_KEY.to_string(),
             Value::from(APP_CONFIG_VERSION),
         );
-        let bytes =
-            serde_json::to_vec(&state.values).map_err(|_| SettingsStoreError::unavailable())?;
+        let bytes = Self::serialize_document(&state.values)?;
         self.persist_locked(&mut state, &bytes)
     }
 
@@ -198,7 +205,7 @@ impl SettingsStore for AtomicJsonSettingsStore {
             APP_CONFIG_VERSION_KEY.to_string(),
             Value::from(APP_CONFIG_VERSION),
         );
-        let bytes = serde_json::to_vec(&next).map_err(|_| SettingsStoreError::unavailable())?;
+        let bytes = Self::serialize_document(&next)?;
         let result = self.persist_locked(&mut state, &bytes);
         if result.is_ok()
             || result

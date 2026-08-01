@@ -1,7 +1,7 @@
 use std::{
     collections::BTreeMap,
     sync::{
-        atomic::{AtomicU8, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering},
         Arc, Mutex,
     },
 };
@@ -11,7 +11,7 @@ use qingyu_kernel::{
     config::KernelConfig,
     contract::{
         AppConfigSnapshotDto, DomainEvent, FileTreeSortKey, PatchAppConfigStateRequest,
-        ResourceRefDto, WorkspaceGeneration, WorkspaceId,
+        ResourceRefDto, StoredWorkspaceWindowStateDto, WorkspaceGeneration, WorkspaceId,
     },
     events::{EventPublication, EventSink, EventSinkError},
     paths::KernelPaths,
@@ -31,6 +31,8 @@ const PUBLISH_UNCERTAIN: u8 = 2;
 #[derive(Default)]
 struct MemorySettingsStore {
     values: Mutex<BTreeMap<String, Value>>,
+    fail_get: AtomicBool,
+    gets: AtomicUsize,
     save_failure: AtomicU8,
     saves: AtomicUsize,
 }
@@ -47,10 +49,22 @@ impl MemorySettingsStore {
     fn fail_next_save(&self, failure: u8) {
         self.save_failure.store(failure, Ordering::Relaxed);
     }
+
+    fn fail_reads(&self) {
+        self.fail_get.store(true, Ordering::Relaxed);
+    }
+
+    fn gets(&self) -> usize {
+        self.gets.load(Ordering::Relaxed)
+    }
 }
 
 impl SettingsStore for MemorySettingsStore {
     fn get(&self, key: &str) -> Result<Option<Value>, SettingsStoreError> {
+        self.gets.fetch_add(1, Ordering::Relaxed);
+        if self.fail_get.load(Ordering::Relaxed) {
+            return Err(SettingsStoreError::unavailable());
+        }
         Ok(self.values.lock().unwrap().get(key).cloned())
     }
 
@@ -290,6 +304,51 @@ fn physical_store() -> (TempDir, KernelConfig, AtomicJsonSettingsStore) {
     (root, config, store)
 }
 
+fn reopen_physical_store(root: &TempDir, config: &KernelConfig) -> AtomicJsonSettingsStore {
+    let paths = KernelPaths::desktop(
+        &root.path().join("workspace"),
+        &root.path().join("app-data"),
+        &root.path().join("cache"),
+    )
+    .unwrap();
+    let durable = DurableFileStore::at_config(paths.config_root(), config.launch_epoch()).unwrap();
+    AtomicJsonSettingsStore::new(durable).unwrap()
+}
+
+#[test]
+fn document_size_limit_is_enforced_on_save_and_portable_replace_across_reopen() {
+    const MIB: usize = 1024 * 1024;
+
+    let (root, config, store) = physical_store();
+    store
+        .set("oversizedLocal", json!("x".repeat(65 * MIB)))
+        .unwrap();
+    assert!(store.save().is_err());
+    assert!(!root.path().join("app-data/settings.json").exists());
+    drop(store);
+    drop(reopen_physical_store(&root, &config));
+
+    let (root, config, store) = physical_store();
+    store
+        .set("largeLocal", json!("x".repeat(63 * MIB)))
+        .unwrap();
+    store.save().unwrap();
+    let path = root.path().join("app-data/settings.json");
+    let before = std::fs::read(&path).unwrap();
+    let replacement = json!({ "language": "y".repeat(2 * MIB) });
+    assert!(store
+        .replace_portable_atomically(replacement.as_object().unwrap())
+        .is_err());
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    drop(store);
+    let reopened = reopen_physical_store(&root, &config);
+    assert_eq!(
+        reopened.get("largeLocal").unwrap(),
+        Some(json!("x".repeat(63 * MIB)))
+    );
+    assert_eq!(reopened.get("language").unwrap(), None);
+}
+
 #[test]
 fn absent_physical_document_reads_defaults_without_creating_settings_json() {
     let (root, _config, store) = physical_store();
@@ -403,6 +462,30 @@ fn invalid_ui_layout_defaults_without_hiding_settings_and_is_replaced_on_state_c
 }
 
 #[test]
+fn noncanonical_persisted_open_window_label_defaults_the_active_layout() {
+    let fixture = Fixture::new(1, "generation-a");
+    let workspace_key = Uuid::from_u128(1).to_string();
+    fixture.store.values.lock().unwrap().insert(
+        "uiLayout".to_string(),
+        json!({
+            workspace_key: {
+                "schemaVersion": 1,
+                "windowStates": {},
+                "openWindows": [{
+                    "filePath": "notes/a.md",
+                    "label": " auxiliary ",
+                    "openFilePaths": ["notes/a.md"]
+                }]
+            }
+        }),
+    );
+
+    let layout = fixture.app_config.read().unwrap().local_state.ui_layout;
+    assert!(layout.window_states.is_empty());
+    assert!(layout.open_windows.is_empty());
+}
+
+#[test]
 fn first_settings_or_state_commit_writes_app_config_version() {
     let (settings_root, _config, settings_store) = physical_store();
     let settings = SettingsService::new(
@@ -473,6 +556,40 @@ fn invalid_document_paths_are_rejected_before_any_store_mutation() {
         assert_eq!(fixture.store.snapshot(), before, "{path}");
         assert_eq!(fixture.store.saves(), 0, "{path}");
     }
+}
+
+#[test]
+fn intrinsically_invalid_requests_are_rejected_before_any_store_read() {
+    fn assert_preflight_rejects_without_reads(operations: Value) {
+        let fixture = Fixture::new(1, "generation-a");
+        fixture.store.fail_reads();
+        let error = fixture.patch(operations).unwrap_err();
+        assert_eq!(
+            error.kind(),
+            AppConfigServiceErrorKind::InvalidAppConfigState
+        );
+        assert_eq!(fixture.store.gets(), 0);
+        assert_eq!(fixture.store.saves(), 0);
+        assert!(fixture.events.snapshot().is_empty());
+    }
+
+    assert_preflight_rejects_without_reads(patch_window("notes/not-markdown.txt"));
+    assert_preflight_rejects_without_reads(json!([{
+        "type": "set-pandoc-path",
+        "path": "x".repeat(501)
+    }]));
+
+    let chunk = "x".repeat(12 * 1024 * 1024 + 1);
+    assert_preflight_rejects_without_reads(json!([{
+        "type": "patch-ui-layout",
+        "windowLabel": "main",
+        "patch": { "draftTabs": [
+            { "content": chunk, "id": "1", "name": "1.md", "path": null },
+            { "content": chunk, "id": "2", "name": "2.md", "path": null },
+            { "content": chunk, "id": "3", "name": "3.md", "path": null },
+            { "content": chunk, "id": "4", "name": "4.md", "path": null }
+        ] }
+    }]));
 }
 
 #[test]
@@ -631,6 +748,52 @@ fn pandoc_path_is_trimmed_bounded_and_nullable() {
             error.kind(),
             AppConfigServiceErrorKind::InvalidAppConfigState
         );
+    }
+}
+
+#[test]
+fn control_characters_are_rejected_before_trimming_app_config_inputs() {
+    assert!(serde_json::from_value::<PatchAppConfigStateRequest>(json!({
+        "workspaceGeneration": "generation-a",
+        "operations": [{
+            "type": "patch-ui-layout",
+            "windowLabel": "\tmain\t",
+            "patch": { "fileTreeOpen": true }
+        }]
+    }))
+    .is_err());
+
+    let fixture = Fixture::new(1, "generation-a");
+    for operations in [
+        json!([{ "type": "set-pandoc-path", "path": "\n/opt/pandoc\n" }]),
+        json!([{
+            "type": "patch-ui-layout",
+            "windowLabel": "main",
+            "patch": { "draftTabs": [{
+                "content": "draft",
+                "id": "\tdraft-id\t",
+                "name": "Draft.md",
+                "path": null
+            }] }
+        }]),
+        json!([{
+            "type": "patch-ui-layout",
+            "windowLabel": "main",
+            "patch": { "draftTabs": [{
+                "content": "draft",
+                "id": "draft-id",
+                "name": "\nDraft.md\n",
+                "path": null
+            }] }
+        }]),
+    ] {
+        let before = fixture.store.snapshot();
+        let error = fixture.patch(operations).unwrap_err();
+        assert_eq!(
+            error.kind(),
+            AppConfigServiceErrorKind::InvalidAppConfigState
+        );
+        assert_eq!(fixture.store.snapshot(), before);
     }
 }
 
@@ -794,6 +957,36 @@ fn app_config_debug_output_redacts_draft_and_pandoc_values() {
         "/debug/pandoc-secret",
     ] {
         assert!(!snapshot_debug.contains(secret));
+    }
+}
+
+#[test]
+fn nested_window_state_debug_redacts_active_draft_identity() {
+    let state: StoredWorkspaceWindowStateDto = serde_json::from_value(json!({
+        "activeDraftId": "nested-active-secret",
+        "draftTabs": [{
+            "content": "nested-content-secret",
+            "id": "nested-active-secret",
+            "name": "Nested secret.md",
+            "path": null
+        }],
+        "fileTreeAssetsVisible": true,
+        "filePath": null,
+        "fileTreeOpen": false,
+        "folderName": null,
+        "folderPath": null,
+        "openFilePaths": [],
+        "sideBySideGroup": null
+    }))
+    .unwrap();
+
+    let debug = format!("{state:?}");
+    for secret in [
+        "nested-active-secret",
+        "nested-content-secret",
+        "Nested secret.md",
+    ] {
+        assert!(!debug.contains(secret));
     }
 }
 

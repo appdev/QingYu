@@ -7,7 +7,8 @@ use crate::{
     contract::{
         AppConfigSnapshotDto, AppConfigStateOperationDto, AppConfigWorkspaceDto, DomainEvent,
         Nullable, PatchAppConfigStateRequest, RecentMarkdownFileDto, ResourceRefDto,
-        StoredFileTreeSortDto, StoredWorkspaceLayoutDto, WorkspaceGeneration, WorkspaceId,
+        StoredFileTreeSortDto, StoredWorkspaceLayoutDto, WindowLabel, WorkspaceGeneration,
+        WorkspaceId,
     },
     events::{EventPublication, EventSink},
     settings::{
@@ -22,8 +23,8 @@ use crate::{
 use super::model::{
     default_layout, default_sort, default_window_state, local_revision, local_state, markdown_path,
     normalize_layout, normalize_pandoc_path, normalize_recent_file, remember_recent_file,
-    APP_CONFIG_VERSION, APP_CONFIG_VERSION_KEY, FILE_TREE_SORT_KEY, PANDOC_PATH_KEY,
-    RECENT_FILES_KEY, UI_LAYOUT_KEY,
+    validate_layout_patch, APP_CONFIG_VERSION, APP_CONFIG_VERSION_KEY, FILE_TREE_SORT_KEY,
+    PANDOC_PATH_KEY, RECENT_FILES_KEY, UI_LAYOUT_KEY,
 };
 
 pub struct AppConfigService {
@@ -85,6 +86,7 @@ impl AppConfigService {
         request
             .validate()
             .map_err(|_| AppConfigServiceError::invalid())?;
+        preflight_operations(&request.operations)?;
 
         let (snapshot, publication) = {
             let _transaction = self
@@ -133,7 +135,7 @@ impl AppConfigService {
         let mut layout = ui_layouts
             .get(&workspace_key)
             .cloned()
-            .and_then(|value| serde_json::from_value::<StoredWorkspaceLayoutDto>(value).ok())
+            .and_then(stored_layout_from_value)
             .filter(|layout| layout.schema_version == APP_CONFIG_VERSION)
             .unwrap_or_else(default_layout);
         if normalize_layout(&mut layout).is_err() {
@@ -228,6 +230,34 @@ impl AppConfigService {
             Err(error.into())
         }
     }
+}
+
+fn preflight_operations(
+    operations: &[AppConfigStateOperationDto],
+) -> Result<(), AppConfigServiceError> {
+    for operation in operations {
+        match operation {
+            AppConfigStateOperationDto::PatchUiLayout { patch, .. } => {
+                validate_layout_patch(patch).map_err(|_| AppConfigServiceError::invalid())?;
+            }
+            AppConfigStateOperationDto::RememberRecentFile { file } => {
+                normalize_recent_file(file.clone())
+                    .map_err(|_| AppConfigServiceError::invalid())?;
+            }
+            AppConfigStateOperationDto::RemoveRecentFile { path } => {
+                if !markdown_path(path) {
+                    return Err(AppConfigServiceError::invalid());
+                }
+            }
+            AppConfigStateOperationDto::SetPandocPath { path } => {
+                normalize_pandoc_path(path.clone())
+                    .map_err(|_| AppConfigServiceError::invalid())?;
+            }
+            AppConfigStateOperationDto::ClearRecentFiles
+            | AppConfigStateOperationDto::SetFileTreeSort { .. } => {}
+        }
+    }
+    Ok(())
 }
 
 struct LoadedState {
@@ -404,6 +434,44 @@ fn canonical_workspace_map(value: Option<Value>) -> Map<String, Value> {
         .into_iter()
         .filter(|(key, _)| Uuid::parse_str(key).is_ok_and(|uuid| uuid.to_string() == *key))
         .collect()
+}
+
+fn stored_layout_from_value(value: Value) -> Option<StoredWorkspaceLayoutDto> {
+    if !raw_layout_labels_are_canonical(&value) {
+        return None;
+    }
+    serde_json::from_value(value).ok()
+}
+
+fn raw_layout_labels_are_canonical(value: &Value) -> bool {
+    let Some(layout) = value.as_object() else {
+        return true;
+    };
+    let window_state_labels_are_canonical = layout
+        .get("windowStates")
+        .and_then(Value::as_object)
+        .is_none_or(|states| {
+            states
+                .keys()
+                .all(|label| raw_window_label_is_canonical(label))
+        });
+    let open_window_labels_are_canonical = layout
+        .get("openWindows")
+        .and_then(Value::as_array)
+        .is_none_or(|windows| {
+            windows.iter().all(|window| {
+                window
+                    .as_object()
+                    .and_then(|window| window.get("label"))
+                    .and_then(Value::as_str)
+                    .is_none_or(raw_window_label_is_canonical)
+            })
+        });
+    window_state_labels_are_canonical && open_window_labels_are_canonical
+}
+
+fn raw_window_label_is_canonical(label: &str) -> bool {
+    WindowLabel::parse(label).is_ok_and(|normalized| normalized.as_str() == label)
 }
 
 fn map_settings_error(error: SettingsServiceError) -> AppConfigServiceError {

@@ -3,16 +3,17 @@ use qingyu_kernel::contract::{
     ApiErrorEnvelope, ApiVersion, AuthenticateFrame, CreateDocumentRequest, CredentialChange,
     DeletionPolicy, DocumentContentDto, DocumentContents, DocumentId, DocumentKind,
     DocumentPageDto, ErrorCode, ErrorDetails, EventSequence, FontFamilyValueDto, FrameErrorCode,
-    HostProfile, InstanceId, ListWorkspaceInventoryQuery, MoveDocumentRequest, Nullable,
-    PageCursor, PageCursorContext, PageQuery, PatchSettingsRequest, PositiveSafeInteger,
-    ProtocolVersion, ReadySequence, ResourceEntryDto, ResourceId, ResourceKind, ResourceName,
-    Revision, Rfc3339Utc, SafeInteger, SafeUnsignedInteger, SearchMatchDto, SearchWorkspaceQuery,
-    ServerFrame, SettingEntryDto, SettingKey, SettingValueDto, SnapshotRequired, StartupState,
-    SyncConfigChangesDto, SyncMode, SyncProvider, SyncSafeErrorCategory, SyncSafeErrorCode,
-    SyncSafeErrorDto, SyncSafeErrorOperation, SyncSafeHttpMethod, SyncSafeProviderErrorCode,
-    ValidationField, ValidationIssueCode, ValidationIssueDto, ValidationIssues, WireIdentityKey,
-    WorkspaceDto, WorkspaceGeneration, WorkspaceId, WorkspaceInventoryEntryDto,
-    WorkspaceInventoryPageDto, WorkspaceReadiness, WorkspaceRelativePath,
+    HostProfile, InstanceId, ListWorkspaceInventoryQuery, LiveHealthResponse, LiveStatus,
+    MoveDocumentRequest, Nullable, PageCursor, PageCursorContext, PageQuery, PatchSettingsRequest,
+    PositiveSafeInteger, ProtocolVersion, ReadySequence, ResourceEntryDto, ResourceId,
+    ResourceKind, ResourceName, Revision, Rfc3339Utc, SafeInteger, SafeUnsignedInteger,
+    SearchMatchDto, SearchWorkspaceQuery, ServerFrame, SettingEntryDto, SettingKey,
+    SettingValueDto, SnapshotRequired, StartupState, SyncConfigChangesDto, SyncMode, SyncProvider,
+    SyncSafeErrorCategory, SyncSafeErrorCode, SyncSafeErrorDto, SyncSafeErrorOperation,
+    SyncSafeHttpMethod, SyncSafeProviderErrorCode, ValidationField, ValidationIssueCode,
+    ValidationIssueDto, ValidationIssues, WireIdentityKey, WorkspaceDto, WorkspaceGeneration,
+    WorkspaceId, WorkspaceInventoryEntryDto, WorkspaceInventoryPageDto, WorkspaceReadiness,
+    WorkspaceRelativePath,
 };
 use qingyu_kernel::error::{http_status_for_error_code, safe_error_envelope};
 use serde_json::json;
@@ -24,6 +25,24 @@ assert_not_impl_any!(qingyu_kernel::paths::InstanceDataRoot: serde::Serialize, s
 assert_not_impl_any!(qingyu_kernel::paths::CacheRoot: serde::Serialize, serde::de::DeserializeOwned);
 assert_not_impl_any!(qingyu_kernel::config::KernelLaunchEpoch: serde::Serialize, serde::de::DeserializeOwned);
 assert_not_impl_any!(qingyu_kernel::config::NativeLaunchCredential: Clone, serde::Serialize, serde::de::DeserializeOwned);
+
+#[test]
+fn live_health_response_keeps_its_public_deserialization_contract() {
+    let response: LiveHealthResponse = serde_json::from_value(json!({
+        "status": "live",
+        "apiVersion": "v1"
+    }))
+    .unwrap();
+
+    assert_eq!(response.status, LiveStatus::Live);
+    assert_eq!(response.api_version, ApiVersion::V1);
+    assert!(serde_json::from_value::<LiveHealthResponse>(json!({
+        "status": "live",
+        "apiVersion": "v1",
+        "unknown": true
+    }))
+    .is_err());
+}
 
 #[test]
 fn native_launch_credentials_are_independent_ephemeral_secrets() {
