@@ -285,11 +285,12 @@ describe("server Web application gate", () => {
     );
     const input = screen.getByLabelText("Server password") as HTMLInputElement;
     fireEvent.change(input, { target: { value: "中文" } });
-    fireEvent.submit(input.form!);
+    fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
 
     expect(owner.login).not.toHaveBeenCalled();
     expect(input.value).toBe("中文");
     expect(input.getAttribute("aria-invalid")).toBe("true");
+    expect(document.activeElement).toBe(input);
     expect(screen.getByText(
       "Enter 1–1024 characters using only English letters, numbers, and special symbols, without spaces.",
     )).not.toBeNull();
@@ -312,12 +313,38 @@ describe("server Web application gate", () => {
       fireEvent.change(token, { target: { value: "one-time-token" } });
       fireEvent.change(password, { target: { value: passwordValue } });
       fireEvent.change(confirmation, { target: { value: passwordValue } });
-      fireEvent.submit(token.form!);
+      fireEvent.click(screen.getByRole("button", { name: "Complete setup" }));
 
       expect(owner.initialize).not.toHaveBeenCalled();
       expect(password.getAttribute("aria-invalid")).toBe("true");
+      expect(document.activeElement).toBe(password);
     },
   );
+
+  it("rejects an invalid confirmation after a valid initialization password", () => {
+    const owner = inertOwner();
+    owner.initialize = vi.fn(async () => undefined);
+    render(
+      <ServerStartupShell
+        owner={owner}
+        snapshot={{ phase: "initialize", error: null }}
+      />,
+    );
+    const token = screen.getByLabelText("One-time initialization token") as HTMLInputElement;
+    const password = screen.getByLabelText("Owner password") as HTMLInputElement;
+    const confirmation = screen.getByLabelText("Confirm password") as HTMLInputElement;
+    fireEvent.change(token, { target: { value: "one-time-token" } });
+    fireEvent.change(password, { target: { value: "!" } });
+    fireEvent.change(confirmation, { target: { value: "😀" } });
+    fireEvent.click(screen.getByRole("button", { name: "Complete setup" }));
+
+    expect(owner.initialize).not.toHaveBeenCalled();
+    expect(confirmation.getAttribute("aria-invalid")).toBe("true");
+    expect(document.activeElement).toBe(confirmation);
+    expect(screen.getByText(
+      "Enter 1–1024 characters using only English letters, numbers, and special symbols, without spaces.",
+    )).not.toBeNull();
+  });
 
   it("accepts a one-character ASCII password after exactly matching confirmation", () => {
     const owner = inertOwner();

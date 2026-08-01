@@ -180,7 +180,7 @@ function LoginForm({
       <header className="server-startup__header server-startup__header--compact">
         <h1 id={titleId}>{copy.loginTitle}</h1>
       </header>
-      <form className="server-startup__form" onSubmit={submitLogin}>
+      <form className="server-startup__form" noValidate onSubmit={submitLogin}>
         <PromptError copy={copy} error={visibleError} retrySeconds={retrySeconds} />
         <SecretField
           autoComplete="current-password"
@@ -274,7 +274,7 @@ function InitializeForm({
         <h1 id={titleId}>{copy.initializeTitle}</h1>
         <p>{copy.initializeIntroduction}</p>
       </header>
-      <form className="server-startup__form" onSubmit={submitInitialization}>
+      <form className="server-startup__form" noValidate onSubmit={submitInitialization}>
         <PromptError copy={copy} error={error} initializing />
         <SecretField
           autoComplete="off"
