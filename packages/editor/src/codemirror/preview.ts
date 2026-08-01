@@ -346,12 +346,30 @@ function buildDecorations(
       if (blockClass) {
         const firstLine = state.doc.lineAt(visibleNodeFrom).number;
         const lastLine = state.doc.lineAt(visibleNodeTo - 1).number;
+        let paragraphEndLine: number | null = null;
+        if (
+          node.name === "Paragraph" &&
+          listDepth(node.node as MarkraSyntaxNode) === 0
+        ) {
+          const endLine = state.doc.lineAt(node.to - 1).number;
+          // An authored blank line already provides full-height block rhythm.
+          // Extra spacing is only needed when another block starts directly.
+          if (
+            endLine < state.doc.lines &&
+            state.doc.line(endLine + 1).text.trim().length > 0
+          ) {
+            paragraphEndLine = endLine;
+          }
+        }
         for (let lineNumber = firstLine; lineNumber <= lastLine; lineNumber += 1) {
           const line = state.doc.line(lineNumber);
           const key = `${blockClass}:${line.from}`;
           if (!decoratedBlockLines.has(key)) {
             decoratedBlockLines.add(key);
-            ranges.push(Decoration.line({ class: blockClass }).range(line.from));
+            const className = lineNumber === paragraphEndLine
+              ? `${blockClass} cm-markra-paragraph-end`
+              : blockClass;
+            ranges.push(Decoration.line({ class: className }).range(line.from));
           }
         }
       }
@@ -703,18 +721,6 @@ function buildDecorations(
         decoratedEmptyLines.add(line.from);
         ranges.push(
           Decoration.line({
-            attributes: {
-              "data-markra-empty-source": isRevealed({
-                view,
-                state,
-                from: line.from,
-                to: line.to,
-                nodeName: "EmptyLine",
-                scope: "line",
-              })
-                ? "visible"
-                : "hidden",
-            },
             class: "cm-markra-empty-line",
           }).range(line.from),
         );
