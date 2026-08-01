@@ -3,6 +3,8 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
+#[cfg(windows)]
+use cap_primitives::fs::_WindowsByHandle as _;
 use cap_std::fs::Dir;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
@@ -72,30 +74,32 @@ pub(super) struct BatchRecord {
     pub(super) items: Vec<BatchRecordItem>,
 }
 
+pub(super) struct BatchRecordPreparation {
+    pub(super) batch_id: ResourceBatchId,
+    pub(super) request_digest: String,
+    pub(super) workspace_id: WorkspaceId,
+    pub(super) workspace_generation: WorkspaceGeneration,
+    pub(super) document_path: WorkspaceRelativePath,
+    pub(super) folder: WorkspaceRelativePath,
+    pub(super) target_parent: WorkspaceRelativePath,
+    pub(super) attempt_id: uuid::Uuid,
+    pub(super) items: Vec<BatchRecordItem>,
+}
+
 impl BatchRecord {
-    pub(super) fn preparing(
-        batch_id: ResourceBatchId,
-        request_digest: String,
-        workspace_id: WorkspaceId,
-        workspace_generation: WorkspaceGeneration,
-        document_path: WorkspaceRelativePath,
-        folder: WorkspaceRelativePath,
-        target_parent: WorkspaceRelativePath,
-        attempt_id: uuid::Uuid,
-        items: Vec<BatchRecordItem>,
-    ) -> Self {
+    pub(super) fn preparing(preparation: BatchRecordPreparation) -> Self {
         Self {
             schema_version: 1,
-            batch_id,
-            request_digest,
-            workspace_id,
-            workspace_generation,
-            document_path,
-            folder,
-            target_parent,
+            batch_id: preparation.batch_id,
+            request_digest: preparation.request_digest,
+            workspace_id: preparation.workspace_id,
+            workspace_generation: preparation.workspace_generation,
+            document_path: preparation.document_path,
+            folder: preparation.folder,
+            target_parent: preparation.target_parent,
             phase: BatchPhase::Preparing,
-            attempt_id,
-            items,
+            attempt_id: preparation.attempt_id,
+            items: preparation.items,
         }
     }
 
@@ -688,7 +692,7 @@ fn record_link_count(metadata: &cap_std::fs::Metadata) -> u64 {
 
 #[cfg(windows)]
 fn record_link_count(metadata: &cap_std::fs::Metadata) -> u64 {
-    cap_fs_ext::MetadataExt::number_of_links(metadata)
+    metadata.number_of_links().map_or(0, u64::from)
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -906,16 +910,16 @@ mod tests {
         let workspace_id = WorkspaceId::new(uuid::Uuid::from_u128(1));
         let generation = WorkspaceGeneration::parse("generation-1").unwrap();
         let attempt_id = uuid::Uuid::from_u128(3);
-        let mut record = BatchRecord::preparing(
-            ResourceBatchId::new(uuid::Uuid::from_u128(2)),
-            format!("sha256:{}", "a".repeat(64)),
+        let mut record = BatchRecord::preparing(BatchRecordPreparation {
+            batch_id: ResourceBatchId::new(uuid::Uuid::from_u128(2)),
+            request_digest: format!("sha256:{}", "a".repeat(64)),
             workspace_id,
-            generation,
-            WorkspaceRelativePath::parse("notes/note.md").unwrap(),
-            WorkspaceRelativePath::parse("assets").unwrap(),
-            WorkspaceRelativePath::parse("notes/assets").unwrap(),
+            workspace_generation: generation,
+            document_path: WorkspaceRelativePath::parse("notes/note.md").unwrap(),
+            folder: WorkspaceRelativePath::parse("assets").unwrap(),
+            target_parent: WorkspaceRelativePath::parse("notes/assets").unwrap(),
             attempt_id,
-            vec![BatchRecordItem {
+            items: vec![BatchRecordItem {
                 ordinal: 0,
                 name_attempt: 0,
                 requested_name: ResourceName::parse("image.png").unwrap(),
@@ -927,7 +931,7 @@ mod tests {
                 content_sha256: "b".repeat(64),
                 stage_name: stage_name(attempt_id, 0),
             }],
-        );
+        });
         record.request_digest = request_digest_from_record(&record).unwrap();
         record
     }

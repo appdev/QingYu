@@ -10,9 +10,13 @@ use std::{
 
 use async_trait::async_trait;
 use base64::{engine::general_purpose::STANDARD, Engine as _};
+#[cfg(unix)]
+use cap_fs_ext::MetadataExt;
 #[cfg(any(unix, windows))]
 use cap_fs_ext::OpenOptionsExt;
-use cap_fs_ext::{DirExt, FollowSymlinks, MetadataExt, OpenOptionsFollowExt};
+use cap_fs_ext::{DirExt, FollowSymlinks, OpenOptionsFollowExt};
+#[cfg(windows)]
+use cap_primitives::fs::_WindowsByHandle as _;
 use cap_std::fs::OpenOptions;
 use cap_std::fs::{Dir, File, Metadata};
 use quick_xml::{
@@ -53,7 +57,8 @@ use super::{
     policy::protected_resource_component,
     transaction::{
         content_digest, request_digest, stage_name, unique_resource_name, BatchPhase, BatchRecord,
-        BatchRecordItem, CreateBatchRecordError, ResourceBatchStore, StoredBatchRecord,
+        BatchRecordItem, BatchRecordPreparation, CreateBatchRecordError, ResourceBatchStore,
+        StoredBatchRecord,
     },
     ResourceServiceError,
 };
@@ -257,8 +262,7 @@ impl WorkspaceResourceService {
             &context,
             &directory,
             &target_parent,
-            &query.name,
-            query.kind,
+            &query,
             &body,
             &ignore,
         );
@@ -451,17 +455,17 @@ impl WorkspaceResourceService {
                 stage_name: stage_name(attempt_id, index),
             });
         }
-        let mut record = BatchRecord::preparing(
+        let mut record = BatchRecord::preparing(BatchRecordPreparation {
             batch_id,
-            digest,
-            context.workspace().id,
-            context.workspace().generation.clone(),
+            request_digest: digest,
+            workspace_id: context.workspace().id,
+            workspace_generation: context.workspace().generation.clone(),
             document_path,
             folder,
-            parent.clone(),
+            target_parent: parent.clone(),
             attempt_id,
-            planned,
-        );
+            items: planned,
+        });
         store.preflight_record(&record)?;
         let mut stored = match store.load(batch_id) {
             Err(_) => {
@@ -497,10 +501,7 @@ impl WorkspaceResourceService {
             },
         };
         let mut recovery = ResourceRecoveryGuard::arm(context, mutation);
-        let (directory, created_directories) = match create_resource_parent(&context.root, parent) {
-            Ok(created) => created,
-            Err(error) => return Err(error),
-        };
+        let (directory, created_directories) = create_resource_parent(&context.root, parent)?;
         for item in &record.items {
             match directory.symlink_metadata(item.target_name.as_str()) {
                 Err(error) if error.kind() == io::ErrorKind::NotFound => {}
@@ -591,13 +592,11 @@ impl WorkspaceResourceService {
                 expected_target: None,
                 expected_revision: None,
             });
-            if install.is_err() {
-                if !self.record_item_is_published(&directory, &item.record)? {
-                    let _closed = context
-                        .runtime
-                        .enter_resource_recovery(&context.snapshot, mutation);
-                    return Err(ResourceServiceError::unavailable());
-                }
+            if install.is_err() && !self.record_item_is_published(&directory, &item.record)? {
+                let _closed = context
+                    .runtime
+                    .enter_resource_recovery(&context.snapshot, mutation);
+                return Err(ResourceServiceError::unavailable());
             }
         }
         if crate::storage::sync_directory(&directory).is_err() {
@@ -902,11 +901,10 @@ impl WorkspaceResourceService {
         mutation: &MutationPermit<'_>,
     ) -> Result<Vec<ResourceEntryDto>, ResourceServiceError> {
         self.resources_from_record(context, record)
-            .map_err(|error| {
+            .inspect_err(|_| {
                 let _closed = context
                     .runtime
                     .enter_resource_recovery(&context.snapshot, mutation);
-                error
             })
     }
 
@@ -1223,8 +1221,7 @@ impl WorkspaceResourceService {
         context: &ResourceContext,
         directory: &Dir,
         parent: &WorkspaceRelativePath,
-        requested_name: &ResourceName,
-        kind: ResourceKind,
+        request: &CreateWorkspaceResourceQuery,
         body: &[u8],
         ignore: &WorkspaceIgnoreSnapshot,
     ) -> Result<ResourceEntryDto, ResourceServiceError> {
@@ -1238,7 +1235,7 @@ impl WorkspaceResourceService {
             }
         };
         for attempt in 0..MAX_UNIQUE_RESOURCE_NAMES {
-            let name = match unique_resource_name(requested_name.as_str(), attempt) {
+            let name = match unique_resource_name(request.name.as_str(), attempt) {
                 Ok(name) => name,
                 Err(error) => {
                     cleanup_staged_resource(directory, &stage_name);
@@ -1309,7 +1306,7 @@ impl WorkspaceResourceService {
                     inspected.metadata.len(),
                     inspected.validation_body.as_deref(),
                 );
-                if classification.kind != kind {
+                if classification.kind != request.kind {
                     return Err(ResourceServiceError::unsafe_target());
                 }
                 context
@@ -1323,7 +1320,7 @@ impl WorkspaceResourceService {
                     .issue_resource_id(
                         context.workspace().id,
                         &context.workspace().generation,
-                        kind,
+                        request.kind,
                         &path,
                     )
                     .map_err(|_| ResourceServiceError::unavailable())?;
@@ -1332,7 +1329,7 @@ impl WorkspaceResourceService {
                     path,
                     parent: parent.clone(),
                     name: name.clone(),
-                    kind,
+                    kind: request.kind,
                     size_bytes: safe_size(inspected.metadata.len())?,
                     modified_at: modified_utc(&inspected.metadata)?,
                     revision: inspected.revision,
@@ -3132,7 +3129,6 @@ fn link_count(metadata: &Metadata) -> u64 {
 
 #[cfg(windows)]
 fn link_count(metadata: &Metadata) -> u64 {
-    use cap_std::fs::MetadataExt as _;
     metadata.number_of_links().unwrap_or(0)
 }
 
@@ -3149,8 +3145,6 @@ fn same_file(left: &Metadata, right: &Metadata) -> bool {
 
 #[cfg(windows)]
 fn same_file(left: &Metadata, right: &Metadata) -> bool {
-    use cap_std::fs::MetadataExt as _;
-
     matches!(
         (
             left.volume_serial_number(),

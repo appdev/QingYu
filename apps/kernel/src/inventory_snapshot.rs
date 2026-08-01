@@ -17,6 +17,8 @@ use std::{
 };
 
 use cap_fs_ext::{FollowSymlinks, OpenOptionsFollowExt};
+#[cfg(windows)]
+use cap_primitives::fs::_WindowsByHandle as _;
 use cap_std::fs::{Dir, File, Metadata, OpenOptions};
 use serde::{Serialize, Serializer};
 
@@ -202,7 +204,6 @@ fn link_count(metadata: &Metadata) -> u64 {
 
 #[cfg(windows)]
 fn link_count(metadata: &Metadata) -> u64 {
-    use cap_std::fs::MetadataExt as _;
     metadata.number_of_links().map_or(0, u64::from)
 }
 
@@ -224,8 +225,6 @@ fn require_same_file(left: &Metadata, right: &Metadata) -> io::Result<()> {
 
 #[cfg(windows)]
 fn require_same_file(left: &Metadata, right: &Metadata) -> io::Result<()> {
-    use cap_std::fs::MetadataExt as _;
-
     let identities = (
         left.volume_serial_number(),
         left.file_index(),

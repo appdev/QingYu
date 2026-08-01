@@ -5,6 +5,8 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+#[cfg(windows)]
+use cap_primitives::fs::_WindowsByHandle as _;
 use cap_std::fs::{Dir, Metadata};
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 
@@ -368,8 +370,6 @@ fn ignore_link_count(metadata: &cap_std::fs::Metadata) -> u64 {
 
 #[cfg(windows)]
 fn ignore_link_count(metadata: &cap_std::fs::Metadata) -> u64 {
-    use cap_std::fs::MetadataExt as _;
-
     metadata.number_of_links().map_or(0, u64::from)
 }
 
@@ -386,8 +386,6 @@ fn same_ignore_file(left: &cap_std::fs::Metadata, right: &cap_std::fs::Metadata)
 
 #[cfg(windows)]
 fn same_ignore_file(left: &cap_std::fs::Metadata, right: &cap_std::fs::Metadata) -> bool {
-    use cap_std::fs::MetadataExt as _;
-
     matches!(
         (
             left.volume_serial_number(),

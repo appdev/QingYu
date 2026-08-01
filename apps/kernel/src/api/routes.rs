@@ -767,20 +767,8 @@ async fn read_json_body(
     if !request_has_json_content_type(&request) {
         return Err(api_error(ErrorCode::InvalidRequest, None));
     }
-    let declared_length = request
-        .headers()
-        .get(header::CONTENT_LENGTH)
-        .map(|value| {
-            value
-                .to_str()
-                .ok()
-                .filter(|value| {
-                    !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit())
-                })
-                .and_then(|value| value.parse::<usize>().ok())
-                .ok_or_else(|| api_error(ErrorCode::InvalidRequest, None))
-        })
-        .transpose()?;
+    let declared_length =
+        declared_content_length(&request).map_err(|code| api_error(code, None))?;
     if declared_length.is_some_and(|length| length > limit) {
         return Err(api_error(oversized_code, None));
     }
@@ -803,6 +791,19 @@ fn request_has_json_content_type(request: &Request<Body>) -> bool {
         .is_some_and(|value| value.trim().eq_ignore_ascii_case("application/json"))
 }
 
+fn declared_content_length(request: &Request<Body>) -> Result<Option<usize>, ErrorCode> {
+    let Some(value) = request.headers().get(header::CONTENT_LENGTH) else {
+        return Ok(None);
+    };
+    value
+        .to_str()
+        .ok()
+        .filter(|value| !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()))
+        .and_then(|value| value.parse::<usize>().ok())
+        .map(Some)
+        .ok_or(ErrorCode::InvalidRequest)
+}
+
 async fn read_resource_body(request: Request<Body>) -> Result<(String, Bytes), Response> {
     let media_type = request
         .headers()
@@ -820,20 +821,8 @@ async fn read_resource_body(request: Request<Body>) -> Result<(String, Bytes), R
         })
         .ok_or_else(|| api_error(ErrorCode::InvalidRequest, None))?
         .to_ascii_lowercase();
-    let declared_length = request
-        .headers()
-        .get(header::CONTENT_LENGTH)
-        .map(|value| {
-            value
-                .to_str()
-                .ok()
-                .filter(|value| {
-                    !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit())
-                })
-                .and_then(|value| value.parse::<usize>().ok())
-                .ok_or_else(|| api_error(ErrorCode::InvalidRequest, None))
-        })
-        .transpose()?;
+    let declared_length =
+        declared_content_length(&request).map_err(|code| api_error(code, None))?;
     if declared_length.is_some_and(|length| length > RESOURCE_BODY_LIMIT) {
         return Err(api_error(ErrorCode::ResourceTooLarge, None));
     }

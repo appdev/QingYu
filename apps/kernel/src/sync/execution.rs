@@ -13,7 +13,9 @@ use super::repository::{SyncManifest, SyncManifestEntry, SyncManifestRepository}
 use crate::storage::{
     rename_noreplace, sync_directory, unique_regular_file_identity, UniqueRegularFileIdentity,
 };
-use cap_fs_ext::{DirExt, FollowSymlinks, MetadataExt, OpenOptionsExt, OpenOptionsFollowExt};
+#[cfg(unix)]
+use cap_fs_ext::OpenOptionsExt;
+use cap_fs_ext::{DirExt, FollowSymlinks, MetadataExt, OpenOptionsFollowExt};
 use cap_std::fs::Dir;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
