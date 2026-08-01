@@ -66,6 +66,7 @@ export type NativeStaticMenuCommand =
   | "syncNow"
   | "exportPdf"
   | "exportHtml"
+  | "exportMarkdown"
   | "exportDocx"
   | "exportEpub"
   | "exportLatex"
@@ -219,7 +220,8 @@ export async function installNativeEditorContextMenu(
         handlers,
         language,
         withNativeClipboardText(options),
-        desktopContextMenuIdPrefixes
+        desktopContextMenuIdPrefixes,
+        element
       ),
       position: contextMenuPositionFromEvent(mouseEvent)
     });

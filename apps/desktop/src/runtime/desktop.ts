@@ -11,10 +11,18 @@ import {
   createUnavailableAppConfigRuntime,
   createUnavailableNativeShellPort,
   kernelWorkspaceRoot,
+  relativePathFromServerPath,
+  resolveServerMarkdownImagePath,
   type AppFormFactor,
   type AppRuntime,
+  type KernelDocumentEntrySnapshot,
   type KernelDomainPort,
-  type NativeShellPort
+  type KernelResourceSnapshot,
+  type KernelWorkspaceGeneration,
+  type KernelWorkspaceRelativePath,
+  type NativeShellPort,
+  type SaveNativeMarkdownBundleFileInput,
+  type SavedNativeMarkdownFile
 } from "@markra/app/runtime";
 import {
   readNativeKernelBootstrap,
@@ -121,6 +129,7 @@ export function createDesktopRuntime({
     export: true,
     fileDrop: true,
     imageImport: true,
+    markdownBundle: true,
     nativeWindowChrome: true,
     openLocalAttachments: true,
     pandoc: true,
@@ -169,6 +178,7 @@ export function createDesktopRuntime({
     saveClipboardImage: files.saveNativeClipboardImage,
     saveClipboardImages: (inputs) => Promise.all(inputs.map(files.saveNativeClipboardImage)),
     saveHtmlFile: files.saveNativeHtmlFile,
+    saveMarkdownBundleFile: files.saveNativeMarkdownBundleFile,
     saveMarkdownFile: files.saveNativeMarkdownFile,
     savePandocFile: files.saveNativePandocFile,
     savePdfFile: files.saveNativePdfFile,
@@ -324,13 +334,186 @@ export interface DesktopKernelRuntimeOwner {
 
 export interface DesktopKernelRuntimeOwnerOptions {
   readonly commitRoot?: (path: string) => Promise<unknown>;
+  readonly saveMarkdownBundleSnapshot?: typeof files.saveNativeMarkdownBundleSnapshotFile;
   readonly selectRoot?: () => Promise<string | null>;
+}
+
+function parentKernelPath(path: string) {
+  const separator = path.lastIndexOf("/");
+  return (separator < 0 ? "" : path.slice(0, separator)) as KernelWorkspaceRelativePath;
+}
+
+function sameKernelResource(
+  left: KernelResourceSnapshot,
+  right: KernelResourceSnapshot
+) {
+  return left.id === right.id &&
+    left.kind === right.kind &&
+    left.mediaType === right.mediaType &&
+    left.name === right.name &&
+    left.relativePath === right.relativePath &&
+    left.revision === right.revision &&
+    left.sizeBytes === right.sizeBytes &&
+    left.workspaceGeneration === right.workspaceGeneration;
+}
+
+async function listKernelDocuments(
+  kernel: KernelDomainPort,
+  parent: KernelWorkspaceRelativePath,
+  workspaceGeneration: KernelWorkspaceGeneration
+) {
+  const items: KernelDocumentEntrySnapshot[] = [];
+  const cursors = new Set<string>();
+  let cursor: Parameters<KernelDomainPort["documents"]["list"]>[0]["cursor"];
+  do {
+    const page = await kernel.documents.list({
+      cursor,
+      limit: 100,
+      parent,
+      workspaceGeneration
+    });
+    if (page.workspaceGeneration !== workspaceGeneration) {
+      throw new Error("The Kernel workspace changed during Markdown export.");
+    }
+    items.push(...page.items);
+    cursor = page.nextCursor ?? undefined;
+    if (cursor !== undefined && cursors.has(cursor)) {
+      throw new Error("The Kernel document listing could not be completed.");
+    }
+    if (cursor !== undefined) cursors.add(cursor);
+  } while (cursor !== undefined);
+  return items;
+}
+
+async function listKernelResources(
+  kernel: KernelDomainPort,
+  parent: KernelWorkspaceRelativePath,
+  workspaceGeneration: KernelWorkspaceGeneration
+) {
+  const inventory = await kernel.resources.list({ parent, workspaceGeneration });
+  if (inventory.workspaceGeneration !== workspaceGeneration) {
+    throw new Error("The Kernel workspace changed during Markdown export.");
+  }
+  return inventory.items.flatMap((entry) => entry.entryType === "resource" ? [entry.resource] : []);
+}
+
+function bytesToBase64(bytes: Uint8Array) {
+  const chunkSize = 32_766;
+  let encoded = "";
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    const chunk = bytes.subarray(offset, Math.min(offset + chunkSize, bytes.length));
+    encoded += btoa(String.fromCharCode(...chunk));
+  }
+  return encoded;
+}
+
+export async function saveDesktopKernelMarkdownBundleFile(
+  kernel: KernelDomainPort,
+  input: SaveNativeMarkdownBundleFileInput,
+  saveSnapshot: typeof files.saveNativeMarkdownBundleSnapshotFile = files.saveNativeMarkdownBundleSnapshotFile
+): Promise<SavedNativeMarkdownFile | null> {
+  if (!input.documentPath) {
+    throw new Error("Current document must be a saved Markdown file.");
+  }
+  const workspace = await kernel.workspace.read();
+  if (workspace.readiness !== "ready") {
+    throw new Error("The Kernel workspace is unavailable for Markdown export.");
+  }
+  const workspaceGeneration = workspace.generation;
+  const documentRelativePath = relativePathFromServerPath(input.documentPath);
+  if (documentRelativePath === "") {
+    throw new Error("Current document must be a saved Markdown file.");
+  }
+  const documentParent = parentKernelPath(documentRelativePath);
+  const documents = await listKernelDocuments(kernel, documentParent, workspaceGeneration);
+  const document = documents.find((entry) => (
+    entry.kind === "file" && entry.relativePath === documentRelativePath
+  ));
+  if (!document) {
+    throw new Error("Current document must be a saved Markdown file.");
+  }
+
+  const references = input.references.map((reference) => {
+    const resourcePath = resolveServerMarkdownImagePath(input.documentPath as string, reference.href);
+    if (!resourcePath) {
+      throw new Error(`Markdown resource "${reference.href}" is not available in the Kernel workspace.`);
+    }
+    return { ...reference, resourcePath };
+  });
+  const paths = [...new Set(references.map((reference) => reference.resourcePath))];
+  const parents = [...new Set(paths.map(parentKernelPath))];
+  const initialByPath = new Map<string, KernelResourceSnapshot>();
+  for (const parent of parents) {
+    const resources = await listKernelResources(kernel, parent, workspaceGeneration);
+    for (const resource of resources) initialByPath.set(resource.relativePath, resource);
+  }
+
+  const resources = [];
+  for (const path of paths) {
+    const resource = initialByPath.get(path);
+    if (!resource) {
+      throw new Error(`Markdown resource "${path}" is not available in the Kernel workspace.`);
+    }
+    const opened = await kernel.resources.open({
+      id: resource.id,
+      kind: resource.kind,
+      workspaceGeneration
+    });
+    if (
+      opened.revision !== resource.revision ||
+      opened.mediaType !== resource.mediaType ||
+      opened.body.size !== resource.sizeBytes
+    ) {
+      throw new Error(`Markdown resource "${path}" changed during export.`);
+    }
+    resources.push({
+      bodyBase64: bytesToBase64(new Uint8Array(await opened.body.arrayBuffer())),
+      name: resource.name,
+      path
+    });
+  }
+
+  for (const parent of parents) {
+    const finalResources = await listKernelResources(kernel, parent, workspaceGeneration);
+    const finalByPath = new Map<string, KernelResourceSnapshot>(
+      finalResources.map((resource) => [resource.relativePath, resource])
+    );
+    for (const path of paths.filter((candidate) => parentKernelPath(candidate) === parent)) {
+      const initial = initialByPath.get(path);
+      const final = finalByPath.get(path);
+      if (!initial || !final || !sameKernelResource(initial, final)) {
+        throw new Error(`Markdown resource "${path}" changed during export.`);
+      }
+    }
+  }
+  const finalDocuments = await listKernelDocuments(kernel, documentParent, workspaceGeneration);
+  const finalDocument = finalDocuments.find((entry) => entry.relativePath === documentRelativePath);
+  if (!finalDocument || finalDocument.kind !== "file" || finalDocument.locator !== document.locator) {
+    throw new Error("Current document changed location during Markdown export.");
+  }
+  const finalWorkspace = await kernel.workspace.read();
+  if (
+    finalWorkspace.id !== workspace.id ||
+    finalWorkspace.generation !== workspaceGeneration ||
+    finalWorkspace.readiness !== "ready"
+  ) {
+    throw new Error("The Kernel workspace changed during Markdown export.");
+  }
+
+  return saveSnapshot({
+    folder: input.folder,
+    markdown: input.markdown,
+    references,
+    resources,
+    suggestedName: input.suggestedName
+  });
 }
 
 export function createDesktopKernelRuntimeOwner(
   kernel: KernelDomainPort,
   {
     commitRoot = switchDesktopKernelWorkspace,
+    saveMarkdownBundleSnapshot = files.saveNativeMarkdownBundleSnapshotFile,
     selectRoot = selectDesktopWorkspaceDirectory,
   }: DesktopKernelRuntimeOwnerOptions = {},
 ): DesktopKernelRuntimeOwner {
@@ -370,6 +553,11 @@ export function createDesktopKernelRuntimeOwner(
       ...fileOwner.files,
       requestPrimaryNotebookSwitch: undefined,
       saveClipboardImage: unavailable.files.saveClipboardImage,
+      saveMarkdownBundleFile: (input) => saveDesktopKernelMarkdownBundleFile(
+        kernel,
+        input,
+        saveMarkdownBundleSnapshot
+      ),
     },
     kernel,
     mcp: shell.mcp,

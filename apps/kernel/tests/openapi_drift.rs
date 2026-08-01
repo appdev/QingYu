@@ -711,6 +711,11 @@ fn operations_freeze_request_bodies_parameters_and_route_specific_errors() {
         binary_headers["X-Content-Type-Options"]["schema"]["const"],
         "nosniff"
     );
+    assert_eq!(binary_headers["X-Resource-Revision"]["required"], true);
+    assert_eq!(
+        binary_headers["X-Resource-Revision"]["schema"]["$ref"],
+        "#/components/schemas/Revision"
+    );
 
     let upload = &document["paths"]["/api/v1/documents/{documentId}/resources"]["post"];
     let upload_parameters = upload["parameters"].as_array().expect("upload parameters");

@@ -292,6 +292,7 @@ describe("Server Kernel domain adapter", () => {
           "content-length": "1",
           "content-type": "image/png",
           "x-content-type-options": "nosniff",
+          "x-resource-revision": "resource-revision-1",
         },
       }));
     const adapter = await createServerKernelDomainAdapter(client, {
@@ -310,6 +311,7 @@ describe("Server Kernel domain adapter", () => {
     });
     await expect(adapter.port.resources.open(input)).resolves.toMatchObject({
       mediaType: "image/png",
+      revision: "resource-revision-1",
     });
     expect(onAuthenticationRequired).not.toHaveBeenCalled();
     await expect(adapter.port.workspace.read()).resolves.toMatchObject({ id: "workspace-1" });
@@ -634,7 +636,10 @@ function kernelClient(overrides: {
       create: vi.fn(),
       list: vi.fn(async () => ({ items: [], nextCursor: null })),
       open: vi.fn(async () => new Response(new Uint8Array([1]), {
-        headers: { "content-type": "image/png" },
+        headers: {
+          "content-type": "image/png",
+          "x-resource-revision": "resource-revision-1",
+        },
       })),
     },
     system: { runtime: runtimeRead },

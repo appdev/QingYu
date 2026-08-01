@@ -85,6 +85,20 @@ function renderedLines(view: EditorView) {
   );
 }
 
+function paragraphSeparatorStates(view: EditorView) {
+  return Array.from(
+    view.dom.querySelectorAll(".cm-markra-empty-line"),
+    (line) => line.classList.contains("cm-markra-paragraph-separator"),
+  );
+}
+
+function paragraphEndStates(view: EditorView) {
+  return Array.from(
+    view.dom.querySelectorAll(".cm-markra-paragraph"),
+    (line) => line.classList.contains("cm-markra-paragraph-end"),
+  );
+}
+
 afterEach(() => {
   for (const view of views.splice(0)) view.destroy();
   document.body.replaceChildren();
@@ -492,11 +506,80 @@ describe("liveMarkdown", () => {
     view.dispatch({ selection: EditorSelection.range(0, doc.length) });
 
     expect(renderedLines(view)).toEqual(before);
-    expect(
-      view.dom
-        .querySelector(".cm-markra-empty-line")
-        ?.getAttribute("data-markra-empty-source"),
-    ).toBe("hidden");
+    const emptyLine = view.dom.querySelector(".cm-markra-empty-line");
+    expect(emptyLine?.hasAttribute("data-markra-empty-source")).toBe(false);
+    expect(paragraphSeparatorStates(view)).toEqual([false]);
+    expect(paragraphEndStates(view)).toEqual([false, false]);
+  });
+
+  it("keeps empty-line rendering stable when the cursor enters a separator", () => {
+    const doc = "Before\n\nAfter";
+    const view = createView({ doc, anchor: doc.length });
+    const emptyLine = view.dom.querySelector<HTMLElement>(
+      ".cm-markra-empty-line",
+    );
+
+    expect(emptyLine?.hasAttribute("data-markra-empty-source")).toBe(false);
+    expect(paragraphSeparatorStates(view)).toEqual([false]);
+    expect(paragraphEndStates(view)).toEqual([false, false]);
+
+    view.dispatch({ selection: EditorSelection.cursor("Before\n".length) });
+
+    expect(view.state.doc.toString()).toBe(doc);
+    const activeEmptyLine = view.dom.querySelector(".cm-markra-empty-line");
+    expect(activeEmptyLine?.hasAttribute("data-markra-empty-source")).toBe(
+      false,
+    );
+    expect(paragraphSeparatorStates(view)).toEqual([false]);
+    expect(paragraphEndStates(view)).toEqual([false, false]);
+  });
+
+  it("keeps authored blank lines separate from paragraph-end spacing", async () => {
+    const view = createView({ doc: "First\nSecond\n\n\nAfter" });
+
+    await vi.waitFor(() => {
+      expect(paragraphSeparatorStates(view)).toEqual([false, false]);
+      expect(paragraphEndStates(view)).toEqual([false, false, false]);
+    });
+  });
+
+  it("adds paragraph spacing when another block starts directly", () => {
+    const view = createView({ doc: "Before\n# Heading" });
+
+    expect(paragraphEndStates(view)).toEqual([true]);
+  });
+
+  it("keeps a trailing editing line free from paragraph spacing", () => {
+    const doc = "Before\n";
+    const view = createView({ doc });
+
+    expect(paragraphEndStates(view)).toEqual([false]);
+
+    view.dispatch({ changes: { from: doc.length, insert: " " } });
+
+    expect(paragraphEndStates(view)).toEqual([false]);
+
+    view.dispatch({
+      changes: { from: view.state.doc.length, insert: "After" },
+    });
+
+    expect(paragraphEndStates(view)).toEqual([false, false]);
+  });
+
+  it("keeps an authored blank line stable while text is entered", () => {
+    const doc = "Before\n\nAfter";
+    const position = "Before\n".length;
+    const view = createView({ doc, anchor: position });
+
+    expect(paragraphEndStates(view)).toEqual([false, false]);
+
+    view.dispatch({
+      changes: { from: position, insert: "Middle" },
+      selection: EditorSelection.cursor(position + "Middle".length),
+    });
+
+    expect(view.state.doc.toString()).toBe("Before\nMiddle\nAfter");
+    expect(paragraphEndStates(view)).toEqual([false, false, false]);
   });
 
   it("does not rebuild preview decorations while a range endpoint moves", () => {
@@ -772,6 +855,41 @@ describe("liveMarkdown", () => {
     expect(lines[0]?.textContent).toBe("First item");
     expect(lines[1]?.getAttribute("data-markra-list-source")).toBe("hidden");
     expect(lines[1]?.textContent).toBe("Second item");
+  });
+
+  it("marks hidden list markers whose source is included in a range selection", () => {
+    const doc = "- First item\n- Second item\n\nTail";
+    const view = createView({
+      doc,
+      selection: EditorSelection.range(0, doc.length),
+    });
+    const listLines = () => [
+      ...view.dom.querySelectorAll<HTMLElement>(".cm-markra-list-item"),
+    ];
+
+    expect(
+      listLines().map((line) =>
+        line.getAttribute("data-markra-list-marker-selected")
+      ),
+    ).toEqual(["true", "true"]);
+
+    view.dispatch({
+      selection: EditorSelection.range(doc.indexOf("First"), doc.length),
+    });
+
+    expect(
+      listLines().map((line) =>
+        line.getAttribute("data-markra-list-marker-selected")
+      ),
+    ).toEqual([null, "true"]);
+
+    view.dispatch({ selection: EditorSelection.cursor(doc.length) });
+
+    expect(
+      listLines().map((line) =>
+        line.getAttribute("data-markra-list-marker-selected")
+      ),
+    ).toEqual([null, null]);
   });
 
   it("preserves visual list depth without leaving source indentation in preview text", () => {

@@ -65,6 +65,7 @@ describe("desktop runtime composition", () => {
       dejavuSync: false,
       fileDrop: false,
       imageImport: true,
+      markdownBundle: true,
       openLocalAttachments: false,
       projectSync: true,
       resources: false
@@ -103,6 +104,8 @@ describe("desktop runtime composition", () => {
     expect(runtime.files.takeOpenedMarkdownPaths)
       .toBe(nativeShell.files.takeOpenedMarkdownPaths);
     expect(runtime.files.openLocalImages).toBe(desktopFiles.openNativeLocalImages);
+    expect(runtime.files.saveMarkdownBundleFile)
+      .not.toBe(desktopFiles.saveNativeMarkdownBundleFile);
 
     const secondOwner = createDesktopKernelRuntimeOwner(kernel);
     expect(runtime.syncConfig.cancelApply).toBe(secondOwner.runtime.syncConfig.cancelApply);
@@ -169,6 +172,131 @@ describe("desktop runtime composition", () => {
 
     owner.release();
     Reflect.deleteProperty(window, "__TAURI_INTERNALS__");
+  });
+
+  it("freezes Kernel Markdown resources before opening the native export picker", async () => {
+    const unavailable = readyKernelPort();
+    const generation = "workspace-generation" as KernelWorkspaceGeneration;
+    const revision = "sha256:resource" as KernelRevision;
+    const resource = {
+      id: "resource-id",
+      kind: "image" as const,
+      mediaType: "image/png",
+      modifiedAt: "2026-08-01T00:00:00Z",
+      name: "chart.png",
+      parent: "notes/assets" as never,
+      previewable: true,
+      relativePath: "notes/assets/chart.png" as never,
+      revision,
+      sizeBytes: 5,
+      workspaceGeneration: generation,
+    };
+    const workspace = {
+      displayName: "Notes",
+      generation,
+      id: "workspace-id",
+      readiness: "ready" as const,
+      revision: "workspace-revision" as KernelRevision,
+    };
+    const document = {
+      kind: "file" as const,
+      locator: "document-locator" as never,
+      modifiedAt: "2026-08-01T00:00:00Z",
+      name: "draft.md",
+      parent: "notes" as never,
+      relativePath: "notes/draft.md" as never,
+      revision: "document-revision" as KernelRevision,
+      sizeBytes: 7,
+      workspaceGeneration: generation,
+    };
+    const kernel = {
+      ...unavailable,
+      availability: "available",
+      documents: {
+        ...unavailable.documents,
+        list: vi.fn(async () => ({
+          items: [document],
+          nextCursor: null,
+          workspaceGeneration: generation,
+        })),
+      },
+      resources: {
+        ...unavailable.resources,
+        list: vi.fn(async () => ({
+          items: [{ entryType: "resource" as const, resource }],
+          workspaceGeneration: generation,
+        })),
+        open: vi.fn(async () => ({
+          body: new Blob(["image"], { type: "image/png" }),
+          mediaType: "image/png",
+          revision,
+        })),
+      },
+      workspace: {
+        read: vi.fn(async () => workspace),
+      },
+    } as KernelDomainPort;
+    const saveMarkdownBundleSnapshot = vi.fn(async () => ({
+      name: "draft.md",
+      path: "/exports/draft/draft.md",
+    }));
+    const owner = createDesktopKernelRuntimeOwner(kernel, { saveMarkdownBundleSnapshot });
+    const markdown = "# Draft\n\n![Chart](assets/chart.png)";
+    const href = "assets/chart.png";
+    const from = markdown.indexOf(href);
+
+    await expect(owner.runtime.files.saveMarkdownBundleFile?.({
+      documentPath: `${kernelWorkspaceRoot}/notes/draft.md`,
+      folder: "assets",
+      markdown,
+      references: [{ from, href, rawHref: href, to: from + href.length }],
+      rootPath: kernelWorkspaceRoot,
+      suggestedName: "draft.md",
+    })).resolves.toEqual({
+      name: "draft.md",
+      path: "/exports/draft/draft.md",
+    });
+
+    expect(kernel.resources.open).toHaveBeenCalledWith({
+      id: resource.id,
+      kind: resource.kind,
+      workspaceGeneration: generation,
+    });
+    expect(kernel.resources.list).toHaveBeenCalledTimes(2);
+    expect(kernel.workspace.read).toHaveBeenCalledTimes(2);
+    expect(saveMarkdownBundleSnapshot).toHaveBeenCalledWith({
+      folder: "assets",
+      markdown,
+      references: [{
+        from,
+        href,
+        rawHref: href,
+        resourcePath: "notes/assets/chart.png",
+        to: from + href.length,
+      }],
+      resources: [{
+        bodyBase64: "aW1hZ2U=",
+        name: "chart.png",
+        path: "notes/assets/chart.png",
+      }],
+      suggestedName: "draft.md",
+    });
+
+    vi.mocked(kernel.resources.open).mockResolvedValueOnce({
+      body: new Blob(["image"], { type: "image/png" }),
+      mediaType: "image/png",
+      revision: "sha256:replacement" as KernelRevision,
+    });
+    await expect(owner.runtime.files.saveMarkdownBundleFile?.({
+      documentPath: `${kernelWorkspaceRoot}/notes/draft.md`,
+      folder: "assets",
+      markdown,
+      references: [{ from, href, rawHref: href, to: from + href.length }],
+      rootPath: kernelWorkspaceRoot,
+      suggestedName: "draft.md",
+    })).rejects.toThrow('Markdown resource "notes/assets/chart.png" changed during export.');
+    expect(saveMarkdownBundleSnapshot).toHaveBeenCalledTimes(1);
+    owner.release();
   });
 
   it("keeps the native image picker while routing image writes to one Kernel batch", async () => {

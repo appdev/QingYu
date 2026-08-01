@@ -10,6 +10,8 @@ pub(crate) mod history;
 mod ignore_rules;
 pub(crate) mod image;
 #[cfg(desktop)]
+pub(crate) mod markdown_export;
+#[cfg(desktop)]
 pub(crate) mod open;
 pub(crate) mod path;
 #[cfg(desktop)]

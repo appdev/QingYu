@@ -133,6 +133,22 @@ export type SaveNativeHtmlFileInput = {
   contents: string;
 };
 
+export type NativeMarkdownExportReference = {
+  from: number;
+  href: string;
+  rawHref: string;
+  to: number;
+};
+
+export type SaveNativeMarkdownBundleFileInput = {
+  documentPath: string | null;
+  folder: string;
+  markdown: string;
+  references: NativeMarkdownExportReference[];
+  rootPath: string | null;
+  suggestedName: string;
+};
+
 export type SaveNativePdfFileInput = {
   suggestedName: string;
   contents: string;
@@ -416,6 +432,10 @@ export function saveNativeMarkdownFile(input: SaveNativeMarkdownFileInput) {
 
 export function saveNativeHtmlFile(input: SaveNativeHtmlFileInput) {
   return getAppRuntime().files.saveHtmlFile(input);
+}
+
+export function saveNativeMarkdownBundleFile(input: SaveNativeMarkdownBundleFileInput) {
+  return getAppRuntime().files.saveMarkdownBundleFile?.(input) ?? Promise.resolve(null);
 }
 
 export function saveNativePdfFile(input: SaveNativePdfFileInput) {

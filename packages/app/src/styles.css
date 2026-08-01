@@ -645,13 +645,10 @@
     color: var(--editor-text-primary);
   }
 
-  /* Keep CodeMirror's child <br> in layout. WebKit uses it to map a drag
-     endpoint through the visual gap instead of falling back to document end. */
-  .markdown-paper .cm-line.cm-markra-empty-line[data-markra-empty-source="hidden"] {
-    height: var(--editor-paragraph-spacing);
-    min-height: var(--editor-paragraph-spacing);
-    font-size: 0;
-    line-height: var(--editor-paragraph-spacing);
+  /* Paragraph spacing is extra rhythm after content, not a replacement for
+     an authored blank line, which must retain the editor's normal line height. */
+  .markdown-paper .cm-line.cm-markra-paragraph-end {
+    padding-block-end: var(--editor-paragraph-spacing) !important;
   }
 
   .markdown-paper .cm-line.cm-markra-list-item {
@@ -669,6 +666,10 @@
     color: var(--editor-text-secondary);
     content: attr(data-list-marker);
     text-align: center;
+  }
+
+  .markdown-paper .cm-line.cm-markra-list-item[data-markra-list-marker-selected="true"]::before {
+    background: color-mix(in srgb, var(--editor-caret-color, var(--accent)) 20%, transparent);
   }
 
   .markdown-paper .cm-line.cm-markra-list-item[data-list-kind="task"][data-markra-list-source="hidden"] {
@@ -714,12 +715,14 @@
   }
 
   .markdown-paper .cm-line.cm-markra-list-item + .cm-line.cm-markra-list-item {
-    padding-block-start: 8px !important;
+    --markra-block-toolbar-block-offset: 4px;
+    padding-block-start: 4px !important;
   }
 
   .markdown-paper .cm-line.cm-markra-list-item[data-list-depth="0"] +
     .cm-line.cm-markra-list-item[data-list-depth="1"] {
-    padding-block-start: 12px !important;
+    --markra-block-toolbar-block-offset: 8px;
+    padding-block-start: 8px !important;
   }
 
   .markdown-paper .cm-line.cm-markra-list-item[data-list-depth="1"] +
@@ -728,7 +731,8 @@
     .cm-line.cm-markra-list-item[data-list-kind="ordered"],
   .markdown-paper .cm-line.cm-markra-list-item[data-list-kind="ordered"] +
     .cm-line.cm-markra-list-item[data-list-kind="task"] {
-    padding-block-start: 24px !important;
+    --markra-block-toolbar-block-offset: 12px;
+    padding-block-start: 12px !important;
   }
 
   .markdown-paper .cm-line.cm-markra-list-item[data-markra-list-source="hidden"] {
@@ -761,6 +765,7 @@
      accumulate across blocks and shift WebKit's pointer mapping away from
      the rendered caret. */
   .markdown-paper .cm-line.cm-markra-code-header-line {
+    --markra-block-toolbar-block-offset: 12px;
     position: relative !important;
     height: 0 !important;
     min-height: 0 !important;
@@ -1009,6 +1014,7 @@
   }
 
   .markdown-paper .cm-line:has(> .cm-markra-horizontal-rule) {
+    --markra-block-toolbar-block-offset: 22px;
     font-size: 0 !important;
     line-height: 0 !important;
   }
@@ -1074,19 +1080,23 @@
     transform: translate(-50%, -50%);
   }
 
+  .markdown-paper .cm-line[data-markra-block-from] {
+    position: relative;
+  }
+
   .markdown-paper .cm-markra-block-toolbar {
-    /* 42px of controls plus a 12px gap offsets the -54px gutter without
-       shifting the document text column. */
-    position: relative !important;
+    /* Keep block tools anchored to the shared line gutter. List and callout
+       padding must move content without pulling controls into the block. */
+    position: absolute !important;
+    inset-inline-start: -54px;
+    top: calc(0.5lh + var(--markra-block-toolbar-block-offset, 0px));
+    z-index: 5;
     display: inline-flex !important;
     flex: none;
-    margin: 0 12px 0 -54px !important;
-    margin-inline-start: -54px !important;
-    margin-inline-end: 12px !important;
+    margin: 0 !important;
     opacity: 0 !important;
     pointer-events: auto;
-    transform: none;
-    vertical-align: middle;
+    transform: translateY(-50%);
   }
 
   /* The controls sit outside the line box. This invisible bridge keeps the
@@ -1524,7 +1534,26 @@
 
   .markdown-paper h2.markra-heading-toggle-heading,
   .markdown-paper .cm-line.cm-markra-h2.markra-heading-toggle-heading {
-    --markra-heading-toggle-center-offset: -3.5px;
+    --markra-heading-toggle-center-offset: 8px;
+  }
+
+  .markdown-paper h3.markra-heading-toggle-heading,
+  .markdown-paper .cm-line.cm-markra-h3.markra-heading-toggle-heading {
+    --markra-heading-toggle-center-offset: 9px;
+  }
+
+  .markdown-paper h4.markra-heading-toggle-heading,
+  .markdown-paper .cm-line.cm-markra-h4.markra-heading-toggle-heading {
+    --markra-heading-toggle-center-offset: 8px;
+  }
+
+  .markdown-paper h5.markra-heading-toggle-heading,
+  .markdown-paper .cm-line.cm-markra-h5.markra-heading-toggle-heading,
+  .markdown-paper h6.markra-heading-toggle-heading,
+  .markdown-paper .cm-line.cm-markra-h6.markra-heading-toggle-heading {
+    /* Heading rhythm uses top padding. Offset gutter controls by half the
+       padding imbalance so they remain centered on the editable text row. */
+    --markra-heading-toggle-center-offset: 7px;
   }
 
   .markdown-paper .markra-heading-toggle-button {
@@ -1683,6 +1712,7 @@
   }
 
   .markdown-paper .cm-line.markra-callout-first {
+    --markra-block-toolbar-block-offset: 14px;
     border-block-start: 1px solid var(--callout-border) !important;
     border-start-start-radius: 7px;
     border-start-end-radius: 7px;

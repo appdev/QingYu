@@ -1,3 +1,16 @@
+## 2.5.0 (2026-08-01)
+
+### Features
+
+* **export:** add portable Markdown bundles
+* **release:** add Arch Linux package
+
+### Bug Fixes
+
+* **editor:** align block controls and list interactions
+* **editor:** preserve list formatting on context paste
+* **editor:** stabilize blank-line editing
+
 ## 2.4.0 (2026-07-31)
 
 ### Features

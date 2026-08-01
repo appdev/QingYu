@@ -25,6 +25,7 @@ type NativeMenuHandlerOptions = {
   exportEpub?: () => unknown | Promise<unknown>;
   exportHtml?: () => unknown | Promise<unknown>;
   exportLatex?: () => unknown | Promise<unknown>;
+  exportMarkdown?: () => unknown | Promise<unknown>;
   exportPdf?: () => unknown | Promise<unknown>;
   importLocalFiles: () => unknown | Promise<unknown>;
   importLocalImages: () => unknown | Promise<unknown>;
@@ -124,6 +125,7 @@ export function useNativeMenuHandlers({
   exportEpub,
   exportHtml,
   exportLatex,
+  exportMarkdown,
   exportPdf,
   importLocalFiles,
   importLocalImages,
@@ -160,6 +162,7 @@ export function useNativeMenuHandlers({
     exportEpub,
     exportHtml,
     exportLatex,
+    exportMarkdown,
     exportPdf,
     importLocalFiles,
     importLocalImages,
@@ -193,6 +196,7 @@ export function useNativeMenuHandlers({
     exportEpub,
     exportHtml,
     exportLatex,
+    exportMarkdown,
     exportPdf,
     importLocalFiles,
     importLocalImages,
@@ -262,6 +266,7 @@ export function useNativeMenuHandlers({
       if (closeDocument) handlers.closeDocument = () => latestOptionsRef.current.closeDocument?.();
       if (exportPdf) handlers.exportPdf = () => latestOptionsRef.current.exportPdf?.();
       if (exportHtml) handlers.exportHtml = () => latestOptionsRef.current.exportHtml?.();
+      if (exportMarkdown) handlers.exportMarkdown = () => latestOptionsRef.current.exportMarkdown?.();
       if (exportDocx) handlers.exportDocx = () => latestOptionsRef.current.exportDocx?.();
       if (exportEpub) handlers.exportEpub = () => latestOptionsRef.current.exportEpub?.();
       if (exportLatex) handlers.exportLatex = () => latestOptionsRef.current.exportLatex?.();

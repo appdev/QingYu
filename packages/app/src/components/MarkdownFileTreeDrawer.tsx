@@ -2788,7 +2788,7 @@ export function MarkdownFileTreeDrawer({
                 onDragStart={handleFileTreeDragStart}
               >
                 {renderFileTreeActions(
-                  "markdown-file-tree-toolbar theme-toolbar-surface flex h-8 shrink-0 items-center justify-start gap-1 pr-4 pl-2.5 text-(--text-secondary)"
+                  "markdown-file-tree-toolbar theme-toolbar-surface flex h-8 shrink-0 items-center justify-start gap-0 px-2 text-(--text-secondary)"
                 )}
 
                 {renderFileSearchInput()}

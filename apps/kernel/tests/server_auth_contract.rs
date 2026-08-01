@@ -299,7 +299,7 @@ fn openapi_freezes_server_auth_routes_and_browser_security_composition() {
     );
     assert_eq!(
         document["x-cors-exposed-response-headers"],
-        json!(["Retry-After", "X-Request-Id"])
+        json!(["Retry-After", "X-Request-Id", "X-Resource-Revision"])
     );
 }
 

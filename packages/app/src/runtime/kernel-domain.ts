@@ -223,6 +223,7 @@ export type KernelCreateResourceBatchInput = {
 export type KernelResourceBody = {
   body: Blob;
   mediaType: string;
+  revision?: KernelRevision;
 };
 
 export type KernelInvalidationScope =

@@ -48,7 +48,8 @@ use crate::{
         InventoryModifiedTime, InventorySnapshotBudget, InventorySnapshotLimits,
     },
     runtime::{
-        ActiveWorkspaceSnapshot, KernelRuntime, MutationPermit, ResourcesApiService, ServiceFailure,
+        ActiveWorkspaceSnapshot, KernelRuntime, MutationPermit, OwnedMutationPermit,
+        ResourcesApiService, ServiceFailure,
     },
     storage::nonfollowing_read_options,
 };
@@ -1156,6 +1157,7 @@ impl WorkspaceResourceService {
             remaining,
             stream_digest: Sha256::new(),
             verified_complete: false,
+            _mutation: None,
         })
     }
 
@@ -1701,6 +1703,11 @@ impl ResourcesApiService for WorkspaceResourceService {
         &self,
         query: ListWorkspaceInventoryQuery,
     ) -> Result<WorkspaceInventoryPageDto, ServiceFailure> {
+        let runtime = self
+            .runtime
+            .upgrade()
+            .ok_or_else(|| service_failure(ResourceServiceError::unavailable()))?;
+        let _mutation = runtime.mutation_coordinator().lock_owned().await;
         let service = self.clone();
         tokio::task::spawn_blocking(move || service.list_inventory_page(query))
             .await
@@ -1713,11 +1720,19 @@ impl ResourcesApiService for WorkspaceResourceService {
         resource_id: ResourceId,
         expected_kind: ResourceKind,
     ) -> Result<RetainedResource, ServiceFailure> {
+        let runtime = self
+            .runtime
+            .upgrade()
+            .ok_or_else(|| service_failure(ResourceServiceError::unavailable()))?;
+        let mutation = runtime.mutation_coordinator().lock_owned().await;
         let service = self.clone();
-        tokio::task::spawn_blocking(move || service.open_resource(&resource_id, expected_kind))
-            .await
-            .map_err(|_| unavailable_service_failure())?
-            .map_err(service_failure)
+        let mut resource =
+            tokio::task::spawn_blocking(move || service.open_resource(&resource_id, expected_kind))
+                .await
+                .map_err(|_| unavailable_service_failure())?
+                .map_err(service_failure)?;
+        resource.retain_mutation(mutation);
+        Ok(resource)
     }
 
     async fn create_workspace_resource(
@@ -4006,11 +4021,16 @@ pub struct RetainedResource {
     remaining: u64,
     stream_digest: Sha256,
     verified_complete: bool,
+    _mutation: Option<OwnedMutationPermit>,
 }
 
 impl RetainedResource {
     pub const fn entry(&self) -> &ResourceEntryDto {
         &self.entry
+    }
+
+    fn retain_mutation(&mut self, mutation: OwnedMutationPermit) {
+        self._mutation = Some(mutation);
     }
 
     /// Verifies that the transport consumed exactly the declared content and

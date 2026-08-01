@@ -99,6 +99,7 @@ const DESKTOP_COMMANDS: &[&str] = &[
     "write_markdown_file",
     "write_markdown_export_file",
     "write_text_file",
+    "export_markdown_file",
     "export_pdf_file",
     "check_pandoc_available",
     "detect_pandoc_path",

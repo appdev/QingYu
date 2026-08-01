@@ -532,6 +532,8 @@ export async function createServerKernelDomainAdapter(
         return {
           body,
           mediaType: response.headers.get("content-type")?.split(";", 1)[0]?.trim() ?? "",
+          revision: response.headers.get("x-resource-revision") as KernelRevision | null
+            ?? undefined,
         };
       },
     },

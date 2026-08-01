@@ -5,7 +5,7 @@ resolver = "2"
 [package]
 name = "qingyu"
 default-run = "qingyu"
-version = "2.4.0"
+version = "2.5.0"
 description = "Practical Markdown note-taking editor"
 authors = ["QingYu contributors"]
 license = "AGPL-3.0-only"
