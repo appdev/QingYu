@@ -6,6 +6,7 @@ import {
   type KernelRevision,
   type KernelWorkspaceGeneration
 } from "@markra/app/runtime";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import * as desktopFiles from "./tauri/file/desktop";
 import type { NativeKernelBootstrap } from "../kernel-bootstrap";
 import { switchDesktopKernelWorkspace } from "../desktop-kernel-startup";
@@ -22,6 +23,10 @@ vi.mock("../desktop-workspace-selector", () => ({
 
 vi.mock("../desktop-kernel-startup", () => ({
   switchDesktopKernelWorkspace: vi.fn(async () => undefined),
+}));
+
+vi.mock("@tauri-apps/api/window", () => ({
+  getCurrentWindow: vi.fn(() => ({ label: "editor-7" })),
 }));
 
 function createReadyBootstrap(): NativeKernelBootstrap {
@@ -49,7 +54,7 @@ describe("desktop runtime composition", () => {
   });
 
   it("composes a host-selectable Kernel workspace without legacy document writers", async () => {
-    const kernel = createUnavailableKernelDomainPort();
+    const kernel = readyKernelPort();
     const selectRoot = vi.fn(async () => "/Workspace/B");
     const commitRoot = vi.fn(async () => undefined);
     const owner = createDesktopKernelRuntimeOwner(kernel, { commitRoot, selectRoot });
@@ -90,8 +95,8 @@ describe("desktop runtime composition", () => {
       .rejects.toThrow("unavailable without a configured app runtime");
     await expect(runtime.files.trashWorkspaceResources("kernel-workspace://primary", []))
       .rejects.toThrow("unavailable for a Kernel workspace");
-    expect(runtime.settings.readPrimaryWorkspaceState).toBeUndefined();
-    expect(runtime.settings.writePrimaryWorkspaceState).toBeUndefined();
+    expect(runtime.settings.readPrimaryWorkspaceState).toEqual(expect.any(Function));
+    expect(runtime.settings.writePrimaryWorkspaceState).toEqual(expect.any(Function));
     const nativeShell = createDesktopRuntime();
     expect(runtime.files.listenOpenedMarkdownPaths)
       .toBe(nativeShell.files.listenOpenedMarkdownPaths);
@@ -110,8 +115,24 @@ describe("desktop runtime composition", () => {
     owner.release();
   });
 
+  it("composes AppConfig with the desktop logical window label", async () => {
+    Object.defineProperty(window, "__TAURI_INTERNALS__", {
+      configurable: true,
+      value: {},
+    });
+    vi.mocked(getCurrentWindow).mockReturnValue({ label: "editor-7" } as never);
+    const owner = createDesktopKernelRuntimeOwner(readyKernelPort());
+
+    await expect(owner.runtime.appConfig.readWorkspaceState()).resolves.toMatchObject({
+      filePath: `${kernelWorkspaceRoot}/notes/editor.md`,
+    });
+
+    owner.release();
+    Reflect.deleteProperty(window, "__TAURI_INTERNALS__");
+  });
+
   it("keeps the native image picker while routing image writes to one Kernel batch", async () => {
-    const unavailable = createUnavailableKernelDomainPort();
+    const unavailable = readyKernelPort();
     const generation = "workspace-generation" as KernelWorkspaceGeneration;
     const revision = "document-revision" as KernelRevision;
     const createBatch = vi.fn(async (request: Parameters<KernelDomainPort["resources"]["createBatch"]>[0]) => request.items.map((item, index) => ({
@@ -204,7 +225,7 @@ describe("desktop runtime composition", () => {
   });
 
   it("uses the raw host directory selector and dedicated Kernel switch by default", async () => {
-    const owner = createDesktopKernelRuntimeOwner(createUnavailableKernelDomainPort());
+    const owner = createDesktopKernelRuntimeOwner(readyKernelPort());
     const policy = owner.runtime.workspace.rootPolicy;
     if (policy?.kind !== "host-selectable") {
       throw new Error("host-selectable Kernel workspace policy unavailable");
@@ -293,3 +314,47 @@ describe("desktop runtime composition", () => {
     expect(release).toHaveBeenCalledTimes(1);
   });
 });
+
+function readyKernelPort(): KernelDomainPort {
+  const unavailable = createUnavailableKernelDomainPort();
+  const bootstrap = {
+    appConfigVersion: 1 as const,
+    localState: {
+      fileTreeSort: { direction: "ascending" as const, key: "name" as const },
+      pandocPath: null,
+      recentMarkdownFiles: [],
+      revision: "local-1" as KernelRevision,
+      uiLayout: {
+        openWindows: [],
+        schemaVersion: 1 as const,
+        windowStates: {
+          "editor-7": {
+            activeDraftId: null,
+            draftTabs: [],
+            filePath: "notes/editor.md" as never,
+            fileTreeAssetsVisible: true,
+            fileTreeOpen: false,
+            folderName: "notes",
+            folderPath: "notes" as never,
+            openFilePaths: ["notes/editor.md" as never],
+            sideBySideGroup: null,
+          },
+        },
+      },
+    },
+    settings: { revision: "settings-1" as KernelRevision, values: [] },
+    workspace: {
+      generation: "generation-1" as KernelWorkspaceGeneration,
+      id: "workspace-1",
+    },
+  };
+  return {
+    ...unavailable,
+    appConfig: {
+      bootstrap,
+      patchState: vi.fn(async () => bootstrap),
+      read: vi.fn(async () => bootstrap),
+    },
+    availability: "available",
+  } as KernelDomainPort;
+}

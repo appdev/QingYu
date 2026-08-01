@@ -1,5 +1,6 @@
 import {
   createDefaultAppRuntime,
+  createKernelAppConfigRuntime,
   type AppRuntime,
   type KernelDomainPort
 } from "@markra/app/runtime";
@@ -90,13 +91,14 @@ export function createServerWebRuntime(
     },
     files: fileOwner.files,
     kernel,
+    appConfig: createKernelAppConfigRuntime(kernel, async () => "main"),
     menu: createWebMenuRuntime(defaultRuntime.menu, options),
     platform: {
       resolveDesktopOsVersion: () => null,
       resolveDesktopPlatform: () => null,
       resolveFormFactor: () => "desktop"
     },
-    settings: createServerSettingsRuntime(kernel),
+    settings: createServerSettingsRuntime(kernel, kernel.appConfig.bootstrap.settings),
     syncConfig: createServerSyncConfigRuntime(kernel),
     webResource: createWebResourceRuntime(options),
     window: createWebWindowRuntime(defaultRuntime.window, options),

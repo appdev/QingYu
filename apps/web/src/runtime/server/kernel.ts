@@ -1,4 +1,6 @@
 import type {
+  KernelAppConfigSnapshot,
+  KernelAppConfigStateOperation,
   KernelCreatedDocumentSnapshot,
   KernelDocumentEntrySnapshot,
   KernelDocumentLocator,
@@ -28,7 +30,10 @@ import type {
   KernelWorkspaceRelativePath,
   KernelWorkspaceSnapshot,
 } from "@markra/app/runtime";
-import { hasRequiredKernelDomainCapabilities } from "@markra/app/runtime";
+import {
+  freezeKernelAppConfigSnapshot,
+  hasRequiredKernelDomainCapabilities,
+} from "@markra/app/runtime";
 import {
   KernelApiError,
   KernelEventError,
@@ -218,8 +223,47 @@ export async function createServerKernelDomainAdapter(
   const assertDocumentIdentity = (actual: string, expected: KernelDocumentLocator) => {
     if (actual !== expected) protocolMismatch();
   };
+  const appConfigSource = await request(() => client.appConfig.get({ signal: requests.signal }));
+  if (
+    appConfigSource.workspace.id !== options.workspaceId ||
+    appConfigSource.workspace.generation !== workspaceGeneration
+  ) {
+    protocolMismatch();
+  }
+  const appConfigBootstrap = mapAppConfig(appConfigSource);
 
   const port: ServerKernelDomainPort = {
+    appConfig: {
+      bootstrap: appConfigBootstrap,
+      patchState: async (input) => {
+        assertWorkspaceGeneration(input.workspaceGeneration);
+        await prepareInstanceOperation();
+        const snapshot = await request(() => client.appConfig.patchState({
+          operations: input.operations.map(mapAppConfigOperation),
+          workspaceGeneration: input.workspaceGeneration,
+        }, { signal: requests.signal }));
+        if (
+          snapshot.workspace.id !== options.workspaceId ||
+          snapshot.workspace.generation !== workspaceGeneration
+        ) {
+          protocolMismatch();
+        }
+        await confirmWorkspaceIdentity();
+        return mapAppConfig(snapshot);
+      },
+      read: async () => {
+        await prepareInstanceOperation();
+        const snapshot = await request(() => client.appConfig.get({ signal: requests.signal }));
+        if (
+          snapshot.workspace.id !== options.workspaceId ||
+          snapshot.workspace.generation !== workspaceGeneration
+        ) {
+          protocolMismatch();
+        }
+        await confirmWorkspaceIdentity();
+        return mapAppConfig(snapshot);
+      },
+    },
     availability: "available",
     documents: {
       create: async (input) => {
@@ -613,12 +657,14 @@ type DocumentPageSource = Awaited<ReturnType<KernelClient["documents"]["list"]>>
 type HistoryPageSource = Awaited<ReturnType<KernelClient["documents"]["listHistory"]>>;
 type SearchPageSource = Awaited<ReturnType<KernelClient["workspace"]["search"]>>;
 type SettingsSource = Awaited<ReturnType<KernelClient["settings"]["get"]>>;
+type AppConfigSource = Awaited<ReturnType<KernelClient["appConfig"]["get"]>>;
 type SyncConfigSource = Awaited<ReturnType<KernelClient["sync"]["getConfig"]>>;
 type SyncConnectionSource = Awaited<ReturnType<KernelClient["sync"]["testConnection"]>>;
 type SyncRunSource = Awaited<ReturnType<KernelClient["sync"]["trigger"]>>;
 type SyncStatusSource = Awaited<ReturnType<KernelClient["sync"]["getStatus"]>>;
 type SettingsPatchInput = Parameters<KernelDomainPort["settings"]["patch"]>[0];
 type SettingsPatchRequest = Parameters<KernelClient["settings"]["patch"]>[0];
+type AppConfigOperationRequest = Parameters<KernelClient["appConfig"]["patchState"]>[0]["operations"][number];
 type SyncPatchInput = Parameters<KernelDomainPort["sync"]["patchConfig"]>[0];
 type SyncPatchRequest = Parameters<KernelClient["sync"]["patchConfig"]>[0];
 type SyncTestInput = Parameters<KernelDomainPort["sync"]["testConnection"]>[0];
@@ -719,6 +765,85 @@ function mapSettings(settings: SettingsSource): KernelSettingsSnapshot {
       value: mapSettingValue(entry.value),
     })),
   };
+}
+
+function mapAppConfig(source: AppConfigSource): KernelAppConfigSnapshot {
+  return freezeKernelAppConfigSnapshot({
+    appConfigVersion: source.appConfigVersion,
+    localState: {
+      fileTreeSort: { ...source.localState.fileTreeSort },
+      pandocPath: source.localState.pandocPath,
+      recentMarkdownFiles: source.localState.recentMarkdownFiles.map((file) => ({
+        name: file.name,
+        path: file.path as KernelWorkspaceRelativePath,
+      })),
+      revision: source.localState.revision as KernelRevision,
+      uiLayout: {
+        openWindows: source.localState.uiLayout.openWindows.map((window) => ({
+          filePath: window.filePath as KernelWorkspaceRelativePath | null,
+          label: window.label,
+          openFilePaths: window.openFilePaths as KernelWorkspaceRelativePath[],
+        })),
+        schemaVersion: source.localState.uiLayout.schemaVersion,
+        windowStates: Object.fromEntries(Object.entries(source.localState.uiLayout.windowStates)
+          .map(([label, state]) => [label, {
+            activeDraftId: state.activeDraftId,
+            draftTabs: state.draftTabs.map((draft) => ({
+              ...draft,
+              path: draft.path as KernelWorkspaceRelativePath | null,
+            })),
+            filePath: state.filePath as KernelWorkspaceRelativePath | null,
+            fileTreeAssetsVisible: state.fileTreeAssetsVisible,
+            fileTreeOpen: state.fileTreeOpen,
+            folderName: state.folderName,
+            folderPath: state.folderPath as KernelWorkspaceRelativePath | null,
+            openFilePaths: state.openFilePaths as KernelWorkspaceRelativePath[],
+            sideBySideGroup: state.sideBySideGroup === null ? null : {
+              primaryFilePath: state.sideBySideGroup.primaryFilePath as KernelWorkspaceRelativePath,
+              sideFilePath: state.sideBySideGroup.sideFilePath as KernelWorkspaceRelativePath,
+            },
+          }])),
+      },
+    },
+    settings: mapSettings(source.settings),
+    workspace: {
+      generation: source.workspace.generation as KernelWorkspaceGeneration,
+      id: source.workspace.id,
+    },
+  });
+}
+
+function mapAppConfigOperation(
+  operation: KernelAppConfigStateOperation,
+): AppConfigOperationRequest {
+  switch (operation.type) {
+    case "patch-ui-layout":
+      return {
+        patch: {
+          ...operation.patch,
+          draftTabs: operation.patch.draftTabs?.map((draft) => ({ ...draft })),
+          openFilePaths: operation.patch.openFilePaths === undefined
+            ? undefined
+            : [...operation.patch.openFilePaths],
+          openWindows: operation.patch.openWindows?.map((window) => ({
+            ...window,
+            openFilePaths: [...window.openFilePaths],
+          })),
+        },
+        type: operation.type,
+        windowLabel: operation.windowLabel,
+      };
+    case "remember-recent-file":
+      return { file: { ...operation.file }, type: operation.type };
+    case "remove-recent-file":
+      return { path: operation.path, type: operation.type };
+    case "clear-recent-files":
+      return { type: operation.type };
+    case "set-file-tree-sort":
+      return { sort: { ...operation.sort }, type: operation.type };
+    case "set-pandoc-path":
+      return { path: operation.path, type: operation.type };
+  }
 }
 
 function mapSettingsPatchRequest(input: SettingsPatchInput): SettingsPatchRequest {
@@ -999,6 +1124,8 @@ function mapInvalidation(notice: ServerKernelEventNotice): KernelInvalidationNot
       };
     case "settings-changed":
       return { scopes: ["settings"] };
+    case "app-config-state-changed":
+      return { scopes: ["app-config"] };
     case "sync-config-changed":
       return { scopes: ["sync-config"] };
     case "sync-status-changed":

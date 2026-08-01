@@ -2,6 +2,7 @@ import { emit } from "@tauri-apps/api/event";
 import { load } from "@tauri-apps/plugin-store";
 import {
   createDefaultAppRuntime,
+  createKernelAppConfigRuntime,
   createKernelFileRuntimeOwner,
   createKernelSettingsRuntime,
   createKernelSyncConfigRuntime,
@@ -139,9 +140,9 @@ export function createMobileKernelRuntimeOwner(
     },
     files: fileOwner.files,
     kernel,
-    settings: createKernelSettingsRuntime(kernel, {
+    appConfig: createKernelAppConfigRuntime(kernel, async () => "main"),
+    settings: createKernelSettingsRuntime(kernel, kernel.appConfig.bootstrap.settings, {
       local: {
-        loadStore: mobileRuntime.settings.loadStore,
         readPrimaryWorkspaceState: undefined,
         writePrimaryWorkspaceState: undefined,
       },

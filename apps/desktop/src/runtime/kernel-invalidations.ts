@@ -103,6 +103,8 @@ function mapDesktopKernelInvalidation(
       };
     case "settings-changed":
       return { scopes: ["settings"] };
+    case "app-config-state-changed":
+      return { scopes: ["app-config"] };
     case "sync-config-changed":
       return { scopes: ["sync-config"] };
     case "sync-status-changed":

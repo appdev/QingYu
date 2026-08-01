@@ -164,6 +164,14 @@ describe("KernelDomainPort", () => {
     const port = createUnavailableKernelDomainPort();
 
     expect(port.availability).toBe("unavailable");
+    expect(() => port.appConfig.bootstrap).toThrow("Kernel domain is unavailable");
+    await expect(port.appConfig.read()).rejects.toMatchObject({
+      name: "KernelDomainUnavailableError",
+    });
+    await expect(port.appConfig.patchState({
+      operations: [],
+      workspaceGeneration: "generation" as KernelWorkspaceGeneration,
+    })).rejects.toMatchObject({ name: "KernelDomainUnavailableError" });
     await expect(port.runtime.read()).rejects.toMatchObject({
       name: "KernelDomainUnavailableError",
     });

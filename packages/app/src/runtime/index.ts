@@ -80,6 +80,10 @@ import {
   type KernelDomainPort
 } from "./kernel-domain";
 import {
+  createUnavailableAppConfigRuntime,
+  type AppConfigRuntime,
+} from "./kernel-app/app-config";
+import {
   createUnavailableNativeShellPort,
   type NativeShellPort
 } from "./native-shell";
@@ -461,6 +465,7 @@ export type AppWindowRuntime = {
 };
 
 export type AppRuntime = {
+  appConfig: AppConfigRuntime;
   dialog: AppDialogRuntime;
   events: AppEventsRuntime;
   features: AppFeatureRuntime;
@@ -662,6 +667,7 @@ export function createDefaultAppRuntime(): AppRuntime {
   let syncPendingApply: Awaited<ReturnType<AppSyncConfigRuntime["requestApply"]>>["event"] | null = null;
 
   return {
+    appConfig: createUnavailableAppConfigRuntime(),
     dialog: {
       showAppAbout: async () => undefined,
       showPandocSetup: async () => "cancel"

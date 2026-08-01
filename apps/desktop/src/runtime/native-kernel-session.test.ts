@@ -773,9 +773,15 @@ class DomainHarness {
       return undefined;
     });
     const unavailable = createUnavailableKernelDomainPort();
+    const appConfigBootstrap = readyAppConfigBootstrap();
     const adapter = {
       port: Object.freeze({
         ...unavailable,
+        appConfig: {
+          bootstrap: appConfigBootstrap,
+          patchState: vi.fn(async () => appConfigBootstrap),
+          read: vi.fn(async () => appConfigBootstrap),
+        },
         availability: "available" as const,
         invalidations: options.invalidations ?? unavailable.invalidations
       }),
@@ -786,6 +792,21 @@ class DomainHarness {
   });
 
   constructor(private readonly log?: string[]) {}
+}
+
+function readyAppConfigBootstrap() {
+  return {
+    appConfigVersion: 1 as const,
+    localState: {
+      fileTreeSort: { direction: "ascending" as const, key: "name" as const },
+      pandocPath: null,
+      recentMarkdownFiles: [],
+      revision: "local-1" as never,
+      uiLayout: { openWindows: [], schemaVersion: 1 as const, windowStates: {} },
+    },
+    settings: { revision: "settings-1" as never, values: [] },
+    workspace: { generation: "generation-1" as never, id: "workspace-1" },
+  };
 }
 
 interface EventsRecord {

@@ -39,6 +39,12 @@ describe("desktop Kernel invalidation bridge", () => {
         documentChange: "tree", paths: ["note.md"], scopes: ["documents", "resources"],
       }],
       [{ settings: {}, type: "settings-changed" }, { scopes: ["settings"] }],
+      [{
+        revision: "app-config-revision-1",
+        type: "app-config-state-changed",
+        workspaceGeneration: "workspace-generation-1",
+        workspaceId: "workspace-1",
+      }, { scopes: ["app-config"] }],
       [{ config: {}, type: "sync-config-changed" }, { scopes: ["sync-config"] }],
       [{ status: { completionState: "attempting" }, type: "sync-status-changed" }, {
         scopes: ["sync-status"],
@@ -68,6 +74,12 @@ describe("desktop Kernel invalidation bridge", () => {
       reason: "sequence-gap",
       scopes: ["sync-status"],
     });
+    bridge.publish({
+      ...identity,
+      kind: "snapshot-required",
+      reason: "sequence-gap",
+      scopes: ["app-config"],
+    });
 
     expect(listener.mock.calls.map(([notice]) => notice)).toEqual([
       ...cases.map(([, expected]) => expected),
@@ -75,6 +87,7 @@ describe("desktop Kernel invalidation bridge", () => {
         documentChange: "snapshot",
         scopes: ["sync-status", "documents", "resources"],
       },
+      { scopes: ["app-config"] },
     ]);
   });
 

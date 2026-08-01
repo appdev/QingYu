@@ -10,7 +10,7 @@ import type {
 
 export type KernelSettingsLocalSupport = Pick<
   AppSettingsRuntime,
-  "loadStore" | "readPrimaryWorkspaceState" | "writePrimaryWorkspaceState"
+  "readPrimaryWorkspaceState" | "writePrimaryWorkspaceState"
 >;
 
 export interface KernelSettingsRuntimeOptions {
@@ -19,35 +19,43 @@ export interface KernelSettingsRuntimeOptions {
 
 export function createKernelSettingsRuntime(
   kernel: KernelDomainPort,
+  bootstrap: KernelSettingsSnapshot,
   { local }: KernelSettingsRuntimeOptions,
 ): AppSettingsRuntime {
-  const localGroupValues = new Map<AppSettingsGroup, unknown>();
+  let current = cloneSettingsSnapshot(bootstrap);
 
   const readGroup = async <TValue>(group: AppSettingsGroup) => {
-    const remote = mapGroup(await kernel.settings.read(), group);
-    const localValue = localGroupValues.get(group);
-    if (isRecord(localValue) && isRecord(remote)) {
-      return { ...localValue, ...remote } as TValue;
-    }
-    return (remote ?? localValue) as TValue | undefined;
+    return mapGroup(current, group) as TValue | undefined;
   };
 
   const writeGroup = async (group: AppSettingsGroup, value: unknown) => {
-    const current = await kernel.settings.read();
     const values = groupEntries(group, value);
-    await kernel.settings.patch({ expectedRevision: current.revision, values });
-    localGroupValues.set(group, cloneSetting(value));
+    current = cloneSettingsSnapshot(await kernel.settings.patch({
+      expectedRevision: current.revision,
+      values,
+    }));
     return undefined;
   };
 
+  kernel.invalidations.subscribe((notice) => {
+    if (notice.scopes.includes("settings")) {
+      kernel.settings.read().then((snapshot) => {
+        current = cloneSettingsSnapshot(snapshot);
+        return undefined;
+      }).catch(() => undefined);
+    }
+    return undefined;
+  });
+
   return {
-    loadStore: local.loadStore,
+    loadStore: () => Promise.reject(new Error(
+      "Renderer-local stores are unavailable for a Kernel-backed runtime.",
+    )),
     ...(local.readPrimaryWorkspaceState === undefined ? {} : {
       readPrimaryWorkspaceState: local.readPrimaryWorkspaceState,
     }),
     readGroup,
     replacePortable: async (settings) => {
-      const current = await kernel.settings.read();
       const portable = requireRecord(settings);
       const groups: Array<[AppSettingsGroup, unknown]> = [
         ["appearance", {
@@ -62,14 +70,28 @@ export function createKernelSettingsRuntime(
         ["exportSettings", portable.exportSettings],
       ];
       const values = groups.flatMap(([group, value]) => groupEntries(group, value));
-      await kernel.settings.patch({ expectedRevision: current.revision, values });
-      groups.forEach(([group, value]) => localGroupValues.set(group, cloneSetting(value)));
+      current = cloneSettingsSnapshot(await kernel.settings.patch({
+        expectedRevision: current.revision,
+        values,
+      }));
       return undefined;
     },
     ...(local.writePrimaryWorkspaceState === undefined ? {} : {
       writePrimaryWorkspaceState: local.writePrimaryWorkspaceState,
     }),
     writeGroup,
+  };
+}
+
+function cloneSettingsSnapshot(snapshot: KernelSettingsSnapshot): KernelSettingsSnapshot {
+  return {
+    revision: snapshot.revision,
+    values: snapshot.values.map((entry) => ({
+      key: entry.key,
+      value: entry.value.type === "font-family"
+        ? { type: entry.value.type, value: { ...entry.value.value } }
+        : { ...entry.value },
+    })),
   };
 }
 
@@ -251,9 +273,4 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function compactRecord(value: Record<string, unknown>) {
   return Object.fromEntries(Object.entries(value).filter(([, item]) => item !== undefined));
-}
-
-function cloneSetting<T>(value: T): T {
-  if (typeof structuredClone === "function") return structuredClone(value);
-  return JSON.parse(JSON.stringify(value)) as T;
 }

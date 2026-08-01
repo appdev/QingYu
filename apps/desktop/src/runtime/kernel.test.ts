@@ -52,7 +52,30 @@ describe("desktop Kernel domain adapter", () => {
       { authorization: `Bearer ${CREDENTIAL}`, pathname: "/api/v1/health/ready" },
       { authorization: `Bearer ${CREDENTIAL}`, pathname: "/api/v1/runtime" },
       { authorization: `Bearer ${CREDENTIAL}`, pathname: "/api/v1/workspace" },
+      { authorization: `Bearer ${CREDENTIAL}`, pathname: "/api/v1/app-config" },
     ]);
+    expect(adapter.port.appConfig.bootstrap.workspace).toEqual({
+      generation: WORKSPACE_GENERATION,
+      id: WORKSPACE_ID,
+    });
+    expect(Object.isFrozen(adapter.port.appConfig.bootstrap.localState)).toBe(true);
+  });
+
+  it.each([
+    ["workspace id", { workspaceId: "123e4567-e89b-42d3-a456-426614174099" }],
+    ["workspace generation", { generation: "workspace-generation-2" }],
+  ])("fails closed when app config has another %s", async (_field, appConfigOverrides) => {
+    const release = vi.fn(() => undefined);
+    const fetch: FetchLike = async (url) => {
+      const pathname = new URL(url).pathname;
+      return pathname === "/api/v1/app-config"
+        ? jsonResponse(appConfigBody(appConfigOverrides))
+        : handshakeResponse(pathname);
+    };
+
+    await expect(createDesktopKernelDomainAdapter(connection({ release }), { fetch }))
+      .rejects.toMatchObject({ code: "protocol-mismatch" });
+    expect(release).toHaveBeenCalledOnce();
   });
 
   it("requires the explicitly selected mobile profile for an in-process mobile host", async () => {
@@ -89,7 +112,7 @@ describe("desktop Kernel domain adapter", () => {
       const adapter = await createDesktopKernelDomainAdapter(connection());
 
       expect(adapter.port.availability).toBe("available");
-      expect(receivers).toEqual([globalThis, globalThis, globalThis]);
+      expect(receivers).toEqual([globalThis, globalThis, globalThis, globalThis]);
     } finally {
       vi.unstubAllGlobals();
     }
@@ -1378,6 +1401,9 @@ function handshakeResponse(pathname: string) {
   if (pathname === "/api/v1/workspace") {
     return jsonResponse(workspaceBody());
   }
+  if (pathname === "/api/v1/app-config") {
+    return jsonResponse(appConfigBody());
+  }
   throw new Error("unexpected request");
 }
 
@@ -1418,6 +1444,31 @@ function settingsBody(revision: string) {
   return {
     revision,
     values: [{ key: "language" as const, value: { type: "string" as const, value: "zh-CN" } }],
+  };
+}
+
+function appConfigBody({
+  generation = WORKSPACE_GENERATION,
+  workspaceId = WORKSPACE_ID,
+}: {
+  generation?: string;
+  workspaceId?: string;
+} = {}) {
+  return {
+    appConfigVersion: 1 as const,
+    localState: {
+      fileTreeSort: { direction: "ascending" as const, key: "name" as const },
+      pandocPath: null,
+      recentMarkdownFiles: [{ name: "Draft", path: "notes/draft.md" }],
+      revision: "app-config-revision-1",
+      uiLayout: {
+        openWindows: [],
+        schemaVersion: 1 as const,
+        windowStates: {},
+      },
+    },
+    settings: settingsBody("settings-1"),
+    workspace: { generation, id: workspaceId },
   };
 }
 

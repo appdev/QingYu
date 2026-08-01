@@ -230,6 +230,7 @@ export type KernelInvalidationScope =
   | "documents"
   | "resources"
   | "settings"
+  | "app-config"
   | "sync-config"
   | "sync-status";
 
@@ -356,6 +357,95 @@ export type KernelSettingsSnapshot = {
   values: KernelSettingEntrySnapshot[];
 };
 
+export type KernelStoredWorkspaceDraft = {
+  content: string;
+  id: string;
+  name: string;
+  path: KernelWorkspaceRelativePath | null;
+};
+
+export type KernelStoredWorkspaceSplitGroup = {
+  primaryFilePath: KernelWorkspaceRelativePath;
+  sideFilePath: KernelWorkspaceRelativePath;
+};
+
+export type KernelStoredWorkspaceWindowState = {
+  activeDraftId: string | null;
+  draftTabs: readonly KernelStoredWorkspaceDraft[];
+  filePath: KernelWorkspaceRelativePath | null;
+  fileTreeAssetsVisible: boolean;
+  fileTreeOpen: boolean;
+  folderName: string | null;
+  folderPath: KernelWorkspaceRelativePath | null;
+  openFilePaths: readonly KernelWorkspaceRelativePath[];
+  sideBySideGroup: KernelStoredWorkspaceSplitGroup | null;
+};
+
+export type KernelStoredWorkspaceWindow = {
+  filePath: KernelWorkspaceRelativePath | null;
+  label: string;
+  openFilePaths: readonly KernelWorkspaceRelativePath[];
+};
+
+export type KernelStoredWorkspaceLayout = {
+  schemaVersion: 1;
+  windowStates: Readonly<Record<string, KernelStoredWorkspaceWindowState>>;
+  openWindows: readonly KernelStoredWorkspaceWindow[];
+};
+
+export type KernelRecentMarkdownFile = {
+  name: string;
+  path: KernelWorkspaceRelativePath;
+};
+
+export type KernelStoredFileTreeSort = {
+  direction: "ascending" | "descending";
+  key: "createdAt" | "modifiedAt" | "name";
+};
+
+export type KernelWorkspaceLayoutPatch = Partial<{
+  activeDraftId: string | null;
+  draftTabs: readonly KernelStoredWorkspaceDraft[];
+  filePath: KernelWorkspaceRelativePath | null;
+  fileTreeAssetsVisible: boolean;
+  fileTreeOpen: boolean;
+  folderName: string | null;
+  folderPath: KernelWorkspaceRelativePath | null;
+  openFilePaths: readonly KernelWorkspaceRelativePath[];
+  openWindows: readonly KernelStoredWorkspaceWindow[];
+  sideBySideGroup: KernelStoredWorkspaceSplitGroup | null;
+}>;
+
+export type KernelAppConfigSnapshot = {
+  appConfigVersion: 1;
+  workspace: { id: string; generation: KernelWorkspaceGeneration };
+  settings: KernelSettingsSnapshot;
+  localState: {
+    revision: KernelRevision;
+    uiLayout: KernelStoredWorkspaceLayout;
+    recentMarkdownFiles: readonly KernelRecentMarkdownFile[];
+    fileTreeSort: KernelStoredFileTreeSort;
+    pandocPath: string | null;
+  };
+};
+
+export type KernelAppConfigStateOperation =
+  | {
+      patch: KernelWorkspaceLayoutPatch;
+      type: "patch-ui-layout";
+      windowLabel: string;
+    }
+  | { file: KernelRecentMarkdownFile; type: "remember-recent-file" }
+  | { path: KernelWorkspaceRelativePath; type: "remove-recent-file" }
+  | { type: "clear-recent-files" }
+  | { sort: KernelStoredFileTreeSort; type: "set-file-tree-sort" }
+  | { path: string | null; type: "set-pandoc-path" };
+
+export type KernelPatchAppConfigStateInput = {
+  operations: readonly KernelAppConfigStateOperation[];
+  workspaceGeneration: KernelWorkspaceGeneration;
+};
+
 export type KernelPatchSettingsInput = {
   expectedRevision: KernelRevision;
   values: KernelSettingEntrySnapshot[];
@@ -477,6 +567,11 @@ export type KernelSyncRunSnapshot = {
 };
 
 export type KernelDomainPort = {
+  appConfig: {
+    readonly bootstrap: KernelAppConfigSnapshot;
+    read: () => Promise<KernelAppConfigSnapshot>;
+    patchState: (input: KernelPatchAppConfigStateInput) => Promise<KernelAppConfigSnapshot>;
+  };
   availability: "available" | "unavailable";
   documents: {
     create: (input: KernelCreateDocumentInput) => Promise<KernelCreatedDocumentSnapshot>;
@@ -533,6 +628,13 @@ function rejectUnavailable<T>(): Promise<T> {
 
 export function createUnavailableKernelDomainPort(): KernelDomainPort {
   return {
+    appConfig: {
+      get bootstrap(): never {
+        throw new KernelDomainUnavailableError();
+      },
+      patchState: rejectUnavailable,
+      read: rejectUnavailable,
+    },
     availability: "unavailable",
     documents: {
       create: rejectUnavailable,

@@ -3,10 +3,12 @@ import { platform as tauriPlatform, version as tauriVersion, type Platform as Ta
 import { hasTauriRuntime } from "@markra/shared";
 import {
   createDefaultAppRuntime,
+  createKernelAppConfigRuntime,
   createKernelFileRuntimeOwner,
   createKernelSettingsRuntime,
   createKernelSyncConfigRuntime,
   createUnavailableKernelDomainPort,
+  createUnavailableAppConfigRuntime,
   createUnavailableNativeShellPort,
   kernelWorkspaceRoot,
   type AppFormFactor,
@@ -101,6 +103,9 @@ export function createDesktopRuntime({
   nativeShell = createDesktopNativeShellPort()
 }: Partial<DesktopRuntimeAdapters> = {}): AppRuntime {
   return {
+  appConfig: kernel.availability === "available"
+    ? createKernelAppConfigRuntime(kernel, windowRuntime.getCurrentNativeWindowLabel)
+    : createUnavailableAppConfigRuntime(),
   dialog: {
     showAppAbout: dialog.showNativeAppAbout,
     showPandocSetup: dialog.showNativePandocSetup
@@ -371,11 +376,10 @@ export function createDesktopKernelRuntimeOwner(
     kernel,
     mcp: shell.mcp,
     nativeShell: createUnavailableNativeShellPort(),
-    settings: createKernelSettingsRuntime(kernel, {
+    settings: createKernelSettingsRuntime(kernel, shell.appConfig.bootstrap.settings, {
       local: {
-        loadStore: shell.settings.loadStore,
-        readPrimaryWorkspaceState: undefined,
-        writePrimaryWorkspaceState: undefined,
+        readPrimaryWorkspaceState: shell.settings.readPrimaryWorkspaceState,
+        writePrimaryWorkspaceState: shell.settings.writePrimaryWorkspaceState,
       },
     }),
     syncConfig: createKernelSyncConfigRuntime(kernel, {

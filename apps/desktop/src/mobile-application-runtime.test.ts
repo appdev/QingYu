@@ -12,8 +12,25 @@ import type {
 
 describe("production mobile application composition", () => {
   it("keeps the App unmounted until one authenticated mobile Kernel domain is ready", async () => {
+    const appConfigBootstrap = {
+      appConfigVersion: 1 as const,
+      localState: {
+        fileTreeSort: { direction: "ascending" as const, key: "name" as const },
+        pandocPath: null,
+        recentMarkdownFiles: [],
+        revision: "local-1" as never,
+        uiLayout: { openWindows: [], schemaVersion: 1 as const, windowStates: {} },
+      },
+      settings: { revision: "settings-1" as never, values: [] },
+      workspace: { generation: "generation-1" as never, id: "workspace-1" },
+    };
     const kernel = {
       ...createUnavailableKernelDomainPort(),
+      appConfig: {
+        bootstrap: appConfigBootstrap,
+        patchState: vi.fn(async () => appConfigBootstrap),
+        read: vi.fn(async () => appConfigBootstrap),
+      },
       availability: "available",
     } as KernelDomainPort;
     const ready: NativeKernelSessionSnapshot = {

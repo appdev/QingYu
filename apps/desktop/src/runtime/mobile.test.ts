@@ -6,6 +6,8 @@ import {
   createUnavailableKernelDomainPort,
   kernelWorkspaceRoot,
   type KernelDomainPort,
+  type KernelRevision,
+  type KernelWorkspaceGeneration,
 } from "@markra/app/runtime";
 
 import {
@@ -66,10 +68,7 @@ describe("mobile Kernel runtime boundary", () => {
   });
 
   it("composes document, settings, and sync over one ready Kernel port", async () => {
-    const kernel = {
-      ...createUnavailableKernelDomainPort(),
-      availability: "available",
-    } as KernelDomainPort;
+    const kernel = readyKernelPort();
     const owner = createMobileKernelRuntimeOwner(kernel);
 
     expect(owner.runtime.kernel).toBe(kernel);
@@ -82,6 +81,9 @@ describe("mobile Kernel runtime boundary", () => {
     })).resolves.toBe(true);
     expect(owner.runtime.settings.readGroup).toEqual(expect.any(Function));
     expect(owner.runtime.settings.writeGroup).toEqual(expect.any(Function));
+    await expect(owner.runtime.appConfig.readWorkspaceState()).resolves.toMatchObject({
+      filePath: `${kernelWorkspaceRoot}/notes/main.md`,
+    });
     expect(owner.runtime.syncConfig.load).not.toBe(mobileRuntime.syncConfig.load);
     expect(owner.runtime.syncConfig.patch).not.toBe(mobileRuntime.syncConfig.patch);
     expect(owner.runtime.workspace.rootPolicy).toMatchObject({
@@ -98,10 +100,7 @@ describe("mobile Kernel runtime boundary", () => {
   });
 
   it("enables image import only for the ready Kernel runtime", () => {
-    const kernel = {
-      ...createUnavailableKernelDomainPort(),
-      availability: "available",
-    } as KernelDomainPort;
+    const kernel = readyKernelPort();
     const owner = createMobileKernelRuntimeOwner(kernel);
 
     expect(mobileRuntime.features.imageImport).toBe(false);
@@ -141,3 +140,47 @@ describe("mobile Kernel runtime boundary", () => {
     expect(mockedInvoke).not.toHaveBeenCalled();
   });
 });
+
+function readyKernelPort(): KernelDomainPort {
+  const unavailable = createUnavailableKernelDomainPort();
+  const bootstrap = {
+    appConfigVersion: 1 as const,
+    localState: {
+      fileTreeSort: { direction: "ascending" as const, key: "name" as const },
+      pandocPath: null,
+      recentMarkdownFiles: [],
+      revision: "local-1" as KernelRevision,
+      uiLayout: {
+        openWindows: [],
+        schemaVersion: 1 as const,
+        windowStates: {
+          main: {
+            activeDraftId: null,
+            draftTabs: [],
+            filePath: "notes/main.md" as never,
+            fileTreeAssetsVisible: true,
+            fileTreeOpen: false,
+            folderName: "notes",
+            folderPath: "notes" as never,
+            openFilePaths: ["notes/main.md" as never],
+            sideBySideGroup: null,
+          },
+        },
+      },
+    },
+    settings: { revision: "settings-1" as KernelRevision, values: [] },
+    workspace: {
+      generation: "generation-1" as KernelWorkspaceGeneration,
+      id: "workspace-1",
+    },
+  };
+  return {
+    ...unavailable,
+    appConfig: {
+      bootstrap,
+      patchState: vi.fn(async () => bootstrap),
+      read: vi.fn(async () => bootstrap),
+    },
+    availability: "available",
+  } as KernelDomainPort;
+}

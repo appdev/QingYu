@@ -21,6 +21,28 @@ const INSTANCE_ID = "123e4567-e89b-42d3-a456-426614174000";
 const GENERATION = "workspace-generation-1" as KernelWorkspaceGeneration;
 
 describe("Server Kernel domain adapter", () => {
+  it("fetches app config once before exposing a ready kernel port", async () => {
+    const client = kernelClient();
+    const adapter = await createServerKernelDomainAdapter(client, options());
+
+    expect(client.appConfig.get).toHaveBeenCalledOnce();
+    expect(adapter.port.appConfig.bootstrap.workspace).toEqual({
+      generation: GENERATION,
+      id: "workspace-1",
+    });
+    expect(Object.isFrozen(adapter.port.appConfig.bootstrap.localState)).toBe(true);
+  });
+
+  it.each([
+    ["workspace id", { appConfigWorkspaceId: "workspace-2" }],
+    ["workspace generation", { appConfigGeneration: "generation-2" }],
+  ])("fails closed when app config has another %s", async (_field, overrides) => {
+    const client = kernelClient(overrides);
+
+    await expect(createServerKernelDomainAdapter(client, options()))
+      .rejects.toMatchObject({ code: "protocol-mismatch" });
+  });
+
   it("maps the validated server runtime, fixed workspace, and paged documents", async () => {
     const client = kernelClient();
     const adapter = await createServerKernelDomainAdapter(client, options());
@@ -451,6 +473,12 @@ describe("Server Kernel domain adapter", () => {
         { documentChange: "tree", paths: ["note.md"], scopes: ["documents", "resources"] },
       ],
       [{ settings: {}, type: "settings-changed" }, { scopes: ["settings"] }],
+      [{
+        revision: "app-config-revision-2",
+        type: "app-config-state-changed",
+        workspaceGeneration: GENERATION,
+        workspaceId: "workspace-1",
+      }, { scopes: ["app-config"] }],
       [{ config: {}, type: "sync-config-changed" }, { scopes: ["sync-config"] }],
       [
         { status: { completionState: "attempting" }, type: "sync-status-changed" },
@@ -484,6 +512,11 @@ describe("Server Kernel domain adapter", () => {
     expect(invalidationListener).toHaveBeenLastCalledWith({
       scopes: ["sync-status", "documents", "resources"],
     });
+    handlers?.onSnapshotRequired?.({
+      reason: "sequence-gap",
+      reloadScopes: ["app-config"],
+    });
+    expect(invalidationListener).toHaveBeenLastCalledWith({ scopes: ["app-config"] });
   });
 
   it("returns to authentication when the event stream rejects the browser session", async () => {
@@ -556,6 +589,8 @@ function options() {
 }
 
 function kernelClient(overrides: {
+  appConfigGeneration?: string;
+  appConfigWorkspaceId?: string;
   runtimeError?: unknown;
   workspaceId?: string;
 } = {}) {
@@ -587,6 +622,13 @@ function kernelClient(overrides: {
     : vi.fn(async () => Promise.reject(overrides.runtimeError));
 
   return {
+    appConfig: {
+      get: vi.fn(async () => appConfigSnapshot({
+        generation: overrides.appConfigGeneration ?? GENERATION,
+        workspaceId: overrides.appConfigWorkspaceId ?? "workspace-1",
+      })),
+      patchState: vi.fn(async () => appConfigSnapshot()),
+    },
     auth: {},
     resources: {
       create: vi.fn(),
@@ -637,4 +679,25 @@ function kernelClient(overrides: {
       trigger: vi.fn(),
     },
   } as unknown as KernelClient;
+}
+
+function appConfigSnapshot({
+  generation = GENERATION,
+  workspaceId = "workspace-1",
+}: {
+  generation?: string;
+  workspaceId?: string;
+} = {}) {
+  return {
+    appConfigVersion: 1 as const,
+    localState: {
+      fileTreeSort: { direction: "ascending" as const, key: "name" as const },
+      pandocPath: null,
+      recentMarkdownFiles: [{ name: "Note", path: "note.md" }],
+      revision: "app-config-revision-1",
+      uiLayout: { openWindows: [], schemaVersion: 1 as const, windowStates: {} },
+    },
+    settings: { revision: "settings-revision-1", values: [] },
+    workspace: { generation, id: workspaceId },
+  };
 }

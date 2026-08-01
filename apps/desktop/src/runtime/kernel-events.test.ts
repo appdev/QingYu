@@ -26,6 +26,7 @@ const ALL_SCOPES = [
   "workspace",
   "documents",
   "settings",
+  "app-config",
   "sync-config",
   "sync-status"
 ] as const satisfies readonly DesktopKernelDomainScope[];
@@ -99,6 +100,7 @@ describe("Desktop Kernel domain events adapter", () => {
       "workspace",
       "documents",
       "settings",
+      "app-config",
       "sync-config",
       "sync-status"
     ]);
@@ -600,6 +602,24 @@ function domainEventFrames(connectionId: string) {
       protocolVersion: 1,
       connectionId,
       sequence: 4,
+      resource: {
+        kind: "app-config" as const,
+        workspaceGeneration: "workspace-generation-1",
+        workspaceId: WORKSPACE_ID,
+      },
+      revision: "app-config-revision-1",
+      event: {
+        type: "app-config-state-changed" as const,
+        revision: "app-config-revision-1",
+        workspaceGeneration: "workspace-generation-1",
+        workspaceId: WORKSPACE_ID
+      }
+    },
+    {
+      type: "event" as const,
+      protocolVersion: 1,
+      connectionId,
+      sequence: 5,
       resource: { kind: "sync-config" as const },
       revision: "sync-revision-1",
       event: {
@@ -637,7 +657,7 @@ function domainEventFrames(connectionId: string) {
       type: "event" as const,
       protocolVersion: 1,
       connectionId,
-      sequence: 5,
+      sequence: 6,
       resource: { kind: "sync-status" as const, runId: null },
       revision: "sync-revision-1",
       event: {

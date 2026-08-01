@@ -32,20 +32,16 @@ describe("server settings owner", () => {
         { key: "appearance.darkTheme", value: { type: "string", value: "night" } },
       ],
     });
+    expect(kernel.settings.read).not.toHaveBeenCalled();
   });
 
-  it("keeps browser-local stores in memory instead of opening IndexedDB", async () => {
+  it("does not expose a browser-local store for Kernel-backed state", async () => {
     const kernel = kernelPort();
     const settings = createServerSettingsRuntime(kernel);
-    const store = await settings.loadStore("local-state.json", {
+    await expect(settings.loadStore("local-state.json", {
       autoSave: false,
       defaults: { layout: "stacked" },
-    });
-
-    await expect(store.get("layout")).resolves.toBe("stacked");
-    await store.set("layout", "tabs");
-    await store.save();
-    await expect(store.get("layout")).resolves.toBe("tabs");
+    })).rejects.toThrow("unavailable for a Kernel-backed runtime");
     expect(kernel.settings.read).not.toHaveBeenCalled();
   });
 });
@@ -67,12 +63,32 @@ function kernelPort() {
     throw new Error("not used");
   });
   return {
+    appConfig: {
+      bootstrap: {
+        appConfigVersion: 1,
+        localState: {
+          fileTreeSort: { direction: "ascending", key: "name" },
+          pandocPath: null,
+          recentMarkdownFiles: [],
+          revision: "local-1",
+          uiLayout: { openWindows: [], schemaVersion: 1, windowStates: {} },
+        },
+        settings: snapshot(),
+        workspace: { generation: "generation-1", id: "workspace-1" },
+      },
+      patchState: unavailable(),
+      read: unavailable(),
+    },
     availability: "available",
     documents: {
       create: unavailable(), delete: unavailable(),
       history: { list: unavailable(), restore: unavailable() },
       list: unavailable(), move: unavailable(), read: unavailable(),
       search: unavailable(), update: unavailable(),
+    },
+    invalidations: {
+      available: false,
+      subscribe: () => () => undefined,
     },
     runtime: { read: unavailable() },
     settings: {

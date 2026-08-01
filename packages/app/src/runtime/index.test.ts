@@ -35,11 +35,21 @@ describe("app runtime logging", () => {
     const runtime = createDefaultAppRuntime();
 
     expect(runtime).toHaveProperty("files");
+    expect(runtime).toHaveProperty("appConfig");
     expect(runtime).toHaveProperty("kernel.availability", "unavailable");
     expect(runtime).toHaveProperty("nativeShell.capabilities.standaloneDocuments", "unavailable");
     expect(runtime).toHaveProperty("settings");
     expect(runtime).toHaveProperty("webResource.downloadImage", expect.any(Function));
     expect(runtime).toHaveProperty("syncConfig");
+  });
+
+  it("keeps default AppConfig explicitly unavailable without pretending to persist state", async () => {
+    const runtime = createDefaultAppRuntime();
+
+    expect(() => runtime.appConfig.bootstrap).toThrow("unavailable");
+    expect(() => runtime.appConfig.getSnapshot()).toThrow("unavailable");
+    await expect(runtime.appConfig.reload()).rejects.toThrow("unavailable");
+    await expect(runtime.appConfig.patchState([])).rejects.toThrow("unavailable");
   });
 
   it("does not expose legacy upload or folder-sync surfaces", () => {

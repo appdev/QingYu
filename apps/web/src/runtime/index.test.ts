@@ -1,5 +1,10 @@
 import { FakeIndexedDbFactory } from "../test/web-runtime-fakes";
-import type { KernelDomainPort } from "@markra/app/runtime";
+import {
+  kernelWorkspaceRoot,
+  type KernelDomainPort,
+  type KernelRevision,
+  type KernelWorkspaceGeneration,
+} from "@markra/app/runtime";
 import { createServerWebRuntime, createWebRuntime } from "./index";
 
 describe("web runtime", () => {
@@ -11,8 +16,17 @@ describe("web runtime", () => {
       throw new Error("IndexedDB owner must be unreachable");
     });
     const kernel = {
+      appConfig: {
+        bootstrap: appConfigSnapshot(),
+        patchState: vi.fn(async () => appConfigSnapshot()),
+        read: vi.fn(async () => appConfigSnapshot()),
+      },
       documents: {
         list: vi.fn(async () => ({ items: [], nextCursor: null, workspaceGeneration: "generation-1" })),
+      },
+      invalidations: {
+        available: false,
+        subscribe: () => () => undefined,
       },
       workspace: {
         read: vi.fn(async () => ({ displayName: "Notes", generation: "generation-1" })),
@@ -41,11 +55,13 @@ describe("web runtime", () => {
     await expect(runtime.workspace.rootPolicy.resolveRoot()).resolves.toBe("kernel-workspace://primary");
     await expect(runtime.files.listMarkdownFilesForPath("kernel-workspace://primary"))
       .resolves.toEqual([]);
-    const store = await runtime.settings.loadStore("local-state.json", {
+    await expect(runtime.appConfig.readWorkspaceState()).resolves.toMatchObject({
+      filePath: `${kernelWorkspaceRoot}/notes/main.md`,
+    });
+    await expect(runtime.settings.loadStore("local-state.json", {
       autoSave: false,
       defaults: {},
-    });
-    await store.save();
+    })).rejects.toThrow("unavailable for a Kernel-backed runtime");
     expect(showDirectoryPicker).not.toHaveBeenCalled();
     expect(indexedDbOpen).not.toHaveBeenCalled();
     owner.release();
@@ -134,3 +150,37 @@ describe("web runtime", () => {
       .rejects.toThrow("resetSyncConfig is unavailable without a configured app runtime.");
   });
 });
+
+function appConfigSnapshot() {
+  return {
+    appConfigVersion: 1 as const,
+    localState: {
+      fileTreeSort: { direction: "ascending" as const, key: "name" as const },
+      pandocPath: null,
+      recentMarkdownFiles: [],
+      revision: "local-1" as KernelRevision,
+      uiLayout: {
+        openWindows: [],
+        schemaVersion: 1 as const,
+        windowStates: {
+          main: {
+            activeDraftId: null,
+            draftTabs: [],
+            filePath: "notes/main.md" as never,
+            fileTreeAssetsVisible: true,
+            fileTreeOpen: false,
+            folderName: "notes",
+            folderPath: "notes" as never,
+            openFilePaths: ["notes/main.md" as never],
+            sideBySideGroup: null,
+          },
+        },
+      },
+    },
+    settings: { revision: "settings-1" as KernelRevision, values: [] },
+    workspace: {
+      generation: "generation-1" as KernelWorkspaceGeneration,
+      id: "workspace-1",
+    },
+  };
+}

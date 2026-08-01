@@ -76,6 +76,7 @@ const ALL_DOMAIN_SCOPES = [
   "workspace",
   "documents",
   "settings",
+  "app-config",
   "sync-config",
   "sync-status"
 ] as const satisfies readonly DesktopKernelDomainScope[];
@@ -282,6 +283,8 @@ function domainScopeFor(frame: KernelEventFrame): DesktopKernelDomainScope {
       return "documents";
     case "settings-changed":
       return "settings";
+    case "app-config-state-changed":
+      return "app-config";
     case "sync-config-changed":
       return "sync-config";
     case "sync-status-changed":

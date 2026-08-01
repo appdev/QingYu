@@ -1,10 +1,11 @@
-import type {
-  KernelDocumentEntrySnapshot,
-  KernelPageCursor,
-  KernelDomainPort,
-  KernelInvalidationNotice,
-  KernelRevision,
-  KernelWorkspaceGeneration,
+import {
+  createUnavailableKernelDomainPort,
+  type KernelDocumentEntrySnapshot,
+  type KernelPageCursor,
+  type KernelDomainPort,
+  type KernelInvalidationNotice,
+  type KernelRevision,
+  type KernelWorkspaceGeneration,
 } from "@markra/app/runtime";
 import { KernelApiError } from "@markra/kernel-client";
 
@@ -1108,6 +1109,7 @@ function kernelPort(): ServerKernelDomainPort {
     throw new Error("not used");
   });
   return {
+    appConfig: createUnavailableKernelDomainPort().appConfig,
     availability: "available",
     documents: {
       create: unavailable(),
