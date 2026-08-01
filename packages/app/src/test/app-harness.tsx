@@ -70,7 +70,6 @@ import { openNativeExternalUrl, openSettingsWindow } from "../lib/tauri";
 import { checkNativeAppUpdate } from "../lib/tauri/updater";
 import {
   clearStoredRecentMarkdownFiles,
-  consumeWelcomeDocumentState,
   getStoredCustomThemeCss,
   getStoredEditorPreferences,
   getStoredExportSettings,
@@ -278,7 +277,6 @@ vi.mock("../lib/platform", async (importOriginal) => {
 });
 
 vi.mock("../lib/settings/app-settings", () => ({
-  consumeWelcomeDocumentState: vi.fn(),
   defaultStoredFileTreeSort: {
     direction: "ascending",
     key: "name"
@@ -754,7 +752,6 @@ export const mockedListNativeEditorWindowRestoreStates = vi.mocked(listNativeEdi
 export const mockedCheckNativeAppUpdate = vi.mocked(checkNativeAppUpdate);
 export const mockedResolveDesktopOsVersion = vi.mocked(resolveDesktopOsVersion);
 export const mockedResolveDesktopPlatform = vi.mocked(resolveDesktopPlatform);
-export const mockedConsumeWelcomeDocumentState = vi.mocked(consumeWelcomeDocumentState);
 export const mockedGetStoredCustomThemeCss = vi.mocked(getStoredCustomThemeCss);
 export const mockedGetStoredEditorPreferences = vi.mocked(getStoredEditorPreferences);
 export const mockedGetStoredExportSettings = vi.mocked(getStoredExportSettings);
@@ -803,6 +800,24 @@ export const mockedNotifyAppThemeChanged = vi.mocked(notifyAppThemeChanged);
 export const mockNativePath = "/mock-files/native.md";
 export const mockDroppedPath = "/mock-files/dropped.md";
 export const mockFolderPath = "/mock-files/vault";
+const defaultEditorFixture = `# Welcome to QingYu
+
+QingYu is a quiet, local-first Markdown editor for simple, practical note recording.
+
+- Write and format notes without leaving the document
+- Organize Markdown files and folders
+- Keep notes local, back them up, or sync a note folder you control
+
+## Start writing
+
+Use **bold**, *italic*, lists, links, tables, code blocks, and images whenever they help the note.
+
+> Your notes remain ordinary Markdown files.
+
+- [ ] Record an idea
+- [ ] Add the details
+- [ ] Save the note
+`;
 export const mockUntitledPath = "/mock-files/Untitled.md";
 
 export const appHarnessResourceThemeDescriptor = {
@@ -994,6 +1009,27 @@ export function renderApp() {
     }
   }
 
+  if (
+    !primaryWorkspaceHarnessState.desktopController &&
+    window.location.search.length === 0
+  ) {
+    mockDesktopPrimaryWorkspace({ root: null, status: "ready" });
+    mockedGetStoredWorkspaceState.mockResolvedValue({
+      activeDraftId: "untitled:editor-fixture",
+      draftTabs: [{
+        content: defaultEditorFixture,
+        id: "untitled:editor-fixture",
+        name: "Untitled.md",
+        path: null
+      }],
+      filePath: null,
+      fileTreeOpen: false,
+      folderName: null,
+      folderPath: null,
+      openFilePaths: []
+    });
+  }
+
   return render(<App />);
 }
 
@@ -1043,7 +1079,6 @@ export function installAppTestHarness() {
       mcp: createApplicationMcpRuntime()
     });
     window.history.pushState({}, "", "/");
-    mockedConsumeWelcomeDocumentState.mockReset();
     mockedConfirmNativeMarkdownFileDelete.mockReset();
     mockedConfirmNativeUnsavedMarkdownDocumentDiscard.mockReset();
     mockedCreateNativeMarkdownTreeFile.mockReset();
@@ -1263,7 +1298,6 @@ export function installAppTestHarness() {
     mockedListenAppFileIgnoreSettingsChanged.mockResolvedValue(() => {});
     mockedGetStoredFileIgnoreSettings.mockResolvedValue({ rules: "" });
     mockedSaveStoredFileIgnoreSettings.mockResolvedValue(undefined);
-    mockedConsumeWelcomeDocumentState.mockResolvedValue(true);
     mockedConfirmNativeMarkdownFileDelete.mockResolvedValue(true);
     mockedConfirmNativeUnsavedMarkdownDocumentDiscard.mockResolvedValue(true);
     mockedCreateNativeMarkdownTreeFile.mockResolvedValue({

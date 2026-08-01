@@ -24,7 +24,6 @@ import {
   mockedCloseNativeWindow,
   mockedConfirmNativeMarkdownFileDelete,
   mockedConfirmNativeUnsavedMarkdownDocumentDiscard,
-  mockedConsumeWelcomeDocumentState,
   mockedCreateNativeMarkdownTreeFile,
   mockedCreateNativeMarkdownTreeFolder,
   mockedDetectNativePandocPath,
@@ -1036,7 +1035,7 @@ describe("QingYu workspace", () => {
     );
   });
 
-  it("clears the ready workspace before rendering a deferred blank editor", async () => {
+  it("clears the ready workspace before rendering deferred Workspace Home", async () => {
     const notePath = "/Notes/a.md";
     const controller = mockDesktopPrimaryWorkspace({
       root: "/Notes",
@@ -1071,7 +1070,9 @@ describe("QingYu workspace", () => {
 
     controller.status = "deferred";
     rerenderApp(app);
-    expect(await screen.findByRole("heading", { name: "Untitled.md" })).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.queryByRole("textbox", { name: "Markdown document" })).not.toBeInTheDocument();
+    });
     expect(screen.queryByRole("tab", { name: "a.md" })).not.toBeInTheDocument();
     expect(screen.queryByRole("complementary", { name: "Markdown file tree" })).not.toBeInTheDocument();
   });
@@ -2304,9 +2305,9 @@ describe("QingYu workspace", () => {
     const { container } = renderApp();
     const shell = container.querySelector(".app-shell");
 
-    expect(screen.getByRole("heading", { name: "Untitled.md" })).toBeInTheDocument();
+    expect(await screen.findByRole("tab", { name: /Untitled\.md/ })).toBeInTheDocument();
     expect(screen.getByLabelText("Window drag region")).toBeInTheDocument();
-    expect(await screen.findByText("Welcome to QingYu")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Welcome to QingYu" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Open Markdown or Folder" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Save Markdown" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Switch to dark theme" })).toBeInTheDocument();
@@ -2314,7 +2315,7 @@ describe("QingYu workspace", () => {
     expect(screen.getByLabelText("Markdown editor")).toHaveAttribute("data-editor-engine", "codemirror");
     await waitFor(() => expect(container.querySelector(".cm-editor")).toBeInTheDocument());
     expect(screen.queryByText("File")).not.toBeInTheDocument();
-    expect(container.querySelector(".native-title")).toBeInTheDocument();
+    expect(container.querySelector(".native-title-slot")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Toggle file list" })).toBeInTheDocument();
     expect(container.querySelector(".quiet-status")?.closest(".editor-content-slot")).toBeInTheDocument();
     expect(container.querySelector(".editor-content-slot")).toHaveClass("h-full", "min-h-0", "overflow-hidden");
@@ -3049,7 +3050,6 @@ describe("QingYu workspace", () => {
       defaultFileTreeListOptions
     );
     expect(mockedReadNativeMarkdownFile).toHaveBeenCalledWith(restoredPath);
-    expect(mockedConsumeWelcomeDocumentState).not.toHaveBeenCalled();
     expect(mockedSaveStoredWorkspaceState.mock.calls).not.toEqual(expect.arrayContaining([
       [expect.objectContaining({ filePath: restoredPath })]
     ]));
@@ -3390,8 +3390,8 @@ describe("QingYu workspace", () => {
 
     const { container } = renderApp();
 
-    expect(await screen.findByText("Welcome to QingYu")).toBeInTheDocument();
-    expect(container.querySelector(".native-title")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Welcome to QingYu" })).toBeInTheDocument();
+    expect(container.querySelector(".native-title-slot")).toBeInTheDocument();
     expect(screen.queryByTestId("compact-app-shell")).not.toBeInTheDocument();
 
     Object.defineProperty(window, "innerWidth", { configurable: true, value: originalInnerWidth });
@@ -3400,7 +3400,6 @@ describe("QingYu workspace", () => {
   it("imports local images through the native file menu without replacing manual image insertion", async () => {
     const localImage = new File([new Uint8Array([1, 2, 3])], "Local Diagram.png", { type: "image/png" });
     Object.defineProperty(localImage, "path", { value: "/mock-files/Local Diagram.png" });
-    mockedConsumeWelcomeDocumentState.mockResolvedValue(false);
     mockOpenMarkdownFile({
       content: "# Native\n\nStart here.",
       name: "native.md",
@@ -3641,7 +3640,6 @@ describe("QingYu workspace", () => {
 
   it("imports local attachments through the native menu as markdown links", async () => {
     const attachment = { name: "Reference Doc.pdf", path: "/mock-files/Reference Doc.pdf" };
-    mockedConsumeWelcomeDocumentState.mockResolvedValue(false);
     mockOpenMarkdownFile({
       content: "# Native\n\nStart here.",
       name: "native.md",
@@ -3694,7 +3692,6 @@ describe("QingYu workspace", () => {
 
   it("imports image selections from the local files menu as markdown links", async () => {
     const imageAttachment = { name: "Screenshot.png", path: "/mock-files/Screenshot.png" };
-    mockedConsumeWelcomeDocumentState.mockResolvedValue(false);
     mockOpenMarkdownFile({
       content: "# Native\n\nStart here.",
       name: "native.md",
@@ -3870,7 +3867,6 @@ describe("QingYu workspace", () => {
   it("keeps successful local file imports when another selected file fails", async () => {
     const rejectedAttachment = { name: "Rejected.pdf", path: "/mock-files/Rejected.pdf" };
     const importedAttachment = { name: "Imported.pdf", path: "/mock-files/Imported.pdf" };
-    mockedConsumeWelcomeDocumentState.mockResolvedValue(false);
     mockOpenMarkdownFile({
       content: "# Native\n\nStart here.",
       name: "native.md",
@@ -3922,7 +3918,6 @@ describe("QingYu workspace", () => {
   it("does not refresh the file tree when every copied local file import fails", async () => {
     const firstAttachment = { name: "First.pdf", path: "/mock-files/First.pdf" };
     const secondAttachment = { name: "Second.pdf", path: "/mock-files/Second.pdf" };
-    mockedConsumeWelcomeDocumentState.mockResolvedValue(false);
     mockOpenMarkdownFile({
       content: "# Native\n\nStart here.",
       name: "native.md",
@@ -4022,7 +4017,6 @@ describe("QingYu workspace", () => {
 
   it("does not refresh the file tree after a no-copy local file import", async () => {
     const attachment = { name: "Reference Doc.pdf", path: "/mock-files/Reference Doc.pdf" };
-    mockedConsumeWelcomeDocumentState.mockResolvedValue(false);
     mockedGetStoredEditorPreferences.mockResolvedValue(createStoredEditorPreferences());
     mockOpenMarkdownFile({
       content: "# Native\n\nStart here.",
@@ -4053,7 +4047,6 @@ describe("QingYu workspace", () => {
 
   it("replaces an empty paragraph when importing a local image at the blank document cursor", async () => {
     const localImage = new File([new Uint8Array([1, 2, 3])], "Blank Import.png", { type: "image/png" });
-    mockedConsumeWelcomeDocumentState.mockResolvedValue(false);
     mockOpenMarkdownFile({
       content: "",
       name: "native.md",
@@ -4142,7 +4135,6 @@ describe("QingYu workspace", () => {
   });
 
   it("restores a selected history version into the current document", async () => {
-    mockedConsumeWelcomeDocumentState.mockResolvedValue(false);
     mockOpenMarkdownFile({
       content: "# Current\n\nSynthetic body.",
       name: "native.md",
@@ -4783,7 +4775,6 @@ describe("QingYu workspace", () => {
     await expectVisibleMarkdownText("Back from last launch.");
     expect(screen.getByRole("tab", { name: /native\.md/ })).toBeInTheDocument();
     expect(mockedReadNativeMarkdownFile).toHaveBeenCalledWith(mockNativePath);
-    expect(mockedConsumeWelcomeDocumentState).not.toHaveBeenCalled();
   });
 
   it("loads application sync configuration but does not synchronize a single opened file", async () => {
@@ -5220,7 +5211,6 @@ describe("QingYu workspace", () => {
     expect(mockedListNativeMarkdownFilesForPath).toHaveBeenCalledWith(mockFolderPath, defaultFileTreeListOptions);
     expect(mockedLoadSyncConfig).toHaveBeenCalledWith();
     expect(mockedSyncApplication).not.toHaveBeenCalled();
-    expect(mockedConsumeWelcomeDocumentState).not.toHaveBeenCalled();
   });
 
   it("keeps the primary project active when Cmd+O hands a standalone file to a new window", async () => {
@@ -5456,7 +5446,9 @@ describe("QingYu workspace", () => {
     await waitFor(() =>
       expect(mockedListNativeMarkdownFilesForPath).toHaveBeenCalledWith("/mock-files/deleted-notes", defaultFileTreeListOptions)
     );
-    expect(await screen.findByRole("heading", { name: "Untitled.md" })).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.queryByRole("textbox", { name: "Markdown document" })).not.toBeInTheDocument();
+    });
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "Toggle file list" })).toHaveAttribute("aria-pressed", "false")
     );
@@ -5471,7 +5463,6 @@ describe("QingYu workspace", () => {
     expect(screen.queryByText("Welcome to QingYu")).not.toBeInTheDocument();
     expect(mockedLoadSyncConfig).toHaveBeenCalledWith();
     expect(mockedSyncApplication).not.toHaveBeenCalled();
-    expect(mockedConsumeWelcomeDocumentState).not.toHaveBeenCalled();
   });
 
   it("keeps the saved folder root when restoring a nested file from that workspace", async () => {
@@ -5514,7 +5505,6 @@ describe("QingYu workspace", () => {
   });
 
   it("loads and persists the app color theme", async () => {
-    mockedConsumeWelcomeDocumentState.mockResolvedValue(false);
     mockedGetStoredThemePreferences.mockResolvedValue({
       appearanceMode: "dark",
       darkTheme: "dark",
@@ -5542,7 +5532,6 @@ describe("QingYu workspace", () => {
   });
 
   it("keeps a manually selected global theme fixed across system color changes", async () => {
-    mockedConsumeWelcomeDocumentState.mockResolvedValue(false);
     mockedGetStoredThemePreferences.mockResolvedValue({
       appearanceMode: "light",
       darkTheme: "catppuccin-mocha",
@@ -5565,7 +5554,6 @@ describe("QingYu workspace", () => {
   });
 
   it("restores the selected light palette after toggling to dark mode and back", async () => {
-    mockedConsumeWelcomeDocumentState.mockResolvedValue(false);
     mockedGetStoredThemePreferences.mockResolvedValue({
       appearanceMode: "light",
       darkTheme: "night",
@@ -5631,7 +5619,6 @@ describe("QingYu workspace", () => {
   });
 
   it("follows the system color scheme when the stored theme preference is system", async () => {
-    mockedConsumeWelcomeDocumentState.mockResolvedValue(false);
     mockedGetStoredThemePreferences.mockResolvedValue({
       appearanceMode: "system",
       darkTheme: "night",
@@ -5654,7 +5641,6 @@ describe("QingYu workspace", () => {
   });
 
   it("reinstalls native menus when another window changes the language", async () => {
-    mockedConsumeWelcomeDocumentState.mockResolvedValue(false);
     let onLanguageChanged: ((language: "en" | "zh-CN" | "fr") => unknown) | null = null;
     mockedListenAppLanguageChanged.mockImplementation(async (listener) => {
       onLanguageChanged = listener;
@@ -5677,7 +5663,6 @@ describe("QingYu workspace", () => {
   });
 
   it("waits for the stored language before replacing the Rust startup menu", async () => {
-    mockedConsumeWelcomeDocumentState.mockResolvedValue(false);
     let resolveLanguage: ((language: "fr") => unknown) | null = null;
     mockedGetStoredLanguage.mockReturnValue(
       new Promise((resolve) => {
@@ -5700,7 +5685,6 @@ describe("QingYu workspace", () => {
   });
 
   it("waits for the stored theme before revealing the workspace window", async () => {
-    mockedConsumeWelcomeDocumentState.mockResolvedValue(false);
     let resolveThemePreferences: ((preferences: {
       appearanceMode: "dark";
       darkTheme: "night";
@@ -5730,7 +5714,6 @@ describe("QingYu workspace", () => {
   });
 
   it("waits for a resource theme stylesheet before revealing the workspace window", async () => {
-    mockedConsumeWelcomeDocumentState.mockResolvedValue(false);
     mockedGetStoredThemePreferences.mockResolvedValue({
       appearanceMode: "dark",
       darkTheme: appHarnessResourceThemeDescriptor.id,
@@ -5777,11 +5760,10 @@ describe("QingYu workspace", () => {
   });
 
   it("does not create Settings during workspace startup", async () => {
-    mockedConsumeWelcomeDocumentState.mockResolvedValue(false);
 
     renderApp();
 
-    expect(await screen.findByRole("heading", { name: "Untitled.md" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Welcome to QingYu" })).toBeInTheDocument();
     await waitFor(() => expect(mockedShowNativeWindow).toHaveBeenCalledTimes(1));
     await act(async () => {
       await new Promise((resolve) => window.setTimeout(resolve, 750));
@@ -5790,7 +5772,6 @@ describe("QingYu workspace", () => {
   });
 
   it("waits for stored settings before revealing a settings route without startup preferences", async () => {
-    mockedConsumeWelcomeDocumentState.mockResolvedValue(false);
     let resolveLanguage: ((language: "fr") => unknown) | null = null;
     mockedGetStoredLanguage.mockReturnValue(
       new Promise((resolve) => {
@@ -5816,7 +5797,6 @@ describe("QingYu workspace", () => {
   });
 
   it("uses settings startup language and theme before async settings resolve", async () => {
-    mockedConsumeWelcomeDocumentState.mockResolvedValue(false);
     mockedGetStoredLanguage.mockReturnValue(new Promise<never>(() => {}));
     mockedGetStoredThemePreferences.mockReturnValue(new Promise<never>(() => {}));
     window.history.pushState(
@@ -5835,7 +5815,6 @@ describe("QingYu workspace", () => {
   });
 
   it("removes the settings startup background once the app theme is applied", async () => {
-    mockedConsumeWelcomeDocumentState.mockResolvedValue(false);
     mockedGetStoredThemePreferences.mockReturnValue(new Promise<never>(() => {}));
     window.history.pushState(
       {},
@@ -5859,7 +5838,6 @@ describe("QingYu workspace", () => {
   });
 
   it("keeps the Settings window mounted while Appearance reuses the loaded theme catalog", async () => {
-    mockedConsumeWelcomeDocumentState.mockResolvedValue(false);
     window.history.pushState({}, "", "/?settings=1");
     const runtime = getAppRuntime();
     const catalogSnapshot = await runtime.themes.list();
@@ -5880,7 +5858,6 @@ describe("QingYu workspace", () => {
   });
 
   it("renders an independent settings window route", async () => {
-    mockedConsumeWelcomeDocumentState.mockResolvedValue(false);
     window.history.pushState({}, "", "/?settings=1");
 
     const { container } = renderApp();
@@ -5969,11 +5946,10 @@ describe("QingYu workspace", () => {
   });
 
   it("renders the settings window after a browser route change", async () => {
-    mockedConsumeWelcomeDocumentState.mockResolvedValue(false);
 
     const { container } = renderApp();
 
-    await screen.findByRole("heading", { name: "Untitled.md" });
+    await screen.findByRole("tab", { name: /Untitled\.md/ });
 
     act(() => {
       window.history.pushState({}, "", "/?settings=1");
@@ -5986,7 +5962,6 @@ describe("QingYu workspace", () => {
   });
 
   it("shows a close button in the web settings window", async () => {
-    mockedConsumeWelcomeDocumentState.mockResolvedValue(false);
     mockedResolveDesktopPlatform.mockReturnValue("linux");
     window.history.pushState({}, "", "/?settings=1");
 
@@ -6006,7 +5981,6 @@ describe("QingYu workspace", () => {
   });
 
   it("hides the settings window from the settings shortcut", async () => {
-    mockedConsumeWelcomeDocumentState.mockResolvedValue(false);
     window.history.pushState({}, "", "/?settings=1");
 
     const { container } = renderApp();
@@ -6023,7 +5997,6 @@ describe("QingYu workspace", () => {
   });
 
   it("syncs toolbar button order in the settings window after another window changes it", async () => {
-    mockedConsumeWelcomeDocumentState.mockResolvedValue(false);
     let onEditorPreferencesChanged: ((preferences: Parameters<typeof mockedSaveStoredEditorPreferences>[0]) => unknown) | null = null;
     mockedListenAppEditorPreferencesChanged.mockImplementation(async (listener) => {
       onEditorPreferencesChanged = listener;
@@ -6076,7 +6049,6 @@ describe("QingYu workspace", () => {
   });
 
   it("removes the reserved settings drag space on Windows", async () => {
-    mockedConsumeWelcomeDocumentState.mockResolvedValue(false);
     mockedResolveDesktopPlatform.mockReturnValue("windows");
     window.history.pushState({}, "", "/?settings=1");
 
@@ -6429,10 +6401,11 @@ describe("QingYu workspace", () => {
         updater: true
       }
     });
+    window.history.pushState({}, "", "/?blank=1");
 
     renderApp();
 
-    expect(await screen.findByText("Welcome to QingYu")).toBeInTheDocument();
+    expect(await screen.findByRole("textbox", { name: "Markdown document" })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Toggle file list" }));
 
@@ -7098,6 +7071,7 @@ describe("QingYu workspace", () => {
 
     const { container } = renderApp();
 
+    await screen.findByRole("textbox", { name: "Markdown document" });
     fireEvent.keyDown(window, { key: "o", metaKey: true });
     await expectVisibleMarkdownText("Native file");
 
@@ -9046,19 +9020,50 @@ describe("QingYu workspace", () => {
     await waitFor(() => expect(view?.state.selection.main.from).toBe(headingB));
   });
 
-  it("shows the welcome document only on the first nonblank app launch", async () => {
-    mockedConsumeWelcomeDocumentState.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
-    const firstLaunch = renderApp();
-
-    expect(await screen.findByText("Welcome to QingYu")).toBeInTheDocument();
-
-    firstLaunch.unmount();
+  it("keeps a fresh empty launch out of the editor without consuming welcome state", async () => {
+    mockDesktopPrimaryWorkspace({ root: null, status: "deferred" });
     renderApp();
 
-    expect(screen.getByRole("heading", { name: "Untitled.md" })).toBeInTheDocument();
-    expect(await screen.findByLabelText("Markdown editor")).toHaveTextContent(/^$/);
-    expect(screen.queryByText("Welcome to QingYu")).not.toBeInTheDocument();
-    expect(mockedConsumeWelcomeDocumentState).toHaveBeenCalledTimes(2);
+    await waitFor(() => expect(mockedGetStoredEditorPreferences).toHaveBeenCalled());
+
+    expect(screen.queryByRole("textbox", { name: "Markdown document" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Untitled.md" })).not.toBeInTheDocument();
+  });
+
+  it("does not render an editor or Workspace Home action while restoration is pending", async () => {
+    const restoredPath = `${mockFolderPath}/delayed.md`;
+    type WorkspaceState = Awaited<ReturnType<typeof mockedGetStoredWorkspaceState>>;
+    let resolveWorkspace!: (workspace: WorkspaceState) => unknown;
+    const workspacePromise = new Promise<WorkspaceState>((resolve) => {
+      resolveWorkspace = (workspace) => {
+        resolve(workspace);
+        return undefined;
+      };
+    });
+    mockDesktopPrimaryWorkspace({ root: mockFolderPath, status: "ready" });
+    mockedGetStoredWorkspaceState.mockReturnValue(workspacePromise);
+    mockedReadNativeMarkdownFile.mockResolvedValue({
+      content: "# Restored after delay",
+      name: "delayed.md",
+      path: restoredPath
+    });
+
+    renderApp();
+
+    await waitFor(() => expect(mockedGetStoredWorkspaceState).toHaveBeenCalledTimes(1));
+    expect(screen.queryByRole("textbox", { name: "Markdown document" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "New Document" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Untitled.md" })).not.toBeInTheDocument();
+
+    act(() => resolveWorkspace({
+      filePath: restoredPath,
+      fileTreeOpen: false,
+      folderName: "vault",
+      folderPath: mockFolderPath,
+      openFilePaths: [restoredPath]
+    }));
+
+    expect(await screen.findByRole("heading", { name: "Restored after delay" })).toBeInTheDocument();
   });
 
   it("loads application sync configuration but keeps synchronization inactive for a blank workspace", async () => {
@@ -9078,19 +9083,8 @@ describe("QingYu workspace", () => {
     expect(screen.getByRole("heading", { name: "Untitled.md" })).toBeInTheDocument();
     expect(await screen.findByLabelText("Markdown editor")).toHaveTextContent(/^$/);
     expect(screen.queryByText("Welcome to QingYu")).not.toBeInTheDocument();
-    expect(mockedConsumeWelcomeDocumentState).not.toHaveBeenCalled();
     expect(mockedLoadSyncConfig).toHaveBeenCalledWith();
     expect(mockedSyncApplication).not.toHaveBeenCalled();
-  });
-
-  it("focuses the editor when the default launch opens an empty document", async () => {
-    mockedConsumeWelcomeDocumentState.mockResolvedValue(false);
-
-    renderApp();
-
-    const editor = await screen.findByRole("textbox", { name: "Markdown document" });
-
-    await waitFor(() => expect(editor).toHaveFocus());
   });
 
   it("focuses the editor when a native new-document window opens", async () => {
@@ -9116,7 +9110,6 @@ describe("QingYu workspace", () => {
     await expectVisibleMarkdownText("Dropped file");
     expect(screen.getByRole("tab", { name: /dropped\.md/ })).toBeInTheDocument();
     expect(mockedReadNativeMarkdownFile).toHaveBeenCalledWith(mockDroppedPath);
-    expect(mockedConsumeWelcomeDocumentState).not.toHaveBeenCalled();
   });
 
   it("hands an OS-opened markdown file from the primary window to a new external window", async () => {
@@ -9221,12 +9214,10 @@ describe("QingYu workspace", () => {
     expect(mockedOpenNativeMarkdownFileInNewWindow).toHaveBeenCalledWith(mockDroppedPath);
     expect(mockedTakeNativeOpenedMarkdownPaths).toHaveBeenCalledTimes(2);
     expect(mockedLoadSyncConfig).toHaveBeenCalledTimes(1);
-    expect(mockedConsumeWelcomeDocumentState).not.toHaveBeenCalled();
   });
 
   it("hands a runtime OS file-open event from the primary window to a new external window", async () => {
     let onOpenedPaths: ((paths: string[]) => unknown) | null = null;
-    mockedConsumeWelcomeDocumentState.mockResolvedValue(false);
     mockedListenNativeOpenedMarkdownPaths.mockImplementation(async (listener) => {
       onOpenedPaths = listener;
       return () => {};
@@ -9378,7 +9369,6 @@ describe("QingYu workspace", () => {
 
   it("opens a dropped markdown file in the current empty editor", async () => {
     window.history.pushState({}, "", "/?blank=1");
-    mockedConsumeWelcomeDocumentState.mockResolvedValue(false);
     mockedReadNativeMarkdownFile.mockResolvedValue({
       content: "# Dropped file\n\nOpened from drag and drop.",
       name: "dropped.md",
@@ -11256,9 +11246,14 @@ describe("QingYu workspace", () => {
   });
 
   it("keeps source mode read-only while read-only mode is active", async () => {
+    mockPrimaryMarkdownFile({
+      content: "# Read-only source",
+      name: "read-only.md",
+      path: mockNativePath
+    });
     renderApp();
 
-    expect(await screen.findByText("Welcome to QingYu")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Read-only source" })).toBeInTheDocument();
 
     fireEvent.keyDown(window, { key: "s", altKey: true, metaKey: true });
     fireEvent.keyDown(window, { key: "l", altKey: true, metaKey: true });
@@ -11670,6 +11665,7 @@ describe("QingYu workspace", () => {
 
     const { container } = renderApp();
 
+    await screen.findByRole("textbox", { name: "Markdown document" });
     fireEvent.keyDown(window, { key: "o", metaKey: true });
     revealVisualPreviews(container);
     let link: HTMLAnchorElement | null = null;
@@ -11719,6 +11715,7 @@ describe("QingYu workspace", () => {
 
     const { container } = renderApp();
 
+    await screen.findByRole("textbox", { name: "Markdown document" });
     fireEvent.keyDown(window, { key: "o", metaKey: true });
     revealVisualPreviews(container);
     let link: HTMLAnchorElement | null = null;

@@ -1,8 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { initialMarkdown } from "../constants/initial-markdown";
 import {
   clearStoredRecentMarkdownFiles,
-  consumeWelcomeDocumentState,
   getStoredRecentMarkdownFiles,
   getStoredWorkspaceState,
   prependRecentMarkdownFile,
@@ -73,8 +71,10 @@ import {
   parseEditorWindowContext,
   type EditorWindowContext
 } from "../lib/editor-window-context";
+import { workspaceSurfaceForRestore } from "./markdown-document/restore-outcome";
 
 export type { MarkdownDocumentTab } from "./markdown-document/document-model";
+export type WorkspaceSurface = "restoring" | "editor" | "home" | "recovery";
 
 function isEmptyUntitledDocument(document: DocumentState) {
   return document.open && document.path === null && document.content.trim() === "";
@@ -179,6 +179,7 @@ type UseMarkdownDocumentOptions = {
     | { kind: "primary"; root: string | null }
     | { kind: "standalone" };
   workspaceSourcePath?: string | null;
+  workspaceReady?: boolean;
   windowContext?: EditorWindowContext;
   workspacePersistencePolicy?: "shared" | "isolated";
 };
@@ -199,6 +200,21 @@ type OpenMarkdownFileOptions = {
 };
 type OpenTreeMarkdownFileOptions = {
   managed?: boolean;
+};
+
+type NativeMarkdownFilesRestoreResult = {
+  activeFilePath: string | null;
+  cancelled: boolean;
+  failedPaths: string[];
+  files: NativeMarkdownFile[];
+  survivingPaths: string[];
+};
+
+type WorkspaceDraftRestoreResult = {
+  activeFilePath: string | null;
+  activeTabId: string | null;
+  recoverableDraftCount: number;
+  tabs: MarkdownDocumentTab[];
 };
 
 function persistDesktopWorkspaceState(patch: Parameters<typeof saveStoredWorkspaceState>[0]) {
@@ -322,6 +338,7 @@ export function useMarkdownDocument({
   restoreWorkspaceRoot = null,
   restoreWorkspaceOnStartup = true,
   saveAsWorkspacePolicy = { kind: "standalone" },
+  workspaceReady = true,
   workspaceSourcePath,
   windowContext = parseEditorWindowContext(window.location.search),
   workspacePersistencePolicy = "shared"
@@ -330,15 +347,19 @@ export function useMarkdownDocument({
   const [document, setDocument] = useState<DocumentState>(() => createInitialDocumentState());
   const [tabs, setTabs] = useState<MarkdownDocumentTab[]>(() => [createDocumentTab(createInitialDocumentState(), "untitled:0")]);
   const [activeTabId, setActiveTabId] = useState<string | null>("untitled:0");
+  const [workspaceSurface, setWorkspaceSurface] = useState<WorkspaceSurface>("restoring");
   const [nativeOpenedPathsReady, setNativeOpenedPathsReady] = useState(false);
   const [recentFiles, setRecentFiles] = useState<RecentMarkdownFile[]>([]);
   const [deferredMarkdownSummary, setDeferredMarkdownSummary] = useState<MarkdownDocumentSummary | null>(null);
   const documentRef = useRef(document);
   const tabsRef = useRef(tabs);
   const activeTabIdRef = useRef<string | null>(activeTabId);
+  const workspaceReadyRef = useRef(workspaceReady);
+  workspaceReadyRef.current = workspaceReady;
   const untitledTabIndexRef = useRef(1);
   const openedFromNativeRef = useRef(false);
   const nativeOpenedPathsInitializationRef = useRef<Promise<boolean> | null>(null);
+  const externalFileStartupPathRef = useRef<string | null>(null);
   const externalFolderStartupPathRef = useRef<string | null>(null);
   const startupWorkspaceRestoreKeyRef = useRef<string | null>(null);
   const nativeWindowCloseScheduledRef = useRef(false);
@@ -447,6 +468,13 @@ export function useMarkdownDocument({
     activeTabIdRef.current = activeTabId;
   }, [activeTabId]);
 
+  useEffect(() => {
+    setWorkspaceSurface((currentSurface) => {
+      if (!workspaceReady) return "recovery";
+      return currentSurface === "recovery" ? "restoring" : currentSurface;
+    });
+  }, [workspaceReady]);
+
   const rememberRecentMarkdownFile = useCallback((file: RecentMarkdownFile) => {
     if (managedWorkspace) return;
 
@@ -519,6 +547,9 @@ export function useMarkdownDocument({
   const setActiveDocument = useCallback((nextDocument: DocumentState) => {
     documentRef.current = nextDocument;
     setDocument(nextDocument);
+    setWorkspaceSurface(nextDocument.open
+      ? "editor"
+      : workspaceReadyRef.current ? "home" : "recovery");
 
     const fallbackActiveTabId = nextDocument.open
       ? nextDocument.path ? fileTabId(nextDocument.path) : "untitled:0"
@@ -529,15 +560,14 @@ export function useMarkdownDocument({
     activeTabIdRef.current = currentActiveTabId;
     setActiveTabId(currentActiveTabId);
 
-    setTabs((currentTabs) => {
-      const nextTab = createDocumentTab(nextDocument, currentActiveTabId);
-      const tabExists = currentTabs.some((tab) => tab.id === currentActiveTabId);
-      const nextTabs = tabExists
-        ? currentTabs.map((tab) => tab.id === currentActiveTabId ? nextTab : tab)
-        : [...currentTabs, nextTab];
-      tabsRef.current = nextTabs;
-      return nextTabs;
-    });
+    const nextTab = createDocumentTab(nextDocument, currentActiveTabId);
+    const currentTabs = tabsRef.current;
+    const tabExists = currentTabs.some((tab) => tab.id === currentActiveTabId);
+    const nextTabs = tabExists
+      ? currentTabs.map((tab) => tab.id === currentActiveTabId ? nextTab : tab)
+      : [...currentTabs, nextTab];
+    tabsRef.current = nextTabs;
+    setTabs(nextTabs);
   }, []);
 
   const setActiveTabState = useCallback((nextTabs: MarkdownDocumentTab[], nextActiveTabId: string | null) => {
@@ -560,6 +590,9 @@ export function useMarkdownDocument({
     setTabs(nextTabs);
     setActiveTabId(nextActiveTabId);
     setDocument(nextDocument);
+    setWorkspaceSurface(activeTab
+      ? "editor"
+      : workspaceReadyRef.current ? "home" : "recovery");
   }, []);
 
   const createUntitledTabId = useCallback(() => {
@@ -909,6 +942,9 @@ export function useMarkdownDocument({
     setActiveTabId(nextActiveTabId);
     setDocument(nextDocument);
     documentRef.current = nextDocument;
+    setWorkspaceSurface(openBlank
+      ? "editor"
+      : workspaceReadyRef.current ? "home" : "recovery");
     registerWindowRestoreState(null, []);
     if (options.persistWorkspace !== false) {
       persistWorkspaceState({
@@ -1130,26 +1166,52 @@ export function useMarkdownDocument({
       shouldApply: () => boolean = () => true
     ) => {
       const files: NativeMarkdownFile[] = [];
+      const failedPaths: string[] = [];
 
       for (const path of paths) {
         try {
           const file = await readMarkdownFileWithPerformance(path, "restore-workspace");
-          if (!shouldApply()) return false;
+          if (!shouldApply()) {
+            return {
+              activeFilePath: null,
+              cancelled: true,
+              failedPaths,
+              files,
+              survivingPaths: files.map((candidate) => candidate.path)
+            } satisfies NativeMarkdownFilesRestoreResult;
+          }
           files.push(file);
         } catch {
           // Missing or moved files should not block restoring the rest of the workspace.
-          if (!shouldApply()) return false;
+          if (!shouldApply()) {
+            return {
+              activeFilePath: null,
+              cancelled: true,
+              failedPaths,
+              files,
+              survivingPaths: files.map((candidate) => candidate.path)
+            } satisfies NativeMarkdownFilesRestoreResult;
+          }
+          failedPaths.push(path);
         }
       }
 
-      if (!shouldApply() || files.length === 0) return false;
+      if (!shouldApply()) {
+        return {
+          activeFilePath: null,
+          cancelled: true,
+          failedPaths,
+          files,
+          survivingPaths: files.map((candidate) => candidate.path)
+        } satisfies NativeMarkdownFilesRestoreResult;
+      }
 
       const activeFile =
         files.find((file) => file.path === activeFilePath) ??
         files.at(-1) ??
         null;
 
-      if (documentTabsEnabled) {
+      if (documentTabsEnabled && files.length > 0) {
         const nextTabs = files.map((file) =>
           createDocumentTab({
             path: file.path,
@@ -1179,13 +1241,13 @@ export function useMarkdownDocument({
 
       if (updateTreeRoot && activeFile) onTreeRootFromFilePath(activeFile.path);
       registerWindowRestoreState(activeFile?.path ?? null, files.map((file) => file.path));
-      persistWorkspaceState({
-        ...draftWorkspacePatchFromTabs(tabsRef.current, activeTabIdRef.current),
-        filePath: activeFile?.path ?? null,
-        openFilePaths: files.map((file) => file.path),
-        ...(updateTreeRoot ? { folderName: null, folderPath: null } : {})
-      });
-      return true;
+      return {
+        activeFilePath: activeFile?.path ?? null,
+        cancelled: false,
+        failedPaths,
+        files,
+        survivingPaths: files.map((file) => file.path)
+      } satisfies NativeMarkdownFilesRestoreResult;
     },
     [documentTabsEnabled, onTreeRootFromFilePath, readMarkdownFileWithPerformance, registerWindowRestoreState, setActiveDocument, setActiveTabState]
   );
@@ -1194,7 +1256,14 @@ export function useMarkdownDocument({
     draftTabs: readonly StoredWorkspaceDraftTab[] | undefined,
     activeDraftId: string | null | undefined
   ) => {
-    if (!draftTabs?.length) return false;
+    if (!draftTabs?.length) {
+      return {
+        activeFilePath: activeFilePathFromTabs(tabsRef.current, activeTabIdRef.current),
+        activeTabId: activeTabIdRef.current,
+        recoverableDraftCount: 0,
+        tabs: tabsRef.current
+      } satisfies WorkspaceDraftRestoreResult;
+    }
 
     const draftDocumentTabs = draftTabs.map((draft, index) =>
       createDocumentTab(documentFromDraftTab(draft, documentRef.current.revision + index + 1), draft.id)
@@ -1213,14 +1282,14 @@ export function useMarkdownDocument({
     const nextActiveFilePath = activeFilePathFromTabs(nextTabs, nextActiveTabId);
     setActiveTabState(nextTabs, nextActiveTabId);
     registerWindowRestoreState(nextActiveFilePath, openFilePathsFromTabs(nextTabs));
-    persistWorkspaceState({
-      ...draftWorkspacePatchFromTabs(nextTabs, nextActiveTabId),
-      filePath: nextActiveFilePath,
-      openFilePaths: openFilePathsFromTabs(nextTabs)
-    });
 
     if (nextActiveFilePath) onTreeRootFromFilePath(nextActiveFilePath);
-    return true;
+    return {
+      activeFilePath: nextActiveFilePath,
+      activeTabId: nextActiveTabId,
+      recoverableDraftCount: draftDocumentTabs.length,
+      tabs: nextTabs
+    } satisfies WorkspaceDraftRestoreResult;
   }, [onTreeRootFromFilePath, registerWindowRestoreState, setActiveTabState]);
 
   const openMarkdownFile = useCallback(async (options: OpenMarkdownFileOptions = {}) => {
@@ -2103,22 +2172,40 @@ export function useMarkdownDocument({
     };
   }, [requestAppExit]);
 
+  const externalFilePath = windowContext.kind === "external-file"
+    ? windowContext.path
+    : null;
+
   useEffect(() => {
     if (managedWorkspace) return;
-    const path = windowContext.kind === "external-file" ? windowContext.path : null;
-    if (!path) return;
+    if (!externalFilePath) return;
+    if (externalFileStartupPathRef.current === externalFilePath) return;
+    externalFileStartupPathRef.current = externalFilePath;
 
     let active = true;
+    let settled = false;
+    setWorkspaceSurface("restoring");
 
-    readMarkdownFileWithPerformance(path, "initial-path").then((file) => {
+    readMarkdownFileWithPerformance(externalFilePath, "initial-path").then((file) => {
       if (!active) return;
+      settled = true;
       applyNativeMarkdownFile(file, false);
-    }).catch(() => {});
+    }).catch(() => {
+      if (!active) return;
+      settled = true;
+      clearOpenDocument({ persistWorkspace: false });
+    });
 
     return () => {
       active = false;
+      if (
+        externalFileStartupPathRef.current === externalFilePath &&
+        !settled
+      ) {
+        externalFileStartupPathRef.current = null;
+      }
     };
-  }, [applyNativeMarkdownFile, managedWorkspace, readMarkdownFileWithPerformance, windowContext]);
+  }, [applyNativeMarkdownFile, clearOpenDocument, externalFilePath, managedWorkspace, readMarkdownFileWithPerformance]);
 
   const externalFolderPath = windowContext.kind === "external-folder"
     ? windowContext.path
@@ -2128,14 +2215,29 @@ export function useMarkdownDocument({
     if (managedWorkspace || !externalFolderPath) return;
     if (externalFolderStartupPathRef.current === externalFolderPath) return;
     externalFolderStartupPathRef.current = externalFolderPath;
+    let active = true;
+    setWorkspaceSurface("restoring");
 
     Promise.resolve().then(() => onTreeRootFromFolderPath(
       externalFolderPath,
       pathNameFromPath(externalFolderPath),
       true,
       true
-    )).catch(() => {});
-  }, [externalFolderPath, managedWorkspace, onTreeRootFromFolderPath]);
+    )).then(() => {
+      if (active) clearOpenDocument({ persistWorkspace: false });
+    }).catch(() => {
+      if (active) clearOpenDocument({ persistWorkspace: false });
+    });
+
+    return () => {
+      active = false;
+    };
+  }, [clearOpenDocument, externalFolderPath, managedWorkspace, onTreeRootFromFolderPath]);
+
+  useEffect(() => {
+    if (managedWorkspace || windowContext.kind !== "external-blank") return;
+    setWorkspaceSurface(workspaceReady ? "editor" : "recovery");
+  }, [managedWorkspace, windowContext.kind, workspaceReady]);
 
   useEffect(() => {
     if (resolvedNativeOpenPolicy === "managed") {
@@ -2210,6 +2312,7 @@ export function useMarkdownDocument({
   useEffect(() => {
     if (managedWorkspace) return;
     if (windowContext.kind !== "primary") return;
+    if (!workspaceReady) return;
     if (!nativeOpenedPathsReady) return;
     if (openedFromNativeRef.current) return;
     if (!preferencesReady) return;
@@ -2218,6 +2321,7 @@ export function useMarkdownDocument({
     startupWorkspaceRestoreKeyRef.current = restoreKey;
 
     let active = true;
+    setWorkspaceSurface("restoring");
 
     if (restoreWorkspaceRoot) {
       const retainedTabs = tabsRef.current.filter((tab) =>
@@ -2238,11 +2342,14 @@ export function useMarkdownDocument({
     }
 
     (async () => {
-      let restoredWorkspace = false;
+      if (!restoreWorkspaceOnStartup) {
+        clearOpenDocument({ persistWorkspace: false });
+        return;
+      }
 
-      if (restoreWorkspaceOnStartup) {
-        try {
+      try {
           const workspace = await getStoredWorkspaceState();
+          if (!active) return;
           const restoreWindows = workspace.openWindows ?? [];
           const currentWindowHasRestoreState = workspaceHasCurrentWindowRestoreState(workspace);
           const primaryRestoreWindow = currentWindowHasRestoreState ? null : restoreWindows[0] ?? null;
@@ -2292,123 +2399,107 @@ export function useMarkdownDocument({
           )
             ? workspace.activeDraftId
             : null;
-
-          if (restoreWorkspaceRoot) {
-            restoredWorkspace = true;
-            persistWorkspaceState({
-              activeDraftId: restoredActiveDraftId,
-              draftTabs: restoredDraftTabs,
-              filePath: activeRestoreFilePath ?? restoreFilePaths[0] ?? null,
-              folderName: null,
-              folderPath: null,
-              openFilePaths: restoreFilePaths,
-              openWindows: [],
-              sideBySideGroup: workspace.sideBySideGroup &&
-                managedDocumentRelativePath(restoreWorkspaceRoot, workspace.sideBySideGroup.primaryFilePath) !== null &&
-                managedDocumentRelativePath(restoreWorkspaceRoot, workspace.sideBySideGroup.sideFilePath) !== null
-                ? workspace.sideBySideGroup
-                : null
-            });
-            if (restoreFilePaths.length === 0) {
-              clearOpenDocument({ persistWorkspace: false });
-            }
-          }
-
+          let folderRestorePromise: Promise<unknown> | null = null;
           if (workspace.folderPath && !restoreWorkspaceRoot) {
             const folderPath = workspace.folderPath;
             const folderName = workspace.folderName ?? folderPath;
-            const handleRestoredFolderResult = (folderResult: unknown) => {
-              if (folderResult === null || folderResult === false) {
-                persistWorkspaceState({
-                  fileTreeOpen: false,
-                  folderName: null,
-                  folderPath: null
-                });
-                return;
-              }
-
-              if (restoreFilePaths.length === 0) clearOpenDocument({ persistWorkspace: false });
-            };
             const restoreFolderRoot = () => onTreeRootFromFolderPath(
               folderPath,
               folderName,
-              restoreFilePaths.length === 0,
+              restoreFilePaths.length === 0 && restoredDraftTabs.length === 0,
               workspace.fileTreeOpen
             );
-
-            // Some saved roots, such as metadata folders, can make tree loading stall. Restoring
-            // files independently prevents the app from staying on Untitled.md while the tree waits.
-            restoredWorkspace = true;
-
-            if (restoreFilePaths.length > 0) {
-              // File restoration should not wait for potentially slow or skipped tree roots.
-              Promise.resolve()
-                .then(restoreFolderRoot)
-                .then((folderResult) => {
-                  if (active) handleRestoredFolderResult(folderResult);
-                })
-                .catch(() => {
-                  if (active) handleRestoredFolderResult(null);
-                });
-            } else {
-              const folderResult = await Promise.resolve().then(restoreFolderRoot);
-              if (!active) return;
-              handleRestoredFolderResult(folderResult);
-            }
+            folderRestorePromise = Promise.resolve().then(restoreFolderRoot).catch(() => null);
           }
 
-          if (restoreFilePaths.length > 0) {
-            const restoredFiles = await restoreNativeMarkdownFiles(
+          const restoredFiles = restoreFilePaths.length > 0
+            ? await restoreNativeMarkdownFiles(
               restoreFilePaths,
               activeRestoreFilePath,
-              !restoreWorkspaceRoot && !workspace.folderPath && !restoredWorkspace,
+              !restoreWorkspaceRoot && !workspace.folderPath,
               () => active
-            );
-            if (!active) return;
-            if (restoredFiles) {
-              restoredWorkspace = true;
-            } else if (restoreWorkspaceRoot) {
-              persistWorkspaceState({ filePath: null, openFilePaths: [] });
-            }
-          }
+            )
+            : {
+              activeFilePath: null,
+              cancelled: false,
+              failedPaths: [],
+              files: [],
+              survivingPaths: []
+            } satisfies NativeMarkdownFilesRestoreResult;
+          if (!active || restoredFiles.cancelled) return;
+          const restoredDrafts = restoreWorkspaceDraftTabs(
+            restoredDraftTabs,
+            restoredActiveDraftId
+          );
+          if (!active) return;
 
-          if (restoredDraftTabs.length) {
-            const restoredDrafts = restoreWorkspaceDraftTabs(
-              restoredDraftTabs,
-              restoredActiveDraftId
-            );
-            if (!active) return;
-            if (restoredDrafts) restoredWorkspace = true;
+          const settledSurface = workspaceSurfaceForRestore({
+            recoverableDraftCount: restoredDrafts.recoverableDraftCount,
+            validFileCount: restoredFiles.survivingPaths.length,
+            workspaceReady: workspaceReadyRef.current
+          });
+          if (settledSurface === "editor") {
+            setWorkspaceSurface("editor");
           }
 
           for (const path of additionalRestoreWindowFilePaths) {
             if (!active) return;
-            await openNativeMarkdownFileInNewWindow(path);
+            try {
+              await openNativeMarkdownFileInNewWindow(path);
+            } catch {
+              // A secondary window failure should not change the current workspace surface.
+            }
             if (!active) return;
-            restoredWorkspace = true;
           }
 
-          if (restoreWindows.length > 0) {
-            persistWorkspaceState({ openWindows: [] });
+          const folderResult = folderRestorePromise ? await folderRestorePromise : null;
+          if (!active) return;
+
+          if (settledSurface !== "editor") {
+            clearOpenDocument({ persistWorkspace: false });
           }
 
-        } catch {
-          // Store issues should not prevent QingYu from opening a usable document.
-        }
+          const finalTabs = tabsRef.current;
+          const finalActiveTabId = activeTabIdRef.current;
+          const finalOpenFilePaths = openFilePathsFromTabs(finalTabs);
+          const finalActiveFilePath = activeFilePathFromTabs(finalTabs, finalActiveTabId);
+          const finalSideBySideGroup = workspace.sideBySideGroup &&
+            finalOpenFilePaths.includes(workspace.sideBySideGroup.primaryFilePath) &&
+            finalOpenFilePaths.includes(workspace.sideBySideGroup.sideFilePath)
+            ? workspace.sideBySideGroup
+            : null;
+          const restoredFolderFailed = Boolean(workspace.folderPath) &&
+            !restoreWorkspaceRoot &&
+            (folderResult === null || folderResult === false);
+          const layoutHadRememberedState = Boolean(
+            workspace.filePath ||
+            workspace.folderPath ||
+            workspace.openFilePaths.length > 0 ||
+            (workspace.draftTabs?.length ?? 0) > 0 ||
+            restoreWindows.length > 0 ||
+            workspace.sideBySideGroup
+          );
+
+          if (layoutHadRememberedState) {
+            persistWorkspaceState({
+              ...draftWorkspacePatchFromTabs(finalTabs, finalActiveTabId),
+              filePath: finalActiveFilePath,
+              openFilePaths: finalOpenFilePaths,
+              openWindows: [],
+              sideBySideGroup: finalSideBySideGroup,
+              ...(restoreWorkspaceRoot || restoredFolderFailed
+                ? {
+                  folderName: null,
+                  folderPath: null,
+                  ...(restoredFolderFailed ? { fileTreeOpen: false } : {})
+                }
+                : {})
+            });
+          }
+      } catch {
+        if (!active) return;
+        clearOpenDocument({ persistWorkspace: false });
       }
-
-      if (!active || restoredWorkspace) return;
-
-      const shouldShowWelcomeDocument = await consumeWelcomeDocumentState();
-      if (!active || !shouldShowWelcomeDocument) return;
-
-      if (!isPristineUntitledDocument(documentRef.current)) return;
-
-      setActiveDocument({
-        ...documentRef.current,
-        content: initialMarkdown,
-        revision: documentRef.current.revision + 1
-      });
     })().catch(() => {});
 
     return () => {
@@ -2420,13 +2511,14 @@ export function useMarkdownDocument({
     managedWorkspace,
     nativeOpenedPathsReady,
     onTreeRootFromFolderPath,
+    persistWorkspaceState,
     preferencesReady,
     restoreNativeMarkdownFiles,
     restoreWorkspaceDraftTabs,
     restoreWorkspaceOnStartup,
     restoreWorkspaceRoot,
-    setActiveDocument,
     setActiveTabState,
+    workspaceReady,
     windowContext.kind
   ]);
 
@@ -2581,6 +2673,7 @@ export function useMarkdownDocument({
     confirmCanDiscardCurrentDocument,
     detachDeletedDocumentFile,
     document,
+    workspaceSurface,
     tabs,
     activeTabId,
     handleDroppedMarkdownPath,

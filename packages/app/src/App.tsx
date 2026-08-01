@@ -926,6 +926,9 @@ function WorkspaceApp() {
     restoreWorkspaceRoot: primaryIntegrationRoot,
     saveAsWorkspacePolicy,
     windowContext: editorWindowContext,
+    workspaceReady: !primaryWindowOwner ||
+      primaryWorkspace.status === "ready" ||
+      primaryWorkspace.status === "deferred",
     workspaceSourcePath: fileTreeSourcePath,
     workspacePersistencePolicy
   });
@@ -936,6 +939,7 @@ function WorkspaceApp() {
     confirmCanDiscardCurrentDocument,
     detachDeletedDocumentFile,
     document,
+    workspaceSurface,
     tabs: documentTabs,
     activeTabId,
     closeMarkdownTab,
@@ -1833,7 +1837,7 @@ function WorkspaceApp() {
     setCaseSensitive: setGlobalSearchCaseSensitive,
     setQuery: setGlobalSearchQuery
   } = workspaceSearch;
-  const hasOpenDocument = document.open;
+  const hasOpenDocument = workspaceSurface === "editor" && document.open;
   const largeMarkdownVisualBlocked =
     hasOpenDocument && !activeImageFile && shouldBlockLargeMarkdownVisual(document.content, {
       sizeBytes: document.sizeBytes
@@ -1846,6 +1850,7 @@ function WorkspaceApp() {
     !fileIgnoreSettings.loading;
   const startupWindowReady =
     startupSettingsReady &&
+    workspaceSurface !== "restoring" &&
     (
       onboardingVisible ||
       Boolean(activeImageFile) ||

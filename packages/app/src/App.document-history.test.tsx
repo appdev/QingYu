@@ -4,7 +4,6 @@ import {
   installAppTestHarness,
   mockNativePath,
   mockOpenMarkdownFile,
-  mockedConsumeWelcomeDocumentState,
   mockedListNativeMarkdownFileHistory,
   mockedReadNativeMarkdownFileHistory,
   mockedResolveDesktopPlatform,
@@ -90,7 +89,6 @@ describe("QingYu document history restore", () => {
 
   it("logs the document history restore pipeline", async () => {
     const debugSpy = vi.spyOn(console, "debug").mockImplementation(() => {});
-    mockedConsumeWelcomeDocumentState.mockResolvedValue(false);
     mockOpenMarkdownFile({
       content: "# Current\n\nSynthetic body.",
       name: "native.md",
@@ -140,7 +138,6 @@ describe("QingYu document history restore", () => {
   });
 
   it("closes history before opening another titlebar menu", async () => {
-    mockedConsumeWelcomeDocumentState.mockResolvedValue(false);
     mockOpenMarkdownFile({
       content: "# Current\n\nSynthetic body.",
       name: "native.md",
@@ -166,7 +163,6 @@ describe("QingYu document history restore", () => {
 
   it("positions history below the self-drawn Windows titlebar", async () => {
     mockedResolveDesktopPlatform.mockReturnValue("windows");
-    mockedConsumeWelcomeDocumentState.mockResolvedValue(false);
     mockOpenMarkdownFile({
       content: "# Current\n\nSynthetic body.",
       name: "native.md",
@@ -187,7 +183,6 @@ describe("QingYu document history restore", () => {
   });
 
   it("writes restored history contents into the active visual editor", async () => {
-    mockedConsumeWelcomeDocumentState.mockResolvedValue(false);
     mockOpenMarkdownFile({
       content: "# Current\n\nSynthetic body.",
       name: "native.md",
@@ -223,7 +218,6 @@ describe("QingYu document history restore", () => {
   });
 
   it("saves restored history contents back to the current file", async () => {
-    mockedConsumeWelcomeDocumentState.mockResolvedValue(false);
     mockOpenMarkdownFile({
       content: "# Current\n\nSynthetic body.",
       name: "native.md",
@@ -266,7 +260,6 @@ describe("QingYu document history restore", () => {
   });
 
   it("preserves unsaved contents in history before restoring an earlier version", async () => {
-    mockedConsumeWelcomeDocumentState.mockResolvedValue(false);
     mockOpenMarkdownFile({
       content: "# Current\n\nSynthetic body.",
       name: "native.md",
@@ -318,7 +311,6 @@ describe("QingYu document history restore", () => {
   });
 
   it("toggles the floating history panel from the titlebar action", async () => {
-    mockedConsumeWelcomeDocumentState.mockResolvedValue(false);
     mockOpenMarkdownFile({
       content: "# Current\n\nSynthetic body.",
       name: "native.md",
@@ -341,7 +333,6 @@ describe("QingYu document history restore", () => {
   });
 
   it("toggles the floating history panel from the keyboard shortcut", async () => {
-    mockedConsumeWelcomeDocumentState.mockResolvedValue(false);
     mockOpenMarkdownFile({
       content: "# Current\n\nSynthetic body.",
       name: "native.md",
@@ -370,7 +361,6 @@ describe("QingYu document history restore", () => {
   });
 
   it("keeps document history unavailable while read-only mode is active", async () => {
-    mockedConsumeWelcomeDocumentState.mockResolvedValue(false);
     mockOpenMarkdownFile({
       content: "# Current\n\nSynthetic body.",
       name: "native.md",
@@ -401,7 +391,6 @@ describe("QingYu document history restore", () => {
   });
 
   it("refreshes the open history panel after saving document updates", async () => {
-    mockedConsumeWelcomeDocumentState.mockResolvedValue(false);
     mockOpenMarkdownFile({
       content: "# Current\n\nSynthetic body.",
       name: "native.md",

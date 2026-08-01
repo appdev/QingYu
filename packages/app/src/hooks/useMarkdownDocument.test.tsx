@@ -20,7 +20,6 @@ import {
 } from "../lib/tauri";
 import {
   clearStoredRecentMarkdownFiles,
-  consumeWelcomeDocumentState,
   getStoredRecentMarkdownFiles,
   getStoredWorkspaceState,
   removeStoredRecentMarkdownFile,
@@ -37,7 +36,6 @@ vi.mock("@markra/markdown", () => markdownHelperMocks);
 
 vi.mock("../lib/settings/app-settings", () => ({
   clearStoredRecentMarkdownFiles: vi.fn(async () => {}),
-  consumeWelcomeDocumentState: vi.fn(),
   getStoredRecentMarkdownFiles: vi.fn(),
   getStoredWorkspaceState: vi.fn(),
   prependRecentMarkdownFile: vi.fn((files: Array<{ path: string }>, file: { path: string }) => [
@@ -88,19 +86,31 @@ const mockedSetNativeEditorWindowRestoreState = vi.mocked(setNativeEditorWindowR
 const mockedTakeNativeOpenedMarkdownPaths = vi.mocked(takeNativeOpenedMarkdownPaths);
 const mockedWatchNativeMarkdownFile = vi.mocked(watchNativeMarkdownFile);
 const mockedClearStoredRecentMarkdownFiles = vi.mocked(clearStoredRecentMarkdownFiles);
-const mockedConsumeWelcomeDocumentState = vi.mocked(consumeWelcomeDocumentState);
 const mockedGetStoredRecentMarkdownFiles = vi.mocked(getStoredRecentMarkdownFiles);
 const mockedGetStoredWorkspaceState = vi.mocked(getStoredWorkspaceState);
 const mockedRemoveStoredRecentMarkdownFile = vi.mocked(removeStoredRecentMarkdownFile);
 const mockedSaveStoredRecentMarkdownFile = vi.mocked(saveStoredRecentMarkdownFile);
 const mockedSaveStoredWorkspaceState = vi.mocked(saveStoredWorkspaceState);
 type NativeMarkdownFileResult = Awaited<ReturnType<typeof readNativeMarkdownFile>>;
+type StoredWorkspaceStateResult = Awaited<ReturnType<typeof getStoredWorkspaceState>>;
 
 function createDeferredNativeMarkdownFile() {
   let resolve!: (file: NativeMarkdownFileResult) => undefined;
   const promise = new Promise<NativeMarkdownFileResult>((resolvePromise) => {
     resolve = (file) => {
       resolvePromise(file);
+      return undefined;
+    };
+  });
+
+  return { promise, resolve };
+}
+
+function createDeferredStoredWorkspaceState() {
+  let resolve!: (workspace: StoredWorkspaceStateResult) => undefined;
+  const promise = new Promise<StoredWorkspaceStateResult>((resolvePromise) => {
+    resolve = (workspace) => {
+      resolvePromise(workspace);
       return undefined;
     };
   });
@@ -127,7 +137,6 @@ describe("useMarkdownDocument", () => {
     mockedTakeNativeOpenedMarkdownPaths.mockReset();
     mockedWatchNativeMarkdownFile.mockReset();
     mockedClearStoredRecentMarkdownFiles.mockReset();
-    mockedConsumeWelcomeDocumentState.mockReset();
     mockedGetStoredRecentMarkdownFiles.mockReset();
     mockedGetStoredWorkspaceState.mockReset();
     mockedRemoveStoredRecentMarkdownFile.mockReset();
@@ -139,7 +148,6 @@ describe("useMarkdownDocument", () => {
     markdownHelperMocks.getWordCount.mockReturnValue(0);
     mockedWatchNativeMarkdownFile.mockResolvedValue(() => {});
     mockedClearStoredRecentMarkdownFiles.mockResolvedValue(undefined);
-    mockedConsumeWelcomeDocumentState.mockResolvedValue(false);
     mockedGetStoredRecentMarkdownFiles.mockResolvedValue([]);
     mockedGetStoredWorkspaceState.mockResolvedValue({
       filePath: null,
@@ -163,6 +171,86 @@ describe("useMarkdownDocument", () => {
     mockedListenNativeWindowCloseRequested.mockResolvedValue(() => {});
     mockedSetNativeEditorWindowRestoreState.mockResolvedValue(undefined);
     mockedTakeNativeOpenedMarkdownPaths.mockResolvedValue([]);
+  });
+
+  it("reports restoring until the retained layout settles", async () => {
+    const deferredWorkspace = createDeferredStoredWorkspaceState();
+    mockedGetStoredWorkspaceState.mockReturnValue(deferredWorkspace.promise);
+
+    const { result } = renderHook(() =>
+      useMarkdownDocument({
+        getCurrentMarkdown: (fallbackContent) => fallbackContent,
+        onTreeRootFromFilePath: vi.fn(),
+        onTreeRootFromFolderPath: vi.fn(),
+        preferencesReady: true,
+        restoreWorkspaceOnStartup: true
+      })
+    );
+
+    await waitFor(() => expect(mockedGetStoredWorkspaceState).toHaveBeenCalledTimes(1));
+    expect(result.current.workspaceSurface).toBe("restoring");
+
+    act(() => deferredWorkspace.resolve({
+      filePath: null,
+      fileTreeOpen: false,
+      folderName: null,
+      folderPath: null,
+      openFilePaths: []
+    }));
+
+    await waitFor(() => expect(result.current.workspaceSurface).toBe("home"));
+  });
+
+  it("does not load retained layout when startup restore is disabled and settles on Home", async () => {
+    mockedGetStoredWorkspaceState.mockResolvedValue({
+      activeDraftId: "untitled:1",
+      draftTabs: [{
+        content: "# Retained draft",
+        id: "untitled:1",
+        name: "Retained.md",
+        path: null
+      }],
+      filePath: "/mock-files/retained.md",
+      fileTreeOpen: true,
+      folderName: "mock-files",
+      folderPath: "/mock-files",
+      openFilePaths: ["/mock-files/retained.md"]
+    });
+
+    const { result } = renderHook(() =>
+      useMarkdownDocument({
+        getCurrentMarkdown: (fallbackContent) => fallbackContent,
+        onTreeRootFromFilePath: vi.fn(),
+        onTreeRootFromFolderPath: vi.fn(),
+        preferencesReady: true,
+        restoreWorkspaceOnStartup: false
+      })
+    );
+
+    await waitFor(() => expect(result.current.workspaceSurface).toBe("home"));
+
+    expect(mockedGetStoredWorkspaceState).not.toHaveBeenCalled();
+    expect(mockedReadNativeMarkdownFile).not.toHaveBeenCalled();
+    expect(result.current.tabs).toEqual([]);
+    expect(result.current.document.open).toBe(false);
+  });
+
+  it("does not reinterpret an unavailable workspace as Home", async () => {
+    const { result } = renderHook(() =>
+      useMarkdownDocument({
+        getCurrentMarkdown: (fallbackContent) => fallbackContent,
+        onTreeRootFromFilePath: vi.fn(),
+        onTreeRootFromFolderPath: vi.fn(),
+        preferencesReady: true,
+        restoreWorkspaceOnStartup: true,
+        workspaceReady: false
+      })
+    );
+
+    await waitFor(() => expect(result.current.workspaceSurface).toBe("recovery"));
+
+    expect(mockedGetStoredWorkspaceState).not.toHaveBeenCalled();
+    expect(mockedReadNativeMarkdownFile).not.toHaveBeenCalled();
   });
 
   it("opens a managed tree document without desktop recent, window, or workspace mutations", async () => {
@@ -2499,6 +2587,50 @@ describe("useMarkdownDocument", () => {
     expect(result.current.tabs.some((tab) => tab.id === guideTab!.id)).toBe(false);
   });
 
+  it("settles on Home and writes an empty layout after closing the final tab", async () => {
+    const guidePath = "/mock-files/guide.md";
+    mockedReadNativeMarkdownFile.mockResolvedValue({
+      content: "# Guide",
+      name: "guide.md",
+      path: guidePath
+    });
+    const { result } = renderHook(() =>
+      useMarkdownDocument({
+        documentTabsEnabled: true,
+        getCurrentMarkdown: (fallbackContent) => fallbackContent,
+        onTreeRootFromFilePath: vi.fn(),
+        onTreeRootFromFolderPath: vi.fn(),
+        preferencesReady: true,
+        restoreWorkspaceOnStartup: false
+      })
+    );
+
+    await waitFor(() => expect(result.current.workspaceSurface).toBe("home"));
+    await act(async () => {
+      await result.current.openTreeMarkdownFile({
+        name: "guide.md",
+        path: guidePath,
+        relativePath: "guide.md"
+      });
+    });
+    expect(result.current.workspaceSurface).toBe("editor");
+    mockedSaveStoredWorkspaceState.mockClear();
+
+    await act(async () => {
+      await result.current.closeMarkdownTab(`file:${guidePath}`);
+    });
+
+    expect(result.current.workspaceSurface).toBe("home");
+    expect(result.current.tabs).toEqual([]);
+    expect(mockedSaveStoredWorkspaceState).toHaveBeenCalledTimes(1);
+    expect(mockedSaveStoredWorkspaceState).toHaveBeenCalledWith({
+      activeDraftId: null,
+      draftTabs: [],
+      filePath: null,
+      openFilePaths: []
+    });
+  });
+
   it("forwards native folder tree changes while watching an opened markdown file", async () => {
     const onMarkdownTreeChange = vi.fn();
     let emitTreeChange: (path: string) => unknown = () => {};
@@ -2988,7 +3120,7 @@ describe("useMarkdownDocument", () => {
     });
   });
 
-  it("skips a restored folder workspace when the folder no longer opens", async () => {
+  it("shows Home when the remembered folder cannot open and no file or dirty draft survives", async () => {
     const onTreeRootFromFolderPath = vi.fn(async () => null);
     mockedGetStoredWorkspaceState.mockResolvedValue({
       filePath: null,
@@ -3016,24 +3148,23 @@ describe("useMarkdownDocument", () => {
         true
       )
     );
-    await waitFor(() =>
-      expect(mockedSaveStoredWorkspaceState).toHaveBeenCalledWith({
-        fileTreeOpen: false,
-        folderName: null,
-        folderPath: null
-      })
-    );
-    expect(result.current.document).toMatchObject({
-      content: "",
-      dirty: false,
-      name: "Untitled.md",
-      open: true,
-      path: null
-    });
-    expect(mockedConsumeWelcomeDocumentState).not.toHaveBeenCalled();
+    await waitFor(() => expect(result.current.workspaceSurface).toBe("home"));
+
+    expect(mockedSaveStoredWorkspaceState).toHaveBeenCalledTimes(1);
+    expect(mockedSaveStoredWorkspaceState).toHaveBeenCalledWith(expect.objectContaining({
+      activeDraftId: null,
+      draftTabs: [],
+      filePath: null,
+      fileTreeOpen: false,
+      folderName: null,
+      folderPath: null,
+      openFilePaths: []
+    }));
+    expect(result.current.tabs).toEqual([]);
+    expect(result.current.document.open).toBe(false);
   });
 
-  it("keeps a blank document when the restored folder and files no longer open", async () => {
+  it("shows Home and writes one cleanup patch when every remembered file is missing", async () => {
     const guidePath = "/mock-files/deleted-notes/guide.md";
     const notesPath = "/mock-files/deleted-notes/notes.md";
     const onTreeRootFromFolderPath = vi.fn(async () => null);
@@ -3057,27 +3188,105 @@ describe("useMarkdownDocument", () => {
       })
     );
 
-    await waitFor(() =>
-      expect(mockedSaveStoredWorkspaceState).toHaveBeenCalledWith({
-        fileTreeOpen: false,
-        folderName: null,
-        folderPath: null
-      })
-    );
+    await waitFor(() => expect(result.current.workspaceSurface).toBe("home"));
 
     expect(mockedReadNativeMarkdownFile).toHaveBeenCalledWith(guidePath);
     expect(mockedReadNativeMarkdownFile).toHaveBeenCalledWith(notesPath);
-    expect(result.current.tabs).toEqual([expect.objectContaining({
-      name: "Untitled.md",
-      path: null
-    })]);
-    expect(result.current.document).toMatchObject({
-      content: "",
-      dirty: false,
-      name: "Untitled.md",
-      open: true,
-      path: null
+    expect(mockedSaveStoredWorkspaceState).toHaveBeenCalledTimes(1);
+    expect(mockedSaveStoredWorkspaceState).toHaveBeenCalledWith(expect.objectContaining({
+      activeDraftId: null,
+      draftTabs: [],
+      filePath: null,
+      fileTreeOpen: false,
+      folderName: null,
+      folderPath: null,
+      openFilePaths: []
+    }));
+    expect(result.current.tabs).toEqual([]);
+    expect(result.current.document.open).toBe(false);
+  });
+
+  it("keeps a dirty draft whose remembered source file is missing and settles on editor", async () => {
+    const missingPath = "/mock-files/vault/missing.md";
+    mockedGetStoredWorkspaceState.mockResolvedValue({
+      activeDraftId: `file:${missingPath}`,
+      draftTabs: [{
+        content: "# Recovered\n\nUnsaved work.",
+        id: `file:${missingPath}`,
+        name: "missing.md",
+        path: missingPath
+      }],
+      filePath: missingPath,
+      fileTreeOpen: false,
+      folderName: null,
+      folderPath: null,
+      openFilePaths: [missingPath]
     });
+    mockedReadNativeMarkdownFile.mockRejectedValue(new Error("Markdown file no longer exists"));
+
+    const { result } = renderHook(() =>
+      useMarkdownDocument({
+        documentTabsEnabled: true,
+        getCurrentMarkdown: (fallbackContent) => fallbackContent,
+        onTreeRootFromFilePath: vi.fn(),
+        onTreeRootFromFolderPath: vi.fn(),
+        preferencesReady: true,
+        restoreWorkspaceOnStartup: true
+      })
+    );
+
+    await waitFor(() => expect(result.current.workspaceSurface).toBe("editor"));
+
+    expect(result.current.document).toMatchObject({
+      content: "# Recovered\n\nUnsaved work.",
+      dirty: true,
+      path: missingPath
+    });
+    expect(result.current.activeTabId).toBe(`file:${missingPath}`);
+    expect(mockedSaveStoredWorkspaceState).toHaveBeenCalledTimes(1);
+    expect(mockedSaveStoredWorkspaceState).toHaveBeenCalledWith(expect.objectContaining({
+      activeDraftId: `file:${missingPath}`,
+      filePath: missingPath,
+      openFilePaths: [missingPath]
+    }));
+  });
+
+  it("canonicalizes the active tab and prunes invalid restored references once", async () => {
+    const validPath = "/mock-files/vault/valid.md";
+    const missingPath = "/mock-files/vault/missing.md";
+    mockedGetStoredWorkspaceState.mockResolvedValue({
+      filePath: missingPath,
+      fileTreeOpen: false,
+      folderName: null,
+      folderPath: null,
+      openFilePaths: [validPath, missingPath]
+    });
+    mockedReadNativeMarkdownFile.mockImplementation(async (path) => {
+      if (path === missingPath) throw new Error("Markdown file no longer exists");
+      return { content: "# Valid", name: "valid.md", path };
+    });
+
+    const { result } = renderHook(() =>
+      useMarkdownDocument({
+        documentTabsEnabled: true,
+        getCurrentMarkdown: (fallbackContent) => fallbackContent,
+        onTreeRootFromFilePath: vi.fn(),
+        onTreeRootFromFolderPath: vi.fn(),
+        preferencesReady: true,
+        restoreWorkspaceOnStartup: true
+      })
+    );
+
+    await waitFor(() => expect(result.current.workspaceSurface).toBe("editor"));
+
+    expect(result.current.document.path).toBe(validPath);
+    expect(result.current.activeTabId).toBe(`file:${validPath}`);
+    expect(result.current.tabs.map((tab) => tab.path)).toEqual([validPath]);
+    expect(mockedSaveStoredWorkspaceState).toHaveBeenCalledTimes(1);
+    expect(mockedSaveStoredWorkspaceState).toHaveBeenCalledWith(expect.objectContaining({
+      filePath: validPath,
+      openFilePaths: [validPath]
+    }));
   });
 
   it("restores saved files when the saved folder root no longer opens", async () => {
@@ -3135,11 +3344,11 @@ describe("useMarkdownDocument", () => {
       true
     );
     expect(onTreeRootFromFilePath).not.toHaveBeenCalled();
-    expect(mockedSaveStoredWorkspaceState).toHaveBeenCalledWith({
+    expect(mockedSaveStoredWorkspaceState).toHaveBeenCalledWith(expect.objectContaining({
       fileTreeOpen: false,
       folderName: null,
       folderPath: null
-    });
+    }));
   });
 
   it("restores saved files without waiting for the saved folder root to finish opening", async () => {
@@ -3237,7 +3446,6 @@ describe("useMarkdownDocument", () => {
     expect(onTreeRootFromFolderPath).toHaveBeenCalledWith("/mock-files/vault", "vault", false, true);
     expect(mockedReadNativeMarkdownFile).toHaveBeenCalledWith(guidePath);
     expect(mockedReadNativeMarkdownFile).toHaveBeenCalledWith(notesPath);
-    expect(mockedConsumeWelcomeDocumentState).not.toHaveBeenCalled();
   });
 
   it("prefers the current window tabs over a stale update-restart snapshot", async () => {
@@ -3303,7 +3511,9 @@ describe("useMarkdownDocument", () => {
     expect(mockedReadNativeMarkdownFile).toHaveBeenCalledWith(guidePath);
     expect(mockedReadNativeMarkdownFile).toHaveBeenCalledWith(notesPath);
     expect(mockedReadNativeMarkdownFile).not.toHaveBeenCalledWith(stalePath);
-    expect(mockedSaveStoredWorkspaceState).toHaveBeenCalledWith({ openWindows: [] });
+    expect(mockedSaveStoredWorkspaceState).toHaveBeenCalledWith(expect.objectContaining({
+      openWindows: []
+    }));
   });
 
   it("keeps the saved folder root when restoring tabs with the file tree collapsed", async () => {
@@ -3415,7 +3625,6 @@ describe("useMarkdownDocument", () => {
       })
     ]);
     expect(result.current.activeTabId).toBe("untitled:1");
-    expect(mockedConsumeWelcomeDocumentState).not.toHaveBeenCalled();
   });
 
   it("persists dirty untitled drafts as markdown changes", async () => {
@@ -4821,8 +5030,11 @@ describe("useMarkdownDocument", () => {
 
     expect(mockedReadNativeMarkdownFile).toHaveBeenCalledWith(firstPath);
     expect(mockedOpenNativeMarkdownFileInNewWindow).toHaveBeenCalledWith(secondPath);
-    expect(mockedSaveStoredWorkspaceState).toHaveBeenCalledWith({ openWindows: [] });
-    expect(mockedConsumeWelcomeDocumentState).not.toHaveBeenCalled();
+    expect(mockedSaveStoredWorkspaceState).toHaveBeenCalledWith(expect.objectContaining({
+      filePath: firstPath,
+      openFilePaths: [firstPath],
+      openWindows: []
+    }));
   });
 
   it("registers the current editor window restore state when a markdown file opens", async () => {
