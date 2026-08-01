@@ -458,9 +458,13 @@ export async function generateReleaseNotes({
   facts,
   model = DEFAULT_MODEL,
   modelClient,
+  requireModel = false,
   warn = (message) => console.warn(message),
 }) {
   if (!modelClient) {
+    if (requireModel) {
+      throw new Error("GitHub Models failed: a model client is required.");
+    }
     return { notes: renderDeterministicReleaseNotes(facts), usedModel: false };
   }
 
@@ -488,6 +492,9 @@ export async function generateReleaseNotes({
     return { notes: renderModelReleaseNotes(summary, facts), usedModel: true };
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
+    if (requireModel) {
+      throw new Error(`GitHub Models failed: ${reason}`, { cause: error });
+    }
     warn(`::warning::GitHub Models failed (${reason}); using deterministic release notes.`);
     return { notes: renderDeterministicReleaseNotes(facts), usedModel: false };
   }
@@ -575,7 +582,7 @@ function collectCommits(range) {
   }));
 }
 
-function createGitHubModelsClient({ token, fetchImpl = fetch, timeoutMs = 30_000 }) {
+export function createGitHubModelsClient({ token, fetchImpl = fetch, timeoutMs = 30_000 }) {
   return async ({ model, systemPrompt, userPrompt }) => {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(new Error("GitHub Models request timed out.")), timeoutMs);
@@ -587,7 +594,7 @@ function createGitHubModelsClient({ token, fetchImpl = fetch, timeoutMs = 30_000
           Accept: "application/vnd.github+json",
           Authorization: `Bearer ${token}`,
           "Content-Type": "application/json",
-          "X-GitHub-Api-Version": "2022-11-28",
+          "X-GitHub-Api-Version": "2026-03-10",
         },
         body: JSON.stringify({
           model,
@@ -650,6 +657,7 @@ async function main(env = process.env) {
     facts,
     model: env.GITHUB_MODELS_MODEL?.trim() || DEFAULT_MODEL,
     modelClient: createGitHubModelsClient({ token }),
+    requireModel: parseBoolean(env.REQUIRE_GITHUB_MODELS),
   });
   fs.writeFileSync(outputPath, generated.notes, "utf8");
 }

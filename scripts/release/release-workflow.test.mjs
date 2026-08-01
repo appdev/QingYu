@@ -21,8 +21,10 @@ test("release workflow always creates a draft with AI permission and inspectable
   assert.match(workflow, /^  publish_release:[\s\S]*?permissions:\n      contents: write\n      models: read/m);
   assert.match(workflow, /^          draft: true$/m);
   assert.match(workflow, /GITHUB_MODELS_MODEL: openai\/gpt-4\.1/);
+  assert.match(workflow, /REQUIRE_GITHUB_MODELS: true/);
   assert.match(workflow, /RELEASE_FACTS_PATH: release-facts\.json/);
   assert.match(workflow, /name: Upload generated release notes/);
+  assert.match(workflow, /uses: softprops\/action-gh-release@v3/);
   assert.match(workflow, /path: \|\n            release-notes\.md\n            release-facts\.json/);
   assert.doesNotMatch(workflow, /inputs\.draft/);
   assert.doesNotMatch(workflow, /Publish preview updater manifest/);

@@ -6,6 +6,7 @@ const {
   buildCompareUrl,
   buildModelInput,
   buildReleaseFacts,
+  createGitHubModelsClient,
   generateReleaseNotes,
   parseConventionalSubject,
   parseGitLog,
@@ -24,6 +25,7 @@ test("release notes module exposes focused selection and rendering helpers", () 
   assert.equal(typeof releaseNotesModule.buildReleaseFacts, "function");
   assert.equal(typeof releaseNotesModule.buildCompareUrl, "function");
   assert.equal(typeof releaseNotesModule.buildModelInput, "function");
+  assert.equal(typeof releaseNotesModule.createGitHubModelsClient, "function");
   assert.equal(typeof releaseNotesModule.validateModelSummary, "function");
   assert.equal(typeof releaseNotesModule.renderModelReleaseNotes, "function");
   assert.equal(typeof releaseNotesModule.generateReleaseNotes, "function");
@@ -362,6 +364,32 @@ test("generateReleaseNotes uses a valid injected model result", async () => {
   assert.match(result.notes, /更可靠的同步/u);
 });
 
+test("GitHub Models client uses the current versioned inference endpoint", async () => {
+  const requests = [];
+  const modelClient = createGitHubModelsClient({
+    token: "test-token",
+    fetchImpl: async (url, options) => {
+      requests.push({ url, options });
+      return {
+        ok: true,
+        json: async () => ({
+          choices: [{ message: { content: JSON.stringify(validModelSummary()) } }],
+        }),
+      };
+    },
+  });
+
+  await modelClient({
+    model: "openai/gpt-4.1",
+    systemPrompt: "System prompt",
+    userPrompt: "User prompt",
+  });
+
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].url, "https://models.github.ai/inference/chat/completions");
+  assert.equal(requests[0].options.headers["X-GitHub-Api-Version"], "2026-03-10");
+});
+
 test("generateReleaseNotes repairs one unsupported model summary before falling back", async () => {
   const calls = [];
   const unsupported = validModelSummary();
@@ -401,4 +429,25 @@ test("generateReleaseNotes warns and deterministically falls back for every mode
     assert.match(warnings[0], /deterministic release notes/u);
     assert.equal(result.notes, renderReleaseNotes({ ...modelFacts(), commits: modelFacts().commits }));
   }
+});
+
+test("generateReleaseNotes fails closed when a model result is required", async () => {
+  await assert.rejects(
+    generateReleaseNotes({
+      facts: modelFacts(),
+      requireModel: true,
+    }),
+    /GitHub Models failed.*client is required/u,
+  );
+
+  await assert.rejects(
+    generateReleaseNotes({
+      facts: modelFacts(),
+      modelClient: async () => {
+        throw new Error("410 Gone");
+      },
+      requireModel: true,
+    }),
+    /GitHub Models failed.*410 Gone/u,
+  );
 });
