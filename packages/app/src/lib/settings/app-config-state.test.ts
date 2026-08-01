@@ -17,6 +17,7 @@ import {
   getStoredWorkspaceState,
   loadLocalPandocPath,
   removeStoredRecentMarkdownFile,
+  retireAppConfigStatePersistence,
   saveLocalPandocPath,
   saveStoredFileTreeSortForWorkspace,
   saveStoredRecentMarkdownFile,
@@ -99,7 +100,9 @@ describe("Kernel AppConfig application state", () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.mocked(showAppToast).mockReset();
+    retireAppConfigStatePersistence();
     resetAppRuntimeForTests();
+    vi.restoreAllMocks();
   });
 
   it("loads and patches workspace state through AppConfig only", async () => {
@@ -118,7 +121,7 @@ describe("Kernel AppConfig application state", () => {
     expect(patchState).toHaveBeenCalledWith([{
       type: "patch-ui-layout",
       windowLabel: "main",
-      patch: { fileTreeOpen: true }
+      patch: { fileTreeOpen: true, openWindows: [] }
     }]);
   });
 
@@ -152,6 +155,51 @@ describe("Kernel AppConfig application state", () => {
       },
       type: "patch-ui-layout",
       windowLabel: "secondary"
+    }]);
+  });
+
+  it("clears stale workspace-level open windows in the same window-state patch", async () => {
+    const { patchState } = appConfigHarness();
+
+    await saveStoredWorkspaceState({
+      filePath: "kernel-workspace://primary/notes/current.md",
+      openFilePaths: ["kernel-workspace://primary/notes/current.md"]
+    }, { windowLabel: "secondary" });
+
+    expect(patchState).toHaveBeenCalledWith([{
+      patch: {
+        filePath: "notes/current.md",
+        openFilePaths: ["notes/current.md"],
+        openWindows: []
+      },
+      type: "patch-ui-layout",
+      windowLabel: "secondary"
+    }]);
+  });
+
+  it("keeps an explicitly supplied workspace-level open-window snapshot", async () => {
+    const { patchState } = appConfigHarness();
+
+    await saveStoredWorkspaceState({
+      fileTreeOpen: true,
+      openWindows: [{
+        filePath: "kernel-workspace://primary/notes/other.md",
+        label: "secondary",
+        openFilePaths: ["kernel-workspace://primary/notes/other.md"]
+      }]
+    });
+
+    expect(patchState).toHaveBeenCalledWith([{
+      patch: {
+        fileTreeOpen: true,
+        openWindows: [{
+          filePath: "notes/other.md",
+          label: "secondary",
+          openFilePaths: ["notes/other.md"]
+        }]
+      },
+      type: "patch-ui-layout",
+      windowLabel: "main"
     }]);
   });
 
@@ -251,7 +299,8 @@ describe("Kernel AppConfig application state", () => {
       patch: {
         activeDraftId: "draft-1",
         draftTabs: [{ content: "newest", id: "draft-1", name: "Draft.md", path: null }],
-        fileTreeOpen: true
+        fileTreeOpen: true,
+        openWindows: []
       },
       type: "patch-ui-layout",
       windowLabel: "main"
@@ -290,9 +339,65 @@ describe("Kernel AppConfig application state", () => {
     expect(patchState).toHaveBeenCalledTimes(1);
   });
 
-  it("retries one newest transient patch and warns once after repeated failure", async () => {
+  it("retries the newest merged window patch when a newer draft arrives during failure", async () => {
+    vi.useFakeTimers();
     const { patchState } = appConfigHarness();
-    patchState.mockRejectedValue(new Error("network unavailable"));
+    const firstAttempt = deferred<KernelAppConfigSnapshot>();
+    patchState.mockImplementationOnce(() => firstAttempt.promise).mockResolvedValue(snapshot());
+
+    const first = saveStoredWorkspaceState({
+      draftTabs: [{ content: "old", id: "draft-1", name: "Draft.md", path: null }],
+      fileTreeOpen: true
+    });
+    await vi.advanceTimersByTimeAsync(400);
+    const newer = saveStoredWorkspaceState({
+      activeDraftId: "draft-1",
+      draftTabs: [{ content: "newest", id: "draft-1", name: "Draft.md", path: null }]
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    firstAttempt.reject(Object.assign(new Error("kernel unavailable"), {
+      code: "kernel_not_ready"
+    }));
+    await first;
+
+    expect(patchState).toHaveBeenCalledTimes(2);
+    expect(patchState).toHaveBeenNthCalledWith(2, [{
+      patch: {
+        activeDraftId: "draft-1",
+        draftTabs: [{ content: "newest", id: "draft-1", name: "Draft.md", path: null }],
+        fileTreeOpen: true,
+        openWindows: []
+      },
+      type: "patch-ui-layout",
+      windowLabel: "main"
+    }]);
+    await newer;
+  });
+
+  it.each([
+    ["unclassified", new Error("validation failed")],
+    ["authentication", Object.assign(new Error("authentication failed"), {
+      code: "authentication_unavailable",
+      kind: "network"
+    })],
+    ["protocol", Object.assign(new Error("protocol failed"), { code: "internal_error" })]
+  ])("does not retry a %s persistence failure", async (_label, failure) => {
+    const { patchState } = appConfigHarness();
+    patchState.mockRejectedValue(failure);
+
+    await expect(saveStoredRecentMarkdownFile({
+      name: "A.md",
+      path: "kernel-workspace://primary/notes/a.md"
+    })).rejects.toBe(failure);
+
+    expect(patchState).toHaveBeenCalledOnce();
+  });
+
+  it("retries one recognized transient patch and warns once after repeated failure", async () => {
+    const { patchState } = appConfigHarness();
+    patchState.mockRejectedValue(Object.assign(new Error("network unavailable"), {
+      kind: "network"
+    }));
 
     await expect(saveStoredRecentMarkdownFile({
       name: "A.md",
@@ -302,5 +407,50 @@ describe("Kernel AppConfig application state", () => {
     expect(patchState).toHaveBeenCalledTimes(2);
     expect(showAppToast).toHaveBeenCalledTimes(1);
     expect(showAppToast).toHaveBeenCalledWith(expect.objectContaining({ status: "warning" }));
+  });
+
+  it("unregisters page, visibility, and native-exit listeners when retired", async () => {
+    const { appConfig } = appConfigHarness();
+    const unlistenExit = vi.fn();
+    const runtime = createDefaultAppRuntime();
+    configureAppRuntime({
+      ...runtime,
+      appConfig,
+      window: {
+        ...runtime.window,
+        listenAppExitRequested: vi.fn(async () => unlistenExit)
+      }
+    });
+    const addWindowListener = vi.spyOn(window, "addEventListener");
+    const removeWindowListener = vi.spyOn(window, "removeEventListener");
+    const addDocumentListener = vi.spyOn(document, "addEventListener");
+    const removeDocumentListener = vi.spyOn(document, "removeEventListener");
+
+    await saveStoredWorkspaceState({ fileTreeOpen: true });
+    await Promise.resolve();
+    retireAppConfigStatePersistence();
+
+    expect(addWindowListener.mock.calls.some(([type]) => type === "pagehide")).toBe(true);
+    expect(removeWindowListener.mock.calls.some(([type]) => type === "pagehide")).toBe(true);
+    expect(addDocumentListener.mock.calls.some(([type]) => type === "visibilitychange")).toBe(true);
+    expect(removeDocumentListener.mock.calls.some(([type]) => type === "visibilitychange")).toBe(true);
+    expect(unlistenExit).toHaveBeenCalledOnce();
+  });
+
+  it("does not create a coordinator or listeners solely to retire persistence", () => {
+    const runtime = createDefaultAppRuntime();
+    const listenAppExitRequested = vi.fn(async () => () => undefined);
+    configureAppRuntime({
+      ...runtime,
+      window: { ...runtime.window, listenAppExitRequested }
+    });
+    const addWindowListener = vi.spyOn(window, "addEventListener");
+    const addDocumentListener = vi.spyOn(document, "addEventListener");
+
+    retireAppConfigStatePersistence();
+
+    expect(addWindowListener).not.toHaveBeenCalled();
+    expect(addDocumentListener).not.toHaveBeenCalled();
+    expect(listenAppExitRequested).not.toHaveBeenCalled();
   });
 });

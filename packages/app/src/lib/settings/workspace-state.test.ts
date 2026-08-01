@@ -24,21 +24,80 @@ describe("workspace state settings", () => {
   beforeEach(() => setupSettingsStoreHarness(settingsStore));
   afterEach(() => resetSettingsStoreRuntime());
 
-  it("keeps managed document path containment portable across POSIX and Windows roots", () => {
-    expect(managedDocumentRelativePath("/mobile/workspace", "/mobile/workspace/notes/day.md"))
-      .toBe("notes/day.md");
-    expect(managedDocumentAbsolutePath("/mobile/workspace", "notes/day.md"))
-      .toBe("/mobile/workspace/notes/day.md");
-    expect(managedDocumentRelativePath("C:\\Notes", "c:\\notes\\nested\\day.md"))
-      .toBe("nested/day.md");
-    expect(managedDocumentAbsolutePath("C:\\Notes", "nested/day.md"))
-      .toBe("C:/Notes/nested/day.md");
+  it("ignores the obsolete recent-directory expansion field", () => {
+    const obsoleteExpansionKey = ["recent", "FoldersOpen"].join("");
+    expect(normalizeWorkspaceState({
+      ...defaultWorkspaceState,
+      [obsoleteExpansionKey]: false
+    })).toEqual(defaultWorkspaceState);
+  });
+
+  it.each([
+    {
+      absolute: "C:/Notes/nested/day.md",
+      document: "c:\\notes\\nested\\day.md",
+      relative: "nested/day.md",
+      root: "\\\\?\\C:\\Notes"
+    },
+    {
+      absolute: "C:/NOTES/Nested/day.markdown",
+      document: "c:/notes/Nested/day.markdown",
+      relative: "Nested/day.markdown",
+      root: "C:\\NOTES"
+    },
+    {
+      absolute: "//Server/Share/Notes/nested/day.md",
+      document: "\\\\?\\UNC\\server\\share\\notes\\nested\\day.md",
+      relative: "nested/day.md",
+      root: "\\\\Server\\Share\\Notes"
+    },
+    {
+      absolute: "//Server/Share/Notes/nested/day.md",
+      document: "//server/share/notes/nested/day.md",
+      relative: "nested/day.md",
+      root: "//?/UNC/Server/Share/Notes"
+    }
+  ])("round-trips Windows drive and UNC variants below $root", ({ absolute, document, relative, root }) => {
+    expect(managedDocumentRelativePath(root, document)).toBe(relative);
+    expect(managedDocumentAbsolutePath(root, relative)).toBe(absolute);
+    expect(managedDocumentRelativePath(root, absolute)).toBe(relative);
+  });
+
+  it("round-trips a normalized POSIX managed document path", () => {
+    expect(managedDocumentRelativePath(
+      "/mobile/workspace/",
+      "/mobile/workspace/notes\\daily.markdown"
+    )).toBe("notes/daily.markdown");
+    expect(managedDocumentAbsolutePath("/mobile/workspace/", "notes\\daily.markdown"))
+      .toBe("/mobile/workspace/notes/daily.markdown");
+  });
+
+  it.each([
+    "",
+    "notes.txt",
+    "/mobile/workspace/notes.md",
+    "../outside.md",
+    "notes/../outside.md",
+    "./notes.md",
+    "C:/outside.md"
+  ])("rejects unsafe managed document restoration path %j", (relativePath) => {
+    expect(managedDocumentAbsolutePath("/mobile/workspace", relativePath)).toBeNull();
+  });
+
+  it.each([
+    "/mobile/workspace",
+    "/mobile/workspace/notes.txt",
+    "/mobile/outside.md",
+    "/mobile/workspace/../outside.md"
+  ])("rejects non-document or outside-root managed file %j", (filePath) => {
+    expect(managedDocumentRelativePath("/mobile/workspace", filePath)).toBeNull();
   });
 
   it.each([
     ["/Notes", "/notes/day.md"],
     ["/mobile/workspace", "/mobile/outside.md"],
-    ["C:\\Notes", "C:\\Notes-archive\\day.md"]
+    ["C:\\Notes", "C:\\Notes-archive\\day.md"],
+    ["\\\\server\\share\\Notes", "\\\\SERVER\\SHARE\\Notes-archive\\day.md"]
   ])("rejects a document outside root %s", (root, document) => {
     expect(managedDocumentRelativePath(root, document)).toBeNull();
   });
@@ -103,7 +162,8 @@ describe("workspace state settings", () => {
         filePath: "notes/a.md",
         fileTreeOpen: true,
         folderPath: "notes",
-        openFilePaths: ["notes/a.md"]
+        openFilePaths: ["notes/a.md"],
+        openWindows: []
       },
       type: "patch-ui-layout",
       windowLabel: "secondary"

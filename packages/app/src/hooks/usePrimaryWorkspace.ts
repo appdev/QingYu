@@ -58,6 +58,17 @@ function createPrimaryWorkspaceSourceId() {
     `qingyu-primary-workspace-${Math.random().toString(36).slice(2)}`;
 }
 
+function primaryWorkspaceStatesMatch(
+  left: PrimaryWorkspaceState,
+  right: PrimaryWorkspaceState
+) {
+  return left.desktopWorkspaceRoot === right.desktopWorkspaceRoot &&
+    left.desktopPath === right.desktopPath &&
+    left.managedName === right.managedName &&
+    left.onboardingCompleted === right.onboardingCompleted &&
+    left.onboardingRequestedForNextLaunch === right.onboardingRequestedForNextLaunch;
+}
+
 export function usePrimaryWorkspace({
   trueMobile
 }: {
@@ -75,7 +86,6 @@ export function usePrimaryWorkspace({
   const rootPolicy = getAppRuntime().workspace.rootPolicy;
   const fixedRootPolicy = rootPolicy?.kind === "fixed" ? rootPolicy : null;
   const hostSelectableRootPolicy = rootPolicy?.kind === "host-selectable" ? rootPolicy : null;
-  const hostOwnedRootPolicy = fixedRootPolicy ?? hostSelectableRootPolicy;
   stateRef.current = state;
   trueMobileRef.current = trueMobile;
 
@@ -99,11 +109,11 @@ export function usePrimaryWorkspace({
     return generation;
   }, [transition]);
 
-  const resolveHostOwnedState = useCallback(async (generation: number) => {
-    if (!hostOwnedRootPolicy) return null;
+  const resolveFixedRoot = useCallback(async (generation: number) => {
+    if (!fixedRootPolicy) return null;
 
     try {
-      const root = await hostOwnedRootPolicy.resolveRoot();
+      const root = await fixedRootPolicy.resolveRoot();
       if (!root.trim()) throw new Error("Host workspace is unavailable.");
       transitionIfCurrent(generation, {
         error: null,
@@ -121,7 +131,61 @@ export function usePrimaryWorkspace({
       });
       return null;
     }
-  }, [hostOwnedRootPolicy, transitionIfCurrent]);
+  }, [fixedRootPolicy, transitionIfCurrent]);
+
+  const resolveHostSelectableDesktopState = useCallback(async (
+    persistedState: PrimaryWorkspaceState,
+    generation: number
+  ) => {
+    if (!hostSelectableRootPolicy) return null;
+    if (persistedState.onboardingRequestedForNextLaunch) {
+      transitionIfCurrent(generation, {
+        error: null,
+        root: null,
+        status: "needs-onboarding",
+        workspaceRoot: null
+      });
+      return null;
+    }
+    if (!persistedState.desktopPath || !persistedState.desktopWorkspaceRoot) {
+      transitionIfCurrent(generation, {
+        error: null,
+        root: null,
+        status: persistedState.onboardingCompleted ? "deferred" : "needs-onboarding",
+        workspaceRoot: null
+      });
+      return null;
+    }
+    if (!persistedState.onboardingCompleted) {
+      transitionIfCurrent(generation, {
+        error: null,
+        root: null,
+        status: "needs-onboarding",
+        workspaceRoot: null
+      });
+      return null;
+    }
+
+    try {
+      const root = await hostSelectableRootPolicy.resolveRoot();
+      if (!root.trim()) throw new Error("Host workspace is unavailable.");
+      transitionIfCurrent(generation, {
+        error: null,
+        root,
+        status: "ready",
+        workspaceRoot: null
+      });
+      return root;
+    } catch (error: unknown) {
+      transitionIfCurrent(generation, {
+        error: primaryWorkspaceError(error),
+        root: null,
+        status: "error",
+        workspaceRoot: null
+      });
+      return null;
+    }
+  }, [hostSelectableRootPolicy, transitionIfCurrent]);
 
   const publishChange = useCallback(async () => {
     const generation = eventGenerationRef.current + 1;
@@ -283,8 +347,8 @@ export function usePrimaryWorkspace({
 
     const resolveInitialState = async () => {
       try {
-        if (hostOwnedRootPolicy) {
-          await resolveHostOwnedState(generation);
+        if (fixedRootPolicy) {
+          await resolveFixedRoot(generation);
           return;
         }
 
@@ -294,6 +358,11 @@ export function usePrimaryWorkspace({
 
         if (trueMobile) {
           await resolveMobileState(persistedState, generation);
+          return;
+        }
+
+        if (hostSelectableRootPolicy) {
+          await resolveHostSelectableDesktopState(persistedState, generation);
           return;
         }
 
@@ -321,9 +390,11 @@ export function usePrimaryWorkspace({
       if (generationRef.current === generation) generationRef.current += 1;
     };
   }, [
-    hostOwnedRootPolicy,
+    fixedRootPolicy,
+    hostSelectableRootPolicy,
     resolveDesktopState,
-    resolveHostOwnedState,
+    resolveFixedRoot,
+    resolveHostSelectableDesktopState,
     resolveMobileState,
     transition,
     transitionIfCurrent,
@@ -341,6 +412,9 @@ export function usePrimaryWorkspace({
       if (!mountedRef.current || generation !== generationRef.current) return null;
       persistedStateRef.current = persistedState;
       if (trueMobileRef.current) return resolveMobileState(persistedState, generation);
+      if (hostSelectableRootPolicy) {
+        return resolveHostSelectableDesktopState(persistedState, generation);
+      }
       return resolveDesktopState(persistedState, generation);
     } catch (error: unknown) {
       transitionIfCurrent(generation, {
@@ -351,10 +425,17 @@ export function usePrimaryWorkspace({
       });
       return null;
     }
-  }, [beginOperation, resolveDesktopState, resolveMobileState, transitionIfCurrent]);
+  }, [
+    beginOperation,
+    hostSelectableRootPolicy,
+    resolveDesktopState,
+    resolveHostSelectableDesktopState,
+    resolveMobileState,
+    transitionIfCurrent
+  ]);
 
   useEffect(() => {
-    if (hostOwnedRootPolicy) return undefined;
+    if (fixedRootPolicy) return undefined;
 
     let cancelled = false;
     let cleanup: (() => unknown) | null = null;
@@ -374,7 +455,7 @@ export function usePrimaryWorkspace({
       cancelled = true;
       cleanup?.();
     };
-  }, [hostOwnedRootPolicy, reloadFromApplicationEvent]);
+  }, [fixedRootPolicy, reloadFromApplicationEvent]);
 
   const commitDesktopRoot = useCallback(async (path: string) => {
     if (fixedRootPolicy) return stateRef.current.root;
@@ -384,20 +465,35 @@ export function usePrimaryWorkspace({
       const previousState = stateRef.current;
       const generation = beginOperation();
       try {
+        const parentPath = parentPathFromPath(path);
+        if (!parentPath || parentPath === path) {
+          throw new Error("Primary workspace notebook requires a Workspace parent.");
+        }
         const root = await hostSelectableRootPolicy.commitRoot(path);
         if (!root || !mountedRef.current || generation !== generationRef.current) return null;
+        const persistedState = await loadPrimaryWorkspaceState();
+        if (!mountedRef.current || generation !== generationRef.current) return null;
+        if (
+          !persistedState.desktopPath ||
+          !persistedState.desktopWorkspaceRoot ||
+          !persistedState.onboardingCompleted
+        ) {
+          throw new Error("Host workspace metadata was not committed.");
+        }
+        persistedStateRef.current = persistedState;
         transitionIfCurrent(generation, {
           error: null,
           root,
           status: "ready",
           workspaceRoot: null
         });
+        await publishChange();
         return root;
-      } catch {
+      } catch (error: unknown) {
         transitionIfCurrent(generation, previousState.status === "ready"
           ? previousState
           : {
-              error: "Host workspace switch failed.",
+              error: primaryWorkspaceError(error),
               root: null,
               status: "error",
               workspaceRoot: null
@@ -499,20 +595,28 @@ export function usePrimaryWorkspace({
   }, [beginOperation, fixedRootPolicy, publishChange, transitionIfCurrent]);
 
   const deferDesktopSetup = useCallback(async () => {
-    if (hostOwnedRootPolicy) return stateRef.current.root;
+    if (fixedRootPolicy) return stateRef.current.root;
     if (trueMobileRef.current) return null;
 
     const generation = beginOperation();
     try {
-      const persistedState = await savePrimaryWorkspaceState({
+      const currentState = persistedStateRef.current ?? await loadPrimaryWorkspaceState();
+      const desiredState: PrimaryWorkspaceState = {
         desktopWorkspaceRoot: null,
         desktopPath: null,
         managedName: null,
         onboardingCompleted: true,
         version: 3
-      });
+      };
+      const persistedState = await saveCanonicalPrimaryWorkspaceState(desiredState, currentState);
       if (!mountedRef.current || generation !== generationRef.current) return null;
       persistedStateRef.current = persistedState;
+      if (!primaryWorkspaceStatesMatch(persistedState, desiredState)) {
+        if (hostSelectableRootPolicy) {
+          return resolveHostSelectableDesktopState(persistedState, generation);
+        }
+        return resolveDesktopState(persistedState, generation);
+      }
       transitionIfCurrent(generation, {
         error: null,
         root: null,
@@ -530,28 +634,71 @@ export function usePrimaryWorkspace({
       });
       return null;
     }
-  }, [beginOperation, hostOwnedRootPolicy, publishChange, transitionIfCurrent]);
+  }, [
+    beginOperation,
+    fixedRootPolicy,
+    hostSelectableRootPolicy,
+    publishChange,
+    resolveDesktopState,
+    resolveHostSelectableDesktopState,
+    transitionIfCurrent
+  ]);
 
   const resetOnboarding = useCallback(async () => {
-    if (hostOwnedRootPolicy) return stateRef.current.root;
+    if (fixedRootPolicy) return stateRef.current.root;
 
     try {
       const currentState = persistedStateRef.current ?? await loadPrimaryWorkspaceState();
-      const persistedState = await savePrimaryWorkspaceState({
+      const desiredState: PrimaryWorkspaceState = {
         ...currentState,
         onboardingRequestedForNextLaunch: true
-      });
+      };
+      const persistedState = await saveCanonicalPrimaryWorkspaceState(desiredState, currentState);
       if (mountedRef.current) persistedStateRef.current = persistedState;
+      if (mountedRef.current && !primaryWorkspaceStatesMatch(persistedState, desiredState)) {
+        const generation = beginOperation();
+        if (trueMobileRef.current) await resolveMobileState(persistedState, generation);
+        else if (hostSelectableRootPolicy) {
+          await resolveHostSelectableDesktopState(persistedState, generation);
+        } else {
+          await resolveDesktopState(persistedState, generation);
+        }
+      }
       return persistedState;
     } catch {
       return null;
     }
-  }, [hostOwnedRootPolicy]);
+  }, [
+    beginOperation,
+    fixedRootPolicy,
+    hostSelectableRootPolicy,
+    resolveDesktopState,
+    resolveHostSelectableDesktopState,
+    resolveMobileState
+  ]);
 
   const retry = useCallback(async () => {
-    if (hostOwnedRootPolicy) {
+    if (fixedRootPolicy) {
       const generation = beginOperation();
-      return resolveHostOwnedState(generation);
+      return resolveFixedRoot(generation);
+    }
+
+    if (hostSelectableRootPolicy && !trueMobileRef.current) {
+      const generation = beginOperation();
+      try {
+        const loadedState = await loadPrimaryWorkspaceState();
+        if (!mountedRef.current || generation !== generationRef.current) return null;
+        persistedStateRef.current = loadedState;
+        return resolveHostSelectableDesktopState(loadedState, generation);
+      } catch (error: unknown) {
+        transitionIfCurrent(generation, {
+          error: primaryWorkspaceError(error),
+          root: null,
+          status: "error",
+          workspaceRoot: null
+        });
+        return null;
+      }
     }
 
     const persistedState = persistedStateRef.current;
@@ -562,6 +709,9 @@ export function usePrimaryWorkspace({
         if (!mountedRef.current || generation !== generationRef.current) return null;
         persistedStateRef.current = loadedState;
         if (trueMobileRef.current) return resolveMobileState(loadedState, generation);
+        if (hostSelectableRootPolicy) {
+          return resolveHostSelectableDesktopState(loadedState, generation);
+        }
         return resolveDesktopState(loadedState, generation);
       } catch (error: unknown) {
         transitionIfCurrent(generation, {
@@ -576,12 +726,17 @@ export function usePrimaryWorkspace({
 
     const generation = beginOperation();
     if (trueMobileRef.current) return resolveMobileState(persistedState, generation);
+    if (hostSelectableRootPolicy) {
+      return resolveHostSelectableDesktopState(persistedState, generation);
+    }
     return resolveDesktopState(persistedState, generation);
   }, [
     beginOperation,
-    hostOwnedRootPolicy,
+    fixedRootPolicy,
+    hostSelectableRootPolicy,
     resolveDesktopState,
-    resolveHostOwnedState,
+    resolveFixedRoot,
+    resolveHostSelectableDesktopState,
     resolveMobileState,
     transitionIfCurrent
   ]);
@@ -592,7 +747,7 @@ export function usePrimaryWorkspace({
     commitDesktopRoot,
     commitManagedRoot,
     deferDesktopSetup,
-    managedName: hostOwnedRootPolicy ? null : persistedStateRef.current?.managedName ?? null,
+    managedName: fixedRootPolicy ? null : persistedStateRef.current?.managedName ?? null,
     resetOnboarding,
     retry
   };

@@ -50,7 +50,11 @@ export type AppConfigStatePersistenceCoordinator = {
 
 type CoordinatorOwner = {
   appConfig: AppConfigRuntime;
-  coordinator: AppConfigStatePersistenceCoordinator;
+  coordinator: ManagedAppConfigStatePersistenceCoordinator;
+};
+
+type ManagedAppConfigStatePersistenceCoordinator = AppConfigStatePersistenceCoordinator & {
+  addRetirementCleanup: (cleanup: () => unknown) => undefined;
 };
 
 let coordinatorOwner: CoordinatorOwner | null = null;
@@ -59,20 +63,22 @@ function appConfigStatePersistenceCoordinator() {
   const appConfig = getAppRuntime().appConfig;
   if (coordinatorOwner?.appConfig !== appConfig) {
     coordinatorOwner?.coordinator.retire();
+    const coordinator = createAppConfigStatePersistenceCoordinator(appConfig);
+    coordinator.addRetirementCleanup(installPersistenceFlushListeners(coordinator));
     coordinatorOwner = {
       appConfig,
-      coordinator: createAppConfigStatePersistenceCoordinator(appConfig)
+      coordinator
     };
-    installPersistenceFlushListeners(coordinatorOwner.coordinator);
   }
   return coordinatorOwner.coordinator;
 }
 
 function createAppConfigStatePersistenceCoordinator(
   appConfig: AppConfigRuntime
-): AppConfigStatePersistenceCoordinator {
+): ManagedAppConfigStatePersistenceCoordinator {
   const queue: PersistenceEntry[] = [];
   const drainWaiters: Array<(value?: unknown) => unknown> = [];
+  const retirementCleanups: Array<() => unknown> = [];
   let draft: PersistenceEntry | null = null;
   let draftTimer: ReturnType<typeof setTimeout> | null = null;
   let processing = false;
@@ -107,9 +113,48 @@ function createAppConfigStatePersistenceCoordinator(
   const retire = () => {
     if (retired) return undefined;
     retired = true;
+    retirementCleanups.splice(0).forEach((cleanup) => {
+      try {
+        cleanup();
+      } catch {
+        // Retirement remains best-effort across independent host listeners.
+      }
+    });
     dropQueued();
     settleDrain();
     return undefined;
+  };
+
+  const addRetirementCleanup = (cleanup: () => unknown) => {
+    if (retired) {
+      cleanup();
+      return undefined;
+    }
+    retirementCleanups.push(cleanup);
+    return undefined;
+  };
+
+  const mergePatchEntry = (current: PersistenceEntry, newer: PersistenceEntry) => {
+    if (current.operation.type !== "patch-ui-layout" || newer.operation.type !== "patch-ui-layout") {
+      return false;
+    }
+    if (current.operation.windowLabel !== newer.operation.windowLabel) return false;
+    current.operation = {
+      ...newer.operation,
+      patch: { ...current.operation.patch, ...newer.operation.patch }
+    };
+    current.reject.push(...newer.reject);
+    current.resolve.push(...newer.resolve);
+    return true;
+  };
+
+  const absorbNewerRetryPatch = (entry: PersistenceEntry) => {
+    while (queue[0] && mergePatchEntry(entry, queue[0])) queue.shift();
+    if (queue.length === 0 && draft && mergePatchEntry(entry, draft)) {
+      draft = null;
+      if (draftTimer) clearTimeout(draftTimer);
+      draftTimer = null;
+    }
   };
 
   const send = async (entry: PersistenceEntry) => {
@@ -127,6 +172,7 @@ function createAppConfigStatePersistenceCoordinator(
           warnOnce();
           throw error;
         }
+        absorbNewerRetryPatch(entry);
       }
     }
     return undefined;
@@ -211,21 +257,40 @@ function createAppConfigStatePersistenceCoordinator(
     return new Promise<unknown>((resolve) => drainWaiters.push(resolve));
   };
 
-  return { enqueueDraft, enqueueImmediate, flush, retire };
+  return { addRetirementCleanup, enqueueDraft, enqueueImmediate, flush, retire };
 }
 
 function installPersistenceFlushListeners(coordinator: AppConfigStatePersistenceCoordinator) {
+  const pagehide = () => {
+    coordinator.flush().catch(() => undefined);
+  };
+  const visibilitychange = () => {
+    if (document.visibilityState === "hidden") coordinator.flush().catch(() => undefined);
+  };
   if (typeof window !== "undefined") {
-    window.addEventListener("pagehide", () => {
-      coordinator.flush().catch(() => undefined);
-    }, { once: true });
+    window.addEventListener("pagehide", pagehide, { once: true });
   }
   if (typeof document !== "undefined") {
-    document.addEventListener("visibilitychange", () => {
-      if (document.visibilityState === "hidden") coordinator.flush().catch(() => undefined);
-    });
+    document.addEventListener("visibilitychange", visibilitychange);
   }
-  getAppRuntime().window.listenAppExitRequested(() => coordinator.flush()).catch(() => undefined);
+  let retired = false;
+  let removeExitListener: (() => unknown) | null = null;
+  getAppRuntime().window.listenAppExitRequested(() => coordinator.flush()).then((cleanup) => {
+    if (retired) {
+      cleanup();
+      return;
+    }
+    removeExitListener = cleanup;
+  }).catch(() => undefined);
+
+  return () => {
+    retired = true;
+    if (typeof window !== "undefined") window.removeEventListener("pagehide", pagehide);
+    if (typeof document !== "undefined") {
+      document.removeEventListener("visibilitychange", visibilitychange);
+    }
+    removeExitListener?.();
+  };
 }
 
 function errorProperty(error: unknown, property: string) {
@@ -241,18 +306,15 @@ function isStaleGenerationError(error: unknown) {
 function isTransientPersistenceError(error: unknown) {
   const code = errorProperty(error, "code");
   const kind = errorProperty(error, "kind");
-  if (kind === "network" || kind === "connection") return true;
   if (typeof code === "string") {
     return [
       "app_config_unavailable",
-      "authentication_unavailable",
-      "internal_error",
       "kernel_not_ready",
       "workspace_locked",
       "workspace_unavailable"
     ].includes(code);
   }
-  return error instanceof Error;
+  return kind === "network" || kind === "connection";
 }
 
 async function resolveWindowLabel(options: StoredWorkspaceStateOptions = {}) {
@@ -302,6 +364,7 @@ function mapWindow(windowState: StoredWorkspaceWindow) {
 
 function layoutPatch(patch: Partial<StoredWorkspaceState>): KernelWorkspaceLayoutPatch {
   const mapped: KernelWorkspaceLayoutPatch = {};
+  const hasWindowStatePatch = Object.keys(patch).some((key) => key !== "openWindows");
   if (patch.activeDraftId !== undefined) mapped.activeDraftId = normalizeNullableString(patch.activeDraftId);
   if (patch.draftTabs !== undefined) {
     const normalized = normalizeWorkspaceState({ ...defaultWorkspaceState, draftTabs: patch.draftTabs });
@@ -323,6 +386,8 @@ function layoutPatch(patch: Partial<StoredWorkspaceState>): KernelWorkspaceLayou
       ...defaultWorkspaceState,
       openWindows: patch.openWindows
     }).openWindows ?? []).map(mapWindow);
+  } else if (hasWindowStatePatch) {
+    mapped.openWindows = [];
   }
   if (patch.sideBySideGroup !== undefined) {
     mapped.sideBySideGroup = mapSideBySideGroup(patch.sideBySideGroup);
@@ -436,8 +501,7 @@ export function flushAppConfigStatePersistence() {
 }
 
 export function retireAppConfigStatePersistence() {
-  const coordinator = appConfigStatePersistenceCoordinator();
-  coordinator.retire();
+  coordinatorOwner?.coordinator.retire();
   coordinatorOwner = null;
   return undefined;
 }
