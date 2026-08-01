@@ -312,8 +312,7 @@ pub(super) async fn delete(
         expected_revision: parse_revision(&input.expected_revision)?,
         deletion_policy: match deletion {
             crate::mcp::config::DeletionPolicy::Permanent => DeletionPolicy::Permanent,
-            crate::mcp::config::DeletionPolicy::SystemTrash
-            | crate::mcp::config::DeletionPolicy::QingYuRecycleBin => DeletionPolicy::Recoverable,
+            crate::mcp::config::DeletionPolicy::Recoverable => DeletionPolicy::Recoverable,
         },
     };
     services

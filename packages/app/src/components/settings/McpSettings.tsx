@@ -205,7 +205,7 @@ export function McpSettings({
           compact={compact}
           value={snapshot.config.deletion}
           options={[
-            ["qing-yu-recycle-bin", "settings.mcp.policy.deletion.qingYuRecycleBin"],
+            ["recoverable", "settings.mcp.policy.deletion.qingYuRecycleBin"],
             ["permanent", "settings.mcp.policy.deletion.permanent"]
           ]}
           translate={translate}

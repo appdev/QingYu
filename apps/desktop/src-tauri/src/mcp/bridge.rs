@@ -16,8 +16,8 @@ use rmcp::{
     ClientHandler, ErrorData, ServerHandler, ServiceExt,
 };
 
-use super::config::McpConfigDocument;
 use super::ipc::{application_data_dir, bounded_transport, LocalIpcEndpoint};
+use super::local_settings::McpLocalSettingsService;
 
 const MAXIMUM_BRIDGE_FRAME_BYTES: usize = 64 * 1024 * 1024;
 
@@ -47,10 +47,12 @@ impl BridgeConfig {
     pub(crate) fn for_test(endpoint: LocalIpcEndpoint) -> Self {
         Self {
             endpoint,
-            mcp_config_path: std::env::temp_dir().join(format!(
-                "qingyu-mcp-test-config-missing-{}",
-                std::process::id()
-            )),
+            mcp_config_path: std::env::temp_dir()
+                .join(format!(
+                    "qingyu-mcp-test-config-missing-{}",
+                    std::process::id()
+                ))
+                .join("mcp.json"),
             startup_timeout: Duration::from_millis(50),
             initial_backoff: Duration::from_millis(5),
             maximum_backoff: Duration::from_millis(10),
@@ -108,16 +110,16 @@ enum McpStartupPermission {
 }
 
 fn read_mcp_startup_permission(path: &Path) -> Result<McpStartupPermission, BridgeError> {
-    match fs::read(path) {
-        Ok(bytes) => parse_mcp_startup_permission(&bytes),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(McpStartupPermission::Disabled),
-        Err(_) => Err(BridgeError::McpConfigUnavailable),
+    if path.file_name().and_then(|name| name.to_str()) != Some("mcp.json") {
+        return Err(BridgeError::McpConfigUnavailable);
     }
-}
-
-fn parse_mcp_startup_permission(bytes: &[u8]) -> Result<McpStartupPermission, BridgeError> {
-    let document =
-        McpConfigDocument::from_json(bytes).map_err(|_| BridgeError::McpConfigUnavailable)?;
+    let config_root = path
+        .parent()
+        .ok_or(BridgeError::McpConfigUnavailable)?
+        .to_path_buf();
+    let document = McpLocalSettingsService::at_config_root(config_root)
+        .load()
+        .map_err(|_| BridgeError::McpConfigUnavailable)?;
     Ok(if document.config.enabled {
         McpStartupPermission::Enabled
     } else {

@@ -24,11 +24,12 @@ use crate::storage_capability::{
 #[cfg(not(mobile))]
 const DESKTOP_PRIMARY_WORKSPACE_STORE_PATH: &str = "primary-workspace.json";
 const LOCAL_STATE_SCHEMA_VERSION_KEY: &str = "schemaVersion";
-const LOCAL_STATE_SCHEMA_VERSION: u64 = 2;
+const LOCAL_STATE_SCHEMA_VERSION: u64 = 3;
 const PRIMARY_WORKSPACE_KEY: &str = "primaryWorkspace";
 const MAX_PRIMARY_WORKSPACE_STORE_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg(not(mobile))]
 enum PrimaryWorkspacePersistence {
     Durable,
     PublishedWithoutDirectoryDurability,
@@ -37,6 +38,7 @@ enum PrimaryWorkspacePersistence {
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg(not(mobile))]
 pub(crate) struct PrimaryWorkspaceWriteInput {
     #[serde(default)]
     expected_state: Option<Value>,
@@ -45,11 +47,13 @@ pub(crate) struct PrimaryWorkspaceWriteInput {
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg(not(mobile))]
 pub(crate) struct PrimaryWorkspaceWriteResult {
     applied: bool,
     state: Value,
 }
 
+#[cfg(not(mobile))]
 trait PrimaryWorkspaceBackend: Sync {
     fn delete(&self, key: &str);
     fn get(&self, key: &str) -> Option<Value>;
@@ -70,12 +74,14 @@ trait PrimaryWorkspaceBackend: Sync {
 ///
 /// The Desktop host-owned primary-workspace record supplies the current path
 /// guard. Opaque child identities remain in a separate native durable store.
+#[cfg(not(mobile))]
 struct NativeHostWorkspaceStatePersistence<'a, Backend: PrimaryWorkspaceBackend + ?Sized> {
     backend: &'a Backend,
     native_store: &'a qingyu_kernel::host::native::NativeHostWorkspaceStore,
     transaction_lock: &'a Mutex<()>,
 }
 
+#[cfg(not(mobile))]
 impl<'a, Backend: PrimaryWorkspaceBackend + ?Sized>
     NativeHostWorkspaceStatePersistence<'a, Backend>
 {
@@ -127,6 +133,7 @@ impl<'a, Backend: PrimaryWorkspaceBackend + ?Sized>
 /// Implementations retain the selected path and an atomic path-transition
 /// reservation internally. The returned Kernel transaction exposes only the
 /// opaque canonical workspace value at commit time.
+#[cfg(not(mobile))]
 pub(crate) trait TrustedDesktopWorkspacePersistence: Send + Sync {
     fn prepare_host_workspace_transaction(
         &self,
@@ -136,6 +143,14 @@ pub(crate) trait TrustedDesktopWorkspacePersistence: Send + Sync {
         Box<dyn qingyu_kernel::workspace::primary::AtomicHostWorkspaceTransaction>,
         qingyu_kernel::services::workspace::WorkspaceServiceError,
     >;
+}
+
+#[cfg(not(mobile))]
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CanonicalPrimaryWorkspaceDocument {
+    schema_version: u64,
+    primary_workspace: Value,
 }
 
 #[cfg(not(mobile))]
@@ -198,8 +213,21 @@ impl DesktopDiskPrimaryWorkspaceBackend {
             Ok(values) => values.clone(),
             Err(_) => return PrimaryWorkspacePersistence::NotPublished,
         };
-        let bytes = match serde_json::to_vec(&values) {
-            Ok(bytes) if bytes.len() <= MAX_PRIMARY_WORKSPACE_STORE_BYTES => bytes,
+        let document = values
+            .get(LOCAL_STATE_SCHEMA_VERSION_KEY)
+            .and_then(Value::as_u64)
+            .filter(|version| *version == LOCAL_STATE_SCHEMA_VERSION)
+            .and_then(|schema_version| {
+                values
+                    .get(PRIMARY_WORKSPACE_KEY)
+                    .cloned()
+                    .map(|primary_workspace| CanonicalPrimaryWorkspaceDocument {
+                        schema_version,
+                        primary_workspace,
+                    })
+            });
+        let bytes = match document.and_then(|document| serde_json::to_vec(&document).ok()) {
+            Some(bytes) if bytes.len() <= MAX_PRIMARY_WORKSPACE_STORE_BYTES => bytes,
             _ => return PrimaryWorkspacePersistence::NotPublished,
         };
         let expected = match self.expected_target.lock() {
@@ -313,8 +341,18 @@ fn read_workspace_store_file(
     if rechecked != Some(identity) {
         return Err(persistence_error());
     }
-    let values = serde_json::from_slice::<BTreeMap<String, Value>>(&bytes)
+    let document = serde_json::from_slice::<CanonicalPrimaryWorkspaceDocument>(&bytes)
         .map_err(|_| persistence_error())?;
+    if document.schema_version != LOCAL_STATE_SCHEMA_VERSION {
+        return Err(persistence_error());
+    }
+    let values = BTreeMap::from([
+        (
+            LOCAL_STATE_SCHEMA_VERSION_KEY.to_owned(),
+            Value::from(document.schema_version),
+        ),
+        (PRIMARY_WORKSPACE_KEY.to_owned(), document.primary_workspace),
+    ]);
     Ok(Some(ExistingPrimaryWorkspaceFile { identity, values }))
 }
 
@@ -431,6 +469,7 @@ fn with_primary_workspace_backend<R: tauri::Runtime, T>(
 // Retained for host-transaction tests and non-renderer workspace operations;
 // the production Desktop child owner composes its authority directly.
 #[allow(dead_code)]
+#[cfg(not(mobile))]
 struct TrustedPreparedWorkspace {
     authority: qingyu_kernel::runtime::PreparedWorkspaceAuthority,
     display_name: String,
@@ -439,10 +478,12 @@ struct TrustedPreparedWorkspace {
 
 #[derive(Clone, Eq, PartialEq)]
 #[allow(dead_code)]
+#[cfg(not(mobile))]
 pub(crate) struct TrustedPreparedWorkspaceToken {
     token: String,
 }
 
+#[cfg(not(mobile))]
 impl std::fmt::Debug for TrustedPreparedWorkspaceToken {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str("TrustedPreparedWorkspaceToken([REDACTED])")
@@ -450,6 +491,7 @@ impl std::fmt::Debug for TrustedPreparedWorkspaceToken {
 }
 
 #[allow(dead_code)]
+#[cfg(not(mobile))]
 pub(crate) struct TrustedDesktopWorkspaceAdapter {
     runtime: Arc<qingyu_kernel::runtime::KernelRuntime>,
     service: Arc<qingyu_kernel::services::workspace::WorkspaceService>,
@@ -458,6 +500,7 @@ pub(crate) struct TrustedDesktopWorkspaceAdapter {
 }
 
 #[allow(dead_code)]
+#[cfg(not(mobile))]
 impl TrustedDesktopWorkspaceAdapter {
     pub(crate) fn new(
         runtime: Arc<qingyu_kernel::runtime::KernelRuntime>,
@@ -548,11 +591,13 @@ impl TrustedDesktopWorkspaceAdapter {
     }
 }
 
+#[cfg(not(mobile))]
 struct PrimaryWorkspaceService<'a, Backend: PrimaryWorkspaceBackend + ?Sized> {
     backend: &'a Backend,
     transaction_lock: &'a Mutex<()>,
 }
 
+#[cfg(not(mobile))]
 impl<'a, Backend: PrimaryWorkspaceBackend + ?Sized> PrimaryWorkspaceService<'a, Backend> {
     fn new(backend: &'a Backend, transaction_lock: &'a Mutex<()>) -> Self {
         Self {
@@ -670,20 +715,16 @@ impl<'a, Backend: PrimaryWorkspaceBackend + ?Sized> PrimaryWorkspaceService<'a, 
     }
 }
 
+#[cfg(not(mobile))]
 fn local_state_schema_is_supported(value: Option<&Value>) -> bool {
     match value {
         None => true,
-        Some(value)
-            if value
-                .as_u64()
-                .is_some_and(|version| version <= LOCAL_STATE_SCHEMA_VERSION) =>
-        {
-            true
-        }
+        Some(value) if value.as_u64() == Some(LOCAL_STATE_SCHEMA_VERSION) => true,
         Some(_) => false,
     }
 }
 
+#[cfg(not(mobile))]
 pub(crate) fn primary_workspace_transaction_gate() -> &'static Mutex<()> {
     static TRANSACTION_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     TRANSACTION_LOCK.get_or_init(|| Mutex::new(()))
@@ -693,10 +734,12 @@ fn persistence_error() -> String {
     "primary workspace persistence is unavailable".to_string()
 }
 
+#[cfg(not(mobile))]
 fn notebook_target_error() -> String {
     "notebook-target-invalid: The notebook target is unavailable.".to_string()
 }
 
+#[cfg(not(mobile))]
 struct PreparedDesktopNotebookDirectory {
     directory: Dir,
     identity: crate::storage_capability::DirectoryIdentity,
@@ -711,11 +754,13 @@ struct PreparedDesktopNotebookDirectory {
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg(not(mobile))]
 pub(crate) struct PreparedDesktopNotebookTarget {
     lease: String,
     notes_root: String,
 }
 
+#[cfg(not(mobile))]
 pub(crate) struct ConsumedPreparedDesktopNotebookTarget {
     pub(crate) directory: Dir,
     pub(crate) notes_root: PathBuf,
@@ -728,6 +773,7 @@ pub(crate) struct ConsumedPreparedDesktopNotebookTarget {
     restore_generation: String,
 }
 
+#[cfg(not(mobile))]
 impl ConsumedPreparedDesktopNotebookTarget {
     pub(crate) fn restore_generation(&self) -> &str {
         &self.restore_generation
@@ -835,6 +881,7 @@ impl ConsumedPreparedDesktopNotebookTarget {
     }
 }
 
+#[cfg(not(mobile))]
 fn prepared_desktop_notebook_targets(
 ) -> &'static Mutex<HashMap<String, PreparedDesktopNotebookDirectory>> {
     static TARGETS: OnceLock<Mutex<HashMap<String, PreparedDesktopNotebookDirectory>>> =
@@ -842,6 +889,7 @@ fn prepared_desktop_notebook_targets(
     TARGETS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+#[cfg(not(mobile))]
 fn prepared_target_lease() -> Result<String, String> {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut entropy = [0_u8; 24];
@@ -854,6 +902,7 @@ fn prepared_target_lease() -> Result<String, String> {
     Ok(lease)
 }
 
+#[cfg(not(mobile))]
 fn open_desktop_notebook_target(
     parent_path: &str,
     notebook_name: &str,
@@ -944,6 +993,7 @@ pub(crate) fn prepare_desktop_notebook_target_lease_at_path(
     prepare_desktop_notebook_target_lease_at_path_with_expected(parent_path, notebook_name, None)
 }
 
+#[cfg(not(mobile))]
 fn prepare_desktop_notebook_target_lease_at_path_with_expected(
     parent_path: &str,
     notebook_name: &str,
@@ -964,6 +1014,7 @@ fn prepare_desktop_notebook_target_lease_at_path_with_expected(
     Ok(PreparedDesktopNotebookTarget { lease, notes_root })
 }
 
+#[cfg(not(mobile))]
 pub(crate) fn consume_prepared_desktop_notebook_target(
     lease: &str,
 ) -> Result<ConsumedPreparedDesktopNotebookTarget, String> {
@@ -987,6 +1038,7 @@ pub(crate) fn consume_prepared_desktop_notebook_target(
     Ok(consumed)
 }
 
+#[cfg(not(mobile))]
 pub(crate) fn discard_prepared_desktop_notebook_target_lease(lease: &str) -> Result<(), String> {
     prepared_desktop_notebook_targets()
         .lock()
@@ -1005,14 +1057,16 @@ pub(crate) fn sync_primary_workspace_mismatch() -> String {
 }
 
 #[derive(Clone, Copy)]
+#[cfg(not(mobile))]
 enum PrimaryWorkspaceKind {
     Desktop,
-    #[cfg(any(mobile, test))]
+    #[cfg(test)]
     Mobile,
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[cfg(not(mobile))]
 struct StoredPrimaryWorkspaceState {
     #[serde(default)]
     desktop_workspace_root: Option<String>,
@@ -1477,10 +1531,12 @@ pub(crate) fn recover_invalid_desktop_primary_workspace<R: tauri::Runtime>(
     })
 }
 
+#[cfg(not(mobile))]
 fn desktop_primary_workspace_initialization_error() -> String {
     "desktop primary workspace initialization is unavailable".to_owned()
 }
 
+#[cfg(not(mobile))]
 fn completed_primary_workspace_state(
     value: Option<Value>,
 ) -> Result<StoredPrimaryWorkspaceState, String> {
@@ -1503,6 +1559,7 @@ fn completed_primary_workspace_state(
     Ok(state)
 }
 
+#[cfg(not(mobile))]
 fn authoritative_primary_workspace_root(
     value: Option<Value>,
     kind: PrimaryWorkspaceKind,
@@ -1566,6 +1623,7 @@ fn validate_primary_workspace_identity(
     Ok(authoritative)
 }
 
+#[cfg(not(mobile))]
 fn read_primary_workspace_value<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> Result<Option<Value>, String> {
@@ -1631,6 +1689,7 @@ pub(crate) fn load_or_create_native_host_workspace_state<R: tauri::Runtime>(
     .load_or_create(workspace_root)
 }
 
+#[cfg(not(mobile))]
 pub(crate) fn with_primary_workspace_transaction<R: tauri::Runtime, T>(
     app: &tauri::AppHandle<R>,
     operation: impl FnOnce(Result<PathBuf, String>) -> Result<T, String>,
@@ -1638,20 +1697,7 @@ pub(crate) fn with_primary_workspace_transaction<R: tauri::Runtime, T>(
     with_primary_workspace_backend(app, |backend| {
         let service = PrimaryWorkspaceService::new(backend, primary_workspace_transaction_gate());
 
-        #[cfg(mobile)]
-        let app_data_root = app
-            .path()
-            .app_data_dir()
-            .map_err(|_| sync_primary_workspace_unavailable())?;
-
         service.with_current(|value| {
-            #[cfg(mobile)]
-            let authoritative = authoritative_primary_workspace_root(
-                value,
-                PrimaryWorkspaceKind::Mobile,
-                Some(&app_data_root),
-            );
-            #[cfg(not(mobile))]
             let authoritative =
                 authoritative_primary_workspace_root(value, PrimaryWorkspaceKind::Desktop, None);
             operation(authoritative)
@@ -1697,33 +1743,29 @@ pub(crate) fn validate_bootstrap_notes_root<R: tauri::Runtime>(
 pub(crate) fn resolve_sync_primary_workspace<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> Result<PathBuf, String> {
-    with_primary_workspace_transaction(app, |authoritative| authoritative)
+    #[cfg(not(mobile))]
+    {
+        with_primary_workspace_transaction(app, |authoritative| authoritative)
+    }
+    #[cfg(mobile)]
+    {
+        let app_data_root = app
+            .path()
+            .app_data_dir()
+            .map_err(|_| sync_primary_workspace_unavailable())?;
+        crate::managed_workspace::ensure_managed_workspace_path(&app_data_root, "primary")
+            .map_err(|_| sync_primary_workspace_unavailable())
+    }
 }
 
+#[cfg(not(mobile))]
 fn proposed_primary_workspace_root<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     state: &Value,
 ) -> Option<PathBuf> {
-    #[cfg(mobile)]
-    {
-        let app_data_root = app.path().app_data_dir().ok()?;
-        authoritative_primary_workspace_root(
-            Some(state.clone()),
-            PrimaryWorkspaceKind::Mobile,
-            Some(&app_data_root),
-        )
+    let _ = app;
+    authoritative_primary_workspace_root(Some(state.clone()), PrimaryWorkspaceKind::Desktop, None)
         .ok()
-    }
-    #[cfg(not(mobile))]
-    {
-        let _ = app;
-        authoritative_primary_workspace_root(
-            Some(state.clone()),
-            PrimaryWorkspaceKind::Desktop,
-            None,
-        )
-        .ok()
-    }
 }
 
 #[cfg(not(mobile))]
@@ -1900,7 +1942,7 @@ mod tests {
     fn desktop_primary_workspace_disk_reread_resolves_published_unknown_commit() {
         let app_data = tempfile::tempdir().expect("temporary app data");
         let root = app_data.path().canonicalize().expect("canonical app data");
-        let desired = br#"{"primaryWorkspace":{"version":3}}"#;
+        let desired = br#"{"schemaVersion":3,"primaryWorkspace":{"version":3}}"#;
 
         let publication = replace_primary_workspace_file_atomically_with_hooks(
             &root,
@@ -1922,6 +1964,54 @@ mod tests {
             reread.values.get(PRIMARY_WORKSPACE_KEY),
             Some(&serde_json::json!({ "version": 3 })),
         );
+    }
+
+    #[test]
+    fn desktop_primary_workspace_disk_reader_rejects_missing_outer_schema_version() {
+        let app_data = tempfile::tempdir().expect("temporary app data");
+        let root = app_data.path().canonicalize().expect("canonical app data");
+        std::fs::write(
+            root.join(DESKTOP_PRIMARY_WORKSPACE_STORE_PATH),
+            br#"{"primaryWorkspace":null}"#,
+        )
+        .expect("seed authority without schema version");
+
+        assert!(DesktopDiskPrimaryWorkspaceBackend::open_at(root).is_err());
+    }
+
+    #[test]
+    fn desktop_primary_workspace_disk_reader_rejects_old_outer_schema_versions() {
+        for version in [0, 1, 2] {
+            let app_data = tempfile::tempdir().expect("temporary app data");
+            let root = app_data.path().canonicalize().expect("canonical app data");
+            std::fs::write(
+                root.join(DESKTOP_PRIMARY_WORKSPACE_STORE_PATH),
+                serde_json::to_vec(&json!({
+                    "schemaVersion": version,
+                    "primaryWorkspace": null
+                }))
+                .expect("old authority JSON"),
+            )
+            .expect("seed old authority");
+
+            assert!(
+                DesktopDiskPrimaryWorkspaceBackend::open_at(root).is_err(),
+                "outer schema version {version} must fail closed"
+            );
+        }
+    }
+
+    #[test]
+    fn desktop_primary_workspace_disk_reader_rejects_unknown_outer_fields() {
+        let app_data = tempfile::tempdir().expect("temporary app data");
+        let root = app_data.path().canonicalize().expect("canonical app data");
+        std::fs::write(
+            root.join(DESKTOP_PRIMARY_WORKSPACE_STORE_PATH),
+            br#"{"schemaVersion":3,"primaryWorkspace":null,"futureAuthority":true}"#,
+        )
+        .expect("seed authority with unknown field");
+
+        assert!(DesktopDiskPrimaryWorkspaceBackend::open_at(root).is_err());
     }
 
     #[test]

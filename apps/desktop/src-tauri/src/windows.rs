@@ -1,6 +1,4 @@
 use std::{
-    fs,
-    path::{Path, PathBuf},
     sync::{
         atomic::{AtomicUsize, Ordering},
         Mutex, OnceLock,
@@ -24,7 +22,8 @@ use dispatch2::{DispatchQueue, DispatchTime};
 use objc2::Message;
 #[cfg(target_os = "macos")]
 use objc2_app_kit::{NSWindow, NSWindowStyleMask};
-use serde_json::{Map, Value};
+#[cfg(test)]
+use serde_json::Value;
 #[cfg(target_os = "macos")]
 use tauri::TitleBarStyle;
 use tauri::{
@@ -59,14 +58,10 @@ const SETTINGS_WORKSPACE_SOURCE_PATH_PARAM: &str = "settingsWorkspaceSourcePath"
 const SETTINGS_SOURCE_WINDOW_LABEL_PARAM: &str = "settingsSourceWindowLabel";
 const SETTINGS_WINDOW_TARGET_EXPORT_PANDOC_PATH: &str = "exportPandocPath";
 const SETTINGS_WINDOW_TARGET_SYNC: &str = "sync";
-const SETTINGS_STORE_PATH: &str = "settings.json";
 const SETTINGS_STARTUP_LANGUAGE_PARAM: &str = "startupLanguage";
 const SETTINGS_STARTUP_APPEARANCE_MODE_PARAM: &str = "startupAppearanceMode";
 const SETTINGS_STARTUP_LIGHT_THEME_PARAM: &str = "startupLightTheme";
 const SETTINGS_STARTUP_DARK_THEME_PARAM: &str = "startupDarkTheme";
-const SETTINGS_APPEARANCE_MODE_KEY: &str = "appearanceMode";
-const SETTINGS_LIGHT_THEME_KEY: &str = "lightThemeId";
-const SETTINGS_DARK_THEME_KEY: &str = "darkThemeId";
 const SETTINGS_WINDOW_NATIVE_REVEAL_FALLBACK_MS: u64 = 1_800;
 const SETTINGS_WINDOW_HIDE_FALLBACK_MS: u64 = 1_200;
 const SETTINGS_WINDOW_IDLE_DESTROY_MS: u64 = 5 * 60 * 1000;
@@ -145,8 +140,6 @@ impl Default for SettingsWindowStartupPreferences {
         Self::default_for_language(AppLanguage::En)
     }
 }
-
-const APP_APPEARANCE_MODE_OPTIONS: &[&str] = &["system", "light", "dark"];
 
 fn current_window_chrome_platform() -> &'static str {
     std::env::consts::OS
@@ -390,72 +383,14 @@ fn append_url_query_param(url: &mut String, key: &str, value: &str) {
     url.push_str(&encode_url_query_component(value));
 }
 
-fn settings_store_path(identifier: &str) -> Option<PathBuf> {
-    dirs::data_dir().map(|data_dir| data_dir.join(identifier).join(SETTINGS_STORE_PATH))
-}
-
-fn read_settings_object(path: &Path) -> Option<Map<String, Value>> {
-    fs::read_to_string(path)
-        .ok()
-        .and_then(|contents| serde_json::from_str::<Value>(&contents).ok())
-        .and_then(|settings| settings.as_object().cloned())
-}
-
-fn stored_settings_string<'a>(settings: &'a Map<String, Value>, key: &str) -> Option<&'a str> {
-    settings.get(key).and_then(Value::as_str)
-}
-
-fn is_app_appearance_mode(value: &str) -> bool {
-    APP_APPEARANCE_MODE_OPTIONS.contains(&value)
-}
-
-fn is_theme_id(value: &str) -> bool {
-    let mut bytes = value.bytes();
-    !value.starts_with("qingyu-")
-        && value.len() <= 64
-        && bytes
-            .next()
-            .is_some_and(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
-        && bytes.all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
-}
-
 fn settings_window_startup_preferences(identifier: &str) -> SettingsWindowStartupPreferences {
-    let language = resolve_startup_language(identifier);
-    let Some(settings_path) = settings_store_path(identifier) else {
-        return SettingsWindowStartupPreferences::default_for_language(language);
-    };
-    let Some(settings) = read_settings_object(&settings_path) else {
-        return SettingsWindowStartupPreferences::default_for_language(language);
-    };
-
-    settings_window_startup_preferences_from_settings(language, &settings)
+    settings_window_startup_preferences_for_language(resolve_startup_language(identifier))
 }
 
-fn settings_window_startup_preferences_from_settings(
+fn settings_window_startup_preferences_for_language(
     language: AppLanguage,
-    settings: &Map<String, Value>,
 ) -> SettingsWindowStartupPreferences {
-    let mut preferences = SettingsWindowStartupPreferences::default_for_language(language);
-
-    if let Some(appearance_mode) = stored_settings_string(&settings, SETTINGS_APPEARANCE_MODE_KEY)
-        .filter(|value| is_app_appearance_mode(value))
-    {
-        preferences.appearance_mode = appearance_mode.to_string();
-    }
-
-    if let Some(light_theme) = stored_settings_string(&settings, SETTINGS_LIGHT_THEME_KEY)
-        .filter(|value| is_theme_id(value))
-    {
-        preferences.light_theme = light_theme.to_string();
-    }
-
-    if let Some(dark_theme) = stored_settings_string(&settings, SETTINGS_DARK_THEME_KEY)
-        .filter(|value| is_theme_id(value))
-    {
-        preferences.dark_theme = dark_theme.to_string();
-    }
-
-    preferences
+    SettingsWindowStartupPreferences::default_for_language(language)
 }
 
 fn settings_window_url(
@@ -1631,17 +1566,6 @@ mod tests {
     }
 
     #[test]
-    fn settings_window_startup_accepts_dynamic_theme_ids() {
-        assert!(is_theme_id("ocean-night"));
-        assert!(is_theme_id("light"));
-        assert!(is_theme_id("classic-light"));
-        assert!(is_theme_id("classic-dark"));
-        assert!(!is_theme_id("-ocean"));
-        assert!(!is_theme_id("Ocean"));
-        assert!(!is_theme_id("qingyu-internal"));
-    }
-
-    #[test]
     fn settings_window_matches_editor_window_chrome() {
         assert_eq!(settings_window_transparent(), editor_window_transparent());
         assert_eq!(settings_window_decorations(), editor_window_decorations());
@@ -2449,39 +2373,9 @@ mod tests {
     }
 
     #[test]
-    fn settings_window_startup_uses_only_canonical_theme_keys() {
-        let settings = serde_json::json!({
-            "appearanceMode": "light",
-            "lightThemeId": "canonical-light",
-            "darkThemeId": "canonical-dark",
-            "theme": "night",
-            "lightTheme": "obsolete-light",
-            "darkTheme": "obsolete-dark"
-        })
-        .as_object()
-        .cloned()
-        .unwrap();
-
+    fn settings_window_startup_uses_defaults_until_frontend_kernel_bootstrap() {
         assert_eq!(
-            settings_window_startup_preferences_from_settings(AppLanguage::En, &settings),
-            SettingsWindowStartupPreferences {
-                language: AppLanguage::En,
-                appearance_mode: "light".to_string(),
-                light_theme: "canonical-light".to_string(),
-                dark_theme: "canonical-dark".to_string(),
-            }
-        );
-
-        let aliases_only = serde_json::json!({
-            "theme": "night",
-            "lightTheme": "obsolete-light",
-            "darkTheme": "obsolete-dark"
-        })
-        .as_object()
-        .cloned()
-        .unwrap();
-        assert_eq!(
-            settings_window_startup_preferences_from_settings(AppLanguage::En, &aliases_only),
+            settings_window_startup_preferences_for_language(AppLanguage::En),
             SettingsWindowStartupPreferences::default()
         );
     }

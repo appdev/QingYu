@@ -1,13 +1,3 @@
-use std::{
-    fs,
-    path::{Path, PathBuf},
-};
-
-use serde_json::Value;
-
-const SETTINGS_STORE_PATH: &str = "settings.json";
-const LANGUAGE_KEY: &str = "language";
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum AppLanguage {
     En,
@@ -58,45 +48,21 @@ impl AppLanguage {
     }
 }
 
-pub(crate) fn resolve_startup_language(identifier: &str) -> AppLanguage {
+pub(crate) fn resolve_startup_language(_identifier: &str) -> AppLanguage {
     let system_locales = system_locale_candidates();
     let system_locale_refs = system_locales
         .iter()
         .map(String::as_str)
         .collect::<Vec<_>>();
-    let Some(settings_path) = settings_store_path(identifier) else {
-        return language_for_initial_launch(None, &system_locale_refs);
-    };
-
-    resolve_startup_language_at_path(&settings_path, &system_locale_refs)
+    language_for_initial_launch(&system_locale_refs)
 }
 
-fn resolve_startup_language_at_path(path: &Path, system_locales: &[&str]) -> AppLanguage {
-    let stored_language = read_stored_language_code(path);
-    language_for_initial_launch(stored_language.as_deref(), system_locales)
-}
-
-pub(crate) fn language_for_initial_launch(
-    stored_language: Option<&str>,
-    system_locales: &[&str],
-) -> AppLanguage {
-    if let Some(language) = stored_language.and_then(AppLanguage::from_code) {
-        return language;
-    }
-
+pub(crate) fn language_for_initial_launch(system_locales: &[&str]) -> AppLanguage {
     language_from_system_locales(system_locales).unwrap_or(AppLanguage::En)
 }
 
 fn system_locale_candidates() -> Vec<String> {
     sys_locale::get_locales().collect()
-}
-
-fn settings_store_path(identifier: &str) -> Option<PathBuf> {
-    dirs::data_dir().map(|data_dir| settings_store_path_from_data_dir(data_dir, identifier))
-}
-
-fn settings_store_path_from_data_dir(data_dir: impl AsRef<Path>, identifier: &str) -> PathBuf {
-    data_dir.as_ref().join(identifier).join(SETTINGS_STORE_PATH)
 }
 
 fn language_from_system_locales(locales: &[&str]) -> Option<AppLanguage> {
@@ -153,45 +119,35 @@ fn normalize_locale(locale: &str) -> String {
         .to_ascii_lowercase()
 }
 
-fn read_stored_language_code(path: &Path) -> Option<String> {
-    let contents = fs::read_to_string(path).ok()?;
-    let settings = serde_json::from_str::<Value>(&contents).ok()?;
-
-    settings
-        .get(LANGUAGE_KEY)
-        .and_then(Value::as_str)
-        .map(ToOwned::to_owned)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::Path;
+    use std::{fs, path::Path};
 
     #[test]
-    fn stored_language_wins_over_system_locale() {
-        let language = language_for_initial_launch(Some("fr"), &["zh_CN"]);
+    fn native_startup_uses_the_supported_system_language() {
+        let language = language_for_initial_launch(&["zh_CN"]);
 
-        assert_eq!(language, AppLanguage::Fr);
+        assert_eq!(language, AppLanguage::ZhCn);
     }
 
     #[test]
     fn missing_language_uses_supported_system_locale() {
-        let language = language_for_initial_launch(None, &["zh_Hant_TW"]);
+        let language = language_for_initial_launch(&["zh_Hant_TW"]);
 
         assert_eq!(language, AppLanguage::ZhTw);
     }
 
     #[test]
     fn unsupported_system_locale_defaults_to_english() {
-        let language = language_for_initial_launch(None, &["nl_NL"]);
+        let language = language_for_initial_launch(&["nl_NL"]);
 
         assert_eq!(language, AppLanguage::En);
     }
 
     #[test]
     fn locale_matching_uses_the_first_supported_system_language() {
-        let language = language_for_initial_launch(None, &["nl_NL", "ja_JP"]);
+        let language = language_for_initial_launch(&["nl_NL", "ja_JP"]);
 
         assert_eq!(language, AppLanguage::Ja);
     }
@@ -283,28 +239,5 @@ mod tests {
         assert!(ios_info_plist.contains(&format!(
             "<key>CFBundleVersion</key>\n\t<string>{version}</string>"
         )));
-    }
-
-    #[test]
-    fn settings_store_path_matches_tauri_app_data_layout() {
-        let path = settings_store_path_from_data_dir("/tmp/app-data", "dev.markra.app");
-
-        assert_eq!(
-            path,
-            Path::new("/tmp/app-data")
-                .join("dev.markra.app")
-                .join("settings.json")
-        );
-    }
-
-    #[test]
-    fn repeated_startup_language_resolution_is_read_only() {
-        let temporary = tempfile::tempdir().unwrap();
-        let path = temporary.path().join("settings.json");
-
-        let language = resolve_startup_language_at_path(&path, &["zh_CN"]);
-
-        assert_eq!(language, AppLanguage::ZhCn);
-        assert!(!path.exists());
     }
 }

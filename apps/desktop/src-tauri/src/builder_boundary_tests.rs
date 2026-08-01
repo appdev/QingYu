@@ -470,6 +470,8 @@ fn builder_boundary_workspace_retry_authenticates_the_main_caller_before_state_c
 #[test]
 fn builder_boundary_startup_resolution_keeps_store_io_off_tauri_setup() {
     let desktop = source("src/desktop_runtime.rs");
+    let language = source("src/language.rs");
+    let windows = source("src/windows.rs");
     let resolver_start = desktop
         .find("async fn resolve_and_start_desktop_kernel")
         .expect("desktop startup resolver");
@@ -484,6 +486,11 @@ fn builder_boundary_startup_resolution_keeps_store_io_off_tauri_setup() {
     assert!(desktop.contains("DesktopKernelStartupStatus::Resolving"));
     assert!(desktop
         .contains("resolve_and_start_desktop_kernel(startup_app, renderer_origin, runtime).await"));
+    for native_startup in [language, windows] {
+        assert!(!native_startup.contains("settings.json"));
+        assert!(!native_startup.contains("read_settings_object"));
+        assert!(!native_startup.contains("read_stored_language_code"));
+    }
 }
 
 #[test]

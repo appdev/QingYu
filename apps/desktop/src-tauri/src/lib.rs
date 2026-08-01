@@ -22,6 +22,7 @@ mod kernel_process;
 mod language;
 mod managed_workspace;
 mod markdown_files;
+#[cfg(any(not(mobile), feature = "desktop-sidecar"))]
 mod mcp;
 #[cfg(desktop)]
 mod menu;

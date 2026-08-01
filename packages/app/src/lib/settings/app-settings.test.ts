@@ -448,6 +448,67 @@ describe("app settings", () => {
     expect(store.get).not.toHaveBeenCalledWith("recentMarkdownFiles");
   });
 
+  it("exports portable settings from typed Kernel groups without opening settings.json", async () => {
+    const runtime = createDefaultAppRuntime();
+    const loadStore = vi.fn(async () => {
+      throw new Error("renderer-local stores are unavailable");
+    });
+    const groups: Record<AppSettingsGroup, unknown> = {
+      appearance: { appearanceMode: "dark", darkTheme: "night", lightTheme: "minimal" },
+      customThemeCss: { dark: "dark-css", light: "light-css" },
+      editorPreferences: { bodyFontSize: 17, showWordCount: false },
+      exportSettings: { pdfAuthor: "QingYu" },
+      fileIgnoreSettings: { rules: "private/**" },
+      language: "zh-CN"
+    };
+    const readGroups: AppSettingsGroup[] = [];
+    const readGroup: NonNullable<AppSettingsRuntime["readGroup"]> = async <TValue>(
+      group: AppSettingsGroup
+    ) => {
+      readGroups.push(group);
+      return groups[group] as TValue | undefined;
+    };
+    configureAppRuntime({
+      ...runtime,
+      appConfig,
+      settings: { ...runtime.settings, loadStore, readGroup }
+    });
+
+    const exported = JSON.parse(
+      await exportStoredAppSettings(new Date("2030-01-02T03:04:05.000Z"))
+    );
+
+    expect(exported.settings).toMatchObject({
+      appearanceMode: "dark",
+      customThemeCss: { dark: "dark-css", light: "light-css" },
+      darkTheme: "night",
+      editorPreferences: { bodyFontSize: 17, showWordCount: false },
+      exportSettings: { pdfAuthor: "QingYu" },
+      fileIgnoreSettings: { rules: "private/**" },
+      language: "zh-CN",
+      lightTheme: "minimal"
+    });
+    expect(Object.keys(exported.settings).sort()).toEqual([
+      "appearanceMode",
+      "customThemeCss",
+      "darkTheme",
+      "editorPreferences",
+      "exportSettings",
+      "fileIgnoreSettings",
+      "language",
+      "lightTheme"
+    ]);
+    expect(loadStore).not.toHaveBeenCalled();
+    expect(readGroups.sort()).toEqual([
+      "appearance",
+      "customThemeCss",
+      "editorPreferences",
+      "exportSettings",
+      "fileIgnoreSettings",
+      "language"
+    ]);
+  });
+
   it("imports portable app settings after validating the file contents", async () => {
     const importedSettingsFile = {
       format: "markra-settings",

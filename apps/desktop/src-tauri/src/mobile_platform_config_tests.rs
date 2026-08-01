@@ -431,6 +431,8 @@ fn mobile_platform_config_has_no_reset_or_workspace_switch_command() {
 
 #[test]
 fn mobile_platform_config_exposes_no_desktop_mcp_commands() {
+    let library = source("src/lib.rs");
+    assert!(library.contains("#[cfg(any(not(mobile), feature = \"desktop-sidecar\"))]\nmod mcp;"));
     let native_runtime = source("src/mobile_runtime.rs");
     for forbidden in [
         "get_mcp_settings",

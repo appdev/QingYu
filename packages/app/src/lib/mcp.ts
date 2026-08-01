@@ -1,7 +1,6 @@
 export type McpConfirmationPolicy = "never" | "destructive-only" | "all-writes";
 export type McpDryRunPolicy = "never" | "high-risk" | "all-writes";
-export type McpDeletionPolicy = "qing-yu-recycle-bin" | "permanent";
-export type McpRecycleBinRetentionDays = 0;
+export type McpDeletionPolicy = "recoverable" | "permanent";
 export type McpSyncAfterWritePolicy = "follow-workspace" | "always" | "never";
 export type McpSyncExecutionPolicy = "background" | "wait";
 
@@ -39,7 +38,6 @@ export type McpConfig = {
   confirmation: McpConfirmationPolicy;
   dryRun: McpDryRunPolicy;
   deletion: McpDeletionPolicy;
-  recycleBinRetentionDays: McpRecycleBinRetentionDays;
   syncAfterWrite: McpSyncAfterWritePolicy;
   syncExecution: McpSyncExecutionPolicy;
   documentLimitBytes: number;
@@ -107,8 +105,7 @@ export function defaultMcpConfig(): McpConfig {
     },
     confirmation: "destructive-only",
     dryRun: "high-risk",
-    deletion: "qing-yu-recycle-bin",
-    recycleBinRetentionDays: 0,
+    deletion: "recoverable",
     syncAfterWrite: "follow-workspace",
     syncExecution: "background",
     documentLimitBytes: 8 * 1024 * 1024,
@@ -167,8 +164,7 @@ export function normalizeMcpConfig(value: unknown): McpConfig {
       defaults.confirmation
     ),
     dryRun: enumOr(value.dryRun, ["never", "high-risk", "all-writes"], defaults.dryRun),
-    deletion: value.deletion === "permanent" ? "permanent" : "qing-yu-recycle-bin",
-    recycleBinRetentionDays: 0,
+    deletion: enumOr(value.deletion, ["recoverable", "permanent"], defaults.deletion),
     syncAfterWrite: enumOr(
       value.syncAfterWrite,
       ["follow-workspace", "always", "never"],

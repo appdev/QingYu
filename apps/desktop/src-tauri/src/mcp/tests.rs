@@ -152,8 +152,7 @@ fn config_defaults_are_disabled_and_use_the_approved_policy() {
     assert!(!config.enabled);
     assert_eq!(config.confirmation, ConfirmationPolicy::DestructiveOnly);
     assert_eq!(config.dry_run, DryRunPolicy::HighRisk);
-    assert_eq!(config.deletion, DeletionPolicy::QingYuRecycleBin);
-    assert_eq!(config.recycle_bin_retention_days, 0);
+    assert_eq!(config.deletion, DeletionPolicy::Recoverable);
     assert_eq!(
         config.sync_after_write,
         SyncAfterWritePolicy::FollowWorkspace
@@ -189,7 +188,6 @@ fn config_limits_are_clamped_before_revisioning() {
         burst_requests: u32::MAX,
         concurrent_calls: usize::MAX,
         tool_timeout_secs: 0,
-        recycle_bin_retention_days: 180,
         ..McpConfig::default()
     };
 
@@ -202,20 +200,25 @@ fn config_limits_are_clamped_before_revisioning() {
     assert_eq!(config.burst_requests, 100);
     assert_eq!(config.concurrent_calls, 32);
     assert_eq!(config.tool_timeout_secs, 5);
-    assert_eq!(config.recycle_bin_retention_days, 0);
 }
 
 #[test]
-fn config_migrates_platform_trash_and_unimplemented_retention_to_kernel_recovery() {
-    let mut config = McpConfig {
-        deletion: DeletionPolicy::SystemTrash,
-        recycle_bin_retention_days: 7,
-        ..McpConfig::default()
-    };
-    config.normalize();
+fn config_rejects_legacy_deletion_policies_and_retention_fields() {
+    for deletion in ["system-trash", "qing-yu-recycle-bin"] {
+        let mut value = serde_json::to_value(McpConfig::default()).expect("default config");
+        value["deletion"] = serde_json::json!(deletion);
+        assert!(
+            McpConfigDocument::from_json(&serde_json::to_vec(&value).expect("legacy JSON"))
+                .is_err(),
+            "legacy deletion policy {deletion} must fail closed"
+        );
+    }
 
-    assert_eq!(config.deletion, DeletionPolicy::QingYuRecycleBin);
-    assert_eq!(config.recycle_bin_retention_days, 0);
+    let mut value = serde_json::to_value(McpConfig::default()).expect("default config");
+    value["recycleBinRetentionDays"] = serde_json::json!(7);
+    assert!(
+        McpConfigDocument::from_json(&serde_json::to_vec(&value).expect("legacy JSON")).is_err()
+    );
 }
 
 #[test]
@@ -1616,8 +1619,7 @@ fn document_mutation_fixture() -> DocumentMutationFixture {
         .expect("authorize mutation workspace");
     let signer = HandleSigner::new([37_u8; 32]);
     let service = DocumentService::new(signer.clone())
-        .with_mutation_storage(history_root.clone(), recycle_root.clone())
-        .with_system_trash(|path| std::fs::remove_file(path).map_err(|error| error.to_string()));
+        .with_mutation_storage(history_root.clone(), recycle_root.clone());
     DocumentMutationFixture {
         _base: base,
         workspace_root,
@@ -1819,16 +1821,15 @@ fn document_mutation_creates_updates_and_moves_without_overwrite_or_stale_writes
 }
 
 #[test]
-fn document_mutation_applies_recycle_permanent_and_system_trash_deletion_modes() {
+fn document_mutation_applies_recoverable_and_permanent_deletion_modes() {
     let fixture = document_mutation_fixture();
     let scope = mutation_scope(&fixture);
     let root = mutation_root(&fixture);
     let options = sync_options(SyncAfterWritePolicy::Never, false);
 
     for (name, deletion) in [
-        ("recycle.md", DeletionPolicy::QingYuRecycleBin),
+        ("recycle.md", DeletionPolicy::Recoverable),
         ("permanent.md", DeletionPolicy::Permanent),
-        ("trash.md", DeletionPolicy::SystemTrash),
     ] {
         let created = fixture
             .service
@@ -2688,7 +2689,7 @@ impl McpKernelPort for FakeKernelPort {
                                 DeletionPolicy::Permanent
                             }
                             qingyu_kernel::contract::DeletionPolicy::Recoverable => {
-                                DeletionPolicy::QingYuRecycleBin
+                                DeletionPolicy::Recoverable
                             }
                         },
                     },
@@ -3845,7 +3846,7 @@ async fn a_policy_change_during_confirmation_invalidates_the_pending_write() {
     let original = fixture.config.snapshot().expect("confirming MCP config");
     let original_generation = fixture.config.generation();
     let mut changed = original.config.clone();
-    changed.deletion = DeletionPolicy::QingYuRecycleBin;
+    changed.deletion = DeletionPolicy::Recoverable;
     let intermediate = fixture
         .config
         .update(changed, &original.revision)
@@ -4285,6 +4286,75 @@ async fn bridge_reports_config_unavailable_when_enabled_is_not_boolean() {
     let error = test_connect_with_launch(&config, &launcher)
         .await
         .expect_err("invalid MCP config must fail closed");
+
+    assert_eq!(error, BridgeError::McpConfigUnavailable);
+    assert_eq!(
+        launcher.launches.load(std::sync::atomic::Ordering::Relaxed),
+        0
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn bridge_rejects_a_symlinked_mcp_config_before_launch() {
+    let directory = tempfile::tempdir().expect("bridge temp directory");
+    let target = directory.path().join("enabled.json");
+    std::fs::write(&target, br#"{"enabled":true}"#).expect("write enabled target");
+    std::os::unix::fs::symlink(&target, directory.path().join("mcp.json"))
+        .expect("symlink MCP config");
+    let launcher = CountingLauncher::default();
+    let config = BridgeConfig::for_test_with_config(
+        LocalIpcEndpoint::for_test(directory.path().join("unavailable.sock")),
+        directory.path().join("mcp.json"),
+    );
+
+    let error = test_connect_with_launch(&config, &launcher)
+        .await
+        .expect_err("symlinked MCP config must fail closed");
+
+    assert_eq!(error, BridgeError::McpConfigUnavailable);
+    assert_eq!(
+        launcher.launches.load(std::sync::atomic::Ordering::Relaxed),
+        0
+    );
+}
+
+#[tokio::test]
+async fn bridge_rejects_a_non_regular_mcp_config_before_launch() {
+    let directory = tempfile::tempdir().expect("bridge temp directory");
+    std::fs::create_dir(directory.path().join("mcp.json")).expect("directory MCP config");
+    let launcher = CountingLauncher::default();
+    let config = BridgeConfig::for_test_with_config(
+        LocalIpcEndpoint::for_test(directory.path().join("unavailable.sock")),
+        directory.path().join("mcp.json"),
+    );
+
+    let error = test_connect_with_launch(&config, &launcher)
+        .await
+        .expect_err("non-regular MCP config must fail closed");
+
+    assert_eq!(error, BridgeError::McpConfigUnavailable);
+    assert_eq!(
+        launcher.launches.load(std::sync::atomic::Ordering::Relaxed),
+        0
+    );
+}
+
+#[tokio::test]
+async fn bridge_rejects_an_oversized_mcp_config_before_launch() {
+    let directory = tempfile::tempdir().expect("bridge temp directory");
+    let mut oversized = br#"{"enabled":true}"#.to_vec();
+    oversized.resize(1024 * 1024 + 1, b' ');
+    std::fs::write(directory.path().join("mcp.json"), oversized).expect("oversized MCP config");
+    let launcher = CountingLauncher::default();
+    let config = BridgeConfig::for_test_with_config(
+        LocalIpcEndpoint::for_test(directory.path().join("unavailable.sock")),
+        directory.path().join("mcp.json"),
+    );
+
+    let error = test_connect_with_launch(&config, &launcher)
+        .await
+        .expect_err("oversized MCP config must fail closed");
 
     assert_eq!(error, BridgeError::McpConfigUnavailable);
     assert_eq!(

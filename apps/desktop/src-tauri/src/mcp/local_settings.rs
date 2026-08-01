@@ -167,6 +167,14 @@ pub(crate) struct McpLocalSettingsService {
 }
 
 impl McpLocalSettingsService {
+    pub(crate) fn at_config_root(config_root: PathBuf) -> Self {
+        Self {
+            backend: Arc::new(FileMcpSettingsBackend::at(config_root)),
+            events: None,
+            transaction: Arc::new(Mutex::new(())),
+        }
+    }
+
     pub(crate) fn from_app<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<Self, McpConfigError> {
         let config_root = app
             .path()
@@ -198,7 +206,7 @@ impl McpLocalSettingsService {
 
     #[cfg(test)]
     fn at_config_root_for_test(config_root: PathBuf) -> Self {
-        Self::new_for_test(Arc::new(FileMcpSettingsBackend::at(config_root)), None)
+        Self::at_config_root(config_root)
     }
 
     pub(crate) fn load(&self) -> Result<McpConfigDocument, McpConfigError> {

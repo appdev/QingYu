@@ -152,7 +152,7 @@ describe("McpSettings", () => {
     expect(await screen.findByRole("button", { name: "Enable MCP" })).toBeEnabled();
     const deletion = screen.getByRole("combobox", { name: "Deletion policy" });
     expect(Array.from((deletion as HTMLSelectElement).options).map((option) => option.value)).toEqual([
-      "qing-yu-recycle-bin",
+      "recoverable",
       "permanent"
     ]);
     expect(screen.queryByRole("combobox", { name: "Recycle bin cleanup" })).not.toBeInTheDocument();

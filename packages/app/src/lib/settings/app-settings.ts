@@ -456,6 +456,29 @@ function normalizePortableStoredAppSettings(value: Record<string, unknown>): Por
 }
 
 async function readPortableStoredAppSettings(): Promise<PortableAppSettingsPayload> {
+  if (getAppRuntime().settings.readGroup) {
+    const [appearance, customThemeCss, language, editorPreferences, fileIgnoreSettings, exportSettings] =
+      await Promise.all([
+        readSettingsGroup<AppThemePreferences>("appearance"),
+        readSettingsGroup<CustomThemeCssValues>("customThemeCss"),
+        readSettingsGroup<AppLanguage>("language"),
+        readSettingsGroup<Partial<EditorPreferences>>("editorPreferences"),
+        readSettingsGroup<Partial<FileIgnoreSettings>>("fileIgnoreSettings"),
+        readSettingsGroup<Partial<PortableExportSettings>>("exportSettings")
+      ]);
+    const themePreferences = normalizeAppThemePreferences(appearance);
+
+    return {
+      appearanceMode: themePreferences.appearanceMode,
+      customThemeCss: normalizeCustomThemeCssValues(customThemeCss),
+      darkTheme: themePreferences.darkTheme,
+      editorPreferences: normalizeEditorPreferences(editorPreferences),
+      exportSettings: normalizePortableExportSettings(exportSettings),
+      fileIgnoreSettings: normalizeFileIgnoreSettings(fileIgnoreSettings),
+      language: isAppLanguage(language) ? language : "en",
+      lightTheme: themePreferences.lightTheme
+    };
+  }
   const store = await loadSettingsStore();
   const legacyTheme = await store.get<AppTheme>(themeKey);
   const legacyPreferences = isAppTheme(legacyTheme)

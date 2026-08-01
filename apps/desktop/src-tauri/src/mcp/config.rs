@@ -13,7 +13,6 @@ use super::local_settings::McpLocalSettingsService;
 
 pub(crate) const MCP_CONFIG_VERSION: u32 = 1;
 const DEFAULT_LIMIT_BYTES: u64 = 8 * 1024 * 1024;
-const DEFAULT_RECYCLE_BIN_RETENTION_DAYS: u16 = 0;
 const MAX_LIMIT_BYTES: u64 = 64 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -47,14 +46,13 @@ impl Default for DryRunPolicy {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum DeletionPolicy {
-    SystemTrash,
-    QingYuRecycleBin,
+    Recoverable,
     Permanent,
 }
 
 impl Default for DeletionPolicy {
     fn default() -> Self {
-        Self::QingYuRecycleBin
+        Self::Recoverable
     }
 }
 
@@ -165,7 +163,6 @@ pub(crate) struct McpConfig {
     pub(crate) confirmation: ConfirmationPolicy,
     pub(crate) dry_run: DryRunPolicy,
     pub(crate) deletion: DeletionPolicy,
-    pub(crate) recycle_bin_retention_days: u16,
     pub(crate) sync_after_write: SyncAfterWritePolicy,
     pub(crate) sync_execution: SyncExecutionPolicy,
     pub(crate) document_limit_bytes: u64,
@@ -187,10 +184,6 @@ impl McpConfig {
         self.burst_requests = self.burst_requests.clamp(1, 100);
         self.concurrent_calls = self.concurrent_calls.clamp(1, 32);
         self.tool_timeout_secs = self.tool_timeout_secs.clamp(5, 600);
-        if self.deletion == DeletionPolicy::SystemTrash {
-            self.deletion = DeletionPolicy::QingYuRecycleBin;
-        }
-        self.recycle_bin_retention_days = 0;
         self.audit.normalize();
     }
 
@@ -211,7 +204,6 @@ impl Default for McpConfig {
             confirmation: ConfirmationPolicy::default(),
             dry_run: DryRunPolicy::default(),
             deletion: DeletionPolicy::default(),
-            recycle_bin_retention_days: DEFAULT_RECYCLE_BIN_RETENTION_DAYS,
             sync_after_write: SyncAfterWritePolicy::default(),
             sync_execution: SyncExecutionPolicy::default(),
             document_limit_bytes: DEFAULT_LIMIT_BYTES,

@@ -863,7 +863,6 @@ pub(crate) struct DocumentService {
     search_document_limit_bytes: u64,
     history_root: Option<PathBuf>,
     recycle_root: Option<PathBuf>,
-    system_trash: Arc<SystemTrash>,
     #[cfg(test)]
     before_atomic_mutation: Option<Arc<BeforeAtomicDocumentMutation>>,
 }
@@ -877,7 +876,6 @@ impl DocumentService {
             search_document_limit_bytes: DEFAULT_DOCUMENT_LIMIT_BYTES,
             history_root: None,
             recycle_root: None,
-            system_trash: Arc::new(|path| trash::delete(path).map_err(|error| error.to_string())),
             #[cfg(test)]
             before_atomic_mutation: None,
         }
@@ -919,15 +917,6 @@ impl DocumentService {
     ) -> Self {
         self.history_root = Some(history_root);
         self.recycle_root = Some(recycle_root);
-        self
-    }
-
-    #[cfg(test)]
-    pub(crate) fn with_system_trash(
-        mut self,
-        delete: impl Fn(&Path) -> Result<(), String> + Send + Sync + 'static,
-    ) -> Self {
-        self.system_trash = Arc::new(delete);
         self
     }
 
@@ -1169,18 +1158,11 @@ impl DocumentService {
         let file_name = relative_path
             .file_name()
             .ok_or_else(DocumentServiceError::boundary)?;
-        let ambient_path = workspace.canonical_path.join(relative_path);
         workspace
             .revalidate_authority()
             .map_err(map_workspace_error)?;
         match input.deletion {
-            DeletionPolicy::SystemTrash => {
-                let latest = read_document_bytes(input.document, self.search_document_limit_bytes)?;
-                validate_expected_revision(&latest, input.expected_revision)?;
-                (self.system_trash)(&ambient_path)
-                    .map_err(|_| DocumentServiceError::mutation_failed())?;
-            }
-            DeletionPolicy::QingYuRecycleBin => {
+            DeletionPolicy::Recoverable => {
                 let recycle_root = self
                     .recycle_root
                     .as_deref()
