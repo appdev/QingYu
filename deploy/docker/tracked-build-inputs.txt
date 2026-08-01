@@ -647,6 +647,8 @@ packages/editor/src/codemirror/markdown-shortcuts.test.ts
 packages/editor/src/codemirror/markdown-shortcuts.ts
 packages/editor/src/codemirror/math-preview.test.ts
 packages/editor/src/codemirror/math-preview.ts
+packages/editor/src/codemirror/media-viewer.test.ts
+packages/editor/src/codemirror/media-viewer.ts
 packages/editor/src/codemirror/plugin.test.ts
 packages/editor/src/codemirror/plugin.ts
 packages/editor/src/codemirror/policy.ts
