@@ -648,18 +648,24 @@ fn next_tick<Value>(state: &mut ContentRevisionCacheState<Value>) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, num::NonZeroUsize, thread, time::Duration};
+    #[cfg(unix)]
+    use std::{fs, time::Duration};
+    use std::{num::NonZeroUsize, thread};
 
+    #[cfg(unix)]
     use cap_std::{ambient_authority, fs::Dir};
+    #[cfg(unix)]
     use tempfile::tempdir;
 
     use crate::contract::WorkspaceRelativePath;
 
+    #[cfg(unix)]
+    use super::RetainedInventoryFile;
     use super::{
         ContentDigest, ContentRevisionCache, ContentRevisionCacheKey, FileVersionStamp,
         InventoryCandidateSnapshot, InventoryCandidateType, InventoryModifiedTime,
         InventorySnapshotBudget, InventorySnapshotBudgetError, InventorySnapshotLimits,
-        RetainedInventoryFile, StrongFileVersionStamp,
+        StrongFileVersionStamp,
     };
 
     #[cfg(unix)]

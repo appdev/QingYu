@@ -535,7 +535,7 @@ fn private_link_count(metadata: &cap_std::fs::Metadata) -> u64 {
 
 #[cfg(windows)]
 fn private_link_count(metadata: &cap_std::fs::Metadata) -> u64 {
-    metadata.number_of_links().unwrap_or(0)
+    metadata.number_of_links().map_or(0, u64::from)
 }
 
 #[cfg(not(any(unix, windows)))]
