@@ -265,7 +265,7 @@ describe("CompactEditorScreen", () => {
     expect(setup.actions.runApplicationSyncNow).not.toHaveBeenCalled();
   });
 
-  it("shows Workspace Home and asks for the new document name in-app", async () => {
+  it("shows Workspace Home and creates an untitled document immediately", async () => {
     const setup = controller({ applicationSync: true, open: false, workspaceSurface: "home" });
     const compactNavigation = navigation();
     render(<CompactEditorScreen controller={setup.controller} navigation={compactNavigation} />);
@@ -283,12 +283,8 @@ describe("CompactEditorScreen", () => {
     expect(screen.queryByRole("toolbar", { name: "Formatting" })).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Visual Milkdown editor")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "New Document" }));
-    expect(screen.getByRole("dialog", { name: "New file name" })).toBeInTheDocument();
-    fireEvent.change(screen.getByRole("textbox", { name: "New file name" }), {
-      target: { value: "  First note  " }
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Create" }));
-    await waitFor(() => expect(setup.createBlankDocument).toHaveBeenCalledWith("First note"));
+    await waitFor(() => expect(setup.createBlankDocument).toHaveBeenCalledWith("Untitled.md"));
+    expect(screen.queryByRole("dialog", { name: "New file name" })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Configure Sync" }));
     await waitFor(() => expect(compactNavigation.push).toHaveBeenCalledWith({ kind: "sync-status" }));
     expect(screen.queryByRole("button", { name: "Open Document" })).not.toBeInTheDocument();
@@ -310,7 +306,7 @@ describe("CompactEditorScreen", () => {
     ]);
   });
 
-  it("keeps Workspace Home creation failures readable and retryable in the dialog", async () => {
+  it("keeps Workspace Home creation failures safe and retryable from the same action", async () => {
     const setup = controller({ open: false, workspaceSurface: "home" });
     setup.createBlankDocument.mockRejectedValueOnce(new Error(
       "token=super-secret failed at /Users/example/private-note.md"
@@ -318,14 +314,14 @@ describe("CompactEditorScreen", () => {
     render(<CompactEditorScreen controller={setup.controller} navigation={navigation()} />);
 
     fireEvent.click(screen.getByRole("button", { name: "New Document" }));
-    fireEvent.change(screen.getByRole("textbox", { name: "New file name" }), {
-      target: { value: "Draft" }
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Create" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent("The file operation failed.");
     expect(screen.queryByText(/super-secret|Users|private-note/u)).not.toBeInTheDocument();
-    expect(screen.getByRole("dialog", { name: "New file name" })).toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "New file name" })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "New Document" }));
+    await waitFor(() => expect(setup.createBlankDocument).toHaveBeenCalledTimes(2));
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
   it("selects Workspace Home from workspaceSurface instead of document.open", () => {

@@ -5,7 +5,7 @@ import {
 } from "../../test/web-runtime-fakes";
 import { createWebRuntime } from "..";
 import type { NativeMarkdownDroppedTarget } from "@markra/app/runtime";
-import type { WebDownloadFile } from "./types";
+import type { WebDirectoryHandle, WebDownloadFile } from "./types";
 
 function createDirectoryUploadFile(relativePath: string, contents: string, type = "text/markdown") {
   const file = new File([contents], relativePath.split("/").pop() ?? relativePath, { type });
@@ -490,6 +490,114 @@ describe("web file runtime", () => {
     await expect(runtime.files.listMarkdownFilesForPath("web-folder://missing-handle")).rejects.toThrow(
       "Web folder handle is no longer available."
     );
+  });
+
+  it("allocates numbered browser file names without overwriting existing notes", async () => {
+    const first = new FakeFileHandle("Untitled.md", "# First");
+    const second = new FakeFileHandle("Untitled 1.md", "# Second");
+    const directory = new FakeDirectoryHandle("mock-vault", {
+      "Untitled.md": first,
+      "Untitled 1.md": second
+    });
+    const runtime = createWebRuntime({
+      indexedDB: new FakeIndexedDbFactory().indexedDB,
+      showDirectoryPicker: async () => directory
+    });
+
+    const folder = await runtime.files.openMarkdownFolder();
+    const created = await runtime.files.createMarkdownTreeFile(folder!.path, "Untitled.md", {
+      contents: "# Third"
+    });
+
+    expect(created).toMatchObject({
+      name: "Untitled 2.md",
+      relativePath: "Untitled 2.md"
+    });
+    expect(first.writes).toEqual([]);
+    expect(second.writes).toEqual([]);
+    await expect(runtime.files.readMarkdownFile(created.path)).resolves.toMatchObject({
+      content: "# Third",
+      name: "Untitled 2.md"
+    });
+  });
+
+  it("serializes concurrent browser note creation so each request gets its own file", async () => {
+    const directory = new FakeDirectoryHandle("mock-vault", {});
+    const runtime = createWebRuntime({
+      indexedDB: new FakeIndexedDbFactory().indexedDB,
+      showDirectoryPicker: async () => directory
+    });
+    const folder = await runtime.files.openMarkdownFolder();
+
+    const [first, second] = await Promise.all([
+      runtime.files.createMarkdownTreeFile(folder!.path, "Untitled.md", { contents: "# First" }),
+      runtime.files.createMarkdownTreeFile(folder!.path, "Untitled.md", { contents: "# Second" })
+    ]);
+
+    expect([first.name, second.name]).toEqual(["Untitled.md", "Untitled 1.md"]);
+    await expect(runtime.files.readMarkdownFile(first.path)).resolves.toMatchObject({ content: "# First" });
+    await expect(runtime.files.readMarkdownFile(second.path)).resolves.toMatchObject({ content: "# Second" });
+  });
+
+  it("serializes browser note creation across runtimes sharing a workspace", async () => {
+    const directory = new FakeDirectoryHandle("mock-vault", {});
+    const getFileHandle = directory.getFileHandle.bind(directory);
+    directory.getFileHandle = async (name, options = {}) => {
+      try {
+        return await getFileHandle(name, options);
+      } catch (error: unknown) {
+        if (!options.create) {
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        throw error;
+      }
+    };
+    const indexedDB = new FakeIndexedDbFactory().indexedDB;
+    const firstRuntime = createWebRuntime({
+      indexedDB,
+      showDirectoryPicker: async () => directory
+    });
+    const secondRuntime = createWebRuntime({
+      indexedDB,
+      showDirectoryPicker: async () => directory
+    });
+    const firstFolder = await firstRuntime.files.openMarkdownFolder();
+    const secondFolder = await secondRuntime.files.openMarkdownFolder();
+
+    expect(firstFolder!.path).not.toBe(secondFolder!.path);
+
+    const [first, second] = await Promise.all([
+      firstRuntime.files.createMarkdownTreeFile(firstFolder!.path, "Untitled.md", { contents: "# First" }),
+      secondRuntime.files.createMarkdownTreeFile(secondFolder!.path, "Untitled.md", { contents: "# Second" })
+    ]);
+
+    expect([first.name, second.name]).toEqual(["Untitled.md", "Untitled 1.md"]);
+    await expect(firstRuntime.files.readMarkdownFile(first.path)).resolves.toMatchObject({ content: "# First" });
+    await expect(secondRuntime.files.readMarkdownFile(second.path)).resolves.toMatchObject({ content: "# Second" });
+  });
+
+  it("reports a browser-created note that cannot be written", async () => {
+    const backingDirectory = new FakeDirectoryHandle("mock-vault", {});
+    const getFileHandle = backingDirectory.getFileHandle.bind(backingDirectory);
+    const directory: WebDirectoryHandle = backingDirectory;
+    directory.getFileHandle = async (name, options = {}) => {
+      const handle = await getFileHandle(name, options);
+      if (!options.create) return handle;
+      return {
+        getFile: handle.getFile.bind(handle),
+        kind: "file",
+        name
+      };
+    };
+    const runtime = createWebRuntime({
+      indexedDB: new FakeIndexedDbFactory().indexedDB,
+      showDirectoryPicker: async () => directory
+    });
+    const folder = await runtime.files.openMarkdownFolder();
+
+    await expect(runtime.files.createMarkdownTreeFile(folder!.path, "Untitled.md"))
+      .rejects.toThrow("Browser file handle is not writable.");
+    await expect(getFileHandle("Untitled.md")).rejects.toMatchObject({ name: "NotFoundError" });
   });
 
   it("stores markdown templates in IndexedDB-backed web settings", async () => {

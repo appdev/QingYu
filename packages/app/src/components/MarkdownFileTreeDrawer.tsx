@@ -115,7 +115,6 @@ import {
   parentPathFromPath,
   virtualFileTreeRowsForOffset,
   type FileNode,
-  type FileTreeCreateRowKind,
   type FileTreeRenderItem,
   type FileTreeRowRenderMode,
   type FileTreeSort,
@@ -496,13 +495,9 @@ export function MarkdownFileTreeDrawer({
   const [localDocumentLinksOpen, setLocalDocumentLinksOpen] = useState(true);
   const [outlineHeightPercent, setOutlineHeightPercent] = useState(defaultOutlineHeightPercent);
   const [documentLinksHeightPercent, setDocumentLinksHeightPercent] = useState(defaultDocumentLinksHeightPercent);
-  const [creatingFile, setCreatingFile] = useState(false);
   const [creatingFolder, setCreatingFolder] = useState(false);
   const [creatingParentPath, setCreatingParentPath] = useState<string | null>(null);
   const [selectedCreateParentPath, setSelectedCreateParentPath] = useState<string | null>(null);
-  const [creatingTemplate, setCreatingTemplate] = useState<MarkdownTemplate | null>(null);
-  const [creatingTemplateStartedAt, setCreatingTemplateStartedAt] = useState<Date | null>(null);
-  const [newFileName, setNewFileName] = useState("");
   const [newFolderName, setNewFolderName] = useState("");
   const [fileTreeSortMenuOpen, setFileTreeSortMenuOpen] = useState(false);
   const [localFileTreeSort, setLocalFileTreeSort] = useState<FileTreeSort>(defaultFileTreeSort);
@@ -577,11 +572,11 @@ export function MarkdownFileTreeDrawer({
       tree,
       expandedFolders,
       searchQuery,
-      creatingFile,
+      false,
       creatingFolder,
       creatingParentPath
     ),
-    [creatingFile, creatingFolder, creatingParentPath, expandedFolders, searchQuery, tree]
+    [creatingFolder, creatingParentPath, expandedFolders, searchQuery, tree]
   );
   const virtualFileTreeEnabled = visibleFileTreeRows.length > fileTreeVirtualizationThreshold;
   const getFileTreeRowKey = useCallback(
@@ -1197,26 +1192,41 @@ export function MarkdownFileTreeDrawer({
     if (!fileCreationAvailable) return;
 
     const startedAt = new Date();
+    const normalizedParentPath = normalizeTreeCreateParentPath(parentPath);
+    const suggestedName = "Untitled.md";
+    const contents = template
+      ? renderMarkdownTemplate(template, {
+        now: startedAt,
+        title: markdownTemplateTitleFromFileName(
+          suggestedMarkdownTemplateFileName(template, { now: startedAt, title: "" })
+        )
+      })
+      : undefined;
+
     setCreatingFolder(false);
     setNewFolderName("");
+    setCreatingParentPath(null);
     setRenamingPath(null);
     renamingFileRef.current = null;
     setRenameFileName("");
-    setCreatingParentPath(normalizeTreeCreateParentPath(parentPath));
-    setCreatingTemplate(template);
-    setCreatingTemplateStartedAt(template ? startedAt : null);
-    setCreatingFile(true);
-    setNewFileName(template ? suggestedMarkdownTemplateFileName(template, { now: startedAt, title: "" }) : "");
     setCreateMenuOpen(false);
+
+    let createResult: unknown;
+    if (normalizedParentPath && contents !== undefined) {
+      createResult = onCreateFile?.(suggestedName, normalizedParentPath, contents);
+    } else if (normalizedParentPath) {
+      createResult = onCreateFile?.(suggestedName, normalizedParentPath);
+    } else if (contents !== undefined) {
+      createResult = onCreateFile?.(suggestedName, undefined, contents);
+    } else {
+      createResult = onCreateFile?.(suggestedName);
+    }
+    Promise.resolve(createResult).catch(() => {});
   };
 
   const startCreatingFolder = (parentPath: string | null = null) => {
     if (!folderCreationAvailable) return;
 
-    setCreatingFile(false);
-    setNewFileName("");
-    setCreatingTemplate(null);
-    setCreatingTemplateStartedAt(null);
     setRenamingPath(null);
     renamingFileRef.current = null;
     setRenameFileName("");
@@ -1247,47 +1257,7 @@ export function MarkdownFileTreeDrawer({
     setCreatingParentPath(null);
   };
 
-  const commitCreateFile = () => {
-    if (!fileCreationAvailable) return;
-
-    const normalizedName = newFileName.trim();
-    if (!normalizedName) {
-      setCreatingFile(false);
-      setNewFileName("");
-      setCreatingParentPath(null);
-      setCreatingTemplate(null);
-      setCreatingTemplateStartedAt(null);
-      return;
-    }
-
-    const contents = creatingTemplate
-      ? renderMarkdownTemplate(creatingTemplate, {
-        now: creatingTemplateStartedAt ?? new Date(),
-        title: markdownTemplateTitleFromFileName(normalizedName)
-      })
-      : undefined;
-
-    if (creatingParentPath && contents !== undefined) {
-      onCreateFile?.(normalizedName, creatingParentPath, contents);
-    } else if (creatingParentPath) {
-      onCreateFile?.(normalizedName, creatingParentPath);
-    } else if (contents !== undefined) {
-      onCreateFile?.(normalizedName, undefined, contents);
-    } else {
-      onCreateFile?.(normalizedName);
-    }
-    setCreatingFile(false);
-    setNewFileName("");
-    setCreatingParentPath(null);
-    setCreatingTemplate(null);
-    setCreatingTemplateStartedAt(null);
-  };
-
   const startRenamingFile = (file: NativeMarkdownFolderFile) => {
-    setCreatingFile(false);
-    setNewFileName("");
-    setCreatingTemplate(null);
-    setCreatingTemplateStartedAt(null);
     setCreatingFolder(false);
     setNewFolderName("");
     setCreatingParentPath(null);
@@ -1318,10 +1288,6 @@ export function MarkdownFileTreeDrawer({
   };
 
   const cancelFileTreeInputs = () => {
-    setCreatingFile(false);
-    setNewFileName("");
-    setCreatingTemplate(null);
-    setCreatingTemplateStartedAt(null);
     setCreatingFolder(false);
     setNewFolderName("");
     setCreatingParentPath(null);
@@ -1374,7 +1340,7 @@ export function MarkdownFileTreeDrawer({
   }, [renamingPath, commitRenameFile]);
 
   useEffect(() => {
-    if (!creatingFile && !creatingFolder) return;
+    if (!creatingFolder) return;
 
     const handlePointerDown = (event: PointerEvent) => {
       const target = event.target;
@@ -1392,7 +1358,7 @@ export function MarkdownFileTreeDrawer({
     return () => {
       window.removeEventListener("pointerdown", handlePointerDown, true);
     };
-  }, [creatingFile, creatingFolder, cancelFileTreeInputs]);
+  }, [creatingFolder, cancelFileTreeInputs]);
 
   const creatingAtParentPath = (parentPath: string | null | undefined, depth = 0) => {
     return creatingAtFileTreeParentPath(parentPath, depth, creatingParentPath);
@@ -1837,53 +1803,10 @@ export function MarkdownFileTreeDrawer({
       : "before:absolute before:left-[-1px] before:top-1/2 before:h-px before:w-6 before:bg-(--border-default)"
   );
 
-  const renderCreateRowContent = (createType: FileTreeCreateRowKind, depth: number, mode: FileTreeRowRenderMode) => {
+  const renderCreateFolderRowContent = (depth: number, mode: FileTreeRowRenderMode) => {
     const rowIndentClass = fileTreeRowIndentClass(mode);
     const rowBranchClass = mode === "nested" ? rowBranchClassForDepth(depth) : "";
     const rowIndentStyle = fileTreeRowIndentStyle(depth, mode);
-
-    if (createType === "file") {
-      return (
-        <div
-          className={`theme-tree-row relative grid h-8 ${creatingTemplate ? "grid-cols-[17px_minmax(0,1fr)_auto]" : "grid-cols-[17px_minmax(0,1fr)]"} items-center gap-1.5 py-0 pr-2 ${rowIndentClass} ${rowBranchClass}`}
-          style={rowIndentStyle}
-        >
-          <FileText aria-hidden="true" className="shrink-0" size={15} />
-          <input
-            aria-label={label("app.newMarkdownFileName")}
-            autoFocus
-            className="theme-tree-input h-6 min-w-0 rounded-md border border-(--accent) bg-(--bg-primary) px-1.5 text-(--text-primary) outline-none"
-            ref={selectPrefilledFileNameInput}
-            type="text"
-            value={newFileName}
-            placeholder="Untitled.md"
-            onChange={(event) => setNewFileName(event.target.value)}
-            onContextMenu={(event) => openTextInputContextMenu(event, setNewFileName)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") {
-                event.preventDefault();
-                commitCreateFile();
-                return;
-              }
-
-              if (event.key === "Escape") {
-                event.preventDefault();
-                setCreatingFile(false);
-                setNewFileName("");
-                setCreatingParentPath(null);
-                setCreatingTemplate(null);
-                setCreatingTemplateStartedAt(null);
-              }
-            }}
-          />
-          {creatingTemplate ? (
-            <span className="max-w-24 truncate rounded-sm bg-(--bg-active) px-1.5 text-[11px] leading-5 text-(--text-secondary)">
-              {creatingTemplate.name}
-            </span>
-          ) : null}
-        </div>
-      );
-    }
 
     return (
       <div
@@ -1920,21 +1843,12 @@ export function MarkdownFileTreeDrawer({
   };
 
   const renderCreateRows = (parentPath: string | null | undefined, depth: number) => {
-    if ((!creatingFile && !creatingFolder) || !creatingAtParentPath(parentPath, depth)) return null;
+    if (!creatingFolder || !creatingAtParentPath(parentPath, depth)) return null;
 
     return (
-      <>
-        {creatingFile ? (
-          <li key="__creating-file">
-            {renderCreateRowContent("file", depth, "nested")}
-          </li>
-        ) : null}
-        {creatingFolder ? (
-          <li key="__creating-folder">
-            {renderCreateRowContent("folder", depth, "nested")}
-          </li>
-        ) : null}
-      </>
+      <li key="__creating-folder">
+        {renderCreateFolderRowContent(depth, "nested")}
+      </li>
     );
   };
 
@@ -1944,7 +1858,7 @@ export function MarkdownFileTreeDrawer({
       depth,
       expandedFolders,
       searchQuery.trim().length > 0,
-      creatingFile,
+      false,
       creatingFolder,
       creatingParentPath
     )
@@ -2238,7 +2152,9 @@ export function MarkdownFileTreeDrawer({
   };
 
   const renderFileTreeRowContent = (row: FileTreeRenderItem, mode: FileTreeRowRenderMode) => {
-    if (row.type === "create") return renderCreateRowContent(row.createType, row.depth, mode);
+    if (row.type === "create") {
+      return row.createType === "folder" ? renderCreateFolderRowContent(row.depth, mode) : null;
+    }
     if (row.node.type === "folder") {
       return renderFolderRowContent(row.node, row.depth, row.expanded ?? false, mode);
     }
@@ -2839,7 +2755,7 @@ export function MarkdownFileTreeDrawer({
                           onMouseDown={cancelFileTreeInputsFromBlankArea}
                           onContextMenu={(event) => openContextMenu(event)}
                         >
-                          {tree.length > 0 || creatingFile || creatingFolder ? (
+                          {tree.length > 0 || creatingFolder ? (
                             virtualFileTreeEnabled ? renderVirtualFileTreeRows() : renderNodes(tree)
                           ) : (
                             <div className="min-h-full" role="tree" aria-label={label("app.markdownFiles")}>

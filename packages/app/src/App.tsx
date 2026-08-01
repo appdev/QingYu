@@ -2868,8 +2868,21 @@ function WorkspaceApp() {
   const handleQuickCreateMarkdownTreeFile = useCallback(() => {
     captureActiveDocumentViewState();
     setActiveImageFile(null);
-    createBlankDocument().catch(() => {});
-  }, [captureActiveDocumentViewState, createBlankDocument]);
+    createBlankDocument()
+      .then((created) => {
+        if (created) return;
+        showAppToast({
+          message: translate("app.markdownFileCreateFailed"),
+          status: "error"
+        });
+      })
+      .catch((error: unknown) => {
+        showAppToast({
+          message: nativeFileOperationFailureMessage(translate("app.markdownFileCreateFailed"), error),
+          status: "error"
+        });
+      });
+  }, [captureActiveDocumentViewState, createBlankDocument, translate]);
   const openImageTab = useCallback((file: NativeMarkdownFolderFile) => {
     const tab = createImageDocumentTab(file);
     setImageTabs((currentTabs) =>
@@ -4604,11 +4617,7 @@ function WorkspaceApp() {
       onCancelSideBySide={handleCancelTitlebarSideBySide}
       onCloseTab={handleCloseTitlebarTab}
       onFocusTab={handleFocusTitlebarTab}
-      onNewTab={() => {
-        captureActiveDocumentViewState();
-        setActiveImageFile(null);
-        createBlankDocument().catch(() => {});
-      }}
+      onNewTab={handleQuickCreateMarkdownTreeFile}
       onOpenTabToSide={handleOpenTitlebarTabToSide}
       onRevealTabInFileTree={handleRevealPathInFileTree}
       onRenameTab={handleRenameTitlebarTab}

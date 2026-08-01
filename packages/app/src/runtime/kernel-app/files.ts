@@ -15,6 +15,7 @@ import type {
   NativeMarkdownFolderFile,
   WorkspaceSearchResponse,
 } from "../index";
+import { numberedMarkdownDocumentName } from "@markra/shared";
 
 export const kernelWorkspaceRoot = "kernel-workspace://primary";
 
@@ -322,6 +323,30 @@ export function createKernelFileRuntimeOwner(
     return entry;
   };
 
+  const createUniqueMarkdownDocument = async (input: {
+    contents: string;
+    parent: KernelWorkspaceRelativePath;
+    suggestedName: string;
+    workspaceGeneration: KernelWorkspaceGeneration;
+  }) => {
+    for (let attempt = 0; attempt < maximumNewMarkdownDocumentCreateAttempts; attempt += 1) {
+      try {
+        return cacheEntry(await kernel.documents.create({
+          contents: input.contents,
+          kind: "file",
+          name: numberedMarkdownDocumentName(input.suggestedName, attempt),
+          parent: input.parent,
+          workspaceGeneration: input.workspaceGeneration,
+        }));
+      } catch (error: unknown) {
+        if (!isDocumentAlreadyExistsError(error)) throw error;
+      }
+    }
+    throw new Error(
+      `Unable to allocate a unique Markdown filename after ${maximumNewMarkdownDocumentCreateAttempts.toLocaleString("en-US")} attempts.`,
+    );
+  };
+
   const removeCachedTree = (relativePath: string) => {
     if (relativePath === "") {
       entries.clear();
@@ -419,15 +444,14 @@ export function createKernelFileRuntimeOwner(
       const parent = parentPath === null || parentPath === undefined
         ? ""
         : relativePathFromServerPath(parentPath);
-      const document = cacheEntry(await kernel.documents.create({
+      const document = await createUniqueMarkdownDocument({
         contents: typeof optionsOrParentPath === "object"
           ? optionsOrParentPath?.contents ?? ""
           : "",
-        kind: "file",
-        name: fileName,
+        suggestedName: fileName,
         parent: parent as KernelWorkspaceRelativePath,
         workspaceGeneration: identity.generation,
-      }));
+      });
       return fileTreeEntry(document);
     },
     createMarkdownTreeFolder: async (rootPath, folderName, parentPath = null) => {
@@ -726,30 +750,13 @@ export function createKernelFileRuntimeOwner(
         const parent = input.defaultDirectory === null || input.defaultDirectory === undefined
           ? ""
           : relativePathFromServerPath(input.defaultDirectory);
-        const extension = input.suggestedName.match(/\.(?:markdown|md)$/i)?.[0] ?? ".md";
-        const stem = input.suggestedName.endsWith(extension)
-          ? input.suggestedName.slice(0, -extension.length)
-          : input.suggestedName;
-        for (let attempt = 0; attempt < maximumNewMarkdownDocumentCreateAttempts; attempt += 1) {
-          let created: KernelDocumentEntrySnapshot;
-          try {
-            created = await kernel.documents.create({
-              contents: input.contents,
-              kind: "file",
-              name: attempt === 0 ? input.suggestedName : `${stem} ${attempt}${extension}`,
-              parent: parent as KernelWorkspaceRelativePath,
-              workspaceGeneration: identity.generation,
-            });
-          } catch (error: unknown) {
-            if (!isDocumentAlreadyExistsError(error)) throw error;
-            continue;
-          }
-          const document = cacheEntry(created);
-          return { name: document.name, path: serverPathFromRelative(document.relativePath) };
-        }
-        throw new Error(
-          `Unable to allocate a unique Markdown filename after ${maximumNewMarkdownDocumentCreateAttempts.toLocaleString("en-US")} attempts.`,
-        );
+        const document = await createUniqueMarkdownDocument({
+          contents: input.contents,
+          parent: parent as KernelWorkspaceRelativePath,
+          suggestedName: input.suggestedName,
+          workspaceGeneration: identity.generation,
+        });
+        return { name: document.name, path: serverPathFromRelative(document.relativePath) };
       }
       const entry = await resolveEntry(input.path);
       if (entry.kind !== "file") throw new Error("The Kernel path is not a document.");

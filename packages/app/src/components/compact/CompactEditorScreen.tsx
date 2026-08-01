@@ -5,7 +5,7 @@ import type { CompactNavigation, CompactOverlayPage } from "../../hooks/useCompa
 import { WorkspaceHome } from "../WorkspaceHome";
 import { CompactEditorToolbar } from "./CompactEditorToolbar";
 import { CompactEditorMoreMenu } from "./CompactEditorMoreMenu";
-import { CompactNameDialog, compactNameOperationErrorMessage } from "./CompactNameDialog";
+import { compactNameOperationErrorMessage } from "./CompactNameDialog";
 import type { CompactAppController, CompactSaveState } from "./types";
 
 type CompactEditorScreenProps = {
@@ -42,7 +42,7 @@ function saveStateContent(language: CompactAppController["language"], saveState:
 
 export function CompactEditorScreen({ controller, navigation }: CompactEditorScreenProps) {
   const [moreOpen, setMoreOpen] = useState(false);
-  const [nameDialogOpen, setNameDialogOpen] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
   const language = controller.language ?? "en";
   const editorVisible = controller.document.workspaceSurface === "editor"
     && controller.document.document.open;
@@ -61,6 +61,19 @@ export function CompactEditorScreen({ controller, navigation }: CompactEditorScr
   const openFiles = () => pushAfterFlush({ kind: "files" });
   const openSettings = () => pushAfterFlush({ kind: "settings" });
   const openSyncStatus = () => pushAfterFlush({ kind: "sync-status" });
+  const createDocument = async () => {
+    setCreateError(null);
+    try {
+      const created = await controller.document.createBlankDocument("Untitled.md");
+      if (!created) throw new Error("Document creation failed");
+    } catch (operationError) {
+      setCreateError(compactNameOperationErrorMessage(operationError, {
+        duplicate: t(language, "compact.files.nameExists"),
+        fallback: t(language, "compact.files.operationFailed"),
+        invalid: t(language, "compact.files.nameInvalid")
+      }));
+    }
+  };
 
   return (
     <section className="relative flex h-full min-h-0 flex-col" aria-label={t(language, "compact.editor.screen")}>
@@ -137,17 +150,24 @@ export function CompactEditorScreen({ controller, navigation }: CompactEditorScr
       ) : null}
       <div className="min-h-0 flex-1 overflow-hidden">
         {editorVisible ? controller.editor.host : homeVisible ? (
-          <WorkspaceHome
-            actions={{
-              createDocument: () => setNameDialogOpen(true),
-              showFiles: openFiles,
-              openSettings,
-              configureSync: controller.capabilities.applicationSync ? openSyncStatus : undefined,
-              switchWorkspace: controller.workspace.openNotebookManager
-            }}
-            language={language}
-            presentation="compact"
-          />
+          <div className="flex h-full min-h-0 flex-col">
+            {createError ? (
+              <p className="m-3 mb-0 text-sm text-(--status-error)" role="alert">{createError}</p>
+            ) : null}
+            <div className="min-h-0 flex-1">
+              <WorkspaceHome
+                actions={{
+                  createDocument,
+                  showFiles: openFiles,
+                  openSettings,
+                  configureSync: controller.capabilities.applicationSync ? openSyncStatus : undefined,
+                  switchWorkspace: controller.workspace.openNotebookManager
+                }}
+                language={language}
+                presentation="compact"
+              />
+            </div>
+          </div>
         ) : null}
       </div>
       {editorVisible && navigation.page.kind === "editor" ? (
@@ -157,25 +177,6 @@ export function CompactEditorScreen({ controller, navigation }: CompactEditorScr
           imageImport={controller.capabilities.imageImport}
           language={language}
           trueMobile={controller.capabilities.trueMobile}
-        />
-      ) : null}
-      {nameDialogOpen ? (
-        <CompactNameDialog
-          cancelLabel={t(language, "compact.files.cancel")}
-          errorMessage={(operationError) => compactNameOperationErrorMessage(operationError, {
-            duplicate: t(language, "compact.files.nameExists"),
-            fallback: t(language, "compact.files.operationFailed"),
-            invalid: t(language, "compact.files.nameInvalid")
-          })}
-          initialValue=""
-          submitLabel={t(language, "compact.files.create")}
-          title={t(language, "compact.files.newFileName")}
-          onCancel={() => setNameDialogOpen(false)}
-          onSubmit={async (fileName) => {
-            const created = await controller.document.createBlankDocument(fileName);
-            if (!created) throw new Error("Document creation failed");
-            setNameDialogOpen(false);
-          }}
         />
       ) : null}
     </section>

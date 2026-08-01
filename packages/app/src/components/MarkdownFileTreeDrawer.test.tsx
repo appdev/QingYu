@@ -2419,7 +2419,7 @@ describe("MarkdownFileTreeDrawer", () => {
     expect(moveFile).not.toHaveBeenCalled();
   });
 
-  it("supports creating and renaming markdown files from the file tree", () => {
+  it("creates an untitled markdown file immediately and keeps manual rename available", () => {
     const createFile = vi.fn();
     const createFolder = vi.fn();
     const renameFile = vi.fn();
@@ -2441,13 +2441,9 @@ describe("MarkdownFileTreeDrawer", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "New" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "New file" }));
-    const newFileInput = screen.getByRole("textbox", { name: "New file name" });
-    expect(newFileInput).toHaveClass("theme-tree-input");
-    expect(newFileInput.parentElement).toHaveClass("theme-tree-row");
-    fireEvent.change(newFileInput, { target: { value: "Daily note" } });
-    fireEvent.keyDown(newFileInput, { key: "Enter" });
 
-    expect(createFile).toHaveBeenCalledWith("Daily note");
+    expect(screen.queryByRole("textbox", { name: "New file name" })).not.toBeInTheDocument();
+    expect(createFile).toHaveBeenCalledWith("Untitled.md");
 
     fireEvent.contextMenu(screen.getByRole("button", { name: "Untitled.md" }));
     const contextHandlers = mockedShowNativeMarkdownFileTreeContextMenu.mock.calls[0]?.[0];
@@ -2464,79 +2460,46 @@ describe("MarkdownFileTreeDrawer", () => {
     expect(renameFile).toHaveBeenCalledWith(markdownFiles[0], "Renamed.md");
   });
 
-  it("selects prefilled file tree names when creating from a template or renaming", () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-05-21T09:30:00"));
+  it("selects prefilled file and folder names when renaming", () => {
     const renameFile = vi.fn();
 
-    try {
-      render(
-        <MarkdownFileTreeDrawer
-          currentPath="/vault/Untitled.md"
-          customTemplates={[
-            {
-              content: "# {{title}}\n",
-              id: "draft-template",
-              name: "Draft",
-              suggestedName: "Draft.md"
-            }
-          ]}
-          files={markdownFiles}
-          open
-          outlineItems={[]}
-          rootPath="/vault"
-          rootName="Obsidian Vault"
-          onCreateFile={() => {}}
-          onOpenFile={() => {}}
-          onRenameFile={renameFile}
-          onSelectOutlineItem={() => {}}
-        />
-      );
+    render(
+      <MarkdownFileTreeDrawer
+        currentPath="/vault/Untitled.md"
+        files={markdownFiles}
+        open
+        outlineItems={[]}
+        rootPath="/vault"
+        rootName="Obsidian Vault"
+        onOpenFile={() => {}}
+        onRenameFile={renameFile}
+        onSelectOutlineItem={() => {}}
+      />
+    );
 
-      fireEvent.click(screen.getByRole("button", { name: "New" }));
-      fireEvent.click(screen.getByRole("menuitem", { name: "Daily note" }));
-      const templateInput = screen.getByRole("textbox", { name: "New file name" }) as HTMLInputElement;
+    fireEvent.contextMenu(screen.getByRole("button", { name: "Untitled.md" }));
+    const fileContextHandlers = mockedShowNativeMarkdownFileTreeContextMenu.mock.calls[0]?.[0];
+    act(() => {
+      fileContextHandlers?.renameFile?.(markdownFiles[0]);
+    });
 
-      expect(templateInput).toHaveValue("2026-05-21");
-      expect(templateInput.selectionStart).toBe(0);
-      expect(templateInput.selectionEnd).toBe("2026-05-21".length);
+    const fileRenameInput = screen.getByRole("textbox", { name: "Rename file" }) as HTMLInputElement;
+    expect(fileRenameInput).toHaveValue("Untitled.md");
+    expect(fileRenameInput.selectionStart).toBe(0);
+    expect(fileRenameInput.selectionEnd).toBe("Untitled".length);
 
-      fireEvent.keyDown(templateInput, { key: "Escape" });
-      fireEvent.click(screen.getByRole("button", { name: "New" }));
-      fireEvent.click(screen.getByRole("menuitem", { name: "Draft" }));
-      const templateInputWithExtension = screen.getByRole("textbox", { name: "New file name" }) as HTMLInputElement;
+    fireEvent.keyDown(fileRenameInput, { key: "Escape" });
+    fireEvent.contextMenu(screen.getByRole("button", { name: "deploy" }));
+    const folderContextHandlers = mockedShowNativeMarkdownFileTreeContextMenu.mock.calls[1]?.[0];
+    const folder = mockedShowNativeMarkdownFileTreeContextMenu.mock.calls[1]?.[2];
+    act(() => {
+      if (folder) folderContextHandlers?.renameFile?.(folder);
+    });
 
-      expect(templateInputWithExtension).toHaveValue("Draft.md");
-      expect(templateInputWithExtension.selectionStart).toBe(0);
-      expect(templateInputWithExtension.selectionEnd).toBe("Draft".length);
-
-      fireEvent.keyDown(templateInputWithExtension, { key: "Escape" });
-      fireEvent.contextMenu(screen.getByRole("button", { name: "Untitled.md" }));
-      const fileContextHandlers = mockedShowNativeMarkdownFileTreeContextMenu.mock.calls[0]?.[0];
-      act(() => {
-        fileContextHandlers?.renameFile?.(markdownFiles[0]);
-      });
-
-      const fileRenameInput = screen.getByRole("textbox", { name: "Rename file" }) as HTMLInputElement;
-      expect(fileRenameInput).toHaveValue("Untitled.md");
-      expect(fileRenameInput.selectionStart).toBe(0);
-      expect(fileRenameInput.selectionEnd).toBe("Untitled".length);
-
-      fireEvent.keyDown(fileRenameInput, { key: "Escape" });
-      fireEvent.contextMenu(screen.getByRole("button", { name: "deploy" }));
-      const folderContextHandlers = mockedShowNativeMarkdownFileTreeContextMenu.mock.calls[1]?.[0];
-      const folder = mockedShowNativeMarkdownFileTreeContextMenu.mock.calls[1]?.[2];
-      act(() => {
-        if (folder) folderContextHandlers?.renameFile?.(folder);
-      });
-
-      const folderRenameInput = screen.getByRole("textbox", { name: "Rename folder" }) as HTMLInputElement;
-      expect(folderRenameInput).toHaveValue("deploy");
-      expect(folderRenameInput.selectionStart).toBe(0);
-      expect(folderRenameInput.selectionEnd).toBe("deploy".length);
-    } finally {
-      vi.useRealTimers();
-    }
+    const folderRenameInput = screen.getByRole("textbox", { name: "Rename folder" }) as HTMLInputElement;
+    expect(folderRenameInput).toHaveValue("deploy");
+    expect(folderRenameInput.selectionStart).toBe(0);
+    expect(folderRenameInput.selectionEnd).toBe("deploy".length);
   });
 
   it("opens the containing folder from file tree context menus", () => {
@@ -2578,8 +2541,8 @@ describe("MarkdownFileTreeDrawer", () => {
     expect(openContainingFolder).toHaveBeenCalledWith("/vault");
   });
 
-  it("shows text editing actions when right-clicking a file name input", async () => {
-    const createFile = vi.fn();
+  it("shows text editing actions when right-clicking a rename input", async () => {
+    const renameFile = vi.fn();
     mockedReadNativeClipboardText.mockResolvedValue("Pasted note");
 
     render(
@@ -2589,19 +2552,21 @@ describe("MarkdownFileTreeDrawer", () => {
         open
         outlineItems={[]}
         rootName="Obsidian Vault"
-        onCreateFile={createFile}
         onOpenFile={() => {}}
+        onRenameFile={renameFile}
         onSelectOutlineItem={() => {}}
       />
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "New" }));
-    fireEvent.click(screen.getByRole("menuitem", { name: "New file" }));
+    fireEvent.contextMenu(screen.getByRole("button", { name: "Untitled.md" }));
+    const contextHandlers = mockedShowNativeMarkdownFileTreeContextMenu.mock.calls[0]?.[0];
+    act(() => {
+      contextHandlers?.renameFile?.(markdownFiles[0]);
+    });
 
-    const newFileInput = screen.getByRole("textbox", { name: "New file name" }) as HTMLInputElement;
-    fireEvent.contextMenu(newFileInput, { clientX: 24, clientY: 36 });
+    const renameInput = screen.getByRole("textbox", { name: "Rename file" }) as HTMLInputElement;
+    fireEvent.contextMenu(renameInput, { clientX: 24, clientY: 36 });
 
-    expect(mockedShowNativeMarkdownFileTreeContextMenu).not.toHaveBeenCalled();
     expect(screen.getByRole("menuitem", { name: /Cut/ })).toBeInTheDocument();
     expect(screen.getByRole("menuitem", { name: /Copy/ })).toBeInTheDocument();
     expect(screen.getByRole("menuitem", { name: /Paste/ })).toBeInTheDocument();
@@ -2610,21 +2575,21 @@ describe("MarkdownFileTreeDrawer", () => {
     const pasteItem = screen.getByRole("menuitem", { name: /Paste/ });
     fireEvent.pointerDown(pasteItem);
 
-    expect(screen.getByRole("textbox", { name: "New file name" })).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "Rename file" })).toBeInTheDocument();
 
     fireEvent.click(pasteItem);
 
-    await waitFor(() => expect(newFileInput).toHaveValue("Pasted note"));
+    await waitFor(() => expect(renameInput).toHaveValue("Pasted note.md"));
 
-    fireEvent.keyDown(newFileInput, { key: "Enter" });
+    fireEvent.keyDown(renameInput, { key: "Enter" });
 
-    expect(createFile).toHaveBeenCalledWith("Pasted note");
+    expect(renameFile).toHaveBeenCalledWith(markdownFiles[0], "Pasted note.md");
   });
 
-  it("uses native text insertion for right-click paste so input undo remains available", async () => {
+  it("uses native text insertion for right-click paste in rename inputs", async () => {
     const originalExecCommand = document.execCommand;
     const execCommand = vi.fn(() => true);
-    mockedReadNativeClipboardText.mockResolvedValue("Undoable note");
+    mockedReadNativeClipboardText.mockResolvedValue("Undoable note.md");
     Object.defineProperty(document, "execCommand", {
       configurable: true,
       value: execCommand
@@ -2638,21 +2603,24 @@ describe("MarkdownFileTreeDrawer", () => {
           open
           outlineItems={[]}
           rootName="Obsidian Vault"
-          onCreateFile={vi.fn()}
           onOpenFile={() => {}}
+          onRenameFile={() => {}}
           onSelectOutlineItem={() => {}}
         />
       );
 
-      fireEvent.click(screen.getByRole("button", { name: "New" }));
-      fireEvent.click(screen.getByRole("menuitem", { name: "New file" }));
+      fireEvent.contextMenu(screen.getByRole("button", { name: "Untitled.md" }));
+      const contextHandlers = mockedShowNativeMarkdownFileTreeContextMenu.mock.calls[0]?.[0];
+      act(() => {
+        contextHandlers?.renameFile?.(markdownFiles[0]);
+      });
 
-      const newFileInput = screen.getByRole("textbox", { name: "New file name" }) as HTMLInputElement;
-      fireEvent.contextMenu(newFileInput, { clientX: 24, clientY: 36 });
+      const renameInput = screen.getByRole("textbox", { name: "Rename file" }) as HTMLInputElement;
+      fireEvent.contextMenu(renameInput, { clientX: 24, clientY: 36 });
       fireEvent.click(screen.getByRole("menuitem", { name: /Paste/ }));
 
       await waitFor(() => {
-        expect(execCommand).toHaveBeenCalledWith("insertText", false, "Undoable note");
+        expect(execCommand).toHaveBeenCalledWith("insertText", false, "Undoable note.md");
       });
     } finally {
       Object.defineProperty(document, "execCommand", {
@@ -2662,7 +2630,7 @@ describe("MarkdownFileTreeDrawer", () => {
     }
   });
 
-  it("uses native cut for right-click cut so input undo remains available", async () => {
+  it("uses native cut for right-click cut in rename inputs", async () => {
     const originalExecCommand = document.execCommand;
     const execCommand = vi.fn((command: string) => command === "cut");
     Object.defineProperty(document, "execCommand", {
@@ -2678,19 +2646,22 @@ describe("MarkdownFileTreeDrawer", () => {
           open
           outlineItems={[]}
           rootName="Obsidian Vault"
-          onCreateFile={vi.fn()}
           onOpenFile={() => {}}
+          onRenameFile={() => {}}
           onSelectOutlineItem={() => {}}
         />
       );
 
-      fireEvent.click(screen.getByRole("button", { name: "New" }));
-      fireEvent.click(screen.getByRole("menuitem", { name: "New file" }));
+      fireEvent.contextMenu(screen.getByRole("button", { name: "Untitled.md" }));
+      const contextHandlers = mockedShowNativeMarkdownFileTreeContextMenu.mock.calls[0]?.[0];
+      act(() => {
+        contextHandlers?.renameFile?.(markdownFiles[0]);
+      });
 
-      const newFileInput = screen.getByRole("textbox", { name: "New file name" }) as HTMLInputElement;
-      fireEvent.change(newFileInput, { target: { value: "Draft note" } });
-      newFileInput.setSelectionRange(0, "Draft".length);
-      fireEvent.contextMenu(newFileInput, { clientX: 24, clientY: 36 });
+      const renameInput = screen.getByRole("textbox", { name: "Rename file" }) as HTMLInputElement;
+      fireEvent.change(renameInput, { target: { value: "Draft note.md" } });
+      renameInput.setSelectionRange(0, "Draft".length);
+      fireEvent.contextMenu(renameInput, { clientX: 24, clientY: 36 });
       fireEvent.click(screen.getByRole("menuitem", { name: /Cut/ }));
 
       await waitFor(() => {
@@ -2816,15 +2787,13 @@ describe("MarkdownFileTreeDrawer", () => {
     act(() => {
       contextHandlers?.createFile?.();
     });
-    const newFileInput = screen.getByRole("textbox", { name: "New file name" });
-    fireEvent.change(newFileInput, { target: { value: "Scratch" } });
-    fireEvent.keyDown(newFileInput, { key: "Enter" });
 
-    expect(createFile).toHaveBeenCalledWith("Scratch");
+    expect(screen.queryByRole("textbox", { name: "New file name" })).not.toBeInTheDocument();
+    expect(createFile).toHaveBeenCalledWith("Untitled.md");
     expect(createFolder).not.toHaveBeenCalled();
   });
 
-  it("starts a markdown file from a lightweight template", () => {
+  it("creates an untitled markdown file from a template without changing its default rendering", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-05-21T09:30:00"));
     const createFile = vi.fn();
@@ -2847,18 +2816,21 @@ describe("MarkdownFileTreeDrawer", () => {
       expect(screen.getByText("New from template")).toBeInTheDocument();
       fireEvent.click(screen.getByRole("menuitem", { name: "Daily note" }));
 
-      const newFileInput = screen.getByRole("textbox", { name: "New file name" });
-
-      expect(newFileInput).toHaveValue("2026-05-21");
-      expect(screen.getByText("Daily note")).toBeInTheDocument();
-
-      fireEvent.keyDown(newFileInput, { key: "Enter" });
-
       expect(createFile).toHaveBeenCalledWith(
-        "2026-05-21",
+        "Untitled.md",
         undefined,
-        expect.stringContaining("# 2026-05-21")
+        `# 2026-05-21
+
+Date: 2026-05-21
+
+## Notes
+
+## Tasks
+
+- [ ]
+`
       );
+      expect(screen.queryByRole("textbox", { name: "New file name" })).not.toBeInTheDocument();
     } finally {
       vi.useRealTimers();
     }
@@ -2888,11 +2860,9 @@ describe("MarkdownFileTreeDrawer", () => {
 
       fireEvent.click(screen.getByRole("button", { name: "New" }));
       fireEvent.click(screen.getByRole("menuitem", { name: "New file" }));
-      const newFileInput = screen.getByRole("textbox", { name: "New file name" });
-      fireEvent.change(newFileInput, { target: { value: "Sprint note" } });
-      fireEvent.keyDown(newFileInput, { key: "Enter" });
 
-      expect(createFile).toHaveBeenCalledWith("Sprint note", "/vault/deploy");
+      expect(createFile).toHaveBeenCalledWith("Untitled.md", "/vault/deploy");
+      expect(screen.queryByRole("textbox", { name: "New file name" })).not.toBeInTheDocument();
 
       rerender(
         <MarkdownFileTreeDrawer
@@ -2911,11 +2881,9 @@ describe("MarkdownFileTreeDrawer", () => {
 
       fireEvent.click(screen.getByRole("button", { name: "New" }));
       fireEvent.click(screen.getByRole("menuitem", { name: "Daily note" }));
-      const templateInput = screen.getByRole("textbox", { name: "New file name" });
-      fireEvent.keyDown(templateInput, { key: "Enter" });
 
       expect(createFile).toHaveBeenLastCalledWith(
-        "2026-05-21",
+        "Untitled.md",
         "/vault/deploy",
         expect.stringContaining("# 2026-05-21")
       );
@@ -2983,11 +2951,9 @@ describe("MarkdownFileTreeDrawer", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "New" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "New file" }));
-    const newFileInput = screen.getByRole("textbox", { name: "New file name" });
-    fireEvent.change(newFileInput, { target: { value: "Root note" } });
-    fireEvent.keyDown(newFileInput, { key: "Enter" });
 
-    expect(createFile).toHaveBeenCalledWith("Root note");
+    expect(createFile).toHaveBeenCalledWith("Untitled.md");
+    expect(screen.queryByRole("textbox", { name: "New file name" })).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "New" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "New Folder" }));
@@ -3028,17 +2994,12 @@ describe("MarkdownFileTreeDrawer", () => {
       fireEvent.click(screen.getByRole("button", { name: "New" }));
       fireEvent.click(screen.getByRole("menuitem", { name: "Standup" }));
 
-      const newFileInput = screen.getByRole("textbox", { name: "New file name" });
-
-      expect(newFileInput).toHaveValue("2026-05-21 standup");
-
-      fireEvent.keyDown(newFileInput, { key: "Enter" });
-
       expect(createFile).toHaveBeenCalledWith(
-        "2026-05-21 standup",
+        "Untitled.md",
         undefined,
-        expect.stringContaining("## Yesterday")
+        "# 2026-05-21 standup\n\n## Yesterday"
       );
+      expect(screen.queryByRole("textbox", { name: "New file name" })).not.toBeInTheDocument();
     } finally {
       vi.useRealTimers();
     }
@@ -3103,36 +3064,8 @@ describe("MarkdownFileTreeDrawer", () => {
     expect(renameFile).not.toHaveBeenCalled();
   });
 
-  it("cancels create inputs when a pointer starts outside the file tree", () => {
-    const createFile = vi.fn();
-
-    render(
-      <MarkdownFileTreeDrawer
-        currentPath="/vault/Untitled.md"
-        files={markdownFiles}
-        open
-        outlineItems={[]}
-        rootName="Obsidian Vault"
-        onCreateFile={createFile}
-        onOpenFile={() => {}}
-        onSelectOutlineItem={() => {}}
-      />
-    );
-
-    fireEvent.click(screen.getByRole("button", { name: "New" }));
-    fireEvent.click(screen.getByRole("menuitem", { name: "New file" }));
-    expect(screen.getByRole("textbox", { name: "New file name" })).toBeInTheDocument();
-
-    fireEvent.pointerDown(document.body);
-
-    expect(screen.queryByRole("textbox", { name: "New file name" })).not.toBeInTheDocument();
-    expect(createFile).not.toHaveBeenCalled();
-  });
-
-  it("finishes active file tree inputs when another file row is clicked", async () => {
+  it("finishes an active rename input when another file row is clicked", async () => {
     const openFile = vi.fn();
-    const createFile = vi.fn();
-    const createFolder = vi.fn();
     const renameFile = vi.fn();
 
     render(
@@ -3142,22 +3075,11 @@ describe("MarkdownFileTreeDrawer", () => {
         open
         outlineItems={[]}
         rootName="Obsidian Vault"
-        onCreateFile={createFile}
-        onCreateFolder={createFolder}
         onOpenFile={openFile}
         onRenameFile={renameFile}
         onSelectOutlineItem={() => {}}
       />
     );
-
-    fireEvent.click(screen.getByRole("button", { name: "New" }));
-    fireEvent.click(screen.getByRole("menuitem", { name: "New file" }));
-    expect(screen.getByRole("textbox", { name: "New file name" })).toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole("button", { name: "AWS.md" }));
-
-    expect(screen.queryByRole("textbox", { name: "New file name" })).not.toBeInTheDocument();
-    expect(openFile).toHaveBeenCalledWith(markdownFiles[1]);
 
     fireEvent.contextMenu(screen.getByRole("button", { name: "Untitled.md" }));
     const contextHandlers = mockedShowNativeMarkdownFileTreeContextMenu.mock.calls[0]?.[0];
@@ -3250,7 +3172,7 @@ describe("MarkdownFileTreeDrawer", () => {
     expect(createFolder).toHaveBeenCalledWith("Research");
   });
 
-  it("starts template creation from the native file tree context menu", () => {
+  it("creates an untitled template document immediately from the native file tree context menu", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-05-21T09:30:00"));
     const createFile = vi.fn();
@@ -3276,19 +3198,42 @@ describe("MarkdownFileTreeDrawer", () => {
         contextHandlers?.createFileFromTemplates?.[0]?.create();
       });
 
-      const newFileInput = screen.getByRole("textbox", { name: "New file name" });
-      expect(newFileInput).toHaveValue("2026-05-21");
-
-      fireEvent.keyDown(newFileInput, { key: "Enter" });
-
       expect(createFile).toHaveBeenCalledWith(
-        "2026-05-21",
+        "Untitled.md",
         undefined,
         expect.stringContaining("Date: 2026-05-21")
       );
+      expect(screen.queryByRole("textbox", { name: "New file name" })).not.toBeInTheDocument();
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("creates an untitled document immediately inside a context-menu folder target", () => {
+    const createFile = vi.fn();
+
+    render(
+      <MarkdownFileTreeDrawer
+        currentPath="/vault/Untitled.md"
+        files={markdownFiles}
+        open
+        outlineItems={[]}
+        rootPath="/vault"
+        rootName="Obsidian Vault"
+        onCreateFile={createFile}
+        onOpenFile={() => {}}
+        onSelectOutlineItem={() => {}}
+      />
+    );
+
+    fireEvent.contextMenu(screen.getByRole("button", { name: "deploy" }));
+    const contextHandlers = mockedShowNativeMarkdownFileTreeContextMenu.mock.calls[0]?.[0];
+    act(() => {
+      contextHandlers?.createFile?.();
+    });
+
+    expect(createFile).toHaveBeenCalledWith("Untitled.md", "/vault/deploy");
+    expect(screen.queryByRole("textbox", { name: "New file name" })).not.toBeInTheDocument();
   });
 
   it("saves a markdown file as a template from the native file tree context menu", () => {

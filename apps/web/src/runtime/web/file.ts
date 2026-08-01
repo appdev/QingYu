@@ -20,6 +20,7 @@ import type {
   SaveNativePdfFileInput,
   SaveNativeSettingsFileInput
 } from "@markra/app/runtime";
+import { numberedMarkdownDocumentName } from "@markra/shared";
 import {
   confirmWithBrowser,
   createBrowserDownload,
@@ -31,6 +32,7 @@ import { loadMarkdownIgnoreRules, type MarkdownIgnoreRules } from "./ignore-rule
 import type {
   WebDirectoryHandle,
   WebFileHandle,
+  WebLockManager,
   WebRuntimeOptions
 } from "./types";
 
@@ -68,12 +70,33 @@ const markdownOpenExtensions = new Set(["md", "markdown", "txt"]);
 const assetExtensions = new Set(["avif", "bmp", "gif", "jpg", "jpeg", "png", "svg", "webp"]);
 const fileHandleStorePath = "web-file-handles.json";
 const directoryHandleStorePath = "web-directory-handles.json";
+const maximumNewMarkdownDocumentCreateAttempts = 10_000;
+const markdownTreeFileCreateLockName = "markra:markdown-tree-file-create";
+let markdownTreeFileCreateQueue: Promise<unknown> = Promise.resolve();
 const settingsFilePickerTypes = [{
   accept: {
     "application/json": [".json"]
   },
   description: "QingYu settings"
 }];
+
+function isMissingBrowserFileSystemEntry(error: unknown) {
+  return error instanceof DOMException && error.name === "NotFoundError";
+}
+
+function resolveWebLockManager() {
+  const navigatorWithLocks = globalThis.navigator as (Navigator & { locks?: WebLockManager }) | undefined;
+  return navigatorWithLocks?.locks ?? null;
+}
+
+function serializeMarkdownTreeFileCreate<T>(operation: () => Promise<T>) {
+  const result = markdownTreeFileCreateQueue.then(operation, operation);
+  markdownTreeFileCreateQueue = result.then(
+    () => undefined,
+    () => undefined
+  );
+  return result;
+}
 
 function extensionFromName(name: string) {
   const extension = name.split(".").pop()?.toLowerCase();
@@ -359,9 +382,16 @@ export function createWebFileRuntime(
   const showDirectoryPicker = options.showDirectoryPicker ?? resolveBrowserPicker("showDirectoryPicker");
   const pickDirectoryFiles = options.pickDirectoryFiles ?? (() => pickBrowserDirectoryFiles(options.document));
   const dropTarget = options.document ?? globalThis.document ?? null;
+  const lockManager = options.lockManager === undefined ? resolveWebLockManager() : options.lockManager;
   const openExternalUrl = options.openExternalUrl ?? ((url: string) => {
     globalThis.open?.(url, "_blank", "noopener,noreferrer");
   });
+
+  function withMarkdownTreeFileCreateLock<T>(operation: () => Promise<T>) {
+    return lockManager
+      ? lockManager.request(markdownTreeFileCreateLockName, operation)
+      : serializeMarkdownTreeFileCreate(operation);
+  }
 
   function cacheFileHandle(handle: WebFileHandle) {
     const id = createHandleId();
@@ -898,24 +928,54 @@ export function createWebFileRuntime(
     confirmMarkdownFileDelete: async (_fileName, labels) => confirm(labels.message),
     confirmWorkspaceResourceTrash: async () => false,
     confirmUnsavedMarkdownDocumentDiscard: async (_fileName, labels) => confirm(labels.message),
-    async createMarkdownTreeFile(rootPath, fileName, optionsOrParentPath = null) {
+    createMarkdownTreeFile(rootPath, fileName, optionsOrParentPath = null) {
       const options = typeof optionsOrParentPath === "object" && optionsOrParentPath !== null
         ? optionsOrParentPath
         : { parentPath: optionsOrParentPath };
-      const { directory, id } = await directoryForPath(rootPath);
-      const parent = options.parentPath ? (await directoryForPath(options.parentPath)).directory : directory;
-      if (!parent.getFileHandle) throw new Error("Browser directory handle cannot create files.");
-      const handle = await parent.getFileHandle(fileName, { create: true });
-      await writeFileHandle(handle, options.contents ?? "");
-      const relativePath = options.parentPath
-        ? joinRelativePath(parseWebHandlePath(options.parentPath)?.relativePath ?? "", fileName)
-        : fileName;
+      return withMarkdownTreeFileCreateLock(async () => {
+        const { directory, id } = await directoryForPath(rootPath);
+        const parent = options.parentPath ? (await directoryForPath(options.parentPath)).directory : directory;
+        if (!parent.getFileHandle || !parent.removeEntry) {
+          throw new Error("Browser directory handle cannot safely create files.");
+        }
+        for (let attempt = 0; attempt < maximumNewMarkdownDocumentCreateAttempts; attempt += 1) {
+          const allocatedName = numberedMarkdownDocumentName(fileName, attempt);
+          try {
+            await parent.getFileHandle(allocatedName);
+            continue;
+          } catch (error: unknown) {
+            if (error instanceof DOMException && error.name === "TypeMismatchError") continue;
+            if (!isMissingBrowserFileSystemEntry(error)) throw error;
+          }
 
-      return {
-        name: fileName,
-        path: createFolderPath(id, relativePath),
-        relativePath
-      };
+          const handle = await parent.getFileHandle(allocatedName, { create: true });
+          try {
+            if (!await writeFileHandle(handle, options.contents ?? "")) {
+              throw new Error("Browser file handle is not writable.");
+            }
+          } catch (error: unknown) {
+            try {
+              await parent.removeEntry(allocatedName);
+            } catch {
+              // Preserve the original write failure when browser cleanup is unavailable.
+            }
+            throw error;
+          }
+          const relativePath = options.parentPath
+            ? joinRelativePath(parseWebHandlePath(options.parentPath)?.relativePath ?? "", allocatedName)
+            : allocatedName;
+
+          return {
+            name: allocatedName,
+            path: createFolderPath(id, relativePath),
+            relativePath
+          };
+        }
+
+        throw new Error(
+          `Unable to allocate a unique Markdown filename after ${maximumNewMarkdownDocumentCreateAttempts.toLocaleString("en-US")} attempts.`
+        );
+      });
     },
     async createMarkdownTreeFolder(rootPath, folderName, parentPath = null) {
       const { directory, id } = await directoryForPath(rootPath);
