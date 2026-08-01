@@ -1,3 +1,9 @@
+## 2.4.0 (2026-07-31)
+
+### Features
+
+* **editor:** add zoomable image and Mermaid preview viewer with pan and reset controls
+
 ## [2.2.0](https://github.com/markrahq/markra/compare/v2.1.0...v2.2.0) (2026-07-29)
 
 ### Features
