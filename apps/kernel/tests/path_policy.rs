@@ -109,6 +109,57 @@ fn mobile_creates_one_managed_workspace_under_app_data() {
 }
 
 #[test]
+fn mobile_accepts_os_cache_below_persistent_app_data() {
+    let temporary = tempdir().unwrap();
+    let app_data = temporary.path().join("app-data");
+    let cache = app_data.join("cache");
+    fs::create_dir_all(&cache).unwrap();
+
+    let paths = KernelPaths::mobile(&app_data, &cache, "personal").unwrap();
+
+    assert_eq!(paths.profile(), HostProfile::Mobile);
+    assert!(app_data.join("workspaces/personal").is_dir());
+}
+
+#[test]
+fn mobile_rejects_equal_instance_data_and_cache_roots() {
+    let temporary = tempdir().unwrap();
+    let shared = temporary.path().join("shared");
+    fs::create_dir_all(&shared).unwrap();
+
+    let error = KernelPaths::mobile(&shared, &shared, "personal").unwrap_err();
+
+    assert_eq!(error.kind(), PathPolicyErrorKind::OverlappingRoots);
+    assert!(!shared.join("workspaces").exists());
+}
+
+#[test]
+fn mobile_rejects_persistent_app_data_below_cache() {
+    let temporary = tempdir().unwrap();
+    let cache = temporary.path().join("cache");
+    let app_data = cache.join("app-data");
+    fs::create_dir_all(&app_data).unwrap();
+
+    let error = KernelPaths::mobile(&app_data, &cache, "personal").unwrap_err();
+
+    assert_eq!(error.kind(), PathPolicyErrorKind::OverlappingRoots);
+    assert!(!app_data.join("workspaces").exists());
+}
+
+#[test]
+fn mobile_rejects_cache_below_the_managed_workspace_collection() {
+    let temporary = tempdir().unwrap();
+    let app_data = temporary.path().join("app-data");
+    let cache = app_data.join("workspaces/system-cache");
+    fs::create_dir_all(&cache).unwrap();
+
+    let error = KernelPaths::mobile(&app_data, &cache, "personal").unwrap_err();
+
+    assert_eq!(error.kind(), PathPolicyErrorKind::OverlappingRoots);
+    assert!(!app_data.join("workspaces/personal").exists());
+}
+
+#[test]
 fn mobile_workspace_capability_detects_when_the_managed_address_is_rebound() {
     let temporary = tempdir().unwrap();
     let app_data = temporary.path().join("app-data");

@@ -56,7 +56,7 @@ impl KernelPaths {
         validate_managed_name(managed_name)?;
         let app_data = OpenedDirectory::open_existing(app_data)?;
         let cache = OpenedDirectory::open_existing(cache)?;
-        reject_overlapping_roots([&app_data, &cache])?;
+        validate_mobile_roots(&app_data, &cache)?;
 
         let workspace_parent = app_data
             .dir
@@ -793,6 +793,20 @@ fn reject_overlapping_roots<const N: usize>(
                 return Err(PathPolicyError::overlapping_roots());
             }
         }
+    }
+    Ok(())
+}
+
+fn validate_mobile_roots(
+    app_data: &OpenedDirectory,
+    cache: &OpenedDirectory,
+) -> Result<(), PathPolicyError> {
+    let managed_workspaces = app_data.canonical_path.join("workspaces");
+    if app_data.identity == cache.identity
+        || app_data.canonical_path.starts_with(&cache.canonical_path)
+        || cache.canonical_path.starts_with(managed_workspaces)
+    {
+        return Err(PathPolicyError::overlapping_roots());
     }
     Ok(())
 }
