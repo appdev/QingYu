@@ -4,7 +4,7 @@
 > [`docs/kernel-runtime-migration-status.md`](../../docs/kernel-runtime-migration-status.md)
 > for the current migration SHA, release blockers, and final-candidate gates. The
 > acceptance statements in this file describe the Docker contract; an older live
-> run is baseline evidence and does not replace acceptance of the final frozen SHA.
+> run is baseline evidence and does not replace acceptance of the final verified SHA.
 
 This directory contains the runnable Kernel image and precompiled runtime-bundle contract for the confirmed deployment model: one Docker deployment owns one user and one persistent `/data` volume. The browser application now uses the server `KernelClient`; final live Linux acceptance remains pending until the target-host matrix is captured.
 
@@ -141,16 +141,16 @@ The runtime packaging gate is ready. Final live Linux acceptance is still pendin
 
 ### AppConfig persistent-volume matrix
 
-Automated tests can prove service, storage-root, adapter, and restoration behavior, but they do not prove a real container/browser lifecycle. Record both evidence channels against the same frozen release SHA.
+Automated tests can prove service, storage-root, adapter, and restoration behavior, but they do not prove a real container/browser lifecycle. Record both evidence channels against the same verified release SHA.
 
 | Scenario | Expected result | Automated status/evidence | Real-environment status |
 | --- | --- | --- | --- |
-| Existing volume, Browser A refresh | Open two Markdown files, select the second, change one layout field, then refresh; the selected file and committed layout restore. | **Passed on `9aa7a633`** through Kernel AppConfig service/API, committed-snapshot adapter, and server-runtime restoration tests. | Pending final-SHA Docker/browser run. |
-| Same instance, Browser B | Browser B reads A's committed state; different semantic fields changed by A and B both survive the final aggregate. | **Passed on `9aa7a633`** through semantic-operation merge and committed-snapshot adapter tests. | Pending final-SHA two-browser run. |
-| Restart and container replacement | Restart, then replace the container while retaining `qingyu-data`; the last successful commit restores identically. | **Passed on `9aa7a633`** through ConfigRoot composition and durable publication/recovery tests. | Pending final-SHA container run. |
-| Missing remembered files, no draft | Refresh shows Workspace Home and stale paths are pruned from committed AppConfig. | **Passed on `9aa7a633`** through shared restoration and Workspace Home behavior tests. | Pending final-SHA browser run. |
-| Missing remembered file, dirty draft | The recoverable draft editor wins over Workspace Home across refresh/restart. | **Passed on `9aa7a633`** through shared dirty-draft restoration tests. | Pending final-SHA browser run. |
-| New named volume | Workspace Home appears before any mutation; `settings.json` is absent until the first accepted mutation. | **Passed on `9aa7a633`** through absent-document/default-without-write service tests. | Pending final-SHA volume inspection. |
-| Filesystem separation | `settings.json` and `sync-config.json` exist only below `/data/config`; operational files remain below `/data/state`. | **Passed on `9aa7a633`** through Kernel root-placement, Docker contract, and 11 Docker contract-mutation tests. | Pending final-SHA volume inspection. |
+| Existing volume, Browser A refresh | Open two Markdown files, select the second, change one layout field, then refresh; the selected file and committed layout restore. | **Passed on `856c3c10`** through Kernel AppConfig service/API, committed-snapshot adapter, and server-runtime restoration tests. | Pending final-SHA Docker/browser run. |
+| Same instance, Browser B | Browser B reads A's committed state; different semantic fields changed by A and B both survive the final aggregate. | **Passed on `856c3c10`** through semantic-operation merge and committed-snapshot adapter tests. | Pending final-SHA two-browser run. |
+| Restart and container replacement | Restart, then replace the container while retaining `qingyu-data`; the last successful commit restores identically. | **Passed on `856c3c10`** through ConfigRoot composition and durable publication/recovery tests. | Pending final-SHA container run. |
+| Missing remembered files, no draft | Refresh shows Workspace Home and stale paths are pruned from committed AppConfig. | **Passed on `856c3c10`** through shared restoration and Workspace Home behavior tests. | Pending final-SHA browser run. |
+| Missing remembered file, dirty draft | The recoverable draft editor wins over Workspace Home across refresh/restart. | **Passed on `856c3c10`** through shared dirty-draft restoration tests. | Pending final-SHA browser run. |
+| New named volume | Workspace Home appears before any mutation; `settings.json` is absent until the first accepted mutation. | **Passed on `856c3c10`** through absent-document/default-without-write service tests. | Pending final-SHA volume inspection. |
+| Filesystem separation | `settings.json` and `sync-config.json` exist only below `/data/config`; operational files remain below `/data/state`. | **Passed on `856c3c10`** through Kernel root-placement, Docker contract, and 11 Docker contract-mutation tests. | Pending final-SHA volume inspection. |
 
 On the 2026-08-01 final automated run, `verify-contract.sh` passed the packaging contract and `test-verify-contract-mutations.sh` rejected all 11 semantic mutations. The local host still reported `docker: command not found`. Therefore every real-environment row above remains pending; no Docker refresh, browser-switch, restart, or volume-inspection result is claimed by this update.

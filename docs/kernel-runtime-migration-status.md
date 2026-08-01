@@ -2,10 +2,13 @@
 
 > Status snapshot: 2026-08-01 (Asia/Shanghai)
 >
-> Frozen AppConfig implementation SHA: `9aa7a63361f08c0b7ea99bf041a8ea2ff7811648`.
-> Independent implementation and documentation review are complete. The final
-> automated gates described below passed on that SHA; outstanding live-environment
-> rows remain explicitly pending.
+> Verified AppConfig implementation SHA: `856c3c104bf11e2b0b975757124cd63f0f8d05b2`.
+> This candidate includes the latest `main` integration at `e6266836`, the
+> deterministic desktop MCP lock-order test repair, the unified managed-workspace
+> restore fix, the Docker tracked-input refresh, and the compact mobile acceptance
+> fixture update. Independent implementation reviews are complete. The automated
+> gates described below passed on this SHA; outstanding live-environment rows
+> remain explicitly pending.
 >
 > This is the progress source of truth for the active Desktop, Server Web/Docker,
 > and Mobile Kernel migration. Historical test reports remain evidence for their
@@ -54,11 +57,11 @@
 | P1 — Kernel foundation and service boundaries | Complete | Kernel HTTP/WS contract, document/settings/resource/history/sync services, runtime ownership, and generated contract checks are in `main`. | Revalidated as part of the final combined suite. |
 | P2 — Desktop production Kernel cutover | Code complete | `db20eb2a` completed the production cutover; later commits added atomic workspace switching, startup readiness, child supervision, MCP-to-Kernel routing, writer fencing, and recovery handling. | Repeat the real macOS GUI/Desktop regression on the final combined SHA. |
 | P3 — Server Web and runtime-only Docker | Code complete; final-candidate acceptance pending | Fixed `/data`, one-user initialization, browser KernelClient, HTTP/HTTPS cookie profiles, WS/WSS, runtime-only packaging, restart persistence, and Linux container security were implemented. Earlier Linux candidates passed the core runtime/browser matrix. | Rebuild and repeat macOS/Linux runtime acceptance on the final combined SHA. Two live S3 endpoints run only when credentials can be injected without disclosure. |
-| P4 — Mobile in-process Kernel | AppConfig integration and native builds complete; full native acceptance pending | The frozen candidate integrates in-process Kernel ownership, shared runtime composition, lifecycle settlement, portable settings, mobile image import, a fixed managed workspace, and Kernel AppConfig ownership. Android aarch64 APK and iOS arm64 Simulator builds passed. A clean iPhone 16 Pro / iOS 18.6 Simulator install opened Workspace Home, and a terminate/relaunch returned to Home. Mobile does not support or package MCP. | Complete the remaining Android emulator and real-device AppConfig/Home lifecycle matrix. |
+| P4 — Mobile in-process Kernel | AppConfig integration and native builds complete; full native acceptance pending | The verified candidate integrates in-process Kernel ownership, shared runtime composition, lifecycle settlement, portable settings, mobile image import, a fixed managed workspace, and Kernel AppConfig ownership. Android aarch64 APK and iOS arm64 Simulator builds passed. A clean earlier-candidate iPhone 16 Pro / iOS 18.6 Simulator install opened Workspace Home, and a terminate/relaunch returned to Home. Mobile does not support or package MCP. | Complete the remaining final-SHA Android emulator and iOS/real-device AppConfig/Home lifecycle matrix. |
 | Resource batch durability | Complete | `e1b409da` added durable journal/receipt replay and crash recovery; `a7d3a7bc` integrated the rollout, with later image/import fixes through downstream baseline `31ee52ce`. | Revalidate as part of the final combined suite; do not reuse the earlier candidate as evidence for later AppConfig changes. |
-| Kernel AppConfig and Workspace Home | Code and automated acceptance complete | Frozen SHA `9aa7a633` moves configuration to ConfigRoot, adds the aggregate AppConfig service/API/client, unifies official client bootstrap and writes, adds deterministic restoration/Home, and removes obsolete native/local writers. Independent implementation and documentation reviews approved the result. | Complete the remaining real Desktop, Docker, Android, and iOS lifecycle rows before a release claim. |
-| Final combined verification | Passed on frozen implementation SHA | Kernel tests passed with 1014 passed / 3 ignored; Desktop Rust with 1252 passed / 6 ignored; focused AppConfig/transport/settings/sync/builder tests, formatting, OpenAPI export, generated KernelClient contract, repository tests (3476), type checking, production builds, Android aarch64 APK build, and iOS arm64 Simulator build all passed. Docker contract and its 11 mutation tests also passed. | Rerun only gates affected by later code changes; documentation-only follow-ups do not invalidate this code evidence. |
-| Final live acceptance | Partially complete; release acceptance still pending | A clean iPhone 16 Pro / iOS 18.6 Simulator install and terminate/relaunch both rendered Workspace Home. The documentation host has no Docker command, no configured Android AVD or physical mobile device, and no live S3 credentials. | Complete real macOS GUI, Docker/browser/volume, Android emulator/device, remaining iOS lifecycle, and credential-gated live sync rows using artifacts from the frozen implementation SHA. |
+| Kernel AppConfig and Workspace Home | Code and automated acceptance complete | Verified SHA `856c3c10` moves configuration to ConfigRoot, adds the aggregate AppConfig service/API/client, unifies official client bootstrap and writes, adds deterministic restoration/Home, and removes obsolete native/local writers. Independent implementation reviews approved the result. | Complete the remaining real Desktop, Docker, Android, and iOS lifecycle rows before a release claim. |
+| Final combined verification | Passed on verified implementation SHA | Kernel tests passed with 1014 passed / 3 ignored; Desktop Rust with 1252 passed / 6 ignored; formatting, OpenAPI/generated-client coverage, repository tests (3490), type checking, production builds, Android aarch64 APK build, and iOS arm64 Simulator build all passed. Docker contract and its 11 mutation tests also passed. | Rerun only gates affected by later code changes; documentation-only follow-ups do not invalidate this code evidence. |
+| Final live acceptance | Partially complete; release acceptance still pending | An earlier candidate's clean iPhone 16 Pro / iOS 18.6 Simulator install and terminate/relaunch both rendered Workspace Home. The verification host has no Docker command, no configured Android AVD or physical mobile device, and no live S3 credentials. | Complete final-SHA real macOS GUI, Docker/browser/volume, Android emulator/device, iOS lifecycle, and credential-gated live sync rows. |
 
 ## Current Release Blockers
 
@@ -95,7 +98,7 @@
 - The server sync lifecycle plan records the completed implementation steps for
   that bounded Kernel task; its checkboxes do not describe the entire migration.
 - Docker and mobile acceptance documents describe their own artifact/candidate.
-  When their candidate differs from the current review candidate or final frozen SHA,
+  When their candidate differs from the current review candidate or final verified SHA,
   treat them as historical evidence.
 - Update this page whenever a phase changes state, a release blocker is added or
   removed, or the final candidate SHA changes.
