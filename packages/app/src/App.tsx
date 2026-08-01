@@ -223,7 +223,6 @@ import {
   type NativePandocExportFormat
 } from "./lib/tauri";
 import {
-  managedDocumentAbsolutePath,
   managedDocumentRelativePath
 } from "./lib/settings/workspace-state";
 import {
@@ -915,7 +914,7 @@ function WorkspaceApp() {
     onTreeRootFromFilePath: setRootFromMarkdownFilePath,
     onSwitchNotebookDirectory: handleNativeNotebookDirectory,
     openDroppedFilesInTabs: editorPreferences.preferences.openDroppedFilesInTabs,
-    preferencesReady: !editorPreferences.loading && !compactMode.trueMobile && (
+    preferencesReady: !editorPreferences.loading && (
       !primaryWindowOwner ||
       primaryWorkspace.status === "ready" ||
       primaryWorkspace.status === "deferred"
@@ -950,7 +949,6 @@ function WorkspaceApp() {
     handleMarkdownTabChange,
     openMarkdownFile,
     openRecentMarkdownFile,
-    persistManagedDocumentPath,
     openTreeMarkdownFileInBackground,
     openTreeMarkdownFile,
     outlineItems,
@@ -1571,25 +1569,6 @@ function WorkspaceApp() {
     (file: Parameters<typeof openTreeMarkdownFile>[0]) => openTreeMarkdownFile(file, { managed: true }),
     [openTreeMarkdownFile]
   );
-  const managedDocumentRef = useRef(document);
-  const clearOpenDocumentRef = useRef(clearOpenDocument);
-  managedDocumentRef.current = document;
-  clearOpenDocumentRef.current = clearOpenDocument;
-  const clearManagedDocument = useCallback(() => {
-    const currentDocument = managedDocumentRef.current;
-    if (
-      !currentDocument.open ||
-      currentDocument.path !== null ||
-      currentDocument.name !== "Untitled.md" ||
-      currentDocument.content !== "" ||
-      currentDocument.dirty ||
-      currentDocument.revision !== 0
-    ) {
-      return false;
-    }
-
-    return clearOpenDocumentRef.current({ persistWorkspace: false });
-  }, []);
   const primaryTreeGenerationRef = useRef(0);
   const primaryWorkspaceReadyRef = useRef(primaryWorkspace.status === "ready");
   const primaryWorkspaceDeferredCleanupPendingRef = useRef(false);
@@ -1623,36 +1602,14 @@ function WorkspaceApp() {
     primaryWorkspaceDeferredCleanupPendingRef.current = false;
     const root = primaryWorkspace.root;
     const openPrimaryRoot = async () => {
-      let restoreDocumentPath: string | null = null;
-      if (compactMode.trueMobile) {
-        const workspace = await getStoredWorkspaceState();
-        restoreDocumentPath = workspace.filePath
-          ? managedDocumentAbsolutePath(root, workspace.filePath)
-          : null;
-      }
-      if (generation !== primaryTreeGenerationRef.current) return;
-
       const openedRoot = await openPrimaryFolderPathRef.current(
         root,
         pathNameFromPath(root),
         false,
         true,
-        { managed: true, restoreDocumentPath }
+        { managed: true }
       );
       if (!openedRoot || generation !== primaryTreeGenerationRef.current) return;
-      if (!compactMode.trueMobile) return;
-
-      if (openedRoot.restoreDocument) {
-        const opened = await openManagedTreeMarkdownFile(openedRoot.restoreDocument);
-        if (opened === false) {
-          clearManagedDocument();
-          await persistManagedDocumentPath(null);
-        }
-        return;
-      }
-
-      clearManagedDocument();
-      if (restoreDocumentPath) await persistManagedDocumentPath(null);
     };
 
     openPrimaryRoot().catch(() => {});
@@ -1662,28 +1619,10 @@ function WorkspaceApp() {
       }
     };
   }, [
-    clearManagedDocument,
     clearOpenDocument,
     clearProjectRoot,
-    compactMode.trueMobile,
     openPrimaryFolderPathEffectDependency,
-    openManagedTreeMarkdownFile,
-    persistManagedDocumentPath,
     primaryWindowOwner,
-    primaryWorkspace.root,
-    primaryWorkspace.status
-  ]);
-  useEffect(() => {
-    if (!compactMode.trueMobile || primaryWorkspace.status !== "ready" || !primaryWorkspace.root) return;
-
-    const relativePath = document.path
-      ? managedDocumentRelativePath(primaryWorkspace.root, document.path)
-      : null;
-    persistManagedDocumentPath(relativePath).catch(() => {});
-  }, [
-    compactMode.trueMobile,
-    document.path,
-    persistManagedDocumentPath,
     primaryWorkspace.root,
     primaryWorkspace.status
   ]);

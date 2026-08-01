@@ -1,12 +1,21 @@
 import { invoke } from "@tauri-apps/api/core";
 import { confirm } from "@tauri-apps/plugin-dialog";
 import {
+  configureAppRuntime,
   createUnavailableKernelDomainPort,
   kernelWorkspaceRoot,
+  resetAppRuntimeForTests,
+  type KernelAppConfigSnapshot,
   type KernelDomainPort,
   type KernelRevision,
   type KernelWorkspaceGeneration,
+  type KernelWorkspaceRelativePath,
 } from "@markra/app/runtime";
+import {
+  flushAppConfigStatePersistence,
+  retireAppConfigStatePersistence,
+  saveStoredWorkspaceState,
+} from "@markra/app/settings";
 
 import {
   createMobileKernelRuntimeOwner,
@@ -45,6 +54,11 @@ describe("mobile Kernel runtime boundary", () => {
   beforeEach(() => {
     mockedConfirm.mockReset();
     mockedInvoke.mockReset();
+  });
+
+  afterEach(() => {
+    retireAppConfigStatePersistence();
+    resetAppRuntimeForTests();
   });
 
   it("keeps the pre-Kernel shell unavailable and free of renderer-local state", async () => {
@@ -127,6 +141,93 @@ describe("mobile Kernel runtime boundary", () => {
     owner.release();
   });
 
+  it("round-trips canonical AppConfig paths across a committed mobile runtime-owner recreation", async () => {
+    const kernel = readyKernelPort();
+    const canonicalFilePath = `${kernelWorkspaceRoot}/notes/relaunch.md`;
+    const canonicalDraftPath = `${kernelWorkspaceRoot}/notes/drafts/idea.md`;
+    const committed: KernelAppConfigSnapshot = {
+      ...kernel.appConfig.bootstrap,
+      localState: {
+        ...kernel.appConfig.bootstrap.localState,
+        revision: "local-2" as KernelRevision,
+        uiLayout: {
+          ...kernel.appConfig.bootstrap.localState.uiLayout,
+          windowStates: {
+            main: {
+              ...kernel.appConfig.bootstrap.localState.uiLayout.windowStates.main,
+              activeDraftId: "draft-1",
+              draftTabs: [{
+                content: "# Draft",
+                id: "draft-1",
+                name: "idea.md",
+                path: "notes/drafts/idea.md" as KernelWorkspaceRelativePath,
+              }],
+              filePath: "notes/relaunch.md" as KernelWorkspaceRelativePath,
+              openFilePaths: ["notes/relaunch.md" as KernelWorkspaceRelativePath],
+            },
+          },
+        },
+      },
+    };
+    vi.mocked(kernel.appConfig.patchState).mockResolvedValueOnce(committed);
+    const owner = createMobileKernelRuntimeOwner(kernel);
+    configureAppRuntime(owner.runtime);
+
+    const persisted = saveStoredWorkspaceState({
+      activeDraftId: "draft-1",
+      draftTabs: [{
+        content: "# Draft",
+        id: "draft-1",
+        name: "idea.md",
+        path: canonicalDraftPath,
+      }],
+      filePath: canonicalFilePath,
+      openFilePaths: [canonicalFilePath],
+    }, { windowLabel: "main" });
+    await flushAppConfigStatePersistence();
+    await persisted;
+
+    expect(kernel.appConfig.patchState).toHaveBeenCalledWith({
+      operations: [{
+        patch: {
+          activeDraftId: "draft-1",
+          draftTabs: [{
+            content: "# Draft",
+            id: "draft-1",
+            name: "idea.md",
+            path: "notes/drafts/idea.md",
+          }],
+          filePath: "notes/relaunch.md",
+          openFilePaths: ["notes/relaunch.md"],
+          openWindows: [],
+        },
+        type: "patch-ui-layout",
+        windowLabel: "main",
+      }],
+      workspaceGeneration: "generation-1",
+    });
+
+    owner.release();
+    retireAppConfigStatePersistence();
+    resetAppRuntimeForTests();
+    const relaunchedOwner = createMobileKernelRuntimeOwner(readyKernelPort(committed));
+
+    await expect(relaunchedOwner.runtime.appConfig.readWorkspaceState("main"))
+      .resolves.toMatchObject({
+        activeDraftId: "draft-1",
+        draftTabs: [{
+          content: "# Draft",
+          id: "draft-1",
+          name: "idea.md",
+          path: canonicalDraftPath,
+        }],
+        filePath: canonicalFilePath,
+        openFilePaths: [canonicalFilePath],
+      });
+
+    relaunchedOwner.release();
+  });
+
   it("enables image import only for the ready Kernel runtime", () => {
     const kernel = readyKernelPort();
     const owner = createMobileKernelRuntimeOwner(kernel);
@@ -169,9 +270,9 @@ describe("mobile Kernel runtime boundary", () => {
   });
 });
 
-function readyKernelPort(): KernelDomainPort {
+function readyKernelPort(bootstrapOverride?: KernelAppConfigSnapshot): KernelDomainPort {
   const unavailable = createUnavailableKernelDomainPort();
-  const bootstrap = {
+  const bootstrap: KernelAppConfigSnapshot = bootstrapOverride ?? {
     appConfigVersion: 1 as const,
     localState: {
       fileTreeSort: { direction: "ascending" as const, key: "name" as const },
@@ -185,12 +286,12 @@ function readyKernelPort(): KernelDomainPort {
           main: {
             activeDraftId: null,
             draftTabs: [],
-            filePath: "notes/main.md" as never,
+            filePath: "notes/main.md" as KernelWorkspaceRelativePath,
             fileTreeAssetsVisible: true,
             fileTreeOpen: false,
             folderName: "notes",
-            folderPath: "notes" as never,
-            openFilePaths: ["notes/main.md" as never],
+            folderPath: "notes" as KernelWorkspaceRelativePath,
+            openFilePaths: ["notes/main.md" as KernelWorkspaceRelativePath],
             sideBySideGroup: null,
           },
         },

@@ -64,9 +64,10 @@ import {
 } from "./markdown-document/document-model";
 import { createEditorSyncState, type EditorSyncState } from "./markdown-document/editor-sync";
 import {
-  managedDocumentAbsolutePath,
   managedDocumentRelativePath
 } from "../lib/settings/workspace-state";
+import { kernelWorkspaceRelativePathFromPath } from "../runtime/kernel-app/app-config";
+import { kernelWorkspaceRoot } from "../runtime/kernel-app/files";
 import {
   parseEditorWindowContext,
   type EditorWindowContext
@@ -222,45 +223,8 @@ function persistDesktopWorkspaceState(patch: Parameters<typeof saveStoredWorkspa
   return saveStoredWorkspaceState(patch).catch(() => {});
 }
 
-function normalizedManagedStoredDocumentPath(path: string) {
-  const absolutePath = managedDocumentAbsolutePath("/", path);
-  return absolutePath ? managedDocumentRelativePath("/", absolutePath) : null;
-}
-
 function managedWorkspaceStatePatch(patch: Partial<StoredWorkspaceState>): Partial<StoredWorkspaceState> {
   const nextPatch = { ...patch };
-
-  if (typeof patch.filePath === "string") {
-    const relativePath = normalizedManagedStoredDocumentPath(patch.filePath);
-    if (relativePath) nextPatch.filePath = relativePath;
-    else delete nextPatch.filePath;
-  }
-
-  if (patch.openFilePaths !== undefined) {
-    const relativePaths = patch.openFilePaths.map(normalizedManagedStoredDocumentPath);
-    if (relativePaths.every((path): path is string => path !== null)) {
-      nextPatch.openFilePaths = relativePaths;
-    } else {
-      delete nextPatch.openFilePaths;
-    }
-  }
-
-  if (patch.draftTabs !== undefined) {
-    const draftIdMap = new Map<string, string>();
-    nextPatch.draftTabs = patch.draftTabs.map((draft, index) => {
-      if (!draft.path) return draft;
-
-      const relativePath = normalizedManagedStoredDocumentPath(draft.path);
-      if (relativePath) return { ...draft, path: relativePath };
-
-      const id = `managed-draft:${index}`;
-      draftIdMap.set(draft.id, id);
-      return { ...draft, id, path: null };
-    });
-    if (patch.activeDraftId && draftIdMap.has(patch.activeDraftId)) {
-      nextPatch.activeDraftId = draftIdMap.get(patch.activeDraftId) ?? null;
-    }
-  }
 
   nextPatch.folderName = null;
   nextPatch.folderPath = null;
@@ -268,6 +232,19 @@ function managedWorkspaceStatePatch(patch: Partial<StoredWorkspaceState>): Parti
   nextPatch.sideBySideGroup = null;
 
   return nextPatch;
+}
+
+function restoreDocumentPathIsWithinRoot(rootPath: string, filePath: string) {
+  if (rootPath !== kernelWorkspaceRoot) {
+    return managedDocumentRelativePath(rootPath, filePath) !== null;
+  }
+
+  try {
+    const relativePath = kernelWorkspaceRelativePathFromPath(filePath);
+    return relativePath.length > 0 && isMarkdownPath(relativePath);
+  } catch {
+    return false;
+  }
 }
 
 function resolveEditorReady(editorReady: boolean | (() => boolean)) {
@@ -1108,7 +1085,16 @@ export function useMarkdownDocument({
         }
 
         if (updateTreeRoot) onTreeRootFromFilePath(file.path);
-        if (!managed && !managedWorkspace) {
+        if (managedWorkspace) {
+          const nextDraftTabs = documentTabsEnabled
+            ? tabsRef.current
+            : [createDocumentTab(nextDocument, activeTabIdRef.current ?? fileTabId(file.path))];
+          persistWorkspaceState({
+            ...draftWorkspacePatchFromTabs(nextDraftTabs, activeTabIdRef.current),
+            filePath: file.path,
+            openFilePaths: nextOpenFilePaths
+          });
+        } else if (!managed) {
           rememberRecentMarkdownFile({ name: file.name, path: file.path });
           registerWindowRestoreState(file.path, nextOpenFilePaths);
           const nextDraftTabs = documentTabsEnabled
@@ -2312,7 +2298,6 @@ export function useMarkdownDocument({
   }, [handleNativeOpenedMarkdownPaths, resolvedNativeOpenPolicy, windowContext.kind]);
 
   useEffect(() => {
-    if (managedWorkspace) return;
     if (windowContext.kind !== "primary") return;
     if (!workspaceReady) return;
     if (!nativeOpenedPathsReady) return;
@@ -2323,11 +2308,12 @@ export function useMarkdownDocument({
     startupWorkspaceRestoreKeyRef.current = restoreKey;
 
     let active = true;
+    let settled = false;
     setWorkspaceSurface("restoring");
 
     if (restoreWorkspaceRoot) {
       const retainedTabs = tabsRef.current.filter((tab) =>
-        tab.path === null || managedDocumentRelativePath(restoreWorkspaceRoot, tab.path) !== null
+        tab.path === null || restoreDocumentPathIsWithinRoot(restoreWorkspaceRoot, tab.path)
       );
       if (retainedTabs.length !== tabsRef.current.length) {
         if (retainedTabs.length === 0) {
@@ -2371,7 +2357,7 @@ export function useMarkdownDocument({
             );
           if (restoreWorkspaceRoot) {
             restoreFilePaths = restoreFilePaths.filter(
-              (path) => managedDocumentRelativePath(restoreWorkspaceRoot, path) !== null
+              (path) => restoreDocumentPathIsWithinRoot(restoreWorkspaceRoot, path)
             );
           }
           const requestedActiveRestoreFilePath = primaryRestoreWindow
@@ -2379,7 +2365,7 @@ export function useMarkdownDocument({
             : workspace.filePath;
           const activeRestoreFilePath = requestedActiveRestoreFilePath && (
             !restoreWorkspaceRoot ||
-            managedDocumentRelativePath(restoreWorkspaceRoot, requestedActiveRestoreFilePath) !== null
+            restoreDocumentPathIsWithinRoot(restoreWorkspaceRoot, requestedActiveRestoreFilePath)
           )
             ? requestedActiveRestoreFilePath
             : null;
@@ -2388,12 +2374,12 @@ export function useMarkdownDocument({
               .map(activeFilePathFromWindowRestore)
           ).filter((path) =>
             !restoreFilePaths.includes(path) && (
-              !restoreWorkspaceRoot || managedDocumentRelativePath(restoreWorkspaceRoot, path) !== null
+              !restoreWorkspaceRoot || restoreDocumentPathIsWithinRoot(restoreWorkspaceRoot, path)
             )
           );
           const restoredDraftTabs = restoreWorkspaceRoot
             ? (workspace.draftTabs ?? []).filter((draft) =>
-              draft.path === null || managedDocumentRelativePath(restoreWorkspaceRoot, draft.path) !== null
+              draft.path === null || restoreDocumentPathIsWithinRoot(restoreWorkspaceRoot, draft.path)
             )
             : workspace.draftTabs ?? [];
           const restoredActiveDraftId = workspace.activeDraftId && restoredDraftTabs.some(
@@ -2445,7 +2431,7 @@ export function useMarkdownDocument({
             setWorkspaceSurface("editor");
           }
 
-          for (const path of additionalRestoreWindowFilePaths) {
+          for (const path of managedWorkspace ? [] : additionalRestoreWindowFilePaths) {
             if (!active) return;
             try {
               await openNativeMarkdownFileInNewWindow(path);
@@ -2503,10 +2489,20 @@ export function useMarkdownDocument({
         if (!active) return;
         clearOpenDocument({ persistWorkspace: false });
       }
-    })().catch(() => {});
+    })().then(
+      () => {
+        if (active) settled = true;
+      },
+      () => {
+        if (active) settled = true;
+      }
+    );
 
     return () => {
       active = false;
+      if (!settled && startupWorkspaceRestoreKeyRef.current === restoreKey) {
+        startupWorkspaceRestoreKeyRef.current = null;
+      }
     };
   }, [
     clearOpenDocument,
@@ -2524,13 +2520,6 @@ export function useMarkdownDocument({
     workspaceReady,
     windowContext.kind
   ]);
-
-  const persistManagedDocumentPath = useCallback((relativePath: string | null) => {
-    return persistWorkspaceState({
-      filePath: relativePath,
-      openFilePaths: relativePath ? [relativePath] : []
-    });
-  }, [persistWorkspaceState]);
 
   useEffect(() => {
     const watchedPaths = watchedMarkdownFilePathsKey.split("\n").filter((path) => path.trim().length > 0);
@@ -2686,7 +2675,6 @@ export function useMarkdownDocument({
     handleSaveClick,
     rememberMarkdownTabVisualBaseline,
     openMarkdownFile,
-    persistManagedDocumentPath,
     openRecentMarkdownFile,
     openTreeMarkdownFileInBackground,
     openTreeMarkdownFile,

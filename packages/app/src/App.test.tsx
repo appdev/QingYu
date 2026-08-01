@@ -2341,11 +2341,27 @@ describe("QingYu workspace", () => {
         resolveFormFactor: () => formFactor
       },
       workspace: formFactor === "mobile"
-        ? { resolveManagedRoot: async () => "/mobile/workspace" }
+        ? {
+            ...runtime.workspace,
+            rootPolicy: {
+              canChooseLocalRoot: false,
+              kind: "fixed",
+              resolveRoot: async () => kernelWorkspaceRoot
+            }
+          }
         : runtime.workspace
     });
+    if (formFactor === "mobile") {
+      mockedGetStoredWorkspaceState.mockImplementation(async () => ({
+        filePath: null,
+        fileTreeOpen: false,
+        folderName: null,
+        folderPath: null,
+        openFilePaths: []
+      }));
+    }
 
-    const { container } = renderApp();
+    const { container } = formFactor === "mobile" ? renderFreshApp() : renderApp();
 
     expect(await screen.findByTestId("compact-app-shell")).toBeInTheDocument();
     if (formFactor === "mobile") {
@@ -2402,19 +2418,24 @@ describe("QingYu workspace", () => {
         listFontFamilies: listSystemFonts
       },
       workspace: {
-        resolveManagedRoot: async () => "/mobile/workspace"
+        ...runtime.workspace,
+        rootPolicy: {
+          canChooseLocalRoot: false,
+          kind: "fixed",
+          resolveRoot: async () => kernelWorkspaceRoot
+        }
       }
     });
-    mockedGetStoredWorkspaceState.mockResolvedValue({
+    mockedGetStoredWorkspaceState.mockImplementation(async () => ({
       filePath: null,
       fileTreeOpen: true,
       folderName: null,
       folderPath: null,
       openFilePaths: []
-    });
+    }));
     mockedListNativeMarkdownFilesForPath.mockResolvedValue([]);
 
-    const app = renderApp();
+    const app = renderFreshApp();
 
     expect(await screen.findByTestId("compact-app-shell")).toBeInTheDocument();
     expect(document.querySelector(".settings-window")).not.toBeInTheDocument();
@@ -2438,7 +2459,7 @@ describe("QingYu workspace", () => {
     expect(files).toHaveClass("absolute", "inset-0", "h-full", "w-full");
     app.unmount();
     window.history.replaceState({}, "", "/");
-    renderApp();
+    renderFreshApp();
     expect(await screen.findByTestId("compact-app-shell")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "More" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "Settings" }));
@@ -2492,7 +2513,7 @@ describe("QingYu workspace", () => {
 
   it("refreshes the managed tree after sync and foreground without replacing the active document", async () => {
     const runtime = createDefaultAppRuntime();
-    const managedRoot = "/mobile/workspace";
+    const managedRoot = kernelWorkspaceRoot;
     const activePath = `${managedRoot}/notes/active.md`;
     const addedPath = `${managedRoot}/downloaded.md`;
     const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
@@ -2508,18 +2529,23 @@ describe("QingYu workspace", () => {
         sync: mockedSyncApplication
       },
       workspace: {
+        ...runtime.workspace,
         isDocumentInRoot: mockedIsDocumentInRoot,
-        resolveManagedRoot: async () => managedRoot
+        rootPolicy: {
+          canChooseLocalRoot: false,
+          kind: "fixed",
+          resolveRoot: async () => managedRoot
+        }
       }
     });
     mockedSyncApplication.mockImplementation(successfulApplicationSync);
-    mockedGetStoredWorkspaceState.mockResolvedValue({
-      filePath: "notes/active.md",
+    mockedGetStoredWorkspaceState.mockImplementation(async () => ({
+      filePath: activePath,
       fileTreeOpen: true,
       folderName: null,
       folderPath: null,
-      openFilePaths: ["notes/active.md"]
-    });
+      openFilePaths: [activePath]
+    }));
     mockedListNativeMarkdownFilesForPath
       .mockResolvedValueOnce([{ name: "active.md", path: activePath, relativePath: "notes/active.md" }])
       .mockResolvedValue([{ name: "downloaded.md", path: addedPath, relativePath: "downloaded.md" }]);
@@ -2529,7 +2555,7 @@ describe("QingYu workspace", () => {
       path: activePath
     });
 
-    renderApp();
+    renderFreshApp();
 
     expect(await screen.findByRole("heading", { name: "active.md" })).toBeInTheDocument();
     expect(await screen.findByText("Active mobile note")).toBeInTheDocument();
@@ -2561,7 +2587,7 @@ describe("QingYu workspace", () => {
 
   it("keeps a synced attachment visible when true mobile cannot open local attachments", async () => {
     const runtime = createDefaultAppRuntime();
-    const managedRoot = "/mobile/workspace";
+    const managedRoot = kernelWorkspaceRoot;
     const notePath = `${managedRoot}/note.md`;
     mockCompactViewport(false);
     configureAppRuntime({
@@ -2572,15 +2598,22 @@ describe("QingYu workspace", () => {
         ...runtime.syncConfig,
         load: async () => ({ revision: null, status: "absent" })
       },
-      workspace: { resolveManagedRoot: async () => managedRoot }
+      workspace: {
+        ...runtime.workspace,
+        rootPolicy: {
+          canChooseLocalRoot: false,
+          kind: "fixed",
+          resolveRoot: async () => managedRoot
+        }
+      }
     });
-    mockedGetStoredWorkspaceState.mockResolvedValue({
-      filePath: "note.md",
+    mockedGetStoredWorkspaceState.mockImplementation(async () => ({
+      filePath: notePath,
       fileTreeOpen: true,
       folderName: null,
       folderPath: null,
-      openFilePaths: ["note.md"]
-    });
+      openFilePaths: [notePath]
+    }));
     mockedListNativeMarkdownFilesForPath.mockResolvedValue([
       { name: "note.md", path: notePath, relativePath: "note.md" },
       {
@@ -2596,7 +2629,7 @@ describe("QingYu workspace", () => {
       path: notePath
     });
 
-    renderApp();
+    renderFreshApp();
     expect(await screen.findByText("Current editor stays open.")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Files" }));
     fireEvent.click(await screen.findByText("assets"));
@@ -2613,7 +2646,7 @@ describe("QingYu workspace", () => {
 
   it("blocks a Markdown attachment link once without leaving the current mobile editor", async () => {
     const runtime = createDefaultAppRuntime();
-    const managedRoot = "/mobile/workspace";
+    const managedRoot = kernelWorkspaceRoot;
     const notePath = `${managedRoot}/note.md`;
     mockCompactViewport(false);
     configureAppRuntime({
@@ -2624,15 +2657,22 @@ describe("QingYu workspace", () => {
         ...runtime.syncConfig,
         load: async () => ({ revision: null, status: "absent" })
       },
-      workspace: { resolveManagedRoot: async () => managedRoot }
+      workspace: {
+        ...runtime.workspace,
+        rootPolicy: {
+          canChooseLocalRoot: false,
+          kind: "fixed",
+          resolveRoot: async () => managedRoot
+        }
+      }
     });
-    mockedGetStoredWorkspaceState.mockResolvedValue({
-      filePath: "note.md",
+    mockedGetStoredWorkspaceState.mockImplementation(async () => ({
+      filePath: notePath,
       fileTreeOpen: true,
       folderName: null,
       folderPath: null,
-      openFilePaths: ["note.md"]
-    });
+      openFilePaths: [notePath]
+    }));
     mockedListNativeMarkdownFilesForPath.mockResolvedValue([
       { name: "note.md", path: notePath, relativePath: "note.md" },
       {
@@ -2648,7 +2688,7 @@ describe("QingYu workspace", () => {
       path: notePath
     });
 
-    const { container } = renderApp();
+    const { container } = renderFreshApp();
     expect(await screen.findByText("Editor remains here.")).toBeInTheDocument();
     const link = await waitFor(() => {
       const attachmentLink = container.querySelector<HTMLAnchorElement>('a[href="assets/Reference.pdf"]');
@@ -2691,7 +2731,7 @@ describe("QingYu workspace", () => {
 
   it("persists true-mobile images in the fixed managed root before inserting Markdown", async () => {
     const runtime = createDefaultAppRuntime();
-    const managedRoot = "/mobile/workspace";
+    const managedRoot = kernelWorkspaceRoot;
     const notePath = `${managedRoot}/note.md`;
     const localImage = new File([
       new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
@@ -2723,16 +2763,21 @@ describe("QingYu workspace", () => {
         load: () => pendingConfig
       },
       workspace: {
-        resolveManagedRoot: async () => managedRoot
+        ...runtime.workspace,
+        rootPolicy: {
+          canChooseLocalRoot: false,
+          kind: "fixed",
+          resolveRoot: async () => managedRoot
+        }
       }
     });
-    mockedGetStoredWorkspaceState.mockResolvedValue({
-      filePath: "note.md",
+    mockedGetStoredWorkspaceState.mockImplementation(async () => ({
+      filePath: notePath,
       fileTreeOpen: true,
       folderName: null,
       folderPath: null,
-      openFilePaths: ["note.md"]
-    });
+      openFilePaths: [notePath]
+    }));
     mockedListNativeMarkdownFilesForPath.mockResolvedValue([
       { name: "note.md", path: notePath, relativePath: "note.md" }
     ]);
@@ -2743,7 +2788,7 @@ describe("QingYu workspace", () => {
     });
     mockedOpenNativeLocalImages.mockResolvedValue([localImage]);
 
-    const { container } = renderApp();
+    const { container } = renderFreshApp();
 
     expect(await screen.findByText("Mobile image import")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Image" }));
@@ -2766,7 +2811,7 @@ describe("QingYu workspace", () => {
 
   it("keeps true-mobile Markdown unchanged when a later image save fails", async () => {
     const runtime = createDefaultAppRuntime();
-    const managedRoot = "/mobile/workspace";
+    const managedRoot = kernelWorkspaceRoot;
     const notePath = `${managedRoot}/note.md`;
     const firstImage = new File([
       new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
@@ -2785,15 +2830,22 @@ describe("QingYu workspace", () => {
         ...runtime.syncConfig,
         load: async () => ({ revision: null, status: "absent" })
       },
-      workspace: { resolveManagedRoot: async () => managedRoot }
+      workspace: {
+        ...runtime.workspace,
+        rootPolicy: {
+          canChooseLocalRoot: false,
+          kind: "fixed",
+          resolveRoot: async () => managedRoot
+        }
+      }
     });
-    mockedGetStoredWorkspaceState.mockResolvedValue({
-      filePath: "note.md",
+    mockedGetStoredWorkspaceState.mockImplementation(async () => ({
+      filePath: notePath,
       fileTreeOpen: true,
       folderName: null,
       folderPath: null,
-      openFilePaths: ["note.md"]
-    });
+      openFilePaths: [notePath]
+    }));
     mockedListNativeMarkdownFilesForPath.mockResolvedValue([
       { name: "note.md", path: notePath, relativePath: "note.md" }
     ]);
@@ -2804,7 +2856,7 @@ describe("QingYu workspace", () => {
     });
     mockedOpenNativeLocalImages.mockResolvedValue([firstImage, secondImage]);
 
-    const { container } = renderApp();
+    const { container } = renderFreshApp();
     expect(await screen.findByText("Mobile partial image failure")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Image" }));
@@ -2819,7 +2871,7 @@ describe("QingYu workspace", () => {
     "leaves true-mobile Markdown unchanged after image %s",
     async (failure) => {
       const runtime = createDefaultAppRuntime();
-      const managedRoot = "/mobile/workspace";
+      const managedRoot = kernelWorkspaceRoot;
       const notePath = `${managedRoot}/note.md`;
       const localImage = new File([
         new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
@@ -2837,15 +2889,22 @@ describe("QingYu workspace", () => {
           ...runtime.syncConfig,
           load: async () => ({ revision: null, status: "absent" })
         },
-        workspace: { resolveManagedRoot: async () => managedRoot }
+        workspace: {
+          ...runtime.workspace,
+          rootPolicy: {
+            canChooseLocalRoot: false,
+            kind: "fixed",
+            resolveRoot: async () => managedRoot
+          }
+        }
       });
-      mockedGetStoredWorkspaceState.mockResolvedValue({
-        filePath: "note.md",
+      mockedGetStoredWorkspaceState.mockImplementation(async () => ({
+        filePath: notePath,
         fileTreeOpen: true,
         folderName: null,
         folderPath: null,
-        openFilePaths: ["note.md"]
-      });
+        openFilePaths: [notePath]
+      }));
       mockedListNativeMarkdownFilesForPath.mockResolvedValue([
         { name: "note.md", path: notePath, relativePath: "note.md" }
       ]);
@@ -2862,7 +2921,7 @@ describe("QingYu workspace", () => {
         mockedOpenNativeLocalImages.mockResolvedValue([localImage]);
       }
 
-      const { container } = renderApp();
+      const { container } = renderFreshApp();
       expect(await screen.findByText("Mobile image failure")).toBeInTheDocument();
 
       fireEvent.click(screen.getByRole("button", { name: "Image" }));
@@ -3006,9 +3065,9 @@ describe("QingYu workspace", () => {
     expect(screen.queryByText(/deleted files/i)).not.toBeInTheDocument();
   });
 
-  it("boots true mobile from the fixed managed root before restoring its relative document", async () => {
+  it("boots true mobile from the fixed Kernel root and round-trips its canonical document path", async () => {
     const runtime = createDefaultAppRuntime();
-    const resolveManagedRoot = vi.fn(async () => "/mobile/workspace");
+    const resolveRoot = vi.fn(async () => kernelWorkspaceRoot);
     mockCompactViewport(false);
     configureAppRuntime({
       ...runtime,
@@ -3017,18 +3076,26 @@ describe("QingYu workspace", () => {
         resolveFormFactor: () => "mobile"
       },
       workspace: {
-        resolveManagedRoot
+        ...runtime.workspace,
+        rootPolicy: {
+          canChooseLocalRoot: false,
+          kind: "fixed",
+          resolveRoot
+        }
       }
     });
-    mockedGetStoredWorkspaceState.mockResolvedValue({
-      filePath: "notes/last.md",
+    const restoredPath = `${kernelWorkspaceRoot}/notes/last.md`;
+    mockedGetStoredEditorPreferences.mockResolvedValue(createStoredEditorPreferences({
+      restoreWorkspaceOnStartup: true
+    }));
+    mockedGetStoredWorkspaceState.mockImplementation(async () => ({
+      filePath: restoredPath,
       fileTreeOpen: true,
-      folderName: "old-desktop-root",
-      folderPath: "/desktop/old-root",
-      openFilePaths: ["notes/last.md"]
-    });
-    const restoredPath = "/mobile/workspace/notes/last.md";
-    mockedListNativeMarkdownFilesForPath.mockImplementation(async (path) => path === "/mobile/workspace"
+      folderName: null,
+      folderPath: null,
+      openFilePaths: [restoredPath]
+    }));
+    mockedListNativeMarkdownFilesForPath.mockImplementation(async (path) => path === kernelWorkspaceRoot
       ? [{ name: "last.md", path: restoredPath, relativePath: "notes/last.md" }]
       : []);
     mockedReadNativeMarkdownFile.mockResolvedValue({
@@ -3037,27 +3104,70 @@ describe("QingYu workspace", () => {
       path: restoredPath
     });
 
-    renderApp();
+    renderFreshApp();
 
+    await waitFor(() => expect(mockedGetStoredWorkspaceState).toHaveBeenCalled());
     expect(await screen.findByText("Managed restore")).toBeInTheDocument();
-    expect(resolveManagedRoot).toHaveBeenCalledTimes(1);
+    expect(resolveRoot).toHaveBeenCalledTimes(1);
     expect(mockedListNativeMarkdownFilesForPath).toHaveBeenCalledWith(
-      "/mobile/workspace",
-      defaultFileTreeListOptions
-    );
-    expect(mockedListNativeMarkdownFilesForPath).not.toHaveBeenCalledWith(
-      "/desktop/old-root",
+      kernelWorkspaceRoot,
       defaultFileTreeListOptions
     );
     expect(mockedReadNativeMarkdownFile).toHaveBeenCalledWith(restoredPath);
-    expect(mockedSaveStoredWorkspaceState.mock.calls).not.toEqual(expect.arrayContaining([
-      [expect.objectContaining({ filePath: restoredPath })]
-    ]));
-    expect(mockedSaveStoredWorkspaceState.mock.calls.every(([patch]) =>
-      !patch.openFilePaths?.includes(restoredPath)
-    )).toBe(true);
     expect(mockedSaveStoredWorkspaceState).toHaveBeenCalledWith(expect.objectContaining({
-      filePath: "notes/last.md"
+      filePath: restoredPath,
+      openFilePaths: [restoredPath]
+    }));
+  });
+
+  it("restores a true-mobile dirty draft when its canonical Kernel source is missing", async () => {
+    const runtime = createDefaultAppRuntime();
+    mockCompactViewport(false);
+    configureAppRuntime({
+      ...runtime,
+      platform: {
+        ...runtime.platform,
+        resolveFormFactor: () => "mobile"
+      },
+      workspace: {
+        ...runtime.workspace,
+        rootPolicy: {
+          canChooseLocalRoot: false,
+          kind: "fixed",
+          resolveRoot: async () => kernelWorkspaceRoot
+        }
+      }
+    });
+    const missingPath = `${kernelWorkspaceRoot}/notes/missing.md`;
+    mockedGetStoredEditorPreferences.mockResolvedValue(createStoredEditorPreferences({
+      restoreWorkspaceOnStartup: true
+    }));
+    mockedGetStoredWorkspaceState.mockImplementation(async () => ({
+      activeDraftId: `file:${missingPath}`,
+      draftTabs: [{
+        content: "# Recovered mobile draft\n\nUnsaved work.",
+        id: `file:${missingPath}`,
+        name: "missing.md",
+        path: missingPath
+      }],
+      filePath: missingPath,
+      fileTreeOpen: true,
+      folderName: null,
+      folderPath: null,
+      openFilePaths: [missingPath]
+    }));
+    mockedListNativeMarkdownFilesForPath.mockResolvedValue([]);
+    mockedReadNativeMarkdownFile.mockRejectedValue(new Error("Markdown file no longer exists"));
+
+    renderFreshApp();
+
+    await waitFor(() => expect(mockedGetStoredWorkspaceState).toHaveBeenCalled());
+    expect(await screen.findByText("Recovered mobile draft")).toBeInTheDocument();
+    expect(mockedReadNativeMarkdownFile).toHaveBeenCalledWith(missingPath);
+    expect(mockedSaveStoredWorkspaceState).toHaveBeenCalledWith(expect.objectContaining({
+      activeDraftId: `file:${missingPath}`,
+      filePath: missingPath,
+      openFilePaths: [missingPath]
     }));
   });
 
