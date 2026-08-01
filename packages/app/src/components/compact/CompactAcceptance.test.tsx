@@ -14,15 +14,16 @@ import {
 import {
   configureAppRuntime,
   createDefaultAppRuntime,
+  kernelWorkspaceRoot,
   resetAppRuntimeForTests
 } from "../../runtime";
 
 installAppTestHarness();
 
-const managedRoot = "/mobile/workspace";
+const managedRoot = kernelWorkspaceRoot;
 
 function configureTrueMobileRuntime(
-  resolveManagedRoot: () => Promise<string | null> = async () => managedRoot
+  resolveRoot: () => Promise<string> = async () => managedRoot
 ) {
   const runtime = createDefaultAppRuntime();
   configureAppRuntime({
@@ -32,7 +33,12 @@ function configureTrueMobileRuntime(
       resolveFormFactor: () => "mobile"
     },
     workspace: {
-      resolveManagedRoot
+      ...runtime.workspace,
+      rootPolicy: {
+        canChooseLocalRoot: false,
+        kind: "fixed",
+        resolveRoot
+      }
     }
   });
 }
@@ -44,13 +50,13 @@ describe("Compact acceptance", () => {
 
   it("starts an empty true-mobile workspace on Workspace Home", async () => {
     configureTrueMobileRuntime();
-    mockedGetStoredWorkspaceState.mockResolvedValue({
+    mockedGetStoredWorkspaceState.mockImplementation(async () => ({
       filePath: null,
       fileTreeOpen: false,
       folderName: null,
       folderPath: null,
       openFilePaths: []
-    });
+    }));
     mockedListNativeMarkdownFilesForPath.mockResolvedValue([]);
 
     renderApp();
@@ -69,13 +75,13 @@ describe("Compact acceptance", () => {
       finishRoot = resolve;
     });
     configureTrueMobileRuntime(() => pendingRoot);
-    mockedGetStoredWorkspaceState.mockResolvedValue({
+    mockedGetStoredWorkspaceState.mockImplementation(async () => ({
       filePath: null,
       fileTreeOpen: false,
       folderName: null,
       folderPath: null,
       openFilePaths: []
-    });
+    }));
     mockedListNativeMarkdownFilesForPath.mockResolvedValue([]);
 
     renderApp();
@@ -94,17 +100,17 @@ describe("Compact acceptance", () => {
   });
 
   it("shows the managed-root reason and retries bootstrap through the blocking page", async () => {
-    const resolveManagedRoot = vi.fn()
+    const resolveRoot = vi.fn()
       .mockRejectedValueOnce(new Error("App data directory is unavailable."))
       .mockResolvedValueOnce(managedRoot);
-    configureTrueMobileRuntime(resolveManagedRoot);
-    mockedGetStoredWorkspaceState.mockResolvedValue({
+    configureTrueMobileRuntime(resolveRoot);
+    mockedGetStoredWorkspaceState.mockImplementation(async () => ({
       filePath: null,
       fileTreeOpen: false,
       folderName: null,
       folderPath: null,
       openFilePaths: []
-    });
+    }));
     mockedListNativeMarkdownFilesForPath.mockResolvedValue([]);
 
     renderApp();
@@ -120,21 +126,22 @@ describe("Compact acceptance", () => {
     fireEvent.click(screen.getByRole("button", { name: "Try again" }));
 
     expect(await screen.findByRole("button", { name: "New Document" })).toBeInTheDocument();
-    expect(resolveManagedRoot).toHaveBeenCalledTimes(2);
+    expect(resolveRoot).toHaveBeenCalledTimes(2);
   });
 
   it("returns to the welcome state and forgets the stored path when restore reading fails", async () => {
     configureTrueMobileRuntime();
-    mockedGetStoredWorkspaceState.mockResolvedValue({
-      filePath: "notes/missing.md",
+    const missingPath = `${managedRoot}/notes/missing.md`;
+    mockedGetStoredWorkspaceState.mockImplementation(async () => ({
+      filePath: missingPath,
       fileTreeOpen: false,
       folderName: null,
       folderPath: null,
-      openFilePaths: ["notes/missing.md"]
-    });
+      openFilePaths: [missingPath]
+    }));
     const missingFile = {
       name: "missing.md",
-      path: `${managedRoot}/notes/missing.md`,
+      path: missingPath,
       relativePath: "notes/missing.md"
     };
     mockedListNativeMarkdownFilesForPath.mockResolvedValue([missingFile]);
@@ -151,13 +158,13 @@ describe("Compact acceptance", () => {
 
   it("creates the first true-mobile document through the current name-first file flow", async () => {
     configureTrueMobileRuntime();
-    mockedGetStoredWorkspaceState.mockResolvedValue({
+    mockedGetStoredWorkspaceState.mockImplementation(async () => ({
       filePath: null,
       fileTreeOpen: false,
       folderName: null,
       folderPath: null,
       openFilePaths: []
-    });
+    }));
     const createdFile = {
       name: "Mobile draft.md",
       path: `${managedRoot}/Mobile draft.md`,
@@ -190,13 +197,13 @@ describe("Compact acceptance", () => {
   it("localizes the true-mobile name-first prompt", async () => {
     configureTrueMobileRuntime();
     mockedGetStoredLanguage.mockResolvedValue("zh-CN");
-    mockedGetStoredWorkspaceState.mockResolvedValue({
+    mockedGetStoredWorkspaceState.mockImplementation(async () => ({
       filePath: null,
       fileTreeOpen: false,
       folderName: null,
       folderPath: null,
       openFilePaths: []
-    });
+    }));
     const createdFile = {
       name: "移动笔记.md",
       path: `${managedRoot}/移动笔记.md`,
@@ -249,13 +256,13 @@ describe("Compact acceptance", () => {
       path: `${managedRoot}/archive/Created note.md`,
       relativePath: "archive/Created note.md"
     };
-    mockedGetStoredWorkspaceState.mockResolvedValue({
-      filePath: currentFile.relativePath,
+    mockedGetStoredWorkspaceState.mockImplementation(async () => ({
+      filePath: currentFile.path,
       fileTreeOpen: false,
       folderName: null,
       folderPath: null,
-      openFilePaths: [currentFile.relativePath]
-    });
+      openFilePaths: [currentFile.path]
+    }));
     mockedListNativeMarkdownFilesForPath
       .mockResolvedValueOnce([currentFile, archiveFolder])
       .mockResolvedValue([currentFile, archiveFolder, createdFile]);
@@ -330,13 +337,13 @@ describe("Compact acceptance", () => {
       path: `${managedRoot}/Current.md`,
       relativePath: "Current.md"
     };
-    mockedGetStoredWorkspaceState.mockResolvedValue({
-      filePath: currentFile.relativePath,
+    mockedGetStoredWorkspaceState.mockImplementation(async () => ({
+      filePath: currentFile.path,
       fileTreeOpen: false,
       folderName: null,
       folderPath: null,
-      openFilePaths: [currentFile.relativePath]
-    });
+      openFilePaths: [currentFile.path]
+    }));
     mockedListNativeMarkdownFilesForPath.mockResolvedValue([currentFile]);
     mockedReadNativeMarkdownFile.mockResolvedValue({
       content: "# Current",
