@@ -804,7 +804,10 @@ async fn password_rule_is_enforced_across_authentication_routes() {
         .await
         .unwrap();
     assert_eq!(rejected_initialization.status(), StatusCode::BAD_REQUEST);
-    assert!(rejected_initialization.headers().get(header::SET_COOKIE).is_none());
+    assert!(rejected_initialization
+        .headers()
+        .get(header::SET_COOKIE)
+        .is_none());
     assert_eq!(
         response_json(rejected_initialization).await["code"],
         "invalid_request"
@@ -815,7 +818,10 @@ async fn password_rule_is_enforced_across_authentication_routes() {
     let rejected_login = api.login("中文").await;
     assert_eq!(rejected_login.status(), StatusCode::UNAUTHORIZED);
     assert!(rejected_login.headers().get(header::SET_COOKIE).is_none());
-    assert_eq!(response_json(rejected_login).await["code"], "invalid_credentials");
+    assert_eq!(
+        response_json(rejected_login).await["code"],
+        "invalid_credentials"
+    );
 
     let mut rejected_change = api.json_request(
         "PATCH",
