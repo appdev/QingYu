@@ -2213,9 +2213,12 @@ struct FakeKernelPort {
     settings: std::sync::Mutex<SettingsSnapshotDto>,
     sync_config: std::sync::Mutex<SyncConfigViewDto>,
     block_settings: std::sync::atomic::AtomicBool,
+    block_sync_config: std::sync::atomic::AtomicBool,
     cancel_after_document_mutation: std::sync::atomic::AtomicBool,
     settings_started: tokio::sync::Notify,
     settings_release: tokio::sync::Notify,
+    sync_config_started: tokio::sync::Notify,
+    sync_config_release: tokio::sync::Notify,
     sync_run_requests: std::sync::atomic::AtomicUsize,
     reject_sync_runs: std::sync::atomic::AtomicBool,
     sync_run_queries: std::sync::atomic::AtomicUsize,
@@ -2245,9 +2248,12 @@ impl FakeKernelPort {
             ),
             sync_config: std::sync::Mutex::new(fake_kernel_sync_config("sync-1")),
             block_settings: std::sync::atomic::AtomicBool::new(false),
+            block_sync_config: std::sync::atomic::AtomicBool::new(false),
             cancel_after_document_mutation: std::sync::atomic::AtomicBool::new(false),
             settings_started: tokio::sync::Notify::new(),
             settings_release: tokio::sync::Notify::new(),
+            sync_config_started: tokio::sync::Notify::new(),
+            sync_config_release: tokio::sync::Notify::new(),
             sync_run_requests: std::sync::atomic::AtomicUsize::new(0),
             reject_sync_runs: std::sync::atomic::AtomicBool::new(false),
             sync_run_queries: std::sync::atomic::AtomicUsize::new(0),
@@ -2265,6 +2271,19 @@ impl FakeKernelPort {
 
     fn release_settings(&self) {
         self.settings_release.notify_waiters();
+    }
+
+    fn block_sync_config(&self) {
+        self.block_sync_config
+            .store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    async fn wait_for_sync_config(&self) {
+        self.sync_config_started.notified().await;
+    }
+
+    fn release_sync_config(&self) {
+        self.sync_config_release.notify_one();
     }
 
     fn cancellation(cancellation: &CancellationToken) -> Result<(), McpKernelFailure> {
@@ -2757,6 +2776,18 @@ impl McpKernelPort for FakeKernelPort {
     ) -> McpKernelFuture<'a, SyncConfigViewDto> {
         Box::pin(async move {
             Self::cancellation(cancellation)?;
+            if self
+                .block_sync_config
+                .load(std::sync::atomic::Ordering::Acquire)
+            {
+                self.sync_config_started.notify_one();
+                tokio::select! {
+                    _ = cancellation.cancelled() => {
+                        return Err(McpKernelFailure::RequestCancelled);
+                    }
+                    _ = self.sync_config_release.notified() => {}
+                }
+            }
             self.sync_config
                 .lock()
                 .map(|config| config.clone())
@@ -2972,12 +3003,6 @@ fn tool_router_fixture_with_documents(
     tool_router_fixture_with_services(configure, |sync| sync)
 }
 
-fn tool_router_fixture_with_sync(
-    configure: impl FnOnce(SyncService) -> SyncService,
-) -> ToolRouterFixture {
-    tool_router_fixture_with_services(|documents| documents, configure)
-}
-
 fn tool_router_fixture_with_services(
     configure_documents: impl FnOnce(DocumentService) -> DocumentService,
     configure_sync: impl FnOnce(SyncService) -> SyncService,
@@ -3076,110 +3101,51 @@ fn tool_router_fixture_with_services_and_confirmation(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn workspace_list_and_primary_switch_do_not_reverse_transaction_and_authority_locks() {
+async fn workspace_list_fails_stale_when_primary_switch_completes_during_kernel_sync_lookup() {
     use std::{sync::mpsc, time::Duration};
 
-    let simulated_primary_transaction = std::sync::Arc::new(std::sync::Mutex::new(()));
-    let (resolver_called_sender, resolver_called_receiver) = mpsc::channel();
-    let resolver_called_sender = std::sync::Mutex::new(Some(resolver_called_sender));
-    let resolver_transaction = std::sync::Arc::clone(&simulated_primary_transaction);
-    let fixture = tool_router_fixture_with_sync(move |sync| {
-        sync.with_primary_root_resolver_for_test(move || {
-            if let Some(sender) = resolver_called_sender
-                .lock()
-                .expect("resolver called sender")
-                .take()
-            {
-                sender.send(()).expect("report primary-root lookup");
-            }
-            let deadline = std::time::Instant::now() + Duration::from_millis(200);
-            while std::time::Instant::now() < deadline {
-                if let Ok(transaction) = resolver_transaction.try_lock() {
-                    drop(transaction);
-                    return None;
-                }
-                std::thread::yield_now();
-            }
-            None
-        })
-    });
-    let (lease_acquired_sender, lease_acquired_receiver) = mpsc::channel();
-    let (release_lease_sender, release_lease_receiver) = mpsc::channel();
-    let lease_acquired_sender = std::sync::Mutex::new(Some(lease_acquired_sender));
-    let release_lease_receiver = std::sync::Mutex::new(Some(release_lease_receiver));
-    fixture.workspaces.set_authority_read_hook(move || {
-        if let Some(sender) = lease_acquired_sender
-            .lock()
-            .expect("lease acquired sender")
-            .take()
-        {
-            sender.send(()).expect("report authority read lease");
-            release_lease_receiver
-                .lock()
-                .expect("release lease receiver")
-                .take()
-                .expect("lease release channel")
-                .recv()
-                .expect("release authority lease");
-        }
-    });
+    let fixture = tool_router_fixture();
+    fixture.kernel.block_sync_config();
 
     let next_workspace = fixture._base.path().join("lock-order-next");
     std::fs::create_dir(&next_workspace).expect("next workspace root");
-    let switch_registry = std::sync::Arc::clone(&fixture.workspaces);
-    let switch_transaction = std::sync::Arc::clone(&simulated_primary_transaction);
-    let (transaction_held_sender, transaction_held_receiver) = mpsc::channel();
-    let (start_switch_sender, start_switch_receiver) = mpsc::channel();
-    let (switch_completed_sender, switch_completed_receiver) = mpsc::channel();
-    let switch = std::thread::spawn(move || {
-        let _transaction = switch_transaction.lock().expect("primary transaction");
-        transaction_held_sender
-            .send(())
-            .expect("report primary transaction");
-        start_switch_receiver
-            .recv()
-            .expect("start authority switch");
-        let result = switch_registry.activate_current(&next_workspace);
-        switch_completed_sender
-            .send(result)
-            .expect("report switch completion");
-    });
-    transaction_held_receiver
-        .recv_timeout(Duration::from_secs(2))
-        .expect("primary transaction held");
-
     let handler = fixture.handler.clone();
     let list = tokio::spawn(async move {
         handler
             .call_tool_current("workspace_list", serde_json::json!({}))
             .await
     });
-    lease_acquired_receiver
+
+    tokio::time::timeout(
+        Duration::from_secs(2),
+        fixture.kernel.wait_for_sync_config(),
+    )
+    .await
+    .expect("workspace list reached Kernel sync lookup");
+
+    let switch_registry = std::sync::Arc::clone(&fixture.workspaces);
+    let (switch_completed_sender, switch_completed_receiver) = mpsc::channel();
+    let switch = std::thread::spawn(move || {
+        switch_completed_sender
+            .send(switch_registry.activate_current(&next_workspace))
+            .expect("report switch completion");
+    });
+    let switched = switch_completed_receiver
         .recv_timeout(Duration::from_secs(2))
-        .expect("workspace list acquired authority lease");
-    start_switch_sender
-        .send(())
-        .expect("start workspace switch");
-    release_lease_sender
-        .send(())
-        .expect("continue workspace list");
+        .expect("workspace switch must not wait on Kernel sync lookup");
+    switch.join().expect("join workspace switch");
+    switched.expect("switch primary workspace");
+
+    fixture.kernel.release_sync_config();
 
     let listed = tokio::time::timeout(Duration::from_secs(2), list)
         .await
         .expect("workspace list must complete")
         .expect("join workspace list")
         .expect("workspace list dispatch");
-    let switched = switch_completed_receiver
-        .recv_timeout(Duration::from_secs(2))
-        .expect("workspace switch must complete");
-    switch.join().expect("join workspace switch");
 
-    assert_eq!(listed.is_error, Some(false));
-    switched.expect("switch primary workspace");
-    assert!(
-        resolver_called_receiver.try_recv().is_err(),
-        "workspace_list must not read local-state while holding an authority lease"
-    );
+    assert_eq!(listed.is_error, Some(true));
+    assert_eq!(structured(&listed)["code"], "mcp-handle-stale");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
