@@ -1151,6 +1151,58 @@ describe("MarkdownFileTreeDrawer", () => {
     expect(createFolder).not.toHaveBeenCalled();
   });
 
+  it("keeps the new item menu outside the clipped file tree", () => {
+    const { container } = render(
+      <MarkdownFileTreeDrawer
+        currentPath={null}
+        files={[]}
+        open
+        outlineItems={[]}
+        platform="macos"
+        rootPath="/vault"
+        rootName="Example Vault"
+        onCreateFile={() => {}}
+        onCreateFolder={() => {}}
+        onOpenFile={() => {}}
+        onSelectOutlineItem={() => {}}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "New" }));
+
+    const menu = screen.getByRole("menu", { name: "New" });
+
+    expect(container.querySelector(".markdown-file-tree")).toHaveClass("overflow-hidden");
+    expect(menu).toHaveClass("fixed", "z-40");
+    expect(menu.closest(".markdown-file-tree")).toBeNull();
+  });
+
+  it("closes the portaled new item menu when the file tree collapses", () => {
+    const drawer = (open: boolean) => (
+      <MarkdownFileTreeDrawer
+        currentPath={null}
+        files={[]}
+        open={open}
+        outlineItems={[]}
+        platform="macos"
+        rootPath="/vault"
+        rootName="Example Vault"
+        onCreateFile={() => {}}
+        onCreateFolder={() => {}}
+        onOpenFile={() => {}}
+        onSelectOutlineItem={() => {}}
+      />
+    );
+    const { rerender } = render(drawer(true));
+
+    fireEvent.click(screen.getByRole("button", { name: "New" }));
+    expect(screen.getByRole("menu", { name: "New" })).toBeInTheDocument();
+
+    rerender(drawer(false));
+
+    expect(screen.queryByRole("menu", { name: "New" })).not.toBeInTheDocument();
+  });
+
   it("keeps settings and sync together while leaving update outside the primary Windows footer actions", () => {
     const toggleMarkdownFiles = vi.fn();
     const onInstallAvailableUpdate = vi.fn();
