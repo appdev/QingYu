@@ -262,7 +262,7 @@ fn read_retained_workspace_rules(directory: &Dir) -> Result<Option<String>, Work
     read_retained_workspace_rules_inner(directory, || {})
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 fn read_retained_workspace_rules_with_hook(
     directory: &Dir,
     after_read: impl FnOnce(),

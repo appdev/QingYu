@@ -1602,7 +1602,7 @@ impl ThemeCatalog {
     }
 
     fn ensure_root(&self) -> Result<(), ThemeError> {
-        match fs::symlink_metadata(&self.root) {
+        match crate::storage_capability::ambient_symlink_metadata(&self.root) {
             Ok(metadata) => {
                 if metadata.file_type().is_symlink() || !metadata.file_type().is_dir() {
                     return Err(ThemeError::new(
@@ -1628,7 +1628,8 @@ impl ThemeCatalog {
                     ));
                 }
                 fs::create_dir_all(&self.root).map_err(io_error)?;
-                let metadata = fs::symlink_metadata(&self.root).map_err(io_error)?;
+                let metadata = crate::storage_capability::ambient_symlink_metadata(&self.root)
+                    .map_err(io_error)?;
                 if metadata.file_type().is_symlink() || !metadata.file_type().is_dir() {
                     return Err(ThemeError::new(
                         ThemeErrorCode::UnsafePath,
